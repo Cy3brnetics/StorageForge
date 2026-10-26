@@ -1,0 +1,1188 @@
+{
+	"nodes": [
+		{
+			"id": "ae71b9af5a46fb92",
+			"type": "group",
+			"label": "atlas",
+			"x": 0,
+			"y": 0,
+			"width": 2060,
+			"height": 3180,
+			"color": "1"
+		},
+		{
+			"id": "59cc8cfb99888624",
+			"type": "group",
+			"label": "demo-target",
+			"x": 2220,
+			"y": 0,
+			"width": 2060,
+			"height": 870,
+			"color": "1"
+		},
+		{
+			"id": "8873272bc0571fd4",
+			"type": "group",
+			"label": "External targets",
+			"x": 4440,
+			"y": 0,
+			"width": 460,
+			"height": 910
+		},
+		{
+			"id": "23da65367e78d70d",
+			"type": "text",
+			"text": "### 🔴 atlas\n**Host** · Broken / offline",
+			"x": 60,
+			"y": 100,
+			"width": 300,
+			"height": 120,
+			"color": "1"
+		},
+		{
+			"id": "163b16da2dae5c0e",
+			"type": "text",
+			"text": "### 🔴 md0\n**StoragePool** · Broken / offline\nmdadm raid1 · 2 members · usable 6.8 TiB · tolerates 1",
+			"x": 460,
+			"y": 100,
+			"width": 300,
+			"height": 140,
+			"color": "1"
+		},
+		{
+			"id": "a6bf6091fe697273",
+			"type": "text",
+			"text": "### 🔴 ext4 · /dev/md0\n**Filesystem** · Broken / offline\n`/dev/md0`",
+			"x": 860,
+			"y": 100,
+			"width": 300,
+			"height": 100,
+			"color": "1"
+		},
+		{
+			"id": "0d35779ab502f468",
+			"type": "text",
+			"text": "### 🔴 /mnt/cold\n**MountPoint** · Broken / offline\next4 · — of —",
+			"x": 1260,
+			"y": 100,
+			"width": 320,
+			"height": 120,
+			"color": "1"
+		},
+		{
+			"id": "9097d55e031db0eb",
+			"type": "text",
+			"text": "### 🔴 tank\n**StoragePool** · Broken / offline\nzfs raidz2 · 1×6-wide · usable 72.6 TiB · tolerates 2",
+			"x": 460,
+			"y": 270,
+			"width": 300,
+			"height": 140,
+			"color": "1"
+		},
+		{
+			"id": "e3ca824c63abc2e8",
+			"type": "text",
+			"text": "### ⚪ zfs · tank\n**Filesystem** · No protection data\n`tank`",
+			"x": 860,
+			"y": 270,
+			"width": 300,
+			"height": 100
+		},
+		{
+			"id": "e1c02904144192c7",
+			"type": "text",
+			"text": "### ⚪ /mnt/storage_array\n**MountPoint** · No protection data\nzfs · — of —",
+			"x": 1260,
+			"y": 270,
+			"width": 320,
+			"height": 120
+		},
+		{
+			"id": "a65a24e77fb6bdbf",
+			"type": "text",
+			"text": "### 🟢 zfs · tank/backups\n**Filesystem** · Protected\n`tank/backups`",
+			"x": 860,
+			"y": 400,
+			"width": 300,
+			"height": 100,
+			"color": "4"
+		},
+		{
+			"id": "16a6851582eb6470",
+			"type": "text",
+			"text": "### 🟢 /mnt/storage_array/backups\n**MountPoint** · Protected\nzfs · — of —",
+			"x": 1260,
+			"y": 420,
+			"width": 320,
+			"height": 120,
+			"color": "4"
+		},
+		{
+			"id": "2e3182876dda0070",
+			"type": "text",
+			"text": "### 🟡 zfs · tank/media\n**Filesystem** · Local-only\n`tank/media`",
+			"x": 860,
+			"y": 530,
+			"width": 300,
+			"height": 100,
+			"color": "3"
+		},
+		{
+			"id": "ac8021f8a1585d89",
+			"type": "text",
+			"text": "### 🟡 /mnt/storage_array/media\n**MountPoint** · Local-only\nzfs · — of —",
+			"x": 1260,
+			"y": 570,
+			"width": 320,
+			"height": 120,
+			"color": "3"
+		},
+		{
+			"id": "c4d55b3d41262d05",
+			"type": "text",
+			"text": "### 🟡 /mnt/storage_array/media/movies/Arrival (2016).mkv\n**Symlink** · Local-only\n→ `/mnt/storage_array/media/downloads/Arrival (2016).mkv`",
+			"x": 1660,
+			"y": 570,
+			"width": 340,
+			"height": 100,
+			"color": "3"
+		},
+		{
+			"id": "17b77d1d9d2c5167",
+			"type": "text",
+			"text": "### 🟡 /var/media\n**Symlink** · Local-only\n→ `/mnt/storage_array/media`",
+			"x": 1660,
+			"y": 700,
+			"width": 340,
+			"height": 100,
+			"color": "3"
+		},
+		{
+			"id": "2259ddcf5e6ca61b",
+			"type": "text",
+			"text": "### 🟢 zfs · tank/photos\n**Filesystem** · Protected\n`tank/photos`",
+			"x": 860,
+			"y": 660,
+			"width": 300,
+			"height": 100,
+			"color": "4"
+		},
+		{
+			"id": "2c39608ec9b14e0e",
+			"type": "text",
+			"text": "### 🟢 /mnt/storage_array/photos\n**MountPoint** · Protected\nzfs · — of —",
+			"x": 1260,
+			"y": 720,
+			"width": 320,
+			"height": 120,
+			"color": "4"
+		},
+		{
+			"id": "bab6b87193d19f95",
+			"type": "text",
+			"text": "### 🟢 /home/ops/Pictures/RAW\n**Symlink** · Protected\n→ `/mnt/storage_array/photos/raw`",
+			"x": 1660,
+			"y": 830,
+			"width": 340,
+			"height": 100,
+			"color": "4"
+		},
+		{
+			"id": "1ca9a4c0f661dc07",
+			"type": "text",
+			"text": "### 🔴 zfs · tank/vm\n**Filesystem** · Broken / offline\n`tank/vm`",
+			"x": 860,
+			"y": 790,
+			"width": 300,
+			"height": 100,
+			"color": "1"
+		},
+		{
+			"id": "539f00585c5b8b05",
+			"type": "text",
+			"text": "### 🔴 /mnt/storage_array/vm\n**MountPoint** · Broken / offline\nzfs · — of —",
+			"x": 1260,
+			"y": 870,
+			"width": 320,
+			"height": 120,
+			"color": "1"
+		},
+		{
+			"id": "237ceacd9b6ee1fc",
+			"type": "text",
+			"text": "### 🟢 btrfs · /dev/nvme0n1p2\n**Filesystem** · Protected\n`/dev/nvme0n1p2`",
+			"x": 860,
+			"y": 920,
+			"width": 300,
+			"height": 100,
+			"color": "4"
+		},
+		{
+			"id": "3ccd9ce6cbd8be5a",
+			"type": "text",
+			"text": "### 🟢 /\n**MountPoint** · Protected\nbtrfs · — of —",
+			"x": 1260,
+			"y": 1020,
+			"width": 320,
+			"height": 120,
+			"color": "4"
+		},
+		{
+			"id": "29fe7fe8bdb0710f",
+			"type": "text",
+			"text": "### ⚪ /.snapshots\n**MountPoint** · No protection data\nbtrfs · — of —",
+			"x": 1260,
+			"y": 1170,
+			"width": 320,
+			"height": 120
+		},
+		{
+			"id": "d2f52d60af6d9715",
+			"type": "text",
+			"text": "### 🟢 /home\n**MountPoint** · Protected\nbtrfs · — of —",
+			"x": 1260,
+			"y": 1320,
+			"width": 320,
+			"height": 120,
+			"color": "4"
+		},
+		{
+			"id": "6a30dd04daee3181",
+			"type": "text",
+			"text": "### ⚪ /var/log\n**MountPoint** · No protection data\nbtrfs · — of —",
+			"x": 1260,
+			"y": 1470,
+			"width": 320,
+			"height": 120
+		},
+		{
+			"id": "259002b1f35e2723",
+			"type": "text",
+			"text": "### 🔴 ext4 · /dev/sdi1\n**Filesystem** · Broken / offline\n`/dev/sdi1`",
+			"x": 860,
+			"y": 1050,
+			"width": 300,
+			"height": 100,
+			"color": "1"
+		},
+		{
+			"id": "a82d8f1840df22a8",
+			"type": "text",
+			"text": "### 🔴 /mnt/legacy\n**MountPoint** · Broken / offline\next4 · — of —",
+			"x": 1260,
+			"y": 1620,
+			"width": 320,
+			"height": 120,
+			"color": "1"
+		},
+		{
+			"id": "76e8fdcf4bb0a9b5",
+			"type": "text",
+			"text": "### ⚪ f2fs · /dev/nvme1n1p2\n**Filesystem** · No protection data\n`/dev/nvme1n1p2`",
+			"x": 860,
+			"y": 1180,
+			"width": 300,
+			"height": 100
+		},
+		{
+			"id": "fc29cb403b8275e0",
+			"type": "text",
+			"text": "### ⚪ /mnt/burst\n**MountPoint** · No protection data\nf2fs · — of —",
+			"x": 1260,
+			"y": 1770,
+			"width": 320,
+			"height": 120
+		},
+		{
+			"id": "ce942c193f9f1ca3",
+			"type": "text",
+			"text": "### ⚪ vfat · /dev/nvme0n1p1\n**Filesystem** · No protection data\n`/dev/nvme0n1p1`",
+			"x": 860,
+			"y": 1310,
+			"width": 300,
+			"height": 100
+		},
+		{
+			"id": "7f0343be4672a38f",
+			"type": "text",
+			"text": "### ⚪ /boot/efi\n**MountPoint** · No protection data\nvfat · — of —",
+			"x": 1260,
+			"y": 1920,
+			"width": 320,
+			"height": 120
+		},
+		{
+			"id": "5b663e26a009b68a",
+			"type": "text",
+			"text": "### ⚪ xfs · /dev/nvme1n1p1\n**Filesystem** · No protection data\n`/dev/nvme1n1p1`",
+			"x": 860,
+			"y": 1440,
+			"width": 300,
+			"height": 100
+		},
+		{
+			"id": "3b1bfe024b119ea3",
+			"type": "text",
+			"text": "### ⚪ /mnt/fast_scratch\n**MountPoint** · No protection data\nxfs · — of —",
+			"x": 1260,
+			"y": 2070,
+			"width": 320,
+			"height": 120
+		},
+		{
+			"id": "83658578db5a5992",
+			"type": "text",
+			"text": "### ⚪ /var/lib/containerd\n**MountPoint** · No protection data\nbind of `/mnt/fast_scratch/containerd`",
+			"x": 1260,
+			"y": 2220,
+			"width": 320,
+			"height": 120
+		},
+		{
+			"id": "7267376fb834935d",
+			"type": "text",
+			"text": "### 🟡 /var/lib/docker\n**MountPoint** · Local-only\nbind of `/mnt/fast_scratch/docker`",
+			"x": 1260,
+			"y": 2370,
+			"width": 320,
+			"height": 120,
+			"color": "3"
+		},
+		{
+			"id": "e3ce66b43b9067af",
+			"type": "text",
+			"text": "### 🟡 xfs · /dev/sdj1\n**Filesystem** · Local-only\n`/dev/sdj1`",
+			"x": 860,
+			"y": 1570,
+			"width": 300,
+			"height": 100,
+			"color": "3"
+		},
+		{
+			"id": "1e6d51056a8588aa",
+			"type": "text",
+			"text": "### 🟡 /mnt/iscsi_vm\n**MountPoint** · Local-only\nxfs · — of —",
+			"x": 1260,
+			"y": 2520,
+			"width": 320,
+			"height": 120,
+			"color": "3"
+		},
+		{
+			"id": "d396ed00df501017",
+			"type": "text",
+			"text": "### 🟡 /srv/vm-images\n**Symlink** · Local-only\n→ `/mnt/iscsi_vm/images`",
+			"x": 1660,
+			"y": 2520,
+			"width": 340,
+			"height": 100,
+			"color": "3"
+		},
+		{
+			"id": "cd8ec4afaa23e0ce",
+			"type": "text",
+			"text": "### 🔴 cifs · //office-nas.nb.internal/archive\n**Filesystem** · Broken / offline\n`//office-nas.nb.internal/archive`",
+			"x": 860,
+			"y": 1700,
+			"width": 300,
+			"height": 100,
+			"color": "1"
+		},
+		{
+			"id": "64817e776e7bbf9d",
+			"type": "text",
+			"text": "### 🔴 /mnt/archive\n**MountPoint** · Broken / offline\ncifs · — of —",
+			"x": 1260,
+			"y": 2670,
+			"width": 320,
+			"height": 120,
+			"color": "1"
+		},
+		{
+			"id": "cb2f53e452e2635e",
+			"type": "text",
+			"text": "### 🔴 /home/ops/Archive\n**Symlink** · Broken / offline\n→ `/mnt/archive/2019`\nTarget is on /mnt/archive, which is disconnected (NetBird)",
+			"x": 1660,
+			"y": 2670,
+			"width": 340,
+			"height": 100,
+			"color": "1"
+		},
+		{
+			"id": "4671aaf440d3c577",
+			"type": "text",
+			"text": "### ⚪ rclone · b2:atlas-offsite\n**Filesystem** · No protection data\n`b2:atlas-offsite`",
+			"x": 860,
+			"y": 1830,
+			"width": 300,
+			"height": 100
+		},
+		{
+			"id": "a23a827257710a72",
+			"type": "text",
+			"text": "### ⚪ /mnt/remote_s3\n**MountPoint** · No protection data\nrclone · — of —",
+			"x": 1260,
+			"y": 2820,
+			"width": 320,
+			"height": 120
+		},
+		{
+			"id": "d0da760543bfbb03",
+			"type": "text",
+			"text": "### ⚪ nfs4 · nas-02.tail4c2e.ts.net:/export/archive\n**Filesystem** · No protection data\n`nas-02.tail4c2e.ts.net:/export/archive`",
+			"x": 860,
+			"y": 1960,
+			"width": 300,
+			"height": 100
+		},
+		{
+			"id": "f9b99cec0dc814b9",
+			"type": "text",
+			"text": "### ⚪ /mnt/remote_nfs\n**MountPoint** · No protection data\nnfs4 · — of —",
+			"x": 1260,
+			"y": 2970,
+			"width": 320,
+			"height": 120
+		},
+		{
+			"id": "1e881b7524f55f11",
+			"type": "text",
+			"text": "### 🔴 /opt/app/current\n**Symlink** · Broken / offline\n→ `/opt/app/releases/live`\nCircular symlink /opt/app/current → /opt/app/releases/live → /opt/app/current (ELOOP)",
+			"x": 1660,
+			"y": 2800,
+			"width": 340,
+			"height": 100,
+			"color": "1"
+		},
+		{
+			"id": "5c40b39c0c22389e",
+			"type": "text",
+			"text": "### 🔴 /opt/app/releases/live\n**Symlink** · Broken / offline\n→ `/opt/app/current`\nCircular symlink /opt/app/releases/live → /opt/app/current → /opt/app/releases/live (ELOOP)",
+			"x": 1660,
+			"y": 2930,
+			"width": 340,
+			"height": 100,
+			"color": "1"
+		},
+		{
+			"id": "2c323962f3b56065",
+			"type": "text",
+			"text": "### 🔴 demo-target\n**Host** · Broken / offline\n172.23.0.3 · Alpine Linux v3.20 · Linux 6.18.55-2-cachyos-lts x86_64",
+			"x": 2280,
+			"y": 100,
+			"width": 300,
+			"height": 120,
+			"color": "1"
+		},
+		{
+			"id": "8a5c9c4250c6039a",
+			"type": "text",
+			"text": "### ⚪ btrfs · /dev/mapper/luks-55a9ff30-4585-4266-b428-bdc4d017d50a[/@/var/lib/docker/containers/a73aa14275adbc548a354cc1673a17066d67f9fc645bb694124e63c482e70f17/hostname]\n**Filesystem** · No protection data\n`/dev/mapper/luks-55a9ff30-4585-4266-b428-bdc4d017d50a[/@/var/lib/docker/containers/a73aa14275adbc548a354cc1673a17066d67f9fc645bb694124e63c482e70f17/hostname]`",
+			"x": 3080,
+			"y": 100,
+			"width": 300,
+			"height": 100
+		},
+		{
+			"id": "5c35e4d027060abe",
+			"type": "text",
+			"text": "### ⚪ /etc/hostname\n**MountPoint** · No protection data\nbtrfs · 752.4 GiB of 890.2 GiB (84%)",
+			"x": 3480,
+			"y": 100,
+			"width": 320,
+			"height": 120
+		},
+		{
+			"id": "c66af002ee37ce77",
+			"type": "text",
+			"text": "### ⚪ btrfs · /dev/mapper/luks-55a9ff30-4585-4266-b428-bdc4d017d50a[/@/var/lib/docker/containers/a73aa14275adbc548a354cc1673a17066d67f9fc645bb694124e63c482e70f17/hosts]\n**Filesystem** · No protection data\n`/dev/mapper/luks-55a9ff30-4585-4266-b428-bdc4d017d50a[/@/var/lib/docker/containers/a73aa14275adbc548a354cc1673a17066d67f9fc645bb694124e63c482e70f17/hosts]`",
+			"x": 3080,
+			"y": 230,
+			"width": 300,
+			"height": 100
+		},
+		{
+			"id": "10c231cb03de1e0e",
+			"type": "text",
+			"text": "### ⚪ /etc/hosts\n**MountPoint** · No protection data\nbtrfs · 752.4 GiB of 890.2 GiB (84%)",
+			"x": 3480,
+			"y": 250,
+			"width": 320,
+			"height": 120
+		},
+		{
+			"id": "9e41c0f540487f76",
+			"type": "text",
+			"text": "### ⚪ btrfs · /dev/mapper/luks-55a9ff30-4585-4266-b428-bdc4d017d50a[/@/var/lib/docker/containers/a73aa14275adbc548a354cc1673a17066d67f9fc645bb694124e63c482e70f17/resolv.conf]\n**Filesystem** · No protection data\n`/dev/mapper/luks-55a9ff30-4585-4266-b428-bdc4d017d50a[/@/var/lib/docker/containers/a73aa14275adbc548a354cc1673a17066d67f9fc645bb694124e63c482e70f17/resolv.conf]`",
+			"x": 3080,
+			"y": 360,
+			"width": 300,
+			"height": 100
+		},
+		{
+			"id": "821ba6cdee1ffb6a",
+			"type": "text",
+			"text": "### ⚪ /etc/resolv.conf\n**MountPoint** · No protection data\nbtrfs · 752.4 GiB of 890.2 GiB (84%)",
+			"x": 3480,
+			"y": 400,
+			"width": 320,
+			"height": 120
+		},
+		{
+			"id": "a8049e0ea930860b",
+			"type": "text",
+			"text": "### ⚪ overlay · overlay\n**Filesystem** · No protection data\n`overlay`",
+			"x": 3080,
+			"y": 490,
+			"width": 300,
+			"height": 100
+		},
+		{
+			"id": "2204502e0da502eb",
+			"type": "text",
+			"text": "### ⚪ /\n**MountPoint** · No protection data\noverlay · 752.4 GiB of 890.2 GiB (84%)",
+			"x": 3480,
+			"y": 550,
+			"width": 320,
+			"height": 120
+		},
+		{
+			"id": "4d6be3ccee9ec5e0",
+			"type": "text",
+			"text": "### ⚪ /etc/ssl1.1/cert.pem\n**Symlink** · No protection data\n→ `/etc/ssl/cert.pem`",
+			"x": 3880,
+			"y": 550,
+			"width": 340,
+			"height": 100
+		},
+		{
+			"id": "bab6432053cae7ca",
+			"type": "text",
+			"text": "### 🔴 /srv/broken-link\n**Symlink** · Broken / offline\n→ `/srv/gone`\nTarget /srv/gone does not exist in the file index",
+			"x": 3880,
+			"y": 680,
+			"width": 340,
+			"height": 100,
+			"color": "1"
+		},
+		{
+			"id": "7a1bffe46ba96656",
+			"type": "text",
+			"text": "### ⚪ S3 Glacier IR\n**Host** · No protection data\nexternal target",
+			"x": 4500,
+			"y": 100,
+			"width": 300,
+			"height": 120
+		},
+		{
+			"id": "8fd453912adf3f48",
+			"type": "text",
+			"text": "### ⚪ b2\n**Host** · No protection data\nexternal target · S3 (rclone) · Internet · TLS",
+			"x": 4500,
+			"y": 250,
+			"width": 300,
+			"height": 120
+		},
+		{
+			"id": "f97db6eb2fba0dd8",
+			"type": "text",
+			"text": "### ⚪ nas-02.tail4c2e.ts.net\n**Host** · No protection data\nexternal target · NFSv4.2 · Tailscale",
+			"x": 4500,
+			"y": 400,
+			"width": 300,
+			"height": 120
+		},
+		{
+			"id": "cf70c9b6a782ef5c",
+			"type": "text",
+			"text": "### 🔴 office-nas.nb.internal\n**Host** · Broken / offline\nexternal target · SMB3 · NetBird",
+			"x": 4500,
+			"y": 550,
+			"width": 300,
+			"height": 120,
+			"color": "1"
+		},
+		{
+			"id": "2f03288ff80cdcae",
+			"type": "text",
+			"text": "### ⚪ pbs-02\n**Host** · No protection data\nexternal target",
+			"x": 4500,
+			"y": 700,
+			"width": 300,
+			"height": 120
+		}
+	],
+	"edges": [
+		{
+			"id": "50f77206063cd5fb",
+			"fromNode": "cd8ec4afaa23e0ce",
+			"toNode": "64817e776e7bbf9d",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "478f7eeab5eb7b24",
+			"fromNode": "a6bf6091fe697273",
+			"toNode": "cf70c9b6a782ef5c",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "sync: Disconnected",
+			"color": "1"
+		},
+		{
+			"id": "171b5a3b72801c5f",
+			"fromNode": "a6bf6091fe697273",
+			"toNode": "0d35779ab502f468",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "efed2e777f83937f",
+			"fromNode": "ce942c193f9f1ca3",
+			"toNode": "7f0343be4672a38f",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "cf491ca3bb363522",
+			"fromNode": "237ceacd9b6ee1fc",
+			"toNode": "8fd453912adf3f48",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "backup: restic → B2",
+			"color": "4"
+		},
+		{
+			"id": "07aade731693bc7d",
+			"fromNode": "237ceacd9b6ee1fc",
+			"toNode": "f97db6eb2fba0dd8",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "sync: Rsync Scheduled",
+			"color": "4"
+		},
+		{
+			"id": "afcb821bb3bda7e0",
+			"fromNode": "237ceacd9b6ee1fc",
+			"toNode": "3ccd9ce6cbd8be5a",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "@"
+		},
+		{
+			"id": "c6664d88618b675e",
+			"fromNode": "237ceacd9b6ee1fc",
+			"toNode": "29fe7fe8bdb0710f",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "@snapshots"
+		},
+		{
+			"id": "084debebd55c5ce4",
+			"fromNode": "237ceacd9b6ee1fc",
+			"toNode": "d2f52d60af6d9715",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "@home"
+		},
+		{
+			"id": "ae2f2d6f5d3c2f04",
+			"fromNode": "237ceacd9b6ee1fc",
+			"toNode": "6a30dd04daee3181",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "@var_log"
+		},
+		{
+			"id": "1839a2956717e3c0",
+			"fromNode": "5b663e26a009b68a",
+			"toNode": "3b1bfe024b119ea3",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "cd3926e07bc9d756",
+			"fromNode": "76e8fdcf4bb0a9b5",
+			"toNode": "fc29cb403b8275e0",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "2594c8afc5582db4",
+			"fromNode": "259002b1f35e2723",
+			"toNode": "a82d8f1840df22a8",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "5e6b09d84ed56f41",
+			"fromNode": "e3ce66b43b9067af",
+			"toNode": "2f03288ff80cdcae",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "backup: PBS → pbs-02",
+			"color": "3"
+		},
+		{
+			"id": "6848935ac1bbc6ea",
+			"fromNode": "e3ce66b43b9067af",
+			"toNode": "1e6d51056a8588aa",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "6a414c94f0599170",
+			"fromNode": "4671aaf440d3c577",
+			"toNode": "a23a827257710a72",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "4451f0ee9f56dcbd",
+			"fromNode": "d0da760543bfbb03",
+			"toNode": "f9b99cec0dc814b9",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "70b4fbb491ab599c",
+			"fromNode": "e3ca824c63abc2e8",
+			"toNode": "e1c02904144192c7",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "3128445d320dbc7d",
+			"fromNode": "a65a24e77fb6bdbf",
+			"toNode": "7a1bffe46ba96656",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "backup: age → S3 Glacier IR",
+			"color": "4"
+		},
+		{
+			"id": "d3e2c56c267c2895",
+			"fromNode": "a65a24e77fb6bdbf",
+			"toNode": "f97db6eb2fba0dd8",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "sync: Active Sync",
+			"color": "4"
+		},
+		{
+			"id": "1aed0c83beb4584e",
+			"fromNode": "a65a24e77fb6bdbf",
+			"toNode": "16a6851582eb6470",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "02bafab4ec59a9cd",
+			"fromNode": "2e3182876dda0070",
+			"toNode": "f97db6eb2fba0dd8",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "sync: Active Sync",
+			"color": "4"
+		},
+		{
+			"id": "5f43607bdacd6cd0",
+			"fromNode": "2e3182876dda0070",
+			"toNode": "ac8021f8a1585d89",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "392bab1732cb4dcd",
+			"fromNode": "2259ddcf5e6ca61b",
+			"toNode": "8fd453912adf3f48",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "backup: restic → B2",
+			"color": "4"
+		},
+		{
+			"id": "5abc599e8bfd53b0",
+			"fromNode": "2259ddcf5e6ca61b",
+			"toNode": "f97db6eb2fba0dd8",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "sync: Active Sync",
+			"color": "4"
+		},
+		{
+			"id": "380e0aa9328771e0",
+			"fromNode": "2259ddcf5e6ca61b",
+			"toNode": "2c39608ec9b14e0e",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "6fc9779b69e810aa",
+			"fromNode": "1ca9a4c0f661dc07",
+			"toNode": "f97db6eb2fba0dd8",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "sync: Lagging",
+			"color": "3"
+		},
+		{
+			"id": "43232306d13a2b7f",
+			"fromNode": "1ca9a4c0f661dc07",
+			"toNode": "2f03288ff80cdcae",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "backup: PBS → pbs-02",
+			"color": "1"
+		},
+		{
+			"id": "2d077d219c8c7ed5",
+			"fromNode": "1ca9a4c0f661dc07",
+			"toNode": "539f00585c5b8b05",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "332e3dc21962ec40",
+			"fromNode": "8a5c9c4250c6039a",
+			"toNode": "5c35e4d027060abe",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "/@"
+		},
+		{
+			"id": "69bcc23a477106ea",
+			"fromNode": "c66af002ee37ce77",
+			"toNode": "10c231cb03de1e0e",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "/@"
+		},
+		{
+			"id": "dee61185ae87ac4a",
+			"fromNode": "9e41c0f540487f76",
+			"toNode": "821ba6cdee1ffb6a",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "/@"
+		},
+		{
+			"id": "9b4b1447d731a386",
+			"fromNode": "a8049e0ea930860b",
+			"toNode": "2204502e0da502eb",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "993c4ccec0e04549",
+			"fromNode": "23da65367e78d70d",
+			"toNode": "ce942c193f9f1ca3",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "05b2d8621628f79e",
+			"fromNode": "23da65367e78d70d",
+			"toNode": "237ceacd9b6ee1fc",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "cc90ea1d078c9a1b",
+			"fromNode": "23da65367e78d70d",
+			"toNode": "5b663e26a009b68a",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "179d0fe1e2ece49a",
+			"fromNode": "23da65367e78d70d",
+			"toNode": "76e8fdcf4bb0a9b5",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "a99bc0c698bf5af2",
+			"fromNode": "23da65367e78d70d",
+			"toNode": "259002b1f35e2723",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "df95a2c3c3892161",
+			"fromNode": "23da65367e78d70d",
+			"toNode": "e3ce66b43b9067af",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "4c20414706be823b",
+			"fromNode": "23da65367e78d70d",
+			"toNode": "163b16da2dae5c0e",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "e13ca742f9e9126c",
+			"fromNode": "23da65367e78d70d",
+			"toNode": "9097d55e031db0eb",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "4d196df54cf7747e",
+			"fromNode": "8fd453912adf3f48",
+			"toNode": "4671aaf440d3c577",
+			"fromSide": "left",
+			"toSide": "right",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "6642c90129d39862",
+			"fromNode": "2c323962f3b56065",
+			"toNode": "8a5c9c4250c6039a",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "1925892b754ee74d",
+			"fromNode": "2c323962f3b56065",
+			"toNode": "c66af002ee37ce77",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "25b7e33ba49abdbb",
+			"fromNode": "2c323962f3b56065",
+			"toNode": "9e41c0f540487f76",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "0e796febccc9ecc1",
+			"fromNode": "2c323962f3b56065",
+			"toNode": "a8049e0ea930860b",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "8823eb329140b90f",
+			"fromNode": "f97db6eb2fba0dd8",
+			"toNode": "d0da760543bfbb03",
+			"fromSide": "left",
+			"toSide": "right",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "fa76bb9403374fc8",
+			"fromNode": "cf70c9b6a782ef5c",
+			"toNode": "cd8ec4afaa23e0ce",
+			"fromSide": "left",
+			"toSide": "right",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "c09d8e6f51687cd0",
+			"fromNode": "cb2f53e452e2635e",
+			"toNode": "64817e776e7bbf9d",
+			"fromSide": "left",
+			"toSide": "right",
+			"toEnd": "arrow",
+			"label": "symlink",
+			"color": "6"
+		},
+		{
+			"id": "a5ea881450975202",
+			"fromNode": "bab6b87193d19f95",
+			"toNode": "2c39608ec9b14e0e",
+			"fromSide": "left",
+			"toSide": "right",
+			"toEnd": "arrow",
+			"label": "symlink",
+			"color": "6"
+		},
+		{
+			"id": "51aa2b82d99f392f",
+			"fromNode": "c4d55b3d41262d05",
+			"toNode": "ac8021f8a1585d89",
+			"fromSide": "left",
+			"toSide": "right",
+			"toEnd": "arrow",
+			"label": "symlink",
+			"color": "6"
+		},
+		{
+			"id": "df30bbc374212051",
+			"fromNode": "1e881b7524f55f11",
+			"toNode": "5c40b39c0c22389e",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "symlink",
+			"color": "6"
+		},
+		{
+			"id": "1ad0156f2946977c",
+			"fromNode": "5c40b39c0c22389e",
+			"toNode": "1e881b7524f55f11",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "symlink",
+			"color": "6"
+		},
+		{
+			"id": "4360a3a6da2cad5c",
+			"fromNode": "d396ed00df501017",
+			"toNode": "1e6d51056a8588aa",
+			"fromSide": "left",
+			"toSide": "right",
+			"toEnd": "arrow",
+			"label": "symlink",
+			"color": "6"
+		},
+		{
+			"id": "c2c993d76581b21b",
+			"fromNode": "17b77d1d9d2c5167",
+			"toNode": "ac8021f8a1585d89",
+			"fromSide": "left",
+			"toSide": "right",
+			"toEnd": "arrow",
+			"label": "symlink",
+			"color": "6"
+		},
+		{
+			"id": "f17cabfb2df53d1f",
+			"fromNode": "4d6be3ccee9ec5e0",
+			"toNode": "2204502e0da502eb",
+			"fromSide": "left",
+			"toSide": "right",
+			"toEnd": "arrow",
+			"label": "symlink",
+			"color": "6"
+		},
+		{
+			"id": "e8819a19f418bef4",
+			"fromNode": "bab6432053cae7ca",
+			"toNode": "2204502e0da502eb",
+			"fromSide": "left",
+			"toSide": "right",
+			"toEnd": "arrow",
+			"label": "symlink",
+			"color": "6"
+		},
+		{
+			"id": "e001a1d2ddaf0ef2",
+			"fromNode": "3b1bfe024b119ea3",
+			"toNode": "83658578db5a5992",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "bind",
+			"color": "5"
+		},
+		{
+			"id": "6286ddd18e35fbd1",
+			"fromNode": "3b1bfe024b119ea3",
+			"toNode": "7267376fb834935d",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow",
+			"label": "bind",
+			"color": "5"
+		},
+		{
+			"id": "03dde268a9c87a41",
+			"fromNode": "163b16da2dae5c0e",
+			"toNode": "a6bf6091fe697273",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "baff3d5ea60a00aa",
+			"fromNode": "9097d55e031db0eb",
+			"toNode": "e3ca824c63abc2e8",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "59fb346fc0b3eb4d",
+			"fromNode": "9097d55e031db0eb",
+			"toNode": "a65a24e77fb6bdbf",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "db7488ed5066880a",
+			"fromNode": "9097d55e031db0eb",
+			"toNode": "2e3182876dda0070",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "b659cb47601c9af3",
+			"fromNode": "9097d55e031db0eb",
+			"toNode": "2259ddcf5e6ca61b",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		},
+		{
+			"id": "5856de59e7b365aa",
+			"fromNode": "9097d55e031db0eb",
+			"toNode": "1ca9a4c0f661dc07",
+			"fromSide": "right",
+			"toSide": "left",
+			"toEnd": "arrow"
+		}
+	]
+}

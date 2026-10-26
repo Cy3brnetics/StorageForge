@@ -1,0 +1,16 @@
+# Throwaway SSH target for the end-to-end demo. Not for production.
+FROM alpine:3.20
+RUN apk add --no-cache openssh-server findutils util-linux coreutils \
+ && adduser -D -s /bin/sh scan && passwd -u scan >/dev/null 2>&1 || true \
+ && ssh-keygen -A \
+ && mkdir -p /home/scan/.ssh /srv/data/photos/2019 /srv/data/docs /srv/archive \
+ && for i in $(seq 1 500); do echo "raw $i" > /srv/data/photos/2019/IMG_$i.CR2; done \
+ && head -c 5000000 /dev/urandom > /srv/data/photos/panorama.cr2 \
+ && cp /srv/data/photos/panorama.cr2 /srv/archive/panorama-copy.cr2 \
+ && echo "quarterly report" > /srv/data/docs/report-2026-q3.pdf \
+ && ln -s /srv/data/photos /srv/photos-link && ln -s /srv/gone /srv/broken-link \
+ && chown -R scan:scan /home/scan && chmod 700 /home/scan/.ssh \
+ && printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin no\nAllowUsers scan\n' >> /etc/ssh/sshd_config
+COPY --chmod=0755 target-entrypoint.sh /usr/local/bin/target-entrypoint
+EXPOSE 22
+ENTRYPOINT ["/usr/local/bin/target-entrypoint"]

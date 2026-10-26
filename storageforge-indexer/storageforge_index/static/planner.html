@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>StorageForge Planner</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/planner.css">
+</head>
+<body>
+
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="3" width="24" height="6" rx="1.5" fill="var(--fast)"/><rect x="2" y="11" width="24" height="6" rx="1.5" fill="var(--mass)"/><rect x="2" y="19" width="24" height="6" rx="1.5" fill="var(--remote)"/><circle cx="21.5" cy="6" r="1.3" fill="var(--bg)"/><circle cx="21.5" cy="14" r="1.3" fill="var(--bg)"/><circle cx="21.5" cy="22" r="1.3" fill="var(--bg)"/></svg>
+      <div><b>StorageForge</b><small id="hostline">blueprint · atlas</small></div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="spacer"></div>
+    <div class="rail-sec">
+      <span class="lbl">fstab identifiers</span>
+      <div class="seg2" id="idmode"><button data-id="UUID">UUID=</button><button data-id="LABEL">LABEL=</button></div>
+    </div>
+    <div class="rail-sec">
+      <span class="lbl">Host</span>
+      <select id="hostpick" aria-label="Design to edit"><option value="">Example host “atlas”</option></select>
+      <span id="docstate" class="muted">Example design. Edits stay in this browser.</span>
+      <div class="rail-btns">
+        <button class="btn sm pri" id="savedesign" type="button" hidden>Save design</button>
+        <button class="btn sm" id="fromscan" type="button" hidden>Refresh from latest scan</button>
+        <button class="btn sm" id="reset" type="button">Reset to example</button>
+      </div>
+      <span id="resetconfirm" hidden>Discard your edits? <button class="btn sm" id="resetyes" type="button">Discard</button> <button class="btn sm ghost" id="resetno" type="button">Keep</button></span>
+      <span id="signin" class="muted" hidden><a href="/">Sign in</a> to load scanned hosts and save designs.</span>
+    </div>
+    <div class="rail-sec">
+      <a class="btn sm ghost" href="/" id="tograph">← Live graph &amp; search</a>
+    </div>
+  </aside>
+  <div class="main" id="main">
+    <header class="top">
+      <div class="tl"><h1 id="vt">Overview</h1><p id="vs"></p></div>
+      <div class="tr" id="topchips"></div>
+    </header>
+    <div id="view"></div>
+    <footer class="chainbar" id="chain"></footer>
+  </div>
+</div>
+
+<script src="/planner.js"></script>
+</body>
+</html>

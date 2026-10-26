@@ -1,0 +1,18 @@
+Filesystem                              Size  Used Avail Use% Mounted on
+/dev/nvme0n1p2                          1.9T  412G  1.4T  23% /
+/dev/nvme0n1p2                          1.9T  412G  1.4T  23% /home
+/dev/nvme0n1p2                          1.9T  412G  1.4T  23% /var/log
+/dev/nvme0n1p2                          1.9T  412G  1.4T  23% /.snapshots
+/dev/nvme0n1p1                         1022M   92M  931M   9% /boot/efi
+/dev/nvme1n1p1                          3.0T  1.1T  2.0T  36% /mnt/fast_scratch
+/dev/nvme1n1p2                          400G  133G  267G  34% /mnt/burst
+tank                                     15T  256K   15T   1% /mnt/storage_array
+tank/media                               57T   42T   15T  74% /mnt/storage_array/media
+tank/photos                              24T  8.9T   15T  38% /mnt/storage_array/photos
+tank/vm                                  18T  2.6T   15T  15% /mnt/storage_array/vm
+tank/backups                             19T  3.8T   15T  21% /mnt/storage_array/backups
+/dev/md0                                7.2T  5.1T  1.8T  74% /mnt/cold
+/dev/sdi1                               2.0T  1.7T  191G  91% /mnt/legacy
+/dev/sdj1                               2.0T  1.2T  859G  59% /mnt/iscsi_vm
+nas-02.tail4c2e.ts.net:/export/archive
+                                         44T   31T   13T  71% /mnt/remote_nfs

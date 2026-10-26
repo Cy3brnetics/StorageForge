@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StorageForge Graph</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><svg width="22" height="22" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="3" width="24" height="6" rx="1.5" class="t1"/><rect x="2" y="11" width="24" height="6" rx="1.5" class="t2"/><rect x="2" y="19" width="24" height="6" rx="1.5" class="t3"/></svg><b>StorageForge</b><span class="muted">graph</span></div>
+  <label class="field"><span>Host</span><select id="host"><option value="">All hosts</option></select></label>
+  <form id="searchform" class="search" role="search"><input id="q" type="search" placeholder="Search files: *.cr2, IMG_2019*, report.pdf  ( / )" aria-label="Search files across hosts" autocomplete="off"></form>
+  <div class="actions">
+    <label class="field"><span>Focus</span><select id="hops"><option value="1">1 hop</option><option value="2" selected>2 hops</option><option value="3">3 hops</option></select></label>
+    <a id="toplanner" class="btn" href="/planner">Planner</a>
+    <button id="reset" type="button" class="btn">Show all</button>
+    <button id="export" type="button" class="btn pri">Export .canvas</button>
+    <button id="lock" type="button" class="btn ghost" title="Sign in or out">Sign in</button>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="stage" aria-label="Storage topology graph">
+    <canvas id="graph" aria-label="Force-directed storage graph. Select a node to see details; double-click to focus on its neighbourhood."></canvas>
+    <div id="crumb" class="crumb" hidden></div>
+    <div id="empty" class="empty" hidden>
+      <h2>No graph yet</h2>
+      <p>Scan a host or import a blueprint, then reload:</p>
+      <pre>storageforge-index scan --host nas-02
+storageforge-index graph import --blueprint atlas.json</pre>
+    </div>
+    <div id="tip" class="tip" hidden></div>
+    <aside class="legend" aria-label="Legend">
+      <div><i class="dot protected"></i>Protected</div><div><i class="dot local-only"></i>Local-only</div>
+      <div><i class="dot broken"></i>Broken / offline</div><div><i class="dot unknown"></i>No data</div>
+      <hr>
+      <div><i class="shape host"></i>Host</div><div><i class="shape pool"></i>Storage pool</div>
+      <div><i class="shape fs"></i>Filesystem</div><div><i class="shape mnt"></i>Mount point</div><div><i class="shape link"></i>Symlink</div>
+      <hr>
+      <div><i class="ln contains"></i>CONTAINS</div><div><i class="ln mounted"></i>MOUNTED_AT</div>
+      <div><i class="ln symlink"></i>SYMLINK_TO</div><div><i class="ln repl"></i>REPLICATES_TO</div>
+    </aside>
+  </section>
+
+  <aside class="panel">
+    <nav class="tabs" role="tablist">
+      <button type="button" role="tab" data-tab="details" class="on">Details</button>
+      <button type="button" role="tab" data-tab="search">Search <span id="nres" class="cnt"></span></button>
+      <button type="button" role="tab" data-tab="jobs">Scans</button>
+      <button type="button" role="tab" data-tab="keys">Keys</button>
+      <button type="button" role="tab" data-tab="audit">Audit</button>
+    </nav>
+    <div id="tab-details" class="tab"><p class="muted">Select a node. Double-click one to focus on everything within the chosen number of hops.</p><div id="summary"></div></div>
+    <div id="tab-search" class="tab" hidden><p class="muted">Type a pattern above. Select a result to focus its mount point.</p><ol id="results" class="results"></ol></div>
+    <div id="tab-jobs" class="tab" hidden>
+      <form id="scanform" class="row"><input id="scanhost" type="text" placeholder="hostname or IP bound in the vault" aria-label="Host to scan" required><button class="btn pri" type="submit">Scan</button></form>
+      <ol id="jobs" class="list"></ol>
+    </div>
+    <div id="tab-keys" class="tab" hidden>
+      <h3>1 · Generate a key</h3>
+      <form id="genform" class="row">
+        <input id="genname" type="text" placeholder="key name, e.g. fleet" aria-label="Key name" autocomplete="off" spellcheck="false" required>
+        <select id="gentype" aria-label="Key type"><option value="ed25519">ed25519</option><option value="rsa">RSA 4096</option></select>
+        <button class="btn pri" type="submit">Generate</button>
+      </form>
+      <p class="muted">The private key is created inside the encrypted vault and never leaves it.</p>
+      <h3>2 · Install on a host with ssh-copy-id</h3>
+      <form id="installform" class="stack">
+        <label class="field col"><span>Key</span><select id="instkey" required></select></label>
+        <div class="row">
+          <label class="field col grow"><span>Host</span><input id="insthost" type="text" placeholder="nas-02 or 10.0.20.5" autocomplete="off" spellcheck="false" required></label>
+          <label class="field col port"><span>Port</span><input id="instport" type="number" min="1" max="65535" value="22" required></label>
+        </div>
+        <label class="field col"><span>User</span><input id="instuser" type="text" placeholder="scan" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+        <label class="field col"><span>That user's SSH password (used once, not stored)</span><input id="instpw" type="password" autocomplete="off" required
+               data-1p-ignore data-lpignore="true" data-bwignore="true"></label>
+        <label class="check"><input id="instbind" type="checkbox" checked> Bind the key to this host for scans</label>
+        <label class="check"><input id="instsum" type="checkbox"> Allow checksum scans too</label>
+        <div class="row end"><button class="btn pri" type="submit">Install key</button></div>
+      </form>
+      <p id="instmsg" class="muted" hidden></p>
+      <h3>Keys</h3>
+      <ol id="keys" class="list"></ol>
+      <h3>Bindings</h3>
+      <ol id="bindings" class="list"></ol>
+    </div>
+    <div id="tab-audit" class="tab" hidden>
+      <div class="row"><button id="verify" type="button" class="btn">Verify chain</button><span id="verified" class="muted"></span></div>
+      <ol id="audit" class="list"></ol>
+    </div>
+  </aside>
+</main>
+
+<dialog id="logindlg">
+  <form id="loginform">
+    <h2>Sign in</h2>
+    <p class="muted">Accounts are created on the server: <code>storageforge-index user add &lt;name&gt;</code></p>
+    <label class="field col"><span>Username</span><input id="username" name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
+    <label class="field col"><span>Password</span><input id="password" name="password" type="password" autocomplete="current-password" required></label>
+    <p id="loginmsg" class="st-failed" hidden></p>
+    <div class="row end"><button id="logincancel" type="button" class="btn ghost">Cancel</button><button type="submit" class="btn pri">Sign in</button></div>
+  </form>
+</dialog>
+<script src="/app.js"></script>
+</body>
+</html>

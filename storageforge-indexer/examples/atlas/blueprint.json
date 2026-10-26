@@ -1,0 +1,1055 @@
+{
+  "apiVersion": "storageforge/v1",
+  "kind": "StorageBlueprint",
+  "metadata": {
+    "host": "atlas",
+    "generated": "2026-10-26",
+    "identifiers": "UUID"
+  },
+  "devices": [
+    {
+      "dev": "/dev/nvme0n1",
+      "model": "Samsung SSD 990 PRO 2TB",
+      "serial": "S6Z2NJ0W412345A",
+      "bus": "NVMe PCIe Gen4 x4",
+      "media": "ssd",
+      "tier": "fast",
+      "sizeBytes": 2000398934016,
+      "sector": {
+        "logical": 512,
+        "physical": 4096
+      },
+      "table": "gpt",
+      "partitions": [
+        {
+          "id": "nvme0n1p1",
+          "startBytes": 1048576,
+          "startMiB": 1,
+          "sizeBytes": 1073741824,
+          "fs": "vfat",
+          "label": "EFI",
+          "mount": "/boot/efi",
+          "options": [
+            "umask=0077",
+            "nofail"
+          ]
+        },
+        {
+          "id": "nvme0n1p2",
+          "startBytes": 1074790400,
+          "startMiB": 1025,
+          "sizeBytes": 1999323004928,
+          "fs": "btrfs",
+          "label": "atlas-root",
+          "options": [
+            "noatime",
+            "compress=zstd:3",
+            "discard=async",
+            "space_cache=v2",
+            "ssd"
+          ],
+          "subvolumes": [
+            {
+              "name": "@",
+              "mount": "/"
+            },
+            {
+              "name": "@home",
+              "mount": "/home"
+            },
+            {
+              "name": "@var_log",
+              "mount": "/var/log"
+            },
+            {
+              "name": "@snapshots",
+              "mount": "/.snapshots"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "dev": "/dev/nvme1n1",
+      "model": "WD_BLACK SN850X 4000GB",
+      "serial": "23174M800123",
+      "bus": "NVMe PCIe Gen4 x4",
+      "media": "ssd",
+      "tier": "fast",
+      "sizeBytes": 4000787030016,
+      "sector": {
+        "logical": 512,
+        "physical": 4096
+      },
+      "table": "gpt",
+      "partitions": [
+        {
+          "id": "nvme1n1p1",
+          "startBytes": 1048576,
+          "startMiB": 1,
+          "sizeBytes": 3298534883328,
+          "fs": "xfs",
+          "label": "scratch",
+          "mount": "/mnt/fast_scratch",
+          "options": [
+            "noatime",
+            "inode64",
+            "logbsize=256k",
+            "nofail"
+          ]
+        },
+        {
+          "id": "nvme1n1p2",
+          "startBytes": 3298535931904,
+          "startMiB": 3145729,
+          "sizeBytes": 429496729600,
+          "fs": "f2fs",
+          "label": "burst",
+          "mount": "/mnt/burst",
+          "options": [
+            "noatime",
+            "lazytime",
+            "compress_algorithm=zstd",
+            "atgc",
+            "gc_merge",
+            "nofail"
+          ]
+        },
+        {
+          "id": "nvme1n1p3",
+          "startBytes": 3728032661504,
+          "startMiB": 3555329,
+          "sizeBytes": 272752443392,
+          "fs": "zfs_member",
+          "label": "tank-l2arc",
+          "member": "tank",
+          "role": "cache"
+        }
+      ]
+    },
+    {
+      "dev": "/dev/nvme2n1",
+      "model": "INTEL SSDPEK1A118GA (Optane P1600X)",
+      "serial": "PHOC2140009X118B",
+      "bus": "NVMe PCIe Gen3 x4",
+      "media": "ssd",
+      "tier": "fast",
+      "sizeBytes": 118410207232,
+      "sector": {
+        "logical": 512,
+        "physical": 512
+      },
+      "table": "gpt",
+      "partitions": [
+        {
+          "id": "nvme2n1p1",
+          "startBytes": 1048576,
+          "startMiB": 1,
+          "sizeBytes": 34359738368,
+          "fs": "zfs_member",
+          "label": "tank-slog",
+          "member": "tank",
+          "role": "log"
+        }
+      ]
+    },
+    {
+      "dev": "/dev/sda",
+      "model": "Seagate Exos X20 ST20000NM002D",
+      "serial": "ZVT04410K",
+      "bus": "SAS 12Gb/s",
+      "media": "hdd",
+      "tier": "mass",
+      "sizeBytes": 20000588955648,
+      "sector": {
+        "logical": 512,
+        "physical": 4096
+      },
+      "table": "gpt",
+      "member": "tank",
+      "partitions": []
+    },
+    {
+      "dev": "/dev/sdb",
+      "model": "Seagate Exos X20 ST20000NM002D",
+      "serial": "ZVT04417K",
+      "bus": "SAS 12Gb/s",
+      "media": "hdd",
+      "tier": "mass",
+      "sizeBytes": 20000588955648,
+      "sector": {
+        "logical": 512,
+        "physical": 4096
+      },
+      "table": "gpt",
+      "member": "tank",
+      "partitions": []
+    },
+    {
+      "dev": "/dev/sdc",
+      "model": "Seagate Exos X20 ST20000NM002D",
+      "serial": "ZVT04424K",
+      "bus": "SAS 12Gb/s",
+      "media": "hdd",
+      "tier": "mass",
+      "sizeBytes": 20000588955648,
+      "sector": {
+        "logical": 512,
+        "physical": 4096
+      },
+      "table": "gpt",
+      "member": "tank",
+      "partitions": []
+    },
+    {
+      "dev": "/dev/sdd",
+      "model": "Seagate Exos X20 ST20000NM002D",
+      "serial": "ZVT04431K",
+      "bus": "SAS 12Gb/s",
+      "media": "hdd",
+      "tier": "mass",
+      "sizeBytes": 20000588955648,
+      "sector": {
+        "logical": 512,
+        "physical": 4096
+      },
+      "table": "gpt",
+      "member": "tank",
+      "partitions": []
+    },
+    {
+      "dev": "/dev/sde",
+      "model": "Seagate Exos X20 ST20000NM002D",
+      "serial": "ZVT04438K",
+      "bus": "SAS 12Gb/s",
+      "media": "hdd",
+      "tier": "mass",
+      "sizeBytes": 20000588955648,
+      "sector": {
+        "logical": 512,
+        "physical": 4096
+      },
+      "table": "gpt",
+      "member": "tank",
+      "partitions": []
+    },
+    {
+      "dev": "/dev/sdf",
+      "model": "Seagate Exos X20 ST20000NM002D",
+      "serial": "ZVT04445K",
+      "bus": "SAS 12Gb/s",
+      "media": "hdd",
+      "tier": "mass",
+      "sizeBytes": 20000588955648,
+      "sector": {
+        "logical": 512,
+        "physical": 4096
+      },
+      "table": "gpt",
+      "member": "tank",
+      "partitions": []
+    },
+    {
+      "dev": "/dev/sdg",
+      "model": "WDC WD80EFZZ (Red Plus 8TB)",
+      "serial": "VK1A2B3C",
+      "bus": "SATA 6Gb/s",
+      "media": "hdd",
+      "tier": "mass",
+      "sizeBytes": 8001563222016,
+      "sector": {
+        "logical": 512,
+        "physical": 4096
+      },
+      "table": "gpt",
+      "partitions": [
+        {
+          "id": "sdg1",
+          "startBytes": 1048576,
+          "startMiB": 1,
+          "sizeBytes": 8001560772608,
+          "fs": "linux_raid_member",
+          "label": "cold-a",
+          "member": "md0"
+        }
+      ]
+    },
+    {
+      "dev": "/dev/sdh",
+      "model": "WDC WD80EFZZ (Red Plus 8TB)",
+      "serial": "VK1A9Q7D",
+      "bus": "SATA 6Gb/s",
+      "media": "hdd",
+      "tier": "mass",
+      "sizeBytes": 8001563222016,
+      "sector": {
+        "logical": 512,
+        "physical": 4096
+      },
+      "table": "gpt",
+      "partitions": [
+        {
+          "id": "sdh1",
+          "startBytes": 1048576,
+          "startMiB": 1,
+          "sizeBytes": 8001560772608,
+          "fs": "linux_raid_member",
+          "label": "cold-b",
+          "member": "md0"
+        }
+      ]
+    },
+    {
+      "dev": "/dev/sdi",
+      "model": "ST3000DM008 (Barracuda 3TB)",
+      "serial": "Z5059XYZ",
+      "bus": "SATA 6Gb/s",
+      "media": "hdd",
+      "tier": "mass",
+      "sizeBytes": 3000592982016,
+      "sector": {
+        "logical": 512,
+        "physical": 4096
+      },
+      "table": "mbr",
+      "partitions": [
+        {
+          "id": "sdi1",
+          "startBytes": 32256,
+          "startMiB": 0.031,
+          "sizeBytes": 2199023223296,
+          "fs": "ext4",
+          "label": "legacy",
+          "mount": "/mnt/legacy",
+          "options": [
+            "defaults",
+            "discard"
+          ]
+        }
+      ]
+    },
+    {
+      "dev": "/dev/sdj",
+      "model": "LIO-ORG vmstore (iSCSI LUN 0)",
+      "serial": "iqn.2024-03.lan.nas02:vmstore",
+      "bus": "iSCSI LUN · 10GbE",
+      "media": "net",
+      "tier": "remote",
+      "sizeBytes": 2199023255552,
+      "sector": {
+        "logical": 512,
+        "physical": 4096
+      },
+      "table": "gpt",
+      "partitions": [
+        {
+          "id": "sdj1",
+          "startBytes": 1048576,
+          "startMiB": 1,
+          "sizeBytes": 2199021158400,
+          "fs": "xfs",
+          "label": "vmstore",
+          "mount": "/mnt/iscsi_vm",
+          "options": [
+            "_netdev",
+            "nofail",
+            "noatime"
+          ]
+        }
+      ]
+    }
+  ],
+  "pools": [
+    {
+      "name": "tank",
+      "type": "zfs",
+      "level": "raidz2",
+      "tier": "mass",
+      "ashift": 12,
+      "mount": "/mnt/storage_array",
+      "encryption": "aes-256-gcm",
+      "members": [
+        "sda",
+        "sdb",
+        "sdc",
+        "sdd",
+        "sde",
+        "sdf"
+      ],
+      "log": [
+        "nvme2n1p1"
+      ],
+      "cache": [
+        "nvme1n1p3"
+      ],
+      "datasets": [
+        {
+          "name": "media",
+          "mount": "/mnt/storage_array/media",
+          "recordsize": "1M",
+          "compression": "zstd",
+          "sync": "standard"
+        },
+        {
+          "name": "photos",
+          "mount": "/mnt/storage_array/photos",
+          "recordsize": "1M",
+          "compression": "zstd",
+          "sync": "standard"
+        },
+        {
+          "name": "vm",
+          "mount": "/mnt/storage_array/vm",
+          "recordsize": "64K",
+          "compression": "lz4",
+          "sync": "always"
+        },
+        {
+          "name": "backups",
+          "mount": "/mnt/storage_array/backups",
+          "recordsize": "1M",
+          "compression": "zstd",
+          "sync": "standard"
+        }
+      ],
+      "usableBytes": 79864916869120
+    },
+    {
+      "name": "md0",
+      "type": "mdadm",
+      "level": "raid1",
+      "tier": "mass",
+      "fs": "ext4",
+      "mount": "/mnt/cold",
+      "members": [
+        "sdg1",
+        "sdh1"
+      ],
+      "log": [],
+      "cache": [],
+      "usableBytes": 7476658385925
+    }
+  ],
+  "mounts": [
+    {
+      "target": "/boot/efi",
+      "kind": "block",
+      "fs": "vfat",
+      "spec": "UUID=0DB2-989C",
+      "options": [
+        "umask=0077",
+        "nofail"
+      ],
+      "tier": "fast",
+      "source": "/dev/nvme0n1p1"
+    },
+    {
+      "target": "/",
+      "kind": "subvol",
+      "fs": "btrfs",
+      "spec": "UUID=ee69b530-f3f6-40b1-ad7e-42649e1a9598",
+      "options": [
+        "subvol=@",
+        "noatime",
+        "compress=zstd:3",
+        "discard=async",
+        "space_cache=v2",
+        "ssd"
+      ],
+      "tier": "fast",
+      "source": "/dev/nvme0n1p2"
+    },
+    {
+      "target": "/home",
+      "kind": "subvol",
+      "fs": "btrfs",
+      "spec": "UUID=ee69b530-f3f6-40b1-ad7e-42649e1a9598",
+      "options": [
+        "subvol=@home",
+        "noatime",
+        "compress=zstd:3",
+        "discard=async",
+        "space_cache=v2",
+        "ssd"
+      ],
+      "tier": "fast",
+      "source": "/dev/nvme0n1p2"
+    },
+    {
+      "target": "/var/log",
+      "kind": "subvol",
+      "fs": "btrfs",
+      "spec": "UUID=ee69b530-f3f6-40b1-ad7e-42649e1a9598",
+      "options": [
+        "subvol=@var_log",
+        "noatime",
+        "compress=zstd:3",
+        "discard=async",
+        "space_cache=v2",
+        "ssd"
+      ],
+      "tier": "fast",
+      "source": "/dev/nvme0n1p2"
+    },
+    {
+      "target": "/.snapshots",
+      "kind": "subvol",
+      "fs": "btrfs",
+      "spec": "UUID=ee69b530-f3f6-40b1-ad7e-42649e1a9598",
+      "options": [
+        "subvol=@snapshots",
+        "noatime",
+        "compress=zstd:3",
+        "discard=async",
+        "space_cache=v2",
+        "ssd"
+      ],
+      "tier": "fast",
+      "source": "/dev/nvme0n1p2"
+    },
+    {
+      "target": "/mnt/fast_scratch",
+      "kind": "block",
+      "fs": "xfs",
+      "spec": "UUID=bb7fcf22-b593-46a5-af78-f7533f5f4b88",
+      "options": [
+        "noatime",
+        "inode64",
+        "logbsize=256k",
+        "nofail"
+      ],
+      "tier": "fast",
+      "source": "/dev/nvme1n1p1"
+    },
+    {
+      "target": "/mnt/burst",
+      "kind": "block",
+      "fs": "f2fs",
+      "spec": "UUID=c559f543-91cd-4a22-aa30-878d5c6f383b",
+      "options": [
+        "noatime",
+        "lazytime",
+        "compress_algorithm=zstd",
+        "atgc",
+        "gc_merge",
+        "nofail"
+      ],
+      "tier": "fast",
+      "source": "/dev/nvme1n1p2"
+    },
+    {
+      "target": "/mnt/legacy",
+      "kind": "block",
+      "fs": "ext4",
+      "spec": "UUID=34ba0334-3236-42f8-aa7f-c92cb3499a37",
+      "options": [
+        "defaults",
+        "discard"
+      ],
+      "tier": "mass",
+      "source": "/dev/sdi1"
+    },
+    {
+      "target": "/mnt/iscsi_vm",
+      "kind": "block",
+      "fs": "xfs",
+      "spec": "UUID=aee5ed84-f358-43ef-ab33-cfe322c8272c",
+      "options": [
+        "_netdev",
+        "nofail",
+        "noatime"
+      ],
+      "tier": "remote",
+      "source": "/dev/sdj1"
+    },
+    {
+      "target": "/mnt/storage_array",
+      "kind": "zfs",
+      "fs": "zfs",
+      "spec": "tank",
+      "options": [],
+      "tier": "mass",
+      "source": "tank"
+    },
+    {
+      "target": "/mnt/storage_array/media",
+      "kind": "zfs",
+      "fs": "zfs",
+      "spec": "tank/media",
+      "options": [],
+      "tier": "mass",
+      "source": "tank/media"
+    },
+    {
+      "target": "/mnt/storage_array/photos",
+      "kind": "zfs",
+      "fs": "zfs",
+      "spec": "tank/photos",
+      "options": [],
+      "tier": "mass",
+      "source": "tank/photos"
+    },
+    {
+      "target": "/mnt/storage_array/vm",
+      "kind": "zfs",
+      "fs": "zfs",
+      "spec": "tank/vm",
+      "options": [],
+      "tier": "mass",
+      "source": "tank/vm"
+    },
+    {
+      "target": "/mnt/storage_array/backups",
+      "kind": "zfs",
+      "fs": "zfs",
+      "spec": "tank/backups",
+      "options": [],
+      "tier": "mass",
+      "source": "tank/backups"
+    },
+    {
+      "target": "/mnt/cold",
+      "kind": "md",
+      "fs": "ext4",
+      "spec": "UUID=c3814337-3ab7-464a-a36e-45cf431ea688",
+      "options": [
+        "noatime",
+        "nofail"
+      ],
+      "tier": "mass",
+      "source": "/dev/md0"
+    },
+    {
+      "target": "/mnt/remote_nfs",
+      "kind": "remote",
+      "fs": "nfs4",
+      "spec": "nas-02.tail4c2e.ts.net:/export/archive",
+      "options": [
+        "_netdev",
+        "x-systemd.automount",
+        "noatime",
+        "vers=4.2"
+      ],
+      "tier": "remote",
+      "source": "nas-02.tail4c2e.ts.net:/export/archive"
+    },
+    {
+      "target": "/mnt/remote_s3",
+      "kind": "remote",
+      "fs": "rclone",
+      "spec": "b2:atlas-offsite",
+      "options": [
+        "_netdev",
+        "x-systemd.automount",
+        "vfs_cache_mode=writes",
+        "config=/etc/rclone/rclone.conf",
+        "allow_other"
+      ],
+      "tier": "remote",
+      "source": "b2:atlas-offsite"
+    },
+    {
+      "target": "/mnt/archive",
+      "kind": "remote",
+      "fs": "cifs",
+      "spec": "//office-nas.nb.internal/archive",
+      "options": [
+        "_netdev",
+        "x-systemd.automount",
+        "credentials=/etc/samba/office.cred",
+        "uid=1000",
+        "vers=3.1.1"
+      ],
+      "tier": "remote",
+      "source": "//office-nas.nb.internal/archive"
+    },
+    {
+      "target": "/var/lib/docker",
+      "kind": "bind",
+      "fs": "none",
+      "spec": "/mnt/fast_scratch/docker",
+      "options": [
+        "bind",
+        "x-systemd.requires-mounts-for=/mnt/fast_scratch"
+      ],
+      "tier": "fast",
+      "source": "/mnt/fast_scratch/docker"
+    },
+    {
+      "target": "/var/lib/containerd",
+      "kind": "bind",
+      "fs": "none",
+      "spec": "/mnt/fast_scratch/containerd",
+      "options": [
+        "bind",
+        "x-systemd.requires-mounts-for=/mnt/fast_scratch"
+      ],
+      "tier": "fast",
+      "source": "/mnt/fast_scratch/containerd"
+    }
+  ],
+  "remotes": [
+    {
+      "name": "nas-02 archive",
+      "protocol": "NFSv4.2",
+      "endpoint": "nas-02.tail4c2e.ts.net:/export/archive",
+      "via": "Tailscale",
+      "mount": "/mnt/remote_nfs",
+      "status": "connected",
+      "options": [
+        "_netdev",
+        "x-systemd.automount",
+        "noatime",
+        "vers=4.2"
+      ]
+    },
+    {
+      "name": "Backblaze B2 offsite",
+      "protocol": "S3 (rclone)",
+      "endpoint": "b2:atlas-offsite",
+      "via": "Internet · TLS",
+      "mount": "/mnt/remote_s3",
+      "status": "connected",
+      "options": [
+        "_netdev",
+        "x-systemd.automount",
+        "vfs_cache_mode=writes",
+        "config=/etc/rclone/rclone.conf",
+        "allow_other"
+      ]
+    },
+    {
+      "name": "office-nas archive",
+      "protocol": "SMB3",
+      "endpoint": "//office-nas.nb.internal/archive",
+      "via": "NetBird",
+      "mount": "/mnt/archive",
+      "status": "disconnected",
+      "options": [
+        "_netdev",
+        "x-systemd.automount",
+        "credentials=/etc/samba/office.cred",
+        "uid=1000",
+        "vers=3.1.1"
+      ]
+    }
+  ],
+  "links": [
+    {
+      "kind": "symlink",
+      "path": "/var/media",
+      "target": "/mnt/storage_array/media",
+      "health": "ok"
+    },
+    {
+      "kind": "bind",
+      "path": "/var/lib/docker",
+      "target": "/mnt/fast_scratch/docker",
+      "health": "warn"
+    },
+    {
+      "kind": "bind",
+      "path": "/var/lib/containerd",
+      "target": "/mnt/fast_scratch/containerd",
+      "health": "ok"
+    },
+    {
+      "kind": "symlink",
+      "path": "/home/ops/Pictures/RAW",
+      "target": "/mnt/storage_array/photos/raw",
+      "health": "ok"
+    },
+    {
+      "kind": "symlink",
+      "path": "/home/ops/Archive",
+      "target": "/mnt/archive/2019",
+      "health": "crit"
+    },
+    {
+      "kind": "symlink",
+      "path": "/opt/app/current",
+      "target": "/opt/app/releases/live",
+      "health": "crit"
+    },
+    {
+      "kind": "symlink",
+      "path": "/opt/app/releases/live",
+      "target": "/opt/app/current",
+      "health": "crit"
+    },
+    {
+      "kind": "hardlink",
+      "path": "/mnt/storage_array/media/movies/Arrival (2016).mkv",
+      "target": "/mnt/storage_array/media/downloads/Arrival (2016).mkv",
+      "health": "ok"
+    },
+    {
+      "kind": "symlink",
+      "path": "/srv/vm-images",
+      "target": "/mnt/iscsi_vm/images",
+      "health": "ok"
+    }
+  ],
+  "exports": [
+    {
+      "protocol": "NFSv4.2",
+      "name": "media",
+      "path": "/mnt/storage_array/media",
+      "clients": "100.64.0.0/10 (tailnet)",
+      "options": "ro,no_subtree_check"
+    },
+    {
+      "protocol": "SMB3",
+      "name": "photos",
+      "path": "/mnt/storage_array/photos",
+      "clients": "@lan-editors",
+      "options": "vfs objects = shadow_copy2 zfsacl"
+    },
+    {
+      "protocol": "S3",
+      "name": "restic (MinIO)",
+      "path": "/mnt/storage_array/backups",
+      "clients": "10.0.20.0/24",
+      "options": "bucket=restic"
+    },
+    {
+      "protocol": "SFTP",
+      "name": "drop (chroot)",
+      "path": "/mnt/cold/drop",
+      "clients": "sftp-users",
+      "options": "ChrootDirectory %h"
+    }
+  ],
+  "protection": [
+    {
+      "dataset": "@ (root)",
+      "path": "/",
+      "tier": "fast",
+      "ephemeral": false,
+      "sync": {
+        "state": "None"
+      },
+      "snapshots": {
+        "enabled": true,
+        "tool": "snapper",
+        "policy": "hourly 24 · daily 7 · pre/post pacman"
+      },
+      "backup": {
+        "target": "restic → B2",
+        "enc": "restic AES-256",
+        "ratio": 1.9,
+        "last": "2026-10-24",
+        "offsite": true
+      },
+      "status": "Protected"
+    },
+    {
+      "dataset": "@home",
+      "path": "/home",
+      "tier": "fast",
+      "ephemeral": false,
+      "sync": {
+        "state": "Rsync Scheduled",
+        "target": "nas-02 nightly 02:30"
+      },
+      "snapshots": {
+        "enabled": true,
+        "tool": "snapper",
+        "policy": "hourly 12 · daily 14"
+      },
+      "backup": {
+        "target": "restic → B2",
+        "enc": "restic AES-256",
+        "ratio": 1.4,
+        "last": "2026-10-24",
+        "offsite": true
+      },
+      "status": "Protected"
+    },
+    {
+      "dataset": "tank/media",
+      "path": "/mnt/storage_array/media",
+      "tier": "mass",
+      "ephemeral": false,
+      "sync": {
+        "state": "Active Sync",
+        "target": "syncoid → nas-02/media",
+        "lag": "12 min"
+      },
+      "snapshots": {
+        "enabled": true,
+        "tool": "sanoid",
+        "policy": "daily 30 · monthly 6"
+      },
+      "backup": {
+        "target": null,
+        "enc": "ZFS native aes-256-gcm",
+        "ratio": 1.01,
+        "last": null,
+        "offsite": false
+      },
+      "status": "Local only"
+    },
+    {
+      "dataset": "tank/photos",
+      "path": "/mnt/storage_array/photos",
+      "tier": "mass",
+      "ephemeral": false,
+      "sync": {
+        "state": "Active Sync",
+        "target": "syncoid → nas-02/photos",
+        "lag": "9 min"
+      },
+      "snapshots": {
+        "enabled": true,
+        "tool": "sanoid",
+        "policy": "hourly 24 · daily 30 · monthly 12"
+      },
+      "backup": {
+        "target": "restic → B2",
+        "enc": "ZFS native + restic",
+        "ratio": 1.03,
+        "last": "2026-10-19",
+        "offsite": true
+      },
+      "status": "Protected"
+    },
+    {
+      "dataset": "tank/vm",
+      "path": "/mnt/storage_array/vm",
+      "tier": "mass",
+      "ephemeral": false,
+      "sync": {
+        "state": "Lagging",
+        "target": "syncoid → nas-02/vm",
+        "lag": "6 h 40 min"
+      },
+      "snapshots": {
+        "enabled": true,
+        "tool": "sanoid",
+        "policy": "frequent 4 · hourly 48"
+      },
+      "backup": {
+        "target": "PBS → pbs-02",
+        "enc": "PBS AES-256-GCM",
+        "ratio": 2.3,
+        "last": "2026-07-02",
+        "offsite": true
+      },
+      "status": "Critical"
+    },
+    {
+      "dataset": "tank/backups",
+      "path": "/mnt/storage_array/backups",
+      "tier": "mass",
+      "ephemeral": false,
+      "sync": {
+        "state": "Active Sync",
+        "target": "zfs send → nas-02",
+        "lag": "31 min"
+      },
+      "snapshots": {
+        "enabled": true,
+        "tool": "sanoid",
+        "policy": "daily 14 · weekly 8"
+      },
+      "backup": {
+        "target": "age → S3 Glacier IR",
+        "enc": "age X25519",
+        "ratio": 1,
+        "last": "2026-10-01",
+        "offsite": true
+      },
+      "status": "Protected"
+    },
+    {
+      "dataset": "md0 (cold)",
+      "path": "/mnt/cold",
+      "tier": "mass",
+      "ephemeral": false,
+      "sync": {
+        "state": "Disconnected",
+        "target": "rsync → office-nas"
+      },
+      "snapshots": {
+        "enabled": false,
+        "tool": "none (ext4)",
+        "policy": ""
+      },
+      "backup": {
+        "target": null,
+        "enc": "LUKS2 (aes-xts-plain64)",
+        "ratio": 1,
+        "last": null,
+        "offsite": false
+      },
+      "status": "Critical"
+    },
+    {
+      "dataset": "fast_scratch",
+      "path": "/mnt/fast_scratch",
+      "tier": "fast",
+      "ephemeral": true,
+      "sync": {
+        "state": "None"
+      },
+      "snapshots": {
+        "enabled": false,
+        "tool": "none",
+        "policy": ""
+      },
+      "backup": {
+        "target": null,
+        "enc": "none",
+        "ratio": 1,
+        "last": null,
+        "offsite": false
+      },
+      "status": "Excluded"
+    },
+    {
+      "dataset": "legacy",
+      "path": "/mnt/legacy",
+      "tier": "mass",
+      "ephemeral": false,
+      "sync": {
+        "state": "None"
+      },
+      "snapshots": {
+        "enabled": false,
+        "tool": "none",
+        "policy": ""
+      },
+      "backup": {
+        "target": null,
+        "enc": "none",
+        "ratio": 1,
+        "last": null,
+        "offsite": false
+      },
+      "status": "Critical"
+    },
+    {
+      "dataset": "iscsi_vm",
+      "path": "/mnt/iscsi_vm",
+      "tier": "remote",
+      "ephemeral": false,
+      "sync": {
+        "state": "None"
+      },
+      "snapshots": {
+        "enabled": true,
+        "tool": "zvol snapshots on nas-02",
+        "policy": "daily 7"
+      },
+      "backup": {
+        "target": "PBS → pbs-02",
+        "enc": "PBS AES-256-GCM",
+        "ratio": 2.1,
+        "last": "2026-10-20",
+        "offsite": false
+      },
+      "status": "Local only"
+    }
+  ]
+}

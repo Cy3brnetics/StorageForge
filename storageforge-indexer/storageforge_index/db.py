@@ -1,0 +1,333 @@
+"""Database layer for SQLite (WAL + FTS5 trigram) and PostgreSQL (COPY + pg_trgm).
+
+SQL is written once with :named parameters; the PostgreSQL connection rewrites
+them to %(named)s. The few dialect differences (timestamps, IS DISTINCT FROM,
+JSONB, full-text maintenance) go through small helpers on Database.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import os
+import re
+import sqlite3
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+
+from .stream import ROW_COLUMNS, split_path
+
+MIGRATIONS = Path(__file__).with_name('migrations')
+
+
+class MassDeleteRefused(RuntimeError):
+    pass
+
+
+@dataclass
+class DiffStats:
+    seen: int = 0
+    added: int = 0
+    modified: int = 0
+    deleted: int = 0
+    first_scan: bool = False
+
+
+class Conn:
+    def __init__(self, raw, dialect: str):
+        self.raw, self.dialect = raw, dialect
+
+    def _sql(self, sql: str) -> str:
+        if self.dialect == 'sqlite':
+            return sql
+        return re.sub(r'(?<![:\w]):([A-Za-z_]\w*)', r'%(\1)s', sql)
+
+    def execute(self, sql: str, params=None):
+        cur = self.raw.cursor()
+        cur.execute(self._sql(sql), params or {})
+        return cur
+
+    def all(self, sql: str, params=None) -> list:
+        return self.execute(sql, params).fetchall()
+
+    def scalar(self, sql: str, params=None):
+        rows = self.all(sql, params)  # fetch everything so SQLite finalises RETURNING statements
+        return rows[0][0] if rows else None
+
+    @contextmanager
+    def tx(self):
+        if self.dialect == 'sqlite':
+            self.raw.execute('BEGIN IMMEDIATE')
+            try:
+                yield
+            except BaseException:
+                self.raw.execute('ROLLBACK')
+                raise
+            else:
+                self.raw.execute('COMMIT')
+        else:
+            with self.raw.transaction():
+                yield
+
+    def close(self):
+        self.raw.close()
+
+
+def epoch(value) -> int | None:
+    """SQLite returns epoch ints, PostgreSQL returns datetimes; normalise to epoch."""
+    if value is None or isinstance(value, (int, float)):
+        return value
+    return int(value.timestamp())
+
+
+class Database:
+    def __init__(self, url: str):
+        self.url = url
+        if url.startswith(('postgres://', 'postgresql://')):
+            self.dialect, self.max_writers = 'postgres', 8
+            try:
+                import psycopg  # noqa: F401
+            except ImportError as exc:
+                raise SystemExit('PostgreSQL support needs psycopg 3: pip install "psycopg[binary]"') from exc
+        else:
+            self.dialect, self.max_writers = 'sqlite', 1
+            self.path = os.path.expanduser(url.removeprefix('sqlite:///').removeprefix('sqlite://'))
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+            if sqlite3.sqlite_version_info < (3, 35, 0):
+                raise SystemExit(f'SQLite {sqlite3.sqlite_version} is too old; 3.35 or newer is required')
+
+    # dialect helpers
+    def ts(self, expr: str) -> str:
+        return expr if self.dialect == 'sqlite' else f'to_timestamp({expr})'
+
+    def distinct(self, a: str, b: str) -> str:
+        return f'{a} IS NOT {b}' if self.dialect == 'sqlite' else f'{a} IS DISTINCT FROM {b}'
+
+    def jsonp(self, expr: str) -> str:
+        return expr if self.dialect == 'sqlite' else f'CAST({expr} AS jsonb)'
+
+    @property
+    def boolean(self) -> str:
+        return 'INTEGER' if self.dialect == 'sqlite' else 'BOOLEAN'
+
+    def connect(self) -> Conn:
+        if self.dialect == 'sqlite':
+            raw = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False, timeout=60)
+            for pragma in ('journal_mode=WAL', 'synchronous=NORMAL', 'foreign_keys=ON', 'cache_size=-262144',
+                           'mmap_size=1073741824', 'busy_timeout=60000'):
+                raw.execute('PRAGMA ' + pragma)
+            return Conn(raw, 'sqlite')
+        import psycopg
+        return Conn(psycopg.connect(self.url, autocommit=True), 'postgres')
+
+    def migrate(self, conn: Conn) -> list[str]:
+        conn.execute('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, '
+                     'name TEXT NOT NULL, applied_at BIGINT NOT NULL)')
+        done = {r[0] for r in conn.all('SELECT version FROM schema_version')}
+        applied = []
+        for f in sorted((MIGRATIONS / self.dialect).glob('*.sql')):
+            if int(f.name.split('_')[0]) in done:
+                continue
+            sql = f.read_text()
+            if self.dialect == 'sqlite':
+                conn.raw.executescript(sql)
+            else:
+                with conn.tx():
+                    conn.raw.execute(sql)
+            applied.append(f.name)
+        return applied
+
+    # hosts, mounts, scans
+    def upsert_host(self, conn: Conn, inv, t) -> int:
+        return conn.scalar(f"""
+            INSERT INTO hosts (hostname, ip_address, os_info, ssh_host, ssh_user, ssh_port, inventory_json)
+            VALUES (:hn, :ip, :os, :sh, :su, :sp, {self.jsonp(':inv')})
+            ON CONFLICT (hostname) DO UPDATE SET ip_address = excluded.ip_address, os_info = excluded.os_info,
+                ssh_host = excluded.ssh_host, ssh_user = excluded.ssh_user, ssh_port = excluded.ssh_port,
+                inventory_json = excluded.inventory_json
+            RETURNING host_id""",
+            {'hn': inv.hostname, 'ip': inv.ip, 'os': inv.os_info, 'sh': t.host, 'su': t.user,
+             'sp': None if t.local else t.port, 'inv': inv.to_json()})
+
+    def sync_mounts(self, conn: Conn, host_id: int, plans) -> None:
+        now = int(time.time())
+        state = {'scan': 'indexed', 'skip': 'skipped', 'alias': 'bind-alias'}
+        with conn.tx():
+            for p in plans:
+                i = p.info
+                p.mount_id = conn.scalar(f"""
+                    INSERT INTO mounts (host_id, mount_point, source, filesystem_type, mount_options, dev_majmin,
+                                        fs_root, total_bytes, used_bytes, scan_state, skip_reason, seen_at)
+                    VALUES (:h, :mp, :src, :fs, :opt, :mm, :root, :tot, :used, :st, :why, {self.ts(':now')})
+                    ON CONFLICT (host_id, mount_point) DO UPDATE SET source = excluded.source,
+                        filesystem_type = excluded.filesystem_type, mount_options = excluded.mount_options,
+                        dev_majmin = excluded.dev_majmin, fs_root = excluded.fs_root,
+                        total_bytes = excluded.total_bytes, used_bytes = excluded.used_bytes,
+                        scan_state = excluded.scan_state, skip_reason = excluded.skip_reason, seen_at = excluded.seen_at
+                    RETURNING mount_id""",
+                    {'h': host_id, 'mp': i.target, 'src': i.source, 'fs': i.fstype, 'opt': i.options,
+                     'mm': i.majmin, 'root': i.fsroot, 'tot': i.total, 'used': i.used,
+                     'st': state[p.action], 'why': p.reason or None, 'now': now})
+            for p in plans:
+                conn.execute('UPDATE mounts SET bind_of_mount_id = :a WHERE mount_id = :m',
+                             {'a': p.alias_of.mount_id if p.alias_of else None, 'm': p.mount_id})
+            seen = {p.info.target for p in plans}
+            for mid, mp in conn.all('SELECT mount_id, mount_point FROM mounts WHERE host_id = :h', {'h': host_id}):
+                if mp not in seen:
+                    conn.execute("UPDATE mounts SET scan_state = 'gone' WHERE mount_id = :m", {'m': mid})
+
+    def begin_scan(self, conn: Conn, host_id: int) -> int:
+        return conn.scalar(f"INSERT INTO scans (host_id, started_at, status) VALUES (:h, {self.ts(':now')}, 'running') "
+                           'RETURNING scan_id', {'h': host_id, 'now': int(time.time())})
+
+    def finish_scan(self, conn: Conn, scan_id: int, host_id: int, tot: dict, status: str, seconds: float):
+        now = int(time.time())
+        with conn.tx():
+            conn.execute(f"""UPDATE scans SET finished_at = {self.ts(':now')}, status = :st, entries_seen = :e,
+                             bytes_seen = :b, added = :a, modified = :mo, deleted = :d, read_errors = :re, duration_ms = :ms
+                             WHERE scan_id = :s""",
+                         {'now': now, 'st': status, 'e': tot['entries'], 'b': tot['bytes'], 'a': tot['added'],
+                          'mo': tot['modified'], 'd': tot['deleted'], 're': tot['read_errors'],
+                          'ms': int(seconds * 1000), 's': scan_id})
+            if status != 'failed':
+                conn.execute(f'UPDATE hosts SET last_scanned_at = {self.ts(":now")} WHERE host_id = :h',
+                             {'now': now, 'h': host_id})
+
+    # staging and diff
+    def stage_create(self, conn: Conn, job_id: int):
+        b = self.boolean
+        conn.execute(f'DROP TABLE IF EXISTS stage_{job_id}')
+        conn.execute(f"""CREATE TEMP TABLE stage_{job_id} (parent_path TEXT NOT NULL, filename TEXT NOT NULL,
+            extension TEXT NOT NULL, size BIGINT NOT NULL, is_dir {b} NOT NULL, is_link {b} NOT NULL, target TEXT,
+            mode TEXT, uid BIGINT, gid BIGINT, mtime BIGINT NOT NULL)""")
+
+    def stage_insert(self, conn: Conn, job_id: int, rows: list[tuple]):
+        if self.dialect == 'sqlite':
+            with conn.tx():
+                conn.raw.executemany(f'INSERT INTO stage_{job_id} VALUES (?,?,?,?,?,?,?,?,?,?,?)', rows)
+        else:
+            with conn.raw.cursor() as cur:
+                with cur.copy(f'COPY stage_{job_id} ({", ".join(ROW_COLUMNS)}) FROM STDIN') as cp:
+                    for r in rows:
+                        cp.write_row(r)
+
+    def stage_drop(self, conn: Conn, job_id: int):
+        for t in ('stage', 'gone', 'chg'):
+            conn.execute(f'DROP TABLE IF EXISTS {t}_{job_id}')
+
+    def apply_diff(self, conn: Conn, scan_id: int, job_id: int, mount_id: int, root: str, full: bool,
+                   max_delete_ratio: float = 0.5) -> DiffStats:
+        """Compare the staged walk with the stored index for one mount (or subtree) and apply it atomically."""
+        t, j, ts, dist, sqlite = f'stage_{job_id}', job_id, self.ts, self.distinct, self.dialect == 'sqlite'
+        p = {'m': mount_id, 'scan': scan_id}
+        scope = ''
+        if not full:
+            parent, name = split_path(root)
+            scope = (' AND (r.parent_path = :root OR substr(r.parent_path, 1, :rlen) = :rootslash'
+                     ' OR (r.parent_path = :rparent AND r.filename = :rname))')
+            p.update(root=root, rlen=len(root.rstrip('/')) + 1, rootslash=root.rstrip('/') + '/',
+                     rparent=parent, rname=name)
+        conn.execute(f'CREATE INDEX ix_{t} ON {t} (parent_path, filename)')
+        if not sqlite:
+            conn.execute(f'ANALYZE {t}')
+        stats = DiffStats(seen=conn.scalar(f'SELECT count(*) FROM {t}'))
+        prev = conn.scalar('SELECT count(*) FROM file_records WHERE mount_id = :m', p)
+        stats.first_scan = prev == 0
+        match = 'r.parent_path = s.parent_path AND r.filename = s.filename'
+        content_changed = f'(r.file_size_bytes <> s.size OR r.modified_at <> {ts("s.mtime")})'
+        with conn.tx():
+            # deleted: in the index (and in scope) but not in this walk
+            conn.execute(f'CREATE TEMP TABLE gone_{j} (file_id BIGINT PRIMARY KEY)')
+            conn.execute(f"""INSERT INTO gone_{j} (file_id) SELECT r.file_id FROM file_records r
+                             WHERE r.mount_id = :m{scope} AND NOT EXISTS (SELECT 1 FROM {t} s WHERE {match})""", p)
+            stats.deleted = conn.scalar(f'SELECT count(*) FROM gone_{j}')
+            if not stats.first_scan and prev >= 1000 and stats.deleted > prev * max_delete_ratio:
+                raise MassDeleteRefused(
+                    f'{stats.deleted:,} of {prev:,} indexed entries vanished; refusing to apply. If the data really '
+                    f'is gone, rerun with --max-delete-ratio 1')
+            if stats.deleted:
+                conn.execute(f"""INSERT INTO file_changes (scan_id, mount_id, change_type, parent_path, filename, is_directory,
+                                     old_size, new_size, old_modified_at, new_modified_at)
+                                 SELECT :scan, :m, 'deleted', r.parent_path, r.filename, r.is_directory,
+                                        r.file_size_bytes, NULL, r.modified_at, NULL
+                                 FROM file_records r JOIN gone_{j} g ON g.file_id = r.file_id""", p)
+                if sqlite:
+                    conn.execute(f"""INSERT INTO file_fts (file_fts, rowid, filename)
+                                     SELECT 'delete', r.file_id, r.filename
+                                     FROM file_records r JOIN gone_{j} g ON g.file_id = r.file_id""")
+                conn.execute(f'DELETE FROM file_records WHERE file_id IN (SELECT file_id FROM gone_{j})')
+
+            # modified: same identity, different metadata
+            b = self.boolean
+            conn.execute(f"""CREATE TEMP TABLE chg_{j} (file_id BIGINT PRIMARY KEY, extension TEXT, size BIGINT,
+                             is_dir {b}, is_link {b}, target TEXT, mode TEXT, uid BIGINT, gid BIGINT, mtime BIGINT,
+                             content_changed {b})""")
+            conn.execute(f"""INSERT INTO chg_{j}
+                SELECT r.file_id, s.extension, s.size, s.is_dir, s.is_link, s.target, s.mode, s.uid, s.gid, s.mtime,
+                       {content_changed}
+                FROM {t} s JOIN file_records r ON r.mount_id = :m AND {match}
+                WHERE {content_changed} OR {dist('r.mode_permissions', 's.mode')} OR {dist('r.owner_uid', 's.uid')}
+                   OR {dist('r.group_gid', 's.gid')} OR {dist('r.symlink_target', 's.target')}
+                   OR r.is_directory <> s.is_dir OR r.is_symlink <> s.is_link""", p)
+            stats.modified = conn.scalar(f'SELECT count(*) FROM chg_{j}')
+            if stats.modified:
+                if not stats.first_scan:
+                    conn.execute(f"""INSERT INTO file_changes (scan_id, mount_id, change_type, parent_path, filename,
+                                         is_directory, old_size, new_size, old_modified_at, new_modified_at)
+                                     SELECT :scan, :m, 'modified', r.parent_path, r.filename, r.is_directory,
+                                            r.file_size_bytes, c.size, r.modified_at, {ts('c.mtime')}
+                                     FROM chg_{j} c JOIN file_records r ON r.file_id = c.file_id
+                                     WHERE NOT c.is_dir""", p)
+                conn.execute(f"""UPDATE file_records SET extension = c.extension, file_size_bytes = c.size,
+                                     is_directory = c.is_dir, is_symlink = c.is_link, symlink_target = c.target,
+                                     mode_permissions = c.mode, owner_uid = c.uid, group_gid = c.gid,
+                                     modified_at = {ts('c.mtime')},
+                                     checksum_hash = CASE WHEN c.content_changed THEN NULL ELSE file_records.checksum_hash END,
+                                     last_changed_scan_id = :scan
+                                 FROM chg_{j} c WHERE file_records.file_id = c.file_id""", p)
+
+            # added: in this walk but not in the index
+            cur = conn.execute(f"""INSERT INTO file_records (mount_id, parent_path, filename, extension, file_size_bytes,
+                                       is_directory, is_symlink, symlink_target, mode_permissions, owner_uid, group_gid,
+                                       modified_at, first_seen_scan_id, last_changed_scan_id)
+                                   SELECT :m, s.parent_path, s.filename, s.extension, s.size, s.is_dir, s.is_link,
+                                          s.target, s.mode, s.uid, s.gid, {ts('s.mtime')}, :scan, :scan
+                                   FROM {t} s
+                                   WHERE NOT EXISTS (SELECT 1 FROM file_records r WHERE r.mount_id = :m AND {match})
+                                   ON CONFLICT (mount_id, parent_path, filename) DO NOTHING""", p)
+            stats.added = max(cur.rowcount, 0)
+            if stats.added:
+                if not stats.first_scan:
+                    conn.execute("""INSERT INTO file_changes (scan_id, mount_id, change_type, parent_path, filename,
+                                        is_directory, old_size, new_size, old_modified_at, new_modified_at)
+                                    SELECT :scan, :m, 'added', parent_path, filename, is_directory,
+                                           NULL, file_size_bytes, NULL, modified_at
+                                    FROM file_records WHERE mount_id = :m AND first_seen_scan_id = :scan""", p)
+                if sqlite:
+                    conn.execute("""INSERT INTO file_fts (rowid, filename)
+                                    SELECT file_id, filename FROM file_records
+                                    WHERE mount_id = :m AND first_seen_scan_id = :scan""", p)
+            conn.execute('UPDATE mounts SET last_scan_id = :scan WHERE mount_id = :m', p)
+        return stats
+
+    # checksums
+    def checksum_candidates(self, conn: Conn, host_id: int, min_size: int) -> list[tuple]:
+        return conn.all("""
+            SELECT f.file_id, f.parent_path, f.filename FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id
+            WHERE m.host_id = :h AND f.checksum_hash IS NULL AND NOT f.is_directory AND NOT f.is_symlink
+              AND f.file_size_bytes >= :min
+              AND f.file_size_bytes IN (SELECT file_size_bytes FROM file_records
+                                        WHERE NOT is_directory AND NOT is_symlink AND file_size_bytes >= :min
+                                        GROUP BY file_size_bytes HAVING count(*) > 1)""",
+            {'h': host_id, 'min': min_size})
+
+    def set_checksums(self, conn: Conn, updates: list[tuple[str, int]]) -> int:
+        with conn.tx():
+            cur = conn.raw.cursor()
+            cur.executemany(conn._sql('UPDATE file_records SET checksum_hash = :h WHERE file_id = :id'),
+                            [{'h': h, 'id': i} for h, i in updates])
+        return len(updates)
+
+
+def now_utc() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)

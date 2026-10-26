@@ -1,0 +1,13 @@
+# Adds a disposable SSH target on the compose network:
+#   docker compose -f docker-compose.yml -f examples/demo/compose.demo.yml up -d --build
+services:
+  storageforge:
+    environment:
+      STORAGEFORGE_INCLUDE_FSTYPES: overlay     # API/scheduled scans of the container target
+  target:
+    build:
+      context: examples/demo
+      dockerfile: Dockerfile.target
+    hostname: demo-target
+    environment:
+      AUTHORIZED_KEY: ${DEMO_AUTHORIZED_KEY:-}
