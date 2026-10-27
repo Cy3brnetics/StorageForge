@@ -31,7 +31,7 @@ def _level(pool: dict) -> str:
         return lvl if lvl in ZFS_LEVELS else 'stripe'
     if pool['type'] in ('mdadm', 'lvm'):
         return lvl if lvl in MD_LEVELS else 'linear'
-    return lvl if lvl in ('single', 'raid1', 'raid1c3', 'raid10') else 'single'
+    return lvl if lvl in ('single', 'dup', 'raid0', 'raid1', 'raid1c3', 'raid1c4', 'raid10', 'raid5', 'raid6') else 'single'
 
 
 def from_node(node: dict, as_of: dt.date | None = None) -> dict:
@@ -66,7 +66,8 @@ def from_node(node: dict, as_of: dt.date | None = None) -> dict:
                           'startBytes': p.get('start') or 0, 'sizeBytes': p.get('size') or 0,
                           'fs': 'swap' if p.get('fs') == 'swap' else (p.get('fs') or 'none'), 'label': p.get('label'),
                           'mount': primary, 'options': opts, 'member': p.get('member'), 'role': p.get('role'),
-                          'subvolumes': subvols, 'encrypted': p.get('encrypted')})
+                          'subvolumes': subvols, 'encrypted': p.get('encrypted'),
+                          **({'btrfsProfile': p['btrfs_profile']} if p.get('btrfs_profile') else {})})
             for sv in subvols:
                 protect(f'sv:{p["dev"]}/{sv["name"]}', sv['name'], sv['mount'], p.get('encrypted'))
             if primary and not p.get('member') and p.get('fs') not in (None, 'swap', 'vfat'):
@@ -91,7 +92,8 @@ def from_node(node: dict, as_of: dt.date | None = None) -> dict:
         pools.append({'name': p['name'], 'type': ptype, 'level': _level(p), 'tier': p.get('tier'),
                       'ashift': p.get('ashift') or 12, 'fs': p.get('fs'), 'mount': mount,
                       'encryption': p.get('encryption'), 'members': p.get('members') or [],
-                      'usableBytes': round((p.get('cap') or {}).get('usable') or 0) or None,
+                      **({'metaLevel': p['meta_level'], 'label': p.get('label')} if p.get('meta_level') else {}),
+                      'usableBytes': round((p.get('cap') or {}).get('usable') or 0) or None, 'uuid': p.get('uuid'),
                       'log': p.get('log') or [], 'cache': p.get('cache') or [], 'datasets': datasets,
                       **({'vg': p['vg'], 'lv': p.get('lv'), 'levelSource': p.get('level_source')} if ptype == 'lvm' else {})})
         if ptype != 'zfs':

@@ -142,11 +142,20 @@ function model(doc) {
         `${(d.model || 'unknown').split(' (')[0]} · ${fmtDec(d.sizeBytes)}`, tier, { ref: d, group: tier });
       if (d.member || poolOf.has(dev)) link(dk, 'pool:' + (d.member || poolOf.get(dev)), cacheOf.has(dev) ? 'cache' : '');
       for (const p of d.partitions || []) {
-        if (p.member || poolOf.has(p.id)) { link(dk, 'pool:' + (p.member || poolOf.get(p.id)), cacheOf.has(p.id) ? 'cache' : ''); continue; }
-        const pk = put('part:' + p.id, 1, 'part', p.id, `${p.fs || 'none'} · ${fmtBytes(p.sizeBytes)}`, tier, { ref: p, group: tier });
+        if (p.member || poolOf.has(p.id)) {
+          const pname = p.member || poolOf.get(p.id), pool = pools.find((x) => x.name === pname) || {};
+          link(dk, 'pool:' + pname, cacheOf.has(p.id) ? 'cache' : '');
+          for (const sv of p.subvolumes || []) {   // a multi-device btrfs records its subvolumes on its first member
+            const ptier = pool.tier || tier;
+            const sk = put(`sv:${p.id}/${sv.name}`, 2, 'subvol', sv.name, `btrfs subvol · ${pool.label || pname}`, ptier, { ref: sv, part: p, pool: pname });
+            link('pool:' + pname, sk); mountAt(sv.mount, sk, 'btrfs', p.options, ptier);
+          }
+          continue;
+        }
+        const pk = put('part:' + p.id, 1, 'part', p.id, `${p.fs || 'none'}${p.btrfsProfile ? ' ' + p.btrfsProfile : ''} · ${fmtBytes(p.sizeBytes)}`, tier, { ref: p, group: tier, disk: d });
         link(dk, pk);
         for (const sv of p.subvolumes || []) {
-          const sk = put(`sv:${p.id}/${sv.name}`, 2, 'subvol', sv.name, `btrfs subvol · ${p.label || p.id}`, tier, { ref: sv });
+          const sk = put(`sv:${p.id}/${sv.name}`, 2, 'subvol', sv.name, `btrfs subvol · ${p.label || p.id}`, tier, { ref: sv, part: p });
           link(pk, sk); mountAt(sv.mount, sk, 'btrfs', p.options, tier);
         }
         mountAt(p.mount, pk, p.fs, p.options, tier);
@@ -165,7 +174,7 @@ function model(doc) {
       const vgOnly = p.type === 'lvm' && !p.lv;
       const pk = put('pool:' + p.name, 1, 'pool', p.lv ? `${p.vg}/${p.lv}` : p.name,
                      (vgOnly ? `LVM volume group · ${legs} PV${legs === 1 ? '' : 's'} · ${(p.datasets || []).length} LVs`
-                       : `${kind} ${p.level || ''}${legs > 1 ? ` · ${legs} ${p.type === 'lvm' ? 'legs' : 'members'}` : ''}`)
+                       : `${kind} ${p.level || ''}${p.metaLevel && p.metaLevel !== p.level ? '/' + p.metaLevel : ''}${legs > 1 ? ` · ${legs} ${p.type === 'lvm' ? 'legs' : p.type === 'btrfs' ? 'devices' : 'members'}` : ''}`)
                      + `${p.usableBytes ? ' · ' + fmtBytes(p.usableBytes) + ' usable' : ''}${(p.levelSource || '').startsWith('inferred') ? ' · level inferred' : ''}`,
                      tier, { ref: p, group: tier });
       mountAt(p.mount, pk, p.fs || p.type, p.options, tier);
@@ -188,6 +197,33 @@ function model(doc) {
     const at = containing(String(e.path || ''), mounts);
     if (at) link('mnt:' + at, k);
   });
+  // staged changes (changes.js): planned boxes are dashed; others mark the box they touch
+  for (const t of (typeof tasksOn === 'function' ? tasksOn(doc.host) : [])) {
+    const p = t.params || {};
+    if (t.type === 'subvolume' || t.type === 'snapshot') {
+      const path = p.path || p.dest, at = containing(path, mounts), mnode = at && nodes.get('mnt:' + at);
+      const up = mnode && edges.find(([, b]) => b === mnode.key);
+      const parent = up && (nodes.get(up[0]) || {}).kind === 'subvol' ? (edges.find(([, b]) => b === up[0]) || [])[0] : up && up[0];
+      const key = put('plan:sv:' + path, 2, 'subvol', path.split('/').pop(), `planned ${t.type === 'snapshot' ? 'snapshot' : 'subvolume'} · ${path}`,
+                      mnode ? mnode.tier : '', { planned: true, plannedPath: path });
+      if (parent) link(parent, key, 'planned');
+    } else if (t.type === 'mount' && !nodes.has('mnt:' + p.target)) {
+      const key = put('mnt:' + p.target, 3, 'mount', p.target, `planned · ${p.fstype}${p.options ? ' · ' + p.options.split(',').slice(0, 2).join(',') : ''}`,
+                      '', { target: p.target, planned: true });
+      const uuid = (String(p.source).match(/^UUID=(.+)/) || [])[1];
+      const from = (p.subvol && [...nodes.values()].find((x) => x.kind === 'subvol' && x.title.replace(/^\//, '') === p.subvol.replace(/^\//, '')))
+        || (uuid && [...nodes.values()].find((x) => (x.kind === 'part' || x.kind === 'pool') && x.ref && x.ref.uuid === uuid));
+      if (from) link(from.key, key, 'planned');
+    } else if (t.type === 'unmount') {
+      const nd = nodes.get('mnt:' + p.target); if (nd) nd.removing = true;
+    } else if (['format', 'partition', 'btrfs-add'].includes(t.type)) {
+      const dev = bare(p.device || p.disk), nd = nodes.get('part:' + dev) || nodes.get('disk:' + dev);
+      if (nd) (nd.pending = nd.pending || []).push(t.type === 'format' ? `format ${p.fstype}` : t.type === 'partition' ? `partition${p.fstype ? ' + ' + p.fstype : ''}` : 'add to pool');
+    } else {
+      const path = p.path || p.target || p.source, at = path && containing(path, mounts), nd = at && nodes.get('mnt:' + at);
+      if (nd) nd.staged = (nd.staged || 0) + 1;
+    }
+  }
   for (const n of nodes.values()) if (n.kind === 'mount') {
     const r = protRow(doc, n.target, false);
     n.prot = protText(r);
@@ -239,11 +275,14 @@ function renderTopo() {
       }
       const sel = T.sel && T.sel.host === host && T.sel.key === n.key;
       const card = el('div', {
-        class: `tn ${n.tier || ''}${n.bad ? ' bad' : ''}${sel ? ' sel' : ''}${doc.changed.has(n.key) ? ' edited' : ''}${n.kind === 'export' ? ' exp' : ''}`,
+        class: `tn ${n.tier || ''}${n.bad ? ' bad' : ''}${sel ? ' sel' : ''}${doc.changed.has(n.key) ? ' edited' : ''}${n.kind === 'export' ? ' exp' : ''}${n.planned ? ' planned' : ''}${n.removing ? ' removing' : ''}`,
         tabindex: '0', role: 'button', draggable: n.kind === 'mount' ? 'true' : null,
         dataset: { node: n.key, host }, 'aria-pressed': sel ? 'true' : 'false',
       }, el('b', {}, n.health ? el('i', { class: `dot ${n.health}`, title: HEALTH_TEXT[n.health] }) : null, n.title),
-        n.sub ? el('span', {}, n.sub) : null, n.prot ? el('span', { class: 'prot' }, n.prot) : null);
+        n.sub ? el('span', {}, n.sub) : null, n.prot ? el('span', { class: 'prot' }, n.prot) : null,
+        n.pending ? el('span', { class: 'pend' }, 'staged: ' + n.pending.join(', ')) : null,
+        n.removing ? el('span', { class: 'pend' }, 'staged: unmount') : null,
+        n.staged ? el('span', { class: 'pend' }, `${n.staged} staged change${n.staged === 1 ? '' : 's'} inside`) : null);
       cols[n.col].append(card);
     }
     const svg = document.createElementNS(SVG_NS, 'svg'); svg.setAttribute('aria-hidden', 'true');
@@ -253,6 +292,7 @@ function renderTopo() {
   box.replaceChildren(...blocks);
   box.scrollTop = keepScroll;
   requestAnimationFrame(drawTopoEdges);
+  if (typeof renderStageBar === 'function') renderStageBar();
 }
 /* ── shares: NFS/SMB mounts traced to the host and folder that serve them ── */
 function hostIndex() {
@@ -464,9 +504,13 @@ function renderEditor() {
       field('Options', entry(e.options, set((v) => { e.options = v; }), { placeholder: 'rw,sync,no_subtree_check' })),
       mountOnEditor(doc, e, n.key),
       el('div', { class: 'row' }, button('Remove export', () => { doc.bp.exports.splice(n.i, 1); T.sel = null; touched(doc, 'exports'); }, 'btn ghost sm danger')));
+  } else if (n.planned) {
+    form.append(el('p', { class: 'muted' }, 'Staged in the change plan, not on the host yet. Edit or remove it in the Changes tab.'),
+      el('div', { class: 'row' }, button('Open the plan', () => showTab('changes'), 'btn sm')));
   } else {
-    form.append(el('p', { class: 'muted' }, 'Comes from the scan. Layout changes (partitions, pools, datasets) are planned in the Planner.'));
+    form.append(el('p', { class: 'muted' }, 'Comes from the scan. Stage changes below, or plan a new layout in the Planner.'));
   }
+  if (!n.planned && typeof stageButtons === 'function') form.append(...stageButtons(doc, n));
   const gid = n.kind === 'mount' ? `mnt:${doc.host}:${n.target}` : n.kind === 'pool' ? `pool:${doc.host}:${n.ref.name}` : null;
   const gnode = gid && S.byId.get(gid);
   const tail = gnode ? [el('div', { class: 'row' }, button('Show in graph', () => { setMode('graph'); select(gid, true); }, 'btn ghost sm'),

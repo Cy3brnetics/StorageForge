@@ -183,6 +183,49 @@ There are three ways to run the script:
 
 The script needs `setcap`, which comes in `libcap2-bin` on Debian and in `libcap` on RHEL. Inside Docker or LXC, the capability must be allowed in the container's bounding set. If it is not, the script says so and leaves nothing behind.
 
+## Staged changes: folders, btrfs, mounts and drives
+
+Change plans work like an Ansible playbook for storage: an ordered list of tasks, each on one host. Stage them from the topology view. Every box has a **Plan a change** section, and **Browse folders** on a mount lists its folders with indexed sizes, each with its own actions. Staged subvolumes and mounts appear as dashed boxes, and other staged tasks mark the box they touch. Then review, reorder, check and download the plan in the **Changes** tab.
+
+| Group | Tasks |
+| :--- | :--- |
+| Files and folders | create folder, rename or move (same filesystem), move to trash, symlink, owner and permissions |
+| btrfs | create subvolume (optionally without copy-on-write), snapshot, turn a folder into a subvolume, add a device to a pool, convert profile (balance), scrub |
+| Mounts | add a mount (fstab), change mount options, unmount |
+| Drives | partition a disk (GPT, one partition), format, set the filesystem label |
+
+**Check** goes through the plan in order, from the index, so later tasks see what earlier ones create. It flags:
+
+- a missing source, or a destination that already exists;
+- a rename that crosses filesystems (use Moves for that);
+- btrfs tasks on another filesystem;
+- formatting a mounted device, a pool member or the OS disk;
+- profiles that need more devices than the pool has;
+- mounts over folders that already hold files;
+- running containers using the path;
+- tasks that undo each other.
+
+**Bash script** (`changes-<plan>.sh`, in the style of `storage-setup.sh`):
+
+```bash
+./changes-plan.sh                               # report: ok (already so), missing (would change), conflict (blocked)
+sudo ./changes-plan.sh --apply                  # make the changes in order; stops at the first failure
+sudo ./changes-plan.sh --apply --destructive    # also partition, format and add devices to pools
+./changes-plan.sh --host rocks@10.42.0.3 --apply
+```
+
+Every task looks before it acts, so reruns are safe. fstab is backed up before each edit, and the backup is restored if `findmnt --verify` rejects the result. Nothing is deleted: trashed paths go to `.storageforge-trash/<date>/` at the top of their filesystem or subvolume (so it stays a rename), and a folder turned into a subvolume leaves its original there. Drive tasks have three locks:
+
+1. the device typed twice in the plan;
+2. `--destructive` on the command line;
+3. a refusal to touch anything that is mounted, swapped on, or part of RAID, LVM or LUKS.
+
+**Ansible playbook** (`changes-<plan>.yml`): the same tasks with standard modules (`ansible.builtin.file`, `ansible.posix.mount`, `community.general.parted` and `filesystem`, and `command` for btrfs). The inventory lines from the last scans are at the top. Drive tasks run only with `-e storageforge_destructive=true`.
+
+On the CLI: `storageforge-index plan list|types|check|script|ansible|import`.
+
+Scans also read each btrfs filesystem's data and metadata profiles and its label from `/sys/fs/btrfs`, so a multi-device pool shows as e.g. "btrfs raid1/raid1 · 4 devices", with usable space worked out from the profile. Its subvolumes and their mount points are listed under the pool.
+
 ## Moving data: plans and rsync scripts
 
 The **Moves** tab plans where data goes. Each step takes a folder on one scanned host to a folder on another, or on the same host, using one of four methods:

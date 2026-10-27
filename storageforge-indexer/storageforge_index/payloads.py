@@ -514,6 +514,27 @@ def _lvm_pool(name: str, e: dict) -> dict:
             'cap': pool_capacity('lvm', level, [s for _, s in legs], fs=e['fs'])}
 
 
+def apply_btrfs(node: dict, text: str):
+    """Real btrfs profiles (raid1, raid10, dup, ...) and labels from /sys/fs/btrfs, readable without root."""
+    info = {}
+    for line in (text or '').splitlines():
+        uuid, data, meta, label = (line.split('\t') + ['', '', '', ''])[:4]
+        if uuid:
+            info[uuid] = {'data': data.split(',')[0] or None, 'meta': meta.split(',')[0] or None, 'label': label or None}
+    for p in node['pools']:
+        b = info.get(p.get('uuid') or '')
+        if p['type'] != 'btrfs' or not b or not b['data']:
+            continue
+        p.update(level=b['data'], meta_level=b['meta'], label=b['label'] or p.get('label'),
+                 level_source='/sys/fs/btrfs')
+        p['cap'] = pool_capacity('btrfs', b['data'], p.get('member_sizes') or [])
+    for d in node['disks']:                     # single-device btrfs: dup vs single metadata is worth showing
+        for part in d['parts']:
+            b = info.get(part.get('uuid') or '')
+            if b and part.get('fs') == 'btrfs' and not part.get('member'):
+                part['btrfs_profile'] = f'{b["data"]}/{b["meta"]}'
+
+
 def apply_lvs(node: dict, text: str):
     """Exact segment types and health from `lvs --reportformat json`, when the scan could run it."""
     try:
@@ -664,6 +685,8 @@ def node_from_index(conn: Conn, host: str, symlink_limit: int = 20000) -> dict:
         finalize_zfs_capacity(node)
     if inv.get('lvs'):
         apply_lvs(node, inv['lvs'])
+    if inv.get('btrfs'):
+        apply_btrfs(node, inv['btrfs'])
 
     parts = {p['dev']: (p, d) for d in node['disks'] for p in d['parts']}
     disks = {d['dev']: d for d in node['disks']}

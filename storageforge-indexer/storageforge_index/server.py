@@ -32,6 +32,12 @@ GET  /api/folders/cold?host=&years=&min_size=   folders whose newest file is old
 GET  /api/git?host=                  git repositories found by scans, with their copies and archive state
 GET  /api/shares/check?host=         the NFS/SMB shares in a host's design, checked against the index
 GET  /api/shares/script?host=        the script that deploys them on the server and mounts them on clients
+GET  /api/changes/types              the task types of change plans, with their fields (the UI builds its forms from it)
+GET  /api/changes                    saved change plans;  POST creates one from {"name", "tasks": [...]}
+GET|PUT|DELETE /api/changes/<id>     one plan
+POST /api/changes/check              check a plan against the index, task by task, in order
+GET  /api/changes/<id>/script        the Bash script (report, --apply, --destructive)
+GET  /api/changes/<id>/ansible       the same plan as an Ansible playbook
 GET  /api/docker?host=               containers, compose stacks (running, stopped, stored), volumes, unused volumes
 GET  /api/docker/usage?host=&path=   containers that use a folder (bind mounts and volume data)
 GET  /api/backups                    backups on disk;  POST {"kind": "essentials"|"full"} makes one now
@@ -61,9 +67,9 @@ from flask_login import LoginManager, current_user, login_required, login_user, 
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import __version__, access, blueprint, canvas, docker, folders, gitrepos, graph, keyinstall, moves, shares, users
+from . import __version__, access, blueprint, canvas, changes, docker, folders, gitrepos, graph, keyinstall, moves, shares, users
 from .capacity import parse_size
-from .db import Database
+from .db import Database, epoch
 from .remote import RemoteError
 from .runner import connect_address, scan_via_vault
 from .scanner import ScanOptions
@@ -195,6 +201,8 @@ class App:
                                           WHERE pattern_kind = 'host' AND allowed_actions LIKE :a""", {'a': '%scan%'}):
                 name = self.canonical(conn, pattern)
                 last = conn.scalar('SELECT max(queued_at) FROM scan_jobs WHERE host IN (:n, :p)', {'n': name, 'p': pattern})
+                done = epoch(conn.scalar('SELECT last_scanned_at FROM hosts WHERE hostname = :n', {'n': name}))
+                last = max(x for x in (last, done, 0) if x is not None) or None     # CLI scans count too
                 if name not in due and (last is None or now - last >= interval * 0.95):
                     due.append(name)
             return due
@@ -334,7 +342,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def planner():
         return static('planner.html')
 
-    @web.get('/<any("app.js", "topology.js", "checks.js", "moves.js", "gitview.js", "dockerview.js", "style.css", "favicon.svg", "planner.js", "planner.css"):name>')
+    @web.get('/<any("app.js", "topology.js", "checks.js", "moves.js", "changes.js", "gitview.js", "dockerview.js", "style.css", "favicon.svg", "planner.js", "planner.css"):name>')
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
         resp.headers['Cache-Control'] = 'no-cache'
@@ -633,6 +641,57 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         core.audit(conn(), actor(), 'shares.script', 'ok', host, {})
         return Response(text, mimetype='text/x-shellscript',
                         headers={'Content-Disposition': f'attachment; filename="shares-{moves.host_slug(host)}.sh"'})
+
+    @web.get('/api/changes/types')
+    @login_required
+    def api_change_types():
+        return jsonify(types=changes.TYPES)
+
+    @web.get('/api/changes')
+    @login_required
+    def api_changes():
+        return jsonify(plans=changes.list_plans(conn()))
+
+    @web.post('/api/changes')
+    @login_required
+    def api_changes_create():
+        pid = changes.save_plan(conn(), json_body(), actor())
+        core.audit(conn(), actor(), 'changes.save', 'ok', None, {'plan': pid})
+        return jsonify(changes.get_plan(conn(), pid)), 201
+
+    @web.route('/api/changes/<int:plan_id>', methods=['GET', 'PUT', 'DELETE'])
+    @login_required
+    def api_change(plan_id):
+        try:
+            if request.method == 'PUT':
+                changes.save_plan(conn(), json_body(), actor(), plan_id)
+                core.audit(conn(), actor(), 'changes.save', 'ok', None, {'plan': plan_id})
+            elif request.method == 'DELETE':
+                changes.get_plan(conn(), plan_id)
+                changes.delete_plan(conn(), plan_id)
+                core.audit(conn(), actor(), 'changes.delete', 'ok', None, {'plan': plan_id})
+                return jsonify(deleted=plan_id)
+            return jsonify(changes.get_plan(conn(), plan_id))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/changes/check')
+    @login_required
+    def api_changes_check():
+        return jsonify(changes.check(conn(), changes.normalize(json_body())))
+
+    @web.get('/api/changes/<int:plan_id>/<any("script", "ansible"):kind>')
+    @login_required
+    def api_change_out(plan_id, kind):
+        try:
+            plan = changes.get_plan(conn(), plan_id)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        text = changes.script(conn(), plan) if kind == 'script' else changes.ansible(conn(), plan)
+        name = f'changes-{moves.slug(plan["name"])}.' + ('sh' if kind == 'script' else 'yml')
+        core.audit(conn(), actor(), f'changes.{kind}', 'ok', None, {'plan': plan_id})
+        return Response(text, mimetype='text/x-shellscript' if kind == 'script' else 'application/yaml',
+                        headers={'Content-Disposition': f'attachment; filename="{name}"'})
 
     @web.get('/api/docker')
     @login_required

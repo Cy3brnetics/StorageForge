@@ -211,6 +211,8 @@ class OpsTests(DBCase):
                           "('10.42.0.100', 'scheduler', :t, 'ok')", {'t': int(time.time()) - 600})
         self.assertEqual(app.due_hosts(3600), [])                       # scanned 10 min ago under its IP: not due
         self.assertEqual(app.due_hosts(300), ['cachyos-x8664'])
+        self.conn.execute("UPDATE hosts SET last_scanned_at = :t", {'t': int(time.time())})      # a scan run from the CLI
+        self.assertEqual(app.due_hosts(300), [])
 
     def test_backup_restore_and_prune(self):
         from storageforge_index import backup
@@ -322,6 +324,115 @@ volumes:
             {'method': 'move', 'src': {'host': 'tr01', 'path': '/mnt/data01/media'}, 'dst': {'host': 'tr01', 'path': '/srv/media'}}]}))
         self.assertTrue(any(i['level'] == 'warn' and 'jellyfin' in i['text'] and 'docker compose -p jellyfin stop' in i['text']
                             for i in c['steps'][0]['items']))
+
+
+class ChangePlanTests(DBCase):
+    LSBLK = {'blockdevices': [
+        {'name': 'sda', 'type': 'disk', 'size': 500 * 10**9, 'tran': 'sata', 'children': [
+            {'name': 'sda1', 'type': 'part', 'size': 499 * 10**9, 'fstype': 'ext4', 'uuid': 'aaaa', 'mountpoint': '/'}]},
+        {'name': 'sdb', 'type': 'disk', 'size': 4 * 10**12, 'tran': 'sata', 'children': [
+            {'name': 'sdb1', 'type': 'part', 'size': 4 * 10**12, 'fstype': 'btrfs', 'uuid': 'bbbb'}]},
+        {'name': 'sdc', 'type': 'disk', 'size': 2 * 10**12, 'tran': 'usb', 'children': []}]}
+
+    def setUp(self):
+        super().setUp()
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json) VALUES ('nas', '10.0.0.5', 'scan', :i)",
+                          {'i': json.dumps({'lsblk': self.LSBLK})})
+        h = self.conn.scalar('SELECT host_id FROM hosts')
+        for mp, src, fs in (('/', '/dev/sda1', 'ext4'), ('/mnt/pool', '/dev/sdb1[/@pool]', 'btrfs')):
+            self.conn.execute("INSERT INTO mounts (host_id, mount_point, source, filesystem_type, total_bytes, used_bytes, "
+                              "scan_state, mount_options) VALUES (:h, :m, :s, :f, 100, 1, 'indexed', 'rw,noatime')",
+                              {'h': h, 'm': mp, 's': src, 'f': fs})
+        pool = self.conn.scalar("SELECT mount_id FROM mounts WHERE mount_point = '/mnt/pool'")
+        for parent, name, d, size in (('/mnt', 'pool', 1, 0), ('/mnt/pool', 'photos', 1, 0), ('/mnt/pool/photos', 'a.jpg', 0, 2048)):
+            self.conn.execute("INSERT INTO file_records (mount_id, parent_path, filename, is_directory, file_size_bytes, modified_at) "
+                              "VALUES (:m, :p, :n, :d, :s, 0)", {'m': pool, 'p': parent, 'n': name, 'd': d, 's': size})
+
+    def plan(self, *tasks):
+        from storageforge_index import changes
+        return changes.normalize({'name': 'p', 'tasks': [{'type': k, 'host': 'nas', 'params': p} for k, p in tasks]})
+
+    def levels(self, plan):
+        from storageforge_index import changes
+        return [[(i['level'], i['text']) for i in t['items']] for t in changes.check(self.conn, plan)['tasks']]
+
+    def has(self, items, level, words):
+        return any(l == level and words in t for l, t in items)
+
+    def test_checks_follow_the_plan_order(self):
+        r = self.levels(self.plan(
+            ('subvolume', {'path': '/mnt/pool/media'}),
+            ('dir', {'path': '/mnt/pool/media/films', 'owner': 'gabe', 'mode': '0750'}),   # inside the subvolume staged above
+            ('rename', {'path': '/mnt/pool/photos', 'dest': '/mnt/pool/media/photos'}),
+            ('rename', {'path': '/mnt/pool/photos', 'dest': '/srv/photos'}),                # already moved by the task above
+            ('subvolume', {'path': '/srv/x'}),                                             # ext4
+            ('snapshot', {'source': '/mnt/pool', 'dest': '/mnt/pool/.snap-1'}),
+            ('trash', {'path': '/mnt/pool/missing'}),
+            ('mount', {'source': 'UUID=bbbb', 'subvol': '@media', 'target': '/srv/media', 'fstype': 'btrfs', 'options': 'noatime'}),
+            ('mount', {'source': 'UUID=bbbb', 'target': '/mnt/pool', 'fstype': 'btrfs'}),     # already mounted
+            ('unmount', {'target': '/'}),
+            ('mount-options', {'target': '/mnt/pool', 'options': 'noatime,compress=zstd:3'})))
+        self.assertTrue(self.has(r[0], 'ok', 'new subvolume'))
+        self.assertFalse([x for x in r[1] if x[0] == 'crit'])
+        self.assertTrue(self.has(r[2], 'ok', '1 files') and self.has(r[2], 'note', 'instant rename'))
+        self.assertTrue(self.has(r[3], 'crit', 'does not exist'))
+        self.assertTrue(self.has(r[4], 'crit', 'not btrfs'))
+        self.assertTrue(self.has(r[5], 'ok', 'read-only snapshot'))
+        self.assertTrue(self.has(r[6], 'crit', 'does not exist'))
+        self.assertTrue(self.has(r[7], 'ok', 'UUID=bbbb is sdb1') and self.has(r[7], 'note', 'nofail'))
+        self.assertTrue(self.has(r[8], 'crit', 'already mounted'))
+        self.assertTrue(self.has(r[9], 'crit', 'running system'))
+        self.assertTrue(self.has(r[10], 'ok', 'now: rw,noatime'))
+
+    def test_drive_tasks_are_guarded(self):
+        from storageforge_index import changes
+        with self.assertRaises(ValueError):                                  # destructive tasks need the device typed twice
+            self.plan(('format', {'device': '/dev/sdc', 'fstype': 'ext4', 'confirm': '/dev/sdb'}))
+        with self.assertRaises(ValueError):
+            self.plan(('dir', {'path': 'relative/path'}))
+        with self.assertRaises(ValueError):
+            self.plan(('mount-options', {'target': '/mnt/pool', 'options': 'rw; rm -rf /'}))
+        r = self.levels(self.plan(
+            ('format', {'device': '/dev/sda1', 'fstype': 'ext4', 'wipe': True, 'confirm': '/dev/sda1'}),
+            ('partition', {'disk': '/dev/sdc', 'fstype': 'btrfs', 'label': 'media', 'confirm': '/dev/sdc'}),
+            ('format', {'device': '/dev/sdb1', 'fstype': 'xfs', 'confirm': '/dev/sdb1'}),
+            ('btrfs-balance', {'target': '/mnt/pool', 'data': 'raid1', 'metadata': 'raid1'}),
+            ('label', {'target': '/dev/sdc', 'label': 'way-too-long-for-vfat-x'})))
+        self.assertTrue(self.has(r[0], 'crit', 'in use') and self.has(r[0], 'crit', 'operating system disk'))
+        self.assertFalse([x for x in r[1] if x[0] == 'crit'])
+        self.assertTrue(self.has(r[2], 'crit', 'holds btrfs'))
+        self.assertTrue(self.has(r[3], 'crit', 'raid1 needs 2 devices'))
+        plan = self.plan(('partition', {'disk': '/dev/sdc', 'fstype': 'btrfs', 'label': 'media', 'confirm': '/dev/sdc'}),
+                         ('subvolume', {'path': '/mnt/pool/media', 'nocow': True}),
+                         ('mount', {'source': 'UUID=bbbb', 'subvol': '@media', 'target': '/srv/media', 'fstype': 'btrfs'}))
+        sh = Path(self.tmp) / 'c.sh'
+        sh.write_text(changes.script(self.conn, plan))
+        self.assertEqual(subprocess.run(['bash', '-n', str(sh)]).returncode, 0)
+        self.assertIn("run 1 nas partition 'Partition /dev/sdc and format it btrfs' /dev/sdc btrfs media ''", sh.read_text())
+        import yaml
+        plays = yaml.safe_load(changes.ansible(self.conn, plan))
+        self.assertEqual([p['hosts'] for p in plays], ['nas'])
+        names = [next(k for k in t if '.' in k) for t in plays[0]['tasks']]
+        self.assertEqual(names, ['community.general.parted', 'community.general.filesystem', 'ansible.builtin.command',
+                                 'ansible.builtin.command', 'ansible.posix.mount'])
+        self.assertEqual(plays[0]['tasks'][0]['when'], 'storageforge_destructive | default(false) | bool')
+        self.assertEqual(plays[0]['tasks'][4]['ansible.posix.mount']['opts'], 'subvol=@media')
+
+    def test_api(self):
+        from storageforge_index import server, users
+        users.create(self.conn, 'alice', 'a long enough password')
+        client = server.create_app(server.App(self.db), 's' * 48).test_client()
+        client.post('/api/login', json={'username': 'alice', 'password': 'a long enough password'})
+        self.assertIn('format', client.get('/api/changes/types').json['types'])
+        body = {'name': 'Tidy', 'tasks': [{'type': 'dir', 'host': 'nas', 'params': {'path': '/mnt/pool/new'}}]}
+        pid = client.post('/api/changes', json=body).json['id']
+        self.assertEqual(client.post('/api/changes/check', json=body).json['crit'], 0)
+        r = client.get(f'/api/changes/{pid}/ansible')
+        self.assertIn('attachment; filename="changes-tidy.yml"', r.headers['Content-Disposition'])
+        self.assertIn(b'ansible.builtin.file', r.data)
+        self.assertEqual(client.get(f'/api/changes/{pid}/script').status_code, 200)
+        self.assertEqual(client.delete(f'/api/changes/{pid}').status_code, 200)
+        self.assertEqual(client.get('/changes.js').status_code, 200)
 
 
 class ConnectAddressTests(DBCase):

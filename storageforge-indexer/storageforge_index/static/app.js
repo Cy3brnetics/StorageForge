@@ -404,6 +404,7 @@ function showTab(name) {
   if (name === 'access') loadAccess();
   if (name === 'copies') loadCopies();
   if (name === 'moves') loadMoves();
+  if (name === 'changes') loadChanges();
   if (name === 'git') loadGit();
   if (name === 'docker') loadDocker();
 }

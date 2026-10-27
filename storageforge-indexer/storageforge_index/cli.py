@@ -281,6 +281,42 @@ def cmd_shares(args) -> int:
     return 0
 
 
+def cmd_plan(args) -> int:
+    from . import changes
+    _, conn = open_db(args)
+    if args.changes_cmd == 'list':
+        for p in changes.list_plans(conn):
+            print(f'#{p["id"]:<4} {p["name"]}  ({p["tasks"]} task{"s" if p["tasks"] != 1 else ""})')
+        return 0
+    if args.changes_cmd == 'types':
+        for k, t in changes.TYPES.items():
+            print(f'{k:<15} {t["group"]:<18} {t["label"]}' + ('  (destructive)' if t.get('destructive') else ''))
+            print(f'{"":<15} fields: ' + ', '.join(f['name'] + ('*' if f.get('required') else '') for f in t['fields']))
+        return 0
+    if args.changes_cmd == 'import':
+        pid = changes.save_plan(conn, json.loads(Path(args.file).read_text()), f'cli:{os.environ.get("USER", "?")}', args.id)
+        print(f'saved change plan #{pid}')
+        return 0
+    plan = changes.get_plan(conn, args.id)
+    if args.changes_cmd == 'check':
+        c = changes.check(conn, plan)
+        for t in c['tasks']:
+            print(f'{t["task"]:>2}. {t["title"]}' + (f'  [{t["host"]}]' if t.get('host') else ''))
+            for it in t['items']:
+                print(f'      {it["level"]:<5} {it["text"]}')
+        print(f'{c["crit"]} critical · {c["warn"]} warning(s)')
+        return 1 if c['crit'] else 0
+    text = changes.script(conn, plan) if args.changes_cmd == 'script' else changes.ansible(conn, plan)
+    if args.output in (None, '-'):
+        print(text, end='')
+    else:
+        Path(args.output).write_text(text)
+        if args.changes_cmd == 'script':
+            os.chmod(args.output, 0o755)
+        print(f'wrote {args.output}', file=sys.stderr)
+    return 0
+
+
 def cmd_docker(args) -> int:
     from . import docker
     _, conn = open_db(args)
@@ -756,6 +792,17 @@ def build_parser() -> argparse.ArgumentParser:
     s2 = shs.add_parser('script', help='write the deploy script (server + client mounts)')
     s2.add_argument('host'); s2.add_argument('-o', '--output')
     sh.set_defaults(fn=cmd_shares)
+
+    ch = sub.add_parser('plan', help='staged change plans for folders, btrfs, mounts and drives (not "changes": that is file changes)')
+    chs = ch.add_subparsers(dest='changes_cmd', required=True)
+    chs.add_parser('list'); chs.add_parser('types', help='task types and their fields')
+    c1 = chs.add_parser('check'); c1.add_argument('id', type=int)
+    for kind in ('script', 'ansible'):
+        c2 = chs.add_parser(kind, help=f'write the plan as {"a Bash script" if kind == "script" else "an Ansible playbook"}')
+        c2.add_argument('id', type=int); c2.add_argument('-o', '--output')
+    c3 = chs.add_parser('import', help='save a plan from a JSON file ({"name", "tasks": [...]})')
+    c3.add_argument('file'); c3.add_argument('--id', type=int, help='replace this plan')
+    ch.set_defaults(fn=cmd_plan)
 
     dk = sub.add_parser('docker', help='containers, compose stacks and the folders they use')
     dk.add_argument('--host')

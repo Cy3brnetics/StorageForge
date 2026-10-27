@@ -237,3 +237,22 @@ path.edge.share.lit { stroke: var(--accent); stroke-width: 2.4; opacity: 1; }
 .dkstack summary { cursor: pointer; font-weight: 600; font-size: 13px; }
 .dkstack[open] summary { margin-bottom: 4px; }
 .dkhost > .row { justify-content: space-between; }
+/* staged change plans (changes.js) */
+.tn.planned { border-style: dashed; border-left-style: dashed; background: color-mix(in srgb, var(--accent) 6%, var(--bg)); }
+.tn.removing b { text-decoration: line-through; }
+.tn .pend { color: var(--accent); font-weight: 600; }
+path.edge.planned { stroke: var(--accent); stroke-dasharray: 5 4; }
+.stagebar { position: absolute; z-index: 5; right: 16px; top: 12px; display: flex; gap: 10px; align-items: center; background: var(--panel);
+  border: 1px solid var(--accent); border-radius: 8px; padding: 6px 8px 6px 12px; font-size: 13px; box-shadow: 0 4px 16px rgb(0 0 0 / .3); }
+.row.wrap { flex-wrap: wrap; gap: 6px; }
+.stageform .field.col input, .stageform .field.col select { width: 100%; }
+.fbrowse { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; max-height: 420px; overflow: auto; }
+.fbrowse li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 2px 8px; align-items: center; padding: 3px 4px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.fbrowse li .n { overflow-wrap: anywhere; } .fbrowse li .s { color: var(--muted); }
+.fbrowse li .mark { grid-column: 1 / -1; color: var(--accent); font-size: 11px; }
+.fbrowse li.staged { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.fbrowse .link { all: unset; cursor: pointer; } .fbrowse .link:hover, .fbrowse .link:focus-visible { color: var(--accent); text-decoration: underline; }
+.fbrowse select.act { font-size: 11px; padding: 2px 4px; max-width: 110px; }
+.chtasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.chtasks .tools { margin-left: auto; gap: 4px; }
+.lv-border-crit { border-left: 3px solid var(--broken); } .lv-border-warn { border-left: 3px solid var(--local-only); } .lv-border-ok { border-left: 3px solid var(--protected); }

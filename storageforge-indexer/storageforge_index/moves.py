@@ -94,8 +94,8 @@ def hosts(conn: Conn) -> dict:
     out = {}
     for hid, name, ssh_host, ssh_user, ssh_port, ip in conn.all(
             'SELECT host_id, hostname, ssh_host, ssh_user, ssh_port, ip_address FROM hosts'):
-        mounts = [dict(zip(('id', 'target', 'source', 'fstype', 'total', 'used', 'state'), r)) for r in conn.all(
-            """SELECT mount_id, mount_point, source, filesystem_type, total_bytes, used_bytes, scan_state FROM mounts
+        mounts = [dict(zip(('id', 'target', 'source', 'fstype', 'total', 'used', 'state', 'options'), r)) for r in conn.all(
+            """SELECT mount_id, mount_point, source, filesystem_type, total_bytes, used_bytes, scan_state, mount_options FROM mounts
                WHERE host_id = :h AND scan_state <> 'gone'""", {'h': hid})]
         out[name] = {'id': hid, 'name': name, 'ssh_host': ssh_host or ip or name, 'ssh_user': ssh_user,
                      'ssh_port': ssh_port or 22, 'mounts': mounts}

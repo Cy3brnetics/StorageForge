@@ -185,6 +185,7 @@ echo '@@lvs'; lvs --reportformat json --units b --nosuffix -o vg_name,lv_name,se
 echo '@@findmnt'; findmnt -J -b -l -o TARGET,SOURCE,FSTYPE,SIZE,USED,OPTIONS,MAJ:MIN,FSROOT 2>/dev/null
 echo '@@mountinfo'; cat /proc/self/mountinfo 2>/dev/null
 echo '@@df'; df -B1 -P 2>/dev/null
+echo '@@btrfs'; for d in /sys/fs/btrfs/*-*/; do [ -d "$d" ] || continue; printf '%s\t%s\t%s\t%s\n' "$(basename "$d")" "$(ls -d "$d"allocation/data/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(ls -d "$d"allocation/metadata/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(cat "$d"label 2>/dev/null)"; done
 echo '@@nfs'; cat /var/lib/nfs/etab 2>/dev/null || cat /etc/exports /etc/exports.d/*.exports 2>/dev/null
 echo '@@smb'; if command -v smbd >/dev/null 2>&1 || [ -f /etc/samba/smb.conf ]; then
   pgrep -x smbd >/dev/null 2>&1 && echo '# smbd running'; testparm -s 2>/dev/null || cat /etc/samba/smb.conf 2>/dev/null; fi
@@ -218,12 +219,13 @@ class HostInventory:
     access: str = ''  # 'capability' once read-only scan access is set up, else 'user'
     user: str = ''
     nfs: str = ''     # /var/lib/nfs/etab (live exports) or /etc/exports
+    btrfs: str = ''   # per filesystem: uuid, data and metadata profiles, label (from /sys/fs/btrfs)
     smb: str = ''     # testparm -s or smb.conf
 
     def to_json(self) -> str:
         return json.dumps({
             'collected_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
-            'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb,
+            'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb, 'btrfs': self.btrfs,
             'mounts': [asdict(m) for m in self.mounts],
         })
 
@@ -306,6 +308,8 @@ def collect_inventory(t: Transport) -> HostInventory:
     mounts = parse_findmnt(sec.get('findmnt', '')) or parse_mountinfo(sec.get('mountinfo', ''), sec.get('df', ''))
     if not mounts:
         raise RemoteError(f'{t.host}: could not read the mount table (findmnt and /proc/self/mountinfo both failed)')
-    return HostInventory(hostname, ip, ' · '.join(lines('os')) or None, mounts, lsblk,
-                         sec.get('zpool', '').strip(), sec.get('df', '').strip(), sec.get('lvs', '').strip(),
-                         *(lines('access') + ['', ''])[:2], sec.get('nfs', '').strip(), sec.get('smb', '').strip())
+    access, user = (lines('access') + ['', ''])[:2]
+    return HostInventory(hostname, ip, ' · '.join(lines('os')) or None, mounts, lsblk,   # optional fields by name: order-proof
+                         sec.get('zpool', '').strip(), sec.get('df', '').strip(), lvs=sec.get('lvs', '').strip(),
+                         access=access, user=user, nfs=sec.get('nfs', '').strip(), smb=sec.get('smb', '').strip(),
+                         btrfs=sec.get('btrfs', '').strip())

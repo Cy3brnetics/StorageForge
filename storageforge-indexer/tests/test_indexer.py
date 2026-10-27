@@ -138,6 +138,20 @@ class Planning(unittest.TestCase):
             access.setup_script('x; rm -rf /')
         self.assertIn('groupdel storageforge-scan', access.remove_script('scan'))
 
+    def test_inventory_sections_land_in_their_fields(self):
+        from storageforge_index import remote
+        out = '\n'.join(['@@hostname', 'h', '@@ip', '10.0.0.1', '@@os', 'Linux', '@@lsblk', '{"blockdevices": []}',
+                          '@@findmnt', '{"filesystems": [{"target": "/", "source": "/dev/sda1", "fstype": "ext4"}]}',
+                          '@@lvs', 'LVS', '@@btrfs', 'BTRFS', '@@nfs', 'NFS', '@@smb', 'SMB', '@@access', 'capability', 'scan', '@@end'])
+
+        class T:
+            host, local = 'h', False
+
+            def run(self, script, timeout=0):
+                return out
+        inv = remote.collect_inventory(T())
+        self.assertEqual((inv.lvs, inv.btrfs, inv.nfs, inv.smb, inv.access, inv.user), ('LVS', 'BTRFS', 'NFS', 'SMB', 'capability', 'scan'))
+
     def test_find_command_quotes_and_prunes(self):
         cmd = find_command("/srv/it's here", ['/srv/it\'s here/[x]'], ['.git'], nice=False)
         self.assertIn("'/srv/it'\"'\"'s here'", cmd)
@@ -196,6 +210,34 @@ class Shares(unittest.TestCase):
                            '[Photos]\n  path = /mnt/photos/\n  read only = yes\n  valid users = @family\n'
                            '; [old]\n[printers]\n  path = /var/spool\n[nopath]\n  comment = x\n')
         self.assertEqual(s, [{'protocol': 'SMB', 'name': 'Photos', 'path': '/mnt/photos', 'clients': '@family', 'options': 'ro'}])
+
+
+class Cli(unittest.TestCase):
+    def test_parser_builds(self):
+        """argparse refuses duplicate subcommands only when the parser is built, which is at container start-up"""
+        from storageforge_index import cli
+        parser = cli.build_parser()
+        for argv in (['plan', 'list'], ['changes', '--host', 'h'], ['docker'], ['backup', 'list'], ['moves', 'list']):
+            self.assertTrue(parser.parse_args(argv))
+        # two handlers with one name: the later def silently replaces the earlier one
+        handlers = [c._defaults['fn'] for c in parser._subparsers._group_actions[0].choices.values() if 'fn' in c._defaults]
+        self.assertEqual(len(handlers), len({f.__name__ for f in handlers}))
+        self.assertIs(parser.parse_args(['changes', '--host', 'h']).fn, cli.cmd_changes)
+
+
+class BtrfsProfiles(unittest.TestCase):
+    def test_multi_device_pool_gets_its_real_profile(self):
+        from storageforge_index.payloads import apply_btrfs
+        disk = lambda n: {'name': n, 'type': 'disk', 'size': 4 * 10**12, 'children': [
+            {'name': n + '1', 'type': 'part', 'size': 4 * 10**12, 'fstype': 'btrfs', 'uuid': 'a90e'}]}
+        node = node_from_lsblk({'blockdevices': [disk('sda'), disk('sdb'), disk('sdc'), disk('sdd'),
+                                                 {'name': 'nvme0n1', 'type': 'disk', 'size': 10**12, 'fstype': 'btrfs', 'uuid': '719d'}]}, 'h')
+        [pool] = node['pools']
+        self.assertEqual(pool['level'], 'multi-device')
+        apply_btrfs(node, 'a90e\traid1\traid1\t\n719d\tsingle\tdup\t\n')
+        self.assertEqual((pool['level'], pool['meta_level'], pool['level_source']), ('raid1', 'raid1', '/sys/fs/btrfs'))
+        self.assertAlmostEqual(pool['cap']['usable'], 8 * 10**12, delta=0.02 * 8 * 10**12)        # raid1 keeps two copies
+        self.assertEqual(node['disks'][4]['parts'][0]['btrfs_profile'], 'single/dup')
 
 
 class LvmRaid(unittest.TestCase):
