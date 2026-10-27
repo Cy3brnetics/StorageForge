@@ -33,6 +33,10 @@ class DiffStats:
     first_scan: bool = False
 
 
+class ScanBusy(RuntimeError):
+    pass
+
+
 class Conn:
     def __init__(self, raw, dialect: str):
         self.raw, self.dialect = raw, dialect
@@ -176,9 +180,46 @@ class Database:
                 if mp not in seen:
                     conn.execute("UPDATE mounts SET scan_state = 'gone' WHERE mount_id = :m", {'m': mid})
 
-    def begin_scan(self, conn: Conn, host_id: int) -> int:
-        return conn.scalar(f"INSERT INTO scans (host_id, started_at, status) VALUES (:h, {self.ts(':now')}, 'running') "
-                           'RETURNING scan_id', {'h': host_id, 'now': int(time.time())})
+    def begin_scan(self, conn: Conn, host_id: int, stale_after: int = 6 * 3600) -> int:
+        """Start a scan, unless one of the same host is already running: two writers diffing the same mounts would
+        lock each other out ("database is locked") and race on the file table. A run older than stale_after is
+        assumed dead (a killed process never marks its row finished)."""
+        now = int(time.time())
+        with conn.tx():
+            busy = conn.scalar(f"""SELECT scan_id FROM scans WHERE host_id = :h AND status = 'running'
+                                   AND started_at > {self.ts(':since')}""", {'h': host_id, 'since': now - stale_after})
+            if busy:
+                raise ScanBusy(f'this host is already being scanned (scan #{busy}); wait for it to finish')
+            return conn.scalar(f"INSERT INTO scans (host_id, started_at, status) VALUES (:h, {self.ts(':now')}, 'running') "
+                               'RETURNING scan_id', {'h': host_id, 'now': now})
+
+    def prune(self, conn: Conn, change_days: int = 90, job_days: int = 90, now: float | None = None) -> dict:
+        """Retention: file change history for change_days (always the newest scan per host), unreadable-folder lists
+        of the newest scan only, finished scan jobs for job_days. Scan summaries are tiny and stay."""
+        now = int(now or time.time())
+        latest = 'SELECT max(scan_id) FROM scans x WHERE x.host_id = s.host_id AND x.status <> \'running\''
+        out = {}
+        with conn.tx():
+            out['changes'] = conn.execute(f"""DELETE FROM file_changes WHERE scan_id IN (
+                SELECT s.scan_id FROM scans s WHERE s.started_at < {self.ts(':cut')} AND s.scan_id < ({latest}))""",
+                {'cut': now - change_days * 86400}).rowcount
+            out['denied'] = conn.execute(f"""DELETE FROM scan_denied WHERE scan_id IN (
+                SELECT s.scan_id FROM scans s WHERE s.scan_id < ({latest}))""").rowcount
+            out['jobs'] = conn.execute("""DELETE FROM scan_jobs WHERE status NOT IN ('queued', 'running')
+                                          AND queued_at < :cut""", {'cut': now - job_days * 86400}).rowcount
+        if self.dialect == 'sqlite':
+            conn.execute('PRAGMA optimize')
+        return out
+
+    def vacuum(self, conn: Conn):
+        """Give freed pages back to the filesystem. Rewrites the whole file: needs that much free space, and locks it."""
+        conn.execute('VACUUM' if self.dialect == 'sqlite' else 'VACUUM ANALYZE')
+
+    def save_denied(self, conn: Conn, scan_id: int, rows):
+        with conn.tx():
+            for mount, path in dict.fromkeys(rows):
+                conn.execute('INSERT INTO scan_denied (scan_id, mount_point, path) VALUES (:s, :m, :p) ON CONFLICT DO NOTHING',
+                             {'s': scan_id, 'm': mount, 'p': path})
 
     def finish_scan(self, conn: Conn, scan_id: int, host_id: int, tot: dict, status: str, seconds: float):
         now = int(time.time())
