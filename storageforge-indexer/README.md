@@ -97,6 +97,8 @@ The database defaults to `~/.local/share/storageforge/index.db`. Use `--db postg
 
 ## Graph and Obsidian canvas
 
+The main page opens on the **Topology** view. Each host is laid out in columns: devices, then partitions and pools, then subvolumes and datasets, then mount points, then links and exports. The view is drawn from the host's design, the same one the planner edits. Select a box to edit what the operator owns: device and pool tiers, 3-2-1 protection on a mount point (snapshots, sync, backup target, offsite), and links and exports. Hardware and layout come from the scan. To set a backup target, drag one mount point onto another, on the same host or a different one. **Save design** stores the design and rebuilds the graph, and the mount health dots update. **Graph** switches to the force-directed view.
+
 The graph is rebuilt per host after every scan, from the index plus any stored blueprint.
 
 | Node | Example id | Edges |
@@ -167,6 +169,108 @@ The graph header links to the planner, and a host node's **Open in planner** jum
 
 Scans cannot detect a btrfs RAID profile, so multi-device btrfs pools import as `single`. Set the real level in the planner before trusting its capacity and fault-tolerance numbers.
 
+## Unreadable folders and read-only scan access
+
+Scans run as an ordinary user, so `find` cannot open folders like `/root`, `/etc/ssl/private` or another user's home folder. Each scan records which folders it could not read. The **Access** tab lists them per host, and topology host headers show an "N unreadable" badge.
+
+To fix it without scanning as root, set up read-only scan access. The script gives the scan user private copies of `find` and `sha256sum` that carry `CAP_DAC_READ_SEARCH`, the approach restic documents for backup users. The copies live in `/usr/local/lib/storageforge`, owned by root and executable only by the `storageforge-scan` group. They can list and checksum every file. They cannot write, change ownership or run anything as root, and programs they start do not inherit the capability. Scans use the copies when they work and fall back to the plain tools otherwise.
+
+There are three ways to run the script:
+
+- **Access tab → Set up read-only access.** StorageForge runs the script once over SSH with sudo. It uses either the scan user's sudo password (connecting with its vault key) or an admin account's password. The password goes only to that one SSH session and is never stored.
+- **Run it yourself:** `storageforge-index access script --host nas-02 | ssh admin@nas-02 sudo sh`
+- **Remove it:** use the same commands with `--remove`.
+
+The script needs `setcap`, which comes in `libcap2-bin` on Debian and in `libcap` on RHEL. Inside Docker or LXC, the capability must be allowed in the container's bounding set. If it is not, the script says so and leaves nothing behind.
+
+## Moving data: plans and rsync scripts
+
+The **Moves** tab plans where data goes. Each step takes a folder on one scanned host to a folder on another, or on the same host, using one of four methods:
+
+| Method | What the script does |
+| :--- | :--- |
+| copy | rsync the folder across. The source is left alone. |
+| move | Copy, `--verify`, then `--cutover`: the source is renamed to `<name>.migrated-<date>` (never deleted). On the same host, a symlink is left at the old path. |
+| mirror | `--install` writes a systemd timer that keeps the copy in sync. It can also remove files that are gone from the source (`--delete-after`). |
+| rsnapshot | `--install` writes an rsnapshot config and timers for rotating hard-linked snapshots. |
+
+You pick folders with a browser that shows each folder's indexed size, or use **Move from here…** on a mount point in the topology. **Check** answers from the index without touching any host. It reports:
+
+- how much each step transfers and roughly how long it takes;
+- free space on each destination mount, summed across steps;
+- planned mounts that aren't mounted yet;
+- destinations that would land on the root filesystem;
+- source and destination folders that overlap;
+- folders the scan couldn't read;
+- files that are already at the destination.
+
+**Download script** writes a Bash script in the style of `storage-setup.sh`:
+
+```bash
+./plan.sh                  # report: sources, destination mounts, free space, SSH and sudo (read-only)
+./plan.sh --dry-run        # what rsync would transfer
+sudo ./plan.sh --run       # copy; resumable, safe to rerun
+sudo ./plan.sh --verify    # compare (add --checksum to read every byte)
+sudo ./plan.sh --cutover   # finish move steps after a clean verify
+sudo ./plan.sh --install   # mirror and rsnapshot timers
+./plan.sh --host rocks@10.42.0.3 --run   # run it on that machine (copies itself over, uses sudo there)
+```
+
+Each step runs on its destination host and pulls from the source over SSH, using `rsync -aHAX --numeric-ids`. A step stops if its destination mount isn't mounted, so nothing lands on the root filesystem. Every run is logged to `/var/log/storageforge/`.
+
+To read every file on the source, the script uses `sudo rsync` there. Only rsync's sending (read-only) side is needed, so allow just that:
+
+```bash
+echo 'rocks ALL=(root) NOPASSWD: /usr/bin/rsync --server --sender *' | sudo tee /etc/sudoers.d/storageforge-rsync
+```
+
+Timers run as root without your SSH agent, so for mirror and rsnapshot steps root on the destination needs its own key on the source. `--install` checks this.
+
+The CLI has the same commands: `storageforge-index moves list|check|script ID -o plan.sh|import plan.json`.
+
+## Git repositories and archives
+
+Scans still skip what is inside `.git`, but they now record the `.git` entry itself, which marks a working copy. Bare repositories are found too: a folder holding `HEAD`, `config`, `objects/` and `refs/`. After the file walk, one SSH call asks the host's git about each repository (read-only, with a 20 s timeout each). It records the branch, last commit, first commit, branch and tag count, remotes, uncommitted changes, and how far it is ahead of or behind its upstream.
+
+Repositories with the same first commit hold the same history, so copies are matched however they are named. The **Git** tab gives each repository one state:
+
+| State | Meaning |
+| :--- | :--- |
+| uncommitted | The working copy has uncommitted changes. |
+| unpushed | It has commits its upstream doesn't have. |
+| behind | Another copy has newer commits. |
+| single copy | No other scanned machine has this history. |
+| copied | Another scanned machine has this history. |
+| archived | A bare copy exists on another machine. |
+
+**Archive to…** adds a `git` step to Moves. The step keeps a `git clone --mirror` on the destination, refreshed by `--run`, or on a timer after `--install`. `--verify` checks that every branch and tag points at the same commit as the source. On the CLI: `storageforge-index git`.
+
+## Deploying NFS and SMB shares
+
+Shares you add to a host's design (topology view → **+ Export**) can be deployed. Scanned shares are only reported. Each share can list **Mount on** clients. **Deploy shares** on the host checks the design, then downloads `shares-<host>.sh`. Without `--apply` the script only reports.
+
+With `sudo ./shares-<host>.sh --apply`, it does the following on the server:
+
+- installs the NFS server or Samba if missing (apt, dnf, zypper or pacman);
+- writes its own `/etc/exports.d/storageforge.exports` and `/etc/samba/storageforge.conf`, and adds one include line to `smb.conf` (after a backup);
+- checks the config with `testparm`;
+- labels SMB folders `samba_share_t` when SELinux is enforcing;
+- opens firewalld or ufw for the listed clients;
+- starts the services;
+- reports Samba accounts that still need `smbpasswd -a`.
+
+On each client it installs the mount helper, keeps SMB credentials in a 0600 file (asking for them once), appends an fstab line with `_netdev,nofail,x-systemd.automount` after a backup, and mounts the share.
+
+NFS shares must name their clients, such as a subnet. Existing fstab lines are never changed. On the CLI: `storageforge-index shares check|script <host>`.
+
+## Cold data
+
+The **Cleanup** tab also lists folders whose newest file is older than a cutoff, 2 years by default. Each folder shows its size, and **Move…** starts a Moves step, for example to cold storage. Only the outermost cold folder is listed.
+
+## Duplicate folders
+
+The **Copies** tab and `storageforge-index folders` find folders that are likely copies, using only the index. Two folders match when they hold the same file names and sizes in the same subfolder layout. Renamed copies still match. Only the outermost copy is listed. Copies on the same host count as reclaimable space; copies across hosts are often backups. System paths, `node_modules` and similar are skipped unless you pass `--include-system`. To confirm the files are identical, run a `--checksum` scan and then `dupes`.
+
 ## Installing keys from the web UI
 
 The **Keys** tab replaces the generate → copy → `authorized_keys` → bind steps:
@@ -181,6 +285,45 @@ The **Keys** tab replaces the generate → copy → `authorized_keys` → bind s
 Host keys are trusted on first use into the same `known_hosts` that scans use. Every generate, install attempt and bind is audited with the signed-in user, and the password is never logged. Any signed-in user can do this; there are no roles yet.
 
 The host must allow password login once for `ssh-copy-id`. Afterwards you can turn `PasswordAuthentication` off.
+
+**Scanning the Docker host itself.** The container reaches other machines through the host, but connections to the host's own address arrive from the Docker network on the `sf0` bridge. A host firewall that only allows SSH from the LAN drops them, and `ssh-copy-id` or scans fail with "Connection timed out". With ufw, allow it once:
+
+```bash
+sudo ufw allow in on sf0 to any port 22 proto tcp
+```
+
+## Backups, retention and logs
+
+Every night at 03:00 (the host's local time, `STORAGEFORGE_BACKUP_HOUR`) the server writes an **essentials** backup to the `sf-backups` volume (`/app/backups`) and keeps the last 14 (`STORAGEFORGE_BACKUP_KEEP`). The same happens at start-up if the newest backup is more than a day old.
+
+An essentials backup holds what a rescan can't rebuild: the encrypted SSH keys and bindings, web users, host designs, move plans, the hosts list and the audit log. It is a few MB. The file index is left out, because the next scans rebuild it.
+
+A **full** backup is SQLite's online copy of everything, taken while the server runs. Set `STORAGEFORGE_BACKUP_FULL_KEEP=2` to also take one nightly. These are as large as the database (several GB with a big index).
+
+```bash
+docker compose exec storageforge storageforge-index backup            # essentials now
+docker compose exec storageforge storageforge-index backup --full     # everything
+docker compose exec storageforge storageforge-index backup list
+docker compose stop storageforge
+docker compose run --rm storageforge restore /app/backups/storageforge-essentials-20261027-030000.db --yes
+docker compose start storageforge
+```
+
+A restore keeps the current database beside the new one as `index.db.pre-restore-<time>`. Backups never contain the vault secret, on purpose: a backup together with its secret would be the keys. Keep `secrets/vault_secret` safe somewhere else.
+
+The backups volume lives on this machine. To keep copies elsewhere, add a Moves **mirror** step from `/var/lib/docker/volumes/storageforge_sf-backups/_data` to another host.
+
+**Retention.** After every scan, and every night, StorageForge removes:
+
+- file change history older than 90 days (the newest scan's changes always stay);
+- unreadable-folder lists from all but each host's latest scan;
+- finished scan jobs older than 90 days.
+
+Run `storageforge-index prune --vacuum` once to shrink the database file. It rewrites the whole file and locks it while doing so.
+
+**Request log.** By default (`STORAGEFORGE_ACCESS_LOG=changes`) only requests that change something, rate-limit hits and server errors are logged. Use `all` to log every request (the old behaviour), or `off`.
+
+**Scheduling.** Hosts are scanned when their last scan job is older than `STORAGEFORGE_SCAN_INTERVAL`, checked every 10 minutes, so restarting the container doesn't rescan everything. A host is always queued under its indexed hostname, whether it was named by IP, alias or hostname.
 
 ## Container files
 
