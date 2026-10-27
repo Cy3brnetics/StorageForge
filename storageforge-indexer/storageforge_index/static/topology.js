@@ -44,6 +44,7 @@ async function loadDesigns() {
   const want = S.host ? hosts.filter((h) => h.host === S.host) : hosts;
   const docs = new Map();
   if (typeof loadAccess === 'function' && !ACCESS.hosts.length) loadAccess();
+  if (typeof loadDocker === 'function' && !DK.usage.length) getJSON('/api/docker/usage').then((r) => { DK.usage = r.usage; renderTopo(); }).catch(() => {});
   await Promise.all(want.map(async (h) => {
     const keep = T.docs.get(h.host);
     if (keep && keep.dirty) { docs.set(h.host, keep); return; }      // unsaved edits survive a reload
@@ -190,6 +191,9 @@ function model(doc) {
   for (const n of nodes.values()) if (n.kind === 'mount') {
     const r = protRow(doc, n.target, false);
     n.prot = protText(r);
+    n.containers = typeof containersOn === 'function' ? containersOn(doc.host, n.target, mounts) : [];
+    const names = [...new Set(n.containers.map((u) => u.container))];
+    if (names.length) n.prot = (n.prot ? n.prot + ' · ' : '') + `${names.length} container${names.length === 1 ? '' : 's'}`;
     n.health = (S.byId.get(`mnt:${doc.host}:${n.target}`) || {}).health;
   }
   return { nodes, edges: edges.filter(([a, b]) => nodes.has(a) && nodes.has(b)) };
@@ -426,6 +430,11 @@ function renderEditor() {
           field('Last validated', entry(r.backup.last, set((v) => { r.backup.last = v || null; }), { type: 'date' })),
           field('Encryption', choice(BACKUP_ENC, r.backup.enc, set((v) => { r.backup.enc = v; })), 'grow')),
         check('Backup is offsite', r.backup.offsite, set((v) => { r.backup.offsite = v; })));
+    }
+    if (n.containers && n.containers.length) {
+      form.append(el('h3', {}, 'Containers using this mount'), el('ul', { class: 'dklist' }, ...n.containers.map((u) =>
+        el('li', {}, el('span', {}, el('b', {}, u.container), text('span', ` ${u.state}${u.stack ? ' · ' + u.stack : ''}`, 'muted')),
+          el('span', { class: 'mono small' }, `${u.path} → ${u.dest}${u.rw ? '' : ' (read-only)'}`)))));
     }
     form.append(el('div', { class: 'row' },
       button('Move from here…', () => moveFrom(doc.host, n.target), 'btn ghost sm'),

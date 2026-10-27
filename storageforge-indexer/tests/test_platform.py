@@ -250,6 +250,80 @@ class OpsTests(DBCase):
         self.assertTrue(Path(full['path']).stat().st_size > Path(ess2['path']).stat().st_size)
 
 
+class DockerTests(DBCase):
+    """Shapes from a real host: a manager in a container (Dockhand) records stack folders as it sees them."""
+    ENGINE = '\n'.join([
+        '@@engine\tdocker\tdirect', '@@root', '/home/docker/imgs', '@@containers',
+        json.dumps({'id': 'a' * 64, 'name': '/dockhand', 'image': 'dockhand', 'state': 'running', 'labels': {'x.secret': 'no'},
+                    'mounts': [{'Type': 'volume', 'Name': 'dockhand_data', 'Source': '/home/docker/imgs/volumes/dockhand_data/_data',
+                                'Destination': '/app/data', 'RW': True},
+                               {'Type': 'bind', 'Source': '/var/run/docker.sock', 'Destination': '/var/run/docker.sock', 'RW': True}]}),
+        json.dumps({'id': 'b' * 64, 'name': '/jellyfin', 'image': 'jellyfin/jellyfin', 'state': 'running',
+                    'labels': {'com.docker.compose.project': 'jellyfin',
+                               'com.docker.compose.project.working_dir': '/app/data/stacks/Local/jellyfin',
+                               'com.docker.compose.project.config_files': '/app/data/stacks/Local/jellyfin/docker-compose.yml'},
+                    'mounts': [{'Type': 'bind', 'Source': '/mnt/data01/media', 'Destination': '/media', 'RW': False},
+                               {'Type': 'volume', 'Name': 'jellyfin_cache', 'Source': '/home/docker/imgs/volumes/jellyfin_cache/_data',
+                                'Destination': '/cache', 'RW': True}]}),
+        '@@volumes',
+        json.dumps({'name': 'jellyfin_cache', 'driver': 'local', 'mountpoint': '/home/docker/imgs/volumes/jellyfin_cache/_data', 'options': None}),
+        json.dumps({'name': 'old', 'driver': 'local', 'mountpoint': '/home/docker/imgs/volumes/old/_data',
+                    'options': {'type': 'cifs', 'o': 'username=g,password=hunter2,vers=3'}}),
+        '@@sizes', json.dumps([{'Name': 'old', 'Size': '1.5GB'}, {'Name': 'jellyfin_cache', 'Size': '200MB'}]) + '@@end'])
+
+    def test_engine_compose_stacks_and_usage(self):
+        from storageforge_index import docker
+        d = docker.parse_engine(self.ENGINE.replace('@@end', '\n@@end'))
+        self.assertEqual((d['engine'], d['root_dir'], len(d['containers'])), ('docker', '/home/docker/imgs', 2))
+        self.assertEqual(d['containers'][0]['labels'], {})                              # unknown labels are not kept
+        old = next(v for v in d['volumes'] if v['name'] == 'old')
+        self.assertEqual((old['options']['o'], old['size']), ('username=g,password=***,vers=3', 1_500_000_000))
+        self.assertEqual(docker.to_host_path('/app/data/stacks/Local/jellyfin', d['containers']),
+                         '/home/docker/imgs/volumes/dockhand_data/_data/stacks/Local/jellyfin')
+        stored = docker.parse_compose('/opt/stacks/paperless/compose.yaml', """
+name: paperless
+services:
+  web:
+    image: paperless-ngx
+    environment: [PAPERLESS_SECRET_KEY=topsecret]
+    volumes: ['./data:/usr/src/paperless/data', 'media:/usr/src/paperless/media',
+              {type: bind, source: /srv/consume, target: /consume, read_only: true}, '${ROOT}/x:/x']
+volumes:
+  media: {driver: local, driver_opts: {type: nfs, o: 'addr=10.0.0.5,password=pw', device: ':/srv/media'}}
+""")
+        self.assertNotIn('topsecret', json.dumps(stored))                               # environment never kept
+        vols = stored['services'][0]['volumes']
+        self.assertEqual([(v['type'], v.get('source'), v['rw']) for v in vols],
+                         [('bind', '/opt/stacks/paperless/data', True), ('volume', 'media', True), ('bind', '/srv/consume', False),
+                          ('bind', '${ROOT}/x', True)])
+        self.assertTrue(vols[3]['unresolved'])
+        self.assertEqual(stored['volumes']['media']['options']['o'], 'addr=10.0.0.5,password=***')
+        self.assertIn('error', docker.parse_compose('/x/compose.yml', 'services: [oops'))
+        self.conn.execute("INSERT INTO hosts (hostname, inventory_json) VALUES ('tr01', '{}')")
+        hid = self.conn.scalar('SELECT host_id FROM hosts')
+        self.conn.execute("""INSERT INTO docker_hosts (host_id, engine, access, root_dir, containers_json, volumes_json, compose_json)
+                             VALUES (:h, 'docker', 'direct', :r, :c, :v, :f)""",
+                          {'h': hid, 'r': d['root_dir'], 'c': json.dumps(d['containers']), 'v': json.dumps(d['volumes']),
+                           'f': json.dumps([stored])})
+        [h] = docker.listing(self.conn)
+        st = {s['project'] or '-': s for s in h['stacks']}
+        self.assertEqual((st['jellyfin']['state'], st['jellyfin']['manager']), ('running', 'Dockhand'))
+        self.assertEqual(st['paperless']['state'], 'stored')                               # on disk, nothing deployed
+        self.assertTrue(st['-']['socket'])                                                  # dockhand holds the docker socket
+        self.assertEqual([v['name'] for v in h['unused_volumes']], ['old'])
+        users = docker.users_of(self.conn, 'tr01', '/mnt/data01/media/movies')
+        self.assertEqual([(u['container'], u['rw']) for u in users], [('jellyfin', False)])
+        self.assertEqual(docker.users_of(self.conn, 'tr01', '/mnt/elsewhere'), [])
+        # a move plan touching that folder warns about the running container
+        from storageforge_index import moves
+        self.conn.execute("INSERT INTO mounts (host_id, mount_point, filesystem_type, total_bytes, used_bytes, scan_state) "
+                          "VALUES (:h, '/', 'ext4', 100, 1, 'indexed')", {'h': hid})
+        c = moves.check(self.conn, moves.normalize({'name': 'm', 'steps': [
+            {'method': 'move', 'src': {'host': 'tr01', 'path': '/mnt/data01/media'}, 'dst': {'host': 'tr01', 'path': '/srv/media'}}]}))
+        self.assertTrue(any(i['level'] == 'warn' and 'jellyfin' in i['text'] and 'docker compose -p jellyfin stop' in i['text']
+                            for i in c['steps'][0]['items']))
+
+
 class ConnectAddressTests(DBCase):
     def test_indexed_hostname_maps_to_the_address_it_was_scanned_at(self):
         from storageforge_index.runner import connect_address
@@ -539,6 +613,9 @@ class ServerTests(DBCase):
         self.assertIn(b"C_SOURCE=(//10.0.0.5/media)", r.data)
         self.assertEqual(self.client.get('/api/folders/cold?years=1').json['folders'], [])
         self.assertEqual(self.client.get('/gitview.js').status_code, 200)
+        self.assertEqual(self.client.get('/dockerview.js').status_code, 200)
+        self.assertEqual(self.client.get('/api/docker').json, {'hosts': []})
+        self.assertEqual(self.client.get('/api/docker/usage?path=/x').status_code, 400)     # path needs host
 
     def test_planner_page_and_designs(self):
         r = self.client.get('/planner')

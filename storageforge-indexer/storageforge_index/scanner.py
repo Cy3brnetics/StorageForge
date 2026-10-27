@@ -45,6 +45,7 @@ class ScanOptions:
     batch_size: int = 20_000
     checksum: bool = False
     git: bool = True                 # read every repository the walk found through the host's git
+    docker: bool = True              # containers, volumes and compose stacks, and which folders they use
     checksum_min_size: int = 1 << 20
     nice: bool = True
     dry_run: bool = False
@@ -340,6 +341,17 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
                     log(f'  git: {g["repos"]} repositories ({g["bare"]} bare, {g["dirty"]} with uncommitted changes)')
             except Exception as exc:                      # never fail a finished scan over the git pass
                 log(f'  git survey failed: {exc}')
+        if opts.docker:
+            from .docker import survey as docker_survey
+            try:
+                d = docker_survey(db, conn, t, host_id, scan_id)
+                if d.get('engine'):
+                    log(f'  {d["engine"]} ({d["access"]}): {d["running"]}/{d["containers"]} containers running, '
+                        f'{d["volumes"]} volumes, {d["compose"]} compose files')
+                elif d.get('compose'):
+                    log(f'  {d["compose"]} compose files (no container engine reachable)')
+            except Exception as exc:                      # never fail a finished scan over the docker pass
+                log(f'  docker survey failed: {exc}')
         if opts.checksum:
             hashed = checksum_pass(db, conn, t, host_id, opts.checksum_min_size, opts.nice)
             log(f'  checksummed {hashed:,} size-collision candidates')

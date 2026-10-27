@@ -32,6 +32,8 @@ GET  /api/folders/cold?host=&years=&min_size=   folders whose newest file is old
 GET  /api/git?host=                  git repositories found by scans, with their copies and archive state
 GET  /api/shares/check?host=         the NFS/SMB shares in a host's design, checked against the index
 GET  /api/shares/script?host=        the script that deploys them on the server and mounts them on clients
+GET  /api/docker?host=               containers, compose stacks (running, stopped, stored), volumes, unused volumes
+GET  /api/docker/usage?host=&path=   containers that use a folder (bind mounts and volume data)
 GET  /api/backups                    backups on disk;  POST {"kind": "essentials"|"full"} makes one now
 GET  /api/planner/hosts             scanned hosts and saved designs
 GET  /api/planner/design?host=&source=saved|scan   a design: the saved one, or built from the latest scan
@@ -59,7 +61,7 @@ from flask_login import LoginManager, current_user, login_required, login_user, 
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import __version__, access, blueprint, canvas, folders, gitrepos, graph, keyinstall, moves, shares, users
+from . import __version__, access, blueprint, canvas, docker, folders, gitrepos, graph, keyinstall, moves, shares, users
 from .capacity import parse_size
 from .db import Database
 from .remote import RemoteError
@@ -332,7 +334,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def planner():
         return static('planner.html')
 
-    @web.get('/<any("app.js", "topology.js", "checks.js", "moves.js", "gitview.js", "style.css", "favicon.svg", "planner.js", "planner.css"):name>')
+    @web.get('/<any("app.js", "topology.js", "checks.js", "moves.js", "gitview.js", "dockerview.js", "style.css", "favicon.svg", "planner.js", "planner.css"):name>')
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
         resp.headers['Cache-Control'] = 'no-cache'
@@ -631,6 +633,21 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         core.audit(conn(), actor(), 'shares.script', 'ok', host, {})
         return Response(text, mimetype='text/x-shellscript',
                         headers={'Content-Disposition': f'attachment; filename="shares-{moves.host_slug(host)}.sh"'})
+
+    @web.get('/api/docker')
+    @login_required
+    def api_docker():
+        return jsonify(hosts=docker.listing(conn(), request.args.get('host') or None))
+
+    @web.get('/api/docker/usage')
+    @login_required
+    def api_docker_usage():
+        host, path = request.args.get('host') or None, request.args.get('path') or ''
+        if path:
+            if not host:
+                raise ValueError('give host with path')
+            return jsonify(usage=docker.users_of(conn(), host, path))
+        return jsonify(usage=docker.usage(conn(), host))
 
     @web.get('/api/backups')
     @login_required

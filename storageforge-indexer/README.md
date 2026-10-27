@@ -245,6 +245,27 @@ Repositories with the same first commit hold the same history, so copies are mat
 
 **Archive to…** adds a `git` step to Moves. The step keeps a `git clone --mirror` on the destination, refreshed by `--run`, or on a timer after `--install`. `--verify` checks that every branch and tag points at the same commit as the source. On the CLI: `storageforge-index git`.
 
+## Docker and compose stacks
+
+After the file walk, each scan asks the host's container engine what is there. It tries Docker, then Podman, either directly (the scan user is in the `docker` group) or through `sudo -n`. It records every container's name, image, state, compose labels and mounts; every volume with its size; and Docker's data directory.
+
+It then reads the compose files the index found (`docker-compose.yml`, `compose.yaml`, and so on) and keeps only services, images and volume definitions. Environment sections, `.env` files and passwords in volume options are never stored.
+
+The **Docker** tab lists each host's stacks:
+
+| State | Meaning |
+| :--- | :--- |
+| running | Every container in the stack is running. |
+| partly running | Some of its containers are running. |
+| stopped | Its containers exist but none is running. |
+| stored | A compose file on disk that nothing was deployed from. |
+
+Each stack shows its containers and the host folders and volumes they use. The tab also lists unused volumes with their sizes, and flags containers that mount the Docker socket (that gives root-equivalent control of the host).
+
+Managers that run in a container record each stack's folder as they see it from inside their own container. Dockhand records `/app/data/stacks/…`, for example. Those paths are translated to host paths through the manager's own mounts, so stacks from Dockhand, Portainer, Komodo and Dockge point at their real folders.
+
+**Which containers use a folder?** answers from the index, and mount boxes in the topology show how many containers use them. A Moves step whose source or destination is used by a running container gets a warning naming the stacks to stop first. On the CLI: `storageforge-index docker [--host H] [--path P]`.
+
 ## Deploying NFS and SMB shares
 
 Shares you add to a host's design (topology view → **+ Export**) can be deployed. Scanned shares are only reported. Each share can list **Mount on** clients. **Deploy shares** on the host checks the design, then downloads `shares-<host>.sh`. Without `--apply` the script only reports.

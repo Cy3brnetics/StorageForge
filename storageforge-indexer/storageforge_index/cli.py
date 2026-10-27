@@ -281,6 +281,25 @@ def cmd_shares(args) -> int:
     return 0
 
 
+def cmd_docker(args) -> int:
+    from . import docker
+    _, conn = open_db(args)
+    if args.path:
+        if not args.host:
+            raise SystemExit('give --host with --path')
+        for u in docker.users_of(conn, args.host, args.path):
+            print(f'{u["state"]:<8} {u["container"]:<28} {u["path"]} -> {u["dest"]} ({"rw" if u["rw"] else "ro"})'
+                  + (f'  [stack {u["stack"]}]' if u['stack'] else ''))
+        return 0
+    for h in docker.listing(conn, args.host):
+        print(f'{h["host"]}: {h["engine"] or "no engine"} ({h["access"]}) · {h["running"]}/{h["containers"]} running · '
+              f'{len(h["volumes"])} volumes, {len(h["unused_volumes"])} unused')
+        for s in h['stacks']:
+            print(f'  {s["state"]:<15} {s["project"] or "(standalone)":<22} {s["manager"]:<9} {s["running"]}/{len(s["containers"])}'
+                  + (f'  {s["dir"]}' if s['dir'] else '') + ('  [docker socket]' if s['socket'] else ''))
+    return 0
+
+
 def cmd_backup(args) -> int:
     from . import backup
     db = Database(args.db)
@@ -737,6 +756,11 @@ def build_parser() -> argparse.ArgumentParser:
     s2 = shs.add_parser('script', help='write the deploy script (server + client mounts)')
     s2.add_argument('host'); s2.add_argument('-o', '--output')
     sh.set_defaults(fn=cmd_shares)
+
+    dk = sub.add_parser('docker', help='containers, compose stacks and the folders they use')
+    dk.add_argument('--host')
+    dk.add_argument('--path', help='which containers use this folder (needs --host)')
+    dk.set_defaults(fn=cmd_docker)
 
     bk = sub.add_parser('backup', help='database backups (essentials by default: keys, bindings, users, designs, plans, audit)')
     bks = bk.add_subparsers(dest='backup_cmd')

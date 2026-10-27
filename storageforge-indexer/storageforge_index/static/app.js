@@ -405,6 +405,7 @@ function showTab(name) {
   if (name === 'copies') loadCopies();
   if (name === 'moves') loadMoves();
   if (name === 'git') loadGit();
+  if (name === 'docker') loadDocker();
 }
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
 

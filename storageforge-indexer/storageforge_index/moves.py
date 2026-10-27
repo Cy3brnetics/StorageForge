@@ -290,6 +290,17 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
             say('note', f'runs on {dh["name"]} and pulls from {login} over SSH'
                         + (' (git reads the repository as that user)' if s['method'] == 'git'
                            else ' with sudo rsync there' if s['options']['remote_sudo'] else ''))
+        from .docker import users_of
+        for side, h0, p0 in (('source', sh, src), ('destination', dh, dst)):
+            users = [u for u in users_of(conn, h0['name'], p0) if u['state'] == 'running']
+            if users:
+                names = sorted({u['container'] for u in users})
+                stacks = sorted({u['stack'] for u in users if u['stack']})
+                say('warn' if s['method'] in ('move', 'copy') else 'note',
+                    f'{len(names)} running container(s) use the {side}: {", ".join(names[:6])}{" …" if len(names) > 6 else ""}. '
+                    + ('Stop them first (' + ', '.join(f'docker compose -p {x} stop' for x in stacks[:3]) + ')' if stacks
+                       else 'Stop them first') + ', or files can change while rsync copies' + (' and the cutover breaks them'
+                                                                                               if s['method'] == 'move' and side == 'source' else ''))
         if s['method'] == 'move':
             moved_away.append((sh['name'], src))
         out.append({**info, 'items': items})

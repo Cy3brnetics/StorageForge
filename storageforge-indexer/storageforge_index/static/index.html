@@ -56,6 +56,7 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <button type="button" role="tab" data-tab="copies">Cleanup</button>
       <button type="button" role="tab" data-tab="moves">Moves</button>
       <button type="button" role="tab" data-tab="git">Git</button>
+      <button type="button" role="tab" data-tab="docker">Docker</button>
       <button type="button" role="tab" data-tab="keys">Keys</button>
       <button type="button" role="tab" data-tab="audit">Audit</button>
     </nav>
@@ -122,6 +123,10 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <p class="muted">Every git repository the scans found. Copies are matched by their first commit, so a bare archive on another machine counts whatever it is called.</p>
       <div id="gitbox" class="stack"></div>
     </div>
+    <div id="tab-docker" class="tab" hidden>
+      <p class="muted">Containers and compose stacks on each host, the folders they use, and stacks stored on disk that are not deployed. Stacks run by a manager in a container (Dockhand, Portainer, Komodo) are traced to their real folders.</p>
+      <div id="dockerbox" class="stack"></div>
+    </div>
     <div id="tab-audit" class="tab" hidden>
       <div class="row"><button id="verify" type="button" class="btn">Verify chain</button><span id="verified" class="muted"></span></div>
       <ol id="audit" class="list"></ol>
@@ -144,5 +149,6 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/checks.js"></script>
 <script src="/moves.js"></script>
 <script src="/gitview.js"></script>
+<script src="/dockerview.js"></script>
 </body>
 </html>

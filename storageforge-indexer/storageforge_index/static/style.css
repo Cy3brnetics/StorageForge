@@ -231,3 +231,9 @@ path.edge.share.lit { stroke: var(--accent); stroke-width: 2.4; opacity: 1; }
 .mounton { display: flex; flex-direction: column; gap: 4px; }
 .mounton .row { flex-wrap: nowrap; } .mounton select { max-width: 45%; }
 .badge.share.deploy { cursor: pointer; border: 1px solid var(--remote); }
+/* docker tab (dockerview.js) */
+.dklist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.dklist li { display: flex; flex-direction: column; gap: 1px; padding-left: 8px; border-left: 2px solid var(--line-2); }
+.dkstack summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.dkstack[open] summary { margin-bottom: 4px; }
+.dkhost > .row { justify-content: space-between; }

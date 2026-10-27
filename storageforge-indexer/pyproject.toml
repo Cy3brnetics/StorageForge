@@ -7,7 +7,7 @@ name = "storageforge-indexer"
 version = "0.2.0"
 description = "Agentless SSH file indexer, cross-host file search and storage architecture reports"
 requires-python = ">=3.10"
-dependencies = ["cryptography>=44", "flask>=3.1", "flask-login>=0.6.3", "flask-limiter>=3.8", "waitress>=3.0"]
+dependencies = ["cryptography>=44", "flask>=3.1", "flask-login>=0.6.3", "flask-limiter>=3.8", "pyyaml>=6", "waitress>=3.0"]
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.1"]
