@@ -39,8 +39,9 @@ fi
 [ -d "$DATA" ] && [ -w "$DATA" ] || die "$DATA must be a volume writable by uid $(id -u)"
 [ "$(stat -c %u "$DATA")" = "$(id -u)" ] || die "$DATA is owned by uid $(stat -c %u "$DATA"); expected $(id -u)"
 chmod 0700 "$DATA"
-mkdir -p "$DATA/home" "$DATA/ssh"
-chmod 0700 "$DATA/home" "$DATA/ssh"
+# SQLite sorts big scan diffs in temp files; the 64 MiB /tmp tmpfs is far too small for millions of rows
+mkdir -p "$DATA/home" "$DATA/ssh" "$DATA/tmp"
+chmod 0700 "$DATA/home" "$DATA/ssh" "$DATA/tmp"
 for f in "$DATA"/index.db "$DATA"/index.db-wal "$DATA"/index.db-shm "$DATA"/ssh/known_hosts; do
   [ -e "$f" ] && chmod 0600 "$f"
 done

@@ -36,7 +36,7 @@ RUN apt-get update \
  && groupadd --system --gid 10001 storageforge \
  && useradd --system --uid 10001 --gid storageforge --home-dir /app/data/home --no-create-home \
             --shell /usr/sbin/nologin storageforge \
- && install -d -o 10001 -g 10001 -m 0700 /app /app/data /run/storageforge \
+ && install -d -o 10001 -g 10001 -m 0700 /app /app/data /app/backups /run/storageforge \
  && rm -f /usr/bin/ssh-keyscan /usr/bin/scp /usr/bin/sftp
 COPY --from=build /opt/venv /opt/venv
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/storageforge-entrypoint
@@ -45,6 +45,8 @@ ENV PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin \
     HOME=/app/data/home \
     STORAGEFORGE_DB=/app/data/index.db \
     STORAGEFORGE_DATA_DIR=/app/data \
+    SQLITE_TMPDIR=/app/data/tmp \
+    STORAGEFORGE_BACKUP_DIR=/app/backups \
     STORAGEFORGE_RUNTIME_DIR=/run/storageforge \
     STORAGEFORGE_LISTEN=0.0.0.0 \
     STORAGEFORGE_PORT=8080

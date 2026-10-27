@@ -23,17 +23,25 @@ services:
       STORAGEFORGE_COOKIE_SECURE: ${STORAGEFORGE_COOKIE_SECURE:-0}   # set 1 once a TLS proxy is in front
       STORAGEFORGE_PROXY_HOPS: ${STORAGEFORGE_PROXY_HOPS:-0}         # set 1 behind one reverse proxy (real client IP)
       STORAGEFORGE_SCAN_INTERVAL: ${STORAGEFORGE_SCAN_INTERVAL:-6h}
+      STORAGEFORGE_BACKUP_HOUR: ${STORAGEFORGE_BACKUP_HOUR:-3}            # nightly essentials backup + prune (local hour)
+      STORAGEFORGE_BACKUP_KEEP: ${STORAGEFORGE_BACKUP_KEEP:-14}
+      STORAGEFORGE_BACKUP_FULL_KEEP: ${STORAGEFORGE_BACKUP_FULL_KEEP:-0}  # >0: also a full copy nightly (large)
+      STORAGEFORGE_ACCESS_LOG: ${STORAGEFORGE_ACCESS_LOG:-changes}        # all | changes | off
     secrets:
       - vault_secret
       - session_secret
     volumes:
       - sf-data:/app/data
+      # Backups in their own volume. Copy them off this machine (e.g. a Moves mirror step to another host).
+      - sf-backups:/app/backups
+      - /etc/localtime:/etc/localtime:ro   # nightly jobs run at the host's local time
       # Optional one-shot key import (file name = key name). Read-only.
       - ${STORAGEFORGE_KEY_IMPORT_DIR:-./keys}:/run/secrets/ssh-import:ro
     tmpfs:
       # Ephemeral ssh-agent sockets live here; never on disk.
       - /run/storageforge:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10001,gid=10001
       - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    networks: [sf]
     ports:
       - "127.0.0.1:${STORAGEFORGE_HTTP_PORT:-8080}:8080"   # loopback only; put a TLS reverse proxy in front
     ulimits:
@@ -41,7 +49,7 @@ services:
       memlock: { soft: 16777216, hard: 16777216 }       # lets the vault mlock() decrypted key buffers
     deploy:
       resources:
-        limits: { cpus: "2.0", memory: 1g, pids: 256 }
+        limits: { cpus: "2.0", memory: 2g, pids: 256 }   # 1g was hit constantly with a 6M-file index
         reservations: { cpus: "0.25", memory: 256m }
     healthcheck:
       test: ["CMD", "storageforge-index", "healthcheck"]
@@ -61,3 +69,11 @@ secrets:
 
 volumes:
   sf-data:
+  sf-backups:
+
+networks:
+  sf:
+    driver_opts:
+      # A fixed bridge name, so a host firewall can allow SSH from this container to the Docker host itself:
+      #   sudo ufw allow in on sf0 to any port 22 proto tcp
+      com.docker.network.bridge.name: sf0
