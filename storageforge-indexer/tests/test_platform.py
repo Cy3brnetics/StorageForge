@@ -211,7 +211,8 @@ class BlueprintTests(DBCase):
         self.assertEqual(out['devices'][0]['tier'], 'remote')
         self.assertEqual(next(r for r in out['protection'] if r['node'] == 'ds:tank/media')['backup']['target'], 'restic → B2')
         self.assertIn('ds:gone/x', {r['node'] for r in out['protection']})
-        self.assertEqual(out['exports'], saved['exports'])
+        self.assertEqual([{k: v for k, v in e.items() if k not in ('designed', 'fromScan')} for e in out['exports']], saved['exports'])
+        self.assertTrue(all(e['designed'] and not e['fromScan'] for e in out['exports']))     # designed, not deployed yet
         self.assertIn('/srv/planned', {l['path'] for l in out['links']})
         self.assertEqual(out['metadata']['source'], 'scan+design')
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from .analysis import (MOUNTABLE_FS, boot_stages, use_pct, capacity_summary, containing_mount, findings, link_health,
+from .analysis import (boot_stages, use_pct, capacity_summary, containing_mount, findings, link_health,
                        local_disks, protection_status, real_mounts)
 from .capacity import fmt_bin, fmt_dec, power_budget
 
@@ -271,7 +271,9 @@ def render_report(nodes: list[dict], title: str | None = None, as_of: dt.date | 
             s = n.get('index_symlinks')
             if s:
                 L += ['', f'Index check on `{n["hostname"]}`: {s["checked"]:,} symlinks examined, {s["reported"]:,} listed '
-                      f'(broken, looping or crossing a mount boundary){"; symlink scan capped" if s["capped"] else ""}.']
+                      f'(broken, looping or crossing a mount boundary)'
+                      + (f'; {s["system"]:,} OS-managed links skipped' if s.get('system') else '') +
+                      f'{"; symlink scan capped" if s["capped"] else ""}.']
     L += ['', '### 3.1 Boot sequence and ordering dependencies', '',
           'Each stage mounts only after every mount it depends on. Bind mounts carry '
           '`x-systemd.requires-mounts-for=<source>`; network mounts wait for `network-online.target`.', '']

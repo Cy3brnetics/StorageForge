@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 
-from .payloads import node_from_index
+from .payloads import merge_shares, node_from_index
 
 MIB = 1 << 20
 REMOTE_PROTO = {'nfs': 'NFSv3', 'nfs4': 'NFSv4.2', 'cifs': 'SMB3', 'smb3': 'SMB3', 'smbfs': 'SMB3', 'sshfs': 'SFTP',
@@ -29,7 +29,7 @@ def _level(pool: dict) -> str:
     lvl = (pool.get('level') or '').split('+')[0]
     if pool['type'] == 'zfs':
         return lvl if lvl in ZFS_LEVELS else 'stripe'
-    if pool['type'] == 'mdadm':
+    if pool['type'] in ('mdadm', 'lvm'):
         return lvl if lvl in MD_LEVELS else 'linear'
     return lvl if lvl in ('single', 'raid1', 'raid1c3', 'raid10') else 'single'
 
@@ -83,7 +83,7 @@ def from_node(node: dict, as_of: dt.date | None = None) -> dict:
             name = ds['name'].split('/', 1)[1] if '/' in ds['name'] else ds['name']
             datasets.append({'name': name, 'mount': ds.get('mount'), **(ds.get('props') or {})})
             protect(f'ds:{p["name"]}/{name}', ds['name'], ds.get('mount'))
-        ptype = p['type'] if p['type'] in ('zfs', 'mdadm', 'btrfs') else 'mdadm'
+        ptype = p['type'] if p['type'] in ('zfs', 'mdadm', 'btrfs', 'lvm') else 'mdadm'
         # a multi-device btrfs mounted by subvolume: the subvolumes (on its first member) are the mounts
         has_subvols = ptype == 'btrfs' and any(x['subvolumes'] for d in devices for x in d['partitions']
                                                  if x['id'] in (p.get('members') or []))
@@ -91,7 +91,9 @@ def from_node(node: dict, as_of: dt.date | None = None) -> dict:
         pools.append({'name': p['name'], 'type': ptype, 'level': _level(p), 'tier': p.get('tier'),
                       'ashift': p.get('ashift') or 12, 'fs': p.get('fs'), 'mount': mount,
                       'encryption': p.get('encryption'), 'members': p.get('members') or [],
-                      'log': p.get('log') or [], 'cache': p.get('cache') or [], 'datasets': datasets})
+                      'usableBytes': round((p.get('cap') or {}).get('usable') or 0) or None,
+                      'log': p.get('log') or [], 'cache': p.get('cache') or [], 'datasets': datasets,
+                      **({'vg': p['vg'], 'lv': p.get('lv'), 'levelSource': p.get('level_source')} if ptype == 'lvm' else {})})
         if ptype != 'zfs':
             protect(f'pool:{p["name"]}', p['name'], mount)
 
@@ -109,7 +111,8 @@ def from_node(node: dict, as_of: dt.date | None = None) -> dict:
     return {'apiVersion': 'storageforge/v1', 'kind': 'StorageBlueprint',
             'metadata': {'host': node['hostname'], 'generated': (as_of or dt.date.today()).isoformat(),
                          'identifiers': 'UUID', 'source': 'scan', 'os': node.get('os'), 'ip': node.get('ip')},
-            'devices': devices, 'pools': pools, 'remotes': remotes, 'links': links, 'exports': [],
+            'devices': devices, 'pools': pools, 'remotes': remotes, 'links': links,
+            'exports': [dict(e) for e in node.get('exports') or [] if e.get('fromScan')],   # shares the scan found
             'protection': protection}
 
 
@@ -135,7 +138,7 @@ def merge_intent(scanned: dict, saved: dict | None) -> dict:
     out['remotes'] = out['remotes'] + [r for r in saved.get('remotes') or [] if r.get('mount') not in have]
     paths = {l['path'] for l in out['links']}
     out['links'] = out['links'] + [l for l in saved.get('links') or [] if not l.get('fromScan') and l.get('path') not in paths]
-    out['exports'] = saved.get('exports') or []
+    out['exports'] = merge_shares(out['exports'], saved.get('exports'))
     rows = {r.get('node') or r.get('dataset'): r for r in saved.get('protection') or []}
     out['protection'] = [rows.pop(r['node'], None) or rows.pop(r['dataset'], None) or r for r in out['protection']]
     out['protection'] += list(rows.values())          # rows for things the scan did not see stay, flagged by the planner

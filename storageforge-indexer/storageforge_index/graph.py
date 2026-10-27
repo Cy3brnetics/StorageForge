@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import posixpath
 import re
 import time
 
@@ -79,8 +80,13 @@ def build(node: dict, as_of: dt.date | None = None) -> tuple[dict, list]:
 
     externals: dict[str, str] = {}
 
+    peers = node.get('peers') or {}          # ip or name → hostname of another scanned host
+
     def external(name, status=None, **props):
         key = name.lower()
+        peer = peers.get(key)
+        if peer and peer != h:                # an NFS/SMB server we also scan: point at its real Host node
+            return add(f'host:{peer}', 'Host', peer, host=peer)['id']
         for known, nid in externals.items():
             if known == key or known.startswith(key + '.') or key.startswith(known + '.'):
                 return nid
@@ -89,6 +95,32 @@ def build(node: dict, as_of: dt.date | None = None) -> tuple[dict, list]:
             external=True, **props)
         externals[key] = nid
         return nid
+
+    peer_mounts, peer_shares = node.get('peer_mounts') or {}, node.get('peer_shares') or {}
+
+    def share_source(src: str):
+        """'10.42.0.10:/srv/media/tv' or '//nas/media/tv' → the server's mount point node holding that folder."""
+        peer = peers.get(_remote_host(src).lower())
+        if not peer or peer == h or not peer_mounts.get(peer):
+            return None
+        shares = peer_shares.get(peer) or []
+        if src.startswith('//'):
+            name, _, sub = src[2:].partition('/')[2].partition('/')
+            share = next((x for x in shares if x['protocol'] == 'SMB' and x['name'].lower() == name.lower()), None)
+            if not share:
+                return None
+            path = posixpath.join(share['path'], sub) if sub else share['path']
+            label = f'SMB [{share["name"]}] {share["path"]}'
+        else:
+            path = src.partition(':')[2] or '/'
+            share = max((x for x in shares if x['protocol'] == 'NFS' and is_under(path, x['path'])),
+                        key=lambda x: len(x['path']), default=None)
+            label = f'NFS {share["path"]}' if share else f'NFS {path}'
+        target = max((m for m in peer_mounts[peer] if is_under(path, m)), key=len, default=None)
+        if not target:
+            return None
+        smid = add(f'mnt:{peer}:{target}', 'MountPoint', target, host=peer)['id']   # stub: the server's build owns it
+        return smid, {'share': label, 'server': peer, 'path': path}
 
     for r in node['remotes']:
         if r.get('endpoint'):
@@ -107,15 +139,18 @@ def build(node: dict, as_of: dt.date | None = None) -> tuple[dict, list]:
         return 'unknown'
 
     pools = {p['name']: p for p in node['pools']}
+    pool_dev = {a: p['name'] for p in node['pools'] for a in (p['name'], *p.get('aliases', ()))}   # LVM: mapper/vg-lv
     member_pool = {m: p['name'] for p in node['pools'] for m in p['members']}
     for p in node['pools']:
         c = p.get('cap') or {}
         failed = p.get('health') not in (None, 'ONLINE')
-        add(f'pool:{h}:{p["name"]}', 'StoragePool', p['name'], 'broken' if failed else 'unknown',
+        add(f'pool:{h}:{p["name"]}', 'StoragePool', f'{p["vg"]}/{p["lv"]}' if p.get('lv') else p['name'], 'broken' if failed else 'unknown',
             type=p['type'], level=p.get('level'), layout=c.get('layout'), usable_bytes=c.get('usable'),
             raw_bytes=c.get('raw'), tolerance=c.get('tolerance'), members=p['members'], log=p.get('log'),
             cache=p.get('cache'), state=p.get('health'), scan=p.get('scan'), device_errors=p.get('device_errors'),
-            encryption=p.get('encryption'))
+            encryption=p.get('encryption'), volume=f'{p["vg"]}/{p["lv"]}' if p.get('lv') else None,
+            volumes=[ds['name'] for ds in p['datasets']] if p['type'] == 'lvm' and not p.get('lv') else None,
+            level_source=p.get('level_source'))
         edge(host_id, f'pool:{h}:{p["name"]}', 'CONTAINS')
 
     fs_of_mount: dict[str, str] = {}
@@ -131,8 +166,8 @@ def build(node: dict, as_of: dt.date | None = None) -> tuple[dict, list]:
             parent = external(_remote_host(src))
         elif kind == 'zfs' and src.split('/')[0] in pools:
             parent = f'pool:{h}:{src.split("/")[0]}'
-        elif src.removeprefix('/dev/') in pools:
-            parent = f'pool:{h}:{src.removeprefix("/dev/")}'
+        elif src.removeprefix('/dev/') in pool_dev:
+            parent = f'pool:{h}:{pool_dev[src.removeprefix("/dev/")]}'
         elif src.removeprefix('/dev/') in member_pool:
             parent = f'pool:{h}:{member_pool[src.removeprefix("/dev/")]}'
         else:
@@ -148,6 +183,11 @@ def build(node: dict, as_of: dt.date | None = None) -> tuple[dict, list]:
             spec=m.get('spec'), tier=m.get('tier'))
         N[fid]['health'] = worst(N[fid]['health'], health)
         edge(fid, mid, 'MOUNTED_AT', subvol=sub)
+        if kind == 'remote':                  # an NFS/SMB mount from a host we also scan: line from its real folder
+            src_mount = share_source(src)
+            if src_mount:
+                smid, props = src_mount
+                edge(smid, mid, 'MOUNTED_AT', remote=True, **props)
         fs_of_mount[m['target']] = fid
 
     for m in mounts:
@@ -165,14 +205,14 @@ def build(node: dict, as_of: dt.date | None = None) -> tuple[dict, list]:
     file_links = [l for l in node['links'] if l['kind'] in ('symlink', 'hardlink')]
     link_paths = {l['path'] for l in file_links}
     for l in file_links:                                     # all nodes first, so chained links can point at each other
-        tm = containing_mount(resolve(l['path'], l['target']), mounts)
+        tm = containing_mount(l.get('resolved') or resolve(l['path'], l['target']), mounts)
         tmid = f'mnt:{h}:{tm["target"]}' if tm else None
         health = {'crit': 'broken', 'warn': 'local-only'}.get(l.get('state')) or (N.get(tmid, {}).get('health', 'unknown'))
         add(f'link:{h}:{l["path"]}', 'Symlink', l['path'], health, target=l['target'], link_kind=l['kind'], note=l.get('note'))
     for l in file_links:
         lid = f'link:{h}:{l["path"]}'
         target_abs = resolve(l['path'], l['target'])
-        tm = containing_mount(target_abs, mounts)
+        tm = containing_mount(l.get('resolved') or target_abs, mounts)
         tmid = f'mnt:{h}:{tm["target"]}' if tm else None
         if target_abs in link_paths:
             edge(lid, f'link:{h}:{target_abs}', 'SYMLINK_TO', target=l['target'])
@@ -195,6 +235,12 @@ def build(node: dict, as_of: dt.date | None = None) -> tuple[dict, list]:
                  offsite=bk.get('offsite'), validated=bk.get('last'), encryption=bk.get('enc'),
                  health='broken' if age is None or age > 90 else 'local-only' if age > 30 or not bk.get('offsite') else 'protected')
 
+    scanned_shares = [f'{e["protocol"]} {e["name"] if e["protocol"] == "SMB" else e["path"]}' for e in node.get('exports') or []
+                      if e.get('fromScan')]
+    if scanned_shares:
+        N[host_id]['props']['shares'] = scanned_shares
+        N[host_id]['props']['serves'] = ' + '.join(sorted({s.split()[0] for s in scanned_shares}))
+
     # roll health up: pools from their filesystems, the host from everything it holds
     for p in node['pools']:
         pid = f'pool:{h}:{p["name"]}'
@@ -213,18 +259,29 @@ def build(node: dict, as_of: dt.date | None = None) -> tuple[dict, list]:
 def save(db, conn, hostname: str, nodes: dict, edges: list):
     now = int(time.time())
     with conn.tx():
-        conn.execute('DELETE FROM graph_nodes WHERE host = :h', {'h': hostname})
+        # Replace the edges this build made, then its stale nodes. Nodes are updated in place, never deleted and
+        # re-added: other hosts' edges point at them (an NFS client's mount at this server's folder, a backup at
+        # this Host) and the cascade would drop those. Edges from before built_by existed fall back to the old rule.
+        conn.execute("""DELETE FROM graph_edges WHERE built_by = :h OR (built_by IS NULL AND (
+                            src IN (SELECT node_id FROM graph_nodes WHERE host = :h AND kind <> 'Host')
+                            OR dst IN (SELECT node_id FROM graph_nodes WHERE host = :h AND kind <> 'Host')))""", {'h': hostname})
+        keep = [n['id'] for n in nodes.values() if n['host'] == hostname]
+        for stale in {r[0] for r in conn.all('SELECT node_id FROM graph_nodes WHERE host = :h', {'h': hostname})} - set(keep):
+            conn.execute('DELETE FROM graph_nodes WHERE node_id = :id', {'id': stale})
         for n in nodes.values():
+            if n['host'] not in (None, hostname):      # another scanned host's node: its own build owns it
+                continue
             conn.execute("""INSERT INTO graph_nodes (node_id, kind, label, host, health, props_json, updated_at)
                             VALUES (:id, :k, :l, :h, :he, :p, :now)
-                            ON CONFLICT (node_id) DO UPDATE SET label = excluded.label, health = excluded.health,
+                            ON CONFLICT (node_id) DO UPDATE SET kind = excluded.kind, label = excluded.label, host = excluded.host,
+                                health = excluded.health,
                                 props_json = excluded.props_json, updated_at = excluded.updated_at""",
                          {'id': n['id'], 'k': n['kind'], 'l': n['label'], 'h': n['host'], 'he': n['health'],
                           'p': json.dumps(n['props'], default=str), 'now': now})
         for e in edges:
-            conn.execute("""INSERT INTO graph_edges (src, dst, rel, props_json) VALUES (:s, :d, :r, :p)
-                            ON CONFLICT (src, dst, rel) DO UPDATE SET props_json = excluded.props_json""",
-                         {'s': e['src'], 'd': e['dst'], 'r': e['rel'], 'p': json.dumps(e['props'], default=str)})
+            conn.execute("""INSERT INTO graph_edges (src, dst, rel, props_json, built_by) VALUES (:s, :d, :r, :p, :h)
+                            ON CONFLICT (src, dst, rel) DO UPDATE SET props_json = excluded.props_json, built_by = excluded.built_by""",
+                         {'s': e['src'], 'd': e['dst'], 'r': e['rel'], 'p': json.dumps(e['props'], default=str), 'h': hostname})
         conn.execute("""DELETE FROM graph_nodes WHERE host IS NULL AND node_id NOT IN
                         (SELECT src FROM graph_edges UNION SELECT dst FROM graph_edges)""")
 
@@ -258,13 +315,28 @@ def store_blueprint(conn, bp: dict) -> str:
     return host
 
 
-def rebuild_host(db, conn, hostname: str) -> tuple[int, int]:
+def rebuild_host(db, conn, hostname: str, rebuild_clients: bool = True) -> tuple[int, int]:
     """Rebuild one scanned host's graph from the index, overlaid with its stored blueprint."""
-    from .payloads import merge_blueprint, node_from_blueprint, node_from_index
+    from .payloads import merge_blueprint, node_from_blueprint, node_from_index, shares_from_inventory
     node = node_from_index(conn, hostname)
+    node['peers'] = {k.lower(): name for name, ip in conn.all('SELECT hostname, ip_address FROM hosts')
+                     for k in (name, name.split('.')[0], ip) if k}
+    node['peer_mounts'] = {}                  # other hosts' mount points already in the graph: share targets
+    for host, label in conn.all("SELECT host, label FROM graph_nodes WHERE kind = 'MountPoint' AND host IS NOT NULL"):
+        node['peer_mounts'].setdefault(host, []).append(label)
+    node['peer_shares'] = {}
+    for host, inv in conn.all('SELECT hostname, inventory_json FROM hosts'):
+        inv = inv if isinstance(inv, dict) else json.loads(inv or '{}')
+        node['peer_shares'][host] = shares_from_inventory(inv or {})
     bp = stored_blueprint(conn, hostname)
     if bp:
         merge_blueprint(node, node_from_blueprint(bp))
     nodes, edges = build(node)
     save(db, conn, node['hostname'], nodes, edges)
+    if rebuild_clients:   # hosts that mount from this one draw their line to its folders: redraw them too
+        clients = {r[0] for r in conn.all("""SELECT DISTINCT n.host FROM graph_edges e JOIN graph_nodes n ON n.node_id = e.dst
+                                             WHERE e.src = :h AND n.host IS NOT NULL AND n.host <> :name""",
+                                          {'h': f'host:{node["hostname"]}', 'name': node['hostname']})}
+        for c in sorted(clients):
+            rebuild_host(db, conn, c, rebuild_clients=False)
     return len(nodes), len(edges)
