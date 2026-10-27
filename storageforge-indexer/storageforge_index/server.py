@@ -19,6 +19,20 @@ GET  /api/keys                      vault keys (public halves) and host bindings
 POST /api/keys  {"name", "type"}     generate a key inside the vault
 POST /api/keys/install  {"key", "host", "user", "port", "password", "bind"}
                                     ssh-copy-id the public key, then optionally bind it for scans
+GET  /api/access?host=               per host: how scans read the disks, and folders they could not open
+GET  /api/access/script?host=&remove=1   the read-only scan access setup (or removal) script, to run as root
+POST /api/access/grant  {"host", "password", "admin_user", "remove"}   run that script once over SSH with sudo
+GET  /api/folders/duplicates?host=&min_files=&min_size=   folders that are copies by name and structure
+GET  /api/browse?host=&path=         subfolders of a path with their indexed sizes (for picking move sources)
+GET  /api/moves                      saved move plans;  POST creates one from {"name", "steps": [...]}
+GET|PUT|DELETE /api/moves/<id>       one plan
+POST /api/moves/check                check a plan (saved or not) against the index: sizes, space, mounts, loops
+GET  /api/moves/<id>/script          the Bash script that runs the plan (copy, verify, cutover, install)
+GET  /api/folders/cold?host=&years=&min_size=   folders whose newest file is older than the cutoff
+GET  /api/git?host=                  git repositories found by scans, with their copies and archive state
+GET  /api/shares/check?host=         the NFS/SMB shares in a host's design, checked against the index
+GET  /api/shares/script?host=        the script that deploys them on the server and mounts them on clients
+GET  /api/backups                    backups on disk;  POST {"kind": "essentials"|"full"} makes one now
 GET  /api/planner/hosts             scanned hosts and saved designs
 GET  /api/planner/design?host=&source=saved|scan   a design: the saved one, or built from the latest scan
 PUT  /api/planner/design            save a storageforge/v1 blueprint (overlaid on the graph and reports)
@@ -30,6 +44,7 @@ import os
 import queue
 import re
 import secrets
+import subprocess
 import sys
 import threading
 import time
@@ -44,10 +59,11 @@ from flask_login import LoginManager, current_user, login_required, login_user, 
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import __version__, blueprint, canvas, graph, keyinstall, users
+from . import __version__, access, blueprint, canvas, folders, gitrepos, graph, keyinstall, moves, shares, users
 from .capacity import parse_size
 from .db import Database
-from .runner import scan_via_vault
+from .remote import RemoteError
+from .runner import connect_address, scan_via_vault
 from .scanner import ScanOptions
 from .search import SearchQuery, run_search
 from .vault import AuditLog, SecretBuffer, Vault, VaultError, fingerprint
@@ -62,6 +78,12 @@ SECURITY_HEADERS = {
     'Cross-Origin-Opener-Policy': 'same-origin', 'Cache-Control': 'no-store',
 }
 MAX_BODY = 4096
+# all: every request · changes (default): requests that change something, rate-limit hits and server errors · off
+ACCESS_LOG = os.environ.get('STORAGEFORGE_ACCESS_LOG', 'changes').lower()
+BACKUP_HOUR = int(os.environ.get('STORAGEFORGE_BACKUP_HOUR', '3'))          # local hour for the nightly backup and prune
+BACKUP_KEEP = int(os.environ.get('STORAGEFORGE_BACKUP_KEEP', '14'))         # essentials backups kept
+BACKUP_FULL = int(os.environ.get('STORAGEFORGE_BACKUP_FULL_KEEP', '0'))     # full backups kept nightly (0: on demand only)
+SCHEDULE_TICK = 600               # the scheduler looks for due hosts this often (seconds)
 MAX_BLUEPRINT = 2 << 20           # planner designs are the one large body we accept
 # Failed sign-ins allowed before /api/login answers 429; successful ones are not counted.
 LOGIN_LIMIT_PER_IP = '10 per minute; 50 per hour'
@@ -109,10 +131,20 @@ class App:
             conn.close()
         if scan_interval:
             threading.Thread(target=self._schedule, args=(scan_interval,), name='scheduler', daemon=True).start()
+        threading.Thread(target=self._nightly, name='nightly', daemon=True).start()
+
+    @staticmethod
+    def canonical(conn, host: str) -> str:
+        """One name per machine: a binding's IP, an ssh alias and the hostname all queue as the indexed hostname, so
+        the scheduler and "Scan now" can't start two scans of one host under different names."""
+        row = conn.all("""SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR ip_address = :h OR ssh_host = :h
+                          ORDER BY last_scanned_at DESC""", {'h': host})
+        return row[0][0] if row else host
 
     def enqueue(self, host: str, actor: str) -> int:
         conn = self.db.connect()
         try:
+            host = self.canonical(conn, host)
             busy = conn.scalar("SELECT job_id FROM scan_jobs WHERE host = :h AND status IN ('queued', 'running')", {'h': host})
             if busy:
                 return busy
@@ -144,26 +176,83 @@ class App:
                     status, result = 'failed', {'error': str(exc)}
                 conn.execute('UPDATE scan_jobs SET status = :s, finished_at = :t, result_json = :r WHERE job_id = :j',
                              {'s': status, 't': int(time.time()), 'r': json.dumps(result, default=str), 'j': jid})
+                self.db.prune(conn)                  # cheap deletes; keeps change history and denied lists bounded
             except Exception:
                 traceback.print_exc()
             finally:
                 conn.close()
 
+    def due_hosts(self, interval: int, now: float | None = None) -> list[str]:
+        """Bound hosts whose last scan job (of any outcome) is older than the interval. A restart therefore never
+        triggers a burst of scans, and a host that keeps failing is retried once per interval, not every tick."""
+        now = now or time.time()
+        conn = self.db.connect()
+        try:
+            due = []
+            for (pattern,) in conn.all("""SELECT DISTINCT host_pattern FROM key_bindings
+                                          WHERE pattern_kind = 'host' AND allowed_actions LIKE :a""", {'a': '%scan%'}):
+                name = self.canonical(conn, pattern)
+                last = conn.scalar('SELECT max(queued_at) FROM scan_jobs WHERE host IN (:n, :p)', {'n': name, 'p': pattern})
+                if name not in due and (last is None or now - last >= interval * 0.95):
+                    due.append(name)
+            return due
+        finally:
+            conn.close()
+
+    def nightly_once(self) -> dict:
+        """Backups and retention. Runs at BACKUP_HOUR, and at start-up when the newest essentials backup is a day old."""
+        from . import backup
+        conn = self.db.connect()
+        out = {}
+        try:
+            try:
+                out['backup'] = backup.create(self.db, 'essentials', keep=BACKUP_KEEP)
+                if BACKUP_FULL:
+                    out['full'] = backup.create(self.db, 'full', keep=BACKUP_FULL)
+                self.audit(conn, 'system', 'backup.create', 'ok', None, {k: v['path'] for k, v in out.items()})
+            except (Exception, SystemExit) as exc:
+                out['error'] = str(exc)
+                self.audit(conn, 'system', 'backup.create', 'failed', None, {'error': str(exc)[:300]})
+            out['pruned'] = self.db.prune(conn)
+        finally:
+            conn.close()
+        print(f'nightly: {out}', file=sys.stderr, flush=True)
+        return out
+
+    def _nightly(self):
+        from . import backup
+        time.sleep(120)                          # let start-up and any first scan settle
+        try:
+            newest = backup.listing()
+            if self.db.dialect == 'sqlite' and (not [b for b in newest if b['kind'] == 'essentials']
+                                                or time.time() - newest[0]['created'] > 86400):
+                self.nightly_once()
+        except Exception:
+            traceback.print_exc()
+        while True:
+            now = time.localtime()
+            wait = ((BACKUP_HOUR - now.tm_hour) % 24) * 3600 - now.tm_min * 60 - now.tm_sec
+            time.sleep(wait if wait > 0 else wait + 86400)
+            try:
+                if self.db.dialect == 'sqlite':
+                    self.nightly_once()
+                else:
+                    conn = self.db.connect()
+                    try:
+                        self.db.prune(conn)
+                    finally:
+                        conn.close()
+            except Exception:
+                traceback.print_exc()
+
     def _schedule(self, interval: int):
         while True:
             try:
-                conn = self.db.connect()
-                try:
-                    hosts = [r[0] for r in conn.all("""SELECT DISTINCT host_pattern FROM key_bindings
-                                                       WHERE pattern_kind = 'host' AND allowed_actions LIKE :a""",
-                                                    {'a': '%scan%'})]
-                finally:
-                    conn.close()
-                for h in hosts:
+                for h in self.due_hosts(interval):
                     self.enqueue(h, 'scheduler')
             except Exception:
                 traceback.print_exc()
-            time.sleep(interval)
+            time.sleep(min(interval, SCHEDULE_TICK))
 
 
 def create_app(core: App, session_secret: str, secure_cookies: bool = False, proxy_hops: int = 0) -> Flask:
@@ -209,7 +298,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         for k, v in SECURITY_HEADERS.items():
             resp.headers.setdefault(k, v)
         resp.headers['Server'] = f'StorageForge/{__version__}'
-        print(f'{request.remote_addr} {request.method} {request.path} {resp.status_code}', file=sys.stderr, flush=True)
+        if ACCESS_LOG == 'all' or (ACCESS_LOG == 'changes' and (request.method not in ('GET', 'HEAD') or resp.status_code >= 500
+                                                                  or resp.status_code == 429)):
+            print(f'{request.remote_addr} {request.method} {request.path} {resp.status_code}', file=sys.stderr, flush=True)
         return resp
 
     @web.errorhandler(Exception)
@@ -241,7 +332,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def planner():
         return static('planner.html')
 
-    @web.get('/<any("app.js", "style.css", "favicon.svg", "planner.js", "planner.css"):name>')
+    @web.get('/<any("app.js", "topology.js", "checks.js", "moves.js", "gitview.js", "style.css", "favicon.svg", "planner.js", "planner.css"):name>')
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
         resp.headers['Cache-Control'] = 'no-cache'
@@ -428,6 +519,162 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         return jsonify(res)
 
     # planner designs (storageforge/v1 blueprints)
+    @web.get('/api/access')
+    @login_required
+    def api_access():
+        return jsonify(hosts=access.status(conn(), request.args.get('host') or None))
+
+    @web.get('/api/access/script')
+    @login_required
+    def api_access_script():
+        host = request.args.get('host', '').strip()
+        user = request.args.get('user', '').strip()
+        if host and not user:
+            with Vault(db, conn()).unlock() as v:
+                user = v.resolve(connect_address(conn(), host), 'scan').user
+        if not user:
+            raise ValueError('give host (to use its scan user) or user')
+        script = (access.remove_script if request.args.get('remove') else access.setup_script)(user)
+        return jsonify(user=user, script=script, readonly_dir=access.READONLY_DIR, group=access.GROUP)
+
+    @web.post('/api/access/grant')
+    @login_required
+    @limiter.limit(INSTALL_LIMIT, key_func=lambda: f'grant:{current_user.get_id()}')
+    def api_access_grant():
+        body = json_body()
+        host, admin = str(body.get('host', '')).strip(), str(body.get('admin_user') or '').strip() or None
+        password, remove = str(body.get('password', '')), bool(body.get('remove'))
+        keyinstall.validate(host, admin or 'root', 22)
+        action = 'access.revoke' if remove else 'access.grant'
+        try:
+            res = access.grant(db, conn(), host, password, admin, remove)
+        except (RemoteError, subprocess.TimeoutExpired) as exc:
+            msg = str(exc) if isinstance(exc, RemoteError) else 'timed out'
+            core.audit(conn(), actor(), action, 'failed', host, {'via': admin, 'error': msg})
+            return jsonify(error=msg), 502
+        finally:
+            del password
+        core.audit(conn(), actor(), action, 'ok', host, {'user': res['user'], 'via': res['via']})
+        return jsonify(res)
+
+    @web.get('/api/browse')
+    @login_required
+    def api_browse():
+        return jsonify(moves.browse(conn(), request.args.get('host', ''), request.args.get('path') or '/'))
+
+    @web.get('/api/moves')
+    @login_required
+    def api_moves():
+        return jsonify(plans=moves.list_plans(conn()))
+
+    @web.post('/api/moves')
+    @login_required
+    def api_moves_create():
+        pid = moves.save_plan(conn(), json_body(), actor())
+        core.audit(conn(), actor(), 'moves.save', 'ok', None, {'plan': pid})
+        return jsonify(moves.get_plan(conn(), pid)), 201
+
+    @web.route('/api/moves/<int:plan_id>', methods=['GET', 'PUT', 'DELETE'])
+    @login_required
+    def api_move(plan_id):
+        try:
+            if request.method == 'PUT':
+                moves.save_plan(conn(), json_body(), actor(), plan_id)
+                core.audit(conn(), actor(), 'moves.save', 'ok', None, {'plan': plan_id})
+            elif request.method == 'DELETE':
+                moves.get_plan(conn(), plan_id)
+                moves.delete_plan(conn(), plan_id)
+                core.audit(conn(), actor(), 'moves.delete', 'ok', None, {'plan': plan_id})
+                return jsonify(deleted=plan_id)
+            return jsonify(moves.get_plan(conn(), plan_id))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/moves/check')
+    @login_required
+    def api_moves_check():
+        return jsonify(moves.check(conn(), moves.normalize(json_body())))
+
+    @web.get('/api/moves/<int:plan_id>/script')
+    @login_required
+    def api_move_script(plan_id):
+        try:
+            plan = moves.get_plan(conn(), plan_id)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        name = moves.slug(plan['name']) + '.sh'
+        core.audit(conn(), actor(), 'moves.script', 'ok', None, {'plan': plan_id})
+        return Response(moves.script(conn(), plan), mimetype='text/x-shellscript',
+                        headers={'Content-Disposition': f'attachment; filename="{name}"'})
+
+    @web.get('/api/git')
+    @login_required
+    def api_git():
+        return jsonify(gitrepos.listing(conn(), request.args.get('host') or None, bool(request.args.get('all'))))
+
+    @web.get('/api/shares/check')
+    @login_required
+    def api_shares_check():
+        try:
+            return jsonify(shares.check(conn(), request.args.get('host', '')))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.get('/api/shares/script')
+    @login_required
+    def api_shares_script():
+        host = request.args.get('host', '')
+        try:
+            text = shares.script(conn(), host)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        core.audit(conn(), actor(), 'shares.script', 'ok', host, {})
+        return Response(text, mimetype='text/x-shellscript',
+                        headers={'Content-Disposition': f'attachment; filename="shares-{moves.host_slug(host)}.sh"'})
+
+    @web.get('/api/backups')
+    @login_required
+    def api_backups():
+        from . import backup
+        return jsonify(backups=backup.listing() if db.dialect == 'sqlite' else [], hour=BACKUP_HOUR, keep=BACKUP_KEEP,
+                       full_keep=BACKUP_FULL)
+
+    @web.post('/api/backups')
+    @login_required
+    @limiter.limit('6 per hour', key_func=lambda: f'backup:{current_user.get_id()}')
+    def api_backup_now():
+        from . import backup
+        kind = 'full' if (json_body().get('kind') == 'full') else 'essentials'
+        res = backup.create(db, kind, keep=BACKUP_KEEP if kind == 'essentials' else max(BACKUP_FULL, 2))
+        core.audit(conn(), actor(), 'backup.create', 'ok', None, {'path': res['path'], 'bytes': res['bytes']})
+        return jsonify(res)
+
+    folder_cache: dict = {}
+
+    @web.get('/api/folders/cold')
+    @login_required
+    def api_folders_cold():
+        host = request.args.get('host') or None
+        years = max(0.1, float(request.args.get('years') or 2))
+        min_size = parse_size(request.args.get('min_size') or '1GiB')
+        key = ('cold', host, years, min_size, conn().scalar('SELECT max(scan_id) FROM scans'))
+        if key not in folder_cache:
+            folder_cache.clear()
+            folder_cache[key] = folders.cold_folders(conn(), host, years, min_size, limit=200)
+        return jsonify(folder_cache[key])
+
+    @web.get('/api/folders/duplicates')
+    @login_required
+    def api_folder_dupes():
+        host = request.args.get('host') or None
+        min_files = max(1, int(request.args.get('min_files') or 3))
+        min_size = parse_size(request.args.get('min_size') or '1MiB')
+        key = (host, min_files, min_size, conn().scalar('SELECT max(scan_id) FROM scans'))
+        if key not in folder_cache:
+            folder_cache.clear()
+            folder_cache[key] = folders.duplicate_folders(conn(), host, min_files, min_size, limit=200)
+        return jsonify(folder_cache[key])
+
     def scanned(host: str) -> bool:
         return bool(conn().scalar('SELECT 1 FROM hosts WHERE hostname = :h', {'h': host}))
 
@@ -488,6 +735,11 @@ def serve(db: Database, host: str, port: int, scan_interval: int | None, paralle
     try:
         if not users.count(conn):
             print('warning: no web users yet; create one with: storageforge-index user add <name>', file=sys.stderr)
+        stale = conn.all("SELECT scan_id FROM scans WHERE status = 'running'")   # killed by the last shutdown
+        if stale:
+            conn.execute(f"UPDATE scans SET status = 'failed', finished_at = {db.ts(':now')} WHERE status = 'running'",
+                         {'now': int(time.time())})
+            print(f'marked {len(stale)} interrupted scan(s) as failed', file=sys.stderr)
     finally:
         conn.close()
     secure = os.environ.get('STORAGEFORGE_COOKIE_SECURE', '0').lower() in ('1', 'true', 'yes')

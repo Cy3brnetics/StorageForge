@@ -176,6 +176,147 @@ def cmd_dupes(args) -> int:
     return 0
 
 
+def cmd_folders(args) -> int:
+    from .folders import duplicate_folders
+    _, conn = open_db(args)
+    r = duplicate_folders(conn, args.host, args.min_files, args.min_size, args.limit, args.include_system)
+    if args.format == 'json':
+        print(json.dumps(r))
+        return 0
+    if not r['groups']:
+        print(f'No duplicate folders among {r["folders_checked"]:,} folders.', file=sys.stderr)
+        return 1
+    for g in r['groups']:
+        print(f'{g["count"]}× {g["files"]:,} files {fmt_bin(g["bytes"])}  {g["scope"]}'
+              + (f'  reclaim {fmt_bin(g["reclaimable"])}' if g['scope'] == 'same host' else ''))
+        for c in g['copies']:
+            print(f'    {c["host"]}:{c["path"]}')
+    print(f'{r["total_groups"]} group(s); {fmt_bin(r["reclaimable_same_host"])} reclaimable within hosts', file=sys.stderr)
+    return 0
+
+
+def cmd_access(args) -> int:
+    from . import access
+    _, conn = open_db(args)
+    if args.access_cmd == 'status':
+        for h in access.status(conn, args.host, limit=args.limit):
+            print(f'{h["host"]}: {h["access"] or "unknown"} access as {h["scan_user"] or "?"} · '
+                  f'{h["denied_total"]} unreadable folder(s) in scan #{h["scan_id"]}')
+            for d in h['denied']:
+                print(f'    {d["path"]}')
+        return 0
+    user = args.user
+    if not user:
+        if not args.host:
+            raise SystemExit('give --host (to use its scan user) or --user')
+        from .vault import Vault
+        with Vault(Database(args.db), conn).unlock() as v:
+            from .runner import connect_address
+            user = v.resolve(connect_address(conn, args.host), 'scan').user
+    print((access.remove_script if args.remove else access.setup_script)(user), end='')
+    return 0
+
+
+def cmd_moves(args) -> int:
+    from . import moves
+    _, conn = open_db(args)
+    if args.moves_cmd == 'list':
+        for p in moves.list_plans(conn):
+            print(f'#{p["id"]:<4} {p["name"]}  ({p["steps"]} step{"s" if p["steps"] != 1 else ""})')
+        return 0
+    if args.moves_cmd == 'import':
+        body = json.loads(Path(args.file).read_text())
+        pid = moves.save_plan(conn, body, f'cli:{os.environ.get("USER", "?")}', args.id)
+        print(f'saved move plan #{pid}')
+        return 0
+    plan = moves.get_plan(conn, args.id)
+    if args.moves_cmd == 'check':
+        c = moves.check(conn, plan)
+        for st in c['steps']:
+            print(f'step {st["step"]}' + (f' (runs on {st["runner"]})' if st.get('runner') else ''))
+            for it in st['items']:
+                print(f'  {it["level"]:<5} {it["text"]}')
+        print(f'{moves._fmt(c["bytes"])} in all · {c["crit"]} critical · {c["warn"]} warning(s)')
+        return 1 if c['crit'] else 0
+    text = moves.script(conn, plan)
+    if args.output in (None, '-'):
+        print(text, end='')
+    else:
+        Path(args.output).write_text(text)
+        os.chmod(args.output, 0o755)
+        print(f'wrote {args.output}', file=sys.stderr)
+    return 0
+
+
+def cmd_git(args) -> int:
+    from . import gitrepos
+    _, conn = open_db(args)
+    r = gitrepos.listing(conn, args.host)
+    if args.format == 'json':
+        print(json.dumps(r))
+        return 0
+    for g in r['repos']:
+        copies = ', '.join(f'{c["host"]}:{c["path"]}{" (bare)" if c["bare"] else ""}' for c in g['copies'])
+        print(f'{g["state"]:<12} {g["host"]}:{g["path"]}  [{g["branch"] or "-"}]' + (f'  copies: {copies}' if copies else ''))
+    print(' · '.join(f'{v} {k}' for k, v in r['summary'].items() if v), file=sys.stderr)
+    return 0
+
+
+def cmd_shares(args) -> int:
+    from . import shares
+    _, conn = open_db(args)
+    if args.shares_cmd == 'check':
+        c = shares.check(conn, args.host)
+        for it in c['items']:
+            e = c['exports'][it['export']]
+            print(f'{it["level"]:<5} {e["proto"]} {e["name"] or e["path"]}: {it["text"]}')
+        return 1 if c['crit'] else 0
+    text = shares.script(conn, args.host)
+    if args.output in (None, '-'):
+        print(text, end='')
+    else:
+        Path(args.output).write_text(text)
+        os.chmod(args.output, 0o755)
+        print(f'wrote {args.output}', file=sys.stderr)
+    return 0
+
+
+def cmd_backup(args) -> int:
+    from . import backup
+    db = Database(args.db)
+    if args.backup_cmd == 'list':
+        for b in backup.listing(Path(args.dir) if args.dir else None):
+            print(f'{dt.datetime.fromtimestamp(b["created"]):%Y-%m-%d %H:%M}  {b["kind"]:<10} {fmt_bin(b["bytes"]):>10}  {b["path"]}')
+        return 0
+    r = backup.create(db, 'full' if args.full else 'essentials', Path(args.dir) if args.dir else None, args.keep)
+    print(f'wrote {r["path"]} ({fmt_bin(r["bytes"])}, {r["seconds"]} s)' + (f'; removed {len(r["removed"])} old' if r['removed'] else ''))
+    print('the vault secret is not in it, on purpose: back up secrets/vault_secret separately', file=sys.stderr)
+    return 0
+
+
+def cmd_restore(args) -> int:
+    from . import backup
+    if not args.yes:
+        print(f'This replaces the database with {args.file}. Stop the server first '
+              '(docker compose stop storageforge), then rerun with --yes.', file=sys.stderr)
+        return 2
+    r = backup.restore(Database(args.db), args.file)
+    print(f'restored {r["restored"]}: {r["keys"]} key(s), {r["files"]:,} indexed files. Previous database kept as {r["previous"]}')
+    if not r['files']:
+        print('an essentials backup: start the server and the next scans rebuild the file index', file=sys.stderr)
+    return 0
+
+
+def cmd_prune(args) -> int:
+    db, conn = open_db(args)
+    r = db.prune(conn, change_days=args.days)
+    print(f'removed {r["changes"]:,} change rows, {r["denied"]:,} old unreadable-folder rows, {r["jobs"]:,} old jobs')
+    if args.vacuum:
+        print('vacuuming (rewrites the file; needs as much free space as the database)…', file=sys.stderr)
+        db.vacuum(conn)
+    return 0
+
+
 def cmd_hosts(args) -> int:
     _, conn = open_db(args)
     rows = conn.all("""SELECT h.hostname, h.ip_address, h.last_scanned_at,
@@ -553,6 +694,69 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument('--limit', type=int, default=50)
     d.add_argument('--format', choices=['table', 'json'], default='table')
     d.set_defaults(fn=cmd_dupes)
+
+    fo = sub.add_parser('folders', help='duplicate folders by name and structure (no checksums needed)')
+    fo.add_argument('--host')
+    fo.add_argument('--min-files', type=int, default=3)
+    fo.add_argument('--min-size', type=size_arg, default=1 << 20, metavar='SIZE')
+    fo.add_argument('--limit', type=int, default=50)
+    fo.add_argument('--include-system', action='store_true', help='also compare /usr, /var/lib, node_modules and similar')
+    fo.add_argument('--format', choices=['table', 'json'], default='table')
+    fo.set_defaults(fn=cmd_folders)
+
+    ac = sub.add_parser('access', help='read-only scan access: status, and the setup script to run as root')
+    acs = ac.add_subparsers(dest='access_cmd', required=True)
+    a1 = acs.add_parser('status', help='folders the latest scans could not read')
+    a1.add_argument('--host')
+    a1.add_argument('--limit', type=int, default=50)
+    a2 = acs.add_parser('script', help='print the setup script; pipe it to: ssh admin@host sudo sh')
+    a2.add_argument('--host', help="use this host's bound scan user")
+    a2.add_argument('--user', help='scan user name')
+    a2.add_argument('--remove', action='store_true', help='print the removal script instead')
+    ac.set_defaults(fn=cmd_access)
+
+    mv = sub.add_parser('moves', help='data move plans: list, check against the index, write the rsync script')
+    mvs = mv.add_subparsers(dest='moves_cmd', required=True)
+    mvs.add_parser('list')
+    m1 = mvs.add_parser('check'); m1.add_argument('id', type=int)
+    m2 = mvs.add_parser('script', help='write the Bash script that runs the plan')
+    m2.add_argument('id', type=int)
+    m2.add_argument('-o', '--output', help='file to write (default stdout); made executable')
+    m3 = mvs.add_parser('import', help='save a plan from a JSON file ({"name", "steps": [...]})')
+    m3.add_argument('file'); m3.add_argument('--id', type=int, help='replace this plan')
+    mv.set_defaults(fn=cmd_moves)
+
+    gi = sub.add_parser('git', help='git repositories found by scans: state, copies and archives')
+    gi.add_argument('--host')
+    gi.add_argument('--format', choices=['table', 'json'], default='table')
+    gi.set_defaults(fn=cmd_git)
+
+    sh = sub.add_parser('shares', help="deploy the NFS/SMB shares in a host's design")
+    shs = sh.add_subparsers(dest='shares_cmd', required=True)
+    s1 = shs.add_parser('check'); s1.add_argument('host')
+    s2 = shs.add_parser('script', help='write the deploy script (server + client mounts)')
+    s2.add_argument('host'); s2.add_argument('-o', '--output')
+    sh.set_defaults(fn=cmd_shares)
+
+    bk = sub.add_parser('backup', help='database backups (essentials by default: keys, bindings, users, designs, plans, audit)')
+    bks = bk.add_subparsers(dest='backup_cmd')
+    b1 = bks.add_parser('create', help='write a backup now (the default)')
+    bks.add_parser('list', help='backups on disk').add_argument('--dir', help='backup folder')
+    for x in (bk, b1):
+        x.add_argument('--full', action='store_true', help='the whole database, file index included (large)')
+        x.add_argument('--keep', type=int, help='then delete the oldest of that kind beyond this many')
+        x.add_argument('--dir', help='backup folder (default $STORAGEFORGE_BACKUP_DIR or <data>/backups)')
+    bk.set_defaults(fn=cmd_backup, backup_cmd='create')
+
+    rs = sub.add_parser('restore', help='replace the database with a backup (stop the server first)')
+    rs.add_argument('file')
+    rs.add_argument('--yes', action='store_true', help='really replace it')
+    rs.set_defaults(fn=cmd_restore)
+
+    pr = sub.add_parser('prune', help='drop old change history and job rows (also runs after every scan)')
+    pr.add_argument('--days', type=int, default=90, help='keep file changes this many days (default 90)')
+    pr.add_argument('--vacuum', action='store_true', help='then shrink the file (slow, locks the database)')
+    pr.set_defaults(fn=cmd_prune)
 
     h = sub.add_parser('hosts', help='list indexed hosts')
     h.set_defaults(fn=cmd_hosts)

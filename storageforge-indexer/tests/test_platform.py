@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -144,6 +145,122 @@ class VaultTests(DBCase):
             del os.environ['STORAGEFORGE_RUNTIME_DIR']
 
 
+class ShareLineTests(DBCase):
+    """A client's NFS and SMB mounts get a line from the server folder they come from, and keep it across rebuilds."""
+
+    def node(self, name, mounts, remotes=()):
+        n = node_from_blueprint({'metadata': {'host': name}, 'devices': [], 'pools': []})
+        n['mounts'] = [{'target': t, 'kind': 'block', 'fstype': 'ext4', 'source': f'/dev/{name}{i}', 'options': []}
+                       for i, t in enumerate(mounts)]
+        for src, fs, target in remotes:
+            n['mounts'].append({'target': target, 'kind': 'remote', 'fstype': fs, 'source': src, 'options': []})
+            n['remotes'].append({'name': src, 'proto': fs, 'endpoint': src, 'mount': target, 'status': 'connected'})
+        n['peers'] = {'10.42.0.10': 'server', 'server': 'server', 'client': 'client'}
+        return n
+
+    def test_client_mount_lines_to_server_folder(self):
+        server = self.node('server', ['/', '/mnt/ssd'])
+        server['exports'] = [{'protocol': 'NFS', 'name': '/mnt/ssd/shared', 'path': '/mnt/ssd/shared', 'fromScan': True},
+                             {'protocol': 'SMB', 'name': 'media', 'path': '/mnt/ssd/media', 'fromScan': True}]
+        graph.save(self.db, self.conn, 'server', *graph.build(server))
+        host = next(n for n in graph.load(self.conn)['nodes'] if n['id'] == 'host:server')
+        self.assertEqual(host['props']['serves'], 'NFS + SMB')
+        client = self.node('client', ['/'], [('10.42.0.10:/mnt/ssd/shared/docker', 'nfs4', '/mnt/shared'),
+                                             ('//server/media/tv', 'cifs', '/mnt/tv')])
+        client['peer_mounts'] = {'server': ['/', '/mnt/ssd']}
+        client['peer_shares'] = {'server': server['exports']}
+        graph.save(self.db, self.conn, 'client', *graph.build(client))
+        lines = lambda: {(r[0], r[1]): json.loads(r[2]) for r in self.conn.all(
+            "SELECT src, dst, props_json FROM graph_edges WHERE src LIKE 'mnt:server:%' AND dst LIKE 'mnt:client:%'")}
+        got = lines()
+        self.assertEqual(set(got), {('mnt:server:/mnt/ssd', 'mnt:client:/mnt/shared'), ('mnt:server:/mnt/ssd', 'mnt:client:/mnt/tv')})
+        self.assertEqual(got[('mnt:server:/mnt/ssd', 'mnt:client:/mnt/tv')]['path'], '/mnt/ssd/media/tv')
+        self.assertEqual(got[('mnt:server:/mnt/ssd', 'mnt:client:/mnt/shared')]['share'], 'NFS /mnt/ssd/shared')
+        graph.save(self.db, self.conn, 'server', *graph.build(server))         # rebuilding the server keeps them
+        self.assertEqual(set(lines()), set(got))
+
+
+class OpsTests(DBCase):
+    def test_deployed_share_is_one_share_and_keeps_its_clients(self):
+        scanned = {'metadata': {'host': 'nas'}, 'devices': [], 'pools': [], 'remotes': [], 'links': [], 'protection': [],
+                   'exports': [{'protocol': 'NFS', 'name': '/srv/media', 'path': '/srv/media/', 'fromScan': True},
+                               {'protocol': 'SMB', 'name': 'Photos', 'path': '/srv/photos', 'fromScan': True}]}
+        saved = {'exports': [{'protocol': 'NFSv4.2', 'name': 'media', 'path': '/srv/media'},
+                             {'protocol': 'SMB3', 'name': 'photos', 'path': '/srv/photos', 'mounts': [{'host': 'desk', 'path': '/mnt/p'}]}]}
+        out = blueprint.merge_intent(scanned, saved)['exports']
+        self.assertEqual(len(out), 2)
+        self.assertTrue(all(e['fromScan'] and e['designed'] for e in out))
+        self.assertEqual(out[1]['mounts'], [{'host': 'desk', 'path': '/mnt/p'}])
+        self.assertEqual(blueprint.merge_intent(scanned, {'exports': out})['exports'], out)    # stable when saved again
+
+    def test_one_name_per_host_and_no_scan_burst_after_restart(self):
+        from storageforge_index import server
+        self.conn.execute("INSERT INTO hosts (hostname, ip_address, ssh_host, inventory_json) "
+                          "VALUES ('cachyos-x8664', '10.42.0.100', '10.42.0.100', '{}')")
+        app = server.App(self.db)
+        self.assertEqual(app.canonical(self.conn, '10.42.0.100'), 'cachyos-x8664')
+        self.assertEqual(app.canonical(self.conn, 'CachyOS-x8664'), 'cachyos-x8664')
+        self.assertEqual(app.canonical(self.conn, 'new-host'), 'new-host')
+        vlt = vault.Vault(self.db, self.conn, SECRET)
+        vlt.init()
+        with vlt.unlock() as v:
+            v.generate_key('k', 'ed25519')
+            v.bind('k', '10.42.0.100', 'archie')
+        self.assertEqual(app.due_hosts(3600), ['cachyos-x8664'])        # never scanned: due
+        self.conn.execute("INSERT INTO scan_jobs (host, requested_by, queued_at, status) VALUES "
+                          "('10.42.0.100', 'scheduler', :t, 'ok')", {'t': int(time.time()) - 600})
+        self.assertEqual(app.due_hosts(3600), [])                       # scanned 10 min ago under its IP: not due
+        self.assertEqual(app.due_hosts(300), ['cachyos-x8664'])
+
+    def test_backup_restore_and_prune(self):
+        from storageforge_index import backup
+        vlt = vault.Vault(self.db, self.conn, SECRET)
+        vlt.init()
+        with vlt.unlock() as v:
+            v.generate_key('fleet', 'ed25519')
+        self.conn.execute("INSERT INTO hosts (hostname, inventory_json) VALUES ('nas', '{}')")
+        hid = self.conn.scalar('SELECT host_id FROM hosts')
+        old = int(time.time()) - 200 * 86400
+        for sid, t in ((1, old), (2, old + 1)):
+            self.conn.execute('INSERT INTO scans (scan_id, host_id, started_at, status) VALUES (:s, :h, :t, \'ok\')', {'s': sid, 'h': hid, 't': t})
+            self.conn.execute("INSERT INTO scan_denied (scan_id, mount_point, path) VALUES (:s, '/', '/root')", {'s': sid})
+        mid = self.conn.scalar("INSERT INTO mounts (host_id, mount_point, filesystem_type) VALUES (:h, '/', 'ext4') RETURNING mount_id", {'h': hid})
+        for sid in (1, 2):
+            self.conn.execute("INSERT INTO file_changes (scan_id, mount_id, change_type, parent_path, filename) "
+                              "VALUES (:s, :m, 'added', '/', 'x')", {'s': sid, 'm': mid})
+        r = self.db.prune(self.conn)
+        self.assertEqual((r['changes'], r['denied']), (1, 1))            # the newest scan's rows always stay
+        dest = Path(self.tmp) / 'bk'
+        dest.mkdir()
+        ess = backup.create(self.db, 'essentials', dest, keep=1)
+        full = backup.create(self.db, 'full', dest)
+        time.sleep(1.1)
+        ess2 = backup.create(self.db, 'essentials', dest, keep=1)
+        self.assertEqual(ess2['removed'], [ess['path']])
+        self.assertEqual({b['kind'] for b in backup.listing(dest)}, {'essentials', 'full'})
+        self.conn.close()
+        r = backup.restore(self.db, ess2['path'])
+        self.assertEqual((r['keys'], r['files']), (1, 0))
+        self.assertTrue(Path(r['previous']).exists())
+        self.conn = self.db.connect()
+        self.assertEqual(self.conn.scalar('SELECT name FROM ssh_keys'), 'fleet')
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM mounts'), 0)          # the index comes back by rescanning
+        with self.assertRaises(SystemExit):
+            backup.restore(self.db, __file__)                                          # not a backup
+        self.assertTrue(Path(full['path']).stat().st_size > Path(ess2['path']).stat().st_size)
+
+
+class ConnectAddressTests(DBCase):
+    def test_indexed_hostname_maps_to_the_address_it_was_scanned_at(self):
+        from storageforge_index.runner import connect_address
+        self.conn.execute("INSERT INTO hosts (hostname, ip_address, ssh_host, inventory_json) "
+                          "VALUES ('cachyos-x8664', '10.42.0.100', '10.42.0.100', '{}')")
+        self.assertEqual(connect_address(self.conn, 'cachyos-x8664'), '10.42.0.100')
+        self.assertEqual(connect_address(self.conn, 'CachyOS-x8664'), '10.42.0.100')
+        self.assertEqual(connect_address(self.conn, '10.42.0.100'), '10.42.0.100')
+        self.assertEqual(connect_address(self.conn, 'never-scanned'), 'never-scanned')
+
+
 class GraphTests(DBCase):
     def test_atlas_graph(self):
         nodes, edges = graph.build(atlas_node(), dt.date(2026, 10, 26))
@@ -159,6 +276,26 @@ class GraphTests(DBCase):
                                 ('link:atlas:/opt/app/releases/live', 'link:atlas:/opt/app/current')})
         self.assertIn('host:nas-02.tail4c2e.ts.net', {e['dst'] for e in edges if e['rel'] == 'REPLICATES_TO'})
         self.assertNotIn('host:nas-02 nightly 02:30', nodes)
+
+    def test_remote_server_that_is_also_scanned_links_to_its_host(self):
+        node = atlas_node()
+        node['peers'] = {'nas-02.tail4c2e.ts.net': 'nas-02', 'nas-02': 'nas-02'}
+        nodes, edges = graph.build(node, dt.date(2026, 10, 26))
+        self.assertEqual(nodes['host:nas-02']['host'], 'nas-02')          # owned by nas-02, not an external stub
+        self.assertNotIn('host:nas-02.tail4c2e.ts.net', nodes)
+        self.assertTrue(any(e['dst'] == 'host:nas-02' or e['src'] == 'host:nas-02' for e in edges))
+        self.conn.execute("INSERT INTO graph_nodes (node_id, kind, label, host, props_json, updated_at) "
+                          "VALUES ('host:nas-02', 'Host', 'nas-02', 'nas-02', '{\"ip\": \"10.0.0.2\"}', 0)")
+        graph.save(self.db, self.conn, 'atlas', nodes, edges)
+        self.assertEqual(self.conn.scalar("SELECT props_json FROM graph_nodes WHERE node_id = 'host:nas-02'"),
+                         '{"ip": "10.0.0.2"}')                              # atlas's build never overwrites it
+        into = {(e['src'], e['dst'], e['rel']) for e in edges if 'host:nas-02' in (e['src'], e['dst'])}
+        nas = node_from_blueprint({'metadata': {'host': 'nas-02'}, 'devices': [], 'pools': []})
+        graph.save(self.db, self.conn, 'nas-02', *graph.build(nas))         # rebuilding nas-02 itself...
+        kept = set(self.conn.all("SELECT src, dst, rel FROM graph_edges WHERE src = 'host:nas-02' OR dst = 'host:nas-02'"))
+        self.assertEqual(kept, into)                                         # ...keeps atlas's edges into it
+        graph.save(self.db, self.conn, 'atlas', nodes, edges)
+        self.assertEqual(set(self.conn.all("SELECT src, dst, rel FROM graph_edges WHERE src = 'host:nas-02' OR dst = 'host:nas-02'")), into)
 
     def test_save_load_and_canvas(self):
         nodes, edges = graph.build(atlas_node(), dt.date(2026, 10, 26))
@@ -347,6 +484,61 @@ class ServerTests(DBCase):
                                       ('Are you sure you want to continue connecting (yes/no)? ', 1, '')):
                 with mock.patch('sys.argv', ['askpass', prompt]), mock.patch('sys.stdout', io.StringIO()) as so:
                     self.assertEqual((askpass.main(), so.getvalue()), (code, out), prompt)
+
+    def test_access_and_duplicate_folder_api(self):
+        self.assertEqual(self.client.get('/api/access').status_code, 401)
+        self.login()
+        self.assertEqual(self.client.get('/api/access').json, {'hosts': []})
+        r = self.client.get('/api/access/script?user=scan')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('U=scan', r.json['script'])
+        self.assertEqual(self.client.get('/api/access/script?user=bad;user').status_code, 400)
+        self.assertEqual(self.client.post('/api/access/grant', json={'host': 'nas', 'password': ''}).status_code, 400)
+        r = self.client.get('/api/folders/duplicates')
+        self.assertEqual((r.status_code, r.json['groups']), (200, []))
+        for name in ('checks.js', 'topology.js'):
+            self.assertEqual(self.client.get('/' + name).status_code, 200)
+
+    def test_move_plan_api(self):
+        self.assertEqual(self.client.get('/api/moves').status_code, 401)
+        self.login()
+        self.assertEqual(self.client.get('/api/moves').json, {'plans': []})
+        self.assertEqual(self.client.post('/api/moves', json={'name': '', 'steps': []}).status_code, 400)
+        body = {'name': 'Media', 'steps': [{'method': 'mirror', 'src': {'host': 'nas', 'path': '/srv/media'},
+                                            'dst': {'host': 'atlas', 'path': '/mnt/media'}, 'options': {'delete': True}}]}
+        r = self.client.post('/api/moves', json=body)
+        self.assertEqual(r.status_code, 201)
+        pid = r.json['id']
+        self.assertTrue(r.json['steps'][0]['options']['delete'])
+        r = self.client.post('/api/moves/check', json=body)
+        self.assertEqual(r.json['crit'], 2)                              # neither host has been scanned here
+        r = self.client.get(f'/api/moves/{pid}/script')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('attachment; filename="media.sh"', r.headers['Content-Disposition'])
+        self.assertIn(b'S_METHOD=(mirror)', r.data)
+        self.assertEqual(self.client.put(f'/api/moves/{pid}', json={**body, 'name': 'Media 2'}).json['name'], 'Media 2')
+        self.assertEqual(self.client.delete(f'/api/moves/{pid}').status_code, 200)
+        self.assertEqual(self.client.get(f'/api/moves/{pid}').status_code, 404)
+        self.assertEqual(self.client.get('/moves.js').status_code, 200)
+
+    def test_git_shares_and_cold_api(self):
+        self.login()
+        self.assertEqual(self.client.get('/api/git').json['repos'], [])
+        self.assertEqual(self.client.get('/api/shares/check?host=nowhere').status_code, 404)
+        self.conn.execute("INSERT INTO hosts (hostname, ip_address, ssh_host, ssh_user, inventory_json) VALUES "
+                          "('nas', '10.0.0.5', '10.0.0.5', 'root', '{}'), ('desk', '10.0.0.6', '10.0.0.6', 'me', '{}')")
+        graph.store_blueprint(self.conn, {'apiVersion': 'storageforge/v1', 'kind': 'StorageBlueprint', 'metadata': {'host': 'nas'},
+                                          'exports': [{'protocol': 'NFS', 'name': '/srv/a', 'path': '/srv/a', 'clients': ''},
+                                                      {'protocol': 'SMB3', 'name': 'media', 'path': '/srv/media', 'clients': 'gabe',
+                                                       'mounts': [{'host': 'desk', 'path': '/mnt/media'}]}]})
+        c = self.client.get('/api/shares/check?host=nas').json
+        self.assertEqual(c['crit'], 1)                                  # NFS without clients
+        self.assertTrue(any('Samba accounts needed: gabe' in x['text'] for x in c['items']))
+        r = self.client.get('/api/shares/script?host=nas')
+        self.assertIn('attachment; filename="shares-nas.sh"', r.headers['Content-Disposition'])
+        self.assertIn(b"C_SOURCE=(//10.0.0.5/media)", r.data)
+        self.assertEqual(self.client.get('/api/folders/cold?years=1').json['folders'], [])
+        self.assertEqual(self.client.get('/gitview.js').status_code, 200)
 
     def test_planner_page_and_designs(self):
         r = self.client.get('/planner')
