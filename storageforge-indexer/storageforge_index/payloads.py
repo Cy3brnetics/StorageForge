@@ -7,7 +7,6 @@ regenerated from saved files.
 """
 from __future__ import annotations
 
-import datetime as dt
 import hashlib
 import json
 import posixpath
@@ -92,6 +91,13 @@ def node_from_blueprint(bp: dict) -> dict:
                               'props': {k: ds[k] for k in ('recordsize', 'compression', 'sync') if k in ds}}
                              for ds in p.get('datasets') or []],
                 'health': None, 'scan': None, 'device_errors': []}
+        if p.get('type') == 'lvm' and p.get('vg') and not p.get('lv'):
+            for ds in pool['datasets']:
+                src = next(x for x in p['datasets'] if f'{p["name"]}/{x["name"]}' == ds['name'])
+                ds['props'] = {k: src[k] for k in ('fs', 'sizeBytes') if k in src}
+            pool.update(vg=p['vg'], lv=None, aliases=[f'{p["vg"]}/{ds["name"].split("/", 1)[1]}' for ds in pool['datasets']])
+        elif p.get('type') == 'lvm' and p.get('vg') and p.get('lv'):
+            pool.update(vg=p['vg'], lv=p['lv'], aliases=[f"mapper/{p['vg'].replace('-', '--')}-{p['lv'].replace('-', '--')}", f"{p['vg']}/{p['lv']}"])
         pool['cap'] = pool_capacity(pool['type'], pool['level'], [s for s in msizes if s], ashift=p.get('ashift') or 12,
                                     fs=p.get('fs'))
         node['pools'].append(pool)
@@ -128,7 +134,10 @@ def _derive_mounts(node, bp):
             out.append({'target': pool['mount'], 'kind': 'zfs' if pool['type'] == 'zfs' else 'md', 'fstype': pool.get('fs') or 'zfs',
                         'source': pool['name'] if pool['type'] == 'zfs' else '/dev/' + pool['name'], 'options': [], 'tier': pool['tier']})
         for ds in pool['datasets']:
-            if ds.get('mount'):
+            if ds.get('mount') and pool['type'] == 'lvm':
+                out.append({'target': ds['mount'], 'kind': 'block', 'fstype': ds['props'].get('fs'), 'source': '/dev/' + ds['name'],
+                            'options': [], 'tier': pool['tier']})
+            elif ds.get('mount'):
                 out.append({'target': ds['mount'], 'kind': 'zfs', 'fstype': 'zfs', 'source': ds['name'], 'options': [], 'tier': pool['tier']})
     for r in bp.get('remotes') or []:
         if r.get('mount'):
@@ -325,6 +334,8 @@ def node_from_lsblk(data: dict, hostname: str, node: dict | None = None) -> dict
     node = node or node_skeleton(hostname)
     node['sources'].append('lsblk -J')
     md: dict[str, dict] = {}
+    lvm: dict[str, dict] = {}
+    vgs: dict[str, dict] = {}
     zfs: dict[str, list] = {}
     for d in data.get('blockdevices') or []:
         if d.get('type') != 'disk' or d['name'].startswith(VIRTUAL_BLOCK):
@@ -339,6 +350,10 @@ def node_from_lsblk(data: dict, hostname: str, node: dict | None = None) -> dict
         children = d.get('children') or []
         if not children and d.get('fstype'):
             children = [dict(d, type='part', start=0)]
+        if _lvm_legs(d['name'], children, disk, lvm):
+            disk['member'] = next(iter(_lvm_owner(d['name'], lvm)), None)
+        elif vg := _lvm_plain(d['name'], _i(d.get('size')), children, disk, vgs):
+            disk['member'] = vg
         for c in children:
             if c.get('type') != 'part':
                 continue
@@ -354,6 +369,10 @@ def node_from_lsblk(data: dict, hostname: str, node: dict | None = None) -> dict
                     entry = md.setdefault(g['name'], {'level': g['type'], 'members': [], 'fs': g.get('fstype'),
                                                       'mount': g.get('mountpoint'), 'label': g.get('label'), 'tier': disk['tier']})
                     entry['members'].append(part)
+                elif g.get('type') == 'lvm' and _lvm_legs(c['name'], [g], disk, lvm):
+                    part['member'] = next(iter(_lvm_owner(c['name'], lvm)), None)
+                elif g.get('type') == 'lvm' and (vg := _lvm_plain(c['name'], _i(c.get('size')), [g], disk, vgs)):
+                    part['member'] = part['member'] or vg
                 elif g.get('type') == 'crypt':
                     part['crypt'] = g['name']
                     part['encrypted'] = 'LUKS'
@@ -381,11 +400,141 @@ def node_from_lsblk(data: dict, hostname: str, node: dict | None = None) -> dict
                               'log': [], 'cache': [], 'spares': [], 'mount': e['mount'], 'fs': e['fs'], 'encryption': None,
                               'tier': e['tier'], 'datasets': [], 'health': None,
                               'cap': pool_capacity('md', e['level'], [p['size'] for p in e['members']], fs=e['fs'])})
+    for name, e in lvm.items():
+        node['pools'].append(_lvm_pool(name, e))
+    for name, e in vgs.items():
+        node['pools'].append(_vg_pool(name, e))
     for name, members in zfs.items():
         node['pools'].append({'name': name, 'type': 'zfs', 'level': None, 'members': [p['dev'] for p, _ in members],
                               'member_parts': members, 'log': [], 'cache': [], 'spares': [], 'mount': None, 'fs': None,
                               'encryption': None, 'tier': members[0][1]['tier'], 'datasets': [], 'cap': None, 'health': None})
     return node
+
+
+# LVM RAID: lsblk shows each leg as <vg>-<lv>_rimage_N (with a small _rmeta_N) on its own PV, and the LV under them.
+# lvs gives the exact segment type when the scan user may run it; otherwise the level follows from the leg count and
+# how many legs' worth of space the LV has (3 legs holding 2 legs of data is raid5).
+LVM_LEG = re.compile(r'(.+)_(r|m)(image|meta|log)_(\d+)')
+
+
+def _dm_split(name: str) -> tuple[str, str]:
+    """Device-mapper names double hyphens inside VG and LV names: 'my--vg-data' is VG 'my-vg', LV 'data'."""
+    parts = re.split(r'(?<!-)-(?!-)', name, maxsplit=1)
+    return (parts[0].replace('--', '-'), parts[1].replace('--', '-')) if len(parts) == 2 else ('', name)
+
+
+def _lvm_legs(pv: str, children: list, disk: dict, lvm: dict) -> bool:
+    found = False
+    for g in children:
+        m = LVM_LEG.fullmatch(g.get('name') or '') if g.get('type') == 'lvm' else None
+        if not m:
+            continue
+        found = True
+        lv = next((x for x in g.get('children') or [] if x.get('name') == m.group(1)), {})
+        e = lvm.setdefault(m.group(1), {'legs': {}, 'size': None, 'fs': None, 'mount': None, 'uuid': None, 'label': None,
+                                        'tier': disk['tier']})
+        e.update({k: v for k, v in {'size': _i(lv.get('size')), 'fs': lv.get('fstype'), 'mount': lv.get('mountpoint'),
+                                    'uuid': lv.get('uuid'), 'label': lv.get('label')}.items() if v})
+        if m.group(3) == 'image':
+            e['legs'][int(m.group(4))] = (pv, _i(g.get('size')))
+    return found
+
+
+LVM_INTERNAL = re.compile(r'.+(_t(meta|data)|_[rm](image|meta|log)_\d+|_c(data|meta)|_vorigin|-(tpool|real|cow))$')
+
+
+def _lvm_plain(pv: str, pv_size, children: list, disk: dict, vgs: dict) -> str | None:
+    """Ordinary (linear or thin) LVs on a PV, grouped by volume group. Returns the VG name if any were found."""
+    found = None
+
+    def walk(items):
+        nonlocal found
+        for g in items:
+            if g.get('type') != 'lvm':
+                continue
+            name = g.get('name') or ''
+            if LVM_INTERNAL.fullmatch(name):          # thin-pool plumbing: the thin LVs sit further down
+                walk(g.get('children') or [])
+                continue
+            vg, lv = _dm_split(name)
+            if not vg:
+                continue
+            e = vgs.setdefault(vg, {'pvs': {}, 'lvs': {}, 'tier': disk['tier']})
+            e['pvs'][pv] = pv_size
+            mount = g.get('mountpoint')
+            e['lvs'].setdefault(lv, {'dm': name, 'size': _i(g.get('size')), 'fs': g.get('fstype'), 'uuid': g.get('uuid'),
+                                     'mount': mount if mount and mount.startswith('/') else None})
+            found = found or vg
+    walk(children)
+    return found
+
+
+def _vg_pool(vg: str, e: dict) -> dict:
+    lvs = sorted(e['lvs'].items(), key=lambda kv: (kv[1]['mount'] is None, kv[1]['mount'] or kv[0]))
+    return {'name': vg, 'type': 'lvm', 'level': 'linear', 'vg': vg, 'lv': None, 'level_source': 'volume group',
+            'aliases': [a for lv, x in lvs for a in (f'mapper/{x["dm"]}', f'{vg}/{lv}')],
+            'members': list(e['pvs']), 'member_sizes': list(e['pvs'].values()), 'log': [], 'cache': [], 'spares': [],
+            'mount': None, 'fs': None, 'encryption': None, 'tier': e['tier'], 'health': None,
+            'datasets': [{'name': f'{vg}/{lv}', 'mount': x['mount'], 'dev': f'mapper/{x["dm"]}',
+                          'props': {k: v for k, v in (('fs', x['fs']), ('sizeBytes', x['size'])) if v}} for lv, x in lvs],
+            'cap': pool_capacity('lvm', 'linear', list(e['pvs'].values()))}
+
+
+def _lvm_owner(pv: str, lvm: dict):
+    return (name for name, e in lvm.items() if any(p == pv for p, _ in e['legs'].values()))
+
+
+def lvm_level(legs: int, leg_size, lv_size) -> tuple[str, str]:
+    if legs < 2 or not leg_size or not lv_size:
+        return 'raid1' if legs >= 2 else 'linear', 'guessed'
+    k, n = round(lv_size / leg_size), legs
+    if k == n:
+        return 'raid0', f'inferred: {n} legs, {k} of data'
+    if k == 1:
+        return 'raid1', f'inferred: {n}-way mirror'
+    if n == 4 and k == 2:
+        return 'raid10', 'inferred: 4 legs, 2 of data (raid10 or raid6; lvs as root tells them apart)'
+    if k == n - 1:
+        return 'raid5', f'inferred: {n} legs, {k} of data'
+    if k == n - 2:
+        return 'raid6', f'inferred: {n} legs, {k} of data'
+    if n % 2 == 0 and k == n // 2:
+        return 'raid10', f'inferred: {n} legs, {k} of data'
+    return 'raid', f'unrecognised: {n} legs, {k} of data'
+
+
+def _lvm_pool(name: str, e: dict) -> dict:
+    vg, lv = _dm_split(name)
+    legs = [e['legs'][i] for i in sorted(e['legs'])]
+    level, how = lvm_level(len(legs), min((s for _, s in legs if s), default=None), e['size'])
+    return {'name': name, 'type': 'lvm', 'level': level, 'level_source': how, 'vg': vg, 'lv': lv,
+            'aliases': [f'mapper/{name}', f'{vg}/{lv}'], 'members': [p for p, _ in legs],
+            'member_sizes': [s for _, s in legs], 'log': [], 'cache': [], 'spares': [], 'mount': e['mount'],
+            'fs': e['fs'], 'label': e['label'], 'encryption': None, 'tier': e['tier'], 'datasets': [], 'health': None,
+            'cap': pool_capacity('lvm', level, [s for _, s in legs], fs=e['fs'])}
+
+
+def apply_lvs(node: dict, text: str):
+    """Exact segment types and health from `lvs --reportformat json`, when the scan could run it."""
+    try:
+        rows = json.loads(text)['report'][0]['lv']
+    except (ValueError, KeyError, IndexError, TypeError):
+        return
+    node['sources'].append('lvs')
+    by = {(r.get('vg_name'), r.get('lv_name')): r for r in rows}
+    for p in node['pools']:
+        r = by.get((p.get('vg'), p.get('lv'))) if p['type'] == 'lvm' else None
+        if not r:
+            continue
+        seg = (r.get('segtype') or '').lower()
+        level = {'mirror': 'raid1', 'striped': 'raid0'}.get(seg, seg.split('_')[0])   # raid6_zr → raid6
+        if level and level != p['level']:
+            p['level'] = level
+            p['cap'] = pool_capacity('lvm', level, p['member_sizes'], fs=p.get('fs'))
+        p['level_source'] = f'lvs: {seg}'
+        p['health'] = r.get('lv_health_status') or 'ONLINE'
+        if r.get('copy_percent') not in (None, '', '100.00'):
+            p['scan'] = f'resyncing {r["copy_percent"]}%'
 
 
 def finalize_zfs_capacity(node: dict):
@@ -413,6 +562,91 @@ def finalize_zfs_capacity(node: dict):
         pool.pop('member_parts', None)
 
 
+# NFS exports and SMB shares, so another host's network mount can be traced to the folder it comes from
+
+def parse_nfs_exports(text: str) -> list[dict]:
+    """/etc/exports or /var/lib/nfs/etab: a path, then clients with options. One entry per path."""
+    out: dict[str, dict] = {}
+    for raw in (text or '').replace('\\\n', ' ').splitlines():
+        line = raw.split('#', 1)[0].strip()
+        if not line.startswith(('/', '"')):
+            continue
+        if line.startswith('"'):
+            path, _, rest = line[1:].partition('"')
+        else:
+            path, _, rest = line.partition(' ') if ' ' in line else line.partition('\t')
+        path = _unoctal(path.strip())
+        clients = [c for c in rest.split() if c]
+        e = out.setdefault(path, {'protocol': 'NFS', 'name': path, 'path': path, 'clients': [], 'options': ''})
+        for c in clients:
+            host, _, opts = c.partition('(')
+            e['clients'].append(host or '*')
+            e['options'] = e['options'] or opts.rstrip(')')
+    for e in out.values():
+        e['clients'] = ' '.join(dict.fromkeys(e['clients']))
+    return list(out.values())
+
+
+SMB_SKIP = {'global', 'printers', 'print$', 'homes'}
+
+
+def parse_smb_conf(text: str) -> list[dict]:
+    """testparm -s or smb.conf: every [share] with a path, except the global and printer sections."""
+    out, cur = [], None
+    for raw in (text or '').splitlines():
+        line = raw.strip()
+        if not line or line[0] in '#;':
+            continue
+        if line.startswith('[') and line.endswith(']'):
+            name = line[1:-1].strip()
+            cur = None if name.lower() in SMB_SKIP else {'protocol': 'SMB', 'name': name, 'path': None, 'clients': '', 'options': ''}
+            if cur:
+                out.append(cur)
+            continue
+        if cur and '=' in line:
+            k, _, v = (x.strip() for x in line.partition('='))
+            k = k.lower()
+            if k == 'path':
+                cur['path'] = v.rstrip('/') or '/'
+            elif k in ('valid users', 'hosts allow'):
+                cur['clients'] = (cur['clients'] + ' ' + v).strip()
+            elif k in ('read only', 'writable', 'writeable') and v.lower() in ('yes', 'no', 'true', 'false'):
+                ro = (v.lower() in ('yes', 'true')) == (k == 'read only')
+                cur['options'] = 'ro' if ro else 'rw'
+    return [s for s in out if s['path']]
+
+
+def share_key(e: dict) -> tuple:
+    """What identifies a share whatever the scan or the design calls it: the path for NFS ('NFS' and 'NFSv4.2' alike),
+    the share name for SMB."""
+    p = str(e.get('protocol') or e.get('proto') or '').upper()
+    if p.startswith(('SMB', 'CIFS')):
+        return ('SMB', str(e.get('name') or '').lower())
+    if p.startswith('NFS'):
+        return ('NFS', str(e.get('path') or '').rstrip('/') or '/')
+    return (p, e.get('path'), e.get('name'))
+
+
+def is_designed(e: dict) -> bool:
+    return bool(e.get('designed')) or not e.get('fromScan')
+
+
+def merge_shares(scanned: list[dict], saved: list[dict]) -> list[dict]:
+    """The shares a scan found plus the design's. A designed share the scan also found is one shares.py deployed (or
+    one the operator described): it keeps the design's settings and client mounts, marked deployed. It stays designed,
+    because the deploy script rewrites its own config from the design and would otherwise drop it."""
+    designed = {share_key(e): e for e in saved or [] if is_designed(e)}
+    out = []
+    for e in scanned:
+        d = designed.pop(share_key(e), None)
+        out.append({**d, 'fromScan': True, 'designed': True} if d else e)
+    return out + [{**d, 'fromScan': False, 'designed': True} for d in designed.values()]
+
+
+def shares_from_inventory(inv: dict) -> list[dict]:
+    return [dict(s, fromScan=True) for s in parse_nfs_exports(inv.get('nfs') or '') + parse_smb_conf(inv.get('smb') or '')]
+
+
 # hosts already in the index
 
 def node_from_index(conn: Conn, host: str, symlink_limit: int = 20000) -> dict:
@@ -428,6 +662,8 @@ def node_from_index(conn: Conn, host: str, symlink_limit: int = 20000) -> dict:
     if inv.get('zpool_status'):
         apply_zpool_status(node, parse_zpool_status(inv['zpool_status']))
         finalize_zfs_capacity(node)
+    if inv.get('lvs'):
+        apply_lvs(node, inv['lvs'])
 
     parts = {p['dev']: (p, d) for d in node['disks'] for p in d['parts']}
     disks = {d['dev']: d for d in node['disks']}
@@ -452,10 +688,13 @@ def node_from_index(conn: Conn, host: str, symlink_limit: int = 20000) -> dict:
         elif dev in disks:
             tier = disks[dev]['tier']
         pool = next((p for p in node['pools'] if dev == p['name'] or (src or '').split('/')[0] == p['name']
-                     or dev in p['members']), None)
+                     or dev in p['members'] or dev in p.get('aliases', ())), None)
         if pool:
             tier = pool['tier']
-            if fs == 'zfs' and '/' in (src or ''):
+            lv = next((ds for ds in pool['datasets'] if dev in (ds.get('dev'), ds['name'])), None) if pool['type'] == 'lvm' else None
+            if lv:
+                lv['mount'] = lv['mount'] or mp
+            elif fs == 'zfs' and '/' in (src or ''):
                 if not any(ds['name'] == src for ds in pool['datasets']):
                     pool['datasets'].append({'name': src, 'mount': mp, 'props': {}})
             elif not pool.get('mount'):
@@ -484,37 +723,90 @@ def node_from_index(conn: Conn, host: str, symlink_limit: int = 20000) -> dict:
         if kind == 'bind':
             node['links'].append({'kind': 'bind', 'path': mp, 'target': bind_src or '?', 'from_index': True, 'exists': True})
 
+    node['exports'] = shares_from_inventory(inv)
     _index_links(conn, node, host_id, mount_ids, symlink_limit)
     node['index'] = _index_stats(conn, host_id)
     return node
 
 
+# Links the OS manages: package alternatives, systemd enablement, usr-merge, zoneinfo, CA bundles. They say nothing about
+# storage layout, and a Debian or Raspberry Pi OS install has hundreds, so they are counted but never listed.
+SYSTEM_LINK_DIRS = ('/etc/alternatives', '/etc/systemd', '/etc/rc0.d', '/etc/rc1.d', '/etc/rc2.d', '/etc/rc3.d',
+                    '/etc/rc4.d', '/etc/rc5.d', '/etc/rc6.d', '/etc/rcS.d', '/etc/init.d', '/etc/ssl', '/etc/ca-certificates',
+                    '/etc/fonts', '/etc/X11', '/etc/xdg', '/etc/dbus-1', '/etc/udev', '/etc/pam.d', '/etc/profile.d',
+                    '/usr', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/var/lib/dpkg', '/var/lib/systemd',
+                    '/var/lib/dkms', '/var/lib/flatpak', '/var/lib/snapd', '/var/lib/pacman',
+                    '/opt/vc', '/boot')
+SYSTEM_LINK_FILES = ('/etc/localtime', '/etc/mtab', '/etc/os-release', '/etc/resolv.conf', '/etc/vconsole.conf',
+                     '/etc/machine-id', '/etc/initramfs-tools/initramfs.conf')
+MAX_HOPS = 40          # the kernel's ELOOP limit
+LOCK_TARGET = re.compile(r'[^/]*:\+\d+')   # Firefox/Thunderbird profile locks: always dangling by design
+
+
+def is_system_link(path: str) -> bool:
+    return path in SYSTEM_LINK_FILES or any(is_under(path, d) for d in SYSTEM_LINK_DIRS)
+
+
+def canonical(path: str, links: dict) -> tuple[str, bool]:
+    """Resolve every component of path through the indexed symlinks, like realpath: /lib/x with /lib → usr/lib
+    becomes /usr/lib/x. Returns (path, looped)."""
+    parts = [p for p in path.split('/') if p]
+    done, hops = '/', 0
+    while parts:
+        name = parts.pop(0)
+        if name == '.':
+            continue
+        if name == '..':
+            done = posixpath.dirname(done) or '/'
+            continue
+        cur = join_path(done, name)
+        if cur in links:
+            hops += 1
+            if hops > MAX_HOPS:
+                return cur, True
+            target = links[cur][0]
+            parts = [p for p in target.split('/') if p] + parts
+            if target.startswith('/'):
+                done = '/'
+            continue
+        done = cur
+    return done, False
+
+
 def _index_links(conn, node, host_id, mount_ids, limit):
-    """Symlinks worth a report line: broken ones, loops, and ones that cross a mount boundary."""
+    """Symlinks worth a report line: broken ones, loops, and ones that cross a mount boundary. Targets resolve through
+    symlinked parents (usr-merge), and links the OS manages are left out."""
     rows = conn.all("""SELECT f.parent_path, f.filename, f.symlink_target, m.mount_point FROM file_records f
                        JOIN mounts m ON m.mount_id = f.mount_id
                        WHERE m.host_id = :h AND f.is_symlink LIMIT :lim""", {'h': host_id, 'lim': limit})
     from .analysis import containing_mount, real_mounts
     mounts = real_mounts(node)
     links = {join_path(p, n): (t, mp) for p, n, t, mp in rows}
-    picked = []
+    picked, system = [], 0
     for path, (target, mp) in links.items():
-        resolved = target if target.startswith('/') else posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
+        if is_system_link(path) or LOCK_TARGET.fullmatch(target):
+            system += 1
+            continue
+        start = target if target.startswith('/') else posixpath.join(posixpath.dirname(path), target)
+        resolved, looped = canonical(start, links)
         tm = containing_mount(resolved, mounts)
         exists = None
-        if resolved in links:
-            exists = True
+        if looped:
+            exists = False
         elif any(is_under(resolved, x) for x in DEFAULT_EXCLUDE_PATHS):
             exists = None                       # /proc, /sys, /dev, /run are never walked
+        elif resolved == '/':
+            exists = True
         elif tm and mount_ids.get(tm['target'], (None, False))[1]:
             parent, name = split_path(resolved)
             exists = bool(conn.scalar('SELECT count(*) FROM file_records WHERE mount_id = :m AND parent_path = :p AND filename = :n',
                                       {'m': mount_ids[tm['target']][0], 'p': parent, 'n': name}))
         cross = bool(tm and tm['target'] != mp)
-        if exists is False or cross or resolved in links:
-            picked.append({'kind': 'symlink', 'path': path, 'target': target, 'exists': exists, 'from_index': True,
-                           'cross_mount': cross})
-    node['index_symlinks'] = {'checked': len(links), 'reported': len(picked), 'capped': len(rows) >= limit}
+        if exists is False or cross:
+            picked.append({'kind': 'symlink', 'path': path, 'target': target, 'resolved': resolved, 'exists': exists,
+                           'from_index': True, 'cross_mount': cross, **({'note': 'ELOOP'} if looped else {})})
+    node['index_symlinks'] = {'checked': len(links), 'reported': len(picked), 'system': system,
+                              'capped': len(rows) >= limit}
     picked.sort(key=lambda l: (l['exists'] is not False, l['path']))
     node['links'].extend(picked[:200])
 
@@ -576,7 +868,7 @@ def merge_blueprint(node: dict, bp_node: dict):
     paths = {l['path'] for l in node['links']}
     node['links'].extend(l for l in bp_node['links'] if l['path'] not in paths)
     node['protection'] = bp_node['protection'] or node['protection']
-    node['exports'] = bp_node['exports'] or node['exports']
+    node['exports'] = merge_shares(node['exports'], bp_node['exports'])
     for bp_pool in bp_node['pools']:
         pool = next((p for p in node['pools'] if p['name'] == bp_pool['name']), None)
         if pool:

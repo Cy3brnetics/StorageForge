@@ -194,7 +194,7 @@ class EndToEnd(unittest.TestCase):
     def test_scan_search_and_incremental_diff(self):
         first = self.scan()
         self.assertEqual(first['status'], 'ok')
-        self.assertEqual(first['entries'], 1 + 2 + 1200 + 1)       # root, a, b, images, notes (.git pruned)
+        self.assertEqual(first['entries'], 1 + 2 + 1200 + 1 + 1)   # root, a, b, images, notes, b/.git (its contents pruned)
         self.assertEqual(len(self.search(pattern='*.cr2')), 1200)
         self.assertEqual(len(self.search(pattern='*_00?5.CR2')), 10)
         self.assertEqual(len(self.search(pattern='notes.TXT')), 1)

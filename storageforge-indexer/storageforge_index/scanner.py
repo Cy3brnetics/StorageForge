@@ -44,6 +44,7 @@ class ScanOptions:
     parallel: int = 4
     batch_size: int = 20_000
     checksum: bool = False
+    git: bool = True                 # read every repository the walk found through the host's git
     checksum_min_size: int = 1 << 20
     nice: bool = True
     dry_run: bool = False
@@ -77,6 +78,7 @@ class JobResult:
     entries: int = 0
     bytes: int = 0
     read_errors: int = 0
+    denied: list = field(default_factory=list)
     seconds: float = 0.0
     error: Exception | None = None
     diff: DiffStats | None = None
@@ -229,6 +231,7 @@ def stream_job(t: Transport, job: ScanJob, pool: WriterPool, opts: ScanOptions) 
     for pipe in (proc.stdout, proc.stderr):
         pipe.close()
     res.read_errors = err.count
+    res.denied = err.denied
     res.seconds = time.time() - started
     return res
 
@@ -290,8 +293,8 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
             return None
 
         host_id = db.upsert_host(conn, inv, t)
+        scan_id = db.begin_scan(conn, host_id)          # refuses while another scan of this host runs
         db.sync_mounts(conn, host_id, plans)
-        scan_id = db.begin_scan(conn, host_id)
         writers = max(1, min(db.max_writers, len(jobs)))
         log(f'scan #{scan_id}: {len(jobs)} job(s), {opts.parallel} parallel stream(s), {writers} writer(s)')
         pool = WriterPool(db, scan_id, writers, opts.max_delete_ratio)
@@ -322,6 +325,21 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
             errs = f', {r.read_errors} unreadable' if r.read_errors else ''
             log(f'  ✓ {r.job.root:<34} {r.entries:>11,} entries {fmt_bin(r.bytes):>11}  {change}  '
                 f'({r.seconds:.1f}s, {rate:,.0f}/s{errs})')
+        denied = [(r.job.plan.info.target, p) for r in results for p in r.denied]
+        if denied:
+            db.save_denied(conn, scan_id, denied)
+            log(f'  {sum(len(r.denied) for r in results):,} folder(s) unreadable as {inv.user or "the scan user"}; '
+                'see Access in the web UI, or: storageforge-index access script')
+        if opts.git:
+            from .gitrepos import survey
+            try:
+                g = survey(db, conn, t, host_id, scan_id)
+                if g.get('error'):
+                    log(f'  git: {g["error"]}')
+                elif g['repos']:
+                    log(f'  git: {g["repos"]} repositories ({g["bare"]} bare, {g["dirty"]} with uncommitted changes)')
+            except Exception as exc:                      # never fail a finished scan over the git pass
+                log(f'  git survey failed: {exc}')
         if opts.checksum:
             hashed = checksum_pass(db, conn, t, host_id, opts.checksum_min_size, opts.nice)
             log(f'  checksummed {hashed:,} size-collision candidates')

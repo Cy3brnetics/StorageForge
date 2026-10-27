@@ -34,6 +34,7 @@ NETWORK_FS = frozenset({
     'lustre', 'beegfs', 'fuse.juicefs',
 })
 DEFAULT_EXCLUDE_PATHS = ('/proc', '/sys', '/dev', '/run')
+RECORD_PRUNED = frozenset({'.git'})        # pruned names whose own entry is still indexed
 DEFAULT_EXCLUDE_NAMES = ('.git', 'node_modules', '.Trash', '.Trash-*', '__pycache__', '.snapshots', '.zfs')
 
 
@@ -116,17 +117,40 @@ class Transport:
 
 
 class StderrTail(threading.Thread):
-    """Drains a stderr pipe so the remote process never blocks, keeping a count and the last lines."""
+    """Drains a stderr pipe so the remote process never blocks, keeping a count, the last lines and the first
+    directories find could not read."""
 
-    def __init__(self, pipe, keep: int = 5):
+    def __init__(self, pipe, keep: int = 5, keep_denied: int = 300):
         super().__init__(daemon=True)
         self.pipe, self.count, self.tail = pipe, 0, deque(maxlen=keep)
+        self.denied, self.denied_count, self.keep_denied = [], 0, keep_denied
         self.start()
 
     def run(self):
         for line in iter(self.pipe.readline, b''):
             self.count += 1
-            self.tail.append(line.decode('utf-8', 'replace').rstrip())
+            text = line.decode('utf-8', 'replace').rstrip()
+            self.tail.append(text)
+            m = DENIED.match(text)
+            if m:
+                self.denied_count += 1
+                if len(self.denied) < self.keep_denied:
+                    self.denied.append(m.group(1))
+
+
+# find: '/srv/x': Permission denied   (LC_ALL=C quotes; UTF-8 locales use ‘ ’)
+DENIED = re.compile(r"^\S*find: ['‘](.*)['’]: Permission denied$")
+
+
+# Read-only scan access (storageforge_index.access): private copies of find and sha256sum carrying
+# CAP_DAC_READ_SEARCH, executable only by the storageforge-scan group. Used when present, plain tools otherwise.
+READONLY_DIR = '/usr/local/lib/storageforge'
+
+
+def _tool(name: str) -> str:
+    t = f'{READONLY_DIR}/{name}'           # used only if it runs: a capability the kernel refuses would break every scan
+    probe = f'{t} / -maxdepth 0' if name == 'find' else f'{t} /dev/null'
+    return f'"$({probe} >/dev/null 2>&1 && echo {t} || echo {name})"'
 
 
 NICE = "$(command -v ionice >/dev/null 2>&1 && echo 'ionice -c3') nice -n 10 "
@@ -134,16 +158,19 @@ NICE = "$(command -v ionice >/dev/null 2>&1 && echo 'ionice -c3') nice -n 10 "
 
 def find_command(root: str, prune_paths, prune_names, nice: bool = True) -> str:
     q = shlex.quote
-    tests = [f'-path {q(glob_escape(p))}' for p in prune_paths] + [f'-name {q(n)}' for n in prune_names]
-    prune = f"\\( {' -o '.join(tests)} \\) -prune -o " if tests else ''
+    # .git is still pruned (its objects are noise), but the .git entry itself is recorded: it marks a repository
+    keep = [n for n in prune_names if n in RECORD_PRUNED]
+    tests = [f'-path {q(glob_escape(p))}' for p in prune_paths] + [f'-name {q(n)}' for n in prune_names if n not in keep]
+    marks = ''.join(f"\\( -name {q(n)} -printf '{FIND_FORMAT}' -prune \\) -o " for n in keep)
+    prune = marks + (f"\\( {' -o '.join(tests)} \\) -prune -o " if tests else '')
     # -P (default) never follows symlinks, so symlink loops cannot recurse; -xdev stays on one
     # filesystem and every other mount point below the root is pruned explicitly, which also
     # stops same-device bind mounts from being walked twice.
-    return f"LC_ALL=C {NICE if nice else ''}find -P {q(root)} -xdev {prune}-printf '{FIND_FORMAT}'"
+    return f"LC_ALL=C {NICE if nice else ''}{_tool('find')} -P {q(root)} -xdev {prune}-printf '{FIND_FORMAT}'"
 
 
 def checksum_command(nice: bool = True) -> str:
-    return f"LC_ALL=C {NICE if nice else ''}xargs -0 -r sha256sum -z --"
+    return f"LC_ALL=C {NICE if nice else ''}xargs -0 -r {_tool('sha256sum')} -z --"
 
 
 INVENTORY_SCRIPT = r"""
@@ -154,9 +181,14 @@ echo '@@lsblk'
 lsblk -J -b -o NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,LABEL,UUID,PARTLABEL,SERIAL,MODEL,TRAN,ROTA,PTTYPE,START,LOG-SEC,PHY-SEC 2>/dev/null \
   || lsblk -J -b -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,LABEL,UUID,SERIAL,MODEL,TRAN,ROTA 2>/dev/null
 echo '@@zpool'; zpool status -P 2>/dev/null
+echo '@@lvs'; lvs --reportformat json --units b --nosuffix -o vg_name,lv_name,segtype,lv_size,data_stripes,lv_health_status,copy_percent 2>/dev/null
 echo '@@findmnt'; findmnt -J -b -l -o TARGET,SOURCE,FSTYPE,SIZE,USED,OPTIONS,MAJ:MIN,FSROOT 2>/dev/null
 echo '@@mountinfo'; cat /proc/self/mountinfo 2>/dev/null
 echo '@@df'; df -B1 -P 2>/dev/null
+echo '@@nfs'; cat /var/lib/nfs/etab 2>/dev/null || cat /etc/exports /etc/exports.d/*.exports 2>/dev/null
+echo '@@smb'; if command -v smbd >/dev/null 2>&1 || [ -f /etc/samba/smb.conf ]; then
+  pgrep -x smbd >/dev/null 2>&1 && echo '# smbd running'; testparm -s 2>/dev/null || cat /etc/samba/smb.conf 2>/dev/null; fi
+echo '@@access'; if [ -x /usr/local/lib/storageforge/find ]; then echo capability; else echo user; fi; id -un 2>/dev/null
 echo '@@end'
 """
 
@@ -182,11 +214,16 @@ class HostInventory:
     lsblk: dict | None
     zpool_status: str
     df: str
+    lvs: str = ''     # empty unless the scan user may run lvs; lsblk alone still shows LVM RAID legs
+    access: str = ''  # 'capability' once read-only scan access is set up, else 'user'
+    user: str = ''
+    nfs: str = ''     # /var/lib/nfs/etab (live exports) or /etc/exports
+    smb: str = ''     # testparm -s or smb.conf
 
     def to_json(self) -> str:
         return json.dumps({
             'collected_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
-            'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'df': self.df,
+            'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb,
             'mounts': [asdict(m) for m in self.mounts],
         })
 
@@ -270,4 +307,5 @@ def collect_inventory(t: Transport) -> HostInventory:
     if not mounts:
         raise RemoteError(f'{t.host}: could not read the mount table (findmnt and /proc/self/mountinfo both failed)')
     return HostInventory(hostname, ip, ' · '.join(lines('os')) or None, mounts, lsblk,
-                         sec.get('zpool', '').strip(), sec.get('df', '').strip())
+                         sec.get('zpool', '').strip(), sec.get('df', '').strip(), sec.get('lvs', '').strip(),
+                         *(lines('access') + ['', ''])[:2], sec.get('nfs', '').strip(), sec.get('smb', '').strip())

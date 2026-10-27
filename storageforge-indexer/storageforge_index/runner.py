@@ -101,12 +101,20 @@ def ephemeral_agent(key: SecretBuffer, ttl: int = AGENT_TTL):
         shutil.rmtree(d, ignore_errors=True)
 
 
+def connect_address(conn, host: str) -> str:
+    """The address an indexed host was scanned at. After the first scan a host is known by its own hostname
+    (cachyos-x8664), which the container often cannot resolve and which the key binding (10.42.0.100) never named."""
+    row = conn.all('SELECT ssh_host FROM hosts WHERE lower(hostname) = lower(:h) AND ssh_host IS NOT NULL', {'h': host})
+    return row[0][0] if row else host
+
+
 def scan_via_vault(db: Database, host: str, opts: ScanOptions, actor: str | None = None, log=None,
                    rebuild_graph: bool = True) -> dict | None:
     """Resolve the host's key binding, scan through an ephemeral agent and audit every step."""
     actor = actor or actor_name()
     conn = db.connect()
     try:
+        host = connect_address(conn, host)
         with Vault(db, conn).unlock() as vault:
             audit = AuditLog(db, conn, vault.audit_key)
             action = 'checksum' if opts.checksum else 'scan'

@@ -128,7 +128,7 @@ def pool_capacity(kind, level, sizes, *, width=None, recordsize=128 * KiB, ashif
         r['usable'] = data - slop
         r['tolerance'] = w - 1 if level == 'mirror' else P
         r['layout'] = f'zfs {level}' + (f' · {groups}×{w}-wide' if w > 1 else f' · {n} single-disk vdevs')
-    elif kind in ('md', 'mdadm'):
+    elif kind in ('md', 'mdadm') or (kind == 'lvm' and level.startswith('raid')):   # LVM RAID is md raid underneath
         m = min(sizes)
         r['waste'] = raw - m * n
         lv = level.replace('raid', '')
@@ -136,7 +136,7 @@ def pool_capacity(kind, level, sizes, *, width=None, recordsize=128 * KiB, ashif
                              '6': ((n - 2) * m, 2 * m, 2), '10': (n * m / 2, n * m / 2, 1)}.get(lv, (n * m, 0, 0))
         reserve = data * FS_RESERVE.get(fs or '', lambda _: 0.0)(ext4_reserve)
         r.update(parity=float(parity), tolerance=tol, fs_reserve=reserve, usable=data - reserve,
-                 layout=f'mdadm {level} · {n} members')
+                 layout=f'{"LVM" if kind == "lvm" else "mdadm"} {level} · {n} {"legs" if kind == "lvm" else "members"}')
     elif kind == 'btrfs':
         copies = {'raid1': 2, 'raid1c3': 3, 'raid1c4': 4, 'raid10': 2}.get(level, 1)
         data = raw if copies == 1 else _btrfs_alloc(sizes, copies, level == 'raid10')

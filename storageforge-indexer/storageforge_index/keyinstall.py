@@ -92,6 +92,10 @@ def install_public_key(public_line: str, host: str, user: str, password: str, po
         lines = [re.sub(r'^\S*ssh-copy-id: (ERROR: )?', '', l) for l in out.splitlines()
                  if l.strip() and not re.match(r'^\S*ssh-copy-id: INFO', l)]
         reason = next((l for l in reversed(lines) if 'denied' in l.lower() or 'error' in l.lower()), lines[-1] if lines else '')
+        if 'timed out' in reason.lower():
+            reason += (' · nothing answered on that port. If this is the machine running StorageForge, its firewall is'
+                       ' probably dropping connections from the Docker network (with ufw: sudo ufw allow in on sf0 to'
+                       ' any port 22 proto tcp); otherwise check sshd, the address and any VPN routes.')
         raise InstallError(f'ssh-copy-id failed (exit {p.returncode}): {reason}')
     added = re.search(r'Number of key\(s\) added:\s*(\d+)', out)
     return {'host': host, 'user': user, 'port': port, 'keys_added': int(added.group(1)) if added else None}
