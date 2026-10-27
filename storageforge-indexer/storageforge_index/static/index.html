@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>StorageForge Graph</title>
+<title>StorageForge</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <header class="bar">
-  <div class="brand"><svg width="22" height="22" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="3" width="24" height="6" rx="1.5" class="t1"/><rect x="2" y="11" width="24" height="6" rx="1.5" class="t2"/><rect x="2" y="19" width="24" height="6" rx="1.5" class="t3"/></svg><b>StorageForge</b><span class="muted">graph</span></div>
+  <div class="brand"><svg width="22" height="22" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="3" width="24" height="6" rx="1.5" class="t1"/><rect x="2" y="11" width="24" height="6" rx="1.5" class="t2"/><rect x="2" y="19" width="24" height="6" rx="1.5" class="t3"/></svg><b>StorageForge</b></div>
+  <div id="viewmode" class="seg" role="group" aria-label="View"><button type="button" data-mode="topo" aria-pressed="true">Topology</button><button type="button" data-mode="graph" aria-pressed="false">Graph</button></div>
   <label class="field"><span>Host</span><select id="host"><option value="">All hosts</option></select></label>
   <form id="searchform" class="search" role="search"><input id="q" type="search" placeholder="Search files: *.cr2, IMG_2019*, report.pdf  ( / )" aria-label="Search files across hosts" autocomplete="off"></form>
   <div class="actions">
-    <label class="field"><span>Focus</span><select id="hops"><option value="1">1 hop</option><option value="2" selected>2 hops</option><option value="3">3 hops</option></select></label>
+    <label id="hopsfield" class="field"><span>Focus</span><select id="hops"><option value="1">1 hop</option><option value="2" selected>2 hops</option><option value="3">3 hops</option></select></label>
     <a id="toplanner" class="btn" href="/planner">Planner</a>
     <button id="reset" type="button" class="btn">Show all</button>
     <button id="export" type="button" class="btn pri">Export .canvas</button>
@@ -22,7 +23,9 @@
 </header>
 
 <main class="layout">
-  <section class="stage" aria-label="Storage topology graph">
+  <section class="stage" aria-label="Storage topology">
+    <div id="topo" class="topo" aria-label="Editable topology: devices, pools, datasets, mount points, links and exports per host"></div>
+    <div id="savebar" class="savebar" role="status" hidden><span id="savemsg" class="muted"></span><button id="discarddesigns" type="button" class="btn ghost">Discard</button><button id="savedesigns" type="button" class="btn pri">Save design</button></div>
     <canvas id="graph" aria-label="Force-directed storage graph. Select a node to see details; double-click to focus on its neighbourhood."></canvas>
     <div id="crumb" class="crumb" hidden></div>
     <div id="empty" class="empty" hidden>
@@ -49,10 +52,14 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <button type="button" role="tab" data-tab="details" class="on">Details</button>
       <button type="button" role="tab" data-tab="search">Search <span id="nres" class="cnt"></span></button>
       <button type="button" role="tab" data-tab="jobs">Scans</button>
+      <button type="button" role="tab" data-tab="access">Access <span id="naccess" class="cnt"></span></button>
+      <button type="button" role="tab" data-tab="copies">Cleanup</button>
+      <button type="button" role="tab" data-tab="moves">Moves</button>
+      <button type="button" role="tab" data-tab="git">Git</button>
       <button type="button" role="tab" data-tab="keys">Keys</button>
       <button type="button" role="tab" data-tab="audit">Audit</button>
     </nav>
-    <div id="tab-details" class="tab"><p class="muted">Select a node. Double-click one to focus on everything within the chosen number of hops.</p><div id="summary"></div></div>
+    <div id="tab-details" class="tab"><p id="detailshint" class="muted"></p><div id="summary"></div></div>
     <div id="tab-search" class="tab" hidden><p class="muted">Type a pattern above. Select a result to focus its mount point.</p><ol id="results" class="results"></ol></div>
     <div id="tab-jobs" class="tab" hidden>
       <form id="scanform" class="row"><input id="scanhost" type="text" placeholder="hostname or IP bound in the vault" aria-label="Host to scan" required><button class="btn pri" type="submit">Scan</button></form>
@@ -86,6 +93,35 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <h3>Bindings</h3>
       <ol id="bindings" class="list"></ol>
     </div>
+    <div id="tab-access" class="tab" hidden>
+      <p class="muted">Folders the latest scan of each host could not open, and read-only scan access to fix it without running scans as root.</p>
+      <div id="accessbox" class="stack"></div>
+    </div>
+    <div id="tab-copies" class="tab" hidden>
+      <p class="muted">Folders that hold the same file names and sizes in the same layout, so they are likely copies. Checksums are not needed; a <code>--checksum</code> scan confirms them.</p>
+      <form id="copyform" class="row">
+        <label class="field"><span>At least</span><input id="copyfiles" type="number" min="1" value="3" style="width:64px" aria-label="Minimum files"></label><span class="muted">files and</span>
+        <select id="copysize" aria-label="Minimum size"><option value="0">any size</option><option value="1MiB" selected>1 MiB</option><option value="100MiB">100 MiB</option><option value="1GiB">1 GiB</option></select>
+        <button class="btn sm" type="submit">Check</button>
+      </form>
+      <div id="copiesbox" class="stack"></div>
+      <h3>Cold data</h3>
+      <p class="muted">Folders whose newest file is older than the cutoff: candidates for cold storage. Move… starts a step in Moves.</p>
+      <form id="coldform" class="row">
+        <label class="field"><span>Untouched for</span><select id="coldyears" aria-label="Years untouched"><option value="1">1 year</option><option value="2" selected>2 years</option><option value="5">5 years</option></select></label>
+        <select id="coldsize" aria-label="Minimum size"><option value="100MiB">100 MiB+</option><option value="1GiB" selected>1 GiB+</option><option value="10GiB">10 GiB+</option></select>
+        <button class="btn sm" type="submit">Find</button>
+      </form>
+      <div id="coldbox" class="stack"></div>
+    </div>
+    <div id="tab-moves" class="tab" hidden>
+      <p class="muted">Plan where data goes: each step copies, moves, mirrors or snapshots a folder with rsync. Check it against the index, then download the script and run it like storage-setup.sh.</p>
+      <div id="movesbox" class="stack"></div>
+    </div>
+    <div id="tab-git" class="tab" hidden>
+      <p class="muted">Every git repository the scans found. Copies are matched by their first commit, so a bare archive on another machine counts whatever it is called.</p>
+      <div id="gitbox" class="stack"></div>
+    </div>
     <div id="tab-audit" class="tab" hidden>
       <div class="row"><button id="verify" type="button" class="btn">Verify chain</button><span id="verified" class="muted"></span></div>
       <ol id="audit" class="list"></ol>
@@ -104,5 +140,9 @@ storageforge-index graph import --blueprint atlas.json</pre>
   </form>
 </dialog>
 <script src="/app.js"></script>
+<script src="/topology.js"></script>
+<script src="/checks.js"></script>
+<script src="/moves.js"></script>
+<script src="/gitview.js"></script>
 </body>
 </html>

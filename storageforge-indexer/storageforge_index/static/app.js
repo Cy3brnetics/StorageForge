@@ -1,5 +1,5 @@
 'use strict';
-/* StorageForge graph UI: force-directed canvas (charge, springs, collision, gravity),
+/* StorageForge graph UI (the column topology view is topology.js): force-directed canvas (charge, springs, collision, gravity),
    2-hop drill-down focus, 3-2-1 health colouring, file search and .canvas export.
    No third-party code, so it runs offline under a strict 'self' CSP. */
 
@@ -79,7 +79,7 @@ async function loadGraph() {
     e.s.deg++; e.t.deg++;
     return e;
   });
-  $('#empty').hidden = S.nodes.length > 0;
+  $('#empty').hidden = S.nodes.length > 0 || T.mode !== 'graph';
   if (S.focus && !S.byId.has(S.focus)) S.focus = null;
   if (S.selected && !S.byId.has(S.selected)) S.selected = null;
   applyFocus(false);
@@ -87,6 +87,7 @@ async function loadGraph() {
   alpha = Math.max(alpha, old.size ? 0.4 : 0.15);
   wake();
   renderSummary();
+  if (T.mode === 'topo' && T.order.length) renderTopo();   // refresh the health dots
 }
 
 /* ── physics ─────────────────────────────────────────────────────── */
@@ -146,6 +147,7 @@ function warmUp() {
 function wake() { if (!raf) raf = requestAnimationFrame(frame); }
 function frame() {
   raf = 0;
+  if (canvas.hidden) return;                          // topology view: resize() wakes it again
   if (alpha > 0.002) tick();
   draw();
   if (alpha > 0.002 || drag) wake();
@@ -372,6 +374,7 @@ function renderDetails(n) {
 }
 function renderSummary() {
   if (S.selected) return;
+  if (T.mode === 'topo' && T.sel) { renderEditor(); return; }
   const counts = {}; const health = {};
   for (const n of S.nodes) { counts[n.kind] = (counts[n.kind] || 0) + 1; health[n.health] = (health[n.health] || 0) + 1; }
   const dl = document.createElement('dl'); dl.className = 'kv';
@@ -398,6 +401,10 @@ function showTab(name) {
   if (name === 'jobs') { loadJobs(); jobTimer = setInterval(loadJobs, 3000); }
   if (name === 'audit') loadAudit();
   if (name === 'keys') loadKeys();
+  if (name === 'access') loadAccess();
+  if (name === 'copies') loadCopies();
+  if (name === 'moves') loadMoves();
+  if (name === 'git') loadGit();
 }
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
 
@@ -450,7 +457,7 @@ async function queueScan(host) {
   try {
     await api('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host }) });
     loadJobs(); clearInterval(jobTimer); jobTimer = setInterval(async () => { await loadJobs(); }, 3000);
-    setTimeout(loadGraph, 15000);
+    setTimeout(() => { loadGraph(); loadDesigns(); }, 15000);
   } catch (err) { $('#jobs').prepend(text('li', err.message, 'st-failed')); }
 }
 $('#scanform').addEventListener('submit', (ev) => { ev.preventDefault(); const h = $('#scanhost').value.trim(); if (h) queueScan(h); });
@@ -543,7 +550,7 @@ async function loadHosts() {
   sel.value = S.host;
 }
 $('#host').addEventListener('change', () => { $('#toplanner').href = '/planner' + (S.host ? `#overview@${encodeURIComponent(S.host)}` : ''); });
-$('#host').addEventListener('change', async () => { S.host = $('#host').value; S.focus = null; S.selected = null; S.byId = new Map(); await loadGraph(); });
+$('#host').addEventListener('change', async () => { S.host = $('#host').value; S.focus = null; S.selected = null; S.byId = new Map(); T.sel = null; await Promise.all([loadGraph(), loadDesigns()]); });
 $('#hops').addEventListener('change', () => { S.hops = Number($('#hops').value); if (S.focus) applyFocus(); });
 $('#reset').addEventListener('click', () => { for (const n of S.nodes) n.fixed = false; alpha = 0.5; setFocus(null); S.selected = null; renderSummary(); fit(); });
 $('#export').addEventListener('click', async () => {
@@ -590,12 +597,13 @@ $('#lock').addEventListener('click', async () => {
   if (!user) { askLogin(); return; }
   await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
   S.nodes = []; S.edges = []; S.byId = new Map(); S.adj = new Map(); S.selected = S.focus = null;
+  T.docs = new Map(); T.order = []; T.sel = null; renderTopo();
   $('#summary').replaceChildren(); wake();
   askLogin();
 });
 
 async function boot() {
-  try { setUser((await getJSON('/api/me')).username); await loadHosts(); await loadGraph(); }
+  try { setUser((await getJSON('/api/me')).username); await loadHosts(); await Promise.all([loadGraph(), loadDesigns()]); }
   catch (err) { if (!/Sign in/.test(err.message)) alertPanel(err.message); }
 }
-boot();
+// boot() runs at the end of topology.js, once both scripts are loaded

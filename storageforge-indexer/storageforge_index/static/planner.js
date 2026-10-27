@@ -129,6 +129,8 @@ const isUnder=(p,root)=>root==='/'?p.startsWith('/'):(p===root||p.startsWith(roo
 function specFor(p){ if(S.idMode==='LABEL'&&p.label) return 'LABEL='+p.label; if(p.uuid) return 'UUID='+p.uuid; return 'UUID='+(p.fs==='vfat'?shortUUID(p.id):fakeUUID(p.id)); }
 const remoteFs=r=>r.proto.startsWith('NFS')?'nfs4':r.proto.startsWith('SMB')?'cifs':'rclone';
 
+const POOL_KIND={zfs:'OpenZFS',btrfs:'Btrfs',lvm:'LVM RAID',mdadm:'mdadm'};
+const lvPath=p=>p.vg&&p.lv?`/dev/${p.vg}/${p.lv}`:'/dev/'+p.name;
 function poolMembers(pool){
   const whole=S.disks.filter(d=>d.member===pool.name).map(d=>({id:d.dev,size:d.size,disk:d,whole:true}));
   const parts=allParts().filter(x=>x.p.member===pool.name).map(x=>({id:x.p.id,size:x.p.size,disk:x.d,role:x.p.role||'data',part:x.p}));
@@ -157,8 +159,12 @@ function collectMounts(){
     if(pool.type==='zfs'){
       if(pool.mount) M.push({target:pool.mount,node:'pool:'+pool.name,kind:'zfs',fs:'zfs',opts:[],spec:pool.name,dev:pool.name,pool,tier:pool.tier,desc:`ZFS pool root ${pool.name}`});
       (pool.datasets||[]).forEach(ds=>{ if(ds.mount) M.push({target:ds.mount,node:`ds:${pool.name}/${ds.name}`,kind:'zfs',fs:'zfs',opts:[],spec:`${pool.name}/${ds.name}`,dev:`${pool.name}/${ds.name}`,pool,ds,tier:pool.tier,desc:`ZFS dataset ${pool.name}/${ds.name}`}) });
+    } else if(pool.type==='lvm'&&!pool.lv){
+      (pool.datasets||[]).forEach(ds=>{const dev=`/dev/${pool.vg}/${ds.name}`;
+        if(ds.fs==='swap') M.push({target:'none',node:`ds:${pool.name}/${ds.name}`,kind:'swap',fs:'swap',opts:['sw'],spec:dev,dev,pool,ds,tier:pool.tier,desc:`swap on LVM ${pool.vg}/${ds.name}`});
+        else if(ds.mount) M.push({target:ds.mount,node:`ds:${pool.name}/${ds.name}`,kind:'block',fs:ds.fs,opts:ds.opts||[],spec:dev,dev,pool,ds,tier:pool.tier,desc:`${ds.fs} on LVM ${pool.vg}/${ds.name}`})});
     } else if(pool.mount){
-      M.push({target:pool.mount,node:'pool:'+pool.name,kind:'md',fs:pool.fs,opts:pool.opts||[],spec:S.idMode==='LABEL'&&pool.label?'LABEL='+pool.label:'UUID='+fakeUUID(pool.name+'-fs'),dev:'/dev/'+pool.name,pool,tier:pool.tier,desc:`${pool.fs} on mdadm ${pool.level} ${pool.name}`});
+      M.push({target:pool.mount,node:'pool:'+pool.name,kind:'md',fs:pool.fs,opts:pool.opts||[],spec:S.idMode==='LABEL'&&pool.label?'LABEL='+pool.label:'UUID='+fakeUUID(pool.name+'-fs'),dev:lvPath(pool),pool,tier:pool.tier,desc:`${pool.fs} on ${POOL_KIND[pool.type]||'mdadm'} ${pool.level} ${pool.vg?pool.vg+'/'+pool.lv:pool.name}`});
     }
   });
   S.remotes.forEach(r=>{ if(r.mount) M.push({target:r.mount,node:'rem:'+r.id,kind:'remote',fs:remoteFs(r),opts:r.opts||[],spec:r.endpoint,dev:r.endpoint,remote:r,tier:'remote',desc:`${r.proto} via ${r.via}`}) });
@@ -500,7 +506,16 @@ function genBash(){
   L.push('# ── 4. Arrays and pools ────────────────────────────────────────');
   S.pools.forEach(pool=>{
     const m=poolMembers(pool);
-    if(pool.type==='mdadm'){
+    if(pool.type==='lvm'&&!pool.lv){
+      L.push(`run pvcreate ${m.data.map(x=>'/dev/'+x.id).join(' ')}`,`run vgcreate ${pool.vg} ${m.data.map(x=>'/dev/'+x.id).join(' ')}`);
+      (pool.datasets||[]).forEach(ds=>{L.push(`run lvcreate -L ${Math.floor((ds.sizeBytes||0)/MiB)}m -n ${ds.name} ${pool.vg}`);
+        if(ds.fs==='swap') L.push(`run mkswap /dev/${pool.vg}/${ds.name}`); else if(ds.fs) L.push(`run mkfs.${ds.fs} /dev/${pool.vg}/${ds.name}`)});
+    } else if(pool.type==='lvm'){
+      const n=m.data.length,lvl=pool.level,stripes=lvl==='raid5'?n-1:lvl==='raid6'?n-2:lvl==='raid10'?n/2:lvl==='raid0'?n:0;
+      L.push(`run pvcreate ${m.data.map(x=>'/dev/'+x.id).join(' ')}`,`run vgcreate ${pool.vg} ${m.data.map(x=>'/dev/'+x.id).join(' ')}`);
+      L.push(`run lvcreate --type ${lvl} ${lvl==='raid1'?'-m '+(n-1):'-i '+stripes} -l 100%FREE -n ${pool.lv} ${pool.vg}`);
+      L.push(`run mkfs.${pool.fs||'ext4'} ${pool.fs==='ext4'||!pool.fs?'-m 1 ':''}${pool.label?'-L '+pool.label+' ':''}${lvPath(pool)}`);
+    } else if(pool.type==='mdadm'){
       L.push(`run mdadm --create /dev/${pool.name} --level=${pool.level.replace('raid','')} --raid-devices=${m.data.length} --metadata=1.2 ${m.data.map(x=>'/dev/'+x.id).join(' ')}`);
       L.push(`run mdadm --detail --scan | tee -a /etc/mdadm/mdadm.conf`);
       L.push(`run mkfs.${pool.fs} ${pool.fs==='ext4'?'-m 1 ':''}-L ${pool.label} /dev/${pool.name}`);
@@ -539,7 +554,13 @@ function genAnsible(){
     if(['ext4','xfs','btrfs','f2fs','vfat','swap'].includes(p.fs)) L.push(`    - name: Create ${p.fs} on /dev/${p.id}`,'      community.general.filesystem:',`        fstype: ${p.fs}`,`        dev: /dev/${p.id}`,`        opts: ${q((p.fs==='vfat'?'-n ':p.fs==='f2fs'?'-l ':'-L ')+(p.label||''))}`);
   })});
   S.pools.forEach(pool=>{const m=poolMembers(pool);
-    if(pool.type==='mdadm') L.push(`    - name: Create mdadm ${pool.level} ${pool.name}`,`      ansible.builtin.command: mdadm --create /dev/${pool.name} --run --level=${pool.level.replace('raid','')} --raid-devices=${m.data.length} ${m.data.map(x=>'/dev/'+x.id).join(' ')}`,'      args:',`        creates: /dev/${pool.name}`,`    - name: Create ${pool.fs} on /dev/${pool.name}`,'      community.general.filesystem:',`        fstype: ${pool.fs}`,`        dev: /dev/${pool.name}`,`        opts: ${q('-L '+pool.label)}`);
+    if(pool.type==='lvm'&&!pool.lv){ L.push(`    - name: Volume group ${pool.vg}`,'      community.general.lvg:',`        vg: ${pool.vg}`,`        pvs: ${m.data.map(x=>'/dev/'+x.id).join(',')}`);
+      (pool.datasets||[]).forEach(ds=>L.push(`    - name: LV ${pool.vg}/${ds.name}`,'      community.general.lvol:',`        vg: ${pool.vg}`,`        lv: ${ds.name}`,`        size: ${Math.floor((ds.sizeBytes||0)/MiB)}m`,
+        ...(ds.fs?[`    - name: Create ${ds.fs} on /dev/${pool.vg}/${ds.name}`,'      community.general.filesystem:',`        fstype: ${ds.fs}`,`        dev: /dev/${pool.vg}/${ds.name}`]:[]))) }
+    else if(pool.type==='lvm') L.push(`    - name: Volume group ${pool.vg}`,'      community.general.lvg:',`        vg: ${pool.vg}`,`        pvs: ${m.data.map(x=>'/dev/'+x.id).join(',')}`,
+      `    - name: LVM ${pool.level} ${pool.vg}/${pool.lv}`,'      community.general.lvol:',`        vg: ${pool.vg}`,`        lv: ${pool.lv}`,'        size: 100%FREE',`        opts: --type ${pool.level}`,
+      `    - name: Create ${pool.fs||'ext4'} on ${lvPath(pool)}`,'      community.general.filesystem:',`        fstype: ${pool.fs||'ext4'}`,`        dev: ${lvPath(pool)}`);
+    else if(pool.type==='mdadm') L.push(`    - name: Create mdadm ${pool.level} ${pool.name}`,`      ansible.builtin.command: mdadm --create /dev/${pool.name} --run --level=${pool.level.replace('raid','')} --raid-devices=${m.data.length} ${m.data.map(x=>'/dev/'+x.id).join(' ')}`,'      args:',`        creates: /dev/${pool.name}`,`    - name: Create ${pool.fs} on /dev/${pool.name}`,'      community.general.filesystem:',`        fstype: ${pool.fs}`,`        dev: /dev/${pool.name}`,`        opts: ${q('-L '+pool.label)}`);
     else{L.push(`    - name: Check for zpool ${pool.name}`,`      ansible.builtin.command: zpool list -H ${pool.name}`,`      register: zp_${pool.name}`,'      changed_when: false','      failed_when: false',`    - name: Create zpool ${pool.name} (${pool.level})`,`      ansible.builtin.command: >-`,`        zpool create -o ashift=${pool.ashift} -O compression=zstd -O atime=off -O xattr=sa -m ${pool.mount||'none'} ${pool.name} ${pool.level==='stripe'?'':pool.level} ${m.data.map(x=>x.whole?byId(x.disk):'/dev/'+x.id).join(' ')}${m.log.length?' log '+m.log.map(x=>'/dev/'+x.id).join(' '):''}${m.cache.length?' cache '+m.cache.map(x=>'/dev/'+x.id).join(' '):''}`,`      when: zp_${pool.name}.rc != 0`);
       (pool.datasets||[]).forEach(ds=>L.push(`    - name: Dataset ${pool.name}/${ds.name}`,'      community.general.zfs:',`        name: ${pool.name}/${ds.name}`,'        state: present','        extra_zfs_properties:',`          recordsize: ${ds.recordsize}`,`          compression: ${ds.compression}`,`          sync: ${ds.sync}`,`          mountpoint: ${ds.mount||'none'}`))}
   });
@@ -553,11 +574,11 @@ function blueprint(){
   return {apiVersion:'storageforge/v1',kind:'StorageBlueprint',metadata:{host:S.host,generated:today(),identifiers:S.idMode},
     devices:S.disks.map(d=>({dev:'/dev/'+d.dev,model:d.model,serial:d.serial,bus:d.bus,media:d.media,tier:d.tier,sizeBytes:d.size,sector:{logical:d.lbs,physical:d.pbs},table:d.table,member:d.member,
       partitions:d.parts.map(p=>({id:p.id,num:p.num,uuid:p.uuid,startBytes:p.start,startMiB:+(p.start/MiB).toFixed(3),sizeBytes:p.size,fs:p.fs,label:p.label,mount:p.mount,options:p.opts,member:p.member,role:p.role,subvolumes:p.subvols}))})),
-    pools:S.pools.map(p=>({name:p.name,type:p.type,level:p.level,tier:p.tier,ashift:p.ashift,fs:p.fs,mount:p.mount,encryption:p.encryption,members:poolMembers(p).data.map(x=>x.id),log:poolMembers(p).log.map(x=>x.id),cache:poolMembers(p).cache.map(x=>x.id),datasets:p.datasets,label:p.label,options:p.opts,usableBytes:Math.round(calcEngine(poolCalc(p)).usable)})),
+    pools:S.pools.map(p=>({name:p.name,type:p.type,level:p.level,tier:p.tier,ashift:p.ashift,fs:p.fs,mount:p.mount,encryption:p.encryption,members:poolMembers(p).data.map(x=>x.id),log:poolMembers(p).log.map(x=>x.id),cache:poolMembers(p).cache.map(x=>x.id),datasets:p.datasets,label:p.label,options:p.opts,vg:p.vg,lv:p.lv,levelSource:p.levelSource,usableBytes:Math.round(calcEngine(poolCalc(p)).usable)})),
     mounts:collectMounts().map(m=>({target:m.target,kind:m.kind,fs:m.fs,spec:m.spec,options:m.opts,tier:m.tier,source:m.dev})),
-    remotes:S.remotes.map(r=>({id:r.id,capacity:r.capacity,name:r.name,protocol:r.proto,endpoint:r.endpoint,via:r.via,mount:r.mount,status:r.status,options:r.opts})),
+    remotes:S.remotes.map(r=>({...(r.raw||{}),id:r.id,capacity:r.capacity,name:r.name,protocol:r.proto,endpoint:r.endpoint,via:r.via,mount:r.mount,status:r.status,options:r.opts})),
     links:S.links.map(l=>({kind:l.kind,path:l.path,target:l.target,health:linkHealth(l).state,fromScan:l.fromScan||undefined})),
-    exports:S.exports.map(e=>({protocol:e.proto,name:e.name,path:e.path,clients:e.clients,options:e.opts})),
+    exports:S.exports.map(e=>({...(e.raw||{}),protocol:e.proto,name:e.name,path:e.path,clients:e.clients,options:e.opts})),
     protection:S.protection.map(r=>{const m=collectMounts().find(x=>x.node===r.node)||{};return {node:r.node,dataset:r.name,path:m.target||null,tier:m.tier||null,ephemeral:!!r.ephemeral,sync:r.sync,snapshots:{enabled:r.snap.on,tool:r.snap.tool,policy:r.snap.policy,count:r.snap.count,overhead:r.snap.overhead},backup:r.backup,status:protStatus(r).t}}),
     planner:{existing:S.existing||{},known:S.known||[]}};
 }
@@ -576,7 +597,7 @@ function genASCII(){
   ['fast','mass','remote'].forEach(tier=>{
     const c=[];
     S.disks.filter(d=>d.tier===tier).forEach(d=>{
-      const dc=d.member?[{t:`whole disk → zpool ${d.member}`}]:d.parts.map(p=>{
+      const dc=d.member?[{t:`whole disk → ${(poolBy(d.member)||{}).type==='lvm'?(poolBy(d.member).lv?'LVM RAID leg of '+lvPath(poolBy(d.member)):'LVM PV in '+d.member):'zpool '+d.member}`}]:d.parts.map(p=>{
         const pc=p.subvols&&p.subvols.length?p.subvols.map(s=>({t:`${s.name}${s.mount?' → '+s.mount:''}`,c:s.mount?linksOn(s.mount):null})):p.mount?linksOn(p.mount):null;
         return {t:`${p.id.replace(d.dev,'')}  ${(p.fs).padEnd(6)} ${fmtBin(p.size).padStart(10)}${p.member?` → ${p.member} (${p.role||'member'})`:p.mount&&MOUNTABLE.includes(p.fs)&&!(p.subvols&&p.subvols.length)?' → '+p.mount:''}`,c:pc&&pc.length?pc:null}});
       c.push({t:`${d.dev.padEnd(8)} ${d.model} [${d.bus}] ${fmtBin(d.size)}`,c:dc});
@@ -666,7 +687,7 @@ function segHTML(d,p){
 function diskHTML(d){
   const sel=UI.sel&&UI.sel.type==='disk'&&UI.sel.id===d.dev;
   let segs='';
-  if(d.member){segs=`<button type="button" class="seg fs-zfs_member" style="flex-grow:1" data-node="disk:${d.dev}" data-act="sel" data-type="pool" data-id="${esc(d.member)}"><b>whole disk · zfs member</b><span>→ ${esc(d.member)} · partitions p1/p9 created by zpool</span></button>`}
+  if(d.member){const mp=poolBy(d.member)||{};const lvm=mp.type==='lvm';segs=`<button type="button" class="seg ${lvm?'fs-linux_raid_member':'fs-zfs_member'}" style="flex-grow:1" data-node="disk:${d.dev}" data-act="sel" data-type="pool" data-id="${esc(d.member)}"><b>whole disk · ${lvm?(mp.lv?'LVM RAID leg':'LVM PV'):'zfs member'}</b><span>→ ${lvm?(mp.lv?`${esc(mp.vg)}/${esc(mp.lv)} · ${esc(mp.level)} · PV on the bare disk`:`volume group ${esc(mp.vg)}`):`${esc(d.member)} · partitions p1/p9 created by zpool`}</span></button>`}
   else{
     let cur=0;const parts=d.parts.slice().sort((a,b)=>a.start-b.start);const limit=d.table==='mbr'?Math.min(d.size,2*TiB):d.size;
     parts.forEach(p=>{ if(p.start-cur>=64*MiB) segs+=`<div class="seg free" style="flex-grow:${(p.start-cur)/d.size}"><b>free</b><span>${fmtBin(p.start-cur,1)}</span></div>`; segs+=segHTML(d,p); cur=p.start+p.size });
@@ -681,9 +702,9 @@ function diskHTML(d){
 }
 function poolHTML(p){
   const sel=UI.sel&&UI.sel.type==='pool'&&UI.sel.id===p.name;const m=poolMembers(p);const r=calcEngine(poolCalc(p));
-  const rows=p.type==='zfs'?(p.datasets||[]).map(ds=>`<div class="dsrow" data-node="ds:${esc(p.name)}/${esc(ds.name)}"><span>${esc(p.name)}/${esc(ds.name)}</span><span class="muted">${esc(ds.mount||'—')}</span><span class="muted">rs=${esc(ds.recordsize)} ${esc(ds.compression)}${ds.sync!=='standard'?' sync='+esc(ds.sync):''}</span></div>`).join(''):`<div class="dsrow"><span>${esc(p.fs)} · ${esc(p.label)}</span><span class="muted">${esc(p.mount)}</span><span class="muted">${esc((p.opts||[]).join(','))}</span></div>`;
+  const rows=p.type==='lvm'&&!p.lv?(p.datasets||[]).map(ds=>`<div class="dsrow" data-node="ds:${esc(p.name)}/${esc(ds.name)}"><span>${esc(p.vg)}/${esc(ds.name)}</span><span class="muted">${esc(ds.mount||(ds.fs==='swap'?'[swap]':'—'))}</span><span class="muted">${esc(ds.fs||'no fs')} · ${fmtBin(ds.sizeBytes||0,1)}</span></div>`).join(''):p.type==='zfs'?(p.datasets||[]).map(ds=>`<div class="dsrow" data-node="ds:${esc(p.name)}/${esc(ds.name)}"><span>${esc(p.name)}/${esc(ds.name)}</span><span class="muted">${esc(ds.mount||'—')}</span><span class="muted">rs=${esc(ds.recordsize)} ${esc(ds.compression)}${ds.sync!=='standard'?' sync='+esc(ds.sync):''}</span></div>`).join(''):`<div class="dsrow"><span>${esc(p.fs)} · ${esc(p.label)}</span><span class="muted">${esc(p.mount)}</span><span class="muted">${esc((p.opts||[]).join(','))}</span></div>`;
   return `<article class="pool ${sel?'sel':''}" data-node="pool:${esc(p.name)}" data-act="sel" data-type="pool" data-id="${esc(p.name)}">
-    <div class="dh"><span class="dev">${esc(p.name)}</span><span class="chip t-${p.tier}">${p.type==='zfs'?'OpenZFS':'mdadm'} ${esc(p.level)}</span>${p.type==='zfs'?`<span class="chip">ashift=${p.ashift}</span><span class="chip">${p.encryption==='off'?'unencrypted':esc(p.encryption)}</span>`:''}<span class="sz">${fmtBin(r.usable)} usable · tolerates ${r.tol}</span></div>
+    <div class="dh"><span class="dev">${esc(p.name)}</span><span class="chip t-${p.tier}">${p.type==='lvm'&&!p.lv?'LVM volume group':(POOL_KIND[p.type]||'mdadm')+' '+esc(p.level)}</span>${p.lv?`<span class="chip">${esc(p.vg)}/${esc(p.lv)}</span>`:''}${p.levelSource&&p.levelSource.startsWith('inferred')?`<span class="chip" title="${esc(p.levelSource)}">level inferred</span>`:''}${p.type==='zfs'?`<span class="chip">ashift=${p.ashift}</span><span class="chip">${p.encryption==='off'?'unencrypted':esc(p.encryption)}</span>`:''}<span class="sz">${fmtBin(r.usable)} usable · tolerates ${r.tol}</span></div>
     <div class="members">${m.data.map(x=>`<span class="chip" data-node="${x.whole?'disk:'+x.id:'part:'+x.id}">${esc(x.id)}</span>`).join('')}${m.log.map(x=>`<span class="chip t-fast" data-node="part:${x.id}">log ${esc(x.id)}</span>`).join('')}${m.cache.map(x=>`<span class="chip t-fast" data-node="part:${x.id}">cache ${esc(x.id)}</span>`).join('')}</div>
     <div>${rows}</div></article>`;
 }
@@ -732,9 +753,9 @@ function inspector(){
   }
   if(s.type==='pool'){
     const p=poolBy(s.id);if(!p) return '';const r=calcEngine(poolCalc(p));
-    return `<div class="ph"><h2>${esc(p.name)}</h2><span class="sub">${p.type==='zfs'?'OpenZFS pool':'mdadm array'}</span></div><div class="pb">
+    return `<div class="ph"><h2>${esc(p.name)}</h2><span class="sub">${p.type==='zfs'?'OpenZFS pool':p.type==='lvm'&&!p.lv?'LVM volume group':(POOL_KIND[p.type]||'mdadm')+' array'}${p.levelSource?' · level '+esc(p.levelSource):''}</span></div><div class="pb">
       <div class="fields">
-        <label class="f">Level<select id="i-level" data-f="level">${(p.type==='zfs'?['stripe','mirror','raidz1','raidz2','raidz3']:['raid0','raid1','raid5','raid6','raid10']).map(l=>`<option ${l===p.level?'selected':''}>${l}</option>`).join('')}</select></label>
+        <label class="f">Level<select id="i-level" data-f="level">${(p.type==='lvm'&&!p.lv?['linear']:p.type==='zfs'?['stripe','mirror','raidz1','raidz2','raidz3']:['raid0','raid1','raid5','raid6','raid10']).map(l=>`<option ${l===p.level?'selected':''}>${l}</option>`).join('')}</select></label>
         ${p.type==='zfs'?`<label class="f">ashift<select id="i-ashift" data-f="ashift">${[9,12,13].map(a=>`<option value="${a}" ${a==p.ashift?'selected':''}>${a} (${2**a} B)</option>`).join('')}</select></label>
           <label class="f">Encryption<select id="i-enc" data-f="encryption">${['aes-256-gcm','aes-128-gcm','off'].map(a=>`<option ${a===p.encryption?'selected':''}>${a}</option>`).join('')}</select></label>
           <label class="f">Root mountpoint<input type="text" class="mono" id="i-pmount" value="${esc(p.mount||'')}" data-f="pmount"></label>`
@@ -953,11 +974,12 @@ function fromBlueprint(bp){
         fs:p.fs||'none',label:p.label||'',mount:p.mount||undefined,opts:p.options||[],member:p.member||undefined,role:p.role||undefined,
         subvols:p.subvolumes&&p.subvolumes.length?p.subvolumes.map(v=>({name:v.name,mount:v.mount||undefined})):undefined}))})),
     pools:(bp.pools||[]).map(p=>({name:p.name,type:p.type||'mdadm',level:p.level||'stripe',ashift:p.ashift||12,tier:p.tier||'mass',encryption:p.encryption||undefined,
-      mount:p.mount||undefined,fs:p.fs||undefined,label:p.label||undefined,opts:p.options||undefined,datasets:(p.datasets||[]).map(ds=>({...ds}))})),
+      mount:p.mount||undefined,fs:p.fs||undefined,label:p.label||undefined,opts:p.options||undefined,vg:p.vg||undefined,lv:p.lv||undefined,levelSource:p.levelSource||undefined,datasets:(p.datasets||[]).map(ds=>({...ds}))})),
     remotes:(bp.remotes||[]).map((r,i)=>({id:r.id||'r'+i,name:r.name||r.endpoint,proto:r.protocol||'NFSv4.2',endpoint:r.endpoint||'',via:r.via||'network',
-      mount:r.mount||undefined,status:r.status||'connected',capacity:r.capacity??null,opts:r.options||['_netdev','nofail']})),
+      mount:r.mount||undefined,status:r.status||'connected',capacity:r.capacity??null,opts:r.options||['_netdev','nofail'],raw:r})),
     links:(bp.links||[]).map((l,i)=>({id:'L'+i,kind:l.kind,path:l.path,target:l.target,fromScan:l.fromScan||undefined})),
-    exports:(bp.exports||[]).map((e,i)=>({id:'e'+i,proto:e.protocol||e.proto,name:e.name,path:e.path,clients:e.clients||'',opts:e.options||e.opts||''})),
+    // raw: the export as stored, so fields the planner doesn't edit (fromScan, client mounts, ...) survive a save
+    exports:(bp.exports||[]).map((e,i)=>({id:'e'+i,proto:e.protocol||e.proto,name:e.name,path:e.path,clients:e.clients||'',opts:e.options||e.opts||'',raw:e})),
     existing:(bp.planner||{}).existing||{},known:(bp.planner||{}).known||[],
     protection:(bp.protection||[]).map(r=>{const sn=r.snapshots||r.snap||{};const b=r.backup||{};
       return {node:r.node||nodeForPath(bp,r.path),name:r.dataset||r.name||r.path||'?',ephemeral:!!r.ephemeral,sync:{state:'None',...(r.sync||{})},
