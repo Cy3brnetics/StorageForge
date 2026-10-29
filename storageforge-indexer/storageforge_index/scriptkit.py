@@ -1,6 +1,30 @@
 """Shared pieces of the Bash scripts StorageForge writes (moves, share deployment): output in storage-setup.sh's
 style (ok / missing / conflict / ->), and --host, which copies the script to another machine and runs it there
 with sudo, forwarding your SSH agent."""
+import re
+
+# A host as plans name it: hostname, IPv4, [IPv6] or IPv6%zone. Never a line break, space or leading '-'.
+HOST_RE = re.compile(r'[A-Za-z0-9_.:\[\]%-]{1,253}')
+# Bash ends a comment at a line break, and terminals act on escape sequences when a script is read with cat or less.
+_BREAKS = re.compile('[\x00-\x08\x0a-\x1f\x7f\x85\u2028\u2029]+')
+
+
+def host_name(value, what: str) -> str:
+    h = str(value or '').strip()
+    if not HOST_RE.fullmatch(h) or h.startswith('-'):
+        raise ValueError(f'{what} must be a host name or address')
+    return h
+
+
+def one_line(text) -> str:
+    """Text safe to put after # in a generated script: control characters and line breaks become spaces."""
+    return _BREAKS.sub(' ', str(text))
+
+
+def comments(lines, empty: str) -> str:
+    """Header comment lines, each forced onto one line, so no value can end the comment and start a command."""
+    return '\n'.join(one_line(l) for l in lines) or empty
+
 
 HELPERS = r"""if [[ -t 1 ]]; then G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' B=$'\e[34m' H=$'\e[1m' N0=$'\e[0m'; else G= Y= R= B= H= N0=; fi
 section()  { printf '\n%s== %s ==%s\n' "$H" "$*" "$N0"; }

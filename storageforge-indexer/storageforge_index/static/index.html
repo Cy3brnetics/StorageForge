@@ -10,7 +10,7 @@
 <body>
 <header class="bar">
   <div class="brand"><svg width="22" height="22" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="3" width="24" height="6" rx="1.5" class="t1"/><rect x="2" y="11" width="24" height="6" rx="1.5" class="t2"/><rect x="2" y="19" width="24" height="6" rx="1.5" class="t3"/></svg><b>StorageForge</b></div>
-  <div id="viewmode" class="seg" role="group" aria-label="View"><button type="button" data-mode="topo" aria-pressed="true">Topology</button><button type="button" data-mode="graph" aria-pressed="false">Graph</button></div>
+  <div id="viewmode" class="seg" role="group" aria-label="View"><button type="button" data-mode="topo" aria-pressed="true">Topology</button><button type="button" data-mode="graph" aria-pressed="false">Graph</button><button type="button" data-mode="tasks" aria-pressed="false">Tasks</button></div>
   <label class="field"><span>Host</span><select id="host"><option value="">All hosts</option></select></label>
   <form id="searchform" class="search" role="search"><input id="q" type="search" placeholder="Search files: *.cr2, IMG_2019*, report.pdf  ( / )" aria-label="Search files across hosts" autocomplete="off"></form>
   <div class="actions">
@@ -18,6 +18,7 @@
     <a id="toplanner" class="btn" href="/planner">Planner</a>
     <button id="reset" type="button" class="btn">Show all</button>
     <button id="export" type="button" class="btn pri">Export .canvas</button>
+    <label id="sessfield" class="field" title="How long a sign-in lasts (changing it asks for your password)" hidden><span>Session</span><select id="sesslen" aria-label="Session length"><option value="30">30 min</option><option value="60">1 h</option><option value="120">2 h</option><option value="240">4 h</option><option value="480">8 h</option></select></label>
     <button id="lock" type="button" class="btn ghost" title="Sign in or out">Sign in</button>
   </div>
 </header>
@@ -27,6 +28,7 @@
     <div id="topo" class="topo" aria-label="Editable topology: devices, pools, datasets, mount points, links and exports per host"></div>
     <div id="stagebar" class="stagebar" role="status" hidden></div>
     <div id="savebar" class="savebar" role="status" hidden><span id="savemsg" class="muted"></span><button id="discarddesigns" type="button" class="btn ghost">Discard</button><button id="savedesigns" type="button" class="btn pri">Save design</button></div>
+    <div id="tasksview" class="tasksview" hidden aria-label="Storage tasks: blocks that copy, snapshot and check, run on a schedule"></div>
     <canvas id="graph" aria-label="Force-directed storage graph. Select a node to see details; double-click to focus on its neighbourhood."></canvas>
     <div id="crumb" class="crumb" hidden></div>
     <div id="empty" class="empty" hidden>
@@ -48,20 +50,10 @@ storageforge-index graph import --blueprint atlas.json</pre>
     </aside>
   </section>
 
-  <aside class="panel">
-    <nav class="tabs" role="tablist">
-      <button type="button" role="tab" data-tab="details" class="on">Details</button>
-      <button type="button" role="tab" data-tab="search">Search <span id="nres" class="cnt"></span></button>
-      <button type="button" role="tab" data-tab="jobs">Scans</button>
-      <button type="button" role="tab" data-tab="access">Access <span id="naccess" class="cnt"></span></button>
-      <button type="button" role="tab" data-tab="copies">Cleanup</button>
-      <button type="button" role="tab" data-tab="changes">Changes</button>
-      <button type="button" role="tab" data-tab="moves">Moves</button>
-      <button type="button" role="tab" data-tab="git">Git</button>
-      <button type="button" role="tab" data-tab="docker">Docker</button>
-      <button type="button" role="tab" data-tab="keys">Keys</button>
-      <button type="button" role="tab" data-tab="audit">Audit</button>
-    </nav>
+  <aside id="panel" class="panel">
+    <div class="pbody">
+    <div id="pgrip" class="pgrip" role="separator" aria-orientation="vertical" aria-label="Resize panel" title="Drag to resize, double-click to reset" tabindex="0"></div>
+    <header class="phead"><div><small id="pgroup">Inspect</small><h2 id="ptitle">Details</h2></div><button id="pclose" type="button" class="iconbtn" title="Hide panel ( \ )" aria-label="Hide panel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button></header>
     <div id="tab-details" class="tab"><p id="detailshint" class="muted"></p><div id="summary"></div></div>
     <div id="tab-search" class="tab" hidden><p class="muted">Type a pattern above. Select a result to focus its mount point.</p><ol id="results" class="results"></ol></div>
     <div id="tab-jobs" class="tab" hidden>
@@ -133,10 +125,32 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <p class="muted">Containers and compose stacks on each host, the folders they use, and stacks stored on disk that are not deployed. Stacks run by a manager in a container (Dockhand, Portainer, Komodo) are traced to their real folders.</p>
       <div id="dockerbox" class="stack"></div>
     </div>
+    <div id="tab-deploy" class="tab" hidden>
+      <div id="deploybox" class="stack"></div>
+    </div>
     <div id="tab-audit" class="tab" hidden>
       <div class="row"><button id="verify" type="button" class="btn">Verify chain</button><span id="verified" class="muted"></span></div>
       <ol id="audit" class="list"></ol>
     </div>
+    </div>
+    <nav class="tabs rail" role="tablist" aria-label="Panels" aria-orientation="vertical">
+      <span class="rgroup" aria-hidden="true">Inspect</span>
+      <button type="button" role="tab" data-tab="details" title="Details of the selection" aria-label="Details of the selection"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg><span class="lbl">Details</span></button>
+      <button type="button" role="tab" data-tab="search" title="File search results" aria-label="File search results"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg><span class="lbl">Search</span><span id="nres" class="cnt"></span></button>
+      <span class="rgroup" aria-hidden="true">Plan</span>
+      <button type="button" role="tab" data-tab="changes" title="Staged changes: folders, btrfs, mounts, drives" aria-label="Staged changes: folders, btrfs, mounts, drives"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6h10M10 12h10M10 18h10M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg><span class="lbl">Changes</span></button>
+      <button type="button" role="tab" data-tab="moves" title="Data moves with rsync" aria-label="Data moves with rsync"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h14l-3-3M20 16H6l3 3"/></svg><span class="lbl">Moves</span></button>
+      <button type="button" role="tab" data-tab="deploy" title="Deployments" aria-label="Deployments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M5 20h14"/></svg><span class="lbl">Deploy</span></button>
+      <span class="rgroup" aria-hidden="true">Inventory</span>
+      <button type="button" role="tab" data-tab="docker" title="Containers and compose stacks" aria-label="Containers and compose stacks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8l9-4 9 4v8l-9 4-9-4zM3 8l9 4 9-4M12 12v8"/></svg><span class="lbl">Docker</span></button>
+      <button type="button" role="tab" data-tab="git" title="Git repositories and their copies" aria-label="Git repositories and their copies"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 5-8 4-11 8.5"/></svg><span class="lbl">Git</span></button>
+      <button type="button" role="tab" data-tab="copies" title="Likely copies and cold data" aria-label="Likely copies and cold data"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg><span class="lbl">Cleanup</span></button>
+      <button type="button" role="tab" data-tab="access" title="Folders scans could not read" aria-label="Folders scans could not read"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg><span class="lbl">Access</span><span id="naccess" class="cnt"></span></button>
+      <span class="rgroup" aria-hidden="true">Admin</span>
+      <button type="button" role="tab" data-tab="jobs" title="Scan jobs" aria-label="Scan jobs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/></svg><span class="lbl">Scans</span></button>
+      <button type="button" role="tab" data-tab="keys" title="SSH keys and host bindings" aria-label="SSH keys and host bindings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l3 3"/></svg><span class="lbl">Keys</span></button>
+      <button type="button" role="tab" data-tab="audit" title="Audit log" aria-label="Audit log"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="m9 12 2 2 4-4"/></svg><span class="lbl">Audit</span></button>
+    </nav>
   </aside>
 </main>
 
@@ -150,12 +164,26 @@ storageforge-index graph import --blueprint atlas.json</pre>
     <div class="row end"><button id="logincancel" type="button" class="btn ghost">Cancel</button><button type="submit" class="btn pri">Sign in</button></div>
   </form>
 </dialog>
+<dialog id="reauthdlg">
+  <form id="reauthform">
+    <h2>Confirm your password</h2>
+    <p class="muted">Running commands on your hosts (and changing how long sessions last) needs your password again. It stays confirmed for 5 minutes.</p>
+    <input type="text" autocomplete="username" id="reauthuser" hidden>
+    <label class="field col"><span>Password</span><input id="reauthpw" type="password" autocomplete="current-password" required></label>
+    <p id="reauthmsg" class="st-failed" hidden></p>
+    <div class="row end"><button id="reauthcancel" type="button" class="btn ghost">Cancel</button><button type="submit" class="btn pri">Confirm</button></div>
+  </form>
+</dialog>
 <script src="/app.js"></script>
 <script src="/topology.js"></script>
+<script src="/fsbrowse.js"></script>
 <script src="/checks.js"></script>
 <script src="/moves.js"></script>
 <script src="/changes.js"></script>
 <script src="/gitview.js"></script>
 <script src="/dockerview.js"></script>
+<script src="/deployview.js"></script>
+<script src="/sharewiz.js"></script>
+<script src="/tasks.js"></script>
 </body>
 </html>

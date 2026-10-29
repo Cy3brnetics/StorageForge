@@ -34,8 +34,8 @@ def duplicate_folders(conn: Conn, host: str | None = None, min_files: int = 3, m
         f"WHERE m.scan_state = 'indexed' {hsql}", {'host': host})}
     # per folder: [own-file hash sum, file count, bytes]; children are folded in afterwards
     own: dict[tuple, list] = {}
-    cur = conn.execute(f"""SELECT f.mount_id, f.parent_path, f.filename, f.file_size_bytes, f.is_directory
-                           FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
+    cur = conn.execute(f"""SELECT f.mount_id, d.path, f.filename, f.file_size_bytes, f.is_directory
+                           FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
                            WHERE f.is_symlink = 0 AND m.scan_state = 'indexed' {hsql}""", {'host': host})
     while rows := cur.fetchmany(50_000):
         for mid, parent, name, size, is_dir in rows:
@@ -104,8 +104,8 @@ def cold_folders(conn: Conn, host: str | None = None, years: float = 2.0, min_by
         f'SELECT m.mount_id, h.hostname, m.mount_point FROM mounts m JOIN hosts h ON h.host_id = m.host_id '
         f"WHERE m.scan_state = 'indexed' {hsql}", {'host': host})}
     tree: dict[tuple, list] = {}            # (mount, path) → [newest mtime, files, bytes]
-    cur = conn.execute(f"""SELECT f.mount_id, f.parent_path, f.filename, f.file_size_bytes, f.is_directory, f.modified_at
-                           FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
+    cur = conn.execute(f"""SELECT f.mount_id, d.path, f.filename, f.file_size_bytes, f.is_directory, f.modified_at
+                           FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
                            WHERE f.is_symlink = 0 AND m.scan_state = 'indexed' {hsql}""", {'host': host})
     while rows := cur.fetchmany(50_000):
         for mid, parent, name, size, is_dir, mtime in rows:

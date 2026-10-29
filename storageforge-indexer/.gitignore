@@ -3,3 +3,4 @@ secrets/
 keys/
 *.db
 *.db-*
+.env

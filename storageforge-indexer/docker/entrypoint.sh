@@ -25,7 +25,7 @@ esac
 length_of() {  # $1 = variable name; prints the secret length without exposing it
   eval "v=\${$1:-}"; eval "f=\${$1_FILE:-}"
   if [ -n "$v" ]; then printf %s "$v" | wc -c
-  elif [ -n "$f" ]; then [ -r "$f" ] || die "$1_FILE=$f is not readable by uid $(id -u)"; tr -d '\r\n' < "$f" | wc -c
+  elif [ -n "$f" ]; then [ -r "$f" ] || die "$1_FILE=$f is not readable by uid $(id -u): run docker/init-secrets.sh, and set STORAGEFORGE_SECRETS_GID to the group of secrets/ if it is not 1000"; tr -d '\r\n' < "$f" | wc -c
   else echo 0; fi
 }
 [ "$(length_of STORAGEFORGE_VAULT_SECRET)" -ge 32 ] \

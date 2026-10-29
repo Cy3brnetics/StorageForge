@@ -25,7 +25,7 @@ import shlex
 import time
 
 from .db import Conn
-from .scriptkit import HELPERS, REMOTE
+from .scriptkit import HELPERS, REMOTE, comments, host_name, one_line
 
 METHODS = ('copy', 'move', 'mirror', 'rsnapshot', 'git')
 SCHEDULES = ('hourly', 'daily', 'weekly', 'monthly')
@@ -33,6 +33,8 @@ LOCAL_MBPS, NET_MBPS = 400, 110            # rough MB/s for the time estimate: d
 PATH_RE = re.compile(r'/[^\0\n]*')
 LOGIN_RE = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}@[A-Za-z0-9_.:\[\]%-]{1,253}')
 EXCLUDE_RE = re.compile(r'[^\0\n]{1,400}')
+CALENDAR_RE = re.compile(r'[A-Za-z0-9*][A-Za-z0-9*,./:~ -]{0,79}')      # systemd OnCalendar; checked again on the host
+WINDOW_RE = re.compile(r'([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d')
 
 
 def slug(text: str) -> str:
@@ -64,6 +66,7 @@ def normalize(body: dict) -> dict:
         src, dst = s.get('src') or {}, s.get('dst') or {}
         if not src.get('host') or not dst.get('host'):
             raise ValueError(f'step {i}: pick a source and a destination host')
+        src_host, dst_host = host_name(src['host'], f'step {i}: the source host'), host_name(dst['host'], f'step {i}: the destination host')
         o = s.get('options') or {}
         login = str(o.get('src_login') or '').strip()
         if login and not LOGIN_RE.fullmatch(login):
@@ -73,17 +76,38 @@ def normalize(body: dict) -> dict:
             raise ValueError(f'step {i}: exclude patterns cannot contain line breaks')
         keep = {k: max(0, min(int((o.get('keep') or {}).get(k, d)), 999))
                 for k, d in (('hourly', 0), ('daily', 7), ('weekly', 4), ('monthly', 6))}
-        bw = o.get('bwlimit')
+        bw, bwn = o.get('bwlimit'), o.get('bwlimit_night')
+        schedule = str(o.get('schedule') or 'daily').strip()
+        if schedule not in SCHEDULES and not CALENDAR_RE.fullmatch(schedule):
+            raise ValueError(f'step {i}: schedule must be hourly, daily, weekly, monthly or a systemd calendar time '
+                             f'such as "*-*-* 02:30" or "Sun 03:00"')
+        windows = {}
+        for k in ('window', 'night'):
+            w = str(o.get(k) or '').replace(' ', '')
+            if w and not WINDOW_RE.fullmatch(w):
+                raise ValueError(f'step {i}: {k} must look like 01:00-06:00')
+            windows[k] = w or None
+        hooks = {}
+        for k in ('pre', 'post'):
+            cmds = [str(c).strip() for c in o.get(k) or [] if str(c).strip()]
+            if len(cmds) > 10 or any(len(c) > 500 or '\n' in c or '\0' in c for c in cmds):
+                raise ValueError(f'step {i}: up to 10 {k} commands, one line each')
+            hooks[k] = cmds
         steps.append({
-            'id': str(s.get('id') or f's{i}'), 'method': method, 'note': str(s.get('note') or '')[:300],
-            'src': {'host': str(src['host']).strip(), 'path': _path(src.get('path'), f'step {i} source')},
-            'dst': {'host': str(dst['host']).strip(), 'path': _path(dst.get('path'), f'step {i} destination')},
+            'id': str(s.get('id') or f's{i}'), 'method': method, 'note': one_line(s.get('note') or '')[:300],
+            'src': {'host': src_host, 'path': _path(src.get('path'), f'step {i} source')},
+            'dst': {'host': dst_host, 'path': _path(dst.get('path'), f'step {i} destination')},
             'excludes': excludes,
             'options': {'checksum': bool(o.get('checksum')), 'delete': bool(o.get('delete')) and method == 'mirror',
                         'remote_sudo': o.get('remote_sudo', True) is not False, 'one_fs': o.get('one_fs', True) is not False,
                         'link_back': o.get('link_back', True) is not False and method == 'move',
                         'bwlimit': int(bw) if bw not in (None, '', 0, '0') else None, 'src_login': login or None,
-                        'schedule': o.get('schedule') if o.get('schedule') in SCHEDULES else 'daily', 'keep': keep},
+                        'schedule': schedule, 'keep': keep,
+                        # deployed jobs only (the downloadable script ignores these)
+                        'bwlimit_night': int(bwn) if bwn not in (None, '', 0, '0') else None,
+                        'window': windows['window'], 'night': windows['night'] or ('22:00-07:00' if bwn else None),
+                        'pre': hooks['pre'], 'post': hooks['post'], 'snapshot': bool(o.get('snapshot')),
+                        'verify': o.get('verify') if o.get('verify') in ('weekly', 'monthly') else None},
         })
     return {'name': name, 'notes': str(body.get('notes') or '')[:2000], 'steps': steps,
             'net_mbps': max(1, min(int(body.get('net_mbps') or NET_MBPS), 100_000))}
@@ -120,8 +144,8 @@ def mount_of(host: dict, path: str):
 def _subtree_sql(path: str, mount_target: str) -> tuple[str, dict]:
     if path == mount_target:
         return 'f.mount_id = :m', {}
-    return '(f.mount_id = :m AND (f.parent_path = :p OR (f.parent_path >= :lo AND f.parent_path < :hi)))', \
-        {'p': path, 'lo': path + '/', 'hi': path + '0'}           # '0' sorts right after '/'
+    return ('f.dir_id IN (SELECT dir_id FROM directories WHERE mount_id = :m AND (path = :p OR (path >= :lo AND path < :hi)))',
+            {'p': path, 'lo': path + '/', 'hi': path + '0'})          # '0' sorts right after '/'
 
 
 def subtree(conn: Conn, mount: dict, path: str) -> dict:
@@ -143,16 +167,16 @@ def browse(conn: Conn, host_name: str, path: str = '/') -> dict:
     if m and m['state'] == 'indexed':
         where, p = _subtree_sql(path, m['target'])
         base = path.rstrip('/') + '/'
-        for parent, size, n in conn.all(f"""SELECT f.parent_path, coalesce(sum(f.file_size_bytes), 0), count(*)
-                                            FROM file_records f WHERE {where} GROUP BY f.parent_path""", {'m': m['id'], **p}):
+        for parent, size, n in conn.all(f"""SELECT d.path, coalesce(sum(f.file_size_bytes), 0), count(*)
+                                            FROM file_records f JOIN directories d ON d.dir_id = f.dir_id WHERE {where} GROUP BY d.path""", {'m': m['id'], **p}):
             if parent == path or not parent.startswith(base):
                 continue
             first = parent[len(base):].split('/', 1)[0]
             c = children.setdefault(first, {'name': first, 'bytes': 0, 'entries': 0})
             c['bytes'] += size
             c['entries'] += n
-        for (name,) in conn.all("""SELECT filename FROM file_records WHERE mount_id = :m AND parent_path = :p
-                                   AND is_directory = 1""", {'m': m['id'], 'p': path}):
+        for (name,) in conn.all("""SELECT f.filename FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
+                                   WHERE d.mount_id = :m AND d.path = :p AND f.is_directory = 1""", {'m': m['id'], 'p': path}):
             children.setdefault(name, {'name': name, 'bytes': 0, 'entries': 0})
     for mm in h['mounts']:                                  # mounts directly below: their own filesystems
         rel = mm['target'][len(path.rstrip('/')) + 1:] if _under(mm['target'], path) and mm['target'] != path else ''
@@ -172,7 +196,7 @@ def _planned_mounts(conn: Conn, host: str) -> list[str]:
 
 def _relset(conn: Conn, mount: dict, path: str, limit: int):
     where, p = _subtree_sql(path, mount['target'])
-    rows = conn.execute(f"""SELECT f.parent_path, f.filename, f.file_size_bytes FROM file_records f
+    rows = conn.execute(f"""SELECT d.path, f.filename, f.file_size_bytes FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
                             WHERE {where} AND f.is_directory = 0 LIMIT :lim""", {'m': mount['id'], **p, 'lim': limit + 1}).fetchall()
     if len(rows) > limit:
         return None
@@ -399,9 +423,9 @@ def script(conn: Conn, plan: dict) -> str:
     problems = [f'#   step {st["step"]}: {it["level"].upper()}: {it["text"]}' for st in chk['steps'] for it in st['items']
                 if it['level'] in ('crit', 'warn')]
     decl = '\n'.join(f'{k}=({" ".join(q(v) for v in vs)})' for k, vs in arrays.items())
-    return (SCRIPT_HEAD.format(name=plan['name'].replace('\n', ' '), slug=slug(plan['name']),
-                               date=dt.datetime.now().strftime('%Y-%m-%d %H:%M'), steps='\n'.join(summary) or '#   (no steps)',
-                               problems='\n'.join(problems) or '#   none',
+    return (SCRIPT_HEAD.format(name=one_line(plan['name']), slug=slug(plan['name']),
+                               date=dt.datetime.now().strftime('%Y-%m-%d %H:%M'), steps=comments(summary, '#   (no steps)'),
+                               problems=comments(problems, '#   none'),
                                total=_fmt(chk['bytes']), eta=_eta(chk['eta_s']))
             + f'PLAN={q(slug(plan["name"]))}\nPLAN_NAME={q(plan["name"])}\n{decl}\n' + SCRIPT_BODY)
 

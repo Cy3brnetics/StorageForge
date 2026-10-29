@@ -10,6 +10,11 @@ const METHOD_HELP = {
   rsnapshot: 'Rotating hard-linked snapshots of the source at the destination, on timers (needs rsnapshot there).',
   git: 'A bare archive of a git repository (git clone --mirror): every branch and tag, refreshed by --run and on a timer after --install.',
 };
+const SCHEDULE_PRESETS = { hourly: 'hourly', daily: 'daily (midnight)', '*-*-* 02:30:00': 'daily at 02:30', '*-*-* 00/4:00:00': 'every 4 hours',
+  '*-*-* 00/6:00:00': 'every 6 hours', weekly: 'weekly (Monday 00:00)', 'Sun *-*-* 03:00:00': 'Sundays at 03:00', monthly: 'monthly (the 1st)' };
+const KEEP_PRESETS = { 'Homelab: 7 days, 4 weeks, 6 months': { hourly: 0, daily: 7, weekly: 4, monthly: 6 },
+  'Busy: 24 hours, 7 days, 4 weeks': { hourly: 24, daily: 7, weekly: 4, monthly: 0 },
+  'Archive: 14 days, 8 weeks, 24 months': { hourly: 0, daily: 14, weekly: 8, monthly: 24 } };
 const blankStep = (src = {}, dst = {}) => ({ method: 'copy', src: { host: src.host || '', path: src.path || '' },
   dst: { host: dst.host || '', path: dst.path || '' }, excludes: [], note: '',
   options: { remote_sudo: true, one_fs: true, link_back: true, checksum: false, delete: false, schedule: 'daily',
@@ -48,7 +53,8 @@ function renderMoves() {
       p.id ? button('Delete plan', delPlan, 'btn ghost sm danger') : '',
       button('Check', checkPlan, 'btn sm'),
       el('button', { id: 'mvsave', type: 'button', class: 'btn sm', onclick: savePlan }, MV.dirty ? 'Save*' : 'Save'),
-      button('Download script', downloadScript, 'btn pri sm')),
+      button('Download script', downloadScript, 'btn sm'),
+      button('Deploy…', deployPlan, 'btn pri sm')),
     el('p', { id: 'mvmsg', class: 'muted', hidden: true }),
     el('details', { class: 'mvhelp' }, el('summary', {}, 'How the script runs'),
       el('p', { class: 'muted' }, 'Copy it to the machine you run storage-setup.sh from. ./plan.sh reports what is there (read-only); '
@@ -76,23 +82,8 @@ function endEditor(s, side, label) {
   return el('div', { class: 'mvend' }, el('span', { class: 'lbl' }, label),
     el('div', { class: 'row' }, hostSelect(end.host, (h) => { end.host = h; touch(); }), path, browse), browser);
 }
-async function openBrowser(box, host, path, choose) {
-  box.replaceChildren(text('p', 'Reading the index…', 'muted'));
-  try {
-    const r = await getJSON(`/api/browse?host=${encodeURIComponent(host)}&path=${encodeURIComponent(path)}`);
-    const up = r.path === '/' ? null : r.path.replace(/\/[^/]*$/, '') || '/';
-    box.replaceChildren(
-      el('div', { class: 'row' }, el('b', { class: 'mono' }, r.path),
-        r.size ? text('span', `${fmtBytes(r.size.bytes)} · ${r.size.files.toLocaleString()} files`, 'muted') : text('span', r.indexed ? '' : 'not indexed', 'muted'),
-        button('Use this folder', () => choose(r.path), 'btn pri sm')),
-      el('ul', { class: 'dirs' },
-        up ? el('li', {}, button('', () => openBrowser(box, host, up, choose), 'dir')) : '',
-        ...r.dirs.map((d) => el('li', {}, button('', () => openBrowser(box, host, (r.path === '/' ? '' : r.path) + '/' + d.name, choose), 'dir')))));
-    const btns = box.querySelectorAll('.dir');
-    let k = 0;
-    if (up) { btns[k++].append(text('span', '..', 'n')); }
-    r.dirs.forEach((d) => { btns[k++].append(text('span', d.name + (d.mount ? `  (${d.mount} mount)` : ''), 'n'), text('span', d.bytes ? fmtBytes(d.bytes) : '', 's')); });
-  } catch (err) { box.replaceChildren(text('p', err.message, 'st-failed')); }
+function openBrowser(box, host, path, choose) {     // the shared index browser (fsbrowse.js), inline
+  box.replaceChildren(fsBrowser({ host, path, onPick: choose }));
 }
 function stepCard(s, i) {
   const p = MV.plan, o = s.options;
@@ -107,19 +98,30 @@ function stepCard(s, i) {
   if (s.method === 'move') opts.append(opt('link_back', 'leave a symlink at the old path (same host)'));
   if (s.method === 'mirror') opts.append(opt('delete', 'delete files gone from the source (--delete-after)'));
   if (s.method === 'mirror' || s.method === 'rsnapshot' || s.method === 'git') {
-    const sch = el('select', { onchange: () => { o.schedule = sch.value; touch(); } }, ...['hourly', 'daily', 'weekly', 'monthly'].map((x) => new Option(x, x)));
-    sch.value = o.schedule || 'daily';
-    if (s.method !== 'rsnapshot') opts.append(el('label', { class: 'field' }, el('span', {}, 'Runs'), sch));
-    else opts.append(el('div', { class: 'row keep' }, text('span', 'Keep', 'muted'), ...['hourly', 'daily', 'weekly', 'monthly'].map((k) => {
-      const n = el('input', { type: 'number', min: 0, max: 999, 'aria-label': `${k} snapshots to keep`, onchange: () => { o.keep[k] = +n.value || 0; touch(); } });
-      n.value = (o.keep || {})[k] || 0; return el('label', { class: 'field' }, el('span', {}, k), n);
-    })));
+    const custom = el('input', { type: 'text', class: 'mono', placeholder: 'systemd time, e.g. Mon..Fri 22:00', 'aria-label': 'Custom schedule',
+      onchange: () => { o.schedule = custom.value.trim() || 'daily'; touch(); } });
+    const sch = el('select', { 'aria-label': 'Schedule', onchange: () => {
+      custom.hidden = sch.value !== 'custom';
+      if (sch.value !== 'custom') { o.schedule = sch.value; touch(); } else custom.focus();
+    } }, ...Object.entries(SCHEDULE_PRESETS).map(([v, l]) => new Option(l, v)), new Option('custom…', 'custom'));
+    const known = Object.prototype.hasOwnProperty.call(SCHEDULE_PRESETS, o.schedule || 'daily');
+    sch.value = known ? o.schedule || 'daily' : 'custom';
+    custom.value = known ? '' : o.schedule; custom.hidden = known;
+    opts.append(el('div', { class: 'row wrap' }, el('label', { class: 'field' }, el('span', {}, s.method === 'rsnapshot' ? 'Snapshots' : 'Runs'), sch), custom));
+    if (s.method === 'rsnapshot') {
+      opts.append(el('div', { class: 'row keep' }, text('span', 'Keep', 'muted'), ...['hourly', 'daily', 'weekly', 'monthly'].map((k) => {
+        const n = el('input', { type: 'number', min: 0, max: 999, 'aria-label': `${k} snapshots to keep`, onchange: () => { o.keep[k] = +n.value || 0; touch(); } });
+        n.value = (o.keep || {})[k] || 0; return el('label', { class: 'field' }, el('span', {}, k), n);
+      })), el('div', { class: 'row wrap' }, text('span', 'Presets:', 'muted small'), ...Object.entries(KEEP_PRESETS).map(([name, k]) =>
+        button(name, () => { o.keep = { ...k }; touch(); renderMoves(); }, 'btn ghost sm'))));
+    }
   }
+  opts.append(jobOptions(s));
   const login = el('input', { type: 'text', placeholder: 'source login (default: its scan user), e.g. root@10.42.0.3', class: 'mono',
     'aria-label': 'Source SSH login', onchange: () => { o.src_login = login.value.trim() || null; touch(); } });
   login.value = o.src_login || '';
   const result = (MV.result && MV.result.steps[i]) || null;
-  return el('li', { class: 'card mvstep' },
+  const li = el('li', { class: 'card mvstep' },
     el('div', { class: 'row' }, el('b', {}, `Step ${i + 1}`), method,
       el('span', { class: 'row tools' },
         i ? button('↑', () => { [p.steps[i - 1], p.steps[i]] = [p.steps[i], p.steps[i - 1]]; touch(); renderMoves(); }, 'btn ghost sm') : '',
@@ -129,6 +131,54 @@ function stepCard(s, i) {
     endEditor(s, 'src', 'From'), endEditor(s, 'dst', 'To'),
     el('details', {}, el('summary', {}, 'Options'), opts, excl, s.src.host && s.dst.host && s.src.host !== s.dst.host ? login : ''),
     result ? el('ul', { class: 'mvcheck' }, ...result.items.map((it) => el('li', { class: `lv-${it.level}` }, it.text))) : '');
+  const redo = (fn) => () => { fn(); touch(); renderMoves(); };
+  li._menu = () => [{ heading: `Step ${i + 1} · ${s.method}${s.src.path ? ' · ' + s.src.path : ''}` },
+    { label: 'Move up', disabled: !i, run: redo(() => { [p.steps[i - 1], p.steps[i]] = [p.steps[i], p.steps[i - 1]]; }) },
+    { label: 'Move down', disabled: i === p.steps.length - 1, run: redo(() => { [p.steps[i + 1], p.steps[i]] = [p.steps[i], p.steps[i + 1]]; }) },
+    { label: 'Duplicate', run: redo(() => { p.steps.splice(i + 1, 0, structuredClone(s)); }) },
+    { label: 'Swap source and destination', run: redo(() => { [s.src, s.dst] = [s.dst, s.src]; }) },
+    s.src.host && s.src.path ? { label: 'Browse the source folder', run: () => browseFolders(s.src.host, s.src.path, mountFor(s.src.host, s.src.path)) } : null,
+    '-', { label: 'Remove', danger: true, run: redo(() => { p.steps.splice(i, 1); }) }];
+  return li;
+}
+/* what only deployed jobs use: run window, day/night bandwidth, pre/post commands, btrfs snapshot first, verify */
+function jobOptions(s) {
+  const o = s.options;
+  const line = (key, label, placeholder, attrs = {}) => {
+    const i = el('input', { type: 'text', class: 'mono', placeholder, 'aria-label': label, ...attrs,
+      onchange: () => { o[key] = i.value.trim() || null; touch(); } });
+    i.value = o[key] ?? ''; return el('label', { class: 'field' }, el('span', {}, label), i);
+  };
+  const cmds = (key, label, placeholder) => {
+    const t = el('textarea', { rows: 2, class: 'mono', placeholder, 'aria-label': label,
+      onchange: () => { o[key] = t.value.split('\n').map((x) => x.trim()).filter(Boolean); touch(); } });
+    t.value = (o[key] || []).join('\n'); return el('label', { class: 'field col' }, el('span', {}, label), t);
+  };
+  const snap = el('input', { type: 'checkbox', onchange: () => { o.snapshot = snap.checked; touch(); } }); snap.checked = !!o.snapshot;
+  const verify = el('select', { 'aria-label': 'Checksum verify', onchange: () => { o.verify = verify.value || null; touch(); } },
+    new Option('never (on demand only)', ''), new Option('weekly (Saturday 04:00)', 'weekly'), new Option('monthly (the 15th)', 'monthly'));
+  verify.value = o.verify || '';
+  const suggest = button('Suggest from Docker', async () => {
+    if (!s.src.host || !s.src.path) return;
+    try {
+      const { usage } = await getJSON(`/api/docker/usage?host=${encodeURIComponent(s.src.host)}&path=${encodeURIComponent(s.src.path)}`);
+      const stacks = [...new Set(usage.filter((u) => u.stack).map((u) => u.stack))];
+      if (!stacks.length) { alertMv(`No compose stack on ${s.src.host} uses ${s.src.path}.`, 'muted'); return; }
+      o.pre = stacks.map((x) => `docker compose -p ${x} stop`); o.post = stacks.map((x) => `docker compose -p ${x} start`);
+      touch(); renderMoves();
+    } catch (err) { alertMv(err.message); }
+  }, 'btn ghost sm');
+  return el('details', { class: 'jobopts' }, el('summary', {}, 'When deployed as a job'),
+    text('p', 'Used when this step is deployed from the Deploy tab (the downloaded script ignores them).', 'muted small'),
+    el('div', { class: 'row wrap' }, line('window', 'Only run between', '01:00-06:00', { size: 12 }),
+      line('bwlimit', 'Bandwidth by day (KB/s)', 'unlimited', { size: 9, inputmode: 'numeric' }),
+      line('bwlimit_night', 'by night (KB/s)', 'unlimited', { size: 9, inputmode: 'numeric' }),
+      line('night', 'Night is', '22:00-07:00', { size: 12 })),
+    cmds('pre', 'Before each run, on the source (one command per line, as root)', 'docker compose -p immich stop'),
+    cmds('post', 'After it (also when the run fails)', 'docker compose -p immich start'),
+    el('div', { class: 'row wrap' }, suggest,
+      el('label', { class: 'check' }, snap, 'Copy from a btrfs snapshot of the source (stops the stack only for the snapshot)'),
+      el('label', { class: 'field' }, el('span', {}, 'Checksum verify'), verify)));
 }
 function alertMv(msg, cls = 'st-failed') { const m = $('#mvmsg'); m.hidden = false; m.textContent = msg; m.className = cls; }
 async function checkPlan() {
@@ -162,6 +212,10 @@ async function downloadScript() {
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     alertMv(`Downloaded ${a.download}. Make it executable (chmod +x) and start with ./${a.download} for the read-only report.`, 'st-ok');
   } catch (err) { alertMv(err.message); }
+}
+async function deployPlan() {   // the Deploy tab runs the read-only report on every host first
+  const id = MV.dirty || !MV.plan.id ? await savePlan() : MV.plan.id;
+  if (id) startDeploy('jobs', id, 'report', `move plan "${MV.plan.name}"`);
 }
 async function delPlan() {
   if (!confirm(`Delete the plan "${MV.plan.name}"? Scripts you downloaded keep working.`)) return;

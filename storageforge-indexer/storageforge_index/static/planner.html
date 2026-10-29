@@ -29,12 +29,16 @@
         <button class="btn sm pri" id="savedesign" type="button" hidden>Save design</button>
         <button class="btn sm" id="fromscan" type="button" hidden>Refresh from latest scan</button>
         <button class="btn sm" id="reset" type="button">Reset to example</button>
+        <button class="btn sm ghost" id="dropexample" type="button" hidden>Remove example host</button>
+        <button class="btn sm ghost" id="showexample" type="button" hidden>Show example host</button>
       </div>
       <span id="resetconfirm" hidden>Discard your edits? <button class="btn sm" id="resetyes" type="button">Discard</button> <button class="btn sm ghost" id="resetno" type="button">Keep</button></span>
+      <span id="dropconfirm" hidden>Remove “atlas” from the planner for every user? <button class="btn sm" id="dropyes" type="button">Remove</button> <button class="btn sm ghost" id="dropno" type="button">Keep</button></span>
       <span id="signin" class="muted" hidden><a href="/">Sign in</a> to load scanned hosts and save designs.</span>
     </div>
-    <div class="rail-sec">
-      <a class="btn sm ghost" href="/" id="tograph">← Live graph &amp; search</a>
+    <div class="rail-sec" id="applinks">
+      <span class="lbl">In StorageForge</span>
+      <a class="btn sm ghost" href="/" id="tograph">← Topology &amp; graph</a>
     </div>
   </aside>
   <div class="main" id="main">

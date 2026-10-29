@@ -6,7 +6,7 @@ Pattern strategy (cheapest first):
   IMG_*        → filename LIKE 'IMG_%'           (B-tree prefix range)
   *2019*raw*   → trigram candidates, then exact GLOB
                  SQLite: FTS5 trigram table; PostgreSQL: pg_trgm GIN with ~*
-  --path-contains scans parent_path in SQLite (fast enough at millions of rows) and uses pg_trgm in PostgreSQL.
+  --path-contains scans directories.path in SQLite (one row per folder) and uses pg_trgm in PostgreSQL.
 """
 from __future__ import annotations
 
@@ -95,8 +95,8 @@ def like_escape(s: str) -> str:
     return s.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
 
-SORTS = {'path': 'f.parent_path, f.filename', 'name': 'f.filename', 'size': 'f.file_size_bytes',
-         'mtime': 'f.modified_at', 'host': 'h.hostname, f.parent_path, f.filename'}
+SORTS = {'path': 'd.path, f.filename', 'name': 'f.filename', 'size': 'f.file_size_bytes',
+         'mtime': 'f.modified_at', 'host': 'h.hostname, d.path, f.filename'}
 
 
 def build_search(db: Database, q: SearchQuery) -> tuple[str, dict]:
@@ -150,16 +150,16 @@ def build_search(db: Database, q: SearchQuery) -> tuple[str, dict]:
             pass
         elif sqlite:
             # '0' sorts right after '/', so this is the B-tree range of everything below u
-            where.append('(f.parent_path = :u OR (f.parent_path >= :us AND f.parent_path < :ue))')
+            where.append('(d.path = :u OR (d.path >= :us AND d.path < :ue))')
             p.update(u=u, us=u + '/', ue=u + '0')
         else:
-            where.append('(f.parent_path = :u OR f.parent_path LIKE :ul)')
+            where.append('(d.path = :u OR d.path LIKE :ul)')
             p.update(u=u, ul=like_escape(u) + '/%')
     if q.path_contains:
         if sqlite:
-            where.append('f.parent_path LIKE :pc')
+            where.append('d.path LIKE :pc')
         else:
-            where.append('f.parent_path ILIKE :pc')
+            where.append('d.path ILIKE :pc')
         p['pc'] = '%' + q.path_contains + '%'
     now = int(time.time())
     if q.newer_than:
@@ -169,10 +169,11 @@ def build_search(db: Database, q: SearchQuery) -> tuple[str, dict]:
         where.append(f'f.modified_at < {db.ts(":ot")}')
         p['ot'] = now - q.older_than
     p['limit'] = q.limit
-    sql = f"""SELECT h.hostname, m.mount_point, f.parent_path, f.filename, f.file_size_bytes, f.is_directory,
+    sql = f"""SELECT h.hostname, m.mount_point, d.path, f.filename, f.file_size_bytes, f.is_directory,
                      f.is_symlink, f.symlink_target, f.mode_permissions, f.owner_uid, f.group_gid, f.modified_at,
                      f.checksum_hash
               FROM file_records f
+              JOIN directories d ON d.dir_id = f.dir_id
               JOIN mounts m ON m.mount_id = f.mount_id
               JOIN hosts h ON h.host_id = m.host_id
               {'WHERE ' + ' AND '.join(where) if where else ''}
@@ -205,9 +206,9 @@ def run_dupes(conn: Conn, host: str | None, min_size: int, limit: int) -> list[d
         ORDER BY reclaimable DESC LIMIT :limit""", p)
     out = []
     for h, n, size, reclaim in groups:
-        members = conn.all("""SELECT h.hostname, f.parent_path, f.filename FROM file_records f
+        members = conn.all("""SELECT h.hostname, d.path, f.filename FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
                               JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
-                              WHERE f.checksum_hash = :c ORDER BY h.hostname, f.parent_path""", {'c': h})
+                              WHERE f.checksum_hash = :c ORDER BY h.hostname, d.path""", {'c': h})
         out.append({'sha256': h, 'copies': n, 'size': size, 'reclaimable': reclaim,
                     'files': [f'{hn}:{join_path(pp, fn)}' for hn, pp, fn in members]})
     return out

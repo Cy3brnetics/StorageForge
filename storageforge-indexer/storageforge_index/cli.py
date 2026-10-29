@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 from . import __version__
@@ -317,6 +318,29 @@ def cmd_plan(args) -> int:
     return 0
 
 
+def cmd_deploy(args) -> int:
+    from . import alerts, deploy, jobs
+    db, conn = open_db(args)
+    if args.deploy_cmd == 'setup-script':
+        print(deploy.remove_script() if args.remove else deploy.setup_for_download(db, conn), end='')
+        return 0
+    if args.deploy_cmd == 'alerts':
+        r = alerts.evaluate(db)
+        for a in alerts.list_alerts(conn):
+            print(f'{a["kind"]:<11} {a["title"]}  {a["message"] or ""}')
+        print(f'{r["open"]} open alert(s), {r["new"]} new')
+        return 1 if r['open'] else 0
+    for a in deploy.access(conn):
+        print(f'{a["host"]:<28} deploy access: {a["state"]}')
+    for j in jobs.overview(conn):
+        last = j['last'] or {}
+        print(f'  {j["state"]:<9} {j["id"]:<14} {j["name"]}  last run: '
+              + (time.strftime('%Y-%m-%d %H:%M', time.localtime(last['end'] or last['start'])) + f' rc={last["rc"]}' if last else 'none'))
+    for d in alerts.drift(conn):
+        print(f'  drift     {d["host"]}: {d["text"]}')
+    return 0
+
+
 def cmd_docker(args) -> int:
     from . import docker
     _, conn = open_db(args)
@@ -364,7 +388,7 @@ def cmd_restore(args) -> int:
 
 def cmd_prune(args) -> int:
     db, conn = open_db(args)
-    r = db.prune(conn, change_days=args.days)
+    r = db.prune(conn, change_days=args.days, max_change_rows=args.max_rows)
     print(f'removed {r["changes"]:,} change rows, {r["denied"]:,} old unreadable-folder rows, {r["jobs"]:,} old jobs')
     if args.vacuum:
         print('vacuuming (rewrites the file; needs as much free space as the database)…', file=sys.stderr)
@@ -662,6 +686,8 @@ def cmd_user(args) -> int:
             users.set_disabled(conn, args.name, a == 'disable')
         elif a == 'remove':
             users.remove(conn, args.name)
+        elif a == 'signout':
+            users.end_all_sessions(conn, args.name)
     except users.UserError as exc:
         print(f'error: {exc}', file=sys.stderr)
         return 2
@@ -671,7 +697,7 @@ def cmd_user(args) -> int:
     except VaultError:
         _audit(db, conn, None, f'user.{a}', username=args.name)
     print({'add': 'created', 'passwd': 'password changed for', 'disable': 'disabled', 'enable': 'enabled',
-           'remove': 'removed'}[a] + f' user {args.name}' + (' (existing sessions signed out)' if a in ('passwd', 'disable') else ''))
+           'remove': 'removed', 'signout': 'signed out every session of'}[a] + f' user {args.name}' + (' (existing sessions signed out)' if a in ('passwd', 'disable') else ''))
     return 0
 
 
@@ -804,6 +830,14 @@ def build_parser() -> argparse.ArgumentParser:
     c3.add_argument('file'); c3.add_argument('--id', type=int, help='replace this plan')
     ch.set_defaults(fn=cmd_plan)
 
+    dp = sub.add_parser('deploy', help='deploy access, deployed jobs and their state, drift and alerts')
+    dps = dp.add_subparsers(dest='deploy_cmd', required=True)
+    dps.add_parser('status', help='hosts, jobs with their last runs, drift')
+    d1 = dps.add_parser('setup-script', help='the deploy setup script, to run as root on a host')
+    d1.add_argument('--remove', action='store_true', help='the script that removes it instead')
+    dps.add_parser('alerts', help='evaluate alerts now (and notify); exit 1 while any are open')
+    dp.set_defaults(fn=cmd_deploy)
+
     dk = sub.add_parser('docker', help='containers, compose stacks and the folders they use')
     dk.add_argument('--host')
     dk.add_argument('--path', help='which containers use this folder (needs --host)')
@@ -825,7 +859,9 @@ def build_parser() -> argparse.ArgumentParser:
     rs.set_defaults(fn=cmd_restore)
 
     pr = sub.add_parser('prune', help='drop old change history and job rows (also runs after every scan)')
-    pr.add_argument('--days', type=int, default=90, help='keep file changes this many days (default 90)')
+    pr.add_argument('--days', type=int, help='keep file changes this many days (default $STORAGEFORGE_CHANGE_DAYS or 90)')
+    pr.add_argument('--max-rows', type=int, help='and at most this many change rows, oldest scans dropped first '
+                                                 '(default $STORAGEFORGE_CHANGE_MAX_ROWS or 2000000)')
     pr.add_argument('--vacuum', action='store_true', help='then shrink the file (slow, locks the database)')
     pr.set_defaults(fn=cmd_prune)
 
@@ -947,7 +983,7 @@ def build_parser() -> argparse.ArgumentParser:
         x.add_argument('name')
         x.add_argument('--password-env', metavar='VAR', help='read the password from this environment variable')
     for name, text in (('disable', 'block sign-in and sign out its sessions'), ('enable', 'allow sign-in again'),
-                       ('remove', 'delete an account')):
+                       ('remove', 'delete an account'), ('signout', 'end every web session of an account')):
         us.add_parser(name, help=text).add_argument('name')
     u.set_defaults(fn=cmd_user)
 

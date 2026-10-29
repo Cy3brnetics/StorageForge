@@ -10,8 +10,8 @@ A containerized storage platform: an encrypted SSH key vault, agentless file ind
 ## Quick start (Docker)
 
 ```bash
-./docker/init-secrets.sh                      # creates secrets/vault_secret and secrets/session_secret
-docker compose up -d --build                  # UI and API on http://127.0.0.1:8080
+./docker/init-secrets.sh                      # creates the vault and session secrets and a self-signed TLS certificate
+docker compose up -d --build                  # UI and API on https://<this machine>:8443 (accept the certificate once)
 docker compose exec storageforge storageforge-index user add admin              # web UI account (prompts for a password)
 docker compose exec storageforge storageforge-index vault generate --name fleet   # prints the public key
 #   … add that public key to ~scan/.ssh/authorized_keys on your hosts, then:
@@ -42,10 +42,10 @@ pip install '.[postgres,yaml]'   # optional extras
 | Runtime | Plaintext is decrypted with `update_into` into an `mlock`ed `bytearray`. It is written to `ssh-add -` from that buffer, then zeroed. The agent (`ssh-agent -D -a`) listens on a socket in a fresh 0700 directory on the tmpfs `/run/storageforge`, with a key lifetime limit. It is killed and the directory removed when the task ends. `ssh` runs with `-F /dev/null`, `IdentityAgent=<socket>`, `BatchMode`, password auth off and a persistent `known_hosts` (trust on first use). |
 | Host mapping | `key_bindings` maps keys to an exact host or IP, a glob (`*.tailnet.ts.net`) or a CIDR, with a user, port and allowed actions (`scan`, `checksum`). The most specific match wins: host, then glob, then longest prefix, then priority. |
 | Audit | Every connection, scan result, denial and vault change is appended to `audit_log`. Each entry carries an HMAC-SHA256 over the previous entry's hash, with a random MAC key wrapped by the KEK. Triggers reject UPDATE, DELETE (and TRUNCATE on PostgreSQL). `audit verify` detects an edited, deleted or reordered row even if the triggers were bypassed. |
-| API | Local accounts. Flask-Login manages sessions and Werkzeug hashes passwords (scrypt); StorageForge has no auth code of its own. The session cookie is signed with `STORAGEFORGE_SESSION_SECRET`, `HttpOnly`, `SameSite=Strict`, and `Secure` when `STORAGEFORGE_COOKIE_SECURE=1`. Sessions last 12 hours. Changing or disabling an account signs out its sessions. State-changing routes accept only `application/json`, so a cross-site form cannot reach them. Every sign-in attempt is audited. Flask-Limiter throttles failed sign-ins: 10 per minute and 50 per hour per client IP, and 5 per minute and 20 per hour per username. After that `/api/login` answers `429` with `Retry-After`. Successful sign-ins don't count, and counters reset when the server restarts. Behind a reverse proxy, set `STORAGEFORGE_PROXY_HOPS=1` so limits and the audit log see the real client IP from `X-Forwarded-For`. Strict CSP (`'self'` only), `nosniff`, `frame-ancestors 'none'`, `no-store`, 4 KiB body cap. Served by waitress. The UI builds the DOM with `textContent` only. |
+| API | Local accounts. Flask-Login manages sessions and Werkzeug hashes passwords (scrypt); StorageForge has no auth code of its own. The session cookie is signed with `STORAGEFORGE_SESSION_SECRET`, `HttpOnly`, `SameSite=Strict`, and `Secure` (as `__Host-sf_session`) when `STORAGEFORGE_COOKIE_SECURE=1`, which compose sets. A session ends 30 minutes after sign-in; each user can raise their own to as much as 8 hours in the header's Session menu. Sessions are also kept server-side (only a hash of their id is stored), so signing out ends that session even for a copied cookie; `storageforge-index user signout <name>` ends all of them, as do changing or disabling the account. Anything that runs commands on hosts (deploys, job runs and cutovers, restores, key install, scan and deploy access) asks for the password again, which then stays confirmed for 5 minutes; so does changing the session length. State-changing routes accept only `application/json`, so a cross-site form cannot reach them. Every sign-in attempt is audited. Flask-Limiter throttles failed sign-ins: 10 per minute and 50 per hour per client IP, 5 per minute and 20 per hour per username from one network (/24 or /64, so a stranger cannot lock the owner out), and 100 per day per username from anywhere. Hitting a limit is audited. After that `/api/login` answers `429` with `Retry-After`. Successful sign-ins don't count, and counters reset when the server restarts. Behind a reverse proxy, set `STORAGEFORGE_PROXY_HOPS=1` so limits and the audit log see the real client IP from `X-Forwarded-For`. Strict CSP (`'self'` only), `nosniff`, `frame-ancestors 'none'`, `no-store`, 4 KiB body cap, list sizes clamped. `/healthz` gives only `{"status"}` unless asked from inside the container or by a signed-in user. Alert URLs may not point at loopback, link-local (cloud metadata) or multicast addresses, redirects are not followed, a stored ntfy/Gotify token is dropped when its server changes, and the test button reports only HTTP status codes. ssh and other child processes never see `STORAGEFORGE_*` variables. Served by waitress. The UI builds the DOM with `textContent` only. |
 | Container | Non-root uid 10001, read-only root filesystem, `cap_drop: ALL`, `no-new-privileges`, tmpfs runtime and `/tmp` (`noexec,nosuid,nodev`), 2 CPU / 1 GiB / 256 PID limits, memlock raised for `mlock`. Secrets come from compose secret files, and the port is published on loopback only. |
 
-Python cannot promise that no other copy of a secret exists in memory: the environment variable and import paths are ordinary immutable objects. The design minimizes how long plaintext lives and never writes it to disk. It does not claim zero copies. Put TLS in front of the API with a reverse proxy.
+Python cannot promise that no other copy of a secret exists in memory: the environment variable and import paths are ordinary immutable objects. The design minimizes how long plaintext lives and never writes it to disk. It does not claim zero copies. The compose stack puts nginx in front with a self-signed certificate for the LAN; StorageForge is not meant to face the internet.
 
 ## Commands
 
@@ -97,7 +97,20 @@ The database defaults to `~/.local/share/storageforge/index.db`. Use `--db postg
 
 ## Graph and Obsidian canvas
 
-The main page opens on the **Topology** view. Each host is laid out in columns: devices, then partitions and pools, then subvolumes and datasets, then mount points, then links and exports. The view is drawn from the host's design, the same one the planner edits. Select a box to edit what the operator owns: device and pool tiers, 3-2-1 protection on a mount point (snapshots, sync, backup target, offsite), and links and exports. Hardware and layout come from the scan. To set a backup target, drag one mount point onto another, on the same host or a different one. **Save design** stores the design and rebuilds the graph, and the mount health dots update. **Graph** switches to the force-directed view.
+The main page opens on the **Topology** view, a schema-designer canvas. Each host is a frame; each disk, pool and remote is a table whose rows are the partitions, subvolumes, datasets and mount points under it, and lines join rows across tables (a member partition's FK row to its pool, a mount point to the links and exports inside it, an export to the client mounting it). Scroll to pan, Ctrl+scroll to zoom, drag a table or a host by its heading, collapse tables, and find anything from the toolbar. Table positions save with the design; **Auto-layout** forgets them. The view is drawn from the host's design, the same one the planner edits. Select a box to edit what the operator owns: device and pool tiers, 3-2-1 protection on a mount point (snapshots, sync, backup target, offsite), and links and exports. Hardware and layout come from the scan. To set a backup target, drag one mount point onto another, on the same host or a different one. **Save design** stores the design and rebuilds the graph, and the mount health dots update. **Graph** switches to the force-directed view.
+
+Right-click almost anything for its actions:
+
+| Where | Menu |
+| :--- | :--- |
+| Topology box | edit, show in graph, tier, protection, move, export, link, the changes staged on it (edit or unstage), every change that can be staged there, copy path, device or UUID |
+| Host heading | scan now, add a link or export, deploy shares, review staged changes, open in the planner |
+| Graph node | details, focus, center, unpin, edit in the topology, browse folders, largest files, move from here |
+| Folder in the browser | open, largest files, rename, trash, permissions, link to it, turn into a subvolume, snapshot, copy to another disk, copy path |
+| Search result | show its folder, largest files there, rename, trash, permissions, copy its folder to another disk, copy path |
+| Staged change, Moves step | edit, reorder, duplicate, remove (and swap source and destination for a step) |
+
+The menu key and Shift+F10 open it on the focused box. Text fields, links and Shift+right-click keep the browser's own menu.
 
 The graph is rebuilt per host after every scan, from the index plus any stored blueprint.
 
@@ -130,6 +143,8 @@ The UI at `/` is a dependency-free canvas force simulation with charge, springs,
 | GET | `/api/planner/hosts` | scanned hosts and saved designs |
 | GET | `/api/planner/design?host=&source=saved\|scan` | a design: the saved one, or built from the latest scan plus saved intent |
 | PUT | `/api/planner/design` | save a `storageforge/v1` blueprint (2 MiB cap) and rebuild the host's graph |
+| PUT | `/api/planner/example` `{"show": false}` | remove (or restore) the built-in example host for everyone |
+| GET | `/api/planner/activity?host=` | staged changes, moves, shares, deployed jobs, drift and unreadable folders on a host |
 | GET | `/api/keys` | vault keys (public halves only) and host bindings |
 | POST | `/api/keys` `{"name": "…", "type": "ed25519" or "rsa"}` | generate a key inside the vault |
 | POST | `/api/keys/install` `{"key", "host", "port", "user", "password", "bind", "checksum"}` | `ssh-copy-id` the public key with the host password, verify key login, optionally bind it for scans (10 per minute per user) |
@@ -150,20 +165,24 @@ Passwords need at least 12 characters. An account that hits the failed sign-in l
 
 `/planner` is the StorageForge design tool, served by the same app and signed in with the same account. It has these views:
 
+- **Overview:** capacity, 3-2-1 protection and every guardrail. For a real host it also lists what the rest of StorageForge holds for it: staged changes, data moves, designed shares and their check results, deployed backup/sync/snapshot jobs and their state, drift, and folders the last scan could not read. Each row links to that panel on the main page.
 - **Devices:** block devices, partition tables and filesystems.
 - **Mounts:** the mount tree with conflict checks, and generated `/etc/fstab` and systemd units.
 - **Links:** symlinks and bind mounts, with health checks and boot ordering.
 - **Topology:** disks, pools and mounts as a diagram.
 - **RAID calculator.**
 - **Protection:** the 3-2-1 grid.
-- **Export:** Bash, Ansible, systemd, JSON/YAML blueprint and ASCII tree.
+- **Export:** Bash, Ansible, systemd, JSON/YAML blueprint and ASCII tree. These build a host from bare disks. To change a running host, stage the change in **Changes** and run it from **Deploy** instead.
 
 Pick a host in the rail:
 
 - **A scanned host with no saved design** opens as a design built from its latest scan. This includes real disks, partitions, UUIDs, btrfs subvolumes (also through LUKS), mdadm/ZFS/multi-device btrfs pools, mount options, remote mounts, bind mounts and problem symlinks. Protection rows start as "None" because a scan cannot see sync, snapshot or backup policy. `/tmp`, `/var/tmp` and `/var/cache` start as ephemeral.
 - **Save design** stores it as the host's `storageforge/v1` blueprint and rebuilds its graph, so reports and the graph pick up your tiers, protection, exports and planned links. A host that has never been scanned gets its graph from the design alone.
 - **Refresh from latest scan** rebuilds the hardware from the newest scan and keeps what only you know. That means disk and pool tiers, encryption notes, protection rows (rows for things that disappeared stay listed), exports, manual links and remotes the scan didn't see.
-- Unsaved edits are kept per host in the browser until you save. The built-in example host "atlas" still works signed out.
+- Unsaved edits are kept per host in the browser until you save.
+- The rail's **In StorageForge** links open the main page on that host's Changes, Moves, Deploy, Docker, Git, Cleanup or Access panel (`/#host=nas-02&tab=changes`).
+
+The built-in example host "atlas" works signed out. Once you have real hosts, **Remove example host** hides it from the planner for every user, and the planner opens your first host instead. **Show example host** brings it back.
 
 The graph header links to the planner, and a host node's **Open in planner** jumps straight to it. The planner is served under the same CSP, with one relaxation, `style-src-attr 'unsafe-inline'`, for its inline-sized bars. It uses system fonts, because web fonts are blocked by the CSP.
 
@@ -311,7 +330,14 @@ Managers that run in a container record each stack's folder as they see it from 
 
 ## Deploying NFS and SMB shares
 
-Shares you add to a host's design (topology view → **+ Export**) can be deployed. Scanned shares are only reported. Each share can list **Mount on** clients. **Deploy shares** on the host checks the design, then downloads `shares-<host>.sh`. Without `--apply` the script only reports.
+Shares you add to a host's design can be deployed. Scanned shares are only reported. **+ Export** (or **Share this…** on a mount point) opens the share wizard:
+
+1. **Folder**: browse the server's file system from the index. Each folder shows the disk or network mount it lives on, mounts below it, shares already there and shares other designs mount there; the side list shows every mount of the host with its free space.
+2. **Access**: NFS (one rule per client or subnet, with presets and one-click subnets of the scanned hosts, and crossmnt when filesystems are mounted inside) or SMB (users and read-only).
+3. **Clients**: where each client mounts it, picked by browsing that client's own file system.
+4. **Review**: what will happen, then **Save** into the design and **Deploy**.
+
+Every step is checked against the index as you go: system and pseudo paths, re-exporting a network mount, folders not in the index, duplicate names and paths, nested exports, filesystems inside the share, and per client a mount point that already holds a disk or another share, sits inside a network mount, is a system folder, or would hide files. Each share can list **Mount on** clients. **Deploy shares** on the host checks the design, then downloads `shares-<host>.sh`. Without `--apply` the script only reports.
 
 With `sudo ./shares-<host>.sh --apply`, it does the following on the server:
 
@@ -326,6 +352,27 @@ With `sudo ./shares-<host>.sh --apply`, it does the following on the server:
 On each client it installs the mount helper, keeps SMB credentials in a 0600 file (asking for them once), appends an fstab line with `_netdev,nofail,x-systemd.automount` after a backup, and mounts the share.
 
 NFS shares must name their clients, such as a subnet. Existing fstab lines are never changed. On the CLI: `storageforge-index shares check|script <host>`.
+
+## Storage tasks: rsync, snapshots and other jobs from blocks
+
+The **Tasks** view (next to Topology and Graph) builds small programs from blocks and runs them on one host, by hand or on a systemd timer. Drag blocks from the palette, or click one to add it at the end or into the selected slot. Each block shows its fields; collapse it to a one-line sentence. Ctrl+Z undoes.
+
+| Group | Blocks |
+|---|---|
+| Guards | Require mounted, Require free space, Require host up |
+| Control | If (mounted, exists, free below, weekday, day of month, host up, command succeeds) with then/else, Try with a fallback, Stop |
+| Copy | Copy with rsync (copy or mirror, one side may be another host), Rotating backup (dated hard-linked folders, keep N), Verify copy |
+| Snapshots | btrfs snapshot, Prune btrfs snapshots, ZFS snapshot, Prune ZFS snapshots |
+| Services | Docker compose stop/start/restart, systemd unit stop/start/restart |
+| Other | Make folder, btrfs scrub, Run command, Wait, Log |
+
+"If the task fails" blocks run after a failure. Templates cover nightly mirrors, snapshot rotations, rotating backups and stop-snapshot-start.
+
+Each block is checked against the index while you edit. The check covers paths, btrfs and ZFS targets, overlapping copies, and free space at the destination. It also catches a destination on a data disk with no guard: if that disk is missing, the copy fills the system disk. A mirror whose source disk could be unmounted gets the same warning, since it would empty the copy. Those warnings come with a one-click "Add Require mounted" fix.
+
+**Script** shows `task-<name>.sh`. Run plainly, it is read-only: it checks the guards and prints each command it would run. `--run` runs it. `--install` copies it to `/usr/local/lib/storageforge/tasks` and adds `sf-task-<name>.service`, plus a `.timer` when the task has a schedule. `--uninstall` removes them. Runs take a lock, so they never overlap, and leave `/var/lib/storageforge/tasks/<name>.last`.
+
+**Deploy** does the same from the web UI, through the signed deploy runner: Dry run, Install, Run now or Uninstall. A task moved to another host is uninstalled from the old one.
 
 ## Cold data
 
@@ -379,11 +426,13 @@ The backups volume lives on this machine. To keep copies elsewhere, add a Moves 
 
 **Retention.** After every scan, and every night, StorageForge removes:
 
-- file change history older than 90 days (the newest scan's changes always stay);
+- file change history older than 90 days (`STORAGEFORGE_CHANGE_DAYS`), and the oldest scans' history beyond 2,000,000 rows (`STORAGEFORGE_CHANGE_MAX_ROWS`). The newest scan's changes on each host always stay;
 - unreadable-folder lists from all but each host's latest scan;
 - finished scan jobs older than 90 days.
 
-Run `storageforge-index prune --vacuum` once to shrink the database file. It rewrites the whole file and locks it while doing so.
+Run `storageforge-index prune --vacuum` once to shrink the database file. It rewrites the whole file and locks it while doing so. Run it after upgrading to schema 12 (below) to give the freed space back.
+
+**Schema 12: directories.** Each folder path is now stored once, in `directories`, and `file_records` points to it by `dir_id`. Before, the full path was repeated in every row and in two indexes. On an index of 11.9 million entries this took the database from 7.7 GB to 3.3 GB after `prune --vacuum`, and the change log from 6.3 million rows to 98,000. Folder queries got much faster: `search --under /mnt` from 23 s to 27 ms, and a `IMG_2019*` name search from 330 ms to 18 ms. On that index the migration took about 8 minutes and the vacuum 2. The migration runs on the first start after upgrading. It rewrites `file_records`, which takes a few minutes and needs about as much free space as that table, and the server is unavailable while it runs. It also drops change-log rows from earlier bulk imports (below).
 
 **Request log.** By default (`STORAGEFORGE_ACCESS_LOG=changes`) only requests that change something, rate-limit hits and server errors are logged. Use `all` to log every request (the old behaviour), or `off`.
 
@@ -394,10 +443,23 @@ Run `storageforge-index prune --vacuum` once to shrink the database file. It rew
 | File | Purpose |
 | :--- | :--- |
 | `Dockerfile` | `build` stage (venv), `test` stage (runs the suite: `docker build --target test .`), slim `runtime` with `openssh-client`, `sqlite3` and `tini`, uid 10001, `HEALTHCHECK` |
-| `docker-compose.yml` | Hardened service, secrets, `sf-data` volume, tmpfs mounts, resource limits, loopback port |
+| `docker-compose.yml` | Hardened service, secrets, `sf-data` volume, tmpfs mounts, resource limits; an unprivileged, read-only nginx serves it over TLS on port 8443 |
+| `docker/nginx.conf` | TLS 1.2/1.3, HSTS, http→https redirect, `X-Forwarded-For` replaced (not appended) |
 | `docker/entrypoint.sh` | Refuses root, checks secret lengths, checks volume ownership and that the runtime dir is tmpfs, tightens permissions, migrates, creates or verifies the vault, imports keys from a read-only mount, then `exec`s |
-| `docker/init-secrets.sh` | Generates the vault secret and session secret |
+| `docker/init-secrets.sh` | Generates the vault secret, session secret and a self-signed certificate for this machine's names and LAN addresses (`STORAGEFORGE_TLS_NAMES` adds more). Files are `0640` with your group; the containers read them through `group_add` (`STORAGEFORGE_SECRETS_GID`, written to `.env` when your group is not 1000) |
+| `docker/egress-firewall.sh` | Optional, run as root: lets the containers open only SSH and alert ports (`STORAGEFORGE_EGRESS_PORTS`, default `22 443`) out of the `sf0` bridge; `--remove` undoes it |
+| `docker/requirements*.lock` | Every Python dependency pinned with hashes; the image installs with `--require-hashes` |
 | `examples/demo/` | Disposable SSH target and an end-to-end script |
+
+### Updating dependencies
+
+The base image is pinned by digest and Python packages by hash. To move them forward (the cutoff skips releases younger than two weeks):
+
+```bash
+docker buildx imagetools inspect python:3.13-slim-bookworm | sed -n 's/^Digest: *//p'     # new digest for the Dockerfile's PYTHON_IMAGE
+uv pip compile pyproject.toml docker/build-requirements.in --universal --python-version 3.13 --generate-hashes --no-header --exclude-newer "$(date -d '14 days ago' +%F)" -o docker/requirements.lock
+uv pip compile pyproject.toml docker/build-requirements.in --extra postgres --universal --python-version 3.13 --generate-hashes --no-header --exclude-newer "$(date -d '14 days ago' +%F)" -o docker/requirements-postgres.lock
+```
 
 For PostgreSQL, build with `--build-arg EXTRAS=postgres` and set `STORAGEFORGE_DB=postgresql://…`. The PostgreSQL DDL is written but has not yet been run against a live server.
 
@@ -444,13 +506,13 @@ For PostgreSQL, build with `--build-arg EXTRAS=postgres` and set `STORAGEFORGE_D
 
 ### Incremental sync
 
-Rows are keyed by `(mount_id, parent_path, filename)`. After a walk is staged, three set operations run in one transaction:
+Rows are keyed by `(dir_id, filename)`. A `dir_id` is one folder on one mount in `directories`. After a walk is staged, its folders are added to `directories`, and three set operations run in one transaction:
 
 1. **Deleted:** indexed rows (in scope) missing from the walk. They are logged to `file_changes`, removed from FTS and deleted.
 2. **Modified:** same key, different size, mtime, mode, owner, symlink target or type. The checksum is cleared when content may have changed.
 3. **Added:** new keys are inserted with `first_seen_scan_id` set, and FTS is updated.
 
-Added entries are logged only after a mount's first scan, so the first index does not write a million-row change log. Directory mtime changes update the row but are not logged as modifications.
+Added entries are logged only after a mount's first scan, so the first index does not write a million-row change log. A later scan that adds more than 50,000 entries to one mount, such as a new disk or a restored folder, counts them in the scan summary but does not list them one by one. Directory mtime changes update the row but are not logged as modifications. Folders left with no entries are removed from `directories`.
 
 ## Schema
 
@@ -460,12 +522,13 @@ The full DDL is in `storageforge_index/migrations/{sqlite,postgres}/`: `001_init
 | :--- | :--- |
 | `hosts` | `host_id`, `hostname`, `ip_address`, `os_info`, `last_scanned_at`, plus the SSH target used and the last inventory (`lsblk`, `zpool status`, `findmnt`, `df`) as JSON |
 | `mounts` | `mount_id`, `host_id`, `mount_point`, `filesystem_type`, `total_bytes`, `used_bytes`, plus source, options, `maj:min`, `fs_root`, scan state (`indexed`, `skipped`, `bind-alias`, `gone`) and skip reason |
-| `file_records` | `file_id`, `mount_id`, `parent_path`, `filename`, `extension`, `file_size_bytes`, `is_directory`, `is_symlink`, `symlink_target`, `mode_permissions`, `owner_uid`, `group_gid`, `modified_at`, `checksum_hash` |
+| `directories` | `dir_id`, `mount_id`, `path`: each folder path once, so file rows don't repeat it |
+| `file_records` | `file_id`, `mount_id`, `dir_id`, `filename`, `extension`, `file_size_bytes`, `is_directory`, `is_symlink`, `symlink_target`, `mode_permissions`, `owner_uid`, `group_gid`, `modified_at`, `checksum_hash` |
 | `scans`, `file_changes` | Scan history and per-scan added, modified and deleted entries |
 | `file_fts` (SQLite) | FTS5 external-content table with the trigram tokenizer over `filename` |
-| `v_files` | View with `hostname`, `mount_point` and `full_path` for ad-hoc SQL |
+| `v_files` | View with `hostname`, `mount_point`, `parent_path` and `full_path` for ad-hoc SQL |
 
-Indexes include `(filename)`, `(parent_path)`, `(file_size_bytes)`, `(extension, file_size_bytes)`, `(modified_at)` and a partial index on `checksum_hash`. PostgreSQL adds `lower(filename)`, `pg_trgm` GIN indexes on `filename` and `parent_path`, and `text_pattern_ops` on `parent_path` for prefix queries under any collation.
+Indexes include `UNIQUE (dir_id, filename)`, `(filename)`, `(file_size_bytes)`, `(extension, file_size_bytes)`, `(modified_at)`, `(mount_id, first_seen_scan_id)` and a partial index on `checksum_hash`, plus `directories (path)`. PostgreSQL adds `lower(filename)`, `pg_trgm` GIN indexes on `filename` and `directories.path`, and `text_pattern_ops` on `directories.path` for prefix queries under any collation.
 
 ### How a pattern is answered
 
@@ -475,7 +538,7 @@ Indexes include `(filename)`, `(parent_path)`, `(file_size_bytes)`, `(extension,
 | `report.pdf` | `filename = … COLLATE NOCASE` | `lower(filename) = lower(…)` |
 | `IMG_2019*` | `filename LIKE 'IMG_2019%'` (B-tree prefix range) | `filename ~* '^IMG_2019.*$'` (trigram GIN) |
 | `*raw*2019*` | FTS5 trigram `LIKE` for candidates, then exact `GLOB` | `filename ~* …` (trigram GIN) |
-| `--under /mnt/x` | `parent_path` B-tree range | `parent_path LIKE '/mnt/x/%'` (`text_pattern_ops`) |
+| `--under /mnt/x` | `directories.path` B-tree range | `directories.path LIKE '/mnt/x/%'` (`text_pattern_ops`) |
 
 ## Measured performance
 
@@ -488,7 +551,7 @@ These numbers come from a local scan (no SSH hop) of `/usr` with a warm page cac
 | Rescan with no changes (walk and full diff) | 8.3 s |
 | `search "*.so"` (7,604 hits) | 26 ms |
 | `search "*python3*config*"` (trigram) | 3 ms |
-| `search --path-contains …` (full parent_path scan, no match) | 78 ms |
+| `search --path-contains …` (full folder-path scan, no match) | 78 ms |
 | Index size | 459 MiB (≈ 410 bytes per entry, including indexes and FTS) |
 
 Over SSH, throughput is usually bound by the remote disk walk and the link. One multiplexed connection with four parallel `find` streams keeps several mounts busy at once.

@@ -26,6 +26,10 @@ function taskTitle(t) {
   }[t.type] || (() => t.type))();
 }
 const tasksOn = (host) => CH.plan.tasks.filter((t) => t.host === host);
+function mountFor(host, path) {      // the mount a path is on, from the topology (the path itself when unknown)
+  const m = (T.docs.get(host) || {}).m;
+  return (m && containing(path, [...m.nodes.values()].filter((x) => x.kind === 'mount' && !x.planned).map((x) => x.target))) || path;
+}
 
 /* ── staging from the topology ───────────────────────────────────── */
 async function openTask(type, host, preset = {}, edit = null) {
@@ -74,7 +78,12 @@ async function openTask(type, host, preset = {}, edit = null) {
   form.querySelector('input, select')?.focus();
 }
 function stageButtons(doc, n) {
-  const h = doc.host, b = (label, type, preset) => button(label, () => openTask(type, h, preset), 'btn ghost sm');
+  const acts = stageActions(doc, n);
+  return acts.length ? [el('h3', {}, 'Plan a change'), el('div', { class: 'row wrap' },
+    ...acts.map((a) => button(a.label, a.run, a.primary ? 'btn sm' : 'btn ghost sm')))] : [];
+}
+function stageActions(doc, n) {
+  const h = doc.host, b = (label, type, preset) => ({ label, run: () => openTask(type, h, preset) });
   const btrfsMounts = [...doc.m.nodes.values()].filter((x) => x.kind === 'mount' && /btrfs/.test(x.sub || ''));
   const out = [];
   if (n.kind === 'disk') {
@@ -101,14 +110,50 @@ function stageButtons(doc, n) {
     out.push(b('Mount it (again)…', 'mount', { source: uuid ? 'UUID=' + uuid : '', subvol: n.ref.name, fstype: 'btrfs', options: 'noatime,nofail' }));
   } else if (n.kind === 'mount') {
     const btrfs = /btrfs/.test(n.sub || '');
-    out.push(button('Browse folders', () => browseFolders(h, n.target, n.target), 'btn sm'),
+    out.push({ label: 'Browse folders', run: () => browseFolders(h, n.target, n.target), primary: true },
       b('New folder…', 'dir', { path: n.target.replace(/\/$/, '') + '/' }));
     if (btrfs) out.push(b('New subvolume here…', 'subvolume', { path: n.target.replace(/\/$/, '') + '/' }),
       b('Snapshot…', 'snapshot', { source: n.target, dest: `${n.target.replace(/\/$/, '')}/.snapshots/${new Date().toISOString().slice(0, 10)}` }));
     const opts = (n.sub || '').split(' · ')[1] || '';
     out.push(b('Mount options…', 'mount-options', { target: n.target, options: opts }), b('Unmount…', 'unmount', { target: n.target }));
   }
-  return out.length ? [el('h3', {}, 'Plan a change'), el('div', { class: 'row wrap' }, ...out)] : [];
+  return out;
+}
+/* tasks staged on a box: planned boxes are their task; a mount also owns what is staged inside it */
+function stagedOn(doc, n) {
+  const mounts = [...doc.m.nodes.values()].filter((x) => x.kind === 'mount').map((x) => x.target);
+  return tasksOn(doc.host).filter((t) => {
+    const p = t.params || {};
+    if (n.plannedPath) return ['subvolume', 'snapshot'].includes(t.type) && (p.path || p.dest) === n.plannedPath;
+    if (n.kind === 'mount' && n.planned) return t.type === 'mount' && p.target === n.target;
+    if (n.kind === 'mount') {
+      if (t.type === 'unmount' || t.type === 'mount') return t.type === 'unmount' && p.target === n.target;
+      const path = p.path || p.dest || p.target || p.source;
+      return !!path && path.startsWith('/') && !path.startsWith('/dev/') && containing(path, mounts) === n.target;
+    }
+    if (n.kind === 'disk' || n.kind === 'part') {
+      const dev = bare(p.device || p.disk || (String(p.target || '').startsWith('/dev/') ? p.target : ''));
+      return !!dev && (n.key === 'part:' + dev || n.key === 'disk:' + dev);
+    }
+    return false;
+  });
+}
+function unstage(t) {
+  const i = CH.plan.tasks.indexOf(t);
+  if (i < 0) return;
+  CH.plan.tasks.splice(i, 1);
+  chTouch();
+  if (!$('#tab-changes').hidden) renderChanges();
+}
+function folderActions(host, full, btrfs) {
+  const go = (type, preset) => () => openTask(type, host, preset);
+  return [{ label: 'Rename or move…', run: go('rename', { path: full, dest: full }) },
+    { label: 'Move to trash', run: go('trash', { path: full }) },
+    { label: 'Owner and permissions…', run: go('perms', { path: full }) },
+    { label: 'Link to it from…', run: go('symlink', { path: '', target: full }) },
+    ...(btrfs ? [{ label: 'Turn into a subvolume', run: go('to-subvolume', { path: full }) },
+      { label: 'Snapshot (if a subvolume)…', run: go('snapshot', { source: full, dest: full + '-snap' }) }] : []),
+    { label: 'Copy to another disk (Moves)…', run: () => moveFrom(host, full) }];
 }
 
 /* ── folder browser: look around inside a mount and stage file changes ── */
@@ -135,23 +180,22 @@ async function browseFolders(host, path, mountTarget) {
   };
   const btrfs = /btrfs/.test(((T.docs.get(host) || {}).m?.nodes.get('mnt:' + mountTarget) || {}).sub || '');
   const base = r.path === '/' ? '' : r.path;
-  const planned = staged.filter((t) => ['dir', 'subvolume', 'snapshot'].includes(t.type) && posixDir(t.params.path || t.params.dest) === r.path)
+  const planned = staged.filter((t) => ['dir', 'subvolume', 'snapshot'].includes(t.type) && dirOf(t.params.path || t.params.dest || '') === r.path)
     .map((t) => ({ name: (t.params.path || t.params.dest).split('/').pop(), planned: t.type }));
   const rows = [...r.dirs.map((d) => ({ ...d })), ...planned.filter((p) => !r.dirs.some((d) => d.name === p.name))];
   const menu = (full) => {
-    const s = el('select', { 'aria-label': `Change ${full}`, class: 'act' }, new Option('Change…', ''),
-      new Option('Rename or move…', 'rename'), new Option('Move to trash', 'trash'), new Option('Owner and permissions…', 'perms'),
-      new Option('Link to it from…', 'symlink'), ...(btrfs ? [new Option('Turn into a subvolume', 'to-subvolume'), new Option('Snapshot (if a subvolume)…', 'snapshot')] : []),
-      new Option('Copy to another disk (Moves)…', 'moves'));
-    s.addEventListener('change', () => {
-      const v = s.value; s.value = '';
-      if (v === 'moves') return moveFrom(host, full);
-      const preset = { rename: { path: full, dest: full }, trash: { path: full }, perms: { path: full }, symlink: { path: '', target: full },
-                       'to-subvolume': { path: full }, snapshot: { source: full, dest: full + '-snap' } }[v];
-      openTask(v, host, preset);
-    });
+    const acts = folderActions(host, full, btrfs);
+    const s = el('select', { 'aria-label': `Change ${full}`, class: 'act' }, new Option('Change…', ''), ...acts.map((a, i) => new Option(a.label, i)));
+    s.addEventListener('change', () => { const a = acts[s.value]; s.value = ''; if (a) a.run(); });
     return s;
   };
+  const rowMenu = (d, full) => () => [{ heading: full },
+    d.mount || d.planned ? null : { label: 'Open', run: () => browseFolders(host, full, mountTarget) },
+    { label: 'Largest files in it', run: () => runSearch({ under: full, host, size_gt: '1MiB' }) },
+    ...(d.planned || d.mount ? [] : ['-', { heading: 'Plan a change' }, ...folderActions(host, full, btrfs)]),
+    ...staged.filter((t) => [t.params.path, t.params.dest, t.params.target].includes(full)).flatMap((t) =>
+      [{ label: `Edit: ${taskTitle(t)}`, run: () => openTask(t.type, host, {}, t) }, { label: `Unstage: ${taskTitle(t)}`, danger: true, run: () => { unstage(t); browseFolders(host, r.path, mountTarget); } }]),
+    '-', { label: 'Copy path', run: () => copyText(full) }];
   const up = r.path !== mountTarget && r.path !== '/' ? r.path.replace(/\/[^/]*$/, '') || '/' : null;
   box.replaceChildren(
     el('div', { class: 'row' }, el('b', { class: 'mono' }, `${host}:${r.path}`),
@@ -163,15 +207,16 @@ async function browseFolders(host, path, mountTarget) {
     el('ul', { class: 'fbrowse' }, ...rows.map((d) => {
       const full = `${base}/${d.name}`;
       const marks = d.planned ? [`planned ${d.planned === 'dir' ? 'folder' : d.planned}`] : markFor(full);
-      return el('li', { class: marks.length ? 'staged' : '' },
+      const li = el('li', { class: marks.length ? 'staged' : '' },
         d.mount || d.planned ? el('span', { class: 'n mono' }, d.name) : button(d.name, () => browseFolders(host, full, mountTarget), 'n mono link'),
         text('span', d.mount ? `${d.mount} mount` : d.bytes ? fmtBytes(d.bytes) : '', 's'),
         marks.length ? text('span', marks.join(' · '), 'mark') : '',
         d.planned || d.mount ? '' : menu(full));
+      li._menu = rowMenu(d, full);
+      return li;
     })),
     rows.length ? '' : text('p', r.indexed ? 'No subfolders.' : 'This mount was not indexed.', 'muted'));
 }
-const posixDir = (p) => (p || '').replace(/\/[^/]*$/, '') || '/';
 
 /* ── stage bar and the Changes tab ───────────────────────────────── */
 function renderStageBar() {
@@ -203,18 +248,29 @@ function renderChanges() {
     onchange: () => { p.name = name.value.trim(); chTouch(); } });
   name.value = p.name || '';
   const res = CH.result;
+  const move = (i, j) => { [p.tasks[i], p.tasks[j]] = [p.tasks[j], p.tasks[i]]; chTouch(); renderChanges(); };
   const list = el('ol', { class: 'chtasks' }, ...p.tasks.map((t, i) => {
     const r = res && res.tasks[i];
     const worst = r ? (r.items.some((x) => x.level === 'crit') ? 'crit' : r.items.some((x) => x.level === 'warn') ? 'warn' : 'ok') : '';
-    return el('li', { class: `card ${worst ? 'lv-border-' + worst : ''}` },
+    const li = el('li', { class: `card ${worst ? 'lv-border-' + worst : ''}` },
       el('div', { class: 'row' }, el('b', {}, `${i + 1}. ${taskTitle(t)}`),
         el('span', { class: 'row tools' },
-          i ? button('↑', () => { [p.tasks[i - 1], p.tasks[i]] = [p.tasks[i], p.tasks[i - 1]]; chTouch(); renderChanges(); }, 'btn ghost sm') : '',
-          i < p.tasks.length - 1 ? button('↓', () => { [p.tasks[i + 1], p.tasks[i]] = [p.tasks[i], p.tasks[i + 1]]; chTouch(); renderChanges(); }, 'btn ghost sm') : '',
+          i ? button('↑', () => move(i, i - 1), 'btn ghost sm') : '',
+          i < p.tasks.length - 1 ? button('↓', () => move(i, i + 1), 'btn ghost sm') : '',
           button('Edit', () => openTask(t.type, t.host, {}, t), 'btn ghost sm'),
           button('Remove', () => { p.tasks.splice(i, 1); chTouch(); renderChanges(); }, 'btn ghost sm danger'))),
       text('span', `${t.host}${(CH.types && CH.types[t.type] && CH.types[t.type].destructive) ? ' · destructive' : ''}`, 'muted small'),
       r ? el('ul', { class: 'mvcheck' }, ...r.items.map((x) => el('li', { class: `lv-${x.level}` }, x.text))) : '');
+    li._menu = () => [{ heading: `${i + 1}. ${taskTitle(t)}` }, { label: 'Edit…', run: () => openTask(t.type, t.host, {}, t) },
+      { label: 'Move up', disabled: !i, run: () => move(i, i - 1) }, { label: 'Move down', disabled: i === p.tasks.length - 1, run: () => move(i, i + 1) },
+      { label: 'Move to the top', disabled: !i, run: () => { p.tasks.unshift(...p.tasks.splice(i, 1)); chTouch(); renderChanges(); } },
+      { label: 'Duplicate', run: () => { p.tasks.splice(i + 1, 0, { ...structuredClone(t), id: 't' + Date.now().toString(36) }); chTouch(); renderChanges(); } },
+      { label: `Show ${t.host} in the topology`, run: async () => {
+        if (T.mode !== 'topo') { setMode('topo', false); await loadDesigns(); }
+        focusHost(t.host);
+      } },
+      '-', { label: 'Remove', danger: true, run: () => { p.tasks.splice(i, 1); chTouch(); renderChanges(); } }];
+    return li;
   }));
   const msg = el('p', { id: 'chmsg', class: 'muted', hidden: true });
   $('#changesbox').replaceChildren(
@@ -224,7 +280,11 @@ function renderChanges() {
     el('div', { class: 'row end' },
       p.id ? button('Delete plan', chDelete, 'btn ghost sm danger') : '',
       button('Check', chCheck, 'btn sm'), button(CH.dirty ? 'Save*' : 'Save', chSave, 'btn sm'),
-      button('Ansible playbook', () => chDownload('ansible'), 'btn sm'), button('Bash script', () => chDownload('script'), 'btn pri sm')),
+      button('Ansible playbook', () => chDownload('ansible'), 'btn sm'), button('Bash script', () => chDownload('script'), 'btn sm'),
+      button('Deploy…', async () => {
+        const id = CH.dirty || !CH.plan.id ? await chSave() : CH.plan.id;
+        if (id) startDeploy('changes', id, 'report', `change plan "${CH.plan.name}"`);
+      }, 'btn pri sm')),
     msg,
     el('details', { class: 'mvhelp' }, el('summary', {}, 'How to run it'),
       text('p', 'Bash: ./changes-<plan>.sh reports what is already done, what would change and what is blocked. sudo … --apply makes the changes in order and stops at the first failure; drive tasks also need --destructive. Add --host user@host to run it on that machine. Ansible: ansible-playbook -i inventory.ini changes-<plan>.yml --check --diff first; drive tasks need -e storageforge_destructive=true. The inventory lines are at the top of the playbook.', 'muted')));

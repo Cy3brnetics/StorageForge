@@ -88,7 +88,9 @@ function normalize(s){
 }
 /* ───────────── documents: the example, or a host's design from the server ───────────── */
 // DOC.host is '' for the built-in example. Every edit is kept as a per-host draft in this browser until saved.
-const DOC={host:'',source:'example',dirty:false,savedAt:null,scanned:false,hosts:[],signedIn:false};
+const DOC={host:'',source:'example',dirty:false,savedAt:null,scanned:false,hosts:[],signedIn:false,example:true,activity:null};
+// the example stays when there is nothing else to show, even after it is removed
+const exampleShown=()=>DOC.example||!DOC.hosts.length;
 const draftKey=h=>'storageforge.v1'+(h?':'+h:'');
 function load(h){ try{ const t=localStorage.getItem(draftKey(h||'')); return t?JSON.parse(t):null }catch(e){ return null } }
 function save(){ try{ localStorage.setItem(draftKey(DOC.host),JSON.stringify(S)) }catch(e){} if(DOC.host){DOC.dirty=true;docState()} }
@@ -97,7 +99,7 @@ let S=load('')||sample();
 
 const UI={view:'overview',sel:null,mountSel:'/',mountTab:'fstab',exportTab:'bash',calc:null,hover:null};
 const VIEWS=[
-  ['overview','Overview','Capacity, protection and every guardrail across the blueprint.'],
+  ['overview','Overview','Capacity, protection, every guardrail, and what is staged or deployed on the host.'],
   ['devices','Devices','Block devices, partition tables and filesystems. Select a partition, pool or remote to edit it.'],
   ['mounts','Mounts','Mount hierarchy, conflict checks, and the generated /etc/fstab and systemd units.'],
   ['links','Links','Symlinks, bind mounts and hard links, with health checks and boot ordering.'],
@@ -674,8 +676,29 @@ function vOverview(){
     ...allParts().filter(x=>x.d.tier==='mass'&&!x.p.member).map(({p,d})=>it('part:'+p.id,'/dev/'+p.id,esc(partRole(p))+' · no redundancy',fmtBin(p.size)))];
   const remote=[...allParts().filter(x=>x.d.tier==='remote').map(({p,d})=>it('part:'+p.id,'/dev/'+p.id,`${esc(d.bus)} · ${esc(partRole(p))}`,fmtBin(p.size))),
     ...S.remotes.map(r=>it('rem:'+r.id,`<span class="dot ${r.status==='connected'?'ok':'crit'}"></span>${esc(r.name)}`,`${esc(r.proto)} via ${esc(r.via)} → ${esc(r.mount)}`,r.capacity?fmtDec(r.capacity,0):'metered'))];
-  return tiles+`<div class="grid" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);align-items:start" id="ovgrid">${alerts}<div class="stack">${tierCard('fast','Fast local tier',fast)}${tierCard('mass','Mass local tier',mass)}${tierCard('remote','Remote / mesh targets',remote)}</div></div>
+  return tiles+activityPanel()+`<div class="grid" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);align-items:start" id="ovgrid">${alerts}<div class="stack">${tierCard('fast','Fast local tier',fast)}${tierCard('mass','Mass local tier',mass)}${tierCard('remote','Remote / mesh targets',remote)}</div></div>
   `;
+}
+
+/* what the rest of StorageForge holds for this host: staged changes, moves, shares, deployed jobs, drift, access */
+function activityPanel(){
+  if(!DOC.host||!DOC.signedIn) return '';
+  const a=DOC.activity;
+  const head=`<div class="ph"><h2>Across StorageForge</h2><span class="sub">Staged, deployed and scanned on ${esc(DOC.host)}</span></div>`;
+  if(!a) return `<section class="panel">${head}<div class="pb muted">Loading…</div></section>`;
+  const it=(tab,n,r,z)=>`<div class="titem"><span class="n"><a href="${esc(appLink(tab))}">${n} →</a></span><span class="r">${r}</span><span class="z">${z}</span></div>`;
+  const cnt=(n,k)=>`<span class="pill ${n?k:'muted'}">${n}</span>`;
+  const pl=(n,w)=>`${n} ${w}${n===1?'':'s'}`;
+  const JOB={ok:'ok',paused:'muted','never-ran':'warn',stale:'crit',failed:'crit',removed:'muted'};
+  const sh=a.shares;
+  const rows=[
+    it('changes','Staged changes',a.changes.length?a.changes.map(p=>`${esc(p.name)} · ${pl(p.tasks,'task')} (${esc(p.types.join(', '))})`).join('<br>'):'Nothing staged. Folder, btrfs, mount and drive changes are staged from the topology.',cnt(sum(a.changes.map(p=>p.tasks)),'info')),
+    it('moves','Data moves',a.moves.length?a.moves.map(p=>`${esc(p.name)} · ${pl(p.steps,'step')}`).join('<br>'):'No move plans copy to or from this host.',cnt(a.moves.length,'info')),
+    it('deploy','Shares',sh?`${pl(sh.exports,'share')} in the design${sh.crit?` · ${sh.crit} critical`:''}${sh.warn?` · ${pl(sh.warn,'warning')}`:''}`:'Scan the host to check its shares against the index.',cnt(sh?sh.exports:0,sh&&sh.crit?'crit':sh&&sh.warn?'warn':'ok')),
+    it('deploy','Deployed jobs',a.jobs.length?a.jobs.map(j=>`${esc(j.name)} · ${esc(j.method)} · <span class="st ${JOB[j.state]||'muted'}">${esc(j.state)}</span>`).join('<br>'):'No backup, sync or snapshot jobs run from or for this host.',cnt(a.jobs.length,a.jobs.some(j=>JOB[j.state]==='crit')?'crit':'ok')),
+    it('deploy','Drift',a.drift.length?a.drift.slice(0,4).map(d=>esc(d.text)).join('<br>')+(a.drift.length>4?`<br>+${a.drift.length-4} more`:''):'Deployed files, units and fstab lines match what StorageForge wrote.',cnt(a.drift.length,'warn')),
+    it('access','Unreadable folders',a.unreadable==null?'Not scanned yet.':a.unreadable?`The last scan could not open ${pl(a.unreadable,'folder')}. Read-only scan access fixes that without scanning as root.`:'The last scan read every folder.',cnt(a.unreadable||0,'warn'))];
+  return `<section class="panel">${head}<div class="pb" style="padding-top:4px;padding-bottom:4px">${rows.join('')}</div></section>`;
 }
 
 /* devices */
@@ -958,7 +981,8 @@ function vExport(){
   const t=UI.exportTab;
   const code={bash:genBash,ansible:genAnsible,units:genUnits,fstab:genFstab,json:()=>JSON.stringify(blueprint(),null,2),yaml:()=>'# StorageForge blueprint'+toYAML(blueprint()),ascii:genASCII}[t]();
   const A=analyze().filter(a=>a.sev==='crit');
-  return `${A.length?`<div class="note crit"><b>${A.length} critical issue${A.length>1?'s':''} in this blueprint.</b> The scripts skip broken links and comment them out, but misalignment, duplicate mounts and stale backups carry through. Review the Overview before running.</div>`:''}
+  const live=DOC.host&&DOC.signedIn?`<div class="note">These scripts build ${esc(S.host)} from bare disks: they partition, format and create pools. To change a host that is already running, stage the change in <a href="${esc(appLink('changes'))}">Changes</a>, where it is checked against the index and reported before it applies, then run it from <a href="${esc(appLink('deploy'))}">Deploy</a>. Shares and backup jobs deploy from there too.</div>`:'';
+  return `${live}${A.length?`<div class="note crit"><b>${A.length} critical issue${A.length>1?'s':''} in this blueprint.</b> The scripts skip broken links and comment them out, but misalignment, duplicate mounts and stale backups carry through. Review the Overview before running.</div>`:''}
   <section class="panel"><div class="ph"><div class="tabs" role="tablist">${EXPORTS.map(([k,l])=>`<button type="button" role="tab" class="${k===t?'on':''}" data-act="etab" data-t="${k}">${l}</button>`).join('')}</div>
   <div class="row"><span class="muted" style="font-size:12px">${code.split('\n').length} lines</span><button type="button" class="btn sm pri" data-act="copy" data-src="ecode">Copy</button></div></div>
   <pre class="code" id="ecode" style="max-height:none">${t==='json'?esc(code):hl(code)}</pre></section>`;
@@ -999,6 +1023,32 @@ async function apiJSON(path,opts={}){
   if(!r.ok) throw new Error(j.error||r.statusText);
   return j;
 }
+/* the main page on one of its panels for this host: /#host=…&tab=… */
+const APP_TABS=[['changes','Changes'],['moves','Moves'],['deploy','Deploy'],['docker','Docker'],['git','Git'],['copies','Cleanup'],['access','Access']];
+const appLink=tab=>{const q=new URLSearchParams();if(DOC.host)q.set('host',DOC.host);if(tab)q.set('tab',tab);const h=q.toString();return '/'+(h?'#'+h:'')};
+function appLinks(){
+  $('#tograph').href=appLink('');
+  const box=$('#applinks');box.querySelector('.rail-btns')?.remove();
+  if(!DOC.host||!DOC.signedIn) return;
+  const row=document.createElement('div');row.className='rail-btns';
+  row.append(...APP_TABS.map(([t,l])=>Object.assign(document.createElement('a'),{className:'btn sm ghost',href:appLink(t),textContent:l})));
+  box.append(row);
+}
+async function loadActivity(){
+  const h=DOC.host;DOC.activity=null;if(!h||!DOC.signedIn) return;
+  try{ const a=await apiJSON('/api/planner/activity?host='+encodeURIComponent(h)); if(DOC.host===h){DOC.activity=a;if(UI.view==='overview') render()} }
+  catch(e){ if(DOC.host===h){DOC.activity={host:h,changes:[],moves:[],shares:null,jobs:[],deployed:[],drift:[],unreadable:null};if(UI.view==='overview') render()} }
+}
+async function setExample(show){
+  $('#dropconfirm').hidden=true;
+  try{
+    await apiJSON('/api/planner/example',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({show})});
+    if(!show) dropDraft('');
+    await loadHosts();
+    if(show) openDoc('');
+    else if(!DOC.host&&!exampleShown()) openDoc(DOC.hosts[0].host);
+  }catch(e){ docState(e.message,'err') }
+}
 function docState(msg,cls){
   const el=$('#docstate');el.className=cls||(DOC.dirty?'dirty':'muted');
   el.textContent=msg||(!DOC.host?'Example design. Edits stay in this browser.'
@@ -1007,24 +1057,27 @@ function docState(msg,cls){
     :'Saved design · '+new Date(DOC.savedAt*1000).toLocaleString());
   $('#savedesign').hidden=!DOC.host||!DOC.signedIn;$('#fromscan').hidden=!DOC.host||!DOC.scanned||!DOC.signedIn;
   $('#reset').hidden=!!DOC.host;$('#hostpick').value=DOC.host;
+  $('#dropexample').hidden=!!DOC.host||!DOC.signedIn||!DOC.example||!DOC.hosts.length||!$('#dropconfirm').hidden;
+  $('#showexample').hidden=!DOC.signedIn||DOC.example;
+  appLinks();
 }
 async function loadHosts(){
   try{
-    const {hosts}=await apiJSON('/api/planner/hosts');DOC.signedIn=true;DOC.hosts=hosts;$('#signin').hidden=true;
+    const {hosts,example}=await apiJSON('/api/planner/hosts');DOC.signedIn=true;DOC.hosts=hosts;DOC.example=example!==false;$('#signin').hidden=true;
     const sel=$('#hostpick');
-    sel.replaceChildren(new Option('Example host “atlas”',''),...hosts.map(h=>new Option(`${h.host}${h.saved?' · saved':''}${h.scanned?' · scanned':''}`,h.host)));
-    sel.value=DOC.host;
+    sel.replaceChildren(...(exampleShown()?[new Option('Example host “atlas”','')]:[]),...hosts.map(h=>new Option(`${h.host}${h.saved?' · saved':''}${h.scanned?' · scanned':''}`,h.host)));
+    sel.value=DOC.host;docState();
   }catch(e){ /* signed out: the example still works */ }
 }
 async function openDoc(host,source){
   if(DOC.host&&DOC.dirty&&!confirm(`Leave ${DOC.host} with unsaved changes? They stay as a draft in this browser.`)){ $('#hostpick').value=DOC.host;return }
-  if(!host){ DOC.host='';DOC.source='example';DOC.dirty=false;S=load('')||sample();UI.sel=null;UI.calc=null;render();docState();setHash();return }
+  if(!host){ DOC.host='';DOC.source='example';DOC.dirty=false;DOC.activity=null;S=load('')||sample();UI.sel=null;UI.calc=null;render();docState();setHash();return }
   docState('Loading '+host+'…');
   try{
     const r=await apiJSON('/api/planner/design?host='+encodeURIComponent(host)+(source?'&source='+source:''));
     const draft=!source&&load(host);
     Object.assign(DOC,{host,source:r.source,savedAt:r.saved_at,scanned:r.scanned,dirty:!!draft});
-    S=draft||fromBlueprint(r.blueprint);if(!source) normalizeIds();UI.sel=null;UI.calc=null;render();docState();setHash();
+    S=draft||fromBlueprint(r.blueprint);if(!source) normalizeIds();UI.sel=null;UI.calc=null;render();docState();setHash();loadActivity();
   }catch(e){ docState(e.message,'err') }
 }
 function normalizeIds(){ S.links.forEach((l,i)=>{l.id=l.id||'L'+i}); }
@@ -1065,6 +1118,10 @@ $('#resetyes').addEventListener('click',()=>{S=sample();UI.sel=null;UI.calc=null
 $('#hostpick').addEventListener('change',e=>openDoc(e.target.value));
 $('#savedesign').addEventListener('click',saveDesign);
 $('#fromscan').addEventListener('click',()=>openDoc(DOC.host,'scan'));
+$('#dropexample').addEventListener('click',()=>{$('#dropconfirm').hidden=false;docState()});
+$('#dropno').addEventListener('click',()=>{$('#dropconfirm').hidden=true;docState()});
+$('#dropyes').addEventListener('click',()=>setExample(false));
+$('#showexample').addEventListener('click',()=>setExample(true));
 
 const view=$('#view');
 view.addEventListener('mouseover',e=>{const el=e.target.closest('[data-node]');const id=el?el.dataset.node:null;if(id===UI.hover) return;UI.hover=id;setChain(id)});
@@ -1143,5 +1200,10 @@ let rz;window.addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(()=>
 if(document.fonts&&document.fonts.ready) document.fonts.ready.then(()=>{if(UI.view==='topology')drawEdges()});
 
 const [h,hh]=(location.hash||'').slice(1).split('@');if(VIEWS.some(v=>v[0]===h)) UI.view=h;
-render();docState();
-loadHosts().then(()=>{ const want=decodeURIComponent(hh||''); if(want&&DOC.signedIn) openDoc(want) });
+docState();
+// wait for the host list before the first render, so a removed example never flashes up
+loadHosts().then(async()=>{
+  const want=decodeURIComponent(hh||'')||(!exampleShown()?DOC.hosts[0].host:'');
+  if(want&&DOC.signedIn) await openDoc(want);
+  if(!DOC.host) render();
+});

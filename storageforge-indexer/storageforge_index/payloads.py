@@ -799,8 +799,8 @@ def canonical(path: str, links: dict) -> tuple[str, bool]:
 def _index_links(conn, node, host_id, mount_ids, limit):
     """Symlinks worth a report line: broken ones, loops, and ones that cross a mount boundary. Targets resolve through
     symlinked parents (usr-merge), and links the OS manages are left out."""
-    rows = conn.all("""SELECT f.parent_path, f.filename, f.symlink_target, m.mount_point FROM file_records f
-                       JOIN mounts m ON m.mount_id = f.mount_id
+    rows = conn.all("""SELECT d.path, f.filename, f.symlink_target, m.mount_point FROM file_records f
+                       JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id
                        WHERE m.host_id = :h AND f.is_symlink LIMIT :lim""", {'h': host_id, 'lim': limit})
     from .analysis import containing_mount, real_mounts
     mounts = real_mounts(node)
@@ -822,7 +822,8 @@ def _index_links(conn, node, host_id, mount_ids, limit):
             exists = True
         elif tm and mount_ids.get(tm['target'], (None, False))[1]:
             parent, name = split_path(resolved)
-            exists = bool(conn.scalar('SELECT count(*) FROM file_records WHERE mount_id = :m AND parent_path = :p AND filename = :n',
+            exists = bool(conn.scalar('SELECT count(*) FROM file_records f JOIN directories d ON d.dir_id = f.dir_id '
+                                      'WHERE d.mount_id = :m AND d.path = :p AND f.filename = :n',
                                       {'m': mount_ids[tm['target']][0], 'p': parent, 'n': name}))
         cross = bool(tm and tm['target'] != mp)
         if exists is False or cross:
@@ -846,8 +847,8 @@ def _index_stats(conn, host_id) -> dict:
                           JOIN mounts m ON m.mount_id = f.mount_id
                           WHERE m.host_id = :h AND NOT f.is_directory AND f.extension <> ''
                           GROUP BY f.extension ORDER BY 3 DESC LIMIT 10""", p)
-    largest = conn.all("""SELECT f.parent_path, f.filename, f.file_size_bytes, f.modified_at FROM file_records f
-                          JOIN mounts m ON m.mount_id = f.mount_id
+    largest = conn.all("""SELECT d.path, f.filename, f.file_size_bytes, f.modified_at FROM file_records f
+                          JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id
                           WHERE m.host_id = :h AND NOT f.is_directory
                           ORDER BY f.file_size_bytes DESC LIMIT 10""", p)
     dup = conn.all("""SELECT count(*), coalesce(sum(reclaim), 0) FROM (

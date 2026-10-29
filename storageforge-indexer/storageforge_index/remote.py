@@ -38,6 +38,12 @@ RECORD_PRUNED = frozenset({'.git'})        # pruned names whose own entry is sti
 DEFAULT_EXCLUDE_NAMES = ('.git', 'node_modules', '.Trash', '.Trash-*', '__pycache__', '.snapshots', '.zfs')
 
 
+def child_env() -> dict:
+    """The environment for ssh and local shells: ours without STORAGEFORGE_*, so a vault or session secret given as an
+    environment variable never reaches a child process (or a ProxyCommand in someone's ssh config)."""
+    return {k: v for k, v in os.environ.items() if not k.startswith('STORAGEFORGE_')}
+
+
 class RemoteError(RuntimeError):
     pass
 
@@ -100,18 +106,18 @@ class Transport:
         return argv + [self.target, 'sh -c ' + shlex.quote(script)]
 
     def run(self, script: str, timeout: int = 120) -> str:
-        proc = subprocess.run(self.argv(script), capture_output=True, timeout=timeout)
+        proc = subprocess.run(self.argv(script), capture_output=True, timeout=timeout, env=child_env())
         if proc.returncode == 255 and not self.local:
             raise RemoteError(f'ssh {self.target}: {proc.stderr.decode(errors="replace").strip() or "connection failed"}')
         return proc.stdout.decode('utf-8', 'replace')
 
     def stream(self, script: str, stdin: bool = False) -> subprocess.Popen:
-        return subprocess.Popen(self.argv(script), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        return subprocess.Popen(self.argv(script), stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=child_env(),
                                 stdin=subprocess.PIPE if stdin else subprocess.DEVNULL, bufsize=1 << 20)
 
     def close(self):
         if self._ctl_dir:
-            subprocess.run(self._base() + ['-O', 'exit', self.target], capture_output=True)
+            subprocess.run(self._base() + ['-O', 'exit', self.target], capture_output=True, env=child_env())
             shutil.rmtree(self._ctl_dir, ignore_errors=True)
             self._ctl_dir = None
 
@@ -186,6 +192,11 @@ echo '@@findmnt'; findmnt -J -b -l -o TARGET,SOURCE,FSTYPE,SIZE,USED,OPTIONS,MAJ
 echo '@@mountinfo'; cat /proc/self/mountinfo 2>/dev/null
 echo '@@df'; df -B1 -P 2>/dev/null
 echo '@@btrfs'; for d in /sys/fs/btrfs/*-*/; do [ -d "$d" ] || continue; printf '%s\t%s\t%s\t%s\n' "$(basename "$d")" "$(ls -d "$d"allocation/data/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(ls -d "$d"allocation/metadata/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(cat "$d"label 2>/dev/null)"; done
+echo '@@jobs'; for f in /var/lib/storageforge/jobs/*/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
+echo '@@managed'; for f in /var/lib/storageforge/managed/*.sha256; do [ -r "$f" ] || continue; echo "## $(basename "$f" .sha256)"; sha256sum -c "$f" 2>&1 | tail -n 300; done
+for f in /var/lib/storageforge/managed/*.lines; do [ -r "$f" ] || continue; echo "## $(basename "$f" .lines)"; while IFS= read -r l; do if grep -Fxq -- "$l" /etc/fstab 2>/dev/null; then echo "LINE-OK $l"; else echo "LINE-MISSING $l"; fi; done <"$f"; done
+for t in /etc/systemd/system/sf-job-*.timer; do [ -e "$t" ] && echo "TIMER $(basename "$t") $(systemctl is-enabled "$(basename "$t")" 2>/dev/null)"; done
+echo '@@ids'; getent passwd 2>/dev/null | awk -F: '$3>=1000 && $3<60000 {print "u " $1 " " $3}'; getent group 2>/dev/null | awk -F: '$3>=1000 && $3<60000 {print "g " $1 " " $3}'
 echo '@@nfs'; cat /var/lib/nfs/etab 2>/dev/null || cat /etc/exports /etc/exports.d/*.exports 2>/dev/null
 echo '@@smb'; if command -v smbd >/dev/null 2>&1 || [ -f /etc/samba/smb.conf ]; then
   pgrep -x smbd >/dev/null 2>&1 && echo '# smbd running'; testparm -s 2>/dev/null || cat /etc/samba/smb.conf 2>/dev/null; fi
@@ -221,11 +232,15 @@ class HostInventory:
     nfs: str = ''     # /var/lib/nfs/etab (live exports) or /etc/exports
     btrfs: str = ''   # per filesystem: uuid, data and metadata profiles, label (from /sys/fs/btrfs)
     smb: str = ''     # testparm -s or smb.conf
+    jobs: str = ''    # run lines of StorageForge jobs (the fallback when a run could not report)
+    managed: str = '' # sha256sum -c of what deploys wrote, StorageForge fstab lines, job timers (drift)
+    ids: str = ''     # users and groups with UID/GID >= 1000 (NFS ownership check)
 
     def to_json(self) -> str:
         return json.dumps({
             'collected_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
             'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb, 'btrfs': self.btrfs,
+            'jobs': self.jobs, 'managed': self.managed, 'ids': self.ids,
             'mounts': [asdict(m) for m in self.mounts],
         })
 
@@ -312,4 +327,5 @@ def collect_inventory(t: Transport) -> HostInventory:
     return HostInventory(hostname, ip, ' · '.join(lines('os')) or None, mounts, lsblk,   # optional fields by name: order-proof
                          sec.get('zpool', '').strip(), sec.get('df', '').strip(), lvs=sec.get('lvs', '').strip(),
                          access=access, user=user, nfs=sec.get('nfs', '').strip(), smb=sec.get('smb', '').strip(),
-                         btrfs=sec.get('btrfs', '').strip())
+                         btrfs=sec.get('btrfs', '').strip(), jobs=sec.get('jobs', '').strip(),
+                         managed=sec.get('managed', '').strip(), ids=sec.get('ids', '').strip())

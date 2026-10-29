@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from storageforge_index import blueprint, canvas, graph, vault
-from storageforge_index.db import Database
+from storageforge_index.db import Database, dir_id
 from storageforge_index.payloads import (apply_df, apply_fstab, apply_zpool_status, load_structured, node_from_blueprint,
                                          parse_df, parse_fstab, parse_zpool_status)
 
@@ -232,6 +232,17 @@ class OpsTests(DBCase):
                               "VALUES (:s, :m, 'added', '/', 'x')", {'s': sid, 'm': mid})
         r = self.db.prune(self.conn)
         self.assertEqual((r['changes'], r['denied']), (1, 1))            # the newest scan's rows always stay
+        self.conn.execute('INSERT INTO scans (scan_id, host_id, started_at, status) VALUES (3, :h, :t, \'ok\')',
+                          {'h': hid, 't': int(time.time())})
+        for sid in (2, 3, 3):
+            self.conn.execute("INSERT INTO file_changes (scan_id, mount_id, change_type, parent_path, filename) "
+                              "VALUES (:s, :m, 'added', '/', 'y')", {'s': sid, 'm': mid})
+        r = self.db.prune(self.conn, max_change_rows=2)                 # scan 2 is over the cap and no longer the newest
+        self.assertEqual(r['changes'], 2)
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM file_changes'), 2)
+        for i in range(2000):                                            # index data: in full backups only
+            self.conn.execute("INSERT INTO file_changes (scan_id, mount_id, change_type, parent_path, filename) "
+                              "VALUES (3, :m, 'added', '/data', :f)", {'m': mid, 'f': f'file-{i:05}.jpg'})
         dest = Path(self.tmp) / 'bk'
         dest.mkdir()
         ess = backup.create(self.db, 'essentials', dest, keep=1)
@@ -345,8 +356,8 @@ class ChangePlanTests(DBCase):
                               {'h': h, 'm': mp, 's': src, 'f': fs})
         pool = self.conn.scalar("SELECT mount_id FROM mounts WHERE mount_point = '/mnt/pool'")
         for parent, name, d, size in (('/mnt', 'pool', 1, 0), ('/mnt/pool', 'photos', 1, 0), ('/mnt/pool/photos', 'a.jpg', 0, 2048)):
-            self.conn.execute("INSERT INTO file_records (mount_id, parent_path, filename, is_directory, file_size_bytes, modified_at) "
-                              "VALUES (:m, :p, :n, :d, :s, 0)", {'m': pool, 'p': parent, 'n': name, 'd': d, 's': size})
+            self.conn.execute("INSERT INTO file_records (mount_id, dir_id, filename, is_directory, file_size_bytes, modified_at) "
+                              "VALUES (:m, :p, :n, :d, :s, 0)", {'m': pool, 'p': dir_id(self.conn, pool, parent), 'n': name, 'd': d, 's': size})
 
     def plan(self, *tasks):
         from storageforge_index import changes
@@ -754,6 +765,129 @@ class ServerTests(DBCase):
         self.assertEqual(self.client.put('/api/planner/design', json={'kind': 'x'}).status_code, 400)
         self.assertEqual(self.client.post('/api/scan', json={'host': 'x' * 5000}).status_code, 413)   # other routes keep 4 KiB
 
+    def test_planner_example_and_activity(self):
+        self.login()
+        self.assertTrue(self.client.get('/api/planner/hosts').json['example'])
+        self.assertEqual(self.client.put('/api/planner/example', json={'show': False}).json, {'example': False})
+        self.assertFalse(self.client.get('/api/planner/hosts').json['example'])
+        self.client.put('/api/planner/example', json={'show': True})
+        self.assertTrue(self.client.get('/api/planner/hosts').json['example'])
+        self.assertEqual(self.client.get('/api/planner/activity').status_code, 400)
+        self.client.post('/api/changes', json={'name': 'tidy', 'tasks': [
+            {'type': 'dir', 'host': 'nas-02', 'params': {'path': '/srv/new'}},
+            {'type': 'dir', 'host': 'elsewhere', 'params': {'path': '/srv/other'}}]})
+        a = self.client.get('/api/planner/activity?host=nas-02.lan').json      # short names match
+        self.assertEqual([(p['name'], p['tasks'], p['types']) for p in a['changes']], [('tidy', 1, ['Create folder'])])
+        self.assertEqual((a['moves'], a['jobs'], a['deployed'], a['shares']), ([], [], [], None))
+
+    def later(self, seconds):
+        from unittest import mock
+        return mock.patch('storageforge_index.server.time.time', return_value=time.time() + seconds)
+
+    def test_session_ends_after_its_length(self):
+        self.login()
+        me = self.client.get('/api/me').json
+        self.assertEqual((me['session_minutes'], me['max_minutes']), (30, 480))
+        with self.later(29 * 60):
+            self.assertEqual(self.client.get('/api/me').status_code, 200)
+        with self.later(31 * 60):
+            r = self.client.get('/api/me')
+            self.assertEqual(r.status_code, 401)
+            self.assertIn('session ended', r.json['error'])
+        self.login()
+        for bad in (10, 481, 'x'):
+            self.assertEqual(self.client.put('/api/me', json={'session_minutes': bad}).status_code, 400)
+        self.assertEqual(self.client.put('/api/me', json={'session_minutes': 240}).json['session_minutes'], 240)
+        with self.later(3 * 3600):
+            self.assertEqual(self.client.get('/api/me').status_code, 200)
+        with self.later(4 * 3600 + 60):
+            self.assertEqual(self.client.get('/api/me').status_code, 401)
+        self.client.post('/api/logout')
+        self.assertEqual(self.client.get('/api/me').status_code, 401)
+
+    def test_signing_out_kills_copies_of_the_cookie(self):
+        from storageforge_index import users
+        self.login()
+        copied = self.client.get_cookie('sf_session').value
+        self.client.post('/api/logout')
+        self.client.set_cookie('sf_session', copied)
+        self.assertEqual(self.client.get('/api/me').status_code, 401)
+        self.login()
+        users.end_all_sessions(self.conn, 'alice')                      # storageforge-index user signout alice
+        self.assertEqual(self.client.get('/api/me').status_code, 401)
+
+    def test_numbers_in_queries_are_held_to_their_range(self):
+        self.login()
+        r = self.client.get('/api/audit?limit=-1')                       # SQLite reads LIMIT -1 as "everything"
+        self.assertEqual(len(r.json['entries']), 1)
+        self.assertEqual(self.client.get('/api/search?q=*&limit=-5').status_code, 200)
+        self.assertEqual(self.client.get('/api/deploy/runs?limit=-1').status_code, 200)
+        for bad in ('/api/folders/cold?years=nan', '/api/folders/cold?years=inf', '/api/audit?limit=abc'):
+            self.assertEqual(self.client.get(bad).status_code, 400, bad)
+
+    def test_health_details_and_login_limits_by_network(self):
+        far = {'REMOTE_ADDR': '10.0.0.8'}
+        r = self.client.get('/healthz', environ_base=far)
+        self.assertEqual((r.status_code, r.json), (200, {'status': 'ok'}))
+        self.assertEqual(r.headers['Server'], 'StorageForge')
+        self.assertIn('users', self.client.get('/healthz').json)                  # the container's own healthcheck
+        for _ in range(5):
+            self.client.post('/api/login', json={'username': 'alice', 'password': 'wrong password!!'}, environ_base=far)
+        r = self.client.post('/api/login', json={'username': 'alice', 'password': 'a long enough password'}, environ_base=far)
+        self.assertEqual(r.status_code, 429)
+        self.assertEqual(self.login().status_code, 200)                  # the owner, on another network, still gets in
+        actions = [e['action'] for e in vault.AuditLog(self.db, self.conn, None).tail(10)]
+        self.assertIn('web.login.limited', actions)
+
+    def test_alert_urls_cannot_reach_this_container_or_metadata(self):
+        from storageforge_index import alerts
+        for url in ('http://127.0.0.1:8080/x', 'http://localhost/x', 'http://169.254.169.254/latest', 'http://[::1]/x',
+                    'http://0.0.0.0/x'):
+            with self.assertRaisesRegex(ValueError, 'not an allowed alert destination'):
+                alerts._check_target(url)
+        alerts._check_target('http://10.0.0.5:2586')                     # a LAN ntfy is fine
+        with self.assertRaisesRegex(ValueError, 'not an allowed alert destination'):
+            alerts.save_settings(self.conn, {'alerts': {'webhook': {'url': 'http://127.0.0.1:8080/api'}}}, 't')
+        alerts.save_settings(self.conn, {'alerts': {'gotify': {'url': 'http://10.0.0.5', 'token': 'secret-token'}}}, 't')
+        alerts.save_settings(self.conn, {'alerts': {'gotify': {'url': 'http://10.0.0.5', 'token': '••••••'}}}, 't')
+        self.assertEqual(alerts.get_setting(self.conn, 'alerts')['gotify']['token'], 'secret-token')
+        alerts.save_settings(self.conn, {'alerts': {'gotify': {'url': 'http://10.0.0.66', 'token': '••••••'}}}, 't')
+        self.assertEqual(alerts.get_setting(self.conn, 'alerts')['gotify']['token'], '')   # not sent to a new server
+        self.assertEqual(alerts.send({'webhook': {'url': 'http://127.0.0.1:9/'}}, 't', 'm'),
+                         ['webhook: 127.0.0.1 is not an allowed alert destination (loopback, link-local or multicast)'])
+
+    def test_secure_cookie_behind_the_tls_proxy(self):
+        from storageforge_index import server
+        web = server.create_app(server.App(self.db), 's' * 48, secure_cookies=True, proxy_hops=1)
+        r = web.test_client().post('/api/login', json={'username': 'alice', 'password': 'a long enough password'},
+                                   base_url='https://storageforge.lan', headers={'X-Forwarded-For': '10.0.0.7'})
+        cookie = r.headers['Set-Cookie']
+        self.assertTrue(cookie.startswith('__Host-sf_session='), cookie)
+        self.assertIn('Secure', cookie)
+        self.assertNotIn('Domain=', cookie)
+        self.assertEqual(vault.AuditLog(self.db, self.conn, None).tail(1)[0]['actor'], 'web:10.0.0.7')
+
+    def test_commands_on_hosts_need_the_password_again(self):
+        self.login()
+        with self.later(6 * 60):
+            for method, path, body in (('post', '/api/deploy/start', {'kind': 'jobs', 'ref': 1}),
+                                       ('post', '/api/deploy/jobs/p1-s1/run', None),
+                                       ('post', '/api/deploy/jobs/p1-s1/restore', {}),
+                                       ('post', '/api/keys/install', {}), ('post', '/api/access/grant', {}),
+                                       ('post', '/api/deploy/access', {}), ('post', '/api/deploy/adopt', {}),
+                                       ('put', '/api/me', {'session_minutes': 60})):
+                r = getattr(self.client, method)(path, json=body)
+                self.assertEqual((path, r.status_code, r.json.get('reauth')), (path, 403, True))
+            self.assertEqual(self.client.post('/api/deploy/jobs/p1-s1/log').status_code, 404)   # reading needs no password
+            self.assertEqual(self.client.post('/api/reauth', json={'password': 'wrong password!!'}).status_code, 403)
+            self.assertEqual(self.client.get('/api/me').status_code, 200)                       # still signed in
+            self.assertEqual(self.client.post('/api/reauth', json={'password': 'a long enough password'}).status_code, 200)
+            r = self.client.post('/api/deploy/start', json={'kind': 'nothing'})
+            self.assertEqual((r.status_code, r.json.get('reauth')), (400, None))
+        actions = [(e['action'], e['outcome']) for e in vault.AuditLog(self.db, self.conn, None).tail(5)]
+        self.assertIn(('web.reauth', 'denied'), actions)
+        self.assertIn(('web.reauth', 'ok'), actions)
+
     def test_user_rules(self):
         from storageforge_index import users
         with self.assertRaises(users.UserError):
@@ -765,6 +899,61 @@ class ServerTests(DBCase):
         stored = self.conn.scalar("SELECT password_hash FROM users WHERE username = 'alice'")
         self.assertTrue(stored.startswith('scrypt:'))
         self.assertNotIn('a long enough password', stored)
+
+
+class ScriptHeaderTests(DBCase):
+    """Free text ends up in the # header of scripts run as root: a line break there would start a command."""
+
+    def assert_commented(self, text):
+        hits = [l for l in text.splitlines() if 'PWNED' in l]
+        self.assertTrue(hits)
+        self.assertTrue(all(l.startswith('#') for l in hits), hits)
+
+    def test_hosts_with_line_breaks_are_refused(self):
+        from storageforge_index import changes, moves, shares
+        bad = 'nas\nid > /tmp/PWNED #'
+        step = {'src': {'host': bad, 'path': '/srv'}, 'dst': {'host': 'b', 'path': '/d'}}
+        for body in ({'name': 'p', 'steps': [step]}, {'name': 'p', 'steps': [{**step, 'src': {'host': '-oProxyCommand=x', 'path': '/srv'}}]}):
+            with self.assertRaisesRegex(ValueError, 'host name'):
+                moves.normalize(body)
+        with self.assertRaisesRegex(ValueError, 'host name'):
+            changes.normalize({'name': 'c', 'tasks': [{'type': 'dir', 'host': bad, 'params': {'path': '/srv/x'}}]})
+        with self.assertRaisesRegex(ValueError, 'host name'):
+            shares.normalize_export({'protocol': 'NFS', 'path': '/srv', 'mounts': [{'host': bad, 'path': '/mnt/x'}]})
+        self.assertEqual(moves.normalize({'name': 'p', 'steps': [{**step, 'src': {'host': '[fe80::1%eth0]', 'path': '/srv'}}]})
+                         ['steps'][0]['src']['host'], '[fe80::1%eth0]')
+
+    def test_job_reports_cannot_be_dated_ahead(self):
+        import uuid
+        from storageforge_index import jobs
+        run = {'run': str(uuid.uuid4()), 'job': 'p1-s1', 'rc': 0, 'start': int(time.time()), 'end': int(time.time()) + 86400}
+        with self.assertRaisesRegex(ValueError, 'future'):
+            jobs.ingest(self.conn, run, 'report:10.0.0.5')
+
+    def test_https_reports_trust_only_the_served_certificate(self):
+        from unittest import mock
+        from storageforge_index import jobs, jobscript
+        pem = self.tmp / 'cert.pem'
+        pem.write_text('-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n')
+        with mock.patch.dict(os.environ, {'STORAGEFORGE_REPORT_CA_FILE': str(pem)}):
+            self.assertTrue(jobs.report_ca('https://10.0.0.5:8443').startswith('-----BEGIN CERTIFICATE-----'))
+            self.assertIsNone(jobs.report_ca('http://10.0.0.5:8080'))
+            pem.write_text('not a certificate')
+            self.assertIsNone(jobs.report_ca('https://10.0.0.5:8443'))
+        self.assertIn('--cacert "$ETC/report-ca.pem"', jobscript.JOB_SCRIPT)
+
+    def test_notes_and_names_stay_inside_comments(self):
+        from storageforge_index import changes, moves
+        note = 'ok\nid > /tmp/PWNED\r\x1b[2K'
+        plan = moves.normalize({'name': 'p', 'steps': [{'src': {'host': 'a', 'path': '/srv'}, 'dst': {'host': 'b', 'path': '/d'},
+                                                        'note': note}]})
+        self.assertNotIn('\n', plan['steps'][0]['note'])
+        self.assert_commented(moves.script(self.conn, plan))
+        cp = {'name': 'c', 'tasks': [{'type': 'dir', 'host': 'nas', 'params': {'path': '/srv/x'}, 'note': note}]}
+        self.assertNotIn('\n', changes.normalize(cp)['tasks'][0]['note'])
+        self.assertFalse([l for l in changes.script(self.conn, cp).splitlines() if l.startswith('id ')])
+        from storageforge_index.scriptkit import comments
+        self.assertEqual(comments(['#   a\nid > /tmp/PWNED', '#   b'], '#'), '#   a id > /tmp/PWNED\n#   b')
 
 
 if __name__ == '__main__':

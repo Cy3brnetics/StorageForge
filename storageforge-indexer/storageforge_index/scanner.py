@@ -294,6 +294,13 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
             return None
 
         host_id = db.upsert_host(conn, inv, t)
+        if inv.jobs:                                     # runs of deployed jobs that could not report themselves
+            try:
+                from .jobs import ingest_scan
+                if n := ingest_scan(conn, inv.hostname, inv.jobs):
+                    log(f'  picked up {n} job run(s) the jobs could not report')
+            except Exception as exc:
+                log(f'  job runs: {exc}')
         scan_id = db.begin_scan(conn, host_id)          # refuses while another scan of this host runs
         db.sync_mounts(conn, host_id, plans)
         writers = max(1, min(db.max_writers, len(jobs)))

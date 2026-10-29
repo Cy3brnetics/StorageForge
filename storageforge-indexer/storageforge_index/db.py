@@ -18,6 +18,11 @@ from pathlib import Path
 from .stream import ROW_COLUMNS, split_path
 
 MIGRATIONS = Path(__file__).with_name('migrations')
+# A mount that gains more entries than this in one scan (a new disk or a restored folder) is a bulk import: the
+# scan counts the adds, but the change log doesn't list them one by one.
+CHANGE_LOG_MAX_ADDS = 50_000
+CHANGE_DAYS = int(os.environ.get('STORAGEFORGE_CHANGE_DAYS', '90'))
+CHANGE_MAX_ROWS = int(os.environ.get('STORAGEFORGE_CHANGE_MAX_ROWS', '2000000'))
 
 
 class MassDeleteRefused(RuntimeError):
@@ -35,6 +40,13 @@ class DiffStats:
 
 class ScanBusy(RuntimeError):
     pass
+
+
+def dir_id(conn: 'Conn', mount_id: int, path: str) -> int:
+    """The directories row for a folder path on a mount, created if needed."""
+    conn.execute('INSERT INTO directories (mount_id, path) VALUES (:m, :p) ON CONFLICT (mount_id, path) DO NOTHING',
+                 {'m': mount_id, 'p': path})
+    return conn.scalar('SELECT dir_id FROM directories WHERE mount_id = :m AND path = :p', {'m': mount_id, 'p': path})
 
 
 class Conn:
@@ -193,16 +205,30 @@ class Database:
             return conn.scalar(f"INSERT INTO scans (host_id, started_at, status) VALUES (:h, {self.ts(':now')}, 'running') "
                                'RETURNING scan_id', {'h': host_id, 'now': now})
 
-    def prune(self, conn: Conn, change_days: int = 90, job_days: int = 90, now: float | None = None) -> dict:
-        """Retention: file change history for change_days (always the newest scan per host), unreadable-folder lists
-        of the newest scan only, finished scan jobs for job_days. Scan summaries are tiny and stay."""
+    def prune(self, conn: Conn, change_days: int | None = None, job_days: int = 90, max_change_rows: int | None = None,
+              now: float | None = None) -> dict:
+        """Retention: file change history for change_days and at most max_change_rows rows, dropping whole scans
+        oldest first (the newest scan per host always stays); unreadable-folder lists of the newest scan only;
+        finished scan jobs for job_days. Scan summaries are tiny and stay."""
         now = int(now or time.time())
+        change_days = CHANGE_DAYS if change_days is None else change_days
+        max_change_rows = CHANGE_MAX_ROWS if max_change_rows is None else max_change_rows
         latest = 'SELECT max(scan_id) FROM scans x WHERE x.host_id = s.host_id AND x.status <> \'running\''
         out = {}
         with conn.tx():
             out['changes'] = conn.execute(f"""DELETE FROM file_changes WHERE scan_id IN (
                 SELECT s.scan_id FROM scans s WHERE s.started_at < {self.ts(':cut')} AND s.scan_id < ({latest}))""",
                 {'cut': now - change_days * 86400}).rowcount
+            newest = {r[0] for r in conn.all("SELECT max(scan_id) FROM scans WHERE status <> 'running' GROUP BY host_id")}
+            total, over = 0, []
+            for sid, n in conn.all('SELECT scan_id, count(*) FROM file_changes GROUP BY scan_id ORDER BY scan_id DESC'):
+                total += n
+                if total > max_change_rows and sid not in newest:
+                    over.append(sid)
+            for i in range(0, len(over), 500):
+                ids = {f's{k}': sid for k, sid in enumerate(over[i:i + 500])}
+                out['changes'] += conn.execute(f'DELETE FROM file_changes WHERE scan_id IN ({", ".join(":" + k for k in ids)})',
+                                               ids).rowcount
             out['denied'] = conn.execute(f"""DELETE FROM scan_denied WHERE scan_id IN (
                 SELECT s.scan_id FROM scans s WHERE s.scan_id < ({latest}))""").rowcount
             out['jobs'] = conn.execute("""DELETE FROM scan_jobs WHERE status NOT IN ('queued', 'running')
@@ -240,12 +266,13 @@ class Database:
         conn.execute(f'DROP TABLE IF EXISTS stage_{job_id}')
         conn.execute(f"""CREATE TEMP TABLE stage_{job_id} (parent_path TEXT NOT NULL, filename TEXT NOT NULL,
             extension TEXT NOT NULL, size BIGINT NOT NULL, is_dir {b} NOT NULL, is_link {b} NOT NULL, target TEXT,
-            mode TEXT, uid BIGINT, gid BIGINT, mtime BIGINT NOT NULL)""")
+            mode TEXT, uid BIGINT, gid BIGINT, mtime BIGINT NOT NULL, dir_id BIGINT)""")
 
     def stage_insert(self, conn: Conn, job_id: int, rows: list[tuple]):
         if self.dialect == 'sqlite':
             with conn.tx():
-                conn.raw.executemany(f'INSERT INTO stage_{job_id} VALUES (?,?,?,?,?,?,?,?,?,?,?)', rows)
+                conn.raw.executemany(f'INSERT INTO stage_{job_id} ({", ".join(ROW_COLUMNS)}) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                                     rows)
         else:
             with conn.raw.cursor() as cur:
                 with cur.copy(f'COPY stage_{job_id} ({", ".join(ROW_COLUMNS)}) FROM STDIN') as cp:
@@ -264,19 +291,27 @@ class Database:
         scope = ''
         if not full:
             parent, name = split_path(root)
-            scope = (' AND (r.parent_path = :root OR substr(r.parent_path, 1, :rlen) = :rootslash'
-                     ' OR (r.parent_path = :rparent AND r.filename = :rname))')
+            scope = (' AND (r.dir_id IN (SELECT dir_id FROM directories WHERE mount_id = :m'
+                     ' AND (path = :root OR substr(path, 1, :rlen) = :rootslash))'
+                     ' OR (r.dir_id = (SELECT dir_id FROM directories WHERE mount_id = :m AND path = :rparent)'
+                     ' AND r.filename = :rname))')
             p.update(root=root, rlen=len(root.rstrip('/')) + 1, rootslash=root.rstrip('/') + '/',
                      rparent=parent, rname=name)
-        conn.execute(f'CREATE INDEX ix_{t} ON {t} (parent_path, filename)')
-        if not sqlite:
-            conn.execute(f'ANALYZE {t}')
         stats = DiffStats(seen=conn.scalar(f'SELECT count(*) FROM {t}'))
         prev = conn.scalar('SELECT count(*) FROM file_records WHERE mount_id = :m', p)
         stats.first_scan = prev == 0
-        match = 'r.parent_path = s.parent_path AND r.filename = s.filename'
+        match = 'r.dir_id = s.dir_id AND r.filename = s.filename'
         content_changed = f'(r.file_size_bytes <> s.size OR r.modified_at <> {ts("s.mtime")})'
         with conn.tx():
+            # folders of this walk, then the staged rows keyed by dir_id like file_records
+            conn.execute(f"""INSERT INTO directories (mount_id, path) SELECT DISTINCT :m, parent_path FROM {t} WHERE true
+                             ON CONFLICT (mount_id, path) DO NOTHING""", p)
+            conn.execute(f"""UPDATE {t} SET dir_id = (SELECT d.dir_id FROM directories d
+                                                     WHERE d.mount_id = :m AND d.path = {t}.parent_path)""", p)
+            conn.execute(f'CREATE INDEX ix_{t} ON {t} (dir_id, filename)')
+            if not sqlite:
+                conn.execute(f'ANALYZE {t}')
+
             # deleted: in the index (and in scope) but not in this walk
             conn.execute(f'CREATE TEMP TABLE gone_{j} (file_id BIGINT PRIMARY KEY)')
             conn.execute(f"""INSERT INTO gone_{j} (file_id) SELECT r.file_id FROM file_records r
@@ -289,9 +324,10 @@ class Database:
             if stats.deleted:
                 conn.execute(f"""INSERT INTO file_changes (scan_id, mount_id, change_type, parent_path, filename, is_directory,
                                      old_size, new_size, old_modified_at, new_modified_at)
-                                 SELECT :scan, :m, 'deleted', r.parent_path, r.filename, r.is_directory,
+                                 SELECT :scan, :m, 'deleted', d.path, r.filename, r.is_directory,
                                         r.file_size_bytes, NULL, r.modified_at, NULL
-                                 FROM file_records r JOIN gone_{j} g ON g.file_id = r.file_id""", p)
+                                 FROM file_records r JOIN gone_{j} g ON g.file_id = r.file_id
+                                 JOIN directories d ON d.dir_id = r.dir_id""", p)
                 if sqlite:
                     conn.execute(f"""INSERT INTO file_fts (file_fts, rowid, filename)
                                      SELECT 'delete', r.file_id, r.filename
@@ -306,7 +342,7 @@ class Database:
             conn.execute(f"""INSERT INTO chg_{j}
                 SELECT r.file_id, s.extension, s.size, s.is_dir, s.is_link, s.target, s.mode, s.uid, s.gid, s.mtime,
                        {content_changed}
-                FROM {t} s JOIN file_records r ON r.mount_id = :m AND {match}
+                FROM {t} s JOIN file_records r ON {match}
                 WHERE {content_changed} OR {dist('r.mode_permissions', 's.mode')} OR {dist('r.owner_uid', 's.uid')}
                    OR {dist('r.group_gid', 's.gid')} OR {dist('r.symlink_target', 's.target')}
                    OR r.is_directory <> s.is_dir OR r.is_symlink <> s.is_link""", p)
@@ -315,9 +351,10 @@ class Database:
                 if not stats.first_scan:
                     conn.execute(f"""INSERT INTO file_changes (scan_id, mount_id, change_type, parent_path, filename,
                                          is_directory, old_size, new_size, old_modified_at, new_modified_at)
-                                     SELECT :scan, :m, 'modified', r.parent_path, r.filename, r.is_directory,
+                                     SELECT :scan, :m, 'modified', d.path, r.filename, r.is_directory,
                                             r.file_size_bytes, c.size, r.modified_at, {ts('c.mtime')}
                                      FROM chg_{j} c JOIN file_records r ON r.file_id = c.file_id
+                                     JOIN directories d ON d.dir_id = r.dir_id
                                      WHERE NOT c.is_dir""", p)
                 conn.execute(f"""UPDATE file_records SET extension = c.extension, file_size_bytes = c.size,
                                      is_directory = c.is_dir, is_symlink = c.is_link, symlink_target = c.target,
@@ -328,33 +365,38 @@ class Database:
                                  FROM chg_{j} c WHERE file_records.file_id = c.file_id""", p)
 
             # added: in this walk but not in the index
-            cur = conn.execute(f"""INSERT INTO file_records (mount_id, parent_path, filename, extension, file_size_bytes,
+            cur = conn.execute(f"""INSERT INTO file_records (mount_id, dir_id, filename, extension, file_size_bytes,
                                        is_directory, is_symlink, symlink_target, mode_permissions, owner_uid, group_gid,
                                        modified_at, first_seen_scan_id, last_changed_scan_id)
-                                   SELECT :m, s.parent_path, s.filename, s.extension, s.size, s.is_dir, s.is_link,
+                                   SELECT :m, s.dir_id, s.filename, s.extension, s.size, s.is_dir, s.is_link,
                                           s.target, s.mode, s.uid, s.gid, {ts('s.mtime')}, :scan, :scan
                                    FROM {t} s
-                                   WHERE NOT EXISTS (SELECT 1 FROM file_records r WHERE r.mount_id = :m AND {match})
-                                   ON CONFLICT (mount_id, parent_path, filename) DO NOTHING""", p)
+                                   WHERE NOT EXISTS (SELECT 1 FROM file_records r WHERE {match})
+                                   ON CONFLICT (dir_id, filename) DO NOTHING""", p)
             stats.added = max(cur.rowcount, 0)
             if stats.added:
-                if not stats.first_scan:
+                if not stats.first_scan and stats.added <= CHANGE_LOG_MAX_ADDS:
                     conn.execute("""INSERT INTO file_changes (scan_id, mount_id, change_type, parent_path, filename,
                                         is_directory, old_size, new_size, old_modified_at, new_modified_at)
-                                    SELECT :scan, :m, 'added', parent_path, filename, is_directory,
-                                           NULL, file_size_bytes, NULL, modified_at
-                                    FROM file_records WHERE mount_id = :m AND first_seen_scan_id = :scan""", p)
+                                    SELECT :scan, :m, 'added', d.path, f.filename, f.is_directory,
+                                           NULL, f.file_size_bytes, NULL, f.modified_at
+                                    FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
+                                    WHERE f.mount_id = :m AND f.first_seen_scan_id = :scan""", p)
                 if sqlite:
                     conn.execute("""INSERT INTO file_fts (rowid, filename)
                                     SELECT file_id, filename FROM file_records
                                     WHERE mount_id = :m AND first_seen_scan_id = :scan""", p)
+            if stats.deleted:                       # folders whose last entry went
+                conn.execute("""DELETE FROM directories WHERE mount_id = :m
+                                AND NOT EXISTS (SELECT 1 FROM file_records r WHERE r.dir_id = directories.dir_id)""", p)
             conn.execute('UPDATE mounts SET last_scan_id = :scan WHERE mount_id = :m', p)
         return stats
 
     # checksums
     def checksum_candidates(self, conn: Conn, host_id: int, min_size: int) -> list[tuple]:
         return conn.all("""
-            SELECT f.file_id, f.parent_path, f.filename FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id
+            SELECT f.file_id, d.path, f.filename FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id
+            JOIN directories d ON d.dir_id = f.dir_id
             WHERE m.host_id = :h AND f.checksum_hash IS NULL AND NOT f.is_directory AND NOT f.is_symlink
               AND f.file_size_bytes >= :min
               AND f.file_size_bytes IN (SELECT file_size_bytes FROM file_records

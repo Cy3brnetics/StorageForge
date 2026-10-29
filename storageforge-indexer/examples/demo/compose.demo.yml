@@ -1,9 +1,16 @@
-# Adds a disposable SSH target on the compose network:
+# A disposable SSH target, in a separate compose project so it never shares volumes, the sf0 bridge or port 8443
+# with a real installation, and on its own network so only StorageForge can reach it:
 #   docker compose -f docker-compose.yml -f examples/demo/compose.demo.yml up -d --build
+name: storageforge-demo
+
 services:
   storageforge:
     environment:
       STORAGEFORGE_INCLUDE_FSTYPES: overlay     # API/scheduled scans of the container target
+    networks: [sf, demo]
+  proxy:
+    ports: !override
+      - "127.0.0.1:${DEMO_HTTPS_PORT:-9443}:8443"
   target:
     build:
       context: examples/demo
@@ -11,3 +18,11 @@ services:
     hostname: demo-target
     environment:
       AUTHORIZED_KEY: ${DEMO_AUTHORIZED_KEY:-}
+    networks: [demo]
+
+networks:
+  sf:
+    driver_opts:
+      com.docker.network.bridge.name: sfdemo0
+  demo:
+    internal: true                              # the target has no way out

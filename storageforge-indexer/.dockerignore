@@ -6,3 +6,4 @@ keys/
 reports/
 *.db
 *.db-*
+.env

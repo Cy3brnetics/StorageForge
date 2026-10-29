@@ -146,4 +146,6 @@ def merge_intent(scanned: dict, saved: dict | None) -> dict:
     out['protection'] += list(rows.values())          # rows for things the scan did not see stay, flagged by the planner
     if saved.get('planner'):
         out['planner'] = saved['planner']
+    if saved.get('layout'):          # where the topology canvas puts the tables
+        out['layout'] = saved['layout']
     return out

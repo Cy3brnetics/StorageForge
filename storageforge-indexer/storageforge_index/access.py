@@ -24,7 +24,7 @@ import tempfile
 from pathlib import Path
 
 from .keyinstall import askpass_path, validate
-from .remote import READONLY_DIR, RemoteError, Transport
+from .remote import READONLY_DIR, RemoteError, Transport, child_env
 from .runner import connect_address, ephemeral_agent, known_hosts_path, runtime_dir
 from .vault import Vault
 
@@ -111,14 +111,20 @@ def _finish(p: subprocess.CompletedProcess, password: str) -> dict:
 
 
 def grant(db, conn, host: str, password: str, admin_user: str | None = None, remove: bool = False) -> dict:
-    """Run the setup (or removal) script on host with sudo. The password only travels on stdin and the askpass
-    environment of one ssh process; it is never logged, stored or put on a command line."""
+    """Set up (or remove) read-only scan access on host, with sudo."""
+    return sudo_run(db, conn, host, lambda scan_user: (remove_script if remove else setup_script)(scan_user),
+                    password, admin_user)
+
+
+def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | None = None) -> dict:
+    """Run a root script on host once, with sudo: make_script(scan_user) -> script. The password only travels on stdin
+    and the askpass environment of one ssh process; it is never logged, stored or put on a command line."""
     if not password:
         raise ValueError('a sudo password is required')
     host = connect_address(conn, host)
     with Vault(db, conn).unlock() as v:
         b = v.resolve(host, 'scan')
-        script = (remove_script if remove else setup_script)(b.user)
+        script = make_script(b.user)
         sudo = 'sudo -S -p "" sh -c ' + shlex.quote(script)
         if not admin_user or admin_user == b.user:
             # the scan user's own sudo rights, connecting with its vault key
@@ -127,7 +133,7 @@ def grant(db, conn, host: str, password: str, admin_user: str | None = None, rem
                               isolated=True)
                 try:
                     p = subprocess.run(t.argv(sudo), input=password + '\n', capture_output=True, text=True,
-                                       timeout=TIMEOUT)
+                                       timeout=TIMEOUT, env=child_env())
                 finally:
                     t.close()
             return {'host': host, 'user': b.user, 'via': b.user, **_finish(p, password)}

@@ -283,6 +283,7 @@ path.edge.lit{stroke:var(--accent);stroke-width:2.2}
 .rail-btns{display:flex;flex-wrap:wrap;gap:6px}
 #docstate.dirty{color:var(--warn)}
 #docstate.err{color:var(--crit)}
-#signin a,#tograph{color:var(--accent)}
-#tograph{text-decoration:none;display:inline-block}
+#signin a,#applinks a{color:var(--accent)}
+#applinks a{text-decoration:none;display:inline-block}
+.titem .n a,.note a{color:var(--accent);text-underline-offset:2px}
 [hidden]{display:none!important}

@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .db import Database
-from .remote import Transport
+from .remote import Transport, child_env
 from .scanner import ScanOptions, scan_host
 from .vault import AuditLog, NoBinding, SecretBuffer, Vault, VaultError, actor_name
 
@@ -65,7 +65,8 @@ def ephemeral_agent(key: SecretBuffer, ttl: int = AGENT_TTL):
     d = Path(tempfile.mkdtemp(prefix='agent-', dir=base))
     os.chmod(d, 0o700)
     sock = d / 'agent.sock'
-    agent = subprocess.Popen(['ssh-agent', '-D', '-a', str(sock)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    agent = subprocess.Popen(['ssh-agent', '-D', '-a', str(sock)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                             env=child_env())
     try:
         for _ in range(100):
             if sock.exists():

@@ -21,9 +21,16 @@ readColors();
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { readColors(); wake(); });
 
 /* ── API (session cookie, set by /api/login) ─────────────────────── */
-async function api(path, opts = {}) {
+async function api(path, opts = {}, confirmed = false) {
   const res = await fetch(path, { credentials: 'same-origin', ...opts });
-  if (res.status === 401) { askLogin(); throw new Error('Sign in required'); }
+  if (res.status === 401) {
+    const msg = (await res.json().catch(() => ({}))).error || '';
+    askLogin(/ended/.test(msg) ? msg : ''); throw new Error('Sign in required');
+  }
+  if (res.status === 403 && !confirmed && (await res.clone().json().catch(() => ({}))).reauth) {
+    await confirmPassword();                     // commands on hosts: type the password again, then retry once
+    return api(path, opts, true);
+  }
   if (!res.ok) {
     let msg = res.statusText;
     try { msg = (await res.json()).error || msg; } catch { /* not JSON */ }
@@ -280,6 +287,7 @@ function hit(p) {
   return null;
 }
 canvas.addEventListener('pointerdown', (ev) => {
+  if (ev.button !== 0) return;                      // right-click opens the menu; it does not select or drag
   canvas.setPointerCapture(ev.pointerId);
   const p = toWorld(ev), n = hit(p);
   drag = { n, sx: ev.clientX, sy: ev.clientY, vx: view.x, vy: view.y, moved: false };
@@ -308,6 +316,27 @@ canvas.addEventListener('pointerup', (ev) => {
 });
 canvas.addEventListener('pointerleave', () => { S.hover = null; $('#tip').hidden = true; wake(); });
 canvas.addEventListener('dblclick', (ev) => { const n = hit(toWorld(ev)); if (n) { setFocus(n.id); select(n.id); } });
+canvas._menu = (ev) => {
+  const n = hit(toWorld(ev));
+  if (!n) return [{ heading: 'Graph' }, { label: 'Fit to view', run: fit }, { label: 'Show all', run: () => setFocus(null), disabled: !S.focus },
+    { label: 'Unpin all nodes', run: () => { for (const x of S.nodes) x.fixed = false; alpha = 0.5; wake(); } }];
+  S.hover = null; $('#tip').hidden = true;
+  const own = n.host && !n.props.external;
+  const rest = (pre) => n.id.startsWith(`${pre}:${n.host}:`) ? n.id.slice(pre.length + n.host.length + 2) : null;
+  const box = own && (rest('mnt') != null ? 'mnt:' + rest('mnt') : rest('pool') != null ? 'pool:' + rest('pool') : null);
+  return [{ heading: `${n.kind} · ${n.label}` },
+    { label: 'Details', run: () => select(n.id) }, { label: `Focus ${S.hops} hop${S.hops > 1 ? 's' : ''}`, run: () => { setFocus(n.id); select(n.id); } },
+    { label: 'Center', run: () => select(n.id, true) },
+    n.fixed ? { label: 'Unpin', run: () => { n.fixed = false; alpha = Math.max(alpha, 0.2); wake(); } } : null,
+    box ? { label: 'Edit in the topology', run: () => showBox(n.host, box) } : null,
+    '-',
+    n.kind === 'Host' && !n.props.external ? { label: 'Scan now', run: () => queueScan(n.label) } : null,
+    n.kind === 'Host' && !n.props.external ? { label: 'Open in planner', run: () => { location.href = `/planner#overview@${encodeURIComponent(n.label)}`; } } : null,
+    n.kind === 'MountPoint' && own ? { label: 'Browse folders', run: () => browseFolders(n.host, n.label, n.label) } : null,
+    n.kind === 'MountPoint' && own ? { label: 'Largest files', run: () => runSearch({ under: n.label, host: n.host, size_gt: '1MiB' }) } : null,
+    n.kind === 'MountPoint' && own ? { label: 'Move from here…', run: () => moveFrom(n.host, n.label) } : null,
+    '-', { label: 'Copy name', run: () => copyText(n.label) }];
+};
 canvas.addEventListener('wheel', (ev) => {
   ev.preventDefault();
   const r = canvas.getBoundingClientRect();
@@ -392,11 +421,114 @@ function renderSummary() {
     ...(broken.length ? [text('h3', 'Needs attention'), ul] : []));
 }
 
+/* ── right-click menus: an element with _menu(ev) returning items gets one ──
+   item: { label, run, danger, disabled, checked } · '-' (separator) · { heading }.
+   Shift+right-click, links, text fields and selected text keep the browser's own menu. */
+let menuEl = null, menuKeyAt = 0;
+function closeMenu(refocus = false) {
+  if (!menuEl) return;
+  const from = menuEl.from; menuEl.remove(); menuEl = null;
+  from?.classList.remove('menu-open');
+  if (refocus && from && from.isConnected && from.focus) from.focus();
+}
+function openMenu(items, x, y, from) {
+  closeMenu();
+  const list = [];
+  for (const it of items) if (it && (it !== '-' || (list.length && list[list.length - 1] !== '-'))) list.push(it);
+  while (list[list.length - 1] === '-') list.pop();
+  const m = document.createElement('div'); m.className = 'ctxmenu'; m.setAttribute('role', 'menu'); m.from = from;
+  for (const it of list) {
+    if (it === '-') { m.append(document.createElement('hr')); continue; }
+    if (it.heading) { m.append(text('div', it.heading, 'ctxh')); continue; }
+    const b = text('button', '', `ctxi${it.danger ? ' danger' : ''}`); b.type = 'button'; b.disabled = !!it.disabled;
+    b.setAttribute('role', it.checked == null ? 'menuitem' : 'menuitemradio');
+    if (it.checked != null) b.setAttribute('aria-checked', String(!!it.checked));
+    b.append(text('span', it.checked ? '✓' : '', 'tick'), text('span', it.label));
+    b.addEventListener('click', () => { closeMenu(); it.run(); });
+    m.append(b);
+  }
+  m.addEventListener('keydown', (ev) => {
+    const bs = [...m.querySelectorAll('.ctxi:not(:disabled)')], i = bs.indexOf(document.activeElement);
+    const go = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: bs.length - 1 }[ev.key];
+    if (go != null) { ev.preventDefault(); bs[(go + bs.length) % bs.length]?.focus(); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); closeMenu(true); }
+    else if (ev.key === 'Tab') closeMenu();
+  });
+  m.style.visibility = 'hidden'; document.body.append(m);
+  const w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = `${Math.max(8, Math.min(x, innerWidth - w - 8))}px`;
+  m.style.top = `${y + h > innerHeight - 8 ? Math.max(8, y - h) : y}px`;
+  m.style.visibility = '';
+  menuEl = m;
+  if (from !== canvas) from?.classList.add('menu-open');
+  m.querySelector('.ctxi:not(:disabled)')?.focus({ preventScroll: true });
+}
+function menuFor(t) { while (t && !t._menu) t = t.parentElement; return t; }
+function menuAt(owner, ev) {
+  const items = owner._menu(ev);
+  if (!items || !items.length) return false;
+  let x = ev.clientX, y = ev.clientY;
+  if (owner !== canvas) {      // opened from the keyboard: under the element, not at the last pointer position
+    const r = owner.getBoundingClientRect();
+    if (ev.type === 'keydown' || x < r.left || x > r.right || y < r.top || y > r.bottom) { x = r.left + 12; y = Math.min(r.bottom - 6, innerHeight - 40); }
+  }
+  openMenu(items, x, y, owner);
+  return true;
+}
+document.addEventListener('contextmenu', (ev) => {
+  if (Date.now() - menuKeyAt < 400) { ev.preventDefault(); return; }       // the menu key already opened ours
+  closeMenu();
+  const t = ev.target.nodeType === 1 ? ev.target : ev.target.parentElement;
+  if (ev.shiftKey || !t || t.closest('input, textarea, select, [contenteditable], a[href]')) return;
+  const sel = getSelection();
+  if (sel && !sel.isCollapsed && sel.containsNode(t, true)) return;          // copying text
+  const owner = menuFor(t);
+  if (owner && menuAt(owner, ev)) ev.preventDefault();
+});
+document.addEventListener('keydown', (ev) => {   // ContextMenu key and Shift+F10 on a focused element
+  if (!(ev.key === 'ContextMenu' || (ev.key === 'F10' && ev.shiftKey)) || menuEl) return;
+  const owner = menuFor(document.activeElement);
+  if (owner && owner !== canvas && menuAt(owner, ev)) { ev.preventDefault(); menuKeyAt = Date.now(); }
+});
+document.addEventListener('pointerdown', (ev) => { if (menuEl && !menuEl.contains(ev.target)) closeMenu(); }, true);
+document.addEventListener('scroll', (ev) => { if (menuEl && !menuEl.contains(ev.target)) closeMenu(); }, true);
+window.addEventListener('resize', () => closeMenu());
+window.addEventListener('blur', () => closeMenu());
+
+function copyText(s, what = 'Copied') {
+  const done = () => toast(`${what}: ${s}`);
+  const ta = Object.assign(document.createElement('textarea'), { value: s, readOnly: true });   // works on plain http on the LAN too
+  ta.style.cssText = 'position:fixed;opacity:0'; document.body.append(ta); ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { /* fall through */ }
+  ta.remove();
+  if (ok) done();
+  else if (navigator.clipboard && isSecureContext) navigator.clipboard.writeText(s).then(done, () => toast('Could not copy'));
+  else toast('Could not copy');
+}
+let toastTimer = 0;
+function toast(msg) {
+  let t = $('#toast');
+  if (!t) { t = text('div', '', 'toast'); t.id = 'toast'; t.setAttribute('role', 'status'); document.body.append(t); }
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 2200);
+}
+const dirOf = (p) => p.replace(/\/[^/]*$/, '') || '/';
+
 /* ── tabs, search, jobs, audit ───────────────────────────────────── */
 let jobTimer = 0;
 function showTab(name) {
-  document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
+  document.querySelectorAll('.tabs button').forEach((b) => {
+    const on = b.dataset.tab === name;
+    b.classList.toggle('on', on); b.setAttribute('aria-selected', on);
+    if (!on) return;
+    $('#ptitle').textContent = b.querySelector('.lbl').textContent;
+    let g = b.previousElementSibling;
+    while (g && !g.classList.contains('rgroup')) g = g.previousElementSibling;
+    $('#pgroup').textContent = g ? g.textContent : '';
+  });
   document.querySelectorAll('.tab').forEach((t) => { t.hidden = t.id !== `tab-${name}`; });
+  setPanelOpen(true);
   clearInterval(jobTimer);
   if (name === 'jobs') { loadJobs(); jobTimer = setInterval(loadJobs, 3000); }
   if (name === 'audit') loadAudit();
@@ -407,8 +539,55 @@ function showTab(name) {
   if (name === 'changes') loadChanges();
   if (name === 'git') loadGit();
   if (name === 'docker') loadDocker();
+  if (name === 'deploy') loadDeploy();
 }
-document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
+const curTab = () => $('.tabs button.on')?.dataset.tab;
+document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => {
+  if (b.dataset.tab === curTab() && !panel.classList.contains('collapsed')) setPanelOpen(false);   // the open one again hides the panel
+  else showTab(b.dataset.tab);
+}));
+
+/* ── side panel: collapse and resize, remembered per browser ─────── */
+const panel = $('#panel');
+const PW = { min: 300, def: 380, max: () => Math.max(300, Math.min(760, innerWidth - 420)) };
+const prefs = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch { /* storage blocked: the default is fine */ } return null; };
+function setPanelWidth(w, save) {
+  w = Math.round(Math.min(PW.max(), Math.max(PW.min, w)));
+  panel.style.setProperty('--pw', `${w}px`);
+  $('#pgrip').setAttribute('aria-valuenow', w);
+  if (save) prefs('sf.panelw', w);
+}
+function setPanelOpen(open) {
+  if (open === !panel.classList.contains('collapsed')) return;
+  panel.classList.toggle('collapsed', !open);
+  prefs('sf.panel', open ? 'open' : 'closed');
+  if (!open && panel.contains(document.activeElement)) $('.tabs button.on')?.focus();
+}
+$('#pclose').addEventListener('click', () => setPanelOpen(false));
+const grip = $('#pgrip');
+grip.addEventListener('pointerdown', (ev) => {
+  ev.preventDefault(); grip.setPointerCapture(ev.pointerId); panel.classList.add('dragging');
+  const x0 = ev.clientX, w0 = panel.querySelector('.pbody').offsetWidth;
+  const move = (e) => setPanelWidth(w0 + x0 - e.clientX);
+  const up = (e) => {
+    grip.removeEventListener('pointermove', move); grip.removeEventListener('pointerup', up);
+    panel.classList.remove('dragging'); setPanelWidth(w0 + x0 - e.clientX, true);
+  };
+  grip.addEventListener('pointermove', move); grip.addEventListener('pointerup', up);
+});
+grip.addEventListener('dblclick', () => setPanelWidth(PW.def, true));
+grip.addEventListener('keydown', (ev) => {
+  const d = { ArrowLeft: 24, ArrowRight: -24 }[ev.key];
+  if (d) { ev.preventDefault(); setPanelWidth(panel.querySelector('.pbody').offsetWidth + d, true); }
+});
+grip.setAttribute('aria-valuemin', PW.min); grip.setAttribute('aria-valuemax', 760);
+setPanelWidth(Number(prefs('sf.panelw')) || PW.def);
+showTab('details');
+if (prefs('sf.panel') === 'closed') setPanelOpen(false);
+document.addEventListener('keydown', (ev) => {   // \ shows or hides the panel
+  if (ev.key !== '\\' || ev.ctrlKey || ev.metaKey || ev.altKey || ev.target.closest?.('input, textarea, select, [contenteditable]')) return;
+  ev.preventDefault(); setPanelOpen(panel.classList.contains('collapsed'));
+});
 
 async function runSearch(params) {
   const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v));
@@ -417,7 +596,7 @@ async function runSearch(params) {
   ol.replaceChildren(text('li', 'Searching…', 'muted'));
   try {
     const { results } = await getJSON(`/api/search?${qs}`);
-    $('#nres').textContent = results.length;
+    $('#nres').textContent = results.length || '';
     ol.replaceChildren(...results.map((r) => {
       const li = document.createElement('li');
       const b = button('', () => {
@@ -426,10 +605,24 @@ async function runSearch(params) {
         else { b.querySelector('.m').textContent = `${r.mount} is not in the graph yet; rebuild it after the next scan`; }
       });
       b.append(text('span', r.path, 'p'), text('span', `${r.host} · ${fmtBytes(r.size)} · ${r.type} · ${new Date(r.modified_at * 1000).toISOString().slice(0, 10)}`, 'm'));
-      li.append(b); return li;
+      li.append(b);
+      li._menu = () => resultMenu(r);
+      return li;
     }));
     if (!results.length) ol.replaceChildren(text('li', 'No matches.', 'muted'));
   } catch (err) { ol.replaceChildren(text('li', err.message, 'muted')); }
+}
+function resultMenu(r) {
+  const dir = r.type === 'dir' ? r.path : dirOf(r.path), stage = (type, preset) => () => openTask(type, r.host, preset);
+  return [{ heading: r.path },
+    { label: 'Show its folder', run: () => browseFolders(r.host, dir, r.mount) },
+    { label: 'Largest files in its folder', run: () => runSearch({ under: dir, host: r.host, size_gt: '1MiB' }) },
+    { label: 'Copy path', run: () => copyText(r.path) },
+    '-', { heading: 'Plan a change' },
+    { label: 'Rename or move…', run: stage('rename', { path: r.path, dest: r.path }) },
+    { label: 'Move to trash', run: stage('trash', { path: r.path }) },
+    { label: 'Owner and permissions…', run: stage('perms', { path: r.path }) },
+    { label: 'Copy its folder to another disk (Moves)…', run: () => moveFrom(r.host, dir) }];
 }
 let debounce = 0;
 $('#q').addEventListener('input', () => {
@@ -571,11 +764,55 @@ function alertPanel(msg) { showTab('details'); $('#summary').prepend(text('p', m
 /* ── sign in ─────────────────────────────────────────────────────── */
 const dlg = $('#logindlg');
 let user = null;
-function setUser(name) {
+function setUser(name, me = null) {
   user = name;
   $('#lock').textContent = name ? `Sign out ${name}` : 'Sign in';
   $('#lock').classList.toggle('locked', !name);
+  $('#sessfield').hidden = !name;
+  if (me) $('#sesslen').value = String(me.session_minutes);
 }
+
+/* ── password again before commands run on hosts ─────────────────── */
+const reauthDlg = $('#reauthdlg');
+let reauthWait = null;
+function confirmPassword() {
+  if (!reauthWait) {
+    reauthWait = new Promise((resolve, reject) => { reauthDlg._done = { resolve, reject }; })
+      .finally(() => { reauthWait = null; });
+    $('#reauthuser').value = user || '';
+    $('#reauthpw').value = ''; $('#reauthmsg').hidden = true;
+    reauthDlg.showModal(); $('#reauthpw').focus();
+  }
+  return reauthWait;
+}
+$('#reauthform').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const password = $('#reauthpw').value;
+  $('#reauthpw').value = '';
+  const res = await fetch('/api/reauth', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ password }) });
+  if (res.status === 401) { reauthDlg.close(); reauthDlg._done.reject(new Error('Sign in required')); askLogin(); return; }
+  if (!res.ok) {
+    $('#reauthmsg').textContent = (await res.json().catch(() => ({}))).error || res.statusText;
+    $('#reauthmsg').hidden = false; $('#reauthpw').focus(); return;
+  }
+  reauthDlg.close(); reauthDlg._done.resolve();
+});
+const reauthCancel = () => { if (reauthWait) reauthDlg._done.reject(new Error('Password not confirmed: nothing was run')); };
+$('#reauthcancel').addEventListener('click', () => { reauthDlg.close(); reauthCancel(); });
+reauthDlg.addEventListener('cancel', reauthCancel);
+$('#sesslen').addEventListener('change', async (ev) => {
+  try {
+    const me = await (await api('/api/me', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                                             body: JSON.stringify({ session_minutes: Number(ev.target.value) }) })).json();
+    setUser(me.username, me);
+    toast(`Sessions now last ${$('#sesslen').selectedOptions[0].textContent} after sign-in`);
+  } catch (err) {
+    const me = await getJSON('/api/me').catch(() => null);
+    if (me) setUser(me.username, me);
+    if (!/Sign in/.test(err.message)) toast(err.message);
+  }
+});
 function askLogin(msg = '') {
   clearInterval(jobTimer);
   setUser(null);
@@ -604,8 +841,29 @@ $('#lock').addEventListener('click', async () => {
   askLogin();
 });
 
+// links from the planner: /#host=nas-02&tab=changes opens that host on that panel
+function takeLink() {
+  const q = new URLSearchParams(location.hash.slice(1));
+  if (!q.has('host') && !q.has('tab')) return null;
+  history.replaceState(null, '', location.pathname + location.search);
+  const host = q.get('host');
+  if (host && [...$('#host').options].some((o) => o.value === host)) {
+    $('#host').value = S.host = host;
+    $('#toplanner').href = `/planner#overview@${encodeURIComponent(host)}`;
+  }
+  const tab = q.get('tab');
+  return tab && document.querySelector(`.tabs button[data-tab="${CSS.escape(tab)}"]`) ? tab : null;
+}
+
 async function boot() {
-  try { setUser((await getJSON('/api/me')).username); await loadHosts(); await Promise.all([loadGraph(), loadDesigns()]); }
+  try {
+    const me = await getJSON('/api/me');
+    setUser(me.username, me); await loadHosts();
+    const tab = takeLink();
+    await Promise.all([loadGraph(), loadDesigns()]);
+    if (tab) showTab(tab);
+    if (T.mode === 'tasks' && typeof loadTasks === 'function') loadTasks();
+  }
   catch (err) { if (!/Sign in/.test(err.message)) alertPanel(err.message); }
 }
 // boot() runs at the end of topology.js, once both scripts are loaded

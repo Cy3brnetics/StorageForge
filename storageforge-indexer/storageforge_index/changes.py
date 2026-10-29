@@ -22,7 +22,7 @@ import time
 
 from .db import Conn
 from .moves import _fmt, _path, find_host, host_slug, hosts, mount_of, slug, subtree
-from .scriptkit import HELPERS, REMOTE
+from .scriptkit import HELPERS, REMOTE, comments, host_name, one_line
 
 PROFILES = ['single', 'dup', 'raid1', 'raid1c3', 'raid1c4', 'raid10', 'raid5', 'raid6']
 MIN_DEVICES = {'single': 1, 'dup': 1, 'raid1': 2, 'raid1c3': 3, 'raid1c4': 4, 'raid10': 4, 'raid5': 2, 'raid6': 3}
@@ -118,9 +118,9 @@ def normalize(body: dict) -> dict:
         spec = TYPES.get(kind)
         if not spec:
             raise ValueError(f'task {i}: unknown type {kind!r}')
-        host = str(t.get('host') or '').strip()
-        if not host:
+        if not str(t.get('host') or '').strip():
             raise ValueError(f'task {i}: pick a host')
+        host = host_name(t['host'], f'task {i}: the host')
         raw, params = t.get('params') or {}, {}
         for f in spec['fields']:
             v = raw.get(f['name'], f.get('default'))
@@ -146,7 +146,7 @@ def normalize(body: dict) -> dict:
             if params.get('confirm') != dev:
                 raise ValueError(f'task {i} ({spec["label"]}): type {dev} again in the confirm field')
         tasks.append({'id': str(t.get('id') or f't{i}'), 'type': kind, 'host': host, 'params': params,
-                      'note': str(t.get('note') or '')[:300]})
+                      'note': one_line(t.get('note') or '')[:300]})
     return {'name': name, 'notes': str(body.get('notes') or '')[:2000], 'tasks': tasks}
 
 
@@ -191,8 +191,8 @@ class Host:
         if not m or m['state'] != 'indexed':
             return 'unknown'
         parent, name = posixpath.split(path)
-        row = self.conn.all('SELECT is_directory, is_symlink FROM file_records WHERE mount_id = :m AND parent_path = :p '
-                            'AND filename = :n', {'m': m['id'], 'p': parent, 'n': name})
+        row = self.conn.all('SELECT f.is_directory, f.is_symlink FROM file_records f JOIN directories d ON d.dir_id = f.dir_id '
+                            'WHERE d.mount_id = :m AND d.path = :p AND f.filename = :n', {'m': m['id'], 'p': parent, 'n': name})
         if not row:
             return 'missing'
         return 'link' if row[0][1] else 'dir' if row[0][0] else 'file'
@@ -538,6 +538,20 @@ ARGS = {'dir': ('path', 'owner', 'group', 'mode'), 'rename': ('path', 'dest'), '
         'label': ('target', 'label')}
 
 
+def deploy_items(conn: Conn, plan: dict, mode: str, destructive: bool = False) -> list[dict]:
+    """deploy.start_group items: the plan's script on each of its hosts, in the order the plan first uses them."""
+    plan = normalize(plan)
+    hs, order = hosts(conn), []
+    for t in plan['tasks']:
+        h = find_host(hs, t['host'])
+        name = h['name'] if h else t['host']
+        if name not in order:
+            order.append(name)
+    text = script(conn, plan)
+    args = (['--apply'] + (['--destructive'] if destructive else [])) if mode == 'apply' else []
+    return [{'host': h, 'script': text, 'args': args, 'kind': 'changes', 'ref': plan['name'], 'mode': mode} for h in order]
+
+
 def script(conn: Conn, plan: dict) -> str:
     plan = normalize(plan)
     hs, chk = hosts(conn), check(conn, plan)
@@ -550,9 +564,9 @@ def script(conn: Conn, plan: dict) -> str:
         summary.append(f'#   {i:>2}. [{t["host"]}] {title(t)}' + ('   (destructive)' if TYPES[t['type']].get('destructive') else ''))
     problems = [f'#   task {x["task"]}: {it["level"].upper()}: {it["text"]}' for x in chk['tasks'] for it in x['items']
                 if it['level'] in ('crit', 'warn')]
-    return (CHANGE_HEAD.format(name=plan['name'].replace('\n', ' '), slug=slug(plan['name']),
-                               date=dt.datetime.now().strftime('%Y-%m-%d %H:%M'), tasks='\n'.join(summary) or '#   (no tasks)',
-                               problems='\n'.join(problems) or '#   none')
+    return (CHANGE_HEAD.format(name=one_line(plan['name']), slug=slug(plan['name']),
+                               date=dt.datetime.now().strftime('%Y-%m-%d %H:%M'), tasks=comments(summary, '#   (no tasks)'),
+                               problems=comments(problems, '#   none'))
             + f'PLAN={q(slug(plan["name"]))}\n' + CHANGE_BODY_1 + HELPERS + CHANGE_BODY_2 + REMOTE + CHANGE_BODY_3
             + '\n'.join(calls) + CHANGE_TAIL)
 
@@ -996,9 +1010,9 @@ def ansible(conn: Conn, plan: dict) -> str:
             plays[-1]['tasks'] += made
         else:
             plays.append({'name': f'{plan["name"]} on {name}', 'hosts': name, 'become': True, 'gather_facts': False, 'tasks': made})
-    inventory = '\n'.join(f'#   {h["name"]} ansible_host={h["ssh_host"]} ansible_user={h["ssh_user"] or "root"}'
-                          for h in (find_host(hs, n) for n in dict.fromkeys(p['hosts'] for p in plays)) if h)
-    head = (f'# StorageForge change plan "{plan["name"]}" as an Ansible playbook, generated {dt.datetime.now():%Y-%m-%d %H:%M}.\n'
+    inventory = comments((f'#   {h["name"]} ansible_host={h["ssh_host"]} ansible_user={h["ssh_user"] or "root"}'
+                          for h in (find_host(hs, n) for n in dict.fromkeys(p['hosts'] for p in plays)) if h), '')
+    head = (f'# StorageForge change plan "{one_line(plan["name"])}" as an Ansible playbook, generated {dt.datetime.now():%Y-%m-%d %H:%M}.\n'
             '# Needs the ansible.posix and community.general collections.\n'
             '#   ansible-playbook -i inventory.ini this.yml --check --diff        # look first\n'
             '#   ansible-playbook -i inventory.ini this.yml                       # apply (drive tasks skipped)\n'

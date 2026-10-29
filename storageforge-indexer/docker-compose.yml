@@ -1,8 +1,9 @@
 # StorageForge production stack.
-#   ./docker/init-secrets.sh            # creates ./secrets/vault_secret and ./secrets/session_secret
+#   ./docker/init-secrets.sh            # creates ./secrets/{vault_secret,session_secret} and a self-signed TLS cert
 #   docker compose up -d --build
 #   docker compose exec storageforge storageforge-index user add admin
-#   open http://127.0.0.1:8080          # sign in with that account
+#   open https://<this machine>:8443    # sign in with that account (accept the self-signed certificate once)
+# Meant for a LAN. Do not publish it on the internet.
 name: storageforge
 
 services:
@@ -20,16 +21,19 @@ services:
     environment:
       STORAGEFORGE_VAULT_SECRET_FILE: /run/secrets/vault_secret
       STORAGEFORGE_SESSION_SECRET_FILE: /run/secrets/session_secret
-      STORAGEFORGE_COOKIE_SECURE: ${STORAGEFORGE_COOKIE_SECURE:-0}   # set 1 once a TLS proxy is in front
-      STORAGEFORGE_PROXY_HOPS: ${STORAGEFORGE_PROXY_HOPS:-0}         # set 1 behind one reverse proxy (real client IP)
+      STORAGEFORGE_COOKIE_SECURE: ${STORAGEFORGE_COOKIE_SECURE:-1}   # the session cookie only travels over https (proxy below)
+      STORAGEFORGE_PROXY_HOPS: ${STORAGEFORGE_PROXY_HOPS:-1}         # the proxy below sets X-Forwarded-For (real client IP)
       STORAGEFORGE_SCAN_INTERVAL: ${STORAGEFORGE_SCAN_INTERVAL:-6h}
       STORAGEFORGE_BACKUP_HOUR: ${STORAGEFORGE_BACKUP_HOUR:-3}            # nightly essentials backup + prune (local hour)
       STORAGEFORGE_BACKUP_KEEP: ${STORAGEFORGE_BACKUP_KEEP:-14}
       STORAGEFORGE_BACKUP_FULL_KEEP: ${STORAGEFORGE_BACKUP_FULL_KEEP:-0}  # >0: also a full copy nightly (large)
       STORAGEFORGE_ACCESS_LOG: ${STORAGEFORGE_ACCESS_LOG:-changes}        # all | changes | off
+      STORAGEFORGE_REPORT_CA_FILE: /run/secrets/tls_cert                 # deployed jobs trust this certificate for reports
     secrets:
       - vault_secret
       - session_secret
+      - tls_cert          # the public half only; the key stays with the proxy
+    group_add: ["${STORAGEFORGE_SECRETS_GID:-1000}"]   # reads the 0640 secret files (docker/init-secrets.sh)
     volumes:
       - sf-data:/app/data
       # Backups in their own volume. Copy them off this machine (e.g. a Moves mirror step to another host).
@@ -42,8 +46,7 @@ services:
       - /run/storageforge:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10001,gid=10001
       - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
     networks: [sf]
-    ports:
-      - "127.0.0.1:${STORAGEFORGE_HTTP_PORT:-8080}:8080"   # loopback only; put a TLS reverse proxy in front
+    # no published port: plain HTTP stays on the compose network, and browsers come in through the proxy
     ulimits:
       nofile: { soft: 4096, hard: 8192 }
       memlock: { soft: 16777216, hard: 16777216 }       # lets the vault mlock() decrypted key buffers
@@ -61,11 +64,45 @@ services:
       driver: json-file
       options: { max-size: 10m, max-file: "5" }
 
+  # TLS for the LAN: nginx with the self-signed certificate from docker/init-secrets.sh
+  proxy:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      storageforge: { condition: service_healthy }
+    user: "101:101"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    secrets:
+      - tls_cert
+      - tls_key
+    group_add: ["${STORAGEFORGE_SECRETS_GID:-1000}"]
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=101,gid=101
+    networks: [sf]
+    ports:
+      # every interface by default, so the LAN can reach it; STORAGEFORGE_HTTPS_BIND=127.0.0.1 keeps it on this machine
+      - "${STORAGEFORGE_HTTPS_BIND:-0.0.0.0}:${STORAGEFORGE_HTTPS_PORT:-8443}:8443"
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 64m, pids: 32 }
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+
 secrets:
   vault_secret:
     file: ./secrets/vault_secret
   session_secret:
     file: ./secrets/session_secret
+  tls_cert:
+    file: ./secrets/tls_cert
+  tls_key:
+    file: ./secrets/tls_key
 
 volumes:
   sf-data:

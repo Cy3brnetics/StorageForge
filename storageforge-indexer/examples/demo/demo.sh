@@ -4,7 +4,7 @@ set -eu
 cd "$(dirname "$0")/../.."
 C="docker compose -f docker-compose.yml -f examples/demo/compose.demo.yml"
 ./docker/init-secrets.sh >/dev/null
-$C up -d --build storageforge
+$C up -d --build storageforge proxy
 SF="$C exec -T storageforge storageforge-index"
 $SF vault pubkey --name demo >/dev/null 2>&1 || $SF vault generate --name demo >/dev/null
 export DEMO_AUTHORIZED_KEY="$($SF vault pubkey --name demo)"
@@ -18,7 +18,7 @@ $SF audit tail --limit 8
 if ! $SF user list | grep -q '^demo '; then
   DEMO_PASSWORD=$(openssl rand -base64 18)
   printf '%s\n' "$DEMO_PASSWORD" | $SF user add demo >/dev/null
-  echo "UI: http://127.0.0.1:${STORAGEFORGE_HTTP_PORT:-8080}  user: demo  password: $DEMO_PASSWORD"
+  echo "UI: https://127.0.0.1:${DEMO_HTTPS_PORT:-9443}  user: demo  password: $DEMO_PASSWORD"
 else
-  echo "UI: http://127.0.0.1:${STORAGEFORGE_HTTP_PORT:-8080}  user: demo (reset with: $SF user passwd demo)"
+  echo "UI: https://127.0.0.1:${DEMO_HTTPS_PORT:-9443}  user: demo (reset with: $SF user passwd demo)"
 fi

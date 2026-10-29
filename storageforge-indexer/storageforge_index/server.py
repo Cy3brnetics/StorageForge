@@ -6,7 +6,8 @@ GET  /                              graph UI (static, no auth; every data call n
 GET  /planner                       storage planner UI (static, no auth)
 POST /api/login  {"username", "password"}   start a session (cookie)
 POST /api/logout                    end it
-GET  /api/me                        the signed-in user
+POST /api/reauth  {"password"}      confirm the password before commands run on hosts (good for REAUTH_WINDOW)
+GET|PUT /api/me                     the signed-in user; PUT {"session_minutes"} sets how long sessions last (30-480)
 GET  /api/hosts                     indexed hosts
 GET  /api/graph[?host=]             nodes and edges
 GET  /api/canvas[?host=]            Obsidian .canvas download
@@ -32,6 +33,15 @@ GET  /api/folders/cold?host=&years=&min_size=   folders whose newest file is old
 GET  /api/git?host=                  git repositories found by scans, with their copies and archive state
 GET  /api/shares/check?host=         the NFS/SMB shares in a host's design, checked against the index
 GET  /api/shares/script?host=        the script that deploys them on the server and mounts them on clients
+POST /api/shares/validate  {"host", "export", "index"}   check one share before saving it (folder, access, mount points)
+POST /api/shares  {"host", "export", "index"}   add the share to the host's design, or replace share #index
+DELETE /api/shares?host=&index=      remove a designed share from the host's design
+GET  /api/fs/browse?host=&path=      folders and files at a path from the index, with mounts, shares and planned mounts
+GET  /api/tasks                      saved storage tasks, block types, templates and where tasks are installed
+POST /api/tasks  {"name", "host", "schedule", "blocks": [...], "on_fail": [...]}   save a new task
+GET|PUT|DELETE /api/tasks/<id>       one task
+POST /api/tasks/check                check a task (saved or not) against the index, block by block
+POST /api/tasks/script               the Bash script of a task (saved or not)
 GET  /api/changes/types              the task types of change plans, with their fields (the UI builds its forms from it)
 GET  /api/changes                    saved change plans;  POST creates one from {"name", "tasks": [...]}
 GET|PUT|DELETE /api/changes/<id>     one plan
@@ -40,13 +50,30 @@ GET  /api/changes/<id>/script        the Bash script (report, --apply, --destruc
 GET  /api/changes/<id>/ansible       the same plan as an Ansible playbook
 GET  /api/docker?host=               containers, compose stacks (running, stopped, stored), volumes, unused volumes
 GET  /api/docker/usage?host=&path=   containers that use a folder (bind mounts and volume data)
+GET  /api/deploy                     deploy access per host, deployed jobs and shares, open alerts, drift, settings
+GET  /api/deploy/setup-script        the deploy setup script, to run as root by hand
+POST /api/deploy/access              {"host", "password", "admin_user"?, "remove"?}: set deploy access up (or remove it) with sudo once
+POST /api/deploy/adopt               {"host"}: after running the setup script by hand, bind the key and test a signed run
+POST /api/deploy/start               {"kind": jobs|shares|changes, "ref", "mode": report|apply, "paused"?, "destructive"?}
+GET  /api/deploy/groups/<id>         the runs of one deploy, with their output (poll while running)
+GET  /api/deploy/runs[/<id>]         deploy history, or one run's output
+GET  /api/deploy/jobs/<id>           one deployed job and its run history
+POST /api/deploy/jobs/<id>/<verb>    run, dryrun, verify, pause, resume, cutover, log, snapshots
+POST /api/deploy/jobs/<id>/browse  {"snapshot", "path"}   a folder inside an rsnapshot snapshot (runs ls on the host)
+POST /api/deploy/jobs/<id>/restore   {"snapshot", "path"}: copy it back to the source as <path>.restored-<time>
+GET|PUT /api/deploy/settings         report URL and alert channels;  POST /api/deploy/settings/test sends a test alert
+POST /api/jobs/report                a job's run result (Authorization: Bearer <job token>; no session)
 GET  /api/backups                    backups on disk;  POST {"kind": "essentials"|"full"} makes one now
 GET  /api/planner/hosts             scanned hosts and saved designs
 GET  /api/planner/design?host=&source=saved|scan   a design: the saved one, or built from the latest scan
+PUT  /api/planner/example  {"show"}  show or remove the built-in example host "atlas" for everyone
+GET  /api/planner/activity?host=     staged changes, moves, shares, deployed jobs and drift on a host
 PUT  /api/planner/design            save a storageforge/v1 blueprint (overlaid on the graph and reports)
 """
 from __future__ import annotations
 
+import functools
+import ipaddress
 import json
 import os
 import queue
@@ -60,14 +87,15 @@ import traceback
 from datetime import timedelta
 from pathlib import Path
 
-from flask import Flask, Response, g, jsonify, request, send_from_directory
+from flask import Flask, Response, g, jsonify, request, send_from_directory, session
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_login import LoginManager, current_user, login_required, login_user, logout_user
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import __version__, access, blueprint, canvas, changes, docker, folders, gitrepos, graph, keyinstall, moves, shares, users
+from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, folders, gitrepos, graph, jobs,
+               fsmap, keyinstall, moves, shares, tasks, users)
 from .capacity import parse_size
 from .db import Database, epoch
 from .remote import RemoteError
@@ -91,12 +119,16 @@ ACCESS_LOG = os.environ.get('STORAGEFORGE_ACCESS_LOG', 'changes').lower()
 BACKUP_HOUR = int(os.environ.get('STORAGEFORGE_BACKUP_HOUR', '3'))          # local hour for the nightly backup and prune
 BACKUP_KEEP = int(os.environ.get('STORAGEFORGE_BACKUP_KEEP', '14'))         # essentials backups kept
 BACKUP_FULL = int(os.environ.get('STORAGEFORGE_BACKUP_FULL_KEEP', '0'))     # full backups kept nightly (0: on demand only)
+ALERT_TICK = 300                  # alerts and drift are re-evaluated this often (and right after a job reports)
 SCHEDULE_TICK = 600               # the scheduler looks for due hosts this often (seconds)
 MAX_BLUEPRINT = 2 << 20           # planner designs are the one large body we accept
 # Failed sign-ins allowed before /api/login answers 429; successful ones are not counted.
 LOGIN_LIMIT_PER_IP = '10 per minute; 50 per hour'
-LOGIN_LIMIT_PER_USER = '5 per minute; 20 per hour'
+LOGIN_LIMIT_PER_USER = '5 per minute; 20 per hour'     # per account and client network (/24, /64)
+LOGIN_LIMIT_PER_ACCOUNT = '100 per day'                # per account from anywhere: the backstop for spread-out guessing
 INSTALL_LIMIT = '10 per minute'     # each attempt is one password try on the target
+# Routes that run commands on hosts want the account password typed again within this many seconds.
+REAUTH_WINDOW = 300
 KEY_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}')
 
 
@@ -140,6 +172,18 @@ class App:
         if scan_interval:
             threading.Thread(target=self._schedule, args=(scan_interval,), name='scheduler', daemon=True).start()
         threading.Thread(target=self._nightly, name='nightly', daemon=True).start()
+        self.alerts_wake = threading.Event()
+        threading.Thread(target=self._alerts, name='alerts', daemon=True).start()
+
+    def _alerts(self):
+        time.sleep(30)
+        while True:
+            try:
+                alerts.evaluate(self.db)
+            except Exception:
+                traceback.print_exc()
+            self.alerts_wake.wait(ALERT_TICK)
+            self.alerts_wake.clear()
 
     @staticmethod
     def canonical(conn, host: str) -> str:
@@ -271,8 +315,12 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         web.wsgi_app = ProxyFix(web.wsgi_app, x_for=proxy_hops, x_proto=proxy_hops)
     web.config.update(
         SECRET_KEY=session_secret, MAX_CONTENT_LENGTH=MAX_BODY,
-        SESSION_COOKIE_NAME='sf_session', SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Strict',
-        SESSION_COOKIE_SECURE=secure_cookies, PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+        # __Host-: browsers only accept it over https, for Path=/ and without Domain, so no other site or subdomain can set it
+        SESSION_COOKIE_NAME='__Host-sf_session' if secure_cookies else 'sf_session',
+        SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Strict',
+        SESSION_COOKIE_SECURE=secure_cookies,
+        # the cookie signature's age limit; each user's own (shorter) session length is checked in load_user
+        PERMANENT_SESSION_LIFETIME=timedelta(minutes=users.MAX_SESSION_MINUTES),
     )
     db = core.db
     login = LoginManager(web)
@@ -292,11 +340,33 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
 
     @login.user_loader
     def load_user(session_id):
-        return users.load(conn(), session_id)
+        user = users.load(conn(), session_id)
+        if user and not users.session_alive(conn(), session.get('sid'), user.user_id):
+            return None                       # signed out (here or elsewhere): a copied cookie is dead too
+        if user and time.time() - session.get('login_at', 0) > user.session_minutes * 60:
+            users.end_session(conn(), session.get('sid'))
+            g.session_expired = True
+            return None
+        return user
 
     @login.unauthorized_handler
     def unauthorized():
+        if g.get('session_expired'):
+            session.clear()
+            return jsonify(error='your session ended: sign in again'), 401
         return jsonify(error='sign in required'), 401
+
+    def password_stale():
+        """A 403 asking for the password again when it was last typed more than REAUTH_WINDOW ago, else None."""
+        if time.time() - session.get('auth_at', 0) > REAUTH_WINDOW:
+            return jsonify(error='confirm your password to run commands on hosts', reauth=True), 403
+        return None
+
+    def password_confirmed(view):
+        @functools.wraps(view)
+        def wrapped(*args, **kwargs):
+            return password_stale() or view(*args, **kwargs)
+        return wrapped
 
     @web.before_request
     def body_limit():
@@ -307,7 +377,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def headers(resp: Response):
         for k, v in SECURITY_HEADERS.items():
             resp.headers.setdefault(k, v)
-        resp.headers['Server'] = f'StorageForge/{__version__}'
+        resp.headers['Server'] = 'StorageForge'
         if ACCESS_LOG == 'all' or (ACCESS_LOG == 'changes' and (request.method not in ('GET', 'HEAD') or resp.status_code >= 500
                                                                   or resp.status_code == 429)):
             print(f'{request.remote_addr} {request.method} {request.path} {resp.status_code}', file=sys.stderr, flush=True)
@@ -324,6 +394,17 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
 
     def actor() -> str:
         return f'web:{current_user.username}' if current_user.is_authenticated else f'web:{request.remote_addr}'
+
+    def arg_num(name: str, default, lo, hi, kind=int):
+        """A numeric query argument held to [lo, hi]: a negative LIMIT means "no limit" in SQLite."""
+        raw = request.args.get(name)
+        try:
+            v = kind(raw) if raw not in (None, '') else default
+        except ValueError:
+            raise ValueError(f'{name} must be a number') from None
+        if v != v or v in (float('inf'), float('-inf')):        # nan, inf
+            raise ValueError(f'{name} must be a number')
+        return max(lo, min(v, hi))
 
     def json_body() -> dict:
         # JSON only: a cross-site form cannot send application/json without a CORS preflight, which we never grant.
@@ -342,7 +423,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def planner():
         return static('planner.html')
 
-    @web.get('/<any("app.js", "topology.js", "checks.js", "moves.js", "changes.js", "gitview.js", "dockerview.js", "style.css", "favicon.svg", "planner.js", "planner.css"):name>')
+    @web.get('/<any("app.js", "topology.js", "checks.js", "moves.js", "changes.js", "gitview.js", "dockerview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "style.css", "favicon.svg", "planner.js", "planner.css"):name>')
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
         resp.headers['Cache-Control'] = 'no-cache'
@@ -361,20 +442,43 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             checks['database'] = f'error: {type(exc).__name__}'
         checks['worker'] = 'ok' if core.worker.is_alive() else 'dead'
         healthy = checks.get('database') == 'ok' and checks['worker'] == 'ok'
-        return jsonify(status='ok' if healthy else 'unhealthy', version=__version__, **checks), 200 if healthy else 503
+        code = 200 if healthy else 503
+        # details (version, users, vault state) only for the container's own HEALTHCHECK and signed-in users
+        local = request.remote_addr in ('127.0.0.1', '::1') and 'X-Forwarded-For' not in request.headers
+        if not (local or current_user.is_authenticated):
+            return jsonify(status='ok' if healthy else 'unhealthy'), code
+        return jsonify(status='ok' if healthy else 'unhealthy', version=__version__, **checks), code
 
     def login_username() -> str:
         body = request.get_json(silent=True) if request.is_json else None
         return 'user:' + (str(body.get('username', '')).lower()[:64] if isinstance(body, dict) else '')
 
+    def client_net() -> str:
+        try:
+            ip = ipaddress.ip_address(request.remote_addr or '')
+        except ValueError:
+            return request.remote_addr or ''
+        return str(ipaddress.ip_network(f'{ip}/{24 if ip.version == 4 else 64}', strict=False))
+
+    def login_user_net() -> str:
+        # Someone guessing from elsewhere uses up this account's tries on *their* network, not the owner's.
+        return f'{login_username()}@{client_net()}'
+
     def failed(resp: Response) -> bool:
         return resp.status_code == 401
 
+    def limited(limit):
+        core.audit(conn(), f'web:{request.remote_addr}', 'web.login.limited', 'denied', None,
+                   {'username': login_username()[5:], 'limit': str(limit.limit)})
+
     # session
     @web.post('/api/login')
-    @limiter.limit(LOGIN_LIMIT_PER_IP, deduct_when=failed, error_message='too many failed sign-ins; try again later')
-    @limiter.limit(LOGIN_LIMIT_PER_USER, key_func=login_username, deduct_when=failed,
+    @limiter.limit(LOGIN_LIMIT_PER_IP, deduct_when=failed, on_breach=limited,
+                   error_message='too many failed sign-ins; try again later')
+    @limiter.limit(LOGIN_LIMIT_PER_USER, key_func=login_user_net, deduct_when=failed, on_breach=limited,
                    error_message='too many failed sign-ins for this account; try again later')
+    @limiter.limit(LOGIN_LIMIT_PER_ACCOUNT, key_func=login_username, deduct_when=failed, on_breach=limited,
+                   error_message='too many failed sign-ins for this account today; try again later')
     def api_login():
         body = json_body()
         name, password = str(body.get('username', '')), str(body.get('password', ''))
@@ -382,18 +486,53 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         core.audit(conn(), f'web:{request.remote_addr}', 'web.login', 'ok' if user else 'denied', None, {'username': name[:64]})
         if not user:
             return jsonify(error='wrong username or password'), 401
+        session.clear()
+        session['login_at'] = session['auth_at'] = int(time.time())
+        session['sid'] = users.start_session(conn(), user.user_id, request.remote_addr)
         login_user(user)
         return jsonify(username=user.username)
 
     @web.post('/api/logout')
     def api_logout():
+        users.end_session(conn(), session.get('sid'))
         logout_user()
+        session.clear()
         return jsonify(ok=True)
+
+    @web.post('/api/reauth')
+    @login_required
+    @limiter.limit(LOGIN_LIMIT_PER_USER, key_func=lambda: f'reauth:{current_user.get_id()}',
+                   deduct_when=lambda resp: resp.status_code == 403, error_message='too many wrong passwords; try again later')
+    def api_reauth():
+        ok = users.confirm(conn(), current_user.user_id, str(json_body().get('password', '')))
+        core.audit(conn(), actor(), 'web.reauth', 'ok' if ok else 'denied', None, {})
+        if not ok:
+            return jsonify(error='wrong password'), 403     # not 401: the session itself is still good
+        session['auth_at'] = int(time.time())
+        return jsonify(ok=True, until=session['auth_at'] + REAUTH_WINDOW)
+
+    def me():
+        login_at = session.get('login_at', 0)
+        return dict(username=current_user.username, session_minutes=current_user.session_minutes,
+                    session_ends=login_at + current_user.session_minutes * 60, min_minutes=users.SESSION_MINUTES,
+                    max_minutes=users.MAX_SESSION_MINUTES)
 
     @web.get('/api/me')
     @login_required
     def api_me():
-        return jsonify(username=current_user.username)
+        return jsonify(me())
+
+    @web.put('/api/me')
+    @login_required
+    @password_confirmed
+    def api_me_update():
+        try:
+            minutes = int(json_body().get('session_minutes'))
+        except (TypeError, ValueError):
+            raise ValueError('session_minutes must be a number') from None
+        current_user.session_minutes = users.set_session_minutes(conn(), current_user.user_id, minutes)
+        core.audit(conn(), actor(), 'web.session-length', 'ok', None, {'minutes': minutes})
+        return jsonify(me())
 
     # data
     @web.get('/api/hosts')
@@ -428,7 +567,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         sq = SearchQuery(pattern=q.get('q') or None, hosts=[q['host']] if q.get('host') else [],
                          size_gt=parse_size(q['size_gt']) if q.get('size_gt') else None,
                          ftype=q.get('type') if q.get('type') in ('f', 'd', 'l') else None,
-                         under=q.get('under') or None, limit=min(int(q.get('limit') or 100), 500), sort='path')
+                         under=q.get('under') or None, limit=arg_num('limit', 100, 1, 500), sort='path')
         if not (sq.pattern or sq.size_gt or sq.under):
             raise ValueError('give q, size_gt or under')
         return Response(json.dumps({'results': run_search(db, conn(), sq)}, default=str), mimetype='application/json')
@@ -444,7 +583,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @web.get('/api/audit')
     @login_required
     def api_audit():
-        limit = min(int(request.args.get('limit') or 100), 1000)
+        limit = arg_num('limit', 100, 1, 1000)
         return Response(json.dumps({'entries': AuditLog(db, conn(), None).tail(limit)}, default=str),
                         mimetype='application/json')
 
@@ -492,6 +631,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
 
     @web.post('/api/keys/install')
     @login_required
+    @password_confirmed
     @limiter.limit(INSTALL_LIMIT, key_func=lambda: f'install:{current_user.get_id()}')
     def api_key_install():
         body = json_body()
@@ -549,6 +689,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
 
     @web.post('/api/access/grant')
     @login_required
+    @password_confirmed
     @limiter.limit(INSTALL_LIMIT, key_func=lambda: f'grant:{current_user.get_id()}')
     def api_access_grant():
         body = json_body()
@@ -593,6 +734,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 core.audit(conn(), actor(), 'moves.save', 'ok', None, {'plan': plan_id})
             elif request.method == 'DELETE':
                 moves.get_plan(conn(), plan_id)
+                if [d for d in deploy.deployed(conn(), kind='jobs') if d['ref'] == f'p{plan_id}']:
+                    return jsonify(error='this plan has jobs deployed on hosts: remove them first (Deploy tab → Remove from hosts)'), 409
                 moves.delete_plan(conn(), plan_id)
                 core.audit(conn(), actor(), 'moves.delete', 'ok', None, {'plan': plan_id})
                 return jsonify(deleted=plan_id)
@@ -641,6 +784,88 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         core.audit(conn(), actor(), 'shares.script', 'ok', host, {})
         return Response(text, mimetype='text/x-shellscript',
                         headers={'Content-Disposition': f'attachment; filename="shares-{moves.host_slug(host)}.sh"'})
+
+    @web.post('/api/shares/validate')
+    @login_required
+    def api_shares_validate():
+        body = json_body()
+        idx = body.get('index')
+        try:
+            return jsonify(shares.validate(conn(), str(body.get('host', '')), body.get('export') or {},
+                                           None if idx is None else int(idx)))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.route('/api/shares', methods=['POST', 'DELETE'])
+    @login_required
+    def api_shares_save():
+        try:
+            if request.method == 'DELETE':
+                host, idx = request.args.get('host', ''), int(request.args.get('index', -1))
+                res = shares.remove_export(db, conn(), host, idx)
+                core.audit(conn(), actor(), 'shares.remove', 'ok', host, {'index': idx})
+                return jsonify(res)
+            body = json_body()
+            idx = body.get('index')
+            res = shares.save_export(db, conn(), str(body.get('host', '')), body.get('export') or {},
+                                     None if idx is None else int(idx), actor())
+            core.audit(conn(), actor(), 'shares.save', 'ok', res['host'],
+                       {'index': res['index'], 'path': res['export']['path'], 'proto': res['export']['protocol']})
+            return jsonify(res)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.get('/api/fs/browse')
+    @login_required
+    def api_fs_browse():
+        try:
+            return jsonify(fsmap.browse(conn(), request.args.get('host', ''), request.args.get('path') or '/'))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.route('/api/tasks', methods=['GET', 'POST'])
+    @login_required
+    def api_tasks():
+        c = conn()
+        if request.method == 'POST':
+            tid = tasks.save_task(c, json_body(), actor())
+            core.audit(c, actor(), 'tasks.save', 'ok', None, {'task': tid})
+            return jsonify(tasks.get_task(c, tid)), 201
+        return jsonify(tasks=tasks.list_tasks(c), types=tasks.TYPES, categories=tasks.CATEGORIES,
+                       templates=tasks.TEMPLATES, schedules=tasks.SCHEDULES, installed=tasks.installed(c))
+
+    @web.route('/api/tasks/<int:task_id>', methods=['GET', 'PUT', 'DELETE'])
+    @login_required
+    def api_task(task_id):
+        c = conn()
+        try:
+            if request.method == 'PUT':
+                tasks.save_task(c, json_body(), actor(), task_id)
+                core.audit(c, actor(), 'tasks.save', 'ok', None, {'task': task_id})
+            elif request.method == 'DELETE':
+                t = tasks.get_task(c, task_id)
+                if tasks.installed(c).get(moves.slug(t['name'])):
+                    return jsonify(error='this task is installed on a host: uninstall it first'), 409
+                tasks.delete_task(c, task_id)
+                core.audit(c, actor(), 'tasks.delete', 'ok', None, {'task': task_id})
+                return jsonify(deleted=task_id)
+            return jsonify(tasks.get_task(c, task_id))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/tasks/check')
+    @login_required
+    def api_tasks_check():
+        return jsonify(tasks.check(conn(), json_body()))
+
+    @web.post('/api/tasks/script')
+    @login_required
+    def api_tasks_script():
+        body = json_body()
+        name = 'task-' + moves.slug(str(body.get('name') or 'task')) + '.sh'
+        core.audit(conn(), actor(), 'tasks.script', 'ok', None, {'task': body.get('id'), 'name': body.get('name')})
+        return Response(tasks.script(conn(), body), mimetype='text/x-shellscript',
+                        headers={'Content-Disposition': f'attachment; filename="{name}"'})
 
     @web.get('/api/changes/types')
     @login_required
@@ -708,6 +933,166 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return jsonify(usage=docker.users_of(conn(), host, path))
         return jsonify(usage=docker.usage(conn(), host))
 
+    # ── deployments ───────────────────────────────────────────────────
+    @web.get('/api/deploy')
+    @login_required
+    def api_deploy():
+        c = conn()
+        return jsonify(access=deploy.access(c), jobs=jobs.overview(c), deployed=deploy.deployed(c),
+                       alerts=alerts.list_alerts(c), drift=alerts.drift(c), settings=alerts.settings(c),
+                       runs=deploy.history(c, limit=30), plans=moves.list_plans(c))
+
+    @web.get('/api/deploy/setup-script')
+    @login_required
+    def api_deploy_setup_script():
+        core.audit(conn(), actor(), 'deploy.setup-script', 'ok', None, {})
+        return Response(deploy.setup_for_download(db, conn()) if not request.args.get('remove') else deploy.remove_script(),
+                        mimetype='text/x-shellscript',
+                        headers={'Content-Disposition': 'attachment; filename="storageforge-deploy-setup.sh"'})
+
+    @web.post('/api/deploy/access')
+    @login_required
+    @password_confirmed
+    @limiter.limit(INSTALL_LIMIT, key_func=lambda: f'deploy-access:{current_user.get_id()}')
+    def api_deploy_access():
+        body = json_body()
+        host, admin = str(body.get('host', '')).strip(), str(body.get('admin_user') or '').strip() or None
+        password = str(body.get('password', ''))
+        keyinstall.validate(host, admin or 'root', 22)
+        try:
+            return jsonify(deploy.enroll(db, conn(), host, password, admin, actor(), bool(body.get('remove'))))
+        except (RemoteError, subprocess.TimeoutExpired) as exc:
+            return jsonify(error=str(exc) if isinstance(exc, RemoteError) else 'timed out'), 502
+        finally:
+            del password
+
+    @web.post('/api/deploy/adopt')
+    @login_required
+    @password_confirmed
+    def api_deploy_adopt():
+        return jsonify(deploy.adopt(db, conn(), str(json_body().get('host', '')).strip(), actor()))
+
+    @web.post('/api/deploy/start')
+    @login_required
+    @password_confirmed
+    def api_deploy_start():
+        body = json_body()
+        kind, mode, ref = body.get('kind'), body.get('mode', 'report'), body.get('ref')
+        if mode not in ('report', 'apply'):
+            raise ValueError('mode is report or apply')
+        c = conn()
+        if kind == 'jobs':
+            pid = int(ref)
+            try:
+                plan = moves.get_plan(c, pid)
+            except LookupError:            # a deleted plan: deploying it empty removes its jobs from the hosts
+                plan = {'id': pid, 'name': f'deleted plan {pid}', 'steps': []}
+            if body.get('remove'):
+                plan = {**plan, 'steps': []}
+            items = jobs.deploy_items(db, c, plan, mode, alerts.get_setting(c, 'report_url'), actor(), bool(body.get('paused')))
+        elif kind == 'shares':
+            items = shares.deploy_items(db, c, str(ref or ''), mode, actor())
+        elif kind == 'changes':
+            items = changes.deploy_items(c, changes.get_plan(c, int(ref)), mode, bool(body.get('destructive')))
+        elif kind == 'tasks':
+            items = tasks.deploy_items(db, c, tasks.get_task(c, int(ref)), mode, actor(), bool(body.get('run')),
+                                       bool(body.get('remove')))
+        else:
+            raise ValueError('kind is jobs, shares, changes or tasks')
+        if not items:
+            raise ValueError('nothing to deploy: no hosts are involved')
+        missing = [it['host'] for it in items if not deploy.ready(c, it['host'])]
+        if missing:
+            return jsonify(error='set up deploy access first on: ' + ', '.join(sorted(set(missing))), hosts=sorted(set(missing))), 409
+        gid = deploy.start_group(db, items, actor(), stop_on_failure=mode == 'apply')
+        core.audit(c, actor(), f'deploy.start', 'ok', None, {'kind': kind, 'ref': ref, 'mode': mode, 'group': gid})
+        return jsonify(group=gid, hosts=[it['host'] for it in items])
+
+    @web.get('/api/deploy/groups/<gid>')
+    @login_required
+    def api_deploy_group(gid):
+        if not re.fullmatch(r'[0-9a-f]{32}', gid):
+            raise ValueError('bad group id')
+        return jsonify(runs=deploy.group(conn(), gid))
+
+    @web.get('/api/deploy/runs')
+    @login_required
+    def api_deploy_runs():
+        return jsonify(runs=deploy.history(conn(), request.args.get('host') or None, arg_num('limit', 50, 1, 500)))
+
+    @web.get('/api/deploy/runs/<int:run_id>')
+    @login_required
+    def api_deploy_run(run_id):
+        try:
+            return jsonify(deploy.output(conn(), run_id))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.get('/api/deploy/jobs/<jid>')
+    @login_required
+    def api_deploy_job(jid):
+        try:
+            return jsonify(job=jobs.get(conn(), jid), runs=jobs.runs(conn(), jid, 100))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/deploy/jobs/<jid>/<any("run", "dryrun", "verify", "pause", "resume", "cutover", "log", "snapshots"):verb>')
+    @login_required
+    def api_deploy_job_action(jid, verb):
+        if verb not in ('dryrun', 'log', 'snapshots'):   # these only read
+            stale = password_stale()
+            if stale:
+                return stale
+        try:
+            return jsonify(jobs.action(db, conn(), jid, verb, actor()))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/deploy/jobs/<jid>/browse')     # POST: it runs a command on the host, so no GET can trigger it
+    @login_required
+    def api_deploy_job_browse(jid):
+        body = json_body()
+        return jsonify(jobs.browse(db, conn(), jid, str(body.get('snapshot', '')), str(body.get('path', '')), actor()))
+
+    @web.post('/api/deploy/jobs/<jid>/restore')
+    @login_required
+    @password_confirmed
+    def api_deploy_job_restore(jid):
+        body = json_body()
+        return jsonify(jobs.restore(db, conn(), jid, str(body.get('snapshot', '')), str(body.get('path', '')), actor()))
+
+    @web.route('/api/deploy/settings', methods=['GET', 'PUT'])
+    @login_required
+    def api_deploy_settings():
+        if request.method == 'PUT':
+            s = alerts.save_settings(conn(), json_body(), actor())
+            core.audit(conn(), actor(), 'deploy.settings', 'ok', None, {})
+            return jsonify(s)
+        return jsonify(alerts.settings(conn()))
+
+    @web.post('/api/deploy/settings/test')
+    @login_required
+    @limiter.limit('10 per minute')
+    def api_deploy_settings_test():
+        return jsonify(sent=alerts.send(alerts.get_setting(conn(), 'alerts'), 'StorageForge test alert',
+                                        f'Sent by {current_user.username} from the Deploy tab.', 'ok', {'state': 'test'}))
+
+    @web.post('/api/jobs/report')
+    @limiter.limit('120 per minute')
+    def api_jobs_report():
+        auth = request.headers.get('Authorization', '')
+        token = auth[7:].strip() if auth.startswith('Bearer ') else ''
+        jid = jobs.job_for_token(conn(), token)
+        if not jid:
+            return jsonify(error='unknown job token'), 401
+        body = json_body()
+        if body.get('job') != jid:
+            return jsonify(error='this token belongs to another job'), 403
+        new = jobs.ingest(conn(), body, f'report:{request.remote_addr}'[:60])   # where it came from, for the record
+        if new:
+            core.alerts_wake.set()
+        return jsonify(ok=True, new=new)
+
     @web.get('/api/backups')
     @login_required
     def api_backups():
@@ -731,7 +1116,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     def api_folders_cold():
         host = request.args.get('host') or None
-        years = max(0.1, float(request.args.get('years') or 2))
+        years = arg_num('years', 2.0, 0.1, 100.0, float)
         min_size = parse_size(request.args.get('min_size') or '1GiB')
         key = ('cold', host, years, min_size, conn().scalar('SELECT max(scan_id) FROM scans'))
         if key not in folder_cache:
@@ -743,7 +1128,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     def api_folder_dupes():
         host = request.args.get('host') or None
-        min_files = max(1, int(request.args.get('min_files') or 3))
+        min_files = arg_num('min_files', 3, 1, 1_000_000)
         min_size = parse_size(request.args.get('min_size') or '1MiB')
         key = (host, min_files, min_size, conn().scalar('SELECT max(scan_id) FROM scans'))
         if key not in folder_cache:
@@ -762,7 +1147,24 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         for name, at in conn().all('SELECT hostname, imported_at FROM blueprints ORDER BY hostname'):
             hosts.setdefault(name, {'host': name, 'scanned': False, 'last_scanned_at': None})
             hosts[name].update(saved=True, saved_at=at)
-        return jsonify(hosts=sorted(hosts.values(), key=lambda h: h['host']))
+        return jsonify(hosts=sorted(hosts.values(), key=lambda h: h['host']),
+                       example=not alerts.get_setting(conn(), 'planner.hide_example'))
+
+    @web.put('/api/planner/example')
+    @login_required
+    def api_planner_example():
+        show = bool(json_body().get('show'))
+        alerts.set_setting(conn(), 'planner.hide_example', not show, actor())
+        core.audit(conn(), actor(), 'planner.example', 'ok', None, {'show': show})
+        return jsonify(example=show)
+
+    @web.get('/api/planner/activity')
+    @login_required
+    def api_planner_activity():
+        host = request.args.get('host', '').strip()
+        if not host:
+            raise ValueError('give host')
+        return jsonify(planner_activity(conn(), host))
 
     @web.get('/api/planner/design')
     @login_required
@@ -788,6 +1190,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         host = str((bp.get('metadata') or {}).get('host') or '').strip()
         if not host or len(host) > 253 or any(c.isspace() for c in host):
             raise ValueError('metadata.host must be a hostname')
+        if 'layout' not in bp:       # the planner page does not carry the topology layout: keep the saved one
+            kept = (graph.stored_blueprint(conn(), host) or {}).get('layout')
+            if kept:
+                bp['layout'] = kept
         graph.store_blueprint(conn(), bp)
         rebuilt = None
         if scanned(host):            # overlay the design on the scanned graph right away
@@ -803,6 +1209,36 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         return jsonify(host=host, saved_at=int(time.time()), graph=rebuilt)
 
     return web
+
+
+def planner_activity(c, host: str) -> dict:
+    """What the rest of StorageForge holds for one host, for the planner's overview: staged changes, data moves,
+    designed shares, deployed jobs, drift and unreadable folders."""
+    same_host = fsmap.same_host
+    staged = []
+    for p in changes.list_plans(c):
+        mine = [t for t in changes.get_plan(c, p['id']).get('tasks') or [] if same_host(t['host'], host)]
+        if mine:
+            staged.append({'id': p['id'], 'name': p['name'], 'tasks': len(mine),
+                           'types': sorted({changes.TYPES.get(t['type'], {}).get('label', t['type']) for t in mine})})
+    moving = []
+    for p in moves.list_plans(c):
+        steps = moves.get_plan(c, p['id']).get('steps') or []
+        mine = [s for s in steps if same_host(s['src']['host'], host) or same_host(s['dst']['host'], host)]
+        if mine:
+            moving.append({'id': p['id'], 'name': p['name'], 'steps': len(mine)})
+    try:
+        sh = shares.check(c, host)
+        designed = {'exports': len(sh['exports']), 'crit': sh['crit'], 'warn': sh['warn']}
+    except LookupError:
+        designed = None
+    running = [{'id': j['id'], 'name': j['name'], 'method': j['method'], 'state': j['state'], 'src': j['src'], 'dst': j['dst']}
+               for j in jobs.overview(c) if same_host(j['runner'] or '', host) or same_host(j['source'] or '', host)]
+    acc = next(iter(access.status(c, host, limit=0)), None)
+    return {'host': host, 'changes': staged, 'moves': moving, 'shares': designed, 'jobs': running,
+            'deployed': [{'kind': d['kind'], 'ref': d['ref'], 'at': d['at']} for d in deploy.deployed(c) if same_host(d['host'], host)],
+            'drift': [x for x in alerts.drift(c) if same_host(x['host'], host)],
+            'unreadable': acc['denied_total'] if acc else None, 'access': acc['access'] if acc else None}
 
 
 def serve(db: Database, host: str, port: int, scan_interval: int | None, parallel: int = 4):
@@ -822,4 +1258,4 @@ def serve(db: Database, host: str, port: int, scan_interval: int | None, paralle
     hops = int(os.environ.get('STORAGEFORGE_PROXY_HOPS', '0'))
     web = create_app(App(db, scan_interval, parallel), session_secret_from_env(), secure, hops)
     print(f'StorageForge {__version__} listening on http://{host}:{port}', file=sys.stderr, flush=True)
-    waitress_serve(web, host=host, port=port, threads=8, ident=f'StorageForge/{__version__}', _quiet=True)
+    waitress_serve(web, host=host, port=port, threads=8, ident='StorageForge', _quiet=True)

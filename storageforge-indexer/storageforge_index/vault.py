@@ -389,9 +389,9 @@ class Vault:
         kid = self.conn.scalar('SELECT key_id FROM ssh_keys WHERE name = :n', {'n': key_name})
         if kid is None:
             raise VaultError(f'No key named {key_name}')
-        bad = set(actions.split(',')) - {'scan', 'checksum'}
+        bad = set(actions.split(',')) - {'scan', 'checksum', 'deploy'}
         if bad:
-            raise VaultError(f'unknown action(s): {", ".join(sorted(bad))}; allowed: scan, checksum')
+            raise VaultError(f'unknown action(s): {", ".join(sorted(bad))}; allowed: scan, checksum, deploy')
         return self.conn.scalar("""INSERT INTO key_bindings (key_id, host_pattern, pattern_kind, ssh_user, ssh_port,
                                        allowed_actions, priority, created_at)
                                    VALUES (:k, :p, :pk, :u, :port, :a, :pr, :now) RETURNING binding_id""",
