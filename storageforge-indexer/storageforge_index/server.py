@@ -70,6 +70,8 @@ GET  /api/planner/design?host=&source=saved|scan   a design: the saved one, or b
 PUT  /api/planner/example  {"show"}  show or remove the built-in example host "atlas" for everyone
 GET  /api/planner/activity?host=     staged changes, moves, shares, deployed jobs and drift on a host
 PUT  /api/planner/design            save a storageforge/v1 blueprint (overlaid on the graph and reports)
+POST /api/planner/changes           a design (saved or not) against the latest scan: the change-plan tasks it needs,
+                                    what Changes can't do, and what the design leaves alone. Stages nothing
 """
 from __future__ import annotations
 
@@ -97,7 +99,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, folders, gitrepos, graph, jobs,
-               fsmap, keyinstall, moves, shares, tasks, users)
+               fromdesign, fsmap, keyinstall, moves, shares, tasks, users)
 from .capacity import parse_size
 from .db import Database, epoch
 from .remote import RemoteError
@@ -373,7 +375,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
 
     @web.before_request
     def body_limit():
-        if request.path == '/api/planner/design' and request.method == 'PUT':
+        if request.path in ('/api/planner/design', '/api/planner/changes') and request.method in ('PUT', 'POST'):
             request.max_content_length = MAX_BLUEPRINT
 
     @web.after_request
@@ -1212,6 +1214,17 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return jsonify(error=f'{host} has no saved design and has not been scanned'), 404
         bp = blueprint.merge_intent(blueprint.from_index(conn(), host), saved)
         return jsonify(host=host, source='scan', saved_at=saved_at, scanned=True, blueprint=bp)
+
+    @web.post('/api/planner/changes')
+    @login_required
+    def api_planner_changes():
+        bp = json_body()
+        if bp.get('apiVersion') != 'storageforge/v1' or bp.get('kind') != 'StorageBlueprint':
+            raise ValueError('expected a storageforge/v1 StorageBlueprint')
+        try:
+            return jsonify(fromdesign.plan(conn(), bp))
+        except LookupError as exc:           # not scanned: there is nothing to compare the design with
+            return jsonify(error=str(exc)), 409
 
     @web.put('/api/planner/design')
     @login_required

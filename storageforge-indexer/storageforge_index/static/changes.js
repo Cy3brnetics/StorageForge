@@ -259,7 +259,10 @@ function renderChanges() {
           i < p.tasks.length - 1 ? button('↓', () => move(i, i + 1), 'btn ghost sm') : '',
           button('Edit', () => openTask(t.type, t.host, {}, t), 'btn ghost sm'),
           button('Remove', () => { p.tasks.splice(i, 1); chTouch(); renderChanges(); }, 'btn ghost sm danger'))),
-      text('span', `${t.host}${(CH.types && CH.types[t.type] && CH.types[t.type].destructive) ? ' · destructive' : ''}`, 'muted small'),
+      text('span', `${t.host}${(CH.types && CH.types[t.type] && CH.types[t.type].destructive) ? ' · destructive' : ''}${t.note ? ' · ' + t.note : ''}`, 'muted small'),
+      // drive tasks staged from a planner design arrive unconfirmed: the server refuses them until the device is typed
+      CH.types?.[t.type]?.destructive && t.params.confirm !== (t.params.device || t.params.disk)
+        ? text('p', `Not confirmed: Edit it and type ${t.params.device || t.params.disk} again. Until then the plan can't be checked or saved.`, 'st-failed small') : '',
       r ? el('ul', { class: 'mvcheck' }, ...r.items.map((x) => el('li', { class: `lv-${x.level}` }, x.text))) : '');
     li._menu = () => [{ heading: `${i + 1}. ${taskTitle(t)}` }, { label: 'Edit…', run: () => openTask(t.type, t.host, {}, t) },
       { label: 'Move up', disabled: !i, run: () => move(i, i - 1) }, { label: 'Move down', disabled: i === p.tasks.length - 1, run: () => move(i, i + 1) },

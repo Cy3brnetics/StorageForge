@@ -1,0 +1,294 @@
+{
+ "nodes": [
+  {
+   "id": "g0",
+   "type": "group",
+   "x": -20,
+   "y": -60,
+   "width": 460,
+   "height": 830,
+   "label": "Now: make change safe",
+   "color": "1"
+  },
+  {
+   "id": "n0-0",
+   "type": "file",
+   "file": "Findings/EQ-01 No CI and untested paths.md",
+   "x": 0,
+   "y": 0,
+   "width": 420,
+   "height": 220,
+   "color": "1"
+  },
+  {
+   "id": "n0-1",
+   "type": "file",
+   "file": "Findings/PF-13 Planner export is a second script generator.md",
+   "x": 0,
+   "y": 250,
+   "width": 420,
+   "height": 220,
+   "color": "1"
+  },
+  {
+   "id": "n0-2",
+   "type": "file",
+   "file": "Findings/EQ-02 Two capacity engines.md",
+   "x": 0,
+   "y": 500,
+   "width": 420,
+   "height": 220,
+   "color": "1"
+  },
+  {
+   "id": "g1",
+   "type": "group",
+   "x": 480,
+   "y": -60,
+   "width": 460,
+   "height": 1080,
+   "label": "Next: from map to monitor",
+   "color": "4"
+  },
+  {
+   "id": "n1-0",
+   "type": "file",
+   "file": "Findings/PF-01 Alerts only cover deploys.md",
+   "x": 500,
+   "y": 0,
+   "width": 420,
+   "height": 220,
+   "color": "4"
+  },
+  {
+   "id": "n1-1",
+   "type": "file",
+   "file": "Findings/PF-02 Protection matrix ignores deployed jobs.md",
+   "x": 500,
+   "y": 250,
+   "width": 420,
+   "height": 220,
+   "color": "4"
+  },
+  {
+   "id": "n1-2",
+   "type": "file",
+   "file": "Findings/PF-06 Move progress from scans.md",
+   "x": 500,
+   "y": 500,
+   "width": 420,
+   "height": 220,
+   "color": "4"
+  },
+  {
+   "id": "n1-3",
+   "type": "file",
+   "file": "Findings/PF-10 Cleanup cache holds one result.md",
+   "x": 500,
+   "y": 750,
+   "width": 420,
+   "height": 220,
+   "color": "4"
+  },
+  {
+   "id": "g2",
+   "type": "group",
+   "x": 980,
+   "y": -60,
+   "width": 460,
+   "height": 1080,
+   "label": "Then: lifecycle and admin",
+   "color": "3"
+  },
+  {
+   "id": "n2-0",
+   "type": "file",
+   "file": "Findings/PF-08 No way to retire a host.md",
+   "x": 1000,
+   "y": 0,
+   "width": 420,
+   "height": 220,
+   "color": "3"
+  },
+  {
+   "id": "n2-1",
+   "type": "file",
+   "file": "Findings/PF-07 Backups have no UI and stay on the same volume.md",
+   "x": 1000,
+   "y": 250,
+   "width": 420,
+   "height": 220,
+   "color": "3"
+  },
+  {
+   "id": "n2-2",
+   "type": "file",
+   "file": "Findings/PF-09 Accounts are CLI-only and have no roles.md",
+   "x": 1000,
+   "y": 500,
+   "width": 420,
+   "height": 220,
+   "color": "3"
+  },
+  {
+   "id": "n2-3",
+   "type": "file",
+   "file": "Findings/PF-12 Storage tasks lag the other plan types.md",
+   "x": 1000,
+   "y": 750,
+   "width": 420,
+   "height": 220,
+   "color": "3"
+  },
+  {
+   "id": "g3",
+   "type": "group",
+   "x": 1480,
+   "y": -60,
+   "width": 460,
+   "height": 1330,
+   "label": "Later: new data",
+   "color": "5"
+  },
+  {
+   "id": "n3-0",
+   "type": "file",
+   "file": "Findings/PF-05 Capacity history.md",
+   "x": 1500,
+   "y": 0,
+   "width": 420,
+   "height": 220,
+   "color": "5"
+  },
+  {
+   "id": "n3-1",
+   "type": "file",
+   "file": "Findings/PF-04 Disk health and scrubs.md",
+   "x": 1500,
+   "y": 250,
+   "width": 420,
+   "height": 220,
+   "color": "5"
+  },
+  {
+   "id": "n3-2",
+   "type": "file",
+   "file": "Findings/PF-03 Backup and snapshot detection.md",
+   "x": 1500,
+   "y": 500,
+   "width": 420,
+   "height": 220,
+   "color": "5"
+  },
+  {
+   "id": "n3-3",
+   "type": "file",
+   "file": "Findings/PF-16 One scan worker and one global schedule.md",
+   "x": 1500,
+   "y": 750,
+   "width": 420,
+   "height": 220,
+   "color": "5"
+  },
+  {
+   "id": "n3-4",
+   "type": "file",
+   "file": "Findings/PF-11 File history and content dupes are CLI-only.md",
+   "x": 1500,
+   "y": 1000,
+   "width": 420,
+   "height": 220,
+   "color": "5"
+  },
+  {
+   "id": "g4",
+   "type": "group",
+   "x": 1980,
+   "y": -60,
+   "width": 460,
+   "height": 830,
+   "label": "Whenever",
+   "color": "2"
+  },
+  {
+   "id": "n4-0",
+   "type": "file",
+   "file": "Findings/PF-14 Reports and canvas predate newer features.md",
+   "x": 2000,
+   "y": 0,
+   "width": 420,
+   "height": 220,
+   "color": "2"
+  },
+  {
+   "id": "n4-1",
+   "type": "file",
+   "file": "Findings/PF-15 Moves and Git QoL.md",
+   "x": 2000,
+   "y": 250,
+   "width": 420,
+   "height": 220,
+   "color": "2"
+  },
+  {
+   "id": "n4-2",
+   "type": "file",
+   "file": "Findings/EQ-03 Large modules.md",
+   "x": 2000,
+   "y": 500,
+   "width": 420,
+   "height": 220,
+   "color": "2"
+  }
+ ],
+ "edges": [
+  {
+   "id": "e0",
+   "fromNode": "n0-0",
+   "fromSide": "bottom",
+   "toNode": "n0-2",
+   "toSide": "top",
+   "label": "runs the vectors"
+  },
+  {
+   "id": "e1",
+   "fromNode": "n1-1",
+   "fromSide": "bottom",
+   "toNode": "n1-0",
+   "toSide": "top",
+   "label": "backup-late alerts"
+  },
+  {
+   "id": "e2",
+   "fromNode": "n3-2",
+   "fromSide": "bottom",
+   "toNode": "n1-1",
+   "toSide": "top",
+   "label": "same overlay"
+  },
+  {
+   "id": "e3",
+   "fromNode": "n3-1",
+   "fromSide": "bottom",
+   "toNode": "n1-0",
+   "toSide": "top",
+   "label": "SMART alerts"
+  },
+  {
+   "id": "e4",
+   "fromNode": "n3-0",
+   "fromSide": "bottom",
+   "toNode": "n1-0",
+   "toSide": "top",
+   "label": "full-in-N-days alerts"
+  },
+  {
+   "id": "e5",
+   "fromNode": "n2-2",
+   "fromSide": "bottom",
+   "toNode": "n4-2",
+   "toSide": "top",
+   "label": "role decorator per blueprint"
+  }
+ ]
+}

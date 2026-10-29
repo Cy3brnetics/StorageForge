@@ -97,7 +97,7 @@ function save(){ try{ localStorage.setItem(draftKey(DOC.host),JSON.stringify(S))
 function dropDraft(h){ try{ localStorage.removeItem(draftKey(h)) }catch(e){} }
 let S=load('')||sample();
 
-const UI={view:'overview',sel:null,mountSel:'/',mountTab:'fstab',exportTab:'bash',calc:null,hover:null};
+const UI={view:'overview',sel:null,mountSel:'/',mountTab:'fstab',exportTab:'changes',diff:null,calc:null,hover:null};
 const VIEWS=[
   ['overview','Overview','Capacity, protection, every guardrail, and what is staged or deployed on the host.'],
   ['devices','Devices','Block devices, partition tables and filesystems. Select a partition, pool or remote to edit it.'],
@@ -106,7 +106,7 @@ const VIEWS=[
   ['topology','Topology','Drives → pools → datasets → mount points → links and exports. Hover a node to trace it.'],
   ['raid','RAID calculator','Usable space, parity, padding, rebuild exposure and write amplification.'],
   ['protection','Protection','3-2-1 matrix: sync, snapshots and offsite backups per dataset.'],
-  ['export','Export','Provisioning scripts, units and blueprints generated from this design.']
+  ['export','Export','The change plan that brings the host to this design, plus fstab, units and blueprints.']
 ];
 
 /* ───────────── model helpers ───────────── */
@@ -468,110 +468,6 @@ function unitFor(m){
 }
 function genUnits(){ return collectMounts().filter(m=>m.kind!=='swap').map(unitFor).join('\n\n') }
 const byId=d=>`/dev/disk/by-id/${d.bus.startsWith('NVMe')?'nvme':d.bus.startsWith('SAS')?'scsi':'ata'}-${d.model.split(' (')[0].replace(/\s+/g,'_')}_${d.serial}`;
-function mkfsCmd(p){
-  const L=p.label?p.label:'';const dev='/dev/'+p.id;
-  switch(p.fs){
-    case 'vfat':return `run mkfs.vfat -F 32 -n ${L.toUpperCase()} ${dev}`;
-    case 'ext4':return `run mkfs.ext4 -L ${L} -E lazy_itable_init=0 ${dev}`;
-    case 'xfs':return `run mkfs.xfs -f -L ${L} ${dev}`;
-    case 'btrfs':return `run mkfs.btrfs -f -L ${L} ${dev}`;
-    case 'f2fs':return `run mkfs.f2fs -f -l ${L} -O extra_attr,inode_checksum,sb_checksum,compression ${dev}`;
-    case 'swap':return `run mkswap -L ${L} ${dev}`;
-  }
-  return null;
-}
-function genBash(){
-  const L=[];const M=collectMounts();
-  L.push('#!/usr/bin/env bash','# StorageForge provisioning script for host '+S.host+' · generated '+today(),'# Review every step. Runs as a dry run unless DRY_RUN=0 is set.','set -euo pipefail','DRY_RUN="${DRY_RUN:-1}"','run() { if [[ "$DRY_RUN" == 1 ]]; then printf \'[dry-run] %s\\n\' "$*"; else "$@"; fi; }','[[ $EUID -eq 0 ]] || { echo "run as root" >&2; exit 1; }','');
-  L.push('# ── 1. Partition tables ─────────────────────────────────────────');
-  S.disks.forEach(d=>{
-    if(d.member) return;
-    L.push(`# /dev/${d.dev} · ${d.model} · SN ${d.serial} · ${d.bus}`);
-    if(d.os){L.push(`#   holds the running root filesystem; partitioned by the installer, verification only`,`run sgdisk --verify /dev/${d.dev}`,'');return}
-    L.push(`run wipefs --all /dev/${d.dev}`,`run parted -s -a optimal /dev/${d.dev} mklabel ${d.table==='mbr'?'msdos':'gpt'}`);
-    d.parts.forEach(p=>{
-      const s=Math.ceil(p.start/MiB),e=Math.floor((p.start+p.size)/MiB);
-      const t=p.fs==='zfs_member'?'':p.fs==='linux_raid_member'?'':p.fs==='swap'?'linux-swap':p.fs==='vfat'?'fat32':p.fs;
-      L.push(`run parted -s -a optimal /dev/${d.dev} mkpart ${d.table==='mbr'?'primary':p.label||'part'+p.num} ${t} ${s}MiB ${e}MiB`.replace(/  +/g,' '));
-      if(p.fs==='linux_raid_member') L.push(`run parted -s /dev/${d.dev} set ${p.num} raid on`);
-      if(p.fs==='vfat'&&p.mount==='/boot/efi') L.push(`run parted -s /dev/${d.dev} set ${p.num} esp on`);
-      if(p.start%MiB) L.push(`# WARNING: original start ${p.start/512}s was misaligned; recreated at ${s}MiB`);
-    });
-    L.push('');
-  });
-  L.push('# ── 2. Filesystems ─────────────────────────────────────────────');
-  allParts().forEach(({p,d})=>{ if(d.os) return; const c=mkfsCmd(p); if(c) L.push(c) });
-  L.push('');
-  const sv=allParts().filter(x=>x.p.fs==='btrfs'&&x.p.subvols&&x.p.subvols.length);
-  if(sv.length){L.push('# ── 3. Btrfs subvolumes ────────────────────────────────────────');
-    sv.forEach(({p})=>{L.push('run mkdir -p /mnt/.btrfs-top',`run mount -o subvolid=5 /dev/${p.id} /mnt/.btrfs-top`);p.subvols.forEach(s=>L.push(`[[ -d /mnt/.btrfs-top/${s.name} ]] || run btrfs subvolume create /mnt/.btrfs-top/${s.name}`));L.push('run umount /mnt/.btrfs-top')});L.push('')}
-  L.push('# ── 4. Arrays and pools ────────────────────────────────────────');
-  S.pools.forEach(pool=>{
-    const m=poolMembers(pool);
-    if(pool.type==='lvm'&&!pool.lv){
-      L.push(`run pvcreate ${m.data.map(x=>'/dev/'+x.id).join(' ')}`,`run vgcreate ${pool.vg} ${m.data.map(x=>'/dev/'+x.id).join(' ')}`);
-      (pool.datasets||[]).forEach(ds=>{L.push(`run lvcreate -L ${Math.floor((ds.sizeBytes||0)/MiB)}m -n ${ds.name} ${pool.vg}`);
-        if(ds.fs==='swap') L.push(`run mkswap /dev/${pool.vg}/${ds.name}`); else if(ds.fs) L.push(`run mkfs.${ds.fs} /dev/${pool.vg}/${ds.name}`)});
-    } else if(pool.type==='lvm'){
-      const n=m.data.length,lvl=pool.level,stripes=lvl==='raid5'?n-1:lvl==='raid6'?n-2:lvl==='raid10'?n/2:lvl==='raid0'?n:0;
-      L.push(`run pvcreate ${m.data.map(x=>'/dev/'+x.id).join(' ')}`,`run vgcreate ${pool.vg} ${m.data.map(x=>'/dev/'+x.id).join(' ')}`);
-      L.push(`run lvcreate --type ${lvl} ${lvl==='raid1'?'-m '+(n-1):'-i '+stripes} -l 100%FREE -n ${pool.lv} ${pool.vg}`);
-      L.push(`run mkfs.${pool.fs||'ext4'} ${pool.fs==='ext4'||!pool.fs?'-m 1 ':''}${pool.label?'-L '+pool.label+' ':''}${lvPath(pool)}`);
-    } else if(pool.type==='mdadm'){
-      L.push(`run mdadm --create /dev/${pool.name} --level=${pool.level.replace('raid','')} --raid-devices=${m.data.length} --metadata=1.2 ${m.data.map(x=>'/dev/'+x.id).join(' ')}`);
-      L.push(`run mdadm --detail --scan | tee -a /etc/mdadm/mdadm.conf`);
-      L.push(`run mkfs.${pool.fs} ${pool.fs==='ext4'?'-m 1 ':''}-L ${pool.label} /dev/${pool.name}`);
-    } else {
-      const dev=x=>x.whole?byId(x.disk):'/dev/'+x.id;
-      const parts=[`run zpool create -o ashift=${pool.ashift} -O compression=zstd -O atime=off -O xattr=sa -O acltype=posixacl`];
-      if(pool.encryption&&pool.encryption!=='off') parts.push(`-O encryption=${pool.encryption} -O keyformat=passphrase -O keylocation=prompt`);
-      parts.push(`-m ${pool.mount||'none'} ${pool.name}`);
-      parts.push(`${pool.level==='stripe'?'':pool.level} ${m.data.map(dev).join(' ')}`.trim());
-      if(m.log.length) parts.push(`log ${m.log.map(dev).join(' ')}`);
-      if(m.cache.length) parts.push(`cache ${m.cache.map(dev).join(' ')}`);
-      L.push(parts.join(' \\\n    '));
-      (pool.datasets||[]).forEach(ds=>L.push(`run zfs create -o recordsize=${ds.recordsize} -o compression=${ds.compression} -o sync=${ds.sync} -o mountpoint=${ds.mount||'none'} ${pool.name}/${ds.name}`));
-    }
-    L.push('');
-  });
-  L.push('# ── 5. Mount points and /etc/fstab ─────────────────────────────');
-  M.filter(m=>m.kind!=='swap'&&m.kind!=='zfs'&&m.target!=='/').forEach(m=>L.push(`run mkdir -p ${m.target}`));
-  L.push("FSTAB_BLOCK=$(cat <<'EOF'",'# BEGIN storageforge',genFstab().split('\n').filter(x=>!x.startsWith('# /etc/fstab')).join('\n'),'# END storageforge','EOF',')');
-  L.push('if ! grep -q "# BEGIN storageforge" /etc/fstab; then','  run cp /etc/fstab "/etc/fstab.bak.$(date +%s)"','  if [[ "$DRY_RUN" == 1 ]]; then echo "$FSTAB_BLOCK"; else printf \'%s\\n\' "$FSTAB_BLOCK" >> /etc/fstab; fi','fi','run systemctl daemon-reload','run findmnt --verify','run mount -a','');
-  L.push('# ── 6. Links (dependency order) ────────────────────────────────');
-  S.links.forEach(l=>{
-    const h=linkHealth(l,M);
-    if(l.kind==='bind'){L.push(`# bind ${l.target} → ${l.path} is handled by fstab above`+(h.state!=='ok'?`  # ${h.state.toUpperCase()}: ${h.msg}`:''));return}
-    if(h.state==='crit'){L.push(`# SKIPPED ${l.kind} ${l.path} → ${l.target}: ${h.msg}`);return}
-    L.push(`run mkdir -p "$(dirname '${l.path}')"`);
-    L.push(l.kind==='symlink'?`run ln -sfn '${l.target}' '${l.path}'`:`run ln '${l.target}' '${l.path}'`);
-  });
-  return L.join('\n');
-}
-function genAnsible(){
-  const q=s=>JSON.stringify(String(s));const L=[];const M=collectMounts();
-  L.push('---',`# StorageForge playbook for ${S.host} · generated ${today()}`,'# Run with --check --diff first. Requires community.general and ansible.posix.',`- name: Provision storage on ${S.host}`,`  hosts: ${S.host}`,'  become: true','  tasks:');
-  S.disks.forEach(d=>{ if(d.member||d.os) return; d.parts.forEach(p=>{
-    L.push(`    - name: Partition /dev/${d.dev} p${p.num} (${p.label||p.fs})`,'      community.general.parted:',`        device: /dev/${d.dev}`,`        number: ${p.num}`,`        label: ${d.table==='mbr'?'msdos':'gpt'}`,...(d.table==='gpt'?[`        name: ${q(p.label||'part'+p.num)}`]:[]),`        part_start: ${Math.ceil(p.start/MiB)}MiB`,`        part_end: ${Math.floor((p.start+p.size)/MiB)}MiB`,...(p.fs==='linux_raid_member'?['        flags: [raid]']:[]),'        state: present');
-    if(['ext4','xfs','btrfs','f2fs','vfat','swap'].includes(p.fs)) L.push(`    - name: Create ${p.fs} on /dev/${p.id}`,'      community.general.filesystem:',`        fstype: ${p.fs}`,`        dev: /dev/${p.id}`,`        opts: ${q((p.fs==='vfat'?'-n ':p.fs==='f2fs'?'-l ':'-L ')+(p.label||''))}`);
-  })});
-  S.pools.forEach(pool=>{const m=poolMembers(pool);
-    if(pool.type==='lvm'&&!pool.lv){ L.push(`    - name: Volume group ${pool.vg}`,'      community.general.lvg:',`        vg: ${pool.vg}`,`        pvs: ${m.data.map(x=>'/dev/'+x.id).join(',')}`);
-      (pool.datasets||[]).forEach(ds=>L.push(`    - name: LV ${pool.vg}/${ds.name}`,'      community.general.lvol:',`        vg: ${pool.vg}`,`        lv: ${ds.name}`,`        size: ${Math.floor((ds.sizeBytes||0)/MiB)}m`,
-        ...(ds.fs?[`    - name: Create ${ds.fs} on /dev/${pool.vg}/${ds.name}`,'      community.general.filesystem:',`        fstype: ${ds.fs}`,`        dev: /dev/${pool.vg}/${ds.name}`]:[]))) }
-    else if(pool.type==='lvm') L.push(`    - name: Volume group ${pool.vg}`,'      community.general.lvg:',`        vg: ${pool.vg}`,`        pvs: ${m.data.map(x=>'/dev/'+x.id).join(',')}`,
-      `    - name: LVM ${pool.level} ${pool.vg}/${pool.lv}`,'      community.general.lvol:',`        vg: ${pool.vg}`,`        lv: ${pool.lv}`,'        size: 100%FREE',`        opts: --type ${pool.level}`,
-      `    - name: Create ${pool.fs||'ext4'} on ${lvPath(pool)}`,'      community.general.filesystem:',`        fstype: ${pool.fs||'ext4'}`,`        dev: ${lvPath(pool)}`);
-    else if(pool.type==='mdadm') L.push(`    - name: Create mdadm ${pool.level} ${pool.name}`,`      ansible.builtin.command: mdadm --create /dev/${pool.name} --run --level=${pool.level.replace('raid','')} --raid-devices=${m.data.length} ${m.data.map(x=>'/dev/'+x.id).join(' ')}`,'      args:',`        creates: /dev/${pool.name}`,`    - name: Create ${pool.fs} on /dev/${pool.name}`,'      community.general.filesystem:',`        fstype: ${pool.fs}`,`        dev: /dev/${pool.name}`,`        opts: ${q('-L '+pool.label)}`);
-    else{L.push(`    - name: Check for zpool ${pool.name}`,`      ansible.builtin.command: zpool list -H ${pool.name}`,`      register: zp_${pool.name}`,'      changed_when: false','      failed_when: false',`    - name: Create zpool ${pool.name} (${pool.level})`,`      ansible.builtin.command: >-`,`        zpool create -o ashift=${pool.ashift} -O compression=zstd -O atime=off -O xattr=sa -m ${pool.mount||'none'} ${pool.name} ${pool.level==='stripe'?'':pool.level} ${m.data.map(x=>x.whole?byId(x.disk):'/dev/'+x.id).join(' ')}${m.log.length?' log '+m.log.map(x=>'/dev/'+x.id).join(' '):''}${m.cache.length?' cache '+m.cache.map(x=>'/dev/'+x.id).join(' '):''}`,`      when: zp_${pool.name}.rc != 0`);
-      (pool.datasets||[]).forEach(ds=>L.push(`    - name: Dataset ${pool.name}/${ds.name}`,'      community.general.zfs:',`        name: ${pool.name}/${ds.name}`,'        state: present','        extra_zfs_properties:',`          recordsize: ${ds.recordsize}`,`          compression: ${ds.compression}`,`          sync: ${ds.sync}`,`          mountpoint: ${ds.mount||'none'}`))}
-  });
-  M.filter(m=>m.kind!=='zfs'&&m.kind!=='swap').forEach(m=>L.push(`    - name: Mount ${m.target}`,'      ansible.posix.mount:',`        path: ${q(m.target)}`,`        src: ${q(m.spec)}`,`        fstype: ${m.fs}`,`        opts: ${q((m.opts.length?m.opts:['defaults']).join(','))}`,`        state: ${m.opts.includes('x-systemd.automount')?'present':'mounted'}`));
-  S.links.filter(l=>l.kind!=='bind').forEach(l=>{const h=linkHealth(l,M);
-    if(h.state==='crit'){L.push(`    # skipped ${l.kind} ${l.path}: ${h.msg}`);return}
-    L.push(`    - name: ${l.kind} ${l.path}`,'      ansible.builtin.file:',`        src: ${q(l.target)}`,`        dest: ${q(l.path)}`,`        state: ${l.kind==='symlink'?'link':'hard'}`,'        force: false')});
-  return L.join('\n');
-}
 function blueprint(){
   return {apiVersion:'storageforge/v1',kind:'StorageBlueprint',metadata:{host:S.host,generated:today(),identifiers:S.idMode},
     devices:S.disks.map(d=>({dev:'/dev/'+d.dev,model:d.model,serial:d.serial,bus:d.bus,media:d.media,tier:d.tier,sizeBytes:d.size,sector:{logical:d.lbs,physical:d.pbs},table:d.table,member:d.member,
@@ -976,14 +872,62 @@ function vProtection(){
 }
 
 /* export */
-const EXPORTS=[['bash','Bash script'],['ansible','Ansible playbook'],['units','systemd units'],['fstab','/etc/fstab'],['json','Blueprint JSON'],['yaml','Blueprint YAML'],['ascii','ASCII tree']];
+const EXPORTS=[['changes','Change plan'],['units','systemd units'],['fstab','/etc/fstab'],['json','Blueprint JSON'],['yaml','Blueprint YAML'],['ascii','ASCII tree']];
+const CH_DRAFT='sf.changes.draft';                     // the Changes tab's staged plan (static/changes.js)
+/* The server compares the design with the latest scan and answers with change-plan tasks: drive and mount changes
+   are checked, reported first and deployed from Changes like any other, instead of a script written here. */
+async function loadDesignChanges(){
+  const body=JSON.stringify(blueprint()),key=DOC.host+'\n'+body;
+  if(UI.diff&&UI.diff.key===key) return;
+  UI.diff={key,loading:true};
+  try{ const r=await apiJSON('/api/planner/changes',{method:'POST',headers:{'Content-Type':'application/json'},body});
+    if(UI.diff.key===key) UI.diff={key,r} }
+  catch(e){ if(UI.diff.key===key) UI.diff={key,error:e.message} }
+  if(UI.view==='export'&&UI.exportTab==='changes') render();
+}
+function vDesignChanges(){
+  if(!DOC.signedIn||!DOC.host) return `<div class="pb muted">Sign in and open a scanned host to turn this design into a change plan. The example host is never scanned, so it has no plan.</div>`;
+  if(!DOC.scanned) return `<div class="pb muted">${esc(DOC.host)} has not been scanned. Change plans are checked against a scan: scan it, then come back. The fstab, systemd and blueprint exports work without one.</div>`;
+  loadDesignChanges();                                 // no-op while the design is unchanged
+  const d=UI.diff;
+  if(d.loading){ return `<div class="pb muted">Comparing the design with the last scan of ${esc(DOC.host)}…</div>` }
+  if(d.error) return `<div class="pb"><div class="note crit">${esc(d.error)}</div></div>`;
+  const r=d.r,pl=(n,w)=>`${n} ${w}${n===1?'':'s'}`;
+  const tasks=r.tasks.map((t,i)=>`<div class="titem"><span class="n">${i+1}. ${esc(taskLabel(t))}</span><span class="r">${t.type==='partition'||t.type==='format'||t.type==='btrfs-add'?'Destroys data on the device: in Changes, open it with Edit and type the device again before it can be saved.':''}</span><span class="z"><span class="pill ${['partition','format','btrfs-add'].includes(t.type)?'crit':'info'}">${esc(t.type)}</span></span></div>`).join('');
+  const manual=r.manual.map(m=>`<li><b>${esc(m.what)}</b>: ${esc(m.why)}</li>`).join('');
+  const left=r.left.map(x=>`<li>${esc(x)}</li>`).join('');
+  return `<div class="pb stack">
+    ${r.tasks.length?`<div class="row" style="justify-content:space-between"><span>${pl(r.tasks.length,'task')} to bring ${esc(r.host)} to this design${r.destructive?`, ${r.destructive} of them on drives`:''}.</span><button type="button" class="btn sm pri" data-act="stagechanges">Stage in Changes</button></div><div>${tasks}</div>`
+      :`<div class="note ok">${esc(r.host)} already matches this design as far as change plans go.</div>`}
+    ${manual?`<div><h3 style="font-size:13px;margin:6px 0">By hand</h3><p class="muted" style="font-size:12px;margin:0 0 6px">Change plans have no task for these. Do them yourself, rescan, then come back for the rest.</p><ul style="font-size:12px;margin:0;padding-left:18px">${manual}</ul></div>`:''}
+    ${left?`<div><h3 style="font-size:13px;margin:6px 0">Left alone</h3><p class="muted" style="font-size:12px;margin:0 0 6px">On the host but not in the design. The plan never removes anything: stage an Unmount yourself if you mean it.</p><ul style="font-size:12px;margin:0;padding-left:18px">${left}</ul></div>`:''}
+  </div>`;
+}
+function taskLabel(t){ const p=t.params;
+  return ({partition:()=>`Partition ${p.disk}${p.fstype?' and format it '+p.fstype:''}`,format:()=>`Format ${p.device} as ${p.fstype}`,
+    'btrfs-add':()=>`Add ${p.device} to the btrfs pool at ${p.target}`,label:()=>`Label ${p.target} "${p.label}"`,
+    'btrfs-balance':()=>`Convert ${p.target} to ${p.data}/${p.metadata}`,subvolume:()=>`Create subvolume ${p.path}`,
+    mount:()=>`Mount ${p.source}${p.subvol?'['+p.subvol+']':''} at ${p.target}`,'mount-options':()=>`Mount options of ${p.target}: ${p.options}`,
+    symlink:()=>`Link ${p.path} → ${p.target}`}[t.type]||(()=>t.type))() }
+function stageDesignChanges(){
+  const r=UI.diff&&UI.diff.r;if(!r||!r.tasks.length) return;
+  let draft;try{ draft=JSON.parse(localStorage.getItem(CH_DRAFT)||'null') }catch(e){ draft=null }
+  if(!draft||!Array.isArray(draft.tasks)) draft={name:'',tasks:[]};
+  const same=(a,b)=>a.type===b.type&&a.host===b.host&&JSON.stringify(a.params)===JSON.stringify(b.params);
+  const stamp=Date.now().toString(36);
+  const add=r.tasks.filter(t=>!draft.tasks.some(x=>same(x,t))).map((t,i)=>({...t,id:'d'+stamp+i}));
+  draft.tasks.push(...add);
+  if(!draft.name) draft.name=r.name;
+  try{ localStorage.setItem(CH_DRAFT,JSON.stringify(draft)) }catch(e){ docState('Your browser blocks storage, so the plan cannot be handed to Changes','err');return }
+  location.href=appLink('changes');
+}
 function vExport(){
   const t=UI.exportTab;
-  const code={bash:genBash,ansible:genAnsible,units:genUnits,fstab:genFstab,json:()=>JSON.stringify(blueprint(),null,2),yaml:()=>'# StorageForge blueprint'+toYAML(blueprint()),ascii:genASCII}[t]();
-  const A=analyze().filter(a=>a.sev==='crit');
-  const live=DOC.host&&DOC.signedIn?`<div class="note">These scripts build ${esc(S.host)} from bare disks: they partition, format and create pools. To change a host that is already running, stage the change in <a href="${esc(appLink('changes'))}">Changes</a>, where it is checked against the index and reported before it applies, then run it from <a href="${esc(appLink('deploy'))}">Deploy</a>. Shares and backup jobs deploy from there too.</div>`:'';
-  return `${live}${A.length?`<div class="note crit"><b>${A.length} critical issue${A.length>1?'s':''} in this blueprint.</b> The scripts skip broken links and comment them out, but misalignment, duplicate mounts and stale backups carry through. Review the Overview before running.</div>`:''}
-  <section class="panel"><div class="ph"><div class="tabs" role="tablist">${EXPORTS.map(([k,l])=>`<button type="button" role="tab" class="${k===t?'on':''}" data-act="etab" data-t="${k}">${l}</button>`).join('')}</div>
+  const tabs=`<div class="tabs" role="tablist">${EXPORTS.map(([k,l])=>`<button type="button" role="tab" class="${k===t?'on':''}" data-act="etab" data-t="${k}">${l}</button>`).join('')}</div>`;
+  if(t==='changes') return `<section class="panel"><div class="ph">${tabs}</div>${vDesignChanges()}</section>`;
+  const code={units:genUnits,fstab:genFstab,json:()=>JSON.stringify(blueprint(),null,2),yaml:()=>'# StorageForge blueprint'+toYAML(blueprint()),ascii:genASCII}[t]();
+  return `<div class="note">These describe the design. To make a host match it, use the Change plan tab: its tasks are checked against the index and reported before they apply.</div>
+  <section class="panel"><div class="ph">${tabs}
   <div class="row"><span class="muted" style="font-size:12px">${code.split('\n').length} lines</span><button type="button" class="btn sm pri" data-act="copy" data-src="ecode">Copy</button></div></div>
   <pre class="code" id="ecode" style="max-height:none">${t==='json'?esc(code):hl(code)}</pre></section>`;
 }
@@ -1138,6 +1082,7 @@ view.addEventListener('click',e=>{
   if(act==='msel'){ UI.mountSel=a.dataset.t; UI.mountTab='unit'; render(); return }
   if(act==='mtab'){ UI.mountTab=a.dataset.t; render(); return }
   if(act==='etab'){ UI.exportTab=a.dataset.t; render(); return }
+  if(act==='stagechanges'){ stageDesignChanges(); return }
   if(act==='preset'){ const p=PRESETS.find(x=>x.id===a.dataset.id);p.links.forEach(x=>{if(!S.links.some(l=>l.path===x.path)) S.links.push({id:'L'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),...x})});commit();return }
   if(act==='dellink'){ S.links=S.links.filter(l=>l.id!==a.dataset.id);commit();return }
   if(act==='psync'){ const r=S.protection[+a.dataset.i];r.sync.state=SYNC_STATES[(SYNC_STATES.indexOf(r.sync.state)+1)%SYNC_STATES.length];if(r.sync.state==='Lagging'&&!r.sync.lag) r.sync.lag='4 h';commit();return }

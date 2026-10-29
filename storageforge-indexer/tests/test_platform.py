@@ -444,6 +444,76 @@ class ChangePlanTests(DBCase):
         self.assertEqual(client.get(f'/api/changes/{pid}/script').status_code, 200)
         self.assertEqual(client.delete(f'/api/changes/{pid}').status_code, 200)
         self.assertEqual(client.get('/changes.js').status_code, 200)
+        from storageforge_index import blueprint
+        bp = blueprint.from_index(self.conn, 'nas')
+        bp['links'].append({'kind': 'symlink', 'path': '/srv/photos', 'target': '/mnt/pool/photos'})
+        r = client.post('/api/planner/changes', json=bp)
+        self.assertEqual([t['type'] for t in r.json['tasks']], ['symlink'])
+        bp['metadata']['host'] = 'never-scanned'
+        self.assertEqual(client.post('/api/planner/changes', json=bp).status_code, 409)
+        self.assertEqual(client.post('/api/planner/changes', json={'kind': 'x'}).status_code, 400)
+
+    def design(self):
+        from storageforge_index import blueprint
+        return blueprint.from_index(self.conn, 'nas')
+
+    def test_design_without_edits_needs_no_changes(self):
+        from storageforge_index import fromdesign
+        r = fromdesign.plan(self.conn, self.design())
+        self.assertEqual((r['host'], r['tasks'], r['manual'], r['left']), ('nas', [], [], []))
+
+    def test_design_edits_become_change_tasks(self):
+        from storageforge_index import changes, fromdesign
+        bp = self.design()
+        disks = {d['dev']: d for d in bp['devices']}
+        disks['/dev/sdc']['partitions'] = [{'id': 'sdc1', 'fs': 'ext4', 'label': 'backup', 'mount': '/mnt/backup',
+                                            'options': ['noatime', 'nofail']}]
+        sdb1 = disks['/dev/sdb']['partitions'][0]
+        sdb1['subvolumes'].append({'name': '@media', 'mount': '/srv/media'})
+        sdb1['options'] = ['noatime', 'compress=zstd:3']
+        disks['/dev/sda']['partitions'][0]['fs'] = 'xfs'                       # reformat the system disk: never a task
+        bp['pools'].append({'name': 'tank', 'type': 'zfs', 'level': 'mirror', 'members': ['sdd', 'sde']})
+        bp['remotes'].append({'name': 'nas-02', 'protocol': 'NFSv4.2', 'endpoint': 'nas-02:/export/archive',
+                              'mount': '/mnt/archive', 'options': ['_netdev']})
+        bp['links'] += [{'kind': 'symlink', 'path': '/srv/photos', 'target': '/mnt/pool/photos'},
+                        {'kind': 'bind', 'path': '/srv/www', 'target': '/mnt/pool/www'}]
+        r = fromdesign.plan(self.conn, bp)
+        self.assertEqual([t['type'] for t in r['tasks']], ['partition', 'mount', 'mount', 'mount', 'symlink'])
+        part = r['tasks'][0]['params']
+        self.assertEqual((part['disk'], part['fstype'], part['label'], part['wipe'], part['confirm']),
+                         ('/dev/sdc', 'ext4', 'backup', False, ''))         # the device is typed again in Changes
+        mounts = {t['params']['target']: t['params'] for t in r['tasks'] if t['type'] == 'mount'}
+        self.assertEqual(mounts['/mnt/backup']['source'], 'LABEL=backup')       # no UUID until it exists
+        self.assertEqual((mounts['/srv/media']['source'], mounts['/srv/media']['subvol']), ('UUID=bbbb', '@media'))
+        self.assertEqual((mounts['/mnt/archive']['fstype'], mounts['/mnt/archive']['options']), ('nfs4', '_netdev,nofail'))
+        manual = ' | '.join(f'{m["what"]}: {m["why"]}' for m in r['manual'])
+        for words in ('ext4 → xfs', 'Create ZFS pool tank', 'Subvolume @media', 'bind /srv/www'):
+            self.assertIn(words, manual)
+        self.assertEqual(r['destructive'], 1)
+        with self.assertRaises(ValueError):                                     # unconfirmed drive tasks can't be saved
+            changes.normalize({'name': r['name'], 'tasks': r['tasks']})
+        r['tasks'][0]['params']['confirm'] = '/dev/sdc'
+        plan = changes.normalize({'name': r['name'], 'tasks': r['tasks']})
+        res = changes.check(self.conn, plan)
+        self.assertEqual(len(res['tasks']), 5)
+        self.assertIn("partition 'Partition /dev/sdc and format it ext4' /dev/sdc ext4 backup ''", changes.script(self.conn, plan))
+
+    def test_design_never_partitions_disks_that_have_partitions(self):
+        from storageforge_index import fromdesign
+        bp = self.design()
+        sdb = next(d for d in bp['devices'] if d['dev'] == '/dev/sdb')
+        sdb['partitions'] = [{'id': 'sdb2', 'fs': 'xfs', 'mount': '/data'}]
+        r = fromdesign.plan(self.conn, bp)
+        self.assertEqual(r['tasks'], [])
+        self.assertIn('already has partitions', r['manual'][0]['why'])
+
+    def test_design_text_cannot_reach_a_script(self):
+        from storageforge_index import changes, fromdesign
+        bp = self.design()
+        bp['links'].append({'kind': 'symlink', 'path': '/srv/x\nrm -rf /', 'target': '/mnt/pool'})
+        r = fromdesign.plan(self.conn, bp)
+        with self.assertRaises(ValueError):                                     # the field checks every saved plan gets
+            changes.normalize({'name': r['name'], 'tasks': r['tasks']})
 
 
 class ConnectAddressTests(DBCase):

@@ -1,0 +1,137 @@
+# API reference
+
+The web UI is built on this API; anything it does can be scripted.
+
+## Conventions
+
+- **Session.** Every `/api/*` route except `/api/login` and `/api/jobs/report` needs a signed-in session cookie. Sign in with `POST /api/login`.
+- **Bodies** are JSON objects sent with `Content-Type: application/json`; anything else is refused with 400. Bodies are capped at 4 KiB, except a design (2 MiB).
+- **Re-authentication.** Routes marked 🔑 need the account password typed within the last 5 minutes. Without it they answer `403 {"error", "reauth": true}`; call `POST /api/reauth` and retry.
+- **Errors** are `{"error": "…"}` with a status:
+
+  | Status | Meaning |
+  | :--- | :--- |
+  | 400 | invalid input (the message says which field) |
+  | 401 | not signed in, or the session ended |
+  | 403 | password confirmation needed (`reauth: true`), or a token for another job |
+  | 404 | no such plan, task, job or host |
+  | 409 | a precondition: hosts without deploy access, a plan with deployed jobs, an installed task, or a host key to confirm (`hostkey: {…}`) |
+  | 429 | rate limited (`Retry-After` is set) |
+  | 502 | the host could not be reached or refused (key install, access, deploy access) |
+
+```bash
+curl -c jar -H 'Content-Type: application/json' -d '{"username":"admin","password":"…"}' https://sf.lan:8443/api/login
+curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
+```
+
+## Pages
+
+| Method | Path | |
+| :--- | :--- | :--- |
+| GET | `/login` | sign-in page; the only page served without a session |
+| GET | `/` | main page; without a session, a redirect to `/login?next=/` |
+| GET | `/planner` | planner; likewise |
+| GET | `/healthz` | `{"status"}`; also version, database, vault, worker and user count from inside the container or when signed in |
+
+## Session
+
+| Method | Path | Body | |
+| :--- | :--- | :--- | :--- |
+| POST | `/api/login` | `{"username", "password"}` | start a session; rate limited (see [Security](security.md#sign-in-limits)) |
+| POST | `/api/logout` | | end it, server-side too |
+| POST | `/api/reauth` | `{"password"}` | confirm the password for 5 minutes; returns `until` |
+| GET | `/api/me` | | user, session length, when it ends |
+| PUT 🔑 | `/api/me` | `{"session_minutes"}` | 30–480 |
+
+## Index, graph and search
+
+| Method | Path | |
+| :--- | :--- | :--- |
+| GET | `/api/hosts` | indexed hosts and hosts in the graph |
+| GET | `/api/graph[?host=]` | nodes and edges |
+| GET | `/api/canvas[?host=]` | Obsidian `.canvas` download |
+| GET | `/api/search?q=&host=&size_gt=&type=f\|d\|l&under=&limit=` | needs `q`, `size_gt` or `under`; `limit` ≤ 500 |
+| GET | `/api/browse?host=&path=` | subfolders with indexed sizes (move pickers) |
+| GET | `/api/fs/browse?host=&path=` | folders and files with mounts, shares and planned mounts |
+| GET | `/api/folders/duplicates?host=&min_files=&min_size=` | duplicate folders |
+| GET | `/api/folders/cold?host=&years=&min_size=` | folders whose newest file is older than the cutoff |
+| GET | `/api/git?host=` | repositories, copies and archive state |
+| GET | `/api/docker?host=` | containers, stacks, volumes |
+| GET | `/api/docker/usage?host=&path=` | containers using a folder (or all usage for a host) |
+| GET | `/api/jobs` | the last 50 scan jobs |
+| POST | `/api/scan` | `{"host"}`: queue a vault-backed scan (202, `{"job_id"}`); duplicates collapse |
+
+## Keys, access and audit
+
+| Method | Path | Body | |
+| :--- | :--- | :--- | :--- |
+| GET | `/api/keys` | | keys (public halves) and bindings |
+| POST | `/api/keys` | `{"name", "type": "ed25519"\|"rsa"}` | generate a key in the vault |
+| POST 🔑 | `/api/keys/install` | `{"key", "host", "port", "user", "password", "bind", "checksum"}` | `ssh-copy-id`, verify key login, optionally bind; 10/min |
+| POST | `/api/hostkey/confirm` | `{"host", "port", "fingerprint"}` | confirm a host key before a password goes there *(in progress)* |
+| GET | `/api/access?host=` | | how scans read each host, and unreadable folders |
+| GET | `/api/access/script?host=\|user=&remove=1` | | the read-only access setup or removal script |
+| POST 🔑 | `/api/access/grant` | `{"host", "password", "admin_user"?, "remove"?}` | run that script once with sudo; 10/min |
+| GET | `/api/audit[?limit=]` | | newest entries (≤ 1000) |
+| GET | `/api/audit/verify` | | `{"valid", "entries_checked", "first_bad_id"}` |
+
+## Designs and planner
+
+| Method | Path | Body | |
+| :--- | :--- | :--- | :--- |
+| GET | `/api/planner/hosts` | | scanned hosts and saved designs; whether the example shows |
+| GET | `/api/planner/design?host=&source=saved\|scan` | | the saved design, or one built from the latest scan plus saved intent |
+| PUT | `/api/planner/design` | a `storageforge/v1` `StorageBlueprint` | save and rebuild the host's graph |
+| POST | `/api/planner/changes` | a `storageforge/v1` `StorageBlueprint` (saved or not) | `{host, name, tasks, manual, left, destructive}`: the change-plan tasks that bring the scanned host to the design, what needs doing by hand, and what the design leaves alone. Stages nothing; 409 when the host has not been scanned |
+| PUT | `/api/planner/example` | `{"show"}` | show or hide the example host for everyone |
+| GET | `/api/planner/activity?host=` | | staged changes, moves, shares, jobs, drift and unreadable folders on a host |
+
+## Plans
+
+Each plan type has the same shape: list, create, one, check, script.
+
+| Method | Path | |
+| :--- | :--- | :--- |
+| GET, POST | `/api/changes` | list; create from `{"name", "tasks": [{"type", "host", "params"}]}` |
+| GET, PUT, DELETE | `/api/changes/<id>` | |
+| GET | `/api/changes/types` | task types and their fields |
+| POST | `/api/changes/check` | check a plan, saved or not |
+| GET | `/api/changes/<id>/script`, `/api/changes/<id>/ansible` | downloads |
+| GET, POST | `/api/moves` | list; create from `{"name", "steps": [{"method", "src": {"host", "path"}, "dst": {…}, "options"}]}` |
+| GET, PUT, DELETE | `/api/moves/<id>` | DELETE answers 409 while jobs are deployed |
+| POST | `/api/moves/check` | |
+| GET | `/api/moves/<id>/script` | download |
+| GET | `/api/shares/check?host=` | the host's designed shares, checked |
+| GET | `/api/shares/script?host=` | download |
+| POST | `/api/shares/validate` | `{"host", "export", "index"?}`: check one share before saving |
+| POST | `/api/shares` | `{"host", "export", "index"?}`: add, or replace share `index` |
+| DELETE | `/api/shares?host=&index=` | remove a designed share |
+| GET, POST | `/api/tasks` | list (with block types, templates, schedules, where installed); create from `{"name", "host", "schedule", "blocks", "on_fail"}` |
+| GET, PUT, DELETE | `/api/tasks/<id>` | DELETE answers 409 while installed |
+| POST | `/api/tasks/check`, `/api/tasks/script` | for a task body, saved or not |
+
+## Deployments
+
+| Method | Path | Body | |
+| :--- | :--- | :--- | :--- |
+| GET | `/api/deploy` | | access per host, jobs, deployed, alerts, drift, settings, recent runs |
+| GET | `/api/deploy/setup-script[?remove=1]` | | download |
+| POST 🔑 | `/api/deploy/access` | `{"host", "password", "admin_user"?, "remove"?}` | set deploy access up (or remove it) with sudo once; 10/min |
+| POST 🔑 | `/api/deploy/adopt` | `{"host"}` | after running the setup by hand: bind and test |
+| POST 🔑 | `/api/deploy/start` | `{"kind": "jobs"\|"shares"\|"changes"\|"tasks", "ref", "mode": "report"\|"apply", …}` | see [Deployments](deployments.md#running-a-deploy); returns `{"group", "hosts"}` |
+| GET | `/api/deploy/groups/<id>` | | the runs of one deploy, with output (poll while running) |
+| GET | `/api/deploy/runs[?host=&limit=]`, `/api/deploy/runs/<id>` | | history, or one run's output |
+| GET | `/api/deploy/jobs/<id>` | | a deployed job and its runs |
+| POST | `/api/deploy/jobs/<id>/<verb>` | | `dryrun`, `log`, `snapshots`; 🔑 for `run`, `verify`, `pause`, `resume`, `cutover` |
+| POST | `/api/deploy/jobs/<id>/browse` | `{"snapshot", "path"}` | list a folder in an rsnapshot snapshot |
+| POST 🔑 | `/api/deploy/jobs/<id>/restore` | `{"snapshot", "path"}` | copy it back as `<path>.restored-<time>` |
+| GET, PUT | `/api/deploy/settings` | `{"report_url", "alerts": {…}}` | |
+| POST | `/api/deploy/settings/test` | | send a test alert; 10/min |
+| POST | `/api/jobs/report` | a run result; `Authorization: Bearer <job token>` | no session; 120/min |
+
+## Backups
+
+| Method | Path | Body | |
+| :--- | :--- | :--- | :--- |
+| GET | `/api/backups` | | backups on disk, schedule and retention |
+| POST | `/api/backups` | `{"kind": "essentials"\|"full"}` | make one now; 6 per hour |
