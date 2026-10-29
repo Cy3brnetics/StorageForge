@@ -1018,7 +1018,7 @@ function nodeForPath(bp,path){ const S0=S;try{ S=fromBlueprint({...bp,protection
 /* ───────────── server: hosts, load, save ───────────── */
 async function apiJSON(path,opts={}){
   const r=await fetch(path,{credentials:'same-origin',...opts});
-  if(r.status===401){DOC.signedIn=false;$('#signin').hidden=false;throw new Error('Sign in required')}
+  if(r.status===401){DOC.signedIn=false;sfSignedOut(/ended/.test((await r.json().catch(()=>({}))).error||'')?'ended':'');throw new Error('Sign in required')}
   const j=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(j.error||r.statusText);
   return j;

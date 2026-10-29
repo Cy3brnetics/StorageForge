@@ -529,7 +529,7 @@ class _Emit:
                 if p['mode'] == 'mirror':
                     args.append('--delete-after')
                 if self.local(dst_host):
-                    self.w(d, f'x mkdir -p -- {q(p["dst"])} || fail "cannot make {p["dst"]}"')
+                    self.w(d, f'x mkdir -p -- {q(p["dst"])} || fail {q("cannot make " + p["dst"])}')
                 self.w(d, f'rs {" ".join(args)} {src} {dst} || fail "rsync failed (exit $?)"')
             elif t == 'rotate':
                 self.w(d, f'rotate {q(p["dst"].rstrip("/"))} {int(p["keep"])} {src} {" ".join(args)} || fail "backup failed"')
@@ -539,7 +539,7 @@ class _Emit:
         elif t == 'btrfs_snapshot':
             into = p['into'] or p['subvol'].rstrip('/') + '/.snapshots'
             flag = '-r ' if p['readonly'] else ''
-            self.w(d, f'x mkdir -p -- {q(into)} || fail "cannot make {into}"')
+            self.w(d, f'x mkdir -p -- {q(into)} || fail {q("cannot make " + into)}')
             self.w(d, f'x btrfs subvolume snapshot {flag}-- {q(p["subvol"])} {q(into)}/{q(p["prefix"])}-"$STAMP" '
                       f'|| fail "snapshot failed"')
         elif t == 'btrfs_prune':
@@ -554,7 +554,7 @@ class _Emit:
         elif t == 'service':
             self.w(d, f'x systemctl {p["action"]} -- {q(p["unit"])} || fail "systemctl {p["action"]} failed"')
         elif t == 'mkdir':
-            self.w(d, f'x mkdir -p -- {q(p["path"])} || fail "cannot make {p["path"]}"')
+            self.w(d, f'x mkdir -p -- {q(p["path"])} || fail {q("cannot make " + p["path"])}')
         elif t == 'scrub':
             self.w(d, f'x btrfs scrub start -B -- {q(p["path"])} || fail "scrub failed or found errors"')
         elif t == 'command':

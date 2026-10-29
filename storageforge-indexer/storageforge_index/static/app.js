@@ -23,9 +23,9 @@ matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { r
 /* ── API (session cookie, set by /api/login) ─────────────────────── */
 async function api(path, opts = {}, confirmed = false) {
   const res = await fetch(path, { credentials: 'same-origin', ...opts });
-  if (res.status === 401) {
+  if (res.status === 401) {          // the session is gone: session.js empties the page and goes to /login
     const msg = (await res.json().catch(() => ({}))).error || '';
-    askLogin(/ended/.test(msg) ? msg : ''); throw new Error('Sign in required');
+    sfSignedOut(/ended/.test(msg) ? 'ended' : ''); throw new Error('Sign in required');
   }
   if (res.status === 403 && !confirmed && (await res.clone().json().catch(() => ({}))).reauth) {
     await confirmPassword();                     // commands on hosts: type the password again, then retry once
@@ -761,15 +761,14 @@ $('#export').addEventListener('click', async () => {
 });
 function alertPanel(msg) { showTab('details'); $('#summary').prepend(text('p', msg, 'st-failed')); }
 
-/* ── sign in ─────────────────────────────────────────────────────── */
-const dlg = $('#logindlg');
+/* ── signed-in user (signing in happens on /login; session.js handles the session ending) ── */
 let user = null;
 function setUser(name, me = null) {
   user = name;
   $('#lock').textContent = name ? `Sign out ${name}` : 'Sign in';
   $('#lock').classList.toggle('locked', !name);
   $('#sessfield').hidden = !name;
-  if (me) $('#sesslen').value = String(me.session_minutes);
+  if (me) { $('#sesslen').value = String(me.session_minutes); sfSessionEnds(me.session_ends); }
 }
 
 /* ── password again before commands run on hosts ─────────────────── */
@@ -791,7 +790,7 @@ $('#reauthform').addEventListener('submit', async (ev) => {
   $('#reauthpw').value = '';
   const res = await fetch('/api/reauth', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
                                           body: JSON.stringify({ password }) });
-  if (res.status === 401) { reauthDlg.close(); reauthDlg._done.reject(new Error('Sign in required')); askLogin(); return; }
+  if (res.status === 401) { reauthDlg.close(); reauthDlg._done.reject(new Error('Sign in required')); sfSignedOut(); return; }
   if (!res.ok) {
     $('#reauthmsg').textContent = (await res.json().catch(() => ({}))).error || res.statusText;
     $('#reauthmsg').hidden = false; $('#reauthpw').focus(); return;
@@ -813,33 +812,7 @@ $('#sesslen').addEventListener('change', async (ev) => {
     if (!/Sign in/.test(err.message)) toast(err.message);
   }
 });
-function askLogin(msg = '') {
-  clearInterval(jobTimer);
-  setUser(null);
-  $('#loginmsg').hidden = !msg;
-  $('#loginmsg').textContent = msg;
-  if (!dlg.open) { $('#password').value = ''; dlg.showModal(); $('#username').value ? $('#password').focus() : $('#username').focus(); }
-}
-$('#loginform').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  const body = JSON.stringify({ username: $('#username').value.trim(), password: $('#password').value });
-  $('#password').value = '';
-  try {
-    const res = await fetch('/api/login', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) { askLogin(data.error || res.statusText); return; }
-    dlg.close(); setUser(data.username); boot();
-  } catch (err) { askLogin(err.message); }
-});
-$('#logincancel').addEventListener('click', () => dlg.close());
-$('#lock').addEventListener('click', async () => {
-  if (!user) { askLogin(); return; }
-  await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
-  S.nodes = []; S.edges = []; S.byId = new Map(); S.adj = new Map(); S.selected = S.focus = null;
-  T.docs = new Map(); T.order = []; T.sel = null; renderTopo();
-  $('#summary').replaceChildren(); wake();
-  askLogin();
-});
+$('#lock').addEventListener('click', sfSignOut);
 
 // links from the planner: /#host=nas-02&tab=changes opens that host on that panel
 function takeLink() {

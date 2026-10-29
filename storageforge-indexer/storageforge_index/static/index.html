@@ -19,7 +19,7 @@
     <button id="reset" type="button" class="btn">Show all</button>
     <button id="export" type="button" class="btn pri">Export .canvas</button>
     <label id="sessfield" class="field" title="How long a sign-in lasts (changing it asks for your password)" hidden><span>Session</span><select id="sesslen" aria-label="Session length"><option value="30">30 min</option><option value="60">1 h</option><option value="120">2 h</option><option value="240">4 h</option><option value="480">8 h</option></select></label>
-    <button id="lock" type="button" class="btn ghost" title="Sign in or out">Sign in</button>
+    <button id="lock" type="button" class="btn ghost" title="Sign out">Sign out</button>
   </div>
 </header>
 
@@ -154,16 +154,6 @@ storageforge-index graph import --blueprint atlas.json</pre>
   </aside>
 </main>
 
-<dialog id="logindlg">
-  <form id="loginform">
-    <h2>Sign in</h2>
-    <p class="muted">Accounts are created on the server: <code>storageforge-index user add &lt;name&gt;</code></p>
-    <label class="field col"><span>Username</span><input id="username" name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
-    <label class="field col"><span>Password</span><input id="password" name="password" type="password" autocomplete="current-password" required></label>
-    <p id="loginmsg" class="st-failed" hidden></p>
-    <div class="row end"><button id="logincancel" type="button" class="btn ghost">Cancel</button><button type="submit" class="btn pri">Sign in</button></div>
-  </form>
-</dialog>
 <dialog id="reauthdlg">
   <form id="reauthform">
     <h2>Confirm your password</h2>
@@ -174,6 +164,7 @@ storageforge-index graph import --blueprint atlas.json</pre>
     <div class="row end"><button id="reauthcancel" type="button" class="btn ghost">Cancel</button><button type="submit" class="btn pri">Confirm</button></div>
   </form>
 </dialog>
+<script src="/session.js"></script>
 <script src="/app.js"></script>
 <script src="/topology.js"></script>
 <script src="/fsbrowse.js"></script>

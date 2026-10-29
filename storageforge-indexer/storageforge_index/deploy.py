@@ -4,7 +4,8 @@
     vault: storageforge-deploy  (ed25519) ──ssh──► storageforge-deploy@host
         authorized_keys: restrict,command="sudo -n /usr/local/sbin/storageforge-run"    (whatever ssh asks for)
         sudoers:         storageforge-run, storageforge-job --serve *                     (nothing else)
-        storageforge-run: verify the signature (ssh-keygen -Y verify), this host, issued < 10 min ago, nonce unused,
+        storageforge-run: verify the signature (ssh-keygen -Y verify), this host (short name, and the machine id
+                          from its last scan), issued < 10 min ago, nonce unused (claimed atomically),
                           then bash <script> <args> as root; output and exit code come back over ssh
 
 The deploy key alone runs nothing: every request needs a fresh signature from the signing key, which never leaves
@@ -69,13 +70,17 @@ def sshsig(key: ed25519.Ed25519PrivateKey, message: bytes, namespace: str = NAME
             + '\n-----END SSH SIGNATURE-----\n')
 
 
-def request(key: ed25519.Ed25519PrivateKey, host: str, script: str, args=(), now: float | None = None) -> bytes:
-    """The bytes storageforge-run reads from stdin: a signed header + script for one host, usable once."""
+def request(key: ed25519.Ed25519PrivateKey, host: str, script: str, args=(), now: float | None = None,
+            machine: str | None = None) -> bytes:
+    """The bytes storageforge-run reads from stdin: a signed header + script for one host, usable once. machine is
+    the host's /etc/machine-id (from its scans): when given, no other machine runs it, even one with the same name."""
     for a in args:
         if not ARG_RE.fullmatch(a):
             raise ValueError(f'argument not allowed: {a!r}')
+    if machine and not re.fullmatch(r'[0-9a-f]{32}', machine):
+        raise ValueError('bad machine id')
     header = (f'host: {host_slug(host)}\nissued: {int(now or time.time())}\nnonce: {secrets.token_hex(16)}\n'
-              f'args: {" ".join(args)}\n\n')
+              + (f'machine: {machine}\n' if machine else '') + f'args: {" ".join(args)}\n\n')
     payload = (header + script).encode()
     sig = sshsig(key, payload).encode()
     return f'STORAGEFORGE-RUN 1\n{len(payload)}\n{len(sig)}\n'.encode() + payload + sig
@@ -88,9 +93,11 @@ RUNNER_SCRIPT = r"""#!/bin/bash
 set -uo pipefail
 export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
-ETC=/etc/storageforge STATE=/var/lib/storageforge/run LOG=/var/log/storageforge/run.log
+ETC=/etc/storageforge STATE=/var/lib/storageforge/run LOG=/var/log/storageforge/run.log MID=/etc/machine-id
+[[ -r $MID ]] || MID=/var/lib/dbus/machine-id
 if ((EUID != 0)); then   # tests run it unprivileged; under sudo the environment is reset, so root never sees these
   ETC=${STORAGEFORGE_RUN_ETC:-$ETC} STATE=${STORAGEFORGE_RUN_STATE:-$STATE} LOG=${STORAGEFORGE_RUN_LOG:-$LOG}
+  MID=${STORAGEFORGE_RUN_MACHINE_ID:-$MID}
 fi
 log() { mkdir -p "${LOG%/*}" 2>/dev/null; printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG" 2>/dev/null || true; }
 die() { echo "storageforge-run: $*" >&2; log "refused: $*"; exit 97; }
@@ -112,11 +119,12 @@ printf '%s' "$payload" >"$work/payload"
 printf '%s' "$sig" >"$work/sig"
 ssh-keygen -Y verify -f "$ETC/allowed_signers" -I storageforge -n storageforge-deploy -s "$work/sig" \
   <"$work/payload" >/dev/null 2>&1 || die "the signature does not verify"
-host= issued= nonce= args=
+host= issued= nonce= args= machine=
 while IFS= read -r line; do
   [[ -z $line ]] && break
   case $line in
     'host: '*) host=${line#host: } ;;
+    'machine: '*) machine=${line#machine: } ;;
     'issued: '*) issued=${line#issued: } ;;
     'nonce: '*) nonce=${line#nonce: } ;;
     'args: '*) args=${line#args: } ;;
@@ -124,14 +132,17 @@ while IFS= read -r line; do
 done <"$work/payload"
 me=$(slug "$(uname -n)")
 [[ $host == "$me" ]] || die "signed for $host, but this is $me"
+if [[ -n $machine ]]; then   # the short name can repeat across machines; the machine id does not
+  mid=$(cat "$MID" 2>/dev/null)
+  [[ $machine =~ ^[0-9a-f]{32}$ && $machine == "$mid" ]] || die "signed for machine $machine, but this is ${mid:-a machine without a machine id}"
+fi
 now=$(date +%s)
 [[ $issued =~ ^[0-9]{9,11}$ ]] || die "bad issue time"
 ((now - issued <= 600 && issued - now <= 300)) || die "the request is too old, or the clocks differ (issued $issued, now $now)"
 [[ $nonce =~ ^[0-9a-f]{32}$ ]] || die "bad nonce"
 mkdir -p "$STATE/seen" || die "cannot write $STATE"
 find "$STATE/seen" -type f -mmin +1440 -delete 2>/dev/null
-[[ -e $STATE/seen/$nonce ]] && die "this request was already used"
-: >"$STATE/seen/$nonce"
+( set -o noclobber; : >"$STATE/seen/$nonce" ) 2>/dev/null || die "this request was already used"   # atomic: one run per nonce
 [[ $args =~ ^[A-Za-z0-9=_./:,@+\ -]*$ ]] || die "bad arguments"
 read -r -a argv <<<"$args"
 sed '1,/^$/d' "$work/payload" >"$work/script"
@@ -142,6 +153,13 @@ rc=$?
 log "done $nonce rc=$rc"
 exit $rc
 """
+
+# Prepended to every signed script: brings an older storageforge-run up to date (machine-id binding, atomic nonce
+# claims) without running the setup again. Silent, so it cannot mix into data streamed on stdout (restores).
+RUNNER_UPDATE = ('if ((EUID == 0)); then _sf_new=$(mktemp) && cat >"$_sf_new" <<\'STORAGEFORGE_RUNNER_UPDATE\'\n'
+                 + RUNNER_SCRIPT + 'STORAGEFORGE_RUNNER_UPDATE\n'
+                 f'cmp -s "$_sf_new" {RUNNER} || install -o root -g root -m 0755 "$_sf_new" {RUNNER}\n'
+                 'rm -f "$_sf_new"; unset _sf_new; fi >/dev/null 2>&1\n')
 
 SETUP = r"""set -eu
 U=%(user)s
@@ -230,9 +248,16 @@ def _signer(vault: Vault) -> ed25519.Ed25519PrivateKey:
 
 
 def canonical(conn, host: str) -> str:
-    row = conn.all('SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR ip_address = :h OR ssh_host = :h',
+    # by name, then by the address it was scanned at; the IP a host reports about itself only as a last resort
+    row = conn.all("""SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR ssh_host = :h OR ip_address = :h
+                      ORDER BY CASE WHEN lower(hostname) = lower(:h) THEN 0 WHEN ssh_host = :h THEN 1 ELSE 2 END""",
                    {'h': host})
     return row[0][0] if row else host
+
+
+def _machine(conn, name: str) -> str | None:
+    """The machine id the host reported in its last scan; deploys are signed for that machine only."""
+    return conn.scalar('SELECT machine_id FROM hosts WHERE hostname = :h', {'h': name}) or None
 
 
 def set_access(conn, host: str, state: str, detail: str, actor: str):
@@ -332,7 +357,7 @@ def run(db: Database, host: str, script: str, args=(), *, kind: str, ref: str | 
                 b = v.resolve(addr, 'deploy')
             except NoBinding as exc:
                 raise DeployError(f'{name}: {exc}') from None
-            req = request(_signer(v), name, script, args)
+            req = request(_signer(v), name, RUNNER_UPDATE + script, args, machine=_machine(conn, name))
             if isinstance(data, (bytes, bytearray)):
                 data = [bytes(data)]
             t = None
@@ -412,7 +437,7 @@ def raw(db: Database, host: str, script: str, *, kind: str, ref: str | None = No
         addr = connect_address(conn, name)
         with Vault(db, conn).unlock() as v:
             b = v.resolve(addr, 'deploy')
-            req = request(_signer(v), name, script)
+            req = request(_signer(v), name, RUNNER_UPDATE + script, machine=_machine(conn, name))
             with ephemeral_agent(v.decrypt_key(b.key_id)) as sock:
                 t = Transport(host=addr, user=b.user, port=b.port, agent_sock=sock, known_hosts=str(known_hosts_path()),
                               isolated=True)

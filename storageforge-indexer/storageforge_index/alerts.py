@@ -21,6 +21,8 @@ import urllib.request
 from .db import Conn
 
 URL_RE = re.compile(r'https?://[^\s"<>]{3,500}')
+# The report URL also ends up in scripts run as root on hosts: scheme, host, port and a plain path, no shell characters.
+REPORT_URL_RE = re.compile(r'https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]{1,253})(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?')
 TOPIC_RE = re.compile(r'[A-Za-z0-9_-]{1,64}')
 DEFAULTS = {'report_url': '', 'alerts': {'ntfy': {'url': '', 'topic': '', 'token': ''}, 'gotify': {'url': '', 'token': ''},
                                          'webhook': {'url': ''}, 'notify_resolved': True}}
@@ -50,8 +52,8 @@ def settings(conn: Conn, reveal: bool = False) -> dict:
 
 def save_settings(conn: Conn, body: dict, actor: str) -> dict:
     url = str(body.get('report_url') or '').strip().rstrip('/')
-    if url and not URL_RE.fullmatch(url):
-        raise ValueError('the report URL must be http(s)://host:port, as the hosts reach StorageForge')
+    if url and not REPORT_URL_RE.fullmatch(url):
+        raise ValueError('the report URL must be http(s)://host:port (optionally /path), as the hosts reach StorageForge')
     set_setting(conn, 'report_url', url, actor)
     cur, new = get_setting(conn, 'alerts'), body.get('alerts') or {}
     for ch, fields in (('ntfy', ('url', 'topic', 'token')), ('gotify', ('url', 'token')), ('webhook', ('url',))):

@@ -740,6 +740,8 @@ class ServerTests(DBCase):
         self.assertEqual(self.client.get('/api/docker/usage?path=/x').status_code, 400)     # path needs host
 
     def test_planner_page_and_designs(self):
+        self.assertEqual(self.client.get('/planner').status_code, 302)          # signed out: to /login
+        self.login()
         r = self.client.get('/planner')
         self.assertEqual(r.status_code, 200)
         self.assertIn(b'/planner.js', r.data)
@@ -747,6 +749,7 @@ class ServerTests(DBCase):
         self.assertIn("script-src 'self'", csp)
         self.assertNotIn('unsafe-inline', csp.split('style-src-attr')[0])        # only style attributes are relaxed
         self.assertNotIn(b'<style', self.client.get('/planner.js').data)
+        self.client.post('/api/logout')
         self.assertEqual(self.client.get('/api/planner/hosts').status_code, 401)
         self.login()
         self.assertEqual(self.client.get('/api/planner/design?host=nowhere').status_code, 404)
@@ -804,6 +807,29 @@ class ServerTests(DBCase):
             self.assertEqual(self.client.get('/api/me').status_code, 401)
         self.client.post('/api/logout')
         self.assertEqual(self.client.get('/api/me').status_code, 401)
+
+    def test_pages_need_a_session_and_send_strangers_to_login(self):
+        for path, nxt in (('/', '%2F'), ('/planner', '%2Fplanner'), ('/index.html?x=1', '%2Findex.html%3Fx%3D1')):
+            r = self.client.get(path)
+            self.assertEqual((r.status_code, r.headers['Location']), (302, f'/login?next={nxt}'), path)
+        for name in ('session.js', 'app.js', 'topology.js', 'planner.js', 'planner.css'):
+            self.assertEqual(self.client.get('/' + name).status_code, 401, name)
+        r = self.client.get('/login')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b'/login.js', r.data)
+        self.assertEqual(r.headers['Cache-Control'], 'no-store')
+        for name in ('login.js', 'style.css', 'favicon.svg'):
+            self.assertEqual(self.client.get('/' + name).status_code, 200, name)
+        self.login()
+        r = self.client.get('/')
+        self.assertEqual((r.status_code, r.headers['Cache-Control']), (200, 'no-store'))
+        self.assertNotIn(b'id="password"', r.data)                               # no sign-in form in the app page
+        for nxt, where in (('/planner#x', '/planner#x'), ('//evil.example/', '/'), ('/\\evil.example', '/'),
+                           ('https://evil.example/', '/')):
+            self.assertEqual(self.client.get('/login', query_string={'next': nxt}).headers['Location'], where, nxt)
+        with self.later(31 * 60):
+            r = self.client.get('/planner')
+            self.assertEqual(r.headers['Location'], '/login?next=%2Fplanner&ended=1')
 
     def test_signing_out_kills_copies_of_the_cookie(self):
         from storageforge_index import users
@@ -901,6 +927,98 @@ class ServerTests(DBCase):
         self.assertNotIn('a long enough password', stored)
 
 
+class HostIdentityTests(DBCase):
+    """A host's name is what it says about itself; who it is, is what SSH verified at its address (SF-16)."""
+
+    def scan_as(self, hostname, address, keys, machine='0' * 32):
+        from types import SimpleNamespace
+        inv = SimpleNamespace(hostname=hostname, ip=address, os_info='Linux', machine_id=machine, to_json=lambda: '{}')
+        t = SimpleNamespace(host=address, user='scan', port=22, local=False)
+        return self.db.upsert_host(self.conn, inv, t, keys)
+
+    def row(self, name):
+        r = self.conn.all('SELECT ssh_host, host_keys, machine_id FROM hosts WHERE hostname = :h', {'h': name})[0]
+        return r[0], json.loads(r[1]) if r[1] else None, r[2]
+
+    def test_a_machine_cannot_take_over_another_hosts_name(self):
+        from storageforge_index.db import HostIdentityError
+        hid = self.scan_as('nas.lan', '10.0.0.5', ['SHA256:nas'])
+        self.assertEqual(self.scan_as('nas.lan', '10.0.0.7', ['SHA256:nas', 'SHA256:nas2']), hid)   # new address, same keys
+        self.assertEqual(self.row('nas.lan')[:2], ('10.0.0.7', ['SHA256:nas', 'SHA256:nas2']))
+        for claim in ('nas.lan', 'NAS.LAN', 'nas', 'nas.office'):          # same name, other case, same short name
+            with self.assertRaisesRegex(HostIdentityError, 'Refused: nothing about nas.lan was changed'):
+                self.scan_as(claim, '10.0.0.66', ['SHA256:evil'])
+        self.assertEqual(self.row('nas.lan')[0], '10.0.0.7')                 # deploys still go to the real one
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM hosts'), 1)
+        self.scan_as('pc.lan', '10.0.0.66', ['SHA256:pc'])                  # an unrelated name is fine
+
+    def test_rows_from_before_pinning_and_rekey(self):
+        from storageforge_index.db import Database, HostIdentityError
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, inventory_json) VALUES ('old', '10.0.0.9', '{}')")
+        with self.assertRaisesRegex(HostIdentityError, 'was scanned at 10.0.0.9'):
+            self.scan_as('old', '10.0.0.66', ['SHA256:evil'])
+        self.scan_as('old', '10.0.0.9', ['SHA256:old'])                      # its own address: pinned now
+        self.assertEqual(self.row('old')[1], ['SHA256:old'])
+        with self.assertRaises(HostIdentityError):
+            self.scan_as('old', '10.0.0.9', ['SHA256:reinstalled'])          # same address, new keys: refused too
+        self.assertEqual(Database.rekey_host(self.conn, 'OLD'), ('old', '10.0.0.9'))
+        self.scan_as('old', '10.0.0.10', ['SHA256:reinstalled'], machine='f' * 32)
+        self.assertEqual(self.row('old'), ('10.0.0.10', ['SHA256:reinstalled'], 'f' * 32))
+
+    def test_canonical_prefers_name_and_scanned_address_over_reported_ip(self):
+        from storageforge_index import deploy
+        self.scan_as('nas.lan', '10.0.0.5', ['SHA256:nas'])
+        self.conn.execute("INSERT INTO hosts (hostname, ip_address, ssh_host, inventory_json) "
+                          "VALUES ('evil', '10.0.0.5', '10.0.0.66', '{}')")  # reports the victim's IP as its own
+        self.assertEqual(deploy.canonical(self.conn, '10.0.0.5'), 'nas.lan')
+        self.assertEqual(deploy.canonical(self.conn, 'NAS.lan'), 'nas.lan')
+
+    @unittest.skipUnless(shutil.which('ssh-keygen'), 'needs ssh-keygen')
+    def test_host_keys_come_from_known_hosts(self):
+        from storageforge_index.remote import Transport
+        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(self.tmp / 'k')], check=True)
+        pub = (self.tmp / 'k.pub').read_text().split()
+        fp = subprocess.run(['ssh-keygen', '-lf', str(self.tmp / 'k.pub')], capture_output=True, text=True).stdout.split()[1]
+        kh = self.tmp / 'known_hosts'
+        kh.write_text(f'10.0.0.5 {pub[0]} {pub[1]}\n[10.0.0.6]:2222 {pub[0]} {pub[1]}\n')
+        for host, port, want in (('10.0.0.5', 22, [fp]), ('10.0.0.6', 2222, [fp]), ('10.0.0.7', 22, [])):
+            t = Transport(host=host, port=port, known_hosts=str(kh))
+            self.assertEqual(t.host_keys(), want, host)
+            shutil.rmtree(t._ctl_dir, ignore_errors=True)               # never connected: nothing to close
+        self.assertEqual(Transport(host='x', local=True).host_keys(), ['local'])
+
+    @unittest.skipUnless(shutil.which('ssh-keygen') and shutil.which('bash'), 'needs ssh-keygen and bash')
+    @unittest.skipIf(os.geteuid() == 0, 'as root the runner ignores the test paths and uses /etc/storageforge')
+    def test_runner_checks_machine_id_and_claims_nonces_once(self):
+        import base64
+        from storageforge_index import deploy
+        key = ed25519.Ed25519PrivateKey.generate()
+        raw = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        pub = 'ssh-ed25519 ' + base64.b64encode(deploy._s(b'ssh-ed25519') + deploy._s(raw)).decode()
+        etc = self.tmp / 'etc'
+        etc.mkdir()
+        (etc / 'allowed_signers').write_text(f'storageforge namespaces="storageforge-deploy" {pub}\n')
+        (self.tmp / 'machine-id').write_text('a' * 32 + '\n')
+        runner = self.tmp / 'storageforge-run'
+        runner.write_text(deploy.RUNNER_SCRIPT)
+        env = {**os.environ, 'STORAGEFORGE_RUN_ETC': str(etc), 'STORAGEFORGE_RUN_STATE': str(self.tmp / 'state'),
+               'STORAGEFORGE_RUN_LOG': str(self.tmp / 'run.log'), 'STORAGEFORGE_RUN_MACHINE_ID': str(self.tmp / 'machine-id')}
+        me = os.uname().nodename
+
+        def run(req):
+            p = subprocess.run(['bash', str(runner)], input=req, env=env, capture_output=True, timeout=30)
+            return p.returncode, p.stdout.decode(), p.stderr.decode()
+        good = deploy.request(key, me, deploy.RUNNER_UPDATE + 'echo "ran $1"', ['x'], machine='a' * 32)
+        self.assertEqual(run(good)[:2], (0, 'ran x\n'))                    # the runner refresh prints nothing
+        rc, _, err = run(good)
+        self.assertEqual(rc, deploy.REFUSED)
+        self.assertIn('already used', err)
+        rc, _, err = run(deploy.request(key, me, 'echo ran', machine='b' * 32))
+        self.assertEqual(rc, deploy.REFUSED)
+        self.assertIn('signed for machine bbbb', err)
+        self.assertEqual(run(deploy.request(key, me, 'echo ran'))[:2], (0, 'ran\n'))   # not scanned yet: name only
+
+
 class ScriptHeaderTests(DBCase):
     """Free text ends up in the # header of scripts run as root: a line break there would start a command."""
 
@@ -922,6 +1040,63 @@ class ScriptHeaderTests(DBCase):
             shares.normalize_export({'protocol': 'NFS', 'path': '/srv', 'mounts': [{'host': bad, 'path': '/mnt/x'}]})
         self.assertEqual(moves.normalize({'name': 'p', 'steps': [{**step, 'src': {'host': '[fe80::1%eth0]', 'path': '/srv'}}]})
                          ['steps'][0]['src']['host'], '[fe80::1%eth0]')
+
+    def test_scanned_and_designed_paths_stay_quoted_in_root_scripts(self):
+        """A destination mount point is whatever the host (or a design) says; in "..." a $(...) would run as root."""
+        import re
+        from storageforge_index import alerts, jobs, tasks
+        evil = '/mnt/$(touch /tmp/PWNED)'
+        for host, mp in (('nas', evil), ('pc', '/')):
+            self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json) VALUES (:h, :h, 'scan', '{}')", {'h': host})
+            hid = self.conn.scalar('SELECT host_id FROM hosts WHERE hostname = :h', {'h': host})
+            self.conn.execute("INSERT INTO mounts (host_id, mount_point, source, filesystem_type, total_bytes, used_bytes, "
+                              "scan_state, mount_options) VALUES (:h, :m, '/dev/sdb1', 'ext4', 1099511627776, 1, 'indexed', 'rw')",
+                              {'h': hid, 'm': mp})
+        plan = {'id': 1, 'name': 'p', 'steps': [{'method': 'mirror', 'src': {'host': 'pc', 'path': '/srv'},
+                                                 'dst': {'host': 'nas', 'path': evil + '/copy'}}]}
+        sp = jobs.specs(self.conn, plan)
+        self.assertEqual(sp[0]['dst_mount'], evil)
+        script = jobs.host_script(plan, 'nas', sp, [], 'https://10.0.0.5:8443')
+        # what bash would expand: drop quoted heredoc bodies (<<'TAG' … TAG), then single-quoted words
+        unquoted = re.sub(r"'[^']*'", "''", re.sub(r"<<'(\w+)'\n.*?\n\1\n", '', script, flags=re.S))
+        self.assertIn('PWNED', script)
+        self.assertNotIn('$(touch', unquoted)
+        t = tasks.normalize({'name': 't', 'blocks': [{'type': 'mkdir', 'params': {'path': '/srv/$(touch /tmp/PWNED)'}}]})
+        code = [l for l in tasks.script(self.conn, t).splitlines() if not l.lstrip().startswith('#')]
+        self.assertNotIn('$(touch', re.sub(r"'[^']*'", "''", '\n'.join(code)))
+        for url in ('http://10.0.0.5:8443/$(touch${IFS}/tmp/PWNED)', 'http://x/`id`', "http://x/'a'", 'http://x;id'):
+            with self.assertRaisesRegex(ValueError, 'report URL'):
+                alerts.save_settings(self.conn, {'report_url': url}, 't')
+        for url in ('https://10.42.0.100:8443', 'http://[fd7a::1]:8080/sf', 'https://nas.lan'):
+            alerts.save_settings(self.conn, {'report_url': url}, 't')
+
+    @unittest.skipUnless(shutil.which('bash') and shutil.which('rsync'), 'needs bash and rsync')
+    def test_job_keys_only_get_rsync_options_our_jobs_use(self):
+        """storageforge-job --serve is the forced command of a job key. With -s anywhere in a cluster rsync reads the
+        real paths from the connection, past the path check: that read any file as root on the source host."""
+        from storageforge_index.jobscript import JOB_SCRIPT
+        etc, root = self.tmp / 'etc', self.tmp / 'root'
+        (etc / 'serve').mkdir(parents=True)
+        root.mkdir()
+        (etc / 'serve' / 'p1-s1.conf').write_text(f'ROOT={root}\nSNAP=0\n')
+        prog = self.tmp / 'storageforge-job'
+        prog.write_text(JOB_SCRIPT)
+        env = {**os.environ, 'STORAGEFORGE_JOB_ETC': str(etc), 'STORAGEFORGE_JOB_VAR': str(self.tmp / 'var')}
+
+        def serve(cmd):
+            p = subprocess.run(['bash', str(prog), '--serve', 'p1-s1', cmd], env=env, stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=30)
+            return p.stderr
+        for ok in (f'rsync --server --sender -lHogDtpAXrxe.iLsfxCIvu --numeric-ids . {root}/',
+                   f'rsync --server --sender -nlHogDtpAXrce.iLsfxCIvu --numeric-ids --info=STATS . {root}/',
+                   f'rsync --server --sender -logDtprRe.iLsfxCIvu --bwlimit=1000 --numeric-ids . {root}/'):
+            self.assertNotIn('storageforge-job:', serve(ok), ok)
+        for bad in (f'rsync --server --sender -se.LsfxCIvu . {root}', f'rsync --server --sender -lse.Ls . {root}',
+                    f'rsync --server --sender -Le.Ls . {root}', f'rsync --server --sender -ke.Ls . {root}',
+                    f'rsync --server --sender --protect-args . {root}', f'rsync --server --sender --files-from=/x . {root}',
+                    f'rsync --server --sender -e.Ls --filter=._/etc/shadow . {root}',
+                    'rsync --server --sender -logDtpre.iLs . /etc'):
+            self.assertRegex(serve(bad), 'storageforge-job: (option not allowed|.* is outside)', bad)
 
     def test_job_reports_cannot_be_dated_ahead(self):
         import uuid

@@ -92,12 +92,18 @@ serve() { # id "ssh command"
       read -a w <<<"$cmd"          # no -r: rsync escapes spaces in the path with backslashes
       for ((i = 3; i < ${#w[@]}; i++)); do
         if ((seen)); then path+="${path:+ }${w[i]}"; continue; fi
+        # An allowlist of what StorageForge's own jobs send. Anything else is refused: -s in a cluster (secluded args)
+        # would make rsync read the real paths from the connection, past the check below; -L/-k would follow symlinks
+        # out of the job's root; filter/merge and *-from options read files as root.
         case ${w[i]} in
           .) seen=1 ;;
-          -s|--protect-args|--secluded-args|--remove-source-files|--remove-sent-files|--server|--daemon|*-from*|--log-file*|--write-batch*|--only-write-batch*|--rsync-path*)
-            die "option not allowed: ${w[i]}" ;;
-          -*) opts+=("${w[i]}") ;;
-          *) die "unexpected argument: ${w[i]}" ;;
+          --numeric-ids|--bwlimit=[0-9]*|--info=[A-Za-z0-9,]*|--debug=[A-Za-z0-9,]*|-e[.A-Za-z]*) opts+=("${w[i]}") ;;
+          -[nlHogDtpAXrcxRzvi]*)    # short options, then optionally e<capabilities> (the rest of the word is its value)
+            local letters=${w[i]#-}; letters=${letters%%e*}
+            [[ $letters =~ ^[nlHogDtpAXrcxRzvi]+$ && ${w[i]#-$letters} =~ ^(e[.A-Za-z]*)?$ ]] \
+              || die "option not allowed: ${w[i]}"
+            opts+=("${w[i]}") ;;
+          *) die "option not allowed: ${w[i]}" ;;
         esac
       done
       [[ -n $path ]] || die "no source path"

@@ -293,7 +293,7 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
                 log(f'  would run: {find_command(j.root, j.prune, opts.exclude_names, opts.nice)}')
             return None
 
-        host_id = db.upsert_host(conn, inv, t)
+        host_id = db.upsert_host(conn, inv, t, t.host_keys())   # refuses a machine claiming another host's name
         if inv.jobs:                                     # runs of deployed jobs that could not report themselves
             try:
                 from .jobs import ingest_scan

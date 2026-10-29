@@ -28,6 +28,7 @@ related: ["[[security-parm]]", "[[audit-results]]", "[[audit-2026-10-27]]", "[[d
 > - **SF-12 fixed (opt-in).** `docker/egress-firewall.sh` (root) limits traffic out of `sf0` to DNS, SSH and alert ports. The demo runs as its own compose project, with its own volumes, bridge and port, and the target sits on an `internal` network.
 > - **SF-13.** Snapshot browse is now POST. Job reports record the sender's address and reject run times dated ahead. Accepted as-is: logout without a CSRF token (SameSite=Strict), library `ValueError` text in 400s (signed-in users only), `style-src-attr 'unsafe-inline'`.
 > - **SF-02 roles / TOTP / separate signer: not done.** The owner considers full power per account inherent to this tool. The password re-check covers the command paths.
+> - **Addendum (§6), same day:** a second pass over the on-host programs and a compromised host. **SF-14** (injection into job deploy scripts) and **SF-15** (job keys could read any file as root) are **fixed**. **SF-16** (host impersonation) and **SF-18** were **fixed** on 2026-10-29. **SF-17** (planner build scripts and HTML) and **SF-21** (SSH first-use trust, agent forwarding) are still **open**, along with lower items SF-19, SF-20 and SF-22.
 > - Verified end to end on an isolated compose stack (TLS, pinned cert, `__Host-` cookie, re-auth, clamps, logout revocation, group-read secrets, no pip in the image). The full test suite passes in the Dockerfile `test` stage.
 
 ---
@@ -549,7 +550,222 @@ Generate `requirements.lock` with `pip-compile --generate-hashes`. Let Dependabo
 - [ ] JSON-only bodies and no CORS
 - [ ] `shlex.quote` for every value in generated scripts; regex-validated IDs before shell interpolation
 
+
+## 6. Addendum: on-host programs and the compromised-host threat model
+
+The first pass looked at an attacker coming through the web UI. This pass asks a different question: **what can someone who already controls *one* machine do to StorageForge, or through it to the others?** That machine could be a scanned host, a backup destination holding job keys, or a source host with untrusted local users. It also covers the two programs StorageForge installs on every host and runs as root: `storageforge-run` (`deploy.py` `RUNNER_SCRIPT`) and `storageforge-job` (`jobscript.py`).
+
+> [!summary] Results
+> | ID | Title | Severity | Status |
+> |---|---|---|---|
+> | SF-14 | Report URL and mount paths injected into root deploy scripts | 🔴 High | ✅ fixed |
+> | SF-15 | Job keys could read any file as root on source hosts (rsync `-s` bypass) | 🔴 Critical | ✅ fixed |
+> | SF-16 | A host's self-reported hostname can take over another host's identity | 🔴 High | ✅ fixed |
+> | SF-17 | Planner build scripts and HTML use scanned names unescaped | 🟠 Medium | ❌ open |
+> | SF-18 | `storageforge-run` binds requests to the short hostname; nonce check is not atomic | 🟡 Low | ✅ fixed |
+> | SF-19 | Job keys can trigger pre/post hooks at any time; sudoers `--serve *` | 🟡 Low | accepted (documented) |
+> | SF-20 | Client-sent rsync filter rules can make the root sender read files (older rsync echoes lines) | 🟡 Low | ❌ open |
+> | SF-21 | SSH trust: first-use host keys, `ssh -A` in move scripts | 🟠 Medium | ❌ open |
+> | SF-22 | Scans let a host forge its own job runs and drift results | 🟡 Low | accepted |
+
+### What holds up (verified)
+
+- **`storageforge-run`'s core check is sound.**
+  - It verifies an SSHSIG over the *whole* payload (header and script) with `ssh-keygen -Y verify`. The namespace and principal are pinned in a root-owned `allowed_signers`.
+  - It parses the header from the same verified bytes.
+  - It enforces a 10-minute age and 5-minute clock skew, plus a single-use 128-bit nonce kept for 24 h, longer than the window.
+  - Arguments are limited to `[A-Za-z0-9=_./:,@+ -]`, and the environment is reset by `sudo`.
+
+  **Why that matters:** the deploy SSH key alone can only feed this program, and it runs nothing it can't verify. A stolen deploy key is useless without the signing key, which never leaves the vault.
+- **The forced commands quote correctly.** Job keys use `command="sudo -n storageforge-job --serve <id> \"$SSH_ORIGINAL_COMMAND\""`, and the deploy key uses `restrict`. The double quotes stop the client's command from being re-split by the shell.
+- **Snapshot browse/restore** validate the snapshot name (`[a-z]+\.\d+`) and reject `..` and absolute paths, both on the server and again in `storageforge-job` (`snap_ok`, `rel_ok`).
+
+---
+
+### SF-14 — Report URL and mount paths injected into root deploy scripts ✅ fixed
+
+| | |
+|---|---|
+| **Severity** | 🔴 High |
+| **Component** | `jobs.py:288, 304-305` (`host_script`), `tasks.py` (`fail "cannot make …"`), `alerts.py` (`URL_RE`) |
+
+**Why it was insecure.** The jobs deploy script printed status with values *inside double quotes*: `ok "reports reach {report_url}"` and `ok "destination mount {dst_mount}"`. In bash, `$(…)` and backticks inside double quotes still run. `URL_RE` refused spaces and quotes, but it accepted `$(…)`. The mount path comes either from **the destination host's own scan** (a compromised host picks its mount point names) or from a saved design. The script runs as root through a signed deploy. So a report URL of `http://10.0.0.5:8443/$(touch${IFS}/tmp/pwned)` ran on **every host that runs deployed jobs**, at the next deploy, without appearing anywhere as a command.
+
+**Fix.**
+- Values are passed only as `shlex.quote`d words: `ok 'destination mount /mnt/…'`. The same change was made to three `fail "cannot make {path}"` lines in `tasks.py`.
+- The report URL now has its own strict pattern, `REPORT_URL_RE`: scheme, host, port and a plain path, no shell characters.
+- The job header's plan name and host go through `one_line()`.
+- Test: `test_scanned_and_designed_paths_stay_quoted_in_root_scripts` builds a job from a host whose mount point is `/mnt/$(touch /tmp/PWNED)`. It asserts nothing outside single quotes or quoted heredocs contains it, and that `$(…)`, backticks, quotes and `;` are refused in report URLs.
+
+---
+
+### SF-15 — Job keys could read any file as root on source hosts ✅ fixed
+
+| | |
+|---|---|
+| **Severity** | 🔴 Critical (any one backup destination → every file on every host it pulls from) |
+| **Component** | `jobscript.py` `serve()`, the `rsync --server --sender` branch |
+
+**Why it was insecure.**
+- **What the gatekeeper does.** A deployed job's **runner** (the backup destination) holds an SSH key for the **source** host. On the source, that key's forced command is `storageforge-job --serve`. It rebuilds the rsync sender command and checks that the requested path is under the job's root, then runs rsync **as root**.
+- **The flaw.** The option check was a *denylist* that compared whole words, so it refused `-s` but let `-se.LsfxCIvu` through, because rsync accepts short options bundled into one word. With `-s` (secluded/protect args), the rsync server **reads the real file arguments from the connection** and ignores the path that was checked.
+- **Reproduced** with an unprivileged harness in the scratchpad (stock rsync 3.5.1, the real `JOB_SCRIPT`, a stand-in for sshd's forced command). The client sent `-se.LsfxCIvu . <decoy path inside the root>` and asked for a file outside the root, and the file came back (`TOP-SECRET`).
+- The same denylist also let `-L`/`-k` through (follow symlinks out of the root as root) and any option it didn't know about.
+
+**Exploit scenario.** Root on a backup NAS (or just a copy of `/etc/storageforge/jobs/<id>.key` from it) gives read access as root to *any* file on each source host: `/etc/shadow`, SSH host keys, other services' secrets. That's more than the folder being backed up.
+
+**Fix.** The check is now an **allowlist** of exactly what StorageForge's own jobs send, captured from real runs:
+- short letters `nlHogDtpAXrcxRzvi`, optionally followed by the `e<capabilities>` word,
+- `--numeric-ids`, `--bwlimit=N`, `--info=…` and `--debug=…`,
+- everything else is refused.
+
+I re-ran the harness: every job variant (copy, mirror, checksum, verify, rsnapshot `--relative`, compress) still works. `-s` in a cluster, `-L`, `-k`, `--protect-args` and `--files-from` are refused, and the attack copies nothing. Test: `test_job_keys_only_get_rsync_options_our_jobs_use`.
+
+**Residual:** SF-20 (filter rules arrive over the connection, not the command line).
+
+---
+
+### SF-16 — A host's self-reported hostname can take over another host's identity ✅ fixed
+
+| | |
+|---|---|
+| **Severity** | 🔴 High |
+| **Component** | `remote.py:183` (`hostname -f`), `scanner.py` → `db.upsert_host` (`ON CONFLICT (hostname) … ssh_host = excluded.ssh_host`), `runner.connect_address`, `deploy.run/raw/enroll`, `access.grant` |
+
+**Why it is insecure.**
+- **How identity is decided.** A scanned host's identity is **whatever that host prints** for `hostname -f`. `upsert_host` treats the name as the key: a scan from address B that reports `nas.lan` **overwrites the existing `nas.lan` row**, including `ssh_host`, the address every later connection uses (`connect_address`).
+- **Why the deploy checks don't help.** Deploy requests are signed for `host_slug(name)`, and B controls its own `uname` too, so its `storageforge-run` accepts them.
+
+**Exploit scenario.** Root on any one scanned host (B) sets its hostname to `nas.lan` and waits for the scheduled scan:
+- **Address takeover.** From then on, StorageForge sends everything meant for nas to B.
+- **Secret theft.** B receives the next deploy, which includes **fresh job tokens and job SSH keys** for nas's jobs. With SF-15 now fixed, those keys can still pull the backed-up folders from nas's sources.
+- **Password theft.** If anyone uses Deploy access or Access grant for "nas", the **sudo password they type** goes to B.
+- **Corrupted records.** nas's index, drift and alerts are overwritten with B's data, and nas stops getting deploys and scans.
+
+**Remediation (recommended).**
+1. Make the **SSH host key** the identity:
+   - Store the host-key fingerprint per `hosts` row on first scan.
+   - Refuse an upsert, and alert, when a scan from a different address claims an existing name with a different host key.
+   - Never change `ssh_host` silently.
+2. Key deploy, enroll and access targets on the row's **pinned address and host key**, not on the name.
+3. For deploys, bind requests to `/etc/machine-id` captured at enrollment (this also covers SF-18).
+
+**Fix (2026-10-29).**
+- **Identity is what SSH verified, not what the host says.** `Transport.host_keys()` reads the fingerprints that ssh verified for the scanned address from StorageForge's own `known_hosts`. The machine proved it holds those keys; it can't claim someone else's. They're pinned per host (`hosts.host_keys`, migration 014).
+- **`upsert_host` no longer overwrites by name.** A scan claiming an indexed name with other host keys is refused (`HostIdentityError`): the scan fails, it's audited, and the real host's address, index, deploys and drift stay untouched. The match is case-insensitive and also covers **the same short name** (`nas` vs `nas.lan`), because host matching and `storageforge-run` compare short names.
+  - The same machine at a new address (same keys) is accepted, and the address is updated.
+  - Rows from before pinning are adopted only when scanned at the address they were last scanned at.
+- **`canonical()`** (scan queue and deploys) matches by name first, then by the address a host was scanned at, and only then by the IP it reports about itself.
+- **Deploys are bound to `/etc/machine-id`.** Scans record it. `request()` signs it into the header, and `storageforge-run` refuses a request whose `machine:` differs from the host's. Hosts never scanned fall back to the name check.
+- **Existing hosts get the new runner automatically.** Every signed script now starts with a silent snippet that replaces `storageforge-run` when it differs, so hosts already set up don't need the setup run again.
+- **Reinstalled or moved host:** `storageforge-index hosts rekey <name>` forgets its pinned keys and its `known_hosts` lines (audited), and the next scan pins it again.
+- **Verified** with unit tests (`HostIdentityTests`: takeover by name, other case and short name; legacy adoption; rekey; `canonical()` order; `known_hosts` parsing), a test driving the real runner with a real SSHSIG (machine id mismatch refused, replay refused, runner refresh silent), and **over real SSH**:
+  - Two copies of the demo SSH target both called `demo-target`: the real one at 127.0.0.1, and an impostor with fresh host keys at 127.0.0.2.
+  - The real one was pinned; the impostor's scan was refused with nothing changed; the real one still scanned.
+- **Residual: first contact is still trust-on-first-use (SF-21).** Whoever answers first at a new address is pinned. Pinning stops a *later* takeover; it can't tell you the first answer was genuine.
+
+---
+
+### SF-17 — Planner build scripts and HTML use scanned names unescaped ❌ open
+
+| | |
+|---|---|
+| **Severity** | 🟠 Medium |
+| **Component** | `static/planner.js`: 765 `${…}` interpolations without `esc()`/quoting (many are numbers or fixed strings; the risky ones carry names from designs and scans), e.g. `run wipefs --all /dev/${d.dev}` (`:491`), `run parted … /dev/${d.dev} mkpart ${p.label…}` (`:495`), `run vgcreate ${pool.vg} …` (`:512`), `data-node="disk:${d.dev}"` (`:713`) |
+
+**Why it is insecure.** The planner turns a design (taken from a scan or edited by any user) into a "build this host from bare disks" bash script that wipes and partitions disks. Device names, partition labels, VG/LV/pool/dataset names and mount targets go into commands **unquoted**. A scanned or designed device name such as `sdb /dev/sda` makes `wipefs --all /dev/sdb /dev/sda` wipe a second disk. `sdb; curl …|sh` runs a command. In the page itself, unescaped values inside attributes allow markup and `style` injection. The CSP blocks script execution, but not fake UI.
+
+**Remediation.** Add a `sh()` single-quote helper in `planner.js` and use it for every value in generated commands. Validate device and pool names against their kernel/tool grammars (`^[A-Za-z0-9._:-]+$`) when a design is saved (`PUT /api/planner/design`). Use `esc()` for every attribute and text value.
+
+---
+
+### SF-18 — `storageforge-run`: short-hostname binding; nonce check not atomic ✅ fixed
+
+| | |
+|---|---|
+| **Severity** | 🟡 Low |
+| **Component** | `deploy.py` `RUNNER_SCRIPT` (`me=$(slug "$(uname -n)")`, `[[ -e $STATE/seen/$nonce ]] && die; : >"$STATE/seen/$nonce"`) |
+
+**Why it is insecure.**
+- **Host binding.** A request is bound to the *short* hostname slug, and each host keeps its own nonce store. Two machines called `nas` (`nas.home`, `nas.office`), or a renamed machine, accept each other's requests. Someone who captures a request on one (root there) can replay it on the other within 10 minutes.
+- **Nonce race.** Checking for the nonce file and then creating it isn't atomic, so two simultaneous replays can both pass.
+
+**Remediation.**
+- Sign `/etc/machine-id` (recorded at enrollment) into the header and compare it on the host.
+- Claim the nonce atomically with `set -o noclobber; : >"$STATE/seen/$nonce" || die …` (or `mkdir`).
+
+**Fixed (2026-10-29)** with SF-16:
+- Requests carry the host's machine id, and the runner compares it.
+- The nonce is claimed with `noclobber` in a subshell, so only one of two concurrent replays can create the file.
+- Both are covered by `test_runner_checks_machine_id_and_claims_nonces_once`.
+
+---
+
+### SF-19 — Job keys trigger hooks at will; sudoers `--serve *` (accepted)
+
+| | |
+|---|---|
+| **Severity** | 🟡 Low |
+| **Component** | `jobscript.py` `serve()` (`pre`, `post`, `snap`, `unsnap`), `deploy.py` SETUP sudoers line |
+
+**Why it matters.** Whoever holds a job key (root on the runner) can run the source's `pre`/`post` commands and take snapshots **whenever they like**. With hooks like `docker compose stop`, that's a denial of service. The sudoers rule `storageforge-job --serve *` lets the `storageforge-deploy` user run `--serve` for *any* job ID without a signature. Today nothing gives that user a shell (both keys have forced commands), so it adds nothing beyond the job keys. It would matter if that account were ever reachable another way.
+
+**Accepted** because backups by design trust the runner with the source's data. Documented so it isn't widened later.
+
+---
+
+### SF-20 — Client-sent rsync filter rules read files as root (older rsync echoes them) ❌ open
+
+| | |
+|---|---|
+| **Severity** | 🟡 Low |
+| **Component** | `jobscript.py` `serve()` |
+
+**Why it matters.** Filter rules travel over the rsync connection, not the command line, so the SF-15 allowlist can't see them. A client rule like `--filter=': /etc/shadow'` makes the **root sender read that file** as rules. rsync 3.5 reports only `<rule from /etc/shadow line 1>`; I didn't test whether older versions (3.1/3.2, still shipped by LTS distros) print the rule text. If they do, the first word of each line leaks back to the job-key holder.
+
+**Remediation.** Require rsync ≥ 3.2.x on sources (check it in the setup script). Or run the sender with privileges dropped to read-only `CAP_DAC_READ_SEARCH`. Or move to an rrsync-style wrapper that also refuses unknown protocol options.
+
+---
+
+### SF-21 — SSH trust: first-use host keys, agent forwarding ❌ open
+
+| | |
+|---|---|
+| **Severity** | 🟠 Medium |
+| **Component** | `remote.py` (`StrictHostKeyChecking=accept-new`), `keyinstall.py`, `scriptkit.REMOTE` (`ssh -A`) |
+
+**Why it matters.**
+- **First-use trust.** The first connection to an address trusts whatever answers. On a LAN, a spoofed ARP or DHCP response during first enrollment means the **sudo password** typed into Access/Deploy access, and every later scan, go to the impostor. After that, a host-key change is refused, which is good.
+- **Agent forwarding.** Downloadable move scripts run with `ssh -A`. While the script runs, root on that host can use **your SSH agent** to log in anywhere your keys work.
+
+**Remediation.**
+- Show the host-key fingerprint in the UI on first contact and require confirmation before any password is sent. Optionally import known host keys from an existing `known_hosts`.
+- Replace `ssh -A` with per-step job keys (as deploys already do), or document it clearly and use `ssh-add -c` (confirm each use).
+
+---
+
+### SF-22 — Hosts can forge their own job runs and drift results (accepted)
+
+| | |
+|---|---|
+| **Severity** | 🟡 Low |
+| **Component** | `jobs.ingest_scan` (runs read from `/var/lib/storageforge/jobs/*/runs.jsonl` during scans), drift checks in `alerts.py` |
+
+**Why it matters.** Run history and drift (file checksums, timers) come from the host itself. A compromised host can report "ok" runs and clean drift, and hide a stopped backup. **Accepted:** a host you don't trust can't attest to itself. The independent check is a **verify run from the destination side**, plus restore tests from snapshots.
+
+---
+
+### Checklist (addendum)
+
+- [x] **SF-14** Quote report URL and mount paths in job scripts; strict `REPORT_URL_RE`; quote `tasks.py` messages
+- [x] **SF-15** Allowlist rsync sender options in `storageforge-job --serve`
+- [x] **SF-16** Pin hosts by SSH host key / address; refuse hostname takeovers; bind deploys to `machine-id`
+- [ ] **SF-17** `sh()` quoting and `esc()` everywhere in `planner.js`; validate device/pool names on save
+- [x] **SF-18** Sign and check `machine-id`; atomic nonce claim (`noclobber`)
+- [ ] **SF-20** Minimum rsync version on sources, or a reduced-privilege sender
+- [ ] **SF-21** Confirm the host key before any password is sent; drop `ssh -A` from move scripts
+
 ---
 
 > [!note] Method and limits
-> Static review of the working tree (including uncommitted files), with targeted reproduction of SF-01 against a scratch SQLite database (`moves.script`, `changes.script`; `tasks.normalize` confirmed safe). Not covered: a live container run, image CVE scanning, the JavaScript UI (beyond the CSP), PostgreSQL-specific paths, `jobscript.py`/`storageforge-run` on-host scripts beyond the deploy docstring, and the full text of every check message.
+> Static review of the working tree (including uncommitted files), with targeted reproduction of SF-01 against a scratch SQLite database (`moves.script`, `changes.script`; `tasks.normalize` confirmed safe). Not covered: a live container run, image CVE scanning, the JavaScript UI (beyond the CSP), PostgreSQL-specific paths, `jobscript.py`/`storageforge-run` on-host scripts beyond the deploy docstring, and the full text of every check message. **§6 addendum:** `storageforge-run` and `storageforge-job` were read in full; SF-15 was reproduced and its fix re-tested against stock rsync 3.5.1 in an unprivileged harness; SF-14's test executes the generators; SF-16 and SF-17 are from code reading (not exercised end to end); SF-20 was observed on rsync 3.5.1 only.

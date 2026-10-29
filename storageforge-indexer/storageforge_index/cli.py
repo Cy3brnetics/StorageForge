@@ -397,6 +397,8 @@ def cmd_prune(args) -> int:
 
 
 def cmd_hosts(args) -> int:
+    if getattr(args, 'hosts_cmd', None) == 'rekey':
+        return _rekey_host(args)
     _, conn = open_db(args)
     rows = conn.all("""SELECT h.hostname, h.ip_address, h.last_scanned_at,
                               (SELECT count(*) FROM mounts m WHERE m.host_id = h.host_id AND m.scan_state = 'indexed'),
@@ -409,6 +411,33 @@ def cmd_hosts(args) -> int:
         return 1
     for hn, ip, last, mounts, files, size in rows:
         print(f'{hn:<28} {ip or "—":<16} scanned {when(epoch(last))}  {mounts} mounts  {files:,} entries  {fmt_bin(size)}')
+    return 0
+
+
+def _rekey_host(args) -> int:
+    """A host was reinstalled (new SSH host keys) or moved: forget its pinned identity and its known_hosts lines, so
+    the next scan that claims the name pins it again. Until then a scan from anywhere may claim it: scan it now."""
+    import subprocess
+    from .db import Database
+    from .remote import child_env
+    from .runner import known_hosts_path
+    from .vault import Vault, VaultError
+    db, conn = open_db(args)
+    try:
+        name, addr = Database.rekey_host(conn, args.name)
+    except LookupError as exc:
+        print(f'error: {exc}', file=sys.stderr)
+        return 2
+    if addr:
+        for entry in (addr, f'[{addr}]:{args.port}'):
+            subprocess.run(['ssh-keygen', '-R', entry, '-f', str(known_hosts_path())], capture_output=True, env=child_env())
+    try:
+        with Vault(db, conn).unlock() as v:
+            _audit(db, conn, v, 'host.rekey', host=name, address=addr)
+    except VaultError:
+        _audit(db, conn, None, 'host.rekey', host=name, address=addr)
+    print(f'forgot the pinned SSH host keys of {name}' + (f' (and {addr} in known_hosts)' if addr else '')
+          + f'. Scan it now: storageforge-index scan --host <its address>; that scan pins it again.')
     return 0
 
 
@@ -866,6 +895,10 @@ def build_parser() -> argparse.ArgumentParser:
     pr.set_defaults(fn=cmd_prune)
 
     h = sub.add_parser('hosts', help='list indexed hosts')
+    hs = h.add_subparsers(dest='hosts_cmd')
+    rk = hs.add_parser('rekey', help='a host was reinstalled or moved: forget its pinned SSH host keys (scan it right after)')
+    rk.add_argument('name')
+    rk.add_argument('--port', type=int, default=22, help='its SSH port, to drop that known_hosts line too')
     h.set_defaults(fn=cmd_hosts)
 
     def report_opts(x):

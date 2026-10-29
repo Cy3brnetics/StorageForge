@@ -29,7 +29,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from . import deploy, moves
 from .db import Conn
 from .jobscript import JOB_SCRIPT
-from .scriptkit import HELPERS
+from .scriptkit import HELPERS, one_line
 
 SCHEDULED = ('mirror', 'rsnapshot', 'git')
 REPORT_CA = '/etc/storageforge/report-ca.pem'       # the self-signed certificate an https report URL is checked against
@@ -270,7 +270,7 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
     'token': token}}."""
     q = shlex.quote
     prefix = f'p{int(plan["id"])}-'
-    parts = [HOST_HEAD.format(name=plan['name'].replace('\n', ' '), host=host, date=time.strftime('%Y-%m-%d %H:%M'),
+    parts = [HOST_HEAD.format(name=one_line(plan['name']), host=one_line(host), date=time.strftime('%Y-%m-%d %H:%M'),
                               prefix=q(prefix)), HOST_FUNCS]
     methods = {s['method'] for s in runner_specs}
     parts.append('section "tools"\n')
@@ -285,8 +285,8 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
         if report_url:
             parts.append(f'cacert=(); [[ -r {REPORT_CA} ]] && cacert=(--cacert {REPORT_CA})\n'
                          f'code=$(curl -s -m 5 ${{cacert[@]+"${{cacert[@]}}"}} -o /dev/null -w "%{{http_code}}" {q(report_url.rstrip("/") + "/healthz")} 2>/dev/null || true)\n'
-                         f'[[ $code == 200 ]] && ok "reports reach {report_url}" || info "cannot reach {report_url} from here '
-                         f'(HTTP ${{code:-none}}): runs are still picked up by scans"\n')
+                         f'[[ $code == 200 ]] && ok {q("reports reach " + report_url)} || info {q("cannot reach " + report_url)}'
+                         f'" from here (HTTP ${{code:-none}}): runs are still picked up by scans"\n')
         else:
             parts.append('info "no report URL set in StorageForge: runs are picked up by scans only"\n')
     if any(s['snapshot'] for s in source_specs):
@@ -301,8 +301,9 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
     timers, paused = [], []
     for s in runner_specs:
         parts.append(f'section {q("job " + s["id"] + ": " + s["name"])}\n')
-        parts.append(f'[[ {q(s["dst_mount"])} == / ]] || mountpoint -q {q(s["dst_mount"])} && ok "destination mount {s["dst_mount"]}" '
-                     f'|| info "{s["dst_mount"]} is not mounted now: runs wait for it"\n')
+        # values only ever as quoted words: inside "..." a $(...) in a scanned or designed path would run as root
+        parts.append(f'[[ {q(s["dst_mount"])} == / ]] || mountpoint -q {q(s["dst_mount"])} && ok {q("destination mount " + s["dst_mount"])} '
+                     f'|| info {q(s["dst_mount"] + " is not mounted now: runs wait for it")}\n')
         parts.append(_heredoc(f'want_file {q(f"/etc/storageforge/jobs/{s["id"]}.conf")} 0644', conf_text(s, report_url)))
         files, ts = units(s)
         for name, body in files.items():

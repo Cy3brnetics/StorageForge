@@ -7,6 +7,7 @@ JSONB, full-text maintenance) go through small helpers on Database.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import re
 import sqlite3
@@ -23,6 +24,14 @@ MIGRATIONS = Path(__file__).with_name('migrations')
 CHANGE_LOG_MAX_ADDS = 50_000
 CHANGE_DAYS = int(os.environ.get('STORAGEFORGE_CHANGE_DAYS', '90'))
 CHANGE_MAX_ROWS = int(os.environ.get('STORAGEFORGE_CHANGE_MAX_ROWS', '2000000'))
+
+
+class HostIdentityError(RuntimeError):
+    """A scan reached a machine that claims the name of another indexed host. Nothing about that host was changed."""
+
+
+def short_name(name: str) -> str:   # moves.host_slug's rule: what host matching and storageforge-run compare
+    return re.sub(r'[^a-z0-9_-]', '', (name or '').split('.')[0].lower()) or 'unknown'
 
 
 class MassDeleteRefused(RuntimeError):
@@ -154,16 +163,53 @@ class Database:
         return applied
 
     # hosts, mounts, scans
-    def upsert_host(self, conn: Conn, inv, t) -> int:
+    def upsert_host(self, conn: Conn, inv, t, host_keys: list[str] | None = None) -> int:
+        """The indexed host this scan belongs to. A host's name is what it reports, so the name alone proves nothing:
+        the row is only updated when the SSH host keys verified at this address match the ones pinned for it (or,
+        for a row from before keys were pinned, when it was scanned at the same address). Another machine claiming
+        an indexed name, or one with the same short name (host matching and deploys compare short names), is refused
+        with HostIdentityError instead of taking over the row, its address and the deploys sent to it."""
+        keys = set(host_keys or [])
+        mine = None
+        for hid, name, ssh, pinned in conn.all('SELECT host_id, hostname, ssh_host, host_keys FROM hosts'):
+            same_name = name.lower() == inv.hostname.lower()
+            if not same_name and short_name(name) != short_name(inv.hostname):
+                continue
+            old = set(json.loads(pinned)) if pinned else set()
+            same = bool(old & keys) if old and keys else (not ssh or ssh == t.host)
+            if not same:
+                why = (f'its SSH host keys are not the ones pinned for {name}' if old and keys
+                       else f'{name} was scanned at {ssh}, not {t.host}')
+                if not same_name:
+                    why = f'that has the same short name as {name}, and {why}'
+                raise HostIdentityError(
+                    f'{t.host} says it is {inv.hostname!r}, but {why}. Refused: nothing about {name} was changed. '
+                    f'If {name} was reinstalled or moved, run: storageforge-index hosts rekey {name}')
+            if same_name:
+                mine = (hid, old)
+        p = {'hn': inv.hostname, 'ip': inv.ip, 'os': inv.os_info, 'sh': t.host, 'su': t.user,
+             'sp': None if t.local else t.port, 'inv': inv.to_json(), 'mid': inv.machine_id or None}
+        if mine:
+            p.update(id=mine[0], keys=json.dumps(sorted(mine[1] | keys)) if mine[1] | keys else None)
+            conn.execute(f"""UPDATE hosts SET ip_address = :ip, os_info = :os, ssh_host = :sh, ssh_user = :su, ssh_port = :sp,
+                                inventory_json = {self.jsonp(':inv')}, host_keys = :keys, machine_id = :mid
+                             WHERE host_id = :id""", p)
+            return mine[0]
+        p['keys'] = json.dumps(sorted(keys)) if keys else None
         return conn.scalar(f"""
-            INSERT INTO hosts (hostname, ip_address, os_info, ssh_host, ssh_user, ssh_port, inventory_json)
-            VALUES (:hn, :ip, :os, :sh, :su, :sp, {self.jsonp(':inv')})
-            ON CONFLICT (hostname) DO UPDATE SET ip_address = excluded.ip_address, os_info = excluded.os_info,
-                ssh_host = excluded.ssh_host, ssh_user = excluded.ssh_user, ssh_port = excluded.ssh_port,
-                inventory_json = excluded.inventory_json
-            RETURNING host_id""",
-            {'hn': inv.hostname, 'ip': inv.ip, 'os': inv.os_info, 'sh': t.host, 'su': t.user,
-             'sp': None if t.local else t.port, 'inv': inv.to_json()})
+            INSERT INTO hosts (hostname, ip_address, os_info, ssh_host, ssh_user, ssh_port, inventory_json, host_keys, machine_id)
+            VALUES (:hn, :ip, :os, :sh, :su, :sp, {self.jsonp(':inv')}, :keys, :mid)
+            RETURNING host_id""", p)
+
+    @staticmethod
+    def rekey_host(conn: Conn, name: str) -> tuple[str, str | None]:
+        """Forget a host's pinned identity (it was reinstalled or moved): the next scan that claims the name pins anew.
+        Returns (hostname, the address it was scanned at), so the caller can drop that address from known_hosts."""
+        rows = conn.all('SELECT hostname, ssh_host FROM hosts WHERE lower(hostname) = lower(:n)', {'n': name})
+        if not rows:
+            raise LookupError(f'no indexed host {name!r}')
+        conn.execute('UPDATE hosts SET host_keys = NULL, ssh_host = NULL WHERE lower(hostname) = lower(:n)', {'n': name})
+        return rows[0]
 
     def sync_mounts(self, conn: Conn, host_id: int, plans) -> None:
         now = int(time.time())

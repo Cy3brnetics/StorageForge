@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · StorageForge</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="loginpage">
+<main>
+  <form id="loginform" class="logincard">
+    <div class="brand"><svg width="22" height="22" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="3" width="24" height="6" rx="1.5" class="t1"/><rect x="2" y="11" width="24" height="6" rx="1.5" class="t2"/><rect x="2" y="19" width="24" height="6" rx="1.5" class="t3"/></svg><b>StorageForge</b></div>
+    <h1>Sign in</h1>
+    <p id="loginmsg" class="st-failed" hidden></p>
+    <label class="field col"><span>Username</span><input id="username" name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" required autofocus></label>
+    <label class="field col"><span>Password</span><input id="password" name="password" type="password" autocomplete="current-password" required></label>
+    <button type="submit" class="btn pri">Sign in</button>
+    <p class="muted small">Accounts are created on the server: <code>storageforge-index user add &lt;name&gt;</code></p>
+  </form>
+</main>
+<script src="/login.js"></script>
+</body>
+</html>

@@ -2,8 +2,9 @@
 reverse proxy or on loopback.
 
 GET  /healthz                       liveness + readiness (no auth)
-GET  /                              graph UI (static, no auth; every data call needs a session)
-GET  /planner                       storage planner UI (static, no auth)
+GET  /login                         sign-in page (the only page served without a session)
+GET  /                              graph UI; without a valid session, a redirect to /login?next=/
+GET  /planner                       storage planner UI; likewise
 POST /api/login  {"username", "password"}   start a session (cookie)
 POST /api/logout                    end it
 POST /api/reauth  {"password"}      confirm the password before commands run on hosts (good for REAUTH_WINDOW)
@@ -86,8 +87,9 @@ import time
 import traceback
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import urlencode
 
-from flask import Flask, Response, g, jsonify, request, send_from_directory, session
+from flask import Flask, Response, g, jsonify, redirect, request, send_from_directory, session
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_login import LoginManager, current_user, login_required, login_user, logout_user
@@ -189,8 +191,9 @@ class App:
     def canonical(conn, host: str) -> str:
         """One name per machine: a binding's IP, an ssh alias and the hostname all queue as the indexed hostname, so
         the scheduler and "Scan now" can't start two scans of one host under different names."""
-        row = conn.all("""SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR ip_address = :h OR ssh_host = :h
-                          ORDER BY last_scanned_at DESC""", {'h': host})
+        row = conn.all("""SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR ssh_host = :h OR ip_address = :h
+                          ORDER BY CASE WHEN lower(hostname) = lower(:h) THEN 0 WHEN ssh_host = :h THEN 1 ELSE 2 END,
+                                   last_scanned_at DESC""", {'h': host})   # a host's self-reported IP comes last
         return row[0][0] if row else host
 
     def enqueue(self, host: str, actor: str) -> int:
@@ -413,17 +416,46 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             raise ValueError('expected a JSON object body')
         return body
 
-    # static UI and health
+    # pages: only /login without a session; the app and planner pages and their scripts need one
+    def page(name):
+        resp = send_from_directory(STATIC, name, max_age=0)
+        resp.headers['Cache-Control'] = 'no-store'      # never kept for the back button after signing out
+        return resp
+
+    def safe_next(value: str | None) -> str:
+        # a path on this site only: "//evil" or "/\\evil" would leave it
+        return value if value and re.fullmatch(r'/(?![/\\])[^\s]*', value) else '/'
+
+    def to_login():
+        args = {'next': request.full_path.rstrip('?')}
+        if g.get('session_expired'):
+            session.clear()
+            args['ended'] = '1'
+        return redirect('/login?' + urlencode(args))
+
     @web.get('/')
     @web.get('/index.html')
     def index():
-        return static('index.html')
+        return page('index.html') if current_user.is_authenticated else to_login()
 
     @web.get('/planner')
     def planner():
-        return static('planner.html')
+        return page('planner.html') if current_user.is_authenticated else to_login()
 
-    @web.get('/<any("app.js", "topology.js", "checks.js", "moves.js", "changes.js", "gitview.js", "dockerview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "style.css", "favicon.svg", "planner.js", "planner.css"):name>')
+    @web.get('/login')
+    def login_page():
+        if current_user.is_authenticated:
+            return redirect(safe_next(request.args.get('next')))
+        return page('login.html')
+
+    @web.get('/<any("login.js", "style.css", "favicon.svg"):name>')
+    def public_static(name):
+        resp = send_from_directory(STATIC, name, max_age=0)
+        resp.headers['Cache-Control'] = 'no-cache'
+        return resp
+
+    @web.get('/<any("session.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "gitview.js", "dockerview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "planner.js", "planner.css"):name>')
+    @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
         resp.headers['Cache-Control'] = 'no-cache'

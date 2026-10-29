@@ -7,6 +7,8 @@ per-mount `find` streams and the optional checksum pass.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -105,6 +107,30 @@ class Transport:
         # The login shell might be fish or csh; always hand the script to POSIX sh.
         return argv + [self.target, 'sh -c ' + shlex.quote(script)]
 
+    def host_keys(self) -> list[str]:
+        """SHA-256 fingerprints of the host keys ssh verified for this address (known_hosts): what the machine
+        proved by holding the private keys, unlike anything it prints about itself. ['local'] for local scans."""
+        if self.local:
+            return ['local']
+        addr = self.host.strip('[]')
+        name = addr if self.port in (None, 22) else f'[{addr}]:{self.port}'
+        argv = ['ssh-keygen', '-F', name] + (['-f', self.known_hosts] if self.known_hosts else [])
+        try:
+            out = subprocess.run(argv, capture_output=True, text=True, timeout=10, env=child_env()).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        fps = set()
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) < 3 or line.startswith('#') or parts[0].startswith('@'):   # comments, @cert-authority, @revoked
+                continue
+            try:
+                blob = base64.b64decode(parts[2], validate=True)
+            except ValueError:
+                continue
+            fps.add('SHA256:' + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip('='))
+        return sorted(fps)
+
     def run(self, script: str, timeout: int = 120) -> str:
         proc = subprocess.run(self.argv(script), capture_output=True, timeout=timeout, env=child_env())
         if proc.returncode == 255 and not self.local:
@@ -181,6 +207,7 @@ def checksum_command(nice: bool = True) -> str:
 
 INVENTORY_SCRIPT = r"""
 echo '@@hostname'; hostname -f 2>/dev/null || hostname 2>/dev/null || uname -n
+echo '@@machineid'; cat /etc/machine-id 2>/dev/null || cat /var/lib/dbus/machine-id 2>/dev/null
 echo '@@ip'; hostname -I 2>/dev/null || ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}'
 echo '@@os'; (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME"); uname -srm
 echo '@@lsblk'
@@ -235,6 +262,7 @@ class HostInventory:
     jobs: str = ''    # run lines of StorageForge jobs (the fallback when a run could not report)
     managed: str = '' # sha256sum -c of what deploys wrote, StorageForge fstab lines, job timers (drift)
     ids: str = ''     # users and groups with UID/GID >= 1000 (NFS ownership check)
+    machine_id: str = ''  # /etc/machine-id: signed into deploy requests (self-reported, so never used as identity)
 
     def to_json(self) -> str:
         return json.dumps({
@@ -328,4 +356,5 @@ def collect_inventory(t: Transport) -> HostInventory:
                          sec.get('zpool', '').strip(), sec.get('df', '').strip(), lvs=sec.get('lvs', '').strip(),
                          access=access, user=user, nfs=sec.get('nfs', '').strip(), smb=sec.get('smb', '').strip(),
                          btrfs=sec.get('btrfs', '').strip(), jobs=sec.get('jobs', '').strip(),
-                         managed=sec.get('managed', '').strip(), ids=sec.get('ids', '').strip())
+                         managed=sec.get('managed', '').strip(), ids=sec.get('ids', '').strip(),
+                         machine_id=next((m for m in lines('machineid') if re.fullmatch(r'[0-9a-f]{32}', m)), ''))
