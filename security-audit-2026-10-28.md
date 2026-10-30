@@ -28,7 +28,8 @@ related: ["[[security-parm]]", "[[audit-results]]", "[[audit-2026-10-27]]", "[[d
 > - **SF-12 fixed (opt-in).** `docker/egress-firewall.sh` (root) limits traffic out of `sf0` to DNS, SSH and alert ports. The demo runs as its own compose project, with its own volumes, bridge and port, and the target sits on an `internal` network.
 > - **SF-13.** Snapshot browse is now POST. Job reports record the sender's address and reject run times dated ahead. Accepted as-is: logout without a CSRF token (SameSite=Strict), library `ValueError` text in 400s (signed-in users only), `style-src-attr 'unsafe-inline'`.
 > - **SF-02 roles / TOTP / separate signer: not done.** The owner considers full power per account inherent to this tool. The password re-check covers the command paths.
-> - **Addendum (§6), same day:** a second pass over the on-host programs and a compromised host. **SF-14** (injection into job deploy scripts) and **SF-15** (job keys could read any file as root) are **fixed**. **SF-16** (host impersonation) and **SF-18** were **fixed** on 2026-10-29. **SF-17** (planner build scripts and HTML) and **SF-21** (SSH first-use trust, agent forwarding) are still **open**, along with lower items SF-19, SF-20 and SF-22.
+> - **Addendum (§6), same day:** a second pass over the on-host programs and a compromised host. **SF-14** (injection into job deploy scripts) and **SF-15** (job keys could read any file as root) are **fixed**. **SF-16** (host impersonation) and **SF-18** were **fixed** on 2026-10-29, then **SF-17**, **SF-20** (re-rated High: it leaked the first line of `/etc/shadow`) and **SF-21**. SF-19 and SF-22 are accepted.
+> - **Second full audit (§7), 2026-10-29:** found and fixed **SF-23** (another root-script injection), **SF-24** (Jinja2 in generated Ansible), **SF-25** (setuid bits survive a restore) and **SF-26** (a host could exhaust StorageForge's memory). **SF-27** (keyless audit entries) is now reported. Two permanent tests guard the classes: a canary sweep over every script generator, and a route-coverage check.
 > - Verified end to end on an isolated compose stack (TLS, pinned cert, `__Host-` cookie, re-auth, clamps, logout revocation, group-read secrets, no pip in the image). The full test suite passes in the Dockerfile `test` stage.
 
 ---
@@ -561,11 +562,11 @@ The first pass looked at an attacker coming through the web UI. This pass asks a
 > | SF-14 | Report URL and mount paths injected into root deploy scripts | 🔴 High | ✅ fixed |
 > | SF-15 | Job keys could read any file as root on source hosts (rsync `-s` bypass) | 🔴 Critical | ✅ fixed |
 > | SF-16 | A host's self-reported hostname can take over another host's identity | 🔴 High | ✅ fixed |
-> | SF-17 | Planner build scripts and HTML use scanned names unescaped | 🟠 Medium | ❌ open |
+> | SF-17 | Planner build scripts and HTML use scanned names unescaped | 🟠 Medium | ✅ fixed |
 > | SF-18 | `storageforge-run` binds requests to the short hostname; nonce check is not atomic | 🟡 Low | ✅ fixed |
 > | SF-19 | Job keys can trigger pre/post hooks at any time; sudoers `--serve *` | 🟡 Low | accepted (documented) |
-> | SF-20 | Client-sent rsync filter rules can make the root sender read files (older rsync echoes lines) | 🟡 Low | ❌ open |
-> | SF-21 | SSH trust: first-use host keys, `ssh -A` in move scripts | 🟠 Medium | ❌ open |
+> | SF-20 | Client-sent rsync filter rules made the root sender read and print any file (first line of `/etc/shadow`) | 🔴 High (re-rated) | ✅ fixed |
+> | SF-21 | SSH trust: first-use host keys, `ssh -A` in move scripts | 🟠 Medium | ✅ fixed |
 > | SF-22 | Scans let a host forge its own job runs and drift results | 🟡 Low | accepted |
 
 ### What holds up (verified)
@@ -666,7 +667,7 @@ I re-ran the harness: every job variant (copy, mirror, checksum, verify, rsnapsh
 
 ---
 
-### SF-17 — Planner build scripts and HTML use scanned names unescaped ❌ open
+### SF-17 — Planner build scripts and HTML use scanned names unescaped ✅ fixed
 
 | | |
 |---|---|
@@ -676,6 +677,16 @@ I re-ran the harness: every job variant (copy, mirror, checksum, verify, rsnapsh
 **Why it is insecure.** The planner turns a design (taken from a scan or edited by any user) into a "build this host from bare disks" bash script that wipes and partitions disks. Device names, partition labels, VG/LV/pool/dataset names and mount targets go into commands **unquoted**. A scanned or designed device name such as `sdb /dev/sda` makes `wipefs --all /dev/sdb /dev/sda` wipe a second disk. `sdb; curl …|sh` runs a command. In the page itself, unescaped values inside attributes allow markup and `style` injection. The CSP blocks script execution, but not fake UI.
 
 **Remediation.** Add a `sh()` single-quote helper in `planner.js` and use it for every value in generated commands. Validate device and pool names against their kernel/tool grammars (`^[A-Za-z0-9._:-]+$`) when a design is saved (`PUT /api/planner/design`). Use `esc()` for every attribute and text value.
+
+**Fix (2026-10-29).**
+- **One entry point for data.** Every design (from the server, or a draft kept in the browser), the host list and the activity data pass through `scrub()` when they enter the planner. It strips control characters (they end a line or a comment in a generated script) and `< > " `` ` `` (they end HTML text or a quoted attribute). So no template can be broken out of, escaped or not; hand-proving all 765 interpolations wasn't needed.
+- **Identifiers are held to their tools' character set** (`tidy()`): device and partition IDs, pool, VG and LV names, fs type, level, ZFS properties, and dataset/subvolume names (with `/`). `sdb /dev/sda` becomes `sdb__dev_sda`, never two arguments to `wipefs`.
+- **Free text is quoted.** Labels, mount points, link paths, `zpool -m`, dataset mount points and `/dev/disk/by-id` names go through `sh()`. fstab fields get octal escapes (`\040`). Ansible values are JSON strings (valid YAML), and `register:` names are made safe.
+- **The server refuses bad designs on save.** `PUT /api/planner/design` runs `blueprint.check_text()`: any string with those characters, or an identifier outside its grammar, gets a 400 naming the field. The bundled atlas example passes.
+- **Verified in the browser** with a hostile design stored the way scan data arrives:
+  - The model `<img … id=PWNIMG>` rendered as text, and no element was created.
+  - The label `data';touch /tmp/PWNED;'` came out as one quoted word in `mkpart` and `mkfs -L`.
+  - `/srv/my data` came out as `'/srv/my data'` in bash and `/srv/my\040data` in fstab.
 
 ---
 
@@ -714,20 +725,34 @@ I re-ran the harness: every job variant (copy, mirror, checksum, verify, rsnapsh
 
 ---
 
-### SF-20 — Client-sent rsync filter rules read files as root (older rsync echoes them) ❌ open
+### SF-20 — Client-sent rsync filter rules read files as root (older rsync echoes them) ✅ fixed
 
 | | |
 |---|---|
-| **Severity** | 🟡 Low |
+| **Severity** | 🔴 High (re-rated from Low after testing) |
 | **Component** | `jobscript.py` `serve()` |
 
 **Why it matters.** Filter rules travel over the rsync connection, not the command line, so the SF-15 allowlist can't see them. A client rule like `--filter=': /etc/shadow'` makes the **root sender read that file** as rules. rsync 3.5 reports only `<rule from /etc/shadow line 1>`; I didn't test whether older versions (3.1/3.2, still shipped by LTS distros) print the rule text. If they do, the first word of each line leaks back to the job-key holder.
 
 **Remediation.** Require rsync ≥ 3.2.x on sources (check it in the setup script). Or run the sender with privileges dropped to read-only `CAP_DAC_READ_SEARCH`. Or move to an rrsync-style wrapper that also refuses unknown protocol options.
 
+**Tested (2026-10-29): worse than estimated.** rsync **3.1.3 and 3.2.5** (what LTS distros ship) print the rule text. `--filter=': /etc/shadow'` returned `Unknown filter rule: 'root:$6$…'`: root's password hash, to whoever holds a job key. Requiring a newer version wouldn't help, since 3.2.5 leaks too.
+
+**Fix.** Sources now serve jobs only through **rsync's daemon mode over the job key's SSH session, chrooted into the job's root**:
+- **What the source runs.** `storageforge-job --serve` accepts only `rsync --server --daemon .`, with a one-off config: module `src` (the job's root), module `snap` (its btrfs snapshot), `use chroot = yes`, `read only = yes`, `list = no`, and `refuse options` for remove/delete/batch/log-file. The config is removed by a `trap`.
+- **What the runner asks for.** Jobs request `storageforge-deploy@host::src/` (or `::snap/`). rsnapshot, which reads `host::module` as a TCP daemon, reaches it through `RSYNC_CONNECT_PROG`.
+- **Old clients get a clear error.** The old `--server --sender` form is refused with "redeploy the plan". A plan deploy updates both sides together.
+- **Verified as root** (the only place `chroot` works), in a throwaway Alpine container with rsync 3.2.5 and the real script:
+  - The normal copy, mirror flags (`--delete-after`, `-c`, `-x`, `--partial-dir`), verify flags and rsnapshot all work.
+  - The `/etc/shadow` merge rule printed nothing.
+  - `-L` through a link to `/etc/shadow`, `::src/../../etc/shadow` and `-s` with an absolute path all resolve inside the job's root.
+  - A push into the source is refused (read-only module), and so is `--remove-source-files`.
+- **In CI:** `test_job_keys_read_the_job_folder_and_nothing_else` runs as root in the Dockerfile `test` stage (rsync added there), and `test_job_keys_only_reach_the_chrooted_daemon` runs everywhere. The SF-15 option allowlist became unnecessary and was removed with the old branch.
+- **Side fix:** `mktemp` templates no longer use a suffix after `XXXXXX`, which BusyBox refuses.
+
 ---
 
-### SF-21 — SSH trust: first-use host keys, agent forwarding ❌ open
+### SF-21 — SSH trust: first-use host keys, agent forwarding ✅ fixed
 
 | | |
 |---|---|
@@ -741,6 +766,16 @@ I re-ran the harness: every job variant (copy, mirror, checksum, verify, rsnapsh
 **Remediation.**
 - Show the host-key fingerprint in the UI on first contact and require confirmation before any password is sent. Optionally import known host keys from an existing `known_hosts`.
 - Replace `ssh -A` with per-step job keys (as deploys already do), or document it clearly and use `ssh-add -c` (confirm each use).
+
+**Fix (2026-10-29).**
+- **A password goes only to a host key a person confirmed.** Key install, scan-access grant and deploy access refuse with **409** (`hostkey`: host, port, fingerprints) unless the key StorageForge holds for that address and port is in `host_key_confirmations` (migration 015).
+  - If the address is new, `hostkeys.offered()` fetches the key the server presents without trusting it or authenticating: the connection carries only the key exchange.
+  - The UI catches the 409 and shows the fingerprint, with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` to compare on the host.
+  - "They match" posts `/api/hostkey/confirm` (signed in, recent password, audited `ssh.hostkey.confirm`). That pins the key if it wasn't pinned yet, and only if the host still presents the same one. Then the request is retried.
+- **The password connections are strict.** They now use `StrictHostKeyChecking=yes` (`Transport(strict=True)`, ssh-copy-id, the admin sudo path), so a key that changes between confirming and sending is refused.
+- **Scans keep trust-on-first-use**, but pinning (SF-16) stops a later takeover, and a key a scan pinned still has to be confirmed by a person before any password goes there.
+- **Agent forwarding is opt-in.** Move, change, share and task scripts forward your agent with `--host` only when `--forward-agent` is also given, and say why it matters. The "cannot reach" hint suggests it.
+- **Verified.** Against a real sshd, `offered()` returned exactly the host's own ED25519 fingerprint (`ssh-keygen -lf` inside the container). Before confirming, a password would be refused; after, a strict connection accepts the key. The key-install route test now walks 409 → wrong fingerprint refused → confirm → install.
 
 ---
 
@@ -760,10 +795,65 @@ I re-ran the harness: every job variant (copy, mirror, checksum, verify, rsnapsh
 - [x] **SF-14** Quote report URL and mount paths in job scripts; strict `REPORT_URL_RE`; quote `tasks.py` messages
 - [x] **SF-15** Allowlist rsync sender options in `storageforge-job --serve`
 - [x] **SF-16** Pin hosts by SSH host key / address; refuse hostname takeovers; bind deploys to `machine-id`
-- [ ] **SF-17** `sh()` quoting and `esc()` everywhere in `planner.js`; validate device/pool names on save
+- [x] **SF-17** `sh()` quoting and `esc()` everywhere in `planner.js`; validate device/pool names on save
 - [x] **SF-18** Sign and check `machine-id`; atomic nonce claim (`noclobber`)
-- [ ] **SF-20** Minimum rsync version on sources, or a reduced-privilege sender
-- [ ] **SF-21** Confirm the host key before any password is sent; drop `ssh -A` from move scripts
+- [x] **SF-20** Minimum rsync version on sources, or a reduced-privilege sender
+- [x] **SF-21** Confirm the host key before any password is sent; drop `ssh -A` from move scripts
+
+## 7. Second full audit (2026-10-29)
+
+After SF-14 to SF-22, a fresh pass over everything, using tools instead of reading alone:
+- **Generator canary sweep.** I put the payload ``$(touch${IFS}/tmp/CANARY)`id`"q;x`` in every free-text field the validators accept, across every change type, every task block type, move plans, both sides of job deploys and share scripts (39 outputs). Then I checked that it only appears where bash treats it as data: in single quotes, a quoted heredoc or a comment.
+- **Route coverage.** Every registered route and method was called without a session.
+- **Live tests** of the restore path (GNU tar as root, with a hostile archive) and of output limits.
+- **Reading:** the vault's crypto, every HTML sink in the UI, and the git source path.
+
+> [!summary] Results
+> | ID | Title | Severity | Status |
+> |---|---|---|---|
+> | SF-23 | Source-side job script ran a move plan's source path as code | 🔴 High | ✅ fixed |
+> | SF-24 | Jinja2 in names and paths was rendered by Ansible on the controller | 🟠 Medium | ✅ fixed |
+> | SF-25 | A restore from a compromised backup host could plant setuid-root files | 🟠 Medium | ✅ fixed |
+> | SF-26 | A compromised host could print until StorageForge ran out of memory | 🟠 Medium | ✅ fixed |
+> | SF-27 | Keyless (locked-vault) audit entries can be rewritten undetected | 🟡 Low | ✅ reported in verify |
+
+### SF-23 — Source-side job script ran the source path as code ✅ fixed
+`jobs.host_script` for the **source** host wrote `ok "source {path}" || conflict "source {path} does not exist"`. Paths may hold `$(…)` (only `..` and line breaks are refused), and inside double quotes bash runs it, as root, at the next deploy. The canary sweep caught it; reading had missed it twice (SF-01, SF-14). **Fix:** quoted words, like SF-14. **Guard:** `test_no_generator_lets_a_value_run_as_code` repeats the sweep on every test run.
+
+### SF-24 — Jinja2 in generated Ansible ✅ fixed
+Ansible renders Jinja2 in every module argument. A change-plan path such as `/srv/{{ lookup('pipe','id') }}` became `path: /srv/{{ lookup('pipe','id') }}` and would have run `id` **on the machine running the playbook**: the operator's laptop, not the target. The planner's playbook had the same issue. **Fix:** any string with `{{`, `{%` or `{#` is emitted as `!unsafe "…"`. That's Ansible's own marker for literal data, and it's still valid YAML. The playbooks' own Jinja lives in `when:`, which takes no user data.
+
+### SF-25 — Setuid bits survive a restore ✅ fixed
+A restore streams `tar` from the backup host and extracts it **as root** on the source. With a hostile archive, GNU tar 1.35 refused `../`, absolute names, a write through a planted symlink and a hard link out of the folder. But it **kept a setuid-root file**. A backup host that was taken over could therefore restore a setuid-root binary that any local user who can reach the folder runs as root. **Fix:** `unpack` strips setuid/setgid from everything it extracted, whether or not tar finished, and says how many files it changed. Verified as root in a container.
+
+### SF-26 — Unbounded output from hosts ✅ fixed
+`Transport.run` (the inventory, and every remote command that isn't streamed), the Docker inventory and the git survey read a host's whole output into memory, and the stderr reader read lines of any length. The container is limited to 2 GiB, so a host printing gigabytes got the server OOM-killed, stopping scans, alerts and backups. **Fix:** `read_capped()` stops at 64 MiB, kills the process and fails with a clear error. stderr lines are read in 64 KiB pieces, and `Transport.run`'s timeout still applies. (Deploy output was already capped at 256 KiB, and the file index streams in bounded chunks.)
+
+### SF-27 — Keyless audit entries ✅ reported
+Each audit row records its own algorithm, and rows written while the vault was locked use plain SHA-256. Someone who can write the database file (past the triggers) could delete entries and re-chain the rest as keyless rows, and `verify` would still say intact. Rejecting keyless rows would break legitimate locked-vault entries, so `verify` (API, UI, CLI) now reports how many entries are keyless and flags any that **follow** a keyed one, from the first such entry on.
+
+### Checked and sound
+- **Authentication coverage.** Of 84 route/method pairs, only `/login` and its assets, `/healthz` (status only) and logout answer without a session. `test_every_route_needs_a_session_unless_listed` keeps it that way.
+- **HTML sinks.** Only the planner builds HTML from strings (now covered by SF-17's `scrub()`). The other views use DOM APIs and `textContent`.
+- **Vault crypto.**
+  - Argon2id (t=3, 64 MiB, 4 lanes) derives the KEK.
+  - AES-256-GCM uses random 96-bit nonces, at a volume where that's safe.
+  - The associated data binds each ciphertext to its key's UUID and purpose (DEK vs key).
+  - The KEK is never stored, and secret rotation re-wraps only the DEKs.
+- **Restore path handling.** GNU tar refuses traversal (tested), and `unpack` refuses targets outside the job's root (tested: `/etc/x`).
+
+### Informational
+- `git-upload-pack` runs as root on repositories inside a job's root with `safe.directory = *`. upload-pack doesn't run repository hooks or `fsmonitor`, and its pack hook is honoured only from protected config, so this is acceptable. Keep it to upload-pack.
+- `/api/hostkey/confirm` makes StorageForge open an SSH connection to an address a signed-in user names. It requires a recent password and is audited. The answer (key, "no SSH server", "did not answer") reveals whether an SSH server listens there, which is a mild probing aid for an account that can already run commands on hosts.
+- Job runs, drift and machine IDs come from the hosts themselves (SF-22): a host can lie about itself, never about another (SF-16).
+
+### Checklist (second audit)
+- [x] **SF-23** Quote the source path in source-side job scripts; canary sweep as a test
+- [x] **SF-24** `!unsafe` for Jinja-looking strings in both playbooks
+- [x] **SF-25** Strip setuid/setgid after every restore
+- [x] **SF-26** 64 MiB cap on host output; bounded stderr lines
+- [x] **SF-27** Report keyless entries after keyed ones in `audit verify`
+- [x] Route-coverage test
 
 ---
 

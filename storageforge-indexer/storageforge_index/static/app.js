@@ -31,6 +31,10 @@ async function api(path, opts = {}, confirmed = false) {
     await confirmPassword();                     // commands on hosts: type the password again, then retry once
     return api(path, opts, true);
   }
+  if (res.status === 409) {                      // a password would go to a host key nobody checked: show it first
+    const hk = (await res.clone().json().catch(() => ({}))).hostkey;
+    if (hk) { await confirmHostKey(hk); return api(path, opts, confirmed); }
+  }
   if (!res.ok) {
     let msg = res.statusText;
     try { msg = (await res.json()).error || msg; } catch { /* not JSON */ }
@@ -731,8 +735,10 @@ $('#verify').addEventListener('click', async () => {
   $('#verified').textContent = 'Checking…';
   try {
     const v = await getJSON('/api/audit/verify');
-    $('#verified').textContent = v.valid ? `Chain intact · ${v.entries_checked} entries` : `Chain broken at entry #${v.first_bad_id}`;
-    $('#verified').className = v.valid ? 'st-ok' : 'st-failed';
+    const weak = v.unkeyed_after_keyed ? ` · ${v.unkeyed_after_keyed} later entries were written with the vault locked (no key): `
+      + `whoever can write the database could have rewritten them, from #${v.first_unkeyed_after_keyed}` : '';
+    $('#verified').textContent = (v.valid ? `Chain intact · ${v.entries_checked} entries` : `Chain broken at entry #${v.first_bad_id}`) + weak;
+    $('#verified').className = !v.valid ? 'st-failed' : weak ? 'st-warn' : 'st-ok';
   } catch (err) { $('#verified').textContent = err.message; }
 });
 
@@ -797,6 +803,29 @@ $('#reauthform').addEventListener('submit', async (ev) => {
   }
   reauthDlg.close(); reauthDlg._done.resolve();
 });
+/* ── a person checks a host's SSH key before a password goes to it ── */
+const hkDlg = $('#hostkeydlg');
+function confirmHostKey(hk) {
+  return new Promise((resolve, reject) => {
+    $('#hkhost').textContent = hk.port && hk.port !== 22 ? `${hk.host} (port ${hk.port})` : hk.host;
+    $('#hkkeys').replaceChildren(...hk.keys.map((k) => el('li', {}, text('code', k.fingerprint), k.type ? ` ${k.type}` : '')));
+    $('#hkmsg').hidden = true;
+    hkDlg._done = { resolve, reject, hk };
+    hkDlg.showModal();
+  });
+}
+$('#hostkeyform').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const { resolve, hk } = hkDlg._done;
+  try {
+    await api('/api/hostkey/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ host: hk.host, port: hk.port, fingerprint: hk.keys[0].fingerprint }) });
+    hkDlg.close(); resolve();
+  } catch (err) { $('#hkmsg').textContent = err.message; $('#hkmsg').hidden = false; }
+});
+const hkCancel = () => { if (hkDlg._done) hkDlg._done.reject(new Error('Host key not confirmed: no password was sent')); hkDlg._done = null; };
+$('#hkcancel').addEventListener('click', () => { hkDlg.close(); hkCancel(); });
+hkDlg.addEventListener('cancel', hkCancel);
 const reauthCancel = () => { if (reauthWait) reauthDlg._done.reject(new Error('Password not confirmed: nothing was run')); };
 $('#reauthcancel').addEventListener('click', () => { reauthDlg.close(); reauthCancel(); });
 reauthDlg.addEventListener('cancel', reauthCancel);

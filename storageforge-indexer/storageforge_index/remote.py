@@ -46,6 +46,54 @@ def child_env() -> dict:
     return {k: v for k, v in os.environ.items() if not k.startswith('STORAGEFORGE_')}
 
 
+def key_fingerprint(b64: str) -> str | None:
+    """OpenSSH's SHA256:… fingerprint of a base64 public key blob."""
+    try:
+        blob = base64.b64decode(b64, validate=True)
+    except ValueError:
+        return None
+    return 'SHA256:' + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip('=')
+
+
+def known_hosts_name(host: str, port: int | None) -> str:
+    addr = host.strip('[]')
+    return addr if port in (None, 22) else f'[{addr}]:{port}'
+
+
+def known_host_keys(host: str, port: int | None = 22, known_hosts: str | None = None) -> list[str]:
+    """Fingerprints of the keys known_hosts holds for host:port (none: never connected)."""
+    argv = ['ssh-keygen', '-F', known_hosts_name(host, port)] + (['-f', known_hosts] if known_hosts else [])
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=10, env=child_env()).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    fps = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or line.startswith('#') or parts[0].startswith('@'):   # comments, @cert-authority, @revoked
+            continue
+        if fp := key_fingerprint(parts[2]):
+            fps.add(fp)
+    return sorted(fps)
+
+
+# What a host may send back for one inventory, Docker or git survey (the file index streams separately). A host that was
+# taken over could otherwise print until the StorageForge container runs out of memory.
+MAX_REMOTE_OUTPUT = 64 << 20
+
+
+def read_capped(proc: subprocess.Popen, what: str, limit: int = MAX_REMOTE_OUTPUT) -> bytes:
+    """proc's stdout, at most limit bytes: beyond that the process is killed and RemoteError raised."""
+    chunks, size = [], 0
+    while chunk := proc.stdout.read(1 << 20):
+        size += len(chunk)
+        if size > limit:
+            proc.kill()
+            raise RemoteError(f'{what}: the host sent more than {limit >> 20} MiB; refused')
+        chunks.append(chunk)
+    return b''.join(chunks)
+
+
 class RemoteError(RuntimeError):
     pass
 
@@ -73,6 +121,7 @@ class Transport:
     agent_sock: str | None = None      # vault-managed ephemeral agent
     known_hosts: str | None = None     # persistent known_hosts (trust on first use)
     isolated: bool = False             # ignore ~/.ssh/config so only vault settings apply
+    strict: bool = False               # only a host key already in known_hosts (password flows); else trust on first use
 
     def __post_init__(self):
         self._ctl_dir = None if self.local else tempfile.mkdtemp(prefix='sfidx-ssh-')
@@ -90,7 +139,7 @@ class Transport:
         argv = self._base() + [
             '-T', '-o', 'BatchMode=yes', '-o', f'ConnectTimeout={self.connect_timeout}',
             '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=4',
-            '-o', 'StrictHostKeyChecking=accept-new',
+            '-o', 'StrictHostKeyChecking=' + ('yes' if self.strict else 'accept-new'),
             '-o', 'ControlMaster=auto', '-o', 'ControlPersist=120',
         ]
         if self.isolated:
@@ -110,32 +159,28 @@ class Transport:
     def host_keys(self) -> list[str]:
         """SHA-256 fingerprints of the host keys ssh verified for this address (known_hosts): what the machine
         proved by holding the private keys, unlike anything it prints about itself. ['local'] for local scans."""
-        if self.local:
-            return ['local']
-        addr = self.host.strip('[]')
-        name = addr if self.port in (None, 22) else f'[{addr}]:{self.port}'
-        argv = ['ssh-keygen', '-F', name] + (['-f', self.known_hosts] if self.known_hosts else [])
-        try:
-            out = subprocess.run(argv, capture_output=True, text=True, timeout=10, env=child_env()).stdout
-        except (OSError, subprocess.TimeoutExpired):
-            return []
-        fps = set()
-        for line in out.splitlines():
-            parts = line.split()
-            if len(parts) < 3 or line.startswith('#') or parts[0].startswith('@'):   # comments, @cert-authority, @revoked
-                continue
-            try:
-                blob = base64.b64decode(parts[2], validate=True)
-            except ValueError:
-                continue
-            fps.add('SHA256:' + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip('='))
-        return sorted(fps)
+        return ['local'] if self.local else known_host_keys(self.host, self.port, self.known_hosts)
 
     def run(self, script: str, timeout: int = 120) -> str:
-        proc = subprocess.run(self.argv(script), capture_output=True, timeout=timeout, env=child_env())
-        if proc.returncode == 255 and not self.local:
-            raise RemoteError(f'ssh {self.target}: {proc.stderr.decode(errors="replace").strip() or "connection failed"}')
-        return proc.stdout.decode('utf-8', 'replace')
+        proc = subprocess.Popen(self.argv(script), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                stdin=subprocess.DEVNULL, env=child_env())
+        expired = threading.Event()
+        timer = threading.Timer(timeout, lambda: (expired.set(), proc.kill()))
+        timer.start()
+        err = StderrTail(proc.stderr)
+        try:
+            out = read_capped(proc, f'ssh {self.target}')
+            rc = proc.wait()
+        finally:
+            timer.cancel()
+            err.join(5)
+            proc.stdout.close()
+            proc.stderr.close()
+        if expired.is_set():
+            raise subprocess.TimeoutExpired(self.argv(script), timeout)
+        if rc == 255 and not self.local:
+            raise RemoteError(f'ssh {self.target}: {" ".join(err.tail).strip() or "connection failed"}')
+        return out.decode('utf-8', 'replace')
 
     def stream(self, script: str, stdin: bool = False) -> subprocess.Popen:
         return subprocess.Popen(self.argv(script), stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=child_env(),
@@ -159,7 +204,7 @@ class StderrTail(threading.Thread):
         self.start()
 
     def run(self):
-        for line in iter(self.pipe.readline, b''):
+        for line in iter(lambda: self.pipe.readline(1 << 16), b''):     # a line without an end is read in pieces
             self.count += 1
             text = line.decode('utf-8', 'replace').rstrip()
             self.tail.append(text)

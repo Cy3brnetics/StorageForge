@@ -1,0 +1,45 @@
+# StorageForge documentation
+
+StorageForge maps, plans and changes the storage on a fleet of Linux machines from one place. It indexes every host over SSH with no agent, shows what it found as an editable topology and graph, checks every plan against that index, and turns plans into scripts that report before they change anything. Run those scripts yourself, or deploy them through a signed runner on each host.
+
+![Topology view](images/topology.jpg)
+
+The code lives in [`storageforge-indexer/`](../storageforge-indexer). Its [README](../storageforge-indexer/README.md) is the short version; these pages are the full one.
+
+## Start here
+
+| Page | What it covers |
+| :--- | :--- |
+| [Getting started](getting-started.md) | Install with Docker or pip, create an account, add a key, scan your first host, run the demo |
+| [Concepts](concepts.md) | How the parts fit together, and the rules every feature follows |
+
+## Using it
+
+| Page | What it covers |
+| :--- | :--- |
+| [Web UI](web-ui.md) | Topology, Graph and Tasks views, the side panels, context menus |
+| [Planner](planner.md) | The design tool at `/planner`: devices, mounts, links, RAID, protection, export |
+| [Scanning and search](scanning-and-search.md) | What a scan reads, guardrails, incremental sync, read-only access, git and Docker discovery, search patterns |
+| [Plans and scripts](plans-and-scripts.md) | Staged changes, data moves, NFS/SMB shares and block-built storage tasks, and the scripts they produce |
+| [Deployments](deployments.md) | Deploy access, the signed runner, deployed jobs, alerts and drift |
+
+## Running it
+
+| Page | What it covers |
+| :--- | :--- |
+| [Security](security.md) | Key vault, audit log, accounts and sessions, host identity, container hardening |
+| [Operations](operations.md) | Configuration, backups, retention, logs, upgrades, dependency updates |
+| [CLI reference](cli-reference.md) | Every `storageforge-index` command |
+| [API reference](api-reference.md) | Every HTTP route |
+| [Database](database.md) | Schema, migrations, how queries use the indexes |
+
+## Records
+
+| Page | What it covers |
+| :--- | :--- |
+| [Consistency audit, 2026-10-29](audit-2026-10-29.md) | Places where the code, the README and the rules in [Concepts](concepts.md) disagree, found while writing these pages |
+| [Deployments design](../deployments-design.md) | The original design for deploys (2026-10-27) |
+| [Security audit, 2026-10-28](../security-audit-2026-10-28.md) | Findings and fixes |
+| [Audit, 2026-10-27](../audit-2026-10-27.md) | QoL, gaps and next features |
+
+Screenshots were taken from a local instance with one scanned demo host (`nas-demo`, the container from `examples/demo`) and the `atlas` example design.

@@ -118,7 +118,8 @@ def survey(db, conn: Conn, t, host_id: int, scan_id: int) -> dict:
     threading.Thread(target=feed, daemon=True).start()
     from .remote import StderrTail
     err = StderrTail(proc.stderr)
-    out = proc.stdout.read().decode('utf-8', 'replace')
+    from .remote import read_capped
+    out = read_capped(proc, 'git survey').decode('utf-8', 'replace')
     proc.wait()
     err.join(5)
     proc.stdout.close()

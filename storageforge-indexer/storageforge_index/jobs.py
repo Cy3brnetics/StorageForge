@@ -320,7 +320,7 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
     keylines = []
     for s in source_specs:
         parts.append(f'section {q("serves job " + s["id"] + " (" + s["runner"] + " pulls " + s["src"] + ")")}\n')
-        parts.append(f'[[ -d {q(s["src"])} ]] && ok "source {s["src"]}" || conflict "source {s["src"]} does not exist"\n')
+        parts.append(f'[[ -d {q(s["src"])} ]] && ok {q("source " + s["src"])} || conflict {q("source " + s["src"] + " does not exist")}\n')
         parts.append(_heredoc(f'want_file {q(f"/etc/storageforge/serve/{s["id"]}.conf")} 0644', serve_text(s)))
         if s['pre'] or s['post']:
             parts.append(f'info {q("runs before: " + "; ".join(s["pre"]) + "  after: " + "; ".join(s["post"]))}\n')

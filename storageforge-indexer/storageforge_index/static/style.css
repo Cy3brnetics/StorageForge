@@ -131,7 +131,7 @@ h3 { margin: 4px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing
 .results .m { font-size: 11.5px; color: var(--muted); }
 .list li { padding: 7px 8px; border-bottom: 1px solid var(--line); font-size: 12.5px; display: grid; gap: 2px; }
 .list .m { color: var(--muted); font-size: 11.5px; font-family: var(--mono); overflow-wrap: anywhere; }
-.st-ok, .st-info { color: var(--protected); } .st-failed, .st-denied { color: var(--broken); } .st-running, .st-queued, .st-partial { color: var(--local-only); }
+.st-ok, .st-info { color: var(--protected); } .st-failed, .st-denied { color: var(--broken); } .st-running, .st-queued, .st-partial, .st-warn { color: var(--local-only); }
 
 dialog { background: var(--panel); color: var(--fg); border: 1px solid var(--line-2); border-radius: 10px; padding: 18px; width: min(440px, calc(100vw - 32px)); }
 dialog::backdrop { background: rgb(0 0 0 / .5); }
@@ -536,3 +536,5 @@ body.loginpage { min-height: 100vh; align-items: center; justify-content: center
 .logincard .brand { display: flex; align-items: center; gap: 8px; }
 .logincard .btn.pri { align-self: stretch; padding: 8px 12px; }
 .logincard p { margin: 0; }
+.hkcmd { margin: 0; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; font-size: 12px; overflow-x: auto; }
+.hkkeys { margin: 0; padding-left: 18px; font-size: 13px; word-break: break-all; }

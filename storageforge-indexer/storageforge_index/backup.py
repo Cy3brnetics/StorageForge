@@ -1,7 +1,8 @@
 """Database backups: small "essentials" copies nightly, full copies on demand, and restore.
 
 The database is mostly the file index, which a rescan rebuilds. What cannot be rebuilt is small: the encrypted SSH
-keys and their bindings, web users, designs, move plans, the audit log and the host list. An essentials backup is a
+keys and their bindings, web users, designs, plans and tasks, settings, deploy state, confirmed host keys, the audit
+log and the host list. An essentials backup is a
 fresh database with the full schema holding just those tables (a few MB), so it restores into a working instance
 that then rescans. A full backup is SQLite's online backup of everything, consistent while the server runs.
 
@@ -19,7 +20,14 @@ from pathlib import Path
 
 from .db import Database
 
-ESSENTIAL = ('vault_meta', 'ssh_keys', 'key_bindings', 'users', 'hosts', 'blueprints', 'move_plans', 'audit_log')
+ESSENTIAL = ('vault_meta', 'ssh_keys', 'key_bindings', 'users', 'hosts', 'blueprints', 'move_plans', 'audit_log',
+             'change_plans', 'storage_tasks', 'settings', 'deploy_access', 'deployed', 'jobs',
+             'host_key_confirmations')
+# Left out of essentials: a rescan or the next deploy rebuilds these, they are history, or they are sessions.
+# Every table is in exactly one of the two lists (tests/test_consistency.py).
+REBUILDABLE = ('mounts', 'scans', 'directories', 'file_records', 'file_fts', 'file_changes', 'scan_denied', 'scan_jobs',
+               'graph_nodes', 'graph_edges', 'git_repos', 'docker_hosts', 'deploy_runs', 'job_runs', 'alerts',
+               'web_sessions', 'schema_version')
 PREFIX = {'essentials': 'storageforge-essentials-', 'full': 'storageforge-full-'}
 
 
@@ -66,6 +74,8 @@ def create(db: Database, kind: str = 'essentials', dest: Path | None = None, kee
                 cols = [r[1] for r in d.execute(f'PRAGMA main.table_info({t})')]
                 have = {r[1] for r in d.execute(f'PRAGMA src.table_info({t})')}
                 shared = ', '.join(c for c in cols if c in have)
+                if not shared:                    # the live database predates this table
+                    continue
                 d.execute(f'INSERT INTO main.{t} ({shared}) SELECT {shared} FROM src.{t}')
             d.execute('COMMIT')
             d.execute('DETACH DATABASE src')

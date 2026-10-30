@@ -124,13 +124,15 @@ def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | 
     host = connect_address(conn, host)
     with Vault(db, conn).unlock() as v:
         b = v.resolve(host, 'scan')
+        from .hostkeys import require_confirmed
+        require_confirmed(conn, host, b.port)          # a password goes only to a host key a person confirmed
         script = make_script(b.user)
         sudo = 'sudo -S -p "" sh -c ' + shlex.quote(script)
         if not admin_user or admin_user == b.user:
             # the scan user's own sudo rights, connecting with its vault key
             with ephemeral_agent(v.decrypt_key(b.key_id), ttl=120) as sock:
                 t = Transport(host=host, user=b.user, port=b.port, agent_sock=sock, known_hosts=str(known_hosts_path()),
-                              isolated=True)
+                              isolated=True, strict=True)
                 try:
                     p = subprocess.run(t.argv(sudo), input=password + '\n', capture_output=True, text=True,
                                        timeout=TIMEOUT, env=child_env())
@@ -141,7 +143,7 @@ def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | 
     validate(host, admin_user, b.port)
     work = Path(tempfile.mkdtemp(prefix='grant-', dir=runtime_dir()))
     try:
-        argv = ['ssh', '-F', '/dev/null', '-T', '-p', str(b.port), '-o', 'StrictHostKeyChecking=accept-new',
+        argv = ['ssh', '-F', '/dev/null', '-T', '-p', str(b.port), '-o', 'StrictHostKeyChecking=yes',
                 '-o', f'UserKnownHostsFile={known_hosts_path()}', '-o', 'GlobalKnownHostsFile=/dev/null',
                 '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no',
                 '-o', 'NumberOfPasswordPrompts=1', '-o', 'ConnectTimeout=10', f'{admin_user}@{host}', sudo]

@@ -39,7 +39,7 @@ host_slug() { local n=${1%%.*}; n=$(tr 'A-Z' 'a-z' <<<"$n" | tr -cd 'a-z0-9_-');
 human() { numfmt --to=iec-i --suffix=B "${1:-0}" 2>/dev/null || echo "$1 B"; }
 """
 
-# Needs ARGS (the original arguments) and HOST set by the caller's option parsing.
+# Needs ARGS (the original arguments) and HOST set by the caller's option parsing; FWD_AGENT=1 with --forward-agent.
 REMOTE = r"""# ── remote: copy this script over, run it there with sudo, clean up (like storage-setup.sh --host) ──
 if [[ -n $HOST ]]; then
   CTL=$(mktemp -d); trap 'ssh -o ControlPath="$CTL/s" -O exit "$HOST" 2>/dev/null; rm -rf "$CTL"' EXIT
@@ -48,8 +48,10 @@ if [[ -n $HOST ]]; then
   for a in "${ARGS[@]}"; do if ((skipnext)); then skipnext=0; continue; fi; if [[ $a == --host ]]; then skipnext=1; continue; fi; REST+=("$a"); done
   tmp=$(ssh "${SSHO[@]}" "$HOST" 'mktemp -d /tmp/sf-move.XXXXXX')
   scp -q -o ControlPath="$CTL/s" "$0" "$HOST:$tmp/move.sh"
-  # -A forwards your SSH agent, so a step on that host can pull from a third one with your key
-  ssh "${SSHO[@]}" -A -t "$HOST" "cd $tmp && if [ \$(id -u) = 0 ]; then bash ./move.sh ${REST[*]:-}; else sudo --preserve-env=SSH_AUTH_SOCK bash ./move.sh ${REST[*]:-}; fi; rc=\$?; rm -rf $tmp; exit \$rc"
+  # Your SSH agent is forwarded only with --forward-agent: while it runs, root on that host can use it to log in
+  # wherever your keys work. A step that pulls from a third host needs it (or a key on that host).
+  FWD=(); ((${FWD_AGENT:-0})) && FWD=(-A)
+  ssh "${SSHO[@]}" ${FWD[@]+"${FWD[@]}"} -t "$HOST" "cd $tmp && if [ \$(id -u) = 0 ]; then bash ./move.sh ${REST[*]:-}; else sudo --preserve-env=SSH_AUTH_SOCK bash ./move.sh ${REST[*]:-}; fi; rc=\$?; rm -rf $tmp; exit \$rc"
   exit $?
 fi
 """

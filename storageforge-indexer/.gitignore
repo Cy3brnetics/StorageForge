@@ -1,6 +1,16 @@
 __pycache__/
+*.egg-info/
+.ruff_cache/
 secrets/
 keys/
+data/
 *.db
 *.db-*
+*.db.part
+*.sqlite*
+*.pem
+*.key
+*.crt
+known_hosts
 .env
+.env.*

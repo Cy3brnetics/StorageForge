@@ -181,6 +181,7 @@ class Tasks(Fleet):
 
 
 @unittest.skipUnless(subprocess.run(['which', 'rsync'], capture_output=True).returncode == 0, 'needs rsync')
+@unittest.skipIf(os.geteuid() == 0, 'as root the task script ignores the test paths and uses /var/lib/storageforge')
 class TaskRuns(Fleet):
     """Run generated scripts for real on a temporary tree (not as root: STORAGEFORGE_TASK_STATE)."""
 

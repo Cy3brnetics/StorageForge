@@ -72,7 +72,7 @@ def install_public_key(public_line: str, host: str, user: str, password: str, po
         pub.write_text(public_line.strip() + '\n')
         (work / '.ssh').mkdir(mode=0o700)       # ssh-copy-id makes its scratch dir under ~/.ssh; HOME is this dir
         argv = ['ssh-copy-id', '-f', '-i', str(pub), '-p', str(port),
-                '-o', 'StrictHostKeyChecking=accept-new',
+                '-o', 'StrictHostKeyChecking=yes',      # the caller made sure a person confirmed this key
                 '-o', f'UserKnownHostsFile={known_hosts_path()}', '-o', 'GlobalKnownHostsFile=/dev/null',
                 '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no',
                 '-o', 'NumberOfPasswordPrompts=1', '-o', 'ConnectTimeout=10',

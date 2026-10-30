@@ -600,6 +600,7 @@ while (($#)); do
     --check|--report) MODE=check ;; --apply) MODE=apply ;; --destructive) DESTRUCTIVE=1 ;;
     --task) ONLY=${2:?--task needs a number}; shift ;;
     --host) HOST=${2:?--host needs [user@]host}; shift ;;
+    --forward-agent) FWD_AGENT=1 ;;
     -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
@@ -988,13 +989,21 @@ def ansible(conn: Conn, plan: dict) -> str:
 
     class Dumper(yaml.SafeDumper):
         pass
+
+    class _Unsafe(str):
+        pass
     Dumper.add_representer(_Literal, lambda d, s: d.represent_scalar('tag:yaml.org,2002:str', s, style='|'))
+    # Ansible renders Jinja2 in every module argument: a path holding {{ lookup('pipe', ...) }} would run a command on
+    # the machine running the playbook. !unsafe keeps such a string literal (the playbook's own Jinja is in when:).
+    Dumper.add_representer(_Unsafe, lambda d, s: d.represent_scalar('!unsafe', str(s), style='"'))
 
     def lit(x):
         if isinstance(x, dict):
             return {k: lit(v) for k, v in x.items()}
         if isinstance(x, list):
             return [lit(v) for v in x]
+        if isinstance(x, str) and any(m in x for m in ('{{', '{%', '{#')):
+            return _Unsafe(x)
         return _Literal(x) if isinstance(x, str) and '\n' in x else x
 
     plan = normalize(plan)

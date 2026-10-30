@@ -451,6 +451,7 @@ SCRIPT_HEAD = r"""#!/usr/bin/env bash
 #                                <name>.migrated-<date> and link the old path to the new one (same host)
 #   sudo ./{slug}.sh --install   mirror and rsnapshot steps: write systemd timers / rsnapshot configs
 #   --step N                     only step N        --host [user@]host   run on that machine instead
+#   --forward-agent              with --host: lend that machine your SSH agent (for steps that pull from a third host)
 #
 # Each step runs on its destination host and pulls from the source (over SSH when it is another host).
 # Steps for other hosts are listed and skipped; run the script there, or with --host from here.
@@ -472,6 +473,7 @@ while (($#)); do
     --checksum) CHECKSUM=1 ;;
     --step) ONLY=${2:?--step needs a number}; shift ;;
     --host) HOST=${2:?--host needs [user@]host}; shift ;;
+    --forward-agent) FWD_AGENT=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
@@ -564,7 +566,7 @@ check_step() {
     if [[ -d ${S_SRC[$i]} ]]; then ok "source ${S_SRC[$i]}"; else conflict "source ${S_SRC[$i]} does not exist"; fi
   else
     if ssh_src "$i" test -d "$(printf %q "${S_SRC[$i]}")" 2>/dev/null; then ok "source ${S_SRC_LOGIN[$i]}:${S_SRC[$i]} (SSH works)"
-    else conflict "cannot reach ${S_SRC_LOGIN[$i]}:${S_SRC[$i]} with a key over SSH (BatchMode). As root here: ssh-copy-id ${S_SRC_LOGIN[$i]}, or run with --host from a machine whose agent has the key"; fi
+    else conflict "cannot reach ${S_SRC_LOGIN[$i]}:${S_SRC[$i]} with a key over SSH (BatchMode). As root here: ssh-copy-id ${S_SRC_LOGIN[$i]}, or run with --host --forward-agent from a machine whose agent has the key"; fi
     if has "$i" sudo; then
       # only rsync's sending (read-only) side is needed on the source, so sudoers can allow just that
       if ssh_src "$i" sudo -n -l rsync --server --sender -logDtpre.iLsfxCIvu . / >/dev/null 2>&1; then ok "sudo rsync (sending side) is allowed on the source"

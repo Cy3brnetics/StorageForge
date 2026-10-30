@@ -20,6 +20,39 @@ SKIP_PROTECT = ('/boot', '/boot/efi', '/efi')
 EPHEMERAL = ('/tmp', '/var/tmp', '/var/cache')   # start excluded from 3-2-1; the operator can change it
 
 
+# Saved designs feed the planner's build scripts, share scripts, the graph and reports. Text in them never holds
+# control characters (they end a line or a comment in a generated script) or < > " ` (they end HTML text or a quoted
+# attribute); identifiers hold only what their tools accept, so they are safe as words in a script.
+UNSAFE_TEXT = re.compile(r'[\x00-\x1f\x7f<>"`]')
+IDENT = re.compile(r'[A-Za-z0-9._@+:-]*')
+IDENT_PATH = re.compile(r'[A-Za-z0-9._@+:/-]*')
+IDENT_FIELDS = {'devices': ('member',), 'partitions': ('id', 'fs', 'member'), 'pools': ('name', 'type', 'level', 'fs', 'vg', 'lv', 'encryption')}
+IDENT_PATH_FIELDS = {'datasets': ('name',), 'subvolumes': ('name',)}
+
+
+def check_text(bp, where: str = 'design') -> None:
+    """Raises ValueError naming the first string that could break out of a script line or the page."""
+    def walk(v, path, parent):
+        if isinstance(v, str):
+            if UNSAFE_TEXT.search(v):
+                raise ValueError(f'{where}: {path} has a line break, control character or one of < > " `')
+            field = path.rsplit('.', 1)[-1]
+            if field in IDENT_FIELDS.get(parent, ()) and not IDENT.fullmatch(v):
+                raise ValueError(f'{where}: {path} {v!r} may only hold letters, digits and . _ @ + : -')
+            if field in IDENT_PATH_FIELDS.get(parent, ()) and not IDENT_PATH.fullmatch(v):
+                raise ValueError(f'{where}: {path} {v!r} may only hold letters, digits and . _ @ + : - /')
+        elif isinstance(v, dict):
+            for k, x in v.items():
+                walk(x, f'{path}.{k}', parent)
+        elif isinstance(v, list):
+            for i, x in enumerate(v):
+                walk(x, f'{path}[{i}]', path.rsplit('.', 1)[-1])
+    walk(bp, 'design', '')
+    for d in bp.get('devices') or []:          # devices are /dev/<name>
+        if not re.fullmatch(r'(/dev/)?[A-Za-z0-9._:+@/-]*', str(d.get('dev') or '')):
+            raise ValueError(f'{where}: device {d.get("dev")!r} is not a device name')
+
+
 def _subvol(source: str | None) -> str | None:
     m = re.search(r'\[/?([^\]]*)\]$', source or '')
     return m.group(1) if m and m.group(1) else None

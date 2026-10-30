@@ -19,6 +19,7 @@ GET  /api/audit/verify              hash-chain verification (unlocks the vault)
 POST /api/scan  {"host": "…"}       queue a vault-backed scan
 GET  /api/keys                      vault keys (public halves) and host bindings
 POST /api/keys  {"name", "type"}     generate a key inside the vault
+POST /api/hostkey/confirm  {"host", "port", "fingerprint"}   a person compared the host key: pin it, passwords may go there
 POST /api/keys/install  {"key", "host", "user", "port", "password", "bind"}
                                     ssh-copy-id the public key, then optionally bind it for scans
 GET  /api/access?host=               per host: how scans read the disks, and folders they could not open
@@ -99,9 +100,10 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, folders, gitrepos, graph, jobs,
-               fromdesign, fsmap, keyinstall, moves, shares, tasks, users)
+               fromdesign, fsmap, hostkeys, keyinstall, moves, shares, tasks, users)
 from .capacity import parse_size
 from .db import Database, epoch
+from .hostkeys import HostKeyNeeded
 from .remote import RemoteError
 from .runner import connect_address, scan_via_vault
 from .scanner import ScanOptions
@@ -392,6 +394,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def on_error(exc):
         if isinstance(exc, HTTPException):
             return jsonify(error=exc.description), exc.code
+        if isinstance(exc, HostKeyNeeded):   # the UI shows the fingerprint, then POSTs /api/hostkey/confirm and retries
+            return jsonify(error=str(exc), hostkey=exc.as_dict()), 409
         if isinstance(exc, (ValueError, VaultError)):
             return jsonify(error=str(exc)), 400
         traceback.print_exc()
@@ -625,8 +629,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     def api_audit_verify():
         with Vault(db, conn()).unlock() as v:
-            ok, n, bad = AuditLog(db, conn(), v.audit_key).verify()
-        return jsonify(valid=ok, entries_checked=n, first_bad_id=bad)
+            log = AuditLog(db, conn(), v.audit_key)
+            ok, n, bad = log.verify()
+            weak = log.unkeyed()                 # keyless entries after keyed ones: rewritable by a database writer
+        return jsonify(valid=ok, entries_checked=n, first_bad_id=bad, **weak)
 
     @web.post('/api/scan')
     @login_required
@@ -679,6 +685,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             if keyinstall.key_login_works(db, conn(), name, host, user, port):   # already installed: no duplicate line
                 res = {'host': host, 'user': user, 'port': port, 'keys_added': 0, 'verified': True}
             else:
+                hostkeys.require_confirmed(conn(), host, port)      # the password goes only to a confirmed host key
                 res = keyinstall.install_public_key(public, host, user, password, port)
                 res['verified'] = keyinstall.key_login_works(db, conn(), name, host, user, port)
         except keyinstall.InstallError as exc:
@@ -700,6 +707,19 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 actions = 'scan,checksum' if body.get('checksum') else 'scan'
                 res['binding_id'] = v.bind(name, host, user, port, actions)
                 core.audit(conn(), actor(), 'vault.bind', 'ok', host, detail | {'binding_id': res['binding_id'], 'actions': actions})
+        return jsonify(res)
+
+    @web.post('/api/hostkey/confirm')
+    @login_required
+    @password_confirmed
+    def api_hostkey_confirm():
+        body = json_body()
+        host, fp = str(body.get('host', '')).strip(), str(body.get('fingerprint', '')).strip()
+        port = int(body.get('port') or 22)
+        if not re.fullmatch(r'SHA256:[A-Za-z0-9+/]{43}', fp):
+            raise ValueError('fingerprint must look like SHA256:… (43 characters)')
+        res = hostkeys.confirm(conn(), host, port, fp, actor())
+        core.audit(conn(), actor(), 'ssh.hostkey.confirm', 'ok', host, {'port': port, 'fingerprint': fp})
         return jsonify(res)
 
     # planner designs (storageforge/v1 blueprints)
@@ -1232,6 +1252,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         bp = json_body()
         if bp.get('apiVersion') != 'storageforge/v1' or bp.get('kind') != 'StorageBlueprint':
             raise ValueError('expected a storageforge/v1 StorageBlueprint')
+        blueprint.check_text(bp)             # it ends up in build, share and change scripts, and in every view
         host = str((bp.get('metadata') or {}).get('host') or '').strip()
         if not host or len(host) > 253 or any(c.isspace() for c in host):
             raise ValueError('metadata.host must be a hostname')

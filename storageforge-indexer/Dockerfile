@@ -28,7 +28,8 @@ RUN lock="docker/requirements${EXTRAS:+-$EXTRAS}.lock" \
 FROM build AS test
 COPY tests ./tests
 COPY examples ./examples
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client util-linux \
+COPY docker ./docker
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client util-linux rsync \
  && /opt/venv/bin/python -m unittest discover -s tests
 
 # ── runtime ───────────────────────────────────────────────────────────────────

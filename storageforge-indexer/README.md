@@ -7,6 +7,10 @@ A containerized storage platform: an encrypted SSH key vault, agentless file ind
 - **Streaming and incremental.** NUL-delimited `find` output is parsed in 1 MiB chunks, and each scan is diffed against the last one in a single transaction.
 - **Few dependencies:** `cryptography` ≥ 44, plus Flask, Flask-Login, Flask-Limiter and waitress for the web UI. PostgreSQL needs `psycopg` 3; YAML blueprints need PyYAML.
 
+![Topology view](../docs/images/topology.jpg)
+
+**Full documentation is in [`../docs/`](../docs/README.md):** [getting started](../docs/getting-started.md), [concepts and rules](../docs/concepts.md), [web UI](../docs/web-ui.md), [planner](../docs/planner.md), [scanning and search](../docs/scanning-and-search.md), [plans and scripts](../docs/plans-and-scripts.md), [deployments](../docs/deployments.md), [security](../docs/security.md), [operations](../docs/operations.md), and the [CLI](../docs/cli-reference.md), [API](../docs/api-reference.md) and [database](../docs/database.md) references. This README is the summary.
+
 ## Quick start (Docker)
 
 ```bash
@@ -44,7 +48,7 @@ pip install '.[postgres,yaml]'   # optional extras
 | Host mapping | `key_bindings` maps keys to an exact host or IP, a glob (`*.tailnet.ts.net`) or a CIDR, with a user, port and allowed actions (`scan`, `checksum`). The most specific match wins: host, then glob, then longest prefix, then priority. |
 | Audit | Every connection, scan result, denial and vault change is appended to `audit_log`. Each entry carries an HMAC-SHA256 over the previous entry's hash, with a random MAC key wrapped by the KEK. Triggers reject UPDATE, DELETE (and TRUNCATE on PostgreSQL). `audit verify` detects an edited, deleted or reordered row even if the triggers were bypassed. |
 | API | Local accounts. Flask-Login manages sessions and Werkzeug hashes passwords (scrypt); StorageForge has no auth code of its own. The session cookie is signed with `STORAGEFORGE_SESSION_SECRET`, `HttpOnly`, `SameSite=Strict`, and `Secure` (as `__Host-sf_session`) when `STORAGEFORGE_COOKIE_SECURE=1`, which compose sets. A session ends 30 minutes after sign-in; each user can raise their own to as much as 8 hours in the header's Session menu. The app and planner pages and their scripts are served only with a valid session; without one they redirect to a separate `/login` page, and an open page empties itself and goes there as soon as its session ends (signed out, expired, or ended from the CLI), so nothing loaded earlier stays on screen. Sessions are also kept server-side (only a hash of their id is stored), so signing out ends that session even for a copied cookie; `storageforge-index user signout <name>` ends all of them, as do changing or disabling the account. Anything that runs commands on hosts (deploys, job runs and cutovers, restores, key install, scan and deploy access) asks for the password again, which then stays confirmed for 5 minutes; so does changing the session length. State-changing routes accept only `application/json`, so a cross-site form cannot reach them. Every sign-in attempt is audited. Flask-Limiter throttles failed sign-ins: 10 per minute and 50 per hour per client IP, 5 per minute and 20 per hour per username from one network (/24 or /64, so a stranger cannot lock the owner out), and 100 per day per username from anywhere. Hitting a limit is audited. After that `/api/login` answers `429` with `Retry-After`. Successful sign-ins don't count, and counters reset when the server restarts. Behind a reverse proxy, set `STORAGEFORGE_PROXY_HOPS=1` so limits and the audit log see the real client IP from `X-Forwarded-For`. Strict CSP (`'self'` only), `nosniff`, `frame-ancestors 'none'`, `no-store`, 4 KiB body cap, list sizes clamped. `/healthz` gives only `{"status"}` unless asked from inside the container or by a signed-in user. Alert URLs may not point at loopback, link-local (cloud metadata) or multicast addresses, redirects are not followed, a stored ntfy/Gotify token is dropped when its server changes, and the test button reports only HTTP status codes. ssh and other child processes never see `STORAGEFORGE_*` variables. Served by waitress. The UI builds the DOM with `textContent` only. |
-| Container | Non-root uid 10001, read-only root filesystem, `cap_drop: ALL`, `no-new-privileges`, tmpfs runtime and `/tmp` (`noexec,nosuid,nodev`), 2 CPU / 1 GiB / 256 PID limits, memlock raised for `mlock`. Secrets come from compose secret files, and the port is published on loopback only. |
+| Container | Non-root uid 10001, read-only root filesystem, `cap_drop: ALL`, `no-new-privileges`, tmpfs runtime and `/tmp` (`noexec,nosuid,nodev`), 2 CPU / 2 GiB / 256 PID limits, memlock raised for `mlock`. Secrets come from compose secret files. The app's own port is not published; only the nginx proxy is, on 8443 on every interface so the LAN can reach it (`STORAGEFORGE_HTTPS_BIND=127.0.0.1` keeps it on this machine). |
 
 Python cannot promise that no other copy of a secret exists in memory: the environment variable and import paths are ordinary immutable objects. The design minimizes how long plaintext lives and never writes it to disk. It does not claim zero copies. The compose stack puts nginx in front with a self-signed certificate for the LAN; StorageForge is not meant to face the internet.
 
@@ -89,8 +93,19 @@ storageforge-index graph build | stats
 storageforge-index graph import --blueprint atlas.json --df df.txt --zpool-status zpool.txt
 storageforge-index canvas -o storage.canvas    # Obsidian JSON Canvas
 storageforge-index serve --listen 127.0.0.1 --scan-interval 6h
-storageforge-index user add | passwd | disable | enable | remove | list
+storageforge-index user add | passwd | disable | enable | remove | signout | list
+
+# Plans, inventory and maintenance (see docs/cli-reference.md for every option)
+storageforge-index plan list | types | check | script | ansible | import
+storageforge-index moves list | check | script | import
+storageforge-index shares check | script <host>
+storageforge-index deploy status | setup-script | alerts
+storageforge-index folders | git | docker | access status | access script
+storageforge-index hosts rekey <name>          # after reinstalling a host
+storageforge-index backup [--full] | backup list | restore FILE --yes | prune [--vacuum]
 ```
+
+The full command reference is in [`docs/cli-reference.md`](../docs/cli-reference.md).
 
 Sizes accept `100MB` (decimal), `100MiB` or `100M` (binary, as `df` and `find` print them). Ages accept `90m`, `36h`, `7d`, `2w` and `1y`.
 
@@ -150,8 +165,9 @@ The UI at `/` is a dependency-free canvas force simulation with charge, springs,
 | POST | `/api/keys` `{"name": "…", "type": "ed25519" or "rsa"}` | generate a key inside the vault |
 | POST | `/api/keys/install` `{"key", "host", "port", "user", "password", "bind", "checksum"}` | `ssh-copy-id` the public key with the host password, verify key login, optionally bind it for scans (10 per minute per user) |
 | GET | `/api/jobs`, `/api/audit[?limit=]`, `/api/audit/verify` | jobs and audit |
+| | `/api/changes`, `/api/moves`, `/api/shares`, `/api/tasks`, `/api/deploy/…` | plans and deployments: see [`docs/api-reference.md`](../docs/api-reference.md) for all of them |
 
-All other `/api/*` routes need a session. Sign in with `POST /api/login` `{"username": "…", "password": "…"}`, which sets the `sf_session` cookie; `POST /api/logout` ends it, and `GET /api/me` returns the signed-in user.
+This is a selection; [`docs/api-reference.md`](../docs/api-reference.md) lists every route. All `/api/*` routes except `/api/login` and `/api/jobs/report` (which takes a job's bearer token) need a session. Sign in with `POST /api/login` `{"username": "…", "password": "…"}`, which sets the session cookie (`__Host-sf_session` with `STORAGEFORGE_COOKIE_SECURE=1`, else `sf_session`); `POST /api/logout` ends it, and `GET /api/me` returns the signed-in user.
 
 ```bash
 storageforge-index user add alice                 # prompts twice, or reads one line from stdin
@@ -160,7 +176,7 @@ storageforge-index user passwd alice | disable alice | enable alice | remove ali
 storageforge-index user list
 ```
 
-Passwords need at least 12 characters. An account that hits the failed sign-in limit is locked for up to an hour, even with the right password. Restart the server to clear it sooner.
+Passwords need at least 12 characters. After 20 failed sign-ins in an hour from one network, an account is locked from that network for up to an hour, even with the right password. After 100 failures in a day from anywhere, it is locked everywhere for up to a day. Restart the server to clear either sooner.
 
 ## Planner
 
@@ -183,11 +199,11 @@ Pick a host in the rail:
 - Unsaved edits are kept per host in the browser until you save.
 - The rail's **In StorageForge** links open the main page on that host's Changes, Moves, Deploy, Docker, Git, Cleanup or Access panel (`/#host=nas-02&tab=changes`).
 
-The built-in example host "atlas" works signed out. Once you have real hosts, **Remove example host** hides it from the planner for every user, and the planner opens your first host instead. **Show example host** brings it back.
+The built-in example host "atlas" is a full design to explore; edits to it stay in your browser. Like every page, the planner needs a sign-in. Once you have real hosts, **Remove example host** hides it from the planner for every user, and the planner opens your first host instead. **Show example host** brings it back.
 
 The graph header links to the planner, and a host node's **Open in planner** jumps straight to it. The planner is served under the same CSP, with one relaxation, `style-src-attr 'unsafe-inline'`, for its inline-sized bars. It uses system fonts, because web fonts are blocked by the CSP.
 
-Scans cannot detect a btrfs RAID profile, so multi-device btrfs pools import as `single`. Set the real level in the planner before trusting its capacity and fault-tolerance numbers.
+Scans read each btrfs filesystem's RAID profile from `/sys/fs/btrfs`. Where that cannot be read, a multi-device btrfs pool imports as `single`: set the real level in the planner before trusting its capacity and fault-tolerance numbers.
 
 ## Unreadable folders and read-only scan access
 
@@ -248,7 +264,7 @@ Scans also read each btrfs filesystem's data and metadata profiles and its label
 
 ## Moving data: plans and rsync scripts
 
-The **Moves** tab plans where data goes. Each step takes a folder on one scanned host to a folder on another, or on the same host, using one of four methods:
+The **Moves** tab plans where data goes. Each step takes a folder on one scanned host to a folder on another, or on the same host, using one of five methods (the fifth, `git`, is in [Git repositories](#git-repositories-and-archives)):
 
 | Method | What the script does |
 | :--- | :--- |
@@ -408,7 +424,7 @@ sudo ufw allow in on sf0 to any port 22 proto tcp
 
 Every night at 03:00 (the host's local time, `STORAGEFORGE_BACKUP_HOUR`) the server writes an **essentials** backup to the `sf-backups` volume (`/app/backups`) and keeps the last 14 (`STORAGEFORGE_BACKUP_KEEP`). The same happens at start-up if the newest backup is more than a day old.
 
-An essentials backup holds what a rescan can't rebuild: the encrypted SSH keys and bindings, web users, host designs, move plans, the hosts list and the audit log. It is a few MB. The file index is left out, because the next scans rebuild it.
+An essentials backup holds everything a rescan cannot rebuild: the encrypted SSH keys and bindings, web users, the hosts list, host designs, change and move plans, storage tasks, settings (report URL, alert channels), deploy access, what is deployed where and its jobs, confirmed host keys, and the audit log. It is a few MB. It leaves out the file index and graph (the next scans rebuild them), run history, open alerts (re-checked on the next run) and web sessions (everyone signs in again). `backup.ESSENTIAL` and `backup.REBUILDABLE` list every table, and a test fails when a migration adds a table to neither.
 
 A **full** backup is SQLite's online copy of everything, taken while the server runs. Set `STORAGEFORGE_BACKUP_FULL_KEEP=2` to also take one nightly. These are as large as the database (several GB with a big index).
 
@@ -420,6 +436,8 @@ docker compose stop storageforge
 docker compose run --rm storageforge restore /app/backups/storageforge-essentials-20261027-030000.db --yes
 docker compose start storageforge
 ```
+
+Images built before 2026-10-29 don't recognise `restore` and the other newer subcommands in `docker compose run`. Rebuild the image, or add `--entrypoint storageforge-index` after `--rm`.
 
 A restore keeps the current database beside the new one as `index.db.pre-restore-<time>`. Backups never contain the vault secret, on purpose: a backup together with its secret would be the keys. Keep `secrets/vault_secret` safe somewhere else.
 
@@ -575,4 +593,4 @@ YAML front matter carries the headline numbers so other tools can parse the repo
 python3 -m unittest discover -s tests -v
 ```
 
-`tests/test_platform.py` covers vault round trips, wrong-secret refusal, tampered and swapped ciphertexts, rotation, binding specificity, the audit chain under tampering, loading a key into a real ephemeral `ssh-agent`, graph building, `.canvas` validity (including no overlapping cards), and the HTTP API with auth and CSP. `tests/test_indexer.py` covers units and patterns, the stream parser (newlines in names, truncation, tiny reads), pool math against the dashboard, mount planning (bind aliases, pruning), payload parsers, report generation, and real local scans: incremental diff, subtree safety and the mass-delete guard. The PostgreSQL code path has not been run against a live server yet.
+`tests/test_platform.py` covers vault round trips, wrong-secret refusal, tampered and swapped ciphertexts, rotation, binding specificity, the audit chain under tampering, loading a key into a real ephemeral `ssh-agent`, graph building, `.canvas` validity (including no overlapping cards), and the HTTP API with auth and CSP. `tests/test_tasks.py` covers storage tasks: normalising, checks and generated scripts. `tests/test_consistency.py` keeps hand-kept lists in step: the container entrypoint against the CLI's subcommands, and the backup table lists against the schema. `tests/test_indexer.py` covers units and patterns, the stream parser (newlines in names, truncation, tiny reads), pool math against the dashboard, mount planning (bind aliases, pruning), payload parsers, report generation, and real local scans: incremental diff, subtree safety and the mass-delete guard. The PostgreSQL code path has not been run against a live server yet.

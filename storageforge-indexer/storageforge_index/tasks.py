@@ -689,6 +689,7 @@ while (($#)); do
     --install) MODE=install ;;
     --uninstall) MODE=uninstall ;;
     --host) HOST=${2:?--host needs user@host}; shift ;;
+    --forward-agent) FWD_AGENT=1 ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac

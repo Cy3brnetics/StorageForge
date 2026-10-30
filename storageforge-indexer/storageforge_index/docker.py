@@ -208,7 +208,8 @@ def _stream(t, script: str, items: list[str] | None = None) -> str:
         threading.Thread(target=feed, daemon=True).start()
     from .remote import StderrTail
     err = StderrTail(proc.stderr)
-    out = proc.stdout.read().decode('utf-8', 'replace')
+    from .remote import read_capped
+    out = read_capped(proc, 'docker inventory').decode('utf-8', 'replace')
     proc.wait()
     err.join(5)
     proc.stdout.close()

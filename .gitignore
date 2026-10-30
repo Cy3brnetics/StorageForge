@@ -1,0 +1,49 @@
+# Files that must never be published. storageforge-indexer/.gitignore repeats the app's own ones so the
+# subproject stays safe if it is copied out on its own.
+
+# Secrets: API token, session/vault secrets, TLS key and cert (docker/init-secrets.sh writes these)
+secrets/
+*.secret
+*_secret
+api_token
+.env
+.env.*
+!.env.example
+
+# SSH and TLS key material
+keys/
+id_rsa*
+id_ecdsa*
+id_ed25519*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.csr
+known_hosts
+known_hosts.old
+
+# Runtime data: databases hold the encrypted vault, host inventory, file index and audit log; backups are copies
+data/
+*.db
+*.db-*
+*.db.part
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.dump
+*.sql.gz
+
+# Per-user Claude Code state (launch configs name local paths)
+.claude/settings.local.json
+.claude/launch.json
+
+# Build and tool caches
+__pycache__/
+*.pyc
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+.venv/
+venv/

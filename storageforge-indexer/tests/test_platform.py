@@ -699,9 +699,15 @@ class ServerTests(DBCase):
         self.assertEqual(self.login('bob has a long password', 'bob').status_code, 429)
 
     def test_key_generate_and_install_routes(self):
+        import base64, hashlib
         from unittest import mock
-        from storageforge_index import keyinstall
+        from storageforge_index import hostkeys, keyinstall
         os.environ['STORAGEFORGE_VAULT_SECRET'] = SECRET.decode()
+        os.environ['STORAGEFORGE_DATA_DIR'] = str(self.tmp / 'data')      # known_hosts lives here, never in ~
+        blob = b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20' + bytes(range(32))
+        line = 'nas-02 ssh-ed25519 ' + base64.b64encode(blob).decode()
+        fp = 'SHA256:' + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip('=')
+        presented = [{'type': 'ssh-ed25519', 'fingerprint': fp, 'line': line}]
         try:
             vault.Vault(self.db, self.conn, SECRET).init()
             self.login()
@@ -717,9 +723,19 @@ class ServerTests(DBCase):
             def fake_install(public, host, user, password, port):
                 calls.append((public, host, user, password, port))
                 return {'host': host, 'user': user, 'port': port, 'keys_added': 1}
-            works = iter([False, True, True])
+            works = iter([False, False, True, True])
             with mock.patch.object(keyinstall, 'install_public_key', fake_install), \
+                 mock.patch.object(hostkeys, 'offered', lambda *a: presented), \
                  mock.patch.object(keyinstall, 'key_login_works', lambda *a: next(works)):
+                r = self.client.post('/api/keys/install', json=body)         # nobody checked nas-02's key yet
+                self.assertEqual((r.status_code, r.json['hostkey']['keys'][0]['fingerprint'], r.json['hostkey']['pinned']),
+                                 (409, fp, False))
+                self.assertEqual(calls, [])                                   # so no password went anywhere
+                wrong = {'host': 'nas-02', 'port': 22, 'fingerprint': 'SHA256:' + 'A' * 43}
+                self.assertEqual(self.client.post('/api/hostkey/confirm', json=wrong).status_code, 400)
+                r = self.client.post('/api/hostkey/confirm', json={'host': 'nas-02', 'port': 22, 'fingerprint': fp})
+                self.assertEqual(r.status_code, 200)
+                self.assertIn(line, (self.tmp / 'data' / 'ssh' / 'known_hosts').read_text())   # pinned
                 r = self.client.post('/api/keys/install', json=body)
                 self.assertEqual((r.status_code, r.json['verified'], r.json['keys_added']), (200, True, 1))
                 bid = r.json['binding_id']
@@ -736,9 +752,11 @@ class ServerTests(DBCase):
                 self.assertEqual(self.client.post('/api/keys/install', json=body).status_code, 502)
             audit = json.dumps(vault.AuditLog(self.db, self.conn, None).tail(20))
             self.assertIn('ssh.copy-id', audit)
+            self.assertIn('ssh.hostkey.confirm', audit)
             self.assertNotIn('"pw"', audit)
         finally:
             del os.environ['STORAGEFORGE_VAULT_SECRET']
+            del os.environ['STORAGEFORGE_DATA_DIR']
 
     def test_askpass_answers_password_prompts_only(self):
         from storageforge_index import askpass
@@ -900,6 +918,24 @@ class ServerTests(DBCase):
         with self.later(31 * 60):
             r = self.client.get('/planner')
             self.assertEqual(r.headers['Location'], '/login?next=%2Fplanner&ended=1')
+
+    def test_every_route_needs_a_session_unless_listed(self):
+        """A new route that forgets @login_required fails here, not in production."""
+        import re
+        public = {('GET', '/login'), ('GET', '/healthz'), ('POST', '/api/logout'),
+                  ('GET', '/<any("login.js", "style.css", "favicon.svg"):name>')}
+        answered = []
+        for rule in self.web.url_map.iter_rules():
+            path = re.sub(r'<int:\w+>', '1', rule.rule)
+            path = re.sub(r'<any\(([^)]*)\):\w+>', lambda m: m.group(1).split(',')[0].strip().strip('"'), path)
+            path = re.sub(r'<[^>]+>', 'x', path)
+            for method in sorted(rule.methods - {'HEAD', 'OPTIONS'}):
+                if (method, rule.rule) in public:
+                    continue
+                code = getattr(self.client, method.lower())(path, json={}).status_code
+                if code not in (401, 302):
+                    answered.append((method, rule.rule, code))
+        self.assertEqual(answered, [])
 
     def test_signing_out_kills_copies_of_the_cookie(self):
         from storageforge_index import users
@@ -1140,33 +1176,120 @@ class ScriptHeaderTests(DBCase):
         for url in ('https://10.42.0.100:8443', 'http://[fd7a::1]:8080/sf', 'https://nas.lan'):
             alerts.save_settings(self.conn, {'report_url': url}, 't')
 
-    @unittest.skipUnless(shutil.which('bash') and shutil.which('rsync'), 'needs bash and rsync')
-    def test_job_keys_only_get_rsync_options_our_jobs_use(self):
-        """storageforge-job --serve is the forced command of a job key. With -s anywhere in a cluster rsync reads the
-        real paths from the connection, past the path check: that read any file as root on the source host."""
+    def write_job_prog(self, root):
         from storageforge_index.jobscript import JOB_SCRIPT
-        etc, root = self.tmp / 'etc', self.tmp / 'root'
-        (etc / 'serve').mkdir(parents=True)
-        root.mkdir()
-        (etc / 'serve' / 'p1-s1.conf').write_text(f'ROOT={root}\nSNAP=0\n')
+        etc = Path('/etc/storageforge') if os.geteuid() == 0 else self.tmp / 'etc'   # root ignores the test paths
+        (etc / 'serve').mkdir(parents=True, exist_ok=True)
+        (etc / 'serve' / 'p9-t1.conf').write_text(f'ROOT={root}\nSNAP=0\n')
         prog = self.tmp / 'storageforge-job'
         prog.write_text(JOB_SCRIPT)
+        wrapper = self.tmp / 'fake-ssh'                     # sshd + the job key's forced command
+        wrapper.write_text(f'#!/bin/bash\nshift; exec bash {prog} --serve p9-t1 "$*"\n')
+        wrapper.chmod(0o755)
         env = {**os.environ, 'STORAGEFORGE_JOB_ETC': str(etc), 'STORAGEFORGE_JOB_VAR': str(self.tmp / 'var')}
+        return prog, wrapper, env
 
-        def serve(cmd):
-            p = subprocess.run(['bash', str(prog), '--serve', 'p1-s1', cmd], env=env, stdin=subprocess.DEVNULL,
-                               capture_output=True, text=True, timeout=30)
-            return p.stderr
-        for ok in (f'rsync --server --sender -lHogDtpAXrxe.iLsfxCIvu --numeric-ids . {root}/',
-                   f'rsync --server --sender -nlHogDtpAXrce.iLsfxCIvu --numeric-ids --info=STATS . {root}/',
-                   f'rsync --server --sender -logDtprRe.iLsfxCIvu --bwlimit=1000 --numeric-ids . {root}/'):
-            self.assertNotIn('storageforge-job:', serve(ok), ok)
-        for bad in (f'rsync --server --sender -se.LsfxCIvu . {root}', f'rsync --server --sender -lse.Ls . {root}',
-                    f'rsync --server --sender -Le.Ls . {root}', f'rsync --server --sender -ke.Ls . {root}',
-                    f'rsync --server --sender --protect-args . {root}', f'rsync --server --sender --files-from=/x . {root}',
-                    f'rsync --server --sender -e.Ls --filter=._/etc/shadow . {root}',
-                    'rsync --server --sender -logDtpre.iLs . /etc'):
-            self.assertRegex(serve(bad), 'storageforge-job: (option not allowed|.* is outside)', bad)
+    @unittest.skipUnless(shutil.which('bash'), 'needs bash')
+    def test_job_keys_only_reach_the_chrooted_daemon(self):
+        """The old rsync --server --sender form is gone: its path check could be bypassed (-s in a cluster) and client
+        filter rules made the root sender read and print any file."""
+        root = self.tmp / 'root'
+        root.mkdir()
+        prog, _, env = self.write_job_prog(root)
+        p = subprocess.run(['bash', str(prog), '--serve', 'p9-t1', f'rsync --server --sender -logDtpre.iLs . {root}/'],
+                           env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+        self.assertIn("daemon mode only", p.stderr)
+
+    @unittest.skipUnless(shutil.which('bash') and shutil.which('rsync'), 'needs bash and rsync')
+    @unittest.skipUnless(os.geteuid() == 0, 'chroot needs root (runs in the Docker test stage)')
+    def test_job_keys_read_the_job_folder_and_nothing_else(self):
+        root, out = self.tmp / 'root', self.tmp / 'out'
+        (root / 'sub').mkdir(parents=True)
+        (root / 'a.txt').write_text('hello')
+        secret = self.tmp / 'secret'
+        secret.write_text('root:$6$NOT-FOR-JOB-KEYS:19000::::::\n')
+        (root / 'link').symlink_to(secret)
+        _, wrapper, env = self.write_job_prog(root)
+
+        def pull(*opts, src='x::src/'):
+            dest = out / str(len(list(out.glob('*'))) if out.exists() else 0)
+            dest.mkdir(parents=True)
+            p = subprocess.run(['rsync', '-a', *opts, '-e', str(wrapper), src, f'{dest}/'], env=env,
+                               capture_output=True, text=True, timeout=60)
+            return p, dest
+        p, dest = pull()
+        self.assertEqual((dest / 'a.txt').read_text(), 'hello')
+        for opts, src in (((f'--filter=: {secret}',), 'x::src/'), (('-L',), 'x::src/'), ((), f'x::src/../../{secret}'),
+                          (('-s',), f'x::src/{secret}')):
+            p, dest = pull(*opts, src=src)
+            seen = p.stdout + p.stderr + ''.join(f.read_text(errors='replace') for f in dest.rglob('*')
+                                                 if f.is_file() and not f.is_symlink())   # a link arrives as a link
+            self.assertNotIn('NOT-FOR-JOB-KEYS', seen, opts)
+        p, _ = pull('--remove-source-files')
+        self.assertIn('refuse', p.stderr)
+        self.assertTrue((root / 'a.txt').exists())
+
+    def test_no_generator_lets_a_value_run_as_code(self):
+        """Every script StorageForge writes runs as root somewhere. Paths and free text may hold $(...), backticks and
+        quotes (the validators allow them); each must reach bash as data: in single quotes, a quoted heredoc or a
+        comment. And in Ansible, Jinja in a value must not be rendered."""
+        import re
+        from storageforge_index import changes, graph, jobs, moves, shares, tasks
+        canary = '$(touch${IFS}/tmp/CANARY)`id`"q;x'
+        path, text = '/srv/' + canary, 'note ' + canary
+        for host in ('nas', 'pc'):
+            self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json) VALUES (:h, :h, 'scan', '{}')", {'h': host})
+            hid = self.conn.scalar('SELECT host_id FROM hosts WHERE hostname = :h', {'h': host})
+            self.conn.execute("INSERT INTO mounts (host_id, mount_point, source, filesystem_type, total_bytes, used_bytes, "
+                              "scan_state, mount_options) VALUES (:h, '/', '/dev/sdb1', 'btrfs', 1099511627776, 1, 'indexed', 'rw')", {'h': hid})
+
+        def runnable(script):
+            t = re.sub(r"<<-?'(\w+)'\n.*?\n\1\n", '', script, flags=re.S)
+            t = re.sub(r"'[^']*'", "''", t)
+            return [l for l in t.splitlines() if 'CANARY' in l and not l.lstrip().startswith('#')]
+        out = {}
+        for kind, spec in changes.TYPES.items():
+            params = {f['name']: next(o for o in f['options'] if o) if f['kind'] == 'choice' else
+                      {'path': path, 'text': text, 'spec': 'nas:/srv/' + canary.replace(' ', ''), 'bool': True, 'device': '/dev/sdb',
+                       'user': 'root', 'mode': '0755', 'options': 'defaults', 'label': 'data', 'confirm': '/dev/sdb'}[f['kind']]
+                      for f in spec['fields']}
+            out[f'changes {kind}'] = changes.script(self.conn, {'name': 'p', 'tasks': [{'type': kind, 'host': 'nas', 'params': params, 'note': text}]})
+        for kind, spec in tasks.TYPES.items():
+            if kind in ('command', 'if', 'try'):             # a command block's value is code on purpose
+                continue
+            params = {p['name']: p['choices'][0] if p['kind'] == 'select' else
+                      {'path': path, 'lines': [text], 'host': 'nas', 'int': 1, 'bool': True, 'prefix': 'snap',
+                       'dataset': 'tank/data', 'unit': 'nginx.service'}.get(p['kind'], text) for p in spec['params']}
+            if kind == 'rsync':
+                params.update(src_host='', dst_host='pc')
+            out[f'tasks {kind}'] = tasks.script(self.conn, tasks.normalize({'name': 't', 'host': 'nas', 'blocks': [{'type': kind, 'params': params}]}))
+        plan = {'id': 1, 'name': 'p', 'steps': [{'method': 'mirror', 'src': {'host': 'pc', 'path': path}, 'dst': {'host': 'nas', 'path': path + '/c'},
+                                               'excludes': [text], 'note': text, 'options': {'snapshot': True}}]}
+        out['moves'] = moves.script(self.conn, plan)
+        sp = jobs.specs(self.conn, plan)
+        out['jobs runner'] = jobs.host_script(plan, 'nas', sp, [], 'https://10.0.0.5:8443')
+        out['jobs source'] = jobs.host_script(plan, 'pc', [], sp, None)
+        graph.store_blueprint(self.conn, {'apiVersion': 'storageforge/v1', 'kind': 'StorageBlueprint', 'metadata': {'host': 'nas'},
+                                          'exports': [shares.normalize_export({'protocol': 'NFS', 'path': path, 'rules': [{'clients': '10.0.0.0/24', 'options': 'rw'}],
+                                                                               'mounts': [{'host': 'pc', 'path': '/mnt/' + canary}]})]})
+        out['shares'] = shares.script(self.conn, 'nas')
+        self.assertGreater(len(out), 30)
+        self.assertEqual({k: runnable(v) for k, v in out.items() if runnable(v)}, {})
+        y = changes.ansible(self.conn, {'name': 'p', 'tasks': [{'type': 'dir', 'host': 'nas', 'params': {'path': "/srv/{{ lookup('pipe','id') }}"}}]})
+        self.assertIn('path: !unsafe "/srv/{{ lookup', y)
+
+    def test_audit_verify_reports_entries_a_database_writer_could_rewrite(self):
+        key = vault.SecretBuffer(32)
+        key.buf[:32] = b'k' * 32
+        key.length = 32
+        vault.AuditLog(self.db, self.conn, None).append('cli', 'vault.init', 'ok')        # before the vault had a key
+        keyed = vault.AuditLog(self.db, self.conn, key)
+        keyed.append('web:alice', 'deploy.start', 'ok')
+        self.assertEqual(keyed.unkeyed(), {'unkeyed': 1, 'unkeyed_after_keyed': 0, 'first_unkeyed_after_keyed': None})
+        vault.AuditLog(self.db, self.conn, None).append('web:?', 'deploy.start', 'ok')   # vault locked later
+        self.assertEqual(keyed.verify()[0], True)                                          # still "intact"...
+        weak = keyed.unkeyed()
+        self.assertEqual(weak['unkeyed_after_keyed'], 1)                                   # ...but flagged
 
     def test_job_reports_cannot_be_dated_ahead(self):
         import uuid

@@ -477,6 +477,17 @@ class AuditLog:
         return [{'id': r[0], 'ts': r[1] / 1e6, 'actor': r[2], 'action': r[3], 'host': r[4], 'key': r[5],
                  'outcome': r[6], 'detail': json.loads(r[7] or '{}')} for r in rows]
 
+    def unkeyed(self) -> dict:
+        """How much of the chain a database writer could rewrite. Entries written while the vault was locked carry a
+        plain SHA-256 (no key): anyone who can write the database could replace them, and every entry after them, with
+        a chain that still verifies. Expected for the first entries before vault init; suspicious after keyed ones."""
+        first_keyed = self.conn.scalar("SELECT min(audit_id) FROM audit_log WHERE hash_alg = 'hmac-sha256'")
+        total = self.conn.scalar("SELECT count(*) FROM audit_log WHERE hash_alg <> 'hmac-sha256'") or 0
+        later = self.conn.all("""SELECT min(audit_id), count(*) FROM audit_log
+                                WHERE hash_alg <> 'hmac-sha256' AND audit_id > :k""", {'k': first_keyed or 0})[0] \
+            if first_keyed else (None, 0)
+        return {'unkeyed': total, 'unkeyed_after_keyed': later[1] or 0, 'first_unkeyed_after_keyed': later[0]}
+
     def verify(self) -> tuple[bool, int, int | None]:
         prev, n = GENESIS, 0
         for aid, ts, actor, action, host, fp, outcome, d, alg, p, e in self.conn.all(

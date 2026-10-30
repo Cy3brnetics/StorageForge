@@ -611,10 +611,15 @@ def cmd_audit(args) -> int:
     if args.audit_cmd == 'verify':
         try:
             with Vault(db, conn).unlock() as v:
-                ok, n, bad = AuditLog(db, conn, v.audit_key).verify()
+                log = AuditLog(db, conn, v.audit_key)
+                ok, n, bad = log.verify()
+                weak = log.unkeyed()
         except VaultError as exc:
             raise SystemExit(f'cannot verify HMAC entries: {exc}')
         print(f'audit chain {"intact" if ok else "BROKEN at entry #" + str(bad)} · {n} entries verified')
+        if weak['unkeyed_after_keyed']:
+            print(f'note: {weak["unkeyed_after_keyed"]} entries from #{weak["first_unkeyed_after_keyed"]} on were written while the '
+                  f'vault was locked (plain SHA-256): whoever can write the database could have rewritten them')
         return 0 if ok else 2
     entries = AuditLog(db, conn, None).tail(args.limit)
     for e in reversed(entries):

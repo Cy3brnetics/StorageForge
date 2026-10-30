@@ -477,6 +477,7 @@ while (($#)); do
     --report) MODE=report ;; --apply) MODE=apply ;;
     --only) ONLY=${2:?--only server or clients}; shift ;;
     --host) HOST=${2:?--host needs [user@]host}; shift ;;
+    --forward-agent) FWD_AGENT=1 ;;
     -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac

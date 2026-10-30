@@ -10,7 +10,7 @@ their sources. Deploys install and update it; it is static, and everything per j
     storageforge-job snapshots|ls|pack    rsnapshot jobs: list snapshots, list a folder in one, tar a path out of one
   on the source host, through the job key's forced SSH command (sudo, see deploy.py):
     storageforge-job --serve <id> "<ssh command>"
-        pre | post | snap | unsnap | ping, rsync --server --sender … (paths under the job's root only),
+        pre | post | snap | unsnap | ping, rsync --server --daemon . (chrooted into the job's root: modules src and snap),
         git-upload-pack '<path>' (under the root only)
   restores, on the source host (run through storageforge-run):
     storageforge-job unpack <id> <target>   tar on stdin into <target>, a new folder under the job's root
@@ -86,30 +86,22 @@ serve() { # id "ssh command"
       sv=$(subvol_of "$ROOT") || exit 0
       [[ -d $sv/.storageforge-snap/$SID ]] && btrfs subvolume delete "$sv/.storageforge-snap/$SID" >/dev/null
       rmdir "$sv/.storageforge-snap" 2>/dev/null; exit 0 ;;
-    'rsync --server --sender '*)
-      # a small rrsync: rebuild the sender's command ourselves, from options and one path under the job's root
-      local w opts=() path= seen=0
-      read -a w <<<"$cmd"          # no -r: rsync escapes spaces in the path with backslashes
-      for ((i = 3; i < ${#w[@]}; i++)); do
-        if ((seen)); then path+="${path:+ }${w[i]}"; continue; fi
-        # An allowlist of what StorageForge's own jobs send. Anything else is refused: -s in a cluster (secluded args)
-        # would make rsync read the real paths from the connection, past the check below; -L/-k would follow symlinks
-        # out of the job's root; filter/merge and *-from options read files as root.
-        case ${w[i]} in
-          .) seen=1 ;;
-          --numeric-ids|--bwlimit=[0-9]*|--info=[A-Za-z0-9,]*|--debug=[A-Za-z0-9,]*|-e[.A-Za-z]*) opts+=("${w[i]}") ;;
-          -[nlHogDtpAXrcxRzvi]*)    # short options, then optionally e<capabilities> (the rest of the word is its value)
-            local letters=${w[i]#-}; letters=${letters%%e*}
-            [[ $letters =~ ^[nlHogDtpAXrcxRzvi]+$ && ${w[i]#-$letters} =~ ^(e[.A-Za-z]*)?$ ]] \
-              || die "option not allowed: ${w[i]}"
-            opts+=("${w[i]}") ;;
-          *) die "option not allowed: ${w[i]}" ;;
-        esac
-      done
-      [[ -n $path ]] || die "no source path"
+    'rsync --server --daemon .')
+      # rsync's daemon mode over this SSH session, chrooted into the job's root: every path, filter or merge rule
+      # (they come over the connection, not on this command line) and symlink a client sends resolves inside it, so
+      # a job key reads that folder (module src) or its snapshot (module snap) and nothing else on this host.
+      local conf chroot=yes rc; ((EUID)) && chroot=no     # tests run unprivileged and cannot chroot
+      conf=$(mktemp "$TMPD/storageforge-serve.XXXXXX") || die "no temporary file"
+      trap 'rm -f "$conf"' EXIT
       snap=$( ((SNAP)) && snap_path || true)
-      under "$path" "$ROOT" "$snap" || die "$path is outside this job's source"
-      exec rsync --server --sender "${opts[@]}" . "$path" ;;
+      { printf 'use chroot = %s\nread only = yes\nwrite only = no\nlist = no\nuid = 0\ngid = 0\nnumeric ids = yes\n' "$chroot"
+        printf 'refuse options = delete* remove-* write-batch only-write-batch log-file*\n'
+        printf '[src]\npath = %s\n' "$(realpath -m "$ROOT")"
+        [[ -n $snap && -d $snap ]] && printf '[snap]\npath = %s\n' "$snap"
+      } >"$conf"
+      rsync --server --daemon --config="$conf" .; exit $? ;;
+    'rsync --server '*)
+      die "this source serves jobs through rsync's daemon mode only: redeploy the plan, so the runner gets the same storageforge-job" ;;
     'git-upload-pack '*)
       path=${cmd#git-upload-pack }; path=${path#\'}; path=${path%\'}
       under "$path" "$ROOT" || die "$path is outside this job's source"
@@ -129,12 +121,19 @@ load() {
   KEY=$ETC/jobs/$ID.key
   SSHO=(-o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o "UserKnownHostsFile=$VAR/known_hosts"
         -o StrictHostKeyChecking=accept-new -i "$KEY" -p "$SRC_PORT")
+  # rsnapshot reads host::module as a TCP daemon and passes no -e: this makes rsync reach the source's chrooted
+  # daemon (see serve) over the same SSH command
+  export RSYNC_CONNECT_PROG="ssh ${SSHO[*]} storageforge-deploy@%H rsync --server --daemon ."
 }
 has() { [[ " $FLAGS " == *" $1 "* ]]; }
 hook() { # verb -> runs it where the source is
   if ((SRC_LOCAL)); then "$SELF" --serve "$ID" "$1"; else ssh "${SSHO[@]}" "storageforge-deploy@$SRC_HOST" "$1"; fi
 }
-src_spec() { if ((SRC_LOCAL)); then printf '%s/' "${1%/}"; else printf 'storageforge-deploy@%s:%s/' "$SRC_HOST" "${1%/}"; fi; }
+src_spec() { # path -> what rsync reads: the path here, or a module of the source's chrooted rsync (see serve)
+  if ((SRC_LOCAL)); then printf '%s/' "${1%/}"
+  elif [[ ${1%/} == "${SRC%/}" ]]; then printf 'storageforge-deploy@%s::src/' "$SRC_HOST"
+  else printf 'storageforge-deploy@%s::snap/' "$SRC_HOST"; fi
+}
 bwlimit() { if [[ -n $NIGHT ]] && in_window "$NIGHT"; then echo "$BW_NIGHT"; else echo "$BW_DAY"; fi; }
 rsync_cmd() { # source-path extra... -> RS
   local src=$1; shift
@@ -184,7 +183,7 @@ transfer_stats() { # rsync --stats output file -> BYTES FILES
 }
 rsnapshot_conf() { # source -> path of a run-time config
   local src=$1 c lv cnt
-  c=$(mktemp "$TMPD/storageforge-rsnapshot-XXXXXX.conf")
+  c=$(mktemp "$TMPD/storageforge-rsnapshot.XXXXXX")
   {
     printf 'config_version\t1.2\nsnapshot_root\t%s/\nno_create_root\t1\ncmd_rsync\t%s\n' "${DST%/}" "$(command -v rsync)"
     printf 'cmd_ssh\t%s\nssh_args\t%s\n' "$(command -v ssh)" "${SSHO[*]}"
@@ -340,7 +339,15 @@ unpack() { # id target -> extracts tar from stdin into target (a new folder unde
   serve_load "$1"; local t=$2
   under "$t" "$ROOT" || die "$t is outside this job's source"
   [[ -e $t ]] && die "$t already exists"
-  mkdir -p -- "$t" && tar -C "$t" -xpf - && echo "restored into $t"
+  mkdir -p -- "$t" || return
+  local rc n; tar -C "$t" -xpf -; rc=$?
+  # The archive comes from the backup host. GNU tar already refuses ../, absolute names and writes through links, but
+  # keeps setuid/setgid bits: a backup host that was taken over could restore a setuid-root binary here. Stripped
+  # whether or not tar finished, since a failed extraction can still have written some files.
+  n=$(find "$t" -xdev -type f -perm /6000 -print -exec chmod ug-s {} + | wc -l)
+  ((n)) && echo "removed setuid/setgid from $n restored file(s); set them again by hand if they need it"
+  ((rc == 0)) && echo "restored into $t"
+  return "$rc"
 }
 
 case ${1:-} in

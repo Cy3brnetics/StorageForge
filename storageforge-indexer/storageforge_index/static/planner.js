@@ -2,6 +2,25 @@
 const MiB=2**20, GiB=2**30, TiB=2**40;
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// Designs come from scans (whatever a host prints) and from users. Text never carries control characters (they end a
+// comment or a line in a generated script) or < > " ` (they end HTML text or a quoted attribute), so no template can be
+// broken out of, escaped or not. Identifiers are held to what their tools accept, so they are safe as script words.
+const UNSAFE=/[\u0000-\u001f\u007f<>"`]/g;
+function scrub(v){ if(typeof v==='string') return v.replace(UNSAFE,''); if(Array.isArray(v)) return v.map(scrub);
+  if(v&&typeof v==='object'){ const o={}; for(const k of Object.keys(v)) o[k]=scrub(v[k]); return o } return v }
+const ident=v=>v==null?v:String(v).replace(/[^A-Za-z0-9._@+:-]/g,'_');
+const identPath=v=>v==null?v:String(v).replace(/[^A-Za-z0-9._@+:\/-]/g,'_');   // dataset and subvolume names nest with /
+const fstabEsc=v=>String(v).replace(/[ \t\\]/g,c=>'\\'+c.charCodeAt(0).toString(8).padStart(3,'0'));   // fstab(5) octal escapes
+function tidy(s){
+  s.host=String(s.host||'host');
+  (s.disks||[]).forEach(d=>{ d.dev=ident(d.dev); if(d.member) d.member=ident(d.member);
+    (d.parts||[]).forEach(p=>{ p.id=ident(p.id); p.fs=ident(p.fs); if(p.member) p.member=ident(p.member);
+      (p.subvols||[]).forEach(v=>{ v.name=identPath(v.name) }) }) });
+  (s.pools||[]).forEach(p=>{ ['name','type','level','fs','vg','lv','encryption'].forEach(k=>{ if(p[k]!=null) p[k]=ident(p[k]) });
+    p.ashift=parseInt(p.ashift,10)||12;
+    (p.datasets||[]).forEach(ds=>{ ds.name=identPath(ds.name); ['fs','recordsize','compression','sync'].forEach(k=>{ if(ds[k]!=null) ds[k]=ident(ds[k]) }) }) });
+  return s;
+}
 const sum=a=>a.reduce((x,y)=>x+y,0);
 function fmtBin(b,d=2){const u=['B','KiB','MiB','GiB','TiB','PiB'];let i=0;while(Math.abs(b)>=1024&&i<u.length-1){b/=1024;i++}return b.toFixed(i<2?0:d)+' '+u[i]}
 function fmtDec(b,d=2){const u=['B','KB','MB','GB','TB','PB'];let i=0;while(Math.abs(b)>=1000&&i<u.length-1){b/=1000;i++}return b.toFixed(i<2?0:d)+' '+u[i]}
@@ -92,7 +111,7 @@ const DOC={host:'',source:'example',dirty:false,savedAt:null,scanned:false,hosts
 // the example stays when there is nothing else to show, even after it is removed
 const exampleShown=()=>DOC.example||!DOC.hosts.length;
 const draftKey=h=>'storageforge.v1'+(h?':'+h:'');
-function load(h){ try{ const t=localStorage.getItem(draftKey(h||'')); return t?JSON.parse(t):null }catch(e){ return null } }
+function load(h){ try{ const t=localStorage.getItem(draftKey(h||'')); return t?tidy(scrub(JSON.parse(t))):null }catch(e){ return null } }
 function save(){ try{ localStorage.setItem(draftKey(DOC.host),JSON.stringify(S)) }catch(e){} if(DOC.host){DOC.dirty=true;docState()} }
 function dropDraft(h){ try{ localStorage.removeItem(draftKey(h)) }catch(e){} }
 let S=load('')||sample();
@@ -443,7 +462,7 @@ function genFstab(){
       if(m.disk) L.push(`# /dev/${m.part.id} · ${m.disk.model} · SN ${m.disk.serial}`);
       if(m.kind==='remote') L.push(`# ${m.remote.name} · ${m.remote.proto} via ${m.remote.via}`);
       const opts=(m.opts.length?m.opts:['defaults']).join(',');
-      L.push([m.spec,m.target,m.fs,opts,0,passFor(m)].join('  '));
+      L.push([fstabEsc(m.spec),fstabEsc(m.target),fstabEsc(m.fs),fstabEsc(opts),0,passFor(m)].join('  '));
     });
   });
   return L.join('\n');
@@ -934,6 +953,7 @@ function vExport(){
 
 /* ───────────── blueprint → planner model ───────────── */
 function fromBlueprint(bp){
+  bp=scrub(bp);
   const md=bp.metadata||{};const bare=x=>String(x||'').replace(/^\/dev\//,'');
   const s={host:md.host||'host',idMode:md.identifiers==='LABEL'?'LABEL':'UUID',
     disks:(bp.devices||[]).map(d=>({dev:bare(d.dev),model:d.model||'unknown model',serial:d.serial||'—',bus:d.bus||'unknown bus',media:d.media||'hdd',
@@ -955,7 +975,7 @@ function fromBlueprint(bp){
         backup:{target:b.target||null,enc:b.enc||'none',ratio:b.ratio||1,last:b.last||null,offsite:!!b.offsite}}})};
   // whole-disk members are recorded per pool in the blueprint; the planner keeps them on the disk
   (bp.pools||[]).forEach(p=>(p.members||[]).map(bare).forEach(m=>{const d=s.disks.find(x=>x.dev===m);if(d&&!d.parts.some(x=>x.id===m)) d.member=p.name}));
-  return s;
+  return tidy(s);
 }
 function nodeForPath(bp,path){ const S0=S;try{ S=fromBlueprint({...bp,protection:[]});const m=collectMounts().find(x=>x.target===path);return m?m.node:'path:'+path }finally{ S=S0 } }
 
@@ -980,7 +1000,7 @@ function appLinks(){
 }
 async function loadActivity(){
   const h=DOC.host;DOC.activity=null;if(!h||!DOC.signedIn) return;
-  try{ const a=await apiJSON('/api/planner/activity?host='+encodeURIComponent(h)); if(DOC.host===h){DOC.activity=a;if(UI.view==='overview') render()} }
+  try{ const a=await apiJSON('/api/planner/activity?host='+encodeURIComponent(h)); if(DOC.host===h){DOC.activity=scrub(a);if(UI.view==='overview') render()} }
   catch(e){ if(DOC.host===h){DOC.activity={host:h,changes:[],moves:[],shares:null,jobs:[],deployed:[],drift:[],unreadable:null};if(UI.view==='overview') render()} }
 }
 async function setExample(show){
@@ -1007,7 +1027,7 @@ function docState(msg,cls){
 }
 async function loadHosts(){
   try{
-    const {hosts,example}=await apiJSON('/api/planner/hosts');DOC.signedIn=true;DOC.hosts=hosts;DOC.example=example!==false;$('#signin').hidden=true;
+    const {hosts,example}=await apiJSON('/api/planner/hosts');DOC.signedIn=true;DOC.hosts=scrub(hosts);DOC.example=example!==false;$('#signin').hidden=true;
     const sel=$('#hostpick');
     sel.replaceChildren(...(exampleShown()?[new Option('Example host “atlas”','')]:[]),...hosts.map(h=>new Option(`${h.host}${h.saved?' · saved':''}${h.scanned?' · scanned':''}`,h.host)));
     sel.value=DOC.host;docState();
