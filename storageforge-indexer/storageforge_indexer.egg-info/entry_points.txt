@@ -1,3 +1,0 @@
-[console_scripts]
-storageforge-askpass = storageforge_index.askpass:main
-storageforge-index = storageforge_index.cli:main
