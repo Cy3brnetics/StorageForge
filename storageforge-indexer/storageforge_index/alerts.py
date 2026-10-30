@@ -8,6 +8,7 @@ shown too, but are not alerts.
 """
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import json
 import re
@@ -57,13 +58,14 @@ def save_settings(conn: Conn, body: dict, actor: str) -> dict:
     set_setting(conn, 'report_url', url, actor)
     cur, new = get_setting(conn, 'alerts'), body.get('alerts') or {}
     for ch, fields in (('ntfy', ('url', 'topic', 'token')), ('gotify', ('url', 'token')), ('webhook', ('url',))):
-        old_host = _host(cur[ch].get('url'))
+        old_origin = _origin(cur[ch].get('url'))
         for f in fields:
             given = (new.get(ch) or {}).get(f)
             v = str(cur[ch].get(f, '') if given is None else given or '').strip()
             if (ch, f) in SECRET_FIELDS and (given is None or v == '••••••'):    # the stored token, kept
-                # ...unless the server changed: then it is not sent there until typed in again
-                v = cur[ch].get(f, '') if _host(cur[ch].get('url')) == old_host else ''
+                # ...unless the server changed, down to the scheme and port (https -> http would send it in clear
+                # text, another port can be another service): then it is not sent there until typed in again
+                v = cur[ch].get(f, '') if _origin(cur[ch].get('url')) == old_origin else ''
             if f == 'url' and v and not URL_RE.fullmatch(v):
                 raise ValueError(f'{ch}: the URL must start with http:// or https://')
             if f == 'url' and v:
@@ -81,21 +83,78 @@ def _host(url: str | None) -> str:
     return (urllib.parse.urlsplit(url or '').hostname or '').lower()
 
 
+def _origin(url: str | None) -> tuple:
+    u = urllib.parse.urlsplit(url or '')
+    try:
+        port = u.port
+    except ValueError:
+        port = None
+    return u.scheme.lower(), (u.hostname or '').lower(), port or {'https': 443, 'http': 80}.get(u.scheme.lower())
+
+
+def _refused(addr: str) -> bool:
+    """Loopback, link-local, unspecified, multicast or reserved, also behind the IPv6 forms that carry an IPv4
+    address (::ffff:127.0.0.1, 6to4 2002:7f00:1::, Teredo)."""
+    ip = ipaddress.ip_address(addr.split('%')[0])
+    ips = [ip, getattr(ip, 'ipv4_mapped', None), getattr(ip, 'sixtofour', None), *(getattr(ip, 'teredo', None) or ())]
+    return any(x.is_loopback or x.is_link_local or x.is_unspecified or x.is_multicast or x.is_reserved
+               for x in ips if x is not None)
+
+
+def _resolve(host: str, port: int | None, what: str = '') -> list[str]:
+    """host's addresses, each one an allowed alert destination, or ValueError."""
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except (OSError, UnicodeError):
+        raise ValueError(f'{what + ": " if what else ""}cannot resolve {host}') from None
+    addrs = list(dict.fromkeys(sa[0] for *_, sa in infos))
+    for a in addrs:
+        if _refused(a):
+            where = host if host.strip('[]') == a.split('%')[0] else f'{host} ({a})'
+            raise ValueError(f'{what + ": " if what else ""}{where} is not an allowed alert destination '
+                             f'(loopback, link-local or multicast)')
+    return addrs
+
+
 def _check_target(url: str, what: str = ''):
     """Alerts go to the LAN or the internet, never to this container, link-local (cloud metadata) or multicast
     addresses. Private ranges stay allowed: a self-hosted ntfy or Gotify on the LAN is the usual setup."""
-    host = _host(url)
-    try:
-        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
-    except (OSError, UnicodeError):
-        raise ValueError(f'{what + ": " if what else ""}cannot resolve {host or url}') from None
-    for *_, sa in infos:
-        ip = ipaddress.ip_address(sa[0].split('%')[0])
-        ip = getattr(ip, 'ipv4_mapped', None) or ip
-        if ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast or ip.is_reserved:
-            where = host if host.strip('[]') == str(ip) else f'{host} ({ip})'
-            raise ValueError(f'{what + ": " if what else ""}{where} is not an allowed alert destination '
-                             f'(loopback, link-local or multicast)')
+    _resolve(_host(url) or url, None, what)
+
+
+def _connect(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, **kw):
+    """socket.create_connection for alert requests: resolves once, checks what it got, and connects to exactly that.
+    Checking the name and letting urllib resolve it again would let a DNS answer change in between (rebinding)."""
+    host, port = address
+    err = None
+    for a in _resolve(host, port):
+        try:
+            return socket.create_connection((a, port), timeout, source_address)
+        except OSError as exc:
+            err = exc
+    raise err or OSError(f'cannot reach {host}')
+
+
+class _CheckedHTTP(http.client.HTTPConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _connect
+
+
+class _CheckedHTTPS(http.client.HTTPSConnection):     # the certificate is still checked against the name
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _connect
+
+
+class _HTTP(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_CheckedHTTP, req)
+
+
+class _HTTPS(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_CheckedHTTPS, req, context=self._context)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -103,7 +162,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_opener = urllib.request.build_opener(_NoRedirect)
+_opener = urllib.request.build_opener(_NoRedirect, _HTTP, _HTTPS, urllib.request.ProxyHandler({}))
 
 
 def _post(url: str, data: bytes, headers: dict):

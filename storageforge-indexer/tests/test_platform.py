@@ -723,14 +723,15 @@ class ServerTests(DBCase):
             def fake_install(public, host, user, password, port):
                 calls.append((public, host, user, password, port))
                 return {'host': host, 'user': user, 'port': port, 'keys_added': 1}
-            works = iter([False, False, True, True])
+            works, probes = iter([False, True, True]), []
             with mock.patch.object(keyinstall, 'install_public_key', fake_install), \
                  mock.patch.object(hostkeys, 'offered', lambda *a: presented), \
-                 mock.patch.object(keyinstall, 'key_login_works', lambda *a: next(works)):
+                 mock.patch.object(keyinstall, 'key_login_works', lambda *a: probes.append(a) or next(works)):
                 r = self.client.post('/api/keys/install', json=body)         # nobody checked nas-02's key yet
                 self.assertEqual((r.status_code, r.json['hostkey']['keys'][0]['fingerprint'], r.json['hostkey']['pinned']),
                                  (409, fp, False))
                 self.assertEqual(calls, [])                                   # so no password went anywhere
+                self.assertEqual(probes, [])                                  # nor a connection that would pin its key
                 wrong = {'host': 'nas-02', 'port': 22, 'fingerprint': 'SHA256:' + 'A' * 43}
                 self.assertEqual(self.client.post('/api/hostkey/confirm', json=wrong).status_code, 400)
                 r = self.client.post('/api/hostkey/confirm', json={'host': 'nas-02', 'port': 22, 'fingerprint': fp})
@@ -750,6 +751,15 @@ class ServerTests(DBCase):
                  mock.patch.object(keyinstall, 'install_public_key',
                                    mock.Mock(side_effect=keyinstall.InstallError('Permission denied'))):
                 self.assertEqual(self.client.post('/api/keys/install', json=body).status_code, 502)
+            if shutil.which('ssh-agent'):
+                made = []
+                class Probe(keyinstall.Transport):
+                    def run(self, script, timeout=120):
+                        made.append(self.argv(script))
+                        raise keyinstall.RemoteError('refused')
+                with mock.patch.object(keyinstall, 'Transport', Probe):
+                    self.assertFalse(keyinstall.key_login_works(self.db, self.conn, 'fleet', 'nas-02', 'scan', 22))
+                self.assertIn('StrictHostKeyChecking=yes', made[0])          # the probe never pins a key (GM-04)
             audit = json.dumps(vault.AuditLog(self.db, self.conn, None).tail(20))
             self.assertIn('ssh.copy-id', audit)
             self.assertIn('ssh.hostkey.confirm', audit)
@@ -987,6 +997,39 @@ class ServerTests(DBCase):
         self.assertEqual(alerts.get_setting(self.conn, 'alerts')['gotify']['token'], '')   # not sent to a new server
         self.assertEqual(alerts.send({'webhook': {'url': 'http://127.0.0.1:9/'}}, 't', 'm'),
                          ['webhook: 127.0.0.1 is not an allowed alert destination (loopback, link-local or multicast)'])
+        # GM-06: IPv6 forms that carry 127.0.0.1 or the metadata address
+        for url in ('http://[2002:7f00:1::1]/x', 'http://[2002:a9fe:a9fe::1]/x', 'http://[::ffff:127.0.0.1]/x',
+                    'http://[2001:0:4136:e378:8000:63bf:80ff:fffe]/x'):   # Teredo, client 127.0.0.1
+            with self.assertRaisesRegex(ValueError, 'not an allowed alert destination'):
+                alerts._check_target(url)
+
+    def test_alert_tokens_stay_with_their_origin_and_the_checked_address(self):
+        """GM-06: https -> http or another port keeps the host name, but the stored token must not follow it; and a
+        name that resolves to an allowed address when checked must not connect somewhere else a moment later."""
+        import socket
+        from unittest import mock
+        from storageforge_index import alerts
+        tok = lambda: alerts.get_setting(self.conn, 'alerts')['ntfy']['token']   # noqa: E731
+        alerts.save_settings(self.conn, {'alerts': {'ntfy': {'url': 'https://10.0.0.5', 'topic': 't', 'token': 'tk'}}}, 't')
+        alerts.save_settings(self.conn, {'alerts': {'ntfy': {'url': 'https://10.0.0.5:443/', 'token': '••••••'}}}, 't')
+        self.assertEqual(tok(), 'tk')                                         # the same origin, written differently
+        for url in ('http://10.0.0.5', 'https://10.0.0.5:8443'):
+            alerts.save_settings(self.conn, {'alerts': {'ntfy': {'url': 'https://10.0.0.5', 'token': 'tk'}}}, 't')
+            alerts.save_settings(self.conn, {'alerts': {'ntfy': {'url': url, 'token': '••••••'}}}, 't')
+            self.assertEqual(tok(), '', url)
+        real = socket.getaddrinfo
+        answers = iter(['93.184.216.34', '127.0.0.1'])                       # checked, then the rebound answer
+
+        def rebinding(host, port, *a, **kw):
+            if host != 'alerts.example':
+                return real(host, port, *a, **kw)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (next(answers), port or 0))]
+        with mock.patch.object(socket, 'create_connection', side_effect=AssertionError('connected')) as dial, \
+             mock.patch.object(alerts.socket, 'getaddrinfo', rebinding):
+            self.assertEqual(alerts.send({'webhook': {'url': 'http://alerts.example/hook'}}, 't', 'm'),
+                             ['webhook: alerts.example (127.0.0.1) is not an allowed alert destination '
+                              '(loopback, link-local or multicast)'])
+        dial.assert_not_called()
 
     def test_secure_cookie_behind_the_tls_proxy(self):
         from storageforge_index import server
@@ -1007,7 +1050,7 @@ class ServerTests(DBCase):
                                        ('post', '/api/deploy/jobs/p1-s1/restore', {}),
                                        ('post', '/api/keys/install', {}), ('post', '/api/access/grant', {}),
                                        ('post', '/api/deploy/access', {}), ('post', '/api/deploy/adopt', {}),
-                                       ('put', '/api/me', {'session_minutes': 60})):
+                                       ('put', '/api/me', {'session_minutes': 60}), ('put', '/api/deploy/settings', {})):
                 r = getattr(self.client, method)(path, json=body)
                 self.assertEqual((path, r.status_code, r.json.get('reauth')), (path, 403, True))
             self.assertEqual(self.client.post('/api/deploy/jobs/p1-s1/log').status_code, 404)   # reading needs no password
@@ -1067,7 +1110,10 @@ class HostIdentityTests(DBCase):
         self.assertEqual(self.row('old')[1], ['SHA256:old'])
         with self.assertRaises(HostIdentityError):
             self.scan_as('old', '10.0.0.9', ['SHA256:reinstalled'])          # same address, new keys: refused too
+        self.conn.execute("INSERT INTO host_key_confirmations (address, port, fingerprint, confirmed_by, confirmed_at) "
+                          "VALUES ('10.0.0.9', 22, 'SHA256:old', 't', 1)")
         self.assertEqual(Database.rekey_host(self.conn, 'OLD'), ('old', '10.0.0.9'))
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM host_key_confirmations'), 0)   # GM-04: not trusted again
         self.scan_as('old', '10.0.0.10', ['SHA256:reinstalled'], machine='f' * 32)
         self.assertEqual(self.row('old'), ('10.0.0.10', ['SHA256:reinstalled'], 'f' * 32))
 

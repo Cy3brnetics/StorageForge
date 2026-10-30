@@ -156,7 +156,10 @@ exit $rc
 
 # Prepended to every signed script: brings an older storageforge-run up to date (machine-id binding, atomic nonce
 # claims) without running the setup again. Silent, so it cannot mix into data streamed on stdout (restores).
-RUNNER_UPDATE = ('if ((EUID == 0)); then _sf_new=$(mktemp) && cat >"$_sf_new" <<\'STORAGEFORGE_RUNNER_UPDATE\'\n'
+# It is line 1 of the script, so it carries the shebang: a storage task installs this very file ($0) as the
+# ExecStart of its systemd unit, and without #! the kernel refuses to run it (203/EXEC).
+RUNNER_UPDATE = ('#!/bin/bash\n'
+                 'if ((EUID == 0)); then _sf_new=$(mktemp) && cat >"$_sf_new" <<\'STORAGEFORGE_RUNNER_UPDATE\'\n'
                  + RUNNER_SCRIPT + 'STORAGEFORGE_RUNNER_UPDATE\n'
                  f'cmp -s "$_sf_new" {RUNNER} || install -o root -g root -m 0755 "$_sf_new" {RUNNER}\n'
                  'rm -f "$_sf_new"; unset _sf_new; fi >/dev/null 2>&1\n')

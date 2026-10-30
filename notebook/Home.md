@@ -5,6 +5,8 @@ tags: [moc]
 
 Working notes for the StorageForge indexer. Start with the latest audit, then the roadmap.
 
+- [[Audit 2026-10-29 - gemini]]: full-stack codebase, API route, code-path and Docker infrastructure audit (GM-01 to GM-25)
+- [[Review of Gemini audit 2026-10-29]]: each GM finding checked against the code, with revised severities and what to fix first
 - [[Audit 2026-10-29 - features]]: partially built features and things worth building better
 - [[Roadmap]]: the findings in the order to tackle them (also as a canvas: [[Roadmap.canvas]])
 - [[Carried over]]: what happened to the items from the 10-27 and 10-29 audits

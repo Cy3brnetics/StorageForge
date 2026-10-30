@@ -58,11 +58,11 @@ subvol_of() { # path -> the btrfs subvolume root holding it (inode 256)
 }
 snap_path() { # -> where the job's snapshot of ROOT is (or will be)
   local root sv; root=$(realpath -m "$ROOT"); sv=$(subvol_of "$root") || return 1
-  echo "$sv/.storageforge-snap/$SID${root#"$sv"}"
+  echo "${sv%/}/.storageforge-snap/$SID${root#"${sv%/}"}"     # ${sv%/}: the subvolume can be / itself
 }
 under() { # path allowed... -> 0 if path is one of them or inside one
   local p a; p=$(realpath -m "$1"); shift
-  for a; do [[ -n $a ]] || continue; a=$(realpath -m "$a"); [[ $p == "$a" || $p == "$a"/* ]] && return 0; done
+  for a; do [[ -n $a ]] || continue; a=$(realpath -m "$a"); [[ $p == "$a" || $p == "${a%/}"/* ]] && return 0; done
   return 1
 }
 run_cmds() { local c; for c; do echo "+ $c" >&2; bash -c "$c" >&2 || { echo "failed (exit $?): $c" >&2; return 1; }; done; }
@@ -77,15 +77,15 @@ serve() { # id "ssh command"
       ((SNAP)) || die "job $SID does not snapshot its source"
       command -v btrfs >/dev/null || die "btrfs-progs is not installed"
       sv=$(subvol_of "$ROOT") || die "$ROOT is not on btrfs"
-      snap="$sv/.storageforge-snap/$SID"
-      mkdir -p "$sv/.storageforge-snap"
+      snap="${sv%/}/.storageforge-snap/$SID"
+      mkdir -p "${sv%/}/.storageforge-snap"
       [[ -d $snap ]] && btrfs subvolume delete "$snap" >/dev/null
       btrfs subvolume snapshot -r "$sv" "$snap" >/dev/null || die "btrfs snapshot of $sv failed"
       snap_path ;;
     unsnap)
       sv=$(subvol_of "$ROOT") || exit 0
-      [[ -d $sv/.storageforge-snap/$SID ]] && btrfs subvolume delete "$sv/.storageforge-snap/$SID" >/dev/null
-      rmdir "$sv/.storageforge-snap" 2>/dev/null; exit 0 ;;
+      [[ -d ${sv%/}/.storageforge-snap/$SID ]] && btrfs subvolume delete "${sv%/}/.storageforge-snap/$SID" >/dev/null
+      rmdir "${sv%/}/.storageforge-snap" 2>/dev/null; exit 0 ;;
     'rsync --server --daemon .')
       # rsync's daemon mode over this SSH session, chrooted into the job's root: every path, filter or merge rule
       # (they come over the connection, not on this command line) and symlink a client sends resolves inside it, so
@@ -104,7 +104,8 @@ serve() { # id "ssh command"
       die "this source serves jobs through rsync's daemon mode only: redeploy the plan, so the runner gets the same storageforge-job" ;;
     'git-upload-pack '*)
       path=${cmd#git-upload-pack }; path=${path#\'}; path=${path%\'}
-      under "$path" "$ROOT" || die "$path is outside this job's source"
+      snap=$( ((SNAP)) && snap_path || true)     # a snapshot-first job clones from the snapshot of its root
+      under "$path" "$ROOT" "$snap" || die "$path is outside this job's source"
       printf '[safe]\n\tdirectory = *\n' >"$VAR/git-safe.conf"
       GIT_CONFIG_GLOBAL=$VAR/git-safe.conf exec git-upload-pack --strict "$path" ;;
     *) die "not allowed: ${cmd:0:80}" ;;
@@ -121,8 +122,8 @@ load() {
   KEY=$ETC/jobs/$ID.key
   SSHO=(-o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o "UserKnownHostsFile=$VAR/known_hosts"
         -o StrictHostKeyChecking=accept-new -i "$KEY" -p "$SRC_PORT")
-  # rsnapshot reads host::module as a TCP daemon and passes no -e: this makes rsync reach the source's chrooted
-  # daemon (see serve) over the same SSH command
+  # rsnapshot accepts a daemon source only as rsync://host/module (it rejects host::module) and passes no -e: this
+  # makes rsync reach the source's chrooted daemon (see serve) over the same SSH command
   export RSYNC_CONNECT_PROG="ssh ${SSHO[*]} storageforge-deploy@%H rsync --server --daemon ."
 }
 has() { [[ " $FLAGS " == *" $1 "* ]]; }
@@ -131,8 +132,8 @@ hook() { # verb -> runs it where the source is
 }
 src_spec() { # path -> what rsync reads: the path here, or a module of the source's chrooted rsync (see serve)
   if ((SRC_LOCAL)); then printf '%s/' "${1%/}"
-  elif [[ ${1%/} == "${SRC%/}" ]]; then printf 'storageforge-deploy@%s::src/' "$SRC_HOST"
-  else printf 'storageforge-deploy@%s::snap/' "$SRC_HOST"; fi
+  elif [[ ${1%/} == "${SRC%/}" ]]; then printf 'rsync://storageforge-deploy@%s/src/' "$SRC_HOST"
+  else printf 'rsync://storageforge-deploy@%s/snap/' "$SRC_HOST"; fi
 }
 bwlimit() { if [[ -n $NIGHT ]] && in_window "$NIGHT"; then echo "$BW_NIGHT"; else echo "$BW_DAY"; fi; }
 rsync_cmd() { # source-path extra... -> RS
@@ -339,13 +340,18 @@ unpack() { # id target -> extracts tar from stdin into target (a new folder unde
   serve_load "$1"; local t=$2
   under "$t" "$ROOT" || die "$t is outside this job's source"
   [[ -e $t ]] && die "$t already exists"
-  mkdir -p -- "$t" || return
-  local rc n; tar -C "$t" -xpf -; rc=$?
+  mkdir -p -- "$(dirname -- "$t")" && mkdir -m 0700 -- "$t" || return
+  local rc n d; tar -C "$t" -xpf -; rc=$?
   # The archive comes from the backup host. GNU tar already refuses ../, absolute names and writes through links, but
-  # keeps setuid/setgid bits: a backup host that was taken over could restore a setuid-root binary here. Stripped
-  # whether or not tar finished, since a failed extraction can still have written some files.
+  # as root it keeps setuid/setgid bits and makes device nodes (it has no option against either): a backup host that
+  # was taken over could restore a setuid-root binary or a world-writable /dev/sda here. $t stays 0700 until both are
+  # gone, so no one else can reach them while a long restore runs, or after one that was killed. Cleaned whether or
+  # not tar finished, since a failed extraction can still have written some files.
+  d=$(find "$t" -xdev \( -type b -o -type c -o -type p -o -type s \) -print -delete | wc -l)
+  ((d)) && echo "removed $d device node(s), pipe(s) or socket(s) from the restore"
   n=$(find "$t" -xdev -type f -perm /6000 -print -exec chmod ug-s {} + | wc -l)
   ((n)) && echo "removed setuid/setgid from $n restored file(s); set them again by hand if they need it"
+  chmod 0755 -- "$t"
   ((rc == 0)) && echo "restored into $t"
   return "$rc"
 }

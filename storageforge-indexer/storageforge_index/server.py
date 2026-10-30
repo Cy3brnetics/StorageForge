@@ -682,10 +682,12 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         public = Vault(db, conn()).public_key(name)
         detail = {'key': name, 'user': user, 'port': port}
         try:
+            # First: even the key-only probe would pin whatever key the host shows, so a person checks it before
+            # anything connects (and the password goes only to that key)
+            hostkeys.require_confirmed(conn(), host, port)
             if keyinstall.key_login_works(db, conn(), name, host, user, port):   # already installed: no duplicate line
                 res = {'host': host, 'user': user, 'port': port, 'keys_added': 0, 'verified': True}
             else:
-                hostkeys.require_confirmed(conn(), host, port)      # the password goes only to a confirmed host key
                 res = keyinstall.install_public_key(public, host, user, password, port)
                 res['verified'] = keyinstall.key_login_works(db, conn(), name, host, user, port)
         except keyinstall.InstallError as exc:
@@ -1119,6 +1121,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     def api_deploy_settings():
         if request.method == 'PUT':
+            # the report URL goes into every job a deploy writes, and the alert channels hold tokens
+            stale = password_stale()
+            if stale:
+                return stale
             s = alerts.save_settings(conn(), json_body(), actor())
             core.audit(conn(), actor(), 'deploy.settings', 'ok', None, {})
             return jsonify(s)

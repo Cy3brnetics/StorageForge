@@ -466,7 +466,7 @@ Run `storageforge-index prune --vacuum` once to shrink the database file. It rew
 | `docker/nginx.conf` | TLS 1.2/1.3, HSTS, http→https redirect, `X-Forwarded-For` replaced (not appended) |
 | `docker/entrypoint.sh` | Refuses root, checks secret lengths, checks volume ownership and that the runtime dir is tmpfs, tightens permissions, migrates, creates or verifies the vault, imports keys from a read-only mount, then `exec`s |
 | `docker/init-secrets.sh` | Generates the vault secret, session secret and a self-signed certificate for this machine's names and LAN addresses (`STORAGEFORGE_TLS_NAMES` adds more). Files are `0640` with your group; the containers read them through `group_add` (`STORAGEFORGE_SECRETS_GID`, written to `.env` when your group is not 1000) |
-| `docker/egress-firewall.sh` | Optional, run as root: lets the containers open only SSH and alert ports (`STORAGEFORGE_EGRESS_PORTS`, default `22 443`) out of the `sf0` bridge; `--remove` undoes it |
+| `docker/egress-firewall.sh` | Optional, run as root: lets the containers open only SSH and alert ports (`STORAGEFORGE_EGRESS_PORTS`, default `22 443`) out of the `sf0` bridge, to other machines and to the Docker host itself (`STORAGEFORGE_BRIDGE` for another bridge, each with its own rules); `--remove` undoes it |
 | `docker/requirements*.lock` | Every Python dependency pinned with hashes; the image installs with `--require-hashes` |
 | `examples/demo/` | Disposable SSH target and an end-to-end script |
 

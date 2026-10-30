@@ -113,6 +113,23 @@ class Planning(unittest.TestCase):
         self.assertIn('/proc', jobs['/'].prune)
         self.assertNotIn('/srv/data', jobs)
 
+    def test_nested_btrfs_subvolumes_get_their_own_scan(self):
+        """GM-14: openSUSE nests subvolumes under /@. /home (subvol /@/home) shares /'s maj:min and sits under its
+        fsroot, but the walk of / prunes /home and never crosses into another subvolume: it was skipped entirely."""
+        opts = 'rw,relatime,compress=zstd:1,subvolid={},subvol={}'
+        mounts = [MountInfo('/', '/dev/sda2', 'btrfs', opts.format(256, '/@'), majmin='0:25', fsroot='/@'),
+                  MountInfo('/home', '/dev/sda2', 'btrfs', opts.format(263, '/@/home'), majmin='0:25', fsroot='/@/home'),
+                  MountInfo('/mnt/logs', '/dev/sda2', 'btrfs', opts.format(264, '/@/var/log'), majmin='0:25', fsroot='/@/var/log'),
+                  MountInfo('/srv/share', '/dev/sda2', 'btrfs', opts.format(256, '/@'), majmin='0:25', fsroot='/@/data/share'),
+                  # mountinfo fallback: no subvolid, but mounted where its files would appear in /
+                  MountInfo('/opt', '/dev/sda2', 'btrfs', 'rw,relatime', majmin='0:25', fsroot='/@/opt')]
+        plans = {p.info.target: p for p in plan_mounts(mounts, ScanOptions())}
+        self.assertEqual({t: p.action for t, p in plans.items()},
+                         {'/': 'scan', '/home': 'scan', '/mnt/logs': 'scan', '/srv/share': 'alias', '/opt': 'scan'})
+        jobs = {j.root: j for j in build_jobs(list(plans.values()), ScanOptions())}
+        self.assertEqual(set(jobs), {'/', '/home', '/mnt/logs', '/opt'})
+        self.assertIn('/home', jobs['/'].prune)                  # still pruned from /, but now walked on its own
+
     def test_root_on_skipped_mount_is_refused(self):
         mounts = [MountInfo('/', '/dev/sda2', 'ext4', majmin='8:2'), MountInfo('/mnt/nas', 'nas:/x', 'nfs4')]
         with self.assertRaises(ValueError):
@@ -158,6 +175,140 @@ class Planning(unittest.TestCase):
         self.assertIn('\\[x\\]', cmd)
         self.assertIn('-xdev', cmd)
 
+
+
+def bash_fn(source: str, name: str) -> str:
+    """One function of a generated script, to run on its own with the rest stubbed out."""
+    import re
+    m = re.search(rf'^{name}\(\) \{{.*?^\}}\n', source, re.M | re.S)
+    assert m, name
+    return m.group(0)
+
+
+@unittest.skipUnless(shutil.which('bash'), 'needs bash')
+class GeneratedBash(unittest.TestCase):
+    """Helpers of the root scripts StorageForge writes, run for real with their surroundings stubbed."""
+
+    def bash(self, code: str) -> str:
+        import subprocess
+        p = subprocess.run(['bash', '-c', code], capture_output=True, text=True, timeout=30)
+        return p.stdout + p.stderr
+
+    def test_move_verify_fails_when_rsync_fails(self):
+        """A failed rsync lists no differences: verify must not call that a match, since cutover trusts it (GM-21)."""
+        from storageforge_index import moves
+        from storageforge_index.scriptkit import HELPERS
+
+        def verify(rs):
+            return self.bash(f"""set -euo pipefail
+{HELPERS}has() {{ return 1; }}; dst_guard() {{ return 0; }}; CHECKSUM=0; S_METHOD=(move)
+rsync_args() {{ RS=({rs}); }}
+{bash_fn(moves.SCRIPT_BODY, 'verify_step')}
+if verify_step 0; then echo VERDICT=match; else echo VERDICT=differ; fi""")
+        out = verify("bash -c 'echo \"rsync: change_dir failed\" >&2; exit 23'")
+        self.assertIn('VERDICT=differ', out)
+        self.assertIn('exit 23', out)
+        self.assertIn('VERDICT=match', verify("printf '%s\\n' '.d..t...... ./'"))
+        self.assertIn('VERDICT=differ', verify("printf '%s\\n' '>f+++++++++ new.txt'"))
+
+    def job(self, code: str, **env) -> str:
+        """Runs code after the job program's helpers (without its command dispatch) and env as shell variables."""
+        import shlex
+        from storageforge_index.jobscript import JOB_SCRIPT
+        helpers = JOB_SCRIPT[:JOB_SCRIPT.index('\ncase ${1:-} in')]
+        helpers = helpers[helpers.index('\nsubvol_of() {'):]          # skip the config loading at the top
+        return self.bash('\n'.join(f'{k}={shlex.quote(str(v))}' for k, v in env.items()) + f'\n{helpers}\n{code}')
+
+    def test_job_paths_when_the_subvolume_or_root_is_slash(self):
+        """GM-10: snap_path lost the / between the snapshot and the path; under x / matched nothing."""
+        for sv, root, want in (('/', '/var/lib/data', '/.storageforge-snap/p1-s1/var/lib/data'),
+                               ('/srv', '/srv/x', '/srv/.storageforge-snap/p1-s1/x'),
+                               ('/srv', '/srv', '/srv/.storageforge-snap/p1-s1')):
+            out = self.job(f'subvol_of() {{ echo {sv}; }}\nsnap_path', ROOT=root, SID='p1-s1')
+            self.assertEqual(out.strip(), want, (sv, root))
+        out = self.job('for c in "/srv/f /" "/ /" "/etc /srv" "/srv2 /srv" "/srv/a /x /srv"; do '
+                       'under $c && echo "$c yes" || echo "$c no"; done')
+        self.assertEqual(out.splitlines(), ['/srv/f / yes', '/ / yes', '/etc /srv no', '/srv2 /srv no', '/srv/a /x /srv yes'])
+
+    def test_snapshot_first_git_job_may_clone_its_snapshot(self):
+        """GM-10: the runner clones from the snapshot of the root, which serve used to refuse."""
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / 'git-upload-pack').write_text('#!/bin/sh\necho "UPLOAD $*"\n')
+        (tmp / 'git-upload-pack').chmod(0o755)
+        snap = '/srv/.storageforge-snap/p1-s1/repo.git'
+
+        def serve(path, flag):
+            return self.job(f"serve_load() {{ :; }}; die() {{ echo \"DIE $*\"; exit 1; }}\n"
+                            f"subvol_of() {{ echo /srv; }}\nPATH={tmp}:$PATH\nserve p1-s1 \"git-upload-pack '{path}'\"",
+                            ROOT='/srv/repo.git', SID='p1-s1', SNAP=flag, VAR=tmp)
+        self.assertIn(f'UPLOAD --strict {snap}', serve(snap, 1))
+        self.assertIn('UPLOAD --strict /srv/repo.git', serve('/srv/repo.git', 1))
+        self.assertIn('DIE', serve(snap, 0))                                       # no snapshot, no snapshot path
+        self.assertIn('DIE', serve('/srv/other.git', 1))
+
+    def test_remote_rsnapshot_source_is_an_rsync_url(self):
+        """GM-10: rsnapshot takes a daemon source only as rsync://… (is_anon_rsync_path); host::module fails its
+        config check. RSYNC_CONNECT_PROG still carries either form over SSH."""
+        out = self.job('src_spec /srv/data; echo; src_spec /srv/.storageforge-snap/p1-s1/data; echo; SRC_LOCAL=1 src_spec /srv/data',
+                       SRC_LOCAL=0, SRC='/srv/data', SRC_HOST='nas')
+        self.assertEqual(out.splitlines(), ['rsync://storageforge-deploy@nas/src/', 'rsync://storageforge-deploy@nas/snap/',
+                                            '/srv/data/'])
+
+    def test_restore_drops_devices_and_setuid_and_stays_private_while_it_runs(self):
+        """GM-01: a restore archive comes from the backup host. Device nodes, pipes and setuid bits never survive, and
+        the target is 0700 while tar writes, so nothing in it is reachable before the cleanup."""
+        import io
+        import stat
+        import tarfile
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode='w') as tf:
+            for name, kind, mode, data in (('d', tarfile.DIRTYPE, 0o755, b''), ('d/su', tarfile.REGTYPE, 0o4755, b'x'),
+                                           ('d/ok', tarfile.REGTYPE, 0o644, b'y'), ('d/mem', tarfile.CHRTYPE, 0o666, b''),
+                                           ('d/fifo', tarfile.FIFOTYPE, 0o666, b'')):
+                ti = tarfile.TarInfo(name)
+                ti.type, ti.mode, ti.size = kind, mode, len(data)
+                ti.devmajor, ti.devminor = (1, 1) if kind == tarfile.CHRTYPE else (0, 0)
+                tf.addfile(ti, io.BytesIO(data))
+        (tmp / 'in.tar').write_bytes(buf.getvalue())
+        target = tmp / 'root' / 'restored'
+        (tmp / 'root').mkdir()
+        out = self.job(f'serve_load() {{ :; }}; die() {{ echo "DIE $*"; exit 1; }}\n'
+                       f'tar() {{ stat -c %a "$2" >{tmp}/mode-during; command tar "$@"; }}\n'
+                       f'unpack p1-s1 {target} <{tmp}/in.tar', ROOT=tmp / 'root')
+        self.assertEqual((tmp / 'mode-during').read_text().strip(), '700', out)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o755)
+        self.assertEqual(sorted(p.name for p in (target / 'd').iterdir()), ['ok', 'su'], out)
+        self.assertFalse((target / 'd' / 'su').stat().st_mode & 0o6000)
+        self.assertEqual((target / 'd' / 'ok').read_text(), 'y')
+
+    def test_owner_change_touches_only_what_was_asked(self):
+        """GM-09: an owner with no group used to chown -R owner:<the top folder's group>, flattening every group
+        inside; and a link at the path handed its target to the new owner."""
+        import grp
+        import pwd
+        from storageforge_index import changes
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / 'tree' / 'sub').mkdir(parents=True)
+        (tmp / 'link').symlink_to(tmp / 'tree')
+        other = next(u.pw_name for u in pwd.getpwall() if u.pw_uid != os.geteuid())
+        mine = grp.getgrgid(os.getegid()).gr_name
+
+        def run(*args):
+            return self.bash('ok() { echo "OK $*"; }; conflict() { echo "CONFLICT $*"; }; act() { return 0; }\n'
+                             'try() { echo "RUN $*"; }\n' + bash_fn(changes.CHANGE_BODY_3, 'owner_mode')
+                             + 'owner_mode ' + ' '.join(f"'{a}'" for a in args))
+        self.assertIn(f'RUN chown -R -- {other} {tmp}/tree', run(f'{tmp}/tree', other, '', '', 1))
+        out = run(f'{tmp}/tree', '', mine, '', 1)                             # every group already is the one asked
+        self.assertIn(f'OK owner :{mine}', out)
+        self.assertNotIn('RUN', out)
+        out = run(f'{tmp}/link', other, '', '0700', 1)
+        self.assertIn('CONFLICT', out)
+        self.assertNotIn('RUN', out)
+        self.assertIn('no user', run(f'{tmp}/tree', 'no-such-user-sf', '', '', 1))
 
 class Payloads(unittest.TestCase):
     def test_zpool_status(self):

@@ -43,7 +43,8 @@ def validate(host: str, user: str, port: int) -> None:
 
 
 def key_login_works(db, conn, key_name: str, host: str, user: str, port: int = 22) -> bool:
-    """Try a key-only login through an ephemeral agent, the same way scans connect."""
+    """Try a key-only login through an ephemeral agent, the same way scans connect, but only to a host key that is
+    already in known_hosts (confirmed by a person, or pinned by a scan)."""
     validate(host, user, port)
     with Vault(db, conn).unlock() as v:
         key_id = conn.scalar('SELECT key_id FROM ssh_keys WHERE name = :n', {'n': key_name})
@@ -51,7 +52,7 @@ def key_login_works(db, conn, key_name: str, host: str, user: str, port: int = 2
             raise VaultError(f'No key named {key_name}')
         with ephemeral_agent(v.decrypt_key(key_id), ttl=60) as sock:
             t = Transport(host=host, user=user, port=port, agent_sock=sock, known_hosts=str(known_hosts_path()),
-                          isolated=True, connect_timeout=10)
+                          isolated=True, connect_timeout=10, strict=True)   # a probe never pins a host key
             try:
                 return t.run('true', timeout=30) is not None
             except (RemoteError, subprocess.TimeoutExpired):

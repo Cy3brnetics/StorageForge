@@ -668,10 +668,18 @@ mkfs_dev() { # device fstype label
 owner_mode() { # path owner group mode recursive
   local p=$1 o=$2 g=$3 m=$4 r=$5
   [[ -e $p ]] || return 0
+  # chown and chmod follow a link at the path itself: it would hand its target (/etc/shadow, say) to the new owner
+  [[ -L $p ]] && { conflict "$p is a symbolic link: give the folder it points to instead"; return 1; }
   if [[ -n $o || -n $g ]]; then
-    local want="${o:-$(stat -c %U "$p")}:${g:-$(stat -c %G "$p")}" off=
-    if [[ $r == 1 ]]; then off=$(find "$p" \( ! -user "${want%%:*}" -o ! -group "${want##*:}" \) -print -quit 2>/dev/null)
-    elif [[ $(stat -c %U:%G "$p") != "$want" ]]; then off=$p; fi
+    [[ -z $o ]] || id -u -- "$o" >/dev/null 2>&1 || { conflict "there is no user $o here"; return 1; }
+    [[ -z $g ]] || getent group "$g" >/dev/null || { conflict "there is no group $g here"; return 1; }
+    # Only what was asked: an empty owner or group stays as each file has it (chown alice, chown :staff), never
+    # the group or owner of the top folder spread over everything inside.
+    local want=$o${g:+:$g} off= q=() depth=(-maxdepth 0)
+    [[ -n $o ]] && q+=(! -user "$o")
+    [[ -n $g ]] && { [[ -n $o ]] && q+=(-o); q+=(! -group "$g"); }
+    [[ $r == 1 ]] && depth=()
+    off=$(find "$p" ${depth[@]+"${depth[@]}"} \( "${q[@]}" \) -print -quit 2>/dev/null)
     if [[ -z $off ]]; then ok "owner $want"; elif act "chown ${r:+-R }$want $p"; then try chown ${r:+-R} -- "$want" "$p" && ok "owner $want"; fi
   fi
   if [[ -n $m ]]; then

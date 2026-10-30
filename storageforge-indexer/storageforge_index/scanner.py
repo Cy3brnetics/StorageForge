@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import posixpath
 import queue
+import re
 import sys
 import threading
 import time
@@ -98,6 +99,23 @@ def skip_reason(m: MountInfo, opts: ScanOptions) -> str | None:
     return None
 
 
+def _subvolid(m: MountInfo) -> str | None:
+    hit = re.search(r'(?:^|,)subvolid=(\d+)', m.options or '')
+    return hit.group(1) if hit else None
+
+
+def _walk_reaches(m: MountInfo, prior: MountInfo) -> bool:
+    """Whether the walk of prior (same filesystem, fsroot above m's) sees m's files somewhere besides m's own mount
+    point: only then is m a mere bind (alias). A btrfs subvolume nested in another (openSUSE's /@/home) is its own
+    tree that the parent's -xdev walk never enters, and a mount over the very place its files would show up is pruned
+    from that walk; either needs a scan of its own."""
+    a, b = _subvolid(m), _subvolid(prior)
+    if m.fstype == 'btrfs' and a and b and a != b:
+        return False
+    rel = posixpath.relpath(m.fsroot or '/', prior.fsroot or '/')
+    return posixpath.normpath(posixpath.join(prior.target, rel)) != m.target
+
+
 def plan_mounts(mounts: list[MountInfo], opts: ScanOptions) -> list[MountPlan]:
     plans: list[MountPlan] = []
     kept: dict[str, list[MountPlan]] = {}
@@ -109,7 +127,8 @@ def plan_mounts(mounts: list[MountInfo], opts: ScanOptions) -> list[MountPlan]:
         if why:
             plans.append(MountPlan(m, 'skip', why))
             continue
-        prior = next((p for p in kept.get(m.majmin, []) if is_under(m.fsroot or '/', p.info.fsroot or '/')), None) if m.majmin else None
+        prior = next((p for p in kept.get(m.majmin, []) if is_under(m.fsroot or '/', p.info.fsroot or '/')
+                      and _walk_reaches(m, p.info)), None) if m.majmin else None
         if prior:
             plans.append(MountPlan(m, 'alias', f'bind of {prior.info.target}', alias_of=prior))
         else:

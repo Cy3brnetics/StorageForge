@@ -209,6 +209,9 @@ class Database:
         if not rows:
             raise LookupError(f'no indexed host {name!r}')
         conn.execute('UPDATE hosts SET host_keys = NULL, ssh_host = NULL WHERE lower(hostname) = lower(:n)', {'n': name})
+        # a person confirmed the old keys: if one of them shows up again, that is not the reinstalled machine
+        conn.execute('DELETE FROM host_key_confirmations WHERE lower(address) IN (lower(:h), lower(:a))',
+                     {'h': rows[0][0], 'a': rows[0][1] or rows[0][0]})
         return rows[0]
 
     def sync_mounts(self, conn: Conn, host_id: int, plans) -> None:

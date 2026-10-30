@@ -57,7 +57,7 @@ To import a key you already have, pipe it in so it is never written to the conta
 docker compose exec -T storageforge storageforge-index vault add --name nas --key-file - < ~/.ssh/id_ed25519
 ```
 
-Or put key files in `./keys/` before starting: the entrypoint imports each one (the file name becomes the key name) from a read-only mount.
+Or put key files in `./keys/` before starting: the entrypoint imports each one (the file name becomes the key name) from a read-only mount. The container reads them through your group, so make them group-readable (`chmod 0640 keys/*`; `docker/init-secrets.sh` already made `keys/` itself `0750`). A key it cannot read is named in the log (`docker compose logs storageforge`).
 
 ## Scanning the Docker host itself
 

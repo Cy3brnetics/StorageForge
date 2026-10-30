@@ -1,0 +1,4 @@
+# per-user Obsidian state; the vault config above it is shared
+.obsidian/workspace*.json
+.obsidian/cache
+.trash/

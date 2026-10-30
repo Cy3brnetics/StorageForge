@@ -231,5 +231,19 @@ class TaskRuns(Fleet):
         self.assertNotIn('\nNEVER', r.stdout)
 
 
+    def test_deployed_task_runs_as_its_own_executable(self):
+        """A deploy installs $0 (the signed script, runner refresh first) as the unit's ExecStart: systemd execs it
+        directly, so it must start with #! (GM-03)."""
+        from storageforge_index import deploy
+        text = tasks.script(self.conn, {'name': 'T', 'host': '', 'blocks': [
+            {'type': 'command', 'params': {'cmd': 'echo FROM-SYSTEMD'}}]})
+        sh = Path(self.tmp) / 'installed.sh'
+        sh.write_text(deploy.RUNNER_UPDATE + text)
+        sh.chmod(0o750)
+        r = subprocess.run([str(sh), '--run'], capture_output=True, text=True, timeout=60,
+                           env={**os.environ, 'STORAGEFORGE_TASK_STATE': f'{self.tmp}/state'})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('FROM-SYSTEMD', r.stdout)
+
 if __name__ == '__main__':
     unittest.main()

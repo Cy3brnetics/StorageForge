@@ -12,6 +12,7 @@ die() { log "error: $*"; exit 64; }
 DATA=${STORAGEFORGE_DATA_DIR:-/app/data}
 RUNTIME=${STORAGEFORGE_RUNTIME_DIR:-/run/storageforge}
 IMPORT_DIR=${STORAGEFORGE_IMPORT_DIR:-/run/secrets/ssh-import}
+[ $# -gt 0 ] || set -- serve
 
 # every storageforge-index subcommand (tests/test_consistency.py fails when one is missing)
 case "${1:-serve}" in
@@ -19,6 +20,12 @@ case "${1:-serve}" in
   export-markdown|report|vault|audit|graph|canvas|blueprint|migrate|serve|healthcheck|user|-*) ;;
   *) exec "$@" ;;
 esac
+# the subcommand, past the global options (--db takes a value); none for --version or --help
+cmd= skip=0 db=
+for a in "$@"; do
+  if [ "$skip" = 1 ]; then skip=0; db=$a; continue; fi
+  case $a in --db) skip=1 ;; --db=*) db=${a#--db=} ;; -*) ;; *) cmd=$a; break ;; esac
+done
 
 # 1. privileges: never root, no setuid escalation possible
 [ "$(id -u)" -ne 0 ] || die "refusing to run as root; run with --user 10001:10001"
@@ -32,7 +39,7 @@ length_of() {  # $1 = variable name; prints the secret length without exposing i
 }
 [ "$(length_of STORAGEFORGE_VAULT_SECRET)" -ge 32 ] \
   || die "set STORAGEFORGE_VAULT_SECRET or STORAGEFORGE_VAULT_SECRET_FILE (≥ 32 characters; openssl rand -base64 48)"
-if [ "${1:-serve}" = serve ]; then
+if [ "$cmd" = serve ]; then
   [ "$(length_of STORAGEFORGE_SESSION_SECRET)" -ge 32 ] \
     || die "set STORAGEFORGE_SESSION_SECRET or STORAGEFORGE_SESSION_SECRET_FILE (≥ 32 characters; openssl rand -base64 48)"
 fi
@@ -59,16 +66,26 @@ esac
 chmod 0700 "$RUNTIME"
 find "$RUNTIME" -mindepth 1 -maxdepth 1 -name 'agent-*' -exec rm -rf {} + 2>/dev/null || true
 
+# A restore replaces the database: migrating it, creating a vault in it or importing keys into it first would fail on
+# the damaged database it is meant to replace, or be thrown away with an empty one. The next start migrates the
+# restored database and checks that the vault secret unlocks it.
+if [ "$cmd" = restore ]; then
+  log "restore: data=$DATA"
+  exec storageforge-index "$@"
+fi
+
 # 5. schema, then the vault (creates it on first start, verifies the secret afterwards)
-storageforge-index migrate >&2
-storageforge-index vault init >&2 || die "the vault secret does not unlock the existing vault"
+storageforge-index ${db:+--db "$db"} migrate >&2
+storageforge-index ${db:+--db "$db"} vault init >&2 || die "the vault secret does not unlock the existing vault"
 
 # 6. optional one-shot key import from a read-only mount (file name = key name)
-if [ -d "$IMPORT_DIR" ] && [ -n "$(ls -A "$IMPORT_DIR" 2>/dev/null)" ]; then
+if [ -d "$IMPORT_DIR" ] && ! { [ -r "$IMPORT_DIR" ] && [ -x "$IMPORT_DIR" ]; }; then
+  log "warning: $IMPORT_DIR is not readable by uid $(id -u) (groups $(id -G)): no keys imported. On the host: chmod 0750 keys, chmod 0640 keys/*, and set STORAGEFORGE_SECRETS_GID to the group of keys/ if it is not 1000"
+elif [ -d "$IMPORT_DIR" ] && [ -n "$(ls -A "$IMPORT_DIR" 2>/dev/null)" ]; then
   if touch "$IMPORT_DIR/.rw-probe" 2>/dev/null; then
     rm -f "$IMPORT_DIR/.rw-probe"; log "warning: $IMPORT_DIR is writable; mount it read-only (:ro)"
   fi
-  storageforge-index vault import-dir "$IMPORT_DIR" >&2 || log "warning: some keys in $IMPORT_DIR were not imported"
+  storageforge-index ${db:+--db "$db"} vault import-dir "$IMPORT_DIR" >&2 || log "warning: some keys in $IMPORT_DIR were not imported"
 fi
 
 log "ready: data=$DATA runtime=$RUNTIME ($fstype)"

@@ -10,6 +10,9 @@ cd "$(dirname "$0")/.."
 umask 077
 mkdir -p secrets keys
 chmod 0700 secrets
+# keys/ is mounted for the one-shot key import: the container (uid 10001) lists it through your group. Key files in it
+# need group read too (chmod 0640 keys/*); ssh-keygen makes them 0600.
+chmod 0750 keys
 [ -s secrets/vault_secret ] || { openssl rand -base64 48 | tr -d '\n' > secrets/vault_secret; echo "created secrets/vault_secret"; }
 [ -s secrets/session_secret ] || { openssl rand -base64 48 | tr -d '\n' > secrets/session_secret; echo "created secrets/session_secret"; }
 if [ ! -s secrets/tls_cert ] || [ ! -s secrets/tls_key ]; then

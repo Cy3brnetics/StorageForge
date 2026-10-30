@@ -82,7 +82,7 @@ Every connection, scan result, denial, sign-in, plan save, script download, depl
 | Secrets | compose secret files, 0640 with your group; checked for length (≥ 32 characters) at start |
 | Network | the app port is not published; only the nginx proxy is, on 8443 over TLS 1.2/1.3 with HSTS, replacing (not appending) `X-Forwarded-For` |
 | Image | base image pinned by digest, Python packages pinned by hash and installed with `--require-hashes`; pip, `scp`, `sftp` and `ssh-keyscan` removed |
-| Egress | optional `docker/egress-firewall.sh` lets the containers open only SSH and alert ports (`STORAGEFORGE_EGRESS_PORTS`, default `22 443`) out of the `sf0` bridge |
+| Egress | optional `docker/egress-firewall.sh` lets the containers open only SSH and alert ports (`STORAGEFORGE_EGRESS_PORTS`, default `22 443`) out of the `sf0` bridge, to other machines and to the Docker host itself |
 
 ## On the hosts
 

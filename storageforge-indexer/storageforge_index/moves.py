@@ -603,11 +603,15 @@ dryrun_step() {
   "${RS[@]}" | grep -E '^(Number of (created|regular) files|Number of regular files transferred|Total file size|Total transferred file size)' | sed 's/^/            /'
 }
 verify_step() { # -> 0 if destination matches source
-  local i=$1 out n
+  local i=$1 out n rc=0
   dst_guard "$i" || return 1
   [[ ${S_METHOD[$i]} == git ]] && { git_step "$i" verify; return; }
   rsync_args "$i" -n -i
-  out=$("${RS[@]}" | grep -v '^\.d' | grep -v '^cd' || true)
+  # rsync's errors go to stderr: a run that failed (host down, source gone) lists no differences, and cutover
+  # trusts this check, so only a clean exit counts
+  out=$("${RS[@]}") || rc=$?
+  if ((rc)); then conflict "rsync could not compare the folders (exit $rc): not a match"; return 1; fi
+  out=$(grep -v '^\.d' <<<"$out" | grep -v '^cd' || true)
   n=$(grep -c . <<<"$out" || true)
   if ((n == 0)); then ok "destination matches the source$( { has "$i" checksum || ((CHECKSUM)); } && echo ' (checksums)')"; return 0; fi
   conflict "$n difference(s); first ones:"; head -10 <<<"$out" | sed 's/^/            /'; return 1
