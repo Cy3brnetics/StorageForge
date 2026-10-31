@@ -129,6 +129,7 @@ import time
 import traceback
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlencode
 
 from flask import Flask, Response, abort, g, jsonify, redirect, request, send_from_directory, session
@@ -139,7 +140,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, retire, scheduler, shares, tasks, users)
+               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, retire, routes_accounts, routes_git, routes_scheduler, scheduler, shares, tasks, users)
 from .capacity import parse_size, trends
 from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
@@ -176,7 +177,6 @@ LOGIN_LIMIT_PER_IP = '10 per minute; 50 per hour'
 LOGIN_LIMIT_PER_USER = '5 per minute; 20 per hour'     # per account and client network (/24, /64)
 LOGIN_LIMIT_PER_ACCOUNT = '100 per day'                # per account from anywhere: the backstop for spread-out guessing
 INSTALL_LIMIT = '10 per minute'     # each attempt is one password try on the target
-GIT_LIMIT = '60 per minute'         # each call unlocks the vault and opens SSH
 # Routes that run commands on hosts want the account password typed again within this many seconds.
 REAUTH_WINDOW = 300
 KEY_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}')
@@ -547,6 +547,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return jsonify(error=str(exc), hostkey=exc.as_dict()), 409
         if isinstance(exc, (ValueError, VaultError)):
             return jsonify(error=str(exc)), 400
+        if isinstance(exc, LookupError) and not isinstance(exc, (KeyError, IndexError)):     # "no such deploy", from a route with no handler of its own
+            return jsonify(error=str(exc)), 404
         traceback.print_exc()
         return jsonify(error=f'internal error: {type(exc).__name__}'), 500
 
@@ -781,134 +783,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         users.end_all_sessions(conn(), current_user.username)
         return jsonify(signed_out=True)
 
-    def account_rows():
-        return jsonify(users=[dict(zip(('username', 'created_at', 'last_login_at', 'disabled_at', 'role'), r)) for r in users.listing(conn())])
-
-    @web.route('/api/users', methods=['GET', 'POST'])
-    @login_required
-    @password_confirmed
-    def api_users():
-        if request.method == 'POST':
-            body = json_body()
-            name, role = str(body.get('username') or ''), str(body.get('role') or 'viewer')
-            may_hand_out(role)
-            users.create(conn(), name, str(body.get('password') or ''), role)
-            core.audit(conn(), actor(), 'user.add', 'ok', None, {'username': name, 'role': role})
-        return account_rows()
-
-    @web.route('/api/users/<name>', methods=['PUT', 'DELETE'])
-    @login_required
-    @password_confirmed
-    def api_user(name):
-        may_hand_out(users.role_of(conn(), name) or '')
-        if request.method == 'DELETE':
-            users.keep_an_admin(conn(), name)
-            users.remove(conn(), name)
-            core.audit(conn(), actor(), 'user.remove', 'ok', None, {'username': name})
-            return jsonify(removed=name)
-        body = json_body()
-        if 'role' in body:
-            may_hand_out(str(body['role']))
-        if ('role' in body and body['role'] != 'admin') or body.get('disabled'):
-            users.keep_an_admin(conn(), name)
-        if 'role' in body:
-            users.set_role(conn(), name, str(body['role']))
-        if 'disabled' in body:
-            users.set_disabled(conn(), name, bool(body['disabled']))
-        core.audit(conn(), actor(), 'user.update', 'ok', None, {'username': name, **{k: body[k] for k in ('role', 'disabled') if k in body}})
-        return account_rows()
-
-    @web.post('/api/users/<name>/reset-link')
-    @login_required
-    @password_confirmed
-    def api_user_reset(name):
-        may_hand_out(users.role_of(conn(), name) or '')
-        invite_id, token = users.create_reset(conn(), name, current_user.username)
-        core.audit(conn(), actor(), 'user.reset-link', 'ok', None, {'username': name, 'invite': invite_id})
-        return jsonify(id=invite_id, token=token)
-
-    @web.route('/api/invites', methods=['GET', 'POST'])
-    @login_required
-    @password_confirmed
-    def api_invites():
-        if request.method == 'GET':
-            return jsonify(invites=users.list_invites(conn()), now=int(time.time()))
-        body = json_body()
-        role = str(body.get('role') or '')
-        may_hand_out(role)
-        try:
-            hours = int(body.get('hours') or users.INVITE_HOURS)
-        except (TypeError, ValueError):
-            raise ValueError('hours must be a number') from None
-        invite_id, token = users.create_invite(conn(), role, current_user.username, hours, str(body.get('note') or ''))
-        core.audit(conn(), actor(), 'invite.create', 'ok', None, {'invite': invite_id, 'role': role, 'hours': hours})
-        return jsonify(id=invite_id, token=token)
-
-    @web.delete('/api/invites/<int:invite_id>')
-    @login_required
-    @password_confirmed
-    def api_invite_revoke(invite_id):
-        may_hand_out(users.invite_role(conn(), invite_id) or '')
-        users.revoke_invite(conn(), invite_id)
-        core.audit(conn(), actor(), 'invite.revoke', 'ok', None, {'invite': invite_id})
-        return jsonify(revoked=invite_id)
-
-    @web.route('/api/roles', methods=['GET', 'POST'])
-    @login_required
-    def api_roles():
-        if request.method == 'POST':
-            stale = password_stale()
-            if stale:
-                return stale
-            save_role(str(json_body().get('name') or ''), new=True)
-        catalog = [dict(group=g, permissions=[dict(name=n, text=t, high_risk=r) for n, t, r in ps]) for g, ps in permissions.CATALOG]
-        return jsonify(roles=users.list_roles(conn()), catalog=catalog)
-
-    def save_role(name: str, new: bool):
-        body = json_body()
-        wanted = body.get('permissions')
-        if isinstance(wanted, list) and not ({str(p) for p in wanted} & permissions.ALL) <= current_user.permissions:
-            abort(403, description='a role cannot allow what your account cannot do')
-        if not new:
-            may_hand_out(name)
-        users.save_role(conn(), name, str(body.get('description') or ''), wanted, current_user.username, new)
-        core.audit(conn(), actor(), 'role.add' if new else 'role.update', 'ok', None, {'role': name, 'permissions': wanted})
-
-    @web.route('/api/roles/<name>', methods=['PUT', 'DELETE'])
-    @login_required
-    @password_confirmed
-    def api_role(name):
-        if request.method == 'PUT':
-            save_role(name, new=False)
-            return jsonify(saved=name)
-        may_hand_out(name)
-        users.remove_role(conn(), name)
-        core.audit(conn(), actor(), 'role.remove', 'ok', None, {'role': name})
-        return jsonify(removed=name)
-
-    # links for people without an account: bad tokens count like failed sign-ins
-    def bad_link(resp: Response) -> bool:
-        return resp.status_code == 403
-
-    @web.post('/api/enroll/check')
-    @limiter.limit(LOGIN_LIMIT_PER_IP, deduct_when=bad_link, error_message='too many tries; try again later')
-    def api_enroll_check():
-        invite = users.open_invite(conn(), str(json_body().get('token') or ''))
-        if not invite:
-            return jsonify(error='this link is not valid: it may have expired or been used'), 403
-        return jsonify(invite)
-
-    @web.post('/api/enroll')
-    @limiter.limit(LOGIN_LIMIT_PER_IP, deduct_when=bad_link, error_message='too many tries; try again later')
-    def api_enroll():
-        body = json_body()
-        try:
-            done = users.enroll(conn(), str(body.get('token') or ''), str(body.get('username') or '').strip(), str(body.get('password') or ''))
-        except users.InviteError as exc:
-            core.audit(conn(), f'web:{request.remote_addr}', 'user.enroll', 'denied', None, {})
-            return jsonify(error=str(exc)), 403
-        core.audit(conn(), f'web:{request.remote_addr}', 'user.reset' if done['reset'] else 'user.enroll', 'ok', None, done)
-        return jsonify(done)
+    ctx = SimpleNamespace(login_limit=LOGIN_LIMIT_PER_IP, core=core, db=db, limiter=limiter, conn=conn, actor=actor, need=need, may_hand_out=may_hand_out, json_body=json_body,
+                          arg_num=arg_num, password_stale=password_stale, password_confirmed=password_confirmed,
+                          need_for_commands=lambda c, kind, ref: need_for_commands(c, kind, ref))
+    routes_accounts.register(web, ctx)
 
     # data
     @web.get('/api/hosts')
@@ -1342,66 +1220,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         except Exception as exc:
             return jsonify(error=str(exc)), 502
 
-    def git_args(*names) -> list[str]:
-        """From a JSON body: these run commands on hosts, so no GET can start one."""
-        body = json_body()
-        vals = [str(body.get(n) or '') for n in names]
-        if not all(vals):
-            raise ValueError(' and '.join(names) + ' are required')
-        return vals
-
-    def git_call(what: str, host: str, path: str, work, **detail):
-        """Every Git route: one audit row whatever happened, and an audit that fails stops the answer."""
-        try:
-            res = work()
-            outcome, code = ('ok' if res.get('ok', True) else 'failed'), 200
-        except deploy.DeployError as exc:
-            res, outcome, code = {'error': str(exc)}, 'failed', 409
-        except ValueError as exc:
-            res, outcome, code = {'error': str(exc)}, 'failed', 400
-        except LookupError as exc:
-            res, outcome, code = {'error': str(exc)}, 'denied', 404
-        except Exception as exc:
-            res, outcome, code = {'error': str(exc)}, 'failed', 502
-        core.audit(conn(), actor(), what, outcome, host, {'path': path[:500], **detail})
-        return jsonify(res), code
-
-    def git_limit():
-        return f'git:{current_user.get_id()}'
-
-    @web.post('/api/git/status')
-    @login_required
-    @limiter.limit(GIT_LIMIT, key_func=git_limit)
-    def api_git_status():
-        host, path = git_args('host', 'path')
-        return git_call('git.status', host, path, lambda: gitrepos.repo_status(db, host, path, actor()))
-
-    @web.post('/api/git/sync')
-    @login_required
-    @password_confirmed
-    @limiter.limit(GIT_LIMIT, key_func=git_limit)
-    def api_git_sync():
-        host, path = git_args('host', 'path')
-        action = str(json_body().get('action') or 'sync')
-        return git_call('git.sync', host, path, lambda: gitrepos.repo_sync(db, host, path, action, actor()), action=action[:20])
-
-    @web.post('/api/git/history')
-    @login_required
-    @limiter.limit(GIT_LIMIT, key_func=git_limit)
-    def api_git_history():
-        host, path = git_args('host', 'path')
-        try:
-            most = max(1, min(int(json_body().get('max') or 50), 200))
-        except (TypeError, ValueError):
-            most = 50
-        return git_call('git.history', host, path, lambda: gitrepos.repo_history(db, host, path, most))
-
-    @web.post('/api/git/commit')
-    @login_required
-    @limiter.limit(GIT_LIMIT, key_func=git_limit)
-    def api_git_commit():
-        host, path, sha = git_args('host', 'path', 'sha')
-        return git_call('git.commit', host, path, lambda: gitrepos.repo_commit(db, host, path, sha), sha=sha[:64])
+    routes_git.register(web, ctx)
 
     @web.get('/api/shares/check')
     @login_required
@@ -1881,215 +1700,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             core.alerts_wake.set()
         return jsonify(ok=True, new=new)
 
-    # ── Scheduler API ──────────────────────────────────────────────────────────
-    def schedule_view(sched: dict) -> dict:
-        """Commands and env values can hold secrets: only those who may edit a schedule read them."""
-        return sched if 'plans.edit' in current_user.permissions else scheduler.masked(sched)
-
-    @web.route('/api/scheduler/schedules', methods=['GET', 'POST'])
-    @login_required
-    def api_scheduler_schedules():
-        c = conn()
-        if request.method == 'POST':
-            stale = password_stale()         # a schedule is a command on a host, on a timer
-            if stale:
-                return stale
-            body = json_body()
-            if body.get('task_type') == 'command':
-                need('hosts.command')
-            sched, token = scheduler.create_schedule(c, body, actor())
-            core.audit(c, actor(), 'scheduler.create', 'ok', sched['host'], {'schedule_id': sched['schedule_id'], 'name': sched['name']})
-            return jsonify(schedule=sched, token=token), 201
-        h = request.args.get('host') or None
-        t = request.args.get('task_type') or None
-        p = None if request.args.get('paused') is None else (request.args.get('paused').lower() in ('1', 'true'))
-        return jsonify(schedules=[schedule_view(s) for s in scheduler.list_schedules(c, host=h, task_type=t, paused=p)],
-                       installed=scheduler.installed(c))
-
-    @web.route('/api/scheduler/schedules/<int:schedule_id>', methods=['GET', 'PUT', 'DELETE'])
-    @login_required
-    def api_scheduler_schedule(schedule_id):
-        c = conn()
-        if request.method != 'GET':
-            stale = password_stale()
-            if stale:
-                return stale
-        try:
-            if request.method == 'PUT':
-                body = json_body()
-                if 'command' in (body.get('task_type'), scheduler.get_schedule(c, schedule_id)['task_type']):
-                    need('hosts.command')
-                sched = scheduler.update_schedule(c, schedule_id, body, actor())
-                core.audit(c, actor(), 'scheduler.update', 'ok', sched['host'], {'schedule_id': schedule_id, 'name': sched['name']})
-                return jsonify(sched)
-            elif request.method == 'DELETE':
-                sched = scheduler.get_schedule(c, schedule_id)
-                try:
-                    scheduler.delete_schedule(c, schedule_id, actor())
-                except scheduler.StillDeployed as exc:
-                    return jsonify(error=str(exc)), 409
-                core.audit(c, actor(), 'scheduler.delete', 'ok', sched['host'], {'schedule_id': schedule_id, 'name': sched['name']})
-                return jsonify(deleted=schedule_id)
-            return jsonify(schedule_view(scheduler.get_schedule(c, schedule_id)))
-        except LookupError as exc:
-            return jsonify(error=str(exc)), 404
-
-    @web.post('/api/scheduler/schedules/<int:schedule_id>/pause')
-    @login_required
-    @password_confirmed
-    def api_scheduler_schedule_pause(schedule_id):
-        c = conn()
-        try:
-            body = json_body()
-            paused = bool(body.get('paused', True))
-            if not paused:                   # stopping is always allowed; starting puts the commands back on the host
-                need_for_commands(c, 'schedules', schedule_id)
-            sched = scheduler.pause_schedule(c, schedule_id, paused, actor())
-            who = actor()
-            core.audit(c, who, 'scheduler.pause', 'ok', sched['host'], {'schedule_id': schedule_id, 'paused': paused})
-            if not scheduler.installed(c).get(str(schedule_id)):
-                return jsonify(sched)
-            # the timer is on the host, so this only happens when the host has been told
-            items = scheduler.deploy_items(db, c, sched, 'apply', alerts.get_setting(c, 'report_url'), who)
-            missing = sorted({it['host'] for it in items if not deploy.ready(c, it['host'])})
-            if missing:
-                return jsonify({**sched, 'host_pending': missing})
-            gid = deploy.start_group(db, items, who, stop_on_failure=True, after=lambda h: core.enqueue(h, who),
-                                     title=f'{"pause" if paused else "resume"} schedule {sched["name"]}', kind='schedules',
-                                     ref=str(schedule_id), mode='apply', options={}, digest=scheduler.schedule_hash(c, sched))
-            return jsonify({**sched, 'group': gid, 'hosts': [it['host'] for it in items]})
-        except LookupError as exc:
-            return jsonify(error=str(exc)), 404
-
-    @web.post('/api/scheduler/schedules/<int:schedule_id>/token')
-    @login_required
-    @password_confirmed
-    def api_scheduler_schedule_token(schedule_id):
-        c = conn()
-        try:
-            token = scheduler.token_for_schedule(c, schedule_id, actor())
-            sched = scheduler.get_schedule(c, schedule_id)
-            core.audit(c, actor(), 'scheduler.token_rotate', 'ok', sched['host'], {'schedule_id': schedule_id})
-            return jsonify(token=token, schedule_id=schedule_id)
-        except LookupError as exc:
-            return jsonify(error=str(exc)), 404
-
-    @web.post('/api/scheduler/schedules/<int:schedule_id>/run')
-    @login_required
-    @password_confirmed
-    def api_scheduler_schedule_run(schedule_id):
-        c = conn()
-        try:
-            sched = scheduler.get_schedule(c, schedule_id)
-            need_for_commands(c, 'schedules', schedule_id)
-            who = actor()
-            report_url = alerts.get_setting(c, 'report_url')
-            items = scheduler.deploy_items(db, c, sched, 'apply', report_url, who, run_now=True)
-            missing = [it['host'] for it in items if not deploy.ready(c, it['host'])]
-            if missing:
-                return jsonify(error='set up deploy access first on: ' + ', '.join(sorted(set(missing))),
-                               hosts=sorted(set(missing))), 409
-            blocked = preflight.blockers(c, [it['host'] for it in items], 'schedules')
-            if blocked:
-                return jsonify(error='; '.join(f'{b["host"]}: {b["text"]}' for b in blocked), blockers=blocked), 409
-            digest = scheduler.schedule_hash(c, sched)
-            gid = deploy.start_group(db, items, who, stop_on_failure=True, after=lambda h: core.enqueue(h, who),
-                                     title=f'run schedule {sched["name"]}', kind='schedules', ref=str(schedule_id),
-                                     mode='apply', options={'run': True}, digest=digest)
-            core.audit(c, who, 'scheduler.run', 'ok', sched['host'], {'schedule_id': schedule_id, 'group': gid})
-            return jsonify(group=gid, hosts=[it['host'] for it in items], schedule_id=schedule_id)
-        except LookupError as exc:
-            return jsonify(error=str(exc)), 404
-
-    @web.post('/api/scheduler/schedules/<int:schedule_id>/verify')
-    @login_required
-    def api_scheduler_schedule_verify(schedule_id):
-        c = conn()
-        try:
-            body = (request.get_json(silent=True) or {}) if request.is_json else {}
-            run_id = body.get('run_id')
-            if run_id is not None:
-                res = scheduler.reverify_run(c, int(run_id))
-            else:
-                res = scheduler.verify_schedule(c, schedule_id)
-            sched = scheduler.get_schedule(c, schedule_id)
-            core.audit(c, actor(), 'scheduler.verify', 'ok', sched['host'],
-                       {'schedule_id': schedule_id, 'run_id': res.get('run_id'), 'status': res.get('status')})
-            core.alerts_wake.set()
-            return jsonify(res)
-        except LookupError as exc:
-            return jsonify(error=str(exc)), 404
-
-    @web.get('/api/scheduler/schedules/<int:schedule_id>/script')
-    @login_required
-    def api_scheduler_schedule_script(schedule_id):
-        c = conn()
-        try:
-            sched = scheduler.get_schedule(c, schedule_id)
-            script, args = scheduler.generate_task_script(c, sched)
-            core.audit(c, actor(), 'scheduler.script', 'ok', sched['host'], {'schedule_id': schedule_id})
-            return Response(script, mimetype='text/x-shellscript',
-                            headers={'Content-Disposition': f'attachment; filename="task-{schedule_id}.sh"'})
-        except LookupError as exc:
-            return jsonify(error=str(exc)), 404
-
-    @web.get('/api/scheduler/schedules/<int:schedule_id>/install-script')
-    @login_required
-    def api_scheduler_schedule_install_script(schedule_id):
-        c = conn()
-        try:
-            sched = scheduler.get_schedule(c, schedule_id)
-            # A GET changes nothing, so this carries no token and the host reports through scans. To report directly, rotate
-            # the token and add it to the config on the host, or deploy over SSH
-            scr = scheduler.generate_install_script(c, sched, alerts.get_setting(c, 'report_url'), '')
-            core.audit(c, actor(), 'scheduler.install-script', 'ok', sched['host'], {'schedule_id': schedule_id})
-            return Response(scr, mimetype='text/x-shellscript',
-                            headers={'Content-Disposition': f'attachment; filename="install-schedule-{schedule_id}.sh"'})
-        except LookupError as exc:
-            return jsonify(error=str(exc)), 404
-
-    @web.get('/api/scheduler/schedules/<int:schedule_id>/cron')
-    @login_required
-    def api_scheduler_schedule_cron(schedule_id):
-        c = conn()
-        try:
-            sched = scheduler.get_schedule(c, schedule_id)
-            cron = scheduler.generate_cron_entry(sched)
-            return Response(cron, mimetype='text/plain')
-        except LookupError as exc:
-            return jsonify(error=str(exc)), 404
-
-    @web.get('/api/scheduler/schedules/<int:schedule_id>/runs')
-    @login_required
-    def api_scheduler_schedule_runs(schedule_id):
-        c = conn()
-        lim = arg_num('limit', 50, 1, 500)
-        return jsonify(runs=scheduler.get_schedule_runs(c, schedule_id=schedule_id, limit=lim))
-
-    @web.get('/api/scheduler/runs')
-    @login_required
-    def api_scheduler_runs():
-        c = conn()
-        h = request.args.get('host') or None
-        lim = arg_num('limit', 50, 1, 500)
-        return jsonify(runs=scheduler.get_schedule_runs(c, host=h, limit=lim))
-
-    @web.post('/api/scheduler/report')
-    @limiter.limit('120 per minute')
-    def api_scheduler_report():
-        auth = request.headers.get('Authorization', '')
-        token = auth[7:].strip() if auth.startswith('Bearer ') else ''
-        sched = scheduler.schedule_for_token(conn(), token)
-        if not sched:
-            return jsonify(error='unknown scheduler token'), 401
-        body = json_body()
-        if int(body.get('schedule_id') or 0) != sched['schedule_id']:
-            return jsonify(error='token does not match schedule_id'), 403
-        res = scheduler.ingest_report(conn(), body, f'report:{request.remote_addr}'[:60])
-        if res.get('auto_rescan'):
-            core.enqueue(sched['host'], 'scheduler')
-        core.alerts_wake.set()
-        return jsonify(ok=True, **res)
+    routes_scheduler.register(web, ctx)
 
     @web.get('/api/hostconfigs')
     @login_required
