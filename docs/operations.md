@@ -151,7 +151,7 @@ python3 -m unittest discover -s tests -v
 docker build --target test .
 ```
 
-`.gitea/workflows/ci.yml` runs the suite on both databases, plus ruff and shellcheck, on every push. It needs Gitea Actions and a runner.
+`.forgejo/workflows/ci.yml` runs the suite on both databases, plus ruff and shellcheck, on every push. It needs Forgejo Actions and a runner.
 
 `tests/test_platform.py` covers the vault, bindings, the audit chain, a real ephemeral `ssh-agent`, the graph and canvas, and the HTTP API with auth and CSP. `tests/test_indexer.py` covers units, patterns, the stream parser, pool math, mount planning, payload parsers, reports and real local scans. `tests/test_tasks.py` covers storage tasks and their scripts.
 

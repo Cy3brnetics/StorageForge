@@ -8,7 +8,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[postgres]"
 .venv/bin/python -m unittest discover -s tests
 ```
 
-Without the install, every test that needs Flask errors with `ModuleNotFoundError`, so a bare `python3 -m unittest` says little. To run the suite on PostgreSQL as well, see [Operations](docs/operations.md#tests). CI runs both databases, plus ruff and shellcheck, from `.gitea/workflows/ci.yml`.
+Without the install, every test that needs Flask errors with `ModuleNotFoundError`, so a bare `python3 -m unittest` says little. To run the suite on PostgreSQL as well, see [Operations](docs/operations.md#tests). CI runs both databases, plus ruff and shellcheck, from `.forgejo/workflows/ci.yml`.
 
 ## Rules every change follows
 

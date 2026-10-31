@@ -22,7 +22,7 @@ found: 2026-10-29
 
 ## Suggested approach
 1. `make test` (or a `scripts/test.sh`) that runs the suite inside the built image: `docker compose run --rm --entrypoint python storageforge -m unittest discover -s tests`. Same command locally and in CI.
-2. A CI workflow (Forgejo/Gitea Actions or GitHub Actions, whichever hosts the repo) with two jobs: SQLite, and Postgres via a service container with `STORAGEFORGE_DB=postgresql://...`.
+2. A CI workflow (Forgejo Actions) with two jobs: SQLite, and Postgres via a service container with `STORAGEFORGE_DB=postgresql://...`.
 3. Fix T1: force the plain `find` in that test (env var or monkeypatch of the tool path).
 4. A small Playwright smoke test: log in, open each tab, open the planner, no console errors.
 
@@ -31,4 +31,4 @@ found: 2026-10-29
 - [ ] A missing dependency fails the run instead of erroring 23 tests
 
 ## Progress 2026-10-30
-The suite passes on SQLite and PostgreSQL, and `.gitea/workflows/ci.yml` is written, but has not run yet: it needs Gitea Actions and a runner. The browser JavaScript is still untested.
+The suite passes on SQLite and PostgreSQL, and `.forgejo/workflows/ci.yml` is written, but has not run yet: it needs Forgejo Actions and a runner. The browser JavaScript is still untested.

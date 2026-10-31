@@ -7,7 +7,7 @@ updated: 2026-10-30
 The findings in the order that makes each step easier than the last. Effort: S under a day, M a few days, L a week or more.
 
 ## Now: make change safe
-1. [[EQ-01 No CI and untested paths]] (M): CI is written (`.gitea/workflows/ci.yml`) and needs a runner. Browser JS is still untested.
+1. [[EQ-01 No CI and untested paths]] (M): CI is written (`.forgejo/workflows/ci.yml`) and needs a runner. Browser JS is still untested.
 2. ~~[[PF-13 Planner export is a second script generator]]~~ done 2026-10-29. Follow-up: [[PF-17 Changes has no pool tasks]]: the ZFS and LVM tasks exist since 2026-10-30; designs still have to use them.
 3. [[EQ-02 Two capacity engines]] (S): shared test vectors, run in the new CI.
 
