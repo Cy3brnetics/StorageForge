@@ -991,11 +991,15 @@ $('#verify').addEventListener('click', async () => {
 });
 
 /* ── header controls ─────────────────────────────────────────────── */
+const STALE_DAYS = 14;
 async function loadHosts() {
   const { indexed, graph } = await getJSON('/api/hosts');
   const names = [...new Set([...graph, ...indexed.map((h) => h.hostname)])].sort();
   const sel = $('#host');
-  sel.replaceChildren(new Option('All hosts', ''), ...names.map((n) => new Option(n, n)));
+  const days = (h) => (h && h.last_scanned_at ? Math.floor((Date.now() / 1000 - h.last_scanned_at) / 86400) : 0);
+  const age = new Map(indexed.map((h) => [h.hostname, days(h)]));
+  const stale = (n) => (age.get(n) >= STALE_DAYS ? ` (not scanned for ${age.get(n)} days)` : '');
+  sel.replaceChildren(new Option('All hosts', ''), ...names.map((n) => new Option(n + stale(n), n)));
   sel.value = S.host;
 }
 $('#host').addEventListener('change', () => { $('#toplanner').href = '/planner' + (S.host ? `#overview@${encodeURIComponent(S.host)}` : ''); });
