@@ -17,6 +17,8 @@ VIRTUAL = {'proc', 'sysfs', 'devtmpfs', 'devpts', 'tmpfs', 'ramfs', 'cgroup', 'c
            'pstore', 'bpf', 'tracefs', 'debugfs', 'mqueue', 'hugetlbfs', 'fusectl', 'configfs', 'efivarfs', 'autofs',
            'binfmt_misc', 'nsfs', 'rpc_pipefs', 'nfsd', 'fuse.portal', 'fuse.gvfsd-fuse', 'selinuxfs', 'zram'}
 PSEUDO_ROOTS = ('/proc', '/sys', '/dev')
+# FUSE filesystems that keep their files on this host's disks; other fuse.* mounts are remote or synthetic
+LOCAL_FUSE = {'fuse.mergerfs', 'fuse.unionfs', 'fuse.ntfs-3g', 'fuse.ntfs'}
 SYSTEM_DIRS = ('/', '/bin', '/boot', '/dev', '/etc', '/home', '/lib', '/lib64', '/proc', '/root', '/run', '/sbin',
                '/sys', '/tmp', '/usr', '/var', '/var/lib', '/var/log')
 FILE_LIMIT = 300
@@ -29,7 +31,7 @@ def mount_kind(m: dict) -> str:
         return 'bind'
     if fs in NETWORK:
         return NETWORK[fs]
-    if fs in VIRTUAL or fs.startswith('fuse.') or any(m.get('target', '').startswith(r + '/') for r in PSEUDO_ROOTS):
+    if fs in VIRTUAL or (fs.startswith('fuse.') and fs not in LOCAL_FUSE) or any(m.get('target', '').startswith(r + '/') for r in PSEUDO_ROOTS):
         return 'virtual'
     return 'local'
 

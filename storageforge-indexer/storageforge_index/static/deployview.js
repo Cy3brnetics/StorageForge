@@ -3,7 +3,7 @@
    drift, alerts and their channels. Every deploy runs the read-only report on each host first; Apply comes after.
    Loaded after dockerview.js; uses the shared helpers. */
 
-const DP = { data: null, group: null, poll: 0, job: null, err: '', setup: null };
+const DP = { data: null, group: null, poll: 0, job: null, err: '', setup: null, settingsForm: null, openRuns: new Set(), cancelRequested: false };
 const JOB_STATE = { ok: 'protected', failed: 'broken', stale: 'local-only', 'never-ran': 'unknown', paused: 'unknown' };
 const RUN_LINE = /^\s{2}(ok|missing|conflict|->|other)\s/;
 
@@ -16,30 +16,88 @@ function when(ts) {
 const stamp = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : '');
 
 async function loadDeploy() {
-  try { DP.data = await getJSON('/api/deploy'); DP.err = ''; }
-  catch (err) { DP.err = err.message; }
+  try {
+    DP.data = await getJSON('/api/deploy');
+    DP.err = '';
+    // If no deploy panel is open, resume watching any active deploy from recent groups
+    if (!DP.group && DP.data?.groups) {
+      const active = DP.data.groups.find((g) => ['running', 'queued'].includes(g.state));
+      if (active) {
+        DP.group = { gid: active.group_id, kind: active.kind, ref: active.ref, mode: active.mode, title: active.title, extra: active.options, runs: [], done: false };
+        pollGroup();
+      }
+    }
+  } catch (err) { DP.err = err.message; }
   renderDeploy();
 }
 
 /* ── running a deploy: report first, then apply ─────────────────── */
 async function startDeploy(kind, ref, mode, title, extra = {}) {
   showTab('deploy');
+  DP.cancelRequested = false;
   try {
     const r = await (await postJSON('/api/deploy/start', { kind, ref, mode, ...extra })).json();
     DP.group = { gid: r.group, kind, ref, mode, title, extra, runs: [], done: false };
   } catch (err) {
-    DP.group = { kind, ref, mode, title, extra, error: err.message, runs: [], done: true };
+    const body = err.body || {};
+    DP.group = {
+      kind, ref, mode, title, extra,
+      error: err.message,
+      stale: Boolean(body.stale),
+      missingHosts: body.hosts || null,
+      blockers: body.blockers || null,
+      runs: [], done: true
+    };
   }
   renderDeploy();
-  pollGroup();
+  if (DP.group?.gid) pollGroup();
 }
+
+async function cancelGroup(gid, force = false) {
+  try {
+    DP.cancelRequested = true;
+    renderGroup();
+    const r = await (await postJSON(`/api/deploy/groups/${gid}/cancel`, { force })).json();
+    toast(force ? 'Deploy force stopped' : 'Cancel requested; stopping remaining hosts');
+    pollGroup();
+  } catch (err) { toast(err.message); }
+}
+
+async function retryGroup(gid) {
+  toast('Retrying deploy…');
+  try {
+    const r = await (await postJSON(`/api/deploy/groups/${gid}/retry`, {})).json();
+    DP.cancelRequested = false;
+    DP.group = { gid: r.group, kind: r.kind, ref: r.ref, mode: r.mode, title: r.title, extra: r.extra, runs: [], done: false };
+    renderDeploy();
+    pollGroup();
+  } catch (err) { toast(err.message); }
+}
+
+async function openGroup(gid, title, kind, ref, mode, extra = {}) {
+  try {
+    const data = await getJSON(`/api/deploy/groups/${gid}`);
+    const g = data.group || {};
+    DP.group = { gid, title: title || g.title, kind: kind || g.kind, ref: ref || g.ref, mode: mode || g.mode, extra: extra || g.options || {}, runs: data.runs || [], done: g.state !== 'running' };
+    renderDeploy();
+    if (!DP.group.done) pollGroup();
+    $('#dpgroup')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  } catch (err) { toast(err.message); }
+}
+
 async function pollGroup() {
   clearTimeout(DP.poll);
   const g = DP.group;
   if (!g || !g.gid || g.done) return;
   try {
-    g.runs = (await getJSON(`/api/deploy/groups/${g.gid}`)).runs;
-    g.done = g.runs.length > 0 && g.runs.every((r) => !['running', 'queued'].includes(r.status));
+    const data = await getJSON(`/api/deploy/groups/${g.gid}`);
+    g.runs = data.runs || [];
+    const grp = data.group;
+    if (grp) g.state = grp.state;
+    g.done = g.runs.length > 0 && (
+      ['ok', 'failed', 'incomplete', 'cancelled', 'interrupted'].includes(grp?.state) ||
+      g.runs.every((r) => !['running', 'queued'].includes(r.status))
+    );
   } catch (err) { g.error = err.message; g.done = true; }
   renderGroup();
   if (!g.done) DP.poll = setTimeout(pollGroup, 1000);
@@ -51,6 +109,7 @@ async function pollGroup() {
     setTimeout(followJobs, 1000);    // the group's rescans are queued as it ends; the graph and designs reload after them
   }
 }
+
 function outputBlock(out) {
   const pre = el('pre', { class: 'dpout' });
   for (const line of (out || '').split('\n')) {
@@ -59,6 +118,56 @@ function outputBlock(out) {
   }
   return pre;
 }
+
+function runCard(r, g) {
+  const label = { ok: 'protected', failed: 'broken', refused: 'broken', incomplete: 'local-only', running: 'local-only', queued: 'unknown', skipped: 'unknown', cancelled: 'unknown' }[r.status] || 'unknown';
+  const cardId = `dp-run-${r.run_id}`;
+  const existing = document.getElementById(cardId);
+  const wasOpen = existing ? existing.open : (DP.openRuns.has(r.run_id) || !g.done || r.status !== 'ok' || g.runs.length === 1);
+
+  const summaryParts = [el('b', { class: 'mono' }, r.host), ` · ${r.kind}${r.mode === 'apply' ? '' : ' report'} · `, text('span', r.status, `pill ${label}`)];
+  if (r.summary) {
+    const sm = r.summary;
+    const bits = [sm.ok ? `${sm.ok} ok` : '', sm.missing ? `${sm.missing} missing` : '', sm.conflict ? `${sm.conflict} conflict` : '', sm.did ? `${sm.did} did` : ''].filter(Boolean);
+    if (bits.length) summaryParts.push(' · ', text('span', bits.join(', '), 'muted small'));
+  }
+  if (r.confirmed_at) {
+    const confPill = r.host_exit === 0 ? text('span', 'confirmed by scan', 'pill protected small') : text('span', `scan: exit ${r.host_exit}`, 'pill broken small');
+    confPill.title = `Host finished with exit ${r.host_exit} (confirmed ${stamp(r.confirmed_at)})`;
+    summaryParts.push(' · ', confPill);
+  }
+
+  const details = el('details', { class: 'card', id: cardId, open: wasOpen });
+  details.addEventListener('toggle', () => {
+    if (details.open) DP.openRuns.add(r.run_id);
+    else DP.openRuns.delete(r.run_id);
+  });
+  details.append(el('summary', {}, ...summaryParts));
+
+  if (r.fetched_log?.output) {
+    details.append(el('details', { class: 'card stack', open: true },
+      el('summary', {}, text('b', 'Host log fetched by scan', 'muted small'), text('span', `fetched ${when(r.fetched_log.fetched_at)}`, 'muted small')),
+      outputBlock(r.fetched_log.output)));
+  }
+
+  const preText = r.output || (r.status === 'queued' ? 'waiting for the hosts before it' : '');
+  const outPre = outputBlock(preText);
+  if (existing) {
+    const oldPre = existing.querySelector('pre.dpout');
+    if (oldPre) {
+      const wasAtBottom = (oldPre.scrollHeight - oldPre.scrollTop <= oldPre.clientHeight + 40);
+      oldPre.replaceWith(outPre);
+      if (wasAtBottom) outPre.scrollTop = outPre.scrollHeight;
+      else outPre.scrollTop = oldPre.scrollTop;
+    } else {
+      details.append(outPre);
+    }
+  } else {
+    details.append(outPre);
+  }
+  return details;
+}
+
 function renderGroup() {
   const box = $('#dpgroup');
   const g = DP.group;
@@ -67,29 +176,74 @@ function renderGroup() {
   box.hidden = false;
   const failed = g.runs.filter((r) => ['failed', 'refused'].includes(r.status));
   const unfinished = g.runs.filter((r) => r.status === 'incomplete');
-  const head = el('div', { class: 'row' }, el('b', {}, `${g.mode === 'apply' ? 'Applying' : 'Dry run (report)'}: ${g.title}`),
-    text('span', g.done ? (g.error ? 'could not start' : failed.length ? `${failed.length} host(s) failed` : unfinished.length ? `${unfinished.length} host(s) not finished` : 'finished') : 'running…',
-      g.done ? (g.error || failed.length ? 'st-failed' : unfinished.length ? 'st-running' : 'st-ok') : 'st-running'),
-    button('Close', () => { DP.group = null; renderGroup(); }, 'btn ghost sm'));
+
+  // Summary counts across runs
+  let totOk = 0, totMiss = 0, totCrit = 0, totDid = 0;
+  for (const r of g.runs) {
+    if (r.summary) {
+      totOk += r.summary.ok || 0;
+      totMiss += r.summary.missing || 0;
+      totCrit += r.summary.conflict || 0;
+      totDid += r.summary.did || 0;
+    }
+  }
+  const totals = [totOk ? `${totOk} ok` : '', totMiss ? `${totMiss} missing` : '', totCrit ? `${totCrit} conflict` : '', totDid ? `${totDid} did` : ''].filter(Boolean).join(' · ');
+
+  const statusLabel = g.done ? (g.error ? (g.stale ? 'plan changed' : 'could not start') : failed.length ? `${failed.length} host(s) failed` : unfinished.length ? `${unfinished.length} host(s) not finished` : 'finished') : (DP.cancelRequested ? 'stopping…' : 'running…');
+  const statusClass = g.done ? (g.error || failed.length ? 'st-failed' : unfinished.length ? 'st-running' : 'st-ok') : 'st-running';
+
+  const tools = el('span', { class: 'row tools' });
+  if (!g.done && g.gid) {
+    if (!DP.cancelRequested) {
+      tools.append(button('Cancel', () => cancelGroup(g.gid, false), 'btn ghost sm danger'));
+    } else {
+      tools.append(button('Force stop', () => cancelGroup(g.gid, true), 'btn sm danger'));
+    }
+  }
+  if (g.done && g.gid && (failed.length || unfinished.length || ['failed', 'incomplete', 'cancelled', 'interrupted'].includes(g.state))) {
+    tools.append(button('Retry failed hosts', () => retryGroup(g.gid), 'btn pri sm'));
+  }
+  tools.append(button('Close', () => { DP.group = null; renderGroup(); }, 'btn ghost sm'));
+
+  const head = el('div', { class: 'row' },
+    el('div', { class: 'row wrap' },
+      el('b', {}, `${g.mode === 'apply' ? 'Applying' : 'Dry run (report)'}: ${g.title}`),
+      text('span', statusLabel, statusClass),
+      totals ? text('span', `(${totals})`, 'muted small') : ''),
+    tools);
+
   const kids = [head];
   if (g.error) {
     kids.push(text('p', g.error, 'st-failed'));
-    const hosts = (g.error.match(/on: (.+)$/) || [])[1];
-    if (hosts) kids.push(el('div', { class: 'row wrap' }, ...hosts.split(', ').map((h) => button(`Set up ${h}…`, () => setupForm(h), 'btn sm'))));
+    if (g.stale) {
+      kids.push(el('div', { class: 'row wrap' },
+        button('Run dry run again', () => startDeploy(g.kind, g.ref, 'report', g.title, g.extra), 'btn pri sm')));
+    }
+    const missing = g.missingHosts || (g.error.match(/on: (.+)$/) || [])[1]?.split(', ');
+    if (missing?.length) {
+      kids.push(el('div', { class: 'row wrap' }, ...missing.map((h) => button(`Set up ${h}…`, () => setupForm(h), 'btn sm'))));
+    }
+    if (g.blockers?.length) {
+      kids.push(el('ul', { class: 'mvcheck' }, ...g.blockers.map((b) => el('li', { class: 'lv-crit' }, `${b.host}: ${b.text}`))));
+    }
   }
+
   for (const r of g.runs) {
-    const label = { ok: 'protected', failed: 'broken', refused: 'broken', incomplete: 'local-only', running: 'local-only', queued: 'unknown', skipped: 'unknown' }[r.status] || 'unknown';
-    kids.push(el('details', { class: 'card', open: !g.done || r.status !== 'ok' || g.runs.length === 1 },
-      el('summary', {}, el('b', { class: 'mono' }, r.host), ` · ${r.kind}${r.mode === 'apply' ? '' : ' report'} · `, text('span', r.status, `pill ${label}`)),
-      outputBlock(r.output || (r.status === 'queued' ? 'waiting for the hosts before it' : ''))));
+    kids.push(runCard(r, g));
   }
+
   if (g.done && !g.error && g.mode === 'apply') {
-    if (g.runs.some((r) => (r.output || '').includes('destructive, skipped'))) kids.push(text('p', 'Drive tasks were skipped, so this plan has not finished. Deploy it again with "include drive tasks" ticked.', 'st-failed small'));
-    else if (unfinished.length) kids.push(text('p', 'The "missing" lines above were not done. Each says what it needs; do that, then deploy again.', 'st-running small'));
+    if (g.runs.some((r) => (r.output || '').includes('destructive, skipped'))) {
+      kids.push(text('p', 'Drive tasks were skipped, so this plan has not finished. Deploy it again with "include drive tasks" ticked.', 'st-failed small'));
+    } else if (unfinished.length) {
+      kids.push(text('p', 'The "missing" lines above were not done. Each says what it needs; do that, then deploy again.', 'st-running small'));
+    }
     kids.push(text('p', 'These hosts are being rescanned, so the other tabs catch up once their scans end.', 'muted small'));
   }
+
   if (g.done && !g.error && g.mode === 'report') {
-    const again = (extra = {}) => startDeploy(g.kind, g.ref, 'apply', g.title, { ...g.extra, ...extra });
+    // When applying from a dry run, pass the dry run's group ID as report_group so the backend checks for plan staleness
+    const again = (extra = {}) => startDeploy(g.kind, g.ref, 'apply', g.title, { ...g.extra, ...extra, report_group: g.gid });
     const row = el('div', { class: 'row end wrap' });
     if (g.kind === 'changes') {
       const destr = el('input', { type: 'checkbox' });
@@ -104,41 +258,66 @@ function renderGroup() {
     kids.push(text('p', failed.length ? 'The report found problems (conflict lines). Fix them and run the dry run again, or apply anyway.'
       : 'Nothing was changed. "missing" lines are what Apply would do.', failed.length ? 'st-failed small' : 'muted small'), row);
   }
+
   box.replaceChildren(...kids);
 }
 
 /* ── deploy access per host ─────────────────────────────────────── */
-function setupForm(host) {
+function setupForm(host, remove = false) {
   const pw = el('input', { type: 'password', autocomplete: 'off', placeholder: 'sudo password', 'aria-label': 'sudo password' });
   const admin = el('input', { type: 'text', autocomplete: 'off', placeholder: 'admin user (optional)', 'aria-label': 'Admin user' });
   const msg = el('p', { class: 'muted small', hidden: true });
-  const form = el('form', { class: 'card stack' },
-    el('div', { class: 'row' }, el('b', {}, `Set up deploy access on ${host}`), button('Cancel', () => { DP.setup = null; form.remove(); }, 'btn ghost sm')),
-    text('p', 'Creates the storageforge-deploy user, whose SSH key can only start a runner that checks StorageForge\'s signature, and installs that runner. It needs root once: the password is used for this one sudo and never stored. Leave the admin user empty to use the scan user\'s own sudo.', 'muted small'),
-    el('div', { class: 'row wrap' }, pw, admin, el('button', { type: 'submit', class: 'btn pri sm' }, 'Set up')),
-    el('div', { class: 'row wrap' }, text('span', 'Or run it yourself as root:', 'muted small'),
-      button('Download the setup script', () => download('/api/deploy/setup-script', 'storageforge-deploy-setup.sh', {}), 'btn ghost sm'),
-      button('I ran it: test', async () => {
-        msg.hidden = false; msg.textContent = 'Testing a signed run…';
-        try { const r = await (await postJSON('/api/deploy/adopt', { host })).json(); msg.textContent = r.output; msg.className = r.state === 'ready' ? 'st-ok small' : 'st-failed small'; loadDeploy(); }
-        catch (err) { msg.textContent = err.message; msg.className = 'st-failed small'; }
-      }, 'btn ghost sm')),
-    msg);
+
+  const title = remove ? `Remove deploy access from ${host}` : `Set up deploy access on ${host}`;
+  const intro = remove
+    ? 'Removes the storageforge-deploy user and its sudoers rule. Installed jobs keep running on their timers. Needs root once: password is never stored.'
+    : 'Creates the storageforge-deploy user, whose SSH key can only start a runner that checks StorageForge\'s signature, and installs that runner. Needs root once: password is never stored. Leave admin user empty to use scan user\'s sudo.';
+
+  const submitBtn = el('button', { type: 'submit', class: remove ? 'btn danger sm' : 'btn pri sm' }, remove ? 'Remove access' : 'Set up');
+  const rowInputs = el('div', { class: 'row wrap' }, pw, admin, submitBtn);
+
+  const formKids = [
+    el('div', { class: 'row' }, el('b', {}, title), button('Cancel', () => { DP.setup = null; form.remove(); }, 'btn ghost sm')),
+    text('p', intro, 'muted small'),
+    rowInputs
+  ];
+
+  if (!remove) {
+    formKids.push(
+      el('div', { class: 'row wrap' }, text('span', 'Or run it yourself as root:', 'muted small'),
+        button('Download the setup script', () => download('/api/deploy/setup-script', 'storageforge-deploy-setup.sh', {}), 'btn ghost sm'),
+        button('I ran it: test', async () => {
+          msg.hidden = false; msg.textContent = 'Testing a signed run…';
+          try {
+            const r = await (await postJSON('/api/deploy/adopt', { host })).json();
+            msg.textContent = r.output;
+            msg.className = r.state === 'ready' ? 'st-ok small' : 'st-failed small';
+            loadDeploy();
+          } catch (err) { msg.textContent = err.message; msg.className = 'st-failed small'; }
+        }, 'btn ghost sm'))
+    );
+  }
+  formKids.push(msg);
+
+  const form = el('form', { class: 'card stack' }, ...formKids);
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
-    msg.hidden = false; msg.className = 'muted small'; msg.textContent = 'Setting up…';
+    msg.hidden = false; msg.className = 'muted small'; msg.textContent = remove ? 'Removing access…' : 'Setting up…';
     try {
-      const r = await (await postJSON('/api/deploy/access', { host, password: pw.value, admin_user: admin.value.trim() || null })).json();
+      const r = await (await postJSON('/api/deploy/access', { host, password: pw.value, admin_user: admin.value.trim() || null, remove })).json();
       pw.value = '';
-      msg.className = r.state === 'ready' ? 'st-ok small' : 'st-failed small'; msg.textContent = r.output;
+      msg.className = (r.state === 'ready' || r.state === 'removed') ? 'st-ok small' : 'st-failed small';
+      msg.textContent = r.output || `Deploy access ${r.state}`;
       loadDeploy();
     } catch (err) { pw.value = ''; msg.className = 'st-failed small'; msg.textContent = err.message; }
   });
-  DP.setup = form;      // kept here: the tab's render makes a new #dpsetup, and showTab renders it again when its data arrives
+
+  DP.setup = form;
   showTab('deploy');
   $('#dpsetup')?.replaceChildren(form);
   pw.focus();
 }
+
 async function download(url, fallback, body) {   // body: POST it as JSON (for a download that changes something)
   try {
     const res = await (body ? postJSON(url, body) : api(url));
@@ -147,11 +326,9 @@ async function download(url, fallback, body) {   // body: POST it as JSON (for a
     document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   } catch (err) { toast(err.message); }
 }
-async function removeAccess(host) {
-  const pw = prompt(`Remove deploy access from ${host}? Jobs installed there keep running on their timers.\n\nsudo password for the scan user on ${host}:`);
-  if (!pw) return;
-  try { await postJSON('/api/deploy/access', { host, password: pw, remove: true }); toast(`Deploy access removed from ${host}`); loadDeploy(); }
-  catch (err) { toast(err.message); }
+
+function removeAccess(host) {
+  setupForm(host, true);
 }
 
 /* ── jobs ───────────────────────────────────────────────────────── */
@@ -255,9 +432,9 @@ function renderDeploy() {
   if (!d) { box.replaceChildren(text('p', 'Loading…', 'muted')); return; }
   const typing = DP.setup?.contains(document.activeElement) ? document.activeElement : null;
   const parts = [el('div', { id: 'dpgroup', class: 'stack', hidden: true }), el('div', { id: 'dpsetup' }, DP.setup || ''), el('div', { id: 'dpjobpanel', class: 'card stack', hidden: true })];
-  if (d.alerts.length) {
+  if (d.alerts?.length) {
     parts.push(el('section', { class: 'stack' }, el('h3', {}, `Alerts (${d.alerts.length})`), el('ul', { class: 'mvcheck' },
-      ...d.alerts.map((a) => el('li', { class: a.kind === 'job-failed' ? 'lv-crit' : 'lv-warn' }, `${a.title}${a.message ? ': ' + a.message : ''} · since ${when(a.first_at)}`)))));
+      ...d.alerts.map((a) => el('li', { class: a.kind.includes('fail') ? 'lv-crit' : 'lv-warn' }, `${a.title}${a.message ? ': ' + a.message : ''} · since ${when(a.first_at)}`)))));
   }
   // hosts
   const ready = new Set(d.access.filter((a) => a.state === 'ready').map((a) => a.host));
@@ -308,27 +485,37 @@ function renderDeploy() {
   parts.push(el('section', { class: 'stack' }, el('h3', {}, 'Drift'),
     changed.length ? el('ul', { class: 'mvcheck' }, ...changed.map((x) => el('li', { class: 'lv-warn' }, `${x.host}: ${x.text}`)))
       : text('p', 'Nothing deployed was changed by hand, as of each host\'s last scan.', 'muted small')));
-  // history
-  parts.push(el('details', { class: 'card' }, el('summary', {}, 'Recent deploys'), el('ul', { class: 'dklist' }, ...d.runs.map((r) => {
-    const li = el('li', {}, button(`${stamp(r.started_at)} · ${r.host} · ${r.kind}${r.ref ? ' ' + r.ref : ''} · ${r.mode} · ${r.status}`, async () => {
-      try { const o = await getJSON(`/api/deploy/runs/${r.run_id}`); DP.job = { job: { name: `${r.host} · ${r.kind} ${r.ref || ''}` }, title: `${r.mode} · ${r.status}`, output: o.output }; renderJobPanel(); }
-      catch (err) { toast(err.message); }
-    }, `link small ${['failed', 'refused'].includes(r.status) ? 'st-failed' : r.status === 'incomplete' ? 'st-running' : ''}`));
-    return li;
-  }))));
+
+  // Recent deploys (groups from engine.py recent, with mode, state, hosts and click-to-view/retry)
+  const groupsList = d.groups || [];
+  parts.push(el('details', { class: 'card' }, el('summary', {}, `Recent deploys (${groupsList.length})`),
+    groupsList.length ? el('ul', { class: 'dklist' }, ...groupsList.map((g) => {
+      const statePill = text('span', g.state, `pill ${{ ok: 'protected', failed: 'broken', incomplete: 'local-only', running: 'local-only', cancelled: 'unknown', interrupted: 'broken' }[g.state] || 'unknown'}`);
+      const hostPills = (g.hosts || []).map((h) => text('span', `${h.host}: ${h.status}`, `pill small ${{ ok: 'protected', failed: 'broken', incomplete: 'local-only', running: 'local-only', skipped: 'unknown' }[h.status] || 'unknown'}`));
+      const item = el('li', {},
+        el('div', { class: 'row wrap' },
+          button(`${stamp(g.started_at)} · ${g.title || (g.kind + ' ' + (g.ref || ''))} · ${g.mode}`, () => openGroup(g.group_id, g.title, g.kind, g.ref, g.mode, g.options), 'link small bold'),
+          statePill,
+          el('span', { class: 'row wrap' }, ...hostPills)));
+      return item;
+    })) : text('p', 'No deploys yet.', 'muted small')));
+
   parts.push(settingsForm(d.settings));
   box.replaceChildren(...parts);
   typing?.focus();
   renderGroup(); renderJobPanel();
 }
+
 async function showHistory(host) {
   try {
     const { runs } = await getJSON(`/api/deploy/runs?host=${encodeURIComponent(host)}&limit=30`);
-    DP.job = { job: { name: `deploy history of ${host}` }, title: '', output: runs.map((r) => `${stamp(r.started_at)}  ${r.kind} ${r.ref || ''}  ${r.mode}  ${r.status}`).join('\n') || 'nothing yet' };
+    DP.job = { job: { name: `deploy history of ${host}` }, title: '', output: runs.map((r) => `${stamp(r.started_at)}  ${r.kind} ${r.ref || ''}  ${r.mode}  ${r.status}${r.confirmed_at ? ' (confirmed: ' + (r.host_exit === 0 ? 'ok' : 'exit ' + r.host_exit) + ')' : ''}`).join('\n') || 'nothing yet' };
     renderJobPanel();
   } catch (err) { toast(err.message); }
 }
+
 function settingsForm(s) {
+  if (DP.settingsForm) return DP.settingsForm;
   const f = (v, attrs) => { const i = el('input', { type: 'text', autocomplete: 'off', class: 'mono', ...attrs }); i.value = v || ''; return i; };
   const url = f(s.report_url, { placeholder: `e.g. https://10.42.0.100:8443 (how hosts reach StorageForge)` });
   const a = s.alerts;
@@ -344,7 +531,7 @@ function settingsForm(s) {
     catch (err) { msg.hidden = false; msg.className = 'st-failed small'; msg.textContent = err.message; return false; }
   };
   const row = (label, ...inputs) => el('label', { class: 'field col' }, el('span', {}, label), el('div', { class: 'row' }, ...inputs));
-  return el('details', { class: 'card stack' }, el('summary', {}, 'Reporting and alerts'),
+  const form = el('details', { class: 'card stack' }, el('summary', {}, 'Reporting and alerts'),
     row('Report URL: jobs post each run here', url),
     !s.report_url && !/^(localhost|127\.)/.test(location.hostname) ? button(`Use ${location.origin}`, () => { url.value = location.origin; }, 'btn ghost sm') : '',
     text('p', 'Without it, runs still reach StorageForge with the next scan of each host. Alerts (failed or stale jobs, verify differences, drift) always show here; they can also be pushed:', 'muted small'),
@@ -355,4 +542,6 @@ function settingsForm(s) {
       try { const r = await (await postJSON('/api/deploy/settings/test', {})).json(); msg.textContent = r.sent.join(' · '); msg.className = 'muted small'; }
       catch (err) { msg.textContent = err.message; msg.className = 'st-failed small'; }
     }, 'btn sm'), button('Save', save, 'btn pri sm')), msg);
+  DP.settingsForm = form;
+  return form;
 }

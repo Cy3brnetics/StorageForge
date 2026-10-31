@@ -817,7 +817,7 @@ send_btrfs() {   # send_btrfs <folder> <prefix> <login> <port> <into> <keep>
   mapfile -t there < <(dest_cmd "$login" "$port" find "$dest" -mindepth 1 -maxdepth 1 -name "$prefix-*" -printf '%f\n' 2>/dev/null </dev/null | sort -r)
   for n in "${there[@]}"; do   # newest first: an interrupted receive leaves a subvolume that was never finished
     if ((!done_)); then
-      if dest_cmd "$login" "$port" btrfs subvolume show -- "$dest/$n" 2>/dev/null </dev/null | grep -qE 'Received UUID:[[:space:]]+[0-9a-f]'; then done_=1
+      if dest_cmd "$login" "$port" btrfs subvolume show -- "$dest/$n" 2>/dev/null </dev/null | grep -E 'Received UUID:[[:space:]]+[0-9a-f]' >/dev/null; then done_=1
       else warnl "$n on the other side is unfinished: removing it"; x dest_cmd "$login" "$port" btrfs subvolume delete -- "$dest/$n" </dev/null || return 1; continue; fi
     fi
     if [[ -d $into/$n ]]; then parent=$n; break; fi
@@ -850,7 +850,7 @@ send_zfs() {   # send_zfs <dataset> <prefix> <login> <port> <into> <keep> <recur
   send_reach "$login" "$port" zfs version || { ((DRY)) && return 0; return 1; }
   mapfile -t there < <(dest_cmd "$login" "$port" zfs list -H -t snapshot -o name -s creation -d 1 -- "$dest" 2>/dev/null </dev/null | grep -F "@$prefix-" | cut -d@ -f2)
   for ((n = ${#there[@]} - 1; n >= 0; n--)); do   # newest shared snapshot
-    if printf '%s\n' "${here[@]}" | grep -qxF -- "${there[n]}"; then parent=${there[n]}; break; fi
+    if printf '%s\n' "${here[@]}" | grep -xF -- "${there[n]}" >/dev/null; then parent=${there[n]}; break; fi
   done
   if [[ $parent == "$newest" ]]; then ok "$newest is already there"
   else
@@ -889,7 +889,7 @@ case $MODE in
       echo "systemd does not understand the schedule \"$SCHEDULE\"" >&2; exit 1
     fi
     install -D -m 0750 "$0" "$LIB/$TASK.sh" && ok "$LIB/$TASK.sh"
-    mkdir -p "$STATE"
+    mkdir -p "$STATE" && chmod 0755 "$STATE" 2>/dev/null || true
     {
       echo "[Unit]"
       echo "Description=StorageForge task: ${TASK_NAME//$'\n'/ }"
@@ -946,6 +946,8 @@ if ((rc)) && ((!DRY)); then
 fi
 if ((!DRY)); then
   printf '{"task":"%s","rc":%d,"started":%d,"finished":%d}\n' "$TASK" "$rc" "$started" "$(date +%s)" >"$STATE/$TASK.last"
+  printf '{"task":"%s","rc":%d,"started":%d,"finished":%d}\n' "$TASK" "$rc" "$started" "$(date +%s)" >>"$STATE/runs.jsonl" 2>/dev/null || true
+  chmod 0644 "$STATE/$TASK.last" "$STATE/runs.jsonl" 2>/dev/null || true
 fi
 section "Done"
 if ((rc)); then printf '  %-9s %s\n' "${R}failed${N0}" "exit $rc after $(( $(date +%s) - started )) s"

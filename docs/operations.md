@@ -18,6 +18,7 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_PROXY_HOPS` | `0` (`1` in compose) | Trust `X-Forwarded-For` from this many proxies (`2` with another proxy in front of the stack's) |
 | `STORAGEFORGE_PROXY_HOST` | none (`proxy` in compose) | Believe those headers only on requests from this host (name or address), not from anything else that can reach the app |
 | `STORAGEFORGE_SCAN_INTERVAL` | off (`6h` in compose) | Rescan bound hosts this often (`90m`, `6h`, `1d`) |
+| `STORAGEFORGE_SCAN_WORKERS` | `4` | Hosts scanned at once; further scan jobs wait for a free worker |
 | `STORAGEFORGE_INCLUDE_FSTYPES` | | Comma list of normally skipped filesystem types the server's scans walk (e.g. `overlay`) |
 | `STORAGEFORGE_RUNTIME_DIR` | `/run/storageforge`, else `$XDG_RUNTIME_DIR` | tmpfs for agent sockets; its path must be short (Unix socket limit) |
 | `STORAGEFORGE_BACKUP_DIR` | `<data>/backups` (`/app/backups`) | Where backups go |

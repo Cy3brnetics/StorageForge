@@ -1,0 +1,57 @@
+#cloud-config
+# @NAME@: lab has passwordless sudo for the harness, sfadmin has password sudo, scan has none.
+hostname: @NAME@
+manage_etc_hosts: true
+ssh_pwauth: false
+disable_root: true
+users:
+  - name: lab
+    shell: /bin/sh
+    lock_passwd: false
+    hashed_passwd: '@LOCKED_HASH@'
+    ssh_authorized_keys: ['@PUBKEY@']
+  - name: sfadmin
+    shell: /bin/sh
+    lock_passwd: false
+    hashed_passwd: '@ADMIN_HASH@'
+    ssh_authorized_keys: ['@PUBKEY@']
+  - name: scan
+    shell: /bin/sh
+    lock_passwd: false
+    hashed_passwd: '@LOCKED_HASH@'
+packages: [@PACKAGES@]
+write_files:
+  - path: /etc/sudoers.d/sflab
+    permissions: '0440'
+    content: |
+      Defaults:lab !targetpw, !requiretty
+      Defaults:sfadmin !targetpw
+      lab ALL=(ALL) NOPASSWD: ALL
+      sfadmin ALL=(ALL) ALL
+  - path: /usr/local/sbin/sflab-zram
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      # 512 MB of swap so package installs survive on 1 GB: compressed if the kernel has zram, else a file.
+      grep -q zram /proc/swaps && exit 0
+      modprobe zram 2>/dev/null
+      if [ -e /sys/block/zram0 ]; then
+        echo 512M > /sys/block/zram0/disksize && mkswap /dev/zram0 >/dev/null && swapon -p 100 /dev/zram0
+      elif [ "$(awk 'END {print NR}' /proc/swaps)" = 1 ]; then
+        f=/var/swap-sflab
+        [ -f "$f" ] || { dd if=/dev/zero of="$f" bs=1M count=512 2>/dev/null; chmod 600 "$f"; mkswap "$f" >/dev/null; }
+        swapon "$f"
+      fi
+      exit 0
+  - path: /etc/systemd/system/sflab-zram.service
+    content: |
+      [Unit]
+      Description=sflab compressed swap
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/sflab-zram
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - command -v restorecon >/dev/null && restorecon -R /usr/local/sbin /etc/systemd/system /etc/sudoers.d || true
+  - if command -v systemctl >/dev/null; then systemctl daemon-reload; systemctl enable --now sflab-zram.service; else ln -sf /usr/local/sbin/sflab-zram /etc/local.d/sflab-zram.start; rc-update add local default; /usr/local/sbin/sflab-zram; fi

@@ -6,6 +6,7 @@ JSONB, full-text maintenance) go through small helpers on Database.
 """
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import json
 import os
@@ -127,7 +128,7 @@ def epoch(value) -> int | None:
 
 class Database:
     def __init__(self, url: str):
-        self.url = url
+        self.url, self.busy_ms = url, 60000
         if url.startswith(('postgres://', 'postgresql://')):
             self.dialect, self.max_writers = 'postgres', 8
             try:
@@ -155,11 +156,18 @@ class Database:
     def boolean(self) -> str:
         return 'INTEGER' if self.dialect == 'sqlite' else 'BOOLEAN'
 
+    def patient(self, busy_ms: int = 30 * 60000) -> 'Database':
+        """The same database, for work that should wait out a long write instead of failing. Applying a large host's
+        scan holds SQLite's one write lock for minutes, longer than a web request should wait."""
+        db = copy.copy(self)
+        db.busy_ms = busy_ms
+        return db
+
     def connect(self) -> Conn:
         if self.dialect == 'sqlite':
-            raw = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False, timeout=60)
+            raw = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False, timeout=self.busy_ms / 1000)
             for pragma in ('journal_mode=WAL', 'synchronous=NORMAL', 'foreign_keys=ON', 'cache_size=-262144',
-                           'mmap_size=1073741824', 'busy_timeout=60000'):
+                           'mmap_size=1073741824', f'busy_timeout={self.busy_ms}'):
                 raw.execute('PRAGMA ' + pragma)
             return Conn(raw, 'sqlite')
         import psycopg
@@ -346,10 +354,15 @@ class Database:
             mode TEXT, uid BIGINT, gid BIGINT, mtime BIGINT NOT NULL, dir_id BIGINT)""")
 
     def stage_insert(self, conn: Conn, job_id: int, rows: list[tuple]):
-        if self.dialect == 'sqlite':
-            with conn.tx():
+        if self.dialect == 'sqlite':     # a temp table: not tx(), whose write lock would wait for other hosts' scans
+            conn.raw.execute('BEGIN')
+            try:
                 conn.raw.executemany(f'INSERT INTO stage_{job_id} ({", ".join(ROW_COLUMNS)}) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                                      rows)
+            except BaseException:
+                conn.raw.execute('ROLLBACK')
+                raise
+            conn.raw.execute('COMMIT')
         else:
             with conn.raw.cursor() as cur:
                 with cur.copy(f'COPY stage_{job_id} ({", ".join(ROW_COLUMNS)}) FROM STDIN') as cp:

@@ -30,23 +30,35 @@ from .runner import connect_address, ephemeral_agent, known_hosts_path, runtime_
 from .vault import NoBinding, Vault
 
 GROUP = 'storageforge-scan'
-TIMEOUT = 90
+TIMEOUT = 300       # the setup may install a package first, on a small VM with stale metadata
 
 SETUP = r"""set -eu
 U=%(user)s
 D=%(dir)s
 G=%(group)s
-command -v setcap >/dev/null 2>&1 || { echo "setcap is missing: install libcap2-bin (Debian/Ubuntu) or libcap (RHEL/Rocky/Fedora)" >&2; exit 3; }
+PATH=$PATH:/usr/sbin:/sbin
 id "$U" >/dev/null 2>&1 || { echo "there is no user $U on this host" >&2; exit 3; }
-getent group "$G" >/dev/null 2>&1 || groupadd --system "$G" 2>/dev/null || groupadd "$G"
-usermod -a -G "$G" "$U"
+if ! command -v setcap >/dev/null 2>&1; then      # not every image has it: openSUSE's and Alpine's minimal ones don't
+  if command -v apt-get >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libcap2-bin >&2 || true
+  elif command -v dnf >/dev/null 2>&1; then dnf install -y -q libcap >&2 || true
+  elif command -v yum >/dev/null 2>&1; then yum install -y -q libcap >&2 || true
+  elif command -v zypper >/dev/null 2>&1; then zypper -nq install libcap-progs >&2 || true
+  elif command -v pacman >/dev/null 2>&1; then pacman -S --needed --noconfirm libcap >&2 || true
+  elif command -v apk >/dev/null 2>&1; then apk add -q libcap-setcap >&2 || true
+  fi
+  command -v setcap >/dev/null 2>&1 || { echo "setcap is missing and could not be installed: libcap2-bin (Debian, Ubuntu), libcap (RHEL, Fedora, Arch), libcap-progs (openSUSE) or libcap-setcap (Alpine)" >&2; exit 3; }
+fi
+if ! getent group "$G" >/dev/null 2>&1; then
+  groupadd --system "$G" 2>/dev/null || groupadd "$G" 2>/dev/null || addgroup -S "$G"      # addgroup: BusyBox has no groupadd
+fi
+usermod -a -G "$G" "$U" 2>/dev/null || addgroup "$U" "$G"
 install -d -o root -g "$G" -m 0750 "$D"
 for t in find sha256sum; do
   src=$(command -v "$t") || { echo "$t is not installed" >&2; exit 3; }
   install -o root -g "$G" -m 0750 "$(readlink -f "$src")" "$D/$t"
   setcap cap_dac_read_search+ep "$D/$t"
 done
-getcap "$D/find" "$D/sha256sum"
+command -v getcap >/dev/null 2>&1 && getcap "$D/find" "$D/sha256sum"
 # prove it: the scan user must now be able to list a root-only directory
 if command -v runuser >/dev/null 2>&1 && ! runuser -u "$U" -- "$D/find" /root -maxdepth 1 >/dev/null 2>&1; then
   echo "the capability does not work here: this is probably a container (Docker, LXC) whose capability bounding set" >&2
@@ -59,8 +71,8 @@ echo "read-only scan access is ready for $U"
 
 REMOVE = r"""set -eu
 rm -rf %(dir)s
-gpasswd -d %(user)s %(group)s 2>/dev/null || true
-groupdel %(group)s 2>/dev/null || true
+gpasswd -d %(user)s %(group)s 2>/dev/null || delgroup %(user)s %(group)s 2>/dev/null || true
+groupdel %(group)s 2>/dev/null || delgroup %(group)s 2>/dev/null || true
 echo "read-only scan access removed"
 """
 
@@ -103,27 +115,30 @@ def _finish(p: subprocess.CompletedProcess, password: str) -> dict:
     if p.returncode == 0:
         return {'ok': True, 'output': out}
     if re.search(r'incorrect password|Sorry, try again|no password was provided|a password is required', out, re.I):
-        raise RemoteError('sudo did not accept that password')
+        raise RemoteError('sudo did not accept that password (openSUSE\'s default sudo asks for root\'s password, not the user\'s)')
     if re.search(r'not in the sudoers|not allowed to (run|execute)', out, re.I):
         raise RemoteError('that account may not use sudo; use an admin account, or run the script as root yourself')
     if re.search(r'Permission denied \(', out):
-        raise RemoteError('SSH login was refused')
+        raise RemoteError('SSH login was refused: wrong password, or this account may not log in over SSH')
     raise RemoteError(f'setup failed (exit {p.returncode}): {out.splitlines()[-1] if out else "no output"}')
 
 
-def grant(db, conn, host: str, password: str, admin_user: str | None = None, remove: bool = False) -> dict:
+def grant(db, conn, host: str, password: str, admin_user: str | None = None, remove: bool = False,
+          admin_key: str | None = None) -> dict:
     """Set up (or remove) read-only scan access on host, with sudo."""
     def make(scan_user):
         if not scan_user:
             raise ValueError(f'no scan key is bound to {host}: bind one first (Keys tab, or storageforge-index vault bind)')
         return (remove_script if remove else setup_script)(scan_user)
-    return sudo_run(db, conn, host, make, password, admin_user)
+    return sudo_run(db, conn, host, make, password, admin_user, admin_key)
 
 
-def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | None = None) -> dict:
+def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | None = None,
+             admin_key: str | None = None) -> dict:
     """Run a root script on host once, with sudo: make_script(scan_user) -> script, scan_user None when no scan key
     is bound to host (then only admin_user can log in). The password only travels on stdin and the askpass environment
-    of one ssh process; it is never logged, stored or put on a command line."""
+    of one ssh process; it is never logged, stored or put on a command line. admin_key: a vault key admin_user logs in
+    with, for hosts that take no SSH passwords: the password is then only sudo's."""
     if not password:
         raise ValueError('a sudo password is required')
     host = connect_address(conn, host)
@@ -153,6 +168,22 @@ def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | 
                 finally:
                     t.close()
             return {'host': host, 'port': port, 'user': b.user, 'via': b.user, **_finish(p, password)}
+        if admin_key:         # an admin account with a key from the vault
+            if not admin_user:
+                raise ValueError('name the admin account the key logs in as')
+            validate(host, admin_user, port)
+            kid = conn.scalar('SELECT key_id FROM ssh_keys WHERE name = :n', {'n': admin_key})
+            if kid is None:
+                raise ValueError(f'the vault has no key named {admin_key}')
+            with ephemeral_agent(v.decrypt_key(kid), ttl=TIMEOUT + 30) as sock:
+                t = Transport(host=host, user=admin_user, port=port, agent_sock=sock, known_hosts=str(known_hosts_path()),
+                              isolated=True, strict=True)
+                try:
+                    p = subprocess.run(t.argv(sudo), input=password + '\n', capture_output=True, text=True,
+                                       timeout=TIMEOUT, env=child_env())
+                finally:
+                    t.close()
+            return {'host': host, 'port': port, 'user': b.user if b else None, 'via': f'{admin_user} (key {admin_key})', **_finish(p, password)}
     # an admin account: password login (askpass answers ssh once), then sudo with the same password on stdin
     validate(host, admin_user, port)
     work = Path(tempfile.mkdtemp(prefix='grant-', dir=runtime_dir()))
@@ -167,4 +198,10 @@ def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | 
                            start_new_session=True)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    if p.returncode and 'Permission denied (' in (p.stderr or ''):      # the password or the server? Its answer says
+        from .preflight import auth_methods, takes_password
+        methods = auth_methods(host, port)
+        if not takes_password(methods):
+            raise RemoteError(f'{host} takes no SSH passwords (it offers: {", ".join(methods)}). Pick a vault key {admin_user} can log '
+                              f'in with and give its sudo password, or run the setup script as root yourself')
     return {'host': host, 'port': port, 'user': b.user if b else None, 'via': admin_user, **_finish(p, password)}

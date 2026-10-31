@@ -52,6 +52,12 @@ Move plan jobs work the same way for `rsync` (on the host that runs the job and,
 
 The report runs first on every host. Apply stops at the first host that fails. Every host involved must have deploy access, or the request is refused with the list of hosts to set up. Each run is recorded in `deploy_runs` (output capped at 256 KiB) and in the audit log; the UI polls `GET /api/deploy/groups/<id>` while it runs.
 
+**Smooth execution:**
+- **Cancel:** A running deploy can be cancelled (`POST /api/deploy/groups/<id>/cancel`). Upcoming queued hosts will not start; **Force stop** additionally terminates SSH processes for any currently running scripts.
+- **Retry:** If a deploy fails, is cancelled, or finishes incompletely, **Retry failed hosts** (`POST /api/deploy/groups/<id>/retry`) re-runs only the unfinished hosts with fresh keys.
+- **Stale dry run protection:** Applying from a report checks that the plan has not changed since the dry run was inspected (`report_group`). If modified, Apply refuses with code 409 so changes are reviewed before running.
+- **Scan confirmation & log capture:** Scans read completion records written by the runner (`/var/lib/storageforge/run/runs.jsonl`) and storage tasks (`/var/lib/storageforge/tasks/`). A scan matches nonces to confirm actual execution results on the host. If a script or scheduled task failed, a signed read-only log fetch runs automatically over deploy access (once per problem) to retrieve journal and runner logs.
+
 ## Deployed jobs
 
 Deploying a move plan turns each step into a job with the id `p<plan>-<step>`. A job runs on its destination host and pulls from its source through `storageforge-job`, a static program the deploy installs.

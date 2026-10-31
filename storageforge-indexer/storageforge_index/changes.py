@@ -866,7 +866,7 @@ dev_guard() { # device -> 0 if nothing on it is mounted, swapped on, or part of 
   [[ -b $1 ]] || { conflict "$1 is not a block device on $(uname -n)"; return 1; }
   local used; used=$(lsblk -nro MOUNTPOINT "$1" | grep . | paste -sd' ' -) || true
   [[ -z $used ]] || { conflict "$1 is in use: $used"; return 1; }
-  if lsblk -nro TYPE "$1" | tail -n +2 | grep -qE 'raid|lvm|crypt'; then conflict "$1 holds RAID, LVM or LUKS volumes"; return 1; fi
+  if lsblk -nro TYPE "$1" | tail -n +2 | grep -E 'raid|lvm|crypt' >/dev/null; then conflict "$1 holds RAID, LVM or LUKS volumes"; return 1; fi
 }
 part_of() { if [[ $1 =~ [0-9]$ ]]; then printf '%sp%s' "$1" "$2"; else printf '%s%s' "$1" "$2"; fi; }
 mkfs_dev() { # device fstype label
@@ -951,7 +951,7 @@ t_subvolume() { local p=$1
     act "btrfs subvolume create $p" && { mkdir -p -- "$(dirname "$p")"; try btrfs subvolume create -- "$p" >/dev/null && ok "created"; } || return 0
   fi
   if [[ $2 == 1 && -d $p ]]; then
-    if lsattr -d -- "$p" 2>/dev/null | cut -d' ' -f1 | grep -q C; then ok "no copy-on-write"
+    if lsattr -d -- "$p" 2>/dev/null | cut -d' ' -f1 | grep C >/dev/null; then ok "no copy-on-write"
     elif act "chattr +C $p"; then try chattr +C -- "$p" && ok "no copy-on-write (for new files)"; fi
   fi
 }
@@ -982,7 +982,7 @@ t_to_subvolume() { local p=$1 new old a b
 }
 t_btrfs_add() { local dev=$1 tgt=$2
   need btrfs btrfs-progs || return 0
-  if btrfs filesystem show -- "$tgt" 2>/dev/null | grep -qE " path $dev\$"; then ok "$dev is in the pool"; return 0; fi
+  if btrfs filesystem show -- "$tgt" 2>/dev/null | grep -E " path $dev\$" >/dev/null; then ok "$dev is in the pool"; return 0; fi
   [[ $(stat -f -c %T "$tgt" 2>/dev/null) == btrfs ]] && mountpoint -q -- "$tgt" || { later "$tgt must be a mounted btrfs filesystem"; return 0; }
   dev_guard "$dev" || return 0
   local have; have=$(blkid -p -o value -s TYPE -- "$dev" 2>/dev/null || true)
@@ -995,13 +995,13 @@ t_btrfs_balance() { local tgt=$1 d=$2 m=$3 cd cm
   cd=$(btrfs filesystem df -- "$tgt" 2>/dev/null | awk -F'[ ,:]+' '/^Data/ {print tolower($2); exit}')
   cm=$(btrfs filesystem df -- "$tgt" 2>/dev/null | awk -F'[ ,:]+' '/^Metadata/ {print tolower($2); exit}')
   if [[ $cd == "$d" && $cm == "$m" ]]; then ok "$tgt is $d/$m"; return 0; fi
-  if btrfs balance status -- "$tgt" 2>/dev/null | grep -q running; then ok "a balance is running on $tgt"; return 0; fi
+  if btrfs balance status -- "$tgt" 2>/dev/null | grep running >/dev/null; then ok "a balance is running on $tgt"; return 0; fi
   act "btrfs balance start --bg -dconvert=$d -mconvert=$m $tgt (now ${cd:-?}/${cm:-?})" &&
     try btrfs balance start --bg -dconvert="$d" -mconvert="$m" -- "$tgt" >/dev/null && ok "started: btrfs balance status $tgt"
 }
 t_scrub() { local tgt=$1
   need btrfs btrfs-progs || return 0
-  if btrfs scrub status -- "$tgt" 2>/dev/null | grep -qi 'running'; then ok "a scrub is running"; return 0; fi
+  if btrfs scrub status -- "$tgt" 2>/dev/null | grep -i 'running' >/dev/null; then ok "a scrub is running"; return 0; fi
   if [[ -e $STATE/scrub-${tgt//\//_} ]]; then ok "started $(cat "$STATE/scrub-${tgt//\//_}"): btrfs scrub status $tgt"; return 0; fi
   act "btrfs scrub start $tgt" && try btrfs scrub start -- "$tgt" >/dev/null &&
     { mkdir -p "$STATE"; date '+%F %T' >"$STATE/scrub-${tgt//\//_}"; ok "started: btrfs scrub status $tgt"; }
@@ -1165,7 +1165,7 @@ t_zfs_send() { local ds=$1 name=$2 base=$3 dest=$4 rec=$5 raw=$6 login=$7 port=$
 t_zfs_scrub() { local pool=$1
   need zpool zfsutils-linux || return 0
   zpool list -H -o name -- "$pool" >/dev/null 2>&1 || { later "pool $pool must exist"; return 0; }
-  if zpool status -- "$pool" | grep -q 'scrub in progress'; then ok "a scrub is running"; return 0; fi
+  if zpool status -- "$pool" | grep 'scrub in progress' >/dev/null; then ok "a scrub is running"; return 0; fi
   if [[ -e $STATE/zfs-scrub-$pool ]]; then ok "started $(cat "$STATE/zfs-scrub-$pool"): zpool status $pool"; return 0; fi
   act "zpool scrub $pool" && try zpool scrub -- "$pool" &&
     { mkdir -p "$STATE"; date '+%F %T' >"$STATE/zfs-scrub-$pool"; ok "started: zpool status $pool"; }
@@ -1377,7 +1377,7 @@ def _ansible_storage(t: dict, gate: dict) -> dict:
         snap = q(f'{p["dataset"]}@{p["name"]}')
         return guarded(f'zfs list -H -t snapshot -- {snap} >/dev/null 2>&1', f'zfs snapshot {"-r " if p["recursive"] else ""}-- {snap}')
     if k == 'zfs-scrub':
-        return guarded(f'zpool status -- {q(p["pool"])} | grep -q "scrub in progress"', f'zpool scrub -- {q(p["pool"])}')
+        return guarded(f'zpool status -- {q(p["pool"])} | grep "scrub in progress" >/dev/null', f'zpool scrub -- {q(p["pool"])}')
     if k == 'lvm-vg':
         return guarded(f'vgs -- {q(p["vg"])} >/dev/null 2>&1', f'vgcreate -y -- {q(p["vg"])} ' + ' '.join(q(d) for d in p['devices'].split()), **gate)
     if k == 'lvm-vg-extend':

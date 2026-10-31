@@ -439,10 +439,10 @@ def deploy_items(db, conn: Conn, host: str, mode: str, actor: str) -> list[dict]
         finally:
             c2.close()
     args = ['--apply'] if mode == 'apply' else []
-    items = [{'host': srv, 'script': text, 'args': args + ['--only', 'server'], 'kind': 'shares', 'ref': srv, 'mode': mode,
+    items = [{'host': srv, 'script': text, 'args': args + ['--only', 'server'], 'kind': 'shares', 'ref': srv, 'mode': mode, 'phase': 0,
               **({'on_ok': done} if mode == 'apply' else {})}]
-    for h in sorted(set(clients) | (set(prev) - {srv})):
-        items.append({'host': h, 'script': text, 'args': args + ['--only', 'clients'], 'kind': 'shares', 'ref': srv, 'mode': mode})
+    for h in sorted(set(clients) | (set(prev) - {srv})):     # the clients need the server, not each other
+        items.append({'host': h, 'script': text, 'args': args + ['--only', 'clients'], 'kind': 'shares', 'ref': srv, 'mode': mode, 'phase': 1})
     return items
 
 
@@ -504,14 +504,30 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 backup() { [[ -e $1 ]] && cp -a -- "$1" "$1.storageforge-$STAMP"; }
 own_file() { # path content -> StorageForge's own file: written whole (after a backup) when it differs
   if [[ -e $1 && $(cat "$1") == "$2" ]]; then ok "$1"; return 1; fi
-  if ((APPLY)); then mkdir -p "$(dirname "$1")"; backup "$1"; printf '%s\n' "$2" >"$1"; doing "wrote $1"; return 0
-  else missing "$1 $([[ -e $1 ]] && echo '(differs)')"; return 1; fi
+  if ((APPLY)); then mkdir -p "$(dirname "$1")"; backup "$1"; printf '%s\n' "$2" >"$1"; chmod 0644 "$1"; doing "wrote $1"; return 0     # scans check its checksum
+  else
+    missing "$1 $([[ -e $1 ]] && echo '(differs)')"
+    if [[ -e $1 ]] && command -v diff >/dev/null; then diff -u "$1" <(printf '%s\n' "$2") | sed -n '3,40p' | sed 's/^/            /' || true; fi
+    return 1
+  fi
+}
+unit_of() { # unit... -> the first that is installed. On disk: a package installed a moment ago may not have reached systemd yet.
+  local u d
+  for u; do for d in /etc/systemd/system /usr/lib/systemd/system /lib/systemd/system; do [[ -e $d/$u.service ]] && { echo "$u"; return 0; }; done; done
+  echo "$1"; return 1
 }
 service_on() { # unit...
-  local u
-  for u; do systemctl list-unit-files "$u.service" >/dev/null 2>&1 && break; done
-  if systemctl is-active -q "$u" && systemctl is-enabled -q "$u" 2>/dev/null; then ok "$u running and enabled"; return; fi
-  if ((APPLY)); then doing "systemctl enable --now $u"; systemctl enable --now "$u"; else missing "$u not running/enabled"; fi
+  local u; u=$(unit_of "$@") || true
+  if systemctl is-active -q "$u" && systemctl is-enabled -q "$u" 2>/dev/null; then ok "$u running and enabled"; return 0; fi
+  if ((!APPLY)); then missing "$u not running/enabled"; return 0; fi
+  doing "systemctl enable --now $u"
+  systemctl daemon-reload
+  systemctl enable --now "$u" 2>&1 || conflict "could not start $u: $(systemctl status "$u" --no-pager -n 3 2>&1 | tail -n 3 | tr '\n' ' ')"
+}
+reexport() {
+  local o; doing "exportfs -ra"
+  o=$(exportfs -ra 2>&1) || conflict "exportfs -ra failed: $o"
+  [[ -z $o ]] || info "$o"
 }
 cidrs() { tr ' ' '\n' <<<"$1" | grep -E '^[0-9.:]+(/[0-9]+)?$' || true; }
 open_fw() { # label tcp-ports clients firewalld-services...
@@ -522,10 +538,10 @@ open_fw() { # label tcp-ports clients firewalld-services...
       elif ((APPLY)); then doing "firewalld: allow $s"; firewall-cmd -q --permanent --add-service="$s"; firewall-cmd -q --reload
       else missing "firewalld does not allow $s"; fi
     done
-  elif command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  elif command -v ufw >/dev/null && ufw status 2>/dev/null | grep '^Status: active' >/dev/null; then
     local from p c; from=$(cidrs "$clients"); [[ -n $from ]] || from=any
     for c in $from; do for p in $ports; do
-      if ufw status | grep -qE "^$p/tcp +ALLOW +(IN +)?$([[ $c == any ]] && echo Anywhere || echo "${c//./\\.}")"; then ok "ufw allows $p/tcp from $c"
+      if ufw status | grep -E "^$p/tcp +ALLOW +(IN +)?$([[ $c == any ]] && echo Anywhere || echo "${c//./\\.}")" >/dev/null; then ok "ufw allows $p/tcp from $c"
       elif ((APPLY)); then doing "ufw allow from $c to any port $p proto tcp"; ufw allow from "$c" to any port "$p" proto tcp >/dev/null
       else missing "ufw does not allow $p/tcp from $c ($label)"; fi
     done; done
@@ -536,25 +552,31 @@ server_nfs() {
   local i body="# StorageForge NFS exports for $(uname -n). Written by shares-$SERVER.sh; edit the design, not this file."
   if [[ " ${E_PROTO[*]} " != *" NFS "* ]]; then      # no NFS shares left: empty StorageForge's exports, if there are any
     if [[ -s /etc/exports.d/storageforge.exports ]] && grep -qv '^#' /etc/exports.d/storageforge.exports; then
-      section "NFS server"; own_file /etc/exports.d/storageforge.exports "$body" && ((APPLY)) && { doing "exportfs -ra"; exportfs -ra; }
+      section "NFS server"; own_file /etc/exports.d/storageforge.exports "$body" && ((APPLY)) && reexport
     fi
     return 0
   fi
   section "NFS server"
   for i in "${!E_PROTO[@]}"; do [[ ${E_PROTO[$i]} == NFS ]] || continue
-    local line; line=$(printf '"%s"' "${E_PATH[$i]}")
-    line+=" ${E_RULES[$i]}"
-    body+=$'\n'"$line"
     if [[ -d ${E_PATH[$i]} ]]; then ok "${E_PATH[$i]} exists"
     elif ((APPLY)); then doing "mkdir -p ${E_PATH[$i]}"; mkdir -p "${E_PATH[$i]}"; else missing "${E_PATH[$i]}"; fi
+    local line rules=${E_RULES[$i]} id; line=$(printf '"%s"' "${E_PATH[$i]}")
+    # A FUSE filesystem (mergerfs) has no device number for NFS to name it by: without an fsid clients get "No such file"
+    if [[ $(stat -f -c %T "${E_PATH[$i]}" 2>/dev/null) == fuse* && $rules != *fsid=* ]]; then
+      id=$(( $(cksum <<<"${E_PATH[$i]}" | cut -d' ' -f1) % 2147483646 + 1 ))
+      rules=${rules//)/,fsid=$id)}
+      info "${E_PATH[$i]} is on FUSE: exported with fsid=$id"
+    fi
+    line+=" $rules"
+    body+=$'\n'"$line"
   done
   need_cmd exportfs "NFS server" nfs-kernel-server nfs-utils nfs-utils nfs-kernel-server || return 0
-  own_file /etc/exports.d/storageforge.exports "$body" && ((APPLY)) && { doing "exportfs -ra"; exportfs -ra; }
+  own_file /etc/exports.d/storageforge.exports "$body" && ((APPLY)) && reexport
   service_on nfs-server nfs-kernel-server
   open_fw NFS "2049 111" "$(printf '%s ' "${E_CLIENTS[@]}")" nfs mountd rpc-bind
   if command -v exportfs >/dev/null; then
     for i in "${!E_PROTO[@]}"; do [[ ${E_PROTO[$i]} == NFS ]] || continue
-      if exportfs -s 2>/dev/null | grep -qF "${E_PATH[$i]}"; then ok "exported: ${E_PATH[$i]}"; elif ((!APPLY)); then missing "not exported yet: ${E_PATH[$i]}"; else conflict "${E_PATH[$i]} is not exported after exportfs -ra"; fi
+      if exportfs -s 2>/dev/null | grep -F "${E_PATH[$i]}" >/dev/null; then ok "exported: ${E_PATH[$i]}"; elif ((!APPLY)); then missing "not exported yet: ${E_PATH[$i]}"; else conflict "${E_PATH[$i]} is not exported after exportfs -ra"; fi
     done
   fi
 }
@@ -562,7 +584,7 @@ server_smb() {
   local i body="# StorageForge Samba shares for $(uname -n). Written by shares-$SERVER.sh; edit the design, not this file."
   if [[ " ${E_PROTO[*]} " != *" SMB "* ]]; then
     if [[ -s /etc/samba/storageforge.conf ]] && grep -q '^\[' /etc/samba/storageforge.conf; then
-      section "SMB server (Samba)"; own_file /etc/samba/storageforge.conf "$body" && ((APPLY)) && { systemctl reload smb smbd 2>/dev/null || true; }
+      section "SMB server (Samba)"; own_file /etc/samba/storageforge.conf "$body" && ((APPLY)) && { systemctl reload "$(unit_of smb smbd)" 2>/dev/null || true; }
     fi
     return 0
   fi
@@ -589,9 +611,9 @@ server_smb() {
   if command -v testparm >/dev/null && [[ -e /etc/samba/smb.conf ]]; then
     if testparm -s >/dev/null 2>&1; then ok "testparm: config is valid"; else conflict "testparm rejects the config: testparm -s"; fi
   fi
-  if command -v getenforce >/dev/null && [[ $(getenforce) == Enforcing ]]; then
+  if [[ $(cat /sys/fs/selinux/enforce 2>/dev/null) == 1 ]]; then     # getenforce is not on every image
     for i in "${!E_PROTO[@]}"; do [[ ${E_PROTO[$i]} == SMB ]] || continue
-      if ls -Zd "${E_PATH[$i]}" 2>/dev/null | grep -q samba_share_t; then ok "SELinux: ${E_PATH[$i]} is samba_share_t"
+      if ls -Zd "${E_PATH[$i]}" 2>/dev/null | grep samba_share_t >/dev/null; then ok "SELinux: ${E_PATH[$i]} is samba_share_t"
       elif ((APPLY)); then doing "SELinux: label ${E_PATH[$i]} samba_share_t"
         if command -v semanage >/dev/null; then semanage fcontext -a -t samba_share_t "${E_PATH[$i]}(/.*)?" 2>/dev/null || true; restorecon -R "${E_PATH[$i]}"
         else chcon -R -t samba_share_t "${E_PATH[$i]}"; fi
@@ -599,7 +621,7 @@ server_smb() {
     done
   fi
   service_on smb smbd
-  ((APPLY && changed)) && systemctl reload smb smbd 2>/dev/null || true
+  ((APPLY && changed)) && systemctl reload "$(unit_of smb smbd)" 2>/dev/null || true
   open_fw SMB "445 139" "$(printf '%s ' "${E_CLIENTS[@]}")" samba
   if command -v pdbedit >/dev/null; then
     local known u; known=$(pdbedit -L 2>/dev/null | cut -d: -f1)

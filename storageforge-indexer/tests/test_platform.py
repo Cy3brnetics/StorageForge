@@ -237,6 +237,41 @@ class OpsTests(DBCase):
         self.assertEqual(out[1]['mounts'], [{'host': 'desk', 'path': '/mnt/p'}])
         self.assertEqual(blueprint.merge_intent(scanned, {'exports': out})['exports'], out)    # stable when saved again
 
+    def test_scans_of_different_hosts_run_at_once(self):
+        import threading
+        from unittest import mock
+        from storageforge_index import server
+        together = threading.Barrier(2, timeout=20)
+
+        def scan(db, host, opts, actor=None, log=None):
+            together.wait()         # returns only when both hosts are scanning at the same moment
+            return {'status': 'ok', 'host': host}
+        with mock.patch.object(server, 'scan_via_vault', scan):
+            app = server.App(self.db)
+            jobs = [app.enqueue(h, 'test') for h in ('big', 'pi')]
+            self.assertEqual(app.enqueue('big', 'test'), jobs[0])       # one host still never scans twice
+            for _ in range(200):
+                got = [r[0] for r in self.conn.all("SELECT status FROM scan_jobs WHERE status = 'ok'")]
+                if len(got) == 2:
+                    break
+                time.sleep(0.05)
+        self.assertEqual(got, ['ok', 'ok'])
+        self.assertFalse(together.broken)
+
+    @unittest.skipIf(dbfactory.PG, 'PostgreSQL writers do not share one lock')
+    def test_a_scan_keeps_streaming_and_waits_out_another_hosts_write(self):
+        self.assertEqual(self.db.patient().connect().scalar('PRAGMA busy_timeout'), 30 * 60000)
+        self.assertEqual(self.db.connect().scalar('PRAGMA busy_timeout'), 60000)
+        scan, other = self.db.connect(), self.db.connect()
+        self.db.stage_create(scan, 1)
+        row = ('/', 'f', '', 1, 0, 0, None, None, None, None, 1)
+        with other.tx():        # another host applying its results holds the write lock
+            other.execute("INSERT INTO hosts (hostname, inventory_json) VALUES ('other', '{}')")
+            started = time.time()
+            self.db.stage_insert(scan, 1, [row])
+            self.assertLess(time.time() - started, 5)
+        self.assertEqual(scan.scalar('SELECT count(*) FROM stage_1'), 1)
+
     def test_one_name_per_host_and_no_scan_burst_after_restart(self):
         from storageforge_index import server
         self.conn.execute("INSERT INTO hosts (hostname, ip_address, ssh_host, inventory_json) "
@@ -1037,6 +1072,7 @@ class ServerTests(DBCase):
         self.assertIn(b"C_SOURCE=(//10.0.0.5/media)", r.data)
         self.assertEqual(self.client.get('/api/folders/cold?years=1').json['folders'], [])
         self.assertEqual(self.client.get('/gitview.js').status_code, 200)
+        self.assertEqual(self.client.get('/rebuildview.js').status_code, 200)
         self.assertEqual(self.client.get('/dockerview.js').status_code, 200)
         self.assertEqual(self.client.get('/api/docker').json, {'hosts': []})
         self.assertEqual(self.client.get('/api/docker/usage?path=/x').status_code, 400)     # path needs host

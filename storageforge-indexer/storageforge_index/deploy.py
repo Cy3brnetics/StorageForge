@@ -33,7 +33,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from .db import Database
 from .moves import host_slug
-from .remote import Transport, child_env
+from .remote import RemoteError, Transport, child_env
 from .runner import connect_address, ephemeral_agent, known_hosts_path
 from .vault import AuditLog, NoBinding, Vault, VaultError, actor_name
 
@@ -73,7 +73,7 @@ def sshsig(key: ed25519.Ed25519PrivateKey, message: bytes, namespace: str = NAME
 
 
 def request(key: ed25519.Ed25519PrivateKey, host: str, script: str, args=(), now: float | None = None,
-            machine: str | None = None) -> bytes:
+            machine: str | None = None, nonce: str | None = None) -> bytes:
     """The bytes storageforge-run reads from stdin: a signed header + script for one host, usable once. machine is
     the host's /etc/machine-id (from its scans): when given, no other machine runs it, even one with the same name."""
     for a in args:
@@ -81,7 +81,10 @@ def request(key: ed25519.Ed25519PrivateKey, host: str, script: str, args=(), now
             raise ValueError(f'argument not allowed: {a!r}')
     if machine and not re.fullmatch(r'[0-9a-f]{32}', machine):
         raise ValueError('bad machine id')
-    header = (f'host: {host_slug(host)}\nissued: {int(now or time.time())}\nnonce: {secrets.token_hex(16)}\n'
+    nonce = nonce or secrets.token_hex(16)
+    if not re.fullmatch(r'[0-9a-f]{32}', nonce):
+        raise ValueError('bad nonce')
+    header = (f'host: {host_slug(host)}\nissued: {int(now or time.time())}\nnonce: {nonce}\n'
               + (f'machine: {machine}\n' if machine else '') + f'args: {" ".join(args)}\n\n')
     payload = (header + script).encode()
     sig = sshsig(key, payload).encode()
@@ -115,8 +118,10 @@ IFS= read -r -d '' -N "$plen" payload
 ((${#payload} == plen)) || die "short request"
 IFS= read -r -d '' -N "$slen" sig
 ((${#sig} == slen)) || die "short signature"
-work=$(mktemp -d /tmp/sf-run.XXXXXX) || die "no temporary directory"
+work=$(mktemp -d /run/sf-run.XXXXXX 2>/dev/null || mktemp -d /tmp/sf-run.XXXXXX) || die "no temporary directory"     # /run: job keys stay off the disk
 trap 'rm -rf "$work"' EXIT
+trap 'exit 129' HUP
+trap 'exit 143' TERM
 printf '%s' "$payload" >"$work/payload"
 printf '%s' "$sig" >"$work/sig"
 ssh-keygen -Y verify -f "$ETC/allowed_signers" -I storageforge -n storageforge-deploy -s "$work/sig" \
@@ -150,9 +155,13 @@ read -r -a argv <<<"$args"
 sed '1,/^$/d' "$work/payload" >"$work/script"
 log "run $nonce $(sha256sum <"$work/script" | cut -c1-16) args=[$args]"
 cd /
+umask 022     # the runner's own files stay private above; what a script makes (shared folders, config) must not
 bash "$work/script" "${argv[@]}"
 rc=$?
 log "done $nonce rc=$rc"
+mkdir -p "$STATE" 2>/dev/null || true
+printf '{"nonce":"%s","rc":%d,"started":%d,"finished":%d}\n' "$nonce" "$rc" "$now" "$(date +%s)" >>"$STATE/runs.jsonl" 2>/dev/null || true
+chmod 0644 "$STATE/runs.jsonl" 2>/dev/null || true
 exit $rc
 """
 
@@ -164,7 +173,8 @@ RUNNER_UPDATE = ('#!/bin/bash\n'
                  'if ((EUID == 0)); then _sf_new=$(mktemp) && cat >"$_sf_new" <<\'STORAGEFORGE_RUNNER_UPDATE\'\n'
                  + RUNNER_SCRIPT + 'STORAGEFORGE_RUNNER_UPDATE\n'
                  f'cmp -s "$_sf_new" {RUNNER} || install -o root -g root -m 0755 "$_sf_new" {RUNNER}\n'
-                 'rm -f "$_sf_new"; unset _sf_new; fi >/dev/null 2>&1\n')
+                 'rm -f "$_sf_new"; unset _sf_new; fi >/dev/null 2>&1\n'
+                 'umask 022\n')         # an older runner still in charge of this very run leaves 077
 
 SETUP = r"""set -eu
 U=%(user)s
@@ -172,17 +182,21 @@ HOME_DIR=/var/lib/storageforge/deploy
 command -v ssh-keygen >/dev/null 2>&1 || { echo "ssh-keygen is missing: install openssh-client" >&2; exit 3; }
 command -v visudo >/dev/null 2>&1 || { echo "sudo is missing: install sudo" >&2; exit 3; }
 command -v bash >/dev/null 2>&1 || { echo "bash is missing" >&2; exit 3; }
+for c in useradd usermod install mktemp; do
+  command -v "$c" >/dev/null 2>&1 || { echo "$c is missing: deploys need a full userland (on Alpine: apk add shadow coreutils)" >&2; exit 3; }
+done
+command -v ssh >/dev/null 2>&1 || { echo "ssh is missing: install the OpenSSH client" >&2; exit 3; }
 ver=$(ssh -V 2>&1 | sed -n 's/^OpenSSH_\([0-9]*\)\.\([0-9]*\).*/\1 \2/p')
 set -- $ver
 if [ "${1:-0}" -lt 8 ] || { [ "${1:-0}" -eq 8 ] && [ "${2:-0}" -lt 1 ]; }; then
   echo "OpenSSH ${1:-?}.${2:-?} is too old: signed deploys need ssh-keygen -Y (OpenSSH 8.1 or later)" >&2; exit 3
 fi
+install -d -o root -g root -m 0755 /etc/storageforge /etc/storageforge/jobs /etc/storageforge/serve /var/lib/storageforge /var/log/storageforge
 if ! id "$U" >/dev/null 2>&1; then
   useradd --system --home-dir "$HOME_DIR" --create-home --shell /bin/sh --comment "StorageForge deploys" "$U"
   echo "created user $U"
 fi
 usermod -p '*' "$U"            # no password, but not locked: sshd without PAM refuses key logins to locked accounts
-install -d -o root -g root -m 0755 /etc/storageforge /etc/storageforge/jobs /etc/storageforge/serve /var/lib/storageforge /var/log/storageforge
 install -d -o "$U" -g root -m 0750 "$HOME_DIR"
 install -d -o root -g root -m 0755 "$HOME_DIR/.ssh"
 printf 'storageforge namespaces="storageforge-deploy" %%s\n' %(signer)s >/etc/storageforge/allowed_signers
@@ -287,17 +301,22 @@ def setup_for_download(db, conn) -> str:
 
 
 def enroll(db, conn, host: str, password: str, admin_user: str | None = None, actor: str | None = None,
-           remove: bool = False) -> dict:
+           remove: bool = False, admin_key: str | None = None) -> dict:
     """Set deploy access up on host (or remove it) with sudo once, bind the deploy key, and prove a signed run works."""
     from .access import sudo_run
+    from .preflight import facts_from_scan, findings
     actor = actor or actor_name()
     name, addr = canonical(conn, host), connect_address(conn, host)
+    if not remove:      # a host deploys can't run on: say so before any password goes anywhere
+        crit = [i['text'] for i in findings(facts_from_scan(conn, name)) if i['level'] == 'crit']
+        if crit:
+            raise RemoteError(f'{name} cannot run deploys: ' + '; '.join(crit))
     with Vault(db, conn).unlock() as v:
         signer_pub, deploy_pub = ensure_keys(v)
         audit = AuditLog(db, conn, v.audit_key)
         try:
             r = sudo_run(db, conn, addr, lambda _u: remove_script() if remove else setup_script(signer_pub, deploy_pub),
-                         password, admin_user)
+                         password, admin_user, admin_key)
         except Exception as exc:
             audit.append(actor, 'deploy.remove' if remove else 'deploy.setup', 'failed', name, None, {'error': str(exc)[:500]})
             raise
@@ -330,7 +349,17 @@ def run_status(rc: int | None, mode: str, text: str) -> str:
 
 def audit_outcome(status: str) -> str:
     """audit_log takes ok, denied, failed and info only."""
-    return {'ok': 'ok', 'refused': 'denied', 'incomplete': 'info'}.get(status, 'failed')
+    return {'ok': 'ok', 'refused': 'denied', 'incomplete': 'info', 'cancelled': 'info'}.get(status, 'failed')
+
+
+def ssh_failure(text: str) -> str:
+    """Exit 255 means ssh itself failed: say which of the usual reasons this was."""
+    if 'REMOTE HOST IDENTIFICATION HAS CHANGED' in text or 'Host key verification failed' in text:
+        return ('\nSSH refused: this host presents a different key than the one pinned for it. If it was reinstalled: '
+                'storageforge-index hosts rekey <name>, then scan it\n')
+    if 'Permission denied' in text:
+        return '\nSSH refused the deploy key: run Set up again. If it still fails, check AllowUsers in the host\'s sshd_config\n'
+    return '\nSSH failed: the host is unreachable, or storageforge-deploy cannot log in\n'
 
 
 def _lock(host: str) -> threading.Lock:
@@ -338,19 +367,45 @@ def _lock(host: str) -> threading.Lock:
         return _host_locks.setdefault(host, threading.Lock())
 
 
+@contextmanager
+def _host_turn(name: str, out: list, save, live=None):
+    """One script per host at a time, across every deploy. A wait says so, or the run just looks hung."""
+    lock = _lock(name)
+    said = False
+    while not lock.acquire(timeout=1):
+        if live and live.cancelled:
+            raise DeployError(f'not run: cancelled by {live.by}')
+        if not said:
+            said = True
+            out.append(f'waiting for another deploy on {name} to end\n')
+            save()
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def run(db: Database, host: str, script: str, args=(), *, kind: str, ref: str | None = None, mode: str = 'report',
         actor: str | None = None, group_id: str | None = None, data=None, timeout: int = 1800,
-        require_ready: bool = True, run_id_box: list | None = None) -> dict:
+        require_ready: bool = True, run_id_box: list | None = None, run_id: int | None = None, live=None,
+        sign_as: str | None = None) -> dict:
     """Run one signed script as root on host and record it in deploy_runs. data: bytes or an iterable of byte chunks
-    for the script's stdin (after the signed request). Blocks until the script ends."""
+    for the script's stdin (after the signed request). Blocks until the script ends. run_id: the queued row this run
+    fills in (engine.py). live: the group it belongs to, which may ask to stop it. sign_as: the host's own name, when
+    it has not been scanned yet and host is only an address."""
     actor = actor or actor_name()
     group_id = group_id or uuid.uuid4().hex
     conn = db.connect()
     started = int(time.time())
-    run_id = conn.scalar("""INSERT INTO deploy_runs (group_id, host, kind, ref, mode, status, script_sha, actor, started_at)
-                            VALUES (:g, :h, :k, :r, :m, 'running', :sha, :a, :t) RETURNING run_id""",
-                         {'g': group_id, 'h': host, 'k': kind, 'r': ref, 'm': mode, 'a': actor, 't': started,
-                          'sha': hashlib.sha256(script.encode()).hexdigest()[:16]})
+    sha = hashlib.sha256(script.encode()).hexdigest()[:16]
+    nonce = secrets.token_hex(16)
+    if run_id:
+        conn.execute("UPDATE deploy_runs SET status = 'running', script_sha = :sha, started_at = :t, nonce = :n WHERE run_id = :r",
+                     {'sha': sha, 't': started, 'r': run_id, 'n': nonce})
+    else:
+        run_id = conn.scalar("""INSERT INTO deploy_runs (group_id, host, kind, ref, mode, status, script_sha, actor, started_at, nonce)
+                                VALUES (:g, :h, :k, :r, :m, 'running', :sha, :a, :t, :n) RETURNING run_id""",
+                             {'g': group_id, 'h': host, 'k': kind, 'r': ref, 'm': mode, 'a': actor, 't': started, 'sha': sha, 'n': nonce})
     if run_id_box is not None:
         run_id_box.append(run_id)
     out: list[str] = []
@@ -369,13 +424,13 @@ def run(db: Database, host: str, script: str, args=(), *, kind: str, ref: str | 
         if require_ready and not ready(conn, name):
             raise DeployError(f'{name} is not set up for deploys yet (Deploy tab → Set up deploy access)')
         addr = connect_address(conn, name)
-        with _lock(name), Vault(db, conn).unlock() as v:
+        with _host_turn(name, out, save, live), Vault(db, conn).unlock() as v:
             audit = AuditLog(db, conn, v.audit_key)
             try:
                 b = v.resolve(addr, 'deploy')
             except NoBinding as exc:
                 raise DeployError(f'{name}: {exc}') from None
-            req = request(_signer(v), name, RUNNER_UPDATE + script, args, machine=_machine(conn, name))
+            req = request(_signer(v), sign_as or name, RUNNER_UPDATE + script, args, machine=_machine(conn, name), nonce=nonce)
             if isinstance(data, (bytes, bytearray)):
                 data = [bytes(data)]
             t = None
@@ -385,6 +440,8 @@ def run(db: Database, host: str, script: str, args=(), *, kind: str, ref: str | 
                                   isolated=True)
                     p = subprocess.Popen(t.argv('storageforge-run'), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                          stderr=subprocess.STDOUT, env=child_env())
+                    if live:
+                        live.attach(run_id, p)
 
                     def feed():
                         try:
@@ -418,11 +475,16 @@ def run(db: Database, host: str, script: str, args=(), *, kind: str, ref: str | 
                             break
                     rc = p.wait(30)
             finally:
+                if live:
+                    live.detach(run_id)
                 if t:
                     t.close()
             status = run_status(rc, mode, ''.join(out))
-            if rc == 255:
-                out.append('\nSSH failed: the host is unreachable, or storageforge-deploy cannot log in\n')
+            if live and live.cancelled == 'force' and status == 'failed':
+                status = 'cancelled'
+                out.append(f'\nstopped: cancelled by {live.by}\n')
+            elif rc == 255:
+                out.append(ssh_failure(''.join(out[-3:])))
             audit.append(actor, f'deploy.{kind}', audit_outcome(status), name, b.fingerprint,
                          {'mode': mode, 'ref': ref, 'run': run_id, 'exit': rc, 'args': list(args)})
     except (DeployError, VaultError, ValueError) as exc:
@@ -431,6 +493,8 @@ def run(db: Database, host: str, script: str, args=(), *, kind: str, ref: str | 
         traceback.print_exc()
         out.append(f'internal error: {type(exc).__name__}: {exc}\n')
     finally:
+        if live and live.cancelled and rc is None and status == 'failed':    # stopped while it waited for the host
+            status = 'cancelled'
         save(status, rc)
         conn.close()
     return {'run_id': run_id, 'group_id': group_id, 'host': host, 'status': status, 'exit_code': rc, 'output': ''.join(out)}
@@ -446,16 +510,17 @@ def raw(db: Database, host: str, script: str, *, kind: str, ref: str | None = No
     if not ready(conn, name):
         conn.close()
         raise DeployError(f'{name} is not set up for deploys yet')
-    run_id = conn.scalar("""INSERT INTO deploy_runs (group_id, host, kind, ref, mode, status, actor, started_at)
-                            VALUES (:g, :h, :k, :r, 'apply', 'running', :a, :t) RETURNING run_id""",
-                         {'g': group_id or uuid.uuid4().hex, 'h': name, 'k': kind, 'r': ref, 'a': actor, 't': int(time.time())})
+    nonce = secrets.token_hex(16)
+    run_id = conn.scalar("""INSERT INTO deploy_runs (group_id, host, kind, ref, mode, status, actor, started_at, nonce)
+                            VALUES (:g, :h, :k, :r, 'apply', 'running', :a, :t, :n) RETURNING run_id""",
+                         {'g': group_id or uuid.uuid4().hex, 'h': name, 'k': kind, 'r': ref, 'a': actor, 't': int(time.time()), 'n': nonce})
     err: list[bytes] = []
     status, rc, t = 'failed', None, None
     try:
         addr = connect_address(conn, name)
         with _lock(name), Vault(db, conn).unlock() as v:     # one run per host at a time, like run()
             b = v.resolve(addr, 'deploy')
-            req = request(_signer(v), name, RUNNER_UPDATE + script, machine=_machine(conn, name))
+            req = request(_signer(v), name, RUNNER_UPDATE + script, machine=_machine(conn, name), nonce=nonce)
             with ephemeral_agent(v.decrypt_key(b.key_id)) as sock:
                 t = Transport(host=addr, user=b.user, port=b.port, agent_sock=sock, known_hosts=str(known_hosts_path()),
                               isolated=True)
@@ -485,46 +550,10 @@ def raw(db: Database, host: str, script: str, *, kind: str, ref: str | None = No
         conn.close()
 
 
-def start_group(db: Database, items: list[dict], actor: str, stop_on_failure: bool = True, after=None) -> str:
-    """Run items (dicts of run() arguments) one after another in a background thread; returns the group id to poll.
-    after(host) is called once for each host an apply item ran on, failed or not, once the group has ended."""
-    gid = uuid.uuid4().hex
-    conn = db.connect()
-    try:   # placeholder rows, so the UI sees every host of the group at once
-        ids = [conn.scalar("""INSERT INTO deploy_runs (group_id, host, kind, ref, mode, status, actor, started_at)
-                              VALUES (:g, :h, :k, :r, :m, 'queued', :a, :t) RETURNING run_id""",
-                           {'g': gid, 'h': it['host'], 'k': it['kind'], 'r': it.get('ref'), 'm': it.get('mode', 'report'),
-                            'a': actor, 't': int(time.time())}) for it in items]
-    finally:
-        conn.close()
-
-    def work():
-        failed, applied = False, {}
-        for rid, it in zip(ids, items):
-            c = db.connect()
-            try:
-                c.execute('DELETE FROM deploy_runs WHERE run_id = :r', {'r': rid})
-                if failed:
-                    c.execute("""INSERT INTO deploy_runs (group_id, host, kind, ref, mode, status, output, actor, started_at, finished_at)
-                                 VALUES (:g, :h, :k, :r, :m, 'skipped', :o, :a, :t, :t)""",
-                              {'g': gid, 'h': it['host'], 'k': it['kind'], 'r': it.get('ref'), 'm': it.get('mode', 'report'),
-                               'o': 'not run: an earlier host failed', 'a': actor, 't': int(time.time())})
-                    continue
-            finally:
-                c.close()
-            res = run(db, group_id=gid, actor=actor, **{k: v for k, v in it.items() if k not in ('on_ok', 'on_fail')})
-            hook = it.get('on_ok' if res['status'] in FINISHED else 'on_fail')
-            if hook:
-                _guard(lambda: hook(res))
-            if res['status'] not in FINISHED:
-                failed = stop_on_failure
-            if it.get('mode') == 'apply':
-                applied[it['host']] = True
-        if after:
-            for h in applied:
-                _guard(lambda h=h: after(h))
-    threading.Thread(target=lambda: _guard(work), name=f'deploy-{gid[:8]}', daemon=True).start()
-    return gid
+def start_group(db: Database, items: list[dict], actor: str, stop_on_failure: bool = True, after=None, **group) -> str:
+    """Run items as one deploy (engine.py); returns the group id to poll."""
+    from . import engine
+    return engine.start(db, items, actor, stop_on_failure=stop_on_failure, after=after, **group)
 
 
 def _guard(fn):
@@ -568,26 +597,29 @@ def start_task(db: Database, host: str, kind: str, ref: str | None, actor: str, 
 
 
 def group(conn, gid: str) -> list[dict]:
-    rows = conn.all("""SELECT run_id, host, kind, ref, mode, status, exit_code, output, actor, started_at, finished_at
+    rows = conn.all("""SELECT run_id, host, kind, ref, mode, status, exit_code, output, actor, started_at, finished_at, phase,
+                              nonce, host_state, host_exit, confirmed_at
                        FROM deploy_runs WHERE group_id = :g ORDER BY run_id""", {'g': gid})
     return [dict(zip(('run_id', 'host', 'kind', 'ref', 'mode', 'status', 'exit_code', 'output', 'actor', 'started_at',
-                      'finished_at'), r)) for r in rows]
+                      'finished_at', 'phase', 'nonce', 'host_state', 'host_exit', 'confirmed_at'), r)) for r in rows]
 
 
 def history(conn, host: str | None = None, limit: int = 50) -> list[dict]:
-    rows = conn.all(f"""SELECT run_id, group_id, host, kind, ref, mode, status, exit_code, actor, started_at, finished_at
+    rows = conn.all(f"""SELECT run_id, group_id, host, kind, ref, mode, status, exit_code, actor, started_at, finished_at,
+                               nonce, host_state, host_exit, confirmed_at
                         FROM deploy_runs {'WHERE host = :h' if host else ''} ORDER BY run_id DESC LIMIT :l""",
                     {'h': host, 'l': limit})
     return [dict(zip(('run_id', 'group_id', 'host', 'kind', 'ref', 'mode', 'status', 'exit_code', 'actor', 'started_at',
-                      'finished_at'), r)) for r in rows]
+                      'finished_at', 'nonce', 'host_state', 'host_exit', 'confirmed_at'), r)) for r in rows]
 
 
 def output(conn, run_id: int) -> dict:
-    rows = conn.all('SELECT run_id, host, kind, ref, mode, status, exit_code, output FROM deploy_runs WHERE run_id = :r',
-                    {'r': run_id})
+    rows = conn.all("""SELECT run_id, host, kind, ref, mode, status, exit_code, output, nonce, host_state, host_exit, confirmed_at
+                       FROM deploy_runs WHERE run_id = :r""", {'r': run_id})
     if not rows:
         raise LookupError(f'no deploy run {run_id}')
-    return dict(zip(('run_id', 'host', 'kind', 'ref', 'mode', 'status', 'exit_code', 'output'), rows[0]))
+    return dict(zip(('run_id', 'host', 'kind', 'ref', 'mode', 'status', 'exit_code', 'output', 'nonce', 'host_state',
+                      'host_exit', 'confirmed_at'), rows[0]))
 
 
 def mark_deployed(conn, host: str, kind: str, ref: str, deploy_hash: str, detail: dict, actor: str):

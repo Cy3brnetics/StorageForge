@@ -79,7 +79,9 @@ NEEDS = {'NFS server': ('exportfs', {'apt-get': 'nfs-kernel-server', 'dnf': 'nfs
          'NFS client': ('mount.nfs', {'apt-get': 'nfs-common', 'dnf': 'nfs-utils', 'yum': 'nfs-utils', 'pacman': 'nfs-utils', 'zypper': 'nfs-client'}),
          'SMB client': ('mount.cifs', {'apt-get': 'cifs-utils', 'dnf': 'cifs-utils', 'yum': 'cifs-utils', 'pacman': 'cifs-utils', 'zypper': 'cifs-utils'}),
          'rsync': ('rsync', {'apt-get': 'rsync', 'dnf': 'rsync', 'yum': 'rsync', 'pacman': 'rsync', 'zypper': 'rsync'}),
-         'rsnapshot': ('rsnapshot', {'apt-get': 'rsnapshot', 'dnf': 'rsnapshot', 'yum': 'rsnapshot', 'pacman': 'rsnapshot', 'zypper': 'rsnapshot'})}
+         'rsnapshot': ('rsnapshot', {'apt-get': 'rsnapshot', 'dnf': 'rsnapshot', 'yum': 'rsnapshot', 'pacman': 'rsnapshot', 'zypper': 'rsnapshot'}),
+         'git': ('git', {'apt-get': 'git', 'dnf': 'git', 'yum': 'git', 'pacman': 'git', 'zypper': 'git'}),
+         'btrfs-progs': ('btrfs', {'apt-get': 'btrfs-progs', 'dnf': 'btrfs-progs', 'yum': 'btrfs-progs', 'pacman': 'btrfs-progs', 'zypper': 'btrfsprogs'})}
 
 
 def package_check(conn: Conn, h: dict, what: str) -> tuple[str, str]:
@@ -97,7 +99,7 @@ def package_check(conn: Conn, h: dict, what: str) -> tuple[str, str]:
     if manager not in packages:
         return 'crit', (f'{what} is not installed on {h["name"]}, and it has no package manager StorageForge knows '
                         f'(apt, dnf, yum, zypper, pacman): install it by hand and rescan')
-    epel = ' (from EPEL, which must be enabled)' if what == 'rsnapshot' and manager in ('dnf', 'yum') else ''
+    epel = ' (from EPEL, which it enables if it has to)' if what == 'rsnapshot' and manager in ('dnf', 'yum') else ''
     return 'note', f'{what} is not installed on {h["name"]}: the deploy installs {packages[manager]} with {manager}{epel}'
 
 
@@ -113,9 +115,12 @@ apt_install() { DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=12
 install_pkg() { # manager package
   case $1 in
     apt-get) apt_install "$2" || { apt-get -o DPkg::Lock::Timeout=120 update -qq 2>&1 && apt_install "$2"; } ;;   # the package lists may be stale
-    dnf|yum) "$1" install -y -q "$2" 2>&1 ;;
+    dnf|yum) "$1" install -y -q "$2" 2>&1 && return 0
+      # some packages only come from EPEL on RHEL and its rebuilds. Rocky and Alma carry epel-release in their own repos.
+      [[ $2 == rsnapshot ]] || return 1
+      "$1" install -y -q epel-release 2>&1 && "$1" install -y -q "$2" 2>&1 ;;
     zypper) zypper -nq install "$2" 2>&1 ;;
-    pacman) pacman -S --needed --noconfirm "$2" 2>&1 ;;   # no -Sy: refreshing without upgrading is a partial upgrade
+    pacman) pacman -S --needed --noconfirm "$2" 2>&1 || { echo "(the pacman package lists may be out of date: run pacman -Syu on the host, reboot if the kernel changed, then deploy again)"; return 1; } ;;   # no -Sy: refreshing without upgrading is a partial upgrade
   esac
 }
 need_cmd() { # command what apt rpm arch suse

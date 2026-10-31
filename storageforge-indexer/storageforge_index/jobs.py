@@ -192,13 +192,16 @@ PREFIX={prefix}
 """
 
 HOST_FUNCS = HELPERS + r"""
-ETC=/etc/storageforge UNITS=/etc/systemd/system MANAGED=/var/lib/storageforge/managed
+ETC=/etc/storageforge UNITS=/etc/systemd/system MANAGED=/var/lib/storageforge/managed SELF_BIN=/usr/local/sbin/storageforge-job
 WANT=()
 want_file() { # path mode, content on stdin -> ok | would write | written
   local p=$1 mode=$2 tmp; tmp=$(mktemp); cat >"$tmp"; WANT+=("$p")
   if [[ -f $p ]] && cmp -s "$tmp" "$p"; then ok "$p"; rm -f "$tmp"; return 0; fi
   if ((APPLY)); then install -D -o root -g root -m "$mode" "$tmp" "$p" && doing "wrote $p" || conflict "could not write $p"
-  else missing "$( [[ -e $p ]] && echo 'would update' || echo 'would write') $p"; fi
+  else
+    missing "$( [[ -e $p ]] && echo 'would update' || echo 'would write') $p"
+    if [[ -e $p && $p != "$SELF_BIN" ]] && command -v diff >/dev/null; then diff -u "$p" "$tmp" | sed -n '3,40p' | sed 's/^/            /'; fi
+  fi
   rm -f "$tmp"
 }
 secret_file() { # path, content on stdin (apply only)
@@ -213,7 +216,7 @@ section "stale jobs of this plan"
 stale=0
 for f in "$ETC"/jobs/"$PREFIX"*.conf "$ETC"/serve/"$PREFIX"*.conf "$UNITS"/sf-job-"$PREFIX"*.service "$UNITS"/sf-job-"$PREFIX"*.timer; do
   [[ -e $f ]] || continue
-  printf '%s\n' "${WANT[@]}" | grep -Fxq -- "$f" && continue
+  printf '%s\n' "${WANT[@]}" | grep -Fx -- "$f" >/dev/null && continue
   stale=1
   if ((APPLY)); then
     [[ $f == *.timer ]] && systemctl disable --now "$(basename "$f")" >/dev/null 2>&1
@@ -281,7 +284,7 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
         if 'rsnapshot' in methods:
             parts.append(need_line('rsnapshot'))
         if 'git' in methods:
-            parts.append('need git "apt/dnf install git"\n')
+            parts.append(need_line('git'))
         if report_url:
             parts.append(f'cacert=(); [[ -r {REPORT_CA} ]] && cacert=(--cacert {REPORT_CA})\n'
                          f'code=$(curl -s -m 5 ${{cacert[@]+"${{cacert[@]}}"}} -o /dev/null -w "%{{http_code}}" {q(report_url.rstrip("/") + "/healthz")} 2>/dev/null || true)\n'
@@ -290,9 +293,12 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
         else:
             parts.append('info "no report URL set in StorageForge: runs are picked up by scans only"\n')
     if any(s['snapshot'] for s in source_specs):
-        parts.append('need btrfs "btrfs-progs, for snapshot-first jobs"\n')
-    if source_specs and any(not s['local'] for s in source_specs):
+        parts.append(need_line('btrfs-progs'))
+    remote_sources = [s for s in source_specs if not s['local']]
+    if any(s['method'] != 'git' for s in remote_sources):
         parts.append(need_line('rsync'))
+    if any(s['method'] == 'git' for s in remote_sources):
+        parts.append(need_line('git'))
     if runner_specs or source_specs:
         parts.append('section "storageforge-job"\n' + _heredoc(f'want_file {deploy.JOBBIN} 0755', JOB_SCRIPT))
         ca = report_ca(report_url) if runner_specs else None
@@ -321,6 +327,9 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
     for s in source_specs:
         parts.append(f'section {q("serves job " + s["id"] + " (" + s["runner"] + " pulls " + s["src"] + ")")}\n')
         parts.append(f'[[ -d {q(s["src"])} ]] && ok {q("source " + s["src"])} || conflict {q("source " + s["src"] + " does not exist")}\n')
+        if s['snapshot']:      # a btrfs snapshot stops at subvolume boundaries: what is below one is not in it
+            parts.append(f'nested=$(btrfs subvolume list -o {q(s["src"])} 2>/dev/null | grep -c . || true)\n'
+                         f'((nested)) && info "$nested"{q(" subvolume(s) below " + s["src"] + " are not in its snapshot: add a step for each")}\n')
         parts.append(_heredoc(f'want_file {q("/etc/storageforge/serve/" + s["id"] + ".conf")} 0644', serve_text(s)))
         if s['pre'] or s['post']:
             parts.append(f'info {q("runs before: " + "; ".join(s["pre"]) + "  after: " + "; ".join(s["post"]))}\n')
@@ -369,6 +378,7 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, report_url: str | None, 
     runners = {s['runner'] for s in sp}
     sources = {s['source'] for s in sp}
     order = sorted(sources) + sorted(runners - sources) + sorted(before - sources - runners)
+    phase = {h: 0 if h in sources else 1 for h in order}    # a source's serve config and keys go first: runners test them
     sec = new_secrets(sp) if mode == 'apply' else None     # {} for a plan with no steps left: apply still cleans up
     if sec is not None:      # store before the hosts get them: a run may report the moment its timer fires
         now = int(time.time())
@@ -398,12 +408,12 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, report_url: str | None, 
             finally:
                 c.close()
         items.append({'host': h, 'script': script, 'args': ['--apply'] if mode == 'apply' else [], 'kind': 'jobs', 'ref': ref,
-                      'mode': mode, **({'on_ok': done} if mode == 'apply' else {})})
+                      'mode': mode, 'phase': phase[h], **({'on_ok': done} if mode == 'apply' else {})})
     if mode == 'apply':
         for h in sorted(runners):
             remote = [s['id'] for s in sp if s['runner'] == h and not s['local']]
             if remote:
-                items.append({'host': h, 'kind': 'job-test', 'ref': ref, 'mode': 'apply',
+                items.append({'host': h, 'kind': 'job-test', 'ref': ref, 'mode': 'apply', 'phase': 2,
                               'script': ''.join(f'{deploy.JOBBIN} test {j} || rc=1\n' for j in remote) + 'exit ${rc:-0}\n'})
     return items
 

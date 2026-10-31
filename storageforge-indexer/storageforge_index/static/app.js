@@ -36,9 +36,12 @@ async function api(path, opts = {}, confirmed = false) {
     if (hk) { await confirmHostKey(hk); return api(path, opts, confirmed); }
   }
   if (!res.ok) {
-    let msg = res.statusText;
-    try { msg = (await res.json()).error || msg; } catch { /* not JSON */ }
-    throw new Error(msg);
+    let msg = res.statusText, body = null;
+    try { body = await res.json(); msg = body.error || msg; } catch { /* not JSON */ }
+    const err = new Error(msg);
+    err.status = res.status;
+    err.body = body;
+    throw err;
   }
   return res;
 }
@@ -542,6 +545,7 @@ function showTab(name) {
   if (name === 'moves') loadMoves();
   if (name === 'changes') loadChanges();
   if (name === 'git') loadGit();
+  if (name === 'rebuild') loadRebuild();
   if (name === 'docker') loadDocker();
   if (name === 'deploy') loadDeploy();
 }

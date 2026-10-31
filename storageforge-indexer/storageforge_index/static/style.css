@@ -538,3 +538,4 @@ body.loginpage { min-height: 100vh; align-items: center; justify-content: center
 .logincard p { margin: 0; }
 .hkcmd { margin: 0; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; font-size: 12px; overflow-x: auto; }
 .hkkeys { margin: 0; padding-left: 18px; font-size: 13px; word-break: break-all; }
+#rebuildbox pre { white-space: pre-wrap; overflow-wrap: anywhere; }

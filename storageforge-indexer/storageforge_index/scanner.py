@@ -322,6 +322,14 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
                     log(f'  picked up {n} job run(s) the jobs could not report')
             except Exception as exc:
                 log(f'  job runs: {exc}')
+        if getattr(inv, 'runs', None) or getattr(inv, 'tasks', None):
+            try:
+                from . import confirm
+                summary = confirm.ingest_scan(db, conn, inv.hostname, getattr(inv, 'runs', ''), getattr(inv, 'tasks', ''), log=log)
+                if summary.get('confirmed') or summary.get('tasks'):
+                    log(f'  confirmed {summary.get("confirmed", 0)} deploy run(s), {summary.get("tasks", 0)} task run(s)')
+            except Exception as exc:
+                log(f'  confirm runs: {exc}')
         scan_id = db.begin_scan(conn, host_id)          # refuses while another scan of this host runs
         db.sync_mounts(conn, host_id, plans)
         writers = max(1, min(db.max_writers, len(jobs)))
@@ -385,6 +393,13 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
             log(f'  checksummed {hashed:,} size-collision candidates')
         status = 'ok' if not tot['failed'] else ('failed' if tot['failed'] == len(results) else 'partial')
         db.finish_scan(conn, scan_id, host_id, tot, status, time.time() - started)
+        if status != 'failed':
+            from .hostconfig import capture
+            try:
+                if capture(conn, inv.hostname)['new']:
+                    log('  host configuration changed: saved a new version')
+            except Exception as exc:                      # never fail a finished scan over the config history
+                log(f'  host configuration not saved: {exc}')
         log(f'scan #{scan_id} {status}: {tot["entries"]:,} entries, {fmt_bin(tot["bytes"])} in '
             f'{time.time() - started:.1f}s · +{tot["added"]:,} ~{tot["modified"]:,} -{tot["deleted"]:,}')
         return {'scan_id': scan_id, 'host': inv.hostname, 'status': status, **tot}

@@ -265,6 +265,9 @@ echo '@@mountinfo'; cat /proc/self/mountinfo 2>/dev/null
 echo '@@df'; df -B1 -P 2>/dev/null
 echo '@@btrfs'; for d in /sys/fs/btrfs/*-*/; do [ -d "$d" ] || continue; printf '%s\t%s\t%s\t%s\n' "$(basename "$d")" "$(ls -d "$d"allocation/data/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(ls -d "$d"allocation/metadata/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(cat "$d"label 2>/dev/null)"; done
 echo '@@jobs'; for f in /var/lib/storageforge/jobs/*/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
+echo '@@tasks'; for f in /var/lib/storageforge/tasks/*.last /var/lib/storageforge/tasks/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
+for t in /etc/systemd/system/sf-task-*.timer; do [ -e "$t" ] && echo "TASK-TIMER $(basename "$t") $(systemctl is-enabled "$(basename "$t")" 2>/dev/null)"; done
+echo '@@runs'; [ -r /var/lib/storageforge/run/runs.jsonl ] && tail -n 100 /var/lib/storageforge/run/runs.jsonl
 echo '@@managed'; for f in /var/lib/storageforge/managed/*.sha256; do [ -r "$f" ] || continue; echo "## $(basename "$f" .sha256)"; sha256sum -c "$f" 2>&1 | tail -n 300; done
 for f in /var/lib/storageforge/managed/*.lines; do [ -r "$f" ] || continue; echo "## $(basename "$f" .lines)"; while IFS= read -r l; do if grep -Fxq -- "$l" /etc/fstab 2>/dev/null; then echo "LINE-OK $l"; else echo "LINE-MISSING $l"; fi; done <"$f"; done
 for t in /etc/systemd/system/sf-job-*.timer; do [ -e "$t" ] && echo "TIMER $(basename "$t") $(systemctl is-enabled "$(basename "$t")" 2>/dev/null)"; done
@@ -272,8 +275,14 @@ echo '@@ids'; getent passwd 2>/dev/null | awk -F: '$3>=1000 && $3<60000 {print "
 echo '@@nfs'; cat /var/lib/nfs/etab 2>/dev/null || cat /etc/exports /etc/exports.d/*.exports 2>/dev/null
 echo '@@smb'; if command -v smbd >/dev/null 2>&1 || [ -f /etc/samba/smb.conf ]; then
   pgrep -x smbd >/dev/null 2>&1 && echo '# smbd running'; testparm -s 2>/dev/null || cat /etc/samba/smb.conf 2>/dev/null; fi
+echo '@@configs'; for f in /etc/fstab /etc/crypttab /etc/mdadm.conf /etc/mdadm/mdadm.conf /etc/exports /etc/exports.d/*.exports /etc/samba/*.conf; do
+  [ -f "$f" ] || continue; if [ -r "$f" ]; then printf '%s\t' "$f"; head -c 262144 "$f" | base64 | tr -d '\n'; echo; else printf '%s\t!\n' "$f"; fi; done
+echo '@@accounts'; getent passwd 2>/dev/null | awk -F: '$3>=1000 && $3<60000 {print "u\t" $1 "\t" $3 "\t" $4 "\t" $6 "\t" $7}'
+getent group 2>/dev/null | awk -F: '$4!="" || ($3>=1000 && $3<60000) {print "g\t" $1 "\t" $3 "\t" $4}'
 echo '@@packages'; (PATH="$PATH:/usr/sbin:/sbin"; for m in apt-get dnf yum zypper pacman; do command -v "$m" >/dev/null 2>&1 && { echo "pm $m"; break; }; done
-  for c in exportfs smbd mount.nfs mount.cifs rsync rsnapshot; do command -v "$c" >/dev/null 2>&1 && echo "have $c"; done)
+  for c in exportfs smbd mount.nfs mount.cifs rsync rsnapshot git btrfs bash sudo; do command -v "$c" >/dev/null 2>&1 && echo "have $c"; done
+  echo 'probed 1'; if [ -d /run/systemd/system ]; then echo 'init systemd'; else echo 'init other'; fi
+  v=$(ssh -V 2>&1 | sed -n 's/^OpenSSH_\([0-9]*\.[0-9]*\).*/\1/p'); [ -n "$v" ] && echo "openssh $v")
 echo '@@access'; if [ -x /usr/local/lib/storageforge/find ]; then echo capability; else echo user; fi; id -un 2>/dev/null
 echo '@@end'
 """
@@ -307,16 +316,21 @@ class HostInventory:
     btrfs: str = ''   # per filesystem: uuid, data and metadata profiles, label (from /sys/fs/btrfs)
     smb: str = ''     # testparm -s or smb.conf
     jobs: str = ''    # run lines of StorageForge jobs (the fallback when a run could not report)
+    tasks: str = ''   # run lines / status of storage tasks
+    runs: str = ''    # nonces and exit codes of StorageForge deploy runs
     managed: str = '' # sha256sum -c of what deploys wrote, StorageForge fstab lines, job timers (drift)
     ids: str = ''     # users and groups with UID/GID >= 1000 (NFS ownership check)
     packages: str = ''  # the package manager, and which NFS, SMB, rsync and rsnapshot programs are installed (what a deploy would add)
     machine_id: str = ''  # /etc/machine-id: signed into deploy requests (self-reported, so never used as identity)
+    configs: dict | None = None  # fstab, crypttab, mdadm, exports, Samba files with passwords removed (hostconfig.py)
+    accounts: str = ''  # local users and groups, no passwords (what a rebuild recreates so files keep their owners)
 
     def to_json(self) -> str:
         return json.dumps({
             'collected_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
             'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb, 'btrfs': self.btrfs,
-            'jobs': self.jobs, 'managed': self.managed, 'ids': self.ids, 'packages': self.packages,
+            'jobs': self.jobs, 'tasks': self.tasks, 'runs': self.runs, 'managed': self.managed, 'ids': self.ids, 'packages': self.packages,
+            'configs': self.configs, 'accounts': self.accounts,
             'mounts': [asdict(m) for m in self.mounts],
         })
 
@@ -408,10 +422,14 @@ def collect_inventory(t: Transport) -> HostInventory:
     if not mounts:
         raise RemoteError(f'{t.host}: could not read the mount table (findmnt and /proc/self/mountinfo both failed)')
     access, user = (lines('access') + ['', ''])[:2]
+    from .hostconfig import parse_configs
     return HostInventory(hostname, ip, ' · '.join(lines('os')) or None, mounts, lsblk,   # optional fields by name: order-proof
                          sec.get('zpool', '').strip(), sec.get('df', '').strip(), lvs=sec.get('lvs', '').strip(),
                          access=access, user=user, nfs=sec.get('nfs', '').strip(), smb=sec.get('smb', '').strip(),
                          btrfs=sec.get('btrfs', '').strip(), jobs=sec.get('jobs', '').strip(),
+                         tasks=sec.get('tasks', '').strip(), runs=sec.get('runs', '').strip(),
                          managed=sec.get('managed', '').strip(), ids=sec.get('ids', '').strip(),
                          packages=sec.get('packages', '').strip(),
+                         configs=parse_configs(sec['configs']) if 'configs' in sec else None,
+                         accounts=sec.get('accounts', '').strip(),
                          machine_id=next((m for m in lines('machineid') if re.fullmatch(r'[0-9a-f]{32}', m)), ''))

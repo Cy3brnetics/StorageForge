@@ -398,6 +398,27 @@ def problems(conn: Conn) -> dict:
             prev = now.get(key)
             now[key] = ('drift', f'{d["host"]}:{d["ref"]}', f'Changed by hand on {d["host"]}',
                         ((prev[3] + '; ') if prev else '') + d['text'], 'warn')
+    # Storage tasks: failed or stale
+    for d in conn.all("SELECT host, ref, detail_json FROM deployed WHERE kind = 'tasks'"):
+        host, tslug, djson = d
+        detail = loads(djson) or {}
+        tname = detail.get('name') or tslug
+        sched = detail.get('schedule')
+        truns = conn.all("""SELECT started_at, finished_at, exit_code FROM task_runs
+                            WHERE lower(host) = lower(:h) AND task = :t ORDER BY started_at DESC LIMIT 5""",
+                         {'h': host, 't': tslug})
+        if truns:
+            last_start, last_end, last_rc = truns[0]
+            if last_rc is not None and last_rc != 0:
+                now[f'task-failed:{host}:{tslug}'] = ('task-failed', f'{host}:{tslug}', f'Task failed: {tname} on {host}',
+                                                      f'exit code {last_rc}', 'crit')
+            if sched:
+                per = jobs.period(sched)
+                good = next((r for r in truns if r[2] == 0), None)
+                last_good = (good[1] or good[0]) if good else last_start
+                if time.time() - last_good > 2 * per + 3600:
+                    now[f'task-stale:{host}:{tslug}'] = ('task-stale', f'{host}:{tslug}', f'No good run: task {tname} on {host}',
+                                                         f'scheduled on {sched}', 'warn')
     return now
 
 

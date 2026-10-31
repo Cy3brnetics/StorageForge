@@ -50,6 +50,7 @@ services:
       STORAGEFORGE_PROXY_HOPS: ${STORAGEFORGE_PROXY_HOPS:-1}         # the proxy below sets X-Forwarded-For (real client IP)
       STORAGEFORGE_PROXY_HOST: proxy                                  # ...believed only from it, not from other containers
       STORAGEFORGE_SCAN_INTERVAL: ${STORAGEFORGE_SCAN_INTERVAL:-6h}
+      STORAGEFORGE_SCAN_WORKERS: ${STORAGEFORGE_SCAN_WORKERS:-4}          # hosts scanned at once
       STORAGEFORGE_BACKUP_HOUR: ${STORAGEFORGE_BACKUP_HOUR:-3}            # nightly essentials backup + prune (local hour)
       STORAGEFORGE_BACKUP_KEEP: ${STORAGEFORGE_BACKUP_KEEP:-14}
       STORAGEFORGE_BACKUP_FULL_KEEP: ${STORAGEFORGE_BACKUP_FULL_KEEP:-0}  # >0: also a full copy nightly (large)

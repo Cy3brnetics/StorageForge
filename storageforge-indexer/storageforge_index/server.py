@@ -57,8 +57,12 @@ GET  /api/deploy                     deploy access per host, deployed jobs and s
 POST /api/deploy/setup-script        {"remove"?}: the deploy setup script, to run as root by hand (makes the deploy keys)
 POST /api/deploy/access              {"host", "password", "admin_user"?, "remove"?}: set deploy access up (or remove it) with sudo once
 POST /api/deploy/adopt               {"host"}: after running the setup script by hand, bind the key and test a signed run
-POST /api/deploy/start               {"kind": jobs|shares|changes, "ref", "mode": report|apply, "paused"?, "destructive"?}
-GET  /api/deploy/groups/<id>         the runs of one deploy, with their output (poll while running)
+POST /api/deploy/start               {"kind": jobs|shares|changes|tasks, "ref", "mode": report|apply, "title"?, "report_group"?, "paused"?, "destructive"?}
+GET  /api/deploy/groups              recent deploys and how their hosts went
+GET  /api/deploy/groups/<id>         one deploy and its runs, with their output (poll while running)
+POST /api/deploy/groups/<id>/cancel  {"force"?}: nothing new starts; force also stops what is running
+POST /api/deploy/groups/<id>/retry   run it again on the hosts that did not finish (every host, for jobs)
+POST /api/deploy/check               {"host"}: what the host can run: a signed probe, or from its last scan if not set up
 GET  /api/deploy/runs[/<id>]         deploy history, or one run's output
 GET  /api/deploy/jobs/<id>           one deployed job and its run history
 POST /api/deploy/jobs/<id>/<verb>    run, dryrun, verify, pause, resume, cutover, log, snapshots
@@ -66,6 +70,10 @@ POST /api/deploy/jobs/<id>/browse  {"snapshot", "path"}   a folder inside an rsn
 POST /api/deploy/jobs/<id>/restore   {"snapshot", "path"}: copy it back to the source as <path>.restored-<time>
 GET|PUT /api/deploy/settings         report URL and alert channels;  POST /api/deploy/settings/test sends a test alert
 POST /api/jobs/report                a job's run result (Authorization: Bearer <job token>; no session)
+GET  /api/hostconfigs[?host=]         saved host configurations: the newest of each host, or every version of one
+GET  /api/hostconfigs/<id>            one version: what it holds, and what changed since the version before
+GET  /api/hostconfigs/script?host=&id=   the reinstall script (mounts, accounts, shares, symlinks)
+GET  /api/hostconfigs/bundle?host=&id=   a .tar.gz of scripts, records and config files (every host without host=)
 GET  /api/backups                    backups on disk;  POST {"kind": "essentials"|"full"} makes one now
 GET  /api/planner/hosts             scanned hosts and saved designs
 GET  /api/planner/design?host=&source=saved|scan   a design: the saved one, or built from the latest scan
@@ -101,8 +109,8 @@ from flask_login import LoginManager, current_user, login_required, login_user, 
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, folders, gitrepos, graph, jobs,
-               fromdesign, fsmap, hostkeys, keyinstall, moves, shares, tasks, users)
+from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, folders, gitrepos, graph, jobs, preflight,
+               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, reinstall, shares, tasks, users)
 from .capacity import parse_size
 from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
@@ -124,6 +132,7 @@ SECURITY_HEADERS = {
 MAX_BODY = 4096
 # all: every request · changes (default): requests that change something, rate-limit hits and server errors · off
 ACCESS_LOG = os.environ.get('STORAGEFORGE_ACCESS_LOG', 'changes').lower()
+SCAN_WORKERS = max(1, int(os.environ.get('STORAGEFORGE_SCAN_WORKERS', '4')))  # hosts scanned at once
 BACKUP_HOUR = int(os.environ.get('STORAGEFORGE_BACKUP_HOUR', '3'))          # local hour for the nightly backup and prune
 BACKUP_KEEP = int(os.environ.get('STORAGEFORGE_BACKUP_KEEP', '14'))         # essentials backups kept
 BACKUP_FULL = int(os.environ.get('STORAGEFORGE_BACKUP_FULL_KEEP', '0'))     # full backups kept nightly (0: on demand only)
@@ -155,7 +164,7 @@ def session_secret_from_env() -> str:
 
 class App:
     def __init__(self, db: Database, scan_interval: int | None = None, parallel: int = 4):
-        self.db, self.parallel = db, parallel
+        self.db, self.parallel, self.scan_db = db, parallel, db.patient()
         self.audit_key = None
         conn = db.connect()
         try:   # keep only the audit MAC key in memory; the KEK is wiped right after unlock
@@ -168,13 +177,16 @@ class App:
         finally:
             conn.close()
         self.queue: queue.Queue[int] = queue.Queue()
-        self.worker = threading.Thread(target=self._work, name='scan-worker', daemon=True)
-        self.worker.start()
+        self.enqueue_lock = threading.Lock()
+        self.workers = [threading.Thread(target=self._work, name=f'scan-worker-{i}', daemon=True) for i in range(SCAN_WORKERS)]
+        for w in self.workers:
+            w.start()
         conn = db.connect()
         try:   # jobs interrupted by a restart are marked failed, not left "running" forever
             conn.execute("UPDATE deploy_runs SET status = 'failed', finished_at = :t, output = output || :o "
                          "WHERE status IN ('queued', 'running')",
                          {'t': int(time.time()), 'o': '\ninterrupted by restart: this run may or may not have finished on the host\n'})
+            engine.close_interrupted(conn)
             conn.execute("UPDATE scan_jobs SET status = 'failed', finished_at = :t, result_json = :r "
                          "WHERE status IN ('queued', 'running')",
                          {'t': int(time.time()), 'r': json.dumps({'error': 'interrupted by restart'})})
@@ -209,11 +221,12 @@ class App:
         conn = self.db.connect()
         try:
             host = self.canonical(conn, host)
-            busy = conn.scalar("SELECT job_id FROM scan_jobs WHERE host = :h AND status IN ('queued', 'running')", {'h': host})
-            if busy:
-                return busy
-            jid = conn.scalar("INSERT INTO scan_jobs (host, requested_by, queued_at) VALUES (:h, :a, :t) RETURNING job_id",
-                              {'h': host, 'a': actor, 't': int(time.time())})
+            with self.enqueue_lock:     # workers run side by side: two requests at once must not start one host twice
+                busy = conn.scalar("SELECT job_id FROM scan_jobs WHERE host = :h AND status IN ('queued', 'running')", {'h': host})
+                if busy:
+                    return busy
+                jid = conn.scalar("INSERT INTO scan_jobs (host, requested_by, queued_at) VALUES (:h, :a, :t) RETURNING job_id",
+                                  {'h': host, 'a': actor, 't': int(time.time())})
         finally:
             conn.close()
         self.queue.put(jid)
@@ -225,7 +238,7 @@ class App:
     def _work(self):
         while True:
             jid = self.queue.get()
-            conn = self.db.connect()
+            conn = self.scan_db.connect()
             try:
                 host, actor = conn.all('SELECT host, requested_by FROM scan_jobs WHERE job_id = :j', {'j': jid})[0]
                 conn.execute("UPDATE scan_jobs SET status = 'running', started_at = :t WHERE job_id = :j",
@@ -233,14 +246,14 @@ class App:
                 try:
                     opts = ScanOptions(parallel=self.parallel, include_fstypes=[
                         x for x in os.environ.get('STORAGEFORGE_INCLUDE_FSTYPES', '').split(',') if x])
-                    res = scan_via_vault(self.db, host, opts, actor=actor,
+                    res = scan_via_vault(self.scan_db, host, opts, actor=actor,
                                          log=lambda m: print(f'[job {jid}] {m}', file=sys.stderr, flush=True))
                     status, result = res['status'], res
                 except Exception as exc:
                     status, result = 'failed', {'error': str(exc)}
                 conn.execute('UPDATE scan_jobs SET status = :s, finished_at = :t, result_json = :r WHERE job_id = :j',
                              {'s': status, 't': int(time.time()), 'r': json.dumps(result, default=str), 'j': jid})
-                self.db.prune(conn)                  # cheap deletes; keeps change history and denied lists bounded
+                self.scan_db.prune(conn)             # cheap deletes; keeps change history and denied lists bounded
             except Exception:
                 traceback.print_exc()
             finally:
@@ -501,7 +514,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "gitview.js", "dockerview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "planner.js", "planner.css"):name>')
+    @web.get('/<any("session.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "gitview.js", "rebuildview.js", "dockerview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "planner.js", "planner.css"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
@@ -519,7 +532,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             checks['users'] = users.count(c)
         except Exception as exc:
             checks['database'] = f'error: {type(exc).__name__}'
-        checks['worker'] = 'ok' if core.worker.is_alive() else 'dead'
+        checks['worker'] = 'ok' if all(w.is_alive() for w in core.workers) else 'dead'
         healthy = checks.get('database') == 'ok' and checks['worker'] == 'ok'
         code = 200 if healthy else 503
         # details (version, users, vault state) only for the container's own HEALTHCHECK and signed-in users
@@ -835,7 +848,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         keyinstall.validate(host, admin or 'root', 22)
         action = 'access.revoke' if remove else 'access.grant'
         try:
-            res = access.grant(db, conn(), host, password, admin, remove)
+            res = access.grant(db, conn(), host, password, admin, remove, str(body.get('admin_key') or '').strip() or None)
         except (RemoteError, subprocess.TimeoutExpired) as exc:
             msg = str(exc) if isinstance(exc, RemoteError) else 'timed out'
             core.audit(conn(), actor(), action, 'failed', host, {'via': admin, 'error': msg})
@@ -1075,7 +1088,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     def api_deploy():
         c = conn()
-        return jsonify(access=deploy.access(c), jobs=jobs.overview(c), deployed=deploy.deployed(c),
+        return jsonify(access=deploy.access(c), jobs=jobs.overview(c), deployed=deploy.deployed(c), checks=preflight.stored(c),
+                       groups=engine.recent(c, 25), keys=[r[0] for r in c.all('SELECT name FROM ssh_keys ORDER BY name')],
                        alerts=alerts.list_alerts(c), drift=alerts.drift(c), settings=alerts.settings(c),
                        runs=deploy.history(c, limit=30), plans=moves.list_plans(c))
 
@@ -1098,7 +1112,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         password = str(body.get('password', ''))
         keyinstall.validate(host, admin or 'root', 22)
         try:
-            return jsonify(deploy.enroll(db, conn(), host, password, admin, actor(), bool(body.get('remove'))))
+            return jsonify(deploy.enroll(db, conn(), host, password, admin, actor(), bool(body.get('remove')),
+                                         str(body.get('admin_key') or '').strip() or None))
         except (RemoteError, subprocess.TimeoutExpired) as exc:
             return jsonify(error=str(exc) if isinstance(exc, RemoteError) else 'timed out'), 502
         finally:
@@ -1110,6 +1125,40 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def api_deploy_adopt():
         return jsonify(deploy.adopt(db, conn(), str(json_body().get('host', '')).strip(), actor()))
 
+    def deploy_items_for(c, kind, ref, mode, options):
+        """The runs of one deploy. Also what a retry rebuilds them from: each keeps its options, none its old script."""
+        if kind == 'jobs':
+            pid = int(ref)
+            try:
+                plan = moves.get_plan(c, pid)
+            except LookupError:            # a deleted plan: deploying it empty removes its jobs from the hosts
+                plan = {'id': pid, 'name': f'deleted plan {pid}', 'steps': []}
+            if options.get('remove'):
+                plan = {**plan, 'steps': []}
+            return jobs.deploy_items(db, c, plan, mode, alerts.get_setting(c, 'report_url'), actor(), bool(options.get('paused')))
+        if kind == 'shares':
+            return shares.deploy_items(db, c, str(ref or ''), mode, actor())
+        if kind == 'changes':
+            return changes.deploy_items(db, c, changes.get_plan(c, int(ref)), mode, actor(), bool(options.get('destructive')))
+        if kind == 'tasks':
+            return tasks.deploy_items(db, c, tasks.get_task(c, int(ref)), mode, actor(), bool(options.get('run')), bool(options.get('remove')))
+        raise ValueError('kind is jobs, shares, changes or tasks')
+
+    def deploy_digest(c, kind, ref):
+        """A fingerprint of what this deploy is made from, to tell whether a dry run still describes it."""
+        try:
+            if kind == 'jobs':
+                return jobs.plan_hash(moves.get_plan(c, int(ref)))
+            if kind == 'shares':
+                return shares.design_hash(c, str(ref or ''))
+            if kind == 'changes':
+                return changes.plan_hash(changes.get_plan(c, int(ref)))
+            if kind == 'tasks':
+                return tasks.task_hash(tasks.get_task(c, int(ref)))
+        except LookupError:
+            return None
+        return None
+
     @web.post('/api/deploy/start')
     @login_required
     @password_confirmed
@@ -1119,41 +1168,85 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if mode not in ('report', 'apply'):
             raise ValueError('mode is report or apply')
         c = conn()
-        if kind == 'jobs':
-            pid = int(ref)
-            try:
-                plan = moves.get_plan(c, pid)
-            except LookupError:            # a deleted plan: deploying it empty removes its jobs from the hosts
-                plan = {'id': pid, 'name': f'deleted plan {pid}', 'steps': []}
-            if body.get('remove'):
-                plan = {**plan, 'steps': []}
-            items = jobs.deploy_items(db, c, plan, mode, alerts.get_setting(c, 'report_url'), actor(), bool(body.get('paused')))
-        elif kind == 'shares':
-            items = shares.deploy_items(db, c, str(ref or ''), mode, actor())
-        elif kind == 'changes':
-            items = changes.deploy_items(db, c, changes.get_plan(c, int(ref)), mode, actor(), bool(body.get('destructive')))
-        elif kind == 'tasks':
-            items = tasks.deploy_items(db, c, tasks.get_task(c, int(ref)), mode, actor(), bool(body.get('run')),
-                                       bool(body.get('remove')))
-        else:
-            raise ValueError('kind is jobs, shares, changes or tasks')
+        options = {k: bool(body[k]) for k in ('remove', 'paused', 'destructive', 'run') if body.get(k)}
+        items = deploy_items_for(c, kind, ref, mode, options)
         if not items:
             raise ValueError('nothing to deploy: no hosts are involved')
         missing = [it['host'] for it in items if not deploy.ready(c, it['host'])]
         if missing:
             return jsonify(error='set up deploy access first on: ' + ', '.join(sorted(set(missing))), hosts=sorted(set(missing))), 409
+        blocked = preflight.blockers(c, [it['host'] for it in items], kind)
+        if blocked:
+            return jsonify(error='; '.join(f'{b["host"]}: {b["text"]}' for b in blocked), blockers=blocked), 409
+        digest = deploy_digest(c, kind, ref)
+        report = str(body.get('report_group') or '')
+        if report and mode == 'apply':      # the dry run someone read must still describe what this applies
+            seen = engine.get(c, report) if re.fullmatch(r'[0-9a-f]{32}', report) else None
+            if seen and seen['digest'] != digest:
+                return jsonify(error='the plan changed since this dry run: run the dry run again', stale=True), 409
         who = actor()
         # every view reads the index: without a rescan, an apply that worked looks like nothing changed
-        gid = deploy.start_group(db, items, who, stop_on_failure=mode == 'apply', after=lambda h: core.enqueue(h, who))
-        core.audit(c, actor(), f'deploy.start', 'ok', None, {'kind': kind, 'ref': ref, 'mode': mode, 'group': gid})
-        return jsonify(group=gid, hosts=[it['host'] for it in items])
+        title = str(body.get('title') or f'{kind} {ref}')[:200]
+        gid = deploy.start_group(db, items, who, stop_on_failure=mode == 'apply', after=lambda h: core.enqueue(h, who), title=title,
+                                 kind=kind, ref=str(ref), mode=mode, options=options, digest=digest, report_group=report or None)
+        core.audit(c, actor(), 'deploy.start', 'ok', None, {'kind': kind, 'ref': ref, 'mode': mode, 'group': gid})
+        return jsonify(group=gid, hosts=[it['host'] for it in items], digest=digest)
+
+    @web.get('/api/deploy/groups')
+    @login_required
+    def api_deploy_groups():
+        return jsonify(groups=engine.recent(conn(), arg_num('limit', 30, 1, 200), request.args.get('host') or None))
+
+    @web.post('/api/deploy/groups/<gid>/cancel')
+    @login_required
+    def api_deploy_group_cancel(gid):
+        if not re.fullmatch(r'[0-9a-f]{32}', gid):
+            raise ValueError('bad group id')
+        res = engine.cancel(db, gid, actor(), bool(json_body().get('force')))
+        core.audit(conn(), actor(), 'deploy.cancel', 'ok', None, {'group': gid, 'force': bool(json_body().get('force'))})
+        return jsonify(res)
+
+    @web.post('/api/deploy/groups/<gid>/retry')
+    @login_required
+    @password_confirmed
+    def api_deploy_group_retry(gid):
+        if not re.fullmatch(r'[0-9a-f]{32}', gid):
+            raise ValueError('bad group id')
+        c = conn()
+        g = engine.get(c, gid)
+        if not g:
+            raise LookupError('no such deploy')
+        if engine.running(gid):
+            return jsonify(error='that deploy is still running'), 409
+        if g['kind'] not in ('jobs', 'shares', 'changes', 'tasks'):
+            raise ValueError('only plans and designs can be retried')
+        items = deploy_items_for(c, g['kind'], g['ref'], g['mode'], g['options'])
+        if g['kind'] != 'jobs':       # job keys are new on every apply, so a job's two hosts must get them together
+            left = set(engine.unfinished_hosts(c, gid))
+            items = [it for it in items if it['host'] in left]
+        if not items:
+            raise ValueError('every host of that deploy finished')
+        who = actor()
+        new = deploy.start_group(db, items, who, stop_on_failure=g['mode'] == 'apply', after=lambda h: core.enqueue(h, who),
+                                 title=g['title'], kind=g['kind'], ref=g['ref'], mode=g['mode'], options=g['options'],
+                                 digest=deploy_digest(c, g['kind'], g['ref']), retry_of=gid)
+        core.audit(c, who, 'deploy.retry', 'ok', None, {'group': new, 'retry_of': gid})
+        return jsonify(group=new, hosts=[it['host'] for it in items], kind=g['kind'], ref=g['ref'], mode=g['mode'], title=g['title'], extra=g['options'])
+
+    @web.post('/api/deploy/check')
+    @login_required
+    def api_deploy_check():
+        host = str(json_body().get('host', '')).strip()
+        keyinstall.validate(host, 'root', 22)
+        return jsonify(preflight.host_report(db, conn(), host, actor()))
 
     @web.get('/api/deploy/groups/<gid>')
     @login_required
     def api_deploy_group(gid):
         if not re.fullmatch(r'[0-9a-f]{32}', gid):
             raise ValueError('bad group id')
-        return jsonify(runs=deploy.group(conn(), gid))
+        c = conn()
+        return jsonify(runs=engine.runs(c, gid), group=engine.get(c, gid))
 
     @web.get('/api/deploy/runs')
     @login_required
@@ -1247,6 +1340,54 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if new:
             core.alerts_wake.set()
         return jsonify(ok=True, new=new)
+
+    @web.get('/api/hostconfigs')
+    @login_required
+    def api_hostconfigs():
+        host = request.args.get('host') or None
+        missing = []
+        if not host:
+            have = {v[0] for v in conn().all('SELECT DISTINCT lower(hostname) FROM host_configs')}
+            missing = [n for (n,) in conn().all('SELECT hostname FROM hosts ORDER BY lower(hostname)') if n.lower() not in have]
+        return jsonify(versions=hostconfig.versions(conn(), host), not_captured=missing, keep=hostconfig.KEEP)
+
+    @web.get('/api/hostconfigs/script')
+    @login_required
+    def api_hostconfig_script():
+        host, cid = request.args.get('host', ''), arg_num('id', 0, 0, 2**53)
+        v = hostconfig.get(conn(), cid) if cid else hostconfig.latest(conn(), host)
+        if not v:
+            return jsonify(error=f'nothing captured for {host}: scan it first'), 404
+        core.audit(conn(), actor(), 'hostconfig.script', 'ok', v['host'], {'version': v['config_id']})
+        return Response(reinstall.script(v).encode('utf-8', 'surrogateescape'), mimetype='text/x-shellscript',
+                        headers={'Content-Disposition': f'attachment; filename="reinstall-{moves.host_slug(v["host"])}.sh"'})
+
+    @web.get('/api/hostconfigs/bundle')
+    @login_required
+    def api_hostconfig_bundle():
+        host, cid = request.args.get('host') or None, arg_num('id', 0, 0, 2**53)
+        try:
+            data = hostconfig.bundle(conn(), [host] if host else None, cid or None)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        core.audit(conn(), actor(), 'hostconfig.export', 'ok', host, {'version': cid or None, 'bytes': len(data)})
+        name = f'hostconfig-{moves.host_slug(host)}.tar.gz' if host else 'hostconfigs.tar.gz'
+        return Response(data, mimetype='application/gzip', headers={'Content-Disposition': f'attachment; filename="{name}"'})
+
+    @web.get('/api/hostconfigs/<int:config_id>')
+    @login_required
+    def api_hostconfig(config_id):
+        v = hostconfig.get(conn(), config_id)
+        if not v:
+            return jsonify(error='no such version'), 404
+        body = v['body']
+        prev = conn().scalar('SELECT max(config_id) FROM host_configs WHERE hostname = :h AND config_id < :i', {'h': v['host'], 'i': config_id})
+        old = hostconfig.get(conn(), prev) if prev else None
+        return jsonify(config_id=config_id, host=v['host'], captured_at=v['captured_at'], summary=hostconfig.summary(body),
+                       mounts=body.get('mounts') or [], datasets=body.get('datasets') or [], crypt=body.get('crypt') or [],
+                       files=sorted(body.get('files') or {}), unreadable=body.get('unreadable') or [],
+                       exports=body.get('exports') or [], links=body.get('links') or [], accounts=body.get('accounts') or {},
+                       previous=prev, changes=hostconfig.diff(old['body'], body) if old else [])
 
     @web.get('/api/backups')
     @login_required

@@ -139,6 +139,10 @@ Both report commands also take `--title`, `--as-of YYYY-MM-DD`, `--kwh-price`, `
 | `serve [--listen ADDR] [--port P] [--scan-interval AGE] [--parallel N]` | the web UI and API (waitress, 8 threads) |
 | `migrate` | apply database migrations |
 | `healthcheck [--url URL]` | probe `/healthz`; used by the image's `HEALTHCHECK` |
+| `config list [HOST]` | saved host configurations: the newest of each host, or every version of one |
+| `config diff OLD NEW` | what changed between two versions |
+| `config script [HOST] [--id N] [-o FILE]` | write a host's reinstall script ([details](disaster-recovery.md#rebuild-a-host-after-reinstalling-it)) |
+| `config export [HOST] [--id N] -o FILE` | a `.tar.gz` of scripts, records and config files |
 | `backup [create] [--full] [--keep N] [--dir D]` | write a backup (essentials by default) |
 | `backup list [--dir D]` | backups on disk |
 | `restore FILE --yes` | replace the database with a backup; stop the server first |

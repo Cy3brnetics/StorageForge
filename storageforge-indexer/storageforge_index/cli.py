@@ -378,6 +378,45 @@ def cmd_backup(args) -> int:
     return 0
 
 
+def cmd_config(args) -> int:
+    from . import hostconfig, reinstall
+    db = Database(args.db)
+    conn = db.connect()
+    try:
+        if args.config_cmd == 'list':
+            for v in hostconfig.versions(conn, args.host):
+                print(f'{v["config_id"]:>6}  {dt.datetime.fromtimestamp(v["captured_at"]):%Y-%m-%d %H:%M}  {v["host"]:<24} '
+                      f'{v["mounts"]} mounts, {v["shares"]} shares, {v["users"]} users, {v["links"]} links')
+            return 0
+        if args.config_cmd == 'diff':
+            old, new = hostconfig.get(conn, args.old), hostconfig.get(conn, args.new)
+            if not old or not new:
+                raise SystemExit('no such version: see storageforge-index config list')
+            for d in hostconfig.diff(old['body'], new['body']):
+                print(f'== {d["name"]}')
+                print('\n'.join(d['lines']))
+            return 0
+        if args.config_cmd == 'export':
+            data = hostconfig.bundle(conn, [args.host] if args.host else None, args.id)
+            Path(args.output).write_bytes(data)
+            os.chmod(args.output, 0o600)
+            print(f'wrote {args.output} ({fmt_bin(len(data))})')
+            return 0
+        v = hostconfig.get(conn, args.id) if args.id else hostconfig.latest(conn, args.host)
+        if not v:
+            raise SystemExit(f'nothing captured for {args.host}: scan it first')
+        text = reinstall.script(v)
+        if args.output:
+            Path(args.output).write_text(text, errors='surrogateescape')
+            os.chmod(args.output, 0o755)
+            print(f'wrote {args.output}', file=sys.stderr)
+        else:
+            sys.stdout.write(text)
+        return 0
+    finally:
+        conn.close()
+
+
 def cmd_restore(args) -> int:
     from . import backup
     if not args.yes:
@@ -891,6 +930,22 @@ def build_parser() -> argparse.ArgumentParser:
         x.add_argument('--keep', type=int, help='then delete the oldest of that kind beyond this many')
         x.add_argument('--dir', help='backup folder (default $STORAGEFORGE_BACKUP_DIR or <data>/backups)')
     bk.set_defaults(fn=cmd_backup, backup_cmd='create')
+
+    hc = sub.add_parser('config', help='host configuration history and the reinstall script (mounts, accounts, shares, symlinks)')
+    hcs = hc.add_subparsers(dest='config_cmd', required=True)
+    hcs.add_parser('list', help='saved versions: the newest of every host, or all of one').add_argument('host', nargs='?')
+    h1 = hcs.add_parser('diff', help='what changed between two versions')
+    h1.add_argument('old', type=int)
+    h1.add_argument('new', type=int)
+    h2 = hcs.add_parser('script', help='write the reinstall script of a host')
+    h2.add_argument('host', nargs='?')
+    h2.add_argument('--id', type=int, help='an older version (see config list)')
+    h2.add_argument('-o', '--output', help='file to write (default: print it)')
+    h3 = hcs.add_parser('export', help='a .tar.gz of reinstall scripts, records and config files, to keep somewhere else')
+    h3.add_argument('host', nargs='?', help='one host (default: all)')
+    h3.add_argument('--id', type=int, help='an older version')
+    h3.add_argument('-o', '--output', required=True)
+    hc.set_defaults(fn=cmd_config)
 
     rs = sub.add_parser('restore', help='replace the database with a backup (stop the server first)')
     rs.add_argument('file')

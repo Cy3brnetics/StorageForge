@@ -154,7 +154,7 @@ The UI at `/` is a dependency-free canvas force simulation with charge, springs,
 | POST | `/api/login`, `/api/logout`; GET `/api/me` | session |
 | GET | `/api/hosts`, `/api/graph[?host=]`, `/api/canvas[?host=]` | topology |
 | GET | `/api/search?q=&host=&size_gt=&type=&under=&limit=` | file search |
-| POST | `/api/scan` `{"host": "…"}` | queue a vault-backed scan (one at a time; duplicates collapse) |
+| POST | `/api/scan` `{"host": "…"}` | queue a vault-backed scan (up to `STORAGEFORGE_SCAN_WORKERS` hosts at once; duplicates collapse) |
 | GET | `/api/planner/hosts` | scanned hosts and saved designs |
 | GET | `/api/planner/design?host=&source=saved\|scan` | a design: the saved one, or built from the latest scan plus saved intent |
 | PUT | `/api/planner/design` | save a `storageforge/v1` blueprint (2 MiB cap) and rebuild the host's graph |

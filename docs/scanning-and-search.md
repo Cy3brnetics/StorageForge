@@ -68,7 +68,7 @@ Added entries are logged only after a mount's first scan, so a first index doesn
 
 ## Scheduling
 
-The server rescans every host that has a `scan` binding when its last scan job is older than `STORAGEFORGE_SCAN_INTERVAL` (default `6h` in compose), checking every 10 minutes. A restart does not trigger a burst of scans, and a failing host is retried once per interval. A host is always queued under its indexed hostname, whether it was named by IP, alias or hostname, and duplicate requests collapse into the queued job. Scan jobs run one at a time.
+The server rescans every host that has a `scan` binding when its last scan job is older than `STORAGEFORGE_SCAN_INTERVAL` (default `6h` in compose), checking every 10 minutes. A restart does not trigger a burst of scans, and a failing host is retried once per interval. A host is always queued under its indexed hostname, whether it was named by IP, alias or hostname, and duplicate requests collapse into the queued job. Up to `STORAGEFORGE_SCAN_WORKERS` hosts (default 4) scan at once, and further jobs wait for a free worker. With SQLite they walk side by side but apply their results to the index one at a time.
 
 ## Unreadable folders and read-only access
 

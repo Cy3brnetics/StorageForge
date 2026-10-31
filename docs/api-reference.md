@@ -130,6 +130,15 @@ Each plan type has the same shape: list, create, one, check, script.
 | POST | `/api/deploy/settings/test` | | send a test alert; 10/min |
 | POST | `/api/jobs/report` | a run result; `Authorization: Bearer <job token>` | no session; 120/min |
 
+## Host configurations
+
+| Method | Path | Body | |
+| :--- | :--- | :--- | :--- |
+| GET | `/api/hostconfigs?host=` | | the newest version of each host, or every version of one |
+| GET | `/api/hostconfigs/<id>` | | one version, and what changed since the one before |
+| GET | `/api/hostconfigs/script?host=&id=` | | the reinstall script |
+| GET | `/api/hostconfigs/bundle?host=&id=` | | a `.tar.gz` of scripts, records and config files; every host without `host=` |
+
 ## Backups
 
 | Method | Path | Body | |
