@@ -13,11 +13,17 @@ When a scan runs:
 from __future__ import annotations
 
 import json
+import re
+import shlex
 import time
 import traceback
 
 from . import deploy
 from .db import Conn, Database
+
+
+TASK_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,99}')     # what moves.slug makes
+MAX_LOG = 256 << 10
 
 
 def ingest_tasks(conn: Conn, host: str, text: str) -> int:
@@ -35,9 +41,12 @@ def ingest_tasks(conn: Conn, host: str, text: str) -> int:
         if not isinstance(r, dict) or not r.get('task') or 'started' not in r:
             continue
         task = str(r['task'])[:100]
-        started = int(r['started'])
-        finished = int(r.get('finished') or started)
-        rc = int(r.get('rc', 0))
+        try:
+            started = int(r['started'])
+            finished = int(r.get('finished') or started)
+            rc = int(r.get('rc', 0))
+        except (TypeError, ValueError):      # one bad line must not stop a scan
+            continue
         # check if already recorded
         have = conn.scalar("SELECT count(*) FROM task_runs WHERE host = :h AND task = :t AND started_at = :s",
                            {'h': host, 't': task, 's': started})
@@ -144,13 +153,13 @@ def fetch_problem_logs(db: Database, conn: Conn, host: str, confirmed: list[dict
         script = ("tail -n 100 /var/log/storageforge/run.log 2>/dev/null || "
                   "journalctl -u storageforge-deploy -n 100 --no-pager 2>&1 || true")
         if nonce:
-            script = (f"grep -C 10 -F {nonce} /var/log/storageforge/run.log 2>/dev/null || "
+            script = (f"grep -C 10 -F -- {shlex.quote(nonce)} /var/log/storageforge/run.log 2>/dev/null || "
                       "tail -n 100 /var/log/storageforge/run.log 2>/dev/null || true")
 
         try:
             res = deploy.run(db, host, script, kind='log_fetch', ref=str(rid), mode='report',
                              actor='system', require_ready=True)
-            out = res.get('output', '').strip()
+            out = res.get('output', '').strip()[-MAX_LOG:]
             conn.execute("""UPDATE host_logs
                             SET state = 'fetched', output = :o, fetched_at = :t, fetch_run = :fr
                             WHERE log_key = :k""",
@@ -175,6 +184,8 @@ def fetch_problem_logs(db: Database, conn: Conn, host: str, confirmed: list[dict
                                ORDER BY t1.started_at DESC LIMIT 3""",
                             {'h': host, 'since': now - 7 * 86400})
     for task_name, s_at, rc in failed_tasks:
+        if not TASK_NAME.fullmatch(task_name):    # the name came from a file on the host, and this signs as root with no person there
+            continue
         log_key = f'task:{host}:{task_name}:{s_at}'
         existing = conn.scalar("SELECT state FROM host_logs WHERE log_key = :k", {'k': log_key})
         if existing in ('fetched', 'failed'):
@@ -183,11 +194,11 @@ def fetch_problem_logs(db: Database, conn: Conn, host: str, confirmed: list[dict
             conn.execute("""INSERT INTO host_logs (log_key, host, kind, ref, reason, state, found_at)
                             VALUES (:k, :h, 'task', :r, :re, 'pending', :t)""",
                          {'k': log_key, 'h': host, 'r': task_name, 're': f'task {task_name} failed with exit {rc}', 't': now})
-        script = f"journalctl -u sf-task-{task_name} -n 100 --no-pager 2>&1 || cat /var/log/messages 2>/dev/null || true"
+        script = f"journalctl -u {shlex.quote('sf-task-' + task_name)} -n 100 --no-pager 2>&1 || true"
         try:
             res = deploy.run(db, host, script, kind='log_fetch', ref=task_name, mode='report',
                              actor='system', require_ready=True)
-            out = res.get('output', '').strip()
+            out = res.get('output', '').strip()[-MAX_LOG:]
             conn.execute("""UPDATE host_logs
                             SET state = 'fetched', output = :o, fetched_at = :t, fetch_run = :fr
                             WHERE log_key = :k""",

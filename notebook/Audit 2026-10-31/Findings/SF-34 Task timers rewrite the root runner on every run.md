@@ -1,6 +1,6 @@
 ---
 id: SF-34
-status: open
+status: done
 severity: medium
 effort: M
 area: Deploy
@@ -26,4 +26,7 @@ An old task quietly rolls the security-critical runner back to its older version
 Strip the header when installing a task (`RUNNER_UPDATE` belongs to the deploy, not the task). Refuse to install a runner older than the current one by adding a version line and comparing it. Keep the new `[ -s ]` guard.
 
 ## Done when
-- [ ] A timer run never writes to the runner path, with a test
+- [x] A timer run never writes to the runner path, with a test
+
+## Fixed
+2026-10-31. The header skips the update when `$0` is under `/usr/local/lib/storageforge/`. **Tasks already installed keep the old header until redeployed.** No version check against an older runner was added. Test: `test_an_installed_copy_leaves_the_runner_alone`.

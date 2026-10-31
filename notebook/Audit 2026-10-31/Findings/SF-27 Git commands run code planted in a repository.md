@@ -1,6 +1,6 @@
 ---
 id: SF-27
-status: open
+status: done
 severity: high
 effort: M
 area: Git
@@ -27,5 +27,8 @@ Any local user on a scanned host can create a repository and get code run as the
 Pass neutralising options on every call: `-c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.sshCommand= -c protocol.ext.allow=never -c diff.external= -c core.pager=cat`. `core.fsmonitor=false` stopped the proof when tried by hand; the other options were not tried. Better still, read what can be read without running Git in the repository (`HEAD`, refs, config parsed as text). Drop `safe.directory='*'` for repositories not owned by the scan user, or report them as not inspected. Check `path` against `git_repos` for that host.
 
 ## Done when
-- [ ] The fsmonitor proof no longer fires, for survey, status, history and commit
-- [ ] An unknown path is refused
+- [x] The fsmonitor proof no longer fires, for survey, status, history and commit
+- [x] An unknown path is refused
+
+## Fixed
+2026-10-31. Git runs with `core.fsmonitor`, `core.hooksPath`, `log.showSignature`, `core.pager` and `protocol.ext` overridden. Clean filters can't be named in advance, so `git status` now runs only in repositories the scan account owns; others keep their commit data and show **Not checked**, which is a visible loss. Routes refuse paths no scan found, and `core.fsmonitor=false` was confirmed by the proof. Two users on a real host were simulated by overriding the ownership check, not run. Tests: `test_a_repository_cannot_run_code_during_status`, `test_a_repository_cannot_run_code_during_a_scan`, `test_an_owned_repository_is_still_read_without_its_monitor`, `test_only_found_repositories_are_touched`.

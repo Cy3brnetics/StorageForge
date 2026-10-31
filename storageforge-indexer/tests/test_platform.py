@@ -1194,12 +1194,12 @@ class ServerTests(DBCase):
         from storageforge_index import gitrepos
         self.login()
         # Missing args
-        self.assertEqual(self.client.get('/api/git/status').status_code, 400)
+        self.assertEqual(self.client.post('/api/git/status', json={}).status_code, 400)
         self.assertEqual(self.client.post('/api/git/sync', json={}).status_code, 400)
         self.assertEqual(self.client.post('/api/git/sync', json={'host': 'nas', 'path': '/srv/repo', 'action': 'invalid'}).status_code, 400)
-        self.assertEqual(self.client.get('/api/git/history').status_code, 400)
-        self.assertEqual(self.client.get('/api/git/commit').status_code, 400)
-        self.assertEqual(self.client.get('/api/git/commit?host=nas&path=/x&sha=invalid!!').status_code, 400)
+        self.assertEqual(self.client.post('/api/git/history', json={}).status_code, 400)
+        self.assertEqual(self.client.post('/api/git/commit', json={}).status_code, 400)
+        self.assertEqual(self.client.post('/api/git/commit', json={'host': 'nas', 'path': '/x', 'sha': 'invalid!!'}).status_code, 400)
 
         # Survey all hosts
         r = self.client.post('/api/git/survey', json={})
@@ -1236,6 +1236,12 @@ class ServerTests(DBCase):
             subprocess.run(['git', '-C', tmp_repo, 'tag', 'v1.0.0', '-m', 'Release 1.0.0'], check=True)
             subprocess.run(['git', '-C', tmp_repo, 'commit', '--allow-empty', '-m', 'feat: cool feature'], check=True)
 
+            def found_by_a_scan(path):   # the routes take only repositories a scan found
+                self.conn.execute('INSERT INTO git_repos (host_id, path, remotes_json, scan_id) VALUES (:h, :p, :r, 0)',
+                                  {'h': self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'local'"), 'p': path.rstrip('/'), 'r': '[]'})
+            self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json) VALUES ('local', 'local', 'scan', '{}')")
+            found_by_a_scan(tmp_repo)
+
             # API Status check
             res = self.client.post('/api/git/status', json={'host': 'local', 'path': tmp_repo})
             self.assertEqual(res.status_code, 200)
@@ -1245,7 +1251,7 @@ class ServerTests(DBCase):
             self.assertEqual(st_data['dirty'], 0)
 
             # API History check
-            h_res = self.client.get(f'/api/git/history?host=local&path={tmp_repo}&max=10')
+            h_res = self.client.post('/api/git/history', json={'host': 'local', 'path': tmp_repo, 'max': 10})
             self.assertEqual(h_res.status_code, 200)
             h_data = h_res.json
             self.assertEqual(len(h_data['commits']), 2)
@@ -1253,7 +1259,7 @@ class ServerTests(DBCase):
             self.assertEqual(h_data['tags'][0]['name'], 'v1.0.0')
 
             # API Commit check
-            c_res = self.client.get(f'/api/git/commit?host=local&path={tmp_repo}&sha={h_data["commits"][0]["hash"]}')
+            c_res = self.client.post('/api/git/commit', json={'host': 'local', 'path': tmp_repo, 'sha': h_data['commits'][0]['hash']})
             self.assertEqual(c_res.status_code, 200)
             self.assertIn('feat: cool feature', c_res.json['output'])
 
@@ -1262,6 +1268,8 @@ class ServerTests(DBCase):
             empty_git = tempfile.mkdtemp()
             try:
                 subprocess.run(['git', 'init', empty_git], check=True, capture_output=True)
+                found_by_a_scan(non_git)
+                found_by_a_scan(empty_git)
 
                 # Non-git directory status & history
                 ng_status = self.client.post('/api/git/status', json={'host': 'local', 'path': non_git})
@@ -1269,7 +1277,7 @@ class ServerTests(DBCase):
                 self.assertEqual(ng_status.json['error'], 'not a git repository')
                 self.assertEqual(ng_status.json['state'], 'error')
 
-                ng_hist = self.client.get(f'/api/git/history?host=local&path={non_git}')
+                ng_hist = self.client.post('/api/git/history', json={'host': 'local', 'path': non_git})
                 self.assertEqual(ng_hist.status_code, 200)
                 self.assertEqual(ng_hist.json['error'], 'not a git repository')
 
@@ -1279,7 +1287,7 @@ class ServerTests(DBCase):
                 self.assertIsNone(eg_status.json['head_commit'])
                 self.assertIsNone(eg_status.json['error'])
 
-                eg_hist = self.client.get(f'/api/git/history?host=local&path={empty_git}')
+                eg_hist = self.client.post('/api/git/history', json={'host': 'local', 'path': empty_git})
                 self.assertEqual(eg_hist.status_code, 200)
                 self.assertEqual(eg_hist.json['commits'], [])
 

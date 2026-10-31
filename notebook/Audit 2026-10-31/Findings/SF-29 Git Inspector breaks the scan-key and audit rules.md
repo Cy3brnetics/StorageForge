@@ -1,6 +1,6 @@
 ---
 id: SF-29
-status: open
+status: done
 severity: medium
 effort: M
 area: Git
@@ -32,5 +32,8 @@ Concepts rule 14, "everything is audited", and rule 13 are not true for this fea
 Make `git.sync` a signed deploy run, which brings password, audit, run history and the correct binding. Make `status` POST only. Audit all four, and let an audit failure fail the action. Clamp `max` to 1-200 and rate limit by account.
 
 ## Done when
-- [ ] No Git command that changes a host uses a `scan` binding
-- [ ] Every Git route writes one audit row
+- [x] No Git command that changes a host uses a `scan` binding
+- [x] Every Git route writes one audit row
+
+## Fixed
+2026-10-31. Sync is a signed run as the owner of the repository's config, with hooks off. All actions need a fresh password. Status, history and commit are POST only, limited to 60 a minute per account, with `max` clamped to 1-200 and one audit row per call. Sync now **needs deploy access**, and hosts without `runuser` refuse a repository owned by someone else. The scan-to-deploy binding fallback is gone. Tests: `test_git_routes_follow_the_rules`, `test_sync_runs_no_hooks`.

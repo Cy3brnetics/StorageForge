@@ -5,6 +5,10 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Security
+- A Git repository can no longer run code as the scan account through its own config. Git runs with those settings off, and `git status` runs only in repositories the scan account owns; others show **Not checked**. Git routes take only repositories a scan found.
+- **Git sync needs deploy access.** Sync is now a signed run, as the repository's owner, with hooks off and a fresh password for every action. Git status, history and commit are POST only, rate limited and audited.
+- The log fetch after a failed task refuses odd task names and no longer copies all of `/var/log/messages`.
+- A task's timer no longer rewrites the deploy runner. **Redeploy existing tasks**: copies already installed keep doing it until then.
 - Schedules holding arbitrary commands need a new high-risk permission, `schedules.command`: only `admin` has it by default, so operators who use them need a custom role. Env variables that change what runs (`PATH`, `LD_*`, `BASH_ENV` and others) are refused.
 - Downloading a schedule's install script no longer rotates its token: the file carries none, and that host reports through scans. A failed deploy no longer ends the old token. Reports never go to an address taken from a request's Host header: set a report URL, or runs arrive with the next scan.
 - Bad or slow verify patterns can no longer lose a report or hold a web thread, and repeated report nonces are ignored.
@@ -15,6 +19,9 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 - Git routes no longer run on the server when given `host=localhost`. Loopback names need a key bound to them, like any host.
 - Accounts that can't edit schedules no longer see their commands or env values. Run output needs `logs.view`. Alert addresses in `/api/deploy` need `settings.manage`.
 - `viewer` can no longer download a schedule's install script (which also minted a report token), its cron line or a host configuration bundle. These now need `plans.scripts`.
+
+### Fixed
+- **The backup copy to another host** now goes through the signed runner. As written it could not get past the deploy key's forced command.
 
 ### Changed
 - **Schedules:** pausing and resuming now update the host, and alerts keep watching until it has. Reports up to 512 KiB are accepted (they were refused above 4 KiB). Drift and dry-run checks notice a change to the plan a schedule runs, so **every deployed schedule shows as changed once after this update: redeploy it.** `nice`, `ionice`, jitter, timezone, window and `user` now take effect; `catchup` and the `scan` task type are gone. A plan or task made for another host can't be scheduled on this one. Cron now wakes the runner every minute and the runner decides.

@@ -1,6 +1,6 @@
 ---
 id: PF-25
-status: open
+status: in-progress
 severity: high
 effort: S
 area: Backups
@@ -28,3 +28,6 @@ Run the receive step as a signed script with the file as `data` on stdin (`deplo
 
 ## Done when
 - [ ] Lab test: nightly backup arrives on a real deploy host and restores
+
+## Fixed
+2026-10-31. The copy is a signed run with the file on stdin. Tested with the script run locally and a mocked `deploy.run`; **the lab test in Done when has not been run, so that box is open.** Test: `test_a_backup_copy_is_a_signed_run`.

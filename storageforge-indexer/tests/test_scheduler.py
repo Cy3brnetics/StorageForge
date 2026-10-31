@@ -479,8 +479,8 @@ if __name__ == '__main__':
     unittest.main()
 
 
-class SchedulerSafetyTests(SchedulerBaseTest):
-    """From the 2026-10-31 audit: SF-23, SF-25, SF-26, PF-19, SF-28 and SF-30."""
+class SafetyCase(SchedulerBaseTest):
+    """A server with an admin, an operator and a viewer signed in."""
     PW = 'a long enough password'
 
     def setUp(self):
@@ -511,6 +511,10 @@ class SchedulerSafetyTests(SchedulerBaseTest):
     def mark_deployed(self, sid, host='nas'):
         from storageforge_index import deploy
         deploy.mark_deployed(self.conn, host, 'schedules', str(sid), 'h', {}, 'test')
+
+
+class SchedulerSafetyTests(SafetyCase):
+    """From the 2026-10-31 audit: SF-23, SF-25, SF-26, PF-19, SF-28 and SF-30."""
 
     def test_a_schedule_never_runs_on_the_server(self):      # SF-23
         marker = Path(self.tmp) / 'RAN'
@@ -596,9 +600,9 @@ class SchedulerSafetyTests(SchedulerBaseTest):
         subprocess.run(['git', '-C', str(repo), 'config', 'core.fsmonitor', str(hook)], check=True)
         for name in ('local', 'localhost', 'LOCALHOST', '127.0.0.1', '::1'):
             q = {'host': name, 'path': str(repo)}
-            self.assertEqual(self.op.get('/api/git/status', query_string=q).status_code, 404, name)
-            self.assertEqual(self.op.get('/api/git/history', query_string=q).status_code, 404, name)
-            self.assertEqual(self.op.get('/api/git/commit', query_string={**q, 'sha': 'abcd'}).status_code, 404, name)
+            self.assertEqual(self.op.post('/api/git/status', json=q).status_code, 404, name)
+            self.assertEqual(self.op.post('/api/git/history', json=q).status_code, 404, name)
+            self.assertEqual(self.op.post('/api/git/commit', json={**q, 'sha': 'abcd'}).status_code, 404, name)
             self.assertEqual(self.op.post('/api/git/sync', json={**q, 'action': 'fetch'}).status_code, 404, name)
         self.assertFalse(marker.exists())
 
@@ -795,3 +799,181 @@ class SchedulerSafetyTests(SchedulerBaseTest):
         self.boss.put(f'/api/tasks/{task}', json={'name': 'elsewhere', 'host': 'nas', 'blocks': []})   # moved after it was scheduled
         with self.assertRaises(ValueError):
             scheduler.deploy_items(self.db, self.conn, scheduler.get_schedule(self.conn, ok), 'apply', None, 'boss')
+
+
+class HostSideSafetyTests(SafetyCase):
+    """From the 2026-10-31 audit: SF-27, SF-29, SF-33, SF-34 and PF-25."""
+
+    def planted(self):
+        """A repository whose own config and attributes name programs, and a marker each one touches."""
+        repo = Path(tempfile.mkdtemp(dir=self.tmp)) / 'repo'
+        self.mark = repo.parent / 'RAN'
+        hook = repo.parent / 'hook.sh'
+        hook.write_text(f'#!/bin/sh\ntouch {self.mark}\ncat\n')
+        hook.chmod(0o755)
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        for key, val in (('user.email', 't@t'), ('user.name', 'T')):
+            subprocess.run(['git', '-C', str(repo), 'config', key, val], check=True)
+        (repo / 'f.txt').write_text('one\n')
+        subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(repo), 'commit', '-qm', 'first'], check=True)
+        for key, val in (('core.fsmonitor', str(hook)), ('core.hooksPath', str(repo.parent)), ('gpg.program', str(hook)),
+                         ('log.showSignature', 'true'), ('core.pager', str(hook)), ('filter.evil.clean', str(hook))):
+            subprocess.run(['git', '-C', str(repo), 'config', key, val], check=True)
+        (repo / '.gitattributes').write_text('*.txt filter=evil\n')
+        (repo / 'f.txt').write_text('two\n')
+        return repo
+
+    def bash(self, script, *args, stdin=None):
+        return subprocess.run(['bash', '-c', script, *args], capture_output=True, text=True, input=stdin or '', timeout=60)
+
+    def foreign(self, script):
+        from storageforge_index import gitrepos
+        self.assertIn(gitrepos.OWNED, script)
+        return script.replace(gitrepos.OWNED, 'owned() { false; }')
+
+    def test_a_repository_cannot_run_code_during_status(self):      # SF-27
+        from storageforge_index import gitrepos
+        repo = self.planted()
+        r = self.bash(f'R={repo}\n' + self.foreign(gitrepos._STATUS_BASH))
+        self.assertFalse(self.mark.exists(), r.stdout)
+        self.assertIn('foreign\t1', r.stdout)
+        self.assertNotIn('@@porcelain', r.stdout)
+        self.assertIn('first', r.stdout)                  # what needs no worktree still reads
+        r = self.bash(f'R={repo}\n' + gitrepos._HISTORY_BASH.replace('$MAX', '5'))
+        self.assertFalse(self.mark.exists(), r.stdout)
+        self.assertIn('first', r.stdout)
+
+    def test_a_repository_cannot_run_code_during_a_scan(self):      # SF-27
+        from storageforge_index import gitrepos
+        repo = self.planted()
+        r = subprocess.run(['bash', '-c', self.foreign(gitrepos._SURVEY_BASH)], input=f'{repo}\0', capture_output=True, text=True, timeout=60)
+        self.assertIn(f'@@repo\t{repo}', r.stdout)
+        self.assertNotIn('dirty', r.stdout)
+        self.assertFalse(self.mark.exists(), r.stdout)
+
+    def test_an_owned_repository_is_still_read_without_its_monitor(self):   # SF-27
+        from storageforge_index import gitrepos
+        repo = self.planted()
+        subprocess.run(['git', '-C', str(repo), 'config', '--unset', 'filter.evil.clean'], check=True)
+        r = self.bash(f'R={repo}\n' + gitrepos._STATUS_BASH)
+        self.assertIn('@@porcelain', r.stdout)
+        self.assertIn('f.txt', r.stdout)
+        self.assertFalse(self.mark.exists(), r.stdout)
+
+    def seed_repo(self, path='/srv/repo'):
+        hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'nas'")
+        self.conn.execute('INSERT INTO git_repos (host_id, path, remotes_json, scan_id) VALUES (:h, :p, :r, 0)', {'h': hid, 'p': path, 'r': '[]'})
+
+    def test_only_found_repositories_are_touched(self):      # SF-27
+        for route, extra in (('status', {}), ('history', {}), ('commit', {'sha': 'abcd'}), ('sync', {'action': 'fetch'})):
+            r = self.boss.post(f'/api/git/{route}', json={'host': 'nas', 'path': '/etc', **extra})
+            self.assertEqual((route, r.status_code), (route, 404))
+
+    def test_git_routes_follow_the_rules(self):              # SF-29
+        from unittest import mock
+        from storageforge_index import deploy, gitrepos
+        self.seed_repo()
+        for route in ('status', 'history', 'commit'):        # POST only
+            self.assertEqual(self.boss.get(f'/api/git/{route}', query_string={'host': 'nas', 'path': '/srv/repo'}).status_code, 405)
+        body = {'host': 'nas', 'path': '/srv/repo'}
+        self.assertEqual(self.boss.post('/api/git/sync', json={**body, 'action': 'fetch'}).status_code, 409)     # no deploy access
+        with mock.patch.object(deploy, 'ready', return_value=True), mock.patch.object(gitrepos, 'repo_status', side_effect=RuntimeError), \
+                mock.patch.object(deploy, 'run', return_value={'status': 'ok', 'output': 'Done.'}) as run:
+            r = self.boss.post('/api/git/sync', json={**body, 'action': 'pull'})
+        self.assertEqual((r.status_code, r.get_json()['ok']), (200, True))
+        self.assertEqual(run.call_args.kwargs['kind'], 'git_sync')
+        self.assertIn('ACT=pull', run.call_args.args[2])
+        with mock.patch.object(gitrepos, 'repo_status', return_value={'ok': True}):
+            self.boss.post('/api/git/status', json=body)
+        with mock.patch.object(gitrepos, 'repo_history', return_value={}) as hist:
+            self.boss.post('/api/git/history', json={**body, 'max': -1})
+            self.assertEqual(hist.call_args.args[3], 1)
+            self.boss.post('/api/git/history', json={**body, 'max': 100000})
+            self.assertEqual(hist.call_args.args[3], 200)
+        seen = [r[0] for r in self.conn.all("SELECT action FROM audit_log WHERE action LIKE 'git.%'")]
+        self.assertGreaterEqual(seen.count('git.sync'), 2)
+        self.assertIn('git.status', seen)
+        self.assertIn('git.history', seen)
+        self.stale(self.boss)
+        for action in ('fetch', 'pull', 'sync', 'push'):
+            r = self.boss.post('/api/git/sync', json={**body, 'action': action})
+            self.assertEqual((action, r.status_code, r.get_json().get('reauth')), (action, 403, True))
+
+    def test_sync_runs_no_hooks(self):                       # SF-29
+        from storageforge_index import gitrepos
+        repo = self.planted()
+        fired = repo.parent / 'HOOK-FIRED'
+        (repo / '.git' / 'hooks' / 'post-merge').write_text(f'#!/bin/sh\ntouch {fired}\n')
+        (repo / '.git' / 'hooks' / 'post-merge').chmod(0o755)
+        for key in ('core.hooksPath', 'filter.evil.clean', 'core.fsmonitor'):
+            subprocess.run(['git', '-C', str(repo), 'config', '--unset', key], check=True)
+        (repo / '.gitattributes').unlink()
+        subprocess.run(['git', '-C', str(repo), 'checkout', '-q', '.'], check=True)
+        up = repo.parent / 'up.git'
+        subprocess.run(['git', 'clone', '-q', '--bare', str(repo), str(up)], check=True)
+        subprocess.run(['git', '-C', str(repo), 'remote', 'add', 'origin', str(up)], check=True)
+        subprocess.run(['git', '-C', str(repo), 'fetch', '-q', 'origin'], check=True)
+        branch = subprocess.run(['git', '-C', str(repo), 'symbolic-ref', '--short', 'HEAD'], capture_output=True, text=True).stdout.strip()
+        subprocess.run(['git', '-C', str(repo), 'branch', '-q', f'--set-upstream-to=origin/{branch}'], check=True)
+        other = repo.parent / 'other'
+        subprocess.run(['git', 'clone', '-q', str(up), str(other)], check=True)
+        subprocess.run(['git', '-C', str(other), '-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'second'], check=True)
+        subprocess.run(['git', '-C', str(other), 'push', '-q'], check=True)
+        r = self.bash(f'R={repo}\nACT=pull\n' + gitrepos._SYNC_BASH)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('second', subprocess.run(['git', '-C', str(repo), 'log', '-1', '--format=%s'], capture_output=True, text=True).stdout)
+        self.assertFalse(fired.exists())
+        self.assertNotEqual(self.bash(f'R={repo.parent}\nACT=pull\n' + gitrepos._SYNC_BASH).returncode, 0)
+
+    def test_the_log_fetch_keeps_host_text_as_data(self):    # SF-33
+        from unittest import mock
+        from storageforge_index import confirm, deploy
+        now = int(time.time())
+        lines = [json.dumps({'task': 'nightly', 'started': now, 'rc': 1}),
+                 json.dumps({'task': 'x; touch /tmp/CANARY', 'started': now, 'rc': 1}),
+                 json.dumps({'task': 'bad-time', 'started': 'soon', 'rc': 1})]
+        self.assertEqual(confirm.ingest_tasks(self.conn, 'nas', '\n'.join(lines)), 2)   # the bad line is skipped, nothing raises
+        long = 'x' * (confirm.MAX_LOG + 100)
+        with mock.patch.object(deploy, 'ready', return_value=True), \
+                mock.patch.object(deploy, 'run', return_value={'output': long, 'run_id': None}) as run:
+            confirm.fetch_problem_logs(self.db, self.conn, 'nas', [])
+        scripts = [c.args[2] for c in run.call_args_list]
+        self.assertEqual(len(scripts), 1)
+        self.assertIn('sf-task-nightly', scripts[0])
+        self.assertNotIn('messages', scripts[0])
+        self.assertEqual(len(self.conn.scalar('SELECT output FROM host_logs')), confirm.MAX_LOG)
+
+    def test_an_installed_copy_leaves_the_runner_alone(self):       # SF-34
+        from storageforge_index import deploy
+        runner = Path(self.tmp) / 'storageforge-run'
+        runner.write_text('newer runner\n')
+        script = deploy.RUNNER_UPDATE.replace('((EUID == 0))', 'true').replace('-o root -g root ', '').replace(deploy.RUNNER, str(runner))
+        r = self.bash(script, '/usr/local/lib/storageforge/tasks/nightly.sh')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(runner.read_text(), 'newer runner\n')
+        self.bash(script, '/run/sf-run.abc/script')          # a deploy still brings it up to date
+        self.assertEqual(runner.read_text(), deploy.RUNNER_SCRIPT)
+
+    def test_a_backup_copy_is_a_signed_run(self):            # PF-25
+        from unittest import mock
+        from storageforge_index import backup, deploy
+        src = Path(self.tmp) / 'storageforge-essentials-1.db'
+        src.write_bytes(b'backup bytes' * 10000)
+        dst = Path(self.tmp) / "off box's"
+        dst.mkdir()
+        (dst / 'notes.txt').write_text('mine')
+        got = {}
+
+        def run(db, host, script, *a, **kw):
+            got.update(host=host, kw=kw)
+            done = subprocess.run(['bash', '-c', script], input=b''.join(kw['data']), capture_output=True, timeout=30)
+            return {'status': 'ok' if done.returncode == 0 else 'failed', 'output': done.stderr.decode()}
+        target = {'host': 'backup-box', 'path': str(dst)}
+        with mock.patch.object(deploy, 'run', run):
+            backup.copy_off(self.db, self.conn, str(src), target, 2)
+        self.assertEqual((got['host'], got['kw']['kind']), ('backup-box', 'backup_copy'))
+        self.assertEqual((dst / src.name).read_bytes(), src.read_bytes())
+        self.assertEqual((dst / 'notes.txt').read_text(), 'mine')
+        with mock.patch.object(deploy, 'run', return_value={'status': 'refused', 'output': 'signature'}), self.assertRaises(RuntimeError):
+            backup.copy_off(self.db, self.conn, str(src), target, 2)

@@ -175,6 +175,7 @@ LOGIN_LIMIT_PER_IP = '10 per minute; 50 per hour'
 LOGIN_LIMIT_PER_USER = '5 per minute; 20 per hour'     # per account and client network (/24, /64)
 LOGIN_LIMIT_PER_ACCOUNT = '100 per day'                # per account from anywhere: the backstop for spread-out guessing
 INSTALL_LIMIT = '10 per minute'     # each attempt is one password try on the target
+GIT_LIMIT = '60 per minute'         # each call unlocks the vault and opens SSH
 # Routes that run commands on hosts want the account password typed again within this many seconds.
 REAUTH_WINDOW = 300
 KEY_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}')
@@ -1330,80 +1331,66 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         except Exception as exc:
             return jsonify(error=str(exc)), 502
 
-    @web.route('/api/git/status', methods=['GET', 'POST'])
-    @login_required
-    def api_git_status():
-        body = (request.get_json(silent=True) or {}) if request.method == 'POST' and request.is_json else {}
-        host = body.get('host') or request.args.get('host')
-        path = body.get('path') or request.args.get('path')
-        if not host or not path:
-            return jsonify(error='host and path are required'), 400
+    def git_args(*names) -> list[str]:
+        """From a JSON body: these run commands on hosts, so no GET can start one."""
+        body = json_body()
+        vals = [str(body.get(n) or '') for n in names]
+        if not all(vals):
+            raise ValueError(' and '.join(names) + ' are required')
+        return vals
+
+    def git_call(what: str, host: str, path: str, work, **detail):
+        """Every Git route: one audit row whatever happened, and an audit that fails stops the answer."""
         try:
-            return jsonify(gitrepos.repo_status(db, host, path, actor()))
+            res = work()
+            outcome, code = ('ok' if res.get('ok', True) else 'failed'), 200
+        except deploy.DeployError as exc:
+            res, outcome, code = {'error': str(exc)}, 'failed', 409
+        except ValueError as exc:
+            res, outcome, code = {'error': str(exc)}, 'failed', 400
         except LookupError as exc:
-            return jsonify(error=str(exc)), 404
+            res, outcome, code = {'error': str(exc)}, 'denied', 404
         except Exception as exc:
-            return jsonify(error=str(exc)), 502
+            res, outcome, code = {'error': str(exc)}, 'failed', 502
+        core.audit(conn(), actor(), what, outcome, host, {'path': path[:500], **detail})
+        return jsonify(res), code
+
+    def git_limit():
+        return f'git:{current_user.get_id()}'
+
+    @web.post('/api/git/status')
+    @login_required
+    @limiter.limit(GIT_LIMIT, key_func=git_limit)
+    def api_git_status():
+        host, path = git_args('host', 'path')
+        return git_call('git.status', host, path, lambda: gitrepos.repo_status(db, host, path, actor()))
 
     @web.post('/api/git/sync')
     @login_required
+    @password_confirmed
+    @limiter.limit(GIT_LIMIT, key_func=git_limit)
     def api_git_sync():
-        try:
-            body = json_body()
-        except ValueError as exc:
-            return jsonify(error=str(exc)), 400
-        host = body.get('host')
-        path = body.get('path')
-        action = body.get('action') or 'sync'
-        if not host or not path:
-            return jsonify(error='host and path are required'), 400
-        if action == 'push':
-            stale = password_stale()
-            if stale:
-                return stale
-        try:
-            return jsonify(gitrepos.repo_sync(db, host, path, action, actor()))
-        except ValueError as exc:
-            return jsonify(error=str(exc)), 400
-        except LookupError as exc:
-            return jsonify(error=str(exc)), 404
-        except Exception as exc:
-            return jsonify(error=str(exc)), 502
+        host, path = git_args('host', 'path')
+        action = str(json_body().get('action') or 'sync')
+        return git_call('git.sync', host, path, lambda: gitrepos.repo_sync(db, host, path, action, actor()), action=action[:20])
 
-    @web.get('/api/git/history')
+    @web.post('/api/git/history')
     @login_required
+    @limiter.limit(GIT_LIMIT, key_func=git_limit)
     def api_git_history():
-        host = request.args.get('host')
-        path = request.args.get('path')
-        if not host or not path:
-            return jsonify(error='host and path are required'), 400
+        host, path = git_args('host', 'path')
         try:
-            max_c = min(int(request.args.get('max', 50)), 200)
-        except ValueError:
-            max_c = 50
-        try:
-            return jsonify(gitrepos.repo_history(db, host, path, max_c))
-        except LookupError as exc:
-            return jsonify(error=str(exc)), 404
-        except Exception as exc:
-            return jsonify(error=str(exc)), 502
+            most = max(1, min(int(json_body().get('max') or 50), 200))
+        except (TypeError, ValueError):
+            most = 50
+        return git_call('git.history', host, path, lambda: gitrepos.repo_history(db, host, path, most))
 
-    @web.get('/api/git/commit')
+    @web.post('/api/git/commit')
     @login_required
+    @limiter.limit(GIT_LIMIT, key_func=git_limit)
     def api_git_commit():
-        host = request.args.get('host')
-        path = request.args.get('path')
-        sha = request.args.get('sha')
-        if not host or not path or not sha:
-            return jsonify(error='host, path and sha are required'), 400
-        try:
-            return jsonify(gitrepos.repo_commit(db, host, path, sha))
-        except ValueError as exc:
-            return jsonify(error=str(exc)), 400
-        except LookupError as exc:
-            return jsonify(error=str(exc)), 404
-        except Exception as exc:
-            return jsonify(error=str(exc)), 502
+        host, path, sha = git_args('host', 'path', 'sha')
+        return git_call('git.commit', host, path, lambda: gitrepos.repo_commit(db, host, path, sha), sha=sha[:64])
 
     @web.get('/api/shares/check')
     @login_required

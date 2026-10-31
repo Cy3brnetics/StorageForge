@@ -48,9 +48,16 @@ def save_ignore(conn: Conn, host: str, paths: list[str], actor: str):
         cur.pop(key, None)
     set_setting(conn, 'git.ignore', cur, actor)
 
+# What a repository's own config can make git run. Other repositories on a host belong to other people, and git would run
+# their programs as the scan account. These cover what the read commands below can reach; a worktree's clean filters can't be
+# named in advance, so `git status` runs only in a repository this account owns (repo_owned).
+SAFE_GIT = "-c safe.directory='*' -c core.fsmonitor=false -c core.hooksPath=/dev/null -c log.showSignature=false -c core.pager=cat -c protocol.ext.allow=never"
+OWNED = 'owned() { [ -O "$1" ]; }'
+
 _SURVEY_BASH = r"""
+@OWNED@
 while IFS= read -r -d '' r; do
-  g() { timeout 20 git -c safe.directory='*' -C "$r" "$@" 2>/dev/null; }
+  g() { timeout 20 git @SAFE@ -C "$r" "$@" 2>/dev/null; }
   printf '@@repo\t%s\n' "$r"
   bare=$(g rev-parse --is-bare-repository) || { printf 'error\tnot readable as a git repository\n'; continue; }
   printf 'bare\t%s\n' "$bare"
@@ -60,12 +67,12 @@ while IFS= read -r -d '' r; do
   printf 'refs\t%s\n' "$(g for-each-ref --format=x refs/heads refs/tags | wc -l)"
   g remote -v | awk '$3 == "(fetch)" { print "remote\t" $1 "\t" $2 }'
   if [ "$bare" = false ]; then
-    printf 'dirty\t%s\n' "$(g status --porcelain --untracked-files=no | wc -l)"
+    if owned "$r" && owned "$(g rev-parse --absolute-git-dir)/config"; then printf 'dirty\t%s\n' "$(g status --porcelain --untracked-files=no | wc -l)"; fi
     up=$(g rev-parse --abbrev-ref --symbolic-full-name '@{u}') && printf 'upstream\t%s\t%s\n' "$up" "$(g rev-list --left-right --count '@{u}...HEAD')"
   fi
   printf 'size\t%s\n' "$(timeout 20 du -sk "$(g rev-parse --absolute-git-dir)" 2>/dev/null | cut -f1)"
 done
-"""
+""".replace('@SAFE@', SAFE_GIT).replace('@OWNED@', OWNED)
 # read -d is bash: a login shell or sh that is dash would stop at it and report no repositories at all
 SURVEY = ("command -v git >/dev/null 2>&1 || { echo '@@nogit'; exit 0; }\n"
           f'exec bash -c {shlex.quote(_SURVEY_BASH)}\n')
@@ -228,19 +235,10 @@ def open_host_transport(db, conn: Conn, host_name: str, action: str = 'scan'):
         raise LookupError(f'{host_name} is not an enrolled host')
 
     from .runner import connect_address, ephemeral_agent, known_hosts_path
-    from .vault import Vault, NoBinding
+    from .vault import Vault
     addr = connect_address(conn, host_name)
     with Vault(db, conn).unlock() as vault:
-        try:
-            b = vault.resolve(addr, action)
-        except NoBinding:
-            if action != 'deploy':
-                try:
-                    b = vault.resolve(addr, 'deploy')
-                except NoBinding:
-                    raise NoBinding(f'no key bound for {host_name} (scan or deploy)') from None
-            else:
-                raise
+        b = vault.resolve(addr, action)
         with ephemeral_agent(vault.decrypt_key(b.key_id)) as sock:
             t = Transport(host=addr, user=b.user, port=b.port, agent_sock=sock,
                           known_hosts=str(known_hosts_path()), isolated=True)
@@ -248,6 +246,13 @@ def open_host_transport(db, conn: Conn, host_name: str, action: str = 'scan'):
                 yield t
             finally:
                 t.close()
+
+
+def _known_repo(conn: Conn, host: str, path: str):
+    """Only repositories a scan found: these routes run git, and a path from a request could be anything."""
+    if not conn.scalar("""SELECT 1 FROM git_repos g JOIN hosts h ON h.host_id = g.host_id
+                          WHERE lower(h.hostname) = lower(:h) AND g.path = :p""", {'h': host, 'p': path}):
+        raise LookupError(f'{path} is not a repository found on {host}: scan or survey it first')
 
 
 def survey_host(db, host_name: str, actor: str | None = None) -> dict:
@@ -273,7 +278,8 @@ export GIT_TERMINAL_PROMPT=0
 export GIT_ASKPASS=
 export SSH_ASKPASS=
 command -v git >/dev/null 2>&1 || { printf 'error\tgit is not installed on this host\n'; exit 0; }
-g() { timeout 25 git -c safe.directory='*' -C "$R" "$@"; }
+@OWNED@
+g() { timeout 25 git @SAFE@ -C "$R" "$@"; }
 if ! g rev-parse --git-dir >/dev/null 2>&1; then
   printf 'error\tnot a git repository\n'
   exit 0
@@ -288,16 +294,21 @@ g remote -v 2>/dev/null | awk '$3 == "(fetch)" { print "remote_fetch\t" $1 "\t" 
 if [ "$bare" = "false" ]; then
   up=$(g rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) && printf 'upstream\t%s\t%s\n' "$up" "$(g rev-list --left-right --count '@{u}...HEAD' 2>/dev/null)"
   printf 'stash\t%s\n' "$(g stash list 2>/dev/null | wc -l)"
-  printf '@@porcelain\n'
-  g status --porcelain -uall 2>/dev/null
-  printf '@@endporcelain\n'
+  gd=$(g rev-parse --absolute-git-dir 2>/dev/null)
+  if owned "$R" && owned "$gd/config"; then
+    printf '@@porcelain\n'
+    g status --porcelain -uall 2>/dev/null
+    printf '@@endporcelain\n'
+  else
+    printf 'foreign\t1\n'
+  fi
 fi
 git_dir="$(g rev-parse --git-dir 2>/dev/null)"
 if [ -n "$git_dir" ]; then
   case "$git_dir" in /*) ;; *) git_dir="$R/$git_dir" ;; esac
   printf 'size\t%s\n' "$(du -sk "$git_dir" 2>/dev/null | cut -f1)"
 fi
-"""
+""".replace('@SAFE@', SAFE_GIT).replace('@OWNED@', OWNED)
 
 
 def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict:
@@ -309,6 +320,7 @@ def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict
                        {'h': host_name})
         canonical_name = row[0][1] if row else host_name
         host_id = row[0][0] if row else None
+        _known_repo(conn, canonical_name, path)
 
         script = f'R={shlex.quote(path)}\n' + _STATUS_BASH
         with open_host_transport(db, conn, canonical_name, 'scan') as t:
@@ -334,6 +346,7 @@ def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict
             'dirty_files': [],
             'stashes': 0,
             'size_kb': None,
+            'foreign': False,     # someone else's repository: not read for changes, see SAFE_GIT
             'error': None,
         }
 
@@ -390,6 +403,8 @@ def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict
             elif k == 'remote_push':
                 name, _, url = v.partition('\t')
                 remotes_dict.setdefault(name, {'name': name})['push_url'] = url
+            elif k == 'foreign':
+                res['foreign'] = True
             elif k == 'error':
                 res['error'] = v
 
@@ -401,41 +416,26 @@ def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict
                 'push_url': r_info.get('push_url'),
             })
 
-        res['dirty'] = len(res['dirty_files'])
+        res['dirty'] = None if res['foreign'] else len(res['dirty_files'])
 
         # Update or insert into database git_repos table if host is known
         if host_id:
             with conn.tx():
-                exists = conn.scalar('SELECT 1 FROM git_repos WHERE host_id = :h AND path = :path',
-                                     {'h': host_id, 'path': path})
-                if res['error'] and exists:
+                if res['error']:
                     conn.execute('UPDATE git_repos SET error = :err WHERE host_id = :h AND path = :path',
                                  {'h': host_id, 'path': path, 'err': res['error']})
-                elif not res['error']:
-                    if exists:
-                        conn.execute("""UPDATE git_repos SET
-                                        bare = :bare, branch = :branch, head_commit = :hc, head_time = :ht,
-                                        head_subject = :hs, root_commit = :rc, refs = :refs, dirty = :dirty,
-                                        upstream = :up, ahead = :ahead, behind = :behind, remotes_json = :remotes,
-                                        size_kb = :size, error = NULL
-                                        WHERE host_id = :h AND path = :path""",
-                                     {'h': host_id, 'path': path, 'bare': int(res['bare']), 'branch': res['branch'],
-                                      'hc': res['head_commit'], 'ht': res['head_time'], 'hs': res['head_subject'],
-                                      'rc': res['root_commit'], 'refs': res['refs'], 'dirty': res['dirty'],
-                                      'up': res['upstream'], 'ahead': res['ahead'], 'behind': res['behind'],
-                                      'remotes': json.dumps(res['remotes']), 'size': res['size_kb']})
-                    else:
-                        scan_id = conn.scalar('SELECT MAX(scan_id) FROM scans WHERE host_id = :h', {'h': host_id}) or 0
-                        conn.execute("""INSERT INTO git_repos (host_id, path, bare, branch, head_commit, head_time,
-                                                               head_subject, root_commit, refs, dirty, upstream, ahead,
-                                                               behind, remotes_json, size_kb, error, scan_id)
-                                        VALUES (:h, :path, :bare, :branch, :hc, :ht, :hs, :rc, :refs, :dirty,
-                                                :up, :ahead, :behind, :remotes, :size, NULL, :scan_id)""",
-                                     {'h': host_id, 'path': path, 'bare': int(res['bare']), 'branch': res['branch'],
-                                      'hc': res['head_commit'], 'ht': res['head_time'], 'hs': res['head_subject'],
-                                      'rc': res['root_commit'], 'refs': res['refs'], 'dirty': res['dirty'],
-                                      'up': res['upstream'], 'ahead': res['ahead'], 'behind': res['behind'],
-                                      'remotes': json.dumps(res['remotes']), 'size': res['size_kb'], 'scan_id': scan_id})
+                else:
+                    conn.execute("""UPDATE git_repos SET
+                                    bare = :bare, branch = :branch, head_commit = :hc, head_time = :ht,
+                                    head_subject = :hs, root_commit = :rc, refs = :refs, dirty = :dirty,
+                                    upstream = :up, ahead = :ahead, behind = :behind, remotes_json = :remotes,
+                                    size_kb = :size, error = NULL
+                                    WHERE host_id = :h AND path = :path""",
+                                 {'h': host_id, 'path': path, 'bare': int(res['bare']), 'branch': res['branch'],
+                                  'hc': res['head_commit'], 'ht': res['head_time'], 'hs': res['head_subject'],
+                                  'rc': res['root_commit'], 'refs': res['refs'], 'dirty': res['dirty'],
+                                  'up': res['upstream'], 'ahead': res['ahead'], 'behind': res['behind'],
+                                  'remotes': json.dumps(res['remotes']), 'size': res['size_kb']})
 
         # Match copies across the fleet
         if res['root_commit']:
@@ -463,11 +463,27 @@ def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict
         conn.close()
 
 
+# Runs as root through the signed runner, so the work happens as whoever owns the repository's config: its hooks, filters
+# and credentials can then do nothing that person could not do anyway, and new files keep their owner.
 _SYNC_BASH = r"""set -e
 export GIT_TERMINAL_PROMPT=0
 export GIT_ASKPASS=
 export SSH_ASKPASS=
-g() { timeout 60 git -c safe.directory='*' -C "$R" "$@"; }
+cfg=$R/.git/config
+[ -e "$cfg" ] || cfg=$R/.git
+[ -e "$cfg" ] || cfg=$R/config
+owner=$(stat -c %U "$cfg" 2>/dev/null) || owner=
+if [ -z "$owner" ]; then
+  echo "Error: not a git repository" >&2
+  exit 1
+fi
+if [ "$(id -u)" = 0 ] && [ "$owner" != root ]; then
+  command -v runuser >/dev/null 2>&1 || { echo "Error: runuser is needed to work as $owner" >&2; exit 4; }
+  home=$(getent passwd "$owner" | cut -d: -f6)
+  g() { runuser -u "$owner" -- env HOME="$home" GIT_TERMINAL_PROMPT=0 timeout 60 git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c protocol.ext.allow=never -C "$R" "$@"; }
+else
+  g() { timeout 60 git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c protocol.ext.allow=never -C "$R" "$@"; }
+fi
 
 if ! g rev-parse --git-dir >/dev/null 2>&1; then
   echo "Error: not a git repository" >&2
@@ -556,25 +572,15 @@ def repo_sync(db, host_name: str, path: str, action: str = 'sync', actor: str | 
                        {'h': host_name})
         canonical_name = row[0][0] if row else host_name
 
+        from . import deploy
+        _known_repo(conn, canonical_name, path)
+        if not deploy.ready(conn, canonical_name):
+            raise deploy.DeployError(f'{canonical_name} is not set up for deploys yet: syncing changes the host, so it needs deploy access')
         script = f'R={shlex.quote(path)}\nACT={shlex.quote(action)}\n' + _SYNC_BASH
-        with open_host_transport(db, conn, canonical_name, 'scan') as t:
-            try:
-                out = t.run(script, timeout=90)
-                ok = True
-                err = None
-            except Exception as exc:
-                ok = False
-                out = str(exc)
-                err = str(exc)
-
-        # Audit the sync operation
-        try:
-            from .vault import Vault, AuditLog
-            with Vault(db, conn).unlock() as v:
-                AuditLog(db, conn, v.audit_key).append(actor or 'user', 'git.sync', 'ok' if ok else 'failed',
-                                                       canonical_name, None, {'path': path, 'action': action, 'error': err})
-        except Exception:
-            pass
+        run = deploy.run(db, canonical_name, script, kind='git_sync', ref=path[:200], mode='apply', actor=actor, timeout=300)
+        ok = run['status'] in deploy.FINISHED
+        out = run['output']
+        err = None if ok else (out.strip()[-300:] or run['status'])
 
         # Refresh repo status after sync
         updated_status = None
@@ -599,7 +605,7 @@ export GIT_TERMINAL_PROMPT=0
 export GIT_ASKPASS=
 export SSH_ASKPASS=
 command -v git >/dev/null 2>&1 || { printf 'error\tgit is not installed on this host\n'; exit 0; }
-g() { timeout 25 git -c safe.directory='*' -C "$R" "$@"; }
+g() { timeout 25 git @SAFE@ -C "$R" "$@"; }
 if ! g rev-parse --git-dir >/dev/null 2>&1; then
   printf 'error\tnot a git repository\n'
   exit 0
@@ -609,7 +615,7 @@ printf '@@tags\n'
 g tag -l --sort=-creatordate --format='%(refname:short)%09%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end)%09%(creatordate:unix)%09%(subject)' 2>/dev/null | head -n 30
 printf '@@commits\n'
 g log -n "$MAX" --format='%H%x09%h%x09%an%x09%ae%x09%at%x09%s%x09%d' 2>/dev/null
-"""
+""".replace('@SAFE@', SAFE_GIT)
 
 
 def repo_history(db, host_name: str, path: str, max_commits: int = 50) -> dict:
@@ -620,6 +626,7 @@ def repo_history(db, host_name: str, path: str, max_commits: int = 50) -> dict:
         row = conn.all('SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR lower(ssh_host) = lower(:h) OR ip_address = :h',
                        {'h': host_name})
         canonical_name = row[0][0] if row else host_name
+        _known_repo(conn, canonical_name, path)
 
         script = f'R={shlex.quote(path)}\nMAX={int(max_commits)}\n' + _HISTORY_BASH
         with open_host_transport(db, conn, canonical_name, 'scan') as t:
@@ -748,7 +755,7 @@ def build_changelog(commits: list[dict], tags: list[dict]) -> list[dict]:
 
 def repo_commit(db, host_name: str, path: str, sha: str) -> dict:
     """Get commit details and diffstat for a commit."""
-    if not re.match(r'^[a-fA-F0-9]{4,64}$', sha):
+    if not re.fullmatch(r'[a-fA-F0-9]{4,64}', sha):
         raise ValueError('Invalid commit hash')
 
     path = path.rstrip('/')
@@ -758,7 +765,8 @@ def repo_commit(db, host_name: str, path: str, sha: str) -> dict:
                        {'h': host_name})
         canonical_name = row[0][0] if row else host_name
 
-        script = f'timeout 25 git -c safe.directory="*" -C {shlex.quote(path)} show --stat --pretty=fuller {shlex.quote(sha)}'
+        _known_repo(conn, canonical_name, path)
+        script = f'timeout 25 git {SAFE_GIT} -C {shlex.quote(path)} show --stat --no-ext-diff --no-textconv --pretty=fuller {shlex.quote(sha)}'
         with open_host_transport(db, conn, canonical_name, 'scan') as t:
             out = t.run(script, timeout=30)
 

@@ -1,6 +1,6 @@
 ---
 id: SF-33
-status: open
+status: done
 severity: medium
 effort: S
 area: Deploy
@@ -27,5 +27,8 @@ The practical injection risk is low. It still breaks concepts rule 3 in the one 
 Quote the name, or better, validate it against known task slugs. Cap output (`tail -n 200`) and remove the `cat` fallback. Skip lines that fail to parse.
 
 ## Done when
-- [ ] Hostile task names reach bash as data, with a test
-- [ ] Fetched output is capped
+- [x] Hostile task names reach bash as data, with a test
+- [x] Fetched output is capped
+
+## Fixed
+2026-10-31. Odd task names are skipped and the rest quoted. The `cat /var/log/messages` fallback is gone, stored output is capped at 256 KiB, and a bad line can't stop the scan. Test: `test_the_log_fetch_keeps_host_text_as_data`.

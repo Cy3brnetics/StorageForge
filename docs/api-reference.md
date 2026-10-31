@@ -59,6 +59,10 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/folders/duplicates?host=&min_files=&min_size=` | duplicate folders |
 | GET | `/api/folders/cold?host=&years=&min_size=` | folders whose newest file is older than the cutoff |
 | GET | `/api/git?host=` | repositories, copies and archive state |
+| POST | `/api/git/status` | `{"host", "path"}`: live status of a repository a scan found |
+| POST | `/api/git/history` | `{"host", "path", "max"?}`: commits and tags, at most 200 |
+| POST | `/api/git/commit` | `{"host", "path", "sha"}`: one commit's details |
+| POST | `/api/git/sync` | `{"host", "path", "action"}`: fetch, pull, push or sync as a signed run, as the repository's owner (password confirmed, needs deploy access) |
 | GET, PUT | `/api/git/ignore` | path fragments hidden from the Git tab: PUT `{"host", "paths"}`, no host means every host, `!x` shows `x` |
 | GET | `/api/docker?host=` | containers, stacks, volumes |
 | GET | `/api/docker/usage?host=&path=` | containers using a folder (or all usage for a host) |

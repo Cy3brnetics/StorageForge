@@ -374,7 +374,8 @@ function renderDrawerStatus() {
     ),
     el('div', { class: 'git-stat-card' },
       el('small', {}, 'Working Tree'),
-      el('b', { class: r.dirty ? 'st-failed' : 'st-ok' }, r.dirty ? `${r.dirty} uncommitted files` : 'Clean')
+      r.foreign ? el('b', { class: 'muted', title: 'Reading changes would run programs named in the config of a repository this account does not own' }, 'Not checked: owned by another user')
+        : el('b', { class: r.dirty ? 'st-failed' : 'st-ok' }, r.dirty ? `${r.dirty} uncommitted files` : 'Clean')
     ),
     el('div', { class: 'git-stat-card' },
       el('small', {}, 'Upstream Tracking'),
@@ -449,7 +450,7 @@ async function loadRepoHistory(host, path) {
   const pane = $('#gtab-commits');
   if (pane) pane.replaceChildren(text('p', 'Loading commit history and tags...', 'muted'));
   try {
-    const res = await api(`/api/git/history?host=${encodeURIComponent(host)}&path=${encodeURIComponent(path)}&max=50`);
+    const res = await postJSON('/api/git/history', { host, path, max: 50 });
     const history = await res.json();
     if (GITD.repo && GITD.repo.host === host && GITD.repo.path.replace(/\/+$/, '') === path.replace(/\/+$/, '')) {
       GITD.history = history;
@@ -472,7 +473,7 @@ async function showCommitDiff(sha, targetEl) {
   targetEl.dataset.sha = sha;
   targetEl.replaceChildren(text('p', 'Loading commit diff...', 'muted small'));
   try {
-    const res = await api(`/api/git/commit?host=${encodeURIComponent(GITD.repo.host)}&path=${encodeURIComponent(GITD.repo.path)}&sha=${encodeURIComponent(sha)}`);
+    const res = await postJSON('/api/git/commit', { host: GITD.repo.host, path: GITD.repo.path, sha });
     const data = await res.json();
     if (targetEl.dataset.sha === sha) {
       targetEl.replaceChildren(el('pre', { class: 'git-commit-diff' }, data.output));
