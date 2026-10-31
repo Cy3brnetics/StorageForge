@@ -29,10 +29,14 @@ FROM build AS test
 COPY tests ./tests
 COPY examples ./examples
 COPY docker ./docker
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client util-linux rsync \
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client util-linux rsync git \
  && /opt/venv/bin/python -m unittest discover -s tests
 
-# ── runtime ───────────────────────────────────────────────────────────────────
+# ── proxy: nginx with its config inside, so a deploy does not need the repo's files on the Docker host ─
+FROM nginxinc/nginx-unprivileged:1.27-alpine AS proxy
+COPY docker/nginx.conf /etc/nginx/nginx.conf
+
+# ── runtime (last, so a plain docker build makes this one) ─────────────────────
 FROM ${PYTHON_IMAGE} AS runtime
 LABEL org.opencontainers.image.title="StorageForge" \
       org.opencontainers.image.description="Encrypted SSH key vault, agentless file indexer and storage graph" \
@@ -49,6 +53,7 @@ RUN apt-get update \
            /usr/local/lib/python3*/ensurepip      # nothing installs packages at runtime
 COPY --from=build /opt/venv /opt/venv
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/storageforge-entrypoint
+COPY --chmod=0755 docker/init-volumes.sh /usr/local/bin/storageforge-init-volumes
 ENV PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin \
     PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     HOME=/app/data/home \

@@ -13,17 +13,19 @@ StorageForge runs as one container (the app) behind an nginx container (TLS). It
 From `storageforge-indexer/`:
 
 ```bash
-./docker/init-secrets.sh
-```
-
-This creates `secrets/vault_secret`, `secrets/session_secret` and a self-signed certificate naming this machine's hostname and LAN addresses. Back up `secrets/vault_secret` somewhere else: without it the vault cannot be decrypted, and backups never contain it.
-
-```bash
 docker compose up -d --build
 docker compose exec storageforge storageforge-index user add admin
 ```
 
-The second command prompts for a password (at least 12 characters). Open `https://<this machine>:8443`, accept the certificate once (compare the fingerprint `init-secrets.sh` printed), and sign in.
+The first deploy runs the one-shot `init-secrets` service, which creates the vault secret, session secret and a self-signed certificate in Docker volumes, and exits. No step on the host is needed, so a stack manager can deploy the repo as it is. The certificate names the host's hostname and main address; set `STORAGEFORGE_TLS_NAMES` before the first deploy to add others. Existing secrets in `./secrets` are copied instead of replaced.
+
+Back up the vault secret somewhere else: without it the vault cannot be decrypted, and backups never contain it. `docker compose down -v` deletes it.
+
+```bash
+docker compose exec storageforge cat /run/sf-secrets/vault_secret
+```
+
+The second command above prompts for a password (at least 12 characters). Open `https://<this machine>:8443`, accept the certificate once (compare the fingerprint in `docker compose logs init-secrets`), and sign in.
 
 ![Sign-in page](images/login.jpg)
 
@@ -57,7 +59,7 @@ To import a key you already have, pipe it in so it is never written to the conta
 docker compose exec -T storageforge storageforge-index vault add --name nas --key-file - < ~/.ssh/id_ed25519
 ```
 
-Or put key files in `./keys/` before starting: the entrypoint imports each one (the file name becomes the key name) from a read-only mount. The container reads them through your group, so make them group-readable (`chmod 0640 keys/*`; `docker/init-secrets.sh` already made `keys/` itself `0750`). A key it cannot read is named in the log (`docker compose logs storageforge`).
+Or put key files in `./keys/` before starting: the entrypoint imports each one (the file name becomes the key name) from a read-only mount. The container reads them through your group, so make them group-readable (`chmod 0640 keys/*`; run `docker/init-secrets.sh` once to make `keys/` itself `0750`). A key it cannot read is named in the log (`docker compose logs storageforge`).
 
 ## Scanning the Docker host itself
 

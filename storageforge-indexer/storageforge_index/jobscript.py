@@ -353,6 +353,7 @@ unpack() { # id target -> extracts tar from stdin into target (a new folder unde
   ((n)) && echo "removed setuid/setgid from $n restored file(s); set them again by hand if they need it"
   chmod 0755 -- "$t"
   ((rc == 0)) && echo "restored into $t"
+  ((rc == 0)) || rmdir -- "$t" 2>/dev/null       # nothing arrived: no empty folder left beside the original
   return "$rc"
 }
 

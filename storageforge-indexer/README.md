@@ -14,8 +14,7 @@ A containerized storage platform: an encrypted SSH key vault, agentless file ind
 ## Quick start (Docker)
 
 ```bash
-./docker/init-secrets.sh                      # creates the vault and session secrets and a self-signed TLS certificate
-docker compose up -d --build                  # UI and API on https://<this machine>:8443 (accept the certificate once)
+docker compose up -d --build                  # creates the secrets and a self-signed certificate; UI and API on https://<this machine>:8443
 docker compose exec storageforge storageforge-index user add admin              # web UI account (prompts for a password)
 docker compose exec storageforge storageforge-index vault generate --name fleet   # prints the public key
 #   … add that public key to ~scan/.ssh/authorized_keys on your hosts, then:
@@ -439,7 +438,7 @@ docker compose start storageforge
 
 Images built before 2026-10-29 don't recognise `restore` and the other newer subcommands in `docker compose run`. Rebuild the image, or add `--entrypoint storageforge-index` after `--rm`.
 
-A restore keeps the current database beside the new one as `index.db.pre-restore-<time>`. Backups never contain the vault secret, on purpose: a backup together with its secret would be the keys. Keep `secrets/vault_secret` safe somewhere else.
+A restore keeps the current database beside the new one as `index.db.pre-restore-<time>`. Backups never contain the vault secret, on purpose: a backup together with its secret would be the keys. Keep the vault secret safe somewhere else (`docker compose exec storageforge cat /run/sf-secrets/vault_secret`).
 
 The backups volume lives on this machine. To keep copies elsewhere, add a Moves **mirror** step from `/var/lib/docker/volumes/storageforge_sf-backups/_data` to another host.
 
@@ -465,7 +464,8 @@ Run `storageforge-index prune --vacuum` once to shrink the database file. It rew
 | `docker-compose.yml` | Hardened service, secrets, `sf-data` volume, tmpfs mounts, resource limits; an unprivileged, read-only nginx serves it over TLS on port 8443 |
 | `docker/nginx.conf` | TLS 1.2/1.3, HSTS, http→https redirect, `X-Forwarded-For` replaced (not appended) |
 | `docker/entrypoint.sh` | Refuses root, checks secret lengths, checks volume ownership and that the runtime dir is tmpfs, tightens permissions, migrates, creates or verifies the vault, imports keys from a read-only mount, then `exec`s |
-| `docker/init-secrets.sh` | Generates the vault secret, session secret and a self-signed certificate for this machine's names and LAN addresses (`STORAGEFORGE_TLS_NAMES` adds more). Files are `0640` with your group; the containers read them through `group_add` (`STORAGEFORGE_SECRETS_GID`, written to `.env` when your group is not 1000) |
+| `docker/init-volumes.sh` | The one-shot `init-secrets` service: on first deploy, fills the `sf-secrets` and `sf-tls` volumes with the vault secret, session secret and a self-signed certificate for the host's name and address (`STORAGEFORGE_TLS_NAMES` adds more). Never overwrites; takes anything missing from `./secrets` first |
+| `docker/init-secrets.sh` | Optional, on the host: makes the same files in `./secrets` for `init-secrets` to copy, with every LAN address in the certificate. Also sets up `keys/` for the key import (`STORAGEFORGE_SECRETS_GID`, written to `.env` when your group is not 1000) |
 | `docker/egress-firewall.sh` | Optional, run as root: lets the containers open only SSH and alert ports (`STORAGEFORGE_EGRESS_PORTS`, default `22 443`) out of the `sf0` bridge, to other machines and to the Docker host itself (`STORAGEFORGE_BRIDGE` for another bridge, each with its own rules); `--remove` undoes it |
 | `docker/requirements*.lock` | Every Python dependency pinned with hashes; the image installs with `--require-hashes` |
 | `examples/demo/` | Disposable SSH target and an end-to-end script |
@@ -480,7 +480,7 @@ uv pip compile pyproject.toml docker/build-requirements.in --universal --python-
 uv pip compile pyproject.toml docker/build-requirements.in --extra postgres --universal --python-version 3.13 --generate-hashes --no-header --exclude-newer "$(date -d '14 days ago' +%F)" -o docker/requirements-postgres.lock
 ```
 
-For PostgreSQL, build with `--build-arg EXTRAS=postgres` and set `STORAGEFORGE_DB=postgresql://…`. The PostgreSQL DDL is written but has not yet been run against a live server.
+For PostgreSQL, build with `--build-arg EXTRAS=postgres` and set `STORAGEFORGE_DB=postgresql://…`. The test suite runs against it too (see [Tests](#tests)).
 
 ## Indexer architecture
 
@@ -593,4 +593,11 @@ YAML front matter carries the headline numbers so other tools can parse the repo
 python3 -m unittest discover -s tests -v
 ```
 
-`tests/test_platform.py` covers vault round trips, wrong-secret refusal, tampered and swapped ciphertexts, rotation, binding specificity, the audit chain under tampering, loading a key into a real ephemeral `ssh-agent`, graph building, `.canvas` validity (including no overlapping cards), and the HTTP API with auth and CSP. `tests/test_tasks.py` covers storage tasks: normalising, checks and generated scripts. `tests/test_consistency.py` keeps hand-kept lists in step: the container entrypoint against the CLI's subcommands, and the backup table lists against the schema. `tests/test_indexer.py` covers units and patterns, the stream parser (newlines in names, truncation, tiny reads), pool math against the dashboard, mount planning (bind aliases, pruning), payload parsers, report generation, and real local scans: incremental diff, subtree safety and the mass-delete guard. The PostgreSQL code path has not been run against a live server yet.
+`tests/test_platform.py` covers vault round trips, wrong-secret refusal, tampered and swapped ciphertexts, rotation, binding specificity, the audit chain under tampering, loading a key into a real ephemeral `ssh-agent`, graph building, `.canvas` validity (including no overlapping cards), and the HTTP API with auth and CSP. `tests/test_tasks.py` covers storage tasks: normalising, checks and generated scripts. `tests/test_consistency.py` keeps hand-kept lists in step: the container entrypoint against the CLI's subcommands, and the backup table lists against the schema. `tests/test_indexer.py` covers units and patterns, the stream parser (newlines in names, truncation, tiny reads), pool math against the dashboard, mount planning (bind aliases, pruning), payload parsers, report generation, and real local scans: incremental diff, subtree safety and the mass-delete guard.
+
+The same suite runs against PostgreSQL when `STORAGEFORGE_TEST_PG` names a server it may create databases on (each test gets a fresh one, dropped afterwards). The backup tests are skipped there, since backups are of SQLite databases:
+
+```bash
+docker run -d --rm --name sf-test-pg -e POSTGRES_USER=sf -e POSTGRES_PASSWORD=sftest -p 127.0.0.1:55432:5432 postgres:16-alpine
+STORAGEFORGE_TEST_PG=postgresql://sf:sftest@127.0.0.1:55432/postgres python3 -m unittest discover -s tests
+```

@@ -13,12 +13,13 @@ const identPath=v=>v==null?v:String(v).replace(/[^A-Za-z0-9._@+:\/-]/g,'_');   /
 const fstabEsc=v=>String(v).replace(/[ \t\\]/g,c=>'\\'+c.charCodeAt(0).toString(8).padStart(3,'0'));   // fstab(5) octal escapes
 function tidy(s){
   s.host=String(s.host||'host');
-  (s.disks||[]).forEach(d=>{ d.dev=ident(d.dev); if(d.member) d.member=ident(d.member);
+  (s.disks||[]).forEach(d=>{ d.dev=ident(d.dev); if(d.member) d.member=ident(d.member); if(d.tier!=null) d.tier=ident(d.tier);
     (d.parts||[]).forEach(p=>{ p.id=ident(p.id); p.fs=ident(p.fs); if(p.member) p.member=ident(p.member);
       (p.subvols||[]).forEach(v=>{ v.name=identPath(v.name) }) }) });
-  (s.pools||[]).forEach(p=>{ ['name','type','level','fs','vg','lv','encryption'].forEach(k=>{ if(p[k]!=null) p[k]=ident(p[k]) });
+  (s.pools||[]).forEach(p=>{ ['name','type','level','fs','vg','lv','encryption','tier'].forEach(k=>{ if(p[k]!=null) p[k]=ident(p[k]) });
     p.ashift=parseInt(p.ashift,10)||12;
     (p.datasets||[]).forEach(ds=>{ ds.name=identPath(ds.name); ['fs','recordsize','compression','sync'].forEach(k=>{ if(ds[k]!=null) ds[k]=ident(ds[k]) }) }) });
+  (s.links||[]).forEach(l=>{ if(l.kind!=null) l.kind=ident(l.kind) });
   return s;
 }
 const sum=a=>a.reduce((x,y)=>x+y,0);
@@ -587,7 +588,7 @@ function vOverview(){
   const it=(node,n,r,z)=>`<div class="titem" data-node="${esc(node)}"><span class="n">${n}</span><span class="r">${r}</span><span class="z">${z}</span></div>`;
   const partRole=p=>p.member?(p.role==='log'?`SLOG / ZIL for ${p.member}`:p.role==='cache'?`L2ARC read cache for ${p.member}`:`member of ${p.member}`):p.subvols&&p.subvols.length?`btrfs · ${p.subvols.filter(s=>s.mount).map(s=>s.mount).join(' ')}`:`${p.fs}${p.mount?' · '+p.mount:''}`;
   const fast=allParts().filter(x=>x.d.tier==='fast').map(({p,d})=>it('part:'+p.id,'/dev/'+p.id,esc(partRole(p))+` <span class="chip">${esc(d.bus.split(' ').slice(0,3).join(' '))}</span>`,fmtBin(p.size)));
-  const mass=[...S.pools.filter(p=>p.tier==='mass').map(p=>{const r=calcEngine(poolCalc(p));const m=poolMembers(p);return it('pool:'+p.name,`${p.name} · ${p.type} ${p.level}`,`${m.data.length}× ${esc(m.data[0]?m.data[0].disk.model.split(' (')[0]:'')} · tolerates ${r.tol}`,fmtBin(r.usable)+'<br><span class="muted">usable</span>')}),
+  const mass=[...S.pools.filter(p=>p.tier==='mass').map(p=>{const r=calcEngine(poolCalc(p));const m=poolMembers(p);return it('pool:'+p.name,`${esc(p.name)} · ${esc(p.type)} ${esc(p.level)}`,`${m.data.length}× ${esc(m.data[0]?m.data[0].disk.model.split(' (')[0]:'')} · tolerates ${r.tol}`,fmtBin(r.usable)+'<br><span class="muted">usable</span>')}),
     ...allParts().filter(x=>x.d.tier==='mass'&&!x.p.member).map(({p,d})=>it('part:'+p.id,'/dev/'+p.id,esc(partRole(p))+' · no redundancy',fmtBin(p.size)))];
   const remote=[...allParts().filter(x=>x.d.tier==='remote').map(({p,d})=>it('part:'+p.id,'/dev/'+p.id,`${esc(d.bus)} · ${esc(partRole(p))}`,fmtBin(p.size))),
     ...S.remotes.map(r=>it('rem:'+r.id,`<span class="dot ${r.status==='connected'?'ok':'crit'}"></span>${esc(r.name)}`,`${esc(r.proto)} via ${esc(r.via)} → ${esc(r.mount)}`,r.capacity?fmtDec(r.capacity,0):'metered'))];
@@ -625,7 +626,7 @@ function segHTML(d,p){
 function diskHTML(d){
   const sel=UI.sel&&UI.sel.type==='disk'&&UI.sel.id===d.dev;
   let segs='';
-  if(d.member){const mp=poolBy(d.member)||{};const lvm=mp.type==='lvm';segs=`<button type="button" class="seg ${lvm?'fs-linux_raid_member':'fs-zfs_member'}" style="flex-grow:1" data-node="disk:${d.dev}" data-act="sel" data-type="pool" data-id="${esc(d.member)}"><b>whole disk · ${lvm?(mp.lv?'LVM RAID leg':'LVM PV'):'zfs member'}</b><span>→ ${lvm?(mp.lv?`${esc(mp.vg)}/${esc(mp.lv)} · ${esc(mp.level)} · PV on the bare disk`:`volume group ${esc(mp.vg)}`):`${esc(d.member)} · partitions p1/p9 created by zpool`}</span></button>`}
+  if(d.member){const mp=poolBy(d.member)||{};const lvm=mp.type==='lvm';segs=`<button type="button" class="seg ${lvm?'fs-linux_raid_member':'fs-zfs_member'}" style="flex-grow:1" data-node="disk:${esc(d.dev)}" data-act="sel" data-type="pool" data-id="${esc(d.member)}"><b>whole disk · ${lvm?(mp.lv?'LVM RAID leg':'LVM PV'):'zfs member'}</b><span>→ ${lvm?(mp.lv?`${esc(mp.vg)}/${esc(mp.lv)} · ${esc(mp.level)} · PV on the bare disk`:`volume group ${esc(mp.vg)}`):`${esc(d.member)} · partitions p1/p9 created by zpool`}</span></button>`}
   else{
     let cur=0;const parts=d.parts.slice().sort((a,b)=>a.start-b.start);const limit=d.table==='mbr'?Math.min(d.size,2*TiB):d.size;
     parts.forEach(p=>{ if(p.start-cur>=64*MiB) segs+=`<div class="seg free" style="flex-grow:${(p.start-cur)/d.size}"><b>free</b><span>${fmtBin(p.start-cur,1)}</span></div>`; segs+=segHTML(d,p); cur=p.start+p.size });
@@ -633,8 +634,8 @@ function diskHTML(d){
     if(d.table==='mbr'&&d.size>2*TiB) segs+=`<div class="seg dead" style="flex-grow:${(d.size-2*TiB)/d.size}"><b>beyond MBR limit</b><span>${fmtBin(d.size-2*TiB,1)} unaddressable</span></div>`;
   }
   const sect=d.lbs===d.pbs?(d.pbs===4096?'4Kn':'512n'):'512e';
-  return `<article class="disk ${d.tier} ${sel?'sel':''}" data-node="disk:${esc(d.dev)}" data-act="sel" data-type="disk" data-id="${esc(d.dev)}">
-    <div class="dh"><span class="dev">/dev/${esc(d.dev)}</span><span class="chip t-${d.tier}">${esc(d.bus)}</span><span class="chip">${d.table.toUpperCase()}</span><span class="chip">${sect} · ${d.lbs}/${d.pbs}</span>${d.os?'<span class="chip">boot</span>':''}<span class="sz">${both(d.size)}</span></div>
+  return `<article class="disk ${esc(d.tier)} ${sel?'sel':''}" data-node="disk:${esc(d.dev)}" data-act="sel" data-type="disk" data-id="${esc(d.dev)}">
+    <div class="dh"><span class="dev">/dev/${esc(d.dev)}</span><span class="chip t-${esc(d.tier)}">${esc(d.bus)}</span><span class="chip">${d.table.toUpperCase()}</span><span class="chip">${sect} · ${d.lbs}/${d.pbs}</span>${d.os?'<span class="chip">boot</span>':''}<span class="sz">${both(d.size)}</span></div>
     <div class="dmeta">${esc(d.model)} · SN ${esc(d.serial)}</div>
     <div class="pbar">${segs}</div></article>`;
 }
@@ -642,7 +643,7 @@ function poolHTML(p){
   const sel=UI.sel&&UI.sel.type==='pool'&&UI.sel.id===p.name;const m=poolMembers(p);const r=calcEngine(poolCalc(p));
   const rows=p.type==='lvm'&&!p.lv?(p.datasets||[]).map(ds=>`<div class="dsrow" data-node="ds:${esc(p.name)}/${esc(ds.name)}"><span>${esc(p.vg)}/${esc(ds.name)}</span><span class="muted">${esc(ds.mount||(ds.fs==='swap'?'[swap]':'—'))}</span><span class="muted">${esc(ds.fs||'no fs')} · ${fmtBin(ds.sizeBytes||0,1)}</span></div>`).join(''):p.type==='zfs'?(p.datasets||[]).map(ds=>`<div class="dsrow" data-node="ds:${esc(p.name)}/${esc(ds.name)}"><span>${esc(p.name)}/${esc(ds.name)}</span><span class="muted">${esc(ds.mount||'—')}</span><span class="muted">rs=${esc(ds.recordsize)} ${esc(ds.compression)}${ds.sync!=='standard'?' sync='+esc(ds.sync):''}</span></div>`).join(''):`<div class="dsrow"><span>${esc(p.fs)} · ${esc(p.label)}</span><span class="muted">${esc(p.mount)}</span><span class="muted">${esc((p.opts||[]).join(','))}</span></div>`;
   return `<article class="pool ${sel?'sel':''}" data-node="pool:${esc(p.name)}" data-act="sel" data-type="pool" data-id="${esc(p.name)}">
-    <div class="dh"><span class="dev">${esc(p.name)}</span><span class="chip t-${p.tier}">${p.type==='lvm'&&!p.lv?'LVM volume group':(POOL_KIND[p.type]||'mdadm')+' '+esc(p.level)}</span>${p.lv?`<span class="chip">${esc(p.vg)}/${esc(p.lv)}</span>`:''}${p.levelSource&&p.levelSource.startsWith('inferred')?`<span class="chip" title="${esc(p.levelSource)}">level inferred</span>`:''}${p.type==='zfs'?`<span class="chip">ashift=${p.ashift}</span><span class="chip">${p.encryption==='off'?'unencrypted':esc(p.encryption)}</span>`:''}<span class="sz">${fmtBin(r.usable)} usable · tolerates ${r.tol}</span></div>
+    <div class="dh"><span class="dev">${esc(p.name)}</span><span class="chip t-${esc(p.tier)}">${p.type==='lvm'&&!p.lv?'LVM volume group':(POOL_KIND[p.type]||'mdadm')+' '+esc(p.level)}</span>${p.lv?`<span class="chip">${esc(p.vg)}/${esc(p.lv)}</span>`:''}${p.levelSource&&p.levelSource.startsWith('inferred')?`<span class="chip" title="${esc(p.levelSource)}">level inferred</span>`:''}${p.type==='zfs'?`<span class="chip">ashift=${p.ashift}</span><span class="chip">${p.encryption==='off'?'unencrypted':esc(p.encryption)}</span>`:''}<span class="sz">${fmtBin(r.usable)} usable · tolerates ${r.tol}</span></div>
     <div class="members">${m.data.map(x=>`<span class="chip" data-node="${x.whole?'disk:'+x.id:'part:'+x.id}">${esc(x.id)}</span>`).join('')}${m.log.map(x=>`<span class="chip t-fast" data-node="part:${x.id}">log ${esc(x.id)}</span>`).join('')}${m.cache.map(x=>`<span class="chip t-fast" data-node="part:${x.id}">cache ${esc(x.id)}</span>`).join('')}</div>
     <div>${rows}</div></article>`;
 }
@@ -739,7 +740,7 @@ function vMounts(){
     return f.join('')};
   const rows=[];
   const walk=(m,d)=>{const p=parentOf(m);const rel=p&&p.target!=='/'?m.target.slice(p.target.length):m.target;const head=p&&p.target!=='/'?`<em>${esc(p.target)}</em>${esc(rel)}`:esc(m.target);
-    rows.push(`<div class="trow ${UI.mountSel===m.target?'sel':''}" style="--d:${d}" data-node="${esc(m.node)}" data-act="msel" data-t="${esc(m.target)}" tabindex="0" role="button"><span class="p">${head}</span><span class="s">${esc(m.spec)}${m.kind==='subvol'?'':''} · ${esc(m.opts.join(',')||'defaults')}</span><span class="c"><span class="chip t-${m.tier}">${esc(m.kind==='bind'?'bind':m.fs)}</span>${flags(m)}</span></div>`);
+    rows.push(`<div class="trow ${UI.mountSel===m.target?'sel':''}" style="--d:${d}" data-node="${esc(m.node)}" data-act="msel" data-t="${esc(m.target)}" tabindex="0" role="button"><span class="p">${head}</span><span class="s">${esc(m.spec)}${m.kind==='subvol'?'':''} · ${esc(m.opts.join(',')||'defaults')}</span><span class="c"><span class="chip t-${esc(m.tier)}">${esc(m.kind==='bind'?'bind':m.fs)}</span>${flags(m)}</span></div>`);
     (kids.get(m)||[]).sort((a,b)=>a.target.localeCompare(b.target)).forEach(k=>walk(k,d+1))};
   roots.sort((a,b)=>a.target.localeCompare(b.target)).forEach(r=>walk(r,0));
   const sel=M.find(m=>m.target===UI.mountSel)||M[0];
@@ -763,7 +764,7 @@ const PRESETS=[
 function vLinks(){
   const M=collectMounts();
   const rows=S.links.map(l=>{const h=linkHealth(l,M);const m=h.m||containingMount(l.target,M);
-    return `<tr data-node="link:${esc(l.id)}"><td><span class="kind ${l.kind}">${l.kind}</span></td><td class="lk">${esc(l.path)}</td><td class="arrow">${l.kind==='bind'?'⇇':l.kind==='hardlink'?'⇔':'→'}</td><td class="lk">${esc(l.target)}</td>
+    return `<tr data-node="link:${esc(l.id)}"><td><span class="kind ${esc(l.kind)}">${esc(l.kind)}</span></td><td class="lk">${esc(l.path)}</td><td class="arrow">${l.kind==='bind'?'⇇':l.kind==='hardlink'?'⇔':'→'}</td><td class="lk">${esc(l.target)}</td>
       <td class="lk muted">${m?esc(m.target)+'<br>'+esc(m.dev):'—'}</td><td><span class="pill ${h.state}">${h.state==='ok'?'healthy':h.state==='warn'?'warning':'broken'}</span><div class="why">${esc(h.msg)}</div></td><td><button type="button" class="xbtn" data-act="dellink" data-id="${esc(l.id)}" aria-label="Remove link">×</button></td></tr>`}).join('');
   const st=stages();
   const svc=S.links.filter(l=>SERVICE_HINT[l.path]).map(l=>{const src=containingMount(l.target,M);const svcName=SERVICE_HINT[l.path];return `# /etc/systemd/system/${svcName}.d/storageforge.conf\n[Unit]\nRequiresMountsFor=${l.path}${src&&src.target!=='/'?' '+src.target:''}`});
@@ -800,7 +801,7 @@ function vTopology(){
   S.pools.forEach(p=>(p.datasets||[]).forEach(ds=>col2.push(tn(`ds:${p.name}/${ds.name}`,`${esc(p.name)}/${esc(ds.name)}`,`rs=${esc(ds.recordsize)} · ${esc(ds.compression)}`,p.tier))));
   const seen=new Set();
   M.filter(m=>m.kind!=='bind'&&m.kind!=='swap').sort((a,b)=>a.target.localeCompare(b.target)).forEach(m=>{ if(seen.has(m.target)) return; seen.add(m.target); col3.push(tn('mnt:'+m.target,esc(m.target),`${esc(m.fs)}${m.opts.length?' · '+esc(m.opts.filter(o=>!o.startsWith('subvol')).slice(0,2).join(',')):''}`,m.tier)) });
-  S.links.forEach(l=>{const h=linkHealth(l,M);col4.push(tn('link:'+l.id,esc(l.path),`${l.kind} → ${esc(l.target)}`,h.state!=='ok'?'bad':'',`style="--tc:var(--${h.state==='ok'?'ok':h.state})"`))});
+  S.links.forEach(l=>{const h=linkHealth(l,M);col4.push(tn('link:'+l.id,esc(l.path),`${esc(l.kind)} → ${esc(l.target)}`,h.state!=='ok'?'bad':'',`style="--tc:var(--${h.state==='ok'?'ok':h.state})"`))});
   col4.push('<div class="tgrp remote" style="--tc:var(--muted)">Exports</div>');
   S.exports.forEach(e=>col4.push(tn('exp:'+e.id,`${esc(e.proto)} · ${esc(e.name)}`,`${esc(e.path)} · ${esc(e.clients)}`,'',`style="--tc:var(--accent)"`)));
   const col=(h,a)=>`<div class="tcol"><div class="eyebrow">${h}</div>${a.join('')}</div>`;
@@ -984,6 +985,8 @@ async function apiJSON(path,opts={}){
   const r=await fetch(path,{credentials:'same-origin',...opts});
   if(r.status===401){DOC.signedIn=false;sfSignedOut(/ended/.test((await r.json().catch(()=>({}))).error||'')?'ended':'');throw new Error('Sign in required')}
   const j=await r.json().catch(()=>({}));
+  // the planner has no password dialog of its own; the main page asks, and the confirmation counts here too
+  if(r.status===403&&j.reauth) throw new Error('Confirm your password first: run the change from the main page, or sign in again');
   if(!r.ok) throw new Error(j.error||r.statusText);
   return j;
 }

@@ -19,7 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .db import Conn
+from .db import Conn, loads
 
 URL_RE = re.compile(r'https?://[^\s"<>]{3,500}')
 # The report URL also ends up in scripts run as root on hosts: scheme, host, port and a plain path, no shell characters.
@@ -228,7 +228,7 @@ def drift(conn: Conn) -> list[dict]:
             except (KeyError, TypeError):
                 pass
     for host, inv in conn.all('SELECT hostname, inventory_json FROM hosts'):
-        text = (json.loads(inv or '{}') or {}).get('managed')
+        text = (loads(inv) or {}).get('managed')
         if text is None:
             continue
         section, timers = '', {}

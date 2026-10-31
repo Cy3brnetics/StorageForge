@@ -7,3 +7,8 @@ reports/
 *.db
 *.db-*
 .env
+.env.*
+*.egg-info/
+.ruff_cache/
+.venv/
+data/

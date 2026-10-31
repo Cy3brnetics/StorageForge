@@ -206,9 +206,9 @@ def run_dupes(conn: Conn, host: str | None, min_size: int, limit: int) -> list[d
         ORDER BY reclaimable DESC LIMIT :limit""", p)
     out = []
     for h, n, size, reclaim in groups:
-        members = conn.all("""SELECT h.hostname, d.path, f.filename FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
+        members = conn.all(f"""SELECT h.hostname, d.path, f.filename FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
                               JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
-                              WHERE f.checksum_hash = :c ORDER BY h.hostname, d.path""", {'c': h})
+                              WHERE f.checksum_hash = :c {host_sql} ORDER BY h.hostname, d.path, f.filename""", {'c': h, 'host': host})
         out.append({'sha256': h, 'copies': n, 'size': size, 'reclaimable': reclaim,
                     'files': [f'{hn}:{join_path(pp, fn)}' for hn, pp, fn in members]})
     return out

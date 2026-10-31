@@ -53,7 +53,7 @@ GET  /api/changes/<id>/ansible       the same plan as an Ansible playbook
 GET  /api/docker?host=               containers, compose stacks (running, stopped, stored), volumes, unused volumes
 GET  /api/docker/usage?host=&path=   containers that use a folder (bind mounts and volume data)
 GET  /api/deploy                     deploy access per host, deployed jobs and shares, open alerts, drift, settings
-GET  /api/deploy/setup-script        the deploy setup script, to run as root by hand
+POST /api/deploy/setup-script        {"remove"?}: the deploy setup script, to run as root by hand (makes the deploy keys)
 POST /api/deploy/access              {"host", "password", "admin_user"?, "remove"?}: set deploy access up (or remove it) with sudo once
 POST /api/deploy/adopt               {"host"}: after running the setup script by hand, bind the key and test a signed run
 POST /api/deploy/start               {"kind": jobs|shares|changes, "ref", "mode": report|apply, "paused"?, "destructive"?}
@@ -83,6 +83,7 @@ import os
 import queue
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import threading
@@ -316,10 +317,38 @@ class App:
             time.sleep(min(interval, SCHEDULE_TICK))
 
 
-def create_app(core: App, session_secret: str, secure_cookies: bool = False, proxy_hops: int = 0) -> Flask:
+class _FromProxy:
+    """X-Forwarded-For and -Proto, believed only from the proxy (proxy_host: its name or address). Anything else that
+    reaches the app directly, on a Docker network it shares, could claim any client address. The name is looked up
+    again every 30 seconds (a recreated proxy container gets a new address), and at most every 5 for an unknown peer."""
+
+    def __init__(self, app, hops: int, proxy_host: str):
+        # Proto from the nearest proxy only: it is the one that terminated TLS
+        self.plain, self.fixed, self.proxy_host = app, ProxyFix(app, x_for=hops, x_proto=1), proxy_host
+        self.addrs: set[str] = set()
+        self.at = 0.0
+
+    def _is_proxy(self, peer: str) -> bool:
+        now = time.time()
+        if now - self.at > 30 or (peer not in self.addrs and now - self.at > 5):
+            self.at = now
+            try:
+                self.addrs = {ai[4][0] for ai in socket.getaddrinfo(self.proxy_host, None, proto=socket.IPPROTO_TCP)}
+            except OSError:
+                self.addrs = set()
+        return peer in self.addrs
+
+    def __call__(self, environ, start_response):
+        if not self.proxy_host or self._is_proxy(environ.get('REMOTE_ADDR', '')):
+            return self.fixed(environ, start_response)
+        return self.plain(environ, start_response)
+
+
+def create_app(core: App, session_secret: str, secure_cookies: bool = False, proxy_hops: int = 0,
+               proxy_host: str = '') -> Flask:
     web = Flask(__name__, static_folder=None)
     if proxy_hops:   # trust X-Forwarded-For from this many proxies, so limits and audit see the real client
-        web.wsgi_app = ProxyFix(web.wsgi_app, x_for=proxy_hops, x_proto=proxy_hops)
+        web.wsgi_app = _FromProxy(web.wsgi_app, proxy_hops, proxy_host)
     web.config.update(
         SECRET_KEY=session_secret, MAX_CONTENT_LENGTH=MAX_BODY,
         # __Host-: browsers only accept it over https, for Path=/ and without Domain, so no other site or subdomain can set it
@@ -505,7 +534,38 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def failed(resp: Response) -> bool:
         return resp.status_code == 401
 
+    signed_in_from: set[tuple[str, str]] = set()      # (username, network) of sign-ins since the server started
+
+    def known_network() -> bool:
+        """This account signed in from this network before (a live session, or since the server started): its owner,
+        most likely. The per-account daily limit is for guessing spread over many networks, so it does not lock the
+        owner out from where they usually sign in."""
+        user, net = login_username()[5:], client_net()
+        if not user or (user, net) in signed_in_from:
+            return bool(user)
+        for (client,) in conn().all('SELECT s.client FROM web_sessions s JOIN users u ON u.user_id = s.user_id '
+                                    'WHERE lower(u.username) = :u', {'u': user}):
+            try:
+                ip = ipaddress.ip_address(client or '')
+            except ValueError:
+                continue
+            if str(ipaddress.ip_network(f'{ip}/{24 if ip.version == 4 else 64}', strict=False)) == net:
+                return True
+        return False
+
+    breaches: dict[tuple, float] = {}
+    breaches_lock = threading.Lock()
+
     def limited(limit):
+        # every refused request is a breach: one audit row per limit and client every 5 minutes, not one per request
+        key = (str(limit.limit), login_username(), client_net())
+        now = time.time()
+        with breaches_lock:
+            if now - breaches.get(key, 0) < 300:
+                return
+            breaches[key] = now
+            for k in [k for k, t in breaches.items() if now - t >= 300]:
+                del breaches[k]
         core.audit(conn(), f'web:{request.remote_addr}', 'web.login.limited', 'denied', None,
                    {'username': login_username()[5:], 'limit': str(limit.limit)})
 
@@ -516,17 +576,20 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @limiter.limit(LOGIN_LIMIT_PER_USER, key_func=login_user_net, deduct_when=failed, on_breach=limited,
                    error_message='too many failed sign-ins for this account; try again later')
     @limiter.limit(LOGIN_LIMIT_PER_ACCOUNT, key_func=login_username, deduct_when=failed, on_breach=limited,
-                   error_message='too many failed sign-ins for this account today; try again later')
+                   exempt_when=known_network, error_message='too many failed sign-ins for this account today; try again later')
     def api_login():
         body = json_body()
         name, password = str(body.get('username', '')), str(body.get('password', ''))
-        user = users.authenticate(conn(), name, password) if name and password else None
+        if not name or not password:     # nothing was guessed: no try used up, nothing for the audit log
+            return jsonify(error='enter a username and a password'), 400
+        user = users.authenticate(conn(), name, password)
         core.audit(conn(), f'web:{request.remote_addr}', 'web.login', 'ok' if user else 'denied', None, {'username': name[:64]})
         if not user:
             return jsonify(error='wrong username or password'), 401
         session.clear()
         session['login_at'] = session['auth_at'] = int(time.time())
         session['sid'] = users.start_session(conn(), user.user_id, request.remote_addr)
+        signed_in_from.add((user.username.lower(), client_net()))
         login_user(user)
         return jsonify(username=user.username)
 
@@ -581,7 +644,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                                      WHERE m.host_id = h.host_id)
                              FROM hosts h ORDER BY h.hostname""")
         graph_hosts = [r[0] for r in conn().all("SELECT label FROM graph_nodes WHERE kind = 'Host' AND host IS NOT NULL ORDER BY label")]
-        return jsonify(indexed=[dict(zip(('hostname', 'ip', 'os', 'last_scanned_at', 'entries'), r)) for r in rows],
+        return jsonify(indexed=[dict(zip(('hostname', 'ip', 'os', 'last_scanned_at', 'entries'), (*r[:3], epoch(r[3]), r[4])))
+                                for r in rows],
                        graph=graph_hosts)
 
     @web.get('/api/graph')
@@ -998,11 +1062,12 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                        alerts=alerts.list_alerts(c), drift=alerts.drift(c), settings=alerts.settings(c),
                        runs=deploy.history(c, limit=30), plans=moves.list_plans(c))
 
-    @web.get('/api/deploy/setup-script')
+    @web.post('/api/deploy/setup-script')     # POST with a JSON body: it makes the deploy keys on first use
     @login_required
     def api_deploy_setup_script():
+        remove = bool(json_body().get('remove'))
         core.audit(conn(), actor(), 'deploy.setup-script', 'ok', None, {})
-        return Response(deploy.setup_for_download(db, conn()) if not request.args.get('remove') else deploy.remove_script(),
+        return Response(deploy.setup_for_download(db, conn()) if not remove else deploy.remove_script(),
                         mimetype='text/x-shellscript',
                         headers={'Content-Disposition': 'attachment; filename="storageforge-deploy-setup.sh"'})
 
@@ -1114,8 +1179,19 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     @password_confirmed
     def api_deploy_job_restore(jid):
+        # Runs in the background (a restore can take hours): the answer is the group to poll, like a deploy's
         body = json_body()
-        return jsonify(jobs.restore(db, conn(), jid, str(body.get('snapshot', '')), str(body.get('path', '')), actor()))
+        snapshot, rel, who = str(body.get('snapshot', '')), str(body.get('path', '')), actor()
+        j, target, parent = jobs.restore_target(conn(), jid, snapshot, rel)
+
+        def work(gid):
+            c = db.connect()
+            try:
+                jobs.restore(db, c, jid, snapshot, rel, who, gid=gid, target=target)
+            finally:
+                c.close()
+        gid = deploy.start_task(db, j['source'], 'restore', jid, who, work)
+        return jsonify(group=gid, target=target, parent=parent), 202
 
     @web.route('/api/deploy/settings', methods=['GET', 'PUT'])
     @login_required
@@ -1165,12 +1241,32 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @limiter.limit('6 per hour', key_func=lambda: f'backup:{current_user.get_id()}')
     def api_backup_now():
         from . import backup
+        if db.dialect != 'sqlite':
+            return jsonify(error='backups of a PostgreSQL database are pg_dump\'s job: pg_dump -Fc storageforge > storageforge.dump'), 400
         kind = 'full' if (json_body().get('kind') == 'full') else 'essentials'
         res = backup.create(db, kind, keep=BACKUP_KEEP if kind == 'essentials' else max(BACKUP_FULL, 2))
         core.audit(conn(), actor(), 'backup.create', 'ok', None, {'path': res['path'], 'bytes': res['bytes']})
         return jsonify(res)
 
     folder_cache: dict = {}
+    folder_lock = threading.Lock()
+
+    def folder_result(key: tuple, compute):
+        """Folder analysis is slow on big indexes: kept until the index changes. A scan adds its scan id when it starts
+        and its files as it goes, so nothing is kept while one runs; it would hold half of it under the new id."""
+        latest, running = conn().all("SELECT max(scan_id), count(CASE WHEN status = 'running' THEN 1 END) FROM scans")[0]
+        key = (*key, latest)
+        with folder_lock:
+            hit = folder_cache.get(key)
+        if hit is not None:
+            return hit
+        result = compute()
+        if not running:
+            with folder_lock:
+                for k in [k for k in folder_cache if k[-1] != latest or len(folder_cache) >= 8]:
+                    del folder_cache[k]       # the Cleanup tab asks for cold and duplicate folders at once: both stay
+                folder_cache[key] = result
+        return result
 
     @web.get('/api/folders/cold')
     @login_required
@@ -1178,11 +1274,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         host = request.args.get('host') or None
         years = arg_num('years', 2.0, 0.1, 100.0, float)
         min_size = parse_size(request.args.get('min_size') or '1GiB')
-        key = ('cold', host, years, min_size, conn().scalar('SELECT max(scan_id) FROM scans'))
-        if key not in folder_cache:
-            folder_cache.clear()
-            folder_cache[key] = folders.cold_folders(conn(), host, years, min_size, limit=200)
-        return jsonify(folder_cache[key])
+        return jsonify(folder_result(('cold', host, years, min_size),
+                                     lambda: folders.cold_folders(conn(), host, years, min_size, limit=200)))
 
     @web.get('/api/folders/duplicates')
     @login_required
@@ -1190,11 +1283,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         host = request.args.get('host') or None
         min_files = arg_num('min_files', 3, 1, 1_000_000)
         min_size = parse_size(request.args.get('min_size') or '1MiB')
-        key = (host, min_files, min_size, conn().scalar('SELECT max(scan_id) FROM scans'))
-        if key not in folder_cache:
-            folder_cache.clear()
-            folder_cache[key] = folders.duplicate_folders(conn(), host, min_files, min_size, limit=200)
-        return jsonify(folder_cache[key])
+        return jsonify(folder_result(('dupes', host, min_files, min_size),
+                                     lambda: folders.duplicate_folders(conn(), host, min_files, min_size, limit=200)))
 
     def scanned(host: str) -> bool:
         return bool(conn().scalar('SELECT 1 FROM hosts WHERE hostname = :h', {'h': host}))
@@ -1202,7 +1292,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @web.get('/api/planner/hosts')
     @login_required
     def api_planner_hosts():
-        hosts = {r[0]: {'host': r[0], 'scanned': True, 'last_scanned_at': r[1], 'saved': False, 'saved_at': None}
+        hosts = {r[0]: {'host': r[0], 'scanned': True, 'last_scanned_at': epoch(r[1]), 'saved': False, 'saved_at': None}
                  for r in conn().all('SELECT hostname, last_scanned_at FROM hosts ORDER BY hostname')}
         for name, at in conn().all('SELECT hostname, imported_at FROM blueprints ORDER BY hostname'):
             hosts.setdefault(name, {'host': name, 'scanned': False, 'last_scanned_at': None})
@@ -1328,6 +1418,7 @@ def serve(db: Database, host: str, port: int, scan_interval: int | None, paralle
         conn.close()
     secure = os.environ.get('STORAGEFORGE_COOKIE_SECURE', '0').lower() in ('1', 'true', 'yes')
     hops = int(os.environ.get('STORAGEFORGE_PROXY_HOPS', '0'))
-    web = create_app(App(db, scan_interval, parallel), session_secret_from_env(), secure, hops)
+    web = create_app(App(db, scan_interval, parallel), session_secret_from_env(), secure, hops,
+                     os.environ.get('STORAGEFORGE_PROXY_HOST', ''))
     print(f'StorageForge {__version__} listening on http://{host}:{port}', file=sys.stderr, flush=True)
     waitress_serve(web, host=host, port=port, threads=8, ident='StorageForge', _quiet=True)

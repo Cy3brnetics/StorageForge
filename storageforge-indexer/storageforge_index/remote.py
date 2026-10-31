@@ -154,7 +154,7 @@ class Transport:
         for opt in self.extra_opts:
             argv += ['-o', opt]
         # The login shell might be fish or csh; always hand the script to POSIX sh.
-        return argv + [self.target, 'sh -c ' + shlex.quote(script)]
+        return argv + ['--', self.target, 'sh -c ' + shlex.quote(script)]      # --: a target is never an option
 
     def host_keys(self) -> list[str]:
         """SHA-256 fingerprints of the host keys ssh verified for this address (known_hosts): what the machine
@@ -318,10 +318,16 @@ class HostInventory:
         })
 
 
+# the section headers the inventory script prints: a line of a file it shows (fstab, exports, a job log) can start
+# with @@ too, and must stay in its section
+SECTIONS = frozenset(re.findall(r"echo '@@(\w+)'", INVENTORY_SCRIPT))
+
+
 def parse_sections(text: str) -> dict[str, str]:
+    """Sections up to @@end. One cut short (the output stopped before the next header) is left out."""
     out, cur, buf = {}, None, []
     for line in text.splitlines():
-        if line.startswith('@@'):
+        if line.startswith('@@') and line[2:].strip() in SECTIONS:
             if cur:
                 out[cur] = '\n'.join(buf)
             cur, buf = line[2:].strip(), []
@@ -375,7 +381,9 @@ def parse_mountinfo(text: str, df_text: str = '') -> list[MountInfo]:
             continue
         target = _unoctal(a[4])
         total, used = sizes.get(target, (None, None))
-        out.append(MountInfo(target=target, source=_unoctal(b[1]), fstype=b[0], options=a[5],
+        # the mount's own options, then the filesystem's (subvolid=, compress=, vers=), as findmnt shows them
+        opts = list(dict.fromkeys(a[5].split(',') + (b[2].split(',') if len(b) > 2 else [])))
+        out.append(MountInfo(target=target, source=_unoctal(b[1]), fstype=b[0], options=','.join(opts),
                              majmin=a[2], fsroot=_unoctal(a[3]), total=total, used=used))
     return out
 

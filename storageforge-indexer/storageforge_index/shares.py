@@ -19,7 +19,7 @@ import json
 import re
 import shlex
 
-from .db import Conn
+from .db import Conn, loads
 from .moves import _subtree_sql, find_host, host_slug, hosts, mount_of
 from .payloads import is_designed
 from .scriptkit import HELPERS, REMOTE, comments, host_name, one_line
@@ -104,7 +104,7 @@ def id_check(conn: Conn, srv: dict, e: dict, clients: list[dict]) -> list[tuple[
     """NFS (sec=sys) trusts numeric UIDs: the owners of an export's files should have the same UID on each client."""
     if all('all_squash' in (r['options'] or '') for r in e['rules']) and e['rules']:
         return [('ok', 'all users are mapped to one owner (all_squash): user IDs do not need to match')]
-    inv = lambda h: json.loads(conn.scalar('SELECT inventory_json FROM hosts WHERE host_id = :h', {'h': h['id']}) or '{}')   # noqa: E731
+    inv = lambda h: loads(conn.scalar('SELECT inventory_json FROM hosts WHERE host_id = :h', {'h': h['id']})) or {}   # noqa: E731
     mine = _ids(inv(srv))
     if mine is None:
         return [('note', f'rescan {srv["name"]} to check user IDs against the clients')]
@@ -635,10 +635,11 @@ client_mount() { # index into C_*
     else missing "credentials $cred (--apply asks for them; or write username=/password= lines, chmod 600)"; return 0; fi
     line="${C_SOURCE[$i]// /\\040} ${t// /\\040} cifs credentials=$cred,uid=$(id -u "$who"),gid=$(id -g "$who"),iocharset=utf8,_netdev,nofail,x-systemd.automount 0 0"
   fi
-  local have; have=$(awk -v t="${t// /\\040}" '!/^[[:space:]]*#/ && $2 == t' /etc/fstab)
+  # rec: the line /etc/fstab holds for this share after the run, which later scans look for (drift)
+  local have rec=$line; have=$(awk -v t="${t// /\\040}" '!/^[[:space:]]*#/ && $2 == t' /etc/fstab)
   if [[ $have == "$line" ]]; then ok "fstab line"
-  elif [[ -n $have && $(awk '{print $1, $3}' <<<"$have") == "$(awk '{print $1, $3}' <<<"$line")" ]]; then ok "fstab line (its own options kept)"
-  elif [[ -n $have ]]; then conflict "fstab already has a different line for $t: $have"
+  elif [[ -n $have && $(awk '{print $1, $3}' <<<"$have") == "$(awk '{print $1, $3}' <<<"$line")" ]]; then ok "fstab line (its own options kept)"; rec=$have
+  elif [[ -n $have ]]; then conflict "fstab already has a different line for $t: $have"; rec=
   elif ((APPLY)); then
     backup /etc/fstab; mkdir -p "$t"; printf '# storageforge share %s:%s\n%s\n' "$SERVER" "$t" "$line" >>/etc/fstab; doing "appended to /etc/fstab"
     if ! findmnt --verify --tab-file /etc/fstab >/dev/null 2>&1; then conflict "findmnt --verify complains about /etc/fstab; the backup is /etc/fstab.storageforge-$STAMP"; return 1; fi
@@ -646,7 +647,8 @@ client_mount() { # index into C_*
   else missing "fstab: $line"; fi
   if mountpoint -q "$t"; then ok "mounted"; elif ((APPLY)); then doing "mount $t"; mount "$t" && ok "mounted" || conflict "mount $t failed"
   else missing "not mounted"; fi
-  WANT_LINES+=("$line")
+  [[ -n $rec ]] && WANT_LINES+=("$rec")
+  return 0
 }
 client_cleanup() { # StorageForge's fstab lines for this server that the design no longer has
   local keep=" " i t line marker removed=0

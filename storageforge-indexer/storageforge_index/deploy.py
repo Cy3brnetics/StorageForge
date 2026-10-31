@@ -299,7 +299,7 @@ def enroll(db, conn, host: str, password: str, admin_user: str | None = None, ac
         except Exception as exc:
             audit.append(actor, 'deploy.remove' if remove else 'deploy.setup', 'failed', name, None, {'error': str(exc)[:500]})
             raise
-        port = conn.scalar('SELECT ssh_port FROM hosts WHERE hostname = :h', {'h': name}) or 22
+        port = conn.scalar('SELECT ssh_port FROM hosts WHERE hostname = :h', {'h': name}) or r['port']   # where sudo_run got in
         mine = [b for b in v.bindings() if b['key'] == DEPLOY_KEY and b['pattern'] == addr]
         if remove:
             for b in mine:
@@ -438,7 +438,7 @@ def raw(db: Database, host: str, script: str, *, kind: str, ref: str | None = No
     status, rc, t = 'failed', None, None
     try:
         addr = connect_address(conn, name)
-        with Vault(db, conn).unlock() as v:
+        with _lock(name), Vault(db, conn).unlock() as v:     # one run per host at a time, like run()
             b = v.resolve(addr, 'deploy')
             req = request(_signer(v), name, RUNNER_UPDATE + script, machine=_machine(conn, name))
             with ephemeral_agent(v.decrypt_key(b.key_id)) as sock:
@@ -450,6 +450,7 @@ def raw(db: Database, host: str, script: str, *, kind: str, ref: str | None = No
                 p.stdin.close()
                 drain = threading.Thread(target=lambda: err.extend(iter(lambda: p.stderr.read(4096), b'')), daemon=True)
                 drain.start()
+                p.errors = err          # its stderr, complete once the block is left
                 try:
                     yield p
                 finally:
@@ -512,6 +513,39 @@ def _guard(fn):
         traceback.print_exc()
 
 
+def start_task(db: Database, host: str, kind: str, ref: str | None, actor: str, fn) -> str:
+    """fn(group_id) in a background thread: work that can take hours (a restore) must not hold one of the web
+    server's few threads. Its runs are recorded under the group id returned here, which the UI polls like a deploy."""
+    gid = uuid.uuid4().hex
+    conn = db.connect()
+    try:      # the task's own row, running until it ends: a poll never takes the group for finished too early
+        rid = conn.scalar("""INSERT INTO deploy_runs (group_id, host, kind, ref, mode, status, actor, started_at)
+                             VALUES (:g, :h, :k, :r, 'apply', 'running', :a, :t) RETURNING run_id""",
+                          {'g': gid, 'h': host, 'k': kind, 'r': ref, 'a': actor, 't': int(time.time())})
+    finally:
+        conn.close()
+
+    def work():
+        try:
+            fn(gid)
+        except Exception as exc:     # failed before (or between) its runs: the task's row says why
+            traceback.print_exc()
+            c = db.connect()
+            try:
+                c.execute("""UPDATE deploy_runs SET status = 'failed', output = :o, finished_at = :t WHERE run_id = :r""",
+                          {'o': str(exc)[-MAX_OUTPUT:], 't': int(time.time()), 'r': rid})
+            finally:
+                c.close()
+            return
+        c = db.connect()
+        try:      # its runs tell how it went
+            c.execute('DELETE FROM deploy_runs WHERE run_id = :r', {'r': rid})
+        finally:
+            c.close()
+    threading.Thread(target=lambda: _guard(work), name=f'task-{gid[:8]}', daemon=True).start()
+    return gid
+
+
 def group(conn, gid: str) -> list[dict]:
     rows = conn.all("""SELECT run_id, host, kind, ref, mode, status, exit_code, output, actor, started_at, finished_at
                        FROM deploy_runs WHERE group_id = :g ORDER BY run_id""", {'g': gid})
@@ -552,15 +586,21 @@ def deployed(conn, host: str | None = None, kind: str | None = None) -> list[dic
 
 def adopt(db, conn, host: str, actor: str | None = None) -> dict:
     """After the setup script was run by hand: bind the deploy key to the host and prove a signed run works."""
+    from .scriptkit import host_name
     actor = actor or actor_name()
+    host = host_name(host, 'the host')            # one host: never a glob, a CIDR or something ssh reads as an option
     name, addr = canonical(conn, host), connect_address(conn, host)
     port = conn.scalar('SELECT ssh_port FROM hosts WHERE hostname = :h', {'h': name}) or 22
+    made = None
     with Vault(db, conn).unlock() as v:
         ensure_keys(v)
         if not [b for b in v.bindings() if b['key'] == DEPLOY_KEY and b['pattern'] == addr]:
-            v.bind(DEPLOY_KEY, addr, DEPLOY_USER, port, actions='deploy', priority=50)
+            made = v.bind(DEPLOY_KEY, addr, DEPLOY_USER, port, actions='deploy', priority=50)
     probe = run(db, name, 'echo "signed runs work on $(uname -n): $(id -un), $(ssh -V 2>&1)"', kind='setup', ref='probe',
                 mode='apply', actor=actor, require_ready=False)
     state = 'ready' if probe['status'] == 'ok' else 'failed'
+    if state == 'failed' and made:      # not set up after all: no deploy key left pointing at it
+        with Vault(db, conn).unlock() as v:
+            v.unbind(made)
     set_access(conn, name, state, probe['output'], actor)
     return {'host': name, 'state': state, 'output': probe['output']}

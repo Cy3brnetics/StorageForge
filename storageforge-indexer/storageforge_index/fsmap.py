@@ -97,7 +97,7 @@ def _dir_exists(conn: Conn, m: dict, path: str) -> bool:
     if path == m['target']:
         return True
     return bool(conn.scalar("""SELECT 1 FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
-                               WHERE d.mount_id = :m AND d.path = :p AND f.filename = :n AND f.is_directory = 1""", {'m': m['id'], 'p': posixpath.dirname(path), 'n': posixpath.basename(path)}))
+                               WHERE d.mount_id = :m AND d.path = :p AND f.filename = :n AND f.is_directory""", {'m': m['id'], 'p': posixpath.dirname(path), 'n': posixpath.basename(path)}))
 
 
 def path_info(conn: Conn, h: dict, path: str) -> dict:
@@ -135,7 +135,7 @@ def browse(conn: Conn, host_name: str, path: str = '/') -> dict:
             c['bytes'] += size
             c['entries'] += n
         for name, size in conn.all("""SELECT f.filename, f.file_size_bytes FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
-                                      WHERE d.mount_id = :m AND d.path = :p AND f.is_directory = 1""", {'m': m['id'], 'p': path}):
+                                      WHERE d.mount_id = :m AND d.path = :p AND f.is_directory""", {'m': m['id'], 'p': path}):
             children.setdefault(name, {'name': name, 'bytes': 0, 'entries': 0})
     for mm in h['mounts']:                      # a mount below: list its first folder on the way down, badge the mount itself
         if mm['target'] == path or not _under(mm['target'], path):
@@ -152,12 +152,12 @@ def browse(conn: Conn, host_name: str, path: str = '/') -> dict:
     if m and m['state'] == 'indexed':
         rows = conn.all("""SELECT f.filename, f.file_size_bytes, f.modified_at, f.is_symlink, f.symlink_target
                            FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
-                           WHERE d.mount_id = :m AND d.path = :p AND f.is_directory = 0 ORDER BY f.filename LIMIT :n""",
+                           WHERE d.mount_id = :m AND d.path = :p AND NOT f.is_directory ORDER BY f.filename LIMIT :n""",
                         {'m': m['id'], 'p': path, 'n': FILE_LIMIT + 1})
         files = [{'name': n, 'bytes': s or 0, 'mtime': t, 'link': lt if ln else None} for n, s, t, ln, lt in rows[:FILE_LIMIT]]
         if len(rows) > FILE_LIMIT:
             more = conn.scalar('SELECT count(*) FROM file_records f JOIN directories d ON d.dir_id = f.dir_id '
-                               'WHERE d.mount_id = :m AND d.path = :p AND f.is_directory = 0',
+                               'WHERE d.mount_id = :m AND d.path = :p AND NOT f.is_directory',
                                {'m': m['id'], 'p': path}) - FILE_LIMIT
     exps = exports_of(conn, h['name'])
     for e in exps:                              # shares at or below each child folder

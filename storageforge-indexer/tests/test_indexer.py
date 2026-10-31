@@ -6,6 +6,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+try:
+    import dbfactory
+except ImportError:      # run as tests.test_x from the project folder
+    from tests import dbfactory
 from storageforge_index.capacity import TiB, parse_size, pool_capacity
 from storageforge_index.db import Database, MassDeleteRefused
 from storageforge_index.payloads import (apply_df, apply_fstab, apply_lvs, apply_zpool_status, load_structured, lvm_level,
@@ -85,6 +89,16 @@ class Capacity(unittest.TestCase):
     def test_md_raid1_ext4(self):
         r = pool_capacity('md', 'raid1', [8001563222016 - 2**20] * 2, fs='ext4')
         self.assertAlmostEqual(r['usable'] / TiB, 6.80, places=2)
+
+    def test_too_few_devices_and_btrfs_parity(self):
+        """GM-23: one device in raid1 left usable at -512 MiB (data 0 minus metadata); btrfs raid5/6 counted no parity."""
+        for kind, level, sizes in (('btrfs', 'raid1', [4e12]), ('btrfs', 'raid10', [4e12, 4e12]), ('md', 'raid5', [4e12]),
+                                   ('btrfs', 'raid6', [4e12, 4e12])):
+            self.assertGreaterEqual(pool_capacity(kind, level, sizes)['usable'], 0, (kind, level))
+        r = pool_capacity('btrfs', 'raid5', [4e12] * 4)
+        self.assertEqual((r['parity'], r['tolerance']), (4e12, 1))
+        self.assertAlmostEqual(r['usable'] / 1e12, 12 * 0.99, delta=0.01)
+        self.assertEqual(pool_capacity('btrfs', 'raid6', [4e12] * 4)['tolerance'], 2)
 
     def test_btrfs_raid1_mixed(self):
         r = pool_capacity('btrfs', 'raid1', [16e12, 4e12])
@@ -168,6 +182,16 @@ class Planning(unittest.TestCase):
                 return out
         inv = remote.collect_inventory(T())
         self.assertEqual((inv.lvs, inv.btrfs, inv.nfs, inv.smb, inv.access, inv.user), ('LVS', 'BTRFS', 'NFS', 'SMB', 'capability', 'scan'))
+
+    def test_inventory_sections_and_mountinfo_options(self):
+        """GM-23: a line of a file the inventory shows (fstab, exports) starting with @@ started a section of its own;
+        the /proc/self/mountinfo fallback dropped the filesystem's own options (subvol=, compress=)."""
+        from storageforge_index.remote import parse_mountinfo, parse_sections
+        sec = parse_sections('@@hostname\nnas\n@@nfs\n/srv x(rw)\n@@note from the admin\n@@end\n')
+        self.assertEqual(sec, {'hostname': 'nas', 'nfs': '/srv x(rw)\n@@note from the admin'})
+        line = '36 25 0:31 /@/home /home rw,relatime shared:1 - btrfs /dev/sda2 rw,compress=zstd:3,subvolid=257,subvol=/@/home'
+        m = parse_mountinfo(line)[0]
+        self.assertEqual(m.options, 'rw,relatime,compress=zstd:3,subvolid=257,subvol=/@/home')
 
     def test_find_command_quotes_and_prunes(self):
         cmd = find_command("/srv/it's here", ['/srv/it\'s here/[x]'], ['.git'], nice=False)
@@ -309,6 +333,101 @@ if verify_step 0; then echo VERDICT=match; else echo VERDICT=differ; fi""")
         self.assertIn('CONFLICT', out)
         self.assertNotIn('RUN', out)
         self.assertIn('no user', run(f'{tmp}/tree', 'no-such-user-sf', '', '', 1))
+
+    def test_share_records_the_fstab_line_it_keeps(self):
+        """GM-21: when fstab already mounts the share with its own options, those stay, and the line recorded for drift
+        checks must be that one: recording ours made every later scan report the line as gone."""
+        from storageforge_index import shares
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        fn = bash_fn(Path(shares.__file__).read_text(), 'client_mount').replace('/etc/fstab', f'{tmp}/fstab')
+
+        def run(fstab):
+            (tmp / 'fstab').write_text(fstab)
+            return self.bash(f"""ok() {{ echo "OK $*"; }}; conflict() {{ echo "CONFLICT $*"; }}; missing() {{ :; }}; section() {{ :; }}
+need_cmd() {{ return 0; }}; mountpoint() {{ return 0; }}; APPLY=1; WANT_LINES=()
+C_TARGET=(/mnt/media); C_SOURCE=(nas:/srv/media); C_PROTO=(NFS)
+{fn}client_mount 0; printf 'WANT %s\\n' "${{WANT_LINES[@]}}" """)
+        own = 'nas:/srv/media /mnt/media nfs4 rw,hard,vers=4.2 0 0'
+        out = run(own + '\n')
+        self.assertIn('its own options kept', out)
+        self.assertIn(f'WANT {own}', out)
+        out = run('other:/x /mnt/media nfs4 defaults 0 0\n')                 # a conflict: nothing of ours is there
+        self.assertIn('CONFLICT', out)
+        self.assertNotIn('WANT nas:', out)
+
+    def test_restore_says_why_pack_failed_and_leaves_no_empty_folder(self):
+        """GM-22: pack's errors went to /dev/null (same host) or only into another run's log (runner elsewhere), and a
+        restore that got nothing left an empty .restored-<time> folder."""
+        import contextlib
+        import io
+        import types
+        from unittest import mock
+        from storageforge_index import deploy, jobs
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / 'root').mkdir()
+        out = self.job(f'serve_load() {{ :; }}; die() {{ echo "DIE $*"; exit 1; }}\nunpack p1-s1 {tmp}/root/x.restored </dev/null',
+                       ROOT=tmp / 'root')
+        self.assertNotIn('restored into', out)
+        self.assertEqual(list((tmp / 'root').iterdir()), [])
+        fake = tmp / 'storageforge-job'
+        fake.write_text('#!/bin/bash\ncase $1 in pack) echo 4096 >&2; echo "storageforge-job: a.txt is not in daily.0" >&2; exit 1 ;;\n'
+                        '  unpack) cat >/dev/null; echo "tar: This does not look like a tar archive" >&2; exit 2 ;; esac\n')
+        fake.chmod(0o755)
+        job = {'runner': 'nas', 'source': 'nas', 'spec': {'src': '/srv'}}
+        scripts = []
+        with mock.patch.object(jobs, 'get', lambda *a: job), \
+             mock.patch.object(deploy, 'run', lambda db, h, script, **k: scripts.append(script) or {'status': 'failed'}):
+            jobs.restore(None, None, 'p1-s1', 'daily.0', 'a.txt', 't')
+        out = self.bash(scripts[0].replace(deploy.JOBBIN, str(fake)))
+        self.assertIn('a.txt is not in daily.0', out)
+        self.assertNotIn('4096', out)
+
+        @contextlib.contextmanager
+        def raw(*a, **k):
+            yield types.SimpleNamespace(stdout=io.BytesIO(b''), returncode=1,
+                                        errors=[b'4096\nstorageforge-job: a.txt is not in daily.0\n'])
+        job['runner'] = 'backup'
+        with mock.patch.object(jobs, 'get', lambda *a: job), mock.patch.object(deploy, 'raw', raw), \
+             mock.patch.object(deploy, 'run', lambda *a, **k: {'status': 'failed', 'output': 'tar: not a tar archive'}):
+            r = jobs.restore(None, None, 'p1-s1', 'daily.0', 'a.txt', 't')
+        self.assertEqual(r['status'], 'failed')
+        self.assertIn('on backup: storageforge-job: a.txt is not in daily.0', r['output'])
+        self.assertNotIn('4096', r['output'])
+
+    def test_host_relay_passes_arguments_intact(self):
+        """GM-02: --host joined the arguments unquoted into the remote command line, so the remote shell split them
+        again and ran what they held; a host starting with - reached ssh as an option. GM-08: tasks refuse those too."""
+        from storageforge_index import tasks
+        from storageforge_index.scriptkit import REMOTE
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / 'bin').mkdir()
+        for name, body in (('ssh', f'for a; do last=$a; done\ncase $* in *mktemp*) cat "{tmp}/where" ;; *" -O "*) ;; '
+                                   f'*) printf %s "$last" >"{tmp}/cmd" ;; esac\n'),
+                           ('scp', ':\n'), ('sudo', 'shift; exec "$@"\n')):
+            (tmp / 'bin' / name).write_text('#!/bin/bash\n' + body)
+            (tmp / 'bin' / name).chmod(0o755)
+
+        def run(host):
+            return self.bash(f"""set -euo pipefail; PATH={tmp}/bin:$PATH
+ARGS=(--step '1; touch {tmp}/PWNED' --host {host} --apply); HOST={host}
+{REMOTE}""")
+        for where in (tmp / 'plain', tmp / 'with space'):   # the remote command removes it at the end
+            where.mkdir()
+            (where / 'move.sh').write_text('for a; do printf "ARG<%s>\\n" "$a"; done\n')
+            (tmp / 'where').write_text(str(where))
+            run('nas')
+            out = self.bash(f'PATH={tmp}/bin:$PATH; sh -c "$(cat \'{tmp}/cmd\')"')
+            self.assertEqual(out.splitlines(), ['ARG<--step>', f'ARG<1; touch {tmp}/PWNED>', 'ARG<--apply>'], where)
+            self.assertFalse((tmp / 'PWNED').exists())
+            self.assertFalse(where.exists())
+        self.assertIn('not a host name', run('-oProxyCommand=x'))
+        for bad in ('-e.', '-oX@nas', 'scan@-e.'):
+            with self.assertRaisesRegex(ValueError, 'host name'):
+                tasks.normalize({'name': 't', 'host': bad, 'blocks': []})
+        self.assertEqual(tasks.normalize({'name': 't', 'host': 'scan@nas-2', 'blocks': []})['host'], 'scan@nas-2')
 
 class Payloads(unittest.TestCase):
     def test_zpool_status(self):
@@ -460,7 +579,7 @@ class EndToEnd(unittest.TestCase):
         (self.tree / 'b' / 'notes.txt').write_text('hi')
         (self.tree / 'b' / '.git').mkdir()
         (self.tree / 'b' / '.git' / 'HEAD').write_text('x')
-        self.db = Database(str(self.tmp / 'idx.db'))
+        self.db = dbfactory.make(self, self.tmp / 'idx.db')
         conn = self.db.connect()
         self.db.migrate(conn)
         conn.close()
@@ -480,6 +599,8 @@ class EndToEnd(unittest.TestCase):
             conn.close()
 
     @unittest.skipIf(os.geteuid() == 0, 'root reads every folder')
+    @unittest.skipIf(os.access('/usr/local/lib/storageforge/find', os.X_OK),
+                     "this machine has StorageForge's read-everything find (scan access was set up here)")
     def test_unreadable_folders_and_duplicate_folders(self):
         from storageforge_index import access
         from storageforge_index.folders import duplicate_folders

@@ -172,7 +172,7 @@ def parse_compose(path: str, text: str) -> dict:
 
 def compose_candidates(conn: Conn, host_id: int, extra: list[str]) -> list[str]:
     rows = conn.all(f"""SELECT d.path, f.filename FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id
-                        WHERE m.host_id = :h AND f.is_directory = 0 AND f.file_size_bytes <= 524288
+                        WHERE m.host_id = :h AND NOT f.is_directory AND f.file_size_bytes <= 524288
                           AND f.filename IN ({', '.join(f"'{n}'" for n in COMPOSE_NAMES)})""", {'h': host_id})
     paths = {posixpath.join(p, n) for p, n in rows}
     paths |= {p for p in extra if p.startswith('/')}

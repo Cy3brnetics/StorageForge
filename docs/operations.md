@@ -15,7 +15,8 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_SESSION_SECRET` / `_FILE` | random per start | Signs session cookies; at least 32 characters |
 | `STORAGEFORGE_LISTEN`, `STORAGEFORGE_PORT` | `127.0.0.1`, `8080` (`0.0.0.0` in the image) | Where `serve` listens |
 | `STORAGEFORGE_COOKIE_SECURE` | `0` (`1` in compose) | `Secure` `__Host-` cookie; needs HTTPS |
-| `STORAGEFORGE_PROXY_HOPS` | `0` (`1` in compose) | Trust `X-Forwarded-For` from this many proxies |
+| `STORAGEFORGE_PROXY_HOPS` | `0` (`1` in compose) | Trust `X-Forwarded-For` from this many proxies (`2` with another proxy in front of the stack's) |
+| `STORAGEFORGE_PROXY_HOST` | none (`proxy` in compose) | Believe those headers only on requests from this host (name or address), not from anything else that can reach the app |
 | `STORAGEFORGE_SCAN_INTERVAL` | off (`6h` in compose) | Rescan bound hosts this often (`90m`, `6h`, `1d`) |
 | `STORAGEFORGE_INCLUDE_FSTYPES` | | Comma list of normally skipped filesystem types the server's scans walk (e.g. `overlay`) |
 | `STORAGEFORGE_RUNTIME_DIR` | `/run/storageforge`, else `$XDG_RUNTIME_DIR` | tmpfs for agent sockets; its path must be short (Unix socket limit) |
@@ -26,16 +27,17 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_CHANGE_DAYS` | `90` | Days of file change history kept |
 | `STORAGEFORGE_CHANGE_MAX_ROWS` | `2000000` | Most change rows kept, oldest scans dropped first |
 | `STORAGEFORGE_ACCESS_LOG` | `changes` | `all`, `changes` (writes, 429s and 5xx) or `off` |
-| `STORAGEFORGE_REPORT_CA_FILE` | `/run/secrets/tls_cert` in compose | Certificate deployed jobs trust for an `https` report URL |
+| `STORAGEFORGE_REPORT_CA_FILE` | `/run/sf-secrets/tls_cert` in compose | Certificate deployed jobs trust for an `https` report URL |
 
 ### Container and scripts
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
 | `STORAGEFORGE_HTTPS_BIND`, `STORAGEFORGE_HTTPS_PORT` | `0.0.0.0`, `8443` | Where the proxy is published |
-| `STORAGEFORGE_SECRETS_GID` | `1000` | Group that can read `secrets/`; `init-secrets.sh` writes it to `.env` when yours differs |
+| `STORAGEFORGE_SECRETS_GID` | `1000` | Group that can read `keys/`; `init-secrets.sh` writes it to `.env` when yours differs |
+| `STORAGEFORGE_SECRETS_DIR` | `./secrets` | Mounted read-only into the `init-secrets` service; it copies what the secret volumes are missing from here |
 | `STORAGEFORGE_KEY_IMPORT_DIR` | `./keys` | Mounted read-only; each file is imported as a key at start |
-| `STORAGEFORGE_TLS_NAMES` | | Extra names and addresses for the certificate `init-secrets.sh` makes |
+| `STORAGEFORGE_TLS_NAMES` | | Extra names and addresses for the self-signed certificate; used when it is created |
 | `STORAGEFORGE_ALLOW_DISK_RUNTIME` | `0` | Let the entrypoint start when the runtime dir is not tmpfs (not recommended) |
 | `STORAGEFORGE_EGRESS_PORTS`, `STORAGEFORGE_BRIDGE` | `22 443`, `sf0` | For `docker/egress-firewall.sh` |
 
@@ -118,7 +120,7 @@ uv pip compile pyproject.toml docker/build-requirements.in --extra postgres --un
 
 ## PostgreSQL
 
-Build with `--build-arg EXTRAS=postgres` and set `STORAGEFORGE_DB=postgresql://user@host/storageforge`. With PostgreSQL the scanner uses up to 8 writers and `COPY`. The PostgreSQL DDL is written but has not yet been run against a live server.
+Build with `--build-arg EXTRAS=postgres` and set `STORAGEFORGE_DB=postgresql://user@host/storageforge`. With PostgreSQL the scanner uses up to 8 writers and `COPY`.
 
 ## Tests
 
@@ -128,3 +130,10 @@ docker build --target test .
 ```
 
 `tests/test_platform.py` covers the vault, bindings, the audit chain, a real ephemeral `ssh-agent`, the graph and canvas, and the HTTP API with auth and CSP. `tests/test_indexer.py` covers units, patterns, the stream parser, pool math, mount planning, payload parsers, reports and real local scans. `tests/test_tasks.py` covers storage tasks and their scripts.
+
+The same suite runs against PostgreSQL when `STORAGEFORGE_TEST_PG` names a server it may create databases on (each test gets a fresh one, dropped afterwards). The backup tests are skipped there, since backups are of SQLite databases:
+
+```bash
+docker run -d --rm --name sf-test-pg -e POSTGRES_USER=sf -e POSTGRES_PASSWORD=sftest -p 127.0.0.1:55432:5432 postgres:16-alpine
+STORAGEFORGE_TEST_PG=postgresql://sf:sftest@127.0.0.1:55432/postgres python3 -m unittest discover -s tests
+```

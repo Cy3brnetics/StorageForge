@@ -31,7 +31,7 @@ Hosts need OpenSSH 8.1 or later for `ssh-keygen -Y`.
 Once per host, either:
 
 - **Deploy → Set up…** in the web UI, with a sudo password typed into the request: the scan user's own, or an admin account's. The password is used for that one SSH session and never stored. Afterwards StorageForge binds the deploy key to the host and proves a signed run works.
-- **By hand:** download the setup script (`GET /api/deploy/setup-script`, or `storageforge-index deploy setup-script`), run it as root on the host, then press **I ran it: test** so StorageForge binds the key and tests a signed run.
+- **By hand:** download the setup script (`POST /api/deploy/setup-script`, or `storageforge-index deploy setup-script`), run it as root on the host, then press **I ran it: test** so StorageForge binds the key and tests a signed run.
 
 The setup creates the `storageforge-deploy` system user (no password, root-owned `authorized_keys`), `/etc/sudoers.d/storageforge-deploy` (checked with `visudo -cf`), `/usr/local/sbin/storageforge-run`, and `/etc/storageforge/allowed_signers`. The removal script (`--remove`, or **Remove** in the UI) undoes all of it.
 

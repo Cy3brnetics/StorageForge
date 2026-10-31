@@ -13,6 +13,10 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
+try:
+    import dbfactory
+except ImportError:      # run as tests.test_x from the project folder
+    from tests import dbfactory
 from storageforge_index import blueprint, canvas, graph, vault
 from storageforge_index.db import Database, dir_id
 from storageforge_index.payloads import (apply_df, apply_fstab, apply_zpool_status, load_structured, node_from_blueprint,
@@ -39,7 +43,7 @@ def private_pem():
 class DBCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix='sf-plat-'))
-        self.db = Database(str(self.tmp / 'idx.db'))
+        self.db = dbfactory.make(self, self.tmp / 'idx.db')
         self.conn = self.db.connect()
         self.db.migrate(self.conn)
 
@@ -63,7 +67,8 @@ class VaultTests(DBCase):
                 got = bytes(buf.view())
             self.assertEqual(serialization.load_ssh_private_key(got, None).public_key().public_bytes(
                 serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH).decode(), info['public_key'].rsplit(' ', 1)[0])
-        raw = Path(self.db.path).read_bytes()
+        raw = Path(self.db.path).read_bytes() if self.db.dialect == 'sqlite' else b''.join(
+            str(r).encode() for r in self.conn.all('SELECT * FROM ssh_keys'))
         self.assertNotIn(b'OPENSSH PRIVATE KEY', raw)
         self.assertNotIn(pem[40:80], raw)
 
@@ -120,7 +125,7 @@ class VaultTests(DBCase):
             self.assertEqual(log.verify(), (True, 5, None))
             with self.assertRaises(Exception):
                 self.conn.execute("UPDATE audit_log SET outcome = 'failed'")
-            self.conn.execute('DROP TRIGGER audit_log_no_update')
+            self.conn.execute('DROP TRIGGER audit_log_no_update' + ('' if self.db.dialect == 'sqlite' else ' ON audit_log'))
             self.conn.execute("UPDATE audit_log SET target_host = 'forged' WHERE audit_id = 3")
             self.assertEqual(log.verify()[0], False)
             self.assertEqual(log.verify()[2], 3)
@@ -211,9 +216,10 @@ class OpsTests(DBCase):
                           "('10.42.0.100', 'scheduler', :t, 'ok')", {'t': int(time.time()) - 600})
         self.assertEqual(app.due_hosts(3600), [])                       # scanned 10 min ago under its IP: not due
         self.assertEqual(app.due_hosts(300), ['cachyos-x8664'])
-        self.conn.execute("UPDATE hosts SET last_scanned_at = :t", {'t': int(time.time())})      # a scan run from the CLI
+        self.conn.execute(f"UPDATE hosts SET last_scanned_at = {self.db.ts(':t')}", {'t': int(time.time())})      # a scan run from the CLI
         self.assertEqual(app.due_hosts(300), [])
 
+    @unittest.skipIf(dbfactory.PG, 'backups are of SQLite databases (PostgreSQL: pg_dump)')
     def test_backup_restore_and_prune(self):
         from storageforge_index import backup
         vlt = vault.Vault(self.db, self.conn, SECRET)
@@ -357,7 +363,8 @@ class ChangePlanTests(DBCase):
         pool = self.conn.scalar("SELECT mount_id FROM mounts WHERE mount_point = '/mnt/pool'")
         for parent, name, d, size in (('/mnt', 'pool', 1, 0), ('/mnt/pool', 'photos', 1, 0), ('/mnt/pool/photos', 'a.jpg', 0, 2048)):
             self.conn.execute("INSERT INTO file_records (mount_id, dir_id, filename, is_directory, file_size_bytes, modified_at) "
-                              "VALUES (:m, :p, :n, :d, :s, 0)", {'m': pool, 'p': dir_id(self.conn, pool, parent), 'n': name, 'd': d, 's': size})
+                              f"VALUES (:m, :p, :n, :d, :s, {self.db.ts('0')})",
+                              {'m': pool, 'p': dir_id(self.conn, pool, parent), 'n': name, 'd': bool(d), 's': size})
 
     def plan(self, *tasks):
         from storageforge_index import changes
@@ -932,7 +939,7 @@ class ServerTests(DBCase):
     def test_every_route_needs_a_session_unless_listed(self):
         """A new route that forgets @login_required fails here, not in production."""
         import re
-        public = {('GET', '/login'), ('GET', '/healthz'), ('POST', '/api/logout'),
+        public = {('GET', '/login'), ('GET', '/healthz'), ('POST', '/api/logout'), ('POST', '/api/login'),
                   ('GET', '/<any("login.js", "style.css", "favicon.svg"):name>')}
         answered = []
         for rule in self.web.url_map.iter_rules():
@@ -980,6 +987,30 @@ class ServerTests(DBCase):
         self.assertEqual(self.login().status_code, 200)                  # the owner, on another network, still gets in
         actions = [e['action'] for e in vault.AuditLog(self.db, self.conn, None).tail(10)]
         self.assertIn('web.login.limited', actions)
+
+    def test_guessing_elsewhere_does_not_lock_the_owner_out(self):
+        """GM-19: the per-account daily limit counts guesses from every network, so anyone could lock alice out for a
+        day; the networks she signs in from are exempt. Empty passwords cost nothing; breaches are audited sparingly."""
+        from unittest import mock
+        from storageforge_index import server
+        with mock.patch.object(server, 'LOGIN_LIMIT_PER_ACCOUNT', '3 per day'):
+            web = server.create_app(server.App(self.db), 's' * 48)
+        c = web.test_client()
+
+        def login(addr, password='wrong password!!'):
+            return c.post('/api/login', json={'username': 'alice', 'password': password}, environ_base={'REMOTE_ADDR': addr})
+        self.assertEqual(login('192.168.1.20', 'a long enough password').status_code, 200)
+        c.post('/api/logout')
+        for i in range(5):                                       # nothing guessed: no try used up
+            self.assertEqual(login(f'10.98.{i}.1', '').status_code, 400)
+        audited = len(vault.AuditLog(self.db, self.conn, None).tail(1000))
+        for i in range(3):                                       # guesses spread over networks use up the day
+            self.assertEqual(login(f'10.{i}.0.1').status_code, 401)
+        for _ in range(6):
+            self.assertEqual(login('10.99.0.1', 'a long enough password').status_code, 429)   # a new network: held
+        self.assertEqual(login('192.168.1.77', 'a long enough password').status_code, 200)   # her own network
+        added = vault.AuditLog(self.db, self.conn, None).tail(1000)[:-audited or None]
+        self.assertEqual(sum(e['action'] == 'web.login.limited' for e in added), 1)       # not one per refused request
 
     def test_alert_urls_cannot_reach_this_container_or_metadata(self):
         from storageforge_index import alerts
@@ -1042,6 +1073,104 @@ class ServerTests(DBCase):
         self.assertNotIn('Domain=', cookie)
         self.assertEqual(vault.AuditLog(self.db, self.conn, None).tail(1)[0]['actor'], 'web:10.0.0.7')
 
+    def test_setup_script_download_needs_a_json_post(self):
+        """GM-11: the download makes the deploy keys on first use, so no cross-site GET or form may trigger it."""
+        os.environ['STORAGEFORGE_VAULT_SECRET'] = SECRET.decode()
+        self.addCleanup(os.environ.pop, 'STORAGEFORGE_VAULT_SECRET', None)
+        vault.Vault(self.db, self.conn, SECRET).init()
+        self.login()
+        keys = lambda: self.conn.scalar('SELECT count(*) FROM ssh_keys')   # noqa: E731
+        self.assertEqual(self.client.get('/api/deploy/setup-script').status_code, 405)
+        self.assertEqual(self.client.post('/api/deploy/setup-script', data='remove=1',
+                                          content_type='application/x-www-form-urlencoded').status_code, 400)
+        self.assertEqual(keys(), 0)
+        r = self.client.post('/api/deploy/setup-script', json={})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('storageforge-deploy', r.get_data(as_text=True))
+        self.assertEqual(keys(), 2)
+
+    def test_folder_results_are_not_kept_from_a_running_scan(self):
+        """GM-25: the cache key was max(scan_id), which a scan sets when it starts: a result computed mid-scan was kept
+        under the new id and served after the scan ended. Cold and duplicate folders also evicted each other."""
+        from unittest import mock
+        from storageforge_index import folders
+        self.login()
+        self.conn.execute("INSERT INTO hosts (hostname, inventory_json) VALUES ('nas', '{}')")
+        hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'nas'")
+        calls = []
+        cold = lambda *a, **k: calls.append('cold') or {'folders': []}               # noqa: E731
+        dupes = lambda *a, **k: calls.append('dupes') or {'groups': []}            # noqa: E731
+        with mock.patch.object(folders, 'cold_folders', cold), mock.patch.object(folders, 'duplicate_folders', dupes):
+            sid = self.conn.scalar(f"INSERT INTO scans (host_id, started_at, status) VALUES (:h, {self.db.ts('1')}, 'running') "
+                                   "RETURNING scan_id", {'h': hid})
+            for _ in range(2):
+                self.client.get('/api/folders/cold')
+            self.assertEqual(calls, ['cold', 'cold'])                       # mid-scan: computed, never kept
+            self.conn.execute("UPDATE scans SET status = 'ok' WHERE scan_id = :s", {'s': sid})
+            for _ in range(2):
+                self.client.get('/api/folders/cold')
+                self.client.get('/api/folders/duplicates')
+            self.assertEqual(calls, ['cold', 'cold', 'cold', 'dupes'])      # both kept, side by side
+
+    def test_restore_runs_in_the_background(self):
+        """GM-12: a restore held one of the 8 web threads for up to 6 hours; now it answers with a group to poll."""
+        import threading
+        from unittest import mock
+        from storageforge_index import deploy, jobs
+        self.login()
+        gate, seen = threading.Event(), []
+
+        def slow(db, c, jid, snapshot, rel, who, gid=None, target=None):
+            seen.append((jid, snapshot, rel, target))
+            gate.wait(10)
+            if rel == 'bad':
+                raise deploy.DeployError('backup is not set up for deploys yet')
+            c.execute("INSERT INTO deploy_runs (group_id, host, kind, ref, mode, status, output, actor, started_at, finished_at) "
+                      "VALUES (:g, 'nas', 'restore', :j, 'apply', 'ok', 'restored', 't', 1, 2)", {'g': gid, 'j': jid})
+        job = {'source': 'nas', 'spec': {'src': '/srv/data'}}
+        with mock.patch.object(jobs, 'get', lambda *a: job), mock.patch.object(jobs, 'restore', slow):
+            r = self.client.post('/api/deploy/jobs/p1-s1/restore', json={'snapshot': 'daily.0', 'path': 'a.txt'})
+            self.assertEqual(r.status_code, 202)                              # answered while the copy still runs
+            self.assertTrue(r.json['target'].startswith('/srv/data/a.txt.restored-'))
+            group = lambda gid: self.client.get(f'/api/deploy/groups/{gid}').json['runs']   # noqa: E731
+            self.assertEqual([x['status'] for x in group(r.json['group'])], ['running'])
+            gate.set()
+            for _ in range(100):
+                runs = group(r.json['group'])
+                if runs and 'running' not in [x['status'] for x in runs]:
+                    break
+                time.sleep(0.05)
+            self.assertEqual([(x['status'], x['output']) for x in runs], [('ok', 'restored')])
+            r = self.client.post('/api/deploy/jobs/p1-s1/restore', json={'snapshot': 'daily.0', 'path': 'bad'})
+            for _ in range(100):
+                runs = group(r.json['group'])
+                if runs and 'running' not in [x['status'] for x in runs]:
+                    break
+                time.sleep(0.05)
+            self.assertEqual([(x['status'], x['output']) for x in runs], [('failed', 'backup is not set up for deploys yet')])
+            self.assertEqual(self.client.post('/api/deploy/jobs/p1-s1/restore', json={'snapshot': '../x', 'path': 'a'}).status_code, 400)
+        self.assertEqual(seen[0][:3], ('p1-s1', 'daily.0', 'a.txt'))
+
+    def test_forwarded_headers_count_only_from_the_proxy(self):
+        """GM-17: anything on a shared Docker network could reach the app directly and claim any client address; with a
+        second proxy in front (PROXY_HOPS=2) the nearest one's single X-Forwarded-Proto was ignored."""
+        from storageforge_index import server
+        actor = lambda: vault.AuditLog(self.db, self.conn, None).tail(1)[0]['actor']   # noqa: E731
+        web = server.create_app(server.App(self.db), 's' * 48, secure_cookies=True, proxy_hops=1, proxy_host='127.0.0.2')
+        body = {'username': 'alice', 'password': 'wrong password!!'}
+        web.test_client().post('/api/login', json=body, environ_base={'REMOTE_ADDR': '10.0.0.9'},
+                               headers={'X-Forwarded-For': '203.0.113.7'})
+        self.assertEqual(actor(), 'web:10.0.0.9')                             # not the proxy: its claim is ignored
+        web.test_client().post('/api/login', json=body, environ_base={'REMOTE_ADDR': '127.0.0.2'},
+                               headers={'X-Forwarded-For': '203.0.113.7'})
+        self.assertEqual(actor(), 'web:203.0.113.7')
+        from flask import request
+        web = server.create_app(server.App(self.db), 's' * 48, secure_cookies=True, proxy_hops=2, proxy_host='127.0.0.2')
+        web.add_url_rule('/test-scheme', 'test_scheme', lambda: f'{request.scheme} {request.remote_addr}')
+        r = web.test_client().get('/test-scheme', base_url='http://storageforge:8080', environ_base={'REMOTE_ADDR': '127.0.0.2'},
+                                  headers={'X-Forwarded-For': '198.51.100.4, 10.1.1.1', 'X-Forwarded-Proto': 'https'})
+        self.assertEqual(r.get_data(as_text=True), 'https 198.51.100.4')     # https from the nearest proxy; client 2 hops back
+
     def test_commands_on_hosts_need_the_password_again(self):
         self.login()
         with self.later(6 * 60):
@@ -1100,6 +1229,56 @@ class HostIdentityTests(DBCase):
         self.assertEqual(self.row('nas.lan')[0], '10.0.0.7')                 # deploys still go to the real one
         self.assertEqual(self.conn.scalar('SELECT count(*) FROM hosts'), 1)
         self.scan_as('pc.lan', '10.0.0.66', ['SHA256:pc'])                  # an unrelated name is fine
+
+    def test_postgres_values_and_sql(self):
+        """GM-13, without a server: what PostgreSQL returns (JSONB as objects, TIMESTAMPTZ as datetimes) and how SQL
+        reaches psycopg (a literal % is doubled). The whole suite runs on PostgreSQL with STORAGEFORGE_TEST_PG."""
+        from storageforge_index.db import Conn, epoch, loads
+        self.assertEqual(loads({'a': 1}), {'a': 1})
+        self.assertEqual(loads('{"a": 1}'), {'a': 1})
+        self.assertEqual((loads(None, {}), loads('', {})), ({}, {}))
+        self.assertEqual(epoch(dt.datetime(2026, 10, 30, tzinfo=dt.timezone.utc)), 1793318400)
+        self.assertEqual(Conn(None, 'postgres')._sql("SELECT 1 WHERE src LIKE 'mnt:%' AND x = :x AND y::text = :y"),
+                         "SELECT 1 WHERE src LIKE 'mnt:%%' AND x = %(x)s AND y::text = %(y)s")
+
+    def test_nested_transactions_and_same_second_backups(self):
+        """GM-25: a nested tx() failed on SQLite (BEGIN inside a transaction); it is a savepoint now, as on PostgreSQL.
+        Two backups started in the same second wrote one .db.part file."""
+        self.conn.execute("INSERT INTO settings (key, value_json, updated_at) VALUES ('a', '1', 0)")
+        with self.conn.tx():
+            self.conn.execute("UPDATE settings SET value_json = '2' WHERE key = 'a'")
+            with self.assertRaises(ZeroDivisionError):
+                with self.conn.tx():
+                    self.conn.execute("UPDATE settings SET value_json = '3' WHERE key = 'a'")
+                    1 / 0
+        self.assertEqual(self.conn.scalar("SELECT value_json FROM settings WHERE key = 'a'"), '2')
+        if self.db.dialect != 'sqlite':
+            return
+        from unittest import mock
+        from storageforge_index import backup
+        dest = self.tmp / 'bk'
+        dest.mkdir()
+        second = dt.datetime(2026, 10, 30, 2, 0, 0)
+        with mock.patch.object(backup.dt, 'datetime', mock.Mock(now=lambda: second)):
+            paths = [backup.create(self.db, 'essentials', dest)['path'] for _ in range(3)]
+        self.assertEqual([Path(p).name for p in paths], ['storageforge-essentials-20261030-020000.db',
+                                                         'storageforge-essentials-20261030-020000b.db',
+                                                         'storageforge-essentials-20261030-020000c.db'])
+        self.assertEqual([Path(b['path']).name for b in backup.listing(dest)][0], Path(paths[-1]).name)   # newest first
+
+    def test_duplicate_files_of_one_host_list_only_its_copies(self):
+        """GM-23: with a host filter the counts were that host's, but the file list held every host's copies."""
+        from storageforge_index.db import dir_id
+        from storageforge_index.search import run_dupes
+        for host in ('nas', 'pc'):
+            hid = self.conn.scalar("INSERT INTO hosts (hostname, inventory_json) VALUES (:h, '{}') RETURNING host_id", {'h': host})
+            mid = self.conn.scalar("INSERT INTO mounts (host_id, mount_point, filesystem_type) VALUES (:h, '/', 'ext4') RETURNING mount_id", {'h': hid})
+            for name in ('a.iso', 'b.iso'):
+                self.conn.execute("INSERT INTO file_records (mount_id, dir_id, filename, file_size_bytes, modified_at, checksum_hash) "
+                                  f"VALUES (:m, :d, :n, 4096, {self.db.ts('0')}, 'h1')", {'m': mid, 'd': dir_id(self.conn, mid, '/srv'), 'n': name})
+        g = run_dupes(self.conn, 'nas', 1, 10)[0]
+        self.assertEqual((g['copies'], g['files']), (2, ['nas:/srv/a.iso', 'nas:/srv/b.iso']))
+        self.assertEqual(run_dupes(self.conn, None, 1, 10)[0]['copies'], 4)
 
     def test_rows_from_before_pinning_and_rekey(self):
         from storageforge_index.db import Database, HostIdentityError
@@ -1169,6 +1348,54 @@ class HostIdentityTests(DBCase):
         self.assertEqual(rc, deploy.REFUSED)
         self.assertIn('signed for machine bbbb', err)
         self.assertEqual(run(deploy.request(key, me, 'echo ran'))[:2], (0, 'ran\n'))   # not scanned yet: name only
+
+
+class HostAccessTests(DBCase):
+    """GM-20 and GM-05: deploy access before any scan key, on another SSH port; adopt only binds one real host."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ['STORAGEFORGE_VAULT_SECRET'] = SECRET.decode()
+        self.addCleanup(os.environ.pop, 'STORAGEFORGE_VAULT_SECRET', None)
+        vault.Vault(self.db, self.conn, SECRET).init()
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_port, inventory_json) VALUES ('nas', '10.0.0.5', 2222, '{}')")
+
+    def test_sudo_run_needs_no_scan_key_with_an_admin_account(self):
+        from unittest import mock
+        from storageforge_index import access, hostkeys
+        seen, calls = [], []
+
+        def fake_run(argv, **kw):
+            calls.append((argv, kw.get('input')))
+            return subprocess.CompletedProcess(argv, 0, 'done', '')
+        with mock.patch.object(hostkeys, 'require_confirmed', lambda *a: None), \
+             mock.patch.object(access, 'askpass_path', lambda: '/bin/true'), \
+             mock.patch.object(access.subprocess, 'run', fake_run):
+            with self.assertRaisesRegex(ValueError, 'no scan key is bound'):
+                access.sudo_run(self.db, self.conn, 'nas', lambda u: 'true', 'pw')
+            r = access.sudo_run(self.db, self.conn, 'nas', lambda u: seen.append(u) or 'id', 'pw', admin_user='admin')
+            with self.assertRaisesRegex(ValueError, 'bind one first'):       # scan access is for the scan user
+                access.grant(self.db, self.conn, 'nas', 'pw', admin_user='admin')
+        self.assertEqual((seen, r['port'], r['via']), ([None], 2222, 'admin'))
+        argv, stdin = calls[0]
+        self.assertEqual(argv[argv.index('-p') + 1], '2222')
+        self.assertIn('admin@10.0.0.5', argv)
+        self.assertTrue(argv[-1].startswith('sudo -S -p "" sh -c ') and 'exec </dev/null' in argv[-1])   # no read of the pw
+        self.assertEqual(stdin, 'pw\n')
+
+    def test_adopt_binds_one_host_and_only_while_it_works(self):
+        from unittest import mock
+        from storageforge_index import deploy
+        for bad in ('*', '10.0.0.0/8', '-oProxyCommand=x', '*.lan'):
+            with self.assertRaisesRegex(ValueError, 'host name'):
+                deploy.adopt(self.db, self.conn, bad, 't')
+        deploy_bindings = lambda: [b for b in vault.Vault(self.db, self.conn, SECRET).bindings() if b['key'] == deploy.DEPLOY_KEY]  # noqa: E731
+        with mock.patch.object(deploy, 'run', lambda *a, **k: {'status': 'failed', 'output': 'refused'}):
+            self.assertEqual(deploy.adopt(self.db, self.conn, 'nas', 't')['state'], 'failed')
+        self.assertEqual(deploy_bindings(), [])
+        with mock.patch.object(deploy, 'run', lambda *a, **k: {'status': 'ok', 'output': 'works'}):
+            self.assertEqual(deploy.adopt(self.db, self.conn, 'nas', 't')['state'], 'ready')
+        self.assertEqual([(b['pattern'], b['port']) for b in deploy_bindings()], [('10.0.0.5', 2222)])
 
 
 class ScriptHeaderTests(DBCase):
@@ -1323,6 +1550,12 @@ class ScriptHeaderTests(DBCase):
         self.assertEqual({k: runnable(v) for k, v in out.items() if runnable(v)}, {})
         y = changes.ansible(self.conn, {'name': 'p', 'tasks': [{'type': 'dir', 'host': 'nas', 'params': {'path': "/srv/{{ lookup('pipe','id') }}"}}]})
         self.assertIn('path: !unsafe "/srv/{{ lookup', y)
+        y = changes.ansible(self.conn, {'name': 'p', 'tasks': [{'type': 'perms', 'host': 'nas', 'params': {
+            'path': '/srv/share', 'owner': 'alice', 'group': '', 'mode': '0750', 'recursive': True}}]})
+        import yaml
+        files = [t['ansible.builtin.file'] for t in yaml.safe_load(y)[0]['tasks']]
+        self.assertEqual(files, [{'path': '/srv/share', 'owner': 'alice', 'recurse': True},     # recursive: owner only
+                                 {'path': '/srv/share', 'mode': '0750'}])
 
     def test_audit_verify_reports_entries_a_database_writer_could_rewrite(self):
         key = vault.SecretBuffer(32)

@@ -1,17 +1,42 @@
 # StorageForge production stack.
-#   ./docker/init-secrets.sh            # creates ./secrets/{vault_secret,session_secret} and a self-signed TLS cert
-#   docker compose up -d --build
+#   docker compose up -d --build        # the first deploy creates the secrets and a self-signed TLS cert (init-secrets below)
 #   docker compose exec storageforge storageforge-index user add admin
 #   open https://<this machine>:8443    # sign in with that account (accept the self-signed certificate once)
 # Meant for a LAN. Do not publish it on the internet.
 name: storageforge
 
 services:
-  storageforge:
-    build:
+  # Runs once per deploy and exits: fills the secret volumes, keeping whatever is already in them (docker/init-volumes.sh)
+  init-secrets:
+    build: &runtime-build
       context: .
       target: runtime
     image: storageforge:0.2.0
+    restart: "no"
+    user: "0:0"                # owns the files for uid 10001 and uid 101
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt:
+      - no-new-privileges:true
+    network_mode: host         # to name the host's hostname and address in the certificate; it listens on nothing
+    entrypoint: ["/usr/local/bin/storageforge-init-volumes"]
+    environment:
+      STORAGEFORGE_TLS_NAMES: ${STORAGEFORGE_TLS_NAMES:-}
+    healthcheck:
+      disable: true
+    volumes:
+      - sf-secrets:/secrets/app
+      - sf-tls:/secrets/proxy
+      - sf-data:/app/data:ro   # a database with no secret is an error, not a new secret
+      # Secrets from docker/init-secrets.sh, for a stack that had them before these volumes. Empty otherwise.
+      - ${STORAGEFORGE_SECRETS_DIR:-./secrets}:/seed:ro
+
+  storageforge:
+    build: *runtime-build
+    image: storageforge:0.2.0
+    depends_on:
+      init-secrets: { condition: service_completed_successfully }
     restart: unless-stopped
     user: "10001:10001"
     read_only: true
@@ -19,22 +44,20 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      STORAGEFORGE_VAULT_SECRET_FILE: /run/secrets/vault_secret
-      STORAGEFORGE_SESSION_SECRET_FILE: /run/secrets/session_secret
+      STORAGEFORGE_VAULT_SECRET_FILE: /run/sf-secrets/vault_secret
+      STORAGEFORGE_SESSION_SECRET_FILE: /run/sf-secrets/session_secret
       STORAGEFORGE_COOKIE_SECURE: ${STORAGEFORGE_COOKIE_SECURE:-1}   # the session cookie only travels over https (proxy below)
       STORAGEFORGE_PROXY_HOPS: ${STORAGEFORGE_PROXY_HOPS:-1}         # the proxy below sets X-Forwarded-For (real client IP)
+      STORAGEFORGE_PROXY_HOST: proxy                                  # ...believed only from it, not from other containers
       STORAGEFORGE_SCAN_INTERVAL: ${STORAGEFORGE_SCAN_INTERVAL:-6h}
       STORAGEFORGE_BACKUP_HOUR: ${STORAGEFORGE_BACKUP_HOUR:-3}            # nightly essentials backup + prune (local hour)
       STORAGEFORGE_BACKUP_KEEP: ${STORAGEFORGE_BACKUP_KEEP:-14}
       STORAGEFORGE_BACKUP_FULL_KEEP: ${STORAGEFORGE_BACKUP_FULL_KEEP:-0}  # >0: also a full copy nightly (large)
       STORAGEFORGE_ACCESS_LOG: ${STORAGEFORGE_ACCESS_LOG:-changes}        # all | changes | off
-      STORAGEFORGE_REPORT_CA_FILE: /run/secrets/tls_cert                 # deployed jobs trust this certificate for reports
-    secrets:
-      - vault_secret
-      - session_secret
-      - tls_cert          # the public half only; the key stays with the proxy
-    group_add: ["${STORAGEFORGE_SECRETS_GID:-1000}"]   # reads the 0640 secret files (docker/init-secrets.sh)
+      STORAGEFORGE_REPORT_CA_FILE: /run/sf-secrets/tls_cert              # deployed jobs trust this certificate for reports
+    group_add: ["${STORAGEFORGE_SECRETS_GID:-1000}"]   # lists ./keys through the host group (docker/init-secrets.sh)
     volumes:
+      - sf-secrets:/run/sf-secrets:ro   # no TLS key here: that stays with the proxy
       - sf-data:/app/data
       # Backups in their own volume. Copy them off this machine (e.g. a Moves mirror step to another host).
       - sf-backups:/app/backups
@@ -64,9 +87,12 @@ services:
       driver: json-file
       options: { max-size: 10m, max-file: "5" }
 
-  # TLS for the LAN: nginx with the self-signed certificate from docker/init-secrets.sh
+  # TLS for the LAN: nginx (config built in) with the self-signed certificate from init-secrets
   proxy:
-    image: nginxinc/nginx-unprivileged:1.27-alpine
+    build:
+      context: .
+      target: proxy
+    image: storageforge-proxy:0.2.0
     restart: unless-stopped
     depends_on:
       storageforge: { condition: service_healthy }
@@ -75,12 +101,8 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-    secrets:
-      - tls_cert
-      - tls_key
-    group_add: ["${STORAGEFORGE_SECRETS_GID:-1000}"]
     volumes:
-      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      - sf-tls:/run/secrets:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=101,gid=101
     networks: [sf]
@@ -94,17 +116,9 @@ services:
       driver: json-file
       options: { max-size: 10m, max-file: "3" }
 
-secrets:
-  vault_secret:
-    file: ./secrets/vault_secret
-  session_secret:
-    file: ./secrets/session_secret
-  tls_cert:
-    file: ./secrets/tls_cert
-  tls_key:
-    file: ./secrets/tls_key
-
 volumes:
+  sf-secrets:
+  sf-tls:
   sf-data:
   sf-backups:
 

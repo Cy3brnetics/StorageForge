@@ -10,6 +10,7 @@ import datetime as dt
 import json
 import os
 import re
+import secrets
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -65,7 +66,8 @@ class Conn:
     def _sql(self, sql: str) -> str:
         if self.dialect == 'sqlite':
             return sql
-        return re.sub(r'(?<![:\w]):([A-Za-z_]\w*)', r'%(\1)s', sql)
+        # psycopg reads every % as a placeholder: a literal one (LIKE 'x%') is written %%
+        return re.sub(r'(?<![:\w]):([A-Za-z_]\w*)', r'%(\1)s', sql.replace('%', '%%'))
 
     def execute(self, sql: str, params=None):
         cur = self.raw.cursor()
@@ -81,7 +83,18 @@ class Conn:
 
     @contextmanager
     def tx(self):
-        if self.dialect == 'sqlite':
+        if self.dialect == 'sqlite' and self.raw.in_transaction:     # nested: a savepoint, as psycopg makes one
+            name = f'sf_tx_{secrets.token_hex(4)}'
+            self.raw.execute(f'SAVEPOINT {name}')
+            try:
+                yield
+            except BaseException:
+                self.raw.execute(f'ROLLBACK TO {name}')
+                self.raw.execute(f'RELEASE {name}')
+                raise
+            else:
+                self.raw.execute(f'RELEASE {name}')
+        elif self.dialect == 'sqlite':
             self.raw.execute('BEGIN IMMEDIATE')
             try:
                 yield
@@ -96,6 +109,13 @@ class Conn:
 
     def close(self):
         self.raw.close()
+
+
+def loads(value, default=None):
+    """A JSON column: SQLite returns its text, PostgreSQL (JSONB) the decoded value."""
+    if value is None or value == '':
+        return default
+    return json.loads(value) if isinstance(value, (str, bytes)) else value
 
 
 def epoch(value) -> int | None:
@@ -143,7 +163,15 @@ class Database:
                 raw.execute('PRAGMA ' + pragma)
             return Conn(raw, 'sqlite')
         import psycopg
-        return Conn(psycopg.connect(self.url, autocommit=True), 'postgres')
+        from psycopg.adapt import Loader
+
+        class Number(Loader):       # sum() of integers is numeric (Decimal), which int and float arithmetic refuses
+            def load(self, data):
+                s = bytes(data).decode()
+                return float(s) if '.' in s or 'e' in s.lower() or s == 'NaN' else int(s)
+        raw = psycopg.connect(self.url, autocommit=True)
+        raw.adapters.register_loader('numeric', Number)
+        return Conn(raw, 'postgres')
 
     def migrate(self, conn: Conn) -> list[str]:
         conn.execute('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, '

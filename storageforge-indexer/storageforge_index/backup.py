@@ -15,10 +15,13 @@ import datetime as dt
 import os
 import shutil
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
 from .db import Database
+
+_names = threading.Lock()
 
 ESSENTIAL = ('vault_meta', 'ssh_keys', 'key_bindings', 'users', 'hosts', 'blueprints', 'move_plans', 'audit_log',
              'change_plans', 'storage_tasks', 'settings', 'deploy_access', 'deployed', 'jobs',
@@ -49,8 +52,13 @@ def create(db: Database, kind: str = 'essentials', dest: Path | None = None, kee
     src = _sqlite_path(db)
     dest = dest or backup_dir()
     stamp = dt.datetime.now().strftime('%Y%m%d-%H%M%S')
-    out = dest / f'{PREFIX[kind]}{stamp}.db'
-    part = out.with_suffix('.db.part')
+    with _names:      # two backups in the same second (the button and the nightly one) get their own files
+        for extra in ('', *'bcdefghijklmnopqrstuvwxyz'):     # a letter sorts after the plain name: still newest first
+            out = dest / f'{PREFIX[kind]}{stamp}{extra}.db'
+            part = out.with_suffix('.db.part')
+            if not out.exists() and not part.exists():
+                part.touch(mode=0o600)
+                break
     started = time.time()
     if kind == 'full':
         s, d = sqlite3.connect(f'file:{src}?mode=ro', uri=True), sqlite3.connect(part)

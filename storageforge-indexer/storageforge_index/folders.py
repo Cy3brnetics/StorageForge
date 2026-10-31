@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import posixpath
 
-from .db import Conn
+from .db import Conn, epoch
 from .remote import is_under
 
 M64 = (1 << 64) - 1
@@ -36,7 +36,7 @@ def duplicate_folders(conn: Conn, host: str | None = None, min_files: int = 3, m
     own: dict[tuple, list] = {}
     cur = conn.execute(f"""SELECT f.mount_id, d.path, f.filename, f.file_size_bytes, f.is_directory
                            FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
-                           WHERE f.is_symlink = 0 AND m.scan_state = 'indexed' {hsql}""", {'host': host})
+                           WHERE NOT f.is_symlink AND m.scan_state = 'indexed' {hsql}""", {'host': host})
     while rows := cur.fetchmany(50_000):
         for mid, parent, name, size, is_dir in rows:
             if is_dir:
@@ -106,14 +106,14 @@ def cold_folders(conn: Conn, host: str | None = None, years: float = 2.0, min_by
     tree: dict[tuple, list] = {}            # (mount, path) → [newest mtime, files, bytes]
     cur = conn.execute(f"""SELECT f.mount_id, d.path, f.filename, f.file_size_bytes, f.is_directory, f.modified_at
                            FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
-                           WHERE f.is_symlink = 0 AND m.scan_state = 'indexed' {hsql}""", {'host': host})
+                           WHERE NOT f.is_symlink AND m.scan_state = 'indexed' {hsql}""", {'host': host})
     while rows := cur.fetchmany(50_000):
         for mid, parent, name, size, is_dir, mtime in rows:
             if is_dir:
                 tree.setdefault((mid, posixpath.join(parent, name) if parent else '/'), [0, 0, 0])
                 continue
             acc = tree.setdefault((mid, parent), [0, 0, 0])
-            acc[0] = max(acc[0], mtime or 0)
+            acc[0] = max(acc[0], epoch(mtime) or 0)
             acc[1] += 1
             acc[2] += size or 0
     for key in sorted(tree, key=lambda k: 0 if k[1] == '/' else k[1].count('/'), reverse=True):

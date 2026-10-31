@@ -20,7 +20,7 @@ DEK ──AES-256-GCM──► encrypts the OpenSSH private key
 
 Python cannot promise no other copy of a secret exists in memory: the environment variable and import paths are ordinary objects. The design minimises how long plaintext lives and never writes it to disk; it does not claim zero copies.
 
-Backups never contain the vault secret, on purpose: a backup together with its secret would be the keys. Keep `secrets/vault_secret` safe somewhere else.
+Backups never contain the vault secret, on purpose: a backup together with its secret would be the keys. Keep the vault secret safe somewhere else (`docker compose exec storageforge cat /run/sf-secrets/vault_secret`).
 
 ## Bindings
 
@@ -63,7 +63,7 @@ The per-network limit means a stranger elsewhere cannot lock the owner out; the 
 - Strict CSP (`'self'` only; the one relaxation is `style-src-attr 'unsafe-inline'` for sized bars), `nosniff`, `frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`.
 - Request bodies are capped at 4 KiB (2 MiB for a design). List sizes and limits are clamped.
 - `/healthz` returns only `{"status"}` unless asked from inside the container or by a signed-in user.
-- Behind a reverse proxy, set `STORAGEFORGE_PROXY_HOPS=1` so limits and the audit log see the real client IP.
+- Behind a reverse proxy, set `STORAGEFORGE_PROXY_HOPS=1` so limits and the audit log see the real client IP, and `STORAGEFORGE_PROXY_HOST` to the proxy so nothing else can claim a client address (compose sets both).
 - The UI builds the DOM with `textContent`. Designs and plans reject control characters and `< > " \`` in text (see [Concepts](concepts.md#the-rules)).
 - `POST /api/jobs/report` is the one API route without a session. It needs a job's bearer token, and each token may only report for its own job.
 

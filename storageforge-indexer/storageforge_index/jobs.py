@@ -472,27 +472,40 @@ def _snap_args(snapshot: str, rel: str):
         raise ValueError('bad path')
 
 
-def restore(db, conn: Conn, jid: str, snapshot: str, rel: str, actor: str) -> dict:
-    """Copy rel from a snapshot back to the source host, beside the original: <original>.restored-<time>/<name>."""
+def restore_target(conn: Conn, jid: str, snapshot: str, rel: str) -> tuple[dict, str, str]:
+    """Checks a restore request: (job, target, parent folder). The target is new: <original>.restored-<time>."""
     j = get(conn, jid)
     _snap_args(snapshot, rel)
     if not rel:
         raise ValueError('pick a file or folder to restore')
     src = j['spec'].get('src') or ''
     parent = (src.rstrip('/') + '/' + rel).rsplit('/', 1)[0]
-    target = f'{src.rstrip("/")}/{rel}.restored-{time.strftime("%Y%m%d-%H%M%S")}'
+    return j, f'{src.rstrip("/")}/{rel}.restored-{time.strftime("%Y%m%d-%H%M%S")}', parent
+
+
+def restore(db, conn: Conn, jid: str, snapshot: str, rel: str, actor: str, gid: str | None = None,
+            target: str | None = None) -> dict:
+    """Copy rel from a snapshot back to the source host, beside the original: <original>.restored-<time>/<name>."""
+    j, made, parent = restore_target(conn, jid, snapshot, rel)
+    target = target or made
     q = shlex.quote
     pack = f'exec {deploy.JOBBIN} pack {jid} {q(snapshot)} {q(rel)}'
     unpack = f'exec {deploy.JOBBIN} unpack {jid} {q(target)}'
-    gid = uuid.uuid4().hex
+    gid = gid or uuid.uuid4().hex
     if j['runner'] == j['source']:
-        res = deploy.run(db, j['runner'], f'set -o pipefail\n{deploy.JOBBIN} pack {jid} {q(snapshot)} {q(rel)} 2>/dev/null | '
-                                          f'{deploy.JOBBIN} unpack {jid} {q(target)}', kind='restore', ref=jid, mode='apply',
-                         actor=actor, group_id=gid)
+        # pack's stderr starts with the size (for the UI's progress), then holds why it failed, if it did
+        res = deploy.run(db, j['runner'], f'set -o pipefail\ne=$(mktemp); trap \'rm -f "$e"\' EXIT\n'
+                                          f'{deploy.JOBBIN} pack {jid} {q(snapshot)} {q(rel)} 2>"$e" | '
+                                          f'{deploy.JOBBIN} unpack {jid} {q(target)}; rc=$?\n'
+                                          'if ((rc)); then sed \'1{/^[0-9]*$/d}\' "$e" >&2; fi; exit $rc',
+                         kind='restore', ref=jid, mode='apply', actor=actor, group_id=gid, timeout=6 * 3600)
     else:
         with deploy.raw(db, j['runner'], pack, kind='restore-pack', ref=jid, actor=actor, group_id=gid) as p:
             res = deploy.run(db, j['source'], unpack, kind='restore', ref=jid, mode='apply', actor=actor, group_id=gid,
                              data=iter(lambda: p.stdout.read(1 << 16), b''), timeout=6 * 3600)
+        if p.returncode:     # the runner could not pack it: say why, not just that the source got no archive
+            why = '\n'.join(l for l in b''.join(p.errors).decode('utf-8', 'replace').splitlines() if not l.isdigit())
+            res = {**res, 'status': 'failed', 'output': f'{res.get("output") or ""}\non {j["runner"]}: {why}'.strip()}
     return {**res, 'target': target, 'parent': parent}
 
 

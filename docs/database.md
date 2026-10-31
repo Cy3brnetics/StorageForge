@@ -59,4 +59,4 @@ SELECT full_path, file_size_bytes FROM v_files WHERE hostname = 'nas-02' ORDER B
 | `jobs`, `job_runs` | deployed move steps (token hashes, not tokens) and their runs |
 | `alerts`, `settings` | open problems; key/value settings (report URL, alert channels, planner options) |
 
-The PostgreSQL DDL mirrors SQLite's but has not yet been run against a live server.
+The PostgreSQL DDL mirrors SQLite's; the test suite runs against both (`STORAGEFORGE_TEST_PG`, see operations).

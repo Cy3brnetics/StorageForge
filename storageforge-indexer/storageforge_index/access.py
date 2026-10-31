@@ -23,10 +23,11 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from .db import epoch
 from .keyinstall import askpass_path, validate
 from .remote import READONLY_DIR, RemoteError, Transport, child_env
 from .runner import connect_address, ephemeral_agent, known_hosts_path, runtime_dir
-from .vault import Vault
+from .vault import NoBinding, Vault
 
 GROUP = 'storageforge-scan'
 TIMEOUT = 90
@@ -87,7 +88,7 @@ def status(conn, host: str | None = None, limit: int = 200) -> list[dict]:
                           {'s': scan_id, 'n': limit}) if scan_id else []
         total = conn.scalar('SELECT count(*) FROM scan_denied WHERE scan_id = :s', {'s': scan_id}) if scan_id else 0
         out.append({'host': name, 'access': inv.get('access') or None, 'scan_user': inv.get('scan_user') or None,
-                    'scan_id': scan_id, 'finished_at': finished, 'read_errors': read_errors or 0,
+                    'scan_id': scan_id, 'finished_at': epoch(finished), 'read_errors': read_errors or 0,
                     'denied_total': total, 'denied': [{'mount': m, 'path': p} for m, p in denied]})
     return out
 
@@ -112,23 +113,36 @@ def _finish(p: subprocess.CompletedProcess, password: str) -> dict:
 
 def grant(db, conn, host: str, password: str, admin_user: str | None = None, remove: bool = False) -> dict:
     """Set up (or remove) read-only scan access on host, with sudo."""
-    return sudo_run(db, conn, host, lambda scan_user: (remove_script if remove else setup_script)(scan_user),
-                    password, admin_user)
+    def make(scan_user):
+        if not scan_user:
+            raise ValueError(f'no scan key is bound to {host}: bind one first (Keys tab, or storageforge-index vault bind)')
+        return (remove_script if remove else setup_script)(scan_user)
+    return sudo_run(db, conn, host, make, password, admin_user)
 
 
 def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | None = None) -> dict:
-    """Run a root script on host once, with sudo: make_script(scan_user) -> script. The password only travels on stdin
-    and the askpass environment of one ssh process; it is never logged, stored or put on a command line."""
+    """Run a root script on host once, with sudo: make_script(scan_user) -> script, scan_user None when no scan key
+    is bound to host (then only admin_user can log in). The password only travels on stdin and the askpass environment
+    of one ssh process; it is never logged, stored or put on a command line."""
     if not password:
         raise ValueError('a sudo password is required')
     host = connect_address(conn, host)
     with Vault(db, conn).unlock() as v:
-        b = v.resolve(host, 'scan')
+        try:
+            b = v.resolve(host, 'scan')
+        except NoBinding:      # fine with an admin account: deploy access can come before any scan
+            if not admin_user:
+                raise ValueError(f'no scan key is bound to {host}: give an admin account and its password') from None
+            b = None
+        port = b.port if b else conn.scalar('SELECT ssh_port FROM hosts WHERE ssh_host = :h OR hostname = :h',
+                                            {'h': host}) or 22
         from .hostkeys import require_confirmed
-        require_confirmed(conn, host, b.port)          # a password goes only to a host key a person confirmed
-        script = make_script(b.user)
-        sudo = 'sudo -S -p "" sh -c ' + shlex.quote(script)
-        if not admin_user or admin_user == b.user:
+        require_confirmed(conn, host, port)            # a password goes only to a host key a person confirmed
+        script = make_script(b.user if b else None)
+        # stdin carries the password to sudo -S. With NOPASSWD, or as root, sudo reads none of it: the script starts
+        # on /dev/null, so nothing it runs can read the password that is left there.
+        sudo = 'sudo -S -p "" sh -c ' + shlex.quote('exec </dev/null\n' + script)
+        if b and (not admin_user or admin_user == b.user):
             # the scan user's own sudo rights, connecting with its vault key
             with ephemeral_agent(v.decrypt_key(b.key_id), ttl=120) as sock:
                 t = Transport(host=host, user=b.user, port=b.port, agent_sock=sock, known_hosts=str(known_hosts_path()),
@@ -138,12 +152,12 @@ def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | 
                                        timeout=TIMEOUT, env=child_env())
                 finally:
                     t.close()
-            return {'host': host, 'user': b.user, 'via': b.user, **_finish(p, password)}
+            return {'host': host, 'port': port, 'user': b.user, 'via': b.user, **_finish(p, password)}
     # an admin account: password login (askpass answers ssh once), then sudo with the same password on stdin
-    validate(host, admin_user, b.port)
+    validate(host, admin_user, port)
     work = Path(tempfile.mkdtemp(prefix='grant-', dir=runtime_dir()))
     try:
-        argv = ['ssh', '-F', '/dev/null', '-T', '-p', str(b.port), '-o', 'StrictHostKeyChecking=yes',
+        argv = ['ssh', '-F', '/dev/null', '-T', '-p', str(port), '-o', 'StrictHostKeyChecking=yes',
                 '-o', f'UserKnownHostsFile={known_hosts_path()}', '-o', 'GlobalKnownHostsFile=/dev/null',
                 '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no',
                 '-o', 'NumberOfPasswordPrompts=1', '-o', 'ConnectTimeout=10', f'{admin_user}@{host}', sudo]
@@ -153,4 +167,4 @@ def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | 
                            start_new_session=True)
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    return {'host': host, 'user': b.user, 'via': admin_user, **_finish(p, password)}
+    return {'host': host, 'port': port, 'user': b.user if b else None, 'via': admin_user, **_finish(p, password)}

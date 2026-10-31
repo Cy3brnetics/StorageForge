@@ -115,7 +115,7 @@ Each plan type has the same shape: list, create, one, check, script.
 | Method | Path | Body | |
 | :--- | :--- | :--- | :--- |
 | GET | `/api/deploy` | | access per host, jobs, deployed, alerts, drift, settings, recent runs |
-| GET | `/api/deploy/setup-script[?remove=1]` | | download |
+| POST | `/api/deploy/setup-script` | `{"remove"?}` | download; makes the deploy keys on first use |
 | POST 🔑 | `/api/deploy/access` | `{"host", "password", "admin_user"?, "remove"?}` | set deploy access up (or remove it) with sudo once; 10/min |
 | POST 🔑 | `/api/deploy/adopt` | `{"host"}` | after running the setup by hand: bind and test |
 | POST 🔑 | `/api/deploy/start` | `{"kind": "jobs"\|"shares"\|"changes"\|"tasks", "ref", "mode": "report"\|"apply", …}` | see [Deployments](deployments.md#running-a-deploy); returns `{"group", "hosts"}` |

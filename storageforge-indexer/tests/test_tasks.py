@@ -8,6 +8,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+try:
+    import dbfactory
+except ImportError:      # run as tests.test_x from the project folder
+    from tests import dbfactory
 from storageforge_index import fsmap, shares, tasks
 from storageforge_index.db import Database, dir_id
 
@@ -18,7 +22,7 @@ class Fleet(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix='sftask-')
-        self.db = Database(f'{self.tmp}/t.db')
+        self.db = dbfactory.make(self, f'{self.tmp}/t.db')
         self.conn = self.db.connect()
         self.db.migrate(self.conn)
         mounts = {'nas': (('/', '/dev/sda1', 'ext4'), ('/mnt/pool', '/dev/sdb1[/@pool]', 'btrfs'),
@@ -40,7 +44,8 @@ class Fleet(unittest.TestCase):
                 (root_pc, '/mnt/docs', 'cv.pdf', 0, 99)]
         for m, parent, name, d, size in rows:
             self.conn.execute("INSERT INTO file_records (mount_id, dir_id, filename, is_directory, file_size_bytes, modified_at) "
-                              "VALUES (:m, :p, :n, :d, :s, 0)", {'m': m, 'p': dir_id(self.conn, m, parent), 'n': name, 'd': d, 's': size})
+                              f"VALUES (:m, :p, :n, :d, :s, {self.db.ts('0')})",
+                              {'m': m, 'p': dir_id(self.conn, m, parent), 'n': name, 'd': bool(d), 's': size})
 
     def tearDown(self):
         self.conn.close()

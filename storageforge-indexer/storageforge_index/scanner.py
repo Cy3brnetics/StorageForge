@@ -277,7 +277,7 @@ def checksum_pass(db: Database, conn, t: Transport, host_id: int, min_size: int,
                 pass
 
     threading.Thread(target=feed, daemon=True).start()
-    StderrTail(proc.stderr)
+    err = StderrTail(proc.stderr)
     done, updates = 0, []
     for (rec,) in iter_fields(proc.stdout, nfields=1):
         line = rec.decode('utf-8', 'backslashreplace')
@@ -288,7 +288,9 @@ def checksum_pass(db: Database, conn, t: Transport, host_id: int, min_size: int,
             done += db.set_checksums(conn, updates)
             updates = []
     proc.wait()
+    err.join(5)
     proc.stdout.close()
+    proc.stderr.close()
     return done + (db.set_checksums(conn, updates) if updates else 0)
 
 

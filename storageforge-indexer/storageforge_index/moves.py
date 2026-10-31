@@ -150,7 +150,7 @@ def _subtree_sql(path: str, mount_target: str) -> tuple[str, dict]:
 
 def subtree(conn: Conn, mount: dict, path: str) -> dict:
     where, p = _subtree_sql(path, mount['target'])
-    n, size, files = conn.all(f"""SELECT count(*), coalesce(sum(f.file_size_bytes), 0), coalesce(sum(1 - f.is_directory), 0)
+    n, size, files = conn.all(f"""SELECT count(*), coalesce(sum(f.file_size_bytes), 0), coalesce(sum(CASE WHEN f.is_directory THEN 0 ELSE 1 END), 0)
                                   FROM file_records f WHERE {where}""", {'m': mount['id'], **p})[0]
     return {'entries': n, 'bytes': size, 'files': files}
 
@@ -176,7 +176,7 @@ def browse(conn: Conn, host_name: str, path: str = '/') -> dict:
             c['bytes'] += size
             c['entries'] += n
         for (name,) in conn.all("""SELECT f.filename FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
-                                   WHERE d.mount_id = :m AND d.path = :p AND f.is_directory = 1""", {'m': m['id'], 'p': path}):
+                                   WHERE d.mount_id = :m AND d.path = :p AND f.is_directory""", {'m': m['id'], 'p': path}):
             children.setdefault(name, {'name': name, 'bytes': 0, 'entries': 0})
     for mm in h['mounts']:                                  # mounts directly below: their own filesystems
         rel = mm['target'][len(path.rstrip('/')) + 1:] if _under(mm['target'], path) and mm['target'] != path else ''
@@ -197,7 +197,7 @@ def _planned_mounts(conn: Conn, host: str) -> list[str]:
 def _relset(conn: Conn, mount: dict, path: str, limit: int):
     where, p = _subtree_sql(path, mount['target'])
     rows = conn.execute(f"""SELECT d.path, f.filename, f.file_size_bytes FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
-                            WHERE {where} AND f.is_directory = 0 LIMIT :lim""", {'m': mount['id'], **p, 'lim': limit + 1}).fetchall()
+                            WHERE {where} AND NOT f.is_directory LIMIT :lim""", {'m': mount['id'], **p, 'lim': limit + 1}).fetchall()
     if len(rows) > limit:
         return None
     cut = len(path.rstrip('/'))

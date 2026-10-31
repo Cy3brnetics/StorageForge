@@ -31,6 +31,48 @@ Each fix has a regression test that fails on the old code (in `tests/test_platfo
 - **GM-18:** The firewall now uses a chain per bridge (`SF-EGRESS-<bridge>`, alternating with `-b` on reruns). The new chain is hooked in before the old one is unhooked, so no bridge is ever left open. Bridge names and port ranges are checked before any rule changes. Traffic to the Docker host itself is now filtered through `INPUT`, with ICMPv6 allowed so IPv6 neighbor discovery keeps working. It moves off the old shared `SF-EGRESS` chain cleanly. **Untested against real iptables:** the tests use a fake `iptables` that tracks chain state.
 - **GM-15:** `init-secrets.sh` makes `keys/` `0750`. The entrypoint now logs a warning when it can't list the import dir, instead of skipping it silently. `docs/getting-started.md` now tells people to make key files `0640`. Note: ssh-keygen creates keys as `0600`, which the container can't read through the group. The import already logs `skipped <file>: Permission denied` for those.
 
+## Third batch (fixed 2026-10-30, uncommitted)
+
+Each fix has a test that fails on the old code, unless noted. **The whole suite now also runs against PostgreSQL**: set `STORAGEFORGE_TEST_PG` (see `docs/operations.md`). It passes on both databases.
+
+- **GM-13:** Running the suite on Postgres turned up more than Gemini found:
+  - boolean `= 0/1` comparisons in `gitrepos`, `fsmap`, `docker` and `moves`, and arithmetic on booleans in `moves.subtree`;
+  - `sum()` coming back as `Decimal` (now loaded as `int`/`float`), which broke move checks and job specs;
+  - any literal `%` in SQL broke psycopg (`Conn._sql` now doubles it).
+
+  Also fixed: JSONB values via `db.loads`, `epoch()` on the timestamps the API returns, and `POST /api/backups` answering 400 on Postgres.
+- **GM-20:** `sudo_run` works with an admin account when no scan key is bound, using the host's SSH port. The script's stdin is `/dev/null`, so it can't read the password that sudo didn't use. `enroll` binds the deploy key on the port it actually got in on.
+- **GM-05:** `adopt` accepts only a single host name (no globs, CIDRs or leading `-`) and removes the binding it made when the probe fails.
+- **GM-21 part 2:** A share that keeps an existing fstab line records *that* line for drift checks, and nothing is recorded after a conflict.
+- **Ansible permissions export:** A recursive change with a mode becomes two tasks: owner and group recursively, then the mode on the top folder only, the same as the shell script.
+- **GM-22:**
+  - Same-host restores show `pack`'s errors (without the leading size line).
+  - Cross-host restores add the runner's error to their output.
+  - A failed restore removes its empty target folder.
+  - `deploy.raw()` takes the per-host lock. (The lock has no test.)
+- **GM-12:** Restore runs in the background (`deploy.start_task`) and answers 202 with a group the UI polls. The nginx timeout drops from 6 h to 35 min. Same-host restores now get 6 h like cross-host ones (they had 30 min). Other job actions stay synchronous: they're capped at 10 minutes.
+- **GM-02:** `--host` quotes every argument and the temporary folder for the remote shell, refuses a host starting with `-`, and puts `--` before host names. The test showed the old code running an injected `touch`. **GM-08:** The task host check refuses a leading `-` in either part. `Transport` puts `--` before its target. `reach()` strips IPv6 brackets.
+- **GM-07:** Planner `tidy()` sanitizes `tier` and link `kind`, and every reported HTML output escapes. Checked in the browser by putting crafted values straight into live state: nothing was injected. When the server asks for a fresh password, the planner now says so clearly. (These planner changes were checked in the browser, not by a unit test.)
+- **GM-11:** The setup-script download is now a JSON `POST`, because it creates the deploy keys on first use. The other claims in GM-11 were already handled or were intended behavior.
+- **GM-17:** Forwarded headers are believed only from `STORAGEFORGE_PROXY_HOST` (compose sets `proxy`), and the protocol is taken from the nearest proxy. nginx appends to `X-Forwarded-For`, so `PROXY_HOPS=2` works.
+- **GM-19:**
+  - The per-account daily limit doesn't apply on networks where that account has signed in (live sessions, or sign-ins since the server started).
+  - An empty password gets a 400 and uses up no tries.
+  - Breaches are audited once per limit and client every 5 minutes.
+- **GM-24:**
+  - nginx looks up the app through Docker's DNS on each request; checked in Docker: with the old config the proxy stays on 502 after the app container is recreated, the new one recovers within about 10 s.
+  - TLS 1.2 is limited to ECDHE with AEAD ciphers.
+  - The Dockerfile test stage installs `git`, and `.dockerignore` is extended.
+  - Not changed, on purpose: the 825-day certificate is correct, and IPv6 clients already reach the proxy through Docker's port publishing (`listen [::]` stops nginx from starting in containers without IPv6).
+- **GM-25:** The folder cache keeps nothing while a scan runs, and keeps cold and duplicate results side by side under a lock. Same-second backups get `b`, `c`… suffixes, which still list newest first. A nested `tx()` on SQLite is a savepoint.
+- **GM-23:**
+  - The inventory parser only takes the section names the script prints.
+  - The mountinfo fallback keeps the filesystem's own options.
+  - Capacity never goes below 0, and counts btrfs raid5/6 parity.
+  - A host-filtered duplicates list shows only that host's copies, in a stable order.
+- **GM-14** stderr pipe: the checksum pass joins its reader and closes the pipe.
+- **The failing test** `test_unreadable_folders_and_duplicate_folders` wasn't a bug: this machine has StorageForge's read-everything `find` (from setting up scan access), so the locked folder *is* readable. The test now skips there.
+
 ## Verdict per finding
 
 | ID | Gemini | Verdict | Revised | Notes |

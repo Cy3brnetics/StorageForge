@@ -107,7 +107,7 @@ function setupForm(host) {
     text('p', 'Creates the storageforge-deploy user, whose SSH key can only start a runner that checks StorageForge\'s signature, and installs that runner. It needs root once: the password is used for this one sudo and never stored. Leave the admin user empty to use the scan user\'s own sudo.', 'muted small'),
     el('div', { class: 'row wrap' }, pw, admin, el('button', { type: 'submit', class: 'btn pri sm' }, 'Set up')),
     el('div', { class: 'row wrap' }, text('span', 'Or run it yourself as root:', 'muted small'),
-      button('Download the setup script', () => download('/api/deploy/setup-script', 'storageforge-deploy-setup.sh'), 'btn ghost sm'),
+      button('Download the setup script', () => download('/api/deploy/setup-script', 'storageforge-deploy-setup.sh', {}), 'btn ghost sm'),
       button('I ran it: test', async () => {
         msg.hidden = false; msg.textContent = 'Testing a signed run…';
         try { const r = await (await postJSON('/api/deploy/adopt', { host })).json(); msg.textContent = r.output; msg.className = r.state === 'ready' ? 'st-ok small' : 'st-failed small'; loadDeploy(); }
@@ -127,9 +127,9 @@ function setupForm(host) {
   box.replaceChildren(form);
   pw.focus();
 }
-async function download(url, fallback) {
+async function download(url, fallback, body) {   // body: POST it as JSON (for a download that changes something)
   try {
-    const res = await api(url);
+    const res = await (body ? postJSON(url, body) : api(url));
     const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob());
     a.download = (res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/)?.[1] || fallback;
     document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
@@ -226,11 +226,11 @@ async function browseSnapshot(j, snapshot, path) {
 }
 async function restoreFrom(j, snapshot, path) {
   if (!confirm(`Restore ${path} from ${snapshot} to ${j.source}?\n\nIt lands beside the original as ${path}.restored-<time>; nothing is overwritten.`)) return;
-  toast('Restoring…');
-  try {
+  try {   // it runs in the background; its runs show like a deploy's
     const r = await (await postJSON(`/api/deploy/jobs/${j.id}/restore`, { snapshot, path })).json();
-    DP.job = { ...DP.job, output: r.output, title: r.status === 'ok' ? `restored into ${j.source}:${r.target}` : 'restore failed' };
-    renderJobPanel(); toast(r.status === 'ok' ? 'Restored' : 'Restore failed');
+    DP.group = { gid: r.group, kind: 'restore', ref: j.id, mode: 'apply', title: `restore ${path} from ${snapshot} into ${j.source}:${r.target}`,
+                 extra: {}, runs: [], done: false };
+    renderGroup(); pollGroup(); toast('Restore started');
   } catch (err) { toast(err.message); }
 }
 

@@ -26,7 +26,8 @@ from .moves import _path, _under, find_host, host_slug, hosts, mount_of, slug, s
 from .scriptkit import HELPERS, REMOTE, comments, one_line
 
 NAME_RE = re.compile(r'[^\n\r\t]{1,80}')
-HOST_RE = re.compile(r'([A-Za-z0-9._-]{1,32}@)?[A-Za-z0-9.:_\[\]-]{1,253}')
+# [user@]host; neither part starts with '-', which rsync and ssh would read as an option
+HOST_RE = re.compile(r'(?!-)([A-Za-z0-9._-]{1,32}@)?(?!-)[A-Za-z0-9.:_\[\]-]{1,253}')
 PREFIX_RE = re.compile(r'[A-Za-z0-9_.-]{1,40}')
 DATASET_RE = re.compile(r'[A-Za-z0-9_.:/-]{1,200}')
 UNIT_RE = re.compile(r'[A-Za-z0-9@_.:\\-]{1,120}')
@@ -720,7 +721,7 @@ need() {   # need <what> <test...>: a guard. The report goes on past a failed gu
   fail "not met: $what"
 }
 free_ge() { local a; a=$(df -P -B1G -- "$1" 2>/dev/null | awk 'NR == 2 {print $4}'); [[ -n $a ]] && ((a >= $2)); }
-reach() { timeout 5 bash -c "</dev/tcp/$1/$2" 2>/dev/null; }
+reach() { local h=${1#[}; h=${h%]}; timeout 5 bash -c "</dev/tcp/$h/$2" 2>/dev/null; }   # bash wants [v6] bare
 rs() {   # rsync; "some files vanished" (24) is fine for live data
   x rsync "$@"; local rc=$?
   if ((rc == 24)); then warnl "some files vanished while copying"; rc=0; fi

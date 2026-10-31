@@ -137,6 +137,13 @@ def pool_capacity(kind, level, sizes, *, width=None, recordsize=128 * KiB, ashif
         reserve = data * FS_RESERVE.get(fs or '', lambda _: 0.0)(ext4_reserve)
         r.update(parity=float(parity), tolerance=tol, fs_reserve=reserve, usable=data - reserve,
                  layout=f'{"LVM" if kind == "lvm" else "mdadm"} {level} · {n} {"legs" if kind == "lvm" else "members"}')
+    elif kind == 'btrfs' and level in ('raid5', 'raid6'):
+        p = 1 if level == 'raid5' else 2               # parity per stripe; stripes span the devices with space left
+        par = float(sum(sorted(sizes)[-p:])) if n > p else raw
+        data = raw - par
+        meta = data * 0.01 + 512 * MiB
+        r.update(parity=par, overhead=meta, usable=data - meta, tolerance=p if n > p else 0,
+                 layout=f'btrfs {level} · {n} devices')
     elif kind == 'btrfs':
         copies = {'raid1': 2, 'raid1c3': 3, 'raid1c4': 4, 'raid10': 2}.get(level, 1)
         data = raw if copies == 1 else _btrfs_alloc(sizes, copies, level == 'raid10')
@@ -146,6 +153,7 @@ def pool_capacity(kind, level, sizes, *, width=None, recordsize=128 * KiB, ashif
     else:
         reserve = raw * FS_RESERVE.get(fs or '', lambda _: 0.0)(ext4_reserve)
         r.update(usable=raw - reserve, fs_reserve=reserve, layout=f'{kind or "linear"} {level}'.strip())
+    r['usable'] = max(0.0, r['usable'])      # too few devices for the level: nothing usable, never less
     return r
 
 

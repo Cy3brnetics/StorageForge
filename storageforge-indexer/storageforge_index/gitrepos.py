@@ -50,11 +50,11 @@ def candidates(conn: Conn, host_id: int) -> list[str]:
     work = conn.all("""SELECT DISTINCT d.path FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id
                        WHERE m.host_id = :h AND f.filename = '.git'""", {'h': host_id})
     bare = conn.all("""SELECT DISTINCT d.path FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id
-                       WHERE m.host_id = :h AND f.filename = 'HEAD' AND f.is_directory = 0
+                       WHERE m.host_id = :h AND f.filename = 'HEAD' AND NOT f.is_directory
                          AND EXISTS (SELECT 1 FROM file_records o WHERE o.dir_id = f.dir_id
-                                     AND o.filename = 'objects' AND o.is_directory = 1)
+                                     AND o.filename = 'objects' AND o.is_directory)
                          AND EXISTS (SELECT 1 FROM file_records o WHERE o.dir_id = f.dir_id
-                                     AND o.filename = 'refs' AND o.is_directory = 1)
+                                     AND o.filename = 'refs' AND o.is_directory)
                          AND EXISTS (SELECT 1 FROM file_records o WHERE o.dir_id = f.dir_id
                                      AND o.filename = 'config')""", {'h': host_id})
     paths = sorted({r[0] for r in work + bare if r[0] and '\n' not in r[0] and '\t' not in r[0]})

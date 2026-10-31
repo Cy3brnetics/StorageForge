@@ -10,6 +10,10 @@ import time
 import unittest
 from pathlib import Path
 
+try:
+    import dbfactory
+except ImportError:      # run as tests.test_x from the project folder
+    from tests import dbfactory
 from storageforge_index import backup, cli
 from storageforge_index.db import Database
 
@@ -20,7 +24,7 @@ FIREWALL = ENTRYPOINT.with_name('egress-firewall.sh')
 class Consistency(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.db = Database(str(Path(self.tmp) / 'index.db'))
+        self.db = dbfactory.make(self, Path(self.tmp) / 'index.db')
         self.conn = self.db.connect()
         self.db.migrate(self.conn)
 
@@ -88,6 +92,7 @@ class Consistency(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((tmp / 'keys').stat().st_mode), 0o750)
         self.assertEqual(stat.S_IMODE((tmp / 'secrets').stat().st_mode), 0o700)
 
+    @unittest.skipIf(dbfactory.PG, 'backups are of SQLite databases (PostgreSQL: pg_dump)')
     def test_every_table_is_backed_up_or_rebuildable(self):
         tables = {r[0] for r in self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'file_fts_%'")}
@@ -97,6 +102,7 @@ class Consistency(unittest.TestCase):
                          'new table: add it to backup.ESSENTIAL or backup.REBUILDABLE')
         self.assertEqual((set(backup.ESSENTIAL) | set(backup.REBUILDABLE)) - tables, set(), 'no such table')
 
+    @unittest.skipIf(dbfactory.PG, 'backups are of SQLite databases (PostgreSQL: pg_dump)')
     def test_essentials_carry_plans_settings_and_deploy_state(self):
         now = int(time.time())
         for sql in ("INSERT INTO change_plans (name, body_json, created_at, updated_at) VALUES ('c', '{}', :t, :t)",

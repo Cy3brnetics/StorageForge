@@ -42,16 +42,19 @@ human() { numfmt --to=iec-i --suffix=B "${1:-0}" 2>/dev/null || echo "$1 B"; }
 # Needs ARGS (the original arguments) and HOST set by the caller's option parsing; FWD_AGENT=1 with --forward-agent.
 REMOTE = r"""# ── remote: copy this script over, run it there with sudo, clean up (like storage-setup.sh --host) ──
 if [[ -n $HOST ]]; then
+  [[ $HOST == -* ]] && { echo "--host: not a host name: $HOST" >&2; exit 2; }
   CTL=$(mktemp -d); trap 'ssh -o ControlPath="$CTL/s" -O exit "$HOST" 2>/dev/null; rm -rf "$CTL"' EXIT
   SSHO=(-o ControlMaster=auto -o ControlPath="$CTL/s" -o ControlPersist=60 -o ConnectTimeout=10)
   REST=(); skipnext=0
   for a in "${ARGS[@]}"; do if ((skipnext)); then skipnext=0; continue; fi; if [[ $a == --host ]]; then skipnext=1; continue; fi; REST+=("$a"); done
-  tmp=$(ssh "${SSHO[@]}" "$HOST" 'mktemp -d /tmp/sf-move.XXXXXX')
-  scp -q -o ControlPath="$CTL/s" "$0" "$HOST:$tmp/move.sh"
+  tmp=$(ssh "${SSHO[@]}" -- "$HOST" 'mktemp -d /tmp/sf-move.XXXXXX')
+  scp -q -o ControlPath="$CTL/s" -- "$0" "$HOST:$tmp/move.sh"
+  # ssh hands the remote side one command line, which its shell splits again: every argument goes quoted
+  qtmp=$(printf %q "$tmp") qrest=; ((${#REST[@]})) && printf -v qrest ' %q' "${REST[@]}"
   # Your SSH agent is forwarded only with --forward-agent: while it runs, root on that host can use it to log in
   # wherever your keys work. A step that pulls from a third host needs it (or a key on that host).
   FWD=(); ((${FWD_AGENT:-0})) && FWD=(-A)
-  ssh "${SSHO[@]}" ${FWD[@]+"${FWD[@]}"} -t "$HOST" "cd $tmp && if [ \$(id -u) = 0 ]; then bash ./move.sh ${REST[*]:-}; else sudo --preserve-env=SSH_AUTH_SOCK bash ./move.sh ${REST[*]:-}; fi; rc=\$?; rm -rf $tmp; exit \$rc"
+  ssh "${SSHO[@]}" ${FWD[@]+"${FWD[@]}"} -t -- "$HOST" "cd $qtmp && if [ \$(id -u) = 0 ]; then bash ./move.sh$qrest; else sudo --preserve-env=SSH_AUTH_SOCK bash ./move.sh$qrest; fi; rc=\$?; rm -rf $qtmp; exit \$rc"
   exit $?
 fi
 """

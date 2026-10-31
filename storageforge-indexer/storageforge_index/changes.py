@@ -909,8 +909,16 @@ def _ansible_task(t: dict, c: Host | None) -> dict:
         return {'name': name, 'ansible.builtin.file': {k2: v for k2, v in (('path', p['path']), ('state', 'directory'),
                 ('owner', p['owner']), ('group', p['group']), ('mode', p['mode'])) if v}}
     if k == 'perms':
-        return {'name': name, 'ansible.builtin.file': {k2: v for k2, v in (('path', p['path']), ('owner', p['owner']),
-                ('group', p['group']), ('mode', p['mode']), ('recurse', p['recursive'] or None)) if v}}
+        if not (p['recursive'] and p['mode']):
+            return {'name': name, 'ansible.builtin.file': {k2: v for k2, v in (('path', p['path']), ('owner', p['owner']),
+                    ('group', p['group']), ('mode', p['mode']), ('recurse', p['recursive'] or None)) if v}}
+        # recursive covers owner and group only (as in the script): the file module's recurse would give every file
+        # inside the folder's mode too
+        tasks = [{'name': f'{name}: mode', 'ansible.builtin.file': {'path': p['path'], 'mode': p['mode']}}]
+        if p['owner'] or p['group']:
+            tasks.insert(0, {'name': f'{name}: owner and group inside too', 'ansible.builtin.file': {k2: v for k2, v in (
+                ('path', p['path']), ('owner', p['owner']), ('group', p['group']), ('recurse', True)) if v}})
+        return tasks
     if k == 'symlink':
         return {'name': name, 'ansible.builtin.file': {'src': p['target'], 'dest': p['path'], 'state': 'link'}}
     if k == 'rename':
