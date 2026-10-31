@@ -133,7 +133,8 @@ def _backup_text(row, as_of):
 
 
 def render_report(nodes: list[dict], title: str | None = None, as_of: dt.date | None = None,
-                  kwh_price: float | None = None, currency: str = '', idle_share: float = 0.75) -> str:
+                  kwh_price: float | None = None, currency: str = '', idle_share: float = 0.75,
+                  extra: list[str] | None = None) -> str:
     as_of = as_of or dt.date.today()
     generated = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
     for n in nodes:
@@ -352,6 +353,7 @@ def render_report(nodes: list[dict], title: str | None = None, as_of: dt.date | 
           'not measurements; replace them with wall readings when you have them.', '']
 
     # appendix: file index
+    L += extra or []
     indexed = [n for n in nodes if n.get('index')]
     if indexed:
         L += ['## Appendix A. File index snapshot', '']

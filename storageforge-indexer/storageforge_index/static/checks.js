@@ -90,7 +90,52 @@ function grantForm(h, remove) {
 }
 
 /* ── copies ──────────────────────────────────────────────────────── */
+function sparkline(points, total) {
+  if (points.length < 2) return text('span', 'one scan so far', 'muted small');
+  const t0 = points[0][0], span = (points[points.length - 1][0] - t0) || 1;
+  const line = points.map(([t, u]) => `${(((t - t0) / span) * 118 + 1).toFixed(1)},${(29 - (u / total) * 28).toFixed(1)}`).join(' ');
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 120 30'); svg.setAttribute('width', '120'); svg.setAttribute('height', '30'); svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', `Used space, ${Math.round((points[points.length - 1][1] / total) * 100)} percent now`);
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+  p.setAttribute('points', line); p.setAttribute('fill', 'none'); p.setAttribute('stroke', 'currentColor'); p.setAttribute('stroke-width', '1.5');
+  svg.append(p);
+  return svg;
+}
+async function loadTrends() {
+  const box = $('#trendbox');
+  try {
+    const { mounts } = await getJSON(`/api/capacity${S.host ? `?host=${encodeURIComponent(S.host)}` : ''}`);
+    if (!mounts.length) { box.replaceChildren(text('p', 'History starts with the next scan of each host.', 'muted')); return; }
+    const order = [...mounts].sort((a, b) => (a.days_left ?? Infinity) - (b.days_left ?? Infinity));
+    box.replaceChildren(el('ol', { class: 'copies' }, ...order.map((m) => el('li', { class: 'row' }, sparkline(m.points, m.total),
+      el('span', { class: 'mono small' }, `${m.host}:${m.mount}`),
+      text('span', `${fmtBytes(m.used)} of ${fmtBytes(m.total)}`, 'muted small'),
+      m.days_left !== null ? text('span', `full in about ${m.days_left} days`, m.days_left <= 30 ? 'st-failed small' : 'st-running small') : ''))));
+  } catch (err) { box.replaceChildren(text('p', err.message, 'muted')); }
+}
+async function loadChanged() {
+  const box = $('#changedbox');
+  if (!S.host) { box.replaceChildren(text('p', 'Pick a host at the top to see what its last scan found changed.', 'muted')); return; }
+  try {
+    const r = await getJSON(`/api/file-changes?host=${encodeURIComponent(S.host)}`);
+    if (!r.scan) { box.replaceChildren(text('p', 'No finished scans of this host yet.', 'muted')); return; }
+    box.replaceChildren(
+      text('p', `Scan #${r.scan.scan_id}, ${new Date(r.scan.started_at * 1000).toLocaleString()}: +${r.scan.added.toLocaleString()} ~${r.scan.modified.toLocaleString()} -${r.scan.deleted.toLocaleString()}${r.truncated ? ' (folders below cover the first 20,000)' : ''}`, 'small'),
+      el('ol', { class: 'copies' }, ...r.folders.map((f) => el('li', { class: 'row' }, el('span', { class: 'mono small' }, f.folder),
+        text('span', `+${f.added.toLocaleString()} ~${f.modified.toLocaleString()} -${f.deleted.toLocaleString()} · ${f.delta < 0 ? '-' : '+'}${fmtBytes(Math.abs(f.delta))}`, 'muted small')))));
+  } catch (err) { box.replaceChildren(text('p', err.message, 'muted')); }
+}
+async function loadDupes() {
+  try {
+    const { groups } = await getJSON(`/api/dupes${S.host ? `?host=${encodeURIComponent(S.host)}` : ''}`);
+    $('#dupesection').hidden = !groups.length;
+    $('#dupesbox').replaceChildren(...groups.map((g) => el('details', {}, el('summary', {}, `${g.copies} copies of ${fmtBytes(g.size)}, ${fmtBytes(g.reclaimable)} to reclaim`),
+      el('ul', { class: 'copies small mono' }, ...g.files.map((f) => el('li', {}, f))))));
+  } catch { $('#dupesection').hidden = true; }
+}
 async function loadCopies() {
+  loadTrends(); loadChanged(); loadDupes();
   const box = $('#copiesbox');
   box.replaceChildren(text('p', 'Comparing folders…', 'muted'));
   const qs = new URLSearchParams({ min_files: $('#copyfiles').value, min_size: $('#copysize').value });

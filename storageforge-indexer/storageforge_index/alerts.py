@@ -29,6 +29,8 @@ REPORT_URL_RE = re.compile(r'https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]{1,253})(
 TOPIC_RE = re.compile(r'[A-Za-z0-9_-]{1,64}')
 DEFAULTS = {'report_url': '', 'alerts': {'ntfy': {'url': '', 'topic': '', 'token': ''}, 'gotify': {'url': '', 'token': ''},
                                          'webhook': {'url': ''}, 'notify_resolved': True}}
+FILLS_UP_DAYS = int(os.environ.get('STORAGEFORGE_FILLS_UP_DAYS', '14'))
+LARGE_DELETE = int(os.environ.get('STORAGEFORGE_LARGE_DELETE', '10000'))   # files gone in one scan
 SECRET_FIELDS = (('ntfy', 'token'), ('gotify', 'token'))
 _lock = threading.Lock()
 
@@ -286,8 +288,17 @@ NO_USAGE_FS = {'tmpfs', 'devtmpfs', 'squashfs', 'iso9660', 'overlay', 'ramfs', '
 
 def scan_problems(conn: Conn) -> dict:
     """A host's latest scan job failed; a mount a scan saw recently is gone; a filesystem is nearly full; a pool is unwell."""
+    from .capacity import trends
     from .payloads import node_from_index
     now = {}
+    for t in trends(conn):
+        if t['days_left'] is not None and t['days_left'] <= FILLS_UP_DAYS:
+            now[f'disk-filling:{t["host"]}:{t["mount"]}'] = ('disk-filling', f'{t["host"]}:{t["mount"]}', f'{t["mount"]} on {t["host"]} fills up in about {t["days_left"]} days',
+                                                             'at the rate of the last 30 days', 'warn')
+    for hid, host in conn.all('SELECT host_id, hostname FROM hosts'):
+        last = conn.all("SELECT deleted, scan_id FROM scans WHERE host_id = :h AND status <> 'running' ORDER BY scan_id DESC LIMIT 1", {'h': hid})
+        if last and (last[0][0] or 0) >= LARGE_DELETE:
+            now[f'large-delete:{host}'] = ('large-delete', host, f'{last[0][0]:,} files vanished on {host}', f'in scan #{last[0][1]}: check that this was meant', 'warn')
     latest = {}
     for host, status, result in conn.all("""SELECT host, status, result_json FROM scan_jobs
                                             WHERE status NOT IN ('queued', 'running') ORDER BY job_id"""):

@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -305,6 +306,43 @@ class Retire(Fleet):
             retire.retire(self.conn, 'nas')
         with self.assertRaises(LookupError):
             retire.retire(self.conn, 'nope')
+
+
+class History(Fleet):
+    def test_forecast(self):
+        from storageforge_index.capacity import forecast
+        day, g = 86400, 2**30
+        self.assertEqual(forecast([(i * day, (100 + 10 * i) * g) for i in range(10)], 1000 * g), 81)     # 190 GiB used, 10 a day
+        self.assertIsNone(forecast([(i * day, 100 * g) for i in range(10)], 1000 * g))                   # flat
+        self.assertIsNone(forecast([(i * day, (100 - i) * g) for i in range(10)], 1000 * g))             # shrinking
+        self.assertIsNone(forecast([(0, g), (3600, 2 * g)], 1000 * g))                                   # under a day of history
+        self.assertEqual(forecast([(0, 100 * g), (day, 2000 * g)], 1000 * g), 0)                         # already over
+
+    def test_a_scan_records_usage_and_old_rows_thin_out(self):
+        from storageforge_index.capacity import trends
+        hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'nas'")
+        self.conn.execute("UPDATE mounts SET total_bytes = 1000, used_bytes = 10 WHERE host_id = :h", {'h': hid})
+        sid = self.db.begin_scan(self.conn, hid)
+        self.db.finish_scan(self.conn, sid, hid, dict(entries=0, bytes=0, added=0, modified=0, deleted=0, read_errors=0), 'ok', 1)
+        got = trends(self.conn, 'nas')
+        self.assertTrue(got and got[0]['used'] == 10)
+        old = int(time.time()) - 200 * 86400
+        day_start = old - old % 86400
+        for i in range(3):
+            self.conn.execute("INSERT INTO mount_usage (host_id, mount_point, at, used_bytes, total_bytes) VALUES (:h, '/old', :t, 1, 2)", {'h': hid, 't': day_start + i})
+        self.db.prune(self.conn)
+        self.assertEqual(self.conn.scalar("SELECT count(*) FROM mount_usage WHERE mount_point = '/old'"), 1)
+
+    def test_the_report_names_every_job_and_alert(self):
+        from unittest import mock
+        from storageforge_index import reportextra
+        job = {'name': 'photos-nightly', 'method': 'mirror', 'source': 'nas', 'runner': 'pc', 'state': 'ok', 'last': {'end': 1793000000}, 'last_ok': {'end': 1793000000}}
+        self.conn.execute("""INSERT INTO alerts (alert_key, kind, ref, title, state, first_at, last_at) VALUES ('k', 'x', 'y', 'Disk on fire', 'open', 1, 1)""")
+        with mock.patch('storageforge_index.jobs.overview', return_value=[job]):
+            text = '\n'.join(reportextra.sections(self.conn, []))
+        self.assertIn('photos-nightly', text)
+        self.assertIn('Disk on fire', text)
+        self.assertNotIn('could not be built', text)
 
 
 class Tasks(Fleet):

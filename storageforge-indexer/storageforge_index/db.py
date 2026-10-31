@@ -126,6 +126,9 @@ def epoch(value) -> int | None:
     return int(value.timestamp())
 
 
+USAGE_DETAIL_DAYS = 90        # after that, one mount_usage row per day per mount
+
+
 class Database:
     def __init__(self, url: str):
         self.url, self.busy_ms = url, 60000
@@ -316,6 +319,9 @@ class Database:
                                                ids).rowcount
             out['denied'] = conn.execute(f"""DELETE FROM scan_denied WHERE scan_id IN (
                 SELECT s.scan_id FROM scans s WHERE s.scan_id < ({latest}))""").rowcount
+            out['usage'] = conn.execute("""DELETE FROM mount_usage WHERE at < :cut AND usage_id NOT IN (
+                SELECT max(usage_id) FROM mount_usage GROUP BY host_id, mount_point, at / 86400)""",
+                {'cut': now - USAGE_DETAIL_DAYS * 86400}).rowcount
             out['jobs'] = conn.execute("""DELETE FROM scan_jobs WHERE status NOT IN ('queued', 'running')
                                           AND queued_at < :cut""", {'cut': now - job_days * 86400}).rowcount
         if self.dialect == 'sqlite':
@@ -344,6 +350,10 @@ class Database:
             if status != 'failed':
                 conn.execute(f'UPDATE hosts SET last_scanned_at = {self.ts(":now")} WHERE host_id = :h',
                              {'now': now, 'h': host_id})
+                conn.execute("""INSERT INTO mount_usage (host_id, mount_point, at, used_bytes, total_bytes)
+                                SELECT host_id, mount_point, :now, used_bytes, total_bytes FROM mounts
+                                WHERE host_id = :h AND total_bytes > 0 AND used_bytes IS NOT NULL
+                                AND scan_state NOT IN ('gone', 'bind-alias')""", {'now': now, 'h': host_id})
 
     # staging and diff
     def stage_create(self, conn: Conn, job_id: int):

@@ -31,7 +31,7 @@ ESSENTIAL = ('vault_meta', 'ssh_keys', 'key_bindings', 'users', 'hosts', 'bluepr
 # Every table is in exactly one of the two lists (tests/test_consistency.py).
 REBUILDABLE = ('mounts', 'scans', 'directories', 'file_records', 'file_fts', 'file_changes', 'scan_denied', 'scan_jobs',
                'graph_nodes', 'graph_edges', 'git_repos', 'docker_hosts', 'deploy_runs', 'deploy_groups', 'host_checks', 'job_runs', 'alerts',
-               'web_sessions', 'schema_version', 'task_runs', 'host_logs')
+               'web_sessions', 'schema_version', 'task_runs', 'host_logs', 'mount_usage')
 PREFIX = {'essentials': 'storageforge-essentials-', 'full': 'storageforge-full-'}
 
 

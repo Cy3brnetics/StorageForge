@@ -157,6 +157,42 @@ def pool_capacity(kind, level, sizes, *, width=None, recordsize=128 * KiB, ashif
     return r
 
 
+def forecast(points: list[tuple[int, int]], total: int, window: int = 30 * 86400) -> int | None:
+    """Days until full from (time, used bytes), by a least-squares line over the last window. None when flat, shrinking,
+    or there is under a day of history to draw a line through."""
+    if not points or not total:
+        return None
+    newest = max(t for t, _ in points)
+    recent = [(t, u) for t, u in points if t >= newest - window]
+    if len(recent) < 2 or newest - min(t for t, _ in recent) < 86400:
+        return None
+    mt, mu = sum(t for t, _ in recent) / len(recent), sum(u for _, u in recent) / len(recent)
+    spread = sum((t - mt) ** 2 for t, _ in recent)
+    slope = sum((t - mt) * (u - mu) for t, u in recent) / spread if spread else 0
+    if slope * 86400 < 1 << 20:      # under 1 MiB a day is noise
+        return None
+    last = max(recent)[1]
+    return max(0, round((total - last) / (slope * 86400)))
+
+
+def trends(conn, host: str | None = None, days: int = 30) -> list[dict]:
+    """Per real mount: its usage over the last days and when it fills up at this rate. A filesystem counts once."""
+    import time
+    since = int(time.time()) - days * 86400
+    rows = conn.all("""SELECT h.hostname, u.mount_point, u.at, u.used_bytes, u.total_bytes FROM mount_usage u JOIN hosts h ON h.host_id = u.host_id
+                         WHERE u.at >= :s ORDER BY h.hostname, u.mount_point, u.at""", {'s': since})
+    series: dict[tuple, list] = {}
+    for name, mp, at, used, total in rows:
+        if not host or name == host:
+            series.setdefault((name, mp), []).append((at, used, total))
+    out = []
+    for (name, mp), pts in series.items():
+        total = pts[-1][2]
+        out.append({'host': name, 'mount': mp, 'used': pts[-1][1], 'total': total, 'points': [[t, u] for t, u, _ in pts],
+                    'days_left': forecast([(t, u) for t, u, _ in pts], total)})
+    return out
+
+
 # key: (label, idle W, active W, spin-up W per drive). Typical datasheet figures for the class, not measurements.
 POWER_CLASSES = {
     'nvme-gen5': ('NVMe SSD · PCIe Gen5', 5.0, 11.0, 0.0),

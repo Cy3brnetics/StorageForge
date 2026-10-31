@@ -13,6 +13,9 @@ POST /api/me/password  {"password", "new_password"}   change your own password; 
 GET|POST /api/users                  accounts (admin, password confirmed); POST {"username", "password", "role"}
 PUT|DELETE /api/users/<name>         {"role"} viewer, operator or admin, {"disabled"}; the last admin stays
 PUT  /api/backups/target  {"host", "path"}   after each nightly backup, copy it to that host over its deploy binding
+GET  /api/capacity?host=             each mount's usage over 30 days and when it fills up at that rate
+GET  /api/file-changes?host=&scan=&limit=   what a scan found changed, grouped by folder (not /api/changes: those are change plans)
+GET  /api/dupes?host=&min_size=&limit=   identical files from checksum scans
 GET  /api/hosts                     indexed hosts
 GET  /api/graph[?host=]             nodes and edges
 GET  /api/canvas[?host=]            Obsidian .canvas download
@@ -121,13 +124,13 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, folders, gitrepos, graph, jobs, preflight, protection,
                fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, reinstall, retire, shares, tasks, users)
-from .capacity import parse_size
+from .capacity import parse_size, trends
 from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
 from .remote import RemoteError
 from .runner import connect_address, scan_via_vault
 from .scanner import ScanOptions
-from .search import SearchQuery, run_search
+from .search import SearchQuery, run_changes, run_dupes, run_search
 from .vault import AuditLog, SecretBuffer, Vault, VaultError, fingerprint
 
 STATIC = Path(__file__).with_name('static')
@@ -1096,6 +1099,34 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         core.audit(conn(), actor(), 'moves.script', 'ok', None, {'plan': plan_id})
         return Response(moves.script(conn(), plan), mimetype='text/x-shellscript',
                         headers={'Content-Disposition': f'attachment; filename="{name}"'})
+
+    @web.get('/api/capacity')
+    @login_required
+    def api_capacity():
+        return jsonify(mounts=trends(conn(), request.args.get('host') or None))
+
+    @web.get('/api/file-changes')
+    @login_required
+    def api_file_changes():
+        host = request.args.get('host', '').strip()
+        if not host:
+            raise ValueError('give host')
+        scan = request.args.get('scan')
+        limit = arg_num('limit', 20000, 1, 200000, int)
+        info, rows = run_changes(conn(), host, int(scan) if scan else None, limit)
+        folders: dict[str, dict] = {}
+        for r in rows:       # a 50,000-file npm install is one line, not a page
+            parts = r['path'].lstrip('/').split('/')
+            top = '/' + '/'.join(parts[:3 if len(parts) > 3 else max(1, len(parts) - 1)])
+            f = folders.setdefault(top, {'folder': top, 'added': 0, 'modified': 0, 'deleted': 0, 'delta': 0})
+            f[r['change']] += 1
+            f['delta'] += (r['new_size'] or 0) - (r['old_size'] or 0)
+        return jsonify(scan=info, folders=sorted(folders.values(), key=lambda f: -(f['added'] + f['modified'] + f['deleted']))[:500], truncated=len(rows) >= limit)
+
+    @web.get('/api/dupes')
+    @login_required
+    def api_dupes():
+        return jsonify(groups=run_dupes(conn(), request.args.get('host') or None, parse_size(request.args.get('min_size') or '1MiB'), arg_num('limit', 50, 1, 500, int)))
 
     @web.get('/api/git')
     @login_required

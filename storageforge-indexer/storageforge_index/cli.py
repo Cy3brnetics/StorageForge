@@ -565,7 +565,8 @@ def cmd_export_markdown(args) -> int:
     from .protection import fill_node
     for n in nodes:
         fill_node(conn, n)
-    _write(render_report(nodes, **_report_kwargs(args)), args.output)
+    from .reportextra import sections
+    _write(render_report(nodes, extra=sections(conn, nodes), **_report_kwargs(args)), args.output)
     return 0
 
 

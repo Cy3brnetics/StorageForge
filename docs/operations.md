@@ -27,6 +27,8 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_BACKUP_FULL_KEEP` | `0` | Full backups kept nightly (0: on demand only) |
 | `STORAGEFORGE_CHANGE_DAYS` | `90` | Days of file change history kept |
 | `STORAGEFORGE_CHANGE_MAX_ROWS` | `2000000` | Most change rows kept, oldest scans dropped first |
+| `STORAGEFORGE_FILLS_UP_DAYS` | `14` | Alert when a mount's 30-day trend fills it within this many days |
+| `STORAGEFORGE_LARGE_DELETE` | `10000` | Alert when one scan finds this many files gone |
 | `STORAGEFORGE_DISK_WARN_PCT`, `STORAGEFORGE_DISK_CRIT_PCT` | `90`, `95` | How full a filesystem is before it raises an alert |
 | `STORAGEFORGE_ACCESS_LOG` | `changes` | `all`, `changes` (writes, 429s and 5xx) or `off` |
 | `STORAGEFORGE_REPORT_CA_FILE` | `/run/sf-secrets/tls_cert` in compose | Certificate deployed jobs trust for an `https` report URL |

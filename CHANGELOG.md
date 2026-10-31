@@ -5,6 +5,9 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Added
+- **Capacity history:** each scan records how full every mount is. The Cleanup tab shows 30-day trends and "full in about N days", which can raise an alert.
+- **File changes and identical files in the Cleanup tab,** and an alert when one scan finds many files gone.
+- **Report sections** for deployed jobs with their last runs, storage tasks, open alerts and drift, capacity trend, shares, unreadable folders, git repositories and containers.
 - **Backups in the web UI**, with an optional copy of each backup to another host over SSH. A failed copy raises an alert.
 - **Roles and accounts in the web UI:** change your own password, and admins can add, disable and remove accounts. `viewer` browses and searches, `operator` also plans, scans and deploys, `admin` also handles keys, accounts and settings. Existing accounts stay admins.
 - **Retire a host** from its menu or with `hosts remove`, and remove keys and bindings from the Keys tab.

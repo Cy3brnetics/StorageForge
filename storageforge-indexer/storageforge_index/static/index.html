@@ -101,6 +101,11 @@ storageforge-index graph import --blueprint atlas.json</pre>
         <button class="btn sm" type="submit">Check</button>
       </form>
       <div id="copiesbox" class="stack"></div>
+      <h3>Capacity trend</h3>
+      <div id="trendbox" class="stack"></div>
+      <h3>What changed in the last scan</h3>
+      <div id="changedbox" class="stack"></div>
+      <div id="dupesection" hidden><h3>Identical files</h3><p class="muted">From scans run with checksums.</p><div id="dupesbox" class="stack"></div></div>
       <h3>Cold data</h3>
       <p class="muted">Folders whose newest file is older than the cutoff: candidates for cold storage. Move… starts a step in Moves.</p>
       <form id="coldform" class="row">
