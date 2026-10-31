@@ -1,0 +1,30 @@
+---
+id: SF-38
+status: open
+severity: medium
+effort: M
+area: Operations
+verified: read
+tags: [finding, audit-2026-10-31]
+found: 2026-10-31
+---
+# SF-38 Container scan report is committed but not triaged
+
+**Medium** · effort M · Operations · Read in the code, not run · part of [[Audit 2026-10-31]]
+
+## What exists
+`vuln-report-storageforge-0.2.0-combined-2026-10-31.md` is raw scanner output for image `storageforge:0.2.0`. Grype reports 5 critical and 84 high; Trivy reports 4 critical and 66 high. Nothing in the repo says which matter.
+
+## Evidence
+- Lines 13 and 2742 of the report.
+- Critical entries in the Grype section name glibc, SQLite and OpenSSH. Mostly marked no fix available in Debian 12. These are the scanners' claims, and this audit didn't test whether any is reachable.
+
+## Why it matters
+The OpenSSH client entry (CVE-2026-60002, use-after-free when a server changes host key during a rekey) deserves the first look, because StorageForge's whole job is to run that client against hosts that might be compromised. The report also dates quickly, and at 390 KB of markdown no one will read it in review.
+
+## Suggested approach
+Triage by reachability into a short table: package, used by us or not, decision. Rebuild on a current base image and rescan. Move raw output out of git, for example into CI artifacts, and keep only the triage.
+
+## Done when
+- [ ] Each critical has a written decision
+- [ ] CI fails on new reachable criticals

@@ -5,6 +5,8 @@ tags: [moc]
 
 Working notes for the StorageForge indexer. Start with the latest audit, then the roadmap.
 
+- [[Audit 2026-10-31]]: the newest audit, security and new features since `68a6d73`
+- [[Audit rules]]: how every audit is run, and where the next one starts
 - [[Review of Gemini audit 2026-10-29]]: each GM finding checked against the code, with revised severities and what to fix first
 - [[Audit 2026-10-29 - features]]: partially built features and things worth building better
 - [[Roadmap]]: the findings in the order to tackle them (also as a canvas: [[Roadmap.canvas]])
