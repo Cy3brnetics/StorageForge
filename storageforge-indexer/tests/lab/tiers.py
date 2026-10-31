@@ -376,9 +376,49 @@ def tier3(r):
         if made.get('copy_error'):
             raise AssertionError(made['copy_error'])
         api('PUT', '/api/backups/target', {'host': '', 'path': ''})
-        if 'storageforge-essentials-' not in ssh('sf-arch', 'sudo -n ls /srv/sf-backups'):
-            raise AssertionError('the backup did not arrive')
-    r.check('backup-copy', 'sf-arch', backup_copy)
+        name = ssh('sf-arch', 'sudo -n ls /srv/sf-backups').split()[-1]
+        if not name.endswith('.db.enc'):
+            raise AssertionError(f'expected an encrypted copy, found {name}')
+        copy = ssh('sf-arch', f'sudo -n base64 -w0 /srv/sf-backups/{name}')
+        # back on the controller: it opens with the vault secret, and is a database holding the accounts
+        check = ('import base64,sqlite3,sys,tempfile,pathlib;from storageforge_index import backup;from storageforge_index.vault import secret_from_env;'
+                 'd=pathlib.Path(tempfile.mkdtemp());(d/"c").write_bytes(base64.b64decode(sys.stdin.read()));'
+                 'backup.decrypt_file(str(d/"c"),str(d/"p"),secret_from_env());'
+                 'print(sqlite3.connect(d/"p").execute("select count(*) from users").fetchone()[0])')
+        out = ssh('sf-ctl', f'{COMPOSE} exec -T storageforge python -c {shlex.quote(check)}', stdin=copy)
+        if int(out.strip().splitlines()[-1]) < 1:
+            raise AssertionError(f'the restored copy holds no accounts: {out[-200:]}')
+    r.check('backup-copy-restores', 'sf-arch', backup_copy)
+
+    def by_cron():
+        # no systemd: deploy access refuses this host, so the script is run by hand, and cron wakes the runner
+        vm, marker = 'sf-alpine', '/tmp/sf-lab-schedule-cron'
+        made = api.post('/api/scheduler/schedules', {'name': 'lab-cron', 'host': vm, 'cron_expr': '* * * * *', 'task_type': 'command', 'task_ref': f'touch {marker}'})['schedule']
+        sid = made['schedule_id']
+        script = api.text(f'/api/scheduler/schedules/{sid}/install-script')
+        ssh(vm, 'sudo -n sh -c "command -v bash >/dev/null && command -v flock >/dev/null && command -v timeout >/dev/null || apk add -q bash util-linux coreutils; rc-service crond start >/dev/null 2>&1 || true"')
+        before = ssh(vm, f'sudo -n bash -s -- --report', stdin=script)
+        if 'needs to be installed' not in before or ssh(vm, f'test -e /usr/local/lib/storageforge/scheduler/run-{sid}.sh && echo there', check=False).strip():
+            raise AssertionError(f'the report changed something: {before[-300:]}')
+        ssh(vm, 'sudo -n bash -s -- --install', stdin=script)
+        wait_for('cron to wake the runner', lambda: ssh(vm, f'test -e {marker} && echo yes', check=False).strip() == 'yes', timeout=150)
+        ssh(vm, 'sudo -n bash -s -- --uninstall', stdin=script)
+        api('DELETE', f'/api/scheduler/schedules/{sid}')
+        return 'report changed nothing, cron ran it, and it left'
+    r.check('schedule-cron', 'sf-alpine', by_cron)
+
+    def move_by_hand():
+        # a move script run by hand on the host, and the rescan that shows the step as copied
+        plan = api.post('/api/moves', {'name': 'Lab by hand', 'steps': [{'method': 'copy', 'src': {'host': 'sf-suse', 'path': '/mnt/raid/lab-seed'},
+                                                                          'dst': {'host': 'sf-suse', 'path': '/srv/btrfs/by-hand'}}]})
+        script = api.text(f'/api/moves/{plan["id"]}/script')
+        ssh('sf-suse', 'sudo -n bash -s -- --run', stdin=script)
+        demo.scan(api, [IPS['sf-suse']])
+        state = api.get(f'/api/moves/{plan["id"]}')['progress'][0]
+        if not state.get('copied'):
+            raise AssertionError(f'the step does not show as copied: {state}')
+        return f'copied {state["copied"]}'
+    r.check('move-progress', 'sf-suse', move_by_hand)
 
     def send_again():
         time.sleep(61)                   # snapshot names go down to the minute

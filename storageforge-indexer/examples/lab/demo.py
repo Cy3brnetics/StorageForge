@@ -77,6 +77,11 @@ class Api:
             except ValueError:
                 return e.code, {'error': text.decode(errors='replace')[:400]}
 
+    def text(self, path):
+        """A generated script: the one kind of answer that isn't JSON."""
+        with self.web.open(urllib.request.Request(BASE + path), timeout=300) as r:
+            return r.read().decode()
+
     def __call__(self, method, path, body=None, expect=None):
         status, out = self.raw(method, path, body)
         if status == 403 and isinstance(out, dict) and out.get('reauth'):    # commands on hosts want a recent password
