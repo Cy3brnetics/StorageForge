@@ -185,6 +185,37 @@ class Tasks(Fleet):
     def task(self, *blocks, **kw):
         return {'name': kw.pop('name', 'Nightly'), 'host': 'nas', 'schedule': kw.pop('schedule', 'hourly'), 'blocks': list(blocks), **kw}
 
+    def test_running_containers_are_warned_about(self):
+        hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'nas'")
+        c = {'name': 'immich', 'labels': {}, 'state': 'running', 'mounts': [{'type': 'bind', 'source': '/mnt/pool/photos', 'rw': True}]}
+        self.conn.execute("""INSERT INTO docker_hosts (host_id, engine, access, root_dir, containers_json, volumes_json, compose_json)
+                             VALUES (:h, 'docker', 'direct', '/var/lib/docker', :c, '[]', '[]')""", {'h': hid, 'c': json.dumps([c])})
+        block = {'type': 'rsync', 'params': {'src': '/mnt/pool/photos', 'dst': '/mnt/backup/photos'}}
+        got = [x['text'] for x in tasks.check(self.conn, self.task(block))['blocks'][0]['items'] if x['level'] == 'warn']
+        self.assertTrue(any('running container(s) use the source: immich' in x for x in got), got)
+        block['params']['src'] = '/mnt/pool/other'
+        got = [x['text'] for x in tasks.check(self.conn, self.task(block))['blocks'][0]['items']]
+        self.assertFalse(any('running container' in x for x in got), got)
+
+    def test_cli(self):
+        import contextlib
+        import io
+        from storageforge_index import cli
+        path = Path(self.tmp) / 'task.json'
+        path.write_text(json.dumps(self.task({'type': 'mkdir', 'params': {'path': '/mnt/backup/x'}})))
+        base = ['--db', self.db.url, 'tasks']
+
+        def run(*a):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cli.main([*base, *a])
+            return rc, out.getvalue()
+        self.assertIn('saved storage task #', run('import', str(path))[1])
+        self.assertIn('Nightly', run('list')[1])
+        tid = tasks.list_tasks(self.conn)[0]['id']
+        self.assertEqual(run('check', str(tid))[0] or 0, 0)
+        self.assertIn('#!/', run('script', str(tid))[1])
+
     def test_checks_suggest_guards(self):
         t = self.task({'type': 'rsync', 'params': {'src': '/mnt/pool/photos', 'dst': '/mnt/backup/photos', 'mode': 'mirror'}})
         c = tasks.check(self.conn, t)

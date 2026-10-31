@@ -5,6 +5,9 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Added
+- **Storage tasks on the CLI:** `tasks list`, `check`, `script` and `import`.
+- Storage task checks warn when a running container uses a block's source or destination.
+- Shared test cases keep the planner's and the report's capacity numbers the same.
 - **Deploy run tracking and scan confirmation:** Scans verify completion records of deploy scripts (`/var/lib/storageforge/run/runs.jsonl`) and storage tasks (`/var/lib/storageforge/tasks/`) by matching run nonces, confirming actual host outcomes. If a run or task failed, StorageForge automatically runs a signed read-only log fetch over deploy access once per problem to capture runner and journal logs.
 - **Deploy cancel and retry:** Running deploys can be stopped in the UI (with a Force stop option to terminate running SSH processes), and failed or interrupted deploys offer a Retry failed hosts button.
 - **Stale dry run protection:** Applying a plan passes the dry run's group ID to ensure the plan was not modified after review.

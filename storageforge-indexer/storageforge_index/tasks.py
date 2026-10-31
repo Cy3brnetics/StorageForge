@@ -319,8 +319,17 @@ def _label(b: dict) -> str:
         return t['label']
 
 
+def _copy_paths(p, host_of):
+    return (('source', host_of(p.get('src_host', '')), p['src']), ('destination', host_of(p.get('dst_host', '')), p['dst']))
+
+
+CONTAINER_PATHS = {'rsync': _copy_paths, 'rotate': _copy_paths,
+                   'btrfs_snapshot': lambda p, host_of: (('subvolume', host_of(''), p['subvol']),)}
+
+
 def check(conn: Conn, task: dict) -> dict:
     """Per block: [{level, text, fix?}] in run order. fix is a block the editor can insert before this one."""
+    from .docker import users_of
     task = normalize({**task, 'name': str(task.get('name') or '').strip() or 'untitled'})   # a draft may have no name yet
     hs = hosts(conn)
     home = find_host(hs, task['host']) if task['host'] else None
@@ -447,6 +456,11 @@ def check(conn: Conn, task: dict) -> dict:
                 add('note', 'runs as root with bash')
             elif t == 'if' and p['cond'] in ('mounted', 'exists', 'free below') and p['arg'] and not p['arg'].startswith('/'):
                 add('crit', f'"{p["cond"]}" needs an absolute path')
+            for side, h0, p0 in CONTAINER_PATHS.get(t, lambda *_: ())(p, host_of):
+                names = sorted({u['container'] for u in users_of(conn, h0['name'], p0) if u['state'] == 'running'} if h0 and p0 else ())
+                if names:
+                    add('warn', f'{len(names)} running container(s) use the {side}: {", ".join(names[:6])}{" …" if len(names) > 6 else ""}. '
+                                'Stop them first (a Docker compose block), or files can change while this runs')
             if TYPES[t].get('slots') and not any((b['slots'] or {}).values()):
                 add('note', 'holds no blocks yet')
             out.append({'path': list(here), 'label': _label(b), 'items': items})

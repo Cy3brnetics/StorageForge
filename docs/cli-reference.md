@@ -89,7 +89,13 @@ storageforge-index search [PATTERN] [options]
 | `deploy setup-script [--remove]` | the deploy setup script, to run as root |
 | `deploy alerts` | evaluate alerts now and notify; exits 1 while any are open |
 
-Storage tasks have no CLI command yet; use the web UI or `/api/tasks`.
+Storage tasks:
+
+| Command | What it does |
+|---|---|
+| `tasks list`, `tasks check ID` | storage tasks; `check` exits 1 on a critical finding |
+| `tasks script ID [-o FILE]` | the Bash script (made executable) |
+| `tasks import FILE [--id ID]` | save a task from JSON (`{"name", "host", "blocks": [...]}`) |
 
 ## Designs, graph and reports
 

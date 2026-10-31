@@ -254,6 +254,39 @@ def cmd_moves(args) -> int:
     return 0
 
 
+def cmd_tasks(args) -> int:
+    from . import tasks
+    _, conn = open_db(args)
+    if args.tasks_cmd == 'list':
+        for t in tasks.list_tasks(conn):
+            print(f'#{t["id"]:<4} {t["name"]}  on {t["host"] or "no host"}  ({t["schedule"] or "by hand"})')
+        return 0
+    if args.tasks_cmd == 'import':
+        body = json.loads(Path(args.file).read_text())
+        tid = tasks.save_task(conn, body, f'cli:{os.environ.get("USER", "?")}', args.id)
+        print(f'saved storage task #{tid}')
+        return 0
+    task = tasks.get_task(conn, args.id)
+    if args.tasks_cmd == 'check':
+        c = tasks.check(conn, task)
+        for it in c['general']:
+            print(f'{it["level"]:<5} {it["text"]}')
+        for b in c['blocks']:
+            print(b['label'])
+            for it in b['items']:
+                print(f'  {it["level"]:<5} {it["text"]}')
+        print(f'{c["crit"]} critical · {c["warn"]} warning(s)')
+        return 1 if c['crit'] else 0
+    text = tasks.script(conn, task)
+    if args.output in (None, '-'):
+        print(text, end='')
+    else:
+        Path(args.output).write_text(text)
+        os.chmod(args.output, 0o755)
+        print(f'wrote {args.output}', file=sys.stderr)
+    return 0
+
+
 def cmd_git(args) -> int:
     from . import gitrepos
     _, conn = open_db(args)
@@ -884,6 +917,17 @@ def build_parser() -> argparse.ArgumentParser:
     m3 = mvs.add_parser('import', help='save a plan from a JSON file ({"name", "steps": [...]})')
     m3.add_argument('file'); m3.add_argument('--id', type=int, help='replace this plan')
     mv.set_defaults(fn=cmd_moves)
+
+    ta = sub.add_parser('tasks', help='storage tasks: list, check against the index, write the Bash script')
+    tas = ta.add_subparsers(dest='tasks_cmd', required=True)
+    tas.add_parser('list')
+    t1 = tas.add_parser('check'); t1.add_argument('id', type=int)
+    t2 = tas.add_parser('script', help='write the Bash script that runs the task')
+    t2.add_argument('id', type=int)
+    t2.add_argument('-o', '--output', help='file to write (default stdout); made executable')
+    t3 = tas.add_parser('import', help='save a task from a JSON file ({"name", "host", "blocks": [...]})')
+    t3.add_argument('file'); t3.add_argument('--id', type=int, help='replace this task')
+    ta.set_defaults(fn=cmd_tasks)
 
     gi = sub.add_parser('git', help='git repositories found by scans: state, copies and archives')
     gi.add_argument('--host')
