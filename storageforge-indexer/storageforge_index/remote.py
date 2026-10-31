@@ -272,6 +272,8 @@ echo '@@ids'; getent passwd 2>/dev/null | awk -F: '$3>=1000 && $3<60000 {print "
 echo '@@nfs'; cat /var/lib/nfs/etab 2>/dev/null || cat /etc/exports /etc/exports.d/*.exports 2>/dev/null
 echo '@@smb'; if command -v smbd >/dev/null 2>&1 || [ -f /etc/samba/smb.conf ]; then
   pgrep -x smbd >/dev/null 2>&1 && echo '# smbd running'; testparm -s 2>/dev/null || cat /etc/samba/smb.conf 2>/dev/null; fi
+echo '@@packages'; (PATH="$PATH:/usr/sbin:/sbin"; for m in apt-get dnf yum zypper pacman; do command -v "$m" >/dev/null 2>&1 && { echo "pm $m"; break; }; done
+  for c in exportfs smbd mount.nfs mount.cifs rsync rsnapshot; do command -v "$c" >/dev/null 2>&1 && echo "have $c"; done)
 echo '@@access'; if [ -x /usr/local/lib/storageforge/find ]; then echo capability; else echo user; fi; id -un 2>/dev/null
 echo '@@end'
 """
@@ -307,13 +309,14 @@ class HostInventory:
     jobs: str = ''    # run lines of StorageForge jobs (the fallback when a run could not report)
     managed: str = '' # sha256sum -c of what deploys wrote, StorageForge fstab lines, job timers (drift)
     ids: str = ''     # users and groups with UID/GID >= 1000 (NFS ownership check)
+    packages: str = ''  # the package manager, and which NFS, SMB, rsync and rsnapshot programs are installed (what a deploy would add)
     machine_id: str = ''  # /etc/machine-id: signed into deploy requests (self-reported, so never used as identity)
 
     def to_json(self) -> str:
         return json.dumps({
             'collected_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
             'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb, 'btrfs': self.btrfs,
-            'jobs': self.jobs, 'managed': self.managed, 'ids': self.ids,
+            'jobs': self.jobs, 'managed': self.managed, 'ids': self.ids, 'packages': self.packages,
             'mounts': [asdict(m) for m in self.mounts],
         })
 
@@ -410,4 +413,5 @@ def collect_inventory(t: Transport) -> HostInventory:
                          access=access, user=user, nfs=sec.get('nfs', '').strip(), smb=sec.get('smb', '').strip(),
                          btrfs=sec.get('btrfs', '').strip(), jobs=sec.get('jobs', '').strip(),
                          managed=sec.get('managed', '').strip(), ids=sec.get('ids', '').strip(),
+                         packages=sec.get('packages', '').strip(),
                          machine_id=next((m for m in lines('machineid') if re.fullmatch(r'[0-9a-f]{32}', m)), ''))

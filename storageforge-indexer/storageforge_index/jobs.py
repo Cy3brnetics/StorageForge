@@ -29,7 +29,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from . import deploy, moves
 from .db import Conn
 from .jobscript import JOB_SCRIPT
-from .scriptkit import HELPERS, one_line
+from .scriptkit import HELPERS, PACKAGES, need_line, one_line
 
 SCHEDULED = ('mirror', 'rsnapshot', 'git')
 REPORT_CA = '/etc/storageforge/report-ca.pem'       # the self-signed certificate an https report URL is checked against
@@ -206,7 +206,7 @@ secret_file() { # path, content on stdin (apply only)
   install -D -o root -g root -m 0600 "$tmp" "$p" && doing "wrote $p (secret)"; rm -f "$tmp"
 }
 need() { command -v "$1" >/dev/null 2>&1 && ok "$1: $(command -v "$1")" || conflict "$1 is not installed ($2)"; }
-"""
+""" + PACKAGES
 
 HOST_TAIL = r"""
 section "stale jobs of this plan"
@@ -277,9 +277,9 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
     if runner_specs:
         parts.append('need systemctl "systemd runs the timers"\n')
         if methods & {'copy', 'move', 'mirror', 'rsnapshot'}:
-            parts.append('need rsync "apt/dnf install rsync"\n')
+            parts.append(need_line('rsync'))
         if 'rsnapshot' in methods:
-            parts.append('need rsnapshot "apt install rsnapshot, or dnf install rsnapshot (EPEL)"\n')
+            parts.append(need_line('rsnapshot'))
         if 'git' in methods:
             parts.append('need git "apt/dnf install git"\n')
         if report_url:
@@ -292,7 +292,7 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
     if any(s['snapshot'] for s in source_specs):
         parts.append('need btrfs "btrfs-progs, for snapshot-first jobs"\n')
     if source_specs and any(not s['local'] for s in source_specs):
-        parts.append('need rsync "the source side of rsync"\n')
+        parts.append(need_line('rsync'))
     if runner_specs or source_specs:
         parts.append('section "storageforge-job"\n' + _heredoc(f'want_file {deploy.JOBBIN} 0755', JOB_SCRIPT))
         ca = report_ca(report_url) if runner_specs else None

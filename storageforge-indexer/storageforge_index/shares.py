@@ -4,6 +4,9 @@ Exports added in the topology view (or the planner) live in the host's saved des
 host already serves; the ones you add are what this deploys. script() writes one Bash script per server, in the
 style of storage-setup.sh: a read-only report by default, --apply to make it so, --host to run it elsewhere.
 
+Scans report the host's package manager and which NFS and SMB programs it has, so the share check can say what a deploy
+would install. The script looks again when it runs, on the host itself, and that decides what it installs.
+
 Server side: installs the NFS server or Samba if missing, writes StorageForge's own files
 (/etc/exports.d/storageforge.exports, /etc/samba/storageforge.conf, included once from smb.conf), labels SMB paths
 for SELinux, opens the firewall (firewalld or ufw) for the clients, and starts the services.
@@ -22,7 +25,7 @@ import shlex
 from .db import Conn, loads
 from .moves import _subtree_sql, find_host, host_slug, hosts, mount_of
 from .payloads import is_designed
-from .scriptkit import HELPERS, REMOTE, comments, host_name, one_line
+from .scriptkit import HELPERS, PACKAGES, REMOTE, comments, host_name, one_line, package_check
 
 SMB_NAME = re.compile(r'[A-Za-z0-9_.$-]{1,80}')
 NFS_DEFAULT = 'rw,sync,no_subtree_check'
@@ -204,6 +207,7 @@ def check_exports(conn: Conn, hs: dict, srv: dict, exports: list[dict], only: in
                                f'inside {e["path"]}: clients see empty folders there unless you add crossmnt to the options')
         elif below:
             say(i, 'note', f'{len(below)} filesystem(s) mounted inside are shared too (Samba follows mounts)')
+        say(i, *package_check(conn, srv, 'NFS server' if e['proto'] == 'NFS' else 'Samba'))
         if e['proto'] == 'NFS':
             if not e['clients']:
                 say(i, 'crit', 'NFS needs clients: a subnet like 10.42.0.0/24, or host names. "*" would export to everyone')
@@ -245,6 +249,7 @@ def check_exports(conn: Conn, hs: dict, srv: dict, exports: list[dict], only: in
                 continue
             seen.add((ch['id'], target))
             where = f'{ch["name"]}:{target}'
+            say(i, *package_check(conn, ch, 'NFS client' if e['proto'] == 'NFS' else 'SMB client'))
             if target in SYSTEM_DIRS:
                 say(i, 'crit', f'{where} is a system folder: mounting over it hides what the OS keeps there')
                 continue
@@ -413,7 +418,7 @@ def script(conn: Conn, host: str, prev_clients: list[str] | None = None) -> str:
                                shares=comments(lines, '#   (no exports in the design)'), problems=comments(problems, '#   none'))
             + f'SERVER={q(host_slug(c["host"]))}\nSERVER_ADDR={q(c["address"])}\n{decl}\n'
             + f'PREV_CLIENTS=({" ".join(q(host_slug(h)) for h in prev_clients or [])})\n'
-            + SHARES_BODY_1 + HELPERS + SHARES_BODY_2 + REMOTE + SHARES_BODY_3)
+            + SHARES_BODY_1 + HELPERS + SHARES_BODY_2 + REMOTE + SHARES_BODY_3.replace('@@PACKAGES@@\n', PACKAGES))
 
 
 def deploy_items(db, conn: Conn, host: str, mode: str, actor: str) -> list[dict]:
@@ -495,19 +500,7 @@ APPLY=0; [[ $MODE == apply ]] && APPLY=1
 if ((APPLY)) && [[ $EUID -ne 0 ]]; then echo "--apply needs root: sudo $0 ${ARGS[*]}" >&2; exit 1; fi
 STAMP=$(date +%Y%m%d-%H%M%S)
 
-pm() { for m in apt-get dnf zypper pacman; do command -v $m >/dev/null && { echo $m; return; }; done; echo none; }
-install_pkg() { # apt-name rpm-name arch-name
-  local m; m=$(pm)
-  case $m in
-    apt-get) DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$1" >/dev/null ;;
-    dnf) dnf install -y -q "$2" >/dev/null ;; zypper) zypper -nq install "$2" >/dev/null ;; pacman) pacman -S --needed --noconfirm "$3" >/dev/null ;;
-    *) conflict "no package manager I know: install $2 yourself"; return 1 ;;
-  esac
-}
-need_cmd() { # command what apt rpm arch
-  if command -v "$1" >/dev/null; then ok "$2 installed"; return 0; fi
-  if ((APPLY)); then doing "install $2"; install_pkg "$3" "$4" "$5" && ok "$2 installed"; else missing "$2 (package $3 / $4)"; fi
-}
+@@PACKAGES@@
 backup() { [[ -e $1 ]] && cp -a -- "$1" "$1.storageforge-$STAMP"; }
 own_file() { # path content -> StorageForge's own file: written whole (after a backup) when it differs
   if [[ -e $1 && $(cat "$1") == "$2" ]]; then ok "$1"; return 1; fi
@@ -555,7 +548,7 @@ server_nfs() {
     if [[ -d ${E_PATH[$i]} ]]; then ok "${E_PATH[$i]} exists"
     elif ((APPLY)); then doing "mkdir -p ${E_PATH[$i]}"; mkdir -p "${E_PATH[$i]}"; else missing "${E_PATH[$i]}"; fi
   done
-  need_cmd exportfs "NFS server" nfs-kernel-server nfs-utils nfs-utils || return 0
+  need_cmd exportfs "NFS server" nfs-kernel-server nfs-utils nfs-utils nfs-kernel-server || return 0
   own_file /etc/exports.d/storageforge.exports "$body" && ((APPLY)) && { doing "exportfs -ra"; exportfs -ra; }
   service_on nfs-server nfs-kernel-server
   open_fw NFS "2049 111" "$(printf '%s ' "${E_CLIENTS[@]}")" nfs mountd rpc-bind
@@ -584,7 +577,7 @@ server_smb() {
     if [[ -d ${E_PATH[$i]} ]]; then ok "${E_PATH[$i]} exists"
     elif ((APPLY)); then doing "mkdir -p ${E_PATH[$i]}"; mkdir -p "${E_PATH[$i]}"; else missing "${E_PATH[$i]}"; fi
   done
-  need_cmd smbd "Samba" samba samba samba || return 0
+  need_cmd smbd "Samba" samba samba samba samba || return 0
   local changed=0; own_file /etc/samba/storageforge.conf "$body" && changed=1
   local inc='include = /etc/samba/storageforge.conf'
   if [[ ! -e /etc/samba/smb.conf ]]; then
@@ -622,10 +615,10 @@ client_mount() { # index into C_*
   local i=$1 t=${C_TARGET[$1]} line opts
   section "mount ${C_SOURCE[$i]} at $t"
   if [[ ${C_PROTO[$i]} == NFS ]]; then
-    need_cmd mount.nfs "NFS client" nfs-common nfs-utils nfs-utils || return 0
+    need_cmd mount.nfs "NFS client" nfs-common nfs-utils nfs-utils nfs-client || return 0
     line="${C_SOURCE[$i]// /\\040} ${t// /\\040} nfs4 _netdev,nofail,x-systemd.automount,x-systemd.mount-timeout=30 0 0"
   else
-    need_cmd mount.cifs "SMB client" cifs-utils cifs-utils cifs-utils || return 0
+    need_cmd mount.cifs "SMB client" cifs-utils cifs-utils cifs-utils cifs-utils || return 0
     local cred=/etc/samba/credentials/$SERVER-${C_NAME[$i]} who=${SUDO_USER:-root}
     if [[ -s $cred ]]; then ok "credentials $cred"
     elif ((APPLY)) && [[ -t 0 ]]; then

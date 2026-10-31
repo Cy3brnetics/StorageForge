@@ -334,6 +334,44 @@ if verify_step 0; then echo VERDICT=match; else echo VERDICT=differ; fi""")
         self.assertNotIn('RUN', out)
         self.assertIn('no user', run(f'{tmp}/tree', 'no-such-user-sf', '', '', 1))
 
+    def test_share_installs_with_the_hosts_package_manager(self):
+        """The fake manager logs its arguments, and its "install" puts the program on a PATH with little else."""
+        from storageforge_index import scriptkit
+        fns = scriptkit.PACKAGES
+        INSTALLS = 'ln -s "${0%/*}/tail" "${0%/*}/sf-prog"'
+
+        def run(manager, fake='', apply=1):
+            tmp = Path(tempfile.mkdtemp())
+            self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+            for tool in ('tail', 'tr', 'touch', 'ln'):
+                (tmp / tool).symlink_to(shutil.which(tool))
+            if manager:
+                (tmp / manager).write_text(f'#!{shutil.which("bash")}\necho "$*" >>{tmp}/log\n'
+                                           + (fake or INSTALLS) + '\n')
+                (tmp / manager).chmod(0o755)
+            out = self.bash(f"""ok() {{ echo "OK $*"; }}; missing() {{ echo "MISSING $*"; }}; doing() {{ :; }}; conflict() {{ echo "CONFLICT $*"; }}
+{fns}APPLY={apply}; PATH={tmp}; need_cmd sf-prog "NFS server" apt-pkg rpm-pkg arch-pkg suse-pkg; echo "rc=$?" """)
+            return out, (tmp / 'log').read_text() if (tmp / 'log').exists() else ''
+
+        out, log = run('pacman', apply=0)                               # a report installs nothing
+        self.assertIn('MISSING NFS server (would install arch-pkg with pacman)', out)
+        self.assertEqual(log, '')
+        for manager, pkg in (('pacman', 'arch-pkg'), ('dnf', 'rpm-pkg'), ('yum', 'rpm-pkg'), ('zypper', 'suse-pkg'), ('apt-get', 'apt-pkg')):
+            out, log = run(manager)
+            self.assertIn(pkg, log, manager)
+            self.assertIn('OK NFS server installed', out)
+            self.assertIn('rc=0', out)
+        out, log = run('dnf', 'echo "No match for argument"; exit 1')
+        self.assertIn('CONFLICT could not install rpm-pkg with dnf: No match for argument', out)
+        self.assertIn('rc=1', out)
+        out, log = run('apt-get', 'case " $* " in *" update "*) touch "${0%/*}/fresh" ;; *) [[ -e "${0%/*}/fresh" ]] || { echo stale; exit 100; }; ' + INSTALLS + ' ;; esac')
+        self.assertIn('OK NFS server installed', out)
+        self.assertIn('update', log)                                    # stale package lists: refreshed, then tried again
+        self.assertEqual(log.count('install'), 2)
+        out, log = run('')
+        self.assertIn('no package manager I know', out)
+        self.assertIn('rc=1', out)
+
     def test_share_records_the_fstab_line_it_keeps(self):
         """GM-21: when fstab already mounts the share with its own options, those stay, and the line recorded for drift
         checks must be that one: recording ours made every later scan report the line as gone."""

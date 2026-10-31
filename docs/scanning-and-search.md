@@ -8,7 +8,8 @@ A scan connects once, with one multiplexed SSH session (`ControlMaster`), and ru
  target host (no agent)                          StorageForge
  ──────────────────────                          ────────────
  ssh ControlMaster (one TCP session, multiplexed)
-   ├─ inventory: hostname, machine-id, os-release, lsblk -J, findmnt -J, df, zpool status, /sys/fs/btrfs
+   ├─ inventory: hostname, machine-id, os-release, lsblk -J, findmnt -J, df, zpool status, /sys/fs/btrfs,
+   │             package manager, installed NFS, SMB, rsync and rsnapshot programs
    ├─ find /       -xdev -prune(other mounts, excludes) -printf NUL-records ─► reader 1 ─┐ 20k-row batches
    ├─ find /home   …                                                         ─► reader 2 ─┤ bounded queues
    └─ find /mnt/x  …                                                         ─► reader N ─┘ (back-pressure)

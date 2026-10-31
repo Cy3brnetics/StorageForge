@@ -46,6 +46,10 @@ The setup creates the `storageforge-deploy` system user (no password, root-owned
 | `changes` | change plan id | each host in the plan | `changes-<plan>.sh` | `--apply`, plus `--destructive` when asked |
 | `tasks` | task id | the task's host (and its previous host, to uninstall) | dry run | `--install`; `run: true` runs once; `remove: true` uninstalls |
 
+Scans record each host's package manager (apt, dnf, yum, zypper or pacman) and whether it has the NFS server (`exportfs`), Samba (`smbd`), the client mount helpers (`mount.nfs`, `mount.cifs`), `rsync` and `rsnapshot`. The share check uses this to say what a deploy would install, such as `the deploy installs nfs-kernel-server with apt-get`. A host that lacks a program and has no known package manager is a critical problem: install the program by hand and rescan. When the deploy runs, the script looks again on the host itself, and installs what is missing at that moment with the package manager it finds. A failed install is a conflict that shows the package manager's last lines and fails that host.
+
+Move plan jobs work the same way for `rsync` (on the host that runs the job and, when the source is elsewhere, on the source) and `rsnapshot` (on the host that runs the job). The plan check says what a deploy would install. On dnf and yum, rsnapshot comes from EPEL, which must already be enabled.
+
 The report runs first on every host. Apply stops at the first host that fails. Every host involved must have deploy access, or the request is refused with the list of hosts to set up. Each run is recorded in `deploy_runs` (output capped at 256 KiB) and in the audit log; the UI polls `GET /api/deploy/groups/<id>` while it runs.
 
 ## Deployed jobs

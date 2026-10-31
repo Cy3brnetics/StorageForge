@@ -12,7 +12,7 @@ try:
     import dbfactory
 except ImportError:      # run as tests.test_x from the project folder
     from tests import dbfactory
-from storageforge_index import fsmap, shares, tasks
+from storageforge_index import fsmap, jobs, moves, scriptkit, shares, tasks
 from storageforge_index.db import Database, dir_id
 
 
@@ -86,6 +86,67 @@ class ShareChecks(Fleet):
         self.assertEqual(r['crit'], 0, items)
         self.assertTrue(self.has(items, 'ok', 'on /mnt/pool (btrfs'))
         self.assertTrue(self.has(items, 'ok', 'mounts on pc:/mnt/photos'))
+
+    def test_says_what_a_deploy_would_install(self):
+        def scanned(host, packages):
+            self.conn.execute('UPDATE hosts SET inventory_json = :i WHERE hostname = :h',
+                              {'i': json.dumps({'packages': packages}), 'h': host})
+        nfs = {'protocol': 'NFS', 'path': '/mnt/pool/photos', 'rules': [{'clients': '10.0.0.0/24', 'options': 'rw'}],
+               'mounts': [{'host': 'pc', 'path': '/mnt/photos'}]}
+        _, items = self.levels(nfs)                                     # scanned before scans looked
+        self.assertTrue(self.has(items, 'note', 'rescan nas to see'))
+        scanned('nas', 'pm apt-get\nhave mount.nfs')                    # the client programs are not the server
+        scanned('pc', 'pm pacman')
+        _, items = self.levels(nfs)
+        self.assertTrue(self.has(items, 'note', 'the deploy installs nfs-kernel-server with apt-get'))
+        self.assertTrue(self.has(items, 'note', 'the deploy installs nfs-utils with pacman'))
+        scanned('nas', 'pm dnf\nhave exportfs')
+        scanned('pc', 'pm zypper\nhave mount.nfs')
+        r, items = self.levels(nfs)
+        self.assertTrue(self.has(items, 'ok', 'NFS server is installed on nas'))
+        self.assertTrue(self.has(items, 'ok', 'NFS client is installed on pc'))
+        self.assertEqual(r['crit'], 0, items)
+        scanned('nas', 'have exportfs')
+        r, items = self.levels({'protocol': 'SMB3', 'name': 'photos', 'path': '/mnt/pool/photos', 'clients': 'gabe'})
+        self.assertTrue(self.has(items, 'crit', 'no package manager'))
+
+    def test_script_packages_match_the_check(self):
+        for what in ('NFS server', 'Samba', 'NFS client', 'SMB client'):
+            self.assertIn(scriptkit.need_line(what).strip() + ' ||', shares.SHARES_BODY_3)
+        shares.save_export(self.db, self.conn, 'nas', {'protocol': 'NFS', 'path': '/mnt/pool/photos',
+                                                       'rules': [{'clients': 'pc', 'options': 'rw'}]}, None, 'test')
+        text = shares.script(self.conn, 'nas')
+        self.assertIn('install_pkg() {', text)
+        self.assertNotIn('@@PACKAGES@@', text)
+
+    def test_jobs_get_rsync_and_rsnapshot(self):
+        def scanned(host, packages):
+            self.conn.execute('UPDATE hosts SET inventory_json = :i WHERE hostname = :h',
+                              {'i': json.dumps({'packages': packages}), 'h': host})
+
+        def plan(method):
+            return moves.normalize({'name': 'p', 'steps': [{'id': 1, 'method': method, 'src': {'host': 'pc', 'path': '/mnt/docs'},
+                                                            'dst': {'host': 'nas', 'path': '/mnt/backup/docs'}}]})
+
+        def texts(method):
+            return [(x['level'], x['text']) for x in moves.check(self.conn, plan(method))['steps'][0]['items']]
+        scanned('nas', 'pm dnf\nhave rsync')
+        scanned('pc', 'pm apt-get')
+        items = texts('rsnapshot')
+        self.assertTrue(self.has(items, 'ok', 'rsync is installed on nas'))
+        self.assertTrue(self.has(items, 'note', 'rsync is not installed on pc: the deploy installs rsync with apt-get'))
+        self.assertTrue(self.has(items, 'note', 'installs rsnapshot with dnf (from EPEL'))
+        self.assertFalse(self.has(texts('copy'), 'note', 'rsnapshot'))
+        self.assertFalse(self.has(texts('git'), 'note', 'rsync is'))
+        p = {**plan('rsnapshot'), 'id': 1}
+        sp = jobs.specs(self.conn, p)
+        runner, source = jobs.host_script(p, 'nas', sp, [], None), jobs.host_script(p, 'pc', [], sp, None)
+        self.assertIn('need_cmd rsnapshot "rsnapshot" rsnapshot', runner)
+        self.assertIn('install_pkg() {', runner)
+        self.assertIn('need_cmd rsync "rsync" rsync', source)
+        self.assertNotIn('need_cmd rsnapshot', source)
+        check = subprocess.run(['bash', '-n'], input=runner, text=True, capture_output=True)
+        self.assertEqual(check.returncode, 0, check.stderr)
 
     def test_bad_mount_points_and_paths(self):
         _, items = self.levels({'protocol': 'NFS', 'path': '/mnt/pool/photos', 'rules': [{'clients': '*', 'options': 'rw'}],

@@ -25,7 +25,7 @@ import shlex
 import time
 
 from .db import Conn
-from .scriptkit import HELPERS, REMOTE, comments, host_name, one_line
+from .scriptkit import HELPERS, REMOTE, comments, host_name, one_line, package_check
 
 METHODS = ('copy', 'move', 'mirror', 'rsnapshot', 'git')
 SCHEDULES = ('hourly', 'daily', 'weekly', 'monthly')
@@ -223,6 +223,12 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
             continue
         same_host = sh['id'] == dh['id']
         info.update(runner=dh['name'], same_host=same_host)
+        if s['method'] != 'git':
+            say(*package_check(conn, dh, 'rsync'))
+            if not same_host:
+                say(*package_check(conn, sh, 'rsync'))
+            if s['method'] == 'rsnapshot':
+                say(*package_check(conn, dh, 'rsnapshot'))
         if same_host and (_under(dst, src) or _under(src, dst)):
             say('crit', 'source and destination overlap: one is inside the other, so rsync would copy into itself')
         for h0, p0 in moved_away:

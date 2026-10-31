@@ -3,6 +3,8 @@ style (ok / missing / conflict / ->), and --host, which copies the script to ano
 with sudo, forwarding your SSH agent."""
 import re
 
+from .db import Conn, loads
+
 # A host as plans name it: hostname, IPv4, [IPv6] or IPv6%zone. Never a line break, space or leading '-'.
 HOST_RE = re.compile(r'[A-Za-z0-9_.:\[\]%-]{1,253}')
 # Bash ends a comment at a line break, and terminals act on escape sequences when a script is read with cat or less.
@@ -57,4 +59,63 @@ if [[ -n $HOST ]]; then
   ssh "${SSHO[@]}" ${FWD[@]+"${FWD[@]}"} -t -- "$HOST" "cd $qtmp && if [ \$(id -u) = 0 ]; then bash ./move.sh$qrest; else sudo --preserve-env=SSH_AUTH_SOCK bash ./move.sh$qrest; fi; rc=\$?; rm -rf $qtmp; exit \$rc"
   exit $?
 fi
+"""
+
+
+# what deploys need on a host: the program that shows it is there, and its package per package manager
+NEEDS = {'NFS server': ('exportfs', {'apt-get': 'nfs-kernel-server', 'dnf': 'nfs-utils', 'yum': 'nfs-utils', 'pacman': 'nfs-utils', 'zypper': 'nfs-kernel-server'}),
+         'Samba': ('smbd', {'apt-get': 'samba', 'dnf': 'samba', 'yum': 'samba', 'pacman': 'samba', 'zypper': 'samba'}),
+         'NFS client': ('mount.nfs', {'apt-get': 'nfs-common', 'dnf': 'nfs-utils', 'yum': 'nfs-utils', 'pacman': 'nfs-utils', 'zypper': 'nfs-client'}),
+         'SMB client': ('mount.cifs', {'apt-get': 'cifs-utils', 'dnf': 'cifs-utils', 'yum': 'cifs-utils', 'pacman': 'cifs-utils', 'zypper': 'cifs-utils'}),
+         'rsync': ('rsync', {'apt-get': 'rsync', 'dnf': 'rsync', 'yum': 'rsync', 'pacman': 'rsync', 'zypper': 'rsync'}),
+         'rsnapshot': ('rsnapshot', {'apt-get': 'rsnapshot', 'dnf': 'rsnapshot', 'yum': 'rsnapshot', 'pacman': 'rsnapshot', 'zypper': 'rsnapshot'})}
+
+
+def package_check(conn: Conn, h: dict, what: str) -> tuple[str, str]:
+    """From the host's last scan: is this installed, and if not, what would a deploy install with what?"""
+    inv = loads(conn.scalar('SELECT inventory_json FROM hosts WHERE host_id = :h', {'h': h['id']})) or {}
+    text = inv.get('packages')
+    if not text:
+        return 'note', f'rescan {h["name"]} to see whether it needs the {what} installed'
+    words = [line.split(None, 1) for line in text.splitlines() if ' ' in line]
+    have = {v for k, v in words if k == 'have'}
+    manager = next((v for k, v in words if k == 'pm'), None)
+    cmd, packages = NEEDS[what]
+    if cmd in have:
+        return 'ok', f'{what} is installed on {h["name"]}'
+    if manager not in packages:
+        return 'crit', (f'{what} is not installed on {h["name"]}, and it has no package manager StorageForge knows '
+                        f'(apt, dnf, yum, zypper, pacman): install it by hand and rescan')
+    epel = ' (from EPEL, which must be enabled)' if what == 'rsnapshot' and manager in ('dnf', 'yum') else ''
+    return 'note', f'{what} is not installed on {h["name"]}: the deploy installs {packages[manager]} with {manager}{epel}'
+
+
+def need_line(what: str) -> str:
+    """The script line that checks for this and, on --apply, installs it. The script needs PACKAGES."""
+    cmd, p = NEEDS[what]
+    return f'need_cmd {cmd} "{what}" {p["apt-get"]} {p["dnf"]} {p["pacman"]} {p["zypper"]}\n'
+
+
+# Needs APPLY and the HELPERS. The host decides when the script runs: the scan only predicts it.
+PACKAGES = r"""pm() { for m in apt-get dnf yum zypper pacman; do command -v $m >/dev/null && { echo $m; return; }; done; echo none; }
+apt_install() { DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y -qq "$1" 2>&1; }
+install_pkg() { # manager package
+  case $1 in
+    apt-get) apt_install "$2" || { apt-get -o DPkg::Lock::Timeout=120 update -qq 2>&1 && apt_install "$2"; } ;;   # the package lists may be stale
+    dnf|yum) "$1" install -y -q "$2" 2>&1 ;;
+    zypper) zypper -nq install "$2" 2>&1 ;;
+    pacman) pacman -S --needed --noconfirm "$2" 2>&1 ;;   # no -Sy: refreshing without upgrading is a partial upgrade
+  esac
+}
+need_cmd() { # command what apt rpm arch suse
+  if command -v "$1" >/dev/null; then ok "$2 installed"; return 0; fi
+  local m pkg out; m=$(pm)
+  case $m in apt-get) pkg=$3 ;; dnf|yum) pkg=$4 ;; pacman) pkg=$5 ;; zypper) pkg=$6 ;;
+    *) conflict "$2 is missing and this host has no package manager I know (apt, dnf, yum, zypper, pacman): install it yourself"; return 1 ;;
+  esac
+  if ((!APPLY)); then missing "$2 (would install $pkg with $m)"; return 0; fi
+  doing "install $2: $pkg with $m"
+  if out=$(install_pkg "$m" "$pkg") && command -v "$1" >/dev/null; then ok "$2 installed"; return 0; fi
+  conflict "could not install $pkg with $m: $(tail -n 3 <<<"$out" | tr '\n' ' ')"; return 1
+}
 """
