@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import zoneinfo
 from pathlib import Path
 
 try:
@@ -169,8 +170,8 @@ class ScheduleCrudTests(SchedulerBaseTest):
             'name': 'hourly-scan',
             'host': 'nas',
             'cron_expr': '0 * * * *',
-            'task_type': 'scan',
-            'task_ref': 'nas',
+            'task_type': 'command',
+            'task_ref': 'true',
         }
         sched, _ = scheduler.create_schedule(self.conn, body, 'admin')
         sid = sched['schedule_id']
@@ -234,7 +235,8 @@ class ScriptGenerationTests(SchedulerBaseTest):
             'config': {'user': 'root'},
         }
         cron = scheduler.generate_cron_entry(s)
-        self.assertIn('15 4 * * * root /usr/local/sbin/storageforge-scheduler run 42', cron)
+        self.assertIn('* * * * * root /usr/local/sbin/storageforge-scheduler run 42 --if-due', cron)
+        self.assertIn('15 4 * * *', cron)
 
         cfg_json = scheduler.generate_client_config(s, 'http://server:8080', 'secret_token')
         parsed = json.loads(cfg_json)
@@ -436,7 +438,7 @@ class SchedulerApiTests(SchedulerBaseTest):
         items = scheduler.deploy_items(self.db, self.conn, sched, 'report', 'http://localhost:8080', 'admin')
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]['kind'], 'schedules')
-        deploy.mark_deployed(self.conn, 'nas', 'schedules', str(sid), scheduler.schedule_hash(sched),
+        deploy.mark_deployed(self.conn, 'nas', 'schedules', str(sid), scheduler.schedule_hash(self.conn, sched),
                              {'name': sched['name']}, 'admin')
         inst = scheduler.installed(self.conn)
         self.assertIn(str(sid), inst)
@@ -604,7 +606,8 @@ class SchedulerSafetyTests(SchedulerBaseTest):
         from storageforge_index import alerts
         secret = 'curl -H "X: tok-in-command" x'
         sid = self.schedule(task_ref=secret, config={'env': {'API_KEY': 'hunter2'}})
-        task = self.schedule(name='plain', task_type='task', task_ref='nightly')
+        tid = self.boss.post('/api/tasks', json={'name': 'nightly', 'host': 'nas', 'blocks': []}).get_json()['id']
+        task = self.schedule(name='plain', task_type='task', task_ref=str(tid))
         alerts.set_setting(self.conn, 'alerts', {**alerts.get_setting(self.conn, 'alerts'),
                                                  'webhook': {'url': 'https://hooks.example.test/services/SECRET-PATH'},
                                                  'ntfy': {'url': 'https://ntfy.example.test', 'topic': 'secret-topic', 'token': 't'}}, 'boss')
@@ -617,7 +620,7 @@ class SchedulerSafetyTests(SchedulerBaseTest):
             self.assertNotIn('hunter2', text)
             self.assertNotIn('tok-in-command', text)
         self.assertIn('API_KEY', self.view.get(f'/api/scheduler/schedules/{sid}').get_data(as_text=True))
-        self.assertEqual(self.view.get(f'/api/scheduler/schedules/{task}').get_json()['task_ref'], 'nightly')
+        self.assertEqual(self.view.get(f'/api/scheduler/schedules/{task}').get_json()['task_ref'], str(tid))
         got = self.boss.get(f'/api/scheduler/schedules/{sid}').get_json()    # who may edit reads what they edit
         self.assertEqual((got['task_ref'], got['config']['env']), (secret, {'API_KEY': 'hunter2'}))
 
@@ -634,3 +637,161 @@ class SchedulerSafetyTests(SchedulerBaseTest):
         self.assertEqual(po.get('/api/scheduler/runs').status_code, 403)
         self.assertEqual(po.get(f'/api/scheduler/schedules/{sid}').status_code, 200)
         self.assertIn('printed-secret', self.view.get(f'/api/scheduler/schedules/{sid}/runs').get_data(as_text=True))  # viewers hold logs.view
+
+    def report(self, sid, token, **kw):
+        return self.web.test_client().post('/api/scheduler/report', headers={'Authorization': f'Bearer {token}'},
+                                           json={'schedule_id': sid, 'exit_code': 0, 'output': '', **kw})
+
+    def created(self, **kw):
+        r = self.boss.post('/api/scheduler/schedules', json={'name': 'made', 'host': 'nas', 'cron_expr': '0 3 * * *',
+                                                             'task_type': 'command', 'task_ref': 'true', **kw})
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        return r.get_json()['schedule']['schedule_id'], r.get_json()['token']
+
+    def test_large_reports_are_stored(self):                 # PF-18
+        sid, token = self.created()
+        self.assertEqual(self.report(sid, token, output='x' * (200 << 10)).status_code, 200)
+        self.assertEqual(len(self.conn.scalar('SELECT output FROM schedule_runs WHERE schedule_id = :s', {'s': sid})), 200 << 10)
+        self.assertEqual(self.web.test_client().post('/api/enroll', data='x' * 8192, content_type='application/json').status_code, 413)   # others keep 4 KiB
+        data = schedscript.fit_report({'schedule_id': sid, 'output': 'a' * 100 + '\\n' * (1 << 20) + 'the end'})
+        self.assertLessEqual(len(data), schedscript.REPORT_MAX)
+        self.assertTrue(json.loads(data)['output'].endswith('the end'))
+
+    def test_patterns_are_checked_and_cannot_lose_a_report(self):   # SF-32
+        for pattern in ('output_must_match', 'output_must_not_match'):
+            r = self.boss.post('/api/scheduler/schedules', json={'name': 'bad', 'host': 'nas', 'cron_expr': '0 3 * * *', 'task_type': 'command',
+                                                                 'task_ref': 'true', 'config': {'verify_rules': {pattern: '('}}})
+            self.assertEqual(r.status_code, 400)
+        sid, token = self.created()
+        cfg = scheduler.get_schedule(self.conn, sid)['config']       # a row saved by an older version
+        cfg['verify_rules']['output_must_match'] = '('
+        self.conn.execute('UPDATE schedules SET config_json = :c WHERE schedule_id = :i', {'c': json.dumps(cfg), 'i': sid})
+        self.assertEqual(self.report(sid, token, exit_code=1, output='failed').status_code, 200)
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM schedule_runs WHERE schedule_id = :s', {'s': sid}), 1)
+
+    def test_a_slow_pattern_is_stopped(self):                # SF-32
+        from unittest import mock
+        with mock.patch.object(scheduler, 'REGEX_SECONDS', 0.5):
+            started = time.time()
+            self.assertIsNone(scheduler._search('(a+)+$', 'a' * 40 + 'b'))
+            self.assertLess(time.time() - started, 5)
+        self.assertTrue(scheduler._search('o+k', 'ok'))
+        self.assertFalse(scheduler._search('nope', 'ok'))
+
+    def test_the_hash_covers_what_a_schedule_runs(self):     # PF-21
+        block = {'type': 'btrfs_snapshot', 'params': {'subvol': '/mnt/data'}}
+        task = self.boss.post('/api/tasks', json={'name': 'digest', 'host': 'nas', 'blocks': [block]}).get_json()['id']
+        sid = self.schedule(task_type='task', task_ref=str(task))
+        before = scheduler.schedule_hash(self.conn, scheduler.get_schedule(self.conn, sid))
+        changed = {**block, 'params': {'subvol': '/mnt/other'}}
+        r = self.boss.put(f'/api/tasks/{task}', json={'name': 'digest', 'host': 'nas', 'blocks': [changed]})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertNotEqual(before, scheduler.schedule_hash(self.conn, scheduler.get_schedule(self.conn, sid)))
+
+    def test_tokens_change_only_when_a_host_gets_the_new_one(self):   # SF-31
+        from storageforge_index import alerts
+        sid, token = self.created()
+        r = self.boss.get(f'/api/scheduler/schedules/{sid}/install-script', headers={'Host': 'attacker.test'})
+        self.assertEqual(self.report(sid, token, nonce='a').status_code, 200)    # a GET changed nothing
+        self.assertNotIn('attacker.test', r.get_data(as_text=True))
+        self.assertEqual(self.report(sid, token, nonce='a').get_json().get('duplicate'), True)
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM schedule_runs WHERE schedule_id = :s', {'s': sid}), 1)
+        self.assertEqual(self.report(sid, token, started_at=int(time.time()) + 86400).status_code, 400)
+        alerts.set_setting(self.conn, 'report_url', 'https://sf.example.test', 'boss')
+        items = scheduler.deploy_items(self.db, self.conn, scheduler.get_schedule(self.conn, sid), 'apply', 'https://sf.example.test', 'boss')
+        self.assertEqual(self.report(sid, token, nonce='b').status_code, 200)    # still the old one: nothing has been installed
+        items[0]['on_ok']({'status': 'failed'})
+        self.assertEqual(self.report(sid, token, nonce='c').status_code, 200)
+        items[0]['on_ok']({'status': 'ok'})
+        self.assertEqual(self.report(sid, token, nonce='d').status_code, 401)
+        new = json.loads(items[0]['script'].split("EOF_CFG' > \"$CFG_JSON\"\n")[1].split('\nEOF_CFG')[0])['token']
+        self.assertEqual(self.report(sid, new, nonce='e').status_code, 200)
+
+    def test_pausing_reaches_the_host(self):                 # PF-20
+        from unittest import mock
+        from storageforge_index import alerts, deploy
+        sid = self.schedule()
+        self.assertNotIn('group', self.boss.post(f'/api/scheduler/schedules/{sid}/pause', json={'paused': True}).get_json())   # nothing deployed
+        self.boss.post(f'/api/scheduler/schedules/{sid}/pause', json={'paused': False})
+        sched = scheduler.get_schedule(self.conn, sid)
+        deploy.mark_deployed(self.conn, 'nas', 'schedules', str(sid), scheduler.schedule_hash(self.conn, sched), {}, 'test')
+
+        r = self.boss.post(f'/api/scheduler/schedules/{sid}/pause', json={'paused': True}).get_json()    # no deploy access
+        self.assertEqual(r['host_pending'], ['nas'])
+        paused = scheduler.get_schedule(self.conn, sid)
+        self.assertTrue(scheduler.pause_pending(self.conn, paused))   # alerts keep watching
+        self.assertTrue([d for d in alerts.drift(self.conn) if d.get('schedule') == sid])
+
+        with mock.patch.object(deploy, 'ready', return_value=True), mock.patch.object(deploy, 'start_group', return_value='g') as start:
+            r = self.boss.post(f'/api/scheduler/schedules/{sid}/pause', json={'paused': True}).get_json()
+        self.assertEqual(r['group'], 'g')
+        item = start.call_args.args[1][0]
+        self.assertEqual(item['args'], ['--install'])
+        self.assertIn('PAUSED=1', item['script'])
+        item['on_ok']({'status': 'ok'})
+        self.assertFalse(scheduler.pause_pending(self.conn, scheduler.get_schedule(self.conn, sid)))
+
+    def test_commands_need_their_own_permission(self):       # SF-24
+        body = {'name': 'c', 'host': 'nas', 'cron_expr': '0 3 * * *', 'task_type': 'command', 'task_ref': 'id'}
+        self.assertEqual(self.op.post('/api/scheduler/schedules', json=body).status_code, 403)
+        sid = self.schedule()
+        self.assertEqual(self.op.put(f'/api/scheduler/schedules/{sid}', json={'task_ref': 'id'}).status_code, 403)
+        self.assertEqual(self.op.post(f'/api/scheduler/schedules/{sid}/run', json={}).status_code, 403)
+        self.assertEqual(self.op.post('/api/deploy/start', json={'kind': 'schedules', 'ref': sid, 'mode': 'apply'}).status_code, 403)
+        plan = self.op.post('/api/changes', json={'name': 'mine', 'tasks': []}).get_json()['id']
+        other = self.schedule(self.op, name='ok', task_type='change', task_ref=str(plan))
+        self.assertEqual(self.op.put(f'/api/scheduler/schedules/{other}', json={'task_type': 'command', 'task_ref': 'id'}).status_code, 403)
+        items = scheduler.deploy_items(self.db, self.conn, scheduler.get_schedule(self.conn, sid), 'report', None, 'boss')
+        self.assertIn('runs: true', items[0]['script'])     # the dry run shows it
+
+    def test_env_cannot_change_what_runs(self):              # SF-24
+        for name in ('BASH_ENV', 'LD_PRELOAD', 'PATH', 'ld_library_path', 'GIT_SSH', 'PYTHONPATH', 'ENV'):
+            r = self.boss.post('/api/scheduler/schedules', json={'name': 'e', 'host': 'nas', 'cron_expr': '0 3 * * *', 'task_type': 'command',
+                                                                 'task_ref': 'true', 'config': {'env': {name: '/tmp/x'}}})
+            self.assertEqual((name, r.status_code), (name, 400))
+        sid = self.schedule(config={'env': {'RETENTION': '7'}})
+        cfg = scheduler.get_schedule(self.conn, sid)['config']       # a row saved by an older version
+        cfg['env']['BASH_ENV'] = '/tmp/x'
+        self.conn.execute('UPDATE schedules SET config_json = :c WHERE schedule_id = :i', {'c': json.dumps(cfg), 'i': sid})
+        out = json.loads(scheduler.generate_client_config(scheduler.get_schedule(self.conn, sid), None, ''))
+        self.assertEqual(out['config']['env'], {'RETENTION': '7'})
+
+    def test_settings_reach_the_runner(self):                # PF-22
+        from unittest import mock
+        cmd = schedscript.task_command({'nice': 5, 'ionice_class': 'best-effort', 'ionice_priority': 4}, '/t.sh', ['--run'])
+        if schedscript.shutil.which('nice'):
+            self.assertEqual(cmd[:3], ['nice', '-n', '5'])
+        self.assertEqual(cmd[-2:], ['/t.sh', '--run'])
+        conf = {'cron_expr': '0 3 * * *', 'config': {'timezone': 'Asia/Tokyo'}}
+        self.assertTrue(schedscript.is_due(conf, dt.datetime(2026, 1, 1, 18, 0, tzinfo=dt.timezone.utc).astimezone(zoneinfo.ZoneInfo('Asia/Tokyo'))))
+        self.assertFalse(schedscript.is_due(conf, dt.datetime(2026, 1, 1, 3, 0, tzinfo=dt.timezone.utc).astimezone(zoneinfo.ZoneInfo('Asia/Tokyo'))))
+        sched = {'schedule_id': 1, 'name': 'n', 'cron_expr': '0 3 * * *', 'config': {'jitter_sec': 30, 'user': 'backup'}}
+        cron = scheduler.generate_cron_entry(sched)
+        self.assertIn('* * * * * root ', cron)               # root reads the token; the runner drops to the user
+        self.assertIn('--if-due --jitter', cron)
+        with mock.patch.object(os, 'geteuid', return_value=0), self.assertRaises(KeyError):
+            schedscript.as_user('no-such-user-here')
+        self.assertEqual(schedscript.as_user('root'), {})
+
+    def test_an_unknown_user_is_a_failed_run(self):          # PF-22
+        from unittest import mock
+        script = Path(self.tmp) / 't.sh'
+        script.write_text('echo ran\n')
+        with mock.patch.object(schedscript, 'as_user', side_effect=KeyError('nobody-here')):
+            rc = schedscript.run_schedule({'schedule_id': 9, 'script_path': str(script), 'config': {'user': 'nobody-here'}},
+                                          var_dir=self.tmp, locks_dir=self.tmp)
+        self.assertEqual(rc, 1)
+        self.assertIn('nobody-here', (Path(self.tmp) / '9' / 'last.json').read_text())
+
+    def test_a_schedule_stays_on_its_own_host(self):         # PF-23
+        task = self.boss.post('/api/tasks', json={'name': 'elsewhere', 'host': 'backup-box', 'blocks': []}).get_json()['id']
+        base = {'name': 'x', 'host': 'nas', 'cron_expr': '0 3 * * *'}
+        for kw in ({'task_type': 'task', 'task_ref': str(task)}, {'task_type': 'shares', 'task_ref': 'backup-box'},
+                   {'task_type': 'task', 'task_ref': 'no such task'}, {'task_type': 'scan', 'task_ref': 'nas'},
+                   {'task_type': 'task', 'task_ref': str(task), 'host': 'backup-box', 'config': {'user': 'backup'}}):
+            r = self.boss.post('/api/scheduler/schedules', json={**base, **kw})
+            self.assertEqual((kw['task_type'], r.status_code), (kw['task_type'], 400), r.get_data(as_text=True))
+        ok = self.schedule(task_type='task', task_ref=str(task), host='backup-box')
+        self.boss.put(f'/api/tasks/{task}', json={'name': 'elsewhere', 'host': 'nas', 'blocks': []})   # moved after it was scheduled
+        with self.assertRaises(ValueError):
+            scheduler.deploy_items(self.db, self.conn, scheduler.get_schedule(self.conn, ok), 'apply', None, 'boss')

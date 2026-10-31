@@ -289,7 +289,7 @@ def drift(conn: Conn) -> list[dict]:
         elif d['kind'] == 'schedules':
             try:
                 sched = scheduler.get_schedule(conn, int(d['ref']))
-                cur = scheduler.schedule_hash(sched)
+                cur = scheduler.schedule_hash(conn, sched)
             except (LookupError, ValueError):
                 sched, cur = None, None
             if cur != d['hash']:
@@ -464,7 +464,9 @@ def problems(conn: Conn) -> dict:
                     now[f'task-stale:{host}:{tslug}'] = ('task-stale', f'{host}:{tslug}', f'No good run: task {tname} on {host}',
                                                          f'scheduled on {sched}', 'warn')
     # Unified Scheduler: failed, verify_failed, or stale schedules
-    for s in scheduler.list_schedules(conn, paused=False):
+    for s in scheduler.list_schedules(conn):
+        if s['paused'] and not scheduler.pause_pending(conn, s):     # stays watched until the host has it
+            continue
         sid = s['schedule_id']
         sruns = scheduler.get_schedule_runs(conn, schedule_id=sid, limit=5)
         if sruns:

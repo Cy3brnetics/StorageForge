@@ -30,4 +30,4 @@ Mask env values and return them only to `plans.edit`. Require `logs.view` for ru
 - [x] A viewer test sees no env value, no run output and no webhook path
 
 ## Fixed
-2026-10-31, in the working tree, not committed yet: add the commit here. Without `plans.edit`, env values and command text are masked. Run output needs `logs.view`. Without `settings.manage`, `/api/deploy` shows alert addresses as origin only and masks the ntfy topic. Env values are still stored in plain text in the database. Test: `test_read_only_accounts_do_not_see_secrets`.
+2026-10-31, in `8d3c73e`. Without `plans.edit`, env values and command text are masked. Run output needs `logs.view`. Without `settings.manage`, `/api/deploy` shows alert addresses as origin only and masks the ntfy topic. Env values are still stored in plain text in the database. Test: `test_read_only_accounts_do_not_see_secrets`.

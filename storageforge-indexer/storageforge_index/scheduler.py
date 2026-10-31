@@ -9,12 +9,14 @@ import json
 import re
 import secrets
 import shlex
+import subprocess
+import sys
 import time
 import zoneinfo
 from typing import Any
 
 from . import alerts, changes, moves, schedscript, tasks
-from .db import Conn
+from .db import Conn, epoch
 from .moves import find_host, host_slug, hosts, slug
 from .scriptkit import HELPERS
 
@@ -39,6 +41,9 @@ NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$')
 HOST_RE = re.compile(r'^(?!-)([A-Za-z0-9._-]{1,32}@)?(?!-)[A-Za-z0-9.:_\[\]-]{1,253}$')
 WINDOW_RE = re.compile(r'^\d{2}:\d{2}-\d{2}:\d{2}$')
 MASK = '••••••'
+# Variables that change what a shell or interpreter runs: a schedule's env must not turn a reviewed script into something else
+UNSAFE_ENV = re.compile(r'(LD_|BASH_|GIT_|PYTHON|PERL|RUBY|NODE_).*|ENV|PATH|IFS|SHELLOPTS|BASHOPTS|PS4|HOME', re.I)
+REGEX_SECONDS = 2
 
 
 class StillDeployed(ValueError):
@@ -230,10 +235,9 @@ def normalize_config(body: dict) -> dict:
     env = {}
     if isinstance(raw_env, dict):
         for k, v in raw_env.items():
-            if re.fullmatch(r'^[A-Za-z_][A-Za-z0-9_]*$', str(k)):
+            if re.fullmatch(r'^[A-Za-z_][A-Za-z0-9_]*$', str(k)) and not UNSAFE_ENV.fullmatch(str(k)):
                 env[str(k)] = str(v)[:1000]
 
-    catchup = bool(cfg.get('catchup'))
     jitter = int(cfg.get('jitter_sec') or 0)
     if not (0 <= jitter <= 300):
         raise ValueError('jitter_sec must be between 0 and 300')
@@ -243,6 +247,8 @@ def normalize_config(body: dict) -> dict:
         raise ValueError(f'verify_policy must be one of {", ".join(VERIFY_POLICIES)}')
 
     raw_vr = cfg.get('verify_rules') or {}
+    if not isinstance(raw_vr, dict):
+        raise ValueError('verify_rules must be an object')
     verify_rules = {
         'require_exit_zero': bool(raw_vr.get('require_exit_zero', True)),
         'check_mounts': [str(p).strip() for p in raw_vr.get('check_mounts') or [] if str(p).strip().startswith('/')],
@@ -269,7 +275,6 @@ def normalize_config(body: dict) -> dict:
         'ionice_priority': ionice_priority,
         'user': user,
         'env': env,
-        'catchup': catchup,
         'jitter_sec': jitter,
         'verify_policy': verify_policy,
         'verify_rules': verify_rules,
@@ -308,9 +313,77 @@ def normalize_schedule(body: dict) -> dict:
     }
 
 
-def schedule_hash(schedule: dict) -> str:
-    """Returns a 16-char SHA-256 fingerprint of the normalized schedule definition."""
-    return hashlib.sha256(json.dumps(normalize_schedule(schedule), sort_keys=True).encode()).hexdigest()[:16]
+def _plan_id(conn: Conn, table: str, ref: str) -> int:
+    pid = int(ref) if ref.isdigit() else conn.scalar(f'SELECT plan_id FROM {table} WHERE lower(name) = lower(:n)', {'n': ref})
+    if not pid:
+        raise LookupError(f'plan "{ref}" not found')
+    return pid
+
+
+def _target_hash(conn: Conn, schedule: dict) -> str:
+    """A fingerprint of what the schedule runs, the same one a deploy of the plan itself uses."""
+    from . import jobs, shares
+    ttype, ref = schedule['task_type'], schedule['task_ref']
+    try:
+        if ttype == 'task':
+            return tasks.task_hash(_resolve_task(conn, ref))
+        if ttype == 'change':
+            return changes.plan_hash(changes.get_plan(conn, _plan_id(conn, 'change_plans', ref)))
+        if ttype == 'move':
+            return jobs.plan_hash(moves.get_plan(conn, _plan_id(conn, 'move_plans', ref)))
+        if ttype == 'shares':
+            return shares.design_hash(conn, ref) or ''
+    except LookupError:
+        return 'missing'
+    return ''
+
+
+def schedule_hash(conn: Conn, schedule: dict) -> str:
+    """Returns a 16-char SHA-256 fingerprint of the schedule and of what it runs: editing the plan changes it too."""
+    text = json.dumps(normalize_schedule(schedule), sort_keys=True) + _target_hash(conn, schedule)
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def check_target(conn: Conn, schedule: dict):
+    """What a schedule runs must be meant for the host it runs on: a script applies whatever it holds, wherever it lands."""
+    from .fsmap import same_host
+    ttype, ref, host = schedule['task_type'], schedule['task_ref'], schedule['host']
+    if ttype == 'task':
+        named = [_resolve_task(conn, ref)['host']]
+    elif ttype == 'change':
+        named = [t['host'] for t in changes.get_plan(conn, _plan_id(conn, 'change_plans', ref)).get('tasks') or []]
+    elif ttype == 'move':
+        named = [s['dst']['host'] for s in moves.get_plan(conn, _plan_id(conn, 'move_plans', ref)).get('steps') or []]
+    elif ttype == 'shares':
+        named = [ref]
+    else:
+        return
+    other = sorted({n for n in named if n and not same_host(n, host)})
+    if other:
+        raise ValueError(f'this {ttype} is for {", ".join(other)}, not {host}: schedule it there')
+
+
+def _check_save(conn: Conn, body: dict, s: dict):
+    """Refuses at save what would fail, or run something else, on a timer later. Saved rows are not held to this, so a
+    schedule from an older version can still be read, hashed and uninstalled."""
+    _no_destructive(body)
+    if s['task_type'] == 'scan':
+        raise ValueError('StorageForge scans hosts from the server: set the host\'s own scan interval instead')
+    raw = (body.get('config') or body.get('config_json') or {})
+    unsafe = sorted(k for k in (raw.get('env') or {}) if UNSAFE_ENV.fullmatch(str(k)))
+    if unsafe:
+        raise ValueError(f'these variables would change what the script runs: {", ".join(unsafe)}')
+    for key in ('output_must_match', 'output_must_not_match'):
+        try:
+            re.compile(s['config']['verify_rules'][key])
+        except re.error as exc:
+            raise ValueError(f'{key} is not a valid pattern: {exc}') from None
+    if s['config']['user'] != 'root' and s['task_type'] != 'command':
+        raise ValueError('only a command can run as another user: tasks, plans and shares need root')
+    try:
+        check_target(conn, s)
+    except LookupError as exc:
+        raise ValueError(str(exc)) from None
 
 
 # ── Database Operations ────────────────────────────────────────────────────────
@@ -332,8 +405,8 @@ def masked(schedule: dict) -> dict:
 
 def create_schedule(conn: Conn, body: dict, actor: str) -> tuple[dict, str]:
     """Creates a new scheduled task and generates an authentication token for client execution reporting."""
-    _no_destructive(body)
     s = normalize_schedule(body)
+    _check_save(conn, body, s)
     now = int(time.time())
     next_ts = next_run(s['cron_expr'], now, s['config']['timezone']) if not s['paused'] else None
 
@@ -438,7 +511,6 @@ def list_schedules(conn: Conn, host: str | None = None, task_type: str | None = 
 
 
 def update_schedule(conn: Conn, schedule_id: int, body: dict, actor: str) -> dict:
-    _no_destructive(body)
     curr = get_schedule(conn, schedule_id)
     # Merge existing fields
     merged = {
@@ -451,6 +523,7 @@ def update_schedule(conn: Conn, schedule_id: int, body: dict, actor: str) -> dic
         'paused': body.get('paused', curr['paused']),
     }
     s = normalize_schedule(merged)
+    _check_save(conn, body, s)
     now = int(time.time())
 
     clash = conn.scalar('SELECT schedule_id FROM schedules WHERE lower(name) = lower(:n) AND schedule_id != :id',
@@ -498,10 +571,13 @@ def pause_schedule(conn: Conn, schedule_id: int, paused: bool, actor: str) -> di
 def token_for_schedule(conn: Conn, schedule_id: int, actor: str) -> str:
     """Rotates and returns a fresh authentication token for the schedule."""
     token = secrets.token_hex(32)
-    th = hashlib.sha256(token.encode()).hexdigest()
-    conn.execute('UPDATE schedules SET auth_token_hash = :th, updated_at = :now WHERE schedule_id = :id',
-                 {'id': schedule_id, 'th': th, 'now': int(time.time())})
+    _set_token(conn, schedule_id, token)
     return token
+
+
+def _set_token(conn: Conn, schedule_id: int, token: str):
+    conn.execute('UPDATE schedules SET auth_token_hash = :th, updated_at = :now WHERE schedule_id = :id',
+                 {'id': schedule_id, 'th': hashlib.sha256(token.encode()).hexdigest(), 'now': int(time.time())})
 
 
 def schedule_for_token(conn: Conn, token: str) -> dict | None:
@@ -564,6 +640,7 @@ def generate_task_script(conn: Conn, schedule: dict) -> tuple[str, list[str]]:
         # Scanner invocation
         sc = f"""#!/bin/bash
 set -euo pipefail
+# from an older version: storageforge-index is not on client hosts, so this cannot work. Scans now run from the server
 echo "StorageForge automated scan of {schedule['host']}"
 exec storageforge-index scan {shlex.quote(schedule['host'])}
 """
@@ -609,7 +686,7 @@ def verify_run(conn: Conn, schedule: dict, report: dict) -> dict:
         output = str(report.get('output') or '')
         must_match = cfg['verify_rules'].get('output_must_match')
         if must_match:
-            if re.search(must_match, output):
+            if _search(must_match, output):
                 checks.append({'name': 'output_must_match', 'status': 'ok',
                                'message': f'output matched required pattern: {must_match}'})
             else:
@@ -619,7 +696,7 @@ def verify_run(conn: Conn, schedule: dict, report: dict) -> dict:
 
         must_not_match = cfg['verify_rules'].get('output_must_not_match')
         if must_not_match:
-            if re.search(must_not_match, output):
+            if _search(must_not_match, output) is not False:     # could not tell: not proof that it is absent
                 passed = False
                 checks.append({'name': 'output_must_not_match', 'status': 'crit',
                                'message': f'output contained forbidden pattern: {must_not_match}'})
@@ -715,7 +792,7 @@ def verify_run(conn: Conn, schedule: dict, report: dict) -> dict:
 
         # Check 6: Task-type specific verifications
         if schedule['task_type'] == 'scan':
-            last_scan = conn.scalar('SELECT max(started_at) FROM scans WHERE host_id = :hid', {'hid': hid})
+            last_scan = epoch(conn.scalar('SELECT max(started_at) FROM scans WHERE host_id = :hid', {'hid': hid}))
             run_start = report.get('started_at', 0)
             if last_scan and last_scan >= run_start - 60:
                 checks.append({'name': 'scan_completion', 'status': 'ok',
@@ -781,6 +858,34 @@ def verify_run(conn: Conn, schedule: dict, report: dict) -> dict:
     }
 
 
+def _search(pattern: str, output: str) -> bool | None:
+    """re.search in a child process with a time limit: the pattern comes from a form and the output from a host, and a
+    bad pair could otherwise hold a web thread for as long as it likes. None when it could not tell."""
+    code = 'import json,re,sys; p,o=json.load(sys.stdin); sys.exit(0 if re.search(p,o) else 1)'
+    try:
+        rc = subprocess.run([sys.executable, '-I', '-c', code], input=json.dumps([pattern, output]), text=True,
+                            capture_output=True, timeout=REGEX_SECONDS).returncode
+    except subprocess.TimeoutExpired:
+        return None
+    return {0: True, 1: False}.get(rc)
+
+
+def _verified(conn: Conn, schedule: dict, report: dict) -> dict:
+    """verify_run that cannot lose a report: an error in checking is a failed check, and the run is still recorded."""
+    try:
+        return verify_run(conn, schedule, report)
+    except Exception as exc:
+        return {'passed': False, 'checks': [{'name': 'verify_error', 'status': 'crit', 'message': f'could not verify: {exc}'[:300]}],
+                'verified_at': int(time.time()), 'summary': 'Verification could not run'}
+
+
+def pause_pending(conn: Conn, schedule: dict) -> bool:
+    """Paused here, but a host still holds the version from before: its timer is still running."""
+    from . import deploy
+    want = schedule_hash(conn, schedule)
+    return any(d['ref'] == str(schedule['schedule_id']) and d['hash'] != want for d in deploy.deployed(conn, kind='schedules'))
+
+
 def reverify_run(conn: Conn, run_id: int) -> dict:
     """Re-runs server verification on an existing schedule_run against the latest StorageForge index."""
     rows = conn.all("""SELECT run_id, schedule_id, host, status, started_at, finished_at, exit_code, output, nonce
@@ -797,7 +902,7 @@ def reverify_run(conn: Conn, run_id: int) -> dict:
         'output': r[7],
         'nonce': r[8],
     }
-    v_result = verify_run(conn, schedule, report)
+    v_result = _verified(conn, schedule, report)
     verified = 1 if v_result['passed'] else -1
     exit_code = r[6] if r[6] is not None else -1
     status = 'verified' if (exit_code == 0 and v_result['passed']) else 'verify_failed' if exit_code == 0 else 'failed'
@@ -849,9 +954,14 @@ def ingest_report(conn: Conn, report: dict, report_source: str) -> dict:
     exit_code = int(report.get('exit_code') if report.get('exit_code') is not None else -1)
     output = str(report.get('output') or '')[:262144]  # 256 KiB cap
     nonce = str(report.get('nonce') or secrets.token_hex(16))[:64]
+    if started_at > time.time() + 3600:
+        raise ValueError('this run says it started in the future')
+    seen = conn.scalar('SELECT run_id FROM schedule_runs WHERE schedule_id = :sid AND nonce = :n', {'sid': sid, 'n': nonce})
+    if seen:                     # a repeat, or a replay: the first answer stands
+        return {'run_id': seen, 'schedule_id': sid, 'duplicate': True, 'auto_rescan': False}
 
     # Run server verification
-    v_result = verify_run(conn, schedule, report)
+    v_result = _verified(conn, schedule, report)
     verified = 1 if v_result['passed'] else -1
     status = 'verified' if (exit_code == 0 and v_result['passed']) else 'verify_failed' if exit_code == 0 else 'failed'
 
@@ -941,7 +1051,10 @@ def ingest_scan_schedules(conn: Conn, host: str, text: str) -> int:
         if exists:
             continue
         rec['nonce'] = nonce
-        ingest_report(conn, rec, f'scan:{host}')
+        try:
+            ingest_report(conn, rec, f'scan:{host}')
+        except ValueError:       # one bad line must not stop a scan
+            continue
         added += 1
     return added
 
@@ -987,16 +1100,17 @@ def get_schedule_runs(conn: Conn, schedule_id: int | None = None, host: str | No
 # ── Client Deployment Package Generation ──────────────────────────────────────
 
 def generate_cron_entry(schedule: dict) -> str:
-    """Generates standard /etc/cron.d/ entry for this schedule."""
+    """Generates standard /etc/cron.d/ entry for this schedule. It wakes every minute and the runner decides: not every cron
+    has CRON_TZ, so only the runner can keep the schedule's own timezone. Always root: the token stays readable by root
+    alone, and the runner drops to config.user for the task itself."""
     sid = schedule['schedule_id']
-    user = schedule['config'].get('user', 'root')
-    expr = schedule['cron_expr']
-    comment = f"# StorageForge schedule {schedule['name']} (#{sid})"
-    cmd = f"/usr/local/sbin/storageforge-scheduler run {sid}"
-    return f"{comment}\n{expr} {user} {cmd}\n"
+    cfg = schedule['config']
+    comment = f"# StorageForge schedule {schedule['name']} (#{sid}): {schedule['cron_expr']} in {cfg.get('timezone') or 'UTC'}"
+    jitter = ' --jitter' if cfg.get('jitter_sec') else ''
+    return f"{comment}\n* * * * * root /usr/local/sbin/storageforge-scheduler run {sid} --if-due{jitter}\n"
 
 
-def generate_client_config(schedule: dict, report_url: str, token: str, script_args: list[str] | None = None) -> str:
+def generate_client_config(schedule: dict, report_url: str | None, token: str, script_args: list[str] | None = None) -> str:
     """Generates JSON config for client daemon and runner in /etc/storageforge/scheduler/<id>.json."""
     sid = schedule['schedule_id']
     data = {
@@ -1007,16 +1121,17 @@ def generate_client_config(schedule: dict, report_url: str, token: str, script_a
         'task_type': schedule['task_type'],
         'task_ref': schedule['task_ref'],
         'paused': bool(schedule.get('paused')),
-        'report_url': report_url.rstrip('/'),
+        'report_url': (report_url or '').rstrip('/'),
         'token': token,
         'script_path': f'/usr/local/lib/storageforge/scheduler/task-{sid}.sh',
         'script_args': list(script_args or []),
-        'config': schedule['config'],
+        # a row saved before the env rules goes through them as well
+        'config': {**schedule['config'], 'env': {k: v for k, v in (schedule['config'].get('env') or {}).items() if not UNSAFE_ENV.fullmatch(k)}},
     }
     return json.dumps(data, indent=2)
 
 
-def generate_install_script(conn: Conn, schedule: dict, report_url: str, token: str) -> str:
+def generate_install_script(conn: Conn, schedule: dict, report_url: str | None, token: str) -> str:
     """Generates a self-contained installation & management script for target client hosts."""
     sid = schedule['schedule_id']
     task_script, script_args = generate_task_script(conn, schedule)
@@ -1024,6 +1139,8 @@ def generate_install_script(conn: Conn, schedule: dict, report_url: str, token: 
     client_config = generate_client_config(schedule, report_url, token, script_args=script_args)
     runner_bin = schedscript.scheduler_binary()
     paused_flag = 1 if schedule.get('paused') else 0
+    # a dry run shows the command itself: the person reading it is who approves it
+    shown_command = f'info {shlex.quote("runs: " + schedule["task_ref"])}' if schedule['task_type'] == 'command' else ':'
 
     return f"""#!/usr/bin/env bash
 # StorageForge Scheduler Install Script for "{schedule['name']}" (#{sid})
@@ -1051,6 +1168,7 @@ MANAGED=/var/lib/storageforge/managed/sched-{sid}.sha256
 
 if [[ $MODE == report ]]; then
   section "Schedule $SCHED_NAME (#$SID)"
+  {shown_command}
   [[ -x $BIN ]] && ok "$BIN" || missing "$BIN needs to be installed"
   [[ -x $TASK_SH ]] && ok "$TASK_SH" || missing "$TASK_SH needs to be installed"
   [[ -f $CFG_JSON ]] && ok "$CFG_JSON" || missing "$CFG_JSON needs to be installed"
@@ -1124,7 +1242,7 @@ finished
 """
 
 
-def deploy_items(db, conn: Conn, schedule: dict, mode: str, report_url: str, actor: str,
+def deploy_items(db, conn: Conn, schedule: dict, mode: str, report_url: str | None, actor: str,
                  run_now: bool = False, remove: bool = False) -> list[dict]:
     """deploy.start_group items for deploying, running, or uninstalling a schedule over SSH via storageforge-run."""
     from . import deploy
@@ -1132,11 +1250,19 @@ def deploy_items(db, conn: Conn, schedule: dict, mode: str, report_url: str, act
     host_name = home['name'] if home else schedule['host']
     sid = schedule['schedule_id']
     ref = str(sid)
-    digest = schedule_hash(schedule)
+    digest = schedule_hash(conn, schedule)
+    if not remove and not schedule.get('paused'):
+        check_target(conn, schedule)
 
-    # Rotate/issue a client reporting token when applying or running now; use a placeholder for dry-run report
-    if mode == 'apply' or run_now:
-        token = token_for_schedule(conn, sid, actor) if not remove else 'uninstall'
+    # The old token keeps working until the host holds the new one, so a deploy that fails leaves reports working. A run
+    # now is the exception: it reports during the deploy, with the new token.
+    promote = None
+    if remove:
+        token = 'uninstall'
+    elif run_now:
+        token = token_for_schedule(conn, sid, actor)
+    elif mode == 'apply':
+        token = promote = secrets.token_hex(32)
     else:
         token = '<issued-on-deploy>'
 
@@ -1152,6 +1278,8 @@ def deploy_items(db, conn: Conn, schedule: dict, mode: str, report_url: str, act
                     c.execute("DELETE FROM deployed WHERE host = :h AND kind = 'schedules' AND ref = :r",
                               {'h': target_host, 'r': ref})
                 else:
+                    if promote:
+                        _set_token(c, sid, promote)
                     deploy.mark_deployed(c, target_host, 'schedules', ref, digest,
                                          {'name': schedule['name'], 'cron_expr': schedule['cron_expr'],
                                           'task_type': schedule['task_type'], 'schedule_id': sid}, actor)

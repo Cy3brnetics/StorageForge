@@ -943,7 +943,7 @@ def cmd_schedule(args) -> int:
 
         elif cmd == 'install-script':
             sched = scheduler.get_schedule(conn, args.id)
-            report_url = args.report_url or 'http://localhost:8080'
+            report_url = args.report_url or ''
             token = scheduler.token_for_schedule(conn, args.id, 'cli')
             print(scheduler.generate_install_script(conn, sched, report_url, token))
             return 0

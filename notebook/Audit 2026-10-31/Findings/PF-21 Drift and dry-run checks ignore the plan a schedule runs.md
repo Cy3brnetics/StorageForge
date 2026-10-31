@@ -1,6 +1,6 @@
 ---
 id: PF-21
-status: open
+status: done
 severity: medium
 effort: S
 area: Scheduler
@@ -26,4 +26,7 @@ Edit a plan after a schedule was deployed: no drift is shown, while the host kee
 Hash the generated script, without the token. The `script_sha` idea is already used for deploy runs.
 
 ## Done when
-- [ ] Editing the underlying plan raises drift and refuses a stale apply
+- [x] Editing the underlying plan raises drift and refuses a stale apply
+
+## Fixed
+2026-10-31. `schedule_hash` now includes the hash of what the schedule runs. Every deployed schedule shows as changed once. Test: `test_the_hash_covers_what_a_schedule_runs`.

@@ -30,4 +30,4 @@ Refuse deletion while deployed, with the same 409 text the other kinds use. Hand
 - [x] An orphan can be uninstalled from the UI
 
 ## Fixed
-2026-10-31, in the working tree, not committed yet: add the commit here. Delete answers 409 while deployed. Already orphaned schedules can be uninstalled from a new section on the Deploy tab, checked in the browser up to the deploy access refusal; no real host was involved. Tests: `test_a_deployed_schedule_cannot_be_deleted`, `test_a_schedule_already_deleted_can_be_uninstalled`.
+2026-10-31, in `8d3c73e`. Delete answers 409 while deployed. Already orphaned schedules can be uninstalled from a new section on the Deploy tab, checked in the browser up to the deploy access refusal; no real host was involved. Tests: `test_a_deployed_schedule_cannot_be_deleted`, `test_a_schedule_already_deleted_can_be_uninstalled`.

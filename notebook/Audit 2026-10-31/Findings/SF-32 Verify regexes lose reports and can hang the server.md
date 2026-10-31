@@ -1,6 +1,6 @@
 ---
 id: SF-32
-status: open
+status: done
 severity: medium
 effort: S
 area: Scheduler
@@ -27,5 +27,8 @@ A typo in a form silently loses every failure report for that schedule, and aler
 Compile on save and refuse invalid patterns. Prefer a fixed-string match. If regex stays, run it in a subprocess with a time limit, or use a linear-time engine. Store the run first, then verify, so that a verification crash can never lose a report.
 
 ## Done when
-- [ ] An invalid pattern is refused on save
-- [ ] A verification error still stores the run
+- [x] An invalid pattern is refused on save
+- [x] A verification error still stores the run
+
+## Fixed
+2026-10-31. Patterns are compiled on save, run in a child process with a 2 second limit, and a verification error is a failed check on a stored run. Tests: `test_patterns_are_checked_and_cannot_lose_a_report`, `test_a_slow_pattern_is_stopped`.

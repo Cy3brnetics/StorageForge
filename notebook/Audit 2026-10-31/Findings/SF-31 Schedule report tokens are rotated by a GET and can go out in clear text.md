@@ -1,6 +1,6 @@
 ---
 id: SF-31
-status: open
+status: done
 severity: medium
 effort: S
 area: Scheduler
@@ -31,5 +31,8 @@ A person with `plans.scripts` can silently stop a host's reports, which then loo
 Rotate only on an explicit POST or after a successful install. Refuse to deploy a schedule without a configured `report_url`, as jobs do. Reject repeated nonces and unreasonable `started_at`. Audit each token issue.
 
 ## Done when
-- [ ] GET changes nothing
-- [ ] No script is generated with a URL taken from a request header
+- [x] GET changes nothing
+- [x] No script is generated with a URL taken from a request header
+
+## Fixed
+2026-10-31. A GET rotates nothing: a downloaded script carries no token and reports through scans. No report URL comes from a request; with none set, runs arrive by scan, as jobs do. An install switches the token only once it succeeded; **Run now** still switches first, because it reports during the deploy. Repeated nonces and future start times are refused. Test: `test_tokens_change_only_when_a_host_gets_the_new_one`.

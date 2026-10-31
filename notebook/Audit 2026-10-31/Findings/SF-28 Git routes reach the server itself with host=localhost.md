@@ -29,4 +29,4 @@ Delete the local branch from the web path. If the CLI needs it, pass it as an ex
 - [x] `host=localhost` answers 404 unless localhost is an enrolled host
 
 ## Fixed
-2026-10-31, in the working tree, not committed yet: add the commit here. Loopback names answer 404 unless a key is bound to that exact name. Test: `test_git_routes_do_not_reach_the_server`.
+2026-10-31, in `8d3c73e`. Loopback names answer 404 unless a key is bound to that exact name. Test: `test_git_routes_do_not_reach_the_server`.

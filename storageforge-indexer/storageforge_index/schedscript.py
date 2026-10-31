@@ -11,9 +11,11 @@ import fcntl
 import glob
 import json
 import os
+import pwd
 import random
 import re
 import secrets
+import shutil
 import signal
 import ssl
 import subprocess
@@ -37,6 +39,7 @@ CRON_ALIASES = {
 MONTH_NAMES = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
                'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12}
 DOW_NAMES = {'sun': 0, 'mon': 1, 'tue': 2, 'wed': 3, 'thu': 4, 'fri': 5, 'sat': 6}
+REPORT_MAX = 480 << 10    # the server takes 512 KiB
 
 
 def _parse_field(field_str: str, min_val: int, max_val: int, name_map: dict[str, int] | None = None) -> set[int]:
@@ -133,12 +136,57 @@ def load_config(id_or_path: str, config_dir: str = '/etc/storageforge/scheduler'
     raise FileNotFoundError(f'no scheduler config found for {id_or_path}')
 
 
+def now_in(cfg: dict, now_dt: dt.datetime | None = None) -> dt.datetime:
+    """The time in the schedule's own timezone, which need not be the host's."""
+    try:
+        tz = zoneinfo.ZoneInfo(cfg.get('timezone') or 'UTC')
+    except Exception:
+        tz = dt.timezone.utc
+    return now_dt or dt.datetime.now(tz=tz)
+
+
+def is_due(conf: dict, now_dt: dt.datetime | None = None) -> bool:
+    now = now_in(conf.get('config') or {}, now_dt)
+    mins, hours, doms, months, dows = parse_cron(conf.get('cron_expr', ''))
+    return (now.minute in mins and now.hour in hours and now.day in doms and now.month in months
+            and (now.weekday() + 1) % 7 in dows)
+
+
+def task_command(cfg: dict, script_path: str, script_args: list[str]) -> list[str]:
+    """The task with its CPU and I/O priority, where the host has the tools for them."""
+    cmd = ['bash', script_path, *script_args]
+    classes = {'realtime': '1', 'best-effort': '2', 'idle': '3'}
+    if cfg.get('ionice_class') in classes and shutil.which('ionice'):
+        klass = classes[cfg['ionice_class']]
+        cmd = ['ionice', '-c', klass, *([] if klass == '3' else ['-n', str(int(cfg.get('ionice_priority', 7)))]), *cmd]
+    if cfg.get('nice') is not None and shutil.which('nice'):
+        cmd = ['nice', '-n', str(int(cfg['nice'])), *cmd]
+    return cmd
+
+
+def as_user(name: str | None) -> dict:
+    """Popen arguments to run the task as config.user. Only root can switch; an unknown user raises, and the run fails."""
+    if not name or name == 'root' or os.geteuid() != 0:
+        return {}
+    p = pwd.getpwnam(name)
+    return {'user': p.pw_uid, 'group': p.pw_gid, 'extra_groups': os.getgrouplist(name, p.pw_gid)}
+
+
+def fit_report(report: dict) -> bytes:
+    """The report as JSON, under what the server accepts. A long run keeps its end, where the result and any error are."""
+    while True:
+        data = json.dumps(report).encode('utf-8')
+        if len(data) <= REPORT_MAX or not report.get('output'):
+            return data
+        report = {**report, 'output': '[start of output cut]\n' + report['output'][len(report['output']) // 2:]}
+
+
 def send_report(report_url: str, token: str, report: dict, ca_file: str | None = None) -> bool:
     """Sends execution report back to StorageForge server via HTTP/HTTPS POST."""
     if not report_url:
         return False
     url = f"{report_url.rstrip('/')}/api/scheduler/report"
-    data = json.dumps(report).encode('utf-8')
+    data = fit_report(report)
     req = urllib.request.Request(url, data=data, method='POST')
     req.add_header('Content-Type', 'application/json')
     req.add_header('Authorization', f'Bearer {token}')
@@ -171,7 +219,7 @@ def run_schedule(conf: dict, var_dir: str = '/var/lib/storageforge/scheduler',
 
     # 1. Window check
     window = cfg.get('window')
-    if window and not in_window(window):
+    if window and not in_window(window, now_in(cfg)):
         print(f"storageforge-scheduler: skipping {sid}, current time outside window ({window})")
         return 0
 
@@ -183,7 +231,7 @@ def run_schedule(conf: dict, var_dir: str = '/var/lib/storageforge/scheduler',
     # 2. Concurrency Lock
     os.makedirs(locks_dir, exist_ok=True)
     lock_file = os.path.join(locks_dir, f'sf-sched-{sid}.lock')
-    lock_fd = open(lock_file, 'w+')
+    lock_fd = open(lock_file, 'a+')     # not w+: that empties the file before policy replace can read the PID
 
     policy = cfg.get('concurrency_policy', 'skip')
     try:
@@ -238,10 +286,10 @@ def run_schedule(conf: dict, var_dir: str = '/var/lib/storageforge/scheduler',
             time.sleep(cur_delay)
             cur_delay = int(cur_delay * retry_backoff)
 
-        cmd = ['bash', script_path, *script_args] if script_path else ['echo', 'no script path specified']
+        cmd = task_command(cfg, script_path, script_args) if script_path else ['echo', 'no script path specified']
         try:
             p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                 env=env, text=True, bufsize=1)
+                                 env=env, text=True, bufsize=1, **as_user(cfg.get('user')))
             out, _ = p.communicate(timeout=timeout if timeout > 0 else None)
             exit_code = p.returncode
             full_output.append(out or '')
@@ -327,17 +375,7 @@ def daemon_tick(config_dir: str = '/etc/storageforge/scheduler',
             conf = load_config(path)
             if conf.get('paused'):
                 continue
-            expr = conf.get('cron_expr', '')
-            tz_name = (conf.get('config') or {}).get('timezone') or 'UTC'
-            try:
-                tz = zoneinfo.ZoneInfo(tz_name)
-            except Exception:
-                tz = dt.timezone.utc
-            now = now_dt or dt.datetime.now(tz=tz)
-            mins, hours, doms, months, dows = parse_cron(expr)
-            weekday = (now.weekday() + 1) % 7
-            if (now.minute in mins and now.hour in hours and
-                    now.day in doms and now.month in months and weekday in dows):
+            if is_due(conf, now_dt):
                 subprocess.Popen([sys.executable, os.path.abspath(__file__),
                                   'run', path, '--var-dir', var_dir, '--lock-dir', locks_dir, '--jitter'],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -386,6 +424,7 @@ def main(argv=None) -> int:
     r.add_argument('--var-dir', default='/var/lib/storageforge/scheduler')
     r.add_argument('--lock-dir', default='/run/lock')
     r.add_argument('--jitter', action='store_true', help='apply configured random jitter delay before running')
+    r.add_argument('--if-due', action='store_true', help='do nothing unless the schedule is due this minute, in its own timezone')
 
     # daemon command
     d = sub.add_parser('daemon', help='run background scheduler daemon')
@@ -409,6 +448,8 @@ def main(argv=None) -> int:
     if args.cmd == 'run':
         try:
             conf = load_config(args.id, args.config_dir)
+            if args.if_due and (conf.get('paused') or not is_due(conf)):
+                return 0
             return run_schedule(conf, args.var_dir, args.lock_dir, no_jitter=not args.jitter)
         except Exception as exc:
             print(f"storageforge-scheduler: error: {exc}", file=sys.stderr)

@@ -30,4 +30,4 @@ Refuse `config.destructive` for schedules. Destructive work is one-off and belon
 - [x] The proof above is a regression test
 
 ## Fixed
-2026-10-31, in the working tree, not committed yet: add the commit here. Saving `config.destructive` is refused for everyone, and scripts never get `--destructive`. **A host already deployed with it keeps its old script until redeployed**; its hash no longer matches, so it shows as changed. Test: `test_a_schedule_cannot_be_destructive`.
+2026-10-31, in `8d3c73e`. Saving `config.destructive` is refused for everyone, and scripts never get `--destructive`. **A host already deployed with it keeps its old script until redeployed**; its hash no longer matches, so it shows as changed. Test: `test_a_schedule_cannot_be_destructive`.

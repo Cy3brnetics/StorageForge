@@ -5,6 +5,9 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Security
+- Schedules holding arbitrary commands need a new high-risk permission, `schedules.command`: only `admin` has it by default, so operators who use them need a custom role. Env variables that change what runs (`PATH`, `LD_*`, `BASH_ENV` and others) are refused.
+- Downloading a schedule's install script no longer rotates its token: the file carries none, and that host reports through scans. A failed deploy no longer ends the old token. Reports never go to an address taken from a request's Host header: set a report URL, or runs arrive with the next scan.
+- Bad or slow verify patterns can no longer lose a report or hold a web thread, and repeated report nonces are ignored.
 - **Schedules no longer run on the StorageForge server.** The **Run local** button and `{"local": true}` are gone: they let an operator run commands where the vault secret lives. Use `storageforge-index schedule run` from a shell on the server.
 - Creating, changing, pausing, running or deleting a schedule, and rotating its token, now asks for a fresh password. Running one also applies the deploy preflight.
 - Schedules can no longer run destructive steps, which bypassed `deploy.destructive`. A schedule deployed with them keeps its old script until redeployed: it shows as changed on the Deploy tab.
@@ -12,6 +15,9 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 - Git routes no longer run on the server when given `host=localhost`. Loopback names need a key bound to them, like any host.
 - Accounts that can't edit schedules no longer see their commands or env values. Run output needs `logs.view`. Alert addresses in `/api/deploy` need `settings.manage`.
 - `viewer` can no longer download a schedule's install script (which also minted a report token), its cron line or a host configuration bundle. These now need `plans.scripts`.
+
+### Changed
+- **Schedules:** pausing and resuming now update the host, and alerts keep watching until it has. Reports up to 512 KiB are accepted (they were refused above 4 KiB). Drift and dry-run checks notice a change to the plan a schedule runs, so **every deployed schedule shows as changed once after this update: redeploy it.** `nice`, `ionice`, jitter, timezone, window and `user` now take effect; `catchup` and the `scan` task type are gone. A plan or task made for another host can't be scheduled on this one. Cron now wakes the runner every minute and the runner decides.
 
 ### Added
 - **Invite links and permissions:** admins create single-use, expiring links that let someone make their own account with a role chosen in advance, and password reset links replace email. Roles now bundle about 30 permissions in groups. `viewer`, `operator` and `admin` stay as they were and cannot be edited, there is a new built-in `search` role that can only search files, and admins can create custom roles. Nobody can grant more than they hold.

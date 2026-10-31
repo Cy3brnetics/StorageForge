@@ -151,6 +151,7 @@ Each plan type has the same shape: list, create, one, check, script.
 | POST | `/api/scheduler/schedules/<id>/pause` | `{"paused": true\|false}` | pause or resume schedule |
 | POST | `/api/scheduler/schedules/<id>/token` | | rotate/generate new execution bearer token |
 | POST | `/api/scheduler/schedules/<id>/run` | | run schedule immediately over SSH deploy access (password confirmed) |
+| POST | `/api/scheduler/report` | run report, up to 512 KiB (`Authorization: Bearer <token>`) | a host reports a run; a repeated nonce is ignored |
 | POST | `/api/scheduler/schedules/<id>/verify` | `{"run_id"?}` | re-verify schedule or specific run against the StorageForge index |
 | GET | `/api/scheduler/schedules/<id>/script` | | download compiled shell script for the task |
 | GET | `/api/scheduler/schedules/<id>/install-script` | | download full installer script (config, script, cron entry) |

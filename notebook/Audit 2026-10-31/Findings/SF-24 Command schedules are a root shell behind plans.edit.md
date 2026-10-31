@@ -1,6 +1,6 @@
 ---
 id: SF-24
-status: open
+status: done
 severity: high
 effort: M
 area: Scheduler
@@ -26,5 +26,8 @@ Everything else in StorageForge checks typed fields before they reach a script, 
 Add a separate permission, `schedules.command`, marked high risk and not in any built-in role except admin. Check it on create, on update, and on deploy of a command schedule. Allow env names from a short list, or refuse `LD_*`, `BASH_ENV`, `ENV`, `PATH`, `PYTHON*`, `IFS` and `GIT_*`. Show the exact command in the dry run.
 
 ## Done when
-- [ ] A plans.edit account cannot save a command schedule
-- [ ] `BASH_ENV` and `LD_PRELOAD` are refused with a clear message
+- [x] A plans.edit account cannot save a command schedule
+- [x] `BASH_ENV` and `LD_PRELOAD` are refused with a clear message
+
+## Fixed
+2026-10-31. New high-risk `schedules.command`, admin only by default, checked on create, update, run and deploy. Unsafe env names are refused on save and dropped from older rows. The dry run shows the command. Tests: `test_commands_need_their_own_permission`, `test_env_cannot_change_what_runs`.

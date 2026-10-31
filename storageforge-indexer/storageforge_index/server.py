@@ -168,7 +168,8 @@ BACKUP_FULL = int(os.environ.get('STORAGEFORGE_BACKUP_FULL_KEEP', '0'))     # fu
 CONFIG_EXPORT_DIR = os.environ.get('STORAGEFORGE_CONFIG_EXPORT_DIR')         # nightly host config bundle: mount another machine's storage here
 ALERT_TICK = 300                  # alerts and drift are re-evaluated this often (and right after a job reports)
 SCHEDULE_TICK = 600               # the scheduler looks for due hosts this often (seconds)
-MAX_BLUEPRINT = 2 << 20           # planner designs are the one large body we accept
+MAX_BLUEPRINT = 2 << 20           # planner designs are the largest body we accept
+MAX_REPORT = 512 << 10            # a schedule's run report: the runner keeps its output under this
 # Failed sign-ins allowed before /api/login answers 429; successful ones are not counted.
 LOGIN_LIMIT_PER_IP = '10 per minute; 50 per hour'
 LOGIN_LIMIT_PER_USER = '5 per minute; 20 per hour'     # per account and client network (/24, /64)
@@ -521,6 +522,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def body_limit():
         if request.path in ('/api/planner/design', '/api/planner/changes') and request.method in ('PUT', 'POST'):
             request.max_content_length = MAX_BLUEPRINT
+        elif request.path == '/api/scheduler/report' and request.method == 'POST':
+            request.max_content_length = MAX_REPORT
 
     @web.after_request
     def headers(resp: Response):
@@ -1648,7 +1651,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 if not options.get('remove'):
                     raise ValueError(f'schedule {ref} no longer exists') from None
                 return scheduler.orphan_items(db, c, int(ref), mode, actor())
-            report_url = alerts.get_setting(c, 'report_url') or f'http://{request.host}'
+            report_url = alerts.get_setting(c, 'report_url')
             return scheduler.deploy_items(db, c, sched, mode, report_url, actor(),
                                           bool(options.get('run')), bool(options.get('remove')))
         raise ValueError('kind is jobs, shares, changes, tasks or schedules')
@@ -1665,7 +1668,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             if kind == 'tasks':
                 return tasks.task_hash(tasks.get_task(c, int(ref)))
             if kind == 'schedules':
-                return scheduler.schedule_hash(scheduler.get_schedule(c, int(ref)))
+                return scheduler.schedule_hash(c, scheduler.get_schedule(c, int(ref)))
         except LookupError:
             return None
         return None
@@ -1683,6 +1686,12 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if body.get('destructive'):
             need('deploy.destructive')
         c = conn()
+        if kind == 'schedules' and not body.get('remove') and mode == 'apply':
+            try:
+                if scheduler.get_schedule(c, int(ref))['task_type'] == 'command':
+                    need('schedules.command')
+            except LookupError:
+                pass
         options = {k: bool(body[k]) for k in ('remove', 'paused', 'destructive', 'run') if body.get(k)}
         items = deploy_items_for(c, kind, ref, mode, options)
         if not items:
@@ -1872,6 +1881,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             if stale:
                 return stale
             body = json_body()
+            if body.get('task_type') == 'command':
+                need('schedules.command')
             sched, token = scheduler.create_schedule(c, body, actor())
             core.audit(c, actor(), 'scheduler.create', 'ok', sched['host'], {'schedule_id': sched['schedule_id'], 'name': sched['name']})
             return jsonify(schedule=sched, token=token), 201
@@ -1892,6 +1903,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         try:
             if request.method == 'PUT':
                 body = json_body()
+                if 'command' in (body.get('task_type'), scheduler.get_schedule(c, schedule_id)['task_type']):
+                    need('schedules.command')
                 sched = scheduler.update_schedule(c, schedule_id, body, actor())
                 core.audit(c, actor(), 'scheduler.update', 'ok', sched['host'], {'schedule_id': schedule_id, 'name': sched['name']})
                 return jsonify(sched)
@@ -1916,8 +1929,19 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             body = json_body()
             paused = bool(body.get('paused', True))
             sched = scheduler.pause_schedule(c, schedule_id, paused, actor())
-            core.audit(c, actor(), 'scheduler.pause', 'ok', sched['host'], {'schedule_id': schedule_id, 'paused': paused})
-            return jsonify(sched)
+            who = actor()
+            core.audit(c, who, 'scheduler.pause', 'ok', sched['host'], {'schedule_id': schedule_id, 'paused': paused})
+            if not scheduler.installed(c).get(str(schedule_id)):
+                return jsonify(sched)
+            # the timer is on the host, so this only happens when the host has been told
+            items = scheduler.deploy_items(db, c, sched, 'apply', alerts.get_setting(c, 'report_url'), who)
+            missing = sorted({it['host'] for it in items if not deploy.ready(c, it['host'])})
+            if missing:
+                return jsonify({**sched, 'host_pending': missing})
+            gid = deploy.start_group(db, items, who, stop_on_failure=True, after=lambda h: core.enqueue(h, who),
+                                     title=f'{"pause" if paused else "resume"} schedule {sched["name"]}', kind='schedules',
+                                     ref=str(schedule_id), mode='apply', options={}, digest=scheduler.schedule_hash(c, sched))
+            return jsonify({**sched, 'group': gid, 'hosts': [it['host'] for it in items]})
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
 
@@ -1941,8 +1965,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         c = conn()
         try:
             sched = scheduler.get_schedule(c, schedule_id)
+            if sched['task_type'] == 'command':
+                need('schedules.command')
             who = actor()
-            report_url = alerts.get_setting(c, 'report_url') or f'http://{request.host}'
+            report_url = alerts.get_setting(c, 'report_url')
             items = scheduler.deploy_items(db, c, sched, 'apply', report_url, who, run_now=True)
             missing = [it['host'] for it in items if not deploy.ready(c, it['host'])]
             if missing:
@@ -1951,7 +1977,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             blocked = preflight.blockers(c, [it['host'] for it in items], 'schedules')
             if blocked:
                 return jsonify(error='; '.join(f'{b["host"]}: {b["text"]}' for b in blocked), blockers=blocked), 409
-            digest = scheduler.schedule_hash(sched)
+            digest = scheduler.schedule_hash(c, sched)
             gid = deploy.start_group(db, items, who, stop_on_failure=True, after=lambda h: core.enqueue(h, who),
                                      title=f'run schedule {sched["name"]}', kind='schedules', ref=str(schedule_id),
                                      mode='apply', options={'run': True}, digest=digest)
@@ -1986,6 +2012,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         try:
             sched = scheduler.get_schedule(c, schedule_id)
             script, args = scheduler.generate_task_script(c, sched)
+            core.audit(c, actor(), 'scheduler.script', 'ok', sched['host'], {'schedule_id': schedule_id})
             return Response(script, mimetype='text/x-shellscript',
                             headers={'Content-Disposition': f'attachment; filename="task-{schedule_id}.sh"'})
         except LookupError as exc:
@@ -1997,9 +2024,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         c = conn()
         try:
             sched = scheduler.get_schedule(c, schedule_id)
-            report_url = alerts.get_setting(c, 'report_url') or f"http://{request.host}"
-            token = scheduler.token_for_schedule(c, schedule_id, actor())
-            scr = scheduler.generate_install_script(c, sched, report_url, token)
+            # A GET changes nothing, so this carries no token and the host reports through scans. To report directly, rotate
+            # the token and add it to the config on the host, or deploy over SSH
+            scr = scheduler.generate_install_script(c, sched, alerts.get_setting(c, 'report_url'), '')
+            core.audit(c, actor(), 'scheduler.install-script', 'ok', sched['host'], {'schedule_id': schedule_id})
             return Response(scr, mimetype='text/x-shellscript',
                             headers={'Content-Disposition': f'attachment; filename="install-schedule-{schedule_id}.sh"'})
         except LookupError as exc:

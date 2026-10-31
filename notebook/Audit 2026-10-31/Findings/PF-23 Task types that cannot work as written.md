@@ -1,6 +1,6 @@
 ---
 id: PF-23
-status: open
+status: in-progress
 severity: medium
 effort: S
 area: Scheduler
@@ -30,3 +30,6 @@ Remove `scan`, or make it a server-side schedule. Validate on save that the refe
 ## Done when
 - [ ] Saving a mismatched schedule is refused
 - [ ] The scheduler tests pass on PostgreSQL
+
+## Fixed
+2026-10-31. `scan` is refused on save, and a plan, task or share for another host is refused on save and on deploy. The timestamp now uses `epoch()`, not run on PostgreSQL. References are still free text, so this stays in progress. Test: `test_a_schedule_stays_on_its_own_host`.

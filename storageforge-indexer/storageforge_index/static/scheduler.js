@@ -46,7 +46,6 @@ function blankSchedule(host = '') {
       ionice_priority: 7,
       user: 'root',
       env: {},
-      catchup: false,
       jitter_sec: 0,
       verify_policy: 'comprehensive',
       verify_rules: {
@@ -221,8 +220,10 @@ function renderScheduler() {
         el('div', { class: 'row wrap' },
           button(cur.paused ? 'Resume' : 'Pause', async () => {
             try {
-              await postJSON(`/api/scheduler/schedules/${cur.schedule_id}/pause`, { paused: !cur.paused });
-              toast(cur.paused ? 'Schedule resumed' : 'Schedule paused');
+              const verb = cur.paused ? 'Resum' : 'Paus';
+              const r = await (await postJSON(`/api/scheduler/schedules/${cur.schedule_id}/pause`, { paused: !cur.paused })).json();
+              toast(r.host_pending ? `Saved, but ${r.host_pending.join(', ')} has no deploy access: its timer has not changed`
+                : r.group ? `${verb}ing on ${r.hosts.join(', ')}…` : `Schedule ${verb.toLowerCase()}ed`);
               await loadScheduler(cur.schedule_id);
             } catch (e) { toast(e.message); }
           }, 'btn sm'),
@@ -275,7 +276,6 @@ function renderScheduler() {
   const typeSel = el('select', {
     onchange: () => {
       cur.task_type = typeSel.value;
-      if (cur.task_type === 'scan' && !cur.task_ref) cur.task_ref = hostIn.value.trim() || 'all';
       if (cur.task_type === 'shares' && !cur.task_ref) cur.task_ref = hostIn.value.trim();
       renderRefPicker();
     },
@@ -284,7 +284,6 @@ function renderScheduler() {
     new Option('Change Plan (folders/mounts/drives)', 'change'),
     new Option('Move Plan (rsync data move)', 'move'),
     new Option('Shares (NFS / SMB design)', 'shares'),
-    new Option('Host Scan (index host)', 'scan'),
     new Option('Command (shell script/command)', 'command')
   );
   typeSel.value = cur.task_type || 'task';
@@ -355,7 +354,6 @@ function renderScheduler() {
   ioniceSel.value = cfg.ionice_class || 'best-effort';
   const ionicePrioIn = el('input', { type: 'number', min: 0, max: 7, value: cfg.ionice_priority ?? 7 });
   const userIn = el('input', { type: 'text', value: cfg.user || 'root' });
-  const catchupChk = el('input', { type: 'checkbox', checked: Boolean(cfg.catchup) });
   const envArea = el('textarea', { class: 'mono', rows: 2, placeholder: 'RESTIC_REPOSITORY=/srv/backup\nBORG_PASSPHRASE=...' });
   envArea.value = fmtEnvLines(cfg.env);
 
@@ -407,7 +405,6 @@ function renderScheduler() {
           ionice_priority: Number(ionicePrioIn.value),
           user: userIn.value.trim() || 'root',
           env: parseEnvLines(envArea.value),
-          catchup: catchupChk.checked,
           jitter_sec: Number(jitterIn.value) || 0,
           verify_policy: vPolicySel.value,
           verify_rules: {
@@ -502,7 +499,6 @@ function renderScheduler() {
           el('label', { class: 'field col grow' }, text('span', 'I/O Class'), ioniceSel),
           el('label', { class: 'field col grow' }, text('span', 'I/O Priority (0..7)'), ionicePrioIn)
         ),
-        el('label', { class: 'check' }, catchupChk, ' Run missed schedule on daemon startup (catchup)'),
         el('label', { class: 'field col' }, text('span', 'Environment Variables (KEY=VALUE per line)'), envArea)
       )
     ),

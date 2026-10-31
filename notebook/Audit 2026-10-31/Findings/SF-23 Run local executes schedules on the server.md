@@ -31,4 +31,4 @@ Remove the `local` branch and the button. The server is not a managed host. Keep
 - [x] A test asserts that a schedule cannot run anything on the server
 
 ## Fixed
-2026-10-31, in the working tree, not committed yet: add the commit here. The local branch and the **Run local** button are gone. `storageforge-index schedule run` stays in the CLI. Test: `test_a_schedule_never_runs_on_the_server`.
+2026-10-31, in `8d3c73e`. The local branch and the **Run local** button are gone. `storageforge-index schedule run` stays in the CLI. Test: `test_a_schedule_never_runs_on_the_server`.

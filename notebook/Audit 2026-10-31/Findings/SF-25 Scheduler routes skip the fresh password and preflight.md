@@ -29,4 +29,4 @@ Add `@password_confirmed` to all scheduler writes. Route `run` through the same 
 - [x] `test_commands_on_hosts_need_the_password_again` (`tests/test_platform.py:1667`) covers the scheduler routes
 
 ## Fixed
-2026-10-31, in the working tree, not committed yet: add the commit here. All scheduler writes now need a fresh password, and the run route applies `preflight.blockers`. The run route still has its own copy of the deploy steps rather than sharing one function with `/api/deploy/start`. `test_commands_on_hosts_need_the_password_again` was left as is; the new tests are `test_scheduler_writes_need_a_fresh_password` and `test_running_a_schedule_applies_preflight`.
+2026-10-31, in `8d3c73e`. All scheduler writes now need a fresh password, and the run route applies `preflight.blockers`. The run route still has its own copy of the deploy steps rather than sharing one function with `/api/deploy/start`. `test_commands_on_hosts_need_the_password_again` was left as is; the new tests are `test_scheduler_writes_need_a_fresh_password` and `test_running_a_schedule_applies_preflight`.

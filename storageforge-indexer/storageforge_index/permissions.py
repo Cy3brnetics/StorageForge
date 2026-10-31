@@ -23,7 +23,8 @@ CATALOG = (
     ('Planning', (
         ('plans.view', 'See moves, changes, tasks and schedules', False),
         ('plans.edit', 'Create and edit plans, tasks, shares and designs', True),
-        ('plans.scripts', 'Download generated scripts and config bundles', False),)),
+        ('plans.scripts', 'Download generated scripts and config bundles', False),
+        ('schedules.command', 'Write, deploy and run schedules holding arbitrary commands, which run as root', True),)),
     ('Deploy', (
         ('deploy.view', 'See deploys, runs and jobs', False),
         ('deploy.report', 'Dry runs, job logs and snapshot browsing', False),
@@ -81,7 +82,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/(browse|fs/browse|file-changes|dupes|filemap|files/ignore|folders/.*)', 'files.browse'),
     (READ, r'/api/(docker(/.*)?|git|git/ignore|shares/check)', 'services.view'),
 
-    # generated scripts name paths, logins and hosts in a form that can be run; install-script also mints a report token
+    # generated scripts name paths, logins and hosts in a form that can be run
     (READ, r'/api/.*/(script|ansible|install-script|cron|bundle)', 'plans.scripts'),
     (('POST',), r'/api/tasks/script', 'plans.scripts'),
     (READ, r'/api/hostconfigs(/.*)?', 'configs.view'),

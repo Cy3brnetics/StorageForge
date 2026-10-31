@@ -1,6 +1,6 @@
 ---
 id: PF-18
-status: open
+status: done
 severity: high
 effort: S
 area: Scheduler
@@ -28,4 +28,7 @@ The headline feature, server-side verification on completion, fails for any job 
 Add the route to `body_limit` with a 512 KiB limit. Have the runner cap what it sends and mark it truncated. Retry from a spool file, or at least rely on the scan path deliberately and say so in the UI.
 
 ## Done when
-- [ ] A 200 KiB report is stored, with a test
+- [x] A 200 KiB report is stored, with a test
+
+## Fixed
+2026-10-31. The report route takes 512 KiB, and the runner keeps a long output's end to fit. Retrying a failed send is not done: the scan path still picks those up. Test: `test_large_reports_are_stored`.
