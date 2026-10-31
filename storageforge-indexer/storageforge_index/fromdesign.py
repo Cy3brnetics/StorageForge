@@ -7,19 +7,20 @@ change plans get. Now the planner hands the design to this module, which compare
 staged in the Changes tab like any other, so they are checked, saved, deployed and audited the same way.
 
 Only additions and edits become tasks. Things the scan has and the design dropped are listed and left alone, and
-anything Changes has no task type for (ZFS pools and datasets, mdadm, LVM, multi-partition layouts, bind mounts,
-hard links) is listed as "by hand" with the reason. Drive tasks keep an empty confirm field, so nobody can save
+anything Changes has no task type for (multi-device btrfs, mdadm, multi-partition layouts, bind mounts, hard links)
+is listed as "by hand" with the reason. Drive tasks keep an empty confirm field, so nobody can save
 them without typing the device again in the Changes tab. Every task still goes through changes.normalize before it
 can be saved or scripted, so text from the design reaches a script only through those field checks.
 """
 from __future__ import annotations
 
 from . import blueprint
-from .changes import MKFS, MOUNT_FS, OS_MOUNTS, PROFILES, TYPES, CHECKS
+from .changes import MKFS, MOUNT_FS, OS_MOUNTS, PROFILES, TYPES, CHECKS, ZPOOL_LEVELS
 from .moves import find_host, hosts
 
 # The order tasks run in: drives first, then filesystems on them, then what mounts and links onto those.
-ORDER = ['partition', 'format', 'btrfs-add', 'label', 'btrfs-balance', 'subvolume', 'mount', 'mount-options', 'symlink']
+ORDER = ['partition', 'format', 'btrfs-add', 'zfs-pool', 'zfs-dataset', 'lvm-vg', 'lvm-vg-extend', 'lvm-lv', 'label', 'btrfs-balance',
+         'subvolume', 'mount', 'mount-options', 'symlink']
 REMOTE_FS = {'NFSv3': 'nfs', 'NFSv4': 'nfs4', 'NFSv4.1': 'nfs4', 'NFSv4.2': 'nfs4', 'SMB3': 'cifs', 'SMB2': 'cifs'}
 IGNORED_OPTS = ('defaults', 'rw', 'relatime', 'seclabel')
 
@@ -161,22 +162,56 @@ def plan(conn, design: dict) -> dict:
                         mount(spec, sv['mount'], 'btrfs', _opts(p.get('options')) or ['noatime'], subvol=name)
 
     # ── pools ────────────────────────────────────────────────────────────
+    def zfs_datasets(pool_name, datasets, existing=()):
+        for ds in datasets or []:
+            if ds.get('name') in existing:
+                continue
+            props = [f'{k}={ds[k]}' for k in ('compression', 'recordsize', 'sync') if ds.get(k)]
+            task('zfs-dataset', dataset=f'{pool_name}/{ds.get("name")}', mountpoint=ds.get('mount') or '', options=','.join(props))
+
+    def lvm_volumes(vg, volumes, existing=()):
+        for lv in volumes or []:
+            if lv.get('name') in existing:
+                continue
+            size = lv.get('size') or lv.get('sizeBytes')
+            if not size:
+                by_hand(f'Logical volume {vg}/{lv.get("name")}', 'the design gives it no size')
+                continue
+            fs = lv.get('fs') if lv.get('fs') in MKFS else ''
+            task('lvm-lv', vg=vg, lv=lv.get('name'), size=str(size), fstype=fs, label='')
+            if lv.get('mount') and fs:
+                mount(f'/dev/{vg}/{lv.get("name")}', lv['mount'], fs, _opts(lv.get('options')))
+
+    def devices(members):
+        return ' '.join(f'/dev/{m}' for m in members)
     have_pools = {p['name']: p for p in have['pools']}
     for pool in design.get('pools') or []:
         name, kind = pool.get('name'), pool.get('type')
         hp = have_pools.get(name)
         members = sorted(_bare(m) for m in pool.get('members') or [])
         if not hp:
+            if kind == 'zfs' and members and pool.get('level') in ZPOOL_LEVELS:
+                task('zfs-pool', pool=name, level=pool['level'], devices=devices(members), mountpoint=pool.get('mount') or '', wipe=False, confirm='')
+                zfs_datasets(name, pool.get('datasets'))
+                continue
+            if kind == 'lvm' and members and pool.get('vg'):
+                task('lvm-vg', vg=pool['vg'], devices=devices(members), wipe=False, confirm='')
+                lvm_volumes(pool['vg'], pool.get('datasets'))
+                continue
             what = {'zfs': 'ZFS pool', 'mdadm': 'mdadm array', 'lvm': 'LVM volume group', 'btrfs': 'btrfs pool'}.get(kind, 'pool')
             by_hand(f'Create {what} {name} ({pool.get("level")} on {", ".join(members) or "no members"})',
-                    'Changes has no task that creates pools yet. Create it by hand, rescan, then plan the rest')
+                    'Changes has no task for this layout. Create it by hand, rescan, then plan the rest')
             continue
         if kind == 'zfs':
-            have_ds = {ds['name'] for ds in hp.get('datasets') or []}
-            for ds in pool.get('datasets') or []:
-                if ds.get('name') not in have_ds:
-                    by_hand(f'ZFS dataset {name}/{ds.get("name")}', 'Changes has no ZFS tasks yet: zfs create it by hand')
+            zfs_datasets(name, pool.get('datasets'), {ds['name'] for ds in hp.get('datasets') or []})
             continue
+        if kind == 'lvm' and hp.get('vg'):
+            for m in members:
+                if m not in {_bare(x) for x in hp.get('members') or []}:
+                    task('lvm-vg-extend', vg=hp['vg'], device=f'/dev/{m}', wipe=False, confirm='')
+            lvm_volumes(hp['vg'], pool.get('datasets'), {hp.get('lv')} | {ds.get('name') for ds in hp.get('datasets') or []})
+            if not pool.get('mount') or pool['mount'] == hp.get('mount'):
+                continue
         target = pool.get('mount') or hp.get('mount') or next(
             (s['mount'] for d in have['devices'] for p in d['partitions'] if p['id'] in hp.get('members', [])
              for s in p.get('subvolumes') or [] if s.get('mount')), None)

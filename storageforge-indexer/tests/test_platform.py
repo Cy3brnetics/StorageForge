@@ -582,7 +582,9 @@ class ChangePlanTests(DBCase):
         bp['links'] += [{'kind': 'symlink', 'path': '/srv/photos', 'target': '/mnt/pool/photos'},
                         {'kind': 'bind', 'path': '/srv/www', 'target': '/mnt/pool/www'}]
         r = fromdesign.plan(self.conn, bp)
-        self.assertEqual([t['type'] for t in r['tasks']], ['partition', 'mount', 'mount', 'mount', 'symlink'])
+        self.assertEqual([t['type'] for t in r['tasks']], ['partition', 'zfs-pool', 'mount', 'mount', 'mount', 'symlink'])
+        zp = next(t['params'] for t in r['tasks'] if t['type'] == 'zfs-pool')
+        self.assertEqual((zp['pool'], zp['level'], zp['devices'], zp['confirm']), ('tank', 'mirror', '/dev/sdd /dev/sde', ''))
         part = r['tasks'][0]['params']
         self.assertEqual((part['disk'], part['fstype'], part['label'], part['wipe'], part['confirm']),
                          ('/dev/sdc', 'ext4', 'backup', False, ''))         # the device is typed again in Changes
@@ -591,15 +593,16 @@ class ChangePlanTests(DBCase):
         self.assertEqual((mounts['/srv/media']['source'], mounts['/srv/media']['subvol']), ('UUID=bbbb', '@media'))
         self.assertEqual((mounts['/mnt/archive']['fstype'], mounts['/mnt/archive']['options']), ('nfs4', '_netdev,nofail'))
         manual = ' | '.join(f'{m["what"]}: {m["why"]}' for m in r['manual'])
-        for words in ('ext4 → xfs', 'Create ZFS pool tank', 'Subvolume @media', 'bind /srv/www'):
+        for words in ('ext4 → xfs', 'Subvolume @media', 'bind /srv/www'):
             self.assertIn(words, manual)
-        self.assertEqual(r['destructive'], 1)
+        self.assertEqual(r['destructive'], 2)
         with self.assertRaises(ValueError):                                     # unconfirmed drive tasks can't be saved
             changes.normalize({'name': r['name'], 'tasks': r['tasks']})
         r['tasks'][0]['params']['confirm'] = '/dev/sdc'
+        r['tasks'][1]['params']['confirm'] = '/dev/sdd /dev/sde'
         plan = changes.normalize({'name': r['name'], 'tasks': r['tasks']})
         res = changes.check(self.conn, plan)
-        self.assertEqual(len(res['tasks']), 5)
+        self.assertEqual(len(res['tasks']), 6)
         self.assertIn("partition 'Partition /dev/sdc and format it ext4' /dev/sdc ext4 backup ''", changes.script(self.conn, plan))
 
     def test_design_never_partitions_disks_that_have_partitions(self):

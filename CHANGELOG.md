@@ -5,6 +5,7 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Added
+- **Designs stage pool tasks:** a new ZFS pool, ZFS datasets, a new LVM volume group and its volumes now become change-plan tasks instead of "by hand" notes.
 - **3-2-1 matrix from what is deployed:** mirror and rsnapshot jobs and scheduled storage tasks fill the sync, snapshot and backup cells with their last good run. Typed values stay where nothing covers a dataset, and hosts can be marked offsite.
 - **Move progress:** a move script run by hand now shows "copied" and "cut over" on its steps after the next scan.
 - **Moves:** Duplicate and Export JSON. **Git:** select repositories and archive them together, and hide or show paths per host.
