@@ -115,8 +115,8 @@ function renderGit() {
       checkBtn.disabled = true;
       checkBtn.textContent = 'Checking...';
       try {
-        await checkRepoStatus(r.host, r.path);
         openGitDrawer(r, 'status');
+        await checkRepoStatus(r.host, r.path).catch(() => {});
       } finally {
         checkBtn.disabled = false;
         checkBtn.textContent = 'Check status';
@@ -157,6 +157,7 @@ function archiveRepo(r) {
 
 /* ── Git Drawer / Inspector (bottom corner of detail panel) ──────── */
 function openGitDrawer(repo, tab = 'status') {
+  if (typeof setPanelOpen === 'function') setPanelOpen(true);
   if (!GITD.repo || GITD.repo.host !== repo.host || GITD.repo.path.replace(/\/+$/, '') !== repo.path.replace(/\/+$/, '')) {
     GITD.status = null;
     GITD.history = null;
@@ -180,6 +181,7 @@ function toggleGitDrawer() {
   const drawer = $('#gitdrawer');
   if (!drawer) return;
   if (drawer.classList.contains('collapsed')) {
+    if (typeof setPanelOpen === 'function') setPanelOpen(true);
     if (!GITD.repo && GITV.data && GITV.data.repos.length) {
       GITD.repo = GITV.data.repos[0];
     }
@@ -270,6 +272,7 @@ function switchGitTab(tabName) {
 
 /* ── Live Status Check ───────────────────────────────────────────── */
 async function checkRepoStatus(host, path) {
+  GITD.loadingStatus = true;
   try {
     const res = await api('/api/git/status', {
       method: 'POST',
@@ -284,11 +287,15 @@ async function checkRepoStatus(host, path) {
       if (GITD.tab === 'status') renderDrawerStatus();
     }
 
-    // Update in GITV.data if present
+    // Update in GITV.data if present and recompute summaries
     if (GITV.data && GITV.data.repos) {
       const idx = GITV.data.repos.findIndex((r) => r.host === host && r.path.replace(/\/+$/, '') === path.replace(/\/+$/, ''));
       if (idx !== -1) {
         Object.assign(GITV.data.repos[idx], status);
+        if (GITV.data.summary) {
+          const sKeys = ['uncommitted', 'unpushed', 'behind', 'single copy', 'copied', 'archived', 'error'];
+          GITV.data.summary = Object.fromEntries(sKeys.map((k) => [k, GITV.data.repos.filter((r) => r.state === k).length]));
+        }
         renderGit();
       }
     }
@@ -300,12 +307,17 @@ async function checkRepoStatus(host, path) {
         pane.replaceChildren(
           text('p', `Status check failed: ${err.message}`, 'st-failed'),
           el('div', { class: 'row' },
-            button('Retry check', () => checkRepoStatus(host, path), 'btn sm')
+            button('Retry check', async () => {
+              pane.replaceChildren(text('p', 'Retrying git status check over SSH...', 'muted'));
+              await checkRepoStatus(host, path).catch(() => {});
+            }, 'btn sm')
           )
         );
       }
     }
     throw err;
+  } finally {
+    GITD.loadingStatus = false;
   }
 }
 
@@ -314,6 +326,14 @@ function renderDrawerStatus() {
   if (!pane || !GITD.repo) return;
   const hasMatchingStatus = GITD.status && GITD.status.host === GITD.repo.host && GITD.status.path.replace(/\/+$/, '') === GITD.repo.path.replace(/\/+$/, '');
   const r = hasMatchingStatus ? GITD.status : GITD.repo;
+
+  const parts = [];
+  if (r.error) {
+    parts.push(el('div', { class: 'git-status-error row st-failed' },
+      text('b', 'Repository error: '),
+      text('span', r.error)
+    ));
+  }
 
   const cards = el('div', { class: 'git-status-grid' },
     el('div', { class: 'git-stat-card' },
@@ -338,14 +358,14 @@ function renderDrawerStatus() {
   const actions = el('div', { class: 'row' },
     button('Check status now', async () => {
       pane.replaceChildren(text('p', 'Running git status check over SSH...', 'muted'));
-      await checkRepoStatus(r.host, r.path);
+      await checkRepoStatus(r.host, r.path).catch(() => {});
     }, 'btn pri sm'),
     button('Fast Sync', () => { switchGitTab('sync'); }, 'btn ghost sm'),
     button('History & Commits', () => { switchGitTab('commits'); }, 'btn ghost sm'),
     button('Archive to…', () => archiveRepo(r), 'btn ghost sm')
   );
 
-  const parts = [cards, actions];
+  parts.push(cards, actions);
 
   // Dirty files section
   if (r.dirty_files && r.dirty_files.length) {
@@ -412,19 +432,23 @@ async function loadRepoHistory(host, path) {
 }
 
 async function showCommitDiff(sha, targetEl) {
-  if (GITD.diffSha === sha) {
-    GITD.diffSha = null;
+  if (targetEl.dataset.sha === sha) {
+    targetEl.dataset.sha = '';
     targetEl.replaceChildren();
     return;
   }
-  GITD.diffSha = sha;
-  targetEl.replaceChildren(text('p', 'Loading commit stat...', 'muted small'));
+  targetEl.dataset.sha = sha;
+  targetEl.replaceChildren(text('p', 'Loading commit diff...', 'muted small'));
   try {
     const res = await api(`/api/git/commit?host=${encodeURIComponent(GITD.repo.host)}&path=${encodeURIComponent(GITD.repo.path)}&sha=${encodeURIComponent(sha)}`);
     const data = await res.json();
-    targetEl.replaceChildren(el('pre', { class: 'git-commit-diff' }, data.output));
+    if (targetEl.dataset.sha === sha) {
+      targetEl.replaceChildren(el('pre', { class: 'git-commit-diff' }, data.output));
+    }
   } catch (err) {
-    targetEl.replaceChildren(text('p', err.message, 'st-failed small'));
+    if (targetEl.dataset.sha === sha) {
+      targetEl.replaceChildren(text('p', err.message, 'st-failed small'));
+    }
   }
 }
 
@@ -434,6 +458,13 @@ function renderDrawerCommits() {
   const hasMatchingHistory = GITD.history && GITD.history.host === GITD.repo.host && GITD.history.path.replace(/\/+$/, '') === GITD.repo.path.replace(/\/+$/, '');
   if (!hasMatchingHistory) {
     loadRepoHistory(GITD.repo.host, GITD.repo.path);
+    return;
+  }
+  if (GITD.history.error) {
+    pane.replaceChildren(
+      el('div', { class: 'row st-failed' }, text('b', 'Error: '), text('span', GITD.history.error)),
+      el('div', { class: 'row' }, button('Retry', () => loadRepoHistory(GITD.repo.host, GITD.repo.path), 'btn sm'))
+    );
     return;
   }
   const { commits, tags } = GITD.history;
@@ -480,6 +511,13 @@ function renderDrawerChangelog() {
     loadRepoHistory(GITD.repo.host, GITD.repo.path);
     return;
   }
+  if (GITD.history.error) {
+    pane.replaceChildren(
+      el('div', { class: 'row st-failed' }, text('b', 'Error: '), text('span', GITD.history.error)),
+      el('div', { class: 'row' }, button('Retry', () => loadRepoHistory(GITD.repo.host, GITD.repo.path), 'btn sm'))
+    );
+    return;
+  }
   const { changelog } = GITD.history;
   if (!changelog || !changelog.length) {
     pane.replaceChildren(text('p', 'No changelog entries could be extracted from commits.', 'muted'));
@@ -504,8 +542,19 @@ function renderDrawerChangelog() {
         md += '\n';
       }
     }
-    navigator.clipboard.writeText(md).then(() => {
+    const writeClip = (txt) => {
+      if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(txt);
+      const ta = document.createElement('textarea');
+      ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+      document.body.removeChild(ta);
+      return Promise.resolve();
+    };
+    writeClip(md).then(() => {
       copyBtn.textContent = 'Copied!';
+      setTimeout(() => { copyBtn.textContent = 'Copy Markdown'; }, 2000);
+    }).catch(() => {
+      copyBtn.textContent = 'Copy failed';
       setTimeout(() => { copyBtn.textContent = 'Copy Markdown'; }, 2000);
     });
   }, 'btn ghost xs');
@@ -624,16 +673,42 @@ function renderDrawerSync() {
 
 /* ── Open Git for a specific path (from Details or Topology) ────── */
 async function openGitForPath(host, path) {
+  if (typeof setPanelOpen === 'function') setPanelOpen(true);
   if (!GITV.data) await loadGit();
   const repos = (GITV.data && GITV.data.repos) || [];
-  const p = path.replace(/\/+$/, '');
-  const r = repos.find((x) => x.host === host && (x.path.replace(/\/+$/, '') === p || x.path.replace(/\/+$/, '').startsWith(p + '/')));
+  const norm = (p) => (p || '').replace(/\/+$/, '') || '/';
+  const target = norm(path);
+
+  // If path is root or empty, find any repo on this host or navigate to Git tab
+  if (target === '/' || !path) {
+    const hostRepo = repos.find((x) => x.host === host);
+    if (hostRepo) {
+      openGitDrawer(hostRepo, 'status');
+    } else {
+      S.host = host;
+      if (typeof showTab === 'function') showTab('git');
+      await loadGit();
+    }
+    return;
+  }
+
+  // Exact match first, then nested under this path
+  let r = repos.find((x) => x.host === host && norm(x.path) === target);
+  if (!r) {
+    r = repos.find((x) => x.host === host && norm(x.path).startsWith(target + '/'));
+  }
+
   if (r) {
     openGitDrawer(r, 'status');
   } else {
-    // If no indexed repo found, open drawer with mock repo and check status on-demand
-    openGitDrawer({ host, path: p, name: p.split('/').pop() || p, state: 'unknown' }, 'status');
-    checkRepoStatus(host, p);
+    // If no indexed repo found, open drawer with on-demand candidate and check status
+    const repoCandidate = {
+      host,
+      path: target,
+      name: target.split('/').filter(Boolean).pop() || target,
+      state: 'unknown',
+    };
+    openGitDrawer(repoCandidate, 'status');
   }
 }
 

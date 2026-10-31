@@ -667,6 +667,13 @@ body.loginpage { min-height: 100vh; align-items: center; justify-content: center
   flex-direction: column;
   gap: 10px;
 }
+.git-status-error {
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--failed, #e06c75);
+  border-radius: 6px;
+  font-size: 12px;
+}
 .git-header-bar {
   display: flex;
   align-items: center;

@@ -1164,7 +1164,7 @@ class ServerTests(DBCase):
         self.assertTrue(any(len(rel['categories']['fixes']) > 0 for rel in cl))
 
         # Test live status, history and commit with local git repo
-        import tempfile, subprocess
+        import tempfile, subprocess, shutil
         tmp_repo = tempfile.mkdtemp()
         try:
             subprocess.run(['git', 'init', tmp_repo], check=True, capture_output=True)
@@ -1194,6 +1194,39 @@ class ServerTests(DBCase):
             c_res = self.client.get(f'/api/git/commit?host=local&path={tmp_repo}&sha={h_data["commits"][0]["hash"]}')
             self.assertEqual(c_res.status_code, 200)
             self.assertIn('feat: cool feature', c_res.json['output'])
+
+            # Edge cases: non-git directory and empty git repo
+            non_git = tempfile.mkdtemp()
+            empty_git = tempfile.mkdtemp()
+            try:
+                subprocess.run(['git', 'init', empty_git], check=True, capture_output=True)
+
+                # Non-git directory status & history
+                ng_status = self.client.post('/api/git/status', json={'host': 'local', 'path': non_git})
+                self.assertEqual(ng_status.status_code, 200)
+                self.assertEqual(ng_status.json['error'], 'not a git repository')
+                self.assertEqual(ng_status.json['state'], 'error')
+
+                ng_hist = self.client.get(f'/api/git/history?host=local&path={non_git}')
+                self.assertEqual(ng_hist.status_code, 200)
+                self.assertEqual(ng_hist.json['error'], 'not a git repository')
+
+                # Empty git repo status & history
+                eg_status = self.client.post('/api/git/status', json={'host': 'local', 'path': empty_git})
+                self.assertEqual(eg_status.status_code, 200)
+                self.assertIsNone(eg_status.json['head_commit'])
+                self.assertIsNone(eg_status.json['error'])
+
+                eg_hist = self.client.get(f'/api/git/history?host=local&path={empty_git}')
+                self.assertEqual(eg_hist.status_code, 200)
+                self.assertEqual(eg_hist.json['commits'], [])
+
+                # Empty POST bodies or non-JSON content-type
+                self.assertEqual(self.client.post('/api/git/status', data='not json').status_code, 400)
+                self.assertEqual(self.client.post('/api/git/sync', data='not json').status_code, 400)
+            finally:
+                shutil.rmtree(non_git, ignore_errors=True)
+                shutil.rmtree(empty_git, ignore_errors=True)
         finally:
             import shutil
             shutil.rmtree(tmp_repo, ignore_errors=True)

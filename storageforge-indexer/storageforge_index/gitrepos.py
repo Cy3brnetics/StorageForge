@@ -248,6 +248,9 @@ def survey_host(db, host_name: str, actor: str | None = None) -> dict:
 
 
 _STATUS_BASH = r"""
+export GIT_TERMINAL_PROMPT=0
+export GIT_ASKPASS=
+export SSH_ASKPASS=
 command -v git >/dev/null 2>&1 || { printf 'error\tgit is not installed on this host\n'; exit 0; }
 g() { timeout 25 git -c safe.directory='*' -C "$R" "$@"; }
 if ! g rev-parse --git-dir >/dev/null 2>&1; then
@@ -268,7 +271,11 @@ if [ "$bare" = "false" ]; then
   g status --porcelain -uall 2>/dev/null
   printf '@@endporcelain\n'
 fi
-printf 'size\t%s\n' "$(du -sk "$(g rev-parse --absolute-git-dir 2>/dev/null)" 2>/dev/null | cut -f1)"
+git_dir="$(g rev-parse --git-dir 2>/dev/null)"
+if [ -n "$git_dir" ]; then
+  case "$git_dir" in /*) ;; *) git_dir="$R/$git_dir" ;; esac
+  printf 'size\t%s\n' "$(du -sk "$git_dir" 2>/dev/null | cut -f1)"
+fi
 """
 
 
@@ -333,18 +340,15 @@ def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict
             elif k == 'branch':
                 res['branch'] = v or None
             elif k == 'head' and v:
-                parts = v.split('\t', 3)
-                if len(parts) >= 4:
+                parts = v.split('\t')
+                if parts and parts[0]:
                     res['head_commit'] = parts[0]
-                    res['head_time'] = int(parts[1]) if parts[1].strip().isdigit() else None
+                if len(parts) > 1 and parts[1].strip().isdigit():
+                    res['head_time'] = int(parts[1].strip())
+                if len(parts) > 2:
                     res['head_author'] = parts[2]
-                    res['head_subject'] = parts[3]
-                elif len(parts) == 1 and ' ' in parts[0]:
-                    h, _, rest = parts[0].partition(' ')
-                    t, _, sub = rest.partition(' ')
-                    res['head_commit'] = h
-                    res['head_time'] = int(t) if t.strip().isdigit() else None
-                    res['head_subject'] = sub
+                if len(parts) > 3:
+                    res['head_subject'] = '\t'.join(parts[3:])
             elif k == 'root':
                 res['root_commit'] = v or None
             elif k == 'refs':
@@ -379,34 +383,38 @@ def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict
         res['dirty'] = len(res['dirty_files'])
 
         # Update or insert into database git_repos table if host is known
-        if host_id and not res['error']:
+        if host_id:
             with conn.tx():
                 exists = conn.scalar('SELECT 1 FROM git_repos WHERE host_id = :h AND path = :path',
                                      {'h': host_id, 'path': path})
-                if exists:
-                    conn.execute("""UPDATE git_repos SET
-                                    bare = :bare, branch = :branch, head_commit = :hc, head_time = :ht,
-                                    head_subject = :hs, root_commit = :rc, refs = :refs, dirty = :dirty,
-                                    upstream = :up, ahead = :ahead, behind = :behind, remotes_json = :remotes,
-                                    size_kb = :size, error = NULL
-                                    WHERE host_id = :h AND path = :path""",
-                                 {'h': host_id, 'path': path, 'bare': int(res['bare']), 'branch': res['branch'],
-                                  'hc': res['head_commit'], 'ht': res['head_time'], 'hs': res['head_subject'],
-                                  'rc': res['root_commit'], 'refs': res['refs'], 'dirty': res['dirty'],
-                                  'up': res['upstream'], 'ahead': res['ahead'], 'behind': res['behind'],
-                                  'remotes': json.dumps(res['remotes']), 'size': res['size_kb']})
-                else:
-                    scan_id = conn.scalar('SELECT MAX(scan_id) FROM scans WHERE host_id = :h', {'h': host_id}) or 0
-                    conn.execute("""INSERT INTO git_repos (host_id, path, bare, branch, head_commit, head_time,
-                                                           head_subject, root_commit, refs, dirty, upstream, ahead,
-                                                           behind, remotes_json, size_kb, error, scan_id)
-                                    VALUES (:h, :path, :bare, :branch, :hc, :ht, :hs, :rc, :refs, :dirty,
-                                            :up, :ahead, :behind, :remotes, :size, NULL, :scan_id)""",
-                                 {'h': host_id, 'path': path, 'bare': int(res['bare']), 'branch': res['branch'],
-                                  'hc': res['head_commit'], 'ht': res['head_time'], 'hs': res['head_subject'],
-                                  'rc': res['root_commit'], 'refs': res['refs'], 'dirty': res['dirty'],
-                                  'up': res['upstream'], 'ahead': res['ahead'], 'behind': res['behind'],
-                                  'remotes': json.dumps(res['remotes']), 'size': res['size_kb'], 'scan_id': scan_id})
+                if res['error'] and exists:
+                    conn.execute('UPDATE git_repos SET error = :err WHERE host_id = :h AND path = :path',
+                                 {'h': host_id, 'path': path, 'err': res['error']})
+                elif not res['error']:
+                    if exists:
+                        conn.execute("""UPDATE git_repos SET
+                                        bare = :bare, branch = :branch, head_commit = :hc, head_time = :ht,
+                                        head_subject = :hs, root_commit = :rc, refs = :refs, dirty = :dirty,
+                                        upstream = :up, ahead = :ahead, behind = :behind, remotes_json = :remotes,
+                                        size_kb = :size, error = NULL
+                                        WHERE host_id = :h AND path = :path""",
+                                     {'h': host_id, 'path': path, 'bare': int(res['bare']), 'branch': res['branch'],
+                                      'hc': res['head_commit'], 'ht': res['head_time'], 'hs': res['head_subject'],
+                                      'rc': res['root_commit'], 'refs': res['refs'], 'dirty': res['dirty'],
+                                      'up': res['upstream'], 'ahead': res['ahead'], 'behind': res['behind'],
+                                      'remotes': json.dumps(res['remotes']), 'size': res['size_kb']})
+                    else:
+                        scan_id = conn.scalar('SELECT MAX(scan_id) FROM scans WHERE host_id = :h', {'h': host_id}) or 0
+                        conn.execute("""INSERT INTO git_repos (host_id, path, bare, branch, head_commit, head_time,
+                                                               head_subject, root_commit, refs, dirty, upstream, ahead,
+                                                               behind, remotes_json, size_kb, error, scan_id)
+                                        VALUES (:h, :path, :bare, :branch, :hc, :ht, :hs, :rc, :refs, :dirty,
+                                                :up, :ahead, :behind, :remotes, :size, NULL, :scan_id)""",
+                                     {'h': host_id, 'path': path, 'bare': int(res['bare']), 'branch': res['branch'],
+                                      'hc': res['head_commit'], 'ht': res['head_time'], 'hs': res['head_subject'],
+                                      'rc': res['root_commit'], 'refs': res['refs'], 'dirty': res['dirty'],
+                                      'up': res['upstream'], 'ahead': res['ahead'], 'behind': res['behind'],
+                                      'remotes': json.dumps(res['remotes']), 'size': res['size_kb'], 'scan_id': scan_id})
 
         # Match copies across the fleet
         if res['root_commit']:
@@ -435,6 +443,9 @@ def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict
 
 
 _SYNC_BASH = r"""set -e
+export GIT_TERMINAL_PROMPT=0
+export GIT_ASKPASS=
+export SSH_ASKPASS=
 g() { timeout 60 git -c safe.directory='*' -C "$R" "$@"; }
 
 if ! g rev-parse --git-dir >/dev/null 2>&1; then
@@ -470,8 +481,15 @@ case "$ACT" in
     fi
     ;;
   push)
-    echo "==> Pushing commits to upstream..."
-    g push
+    branch="$(g symbolic-ref --short -q HEAD 2>/dev/null || true)"
+    up="$(g rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+    if [ -z "$up" ] && [ -n "$branch" ]; then
+      echo "==> No upstream branch configured for $branch; pushing with -u origin $branch..."
+      g push -u origin "$branch"
+    else
+      echo "==> Pushing commits to upstream..."
+      g push
+    fi
     ;;
   sync)
     if [ "$bare" = "true" ]; then
@@ -556,6 +574,9 @@ def repo_sync(db, host_name: str, path: str, action: str = 'sync', actor: str | 
 
 
 _HISTORY_BASH = r"""
+export GIT_TERMINAL_PROMPT=0
+export GIT_ASKPASS=
+export SSH_ASKPASS=
 command -v git >/dev/null 2>&1 || { printf 'error\tgit is not installed on this host\n'; exit 0; }
 g() { timeout 25 git -c safe.directory='*' -C "$R" "$@"; }
 if ! g rev-parse --git-dir >/dev/null 2>&1; then
@@ -603,18 +624,18 @@ def repo_history(db, host_name: str, path: str, max_commits: int = 50) -> dict:
                 tags.append({
                     'name': parts[0],
                     'commit': parts[1] if len(parts) > 1 else '',
-                    'time': int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None,
+                    'time': int(parts[2].strip()) if len(parts) > 2 and parts[2].strip().isdigit() else None,
                     'subject': parts[3] if len(parts) > 3 else '',
                 })
             elif mode == 'commits' and line:
-                parts = line.split('\t')
+                parts = line.split('\t', 6)
                 if len(parts) >= 6:
                     commits.append({
                         'hash': parts[0],
                         'short_hash': parts[1],
                         'author': parts[2],
                         'email': parts[3],
-                        'time': int(parts[4]) if parts[4].isdigit() else None,
+                        'time': int(parts[4].strip()) if parts[4].strip().isdigit() else None,
                         'subject': parts[5],
                         'refs': parts[6].strip(' ()') if len(parts) > 6 else '',
                     })
@@ -644,7 +665,7 @@ def build_changelog(commits: list[dict], tags: list[dict]) -> list[dict]:
     current_release = {
         'version': 'Unreleased' if tags else 'Recent Changes',
         'tag': None,
-        'date': None,
+        'date': commits[0].get('time') if commits and commits[0].get('time') else None,
         'categories': {
             'features': [],
             'fixes': [],

@@ -956,7 +956,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @web.post('/api/git/survey')
     @login_required
     def api_git_survey():
-        body = json_body() if request.is_json else {}
+        body = (request.get_json(silent=True) or {}) if request.is_json else {}
         host = body.get('host') or request.args.get('host')
         if not host:
             hosts = [r[0] for r in conn().all('SELECT hostname FROM hosts ORDER BY hostname')]
@@ -980,7 +980,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @web.route('/api/git/status', methods=['GET', 'POST'])
     @login_required
     def api_git_status():
-        body = json_body() if request.method == 'POST' and request.is_json else {}
+        body = (request.get_json(silent=True) or {}) if request.method == 'POST' and request.is_json else {}
         host = body.get('host') or request.args.get('host')
         path = body.get('path') or request.args.get('path')
         if not host or not path:
@@ -995,7 +995,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @web.post('/api/git/sync')
     @login_required
     def api_git_sync():
-        body = json_body()
+        try:
+            body = json_body()
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
         host = body.get('host')
         path = body.get('path')
         action = body.get('action') or 'sync'
