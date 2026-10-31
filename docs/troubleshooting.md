@@ -26,6 +26,7 @@
 | A dialog asks for your password | Running commands on hosts needs it typed again every so often | Enter your StorageForge password |
 | `another run of this plan is in progress` | The lock is held | Wait, or check for a stuck script on that host |
 | `destructive, skipped` | The script needs `--destructive` too | Check the task, then rerun with `--apply --destructive` |
+| A deploy says `incomplete`, or `host(s) not finished` | The script ended, but its `missing` lines were not done, such as SMB credentials on a client or a Samba account | Do what each line says, then deploy again |
 | A job's reports are refused | Its token is gone, or the certificate changed | Deploy the job again. Logs are in `/var/log/storageforge/run.log` on the host |
 
 ## Sending snapshots

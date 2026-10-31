@@ -43,7 +43,13 @@ async function pollGroup() {
   } catch (err) { g.error = err.message; g.done = true; }
   renderGroup();
   if (!g.done) DP.poll = setTimeout(pollGroup, 1000);
-  else if (g.mode === 'apply') { loadDeploy(); if (g.kind === 'changes' && !g.error) chApplied(g.ref); }
+  else if (g.mode === 'apply') {
+    loadDeploy();
+    if (g.error) return;
+    if (g.kind === 'changes') chApplied(g.ref);
+    if (g.kind === 'jobs') loadMoves(!MV.dirty && MV.plan?.id === g.ref ? g.ref : undefined);
+    setTimeout(followJobs, 1000);    // the group's rescans are queued as it ends; the graph and designs reload after them
+  }
 }
 function outputBlock(out) {
   const pre = el('pre', { class: 'dpout' });
@@ -60,9 +66,10 @@ function renderGroup() {
   if (!g) { box.replaceChildren(); box.hidden = true; return; }
   box.hidden = false;
   const failed = g.runs.filter((r) => ['failed', 'refused'].includes(r.status));
+  const unfinished = g.runs.filter((r) => r.status === 'incomplete');
   const head = el('div', { class: 'row' }, el('b', {}, `${g.mode === 'apply' ? 'Applying' : 'Dry run (report)'}: ${g.title}`),
-    text('span', g.done ? (g.error ? 'could not start' : failed.length ? `${failed.length} host(s) failed` : 'finished') : 'running…',
-      g.done ? (g.error || failed.length ? 'st-failed' : 'st-ok') : 'st-running'),
+    text('span', g.done ? (g.error ? 'could not start' : failed.length ? `${failed.length} host(s) failed` : unfinished.length ? `${unfinished.length} host(s) not finished` : 'finished') : 'running…',
+      g.done ? (g.error || failed.length ? 'st-failed' : unfinished.length ? 'st-running' : 'st-ok') : 'st-running'),
     button('Close', () => { DP.group = null; renderGroup(); }, 'btn ghost sm'));
   const kids = [head];
   if (g.error) {
@@ -71,13 +78,14 @@ function renderGroup() {
     if (hosts) kids.push(el('div', { class: 'row wrap' }, ...hosts.split(', ').map((h) => button(`Set up ${h}…`, () => setupForm(h), 'btn sm'))));
   }
   for (const r of g.runs) {
-    const label = { ok: 'protected', failed: 'broken', refused: 'broken', running: 'local-only', queued: 'unknown', skipped: 'unknown' }[r.status] || 'unknown';
+    const label = { ok: 'protected', failed: 'broken', refused: 'broken', incomplete: 'local-only', running: 'local-only', queued: 'unknown', skipped: 'unknown' }[r.status] || 'unknown';
     kids.push(el('details', { class: 'card', open: !g.done || r.status !== 'ok' || g.runs.length === 1 },
       el('summary', {}, el('b', { class: 'mono' }, r.host), ` · ${r.kind}${r.mode === 'apply' ? '' : ' report'} · `, text('span', r.status, `pill ${label}`)),
       outputBlock(r.output || (r.status === 'queued' ? 'waiting for the hosts before it' : ''))));
   }
   if (g.done && !g.error && g.mode === 'apply') {
     if (g.runs.some((r) => (r.output || '').includes('destructive, skipped'))) kids.push(text('p', 'Drive tasks were skipped, so this plan has not finished. Deploy it again with "include drive tasks" ticked.', 'st-failed small'));
+    else if (unfinished.length) kids.push(text('p', 'The "missing" lines above were not done. Each says what it needs; do that, then deploy again.', 'st-running small'));
     kids.push(text('p', 'These hosts are being rescanned, so the other tabs catch up once their scans end.', 'muted small'));
   }
   if (g.done && !g.error && g.mode === 'report') {
@@ -305,7 +313,7 @@ function renderDeploy() {
     const li = el('li', {}, button(`${stamp(r.started_at)} · ${r.host} · ${r.kind}${r.ref ? ' ' + r.ref : ''} · ${r.mode} · ${r.status}`, async () => {
       try { const o = await getJSON(`/api/deploy/runs/${r.run_id}`); DP.job = { job: { name: `${r.host} · ${r.kind} ${r.ref || ''}` }, title: `${r.mode} · ${r.status}`, output: o.output }; renderJobPanel(); }
       catch (err) { toast(err.message); }
-    }, `link small ${['failed', 'refused'].includes(r.status) ? 'st-failed' : ''}`));
+    }, `link small ${['failed', 'refused'].includes(r.status) ? 'st-failed' : r.status === 'incomplete' ? 'st-running' : ''}`));
     return li;
   }))));
   parts.push(settingsForm(d.settings));

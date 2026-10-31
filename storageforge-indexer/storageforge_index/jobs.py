@@ -394,7 +394,7 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, report_url: str | None, 
             c = db.connect()
             try:
                 deploy.mark_deployed(c, h, 'jobs', ref, plan_hash(plan),
-                                     {'jobs': [s['id'] for s in sp if h in (s['runner'], s['source'])]}, actor)
+                                     {'jobs': [s['id'] for s in sp if h in (s['runner'], s['source'])], 'hosts': order}, actor)
             finally:
                 c.close()
         items.append({'host': h, 'script': script, 'args': ['--apply'] if mode == 'apply' else [], 'kind': 'jobs', 'ref': ref,

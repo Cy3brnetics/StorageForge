@@ -361,16 +361,35 @@ def _fmt(n) -> str:
 
 
 # ── storage ────────────────────────────────────────────────────────────
+def _deployed_at(marks: list[dict], plan_id: int, body: dict) -> int | None:
+    """When the plan, as it is now, was last deployed as jobs on all its hosts. An edit waits for the next deploy."""
+    from . import deploy, jobs
+    if not body.get('steps'):
+        return None
+    try:
+        return deploy.finished_at(marks, f'p{plan_id}', jobs.plan_hash(body))
+    except ValueError:             # saved under older rules: it can't be the version that was deployed
+        return None
+
+
 def list_plans(conn: Conn) -> list[dict]:
-    return [{'id': r[0], 'name': r[1], 'steps': len(json.loads(r[2]).get('steps') or []), 'updated_at': r[3], 'updated_by': r[4]}
-            for r in conn.all('SELECT plan_id, name, body_json, updated_at, updated_by FROM move_plans ORDER BY name')]
+    from . import deploy
+    marks, out = deploy.deployed(conn, kind='jobs'), []
+    for r in conn.all('SELECT plan_id, name, body_json, updated_at, updated_by FROM move_plans ORDER BY name'):
+        body = json.loads(r[2])
+        out.append({'id': r[0], 'name': r[1], 'steps': len(body.get('steps') or []), 'updated_at': r[3], 'updated_by': r[4],
+                    'deployed_at': _deployed_at(marks, r[0], body)})
+    return out
 
 
 def get_plan(conn: Conn, plan_id: int) -> dict:
+    from . import deploy
     rows = conn.all('SELECT plan_id, body_json, updated_at FROM move_plans WHERE plan_id = :i', {'i': plan_id})
     if not rows:
         raise LookupError(f'no move plan #{plan_id}')
-    return {'id': rows[0][0], **json.loads(rows[0][1]), 'updated_at': rows[0][2]}
+    body = json.loads(rows[0][1])
+    return {'id': rows[0][0], **body, 'updated_at': rows[0][2],
+            'deployed_at': _deployed_at(deploy.deployed(conn, kind='jobs'), rows[0][0], body)}
 
 
 def save_plan(conn: Conn, body: dict, actor: str, plan_id: int | None = None) -> int:

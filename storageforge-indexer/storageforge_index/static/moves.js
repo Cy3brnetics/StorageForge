@@ -33,10 +33,13 @@ async function loadMoves(selectId) {
 function touch() { MV.dirty = true; MV.result = null; const b = $('#mvsave'); if (b) b.textContent = 'Save*'; }
 function renderMoves() {
   const p = MV.plan;
+  const planOption = (x) => new Option(`${x.name} (${x.steps})${x.deployed_at ? ` · deployed ${stamp(x.deployed_at)}` : ''}`, x.id);
+  const live = MV.plans.filter((x) => x.deployed_at);
   const pick = el('select', { 'aria-label': 'Move plan', onchange: async () => {
     if (MV.dirty && !confirm('Discard unsaved changes to this plan?')) { pick.value = p.id || ''; return; }
     MV.dirty = false; MV.result = null; MV.plan = pick.value ? await getJSON(`/api/moves/${pick.value}`) : { name: '', steps: [] }; renderMoves();
-  } }, new Option('New plan…', ''), ...MV.plans.map((x) => new Option(`${x.name} (${x.steps})`, x.id)));
+  } }, new Option('New plan…', ''), ...MV.plans.filter((x) => !x.deployed_at).map(planOption),
+    live.length ? el('optgroup', { label: 'Deployed as jobs' }, ...live.map(planOption)) : '');
   pick.value = p.id || '';
   const name = el('input', { type: 'text', placeholder: 'plan name, e.g. TR01 media to Archie', 'aria-label': 'Plan name',
     onchange: () => { p.name = name.value.trim(); touch(); } }); name.value = p.name || '';
@@ -46,6 +49,7 @@ function renderMoves() {
     `${fmtBytes(res.bytes)} in all · about ${eta(res.eta_s)} · ${res.crit} critical · ${res.warn} warning${res.warn === 1 ? '' : 's'}`) : null;
   $('#movesbox').replaceChildren(
     el('div', { class: 'row' }, pick, name),
+    p.deployed_at && !MV.dirty ? text('p', `Deployed as jobs on ${stamp(p.deployed_at)}. The Deploy tab shows how they are running; edit the plan and deploy it again to change them.`, 'st-ok small') : '',
     steps,
     el('div', { class: 'row' }, button('+ Add step', () => { p.steps.push(blankStep()); touch(); renderMoves(); }, 'btn sm')),
     total || '',

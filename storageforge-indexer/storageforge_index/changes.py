@@ -661,11 +661,8 @@ def plan_hash(plan: dict) -> str:
 
 def _ran_at(marks: list[dict], plan_id: int, plan: dict) -> int | None:
     """When this plan, as it is now, last finished on all its hosts. Editing it makes it a plan to run again."""
-    digest = plan_hash(plan)
-    done = [d for d in marks if d['ref'] == str(plan_id) and d['hash'] == digest]
-    if not done or not set(done[0]['detail'].get('hosts') or ()) <= {d['host'] for d in done}:
-        return None
-    return max(d['at'] for d in done)
+    from . import deploy
+    return deploy.finished_at(marks, str(plan_id), plan_hash(plan))
 
 
 def list_plans(conn: Conn) -> list[dict]:

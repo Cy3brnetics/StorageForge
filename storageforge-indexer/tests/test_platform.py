@@ -643,6 +643,58 @@ class ChangePlanTests(DBCase):
             self.assertEqual(seen, want)
 
 
+    def test_an_apply_with_missing_lines_is_incomplete_not_ok(self):
+        from storageforge_index import deploy
+        text = '== mount ==\n  missing   credentials /etc/samba/credentials/x\n\ndone\n'
+        self.assertEqual(deploy.run_status(0, 'apply', text), 'incomplete')
+        self.assertEqual(deploy.run_status(0, 'apply', '  \x1b[33mmissing\x1b[0m   x\n'), 'incomplete')
+        self.assertEqual(deploy.run_status(0, 'report', text), 'ok')
+        self.assertEqual(deploy.run_status(0, 'apply', '  ok        missing nothing\ndone\n'), 'ok')
+        self.assertEqual(deploy.run_status(1, 'apply', text), 'failed')
+        self.assertEqual(deploy.run_status(deploy.REFUSED, 'apply', ''), 'refused')
+
+    def test_every_run_status_fits_the_audit_log(self):
+        from storageforge_index import deploy
+        from storageforge_index.vault import AuditLog
+        for status in ('ok', 'incomplete', 'refused', 'failed'):
+            AuditLog(self.db, self.conn, None).append('test', 'deploy.x', deploy.audit_outcome(status))
+
+    def test_an_incomplete_host_keeps_its_hook_and_does_not_stop_the_next(self):
+        from unittest import mock
+        from storageforge_index import deploy
+        marked, ran = [], []
+
+        def fake(db, **kw):
+            ran.append(kw['host'])
+            return {'status': 'incomplete' if kw['host'] == 'nas' else 'ok', 'output': ''}
+        items = [{'host': h, 'script': 'true', 'kind': 'shares', 'ref': 'x', 'mode': 'apply', 'on_ok': lambda _r, h=h: marked.append(h)}
+                 for h in ('nas', 'desk')]
+        with mock.patch.object(deploy, 'run', fake), mock.patch.object(deploy.threading, 'Thread', _InlineThread):
+            deploy.start_group(self.db, items, 'test')
+        self.assertEqual((ran, marked), (['nas', 'desk'], ['nas', 'desk']))
+
+    def test_a_deployed_move_plan_says_so_until_it_is_edited(self):
+        from storageforge_index import deploy, jobs, moves
+        step = {'method': 'copy', 'src': {'host': 'nas', 'path': '/mnt/pool/photos'}, 'dst': {'host': 'nas', 'path': '/mnt/pool/copy'}}
+        body = {'name': 'photos', 'steps': [step]}
+        pid = moves.save_plan(self.conn, body, 'test')
+        plan = moves.get_plan(self.conn, pid)
+        self.assertIsNone(plan['deployed_at'])
+        digest, detail = jobs.plan_hash(plan), {'jobs': [], 'hosts': ['nas', 'desk']}
+        deploy.mark_deployed(self.conn, 'nas', 'jobs', f'p{pid}', digest, detail, 'test')
+        self.assertIsNone(moves.list_plans(self.conn)[0]['deployed_at'])       # one host of two
+        deploy.mark_deployed(self.conn, 'desk', 'jobs', f'p{pid}', digest, detail, 'test')
+        self.assertTrue(moves.list_plans(self.conn)[0]['deployed_at'])
+        saved = moves.get_plan(self.conn, pid)
+        self.assertTrue(saved['deployed_at'])
+        moves.save_plan(self.conn, saved, 'test', pid)                         # saved as it is: the marker isn't stored
+        self.assertNotIn('deployed_at', json.loads(self.conn.scalar('SELECT body_json FROM move_plans')))
+        self.assertTrue(moves.get_plan(self.conn, pid)['deployed_at'])
+        saved['steps'][0]['dst']['path'] = '/mnt/pool/other'
+        moves.save_plan(self.conn, saved, 'test', pid)
+        self.assertIsNone(moves.get_plan(self.conn, pid)['deployed_at'])
+
+
 class _InlineThread:
     def __init__(self, target, **_kw):
         self.target = target

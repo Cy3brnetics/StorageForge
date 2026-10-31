@@ -46,6 +46,8 @@ JOBBIN = '/usr/local/sbin/storageforge-job'
 MAX_OUTPUT = 256 * 1024
 ARG_RE = re.compile(r'[A-Za-z0-9=_./:,@+-]{1,200}')
 REFUSED = 97                                   # the runner's exit code for a request it would not run
+UNFINISHED = re.compile(r'^  (?:\x1b\[[0-9;]*m)?missing\b', re.M)   # during an apply, a "missing" line is a step not done
+FINISHED = ('ok', 'incomplete')                # the script ran to its end; 'incomplete' left steps for the operator
 _host_locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
 
@@ -318,6 +320,19 @@ def enroll(db, conn, host: str, password: str, admin_user: str | None = None, ac
 
 
 # ── runs ────────────────────────────────────────────────────────────
+def run_status(rc: int | None, mode: str, text: str) -> str:
+    if rc == REFUSED:
+        return 'refused'
+    if rc != 0:
+        return 'failed'
+    return 'incomplete' if mode == 'apply' and UNFINISHED.search(text) else 'ok'
+
+
+def audit_outcome(status: str) -> str:
+    """audit_log takes ok, denied, failed and info only."""
+    return {'ok': 'ok', 'refused': 'denied', 'incomplete': 'info'}.get(status, 'failed')
+
+
 def _lock(host: str) -> threading.Lock:
     with _locks_guard:
         return _host_locks.setdefault(host, threading.Lock())
@@ -405,10 +420,10 @@ def run(db: Database, host: str, script: str, args=(), *, kind: str, ref: str | 
             finally:
                 if t:
                     t.close()
-            status = 'ok' if rc == 0 else 'refused' if rc == REFUSED else 'failed'
+            status = run_status(rc, mode, ''.join(out))
             if rc == 255:
                 out.append('\nSSH failed: the host is unreachable, or storageforge-deploy cannot log in\n')
-            audit.append(actor, f'deploy.{kind}', status, name, b.fingerprint,
+            audit.append(actor, f'deploy.{kind}', audit_outcome(status), name, b.fingerprint,
                          {'mode': mode, 'ref': ref, 'run': run_id, 'exit': rc, 'args': list(args)})
     except (DeployError, VaultError, ValueError) as exc:
         out.append(f'{exc}\n')
@@ -458,8 +473,8 @@ def raw(db: Database, host: str, script: str, *, kind: str, ref: str | None = No
                         p.stdout.close()
                     rc = p.wait(60)
                     drain.join(5)
-                status = 'ok' if rc == 0 else 'refused' if rc == REFUSED else 'failed'
-            AuditLog(db, conn, v.audit_key).append(actor, f'deploy.{kind}', status, name, b.fingerprint,
+                status = run_status(rc, 'report', '')
+            AuditLog(db, conn, v.audit_key).append(actor, f'deploy.{kind}', audit_outcome(status), name, b.fingerprint,
                                                    {'ref': ref, 'run': run_id, 'exit': rc})
     finally:
         if t:
@@ -498,10 +513,10 @@ def start_group(db: Database, items: list[dict], actor: str, stop_on_failure: bo
             finally:
                 c.close()
             res = run(db, group_id=gid, actor=actor, **{k: v for k, v in it.items() if k not in ('on_ok', 'on_fail')})
-            hook = it.get('on_ok' if res['status'] == 'ok' else 'on_fail')
+            hook = it.get('on_ok' if res['status'] in FINISHED else 'on_fail')
             if hook:
                 _guard(lambda: hook(res))
-            if res['status'] != 'ok':
+            if res['status'] not in FINISHED:
                 failed = stop_on_failure
             if it.get('mode') == 'apply':
                 applied[it['host']] = True
@@ -580,6 +595,14 @@ def mark_deployed(conn, host: str, kind: str, ref: str, deploy_hash: str, detail
     conn.execute("""INSERT INTO deployed (host, kind, ref, deploy_hash, detail_json, deployed_at, deployed_by)
                     VALUES (:h, :k, :r, :d, :j, :t, :a)""",
                  {'h': host, 'k': kind, 'r': ref, 'd': deploy_hash, 'j': json.dumps(detail), 't': int(time.time()), 'a': actor})
+
+
+def finished_at(marks: list[dict], ref: str, digest: str) -> int | None:
+    """When this version of a plan last finished on all its hosts (their list is in each mark's detail), if it has."""
+    done = [d for d in marks if d['ref'] == ref and d['hash'] == digest]
+    if not done or not set(done[0]['detail'].get('hosts') or ()) <= {d['host'] for d in done}:
+        return None
+    return max(d['at'] for d in done)
 
 
 def deployed(conn, host: str | None = None, kind: str | None = None) -> list[dict]:

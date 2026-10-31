@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import threading
 
 from .db import Conn
@@ -25,8 +26,7 @@ def is_noise(path: str) -> bool:
     p = path + '/'
     return any(n in p for n in NOISE)
 
-SURVEY = r"""
-command -v git >/dev/null 2>&1 || { echo '@@nogit'; exit 0; }
+_SURVEY_BASH = r"""
 while IFS= read -r -d '' r; do
   g() { timeout 20 git -c safe.directory='*' -C "$r" "$@" 2>/dev/null; }
   printf '@@repo\t%s\n' "$r"
@@ -44,6 +44,9 @@ while IFS= read -r -d '' r; do
   printf 'size\t%s\n' "$(timeout 20 du -sk "$(g rev-parse --absolute-git-dir)" 2>/dev/null | cut -f1)"
 done
 """
+# read -d is bash: a login shell or sh that is dash would stop at it and report no repositories at all
+SURVEY = ("command -v git >/dev/null 2>&1 || { echo '@@nogit'; exit 0; }\n"
+          f'exec bash -c {shlex.quote(_SURVEY_BASH)}\n')
 
 
 def candidates(conn: Conn, host_id: int) -> list[str]:
