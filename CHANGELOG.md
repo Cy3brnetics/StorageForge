@@ -5,6 +5,7 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Added
+- **Roles and accounts in the web UI:** change your own password, and admins can add, disable and remove accounts. `viewer` browses and searches, `operator` also plans, scans and deploys, `admin` also handles keys, accounts and settings. Existing accounts stay admins.
 - **Retire a host** from its menu or with `hosts remove`, and remove keys and bindings from the Keys tab.
 - **Per-host scan schedules:** a host can have its own interval and quiet hours, from its menu in the topology.
 - **Designs stage pool tasks:** a new ZFS pool, ZFS datasets, a new LVM volume group and its volumes now become change-plan tasks instead of "by hand" notes.

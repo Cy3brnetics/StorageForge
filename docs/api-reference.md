@@ -31,6 +31,9 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/login` | sign-in page; the only page served without a session |
 | GET | `/` | main page; without a session, a redirect to `/login?next=/` |
 | GET | `/planner` | planner; likewise |
+| POST | `/api/me/password` | `{"password", "new_password"}`: change your own password; your sessions end |
+| GET, POST | `/api/users` | accounts (admin, password confirmed); POST `{"username", "password", "role"}` |
+| PUT, DELETE | `/api/users/<name>` | `{"role", "disabled"}`; the last enabled admin can't be removed, disabled or demoted |
 | GET | `/healthz` | `{"status"}`; also version, database, vault, worker and user count from inside the container or when signed in |
 
 ## Session

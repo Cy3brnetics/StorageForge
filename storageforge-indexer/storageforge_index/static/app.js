@@ -750,7 +750,49 @@ $('#installform').addEventListener('submit', async (ev) => {
   finally { btn.disabled = false; }
 });
 
+async function loadUsers() {
+  const me = await getJSON('/api/me').catch(() => null);
+  $('#userscard').hidden = !me || me.role !== 'admin';
+  if ($('#userscard').hidden) return;
+  try {
+    const { users } = await getJSON('/api/users');
+    const change = async (u, body) => {
+      try { await api(`/api/users/${encodeURIComponent(u)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
+      catch (err) { $('#usermsg').textContent = err.message; }
+      loadUsers();
+    };
+    $('#userlist').replaceChildren(...users.map((u) => {
+      const role = el('select', { 'aria-label': `Role of ${u.username}`, onchange: () => change(u.username, { role: role.value }) },
+        ...['viewer', 'operator', 'admin'].map((r) => new Option(r, r)));
+      role.value = u.role;
+      return el('li', {}, text('span', `${u.username}${u.disabled_at ? ' · disabled' : ''}`), role,
+        button(u.disabled_at ? 'Enable' : 'Disable', () => change(u.username, { disabled: !u.disabled_at }), 'btn ghost sm'),
+        button('Remove', async () => {
+          if (!confirm(`Remove account ${u.username}?`)) return;
+          try { await api(`/api/users/${encodeURIComponent(u.username)}`, { method: 'DELETE' }); }
+          catch (err) { $('#usermsg').textContent = err.message; }
+          loadUsers();
+        }, 'btn ghost sm danger'));
+    }));
+  } catch (err) { $('#usermsg').textContent = err.message; }
+}
+$('#pwform').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  try {
+    await postJSON('/api/me/password', { password: $('#pwold').value, new_password: $('#pwnew').value });
+    sfSignedOut('');
+  } catch (err) { $('#pwmsg').textContent = err.message; }
+});
+$('#userform').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  try {
+    await postJSON('/api/users', { username: $('#newuser').value.trim(), password: $('#newuserpw').value, role: $('#newuserrole').value });
+    ev.target.reset(); $('#usermsg').textContent = '';
+  } catch (err) { $('#usermsg').textContent = err.message; }
+  loadUsers();
+});
 async function loadAudit() {
+  loadUsers();
   try {
     const { entries } = await getJSON('/api/audit?limit=100');
     $('#audit').replaceChildren(...entries.map((a) => {

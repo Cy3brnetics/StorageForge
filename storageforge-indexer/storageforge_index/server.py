@@ -9,6 +9,9 @@ POST /api/login  {"username", "password"}   start a session (cookie)
 POST /api/logout                    end it
 POST /api/reauth  {"password"}      confirm the password before commands run on hosts (good for REAUTH_WINDOW)
 GET|PUT /api/me                     the signed-in user; PUT {"session_minutes"} sets how long sessions last (30-480)
+POST /api/me/password  {"password", "new_password"}   change your own password; every session of yours ends
+GET|POST /api/users                  accounts (admin, password confirmed); POST {"username", "password", "role"}
+PUT|DELETE /api/users/<name>         {"role"} viewer, operator or admin, {"disabled"}; the last admin stays
 GET  /api/hosts                     indexed hosts
 GET  /api/graph[?host=]             nodes and edges
 GET  /api/canvas[?host=]            Obsidian .canvas download
@@ -166,6 +169,27 @@ def session_secret_from_env() -> str:
         print('warning: STORAGEFORGE_SESSION_SECRET is not set; sessions end when the server restarts', file=sys.stderr)
         s = secrets.token_urlsafe(48)
     return s
+
+
+ROLE_RANK = {'viewer': 0, 'operator': 1, 'admin': 2}
+ANYONE = ('/api/login', '/api/logout', '/api/reauth', '/api/me', '/api/me/password')
+ADMIN_ANY_METHOD = ('/api/users', '/api/deploy/settings', '/api/audit/verify')
+ADMIN_WRITES = ('/api/keys', '/api/bindings', '/api/hostkey', '/api/access/grant', '/api/deploy/access', '/api/backups', '/api/planner/example')
+
+
+def required_role(method: str, path: str) -> str:
+    """viewer browses and searches; operator also plans, deploys and scans; admin also handles keys, accounts and settings.
+    Generated scripts are for operators: they name paths, logins and hosts in a form that can be run."""
+    under = lambda roots: any(path == r or path.startswith(r + '/') for r in roots)   # noqa: E731
+    if path in ANYONE:
+        return 'viewer'
+    if under(ADMIN_ANY_METHOD):
+        return 'admin'
+    if method in ('GET', 'HEAD'):
+        return 'operator' if path.rsplit('/', 1)[-1] in ('script', 'ansible') else 'viewer'
+    if under(ADMIN_WRITES) or (method == 'DELETE' and re.fullmatch(r'/api/hosts/[^/]+', path)):
+        return 'admin'
+    return 'operator'
 
 
 QUIET_RE = re.compile(r'(\d{1,2})-(\d{1,2})')
@@ -454,6 +478,13 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         return wrapped
 
     @web.before_request
+    def role_allows():
+        """Default-deny: a new route that writes needs an operator without saying so. See required_role."""
+        if current_user.is_authenticated and ROLE_RANK[current_user.role] < ROLE_RANK[required_role(request.method, request.path)]:
+            return jsonify(error=f'your account ({current_user.role}) may not do this'), 403
+        return None
+
+    @web.before_request
     def body_limit():
         if request.path in ('/api/planner/design', '/api/planner/changes') and request.method in ('PUT', 'POST'):
             request.max_content_length = MAX_BLUEPRINT
@@ -663,7 +694,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
 
     def me():
         login_at = session.get('login_at', 0)
-        return dict(username=current_user.username, session_minutes=current_user.session_minutes,
+        return dict(username=current_user.username, role=current_user.role, session_minutes=current_user.session_minutes,
                     session_ends=login_at + current_user.session_minutes * 60, min_minutes=users.SESSION_MINUTES,
                     max_minutes=users.MAX_SESSION_MINUTES)
 
@@ -683,6 +714,49 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         current_user.session_minutes = users.set_session_minutes(conn(), current_user.user_id, minutes)
         core.audit(conn(), actor(), 'web.session-length', 'ok', None, {'minutes': minutes})
         return jsonify(me())
+
+    @web.post('/api/me/password')
+    @login_required
+    @limiter.limit(LOGIN_LIMIT_PER_USER, key_func=lambda: f'password:{current_user.get_id()}')
+    def api_me_password():
+        body = json_body()
+        ok = users.confirm(conn(), current_user.user_id, str(body.get('password') or ''))
+        core.audit(conn(), actor(), 'web.password', 'ok' if ok else 'denied', None, {})
+        if not ok:
+            return jsonify(error='that is not your current password'), 403
+        users.set_password(conn(), current_user.username, str(body.get('new_password') or ''))
+        users.end_all_sessions(conn(), current_user.username)
+        return jsonify(signed_out=True)
+
+    @web.route('/api/users', methods=['GET', 'POST'])
+    @login_required
+    @password_confirmed
+    def api_users():
+        if request.method == 'POST':
+            body = json_body()
+            name = str(body.get('username') or '')
+            users.create(conn(), name, str(body.get('password') or ''), str(body.get('role') or 'viewer'))
+            core.audit(conn(), actor(), 'user.add', 'ok', None, {'username': name, 'role': str(body.get('role') or 'viewer')})
+        return jsonify(users=[dict(zip(('username', 'created_at', 'last_login_at', 'disabled_at', 'role'), r)) for r in users.listing(conn())])
+
+    @web.route('/api/users/<name>', methods=['PUT', 'DELETE'])
+    @login_required
+    @password_confirmed
+    def api_user(name):
+        if request.method == 'DELETE':
+            users.keep_an_admin(conn(), name)
+            users.remove(conn(), name)
+            core.audit(conn(), actor(), 'user.remove', 'ok', None, {'username': name})
+            return jsonify(removed=name)
+        body = json_body()
+        if ('role' in body and body['role'] != 'admin') or body.get('disabled'):
+            users.keep_an_admin(conn(), name)
+        if 'role' in body:
+            users.set_role(conn(), name, str(body['role']))
+        if 'disabled' in body:
+            users.set_disabled(conn(), name, bool(body['disabled']))
+        core.audit(conn(), actor(), 'user.update', 'ok', None, {'username': name, **{k: body[k] for k in ('role', 'disabled') if k in body}})
+        return jsonify(users=[dict(zip(('username', 'created_at', 'last_login_at', 'disabled_at', 'role'), r)) for r in users.listing(conn())])
 
     # data
     @web.get('/api/hosts')

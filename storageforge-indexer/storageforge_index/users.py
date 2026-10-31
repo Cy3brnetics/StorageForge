@@ -20,6 +20,9 @@ SESSION_MINUTES, MAX_SESSION_MINUTES = 30, 480
 _DUMMY_HASH = generate_password_hash('storageforge-no-such-user')
 
 
+ROLES = ('viewer', 'operator', 'admin')
+
+
 class UserError(ValueError):
     pass
 
@@ -30,6 +33,7 @@ class User(UserMixin):
     username: str
     session_version: int
     session_minutes: int = SESSION_MINUTES
+    role: str = 'admin'
 
     def get_id(self) -> str:   # Flask-Login stores this in the session; a version bump invalidates old sessions
         return f'{self.user_id}:{self.session_version}'
@@ -40,22 +44,22 @@ def load(conn: Conn, session_id: str) -> User | None:
         uid, ver = (int(x) for x in session_id.split(':'))
     except ValueError:
         return None
-    rows = conn.all('SELECT user_id, username, session_version, session_minutes FROM users '
+    rows = conn.all('SELECT user_id, username, session_version, session_minutes, role FROM users '
                     'WHERE user_id = :u AND session_version = :v AND disabled_at IS NULL', {'u': uid, 'v': ver})
     return User(*rows[0]) if rows else None
 
 
 def authenticate(conn: Conn, username: str, password: str) -> User | None:
-    rows = conn.all('SELECT user_id, username, session_version, session_minutes, password_hash FROM users '
+    rows = conn.all('SELECT user_id, username, session_version, session_minutes, role, password_hash FROM users '
                     'WHERE lower(username) = lower(:n) AND disabled_at IS NULL', {'n': username})
     if not rows:
         check_password_hash(_DUMMY_HASH, password)
         return None
-    uid, name, ver, minutes, pw_hash = rows[0]
+    uid, name, ver, minutes, role, pw_hash = rows[0]
     if not check_password_hash(pw_hash, password):
         return None
     conn.execute('UPDATE users SET last_login_at = :t WHERE user_id = :u', {'t': int(time.time()), 'u': uid})
-    return User(uid, name, ver, minutes)
+    return User(uid, name, ver, minutes, role)
 
 
 def confirm(conn: Conn, user_id: int, password: str) -> bool:
@@ -108,14 +112,33 @@ def _check_password(password: str):
         raise UserError(f'password must be at least {MIN_PASSWORD} characters')
 
 
-def create(conn: Conn, username: str, password: str) -> None:
+def _check_role(role: str):
+    if role not in ROLES:
+        raise UserError(f'role must be one of {", ".join(ROLES)}')
+
+
+def keep_an_admin(conn: Conn, username: str):
+    """For the web UI: refuses what would leave no enabled admin. The CLI needs a shell on the server and can always recover."""
+    others = conn.scalar("""SELECT count(*) FROM users WHERE role = 'admin' AND disabled_at IS NULL
+                            AND lower(username) <> lower(:n)""", {'n': username})
+    if not others:
+        raise UserError(f'{username} is the last admin: make another account admin first')
+
+
+def set_role(conn: Conn, username: str, role: str) -> None:
+    _check_role(role)
+    _update(conn, username, 'role = :r, session_version = session_version + 1', {'r': role})
+
+
+def create(conn: Conn, username: str, password: str, role: str = 'admin') -> None:
+    _check_role(role)
     if not USERNAME.fullmatch(username):
         raise UserError('username: letters, digits, . _ - only (max 64), starting with a letter or digit')
     _check_password(password)
     if conn.scalar('SELECT 1 FROM users WHERE lower(username) = lower(:n)', {'n': username}):
         raise UserError(f'user {username!r} already exists')
-    conn.execute('INSERT INTO users (username, password_hash, created_at) VALUES (:n, :h, :t)',
-                 {'n': username, 'h': generate_password_hash(password), 't': int(time.time())})
+    conn.execute('INSERT INTO users (username, password_hash, created_at, role) VALUES (:n, :h, :t, :r)',
+                 {'n': username, 'h': generate_password_hash(password), 't': int(time.time()), 'r': role})
 
 
 def set_password(conn: Conn, username: str, password: str) -> None:
@@ -142,7 +165,7 @@ def _update(conn: Conn, username: str, sets: str, params: dict) -> None:
 
 
 def listing(conn: Conn) -> list[tuple]:
-    return conn.all('SELECT username, created_at, last_login_at, disabled_at FROM users ORDER BY lower(username)')
+    return conn.all('SELECT username, created_at, last_login_at, disabled_at, role FROM users ORDER BY lower(username)')
 
 
 def count(conn: Conn) -> int:

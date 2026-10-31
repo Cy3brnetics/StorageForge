@@ -804,11 +804,13 @@ def cmd_user(args) -> int:
     a = args.user_cmd
     try:
         if a == 'list':
-            for name, created, last, disabled in users.listing(conn):
-                print(f'{name:<24} created {when(created)}  last login {when(last)}{"  DISABLED" if disabled else ""}')
+            for name, created, last, disabled, role in users.listing(conn):
+                print(f'{name:<24} {role:<9} created {when(created)}  last login {when(last)}{"  DISABLED" if disabled else ""}')
             return 0
         if a == 'add':
-            users.create(conn, args.name, _new_password(args))
+            users.create(conn, args.name, _new_password(args), args.role)
+        elif a == 'role':
+            users.set_role(conn, args.name, args.new_role)
         elif a == 'passwd':
             users.set_password(conn, args.name, _new_password(args))
         elif a in ('disable', 'enable'):
@@ -825,7 +827,7 @@ def cmd_user(args) -> int:
             _audit(db, conn, v, f'user.{a}', username=args.name)
     except VaultError:
         _audit(db, conn, None, f'user.{a}', username=args.name)
-    print({'add': 'created', 'passwd': 'password changed for', 'disable': 'disabled', 'enable': 'enabled',
+    print({'add': 'created', 'role': f'role {getattr(args, "new_role", "")} for', 'passwd': 'password changed for', 'disable': 'disabled', 'enable': 'enabled',
            'remove': 'removed', 'signout': 'signed out every session of'}[a] + f' user {args.name}' + (' (existing sessions signed out)' if a in ('passwd', 'disable') else ''))
     return 0
 
@@ -1145,6 +1147,10 @@ def build_parser() -> argparse.ArgumentParser:
         x = us.add_parser(name, help=text)
         x.add_argument('name')
         x.add_argument('--password-env', metavar='VAR', help='read the password from this environment variable')
+        if name == 'add':
+            x.add_argument('--role', choices=('viewer', 'operator', 'admin'), default='admin')
+    ro = us.add_parser('role', help='set what an account may do')
+    ro.add_argument('name'); ro.add_argument('new_role', choices=('viewer', 'operator', 'admin'))
     for name, text in (('disable', 'block sign-in and sign out its sessions'), ('enable', 'allow sign-in again'),
                        ('remove', 'delete an account'), ('signout', 'end every web session of an account')):
         us.add_parser(name, help=text).add_argument('name')

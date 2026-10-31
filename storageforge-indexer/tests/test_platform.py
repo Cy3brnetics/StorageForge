@@ -1218,6 +1218,50 @@ class ServerTests(DBCase):
                     answered.append((method, rule.rule, code))
         self.assertEqual(answered, [])
 
+    def test_a_viewer_can_browse_but_never_write(self):
+        import re
+        from storageforge_index import users
+        users.create(self.conn, 'vera', 'x' * 16, 'viewer')
+        self.assertEqual(self.client.post('/api/login', json={'username': 'vera', 'password': 'x' * 16}).status_code, 200)
+        self.assertEqual(self.client.get('/api/me').get_json()['role'], 'viewer')
+        self.assertEqual(self.client.get('/api/hosts').status_code, 200)
+        allowed = {'/api/login', '/api/logout', '/api/reauth', '/api/me', '/api/me/password', '/api/jobs/report'}
+        wrote = []
+        for rule in self.web.url_map.iter_rules():
+            path = re.sub(r'<int:\w+>', '1', rule.rule)
+            path = re.sub(r'<any\(([^)]*)\):\w+>', lambda m: m.group(1).split(',')[0].strip().strip('"'), path)
+            path = re.sub(r'<[^>]+>', 'x', path)
+            for method in sorted(rule.methods - {'HEAD', 'OPTIONS', 'GET'}):
+                if rule.rule in allowed:
+                    continue
+                code = getattr(self.client, method.lower())(path, json={}).status_code
+                if code != 403:
+                    wrote.append((method, rule.rule, code))
+        self.assertEqual(wrote, [])
+
+    def test_role_rules(self):
+        from storageforge_index.server import required_role as need
+        self.assertEqual(need('GET', '/api/hosts'), 'viewer')
+        self.assertEqual(need('GET', '/api/moves/1/script'), 'operator')
+        self.assertEqual(need('POST', '/api/deploy/start'), 'operator')
+        self.assertEqual(need('POST', '/api/some-new-route'), 'operator')      # a new route is not open by default
+        self.assertEqual(need('GET', '/api/users'), 'admin')
+        self.assertEqual(need('DELETE', '/api/keys/k'), 'admin')
+        self.assertEqual(need('DELETE', '/api/hosts/x'), 'admin')
+        self.assertEqual(need('GET', '/api/keys'), 'viewer')
+
+    def test_password_change_and_the_last_admin(self):
+        self.login()
+        name = self.client.get('/api/me').get_json()['username']
+        self.assertEqual(self.client.post('/api/me/password', json={'password': 'wrong', 'new_password': 'y' * 16}).status_code, 403)
+        self.assertEqual(self.client.post('/api/me/password', json={'password': 'a long enough password', 'new_password': 'y' * 16}).status_code, 200)
+        self.assertEqual(self.client.get('/api/me').status_code, 401)            # every session ended
+        self.assertEqual(self.client.post('/api/login', json={'username': name, 'password': 'y' * 16}).status_code, 200)
+        for r in (self.client.put(f'/api/users/{name}', json={'role': 'viewer'}), self.client.put(f'/api/users/{name}', json={'disabled': True}),
+                  self.client.delete(f'/api/users/{name}')):
+            self.assertEqual(r.status_code, 400)
+            self.assertIn('last admin', r.json['error'])
+
     def test_signing_out_kills_copies_of_the_cookie(self):
         from storageforge_index import users
         self.login()

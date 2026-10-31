@@ -94,6 +94,7 @@ Storage tasks:
 | Command | What it does |
 |---|---|
 | `hosts remove NAME [--keep-design]` | retire a host; refused while anything is deployed there |
+| `user add NAME [--role R]`, `user role NAME ROLE` | an account and what it may do: viewer, operator or admin |
 | `tasks list`, `tasks check ID` | storage tasks; `check` exits 1 on a critical finding |
 | `tasks script ID [-o FILE]` | the Bash script (made executable) |
 | `tasks import FILE [--id ID]` | save a task from JSON (`{"name", "host", "blocks": [...]}`) |

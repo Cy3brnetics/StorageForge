@@ -136,6 +136,22 @@ storageforge-index graph import --blueprint atlas.json</pre>
     <div id="tab-audit" class="tab" hidden>
       <div class="row"><button id="verify" type="button" class="btn">Verify chain</button><span id="verified" class="muted"></span></div>
       <ol id="audit" class="list"></ol>
+      <h3>Your password</h3>
+      <form id="pwform" class="row wrap">
+        <input id="pwold" type="password" autocomplete="current-password" placeholder="current password" aria-label="Current password" required>
+        <input id="pwnew" type="password" autocomplete="new-password" placeholder="new password" aria-label="New password" required>
+        <button class="btn" type="submit">Change password</button><span id="pwmsg" class="muted"></span>
+      </form>
+      <div id="userscard" hidden>
+        <h3>Accounts</h3>
+        <ol id="userlist" class="list"></ol>
+        <form id="userform" class="row wrap">
+          <input id="newuser" type="text" autocomplete="off" placeholder="username" aria-label="New username" required>
+          <input id="newuserpw" type="password" autocomplete="new-password" placeholder="password" aria-label="New account password" required>
+          <select id="newuserrole" aria-label="Role"><option>viewer</option><option>operator</option><option>admin</option></select>
+          <button class="btn" type="submit">Add account</button><span id="usermsg" class="muted"></span>
+        </form>
+      </div>
     </div>
     </div>
     <nav class="tabs rail" role="tablist" aria-label="Panels" aria-orientation="vertical">
