@@ -344,6 +344,19 @@ def schedule_hash(conn: Conn, schedule: dict) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
+def holds_commands(conn: Conn, schedule: dict) -> bool:
+    """Whether deploying this schedule puts raw commands on its host, in itself or in what it runs."""
+    ttype, ref = schedule['task_type'], schedule['task_ref']
+    try:
+        if ttype == 'task':
+            return tasks.has_command(_resolve_task(conn, ref))
+        if ttype == 'move':
+            return moves.has_raw_hooks(moves.get_plan(conn, _plan_id(conn, 'move_plans', ref)))
+    except LookupError:
+        return False
+    return ttype == 'command'
+
+
 def check_target(conn: Conn, schedule: dict):
     """What a schedule runs must be meant for the host it runs on: a script applies whatever it holds, wherever it lands."""
     from .fsmap import same_host

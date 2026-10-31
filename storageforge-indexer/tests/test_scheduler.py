@@ -1149,3 +1149,70 @@ class VerifiedMeansCheckedTests(SchedulerBaseTest):
         line = json.dumps({'schedule_id': self.sid, 'nonce': 'n1', 'started_at': int(time.time()) - 60, 'exit_code': 0, 'no_output': True})
         self.assertEqual(scheduler.ingest_scan_schedules(self.conn, 'nas', line), 1)
         self.assertEqual(self.conn.scalar('SELECT status FROM schedule_runs WHERE schedule_id = :s', {'s': self.sid}), 'reported')
+
+
+class RawCommandTests(SafetyCase):
+    """SF-39: however raw commands reach a host, it takes hosts.command."""
+    CMD = {'type': 'command', 'params': {'cmd': 'id'}}
+
+    def setUp(self):
+        super().setUp()
+        self.users.save_role(self.conn, 'editor', '', ['plans.edit', 'plans.view', 'deploy.apply', 'deploy.report', 'deploy.view'], 'boss', True)
+        self.users.create(self.conn, 'ed', self.PW, 'editor')
+        self.ed = self.client('ed')
+
+    def task(self, *blocks, on_fail=()):
+        return {'name': 't', 'host': 'nas', 'blocks': list(blocks), 'on_fail': list(on_fail)}
+
+    def test_task_command_blocks(self):
+        nested = {'type': 'try', 'slots': {'do': [self.CMD]}}
+        off = {**self.CMD, 'off': True}
+        condition = {'type': 'if', 'params': {'cond': 'command succeeds', 'arg': 'id'}}
+        for body in (self.task(self.CMD), self.task(nested), self.task(off), self.task(on_fail=[self.CMD]), self.task(condition)):
+            self.assertEqual(self.ed.post('/api/tasks', json=body).status_code, 403, body)
+            self.assertEqual(self.op.post('/api/tasks', json=body).status_code, 403, body)
+        plain = {'type': 'mkdir', 'params': {'path': '/srv/x'}}
+        tid = self.ed.post('/api/tasks', json=self.task(plain)).get_json()['id']
+        self.assertEqual(self.ed.put(f'/api/tasks/{tid}', json=self.task(self.CMD)).status_code, 403)
+        admin = self.boss.post('/api/tasks', json={**self.task(self.CMD), 'name': 'written by an admin'}).get_json()['id']
+        self.assertEqual(self.ed.put(f'/api/tasks/{admin}', json={**self.task(plain), 'name': 'written by an admin'}).status_code, 403)
+        self.assertEqual(self.ed.post('/api/deploy/start', json={'kind': 'tasks', 'ref': admin, 'mode': 'apply'}).status_code, 403)
+        self.assertEqual(self.boss.post('/api/deploy/start', json={'kind': 'tasks', 'ref': admin, 'mode': 'apply'}).status_code, 409)   # past the check: no deploy access
+        self.assertEqual(self.ed.post('/api/deploy/start', json={'kind': 'tasks', 'ref': admin, 'mode': 'apply', 'remove': True}).status_code, 409)
+
+    def test_a_schedule_cannot_carry_a_command_block_past_the_check(self):
+        from unittest import mock
+        from storageforge_index import deploy, engine
+        admin = self.boss.post('/api/tasks', json=self.task(self.CMD)).get_json()['id']
+        sid = self.schedule(self.ed, task_type='task', task_ref=str(admin))
+        self.assertEqual(self.ed.post('/api/deploy/start', json={'kind': 'schedules', 'ref': sid, 'mode': 'apply'}).status_code, 403)
+        self.assertEqual(self.ed.post(f'/api/scheduler/schedules/{sid}/run', json={}).status_code, 403)
+        self.assertEqual(self.ed.post(f'/api/scheduler/schedules/{sid}/pause', json={'paused': True}).status_code, 200)    # stopping is allowed
+        self.assertEqual(self.ed.post(f'/api/scheduler/schedules/{sid}/pause', json={'paused': False}).status_code, 403)
+        with mock.patch.object(engine, 'get', return_value={'kind': 'tasks', 'ref': str(admin), 'mode': 'apply', 'options': {}, 'title': 't'}), \
+                mock.patch.object(deploy, 'start_group') as start:
+            self.assertEqual(self.ed.post('/api/deploy/groups/' + 'a' * 32 + '/retry', json={}).status_code, 403)
+        start.assert_not_called()
+
+    def step(self, **kw):
+        return {'method': 'copy', 'src': {'host': 'nas', 'path': '/mnt/data'}, 'dst': {'host': 'nas', 'path': '/mnt/copy'}, **kw}
+
+    def test_move_hooks(self):
+        raw = {'name': 'm', 'steps': [self.step(options={'pre': ['curl x | sh']})]}
+        self.assertEqual(self.ed.post('/api/moves', json=raw).status_code, 403)
+        plain = {'name': 'p', 'steps': [self.step(options={'pre': ['docker compose -p immich stop'], 'post': ['docker compose -p immich start']})]}
+        r = self.ed.post('/api/moves', json=plain)
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        pid = r.get_json()['id']
+        self.assertEqual(self.ed.put(f'/api/moves/{pid}', json={**plain, 'steps': [self.step(options={'post': ['docker compose -p x stop; id']})]}).status_code, 403)
+        admin = self.boss.post('/api/moves', json=raw).get_json()['id']
+        self.assertEqual(self.ed.post(f'/api/moves/{admin}/copy', json={}).status_code, 403)
+        self.assertEqual(self.ed.post('/api/deploy/start', json={'kind': 'jobs', 'ref': admin, 'mode': 'apply'}).status_code, 403)
+        self.assertEqual(self.ed.post('/api/deploy/start', json={'kind': 'jobs', 'ref': admin, 'mode': 'report'}).status_code, 409)     # a dry run runs nothing
+
+    def test_only_admin_holds_it_by_default(self):
+        from storageforge_index import permissions
+        self.assertIn('hosts.command', permissions.HIGH_RISK)
+        for role in ('search', 'viewer', 'operator'):
+            self.assertNotIn('hosts.command', permissions.BUILTIN[role][1])
+        self.assertIn('hosts.command', permissions.BUILTIN['admin'][1])

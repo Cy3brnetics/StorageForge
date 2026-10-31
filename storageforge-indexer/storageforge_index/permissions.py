@@ -24,7 +24,7 @@ CATALOG = (
         ('plans.view', 'See moves, changes, tasks and schedules', False),
         ('plans.edit', 'Create and edit plans, tasks, shares and designs', True),
         ('plans.scripts', 'Download generated scripts and config bundles', False),
-        ('schedules.command', 'Write, deploy and run schedules holding arbitrary commands, which run as root', True),)),
+        ('hosts.command', 'Write and deploy raw commands, which run as root: command schedules, task command blocks, move hooks', True),)),
     ('Deploy', (
         ('deploy.view', 'See deploys, runs and jobs', False),
         ('deploy.report', 'Dry runs, job logs and snapshot browsing', False),

@@ -1213,7 +1213,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @web.post('/api/moves')
     @login_required
     def api_moves_create():
-        pid = moves.save_plan(conn(), json_body(), actor())
+        body = json_body()
+        if moves.has_raw_hooks(moves.normalize(body)):
+            need('hosts.command')
+        pid = moves.save_plan(conn(), body, actor())
         core.audit(conn(), actor(), 'moves.save', 'ok', None, {'plan': pid})
         return jsonify(moves.get_plan(conn(), pid)), 201
 
@@ -1222,7 +1225,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def api_move(plan_id):
         try:
             if request.method == 'PUT':
-                moves.save_plan(conn(), json_body(), actor(), plan_id)
+                body = json_body()
+                if moves.has_raw_hooks(moves.normalize(body)) or moves.has_raw_hooks(moves.get_plan(conn(), plan_id)):
+                    need('hosts.command')
+                moves.save_plan(conn(), body, actor(), plan_id)
                 core.audit(conn(), actor(), 'moves.save', 'ok', None, {'plan': plan_id})
             elif request.method == 'DELETE':
                 moves.get_plan(conn(), plan_id)
@@ -1239,6 +1245,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     def api_move_copy(plan_id):
         try:
+            if moves.has_raw_hooks(moves.get_plan(conn(), plan_id)):
+                need('hosts.command')
             pid = moves.copy_plan(conn(), plan_id, actor())
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
@@ -1456,7 +1464,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def api_tasks():
         c = conn()
         if request.method == 'POST':
-            tid = tasks.save_task(c, json_body(), actor())
+            body = json_body()
+            if tasks.has_command(tasks.normalize(body)):
+                need('hosts.command')
+            tid = tasks.save_task(c, body, actor())
             core.audit(c, actor(), 'tasks.save', 'ok', None, {'task': tid})
             return jsonify(tasks.get_task(c, tid)), 201
         return jsonify(tasks=tasks.list_tasks(c), types=tasks.TYPES, categories=tasks.CATEGORIES,
@@ -1468,7 +1479,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         c = conn()
         try:
             if request.method == 'PUT':
-                tasks.save_task(c, json_body(), actor(), task_id)
+                body = json_body()
+                if tasks.has_command(tasks.normalize(body)) or tasks.has_command(tasks.get_task(c, task_id)):
+                    need('hosts.command')
+                tasks.save_task(c, body, actor(), task_id)
                 core.audit(c, actor(), 'tasks.save', 'ok', None, {'task': task_id})
             elif request.method == 'DELETE':
                 t = tasks.get_task(c, task_id)
@@ -1643,6 +1657,17 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                                           bool(options.get('run')), bool(options.get('remove')))
         raise ValueError('kind is jobs, shares, changes, tasks or schedules')
 
+    def need_for_commands(c, kind, ref):
+        """Raw commands run as root, so deploying them takes hosts.command, whoever wrote them. Taking them off a host doesn't."""
+        try:
+            holds = (moves.has_raw_hooks(moves.get_plan(c, int(ref))) if kind == 'jobs' else
+                     tasks.has_command(tasks.get_task(c, int(ref))) if kind == 'tasks' else
+                     scheduler.holds_commands(c, scheduler.get_schedule(c, int(ref))) if kind == 'schedules' else False)
+        except LookupError:
+            return
+        if holds:
+            need('hosts.command')
+
     def deploy_digest(c, kind, ref):
         """A fingerprint of what this deploy is made from, to tell whether a dry run still describes it."""
         try:
@@ -1673,12 +1698,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if body.get('destructive'):
             need('deploy.destructive')
         c = conn()
-        if kind == 'schedules' and not body.get('remove') and mode == 'apply':
-            try:
-                if scheduler.get_schedule(c, int(ref))['task_type'] == 'command':
-                    need('schedules.command')
-            except LookupError:
-                pass
+        if mode == 'apply' and not body.get('remove'):
+            need_for_commands(c, kind, ref)
         options = {k: bool(body[k]) for k in ('remove', 'paused', 'destructive', 'run') if body.get(k)}
         items = deploy_items_for(c, kind, ref, mode, options)
         if not items:
@@ -1729,6 +1750,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             raise LookupError('no such deploy')
         if g['options'].get('destructive'):
             need('deploy.destructive')
+        if g['mode'] == 'apply' and not g['options'].get('remove'):
+            need_for_commands(c, g['kind'], g['ref'])
         if engine.running(gid):
             return jsonify(error='that deploy is still running'), 409
         if g['kind'] not in ('jobs', 'shares', 'changes', 'tasks', 'schedules'):
@@ -1870,7 +1893,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 return stale
             body = json_body()
             if body.get('task_type') == 'command':
-                need('schedules.command')
+                need('hosts.command')
             sched, token = scheduler.create_schedule(c, body, actor())
             core.audit(c, actor(), 'scheduler.create', 'ok', sched['host'], {'schedule_id': sched['schedule_id'], 'name': sched['name']})
             return jsonify(schedule=sched, token=token), 201
@@ -1892,7 +1915,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             if request.method == 'PUT':
                 body = json_body()
                 if 'command' in (body.get('task_type'), scheduler.get_schedule(c, schedule_id)['task_type']):
-                    need('schedules.command')
+                    need('hosts.command')
                 sched = scheduler.update_schedule(c, schedule_id, body, actor())
                 core.audit(c, actor(), 'scheduler.update', 'ok', sched['host'], {'schedule_id': schedule_id, 'name': sched['name']})
                 return jsonify(sched)
@@ -1916,6 +1939,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         try:
             body = json_body()
             paused = bool(body.get('paused', True))
+            if not paused:                   # stopping is always allowed; starting puts the commands back on the host
+                need_for_commands(c, 'schedules', schedule_id)
             sched = scheduler.pause_schedule(c, schedule_id, paused, actor())
             who = actor()
             core.audit(c, who, 'scheduler.pause', 'ok', sched['host'], {'schedule_id': schedule_id, 'paused': paused})
@@ -1953,8 +1978,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         c = conn()
         try:
             sched = scheduler.get_schedule(c, schedule_id)
-            if sched['task_type'] == 'command':
-                need('schedules.command')
+            need_for_commands(c, 'schedules', schedule_id)
             who = actor()
             report_url = alerts.get_setting(c, 'report_url')
             items = scheduler.deploy_items(db, c, sched, 'apply', report_url, who, run_now=True)

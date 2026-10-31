@@ -255,6 +255,16 @@ def normalize(body: dict) -> dict:
             'on_fail': _blocks(body.get('on_fail'), 0, count, 'on failure ')}
 
 
+def has_command(task: dict) -> bool:
+    """A Run command block or a "command succeeds" condition anywhere, switched off or not: its value is code, so it takes hosts.command."""
+    def code(b: dict) -> bool:
+        return b.get('type') == 'command' or (b.get('type') == 'if' and (b.get('params') or {}).get('cond') == 'command succeeds')
+
+    def holds(blocks) -> bool:
+        return any(code(b) or any(holds(v) for v in (b.get('slots') or {}).values()) for b in blocks or [])
+    return holds(task.get('blocks')) or holds(task.get('on_fail'))
+
+
 def walk(blocks, path=()):
     """(path, block) for every block in run order; path is a tuple of indices and slot names."""
     for i, b in enumerate(blocks):

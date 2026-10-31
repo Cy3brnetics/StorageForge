@@ -53,6 +53,16 @@ def _path(p, what) -> str:
     return posixpath.normpath(p)
 
 
+# The Moves form writes these to stop containers around a copy: a fixed verb and a checked name, so they are not raw commands
+PLAIN_HOOK = re.compile(r'docker compose -p [A-Za-z0-9][A-Za-z0-9_.-]* (stop|start)')
+
+
+def has_raw_hooks(plan: dict) -> bool:
+    """Pre or post commands other than those: they run as root on a host, so they take hosts.command."""
+    return any(not PLAIN_HOOK.fullmatch(c) for s in plan.get('steps') or [] for o in (s.get('options') or {}, s)
+               for k in ('pre', 'post') for c in o.get(k) or [])
+
+
 def normalize(body: dict) -> dict:
     """Validate a plan from the UI or CLI and fill defaults. Raises ValueError with a readable reason."""
     name = str(body.get('name') or '').strip()
