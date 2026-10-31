@@ -31,4 +31,4 @@ Quote the name, or better, validate it against known task slugs. Cap output (`ta
 - [x] Fetched output is capped
 
 ## Fixed
-2026-10-31. Odd task names are skipped and the rest quoted. The `cat /var/log/messages` fallback is gone, stored output is capped at 256 KiB, and a bad line can't stop the scan. Test: `test_the_log_fetch_keeps_host_text_as_data`.
+2026-10-31, in `85f805a`. Odd task names are skipped and the rest quoted. The `cat /var/log/messages` fallback is gone, stored output is capped at 256 KiB, and a bad line can't stop the scan. Test: `test_the_log_fetch_keeps_host_text_as_data`.

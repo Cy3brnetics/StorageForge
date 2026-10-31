@@ -36,4 +36,4 @@ Make `git.sync` a signed deploy run, which brings password, audit, run history a
 - [x] Every Git route writes one audit row
 
 ## Fixed
-2026-10-31. Sync is a signed run as the owner of the repository's config, with hooks off. All actions need a fresh password. Status, history and commit are POST only, limited to 60 a minute per account, with `max` clamped to 1-200 and one audit row per call. Sync now **needs deploy access**, and hosts without `runuser` refuse a repository owned by someone else. The scan-to-deploy binding fallback is gone. Tests: `test_git_routes_follow_the_rules`, `test_sync_runs_no_hooks`.
+2026-10-31, in `85f805a`. Sync is a signed run as the owner of the repository's config, with hooks off. All actions need a fresh password. Status, history and commit are POST only, limited to 60 a minute per account, with `max` clamped to 1-200 and one audit row per call. Sync now **needs deploy access**, and hosts without `runuser` refuse a repository owned by someone else. The scan-to-deploy binding fallback is gone. Tests: `test_git_routes_follow_the_rules`, `test_sync_runs_no_hooks`.

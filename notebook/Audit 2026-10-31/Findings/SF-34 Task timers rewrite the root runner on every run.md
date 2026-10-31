@@ -29,4 +29,4 @@ Strip the header when installing a task (`RUNNER_UPDATE` belongs to the deploy, 
 - [x] A timer run never writes to the runner path, with a test
 
 ## Fixed
-2026-10-31. The header skips the update when `$0` is under `/usr/local/lib/storageforge/`. **Tasks already installed keep the old header until redeployed.** No version check against an older runner was added. Test: `test_an_installed_copy_leaves_the_runner_alone`.
+2026-10-31, in `85f805a`. The header skips the update when `$0` is under `/usr/local/lib/storageforge/`. **Tasks already installed keep the old header until redeployed.** No version check against an older runner was added. Test: `test_an_installed_copy_leaves_the_runner_alone`.
