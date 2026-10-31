@@ -1439,7 +1439,8 @@ t_lvm_extend() { local vg=$1 lv=$2 size=$3 now want
   if ((now >= want)); then ok "$vg/$lv is already $(human "$now")"; return 0; fi
   # LVM refuses to resize an active volume with a classic snapshot, and says only to deactivate it
   if [[ $(lvs --noheadings -o lv_attr -- "$vg/$lv" | tr -d ' ') == o* ]]; then conflict "$vg/$lv has a snapshot and LVM cannot grow it while it does: remove the snapshot first (lvs -o lv_name,origin $vg)"; return 0; fi
-  act "lvextend -r -L $size $vg/$lv (now $(human "$now"))" && try lvextend -r -L "$size" -- "$vg/$lv" >/dev/null && ok "grown"
+  # -y: on an unmounted filesystem it asks before mounting it to grow it, and nobody is here to answer
+  act "lvextend -r -L $size $vg/$lv (now $(human "$now"))" && try lvextend -y -r -L "$size" -- "$vg/$lv" >/dev/null && ok "grown"
 }
 t_lvm_snapshot() { local vg=$1 lv=$2 name=$3 size=$4
   need lvcreate lvm2 || return 0
@@ -1621,7 +1622,7 @@ def _ansible_storage(t: dict, gate: dict) -> dict:
         return guarded(f'lvs -- {lv} >/dev/null 2>&1', f'lvcreate -y -Wn -L {q(p["size"])} -n {q(p["lv"])} -- {q(p["vg"])}{fmt}')
     if k == 'lvm-extend':
         return guarded(f'[ "$(lvs --noheadings --nosuffix --units b -o lv_size -- {lv} | tr -d " ")" -ge "$(numfmt --from=iec {q(p["size"])})" ]',
-                       f'lvextend -r -L {q(p["size"])} -- {lv}')
+                       f'lvextend -y -r -L {q(p["size"])} -- {lv}')
     if k == 'lvm-snapshot':
         size = f'-L {q(p["size"])} ' if p['size'] else ''
         return guarded(f'lvs -- {q(p["vg"] + "/" + p["name"])} >/dev/null 2>&1', f'lvcreate -y -s {size}-n {q(p["name"])} -- {lv}')

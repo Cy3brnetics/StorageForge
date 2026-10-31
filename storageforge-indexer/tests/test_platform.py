@@ -1842,6 +1842,21 @@ class HostIdentityTests(DBCase):
         self.assertIn('signed for machine bbbb', err)
         self.assertEqual(run(deploy.request(key, me, 'echo ran'))[:2], (0, 'ran\n'))   # not scanned yet: name only
 
+    def test_runner_refresh_never_installs_a_copy_it_could_not_write(self):
+        from storageforge_index import deploy
+        runner = self.tmp / 'storageforge-run'
+        fake = self.tmp / 'bin'
+        fake.mkdir()
+        (fake / 'cat').write_text('#!/bin/sh\nexit 1\n')
+        (fake / 'cat').chmod(0o755)
+        script = self.tmp / 'refresh.sh'
+        script.write_text(deploy.RUNNER_UPDATE.replace('((EUID == 0))', 'true').replace('-o root -g root ', '').replace(deploy.RUNNER, str(runner)))
+        runner.write_text('old runner\n')
+        subprocess.run(['bash', str(script)], env={**os.environ, 'PATH': f'{fake}:{os.environ["PATH"]}'}, check=True, timeout=30)
+        self.assertEqual(runner.read_text(), 'old runner\n')
+        subprocess.run(['bash', str(script)], check=True, timeout=30)
+        self.assertEqual(runner.read_text(), deploy.RUNNER_SCRIPT)
+
 
 class HostAccessTests(DBCase):
     """GM-20 and GM-05: deploy access before any scan key, on another SSH port; adopt only binds one real host."""

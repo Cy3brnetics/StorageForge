@@ -253,8 +253,9 @@ class App:
     @staticmethod
     def canonical(conn, host: str) -> str:
         """One name per machine: a binding's IP, an ssh alias and the hostname all queue as the indexed hostname, so
-        the scheduler and "Scan now" can't start two scans of one host under different names."""
-        row = conn.all("""SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR ssh_host = :h OR ip_address = :h
+        the scheduler and "Scan now" can't start two scans of one host under different names. A host just rekeyed has no
+        scanned address, so its name reaches nothing yet: the IP stays as given, which is what its key binding names."""
+        row = conn.all("""SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR ssh_host = :h OR (ip_address = :h AND ssh_host IS NOT NULL)
                           ORDER BY CASE WHEN lower(hostname) = lower(:h) THEN 0 WHEN ssh_host = :h THEN 1 ELSE 2 END,
                                    last_scanned_at DESC""", {'h': host})   # a host's self-reported IP comes last
         return row[0][0] if row else host

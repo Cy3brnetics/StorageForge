@@ -170,9 +170,10 @@ exit $rc
 # It is line 1 of the script, so it carries the shebang: a storage task installs this very file ($0) as the
 # ExecStart of its systemd unit, and without #! the kernel refuses to run it (203/EXEC).
 RUNNER_UPDATE = ('#!/bin/bash\n'
-                 'if ((EUID == 0)); then _sf_new=$(mktemp) && cat >"$_sf_new" <<\'STORAGEFORGE_RUNNER_UPDATE\'\n'
+                 # nothing is installed unless the copy was written whole: an empty runner locks every deploy out of the host
+                 'if ((EUID == 0)); then _sf_new=$(mktemp) && cat >"$_sf_new" <<\'STORAGEFORGE_RUNNER_UPDATE\' &&\n'
                  + RUNNER_SCRIPT + 'STORAGEFORGE_RUNNER_UPDATE\n'
-                 f'cmp -s "$_sf_new" {RUNNER} || install -o root -g root -m 0755 "$_sf_new" {RUNNER}\n'
+                 f'  [ -s "$_sf_new" ] && {{ cmp -s "$_sf_new" {RUNNER} || install -o root -g root -m 0755 "$_sf_new" {RUNNER}; }}\n'
                  'rm -f "$_sf_new"; unset _sf_new; fi >/dev/null 2>&1\n'
                  'umask 022\n')         # an older runner still in charge of this very run leaves 077
 
@@ -228,7 +229,12 @@ echo "deploy access is ready: $U may only run signed StorageForge scripts"
 REMOVE = r"""set -eu
 U=%(user)s
 rm -f /etc/sudoers.d/storageforge-deploy %(runner_path)s /etc/storageforge/allowed_signers
-if id "$U" >/dev/null 2>&1; then userdel -r "$U" 2>/dev/null || userdel "$U"; fi
+if id "$U" >/dev/null 2>&1; then
+  # its last login outlives the deploy by a few seconds, and userdel refuses while a process of its is alive
+  for _ in 1 2 3 4 5 6 7 8; do pgrep -u "$U" >/dev/null 2>&1 || break; sleep 1; done
+  pkill -KILL -u "$U" 2>/dev/null || true; sleep 1
+  userdel -r "$U" 2>/dev/null || userdel "$U"
+fi
 rm -rf /var/lib/storageforge/deploy
 echo "deploy access removed (installed jobs keep running on their timers; remove them first to stop them)"
 """

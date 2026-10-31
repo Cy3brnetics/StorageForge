@@ -566,7 +566,7 @@ class _Emit:
             src, sargs = self.rsync_side(p.get('src_host', ''), p['src'], p.get('sudo', True))
             dst_host = p.get('dst_host', '') if t == 'rsync' else ''
             dst, dargs = self.rsync_side(dst_host, p['dst'], p.get('sudo', True))
-            args = ['-aHAX', '--numeric-ids', '--info=stats1', '--partial'] + sargs + dargs
+            args = ['-aHAXS', '--filter=-x_system.*', '--filter=-x_security.selinux', '--numeric-ids', '--info=stats1', '--partial'] + sargs + dargs
             if p.get('one_fs'):
                 args.append('-x')
             if p.get('checksum'):
@@ -583,12 +583,14 @@ class _Emit:
             elif t == 'rotate':
                 self.w(d, f'rotate {q(p["dst"].rstrip("/"))} {int(p["keep"])} {src} {" ".join(args)} || fail "backup failed"')
             else:
-                v = ['-aHAXn', '--checksum', '--numeric-ids', '-i', '--delete'] + sargs + dargs
+                v = ['-aHAXSn', '--filter=-x_system.*', '--filter=-x_security.selinux', '--checksum', '--numeric-ids', '-i', '--delete'] + sargs + dargs
                 self.w(d, f'verify_copy {1 if p["fail"] else 0} {" ".join(v)} {src} {dst} || fail "the copy differs"')
         elif t == 'btrfs_snapshot':
             into = p['into'] or p['subvol'].rstrip('/') + '/.snapshots'
             flag = '-r ' if p['readonly'] else ''
             self.w(d, f'x mkdir -p -- {q(into)} || fail {q("cannot make " + into)}')
+            # a second run in the same second: btrfs would nest it inside the first, read-only, and say only "Read-only file system"
+            self.w(d, f'while [[ -e {q(into)}/{q(p["prefix"])}-$STAMP ]]; do sleep 1; STAMP=$(date +%Y-%m-%d_%H%M%S); done')
             self.w(d, f'x btrfs subvolume snapshot {flag}-- {q(p["subvol"])} {q(into)}/{q(p["prefix"])}-"$STAMP" '
                       f'|| fail "snapshot failed"')
         elif t == 'btrfs_prune':

@@ -133,6 +133,7 @@ need_cmd() { # command what apt rpm arch suse
   if ((!APPLY)); then missing "$2 (would install $pkg with $m)"; return 0; fi
   doing "install $2: $pkg with $m"
   if out=$(install_pkg "$m" "$pkg") && command -v "$1" >/dev/null; then ok "$2 installed"; return 0; fi
-  conflict "could not install $pkg with $m: $(tail -n 3 <<<"$out" | tr '\n' ' ')"; return 1
+  out=$(tail -n 3 <<<"$out" | tr '\n' ' ')
+  conflict "could not install $pkg with $m: ${out:-it stopped without saying why; if the host is short of memory, it may have been killed (dmesg)}"; return 1
 }
 """

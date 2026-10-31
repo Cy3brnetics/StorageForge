@@ -29,7 +29,7 @@ MAX_COMPOSE = 500
 KEEP_LABELS = re.compile(r'^(com\.docker\.compose\.|io\.podman\.compose\.|komodo\.|org\.opencontainers\.image\.title$)')
 SECRET_OPT = re.compile(r'((?:pass|password|pwd|secret|token)=)[^,]*', re.I)
 
-FMT_C = ('{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Config.Image}},"state":{{json .State.Status}},'
+FMT_C = ('{"id":"{{.Id}}","name":{{json .Name}},"image":{{json .Config.Image}},"state":{{json .State.Status}},'
          '"started":{{json .State.StartedAt}},"labels":{{json .Config.Labels}},"mounts":{{json .Mounts}},'
          '"restart":{{json .HostConfig.RestartPolicy.Name}}}')
 FMT_V = '{"name":{{json .Name}},"driver":{{json .Driver}},"mountpoint":{{json .Mountpoint}},"options":{{json .Options}},"labels":{{json .Labels}}}'
@@ -38,14 +38,19 @@ ENGINE = r"""
 D=; how=
 for e in docker podman; do
   command -v $e >/dev/null 2>&1 || continue
-  if $e ps -q >/dev/null 2>&1; then D=$e; how=direct; break; fi
+  if $e ps -q >/dev/null 2>&1; then
+    D=$e; how=direct
+    # rootless podman answers for this user alone, with an empty list: root's containers are behind sudo
+    if [ -z "$($e ps -aq 2>/dev/null)" ] && [ -n "$(sudo -n $e ps -aq 2>/dev/null)" ]; then D="sudo -n $e"; how=sudo; fi
+    break
+  fi
   if sudo -n $e ps -q >/dev/null 2>&1; then D="sudo -n $e"; how=sudo; break; fi
   [ -z "$how" ] && how="no access to $e"
 done
 printf '@@engine\t%s\t%s\n' "${D##* }" "$how"
 [ -n "$D" ] || exit 0
 echo '@@root'; $D info --format '{{.DockerRootDir}}' 2>/dev/null || $D info --format '{{.Store.GraphRoot}}' 2>/dev/null
-echo '@@containers'; ids=$($D ps -aq); [ -n "$ids" ] && $D inspect --format 'FMT_C' $ids
+echo '@@containers'; ids=$($D ps -aq); [ -n "$ids" ] && $D container inspect --format 'FMT_C' $ids
 echo '@@volumes'; vs=$($D volume ls -q); [ -n "$vs" ] && $D volume inspect --format 'FMT_V' $vs
 echo '@@sizes'; [ "${D##* }" = docker ] && timeout 90 $D system df -v --format '{{json .Volumes}}' 2>/dev/null
 echo; echo '@@end'                               # df prints no trailing newline

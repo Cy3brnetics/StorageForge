@@ -106,6 +106,7 @@ serve() { # id "ssh command"
       path=${cmd#git-upload-pack }; path=${path#\'}; path=${path%\'}
       snap=$( ((SNAP)) && snap_path || true)     # a snapshot-first job clones from the snapshot of its root
       under "$path" "$ROOT" "$snap" || die "$path is outside this job's source"
+      [[ -d $path/.git ]] && path=$path/.git     # --strict takes the repository itself, not its working copy
       printf '[safe]\n\tdirectory = *\n' >"$VAR/git-safe.conf"
       GIT_CONFIG_GLOBAL=$VAR/git-safe.conf exec git-upload-pack --strict "$path" ;;
     *) die "not allowed: ${cmd:0:80}" ;;
@@ -138,7 +139,10 @@ src_spec() { # path -> what rsync reads: the path here, or a module of the sourc
 bwlimit() { if [[ -n $NIGHT ]] && in_window "$NIGHT"; then echo "$BW_NIGHT"; else echo "$BW_DAY"; fi; }
 rsync_cmd() { # source-path extra... -> RS
   local src=$1; shift
-  RS=(rsync -aHAX --numeric-ids --partial --partial-dir=.rsync-partial)
+  # a label belongs to the host holding the file: asking an SELinux destination to change one fails with exit 23
+  # (rsnapshot's --delete-excluded makes these sender-only, so its config also names the receiver with -xr). -S: a sparse
+  # file stays sparse, or a 1 GiB image holding nothing fills the destination
+  RS=(rsync -aHAXS '--filter=-x_system.*' --filter=-x_security.selinux --numeric-ids --partial --partial-dir=.rsync-partial)
   has onefs && RS+=(-x)
   has checksum && RS+=(-c)
   has delete && RS+=(--delete-after)
@@ -188,7 +192,8 @@ rsnapshot_conf() { # source -> path of a run-time config
   {
     printf 'config_version\t1.2\nsnapshot_root\t%s/\nno_create_root\t1\ncmd_rsync\t%s\n' "${DST%/}" "$(command -v rsync)"
     printf 'cmd_ssh\t%s\nssh_args\t%s\n' "$(command -v ssh)" "${SSHO[*]}"
-    printf 'rsync_long_args\t--delete --numeric-ids --delete-excluded%s\n' "$(has onefs && echo ' --one-file-system')"
+    printf 'rsync_short_args\t-aHAXS\n'    # what a mirror keeps, and what verify compares
+    printf 'rsync_long_args\t--delete --numeric-ids --delete-excluded --filter=-x_system.* --filter=-x_security.selinux --filter=-xr_system.* --filter=-xr_security.selinux%s\n' "$(has onefs && echo ' --one-file-system')"
     printf 'lockfile\t%s/storageforge-rsnapshot-%s.pid\n' "$TMPD" "$ID"
     for lv in $KEEP; do cnt=${lv#*=}; ((cnt > 0)) && printf 'retain\t%s\t%s\n' "${lv%=*}" "$cnt"; done
     local x; for x in "${EXCLUDES[@]}" .storageforge-snap; do printf 'exclude\t%s\n' "$x"; done

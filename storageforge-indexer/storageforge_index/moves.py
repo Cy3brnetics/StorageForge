@@ -557,7 +557,7 @@ src_spec() { if src_is_local "$1"; then printf '%s/' "${S_SRC[$1]%/}"; else prin
 ssh_src() { local i=$1; shift; ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -p "${S_SRC_PORT[$i]}" "${S_SRC_LOGIN[$i]}" "$@"; }
 rsync_args() { # step [extra...] -> RS array
   local i=$1; shift
-  RS=(rsync -aHAX --numeric-ids --protect-args --partial --partial-dir=.rsync-partial --human-readable)
+  RS=(rsync -aHAXS '--filter=-x_system.*' --filter=-x_security.selinux --numeric-ids --protect-args --partial --partial-dir=.rsync-partial --human-readable)
   has "$i" onefs && RS+=(-x)
   { has "$i" checksum || ((CHECKSUM)); } && RS+=(-c)
   has "$i" delete && RS+=(--delete-after)
@@ -742,11 +742,11 @@ WantedBy=timers.target"
       command -v rsnapshot >/dev/null || { conflict "rsnapshot is not installed"; return 1; }
       root_key_ok "$i" || return 1
       mkdir -p /etc/rsnapshot.d "${S_DST[$i]}"
-      local conf=/etc/rsnapshot.d/$u.conf src lv cnt rsargs="--numeric-ids --protect-args"
+      local conf=/etc/rsnapshot.d/$u.conf src lv cnt rsargs="--numeric-ids --protect-args --filter=-x_system.* --filter=-x_security.selinux"
       src=$(src_spec "$i")
       has "$i" onefs && rsargs+=" --one-file-system"
       if ! src_is_local "$i" && has "$i" sudo; then ensure_sudo_rsync "$i" || return 1; rsargs+=" --rsync-path=$SUDO_RSYNC"; fi
-      local body; body=$(printf 'config_version\t1.2\nsnapshot_root\t%s/\nno_create_root\t1\ncmd_rsync\t%s\ncmd_ssh\t%s\nssh_args\t-o BatchMode=yes -p %s\nrsync_long_args\t%s\nlockfile\t/run/%s.pid\n' \
+      local body; body=$(printf 'config_version\t1.2\nsnapshot_root\t%s/\nno_create_root\t1\ncmd_rsync\t%s\ncmd_ssh\t%s\nssh_args\t-o BatchMode=yes -p %s\nrsync_short_args\t-aHAXS\nrsync_long_args\t%s\nlockfile\t/run/%s.pid\n' \
         "${S_DST[$i]%/}" "$(command -v rsync)" "$(command -v ssh)" "${S_SRC_PORT[$i]}" "$rsargs" "$u")
       for kv in ${S_KEEP[$i]}; do body+=$(printf '\nretain\t%s\t%s' "${kv%=*}" "${kv#*=}"); done
       while IFS= read -r x; do [[ -n $x ]] && body+=$(printf '\nexclude\t%s' "$x"); done <<<"${S_EXCLUDES[$i]}"
