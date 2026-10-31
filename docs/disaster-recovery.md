@@ -101,4 +101,5 @@ It installs the tools it needs, restores `mdadm.conf`, opens LUKS volumes, activ
 
 - **Conflicts:** a line in the new fstab for the same mount point is left alone and reported, so sort those out by hand. Anything on the old system disk, such as `/home` on a root btrfs, is left to the new install.
 - **Afterwards:** set passwords for restored accounts, run `smbpasswd -a` for Samba users, open firewall ports, then scan the host. If its SSH host keys changed, run `storageforge-index hosts rekey` before that scan.
+- **What can stop it:** a kernel without md modules (some minimal cloud images, so install the full kernel first), a package that isn't in the distro's repositories (mergerfs and ZFS on some distros), and a LUKS volume with a key file, which you put back before running it again.
 - **Alpine:** the script needs bash, so run `apk add bash util-linux shadow` first. It doesn't start services there, because Alpine has no systemd.
