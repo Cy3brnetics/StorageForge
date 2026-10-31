@@ -1,11 +1,13 @@
 ---
 date: 2026-10-29
 tags: [audit, review, gemini-audit]
-reviews: "[[Audit 2026-10-29 - gemini]]"
 ---
 # Review of Gemini audit 2026-10-29
 
-Each of [[Audit 2026-10-29 - gemini|Gemini's]] 25 findings was checked against the current source, not just its own quotes.
+Each of Gemini's 25 findings was checked against the current source, not just its own quotes.
+
+The audit's own notes were removed on 2026-10-30, once every finding was closed; they are in git history. GM numbers in test docstrings refer to the entries below.
+
 **Short version:** the line references are mostly right, and about half of the findings are real bugs. Severity is
 inflated across the board (1 Critical / 15 High), several sub-claims are wrong, and two of its "code quotes" are not the code that is in the repo
 (GM-04 `install_public_key` args, GM-07 `tidy()`), so don't paste its snippets as evidence without checking them.
@@ -14,12 +16,12 @@ inflated across the board (1 Critical / 15 High), several sub-claims are wrong, 
 
 Each of these is confirmed and breaks something real. **Fixed 2026-10-29** (uncommitted), each with a regression test that fails on the old code. The tests are in `tests/test_indexer.py` (`GeneratedBash`, `Planning`) and `tests/test_tasks.py`.
 
-1. [[GM-03 Deployed tasks fail under systemd with 203 EXEC due to missing shebang|GM-03]]: every storage task deployed from the UI installs `$0`, which starts with `RUNNER_UPDATE` (`if ((EUID == 0))…`) and not `#!`. Its `ExecStart=$LIB/$TASK.sh --run` → `203/EXEC`. The tests run the script through `bash`, so they never see it.
-2. [[GM-21 Move plan verify_step ignores rsync exit code and shares fstab preservation triggers false drift|GM-21]] part 1: `moves.py` `verify_step` does `out=$("${RS[@]}" | grep … || true)`, and rsync errors go to stderr. A failed rsync (unreachable host, missing source) therefore gives 0 lines and reports **"destination matches the source"**, and `cutover` uses that as its gate. Gemini rated it Medium, but it's **High**. (The `jobscript.py` `verify_job` instance is mostly safe: it uses `2>&1`, so error lines count as differences.)
-3. [[GM-10 Four broken code paths in jobscript backup and snapshot execution|GM-10]]: parts 1–3 are confirmed. `snap_path` gives `//.storageforge-snap/<SID>var/lib/…` when the subvolume is `/`. `under x /` tests `//*` and matches nothing. A remote git job with `snapshot` is refused by `serve` because the snapshot path lies outside `ROOT`. Part 4 (rsnapshot rejects `user@host::src/`) is plausible but untested, since rsnapshot isn't installed here. To check it, run `rsnapshot configtest` on a generated config, or switch to `rsync://storageforge-deploy@host/src/`, which `RSYNC_CONNECT_PROG` also covers.
-4. [[GM-14 Scanner skips child Btrfs subvolumes by marking them alias while also pruning them|GM-14]]: confirmed for **nested** subvolume layouts (openSUSE `/@/home`). `plan_mounts` marks the mount `alias` because its fsroot is under `/@`, and `build_jobs` adds every target (aliases included) to `/`'s prune list, so `/home` is never indexed and nothing reports it. Flat layouts (`@`, `@home` siblings: Ubuntu, Arch, Fedora) are not affected.
-5. [[GM-09 Change plan perms task clobbers descendant groups and follows symlinks as root|GM-09]] part 1: with owner set, group blank and recursive on, `chown -R` writes the top folder's group onto the whole tree. Part 2 is **not a bug**: the field's label reads "Owner and group for everything inside too", so leaving the mode on the top folder only is intended. Part 3 (symlinks): `chown -R` defaults to `-P`, so only a symlinked top path is followed. Fixed by refusing that. Still open: the Ansible export passes `recurse` together with `mode`, so it *does* chmod the whole tree, which doesn't match the shell script.
-6. [[GM-01 Restore unpack as root allows device nodes and TOCTOU|GM-01]]: the attack is real (`find -type f` misses device nodes, and setuid files stay live until tar finishes), but it needs a compromised backup host, so it's **High, not Critical**. **Gemini's fix doesn't work:** GNU tar has no `--no-devices` / `--no-specials` (checked with `tar --help`). The fix that does work is `mkdir -m 0700 "$t"` (nobody else can reach anything while the extraction runs), then `find "$t" -xdev \( -type b -o -type c -o -type p -o -type s \) -delete` and strip setuid/setgid from files before opening the mode up. Setgid *directories* are kept: they only set group inheritance and aren't an escalation.
+1. GM-03: every storage task deployed from the UI installs `$0`, which starts with `RUNNER_UPDATE` (`if ((EUID == 0))…`) and not `#!`. Its `ExecStart=$LIB/$TASK.sh --run` → `203/EXEC`. The tests run the script through `bash`, so they never see it.
+2. GM-21 part 1: `moves.py` `verify_step` does `out=$("${RS[@]}" | grep … || true)`, and rsync errors go to stderr. A failed rsync (unreachable host, missing source) therefore gives 0 lines and reports **"destination matches the source"**, and `cutover` uses that as its gate. Gemini rated it Medium, but it's **High**. (The `jobscript.py` `verify_job` instance is mostly safe: it uses `2>&1`, so error lines count as differences.)
+3. GM-10: parts 1–3 are confirmed. `snap_path` gives `//.storageforge-snap/<SID>var/lib/…` when the subvolume is `/`. `under x /` tests `//*` and matches nothing. A remote git job with `snapshot` is refused by `serve` because the snapshot path lies outside `ROOT`. Part 4 (rsnapshot rejects `user@host::src/`) is plausible but untested, since rsnapshot isn't installed here. To check it, run `rsnapshot configtest` on a generated config, or switch to `rsync://storageforge-deploy@host/src/`, which `RSYNC_CONNECT_PROG` also covers.
+4. GM-14: confirmed for **nested** subvolume layouts (openSUSE `/@/home`). `plan_mounts` marks the mount `alias` because its fsroot is under `/@`, and `build_jobs` adds every target (aliases included) to `/`'s prune list, so `/home` is never indexed and nothing reports it. Flat layouts (`@`, `@home` siblings: Ubuntu, Arch, Fedora) are not affected.
+5. GM-09 part 1: with owner set, group blank and recursive on, `chown -R` writes the top folder's group onto the whole tree. Part 2 is **not a bug**: the field's label reads "Owner and group for everything inside too", so leaving the mode on the top folder only is intended. Part 3 (symlinks): `chown -R` defaults to `-P`, so only a symlinked top path is followed. Fixed by refusing that. Still open: the Ansible export passes `recurse` together with `mode`, so it *does* chmod the whole tree, which doesn't match the shell script.
+6. GM-01: the attack is real (`find -type f` misses device nodes, and setuid files stay live until tar finishes), but it needs a compromised backup host, so it's **High, not Critical**. **Gemini's fix doesn't work:** GNU tar has no `--no-devices` / `--no-specials` (checked with `tar --help`). The fix that does work is `mkdir -m 0700 "$t"` (nobody else can reach anything while the extraction runs), then `find "$t" -xdev \( -type b -o -type c -o -type p -o -type s \) -delete` and strip setuid/setgid from files before opening the mode up. Setgid *directories* are kept: they only set group inheritance and aren't an escalation.
 
 ## Second batch (fixed 2026-10-29, uncommitted)
 
@@ -105,7 +107,6 @@ Each fix has a test that fails on the old code, unless noted. **The whole suite 
 
 ## Other problems in the Gemini notebook
 - Its inventory counts are wrong: it says 85 routes, 26 modules and 8 JS files, but there are 76 route decorators, 38 `.py` modules and 14 JS files.
-- Its notebook was copied into `notebook/` (the GM files, Areas, and companion notes) as well as living in `notebook-gemini/`. Keep one copy.
 - Its severity labels shouldn't drive [[Roadmap]] ordering. Use the revised column above.
 
 Back to [[Home]]

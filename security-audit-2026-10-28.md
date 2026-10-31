@@ -5,7 +5,7 @@ version_audited: 0.2.0 (working tree on master, uncommitted changes included)
 auditor: Claude Code (static review + targeted local reproduction)
 scope: [Dockerfile, docker-compose.yml, docker/entrypoint.sh, docker/init-secrets.sh, server.py, users.py, alerts.py, jobs.py, deploy.py, moves.py, changes.py, shares.py, tasks.py, keyinstall.py]
 tags: [security, audit, docker, api, hardening]
-related: ["[[security-parm]]", "[[audit-results]]", "[[audit-2026-10-27]]", "[[deployments-design]]"]
+related: ["[[security-parm]]", "[[deployments-design]]"]
 ---
 
 # StorageForge Security Audit — 2026-10-28
