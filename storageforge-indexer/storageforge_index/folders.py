@@ -16,14 +16,47 @@ from .db import Conn, epoch
 from .remote import is_under
 
 M64 = (1 << 64) - 1
-NOISE_DIRS = ('/usr', '/lib', '/lib32', '/lib64', '/bin', '/sbin', '/boot', '/etc', '/opt/containerd', '/snap',
+NOISE_DIRS = ('/usr', '/lib', '/lib32', '/lib64', '/libx32', '/bin', '/sbin', '/boot', '/etc', '/opt/containerd', '/opt/vc', '/snap',
               '/var/lib', '/var/cache', '/var/log', '/var/tmp', '/tmp')
 NOISE_NAMES = frozenset({'node_modules', '__pycache__', '.cache', 'site-packages', '.venv', 'venv', '.git',
-                         '.npm', '.cargo', '.rustup', '.local'})
+                         '.npm', '.cargo', '.rustup', '.local', '.storageforge-trash'})
 
 
 def _noise(path: str) -> bool:
     return any(path == d or path.startswith(d + '/') for d in NOISE_DIRS) or bool(NOISE_NAMES & set(path.split('/')))
+
+
+def ignore_lists(conn: Conn) -> dict[str, list[str]]:
+    from .alerts import get_setting
+    return get_setting(conn, 'files.ignore') or {}
+
+
+def save_ignore(conn: Conn, host: str, paths: list[str], actor: str):
+    from .alerts import set_setting
+    cur = ignore_lists(conn)
+    clean = sorted({x.strip() for x in paths if x.strip() and x.strip() != '!'})
+    key = host or '*'
+    if clean:
+        cur[key] = clean
+    else:
+        cur.pop(key, None)
+    set_setting(conn, 'files.ignore', cur, actor)
+
+
+def _matches(entry: str, path: str) -> bool:
+    if entry.startswith('/'):              # a path: that path and everything under it
+        return is_under(path, entry.rstrip('/') or '/')
+    return entry in path + '/'             # a fragment: 'Thumbs.db', '.cache/'
+
+
+def is_ignored(host: str | None, path: str, lists: dict | None = None, system: bool = True, extra: tuple = ()) -> bool:
+    """The user's list for this host and all hosts, then the built-in system paths. An entry starting with ! shows
+    what matches it, whatever else says."""
+    entries = (lists or {}).get('*', []) + (lists or {}).get(host or '', [])
+    if any(x.startswith('!') and _matches(x[1:], path) for x in entries):
+        return False
+    return (any(not x.startswith('!') and _matches(x, path) for x in entries) or (system and _noise(path))
+            or any(is_under(path, d) for d in extra))
 
 
 def duplicate_folders(conn: Conn, host: str | None = None, min_files: int = 3, min_bytes: int = 1 << 20,

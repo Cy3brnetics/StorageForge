@@ -546,6 +546,11 @@ def stage_tasks():
             last = raw(vm, f'sudo -n cat /var/lib/storageforge/tasks/{sl}.last').stdout.decode()
             good = p.returncode == 0 and '"rc":0' in last
             R.add('task-systemd', vm, good and on == 'enabled', f'timer {on}, service exit {p.returncode}, {last.strip()[:70]}', journal + p.stderr.decode(errors='replace'))
+            # The installed copy of a task must not touch the deploy runner when its timer fires.
+            size = sh(vm, 'sudo -n wc -c </usr/local/sbin/storageforge-run').strip()
+            R.add('task-keeps-runner', vm, size != '0', f'storageforge-run is {size} bytes after the service ran')
+            if size == '0':     # later stages need a working runner: setting up again restores it
+                deploy.enroll(db, conn, NAME[vm], PASSWORD, 'sfadmin', ACTOR, admin_key='lab-admin')
             have = raw(vm, f'test -f {data}/task-copy/os-release').returncode == 0
             R.add('task-result', vm, have, 'the service did its work' if have else 'the file is not there')
             report_runs('task-runnow', execute(tasks.deploy_items(db, conn, task, 'apply', ACTOR, run_now=True), 'apply'))
@@ -642,7 +647,13 @@ def stage_remove():
             fstab = raw(vm, 'grep -c "storageforge share" /etc/fstab').stdout.decode().strip()
             units = raw(vm, 'ls /etc/systemd/system | grep -c "^sf-"').stdout.decode().strip()
             R.add('remove-clean', vm, fstab in ('0', '') and units in ('0', ''), f'{fstab or 0} fstab lines, {units or 0} units left')
-            r = deploy.enroll(db, conn, NAME[vm], PASSWORD, 'sfadmin', ACTOR, remove=True, admin_key='lab-admin')
+            try:
+                r = deploy.enroll(db, conn, NAME[vm], PASSWORD, 'sfadmin', ACTOR, remove=True, admin_key='lab-admin')
+                R.add('remove-at-once', vm, True, 'removed straight after a deploy')
+            except deploy.RemoteError as exc:       # the last login's session outlives it by a few seconds
+                R.add('remove-at-once', vm, False, str(exc)[:150])
+                time.sleep(20)
+                r = deploy.enroll(db, conn, NAME[vm], PASSWORD, 'sfadmin', ACTOR, remove=True, admin_key='lab-admin')
             gone = raw(vm, 'id storageforge-deploy').returncode != 0 and raw(vm, 'test -e /usr/local/sbin/storageforge-run').returncode != 0
             R.add('remove-access', vm, gone and r['state'] == 'removed', r['output'][-120:])
         R.check('remove-access', vm, left)

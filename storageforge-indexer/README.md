@@ -92,7 +92,7 @@ storageforge-index graph build | stats
 storageforge-index graph import --blueprint atlas.json --df df.txt --zpool-status zpool.txt
 storageforge-index canvas -o storage.canvas    # Obsidian JSON Canvas
 storageforge-index serve --listen 127.0.0.1 --scan-interval 6h
-storageforge-index user add | passwd | disable | enable | remove | signout | list
+storageforge-index user add | passwd | role | disable | enable | remove | signout | list
 
 # Plans, inventory and maintenance (see docs/cli-reference.md for every option)
 storageforge-index plan list | types | check | script | ansible | import
@@ -176,6 +176,21 @@ storageforge-index user list
 ```
 
 Passwords need at least 12 characters. After 20 failed sign-ins in an hour from one network, an account is locked from that network for up to an hour, even with the right password. After 100 failures in a day from anywhere, it is locked everywhere for up to a day. Restart the server to clear either sooner.
+
+## Accounts, invite links and roles
+
+The first account comes from the CLI (`user add`). After that, an admin opens the **Audit** tab and creates an **invite link**: it works once, expires, and sets the role, so the person enrolling cannot choose one. Only a hash of the token is stored, and the token sits in the link's `#fragment`, so it stays out of proxy logs. Nothing sends email, so **Password reset link** on an account gives you a link to pass on yourself. It dies if the account's role changes.
+
+| Built-in role | May |
+|---|---|
+| `search` | search files across hosts, on its own page, and nothing else |
+| `viewer` | browse and search, read logs and the audit log |
+| `operator` | also scan, plan, generate scripts and deploy |
+| `admin` | everything, including keys, accounts, roles and settings |
+
+Built-in roles cannot be edited. Custom roles pick from the permissions in [`permissions.py`](storageforge_index/permissions.py), and changes apply on the account's next request. Nobody can give out a permission they lack, or change an account whose role can do more than theirs. An API route with no rule in `permissions.py` is open only to roles holding every permission, and a test fails until it gets one.
+
+Roles apply to all hosts. `plans.edit` with `deploy.apply` amounts to root on every enrolled host, because plans can carry hook commands and deploys run as root.
 
 ## Planner
 
@@ -413,7 +428,7 @@ The **Keys** tab replaces the generate → copy → `authorized_keys` → bind s
    - logs in with the key again to confirm it works, and then, if asked, adds a host binding for `scan` (and `checksum`).
 3. **Scan now** on a binding queues a scan.
 
-Host keys are trusted on first use into the same `known_hosts` that scans use. Every generate, install attempt and bind is audited with the signed-in user, and the password is never logged. Any signed-in user can do this; there are no roles yet.
+Host keys are trusted on first use into the same `known_hosts` that scans use. Every generate, install attempt and bind is audited with the signed-in user, and the password is never logged. This needs the `keys.manage` permission.
 
 The host must allow password login once for `ssh-copy-id`. Afterwards you can turn `PasswordAuthentication` off.
 

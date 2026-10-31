@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Search · StorageForge</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="searchpage">
+<header class="bar">
+  <div class="brand"><svg width="22" height="22" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="3" width="24" height="6" rx="1.5" class="t1"/><rect x="2" y="11" width="24" height="6" rx="1.5" class="t2"/><rect x="2" y="19" width="24" height="6" rx="1.5" class="t3"/></svg><b>StorageForge</b></div>
+  <div class="actions"><button id="signout" type="button" class="btn ghost">Sign out</button></div>
+</header>
+<main class="searchmain">
+  <form id="sform" class="row wrap" role="search">
+    <input id="sq" type="search" placeholder="Search files: *.cr2, IMG_2019*, report.pdf" aria-label="Search files across hosts" autocomplete="off" required>
+    <label class="field"><span>Host</span><select id="shost"><option value="">All hosts</option></select></label>
+    <button class="btn pri" type="submit">Search</button>
+  </form>
+  <p id="smsg" class="muted" role="status"></p>
+  <ol id="sresults" class="list"></ol>
+  <details class="searchaccount">
+    <summary>Your password</summary>
+    <form id="spwform" class="row wrap">
+      <input id="spwold" type="password" autocomplete="current-password" placeholder="current password" aria-label="Current password" required>
+      <input id="spwnew" type="password" autocomplete="new-password" placeholder="new password" aria-label="New password" required>
+      <button class="btn" type="submit">Change password</button><span id="spwmsg" class="muted"></span>
+    </form>
+  </details>
+</main>
+<script src="/session.js"></script>
+<script src="/search.js"></script>
+</body>
+</html>

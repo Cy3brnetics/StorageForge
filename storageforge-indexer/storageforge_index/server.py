@@ -10,8 +10,19 @@ POST /api/logout                    end it
 POST /api/reauth  {"password"}      confirm the password before commands run on hosts (good for REAUTH_WINDOW)
 GET|PUT /api/me                     the signed-in user; PUT {"session_minutes"} sets how long sessions last (30-480)
 POST /api/me/password  {"password", "new_password"}   change your own password; every session of yours ends
-GET|POST /api/users                  accounts (admin, password confirmed); POST {"username", "password", "role"}
-PUT|DELETE /api/users/<name>         {"role"} viewer, operator or admin, {"disabled"}; the last admin stays
+GET|POST /api/users                  accounts (password confirmed); POST {"username", "password", "role"}
+PUT|DELETE /api/users/<name>         {"role"}, {"disabled"}; the last admin stays. Nobody hands out or touches more than they hold
+POST /api/users/<name>/reset-link    a single-use link to set a new password (there is no email)
+GET|POST /api/invites                single-use sign-up links; POST {"role", "hours"?, "note"?} returns the token once
+DELETE /api/invites/<id>             revoke an open link
+GET /api/roles                       built-in and custom roles and the permission catalog
+POST /api/roles  {"name", "description", "permissions"}   add a custom role
+PUT|DELETE /api/roles/<name>         change or remove one; built-in roles stay as they are
+GET  /enroll#<token>                 the page an invite or reset link opens (no session)
+POST /api/enroll/check  {"token"}    what the link gives (no session)
+POST /api/enroll  {"token", "username", "password"}   use the link: make the account, or set its new password (no session)
+GET  /search                         the search-only page, where accounts that cannot see hosts land
+GET  /api/search/hosts               host names, for filtering a search
 PUT  /api/backups/target  {"host", "path"}   after each nightly backup, copy it to that host over its deploy binding
 GET  /api/capacity?host=             each mount's usage over 30 days and when it fills up at that rate
 GET  /api/file-changes?host=&scan=&limit=   what a scan found changed, grouped by folder (not /api/changes: those are change plans)
@@ -39,6 +50,8 @@ GET  /api/access?host=               per host: how scans read the disks, and fol
 GET  /api/access/script?host=&remove=1   the read-only scan access setup (or removal) script, to run as root
 POST /api/access/grant  {"host", "password", "admin_user", "remove"}   run that script once over SSH with sudo
 GET  /api/folders/duplicates?host=&min_files=&min_size=   folders that are copies by name and structure
+GET  /api/filemap?host=&min_size=&folders=&system=   the Graph view: folders holding copies and the lines between them
+GET/PUT /api/files/ignore           paths and fragments left out of the file map and of broken-link flags
 GET  /api/browse?host=&path=         subfolders of a path with their indexed sizes (for picking move sources)
 DELETE /api/hosts/<name>[?keep_design=1]   retire a host (password confirmed; refused while anything is deployed there)
 GET|PUT /api/hosts/<name>/schedule   the host's own scan interval and quiet hours ({"interval": "1d", "quiet_hours": "22-6"})
@@ -119,15 +132,15 @@ from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 
-from flask import Flask, Response, g, jsonify, redirect, request, send_from_directory, session
+from flask import Flask, Response, abort, g, jsonify, redirect, request, send_from_directory, session
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_login import LoginManager, current_user, login_required, login_user, logout_user
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, folders, gitrepos, graph, jobs, logbook, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, reinstall, retire, scheduler, shares, tasks, users)
+from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
+               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, retire, scheduler, shares, tasks, users)
 from .capacity import parse_size, trends
 from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
@@ -178,28 +191,6 @@ def session_secret_from_env() -> str:
         print('warning: STORAGEFORGE_SESSION_SECRET is not set; sessions end when the server restarts', file=sys.stderr)
         s = secrets.token_urlsafe(48)
     return s
-
-
-ROLE_RANK = {'viewer': 0, 'operator': 1, 'admin': 2}
-ANYONE = ('/api/login', '/api/logout', '/api/reauth', '/api/me', '/api/me/password')
-RUNS_ON_HOSTS = ('/api/git/status', '/api/git/history', '/api/git/commit')    # these read over SSH, live, not from the index
-ADMIN_ANY_METHOD = ('/api/users', '/api/deploy/settings', '/api/audit/verify')
-ADMIN_WRITES = ('/api/keys', '/api/bindings', '/api/hostkey', '/api/access/grant', '/api/deploy/access', '/api/backups', '/api/planner/example')
-
-
-def required_role(method: str, path: str) -> str:
-    """viewer browses and searches; operator also plans, deploys and scans; admin also handles keys, accounts and settings.
-    Generated scripts are for operators: they name paths, logins and hosts in a form that can be run."""
-    under = lambda roots: any(path == r or path.startswith(r + '/') for r in roots)   # noqa: E731
-    if path in ANYONE:
-        return 'viewer'
-    if under(ADMIN_ANY_METHOD):
-        return 'admin'
-    if method in ('GET', 'HEAD'):
-        return 'operator' if path.rsplit('/', 1)[-1] in ('script', 'ansible') or path in RUNS_ON_HOSTS else 'viewer'
-    if under(ADMIN_WRITES) or (method == 'DELETE' and re.fullmatch(r'/api/hosts/[^/]+', path)):
-        return 'admin'
-    return 'operator'
 
 
 QUIET_RE = re.compile(r'(\d{1,2})-(\d{1,2})')
@@ -511,10 +502,20 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
 
     @web.before_request
     def role_allows():
-        """Default-deny: a new route that writes needs an operator without saying so. See required_role."""
-        if current_user.is_authenticated and ROLE_RANK[current_user.role] < ROLE_RANK[required_role(request.method, request.path)]:
+        """Default-deny: see permissions.required."""
+        if current_user.is_authenticated and not permissions.allows(current_user.permissions, request.method, request.path):
             return jsonify(error=f'your account ({current_user.role}) may not do this'), 403
         return None
+
+    def need(permission: str):
+        """For what a route's path cannot say, such as a deploy's mode."""
+        if permission not in current_user.permissions:
+            abort(403, description=f'your account ({current_user.role}) may not do this')
+
+    def may_hand_out(role: str):
+        """Nobody gives out, or changes the account of, a role that can do more than they can."""
+        if not users.permissions_of(conn(), role) <= current_user.permissions:
+            abort(403, description=f'the role {role} can do things your account cannot')
 
     @web.before_request
     def body_limit():
@@ -583,11 +584,24 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @web.get('/')
     @web.get('/index.html')
     def index():
-        return page('index.html') if current_user.is_authenticated else to_login()
+        return app_page('index.html')
 
     @web.get('/planner')
     def planner():
-        return page('planner.html') if current_user.is_authenticated else to_login()
+        return app_page('planner.html')
+
+    def app_page(name):
+        if not current_user.is_authenticated:
+            return to_login()
+        return page(name) if 'hosts.view' in current_user.permissions else redirect('/search')
+
+    @web.get('/search')
+    def search_page():
+        return page('search.html') if current_user.is_authenticated else to_login()
+
+    @web.get('/enroll')
+    def enroll_page():
+        return page('enroll.html')
 
     @web.get('/login')
     def login_page():
@@ -595,13 +609,13 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return redirect(safe_next(request.args.get('next')))
         return page('login.html')
 
-    @web.get('/<any("login.js", "style.css", "favicon.svg"):name>')
+    @web.get('/<any("login.js", "enroll.js", "style.css", "favicon.svg"):name>')
     def public_static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "gitview.js", "rebuildview.js", "dockerview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css"):name>')
+    @web.get('/<any("session.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
@@ -726,7 +740,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
 
     def me():
         login_at = session.get('login_at', 0)
-        return dict(username=current_user.username, role=current_user.role, session_minutes=current_user.session_minutes,
+        return dict(username=current_user.username, role=current_user.role, permissions=sorted(current_user.permissions), session_minutes=current_user.session_minutes,
                     session_ends=login_at + current_user.session_minutes * 60, min_minutes=users.SESSION_MINUTES,
                     max_minutes=users.MAX_SESSION_MINUTES)
 
@@ -760,27 +774,34 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         users.end_all_sessions(conn(), current_user.username)
         return jsonify(signed_out=True)
 
+    def account_rows():
+        return jsonify(users=[dict(zip(('username', 'created_at', 'last_login_at', 'disabled_at', 'role'), r)) for r in users.listing(conn())])
+
     @web.route('/api/users', methods=['GET', 'POST'])
     @login_required
     @password_confirmed
     def api_users():
         if request.method == 'POST':
             body = json_body()
-            name = str(body.get('username') or '')
-            users.create(conn(), name, str(body.get('password') or ''), str(body.get('role') or 'viewer'))
-            core.audit(conn(), actor(), 'user.add', 'ok', None, {'username': name, 'role': str(body.get('role') or 'viewer')})
-        return jsonify(users=[dict(zip(('username', 'created_at', 'last_login_at', 'disabled_at', 'role'), r)) for r in users.listing(conn())])
+            name, role = str(body.get('username') or ''), str(body.get('role') or 'viewer')
+            may_hand_out(role)
+            users.create(conn(), name, str(body.get('password') or ''), role)
+            core.audit(conn(), actor(), 'user.add', 'ok', None, {'username': name, 'role': role})
+        return account_rows()
 
     @web.route('/api/users/<name>', methods=['PUT', 'DELETE'])
     @login_required
     @password_confirmed
     def api_user(name):
+        may_hand_out(users.role_of(conn(), name) or '')
         if request.method == 'DELETE':
             users.keep_an_admin(conn(), name)
             users.remove(conn(), name)
             core.audit(conn(), actor(), 'user.remove', 'ok', None, {'username': name})
             return jsonify(removed=name)
         body = json_body()
+        if 'role' in body:
+            may_hand_out(str(body['role']))
         if ('role' in body and body['role'] != 'admin') or body.get('disabled'):
             users.keep_an_admin(conn(), name)
         if 'role' in body:
@@ -788,7 +809,99 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if 'disabled' in body:
             users.set_disabled(conn(), name, bool(body['disabled']))
         core.audit(conn(), actor(), 'user.update', 'ok', None, {'username': name, **{k: body[k] for k in ('role', 'disabled') if k in body}})
-        return jsonify(users=[dict(zip(('username', 'created_at', 'last_login_at', 'disabled_at', 'role'), r)) for r in users.listing(conn())])
+        return account_rows()
+
+    @web.post('/api/users/<name>/reset-link')
+    @login_required
+    @password_confirmed
+    def api_user_reset(name):
+        may_hand_out(users.role_of(conn(), name) or '')
+        invite_id, token = users.create_reset(conn(), name, current_user.username)
+        core.audit(conn(), actor(), 'user.reset-link', 'ok', None, {'username': name, 'invite': invite_id})
+        return jsonify(id=invite_id, token=token)
+
+    @web.route('/api/invites', methods=['GET', 'POST'])
+    @login_required
+    @password_confirmed
+    def api_invites():
+        if request.method == 'GET':
+            return jsonify(invites=users.list_invites(conn()), now=int(time.time()))
+        body = json_body()
+        role = str(body.get('role') or '')
+        may_hand_out(role)
+        try:
+            hours = int(body.get('hours') or users.INVITE_HOURS)
+        except (TypeError, ValueError):
+            raise ValueError('hours must be a number') from None
+        invite_id, token = users.create_invite(conn(), role, current_user.username, hours, str(body.get('note') or ''))
+        core.audit(conn(), actor(), 'invite.create', 'ok', None, {'invite': invite_id, 'role': role, 'hours': hours})
+        return jsonify(id=invite_id, token=token)
+
+    @web.delete('/api/invites/<int:invite_id>')
+    @login_required
+    @password_confirmed
+    def api_invite_revoke(invite_id):
+        may_hand_out(users.invite_role(conn(), invite_id) or '')
+        users.revoke_invite(conn(), invite_id)
+        core.audit(conn(), actor(), 'invite.revoke', 'ok', None, {'invite': invite_id})
+        return jsonify(revoked=invite_id)
+
+    @web.route('/api/roles', methods=['GET', 'POST'])
+    @login_required
+    def api_roles():
+        if request.method == 'POST':
+            stale = password_stale()
+            if stale:
+                return stale
+            save_role(str(json_body().get('name') or ''), new=True)
+        catalog = [dict(group=g, permissions=[dict(name=n, text=t, high_risk=r) for n, t, r in ps]) for g, ps in permissions.CATALOG]
+        return jsonify(roles=users.list_roles(conn()), catalog=catalog)
+
+    def save_role(name: str, new: bool):
+        body = json_body()
+        wanted = body.get('permissions')
+        if isinstance(wanted, list) and not ({str(p) for p in wanted} & permissions.ALL) <= current_user.permissions:
+            abort(403, description='a role cannot allow what your account cannot do')
+        if not new:
+            may_hand_out(name)
+        users.save_role(conn(), name, str(body.get('description') or ''), wanted, current_user.username, new)
+        core.audit(conn(), actor(), 'role.add' if new else 'role.update', 'ok', None, {'role': name, 'permissions': wanted})
+
+    @web.route('/api/roles/<name>', methods=['PUT', 'DELETE'])
+    @login_required
+    @password_confirmed
+    def api_role(name):
+        if request.method == 'PUT':
+            save_role(name, new=False)
+            return jsonify(saved=name)
+        may_hand_out(name)
+        users.remove_role(conn(), name)
+        core.audit(conn(), actor(), 'role.remove', 'ok', None, {'role': name})
+        return jsonify(removed=name)
+
+    # links for people without an account: bad tokens count like failed sign-ins
+    def bad_link(resp: Response) -> bool:
+        return resp.status_code == 403
+
+    @web.post('/api/enroll/check')
+    @limiter.limit(LOGIN_LIMIT_PER_IP, deduct_when=bad_link, error_message='too many tries; try again later')
+    def api_enroll_check():
+        invite = users.open_invite(conn(), str(json_body().get('token') or ''))
+        if not invite:
+            return jsonify(error='this link is not valid: it may have expired or been used'), 403
+        return jsonify(invite)
+
+    @web.post('/api/enroll')
+    @limiter.limit(LOGIN_LIMIT_PER_IP, deduct_when=bad_link, error_message='too many tries; try again later')
+    def api_enroll():
+        body = json_body()
+        try:
+            done = users.enroll(conn(), str(body.get('token') or ''), str(body.get('username') or '').strip(), str(body.get('password') or ''))
+        except users.InviteError as exc:
+            core.audit(conn(), f'web:{request.remote_addr}', 'user.enroll', 'denied', None, {})
+            return jsonify(error=str(exc)), 403
+        core.audit(conn(), f'web:{request.remote_addr}', 'user.reset' if done['reset'] else 'user.enroll', 'ok', None, done)
+        return jsonify(done)
 
     # data
     @web.get('/api/hosts')
@@ -862,6 +975,11 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if not (sq.pattern or sq.size_gt or sq.under):
             raise ValueError('give q, size_gt or under')
         return Response(json.dumps({'results': run_search(db, conn(), sq)}, default=str), mimetype='application/json')
+
+    @web.get('/api/search/hosts')
+    @login_required
+    def api_search_hosts():
+        return jsonify(hosts=[r[0] for r in conn().all('SELECT hostname FROM hosts ORDER BY hostname')])
 
     @web.get('/api/jobs')
     @login_required
@@ -1553,6 +1671,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         kind, mode, ref = body.get('kind'), body.get('mode', 'report'), body.get('ref')
         if mode not in ('report', 'apply'):
             raise ValueError('mode is report or apply')
+        if mode == 'apply':
+            need('deploy.apply')
+        if body.get('destructive'):
+            need('deploy.destructive')
         c = conn()
         options = {k: bool(body[k]) for k in ('remove', 'paused', 'destructive', 'run') if body.get(k)}
         items = deploy_items_for(c, kind, ref, mode, options)
@@ -1602,6 +1724,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         g = engine.get(c, gid)
         if not g:
             raise LookupError('no such deploy')
+        if g['options'].get('destructive'):
+            need('deploy.destructive')
         if engine.running(gid):
             return jsonify(error='that deploy is still running'), 409
         if g['kind'] not in ('jobs', 'shares', 'changes', 'tasks', 'schedules'):
@@ -2058,6 +2182,33 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         return jsonify(folder_result(('dupes', host, min_files, min_size),
                                      lambda: folders.duplicate_folders(conn(), host, min_files, min_size, limit=200)))
 
+    @web.get('/api/filemap')
+    @login_required
+    def api_filemap():
+        host = request.args.get('host') or None
+        system = bool(request.args.get('system'))
+        min_size = parse_size(request.args.get('min_size') or '1MiB')
+        twins = None
+        if request.args.get('folders'):
+            key = ('dupes', host, 3, min_size) if not system else ('dupes-system', host, 3, min_size)
+            twins = folder_result(key, lambda: folders.duplicate_folders(conn(), host, 3, min_size, limit=200, include_system=system))
+        return jsonify(filemap.build(conn(), host, min_size, system, twins))
+
+    @web.route('/api/files/ignore', methods=['GET', 'PUT'])
+    @login_required
+    def api_files_ignore():
+        if request.method == 'PUT':
+            body = json_body()
+            paths, host = body.get('paths'), str(body.get('host') or '')
+            if not isinstance(paths, list) or not all(isinstance(x, str) and '\n' not in x for x in paths) or len(paths) > 2000:
+                return jsonify(error='paths must be a list of paths or path fragments'), 400
+            folders.save_ignore(conn(), host, paths, actor())
+            core.audit(conn(), actor(), 'files.ignore', 'ok', host or None, {'paths': len(paths)})
+            scan_designs.clear()              # broken links are left out when a design is read from the scan
+            for name in [host] if host and scanned(host) else [r[0] for r in conn().all('SELECT hostname FROM hosts')]:
+                graph.rebuild_host(db, conn(), name)
+        return jsonify(ignore=folders.ignore_lists(conn()), builtin_dirs=[*folders.NOISE_DIRS, *filemap.APP_DIRS], builtin_names=sorted(folders.NOISE_NAMES))
+
     def scanned(host: str) -> bool:
         return bool(conn().scalar('SELECT 1 FROM hosts WHERE hostname = :h', {'h': host}))
 
@@ -2100,6 +2251,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             raise ValueError('give host')
         return jsonify(planner_activity(conn(), host))
 
+    def quiet_links(host: str, links) -> list:
+        ignore = folders.ignore_lists(conn())
+        return [l for l in links or [] if not (l.get('health') == 'crit' and folders.is_ignored(host, l.get('path') or '', ignore))]
+
     @web.get('/api/planner/design')
     @login_required
     def api_planner_design():
@@ -2110,11 +2265,13 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         saved_at = conn().scalar('SELECT imported_at FROM blueprints WHERE hostname = :h', {'h': host})
         offsite = moves.host_slug(host) in protection.offsite_hosts(conn())
         if source == 'saved' and saved:
+            saved['links'] = quiet_links(host, saved.get('links'))
             saved['protection'] = protection.overlay(conn(), host, saved.get('protection') or [])
             return jsonify(host=host, source='saved', saved_at=saved_at, scanned=scanned(host), offsite=offsite, blueprint=saved)
         if not scanned(host):
             return jsonify(error=f'{host} has no saved design and has not been scanned'), 404
         bp = blueprint.merge_intent(scan_design(host), saved)
+        bp['links'] = quiet_links(host, bp.get('links'))
         bp['protection'] = protection.overlay(conn(), host, bp['protection'])
         return jsonify(host=host, source='scan', saved_at=saved_at, scanned=True, offsite=offsite, blueprint=bp)
 

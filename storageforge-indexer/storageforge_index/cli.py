@@ -1334,9 +1334,9 @@ def build_parser() -> argparse.ArgumentParser:
         x.add_argument('name')
         x.add_argument('--password-env', metavar='VAR', help='read the password from this environment variable')
         if name == 'add':
-            x.add_argument('--role', choices=('viewer', 'operator', 'admin'), default='admin')
+            x.add_argument('--role', default='admin', help='a built-in or custom role')
     ro = us.add_parser('role', help='set what an account may do')
-    ro.add_argument('name'); ro.add_argument('new_role', choices=('viewer', 'operator', 'admin'))
+    ro.add_argument('name'); ro.add_argument('new_role', help='a built-in or custom role')
     for name, text in (('disable', 'block sign-in and sign out its sessions'), ('enable', 'allow sign-in again'),
                        ('remove', 'delete an account'), ('signout', 'end every web session of an account')):
         us.add_parser(name, help=text).add_argument('name')

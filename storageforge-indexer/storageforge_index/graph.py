@@ -19,6 +19,7 @@ import re
 import time
 
 from .analysis import containing_mount, link_health, protection_status, real_mounts, use_pct, resolve
+from .folders import ignore_lists, is_ignored
 from .remote import is_under
 
 KINDS = ('Host', 'StoragePool', 'Filesystem', 'MountPoint', 'Symlink')
@@ -73,6 +74,9 @@ def build(node: dict, as_of: dt.date | None = None) -> tuple[dict, list]:
     for l in node['links']:
         if 'state' not in l:
             l['state'], l['note'] = link_health(l, node)
+    if 'link_ignore' in node:                 # broken links that are ignored do not turn the host red
+        node['links'] = [l for l in node['links'] if not (l['kind'] != 'bind' and l['state'] == 'crit'
+                                                          and is_ignored(h, l['path'], node['link_ignore']))]
 
     host_id = f'host:{h}'
     add(host_id, 'Host', h, ip=node.get('ip'), os=node.get('os'), node_id=node.get('node_id'),
@@ -351,6 +355,7 @@ def rebuild_host(db, conn, hostname: str, rebuild_clients: bool = True) -> tuple
         node['jobs'] = []
     from .protection import fill_node
     fill_node(conn, node)
+    node['link_ignore'] = ignore_lists(conn)
     nodes, edges = build(node)
     save(db, conn, node['hostname'], nodes, edges)
     if rebuild_clients:   # hosts that mount from this one draw their line to its folders: redraw them too

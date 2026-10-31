@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create account · StorageForge</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="loginpage">
+<main>
+  <form id="enrollform" class="logincard" hidden>
+    <div class="brand"><svg width="22" height="22" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="3" width="24" height="6" rx="1.5" class="t1"/><rect x="2" y="11" width="24" height="6" rx="1.5" class="t2"/><rect x="2" y="19" width="24" height="6" rx="1.5" class="t3"/></svg><b>StorageForge</b></div>
+    <h1 id="enrolltitle">Create your account</h1>
+    <p id="enrollwhat" class="muted small"></p>
+    <p id="enrollmsg" class="st-failed" role="alert" hidden></p>
+    <label id="enrollnamefield" class="field col"><span>Username</span><input id="enrollname" type="text" autocomplete="username" autocapitalize="off" spellcheck="false"></label>
+    <label class="field col"><span>Password (at least 12 characters)</span><input id="enrollpw" type="password" autocomplete="new-password" minlength="12" required></label>
+    <button type="submit" class="btn pri">Continue</button>
+  </form>
+  <div id="enrollbad" class="logincard" hidden>
+    <h1>This link does not work</h1>
+    <p id="enrollbadwhy" class="muted"></p>
+    <a class="btn" href="/login">Go to sign in</a>
+  </div>
+</main>
+<script src="/enroll.js"></script>
+</body>
+</html>

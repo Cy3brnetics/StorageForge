@@ -798,6 +798,7 @@ class EndToEnd(unittest.TestCase):
 
     def test_symlinks_resolve_through_symlinked_parents(self):
         from storageforge_index.db import Database as _D
+        from storageforge_index import folders
         from storageforge_index.payloads import node_from_index
         t = self.tree
         (t / 'usr' / 'lib').mkdir(parents=True)
@@ -809,6 +810,7 @@ class EndToEnd(unittest.TestCase):
         os.symlink('loop-a', t / 'loop-b')
         res = self.scan()
         conn = self.db.connect()
+        folders.save_ignore(conn, '', [f'!{t}'], 'test')     # the fixture may sit under /tmp, a system path
         try:
             node = node_from_index(conn, res['host'])
         finally:

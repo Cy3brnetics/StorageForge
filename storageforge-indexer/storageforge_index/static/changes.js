@@ -253,7 +253,8 @@ function renderStageBar() {
   if (!bar) return;
   const isRan = CH.plan.ran_at && !CH.dirty;
   const n = isRan ? 0 : CH.plan.tasks.length;
-  bar.hidden = !n || T.mode !== 'topo';
+  if (typeof fmDrawStaged === 'function') fmDrawStaged();
+  bar.hidden = !n || T.mode === 'tasks';
   if (!n) return;
   bar.replaceChildren(text('span', `${CH.plan.name || 'Unnamed plan'} · ${n} staged change${n === 1 ? '' : 's'}${CH.dirty ? ' (not saved)' : ''}`),
     button('Review', () => showTab('changes'), 'btn pri sm'));

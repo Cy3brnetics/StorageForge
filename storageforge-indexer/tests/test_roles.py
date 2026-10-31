@@ -1,0 +1,276 @@
+"""Permissions, custom roles and invite links."""
+import re
+import sqlite3
+import tempfile
+import time
+import unittest
+
+from storageforge_index import permissions, server, users
+from storageforge_index.db import MIGRATIONS, Database
+
+PW = 'a long enough password'
+
+
+def old_required_role(method, path):
+    """required_role as it was before permissions: the built-in roles must keep exactly this."""
+    under = lambda roots: any(path == r or path.startswith(r + '/') for r in roots)   # noqa: E731
+    if path in ('/api/login', '/api/logout', '/api/reauth', '/api/me', '/api/me/password'):
+        return 'viewer'
+    if under(('/api/users', '/api/deploy/settings', '/api/audit/verify')):
+        return 'admin'
+    if method in ('GET', 'HEAD'):
+        return 'operator' if path.rsplit('/', 1)[-1] in ('script', 'ansible') or path in ('/api/git/status', '/api/git/history', '/api/git/commit') else 'viewer'
+    if under(('/api/keys', '/api/bindings', '/api/hostkey', '/api/access/grant', '/api/deploy/access', '/api/backups', '/api/planner/example')) \
+            or (method == 'DELETE' and re.fullmatch(r'/api/hosts/[^/]+', path)):
+        return 'admin'
+    return 'operator'
+
+
+# Deliberately tighter than before: these handed runnable scripts, and a report token, to viewers.
+TIGHTENED = ('/install-script', '/cron', '/api/hostconfigs/bundle')
+NEW_ROUTES = ('/api/invites', '/api/roles', '/api/search/hosts', '/api/enroll')
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Database(f'sqlite:///{self.tmp.name}/idx.db')
+        self.conn = self.db.connect()
+        self.addCleanup(self.conn.close)
+        self.db.migrate(self.conn)
+        users.create(self.conn, 'root', PW, 'admin')
+        self.web = server.create_app(server.App(self.db), 's' * 48)
+
+    def as_user(self, name, role=None):
+        if role:
+            users.create(self.conn, name, PW, role)
+        c = self.web.test_client()
+        self.assertEqual(c.post('/api/login', json={'username': name, 'password': PW}).status_code, 200)
+        return c
+
+
+class RouteRules(Base):
+    def rules(self):
+        for rule in self.web.url_map.iter_rules():
+            for method in rule.methods - {'OPTIONS', 'HEAD'}:
+                path = re.sub(r'<int:\w+>', '1', rule.rule)
+                path = re.sub(r'<any\(([^)]*)\):\w+>', lambda m: m[1].split(',')[0].strip(' "'), path)
+                yield method, re.sub(r'<[^>]+>', 'x', path)
+
+    def test_every_route_is_listed(self):
+        missing = [(m, p) for m, p in self.rules() if permissions.required(m, p) == permissions.EVERYTHING]
+        self.assertEqual(missing, [], 'add a rule to permissions._RULES')
+
+    def test_every_rule_names_a_real_permission(self):
+        for _, _, perm in permissions._RULES:
+            self.assertIn(perm, permissions.ALL)
+
+    def test_built_in_roles_keep_their_access(self):
+        rank = {'viewer': 0, 'operator': 1, 'admin': 2}
+        paths = set(self.rules())
+        for rule in self.web.url_map.iter_rules():      # each verb of the routes that take one
+            m = re.search(r'<any\(([^)]*)\):\w+>', rule.rule)
+            if m and rule.rule.startswith('/api/'):
+                for verb in m[1].split(','):
+                    paths.add(('POST' if 'POST' in rule.methods else 'GET',
+                               re.sub(r'<[^>]+>', 'x', rule.rule.replace(m[0], verb.strip(' "')))))
+        for method, path in sorted(paths):
+            if not path.startswith('/api/') or any(path.endswith(t) or t in path for t in TIGHTENED + NEW_ROUTES):
+                continue
+            before = rank[old_required_role(method, path)]
+            for role, level in rank.items():
+                self.assertEqual(permissions.allows(permissions.BUILTIN[role][1], method, path), level >= before, (role, method, path))
+
+    def test_tightened_routes_need_scripts(self):
+        for path in ('/api/scheduler/schedules/1/install-script', '/api/scheduler/schedules/1/cron', '/api/hostconfigs/bundle'):
+            self.assertEqual(permissions.required('GET', path), 'plans.scripts')
+            self.assertFalse(permissions.allows(permissions.BUILTIN['viewer'][1], 'GET', path))
+
+    def test_unlisted_routes_are_denied(self):
+        self.assertEqual(permissions.required('POST', '/api/some-new-route'), permissions.EVERYTHING)
+        self.assertFalse(permissions.allows(permissions.BUILTIN['operator'][1], 'POST', '/api/some-new-route'))
+        self.assertTrue(permissions.allows(permissions.ALL, 'POST', '/api/some-new-route'))
+
+
+class SearchOnly(Base):
+    def test_only_search_answers(self):
+        c = self.as_user('sam', 'search')
+        self.assertEqual(c.get('/api/search?q=*').status_code, 200)
+        self.assertEqual(c.get('/api/search/hosts').status_code, 200)
+        self.assertEqual(c.get('/api/me').json['permissions'], ['search.files'])
+        allowed = {'/api/search', '/api/search/hosts', *permissions.ANYONE}
+        for rule in self.web.url_map.iter_rules():
+            if not rule.rule.startswith('/api/') or rule.rule in allowed or rule.rule in ('/api/jobs/report', '/api/scheduler/report'):
+                continue
+            path = re.sub(r'<int:\w+>', '1', rule.rule)
+            path = re.sub(r'<any\(([^)]*)\):\w+>', lambda m: m[1].split(',')[0].strip(' "'), path)
+            path = re.sub(r'<[^>]+>', 'x', path)
+            for method in rule.methods - {'OPTIONS', 'HEAD'}:
+                self.assertEqual(c.open(path, method=method, json={}).status_code, 403, (method, path))
+
+    def test_lands_on_the_search_page(self):
+        c = self.as_user('sam', 'search')
+        for page in ('/', '/planner'):
+            r = c.get(page)
+            self.assertEqual((r.status_code, r.headers['Location']), (302, '/search'))
+        self.assertIn(b'id="sform"', c.get('/search').data)
+        self.assertEqual(self.web.test_client().get('/search').status_code, 302)
+
+
+class CustomRoles(Base):
+    def test_a_custom_role_gets_what_it_lists(self):
+        admin = self.as_user('root')
+        r = admin.post('/api/roles', json={'name': 'scanner', 'description': 'runs scans', 'permissions': ['scans.view', 'hosts.view']})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('scanner', [x['name'] for x in r.json['roles']])
+        c = self.as_user('scott', 'scanner')
+        self.assertEqual(c.get('/api/jobs').status_code, 200)
+        self.assertEqual(c.get('/api/keys').status_code, 403)
+        admin.put('/api/roles/scanner', json={'permissions': ['hosts.view']})
+        self.assertEqual(c.get('/api/jobs').status_code, 403)            # takes effect at once
+
+    def test_built_in_roles_are_fixed(self):
+        admin = self.as_user('root')
+        for r in (admin.put('/api/roles/viewer', json={'permissions': []}), admin.delete('/api/roles/admin'),
+                  admin.post('/api/roles', json={'name': 'operator', 'permissions': []})):
+            self.assertEqual(r.status_code, 400)
+        self.assertEqual(admin.post('/api/roles', json={'name': 'x', 'permissions': ['no.such']}).status_code, 400)
+
+    def test_a_role_in_use_stays(self):
+        admin = self.as_user('root')
+        admin.post('/api/roles', json={'name': 'temp', 'permissions': []})
+        users.create(self.conn, 'tess', PW, 'temp')
+        self.assertIn('still have', admin.delete('/api/roles/temp').json['error'])
+        users.remove(self.conn, 'tess')
+        invite = admin.post('/api/invites', json={'role': 'temp'}).json
+        self.assertIn('open invite', admin.delete('/api/roles/temp').json['error'])
+        admin.delete(f'/api/invites/{invite["id"]}')
+        self.assertEqual(admin.delete('/api/roles/temp').status_code, 200)
+
+    def test_a_missing_role_allows_nothing(self):
+        self.assertEqual(users.permissions_of(self.conn, 'gone'), frozenset())
+
+    def test_nobody_hands_out_more_than_they_hold(self):
+        admin = self.as_user('root')
+        admin.post('/api/roles', json={'name': 'helpdesk', 'permissions': ['users.manage', 'roles.manage', 'hosts.view', 'search.files']})
+        c = self.as_user('hal', 'helpdesk')
+        for r in (c.post('/api/invites', json={'role': 'admin'}),
+                  c.post('/api/users', json={'username': 'evil', 'password': PW, 'role': 'admin'}),
+                  c.post('/api/roles', json={'name': 'mine', 'permissions': ['deploy.apply']}),
+                  c.put('/api/users/hal', json={'role': 'admin'}),
+                  c.put('/api/users/root', json={'disabled': True}),
+                  c.post('/api/users/root/reset-link', json={}),
+                  c.delete('/api/users/root')):
+            self.assertEqual(r.status_code, 403, r.json)
+        self.assertEqual(c.post('/api/invites', json={'role': 'search'}).status_code, 200)
+        self.assertEqual(c.post('/api/roles', json={'name': 'lesser', 'permissions': ['hosts.view']}).status_code, 200)
+
+
+class DeployLimits(Base):
+    def test_mode_and_destructive_are_checked(self):
+        admin = self.as_user('root')
+        admin.post('/api/roles', json={'name': 'dry', 'permissions': ['deploy.report']})
+        c = self.as_user('dana', 'dry')
+        self.assertEqual(c.post('/api/deploy/start', json={'kind': 'jobs', 'ref': 'x', 'mode': 'apply'}).status_code, 403)
+        self.assertEqual(c.post('/api/deploy/start', json={'kind': 'jobs', 'ref': 'x', 'destructive': True}).status_code, 403)
+        self.assertNotEqual(c.post('/api/deploy/start', json={'kind': 'nope', 'ref': 'x', 'mode': 'report'}).status_code, 403)
+
+
+class Invites(Base):
+    def invite(self, role='viewer', **extra):
+        return self.as_user('root').post('/api/invites', json={'role': role, **extra}).json
+
+    def test_enroll_once(self):
+        i = self.invite()
+        anon = self.web.test_client()
+        self.assertEqual(anon.post('/api/enroll/check', json={'token': i['token']}).json['role'], 'viewer')
+        r = anon.post('/api/enroll', json={'token': i['token'], 'username': 'nina', 'password': PW, 'role': 'admin'})
+        self.assertEqual((r.status_code, r.json['role']), (200, 'viewer'))      # the link decides the role
+        self.assertEqual(self.as_user('nina').get('/api/me').json['role'], 'viewer')
+        r = anon.post('/api/enroll', json={'token': i['token'], 'username': 'two', 'password': PW})
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(self.conn.scalar("SELECT count(*) FROM users WHERE username = 'two'"), 0)
+
+    def test_a_refused_account_leaves_the_link_usable(self):
+        i = self.invite()
+        anon = self.web.test_client()
+        self.assertEqual(anon.post('/api/enroll', json={'token': i['token'], 'username': 'nina', 'password': 'short'}).status_code, 400)
+        self.assertEqual(anon.post('/api/enroll', json={'token': i['token'], 'username': 'ROOT', 'password': PW}).status_code, 400)
+        self.assertEqual(anon.post('/api/enroll', json={'token': i['token'], 'username': 'nina', 'password': PW}).status_code, 200)
+
+    def test_bad_expired_and_revoked_links(self):
+        anon = self.web.test_client()
+        self.assertEqual(anon.post('/api/enroll/check', json={'token': 'nope'}).status_code, 403)
+        i = self.invite()
+        self.conn.execute('UPDATE invites SET expires_at = :t WHERE invite_id = :i', {'t': int(time.time()) - 1, 'i': i['id']})
+        self.assertEqual(anon.post('/api/enroll', json={'token': i['token'], 'username': 'late', 'password': PW}).status_code, 403)
+        i = self.invite()
+        self.as_user('root').delete(f'/api/invites/{i["id"]}')
+        self.assertEqual(anon.post('/api/enroll', json={'token': i['token'], 'username': 'late', 'password': PW}).status_code, 403)
+
+    def test_token_is_not_stored_or_listed(self):
+        i = self.invite()
+        admin = self.as_user('root')
+        self.assertNotIn(i['token'], admin.get('/api/invites').text)
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM invites WHERE token_hash = :t', {'t': i['token']}), 0)
+
+    def test_guessing_tokens_is_limited(self):
+        anon = self.web.test_client()
+        codes = [anon.post('/api/enroll/check', json={'token': f'guess{n}'}).status_code for n in range(12)]
+        self.assertIn(429, codes)
+
+    def test_lifetime_is_bounded(self):
+        admin = self.as_user('root')
+        self.assertEqual(admin.post('/api/invites', json={'role': 'viewer', 'hours': 99999}).status_code, 400)
+        self.assertEqual(admin.post('/api/invites', json={'role': 'nope'}).status_code, 400)
+
+
+class ResetLinks(Base):
+    def test_reset_sets_the_named_account_only(self):
+        users.create(self.conn, 'vic', PW, 'viewer')
+        vic = self.as_user('vic')
+        link = self.as_user('root').post('/api/users/vic/reset-link', json={}).json
+        anon = self.web.test_client()
+        self.assertEqual(anon.post('/api/enroll/check', json={'token': link['token']}).json['reset_user'], 'vic')
+        new = 'a different long password'
+        r = anon.post('/api/enroll', json={'token': link['token'], 'username': 'root', 'password': new})
+        self.assertEqual((r.status_code, r.json['username']), (200, 'vic'))
+        self.assertEqual(vic.get('/api/me').status_code, 401)                 # every session ended
+        self.assertIsNone(users.authenticate(self.conn, 'root', new))
+        self.assertIsNotNone(users.authenticate(self.conn, 'vic', new))
+        self.assertEqual(anon.post('/api/enroll', json={'token': link['token'], 'password': PW}).status_code, 403)
+
+    def test_a_link_dies_when_the_role_changes(self):
+        users.create(self.conn, 'vic', PW, 'viewer')
+        link = self.as_user('root').post('/api/users/vic/reset-link', json={}).json
+        users.set_role(self.conn, 'vic', 'admin')
+        self.assertEqual(self.web.test_client().post('/api/enroll', json={'token': link['token'], 'password': 'x' * 16}).status_code, 403)
+
+
+class Migration(unittest.TestCase):
+    def test_upgrade_keeps_accounts_and_sessions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(f'sqlite:///{tmp}/idx.db')
+            conn = db.connect()
+            for f in sorted((MIGRATIONS / 'sqlite').glob('*.sql')):
+                if int(f.name.split('_')[0]) < 24:
+                    conn.raw.executescript(f.read_text())
+            now = int(time.time())
+            conn.execute("INSERT INTO users (username, password_hash, created_at, role) VALUES ('old', 'h', :t, 'operator')", {'t': now})
+            uid = conn.scalar("SELECT user_id FROM users WHERE username = 'old'")
+            conn.execute("INSERT INTO web_sessions (sid_hash, user_id, created_at) VALUES ('s', :u, :t)", {'u': uid, 't': now})
+            self.assertEqual(db.migrate(conn), ['024_roles_invites.sql'])
+            self.assertEqual(conn.scalar("SELECT role FROM users WHERE username = 'old'"), 'operator')
+            self.assertEqual(conn.scalar('SELECT count(*) FROM web_sessions'), 1)
+            users.set_role(conn, 'old', 'search')                             # the old CHECK is gone
+            conn.execute("INSERT INTO roles (name, permissions, created_at, created_by) VALUES ('c', '[]', 1, 'x')")
+            users.set_role(conn, 'old', 'c')
+            with self.assertRaises(users.UserError):
+                users.set_role(conn, 'old', 'nope')
+            conn.close()
+        self.assertTrue(sqlite3.sqlite_version_info >= (3, 35))
+
+
+if __name__ == '__main__':
+    unittest.main()

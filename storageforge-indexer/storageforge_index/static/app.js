@@ -274,6 +274,7 @@ function applyFocus(reheat = true) {
 }
 function setFocus(id) { S.focus = id; applyFocus(); }
 function select(id, center = false) {
+  if (typeof fmShowStructure === 'function') fmShowStructure();
   S.selected = id;
   const n = S.byId.get(id);
   if (n && center) { view.x = -n.x * view.k; view.y = -n.y * view.k; }
@@ -336,6 +337,7 @@ canvas._menu = (ev) => {
     { label: 'Center', run: () => select(n.id, true) },
     n.fixed ? { label: 'Unpin', run: () => { n.fixed = false; alpha = Math.max(alpha, 0.2); wake(); } } : null,
     box ? { label: 'Edit in the topology', run: () => showBox(n.host, box) } : null,
+    n.kind === 'Symlink' && own ? { label: 'Ignore this link', run: () => fmIgnore(n.host, n.label) } : null,
     '-',
     n.kind === 'Host' && !n.props.external ? { label: 'Scan now', run: () => queueScan(n.label) } : null,
     n.kind === 'Host' && !n.props.external ? { label: 'Open in planner', run: () => { location.href = `/planner#overview@${encodeURIComponent(n.label)}`; } } : null,
@@ -434,6 +436,7 @@ function renderDetails(n) {
   box.replaceChildren(...sections);
 }
 function renderSummary() {
+  if (typeof fmPanel === 'function' && fmPanel()) return;
   if (S.selected) return;
   if (T.mode === 'topo' && T.sel) { renderEditor(); return; }
   const counts = {}; const health = {};
@@ -776,23 +779,71 @@ $('#installform').addEventListener('submit', async (ev) => {
   finally { btn.disabled = false; }
 });
 
+/* ── what this account may do ────────────────────────────────────── */
+let ME = null;
+const can = (perm) => !!ME && ME.permissions.includes(perm);
+const TAB_NEEDS = { search: 'search.files', changes: 'plans.view', moves: 'plans.view', schedule: 'plans.view', deploy: 'deploy.view',
+                    docker: 'services.view', git: 'services.view', rebuild: 'configs.view', copies: 'files.browse', access: 'keys.view',
+                    jobs: 'scans.view', keys: 'keys.view' };
+function applyPermissions(me) {          // only hides what would answer 403: the server decides
+  ME = me;
+  document.querySelectorAll('.tabs button[data-tab]').forEach((b) => { const need = TAB_NEEDS[b.dataset.tab]; b.hidden = !!need && !can(need); });
+  document.querySelectorAll('.tabs .rgroup').forEach((g) => {
+    let n = g.nextElementSibling, any = false;
+    while (n && !n.classList.contains('rgroup')) { any = any || !n.hidden; n = n.nextElementSibling; }
+    g.hidden = !any;
+  });
+  $('#searchform').hidden = !can('search.files');
+  $('#verify').hidden = !can('audit.verify');
+  $('#audit').hidden = !can('audit.view');
+  $('#backupshead').hidden = $('#backupsbox').hidden = !can('backups.view');
+}
+
+const jsonOpts = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const untilText = (t) => new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 16);
+function showLink(what, token) {
+  $('#linkwhat').textContent = what;
+  $('#linkurl').value = `${location.origin}/enroll#${token}`;
+  $('#linkbox').hidden = false;
+  $('#linkurl').select();
+}
+$('#linkcopy').addEventListener('click', async () => {
+  $('#linkurl').select();
+  try { await navigator.clipboard.writeText($('#linkurl').value); toast('Link copied'); } catch { toast('Copy it from the box'); }
+});
+
+let CATALOG = [];
 async function loadUsers() {
-  const me = await getJSON('/api/me').catch(() => null);
-  $('#userscard').hidden = !me || me.role !== 'admin';
-  if ($('#userscard').hidden) return;
+  $('#userscard').hidden = !can('users.manage');
+  $('#rolescard').hidden = !can('roles.manage');
+  if ($('#userscard').hidden && $('#rolescard').hidden) return;
   try {
-    const { users } = await getJSON('/api/users');
+    const { roles, catalog } = await getJSON('/api/roles');
+    CATALOG = catalog;
+    const mine = roles.filter((r) => r.permissions.every((p) => ME.permissions.includes(p)));
+    if (can('roles.manage')) renderRoles(roles, mine);
+    if (!can('users.manage')) return;
+    for (const sel of [$('#newuserrole'), $('#inviterole')]) {
+      const was = sel.value;
+      sel.replaceChildren(...mine.map((r) => new Option(r.name, r.name)));
+      sel.value = was && mine.some((r) => r.name === was) ? was : 'viewer';
+    }
+    const [{ users }, { invites, now }] = await Promise.all([getJSON('/api/users'), getJSON('/api/invites')]);
     const change = async (u, body) => {
-      try { await api(`/api/users/${encodeURIComponent(u)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
+      try { await api(`/api/users/${encodeURIComponent(u)}`, jsonOpts('PUT', body)); }
       catch (err) { $('#usermsg').textContent = err.message; }
       loadUsers();
     };
     $('#userlist').replaceChildren(...users.map((u) => {
       const role = el('select', { 'aria-label': `Role of ${u.username}`, onchange: () => change(u.username, { role: role.value }) },
-        ...['viewer', 'operator', 'admin'].map((r) => new Option(r, r)));
+        ...roles.map((r) => new Option(r.name, r.name)));
       role.value = u.role;
       return el('li', {}, text('span', `${u.username}${u.disabled_at ? ' · disabled' : ''}`), role,
         button(u.disabled_at ? 'Enable' : 'Disable', () => change(u.username, { disabled: !u.disabled_at }), 'btn ghost sm'),
+        button('Password reset link', async () => {
+          try { showLink(`New password for ${u.username}, good for one day:`, (await (await postJSON(`/api/users/${encodeURIComponent(u.username)}/reset-link`, {})).json()).token); }
+          catch (err) { $('#usermsg').textContent = err.message; }
+        }, 'btn ghost sm'),
         button('Remove', async () => {
           if (!confirm(`Remove account ${u.username}?`)) return;
           try { await api(`/api/users/${encodeURIComponent(u.username)}`, { method: 'DELETE' }); }
@@ -800,8 +851,77 @@ async function loadUsers() {
           loadUsers();
         }, 'btn ghost sm danger'));
     }));
+    $('#invitelist').replaceChildren(...invites.map((i) => {
+      const open = !i.used_at && !i.revoked_at && i.expires_at > now;
+      const state = i.used_at ? `used by ${i.used_by}` : i.revoked_at ? 'revoked' : open ? `open until ${untilText(i.expires_at)}` : 'expired';
+      const what = i.reset_user ? `Password reset for ${i.reset_user}` : `${i.role}${i.note ? ` · ${i.note}` : ''}`;
+      return el('li', {}, text('span', what), text('span', `${state} · made by ${i.created_by}`, 'm'),
+        ...(open ? [button('Revoke', async () => {
+          try { await api(`/api/invites/${i.invite_id}`, { method: 'DELETE' }); }
+          catch (err) { $('#invitemsg').textContent = err.message; }
+          loadUsers();
+        }, 'btn ghost sm danger')] : []));
+    }));
   } catch (err) { $('#usermsg').textContent = err.message; }
 }
+
+let editingRole = null;     // null: a new role
+function checkRoleRisk() {
+  const on = (p) => !!document.querySelector(`#roleperms input[value="${p}"]:checked`);
+  $('#rolerisk').hidden = !(on('plans.edit') && (on('deploy.apply') || on('deploy.destructive')));
+}
+function openRoleForm(role) {
+  editingRole = role ? role.name : null;
+  $('#roleform').hidden = false;
+  $('#rolename').value = role ? role.name : '';
+  $('#rolename').disabled = !!role;
+  $('#roledesc').value = role ? role.description : '';
+  $('#rolemsg').textContent = '';
+  $('#roleperms').replaceChildren(...CATALOG.map((g) => el('fieldset', { class: 'permgroup' }, text('legend', g.group),
+    ...g.permissions.map((p) => {
+      const box = el('input', { type: 'checkbox', value: p.name, onchange: checkRoleRisk });
+      box.checked = !!role && role.permissions.includes(p.name);
+      box.disabled = !can(p.name);       // nobody grants what they cannot do themselves
+      return el('label', { class: 'perm', title: p.name }, box, text('span', p.text), ...(p.high_risk ? [text('span', 'high risk', 'st-warn small')] : []));
+    }))));
+  checkRoleRisk();
+}
+function renderRoles(roles, mine) {
+  $('#rolelist').replaceChildren(...roles.map((r) => el('li', {},
+    text('span', `${r.name}${r.builtin ? ' · built-in' : ''} · ${r.users} account${r.users === 1 ? '' : 's'}`),
+    text('span', r.description || `${r.permissions.length} permissions`, 'm'),
+    ...(r.builtin || !mine.includes(r) ? [] : [
+      button('Edit', () => openRoleForm(r), 'btn ghost sm'),
+      button('Remove', async () => {
+        if (!confirm(`Remove role ${r.name}?`)) return;
+        try { await api(`/api/roles/${encodeURIComponent(r.name)}`, { method: 'DELETE' }); $('#rolemsg').textContent = ''; }
+        catch (err) { toast(err.message); }
+        loadUsers();
+      }, 'btn ghost sm danger')]))));
+}
+$('#rolenew').addEventListener('click', () => openRoleForm(null));
+$('#rolecancel').addEventListener('click', () => { $('#roleform').hidden = true; });
+$('#roleform').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const body = { name: $('#rolename').value.trim(), description: $('#roledesc').value.trim(),
+                 permissions: [...document.querySelectorAll('#roleperms input:checked')].map((b) => b.value) };
+  try {
+    if (editingRole) await api(`/api/roles/${encodeURIComponent(editingRole)}`, jsonOpts('PUT', body));
+    else await api('/api/roles', jsonOpts('POST', body));
+    $('#roleform').hidden = true;
+    loadUsers();
+  } catch (err) { $('#rolemsg').textContent = err.message; }
+});
+$('#inviteform').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  try {
+    const role = $('#inviterole').value;
+    const r = await (await postJSON('/api/invites', { role, hours: Number($('#invitehours').value), note: $('#invitenote').value.trim() })).json();
+    showLink(`Invite with the role ${role}:`, r.token);
+    $('#invitenote').value = ''; $('#invitemsg').textContent = '';
+  } catch (err) { $('#invitemsg').textContent = err.message; }
+  loadUsers();
+});
 $('#pwform').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   try {
@@ -846,7 +966,8 @@ async function loadBackups() {
 }
 async function loadAudit() {
   loadUsers();
-  loadBackups();
+  if (can('backups.view')) loadBackups();
+  if (!can('audit.view')) return;
   try {
     const { entries } = await getJSON('/api/audit?limit=100');
     $('#audit').replaceChildren(...entries.map((a) => {
@@ -987,7 +1108,7 @@ function takeLink() {
 async function boot() {
   try {
     const me = await getJSON('/api/me');
-    setUser(me.username, me); await loadHosts();
+    setUser(me.username, me); applyPermissions(me); await loadHosts();
     const tab = takeLink();
     await Promise.all([loadGraph(), loadDesigns()]);
     if (tab) showTab(tab);

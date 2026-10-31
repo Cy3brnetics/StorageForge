@@ -846,7 +846,9 @@ function boxMenu(doc, n) {
     }
     items.push(...mountActions(doc, n), { label: 'Largest files', run: () => runSearch({ under: n.target, host: h, size_gt: '1MiB' }) });
   } else if (n.kind === 'link' && !r.fromScan) {
-    items.push('-', { label: 'Remove link', danger: true, run: drop('links', 'link:') });
+    items.push('-', n.bad ? { label: 'Ignore this link', run: () => fmIgnore(h, r.path) } : null, { label: 'Remove link', danger: true, run: drop('links', 'link:') });
+  } else if (n.kind === 'link' && n.bad) {
+    items.push('-', { label: 'Ignore this link', run: () => fmIgnore(h, r.path) });
   } else if (n.kind === 'export' && !(r.fromScan && !r.designed)) {
     items.push('-', designedShares(doc).includes(r) ? { label: 'Deploy shares…', run: () => deployShares(doc) } : null,
       { label: 'Remove export', danger: true, run: drop('exports', 'exp:') });
@@ -1130,6 +1132,7 @@ function setMode(mode, load = true) {
   if (mode === 'tasks' && load && typeof loadTasks === 'function' && !TK.loaded) loadTasks();
   updateSavebar();
   if (typeof renderStageBar === 'function') renderStageBar();
+  if (typeof fmSync === 'function') fmSync();
 }
 document.querySelectorAll('#viewmode button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
 try { T.mode = ['graph', 'tasks'].includes(localStorage.getItem('sf.view')) ? localStorage.getItem('sf.view') : 'topo'; } catch { /* default */ }

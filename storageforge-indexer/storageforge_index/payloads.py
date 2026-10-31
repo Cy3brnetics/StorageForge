@@ -808,6 +808,8 @@ def _index_links(conn, node, host_id, mount_ids, limit):
                        JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id
                        WHERE m.host_id = :h AND f.is_symlink LIMIT :lim""", {'h': host_id, 'lim': limit})
     from .analysis import containing_mount, real_mounts
+    from .folders import ignore_lists, is_ignored
+    ignore = ignore_lists(conn)
     mounts = real_mounts(node)
     links = {join_path(p, n): (t, mp) for p, n, t, mp in rows}
     picked, system = [], 0
@@ -830,6 +832,9 @@ def _index_links(conn, node, host_id, mount_ids, limit):
             exists = bool(conn.scalar('SELECT count(*) FROM file_records f JOIN directories d ON d.dir_id = f.dir_id '
                                       'WHERE d.mount_id = :m AND d.path = :p AND f.filename = :n',
                                       {'m': mount_ids[tm['target']][0], 'p': parent, 'n': name}))
+        if exists is False and is_ignored(node['hostname'], path, ignore):
+            system += 1                         # a dangling link nobody wants flagged; working ones still count for rebuilds
+            continue
         cross = bool(tm and tm['target'] != mp)
         if exists is False or cross:
             picked.append({'kind': 'symlink', 'path': path, 'target': target, 'resolved': resolved, 'exists': exists,

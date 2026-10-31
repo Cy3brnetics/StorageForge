@@ -1389,7 +1389,8 @@ class ServerTests(DBCase):
         """A new route that forgets @login_required fails here, not in production."""
         import re
         public = {('GET', '/login'), ('GET', '/healthz'), ('POST', '/api/logout'), ('POST', '/api/login'),
-                  ('GET', '/<any("login.js", "style.css", "favicon.svg"):name>')}
+                  ('GET', '/enroll'), ('POST', '/api/enroll'), ('POST', '/api/enroll/check'),
+                  ('GET', '/<any("login.js", "enroll.js", "style.css", "favicon.svg"):name>')}
         answered = []
         for rule in self.web.url_map.iter_rules():
             path = re.sub(r'<int:\w+>', '1', rule.rule)
@@ -1423,19 +1424,6 @@ class ServerTests(DBCase):
                 if code != 403:
                     wrote.append((method, rule.rule, code))
         self.assertEqual(wrote, [])
-
-    def test_role_rules(self):
-        from storageforge_index.server import required_role as need
-        self.assertEqual(need('GET', '/api/hosts'), 'viewer')
-        self.assertEqual(need('GET', '/api/moves/1/script'), 'operator')
-        self.assertEqual(need('POST', '/api/deploy/start'), 'operator')
-        self.assertEqual(need('POST', '/api/some-new-route'), 'operator')      # a new route is not open by default
-        self.assertEqual(need('GET', '/api/users'), 'admin')
-        self.assertEqual(need('DELETE', '/api/keys/k'), 'admin')
-        self.assertEqual(need('DELETE', '/api/hosts/x'), 'admin')
-        self.assertEqual(need('GET', '/api/keys'), 'viewer')
-        self.assertEqual(need('GET', '/api/git/status'), 'operator')          # reads over SSH, live
-        self.assertEqual(need('GET', '/api/log'), 'viewer')
 
     def test_password_change_and_the_last_admin(self):
         self.login()

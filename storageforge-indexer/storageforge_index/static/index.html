@@ -30,6 +30,7 @@
     <div id="savebar" class="savebar" role="status" hidden><span id="savemsg" class="muted"></span><button id="discarddesigns" type="button" class="btn ghost">Discard</button><button id="savedesigns" type="button" class="btn pri">Save design</button></div>
     <div id="tasksview" class="tasksview" hidden aria-label="Storage tasks: blocks that copy, snapshot and check, run on a schedule"></div>
     <canvas id="graph" aria-label="Force-directed storage graph. Select a node to see details; double-click to focus on its neighbourhood."></canvas>
+    <div id="filemap" class="filemap" hidden aria-label="File map: folders holding duplicate files, per host, with lines between the copies"></div>
     <div id="crumb" class="crumb" hidden></div>
     <div id="empty" class="empty" hidden>
       <h2>No graph yet</h2>
@@ -150,7 +151,7 @@ storageforge-index graph import --blueprint atlas.json</pre>
     <div id="tab-audit" class="tab" hidden>
       <div class="row"><button id="verify" type="button" class="btn">Verify chain</button><span id="verified" class="muted"></span></div>
       <ol id="audit" class="list"></ol>
-      <h3>Backups</h3>
+      <h3 id="backupshead">Backups</h3>
       <div id="backupsbox"></div>
       <h3>Your password</h3>
       <form id="pwform" class="row wrap">
@@ -164,8 +165,35 @@ storageforge-index graph import --blueprint atlas.json</pre>
         <form id="userform" class="row wrap">
           <input id="newuser" type="text" autocomplete="off" placeholder="username" aria-label="New username" required>
           <input id="newuserpw" type="password" autocomplete="new-password" placeholder="password" aria-label="New account password" required>
-          <select id="newuserrole" aria-label="Role"><option>viewer</option><option>operator</option><option>admin</option></select>
+          <select id="newuserrole" aria-label="Role"></select>
           <button class="btn" type="submit">Add account</button><span id="usermsg" class="muted"></span>
+        </form>
+        <h3>Invite links</h3>
+        <p class="muted small">Someone opens the link and makes their own account with the role you pick. A link works once.</p>
+        <form id="inviteform" class="row wrap">
+          <select id="inviterole" aria-label="Role the invite gives"></select>
+          <select id="invitehours" aria-label="Link lasts"><option value="24">1 day</option><option value="72" selected>3 days</option><option value="168">7 days</option><option value="720">30 days</option></select>
+          <input id="invitenote" type="text" maxlength="200" autocomplete="off" placeholder="who it is for (optional)" aria-label="Who the invite is for">
+          <button class="btn" type="submit">Create link</button>
+        </form>
+        <div id="linkbox" class="linkbox" hidden>
+          <p id="linkwhat" class="small"></p>
+          <div class="row nowrap"><input id="linkurl" type="text" readonly aria-label="Link to send"><button id="linkcopy" type="button" class="btn sm">Copy</button></div>
+          <p class="muted small">It is shown only now. Send it over a channel you trust.</p>
+        </div>
+        <span id="invitemsg" class="muted"></span>
+        <ol id="invitelist" class="list"></ol>
+      </div>
+      <div id="rolescard" hidden>
+        <h3>Roles</h3>
+        <ol id="rolelist" class="list"></ol>
+        <button id="rolenew" type="button" class="btn sm">New role</button>
+        <form id="roleform" class="roleform" hidden>
+          <input id="rolename" type="text" maxlength="32" autocomplete="off" placeholder="role name" aria-label="Role name" required>
+          <input id="roledesc" type="text" maxlength="200" autocomplete="off" placeholder="what it is for" aria-label="What the role is for">
+          <div id="roleperms"></div>
+          <p id="rolerisk" class="st-warn small" hidden>Editing plans and applying them together amounts to root on every enrolled host.</p>
+          <div class="row"><button class="btn pri" type="submit">Save role</button><button id="rolecancel" type="button" class="btn ghost">Cancel</button><span id="rolemsg" class="muted"></span></div>
         </form>
       </div>
     </div>
@@ -257,6 +285,7 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/checks.js"></script>
 <script src="/moves.js"></script>
 <script src="/changes.js"></script>
+<script src="/filemap.js"></script>
 <script src="/gitview.js"></script>
 <script src="/rebuildview.js"></script>
 <script src="/dockerview.js"></script>

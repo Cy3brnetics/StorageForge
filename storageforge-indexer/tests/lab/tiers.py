@@ -50,6 +50,15 @@ KNOWN = {
     ('job-verify-rsnapshot', 'sf-fedora'): "rsnapshot's config has no --hard-links or xattrs, but verify compares with -HAX",
     ('rsnapshot-on-el9', 'sf-rocky'): 'docs/deployments.md says EPEL has it; on Rocky 9 it does not',
     ('lvm-extend-unmounted', 'sf-rocky'): 'lvextend -r asks a question on an unmounted XFS volume, with no terminal to answer it',
+    ('remove-at-once', 'sf-ctl'): 'userdel fails while the last login session lingers, for a few seconds after any deploy',
+    ('remove-at-once', 'sf-ubuntu'): 'userdel fails while the last login session lingers, for a few seconds after any deploy',
+    ('remove-at-once', 'sf-fedora'): 'userdel fails while the last login session lingers, for a few seconds after any deploy',
+    ('remove-at-once', 'sf-rocky'): 'userdel fails while the last login session lingers, for a few seconds after any deploy',
+    ('remove-at-once', 'sf-suse'): 'userdel fails while the last login session lingers, for a few seconds after any deploy',
+    ('remove-at-once', 'sf-arch'): 'userdel fails while the last login session lingers, for a few seconds after any deploy',
+    ('task-keeps-runner', 'sf-fedora'): 'a task installs its whole signed script with the runner-update header; when systemd runs it on SELinux hosts the runner becomes 0 bytes, and every later deploy reports ok without running',
+    ('task-keeps-runner', 'sf-rocky'): 'a task installs its whole signed script with the runner-update header; when systemd runs it on SELinux hosts the runner becomes 0 bytes, and every later deploy reports ok without running',
+    ('task-keeps-runner', 'sf-suse'): 'a task installs its whole signed script with the runner-update header; when systemd runs it on SELinux hosts the runner becomes 0 bytes, and every later deploy reports ok without running',
     ('mergerfs-source', 'sf-arch'): 'the kernel reports the FUSE source as 1:2, and the branches are not read from anywhere else',
 }
 PACKAGE_MANAGERS = {'sf-ctl': 'apt-get', 'sf-ubuntu': 'apt-get', 'sf-fedora': 'dnf', 'sf-rocky': 'dnf', 'sf-suse': 'zypper', 'sf-arch': 'pacman', 'sf-alpine': 'none'}
@@ -90,8 +99,9 @@ class Results:
 
 
 def sql(query):
-    out = ssh('sf-ctl', f'{COMPOSE} exec -T storageforge sqlite3 -json /app/data/index.db {shlex.quote(query)}')
-    return json.loads(out) if out.strip() else []
+    code = ("import json, sqlite3, sys; c = sqlite3.connect('/app/data/index.db'); c.row_factory = sqlite3.Row; "
+            "print(json.dumps([dict(r) for r in c.execute(sys.argv[1])]))")
+    return json.loads(ssh('sf-ctl', f'{COMPOSE} exec -T storageforge python -c {shlex.quote(code)} {shlex.quote(query)}'))
 
 
 def host_ids():

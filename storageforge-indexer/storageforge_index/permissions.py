@@ -1,0 +1,139 @@
+"""What an account may do: the permission catalog, the built-in roles and which permission each route needs.
+Roles only bundle permissions, and the code only ever asks about permissions. Custom roles are rows in `roles` (users.py)."""
+from __future__ import annotations
+
+import re
+
+# group, then (permission, what it allows, high risk: it can lead to root on enrolled hosts)
+CATALOG = (
+    ('Search', (
+        ('search.files', 'Search files across hosts', False),)),
+    ('Inventory', (
+        ('hosts.view', 'See hosts, the graph, capacity and designs', False),
+        ('files.browse', 'Browse folders, copies, cold data and file changes', False),
+        ('services.view', 'See Docker, Git and shares from the index', False),
+        ('configs.view', 'See saved host configurations', False),)),
+    ('Logs', (
+        ('logs.view', 'Read the activity log and command output', False),
+        ('audit.view', 'Read the audit log', False),
+        ('audit.verify', 'Verify the audit chain (unlocks the vault)', False),)),
+    ('Scans', (
+        ('scans.view', 'See scan jobs', False),
+        ('scans.run', 'Run scans, set scan schedules and ignore lists', False),)),
+    ('Planning', (
+        ('plans.view', 'See moves, changes, tasks and schedules', False),
+        ('plans.edit', 'Create and edit plans, tasks, shares and designs', True),
+        ('plans.scripts', 'Download generated scripts and config bundles', False),)),
+    ('Deploy', (
+        ('deploy.view', 'See deploys, runs and jobs', False),
+        ('deploy.report', 'Dry runs, job logs and snapshot browsing', False),
+        ('deploy.apply', 'Apply deploys, run and pause jobs and schedules', True),
+        ('deploy.destructive', 'Destructive applies, cutover and restore', True),
+        ('deploy.setup', 'Make the deploy keys and adopt hosts', True),)),
+    ('Live hosts', (
+        ('git.live', 'Read Git status and history over SSH', False),
+        ('git.sync', 'Run Git sync on hosts', True),)),
+    ('Host access', (
+        ('keys.view', 'See public keys, bindings and scan access', False),
+        ('keys.manage', 'Generate, install, bind and remove SSH keys', True),
+        ('access.manage', 'Confirm host keys and grant scan or deploy access', True),
+        ('hosts.retire', 'Retire hosts', False),)),
+    ('Administration', (
+        ('users.manage', 'Add and change accounts, create invite links', False),
+        ('roles.manage', 'Create and change custom roles', False),
+        ('settings.manage', 'Change report URL, alert channels and the example host', False),
+        ('backups.view', 'See backups', False),
+        ('backups.manage', 'Make backups and set where they are copied', False),)),
+)
+ALL = frozenset(p for _, perms in CATALOG for p, _, _ in perms)
+HIGH_RISK = frozenset(p for _, perms in CATALOG for p, _, risky in perms if risky)
+
+_VIEWER = frozenset({'search.files', 'hosts.view', 'files.browse', 'services.view', 'configs.view', 'logs.view', 'audit.view',
+                     'scans.view', 'plans.view', 'deploy.view', 'keys.view', 'backups.view'})
+# Built-in roles cannot be changed or removed. Without a role here or in `roles`, an account may do nothing.
+BUILTIN = {
+    'search': ('Searches files across hosts, and nothing else', frozenset({'search.files'})),
+    'viewer': ('Browses and searches', _VIEWER),
+    'operator': ('Also plans, scans and deploys', _VIEWER | {'scans.run', 'plans.edit', 'plans.scripts', 'deploy.report', 'deploy.apply',
+                                                            'deploy.destructive', 'deploy.setup', 'git.live', 'git.sync'}),
+    'admin': ('Everything, including keys, accounts and settings', ALL),
+}
+
+ANYONE = ('/api/login', '/api/logout', '/api/reauth', '/api/me', '/api/me/password', '/api/enroll', '/api/enroll/check')
+READ = ('GET', 'HEAD')
+_ANY = ('GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH')
+_WRITE = ('POST', 'PUT', 'DELETE', 'PATCH')
+# First match wins. See required() for a route that matches nothing.
+_RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm in (
+    (_ANY, r'/api/(users|invites)(/.*)?', 'users.manage'),
+    (READ, r'/api/roles', 'users.manage'),            # who can hand out roles needs to see them
+    (_ANY, r'/api/roles(/.*)?', 'roles.manage'),
+    (_ANY, r'/api/deploy/settings(/.*)?', 'settings.manage'),
+    (_WRITE, r'/api/planner/example', 'settings.manage'),
+    (_WRITE, r'/api/planner/offsite', 'plans.edit'),
+    (_ANY, r'/api/audit/verify', 'audit.verify'),
+    (READ, r'/api/audit', 'audit.view'),
+    (READ, r'/api/log(/.*)?', 'logs.view'),
+
+    (READ, r'/api/search(/hosts)?', 'search.files'),
+    (READ, r'/api/(hosts|graph|canvas|capacity|planner/.*)', 'hosts.view'),
+    (READ, r'/api/hosts/[^/]+/schedule', 'hosts.view'),
+    (READ, r'/api/(browse|fs/browse|file-changes|dupes|filemap|files/ignore|folders/.*)', 'files.browse'),
+    (READ, r'/api/(docker(/.*)?|git|git/ignore|shares/check)', 'services.view'),
+
+    # generated scripts name paths, logins and hosts in a form that can be run; install-script also mints a report token
+    (READ, r'/api/.*/(script|ansible|install-script|cron|bundle)', 'plans.scripts'),
+    (('POST',), r'/api/tasks/script', 'plans.scripts'),
+    (READ, r'/api/hostconfigs(/.*)?', 'configs.view'),
+
+    (READ, r'/api/jobs', 'scans.view'),
+    (_WRITE, r'/api/scan(/all)?', 'scans.run'),
+    (_WRITE, r'/api/hosts/[^/]+/schedule', 'scans.run'),
+    (_WRITE, r'/api/(files/ignore|git/ignore|git/survey)', 'scans.run'),
+
+    (READ, r'/api/(moves|changes|tasks)(/.*)?', 'plans.view'),
+    (READ, r'/api/scheduler(/.*)?', 'plans.view'),
+    (_WRITE, r'/api/(moves|changes|tasks|shares|planner)(/.*)?', 'plans.edit'),
+    (('POST',), r'/api/scheduler/schedules/\d+/(run|pause|token)', 'deploy.apply'),
+    (('POST',), r'/api/scheduler/schedules/\d+/verify', 'deploy.report'),
+    (_WRITE, r'/api/scheduler/schedules(/\d+)?', 'plans.edit'),
+    (('POST',), r'/api/(jobs|scheduler)/report', 'deploy.apply'),     # jobs report with a bearer token and no session
+
+    (READ, r'/api/deploy(/.*)?', 'deploy.view'),
+    (('POST',), r'/api/deploy/(setup-script|adopt)', 'deploy.setup'),
+    (('POST',), r'/api/deploy/access', 'access.manage'),
+    (('POST',), r'/api/deploy/start', 'deploy.report'),               # apply and destructive are checked in the route
+    (('POST',), r'/api/deploy/check', 'deploy.report'),
+    (('POST',), r'/api/deploy/groups/[^/]+/(cancel|retry)', 'deploy.apply'),
+    (('POST',), r'/api/deploy/jobs/[^/]+/(dryrun|log|snapshots|browse)', 'deploy.report'),
+    (('POST',), r'/api/deploy/jobs/[^/]+/(cutover|restore)', 'deploy.destructive'),
+    (('POST',), r'/api/deploy/jobs/[^/]+/(run|verify|pause|resume)', 'deploy.apply'),
+
+    (_ANY, r'/api/git/(status|history|commit)', 'git.live'),
+    (_WRITE, r'/api/git/sync', 'git.sync'),
+
+    (READ, r'/api/(keys|access)', 'keys.view'),
+    (_WRITE, r'/api/(keys|bindings)(/.*)?', 'keys.manage'),
+    (_WRITE, r'/api/(hostkey|access/grant)(/.*)?', 'access.manage'),
+    (('DELETE',), r'/api/hosts/[^/]+', 'hosts.retire'),
+
+    (READ, r'/api/backups', 'backups.view'),
+    (_WRITE, r'/api/backups(/.*)?', 'backups.manage'),
+))
+EVERYTHING = 'everything'    # what an unlisted route needs: only a role that holds the whole catalog
+
+
+def required(method: str, path: str) -> str | None:
+    """The permission a signed-in request needs, None for pages and the account's own routes. Default-deny: a new /api
+    route nobody listed is open only to accounts holding every permission, until it gets a rule here."""
+    if not path.startswith('/api/') or path in ANYONE:
+        return None
+    for methods, pattern, perm in _RULES:
+        if method in methods and pattern.fullmatch(path):
+            return perm
+    return EVERYTHING
+
+
+def allows(held: frozenset[str], method: str, path: str) -> bool:
+    need = required(method, path)
+    return need is None or (held >= ALL if need == EVERYTHING else need in held)
