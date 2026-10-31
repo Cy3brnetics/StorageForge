@@ -5,6 +5,9 @@
 
 const SW = { dlg: null, timer: 0, req: 0 };
 const SW_STEPS = ['Folder', 'Access', 'Clients', 'Review'];
+const SM = { dlg: null, req: 0, checks: new Map(), pending: new Set(), error: '' };
+// the share itself, not its place in a list: the topology's list is the scan merged with the design
+const swWas = (e) => (e ? { protocol: e.protocol || e.proto, name: e.name, path: e.path } : null);
 
 async function openShareWizard({ host = '', path = '', index = null, share = null } = {}) {
   let hostsList = [];
@@ -19,7 +22,7 @@ async function openShareWizard({ host = '', path = '', index = null, share = nul
          rules: (e.rules && e.rules.length ? e.rules : e.clients && !isSmb ? [{ clients: e.clients, options: e.options || NFS_PRESETS['read-write'] }] : [])
            .map((r) => ({ ...r })),
          users: isSmb ? e.clients || '' : '', readonly: isSmb && /\bro\b/.test(e.options || ''),
-         mounts: (e.mounts || []).map((m) => ({ host: m.host, path: m.path })) },
+         smb: isSmb ? e.smb : null, mounts: (e.mounts || []).map((m) => ({ ...m })) },
   });
   if (SW.dlg) SW.dlg.remove();
   SW.dlg = el('dialog', { class: 'swdlg', 'aria-label': 'Share wizard' });
@@ -30,14 +33,14 @@ async function openShareWizard({ host = '', path = '', index = null, share = nul
   swValidate();
   return true;
 }
-function closeShareWizard() { if (SW.dlg) { SW.dlg.close(); SW.dlg.remove(); SW.dlg = null; } }
+function closeShareWizard() { if (SW.dlg) { SW.dlg.close(); SW.dlg.remove(); SW.dlg = null; } if (SM.dlg) smRender(); }
 
 function swExport() {
   const s = SW.s;
   const name = s.name || (s.path.split('/').pop() || 'share');
   return s.proto === 'NFS'
     ? { protocol: s.version, name, path: s.path, rules: s.rules.filter((r) => r.clients.trim()), mounts: s.mounts.filter((m) => m.host) }
-    : { protocol: 'SMB3', name, path: s.path, clients: s.users, options: s.readonly ? 'ro' : '', mounts: s.mounts.filter((m) => m.host) };
+    : { protocol: 'SMB3', name, path: s.path, clients: s.users, options: s.readonly ? 'ro' : '', mounts: s.mounts.filter((m) => m.host), ...(s.smb ? { smb: s.smb } : {}) };
 }
 function swChanged() { SW.saved = null; clearTimeout(SW.timer); SW.timer = setTimeout(swValidate, 350); }
 async function swValidate() {
@@ -45,7 +48,7 @@ async function swValidate() {
   if (!s.host || !s.path) { SW.check = null; swRenderChecks(); return; }
   const n = ++SW.req;
   try {
-    const r = await (await postJSON('/api/shares/validate', { host: s.host, export: swExport(), index: SW.index })).json();
+    const r = await (await postJSON('/api/shares/validate', { host: s.host, export: swExport(), index: SW.index, was: swWas(SW.share) })).json();
     if (n === SW.req) SW.check = r;
   } catch (err) { if (n === SW.req) SW.check = { error: err.message, items: [], crit: 1, warn: 0 }; }
   swRenderChecks();
@@ -127,14 +130,14 @@ function swRenderStep(full) {
     el('ul', { class: 'swsummary' }, ...what.map((t) => text('li', t))),
     SW.saved ? el('div', { class: 'card' }, text('b', `Saved in ${SW.saved.host}'s design.`, 'st-ok'),
       text('p', 'Deploying installs the server side on the server and mounts it on each client. It starts with a read-only report.', 'muted small'),
-      el('div', { class: 'row start' }, button('Deploy (report first)…', () => { closeShareWizard(); startDeploy('shares', SW.saved.host, 'report', `shares of ${SW.saved.host}`); }, 'btn pri sm'),
+      el('div', { class: 'row start' }, button('Deploy (report first)…', () => { closeSharesManager(); closeShareWizard(); startDeploy('shares', SW.saved.host, 'report', `shares of ${SW.saved.host}`); }, 'btn pri sm'),
         button('Download the script', () => swDownload(SW.saved.host), 'btn sm'), button('Close', closeShareWizard, 'btn ghost sm')))
       : el('div', { class: 'stack' },
         docDirty ? text('p', `The topology has unsaved edits on ${s.host}: save or discard them first.`, 'st-failed') : null,
         crit ? anyway : null,
         el('div', { class: 'row' }, el('button', { type: 'button', class: 'btn pri', disabled: !!docDirty || (crit && !SW.anyway) || !s.path, onclick: swSave },
           SW.index != null ? 'Save changes' : 'Save share'),
-        SW.index != null && !(SW.share && SW.share.fromScan) ? button('Remove share', swRemove, 'btn ghost danger') : null)));
+        SW.index != null ? button('Remove share', swRemove, 'btn ghost danger') : null)));
 }
 
 function swRulesEditor() {
@@ -232,9 +235,9 @@ function swRenderChecks() {
 async function swSave() {
   const s = SW.s;
   try {
-    const r = await (await postJSON('/api/shares', { host: s.host, export: swExport(), index: SW.index })).json();
-    SW.saved = r; SW.index = r.index;
-    if (typeof T !== 'undefined' && T.docs.has(r.host) && !T.docs.get(r.host).dirty) { T.docs.delete(r.host); if (T.mode === 'topo') loadDesigns(); }
+    const r = await (await postJSON('/api/shares', { host: s.host, export: swExport(), index: SW.index, was: swWas(SW.share) })).json();
+    SW.saved = r; SW.index = r.index; SW.share = r.export;
+    smReload(r.host);
     if (typeof loadGraph === 'function') loadGraph();
     swRender();
   } catch (err) { toast(err.message); }
@@ -243,8 +246,7 @@ async function swRemove() {
   const s = SW.s;
   if (!confirm(`Remove the share of ${s.path} from ${s.host}'s design? Hosts keep it until you deploy again.`)) return;
   try {
-    await api(`/api/shares?host=${encodeURIComponent(s.host)}&index=${SW.index}`, { method: 'DELETE' });
-    if (typeof T !== 'undefined' && T.docs.has(s.host) && !T.docs.get(s.host).dirty) { T.docs.delete(s.host); if (T.mode === 'topo') loadDesigns(); }
+    await smDelete(s.host, SW.share);
     closeShareWizard();
     toast('Share removed from the design');
   } catch (err) { toast(err.message); }
@@ -256,4 +258,129 @@ async function swDownload(host) {
     a.download = `shares-${host.split('.')[0].toLowerCase()}.sh`; document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   } catch (err) { toast(err.message); }
+}
+
+/* The shares manager: every share on the hosts in view, with who may use it, who mounts it and what the checks say.
+   Designed shares open in the wizard; shares only the scan knows are read-only, since the host's own config holds them. */
+function smDelete(host, e) {
+  const q = new URLSearchParams({ host, ...swWas(e) });
+  return api(`/api/shares?${q}`, { method: 'DELETE' }).then(() => { smReload(host); if (typeof loadGraph === 'function') loadGraph(); });
+}
+function smReload(host) {          // the saved design changed under the topology: fetch it again unless edits are open
+  if (typeof T === 'undefined' || !T.docs.has(host) || T.docs.get(host).dirty) return;
+  if (T.sel && T.sel.host === host && T.sel.key.startsWith('exp:')) T.sel = null;     // keys are list indexes
+  if (T.mode === 'topo') loadDesigns();           // it refetches every doc without open edits
+}
+function smKey(e) {                // payloads.share_key
+  const p = String(e.protocol || e.proto || '').toUpperCase();
+  return /^(SMB|CIFS)/.test(p) ? `SMB|${String(e.name || '').toLowerCase()}` : p.startsWith('NFS') ? `NFS|${String(e.path || '').replace(/\/+$/, '') || '/'}` : `${p}|${e.path}|${e.name}`;
+}
+function openSharesManager(filter = '') {
+  if (SM.dlg) return;
+  SM.dlg = el('dialog', { class: 'swdlg smdlg', 'aria-label': 'Shares' });
+  SM.dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); closeSharesManager(); });
+  SM.find = el('input', { type: 'search', placeholder: 'Filter by host, name, path or client…', 'aria-label': 'Filter shares', value: filter, oninput: smRender });
+  SM.list = el('div', { class: 'smlist stack' });
+  SM.dlg.append(el('header', { class: 'row swhead' }, el('h2', {}, 'Shares'), SM.find, el('span', { class: 'grow' }),
+    button('+ New share', () => openShareWizard({}), 'btn pri sm'), button('Close', closeSharesManager, 'btn ghost sm')), SM.list);
+  document.body.append(SM.dlg);
+  SM.dlg.showModal();
+  smLoad();
+}
+function closeSharesManager() { if (SM.dlg) { SM.dlg.close(); SM.dlg.remove(); SM.dlg = null; } }
+async function smLoad() {          // the checks and what is not deployed yet; the list itself comes from the topology's docs
+  if (!SM.dlg) return;
+  smRender();
+  const n = ++SM.req;
+  const docs = [...T.docs.values()].filter((d) => d.bp && !d.dirty && d.savedAt && designedShares(d).length);
+  const [checks, deployed] = await Promise.all([
+    Promise.all(docs.map((d) => getJSON(`/api/shares/check?host=${encodeURIComponent(d.host)}`).then((c) => [d.host, c]).catch(() => null))),
+    getJSON('/api/deploy').catch(() => null)]);
+  if (n !== SM.req || !SM.dlg) return;
+  SM.checks = new Map(checks.filter(Boolean));
+  SM.pending = new Set(deployed ? deployed.drift.filter((x) => x.kind === 'pending').map((x) => x.ref) : []);
+  smRender();
+}
+function smState(e) {
+  if (!e.designed && e.fromScan) return ['on the host only', 'unknown', 'Found by the scan in the host\'s own config. StorageForge did not deploy it and does not change it.'];
+  if (e.fromScan) return ['deployed', 'protected', 'In the design and found on the host by the last scan.'];
+  return ['planned', 'local-only', 'In the design, not found on the host yet: deploy it, or scan again if it is already there.'];
+}
+function smMountedBy(doc, i, e) {
+  const seen = [...(e.mounts || []).filter((m) => m.host).map((m) => `${m.host}:${m.path}`),
+    ...[...T.docs.values()].flatMap((d) => (d.bp && d.bp.remotes || [])
+      .filter((r) => { const f = shareSource(d, r); return f && f.host === doc.host && f.key === `exp:${i}`; }).map((r) => `${d.host}:${r.mount}`))];
+  return [...new Set(seen)];
+}
+function smAccess(e) {
+  if (e.rules && e.rules.length) return e.rules.map((r) => `${r.clients} (${r.options || 'default options'})`).join(', ');
+  return [e.clients, e.options].filter(Boolean).join(' · ') || (/^(SMB|CIFS)/i.test(e.protocol || e.proto || '') ? 'any Samba account' : 'no clients');
+}
+function smShow(host, key) { closeSharesManager(); showTab('details'); selectBox(host, key); reveal(host, key); }
+async function smEdit(doc, i, e) {
+  const managed = /^(NFS|SMB|CIFS)/i.test(e.protocol || e.proto || '');
+  if (managed && await openShareWizard({ host: doc.host, index: i, share: e })) return;
+  smShow(doc.host, `exp:${i}`);                   // a planned host, or SFTP/S3: the topology's own form
+}
+async function smRemove(doc, i, e) {
+  const [state] = smState(e);
+  const label = `${e.protocol || e.proto} ${e.name || e.path}`;
+  if (!confirm(state === 'deployed'
+    ? `Remove ${label} from ${doc.host}'s design? It stays on the host and its clients until you deploy ${doc.host}'s shares again, which takes it down.`
+    : `Remove ${label} from ${doc.host}'s design?`)) return;
+  SM.error = '';
+  if (doc.source !== 'scan') {                    // a planned host's design: an unsaved edit like any other
+    doc.bp.exports.splice(i, 1);
+    if (T.sel && T.sel.host === doc.host && T.sel.key.startsWith('exp:')) T.sel = null;
+    touched(doc, 'exports');
+    smRender();
+    return;
+  }
+  try { await smDelete(doc.host, e); } catch (err) { SM.error = err.message; smRender(); }
+}
+function smRow(doc, i, e, chk) {
+  const [state, cls, why] = smState(e);
+  const scanOnly = !e.designed && e.fromScan;
+  const dirty = doc.dirty ? `Save or discard the edits on ${doc.host} first` : '';
+  const items = chk ? chk.items.filter((x) => ['crit', 'warn'].includes(x.level) && chk.exports[x.export] && smKey(chk.exports[x.export]) === smKey(e)) : [];
+  const by = smMountedBy(doc, i, e);
+  const act = (label, fn, cls2) => { const b = button(label, fn, cls2); if (dirty) { b.disabled = true; b.title = dirty; } return b; };
+  const pill = text('span', state, `pill ${cls}`); pill.title = why;
+  return el('li', { class: 'card smrow' },
+    el('div', { class: 'row' }, text('span', e.protocol || e.proto || '?', 'fsk'), text('b', e.name || e.path, 'mono'), pill, el('span', { class: 'grow' }),
+      button('Show', () => smShow(doc.host, `exp:${i}`), 'btn ghost sm'),
+      scanOnly ? null : act('Edit', () => smEdit(doc, i, e), 'btn sm'),
+      scanOnly ? null : act('Remove', () => smRemove(doc, i, e), 'btn ghost sm danger')),
+    el('dl', { class: 'smfacts' }, text('dt', 'Folder'), text('dd', e.path || '?', 'mono'), text('dt', 'Access'), text('dd', smAccess(e), 'mono'),
+      text('dt', 'Mounted on'), text('dd', by.length ? by.join(', ') : 'no client', by.length ? 'mono' : 'muted')),
+    scanOnly ? text('p', 'Change it in the host\'s own config; the next scan picks it up.', 'muted small') : null,
+    items.length ? el('ul', { class: 'mvcheck' }, ...items.map((x) => text('li', x.text, `lv-${x.level}`))) : null);
+}
+function smRender() {
+  if (!SM.dlg) return;
+  const q = SM.find.value.trim().toLowerCase();
+  const groups = [];
+  for (const host of T.order) {
+    const doc = T.docs.get(host);
+    if (!doc || !doc.bp) continue;
+    const rows = (doc.bp.exports || []).map((e, i) => [i, e]).filter(([i, e]) => !q
+      || [host, e.protocol, e.proto, e.name, e.path, smAccess(e), ...smMountedBy(doc, i, e)].join(' ').toLowerCase().includes(q));
+    if (!rows.length) continue;
+    const chk = SM.checks.get(host);
+    const designed = designedShares(doc).length;
+    const blocked = (b) => { if (doc.dirty) { b.disabled = true; b.title = `Save or discard the edits on ${host} first`; } return b; };
+    groups.push(el('section', { class: 'stack' },
+      el('div', { class: 'row wrap' }, text('h3', host, 'mono'),
+        doc.dirty ? text('span', 'unsaved edits', 'dirty') : null,
+        SM.pending.has(host) ? text('span', 'design changed, not deployed', 'pill local-only') : null,
+        chk && chk.crit ? text('span', `${chk.crit} to fix`, 'st-failed') : null,
+        el('span', { class: 'grow' }),
+        blocked(button('+ Share here', () => openShareWizard({ host }).then((ok) => { if (!ok) { closeSharesManager(); addExport(doc); } }), 'btn ghost sm')),
+        designed ? blocked(button('Checks & script', () => { closeSharesManager(); deployShares(doc); }, 'btn ghost sm')) : null,
+        designed && doc.source === 'scan' ? blocked(button('Deploy (report first)…', () => { closeSharesManager(); startDeploy('shares', host, 'report', `shares of ${host}`); }, 'btn sm')) : null),
+      el('ul', { class: 'smshares' }, ...rows.map(([i, e]) => smRow(doc, i, e, chk)))));
+  }
+  const any = T.order.some((h) => ((T.docs.get(h) || {}).bp || {}).exports && T.docs.get(h).bp.exports.length);
+  SM.list.replaceChildren(...[SM.error ? text('p', SM.error, 'st-failed') : null, ...groups,
+    groups.length ? null : text('p', any ? 'No share matches the filter.' : 'No shares on the hosts in view yet. Add one with + New share.', 'muted')].filter(Boolean));
 }

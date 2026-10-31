@@ -662,10 +662,13 @@ class ChangePlanTests(DBCase):
         for words in ('ext4 → xfs', 'Subvolume @media', 'bind /srv/www'):
             self.assertIn(words, manual)
         self.assertEqual(r['destructive'], 2)
+        bp['pools'][-1]['encryption'] = 'aes-256-gcm'                           # its key is the operator's: never a task
+        self.assertIn('Create ZFS pool tank', ' | '.join(m['what'] for m in fromdesign.plan(self.conn, bp)['manual']))
+        del bp['pools'][-1]['encryption']
         with self.assertRaises(ValueError):                                     # unconfirmed drive tasks can't be saved
             changes.normalize({'name': r['name'], 'tasks': r['tasks']})
         r['tasks'][0]['params']['confirm'] = '/dev/sdc'
-        r['tasks'][1]['params']['confirm'] = '/dev/sdd /dev/sde'
+        r['tasks'][1]['params']['confirm'] = r['tasks'][1]['params']['devices']
         plan = changes.normalize({'name': r['name'], 'tasks': r['tasks']})
         res = changes.check(self.conn, plan)
         self.assertEqual(len(res['tasks']), 6)
@@ -726,6 +729,22 @@ class ChangePlanTests(DBCase):
         items[0]['on_ok']({'output': 'done\n'})
         changes.delete_plan(self.conn, pid)
         self.assertEqual(self.conn.scalar("SELECT count(*) FROM deployed WHERE kind = 'changes'"), 0)
+
+    def test_mark_ran_records_plan_as_ran_on_all_hosts(self):
+        changes, _body, pid, _items = self._ran_plan()
+        self.assertIsNone(changes.get_plan(self.conn, pid)['ran_at'])
+        updated = changes.mark_ran(self.conn, pid, 'test')
+        self.assertTrue(updated['ran_at'])
+        self.assertTrue(changes.get_plan(self.conn, pid)['ran_at'])
+
+    def test_check_reports_all_done_when_tasks_already_exist(self):
+        from storageforge_index import changes
+        # /mnt/pool is already mounted in test fixtures
+        plan = {'name': 'check-done', 'tasks': [{'type': 'dir', 'host': 'nas', 'params': {'path': '/mnt/pool'}}]}
+        res = changes.check(self.conn, plan)
+        self.assertEqual(res['crit'], 0)
+        self.assertEqual(res['warn'], 0)
+        self.assertTrue(res['all_done'])
 
     def test_apply_calls_back_per_host_but_a_report_does_not(self):
         from unittest import mock
@@ -1160,6 +1179,120 @@ class ServerTests(DBCase):
         self.assertEqual(self.client.get('/api/docker').json, {'hosts': []})
         self.assertEqual(self.client.get('/api/docker/usage?path=/x').status_code, 400)     # path needs host
 
+    def test_git_feature_set_api_and_changelog(self):
+        from storageforge_index import gitrepos
+        self.login()
+        # Missing args
+        self.assertEqual(self.client.get('/api/git/status').status_code, 400)
+        self.assertEqual(self.client.post('/api/git/sync', json={}).status_code, 400)
+        self.assertEqual(self.client.post('/api/git/sync', json={'host': 'nas', 'path': '/srv/repo', 'action': 'invalid'}).status_code, 400)
+        self.assertEqual(self.client.get('/api/git/history').status_code, 400)
+        self.assertEqual(self.client.get('/api/git/commit').status_code, 400)
+        self.assertEqual(self.client.get('/api/git/commit?host=nas&path=/x&sha=invalid!!').status_code, 400)
+
+        # Survey all hosts
+        r = self.client.post('/api/git/survey', json={})
+        self.assertEqual(r.status_code, 200)
+
+        # Unknown host survey
+        r = self.client.post('/api/git/survey', json={'host': 'nonexistent'})
+        self.assertEqual(r.status_code, 404)
+
+        # Changelog generator logic
+        commits = [
+            {'hash': 'aaa111', 'short_hash': 'aaa111', 'author': 'Dev', 'email': 'dev@test', 'time': 1700000000, 'subject': 'feat: add git inspector', 'refs': 'HEAD -> main'},
+            {'hash': 'bbb222', 'short_hash': 'bbb222', 'author': 'Dev', 'email': 'dev@test', 'time': 1699990000, 'subject': 'fix: handle missing remote', 'refs': ''},
+            {'hash': 'ccc333', 'short_hash': 'ccc333', 'author': 'Dev', 'email': 'dev@test', 'time': 1699980000, 'subject': 'docs: update changelog guide', 'refs': 'tag: v1.0.0'},
+            {'hash': 'ddd444', 'short_hash': 'ddd444', 'author': 'Dev', 'email': 'dev@test', 'time': 1699970000, 'subject': 'initial commit', 'refs': ''},
+        ]
+        tags = [
+            {'name': 'v1.0.0', 'commit': 'ccc333', 'time': 1699980000, 'subject': 'Release v1.0.0'}
+        ]
+        cl = gitrepos.build_changelog(commits, tags)
+        self.assertTrue(len(cl) >= 1)
+        # Check that categories exist
+        self.assertTrue(any(len(rel['categories']['features']) > 0 for rel in cl))
+        self.assertTrue(any(len(rel['categories']['fixes']) > 0 for rel in cl))
+
+        # Test live status, history and commit with local git repo
+        import tempfile, subprocess, shutil
+        tmp_repo = tempfile.mkdtemp()
+        try:
+            subprocess.run(['git', 'init', tmp_repo], check=True, capture_output=True)
+            subprocess.run(['git', '-C', tmp_repo, 'config', 'user.email', 'test@test'], check=True)
+            subprocess.run(['git', '-C', tmp_repo, 'config', 'user.name', 'Tester'], check=True)
+            subprocess.run(['git', '-C', tmp_repo, 'commit', '--allow-empty', '-m', 'Initial commit'], check=True)
+            subprocess.run(['git', '-C', tmp_repo, 'tag', 'v1.0.0', '-m', 'Release 1.0.0'], check=True)
+            subprocess.run(['git', '-C', tmp_repo, 'commit', '--allow-empty', '-m', 'feat: cool feature'], check=True)
+
+            # API Status check
+            res = self.client.post('/api/git/status', json={'host': 'local', 'path': tmp_repo})
+            self.assertEqual(res.status_code, 200)
+            st_data = res.json
+            self.assertIn(st_data['branch'], ('main', 'master'))
+            self.assertEqual(st_data['head_subject'], 'feat: cool feature')
+            self.assertEqual(st_data['dirty'], 0)
+
+            # API History check
+            h_res = self.client.get(f'/api/git/history?host=local&path={tmp_repo}&max=10')
+            self.assertEqual(h_res.status_code, 200)
+            h_data = h_res.json
+            self.assertEqual(len(h_data['commits']), 2)
+            self.assertEqual(len(h_data['tags']), 1)
+            self.assertEqual(h_data['tags'][0]['name'], 'v1.0.0')
+
+            # API Commit check
+            c_res = self.client.get(f'/api/git/commit?host=local&path={tmp_repo}&sha={h_data["commits"][0]["hash"]}')
+            self.assertEqual(c_res.status_code, 200)
+            self.assertIn('feat: cool feature', c_res.json['output'])
+
+            # Edge cases: non-git directory and empty git repo
+            non_git = tempfile.mkdtemp()
+            empty_git = tempfile.mkdtemp()
+            try:
+                subprocess.run(['git', 'init', empty_git], check=True, capture_output=True)
+
+                # Non-git directory status & history
+                ng_status = self.client.post('/api/git/status', json={'host': 'local', 'path': non_git})
+                self.assertEqual(ng_status.status_code, 200)
+                self.assertEqual(ng_status.json['error'], 'not a git repository')
+                self.assertEqual(ng_status.json['state'], 'error')
+
+                ng_hist = self.client.get(f'/api/git/history?host=local&path={non_git}')
+                self.assertEqual(ng_hist.status_code, 200)
+                self.assertEqual(ng_hist.json['error'], 'not a git repository')
+
+                # Empty git repo status & history
+                eg_status = self.client.post('/api/git/status', json={'host': 'local', 'path': empty_git})
+                self.assertEqual(eg_status.status_code, 200)
+                self.assertIsNone(eg_status.json['head_commit'])
+                self.assertIsNone(eg_status.json['error'])
+
+                eg_hist = self.client.get(f'/api/git/history?host=local&path={empty_git}')
+                self.assertEqual(eg_hist.status_code, 200)
+                self.assertEqual(eg_hist.json['commits'], [])
+
+                # Empty POST bodies or non-JSON content-type
+                self.assertEqual(self.client.post('/api/git/status', data='not json').status_code, 400)
+                self.assertEqual(self.client.post('/api/git/sync', data='not json').status_code, 400)
+            finally:
+                shutil.rmtree(non_git, ignore_errors=True)
+                shutil.rmtree(empty_git, ignore_errors=True)
+        finally:
+            import shutil
+            shutil.rmtree(tmp_repo, ignore_errors=True)
+
+        # Check frontend assets contain git inspector elements
+        index_html = self.client.get('/').data.decode('utf-8')
+        self.assertIn('id="gitdrawer"', index_html)
+        self.assertIn('gitdrawer-toggle', index_html)
+        self.assertIn('git-find-btn', index_html)
+        gitview_js = self.client.get('/gitview.js').data.decode('utf-8')
+        self.assertIn('openGitDrawer', gitview_js)
+        self.assertIn('checkRepoStatus', gitview_js)
+        self.assertIn('syncRepo', gitview_js)
+        self.assertIn('loadRepoHistory', gitview_js)
+
     def test_planner_page_and_designs(self):
         self.assertEqual(self.client.get('/planner').status_code, 302)          # signed out: to /login
         self.login()
@@ -1301,6 +1434,8 @@ class ServerTests(DBCase):
         self.assertEqual(need('DELETE', '/api/keys/k'), 'admin')
         self.assertEqual(need('DELETE', '/api/hosts/x'), 'admin')
         self.assertEqual(need('GET', '/api/keys'), 'viewer')
+        self.assertEqual(need('GET', '/api/git/status'), 'operator')          # reads over SSH, live
+        self.assertEqual(need('GET', '/api/log'), 'viewer')
 
     def test_password_change_and_the_last_admin(self):
         self.login()
@@ -1895,7 +2030,7 @@ class ScriptHeaderTests(DBCase):
             params = {f['name']: next(o for o in f['options'] if o) if f['kind'] == 'choice' else
                       {'path': path, 'text': text, 'spec': 'nas:/srv/' + canary.replace(' ', ''), 'bool': True, 'device': '/dev/sdb',
                        'user': 'root', 'mode': '0755', 'options': 'defaults', 'label': 'data', 'confirm': '/dev/sdb', 'host': 'pc',
-                       'devices': '/dev/sdb', 'name': 'snap', 'dataset': 'tank/data', 'size': '10G'}[f['kind']]
+                       'devices': '/dev/sdb', 'name': 'snap', 'dataset': 'tank/data', 'size': '10G', 'mkfs': '', 'number': '4096'}[f['kind']]
                       for f in spec['fields']}
             out[f'changes {kind}'] = changes.script(self.conn, {'name': 'p', 'tasks': [{'type': kind, 'host': 'nas', 'params': params, 'note': text}]})
         for kind, spec in tasks.TYPES.items():

@@ -397,6 +397,9 @@ function renderDetails(n) {
   if (n.kind === 'Host' && !n.props.external) actions.append(button('Scan now', () => queueScan(n.label), 'btn pri'));
   if (n.kind === 'Host' && !n.props.external) actions.append(button('Open in planner', () => { location.href = `/planner#overview@${encodeURIComponent(n.label)}`; }, 'btn'));
   if (n.kind === 'MountPoint' && n.host) actions.append(button('Largest files', () => runSearch({ under: n.label, host: n.host, size_gt: '1MiB' }), 'btn'));
+  if ((n.kind === 'Host' || n.kind === 'MountPoint') && typeof openGitForPath === 'function') {
+    actions.append(button('Git repos…', () => openGitForPath(n.host || n.label, n.kind === 'MountPoint' ? n.label : '/'), 'btn ghost'));
+  }
   const nb = document.createElement('ul'); nb.className = 'nbrs';
   for (const { e, other, out } of (S.adj.get(n.id) || []).slice().sort((a, b) => a.e.rel.localeCompare(b.e.rel))) {
     const li = document.createElement('li');
@@ -406,7 +409,29 @@ function renderDetails(n) {
     b.append(dot, text('span', `${out ? '→' : '←'} ${e.rel}`, 'rel'), text('span', other.label + extra, 'lbl'));
     li.append(b); nb.append(li);
   }
-  box.replaceChildren(head, actions, text('h3', 'Properties'), dl, text('h3', `Connections (${nb.children.length})`), nb);
+  const sections = [head, actions, text('h3', 'Properties'), dl, text('h3', `Connections (${nb.children.length})`), nb];
+
+  // Surfaced Git Repos under this node (Host or MountPoint)
+  if (window.GITV && GITV.data && GITV.data.repos) {
+    const reposUnder = GITV.data.repos.filter((r) => {
+      if (n.kind === 'Host') return r.host === n.label;
+      if (n.kind === 'MountPoint') return r.host === n.host && (r.path === n.label || r.path.startsWith(n.label.replace(/\/$/, '') + '/'));
+      return false;
+    });
+    if (reposUnder.length) {
+      const gitUl = document.createElement('ul'); gitUl.className = 'nbrs';
+      for (const r of reposUnder) {
+        const li = document.createElement('li');
+        const b = button('', () => { if (typeof openGitDrawer === 'function') openGitDrawer(r, 'status'); });
+        const dot = text('i', ''); dot.className = `dot ${r.state === 'error' ? 'broken' : r.state === 'uncommitted' || r.state === 'unpushed' ? 'local-only' : 'protected'}`;
+        b.append(dot, text('span', r.state, 'rel'), text('span', `${r.name} (${r.path})`, 'lbl'));
+        li.append(b); gitUl.append(li);
+      }
+      sections.push(text('h3', `Git Repositories (${reposUnder.length})`), gitUl);
+    }
+  }
+
+  box.replaceChildren(...sections);
 }
 function renderSummary() {
   if (S.selected) return;

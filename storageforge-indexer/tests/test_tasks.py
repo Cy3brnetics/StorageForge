@@ -181,6 +181,42 @@ class ShareChecks(Fleet):
         shares.remove_export(self.db, self.conn, 'nas', res['index'])
         self.assertEqual(shares.design_exports(self.conn, 'nas'), [])
 
+    def test_edit_and_remove_find_the_share_not_a_list_position(self):
+        a = {'protocol': 'NFS', 'path': '/mnt/pool/photos', 'rules': [{'clients': '10.0.0.0/24', 'options': 'ro'}]}
+        b = {'protocol': 'SMB3', 'name': 'docs', 'path': '/mnt/backup', 'clients': 'gabe', 'smb': {'comment': 'Docs'},
+             'mounts': [{'host': 'pc', 'path': '/mnt/docs', 'idle_min': 5}]}
+        for e in (a, b):
+            shares.save_export(self.db, self.conn, 'nas', e, None, 'test')
+        # the topology's merged list numbered these differently: #0 here would be photos, the identity says docs
+        res = shares.save_export(self.db, self.conn, 'nas', {**b, 'clients': 'gabe @family'}, 0, 'test', {'protocol': 'SMB', 'name': 'DOCS'})
+        self.assertEqual(res['index'], 1)
+        saved = shares.design_exports(self.conn, 'nas')
+        self.assertEqual([e['clients'] for e in saved], ['10.0.0.0/24', 'gabe @family'])
+        self.assertEqual(saved[1]['smb'], {'comment': 'Docs'})
+        self.assertEqual(saved[1]['mounts'][0]['idle_min'], 5)
+        with self.assertRaises(LookupError):                                  # gone since the view was loaded
+            shares.save_export(self.db, self.conn, 'nas', b, None, 'test', {'protocol': 'SMB', 'name': 'other'})
+        with self.assertRaises(ValueError):                                   # merging the two would lose one
+            shares.save_export(self.db, self.conn, 'nas', {**a, 'path': '/mnt/pool/photos/'}, None, 'test')
+        with self.assertRaises(ValueError):                                   # nor may an edit turn into another share
+            shares.save_export(self.db, self.conn, 'nas', a, None, 'test', {'protocol': 'SMB', 'name': 'docs'})
+        shares.remove_export(self.db, self.conn, 'nas', 0, {'protocol': 'SMB', 'name': 'docs'})
+        self.assertEqual([e['proto'] for e in shares.design_exports(self.conn, 'nas')], ['NFS'])
+
+    def test_a_deployed_share_can_be_removed_but_a_scanned_one_cannot(self):
+        from storageforge_index import graph
+        shares.save_export(self.db, self.conn, 'nas', {'protocol': 'NFS', 'path': '/mnt/pool/photos', 'clients': '10.0.0.0/24'}, None, 'test')
+        bp = graph.stored_blueprint(self.conn, 'nas')
+        bp['exports'][-1]['fromScan'] = True                                  # the scan has seen it on the host
+        bp['exports'].append({'protocol': 'NFS', 'name': '/srv/own', 'path': '/srv/own', 'fromScan': True})
+        graph.store_blueprint(self.conn, bp)
+        with self.assertRaises(ValueError):
+            shares.remove_export(self.db, self.conn, 'nas', len(bp['exports']) - 1)
+        with self.assertRaises(LookupError):                                  # by identity too: not a designed share
+            shares.remove_export(self.db, self.conn, 'nas', -1, {'protocol': 'NFS', 'path': '/srv/own'})
+        shares.remove_export(self.db, self.conn, 'nas', -1, {'protocol': 'NFS', 'path': '/mnt/pool/photos'})
+        self.assertEqual(shares.design_exports(self.conn, 'nas'), [])
+
 
 class MoveExtras(Fleet):
     def plan(self):

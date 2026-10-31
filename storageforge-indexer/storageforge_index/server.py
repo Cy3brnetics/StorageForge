@@ -23,6 +23,9 @@ GET  /api/search?q=&host=&size_gt=&type=&under=&limit=
 GET  /api/jobs                      recent scan jobs
 GET  /api/audit[?limit=]            newest audit entries
 GET  /api/audit/verify              hash-chain verification (unlocks the vault)
+GET  /api/log[?host=&sources=&outcomes=&q=&since=&until=&limit=&offset=]   what has been done, from every source
+GET  /api/log/output?id=             the full output of one deploy run or fetched log
+GET  /api/log/export?format=csv|json|text[&output=1&...]   the same list as a file
 POST /api/scan  {"host": "…"}       queue a vault-backed scan
 POST /api/scan/all                  queue a scan of every host with a scan binding
 GET  /api/keys                      vault keys (public halves) and host bindings
@@ -49,9 +52,9 @@ GET  /api/git?host=                  git repositories found by scans, with their
 GET|PUT /api/git/ignore              path fragments hidden from the Git tab, for every host ("*") or one; "!x" shows x
 GET  /api/shares/check?host=         the NFS/SMB shares in a host's design, checked against the index
 GET  /api/shares/script?host=        the script that deploys them on the server and mounts them on clients
-POST /api/shares/validate  {"host", "export", "index"}   check one share before saving it (folder, access, mount points)
-POST /api/shares  {"host", "export", "index"}   add the share to the host's design, or replace share #index
-DELETE /api/shares?host=&index=      remove a designed share from the host's design
+POST /api/shares/validate  {"host", "export", "index"|"was"}   check one share before saving it (folder, access, mount points)
+POST /api/shares  {"host", "export", "index"|"was"}   add the share to the host's design, or replace share #index or the share "was" {protocol, name, path}
+DELETE /api/shares?host=&index= or &protocol=&name=&path=      remove a designed share from the host's design
 GET  /api/fs/browse?host=&path=      folders and files at a path from the index, with mounts, shares and planned mounts
 GET  /api/tasks                      saved storage tasks, block types, templates and where tasks are installed
 POST /api/tasks  {"name", "host", "schedule", "blocks": [...], "on_fail": [...]}   save a new task
@@ -122,7 +125,7 @@ from flask_login import LoginManager, current_user, login_required, login_user, 
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, folders, gitrepos, graph, jobs, preflight, protection,
+from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, folders, gitrepos, graph, jobs, logbook, preflight, protection,
                fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, reinstall, retire, shares, tasks, users)
 from .capacity import parse_size, trends
 from .db import Database, epoch
@@ -178,6 +181,7 @@ def session_secret_from_env() -> str:
 
 ROLE_RANK = {'viewer': 0, 'operator': 1, 'admin': 2}
 ANYONE = ('/api/login', '/api/logout', '/api/reauth', '/api/me', '/api/me/password')
+RUNS_ON_HOSTS = ('/api/git/status', '/api/git/history', '/api/git/commit')    # these read over SSH, live, not from the index
 ADMIN_ANY_METHOD = ('/api/users', '/api/deploy/settings', '/api/audit/verify')
 ADMIN_WRITES = ('/api/keys', '/api/bindings', '/api/hostkey', '/api/access/grant', '/api/deploy/access', '/api/backups', '/api/planner/example')
 
@@ -191,7 +195,7 @@ def required_role(method: str, path: str) -> str:
     if under(ADMIN_ANY_METHOD):
         return 'admin'
     if method in ('GET', 'HEAD'):
-        return 'operator' if path.rsplit('/', 1)[-1] in ('script', 'ansible') else 'viewer'
+        return 'operator' if path.rsplit('/', 1)[-1] in ('script', 'ansible') or path in RUNS_ON_HOSTS else 'viewer'
     if under(ADMIN_WRITES) or (method == 'DELETE' and re.fullmatch(r'/api/hosts/[^/]+', path)):
         return 'admin'
     return 'operator'
@@ -882,6 +886,33 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             weak = log.unkeyed()                 # keyless entries after keyed ones: rewritable by a database writer
         return jsonify(valid=ok, entries_checked=n, first_bad_id=bad, **weak)
 
+    def log_filter():
+        a = request.args
+        return logbook.clean_filter(a.get('host'), a.get('sources'), a.get('outcomes'), a.get('q'), a.get('since'), a.get('until'))
+
+    @web.get('/api/log')
+    @login_required
+    def api_log():
+        return Response(json.dumps(logbook.page(conn(), log_filter(), arg_num('limit', 100, 1, 500), arg_num('offset', 0, 0, logbook.MAX_EXPORT)),
+                                   default=str), mimetype='application/json')
+
+    @web.get('/api/log/output')
+    @login_required
+    def api_log_output():
+        return jsonify(id=request.args.get('id', ''), output=logbook.output_of(conn(), request.args.get('id', '')))
+
+    @web.get('/api/log/export')
+    @login_required
+    def api_log_export():
+        f, fmt = log_filter(), request.args.get('format') or 'csv'
+        text, n = logbook.export(conn(), f, fmt, request.args.get('output') in ('1', 'true'))
+        core.audit(conn(), actor(), 'log.export', 'ok', f['host'], {'format': fmt, 'entries': n, 'q': f['q'],
+                                                                    'sources': sorted(f['sources']), 'outcomes': sorted(f['outcomes'])})
+        mime, ext = logbook.FORMATS[fmt]
+        stamp = time.strftime('%Y%m%d-%H%M%S', time.gmtime())
+        return Response(text, mimetype=mime.split(';')[0], headers={
+            'Content-Disposition': f'attachment; filename="storageforge-log-{stamp}.{ext}"', 'X-Content-Type-Options': 'nosniff'})
+
     @web.post('/api/scan')
     @login_required
     def api_scan():
@@ -1153,6 +1184,105 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             core.audit(conn(), actor(), 'git.ignore', 'ok', str(body.get('host') or '') or None, {'paths': len(paths)})
         return jsonify(ignore=gitrepos.ignore_lists(conn()), builtin=list(gitrepos.NOISE))
 
+    @web.post('/api/git/survey')
+    @login_required
+    def api_git_survey():
+        body = (request.get_json(silent=True) or {}) if request.is_json else {}
+        host = body.get('host') or request.args.get('host')
+        if not host:
+            hosts = [r[0] for r in conn().all('SELECT hostname FROM hosts ORDER BY hostname')]
+            results = []
+            for h in hosts:
+                try:
+                    results.append(gitrepos.survey_host(db, h, actor()))
+                except Exception as exc:
+                    results.append({'host': h, 'error': str(exc), 'repos': 0})
+            core.audit(conn(), actor(), 'git.survey', 'ok', None, {'count': len(hosts)})
+            return jsonify(results=results, repos=gitrepos.listing(conn())['repos'])
+        try:
+            res = gitrepos.survey_host(db, host, actor())
+            core.audit(conn(), actor(), 'git.survey', 'ok', host, {'repos': res.get('repos', 0)})
+            return jsonify(res)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        except Exception as exc:
+            return jsonify(error=str(exc)), 502
+
+    @web.route('/api/git/status', methods=['GET', 'POST'])
+    @login_required
+    def api_git_status():
+        body = (request.get_json(silent=True) or {}) if request.method == 'POST' and request.is_json else {}
+        host = body.get('host') or request.args.get('host')
+        path = body.get('path') or request.args.get('path')
+        if not host or not path:
+            return jsonify(error='host and path are required'), 400
+        try:
+            return jsonify(gitrepos.repo_status(db, host, path, actor()))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        except Exception as exc:
+            return jsonify(error=str(exc)), 502
+
+    @web.post('/api/git/sync')
+    @login_required
+    def api_git_sync():
+        try:
+            body = json_body()
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        host = body.get('host')
+        path = body.get('path')
+        action = body.get('action') or 'sync'
+        if not host or not path:
+            return jsonify(error='host and path are required'), 400
+        if action == 'push':
+            stale = password_stale()
+            if stale:
+                return stale
+        try:
+            return jsonify(gitrepos.repo_sync(db, host, path, action, actor()))
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        except Exception as exc:
+            return jsonify(error=str(exc)), 502
+
+    @web.get('/api/git/history')
+    @login_required
+    def api_git_history():
+        host = request.args.get('host')
+        path = request.args.get('path')
+        if not host or not path:
+            return jsonify(error='host and path are required'), 400
+        try:
+            max_c = min(int(request.args.get('max', 50)), 200)
+        except ValueError:
+            max_c = 50
+        try:
+            return jsonify(gitrepos.repo_history(db, host, path, max_c))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        except Exception as exc:
+            return jsonify(error=str(exc)), 502
+
+    @web.get('/api/git/commit')
+    @login_required
+    def api_git_commit():
+        host = request.args.get('host')
+        path = request.args.get('path')
+        sha = request.args.get('sha')
+        if not host or not path or not sha:
+            return jsonify(error='host, path and sha are required'), 400
+        try:
+            return jsonify(gitrepos.repo_commit(db, host, path, sha))
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        except Exception as exc:
+            return jsonify(error=str(exc)), 502
+
     @web.get('/api/shares/check')
     @login_required
     def api_shares_check():
@@ -1180,7 +1310,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         idx = body.get('index')
         try:
             return jsonify(shares.validate(conn(), str(body.get('host', '')), body.get('export') or {},
-                                           None if idx is None else int(idx)))
+                                           None if idx is None else int(idx), body.get('was') or None))
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
 
@@ -1190,13 +1320,14 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         try:
             if request.method == 'DELETE':
                 host, idx = request.args.get('host', ''), int(request.args.get('index', -1))
-                res = shares.remove_export(db, conn(), host, idx)
+                was = {k: request.args[k] for k in ('protocol', 'name', 'path') if k in request.args} or None
+                res = shares.remove_export(db, conn(), host, idx, was)
                 core.audit(conn(), actor(), 'shares.remove', 'ok', host, {'index': idx})
                 return jsonify(res)
             body = json_body()
             idx = body.get('index')
             res = shares.save_export(db, conn(), str(body.get('host', '')), body.get('export') or {},
-                                     None if idx is None else int(idx), actor())
+                                     None if idx is None else int(idx), actor(), body.get('was') or None)
             core.audit(conn(), actor(), 'shares.save', 'ok', res['host'],
                        {'index': res['index'], 'path': res['export']['path'], 'proto': res['export']['protocol']})
             return jsonify(res)
@@ -1285,6 +1416,16 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 core.audit(conn(), actor(), 'changes.delete', 'ok', None, {'plan': plan_id})
                 return jsonify(deleted=plan_id)
             return jsonify(changes.get_plan(conn(), plan_id))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/changes/<int:plan_id>/ran')
+    @login_required
+    def api_change_mark_ran(plan_id):
+        try:
+            plan = changes.mark_ran(conn(), plan_id, actor())
+            core.audit(conn(), actor(), 'changes.ran', 'ok', None, {'plan': plan_id})
+            return jsonify(plan)
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
 

@@ -384,7 +384,7 @@ if verify_step 0; then echo VERDICT=match; else echo VERDICT=differ; fi""")
             (tmp / 'fstab').write_text(fstab)
             return self.bash(f"""ok() {{ echo "OK $*"; }}; conflict() {{ echo "CONFLICT $*"; }}; missing() {{ :; }}; section() {{ :; }}
 need_cmd() {{ return 0; }}; mountpoint() {{ return 0; }}; APPLY=1; WANT_LINES=()
-C_TARGET=(/mnt/media); C_SOURCE=(nas:/srv/media); C_PROTO=(NFS)
+C_TARGET=(/mnt/media); C_SOURCE=(nas:/srv/media); C_PROTO=(NFS); C_FS=(nfs4); C_OPTS=(''); C_AUTO=(1); C_SET=(0)
 {fn}client_mount 0; printf 'WANT %s\\n' "${{WANT_LINES[@]}}" """)
         own = 'nas:/srv/media /mnt/media nfs4 rw,hard,vers=4.2 0 0'
         out = run(own + '\n')

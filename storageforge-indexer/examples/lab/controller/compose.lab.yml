@@ -1,0 +1,13 @@
+# Added to the repo's docker-compose.yml on sf-ctl: an ntfy server for alerts to reach, so nothing leaves the lab.
+services:
+  ntfy:
+    image: binwiederhier/ntfy:v2.15.0
+    command: [serve]
+    restart: unless-stopped
+    environment:
+      NTFY_CACHE_FILE: /var/cache/ntfy/cache.db
+      NTFY_CACHE_DURATION: 72h
+    tmpfs:
+      - /var/cache/ntfy
+    ports:
+      - "8090:80"

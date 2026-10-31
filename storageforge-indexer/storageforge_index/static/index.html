@@ -124,6 +124,11 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <div id="movesbox" class="stack"></div>
     </div>
     <div id="tab-git" class="tab" hidden>
+      <div class="git-header-bar row">
+        <button id="git-find-btn" type="button" class="btn pri sm" title="Scan or discover repositories on hosts">Find repos</button>
+        <input id="git-filter-text" type="search" placeholder="Filter repositories..." class="sm" aria-label="Filter repositories" style="max-width:180px">
+        <span id="git-scan-msg" class="muted small" style="margin-left:auto"></span>
+      </div>
       <p class="muted">Every git repository the scans found. Copies are matched by their first commit, so a bare archive on another machine counts whatever it is called.</p>
       <div id="gitbox" class="stack"></div>
     </div>
@@ -158,6 +163,42 @@ storageforge-index graph import --blueprint atlas.json</pre>
           <select id="newuserrole" aria-label="Role"><option>viewer</option><option>operator</option><option>admin</option></select>
           <button class="btn" type="submit">Add account</button><span id="usermsg" class="muted"></span>
         </form>
+      </div>
+    </div>
+    <div id="gitdrawer" class="pdrawer collapsed" aria-label="Git Inspector">
+      <div class="pdrawer-bar">
+        <button id="gitdrawer-toggle" type="button" class="pdrawer-toggle" title="Toggle Git Inspector">
+          <svg class="pdrawer-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 15l-6-6-6 6"/></svg>
+          <span class="pdrawer-title">
+            <svg viewBox="0 0 24 24" class="pdrawer-git-icon" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 5-8 4-11 8.5"/></svg>
+            <b id="gitdrawer-title">Git Inspector</b>
+          </span>
+          <span id="gitdrawer-pill" class="pill sm unknown" hidden></span>
+        </button>
+        <div class="pdrawer-actions">
+          <button id="gitdrawer-btn-sync" type="button" class="btn ghost sm" title="Quick sync" hidden>Sync</button>
+          <button id="gitdrawer-close" type="button" class="iconbtn sm" title="Collapse" aria-label="Collapse"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+        </div>
+      </div>
+      <div id="gitdrawer-body" class="pdrawer-body">
+        <div class="pdrawer-subbar">
+          <div class="pdrawer-meta">
+            <span id="gitdrawer-host" class="mono small muted"></span>
+            <span id="gitdrawer-path" class="mono small" title="Repository path">Select a repository to inspect</span>
+          </div>
+          <div id="gitdrawer-nav" class="seg sm" role="tablist" aria-label="Git inspector views">
+            <button type="button" data-gtab="status" aria-pressed="true">Status</button>
+            <button type="button" data-gtab="commits" aria-pressed="false">Commits</button>
+            <button type="button" data-gtab="changelog" aria-pressed="false">Changelog</button>
+            <button type="button" data-gtab="sync" aria-pressed="false">Sync</button>
+          </div>
+        </div>
+        <div id="gitdrawer-content" class="pdrawer-content">
+          <div id="gtab-status" class="gtab-pane"></div>
+          <div id="gtab-commits" class="gtab-pane" hidden></div>
+          <div id="gtab-changelog" class="gtab-pane" hidden></div>
+          <div id="gtab-sync" class="gtab-pane" hidden></div>
+        </div>
       </div>
     </div>
     </div>

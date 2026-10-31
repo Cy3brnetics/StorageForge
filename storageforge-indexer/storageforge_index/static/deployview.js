@@ -105,6 +105,10 @@ async function pollGroup() {
     loadDeploy();
     if (g.error) return;
     if (g.kind === 'changes') chApplied(g.ref);
+    if (g.kind === 'shares') {
+      if (typeof loadDesigns === 'function') loadDesigns();
+      if (typeof smLoad === 'function') smLoad();
+    }
     if (g.kind === 'jobs') loadMoves(!MV.dirty && MV.plan?.id === g.ref ? g.ref : undefined);
     setTimeout(followJobs, 1000);    // the group's rescans are queued as it ends; the graph and designs reload after them
   }

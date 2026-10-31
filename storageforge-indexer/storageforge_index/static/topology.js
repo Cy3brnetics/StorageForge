@@ -60,6 +60,7 @@ async function loadDesigns() {
   if (T.sel && !(T.docs.get(T.sel.host) || {}).bp) T.sel = null;
   renderTopo();
   if (T.sel) renderEditor();
+  if (typeof smLoad === 'function') smLoad();     // the shares manager lists these docs
 }
 const dirtyDocs = () => [...T.docs.values()].filter((d) => d.dirty);
 function touched(doc, key) {
@@ -560,6 +561,7 @@ function initCanvas() {
       tool('Fit', fitView, 'Fit everything on screen (F)'),
       tool('Auto-layout', autoLayout, 'Forget the saved positions and lay the tables out again'),
       tool('Collapse all', toggleAll, 'Collapse or expand every table', 'tcollapse'),
+      tool('Shares', () => openSharesManager(), 'See, edit and remove the NFS and SMB shares on these hosts'),
       el('span', { class: 'tsep' }), T.find, T.findN),
     el('details', { class: 'tlegend' }, el('summary', {}, 'Legend'),
       el('div', { class: 'tleg' },
@@ -818,8 +820,9 @@ const mountActions = (doc, n) => {
     { label: 'Move from here…', run: () => moveFrom(doc.host, n.target) },
     { label: 'Share this…', run: () => addExport(doc, n.target) },
     { label: '+ Link into this', run: () => addLink(doc, n.target) },
+    { label: 'Git repos…', run: () => { if (typeof openGitForPath === 'function') openGitForPath(doc.host, n.target); } },
     typeof newTaskAt === 'function' ? { label: 'Back up with a task…', run: () => newTaskAt(doc.host, n.target, 'backup') } : null,
-    typeof newTaskAt === 'function' && /btrfs|zfs/i.test(fs) ? { label: 'Snapshot with a task…', run: () => newTaskAt(doc.host, n.target, 'snapshot', fs) } : null];
+    typeof newTaskAt === 'function' && /btrfs|zfs/i.test(fs) ? { label: 'Snapshot with a task…', run: () => newTaskAt(doc.host, n.target, 'snapshot', fs) } : null].filter(Boolean);
 };
 
 /* ── right-click menus: what the editor offers, staged changes, copy ── */
@@ -889,6 +892,7 @@ function hostMenu(doc) {
   const h = doc.host;
   return [{ heading: h }, { label: 'Scan now', run: () => queueScan(h) }, { label: 'Scan schedule…', run: () => editSchedule(h) },
     doc.bp ? { label: '+ Link…', run: () => addLink(doc) } : null, doc.bp ? { label: '+ Export…', run: () => addExport(doc) } : null,
+    doc.bp && (doc.bp.exports || []).length ? { label: 'Manage shares…', run: () => openSharesManager(h) } : null,
     doc.bp && designedShares(doc).length ? { label: 'Deploy shares…', run: () => deployShares(doc) } : null,
     doc.bp && typeof tasksOn === 'function' && tasksOn(h).length ? { label: `Review ${tasksOn(h).length} staged change${tasksOn(h).length === 1 ? '' : 's'}`, run: () => showTab('changes') } : null,
     { label: 'Open in planner', run: () => { location.href = `/planner#topology@${encodeURIComponent(h)}`; } },

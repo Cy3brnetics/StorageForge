@@ -17,7 +17,7 @@ IMPORT_DIR=${STORAGEFORGE_IMPORT_DIR:-/run/secrets/ssh-import}
 # every storageforge-index subcommand (tests/test_consistency.py fails when one is missing)
 case "${1:-serve}" in
   scan|search|changes|dupes|folders|access|moves|tasks|git|shares|plan|deploy|docker|backup|restore|prune|hosts|config|\
-  export-markdown|report|vault|audit|graph|canvas|blueprint|migrate|serve|healthcheck|user|-*) ;;
+  export-markdown|report|vault|audit|log|graph|canvas|blueprint|migrate|serve|healthcheck|user|-*) ;;
   *) exec "$@" ;;
 esac
 # the subcommand, past the global options (--db takes a value); none for --version or --help
