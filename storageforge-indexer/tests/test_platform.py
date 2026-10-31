@@ -1171,6 +1171,16 @@ class ServerTests(DBCase):
                                   headers={'X-Forwarded-For': '198.51.100.4, 10.1.1.1', 'X-Forwarded-Proto': 'https'})
         self.assertEqual(r.get_data(as_text=True), 'https 198.51.100.4')     # https from the nearest proxy; client 2 hops back
 
+    def test_health_check_does_not_look_up_the_proxy(self):
+        """The proxy starts only once the app is healthy: a slow answer for its missing name failed the health check."""
+        from unittest import mock
+
+        from storageforge_index import server
+        web = server.create_app(server.App(self.db), 's' * 48, proxy_hops=1, proxy_host='proxy')
+        with mock.patch.object(server.socket, 'getaddrinfo', side_effect=AssertionError('looked up')) as lookup:
+            self.assertEqual(web.test_client().get('/healthz', environ_base={'REMOTE_ADDR': '127.0.0.1'}).status_code, 200)
+        lookup.assert_not_called()
+
     def test_commands_on_hosts_need_the_password_again(self):
         self.login()
         with self.later(6 * 60):

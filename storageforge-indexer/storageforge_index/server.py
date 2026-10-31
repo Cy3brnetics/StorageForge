@@ -339,6 +339,10 @@ class _FromProxy:
         return peer in self.addrs
 
     def __call__(self, environ, start_response):
+        # /healthz uses no forwarded header and needs no lookup: compose starts the proxy only once the app is healthy, so
+        # until then the name doesn't exist, and a DNS server that is slow to say so would time out the health check
+        if environ.get('PATH_INFO') == '/healthz':
+            return self.plain(environ, start_response)
         if not self.proxy_host or self._is_proxy(environ.get('REMOTE_ADDR', '')):
             return self.fixed(environ, start_response)
         return self.plain(environ, start_response)
