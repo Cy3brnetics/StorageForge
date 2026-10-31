@@ -470,8 +470,9 @@ def raw(db: Database, host: str, script: str, *, kind: str, ref: str | None = No
         conn.close()
 
 
-def start_group(db: Database, items: list[dict], actor: str, stop_on_failure: bool = True) -> str:
-    """Run items (dicts of run() arguments) one after another in a background thread; returns the group id to poll."""
+def start_group(db: Database, items: list[dict], actor: str, stop_on_failure: bool = True, after=None) -> str:
+    """Run items (dicts of run() arguments) one after another in a background thread; returns the group id to poll.
+    after(host) is called once for each host an apply item ran on, failed or not, once the group has ended."""
     gid = uuid.uuid4().hex
     conn = db.connect()
     try:   # placeholder rows, so the UI sees every host of the group at once
@@ -483,7 +484,7 @@ def start_group(db: Database, items: list[dict], actor: str, stop_on_failure: bo
         conn.close()
 
     def work():
-        failed = False
+        failed, applied = False, {}
         for rid, it in zip(ids, items):
             c = db.connect()
             try:
@@ -502,6 +503,11 @@ def start_group(db: Database, items: list[dict], actor: str, stop_on_failure: bo
                 _guard(lambda: hook(res))
             if res['status'] != 'ok':
                 failed = stop_on_failure
+            if it.get('mode') == 'apply':
+                applied[it['host']] = True
+        if after:
+            for h in applied:
+                _guard(lambda h=h: after(h))
     threading.Thread(target=lambda: _guard(work), name=f'deploy-{gid[:8]}', daemon=True).start()
     return gid
 

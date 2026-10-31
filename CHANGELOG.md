@@ -12,6 +12,8 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 - CI for Forgejo Actions, ruff settings, `.env.example`, and guides for disaster recovery, troubleshooting and target hosts.
 
 ### Fixed
+- An apply from the web UI rescans the hosts it ran on, so the other tabs show the result instead of waiting up to 6 hours for the next scan.
+- A change plan that finished applying is no longer staged and moves to "Already ran" in the picker. Editing it makes it a plan to run again; one that skipped drive tasks stays unfinished and says so.
 - `jobs.py` used f-string syntax that only Python 3.12 and later accept, though `pyproject.toml` promises 3.10.
 - Two vault key derivations at once could hang, leaving deploys stuck and later scans failing with "Not enough memory to derive key" until a restart. They now run one at a time.
 - A restart now marks unfinished deploy runs as failed, as it already did for scan jobs, instead of leaving them shown as running.

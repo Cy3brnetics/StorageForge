@@ -14,6 +14,7 @@ goes there too.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import posixpath
 import re
@@ -654,16 +655,38 @@ def _check_devices(c: Host, h: dict, devs: list, wipe: bool, say):
 
 
 # ── storage ─────────────────────────────────────────────────────────────
+def plan_hash(plan: dict) -> str:
+    return hashlib.sha256(json.dumps(plan.get('tasks') or [], sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _ran_at(marks: list[dict], plan_id: int, plan: dict) -> int | None:
+    """When this plan, as it is now, last finished on all its hosts. Editing it makes it a plan to run again."""
+    digest = plan_hash(plan)
+    done = [d for d in marks if d['ref'] == str(plan_id) and d['hash'] == digest]
+    if not done or not set(done[0]['detail'].get('hosts') or ()) <= {d['host'] for d in done}:
+        return None
+    return max(d['at'] for d in done)
+
+
 def list_plans(conn: Conn) -> list[dict]:
-    return [{'id': r[0], 'name': r[1], 'tasks': len(json.loads(r[2]).get('tasks') or []), 'updated_at': r[3]}
-            for r in conn.all('SELECT plan_id, name, body_json, updated_at FROM change_plans ORDER BY name')]
+    from . import deploy
+    marks = deploy.deployed(conn, kind='changes')
+    out = []
+    for r in conn.all('SELECT plan_id, name, body_json, updated_at FROM change_plans ORDER BY name'):
+        body = json.loads(r[2])
+        out.append({'id': r[0], 'name': r[1], 'tasks': len(body.get('tasks') or []), 'updated_at': r[3],
+                    'ran_at': _ran_at(marks, r[0], body)})
+    return out
 
 
 def get_plan(conn: Conn, plan_id: int) -> dict:
+    from . import deploy
     rows = conn.all('SELECT plan_id, body_json, updated_at FROM change_plans WHERE plan_id = :i', {'i': plan_id})
     if not rows:
         raise LookupError(f'no change plan #{plan_id}')
-    return {'id': rows[0][0], **json.loads(rows[0][1]), 'updated_at': rows[0][2]}
+    body = json.loads(rows[0][1])
+    return {'id': rows[0][0], **body, 'updated_at': rows[0][2],
+            'ran_at': _ran_at(deploy.deployed(conn, kind='changes'), rows[0][0], body)}
 
 
 def save_plan(conn: Conn, body: dict, actor: str, plan_id: int | None = None) -> int:
@@ -686,6 +709,7 @@ def save_plan(conn: Conn, body: dict, actor: str, plan_id: int | None = None) ->
 
 def delete_plan(conn: Conn, plan_id: int):
     conn.execute('DELETE FROM change_plans WHERE plan_id = :i', {'i': plan_id})
+    conn.execute("DELETE FROM deployed WHERE kind = 'changes' AND ref = :r", {'r': str(plan_id)})    # ids can be reused
 
 
 # ── the Bash script ─────────────────────────────────────────────────────
@@ -702,8 +726,11 @@ ARGS = {'dir': ('path', 'owner', 'group', 'mode'), 'rename': ('path', 'dest'), '
         'lvm-lv': ('vg', 'lv', 'size', 'fstype', 'label'), 'lvm-extend': ('vg', 'lv', 'size'), 'lvm-snapshot': ('vg', 'lv', 'name', 'size')}
 
 
-def deploy_items(conn: Conn, plan: dict, mode: str, destructive: bool = False) -> list[dict]:
-    """deploy.start_group items: the plan's script on each of its hosts, in the order the plan first uses them."""
+def deploy_items(db, conn: Conn, plan: dict, mode: str, actor: str, destructive: bool = False) -> list[dict]:
+    """deploy.start_group items: the plan's script on each of its hosts, in the order the plan first uses them.
+    An apply that ends clean on every host marks the plan as ran; one that skipped drive tasks has not finished."""
+    from . import deploy
+    plan_id, digest = plan.get('id'), plan_hash(plan)
     plan = normalize(plan)
     hs, order = hosts(conn), []
     for t in plan['tasks']:
@@ -713,7 +740,19 @@ def deploy_items(conn: Conn, plan: dict, mode: str, destructive: bool = False) -
             order.append(name)
     text = script(conn, plan)
     args = (['--apply'] + (['--destructive'] if destructive else [])) if mode == 'apply' else []
-    return [{'host': h, 'script': text, 'args': args, 'kind': 'changes', 'ref': plan['name'], 'mode': mode} for h in order]
+
+    def mark(host):
+        def hook(res):
+            if 'destructive, skipped' in res['output']:
+                return
+            c = db.connect()
+            try:
+                deploy.mark_deployed(c, host, 'changes', str(plan_id), digest, {'name': plan['name'], 'hosts': order}, actor)
+            finally:
+                c.close()
+        return hook
+    return [{'host': h, 'script': text, 'args': args, 'kind': 'changes', 'ref': plan['name'], 'mode': mode,
+             **({'on_ok': mark(h)} if mode == 'apply' and plan_id else {})} for h in order]
 
 
 def script(conn: Conn, plan: dict) -> str:

@@ -43,7 +43,7 @@ async function pollGroup() {
   } catch (err) { g.error = err.message; g.done = true; }
   renderGroup();
   if (!g.done) DP.poll = setTimeout(pollGroup, 1000);
-  else if (g.mode === 'apply') loadDeploy();
+  else if (g.mode === 'apply') { loadDeploy(); if (g.kind === 'changes' && !g.error) chApplied(g.ref); }
 }
 function outputBlock(out) {
   const pre = el('pre', { class: 'dpout' });
@@ -75,6 +75,10 @@ function renderGroup() {
     kids.push(el('details', { class: 'card', open: !g.done || r.status !== 'ok' || g.runs.length === 1 },
       el('summary', {}, el('b', { class: 'mono' }, r.host), ` · ${r.kind}${r.mode === 'apply' ? '' : ' report'} · `, text('span', r.status, `pill ${label}`)),
       outputBlock(r.output || (r.status === 'queued' ? 'waiting for the hosts before it' : ''))));
+  }
+  if (g.done && !g.error && g.mode === 'apply') {
+    if (g.runs.some((r) => (r.output || '').includes('destructive, skipped'))) kids.push(text('p', 'Drive tasks were skipped, so this plan has not finished. Deploy it again with "include drive tasks" ticked.', 'st-failed small'));
+    kids.push(text('p', 'These hosts are being rescanned, so the other tabs catch up once their scans end.', 'muted small'));
   }
   if (g.done && !g.error && g.mode === 'report') {
     const again = (extra = {}) => startDeploy(g.kind, g.ref, 'apply', g.title, { ...g.extra, ...extra });

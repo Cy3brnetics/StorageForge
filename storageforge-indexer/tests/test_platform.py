@@ -584,6 +584,72 @@ class ChangePlanTests(DBCase):
         with self.assertRaises(ValueError):                                     # the field checks every saved plan gets
             changes.normalize({'name': r['name'], 'tasks': r['tasks']})
 
+    def _ran_plan(self):
+        from storageforge_index import changes
+        body = {'name': 'tidy', 'tasks': [{'type': 'dir', 'host': 'nas', 'params': {'path': '/mnt/pool/new'}}]}
+        pid = changes.save_plan(self.conn, body, 'test')
+        return changes, body, pid, changes.deploy_items(self.db, self.conn, changes.get_plan(self.conn, pid), 'apply', 'test')
+
+    def test_a_plan_that_finished_counts_as_ran_until_it_is_edited(self):
+        changes, body, pid, items = self._ran_plan()
+        self.assertIsNone(changes.list_plans(self.conn)[0]['ran_at'])
+        items[0]['on_ok']({'output': 'done\n'})
+        self.assertTrue(changes.list_plans(self.conn)[0]['ran_at'])
+        self.assertTrue(changes.get_plan(self.conn, pid)['ran_at'])
+        body['tasks'][0]['params']['path'] = '/mnt/pool/other'
+        changes.save_plan(self.conn, body, 'test', pid)
+        self.assertIsNone(changes.get_plan(self.conn, pid)['ran_at'])
+
+    def test_skipped_drive_tasks_and_reports_do_not_count_as_ran(self):
+        changes, _body, pid, items = self._ran_plan()
+        items[0]['on_ok']({'output': '  missing   destructive, skipped: mkfs (rerun with --apply --destructive)\ndone\n'})
+        self.assertIsNone(changes.get_plan(self.conn, pid)['ran_at'])
+        report = changes.deploy_items(self.db, self.conn, changes.get_plan(self.conn, pid), 'report', 'test')
+        self.assertNotIn('on_ok', report[0])
+
+    def test_a_plan_on_two_hosts_has_ran_only_when_both_finished(self):
+        from storageforge_index import changes, deploy
+        _c, _b, pid, _items = self._ran_plan()
+        plan = changes.get_plan(self.conn, pid)
+        digest, detail = changes.plan_hash(plan), {'name': 'tidy', 'hosts': ['nas', 'desk']}
+        deploy.mark_deployed(self.conn, 'nas', 'changes', str(pid), digest, detail, 'test')
+        self.assertIsNone(changes.get_plan(self.conn, pid)['ran_at'])
+        deploy.mark_deployed(self.conn, 'desk', 'changes', str(pid), digest, detail, 'test')
+        self.assertTrue(changes.get_plan(self.conn, pid)['ran_at'])
+
+    def test_deleting_a_plan_forgets_that_it_ran(self):
+        changes, _body, pid, items = self._ran_plan()
+        items[0]['on_ok']({'output': 'done\n'})
+        changes.delete_plan(self.conn, pid)
+        self.assertEqual(self.conn.scalar("SELECT count(*) FROM deployed WHERE kind = 'changes'"), 0)
+
+    def test_apply_calls_back_per_host_but_a_report_does_not(self):
+        from unittest import mock
+        import threading
+        from storageforge_index import deploy
+        for mode, want in (('report', []), ('apply', ['nas', 'desk'])):
+            seen, ended = [], threading.Event()
+            items = [{'host': h, 'script': 'true', 'kind': 'changes', 'ref': 'x', 'mode': mode} for h in ('nas', 'desk', 'nas')]
+
+            def fake(db, **kw):
+                if len(fake.calls) == 2:
+                    ended.set()
+                fake.calls.append(kw)
+                return {'status': 'ok', 'output': ''}
+            fake.calls = []
+            with mock.patch.object(deploy, 'run', fake), mock.patch.object(deploy.threading, 'Thread', _InlineThread):
+                deploy.start_group(self.db, items, 'test', after=seen.append)
+            self.assertTrue(ended.is_set())
+            self.assertEqual(seen, want)
+
+
+class _InlineThread:
+    def __init__(self, target, **_kw):
+        self.target = target
+
+    def start(self):
+        self.target()
+
 
 class ConnectAddressTests(DBCase):
     def test_indexed_hostname_maps_to_the_address_it_was_scanned_at(self):

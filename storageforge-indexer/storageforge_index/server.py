@@ -1131,7 +1131,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         elif kind == 'shares':
             items = shares.deploy_items(db, c, str(ref or ''), mode, actor())
         elif kind == 'changes':
-            items = changes.deploy_items(c, changes.get_plan(c, int(ref)), mode, bool(body.get('destructive')))
+            items = changes.deploy_items(db, c, changes.get_plan(c, int(ref)), mode, actor(), bool(body.get('destructive')))
         elif kind == 'tasks':
             items = tasks.deploy_items(db, c, tasks.get_task(c, int(ref)), mode, actor(), bool(body.get('run')),
                                        bool(body.get('remove')))
@@ -1142,7 +1142,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         missing = [it['host'] for it in items if not deploy.ready(c, it['host'])]
         if missing:
             return jsonify(error='set up deploy access first on: ' + ', '.join(sorted(set(missing))), hosts=sorted(set(missing))), 409
-        gid = deploy.start_group(db, items, actor(), stop_on_failure=mode == 'apply')
+        who = actor()
+        # every view reads the index: without a rescan, an apply that worked looks like nothing changed
+        gid = deploy.start_group(db, items, who, stop_on_failure=mode == 'apply', after=lambda h: core.enqueue(h, who))
         core.audit(c, actor(), f'deploy.start', 'ok', None, {'kind': kind, 'ref': ref, 'mode': mode, 'group': gid})
         return jsonify(group=gid, hosts=[it['host'] for it in items])
 

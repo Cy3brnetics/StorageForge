@@ -244,13 +244,25 @@ async function loadChanges(selectId) {
   } catch (err) { $('#changesbox').replaceChildren(text('p', err.message, 'st-failed')); return; }
   renderChanges();
 }
+/* an apply ended: a plan that finished is no longer staged, and moves to "Already ran" in the picker */
+async function chApplied(id) {
+  try { CH.plans = (await getJSON('/api/changes')).plans; } catch { return; }
+  if (CH.plan.id === id && !CH.dirty && CH.plans.find((x) => x.id === id)?.ran_at) {
+    CH.plan = { name: '', tasks: [] }; CH.result = null; chKeep(); renderStageBar();
+    if (T.mode === 'topo') renderTopo();
+  }
+  renderChanges();
+}
 function renderChanges() {
   const p = CH.plan;
+  const planOption = (x) => new Option(`${x.name} (${x.tasks})${x.ran_at ? ` · ran ${stamp(x.ran_at)}` : ''}`, x.id);
+  const ran = CH.plans.filter((x) => x.ran_at);
   const pick = el('select', { 'aria-label': 'Change plan', onchange: async () => {
     if (CH.dirty && p.tasks.length && !confirm('Leave this plan? Its unsaved changes are lost.')) { pick.value = p.id || ''; return; }
     CH.result = null;
     if (pick.value) await loadChanges(pick.value); else { CH.plan = { name: '', tasks: [] }; CH.dirty = false; chKeep(); renderChanges(); renderStageBar(); }
-  } }, new Option('New plan…', ''), ...CH.plans.map((x) => new Option(`${x.name} (${x.tasks})`, x.id)));
+  } }, new Option('New plan…', ''), ...CH.plans.filter((x) => !x.ran_at).map(planOption),
+    ran.length ? el('optgroup', { label: 'Already ran' }, ...ran.map(planOption)) : '');
   pick.value = p.id || '';
   const name = el('input', { type: 'text', placeholder: 'plan name, e.g. Reorganise raid01', 'aria-label': 'Plan name',
     onchange: () => { p.name = name.value.trim(); chTouch(); } });
@@ -286,6 +298,7 @@ function renderChanges() {
   const msg = el('p', { id: 'chmsg', class: 'muted', hidden: true });
   $('#changesbox').replaceChildren(
     el('div', { class: 'row' }, pick, name),
+    p.ran_at && !CH.dirty ? text('p', `This plan ran on ${stamp(p.ran_at)}. Deploying it again is safe: tasks already done are left alone.`, 'st-ok small') : '',
     p.tasks.length ? list : text('p', 'No changes staged. In the topology, select a disk, partition, pool, subvolume or mount and use "Plan a change", or browse a mount\'s folders.', 'muted'),
     res ? el('p', { class: res.crit ? 'st-failed' : res.warn ? 'st-running' : 'st-ok' }, `${res.crit} critical · ${res.warn} warning${res.warn === 1 ? '' : 's'}`) : '',
     el('div', { class: 'row end' },
