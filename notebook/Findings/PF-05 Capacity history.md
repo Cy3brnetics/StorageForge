@@ -1,6 +1,6 @@
 ---
 id: PF-05
-status: open
+status: done
 severity: medium
 effort: M
 area: "[[Alerts and monitoring]]"
@@ -27,3 +27,6 @@ No history: the previous value is overwritten, so there is no trend and no "full
 ## Done when
 - [ ] Mount boxes show a 30-day sparkline
 - [ ] "Full in about N days" appears when the trend is up, and feeds an alert under [[PF-01 Alerts only cover deploys|PF-01]]
+
+## Progress 2026-10-30
+`mount_usage`, `capacity.forecast`, `GET /api/capacity`, an alert and a report section. The sparkline is in the Cleanup tab, not on the topology mount boxes as first suggested.

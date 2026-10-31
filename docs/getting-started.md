@@ -80,7 +80,7 @@ examples/demo/demo.sh
 ## Without Docker
 
 ```bash
-pip install .                    # or: pip install '.[postgres,yaml]'
+pip install .                    # or: pip install '.[postgres]'
 export STORAGEFORGE_VAULT_SECRET="$(openssl rand -base64 48)"     # keep it; it unlocks the vault
 storageforge-index vault init
 storageforge-index user add admin

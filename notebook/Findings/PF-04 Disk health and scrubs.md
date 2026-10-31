@@ -1,6 +1,6 @@
 ---
 id: PF-04
-status: open
+status: in-progress
 severity: medium
 effort: M
 area: "[[Alerts and monitoring]]"
@@ -28,3 +28,6 @@ Roadmap item #3 from the 10-27 audit. **Not started**, but half of the pieces ex
 ## Done when
 - [ ] A disk with reallocated sectors shows as warn in the topology and raises an alert
 - [ ] Each btrfs/ZFS pool shows when it was last scrubbed and with how many errors
+
+## Progress 2026-10-30
+Root-owned collector installed by access setup, so the scan account gets no new sudo rules, unlike the first suggestion. Parsing is tested on fixtures only: **not yet run against real SMART data**, and hosts need access setup rerun.

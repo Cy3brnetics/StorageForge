@@ -1,6 +1,6 @@
 ---
 id: PF-08
-status: open
+status: in-progress
 severity: medium
 effort: M
 area: "[[Hosts, keys and accounts]]"
@@ -26,3 +26,6 @@ found: 2026-10-29
 ## Done when
 - [ ] A host can be retired from the UI and disappears from search, graph and the scheduler
 - [ ] Bindings can be removed from the UI
+
+## Progress 2026-10-30
+`retire.py`, `hosts remove`, `DELETE /api/hosts/<name>`, and Remove and Unbind in the Keys tab. Not done: grey "not scanned for N days" on stale hosts.

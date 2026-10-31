@@ -1,6 +1,6 @@
 ---
 id: PF-14
-status: open
+status: in-progress
 severity: low
 effort: M
 area: "[[Reports and exports]]"
@@ -22,3 +22,6 @@ Add sections 6 to 9 built from the same functions the API uses (`gitrepos`, `sha
 
 ## Done when
 - [ ] `report` mentions every deployed job with its last run and every open alert
+
+## Progress 2026-10-30
+`reportextra.py` adds sections 6 to 11. Not done: share edges and stack groups in the canvas.

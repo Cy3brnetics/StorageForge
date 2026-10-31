@@ -1,6 +1,6 @@
 ---
 id: EQ-02
-status: open
+status: done
 severity: medium
 effort: S
 area: "[[Operations and engineering]]"
@@ -20,3 +20,6 @@ They agree today because someone checked. Nothing will notice when one changes. 
 Shared test vectors, not a rewrite: `tests/vectors/capacity.json` with about 20 cases (layout, disk sizes, recordsize, ashift → usable bytes) and `analysis.json` for 3-2-1 rows. A Python test runs them through `capacity.py`; a tiny Node script (no framework, `node tests/vectors/check.mjs`) imports the planner functions and runs the same file. Both in CI ([[EQ-01 No CI and untested paths|EQ-01]]).
 
 Longer term: have the planner ask `POST /api/capacity/calc` instead, once the planner needs the server anyway (it already does for designs).
+
+## Progress 2026-10-30
+Shared cases in `tests/vectors/capacity.json`, run through both engines, in CI too. They agree on all 22.

@@ -1,6 +1,6 @@
 ---
 id: PF-12
-status: open
+status: done
 severity: low
 effort: S
 area: "[[Plans and the planner]]"
@@ -20,3 +20,6 @@ Copy the `plan` subcommand's shape (`cli.py:851`) for `tasks list|check|script|i
 ## Done when
 - [ ] `storageforge-index tasks script <id>` works
 - [ ] A copy block whose source is a running container's bind mount gets a warning
+
+## Progress 2026-10-30
+`tasks list|check|script|import`, and running containers warn on copy and snapshot blocks.

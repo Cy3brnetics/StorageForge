@@ -1,6 +1,6 @@
 ---
 id: PF-09
-status: open
+status: done
 severity: medium
 effort: M
 area: "[[Hosts, keys and accounts]]"
@@ -24,3 +24,6 @@ found: 2026-10-29
 ## Done when
 - [ ] Password change works from the UI
 - [ ] A viewer can browse and search but every write route answers 403
+
+## Progress 2026-10-30
+Password change, Accounts card, and `required_role` in `server.py`: default-deny, with a test that walks every route as a viewer. Buttons a viewer may not use are still shown and answer 403.

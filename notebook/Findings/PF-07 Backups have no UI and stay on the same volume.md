@@ -1,6 +1,6 @@
 ---
 id: PF-07
-status: open
+status: in-progress
 severity: medium
 effort: M
 area: "[[Operations and engineering]]"
@@ -26,3 +26,6 @@ found: 2026-10-29
 ## Done when
 - [ ] The UI shows the newest backup and its age, and can make one
 - [ ] At least one copy can live off the data volume
+
+## Progress 2026-10-30
+Backups card in the Audit tab and `backup.target` copy over SSH with an alert on failure. Tested over a local transport, not yet to a real host. PostgreSQL stays external and the UI says so.

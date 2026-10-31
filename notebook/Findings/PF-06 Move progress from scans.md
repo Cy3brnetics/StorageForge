@@ -1,6 +1,6 @@
 ---
 id: PF-06
-status: open
+status: in-progress
 severity: medium
 effort: S
 area: "[[Plans and the planner]]"
@@ -25,3 +25,6 @@ Scans read `/var/lib/storageforge/jobs/*/runs.jsonl` and `managed/*` (`remote.py
 
 ## Done when
 - [ ] Running a move script by hand, then rescanning, shows the step as copied
+
+## Progress 2026-10-30
+Scans read `moves/`, and steps show "copied" and "cut over". Not yet checked with a move script run on a real host.

@@ -17,4 +17,7 @@ Not urgent; worth doing before the next big feature lands in these files.
 - `pyproject.toml` lists `pyyaml` both as a core dependency and as the `yaml` extra; drop the extra.
 
 ## Done when
-- [ ] `shellcheck` runs over every generated script template in CI
+- [x] `shellcheck` runs over every generated script template in CI
+
+## Progress 2026-10-30
+Shellcheck (errors only) runs over generated scripts in a test and in CI, and the `yaml` extra is gone. Not done: splitting `server.py` and moving Bash out of Python strings, left until the other sessions editing those files have landed.

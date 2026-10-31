@@ -1,6 +1,6 @@
 ---
 id: PF-16
-status: open
+status: done
 severity: medium
 effort: M
 area: "[[Operations and engineering]]"
@@ -9,7 +9,7 @@ found: 2026-10-29
 ---
 # PF-16 One scan worker and one global schedule
 
-Roadmap item #6 from the 10-27 audit. **Worker pool done; per-host schedules not started.**
+Roadmap item #6 from the 10-27 audit. **Done.**
 
 ## What exists
 - `App.__init__` starts `STORAGEFORGE_SCAN_WORKERS` (default 4) `scan-worker` threads on one queue. `--parallel` is the parallelism *inside* one scan.
@@ -23,4 +23,7 @@ Roadmap item #6 from the 10-27 audit. **Worker pool done; per-host schedules not
 
 ## Done when
 - [x] A Pi's scan starts while a large host is still scanning
-- [ ] One host can scan hourly while another scans nightly
+- [x] One host can scan hourly while another scans nightly
+
+## Progress 2026-10-30
+`hosts.scan_interval` and `hosts.quiet_hours`, from the host menu in the topology or `PUT /api/hosts/<name>/schedule`.

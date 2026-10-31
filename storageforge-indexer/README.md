@@ -32,7 +32,7 @@ docker compose exec -T storageforge storageforge-index vault add --name nas --ke
 
 ```bash
 pip install .                    # without Docker: python3 -m storageforge_index …
-pip install '.[postgres,yaml]'   # optional extras
+pip install '.[postgres]'   # optional extras
 ```
 
 ## Security model

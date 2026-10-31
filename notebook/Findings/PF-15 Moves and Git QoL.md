@@ -1,6 +1,6 @@
 ---
 id: PF-15
-status: open
+status: done
 severity: low
 effort: S
 area: "[[Plans and the planner]]"
@@ -17,3 +17,6 @@ U7 and U8 from the 10-27 audit, still open.
 ## Suggested approach
 - `POST /api/moves/<id>/copy` and a JSON download link (the plan body is already JSON).
 - A `git_ignore` setting (list of path fragments, global and per host) merged with `NOISE`; a checkbox column plus "Archive selected to…" that builds one move plan with one git step per repo.
+
+## Progress 2026-10-30
+Duplicate, Export JSON, per-host hide list with `!` to show, and bulk archive.

@@ -1,6 +1,6 @@
 ---
 id: PF-03
-status: open
+status: in-progress
 severity: medium
 effort: L
 area: "[[Data protection]]"
@@ -29,3 +29,6 @@ Nothing finds protection that StorageForge didn't deploy:
 ## Done when
 - [ ] A restic repo on any scanned host shows as a backup target for the datasets it lives beside (or is marked "unmatched")
 - [ ] ZFS and btrfs snapshot counts and newest age show in the matrix
+
+## Progress 2026-10-30
+Restic, borg and rsnapshot from the index; ZFS and btrfs snapshots. Not done: reading snapper configs into the matrix (they are collected only), timeshift, btrbk, sanoid. A detected repo fills empty rows on its host as a guess and never counts as offsite.

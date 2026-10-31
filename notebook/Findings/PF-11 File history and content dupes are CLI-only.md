@@ -1,6 +1,6 @@
 ---
 id: PF-11
-status: open
+status: done
 severity: medium
 effort: M
 area: "[[Reports and exports]]"
@@ -25,3 +25,6 @@ Neither has an API route or UI. The web app shows *folder*-level copies (by name
 ## Done when
 - [ ] The UI answers "what changed on host X in the last scan"
 - [ ] Checksum duplicates are visible in Cleanup
+
+## Progress 2026-10-30
+`GET /api/file-changes`, `GET /api/dupes`, both in Cleanup, and a large-delete alert.

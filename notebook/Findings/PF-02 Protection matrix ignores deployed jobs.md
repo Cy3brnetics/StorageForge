@@ -1,6 +1,6 @@
 ---
 id: PF-02
-status: open
+status: done
 severity: high
 effort: M
 area: "[[Data protection]]"
@@ -27,3 +27,6 @@ The two halves never meet. `blueprint.py:79-86` creates every protection row as 
 - [ ] A hand-entered row still wins where no job covers the dataset
 
 Related: [[PF-03 Backup and snapshot detection]]
+
+## Progress 2026-10-30
+`protection.py` fills the matrix from deployed jobs and scheduled tasks. Typed values stay where nothing covers a dataset and come back if the job goes. Hosts are marked offsite from the Protection view.

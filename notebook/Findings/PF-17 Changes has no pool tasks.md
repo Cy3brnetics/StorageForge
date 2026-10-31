@@ -32,3 +32,5 @@ Add task types to `changes.TYPES`, each with its check, Bash function and Ansibl
 
 ## Progress 2026-10-30
 Changes now has ZFS pool and dataset tasks and LVM volume group and volume tasks. `fromdesign.plan()` still lists them under "By hand": wiring designs to these tasks is what is left. mdadm has no tasks yet.
+
+Later on 2026-10-30: designs now stage `zfs-pool`, `zfs-dataset`, `lvm-vg`, `lvm-vg-extend` and `lvm-lv`. Still by hand: mdadm, multi-device btrfs, several partitions on a disk, bind mounts. Those need new destructive task types, which should be run on the lab VMs as they are written.

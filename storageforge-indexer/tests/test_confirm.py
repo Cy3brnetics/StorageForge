@@ -98,22 +98,22 @@ class ConfirmTests(unittest.TestCase):
     def test_fetch_problem_logs(self):
         now = int(time.time())
         self.conn.execute("INSERT INTO deploy_access (host, state, detail, updated_at, updated_by) VALUES ('server01', 'ready', 'ok', :t, 'test')", {'t': now})
-        self.conn.execute("""INSERT INTO deploy_runs (run_id, group_id, host, kind, ref, mode, status, nonce, exit_code, started_at)
-                             VALUES (42, 'g4', 'server01', 'changes', '1', 'apply', 'failed', 'n42', 1, :t)""", {'t': now - 100})
+        run_id = self.conn.scalar("""INSERT INTO deploy_runs (group_id, host, kind, ref, mode, status, nonce, exit_code, started_at)
+                                     VALUES ('g4', 'server01', 'changes', '1', 'apply', 'failed', 'n42', 1, :t) RETURNING run_id""", {'t': now - 100})
 
         fake_output = "error: package conflict\nfailed to install nfs-kernel-server"
         with mock.patch.object(deploy, 'ready', lambda c, h: True), \
              mock.patch.object(deploy, 'run', lambda *a, **k: {'run_id': 99, 'status': 'ok', 'output': fake_output}):
-            fetched = confirm.fetch_problem_logs(self.db, self.conn, 'server01', [{'run_id': 42, 'nonce': 'n42', 'rc': 1}])
+            fetched = confirm.fetch_problem_logs(self.db, self.conn, 'server01', [{'run_id': run_id, 'nonce': 'n42', 'rc': 1}])
             self.assertEqual(fetched, 1)
 
         # Check host_logs has record
-        log_row = self.conn.all("SELECT state, output FROM host_logs WHERE log_key = 'deploy:42'")
+        log_row = self.conn.all("SELECT state, output FROM host_logs WHERE log_key = :k", {'k': f'deploy:{run_id}'})
         self.assertEqual(len(log_row), 1)
         self.assertEqual(log_row[0][0], 'fetched')
         self.assertIn("package conflict", log_row[0][1])
 
         # Check deploy_runs.output has the fetched log appended
-        out = self.conn.scalar("SELECT output FROM deploy_runs WHERE run_id = 42")
+        out = self.conn.scalar("SELECT output FROM deploy_runs WHERE run_id = :r", {'r': run_id})
         self.assertIn("host logs fetched by scan", out)
         self.assertIn("package conflict", out)
