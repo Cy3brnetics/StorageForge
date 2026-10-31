@@ -354,6 +354,32 @@ def tier3(r):
         return got[-1]
     r.check('btrfs-send', 'sf-arch', send)
 
+    # a schedule on a real host: its timer fires within a minute, it reports, a pause reaches the host, and it can leave
+    def schedule_for(vm):
+        marker = f'/tmp/sf-lab-schedule-{vm}'
+        made = api.post('/api/scheduler/schedules', {'name': f'lab-{vm}', 'host': vm, 'cron_expr': '* * * * *', 'task_type': 'command',
+                                                     'task_ref': f'touch {marker}; echo lab-run'})['schedule']
+        sid = made['schedule_id']
+        demo.deploy(api, 'schedules', sid, f'schedule on {vm}')
+        wait_for('the timer to fire', lambda: ssh(vm, f'test -e {marker} && echo yes', check=False).strip() == 'yes', timeout=150)
+        wait_for('its report', lambda: api.get(f'/api/scheduler/schedules/{sid}/runs')['runs'], timeout=90)
+        api.post(f'/api/scheduler/schedules/{sid}/pause', {'paused': True})
+        wait_for('the pause to reach the host', lambda: ssh(vm, f'systemctl is-active sf-sched-{sid}.timer', check=False).strip() != 'active', timeout=120)
+        demo.deploy(api, 'schedules', sid, 'uninstall', remove=True)
+        api('DELETE', f'/api/scheduler/schedules/{sid}')
+    for vm in ('sf-ubuntu', 'sf-rocky'):
+        r.check('schedule-timer', vm, lambda vm=vm: schedule_for(vm))
+
+    def backup_copy():
+        api('PUT', '/api/backups/target', {'host': 'sf-arch', 'path': '/srv/sf-backups'})
+        made = api.post('/api/backups', {'kind': 'essentials'})
+        if made.get('copy_error'):
+            raise AssertionError(made['copy_error'])
+        api('PUT', '/api/backups/target', {'host': '', 'path': ''})
+        if 'storageforge-essentials-' not in ssh('sf-arch', 'sudo -n ls /srv/sf-backups'):
+            raise AssertionError('the backup did not arrive')
+    r.check('backup-copy', 'sf-arch', backup_copy)
+
     def send_again():
         time.sleep(61)                   # snapshot names go down to the minute
         before = set(ssh('sf-arch', 'sudo -n ls /srv/fedora-media').split())

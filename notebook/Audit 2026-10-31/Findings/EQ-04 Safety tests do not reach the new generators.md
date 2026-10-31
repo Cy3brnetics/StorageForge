@@ -1,6 +1,6 @@
 ---
 id: EQ-04
-status: open
+status: done
 severity: medium
 effort: S
 area: Tests
@@ -30,4 +30,7 @@ Green CI gives more confidence than it has earned for the riskiest module. `test
 Add table-driven route tests: for every route, assert permission, whether it wants a fresh password, whether it is audited, and method safety. Add the scheduler to the hostile-values test and shellcheck. Use random heredoc delimiters.
 
 ## Done when
-- [ ] A new route without a declared password and audit rule fails CI
+- [x] A new route without a declared password and audit rule fails CI
+
+## Fixed
+2026-10-31. `tests/test_route_rules.py` holds every write route's password rule and audit reason, checks the password rule by calling each route, and fails on a route missing from the table. Scheduler scripts joined the hostile-values test and shellcheck (run locally through `shellcheck-py`). Heredoc delimiters are now a hash of their text. It found one gap: `POST /api/deploy/settings/test` had no audit row, now fixed. Lab cases added, not run.

@@ -479,7 +479,7 @@ def problems(conn: Conn) -> dict:
                     summ, 'crit'
                 )
             per = scheduler.period(s['cron_expr'])
-            good = next((r for r in sruns if r['status'] == 'verified'), None)
+            good = next((r for r in sruns if r['status'] in ('verified', 'reported')), None)
             last_good = (good['finished_at'] or good['started_at']) if good else latest['started_at']
             if time.time() - last_good > 2 * per + 3600:
                 now[f'schedule-stale:{sid}'] = (

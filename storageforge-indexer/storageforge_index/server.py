@@ -1835,6 +1835,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     @limiter.limit('10 per minute')
     def api_deploy_settings_test():
+        core.audit(conn(), actor(), 'deploy.settings.test', 'info', None, {})
         return jsonify(sent=alerts.send(alerts.get_setting(conn(), 'alerts'), 'StorageForge test alert',
                                         f'Sent by {current_user.username} from the Deploy tab.', 'ok', {'state': 'test'}))
 

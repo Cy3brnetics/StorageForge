@@ -24,6 +24,8 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 - **The backup copy to another host** now goes through the signed runner. As written it could not get past the deploy key's forced command.
 
 ### Changed
+- **Schedules run from a bash script, without Python.** A systemd timer fires it, or cron where there is no systemd. With no flags the install script only reports. **Redeploy every schedule:** the old Python runner stays in charge on a host until then, and redeploying removes it.
+- **A schedule's `verified` now means a scan newer than the run agrees.** Until that scan a run is `reported`. A required path that's missing now fails the check instead of warning. Output no longer goes in the world-readable `runs.jsonl`, so runs picked up by a scan have none.
 - **Schedules:** pausing and resuming now update the host, and alerts keep watching until it has. Reports up to 512 KiB are accepted (they were refused above 4 KiB). Drift and dry-run checks notice a change to the plan a schedule runs, so **every deployed schedule shows as changed once after this update: redeploy it.** `nice`, `ionice`, jitter, timezone, window and `user` now take effect; `catchup` and the `scan` task type are gone. A plan or task made for another host can't be scheduled on this one. Cron now wakes the runner every minute and the runner decides.
 
 ### Added

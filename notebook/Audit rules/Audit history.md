@@ -12,7 +12,7 @@ updated: 2026-10-31
 | 2026-10-29 | `docs/audit-2026-10-29.md` | Docs against code | not recorded | not recorded | not recorded | |
 | 2026-10-29 | [[Audit 2026-10-29 - features]] | Features | not recorded | `bc12d9c` | yes | PF-01 to PF-16, EQ-01 to EQ-03 |
 | 2026-10-29 to 30 | [[Review of Gemini audit 2026-10-29]] | Security and bugs, external | not recorded | `68a6d73` | yes | GM-01 to GM-25 |
-| 2026-10-31 | [[Audit 2026-10-31]] | Security and new features | `68a6d73` | `82b0eb0` | **yes** | SF-23 to SF-38, PF-18 to PF-27, EQ-04, EQ-05 |
+| 2026-10-31 | [[Audit 2026-10-31]] | Security and new features | `68a6d73` | `82b0eb0` | **yes** | SF-23 to SF-39, PF-18 to PF-27, EQ-04, EQ-05 |
 
 ## Not code audits
 These don't move the baseline.

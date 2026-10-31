@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -235,16 +236,13 @@ class ScriptGenerationTests(SchedulerBaseTest):
             'config': {'user': 'root'},
         }
         cron = scheduler.generate_cron_entry(s)
-        self.assertIn('* * * * * root /usr/local/sbin/storageforge-scheduler run 42 --if-due', cron)
+        self.assertIn('* * * * * root /usr/local/lib/storageforge/scheduler/run-42.sh --if-due', cron)
         self.assertIn('15 4 * * *', cron)
-
-        cfg_json = scheduler.generate_client_config(s, 'http://server:8080', 'secret_token')
-        parsed = json.loads(cfg_json)
-        self.assertEqual(parsed['schedule_id'], 42)
-        self.assertEqual(parsed['token'], 'secret_token')
 
         bundle = scheduler.generate_install_script(self.conn, s, 'http://server:8080', 'secret_token')
         self.assertIn('/etc/cron.d/sf-sched-42', bundle)
+        self.assertIn('/etc/systemd/system/$UNIT.timer', bundle)
+        self.assertIn('secret_token', bundle)
 
 
 class ServerVerificationTests(SchedulerBaseTest):
@@ -277,6 +275,8 @@ class ServerVerificationTests(SchedulerBaseTest):
             'output': 'Starting job...\nOperation completed successfully.\nDone.',
         }
 
+        self.conn.execute(f"INSERT INTO scans (host_id, started_at, finished_at, status) VALUES (:h, {self.db.ts(':t')}, {self.db.ts(':t')}, 'ok')",
+                          {'h': self.hid_nas, 't': int(time.time()) + 1})     # a scan newer than the run
         res = scheduler.ingest_report(self.conn, report, '10.0.0.5')
         self.assertEqual(res['status'], 'verified')
         self.assertEqual(res['verified'], 1)
@@ -309,51 +309,6 @@ class ServerVerificationTests(SchedulerBaseTest):
         self.assertEqual(res['status'], 'failed')
         self.assertEqual(res['verified'], -1)
         self.assertFalse(res['verify_result']['passed'])
-
-
-class ClientRunnerTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix='sfrun-')
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def test_in_window(self):
-        self.assertTrue(schedscript.in_window(''))
-        dt1 = dt.datetime(2026, 1, 1, 3, 30)
-        self.assertTrue(schedscript.in_window('02:00-05:00', dt1))
-        self.assertFalse(schedscript.in_window('04:00-05:00', dt1))
-        # Crossing midnight (22:00 to 04:00)
-        self.assertTrue(schedscript.in_window('22:00-04:00', dt1))
-
-    def test_run_schedule_execution_and_retries(self):
-        script_file = os.path.join(self.tmp, 'test.sh')
-        with open(script_file, 'w') as f:
-            f.write("#!/bin/bash\necho 'hello from runner'\nexit 0\n")
-        os.chmod(script_file, 0o755)
-
-        conf = {
-            'schedule_id': 99,
-            'script_path': script_file,
-            'config': {
-                'timeout_sec': 10,
-                'retry_count': 0,
-                'env': {'TEST_VAR': '123'},
-            },
-        }
-
-        var_dir = os.path.join(self.tmp, 'var')
-        lock_dir = os.path.join(self.tmp, 'locks')
-        rc = schedscript.run_schedule(conf, var_dir=var_dir, locks_dir=lock_dir)
-        self.assertEqual(rc, 0)
-
-        # Verify last.json and runs.jsonl
-        last_file = os.path.join(var_dir, '99', 'last.json')
-        self.assertTrue(os.path.isfile(last_file))
-        with open(last_file) as f:
-            rec = json.load(f)
-            self.assertEqual(rec['exit_code'], 0)
-            self.assertIn('hello from runner', rec['output'])
 
 
 class SchedulerApiTests(SchedulerBaseTest):
@@ -396,7 +351,7 @@ class SchedulerApiTests(SchedulerBaseTest):
         # 4. Get cron entry
         resp = client.get(f'/api/scheduler/schedules/{sid}/cron')
         self.assertEqual(resp.status_code, 200)
-        self.assertIn(f'/usr/local/sbin/storageforge-scheduler run {sid}', resp.get_data(as_text=True))
+        self.assertIn(f'/usr/local/lib/storageforge/scheduler/run-{sid}.sh', resp.get_data(as_text=True))
 
         # 5. Ingest client report with bearer token
         rep_resp = client.post('/api/scheduler/report',
@@ -421,7 +376,7 @@ class SchedulerApiTests(SchedulerBaseTest):
         # 7. On-demand verify endpoint
         v_resp = client.post(f'/api/scheduler/schedules/{sid}/verify', json={'run_id': runs[0]['run_id']})
         self.assertEqual(v_resp.status_code, 200)
-        self.assertEqual(v_resp.get_json()['status'], 'verified')
+        self.assertEqual(v_resp.get_json()['status'], 'reported')      # no scan is newer than this run
 
     def test_scan_ingest_alerts_drift_and_logbook(self):
         from storageforge_index import alerts, deploy, logbook
@@ -657,9 +612,6 @@ class SchedulerSafetyTests(SafetyCase):
         self.assertEqual(self.report(sid, token, output='x' * (200 << 10)).status_code, 200)
         self.assertEqual(len(self.conn.scalar('SELECT output FROM schedule_runs WHERE schedule_id = :s', {'s': sid})), 200 << 10)
         self.assertEqual(self.web.test_client().post('/api/enroll', data='x' * 8192, content_type='application/json').status_code, 413)   # others keep 4 KiB
-        data = schedscript.fit_report({'schedule_id': sid, 'output': 'a' * 100 + '\\n' * (1 << 20) + 'the end'})
-        self.assertLessEqual(len(data), schedscript.REPORT_MAX)
-        self.assertTrue(json.loads(data)['output'].endswith('the end'))
 
     def test_patterns_are_checked_and_cannot_lose_a_report(self):   # SF-32
         for pattern in ('output_must_match', 'output_must_not_match'):
@@ -708,7 +660,7 @@ class SchedulerSafetyTests(SafetyCase):
         self.assertEqual(self.report(sid, token, nonce='c').status_code, 200)
         items[0]['on_ok']({'status': 'ok'})
         self.assertEqual(self.report(sid, token, nonce='d').status_code, 401)
-        new = json.loads(items[0]['script'].split("EOF_CFG' > \"$CFG_JSON\"\n")[1].split('\nEOF_CFG')[0])['token']
+        new = re.search(r"printf '%s\\n' (\w+) >/etc/storageforge", items[0]['script'])[1]
         self.assertEqual(self.report(sid, new, nonce='e').status_code, 200)
 
     def test_pausing_reaches_the_host(self):                 # PF-20
@@ -732,6 +684,7 @@ class SchedulerSafetyTests(SafetyCase):
         item = start.call_args.args[1][0]
         self.assertEqual(item['args'], ['--install'])
         self.assertIn('PAUSED=1', item['script'])
+        self.assertIn('rm -f /etc/systemd/system/sf-sched', item['script'])    # a reinstall starts by taking the timer away
         item['on_ok']({'status': 'ok'})
         self.assertFalse(scheduler.pause_pending(self.conn, scheduler.get_schedule(self.conn, sid)))
 
@@ -757,35 +710,9 @@ class SchedulerSafetyTests(SafetyCase):
         cfg = scheduler.get_schedule(self.conn, sid)['config']       # a row saved by an older version
         cfg['env']['BASH_ENV'] = '/tmp/x'
         self.conn.execute('UPDATE schedules SET config_json = :c WHERE schedule_id = :i', {'c': json.dumps(cfg), 'i': sid})
-        out = json.loads(scheduler.generate_client_config(scheduler.get_schedule(self.conn, sid), None, ''))
-        self.assertEqual(out['config']['env'], {'RETENTION': '7'})
-
-    def test_settings_reach_the_runner(self):                # PF-22
-        from unittest import mock
-        cmd = schedscript.task_command({'nice': 5, 'ionice_class': 'best-effort', 'ionice_priority': 4}, '/t.sh', ['--run'])
-        if schedscript.shutil.which('nice'):
-            self.assertEqual(cmd[:3], ['nice', '-n', '5'])
-        self.assertEqual(cmd[-2:], ['/t.sh', '--run'])
-        conf = {'cron_expr': '0 3 * * *', 'config': {'timezone': 'Asia/Tokyo'}}
-        self.assertTrue(schedscript.is_due(conf, dt.datetime(2026, 1, 1, 18, 0, tzinfo=dt.timezone.utc).astimezone(zoneinfo.ZoneInfo('Asia/Tokyo'))))
-        self.assertFalse(schedscript.is_due(conf, dt.datetime(2026, 1, 1, 3, 0, tzinfo=dt.timezone.utc).astimezone(zoneinfo.ZoneInfo('Asia/Tokyo'))))
-        sched = {'schedule_id': 1, 'name': 'n', 'cron_expr': '0 3 * * *', 'config': {'jitter_sec': 30, 'user': 'backup'}}
-        cron = scheduler.generate_cron_entry(sched)
-        self.assertIn('* * * * * root ', cron)               # root reads the token; the runner drops to the user
-        self.assertIn('--if-due --jitter', cron)
-        with mock.patch.object(os, 'geteuid', return_value=0), self.assertRaises(KeyError):
-            schedscript.as_user('no-such-user-here')
-        self.assertEqual(schedscript.as_user('root'), {})
-
-    def test_an_unknown_user_is_a_failed_run(self):          # PF-22
-        from unittest import mock
-        script = Path(self.tmp) / 't.sh'
-        script.write_text('echo ran\n')
-        with mock.patch.object(schedscript, 'as_user', side_effect=KeyError('nobody-here')):
-            rc = schedscript.run_schedule({'schedule_id': 9, 'script_path': str(script), 'config': {'user': 'nobody-here'}},
-                                          var_dir=self.tmp, locks_dir=self.tmp)
-        self.assertEqual(rc, 1)
-        self.assertIn('nobody-here', (Path(self.tmp) / '9' / 'last.json').read_text())
+        script = scheduler.generate_install_script(self.conn, scheduler.get_schedule(self.conn, sid), None, '')
+        self.assertIn('RETENTION=7', script)
+        self.assertNotIn('BASH_ENV', script)
 
     def test_a_schedule_stays_on_its_own_host(self):         # PF-23
         task = self.boss.post('/api/tasks', json={'name': 'elsewhere', 'host': 'backup-box', 'blocks': []}).get_json()['id']
@@ -977,3 +904,248 @@ class HostSideSafetyTests(SafetyCase):
         self.assertEqual((dst / 'notes.txt').read_text(), 'mine')
         with mock.patch.object(deploy, 'run', return_value={'status': 'refused', 'output': 'signature'}), self.assertRaises(RuntimeError):
             backup.copy_off(self.db, self.conn, str(src), target, 2)
+
+
+class RunnerTests(unittest.TestCase):
+    """The runner a schedule installs, run for real by bash with a stand-in curl (PF-26)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='sfrunner-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.bin = self.tmp / 'bin'
+        self.bin.mkdir()
+        (self.tmp / 'etc' / 'scheduler').mkdir(parents=True)
+        (self.tmp / 'etc' / 'scheduler' / '5.token').write_text('tok-123\n')
+        curl = self.bin / 'curl'
+        curl.write_text(f"""#!/bin/bash
+while (($#)); do
+  case $1 in -H) [[ $2 == @* ]] && cp "${{2#@}}" {self.tmp}/sent-header; shift ;;
+    --data-binary) cp "${{2#@}}" {self.tmp}/sent-body; shift ;;
+    -m) shift ;;
+    http*) echo "$1" >{self.tmp}/sent-url ;;
+  esac; shift
+done
+""")
+        curl.chmod(0o755)
+
+    def run_it(self, task, *args, cfg=None, times=None, script_args=('--go',), url='https://sf.test'):
+        task_sh = self.tmp / 'task.sh'
+        task_sh.write_text(task)
+        sched = {'schedule_id': 5, 'name': "it's", 'config': {'timezone': 'UTC', **(cfg or {})}}
+        every = (set(range(60)), set(range(24)), set(range(1, 32)), set(range(1, 13)), set(range(7)))
+        runner = self.tmp / 'run.sh'
+        runner.write_text(schedscript.runner_script(sched, list(script_args), times or every, url, (cfg or {}).get('env') or {}, str(task_sh)))
+        return subprocess.run(['bash', str(runner), *args], capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+                              env={**os.environ, 'STORAGEFORGE_SCHED_ROOT': str(self.tmp)})
+
+    def lines(self):
+        return [json.loads(x) for x in (self.tmp / 'var' / 'runs.jsonl').read_text().splitlines()]
+
+    def test_no_flags_do_nothing(self):
+        r = self.run_it(f'touch {self.tmp}/RAN\n')
+        self.assertEqual(r.returncode, 0)
+        self.assertFalse((self.tmp / 'RAN').exists())
+
+    def test_a_run_reports_any_output_as_json(self):
+        r = self.run_it("""printf 'quote " back\\\\slash\ttab\n'; printf 'bin \\377\\001 end\n'; echo "args $*"\n""", '--run')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        body = json.loads((self.tmp / 'sent-body').read_bytes())
+        self.assertEqual(body['schedule_id'], 5)
+        self.assertEqual(body['exit_code'], 0)
+        self.assertIn('quote " back\\slash\ttab', body['output'])
+        self.assertIn('args --go', body['output'])
+        self.assertNotIn('no_output', body)
+        self.assertEqual((self.tmp / 'sent-header').read_text(), 'Authorization: Bearer tok-123\n')
+        self.assertEqual((self.tmp / 'sent-url').read_text().strip(), 'https://sf.test/api/scheduler/report')
+
+    def test_what_a_scan_can_read_holds_no_output(self):
+        self.run_it('echo secret-output\n', '--run')
+        var = self.tmp / 'var'
+        self.assertEqual(oct((var / 'runs.jsonl').stat().st_mode & 0o777), '0o644')
+        self.assertEqual(oct((var / 'last.out').stat().st_mode & 0o777), '0o600')
+        self.assertNotIn('secret-output', (var / 'runs.jsonl').read_text())
+        self.assertTrue(self.lines()[0]['no_output'])
+
+    def test_a_long_run_fits_the_server_and_keeps_its_end(self):
+        self.run_it('head -c 2000000 /dev/zero | tr "\\0" \\"; echo the-end\n', '--run')
+        data = (self.tmp / 'sent-body').read_bytes()
+        self.assertLessEqual(len(data), 512 << 10)
+        self.assertTrue(json.loads(data)['output'].endswith('the-end\n'))
+
+    def test_failures_retry_and_are_reported(self):
+        count = self.tmp / 'n'
+        r = self.run_it(f'echo x >>{count}; [[ $(wc -l <{count}) == 3 ]]\n', '--run', cfg={'retry_count': 5, 'retry_delay_sec': 1, 'retry_backoff': 1.0})
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.lines()[-1]['attempts'], 3)
+        r = self.run_it('exit 7\n', '--run')
+        self.assertEqual(r.returncode, 7)
+        self.assertEqual(self.lines()[-1]['exit_code'], 7)
+
+    def test_a_timeout_stops_the_task(self):
+        r = self.run_it('sleep 30\n', '--run', cfg={'timeout_sec': 1})
+        self.assertEqual(r.returncode, 124)
+
+    def test_an_unknown_user_is_a_failed_run(self):          # PF-22
+        r = self.run_it(f'touch {self.tmp}/RAN\n', '--run', cfg={'user': 'no-such-user-here'})
+        self.assertEqual(r.returncode, 1)
+        self.assertFalse((self.tmp / 'RAN').exists())
+        self.assertIn('no user no-such-user-here', json.loads((self.tmp / 'sent-body').read_bytes())['output'])
+
+    def test_settings_reach_the_task(self):                  # PF-22
+        base = os.nice(0)
+        r = self.run_it('nice; echo "v=$RETENTION"; [[ $(pwd) == / ]] && echo at-root\n', '--run', cfg={'nice': 5, 'env': {'RETENTION': '7'}})
+        out = json.loads((self.tmp / 'sent-body').read_bytes())['output']
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(str(base + 5), out.split())
+        self.assertIn('v=7', out)
+        self.assertIn('at-root', out)
+
+    def test_the_schedule_keeps_its_own_timezone(self):      # PF-22
+        tokyo = dt.datetime.now(zoneinfo.ZoneInfo('Asia/Tokyo'))
+        every = (set(range(60)), {tokyo.hour}, set(range(1, 32)), set(range(1, 13)), set(range(7)))
+        other = (set(range(60)), {(tokyo.hour + 5) % 24}, set(range(1, 32)), set(range(1, 13)), set(range(7)))
+        mark = self.tmp / 'RAN'
+        self.run_it(f'touch {mark}\n', '--if-due', cfg={'timezone': 'Asia/Tokyo'}, times=other)
+        self.assertFalse(mark.exists())
+        self.run_it(f'touch {mark}\n', '--if-due', cfg={'timezone': 'Asia/Tokyo'}, times=every)
+        self.assertTrue(mark.exists())
+
+    def test_the_window_holds_back_a_run(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        hour = lambda h: f'{h % 24:02d}:00'   # noqa: E731
+        mark = self.tmp / 'RAN'
+        self.run_it(f'touch {mark}\n', '--timer', cfg={'window': f'{hour(now.hour + 2)}-{hour(now.hour + 3)}'})
+        self.assertFalse(mark.exists())
+        self.run_it(f'touch {mark}\n', '--timer', cfg={'window': f'{hour(now.hour - 1)}-{hour(now.hour + 2)}'})
+        self.assertTrue(mark.exists())
+
+    def test_policies(self):
+        (self.tmp / 'run').mkdir()
+        task = self.tmp / 'task.sh'
+        task.write_text('sleep 20\n')
+        every = (set(range(60)), set(range(24)), set(range(1, 32)), set(range(1, 13)), set(range(7)))
+        runner = self.tmp / 'first.sh'
+        sched = {'schedule_id': 5, 'name': 'n', 'config': {'concurrency_policy': 'skip'}}
+        runner.write_text(schedscript.runner_script(sched, [], every, None, {}, str(task)))
+        first = subprocess.Popen(['bash', str(runner), '--run'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                 env={**os.environ, 'STORAGEFORGE_SCHED_ROOT': str(self.tmp)})
+        self.addCleanup(first.kill)
+        for _ in range(100):
+            if (self.tmp / 'run' / 'sched-5.pid').exists():
+                break
+            time.sleep(0.05)
+        r = self.run_it('echo second\n', '--run', url='')
+        self.assertIn('already running', r.stdout)
+        r = self.run_it('echo second\n', '--run', url='', cfg={'concurrency_policy': 'replace'})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(first.wait(30), 143)
+
+    def test_a_token_is_never_on_a_command_line(self):
+        text = schedscript.RUNNER
+        self.assertNotIn('Bearer $', text.replace('Bearer %s', ''))
+        self.assertIn('-H @"$hdr"', text)
+
+
+class InstallScriptTests(SchedulerBaseTest):
+    """PF-26: one bash script, no Python on the host, and no flags means no change."""
+
+    def sched(self, **kw):
+        return {'schedule_id': 8, 'name': 'nightly', 'host': 'nas', 'cron_expr': '30 2 * * 1-5', 'task_type': 'command', 'task_ref': 'true',
+                'paused': False, 'config': {'timezone': 'Asia/Tokyo', **kw.pop('config', {})}, **kw}
+
+    def test_times_for_systemd(self):
+        self.assertEqual(scheduler.on_calendar(self.sched()), 'Mon,Tue,Wed,Thu,Fri *-*-* 2:30:00 Asia/Tokyo')
+        s = self.sched(cron_expr='*/15 * 1 1,7 *')
+        self.assertEqual(scheduler.on_calendar(s), '*-1,7-1 *:0,15,30,45:00 Asia/Tokyo')
+        s = self.sched(cron_expr='0 0 * * 0')
+        self.assertEqual(scheduler.on_calendar(s), 'Sun *-*-* 0:0:00 Asia/Tokyo')
+        if shutil.which('systemd-analyze'):
+            for expr in ('30 2 * * 1-5', '*/15 * 1 1,7 *', '0 0 * * 0', '@daily'):
+                cal = scheduler.on_calendar(self.sched(cron_expr=expr))
+                self.assertEqual(subprocess.run(['systemd-analyze', 'calendar', cal], capture_output=True).returncode, 0, cal)
+
+    def test_no_flags_only_report(self):
+        text = scheduler.generate_install_script(self.conn, self.sched(), 'https://sf.test', 'tok')
+        self.assertIn('\nMODE=report\n', text)
+        r = subprocess.run(['bash', '-c', text], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('needs to be installed', r.stdout)
+        self.assertNotIn('python', text.lower().replace('# the python runner of older versions', ''))
+
+    def test_scripts_are_valid_bash(self):
+        for s in (self.sched(), self.sched(paused=True), self.sched(config={'env': {'A': "it's"}, 'jitter_sec': 5, 'window': '01:00-02:00'})):
+            text = scheduler.generate_install_script(self.conn, s, 'https://sf.test', 'tok')
+            self.assertEqual(subprocess.run(['bash', '-n'], input=text, text=True, capture_output=True).returncode, 0)
+            self.assertEqual(subprocess.run(['bash', '-n'], input=schedscript.runner_script(s, [], scheduler.parse_cron(s['cron_expr']), None, {}, '/t'),
+                                            text=True, capture_output=True).returncode, 0)
+
+    def test_a_value_cannot_end_a_heredoc(self):             # EQ-04
+        canary = Path(tempfile.mkdtemp()) / 'CANARY'
+        self.addCleanup(shutil.rmtree, canary.parent, True)
+        tasks_body = f'true\nSF_ffff\nEOF_TASK\ntouch {canary}\n'
+        wrapped = scheduler._heredoc(f'{canary.parent}/out', tasks_body)
+        self.assertEqual(subprocess.run(['bash', '-c', wrapped], capture_output=True).returncode, 0)
+        self.assertFalse(canary.exists())
+        self.assertIn(f'touch {canary}', (canary.parent / 'out').read_text())
+
+    def test_a_downloaded_script_keeps_the_token_a_reinstall_needs(self):
+        with_none = scheduler.generate_install_script(self.conn, self.sched(), None, '')
+        install = with_none[with_none.index('section "Installing'):]
+        self.assertNotIn('8.token', install)
+        self.assertIn('8.token', with_none[:with_none.index('section "Installing')])
+
+
+class VerifiedMeansCheckedTests(SchedulerBaseTest):
+    """PF-24: verified is only ever said from a scan newer than the run."""
+
+    def setUp(self):
+        super().setUp()
+        self.sched, _ = scheduler.create_schedule(self.conn, {
+            'name': 'v', 'host': 'nas', 'cron_expr': '0 3 * * *', 'task_type': 'command', 'task_ref': 'true',
+            'config': {'verify_rules': {'paths_must_not_exist': ['/mnt/data/old']}}}, 'test')
+        self.sid = self.sched['schedule_id']
+        self.conn.execute('DELETE FROM scans')
+
+    def scan_finished(self, at):
+        hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'nas'")
+        ts = self.db.ts(':t')
+        self.conn.execute(f"INSERT INTO scans (host_id, started_at, finished_at, status) VALUES (:h, {ts}, {ts}, 'ok')", {'h': hid, 't': at})
+
+    def report(self, **kw):
+        now = int(time.time())
+        return scheduler.ingest_report(self.conn, {'schedule_id': self.sid, 'exit_code': 0, 'output': 'fine', 'started_at': now - 60, 'finished_at': now - 30, **kw}, 'test')
+
+    def test_an_exit_code_alone_is_only_reported(self):
+        self.scan_finished(int(time.time()) - 3600)          # the index predates the run
+        res = self.report()
+        self.assertEqual((res['status'], res['verified']), ('reported', 0))
+        self.assertFalse(any(c['name'].startswith('path_absent') for c in res['verify_result']['checks']))
+
+    def test_the_next_scan_decides(self):
+        res = self.report()
+        self.assertEqual(res['status'], 'reported')
+        self.scan_finished(int(time.time()))
+        self.assertEqual(scheduler.verify_pending(self.conn, 'nas'), 1)
+        row = self.conn.all('SELECT status, verified FROM schedule_runs WHERE run_id = :r', {'r': res['run_id']})[0]
+        self.assertEqual(tuple(row), ('verified', 1))
+        self.assertEqual(scheduler.verify_pending(self.conn, 'nas'), 0)
+
+    def test_a_missing_path_fails_once_the_index_is_new_enough(self):
+        cfg = {**self.sched['config']}
+        cfg['verify_rules'] = {**cfg['verify_rules'], 'paths_must_exist': ['/nope'], 'paths_must_not_exist': []}
+        scheduler.update_schedule(self.conn, self.sid, {'config': cfg}, 'test')
+        self.scan_finished(int(time.time()))
+        res = self.report()
+        self.assertEqual((res['status'], res['verified']), ('verify_failed', -1))
+
+    def test_other_policies_never_say_verified(self):
+        scheduler.update_schedule(self.conn, self.sid, {'config': {'verify_policy': 'report_only'}}, 'test')
+        self.scan_finished(int(time.time()))
+        self.assertEqual(self.report()['status'], 'reported')
+
+    def test_a_run_from_a_scan_is_not_failed_for_its_missing_output(self):
+        cfg = {'verify_rules': {'output_must_match': 'fine'}}
+        scheduler.update_schedule(self.conn, self.sid, {'config': cfg}, 'test')
+        line = json.dumps({'schedule_id': self.sid, 'nonce': 'n1', 'started_at': int(time.time()) - 60, 'exit_code': 0, 'no_output': True})
+        self.assertEqual(scheduler.ingest_scan_schedules(self.conn, 'nas', line), 1)
+        self.assertEqual(self.conn.scalar('SELECT status FROM schedule_runs WHERE schedule_id = :s', {'s': self.sid}), 'reported')

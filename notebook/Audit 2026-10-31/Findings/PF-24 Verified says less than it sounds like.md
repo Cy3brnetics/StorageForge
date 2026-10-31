@@ -1,6 +1,6 @@
 ---
 id: PF-24
-status: open
+status: done
 severity: medium
 effort: M
 area: Scheduler
@@ -25,4 +25,7 @@ The panel's status and the 3-2-1 view suggest independent proof. A compromised o
 Name it honestly (`reported ok`), and keep `verified` for checks run on index data newer than the run. Verify after the rescan finishes. Offer signed or task-specific evidence, like the restore tests or `verify_copy`, for backups.
 
 ## Done when
-- [ ] `verified` requires a scan newer than the run
+- [x] `verified` requires a scan newer than the run
+
+## Fixed
+2026-10-31. New status `reported`. `verified` needs a finished scan newer than the run, and `verify_pending` runs after each scan. `paths_must_exist` now fails rather than warns. Root-level paths compare correctly. Tests: `VerifiedMeansCheckedTests`.

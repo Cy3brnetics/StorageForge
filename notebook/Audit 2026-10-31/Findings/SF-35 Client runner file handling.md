@@ -1,6 +1,6 @@
 ---
 id: SF-35
-status: open
+status: in-progress
 severity: low
 effort: S
 area: Scheduler
@@ -31,3 +31,6 @@ Make output 0640 with the scan group, as `health.py` does. Rotate `runs.jsonl` a
 ## Done when
 - [ ] Output is not world-readable
 - [ ] A `replace` test kills the older run
+
+## Progress
+2026-10-31, through PF-26: `runs.jsonl` holds no output and rotates at 600 lines, `last.out` is root only, and locks moved to the private `/run/storageforge`. `replace` is tested. Still open: `schedule_runs` has no prune rule on the server.

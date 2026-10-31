@@ -985,7 +985,7 @@ def cmd_schedule(args) -> int:
                 print(json.dumps(res, indent=2))
             else:
                 print(f"Run #{res['run_id']} finished with status={res['status']} (exit={rc}): {res['verify_result']['summary']}")
-            return 0 if res['status'] == 'verified' else 1
+            return 0 if res['status'] in ('verified', 'reported') else 1
 
         elif cmd == 'verify':
             if args.run_id:
@@ -998,7 +998,7 @@ def cmd_schedule(args) -> int:
                 print(f"Schedule #{args.id} verification: {res['status']} — {res['verify_result']['summary']}")
                 for chk in res['verify_result'].get('checks') or []:
                     print(f"  [{chk['status'].upper():<4}] {chk['name']}: {chk['message']}")
-            return 0 if res['verified'] == 1 else 1
+            return 0 if res['verified'] != -1 else 1
 
     finally:
         conn.close()

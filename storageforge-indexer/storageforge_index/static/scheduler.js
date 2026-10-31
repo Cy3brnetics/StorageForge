@@ -141,7 +141,7 @@ function parseEnvLines(str) {
 }
 
 function statusClass(st) {
-  if (st === 'verified' || st === 'ok') return 'st-ok';
+  if (st === 'verified' || st === 'reported' || st === 'ok') return 'st-ok';
   if (st === 'verify_failed' || st === 'warn') return 'st-warn';
   if (st === 'failed' || st === 'crit') return 'st-failed';
   return 'muted';

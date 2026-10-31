@@ -1,6 +1,6 @@
 ---
 id: PF-26
-status: open
+status: in-progress
 severity: medium
 effort: L
 area: Scheduler
@@ -32,3 +32,14 @@ Decide before fixing details. **Recommended:** build the scheduler as a layer ov
 ## Done when
 - [ ] One install path for timed work
 - [ ] The no-flags run of the script changes nothing
+
+## Decision
+2026-10-31: **one generated bash runner per schedule, and no Python on hosts.** A systemd timer fires it where there is systemd, and cron wakes it each minute elsewhere. The server's `parse_cron` is the only parser: it writes the expanded times into the runner and the `OnCalendar` line.
+
+- **Why not keep Python and patch it:** that was the smallest change, but every host would still need Python 3.9, and it is the only thing StorageForge deploys that does. Alpine and older RHEL would stay broken, and the cron parser would stay duplicated.
+- **Why not build on the task install path directly:** `TASK_TAIL` assumes systemd and has no retries, windows, reports or other users. The runner uses the same patterns (`flock`, `runs.jsonl`, curl with a header file, the shape of the units) instead.
+- **What stays:** the panel, run history, verification, the table and the API.
+- **Cost:** two ways to wake, and a bash JSON writer. Hosts need `flock` and `timeout`, and `curl` to report directly. Without `curl` a run arrives with the next scan.
+
+## Fixed
+2026-10-31. Tests in `RunnerTests` and `InstallScriptTests` run the real script under bash with a stand-in `curl`. Added lab cases `schedule-timer` and `backup-copy`, **which have not been run**, so the systemd, cron and `runuser` paths are unproven on real hosts. This finding stays in progress only for that lab run.

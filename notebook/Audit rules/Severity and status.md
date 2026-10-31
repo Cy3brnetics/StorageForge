@@ -19,7 +19,7 @@ Add **Effort**: S under a day, M a few days, L a week or more.
 
 ## Numbering
 Numbers carry on across audits and are never reused:
-- `SF-nn` security (`SF-38` was the last used on 2026-10-31)
+- `SF-nn` security (`SF-39` was the last used on 2026-10-31)
 - `PF-nn` a partial feature, or a feature that should be built differently (`PF-27`)
 - `EQ-nn` engineering quality (`EQ-05`)
 - `GM-nn` is kept for the Gemini review and isn't extended

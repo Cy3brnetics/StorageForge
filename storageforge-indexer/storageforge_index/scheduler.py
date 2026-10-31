@@ -665,7 +665,7 @@ def verify_run(conn: Conn, schedule: dict, report: dict) -> dict:
     policy = cfg.get('verify_policy', 'comprehensive')
     if policy == 'none':
         return {'passed': True, 'checks': [{'name': 'policy_none', 'status': 'ok', 'message': 'verification skipped by policy'}],
-                'verified_at': int(time.time()), 'summary': 'Verification skipped'}
+                'verified_at': int(time.time()), 'state_checked': False, 'summary': 'Verification skipped'}
 
     checks = []
     passed = True
@@ -685,6 +685,9 @@ def verify_run(conn: Conn, schedule: dict, report: dict) -> dict:
         # Check 2: Output pattern checks
         output = str(report.get('output') or '')
         must_match = cfg['verify_rules'].get('output_must_match')
+        if report.get('no_output') and (must_match or cfg['verify_rules'].get('output_must_not_match')):
+            checks.append({'name': 'output_patterns', 'status': 'warn', 'message': 'this run arrived with a scan, without its output: patterns not checked'})
+            must_match = None
         if must_match:
             if _search(must_match, output):
                 checks.append({'name': 'output_must_match', 'status': 'ok',
@@ -695,7 +698,7 @@ def verify_run(conn: Conn, schedule: dict, report: dict) -> dict:
                                'message': f'output did not match required pattern: {must_match}'})
 
         must_not_match = cfg['verify_rules'].get('output_must_not_match')
-        if must_not_match:
+        if must_not_match and not report.get('no_output'):
             if _search(must_not_match, output) is not False:     # could not tell: not proof that it is absent
                 passed = False
                 checks.append({'name': 'output_must_not_match', 'status': 'crit',
@@ -706,156 +709,111 @@ def verify_run(conn: Conn, schedule: dict, report: dict) -> dict:
     else:
         output = str(report.get('output') or '')
 
-    # If policy is report_only, we don't query host index
-    if policy == 'report_only':
-        summary = 'Report verified successfully' if passed else 'Report verification failed'
-        return {'passed': passed, 'checks': checks, 'verified_at': int(time.time()), 'summary': summary}
-
-    # Query host state in index
-    h_rows = conn.all('SELECT host_id, hostname FROM hosts WHERE lower(hostname) = lower(:h)',
-                      {'h': schedule['host']})
-    if not h_rows:
-        checks.append({'name': 'host_indexed', 'status': 'warn',
-                       'message': f'host {schedule["host"]} is not in the StorageForge index'})
-    else:
-        hid, hname = h_rows[0][0], h_rows[0][1]
-        mounts_db = conn.all("""SELECT mount_point, filesystem_type, total_bytes, used_bytes, scan_state
-                                FROM mounts WHERE host_id = :hid AND scan_state <> 'gone'""", {'hid': hid})
-        mount_map = {m[0]: {'fs': m[1], 'total': m[2], 'used': m[3], 'state': m[4]} for m in mounts_db}
-
-        # Check 3: Mount point checks
-        for mp in cfg['verify_rules'].get('check_mounts') or []:
-            if mp in mount_map:
-                checks.append({'name': f'mount_{mp}', 'status': 'ok',
-                               'message': f'{mp} is mounted ({mount_map[mp]["fs"]})'})
-            else:
-                passed = False
-                checks.append({'name': f'mount_{mp}', 'status': 'crit',
-                               'message': f'{mp} is NOT mounted on {hname}'})
-
-        # Check 4: Free space checks
-        for path, min_gib in (cfg['verify_rules'].get('min_free_gib') or {}).items():
-            best_mount = None
-            for mp in sorted(mount_map.keys(), key=len, reverse=True):
-                if path == mp or path.startswith(mp.rstrip('/') + '/'):
-                    best_mount = mount_map[mp]
-                    break
-            if best_mount and best_mount['total'] is not None and best_mount['used'] is not None:
-                free_bytes = best_mount['total'] - best_mount['used']
-                free_gib = free_bytes / (1024 ** 3)
-                if free_gib >= min_gib:
-                    checks.append({'name': f'free_space_{path}', 'status': 'ok',
-                                   'message': f'{path} has {free_gib:.1f} GiB free (threshold: {min_gib} GiB)'})
-                else:
-                    passed = False
-                    checks.append({'name': f'free_space_{path}', 'status': 'crit',
-                                   'message': f'{path} has only {free_gib:.1f} GiB free, below required {min_gib} GiB'})
-
-        # Check 5: Paths must exist in index
-        for p in cfg['verify_rules'].get('paths_must_exist') or []:
-            found = conn.scalar("""SELECT 1 FROM file_records f
-                                   JOIN mounts m ON f.mount_id = m.mount_id
-                                   JOIN directories d ON f.dir_id = d.dir_id
-                                   WHERE m.host_id = :hid AND (d.path || '/' || f.filename) = :p""",
-                                {'hid': hid, 'p': p})
-            if not found:
-                found = conn.scalar("""SELECT 1 FROM directories d
-                                       JOIN mounts m ON d.mount_id = m.mount_id
-                                       WHERE m.host_id = :hid AND d.path = :p""",
-                                    {'hid': hid, 'p': p})
-            if found:
-                checks.append({'name': f'path_exists_{p}', 'status': 'ok',
-                               'message': f'path {p} confirmed in index'})
-            else:
-                checks.append({'name': f'path_exists_{p}', 'status': 'warn',
-                               'message': f'path {p} not confirmed in latest index (may need rescan)'})
-
-        # Check 5b: Paths must NOT exist in index
-        for p in cfg['verify_rules'].get('paths_must_not_exist') or []:
-            found = conn.scalar("""SELECT 1 FROM file_records f
-                                   JOIN mounts m ON f.mount_id = m.mount_id
-                                   JOIN directories d ON f.dir_id = d.dir_id
-                                   WHERE m.host_id = :hid AND (d.path || '/' || f.filename) = :p""",
-                                {'hid': hid, 'p': p})
-            if not found:
-                found = conn.scalar("""SELECT 1 FROM directories d
-                                       JOIN mounts m ON d.mount_id = m.mount_id
-                                       WHERE m.host_id = :hid AND d.path = :p""",
-                                    {'hid': hid, 'p': p})
-            if found:
-                passed = False
-                checks.append({'name': f'path_absent_{p}', 'status': 'crit',
-                               'message': f'forbidden path {p} still exists in index'})
-            else:
-                checks.append({'name': f'path_absent_{p}', 'status': 'ok',
-                               'message': f'path {p} is absent in index'})
-
-        # Check 6: Task-type specific verifications
-        if schedule['task_type'] == 'scan':
-            last_scan = epoch(conn.scalar('SELECT max(started_at) FROM scans WHERE host_id = :hid', {'hid': hid}))
-            run_start = report.get('started_at', 0)
-            if last_scan and last_scan >= run_start - 60:
-                checks.append({'name': 'scan_completion', 'status': 'ok',
-                               'message': 'host scan registered in index successfully'})
-            else:
-                checks.append({'name': 'scan_completion', 'status': 'warn',
-                               'message': 'no fresh scan recorded in index for this host'})
-
-        elif schedule['task_type'] == 'task':
+    # What the output says about the work itself
+    if not report.get('no_output'):
+        if schedule['task_type'] in ('task', 'move'):
             if 'the copy differs' in output or 'rsync failed' in output:
                 passed = False
-                checks.append({'name': 'task_integrity', 'status': 'crit',
-                               'message': 'task output indicates transfer/verification failure'})
-            try:
-                t_obj = _resolve_task(conn, schedule['task_ref'])
-                t_chk = tasks.check(conn, t_obj)
-                if t_chk['crit'] > 0:
-                    checks.append({'name': 'task_check', 'status': 'warn',
-                                   'message': f'task check reports {t_chk["crit"]} critical issue(s) against index'})
-                else:
-                    checks.append({'name': 'task_check', 'status': 'ok',
-                                   'message': 'task blocks verified against index'})
-            except Exception:
-                pass
-
+                checks.append({'name': f'{schedule["task_type"]}_integrity', 'status': 'crit',
+                               'message': 'output reports a transfer or verification failure'})
         elif schedule['task_type'] == 'change':
             if 'problem(s)' in output or 'CONFLICT' in output:
                 passed = False
                 checks.append({'name': 'change_conflicts', 'status': 'crit',
                                'message': 'change plan output reported conflicts or problems'})
-            else:
-                checks.append({'name': 'change_conflicts', 'status': 'ok',
-                               'message': 'change plan applied without conflicts'})
 
-        elif schedule['task_type'] == 'move':
-            if 'the copy differs' in output or 'rsync failed' in output:
+    # "verified" is only ever said from a scan newer than the run. Until then the run is just what the host reported.
+    def result(checked: bool, summary: str) -> dict:
+        return {'passed': passed, 'checks': checks, 'verified_at': int(time.time()), 'state_checked': checked,
+                'summary': summary if passed else 'One or more verification checks failed'}
+
+    if policy == 'report_only':
+        return result(False, 'The host reported this; the index is not checked for this schedule')
+
+    h_rows = conn.all('SELECT host_id, hostname FROM hosts WHERE lower(hostname) = lower(:h)', {'h': schedule['host']})
+    if not h_rows:
+        checks.append({'name': 'host_indexed', 'status': 'warn', 'message': f'host {schedule["host"]} is not in the StorageForge index'})
+        return result(False, 'The host reported this; it has no index to check against')
+    hid, hname = h_rows[0][0], h_rows[0][1]
+    done = report.get('finished_at') or report.get('started_at') or 0
+    scanned = epoch(conn.scalar("""SELECT max(finished_at) FROM scans WHERE host_id = :hid AND status IN ('ok', 'partial')""", {'hid': hid}))
+    if not scanned or scanned < done:
+        checks.append({'name': 'state_pending', 'status': 'info', 'message': 'waiting for a scan newer than this run to check the host itself'})
+        return result(False, 'The host reported this; the next scan checks it')
+
+    mounts_db = conn.all("""SELECT mount_point, filesystem_type, total_bytes, used_bytes, scan_state
+                            FROM mounts WHERE host_id = :hid AND scan_state <> 'gone'""", {'hid': hid})
+    mount_map = {m[0]: {'fs': m[1], 'total': m[2], 'used': m[3], 'state': m[4]} for m in mounts_db}
+
+    for mp in cfg['verify_rules'].get('check_mounts') or []:
+        if mp in mount_map:
+            checks.append({'name': f'mount_{mp}', 'status': 'ok', 'message': f'{mp} is mounted ({mount_map[mp]["fs"]})'})
+        else:
+            passed = False
+            checks.append({'name': f'mount_{mp}', 'status': 'crit', 'message': f'{mp} is NOT mounted on {hname}'})
+
+    for path, min_gib in (cfg['verify_rules'].get('min_free_gib') or {}).items():
+        best_mount = None
+        for mp in sorted(mount_map.keys(), key=len, reverse=True):
+            if path == mp or path.startswith(mp.rstrip('/') + '/'):
+                best_mount = mount_map[mp]
+                break
+        if best_mount and best_mount['total'] is not None and best_mount['used'] is not None:
+            free_gib = (best_mount['total'] - best_mount['used']) / (1024 ** 3)
+            if free_gib >= min_gib:
+                checks.append({'name': f'free_space_{path}', 'status': 'ok',
+                               'message': f'{path} has {free_gib:.1f} GiB free (threshold: {min_gib} GiB)'})
+            else:
                 passed = False
-                checks.append({'name': 'move_integrity', 'status': 'crit',
-                               'message': 'move plan output reported copy or verification failure'})
-            else:
-                checks.append({'name': 'move_integrity', 'status': 'ok',
-                               'message': 'move plan step completed cleanly'})
+                checks.append({'name': f'free_space_{path}', 'status': 'crit',
+                               'message': f'{path} has only {free_gib:.1f} GiB free, below required {min_gib} GiB'})
 
-        elif schedule['task_type'] == 'shares':
-            from . import shares
-            try:
-                s_chk = shares.check(conn, schedule['task_ref'] or schedule['host'])
-                if s_chk['crit'] > 0:
-                    checks.append({'name': 'shares_check', 'status': 'warn',
-                                   'message': f'share design has {s_chk["crit"]} critical issue(s)'})
-                else:
-                    checks.append({'name': 'shares_check', 'status': 'ok',
-                                   'message': f'{len(s_chk["exports"])} share(s) checked against index'})
-            except Exception:
-                pass
+    def in_index(p: str) -> bool:
+        full = "CASE WHEN d.path = '/' THEN '/' || f.filename ELSE d.path || '/' || f.filename END"
+        return bool(conn.scalar(f"""SELECT 1 FROM file_records f JOIN mounts m ON f.mount_id = m.mount_id
+                                    JOIN directories d ON f.dir_id = d.dir_id WHERE m.host_id = :hid AND {full} = :p""", {'hid': hid, 'p': p})
+                    or conn.scalar("""SELECT 1 FROM directories d JOIN mounts m ON d.mount_id = m.mount_id
+                                      WHERE m.host_id = :hid AND d.path = :p""", {'hid': hid, 'p': p}))
 
-    summary = 'All verification checks passed' if passed else 'One or more verification checks failed'
-    return {
-        'passed': passed,
-        'checks': checks,
-        'verified_at': int(time.time()),
-        'summary': summary,
-    }
+    for p in cfg['verify_rules'].get('paths_must_exist') or []:
+        if in_index(p):
+            checks.append({'name': f'path_exists_{p}', 'status': 'ok', 'message': f'path {p} is in the index'})
+        else:
+            passed = False
+            checks.append({'name': f'path_exists_{p}', 'status': 'crit', 'message': f'path {p} is not in an index newer than the run'})
+
+    for p in cfg['verify_rules'].get('paths_must_not_exist') or []:
+        if in_index(p):
+            passed = False
+            checks.append({'name': f'path_absent_{p}', 'status': 'crit', 'message': f'forbidden path {p} still exists in the index'})
+        else:
+            checks.append({'name': f'path_absent_{p}', 'status': 'ok', 'message': f'path {p} is absent from the index'})
+
+    if schedule['task_type'] == 'task':
+        try:
+            t_chk = tasks.check(conn, _resolve_task(conn, schedule['task_ref']))
+            checks.append({'name': 'task_check', 'status': 'warn' if t_chk['crit'] else 'ok',
+                           'message': f'task check reports {t_chk["crit"]} critical issue(s) against the index' if t_chk['crit'] else 'task blocks fit the index'})
+        except LookupError:
+            pass
+    elif schedule['task_type'] == 'shares':
+        from . import shares
+        try:
+            s_chk = shares.check(conn, schedule['task_ref'] or schedule['host'])
+            checks.append({'name': 'shares_check', 'status': 'warn' if s_chk['crit'] else 'ok',
+                           'message': f'share design has {s_chk["crit"]} critical issue(s)' if s_chk['crit'] else f'{len(s_chk["exports"])} share(s) fit the index'})
+        except LookupError:
+            pass
+    return result(True, 'Checked against a scan newer than the run')
+
+
+def run_status(exit_code: int, v_result: dict) -> tuple[str, int]:
+    """(status, verified). verified: the scan agrees · reported: the host says so, and nothing has checked · verify_failed: a check failed."""
+    if exit_code != 0:
+        return 'failed', -1 if not v_result['passed'] else 0
+    if not v_result['passed']:
+        return 'verify_failed', -1
+    return ('verified', 1) if v_result.get('state_checked') else ('reported', 0)
 
 
 def _search(pattern: str, output: str) -> bool | None:
@@ -901,11 +859,11 @@ def reverify_run(conn: Conn, run_id: int) -> dict:
         'exit_code': r[6],
         'output': r[7],
         'nonce': r[8],
+        'no_output': not r[7],
     }
     v_result = _verified(conn, schedule, report)
-    verified = 1 if v_result['passed'] else -1
     exit_code = r[6] if r[6] is not None else -1
-    status = 'verified' if (exit_code == 0 and v_result['passed']) else 'verify_failed' if exit_code == 0 else 'failed'
+    status, verified = run_status(exit_code, v_result)
     with conn.tx():
         conn.execute("""UPDATE schedule_runs
                         SET status = :st, verified = :v, verify_result_json = :vj, verified_at = :va
@@ -932,12 +890,13 @@ def verify_schedule(conn: Conn, schedule_id: int) -> dict:
     if latest:
         return reverify_run(conn, int(latest))
     fake_sched = {**schedule, 'config': {**schedule['config'], 'verify_policy': 'state_only'}}
-    v_result = verify_run(conn, fake_sched, {'exit_code': 0, 'output': '', 'started_at': int(time.time())})
+    v_result = verify_run(conn, fake_sched, {'exit_code': 0, 'output': '', 'started_at': 0})     # the index as it stands
+    status, verified = run_status(0, v_result)
     return {
         'run_id': None,
         'schedule_id': schedule_id,
-        'status': 'verified' if v_result['passed'] else 'verify_failed',
-        'verified': 1 if v_result['passed'] else -1,
+        'status': status,
+        'verified': verified,
         'verify_result': v_result,
     }
 
@@ -962,8 +921,7 @@ def ingest_report(conn: Conn, report: dict, report_source: str) -> dict:
 
     # Run server verification
     v_result = _verified(conn, schedule, report)
-    verified = 1 if v_result['passed'] else -1
-    status = 'verified' if (exit_code == 0 and v_result['passed']) else 'verify_failed' if exit_code == 0 else 'failed'
+    status, verified = run_status(exit_code, v_result)
 
     with conn.tx():
         run_id = conn.scalar("""INSERT INTO schedule_runs
@@ -1019,6 +977,13 @@ def ingest_report(conn: Conn, report: dict, report_source: str) -> dict:
         'verify_result': v_result,
         'auto_rescan': bool(cfg['verify_rules'].get('auto_rescan')),
     }
+
+
+def verify_pending(conn: Conn, host: str, limit: int = 50) -> int:
+    """After a scan of host: the runs it can now check, which until now were only what the host reported."""
+    rows = conn.all("""SELECT run_id FROM schedule_runs WHERE lower(host) = lower(:h) AND status = 'reported'
+                        ORDER BY run_id DESC LIMIT :n""", {'h': host, 'n': limit})
+    return sum(1 for (run_id,) in rows if reverify_run(conn, run_id)['status'] != 'reported')
 
 
 def ingest_scan_schedules(conn: Conn, host: str, text: str) -> int:
@@ -1099,55 +1064,77 @@ def get_schedule_runs(conn: Conn, schedule_id: int | None = None, host: str | No
 
 # ── Client Deployment Package Generation ──────────────────────────────────────
 
+LIB = '/usr/local/lib/storageforge/scheduler'
+_WEEKDAYS = ('Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat')
+
+
 def generate_cron_entry(schedule: dict) -> str:
-    """Generates standard /etc/cron.d/ entry for this schedule. It wakes every minute and the runner decides: not every cron
-    has CRON_TZ, so only the runner can keep the schedule's own timezone. Always root: the token stays readable by root
-    alone, and the runner drops to config.user for the task itself."""
+    """The line for a host without systemd. It wakes every minute and the runner decides: not every cron has CRON_TZ, so only
+    the runner can keep the schedule's own timezone."""
     sid = schedule['schedule_id']
     cfg = schedule['config']
     comment = f"# StorageForge schedule {schedule['name']} (#{sid}): {schedule['cron_expr']} in {cfg.get('timezone') or 'UTC'}"
-    jitter = ' --jitter' if cfg.get('jitter_sec') else ''
-    return f"{comment}\n* * * * * root /usr/local/sbin/storageforge-scheduler run {sid} --if-due{jitter}\n"
+    return f"{comment}\n* * * * * root {LIB}/run-{sid}.sh --if-due\n"
 
 
-def generate_client_config(schedule: dict, report_url: str | None, token: str, script_args: list[str] | None = None) -> str:
-    """Generates JSON config for client daemon and runner in /etc/storageforge/scheduler/<id>.json."""
-    sid = schedule['schedule_id']
-    data = {
-        'schedule_id': sid,
-        'name': schedule['name'],
-        'host': schedule['host'],
-        'cron_expr': schedule['cron_expr'],
-        'task_type': schedule['task_type'],
-        'task_ref': schedule['task_ref'],
-        'paused': bool(schedule.get('paused')),
-        'report_url': (report_url or '').rstrip('/'),
-        'token': token,
-        'script_path': f'/usr/local/lib/storageforge/scheduler/task-{sid}.sh',
-        'script_args': list(script_args or []),
-        # a row saved before the env rules goes through them as well
-        'config': {**schedule['config'], 'env': {k: v for k, v in (schedule['config'].get('env') or {}).items() if not UNSAFE_ENV.fullmatch(k)}},
-    }
-    return json.dumps(data, indent=2)
+def on_calendar(schedule: dict) -> str:
+    """The same times as systemd writes them. Like parse_cron's reading of cron, a day has to match both day fields."""
+    mins, hours, doms, months, dows = parse_cron(schedule['cron_expr'])
+    ls = lambda v, every: '*' if len(v) == every else ','.join(str(x) for x in sorted(v))   # noqa: E731
+    days = sorted(dows - {7})
+    prefix = '' if len(days) == 7 else ','.join(_WEEKDAYS[d] for d in days) + ' '
+    return (f'{prefix}*-{ls(months, 12)}-{ls(doms, 31)} {ls(hours, 24)}:{ls(mins, 60)}:00 '
+            f'{schedule["config"].get("timezone") or "UTC"}')
+
+
+def _heredoc(target: str, text: str) -> str:
+    """Quoted, under a delimiter made from the text itself: a line in a value cannot end it, or be chosen to."""
+    mark = 'SF_' + hashlib.sha256(text.encode()).hexdigest()[:24]
+    return f"cat >{target} <<'{mark}'\n{text.rstrip(chr(10))}\n{mark}\n"
+
+
+def _remove_block(sid: int, token: bool = True) -> str:
+    """Bash that takes a schedule off this host, whichever version put it there. token=False keeps the report token, for a
+    reinstall from a downloaded script, which carries none."""
+    keep = f'/etc/storageforge/scheduler/{sid}.token ' if token else ''
+    return f"""systemctl disable --now sf-sched-{sid}.timer >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/sf-sched-{sid}.service /etc/systemd/system/sf-sched-{sid}.timer
+[[ -d /run/systemd/system ]] && systemctl daemon-reload 2>/dev/null || true
+rm -f /etc/cron.d/sf-sched-{sid} {LIB}/task-{sid}.sh {LIB}/run-{sid}.sh /etc/storageforge/scheduler/{sid}.json {keep}/var/lib/storageforge/managed/sched-{sid}.sha256
+if [[ -f /etc/crontabs/root ]]; then sed -i '/{LIB.replace('/', chr(92) + '/')}\\/run-{sid}\\.sh/d' /etc/crontabs/root; fi
+ls /etc/storageforge/scheduler/*.json >/dev/null 2>&1 || rm -f /usr/local/sbin/storageforge-scheduler   # the Python runner of older versions
+"""
 
 
 def generate_install_script(conn: Conn, schedule: dict, report_url: str | None, token: str) -> str:
-    """Generates a self-contained installation & management script for target client hosts."""
+    """The script that puts a schedule on its host. With no flags it only reports, like every script StorageForge writes.
+    token: empty leaves the host without one, and it reports through scans."""
+    from .jobs import REPORT_CA, report_ca
     sid = schedule['schedule_id']
+    cfg = schedule['config']
+    q = shlex.quote
     task_script, script_args = generate_task_script(conn, schedule)
-    cron_entry = generate_cron_entry(schedule)
-    client_config = generate_client_config(schedule, report_url, token, script_args=script_args)
-    runner_bin = schedscript.scheduler_binary()
-    paused_flag = 1 if schedule.get('paused') else 0
+    env = {k: v for k, v in (cfg.get('env') or {}).items() if not UNSAFE_ENV.fullmatch(k)}    # a row from before the env rules too
+    task_sh, run_sh = f'{LIB}/task-{sid}.sh', f'{LIB}/run-{sid}.sh'
+    runner = schedscript.runner_script(schedule, script_args, parse_cron(schedule['cron_expr']), report_url, env, task_sh)
+    paused = 1 if schedule.get('paused') else 0
     # a dry run shows the command itself: the person reading it is who approves it
-    shown_command = f'info {shlex.quote("runs: " + schedule["task_ref"])}' if schedule['task_type'] == 'command' else ':'
-
+    shown_command = f'info {q("runs: " + schedule["task_ref"])}' if schedule['task_type'] == 'command' else ':'
+    ca = report_ca(report_url)
+    keep_token = '' if not token else f"( umask 077; printf '%s\\n' {q(token)} >/etc/storageforge/scheduler/{sid}.token )\n"
+    calendar = on_calendar(schedule)
+    jitter = int(cfg.get('jitter_sec') or 0)
+    cron_line = generate_cron_entry(schedule)
+    service = (f'[Unit]\nDescription=StorageForge schedule {schedule["name"]} (#{sid})\n[Service]\nType=oneshot\n'
+               f'ExecStart={run_sh} --timer\nTimeoutStartSec=infinity\n')
+    timer = (f'[Unit]\nDescription=Timer for StorageForge schedule #{sid}\n[Timer]\nOnCalendar={calendar}\n'
+             f'Persistent=false\n[Install]\nWantedBy=timers.target\n')
     return f"""#!/usr/bin/env bash
-# StorageForge Scheduler Install Script for "{schedule['name']}" (#{sid})
+# StorageForge schedule {schedule['name']} (#{sid}): {schedule['cron_expr']}
 set -euo pipefail
 export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-MODE=install
+MODE=report
 for arg in "$@"; do
   case "$arg" in
     --report) MODE=report ;;
@@ -1158,85 +1145,76 @@ for arg in "$@"; do
 done
 {HELPERS}
 SID={sid}
-SCHED_NAME={shlex.quote(schedule['name'])}
-PAUSED={paused_flag}
-BIN=/usr/local/sbin/storageforge-scheduler
-TASK_SH=/usr/local/lib/storageforge/scheduler/task-{sid}.sh
-CFG_JSON=/etc/storageforge/scheduler/{sid}.json
-CRON_FILE=/etc/cron.d/sf-sched-{sid}
-MANAGED=/var/lib/storageforge/managed/sched-{sid}.sha256
+SCHED_NAME={q(schedule['name'])}
+PAUSED={paused}
+CALENDAR={q(calendar)}
+UNIT=sf-sched-$SID
+TASK_SH={task_sh}
+RUN_SH={run_sh}
+CRON_FILE=/etc/cron.d/$UNIT
+MANAGED=/var/lib/storageforge/managed/sched-$SID.sha256
+wakes_by_systemd() {{ [[ -d /run/systemd/system ]] && systemd-analyze calendar "$CALENDAR" >/dev/null 2>&1; }}
+has_cron() {{ command -v crond >/dev/null || command -v cron >/dev/null; }}
 
 if [[ $MODE == report ]]; then
   section "Schedule $SCHED_NAME (#$SID)"
   {shown_command}
-  [[ -x $BIN ]] && ok "$BIN" || missing "$BIN needs to be installed"
+  [[ -x $RUN_SH ]] && ok "$RUN_SH" || missing "$RUN_SH needs to be installed"
   [[ -x $TASK_SH ]] && ok "$TASK_SH" || missing "$TASK_SH needs to be installed"
-  [[ -f $CFG_JSON ]] && ok "$CFG_JSON" || missing "$CFG_JSON needs to be installed"
-  if ((PAUSED)); then
-    [[ ! -e $CRON_FILE ]] && ok "paused (no cron entry)" || missing "$CRON_FILE will be removed (schedule is paused)"
-  else
-    [[ -f $CRON_FILE ]] && ok "$CRON_FILE ({schedule['cron_expr']})" || missing "$CRON_FILE ({schedule['cron_expr']}) needs to be installed"
+  if ((PAUSED)); then ok "paused: no timer"
+  elif wakes_by_systemd; then ok "wakes by systemd: $CALENDAR"
+  elif has_cron; then ok "wakes by cron, each minute"
+  else conflict "this host has neither systemd nor cron: nothing could wake the schedule"
   fi
   finished
   exit 0
 fi
 
 if [[ $(id -u) -ne 0 ]]; then
-  echo "error: install must be run as root (sudo)" >&2
+  echo "error: this must be run as root (sudo)" >&2
   exit 1
 fi
 
 if [[ $MODE == uninstall ]]; then
   section "Remove schedule $SCHED_NAME (#$SID)"
-  rm -f "$TASK_SH" "$CFG_JSON" "$CRON_FILE" "$MANAGED"
-  ok "removed schedule #$SID files and cron entry"
+  {_remove_block(sid)}
+  ok "removed schedule #$SID"
   finished
   exit 0
 fi
 
-section "Installing StorageForge Scheduler for task: $SCHED_NAME (#$SID)"
-mkdir -p /usr/local/sbin /usr/local/lib/storageforge/scheduler /etc/storageforge/scheduler "/var/lib/storageforge/scheduler/$SID" /var/lib/storageforge/managed /etc/cron.d
-chmod 0755 /var/lib/storageforge /var/lib/storageforge/scheduler "/var/lib/storageforge/scheduler/$SID" /var/lib/storageforge/managed 2>/dev/null || true
-
-# 0. Install standalone storageforge-scheduler client runner & daemon
-cat <<'EOF_SF_SCHED_BIN' > "$BIN"
-{runner_bin}
-EOF_SF_SCHED_BIN
-chmod 0755 "$BIN"
-ok "$BIN"
-
-# 1. Install task execution script
-cat <<'EOF_TASK' > "$TASK_SH"
-{task_script}
-EOF_TASK
-chmod 0755 "$TASK_SH"
+section "Installing schedule $SCHED_NAME (#$SID)"
+{_remove_block(sid, token=False)}mkdir -p {LIB} /etc/storageforge/scheduler /var/lib/storageforge/scheduler/$SID /var/lib/storageforge/managed
+chmod 0755 /var/lib/storageforge /var/lib/storageforge/scheduler /var/lib/storageforge/scheduler/$SID /var/lib/storageforge/managed 2>/dev/null || true
+chmod 0700 /etc/storageforge/scheduler
+{_heredoc('"$TASK_SH"', task_script)}chmod 0755 "$TASK_SH"
 ok "$TASK_SH"
-
-# 2. Install scheduler client config
-cat <<'EOF_CFG' > "$CFG_JSON"
-{client_config}
-EOF_CFG
-chmod 0600 "$CFG_JSON"
-ok "$CFG_JSON"
-
-# 3. Install or remove cron job according to paused state
+{_heredoc('"$RUN_SH"', runner)}chmod 0700 "$RUN_SH"
+ok "$RUN_SH"
+{keep_token}{_heredoc(REPORT_CA, ca) + f'chmod 0644 {REPORT_CA}' if ca else ''}
 if ((PAUSED)); then
-  rm -f "$CRON_FILE"
-  ok "schedule is paused (cron entry omitted)"
-  sha256sum "$BIN" "$TASK_SH" > "$MANAGED"
+  ok "schedule is paused: no timer"
+elif wakes_by_systemd; then
+{_heredoc('"/etc/systemd/system/$UNIT.service"', service)}{_heredoc('"/etc/systemd/system/$UNIT.timer"', timer)}  systemctl daemon-reload
+  systemctl enable --now "$UNIT.timer" >/dev/null
+  ok "timer on: $CALENDAR"
+elif has_cron && [[ -d /etc/cron.d ]]; then
+{_heredoc('"$CRON_FILE"', cron_line)}  chmod 0644 "$CRON_FILE"
+  ok "$CRON_FILE"
+elif has_cron && [[ -f /etc/crontabs/root ]]; then
+  printf '%s\\n' {q(f"* * * * * {run_sh} --if-due")} >>/etc/crontabs/root
+  ok "/etc/crontabs/root"
 else
-  cat <<'EOF_CRON' > "$CRON_FILE"
-{cron_entry}
-EOF_CRON
-  chmod 0644 "$CRON_FILE"
-  ok "Installed successfully: $CRON_FILE"
-  sha256sum "$BIN" "$TASK_SH" "$CRON_FILE" > "$MANAGED"
+  conflict "this host has neither systemd nor cron: nothing can wake the schedule"
+  exit 1
 fi
+sha256sum "$RUN_SH" "$TASK_SH" >"$MANAGED"
 chmod 0644 "$MANAGED"
+info {q(f"jitter: up to {jitter} s") if jitter else q("no jitter")}
 
 if [[ $MODE == run ]]; then
   section "Running schedule $SCHED_NAME (#$SID) now"
-  "$BIN" run "$SID"
+  "$RUN_SH" --run
 fi
 finished
 """
@@ -1302,26 +1280,28 @@ def deploy_items(db, conn: Conn, schedule: dict, mode: str, report_url: str | No
     return items
 
 
+def orphan_script(sid: int) -> str:
+    return f"""#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+{HELPERS}
+section "Deleted schedule #{sid}"
+if [[ ${{1:-}} == --uninstall ]]; then
+  {_remove_block(sid)}
+  ok "removed"
+else
+  [[ -e {LIB}/run-{sid}.sh || -e {LIB}/task-{sid}.sh || -e /etc/cron.d/sf-sched-{sid} || -e /etc/systemd/system/sf-sched-{sid}.timer ]] && missing "schedule #{sid} will be removed" || ok "nothing here"
+fi
+finished
+"""
+
+
 def orphan_items(db, conn: Conn, schedule_id: int, mode: str, actor: str) -> list[dict]:
     """Deploy items that take a schedule whose row is gone off the hosts still holding it. Only what deployed it says
     where it is, so this reads the deployed table. Reports with no flags, like every script."""
     from . import deploy
     sid, ref = int(schedule_id), str(int(schedule_id))
-    paths = (f'/usr/local/lib/storageforge/scheduler/task-{sid}.sh', f'/etc/storageforge/scheduler/{sid}.json',
-             f'/etc/cron.d/sf-sched-{sid}', f'/var/lib/storageforge/managed/sched-{sid}.sha256')
-    text = f"""#!/usr/bin/env bash
-set -euo pipefail
-export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-MODE=report
-[[ ${{1:-}} == --uninstall ]] && MODE=uninstall
-{HELPERS}
-section "Deleted schedule #{sid}"
-for f in {' '.join(paths)}; do
-  [[ -e $f ]] || continue
-  if [[ $MODE == uninstall ]]; then rm -f -- "$f"; ok "removed $f"; else missing "$f will be removed"; fi
-done
-finished
-"""
+    text = orphan_script(sid)
 
     def forget(host: str):
         def hook(res):

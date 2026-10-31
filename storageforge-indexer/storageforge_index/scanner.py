@@ -396,6 +396,13 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
         status = 'ok' if not tot['failed'] else ('failed' if tot['failed'] == len(results) else 'partial')
         db.finish_scan(conn, scan_id, host_id, tot, status, time.time() - started)
         if status != 'failed':
+            try:
+                from .scheduler import verify_pending
+                if n := verify_pending(conn, inv.hostname):
+                    log(f'  checked {n} schedule run(s) against this scan')
+            except Exception as exc:
+                log(f'  schedule runs: {exc}')
+        if status != 'failed':
             from .hostconfig import capture
             try:
                 if capture(conn, inv.hostname)['new']:

@@ -24,7 +24,7 @@ MAX_EXPORT = 20000
 DEPLOY = {'ok': 'ok', 'incomplete': 'warn', 'refused': 'denied', 'cancelled': 'info', 'skipped': 'info', 'running': 'running',
           'queued': 'running', 'failed': 'failed'}
 SCAN = {'ok': 'ok', 'partial': 'warn', 'failed': 'failed', 'running': 'running', 'queued': 'running'}
-SCHEDULE = {'verified': 'ok', 'ok': 'ok', 'verify_failed': 'warn', 'failed': 'failed', 'running': 'running'}
+SCHEDULE = {'verified': 'ok', 'reported': 'ok', 'ok': 'ok', 'verify_failed': 'warn', 'failed': 'failed', 'running': 'running'}
 HOSTLOG = {'fetched': 'info', 'pending': 'running', 'failed': 'failed'}
 
 
