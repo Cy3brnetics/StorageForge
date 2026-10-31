@@ -65,6 +65,7 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/jobs` | the last 50 scan jobs |
 | DELETE | `/api/hosts/<name>[?keep_design=1]` | retire a host (password confirmed); 409 while anything is deployed there |
 | DELETE | `/api/keys/<name>`, `/api/bindings/<id>` | remove a key with no bindings, or a binding (password confirmed) |
+| PUT | `/api/backups/target` | `{"host", "path"}`: copy each backup to that host; empty stops copying |
 | GET, PUT | `/api/hosts/<name>/schedule` | the host's own scan interval and quiet hours: `{"interval": "1d", "quiet_hours": "22-6"}`; empty uses the global interval, no quiet hours |
 | POST | `/api/scan` | `{"host"}`: queue a vault-backed scan (202, `{"job_id"}`); duplicates collapse |
 | POST | `/api/scan/all` | `{}`: queue a scan of every host bound by name for scanning (202, `{"jobs": {host: job_id}}`); duplicates collapse |

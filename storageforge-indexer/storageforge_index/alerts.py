@@ -347,6 +347,10 @@ def backup_problems(conn: Conn) -> dict:
                         ORDER BY audit_id DESC LIMIT 1""")
     if rows and rows[0][0] == 'failed':
         now['backup-failed'] = ('backup-failed', 'backup', 'The nightly backup failed', str((loads(rows[0][1]) or {}).get('error') or ''), 'crit')
+    copied = conn.all("SELECT outcome, target_host, detail_json FROM audit_log WHERE action = 'backup.copy' ORDER BY audit_id DESC LIMIT 1")
+    if copied and copied[0][0] == 'failed':
+        now['backup-copy-failed'] = ('backup-copy-failed', 'backup', f'The backup copy to {copied[0][1]} failed',
+                                     str((loads(copied[0][2]) or {}).get('error') or ''), 'crit')
     if rows:
         try:
             found = [b for b in backup.listing() if b['kind'] == 'essentials']

@@ -69,7 +69,7 @@ docker compose exec storageforge storageforge-index backup --full     # everythi
 docker compose exec storageforge storageforge-index backup list
 ```
 
-`POST /api/backups` makes one over HTTP, up to 6 per hour; the web UI has no backup screen yet. Backups are SQLite only; with PostgreSQL use its own tools. To rebuild on another machine, see [Disaster recovery](disaster-recovery.md).
+`POST /api/backups` makes one over HTTP, up to 6 per hour; the **Audit** tab shows the newest backup and can make one. Set a host and folder there (or `PUT /api/backups/target`) to copy each backup off this machine, using the key bound to that host for deploys; a failed copy raises an alert. Backups are SQLite only; with PostgreSQL use its own tools. To rebuild on another machine, see [Disaster recovery](disaster-recovery.md).
 
 ### Restore
 

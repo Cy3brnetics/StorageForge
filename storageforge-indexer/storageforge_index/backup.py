@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import shlex
 import shutil
 import sqlite3
 import threading
@@ -95,6 +96,42 @@ def create(db: Database, kind: str = 'essentials', dest: Path | None = None, kee
     removed = prune(dest, kind, keep) if keep else []
     return {'path': str(out), 'kind': kind, 'bytes': out.stat().st_size, 'seconds': round(time.time() - started, 1),
             'removed': removed}
+
+
+def send_file(t, path: str, directory: str, keep: int) -> None:
+    """Write one essentials backup into a folder over t, then keep the newest few there. Only the folder's own backups
+    are ever removed. Essentials hold the vault encrypted, so the other host learns nothing without the vault secret."""
+    d, name = shlex.quote(directory.rstrip('/') or '/'), Path(path).name
+    q = shlex.quote(name)
+    script = (f'umask 077; mkdir -p {d} && cat > {d}/{q}.part && mv {d}/{q}.part {d}/{q} && '
+              f'ls -1t {d} | grep "^{PREFIX["essentials"]}" | grep -v "\\.part$" | tail -n +{keep + 1} | while read -r f; do rm -f -- {d}/"$f"; done')
+    proc = t.stream(script, stdin=True)
+    try:
+        with open(path, 'rb') as f:
+            shutil.copyfileobj(f, proc.stdin)
+        proc.stdin.close()
+        err = proc.stderr.read().decode('utf-8', 'replace').strip()
+        if proc.wait() != 0:
+            raise RuntimeError(err[-300:] or f'copy to {directory} failed')
+    finally:
+        proc.stdout.close()
+        proc.stderr.close()
+
+
+def copy_off(db: Database, conn, path: str, target: dict, keep: int) -> None:
+    """Send a backup to target {"host", "path"} with the key bound to that host for deploys."""
+    from .remote import Transport
+    from .runner import connect_address, ephemeral_agent, known_hosts_path
+    from .vault import Vault
+    host = connect_address(conn, target['host'])
+    with Vault(db, conn).unlock() as vault:
+        b = vault.resolve(host, 'deploy')
+        with ephemeral_agent(vault.decrypt_key(b.key_id)) as sock:
+            t = Transport(host=host, user=b.user, port=b.port, agent_sock=sock, known_hosts=str(known_hosts_path()), isolated=True)
+            try:
+                send_file(t, path, target['path'], keep)
+            finally:
+                t.close()
 
 
 def listing(dest: Path | None = None) -> list[dict]:

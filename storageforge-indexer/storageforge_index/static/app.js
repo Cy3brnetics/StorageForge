@@ -791,8 +791,36 @@ $('#userform').addEventListener('submit', async (ev) => {
   } catch (err) { $('#usermsg').textContent = err.message; }
   loadUsers();
 });
+async function loadBackups() {
+  const box = $('#backupsbox');
+  try {
+    const b = await getJSON('/api/backups');
+    if (b.external) { box.replaceChildren(text('p', 'This database is PostgreSQL: StorageForge makes no backups of it. Use pg_dump, and keep the vault secret safe.', 'st-running')); return; }
+    const newest = b.backups[0];
+    const hours = newest ? (Date.now() / 1000 - newest.created) / 3600 : null;
+    const host = el('input', { type: 'text', placeholder: 'host', 'aria-label': 'Copy backups to host' }); host.value = b.target?.host || '';
+    const path = el('input', { type: 'text', class: 'mono', placeholder: '/srv/storageforge-backups', 'aria-label': 'Folder on that host' }); path.value = b.target?.path || '';
+    const msg = text('span', '', 'muted');
+    const when_ = (x) => new Date(x * 1000).toLocaleString();
+    box.replaceChildren(
+      text('p', newest ? `Newest: ${newest.kind}, ${fmtBytes(newest.bytes)}, ${hours < 48 ? `${Math.round(hours)} h` : `${Math.round(hours / 24)} days`} ago. Runs nightly at ${b.hour}:00, keeps ${b.keep}.` : 'No backups yet.', newest && hours < 48 ? 'st-ok' : 'st-failed'),
+      b.nightly ? text('p', `Last nightly: ${b.nightly.outcome}, ${when_(b.nightly.at)}`, `small st-${b.nightly.outcome}`) : '',
+      b.copy ? text('p', `Last copy off this machine: ${b.copy.outcome}, ${when_(b.copy.at)}${b.copy.detail.error ? `: ${b.copy.detail.error}` : ''}`, `small st-${b.copy.outcome}`)
+        : text('p', 'These backups sit on the same volume as the database. Add a host below so that losing the volume does not lose them too.', 'small st-running'),
+      el('div', { class: 'row wrap' }, host, path,
+        button('Save', async () => {
+          try { await api('/api/backups/target', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host: host.value.trim(), path: path.value.trim() }) }); msg.textContent = 'Saved. It uses the key bound to that host for deploys.'; }
+          catch (err) { msg.textContent = err.message; }
+        }, 'btn ghost sm'),
+        button('Back up now', async () => {
+          try { await postJSON('/api/backups', { kind: 'essentials' }); loadBackups(); }
+          catch (err) { msg.textContent = err.message; }
+        }, 'btn sm'), msg));
+  } catch (err) { box.replaceChildren(text('p', err.message, 'muted')); }
+}
 async function loadAudit() {
   loadUsers();
+  loadBackups();
   try {
     const { entries } = await getJSON('/api/audit?limit=100');
     $('#audit').replaceChildren(...entries.map((a) => {

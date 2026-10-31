@@ -12,6 +12,7 @@ GET|PUT /api/me                     the signed-in user; PUT {"session_minutes"} 
 POST /api/me/password  {"password", "new_password"}   change your own password; every session of yours ends
 GET|POST /api/users                  accounts (admin, password confirmed); POST {"username", "password", "role"}
 PUT|DELETE /api/users/<name>         {"role"} viewer, operator or admin, {"disabled"}; the last admin stays
+PUT  /api/backups/target  {"host", "path"}   after each nightly backup, copy it to that host over its deploy binding
 GET  /api/hosts                     indexed hosts
 GET  /api/graph[?host=]             nodes and edges
 GET  /api/canvas[?host=]            Obsidian .canvas download
@@ -341,6 +342,7 @@ class App:
                 if BACKUP_FULL:
                     out['full'] = backup.create(self.db, 'full', keep=BACKUP_FULL)
                 self.audit(conn, 'system', 'backup.create', 'ok', None, {k: v['path'] for k, v in out.items()})
+                out['copy'] = self.copy_off(conn, out['backup']['path'], 'system')
             except (Exception, SystemExit) as exc:
                 out['error'] = str(exc)
                 self.audit(conn, 'system', 'backup.create', 'failed', None, {'error': str(exc)[:300]})
@@ -349,6 +351,20 @@ class App:
             conn.close()
         print(f'nightly: {out}', file=sys.stderr, flush=True)
         return out
+
+    def copy_off(self, conn, path: str, actor: str) -> str | None:
+        """Copy a backup to the host in the backup.target setting, if there is one. Returns the error, if any."""
+        from . import backup
+        target = alerts.get_setting(conn, 'backup.target')
+        if not target:
+            return None
+        try:
+            backup.copy_off(self.scan_db, conn, path, target, BACKUP_KEEP)
+        except Exception as exc:
+            self.audit(conn, actor, 'backup.copy', 'failed', target['host'], {'error': str(exc)[:300]})
+            return str(exc)
+        self.audit(conn, actor, 'backup.copy', 'ok', target['host'], {'path': target['path']})
+        return None
 
     def _nightly(self):
         from . import backup
@@ -1576,8 +1592,27 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     def api_backups():
         from . import backup
+        last = conn().all("""SELECT action, outcome, ts_us, detail_json FROM audit_log WHERE actor = 'system' AND action = 'backup.create'
+                               ORDER BY audit_id DESC LIMIT 1""")
+        copied = conn().all("""SELECT outcome, ts_us, detail_json FROM audit_log WHERE action = 'backup.copy' ORDER BY audit_id DESC LIMIT 1""")
         return jsonify(backups=backup.listing() if db.dialect == 'sqlite' else [], hour=BACKUP_HOUR, keep=BACKUP_KEEP,
-                       full_keep=BACKUP_FULL)
+                       full_keep=BACKUP_FULL, external=db.dialect != 'sqlite', target=alerts.get_setting(conn(), 'backup.target'),
+                       nightly={'outcome': last[0][1], 'at': last[0][2] // 1000000} if last else None,
+                       copy={'outcome': copied[0][0], 'at': copied[0][1] // 1000000, 'detail': json.loads(copied[0][2] or '{}')} if copied else None)
+
+    @web.put('/api/backups/target')
+    @login_required
+    @password_confirmed
+    def api_backup_target():
+        body = json_body()
+        host, path = str(body.get('host') or '').strip(), str(body.get('path') or '').strip()
+        if bool(host) != bool(path):
+            raise ValueError('give both a host and a folder, or neither to stop copying')
+        if path and not re.fullmatch(r'/[A-Za-z0-9._/-]{1,200}', path):
+            raise ValueError('the folder must be an absolute path of letters, digits and . _ - /')
+        alerts.set_setting(conn(), 'backup.target', {'host': host, 'path': path} if host else None, actor())
+        core.audit(conn(), actor(), 'backup.target', 'ok', host or None, {'path': path})
+        return jsonify(target={'host': host, 'path': path} if host else None)
 
     @web.post('/api/backups')
     @login_required
@@ -1589,6 +1624,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         kind = 'full' if (json_body().get('kind') == 'full') else 'essentials'
         res = backup.create(db, kind, keep=BACKUP_KEEP if kind == 'essentials' else max(BACKUP_FULL, 2))
         core.audit(conn(), actor(), 'backup.create', 'ok', None, {'path': res['path'], 'bytes': res['bytes']})
+        if kind == 'essentials':
+            res['copy_error'] = core.copy_off(conn(), res['path'], actor())
         return jsonify(res)
 
     folder_cache: dict = {}
