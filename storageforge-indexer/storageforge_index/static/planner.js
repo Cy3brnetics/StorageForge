@@ -877,12 +877,12 @@ function vProtection(){
     const sk=r.sync.state==='Active Sync'?'ok':r.sync.state==='Rsync Scheduled'?'ok':r.sync.state==='None'?'muted':r.sync.state==='Lagging'?'warn':'crit';
     const path=(collectMounts().find(m=>m.node===r.node)||{}).target||'';
     return `<tr data-node="${esc(r.node)}">
-      <td><b class="mono">${esc(r.name)}</b><div class="muted mono" style="font-size:11.5px">${esc(path)}</div>${r.deployed?`<div class="muted" style="font-size:11px">Deployed: ${esc(r.deployed.join(', '))}</div>`:''}</td>
+      <td><b class="mono">${esc(r.name)}</b><div class="muted mono" style="font-size:11.5px">${esc(path)}</div>${r.deployed?`<div class="muted" style="font-size:11px">From: ${esc(r.deployed.join(', '))}</div>`:''}</td>
       <td><div class="pcell" data-act="psync" data-i="${i}" role="button" tabindex="0" title="Click to cycle sync state"><span class="st ${sk}">${esc(r.sync.state)}</span><small>${esc(r.sync.target||'no replication')}${r.sync.lag?' · lag '+esc(r.sync.lag):''}</small></div></td>
       <td><div class="pcell" data-act="psnap" data-i="${i}" role="button" tabindex="0" title="Click to toggle snapshots"><span class="st ${r.snap.on?'ok':'crit'}">${r.snap.on?esc(r.snap.tool):'No snapshots'}</span><small>${r.snap.on?`${esc(r.snap.policy)} · ${r.snap.count} kept · ${fmtBin(r.snap.overhead,1)}`:'click to enable'}</small></div></td>
       <td><span class="st ${r.backup.target?(r.backup.offsite?'ok':'warn'):'crit'}">${esc(r.backup.target||'No backup')}</span><div class="muted mono" style="font-size:11px">${r.backup.target?`${r.backup.offsite?'offsite':'same site'} · ${r.backup.ratio.toFixed(2)}× compression`:''}</div></td>
       <td class="mono" style="font-size:11.5px">${esc(r.backup.enc)}</td>
-      <td>${r.backup.target?`<span class="st ${age>90?'crit':age>30?'warn':'ok'} num">${esc(r.backup.last)}</span><div class="muted" style="font-size:11px">${age} days ago</div><button type="button" class="btn sm ghost" style="margin-top:4px" data-act="pval" data-i="${i}">Mark validated</button>`:'<span class="muted">—</span>'}</td>
+      <td>${r.backup.target?`<span class="st ${age>90?'crit':age>30?'warn':'ok'} num">${r.backup.last?esc(r.backup.last):'No good run yet'}</span>${r.backup.last?`<div class="muted" style="font-size:11px">${age} days ago</div>`:''}${r.deployed?'':`<button type="button" class="btn sm ghost" style="margin-top:4px" data-act="pval" data-i="${i}">Mark validated</button>`}`:'<span class="muted">—</span>'}</td>
       <td class="num mono" style="font-size:12px">${c.c} cop${c.c>1?'ies':'y'}<br><span class="muted">${c.off?'offsite ✓':'no offsite'}</span></td>
       <td><span class="pill ${st.k}">${st.t}</span><div class="why">${esc(st.why.join(' · '))}</div></td></tr>`}).join('');
   const P=S.protection.map(protStatus);
@@ -1109,7 +1109,7 @@ view.addEventListener('click',e=>{
   if(act==='stagechanges'){ stageDesignChanges(); return }
   if(act==='preset'){ const p=PRESETS.find(x=>x.id===a.dataset.id);p.links.forEach(x=>{if(!S.links.some(l=>l.path===x.path)) S.links.push({id:'L'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),...x})});commit();return }
   if(act==='dellink'){ S.links=S.links.filter(l=>l.id!==a.dataset.id);commit();return }
-  if(['psync','psnap','pval'].includes(act)&&S.protection[+a.dataset.i].deployed){ docState('This row comes from what is deployed. Change the job in the Deploy tab.','err');return }
+  if(['psync','psnap','pval'].includes(act)&&S.protection[+a.dataset.i].deployed){ docState('This row comes from what is deployed or was found by a scan, so it cannot be edited here.','err');return }
   if(act==='offsite'){ const off=!DOC.offsite;apiJSON('/api/planner/offsite',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:DOC.host,offsite:off})}).then(()=>{DOC.offsite=off;render()}).catch(e=>docState(e.message,'err'));return }
   if(act==='psync'){ const r=S.protection[+a.dataset.i];r.sync.state=SYNC_STATES[(SYNC_STATES.indexOf(r.sync.state)+1)%SYNC_STATES.length];if(r.sync.state==='Lagging'&&!r.sync.lag) r.sync.lag='4 h';commit();return }
   if(act==='psnap'){ const r=S.protection[+a.dataset.i];r.snap.on=!r.snap.on;if(r.snap.on&&(!r.snap.tool||r.snap.tool.startsWith('none'))){r.snap.tool=r.node.startsWith('ds:')?'sanoid':'snapper';r.snap.policy='hourly 24 · daily 7'}commit();return }

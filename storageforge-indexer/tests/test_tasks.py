@@ -421,6 +421,25 @@ Error summary:    no errors found
         self.assertEqual((media['snapshots']['tool'], media['snapshots']['count']), ('zfs', 9))
 
 
+class GeneratedScripts(Fleet):
+    @unittest.skipUnless(shutil.which('shellcheck'), 'needs shellcheck (CI has it)')
+    def test_shellcheck_finds_no_errors(self):
+        from storageforge_index import access, changes, health
+        scripts = {'access-setup': access.setup_script('scan'), 'access-remove': access.remove_script('scan'), 'health': health.COLLECTOR,
+                   'move': moves.script(self.conn, moves.normalize({'name': 'm', 'steps': [
+                       {'method': m, 'src': {'host': 'nas', 'path': '/mnt/pool'}, 'dst': {'host': 'nas', 'path': f'/mnt/backup/{m}'}}
+                       for m in ('copy', 'move', 'mirror', 'rsnapshot', 'git')]})),
+                   'task': tasks.script(self.conn, tasks.normalize({'name': 't', 'host': 'nas', 'schedule': 'hourly', 'blocks': [
+                       {'type': 'mkdir', 'params': {'path': '/x'}}, {'type': 'rsync', 'params': {'src': '/mnt/pool', 'dst': '/mnt/backup/p'}},
+                       {'type': 'btrfs_snapshot', 'params': {'subvol': '/mnt/pool', 'prefix': 'auto'}}]})),
+                   'change': changes.script(self.conn, changes.normalize({'name': 'c', 'tasks': [{'type': 'dir', 'host': 'nas', 'params': {'path': '/x'}}]}))}
+        for name, text in scripts.items():
+            with self.subTest(name):
+                shell = 'bash' if text.startswith('#!/usr/bin/env bash') else 'sh'
+                r = subprocess.run(['shellcheck', '--severity=error', '-s', shell, '-'], input=text, capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stdout)
+
+
 class Tasks(Fleet):
     def task(self, *blocks, **kw):
         return {'name': kw.pop('name', 'Nightly'), 'host': 'nas', 'schedule': kw.pop('schedule', 'hourly'), 'blocks': list(blocks), **kw}

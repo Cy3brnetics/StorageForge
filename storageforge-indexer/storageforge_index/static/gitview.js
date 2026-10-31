@@ -16,7 +16,7 @@ const GIT_STATE = {
 async function loadGit() {
   const box = $('#gitbox');
   const qs = new URLSearchParams(); if (S.host) qs.set('host', S.host); if (GITV.all) qs.set('all', '1');
-  try { GITV.data = await getJSON(`/api/git?${qs}`); }
+  try { [GITV.data, GITV.hosts] = await Promise.all([getJSON(`/api/git?${qs}`), getJSON('/api/hosts').then((h) => h.indexed.map((x) => x.hostname).sort())]); }
   catch (err) { box.replaceChildren(text('p', err.message, 'st-failed')); return; }
   renderGit();
 }
@@ -40,8 +40,7 @@ function renderGit() {
   const all = el('input', { type: 'checkbox', onchange: () => { GITV.all = all.checked; loadGit(); } }); all.checked = GITV.all;
   const toggle = el('label', { class: 'check' }, all, GITV.all ? 'Showing caches and build checkouts' : `Show ${GITV.data.hidden} in caches and build trees`);
   const key = (r) => `${r.host}:${r.path}`;
-  const targets = [...new Set(GITV.data.repos.map((r) => r.host))].sort();
-  const target = el('select', { 'aria-label': 'Archive to host' }, new Option('host…', ''), ...targets.map((h) => new Option(h, h)));
+  const target = el('select', { 'aria-label': 'Archive to host' }, new Option('host…', ''), ...(GITV.hosts || []).map((h) => new Option(h, h)));
   const singles = repos.filter((r) => r.state === 'single copy');
   const bulk = el('div', { class: 'row wrap' },
     singles.length ? button(`Select ${singles.length} single-copy`, () => { singles.forEach((r) => GITV.picked.add(key(r))); renderGit(); }, 'btn ghost sm') : '',

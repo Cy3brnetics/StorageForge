@@ -24,7 +24,7 @@ tmp=$(mktemp "$out/.report.XXXXXX") || exit 1
     done
   fi
   if command -v btrfs >/dev/null 2>&1 && command -v findmnt >/dev/null 2>&1; then
-    findmnt -rn -t btrfs -o SOURCE,TARGET | sed 's/\[[^]]*\]//' | sort -u -k1,1 | while read -r src m; do
+    findmnt -rn -t btrfs -o SOURCE,TARGET | sed 's/\[[^]]*\]//' | sort -u -k1,1 | while read -r _ m; do
       echo "## stats $m"; btrfs device stats -c "$m" 2>/dev/null
       echo "## scrub $m"; btrfs scrub status "$m" 2>/dev/null
       echo "## snaps $m"; btrfs subvolume list -r -s "$m" 2>/dev/null | wc -l
