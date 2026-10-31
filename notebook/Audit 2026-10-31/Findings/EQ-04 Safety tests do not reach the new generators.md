@@ -33,4 +33,4 @@ Add table-driven route tests: for every route, assert permission, whether it wan
 - [x] A new route without a declared password and audit rule fails CI
 
 ## Fixed
-2026-10-31. `tests/test_route_rules.py` holds every write route's password rule and audit reason, checks the password rule by calling each route, and fails on a route missing from the table. Scheduler scripts joined the hostile-values test and shellcheck (run locally through `shellcheck-py`). Heredoc delimiters are now a hash of their text. It found one gap: `POST /api/deploy/settings/test` had no audit row, now fixed. Lab cases added, not run.
+2026-10-31, in `9326d72`. `tests/test_route_rules.py` holds every write route's password rule and audit reason, checks the password rule by calling each route, and fails on a route missing from the table. Scheduler scripts joined the hostile-values test and shellcheck (run locally through `shellcheck-py`). Heredoc delimiters are now a hash of their text. It found one gap: `POST /api/deploy/settings/test` had no audit row, now fixed. Lab cases added, not run.

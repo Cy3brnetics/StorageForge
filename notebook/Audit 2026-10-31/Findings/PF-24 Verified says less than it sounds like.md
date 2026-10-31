@@ -28,4 +28,4 @@ Name it honestly (`reported ok`), and keep `verified` for checks run on index da
 - [x] `verified` requires a scan newer than the run
 
 ## Fixed
-2026-10-31. New status `reported`. `verified` needs a finished scan newer than the run, and `verify_pending` runs after each scan. `paths_must_exist` now fails rather than warns. Root-level paths compare correctly. Tests: `VerifiedMeansCheckedTests`.
+2026-10-31, in `9326d72`. New status `reported`. `verified` needs a finished scan newer than the run, and `verify_pending` runs after each scan. `paths_must_exist` now fails rather than warns. Root-level paths compare correctly. Tests: `VerifiedMeansCheckedTests`.

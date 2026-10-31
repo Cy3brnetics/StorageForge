@@ -42,4 +42,4 @@ Decide before fixing details. **Recommended:** build the scheduler as a layer ov
 - **Cost:** two ways to wake, and a bash JSON writer. Hosts need `flock` and `timeout`, and `curl` to report directly. Without `curl` a run arrives with the next scan.
 
 ## Fixed
-2026-10-31. Tests in `RunnerTests` and `InstallScriptTests` run the real script under bash with a stand-in `curl`. Added lab cases `schedule-timer` and `backup-copy`, **which have not been run**, so the systemd, cron and `runuser` paths are unproven on real hosts. This finding stays in progress only for that lab run.
+2026-10-31, in `9326d72`. Tests in `RunnerTests` and `InstallScriptTests` run the real script under bash with a stand-in `curl`. Added lab cases `schedule-timer` and `backup-copy`, **which have not been run**, so the systemd, cron and `runuser` paths are unproven on real hosts. This finding stays in progress only for that lab run.
