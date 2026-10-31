@@ -1239,7 +1239,7 @@ echo "${H}$PLAN${N0} · $MODE on $(uname -n)$( ((DESTRUCTIVE)) && echo ' · dest
 CHANGE_TAIL = r"""
 echo
 if ((PROBLEMS)); then echo "${R}$PROBLEMS problem(s)${N0}$( ((STOPPED)) && echo ', stopped at the first one')"; exit 1; fi
-echo "${G}done${N0}"
+finished
 """
 
 

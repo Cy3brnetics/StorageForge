@@ -203,6 +203,15 @@ class Tasks(Fleet):
         self.assertTrue(any('not btrfs' in x['text'] for x in c['blocks'][0]['items']))
         self.assertTrue(any('overlap' in x['text'] for x in c['blocks'][1]['items']))
 
+    def test_shares_apply_with_steps_left_is_not_marked_deployed(self):
+        from storageforge_index import deploy
+        shares.save_export(self.db, self.conn, 'nas', {'protocol': 'NFS', 'path': '/mnt/pool/photos', 'clients': '10.0.0.0/24'}, None, 'test')
+        hook = shares.deploy_items(self.db, self.conn, 'nas', 'apply', 'test')[0]['on_ok']
+        hook({'status': 'incomplete'})
+        self.assertEqual(deploy.deployed(self.conn, kind='shares'), [])
+        hook({'status': 'ok'})
+        self.assertEqual(len(deploy.deployed(self.conn, kind='shares')), 1)
+
     def test_normalize_refuses_bad_input(self):
         for bad in ({'type': 'nope'}, {'type': 'rsync', 'params': {'src': 'rel', 'dst': '/x'}},
                     {'type': 'zfs_snapshot', 'params': {'dataset': 'tank; rm -rf /'}},

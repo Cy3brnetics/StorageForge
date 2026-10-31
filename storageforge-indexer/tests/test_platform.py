@@ -72,6 +72,23 @@ class VaultTests(DBCase):
         self.assertNotIn(b'OPENSSH PRIVATE KEY', raw)
         self.assertNotIn(pem[40:80], raw)
 
+    def test_a_refused_deploy_is_recorded_not_an_internal_error(self):
+        from unittest import mock
+        from storageforge_index import deploy
+        with self.unlocked() as v:
+            v.add_key('k', private_pem())
+            v.bind('k', 'nas', 'root', 22, 'deploy')
+            v.generate_key(deploy.SIGNING_KEY)
+        fake = mock.MagicMock()
+        fake.return_value.argv.return_value = ['sh', '-c', 'cat >/dev/null; echo not signed for this host; exit 97']
+        with mock.patch.dict(os.environ, {'STORAGEFORGE_VAULT_SECRET': SECRET.decode()}), \
+                mock.patch.object(deploy, 'Transport', fake), mock.patch.object(deploy, 'ephemeral_agent'):
+            res = deploy.run(self.db, 'nas', 'true', kind='shares', ref='x', mode='apply', actor='test', require_ready=False)
+        self.assertEqual((res['status'], res['exit_code']), ('refused', 97), res['output'])
+        self.assertNotIn('internal error', res['output'])
+        self.assertEqual(self.conn.scalar('SELECT status FROM deploy_runs WHERE run_id = :r', {'r': res['run_id']}), 'refused')
+        self.assertEqual(self.conn.scalar("SELECT outcome FROM audit_log WHERE action = 'deploy.shares'"), 'denied')
+
     def test_a_restart_closes_deploy_runs_left_unfinished(self):
         from storageforge_index import server
         for host, st in (('a', 'running'), ('b', 'queued'), ('c', 'ok')):
@@ -687,6 +704,20 @@ class ChangePlanTests(DBCase):
         self.assertEqual(deploy.run_status(0, 'apply', '  ok        missing nothing\ndone\n'), 'ok')
         self.assertEqual(deploy.run_status(1, 'apply', text), 'failed')
         self.assertEqual(deploy.run_status(deploy.REFUSED, 'apply', ''), 'refused')
+
+    def test_scripts_run_by_hand_say_when_an_apply_left_steps(self):
+        import subprocess
+        from storageforge_index import changes, moves, scriptkit, shares
+
+        def last(apply):
+            p = subprocess.run(['bash', '-c', f'set -eu\n{scriptkit.HELPERS}\nAPPLY={apply}\nmissing "a thing"\nfinished'],
+                               capture_output=True, text=True, timeout=30)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            return p.stdout.splitlines()[-1]
+        self.assertEqual(last(1), '1 step(s) not finished')
+        self.assertEqual(last(0), 'done')
+        for mod in (shares, changes, moves):
+            self.assertNotIn('echo "${G}done', Path(mod.__file__).read_text())
 
     def test_every_run_status_fits_the_audit_log(self):
         from storageforge_index import deploy

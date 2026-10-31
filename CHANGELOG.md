@@ -21,7 +21,9 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 - **Smoother Deploy tab:** Deploy panel polling updates output in-place preserving card expansion and scroll position; active deploys resume polling across tab reloads; the reporting settings form is kept across reloads; and deploy access removal uses a secure inline form instead of a plain-text prompt.
 - An apply from the web UI rescans the hosts it ran on, so the other tabs show the result instead of waiting up to 6 hours for the next scan.
 - A change plan that finished applying is no longer staged and moves to "Already ran" in the picker. Editing it makes it a plan to run again; one that skipped drive tasks stays unfinished and says so.
-- An apply that left `missing` steps shows as `incomplete` instead of a green `ok`, for every kind of deploy.
+- An apply that left `missing` steps shows as `incomplete` instead of a green `ok`, for every kind of deploy, and a later scan keeps it that way.
+- Share, change and move scripts run by hand end with "N step(s) not finished" instead of `done` when an apply left `missing` steps.
+- A shares apply that left steps on the server is no longer marked as deployed.
 - Move plans deployed as jobs are grouped under "Deployed as jobs" in the picker, until they are edited.
 - Open tabs reload once the rescan after an apply ends.
 - A refused deploy no longer fails with an internal error when it writes to the audit log.
