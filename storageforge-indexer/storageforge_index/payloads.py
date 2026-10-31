@@ -670,7 +670,9 @@ def shares_from_inventory(inv: dict) -> list[dict]:
 
 # hosts already in the index
 
-def node_from_index(conn: Conn, host: str, symlink_limit: int = 20000) -> dict:
+def node_from_index(conn: Conn, host: str, symlink_limit: int = 20000, stats: bool = True) -> dict:
+    """stats adds the per-mount, largest-file and duplicate totals only reports show. They read every file row of the
+    host, so callers that want the layout (designs, the graph) leave them out."""
     rows = conn.all("""SELECT host_id, hostname, ip_address, os_info, last_scanned_at, inventory_json FROM hosts
                        WHERE hostname = :x OR ip_address = :x OR ssh_host = :x""", {'x': host})
     if not rows:
@@ -748,7 +750,8 @@ def node_from_index(conn: Conn, host: str, symlink_limit: int = 20000) -> dict:
 
     node['exports'] = shares_from_inventory(inv)
     _index_links(conn, node, host_id, mount_ids, symlink_limit)
-    node['index'] = _index_stats(conn, host_id)
+    if stats:
+        node['index'] = _index_stats(conn, host_id)
     return node
 
 

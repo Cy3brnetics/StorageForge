@@ -464,6 +464,29 @@ class ChangePlanTests(DBCase):
         from storageforge_index import blueprint
         return blueprint.from_index(self.conn, 'nas')
 
+    def test_scan_design_is_kept_until_the_scan_data_changes(self):
+        from unittest import mock
+        from storageforge_index import blueprint, payloads, server, users
+        users.create(self.conn, 'alice', 'a long enough password')
+        client = server.create_app(server.App(self.db), 's' * 48).test_client()
+        client.post('/api/login', json={'username': 'alice', 'password': 'a long enough password'})
+        url = '/api/planner/design?host=nas&source=scan'
+        with mock.patch.object(blueprint, 'from_index', wraps=blueprint.from_index) as built:
+            first = client.get(url).json['blueprint']
+            first_devices = first['devices']
+            again = client.get(url).json['blueprint']
+            self.assertEqual(built.call_count, 1)
+            self.assertEqual(again['devices'], first_devices)
+            self.conn.execute("UPDATE mounts SET used_bytes = coalesce(used_bytes, 0) + 1 "
+                              "WHERE host_id = (SELECT host_id FROM hosts WHERE hostname = 'nas')")
+            client.get(url)
+            self.assertEqual(built.call_count, 2)
+            self.conn.execute("UPDATE hosts SET os_info = 'rescanned' WHERE hostname = 'nas'")
+            self.assertEqual(client.get(url).json['blueprint']['metadata']['os'], 'rescanned')
+            self.assertEqual(built.call_count, 3)
+        with mock.patch.object(payloads, '_index_stats', side_effect=AssertionError('report-only totals')):
+            blueprint.from_index(self.conn, 'nas')          # a design never reads the report totals
+
     def test_design_without_edits_needs_no_changes(self):
         from storageforge_index import fromdesign
         r = fromdesign.plan(self.conn, self.design())

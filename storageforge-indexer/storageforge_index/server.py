@@ -643,12 +643,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @web.get('/api/hosts')
     @login_required
     def api_hosts():
-        rows = conn().all("""SELECT h.hostname, h.ip_address, h.os_info, h.last_scanned_at,
-                                    (SELECT count(*) FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id
-                                     WHERE m.host_id = h.host_id)
-                             FROM hosts h ORDER BY h.hostname""")
+        rows = conn().all('SELECT hostname, ip_address, os_info, last_scanned_at FROM hosts ORDER BY hostname')
         graph_hosts = [r[0] for r in conn().all("SELECT label FROM graph_nodes WHERE kind = 'Host' AND host IS NOT NULL ORDER BY label")]
-        return jsonify(indexed=[dict(zip(('hostname', 'ip', 'os', 'last_scanned_at', 'entries'), (*r[:3], epoch(r[3]), r[4])))
+        return jsonify(indexed=[dict(zip(('hostname', 'ip', 'os', 'last_scanned_at'), (*r[:3], epoch(r[3]))))
                                 for r in rows],
                        graph=graph_hosts)
 
@@ -1293,6 +1290,18 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def scanned(host: str) -> bool:
         return bool(conn().scalar('SELECT 1 FROM hosts WHERE hostname = :h', {'h': host}))
 
+    scan_designs = {}                        # host: (scan_mark, the design as JSON), kept until the next scan changes it
+
+    def scan_design(host: str) -> dict:
+        mark, kept = blueprint.scan_mark(conn(), host), scan_designs.get(host)
+        if kept and kept[0] == mark:         # a fresh copy each time: merge_intent writes into it
+            bp = json.loads(kept[1])
+            bp['metadata']['generated'] = time.strftime('%Y-%m-%d')
+            return bp
+        bp = blueprint.from_index(conn(), host)
+        scan_designs[host] = (mark, json.dumps(bp))
+        return bp
+
     @web.get('/api/planner/hosts')
     @login_required
     def api_planner_hosts():
@@ -1332,7 +1341,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return jsonify(host=host, source='saved', saved_at=saved_at, scanned=scanned(host), blueprint=saved)
         if not scanned(host):
             return jsonify(error=f'{host} has no saved design and has not been scanned'), 404
-        bp = blueprint.merge_intent(blueprint.from_index(conn(), host), saved)
+        bp = blueprint.merge_intent(scan_design(host), saved)
         return jsonify(host=host, source='scan', saved_at=saved_at, scanned=True, blueprint=bp)
 
     @web.post('/api/planner/changes')

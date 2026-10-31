@@ -152,7 +152,21 @@ def from_node(node: dict, as_of: dt.date | None = None) -> dict:
 
 
 def from_index(conn, host: str) -> dict:
-    return from_node(node_from_index(conn, host))
+    return from_node(node_from_index(conn, host, stats=False))
+
+
+def scan_mark(conn, host: str) -> list:
+    """Changes whenever from_index could answer differently: only a scan writes these rows, the host's files and its
+    mounts. Cheap, unlike from_index, so a design built from the scan can be kept until the next one."""
+    return conn.all("""SELECT h.host_id, h.ip_address, h.os_info, h.last_scanned_at, h.inventory_json,
+                               (SELECT max(s.scan_id) FROM scans s WHERE s.host_id = h.host_id),
+                               (SELECT count(*) FROM scans s WHERE s.host_id = h.host_id AND s.status = 'running')
+                        FROM hosts h WHERE h.hostname = :h""", {'h': host}) + \
+        conn.all("""SELECT m.mount_id, m.mount_point, m.source, m.filesystem_type, m.mount_options, m.total_bytes,
+                            m.used_bytes, m.scan_state, m.skip_reason, m.bind_of_mount_id, m.fs_root, m.dev_majmin,
+                            m.last_scan_id
+                     FROM mounts m JOIN hosts h ON h.host_id = m.host_id WHERE h.hostname = :h
+                     ORDER BY m.mount_id""", {'h': host})
 
 
 def merge_intent(scanned: dict, saved: dict | None) -> dict:

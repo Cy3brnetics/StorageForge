@@ -328,7 +328,7 @@ def store_blueprint(conn, bp: dict) -> str:
 def rebuild_host(db, conn, hostname: str, rebuild_clients: bool = True) -> tuple[int, int]:
     """Rebuild one scanned host's graph from the index, overlaid with its stored blueprint."""
     from .payloads import merge_blueprint, node_from_blueprint, node_from_index, shares_from_inventory
-    node = node_from_index(conn, hostname)
+    node = node_from_index(conn, hostname, stats=False)
     node['peers'] = {k.lower(): name for name, ip in conn.all('SELECT hostname, ip_address FROM hosts')
                      for k in (name, name.split('.')[0], ip) if k}
     node['peer_mounts'] = {}                  # other hosts' mount points already in the graph: share targets
