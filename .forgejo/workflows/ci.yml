@@ -53,3 +53,15 @@ jobs:
         run: python -m pip install ruff && ruff check storageforge_index tests
       - name: Shell scripts
         run: sudo apt-get update && sudo apt-get install -y shellcheck && shellcheck --severity=error docker/*.sh examples/demo/*.sh
+
+  image:
+    # Fails on a critical that is not decided in .trivyignore. See notebook/Audit 2026-10-31/Container scan triage 2026-10-31.md
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+      - name: Image scan
+        run: |
+          docker build -t storageforge:ci --target runtime storageforge-indexer
+          docker save storageforge:ci -o /tmp/image.tar
+          docker run --rm -v /tmp/image.tar:/image.tar:ro -v "$PWD/.trivyignore:/.trivyignore:ro" aquasec/trivy:latest \
+            image --quiet --input /image.tar --severity CRITICAL --exit-code 1 --ignorefile /.trivyignore
