@@ -3,7 +3,7 @@
    drift, alerts and their channels. Every deploy runs the read-only report on each host first; Apply comes after.
    Loaded after dockerview.js; uses the shared helpers. */
 
-const DP = { data: null, group: null, poll: 0, job: null, err: '' };
+const DP = { data: null, group: null, poll: 0, job: null, err: '', setup: null };
 const JOB_STATE = { ok: 'protected', failed: 'broken', stale: 'local-only', 'never-ran': 'unknown', paused: 'unknown' };
 const RUN_LINE = /^\s{2}(ok|missing|conflict|->|other)\s/;
 
@@ -97,13 +97,11 @@ function renderGroup() {
 
 /* ── deploy access per host ─────────────────────────────────────── */
 function setupForm(host) {
-  showTab('deploy');
-  const box = $('#dpsetup');
   const pw = el('input', { type: 'password', autocomplete: 'off', placeholder: 'sudo password', 'aria-label': 'sudo password' });
   const admin = el('input', { type: 'text', autocomplete: 'off', placeholder: 'admin user (optional)', 'aria-label': 'Admin user' });
   const msg = el('p', { class: 'muted small', hidden: true });
   const form = el('form', { class: 'card stack' },
-    el('div', { class: 'row' }, el('b', {}, `Set up deploy access on ${host}`), button('Cancel', () => box.replaceChildren(), 'btn ghost sm')),
+    el('div', { class: 'row' }, el('b', {}, `Set up deploy access on ${host}`), button('Cancel', () => { DP.setup = null; form.remove(); }, 'btn ghost sm')),
     text('p', 'Creates the storageforge-deploy user, whose SSH key can only start a runner that checks StorageForge\'s signature, and installs that runner. It needs root once: the password is used for this one sudo and never stored. Leave the admin user empty to use the scan user\'s own sudo.', 'muted small'),
     el('div', { class: 'row wrap' }, pw, admin, el('button', { type: 'submit', class: 'btn pri sm' }, 'Set up')),
     el('div', { class: 'row wrap' }, text('span', 'Or run it yourself as root:', 'muted small'),
@@ -124,7 +122,9 @@ function setupForm(host) {
       loadDeploy();
     } catch (err) { pw.value = ''; msg.className = 'st-failed small'; msg.textContent = err.message; }
   });
-  box.replaceChildren(form);
+  DP.setup = form;      // kept here: the tab's render makes a new #dpsetup, and showTab renders it again when its data arrives
+  showTab('deploy');
+  $('#dpsetup')?.replaceChildren(form);
   pw.focus();
 }
 async function download(url, fallback, body) {   // body: POST it as JSON (for a download that changes something)
@@ -241,7 +241,8 @@ function renderDeploy() {
   if (DP.err) { box.replaceChildren(text('p', DP.err, 'st-failed')); return; }
   const d = DP.data;
   if (!d) { box.replaceChildren(text('p', 'Loading…', 'muted')); return; }
-  const parts = [el('div', { id: 'dpgroup', class: 'stack', hidden: true }), el('div', { id: 'dpsetup' }), el('div', { id: 'dpjobpanel', class: 'card stack', hidden: true })];
+  const typing = DP.setup?.contains(document.activeElement) ? document.activeElement : null;
+  const parts = [el('div', { id: 'dpgroup', class: 'stack', hidden: true }), el('div', { id: 'dpsetup' }, DP.setup || ''), el('div', { id: 'dpjobpanel', class: 'card stack', hidden: true })];
   if (d.alerts.length) {
     parts.push(el('section', { class: 'stack' }, el('h3', {}, `Alerts (${d.alerts.length})`), el('ul', { class: 'mvcheck' },
       ...d.alerts.map((a) => el('li', { class: a.kind === 'job-failed' ? 'lv-crit' : 'lv-warn' }, `${a.title}${a.message ? ': ' + a.message : ''} · since ${when(a.first_at)}`)))));
@@ -305,6 +306,7 @@ function renderDeploy() {
   }))));
   parts.push(settingsForm(d.settings));
   box.replaceChildren(...parts);
+  typing?.focus();
   renderGroup(); renderJobPanel();
 }
 async function showHistory(host) {
