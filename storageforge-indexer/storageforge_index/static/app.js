@@ -569,6 +569,7 @@ function showTab(name) {
   if (name === 'copies') loadCopies();
   if (name === 'moves') loadMoves();
   if (name === 'changes') loadChanges();
+  if (name === 'schedule' && typeof loadScheduler === 'function') loadScheduler();
   if (name === 'git') loadGit();
   if (name === 'rebuild') loadRebuild();
   if (name === 'docker') loadDocker();

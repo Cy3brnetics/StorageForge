@@ -14,6 +14,7 @@ import argparse
 import concurrent.futures as cf
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -188,7 +189,8 @@ def stage_scan():
     vault.Vault(db, main_conn, vault.secret_from_env()).init()
     with vault.Vault(db, main_conn).unlock() as v:
         v.generate_key('lab-scan', comment='gauntlet')
-        pub = v.public_key('lab-scan')
+        v.generate_key('lab-admin', comment='gauntlet')      # the VMs take no SSH passwords: sfadmin logs in with this, and sudo gets the password
+        pub, admin_pub = v.public_key('lab-scan'), v.public_key('lab-admin')
         for vm, ip in NODES.items():
             v.bind('lab-scan', ip, 'scan', 22, actions='scan,checksum')
 
@@ -196,6 +198,7 @@ def stage_scan():
         home = sh(vm, "getent passwd scan | cut -d: -f6").strip()
         raw(vm, f'sudo -n sh -c {shlex.quote(f"mkdir -p {home}/.ssh && cat >>{home}/.ssh/authorized_keys && chown -R scan {home}/.ssh && chmod 700 {home}/.ssh && chmod 600 {home}/.ssh/authorized_keys; command -v restorecon >/dev/null && restorecon -R {home}/.ssh; true")}',
             stdin=(pub + '\n').encode())
+        raw(vm, f'sudo -n sh -c {shlex.quote("cat >>$(getent passwd sfadmin | cut -d: -f6)/.ssh/authorized_keys")}', stdin=(admin_pub + '\n').encode())
         res = scan_via_vault(db, NODES[vm], ScanOptions(), actor=ACTOR)
         return vm, res
 
@@ -224,7 +227,7 @@ def stage_scan_access():
             continue
 
         def run(vm=vm, ip=ip):
-            r = access.grant(db, main_conn, ip, PASSWORD, 'sfadmin')
+            r = access.grant(db, main_conn, ip, PASSWORD, 'sfadmin', admin_key='lab-admin')
             have = raw(vm, 'sudo -n -u scan /usr/local/lib/storageforge/find /root -maxdepth 0')
             R.add('scan-access', vm, have.returncode == 0, r['output'].splitlines()[-1][:120] if r.get('output') else '', r.get('output', ''))
         R.check('scan-access', vm, run)
@@ -237,7 +240,7 @@ def stage_deploy_access():
         name = NAME[vm]
 
         def run(vm=vm, name=name):
-            r = deploy.enroll(db, main_conn, name, PASSWORD, 'sfadmin', ACTOR)
+            r = deploy.enroll(db, main_conn, name, PASSWORD, 'sfadmin', ACTOR, admin_key='lab-admin')
             ok = r['state'] == 'ready'
             if ok:
                 READY.add(vm)
@@ -357,7 +360,8 @@ def stage_shares():
             shares.save_export(db, conn, NAME[srv], {'protocol': 'SMB3', 'name': 'fsmb', 'path': '/data/backups', 'clients': '10.77.0.0/24 sfadmin',
                                                      'mounts': [{'host': NAME[client], 'path': '/mnt/sf/fedora-smb'}]}, None, ACTOR)
             server_only = [i for i in shares.deploy_items(db, conn, NAME[srv], 'apply', ACTOR) if i['host'] == NAME[srv]]
-            report_runs('smb-server', execute(server_only, 'apply'))
+            report_runs('smb-server', execute(server_only, 'apply'), want=('ok', 'incomplete'))     # it reports the account it can't make
+            sh(srv, 'sudo -n chown sfadmin /data/backups')
             label = sh(srv, 'ls -Zd /data/backups')
             R.add('smb-server', srv, 'samba_share_t' in label, label.strip())
             sh(srv, "printf 'labpw\\nlabpw\\n' | sudo -n smbpasswd -s -a sfadmin")
@@ -374,7 +378,7 @@ JOB_STEPS = [  # method, source vm, source path, destination vm, path, options, 
     ('mirror', 'sf-fedora', '/data/media/lab-seed', 'sf-ubuntu', '/backup/replica/fedora', {'snapshot': True}, ('sf-fedora', '/data/media')),
     ('copy', 'sf-ubuntu', '/tank/media/lab-seed', 'sf-rocky', '/srv/data/from-ubuntu', {}, ('sf-ubuntu', '/tank/media')),
     ('rsnapshot', 'sf-rocky', '/srv/data/lab-seed', 'sf-suse', '/srv/btrfs/rocky-snaps', {}, ('sf-rocky', '/srv/data')),
-    ('rsnapshot', 'sf-arch', '/mnt/pool/lab-seed', 'sf-rocky', '/srv/data/arch-snaps', {}, ('sf-arch', '/mnt/pool')),
+    ('rsnapshot', 'sf-arch', '/mnt/pool/lab-seed', 'sf-fedora', '/data/backups/arch-snaps', {}, ('sf-arch', '/mnt/pool')),
     ('mirror', 'sf-suse', '/srv/btrfs/home/lab-seed', 'sf-arch', '/mnt/disk1/suse-home', {'snapshot': True}, ('sf-suse', '/srv/btrfs/home')),
     ('mirror', 'sf-fedora', '/data/media/lab-seed', 'sf-fedora', '/data/backups/local', {}, ('sf-fedora', '/data/media')),
     ('git', 'sf-ubuntu', '/tank/media/lab-seed/repos/sample', 'sf-fedora', '/data/snaps/sample.git', {}, None),
@@ -384,6 +388,9 @@ JOB_STEPS = [  # method, source vm, source path, destination vm, path, options, 
 
 def stage_jobs():
     conn = db.connect()
+    sh('sf-rocky', 'sudo -n dnf -q -y install epel-release')
+    have = raw('sf-rocky', 'dnf -q info rsnapshot').returncode == 0
+    R.add('rsnapshot-on-el9', 'sf-rocky', have, 'in EPEL' if have else 'EPEL 9 has no rsnapshot, so a job there cannot be deployed')
     steps, kept = [], {}
     for i, (method, s, sp, d, dp, opts, seed) in enumerate(JOB_STEPS, 1):
         if s not in READY or d not in READY:
@@ -421,27 +428,27 @@ def stage_jobs():
         def one(sid=sid, jid=jid, method=method, s=s, d=d, dp=dp, seed=seed, sp=sp):
             start = int(sh(d, 'date +%s').strip())
             r = jobs.action(db, conn, jid, 'dryrun', ACTOR)
-            R.add('job-dryrun', d, r['status'] == 'ok', f'{method} from {s}', r['output'])
+            R.add(f'job-dryrun-{method}', d, r['status'] == 'ok', f'{method} from {s}', r['output'])
             r = jobs.action(db, conn, jid, 'run', ACTOR)
             if r['status'] != 'ok':
-                R.add('job-run', d, False, f'{method} from {s}: could not start', r['output'])
+                R.add(f'job-run-{method}', d, False, f'{method} from {s}: could not start', r['output'])
                 return
             got = last_run(d, jid, 'run', start)
             journal = jobs.action(db, conn, jid, 'log', ACTOR)['output'] if got['rc'] else ''
-            R.add('job-run', d, got['rc'] == 0, f'{method} from {s}: rc={got["rc"]} {got["message"][:120]}', journal)
+            R.add(f'job-run-{method}', d, got['rc'] == 0, f'{method} from {s}: rc={got["rc"]} {got["message"][:120]}', journal)
             if got['rc']:
                 return
             if method == 'git':
                 head = sh(d, f'sudo -n git -c safe.directory="*" -C {dp} log -1 --format=%s main').strip()
-                R.add('job-result', d, head == 'first', f'archive holds the commit {head!r}')
+                R.add(f'job-result-{method}', d, head == 'first', f'archive holds the commit {head!r}')
                 return
             target = f'{dp}/daily.0/lab-seed' if method == 'rsnapshot' else dp
             bad = same_as_manifest(d, target, manifest(*seed))
-            R.add('job-result', d, not bad, bad or f'{method} from {s}: every entry matches the seed')
+            R.add(f'job-result-{method}', d, not bad, bad or f'{method} from {s}: every entry matches the seed')
             start = int(sh(d, 'date +%s').strip())
             jobs.action(db, conn, jid, 'verify', ACTOR)
             got = last_run(d, jid, 'verify', start)
-            R.add('job-verify', d, got['rc'] == 0, f'{method} from {s}: {got["message"][:140]}')
+            R.add(f'job-verify-{method}', d, got['rc'] == 0, f'{method} from {s}: {got["message"][:140]}')
         R.check('job-run', d, one)
     conn.close()
 
@@ -456,9 +463,9 @@ CHANGE_TASKS = {
                   ('mount-options', {'target': '/data/snaps', 'options': 'subvol=@snaps,compress=zstd,noatime,nofail,commit=60'}),
                   ('btrfs-send', {'source': '/data/snaps/ch-snap', 'dest': '/data/backups'}), ('scrub', {'target': '/data/media'})],
     'sf-rocky': [('dir', {'path': '/srv/data/ch'}), ('lvm-lv', {'vg': 'vgdata', 'lv': 'chlv', 'size': '256M', 'fstype': 'xfs', 'label': 'chlv'}),
+                 ('mount', {'source': '/dev/vgdata/chlv', 'target': '/srv/chlv', 'fstype': 'xfs', 'options': 'defaults,nofail'}),
                  ('lvm-extend', {'vg': 'vgdata', 'lv': 'chlv', 'size': '300M'}),
-                 ('lvm-snapshot', {'vg': 'vgdata', 'lv': 'data', 'name': 'chsnap', 'size': '128M'}),
-                 ('mount', {'source': '/dev/vgdata/chlv', 'target': '/srv/chlv', 'fstype': 'xfs', 'options': 'defaults,nofail'})],
+                 ('lvm-snapshot', {'vg': 'vgdata', 'lv': 'data', 'name': 'chsnap', 'size': '128M'})],
     'sf-suse': [('subvolume', {'path': '/srv/btrfs/ch-sub'}), ('dir', {'path': '/mnt/raid/ch', 'mode': '0770'}),
                 ('to-subvolume', {'path': '/srv/btrfs/home/lab-seed/shared/docs'}), ('scrub', {'target': '/srv/btrfs'})],
     'sf-arch': [('dir', {'path': '/mnt/pool/ch'}), ('rename', {'path': '/mnt/secure/lab-seed/unique', 'dest': '/mnt/secure/lab-seed/renamed'}),
@@ -483,9 +490,18 @@ def stage_changes():
             report_runs('change-report', execute(changes.deploy_items(db, conn, plan, 'report', ACTOR), 'report'))
             report_runs('change-apply', execute(changes.deploy_items(db, conn, plan, 'apply', ACTOR), 'apply'))
             again = execute(changes.deploy_items(db, conn, plan, 'apply', ACTOR), 'apply')
-            wrote = [r for r in again if '->' in (r['output'] or '')]
+            wrote = [r for r in again if re.search(r'^  (\x1b\[[0-9;]*m)?->', r['output'] or '', re.M)]
             R.add('change-rerun', vm, again[0]['status'] == 'ok' and not wrote, f'second apply {again[0]["status"]}, {"changed things" if wrote else "nothing to do"}', again[0]['output'] or '')
         R.check('change-apply', vm, one)
+    if 'sf-rocky' in READY:
+        def unmounted():
+            body = {'name': 'gauntlet unmounted', 'tasks': [
+                {'type': 'lvm-lv', 'host': NAME['sf-rocky'], 'params': {'vg': 'vgdata', 'lv': 'chlv2', 'size': '256M', 'fstype': 'xfs', 'label': 'chlv2'}},
+                {'type': 'lvm-extend', 'host': NAME['sf-rocky'], 'params': {'vg': 'vgdata', 'lv': 'chlv2', 'size': '300M'}}]}
+            plan = changes.get_plan(conn, changes.save_plan(conn, body, ACTOR))
+            run = execute(changes.deploy_items(db, conn, plan, 'apply', ACTOR), 'apply')[0]
+            R.add('lvm-extend-unmounted', 'sf-rocky', run['status'] == 'ok', run['status'], run['output'] or '')
+        R.check('lvm-extend-unmounted', 'sf-rocky', unmounted)
     if 'sf-ctl' in READY:
         def modes():
             got = sh('sf-ctl', 'stat -c "%a %n" /srv/ch/plain /srv/ch/modes').split('\n')
@@ -597,7 +613,7 @@ def stage_engine():
     items = [{'host': NAME[a], 'kind': 'probe', 'ref': 'lock', 'mode': 'report', 'script': 'date +%s; sleep 4; date +%s\n'}]
     g1, g2 = (engine.start(db, items, ACTOR, title='lock', kind='probe', ref='lock', mode='report') for _ in range(2))
     r1, r2 = wait_group(g1)[0], wait_group(g2)[0]
-    s1, s2 = [list(map(int, r['output'].split())) for r in (r1, r2)]
+    s1, s2 = [[int(w) for w in r['output'].split() if w.isdigit()] for r in (r1, r2)]     # a queued run also says it waited
     R.add('engine', a, s1[1] <= s2[0] or s2[1] <= s1[0], 'two groups took turns on one host')
     conn.close()
 
@@ -626,7 +642,7 @@ def stage_remove():
             fstab = raw(vm, 'grep -c "storageforge share" /etc/fstab').stdout.decode().strip()
             units = raw(vm, 'ls /etc/systemd/system | grep -c "^sf-"').stdout.decode().strip()
             R.add('remove-clean', vm, fstab in ('0', '') and units in ('0', ''), f'{fstab or 0} fstab lines, {units or 0} units left')
-            r = deploy.enroll(db, conn, NAME[vm], PASSWORD, 'sfadmin', ACTOR, remove=True)
+            r = deploy.enroll(db, conn, NAME[vm], PASSWORD, 'sfadmin', ACTOR, remove=True, admin_key='lab-admin')
             gone = raw(vm, 'id storageforge-deploy').returncode != 0 and raw(vm, 'test -e /usr/local/sbin/storageforge-run').returncode != 0
             R.add('remove-access', vm, gone and r['state'] == 'removed', r['output'][-120:])
         R.check('remove-access', vm, left)

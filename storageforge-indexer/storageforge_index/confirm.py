@@ -203,9 +203,12 @@ def fetch_problem_logs(db: Database, conn: Conn, host: str, confirmed: list[dict
     return fetched
 
 
-def ingest_scan(db: Database, conn: Conn, host: str, runs_text: str, tasks_text: str, log=None) -> dict:
-    """Invoked after scan inventory is collected: confirms deploy runs, tasks, and fetches problem logs."""
+def ingest_scan(db: Database, conn: Conn, host: str, runs_text: str, tasks_text: str,
+                schedules_text: str = '', log=None) -> dict:
+    """Invoked after scan inventory is collected: confirms deploy runs, tasks, schedules, and fetches problem logs."""
+    from . import scheduler
     n_tasks = ingest_tasks(conn, host, tasks_text) if tasks_text else 0
+    n_sched = scheduler.ingest_scan_schedules(conn, host, schedules_text) if schedules_text else 0
     confirmed = ingest_runs(conn, host, runs_text) if runs_text else []
     fetched = fetch_problem_logs(db, conn, host, confirmed, log=log)
-    return {'tasks': n_tasks, 'confirmed': len(confirmed), 'logs_fetched': fetched}
+    return {'tasks': n_tasks, 'schedules': n_sched, 'confirmed': len(confirmed), 'logs_fetched': fetched}

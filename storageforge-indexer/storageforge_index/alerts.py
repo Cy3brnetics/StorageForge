@@ -221,7 +221,7 @@ def send(cfg: dict, title: str, message: str, level: str = 'warn', extra: dict |
 def drift(conn: Conn) -> list[dict]:
     """Per host: deployed files changed or missing, fstab lines gone, job timers missing or disabled; and plans or
     designs changed since their last deploy (pending)."""
-    from . import deploy, jobs, moves, shares
+    from . import deploy, jobs, moves, scheduler, shares
     out = []
     expected = {}
     for r in conn.all('SELECT job_id, runner_host, spec_json, paused FROM jobs WHERE removed_at IS NULL'):
@@ -273,6 +273,16 @@ def drift(conn: Conn) -> list[dict]:
                 out.append({'host': d['host'], 'ref': d['ref'], 'kind': 'pending',
                             'text': 'the move plan was deleted since it was deployed: remove its jobs' if not row
                             else 'the move plan changed since it was deployed'})
+        elif d['kind'] == 'schedules':
+            try:
+                sched = scheduler.get_schedule(conn, int(d['ref']))
+                cur = scheduler.schedule_hash(sched)
+            except (LookupError, ValueError):
+                sched, cur = None, None
+            if cur != d['hash']:
+                out.append({'host': d['host'], 'ref': f'sched-{d["ref"]}', 'kind': 'pending',
+                            'text': 'the schedule was deleted since it was deployed: uninstall it' if not sched
+                            else f'schedule "{sched["name"]}" changed since it was deployed'})
     del moves
     return out
 
@@ -398,7 +408,7 @@ def cert_problems() -> dict:
 
 # ── evaluation ──────────────────────────────────────────────────────
 def problems(conn: Conn) -> dict:
-    from . import jobs
+    from . import jobs, scheduler
     now = {**scan_problems(conn), **backup_problems(conn), **cert_problems()}
     for j in jobs.overview(conn):
         if j['state'] == 'failed':
@@ -439,6 +449,28 @@ def problems(conn: Conn) -> dict:
                 if time.time() - last_good > 2 * per + 3600:
                     now[f'task-stale:{host}:{tslug}'] = ('task-stale', f'{host}:{tslug}', f'No good run: task {tname} on {host}',
                                                          f'scheduled on {sched}', 'warn')
+    # Unified Scheduler: failed, verify_failed, or stale schedules
+    for s in scheduler.list_schedules(conn, paused=False):
+        sid = s['schedule_id']
+        sruns = scheduler.get_schedule_runs(conn, schedule_id=sid, limit=5)
+        if sruns:
+            latest = sruns[0]
+            if latest['status'] in ('failed', 'verify_failed'):
+                summ = (latest.get('verify_result') or {}).get('summary') or f'exit code {latest.get("exit_code")}'
+                now[f'schedule-failed:{sid}'] = (
+                    'schedule-failed', str(sid),
+                    f'Schedule {latest["status"].replace("_", " ")}: {s["name"]} on {s["host"]}',
+                    summ, 'crit'
+                )
+            per = scheduler.period(s['cron_expr'])
+            good = next((r for r in sruns if r['status'] == 'verified'), None)
+            last_good = (good['finished_at'] or good['started_at']) if good else latest['started_at']
+            if time.time() - last_good > 2 * per + 3600:
+                now[f'schedule-stale:{sid}'] = (
+                    'schedule-stale', str(sid),
+                    f'No verified run: schedule {s["name"]} on {s["host"]}',
+                    f'cron {s["cron_expr"]}', 'warn'
+                )
     return now
 
 

@@ -130,7 +130,7 @@ Each plan type has the same shape: list, create, one, check, script.
 | POST | `/api/deploy/setup-script` | `{"remove"?}` | download; makes the deploy keys on first use |
 | POST 🔑 | `/api/deploy/access` | `{"host", "password", "admin_user"?, "remove"?}` | set deploy access up (or remove it) with sudo once; 10/min |
 | POST 🔑 | `/api/deploy/adopt` | `{"host"}` | after running the setup by hand: bind and test |
-| POST 🔑 | `/api/deploy/start` | `{"kind": "jobs"\|"shares"\|"changes"\|"tasks", "ref", "mode": "report"\|"apply", …}` | see [Deployments](deployments.md#running-a-deploy); returns `{"group", "hosts"}` |
+| POST 🔑 | `/api/deploy/start` | `{"kind": "jobs"\|"shares"\|"changes"\|"tasks"\|"schedules", "ref", "mode": "report"\|"apply", …}` | see [Deployments](deployments.md#running-a-deploy); returns `{"group", "hosts"}` |
 | GET | `/api/deploy/groups/<id>` | | the runs of one deploy, with output (poll while running) |
 | GET | `/api/deploy/runs[?host=&limit=]`, `/api/deploy/runs/<id>` | | history, or one run's output |
 | GET | `/api/deploy/jobs/<id>` | | a deployed job and its runs |
@@ -140,6 +140,24 @@ Each plan type has the same shape: list, create, one, check, script.
 | GET, PUT | `/api/deploy/settings` | `{"report_url", "alerts": {…}}` | |
 | POST | `/api/deploy/settings/test` | | send a test alert; 10/min |
 | POST | `/api/jobs/report` | a run result; `Authorization: Bearer <job token>` | no session; 120/min |
+
+## Scheduler
+
+| Method | Path | Body | |
+| :--- | :--- | :--- | :--- |
+| GET | `/api/scheduler/schedules[?host=&task_type=&paused=]` | | list configured schedules |
+| POST | `/api/scheduler/schedules` | `{"name", "host", "cron_expr", "task_type", "task_ref", "config"?}` | create schedule; returns schedule and initial auth token |
+| GET, PUT, DELETE | `/api/scheduler/schedules/<id>` | `PUT`: updated fields | inspect, edit, or remove schedule |
+| POST | `/api/scheduler/schedules/<id>/pause` | `{"paused": true\|false}` | pause or resume schedule |
+| POST | `/api/scheduler/schedules/<id>/token` | | rotate/generate new execution bearer token |
+| POST | `/api/scheduler/schedules/<id>/run` | `{"local"?}` | run schedule immediately over SSH deploy access (or locally) |
+| POST | `/api/scheduler/schedules/<id>/verify` | `{"run_id"?}` | re-verify schedule or specific run against the StorageForge index |
+| GET | `/api/scheduler/schedules/<id>/script` | | download compiled shell script for the task |
+| GET | `/api/scheduler/schedules/<id>/install-script` | | download full installer script (config, script, cron entry) |
+| GET | `/api/scheduler/schedules/<id>/cron` | | output `/etc/cron.d/` entry string |
+| GET | `/api/scheduler/schedules/<id>/runs[?limit=]` | | execution history and server verification reports for schedule |
+| GET | `/api/scheduler/runs[?host=&limit=]` | | global schedule runs history |
+| POST | `/api/scheduler/report` | execution report; `Authorization: Bearer <token>` | client execution reporting; triggers server verification (120/min) |
 
 ## Host configurations
 

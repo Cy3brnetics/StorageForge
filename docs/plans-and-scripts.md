@@ -159,6 +159,16 @@ sudo ./task-nightly-archive.sh --uninstall
 
 Runs take a lock, so they never overlap, and leave `/var/lib/storageforge/tasks/<name>.last`. **Deploy** does the same from the web UI: Dry run, Install, Run now or Uninstall. A task moved to another host is uninstalled from the old one, and a task installed on a host cannot be deleted until it is uninstalled.
 
+## Unified task scheduler
+
+The unified scheduler runs any task StorageForge can do on target client hosts on a cron schedule, with client execution managed by `/etc/cron.d/` or the standalone `/usr/local/sbin/storageforge-scheduler` daemon/runner, and comprehensive verification conducted on the server:
+
+- **Supported operations:** Storage tasks (`task`), staged change plans (`change`), data move plans (`move`), NFS/SMB share configurations (`shares`), host inventory scans (`scan`), or arbitrary shell commands (`command`).
+- **Scheduling & execution control:** Standard 5-field cron expressions, timezone awareness, allowed time windows (`HH:MM-HH:MM`), concurrency policies (`skip`, `queue`, `replace`), execution timeouts, random jitter, nice/ionice scheduling priorities, environment variables, and retries with backoff.
+- **Client runner (`storageforge-scheduler`):** Installed to `/usr/local/sbin/storageforge-scheduler` with zero external dependencies. Manages flock concurrency locks, executes tasks, records `/var/lib/storageforge/scheduler/<id>/last.json` and `runs.jsonl`, and posts bearer-authenticated reports to `/api/scheduler/report`.
+- **Server verification:** When execution finishes, the server validates the exit code and output regex rules, and queries the StorageForge index to confirm state changes (mount points present, minimum free space thresholds in GiB, paths existing or absent, task block integrity, and drift detection).
+- **Management:** Configured via the Web UI **Schedule** panel, REST API (`/api/scheduler/*`), CLI (`storageforge-index schedule`), and deployed over SSH with signed deploy access. Missing reports are automatically picked up during subsequent host scans.
+
 ## From a planner design
 
 The [planner's Export view](planner.md#export) turns a design into change-plan tasks (`POST /api/planner/changes`) and stages them here, so a design reaches a host through the same checks, report-first script and deploy as any other change plan. Drive tasks staged this way need the device typed again before the plan can be saved. Pools, ZFS datasets, mdadm and LVM have no task type yet and are listed as "by hand".

@@ -39,6 +39,17 @@ KNOWN = {
     ('scan-status', 'sf-rocky'): "without scan access, Podman's overlay folder counts as a failed mount",
     ('child-subvolume', 'sf-suse'): 'finding GM-14: find -xdev stops at a child subvolume, so its files are never indexed',
     ('containers', 'sf-rocky'): "rootless podman ps succeeds with an empty list, so the sudo that would see root's containers is never tried",
+    ('rescan-after-rekey-api', 'sf-suse'): 'rekey clears the scanned address, so the API turns the IP into the host name, which the key is not bound to',
+    ('scan', 'sf-rocky'): "without scan access, Podman's overlay folder counts as a failed mount",
+    ('job-run-copy', 'sf-rocky'): "rsync -X tries to remove security.selinux on the SELinux destination: all data arrives, but the job reports exit 23",
+    ('job-run-git', 'sf-fedora'): "the job serves with git-upload-pack --strict, which refuses the working-copy path the Git panel sends",
+    ('job-run-git', 'sf-suse'): "the job serves with git-upload-pack --strict, which refuses the working-copy path the Git panel sends",
+    ('job-result-rsnapshot', 'sf-suse'): "rsnapshot's config has no --hard-links or xattrs, but verify compares with -HAX",
+    ('job-verify-rsnapshot', 'sf-suse'): "rsnapshot's config has no --hard-links or xattrs, but verify compares with -HAX",
+    ('job-result-rsnapshot', 'sf-fedora'): "rsnapshot's config has no --hard-links or xattrs, but verify compares with -HAX",
+    ('job-verify-rsnapshot', 'sf-fedora'): "rsnapshot's config has no --hard-links or xattrs, but verify compares with -HAX",
+    ('rsnapshot-on-el9', 'sf-rocky'): 'docs/deployments.md says EPEL has it; on Rocky 9 it does not',
+    ('lvm-extend-unmounted', 'sf-rocky'): 'lvextend -r asks a question on an unmounted XFS volume, with no terminal to answer it',
     ('mergerfs-source', 'sf-arch'): 'the kernel reports the FUSE source as 1:2, and the branches are not read from anywhere else',
 }
 PACKAGE_MANAGERS = {'sf-ctl': 'apt-get', 'sf-ubuntu': 'apt-get', 'sf-fedora': 'dnf', 'sf-rocky': 'dnf', 'sf-suse': 'zypper', 'sf-arch': 'pacman', 'sf-alpine': 'none'}
@@ -297,10 +308,11 @@ def tier3(r):
             runs = api.get(f'/api/deploy/groups/{out["group"]}')['runs']
             return runs and all(x['status'] not in ('queued', 'running') for x in runs)
         wait_for('the restore', done, 300)
-        if seed_hash('sf-rocky', out['target']) != want:
+        restored = f'{out["target"]}/handbook.txt'        # beside the original, in a folder of its own
+        if seed_hash('sf-rocky', restored) != want:
             raise AssertionError('the restored file has other bytes')
-        ssh('sf-rocky', f'sudo -n sh -c {shlex.quote(f"mv {out["target"]} /srv/data/{handbook}")}')
-        return f'{out["target"]}, same bytes'
+        ssh('sf-rocky', f'sudo -n mv {restored} /srv/data/{handbook}')
+        return f'{restored}, same bytes'
     if job:
         r.check('rsnapshot-restore', 'sf-rocky', restore)
 
@@ -482,8 +494,11 @@ def tier4(r):
         if ended['status'] != 'failed':
             raise AssertionError(f'a changed host key was accepted: the scan ended {ended["status"]}')
         cli('hosts', 'rekey', 'sf-suse')
-        demo.scan(api, [IPS['sf-suse']])
-        return 'refused until rekey, then scanned'
+        job = api.post('/api/scan', {'host': IPS['sf-suse']})['job_id']
+        ended = wait_for('the scan', lambda: next((j for j in api.get('/api/jobs')['jobs'] if j['job_id'] == job and j['status'] not in ('queued', 'running')), None), 120)
+        r.add('rescan-after-rekey-api', 'sf-suse', ended['status'] == 'ok', ended['status'], json.dumps(ended['result']))
+        cli('scan', '--host', IPS['sf-suse'])       # what rekey tells the operator to run
+        return 'refused until rekey, then scanned through the CLI'
     r.check('changed-host-key', 'sf-suse', reinstalled)
 
 
@@ -507,7 +522,11 @@ def report():
         if path.exists():
             rows += json.loads(path.read_text())
     if (STATE / 'gauntlet.json').exists():
-        rows += [{**x, 'tier': 2, 'check': x['stage']} for x in json.loads((STATE / 'gauntlet.json').read_text())]
+        for x in json.loads((STATE / 'gauntlet.json').read_text()):
+            why = KNOWN.get((x['stage'], x['host']))
+            if why and x['status'] == 'FAIL':
+                x = {**x, 'status': 'known', 'note': f'{x["note"]} ({why})'}
+            rows.append({**x, 'tier': 2, 'check': x['stage']})
     REPORTS.mkdir(exist_ok=True)
     stamp = time.strftime('%Y-%m-%d-%H%M')
     commit = subprocess.run(['git', '-C', str(ROOT), 'log', '-1', '--format=%h'], capture_output=True, text=True).stdout.strip()

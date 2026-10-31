@@ -45,6 +45,7 @@ The setup creates the `storageforge-deploy` system user (no password, root-owned
 | `jobs` | move plan id | source hosts first (serve config and keys), then the hosts that run the jobs | job configs that would change | install jobs and timers; `remove: true` deploys an empty plan, removing its jobs |
 | `changes` | change plan id | each host in the plan | `changes-<plan>.sh` | `--apply`, plus `--destructive` when asked |
 | `tasks` | task id | the task's host (and its previous host, to uninstall) | dry run | `--install`; `run: true` runs once; `remove: true` uninstalls |
+| `schedules` | schedule id | the scheduled task's host | dry run (`--report`) | install client runner, config, cron file; `run: true` runs once; `remove: true` uninstalls |
 
 Scans record each host's package manager (apt, dnf, yum, zypper or pacman) and whether it has the NFS server (`exportfs`), Samba (`smbd`), the client mount helpers (`mount.nfs`, `mount.cifs`), `rsync` and `rsnapshot`. The share check uses this to say what a deploy would install, such as `the deploy installs nfs-kernel-server with apt-get`. A host that lacks a program and has no known package manager is a critical problem: install the program by hand and rescan. When the deploy runs, the script looks again on the host itself, and installs what is missing at that moment with the package manager it finds. A failed install is a conflict that shows the package manager's last lines and fails that host.
 
@@ -98,6 +99,8 @@ Keys and tokens are made fresh on every apply and travel only inside the signed 
 
 - a job failed;
 - a job is stale (no good run for twice its schedule period plus an hour);
+- a scheduled task failed or failed server verification;
+- a schedule is stale (no verified run for twice its period plus an hour);
 - a verify found differences;
 - drift on a host;
 - a deploy failed.

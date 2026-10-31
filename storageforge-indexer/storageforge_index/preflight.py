@@ -138,14 +138,14 @@ def takes_password(methods: list[str] | None) -> bool:
 
 def blockers(conn, hosts: list[str], kind: str) -> list[dict]:
     """Hosts a deploy of this kind cannot run on, from what is known without touching them."""
-    if kind not in ('shares', 'jobs', 'tasks', 'changes'):
+    if kind not in ('shares', 'jobs', 'tasks', 'changes', 'schedules'):
         return []
     out = []
     for host in dict.fromkeys(hosts):
         rows = conn.all('SELECT facts_json FROM host_checks WHERE host = :h', {'h': host})
         facts = (loads(rows[0][0]) or {}) if rows else facts_from_scan(conn, host)
         for it in findings(facts):
-            if it['level'] == 'crit' and (kind != 'changes' or 'systemd' not in it['text']):   # change plans need no units
+            if it['level'] == 'crit' and (kind not in ('changes', 'schedules') or 'systemd' not in it['text']):   # change plans and cron schedules need no units
                 out.append({'host': host, 'text': it['text']})
     return out
 

@@ -322,12 +322,14 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
                     log(f'  picked up {n} job run(s) the jobs could not report')
             except Exception as exc:
                 log(f'  job runs: {exc}')
-        if getattr(inv, 'runs', None) or getattr(inv, 'tasks', None):
+        if getattr(inv, 'runs', None) or getattr(inv, 'tasks', None) or getattr(inv, 'schedules', None):
             try:
                 from . import confirm
-                summary = confirm.ingest_scan(db, conn, inv.hostname, getattr(inv, 'runs', ''), getattr(inv, 'tasks', ''), log=log)
-                if summary.get('confirmed') or summary.get('tasks'):
-                    log(f'  confirmed {summary.get("confirmed", 0)} deploy run(s), {summary.get("tasks", 0)} task run(s)')
+                summary = confirm.ingest_scan(db, conn, inv.hostname, getattr(inv, 'runs', ''),
+                                              getattr(inv, 'tasks', ''), getattr(inv, 'schedules', ''), log=log)
+                if summary.get('confirmed') or summary.get('tasks') or summary.get('schedules'):
+                    log(f'  confirmed {summary.get("confirmed", 0)} deploy run(s), '
+                        f'{summary.get("tasks", 0)} task run(s), {summary.get("schedules", 0)} schedule run(s)')
             except Exception as exc:
                 log(f'  confirm runs: {exc}')
         scan_id = db.begin_scan(conn, host_id)          # refuses while another scan of this host runs

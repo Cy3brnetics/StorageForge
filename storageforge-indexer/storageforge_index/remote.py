@@ -267,6 +267,7 @@ echo '@@btrfs'; for d in /sys/fs/btrfs/*-*/; do [ -d "$d" ] || continue; printf 
 echo '@@jobs'; for f in /var/lib/storageforge/jobs/*/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
 echo '@@tasks'; for f in /var/lib/storageforge/tasks/*.last /var/lib/storageforge/tasks/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
 for t in /etc/systemd/system/sf-task-*.timer; do [ -e "$t" ] && echo "TASK-TIMER $(basename "$t") $(systemctl is-enabled "$(basename "$t")" 2>/dev/null)"; done
+echo '@@schedules'; for f in /var/lib/storageforge/scheduler/*/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
 echo '@@runs'; [ -r /var/lib/storageforge/run/runs.jsonl ] && tail -n 100 /var/lib/storageforge/run/runs.jsonl
 echo '@@moves'; for f in /var/lib/storageforge/moves/*/*; do [ -r "$f" ] && printf '%s\t%s\n' "${f#/var/lib/storageforge/moves/}" "$(head -c 200 "$f" | head -n 1)"; done
 echo '@@health'; cat /var/lib/storageforge/health/report 2>/dev/null
@@ -321,6 +322,7 @@ class HostInventory:
     smb: str = ''     # testparm -s or smb.conf
     jobs: str = ''    # run lines of StorageForge jobs (the fallback when a run could not report)
     tasks: str = ''   # run lines / status of storage tasks
+    schedules: str = ''  # run lines of StorageForge unified scheduler tasks
     runs: str = ''    # nonces and exit codes of StorageForge deploy runs
     managed: str = '' # sha256sum -c of what deploys wrote, StorageForge fstab lines, job timers (drift)
     ids: str = ''     # users and groups with UID/GID >= 1000 (NFS ownership check)
@@ -336,7 +338,7 @@ class HostInventory:
         return json.dumps({
             'collected_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
             'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb, 'btrfs': self.btrfs,
-            'jobs': self.jobs, 'tasks': self.tasks, 'runs': self.runs, 'managed': self.managed, 'ids': self.ids, 'packages': self.packages,
+            'jobs': self.jobs, 'tasks': self.tasks, 'schedules': self.schedules, 'runs': self.runs, 'managed': self.managed, 'ids': self.ids, 'packages': self.packages,
             'configs': self.configs, 'accounts': self.accounts, 'moves': self.moves, 'health': self.health, 'snapshots': self.snapshots,
             'mounts': [asdict(m) for m in self.mounts],
         })
@@ -435,7 +437,8 @@ def collect_inventory(t: Transport) -> HostInventory:
                          sec.get('zpool', '').strip(), sec.get('df', '').strip(), lvs=sec.get('lvs', '').strip(),
                          access=access, user=user, nfs=sec.get('nfs', '').strip(), smb=sec.get('smb', '').strip(),
                          btrfs=sec.get('btrfs', '').strip(), jobs=sec.get('jobs', '').strip(),
-                         tasks=sec.get('tasks', '').strip(), runs=sec.get('runs', '').strip(),
+                         tasks=sec.get('tasks', '').strip(), schedules=sec.get('schedules', '').strip(),
+                         runs=sec.get('runs', '').strip(),
                          managed=sec.get('managed', '').strip(), ids=sec.get('ids', '').strip(),
                          packages=sec.get('packages', '').strip(), moves=sec.get('moves', '').strip(),
                          health=parse_report(sec.get('health', '')), snapshots=parse_snapshots(sec.get('snapshots', '')),

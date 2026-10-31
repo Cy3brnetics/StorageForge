@@ -77,6 +77,7 @@ The rail on the right opens panels in the inspector. The first panel, **Details*
 | :--- | :--- |
 | **Changes** | [Staged change plans](plans-and-scripts.md#staged-changes): review, reorder, **Check**, **Bash script**, **Ansible playbook**, **Deploy** |
 | **Moves** | [Move plans](plans-and-scripts.md#data-moves): steps, **Check**, **Download script**, **Deploy** |
+| **Schedule** | [Unified task scheduler](plans-and-scripts.md#unified-task-scheduler): cron jobs on client hosts with comprehensive server-side verification, SSH deploy, on-demand runs and verification inspector |
 | **Deploy** | [Deploy access](deployments.md) per host, deployed jobs and shares, drift, recent deploys, reporting and alert settings |
 
 ![Changes panel after Check](images/changes.jpg)

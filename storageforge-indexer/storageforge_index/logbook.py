@@ -15,7 +15,8 @@ import json
 
 from .db import Conn
 
-SOURCES = {'audit': 'Audit log', 'deploy': 'Deploys', 'scan': 'Scans', 'task': 'Task runs', 'hostlog': 'Fetched logs'}
+SOURCES = {'audit': 'Audit log', 'deploy': 'Deploys', 'scan': 'Scans', 'task': 'Task runs',
+           'schedule': 'Schedule runs', 'hostlog': 'Fetched logs'}
 OUTCOMES = ('ok', 'warn', 'failed', 'denied', 'info', 'running')
 MAX_EXPORT = 20000
 
@@ -23,6 +24,7 @@ MAX_EXPORT = 20000
 DEPLOY = {'ok': 'ok', 'incomplete': 'warn', 'refused': 'denied', 'cancelled': 'info', 'skipped': 'info', 'running': 'running',
           'queued': 'running', 'failed': 'failed'}
 SCAN = {'ok': 'ok', 'partial': 'warn', 'failed': 'failed', 'running': 'running', 'queued': 'running'}
+SCHEDULE = {'verified': 'ok', 'ok': 'ok', 'verify_failed': 'warn', 'failed': 'failed', 'running': 'running'}
 HOSTLOG = {'fetched': 'info', 'pending': 'running', 'failed': 'failed'}
 
 
@@ -155,7 +157,34 @@ def _hostlog(conn: Conn, f: dict, n: int) -> list[dict]:
     return out
 
 
-READERS = {'audit': _audit, 'deploy': _deploy, 'scan': _scan, 'task': _task, 'hostlog': _hostlog}
+def _schedule(conn: Conn, f: dict, n: int) -> list[dict]:
+    p = {'n': n}
+    where = _where('r.host', 'r.started_at', f, ('r.host', 'r.status', 'r.report_source', 's.name', 's.task_type'), p,
+                   status_col='r.status', statuses=_statuses(SCHEDULE, f.get('outcomes')))
+    rows = conn.all(f"""SELECT r.run_id, r.schedule_id, s.name, s.task_type, r.host, r.status, r.started_at,
+                               r.finished_at, r.exit_code, r.verified, r.report_source, length(r.output)
+                        FROM schedule_runs r
+                        LEFT JOIN schedules s ON s.schedule_id = r.schedule_id{where}
+                        ORDER BY r.started_at DESC, r.run_id DESC LIMIT :n""", p)
+    out = []
+    for r in rows:
+        sname = r[2] or f'schedule #{r[1]}'
+        out.append({
+            'id': f'schedule:{r[0]}',
+            'ts': _ts(r[6]),
+            'source': 'schedule',
+            'host': r[4],
+            'actor': r[10] or 'cron',
+            'action': f'schedule.{r[3] or "run"}',
+            'outcome': SCHEDULE.get(r[5], 'failed'),
+            'summary': f'schedule {sname}: {r[5]}' + ('' if r[8] is None else f' (exit {r[8]})'),
+            'detail': {'schedule_id': r[1], 'finished_at': r[7], 'exit_code': r[8], 'verified': r[9], 'status': r[5]},
+            'has_output': bool(r[11]),
+        })
+    return out
+
+
+READERS = {'audit': _audit, 'deploy': _deploy, 'scan': _scan, 'task': _task, 'schedule': _schedule, 'hostlog': _hostlog}
 
 
 def clean_filter(host=None, sources=None, outcomes=None, q=None, since=None, until=None) -> dict:
@@ -207,6 +236,8 @@ def output_of(conn: Conn, entry_id: str) -> str:
     source, _, ref = entry_id.partition(':')
     if source == 'deploy' and ref.isdigit():
         return conn.scalar('SELECT output FROM deploy_runs WHERE run_id = :r', {'r': int(ref)}) or ''
+    if source == 'schedule' and ref.isdigit():
+        return conn.scalar('SELECT output FROM schedule_runs WHERE run_id = :r', {'r': int(ref)}) or ''
     if source == 'hostlog':
         return conn.scalar('SELECT output FROM host_logs WHERE log_key = :k', {'k': ref}) or ''
     return ''

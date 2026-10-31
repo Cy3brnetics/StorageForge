@@ -851,6 +851,160 @@ def cmd_user(args) -> int:
     return 0
 
 
+def cmd_schedule(args) -> int:
+    from . import scheduler
+    db, conn = open_db(args)
+    try:
+        cmd = args.schedule_cmd
+        if cmd == 'list':
+            schedules = scheduler.list_schedules(conn, host=args.host, task_type=args.type,
+                                                 paused=True if args.paused else None)
+            if args.json:
+                print(json.dumps(schedules, indent=2))
+            else:
+                if not schedules:
+                    print("No schedules found.")
+                    return 0
+                print(f"{'ID':<6} {'NAME':<24} {'HOST':<16} {'CRON':<16} {'TYPE':<8} {'PAUSED':<8} {'NEXT RUN':<18} {'LAST STATUS'}")
+                print("-" * 110)
+                for s in schedules:
+                    nxt = dt.datetime.fromtimestamp(s['next_run_at'], dt.timezone.utc).strftime('%Y-%m-%d %H:%M') if s['next_run_at'] else '—'
+                    print(f"{s['schedule_id']:<6} {s['name'][:23]:<24} {s['host'][:15]:<16} {s['cron_expr']:<16} "
+                          f"{s['task_type']:<8} {'yes' if s['paused'] else 'no':<8} {nxt:<18} {s['last_status'] or '—'}")
+            return 0
+
+        elif cmd == 'add':
+            cfg = json.loads(args.config) if args.config else {}
+            body = {
+                'name': args.name,
+                'host': args.host,
+                'cron_expr': args.cron,
+                'task_type': args.type,
+                'task_ref': args.ref,
+                'config': cfg,
+                'paused': args.paused,
+            }
+            sched, token = scheduler.create_schedule(conn, body, 'cli')
+            if args.json:
+                print(json.dumps({'schedule': sched, 'token': token}, indent=2))
+            else:
+                print(f"Created schedule #{sched['schedule_id']} ({sched['name']}) on {sched['host']}")
+                print(f"Auth token: {token}")
+                print("Keep this token safe; it authenticates execution reports from the client.")
+            return 0
+
+        elif cmd == 'get':
+            sched = scheduler.get_schedule(conn, args.id)
+            print(json.dumps(sched, indent=2))
+            return 0
+
+        elif cmd == 'pause':
+            sched = scheduler.pause_schedule(conn, args.id, True, 'cli')
+            print(f"Paused schedule #{args.id} ({sched['name']})")
+            return 0
+
+        elif cmd == 'resume':
+            sched = scheduler.pause_schedule(conn, args.id, False, 'cli')
+            print(f"Resumed schedule #{args.id} ({sched['name']})")
+            return 0
+
+        elif cmd == 'remove':
+            sched = scheduler.get_schedule(conn, args.id)
+            scheduler.delete_schedule(conn, args.id, 'cli')
+            print(f"Removed schedule #{args.id} ({sched['name']})")
+            return 0
+
+        elif cmd == 'token':
+            token = scheduler.token_for_schedule(conn, args.id, 'cli')
+            print(f"Generated new auth token for schedule #{args.id}:\n{token}")
+            return 0
+
+        elif cmd == 'runs':
+            runs = scheduler.get_schedule_runs(conn, schedule_id=args.id, host=args.host, limit=args.limit)
+            if args.json:
+                print(json.dumps(runs, indent=2))
+            else:
+                if not runs:
+                    print("No runs recorded.")
+                    return 0
+                print(f"{'RUN ID':<8} {'SCHED':<6} {'STATUS':<12} {'STARTED':<18} {'EXIT':<6} {'VERIFIED':<10} {'SUMMARY'}")
+                print("-" * 90)
+                for r in runs:
+                    st = dt.datetime.fromtimestamp(r['started_at'], dt.timezone.utc).strftime('%Y-%m-%d %H:%M')
+                    v = 'passed' if r['verified'] == 1 else 'failed' if r['verified'] == -1 else 'none'
+                    summ = (r['verify_result'] or {}).get('summary', '')[:30]
+                    print(f"{r['run_id']:<8} {r['schedule_id']:<6} {r['status']:<12} {st:<18} {str(r['exit_code']):<6} {v:<10} {summ}")
+            return 0
+
+        elif cmd == 'cron':
+            sched = scheduler.get_schedule(conn, args.id)
+            print(scheduler.generate_cron_entry(sched).strip())
+            return 0
+
+        elif cmd == 'install-script':
+            sched = scheduler.get_schedule(conn, args.id)
+            report_url = args.report_url or 'http://localhost:8080'
+            token = scheduler.token_for_schedule(conn, args.id, 'cli')
+            print(scheduler.generate_install_script(conn, sched, report_url, token))
+            return 0
+
+        elif cmd == 'run':
+            import subprocess
+            import tempfile
+            import time
+            sched = scheduler.get_schedule(conn, args.id)
+            script, sargs = scheduler.generate_task_script(conn, sched)
+            started = int(time.time())
+            with tempfile.NamedTemporaryFile('w', suffix='.sh', delete=False) as tf:
+                tf.write(script)
+                tmp_path = tf.name
+            try:
+                os.chmod(tmp_path, 0o750)
+                env = {**os.environ, **(sched['config'].get('env') or {})}
+                timeout = int(sched['config'].get('timeout_sec') or 3600) or None
+                proc = subprocess.run(['/bin/bash', tmp_path, *sargs], capture_output=True, text=True,
+                                      timeout=timeout, env=env)
+                rc = proc.returncode
+                out = (proc.stdout or '') + ('\n' + proc.stderr if proc.stderr else '')
+            except subprocess.TimeoutExpired:
+                rc, out = 124, 'Schedule execution timed out'
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            finished = int(time.time())
+            res = scheduler.ingest_report(conn, {
+                'schedule_id': args.id,
+                'started_at': started,
+                'finished_at': finished,
+                'exit_code': rc,
+                'output': out,
+            }, 'cli:run')
+            if args.json:
+                print(json.dumps(res, indent=2))
+            else:
+                print(f"Run #{res['run_id']} finished with status={res['status']} (exit={rc}): {res['verify_result']['summary']}")
+            return 0 if res['status'] == 'verified' else 1
+
+        elif cmd == 'verify':
+            if args.run_id:
+                res = scheduler.reverify_run(conn, args.run_id)
+            else:
+                res = scheduler.verify_schedule(conn, args.id)
+            if args.json:
+                print(json.dumps(res, indent=2))
+            else:
+                print(f"Schedule #{args.id} verification: {res['status']} — {res['verify_result']['summary']}")
+                for chk in res['verify_result'].get('checks') or []:
+                    print(f"  [{chk['status'].upper():<4}] {chk['name']}: {chk['message']}")
+            return 0 if res['verified'] == 1 else 1
+
+    finally:
+        conn.close()
+    return 0
+
+
 def cmd_healthcheck(args) -> int:
     import urllib.request
     try:
@@ -1123,7 +1277,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     lg = sub.add_parser('log', help='what has been done: audit log, deploys, scans and task runs in one list')
     lg.add_argument('--host', help='only this host')
-    lg.add_argument('--source', help='comma-separated: audit, deploy, scan, task, hostlog')
+    lg.add_argument('--source', help='comma-separated: audit, deploy, scan, task, schedule, hostlog')
     lg.add_argument('--outcome', help='comma-separated: ok, warn, failed, denied, info, running')
     lg.add_argument('--grep', help='only entries holding this text')
     lg.add_argument('--since', help='unix seconds or a date like 2026-10-30')
@@ -1187,6 +1341,64 @@ def build_parser() -> argparse.ArgumentParser:
                        ('remove', 'delete an account'), ('signout', 'end every web session of an account')):
         us.add_parser(name, help=text).add_argument('name')
     u.set_defaults(fn=cmd_user)
+
+    sc = sub.add_parser('schedule', help='unified task scheduler across all storageforge operations')
+    scs = sc.add_subparsers(dest='schedule_cmd', required=True)
+
+    scl = scs.add_parser('list', help='list schedules')
+    scl.add_argument('--host')
+    scl.add_argument('--type', choices=['task', 'change', 'move', 'shares', 'scan', 'command'])
+    scl.add_argument('--paused', action='store_true')
+    scl.add_argument('--json', action='store_true')
+
+    sca = scs.add_parser('add', help='create a new schedule')
+    sca.add_argument('--name', required=True)
+    sca.add_argument('--host', required=True)
+    sca.add_argument('--cron', required=True, help='cron expression e.g. "0 2 * * *" or "*/15 * * * *"')
+    sca.add_argument('--type', required=True, choices=['task', 'change', 'move', 'shares', 'scan', 'command'])
+    sca.add_argument('--ref', required=True, help='task id/slug, plan id, host name, or command string')
+    sca.add_argument('--config', help='JSON string with extra config options')
+    sca.add_argument('--paused', action='store_true')
+    sca.add_argument('--json', action='store_true')
+
+    scg = scs.add_parser('get', help='get schedule details')
+    scg.add_argument('id', type=int)
+
+    scp = scs.add_parser('pause', help='pause a schedule')
+    scp.add_argument('id', type=int)
+
+    scr = scs.add_parser('resume', help='resume a schedule')
+    scr.add_argument('id', type=int)
+
+    scd = scs.add_parser('remove', help='delete a schedule')
+    scd.add_argument('id', type=int)
+
+    sct = scs.add_parser('token', help='generate/rotate auth token for schedule')
+    sct.add_argument('id', type=int)
+
+    scu = scs.add_parser('runs', help='view run history and verification results')
+    scu.add_argument('--id', type=int)
+    scu.add_argument('--host')
+    scu.add_argument('--limit', type=int, default=50)
+    scu.add_argument('--json', action='store_true')
+
+    scc = scs.add_parser('cron', help='generate /etc/cron.d/ entry')
+    scc.add_argument('id', type=int)
+
+    sci = scs.add_parser('install-script', help='generate target host install script')
+    sci.add_argument('id', type=int)
+    sci.add_argument('--report-url', help='StorageForge report endpoint URL')
+
+    scrun = scs.add_parser('run', help='execute a schedule immediately and verify the result')
+    scrun.add_argument('id', type=int)
+    scrun.add_argument('--json', action='store_true')
+
+    scver = scs.add_parser('verify', help='re-verify a schedule or specific run against the index')
+    scver.add_argument('id', type=int)
+    scver.add_argument('--run-id', type=int, help='specific run_id to re-verify')
+    scver.add_argument('--json', action='store_true')
+
+    sc.set_defaults(fn=cmd_schedule)
 
     hc = sub.add_parser('healthcheck', help='probe /healthz (for Docker HEALTHCHECK)')
     hc.add_argument('--url', default=f"http://127.0.0.1:{os.environ.get('STORAGEFORGE_PORT', '8080')}/healthz")

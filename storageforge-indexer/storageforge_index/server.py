@@ -111,6 +111,7 @@ import secrets
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -126,7 +127,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, folders, gitrepos, graph, jobs, logbook, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, reinstall, retire, shares, tasks, users)
+               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, reinstall, retire, scheduler, shares, tasks, users)
 from .capacity import parse_size, trends
 from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
@@ -600,7 +601,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "gitview.js", "rebuildview.js", "dockerview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "planner.js", "planner.css"):name>')
+    @web.get('/<any("session.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "gitview.js", "rebuildview.js", "dockerview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
@@ -1521,7 +1522,11 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return changes.deploy_items(db, c, changes.get_plan(c, int(ref)), mode, actor(), bool(options.get('destructive')))
         if kind == 'tasks':
             return tasks.deploy_items(db, c, tasks.get_task(c, int(ref)), mode, actor(), bool(options.get('run')), bool(options.get('remove')))
-        raise ValueError('kind is jobs, shares, changes or tasks')
+        if kind == 'schedules':
+            report_url = alerts.get_setting(c, 'report_url') or f'http://{request.host}'
+            return scheduler.deploy_items(db, c, scheduler.get_schedule(c, int(ref)), mode, report_url, actor(),
+                                          bool(options.get('run')), bool(options.get('remove')))
+        raise ValueError('kind is jobs, shares, changes, tasks or schedules')
 
     def deploy_digest(c, kind, ref):
         """A fingerprint of what this deploy is made from, to tell whether a dry run still describes it."""
@@ -1534,6 +1539,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 return changes.plan_hash(changes.get_plan(c, int(ref)))
             if kind == 'tasks':
                 return tasks.task_hash(tasks.get_task(c, int(ref)))
+            if kind == 'schedules':
+                return scheduler.schedule_hash(scheduler.get_schedule(c, int(ref)))
         except LookupError:
             return None
         return None
@@ -1597,7 +1604,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             raise LookupError('no such deploy')
         if engine.running(gid):
             return jsonify(error='that deploy is still running'), 409
-        if g['kind'] not in ('jobs', 'shares', 'changes', 'tasks'):
+        if g['kind'] not in ('jobs', 'shares', 'changes', 'tasks', 'schedules'):
             raise ValueError('only plans and designs can be retried')
         items = deploy_items_for(c, g['kind'], g['ref'], g['mode'], g['options'])
         if g['kind'] != 'jobs':       # job keys are new on every apply, so a job's two hosts must get them together
@@ -1719,6 +1726,211 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if new:
             core.alerts_wake.set()
         return jsonify(ok=True, new=new)
+
+    # ── Scheduler API ──────────────────────────────────────────────────────────
+    @web.route('/api/scheduler/schedules', methods=['GET', 'POST'])
+    @login_required
+    def api_scheduler_schedules():
+        c = conn()
+        if request.method == 'POST':
+            body = json_body()
+            sched, token = scheduler.create_schedule(c, body, actor())
+            core.audit(c, actor(), 'scheduler.create', 'ok', sched['host'], {'schedule_id': sched['schedule_id'], 'name': sched['name']})
+            return jsonify(schedule=sched, token=token), 201
+        h = request.args.get('host') or None
+        t = request.args.get('task_type') or None
+        p = None if request.args.get('paused') is None else (request.args.get('paused').lower() in ('1', 'true'))
+        return jsonify(schedules=scheduler.list_schedules(c, host=h, task_type=t, paused=p),
+                       installed=scheduler.installed(c))
+
+    @web.route('/api/scheduler/schedules/<int:schedule_id>', methods=['GET', 'PUT', 'DELETE'])
+    @login_required
+    def api_scheduler_schedule(schedule_id):
+        c = conn()
+        try:
+            if request.method == 'PUT':
+                body = json_body()
+                sched = scheduler.update_schedule(c, schedule_id, body, actor())
+                core.audit(c, actor(), 'scheduler.update', 'ok', sched['host'], {'schedule_id': schedule_id, 'name': sched['name']})
+                return jsonify(sched)
+            elif request.method == 'DELETE':
+                sched = scheduler.get_schedule(c, schedule_id)
+                scheduler.delete_schedule(c, schedule_id, actor())
+                core.audit(c, actor(), 'scheduler.delete', 'ok', sched['host'], {'schedule_id': schedule_id, 'name': sched['name']})
+                return jsonify(deleted=schedule_id)
+            return jsonify(scheduler.get_schedule(c, schedule_id))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/scheduler/schedules/<int:schedule_id>/pause')
+    @login_required
+    def api_scheduler_schedule_pause(schedule_id):
+        c = conn()
+        try:
+            body = json_body()
+            paused = bool(body.get('paused', True))
+            sched = scheduler.pause_schedule(c, schedule_id, paused, actor())
+            core.audit(c, actor(), 'scheduler.pause', 'ok', sched['host'], {'schedule_id': schedule_id, 'paused': paused})
+            return jsonify(sched)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/scheduler/schedules/<int:schedule_id>/token')
+    @login_required
+    def api_scheduler_schedule_token(schedule_id):
+        c = conn()
+        try:
+            token = scheduler.token_for_schedule(c, schedule_id, actor())
+            sched = scheduler.get_schedule(c, schedule_id)
+            core.audit(c, actor(), 'scheduler.token_rotate', 'ok', sched['host'], {'schedule_id': schedule_id})
+            return jsonify(token=token, schedule_id=schedule_id)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/scheduler/schedules/<int:schedule_id>/run')
+    @login_required
+    def api_scheduler_schedule_run(schedule_id):
+        c = conn()
+        try:
+            sched = scheduler.get_schedule(c, schedule_id)
+            body = (request.get_json(silent=True) or {}) if request.is_json else {}
+            who = actor()
+            if body.get('local'):
+                script, args = scheduler.generate_task_script(c, sched)
+                started = int(time.time())
+                with tempfile.NamedTemporaryFile('w', suffix='.sh', delete=False) as tf:
+                    tf.write(script)
+                    tmp_path = tf.name
+                try:
+                    os.chmod(tmp_path, 0o750)
+                    env = {**os.environ, **(sched['config'].get('env') or {})}
+                    timeout = int(sched['config'].get('timeout_sec') or 3600) or None
+                    proc = subprocess.run(['/bin/bash', tmp_path, *args], capture_output=True, text=True,
+                                          timeout=timeout, env=env)
+                    rc = proc.returncode
+                    out = (proc.stdout or '') + ('\n' + proc.stderr if proc.stderr else '')
+                except subprocess.TimeoutExpired:
+                    rc, out = 124, 'Schedule execution timed out'
+                finally:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                finished = int(time.time())
+                res = scheduler.ingest_report(c, {
+                    'schedule_id': schedule_id,
+                    'started_at': started,
+                    'finished_at': finished,
+                    'exit_code': rc,
+                    'output': out,
+                }, f'manual:{who}')
+                core.audit(c, who, 'scheduler.run', 'ok' if rc == 0 else 'failed', sched['host'],
+                           {'schedule_id': schedule_id, 'run_id': res['run_id']})
+                core.alerts_wake.set()
+                return jsonify(res)
+
+            report_url = alerts.get_setting(c, 'report_url') or f'http://{request.host}'
+            items = scheduler.deploy_items(db, c, sched, 'apply', report_url, who, run_now=True)
+            missing = [it['host'] for it in items if not deploy.ready(c, it['host'])]
+            if missing:
+                return jsonify(error='set up deploy access first on: ' + ', '.join(sorted(set(missing))),
+                               hosts=sorted(set(missing))), 409
+            digest = scheduler.schedule_hash(sched)
+            gid = deploy.start_group(db, items, who, stop_on_failure=True, after=lambda h: core.enqueue(h, who),
+                                     title=f'run schedule {sched["name"]}', kind='schedules', ref=str(schedule_id),
+                                     mode='apply', options={'run': True}, digest=digest)
+            core.audit(c, who, 'scheduler.run', 'ok', sched['host'], {'schedule_id': schedule_id, 'group': gid})
+            return jsonify(group=gid, hosts=[it['host'] for it in items], schedule_id=schedule_id)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/scheduler/schedules/<int:schedule_id>/verify')
+    @login_required
+    def api_scheduler_schedule_verify(schedule_id):
+        c = conn()
+        try:
+            body = (request.get_json(silent=True) or {}) if request.is_json else {}
+            run_id = body.get('run_id')
+            if run_id is not None:
+                res = scheduler.reverify_run(c, int(run_id))
+            else:
+                res = scheduler.verify_schedule(c, schedule_id)
+            sched = scheduler.get_schedule(c, schedule_id)
+            core.audit(c, actor(), 'scheduler.verify', 'ok', sched['host'],
+                       {'schedule_id': schedule_id, 'run_id': res.get('run_id'), 'status': res.get('status')})
+            core.alerts_wake.set()
+            return jsonify(res)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.get('/api/scheduler/schedules/<int:schedule_id>/script')
+    @login_required
+    def api_scheduler_schedule_script(schedule_id):
+        c = conn()
+        try:
+            sched = scheduler.get_schedule(c, schedule_id)
+            script, args = scheduler.generate_task_script(c, sched)
+            return Response(script, mimetype='text/x-shellscript',
+                            headers={'Content-Disposition': f'attachment; filename="task-{schedule_id}.sh"'})
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.get('/api/scheduler/schedules/<int:schedule_id>/install-script')
+    @login_required
+    def api_scheduler_schedule_install_script(schedule_id):
+        c = conn()
+        try:
+            sched = scheduler.get_schedule(c, schedule_id)
+            report_url = alerts.get_setting(c, 'report_url') or f"http://{request.host}"
+            token = scheduler.token_for_schedule(c, schedule_id, actor())
+            scr = scheduler.generate_install_script(c, sched, report_url, token)
+            return Response(scr, mimetype='text/x-shellscript',
+                            headers={'Content-Disposition': f'attachment; filename="install-schedule-{schedule_id}.sh"'})
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.get('/api/scheduler/schedules/<int:schedule_id>/cron')
+    @login_required
+    def api_scheduler_schedule_cron(schedule_id):
+        c = conn()
+        try:
+            sched = scheduler.get_schedule(c, schedule_id)
+            cron = scheduler.generate_cron_entry(sched)
+            return Response(cron, mimetype='text/plain')
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.get('/api/scheduler/schedules/<int:schedule_id>/runs')
+    @login_required
+    def api_scheduler_schedule_runs(schedule_id):
+        c = conn()
+        lim = arg_num('limit', 50, 1, 500)
+        return jsonify(runs=scheduler.get_schedule_runs(c, schedule_id=schedule_id, limit=lim))
+
+    @web.get('/api/scheduler/runs')
+    @login_required
+    def api_scheduler_runs():
+        c = conn()
+        h = request.args.get('host') or None
+        lim = arg_num('limit', 50, 1, 500)
+        return jsonify(runs=scheduler.get_schedule_runs(c, host=h, limit=lim))
+
+    @web.post('/api/scheduler/report')
+    @limiter.limit('120 per minute')
+    def api_scheduler_report():
+        auth = request.headers.get('Authorization', '')
+        token = auth[7:].strip() if auth.startswith('Bearer ') else ''
+        sched = scheduler.schedule_for_token(conn(), token)
+        if not sched:
+            return jsonify(error='unknown scheduler token'), 401
+        body = json_body()
+        if int(body.get('schedule_id') or 0) != sched['schedule_id']:
+            return jsonify(error='token does not match schedule_id'), 403
+        res = scheduler.ingest_report(conn(), body, f'report:{request.remote_addr}'[:60])
+        if res.get('auto_rescan'):
+            core.enqueue(sched['host'], 'scheduler')
+        core.alerts_wake.set()
+        return jsonify(ok=True, **res)
 
     @web.get('/api/hostconfigs')
     @login_required
