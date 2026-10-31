@@ -28,6 +28,7 @@ TOOLS = {'btrfs': ('btrfs', 'btrfs-progs', 'btrfs-progs', 'btrfs-progs', 'btrfsp
          'ntfs3': ('ntfs-3g', 'ntfs-3g', 'ntfs-3g', 'ntfs-3g', 'ntfs-3g'),
          'crypto_LUKS': ('cryptsetup', 'cryptsetup', 'cryptsetup', 'cryptsetup', 'cryptsetup'),
          'fuse.mergerfs': ('mergerfs', 'mergerfs', 'mergerfs', 'mergerfs', 'mergerfs'),
+         'mergerfs': ('mergerfs', 'mergerfs', 'mergerfs', 'mergerfs', 'mergerfs'),
          'nfs': ('mount.nfs', 'nfs-common', 'nfs-utils', 'nfs-utils', 'nfs-client'),
          'nfs4': ('mount.nfs', 'nfs-common', 'nfs-utils', 'nfs-utils', 'nfs-client'),
          'cifs': ('mount.cifs', 'cifs-utils', 'cifs-utils', 'cifs-utils', 'cifs-utils'),
@@ -120,7 +121,19 @@ crypttab_line() { # name line spec
   if ((APPLY)); then backup /etc/crypttab; printf '%s\n' "$2" >>/etc/crypttab; doing "crypttab: added $1"; else missing "crypttab: $2"; fi
 }
 
+fs_tool() { # as need_cmd. These filesystems mount without their tools, so a host we cannot install on is not a failure
+  if [[ $(pm) == none ]] && ! command -v "$1" >/dev/null; then info "$2 tools are not installed and I know no package manager here: install them if you need them"; return; fi
+  need_cmd "$@"
+}
+
+md_assemble() {
+  local out; out=$(mdadm --assemble --scan 2>&1)
+  if grep -q '^md' /proc/mdstat 2>/dev/null; then doing "md arrays are running"; return; fi
+  conflict "no md array started. Does this kernel have the md modules? $(tail -n 2 <<<"$out" | tr '\n' ' ')"
+}
+
 zfs_pool() { # name
+  if ! command -v zpool >/dev/null; then ((APPLY)) && conflict "ZFS pool $1: ZFS tools are not installed" || missing "ZFS pool $1 (looks for its drives once ZFS is installed)"; return; fi
   if zpool list -H -o name "$1" >/dev/null 2>&1; then ok "ZFS pool $1 is imported"; return; fi
   if ! zpool import 2>/dev/null | grep -Eq "^[[:space:]]*pool: $1\$"; then conflict "ZFS pool $1: its drives are not on this machine"; return; fi
   if ((!APPLY)); then missing "ZFS pool $1 is not imported"; return; fi
@@ -199,6 +212,12 @@ is_mounted() { findmnt -rn --mountpoint "$1" >/dev/null 2>&1; }
 mount_device() { # target spec fstype line origin
   local t=$1 spec=$2 fs=$3 line=$4 dev got
   dev=$(device_of "$spec")
+  if [[ -z $dev && $spec == /dev/* && $spec != /dev/[sv]d* && $spec != /dev/nvme* ]]; then   # LVM or LUKS: it appears once opened
+    ((APPLY)) && conflict "$t: $spec did not appear. Check that its LUKS volume is open or its volume group active, then run this again" || missing "$t: $spec appears once its LUKS or LVM layer is up"
+    return
+  fi
+  # a report assembles nothing, so a filesystem on an md array or in LVM may just not be visible yet
+  if [[ -z $dev ]] && ((!APPLY && LAYERED)); then missing "$t: $spec is not visible yet, and may appear once storage is assembled"; return; fi
   if [[ -z $dev ]]; then conflict "$t: $spec is not on this machine (expected $fs). Attach that drive, or leave it out"; return; fi
   got=$(blkid -o value -s TYPE "$dev" 2>/dev/null)
   if [[ -n $got && $got != "$fs" && $fs != auto ]]; then conflict "$t: $spec holds $got and was $fs, so it is not the same filesystem"; return; fi
@@ -210,6 +229,11 @@ mount_other() { # target line needs(a path that must exist first)
   local t=$1 line=$2 needs=${3:-}
   if [[ -n $needs && ! -e $needs ]]; then ((APPLY)) && conflict "$t: its source $needs is not there" || missing "$t waits for $needs"; return; fi
   fstab_line "$t" "$line" || return
+  local cred=; [[ $line =~ (^|[ ,])(credentials|cred)=([^ ,]+) ]] && cred=${BASH_REMATCH[3]}
+  if [[ -n $cred && ! -e $cred ]] && ! is_mounted "$t"; then
+    ((APPLY)) && conflict "$t: its credentials file $cred is not kept. Create it, then: mount $t" || missing "$t: needs its credentials file $cred back"
+    return
+  fi
   if is_mounted "$t"; then ok "mounted $t"; elif ((APPLY)); then mount_it "$t"; else missing "mount $t"; fi
 }
 
@@ -289,12 +313,15 @@ def script(version: dict) -> str:
     body = (BODY.replace('@@REMOTE@@', REMOTE).replace('@@HELPERS@@', HELPERS).replace('@@PACKAGES@@', PACKAGES)
             .replace('@@MARK@@', REBUILT_MARK).replace('@@WHEN@@', when).replace('@@NAME@@', re.sub(r'[^A-Za-z0-9._-]', '_', name)).replace('@@QNAME@@', _q(name)))
     out.append(body)
+    out.append(f'LAYERED={int(bool(b.get("has_md") or b.get("has_lvm") or b.get("crypt")))}\n')
 
     # tools
     s = 'if stage tools; then\n  section "Tools"\n'
     fstypes = set(b.get('fstypes') or [])
     for key, t in TOOLS.items():
-        if key in fstypes or (key == 'crypto_LUKS' and b.get('crypt')):
+        if key in ('xfs', 'f2fs', 'exfat', 'btrfs') and key in fstypes:
+            s += '  ' + _tool(key, t).replace('need_cmd', 'fs_tool', 1)
+        elif key in fstypes or (key == 'crypto_LUKS' and b.get('crypt')):
             s += '  ' + _tool(key, t)
     if b.get('has_md'):
         s += '  ' + _tool('mdadm', LAYERS['md'])
@@ -312,7 +339,7 @@ def script(version: dict) -> str:
         if p in files and b.get('has_md'):
             s += f'  restore_file {_q(p)} {_q(_b64(files[p]))}\n'
     if b.get('has_md'):
-        s += ('  if command -v mdadm >/dev/null; then ((APPLY)) && { mdadm --assemble --scan 2>/dev/null; doing "assembled md arrays"; }\n'
+        s += ('  if command -v mdadm >/dev/null; then ((APPLY)) && md_assemble\n'
               '    [[ -r /proc/mdstat ]] && grep -E "^md" /proc/mdstat | while read -r l; do info "$l"; done; fi\n')
     for c in b.get('crypt') or []:
         s += f'  open_luks {_q(c["name"])} {_q(c["spec"])} {_q(c.get("key") or "")}\n'
