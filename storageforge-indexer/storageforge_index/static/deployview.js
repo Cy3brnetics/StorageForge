@@ -484,6 +484,14 @@ function renderDeploy() {
         el('span', { class: 'row tools' }, button('Check', () => { const doc = T.docs.get(h); if (doc) deployShares(doc); }, 'btn ghost sm'),
           button('Dry run', () => startDeploy('shares', h, 'report', `shares of ${h}`), 'btn sm'))));
     })) : text('p', 'No shares designed yet: add an export to a mount in the topology (+ Export this), save the design, then deploy it here.', 'muted small')));
+  // schedules deleted while installed (older versions allowed it): a timer still runs them as root
+  const orphans = [...new Set(d.drift.filter((x) => x.deleted).map((x) => x.schedule))];
+  if (orphans.length) {
+    parts.push(el('section', { class: 'stack' }, el('h3', {}, 'Deleted schedules still on hosts'),
+      el('ul', { class: 'dklist' }, ...orphans.map((sid) => el('li', {}, el('div', { class: 'row wrap' }, el('b', {}, `schedule #${sid}`),
+        text('span', d.drift.filter((x) => x.schedule === sid).map((x) => x.host).join(', '), 'muted small'),
+        el('span', { class: 'row tools' }, button('Uninstall', () => startDeploy('schedules', sid, 'apply', `uninstall deleted schedule #${sid}`, { remove: true }), 'btn ghost sm danger'))))))));
+  }
   // drift
   const changed = d.drift.filter((x) => x.kind === 'changed');
   parts.push(el('section', { class: 'stack' }, el('h3', {}, 'Drift'),

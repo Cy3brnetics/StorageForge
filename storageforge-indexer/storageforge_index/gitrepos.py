@@ -216,17 +216,16 @@ def listing(conn: Conn, host: str | None = None, include_noise: bool = False) ->
                                         for s in ('uncommitted', 'unpushed', 'behind', 'single copy', 'copied', 'archived', 'error')}}
 
 
+LOOPBACK = ('local', 'localhost', '127.0.0.1', '::1')
+
+
 @contextmanager
 def open_host_transport(db, conn: Conn, host_name: str, action: str = 'scan'):
-    """Context manager providing an open Transport to host_name via vault credentials, or local."""
+    """Context manager providing an open Transport to host_name via vault credentials. Never the server itself: the
+    routes take any name, and the server holds the vault. A loopback name needs a key bound to it, like any other host."""
     from .remote import Transport
-    if host_name.lower() in ('local', 'localhost'):
-        t = Transport(host='localhost', local=True)
-        try:
-            yield t
-        finally:
-            t.close()
-        return
+    if host_name.lower() in LOOPBACK and not conn.scalar('SELECT 1 FROM key_bindings WHERE lower(host_pattern) = lower(:h)', {'h': host_name}):
+        raise LookupError(f'{host_name} is not an enrolled host')
 
     from .runner import connect_address, ephemeral_agent, known_hosts_path
     from .vault import Vault, NoBinding

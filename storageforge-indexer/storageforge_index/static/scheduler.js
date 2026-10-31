@@ -48,7 +48,6 @@ function blankSchedule(host = '') {
       env: {},
       catchup: false,
       jitter_sec: 0,
-      destructive: false,
       verify_policy: 'comprehensive',
       verify_rules: {
         require_exit_zero: true,
@@ -230,14 +229,6 @@ function renderScheduler() {
           button('Run now (SSH)', async () => {
             startDeploy('schedules', cur.schedule_id, 'apply', `run schedule ${cur.name}`, { run: true });
           }, 'btn pri sm'),
-          button('Run local', async () => {
-            try {
-              toast(`Running ${cur.name}…`);
-              const r = await (await postJSON(`/api/scheduler/schedules/${cur.schedule_id}/run`, { local: true })).json();
-              toast(`Finished: ${r.status} (${r.verify_result?.summary || ''})`);
-              await loadScheduler(cur.schedule_id);
-            } catch (e) { toast(e.message); }
-          }, 'btn ghost sm'),
           button('Verify now', async () => {
             try {
               const r = await (await postJSON(`/api/scheduler/schedules/${cur.schedule_id}/verify`, {})).json();
@@ -365,7 +356,6 @@ function renderScheduler() {
   const ionicePrioIn = el('input', { type: 'number', min: 0, max: 7, value: cfg.ionice_priority ?? 7 });
   const userIn = el('input', { type: 'text', value: cfg.user || 'root' });
   const catchupChk = el('input', { type: 'checkbox', checked: Boolean(cfg.catchup) });
-  const destrChk = el('input', { type: 'checkbox', checked: Boolean(cfg.destructive) });
   const envArea = el('textarea', { class: 'mono', rows: 2, placeholder: 'RESTIC_REPOSITORY=/srv/backup\nBORG_PASSPHRASE=...' });
   envArea.value = fmtEnvLines(cfg.env);
 
@@ -419,7 +409,6 @@ function renderScheduler() {
           env: parseEnvLines(envArea.value),
           catchup: catchupChk.checked,
           jitter_sec: Number(jitterIn.value) || 0,
-          destructive: destrChk.checked,
           verify_policy: vPolicySel.value,
           verify_rules: {
             require_exit_zero: reqZeroChk.checked,
@@ -514,7 +503,6 @@ function renderScheduler() {
           el('label', { class: 'field col grow' }, text('span', 'I/O Priority (0..7)'), ionicePrioIn)
         ),
         el('label', { class: 'check' }, catchupChk, ' Run missed schedule on daemon startup (catchup)'),
-        el('label', { class: 'check' }, destrChk, ' Allow destructive steps (for Change Plans)'),
         el('label', { class: 'field col' }, text('span', 'Environment Variables (KEY=VALUE per line)'), envArea)
       )
     ),

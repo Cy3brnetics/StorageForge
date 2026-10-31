@@ -5,6 +5,12 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Security
+- **Schedules no longer run on the StorageForge server.** The **Run local** button and `{"local": true}` are gone: they let an operator run commands where the vault secret lives. Use `storageforge-index schedule run` from a shell on the server.
+- Creating, changing, pausing, running or deleting a schedule, and rotating its token, now asks for a fresh password. Running one also applies the deploy preflight.
+- Schedules can no longer run destructive steps, which bypassed `deploy.destructive`. A schedule deployed with them keeps its old script until redeployed: it shows as changed on the Deploy tab.
+- A schedule installed on a host can't be deleted until it is uninstalled. Ones already deleted get an **Uninstall** button on the Deploy tab.
+- Git routes no longer run on the server when given `host=localhost`. Loopback names need a key bound to them, like any host.
+- Accounts that can't edit schedules no longer see their commands or env values. Run output needs `logs.view`. Alert addresses in `/api/deploy` need `settings.manage`.
 - `viewer` can no longer download a schedule's install script (which also minted a report token), its cron line or a host configuration bundle. These now need `plans.scripts`.
 
 ### Added

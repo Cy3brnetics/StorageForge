@@ -1180,6 +1180,17 @@ class ServerTests(DBCase):
         self.assertEqual(self.client.get('/api/docker/usage?path=/x').status_code, 400)     # path needs host
 
     def test_git_feature_set_api_and_changelog(self):
+        # These routes refuse to run on the server: stand in for a host with a local transport
+        from contextlib import contextmanager
+        from unittest import mock
+        from storageforge_index.remote import Transport
+
+        @contextmanager
+        def here(*_a, **_k):
+            yield Transport('localhost', local=True)
+        patcher = mock.patch('storageforge_index.gitrepos.open_host_transport', here)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         from storageforge_index import gitrepos
         self.login()
         # Missing args

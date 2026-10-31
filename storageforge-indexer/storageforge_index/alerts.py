@@ -55,6 +55,19 @@ def settings(conn: Conn, reveal: bool = False) -> dict:
     return s
 
 
+def public_settings(conn: Conn) -> dict:
+    """For accounts that see deploys but not the settings: which channels are on, and nothing that could post to them.
+    A webhook's or ntfy topic's address is itself the credential."""
+    s = settings(conn)
+    for ch in ('ntfy', 'gotify', 'webhook'):
+        c = s['alerts'][ch]
+        u = urllib.parse.urlsplit(c.get('url') or '')
+        c['url'] = f'{u.scheme}://{u.netloc.rpartition("@")[2]}' if u.netloc else ''
+        if c.get('topic'):
+            c['topic'] = '••••••'
+    return s
+
+
 def save_settings(conn: Conn, body: dict, actor: str) -> dict:
     url = str(body.get('report_url') or '').strip().rstrip('/')
     if url and not REPORT_URL_RE.fullmatch(url):
@@ -281,6 +294,7 @@ def drift(conn: Conn) -> list[dict]:
                 sched, cur = None, None
             if cur != d['hash']:
                 out.append({'host': d['host'], 'ref': f'sched-{d["ref"]}', 'kind': 'pending',
+                            'schedule': int(d['ref']), 'deleted': not sched,
                             'text': 'the schedule was deleted since it was deployed: uninstall it' if not sched
                             else f'schedule "{sched["name"]}" changed since it was deployed'})
     del moves

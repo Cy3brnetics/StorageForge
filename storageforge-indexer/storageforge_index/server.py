@@ -124,7 +124,6 @@ import secrets
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import traceback
@@ -1589,7 +1588,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         c = conn()
         return jsonify(access=deploy.access(c), jobs=jobs.overview(c), deployed=deploy.deployed(c), checks=preflight.stored(c),
                        groups=engine.recent(c, 25), keys=[r[0] for r in c.all('SELECT name FROM ssh_keys ORDER BY name')],
-                       alerts=alerts.list_alerts(c), drift=alerts.drift(c), settings=alerts.settings(c),
+                       alerts=alerts.list_alerts(c), drift=alerts.drift(c),
+                       settings=alerts.settings(c) if 'settings.manage' in current_user.permissions else alerts.public_settings(c),
                        runs=deploy.history(c, limit=30), plans=moves.list_plans(c))
 
     @web.post('/api/deploy/setup-script')     # POST with a JSON body: it makes the deploy keys on first use
@@ -1642,8 +1642,14 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if kind == 'tasks':
             return tasks.deploy_items(db, c, tasks.get_task(c, int(ref)), mode, actor(), bool(options.get('run')), bool(options.get('remove')))
         if kind == 'schedules':
+            try:
+                sched = scheduler.get_schedule(c, int(ref))
+            except LookupError:            # a deleted schedule: all that is left to do is take it off its hosts
+                if not options.get('remove'):
+                    raise ValueError(f'schedule {ref} no longer exists') from None
+                return scheduler.orphan_items(db, c, int(ref), mode, actor())
             report_url = alerts.get_setting(c, 'report_url') or f'http://{request.host}'
-            return scheduler.deploy_items(db, c, scheduler.get_schedule(c, int(ref)), mode, report_url, actor(),
+            return scheduler.deploy_items(db, c, sched, mode, report_url, actor(),
                                           bool(options.get('run')), bool(options.get('remove')))
         raise ValueError('kind is jobs, shares, changes, tasks or schedules')
 
@@ -1853,11 +1859,18 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         return jsonify(ok=True, new=new)
 
     # ── Scheduler API ──────────────────────────────────────────────────────────
+    def schedule_view(sched: dict) -> dict:
+        """Commands and env values can hold secrets: only those who may edit a schedule read them."""
+        return sched if 'plans.edit' in current_user.permissions else scheduler.masked(sched)
+
     @web.route('/api/scheduler/schedules', methods=['GET', 'POST'])
     @login_required
     def api_scheduler_schedules():
         c = conn()
         if request.method == 'POST':
+            stale = password_stale()         # a schedule is a command on a host, on a timer
+            if stale:
+                return stale
             body = json_body()
             sched, token = scheduler.create_schedule(c, body, actor())
             core.audit(c, actor(), 'scheduler.create', 'ok', sched['host'], {'schedule_id': sched['schedule_id'], 'name': sched['name']})
@@ -1865,13 +1878,17 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         h = request.args.get('host') or None
         t = request.args.get('task_type') or None
         p = None if request.args.get('paused') is None else (request.args.get('paused').lower() in ('1', 'true'))
-        return jsonify(schedules=scheduler.list_schedules(c, host=h, task_type=t, paused=p),
+        return jsonify(schedules=[schedule_view(s) for s in scheduler.list_schedules(c, host=h, task_type=t, paused=p)],
                        installed=scheduler.installed(c))
 
     @web.route('/api/scheduler/schedules/<int:schedule_id>', methods=['GET', 'PUT', 'DELETE'])
     @login_required
     def api_scheduler_schedule(schedule_id):
         c = conn()
+        if request.method != 'GET':
+            stale = password_stale()
+            if stale:
+                return stale
         try:
             if request.method == 'PUT':
                 body = json_body()
@@ -1880,15 +1897,19 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 return jsonify(sched)
             elif request.method == 'DELETE':
                 sched = scheduler.get_schedule(c, schedule_id)
-                scheduler.delete_schedule(c, schedule_id, actor())
+                try:
+                    scheduler.delete_schedule(c, schedule_id, actor())
+                except scheduler.StillDeployed as exc:
+                    return jsonify(error=str(exc)), 409
                 core.audit(c, actor(), 'scheduler.delete', 'ok', sched['host'], {'schedule_id': schedule_id, 'name': sched['name']})
                 return jsonify(deleted=schedule_id)
-            return jsonify(scheduler.get_schedule(c, schedule_id))
+            return jsonify(schedule_view(scheduler.get_schedule(c, schedule_id)))
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
 
     @web.post('/api/scheduler/schedules/<int:schedule_id>/pause')
     @login_required
+    @password_confirmed
     def api_scheduler_schedule_pause(schedule_id):
         c = conn()
         try:
@@ -1902,6 +1923,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
 
     @web.post('/api/scheduler/schedules/<int:schedule_id>/token')
     @login_required
+    @password_confirmed
     def api_scheduler_schedule_token(schedule_id):
         c = conn()
         try:
@@ -1914,52 +1936,21 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
 
     @web.post('/api/scheduler/schedules/<int:schedule_id>/run')
     @login_required
+    @password_confirmed
     def api_scheduler_schedule_run(schedule_id):
         c = conn()
         try:
             sched = scheduler.get_schedule(c, schedule_id)
-            body = (request.get_json(silent=True) or {}) if request.is_json else {}
             who = actor()
-            if body.get('local'):
-                script, args = scheduler.generate_task_script(c, sched)
-                started = int(time.time())
-                with tempfile.NamedTemporaryFile('w', suffix='.sh', delete=False) as tf:
-                    tf.write(script)
-                    tmp_path = tf.name
-                try:
-                    os.chmod(tmp_path, 0o750)
-                    env = {**os.environ, **(sched['config'].get('env') or {})}
-                    timeout = int(sched['config'].get('timeout_sec') or 3600) or None
-                    proc = subprocess.run(['/bin/bash', tmp_path, *args], capture_output=True, text=True,
-                                          timeout=timeout, env=env)
-                    rc = proc.returncode
-                    out = (proc.stdout or '') + ('\n' + proc.stderr if proc.stderr else '')
-                except subprocess.TimeoutExpired:
-                    rc, out = 124, 'Schedule execution timed out'
-                finally:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                finished = int(time.time())
-                res = scheduler.ingest_report(c, {
-                    'schedule_id': schedule_id,
-                    'started_at': started,
-                    'finished_at': finished,
-                    'exit_code': rc,
-                    'output': out,
-                }, f'manual:{who}')
-                core.audit(c, who, 'scheduler.run', 'ok' if rc == 0 else 'failed', sched['host'],
-                           {'schedule_id': schedule_id, 'run_id': res['run_id']})
-                core.alerts_wake.set()
-                return jsonify(res)
-
             report_url = alerts.get_setting(c, 'report_url') or f'http://{request.host}'
             items = scheduler.deploy_items(db, c, sched, 'apply', report_url, who, run_now=True)
             missing = [it['host'] for it in items if not deploy.ready(c, it['host'])]
             if missing:
                 return jsonify(error='set up deploy access first on: ' + ', '.join(sorted(set(missing))),
                                hosts=sorted(set(missing))), 409
+            blocked = preflight.blockers(c, [it['host'] for it in items], 'schedules')
+            if blocked:
+                return jsonify(error='; '.join(f'{b["host"]}: {b["text"]}' for b in blocked), blockers=blocked), 409
             digest = scheduler.schedule_hash(sched)
             gid = deploy.start_group(db, items, who, stop_on_failure=True, after=lambda h: core.enqueue(h, who),
                                      title=f'run schedule {sched["name"]}', kind='schedules', ref=str(schedule_id),

@@ -5,9 +5,11 @@ import datetime as dt
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 import unittest
+from pathlib import Path
 
 try:
     import dbfactory
@@ -419,18 +421,6 @@ class SchedulerApiTests(SchedulerBaseTest):
         self.assertEqual(v_resp.status_code, 200)
         self.assertEqual(v_resp.get_json()['status'], 'verified')
 
-        # 8. On-demand local run endpoint
-        cmd_sched = client.post('/api/scheduler/schedules', json={
-            'name': 'echo-schedule',
-            'host': 'nas',
-            'cron_expr': '0 * * * *',
-            'task_type': 'command',
-            'task_ref': 'echo "manual local run ok"',
-        }).get_json()['schedule']
-        run_resp = client.post(f'/api/scheduler/schedules/{cmd_sched["schedule_id"]}/run', json={'local': True})
-        self.assertEqual(run_resp.status_code, 200)
-        self.assertEqual(run_resp.get_json()['status'], 'verified')
-
     def test_scan_ingest_alerts_drift_and_logbook(self):
         from storageforge_index import alerts, deploy, logbook
         sched, _ = scheduler.create_schedule(self.conn, {
@@ -485,3 +475,162 @@ class SchedulerApiTests(SchedulerBaseTest):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SchedulerSafetyTests(SchedulerBaseTest):
+    """From the 2026-10-31 audit: SF-23, SF-25, SF-26, PF-19, SF-28 and SF-30."""
+    PW = 'a long enough password'
+
+    def setUp(self):
+        super().setUp()
+        from storageforge_index import server, users
+        self.users = users
+        self.web = server.create_app(server.App(self.db), 's' * 48)
+        users.create(self.conn, 'boss', self.PW, 'admin')
+        users.create(self.conn, 'op', self.PW, 'operator')
+        users.create(self.conn, 'view', self.PW, 'viewer')
+        self.boss, self.op, self.view = self.client('boss'), self.client('op'), self.client('view')
+
+    def client(self, name):
+        c = self.web.test_client()
+        self.assertEqual(c.post('/api/login', json={'username': name, 'password': self.PW}).status_code, 200)
+        return c
+
+    def schedule(self, c=None, **kw):
+        r = (c or self.boss).post('/api/scheduler/schedules', json={
+            'name': 'sched', 'host': 'nas', 'cron_expr': '0 3 * * *', 'task_type': 'command', 'task_ref': 'true', **kw})
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        return r.get_json()['schedule']['schedule_id']
+
+    def stale(self, c):
+        with c.session_transaction() as s:
+            s['auth_at'] = 0
+
+    def mark_deployed(self, sid, host='nas'):
+        from storageforge_index import deploy
+        deploy.mark_deployed(self.conn, host, 'schedules', str(sid), 'h', {}, 'test')
+
+    def test_a_schedule_never_runs_on_the_server(self):      # SF-23
+        marker = Path(self.tmp) / 'RAN'
+        sid = self.schedule(task_ref=f'touch {marker}')
+        r = self.boss.post(f'/api/scheduler/schedules/{sid}/run', json={'local': True})
+        self.assertFalse(marker.exists())
+        self.assertEqual(r.status_code, 409)                 # the deploy path: this host has no deploy access
+        self.assertIn('deploy access', r.get_json()['error'])
+
+    def test_scheduler_writes_need_a_fresh_password(self):   # SF-25
+        sid = self.schedule()
+        self.stale(self.boss)
+        for method, path, body in (('post', '/api/scheduler/schedules', {}),
+                                   ('put', f'/api/scheduler/schedules/{sid}', {}),
+                                   ('delete', f'/api/scheduler/schedules/{sid}', None),
+                                   ('post', f'/api/scheduler/schedules/{sid}/pause', {}),
+                                   ('post', f'/api/scheduler/schedules/{sid}/token', None),
+                                   ('post', f'/api/scheduler/schedules/{sid}/run', {})):
+            r = getattr(self.boss, method)(path, json=body)
+            self.assertEqual((path, method, r.status_code, r.get_json().get('reauth')), (path, method, 403, True))
+        self.assertEqual(self.boss.get(f'/api/scheduler/schedules/{sid}').status_code, 200)   # reading needs none
+
+    def test_running_a_schedule_applies_preflight(self):     # SF-25
+        from unittest import mock
+        from storageforge_index import deploy, preflight
+        sid = self.schedule()
+        with mock.patch.object(deploy, 'ready', return_value=True), mock.patch.object(deploy, 'start_group') as start, \
+                mock.patch.object(preflight, 'blockers', return_value=[{'host': 'nas', 'text': 'no bash'}]):
+            r = self.boss.post(f'/api/scheduler/schedules/{sid}/run', json={})
+        self.assertEqual(r.status_code, 409)
+        start.assert_not_called()
+
+    def test_a_schedule_cannot_be_destructive(self):         # SF-26
+        self.users.save_role(self.conn, 'nodestroy', '', ['plans.edit', 'plans.view', 'deploy.apply'], 'boss', True)
+        self.users.create(self.conn, 'nd', self.PW, 'nodestroy')
+        nd = self.client('nd')
+        plan = nd.post('/api/changes', json={'name': 'p', 'tasks': []}).get_json()['id']
+        body = {'name': 'd', 'host': 'nas', 'cron_expr': '0 3 * * *', 'task_type': 'change', 'task_ref': str(plan)}
+        for c in (nd, self.boss):                            # nobody: it is not a permission question
+            self.assertEqual(c.post('/api/scheduler/schedules', json={**body, 'config': {'destructive': True}}).status_code, 400)
+        sid = self.schedule(nd, **{k: body[k] for k in ('task_type', 'task_ref')})
+        self.assertEqual(nd.put(f'/api/scheduler/schedules/{sid}', json={'config': {'destructive': True}}).status_code, 400)
+        # a row saved by an older version
+        cfg = scheduler.get_schedule(self.conn, sid)['config']
+        self.conn.execute('UPDATE schedules SET config_json = :c WHERE schedule_id = :i', {'c': json.dumps({**cfg, 'destructive': True}), 'i': sid})
+        self.assertEqual(scheduler.generate_task_script(self.conn, scheduler.get_schedule(self.conn, sid))[1], ['--apply'])
+
+    def test_a_deployed_schedule_cannot_be_deleted(self):    # PF-19
+        sid = self.schedule()
+        self.mark_deployed(sid)
+        r = self.boss.delete(f'/api/scheduler/schedules/{sid}')
+        self.assertEqual(r.status_code, 409)
+        self.assertIn('uninstall', r.get_json()['error'])
+        self.assertEqual(scheduler.get_schedule(self.conn, sid)['schedule_id'], sid)
+        self.conn.execute("DELETE FROM deployed WHERE kind = 'schedules'")
+        self.assertEqual(self.boss.delete(f'/api/scheduler/schedules/{sid}').status_code, 200)
+
+    def test_a_schedule_already_deleted_can_be_uninstalled(self):   # PF-19
+        from unittest import mock
+        from storageforge_index import alerts, deploy
+        sid = self.schedule()
+        self.mark_deployed(sid)
+        self.conn.execute('DELETE FROM schedules WHERE schedule_id = :i', {'i': sid})
+        self.assertTrue(any(d.get('schedule') == sid and d['deleted'] for d in alerts.drift(self.conn)))
+        self.assertEqual(self.boss.post('/api/deploy/start', json={'kind': 'schedules', 'ref': sid, 'mode': 'apply'}).status_code, 400)
+        with mock.patch.object(deploy, 'ready', return_value=True), mock.patch.object(deploy, 'start_group', return_value='g') as start:
+            r = self.boss.post('/api/deploy/start', json={'kind': 'schedules', 'ref': sid, 'mode': 'apply', 'remove': True})
+        self.assertEqual((r.status_code, r.get_json()['hosts']), (200, ['nas']))
+        item = start.call_args.args[1][0]
+        self.assertEqual(item['args'], ['--uninstall'])
+        self.assertEqual(subprocess.run(['bash', '-n'], input=item['script'], text=True).returncode, 0)
+        self.assertIn(f'/etc/cron.d/sf-sched-{sid}', item['script'])
+        item['on_ok']({'status': 'ok'})
+        self.assertEqual(deploy.deployed(self.conn, kind='schedules'), [])
+
+    def test_git_routes_do_not_reach_the_server(self):       # SF-28
+        repo = Path(self.tmp) / 'repo'
+        marker = Path(self.tmp) / 'HOOK-RAN'
+        hook = Path(self.tmp) / 'hook.sh'
+        hook.write_text(f'#!/bin/sh\ntouch {marker}\n')
+        hook.chmod(0o755)
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        subprocess.run(['git', '-C', str(repo), 'config', 'core.fsmonitor', str(hook)], check=True)
+        for name in ('local', 'localhost', 'LOCALHOST', '127.0.0.1', '::1'):
+            q = {'host': name, 'path': str(repo)}
+            self.assertEqual(self.op.get('/api/git/status', query_string=q).status_code, 404, name)
+            self.assertEqual(self.op.get('/api/git/history', query_string=q).status_code, 404, name)
+            self.assertEqual(self.op.get('/api/git/commit', query_string={**q, 'sha': 'abcd'}).status_code, 404, name)
+            self.assertEqual(self.op.post('/api/git/sync', json={**q, 'action': 'fetch'}).status_code, 404, name)
+        self.assertFalse(marker.exists())
+
+    def test_read_only_accounts_do_not_see_secrets(self):    # SF-30
+        from storageforge_index import alerts
+        secret = 'curl -H "X: tok-in-command" x'
+        sid = self.schedule(task_ref=secret, config={'env': {'API_KEY': 'hunter2'}})
+        task = self.schedule(name='plain', task_type='task', task_ref='nightly')
+        alerts.set_setting(self.conn, 'alerts', {**alerts.get_setting(self.conn, 'alerts'),
+                                                 'webhook': {'url': 'https://hooks.example.test/services/SECRET-PATH'},
+                                                 'ntfy': {'url': 'https://ntfy.example.test', 'topic': 'secret-topic', 'token': 't'}}, 'boss')
+        report = {'schedule_id': sid, 'exit_code': 0, 'output': 'printed-secret'}
+        scheduler.ingest_report(self.conn, report, 'test')
+
+        for r in (self.view.get('/api/scheduler/schedules'), self.view.get(f'/api/scheduler/schedules/{sid}')):
+            text = r.get_data(as_text=True)
+            self.assertEqual(r.status_code, 200)
+            self.assertNotIn('hunter2', text)
+            self.assertNotIn('tok-in-command', text)
+        self.assertIn('API_KEY', self.view.get(f'/api/scheduler/schedules/{sid}').get_data(as_text=True))
+        self.assertEqual(self.view.get(f'/api/scheduler/schedules/{task}').get_json()['task_ref'], 'nightly')
+        got = self.boss.get(f'/api/scheduler/schedules/{sid}').get_json()    # who may edit reads what they edit
+        self.assertEqual((got['task_ref'], got['config']['env']), (secret, {'API_KEY': 'hunter2'}))
+
+        shown = self.view.get('/api/deploy').get_json()['settings']['alerts']
+        self.assertEqual(shown['webhook']['url'], 'https://hooks.example.test')
+        self.assertEqual(shown['ntfy']['topic'], '••••••')
+        self.assertNotIn('SECRET-PATH', self.view.get('/api/deploy').get_data(as_text=True))
+        self.assertIn('SECRET-PATH', self.boss.get('/api/deploy').get_data(as_text=True))
+
+        self.users.save_role(self.conn, 'plansonly', '', ['plans.view'], 'boss', True)
+        self.users.create(self.conn, 'po', self.PW, 'plansonly')
+        po = self.client('po')
+        self.assertEqual(po.get(f'/api/scheduler/schedules/{sid}/runs').status_code, 403)
+        self.assertEqual(po.get('/api/scheduler/runs').status_code, 403)
+        self.assertEqual(po.get(f'/api/scheduler/schedules/{sid}').status_code, 200)
+        self.assertIn('printed-secret', self.view.get(f'/api/scheduler/schedules/{sid}/runs').get_data(as_text=True))  # viewers hold logs.view

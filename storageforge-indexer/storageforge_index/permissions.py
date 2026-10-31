@@ -92,6 +92,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (_WRITE, r'/api/(files/ignore|git/ignore|git/survey)', 'scans.run'),
 
     (READ, r'/api/(moves|changes|tasks)(/.*)?', 'plans.view'),
+    (READ, r'/api/scheduler/(runs|schedules/\d+/runs)', 'logs.view'),   # what a run printed, as /api/log/output
     (READ, r'/api/scheduler(/.*)?', 'plans.view'),
     (_WRITE, r'/api/(moves|changes|tasks|shares|planner)(/.*)?', 'plans.edit'),
     (('POST',), r'/api/scheduler/schedules/\d+/(run|pause|token)', 'deploy.apply'),

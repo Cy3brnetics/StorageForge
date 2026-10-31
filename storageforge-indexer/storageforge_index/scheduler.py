@@ -38,6 +38,11 @@ VERIFY_POLICIES = ('comprehensive', 'state_only', 'report_only', 'none')
 NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$')
 HOST_RE = re.compile(r'^(?!-)([A-Za-z0-9._-]{1,32}@)?(?!-)[A-Za-z0-9.:_\[\]-]{1,253}$')
 WINDOW_RE = re.compile(r'^\d{2}:\d{2}-\d{2}:\d{2}$')
+MASK = '••••••'
+
+
+class StillDeployed(ValueError):
+    pass
 
 
 # ── Cron Expression Parsing & Calculation ──────────────────────────────────────
@@ -250,7 +255,6 @@ def normalize_config(body: dict) -> dict:
     }
 
     notify_on = list(cfg.get('notify_on') or ['failure', 'verify_failure'])
-    destructive = bool(cfg.get('destructive'))
 
     return {
         'timezone': tz,
@@ -270,7 +274,7 @@ def normalize_config(body: dict) -> dict:
         'verify_policy': verify_policy,
         'verify_rules': verify_rules,
         'notify_on': notify_on,
-        'destructive': destructive,
+        'destructive': False,      # stays in the record so a deployed schedule's hash does not change; see _no_destructive
     }
 
 
@@ -311,8 +315,24 @@ def schedule_hash(schedule: dict) -> str:
 
 # ── Database Operations ────────────────────────────────────────────────────────
 
+def _no_destructive(body: dict):
+    """Destructive steps wipe drives: one-off work that a person holding deploy.destructive applies from a change plan,
+    never something a timer repeats."""
+    cfg = body.get('config') or body.get('config_json')
+    if isinstance(cfg, dict) and cfg.get('destructive'):
+        raise ValueError('a schedule cannot run destructive steps: apply those once, from the change plan')
+
+
+def masked(schedule: dict) -> dict:
+    """A schedule for someone who may look at it but not edit it."""
+    cfg = schedule['config']
+    return {**schedule, 'task_ref': MASK if schedule['task_type'] == 'command' else schedule['task_ref'],
+            'config': {**cfg, 'env': {k: MASK for k in cfg.get('env') or {}}}}
+
+
 def create_schedule(conn: Conn, body: dict, actor: str) -> tuple[dict, str]:
     """Creates a new scheduled task and generates an authentication token for client execution reporting."""
+    _no_destructive(body)
     s = normalize_schedule(body)
     now = int(time.time())
     next_ts = next_run(s['cron_expr'], now, s['config']['timezone']) if not s['paused'] else None
@@ -418,6 +438,7 @@ def list_schedules(conn: Conn, host: str | None = None, task_type: str | None = 
 
 
 def update_schedule(conn: Conn, schedule_id: int, body: dict, actor: str) -> dict:
+    _no_destructive(body)
     curr = get_schedule(conn, schedule_id)
     # Merge existing fields
     merged = {
@@ -460,6 +481,8 @@ def update_schedule(conn: Conn, schedule_id: int, body: dict, actor: str) -> dic
 
 
 def delete_schedule(conn: Conn, schedule_id: int, actor: str):
+    if installed(conn).get(str(schedule_id)):
+        raise StillDeployed('this schedule is installed on a host: uninstall it first')
     conn.execute('DELETE FROM schedules WHERE schedule_id = :id', {'id': schedule_id})
 
 
@@ -523,8 +546,7 @@ def generate_task_script(conn: Conn, schedule: dict) -> tuple[str, list[str]]:
         if not plan_id:
             raise LookupError(f'change plan "{tref}" not found')
         p = changes.get_plan(conn, plan_id)
-        args = ['--apply', '--destructive'] if schedule['config'].get('destructive') else ['--apply']
-        return changes.script(conn, p), args
+        return changes.script(conn, p), ['--apply']
 
     elif ttype == 'move':
         plan_id = int(tref) if tref.isdigit() else conn.scalar(
@@ -1150,6 +1172,45 @@ def deploy_items(db, conn: Conn, schedule: dict, mode: str, report_url: str, act
             items.append({'host': d['host'], 'script': text, 'args': ['--uninstall'], 'kind': 'schedules',
                           'ref': ref, 'mode': 'apply', 'on_ok': mark(d['host'], True)})
     return items
+
+
+def orphan_items(db, conn: Conn, schedule_id: int, mode: str, actor: str) -> list[dict]:
+    """Deploy items that take a schedule whose row is gone off the hosts still holding it. Only what deployed it says
+    where it is, so this reads the deployed table. Reports with no flags, like every script."""
+    from . import deploy
+    sid, ref = int(schedule_id), str(int(schedule_id))
+    paths = (f'/usr/local/lib/storageforge/scheduler/task-{sid}.sh', f'/etc/storageforge/scheduler/{sid}.json',
+             f'/etc/cron.d/sf-sched-{sid}', f'/var/lib/storageforge/managed/sched-{sid}.sha256')
+    text = f"""#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MODE=report
+[[ ${{1:-}} == --uninstall ]] && MODE=uninstall
+{HELPERS}
+section "Deleted schedule #{sid}"
+for f in {' '.join(paths)}; do
+  [[ -e $f ]] || continue
+  if [[ $MODE == uninstall ]]; then rm -f -- "$f"; ok "removed $f"; else missing "$f will be removed"; fi
+done
+finished
+"""
+
+    def forget(host: str):
+        def hook(res):
+            if res.get('status') != 'ok':
+                return
+            c = db.connect()
+            try:
+                c.execute("DELETE FROM deployed WHERE host = :h AND kind = 'schedules' AND ref = :r", {'h': host, 'r': ref})
+            finally:
+                c.close()
+        return hook
+
+    hosts_with = [d['host'] for d in deploy.deployed(conn, kind='schedules') if d['ref'] == ref]
+    if mode != 'apply':
+        return [{'host': h, 'script': text, 'args': [], 'kind': 'schedules', 'ref': ref, 'mode': 'report'} for h in hosts_with]
+    return [{'host': h, 'script': text, 'args': ['--uninstall'], 'kind': 'schedules', 'ref': ref, 'mode': 'apply', 'on_ok': forget(h)}
+            for h in hosts_with]
 
 
 def installed(conn: Conn) -> dict:
