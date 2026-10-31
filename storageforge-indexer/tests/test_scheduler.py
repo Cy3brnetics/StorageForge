@@ -43,7 +43,7 @@ class SchedulerBaseTest(unittest.TestCase):
         # Seed files
         p_dir = dir_id(self.conn, self.mid, '/mnt/data')
         self.conn.execute("INSERT INTO file_records (mount_id, dir_id, filename, is_directory, file_size_bytes, modified_at) "
-                          f"VALUES (:m, :d, 'archive.tar.gz', 0, 1024, {self.db.ts('0')})",
+                          f"VALUES (:m, :d, 'archive.tar.gz', FALSE, 1024, {self.db.ts('0')})",
                           {'m': self.mid, 'd': p_dir})
 
         # Seed a storage task
@@ -1354,7 +1354,7 @@ class Step5Tests(SafetyCase):
         did = self.conn.scalar('SELECT dir_id FROM directories LIMIT 1')
         for name, sha in (('a', 'same'), ('b', 'same'), ('c', 'alone')):
             self.conn.execute(f"""INSERT INTO file_records (mount_id, dir_id, filename, is_directory, file_size_bytes, modified_at, is_symlink, checksum_hash)
-                                  VALUES (:m, :d, :n, 0, 5000000, {self.db.ts(':t')}, 0, :s)""", {'m': mid, 'd': did, 'n': name, 't': 1, 's': sha})
+                                  VALUES (:m, :d, :n, FALSE, 5000000, {self.db.ts(':t')}, FALSE, :s)""", {'m': mid, 'd': did, 'n': name, 't': 1, 's': sha})
         groups, _ = filemap.file_groups(self.conn, None, 1, {}, False)
         self.assertEqual([g['sha256'] for g in groups], ['same'])
         self.assertEqual(sorted(c['path'].rsplit('/', 1)[1] for c in groups[0]['copies']), ['a', 'b'])
