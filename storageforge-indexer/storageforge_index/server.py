@@ -953,6 +953,102 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def api_git():
         return jsonify(gitrepos.listing(conn(), request.args.get('host') or None, bool(request.args.get('all'))))
 
+    @web.post('/api/git/survey')
+    @login_required
+    def api_git_survey():
+        body = json_body() if request.is_json else {}
+        host = body.get('host') or request.args.get('host')
+        if not host:
+            hosts = [r[0] for r in conn().all('SELECT hostname FROM hosts ORDER BY hostname')]
+            results = []
+            for h in hosts:
+                try:
+                    results.append(gitrepos.survey_host(db, h, actor()))
+                except Exception as exc:
+                    results.append({'host': h, 'error': str(exc), 'repos': 0})
+            core.audit(conn(), actor(), 'git.survey', 'ok', None, {'count': len(hosts)})
+            return jsonify(results=results, repos=gitrepos.listing(conn())['repos'])
+        try:
+            res = gitrepos.survey_host(db, host, actor())
+            core.audit(conn(), actor(), 'git.survey', 'ok', host, {'repos': res.get('repos', 0)})
+            return jsonify(res)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        except Exception as exc:
+            return jsonify(error=str(exc)), 502
+
+    @web.route('/api/git/status', methods=['GET', 'POST'])
+    @login_required
+    def api_git_status():
+        body = json_body() if request.method == 'POST' and request.is_json else {}
+        host = body.get('host') or request.args.get('host')
+        path = body.get('path') or request.args.get('path')
+        if not host or not path:
+            return jsonify(error='host and path are required'), 400
+        try:
+            return jsonify(gitrepos.repo_status(db, host, path, actor()))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        except Exception as exc:
+            return jsonify(error=str(exc)), 502
+
+    @web.post('/api/git/sync')
+    @login_required
+    def api_git_sync():
+        body = json_body()
+        host = body.get('host')
+        path = body.get('path')
+        action = body.get('action') or 'sync'
+        if not host or not path:
+            return jsonify(error='host and path are required'), 400
+        if action == 'push':
+            stale = password_stale()
+            if stale:
+                return stale
+        try:
+            return jsonify(gitrepos.repo_sync(db, host, path, action, actor()))
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        except Exception as exc:
+            return jsonify(error=str(exc)), 502
+
+    @web.get('/api/git/history')
+    @login_required
+    def api_git_history():
+        host = request.args.get('host')
+        path = request.args.get('path')
+        if not host or not path:
+            return jsonify(error='host and path are required'), 400
+        try:
+            max_c = min(int(request.args.get('max', 50)), 200)
+        except ValueError:
+            max_c = 50
+        try:
+            return jsonify(gitrepos.repo_history(db, host, path, max_c))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        except Exception as exc:
+            return jsonify(error=str(exc)), 502
+
+    @web.get('/api/git/commit')
+    @login_required
+    def api_git_commit():
+        host = request.args.get('host')
+        path = request.args.get('path')
+        sha = request.args.get('sha')
+        if not host or not path or not sha:
+            return jsonify(error='host, path and sha are required'), 400
+        try:
+            return jsonify(gitrepos.repo_commit(db, host, path, sha))
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        except Exception as exc:
+            return jsonify(error=str(exc)), 502
+
     @web.get('/api/shares/check')
     @login_required
     def api_shares_check():

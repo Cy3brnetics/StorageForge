@@ -820,8 +820,9 @@ const mountActions = (doc, n) => {
     { label: 'Move from here…', run: () => moveFrom(doc.host, n.target) },
     { label: 'Share this…', run: () => addExport(doc, n.target) },
     { label: '+ Link into this', run: () => addLink(doc, n.target) },
+    { label: 'Git repos…', run: () => { if (typeof openGitForPath === 'function') openGitForPath(doc.host, n.target); } },
     typeof newTaskAt === 'function' ? { label: 'Back up with a task…', run: () => newTaskAt(doc.host, n.target, 'backup') } : null,
-    typeof newTaskAt === 'function' && /btrfs|zfs/i.test(fs) ? { label: 'Snapshot with a task…', run: () => newTaskAt(doc.host, n.target, 'snapshot', fs) } : null];
+    typeof newTaskAt === 'function' && /btrfs|zfs/i.test(fs) ? { label: 'Snapshot with a task…', run: () => newTaskAt(doc.host, n.target, 'snapshot', fs) } : null].filter(Boolean);
 };
 
 /* ── right-click menus: what the editor offers, staged changes, copy ── */

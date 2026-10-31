@@ -1128,6 +1128,52 @@ class ServerTests(DBCase):
         self.assertEqual(self.client.get('/api/docker').json, {'hosts': []})
         self.assertEqual(self.client.get('/api/docker/usage?path=/x').status_code, 400)     # path needs host
 
+    def test_git_feature_set_api_and_changelog(self):
+        from storageforge_index import gitrepos
+        self.login()
+        # Missing args
+        self.assertEqual(self.client.get('/api/git/status').status_code, 400)
+        self.assertEqual(self.client.post('/api/git/sync', json={}).status_code, 400)
+        self.assertEqual(self.client.post('/api/git/sync', json={'host': 'nas', 'path': '/srv/repo', 'action': 'invalid'}).status_code, 400)
+        self.assertEqual(self.client.get('/api/git/history').status_code, 400)
+        self.assertEqual(self.client.get('/api/git/commit').status_code, 400)
+        self.assertEqual(self.client.get('/api/git/commit?host=nas&path=/x&sha=invalid!!').status_code, 400)
+
+        # Survey all hosts
+        r = self.client.post('/api/git/survey', json={})
+        self.assertEqual(r.status_code, 200)
+
+        # Unknown host survey
+        r = self.client.post('/api/git/survey', json={'host': 'nonexistent'})
+        self.assertEqual(r.status_code, 404)
+
+        # Changelog generator logic
+        commits = [
+            {'hash': 'aaa111', 'short_hash': 'aaa111', 'author': 'Dev', 'email': 'dev@test', 'time': 1700000000, 'subject': 'feat: add git inspector', 'refs': 'HEAD -> main'},
+            {'hash': 'bbb222', 'short_hash': 'bbb222', 'author': 'Dev', 'email': 'dev@test', 'time': 1699990000, 'subject': 'fix: handle missing remote', 'refs': ''},
+            {'hash': 'ccc333', 'short_hash': 'ccc333', 'author': 'Dev', 'email': 'dev@test', 'time': 1699980000, 'subject': 'docs: update changelog guide', 'refs': 'tag: v1.0.0'},
+            {'hash': 'ddd444', 'short_hash': 'ddd444', 'author': 'Dev', 'email': 'dev@test', 'time': 1699970000, 'subject': 'initial commit', 'refs': ''},
+        ]
+        tags = [
+            {'name': 'v1.0.0', 'commit': 'ccc333', 'time': 1699980000, 'subject': 'Release v1.0.0'}
+        ]
+        cl = gitrepos.build_changelog(commits, tags)
+        self.assertTrue(len(cl) >= 1)
+        # Check that categories exist
+        self.assertTrue(any(len(rel['categories']['features']) > 0 for rel in cl))
+        self.assertTrue(any(len(rel['categories']['fixes']) > 0 for rel in cl))
+
+        # Check frontend assets contain git inspector elements
+        index_html = self.client.get('/').data.decode('utf-8')
+        self.assertIn('id="gitdrawer"', index_html)
+        self.assertIn('gitdrawer-toggle', index_html)
+        self.assertIn('git-find-btn', index_html)
+        gitview_js = self.client.get('/gitview.js').data.decode('utf-8')
+        self.assertIn('openGitDrawer', gitview_js)
+        self.assertIn('checkRepoStatus', gitview_js)
+        self.assertIn('syncRepo', gitview_js)
+        self.assertIn('loadRepoHistory', gitview_js)
+
     def test_planner_page_and_designs(self):
         self.assertEqual(self.client.get('/planner').status_code, 302)          # signed out: to /login
         self.login()
