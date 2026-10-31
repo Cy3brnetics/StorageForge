@@ -464,7 +464,7 @@ Run `storageforge-index prune --vacuum` once to shrink the database file. It rew
 
 | File | Purpose |
 | :--- | :--- |
-| `Dockerfile` | `build` stage (venv), `test` stage (runs the suite: `docker build --target test .`), slim `runtime` with `openssh-client`, `sqlite3` and `tini`, uid 10001, `HEALTHCHECK` |
+| `Dockerfile` | `build` stage (venv), `test` stage (runs the suite: `docker build --target test .`), `openssh` stage (ssh client from source), slim `runtime` with `tini` and only the OS packages it uses, uid 10001, `HEALTHCHECK` |
 | `docker-compose.yml` | Hardened service, secrets, `sf-data` volume, tmpfs mounts, resource limits; an unprivileged, read-only nginx serves it over TLS on port 8443 |
 | `docker/nginx.conf` | TLS 1.2/1.3, HSTS, http→https redirect, `X-Forwarded-For` replaced (not appended) |
 | `docker/entrypoint.sh` | Refuses root, checks secret lengths, checks volume ownership and that the runtime dir is tmpfs, tightens permissions, migrates, creates or verifies the vault, imports keys from a read-only mount, then `exec`s |
@@ -476,13 +476,16 @@ Run `storageforge-index prune --vacuum` once to shrink the database file. It rew
 
 ### Updating dependencies
 
-The base image is pinned by digest and Python packages by hash. To move them forward (the cutoff skips releases younger than two weeks):
+The base images are pinned by digest and Python packages by hash. To move them forward (the cutoff skips releases younger than two weeks):
 
 ```bash
-docker buildx imagetools inspect python:3.13-slim-bookworm | sed -n 's/^Digest: *//p'     # new digest for the Dockerfile's PYTHON_IMAGE
+docker buildx imagetools inspect python:3.13-slim-trixie | sed -n 's/^Digest: *//p'     # new digest for the Dockerfile's PYTHON_IMAGE
+docker buildx imagetools inspect nginxinc/nginx-unprivileged:stable-alpine | sed -n 's/^Digest: *//p'     # new digest for the proxy stage's FROM
 uv pip compile pyproject.toml docker/build-requirements.in --universal --python-version 3.13 --generate-hashes --no-header --exclude-newer "$(date -d '14 days ago' +%F)" -o docker/requirements.lock
 uv pip compile pyproject.toml docker/build-requirements.in --extra postgres --universal --python-version 3.13 --generate-hashes --no-header --exclude-newer "$(date -d '14 days ago' +%F)" -o docker/requirements-postgres.lock
 ```
+
+The ssh client is built from source in the Dockerfile's `openssh` stage, so vulnerability scanners cannot see its version. Check the [OpenSSH release notes](https://www.openssh.com/releasenotes.html) when you update. To move to a new release, verify the tarball's signature against the OpenSSH release key, then change `OPENSSH_VERSION` and the `--checksum` hash together.
 
 For PostgreSQL, build with `--build-arg EXTRAS=postgres` and set `STORAGEFORGE_DB=postgresql://…`. The test suite runs against it too (see [Tests](#tests)).
 

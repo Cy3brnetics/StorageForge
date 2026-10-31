@@ -132,6 +132,20 @@ Both report commands also take `--title`, `--as-of YYYY-MM-DD`, `--kwh-price`, `
 | `user signout NAME` | end every web session of an account |
 | `user remove NAME`, `user list` | |
 
+## Task scheduler
+
+| Command | Does |
+| :--- | :--- |
+| `schedule list [--host H] [--type T] [--paused] [--json]` | list scheduled tasks |
+| `schedule add --name N --host H --cron EXPR --type T --ref REF [--config JSON] [--paused]` | create a schedule for any task, change, move, scan or command |
+| `schedule get ID` | print JSON configuration and details of a schedule |
+| `schedule pause ID`, `schedule resume ID` | pause or resume scheduled runs |
+| `schedule remove ID` | remove a schedule |
+| `schedule token ID` | generate or rotate bearer authentication token |
+| `schedule runs [--id ID] [--host H] [--limit N] [--json]` | view execution history and server verification reports |
+| `schedule cron ID` | print `/etc/cron.d/` entry for native cron execution |
+| `schedule install-script ID [--report-url URL]` | generate full client installation script |
+
 ## Server and maintenance
 
 | Command | Does |

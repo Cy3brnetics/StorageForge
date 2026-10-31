@@ -25,12 +25,12 @@ _names = threading.Lock()
 
 ESSENTIAL = ('vault_meta', 'ssh_keys', 'key_bindings', 'users', 'hosts', 'blueprints', 'move_plans', 'audit_log',
              'change_plans', 'storage_tasks', 'settings', 'deploy_access', 'deployed', 'jobs',
-             'host_key_confirmations', 'host_configs')
+             'host_key_confirmations', 'host_configs', 'schedules')
 # Left out of essentials: a rescan or the next deploy rebuilds these, they are history, or they are sessions.
 # Every table is in exactly one of the two lists (tests/test_consistency.py).
 REBUILDABLE = ('mounts', 'scans', 'directories', 'file_records', 'file_fts', 'file_changes', 'scan_denied', 'scan_jobs',
                'graph_nodes', 'graph_edges', 'git_repos', 'docker_hosts', 'deploy_runs', 'deploy_groups', 'host_checks', 'job_runs', 'alerts',
-               'web_sessions', 'schema_version', 'task_runs', 'host_logs')
+               'web_sessions', 'schema_version', 'task_runs', 'host_logs', 'schedule_runs')
 PREFIX = {'essentials': 'storageforge-essentials-', 'full': 'storageforge-full-'}
 
 

@@ -113,7 +113,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, folders, gitrepos, graph, jobs, logbook, preflight,
-               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, reinstall, shares, tasks, users)
+               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, reinstall, scheduler, shares, tasks, users)
 from .capacity import parse_size
 from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
@@ -1488,6 +1488,131 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if new:
             core.alerts_wake.set()
         return jsonify(ok=True, new=new)
+
+    # ── Scheduler API ──────────────────────────────────────────────────────────
+    @web.route('/api/scheduler/schedules', methods=['GET', 'POST'])
+    @login_required
+    def api_scheduler_schedules():
+        c = conn()
+        if request.method == 'POST':
+            body = json_body()
+            sched, token = scheduler.create_schedule(c, body, actor())
+            core.audit(c, actor(), 'scheduler.create', 'ok', sched['host'], {'schedule_id': sched['schedule_id'], 'name': sched['name']})
+            return jsonify(schedule=sched, token=token), 201
+        h = request.args.get('host') or None
+        t = request.args.get('task_type') or None
+        p = None if request.args.get('paused') is None else (request.args.get('paused').lower() in ('1', 'true'))
+        return jsonify(schedules=scheduler.list_schedules(c, host=h, task_type=t, paused=p))
+
+    @web.route('/api/scheduler/schedules/<int:schedule_id>', methods=['GET', 'PUT', 'DELETE'])
+    @login_required
+    def api_scheduler_schedule(schedule_id):
+        c = conn()
+        try:
+            if request.method == 'PUT':
+                body = json_body()
+                sched = scheduler.update_schedule(c, schedule_id, body, actor())
+                core.audit(c, actor(), 'scheduler.update', 'ok', sched['host'], {'schedule_id': schedule_id, 'name': sched['name']})
+                return jsonify(sched)
+            elif request.method == 'DELETE':
+                sched = scheduler.get_schedule(c, schedule_id)
+                scheduler.delete_schedule(c, schedule_id, actor())
+                core.audit(c, actor(), 'scheduler.delete', 'ok', sched['host'], {'schedule_id': schedule_id, 'name': sched['name']})
+                return jsonify(deleted=schedule_id)
+            return jsonify(scheduler.get_schedule(c, schedule_id))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/scheduler/schedules/<int:schedule_id>/pause')
+    @login_required
+    def api_scheduler_schedule_pause(schedule_id):
+        c = conn()
+        try:
+            body = json_body()
+            paused = bool(body.get('paused', True))
+            sched = scheduler.pause_schedule(c, schedule_id, paused, actor())
+            core.audit(c, actor(), 'scheduler.pause', 'ok', sched['host'], {'schedule_id': schedule_id, 'paused': paused})
+            return jsonify(sched)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/scheduler/schedules/<int:schedule_id>/token')
+    @login_required
+    def api_scheduler_schedule_token(schedule_id):
+        c = conn()
+        try:
+            token = scheduler.token_for_schedule(c, schedule_id, actor())
+            sched = scheduler.get_schedule(c, schedule_id)
+            core.audit(c, actor(), 'scheduler.token_rotate', 'ok', sched['host'], {'schedule_id': schedule_id})
+            return jsonify(token=token, schedule_id=schedule_id)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.get('/api/scheduler/schedules/<int:schedule_id>/script')
+    @login_required
+    def api_scheduler_schedule_script(schedule_id):
+        c = conn()
+        try:
+            sched = scheduler.get_schedule(c, schedule_id)
+            script, args = scheduler.generate_task_script(c, sched)
+            return Response(script, mimetype='text/x-shellscript',
+                            headers={'Content-Disposition': f'attachment; filename="task-{schedule_id}.sh"'})
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.get('/api/scheduler/schedules/<int:schedule_id>/install-script')
+    @login_required
+    def api_scheduler_schedule_install_script(schedule_id):
+        c = conn()
+        try:
+            sched = scheduler.get_schedule(c, schedule_id)
+            report_url = alerts.get_setting(c, 'report_url') or f"http://{request.host}"
+            token = scheduler.token_for_schedule(c, schedule_id, actor())
+            scr = scheduler.generate_install_script(c, sched, report_url, token)
+            return Response(scr, mimetype='text/x-shellscript',
+                            headers={'Content-Disposition': f'attachment; filename="install-schedule-{schedule_id}.sh"'})
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.get('/api/scheduler/schedules/<int:schedule_id>/cron')
+    @login_required
+    def api_scheduler_schedule_cron(schedule_id):
+        c = conn()
+        try:
+            sched = scheduler.get_schedule(c, schedule_id)
+            cron = scheduler.generate_cron_entry(sched)
+            return Response(cron, mimetype='text/plain')
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.get('/api/scheduler/schedules/<int:schedule_id>/runs')
+    @login_required
+    def api_scheduler_schedule_runs(schedule_id):
+        c = conn()
+        lim = arg_num('limit', 50, 1, 500)
+        return jsonify(runs=scheduler.get_schedule_runs(c, schedule_id=schedule_id, limit=lim))
+
+    @web.get('/api/scheduler/runs')
+    @login_required
+    def api_scheduler_runs():
+        c = conn()
+        h = request.args.get('host') or None
+        lim = arg_num('limit', 50, 1, 500)
+        return jsonify(runs=scheduler.get_schedule_runs(c, host=h, limit=lim))
+
+    @web.post('/api/scheduler/report')
+    @limiter.limit('120 per minute')
+    def api_scheduler_report():
+        auth = request.headers.get('Authorization', '')
+        token = auth[7:].strip() if auth.startswith('Bearer ') else ''
+        sched = scheduler.schedule_for_token(conn(), token)
+        if not sched:
+            return jsonify(error='unknown scheduler token'), 401
+        body = json_body()
+        if int(body.get('schedule_id') or 0) != sched['schedule_id']:
+            return jsonify(error='token does not match schedule_id'), 403
+        res = scheduler.ingest_report(conn(), body, f'report:{request.remote_addr}'[:60])
+        return jsonify(ok=True, **res)
 
     @web.get('/api/hostconfigs')
     @login_required

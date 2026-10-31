@@ -130,6 +130,22 @@ Each plan type has the same shape: list, create, one, check, script.
 | POST | `/api/deploy/settings/test` | | send a test alert; 10/min |
 | POST | `/api/jobs/report` | a run result; `Authorization: Bearer <job token>` | no session; 120/min |
 
+## Scheduler
+
+| Method | Path | Body | |
+| :--- | :--- | :--- | :--- |
+| GET | `/api/scheduler/schedules[?host=&task_type=&paused=]` | | list configured schedules |
+| POST | `/api/scheduler/schedules` | `{"name", "host", "cron_expr", "task_type", "task_ref", "config"?}` | create schedule; returns schedule and initial auth token |
+| GET, PUT, DELETE | `/api/scheduler/schedules/<id>` | `PUT`: updated fields | inspect, edit, or remove schedule |
+| POST | `/api/scheduler/schedules/<id>/pause` | `{"paused": true\|false}` | pause or resume schedule |
+| POST | `/api/scheduler/schedules/<id>/token` | | rotate/generate new execution bearer token |
+| GET | `/api/scheduler/schedules/<id>/script` | | download compiled shell script for the task |
+| GET | `/api/scheduler/schedules/<id>/install-script` | | download full installer script (config, script, cron entry) |
+| GET | `/api/scheduler/schedules/<id>/cron` | | output `/etc/cron.d/` entry string |
+| GET | `/api/scheduler/schedules/<id>/runs[?limit=]` | | execution history and server verification reports for schedule |
+| GET | `/api/scheduler/runs[?host=&limit=]` | | global schedule runs history |
+| POST | `/api/scheduler/report` | execution report; `Authorization: Bearer <token>` | client execution reporting; triggers server verification (120/min) |
+
 ## Host configurations
 
 | Method | Path | Body | |

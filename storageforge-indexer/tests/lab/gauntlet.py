@@ -597,7 +597,7 @@ def stage_engine():
     items = [{'host': NAME[a], 'kind': 'probe', 'ref': 'lock', 'mode': 'report', 'script': 'date +%s; sleep 4; date +%s\n'}]
     g1, g2 = (engine.start(db, items, ACTOR, title='lock', kind='probe', ref='lock', mode='report') for _ in range(2))
     r1, r2 = wait_group(g1)[0], wait_group(g2)[0]
-    s1, s2 = [list(map(int, r['output'].split())) for r in (r1, r2)]
+    s1, s2 = [[int(w) for w in r['output'].split() if w.isdigit()] for r in (r1, r2)]     # a queued run also says it waited
     R.add('engine', a, s1[1] <= s2[0] or s2[1] <= s1[0], 'two groups took turns on one host')
     conn.close()
 

@@ -428,9 +428,11 @@ cmd_ssh() {
 
 cmd_gauntlet() {
   [ -f "$STATE/id_ed25519" ] || die 'no lab is running: use up'
+  # installed, not from source: password logins need its storageforge-askpass program
+  [ -x "$STATE/venv/bin/storageforge-askpass" ] || { python3 -m venv "$STATE/venv" && "$STATE/venv/bin/pip" install -q -e "$HERE/../.." ; } || die 'could not install StorageForge for the gauntlet'
   cmd_reset
   local rc=0
-  SFLAB_STATE="$STATE" python3 "$HERE/../../tests/lab/gauntlet.py" "$@" || rc=$?
+  SFLAB_STATE="$STATE" "$STATE/venv/bin/python" "$HERE/../../tests/lab/gauntlet.py" "$@" || rc=$?
   cmd_reset
   return $rc
 }

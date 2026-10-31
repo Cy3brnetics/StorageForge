@@ -16,6 +16,7 @@ yaml = ["pyyaml>=6"]
 [project.scripts]
 storageforge-index = "storageforge_index.cli:main"
 storageforge-askpass = "storageforge_index.askpass:main"
+storageforge-scheduler = "storageforge_index.schedscript:main"
 
 [tool.ruff]
 line-length = 160
