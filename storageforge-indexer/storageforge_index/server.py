@@ -94,11 +94,12 @@ POST /api/deploy/groups/<id>/retry   run it again on the hosts that did not fini
 POST /api/deploy/check               {"host"}: what the host can run: a signed probe, or from its last scan if not set up
 GET  /api/deploy/runs[/<id>]         deploy history, or one run's output
 GET  /api/deploy/jobs/<id>           one deployed job and its run history
-POST /api/deploy/jobs/<id>/<verb>    run, dryrun, verify, pause, resume, cutover, log, snapshots
+POST /api/deploy/jobs/<id>/<verb>    run, dryrun, verify, pause, resume, cutover, log, snapshots, dedupe
 POST /api/deploy/jobs/<id>/browse  {"snapshot", "path"}   a folder inside an rsnapshot snapshot (runs ls on the host)
 POST /api/deploy/jobs/<id>/restore   {"snapshot", "path"}: copy it back to the source as <path>.restored-<time>
 GET|PUT /api/deploy/settings         report URL and alert channels;  POST /api/deploy/settings/test sends a test alert
 POST /api/jobs/report                a job's run result (Authorization: Bearer <job token>; no session)
+POST /api/jobs/state                 a running job's latest state event (same token)
 GET  /api/hostconfigs[?host=]         saved host configurations: the newest of each host, or every version of one
 GET  /api/hostconfigs/<id>            one version: what it holds, and what changed since the version before
 GET  /api/hostconfigs/script?host=&id=   the reinstall script (mounts, accounts, shares, symlinks)
@@ -1808,7 +1809,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
 
-    @web.post('/api/deploy/jobs/<jid>/<any("run", "dryrun", "verify", "pause", "resume", "cutover", "log", "snapshots"):verb>')
+    @web.post('/api/deploy/jobs/<jid>/<any("run", "dryrun", "verify", "pause", "resume", "cutover", "log", "snapshots", "dedupe"):verb>')
     @login_required
     def api_deploy_job_action(jid, verb):
         if verb not in ('dryrun', 'log', 'snapshots'):   # these only read
@@ -1880,6 +1881,19 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if new:
             core.alerts_wake.set()
         return jsonify(ok=True, new=new)
+
+    @web.post('/api/jobs/state')
+    @limiter.limit('120 per minute')
+    def api_jobs_state():
+        auth = request.headers.get('Authorization', '')
+        jid = jobs.job_for_token(conn(), auth[7:].strip() if auth.startswith('Bearer ') else '')
+        if not jid:
+            return jsonify(error='unknown job token'), 401
+        body = json_body()
+        if body.get('job') != jid:
+            return jsonify(error='this token belongs to another job'), 403
+        jobs.ingest_state(conn(), body)
+        return jsonify(ok=True)
 
     # ── Scheduler API ──────────────────────────────────────────────────────────
     def schedule_view(sched: dict) -> dict:

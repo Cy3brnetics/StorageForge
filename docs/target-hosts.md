@@ -21,6 +21,10 @@ An ordinary user works, but it can only index what it can read. [Read-only scan 
 | `bash`, `flock`, `sudo` | every generated script |
 | `systemd` | scheduled jobs and storage tasks |
 | `rsync` | moves and copies; a deploy installs it if it is missing |
+| `python3` 3.8+ | only for jobs with dedup, on both hosts; a deploy installs it if it is missing |
+| `duperemove` | only for jobs with extent dedup; a deploy installs it if it is missing |
+| `b3sum` | only for jobs that hash with BLAKE3, on both hosts; install it yourself |
+| `pv` | only to limit the bandwidth of a snapshot stream |
 | `btrfs-progs`, `zfsutils-linux` or `zfs`, `lvm2`, `parted` | the tasks that use them; the script reports a conflict if one is missing |
 
 Deploys can install packages for shares and jobs with apt, dnf, yum, zypper or pacman. The [KVM lab](kvm-lab.md#tested-distributions) lists the distributions these were tested on and what is still open. Run a plan's report first on a system you have not used it on.

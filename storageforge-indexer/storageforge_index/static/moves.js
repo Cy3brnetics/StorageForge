@@ -167,6 +167,20 @@ function jobOptions(s) {
   const verify = el('select', { 'aria-label': 'Checksum verify', onchange: () => { o.verify = verify.value || null; touch(); } },
     new Option('never (on demand only)', ''), new Option('weekly (Saturday 04:00)', 'weekly'), new Option('monthly (the 15th)', 'monthly'));
   verify.value = o.verify || '';
+  const check = (key, label) => {
+    const c = el('input', { type: 'checkbox', onchange: () => { o[key] = c.checked; touch(); } }); c.checked = !!o[key];
+    return el('label', { class: 'check' }, c, label);
+  };
+  const pick = (key, label, options) => {
+    const c = el('select', { 'aria-label': label, onchange: () => { o[key] = c.value || null; touch(); } }, ...options.map(([v, t]) => new Option(t, v)));
+    c.value = o[key] || ''; return el('label', { class: 'field' }, el('span', {}, label), c);
+  };
+  const routes = el('textarea', { rows: 2, class: 'mono', 'aria-label': 'Routes to the source', placeholder: 'lan 192.168.1.20\nmesh 100.64.0.20 tailscale0',
+    onchange: () => {
+      o.routes = routes.value.split('\n').map((x) => x.trim().split(/\s+/)).filter((w) => w[0]).map(([via, address, iface]) => ({ via, address, iface: iface || null }));
+      touch();
+    } });
+  routes.value = (o.routes || []).map((r) => [r.via, r.address, r.iface].filter(Boolean).join(' ')).join('\n');
   const suggest = button('Suggest from Docker', async () => {
     if (!s.src.host || !s.src.path) return;
     try {
@@ -187,7 +201,14 @@ function jobOptions(s) {
     cmds('post', 'After it (also when the run fails)', 'docker compose -p immich start'),
     el('div', { class: 'row wrap' }, suggest,
       el('label', { class: 'check' }, snap, 'Copy from a btrfs snapshot of the source (stops the stack only for the snapshot)'),
-      el('label', { class: 'field' }, el('span', {}, 'Checksum verify'), verify)));
+      el('label', { class: 'field' }, el('span', {}, 'Checksum verify'), verify)),
+    el('label', { class: 'field col' }, el('span', {}, 'Routes to the source, tried in order, each "lan|mesh address [interface]". A bandwidth limit applies on mesh only. Empty: the scanned address'), routes),
+    el('div', { class: 'row wrap' }, pick('transport', 'Transfer with', [['', 'rsync'], ['btrfs', 'btrfs send (mirror, whole subvolume)'], ['zfs', 'zfs send (mirror, whole dataset)']]),
+      check('dedup', 'Make files already at the destination from local data'), check('dedup_hardlink', 'allow hard links for dedup'),
+      pick('hash', 'Hash', [['', 'SHA-256'], ['blake3', 'BLAKE3 (needs b3sum on both)']])),
+    el('div', { class: 'row wrap' }, check('preflight', 'Check room to receive first (data and metadata)'),
+      line('reserve_gb', 'Keep free (GiB)', '1', { size: 5, inputmode: 'numeric' }),
+      pick('extent_dedup', 'duperemove the destination', [['', 'never'], ['weekly', 'weekly (Sunday 05:00)'], ['monthly', 'monthly (the 20th)']])));
 }
 function alertMv(msg, cls = 'st-failed') { const m = $('#mvmsg'); m.hidden = false; m.textContent = msg; m.className = cls; }
 async function checkPlan() {

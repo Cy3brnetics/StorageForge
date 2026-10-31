@@ -93,6 +93,59 @@ Copies do not carry SELinux labels, since a label belongs to the host holding th
 
 **Actions** on a deployed job: Run, Dry run, Verify (`rsync --checksum` dry run listing differing files), Pause, Resume, Cutover (move steps, after a clean verify), Log (journal), and for rsnapshot jobs Snapshots, browse a folder in one, and Restore. A restore goes back to the source as `<path>.restored-<time>` and never overwrites anything. Across hosts it is a tar stream from a signed `pack` run into a signed `unpack` run.
 
+## Sync engine
+
+Options on a move step, under **When deployed as a job**. All are off by default, and a job with none of them connects as it did before.
+
+**Routes.** A step can list up to 4 addresses for its source, each `lan` or `mesh`, with an optional interface (`mesh 100.64.0.20 tailscale0`). This works with any overlay that gives the host an interface and an address: ZeroTier, NetBird or Tailscale.
+
+- Each run takes the first route that answers, in the listed order. A route whose interface does not exist is skipped.
+- All traffic is inside SSH on every route, so the LAN path is encrypted too, and the overlay adds its own tunnel.
+- Every route must present the same host key: the one StorageForge pinned when it scanned the source. Without a pin, the first connection is trusted. Rescan before deploying to get one. A different machine holding the LAN address on another network fails this check and the job moves to the mesh.
+- **A bandwidth limit applies only on a `mesh` route.** The `lan` route runs unthrottled.
+- **When a route drops mid-run:** SSH notices within about 30 seconds, the job looks for a route up to 5 times and rsync resumes from `--partial-dir`. rsnapshot and git runs pick a route at the start and do not move during a run: they fail and the next run tries again, because retrying rsnapshot would rotate twice. A running transfer does not move back when the LAN returns; the next run uses it.
+- OpenSSH on the runner needs `BindInterface` if a route names an interface. The deploy report checks this.
+
+**Dedup before transfer** (copy, move and mirror; needs `python3` 3.8 or later on both hosts):
+
+1. An rsync dry run lists what would be copied, so excludes and rsync's own checks apply. If nothing changed, nothing is hashed.
+2. Only files of at least the minimum size (1 MiB) with a same-sized file at the destination are hashed on the source, through the job key's `hashes` command.
+3. The local candidate is read and hashed again. Where it matches, the file is made with a reflink, then a hard link if allowed, then a local copy, and rsync finishes its owner, mode and attributes.
+
+Same-host jobs first try a reflink straight from the source. Each host keeps its index in `/var/lib/storageforge/index/<job>*.db` (SQLite, root only): path, size, mtime, inode and hash.
+
+The pool is only that job's own destination. Sharing a pool across jobs would let a taken-over source name another job's hash and read that file back through a restore. Paths from the source are opened below the job's folders and through no symlink. If any of this fails, rsync copies the file as usual.
+
+Hard links are off by default because two names then share one inode: editing either one on the destination changes both. They are used only where the owner, mode and mtime already agree. Jobs never use `--inplace`, because writing into a shared file would change every name for it.
+
+**Snapshot streams** (mirror steps; btrfs or ZFS on both sides). The source must be the root of a subvolume or dataset, because only a whole one can be sent and a job key may read no more than its folder. The run refuses anything else. A stream takes no excludes.
+
+| | btrfs | ZFS |
+| :--- | :--- | :--- |
+| On the destination | `<dst>/.storageforge-stream/<snapshot>`, with `<dst>/latest` linking to the newest | child dataset `<dataset>/sf-<job>`, not mounted (`receive -u`, never `-F`) |
+| Verified by | the source's subvolume UUID against the copy's Received UUID | the snapshot's `guid` on both sides |
+| Incremental when | both sides still have the last snapshot; otherwise it sends in full | both sides still have it; otherwise the run stops, since a full receive would need that dataset gone |
+
+Older sync snapshots are removed only after the new copy verifies, and a failed attempt's copy is removed straight away. Removing a job removes its snapshots on the source and leaves the received copy. A limit on a stream needs `pv` on the runner; without it the run says so and sends unlimited.
+
+**Room check.** Before a run, and again with rsync's estimate of what it will send, the job checks free space plus a reserve (default 1 GiB). On btrfs it also checks metadata room, on ZFS that the pool is under 90% full, and elsewhere that inodes remain. Otherwise the run stops with exit 6, before copying anything. An rsync estimate takes a full dry run, and an incremental btrfs send has no estimate, so it uses twice the size of the last one.
+
+**duperemove.** Weekly or monthly on the job's destination, inside its run window, holding the volume lock alone. Also available as **Run duperemove now**. What it frees and how much is shared go to the job's run history and the `space_metrics` table of its index.
+
+**The volume lock.** Each job opens `.storage.lock` at its destination mount (`/var/lib/storageforge/locks/` for the root filesystem) and holds an advisory `flock` until it ends. Copies, mirrors and verifies share it. rsnapshot, git and duperemove take it alone. A job that waits an hour exits 75. StorageForge itself makes no git auto-commits, so put your own under the same lock:
+
+```bash
+storageforge-job with-lock /srv/data -- git -C /srv/data/repo commit -am auto
+```
+
+**State events.** One JSON line per state on stdout (so also in the journal), in `/var/lib/storageforge/jobs/<id>/state.json`, and to `POST /api/jobs/state` at most every 30 seconds, shown on the job's row in the Deploy tab:
+
+```json
+{"event":"sync","job":"p1-s1","run":"…","state":"transferring","percent":42,"speed":"38.20MB/s","dedup_ratio":0.31,"route":"mesh","node":"100.64.0.20","at":1793486873}
+```
+
+States are `starting`, `route`, `transferring`, `streaming`, `failover`, `finished` and `failed`. Progress goes up to 100% for rsync transfers only; a stream shows `streaming` with no percentage.
+
 ## Reporting, alerts and drift
 
 **Report URL.** Set it under **Deploy → Reporting and alerts** to the address hosts can reach StorageForge at. For an `https` URL with the self-signed certificate, jobs trust the certificate in `STORAGEFORGE_REPORT_CA_FILE` (compose sets it). Scans also read the last runs from `runs.jsonl`, so history fills in even when a report could not be sent.

@@ -36,7 +36,7 @@ ESSENTIAL = ('vault_meta', 'ssh_keys', 'key_bindings', 'users', 'hosts', 'bluepr
 # Every table is in exactly one of the two lists (tests/test_consistency.py).
 REBUILDABLE = ('mounts', 'scans', 'directories', 'file_records', 'file_fts', 'file_changes', 'scan_denied', 'scan_jobs',
                'graph_nodes', 'graph_edges', 'git_repos', 'docker_hosts', 'deploy_runs', 'deploy_groups', 'host_checks', 'job_runs', 'alerts',
-               'web_sessions', 'schema_version', 'task_runs', 'host_logs', 'mount_usage', 'schedule_runs')
+               'web_sessions', 'schema_version', 'task_runs', 'host_logs', 'mount_usage', 'schedule_runs', 'job_state')
 ENC_MAGIC, ENC_SUFFIX, ENC_CHUNK = b'STORAGEFORGE-BACKUP-1\n', '.enc', 1 << 20
 ENC_KDF = {'time_cost': 3, 'memory_kib': 65536, 'lanes': 4}    # as the vault's own key
 PREFIX = {'essentials': 'storageforge-essentials-', 'full': 'storageforge-full-'}

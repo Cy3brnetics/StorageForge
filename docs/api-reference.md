@@ -4,7 +4,7 @@ The web UI is built on this API; anything it does can be scripted.
 
 ## Conventions
 
-- **Session.** Every `/api/*` route except `/api/login` and `/api/jobs/report` needs a signed-in session cookie. Sign in with `POST /api/login`.
+- **Session.** Every `/api/*` route except `/api/login`, `/api/jobs/report` and `/api/jobs/state` needs a signed-in session cookie. Sign in with `POST /api/login`.
 - **Bodies** are JSON objects sent with `Content-Type: application/json`; anything else is refused with 400. Bodies are capped at 4 KiB, except a design (2 MiB).
 - **Re-authentication.** Routes marked 🔑 need the account password typed within the last 5 minutes. Without it they answer `403 {"error", "reauth": true}`; call `POST /api/reauth` and retry.
 - **Errors** are `{"error": "…"}` with a status:
@@ -144,6 +144,7 @@ Each plan type has the same shape: list, create, one, check, script.
 | GET, PUT | `/api/deploy/settings` | `{"report_url", "alerts": {…}}` | |
 | POST | `/api/deploy/settings/test` | | send a test alert; 10/min |
 | POST | `/api/jobs/report` | a run result; `Authorization: Bearer <job token>` | no session; 120/min |
+| POST | `/api/jobs/state` | a state event; `Authorization: Bearer <job token>` | no session; 120/min |
 
 ## Scheduler
 
