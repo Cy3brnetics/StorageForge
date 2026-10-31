@@ -39,16 +39,14 @@ KNOWN = {
     ('scan-status', 'sf-rocky'): "without scan access, Podman's overlay folder counts as a failed mount",
     ('child-subvolume', 'sf-suse'): 'finding GM-14: find -xdev stops at a child subvolume, so its files are never indexed',
     ('containers', 'sf-rocky'): "rootless podman ps succeeds with an empty list, so the sudo that would see root's containers is never tried",
-    ('rescan-after-rekey-api', 'sf-suse'): 'rekey clears the scanned address, so the API turns the IP into the host name, which the key is not bound to',
     ('scan', 'sf-rocky'): "without scan access, Podman's overlay folder counts as a failed mount",
     ('job-run-copy', 'sf-rocky'): "rsync -X tries to remove security.selinux on the SELinux destination: all data arrives, but the job reports exit 23",
     ('job-run-git', 'sf-fedora'): "the job serves with git-upload-pack --strict, which refuses the working-copy path the Git panel sends",
     ('job-run-git', 'sf-suse'): "the job serves with git-upload-pack --strict, which refuses the working-copy path the Git panel sends",
     ('job-result-rsnapshot', 'sf-suse'): "rsnapshot's config has no --hard-links or xattrs, but verify compares with -HAX",
     ('job-verify-rsnapshot', 'sf-suse'): "rsnapshot's config has no --hard-links or xattrs, but verify compares with -HAX",
-    ('job-result-rsnapshot', 'sf-fedora'): "rsnapshot's config has no --hard-links or xattrs, but verify compares with -HAX",
-    ('job-verify-rsnapshot', 'sf-fedora'): "rsnapshot's config has no --hard-links or xattrs, but verify compares with -HAX",
-    ('rsnapshot-on-el9', 'sf-rocky'): 'docs/deployments.md says EPEL has it; on Rocky 9 it does not',
+    ('job-result-rsnapshot', 'sf-rocky'): "rsnapshot's config has no --hard-links or xattrs, but verify compares with -HAX",
+    ('job-verify-rsnapshot', 'sf-rocky'): "rsnapshot's config has no --hard-links or xattrs, but verify compares with -HAX",
     ('lvm-extend-unmounted', 'sf-rocky'): 'lvextend -r asks a question on an unmounted XFS volume, with no terminal to answer it',
     ('remove-at-once', 'sf-ctl'): 'userdel fails while the last login session lingers, for a few seconds after any deploy',
     ('remove-at-once', 'sf-ubuntu'): 'userdel fails while the last login session lingers, for a few seconds after any deploy',
@@ -59,7 +57,7 @@ KNOWN = {
     ('task-keeps-runner', 'sf-fedora'): 'a task installs its whole signed script with the runner-update header; when systemd runs it on SELinux hosts the runner becomes 0 bytes, and every later deploy reports ok without running',
     ('task-keeps-runner', 'sf-rocky'): 'a task installs its whole signed script with the runner-update header; when systemd runs it on SELinux hosts the runner becomes 0 bytes, and every later deploy reports ok without running',
     ('task-keeps-runner', 'sf-suse'): 'a task installs its whole signed script with the runner-update header; when systemd runs it on SELinux hosts the runner becomes 0 bytes, and every later deploy reports ok without running',
-    ('mergerfs-source', 'sf-arch'): 'the kernel reports the FUSE source as 1:2, and the branches are not read from anywhere else',
+    ('mergerfs-source', 'sf-arch'): 'the scan records the kernel source 1:2, not the branch folders',
 }
 PACKAGE_MANAGERS = {'sf-ctl': 'apt-get', 'sf-ubuntu': 'apt-get', 'sf-fedora': 'dnf', 'sf-rocky': 'dnf', 'sf-suse': 'zypper', 'sf-arch': 'pacman', 'sf-alpine': 'none'}
 TOPOLOGY = {'sf-ubuntu': ['tank', 'backup'], 'sf-rocky': ['vgdata'], 'sf-suse': ['md0'], 'sf-arch': ['secure', 'mergerfs']}

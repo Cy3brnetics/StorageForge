@@ -4,6 +4,8 @@ Seven disposable VMs for testing StorageForge across distros and filesystems. It
 
 It builds the VMs, their storage layouts and seed data, the network, the snapshots and the control panel, runs StorageForge from this working tree on `sf-ctl`, and can fill it with a working demo.
 
+See [KVM lab](../../../docs/kvm-lab.md) for the test tiers and results.
+
 ## Use it
 
 ```bash
@@ -17,13 +19,14 @@ python3 examples/lab/panel.py --open   # or start the panel directly
 | **Reset** | `lab.sh reset` | Returns every VM to `golden`. |
 | **Demo** | `lab.sh demo` | Resets the lab, then fills StorageForge through its own API. Takes about 3 minutes. |
 | **Test** | `lab.sh test` | Checks the running lab against what it should hold. Reads only. |
+| **Full test** | `lab.sh test --all` | Runs tiers 0-4, resetting around them, and writes `reports/lab-<date>.md`. Takes about 25 minutes, and changes the VMs while it runs. |
 | **Destroy** | `lab.sh down` | Removes the lab straight away with no confirmation, stopping any running command first. |
 
 Also: `lab.sh status`, `lab.sh ssh <vm> [command]`, and `lab.sh snapshot` to retake `golden`, and `lab.sh controller` to rebuild StorageForge from this tree and restart it on `sf-ctl`, keeping its data. `lab.sh up <vm>...` creates only the named VMs and takes no snapshot.
 
 ## What it needs
 
-libvirt with `qemu:///system`, `virt-install`, `qemu-img`, `xorriso`, Docker to build the images, write access to `/dev/kvm`, about 10 GB of free RAM and 30 GB of free disk. `up` checks all of these first.
+libvirt with `qemu:///system`, `virt-install`, `qemu-img`, `xorriso`, Docker to build the images, write access to `/dev/kvm`, about 11 GB of free RAM and 30 GB of free disk. `up` checks all of these first.
 
 | Item | Where | After Destroy |
 | :--- | :--- | :--- |
@@ -57,7 +60,7 @@ The generator also writes a manifest with the type, size, mode and SHA-256 of ev
 
 ## StorageForge and the demo
 
-The panel shows the address and the password while `sf-ctl` is up: `https://10.77.0.10:8443`, user `demo`, password in `~/.local/state/sflab/ui-password`. The images are built on this machine and loaded onto `sf-ctl`. `sf-ctl` has 2 vCPUs because `docker-compose.yml` limits StorageForge to 2.0 CPUs, and Docker refuses a limit above what the machine has.
+The panel shows the address and the password while `sf-ctl` is up: `https://10.77.0.10:8443`, user `demo`, password in `~/.local/state/sflab/ui-password`. The images are built on this machine and loaded onto `sf-ctl`. `sf-rocky` has 2 GB because `dnf` is killed for lack of memory at 1 GB once EPEL is enabled. `sf-ctl` has 2 vCPUs because `docker-compose.yml` limits StorageForge to 2.0 CPUs, and Docker refuses a limit above what the machine has.
 
 `demo.py` leaves this in place:
 

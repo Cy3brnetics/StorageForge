@@ -34,7 +34,7 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 - **Stale dry run protection:** Applying a plan passes the dry run's group ID to ensure the plan was not modified after review.
 - **Host configuration history and reinstall scripts:** each scan saves a host's fstab, crypttab, mdadm, NFS and Samba files, mounts, accounts and cross-mount symlinks when they change, with passwords removed. The new Rebuild tab and `storageforge-index config` show versions and what changed, and export a script that mounts every drive and subvolume on a fresh install, plus a `.tar.gz` to keep elsewhere. `STORAGEFORGE_CONFIG_EXPORT_DIR` writes that bundle every night.
 - **Parallel scans:** up to `STORAGEFORGE_SCAN_WORKERS` hosts (default 4) scan at once, so a large or hung host no longer holds up the rest.
-- **KVM lab:** `examples/lab` builds seven disposable VMs across distros, with a local control panel to create, reset and destroy them.
+- **KVM lab:** `examples/lab` builds seven disposable VMs across distros, with a local control panel to create, reset and destroy them, StorageForge running on one VM, a demo that fills it with scans, shares, jobs and an alert, and test tiers with a report per distro ([KVM lab](docs/kvm-lab.md)).
 - **ZFS change tasks:** create a pool, create a dataset with properties, snapshot, scrub.
 - **LVM change tasks:** create a volume group, add a device to one, create, grow and snapshot a logical volume.
 - **Send over the network:** `btrfs-send` and `zfs-send` change tasks, and `btrfs_send` and `zfs_send` storage task blocks that send only the changes since the last shared snapshot, with "btrfs replication" and "ZFS replication" templates.

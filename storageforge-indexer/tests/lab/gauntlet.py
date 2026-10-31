@@ -378,7 +378,7 @@ JOB_STEPS = [  # method, source vm, source path, destination vm, path, options, 
     ('mirror', 'sf-fedora', '/data/media/lab-seed', 'sf-ubuntu', '/backup/replica/fedora', {'snapshot': True}, ('sf-fedora', '/data/media')),
     ('copy', 'sf-ubuntu', '/tank/media/lab-seed', 'sf-rocky', '/srv/data/from-ubuntu', {}, ('sf-ubuntu', '/tank/media')),
     ('rsnapshot', 'sf-rocky', '/srv/data/lab-seed', 'sf-suse', '/srv/btrfs/rocky-snaps', {}, ('sf-rocky', '/srv/data')),
-    ('rsnapshot', 'sf-arch', '/mnt/pool/lab-seed', 'sf-fedora', '/data/backups/arch-snaps', {}, ('sf-arch', '/mnt/pool')),
+    ('rsnapshot', 'sf-arch', '/mnt/pool/lab-seed', 'sf-rocky', '/srv/data/arch-snaps', {}, ('sf-arch', '/mnt/pool')),
     ('mirror', 'sf-suse', '/srv/btrfs/home/lab-seed', 'sf-arch', '/mnt/disk1/suse-home', {'snapshot': True}, ('sf-suse', '/srv/btrfs/home')),
     ('mirror', 'sf-fedora', '/data/media/lab-seed', 'sf-fedora', '/data/backups/local', {}, ('sf-fedora', '/data/media')),
     ('git', 'sf-ubuntu', '/tank/media/lab-seed/repos/sample', 'sf-fedora', '/data/snaps/sample.git', {}, None),
@@ -388,9 +388,7 @@ JOB_STEPS = [  # method, source vm, source path, destination vm, path, options, 
 
 def stage_jobs():
     conn = db.connect()
-    sh('sf-rocky', 'sudo -n dnf -q -y install epel-release')
-    have = raw('sf-rocky', 'dnf -q info rsnapshot').returncode == 0
-    R.add('rsnapshot-on-el9', 'sf-rocky', have, 'in EPEL' if have else 'EPEL 9 has no rsnapshot, so a job there cannot be deployed')
+    sh('sf-rocky', 'sudo -n dnf -q -y install epel-release')     # rsnapshot comes from EPEL, which deploys expect to be on
     steps, kept = [], {}
     for i, (method, s, sp, d, dp, opts, seed) in enumerate(JOB_STEPS, 1):
         if s not in READY or d not in READY:
@@ -644,6 +642,7 @@ def stage_remove():
         R.check('remove-shares', srv, one)
     for vm in sorted(READY):
         def left(vm=vm):
+            access.grant(db, conn, NODES[vm], PASSWORD, 'sfadmin', remove=True, admin_key='lab-admin')   # scan access has its own timer
             fstab = raw(vm, 'grep -c "storageforge share" /etc/fstab').stdout.decode().strip()
             units = raw(vm, 'ls /etc/systemd/system | grep -c "^sf-"').stdout.decode().strip()
             R.add('remove-clean', vm, fstab in ('0', '') and units in ('0', ''), f'{fstab or 0} fstab lines, {units or 0} units left')

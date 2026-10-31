@@ -23,7 +23,7 @@ An ordinary user works, but it can only index what it can read. [Read-only scan 
 | `rsync` | moves and copies; a deploy installs it if it is missing |
 | `btrfs-progs`, `zfsutils-linux` or `zfs`, `lvm2`, `parted` | the tasks that use them; the script reports a conflict if one is missing |
 
-Deploys can install packages for shares and jobs with apt, dnf, yum, zypper or pacman. StorageForge has no matrix of tested distributions, so run a plan's report first on a system you have not used it on.
+Deploys can install packages for shares and jobs with apt, dnf, yum, zypper or pacman. The [KVM lab](kvm-lab.md#tested-distributions) lists the distributions these were tested on and what is still open. Run a plan's report first on a system you have not used it on.
 
 ## Sending snapshots between hosts
 

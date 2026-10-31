@@ -31,6 +31,7 @@ The code lives in [`storageforge-indexer/`](../storageforge-indexer). Its [READM
 | [Operations](operations.md) | Configuration, backups, certificates, retention, logs, upgrades, dependency updates |
 | [Disaster recovery](disaster-recovery.md) | What to keep elsewhere, and rebuilding on a new machine |
 | [Target hosts](target-hosts.md) | What a scanned or changed machine needs, and SSH for sending snapshots |
+| [KVM lab](kvm-lab.md) | The disposable test VMs, the test tiers and the distributions they cover |
 | [Troubleshooting](troubleshooting.md) | Common messages, what causes them and what to do |
 | [CLI reference](cli-reference.md) | Every `storageforge-index` command |
 | [API reference](api-reference.md) | Every HTTP route |
