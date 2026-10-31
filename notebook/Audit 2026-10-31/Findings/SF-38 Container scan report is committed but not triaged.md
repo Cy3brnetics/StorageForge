@@ -30,4 +30,4 @@ Triage by reachability into a short table: package, used by us or not, decision.
 - [ ] CI fails on new reachable criticals
 
 ## Progress
-2026-10-31. Triage in [[Container scan triage 2026-10-31]]: the report describes an older Debian 12 image. The raw file left git and is ignored. **Open:** a fresh scan, and the CI check.
+2026-10-31, in `d3424a1`. Triage in [[Container scan triage 2026-10-31]]: the report describes an older Debian 12 image. The raw file left git and is ignored. **Open:** a fresh scan, and the CI check.

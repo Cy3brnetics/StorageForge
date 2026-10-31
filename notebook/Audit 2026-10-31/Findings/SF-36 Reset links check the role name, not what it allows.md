@@ -29,4 +29,4 @@ Store the role's permission list, or the user id plus `session_version`, in the 
 - [x] Widening a role cancels links that name it
 
 ## Fixed
-2026-10-31. Migration 025 stores what a link grants and, for a reset, the account id and session version. A link dies if its role comes to allow more, or its account changes in any way; a new link and removing the account both revoke. Links from before this are dead. Tests: `test_links_die_when_what_they_grant_changes`, `test_a_reset_link_is_for_one_account_as_it_was`, `test_a_link_from_before_the_checks_is_dead`.
+2026-10-31, in `d3424a1`. Migration 025 stores what a link grants and, for a reset, the account id and session version. A link dies if its role comes to allow more, or its account changes in any way; a new link and removing the account both revoke. Links from before this are dead. Tests: `test_links_die_when_what_they_grant_changes`, `test_a_reset_link_is_for_one_account_as_it_was`, `test_a_link_from_before_the_checks_is_dead`.

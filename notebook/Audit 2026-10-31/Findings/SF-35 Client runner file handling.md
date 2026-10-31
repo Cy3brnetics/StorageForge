@@ -36,4 +36,4 @@ Make output 0640 with the scan group, as `health.py` does. Rotate `runs.jsonl` a
 2026-10-31, through PF-26 in `9326d72`: `runs.jsonl` holds no output and rotates at 600 lines, `last.out` is root only, and locks moved to the private `/run/storageforge`. `replace` is tested. Still open: `schedule_runs` has no prune rule on the server.
 
 ## Fixed
-2026-10-31. `schedule_runs` keeps the newest 200 per schedule. The rest went with [[PF-26 Scheduler design duplicates what tasks already do|PF-26]]. Test: `test_schedule_runs_are_pruned`.
+2026-10-31, in `d3424a1`. `schedule_runs` keeps the newest 200 per schedule. The rest went with [[PF-26 Scheduler design duplicates what tasks already do|PF-26]]. Test: `test_schedule_runs_are_pruned`.
