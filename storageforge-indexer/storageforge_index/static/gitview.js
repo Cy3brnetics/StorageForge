@@ -3,7 +3,7 @@
    remote sync (fetch, pull, push, sync), commit history and changelog generator. */
 
 const GITV = { data: null, filter: '', textFilter: '', all: false, selectedRepo: null };
-const GITD = { repo: null, tab: 'status', status: null, history: null, syncLog: '', loading: false, diffSha: null, diffOutput: '' };
+const GITD = { repo: null, tab: 'status', status: null, history: null, syncLog: '', loading: false, loadingStatus: false, diffSha: null, diffOutput: '' };
 
 const GIT_STATE = {
   uncommitted: ['local-only', 'Uncommitted changes in the working copy'],
@@ -157,6 +157,11 @@ function archiveRepo(r) {
 
 /* ── Git Drawer / Inspector (bottom corner of detail panel) ──────── */
 function openGitDrawer(repo, tab = 'status') {
+  if (!GITD.repo || GITD.repo.host !== repo.host || GITD.repo.path.replace(/\/+$/, '') !== repo.path.replace(/\/+$/, '')) {
+    GITD.status = null;
+    GITD.history = null;
+    GITD.diffSha = null;
+  }
   GITD.repo = repo;
   const drawer = $('#gitdrawer');
   if (!drawer) return;
@@ -238,16 +243,29 @@ function switchGitTab(tabName) {
   });
 
   if (!GITD.repo) {
-    content.querySelector(`#gtab-${tabName}`).replaceChildren(
+    const target = content.querySelector(`#gtab-${tabName}`);
+    if (target) target.replaceChildren(
       text('p', 'Select a repository from the Git tab or Details panel to inspect.', 'muted')
     );
     return;
   }
 
-  if (tabName === 'status') renderDrawerStatus();
-  else if (tabName === 'commits') renderDrawerCommits();
-  else if (tabName === 'changelog') renderDrawerChangelog();
-  else if (tabName === 'sync') renderDrawerSync();
+  if (tabName === 'status') {
+    renderDrawerStatus();
+    // Auto-fetch fresh live status if not checked yet
+    if (!GITD.status && !GITD.loadingStatus) {
+      GITD.loadingStatus = true;
+      checkRepoStatus(GITD.repo.host, GITD.repo.path)
+        .catch(() => {})
+        .finally(() => { GITD.loadingStatus = false; });
+    }
+  } else if (tabName === 'commits') {
+    renderDrawerCommits();
+  } else if (tabName === 'changelog') {
+    renderDrawerChangelog();
+  } else if (tabName === 'sync') {
+    renderDrawerSync();
+  }
 }
 
 /* ── Live Status Check ───────────────────────────────────────────── */
@@ -259,26 +277,33 @@ async function checkRepoStatus(host, path) {
       body: JSON.stringify({ host, path }),
     });
     const status = await res.json();
-    GITD.status = status;
+    if (GITD.repo && GITD.repo.host === host && GITD.repo.path.replace(/\/+$/, '') === path.replace(/\/+$/, '')) {
+      GITD.status = status;
+      Object.assign(GITD.repo, status);
+      updateDrawerRepoInfo();
+      if (GITD.tab === 'status') renderDrawerStatus();
+    }
 
     // Update in GITV.data if present
     if (GITV.data && GITV.data.repos) {
-      const idx = GITV.data.repos.findIndex((r) => r.host === host && r.path === path);
+      const idx = GITV.data.repos.findIndex((r) => r.host === host && r.path.replace(/\/+$/, '') === path.replace(/\/+$/, ''));
       if (idx !== -1) {
         Object.assign(GITV.data.repos[idx], status);
         renderGit();
       }
     }
-    if (GITD.repo && GITD.repo.host === host && GITD.repo.path === path) {
-      Object.assign(GITD.repo, status);
-      updateDrawerRepoInfo();
-      if (GITD.tab === 'status') renderDrawerStatus();
-    }
     return status;
   } catch (err) {
-    if (GITD.tab === 'status') {
+    if (GITD.repo && GITD.repo.host === host && GITD.repo.path.replace(/\/+$/, '') === path.replace(/\/+$/, '') && GITD.tab === 'status') {
       const pane = $('#gtab-status');
-      if (pane) pane.replaceChildren(text('p', `Status check failed: ${err.message}`, 'st-failed'));
+      if (pane) {
+        pane.replaceChildren(
+          text('p', `Status check failed: ${err.message}`, 'st-failed'),
+          el('div', { class: 'row' },
+            button('Retry check', () => checkRepoStatus(host, path), 'btn sm')
+          )
+        );
+      }
     }
     throw err;
   }
@@ -287,7 +312,8 @@ async function checkRepoStatus(host, path) {
 function renderDrawerStatus() {
   const pane = $('#gtab-status');
   if (!pane || !GITD.repo) return;
-  const r = GITD.status || GITD.repo;
+  const hasMatchingStatus = GITD.status && GITD.status.host === GITD.repo.host && GITD.status.path.replace(/\/+$/, '') === GITD.repo.path.replace(/\/+$/, '');
+  const r = hasMatchingStatus ? GITD.status : GITD.repo;
 
   const cards = el('div', { class: 'git-status-grid' },
     el('div', { class: 'git-stat-card' },
@@ -323,12 +349,16 @@ function renderDrawerStatus() {
 
   // Dirty files section
   if (r.dirty_files && r.dirty_files.length) {
-    const list = el('ul', { class: 'git-dirty-list' }, ...r.dirty_files.map((f) =>
-      el('li', { class: 'git-dirty-item' },
-        el('span', { class: `git-file-code ${f.code.trim()}` }, f.code),
+    const list = el('ul', { class: 'git-dirty-list' }, ...r.dirty_files.map((f) => {
+      const codeClass = f.code.includes('?') ? 'untracked' :
+                        f.code.includes('M') ? 'M' :
+                        f.code.includes('A') ? 'A' :
+                        f.code.includes('D') ? 'D' : 'U';
+      return el('li', { class: 'git-dirty-item' },
+        el('span', { class: `git-file-code ${codeClass}` }, f.code),
         el('span', { class: 'small mono' }, f.path)
-      )
-    ));
+      );
+    }));
     parts.push(el('div', {}, el('h4', { class: 'small muted' }, `Modified & untracked files (${r.dirty_files.length})`), list));
   }
 
@@ -368,11 +398,16 @@ async function loadRepoHistory(host, path) {
   if (pane) pane.replaceChildren(text('p', 'Loading commit history and tags...', 'muted'));
   try {
     const res = await api(`/api/git/history?host=${encodeURIComponent(host)}&path=${encodeURIComponent(path)}&max=50`);
-    GITD.history = await res.json();
-    if (GITD.tab === 'commits') renderDrawerCommits();
-    if (GITD.tab === 'changelog') renderDrawerChangelog();
+    const history = await res.json();
+    if (GITD.repo && GITD.repo.host === host && GITD.repo.path.replace(/\/+$/, '') === path.replace(/\/+$/, '')) {
+      GITD.history = history;
+      if (GITD.tab === 'commits') renderDrawerCommits();
+      if (GITD.tab === 'changelog') renderDrawerChangelog();
+    }
   } catch (err) {
-    if (pane) pane.replaceChildren(text('p', `Failed to load history: ${err.message}`, 'st-failed'));
+    if (pane && GITD.repo && GITD.repo.host === host) {
+      pane.replaceChildren(text('p', `Failed to load history: ${err.message}`, 'st-failed'));
+    }
   }
 }
 
@@ -396,7 +431,8 @@ async function showCommitDiff(sha, targetEl) {
 function renderDrawerCommits() {
   const pane = $('#gtab-commits');
   if (!pane || !GITD.repo) return;
-  if (!GITD.history) {
+  const hasMatchingHistory = GITD.history && GITD.history.host === GITD.repo.host && GITD.history.path.replace(/\/+$/, '') === GITD.repo.path.replace(/\/+$/, '');
+  if (!hasMatchingHistory) {
     loadRepoHistory(GITD.repo.host, GITD.repo.path);
     return;
   }
@@ -439,7 +475,8 @@ function renderDrawerCommits() {
 function renderDrawerChangelog() {
   const pane = $('#gtab-changelog');
   if (!pane || !GITD.repo) return;
-  if (!GITD.history) {
+  const hasMatchingHistory = GITD.history && GITD.history.host === GITD.repo.host && GITD.history.path.replace(/\/+$/, '') === GITD.repo.path.replace(/\/+$/, '');
+  if (!hasMatchingHistory) {
     loadRepoHistory(GITD.repo.host, GITD.repo.path);
     return;
   }
@@ -559,7 +596,8 @@ async function syncRepo(host, path, action = 'sync') {
 function renderDrawerSync() {
   const pane = $('#gtab-sync');
   if (!pane || !GITD.repo) return;
-  const r = GITD.status || GITD.repo;
+  const hasMatchingStatus = GITD.status && GITD.status.host === GITD.repo.host && GITD.status.path.replace(/\/+$/, '') === GITD.repo.path.replace(/\/+$/, '');
+  const r = hasMatchingStatus ? GITD.status : GITD.repo;
 
   const remotesList = r.remotes && r.remotes.length
     ? r.remotes.map((rm) => `${rm.name}: ${rm.url || rm.fetch_url || ''}`).join('\n')
@@ -588,8 +626,8 @@ function renderDrawerSync() {
 async function openGitForPath(host, path) {
   if (!GITV.data) await loadGit();
   const repos = (GITV.data && GITV.data.repos) || [];
-  const p = path.replace(/\/$/, '');
-  const r = repos.find((x) => x.host === host && (x.path === p || x.path.startsWith(p + '/')));
+  const p = path.replace(/\/+$/, '');
+  const r = repos.find((x) => x.host === host && (x.path.replace(/\/+$/, '') === p || x.path.replace(/\/+$/, '').startsWith(p + '/')));
   if (r) {
     openGitDrawer(r, 'status');
   } else {
@@ -600,7 +638,7 @@ async function openGitForPath(host, path) {
 }
 
 /* ── Event Wiring ────────────────────────────────────────────────── */
-document.addEventListener('DOMContentLoaded', () => {
+function initGitEvents() {
   const toggleBtn = $('#gitdrawer-toggle');
   if (toggleBtn) toggleBtn.addEventListener('click', toggleGitDrawer);
 
@@ -635,4 +673,10 @@ document.addEventListener('DOMContentLoaded', () => {
       renderGit();
     });
   }
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initGitEvents);
+} else {
+  initGitEvents();
+}

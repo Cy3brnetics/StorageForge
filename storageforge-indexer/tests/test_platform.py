@@ -1163,6 +1163,41 @@ class ServerTests(DBCase):
         self.assertTrue(any(len(rel['categories']['features']) > 0 for rel in cl))
         self.assertTrue(any(len(rel['categories']['fixes']) > 0 for rel in cl))
 
+        # Test live status, history and commit with local git repo
+        import tempfile, subprocess
+        tmp_repo = tempfile.mkdtemp()
+        try:
+            subprocess.run(['git', 'init', tmp_repo], check=True, capture_output=True)
+            subprocess.run(['git', '-C', tmp_repo, 'config', 'user.email', 'test@test'], check=True)
+            subprocess.run(['git', '-C', tmp_repo, 'config', 'user.name', 'Tester'], check=True)
+            subprocess.run(['git', '-C', tmp_repo, 'commit', '--allow-empty', '-m', 'Initial commit'], check=True)
+            subprocess.run(['git', '-C', tmp_repo, 'tag', 'v1.0.0', '-m', 'Release 1.0.0'], check=True)
+            subprocess.run(['git', '-C', tmp_repo, 'commit', '--allow-empty', '-m', 'feat: cool feature'], check=True)
+
+            # API Status check
+            res = self.client.post('/api/git/status', json={'host': 'local', 'path': tmp_repo})
+            self.assertEqual(res.status_code, 200)
+            st_data = res.json
+            self.assertIn(st_data['branch'], ('main', 'master'))
+            self.assertEqual(st_data['head_subject'], 'feat: cool feature')
+            self.assertEqual(st_data['dirty'], 0)
+
+            # API History check
+            h_res = self.client.get(f'/api/git/history?host=local&path={tmp_repo}&max=10')
+            self.assertEqual(h_res.status_code, 200)
+            h_data = h_res.json
+            self.assertEqual(len(h_data['commits']), 2)
+            self.assertEqual(len(h_data['tags']), 1)
+            self.assertEqual(h_data['tags'][0]['name'], 'v1.0.0')
+
+            # API Commit check
+            c_res = self.client.get(f'/api/git/commit?host=local&path={tmp_repo}&sha={h_data["commits"][0]["hash"]}')
+            self.assertEqual(c_res.status_code, 200)
+            self.assertIn('feat: cool feature', c_res.json['output'])
+        finally:
+            import shutil
+            shutil.rmtree(tmp_repo, ignore_errors=True)
+
         # Check frontend assets contain git inspector elements
         index_html = self.client.get('/').data.decode('utf-8')
         self.assertIn('id="gitdrawer"', index_html)

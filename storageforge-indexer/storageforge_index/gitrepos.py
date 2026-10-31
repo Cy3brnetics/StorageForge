@@ -51,7 +51,7 @@ SURVEY = ("command -v git >/dev/null 2>&1 || { echo '@@nogit'; exit 0; }\n"
           f'exec bash -c {shlex.quote(_SURVEY_BASH)}\n')
 
 
-def candidates(conn: Conn, host_id: int) -> list[str]:
+def candidates(conn: Conn, host_id: int) -> tuple[list[str], set[str]]:
     work = conn.all("""SELECT DISTINCT d.path FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id
                        WHERE m.host_id = :h AND f.filename = '.git'""", {'h': host_id})
     bare = conn.all("""SELECT DISTINCT d.path FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id
@@ -62,8 +62,9 @@ def candidates(conn: Conn, host_id: int) -> list[str]:
                                      AND o.filename = 'refs' AND o.is_directory)
                          AND EXISTS (SELECT 1 FROM file_records o WHERE o.dir_id = f.dir_id
                                      AND o.filename = 'config')""", {'h': host_id})
-    paths = sorted({r[0] for r in work + bare if r[0] and '\n' not in r[0] and '\t' not in r[0]})
-    return paths[:MAX_REPOS], {r[0] for r in work}
+    existing = conn.all('SELECT path FROM git_repos WHERE host_id = :h', {'h': host_id})
+    paths = sorted({r[0].rstrip('/') for r in work + bare + existing if r[0] and '\n' not in r[0] and '\t' not in r[0]})
+    return paths[:MAX_REPOS], {r[0].rstrip('/') for r in work}
 
 
 def parse_survey(text: str) -> tuple[list[dict], bool]:
@@ -247,7 +248,6 @@ def survey_host(db, host_name: str, actor: str | None = None) -> dict:
 
 
 _STATUS_BASH = r"""
-R=%s
 command -v git >/dev/null 2>&1 || { printf 'error\tgit is not installed on this host\n'; exit 0; }
 g() { timeout 25 git -c safe.directory='*' -C "$R" "$@"; }
 if ! g rev-parse --git-dir >/dev/null 2>&1; then
@@ -274,14 +274,15 @@ printf 'size\t%s\n' "$(du -sk "$(g rev-parse --absolute-git-dir 2>/dev/null)" 2>
 
 def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict:
     """Run an on-demand status check on a specific git repository."""
+    path = path.rstrip('/')
     conn = db.connect()
     try:
-        row = conn.all('SELECT host_id, hostname FROM hosts WHERE lower(hostname) = lower(:h) OR lower(ssh_host) = lower(:h)',
+        row = conn.all('SELECT host_id, hostname FROM hosts WHERE lower(hostname) = lower(:h) OR lower(ssh_host) = lower(:h) OR ip_address = :h',
                        {'h': host_name})
         canonical_name = row[0][1] if row else host_name
         host_id = row[0][0] if row else None
 
-        script = _STATUS_BASH % shlex.quote(path)
+        script = f'R={shlex.quote(path)}\n' + _STATUS_BASH
         with open_host_transport(db, conn, canonical_name, 'scan') as t:
             out = t.run(script, timeout=30)
 
@@ -332,32 +333,32 @@ def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict
             elif k == 'branch':
                 res['branch'] = v or None
             elif k == 'head' and v:
-                parts = v.split('\t')
+                parts = v.split('\t', 3)
                 if len(parts) >= 4:
                     res['head_commit'] = parts[0]
-                    res['head_time'] = int(parts[1]) if parts[1].isdigit() else None
+                    res['head_time'] = int(parts[1]) if parts[1].strip().isdigit() else None
                     res['head_author'] = parts[2]
                     res['head_subject'] = parts[3]
                 elif len(parts) == 1 and ' ' in parts[0]:
                     h, _, rest = parts[0].partition(' ')
                     t, _, sub = rest.partition(' ')
                     res['head_commit'] = h
-                    res['head_time'] = int(t) if t.isdigit() else None
+                    res['head_time'] = int(t) if t.strip().isdigit() else None
                     res['head_subject'] = sub
             elif k == 'root':
                 res['root_commit'] = v or None
             elif k == 'refs':
-                res['refs'] = int(v) if v.isdigit() else 0
+                res['refs'] = int(v) if v.strip().isdigit() else 0
             elif k == 'stash':
-                res['stashes'] = int(v) if v.isdigit() else 0
+                res['stashes'] = int(v) if v.strip().isdigit() else 0
             elif k == 'size':
-                res['size_kb'] = int(v) if v.isdigit() else None
+                res['size_kb'] = int(v) if v.strip().isdigit() else None
             elif k == 'upstream':
                 up, _, counts = v.partition('\t')
                 b, _, a = counts.partition('\t')
                 res['upstream'] = up
-                res['behind'] = int(b) if b.isdigit() else None
-                res['ahead'] = int(a) if a.isdigit() else None
+                res['behind'] = int(b) if b.strip().isdigit() else None
+                res['ahead'] = int(a) if a.strip().isdigit() else None
             elif k == 'remote_fetch':
                 name, _, url = v.partition('\t')
                 remotes_dict.setdefault(name, {'name': name})['fetch_url'] = url
@@ -377,20 +378,35 @@ def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict
 
         res['dirty'] = len(res['dirty_files'])
 
-        # Update database git_repos table if host is known
+        # Update or insert into database git_repos table if host is known
         if host_id and not res['error']:
             with conn.tx():
-                conn.execute("""UPDATE git_repos SET
-                                bare = :bare, branch = :branch, head_commit = :hc, head_time = :ht,
-                                head_subject = :hs, root_commit = :rc, refs = :refs, dirty = :dirty,
-                                upstream = :up, ahead = :ahead, behind = :behind, remotes_json = :remotes,
-                                size_kb = :size, error = NULL
-                                WHERE host_id = :h AND path = :path""",
-                             {'h': host_id, 'path': path, 'bare': int(res['bare']), 'branch': res['branch'],
-                              'hc': res['head_commit'], 'ht': res['head_time'], 'hs': res['head_subject'],
-                              'rc': res['root_commit'], 'refs': res['refs'], 'dirty': res['dirty'],
-                              'up': res['upstream'], 'ahead': res['ahead'], 'behind': res['behind'],
-                              'remotes': json.dumps(res['remotes']), 'size': res['size_kb']})
+                exists = conn.scalar('SELECT 1 FROM git_repos WHERE host_id = :h AND path = :path',
+                                     {'h': host_id, 'path': path})
+                if exists:
+                    conn.execute("""UPDATE git_repos SET
+                                    bare = :bare, branch = :branch, head_commit = :hc, head_time = :ht,
+                                    head_subject = :hs, root_commit = :rc, refs = :refs, dirty = :dirty,
+                                    upstream = :up, ahead = :ahead, behind = :behind, remotes_json = :remotes,
+                                    size_kb = :size, error = NULL
+                                    WHERE host_id = :h AND path = :path""",
+                                 {'h': host_id, 'path': path, 'bare': int(res['bare']), 'branch': res['branch'],
+                                  'hc': res['head_commit'], 'ht': res['head_time'], 'hs': res['head_subject'],
+                                  'rc': res['root_commit'], 'refs': res['refs'], 'dirty': res['dirty'],
+                                  'up': res['upstream'], 'ahead': res['ahead'], 'behind': res['behind'],
+                                  'remotes': json.dumps(res['remotes']), 'size': res['size_kb']})
+                else:
+                    scan_id = conn.scalar('SELECT MAX(scan_id) FROM scans WHERE host_id = :h', {'h': host_id}) or 0
+                    conn.execute("""INSERT INTO git_repos (host_id, path, bare, branch, head_commit, head_time,
+                                                           head_subject, root_commit, refs, dirty, upstream, ahead,
+                                                           behind, remotes_json, size_kb, error, scan_id)
+                                    VALUES (:h, :path, :bare, :branch, :hc, :ht, :hs, :rc, :refs, :dirty,
+                                            :up, :ahead, :behind, :remotes, :size, NULL, :scan_id)""",
+                                 {'h': host_id, 'path': path, 'bare': int(res['bare']), 'branch': res['branch'],
+                                  'hc': res['head_commit'], 'ht': res['head_time'], 'hs': res['head_subject'],
+                                  'rc': res['root_commit'], 'refs': res['refs'], 'dirty': res['dirty'],
+                                  'up': res['upstream'], 'ahead': res['ahead'], 'behind': res['behind'],
+                                  'remotes': json.dumps(res['remotes']), 'size': res['size_kb'], 'scan_id': scan_id})
 
         # Match copies across the fleet
         if res['root_commit']:
@@ -401,7 +417,7 @@ def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict
             res['copies'] = [{
                 'host': r[0], 'path': r[1], 'bare': bool(r[2]), 'head_commit': r[3], 'head_time': r[4],
                 'same_head': r[3] == res['head_commit'],
-                'newer': (r[4] or 0) > (res['head_time'] or 0),
+                'newer': (r[3] != res['head_commit']) and ((r[4] or 0) > (res['head_time'] or 0)),
             } for r in copies_rows]
         else:
             res['copies'] = []
@@ -418,21 +434,7 @@ def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict
         conn.close()
 
 
-def repo_sync(db, host_name: str, path: str, action: str = 'sync', actor: str | None = None) -> dict:
-    """Run git fetch, pull, push, or sync on a repository."""
-    action = (action or 'sync').lower()
-    if action not in ('fetch', 'pull', 'push', 'sync'):
-        raise ValueError(f'Invalid sync action: {action}')
-
-    conn = db.connect()
-    try:
-        row = conn.all('SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR lower(ssh_host) = lower(:h)',
-                       {'h': host_name})
-        canonical_name = row[0][0] if row else host_name
-
-        sync_bash = r"""set -e
-R=%s
-ACT=%s
+_SYNC_BASH = r"""set -e
 g() { timeout 60 git -c safe.directory='*' -C "$R" "$@"; }
 
 if ! g rev-parse --git-dir >/dev/null 2>&1; then
@@ -441,7 +443,7 @@ if ! g rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 bare=$(g rev-parse --is-bare-repository 2>/dev/null)
-remotes=$(g remote | tr '\n' ' ')
+remotes=$(g remote 2>/dev/null | tr '\n' ' ')
 
 if [ -z "$remotes" ]; then
   echo "Error: No remote configured for this repository" >&2
@@ -458,7 +460,7 @@ case "$ACT" in
       echo "==> Updating bare mirror remotes..."
       g remote update --prune
     else
-      dirty=$(g status --porcelain --untracked-files=no | wc -l)
+      dirty=$(g status --porcelain --untracked-files=no 2>/dev/null | wc -l)
       if [ "$dirty" -gt 0 ]; then
         echo "Error: Working tree has uncommitted changes ($dirty files). Stash or commit before pulling." >&2
         exit 3
@@ -481,7 +483,7 @@ case "$ACT" in
       up=$(g rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
       if [ -n "$up" ]; then
         behind=$(g rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
-        dirty=$(g status --porcelain --untracked-files=no | wc -l)
+        dirty=$(g status --porcelain --untracked-files=no 2>/dev/null | wc -l)
         if [ "$behind" -gt 0 ]; then
           if [ "$dirty" -gt 0 ]; then
             echo "Notice: Fetched $behind new commits, but cannot fast-forward because working tree has uncommitted changes."
@@ -499,11 +501,26 @@ case "$ACT" in
     ;;
 esac
 echo "Done."
-""" % (shlex.quote(path), shlex.quote(action))
+"""
 
+
+def repo_sync(db, host_name: str, path: str, action: str = 'sync', actor: str | None = None) -> dict:
+    """Run git fetch, pull, push, or sync on a repository."""
+    action = (action or 'sync').lower()
+    if action not in ('fetch', 'pull', 'push', 'sync'):
+        raise ValueError(f'Invalid sync action: {action}')
+
+    path = path.rstrip('/')
+    conn = db.connect()
+    try:
+        row = conn.all('SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR lower(ssh_host) = lower(:h) OR ip_address = :h',
+                       {'h': host_name})
+        canonical_name = row[0][0] if row else host_name
+
+        script = f'R={shlex.quote(path)}\nACT={shlex.quote(action)}\n' + _SYNC_BASH
         with open_host_transport(db, conn, canonical_name, 'scan') as t:
             try:
-                out = t.run(sync_bash, timeout=90)
+                out = t.run(script, timeout=90)
                 ok = True
                 err = None
             except Exception as exc:
@@ -539,8 +556,6 @@ echo "Done."
 
 
 _HISTORY_BASH = r"""
-R=%s
-MAX=%d
 command -v git >/dev/null 2>&1 || { printf 'error\tgit is not installed on this host\n'; exit 0; }
 g() { timeout 25 git -c safe.directory='*' -C "$R" "$@"; }
 if ! g rev-parse --git-dir >/dev/null 2>&1; then
@@ -549,21 +564,22 @@ if ! g rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 printf '@@tags\n'
-g tag -l --sort=-creatordate --format='%(refname:short)%x09%(objectname)%x09%(creatordate:unix)%x09%(subject)' 2>/dev/null | head -n 30
+g tag -l --sort=-creatordate --format='%(refname:short)%09%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end)%09%(creatordate:unix)%09%(subject)' 2>/dev/null | head -n 30
 printf '@@commits\n'
-g log -n "$MAX" --format='%%H%%x09%%h%%x09%%an%%x09%%ae%%x09%%at%%x09%%s%%x09%%d' 2>/dev/null
+g log -n "$MAX" --format='%H%x09%h%x09%an%x09%ae%x09%at%x09%s%x09%d' 2>/dev/null
 """
 
 
 def repo_history(db, host_name: str, path: str, max_commits: int = 50) -> dict:
     """Fetch commit history, tags, and formatted changelog for a repository."""
+    path = path.rstrip('/')
     conn = db.connect()
     try:
-        row = conn.all('SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR lower(ssh_host) = lower(:h)',
+        row = conn.all('SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR lower(ssh_host) = lower(:h) OR ip_address = :h',
                        {'h': host_name})
         canonical_name = row[0][0] if row else host_name
 
-        script = _HISTORY_BASH % (shlex.quote(path), max_commits)
+        script = f'R={shlex.quote(path)}\nMAX={int(max_commits)}\n' + _HISTORY_BASH
         with open_host_transport(db, conn, canonical_name, 'scan') as t:
             out = t.run(script, timeout=30)
 
@@ -693,9 +709,10 @@ def repo_commit(db, host_name: str, path: str, sha: str) -> dict:
     if not re.match(r'^[a-fA-F0-9]{4,64}$', sha):
         raise ValueError('Invalid commit hash')
 
+    path = path.rstrip('/')
     conn = db.connect()
     try:
-        row = conn.all('SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR lower(ssh_host) = lower(:h)',
+        row = conn.all('SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR lower(ssh_host) = lower(:h) OR ip_address = :h',
                        {'h': host_name})
         canonical_name = row[0][0] if row else host_name
 
