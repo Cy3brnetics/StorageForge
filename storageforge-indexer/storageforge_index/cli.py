@@ -547,6 +547,9 @@ def cmd_export_markdown(args) -> int:
             merge_blueprint(target, bp)
         else:
             print(f'{path}: blueprint host {bp["hostname"]} is not among the exported hosts; ignored', file=sys.stderr)
+    from .protection import fill_node
+    for n in nodes:
+        fill_node(conn, n)
     _write(render_report(nodes, **_report_kwargs(args)), args.output)
     return 0
 

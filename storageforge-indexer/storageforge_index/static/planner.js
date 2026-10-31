@@ -497,7 +497,7 @@ function blueprint(){
     remotes:S.remotes.map(r=>({...(r.raw||{}),id:r.id,capacity:r.capacity,name:r.name,protocol:r.proto,endpoint:r.endpoint,via:r.via,mount:r.mount,status:r.status,options:r.opts})),
     links:S.links.map(l=>({kind:l.kind,path:l.path,target:l.target,health:linkHealth(l).state,fromScan:l.fromScan||undefined})),
     exports:S.exports.map(e=>({...(e.raw||{}),protocol:e.proto,name:e.name,path:e.path,clients:e.clients,options:e.opts})),
-    protection:S.protection.map(r=>{const m=collectMounts().find(x=>x.node===r.node)||{};return {node:r.node,dataset:r.name,path:m.target||null,tier:m.tier||null,ephemeral:!!r.ephemeral,sync:r.sync,snapshots:{enabled:r.snap.on,tool:r.snap.tool,policy:r.snap.policy,count:r.snap.count,overhead:r.snap.overhead},backup:r.backup,status:protStatus(r).t}}),
+    protection:S.protection.map(r=>{const m=collectMounts().find(x=>x.node===r.node)||{};return {node:r.node,dataset:r.name,path:m.target||null,tier:m.tier||null,ephemeral:!!r.ephemeral,sync:r.sync,snapshots:{enabled:r.snap.on,tool:r.snap.tool,policy:r.snap.policy,count:r.snap.count,overhead:r.snap.overhead},backup:r.backup,status:protStatus(r).t,...(r.deployed?{deployed:r.deployed,hand:r.hand}:{})}}),
     planner:{existing:S.existing||{},known:S.known||[]}};
 }
 function yamlScalar(v){ if(v===null||v===undefined) return 'null'; if(typeof v==='number'||typeof v==='boolean') return String(v); const s=String(v); return (/^[\w./@-]+$/.test(s)&&!/^(true|false|null|yes|no|\d.*)$/i.test(s))?s:JSON.stringify(s) }
@@ -877,7 +877,7 @@ function vProtection(){
     const sk=r.sync.state==='Active Sync'?'ok':r.sync.state==='Rsync Scheduled'?'ok':r.sync.state==='None'?'muted':r.sync.state==='Lagging'?'warn':'crit';
     const path=(collectMounts().find(m=>m.node===r.node)||{}).target||'';
     return `<tr data-node="${esc(r.node)}">
-      <td><b class="mono">${esc(r.name)}</b><div class="muted mono" style="font-size:11.5px">${esc(path)}</div></td>
+      <td><b class="mono">${esc(r.name)}</b><div class="muted mono" style="font-size:11.5px">${esc(path)}</div>${r.deployed?`<div class="muted" style="font-size:11px">Deployed: ${esc(r.deployed.join(', '))}</div>`:''}</td>
       <td><div class="pcell" data-act="psync" data-i="${i}" role="button" tabindex="0" title="Click to cycle sync state"><span class="st ${sk}">${esc(r.sync.state)}</span><small>${esc(r.sync.target||'no replication')}${r.sync.lag?' · lag '+esc(r.sync.lag):''}</small></div></td>
       <td><div class="pcell" data-act="psnap" data-i="${i}" role="button" tabindex="0" title="Click to toggle snapshots"><span class="st ${r.snap.on?'ok':'crit'}">${r.snap.on?esc(r.snap.tool):'No snapshots'}</span><small>${r.snap.on?`${esc(r.snap.policy)} · ${r.snap.count} kept · ${fmtBin(r.snap.overhead,1)}`:'click to enable'}</small></div></td>
       <td><span class="st ${r.backup.target?(r.backup.offsite?'ok':'warn'):'crit'}">${esc(r.backup.target||'No backup')}</span><div class="muted mono" style="font-size:11px">${r.backup.target?`${r.backup.offsite?'offsite':'same site'} · ${r.backup.ratio.toFixed(2)}× compression`:''}</div></td>
@@ -887,7 +887,7 @@ function vProtection(){
       <td><span class="pill ${st.k}">${st.t}</span><div class="why">${esc(st.why.join(' · '))}</div></td></tr>`}).join('');
   const P=S.protection.map(protStatus);
   return `<div class="grid g4">${[['ok','Protected','Snapshots plus a validated offsite copy'],['warn','Local only','A copy is missing, stale or on the same site'],['crit','Critical','Stale sync, unvalidated backup or a single copy'],['muted','Excluded','Ephemeral scratch, not tracked']].map(([k,t,d])=>`<div class="panel kpi"><span class="pill ${k}">${t}</span><span class="v">${P.filter(x=>x.k===k).length}</span><span class="s">${d}</span></div>`).join('')}</div>
-  <section class="panel"><div class="ph"><h2>3-2-1 health grid</h2><span class="sub">Click a sync or snapshot cell to simulate a state change</span></div>
+  <section class="panel"><div class="ph"><h2>3-2-1 health grid</h2><span class="sub">Click a sync or snapshot cell to simulate a state change</span>${DOC.host&&DOC.signedIn?`<button type="button" class="btn sm ghost" data-act="offsite" title="Backups that run on this host count as offsite">${DOC.offsite?'This host is offsite':'Mark this host offsite'}</button>`:''}</div>
   <div class="tw"><table style="min-width:1080px"><thead><tr><th>Dataset</th><th>Synced</th><th>Snapshots</th><th>Backup</th><th>Encryption</th><th>Last validated</th><th>3-2-1</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 
@@ -973,7 +973,7 @@ function fromBlueprint(bp){
     protection:(bp.protection||[]).map(r=>{const sn=r.snapshots||r.snap||{};const b=r.backup||{};
       return {node:r.node||nodeForPath(bp,r.path),name:r.dataset||r.name||r.path||'?',ephemeral:!!r.ephemeral,sync:{state:'None',...(r.sync||{})},
         snap:{on:!!(sn.enabled??sn.on),tool:sn.tool||'none',policy:sn.policy||'',count:sn.count||0,overhead:sn.overhead||0},
-        backup:{target:b.target||null,enc:b.enc||'none',ratio:b.ratio||1,last:b.last||null,offsite:!!b.offsite}}})};
+        backup:{target:b.target||null,enc:b.enc||'none',ratio:b.ratio||1,last:b.last||null,offsite:!!b.offsite},...(r.deployed?{deployed:r.deployed,hand:r.hand}:{})}})};
   // whole-disk members are recorded per pool in the blueprint; the planner keeps them on the disk
   (bp.pools||[]).forEach(p=>(p.members||[]).map(bare).forEach(m=>{const d=s.disks.find(x=>x.dev===m);if(d&&!d.parts.some(x=>x.id===m)) d.member=p.name}));
   return tidy(s);
@@ -1042,6 +1042,7 @@ async function openDoc(host,source){
   docState('Loading '+host+'…');
   try{
     const r=await apiJSON('/api/planner/design?host='+encodeURIComponent(host)+(source?'&source='+source:''));
+    DOC.offsite=!!r.offsite;
     const draft=!source&&load(host);
     Object.assign(DOC,{host,source:r.source,savedAt:r.saved_at,scanned:r.scanned,dirty:!!draft});
     S=draft||fromBlueprint(r.blueprint);if(!source) normalizeIds();UI.sel=null;UI.calc=null;render();docState();setHash();loadActivity();
@@ -1108,6 +1109,8 @@ view.addEventListener('click',e=>{
   if(act==='stagechanges'){ stageDesignChanges(); return }
   if(act==='preset'){ const p=PRESETS.find(x=>x.id===a.dataset.id);p.links.forEach(x=>{if(!S.links.some(l=>l.path===x.path)) S.links.push({id:'L'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),...x})});commit();return }
   if(act==='dellink'){ S.links=S.links.filter(l=>l.id!==a.dataset.id);commit();return }
+  if(['psync','psnap','pval'].includes(act)&&S.protection[+a.dataset.i].deployed){ docState('This row comes from what is deployed. Change the job in the Deploy tab.','err');return }
+  if(act==='offsite'){ const off=!DOC.offsite;apiJSON('/api/planner/offsite',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:DOC.host,offsite:off})}).then(()=>{DOC.offsite=off;render()}).catch(e=>docState(e.message,'err'));return }
   if(act==='psync'){ const r=S.protection[+a.dataset.i];r.sync.state=SYNC_STATES[(SYNC_STATES.indexOf(r.sync.state)+1)%SYNC_STATES.length];if(r.sync.state==='Lagging'&&!r.sync.lag) r.sync.lag='4 h';commit();return }
   if(act==='psnap'){ const r=S.protection[+a.dataset.i];r.snap.on=!r.snap.on;if(r.snap.on&&(!r.snap.tool||r.snap.tool.startsWith('none'))){r.snap.tool=r.node.startsWith('ds:')?'sanoid':'snapper';r.snap.policy='hourly 24 · daily 7'}commit();return }
   if(act==='pval'){ S.protection[+a.dataset.i].backup.last=today();commit();return }

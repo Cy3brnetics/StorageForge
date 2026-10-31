@@ -349,6 +349,8 @@ def rebuild_host(db, conn, hostname: str, rebuild_clients: bool = True) -> tuple
                         for j in overview(conn) if j['source'] == node['hostname'] and j['method'] in ('mirror', 'rsnapshot')]
     except Exception:                         # an older schema (no jobs table yet) or no jobs: nothing to add
         node['jobs'] = []
+    from .protection import fill_node
+    fill_node(conn, node)
     nodes, edges = build(node)
     save(db, conn, node['hostname'], nodes, edges)
     if rebuild_clients:   # hosts that mount from this one draw their line to its folders: redraw them too

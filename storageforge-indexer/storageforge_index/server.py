@@ -111,7 +111,7 @@ from flask_login import LoginManager, current_user, login_required, login_user, 
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, folders, gitrepos, graph, jobs, preflight,
+from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, folders, gitrepos, graph, jobs, preflight, protection,
                fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, reinstall, shares, tasks, users)
 from .capacity import parse_size
 from .db import Database, epoch
@@ -1520,12 +1520,26 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             raise ValueError('give host')
         saved = graph.stored_blueprint(conn(), host)
         saved_at = conn().scalar('SELECT imported_at FROM blueprints WHERE hostname = :h', {'h': host})
+        offsite = moves.host_slug(host) in protection.offsite_hosts(conn())
         if source == 'saved' and saved:
-            return jsonify(host=host, source='saved', saved_at=saved_at, scanned=scanned(host), blueprint=saved)
+            saved['protection'] = protection.overlay(conn(), host, saved.get('protection') or [])
+            return jsonify(host=host, source='saved', saved_at=saved_at, scanned=scanned(host), offsite=offsite, blueprint=saved)
         if not scanned(host):
             return jsonify(error=f'{host} has no saved design and has not been scanned'), 404
         bp = blueprint.merge_intent(scan_design(host), saved)
-        return jsonify(host=host, source='scan', saved_at=saved_at, scanned=True, blueprint=bp)
+        bp['protection'] = protection.overlay(conn(), host, bp['protection'])
+        return jsonify(host=host, source='scan', saved_at=saved_at, scanned=True, offsite=offsite, blueprint=bp)
+
+    @web.put('/api/planner/offsite')
+    @login_required
+    def api_planner_offsite():
+        body = json_body()
+        host, off = str(body.get('host') or '').strip(), bool(body.get('offsite'))
+        if not host:
+            raise ValueError('give host')
+        protection.set_offsite(conn(), host, off, actor())
+        core.audit(conn(), actor(), 'planner.offsite', 'ok', host, {'offsite': off})
+        return jsonify(host=host, offsite=off)
 
     @web.post('/api/planner/changes')
     @login_required

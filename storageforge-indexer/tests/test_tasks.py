@@ -219,6 +219,65 @@ class MoveExtras(Fleet):
         self.assertEqual(len(gitrepos.listing(self.conn)['repos']), 1)
 
 
+class DeployedProtection(Fleet):
+    ROWS = [{'node': 'a', 'dataset': 'pool', 'path': '/mnt/pool', 'sync': {'state': 'None'},
+             'snapshots': {'enabled': False}, 'backup': {'target': 'typed', 'enc': 'gpg', 'ratio': 2, 'last': '2020-01-01', 'offsite': False}},
+            {'node': 'b', 'dataset': 'root', 'path': '/', 'sync': {'state': 'None'}, 'snapshots': {'enabled': False}, 'backup': {'target': 'by hand'}}]
+
+    def job(self, **kw):
+        return {'id': 'j1', 'name': 'Photos', 'method': 'rsnapshot', 'runner': 'pc', 'source': 'nas', 'src': '/mnt/pool/photos', 'dst': '/mnt/share/p',
+                'schedule': 'daily', 'state': 'ok', 'last_ok': {'end': 1793000000}, **kw}
+
+    def overlay(self, *jobs_):
+        from unittest import mock
+        from storageforge_index import protection
+        with mock.patch('storageforge_index.jobs.overview', return_value=list(jobs_)):
+            return protection.overlay(self.conn, 'nas', self.ROWS)
+
+    def test_a_job_fills_its_dataset_and_a_typed_row_stays(self):
+        import datetime as dt
+        pool, root = self.overlay(self.job())
+        self.assertEqual(pool['backup']['target'], 'pc:/mnt/share/p')
+        self.assertEqual(pool['backup']['last'], dt.date.fromtimestamp(1793000000).isoformat())
+        self.assertEqual((pool['backup']['enc'], pool['backup']['offsite']), ('gpg', False))
+        self.assertEqual(pool['deployed'], ['job Photos'])
+        self.assertEqual(root, self.ROWS[1])
+
+    def test_offsite_and_removed_jobs(self):
+        from storageforge_index import protection
+        protection.set_offsite(self.conn, 'pc', True, 'test')
+        pool = self.overlay(self.job())[0]
+        self.assertTrue(pool['backup']['offsite'])
+        protection.set_offsite(self.conn, 'pc', False, 'test')
+        from unittest import mock
+        with mock.patch('storageforge_index.jobs.overview', return_value=[]):      # saved with the job's values, then it went away
+            again = protection.overlay(self.conn, 'nas', [pool])
+        self.assertEqual(again[0]['backup'], self.ROWS[0]['backup'])
+        self.assertNotIn('deployed', again[0])
+
+    def test_a_failing_mirror_is_lagging(self):
+        pool = self.overlay(self.job(method='mirror', state='failed', last_ok=None))[0]
+        self.assertEqual((pool['sync']['state'], pool['sync']['lag']), ('Lagging', 'last run failed'))
+        self.assertIsNone(pool['backup']['last'])
+
+    def test_other_hosts_jobs_do_not_count(self):
+        self.assertEqual(self.overlay(self.job(source='other')), self.ROWS)
+
+    def test_a_scheduled_task_counts(self):
+        from storageforge_index import protection
+        task = {'name': 'Snaps', 'host': 'nas', 'schedule': 'hourly', 'blocks': [
+            {'type': 'btrfs_snapshot', 'params': {'subvol': '/mnt/pool'}},
+            {'type': 'rsync', 'params': {'src': '/mnt/pool/photos', 'dst': '/mnt/share/x', 'dst_host': 'pc'}}]}
+        tasks.save_task(self.conn, task, 'test')
+        self.conn.execute("""INSERT INTO deployed (host, kind, ref, deploy_hash, deployed_at, deployed_by, detail_json)
+                             VALUES ('nas', 'tasks', 'snaps', 'x', 1, 't', '{}')""")
+        self.conn.execute("INSERT INTO task_runs (host, task, started_at, finished_at, exit_code, via, received_at) VALUES ('nas', 'snaps', 1793000000, 1793000100, 0, 'scan', 1793000100)")
+        pool = protection.overlay(self.conn, 'nas', self.ROWS)[0]
+        self.assertEqual(pool['snapshots']['tool'], 'btrfs')
+        self.assertEqual(pool['backup']['target'], 'pc:/mnt/share/x')
+        self.assertIsNotNone(pool['backup']['last'])
+
+
 class Tasks(Fleet):
     def task(self, *blocks, **kw):
         return {'name': kw.pop('name', 'Nightly'), 'host': 'nas', 'schedule': kw.pop('schedule', 'hourly'), 'blocks': list(blocks), **kw}
