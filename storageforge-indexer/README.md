@@ -261,6 +261,8 @@ On the CLI: `storageforge-index plan list|types|check|script|ansible|import`.
 
 Scans also read each btrfs filesystem's data and metadata profiles and its label from `/sys/fs/btrfs`, so a multi-device pool shows as e.g. "btrfs raid1/raid1 · 4 devices", with usable space worked out from the profile. Its subvolumes and their mount points are listed under the pool.
 
+Change plans also create ZFS pools and datasets and LVM volumes, and send btrfs and ZFS snapshots to other hosts. See [Plans and scripts](../docs/plans-and-scripts.md).
+
 ## Moving data: plans and rsync scripts
 
 The **Moves** tab plans where data goes. Each step takes a folder on one scanned host to a folder on another, or on the same host, using one of five methods (the fifth, `git`, is in [Git repositories](#git-repositories-and-archives)):

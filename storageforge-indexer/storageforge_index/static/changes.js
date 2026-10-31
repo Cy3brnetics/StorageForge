@@ -48,7 +48,7 @@ async function openTask(type, host, preset = {}, edit = null) {
     if (f.kind === 'choice') {
       input = el('select', {}, ...f.options.map((o) => new Option(o || '(none)', o))); input.value = v || f.options[0];
     } else {
-      input = el('input', { type: 'text', class: ['path', 'device', 'spec', 'options', 'confirm'].includes(f.kind) ? 'mono' : '',
+      input = el('input', { type: 'text', class: ['path', 'device', 'devices', 'dataset', 'name', 'size', 'host', 'spec', 'options', 'confirm'].includes(f.kind) ? 'mono' : '',
                             placeholder: f.placeholder || (f.kind === 'confirm' ? 'e.g. /dev/sdc' : ''), autocomplete: 'off', spellcheck: 'false' });
       input.value = v;
     }
@@ -90,6 +90,7 @@ function stageActions(doc, n) {
     const dev = '/dev/' + bare(n.ref.dev);
     out.push(b('Partition…', 'partition', { disk: dev }), b('Format whole disk…', 'format', { device: dev }));
     if (btrfsMounts.length) out.push(b('Add to a btrfs pool…', 'btrfs-add', { device: dev, target: btrfsMounts[0].target }));
+    out.push(b('New ZFS pool…', 'zfs-pool', { devices: dev }), b('New volume group…', 'lvm-vg', { devices: dev }), b('Add to a volume group…', 'lvm-vg-extend', { device: dev }));
   } else if (n.kind === 'part') {
     const dev = '/dev/' + n.ref.id, uuid = n.ref.uuid;
     out.push(b('Format…', 'format', { device: dev, fstype: n.ref.fs && n.ref.fs !== 'none' ? n.ref.fs : 'ext4' }),
@@ -103,6 +104,12 @@ function stageActions(doc, n) {
     out.push(b('New subvolume…', 'subvolume', { path: at ? at + '/' : '' }),
       b('Convert profile…', 'btrfs-balance', { target: at, data: n.ref.level === 'single' ? 'raid1' : n.ref.level, metadata: n.ref.metaLevel || 'raid1' }),
       b('Add device…', 'btrfs-add', { target: at }), b('Scrub', 'scrub', { target: at }));
+  } else if (n.kind === 'pool' && n.ref.type === 'zfs') {
+    out.push(b('New dataset…', 'zfs-dataset', { dataset: n.ref.name + '/' }), b('Snapshot…', 'zfs-snapshot', { dataset: n.ref.name, name: new Date().toISOString().slice(0, 10) }),
+      b('Send a snapshot…', 'zfs-send', { dataset: n.ref.name }), b('Scrub', 'zfs-scrub', { pool: n.ref.name }));
+  } else if (n.kind === 'pool' && n.ref.type === 'lvm') {
+    const [vg, lv] = String(n.ref.name || '').split('/');
+    out.push(b('New volume…', 'lvm-lv', { vg }), b('Grow…', 'lvm-extend', { vg, lv: lv || '' }), b('Snapshot…', 'lvm-snapshot', { vg, lv: lv || '', name: `${lv || 'lv'}-snap` }));
   } else if (n.kind === 'subvol') {
     const mnt = [...doc.m.nodes.values()].find((x) => x.kind === 'mount' && doc.m.edges.some(([a, c]) => a === n.key && c === x.key));
     const uuid = (n.part && n.part.uuid) || '';
@@ -113,7 +120,8 @@ function stageActions(doc, n) {
     out.push({ label: 'Browse folders', run: () => browseFolders(h, n.target, n.target), primary: true },
       b('New folder…', 'dir', { path: n.target.replace(/\/$/, '') + '/' }));
     if (btrfs) out.push(b('New subvolume here…', 'subvolume', { path: n.target.replace(/\/$/, '') + '/' }),
-      b('Snapshot…', 'snapshot', { source: n.target, dest: `${n.target.replace(/\/$/, '')}/.snapshots/${new Date().toISOString().slice(0, 10)}` }));
+      b('Snapshot…', 'snapshot', { source: n.target, dest: `${n.target.replace(/\/$/, '')}/.snapshots/${new Date().toISOString().slice(0, 10)}` }),
+      b('Send a snapshot…', 'btrfs-send', { source: `${n.target.replace(/\/$/, '')}/.snapshots/` }));
     const opts = (n.sub || '').split(' · ')[1] || '';
     out.push(b('Mount options…', 'mount-options', { target: n.target, options: opts }), b('Unmount…', 'unmount', { target: n.target }));
   }
@@ -261,7 +269,7 @@ function renderChanges() {
           button('Remove', () => { p.tasks.splice(i, 1); chTouch(); renderChanges(); }, 'btn ghost sm danger'))),
       text('span', `${t.host}${(CH.types && CH.types[t.type] && CH.types[t.type].destructive) ? ' · destructive' : ''}${t.note ? ' · ' + t.note : ''}`, 'muted small'),
       // drive tasks staged from a planner design arrive unconfirmed: the server refuses them until the device is typed
-      CH.types?.[t.type]?.destructive && t.params.confirm !== (t.params.device || t.params.disk)
+      CH.types?.[t.type]?.destructive && t.params.confirm !== (t.params.device || t.params.disk || t.params.devices)
         ? text('p', `Not confirmed: Edit it and type ${t.params.device || t.params.disk} again. Until then the plan can't be checked or saved.`, 'st-failed small') : '',
       r ? el('ul', { class: 'mvcheck' }, ...r.items.map((x) => el('li', { class: `lv-${x.level}` }, x.text))) : '');
     li._menu = () => [{ heading: `${i + 1}. ${taskTitle(t)}` }, { label: 'Edit…', run: () => openTask(t.type, t.host, {}, t) },

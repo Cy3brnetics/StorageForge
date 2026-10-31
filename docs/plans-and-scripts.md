@@ -21,6 +21,8 @@ Change plans work like an Ansible playbook for storage: an ordered list of tasks
 | :--- | :--- |
 | Files and folders | create folder, rename or move (same filesystem), move to trash, symlink, owner and permissions |
 | btrfs | create subvolume (optionally no copy-on-write), snapshot, turn a folder into a subvolume, add a device to a pool, convert profile (balance), scrub |
+| ZFS | create a pool, create a dataset with properties, snapshot, send a snapshot to another host, scrub |
+| LVM | create a volume group, add a device to one, create a logical volume, grow one with its filesystem, snapshot one |
 | Mounts | add a mount (fstab), change mount options, unmount |
 | Drives | partition a disk (GPT, one partition), format, set the filesystem label |
 
@@ -50,6 +52,23 @@ fstab is backed up before each edit and restored if `findmnt --verify` rejects t
 Drive tasks have three locks: the device typed twice in the plan, `--destructive` on the command line, and a refusal to touch anything mounted, swapped on, or part of RAID, LVM or LUKS.
 
 **Ansible playbook** (`changes-<plan>.yml`) writes the same tasks with standard modules (`ansible.builtin.file`, `ansible.posix.mount`, `community.general.parted` and `filesystem`, `command` for btrfs). The inventory lines from the last scans are at the top. Drive tasks run only with `-e storageforge_destructive=true`.
+
+### Sending snapshots
+
+Use the **btrfs** and **ZFS** send tasks for a one-off copy, and the **Send** blocks in a [storage task](#storage-tasks) to repeat it. Both run on the sending host and copy only the changes when given, or when they find, an earlier snapshot both sides share. The "btrfs replication" and "ZFS replication" templates snapshot, send and prune on a timer.
+
+| | Change task | Storage task block |
+| :--- | :--- | :--- |
+| Which snapshot | The one you name | The newest with the prefix |
+| Earlier snapshot | The one you name | The newest both sides have |
+| Interrupted btrfs receive | Reported, you delete it | Removed and sent again |
+| Old copies on the receiver | Left alone | Pruned to **Keep there** |
+
+ZFS sends use `zfs receive -u`, so nothing is mounted over a folder on the receiver, and never `-F`, so an existing dataset is never overwritten. Raw sends keep an encrypted dataset encrypted, and the receiver does not need its key.
+
+Keep the last snapshot you sent on the sender until the next send finishes, or the next one is a full copy. See [Target hosts](target-hosts.md#sending-snapshots-between-hosts) for the SSH setup.
+
+LVM has no equivalent. To copy an LVM snapshot, mount it and use a Moves step.
 
 ## Data moves
 
@@ -121,7 +140,7 @@ Tasks are small programs built from blocks in the **Tasks** view. They run on on
 | Guards | Require mounted, Require free space, Require host up |
 | Control | If (mounted, exists, free below, weekday, day of month, host up, command succeeds) with then/else, Try with a fallback, Stop |
 | Copy | Copy with rsync (copy or mirror; one side may be another host), Rotating backup (dated hard-linked folders, keep N), Verify copy |
-| Snapshots | btrfs snapshot, Prune btrfs snapshots, ZFS snapshot, Prune ZFS snapshots |
+| Snapshots | btrfs snapshot, Prune btrfs snapshots, Send btrfs snapshots, ZFS snapshot, Prune ZFS snapshots, Send ZFS snapshots |
 | Services | Docker compose stop/start/restart, systemd unit stop/start/restart |
 | Other | Make folder, btrfs scrub, Run command, Wait, Log |
 

@@ -23,13 +23,13 @@ import time
 
 from .db import Conn
 from .moves import _path, _under, find_host, host_slug, hosts, mount_of, slug, subtree
-from .scriptkit import HELPERS, REMOTE, comments, one_line
+from .scriptkit import DEST_CMD, HELPERS, REMOTE, comments, one_line
 
 NAME_RE = re.compile(r'[^\n\r\t]{1,80}')
 # [user@]host; neither part starts with '-', which rsync and ssh would read as an option
 HOST_RE = re.compile(r'(?!-)([A-Za-z0-9._-]{1,32}@)?(?!-)[A-Za-z0-9.:_\[\]-]{1,253}')
 PREFIX_RE = re.compile(r'[A-Za-z0-9_.-]{1,40}')
-DATASET_RE = re.compile(r'[A-Za-z0-9_.:/-]{1,200}')
+DATASET_RE = re.compile(r'(?!-)[A-Za-z0-9_.:/-]{1,200}')
 UNIT_RE = re.compile(r'[A-Za-z0-9@_.:\\-]{1,120}')
 SCHEDULE_RE = re.compile(r'[A-Za-z0-9 *:,./~-]{1,80}')
 MAX_BLOCKS, MAX_DEPTH = 200, 6
@@ -96,6 +96,19 @@ TYPES: dict[str, dict] = {
     'zfs_prune': {'cat': 'snapshot', 'label': 'Prune ZFS snapshots', 'text': 'keep the newest {keep} {dataset}@{prefix}-*',
                   'params': [P('dataset', 'dataset', 'Dataset'), P('prefix', 'prefix', 'Name prefix', 'auto'),
                              P('keep', 'int', 'Keep', 14, min=1, max=9999), P('recursive', 'bool', 'with child datasets', False)]},
+    'btrfs_send': {'cat': 'snapshot', 'label': 'Send btrfs snapshots', 'text': 'send the newest {prefix}-* in {into} to {dst}',
+                   'help': 'Sends the newest read-only snapshot with btrfs send, only the changes when both sides still share an '
+                           'earlier one. Keep at least that one when you prune here. Older snapshots on this host are not sent.',
+                   'params': [P('into', 'path', 'Snapshot folder'), P('prefix', 'prefix', 'Name prefix', 'auto'),
+                              P('dst_host', 'host', 'To host', '', optional=True), P('dst', 'path', 'Into folder', on='dst_host'),
+                              P('keep', 'int', 'Keep there (0 = all)', 0, min=0, max=9999)]},
+    'zfs_send': {'cat': 'snapshot', 'label': 'Send ZFS snapshots', 'text': 'send the newest {dataset}@{prefix}-* to {dst}',
+                 'help': 'Sends the newest snapshot with zfs send, only the changes when both sides still share an earlier one. '
+                         'It never overwrites a dataset it shares nothing with. Keep at least the shared one when you prune here.',
+                 'params': [P('dataset', 'dataset', 'Dataset'), P('prefix', 'prefix', 'Name prefix', 'auto'),
+                            P('dst_host', 'host', 'To host', '', optional=True), P('dst', 'dataset', 'Into dataset', placeholder='backup/media'),
+                            P('keep', 'int', 'Keep there (0 = all)', 0, min=0, max=9999), P('recursive', 'bool', 'with child datasets', False),
+                            P('raw', 'bool', 'raw (stays encrypted, without its key)', False)]},
     'compose': {'cat': 'service', 'label': 'Docker compose', 'text': '{action} the {project} stack',
                 'params': [P('project', 'unit', 'Compose project', placeholder='immich'),
                            P('action', 'select', 'Action', 'stop', choices=['stop', 'start', 'restart'])]},
@@ -127,6 +140,14 @@ TEMPLATES = [
      'blocks': [_b('btrfs_snapshot', subvol='', prefix='hourly'), _b('btrfs_prune', into='', prefix='hourly', keep=48)]},
     {'name': 'ZFS snapshots', 'help': 'Snapshot a dataset every night and keep two weeks.', 'schedule': '*-*-* 02:30:00',
      'blocks': [_b('zfs_snapshot', dataset='', prefix='daily'), _b('zfs_prune', dataset='', prefix='daily', keep=14)]},
+    {'name': 'btrfs replication', 'help': 'Snapshot a subvolume every night and send it to another host, changes only after the first.',
+     'schedule': '*-*-* 02:30:00',
+     'blocks': [_b('btrfs_snapshot', subvol='', prefix='daily'), _b('btrfs_send', into='', prefix='daily', dst_host='', dst='', keep=30),
+                _b('btrfs_prune', into='', prefix='daily', keep=7)]},
+    {'name': 'ZFS replication', 'help': 'Snapshot a dataset every night and send it to another host, changes only after the first.',
+     'schedule': '*-*-* 02:30:00',
+     'blocks': [_b('zfs_snapshot', dataset='', prefix='daily'), _b('zfs_send', dataset='', prefix='daily', dst_host='', dst='', keep=30),
+                _b('zfs_prune', dataset='', prefix='daily', keep=7)]},
     {'name': 'Rotating backups', 'help': 'Pull a folder from another host into dated, hard-linked folders.',
      'schedule': '*-*-* 02:30:00',
      'blocks': [_b('require_mounted', path=''), _b('require_reachable', host=''), _b('rotate', src='', dst='', keep=14)]},
@@ -403,6 +424,19 @@ def check(conn: Conn, task: dict) -> dict:
                 known = {(x['source'] or '').split('@')[0] for x in home['mounts'] if (x['fstype'] or '').lower() == 'zfs'}
                 if known and p['dataset'] not in known:
                     add('warn', f'{p["dataset"]} is not a mounted dataset on {home["name"]} at the last scan')
+            elif t in ('btrfs_send', 'zfs_send'):
+                if p['dst_host']:
+                    if not host_of(p['dst_host']) and '@' not in p['dst_host']:
+                        add('warn', f'{p["dst_host"]} has not been scanned: give it as user@address if it is not')
+                    add('note', f'root on {task["host"] or "the task host"} logs in to {p["dst_host"]} with its SSH key '
+                                f'(/root/.ssh): set that up once (ssh-copy-id)')
+                if t == 'btrfs_send' and p['dst']:
+                    dh = host_of(p['dst_host'])
+                    dm = dh and mount_of(dh, p['dst'])
+                    if dm and (dm['fstype'] or '').lower() != 'btrfs':
+                        add('crit', f'{p["dst"]} is on {dm["fstype"]} on {dh["name"]}, not btrfs')
+                if t == 'zfs_send' and p['dst'] and '/' not in p['dst']:
+                    add('crit', f'{p["dst"]} is a whole pool, and receiving onto one means overwriting it: give pool/name')
             elif t == 'scrub' and p['path'] and home:
                 m = mount_of(home, p['path'])
                 if m and (m['fstype'] or '').lower() != 'btrfs':
@@ -550,6 +584,13 @@ class _Emit:
                       f'|| fail "snapshot failed"')
         elif t == 'zfs_prune':
             self.w(d, f'prune_zfs {q(p["dataset"])} {q(p["prefix"])} {int(p["keep"])} {1 if p["recursive"] else 0} || fail "prune failed"')
+        elif t in ('btrfs_send', 'zfs_send'):
+            login, port = ('', 22) if self.local(p['dst_host']) else _login(self.hs, p['dst_host'])
+            if t == 'btrfs_send':
+                self.w(d, f'send_btrfs {q(p["into"])} {q(p["prefix"])} {q(login)} {int(port)} {q(p["dst"])} {int(p["keep"])} || fail "send failed"')
+            else:
+                self.w(d, f'send_zfs {q(p["dataset"])} {q(p["prefix"])} {q(login)} {int(port)} {q(p["dst"])} {int(p["keep"])} '
+                          f'{1 if p["recursive"] else 0} {1 if p["raw"] else 0} || fail "send failed"')
         elif t == 'compose':
             self.w(d, f'x docker compose -p {q(p["project"])} {p["action"]} || fail "docker compose {p["action"]} failed"')
         elif t == 'service':
@@ -611,7 +652,7 @@ def script(conn: Conn, task: dict) -> str:
                              problems=comments(problems, '#   none'))
             + f'TASK={q(sl)}\nTASK_NAME={q(task["name"])}\nTASK_HOST={q(host_slug(task["host"]) if task["host"] else "")}\n'
             + f'SCHEDULE={q(task["schedule"])}\nTIMEOUT_MIN={int(task["timeout_min"])}\n'
-            + TASK_BODY_1 + HELPERS + TASK_FUNCS + REMOTE.replace('sf-move', 'sf-task').replace('move.sh', 'task.sh')
+            + TASK_BODY_1 + HELPERS + DEST_CMD + TASK_FUNCS + REMOTE.replace('sf-move', 'sf-task').replace('move.sh', 'task.sh')
             + f'\nmain() {{\n{main}\n}}\n\non_failure() {{\n{fail_body}\n}}\n' + TASK_TAIL)
 
 
@@ -758,6 +799,76 @@ prune_zfs() {   # prune_zfs <dataset> <prefix> <keep> <recursive>
   mapfile -t old < <(zfs list -H -t snapshot -o name -s creation -d 1 -- "$1" 2>/dev/null | grep -F "@$2-" | head -n "-$3")
   ((${#old[@]})) || { ok "nothing to prune on $1"; return 0; }
   for o in "${old[@]}"; do x zfs destroy $r -- "$o" || return 1; done
+}
+send_reach() {   # send_reach <login> <port> <tool> <its version argument>: can the receiving side run it?
+  dest_cmd "$1" "$2" "$3" "$4" >/dev/null 2>&1 </dev/null && return 0
+  if ((DRY)); then conflict "cannot run $3 on ${1:-this host} (SSH key, sudo, is it installed?): a real run fails here"; else
+    warnl "cannot run $3 on ${1:-this host} (SSH key, sudo, is it installed?)"; fi
+  return 1
+}
+send_btrfs() {   # send_btrfs <folder> <prefix> <login> <port> <into> <keep>
+  local into=$1 prefix=$2 login=$3 port=$4 dest=$5 keep=$6 newest parent= n done_=0 there old
+  newest=$(find "$into" -mindepth 1 -maxdepth 1 -name "$prefix-*" 2>/dev/null | sort | tail -n 1); newest=${newest##*/}
+  if [[ -z $newest ]]; then
+    if ((DRY)); then info "no $prefix-* in $into yet: a real run sends the snapshot taken before this block"; return 0; fi
+    warnl "no $prefix-* in $into to send"; return 1
+  fi
+  send_reach "$login" "$port" btrfs --version || { ((DRY)) && return 0; return 1; }
+  mapfile -t there < <(dest_cmd "$login" "$port" find "$dest" -mindepth 1 -maxdepth 1 -name "$prefix-*" -printf '%f\n' 2>/dev/null </dev/null | sort -r)
+  for n in "${there[@]}"; do   # newest first: an interrupted receive leaves a subvolume that was never finished
+    if ((!done_)); then
+      if dest_cmd "$login" "$port" btrfs subvolume show -- "$dest/$n" 2>/dev/null </dev/null | grep -qE 'Received UUID:[[:space:]]+[0-9a-f]'; then done_=1
+      else warnl "$n on the other side is unfinished: removing it"; x dest_cmd "$login" "$port" btrfs subvolume delete -- "$dest/$n" </dev/null || return 1; continue; fi
+    fi
+    if [[ -d $into/$n ]]; then parent=$n; break; fi
+  done
+  if [[ $parent == "$newest" ]]; then ok "$newest is already there"
+  else
+    [[ -n $parent ]] && info "changes since $parent" || info "no shared snapshot: sending all of $newest"
+    if ((DRY)); then doing "would run: btrfs send ${parent:+-p $into/$parent }$into/$newest | btrfs receive $dest on ${login:-this host}"
+    else
+      doing "btrfs send ${parent:+-p $into/$parent }$into/$newest | btrfs receive $dest on ${login:-this host}"
+      dest_cmd "$login" "$port" mkdir -p -- "$dest" </dev/null || return 1
+      btrfs send ${parent:+-p "$into/$parent"} -- "$into/$newest" | dest_cmd "$login" "$port" btrfs receive -- "$dest" || return 1
+      ok "sent $newest"
+    fi
+  fi
+  ((keep)) || return 0
+  mapfile -t old < <(dest_cmd "$login" "$port" find "$dest" -mindepth 1 -maxdepth 1 -name "$prefix-*" -printf '%f\n' 2>/dev/null </dev/null | sort | head -n "-$keep")
+  for n in "${old[@]}"; do x dest_cmd "$login" "$port" btrfs subvolume delete -- "$dest/$n" </dev/null || return 1; done
+}
+send_zfs() {   # send_zfs <dataset> <prefix> <login> <port> <into> <keep> <recursive> <raw>
+  local ds=$1 prefix=$2 login=$3 port=$4 dest=$5 keep=$6 flags=() r= here there newest parent= n old
+  ((${7})) && { flags+=(-R); r=-r; }
+  ((${8})) && flags+=(-w)
+  mapfile -t here < <(zfs list -H -t snapshot -o name -s creation -d 1 -- "$ds" 2>/dev/null | grep -F "@$prefix-" | cut -d@ -f2)
+  newest=${here[${#here[@]}-1]:-}
+  if [[ -z $newest ]]; then
+    if ((DRY)); then info "no $ds@$prefix-* yet: a real run sends the snapshot taken before this block"; return 0; fi
+    warnl "no $ds@$prefix-* to send"; return 1
+  fi
+  send_reach "$login" "$port" zfs version || { ((DRY)) && return 0; return 1; }
+  mapfile -t there < <(dest_cmd "$login" "$port" zfs list -H -t snapshot -o name -s creation -d 1 -- "$dest" 2>/dev/null </dev/null | grep -F "@$prefix-" | cut -d@ -f2)
+  for ((n = ${#there[@]} - 1; n >= 0; n--)); do   # newest shared snapshot
+    if printf '%s\n' "${here[@]}" | grep -qxF -- "${there[n]}"; then parent=${there[n]}; break; fi
+  done
+  if [[ $parent == "$newest" ]]; then ok "$newest is already there"
+  else
+    if [[ -z $parent ]] && dest_cmd "$login" "$port" zfs list -H -o name -- "$dest" >/dev/null 2>&1 </dev/null; then
+      if ((DRY)); then conflict "$dest exists there and shares no snapshot with $ds: a real run fails here"; return 0; fi
+      warnl "$dest exists there and shares no snapshot with $ds: not overwriting it"; return 1
+    fi
+    [[ -n $parent ]] && { flags+=(-i "@$parent"); info "changes since $parent"; } || info "no shared snapshot: sending all of $newest"
+    if ((DRY)); then doing "would run: zfs send ${flags[*]-} $ds@$newest | zfs receive -u $dest on ${login:-this host}"
+    else
+      doing "zfs send ${flags[*]-} $ds@$newest | zfs receive -u $dest on ${login:-this host}"
+      zfs send ${flags[@]+"${flags[@]}"} -- "$ds@$newest" | dest_cmd "$login" "$port" zfs receive -u -- "$dest" || return 1
+      ok "sent $newest"
+    fi
+  fi
+  ((keep)) || return 0
+  mapfile -t old < <(dest_cmd "$login" "$port" zfs list -H -t snapshot -o name -s creation -d 1 -- "$dest" 2>/dev/null </dev/null | grep -F "@$prefix-" | head -n "-$keep")
+  for n in "${old[@]}"; do x dest_cmd "$login" "$port" zfs destroy $r -- "$n" </dev/null || return 1; done
 }
 """
 

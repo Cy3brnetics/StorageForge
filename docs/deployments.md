@@ -96,6 +96,15 @@ Keys and tokens are made fresh on every apply and travel only inside the signed 
 - drift on a host;
 - a deploy failed.
 
+Besides failed, late and differing jobs and drift, alerts cover what scans and the server already know:
+
+- a host's latest scan failed;
+- a mount seen in the last 30 days is gone (after that it counts as removed on purpose);
+- a filesystem is over `STORAGEFORGE_DISK_WARN_PCT` or `STORAGEFORGE_DISK_CRIT_PCT` full, from the last scan (network shares and RAM disks don't count);
+- a pool is not healthy, or reports device errors;
+- the nightly backup failed, or the newest is over 3 days old;
+- the HTTPS certificate ends within 30 days.
+
 Open alerts show in the Deploy panel. Each opening and resolving can also go to ntfy (URL, topic, optional token), Gotify (URL, token) or a webhook. Alert URLs may not point at loopback, link-local or multicast addresses, redirects are not followed, a stored token is dropped when its server changes, and the test button reports only HTTP status codes. Private LAN addresses are allowed, since a self-hosted ntfy is the usual setup.
 
 **Drift** has two kinds:

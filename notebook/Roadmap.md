@@ -1,21 +1,21 @@
 ---
 tags: [roadmap]
-updated: 2026-10-29
+updated: 2026-10-30
 ---
 # Roadmap
 
 The findings in the order that makes each step easier than the last. Effort: S under a day, M a few days, L a week or more.
 
 ## Now: make change safe
-1. [[EQ-01 No CI and untested paths]] (M): one test command that runs in the image, CI on SQLite and PostgreSQL. Everything after this is safer.
-2. ~~[[PF-13 Planner export is a second script generator]]~~ done 2026-10-29. Follow-up: [[PF-17 Changes has no pool tasks]] (M).
+1. [[EQ-01 No CI and untested paths]] (M): CI is written (`.gitea/workflows/ci.yml`) and needs a runner. Browser JS is still untested.
+2. ~~[[PF-13 Planner export is a second script generator]]~~ done 2026-10-29. Follow-up: [[PF-17 Changes has no pool tasks]]: the ZFS and LVM tasks exist since 2026-10-30; designs still have to use them.
 3. [[EQ-02 Two capacity engines]] (S): shared test vectors, run in the new CI.
 
 ## Next: from map to monitor
-4. [[PF-01 Alerts only cover deploys]] (M): scan failures, gone mounts, full disks, degraded pools. Uses data already stored.
+4. ~~[[PF-01 Alerts only cover deploys]]~~ done 2026-10-30.
 5. [[PF-02 Protection matrix ignores deployed jobs]] (M): fill 3-2-1 from deployed jobs; unlocks "backup is late" alerts.
 6. [[PF-06 Move progress from scans]] (S): one scan section.
-7. [[PF-10 Cleanup cache holds one result]] (S): small fix, visible every time Cleanup opens.
+7. ~~[[PF-10 Cleanup cache holds one result]]~~ done (GM-25).
 
 ## Then: lifecycle and admin
 8. [[PF-08 No way to retire a host]] (M)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import http.client
 import ipaddress
 import json
+import os
 import re
 import socket
 import threading
@@ -18,8 +19,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
-from .db import Conn, loads
+from .db import Conn, epoch, loads
 
 URL_RE = re.compile(r'https?://[^\s"<>]{3,500}')
 # The report URL also ends up in scripts run as root on hosts: scheme, host, port and a plain path, no shell characters.
@@ -273,10 +275,111 @@ def drift(conn: Conn) -> list[dict]:
     return out
 
 
+# ── what the scans and this server know ─────────────────────────────
+DISK_WARN = int(os.environ.get('STORAGEFORGE_DISK_WARN_PCT', '90'))
+DISK_CRIT = int(os.environ.get('STORAGEFORGE_DISK_CRIT_PCT', '95'))
+GONE_DAYS = 30                   # a mount missing this long was removed on purpose: stop alerting
+CERT_WARN_DAYS, CERT_CRIT_DAYS = 30, 7
+BACKUP_STALE_DAYS = 3
+NO_USAGE_FS = {'tmpfs', 'devtmpfs', 'squashfs', 'iso9660', 'overlay', 'ramfs', 'nfs', 'nfs4', 'cifs', 'smb3', 'fuse.sshfs'}    # always full, or another host's disk
+
+
+def scan_problems(conn: Conn) -> dict:
+    """A host's latest scan job failed; a mount a scan saw recently is gone; a filesystem is nearly full; a pool is unwell."""
+    from .payloads import node_from_index
+    now = {}
+    latest = {}
+    for host, status, result in conn.all("""SELECT host, status, result_json FROM scan_jobs
+                                            WHERE status NOT IN ('queued', 'running') ORDER BY job_id"""):
+        latest[host] = (status, result)
+    for host, (status, result) in latest.items():
+        if status == 'failed':
+            why = str((loads(result) or {}).get('error') or '')
+            now[f'scan-failed:{host}'] = ('scan-failed', host, f'Scan failed on {host}', why, 'warn')
+    cutoff = time.time() - GONE_DAYS * 86400
+    hosts = conn.all('SELECT host_id, hostname FROM hosts')
+    for hid, host in hosts:
+        newest = epoch(conn.scalar('SELECT max(finished_at) FROM scans WHERE host_id = :h', {'h': hid}))
+        seen_fs = set()
+        for mp, source, fs, total, used, state, seen in conn.all(
+                """SELECT mount_point, source, filesystem_type, total_bytes, used_bytes, scan_state, seen_at
+                   FROM mounts WHERE host_id = :h ORDER BY mount_point""", {'h': hid}):
+            kind = (fs or '').lower()
+            if state == 'gone':
+                seen_at = epoch(seen)
+                if kind not in NO_USAGE_FS and seen_at and seen_at > cutoff and newest and total:
+                    now[f'mount-gone:{host}:{mp}'] = ('mount-gone', f'{host}:{mp}', f'{mp} is gone on {host}',
+                                                      f'{source} was there until {time.strftime("%Y-%m-%d %H:%M", time.localtime(seen_at))}', 'warn')
+                continue
+            base = (source or mp).split('[')[0]          # btrfs subvolumes share one filesystem: one alert for it
+            if state == 'bind-alias' or kind in NO_USAGE_FS or not total or base in seen_fs:
+                continue
+            seen_fs.add(base)
+            pct = 100 * (used or 0) / total
+            if pct >= DISK_CRIT:
+                now[f'disk-crit:{host}:{mp}'] = ('disk-crit', f'{host}:{mp}', f'{mp} is {pct:.0f}% full on {host}',
+                                                 f'{(total - (used or 0)) / 2**30:,.1f} GiB free at the last scan', 'crit')
+            elif pct >= DISK_WARN:
+                now[f'disk-warn:{host}:{mp}'] = ('disk-warn', f'{host}:{mp}', f'{mp} is {pct:.0f}% full on {host}',
+                                                 f'{(total - (used or 0)) / 2**30:,.1f} GiB free at the last scan', 'warn')
+        try:
+            pools = node_from_index(conn, host, symlink_limit=0, stats=False)['pools']
+        except (KeyError, ValueError, TypeError, SystemExit):
+            continue
+        for p in pools:
+            health = str(p.get('health') or 'ONLINE')
+            if health.upper() not in ('ONLINE', 'OK', ''):
+                now[f'pool:{host}:{p["name"]}'] = ('pool', f'{host}:{p["name"]}', f'Pool {p["name"]} is {health} on {host}',
+                                                   p.get('status_note') or '', 'crit')
+            errors = p.get('device_errors') or []
+            if errors:
+                now[f'pool-errors:{host}:{p["name"]}'] = (
+                    'pool-errors', f'{host}:{p["name"]}', f'Pool {p["name"]} reports device errors on {host}',
+                    '; '.join(f'{e["device"]} R/W/C {e["read"]}/{e["write"]}/{e["cksum"]}' for e in errors), 'warn')
+    return now
+
+
+def backup_problems(conn: Conn) -> dict:
+    """The nightly backup failed, or the newest one is old (the thread stopped, or the volume went read-only)."""
+    from . import backup
+    now = {}
+    rows = conn.all("""SELECT outcome, detail_json FROM audit_log WHERE actor = 'system' AND action = 'backup.create'
+                        ORDER BY audit_id DESC LIMIT 1""")
+    if rows and rows[0][0] == 'failed':
+        now['backup-failed'] = ('backup-failed', 'backup', 'The nightly backup failed', str((loads(rows[0][1]) or {}).get('error') or ''), 'crit')
+    if rows:
+        try:
+            found = [b for b in backup.listing() if b['kind'] == 'essentials']
+        except OSError:
+            found = []
+        if found and found[0]['created'] < time.time() - BACKUP_STALE_DAYS * 86400:
+            now['backup-stale'] = ('backup-stale', 'backup', f'No backup in {BACKUP_STALE_DAYS} days',
+                                   f'the newest is {time.strftime("%Y-%m-%d %H:%M", time.localtime(found[0]["created"]))}', 'warn')
+    return now
+
+
+def cert_problems() -> dict:
+    """The HTTPS certificate is near its end: browsers warn, and jobs reporting over https stop being accepted."""
+    from cryptography import x509
+    path = os.environ.get('STORAGEFORGE_REPORT_CA_FILE')
+    if not path:
+        return {}
+    try:
+        ends = x509.load_pem_x509_certificate(Path(path).read_bytes()).not_valid_after_utc.timestamp()
+    except (OSError, ValueError):
+        return {}
+    days = (ends - time.time()) / 86400
+    if days > CERT_WARN_DAYS:
+        return {}
+    level = 'crit' if days <= CERT_CRIT_DAYS else 'warn'
+    text = f'ended {-days:.0f} days ago' if days < 0 else f'ends in {days:.0f} days'
+    return {f'cert-{level}': (f'cert-{level}', 'tls', f'The HTTPS certificate {text}', 'See "Certificates" in docs/operations.md', level)}
+
+
 # ── evaluation ──────────────────────────────────────────────────────
 def problems(conn: Conn) -> dict:
     from . import jobs
-    now = {}
+    now = {**scan_problems(conn), **backup_problems(conn), **cert_problems()}
     for j in jobs.overview(conn):
         if j['state'] == 'failed':
             now[f'job-failed:{j["id"]}'] = ('job-failed', j['id'], f'Job failed: {j["name"]}',

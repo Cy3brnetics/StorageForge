@@ -1,6 +1,6 @@
 ---
 id: EQ-01
-status: open
+status: in-progress
 severity: high
 effort: M
 area: "[[Operations and engineering]]"
@@ -29,3 +29,6 @@ found: 2026-10-29
 ## Done when
 - [ ] Every push runs the full suite against SQLite and PostgreSQL
 - [ ] A missing dependency fails the run instead of erroring 23 tests
+
+## Progress 2026-10-30
+The suite passes on SQLite and PostgreSQL, and `.gitea/workflows/ci.yml` is written, but has not run yet: it needs Gitea Actions and a runner. The browser JavaScript is still untested.

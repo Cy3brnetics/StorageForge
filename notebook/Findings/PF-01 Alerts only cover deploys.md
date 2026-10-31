@@ -1,6 +1,6 @@
 ---
 id: PF-01
-status: open
+status: done
 severity: high
 effort: M
 area: "[[Alerts and monitoring]]"
@@ -39,3 +39,6 @@ So the most serious things StorageForge can see (a degraded pool) show only when
 - [ ] Tests cover each new source
 
 Related: [[PF-02 Protection matrix ignores deployed jobs]], [[PF-04 Disk health and scrubs]], [[PF-05 Capacity history]]
+
+## Done 2026-10-30
+Scan failures, gone mounts, full disks, unhealthy pools, device errors, backups and the certificate now raise alerts (`alerts.scan_problems`, `backup_problems`, `cert_problems`). "A backup job is late" still depends on [[PF-02 Protection matrix ignores deployed jobs]].

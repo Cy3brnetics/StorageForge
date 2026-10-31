@@ -1,6 +1,6 @@
 ---
 id: PF-17
-status: open
+status: in-progress
 severity: medium
 effort: M
 area: "[[Plans and the planner]]"
@@ -29,3 +29,6 @@ Add task types to `changes.TYPES`, each with its check, Bash function and Ansibl
 
 ## Done when
 - [ ] A design with a new mirrored ZFS pool stages a `zpool-create` task that is checked, needs every member device confirmed, and only runs with `--apply --destructive`
+
+## Progress 2026-10-30
+Changes now has ZFS pool and dataset tasks and LVM volume group and volume tasks. `fromdesign.plan()` still lists them under "By hand": wiring designs to these tasks is what is left. mdadm has no tasks yet.

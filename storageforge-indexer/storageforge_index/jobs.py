@@ -304,16 +304,16 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
         # values only ever as quoted words: inside "..." a $(...) in a scanned or designed path would run as root
         parts.append(f'[[ {q(s["dst_mount"])} == / ]] || mountpoint -q {q(s["dst_mount"])} && ok {q("destination mount " + s["dst_mount"])} '
                      f'|| info {q(s["dst_mount"] + " is not mounted now: runs wait for it")}\n')
-        parts.append(_heredoc(f'want_file {q(f"/etc/storageforge/jobs/{s["id"]}.conf")} 0644', conf_text(s, report_url)))
+        parts.append(_heredoc(f'want_file {q("/etc/storageforge/jobs/" + s["id"] + ".conf")} 0644', conf_text(s, report_url)))
         files, ts = units(s)
         for name, body in files.items():
             parts.append(_heredoc(f'want_file {q("/etc/systemd/system/" + name)} 0644', body))
         (paused if s['paused'] else timers).extend(ts)
         if secrets_:
             sec = secrets_[s['id']]
-            parts.append(_heredoc(f'secret_file {q(f"/etc/storageforge/jobs/{s["id"]}.token")}', sec['token'] + '\n'))
+            parts.append(_heredoc(f'secret_file {q("/etc/storageforge/jobs/" + s["id"] + ".token")}', sec['token'] + '\n'))
             if not s['local']:
-                parts.append(_heredoc(f'secret_file {q(f"/etc/storageforge/jobs/{s["id"]}.key")}', sec['key']))
+                parts.append(_heredoc(f'secret_file {q("/etc/storageforge/jobs/" + s["id"] + ".key")}', sec['key']))
         else:
             parts.append(f'[[ -e /etc/storageforge/jobs/{s["id"]}.token ]] && ok "job token present (apply makes a new one)" '
                          f'|| missing "would write the job token{"" if s["local"] else " and SSH key"}"\n')
@@ -321,7 +321,7 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
     for s in source_specs:
         parts.append(f'section {q("serves job " + s["id"] + " (" + s["runner"] + " pulls " + s["src"] + ")")}\n')
         parts.append(f'[[ -d {q(s["src"])} ]] && ok {q("source " + s["src"])} || conflict {q("source " + s["src"] + " does not exist")}\n')
-        parts.append(_heredoc(f'want_file {q(f"/etc/storageforge/serve/{s["id"]}.conf")} 0644', serve_text(s)))
+        parts.append(_heredoc(f'want_file {q("/etc/storageforge/serve/" + s["id"] + ".conf")} 0644', serve_text(s)))
         if s['pre'] or s['post']:
             parts.append(f'info {q("runs before: " + "; ".join(s["pre"]) + "  after: " + "; ".join(s["post"]))}\n')
         if not s['local'] and secrets_:

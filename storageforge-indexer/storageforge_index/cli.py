@@ -47,6 +47,11 @@ def when(ts) -> str:
 
 # commands
 
+def scans_here(args, host: str) -> bool:
+    """A loopback address with its own port is an SSH server (the demo target, a VM, a tunnel), not this machine."""
+    return args.local or (host in ('localhost', '127.0.0.1', '::1') and not args.user and not args.key and args.port == 22)
+
+
 def cmd_scan(args) -> int:
     opts = ScanOptions(
         roots=args.path or [],
@@ -62,7 +67,7 @@ def cmd_scan(args) -> int:
     conn.close()
     failures = 0
     for host in args.host:
-        local = args.local or host in ('localhost', '127.0.0.1', '::1') and not args.user and not args.key
+        local = scans_here(args, host)
         if not local and not args.key and not opts.dry_run:
             # no key on the command line: use the vault binding for this host
             from .runner import scan_via_vault
@@ -1037,11 +1042,11 @@ def main(argv=None) -> int:
         return args.fn(args)
     except KeyboardInterrupt:
         return 130
+    except BrokenPipeError:             # before Exception, which would catch it first
+        return 0
     except Exception as exc:
         from .vault import VaultError
         if isinstance(exc, VaultError):
             print(f'error: {exc}', file=sys.stderr)
             return 2
         raise
-    except BrokenPipeError:
-        return 0

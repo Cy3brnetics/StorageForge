@@ -22,7 +22,8 @@ import time
 
 from .db import Conn
 from .moves import _fmt, _path, find_host, host_slug, hosts, mount_of, slug, subtree
-from .scriptkit import HELPERS, REMOTE, comments, host_name, one_line
+from .scriptkit import DEST_CMD, HELPERS, REMOTE, comments, host_name, one_line
+from .tasks import HOST_RE, _login
 
 PROFILES = ['single', 'dup', 'raid1', 'raid1c3', 'raid1c4', 'raid10', 'raid5', 'raid6']
 MIN_DEVICES = {'single': 1, 'dup': 1, 'raid1': 2, 'raid1c3': 3, 'raid1c4': 4, 'raid10': 4, 'raid5': 2, 'raid6': 3}
@@ -30,6 +31,8 @@ MKFS = ['ext4', 'xfs', 'btrfs', 'vfat', 'exfat']
 MOUNT_FS = ['btrfs', 'ext4', 'xfs', 'vfat', 'exfat', 'ntfs3', 'f2fs', 'nfs4', 'nfs', 'cifs', 'zfs', 'none']
 LABEL_MAX = {'ext2': 16, 'ext3': 16, 'ext4': 16, 'xfs': 12, 'btrfs': 255, 'vfat': 11, 'exfat': 15}
 OS_MOUNTS = ('/', '/boot', '/boot/efi', '/efi', '/usr', '/var')
+ZPOOL_LEVELS = ['stripe', 'mirror', 'raidz1', 'raidz2', 'raidz3']
+ZPOOL_MIN = {'stripe': 1, 'mirror': 2, 'raidz1': 3, 'raidz2': 4, 'raidz3': 5}
 
 
 def F(name, kind, label, **kw):
@@ -39,6 +42,9 @@ def F(name, kind, label, **kw):
 PATH, TARGET = F('path', 'path', 'Path', required=True), F('target', 'path', 'Mount point', required=True)
 OWNER, GROUP, MODE = F('owner', 'user', 'Owner'), F('group', 'user', 'Group'), F('mode', 'mode', 'Mode', placeholder='0755')
 CONFIRM = F('confirm', 'confirm', 'Type the device again to confirm', required=True)
+DEVICES = F('devices', 'devices', 'Devices', required=True, placeholder='/dev/sdb /dev/sdc')
+CONFIRM_ALL = F('confirm', 'confirm', 'Type the devices again to confirm', required=True)
+TO_HOST = F('dest_host', 'host', 'To host', placeholder='this host, or nas-02, or root@10.0.0.9')
 TYPES = {
     'dir': {'group': 'Files and folders', 'label': 'Create folder', 'fields': [PATH, OWNER, GROUP, MODE]},
     'rename': {'group': 'Files and folders', 'label': 'Rename or move', 'fields': [
@@ -64,6 +70,45 @@ TYPES = {
         F('target', 'path', 'Pool mounted at', required=True), F('data', 'choice', 'Data', options=PROFILES, required=True),
         F('metadata', 'choice', 'Metadata', options=PROFILES, required=True)]},
     'scrub': {'group': 'btrfs', 'label': 'Scrub (verify checksums)', 'fields': [F('target', 'path', 'Mounted at', required=True)]},
+    'btrfs-send': {'group': 'btrfs', 'label': 'Send a snapshot to another host', 'fields': [
+        F('source', 'path', 'Read-only snapshot', required=True), F('parent', 'path', 'Earlier snapshot (sends only the changes)'),
+        TO_HOST, F('dest', 'path', 'Into folder there', required=True)],
+        'help': 'btrfs send piped to btrfs receive. The earlier snapshot must exist on both sides. Root on this host logs in to the other one with its SSH key.'},
+    'zfs-pool': {'group': 'ZFS', 'label': 'Create a pool', 'destructive': True, 'fields': [
+        F('pool', 'name', 'Pool name', required=True), F('level', 'choice', 'Layout', options=ZPOOL_LEVELS, required=True),
+        DEVICES, F('mountpoint', 'path', 'Mount at'), F('wipe', 'bool', 'They have a filesystem: overwrite it'), CONFIRM_ALL],
+        'help': 'Prefer stable names from /dev/disk/by-id: sdX names can change at boot.'},
+    'zfs-dataset': {'group': 'ZFS', 'label': 'Create a dataset', 'fields': [
+        F('dataset', 'dataset', 'Dataset', required=True, placeholder='tank/media'), F('mountpoint', 'path', 'Mount at'),
+        F('options', 'options', 'Properties', placeholder='compression=zstd,recordsize=1M,quota=500G')],
+        'help': 'Properties on a dataset that already exists are set to these values.'},
+    'zfs-snapshot': {'group': 'ZFS', 'label': 'Snapshot a dataset', 'fields': [
+        F('dataset', 'dataset', 'Dataset', required=True), F('name', 'name', 'Snapshot name', required=True),
+        F('recursive', 'bool', 'With child datasets')]},
+    'zfs-send': {'group': 'ZFS', 'label': 'Send a snapshot to another host', 'fields': [
+        F('dataset', 'dataset', 'Dataset', required=True), F('name', 'name', 'Snapshot name', required=True),
+        F('base', 'name', 'Earlier snapshot (sends only the changes)'), TO_HOST,
+        F('dest', 'dataset', 'Into dataset there', required=True, placeholder='backup/media'),
+        F('recursive', 'bool', 'With child datasets'), F('raw', 'bool', 'Raw (an encrypted dataset stays encrypted, without its key)')],
+        'help': 'zfs send piped to zfs receive -u. It never overwrites: without an earlier snapshot the dataset there must not exist yet.'},
+    'zfs-scrub': {'group': 'ZFS', 'label': 'Scrub a pool', 'fields': [F('pool', 'name', 'Pool name', required=True)]},
+    'lvm-vg': {'group': 'LVM', 'label': 'Create a volume group', 'destructive': True, 'fields': [
+        F('vg', 'name', 'Volume group', required=True), DEVICES, F('wipe', 'bool', 'They have a filesystem: overwrite it'), CONFIRM_ALL]},
+    'lvm-vg-extend': {'group': 'LVM', 'label': 'Add a device to a volume group', 'destructive': True, 'fields': [
+        F('vg', 'name', 'Volume group', required=True), F('device', 'device', 'New device', required=True),
+        F('wipe', 'bool', 'It has a filesystem: overwrite it'), CONFIRM]},
+    'lvm-lv': {'group': 'LVM', 'label': 'Create a logical volume', 'fields': [
+        F('vg', 'name', 'Volume group', required=True), F('lv', 'name', 'Name', required=True),
+        F('size', 'size', 'Size', required=True, placeholder='100G'), F('fstype', 'choice', 'Then format as', options=[''] + MKFS),
+        F('label', 'label', 'Label')]},
+    'lvm-extend': {'group': 'LVM', 'label': 'Grow a logical volume', 'fields': [
+        F('vg', 'name', 'Volume group', required=True), F('lv', 'name', 'Name', required=True),
+        F('size', 'size', 'New total size', required=True, placeholder='200G')],
+        'help': 'Grows the volume and the filesystem on it to this total. It never shrinks.'},
+    'lvm-snapshot': {'group': 'LVM', 'label': 'Snapshot a logical volume', 'fields': [
+        F('vg', 'name', 'Volume group', required=True), F('lv', 'name', 'Volume', required=True), F('name', 'name', 'Snapshot name', required=True),
+        F('size', 'size', 'Space for changes (empty for a thin volume)', placeholder='10G')],
+        'help': 'A classic snapshot stops working if its space fills up, so size it for the changes you expect while you keep it.'},
     'mount': {'group': 'Mounts', 'label': 'Add a mount', 'fields': [
         F('source', 'spec', 'Source', required=True, placeholder='UUID=…, LABEL=…, server:/path or //server/share'),
         F('subvol', 'text', 'btrfs subvolume', placeholder='@Media'), TARGET,
@@ -87,7 +132,10 @@ CHECKS = {
     'path': re.compile(r'/[^\0\n]*'), 'device': re.compile(r'/dev/[A-Za-z0-9/_.:+-]+'),
     'user': re.compile(r'[A-Za-z_][A-Za-z0-9_.-]{0,31}|\d{1,10}'), 'mode': re.compile(r'0?[0-7]{3,4}'),
     'options': re.compile(r'[A-Za-z0-9_=,.:/@+-]{0,400}'), 'label': re.compile(r'[A-Za-z0-9_.-]{0,64}'),
-    'text': re.compile(r'[^\0\n]{0,200}'),
+    'text': re.compile(r'[^\0\n]{0,200}'), 'host': HOST_RE,
+    'devices': re.compile(r'/dev/[A-Za-z0-9/_.:+-]+( +/dev/[A-Za-z0-9/_.:+-]+){0,63}'),
+    'name': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}'), 'dataset': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}'),
+    'size': re.compile(r'\d{1,12}(\.\d{1,3})?[KMGTP]'),
     'spec': re.compile(r'(UUID|LABEL|PARTUUID|PARTLABEL)=[A-Za-z0-9_.-]+|/dev/[A-Za-z0-9/_.:+-]+|[A-Za-z0-9_.-]+:/[^\0\n ]*|//[^\0\n /]+/[^\0\n ]+'),
 }
 
@@ -105,6 +153,13 @@ def title(t: dict) -> str:
         'mount-options': lambda: f'Mount options of {p["target"]}: {p["options"]}', 'unmount': lambda: f'Unmount {p["target"]}',
         'partition': lambda: f'Partition {p["disk"]}' + (f' and format it {p["fstype"]}' if p.get('fstype') else ''),
         'format': lambda: f'Format {p["device"]} as {p["fstype"]}', 'label': lambda: f'Label {p["target"]} "{p["label"]}"',
+        'btrfs-send': lambda: f'Send {p["source"]} to {p["dest_host"] or "this host"}:{p["dest"]}',
+        'zfs-pool': lambda: f'Create ZFS pool {p["pool"]} ({p["level"]}) on {p["devices"]}',
+        'zfs-dataset': lambda: f'Create ZFS dataset {p["dataset"]}', 'zfs-snapshot': lambda: f'Snapshot {p["dataset"]}@{p["name"]}',
+        'zfs-send': lambda: f'Send {p["dataset"]}@{p["name"]} to {p["dest_host"] or "this host"}:{p["dest"]}',
+        'zfs-scrub': lambda: f'Scrub ZFS pool {p["pool"]}', 'lvm-vg': lambda: f'Create volume group {p["vg"]} on {p["devices"]}',
+        'lvm-vg-extend': lambda: f'Add {p["device"]} to volume group {p["vg"]}', 'lvm-lv': lambda: f'Create volume {p["vg"]}/{p["lv"]} ({p["size"]})',
+        'lvm-extend': lambda: f'Grow {p["vg"]}/{p["lv"]} to {p["size"]}', 'lvm-snapshot': lambda: f'Snapshot {p["vg"]}/{p["lv"]} as {p["name"]}',
     }[k]()
 
 
@@ -142,7 +197,10 @@ def normalize(body: dict) -> dict:
                 raise ValueError(f'task {i} ({spec["label"]}): {f["label"]} {v!r} is not valid')
             params[f['name']] = v
         if spec.get('destructive'):
-            dev = params.get('device') or params.get('disk')
+            if params.get('devices'):
+                params['devices'] = ' '.join(params['devices'].split())
+                params['confirm'] = ' '.join(params.get('confirm', '').split())
+            dev = params.get('device') or params.get('disk') or params.get('devices')
             if params.get('confirm') != dev:
                 raise ValueError(f'task {i} ({spec["label"]}): type {dev} again in the confirm field')
         tasks.append({'id': str(t.get('id') or f't{i}'), 'type': kind, 'host': host, 'params': params,
@@ -155,17 +213,20 @@ class Host:
     """What the index knows about one host, plus the effect of the tasks checked so far."""
 
     def __init__(self, conn: Conn, h: dict):
-        from .payloads import apply_btrfs, apply_lvs, node_from_lsblk
+        from .payloads import apply_btrfs, apply_lvs, apply_zpool_status, node_from_lsblk, parse_zpool_status
         self.conn, self.h = conn, h
         inv = conn.scalar('SELECT inventory_json FROM hosts WHERE host_id = :h', {'h': h['id']})
         inv = (inv if isinstance(inv, dict) else json.loads(inv or '{}')) or {}
         self.node = node_from_lsblk(inv['lsblk'], h['name']) if inv.get('lsblk') else {'disks': [], 'pools': []}
+        if inv.get('zpool_status'):
+            apply_zpool_status(self.node, parse_zpool_status(inv['zpool_status']))
         if inv.get('lvs'):
             apply_lvs(self.node, inv['lvs'])
         if inv.get('btrfs'):
             apply_btrfs(self.node, inv['btrfs'])
         self.mounted = {m['target']: m for m in h['mounts'] if m['state'] != 'gone'}
         self.made, self.gone, self.subvols, self.unmounted = set(), set(), set(), set()
+        self.new_zpools, self.new_vgs = set(), set()
         self.new_mounts: dict[str, dict] = {}
 
     def mount_at(self, path: str):
@@ -225,6 +286,12 @@ class Host:
                 out.append(t)
         return sorted(out)
 
+    def zpools(self) -> set:
+        return {p['name'] for p in self.node['pools'] if p['type'] == 'zfs'} | self.new_zpools
+
+    def vgs(self) -> set:
+        return {p.get('vg') for p in self.node['pools'] if p['type'] == 'lvm'} | self.new_vgs
+
     def pool_devices(self, target: str) -> int:
         src = (self.mounted.get(target, {}).get('source') or '').split('[')[0].removeprefix('/dev/')
         for p in self.node['pools']:
@@ -262,6 +329,8 @@ def check(conn: Conn, plan: dict) -> dict:
             say('warn', f'running containers use this: {", ".join(names[:6])}{" …" if len(names) > 6 else ""}. Stop them first')
         if TYPES[k].get('destructive'):
             say('note', 'destroys data on the device: the script only does it with --apply --destructive')
+        if k in ('btrfs-send', 'zfs-send') and p['dest_host']:
+            say('note', f'root on {h["name"]} logs in to {p["dest_host"]} with its SSH key (/root/.ssh): set that up once (ssh-copy-id)')
         undo = {'unmount': ('mount', 'target'), 'trash': ('dir', 'path')}.get(k)
         if undo:
             for j, e in enumerate(plan['tasks'][:i - 1], 1):
@@ -491,6 +560,97 @@ def _check_task(conn, c: Host, h: dict, k: str, p: dict, say):
             say('note', 'a balance runs in the background for hours; the script starts it (btrfs balance status follows it)')
         else:
             say('note', 'reads every block and checks it; runs in the background')
+    elif k == 'btrfs-send':
+        if c.mount_at(p['source'])[1] not in ('btrfs', None):
+            say('crit', f'{p["source"]} is not on btrfs')
+        if p['parent'] and p['parent'] == p['source']:
+            say('crit', 'the earlier snapshot is the one being sent')
+        other = find_host(hosts(conn), p['dest_host'].split('@')[-1]) if p['dest_host'] else h
+        dm = other and mount_of(other, p['dest'])
+        if p['dest_host'] and not other and '@' not in p['dest_host']:
+            say('warn', f'{p["dest_host"]} has not been scanned: give it as user@address if it is not')
+        if dm and (dm['fstype'] or '').lower() != 'btrfs':
+            say('crit', f'{p["dest"]} is on {dm["fstype"]} on {other["name"]}, not btrfs')
+        elif dm:
+            say('ok', f'{p["dest"]} is on btrfs on {other["name"]}')
+        say('note', 'the snapshot must be read-only: the script checks' + ('' if p['parent'] else '. No earlier snapshot, so all of it is copied'))
+    elif k == 'zfs-pool':
+        if p['pool'] in c.zpools():
+            say('ok', f'pool {p["pool"]} already exists: nothing to do')
+            return
+        devs = p['devices'].split()
+        if len(devs) < ZPOOL_MIN[p['level']]:
+            say('crit', f'{p["level"]} needs at least {ZPOOL_MIN[p["level"]]} devices')
+        _check_devices(c, h, devs, p['wipe'], say)
+        if any(re.fullmatch(r'/dev/(sd[a-z]+|vd[a-z]+)\d*', d) for d in devs):
+            say('warn', 'sdX names can change at boot: /dev/disk/by-id/... names are safer for a pool')
+        c.new_zpools.add(p['pool'])
+    elif k == 'zfs-dataset':
+        pool = p['dataset'].split('/')[0]
+        if c.zpools() and pool not in c.zpools():
+            say('crit', f'there is no pool {pool} on {h["name"]}')
+        elif not c.zpools():
+            say('note', f'no ZFS pool in the last scan of {h["name"]}; the script checks')
+        for o in filter(None, p['options'].split(',')):
+            if '=' not in o:
+                say('crit', f'{o} is not property=value')
+    elif k in ('zfs-snapshot', 'zfs-scrub'):
+        pool = (p.get('dataset') or p['pool']).split('/')[0]
+        if c.zpools() and pool not in c.zpools():
+            say('crit', f'there is no pool {pool} on {h["name"]}')
+        elif k == 'zfs-scrub':
+            say('note', 'reads every block and checks it; runs in the background')
+    elif k == 'zfs-send':
+        pool = p['dataset'].split('/')[0]
+        if c.zpools() and pool not in c.zpools():
+            say('crit', f'there is no pool {pool} on {h["name"]}')
+        if '/' not in p['dest']:
+            say('crit', f'{p["dest"]} is a whole pool, and receiving onto one means overwriting it: give pool/name')
+        if p['base'] and p['base'] == p['name']:
+            say('crit', 'the earlier snapshot is the one being sent')
+        if p['dest_host'] and not find_host(hosts(conn), p['dest_host'].split('@')[-1]) and '@' not in p['dest_host']:
+            say('warn', f'{p["dest_host"]} has not been scanned: give it as user@address if it is not')
+        say('note', 'received with -u, so it is not mounted over anything there' + ('' if p['base'] else '. No earlier snapshot, so all of it is copied'))
+    elif k in ('lvm-vg', 'lvm-vg-extend'):
+        if k == 'lvm-vg' and p['vg'] in c.vgs():
+            say('ok', f'volume group {p["vg"]} already exists: nothing to do')
+            return
+        _check_devices(c, h, p['devices'].split() if k == 'lvm-vg' else [p['device']], p['wipe'], say)
+        if k == 'lvm-vg':
+            c.new_vgs.add(p['vg'])
+    elif k in ('lvm-lv', 'lvm-extend', 'lvm-snapshot'):
+        if k == 'lvm-extend':
+            say('note', 'only grows: a size at or below the current one changes nothing')
+        elif k == 'lvm-snapshot' and p['size']:
+            say('warn', f'if {p["size"]} of changes is reached while you keep it, the snapshot stops working: extend or remove it before then')
+        elif k == 'lvm-snapshot':
+            say('note', 'no size: this only works for a thin volume')
+        if k == 'lvm-lv' and p['label'] and p['fstype'] and len(p['label']) > LABEL_MAX.get(p['fstype'], 64):
+            say('crit', f'{p["fstype"]} labels are at most {LABEL_MAX[p["fstype"]]} characters')
+        if c.vgs() - {None} and p['vg'] not in c.vgs():
+            say('warn', f'volume group {p["vg"]} was not seen by the last scan; the script checks')
+
+
+def _check_devices(c: Host, h: dict, devs: list, wipe: bool, say):
+    """Devices about to join a ZFS pool or a volume group: seen by the scan, unused, overwritten only when allowed."""
+    for dev in devs:
+        info = c.device(dev)
+        if not info:
+            if dev.startswith('/dev/disk/') or dev.startswith('/dev/mapper/'):
+                say('note', f'{dev}: the scan knows short names only; the script checks that it is free')
+            else:
+                say('crit', f'{dev} was not seen by the last scan of {h["name"]}')
+            continue
+        used = c.mounted_from(dev)
+        if used:
+            say('crit', f'{dev} is in use: mounted at {", ".join(used[:6])}')
+        if info.get('member') or (info['kind'] == 'disk' and any(x.get('member') for x in info['parts'])):
+            say('crit', f'{dev} belongs to {info.get("member") or "a pool"}')
+        fs = info.get('fs') or (info['kind'] == 'disk' and info['parts'] and 'partitions') or None
+        if fs and not wipe:
+            say('crit', f'{dev} holds {fs}: tick the box to destroy it')
+        elif fs:
+            say('warn', f'destroys the {fs} on {dev}')
 
 
 # ── storage ─────────────────────────────────────────────────────────────
@@ -535,7 +695,11 @@ ARGS = {'dir': ('path', 'owner', 'group', 'mode'), 'rename': ('path', 'dest'), '
         'btrfs-add': ('device', 'target', 'wipe'), 'btrfs-balance': ('target', 'data', 'metadata'), 'scrub': ('target',),
         'mount': ('source', 'subvol', 'target', 'fstype', 'options'), 'mount-options': ('target', 'options'),
         'unmount': ('target',), 'partition': ('disk', 'fstype', 'label', 'wipe'), 'format': ('device', 'fstype', 'label', 'wipe'),
-        'label': ('target', 'label')}
+        'label': ('target', 'label'), 'btrfs-send': ('source', 'parent', 'dest'),
+        'zfs-pool': ('pool', 'level', 'devices', 'mountpoint', 'wipe'), 'zfs-dataset': ('dataset', 'mountpoint', 'options'),
+        'zfs-snapshot': ('dataset', 'name', 'recursive'), 'zfs-send': ('dataset', 'name', 'base', 'dest', 'recursive', 'raw'),
+        'zfs-scrub': ('pool',), 'lvm-vg': ('vg', 'devices', 'wipe'), 'lvm-vg-extend': ('vg', 'device', 'wipe'),
+        'lvm-lv': ('vg', 'lv', 'size', 'fstype', 'label'), 'lvm-extend': ('vg', 'lv', 'size'), 'lvm-snapshot': ('vg', 'lv', 'name', 'size')}
 
 
 def deploy_items(conn: Conn, plan: dict, mode: str, destructive: bool = False) -> list[dict]:
@@ -560,6 +724,11 @@ def script(conn: Conn, plan: dict) -> str:
     for i, (t, c) in enumerate(zip(plan['tasks'], chk['tasks']), 1):
         h = find_host(hs, t['host'])
         args = [('1' if t['params'][a] else '') if isinstance(t['params'][a], bool) else t['params'][a] for a in ARGS[t['type']]]
+        if t['type'] in ('btrfs-send', 'zfs-send'):        # the receiving side: empty login when that is this host
+            there = t['params']['dest_host']
+            same = not there or (h and find_host(hs, there.split('@')[-1]) is h)
+            login, port = ('', 22) if same else _login(hs, there)
+            args += [login, str(port)]
         calls.append(f'run {i} {q(host_slug(h["name"] if h else t["host"]))} {t["type"]} {q(title(t))} ' + ' '.join(q(a) for a in args))
         summary.append(f'#   {i:>2}. [{t["host"]}] {title(t)}' + ('   (destructive)' if TYPES[t['type']].get('destructive') else ''))
     problems = [f'#   task {x["task"]}: {it["level"].upper()}: {it["text"]}' for x in chk['tasks'] for it in x['items']
@@ -567,7 +736,7 @@ def script(conn: Conn, plan: dict) -> str:
     return (CHANGE_HEAD.format(name=one_line(plan['name']), slug=slug(plan['name']),
                                date=dt.datetime.now().strftime('%Y-%m-%d %H:%M'), tasks=comments(summary, '#   (no tasks)'),
                                problems=comments(problems, '#   none'))
-            + f'PLAN={q(slug(plan["name"]))}\n' + CHANGE_BODY_1 + HELPERS + CHANGE_BODY_2 + REMOTE + CHANGE_BODY_3
+            + f'PLAN={q(slug(plan["name"]))}\n' + CHANGE_BODY_1 + HELPERS + DEST_CMD + CHANGE_BODY_2 + REMOTE + CHANGE_BODY_3
             + '\n'.join(calls) + CHANGE_TAIL)
 
 
@@ -583,7 +752,7 @@ CHANGE_HEAD = r"""#!/usr/bin/env bash
 #   ./changes-{slug}.sh                       report: what is already so, what would change, what is blocked
 #                                             (read-only; run it with sudo to see into folders your user can't read)
 #   sudo ./changes-{slug}.sh --apply          make the changes, in order; stops at the first task that fails
-#   sudo ./changes-{slug}.sh --apply --destructive   also partition, format and add devices to pools
+#   sudo ./changes-{slug}.sh --apply --destructive   also partition, format, create pools and add devices to them
 #   --task N     only task N            --host [user@]host   run on that machine instead
 #
 # Every task looks before it acts, so rerunning is safe. fstab is backed up before each edit and restored if
@@ -648,6 +817,14 @@ fs_top() { # path -> the top folder of its filesystem or btrfs subvolume (where 
   local d; d=$(cd "$(dirname "$1")" && pwd -P)
   while [[ $d != / && $(stat -c %d "$(dirname "$d")") == $(stat -c %d "$d") ]]; do d=$(dirname "$d"); done
   printf '%s' "$d"
+}
+devs_guard() { # wipe-allowed devices... -> 0 if each is free and, unless allowed, holds no filesystem
+  local wipe=$1 d have; shift
+  for d in "$@"; do
+    dev_guard "$d" || return 1
+    have=$(blkid -p -o value -s TYPE -- "$d" 2>/dev/null || true)
+    [[ -z $have || $wipe == 1 ]] || { conflict "$d holds $have; the plan does not allow overwriting it"; return 1; }
+  done
 }
 dev_guard() { # device -> 0 if nothing on it is mounted, swapped on, or part of RAID/LVM/LUKS
   [[ -b $1 ]] || { conflict "$1 is not a block device on $(uname -n)"; return 1; }
@@ -876,6 +1053,136 @@ t_label() { local tgt=$1 label=$2 dev fs cur
     *) conflict "labels on $fs are not handled"; return 0 ;;
   esac && ok "labelled"
 }
+t_btrfs_send() { local s=$1 par=$2 dir=$3 login=$4 port=$5 name=${1##*/} there ro
+  need btrfs btrfs-progs || return 0
+  if ! dest_cmd "$login" "$port" btrfs --version >/dev/null 2>&1 </dev/null; then later "cannot run btrfs on ${login:-this host} (SSH key, sudo, btrfs-progs)"; return 0; fi
+  if there=$(dest_cmd "$login" "$port" btrfs subvolume show -- "$dir/$name" 2>/dev/null </dev/null); then
+    if grep -qE 'Received UUID:[[:space:]]+[0-9a-f]' <<<"$there"; then ok "$dir/$name is already there"
+    else conflict "$dir/$name is there but is not a finished copy (an interrupted send?): delete it with btrfs subvolume delete, then rerun"; fi
+    return 0
+  fi
+  btrfs subvolume show -- "$s" >/dev/null 2>&1 || { later "$s must be a btrfs subvolume"; return 0; }
+  ro=$(btrfs property get -ts -- "$s" ro 2>/dev/null || true)
+  [[ $ro == ro=true ]] || { conflict "$s is not read-only: btrfs only sends read-only snapshots"; return 0; }
+  if [[ -n $par ]]; then
+    btrfs subvolume show -- "$par" >/dev/null 2>&1 || { later "$par must exist here"; return 0; }
+    dest_cmd "$login" "$port" btrfs subvolume show -- "$dir/${par##*/}" >/dev/null 2>&1 </dev/null ||
+      { conflict "$dir/${par##*/} is not on the other side: send $par there first"; return 0; }
+  fi
+  act "btrfs send ${par:+-p $par }$s | btrfs receive $dir on ${login:-this host}" || return 0
+  dest_cmd "$login" "$port" mkdir -p -- "$dir" </dev/null || { conflict "cannot make $dir"; return 0; }
+  if btrfs send ${par:+-p "$par"} -- "$s" | dest_cmd "$login" "$port" btrfs receive -- "$dir"; then ok "sent"
+  else conflict "the send failed: delete a partial $dir/$name on the other side before you rerun"; fi
+}
+zfs_exists() { zfs list -H -o name -t "${2:-all}" -- "$1" >/dev/null 2>&1; }
+t_zfs_pool() { local pool=$1 level=$2 devs=$3 mp=$4 wipe=$5 vdev=() d arr
+  need zpool zfsutils-linux || return 0
+  if zpool list -H -o name -- "$pool" >/dev/null 2>&1; then ok "pool $pool exists"; return 0; fi
+  read -ra arr <<<"$devs"
+  devs_guard "$wipe" "${arr[@]}" || return 0
+  [[ $level == stripe ]] || vdev=("$level")
+  act "zpool create $pool $level $devs${mp:+ (mounted at $mp)}" || return 0
+  if [[ $wipe == 1 ]]; then for d in "${arr[@]}"; do try wipefs -aq -- "$d" || return 0; done; fi
+  try zpool create -o ashift=12 ${wipe:+-f} ${mp:+-m "$mp"} -- "$pool" ${vdev[@]+"${vdev[@]}"} "${arr[@]}" && ok "created"
+}
+t_zfs_dataset() { local ds=$1 mp=$2 opts=$3 o k v have
+  need zfs zfsutils-linux || return 0
+  if ! zfs_exists "$ds" filesystem; then
+    zfs_exists "${ds%%/*}" filesystem || { later "pool ${ds%%/*} must exist"; return 0; }
+    act "zfs create -p $ds" && try zfs create -p -- "$ds" && ok "created" || return 0
+  else ok "dataset $ds exists"; fi
+  local props=() more=()
+  [[ -n $mp ]] && props+=("mountpoint=$mp")
+  IFS=, read -ra more <<<"$opts"
+  for o in ${props[@]+"${props[@]}"} ${more[@]+"${more[@]}"}; do
+    k=${o%%=*}; v=${o#*=}
+    have=$(zfs get -H -o value "$k" -- "$ds" 2>/dev/null || true)
+    if [[ $have == "$v" ]]; then ok "$k=$v"
+    elif act "zfs set $k=$v $ds (now ${have:-unset})"; then try zfs set "$k=$v" -- "$ds" && ok "$k=$v"; fi
+  done
+}
+t_zfs_snapshot() { local ds=$1 name=$2
+  need zfs zfsutils-linux || return 0
+  if zfs_exists "$ds@$name" snapshot; then ok "snapshot $ds@$name exists"; return 0; fi
+  zfs_exists "$ds" filesystem || { later "dataset $ds must exist"; return 0; }
+  act "zfs snapshot ${3:+-r }$ds@$name" && try zfs snapshot ${3:+-r} -- "$ds@$name" && ok "snapshot taken"
+}
+t_zfs_send() { local ds=$1 name=$2 base=$3 dest=$4 rec=$5 raw=$6 login=$7 port=$8 flags=()
+  need zfs zfsutils-linux || return 0
+  if ! dest_cmd "$login" "$port" zfs version >/dev/null 2>&1 </dev/null; then later "cannot run zfs on ${login:-this host} (SSH key, sudo, ZFS tools)"; return 0; fi
+  if dest_cmd "$login" "$port" zfs list -H -o name -t snapshot -- "$dest@$name" >/dev/null 2>&1 </dev/null; then ok "$dest@$name is already there"; return 0; fi
+  zfs_exists "$ds@$name" snapshot || { later "snapshot $ds@$name must exist"; return 0; }
+  if [[ -n $base ]]; then
+    zfs_exists "$ds@$base" snapshot || { later "snapshot $ds@$base must exist here"; return 0; }
+    dest_cmd "$login" "$port" zfs list -H -o name -t snapshot -- "$dest@$base" >/dev/null 2>&1 </dev/null ||
+      { conflict "$dest@$base is not on the other side: send it there first"; return 0; }
+  elif dest_cmd "$login" "$port" zfs list -H -o name -- "$dest" >/dev/null 2>&1 </dev/null; then
+    conflict "$dest already exists there and I never overwrite it: give an earlier snapshot both sides have"; return 0
+  fi
+  [[ -n $rec ]] && flags+=(-R)
+  [[ -n $raw ]] && flags+=(-w)
+  [[ -n $base ]] && flags+=(-i "@$base")
+  act "zfs send ${flags[*]-} $ds@$name | zfs receive -u $dest on ${login:-this host}" || return 0
+  if zfs send ${flags[@]+"${flags[@]}"} -- "$ds@$name" | dest_cmd "$login" "$port" zfs receive -u -- "$dest"; then ok "sent"
+  else conflict "the send failed"; fi
+}
+t_zfs_scrub() { local pool=$1
+  need zpool zfsutils-linux || return 0
+  zpool list -H -o name -- "$pool" >/dev/null 2>&1 || { later "pool $pool must exist"; return 0; }
+  if zpool status -- "$pool" | grep -q 'scrub in progress'; then ok "a scrub is running"; return 0; fi
+  if [[ -e $STATE/zfs-scrub-$pool ]]; then ok "started $(cat "$STATE/zfs-scrub-$pool"): zpool status $pool"; return 0; fi
+  act "zpool scrub $pool" && try zpool scrub -- "$pool" &&
+    { mkdir -p "$STATE"; date '+%F %T' >"$STATE/zfs-scrub-$pool"; ok "started: zpool status $pool"; }
+}
+vg_exists() { vgs --noheadings -o vg_name -- "$1" >/dev/null 2>&1; }
+lv_exists() { lvs --noheadings -o lv_name -- "$1/$2" >/dev/null 2>&1; }
+t_lvm_vg() { local vg=$1 devs=$2 wipe=$3 d arr
+  need vgcreate lvm2 || return 0
+  if vg_exists "$vg"; then ok "volume group $vg exists"; return 0; fi
+  read -ra arr <<<"$devs"
+  devs_guard "$wipe" "${arr[@]}" || return 0
+  act "vgcreate $vg $devs" || return 0
+  if [[ $wipe == 1 ]]; then for d in "${arr[@]}"; do try wipefs -aq -- "$d" || return 0; done; fi
+  try vgcreate -y -- "$vg" "${arr[@]}" >/dev/null && ok "created"
+}
+t_lvm_vg_extend() { local vg=$1 dev=$2 wipe=$3
+  need vgextend lvm2 || return 0
+  vg_exists "$vg" || { later "volume group $vg must exist"; return 0; }
+  if [[ $(pvs --noheadings -o vg_name -- "$dev" 2>/dev/null | tr -d ' ') == "$vg" ]]; then ok "$dev is in $vg"; return 0; fi
+  devs_guard "$wipe" "$dev" || return 0
+  act "vgextend $vg $dev" || return 0
+  [[ $wipe == 1 ]] && { try wipefs -aq -- "$dev" || return 0; }
+  try vgextend -y -- "$vg" "$dev" >/dev/null && ok "added"
+}
+t_lvm_lv() { local vg=$1 lv=$2 size=$3 fs=$4 label=$5 dev=/dev/$1/$2 have
+  need lvcreate lvm2 || return 0
+  if lv_exists "$vg" "$lv"; then ok "volume $vg/$lv exists"
+  else
+    vg_exists "$vg" || { later "volume group $vg must exist"; return 0; }
+    # -Wn: a new volume can land on old filesystem signatures; it is only formatted below if the plan asks
+    act "lvcreate -L $size -n $lv $vg" && try lvcreate -y -Wn -L "$size" -n "$lv" -- "$vg" >/dev/null && ok "created" || return 0
+    udevadm settle 2>/dev/null || true
+  fi
+  [[ -n $fs ]] || return 0
+  have=$(blkid -p -o value -s TYPE -- "$dev" 2>/dev/null || true)
+  if [[ $have == "$fs" ]]; then ok "$dev is $fs"
+  elif [[ -n $have ]]; then conflict "$dev holds $have"
+  elif act "mkfs.$fs $dev"; then mkfs_dev "$dev" "$fs" "$label" && ok "formatted" || conflict "mkfs.$fs $dev failed"; fi
+}
+t_lvm_extend() { local vg=$1 lv=$2 size=$3 now want
+  need lvextend lvm2 || return 0
+  lv_exists "$vg" "$lv" || { later "volume $vg/$lv must exist"; return 0; }
+  now=$(lvs --noheadings --nosuffix --units b -o lv_size -- "$vg/$lv" | tr -d ' ')
+  want=$(numfmt --from=iec "$size")
+  if ((now >= want)); then ok "$vg/$lv is already $(human "$now")"; return 0; fi
+  act "lvextend -r -L $size $vg/$lv (now $(human "$now"))" && try lvextend -r -L "$size" -- "$vg/$lv" >/dev/null && ok "grown"
+}
+t_lvm_snapshot() { local vg=$1 lv=$2 name=$3 size=$4
+  need lvcreate lvm2 || return 0
+  if lv_exists "$vg" "$name"; then ok "snapshot $vg/$name exists"; return 0; fi
+  lv_exists "$vg" "$lv" || { later "volume $vg/$lv must exist"; return 0; }
+  act "lvcreate -s ${size:+-L $size }-n $name $vg/$lv" && try lvcreate -y -s ${size:+-L "$size"} -n "$name" -- "$vg/$lv" >/dev/null && ok "snapshot taken"
+}
 
 run() { # n host type title args...
   local n=$1 host=$2 type=$3 desc=$4; shift 4
@@ -883,7 +1190,7 @@ run() { # n host type title args...
   section "$n. $desc"
   if [[ $host != "$ME" ]]; then skip "runs on $host: ./$(basename "$0") --host <user>@$host ${ARGS[*]}"; return 0; fi
   if ((STOPPED)); then info "skipped: an earlier task failed"; return 0; fi
-  CUR_DESTRUCTIVE=0; case $type in partition|format|btrfs-add) CUR_DESTRUCTIVE=1 ;; esac
+  CUR_DESTRUCTIVE=0; case $type in partition|format|btrfs-add|zfs-pool|lvm-vg|lvm-vg-extend) CUR_DESTRUCTIVE=1 ;; esac
   local before=$PROBLEMS
   "t_${type//-/_}" "$@" '' '' '' '' '' || true      # padded: every task function can read its optional arguments
   if ((APPLY && PROBLEMS > before)); then STOPPED=1; fi
@@ -993,6 +1300,63 @@ def _ansible_task(t: dict, c: Host | None) -> dict:
             'case $fs in ext*) e2label "$d" "$l" ;; btrfs) btrfs filesystem label "$t" "$l" ;; xfs) xfs_admin -L "$l" "$d" ;;\n'
             '  vfat) fatlabel "$d" "$l" ;; exfat) exfatlabel "$d" "$l" ;; *) echo "labels on $fs are not handled" >&2; exit 1 ;; esac\n')},
             'register': 'sf_out', 'changed_when': "'unchanged' not in sf_out.stdout"}
+    return _ansible_storage(t, gate)
+
+
+def _ansible_storage(t: dict, gate: dict) -> dict:
+    """ZFS, LVM and send tasks, which have no module every install has: a shell step that looks first, like the script."""
+    p, k = t['params'], t['type']
+    q = shlex.quote
+
+    def guarded(test: str, cmd: str, **extra) -> dict:
+        return {'name': title(t), 'ansible.builtin.shell': {'executable': '/bin/bash', 'cmd': (
+            f'set -euo pipefail\nif {test}; then echo unchanged; exit 0; fi\n{cmd}\n')},
+            'register': 'sf_out', 'changed_when': "'unchanged' not in sf_out.stdout", **extra}
+
+    def to(cmd: str) -> str:                 # on the receiving side
+        host = p['dest_host']
+        return cmd if not host else f'ssh -o BatchMode=yes -- {q(host)} {q(("sudo -n " if not host.startswith("root@") else "") + cmd)}'
+    if k == 'btrfs-send':
+        name = p['source'].rstrip('/').rsplit('/', 1)[-1]
+        flag = f'-p {q(p["parent"])} ' if p['parent'] else ''
+        recv = to(f'btrfs receive -- {q(p["dest"])}')
+        return guarded(to(f'btrfs subvolume show -- {q(p["dest"] + "/" + name)}') + ' >/dev/null 2>&1',
+                       f'btrfs send {flag}-- {q(p["source"])} | {recv}')
+    if k == 'zfs-send':
+        flags = ('-R ' if p['recursive'] else '') + ('-w ' if p['raw'] else '') + (f'-i {q("@" + p["base"])} ' if p['base'] else '')
+        recv = to(f'zfs receive -u -- {q(p["dest"])}')
+        return guarded(to(f'zfs list -H -t snapshot -- {q(p["dest"] + "@" + p["name"])}') + ' >/dev/null 2>&1',
+                       f'zfs send {flags}-- {q(p["dataset"] + "@" + p["name"])} | {recv}')
+    if k == 'zfs-pool':
+        vdev = '' if p['level'] == 'stripe' else p['level'] + ' '
+        force = '-f ' if p['wipe'] else ''
+        mp = f'-m {q(p["mountpoint"])} ' if p['mountpoint'] else ''
+        return guarded(f'zpool list -H -- {q(p["pool"])} >/dev/null 2>&1',
+                       f'zpool create -o ashift=12 {force}{mp}-- {q(p["pool"])} {vdev}' + ' '.join(q(d) for d in p['devices'].split()), **gate)
+    if k == 'zfs-dataset':
+        props = ([f'mountpoint={p["mountpoint"]}'] if p['mountpoint'] else []) + [o for o in p['options'].split(',') if o]
+        opts = ''.join(f'-o {q(o)} ' for o in props)
+        return guarded(f'zfs list -H -- {q(p["dataset"])} >/dev/null 2>&1', f'zfs create -p {opts}-- {q(p["dataset"])}')
+    if k == 'zfs-snapshot':
+        snap = q(f'{p["dataset"]}@{p["name"]}')
+        return guarded(f'zfs list -H -t snapshot -- {snap} >/dev/null 2>&1', f'zfs snapshot {"-r " if p["recursive"] else ""}-- {snap}')
+    if k == 'zfs-scrub':
+        return guarded(f'zpool status -- {q(p["pool"])} | grep -q "scrub in progress"', f'zpool scrub -- {q(p["pool"])}')
+    if k == 'lvm-vg':
+        return guarded(f'vgs -- {q(p["vg"])} >/dev/null 2>&1', f'vgcreate -y -- {q(p["vg"])} ' + ' '.join(q(d) for d in p['devices'].split()), **gate)
+    if k == 'lvm-vg-extend':
+        return guarded(f'[ "$(pvs --noheadings -o vg_name -- {q(p["device"])} 2>/dev/null | tr -d " ")" = {q(p["vg"])} ]',
+                       f'vgextend -y -- {q(p["vg"])} {q(p["device"])}', **gate)
+    lv = q(f'{p["vg"]}/{p["lv"]}')
+    if k == 'lvm-lv':
+        fmt = f'\nmkfs.{p["fstype"]} {q("/dev/" + p["vg"] + "/" + p["lv"])}' if p['fstype'] else ''
+        return guarded(f'lvs -- {lv} >/dev/null 2>&1', f'lvcreate -y -Wn -L {q(p["size"])} -n {q(p["lv"])} -- {q(p["vg"])}{fmt}')
+    if k == 'lvm-extend':
+        return guarded(f'[ "$(lvs --noheadings --nosuffix --units b -o lv_size -- {lv} | tr -d " ")" -ge "$(numfmt --from=iec {q(p["size"])})" ]',
+                       f'lvextend -r -L {q(p["size"])} -- {lv}')
+    if k == 'lvm-snapshot':
+        size = f'-L {q(p["size"])} ' if p['size'] else ''
+        return guarded(f'lvs -- {q(p["vg"] + "/" + p["name"])} >/dev/null 2>&1', f'lvcreate -y -s {size}-n {q(p["name"])} -- {lv}')
     raise ValueError(k)
 
 
@@ -1041,7 +1405,7 @@ def ansible(conn: Conn, plan: dict) -> str:
             '# Needs the ansible.posix and community.general collections.\n'
             '#   ansible-playbook -i inventory.ini this.yml --check --diff        # look first\n'
             '#   ansible-playbook -i inventory.ini this.yml                       # apply (drive tasks skipped)\n'
-            '#   ansible-playbook -i inventory.ini this.yml -e storageforge_destructive=true   # also partition/format/add devices\n'
+            '#   ansible-playbook -i inventory.ini this.yml -e storageforge_destructive=true   # also partition/format/create pools/add devices\n'
             '# Unlike the Bash script, unmount removes the fstab line (a backup is kept) and trash has no "already done" check.\n'
             '# inventory.ini from the last scans:\n' + (inventory or '#   (no scanned hosts)') + '\n')
     return head + yaml.dump(lit(plays), Dumper=Dumper, sort_keys=False, default_flow_style=False, width=120, allow_unicode=True)

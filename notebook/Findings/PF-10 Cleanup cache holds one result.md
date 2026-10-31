@@ -1,6 +1,6 @@
 ---
 id: PF-10
-status: open
+status: done
 severity: low
 effort: S
 area: "[[Operations and engineering]]"

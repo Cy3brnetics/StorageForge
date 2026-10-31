@@ -26,6 +26,7 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_BACKUP_FULL_KEEP` | `0` | Full backups kept nightly (0: on demand only) |
 | `STORAGEFORGE_CHANGE_DAYS` | `90` | Days of file change history kept |
 | `STORAGEFORGE_CHANGE_MAX_ROWS` | `2000000` | Most change rows kept, oldest scans dropped first |
+| `STORAGEFORGE_DISK_WARN_PCT`, `STORAGEFORGE_DISK_CRIT_PCT` | `90`, `95` | How full a filesystem is before it raises an alert |
 | `STORAGEFORGE_ACCESS_LOG` | `changes` | `all`, `changes` (writes, 429s and 5xx) or `off` |
 | `STORAGEFORGE_REPORT_CA_FILE` | `/run/sf-secrets/tls_cert` in compose | Certificate deployed jobs trust for an `https` report URL |
 
@@ -67,7 +68,7 @@ docker compose exec storageforge storageforge-index backup --full     # everythi
 docker compose exec storageforge storageforge-index backup list
 ```
 
-The web UI's backup button is limited to 6 per hour. Backups are SQLite only; with PostgreSQL use its own tools.
+`POST /api/backups` makes one over HTTP, up to 6 per hour; the web UI has no backup screen yet. Backups are SQLite only; with PostgreSQL use its own tools. To rebuild on another machine, see [Disaster recovery](disaster-recovery.md).
 
 ### Restore
 
@@ -82,6 +83,26 @@ docker compose start storageforge
 Images built before 2026-10-29 don't recognise `restore` and the other newer subcommands in `docker compose run` (see the [audit](audit-2026-10-29.md#container)). Rebuild the image, or add `--entrypoint storageforge-index` after `--rm`. A restore keeps the current database beside it as `index.db.pre-restore-<time>`. After restoring an essentials backup, rescan to rebuild the index.
 
 Backups live in the `sf-backups` volume on this machine. To keep copies elsewhere, add a Moves **mirror** step from `/var/lib/docker/volumes/storageforge_sf-backups/_data` to another host.
+
+## Certificates
+
+The self-signed certificate lasts 825 days. An alert opens 30 days before the end and goes critical at 7. To replace it, delete it from its volume and deploy again:
+
+```bash
+docker compose run --rm --no-deps --entrypoint sh init-secrets -c 'rm -f /secrets/proxy/tls_cert /secrets/proxy/tls_key'
+docker compose up -d
+```
+
+To use your own, put `tls_cert` and `tls_key` in `./secrets` before that second command. Either way, deploy your jobs again afterwards if they report over `https`, because each one trusts the certificate it was deployed with.
+
+## Retiring a host
+
+StorageForge has no way to remove a host yet. To stop using one:
+
+1. Remove what you deployed to it, from the **Deploy** tab.
+2. Stop scanning it: `storageforge-index vault unbind` (see the [CLI reference](cli-reference.md)).
+
+Its index, graph entries and design stay, so it still shows up in search.
 
 ## Retention
 
@@ -125,9 +146,12 @@ Build with `--build-arg EXTRAS=postgres` and set `STORAGEFORGE_DB=postgresql://u
 ## Tests
 
 ```bash
+pip install -e .                                  # without Flask, the server tests error instead of running
 python3 -m unittest discover -s tests -v
 docker build --target test .
 ```
+
+`.gitea/workflows/ci.yml` runs the suite on both databases, plus ruff and shellcheck, on every push. It needs Gitea Actions and a runner.
 
 `tests/test_platform.py` covers the vault, bindings, the audit chain, a real ephemeral `ssh-agent`, the graph and canvas, and the HTTP API with auth and CSP. `tests/test_indexer.py` covers units, patterns, the stream parser, pool math, mount planning, payload parsers, reports and real local scans. `tests/test_tasks.py` covers storage tasks and their scripts.
 

@@ -1574,7 +1574,8 @@ class ScriptHeaderTests(DBCase):
         for kind, spec in changes.TYPES.items():
             params = {f['name']: next(o for o in f['options'] if o) if f['kind'] == 'choice' else
                       {'path': path, 'text': text, 'spec': 'nas:/srv/' + canary.replace(' ', ''), 'bool': True, 'device': '/dev/sdb',
-                       'user': 'root', 'mode': '0755', 'options': 'defaults', 'label': 'data', 'confirm': '/dev/sdb'}[f['kind']]
+                       'user': 'root', 'mode': '0755', 'options': 'defaults', 'label': 'data', 'confirm': '/dev/sdb', 'host': 'pc',
+                       'devices': '/dev/sdb', 'name': 'snap', 'dataset': 'tank/data', 'size': '10G'}[f['kind']]
                       for f in spec['fields']}
             out[f'changes {kind}'] = changes.script(self.conn, {'name': 'p', 'tasks': [{'type': kind, 'host': 'nas', 'params': params, 'note': text}]})
         for kind, spec in tasks.TYPES.items():

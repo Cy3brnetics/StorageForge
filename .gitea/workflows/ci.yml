@@ -1,0 +1,53 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+defaults:
+  run:
+    working-directory: storageforge-indexer
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sf
+          POSTGRES_PASSWORD: sftest
+        options: >-
+          --health-cmd "pg_isready -U sf" --health-interval 5s --health-timeout 5s --health-retries 10
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Tools the tests call
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends openssh-client util-linux rsync
+      - name: Install
+        run: python -m pip install -e ".[postgres]"
+      - name: Tests on SQLite
+        if: matrix.database == 'sqlite'
+        run: python -m unittest discover -s tests
+      - name: Tests on PostgreSQL
+        if: matrix.database == 'postgres'
+        env:
+          STORAGEFORGE_TEST_PG: postgresql://sf:sftest@postgres:5432/postgres
+        run: python -m unittest discover -s tests
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Ruff
+        run: python -m pip install ruff && ruff check storageforge_index tests
+      - name: Shell scripts
+        run: sudo apt-get update && sudo apt-get install -y shellcheck && shellcheck --severity=error docker/*.sh examples/demo/*.sh

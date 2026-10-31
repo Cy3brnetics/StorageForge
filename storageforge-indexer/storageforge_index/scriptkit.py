@@ -41,6 +41,17 @@ host_slug() { local n=${1%%.*}; n=$(tr 'A-Z' 'a-z' <<<"$n" | tr -cd 'a-z0-9_-');
 human() { numfmt --to=iec-i --suffix=B "${1:-0}" 2>/dev/null || echo "$1 B"; }
 """
 
+# Run a command where a btrfs or ZFS stream lands: here when the login is empty, else over SSH as root on this host,
+# with sudo unless it logs in as root. The stream is the command's stdin, so checks give it </dev/null.
+DEST_CMD = r"""dest_cmd() { # login port command...
+  local login=$1 port=$2 line; shift 2
+  if [[ -z $login ]]; then "$@"; return; fi
+  [[ $login == root@* ]] || set -- sudo -n "$@"
+  printf -v line ' %q' "$@"
+  ssh -p "$port" -o BatchMode=yes -o ConnectTimeout=15 -- "$login" "$line"
+}
+"""
+
 # Needs ARGS (the original arguments) and HOST set by the caller's option parsing; FWD_AGENT=1 with --forward-agent.
 REMOTE = r"""# ── remote: copy this script over, run it there with sudo, clean up (like storage-setup.sh --host) ──
 if [[ -n $HOST ]]; then

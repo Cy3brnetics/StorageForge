@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "storageforge-indexer"
 version = "0.2.0"
-description = "Agentless SSH file indexer, cross-host file search and storage architecture reports"
+description = "Map, plan and change the storage on a fleet of Linux machines over SSH, with no agent"
 requires-python = ">=3.10"
 dependencies = ["cryptography>=44", "flask>=3.1", "flask-login>=0.6.3", "flask-limiter>=3.8", "pyyaml>=6", "waitress>=3.0"]
 
@@ -16,6 +16,12 @@ yaml = ["pyyaml>=6"]
 [project.scripts]
 storageforge-index = "storageforge_index.cli:main"
 storageforge-askpass = "storageforge_index.askpass:main"
+
+[tool.ruff]
+line-length = 160
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]    # syntax errors and code that cannot work; style stays a matter of review
 
 [tool.setuptools.packages.find]
 include = ["storageforge_index*"]

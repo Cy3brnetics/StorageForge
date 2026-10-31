@@ -28,7 +28,10 @@ The code lives in [`storageforge-indexer/`](../storageforge-indexer). Its [READM
 | Page | What it covers |
 | :--- | :--- |
 | [Security](security.md) | Key vault, audit log, accounts and sessions, host identity, container hardening |
-| [Operations](operations.md) | Configuration, backups, retention, logs, upgrades, dependency updates |
+| [Operations](operations.md) | Configuration, backups, certificates, retention, logs, upgrades, dependency updates |
+| [Disaster recovery](disaster-recovery.md) | What to keep elsewhere, and rebuilding on a new machine |
+| [Target hosts](target-hosts.md) | What a scanned or changed machine needs, and SSH for sending snapshots |
+| [Troubleshooting](troubleshooting.md) | Common messages, what causes them and what to do |
 | [CLI reference](cli-reference.md) | Every `storageforge-index` command |
 | [API reference](api-reference.md) | Every HTTP route |
 | [Database](database.md) | Schema, migrations, how queries use the indexes |
@@ -40,6 +43,7 @@ The code lives in [`storageforge-indexer/`](../storageforge-indexer). Its [READM
 | [Consistency audit, 2026-10-29](audit-2026-10-29.md) | Places where the code, the README and the rules in [Concepts](concepts.md) disagree, found while writing these pages |
 | [Deployments design](../deployments-design.md) | The original design for deploys (2026-10-27) |
 | [Security audit, 2026-10-28](../security-audit-2026-10-28.md) | Findings and fixes |
-| [Audit, 2026-10-27](../audit-2026-10-27.md) | QoL, gaps and next features |
+| [Security parameters](../security-parm.md) | The threat model and hardening checklist, from 2026-10-26 |
+| [Roadmap](../notebook/Roadmap.md) | What is planned next, and every finding behind it |
 
 Screenshots were taken from a local instance with one scanned demo host (`nas-demo`, the container from `examples/demo`) and the `atlas` example design.
