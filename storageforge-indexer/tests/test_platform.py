@@ -272,6 +272,34 @@ class OpsTests(DBCase):
             self.assertLess(time.time() - started, 5)
         self.assertEqual(scan.scalar('SELECT count(*) FROM stage_1'), 1)
 
+    def test_each_host_has_its_own_schedule(self):
+        from storageforge_index import server
+        for name in ('nightly', 'hourly', 'plain'):
+            self.conn.execute("INSERT INTO hosts (hostname, ip_address, ssh_host, inventory_json) VALUES (:n, :n, :n, '{}')", {'n': name})
+        vlt = vault.Vault(self.db, self.conn, SECRET)
+        vlt.init()
+        with vlt.unlock() as v:
+            v.generate_key('k', 'ed25519')
+            for name in ('nightly', 'hourly', 'plain'):
+                v.bind('k', name, 'archie')
+        now = int(time.time())
+        for name in ('nightly', 'hourly', 'plain'):
+            self.conn.execute(f"UPDATE hosts SET last_scanned_at = {self.db.ts(':t')} WHERE hostname = :n", {'t': now - 2 * 3600, 'n': name})
+        self.conn.execute("UPDATE hosts SET scan_interval = 86400 WHERE hostname = 'nightly'")
+        self.conn.execute("UPDATE hosts SET scan_interval = 3600 WHERE hostname = 'hourly'")
+        from unittest import mock
+        with mock.patch.object(server.App, '_schedule'):                        # or it queues them while this test looks
+            app = server.App(self.db)
+        self.assertEqual(app.due_hosts(6 * 3600, now), ['hourly'])
+        self.assertEqual(sorted(app.due_hosts(1800, now)), ['hourly', 'plain'])
+        self.assertEqual(app.due_hosts(None, now), ['hourly'])                  # no global interval: only hosts with their own
+        hour = time.localtime(now).tm_hour
+        self.conn.execute("UPDATE hosts SET quiet_hours = :q WHERE hostname = 'hourly'", {'q': f'{hour}-{(hour + 1) % 24}'})
+        self.assertEqual(app.due_hosts(None, now), [])
+        self.assertEqual(sorted(app.bound_hosts()), ['hourly', 'nightly', 'plain'])    # "Scan all" still means all
+        self.assertTrue(server.in_quiet_hours('22-6', 23) and server.in_quiet_hours('22-6', 5))
+        self.assertFalse(server.in_quiet_hours('22-6', 6) or server.in_quiet_hours(None, 3))
+
     def test_one_name_per_host_and_no_scan_burst_after_restart(self):
         from storageforge_index import server
         self.conn.execute("INSERT INTO hosts (hostname, ip_address, ssh_host, inventory_json) "

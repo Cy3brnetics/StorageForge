@@ -60,6 +60,7 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/docker?host=` | containers, stacks, volumes |
 | GET | `/api/docker/usage?host=&path=` | containers using a folder (or all usage for a host) |
 | GET | `/api/jobs` | the last 50 scan jobs |
+| GET, PUT | `/api/hosts/<name>/schedule` | the host's own scan interval and quiet hours: `{"interval": "1d", "quiet_hours": "22-6"}`; empty uses the global interval, no quiet hours |
 | POST | `/api/scan` | `{"host"}`: queue a vault-backed scan (202, `{"job_id"}`); duplicates collapse |
 | POST | `/api/scan/all` | `{}`: queue a scan of every host bound by name for scanning (202, `{"jobs": {host: job_id}}`); duplicates collapse |
 

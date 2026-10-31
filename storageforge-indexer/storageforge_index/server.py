@@ -28,6 +28,7 @@ GET  /api/access/script?host=&remove=1   the read-only scan access setup (or rem
 POST /api/access/grant  {"host", "password", "admin_user", "remove"}   run that script once over SSH with sudo
 GET  /api/folders/duplicates?host=&min_files=&min_size=   folders that are copies by name and structure
 GET  /api/browse?host=&path=         subfolders of a path with their indexed sizes (for picking move sources)
+GET|PUT /api/hosts/<name>/schedule   the host's own scan interval and quiet hours ({"interval": "1d", "quiet_hours": "22-6"})
 GET  /api/moves                      saved move plans;  POST creates one from {"name", "steps": [...]}
 GET|PUT|DELETE /api/moves/<id>       one plan
 POST /api/moves/<id>/copy            save a copy of a plan
@@ -164,6 +165,18 @@ def session_secret_from_env() -> str:
     return s
 
 
+QUIET_RE = re.compile(r'(\d{1,2})-(\d{1,2})')
+
+
+def in_quiet_hours(quiet: str | None, hour: int) -> bool:
+    """quiet is "22-6": from 22:00 up to, not including, 06:00, across midnight if it needs to."""
+    m = QUIET_RE.fullmatch(quiet or '')
+    if not m:
+        return False
+    start, end = int(m[1]), int(m[2])
+    return start <= hour < end if start <= end else hour >= start or hour < end
+
+
 class App:
     def __init__(self, db: Database, scan_interval: int | None = None, parallel: int = 4):
         self.db, self.parallel, self.scan_db = db, parallel, db.patient()
@@ -194,8 +207,7 @@ class App:
                          {'t': int(time.time()), 'r': json.dumps({'error': 'interrupted by restart'})})
         finally:
             conn.close()
-        if scan_interval:
-            threading.Thread(target=self._schedule, args=(scan_interval,), name='scheduler', daemon=True).start()
+        threading.Thread(target=self._schedule, args=(scan_interval,), name='scheduler', daemon=True).start()
         threading.Thread(target=self._nightly, name='nightly', daemon=True).start()
         self.alerts_wake = threading.Event()
         threading.Thread(target=self._alerts, name='alerts', daemon=True).start()
@@ -263,11 +275,12 @@ class App:
 
     def bound_hosts(self) -> list[str]:
         """Hosts bound by name for scanning, under their indexed hostnames."""
-        return self.due_hosts(0)
+        return self.due_hosts(0, schedules=False)
 
-    def due_hosts(self, interval: int, now: float | None = None) -> list[str]:
-        """Bound hosts whose last scan job (of any outcome) is older than the interval. A restart therefore never
-        triggers a burst of scans, and a host that keeps failing is retried once per interval, not every tick."""
+    def due_hosts(self, interval: int | None, now: float | None = None, schedules: bool = True) -> list[str]:
+        """Bound hosts whose last scan job (of any outcome) is older than the interval: the host's own if it has one, else
+        the given one (None: only hosts with their own). A restart therefore never triggers a burst of scans, and a host
+        that keeps failing is retried once per interval, not every tick. Quiet hours hold back the scan, not the clock."""
         now = now or time.time()
         conn = self.db.connect()
         try:
@@ -278,7 +291,13 @@ class App:
                 last = conn.scalar('SELECT max(queued_at) FROM scan_jobs WHERE host IN (:n, :p)', {'n': name, 'p': pattern})
                 done = epoch(conn.scalar('SELECT last_scanned_at FROM hosts WHERE hostname = :n', {'n': name}))
                 last = max(x for x in (last, done, 0) if x is not None) or None     # CLI scans count too
-                if name not in due and (last is None or now - last >= interval * 0.95):
+                every, quiet = interval, None
+                if schedules:
+                    own = conn.all('SELECT scan_interval, quiet_hours FROM hosts WHERE hostname = :n', {'n': name})
+                    every, quiet = (own[0][0] or interval, own[0][1]) if own else (interval, None)
+                if every is None or in_quiet_hours(quiet, time.localtime(now).tm_hour):
+                    continue
+                if name not in due and (last is None or now - last >= every * 0.95):
                     due.append(name)
             return due
         finally:
@@ -330,14 +349,14 @@ class App:
             except Exception:
                 traceback.print_exc()
 
-    def _schedule(self, interval: int):
+    def _schedule(self, interval: int | None):
         while True:
             try:
                 for h in self.due_hosts(interval):
                     self.enqueue(h, 'scheduler')
             except Exception:
                 traceback.print_exc()
-            time.sleep(min(interval, SCHEDULE_TICK))
+            time.sleep(min(interval or SCHEDULE_TICK, SCHEDULE_TICK))
 
 
 class _FromProxy:
@@ -671,6 +690,28 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         return jsonify(indexed=[dict(zip(('hostname', 'ip', 'os', 'last_scanned_at'), (*r[:3], epoch(r[3]))))
                                 for r in rows],
                        graph=graph_hosts)
+
+    @web.route('/api/hosts/<name>/schedule', methods=['GET', 'PUT'])
+    @login_required
+    def api_host_schedule(name):
+        host = core.canonical(conn(), name)
+        if not conn().scalar('SELECT 1 FROM hosts WHERE hostname = :h', {'h': host}):
+            return jsonify(error=f'{name} has not been scanned'), 404
+        if request.method == 'PUT':
+            from .cli import parse_age
+            body = json_body()
+            quiet = str(body.get('quiet_hours') or '').strip() or None
+            m = QUIET_RE.fullmatch(quiet or '')
+            if quiet and not (m and int(m[1]) < 24 and int(m[2]) < 24 and m[1] != m[2]):
+                raise ValueError('quiet hours look like 22-6: from 22:00 up to 06:00')
+            try:
+                every = parse_age(str(body['interval'])) if body.get('interval') else None
+            except Exception:
+                raise ValueError('give the interval like 90m, 6h or 1d') from None
+            conn().execute('UPDATE hosts SET scan_interval = :i, quiet_hours = :q WHERE hostname = :h', {'i': every, 'q': quiet, 'h': host})
+            core.audit(conn(), actor(), 'hosts.schedule', 'ok', host, {'interval': every, 'quiet_hours': quiet})
+        every, quiet = conn().all('SELECT scan_interval, quiet_hours FROM hosts WHERE hostname = :h', {'h': host})[0]
+        return jsonify(host=host, interval=every, quiet_hours=quiet)
 
     @web.get('/api/graph')
     @login_required

@@ -867,9 +867,20 @@ function boxMenu(doc, n) {
   if (r.uuid) items.push({ label: 'Copy UUID', run: () => copyText(r.uuid, 'Copied UUID') });
   return items;
 }
+async function editSchedule(host) {
+  const path = `/api/hosts/${encodeURIComponent(host)}/schedule`;
+  try {
+    const cur = await getJSON(path);
+    const interval = prompt(`Scan ${host} how often? For example 90m, 6h or 1d. Empty uses the global interval.`, cur.interval ? `${Math.round(cur.interval / 60)}m` : '');
+    if (interval === null) return;
+    const quiet = prompt('Quiet hours, when no scheduled scan starts? For example 22-6. Empty means none.', cur.quiet_hours || '');
+    if (quiet === null) return;
+    await api(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ interval, quiet_hours: quiet }) });
+  } catch (err) { alert(err.message); }
+}
 function hostMenu(doc) {
   const h = doc.host;
-  return [{ heading: h }, { label: 'Scan now', run: () => queueScan(h) },
+  return [{ heading: h }, { label: 'Scan now', run: () => queueScan(h) }, { label: 'Scan schedule…', run: () => editSchedule(h) },
     doc.bp ? { label: '+ Link…', run: () => addLink(doc) } : null, doc.bp ? { label: '+ Export…', run: () => addExport(doc) } : null,
     doc.bp && designedShares(doc).length ? { label: 'Deploy shares…', run: () => deployShares(doc) } : null,
     doc.bp && typeof tasksOn === 'function' && tasksOn(h).length ? { label: `Review ${tasksOn(h).length} staged change${tasksOn(h).length === 1 ? '' : 's'}`, run: () => showTab('changes') } : null,
