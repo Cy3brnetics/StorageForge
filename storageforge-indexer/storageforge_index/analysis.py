@@ -245,6 +245,10 @@ def findings(node, as_of: dt.date) -> list[dict]:
         for e in p.get('device_errors') or []:
             add('warn', f'Pool {p["name"]}: {e["device"]} reports errors (R/W/C {e["read"]}/{e["write"]}/{e["cksum"]})',
                 'Run a scrub, check SMART and cabling, then `zpool clear` once the cause is known.')
+    from .health import apply_report, problems
+    apply_report(node, node.get('health_report'))
+    for level, _, title, detail in problems(node, as_of):
+        add(level, title, detail)
     root = next((m for m in real_mounts(node) if m['target'] == '/'), None)
     if root:
         disk = _disk_of(root, node)

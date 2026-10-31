@@ -689,6 +689,8 @@ def node_from_index(conn: Conn, host: str, symlink_limit: int = 20000, stats: bo
         apply_lvs(node, inv['lvs'])
     if inv.get('btrfs'):
         apply_btrfs(node, inv['btrfs'])
+    node['snapshots_seen'] = inv.get('snapshots') or {}
+    node['health_report'] = inv.get('health')
 
     parts = {p['dev']: (p, d) for d in node['disks'] for p in d['parts']}
     disks = {d['dev']: d for d in node['disks']}

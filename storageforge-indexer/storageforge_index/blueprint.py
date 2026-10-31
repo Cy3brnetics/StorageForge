@@ -68,6 +68,8 @@ def _level(pool: dict) -> str:
 
 
 def from_node(node: dict, as_of: dt.date | None = None) -> dict:
+    from .health import apply_report
+    apply_report(node, node.get('health_report'))
     mounts = [m for m in node['mounts'] if m.get('target', '').startswith('/')]
     crypt = {p['crypt']: p['dev'] for d in node['disks'] for p in d['parts'] if p.get('crypt')}
     by_source: dict[str, list] = {}
@@ -105,7 +107,7 @@ def from_node(node: dict, as_of: dt.date | None = None) -> dict:
                 protect(f'sv:{p["dev"]}/{sv["name"]}', sv['name'], sv['mount'], p.get('encrypted'))
             if primary and not p.get('member') and p.get('fs') not in (None, 'swap', 'vfat'):
                 protect(f'part:{p["dev"]}', p.get('label') or p['dev'], primary, p.get('encrypted'))
-        devices.append({'dev': '/dev/' + d['dev'], 'model': d.get('model'), 'serial': d.get('serial'), 'bus': d.get('bus'),
+        devices.append({'dev': '/dev/' + d['dev'], 'model': d.get('model'), 'serial': d.get('serial'), 'bus': d.get('bus'), 'health': d.get('health'),
                         'media': d.get('media'), 'tier': d.get('tier'), 'sizeBytes': d.get('size') or 0,
                         'sector': {'logical': d.get('log_sec') or 512, 'physical': d.get('phy_sec') or 4096},
                         'table': d.get('table') or 'gpt', 'member': d.get('member'), 'partitions': parts})

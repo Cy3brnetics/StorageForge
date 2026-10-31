@@ -345,6 +345,82 @@ class History(Fleet):
         self.assertNotIn('could not be built', text)
 
 
+class Health(Fleet):
+    SMART = json.dumps({'smart_status': {'passed': True}, 'temperature': {'current': 34}, 'power_on_time': {'hours': 900},
+                        'ata_smart_attributes': {'table': [{'id': 5, 'raw': {'value': 8}}, {'id': 197, 'raw': {'value': 0}}]}})
+    REPORT = f"""## at
+1793000000
+## smart sda
+{SMART}
+## smart sdb
+{{"smart_status": {{"passed": false}}}}
+## smart sdc
+
+## stats /mnt/pool
+[/dev/sdb1].write_io_errs    3
+[/dev/sdb1].read_io_errs     0
+## scrub /mnt/pool
+Scrub started:    Sun Oct  4 01:00:00 2026
+Status:           finished
+Error summary:    no errors found
+## snaps /mnt/pool
+12
+"""
+
+    def test_the_report_parses(self):
+        from storageforge_index import health
+        r = health.parse_report(self.REPORT)
+        self.assertEqual(r['at'], 1793000000)
+        self.assertEqual((r['disks']['sda']['smart'], r['disks']['sda']['reallocated'], r['disks']['sda']['temp']), ('warn', 8, 34))
+        self.assertEqual(r['disks']['sdb']['smart'], 'fail')
+        self.assertNotIn('sdc', r['disks'])
+        self.assertEqual(r['btrfs']['/mnt/pool'], {'errors': 3, 'last_scrub': 'Sun Oct  4 01:00:00 2026', 'scrub_errors': 0, 'snapshots': 12})
+        self.assertIsNone(health.parse_report(''))
+
+    def test_problems(self):
+        from storageforge_index import health
+        import datetime as dt
+        r = health.parse_report(self.REPORT)
+        node = {'hostname': 'nas', 'disks': [{'dev': 'sda'}, {'dev': 'sdb'}], 'mounts': [{'target': '/mnt/pool', 'source': '/dev/sdb1'}],
+                'pools': [{'name': 'pool', 'type': 'btrfs', 'members': ['sdb1']},
+                          {'name': 'tank', 'type': 'zfs', 'scan': 'scrub repaired 0B in 01:00:00 with 0 errors on Sun Jan  4 01:00:00 2026'}]}
+        health.apply_report(node, r)
+        self.assertEqual(node['pools'][0]['last_scrub'], '2026-10-04')
+        self.assertEqual(node['pools'][1]['last_scrub'], '2026-01-04')
+        got = {k: (lv, t) for lv, k, t, _ in health.problems(node, dt.date(2026, 10, 20))}
+        self.assertEqual(got['smart:sda'][0], 'warn')
+        self.assertEqual(got['smart:sdb'][0], 'crit')
+        self.assertEqual(got['pool-errors:pool'][0], 'crit')
+        self.assertIn('scrub:tank', got)
+        self.assertNotIn('scrub:pool', got)
+
+    def test_the_setup_script_is_valid_and_grants_nothing_new(self):
+        from storageforge_index import access
+        text = access.setup_script('scanner')
+        self.assertNotIn('sudoers', text)
+        self.assertIn('sf-health.timer', text)
+        self.assertEqual(subprocess.run(['sh', '-n'], input=text, text=True).returncode, 0)
+        self.assertEqual(subprocess.run(['sh', '-n'], input=access.remove_script('scanner'), text=True).returncode, 0)
+        self.assertIn('rm -rf /var/lib/storageforge/health', access.remove_script('scanner'))
+
+    def test_detected_backups_and_snapshots(self):
+        from storageforge_index import protection
+        m = self.conn.scalar("SELECT m.mount_id FROM mounts m JOIN hosts h ON h.host_id = m.host_id WHERE h.hostname = 'nas' AND m.mount_point = '/mnt/backup'")
+        repo = dir_id(self.conn, m, '/mnt/backup/restic')
+        for n in ('keys', 'snapshots', 'index', 'data', 'config'):
+            self.conn.execute(f"INSERT INTO file_records (mount_id, dir_id, filename, is_directory, file_size_bytes, modified_at) VALUES (:m, :d, :n, false, 1, {self.db.ts('1793000000')})", {'m': m, 'd': repo, 'n': n})
+        self.conn.execute("UPDATE hosts SET inventory_json = :i WHERE hostname = 'nas'", {'i': json.dumps({'snapshots': {'zfs': {'tank/media': {'count': 9, 'newest': 1793000000}}}})})
+        rows = [{'node': 'a', 'dataset': 'pool', 'path': '/mnt/pool', 'sync': {'state': 'None'}, 'snapshots': {'enabled': False}, 'backup': {}},
+                {'node': 'b', 'dataset': 'backup', 'path': '/mnt/backup', 'sync': {'state': 'None'}, 'snapshots': {'enabled': False}, 'backup': {}},
+                {'node': 'ds:tank/media', 'dataset': 'tank/media', 'path': '/srv/media', 'sync': {'state': 'None'}, 'snapshots': {'enabled': False}, 'backup': {'target': 'typed'}}]
+        pool, backup, media = protection.overlay(self.conn, 'nas', rows)
+        self.assertIn('restic /mnt/backup/restic', pool['backup']['target'])
+        self.assertFalse(pool['backup']['offsite'])
+        self.assertFalse(backup['backup'].get('target'))                       # a repo doesn't back up the disk it is on
+        self.assertEqual(media['backup']['target'], 'typed')                   # what is typed stays
+        self.assertEqual((media['snapshots']['tool'], media['snapshots']['count']), ('zfs', 9))
+
+
 class Tasks(Fleet):
     def task(self, *blocks, **kw):
         return {'name': kw.pop('name', 'Nightly'), 'host': 'nas', 'schedule': kw.pop('schedule', 'hourly'), 'blocks': list(blocks), **kw}

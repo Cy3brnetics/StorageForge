@@ -23,6 +23,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from . import health
 from .db import epoch
 from .keyinstall import askpass_path, validate
 from .remote import READONLY_DIR, RemoteError, Transport, child_env
@@ -70,7 +71,7 @@ echo "read-only scan access is ready for $U"
 """
 
 REMOVE = r"""set -eu
-rm -rf %(dir)s
+""" + health.UNINSTALL + r"""rm -rf %(dir)s
 gpasswd -d %(user)s %(group)s 2>/dev/null || delgroup %(user)s %(group)s 2>/dev/null || true
 groupdel %(group)s 2>/dev/null || delgroup %(group)s 2>/dev/null || true
 echo "read-only scan access removed"
@@ -79,7 +80,8 @@ echo "read-only scan access removed"
 
 def setup_script(user: str) -> str:
     validate('localhost', user, 22)
-    return SETUP % {'user': shlex.quote(user), 'dir': READONLY_DIR, 'group': GROUP}
+    ready = 'echo "read-only scan access is ready for $U"\n'
+    return SETUP.replace(ready, health.install_script(GROUP).replace('%', '%%') + ready) % {'user': shlex.quote(user), 'dir': READONLY_DIR, 'group': GROUP}
 
 
 def remove_script(user: str) -> str:

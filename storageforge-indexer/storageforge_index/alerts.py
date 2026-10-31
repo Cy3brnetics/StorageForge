@@ -334,7 +334,12 @@ def scan_problems(conn: Conn) -> dict:
                 now[f'disk-warn:{host}:{mp}'] = ('disk-warn', f'{host}:{mp}', f'{mp} is {pct:.0f}% full on {host}',
                                                  f'{(total - (used or 0)) / 2**30:,.1f} GiB free at the last scan', 'warn')
         try:
-            pools = node_from_index(conn, host, symlink_limit=0, stats=False)['pools']
+            node = node_from_index(conn, host, symlink_limit=0, stats=False)
+            pools = node['pools']
+            from .health import apply_report, problems as health_problems
+            apply_report(node, node.get('health_report'))
+            for level, key, title, detail in health_problems(node):
+                now[f'health:{host}:{key}'] = ('health', f'{host}:{key}', title, detail, level)
         except (KeyError, ValueError, TypeError, SystemExit):
             continue
         for p in pools:

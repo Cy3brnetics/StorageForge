@@ -5,6 +5,8 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Added
+- **Disk health:** rerun the read-only scan access setup to install an hourly collector for SMART and btrfs errors. The scan account gets no new rights; scans read its report. Failing disks, pool errors and overdue scrubs raise alerts and show in the topology and report.
+- **Backups found by scans:** restic, borg and rsnapshot folders, ZFS and btrfs snapshots and snapper configs now show in the 3-2-1 matrix, marked as detected.
 - **Capacity history:** each scan records how full every mount is. The Cleanup tab shows 30-day trends and "full in about N days", which can raise an alert.
 - **File changes and identical files in the Cleanup tab,** and an alert when one scan finds many files gone.
 - **Report sections** for deployed jobs with their last runs, storage tasks, open alerts and drift, capacity trend, shares, unreadable folders, git repositories and containers.

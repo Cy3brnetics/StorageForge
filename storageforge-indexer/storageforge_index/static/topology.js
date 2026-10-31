@@ -141,7 +141,7 @@ function model(doc) {
   for (const tier of TIERS) {
     for (const d of (bp.devices || []).filter((x) => (x.tier || 'mass') === tier)) {
       const dev = bare(d.dev), dk = put('disk:' + dev, 0, 'disk', '/dev/' + dev,
-        `${(d.model || 'unknown').split(' (')[0]} · ${fmtDec(d.sizeBytes)}`, tier, { ref: d, group: tier });
+        `${d.health && d.health.smart !== 'ok' ? `⚠ ${d.health.smart === 'fail' ? 'SMART failed' : 'bad sectors'} · ` : ''}${(d.model || 'unknown').split(' (')[0]} · ${fmtDec(d.sizeBytes)}`, tier, { ref: d, group: tier });
       if (d.member || poolOf.has(dev)) link(dk, 'pool:' + (d.member || poolOf.get(dev)), cacheOf.has(dev) ? 'cache' : '');
       for (const p of d.partitions || []) {
         if (p.member || poolOf.has(p.id)) {

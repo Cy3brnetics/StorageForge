@@ -1,4 +1,4 @@
-"""What StorageForge itself deployed, in the 3-2-1 matrix. Deployed mirror and rsnapshot jobs and scheduled storage
+"""What StorageForge deployed or scans found, in the 3-2-1 matrix. Deployed mirror and rsnapshot jobs and scheduled storage
 tasks fill the sync, snapshot and backup cells of the dataset holding their source, with their last good run. A row no
 job or task covers keeps what was typed into the design, and so does a row whose job is later removed: the typed values
 wait under row['hand'].
@@ -9,7 +9,7 @@ import datetime as dt
 import json
 
 from .alerts import get_setting, set_setting
-from .db import Conn, loads
+from .db import Conn, epoch, loads
 from .moves import host_slug, slug
 from .remote import is_under
 
@@ -92,6 +92,32 @@ def _facts_from_tasks(conn: Conn, host: str, offsite: set[str]) -> list[dict]:
     return out
 
 
+def _facts_detected(conn: Conn, host: str) -> list[dict]:
+    """Backups nothing here deployed: restic, borg and rsnapshot folders in the index, and snapshots a scan saw."""
+    row = conn.all('SELECT host_id, inventory_json FROM hosts WHERE lower(hostname) = lower(:h)', {'h': host})
+    if not row:
+        return []
+    hid, inv = row[0]
+    inv = inv if isinstance(inv, dict) else json.loads(inv or '{}')
+    out = []
+    for name, tool, siblings in (('keys', 'restic', ('snapshots', 'index', 'data', 'config')), ('hints.1', 'borg', ('config', 'data', 'README')),
+                                 ('daily.0', 'rsnapshot', ()), ('hourly.0', 'rsnapshot', ())):
+        for dir_id, path, newest in conn.all("""SELECT d.dir_id, d.path, max(f.modified_at) FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
+                                                 JOIN mounts m ON m.mount_id = f.mount_id WHERE m.host_id = :h AND f.filename = :n
+                                                 GROUP BY d.dir_id, d.path""", {'h': hid, 'n': name}):
+            if all(conn.scalar('SELECT 1 FROM file_records WHERE dir_id = :d AND filename = :n', {'d': dir_id, 'n': s}) for s in siblings):
+                out.append({'repo': path, 'why': f'detected {tool} at {path}', 'tool': tool, 'newest': epoch(newest)})
+    snaps = inv.get('snapshots') or {}
+    for ds, s in (snaps.get('zfs') or {}).items():
+        out.append({'dataset': ds, 'why': f'detected {s["count"]} ZFS snapshots',
+                    'snapshots': {'enabled': True, 'tool': 'zfs', 'policy': f'newest {_date(s["newest"])}', 'count': s['count'], 'overhead': 0}})
+    for target, b in ((inv.get('health') or {}).get('btrfs') or {}).items():
+        if b.get('snapshots'):
+            out.append({'path': target, 'why': f'detected {b["snapshots"]} btrfs snapshots',
+                        'snapshots': {'enabled': True, 'tool': 'btrfs', 'policy': 'read-only subvolumes', 'count': b['snapshots'], 'overhead': 0}})
+    return out
+
+
 def _row_for(fact: dict, rows: list[dict]) -> dict | None:
     if 'dataset' in fact:
         return next((r for r in rows if fact['dataset'] in (r.get('dataset'), str(r.get('node')).removeprefix('ds:'))), None)
@@ -117,14 +143,17 @@ def overlay(conn: Conn, host: str, rows: list[dict]) -> list[dict]:
     offsite = offsite_hosts(conn)
     live = [r for r in out if not r.get('ephemeral')]
     taken = {}
+
+    def mark(r, why):
+        if 'deployed' not in r:
+            r['hand'] = {k: r.get(k) for k in CELLS}
+            r['deployed'] = []
+        r['deployed'].append(why)
     for fact in _facts_from_jobs(conn, host, offsite) + _facts_from_tasks(conn, host, offsite):
         r = _row_for(fact, live)
         if r is None:
             continue
-        if 'deployed' not in r:
-            r['hand'] = {k: r.get(k) for k in CELLS}
-            r['deployed'] = []
-        r['deployed'].append(fact['why'])
+        mark(r, fact['why'])
         seen = taken.setdefault(id(r), {})
         for cell in ('sync', 'snapshots'):
             if cell in fact and cell not in seen:
@@ -132,6 +161,18 @@ def overlay(conn: Conn, host: str, rows: list[dict]) -> list[dict]:
         if 'backup' in fact and _better(fact['backup'], seen.get('backup')):
             seen['backup'] = fact['backup']
             r['backup'] = {'enc': (r.get('backup') or {}).get('enc') or 'none', 'ratio': (r.get('backup') or {}).get('ratio') or 1, **fact['backup']}
+    for fact in _facts_detected(conn, host):
+        if 'repo' in fact:      # it can't say what it backs up: the host's other datasets get it where they have nothing, never as offsite
+            holder = _row_for({'path': fact['repo']}, live)
+            for r in live:
+                if r is not holder and not (r.get('backup') or {}).get('target'):
+                    mark(r, fact['why'])
+                    r['backup'] = {'target': f'{fact["tool"]} {fact["repo"]} (detected)', 'enc': 'unknown', 'ratio': 1, 'last': _date(fact['newest']), 'offsite': False}
+            continue
+        r = _row_for(fact, live)
+        if r is not None and not (r.get('snapshots') or {}).get('enabled'):
+            mark(r, fact['why'])
+            r['snapshots'] = fact['snapshots']
     return out
 
 
