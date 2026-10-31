@@ -822,5 +822,6 @@ for ((i = 0; i < N; i++)); do
 done
 echo
 if ((PROBLEMS)); then echo "${R}$PROBLEMS problem(s)${N0}"; exit 1; fi
-echo "${G}done${N0}"
+[[ $MODE =~ ^(run|cutover|install)$ ]] && APPLY=1
+finished
 """

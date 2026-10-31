@@ -31,12 +31,13 @@ def comments(lines, empty: str) -> str:
 HELPERS = r"""if [[ -t 1 ]]; then G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' B=$'\e[34m' H=$'\e[1m' N0=$'\e[0m'; else G= Y= R= B= H= N0=; fi
 section()  { printf '\n%s== %s ==%s\n' "$H" "$*" "$N0"; }
 ok()       { printf '  %-9s %s\n' "${G}ok${N0}" "$*"; }
-missing()  { printf '  %-9s %s\n' "${Y}missing${N0}" "$*"; }
+missing()  { printf '  %-9s %s\n' "${Y}missing${N0}" "$*"; MISSING=$((MISSING + 1)); }
 conflict() { printf '  %-9s %s\n' "${R}conflict${N0}" "$*"; PROBLEMS=$((PROBLEMS + 1)); }
 info()     { printf '  %-9s %s\n' "" "$*"; }
 doing()    { printf '  %-9s %s\n' "${Y}->${N0}" "$*"; }
 skip()     { printf '  %-9s %s\n' "${B}other${N0}" "$*"; }
-PROBLEMS=0
+PROBLEMS=0 MISSING=0
+finished() { if ((${APPLY:-0} && MISSING)); then echo "${Y}$MISSING step(s) not finished${N0}"; else echo "${G}done${N0}"; fi; }
 host_slug() { local n=${1%%.*}; n=$(tr 'A-Z' 'a-z' <<<"$n" | tr -cd 'a-z0-9_-'); echo "${n:-unknown}"; }
 human() { numfmt --to=iec-i --suffix=B "${1:-0}" 2>/dev/null || echo "$1 B"; }
 """

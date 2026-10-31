@@ -827,6 +827,7 @@ STATE=/var/lib/storageforge/changes/$PLAN
 if ((APPLY)); then
   exec 9>"/run/lock/sf-changes-$PLAN.lock" 2>/dev/null || exec 9>"/tmp/sf-changes-$PLAN.lock"
   flock -n 9 || { echo "another run of this plan is in progress" >&2; exit 1; }
+  export LVM_SUPPRESS_FD_WARNINGS=1   # LVM complains about the lock on every command
   mkdir -p /var/log/storageforge; LOG=/var/log/storageforge/changes-$PLAN-$STAMP.log
   exec > >(tee -a "$LOG") 2>&1; echo "log: $LOG"
 fi
@@ -1211,6 +1212,8 @@ t_lvm_extend() { local vg=$1 lv=$2 size=$3 now want
   now=$(lvs --noheadings --nosuffix --units b -o lv_size -- "$vg/$lv" | tr -d ' ')
   want=$(numfmt --from=iec "$size")
   if ((now >= want)); then ok "$vg/$lv is already $(human "$now")"; return 0; fi
+  # LVM refuses to resize an active volume with a classic snapshot, and says only to deactivate it
+  if [[ $(lvs --noheadings -o lv_attr -- "$vg/$lv" | tr -d ' ') == o* ]]; then conflict "$vg/$lv has a snapshot and LVM cannot grow it while it does: remove the snapshot first (lvs -o lv_name,origin $vg)"; return 0; fi
   act "lvextend -r -L $size $vg/$lv (now $(human "$now"))" && try lvextend -r -L "$size" -- "$vg/$lv" >/dev/null && ok "grown"
 }
 t_lvm_snapshot() { local vg=$1 lv=$2 name=$3 size=$4
@@ -1239,7 +1242,7 @@ echo "${H}$PLAN${N0} · $MODE on $(uname -n)$( ((DESTRUCTIVE)) && echo ' · dest
 CHANGE_TAIL = r"""
 echo
 if ((PROBLEMS)); then echo "${R}$PROBLEMS problem(s)${N0}$( ((STOPPED)) && echo ', stopped at the first one')"; exit 1; fi
-echo "${G}done${N0}"
+finished
 """
 
 

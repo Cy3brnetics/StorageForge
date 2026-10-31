@@ -58,6 +58,16 @@ class ConfirmTests(unittest.TestCase):
         row = self.conn.all("SELECT status, host_state, host_exit, exit_code FROM deploy_runs WHERE nonce = :n", {'n': nonce})[0]
         self.assertEqual(row, ('ok', 'finished', 0, 0))
 
+    def test_ingest_runs_keeps_an_incomplete_apply_incomplete(self):
+        now = int(time.time())
+        nonce = 'fedcba0987654321fedcba0987654321'
+        self.conn.execute("""INSERT INTO deploy_runs (group_id, host, kind, ref, mode, status, nonce, started_at, output, exit_code)
+                             VALUES ('g3', 'server01', 'shares', 'x', 'apply', 'incomplete', :n, :t, :o, NULL)""",
+                          {'n': nonce, 't': now - 60, 'o': '  missing   not mounted\n'})
+        runs_text = f'{{"nonce":"{nonce}","rc":0,"started":{now - 60},"finished":{now - 10}}}\n'
+        self.assertEqual(confirm.ingest_runs(self.conn, 'server01', runs_text)[0]['status'], 'incomplete')
+        self.assertEqual(self.conn.scalar('SELECT status FROM deploy_runs WHERE nonce = :n', {'n': nonce}), 'incomplete')
+
     def test_ingest_runs_confirms_failure(self):
         now = int(time.time())
         nonce = 'abcdef1234567890abcdef1234567890'

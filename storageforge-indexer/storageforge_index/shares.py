@@ -432,7 +432,9 @@ def deploy_items(db, conn: Conn, host: str, mode: str, actor: str) -> list[dict]
     text = script(conn, srv, prev)
     digest = design_hash(conn, srv)
 
-    def done(_res):
+    def done(res):
+        if res['status'] != 'ok':       # steps left: the next apply must still see this design as not deployed
+            return
         c2 = db.connect()
         try:
             deploy.mark_deployed(c2, srv, 'shares', srv, digest, {'clients': clients}, actor)
@@ -717,5 +719,5 @@ fi
 record_managed
 echo
 if ((PROBLEMS)); then echo "${R}$PROBLEMS problem(s)${N0}"; exit 1; fi
-echo "${G}done${N0}"
+finished
 """

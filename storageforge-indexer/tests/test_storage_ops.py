@@ -124,6 +124,21 @@ class Types(Fleet):
         self.assertFalse(scans_here(a(), 'nas'))
 
 
+class LvmScript(Stubbed):
+    def test_growing_a_volume_with_a_snapshot_says_why_and_never_calls_lvextend(self):
+        (self.bin / 'lvs').write_text('#!/bin/bash\ncase "$*" in *lv_attr*) echo "  owi-aos---" ;; *lv_size*) echo "  1048576" ;; esac\n')
+        (self.bin / 'lvextend').write_text('#!/bin/bash\necho "lvextend $*" >>"$STUB_LOG"\n')
+        for name in ('lvs', 'lvextend'):
+            (self.bin / name).chmod(0o755)
+        me = os.uname().nodename.split('.')[0]
+        plan = {'name': 'p', 'tasks': [{'type': 'lvm-extend', 'host': me, 'params': {'vg': 'v', 'lv': 'a', 'size': '2M'}}]}
+        sh = self.t / 'c.sh'
+        sh.write_text(changes.script(self.conn, plan))
+        r = subprocess.run(['bash', str(sh)], capture_output=True, text=True, timeout=60, env={**os.environ, 'PATH': f'{self.bin}:{os.environ["PATH"]}', 'STUB_LOG': str(self.log)})
+        self.assertIn('has a snapshot', r.stdout)
+        self.assertEqual(self.log.read_text(), '')
+
+
 class Sends(Stubbed):
     def btrfs_block(self, keep=0):
         return [{'type': 'btrfs_send', 'params': {'into': f'{self.tmp}/here', 'prefix': 'd', 'dst_host': 'root@10.0.0.9', 'dst': f'{self.tmp}/there', 'keep': keep}}]
@@ -181,6 +196,12 @@ class Sends(Stubbed):
 
     def zfs_block(self, keep=0, dst_host='pc'):
         return [{'type': 'zfs_send', 'params': {'dataset': 'tank/a', 'prefix': 'd', 'dst_host': dst_host, 'dst': 'back/a', 'keep': keep}}]
+
+    def test_zfs_report_before_any_snapshot_exists(self):
+        r = self.run_task(self.zfs_block())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn('bad array subscript', r.stderr)
+        self.assertIn('no tank/a@d-* yet', r.stdout)
 
     def test_zfs_full_then_changes_only_then_prunes(self):
         self.zstate.write_text('tank/a@d-1\n')

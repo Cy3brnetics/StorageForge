@@ -73,16 +73,16 @@ def ingest_runs(conn: Conn, host: str, text: str) -> list[dict]:
         rc = int(r.get('rc', 0))
         fin = int(r.get('finished') or now)
 
-        row = conn.all("""SELECT run_id, status, exit_code, confirmed_at, output FROM deploy_runs
+        row = conn.all("""SELECT run_id, status, exit_code, confirmed_at, output, mode FROM deploy_runs
                           WHERE nonce = :n AND lower(host) = lower(:h)""", {'n': nonce, 'h': host})
         if not row:
             continue
-        rid, status, cur_exit, conf_at, cur_out = row[0]
+        rid, status, cur_exit, conf_at, cur_out, mode = row[0]
         if conf_at and cur_exit == rc:
             continue
 
-        # Status update: if host rc == 0, mark ok; if host rc != 0, mark failed
-        new_status = 'ok' if rc == 0 else 'failed'
+        # The same reading the run got when it ended: exit code 0 with steps left stays incomplete
+        new_status = deploy.run_status(rc, mode, cur_out or '')
         note = f"\n[confirmed by scan at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}: host finished with exit code {rc}]\n"
         conn.execute("""UPDATE deploy_runs
                         SET host_state = 'finished', host_exit = :rc, confirmed_at = :now,

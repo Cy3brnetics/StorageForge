@@ -25,6 +25,7 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_BACKUP_HOUR` | `3` | Local hour for the nightly backup and prune |
 | `STORAGEFORGE_BACKUP_KEEP` | `14` | Essentials backups kept |
 | `STORAGEFORGE_BACKUP_FULL_KEEP` | `0` | Full backups kept nightly (0: on demand only) |
+| `STORAGEFORGE_CONFIG_EXPORT_DIR` | unset | Folder for the nightly host configuration bundle; the newest 14 are kept. Mount storage from another machine here |
 | `STORAGEFORGE_CHANGE_DAYS` | `90` | Days of file change history kept |
 | `STORAGEFORGE_CHANGE_MAX_ROWS` | `2000000` | Most change rows kept, oldest scans dropped first |
 | `STORAGEFORGE_FILLS_UP_DAYS` | `14` | Alert when a mount's 30-day trend fills it within this many days |

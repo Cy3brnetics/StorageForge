@@ -1,5 +1,6 @@
 """Host configuration history and the reinstall script: passwords never kept, values never run as code."""
 import base64
+import contextlib
 import io
 import json
 import re
@@ -115,3 +116,71 @@ class History(unittest.TestCase):
         bare = re.sub(r"'[^']*'", "''", text)
         self.assertEqual([x for x in bare.splitlines() if 'CANARY' in x and not x.lstrip().startswith('#')], [])
         self.assertNotIn('\nrm -rf /', text)
+
+    def test_export_to_keeps_the_newest_and_refuses_a_missing_folder(self):
+        dest = Path(self.tmp) / 'out'
+        with self.assertRaises(FileNotFoundError):
+            hostconfig.export_to(self.conn, str(dest))
+        dest.mkdir()
+        self.assertIsNone(hostconfig.export_to(self.conn, str(dest)))      # nothing captured yet
+        self.scan(self.FSTAB)
+        (dest / 'hostconfigs-20000101-000000.tar.gz').write_bytes(b'old')
+        got = hostconfig.export_to(self.conn, str(dest), keep=1)
+        self.assertEqual([p.name for p in dest.iterdir()], [Path(got['path']).name])
+        self.assertEqual(Path(got['path']).stat().st_mode & 0o777, 0o600)
+
+    def test_cli(self):
+        from storageforge_index import cli
+        self.scan(self.FSTAB)
+        first = hostconfig.latest(self.conn, 'nas')['config_id']
+        second = self.scan(self.FSTAB + '# changed\n')['config_id']
+        db = str(Path(self.tmp) / 'index.db')
+        if self.db.dialect != 'sqlite':
+            self.skipTest('the CLI test uses the SQLite file')
+        script, tar = Path(self.tmp) / 'r.sh', Path(self.tmp) / 'b.tar.gz'
+
+        def run(*args):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cli.main(['--db', db, 'config', *args]), 0)
+            return out.getvalue()
+        self.assertIn('nas', run('list'))
+        self.assertEqual(len(run('list', 'nas').splitlines()), 2)
+        self.assertIn('# changed', run('diff', str(first), str(second)))
+        run('script', 'nas', '-o', str(script))
+        self.assertEqual(subprocess.run(['bash', '-n', str(script)]).returncode, 0)
+        self.assertIn('Reinstall script for nas', run('script', '--id', str(first)))
+        run('export', '-o', str(tar))
+        self.assertTrue(tarfile.is_tarfile(tar))
+
+
+class Api(unittest.TestCase):
+    def setUp(self):
+        from storageforge_index import server, users
+        self.tmp = tempfile.mkdtemp()
+        self.db = dbfactory.make(self, Path(self.tmp) / 'index.db')
+        self.conn = self.db.connect()
+        self.db.migrate(self.conn)
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.addCleanup(self.conn.close)
+        users.create(self.conn, 'alice', 'a long enough password')
+        self.client = server.create_app(server.App(self.db), 's' * 48).test_client()
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json) VALUES ('nas', 'nas', 'scan', :i), ('new', 'new', 'scan', '{}')",
+                          {'i': json.dumps(inventory(History.FSTAB))})
+        self.first = hostconfig.capture(self.conn, 'nas')['config_id']
+
+    def test_routes(self):
+        for path in ('/api/hostconfigs', f'/api/hostconfigs/{self.first}', '/api/hostconfigs/script?host=nas', '/api/hostconfigs/bundle'):
+            self.assertEqual(self.client.get(path).status_code, 401, path)
+        self.client.post('/api/login', json={'username': 'alice', 'password': 'a long enough password'})
+        got = self.client.get('/api/hostconfigs').json
+        self.assertEqual(([v['host'] for v in got['versions']], got['not_captured']), (['nas'], ['new']))
+        one = self.client.get(f'/api/hostconfigs/{self.first}').json
+        self.assertEqual((one['host'], one['previous'], one['summary']['subvolumes']), ('nas', None, 1))
+        r = self.client.get('/api/hostconfigs/script?host=nas')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b'mount_device', r.data)
+        self.assertEqual(self.client.get('/api/hostconfigs/script?host=nowhere').status_code, 404)
+        self.assertEqual(self.client.get('/api/hostconfigs/99999').status_code, 404)
+        self.assertEqual(self.client.get('/api/hostconfigs/bundle?host=nowhere').status_code, 404)
+        self.assertTrue(tarfile.is_tarfile(io.BytesIO(self.client.get('/api/hostconfigs/bundle').data)))
