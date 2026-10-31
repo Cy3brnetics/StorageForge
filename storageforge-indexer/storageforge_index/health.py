@@ -128,14 +128,20 @@ def parse_report(text: str) -> dict | None:
 
 
 def parse_snapshots(text: str) -> dict:
-    """@@snapshots: "zfs<TAB>dataset<TAB>count<TAB>newest" and "snapper<TAB>config" lines."""
-    out = {'zfs': {}, 'snapper': []}
+    """@@snapshots: "zfs<TAB>dataset<TAB>count<TAB>newest", "snapper<TAB>config<TAB>subvolume", "sanoid<TAB>dataset" and "tool<TAB>name" lines."""
+    out = {'zfs': {}, 'snapper': [], 'snapper_paths': {}, 'sanoid': [], 'tools': []}
     for line in (text or '').splitlines():
         f = line.split('\t')
         if f[0] == 'zfs' and len(f) == 4 and f[2].isdigit() and f[3].isdigit():
             out['zfs'][f[1]] = {'count': int(f[2]), 'newest': int(f[3])}
-        elif f[0] == 'snapper' and len(f) == 2:
+        elif f[0] == 'snapper' and len(f) in (2, 3):
             out['snapper'].append(f[1])
+            if len(f) == 3 and f[2].startswith('/'):
+                out['snapper_paths'][f[1]] = f[2]
+        elif f[0] == 'sanoid' and len(f) == 2 and not f[1].startswith('template_'):
+            out['sanoid'].append(f[1])
+        elif f[0] == 'tool' and len(f) == 2:
+            out['tools'].append(f[1])
     return out
 
 

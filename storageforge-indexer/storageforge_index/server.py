@@ -846,7 +846,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def api_canvas():
         host = request.args.get('host') or None
         name = f'storageforge-{host or "network"}.canvas'.replace('/', '_').replace('"', '')
-        return Response(canvas.dumps(graph.load(conn(), host)), mimetype='application/json',
+        return Response(canvas.dumps(graph.load(conn(), host), canvas.extras(conn(), host)), mimetype='application/json',
                         headers={'Content-Disposition': f'attachment; filename="{name}"'})
 
     @web.get('/api/search')

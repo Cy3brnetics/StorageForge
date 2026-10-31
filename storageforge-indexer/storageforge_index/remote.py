@@ -272,7 +272,10 @@ echo '@@runs'; [ -r /var/lib/storageforge/run/runs.jsonl ] && tail -n 100 /var/l
 echo '@@moves'; for f in /var/lib/storageforge/moves/*/*; do [ -r "$f" ] && printf '%s\t%s\n' "${f#/var/lib/storageforge/moves/}" "$(head -c 200 "$f" | head -n 1)"; done
 echo '@@health'; cat /var/lib/storageforge/health/report 2>/dev/null
 echo '@@snapshots'; command -v zfs >/dev/null 2>&1 && zfs list -H -p -t snapshot -o name,creation 2>/dev/null | awk -F'[@\t]' '{c[$1]++; if ($3 > m[$1]) m[$1] = $3} END {for (d in c) print "zfs\t" d "\t" c[d] "\t" m[d]}'
-for f in /etc/snapper/configs/*; do [ -e "$f" ] && printf 'snapper\t%s\n' "$(basename "$f")"; done
+for f in /etc/snapper/configs/*; do [ -e "$f" ] && printf 'snapper\t%s\t%s\n' "$(basename "$f")" "$(sed -n 's/^SUBVOLUME="\(.*\)"$/\1/p' "$f" 2>/dev/null)"; done
+[ -e /etc/timeshift/timeshift.json ] && printf 'tool\ttimeshift\n'
+[ -e /etc/btrbk/btrbk.conf ] && printf 'tool\tbtrbk\n'
+[ -r /etc/sanoid/sanoid.conf ] && sed -n 's/^\[\([^]]*\)\]$/sanoid\t\1/p' /etc/sanoid/sanoid.conf
 echo '@@managed'; for f in /var/lib/storageforge/managed/*.sha256; do [ -r "$f" ] || continue; echo "## $(basename "$f" .sha256)"; sha256sum -c "$f" 2>&1 | tail -n 300; done
 for f in /var/lib/storageforge/managed/*.lines; do [ -r "$f" ] || continue; echo "## $(basename "$f" .lines)"; while IFS= read -r l; do if grep -Fxq -- "$l" /etc/fstab 2>/dev/null; then echo "LINE-OK $l"; else echo "LINE-MISSING $l"; fi; done <"$f"; done
 for t in /etc/systemd/system/sf-job-*.timer; do [ -e "$t" ] && echo "TIMER $(basename "$t") $(systemctl is-enabled "$(basename "$t")" 2>/dev/null)"; done

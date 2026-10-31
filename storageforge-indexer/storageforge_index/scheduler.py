@@ -395,8 +395,20 @@ def _check_save(conn: Conn, body: dict, s: dict):
         raise ValueError('only a command can run as another user: tasks, plans and shares need root')
     try:
         check_target(conn, s)
+        s['task_ref'] = _ref_to_id(conn, s)
     except LookupError as exc:
         raise ValueError(str(exc)) from None
+
+
+def _ref_to_id(conn: Conn, s: dict) -> str:
+    """What a schedule runs, by id: a name typed here would break, or point elsewhere, when plans are renamed."""
+    if s['task_type'] == 'task':
+        return str(_resolve_task(conn, s['task_ref'])['id'])
+    if s['task_type'] == 'change':
+        return str(_plan_id(conn, 'change_plans', s['task_ref']))
+    if s['task_type'] == 'move':
+        return str(_plan_id(conn, 'move_plans', s['task_ref']))
+    return s['task_ref']
 
 
 # ── Database Operations ────────────────────────────────────────────────────────
