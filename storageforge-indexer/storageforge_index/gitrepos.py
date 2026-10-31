@@ -22,9 +22,29 @@ NOISE = ('/.cache/', '/.cargo/', '/.rustup/', '/.npm/', '/.nvm', '/go/pkg/mod/',
          '/.local/share/Trash/', '/var/lib/containerd/', '/var/lib/docker/', '-prefix/src/', '/.vscode-server/')
 
 
-def is_noise(path: str) -> bool:
+def is_noise(path: str, ignore: list[str] | tuple = ()) -> bool:
+    """ignore adds path fragments to hide; a fragment starting with ! shows what matches it, whatever else says."""
     p = path + '/'
-    return any(n in p for n in NOISE)
+    if any(x.startswith('!') and x[1:] in p for x in ignore):
+        return False
+    return any(n in p for n in (*NOISE, *(x for x in ignore if not x.startswith('!'))))
+
+
+def ignore_lists(conn: Conn) -> dict[str, list[str]]:
+    from .alerts import get_setting
+    return get_setting(conn, 'git.ignore') or {}
+
+
+def save_ignore(conn: Conn, host: str, paths: list[str], actor: str):
+    from .alerts import set_setting
+    cur = ignore_lists(conn)
+    clean = sorted({x.strip() for x in paths if x.strip() and x.strip() != '!'})
+    key = host or '*'
+    if clean:
+        cur[key] = clean
+    else:
+        cur.pop(key, None)
+    set_setting(conn, 'git.ignore', cur, actor)
 
 _SURVEY_BASH = r"""
 while IFS= read -r -d '' r; do
@@ -185,7 +205,9 @@ def listing(conn: Conn, host: str | None = None, include_noise: bool = False) ->
         r['state'] = ('error' if r['error'] else 'uncommitted' if r['dirty'] else
                       'unpushed' if r['ahead'] else 'behind' if r['behind_copies'] else
                       'archived' if r['archived'] else 'copied' if r['elsewhere'] else 'single copy')
-    hidden = sum(1 for r in repos if is_noise(r['path']) and (not host or r['host'] == host))
-    shown = [r for r in repos if (not host or r['host'] == host) and (include_noise or not is_noise(r['path']))]
-    return {'repos': shown, 'hidden': 0 if include_noise else hidden, 'summary': {s: sum(1 for r in shown if r['state'] == s)
+    ignore = ignore_lists(conn)
+    noise = lambda r: is_noise(r['path'], ignore.get('*', []) + ignore.get(r['host'], []))   # noqa: E731
+    hidden = sum(1 for r in repos if noise(r) and (not host or r['host'] == host))
+    shown = [r for r in repos if (not host or r['host'] == host) and (include_noise or not noise(r))]
+    return {'repos': shown, 'hidden': 0 if include_noise else hidden, 'ignore': ignore, 'summary': {s: sum(1 for r in shown if r['state'] == s)
                                         for s in ('uncommitted', 'unpushed', 'behind', 'single copy', 'copied', 'archived', 'error')}}

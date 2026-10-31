@@ -392,8 +392,30 @@ def get_plan(conn: Conn, plan_id: int) -> dict:
     if not rows:
         raise LookupError(f'no move plan #{plan_id}')
     body = json.loads(rows[0][1])
-    return {'id': rows[0][0], **body, 'updated_at': rows[0][2],
+    return {'id': rows[0][0], **body, 'updated_at': rows[0][2], 'progress': progress(conn, body),
             'deployed_at': _deployed_at(deploy.deployed(conn, kind='jobs'), rows[0][0], body)}
+
+
+def progress(conn: Conn, plan: dict) -> list[dict]:
+    """Per step, what the script reported on its destination host at the last scan: {copied, cutover}, each a text or None.
+    The script keeps these under the plan's name, so renaming a plan starts its progress over."""
+    marks: dict[str, dict] = {}
+    for name, inv in conn.all('SELECT hostname, inventory_json FROM hosts'):
+        inv = inv if isinstance(inv, dict) else json.loads(inv or '{}')
+        marks[host_slug(name)] = dict(line.split('\t', 1) for line in (inv.get('moves') or '').splitlines() if '\t' in line)
+    plan_dir = slug(plan['name'])
+    out = []
+    for i, s in enumerate(plan['steps']):
+        m = marks.get(host_slug(s['dst']['host']), {})
+        out.append({'copied': m.get(f'{plan_dir}/{i}.done'), 'cutover': m.get(f'{plan_dir}/{i}.cutover')})
+    return out
+
+
+def copy_plan(conn: Conn, plan_id: int, actor: str) -> int:
+    plan = get_plan(conn, plan_id)
+    names = {p['name'].lower() for p in list_plans(conn)}
+    name = next(n for n in (f'{plan["name"]} (copy{"" if i == 1 else f" {i}"})' for i in range(1, 10000)) if n.lower() not in names)
+    return save_plan(conn, {**plan, 'name': name}, actor)
 
 
 def save_plan(conn: Conn, body: dict, actor: str, plan_id: int | None = None) -> int:

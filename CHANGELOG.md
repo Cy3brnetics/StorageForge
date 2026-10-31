@@ -5,6 +5,8 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Added
+- **Move progress:** a move script run by hand now shows "copied" and "cut over" on its steps after the next scan.
+- **Moves:** Duplicate and Export JSON. **Git:** select repositories and archive them together, and hide or show paths per host.
 - **Storage tasks on the CLI:** `tasks list`, `check`, `script` and `import`.
 - Storage task checks warn when a running container uses a block's source or destination.
 - Shared test cases keep the planner's and the report's capacity numbers the same.

@@ -30,10 +30,12 @@ GET  /api/folders/duplicates?host=&min_files=&min_size=   folders that are copie
 GET  /api/browse?host=&path=         subfolders of a path with their indexed sizes (for picking move sources)
 GET  /api/moves                      saved move plans;  POST creates one from {"name", "steps": [...]}
 GET|PUT|DELETE /api/moves/<id>       one plan
+POST /api/moves/<id>/copy            save a copy of a plan
 POST /api/moves/check                check a plan (saved or not) against the index: sizes, space, mounts, loops
 GET  /api/moves/<id>/script          the Bash script that runs the plan (copy, verify, cutover, install)
 GET  /api/folders/cold?host=&years=&min_size=   folders whose newest file is older than the cutoff
 GET  /api/git?host=                  git repositories found by scans, with their copies and archive state
+GET|PUT /api/git/ignore              path fragments hidden from the Git tab, for every host ("*") or one; "!x" shows x
 GET  /api/shares/check?host=         the NFS/SMB shares in a host's design, checked against the index
 GET  /api/shares/script?host=        the script that deploys them on the server and mounts them on clients
 POST /api/shares/validate  {"host", "export", "index"}   check one share before saving it (folder, access, mount points)
@@ -893,6 +895,16 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
 
+    @web.post('/api/moves/<int:plan_id>/copy')
+    @login_required
+    def api_move_copy(plan_id):
+        try:
+            pid = moves.copy_plan(conn(), plan_id, actor())
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        core.audit(conn(), actor(), 'moves.save', 'ok', None, {'plan': pid, 'copied_from': plan_id})
+        return jsonify(moves.get_plan(conn(), pid)), 201
+
     @web.post('/api/moves/check')
     @login_required
     def api_moves_check():
@@ -914,6 +926,18 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     def api_git():
         return jsonify(gitrepos.listing(conn(), request.args.get('host') or None, bool(request.args.get('all'))))
+
+    @web.route('/api/git/ignore', methods=['GET', 'PUT'])
+    @login_required
+    def api_git_ignore():
+        if request.method == 'PUT':
+            body = json_body()
+            paths = body.get('paths')
+            if not isinstance(paths, list) or not all(isinstance(x, str) for x in paths):
+                return jsonify(error='paths must be a list of path fragments'), 400
+            gitrepos.save_ignore(conn(), str(body.get('host') or ''), paths, actor())
+            core.audit(conn(), actor(), 'git.ignore', 'ok', str(body.get('host') or '') or None, {'paths': len(paths)})
+        return jsonify(ignore=gitrepos.ignore_lists(conn()), builtin=list(gitrepos.NOISE))
 
     @web.get('/api/shares/check')
     @login_required

@@ -56,6 +56,7 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/folders/duplicates?host=&min_files=&min_size=` | duplicate folders |
 | GET | `/api/folders/cold?host=&years=&min_size=` | folders whose newest file is older than the cutoff |
 | GET | `/api/git?host=` | repositories, copies and archive state |
+| GET, PUT | `/api/git/ignore` | path fragments hidden from the Git tab: PUT `{"host", "paths"}`, no host means every host, `!x` shows `x` |
 | GET | `/api/docker?host=` | containers, stacks, volumes |
 | GET | `/api/docker/usage?host=&path=` | containers using a folder (or all usage for a host) |
 | GET | `/api/jobs` | the last 50 scan jobs |

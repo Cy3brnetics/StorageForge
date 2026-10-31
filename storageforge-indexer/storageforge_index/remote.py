@@ -268,6 +268,7 @@ echo '@@jobs'; for f in /var/lib/storageforge/jobs/*/runs.jsonl; do [ -r "$f" ] 
 echo '@@tasks'; for f in /var/lib/storageforge/tasks/*.last /var/lib/storageforge/tasks/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
 for t in /etc/systemd/system/sf-task-*.timer; do [ -e "$t" ] && echo "TASK-TIMER $(basename "$t") $(systemctl is-enabled "$(basename "$t")" 2>/dev/null)"; done
 echo '@@runs'; [ -r /var/lib/storageforge/run/runs.jsonl ] && tail -n 100 /var/lib/storageforge/run/runs.jsonl
+echo '@@moves'; for f in /var/lib/storageforge/moves/*/*; do [ -r "$f" ] && printf '%s\t%s\n' "${f#/var/lib/storageforge/moves/}" "$(head -c 200 "$f" | head -n 1)"; done
 echo '@@managed'; for f in /var/lib/storageforge/managed/*.sha256; do [ -r "$f" ] || continue; echo "## $(basename "$f" .sha256)"; sha256sum -c "$f" 2>&1 | tail -n 300; done
 for f in /var/lib/storageforge/managed/*.lines; do [ -r "$f" ] || continue; echo "## $(basename "$f" .lines)"; while IFS= read -r l; do if grep -Fxq -- "$l" /etc/fstab 2>/dev/null; then echo "LINE-OK $l"; else echo "LINE-MISSING $l"; fi; done <"$f"; done
 for t in /etc/systemd/system/sf-job-*.timer; do [ -e "$t" ] && echo "TIMER $(basename "$t") $(systemctl is-enabled "$(basename "$t")" 2>/dev/null)"; done
@@ -324,13 +325,14 @@ class HostInventory:
     machine_id: str = ''  # /etc/machine-id: signed into deploy requests (self-reported, so never used as identity)
     configs: dict | None = None  # fstab, crypttab, mdadm, exports, Samba files with passwords removed (hostconfig.py)
     accounts: str = ''  # local users and groups, no passwords (what a rebuild recreates so files keep their owners)
+    moves: str = ''     # <plan>/<step>.done and .cutover from move scripts run by hand
 
     def to_json(self) -> str:
         return json.dumps({
             'collected_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
             'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb, 'btrfs': self.btrfs,
             'jobs': self.jobs, 'tasks': self.tasks, 'runs': self.runs, 'managed': self.managed, 'ids': self.ids, 'packages': self.packages,
-            'configs': self.configs, 'accounts': self.accounts,
+            'configs': self.configs, 'accounts': self.accounts, 'moves': self.moves,
             'mounts': [asdict(m) for m in self.mounts],
         })
 
@@ -429,7 +431,7 @@ def collect_inventory(t: Transport) -> HostInventory:
                          btrfs=sec.get('btrfs', '').strip(), jobs=sec.get('jobs', '').strip(),
                          tasks=sec.get('tasks', '').strip(), runs=sec.get('runs', '').strip(),
                          managed=sec.get('managed', '').strip(), ids=sec.get('ids', '').strip(),
-                         packages=sec.get('packages', '').strip(),
+                         packages=sec.get('packages', '').strip(), moves=sec.get('moves', '').strip(),
                          configs=parse_configs(sec['configs']) if 'configs' in sec else None,
                          accounts=sec.get('accounts', '').strip(),
                          machine_id=next((m for m in lines('machineid') if re.fullmatch(r'[0-9a-f]{32}', m)), ''))

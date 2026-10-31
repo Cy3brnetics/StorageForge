@@ -55,6 +55,8 @@ function renderMoves() {
     total || '',
     el('div', { class: 'row end' },
       p.id ? button('Delete plan', delPlan, 'btn ghost sm danger') : '',
+      p.id ? button('Duplicate', copyPlan, 'btn ghost sm') : '',
+      p.id ? button('Export JSON', exportPlan, 'btn ghost sm') : '',
       button('Check', checkPlan, 'btn sm'),
       el('button', { id: 'mvsave', type: 'button', class: 'btn sm', onclick: savePlan }, MV.dirty ? 'Save*' : 'Save'),
       button('Download script', downloadScript, 'btn sm'),
@@ -125,6 +127,8 @@ function stepCard(s, i) {
     'aria-label': 'Source SSH login', onchange: () => { o.src_login = login.value.trim() || null; touch(); } });
   login.value = o.src_login || '';
   const result = (MV.result && MV.result.steps[i]) || null;
+  const done = !MV.dirty && p.progress && p.progress[i];
+  const marks = done ? [done.copied && `copied ${done.copied}`, done.cutover && `cut over ${done.cutover}`].filter(Boolean) : [];
   const li = el('li', { class: 'card mvstep' },
     el('div', { class: 'row' }, el('b', {}, `Step ${i + 1}`), method,
       el('span', { class: 'row tools' },
@@ -132,6 +136,7 @@ function stepCard(s, i) {
         i < p.steps.length - 1 ? button('↓', () => { [p.steps[i + 1], p.steps[i]] = [p.steps[i], p.steps[i + 1]]; touch(); renderMoves(); }, 'btn ghost sm') : '',
         button('Remove', () => { p.steps.splice(i, 1); touch(); renderMoves(); }, 'btn ghost sm danger'))),
     text('p', METHOD_HELP[s.method], 'muted small'),
+    marks.length ? text('p', `${marks.join(' · ')} (at the last scan of ${s.dst.host})`, 'st-ok small') : '',
     endEditor(s, 'src', 'From'), endEditor(s, 'dst', 'To'),
     el('details', {}, el('summary', {}, 'Options'), opts, excl, s.src.host && s.dst.host && s.src.host !== s.dst.host ? login : ''),
     result ? el('ul', { class: 'mvcheck' }, ...result.items.map((it) => el('li', { class: `lv-${it.level}` }, it.text))) : '');
@@ -202,6 +207,22 @@ async function savePlan() {
     alertMv('Saved.', 'st-ok');
     return r.id;
   } catch (err) { alertMv(err.message); return null; }
+}
+async function copyPlan() {
+  if (MV.dirty && !confirm('The copy is made from the saved plan, without your unsaved changes. Continue?')) return;
+  try {
+    const copy = await (await api(`/api/moves/${MV.plan.id}/copy`, { method: 'POST' })).json();
+    MV.dirty = false; MV.result = null;
+    await loadMoves(copy.id);
+  } catch (err) { alert(err.message); }
+}
+function exportPlan() {   // the same shape `storageforge-index moves import` reads
+  const { name, steps } = MV.plan;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify({ name, steps }, null, 2)], { type: 'application/json' }));
+  a.download = `${(name || 'move-plan').replace(/[^\w.-]+/g, '-')}.json`;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 async function downloadScript() {
   const id = MV.dirty || !MV.plan.id ? await savePlan() : MV.plan.id;

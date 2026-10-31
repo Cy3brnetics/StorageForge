@@ -181,6 +181,44 @@ class ShareChecks(Fleet):
         self.assertEqual(shares.design_exports(self.conn, 'nas'), [])
 
 
+class MoveExtras(Fleet):
+    def plan(self):
+        return moves.save_plan(self.conn, {'name': 'Media', 'steps': [
+            {'method': 'copy', 'src': {'host': 'pc', 'path': '/mnt/share'}, 'dst': {'host': 'nas', 'path': '/mnt/backup/a'}},
+            {'method': 'move', 'src': {'host': 'pc', 'path': '/mnt/share'}, 'dst': {'host': 'nas', 'path': '/mnt/backup/b'}}]}, 'test')
+
+    def test_progress_from_a_scan(self):
+        pid = self.plan()
+        self.assertEqual(moves.get_plan(self.conn, pid)['progress'], [{'copied': None, 'cutover': None}] * 2)
+        inv = {'moves': 'media/0.done\t2026-10-30 10:00:00\nmedia/1.done\t2026-10-30 11:00:00\nmedia/1.cutover\t2026-10-31 09:00:00 · source kept\nother/0.done\tx'}
+        self.conn.execute("UPDATE hosts SET inventory_json = :i WHERE hostname = 'nas'", {'i': json.dumps(inv)})
+        self.assertEqual(moves.get_plan(self.conn, pid)['progress'], [
+            {'copied': '2026-10-30 10:00:00', 'cutover': None},
+            {'copied': '2026-10-30 11:00:00', 'cutover': '2026-10-31 09:00:00 · source kept'}])
+
+    def test_copy(self):
+        pid = self.plan()
+        first = moves.copy_plan(self.conn, pid, 'test')
+        second = moves.copy_plan(self.conn, pid, 'test')
+        self.assertEqual(moves.get_plan(self.conn, first)['name'], 'Media (copy)')
+        self.assertEqual(moves.get_plan(self.conn, second)['name'], 'Media (copy 2)')
+        self.assertEqual(len(moves.get_plan(self.conn, second)['steps']), 2)
+
+    def test_git_ignore(self):
+        from storageforge_index import gitrepos
+        self.assertTrue(gitrepos.is_noise('/home/a/.cache/x'))
+        self.assertFalse(gitrepos.is_noise('/home/a/.cache/x', ['!/.cache/x']))
+        self.assertTrue(gitrepos.is_noise('/scratch/x', ['/scratch/']))
+        hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'nas'")
+        self.conn.execute("INSERT INTO git_repos (host_id, path, bare, refs) VALUES (:h, '/scratch/x', 0, 1)", {'h': hid})
+        self.assertEqual(len(gitrepos.listing(self.conn)['repos']), 1)
+        gitrepos.save_ignore(self.conn, 'nas', ['/scratch/'], 'test')
+        got = gitrepos.listing(self.conn)
+        self.assertEqual((got['repos'], got['hidden']), ([], 1))
+        gitrepos.save_ignore(self.conn, 'nas', [], 'test')
+        self.assertEqual(len(gitrepos.listing(self.conn)['repos']), 1)
+
+
 class Tasks(Fleet):
     def task(self, *blocks, **kw):
         return {'name': kw.pop('name', 'Nightly'), 'host': 'nas', 'schedule': kw.pop('schedule', 'hourly'), 'blocks': list(blocks), **kw}

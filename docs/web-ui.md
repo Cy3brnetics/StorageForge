@@ -90,7 +90,7 @@ The rail on the right opens panels in the inspector. The first panel, **Details*
 | Panel | What it does |
 | :--- | :--- |
 | **Docker** | Each host's [compose stacks](scanning-and-search.md#docker-and-compose-stacks), their containers and the folders and volumes they use; unused volumes; containers that mount the Docker socket |
-| **Git** | [Repositories](scanning-and-search.md#git-repositories) the scans found, matched across hosts by history, with **Archive to…** |
+| **Git** | [Repositories](scanning-and-search.md#git-repositories) the scans found, matched across hosts by history, with **Archive to…**, bulk archiving of selected repositories, and a per-host hide list |
 | **Rebuild** | Each host's saved configuration: mounts, subvolumes, shares, accounts, symlinks and config files, with what changed in each version. Downloads the reinstall script or a bundle. See [rebuilding a host](disaster-recovery.md#rebuild-a-host-after-reinstalling-it). |
 | **Cleanup** | Duplicate folders (same names, sizes and layout) and cold data (newest file older than a cutoff), each with **Move…** |
 | **Access** | Folders the last scan could not read, and [read-only scan access](scanning-and-search.md#unreadable-folders-and-read-only-access) to fix it |

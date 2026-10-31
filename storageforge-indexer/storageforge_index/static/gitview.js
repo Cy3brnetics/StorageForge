@@ -2,7 +2,7 @@
 /* Git tab: every repository the scans found, its state, and its copies on other machines. "Archive to…" starts a
    Moves step that keeps a bare mirror elsewhere. Loaded after moves.js; uses its helpers. */
 
-const GITV = { data: null, filter: '', all: false };
+const GITV = { data: null, filter: '', all: false, picked: new Set() };
 const GIT_STATE = {
   uncommitted: ['local-only', 'Uncommitted changes in the working copy'],
   unpushed: ['local-only', 'Commits not pushed to its upstream'],
@@ -39,13 +39,24 @@ function renderGit() {
   const shown = repos.filter((r) => !GITV.filter || r.state === GITV.filter);
   const all = el('input', { type: 'checkbox', onchange: () => { GITV.all = all.checked; loadGit(); } }); all.checked = GITV.all;
   const toggle = el('label', { class: 'check' }, all, GITV.all ? 'Showing caches and build checkouts' : `Show ${GITV.data.hidden} in caches and build trees`);
-  $('#gitbox').replaceChildren(chips, toggle, el('ol', { class: 'gitlist' }, ...shown.map((r) => {
+  const key = (r) => `${r.host}:${r.path}`;
+  const targets = [...new Set(GITV.data.repos.map((r) => r.host))].sort();
+  const target = el('select', { 'aria-label': 'Archive to host' }, new Option('host…', ''), ...targets.map((h) => new Option(h, h)));
+  const singles = repos.filter((r) => r.state === 'single copy');
+  const bulk = el('div', { class: 'row wrap' },
+    singles.length ? button(`Select ${singles.length} single-copy`, () => { singles.forEach((r) => GITV.picked.add(key(r))); renderGit(); }, 'btn ghost sm') : '',
+    GITV.picked.size ? button('Clear', () => { GITV.picked.clear(); renderGit(); }, 'btn ghost sm') : '',
+    target, button(`Archive ${GITV.picked.size} selected`, () => archiveSelected(target.value), 'btn sm'));
+  $('#gitbox').replaceChildren(chips, toggle, ignoreEditor(), bulk, el('ol', { class: 'gitlist' }, ...shown.map((r) => {
+    const pick = el('input', { type: 'checkbox', 'aria-label': `Select ${r.name}`, onchange: () => {
+      if (pick.checked) GITV.picked.add(key(r)); else GITV.picked.delete(key(r)); renderGit();
+    } }); pick.checked = GITV.picked.has(key(r));
     const [cls, why] = GIT_STATE[r.state] || ['unknown', ''];
     const p = text('span', r.state, `pill ${cls}`); p.title = why;
     const meta = [r.bare ? 'bare' : r.branch || 'detached', `${r.refs ?? '?'} refs`, r.size_kb ? fmtBytes(r.size_kb * 1024) : null,
                   r.dirty ? `${r.dirty} changed` : null, r.ahead ? `${r.ahead} ahead` : null, r.behind ? `${r.behind} behind` : null].filter(Boolean).join(' · ');
     return el('li', { class: 'card' },
-      el('div', { class: 'row' }, el('b', {}, r.name), p),
+      el('div', { class: 'row' }, pick, el('b', {}, r.name), p),
       el('span', { class: 'mono small' }, `${r.host}:${r.path}`),
       el('span', { class: 'muted small' }, meta),
       r.head_subject ? el('span', { class: 'small' }, `${ago(r.head_time)}: ${r.head_subject}`) : el('span', { class: 'muted small' }, r.error || 'no commits'),
@@ -55,11 +66,34 @@ function renderGit() {
       el('div', { class: 'row end' }, button('Archive to…', () => archiveRepo(r), 'btn ghost sm')));
   })));
 }
-function archiveRepo(r) {
+function ignoreEditor() {
+  const host = S.host || '';
+  const list = el('textarea', { rows: 3, class: 'mono', 'aria-label': 'Paths to hide', placeholder: '/scratch/\n!/.cache/keep-this/' });
+  list.value = ((GITV.data.ignore || {})[host || '*'] || []).join('\n');
+  const save = button('Save', async () => {
+    try {
+      await api('/api/git/ignore', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host, paths: list.value.split('\n') }) });
+      await loadGit();
+    } catch (err) { alert(err.message); }
+  }, 'btn sm');
+  return el('details', {}, el('summary', {}, `Hide repositories ${host ? `on ${host}` : 'on every host'}`),
+    text('p', 'One path fragment per line. A line starting with ! shows matching repositories even if they would be hidden.', 'muted small'), list, save);
+}
+function addArchiveStep(r, dstHost) {
   if (!MV.plan) MV.plan = { name: '', steps: [] };
   if (!MV.plan.name) MV.plan.name = 'Git archives';
-  const s = blankStep({ host: r.host, path: r.path }, { host: '', path: `/srv/git-archive/${r.name}.git` });
+  const s = blankStep({ host: r.host, path: r.path }, { host: dstHost, path: `/srv/git-archive/${r.name}.git` });
   s.method = 'git';
   MV.plan.steps.push(s); MV.dirty = true; MV.result = null;
+}
+function archiveRepo(r) {
+  addArchiveStep(r, '');
+  showTab('moves');
+}
+function archiveSelected(dstHost) {
+  const repos = GITV.data.repos.filter((r) => GITV.picked.has(`${r.host}:${r.path}`) && r.host !== dstHost);
+  if (!dstHost || !repos.length) { alert(dstHost ? 'Select repositories on other hosts first.' : 'Pick the host to archive to first.'); return; }
+  repos.forEach((r) => addArchiveStep(r, dstHost));
+  GITV.picked.clear();
   showTab('moves');
 }
