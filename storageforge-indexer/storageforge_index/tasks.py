@@ -842,7 +842,7 @@ send_zfs() {   # send_zfs <dataset> <prefix> <login> <port> <into> <keep> <recur
   ((${7})) && { flags+=(-R); r=-r; }
   ((${8})) && flags+=(-w)
   mapfile -t here < <(zfs list -H -t snapshot -o name -s creation -d 1 -- "$ds" 2>/dev/null | grep -F "@$prefix-" | cut -d@ -f2)
-  newest=${here[${#here[@]}-1]:-}
+  newest=; ((${#here[@]})) && newest=${here[${#here[@]}-1]}
   if [[ -z $newest ]]; then
     if ((DRY)); then info "no $ds@$prefix-* yet: a real run sends the snapshot taken before this block"; return 0; fi
     warnl "no $ds@$prefix-* to send"; return 1
