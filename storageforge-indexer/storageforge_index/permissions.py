@@ -42,9 +42,9 @@ CATALOG = (
     ('Administration', (
         ('users.manage', 'Add and change accounts, create invite links', False),
         ('roles.manage', 'Create and change custom roles', False),
-        ('settings.manage', 'Change report URL, alert channels and the example host', False),
+        ('settings.manage', 'Change report URL, alert channels and the example host', True),
         ('backups.view', 'See backups', False),
-        ('backups.manage', 'Make backups and set where they are copied', False),)),
+        ('backups.manage', 'Make backups and set where they are copied', True),)),
 )
 ALL = frozenset(p for _, perms in CATALOG for p, _, _ in perms)
 HIGH_RISK = frozenset(p for _, perms in CATALOG for p, _, risky in perms if risky)

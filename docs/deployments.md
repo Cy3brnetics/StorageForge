@@ -89,6 +89,8 @@ Keys and tokens are made fresh on every apply and travel only inside the signed 
 6. Snapshot removed, `post` if it has not run yet (a trap runs it even when the transfer fails).
 7. The result goes to `runs.jsonl` and to `<report URL>/api/jobs/report` with the job token.
 
+Copies do not carry SELinux labels, since a label belongs to the host holding the file. After restoring onto an SELinux host, run `restorecon -R <restored folder>`.
+
 **Actions** on a deployed job: Run, Dry run, Verify (`rsync --checksum` dry run listing differing files), Pause, Resume, Cutover (move steps, after a clean verify), Log (journal), and for rsnapshot jobs Snapshots, browse a folder in one, and Restore. A restore goes back to the source as `<path>.restored-<time>` and never overwrites anything. Across hosts it is a tar stream from a signed `pack` run into a signed `unpack` run.
 
 ## Reporting, alerts and drift

@@ -5,6 +5,9 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Security
+- **Backup copies on another host are encrypted**, with a key from the vault secret. They hold password hashes and alert tokens. `restore` takes them as they are. Without the vault secret, no copy is made.
+- Invite and reset links die when their role comes to allow more. A reset link also dies when its account is replaced or changes, and a new link cancels the last one. **Open links made before this update stop working: make them again.**
+- `backups.manage` and `settings.manage` are marked high risk. A retired host can't still have schedules. A job's `.git` link can't point outside its source.
 - A Git repository can no longer run code as the scan account through its own config. Git runs with those settings off, and `git status` runs only in repositories the scan account owns; others show **Not checked**. Git routes take only repositories a scan found.
 - **Git sync needs deploy access.** Sync is now a signed run, as the repository's owner, with hooks off and a fresh password for every action. Git status, history and commit are POST only, rate limited and audited.
 - The log fetch after a failed task refuses odd task names and no longer copies all of `/var/log/messages`.
@@ -21,6 +24,8 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 - `viewer` can no longer download a schedule's install script (which also minted a report token), its cron line or a host configuration bundle. These now need `plans.scripts`.
 
 ### Fixed
+- File map: faster, kept until the index or ignore list changes. Ignore lists are no longer capped at 4 KiB, and saving one no longer holds the request while graphs rebuild.
+- Schedule runs are pruned to the newest 200 per schedule.
 - **The backup copy to another host** now goes through the signed runner. As written it could not get past the deploy key's forced command.
 
 ### Changed

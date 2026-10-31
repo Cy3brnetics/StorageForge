@@ -25,6 +25,7 @@ MIGRATIONS = Path(__file__).with_name('migrations')
 # scan counts the adds, but the change log doesn't list them one by one.
 CHANGE_LOG_MAX_ADDS = 50_000
 CHANGE_DAYS = int(os.environ.get('STORAGEFORGE_CHANGE_DAYS', '90'))
+SCHEDULE_RUNS_KEPT = 200    # per schedule; each can hold 256 KiB of output
 CHANGE_MAX_ROWS = int(os.environ.get('STORAGEFORGE_CHANGE_MAX_ROWS', '2000000'))
 
 
@@ -322,6 +323,9 @@ class Database:
             out['usage'] = conn.execute("""DELETE FROM mount_usage WHERE at < :cut AND usage_id NOT IN (
                 SELECT max(usage_id) FROM mount_usage GROUP BY host_id, mount_point, at / 86400)""",
                 {'cut': now - USAGE_DETAIL_DAYS * 86400}).rowcount
+            out['schedule_runs'] = conn.execute("""DELETE FROM schedule_runs WHERE run_id IN (
+                SELECT run_id FROM (SELECT run_id, row_number() OVER (PARTITION BY schedule_id ORDER BY run_id DESC) AS n FROM schedule_runs) x
+                WHERE n > :keep)""", {'keep': SCHEDULE_RUNS_KEPT}).rowcount
             out['jobs'] = conn.execute("""DELETE FROM scan_jobs WHERE status NOT IN ('queued', 'running')
                                           AND queued_at < :cut""", {'cut': now - job_days * 86400}).rowcount
         if self.dialect == 'sqlite':

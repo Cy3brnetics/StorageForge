@@ -65,6 +65,8 @@ Each scan saves what it takes to rebuild the host when any of it changed, keepin
 
 If the scan user can't read a share file, the script uses the live export table or `testparm` output instead. If it can't read `/etc/crypttab`, the script opens the LUKS volumes it knows about, but you add them to crypttab yourself.
 
+**Copies on another host are encrypted** (`*.db.enc`) with a key from the vault secret, so a copy there is useless without it. `restore` takes them as they are, given the same secret.
+
 **Keep a copy elsewhere.** A backup on the machine you are rebuilding is no help:
 
 ```bash

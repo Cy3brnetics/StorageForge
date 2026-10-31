@@ -107,6 +107,7 @@ serve() { # id "ssh command"
       snap=$( ((SNAP)) && snap_path || true)     # a snapshot-first job clones from the snapshot of its root
       under "$path" "$ROOT" "$snap" || die "$path is outside this job's source"
       [[ -d $path/.git ]] && path=$path/.git     # --strict takes the repository itself, not its working copy
+      under "$path" "$ROOT" "$snap" || die "$path is outside this job's source"     # again: that .git can be a link out
       printf '[safe]\n\tdirectory = *\n' >"$VAR/git-safe.conf"
       GIT_CONFIG_GLOBAL=$VAR/git-safe.conf exec git-upload-pack --strict "$path" ;;
     *) die "not allowed: ${cmd:0:80}" ;;

@@ -47,3 +47,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+
+# Raw image scans: the triage in the notebook is what is kept
+vuln-report-*

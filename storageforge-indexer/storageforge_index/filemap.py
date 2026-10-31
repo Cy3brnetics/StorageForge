@@ -29,7 +29,11 @@ def file_groups(conn: Conn, host: str | None, min_size: int, ignore: dict, syste
     cur = conn.execute(f"""SELECT f.checksum_hash, h.hostname, m.mount_point, d.path, f.filename, f.file_size_bytes, f.modified_at
                            FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
                            JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
-                           WHERE f.checksum_hash IS NOT NULL AND f.file_size_bytes >= :min AND NOT f.is_directory AND NOT f.is_symlink {hsql}""",
+                           WHERE f.checksum_hash IS NOT NULL AND f.file_size_bytes >= :min AND NOT f.is_directory AND NOT f.is_symlink {hsql}
+                             AND f.checksum_hash IN (SELECT x.checksum_hash FROM file_records x JOIN mounts xm ON xm.mount_id = x.mount_id
+                                                     JOIN hosts h ON h.host_id = xm.host_id
+                                                     WHERE x.checksum_hash IS NOT NULL AND x.file_size_bytes >= :min {hsql}
+                                                     GROUP BY x.checksum_hash HAVING count(*) > 1)""",
                        {'min': min_size, 'host': host})
     while rows := cur.fetchmany(50_000):
         for sha, hn, mount, parent, name, size, mtime in rows:

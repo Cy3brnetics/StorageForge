@@ -10,6 +10,7 @@ def blockers(conn: Conn, name: str) -> list[str]:
         'SELECT kind, ref FROM deployed WHERE lower(host) = lower(:h)', {'h': name})]
     out += [f'job {j} runs on it or reads from it' for (j,) in conn.all(
         """SELECT name FROM jobs WHERE removed_at IS NULL AND (lower(runner_host) = lower(:h) OR lower(source_host) = lower(:h))""", {'h': name})]
+    out += [f'schedule {s} runs on it' for (s,) in conn.all('SELECT name FROM schedules WHERE lower(host) = lower(:h)', {'h': name})]
     if conn.scalar("SELECT 1 FROM scan_jobs WHERE host = :h AND status IN ('queued', 'running')", {'h': name}):
         out.append('a scan of it is queued or running')
     return out

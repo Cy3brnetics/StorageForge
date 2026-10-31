@@ -516,7 +516,7 @@ def restore(db, conn: Conn, jid: str, snapshot: str, rel: str, actor: str, gid: 
         if p.returncode:     # the runner could not pack it: say why, not just that the source got no archive
             why = '\n'.join(l for l in b''.join(p.errors).decode('utf-8', 'replace').splitlines() if not l.isdigit())
             res = {**res, 'status': 'failed', 'output': f'{res.get("output") or ""}\non {j["runner"]}: {why}'.strip()}
-    return {**res, 'target': target, 'parent': parent}
+    return {**res, 'target': target, 'parent': parent, 'note': 'on an SELinux host, run restorecon -R on the restored folder: copies carry no labels'}
 
 
 # ── run reports and history ─────────────────────────────────────────

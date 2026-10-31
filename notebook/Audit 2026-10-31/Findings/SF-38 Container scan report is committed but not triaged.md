@@ -1,6 +1,6 @@
 ---
 id: SF-38
-status: open
+status: in-progress
 severity: medium
 effort: M
 area: Operations
@@ -28,3 +28,6 @@ Triage by reachability into a short table: package, used by us or not, decision.
 ## Done when
 - [ ] Each critical has a written decision
 - [ ] CI fails on new reachable criticals
+
+## Progress
+2026-10-31. Triage in [[Container scan triage 2026-10-31]]: the report describes an older Debian 12 image. The raw file left git and is ignored. **Open:** a fresh scan, and the CI check.

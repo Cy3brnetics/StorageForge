@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -897,12 +898,13 @@ class HostSideSafetyTests(SafetyCase):
             done = subprocess.run(['bash', '-c', script], input=b''.join(kw['data']), capture_output=True, timeout=30)
             return {'status': 'ok' if done.returncode == 0 else 'failed', 'output': done.stderr.decode()}
         target = {'host': 'backup-box', 'path': str(dst)}
-        with mock.patch.object(deploy, 'run', run):
+        with mock.patch.object(deploy, 'run', run), mock.patch.dict(os.environ, {'STORAGEFORGE_VAULT_SECRET': 'v' * 40}):
             backup.copy_off(self.db, self.conn, str(src), target, 2)
         self.assertEqual((got['host'], got['kw']['kind']), ('backup-box', 'backup_copy'))
-        self.assertEqual((dst / src.name).read_bytes(), src.read_bytes())
+        self.assertTrue((dst / (src.name + '.enc')).exists())
         self.assertEqual((dst / 'notes.txt').read_text(), 'mine')
-        with mock.patch.object(deploy, 'run', return_value={'status': 'refused', 'output': 'signature'}), self.assertRaises(RuntimeError):
+        with mock.patch.object(deploy, 'run', return_value={'status': 'refused', 'output': 'signature'}), \
+                mock.patch.dict(os.environ, {'STORAGEFORGE_VAULT_SECRET': 'v' * 40}), self.assertRaises(RuntimeError):
             backup.copy_off(self.db, self.conn, str(src), target, 2)
 
 
@@ -1216,3 +1218,167 @@ class RawCommandTests(SafetyCase):
         for role in ('search', 'viewer', 'operator'):
             self.assertNotIn('hosts.command', permissions.BUILTIN[role][1])
         self.assertIn('hosts.command', permissions.BUILTIN['admin'][1])
+
+
+class Step5Tests(SafetyCase):
+    """SF-35, SF-36, SF-37, PF-27 and EQ-05."""
+
+    def test_schedule_runs_are_pruned(self):                 # SF-35
+        sid, other = self.schedule(), self.schedule(name='other')
+        for s, n in ((sid, 205), (other, 3)):
+            for i in range(n):
+                self.conn.execute("INSERT INTO schedule_runs (schedule_id, host, status, started_at, nonce) VALUES (:s, 'nas', 'reported', :t, :n)",
+                                  {'s': s, 't': i, 'n': f'{s}-{i}'})
+        self.db.prune(self.conn)
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM schedule_runs WHERE schedule_id = :s', {'s': sid}), 200)
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM schedule_runs WHERE schedule_id = :s', {'s': other}), 3)
+        self.assertEqual(self.conn.scalar('SELECT min(started_at) FROM schedule_runs WHERE schedule_id = :s', {'s': sid}), 5)
+
+    def test_links_die_when_what_they_grant_changes(self):   # SF-36
+        u = self.users
+        u.save_role(self.conn, 'small', '', ['search.files'], 'boss', True)
+        u.create(self.conn, 't', self.PW, 'small')
+        _, reset = u.create_reset(self.conn, 't', 'boss')
+        _, invite = u.create_invite(self.conn, 'small', 'boss')
+        self.assertIsNotNone(u.open_invite(self.conn, reset))
+        self.assertIsNotNone(u.open_invite(self.conn, invite))
+        u.save_role(self.conn, 'small', '', ['search.files', 'keys.manage'], 'boss', False)
+        self.assertIsNone(u.open_invite(self.conn, reset))
+        self.assertIsNone(u.open_invite(self.conn, invite))
+        u.save_role(self.conn, 'small', '', [], 'boss', False)        # narrower is no threat
+        _, invite = u.create_invite(self.conn, 'small', 'boss')
+        u.save_role(self.conn, 'small', '', [], 'boss', False)
+        self.assertIsNotNone(u.open_invite(self.conn, invite))
+
+    def test_a_reset_link_is_for_one_account_as_it_was(self):      # SF-36
+        u = self.users
+        u.create(self.conn, 't', self.PW, 'viewer')
+        _, first = u.create_reset(self.conn, 't', 'boss')
+        _, second = u.create_reset(self.conn, 't', 'boss')
+        self.assertIsNone(u.open_invite(self.conn, first))          # a new link ends the last
+        self.assertIsNotNone(u.open_invite(self.conn, second))
+        u.remove(self.conn, 't')
+        u.create(self.conn, 't', self.PW, 'viewer')                 # same name and role: another person
+        self.assertIsNone(u.open_invite(self.conn, second))
+        _, third = u.create_reset(self.conn, 't', 'boss')
+        u.set_password(self.conn, 't', 'another long password')
+        self.assertIsNone(u.open_invite(self.conn, third))
+
+    def test_a_link_from_before_the_checks_is_dead(self):    # SF-36
+        _, token = self.users.create_invite(self.conn, 'viewer', 'boss')
+        self.conn.execute('UPDATE invites SET grants_json = NULL')
+        self.assertIsNone(self.users.open_invite(self.conn, token))
+
+    def test_risky_permissions_say_so(self):                 # SF-37
+        from storageforge_index import permissions
+        self.assertLessEqual({'backups.manage', 'settings.manage'}, permissions.HIGH_RISK)
+
+    def backup_file(self, data=b'SQLite secret-password-hash ' * 80000):
+        src = Path(self.tmp) / 'storageforge-essentials-1.db'
+        src.write_bytes(data)
+        return src, data
+
+    def test_an_off_box_copy_is_encrypted(self):             # SF-37
+        from unittest import mock
+        from storageforge_index import backup, deploy
+        src, data = self.backup_file()
+        dst = Path(tempfile.mkdtemp(dir=self.tmp))
+
+        def run(db, host, script, *a, **kw):
+            done = subprocess.run(['bash', '-c', script], input=b''.join(kw['data']), capture_output=True, timeout=30)
+            return {'status': 'ok' if done.returncode == 0 else 'failed', 'output': done.stderr.decode()}
+        with mock.patch.object(deploy, 'run', run), mock.patch.dict(os.environ, {'STORAGEFORGE_VAULT_SECRET': 'v' * 40}):
+            backup.copy_off(self.db, self.conn, str(src), {'host': 'x', 'path': str(dst)}, 2)
+        sent = dst / (src.name + '.enc')
+        self.assertNotIn(b'secret-password-hash', sent.read_bytes())
+        back = Path(self.tmp) / 'back.db'
+        backup.decrypt_file(str(sent), str(back), b'v' * 40)
+        self.assertEqual(back.read_bytes(), data)
+
+        for label, change in (('wrong secret', None), ('changed byte', 100), ('cut short', -1)):
+            bad = Path(self.tmp) / f'{label}.enc'
+            raw = bytearray(sent.read_bytes())
+            if change == 100:
+                raw[change] ^= 1
+            elif change == -1:
+                raw = raw[:(1 << 20) + 200]        # a whole chunk and part of the next
+            bad.write_bytes(raw)
+            with self.assertRaises(SystemExit, msg=label):
+                backup.decrypt_file(str(bad), str(back), b'w' * 40 if change is None else b'v' * 40)
+
+    def test_no_secret_means_no_copy(self):                  # SF-37
+        from unittest import mock
+        from storageforge_index import backup, deploy, vault
+        src, _ = self.backup_file()
+        env = {k: v for k, v in os.environ.items() if not k.startswith('STORAGEFORGE_VAULT_SECRET')}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(deploy, 'run') as run, self.assertRaises(vault.VaultError):
+            backup.copy_off(self.db, self.conn, str(src), {'host': 'x', 'path': '/y'}, 2)
+        run.assert_not_called()
+
+    @unittest.skipIf(dbfactory.PG, 'backups are of SQLite databases')
+    def test_restore_takes_an_encrypted_copy(self):          # SF-37
+        from unittest import mock
+        from storageforge_index import backup
+        with mock.patch.dict(os.environ, {'STORAGEFORGE_VAULT_SECRET': 'v' * 40}):
+            (Path(self.tmp) / 'bk').mkdir()
+            made = backup.create(self.db, 'essentials', Path(self.tmp) / 'bk')
+            sealed = Path(self.tmp) / 'copy.db.enc'
+            sealed.write_bytes(b''.join(backup.encrypted(made['path'], b'v' * 40)))
+            tmp2 = Path(tempfile.mkdtemp(dir=self.tmp))
+            target = Database(f'sqlite:///{tmp2}/restored.db')
+            out = backup.restore(target, str(sealed))
+        self.assertTrue(out)
+        self.assertEqual(sorted(p.name for p in tmp2.iterdir() if p.name.startswith('.restore')), [])
+        self.assertEqual(sqlite3.connect(f'{tmp2}/restored.db').execute("SELECT count(*) FROM hosts").fetchone()[0], 2)
+
+    def test_file_map_is_kept_until_something_changes(self):       # PF-27
+        from unittest import mock
+        from storageforge_index import filemap
+        real = filemap.build
+        with mock.patch.object(filemap, 'build', side_effect=real) as build:
+            self.assertEqual(self.view.get('/api/filemap').status_code, 200)
+            self.assertEqual(self.view.get('/api/filemap').status_code, 200)
+            self.assertEqual(build.call_count, 1)
+            self.assertEqual(self.boss.put('/api/files/ignore', json={'host': '', 'paths': ['/srv/junk']}).status_code, 200)
+            self.view.get('/api/filemap')
+            self.assertEqual(build.call_count, 2)
+
+    def test_a_long_ignore_list_fits(self):                  # PF-27
+        paths = [f'/srv/some/long/path/number/{i}' for i in range(1500)]
+        self.assertEqual(self.boss.put('/api/files/ignore', json={'host': '', 'paths': paths}).status_code, 200)
+        self.assertEqual(self.boss.put('/api/git/ignore', json={'host': '', 'paths': paths[:400]}).status_code, 200)
+
+    def test_only_duplicates_are_read_for_the_map(self):     # PF-27
+        from storageforge_index import filemap
+        mid = self.conn.scalar("SELECT mount_id FROM mounts WHERE mount_point = '/mnt/data'")
+        did = self.conn.scalar('SELECT dir_id FROM directories LIMIT 1')
+        for name, sha in (('a', 'same'), ('b', 'same'), ('c', 'alone')):
+            self.conn.execute(f"""INSERT INTO file_records (mount_id, dir_id, filename, is_directory, file_size_bytes, modified_at, is_symlink, checksum_hash)
+                                  VALUES (:m, :d, :n, 0, 5000000, {self.db.ts(':t')}, 0, :s)""", {'m': mid, 'd': did, 'n': name, 't': 1, 's': sha})
+        groups, _ = filemap.file_groups(self.conn, None, 1, {}, False)
+        self.assertEqual([g['sha256'] for g in groups], ['same'])
+        self.assertEqual(sorted(c['path'].rsplit('/', 1)[1] for c in groups[0]['copies']), ['a', 'b'])
+
+    def test_retiring_a_host_with_a_schedule_is_refused(self):     # PF-27
+        from storageforge_index import retire
+        self.schedule()
+        with self.assertRaises(ValueError) as e:
+            retire.retire(self.conn, 'nas')
+        self.assertIn('schedule', str(e.exception))
+
+    def test_a_git_link_out_of_the_source_is_refused(self):  # EQ-05
+        from storageforge_index import jobscript
+        text = jobscript.JOB_SCRIPT
+        at = text.index('[[ -d $path/.git ]] && path=$path/.git')
+        self.assertIn('under "$path" "$ROOT" "$snap" || die', text[at:at + 200])
+        src = Path(tempfile.mkdtemp(dir=self.tmp))
+        (src / 'root' / 'repo').mkdir(parents=True)
+        (src / 'secret.git').mkdir()
+        (src / 'root' / 'repo' / '.git').symlink_to(src / 'secret.git')
+        probe = text[text.index('under() {'):text.index('run_cmds()')] + f"""
+path={src}/root/repo; ROOT={src}/root; snap=
+under "$path" "$ROOT" "$snap" || exit 3
+[[ -d $path/.git ]] && path=$path/.git
+under "$path" "$ROOT" "$snap" || exit 4
+"""
+        self.assertEqual(subprocess.run(['bash', '-c', probe], capture_output=True).returncode, 4)

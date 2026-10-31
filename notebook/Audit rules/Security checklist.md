@@ -52,4 +52,5 @@ tags: [audit-rules, checklist]
 
 ## For dependencies and containers
 - [ ] Scanner results triaged by reachability, each critical with a written decision
+- [ ] The scan is of the image the Dockerfile builds today: compare the versions in the report with the image
 - [ ] Lock files updated, with images pinned by digest

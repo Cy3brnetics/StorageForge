@@ -1,6 +1,6 @@
 ---
 id: EQ-05
-status: open
+status: in-progress
 severity: low
 effort: S
 area: Operations
@@ -31,3 +31,6 @@ Run the lab tiers, fix the symlink case, add the restore note, then commit.
 
 ## Done when
 - [ ] Lab results recorded with no new failures
+
+## Progress
+2026-10-31. The fixes were committed as `1fea59c`. `serve` re-checks after adding `.git`, and restores note `restorecon` (docs and the API answer). Test: `test_a_git_link_out_of_the_source_is_refused`. **The lab run is still open**, which keeps this in progress.

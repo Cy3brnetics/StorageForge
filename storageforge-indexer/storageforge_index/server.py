@@ -169,6 +169,7 @@ CONFIG_EXPORT_DIR = os.environ.get('STORAGEFORGE_CONFIG_EXPORT_DIR')         # n
 ALERT_TICK = 300                  # alerts and drift are re-evaluated this often (and right after a job reports)
 SCHEDULE_TICK = 600               # the scheduler looks for due hosts this often (seconds)
 MAX_BLUEPRINT = 2 << 20           # planner designs are the largest body we accept
+MAX_IGNORE = 256 << 10            # ignore lists: up to 2000 paths
 MAX_REPORT = 512 << 10            # a schedule's run report: the runner keeps its output under this
 # Failed sign-ins allowed before /api/login answers 429; successful ones are not counted.
 LOGIN_LIMIT_PER_IP = '10 per minute; 50 per hour'
@@ -523,6 +524,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def body_limit():
         if request.path in ('/api/planner/design', '/api/planner/changes') and request.method in ('PUT', 'POST'):
             request.max_content_length = MAX_BLUEPRINT
+        elif request.path in ('/api/files/ignore', '/api/git/ignore') and request.method == 'PUT':
+            request.max_content_length = MAX_IGNORE
         elif request.path == '/api/scheduler/report' and request.method == 'POST':
             request.max_content_length = MAX_REPORT
 
@@ -2220,11 +2223,15 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         host = request.args.get('host') or None
         system = bool(request.args.get('system'))
         min_size = parse_size(request.args.get('min_size') or '1MiB')
-        twins = None
-        if request.args.get('folders'):
-            key = ('dupes', host, 3, min_size) if not system else ('dupes-system', host, 3, min_size)
-            twins = folder_result(key, lambda: folders.duplicate_folders(conn(), host, 3, min_size, limit=200, include_system=system))
-        return jsonify(filemap.build(conn(), host, min_size, system, twins))
+        with_folders = bool(request.args.get('folders'))
+
+        def compute():
+            twins = None
+            if with_folders:
+                key = ('dupes', host, 3, min_size) if not system else ('dupes-system', host, 3, min_size)
+                twins = folder_result(key, lambda: folders.duplicate_folders(conn(), host, 3, min_size, limit=200, include_system=system))
+            return filemap.build(conn(), host, min_size, system, twins)
+        return jsonify(folder_result(('filemap', host, min_size, system, with_folders, json.dumps(folders.ignore_lists(conn()), sort_keys=True)), compute))
 
     @web.route('/api/files/ignore', methods=['GET', 'PUT'])
     @login_required
@@ -2237,8 +2244,18 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             folders.save_ignore(conn(), host, paths, actor())
             core.audit(conn(), actor(), 'files.ignore', 'ok', host or None, {'paths': len(paths)})
             scan_designs.clear()              # broken links are left out when a design is read from the scan
-            for name in [host] if host and scanned(host) else [r[0] for r in conn().all('SELECT hostname FROM hosts')]:
-                graph.rebuild_host(db, conn(), name)
+            names = [host] if host and scanned(host) else [r[0] for r in conn().all('SELECT hostname FROM hosts')]
+
+            def rebuild():                    # a graph per host: too long to hold a request and a web thread
+                c = db.connect()
+                try:
+                    for name in names:
+                        graph.rebuild_host(db, c, name)
+                except Exception:
+                    traceback.print_exc()
+                finally:
+                    c.close()
+            threading.Thread(target=rebuild, name='ignore-rebuild', daemon=True).start()
         return jsonify(ignore=folders.ignore_lists(conn()), builtin_dirs=[*folders.NOISE_DIRS, *filemap.APP_DIRS], builtin_names=sorted(folders.NOISE_NAMES))
 
     def scanned(host: str) -> bool:

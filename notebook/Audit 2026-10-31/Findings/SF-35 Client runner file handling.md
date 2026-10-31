@@ -1,6 +1,6 @@
 ---
 id: SF-35
-status: in-progress
+status: done
 severity: low
 effort: S
 area: Scheduler
@@ -29,8 +29,11 @@ Output may hold secrets and is exposed locally. Long-lived schedules slowly fill
 Make output 0640 with the scan group, as `health.py` does. Rotate `runs.jsonl` and add a prune rule. Open the lock with `O_NOFOLLOW` under a root-owned folder such as `/run/storageforge`, read before truncating, and record the PID separately.
 
 ## Done when
-- [ ] Output is not world-readable
-- [ ] A `replace` test kills the older run
+- [x] Output is not world-readable
+- [x] A `replace` test kills the older run
 
 ## Progress
 2026-10-31, through PF-26 in `9326d72`: `runs.jsonl` holds no output and rotates at 600 lines, `last.out` is root only, and locks moved to the private `/run/storageforge`. `replace` is tested. Still open: `schedule_runs` has no prune rule on the server.
+
+## Fixed
+2026-10-31. `schedule_runs` keeps the newest 200 per schedule. The rest went with [[PF-26 Scheduler design duplicates what tasks already do|PF-26]]. Test: `test_schedule_runs_are_pruned`.

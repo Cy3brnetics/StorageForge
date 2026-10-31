@@ -186,6 +186,10 @@ def remove_role(conn: Conn, name: str) -> None:
         raise UserError(f'no role {name!r}')
 
 
+def _grants(conn: Conn, role: str) -> str:
+    return json.dumps(sorted(permissions_of(conn, role)))
+
+
 def _invite_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
@@ -196,33 +200,41 @@ def create_invite(conn: Conn, role: str, by: str, hours: int = INVITE_HOURS, not
     if not 1 <= hours <= MAX_INVITE_HOURS:
         raise UserError(f'an invite lasts 1 to {MAX_INVITE_HOURS} hours')
     token, now = secrets.token_urlsafe(32), int(time.time())
-    conn.execute('INSERT INTO invites (token_hash, role, note, created_by, created_at, expires_at) VALUES (:h, :r, :o, :b, :t, :e)',
-                 {'h': _invite_hash(token), 'r': role, 'o': note[:200], 'b': by, 't': now, 'e': now + hours * 3600})
+    conn.execute('INSERT INTO invites (token_hash, role, note, created_by, created_at, expires_at, grants_json) VALUES (:h, :r, :o, :b, :t, :e, :g)',
+                 {'h': _invite_hash(token), 'r': role, 'o': note[:200], 'b': by, 't': now, 'e': now + hours * 3600, 'g': _grants(conn, role)})
     return conn.scalar('SELECT invite_id FROM invites WHERE token_hash = :h', {'h': _invite_hash(token)}), token
 
 
 def create_reset(conn: Conn, username: str, by: str, hours: int = 24) -> tuple[int, str]:
     """A single-use link to set a new password, for accounts that forgot theirs (StorageForge sends no email)."""
-    row = conn.all('SELECT username, role FROM users WHERE lower(username) = lower(:n)', {'n': username})
+    row = conn.all('SELECT username, role, user_id, session_version FROM users WHERE lower(username) = lower(:n)', {'n': username})
     if not row:
         raise UserError(f'no user {username!r}')
     if not 1 <= hours <= MAX_INVITE_HOURS:
         raise UserError(f'a reset link lasts 1 to {MAX_INVITE_HOURS} hours')
     token, now = secrets.token_urlsafe(32), int(time.time())
-    conn.execute('INSERT INTO invites (token_hash, role, reset_user, created_by, created_at, expires_at) VALUES (:h, :r, :u, :b, :t, :e)',
-                 {'h': _invite_hash(token), 'r': row[0][1], 'u': row[0][0], 'b': by, 't': now, 'e': now + hours * 3600})
+    conn.execute('UPDATE invites SET revoked_at = :t WHERE reset_user = :u AND used_at IS NULL AND revoked_at IS NULL', {'t': now, 'u': row[0][0]})
+    conn.execute("""INSERT INTO invites (token_hash, role, reset_user, created_by, created_at, expires_at, grants_json, reset_user_id, reset_version)
+                    VALUES (:h, :r, :u, :b, :t, :e, :g, :i, :v)""",
+                 {'h': _invite_hash(token), 'r': row[0][1], 'u': row[0][0], 'b': by, 't': now, 'e': now + hours * 3600,
+                  'g': _grants(conn, row[0][1]), 'i': row[0][2], 'v': row[0][3]})
     return conn.scalar('SELECT invite_id FROM invites WHERE token_hash = :h', {'h': _invite_hash(token)}), token
 
 
 def open_invite(conn: Conn, token: str) -> dict | None:
-    """What an open link does, or None: one answer for every way a token can be bad. A reset link dies if the account's
-    role changed after it was made, so a link made for a viewer cannot take over the admin that viewer became."""
-    rows = conn.all('SELECT role, reset_user FROM invites WHERE token_hash = :h AND used_at IS NULL AND revoked_at IS NULL AND expires_at > :t',
+    """What an open link does, or None: one answer for every way a token can be bad. A link dies if its role came to allow
+    more than when it was made. A reset link also dies if the account was replaced, or its role, password or state changed,
+    so a link made for a viewer cannot take over the admin that viewer became. A link from before these checks is dead too."""
+    rows = conn.all("""SELECT role, reset_user, grants_json, reset_user_id, reset_version FROM invites
+                       WHERE token_hash = :h AND used_at IS NULL AND revoked_at IS NULL AND expires_at > :t""",
                     {'h': _invite_hash(token), 't': int(time.time())})
     if not rows or not role_exists(conn, rows[0][0]):
         return None
-    role, reset = rows[0]
-    if reset and role_of(conn, reset) != role:
+    role, reset, grants, user_id, version = rows[0]
+    if not grants or not permissions_of(conn, role) <= set(json.loads(grants)):
+        return None
+    if reset and not conn.scalar("""SELECT 1 FROM users WHERE user_id = :u AND session_version = :v AND role = :r""",
+                                 {'u': user_id, 'v': version, 'r': role}):
         return None
     return dict(role=role, reset_user=reset)
 
@@ -315,6 +327,8 @@ def set_disabled(conn: Conn, username: str, disabled: bool) -> None:
 
 
 def remove(conn: Conn, username: str) -> None:
+    conn.execute('UPDATE invites SET revoked_at = :t WHERE lower(reset_user) = lower(:n) AND used_at IS NULL AND revoked_at IS NULL',
+                 {'t': int(time.time()), 'n': username})     # SQLite can give the next account this one's id
     conn.execute('DELETE FROM web_sessions WHERE user_id IN (SELECT user_id FROM users WHERE lower(username) = lower(:n))',
                  {'n': username})
     if not conn.execute('DELETE FROM users WHERE lower(username) = lower(:n)', {'n': username}).rowcount:
