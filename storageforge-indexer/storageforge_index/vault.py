@@ -140,10 +140,16 @@ def open_into(key, nonce: bytes, blob: bytes, aad: bytes) -> SecretBuffer:
     return out
 
 
+# Argon2id hung when two threads derived at once in the image, and later callers failed with "Not enough memory to
+# derive key" until a restart: one at a time. Each takes about 0.1 s.
+_KDF_LOCK = threading.Lock()
+
+
 def derive_kek(secret: bytes, salt: bytes, p: dict) -> SecretBuffer:
     kdf = Argon2id(salt=salt, length=32, iterations=p['time_cost'], lanes=p['lanes'], memory_cost=p['memory_kib'])
     out = SecretBuffer(32)
-    kdf.derive_into(secret, out.buf)
+    with _KDF_LOCK:
+        kdf.derive_into(secret, out.buf)
     out.length = 32
     return out
 

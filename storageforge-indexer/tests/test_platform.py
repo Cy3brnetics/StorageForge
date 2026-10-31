@@ -72,6 +72,45 @@ class VaultTests(DBCase):
         self.assertNotIn(b'OPENSSH PRIVATE KEY', raw)
         self.assertNotIn(pem[40:80], raw)
 
+    def test_a_restart_closes_deploy_runs_left_unfinished(self):
+        from storageforge_index import server
+        for host, st in (('a', 'running'), ('b', 'queued'), ('c', 'ok')):
+            self.conn.execute("INSERT INTO deploy_runs (group_id, host, kind, mode, status, started_at) VALUES ('g', :h, 'shares', 'report', :s, 1)",
+                              {'h': host, 's': st})
+        server.App(self.db)
+        got = dict(self.conn.all('SELECT host, status FROM deploy_runs'))
+        self.assertEqual(got, {'a': 'failed', 'b': 'failed', 'c': 'ok'})
+        self.assertIn('interrupted by restart', self.conn.scalar("SELECT output FROM deploy_runs WHERE host = 'a'"))
+
+    def test_key_derivation_runs_one_at_a_time(self):
+        """Concurrent Argon2id hung in the image and left later scans failing with "Not enough memory to derive key"."""
+        import threading
+        from unittest import mock
+        running, most, results = [0], [0], []
+        real = vault.Argon2id
+
+        class Counting:
+            def __init__(self, **kw):
+                self.kdf = real(**kw)
+
+            def derive_into(self, secret, buf):
+                running[0] += 1
+                most[0] = max(most[0], running[0])
+                time.sleep(0.02)
+                self.kdf.derive_into(secret, buf)
+                running[0] -= 1
+        params = {'time_cost': 1, 'memory_kib': 8192, 'lanes': 1}
+
+        def one():
+            results.append(bytes(vault.derive_kek(b'x' * 32, b's' * 16, params).view()))
+        with mock.patch.object(vault, 'Argon2id', Counting):
+            threads = [threading.Thread(target=one, daemon=True) for _ in range(4)]
+            [t.start() for t in threads]
+            [t.join(30) for t in threads]
+        self.assertEqual(most[0], 1)
+        self.assertEqual(len(set(results)), 1)
+        self.assertEqual(len(results), 4)
+
     def test_wrong_secret_is_refused(self):
         self.unlocked().close()
         with self.assertRaises(vault.VaultLocked):

@@ -172,6 +172,9 @@ class App:
         self.worker.start()
         conn = db.connect()
         try:   # jobs interrupted by a restart are marked failed, not left "running" forever
+            conn.execute("UPDATE deploy_runs SET status = 'failed', finished_at = :t, output = output || :o "
+                         "WHERE status IN ('queued', 'running')",
+                         {'t': int(time.time()), 'o': '\ninterrupted by restart: this run may or may not have finished on the host\n'})
             conn.execute("UPDATE scan_jobs SET status = 'failed', finished_at = :t, result_json = :r "
                          "WHERE status IN ('queued', 'running')",
                          {'t': int(time.time()), 'r': json.dumps({'error': 'interrupted by restart'})})
