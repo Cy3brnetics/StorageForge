@@ -102,7 +102,7 @@ The rail on the right opens panels in the inspector. The first panel, **Details*
 
 | Panel | What it does |
 | :--- | :--- |
-| **Scans** | Queue a scan of a bound host and follow recent scan jobs |
+| **Scans** | Queue a scan of a bound host, or **Scan all hosts**, and follow recent scan jobs |
 | **Keys** | Generate a key in the vault, install it on a host with its password once, list keys and bindings, **Scan now** per binding |
 | **Audit** | The newest audit entries, and **Verify chain** |
 

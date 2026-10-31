@@ -520,7 +520,7 @@ function toast(msg) {
 const dirOf = (p) => p.replace(/\/[^/]*$/, '') || '/';
 
 /* ── tabs, search, jobs, audit ───────────────────────────────────── */
-let jobTimer = 0;
+let jobTimer = 0, followingScans = false;
 function showTab(name) {
   document.querySelectorAll('.tabs button').forEach((b) => {
     const on = b.dataset.tab === name;
@@ -648,17 +648,37 @@ async function loadJobs() {
         text('span', `${j.requested_by} · ${new Date(j.queued_at * 1000).toLocaleString()}${summary ? ' · ' + summary : ''}`, 'm'));
       return li;
     }));
-    if (!jobs.some((j) => j.status === 'queued' || j.status === 'running')) { clearInterval(jobTimer); }
+    if (!jobs.some((j) => j.status === 'queued' || j.status === 'running')) {
+      clearInterval(jobTimer);
+      if (followingScans) { followingScans = false; loadGraph(); loadDesigns(); }   // a long run outlasts the refresh below
+    }
   } catch (err) { clearInterval(jobTimer); $('#jobs').replaceChildren(text('li', err.message, 'muted')); }
+}
+function followJobs() {
+  followingScans = true;
+  loadJobs(); clearInterval(jobTimer); jobTimer = setInterval(async () => { await loadJobs(); }, 3000);
+  setTimeout(() => { loadGraph(); loadDesigns(); }, 15000);
 }
 async function queueScan(host) {
   showTab('jobs');
   try {
     await api('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host }) });
-    loadJobs(); clearInterval(jobTimer); jobTimer = setInterval(async () => { await loadJobs(); }, 3000);
-    setTimeout(() => { loadGraph(); loadDesigns(); }, 15000);
+    followJobs();
   } catch (err) { $('#jobs').prepend(text('li', err.message, 'st-failed')); }
 }
+async function scanAll() {
+  const btn = $('#scanall'), msg = $('#scanmsg'); btn.disabled = true; msg.hidden = true;
+  const say = (m, cls) => { msg.textContent = m; msg.className = cls; msg.hidden = false; };   // loadJobs redraws #jobs
+  showTab('jobs');
+  try {
+    const res = await api('/api/scan/all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const { jobs } = await res.json();
+    if (Object.keys(jobs).length) followJobs();
+    else say('No hosts have a scan binding yet. Bind a key to a host in the Keys tab first.', 'muted');
+  } catch (err) { say(err.message, 'st-failed'); }
+  finally { btn.disabled = false; }
+}
+$('#scanall').addEventListener('click', scanAll);
 $('#scanform').addEventListener('submit', (ev) => { ev.preventDefault(); const h = $('#scanhost').value.trim(); if (h) queueScan(h); });
 
 /* ── keys: generate in the vault, install with ssh-copy-id ────────── */

@@ -57,7 +57,8 @@ storageforge-index graph import --blueprint atlas.json</pre>
     <div id="tab-details" class="tab"><p id="detailshint" class="muted"></p><div id="summary"></div></div>
     <div id="tab-search" class="tab" hidden><p class="muted">Type a pattern above. Select a result to focus its mount point.</p><ol id="results" class="results"></ol></div>
     <div id="tab-jobs" class="tab" hidden>
-      <form id="scanform" class="row"><input id="scanhost" type="text" placeholder="hostname or IP bound in the vault" aria-label="Host to scan" required><button class="btn pri" type="submit">Scan</button></form>
+      <form id="scanform" class="row"><input id="scanhost" type="text" placeholder="hostname or IP bound in the vault" aria-label="Host to scan" required><button class="btn pri" type="submit">Scan</button><button id="scanall" type="button" class="btn" title="Queue a scan of every host with a scan binding. Scans run one at a time.">Scan all hosts</button></form>
+      <p id="scanmsg" hidden></p>
       <ol id="jobs" class="list"></ol>
     </div>
     <div id="tab-keys" class="tab" hidden>

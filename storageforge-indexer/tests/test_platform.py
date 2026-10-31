@@ -712,6 +712,23 @@ class ServerTests(DBCase):
         self.assertEqual((job['job_id'], job['requested_by']), (r.json['job_id'], 'web:alice'))
         self.assertEqual(self.client.post('/api/scan', json={'host': 'x' * 5000}).status_code, 413)
 
+    def test_scan_all_queues_each_bound_host(self):
+        from storageforge_index import vault
+        self.assertEqual(self.client.post('/api/scan/all', json={}).status_code, 401)
+        self.login()
+        self.assertEqual(self.client.post('/api/scan/all', json={}).json['jobs'], {})
+        vlt = vault.Vault(self.db, self.conn, SECRET)
+        vlt.init()
+        with vlt.unlock() as v:
+            v.generate_key('k', 'ed25519')
+            v.bind('k', 'nas-01', 'archie')
+            v.bind('k', 'nas-02', 'archie')
+        r = self.client.post('/api/scan/all', json={})
+        self.assertEqual(r.status_code, 202)
+        self.assertEqual(sorted(r.json['jobs']), ['nas-01', 'nas-02'])
+        queued = {j['job_id']: j['requested_by'] for j in self.client.get('/api/jobs').json['jobs']}
+        self.assertEqual({queued[j] for j in r.json['jobs'].values()}, {'web:alice'})
+
     def test_failed_logins_are_rate_limited(self):
         from storageforge_index import users
         users.create(self.conn, 'bob', 'bob has a long password')

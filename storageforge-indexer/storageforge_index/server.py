@@ -17,6 +17,7 @@ GET  /api/jobs                      recent scan jobs
 GET  /api/audit[?limit=]            newest audit entries
 GET  /api/audit/verify              hash-chain verification (unlocks the vault)
 POST /api/scan  {"host": "…"}       queue a vault-backed scan
+POST /api/scan/all                  queue a scan of every host with a scan binding
 GET  /api/keys                      vault keys (public halves) and host bindings
 POST /api/keys  {"name", "type"}     generate a key inside the vault
 POST /api/hostkey/confirm  {"host", "port", "fingerprint"}   a person compared the host key: pin it, passwords may go there
@@ -241,6 +242,10 @@ class App:
                 traceback.print_exc()
             finally:
                 conn.close()
+
+    def bound_hosts(self) -> list[str]:
+        """Hosts bound by name for scanning, under their indexed hostnames."""
+        return self.due_hosts(0)
 
     def due_hosts(self, interval: int, now: float | None = None) -> list[str]:
         """Bound hosts whose last scan job (of any outcome) is older than the interval. A restart therefore never
@@ -708,6 +713,14 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         jid = core.enqueue(host, actor())
         core.audit(conn(), actor(), 'api.scan.request', 'info', host, {'job_id': jid})
         return jsonify(job_id=jid), 202
+
+    @web.post('/api/scan/all')
+    @login_required
+    def api_scan_all():
+        json_body()
+        jobs = {h: core.enqueue(h, actor()) for h in core.bound_hosts()}
+        core.audit(conn(), actor(), 'api.scan.request_all', 'info', None, {'jobs': jobs})
+        return jsonify(jobs=jobs), 202
 
     # vault keys: generate, install with ssh-copy-id, bind
     @web.get('/api/keys')
