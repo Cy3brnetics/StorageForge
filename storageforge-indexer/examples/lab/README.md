@@ -2,7 +2,7 @@
 
 Seven disposable VMs for testing StorageForge across distros and filesystems. It runs on the libvirt host, separate from StorageForge itself.
 
-So far this builds the VMs, their storage layouts and seed data, the network, the snapshots and the control panel. StorageForge isn't installed on `sf-ctl` yet.
+It builds the VMs, their storage layouts and seed data, the network, the snapshots and the control panel, runs StorageForge from this working tree on `sf-ctl`, and can fill it with a working demo.
 
 ## Use it
 
@@ -13,16 +13,17 @@ python3 examples/lab/panel.py --open   # or start the panel directly
 
 | Button | Command | What it does |
 | :--- | :--- | :--- |
-| **Up** | `lab.sh up` | Creates and starts the VMs, lays out their storage, adds seed data, then takes a `golden` snapshot. Safe to run again: it resumes VMs that aren't finished, except one whose storage layout failed partway, which needs Destroy. |
+| **Up** | `lab.sh up` | Creates and starts the VMs, lays out their storage, adds seed data, starts StorageForge on `sf-ctl`, then takes a `golden` snapshot. Safe to run again: it resumes VMs that aren't finished, except one whose storage layout failed partway, which needs Destroy. |
 | **Reset** | `lab.sh reset` | Returns every VM to `golden`. |
+| **Demo** | `lab.sh demo` | Resets the lab, then fills StorageForge through its own API. Takes about 3 minutes. |
 | **Test** | `lab.sh test` | Checks the running lab against what it should hold. Reads only. |
 | **Destroy** | `lab.sh down` | Removes the lab straight away with no confirmation, stopping any running command first. |
 
-Also: `lab.sh status`, `lab.sh ssh <vm> [command]`, and `lab.sh snapshot` to retake `golden`. `lab.sh up <vm>...` creates only the named VMs and takes no snapshot.
+Also: `lab.sh status`, `lab.sh ssh <vm> [command]`, and `lab.sh snapshot` to retake `golden`, and `lab.sh controller` to rebuild StorageForge from this tree and restart it on `sf-ctl`, keeping its data. `lab.sh up <vm>...` creates only the named VMs and takes no snapshot.
 
 ## What it needs
 
-libvirt with `qemu:///system`, `virt-install`, `qemu-img`, `xorriso`, write access to `/dev/kvm`, about 10 GB of free RAM and 30 GB of free disk. `up` checks all of these first.
+libvirt with `qemu:///system`, `virt-install`, `qemu-img`, `xorriso`, Docker to build the images, write access to `/dev/kvm`, about 10 GB of free RAM and 30 GB of free disk. `up` checks all of these first.
 
 | Item | Where | After Destroy |
 | :--- | :--- | :--- |
@@ -30,6 +31,7 @@ libvirt with `qemu:///system`, `virt-install`, `qemu-img`, `xorriso`, write acce
 | Network | libvirt `sflab`, bridge `sflab0`, 10.77.0.0/24 | removed |
 | Pool | libvirt `sflab` | removed |
 | Keys, generated passwords | `~/.local/state/sflab` | removed |
+| Docker images on this machine | `storageforge:*`, `storageforge-proxy:*`, ntfy | kept, to make the next Up faster |
 | Base images | `/mnt/ssd/Data/KVM/sflab-images` (`SFLAB_IMAGES`) | kept, to make the next Up faster |
 | Panel token | `~/.config/sflab/panel-token` | kept |
 
@@ -37,7 +39,7 @@ libvirt with `qemu:///system`, `virt-install`, `qemu-img`, `xorriso`, write acce
 
 | VM | Root | Data disks |
 | :--- | :--- | :--- |
-| `sf-ctl` | ext4 | none |
+| `sf-ctl` | ext4 | none. StorageForge from the repo's `docker-compose.yml`, plus ntfy from `controller/compose.lab.yml`. |
 | `sf-ubuntu` | ext4 | ZFS: `tank` (raidz1) with `media`, `photos` and `backups`, and `backup` to send to. Docker container `sflab-web`. |
 | `sf-fedora` | btrfs | btrfs raid1 over two disks, subvolumes mounted at `/data/media`, `/data/backups` and `/data/snaps` |
 | `sf-rocky` | XFS | LVM `vgdata`: XFS on `data` at `/srv/data`, snapshot `data-snap`. Podman container `sflab-web`. |
@@ -52,6 +54,24 @@ The layouts are in `provision/<vm>.sh`, and `provision/layout.conf` lists what t
 `provision/seed.py` builds the same data each time and `provision/seed-roots.conf` says where it goes, about 46 MB per full copy. The `full` profile has files duplicated across hosts and within one, a folder the `scan` user can't read, awkward names (Unicode, a newline, leading hyphens, bytes that aren't UTF-8), hardlinks, symlinks including a loop and a dangling one, a sparse file and a git repository. The `plain` profile is simple files, for filesystems that can't hold the rest.
 
 The generator also writes a manifest with the type, size, mode and SHA-256 of every entry to `~/.local/state/sflab/manifests`, so tests compare a VM and its scans with values the VM had no part in.
+
+## StorageForge and the demo
+
+The panel shows the address and the password while `sf-ctl` is up: `https://10.77.0.10:8443`, user `demo`, password in `~/.local/state/sflab/ui-password`. The images are built on this machine and loaded onto `sf-ctl`. `sf-ctl` has 2 vCPUs because `docker-compose.yml` limits StorageForge to 2.0 CPUs, and Docker refuses a limit above what the machine has.
+
+`demo.py` leaves this in place:
+
+| What | Where |
+| :--- | :--- |
+| All seven hosts scanned | `sf-rocky` shows as partial, because `scan` can't read Podman's overlay folder |
+| Deploy access | Five hosts, set up with the `sfadmin` sudo password. `sf-alpine` is refused, because it has no bash or systemd. |
+| NFS share | `sf-ubuntu:/tank/media` mounted on `sf-fedora` at `/mnt/ubuntu-media`, read-only |
+| SMB share | `sf-rocky:/srv/data` mounted on `sf-suse` at `/mnt/rocky-data` |
+| rsnapshot job | `sf-rocky:/srv/data/lab-seed` to `sf-ubuntu:/tank/backups/rocky`, with one snapshot taken |
+| btrfs send task | `sf-fedora:/data/media` to `sf-arch:/srv/fedora-media`, with one snapshot sent |
+| One open alert | `/backup` on `sf-ubuntu` is 96% full. It's in the Deploy tab and at `http://10.77.0.10:8090/storageforge-lab`. |
+
+A few steps StorageForge leaves to an operator go over the lab's own SSH: installing login keys, adding the Samba account and its client credentials, and root's key for the btrfs send. The Samba account needs the Samba that the deploy installs, so the demo applies the SMB share, adds the account, and applies again.
 
 ## Accounts on each VM
 

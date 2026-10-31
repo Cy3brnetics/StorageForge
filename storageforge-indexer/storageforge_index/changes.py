@@ -46,6 +46,8 @@ CONFIRM = F('confirm', 'confirm', 'Type the device again to confirm', required=T
 DEVICES = F('devices', 'devices', 'Devices', required=True, placeholder='/dev/sdb /dev/sdc')
 CONFIRM_ALL = F('confirm', 'confirm', 'Type the devices again to confirm', required=True)
 TO_HOST = F('dest_host', 'host', 'To host', placeholder='this host, or nas-02, or root@10.0.0.9')
+# added=True: a field newer than plans already saved and deployed. Left empty it does not count towards the plan's hash.
+MKFS_FIELD = F('mkfs', 'mkfs', 'Format options', added=True, placeholder='reserved=1,bytes_per_inode=16384')
 TYPES = {
     'dir': {'group': 'Files and folders', 'label': 'Create folder', 'fields': [PATH, OWNER, GROUP, MODE]},
     'rename': {'group': 'Files and folders', 'label': 'Rename or move', 'fields': [
@@ -77,7 +79,10 @@ TYPES = {
         'help': 'btrfs send piped to btrfs receive. The earlier snapshot must exist on both sides. Root on this host logs in to the other one with its SSH key.'},
     'zfs-pool': {'group': 'ZFS', 'label': 'Create a pool', 'destructive': True, 'fields': [
         F('pool', 'name', 'Pool name', required=True), F('level', 'choice', 'Layout', options=ZPOOL_LEVELS, required=True),
-        DEVICES, F('mountpoint', 'path', 'Mount at'), F('wipe', 'bool', 'They have a filesystem: overwrite it'), CONFIRM_ALL],
+        DEVICES, F('mountpoint', 'path', 'Mount at'), F('wipe', 'bool', 'They have a filesystem: overwrite it'), CONFIRM_ALL,
+        F('ashift', 'choice', 'Sector size (ashift, 12 if empty)', options=['', '9', '12', '13', '14'], added=True),
+        F('pool_props', 'options', 'Pool properties', added=True, placeholder='autotrim=on,autoexpand=on'),
+        F('fs_props', 'options', 'Properties of its datasets', added=True, placeholder='compression=zstd,atime=off,xattr=sa')],
         'help': 'Prefer stable names from /dev/disk/by-id: sdX names can change at boot.'},
     'zfs-dataset': {'group': 'ZFS', 'label': 'Create a dataset', 'fields': [
         F('dataset', 'dataset', 'Dataset', required=True, placeholder='tank/media'), F('mountpoint', 'path', 'Mount at'),
@@ -114,18 +119,34 @@ TYPES = {
         F('source', 'spec', 'Source', required=True, placeholder='UUID=…, LABEL=…, server:/path or //server/share'),
         F('subvol', 'text', 'btrfs subvolume', placeholder='@Media'), TARGET,
         F('fstype', 'choice', 'Filesystem', options=MOUNT_FS, required=True),
-        F('options', 'options', 'Options', placeholder='defaults,noatime,nofail')]},
+        F('options', 'options', 'Options', placeholder='defaults,noatime,nofail'),
+        F('fsck_pass', 'choice', 'Check at boot (fsck pass, none if empty)', options=['', '1', '2'], added=True)]},
     'mount-options': {'group': 'Mounts', 'label': 'Change mount options', 'fields': [
         TARGET, F('options', 'options', 'New options', required=True, placeholder='noatime,compress=zstd:3,nofail')]},
     'unmount': {'group': 'Mounts', 'label': 'Unmount', 'fields': [TARGET],
                 'help': 'Unmounts it and comments out its fstab line. The folder and the data stay.'},
     'partition': {'group': 'Drives', 'label': 'Partition a disk', 'destructive': True, 'fields': [
         F('disk', 'device', 'Disk', required=True), F('fstype', 'choice', 'Then format as', options=[''] + MKFS),
-        F('label', 'label', 'Label'), F('wipe', 'bool', 'It has partitions: replace them'), CONFIRM],
-        'help': 'A new GPT with one partition spanning the disk.'},
+        F('label', 'label', 'Label'), F('wipe', 'bool', 'It has partitions: replace them'), CONFIRM,
+        F('table', 'choice', 'Partition table (GPT if empty)', options=['', 'gpt', 'msdos'], added=True),
+        F('flag', 'choice', 'Partition flag', options=['', 'esp', 'lvm', 'raid', 'swap'], added=True), MKFS_FIELD],
+        'help': 'A new partition table with one partition spanning the disk.'},
+    'partition-add': {'group': 'Drives', 'label': 'Add a partition', 'destructive': True, 'fields': [
+        F('disk', 'device', 'Disk', required=True), F('name', 'label', 'Partition name', required=True),
+        F('size', 'size', 'Size (the rest of the disk if empty)', placeholder='100G'),
+        F('fstype', 'choice', 'Then format as', options=[''] + MKFS), F('label', 'label', 'Filesystem label'),
+        F('flag', 'choice', 'Partition flag', options=['', 'esp', 'lvm', 'raid', 'swap']), MKFS_FIELD, CONFIRM],
+        'help': 'After the last partition on a GPT disk, or on an empty disk. Existing partitions stay. The name is how a rerun knows it is done.'},
+    'drive-tune': {'group': 'Drives', 'label': 'Tune a drive', 'fields': [
+        F('device', 'device', 'Disk', required=True),
+        F('scheduler', 'choice', 'I/O scheduler', options=['', 'none', 'mq-deadline', 'bfq', 'kyber']),
+        F('read_ahead', 'number', 'Read-ahead (KiB)', placeholder='4096'),
+        F('spindown', 'choice', 'Spin down when idle (minutes)', options=['', 'off', '10', '20', '30', '60', '120']),
+        F('write_cache', 'choice', 'Write cache', options=['', 'on', 'off'])],
+        'help': 'Writes a udev rule matched on the serial number, so it follows the drive if its name changes, and applies it now. Empty fields are left as they are.'},
     'format': {'group': 'Drives', 'label': 'Format', 'destructive': True, 'fields': [
         F('device', 'device', 'Device', required=True), F('fstype', 'choice', 'Filesystem', options=MKFS, required=True),
-        F('label', 'label', 'Label'), F('wipe', 'bool', 'It has a filesystem: destroy it'), CONFIRM]},
+        F('label', 'label', 'Label'), F('wipe', 'bool', 'It has a filesystem: destroy it'), CONFIRM, MKFS_FIELD]},
     'label': {'group': 'Drives', 'label': 'Set filesystem label', 'fields': [
         F('target', 'path', 'Mount point or device', required=True), F('label', 'label', 'Label', required=True)]},
 }
@@ -136,9 +157,59 @@ CHECKS = {
     'text': re.compile(r'[^\0\n]{0,200}'), 'host': HOST_RE,
     'devices': re.compile(r'/dev/[A-Za-z0-9/_.:+-]+( +/dev/[A-Za-z0-9/_.:+-]+){0,63}'),
     'name': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}'), 'dataset': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}'),
-    'size': re.compile(r'\d{1,12}(\.\d{1,3})?[KMGTP]'),
+    'size': re.compile(r'\d{1,12}(\.\d{1,3})?[KMGTP]'), 'number': re.compile(r'\d{1,7}'),
+    'mkfs': re.compile(r'[a-z_]+=[A-Za-z0-9_.+:-]+(,[a-z_]+=[A-Za-z0-9_.+:-]+)*'),
     'spec': re.compile(r'(UUID|LABEL|PARTUUID|PARTLABEL)=[A-Za-z0-9_.-]+|/dev/[A-Za-z0-9/_.:+-]+|[A-Za-z0-9_.-]+:/[^\0\n ]*|//[^\0\n /]+/[^\0\n ]+'),
 }
+
+
+def _one_of(*allowed):
+    return lambda v: v in allowed
+
+
+def _between(lo, hi):
+    return lambda v: v.isdigit() and lo <= int(v) <= hi
+
+
+ON_OFF, SIZE_WORD = _one_of('0', '1'), re.compile(r'\d{1,9}[kmgKMG]?')
+# fs -> option -> (test of the value, how it reaches mkfs). A flag is repeated per option; "-E" and "-O" style lists
+# are joined by mkfs_args. Nothing else reaches the mkfs command line.
+MKFS_OPTIONS = {
+    'ext4': {'reserved': (_between(0, 50), '-m {}'), 'bytes_per_inode': (_between(1024, 67108864), '-i {}'),
+             'inode_size': (_one_of('128', '256', '512', '1024'), '-I {}'), 'block_size': (_one_of('1024', '2048', '4096'), '-b {}'),
+             'stride': (_between(1, 65535), '-E stride={}'), 'stripe_width': (_between(1, 65535), '-E stripe_width={}'),
+             'lazy_init': (ON_OFF, '-E lazy_itable_init={}')},
+    'xfs': {'reflink': (ON_OFF, '-m reflink={}'), 'crc': (ON_OFF, '-m crc={}'), 'block_size': (_one_of('1024', '2048', '4096'), '-b size={}'),
+            'inode_size': (_one_of('256', '512', '1024', '2048'), '-i size={}'), 'su': (SIZE_WORD.fullmatch, '-d su={}'),
+            'sw': (_between(1, 4096), '-d sw={}'), 'agcount': (_between(1, 65536), '-d agcount={}')},
+    'btrfs': {'data': (_one_of(*PROFILES), '-d {}'), 'metadata': (_one_of(*PROFILES), '-m {}'),
+              'checksum': (_one_of('crc32c', 'xxhash', 'sha256', 'blake2'), '--csum {}'),
+              'nodesize': (_one_of('4096', '8192', '16384', '32768', '65536'), '-n {}')},
+    'vfat': {'fat': (_one_of('12', '16', '32'), '-F {}'), 'cluster': (_one_of('1', '2', '4', '8', '16', '32', '64', '128'), '-s {}')},
+    'exfat': {'cluster': (SIZE_WORD.fullmatch, '-c {}')},
+}
+
+
+def mkfs_args(fstype: str, opts: str) -> str:
+    """The extra words for mkfs.<fstype>, or ValueError naming the option it will not take. Words hold no spaces of
+    their own, so the script can split the result."""
+    known, plain, lists = MKFS_OPTIONS.get(fstype, {}), [], {}
+    for item in filter(None, (opts or '').split(',')):
+        key, _, val = item.partition('=')
+        if key not in known:
+            raise ValueError(f'{key} is not a format option for {fstype or "no filesystem"}'
+                             + (f' (it takes {", ".join(known)})' if known else ''))
+        test, form = known[key]
+        if not test(val):
+            raise ValueError(f'{val!r} is not a value for {key}')
+        flag, _, word = form.format(val).partition(' ')
+        if flag in ('-E', '-m', '-d') and '=' in word:
+            lists.setdefault(flag, []).append(word)
+        else:
+            plain += [flag, word]
+    for flag, words in lists.items():
+        plain += [flag, ','.join(words)]
+    return ' '.join(plain)
 
 
 def title(t: dict) -> str:
@@ -153,6 +224,10 @@ def title(t: dict) -> str:
         'mount': lambda: f'Mount {p["source"]}{"[" + p["subvol"] + "]" if p.get("subvol") else ""} at {p["target"]}',
         'mount-options': lambda: f'Mount options of {p["target"]}: {p["options"]}', 'unmount': lambda: f'Unmount {p["target"]}',
         'partition': lambda: f'Partition {p["disk"]}' + (f' and format it {p["fstype"]}' if p.get('fstype') else ''),
+        'partition-add': lambda: f'Add partition {p["name"]} ({p["size"] or "the rest"}) on {p["disk"]}' + (f' and format it {p["fstype"]}' if p.get('fstype') else ''),
+        'drive-tune': lambda: f'Tune {p["device"]}: ' + ', '.join(x for x in (
+            p['scheduler'] and f'scheduler {p["scheduler"]}', p['read_ahead'] and f'read-ahead {p["read_ahead"]} KiB',
+            p['spindown'] and f'spin down {p["spindown"]}', p['write_cache'] and f'write cache {p["write_cache"]}') if x),
         'format': lambda: f'Format {p["device"]} as {p["fstype"]}', 'label': lambda: f'Label {p["target"]} "{p["label"]}"',
         'btrfs-send': lambda: f'Send {p["source"]} to {p["dest_host"] or "this host"}:{p["dest"]}',
         'zfs-pool': lambda: f'Create ZFS pool {p["pool"]} ({p["level"]}) on {p["devices"]}',
@@ -339,7 +414,15 @@ def check(conn: Conn, plan: dict) -> dict:
                     say('warn', f'undoes task {j}: every rerun of the script does both again. Drop one of them')
         out.append({'task': i, 'title': title(t), 'host': h['name'], 'items': items})
     levels = [x['level'] for t in out for x in t['items']]
-    return {'tasks': out, 'crit': levels.count('crit'), 'warn': levels.count('warn')}
+    crit_count = levels.count('crit')
+    warn_count = levels.count('warn')
+    all_done = bool(out) and crit_count == 0 and warn_count == 0 and all(
+        any(it['level'] == 'ok' and any(w in it['text'].lower() for w in ('already', 'matches', 'points to target'))
+            for it in t['items'])
+        and not any(it['level'] in ('crit', 'warn') or 'creates ' in it['text'] for it in t['items'])
+        for t in out
+    )
+    return {'tasks': out, 'crit': crit_count, 'warn': warn_count, 'all_done': all_done}
 
 
 def _check_task(conn, c: Host, h: dict, k: str, p: dict, say):
@@ -495,12 +578,64 @@ def _check_task(conn, c: Host, h: dict, k: str, p: dict, say):
             say('crit', f'mounted inside it: {", ".join(inside[:5])}. Unmount those first (earlier in the plan)')
         c.unmounted.add(tgt)
         c.new_mounts.pop(tgt, None)
+    elif k == 'partition-add':
+        info = c.device(p['disk'])
+        if not info:
+            say('crit', f'{p["disk"]} was not seen by the last scan of {h["name"]}')
+            return
+        if info['kind'] != 'disk':
+            say('crit', f'{p["disk"]} is a partition; pick its disk')
+            return
+        used = c.mounted_from(p['disk'])
+        if used:
+            say('crit', f'{p["disk"]} is in use: mounted at {", ".join(used[:6])}. Nothing on it may be mounted while its table changes')
+        if info.get('member') or any(x.get('member') for x in info['parts']):
+            say('crit', f'{p["disk"]} belongs to {info.get("member") or "a pool"}')
+        table = (info['disk'].get('table') or '').lower()
+        if info['parts'] and table and table != 'gpt':
+            say('crit', f'{p["disk"]} has a {table} table: added partitions need GPT, whose names tell a rerun they are done')
+        size, taken = info['disk'].get('size') or 0, sum(x.get('size') or 0 for x in info['parts'])
+        if p['size'] and size:
+            want = float(p['size'][:-1]) * 1024 ** ('KMGTP'.index(p['size'][-1]) + 1)
+            if want > size - taken:
+                say('crit', f'{p["size"]} does not fit: {_fmt(size - taken)} is left on {p["disk"]}')
+        if p['label'] and len(p['label']) > LABEL_MAX.get(p['fstype'], 64):
+            say('warn', f'{p["fstype"]} labels hold {LABEL_MAX[p["fstype"]]} characters; mkfs may refuse this one')
+        try:
+            mkfs_args(p['fstype'], p['mkfs'])
+        except ValueError as exc:
+            say('crit', str(exc))
+        if not used:
+            say('ok', f'{info["disk"].get("model") or p["disk"]}: {_fmt(size - taken)} free' if size else p['disk'])
+    elif k == 'drive-tune':
+        info = c.device(p['device'])
+        if not info:
+            say('crit', f'{p["device"]} was not seen by the last scan of {h["name"]}')
+            return
+        if info['kind'] != 'disk':
+            say('crit', f'{p["device"]} is a partition; these settings belong to the whole disk')
+        if not any(p[x] for x in ('scheduler', 'read_ahead', 'spindown', 'write_cache')):
+            say('crit', 'choose at least one setting')
+        media = (info['disk'].get('media') or '').lower()
+        if p['spindown'] and p['spindown'] != 'off' and media in ('ssd', 'nvme'):
+            say('warn', f'{p["device"]} is {media}: it has nothing to spin down')
+        if p['spindown'] and p['spindown'] != 'off' and c.mounted_from(p['device']):
+            say('note', 'a drive that is written to often wakes each time, and frequent spin-ups wear it')
+        if p['write_cache'] == 'off':
+            say('note', 'writes get much slower with the write cache off')
+        if p['spindown'] or p['write_cache']:
+            say('note', 'spin-down and write cache use hdparm, which SATA drives answer and most others do not')
     elif k in ('partition', 'format', 'btrfs-add'):
         dev = p.get('disk') or p.get('device')
         info = c.device(dev)
         if not info:
             say('crit', f'{dev} was not seen by the last scan of {h["name"]}')
             return
+        if p.get('mkfs') is not None:
+            try:
+                mkfs_args(p['fstype'], p['mkfs'])
+            except ValueError as exc:
+                say('crit', str(exc))
         if k == 'partition' and info['kind'] != 'disk':
             say('crit', f'{dev} is a partition; pick its disk')
         used = c.mounted_from(dev)
@@ -585,6 +720,9 @@ def _check_task(conn, c: Host, h: dict, k: str, p: dict, say):
         _check_devices(c, h, devs, p['wipe'], say)
         if any(re.fullmatch(r'/dev/(sd[a-z]+|vd[a-z]+)\d*', d) for d in devs):
             say('warn', 'sdX names can change at boot: /dev/disk/by-id/... names are safer for a pool')
+        for o in filter(None, (p['pool_props'] + ',' + p['fs_props']).split(',')):
+            if '=' not in o:
+                say('crit', f'{o} is not property=value')
         c.new_zpools.add(p['pool'])
     elif k == 'zfs-dataset':
         pool = p['dataset'].split('/')[0]
@@ -655,8 +793,13 @@ def _check_devices(c: Host, h: dict, devs: list, wipe: bool, say):
 
 
 # ── storage ─────────────────────────────────────────────────────────────
+def _hashed(t: dict) -> dict:
+    late = {f['name'] for f in TYPES.get(t.get('type'), {}).get('fields', ()) if f.get('added')}
+    return {**t, 'params': {k: v for k, v in (t.get('params') or {}).items() if k not in late or v}}
+
+
 def plan_hash(plan: dict) -> str:
-    return hashlib.sha256(json.dumps(plan.get('tasks') or [], sort_keys=True).encode()).hexdigest()[:16]
+    return hashlib.sha256(json.dumps([_hashed(t) for t in plan.get('tasks') or []], sort_keys=True).encode()).hexdigest()[:16]
 
 
 def _ran_at(marks: list[dict], plan_id: int, plan: dict) -> int | None:
@@ -709,15 +852,33 @@ def delete_plan(conn: Conn, plan_id: int):
     conn.execute("DELETE FROM deployed WHERE kind = 'changes' AND ref = :r", {'r': str(plan_id)})    # ids can be reused
 
 
+def mark_ran(conn: Conn, plan_id: int, actor: str) -> dict:
+    from . import deploy
+    plan = get_plan(conn, plan_id)
+    digest = plan_hash(plan)
+    hs, order = hosts(conn), []
+    for t in plan.get('tasks') or []:
+        h = find_host(hs, t['host'])
+        name = h['name'] if h else t['host']
+        if name not in order:
+            order.append(name)
+    with conn.tx():
+        for h in order:
+            deploy.mark_deployed(conn, h, 'changes', str(plan_id), digest, {'name': plan['name'], 'hosts': order}, actor)
+    return get_plan(conn, plan_id)
+
+
 # ── the Bash script ─────────────────────────────────────────────────────
 ARGS = {'dir': ('path', 'owner', 'group', 'mode'), 'rename': ('path', 'dest'), 'trash': ('path',),
         'symlink': ('path', 'target'), 'perms': ('path', 'owner', 'group', 'mode', 'recursive'),
         'subvolume': ('path', 'nocow'), 'snapshot': ('source', 'dest', 'readonly'), 'to-subvolume': ('path',),
         'btrfs-add': ('device', 'target', 'wipe'), 'btrfs-balance': ('target', 'data', 'metadata'), 'scrub': ('target',),
-        'mount': ('source', 'subvol', 'target', 'fstype', 'options'), 'mount-options': ('target', 'options'),
-        'unmount': ('target',), 'partition': ('disk', 'fstype', 'label', 'wipe'), 'format': ('device', 'fstype', 'label', 'wipe'),
+        'mount': ('source', 'subvol', 'target', 'fstype', 'options', 'fsck_pass'), 'mount-options': ('target', 'options'),
+        'unmount': ('target',), 'partition': ('disk', 'fstype', 'label', 'wipe', 'table', 'flag', 'mkfs'),
+        'partition-add': ('disk', 'name', 'size', 'fstype', 'label', 'flag', 'mkfs'),
+        'drive-tune': ('device', 'scheduler', 'read_ahead', 'spindown', 'write_cache'), 'format': ('device', 'fstype', 'label', 'wipe', 'mkfs'),
         'label': ('target', 'label'), 'btrfs-send': ('source', 'parent', 'dest'),
-        'zfs-pool': ('pool', 'level', 'devices', 'mountpoint', 'wipe'), 'zfs-dataset': ('dataset', 'mountpoint', 'options'),
+        'zfs-pool': ('pool', 'level', 'devices', 'mountpoint', 'wipe', 'ashift', 'pool_props', 'fs_props'), 'zfs-dataset': ('dataset', 'mountpoint', 'options'),
         'zfs-snapshot': ('dataset', 'name', 'recursive'), 'zfs-send': ('dataset', 'name', 'base', 'dest', 'recursive', 'raw'),
         'zfs-scrub': ('pool',), 'lvm-vg': ('vg', 'devices', 'wipe'), 'lvm-vg-extend': ('vg', 'device', 'wipe'),
         'lvm-lv': ('vg', 'lv', 'size', 'fstype', 'label'), 'lvm-extend': ('vg', 'lv', 'size'), 'lvm-snapshot': ('vg', 'lv', 'name', 'size')}
@@ -759,7 +920,8 @@ def script(conn: Conn, plan: dict) -> str:
     calls, summary = [], []
     for i, (t, c) in enumerate(zip(plan['tasks'], chk['tasks']), 1):
         h = find_host(hs, t['host'])
-        args = [('1' if t['params'][a] else '') if isinstance(t['params'][a], bool) else t['params'][a] for a in ARGS[t['type']]]
+        args = [('1' if t['params'][a] else '') if isinstance(t['params'][a], bool) else
+                mkfs_args(t['params']['fstype'], t['params'][a]) if a == 'mkfs' else t['params'][a] for a in ARGS[t['type']]]
         if t['type'] in ('btrfs-send', 'zfs-send'):        # the receiving side: empty login when that is this host
             there = t['params']['dest_host']
             same = not there or (h and find_host(hs, there.split('@')[-1]) is h)
@@ -870,13 +1032,14 @@ dev_guard() { # device -> 0 if nothing on it is mounted, swapped on, or part of 
   if lsblk -nro TYPE "$1" | tail -n +2 | grep -E 'raid|lvm|crypt' >/dev/null; then conflict "$1 holds RAID, LVM or LUKS volumes"; return 1; fi
 }
 part_of() { if [[ $1 =~ [0-9]$ ]]; then printf '%sp%s' "$1" "$2"; else printf '%s%s' "$1" "$2"; fi; }
-mkfs_dev() { # device fstype label
+mkfs_dev() { # device fstype label [format options, as words]
+  local more=(); read -ra more <<<"${4:-}"
   case $2 in
-    ext4) need mkfs.ext4 e2fsprogs && mkfs.ext4 -q -F ${3:+-L "$3"} "$1" ;;
-    xfs) need mkfs.xfs xfsprogs && mkfs.xfs -q -f ${3:+-L "$3"} "$1" ;;
-    btrfs) need mkfs.btrfs btrfs-progs && mkfs.btrfs -q -f ${3:+-L "$3"} "$1" ;;
-    vfat) need mkfs.vfat dosfstools && mkfs.vfat ${3:+-n "$3"} "$1" >/dev/null ;;
-    exfat) need mkfs.exfat exfatprogs && mkfs.exfat ${3:+-L "$3"} "$1" >/dev/null ;;
+    ext4) need mkfs.ext4 e2fsprogs && mkfs.ext4 -q -F ${3:+-L "$3"} ${more[@]+"${more[@]}"} "$1" ;;
+    xfs) need mkfs.xfs xfsprogs && mkfs.xfs -q -f ${3:+-L "$3"} ${more[@]+"${more[@]}"} "$1" ;;
+    btrfs) need mkfs.btrfs btrfs-progs && mkfs.btrfs -q -f ${3:+-L "$3"} ${more[@]+"${more[@]}"} "$1" ;;
+    vfat) need mkfs.vfat dosfstools && mkfs.vfat ${3:+-n "$3"} ${more[@]+"${more[@]}"} "$1" >/dev/null ;;
+    exfat) need mkfs.exfat exfatprogs && mkfs.exfat ${3:+-L "$3"} ${more[@]+"${more[@]}"} "$1" >/dev/null ;;
   esac
 }
 owner_mode() { # path owner group mode recursive
@@ -1007,9 +1170,9 @@ t_scrub() { local tgt=$1
   act "btrfs scrub start $tgt" && try btrfs scrub start -- "$tgt" >/dev/null &&
     { mkdir -p "$STATE"; date '+%F %T' >"$STATE/scrub-${tgt//\//_}"; ok "started: btrfs scrub status $tgt"; }
 }
-t_mount() { local src=$1 sv=$2 tgt=$3 fs=$4 opts=$5 line have
+t_mount() { local src=$1 sv=$2 tgt=$3 fs=$4 opts=$5 pass=${6:-0} line have
   [[ -n $sv ]] && opts="subvol=$sv${opts:+,$opts}"
-  line="$(esc "$src") $(esc "$tgt") $fs ${opts:-defaults} 0 0"
+  line="$(esc "$src") $(esc "$tgt") $fs ${opts:-defaults} 0 $pass"
   have=$(fstab_line "$tgt")
   if [[ -n $have ]]; then
     if [[ $(awk '{print $1, $3}' <<<"$have") == "$(esc "$src") $fs" ]]; then ok "fstab: $have"
@@ -1050,29 +1213,89 @@ t_unmount() { local tgt=$1 have inner
     fstab_verify && ok "fstab line commented out"
   fi
 }
-t_partition() { local disk=$1 fs=$2 label=$3 wipe=$4 n part
+t_partition() { local disk=$1 fs=$2 label=$3 wipe=$4 table=${5:-gpt} flag=$6 more=$7 n part
   need parted parted || return 0
   part=$(part_of "$disk" 1); n=$(lsblk -nro TYPE -- "$disk" 2>/dev/null | grep -c part || true)
   if ((n == 1)) && [[ -b $part ]] && [[ -z $fs || $(blkid -p -o value -s TYPE -- "$part" 2>/dev/null) == "$fs" ]]; then
     ok "$disk has one partition${fs:+ with $fs}"; return 0; fi
   dev_guard "$disk" || return 0
   ((n == 0)) || [[ $wipe == 1 ]] || { conflict "$disk has $n partition(s); the plan doesn't allow replacing them"; return 0; }
-  act "new GPT on $disk with one partition${fs:+, formatted $fs}" || return 0
-  try wipefs -aq -- "$disk" && try parted -s -- "$disk" mklabel gpt mkpart primary 1MiB 100% || return 0
+  act "new $table table on $disk with one partition${flag:+ ($flag)}${fs:+, formatted $fs}" || return 0
+  try wipefs -aq -- "$disk" && try parted -s -- "$disk" mklabel "$table" mkpart primary 1MiB 100% || return 0
+  [[ -z $flag ]] || try parted -s -- "$disk" set 1 "$flag" on || return 0
   partprobe -- "$disk" 2>/dev/null || true; udevadm settle 2>/dev/null || true
   for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -b $part ]] && break; sleep 0.5; done
   [[ -b $part ]] || { conflict "$part did not appear"; return 0; }
   ok "partitioned: $part"
-  [[ -n $fs ]] && { mkfs_dev "$part" "$fs" "$label" && ok "formatted $part as $fs" || conflict "mkfs.$fs $part failed"; }
+  [[ -n $fs ]] && { mkfs_dev "$part" "$fs" "$label" "$more" && ok "formatted $part as $fs" || conflict "mkfs.$fs $part failed"; }
 }
-t_format() { local dev=$1 fs=$2 label=$3 wipe=$4 have
+named_part() { lsblk -nrpo NAME,PARTLABEL -- "$1" 2>/dev/null | awk -v n="$2" '$2 == n { print $1; exit }'; }
+t_partition_add() { local disk=$1 name=$2 size=$3 fs=$4 label=$5 flag=$6 more=$7 part table start end num have
+  need parted parted || return 0
+  part=$(named_part "$disk" "$name")
+  if [[ -z $part ]]; then
+    dev_guard "$disk" || return 0
+    table=$(parted -sm -- "$disk" print 2>/dev/null | awk -F: 'NR == 2 { print $6 }')
+    if [[ -n $table && $table != unknown && $table != gpt ]]; then conflict "$disk has a $table table: added partitions need GPT"; return 0; fi
+    if [[ $table == unknown || -z $table ]] && [[ -n $(blkid -p -o value -s TYPE -- "$disk" 2>/dev/null || true) ]]; then
+      conflict "$disk holds a filesystem and no partition table: format or partition it instead"; return 0; fi
+    start=$(parted -sm -- "$disk" unit MiB print 2>/dev/null | awk -F: '/^[0-9]+:/ { e = $3 + 0; if (e > m) m = e } END { printf "%d", (m == int(m) ? m : int(m) + 1) }')
+    ((start >= 1)) || start=1
+    if [[ -n $size ]]; then end=$((start + $(numfmt --from=iec "$size") / 1048576))MiB; else end=100%; fi
+    act "add partition $name on $disk (${start}MiB to $end)${flag:+, flag $flag}" || { [[ -z $fs ]] || missing "would format it $fs"; return 0; }
+    if [[ $table == unknown || -z $table ]]; then try parted -s -- "$disk" mklabel gpt || return 0; fi
+    try parted -s -- "$disk" mkpart "$name" "${start}MiB" "$end" || return 0
+    partprobe -- "$disk" 2>/dev/null || true; udevadm settle 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do part=$(named_part "$disk" "$name"); [[ -n $part ]] && break; sleep 0.5; done
+    [[ -n $part ]] || { conflict "partition $name did not appear on $disk"; return 0; }
+    if [[ -n $flag ]]; then
+      num=$(parted -sm -- "$disk" print | awk -F: -v n="$name" '$6 == n { print $1; exit }')
+      try parted -s -- "$disk" set "$num" "$flag" on || return 0
+    fi
+    ok "added $part"
+  else ok "$part is named $name"; fi
+  [[ -n $fs ]] || return 0
+  have=$(blkid -p -o value -s TYPE -- "$part" 2>/dev/null || true)
+  if [[ $have == "$fs" ]]; then ok "$part is $fs"
+  elif [[ -n $have ]]; then conflict "$part holds $have, not $fs"
+  elif act "mkfs.$fs $part"; then mkfs_dev "$part" "$fs" "$label" "$more" && ok "formatted $part as $fs" || conflict "mkfs.$fs $part failed"; fi
+}
+t_drive_tune() { local dev=$1 sched=$2 ra=$3 spin=$4 wc=$5 base=${1##*/} serial match rule hd=() file body now
+  [[ -b $dev ]] || { later "$dev is not a block device here"; return 0; }
+  serial=$(udevadm info -q property -n "$dev" 2>/dev/null | sed -n 's/^ID_SERIAL=//p' | head -n 1)
+  if [[ -n $serial ]]; then match="ENV{ID_SERIAL}==\"$serial\""
+  else match="KERNEL==\"$base\""; info "$dev reports no serial number: the rule follows the name $base"; fi
+  rule="ACTION==\"add|change\", SUBSYSTEM==\"block\", ENV{DEVTYPE}==\"disk\", $match"
+  [[ -n $sched ]] && rule+=", ATTR{queue/scheduler}=\"$sched\""
+  [[ -n $ra ]] && rule+=", ATTR{queue/read_ahead_kb}=\"$ra\""
+  case $spin in
+    '') ;; off) hd+=(-S 0) ;;
+    *) if ((spin <= 20)); then hd+=(-S "$((spin * 12))"); else hd+=(-S "$((240 + spin / 30))"); fi ;;
+  esac
+  case $wc in on) hd+=(-W 1) ;; off) hd+=(-W 0) ;; esac
+  if ((${#hd[@]})); then
+    need hdparm hdparm || return 0
+    rule+=", RUN+=\"$(command -v hdparm) ${hd[*]} /dev/%k\""
+  fi
+  file=/etc/udev/rules.d/90-storageforge-$base.rules
+  body="# Written by StorageForge: drive settings for $dev"$'\n'"$rule"
+  now=$(cat "$file" 2>/dev/null || true)
+  if [[ $now == "$body" ]]; then ok "$file"; return 0; fi
+  act "write $file${now:+ (it differs)} and apply it" || return 0
+  mkdir -p /etc/udev/rules.d; printf '%s\n' "$body" >"$file"
+  udevadm control --reload 2>/dev/null || true
+  try udevadm trigger --action=change --sysname-match="$base" || return 0
+  udevadm settle 2>/dev/null || true
+  ok "applied: $(sed -n 's/.*\[\(.*\)\].*/\1/p' "/sys/block/$base/queue/scheduler" 2>/dev/null || true) scheduler, read-ahead $(cat "/sys/block/$base/queue/read_ahead_kb" 2>/dev/null || echo '?') KiB"
+}
+t_format() { local dev=$1 fs=$2 label=$3 wipe=$4 more=$5 have
   have=$(blkid -p -o value -s TYPE -- "$dev" 2>/dev/null || true)
   if [[ $have == "$fs" && ( -z $label || $(blkid -p -o value -s LABEL -- "$dev" 2>/dev/null) == "$label" ) ]]; then ok "$dev is $fs"; return 0; fi
   dev_guard "$dev" || return 0
   [[ -z $have || $wipe == 1 ]] || { conflict "$dev holds $have; the plan doesn't allow destroying it"; return 0; }
   act "mkfs.$fs ${label:+-L $label }$dev${have:+ (destroys its $have)}" || return 0
   [[ -n $have ]] && { try wipefs -aq -- "$dev" || return 0; }
-  mkfs_dev "$dev" "$fs" "$label" && ok "formatted" || conflict "mkfs.$fs $dev failed"
+  mkfs_dev "$dev" "$fs" "$label" "$more" && ok "formatted" || conflict "mkfs.$fs $dev failed"
 }
 t_label() { local tgt=$1 label=$2 dev fs cur
   if [[ $tgt == /dev/* ]]; then dev=$tgt; fs=$(blkid -p -o value -s TYPE -- "$dev" 2>/dev/null || true)
@@ -1112,7 +1335,7 @@ t_btrfs_send() { local s=$1 par=$2 dir=$3 login=$4 port=$5 name=${1##*/} there r
   else conflict "the send failed: delete a partial $dir/$name on the other side before you rerun"; fi
 }
 zfs_exists() { zfs list -H -o name -t "${2:-all}" -- "$1" >/dev/null 2>&1; }
-t_zfs_pool() { local pool=$1 level=$2 devs=$3 mp=$4 wipe=$5 vdev=() d arr
+t_zfs_pool() { local pool=$1 level=$2 devs=$3 mp=$4 wipe=$5 ashift=${6:-12} vdev=() d arr props=() x more=()
   need zpool zfsutils-linux || return 0
   if zpool list -H -o name -- "$pool" >/dev/null 2>&1; then ok "pool $pool exists"; return 0; fi
   read -ra arr <<<"$devs"
@@ -1120,7 +1343,9 @@ t_zfs_pool() { local pool=$1 level=$2 devs=$3 mp=$4 wipe=$5 vdev=() d arr
   [[ $level == stripe ]] || vdev=("$level")
   act "zpool create $pool $level $devs${mp:+ (mounted at $mp)}" || return 0
   if [[ $wipe == 1 ]]; then for d in "${arr[@]}"; do try wipefs -aq -- "$d" || return 0; done; fi
-  try zpool create -o ashift=12 ${wipe:+-f} ${mp:+-m "$mp"} -- "$pool" ${vdev[@]+"${vdev[@]}"} "${arr[@]}" && ok "created"
+  IFS=, read -ra more <<<"$7"; for x in ${more[@]+"${more[@]}"}; do props+=(-o "$x"); done
+  IFS=, read -ra more <<<"$8"; for x in ${more[@]+"${more[@]}"}; do props+=(-O "$x"); done
+  try zpool create -o "ashift=$ashift" ${props[@]+"${props[@]}"} ${wipe:+-f} ${mp:+-m "$mp"} -- "$pool" ${vdev[@]+"${vdev[@]}"} "${arr[@]}" && ok "created"
 }
 t_zfs_dataset() { local ds=$1 mp=$2 opts=$3 o k v have
   need zfs zfsutils-linux || return 0
@@ -1229,9 +1454,9 @@ run() { # n host type title args...
   section "$n. $desc"
   if [[ $host != "$ME" ]]; then skip "runs on $host: ./$(basename "$0") --host <user>@$host ${ARGS[*]}"; return 0; fi
   if ((STOPPED)); then info "skipped: an earlier task failed"; return 0; fi
-  CUR_DESTRUCTIVE=0; case $type in partition|format|btrfs-add|zfs-pool|lvm-vg|lvm-vg-extend) CUR_DESTRUCTIVE=1 ;; esac
+  CUR_DESTRUCTIVE=0; case $type in partition|partition-add|format|btrfs-add|zfs-pool|lvm-vg|lvm-vg-extend) CUR_DESTRUCTIVE=1 ;; esac
   local before=$PROBLEMS
-  "t_${type//-/_}" "$@" '' '' '' '' '' || true      # padded: every task function can read its optional arguments
+  "t_${type//-/_}" "$@" '' '' '' '' '' '' '' '' || true      # padded: every task function can read its optional arguments
   if ((APPLY && PROBLEMS > before)); then STOPPED=1; fi
 }
 
@@ -1311,18 +1536,16 @@ def _ansible_task(t: dict, c: Host | None) -> dict:
         return {'name': name, 'ansible.posix.mount': {'path': p['target'], 'state': 'absent', 'backup': True}}
     gate = {'tags': ['destructive'], 'when': 'storageforge_destructive | default(false) | bool'}
     if k == 'partition':
-        tasks = [{'name': name, 'community.general.parted': {'device': p['disk'], 'label': 'gpt', 'number': 1, 'state': 'present',
-                  'part_start': '1MiB', 'part_end': '100%'}, **gate}]
+        tasks = [{'name': name, 'community.general.parted': {'device': p['disk'], 'label': p['table'] or 'gpt', 'number': 1, 'state': 'present',
+                  'part_start': '1MiB', 'part_end': '100%', **({'flags': [p['flag']]} if p['flag'] else {})}, **gate}]
         if p['fstype']:
             part = p['disk'] + ('p1' if p['disk'][-1].isdigit() else '1')
             tasks.append({'name': f'Format {part} as {p["fstype"]}', 'community.general.filesystem': {k2: v for k2, v in (
-                ('dev', part), ('fstype', p['fstype']), ('opts', f'-L {q(p["label"])}' if p['label'] and p['fstype'] != 'vfat'
-                                                             else f'-n {q(p["label"])}' if p['label'] else None)) if v}, **gate})
+                ('dev', part), ('fstype', p['fstype']), ('opts', _mkfs_opts(p))) if v}, **gate})
         return tasks
     if k == 'format':
         return {'name': name, 'community.general.filesystem': {k2: v for k2, v in (
-            ('dev', p['device']), ('fstype', p['fstype']), ('force', p['wipe'] or None),
-            ('opts', (f'-n {q(p["label"])}' if p['fstype'] == 'vfat' else f'-L {q(p["label"])}') if p['label'] else None)) if v}, **gate}
+            ('dev', p['device']), ('fstype', p['fstype']), ('force', p['wipe'] or None), ('opts', _mkfs_opts(p))) if v}, **gate}
     if k == 'btrfs-add':
         return {'name': name, 'ansible.builtin.command': {'argv': ['btrfs', 'device', 'add'] + (['-f'] if p['wipe'] else [])
                 + [p['device'], p['target']]}, **gate}
@@ -1340,6 +1563,11 @@ def _ansible_task(t: dict, c: Host | None) -> dict:
             '  vfat) fatlabel "$d" "$l" ;; exfat) exfatlabel "$d" "$l" ;; *) echo "labels on $fs are not handled" >&2; exit 1 ;; esac\n')},
             'register': 'sf_out', 'changed_when': "'unchanged' not in sf_out.stdout"}
     return _ansible_storage(t, gate)
+
+
+def _mkfs_opts(p: dict) -> str | None:
+    label = (f'-n {shlex.quote(p["label"])}' if p['fstype'] == 'vfat' else f'-L {shlex.quote(p["label"])}') if p['label'] else ''
+    return ' '.join(x for x in (label, mkfs_args(p['fstype'], p.get('mkfs') or '')) if x) or None
 
 
 def _ansible_storage(t: dict, gate: dict) -> dict:
@@ -1370,8 +1598,9 @@ def _ansible_storage(t: dict, gate: dict) -> dict:
         vdev = '' if p['level'] == 'stripe' else p['level'] + ' '
         force = '-f ' if p['wipe'] else ''
         mp = f'-m {q(p["mountpoint"])} ' if p['mountpoint'] else ''
+        props = ''.join(f'{flag} {q(o)} ' for flag, key in (('-o', 'pool_props'), ('-O', 'fs_props')) for o in p[key].split(',') if o)
         return guarded(f'zpool list -H -- {q(p["pool"])} >/dev/null 2>&1',
-                       f'zpool create -o ashift=12 {force}{mp}-- {q(p["pool"])} {vdev}' + ' '.join(q(d) for d in p['devices'].split()), **gate)
+                       f'zpool create -o ashift={p["ashift"] or 12} {props}{force}{mp}-- {q(p["pool"])} {vdev}' + ' '.join(q(d) for d in p['devices'].split()), **gate)
     if k == 'zfs-dataset':
         props = ([f'mountpoint={p["mountpoint"]}'] if p['mountpoint'] else []) + [o for o in p['options'].split(',') if o]
         opts = ''.join(f'-o {q(o)} ' for o in props)
@@ -1396,6 +1625,32 @@ def _ansible_storage(t: dict, gate: dict) -> dict:
     if k == 'lvm-snapshot':
         size = f'-L {q(p["size"])} ' if p['size'] else ''
         return guarded(f'lvs -- {q(p["vg"] + "/" + p["name"])} >/dev/null 2>&1', f'lvcreate -y -s {size}-n {q(p["name"])} -- {lv}')
+    if k == 'partition-add':
+        disk, nm = q(p['disk']), q(p['name'])
+        size = f'$((start + $(numfmt --from=iec {q(p["size"])}) / 1048576))MiB' if p['size'] else '100%'
+        flag = (f'parted -s -- {disk} set "$(parted -sm -- {disk} print | awk -F: -v n={nm} \'$6 == n {{ print $1; exit }}\')" {q(p["flag"])} on\n'
+                if p['flag'] else '')
+        fmt = (f'udevadm settle\npart=$(lsblk -nrpo NAME,PARTLABEL -- {disk} | awk -v n={nm} \'$2 == n {{ print $1; exit }}\')\n'
+               f'mkfs.{p["fstype"]} {_mkfs_opts(p) or ""} "$part"\n' if p['fstype'] else '')
+        return {**guarded(f'lsblk -nrpo PARTLABEL -- {disk} | grep -qxF -- {nm}',
+                          f'parted -sm -- {disk} print >/dev/null 2>&1 || parted -s -- {disk} mklabel gpt\n'
+                          f'start=$(parted -sm -- {disk} unit MiB print | awk -F: \'/^[0-9]+:/ {{ e = $3 + 0; if (e > m) m = e }} END {{ printf "%d", (m == int(m) ? m : int(m) + 1) }}\')\n'
+                          f'[ "$start" -ge 1 ] || start=1\nparted -s -- {disk} mkpart {nm} "${{start}}MiB" "{size}"\n{flag}{fmt}'), **gate}
+    if k == 'drive-tune':
+        base = p['device'].rsplit('/', 1)[-1]
+        spin = {'off': 0, '10': 120, '20': 240, '30': 241, '60': 242, '120': 244}.get(p['spindown'])
+        hd = ' '.join(x for x in (f'-S {spin}' if spin is not None else '', {'on': '-W 1', 'off': '-W 0'}.get(p['write_cache'], '')) if x)
+        rule = ''.join(x for x in (f', ATTR{{queue/scheduler}}=\\"{p["scheduler"]}\\"' if p['scheduler'] else '',
+                                   f', ATTR{{queue/read_ahead_kb}}=\\"{p["read_ahead"]}\\"' if p['read_ahead'] else ''))
+        run = f', RUN+=\\"$(command -v hdparm) {hd} /dev/%k\\"' if hd else ''
+        return {'name': title(t), 'ansible.builtin.shell': {'executable': '/bin/bash', 'cmd': (
+            f'set -euo pipefail\nserial=$(udevadm info -q property -n {q(p["device"])} | sed -n "s/^ID_SERIAL=//p" | head -n 1)\n'
+            f'match=${{serial:+ENV{{ID_SERIAL}}==\\"$serial\\"}}; match=${{match:-KERNEL==\\"{base}\\"}}\n'
+            f'body="ACTION==\\"add|change\\", SUBSYSTEM==\\"block\\", ENV{{DEVTYPE}}==\\"disk\\", $match{rule}{run}"\n'
+            f'file=/etc/udev/rules.d/90-storageforge-{base}.rules\n'
+            '[ "$(cat "$file" 2>/dev/null)" = "$body" ] && { echo unchanged; exit 0; }\n'
+            f'printf "%s\\n" "$body" >"$file"\nudevadm control --reload\nudevadm trigger --action=change --sysname-match={base}\n')},
+            'register': 'sf_out', 'changed_when': "'unchanged' not in sf_out.stdout"}
     raise ValueError(k)
 
 

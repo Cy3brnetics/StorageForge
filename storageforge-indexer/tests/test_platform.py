@@ -599,7 +599,7 @@ class ChangePlanTests(DBCase):
         bp['links'] += [{'kind': 'symlink', 'path': '/srv/photos', 'target': '/mnt/pool/photos'},
                         {'kind': 'bind', 'path': '/srv/www', 'target': '/mnt/pool/www'}]
         r = fromdesign.plan(self.conn, bp)
-        self.assertEqual([t['type'] for t in r['tasks']], ['partition', 'mount', 'mount', 'mount', 'symlink'])
+        self.assertEqual([t['type'] for t in r['tasks']], ['partition', 'zfs-pool', 'mount', 'mount', 'mount', 'symlink'])
         part = r['tasks'][0]['params']
         self.assertEqual((part['disk'], part['fstype'], part['label'], part['wipe'], part['confirm']),
                          ('/dev/sdc', 'ext4', 'backup', False, ''))         # the device is typed again in Changes
@@ -608,15 +608,19 @@ class ChangePlanTests(DBCase):
         self.assertEqual((mounts['/srv/media']['source'], mounts['/srv/media']['subvol']), ('UUID=bbbb', '@media'))
         self.assertEqual((mounts['/mnt/archive']['fstype'], mounts['/mnt/archive']['options']), ('nfs4', '_netdev,nofail'))
         manual = ' | '.join(f'{m["what"]}: {m["why"]}' for m in r['manual'])
-        for words in ('ext4 → xfs', 'Create ZFS pool tank', 'Subvolume @media', 'bind /srv/www'):
+        for words in ('ext4 → xfs', 'Subvolume @media', 'bind /srv/www'):
             self.assertIn(words, manual)
-        self.assertEqual(r['destructive'], 1)
+        self.assertEqual(r['destructive'], 2)
+        bp['pools'][-1]['encryption'] = 'aes-256-gcm'                           # its key is the operator's: never a task
+        self.assertIn('Create ZFS pool tank', ' | '.join(m['what'] for m in fromdesign.plan(self.conn, bp)['manual']))
+        del bp['pools'][-1]['encryption']
         with self.assertRaises(ValueError):                                     # unconfirmed drive tasks can't be saved
             changes.normalize({'name': r['name'], 'tasks': r['tasks']})
         r['tasks'][0]['params']['confirm'] = '/dev/sdc'
+        r['tasks'][1]['params']['confirm'] = r['tasks'][1]['params']['devices']
         plan = changes.normalize({'name': r['name'], 'tasks': r['tasks']})
         res = changes.check(self.conn, plan)
-        self.assertEqual(len(res['tasks']), 5)
+        self.assertEqual(len(res['tasks']), 6)
         self.assertIn("partition 'Partition /dev/sdc and format it ext4' /dev/sdc ext4 backup ''", changes.script(self.conn, plan))
 
     def test_design_never_partitions_disks_that_have_partitions(self):
@@ -674,6 +678,22 @@ class ChangePlanTests(DBCase):
         items[0]['on_ok']({'output': 'done\n'})
         changes.delete_plan(self.conn, pid)
         self.assertEqual(self.conn.scalar("SELECT count(*) FROM deployed WHERE kind = 'changes'"), 0)
+
+    def test_mark_ran_records_plan_as_ran_on_all_hosts(self):
+        changes, _body, pid, _items = self._ran_plan()
+        self.assertIsNone(changes.get_plan(self.conn, pid)['ran_at'])
+        updated = changes.mark_ran(self.conn, pid, 'test')
+        self.assertTrue(updated['ran_at'])
+        self.assertTrue(changes.get_plan(self.conn, pid)['ran_at'])
+
+    def test_check_reports_all_done_when_tasks_already_exist(self):
+        from storageforge_index import changes
+        # /mnt/pool is already mounted in test fixtures
+        plan = {'name': 'check-done', 'tasks': [{'type': 'dir', 'host': 'nas', 'params': {'path': '/mnt/pool'}}]}
+        res = changes.check(self.conn, plan)
+        self.assertEqual(res['crit'], 0)
+        self.assertEqual(res['warn'], 0)
+        self.assertTrue(res['all_done'])
 
     def test_apply_calls_back_per_host_but_a_report_does_not(self):
         from unittest import mock
@@ -1799,7 +1819,7 @@ class ScriptHeaderTests(DBCase):
             params = {f['name']: next(o for o in f['options'] if o) if f['kind'] == 'choice' else
                       {'path': path, 'text': text, 'spec': 'nas:/srv/' + canary.replace(' ', ''), 'bool': True, 'device': '/dev/sdb',
                        'user': 'root', 'mode': '0755', 'options': 'defaults', 'label': 'data', 'confirm': '/dev/sdb', 'host': 'pc',
-                       'devices': '/dev/sdb', 'name': 'snap', 'dataset': 'tank/data', 'size': '10G'}[f['kind']]
+                       'devices': '/dev/sdb', 'name': 'snap', 'dataset': 'tank/data', 'size': '10G', 'mkfs': '', 'number': '4096'}[f['kind']]
                       for f in spec['fields']}
             out[f'changes {kind}'] = changes.script(self.conn, {'name': 'p', 'tasks': [{'type': kind, 'host': 'nas', 'params': params, 'note': text}]})
         for kind, spec in tasks.TYPES.items():

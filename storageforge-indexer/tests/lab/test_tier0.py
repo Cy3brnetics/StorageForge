@@ -3,8 +3,10 @@ Needs a running lab. Run with: examples/lab/lab.sh test (not part of the normal 
 import json
 import os
 import shlex
+import ssl
 import subprocess
 import unittest
+import urllib.request
 from pathlib import Path
 
 LAB_DIR = Path(__file__).resolve().parents[2] / 'examples' / 'lab'
@@ -121,11 +123,32 @@ class Layout(unittest.TestCase):
         self.assertEqual(out.strip(), '')
 
     def test_share_servers_are_left_for_deploys_to_install(self):
+        if raw('sf-ctl', 'test -e /var/lib/sflab/demo').returncode == 0:
+            self.skipTest('the demo has deployed shares: Reset to check this')
         for vm in SCANNED:
             with self.subTest(vm=vm):
                 # Rocky's image ships nfs-utils. It's the lab's SMB server, so Samba is the install its deploy exercises.
                 programs = 'smbd' if vm == 'sf-rocky' else 'exportfs smbd'
                 self.assertEqual(sh(vm, f'PATH=$PATH:/usr/sbin:/sbin; for c in {programs}; do command -v $c; done; true').strip(), '')
+
+
+@unittest.skipUnless(set(UP) == set(VMS), f'needs every lab VM up, have {UP}')
+class Controller(unittest.TestCase):
+    def test_storageforge_is_healthy_from_this_machine(self):
+        out = sh('sf-ctl', "sudo -n docker ps --format '{{.Names}} {{.Status}}'")
+        self.assertRegex(out, r'storageforge-1 Up .*\(healthy\)')
+        context = ssl.create_default_context()
+        context.check_hostname, context.verify_mode = False, ssl.CERT_NONE      # self-signed: only reachability matters here
+        with urllib.request.urlopen('https://10.77.0.10:8443/healthz', context=context, timeout=15) as r:
+            self.assertEqual(json.load(r)['status'], 'ok')
+
+    def test_ntfy_answers(self):
+        with urllib.request.urlopen('http://10.77.0.10:8090/v1/health', timeout=15) as r:
+            self.assertTrue(json.load(r)['healthy'])
+
+    def test_stack_does_not_build_on_the_vm(self):
+        self.assertIn('storageforge:', sh('sf-ctl', "sudo -n docker images --format '{{.Repository}}:{{.Tag}}'"))
+        self.assertNotEqual(raw('sf-ctl', 'sudo -n test -e /opt/storageforge/Dockerfile').returncode, 0)
 
 
 @unittest.skipUnless(set(UP) == set(VMS), f'needs every lab VM up, have {UP}')

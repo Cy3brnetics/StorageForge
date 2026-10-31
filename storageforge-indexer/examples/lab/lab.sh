@@ -5,6 +5,10 @@
 #   lab.sh reset          return every VM to the golden snapshot
 #   lab.sh snapshot       retake the golden snapshot from the current state
 #   lab.sh test           check the running lab against what it should hold
+#   lab.sh test --all     tiers 0-4, resetting around them, and write the report into reports/. Takes a while.
+#   lab.sh gauntlet       tier 2 alone: every deploy path on every VM, from golden and back
+#   lab.sh controller     rebuild StorageForge from this tree and restart it on sf-ctl, keeping its data
+#   lab.sh demo           reset, then scan every host and deploy shares, jobs and an alert through StorageForge
 #   lab.sh status [--json]
 #   lab.sh ssh <vm> [cmd]
 #   lab.sh images         download and check the base images
@@ -60,7 +64,7 @@ lab_pipe() {   # as lab_ssh, with stdin passed through
 
 preflight() {
   local need=1536 n ram free_kb
-  for c in virsh virt-install qemu-img xorriso openssl curl flock ssh ssh-keygen python3 git; do command -v "$c" >/dev/null || die "missing $c"; done
+  for c in virsh virt-install qemu-img xorriso openssl curl flock ssh ssh-keygen python3 git docker; do command -v "$c" >/dev/null || die "missing $c"; done
   [ -w /dev/kvm ] || die 'no write access to /dev/kvm'
   virsh uri >/dev/null 2>&1 || die 'cannot reach libvirt (qemu:///system)'
   for n in "$@"; do
@@ -88,6 +92,7 @@ ensure_state() {
   [ -f "$STATE/admin-hash" ] || (umask 077; openssl passwd -6 -stdin <"$STATE/admin-password" >"$STATE/admin-hash")
   # lab and scan log in by key only. A real hash nobody knows, because some sshd builds refuse locked accounts.
   [ -f "$STATE/locked-hash" ] || (umask 077; openssl rand -base64 32 | openssl passwd -6 -stdin >"$STATE/locked-hash")
+  [ -f "$STATE/ui-password" ] || (umask 077; openssl rand -base64 18 >"$STATE/ui-password")
 }
 
 image_path() { local url; url=$(awk -F'|' -v k="$1" '$1==k {print $2}' "$HERE/images.conf"); echo "$IMG_DIR/$(basename "$url")"; }
@@ -264,6 +269,25 @@ provision_all() {
   return $rc
 }
 
+install_controller() {   # StorageForge from this tree, in the repo's own compose stack, plus ntfy
+  local root=$HERE/../.. ntfy compose='sudo -n docker compose -f docker-compose.yml -f compose.lab.yml' sf
+  ntfy=$(sed -n 's/^ *image: //p' "$HERE/controller/compose.lab.yml")
+  say 'building StorageForge images'
+  docker compose --project-directory "$root" -f "$root/docker-compose.yml" build -q storageforge proxy
+  docker image inspect "$ntfy" >/dev/null 2>&1 || docker pull -q "$ntfy" >/dev/null
+  say 'loading images on sf-ctl'
+  # shellcheck disable=SC2046
+  docker save $(sed -n 's/^ *image: //p' "$root/docker-compose.yml" | sort -u) "$ntfy" | gzip -1 | SSH_TIMEOUT=30 lab_pipe sf-ctl 'gunzip | sudo -n docker load -q >/dev/null'
+  tar -C "$root" -c docker-compose.yml -C "$HERE/controller" compose.lab.yml | lab_pipe sf-ctl \
+    'sudo -n mkdir -p /opt/storageforge/keys /opt/storageforge/secrets && sudo -n tar -x --no-same-owner -C /opt/storageforge'
+  say 'starting StorageForge on sf-ctl'
+  lab_ssh sf-ctl "cd /opt/storageforge && $compose up -d --no-build --wait --quiet-pull" >"$STATE/controller.log" 2>&1 \
+    || { tail -20 "$STATE/controller.log"; return 1; }
+  sf="cd /opt/storageforge && $compose exec -T storageforge storageforge-index"
+  lab_ssh sf-ctl "$sf user list" | grep -q '^demo ' || lab_pipe sf-ctl "$sf user add demo" <"$STATE/ui-password" >/dev/null
+  lab_ssh sf-ctl 'sudo -n touch /var/lib/sflab/controller'
+}
+
 node_disks() { ls "$LAB_DIR/$1"-*.qcow2; }
 has_golden() { qemu-img snapshot -U -l "$LAB_DIR/$1-root.qcow2" 2>/dev/null | grep -qw golden; }
 
@@ -306,6 +330,10 @@ cmd_up() {
   check_identity "${want[@]}"
   say 'provisioning storage and seed data'
   provision_all "${want[@]}" || die 'some VMs were not provisioned: see above. Fix or use down.'
+  if printf '%s\n' "${want[@]}" | grep -qx sf-ctl && ! lab_ssh sf-ctl 'test -e /var/lib/sflab/controller'; then
+    install_controller || die 'StorageForge did not start on sf-ctl: see above. Run up again, or use down.'
+    : >"$STATE/needs-snapshot"
+  fi
   if [ $all = 1 ]; then
     for n in "${want[@]}"; do has_golden "$n" || : >"$STATE/needs-snapshot"; done
     if [ -e "$STATE/needs-snapshot" ]; then cmd_snapshot; rm -f "$STATE/needs-snapshot"; fi
@@ -398,10 +426,48 @@ cmd_ssh() {
   ssh -i "$STATE/id_ed25519" -o UserKnownHostsFile="$STATE/known_hosts" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -o ConnectTimeout=10 "lab@$(field "$n" 7)" "$@"
 }
 
+cmd_gauntlet() {
+  [ -f "$STATE/id_ed25519" ] || die 'no lab is running: use up'
+  cmd_reset
+  local rc=0
+  SFLAB_STATE="$STATE" python3 "$HERE/../../tests/lab/gauntlet.py" "$@" || rc=$?
+  cmd_reset
+  return $rc
+}
+
+cmd_test_all() {
+  local tiers="$HERE/../../tests/lab/tiers.py" t rc=0
+  [ -f "$STATE/id_ed25519" ] || die 'no lab is running: use up'
+  export SFLAB_STATE="$STATE"
+  rm -rf "$STATE/results" "$STATE/gauntlet.json"
+  cmd_reset
+  for t in 0 1 2 3 4; do
+    say "== tier $t =="
+    [ "$t" = 0 ] || [ "$t" = 2 ] || cmd_reset
+    if [ "$t" = 2 ]; then cmd_gauntlet || rc=1; else python3 "$tiers" run "$t" || rc=1; fi
+  done
+  cmd_reset
+  python3 "$tiers" report || rc=1
+  return $rc
+}
+
 cmd_test() {
   [ -f "$STATE/id_ed25519" ] || die 'no lab is running: use up'
+  [ "${1:-}" != --all ] || { cmd_test_all; return; }
   cd "$HERE/../.."
   SFLAB_STATE="$STATE" python3 -m unittest discover -s tests/lab -v
+}
+
+cmd_controller() {
+  [ -f "$STATE/id_ed25519" ] || die 'no lab is running: use up'
+  install_controller
+  say 'StorageForge updated. Reset goes back to the build in golden: run snapshot to keep this one.'
+}
+
+cmd_demo() {
+  [ -f "$STATE/id_ed25519" ] || die 'no lab is running: use up'
+  cmd_reset
+  SFLAB_STATE="$STATE" python3 "$HERE/demo.py"
 }
 
 cmd_install_launcher() {
@@ -427,8 +493,11 @@ case ${1:-} in
   snapshot) lock; cmd_snapshot ;;
   status) shift; cmd_status "${1:-}" ;;
   ssh) shift; cmd_ssh "$@" ;;
-  test) lock; cmd_test ;;
+  test) shift; lock; cmd_test "$@" ;;
+  gauntlet) shift; lock; cmd_gauntlet "$@" ;;
+  controller) lock; cmd_controller ;;
+  demo) lock; cmd_demo ;;
   images) mapfile -t all < <(nodes | cut -d'|' -f1); ensure_images "${all[@]}" ;;
   install-launcher) cmd_install_launcher ;;
-  *) sed -n '2,11p' "$0" | sed 's/^# \?//'; exit 2 ;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \?//'; exit 2 ;;
 esac

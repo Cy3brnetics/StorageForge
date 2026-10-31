@@ -371,6 +371,8 @@ On each client it installs the mount helper, keeps SMB credentials in a 0600 fil
 
 NFS shares must name their clients, such as a subnet. Existing fstab lines are never changed. On the CLI: `storageforge-index shares check|script <host>`.
 
+**Shares** on the topology toolbar (or **Manage shares…** on a host's menu) lists every share on the hosts in view: its folder, who may use it, who mounts it, its state and any check problems. Edit or remove designed shares from there; removing a deployed share takes it down at the next deploy. Shares only the scan knows are read-only.
+
 ## Storage tasks: rsync, snapshots and other jobs from blocks
 
 The **Tasks** view (next to Topology and Graph) builds small programs from blocks and runs them on one host, by hand or on a systemd timer. Drag blocks from the palette, or click one to add it at the end or into the selected slot. Each block shows its fields; collapse it to a one-line sentence. Ctrl+Z undoes.

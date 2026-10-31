@@ -11,8 +11,8 @@ Server side: installs the NFS server or Samba if missing, writes StorageForge's 
 (/etc/exports.d/storageforge.exports, /etc/samba/storageforge.conf, included once from smb.conf), labels SMB paths
 for SELinux, opens the firewall (firewalld or ufw) for the clients, and starts the services.
 Client side, for each "mount on" entry: installs the mount helper, appends an fstab line (automount, nofail,
-_netdev) after a backup, keeps SMB credentials in a 0600 file, and mounts it. Nothing existing is edited: a
-different fstab line for the same mount point is a conflict to fix by hand.
+_netdev, plus any options the design sets) after a backup, keeps SMB credentials in a 0600 file, and mounts it. Lines
+it did not write are not edited: a different fstab line for the same mount point is a conflict to fix by hand.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ import shlex
 
 from .db import Conn, loads
 from .moves import _subtree_sql, find_host, host_slug, hosts, mount_of
-from .payloads import is_designed
+from .payloads import is_designed, share_key
 from .scriptkit import HELPERS, PACKAGES, REMOTE, comments, host_name, one_line, package_check
 
 SMB_NAME = re.compile(r'[A-Za-z0-9_.$-]{1,80}')
@@ -37,6 +37,120 @@ NFS_OPTION = re.compile(r'rw|ro|sync|async|(no_)?subtree_check|(no_)?root_squash
 NFS_PRESETS = {'read-only': 'ro,sync,no_subtree_check', 'read-write': 'rw,sync,no_subtree_check',
                'read-write, root not squashed': 'rw,sync,no_subtree_check,no_root_squash',
                'all users as one owner': 'rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=1000'}
+
+
+# ── share settings beyond who may connect. Each reaches a config file or fstab as text, so each is held to a pattern. ──
+SMB_USER = re.compile(r'[@+&]{0,2}[A-Za-z0-9_][A-Za-z0-9_.\\-]{0,63}')
+SMB_HOST = re.compile(r'[A-Za-z0-9.:/_-]{1,255}')
+SMB_MASK = re.compile(r'0?[0-7]{3,4}')
+SMB_ACCOUNT = re.compile(r'[A-Za-z_][A-Za-z0-9_.-]{0,31}')
+SMB_COMMENT = re.compile(r'[^\x00-\x1f\x7f%]{0,200}')
+SMB_VETO = re.compile(r'[^\x00-\x1f\x7f/%]{1,100}')
+SNAP_PREFIX = re.compile(r'[A-Za-z0-9_.-]{1,40}')
+MOUNT_OPTS = re.compile(r'[A-Za-z0-9_=,.:/@+-]{0,400}')
+MANAGED_OPTS = ('credentials=', 'username=', 'password=', 'x-systemd.automount', 'x-systemd.idle-timeout=', '_netdev')
+SMB_ENCRYPT = ('', 'desired', 'required')
+SMB_SHADOW = {'zfs': '.zfs/snapshot', 'btrfs': '.snapshots'}
+
+
+def smb_lines(e: dict) -> list[str]:
+    """The lines of an SMB share's settings in smb.conf. Raises ValueError for a value that does not fit its pattern."""
+    s = e.get('smb') or {}
+    out, vfs = [], []
+
+    def users(key):
+        v = ' '.join(str(s.get(key) or '').split())
+        bad = [u for u in v.split() if not SMB_USER.fullmatch(u)]
+        if bad:
+            raise ValueError(f'{", ".join(bad)} is not a Samba user or @group')
+        return v
+
+    def text(key, rx, what):
+        v = str(s.get(key) or '').strip()
+        if v and not rx.fullmatch(v):
+            raise ValueError(f'{what} {v!r} is not valid')
+        return v
+    if v := text('comment', SMB_COMMENT, 'comment'):
+        out.append(f'comment = {v}')
+    if s.get('browseable') is False:
+        out.append('browseable = no')
+    if s.get('guest'):
+        out.append('guest ok = yes')
+    if v := users('write_list'):
+        out.append(f'write list = {v}')
+    if v := users('read_list'):
+        out.append(f'read list = {v}')
+    if v := text('create_mask', SMB_MASK, 'file mode'):
+        out.append(f'create mask = {v}')
+    if v := text('dir_mask', SMB_MASK, 'folder mode'):
+        out.append(f'directory mask = {v}')
+    if v := text('force_user', SMB_ACCOUNT, 'force user'):
+        out.append(f'force user = {v}')
+    if v := text('force_group', SMB_ACCOUNT, 'force group'):
+        out.append(f'force group = {v}')
+    if s.get('inherit_perms'):
+        out.append('inherit permissions = yes')
+    if s.get('inherit_acls'):
+        out.append('inherit acls = yes')
+    if v := ' '.join(str(s.get('hosts_deny') or '').split()):
+        if not all(SMB_HOST.fullmatch(x) for x in v.split()):
+            raise ValueError(f'hosts deny {v!r} is not a list of hosts or subnets')
+        out.append(f'hosts deny = {v}')
+    enc = str(s.get('encrypt') or '')
+    if enc not in SMB_ENCRYPT:
+        raise ValueError('encryption is desired or required')
+    if enc:
+        out.append(f'smb encrypt = {enc}')
+    if s.get('max_connections'):
+        out.append(f'max connections = {_whole(s["max_connections"], "max connections", 1, 65535)}')
+    veto = [x for x in (str(v).strip() for v in s.get('veto') or []) if x]
+    for x in veto:
+        if not SMB_VETO.fullmatch(x):
+            raise ValueError(f'hidden file pattern {x!r} cannot hold / or %')
+    if veto:
+        out += ['veto files = /' + '/'.join(veto) + '/', 'delete veto files = yes']
+    shadow = str(s.get('shadow_copy') or '')
+    if shadow and shadow not in SMB_SHADOW:
+        raise ValueError('previous versions come from zfs or btrfs snapshots')
+    if shadow:
+        vfs.append('shadow_copy2')
+    if s.get('recycle'):
+        vfs.append('recycle')
+    if s.get('mac'):
+        vfs += ['catia', 'fruit', 'streams_xattr']
+    if vfs:
+        out.append('vfs objects = ' + ' '.join(vfs))
+    if shadow:
+        prefix = text('shadow_prefix', SNAP_PREFIX, 'snapshot prefix') or 'daily'
+        # the names storage task snapshot blocks give: <prefix>-2026-10-30_023000
+        out += [f'shadow:snapdir = {SMB_SHADOW[shadow]}', f'shadow:format = {prefix}-%Y-%m-%d_%H%M%S', 'shadow:sort = desc', 'shadow:localtime = yes']
+    if s.get('recycle'):
+        out += ['recycle:repository = .recycle/%U', 'recycle:keeptree = yes', 'recycle:versions = yes', 'recycle:touch = yes']
+    return out
+
+
+def _whole(v, what: str, lo: int, hi: int) -> int:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        raise ValueError(f'{what} must be a whole number') from None
+    if not lo <= n <= hi:
+        raise ValueError(f'{what} must be between {lo} and {hi}')
+    return n
+
+
+def client_options(m: dict) -> tuple[str, bool]:
+    """(extra fstab options, automount) for one client mount. The script adds the ones it manages itself."""
+    opts = ','.join(o for o in (x.strip() for x in str(m.get('options') or '').split(',')) if o)
+    if not MOUNT_OPTS.fullmatch(opts):
+        raise ValueError(f'mount options {opts!r} hold characters fstab cannot take')
+    taken = [o for o in opts.split(',') if o.startswith(MANAGED_OPTS)]
+    if taken:
+        raise ValueError(f'{", ".join(taken)} is set for you: use the automount and idle fields, or leave it out')
+    idle = m.get('idle_min')
+    if idle:
+        opts = ','.join(x for x in (opts, f'x-systemd.idle-timeout={_whole(idle, "idle minutes", 1, 10080)}min') if x)
+    return opts, m.get('automount') is not False
 
 
 def proto(e: dict) -> str:
@@ -60,9 +174,20 @@ def design_exports(conn: Conn, host: str) -> list[dict]:
         out.append({'deployed': bool(e.get('fromScan')), 'proto': proto(e), 'name': str(e.get('name') or '').strip(), 'path': str(e.get('path') or '').rstrip('/') or '/',
                     'clients': ' '.join(r['clients'] for r in rules) or str(e.get('clients') or '').strip(),
                     'options': str(e.get('options') or '').strip(), 'rules': rules,
-                    'mounts': [{'host': str(m.get('host') or '').strip(), 'path': str(m.get('path') or '').strip()}
-                               for m in e.get('mounts') or [] if m.get('host') and m.get('path')]})
+                    'mounts': [_client_mount(m) for m in e.get('mounts') or [] if m.get('host') and m.get('path')],
+                    **_settings(e)})
     return out
+
+
+def _client_mount(m: dict) -> dict:
+    # settings only when set: a share's hash stays what it was at its last deploy unless something changed
+    return {'host': str(m.get('host') or '').strip(), 'path': str(m.get('path') or '').strip(),
+            **{k: m[k] for k in ('options', 'idle_min') if m.get(k)}, **({'automount': False} if m.get('automount') is False else {})}
+
+
+def _settings(e: dict) -> dict:
+    smb = {k: v for k, v in (e.get('smb') or {}).items() if (v is False if k == 'browseable' else bool(v))}
+    return {**({'smb': smb} if smb else {}), **({'nfs_version': 3} if str(e.get('protocol') or '').upper() == 'NFSV3' else {})}
 
 
 def nfs_options(opts: str) -> str:
@@ -217,11 +342,20 @@ def check_exports(conn: Conn, hs: dict, srv: dict, exports: list[dict], only: in
                 for r in e['rules']:
                     o = nfs_options(r['options'] or e['options'] or NFS_DEFAULT)
                     say(i, 'note', f'{r["clients"]}: {o}')
-                    if 'no_root_squash' in o.split(','):
+                    words = o.split(',')
+                    if 'no_root_squash' in words:
                         say(i, 'warn', f'root on {r["clients"]} is root on this share (no_root_squash)')
+                    if 'async' in words:
+                        say(i, 'warn', f'async for {r["clients"]}: the server answers before writes reach the disk, so a crash can lose them')
+                    if 'insecure' in words:
+                        say(i, 'note', f'insecure for {r["clients"]}: any local user there can connect, from any port')
+                    if any(x.startswith('sec=krb5') for x in words):
+                        say(i, 'note', f'{r["clients"]} needs Kerberos set up on the server and client: StorageForge does not do that')
                 nfs_rules(e)
             except ValueError as exc:
                 say(i, 'crit', str(exc))
+            if e.get('nfs_version') == 3:
+                say(i, 'note', 'NFSv3 also needs mountd and statd through the firewall: ufw is only opened for 2049 and 111')
             clients = [ch for ch in (find_host(hs, mt['host']) for mt in e['mounts']) if ch and ch['id'] != srv['id']]
             for level, text in id_check(conn, srv, e, clients):
                 say(i, level, text)
@@ -231,10 +365,33 @@ def check_exports(conn: Conn, hs: dict, srv: dict, exports: list[dict], only: in
             users = [u for u in e['clients'].split() if not re.match(r'^[\d.:/]+$', u)]
             say(i, 'note', f'Samba accounts needed: {", ".join(users)} (smbpasswd -a <user> on {srv["name"]})' if users
                 else 'no valid users set: any Samba account can connect; set clients to user names or @groups to restrict')
+            try:
+                smb_lines(e)
+            except ValueError as exc:
+                say(i, 'crit', str(exc))
+            st = e.get('smb') or {}
+            if st.get('guest'):
+                say(i, 'warn', 'guest access: anyone who can reach this host can connect without a password')
+            if st.get('shadow_copy') and m and str(m.get('fstype') or '').lower() != st['shadow_copy']:
+                say(i, 'crit', f'previous versions read {st["shadow_copy"]} snapshots, but {e["path"]} is on {m["fstype"]}')
+            elif st.get('shadow_copy'):
+                say(i, 'note', f'previous versions show {st.get("shadow_prefix") or "daily"}-* snapshots: a storage task has to take them')
+            if st.get('recycle'):
+                say(i, 'note', 'deleted files go to .recycle in the share and take up space until something clears it (Prune old files, in Tasks)')
+            if st.get('mac'):
+                say(i, 'note', 'macOS support needs the Samba VFS modules (samba-vfs-modules on Debian and Ubuntu)')
         seen = set()
         for mt in e['mounts']:
             ch = find_host(hs, mt['host'])
             target = mt['path'].rstrip('/') or '/'
+            try:
+                extra, _auto = client_options(mt)
+                if 'soft' in extra.split(','):
+                    say(i, 'warn', f'soft mount on {mt["host"]}:{target}: programs get errors when the server is slow, and writes can be lost')
+                if e['proto'] == 'NFS' and any(x.startswith('vers=') for x in extra.split(',')) and e.get('nfs_version') == 3:
+                    say(i, 'note', f'{mt["host"]}:{target} sets vers= itself: the share is also marked NFSv3')
+            except ValueError as exc:
+                say(i, 'crit', f'{mt["host"]}:{target}: {exc}')
             if not ch:
                 say(i, 'crit', f'client {mt["host"]} has not been scanned')
                 continue
@@ -306,23 +463,41 @@ def normalize_export(body: dict) -> dict:
     for m in body.get('mounts') or []:
         if not str(m.get('host') or '').strip():
             continue
-        mounts.append({'host': host_name(m['host'], 'a client host'), 'path': _path(m.get('path'), f'the mount point on {m["host"]}')})
+        mt = {'host': host_name(m['host'], 'a client host'), 'path': _path(m.get('path'), f'the mount point on {m["host"]}'),
+              **{k: m[k] for k in ('options', 'idle_min') if m.get(k)}, **({'automount': False} if m.get('automount') is False else {})}
+        client_options(mt)
+        mounts.append(mt)
     out = {'protocol': protocol, 'name': name, 'path': path, 'mounts': mounts}
     if p == 'NFS':
         out.update(rules=rules, clients=' '.join(r['clients'] for r in rules), options='')
     else:
         out.update(clients=' '.join(str(body.get('clients') or '').split()), options=str(body.get('options') or '').strip())
+        smb = _settings(body).get('smb')
+        if smb:
+            smb_lines({'smb': smb})
+            out['smb'] = smb
     return out
 
 
 def _as_checked(e: dict) -> dict:
     return {'deployed': False, 'proto': proto(e), 'name': e['name'], 'path': e['path'].rstrip('/') or '/',
             'clients': e.get('clients') or '', 'options': e.get('options') or '', 'rules': e.get('rules') or [],
-            'mounts': e['mounts']}
+            'mounts': e['mounts'], **_settings(e)}
 
 
-def validate(conn: Conn, host: str, body: dict, index: int | None = None) -> dict:
-    """Check one share before it is saved: the draft takes the place of export #index in the design (or is added)."""
+def _designed_index(exports: list[dict], was: dict, host: str) -> int:
+    """Where a share the viewer was looking at sits in the saved design. The topology shows the scan merged with the
+    design, in another order, and a rescan can reorder it: only the share's identity means the same thing in both."""
+    key = share_key(was)
+    for i, e in enumerate(exports):
+        if is_designed(e) and share_key(e) == key:
+            return i
+    raise LookupError(f'{host} has no designed share {was.get("name") or was.get("path")}: it may have changed, reload and try again')
+
+
+def validate(conn: Conn, host: str, body: dict, index: int | None = None, was: dict | None = None) -> dict:
+    """Check one share before it is saved: the draft takes the place of the share was, or export #index, in the
+    design (or is added)."""
     hs = hosts(conn)
     srv = find_host(hs, host)
     if not srv:
@@ -334,12 +509,9 @@ def validate(conn: Conn, host: str, body: dict, index: int | None = None) -> dic
         exports = []
     from .graph import stored_blueprint
     raw = (stored_blueprint(conn, srv['name']) or {}).get('exports') or []
-    if index is not None:                       # design_exports skips scanned/other shares: map the raw index to its slot
-        target = raw[index] if 0 <= index < len(raw) else None
-        pos = next((k for k, x in enumerate(exports) if target and x['path'] == (str(target.get('path') or '').rstrip('/') or '/')
-                    and x['name'] == str(target.get('name') or '').strip()), None)
-    else:
-        pos = None
+    target = was or (raw[index] if index is not None and 0 <= index < len(raw) else None)
+    # design_exports skips scanned/other shares: find the slot by what the share is
+    pos = next((k for k, x in enumerate(exports) if target and share_key(x) == share_key(target)), None)
     if pos is None:
         exports.append(_as_checked(e))
         pos = len(exports) - 1
@@ -350,8 +522,9 @@ def validate(conn: Conn, host: str, body: dict, index: int | None = None) -> dic
             'crit': sum(1 for x in items if x['level'] == 'crit'), 'warn': sum(1 for x in items if x['level'] == 'warn')}
 
 
-def save_export(db, conn: Conn, host: str, body: dict, index: int | None, actor: str) -> dict:
-    """Add the share to the host's saved design (starting one from the scan if there is none), or replace #index."""
+def save_export(db, conn: Conn, host: str, body: dict, index: int | None, actor: str, was: dict | None = None) -> dict:
+    """Add the share to the host's saved design (starting one from the scan if there is none), or replace the share
+    was (or #index)."""
     from . import blueprint, graph
     hs = hosts(conn)
     srv = find_host(hs, host)
@@ -361,13 +534,17 @@ def save_export(db, conn: Conn, host: str, body: dict, index: int | None, actor:
     e['designed'] = True
     bp = graph.stored_blueprint(conn, srv['name']) or blueprint.from_index(conn, srv['name'])
     exports = bp.setdefault('exports', [])
+    if was:
+        index = _designed_index(exports, was, srv['name'])
+    if any(i != index and is_designed(x) and share_key(x) == share_key(e) for i, x in enumerate(exports)):
+        raise ValueError(f'{srv["name"]} already has this share in its design: edit that one instead')    # merging would drop one
     if index is not None:
         if not 0 <= index < len(exports):
             raise LookupError(f'{srv["name"]} has no share #{index}')
         old = exports[index]
         if old.get('fromScan'):                 # editing a share the scan found: keep it marked as deployed
             e['fromScan'] = True
-        exports[index] = {**{k: v for k, v in old.items() if k not in ('rules', 'clients', 'options', 'mounts')}, **e}
+        exports[index] = {**{k: v for k, v in old.items() if k not in ('rules', 'clients', 'options', 'mounts', 'smb')}, **e}
     else:
         exports.append(e)
         index = len(exports) - 1
@@ -377,13 +554,16 @@ def save_export(db, conn: Conn, host: str, body: dict, index: int | None, actor:
     return {'host': srv['name'], 'index': index, 'export': exports[index]}
 
 
-def remove_export(db, conn: Conn, host: str, index: int) -> dict:
+def remove_export(db, conn: Conn, host: str, index: int, was: dict | None = None) -> dict:
+    """Take a share out of the design. One already deployed stays on the host until the next deploy rewrites the config."""
     from . import graph
     bp = graph.stored_blueprint(conn, host)
     exports = (bp or {}).get('exports') or []
+    if was:
+        index = _designed_index(exports, was, host)
     if not 0 <= index < len(exports):
         raise LookupError(f'{host} has no share #{index}')
-    if exports[index].get('fromScan'):
+    if not is_designed(exports[index]):
         raise ValueError('this share was found by the scan: remove it on the host, the next scan drops it')
     gone = exports.pop(index)
     graph.store_blueprint(conn, bp)
@@ -396,20 +576,27 @@ def script(conn: Conn, host: str, prev_clients: list[str] | None = None) -> str:
     c = check(conn, host)
     hs = hosts(conn)
     q = shlex.quote
-    e_arrays = {k: [] for k in ('E_PROTO', 'E_NAME', 'E_PATH', 'E_CLIENTS', 'E_OPTS', 'E_RULES')}
-    c_arrays = {k: [] for k in ('C_HOST', 'C_TARGET', 'C_PROTO', 'C_SOURCE', 'C_NAME')}
+    e_arrays = {k: [] for k in ('E_PROTO', 'E_NAME', 'E_PATH', 'E_CLIENTS', 'E_OPTS', 'E_RULES', 'E_SMB')}
+    c_arrays = {k: [] for k in ('C_HOST', 'C_TARGET', 'C_PROTO', 'C_SOURCE', 'C_NAME', 'C_FS', 'C_OPTS', 'C_AUTO', 'C_SET')}
     lines = []
     for e in c['exports']:
         for k, v in (('E_PROTO', e['proto']), ('E_NAME', e['name'] or e['path']), ('E_PATH', e['path']),
                      ('E_CLIENTS', e['clients']), ('E_OPTS', e['options'] or (NFS_DEFAULT if e['proto'] == 'NFS' else 'rw')),
-                     ('E_RULES', nfs_rules(e) if e['proto'] == 'NFS' and e['clients'] else '')):
+                     ('E_RULES', nfs_rules(e) if e['proto'] == 'NFS' and e['clients'] else ''),
+                     ('E_SMB', '\n'.join('   ' + x for x in smb_lines(e)) if e['proto'] == 'SMB' else '')):
             e_arrays[k].append(v)
         lines.append(f'#   {e["proto"]} {e["name"] if e["proto"] == "SMB" else e["path"]}  ({e["path"]} → {e["clients"] or "anyone"})')
         for mt in e['mounts']:
             ch = find_host(hs, mt['host'])
             src = f'{c["address"]}:{e["path"]}' if e['proto'] == 'NFS' else f'//{c["address"]}/{e["name"]}'
+            extra, auto = client_options(mt)
+            v3 = e.get('nfs_version') == 3
+            if v3 and 'vers=' not in extra:
+                extra = ','.join(x for x in ('vers=3', extra) if x)
             for k, v in (('C_HOST', host_slug(ch['name'] if ch else mt['host'])), ('C_TARGET', mt['path']),
-                         ('C_PROTO', e['proto']), ('C_SOURCE', src), ('C_NAME', e['name'] or 'share')):
+                         ('C_PROTO', e['proto']), ('C_SOURCE', src), ('C_NAME', e['name'] or 'share'),
+                         ('C_FS', 'nfs' if v3 else 'nfs4'), ('C_OPTS', extra), ('C_AUTO', '1' if auto else '0'),
+                         ('C_SET', '1' if extra or not auto else '0')):
                 c_arrays[k].append(v)
             lines.append(f'#       mounted on {mt["host"]}:{mt["path"]}')
     problems = [f'#   {x["level"].upper()}: {x["text"]}' for x in c['items'] if x['level'] in ('crit', 'warn')]
@@ -472,7 +659,8 @@ SHARES_HEAD = r"""#!/usr/bin/env bash
 #
 # Run it on the server and on each client (or from here with --host). It writes only its own files
 # (/etc/exports.d/storageforge.exports, /etc/samba/storageforge.conf, /etc/samba/credentials/*) and appends to
-# smb.conf (one include line) and fstab (after a backup). It never edits or removes existing lines.
+# smb.conf (one include line) and fstab (after a backup). The only existing lines it edits are fstab lines it
+# wrote itself, when the design sets options for that mount.
 set -euo pipefail
 
 """
@@ -594,10 +782,12 @@ server_smb() {
   for i in "${!E_PROTO[@]}"; do [[ ${E_PROTO[$i]} == SMB ]] || continue
     local users=() hostsallow=() c
     for c in ${E_CLIENTS[$i]}; do if [[ $c =~ ^[0-9.:]+(/[0-9]+)?$ ]]; then hostsallow+=("$c"); else users+=("$c"); fi; done
-    body+=$'\n'"[${E_NAME[$i]}]"$'\n'"   path = ${E_PATH[$i]}"$'\n'"   browseable = yes"
+    body+=$'\n'"[${E_NAME[$i]}]"$'\n'"   path = ${E_PATH[$i]}"
+    [[ ${E_SMB[$i]} == *"browseable = "* ]] || body+=$'\n'"   browseable = yes"
     body+=$'\n'"   read only = $([[ ${E_OPTS[$i]} == *ro* ]] && echo yes || echo no)"
     ((${#users[@]})) && body+=$'\n'"   valid users = ${users[*]}"
     ((${#hostsallow[@]})) && body+=$'\n'"   hosts allow = ${hostsallow[*]} 127.0.0.1"
+    [[ -z ${E_SMB[$i]} ]] || body+=$'\n'"${E_SMB[$i]}"
     if [[ -d ${E_PATH[$i]} ]]; then ok "${E_PATH[$i]} exists"
     elif ((APPLY)); then doing "mkdir -p ${E_PATH[$i]}"; mkdir -p "${E_PATH[$i]}"; else missing "${E_PATH[$i]}"; fi
   done
@@ -636,11 +826,12 @@ server_smb() {
 }
 
 client_mount() { # index into C_*
-  local i=$1 t=${C_TARGET[$1]} line opts
+  local i=$1 t=${C_TARGET[$1]} line auto= extra=${C_OPTS[$1]:+,${C_OPTS[$1]}}
+  [[ ${C_AUTO[$i]} == 1 ]] && auto=,x-systemd.automount
   section "mount ${C_SOURCE[$i]} at $t"
   if [[ ${C_PROTO[$i]} == NFS ]]; then
     need_cmd mount.nfs "NFS client" nfs-common nfs-utils nfs-utils nfs-client || return 0
-    line="${C_SOURCE[$i]// /\\040} ${t// /\\040} nfs4 _netdev,nofail,x-systemd.automount,x-systemd.mount-timeout=30 0 0"
+    line="${C_SOURCE[$i]// /\\040} ${t// /\\040} ${C_FS[$i]} _netdev,nofail$auto,x-systemd.mount-timeout=30$extra 0 0"
   else
     need_cmd mount.cifs "SMB client" cifs-utils cifs-utils cifs-utils cifs-utils || return 0
     local cred=/etc/samba/credentials/$SERVER-${C_NAME[$i]} who=${SUDO_USER:-root}
@@ -650,12 +841,24 @@ client_mount() { # index into C_*
       mkdir -p /etc/samba/credentials; chmod 700 /etc/samba/credentials
       ( umask 077; printf 'username=%s\npassword=%s\n' "$u" "$p" >"$cred" ); unset p; doing "wrote $cred (0600)"
     else missing "credentials $cred (--apply asks for them; or write username=/password= lines, chmod 600)"; return 0; fi
-    line="${C_SOURCE[$i]// /\\040} ${t// /\\040} cifs credentials=$cred,uid=$(id -u "$who"),gid=$(id -g "$who"),iocharset=utf8,_netdev,nofail,x-systemd.automount 0 0"
+    line="${C_SOURCE[$i]// /\\040} ${t// /\\040} cifs credentials=$cred,uid=$(id -u "$who"),gid=$(id -g "$who"),iocharset=utf8,_netdev,nofail$auto$extra 0 0"
   fi
   # rec: the line /etc/fstab holds for this share after the run, which later scans look for (drift)
   local have rec=$line; have=$(awk -v t="${t// /\\040}" '!/^[[:space:]]*#/ && $2 == t' /etc/fstab)
   if [[ $have == "$line" ]]; then ok "fstab line"
-  elif [[ -n $have && $(awk '{print $1, $3}' <<<"$have") == "$(awk '{print $1, $3}' <<<"$line")" ]]; then ok "fstab line (its own options kept)"; rec=$have
+  elif [[ -n $have && $(awk '{print $1, $3}' <<<"$have") == "$(awk '{print $1, $3}' <<<"$line")" ]]; then
+    # a line this script wrote, for a share whose design sets options: the design decides. Otherwise it is left alone.
+    if [[ ${C_SET[$i]} == 1 ]] && grep -qxF "# storageforge share $SERVER:$t" /etc/fstab; then
+      if ((APPLY)); then
+        backup /etc/fstab
+        MARK="# storageforge share $SERVER:$t" LINE=$line awk 'next_one { print ENVIRON["LINE"]; next_one = 0; next } $0 == ENVIRON["MARK"] { next_one = 1 } { print }' /etc/fstab >/etc/fstab.storageforge-new \
+          && cat /etc/fstab.storageforge-new >/etc/fstab && rm -f /etc/fstab.storageforge-new
+        if ! findmnt --verify --tab-file /etc/fstab >/dev/null 2>&1; then
+          cp -a "/etc/fstab.storageforge-$STAMP" /etc/fstab; conflict "findmnt --verify rejected the new options: fstab was put back"; return 1
+        fi
+        systemctl daemon-reload; doing "new options in /etc/fstab: they apply the next time $t is mounted"
+      else missing "fstab options differ: $line"; fi
+    else ok "fstab line (its own options kept)"; rec=$have; fi
   elif [[ -n $have ]]; then conflict "fstab already has a different line for $t: $have"; rec=
   elif ((APPLY)); then
     backup /etc/fstab; mkdir -p "$t"; printf '# storageforge share %s:%s\n%s\n' "$SERVER" "$t" "$line" >>/etc/fstab; doing "appended to /etc/fstab"

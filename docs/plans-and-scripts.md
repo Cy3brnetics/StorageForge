@@ -129,6 +129,8 @@ Each step is checked as you go: system and pseudo paths, re-exporting a network 
 
 On each client it installs the mount helper, keeps SMB credentials in a 0600 file (asking once), appends an fstab line with `_netdev,nofail,x-systemd.automount` after a backup, and mounts the share. Existing fstab lines are never changed; a different line for the same mount point is a conflict to fix by hand. `--only server` or `--only clients` limits a run.
 
+**Shares** on the topology toolbar (or **Manage shares…** on a host's menu) lists every share on the hosts in view: its folder, who may use it, who mounts it, its state and any check problems. Edit or remove designed shares from there; removing a deployed share takes it down at the next deploy. Shares only the scan knows are read-only.
+
 ## Storage tasks
 
 Tasks are small programs built from blocks in the **Tasks** view. They run on one host, by hand or on a systemd timer.

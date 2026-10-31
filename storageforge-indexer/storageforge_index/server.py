@@ -16,6 +16,9 @@ GET  /api/search?q=&host=&size_gt=&type=&under=&limit=
 GET  /api/jobs                      recent scan jobs
 GET  /api/audit[?limit=]            newest audit entries
 GET  /api/audit/verify              hash-chain verification (unlocks the vault)
+GET  /api/log[?host=&sources=&outcomes=&q=&since=&until=&limit=&offset=]   what has been done, from every source
+GET  /api/log/output?id=             the full output of one deploy run or fetched log
+GET  /api/log/export?format=csv|json|text[&output=1&...]   the same list as a file
 POST /api/scan  {"host": "…"}       queue a vault-backed scan
 POST /api/scan/all                  queue a scan of every host with a scan binding
 GET  /api/keys                      vault keys (public halves) and host bindings
@@ -36,9 +39,9 @@ GET  /api/folders/cold?host=&years=&min_size=   folders whose newest file is old
 GET  /api/git?host=                  git repositories found by scans, with their copies and archive state
 GET  /api/shares/check?host=         the NFS/SMB shares in a host's design, checked against the index
 GET  /api/shares/script?host=        the script that deploys them on the server and mounts them on clients
-POST /api/shares/validate  {"host", "export", "index"}   check one share before saving it (folder, access, mount points)
-POST /api/shares  {"host", "export", "index"}   add the share to the host's design, or replace share #index
-DELETE /api/shares?host=&index=      remove a designed share from the host's design
+POST /api/shares/validate  {"host", "export", "index"|"was"}   check one share before saving it (folder, access, mount points)
+POST /api/shares  {"host", "export", "index"|"was"}   add the share to the host's design, or replace share #index or the share "was" {protocol, name, path}
+DELETE /api/shares?host=&index= or &protocol=&name=&path=      remove a designed share from the host's design
 GET  /api/fs/browse?host=&path=      folders and files at a path from the index, with mounts, shares and planned mounts
 GET  /api/tasks                      saved storage tasks, block types, templates and where tasks are installed
 POST /api/tasks  {"name", "host", "schedule", "blocks": [...], "on_fail": [...]}   save a new task
@@ -109,7 +112,7 @@ from flask_login import LoginManager, current_user, login_required, login_user, 
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, folders, gitrepos, graph, jobs, preflight,
+from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, folders, gitrepos, graph, jobs, logbook, preflight,
                fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, reinstall, shares, tasks, users)
 from .capacity import parse_size
 from .db import Database, epoch
@@ -728,6 +731,33 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             weak = log.unkeyed()                 # keyless entries after keyed ones: rewritable by a database writer
         return jsonify(valid=ok, entries_checked=n, first_bad_id=bad, **weak)
 
+    def log_filter():
+        a = request.args
+        return logbook.clean_filter(a.get('host'), a.get('sources'), a.get('outcomes'), a.get('q'), a.get('since'), a.get('until'))
+
+    @web.get('/api/log')
+    @login_required
+    def api_log():
+        return Response(json.dumps(logbook.page(conn(), log_filter(), arg_num('limit', 100, 1, 500), arg_num('offset', 0, 0, logbook.MAX_EXPORT)),
+                                   default=str), mimetype='application/json')
+
+    @web.get('/api/log/output')
+    @login_required
+    def api_log_output():
+        return jsonify(id=request.args.get('id', ''), output=logbook.output_of(conn(), request.args.get('id', '')))
+
+    @web.get('/api/log/export')
+    @login_required
+    def api_log_export():
+        f, fmt = log_filter(), request.args.get('format') or 'csv'
+        text, n = logbook.export(conn(), f, fmt, request.args.get('output') in ('1', 'true'))
+        core.audit(conn(), actor(), 'log.export', 'ok', f['host'], {'format': fmt, 'entries': n, 'q': f['q'],
+                                                                    'sources': sorted(f['sources']), 'outcomes': sorted(f['outcomes'])})
+        mime, ext = logbook.FORMATS[fmt]
+        stamp = time.strftime('%Y%m%d-%H%M%S', time.gmtime())
+        return Response(text, mimetype=mime.split(';')[0], headers={
+            'Content-Disposition': f'attachment; filename="storageforge-log-{stamp}.{ext}"', 'X-Content-Type-Options': 'nosniff'})
+
     @web.post('/api/scan')
     @login_required
     def api_scan():
@@ -950,7 +980,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         idx = body.get('index')
         try:
             return jsonify(shares.validate(conn(), str(body.get('host', '')), body.get('export') or {},
-                                           None if idx is None else int(idx)))
+                                           None if idx is None else int(idx), body.get('was') or None))
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
 
@@ -960,13 +990,14 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         try:
             if request.method == 'DELETE':
                 host, idx = request.args.get('host', ''), int(request.args.get('index', -1))
-                res = shares.remove_export(db, conn(), host, idx)
+                was = {k: request.args[k] for k in ('protocol', 'name', 'path') if k in request.args} or None
+                res = shares.remove_export(db, conn(), host, idx, was)
                 core.audit(conn(), actor(), 'shares.remove', 'ok', host, {'index': idx})
                 return jsonify(res)
             body = json_body()
             idx = body.get('index')
             res = shares.save_export(db, conn(), str(body.get('host', '')), body.get('export') or {},
-                                     None if idx is None else int(idx), actor())
+                                     None if idx is None else int(idx), actor(), body.get('was') or None)
             core.audit(conn(), actor(), 'shares.save', 'ok', res['host'],
                        {'index': res['index'], 'path': res['export']['path'], 'proto': res['export']['protocol']})
             return jsonify(res)
@@ -1055,6 +1086,16 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 core.audit(conn(), actor(), 'changes.delete', 'ok', None, {'plan': plan_id})
                 return jsonify(deleted=plan_id)
             return jsonify(changes.get_plan(conn(), plan_id))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/changes/<int:plan_id>/ran')
+    @login_required
+    def api_change_mark_ran(plan_id):
+        try:
+            plan = changes.mark_ran(conn(), plan_id, actor())
+            core.audit(conn(), actor(), 'changes.ran', 'ok', None, {'plan': plan_id})
+            return jsonify(plan)
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
 

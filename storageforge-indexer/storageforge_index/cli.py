@@ -649,6 +649,24 @@ def cmd_vault(args) -> int:
     return 0
 
 
+def cmd_log(args) -> int:
+    from . import logbook
+    db, conn = open_db(args)
+    try:
+        f = logbook.clean_filter(args.host, args.source, args.outcome, args.grep, args.since, args.until)
+        text, n = logbook.export(conn, f, args.format, args.with_output, args.limit)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    if not args.output:
+        print(text, end='')
+        return 0
+    with open(args.output, 'w', encoding='utf-8', newline='') as out:
+        out.write(text)
+    _audit(db, conn, None, 'log.export', host=f['host'], format=args.format, entries=n, file=args.output)
+    print(f'{n} entries written to {args.output}')
+    return 0
+
+
 def cmd_audit(args) -> int:
     from .vault import AuditLog, Vault, VaultError
     db, conn = open_db(args)
@@ -1034,6 +1052,19 @@ def build_parser() -> argparse.ArgumentParser:
     x = vs.add_parser('import-dir', help='import every private key file in a directory (name = file stem)')
     x.add_argument('dir')
     v.set_defaults(fn=cmd_vault)
+
+    lg = sub.add_parser('log', help='what has been done: audit log, deploys, scans and task runs in one list')
+    lg.add_argument('--host', help='only this host')
+    lg.add_argument('--source', help='comma-separated: audit, deploy, scan, task, hostlog')
+    lg.add_argument('--outcome', help='comma-separated: ok, warn, failed, denied, info, running')
+    lg.add_argument('--grep', help='only entries holding this text')
+    lg.add_argument('--since', help='unix seconds or a date like 2026-10-30')
+    lg.add_argument('--until', help='unix seconds or a date like 2026-10-30 (the whole day)')
+    lg.add_argument('--limit', type=int, default=100)
+    lg.add_argument('--format', choices=['text', 'csv', 'json'], default='text')
+    lg.add_argument('--with-output', action='store_true', help='include the full output of deploy runs and fetched logs')
+    lg.add_argument('-o', '--output', help='write to this file instead of the terminal')
+    lg.set_defaults(fn=cmd_log)
 
     a = sub.add_parser('audit', help='append-only audit log')
     asub = a.add_subparsers(dest='audit_cmd', required=True)

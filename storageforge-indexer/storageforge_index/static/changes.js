@@ -5,11 +5,32 @@
 
 const CH = { types: null, plans: [], plan: { name: '', tasks: [] }, dirty: false, result: null };
 const CH_DRAFT = 'sf.changes.draft';
-try { const d = JSON.parse(localStorage.getItem(CH_DRAFT) || 'null'); if (d && Array.isArray(d.tasks)) { CH.plan = d; CH.dirty = !!d.tasks.length; } } catch { /* no draft */ }
+try {
+  const d = JSON.parse(localStorage.getItem(CH_DRAFT) || 'null');
+  if (d && Array.isArray(d.tasks)) {
+    CH.plan = d;
+    CH.dirty = Boolean(d.dirty);
+  }
+} catch { /* no draft */ }
 
-function chKeep() { try { localStorage.setItem(CH_DRAFT, JSON.stringify(CH.plan)); } catch { /* storage blocked */ } }
+function chKeep() {
+  try {
+    if (!CH.plan.tasks.length && !CH.plan.name && !CH.plan.id) {
+      localStorage.removeItem(CH_DRAFT);
+    } else {
+      localStorage.setItem(CH_DRAFT, JSON.stringify({ ...CH.plan, dirty: CH.dirty }));
+    }
+  } catch { /* storage blocked */ }
+}
 async function chTypes() { if (!CH.types) CH.types = (await getJSON('/api/changes/types')).types; return CH.types; }
-function chTouch() { CH.dirty = true; CH.result = null; chKeep(); renderStageBar(); if (T.mode === 'topo') renderTopo(); }
+function chTouch() {
+  CH.dirty = true;
+  CH.result = null;
+  if (CH.plan.ran_at) CH.plan.ran_at = null;
+  chKeep();
+  renderStageBar();
+  if (T.mode === 'topo') renderTopo();
+}
 
 function taskTitle(t) {
   const p = t.params || {};
@@ -25,7 +46,7 @@ function taskTitle(t) {
     format: () => `Format ${p.device} as ${p.fstype}`, label: () => `Label ${p.target} "${p.label}"`,
   }[t.type] || (() => t.type))();
 }
-const tasksOn = (host) => CH.plan.tasks.filter((t) => t.host === host);
+const tasksOn = (host) => (CH.plan.ran_at && !CH.dirty) ? [] : CH.plan.tasks.filter((t) => t.host === host);
 function mountFor(host, path) {      // the mount a path is on, from the topology (the path itself when unknown)
   const m = (T.docs.get(host) || {}).m;
   return (m && containing(path, [...m.nodes.values()].filter((x) => x.kind === 'mount' && !x.planned).map((x) => x.target))) || path;
@@ -230,7 +251,8 @@ async function browseFolders(host, path, mountTarget) {
 function renderStageBar() {
   const bar = $('#stagebar');
   if (!bar) return;
-  const n = CH.plan.tasks.length;
+  const isRan = CH.plan.ran_at && !CH.dirty;
+  const n = isRan ? 0 : CH.plan.tasks.length;
   bar.hidden = !n || T.mode !== 'topo';
   if (!n) return;
   bar.replaceChildren(text('span', `${CH.plan.name || 'Unnamed plan'} · ${n} staged change${n === 1 ? '' : 's'}${CH.dirty ? ' (not saved)' : ''}`),
@@ -240,18 +262,53 @@ async function loadChanges(selectId) {
   try {
     await chTypes();
     CH.plans = (await getJSON('/api/changes')).plans;
-    if (selectId) { CH.plan = await getJSON(`/api/changes/${selectId}`); CH.dirty = false; chKeep(); }
+    if (selectId) {
+      CH.plan = await getJSON(`/api/changes/${selectId}`);
+      CH.dirty = false;
+      chKeep();
+    } else if (CH.plan.id) {
+      const match = CH.plans.find((x) => String(x.id) === String(CH.plan.id));
+      if (match) {
+        CH.plan.ran_at = match.ran_at;
+        if (match.ran_at && !CH.dirty) {
+          CH.plan = { name: '', tasks: [] };
+          CH.dirty = false;
+          CH.result = null;
+          chKeep();
+          renderStageBar();
+          if (T.mode === 'topo') renderTopo();
+        }
+      }
+    }
   } catch (err) { $('#changesbox').replaceChildren(text('p', err.message, 'st-failed')); return; }
   renderChanges();
 }
 /* an apply ended: a plan that finished is no longer staged, and moves to "Already ran" in the picker */
 async function chApplied(id) {
   try { CH.plans = (await getJSON('/api/changes')).plans; } catch { return; }
-  if (CH.plan.id === id && !CH.dirty && CH.plans.find((x) => x.id === id)?.ran_at) {
-    CH.plan = { name: '', tasks: [] }; CH.result = null; chKeep(); renderStageBar();
+  const ran = CH.plans.find((x) => String(x.id) === String(id))?.ran_at;
+  if (ran && (String(CH.plan.id) === String(id) || !CH.plan.id)) {
+    CH.plan = { name: '', tasks: [] };
+    CH.dirty = false;
+    CH.result = null;
+    chKeep();
+    renderStageBar();
     if (T.mode === 'topo') renderTopo();
   }
   renderChanges();
+}
+async function chUnstage() {
+  if (CH.plan.id && (CH.result?.all_done || CH.plan.ran_at)) {
+    try { await postJSON(`/api/changes/${CH.plan.id}/ran`, {}); } catch { /* ignore */ }
+  }
+  CH.plan = { name: '', tasks: [] };
+  CH.dirty = false;
+  CH.result = null;
+  chKeep();
+  renderStageBar();
+  if (T.mode === 'topo') renderTopo();
+  renderChanges();
+  chMsg('Plan unstaged.', 'st-ok');
 }
 function renderChanges() {
   const p = CH.plan;
@@ -299,10 +356,14 @@ function renderChanges() {
   $('#changesbox').replaceChildren(
     el('div', { class: 'row' }, pick, name),
     p.ran_at && !CH.dirty ? text('p', `This plan ran on ${stamp(p.ran_at)}. Deploying it again is safe: tasks already done are left alone.`, 'st-ok small') : '',
+    res?.all_done ? el('div', { class: 'card row wrap' },
+      text('b', 'All changes in this plan already exist on the hosts.', 'st-ok'),
+      button('Unstage plan', chUnstage, 'btn sm pri')) : '',
     p.tasks.length ? list : text('p', 'No changes staged. In the topology, select a disk, partition, pool, subvolume or mount and use "Plan a change", or browse a mount\'s folders.', 'muted'),
     res ? el('p', { class: res.crit ? 'st-failed' : res.warn ? 'st-running' : 'st-ok' }, `${res.crit} critical · ${res.warn} warning${res.warn === 1 ? '' : 's'}`) : '',
-    el('div', { class: 'row end' },
+    el('div', { class: 'row end wrap' },
       p.id ? button('Delete plan', chDelete, 'btn ghost sm danger') : '',
+      p.tasks.length ? button('Unstage', chUnstage, 'btn ghost sm') : '',
       button('Check', chCheck, 'btn sm'), button(CH.dirty ? 'Save*' : 'Save', chSave, 'btn sm'),
       button('Ansible playbook', () => chDownload('ansible'), 'btn sm'), button('Bash script', () => chDownload('script'), 'btn sm'),
       button('Deploy…', async () => {

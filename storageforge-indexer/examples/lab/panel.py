@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local control panel for the KVM lab: Up, Reset, Test and Destroy buttons over lab.sh.
+"""Local control panel for the KVM lab: Up, Reset, Demo, Test, Full test and Destroy buttons over lab.sh.
 
 Only this machine can reach it, and a web page elsewhere can't press Destroy: every request needs the token from
 the launch URL and a Host header naming this panel, which stops cross-site requests and DNS rebinding.
@@ -20,7 +20,9 @@ from urllib.parse import parse_qs, urlsplit
 
 HERE = Path(__file__).resolve().parent
 LAB = str(HERE / 'lab.sh')
-ACTIONS = {'up': ['up'], 'reset': ['reset'], 'test': ['test'], 'destroy': ['down']}
+ACTIONS = {'up': ['up'], 'reset': ['reset'], 'demo': ['demo'], 'test': ['test'], 'full': ['test', '--all'], 'destroy': ['down']}
+UI_PASSWORD = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local' / 'state')) / 'sflab' / 'ui-password'
+UI_URL = 'https://10.77.0.10:8443'
 TOKEN_FILE = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'sflab' / 'panel-token'
 
 
@@ -79,7 +81,11 @@ class Lab:
                 self.last = {'action': action, 'ok': code == 0, 'finished': time.strftime('%H:%M:%S')}
 
     def state(self):
-        return {'action': self.action, 'last': self.last, 'log': list(self.log), 'nodes': self.nodes}
+        ctl = next((n for n in self.nodes if n['name'] == 'sf-ctl'), {})
+        ui = None
+        if ctl.get('ssh') == 'yes' and UI_PASSWORD.exists():
+            ui = {'url': UI_URL, 'user': 'demo', 'password': UI_PASSWORD.read_text().strip()}
+        return {'action': self.action, 'last': self.last, 'log': list(self.log), 'nodes': self.nodes, 'ui': ui}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -149,15 +155,17 @@ table{border-collapse:collapse;width:100%;white-space:nowrap}th,td{text-align:le
 tr:last-child td{border-bottom:0}th{font-size:12px;color:var(--muted);font-weight:600}
 td.mono{font-family:ui-monospace,monospace;font-size:13px}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;background:var(--muted)}.dot.on{background:var(--ok)}
+.ui{margin:0 0 18px;overflow-wrap:anywhere}a{color:var(--accent)}code{font:13px ui-monospace,monospace}
 pre{margin:0;padding:12px 14px;background:var(--log);color:var(--logtext);border-radius:8px;height:230px;overflow:auto;font:12.5px/1.5 ui-monospace,monospace;white-space:pre-wrap}
 </style></head><body><main>
-<h1>StorageForge Lab</h1><p class="sub">Disposable KVM test network. Destroy removes the VMs, network, disks and lab keys straight away, with no confirmation.</p>
-<div class="bar"><button class="main" id="up">Up</button><button id="reset">Reset</button><button id="test">Test</button><button class="danger" id="destroy">Destroy</button><div class="msg" id="msg" role="status"></div></div>
+<h1>StorageForge Lab</h1><p class="sub">Disposable KVM test network. Demo resets the lab, then fills StorageForge with scans, shares, jobs and an alert. Destroy removes the VMs, network, disks and lab keys straight away, with no confirmation.</p>
+<div class="bar"><button class="main" id="up">Up</button><button id="reset">Reset</button><button id="demo">Demo</button><button id="test">Test</button><button id="full">Full test</button><button class="danger" id="destroy">Destroy</button><div class="msg" id="msg" role="status"></div></div>
 <div class="tablewrap"><table><thead><tr><th>VM</th><th>Address</th><th>State</th><th>SSH</th><th>Root FS</th><th>Golden</th></tr></thead><tbody id="rows"></tbody></table></div>
+<p class="ui" id="ui" hidden>StorageForge: <a id="uilink" rel="noreferrer" target="_blank"></a> (self-signed certificate). Sign in as <code id="uiuser"></code>, password <code id="uipass"></code>.</p>
 <pre id="log" aria-label="Command output"></pre>
 <script>
 const T='@TOKEN@',$=id=>document.getElementById(id),H={'X-Lab-Token':T};
-const LABEL={up:'Up',reset:'Reset',test:'Test',destroy:'Destroy'};
+const LABEL={up:'Up',reset:'Reset',demo:'Demo',test:'Test',full:'Full test',destroy:'Destroy'};
 async function press(a){$('msg').textContent='Starting '+LABEL[a]+'...';$('msg').className='msg';
   const r=await fetch('/api/'+a,{method:'POST',headers:H});if(r.status===409){$('msg').textContent='Another action is running.';$('msg').className='msg bad'}refresh()}
 for(const a of Object.keys(LABEL))$(a).onclick=()=>press(a);
@@ -169,7 +177,8 @@ function render(s){
       if(i===2){const d=document.createElement('span');d.className='dot'+(v==='running'?' on':'');td.append(d)}
       td.append(v);tr.append(td)});body.append(tr)}
   const exists=s.nodes.some(n=>n.state!=='absent'),golden=s.nodes.length&&s.nodes.filter(n=>n.state!=='absent').every(n=>n.golden==='yes');
-  $('up').disabled=!!s.action;$('reset').disabled=!!s.action||!exists||!golden;$('test').disabled=!!s.action||!exists;$('destroy').disabled=s.action==='destroy';
+  $('up').disabled=!!s.action;$('reset').disabled=!!s.action||!exists||!golden;$('demo').disabled=!!s.action||!exists||!golden;$('test').disabled=!!s.action||!exists;$('full').disabled=!!s.action||!exists||!golden;
+  $('ui').hidden=!s.ui;if(s.ui){$('uilink').href=s.ui.url;$('uilink').textContent=s.ui.url;$('uiuser').textContent=s.ui.user;$('uipass').textContent=s.ui.password}$('destroy').disabled=s.action==='destroy';
   const m=$('msg');
   if(s.action){m.textContent=LABEL[s.action]+' is running...';m.className='msg'}
   else if(s.last){m.textContent=LABEL[s.last.action]+(s.last.ok?' finished at ':' failed at ')+s.last.finished;m.className='msg '+(s.last.ok?'good':'bad')}

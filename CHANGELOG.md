@@ -5,6 +5,7 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Added
+- **Shares manager in the topology:** a Shares button lists every share on the hosts in view, with access, client mounts, state and check problems, and opens designed shares to edit or remove. Editing and removing now find a share by its identity instead of its list position, which could change after a rescan and hit the wrong share. Wizard edits keep SMB settings and per-client mount options, a deployed share can be removed from the design, and saving a second copy of a share is refused.
 - **Deploy run tracking and scan confirmation:** Scans verify completion records of deploy scripts (`/var/lib/storageforge/run/runs.jsonl`) and storage tasks (`/var/lib/storageforge/tasks/`) by matching run nonces, confirming actual host outcomes. If a run or task failed, StorageForge automatically runs a signed read-only log fetch over deploy access once per problem to capture runner and journal logs.
 - **Deploy cancel and retry:** Running deploys can be stopped in the UI (with a Force stop option to terminate running SSH processes), and failed or interrupted deploys offer a Retry failed hosts button.
 - **Stale dry run protection:** Applying a plan passes the dry run's group ID to ensure the plan was not modified after review.
@@ -20,7 +21,7 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ### Fixed
 - **Smoother Deploy tab:** Deploy panel polling updates output in-place preserving card expansion and scroll position; active deploys resume polling across tab reloads; the reporting settings form is kept across reloads; and deploy access removal uses a secure inline form instead of a plain-text prompt.
 - An apply from the web UI rescans the hosts it ran on, so the other tabs show the result instead of waiting up to 6 hours for the next scan.
-- A change plan that finished applying is no longer staged and moves to "Already ran" in the picker. Editing it makes it a plan to run again; one that skipped drive tasks stays unfinished and says so.
+- A change plan that finished applying is no longer staged and moves to "Already ran" in the picker: deploy tracking ID matching is type-coerced, local drafts preserve clean state across reloads rather than forcing dirty state, and plans whose changes already exist on hosts offer one-click unstaging and mark as ran. Editing a plan makes it a plan to run again; one that skipped drive tasks stays unfinished and says so.
 - An apply that left `missing` steps shows as `incomplete` instead of a green `ok`, for every kind of deploy, and a later scan keeps it that way.
 - Share, change and move scripts run by hand end with "N step(s) not finished" instead of `done` when an apply left `missing` steps.
 - A shares apply that left steps on the server is no longer marked as deployed.

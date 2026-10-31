@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tier 1: every deploy path, for real, on every lab VM. It changes the VMs, so run it through examples/lab/lab.sh gauntlet,
+"""Tier 2: every deploy path, for real, on every lab VM. It changes the VMs, so run it through examples/lab/lab.sh gauntlet,
 which starts from the golden snapshot and goes back to it afterwards.
 
 StorageForge runs here on the libvirt host, on a throwaway database, and drives the same functions the web API does:
