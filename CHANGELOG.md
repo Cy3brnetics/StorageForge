@@ -5,6 +5,7 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Added
+- **Retire a host** from its menu or with `hosts remove`, and remove keys and bindings from the Keys tab.
 - **Per-host scan schedules:** a host can have its own interval and quiet hours, from its menu in the topology.
 - **Designs stage pool tasks:** a new ZFS pool, ZFS datasets, a new LVM volume group and its volumes now become change-plan tasks instead of "by hand" notes.
 - **3-2-1 matrix from what is deployed:** mirror and rsnapshot jobs and scheduled storage tasks fill the sync, snapshot and backup cells with their last good run. Typed values stay where nothing covers a dataset, and hosts can be marked offsite.

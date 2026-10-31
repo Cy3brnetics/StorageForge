@@ -278,6 +278,35 @@ class DeployedProtection(Fleet):
         self.assertIsNotNone(pool['backup']['last'])
 
 
+class Retire(Fleet):
+    def test_a_retired_host_leaves_everything(self):
+        from storageforge_index import retire
+        hit = lambda: self.conn.scalar("SELECT count(*) FROM file_fts WHERE filename LIKE '%readme%'")   # noqa: E731
+        if self.db.dialect == 'sqlite':       # as apply_diff does for a real scan
+            self.conn.execute('INSERT INTO file_fts (rowid, filename) SELECT file_id, filename FROM file_records')
+        before = hit() if self.db.dialect == 'sqlite' else 0
+        self.conn.execute("INSERT INTO scan_jobs (host, requested_by, queued_at, status) VALUES ('nas', 't', 1, 'ok')")
+        self.conn.execute("INSERT INTO graph_nodes (node_id, kind, label, host, updated_at) VALUES ('host:nas', 'Host', 'nas', 'nas', 1)")
+        self.conn.execute("INSERT INTO blueprints (hostname, body_json, imported_at) VALUES ('nas', '{}', 1)")
+        retire.retire(self.conn, 'nas')
+        for sql in ("SELECT count(*) FROM hosts WHERE hostname = 'nas'", "SELECT count(*) FROM scan_jobs",
+                    "SELECT count(*) FROM graph_nodes WHERE host = 'nas'", "SELECT count(*) FROM blueprints"):
+            self.assertEqual(self.conn.scalar(sql), 0, sql)
+        self.assertEqual(self.conn.scalar("SELECT count(*) FROM mounts m LEFT JOIN hosts h ON h.host_id = m.host_id WHERE h.host_id IS NULL"), 0)
+        if self.db.dialect == 'sqlite':
+            self.assertGreater(before, 0)
+            self.assertEqual(hit(), 0)
+        self.assertEqual(self.conn.scalar("SELECT count(*) FROM hosts WHERE hostname = 'pc'"), 1)
+
+    def test_refused_while_in_use_or_unknown(self):
+        from storageforge_index import retire
+        self.conn.execute("""INSERT INTO deployed (host, kind, ref, deploy_hash, deployed_at, detail_json) VALUES ('nas', 'tasks', 'x', 'h', 1, '{}')""")
+        with self.assertRaisesRegex(ValueError, 'tasks x is deployed'):
+            retire.retire(self.conn, 'nas')
+        with self.assertRaises(LookupError):
+            retire.retire(self.conn, 'nope')
+
+
 class Tasks(Fleet):
     def task(self, *blocks, **kw):
         return {'name': kw.pop('name', 'Nightly'), 'host': 'nas', 'schedule': kw.pop('schedule', 'hourly'), 'blocks': list(blocks), **kw}

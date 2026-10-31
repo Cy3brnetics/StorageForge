@@ -702,7 +702,8 @@ async function loadKeys(select) {
         button('Copy public key', async (ev) => {
           try { await navigator.clipboard.writeText(k.public_key); ev.target.textContent = 'Copied'; }
           catch { getSelection().selectAllChildren(pub); }
-        }, 'btn ghost sm'));
+        }, 'btn ghost sm'),
+        k.bindings ? '' : button('Remove', () => removeVaultItem(`/api/keys/${encodeURIComponent(k.name)}`, `Remove key ${k.name}? It cannot be recovered.`), 'btn ghost sm danger'));
       return li;
     }));
     if (!keys.length) $('#keys').replaceChildren(text('li', 'No keys yet. Generate one above.', 'muted'));
@@ -710,10 +711,16 @@ async function loadKeys(select) {
       const li = document.createElement('li');
       li.append(text('span', `${b.user}@${b.pattern}:${b.port} → ${b.key}`), text('span', `${b.kind} · ${b.actions}`, 'm'));
       if (b.kind === 'host') li.append(button('Scan now', () => queueScan(b.pattern), 'btn ghost sm'));
+      li.append(button('Unbind', () => removeVaultItem(`/api/bindings/${b.binding_id}`, `Stop using ${b.key} for ${b.user}@${b.pattern}?`), 'btn ghost sm danger'));
       return li;
     }));
     if (!bindings.length) $('#bindings').replaceChildren(text('li', 'No bindings yet.', 'muted'));
   } catch (err) { $('#keys').replaceChildren(text('li', err.message, 'muted')); }
+}
+async function removeVaultItem(path, question) {
+  if (!confirm(question)) return;
+  try { await api(path, { method: 'DELETE' }); loadKeys(); }
+  catch (err) { keyMsg(err.message, false); }
 }
 $('#genform').addEventListener('submit', async (ev) => {
   ev.preventDefault();

@@ -93,6 +93,7 @@ Storage tasks:
 
 | Command | What it does |
 |---|---|
+| `hosts remove NAME [--keep-design]` | retire a host; refused while anything is deployed there |
 | `tasks list`, `tasks check ID` | storage tasks; `check` exits 1 on a critical finding |
 | `tasks script ID [-o FILE]` | the Bash script (made executable) |
 | `tasks import FILE [--id ID]` | save a task from JSON (`{"name", "host", "blocks": [...]}`) |

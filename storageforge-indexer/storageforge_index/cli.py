@@ -476,7 +476,22 @@ def cmd_prune(args) -> int:
 def cmd_hosts(args) -> int:
     if getattr(args, 'hosts_cmd', None) == 'rekey':
         return _rekey_host(args)
-    _, conn = open_db(args)
+    db, conn = open_db(args)
+    if getattr(args, 'hosts_cmd', None) == 'remove':
+        from .retire import retire
+        from .vault import Vault, VaultError
+        try:
+            gone = retire(conn, args.name, args.keep_design)
+        except (LookupError, ValueError) as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        try:
+            with Vault(db, conn).unlock() as v:
+                _audit(db, conn, v, 'hosts.retire', host=args.name, **gone)
+        except VaultError:
+            _audit(db, conn, None, 'hosts.retire', host=args.name, **gone)
+        print(f'retired {args.name}: ' + ', '.join(f'{v} {k}' for k, v in gone.items()))
+        return 0
     rows = conn.all("""SELECT h.hostname, h.ip_address, h.last_scanned_at,
                               (SELECT count(*) FROM mounts m WHERE m.host_id = h.host_id AND m.scan_state = 'indexed'),
                               (SELECT count(*) FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id WHERE m.host_id = h.host_id),
@@ -1011,6 +1026,9 @@ def build_parser() -> argparse.ArgumentParser:
     rk = hs.add_parser('rekey', help='a host was reinstalled or moved: forget its pinned SSH host keys (scan it right after)')
     rk.add_argument('name')
     rk.add_argument('--port', type=int, default=22, help='its SSH port, to drop that known_hosts line too')
+    rm = hs.add_parser('remove', help='retire a host: drop its index, graph, scan jobs, bindings and design')
+    rm.add_argument('name')
+    rm.add_argument('--keep-design', action='store_true', help='keep its saved design')
     h.set_defaults(fn=cmd_hosts)
 
     def report_opts(x):

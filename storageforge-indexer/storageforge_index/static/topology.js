@@ -878,6 +878,13 @@ async function editSchedule(host) {
     await api(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ interval, quiet_hours: quiet }) });
   } catch (err) { alert(err.message); }
 }
+async function retireHost(host) {
+  if (!confirm(`Retire ${host}? Its index, graph, scan history, bindings and design are removed. The audit log stays, and a new scan would add it back only with a new binding.`)) return;
+  try {
+    await api(`/api/hosts/${encodeURIComponent(host)}`, { method: 'DELETE' });
+    location.reload();
+  } catch (err) { alert(err.message); }
+}
 function hostMenu(doc) {
   const h = doc.host;
   return [{ heading: h }, { label: 'Scan now', run: () => queueScan(h) }, { label: 'Scan schedule…', run: () => editSchedule(h) },
@@ -885,7 +892,7 @@ function hostMenu(doc) {
     doc.bp && designedShares(doc).length ? { label: 'Deploy shares…', run: () => deployShares(doc) } : null,
     doc.bp && typeof tasksOn === 'function' && tasksOn(h).length ? { label: `Review ${tasksOn(h).length} staged change${tasksOn(h).length === 1 ? '' : 's'}`, run: () => showTab('changes') } : null,
     { label: 'Open in planner', run: () => { location.href = `/planner#topology@${encodeURIComponent(h)}`; } },
-    '-', { label: 'Copy hostname', run: () => copyText(h) }];
+    '-', { label: 'Copy hostname', run: () => copyText(h) }, { label: 'Retire…', danger: true, run: () => retireHost(h) }];
 }
 async function showBox(host, key) {     // from the graph: the same thing as a box in the topology
   T.sel = { host, key };

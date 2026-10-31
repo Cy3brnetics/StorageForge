@@ -20,6 +20,8 @@ POST /api/scan  {"host": "…"}       queue a vault-backed scan
 POST /api/scan/all                  queue a scan of every host with a scan binding
 GET  /api/keys                      vault keys (public halves) and host bindings
 POST /api/keys  {"name", "type"}     generate a key inside the vault
+DELETE /api/keys/<name>              remove a key with no bindings (password confirmed)
+DELETE /api/bindings/<id>            remove a binding (password confirmed)
 POST /api/hostkey/confirm  {"host", "port", "fingerprint"}   a person compared the host key: pin it, passwords may go there
 POST /api/keys/install  {"key", "host", "user", "port", "password", "bind"}
                                     ssh-copy-id the public key, then optionally bind it for scans
@@ -28,6 +30,7 @@ GET  /api/access/script?host=&remove=1   the read-only scan access setup (or rem
 POST /api/access/grant  {"host", "password", "admin_user", "remove"}   run that script once over SSH with sudo
 GET  /api/folders/duplicates?host=&min_files=&min_size=   folders that are copies by name and structure
 GET  /api/browse?host=&path=         subfolders of a path with their indexed sizes (for picking move sources)
+DELETE /api/hosts/<name>[?keep_design=1]   retire a host (password confirmed; refused while anything is deployed there)
 GET|PUT /api/hosts/<name>/schedule   the host's own scan interval and quiet hours ({"interval": "1d", "quiet_hours": "22-6"})
 GET  /api/moves                      saved move plans;  POST creates one from {"name", "steps": [...]}
 GET|PUT|DELETE /api/moves/<id>       one plan
@@ -113,7 +116,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, folders, gitrepos, graph, jobs, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, reinstall, shares, tasks, users)
+               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, reinstall, retire, shares, tasks, users)
 from .capacity import parse_size
 from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
@@ -691,6 +694,21 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                                 for r in rows],
                        graph=graph_hosts)
 
+    @web.delete('/api/hosts/<name>')
+    @login_required
+    @password_confirmed
+    def api_host_retire(name):
+        host = core.canonical(conn(), name)
+        try:
+            gone = retire.retire(conn(), host, bool(request.args.get('keep_design')))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 409
+        core.audit(conn(), actor(), 'hosts.retire', 'ok', host, gone)
+        core.alerts_wake.set()
+        return jsonify(host=host, removed=gone)
+
     @web.route('/api/hosts/<name>/schedule', methods=['GET', 'PUT'])
     @login_required
     def api_host_schedule(name):
@@ -788,6 +806,32 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         v = Vault(db, conn())
         keys = [k | {'public_key': v.public_key(k['name'])} for k in v.list_keys()]
         return jsonify(keys=keys, bindings=v.bindings())
+
+    @web.delete('/api/keys/<name>')
+    @login_required
+    @password_confirmed
+    def api_key_remove(name):
+        v = Vault(db, conn())
+        key = next((k for k in v.list_keys() if k['name'] == name), None)
+        if not key:
+            return jsonify(error=f'no key named {name!r}'), 404
+        if key['bindings']:
+            return jsonify(error=f'{name} still has {key["bindings"]} binding(s): remove them first'), 409
+        v.remove_key(name)
+        core.audit(conn(), actor(), 'vault.key.remove', 'ok', None, {'name': name, 'fingerprint': key['fingerprint']})
+        return jsonify(removed=name)
+
+    @web.delete('/api/bindings/<int:binding_id>')
+    @login_required
+    @password_confirmed
+    def api_binding_remove(binding_id):
+        v = Vault(db, conn())
+        b = next((x for x in v.bindings() if x['binding_id'] == binding_id), None)
+        if not b:
+            return jsonify(error=f'no binding #{binding_id}'), 404
+        v.unbind(binding_id)
+        core.audit(conn(), actor(), 'vault.unbind', 'ok', b['pattern'], {'key': b['key'], 'user': b['user']})
+        return jsonify(removed=binding_id)
 
     @web.post('/api/keys')
     @login_required
