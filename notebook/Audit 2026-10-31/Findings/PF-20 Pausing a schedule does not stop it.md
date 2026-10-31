@@ -30,4 +30,4 @@ Make pause a real deploy that updates the host, with its progress shown. If that
 - [x] Pausing removes the cron entry on the host, tested in the lab
 
 ## Fixed
-2026-10-31. Pause and resume start a deploy to the hosts holding the schedule, or answer `host_pending` when one has no deploy access, and alerts keep watching until the host has it. Tested with mocks, **not on a host**. Test: `test_pausing_reaches_the_host`.
+2026-10-31, in `6a5a990`. Pause and resume start a deploy to the hosts holding the schedule, or answer `host_pending` when one has no deploy access, and alerts keep watching until the host has it. Tested with mocks, **not on a host**. Test: `test_pausing_reaches_the_host`.

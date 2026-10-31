@@ -31,4 +31,4 @@ Compile on save and refuse invalid patterns. Prefer a fixed-string match. If reg
 - [x] A verification error still stores the run
 
 ## Fixed
-2026-10-31. Patterns are compiled on save, run in a child process with a 2 second limit, and a verification error is a failed check on a stored run. Tests: `test_patterns_are_checked_and_cannot_lose_a_report`, `test_a_slow_pattern_is_stopped`.
+2026-10-31, in `6a5a990`. Patterns are compiled on save, run in a child process with a 2 second limit, and a verification error is a failed check on a stored run. Tests: `test_patterns_are_checked_and_cannot_lose_a_report`, `test_a_slow_pattern_is_stopped`.

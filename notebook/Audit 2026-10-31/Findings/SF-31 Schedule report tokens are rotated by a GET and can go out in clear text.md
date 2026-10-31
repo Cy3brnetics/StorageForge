@@ -35,4 +35,4 @@ Rotate only on an explicit POST or after a successful install. Refuse to deploy 
 - [x] No script is generated with a URL taken from a request header
 
 ## Fixed
-2026-10-31. A GET rotates nothing: a downloaded script carries no token and reports through scans. No report URL comes from a request; with none set, runs arrive by scan, as jobs do. An install switches the token only once it succeeded; **Run now** still switches first, because it reports during the deploy. Repeated nonces and future start times are refused. Test: `test_tokens_change_only_when_a_host_gets_the_new_one`.
+2026-10-31, in `6a5a990`. A GET rotates nothing: a downloaded script carries no token and reports through scans. No report URL comes from a request; with none set, runs arrive by scan, as jobs do. An install switches the token only once it succeeded; **Run now** still switches first, because it reports during the deploy. Repeated nonces and future start times are refused. Test: `test_tokens_change_only_when_a_host_gets_the_new_one`.

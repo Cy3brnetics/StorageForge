@@ -33,4 +33,4 @@ Implement each in the runner or delete it from the form and docs. A setting that
 - [x] Each setting has a test, or is gone
 
 ## Fixed
-2026-10-31. `nice`, `ionice`, jitter, timezone, window and `user` now work; `catchup` is gone. Cron wakes the runner each minute (`--if-due`), since not every cron has `CRON_TZ`. Cron stays root and the runner drops to `user`, so the token stays root-only. Not run on a host. Policy `replace` can now read its PID too, the last point of SF-35. Tests: `test_settings_reach_the_runner`, `test_an_unknown_user_is_a_failed_run`.
+2026-10-31, in `6a5a990`. `nice`, `ionice`, jitter, timezone, window and `user` now work; `catchup` is gone. Cron wakes the runner each minute (`--if-due`), since not every cron has `CRON_TZ`. Cron stays root and the runner drops to `user`, so the token stays root-only. Not run on a host. Policy `replace` can now read its PID too, the last point of SF-35. Tests: `test_settings_reach_the_runner`, `test_an_unknown_user_is_a_failed_run`.

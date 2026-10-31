@@ -32,4 +32,4 @@ Remove `scan`, or make it a server-side schedule. Validate on save that the refe
 - [ ] The scheduler tests pass on PostgreSQL
 
 ## Fixed
-2026-10-31. `scan` is refused on save, and a plan, task or share for another host is refused on save and on deploy. The timestamp now uses `epoch()`, not run on PostgreSQL. References are still free text, so this stays in progress. Test: `test_a_schedule_stays_on_its_own_host`.
+2026-10-31, in `6a5a990`. `scan` is refused on save, and a plan, task or share for another host is refused on save and on deploy. The timestamp now uses `epoch()`, not run on PostgreSQL. References are still free text, so this stays in progress. Test: `test_a_schedule_stays_on_its_own_host`.

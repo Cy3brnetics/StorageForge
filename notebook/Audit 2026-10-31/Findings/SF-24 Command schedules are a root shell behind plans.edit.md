@@ -30,4 +30,4 @@ Add a separate permission, `schedules.command`, marked high risk and not in any 
 - [x] `BASH_ENV` and `LD_PRELOAD` are refused with a clear message
 
 ## Fixed
-2026-10-31. New high-risk `schedules.command`, admin only by default, checked on create, update, run and deploy. Unsafe env names are refused on save and dropped from older rows. The dry run shows the command. Tests: `test_commands_need_their_own_permission`, `test_env_cannot_change_what_runs`.
+2026-10-31, in `6a5a990`. New high-risk `schedules.command`, admin only by default, checked on create, update, run and deploy. Unsafe env names are refused on save and dropped from older rows. The dry run shows the command. Tests: `test_commands_need_their_own_permission`, `test_env_cannot_change_what_runs`.

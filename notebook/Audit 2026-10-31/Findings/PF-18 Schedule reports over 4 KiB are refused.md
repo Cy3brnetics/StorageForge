@@ -31,4 +31,4 @@ Add the route to `body_limit` with a 512 KiB limit. Have the runner cap what it 
 - [x] A 200 KiB report is stored, with a test
 
 ## Fixed
-2026-10-31. The report route takes 512 KiB, and the runner keeps a long output's end to fit. Retrying a failed send is not done: the scan path still picks those up. Test: `test_large_reports_are_stored`.
+2026-10-31, in `6a5a990`. The report route takes 512 KiB, and the runner keeps a long output's end to fit. Retrying a failed send is not done: the scan path still picks those up. Test: `test_large_reports_are_stored`.

@@ -29,4 +29,4 @@ Hash the generated script, without the token. The `script_sha` idea is already u
 - [x] Editing the underlying plan raises drift and refuses a stale apply
 
 ## Fixed
-2026-10-31. `schedule_hash` now includes the hash of what the schedule runs. Every deployed schedule shows as changed once. Test: `test_the_hash_covers_what_a_schedule_runs`.
+2026-10-31, in `6a5a990`. `schedule_hash` now includes the hash of what the schedule runs. Every deployed schedule shows as changed once. Test: `test_the_hash_covers_what_a_schedule_runs`.
