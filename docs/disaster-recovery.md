@@ -71,6 +71,8 @@ If the scan user can't read a share file, the script uses the live export table 
 storageforge-index config export -o hostconfigs.tar.gz
 ```
 
+To get a copy every night, set `STORAGEFORGE_CONFIG_EXPORT_DIR` to a folder on another machine's storage, such as an NFS mount passed into the container. If the folder is missing, nothing is written and the audit log records the failure.
+
 Each host's folder holds `reinstall.sh`, its record, its design and its config files. The script holds everything it needs, so it works with StorageForge gone. Treat the bundle as private: it names your hosts, accounts and network.
 
 ### Run the script

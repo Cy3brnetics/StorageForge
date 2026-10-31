@@ -136,6 +136,7 @@ SCAN_WORKERS = max(1, int(os.environ.get('STORAGEFORGE_SCAN_WORKERS', '4')))  # 
 BACKUP_HOUR = int(os.environ.get('STORAGEFORGE_BACKUP_HOUR', '3'))          # local hour for the nightly backup and prune
 BACKUP_KEEP = int(os.environ.get('STORAGEFORGE_BACKUP_KEEP', '14'))         # essentials backups kept
 BACKUP_FULL = int(os.environ.get('STORAGEFORGE_BACKUP_FULL_KEEP', '0'))     # full backups kept nightly (0: on demand only)
+CONFIG_EXPORT_DIR = os.environ.get('STORAGEFORGE_CONFIG_EXPORT_DIR')         # nightly host config bundle: mount another machine's storage here
 ALERT_TICK = 300                  # alerts and drift are re-evaluated this often (and right after a job reports)
 SCHEDULE_TICK = 600               # the scheduler looks for due hosts this often (seconds)
 MAX_BLUEPRINT = 2 << 20           # planner designs are the one large body we accept
@@ -296,6 +297,13 @@ class App:
             except (Exception, SystemExit) as exc:
                 out['error'] = str(exc)
                 self.audit(conn, 'system', 'backup.create', 'failed', None, {'error': str(exc)[:300]})
+            if CONFIG_EXPORT_DIR:
+                try:
+                    out['hostconfigs'] = hostconfig.export_to(conn, CONFIG_EXPORT_DIR)
+                    self.audit(conn, 'system', 'hostconfig.export', 'ok', None, out['hostconfigs'])
+                except Exception as exc:
+                    out['hostconfigs_error'] = str(exc)
+                    self.audit(conn, 'system', 'hostconfig.export', 'failed', None, {'error': str(exc)[:300]})
             out['pruned'] = self.db.prune(conn)
         finally:
             conn.close()

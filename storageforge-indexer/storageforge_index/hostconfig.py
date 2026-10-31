@@ -12,14 +12,17 @@ from __future__ import annotations
 
 import base64
 import binascii
+import datetime as dt
 import difflib
 import hashlib
 import io
 import json
+import os
 import posixpath
 import re
 import tarfile
 import time
+from pathlib import Path
 
 from .db import Conn, loads
 from .moves import host_slug
@@ -427,3 +430,23 @@ def bundle(conn: Conn, hosts: list[str] | None = None, config_id: int | None = N
                 if CONFIG_PATH.fullmatch(path):
                     _add(tar, posixpath.normpath(f'{root}/{path.lstrip("/")}'), text.encode('utf-8', 'surrogateescape'), at)
     return buf.getvalue()
+
+
+def export_to(conn: Conn, dest: str, keep: int = 14) -> dict | None:
+    """Write the bundle of every host into dest (a mount that lives elsewhere), keeping the newest few. None: nothing yet."""
+    folder = Path(dest)
+    if not folder.is_dir():         # a share that is not mounted must not fill the disk underneath it
+        raise FileNotFoundError(f'{dest} is not a folder: is it mounted?')
+    try:
+        data = bundle(conn)
+    except LookupError:
+        return None
+    out = folder / f'hostconfigs-{dt.datetime.now():%Y%m%d-%H%M%S}.tar.gz'
+    part = out.with_name(out.name + '.part')
+    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'wb') as f:
+        f.write(data)
+    part.rename(out)
+    for old in sorted(folder.glob('hostconfigs-*.tar.gz'), reverse=True)[keep:]:
+        old.unlink()
+    return {'path': str(out), 'bytes': len(data)}
