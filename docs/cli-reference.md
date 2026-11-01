@@ -126,6 +126,7 @@ Both report commands also take `--title`, `--as-of YYYY-MM-DD`, `--kwh-price`, `
 | `vault bind --key K --host H --user U [--port P] [--actions scan,checksum] [--priority N]` | allow a key to reach a host, glob or CIDR |
 | `vault unbind --id ID`, `vault bindings` | |
 | `vault resolve --host H [--action A]` | which key and user a host would use |
+| `vault policy [generate-only\|open]` | show or set whether imported keys are refused |
 | `vault rotate-secret` | rewrap everything under `$STORAGEFORGE_VAULT_NEW_SECRET` |
 | `audit tail [--limit N] [--format table\|json]` | newest entries |
 | `audit verify` | check the HMAC chain |
@@ -169,7 +170,9 @@ Both report commands also take `--title`, `--as-of YYYY-MM-DD`, `--kwh-price`, `
 | `config export [HOST] [--id N] -o FILE` | a `.tar.gz` of scripts, records and config files |
 | `backup [create] [--full] [--keep N] [--dir D]` | write a backup (essentials by default) |
 | `backup list [--dir D]` | backups on disk |
-| `restore FILE --yes` | replace the database with a backup; stop the server first |
+| `restore FILE --yes` | replace the database with a backup from this site; stop the server first |
+| `site [show]`, `site rename NAME` | which client this database belongs to |
+| `reset --site-name NAME [--archive D] [--abandon-deployed] --yes` | archive this site and start a new one ([details](operations.md#starting-a-new-site)) |
 | `prune [--days N] [--max-rows N] [--vacuum]` | drop old change history and job rows; `--vacuum` shrinks the file |
 
 ## Exit codes

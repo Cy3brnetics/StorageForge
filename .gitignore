@@ -12,6 +12,7 @@ api_token
 
 # SSH and TLS key material
 keys/
+archive/
 id_rsa*
 id_ecdsa*
 id_ed25519*

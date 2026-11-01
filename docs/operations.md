@@ -22,6 +22,7 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_INCLUDE_FSTYPES` | | Comma list of normally skipped filesystem types the server's scans walk (e.g. `overlay`) |
 | `STORAGEFORGE_RUNTIME_DIR` | `/run/storageforge`, else `$XDG_RUNTIME_DIR` | tmpfs for agent sockets; its path must be short (Unix socket limit) |
 | `STORAGEFORGE_BACKUP_DIR` | `<data>/backups` (`/app/backups`) | Where backups go |
+| `STORAGEFORGE_ARCHIVE_DIR` | none (`./archive` for the compose `admin` service) | Where `reset` puts the old site |
 | `STORAGEFORGE_BACKUP_HOUR` | `3` | Local hour for the nightly backup and prune |
 | `STORAGEFORGE_BACKUP_KEEP` | `14` | Essentials backups kept |
 | `STORAGEFORGE_BACKUP_FULL_KEEP` | `0` | Full backups kept nightly (0: on demand only) |
@@ -87,6 +88,47 @@ docker compose start storageforge
 Images built before 2026-10-29 don't recognise `restore` and the other newer subcommands in `docker compose run` (see the [audit](audit-2026-10-29.md#container)). Rebuild the image, or add `--entrypoint storageforge-index` after `--rm`. A restore keeps the current database beside it as `index.db.pre-restore-<time>`. After restoring an essentials backup, rescan to rebuild the index.
 
 Backups live in the `sf-backups` volume on this machine. To keep copies elsewhere, add a Moves **mirror** step from `/var/lib/docker/volumes/storageforge_sf-backups/_data` to another host.
+
+## Starting a new site
+
+One install holds one site, usually one client. `reset` moves this install to a new one. It keeps nothing but the certificate, the session secret and the settings in `.env`, including users, hosts, keys and plans.
+
+```bash
+sudo install -d -o 10001 -g 10001 -m 0700 archive
+docker compose stop storageforge proxy
+docker compose run --rm admin reset --site-name "Acme" --yes
+docker compose up -d
+```
+
+The command prints a one-time link for the first admin, valid for 3 days. Replace `https://<this machine>` in it with the address you use, including the port.
+
+**The archive** (`./archive/<old site>-<time>/`) holds a full backup, the old backups, `known_hosts` and the old vault secret. Together those are the old client's SSH keys, so move it off this machine. Only the `admin` service mounts that folder, and without Docker `--archive` must be outside the data and backup folders.
+
+**What `reset` refuses:**
+
+- A server is running on the database.
+- Deploys, jobs, schedules or deploy access are still recorded. They would keep running as root with nothing managing them: remove them first, or pass `--abandon-deployed`.
+- `./keys` still holds keys. They belong to the old client.
+- The current vault secret does not unlock the vault, since the archive would be unreadable.
+- The database is PostgreSQL: `pg_dump` it, create a new database, point `STORAGEFORGE_DB` at it and change the vault secret.
+
+**What it can't do for you:**
+
+- `left-behind.json` in the archive lists what is still on the old client's machines, including public keys in `authorized_keys`. Remove them there.
+- Copies on a backup target host and in `STORAGEFORGE_CONFIG_EXPORT_DIR` stay where they are. A named site's bundles go in their own subfolder of that directory.
+- Back up the new vault secret. `./secrets/vault_secret`, if you have one, still holds the old one, so replace or delete it.
+
+Outside Docker, or when the secret comes from `STORAGEFORGE_VAULT_SECRET`, set `STORAGEFORGE_VAULT_NEW_SECRET` for the reset, then switch to it before starting the server.
+
+### Keys stay with their site
+
+Sites made by `reset` only take keys generated in their own vault. `vault add` and `vault import-dir` refuse, the `./keys` import does nothing, and nothing can export a private key, so one key cannot serve two clients. Put a generated key on a host with **Install** in the web UI, which uses the host's password once.
+
+On an existing install, `vault policy generate-only` turns this on, and lists keys that were imported or whose origin is unknown. `vault policy open` turns it off and is recorded in the audit log. This protects clients from each other inside StorageForge. It does not stop someone with Docker access on this machine, or a key someone adds to a host by hand.
+
+### Restoring across sites
+
+`restore` only accepts a backup from the same site, or onto a database with no name, hosts or keys. Backups made before sites existed name no site: they restore with a warning, and are refused on a generate-only site.
 
 ## Certificates
 

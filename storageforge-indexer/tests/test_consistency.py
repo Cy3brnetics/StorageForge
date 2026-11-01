@@ -64,6 +64,7 @@ class Consistency(unittest.TestCase):
             calls = (tmp / 'calls').read_text().splitlines() if (tmp / 'calls').exists() else []
             return p.returncode, calls, p.stderr
         self.assertEqual(start('restore', '/app/backups/x.db', '--yes')[1], ['restore /app/backups/x.db --yes'])
+        self.assertEqual(start('reset', '--site-name', 'Acme', '--yes')[1], ['reset --site-name Acme --yes'])
         rc, calls, err = start('--db', '/srv/other.db', 'serve', session=False)
         self.assertNotEqual(rc, 0)
         self.assertIn('SESSION_SECRET', err)

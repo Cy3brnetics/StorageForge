@@ -23,6 +23,7 @@ The DDL is in `storageforge_index/migrations/{sqlite,postgres}/`. The CLI and th
 | `013_web_sessions` | `web_sessions` (server-side sessions, hashed ids) |
 | `014_host_identity` | host key and machine-id pinning on `hosts` |
 | `015_host_key_confirmations` | `host_key_confirmations` *(in progress)* |
+| `027_key_origin` | where each vault key came from: `generated`, `imported` or `unknown` |
 
 ## The index
 

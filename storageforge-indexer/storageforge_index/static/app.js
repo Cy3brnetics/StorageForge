@@ -769,7 +769,7 @@ async function loadKeys(select) {
     $('#keys').replaceChildren(...keys.map((k) => {
       const li = document.createElement('li');
       const pub = text('code', k.public_key, 'pub');
-      li.append(text('span', `${k.name} · ${k.type} · ${k.bindings} binding${k.bindings === 1 ? '' : 's'}`),
+      li.append(text('span', `${k.name} · ${k.type} · ${k.origin} · ${k.bindings} binding${k.bindings === 1 ? '' : 's'}`),
         text('span', k.fingerprint, 'm'), pub,
         button('Copy public key', async (ev) => {
           try { await navigator.clipboard.writeText(k.public_key); ev.target.textContent = 'Copied'; }
@@ -1152,10 +1152,16 @@ function takeLink() {
   return tab && document.querySelector(`.tabs button[data-tab="${CSS.escape(tab)}"]`) ? tab : null;
 }
 
+function showSite(name) {   // on every page, so nobody acts on the wrong client
+  if (!name) return;
+  document.title = `${name} · StorageForge`;
+  const b = $('#sitename'); b.textContent = name; b.hidden = false;
+}
+
 async function boot() {
   try {
     const me = await getJSON('/api/me');
-    setUser(me.username, me); applyPermissions(me); await loadHosts();
+    setUser(me.username, me); applyPermissions(me); showSite(me.site); await loadHosts();
     const tab = takeLink();
     await Promise.all([loadGraph(), loadDesigns()]);
     if (tab) showTab(tab);

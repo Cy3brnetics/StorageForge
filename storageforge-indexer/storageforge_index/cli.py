@@ -399,12 +399,15 @@ def cmd_docker(args) -> int:
 
 
 def cmd_backup(args) -> int:
-    from . import backup
+    from . import backup, site
     db = Database(args.db)
     if args.backup_cmd == 'list':
         for b in backup.listing(Path(args.dir) if args.dir else None):
             print(f'{dt.datetime.fromtimestamp(b["created"]):%Y-%m-%d %H:%M}  {b["kind"]:<10} {fmt_bin(b["bytes"]):>10}  {b["path"]}')
         return 0
+    _, conn = open_db(args)
+    site.ensure(conn)      # so this backup can be told from another client's
+    conn.close()
     r = backup.create(db, 'full' if args.full else 'essentials', Path(args.dir) if args.dir else None, args.keep)
     print(f'wrote {r["path"]} ({fmt_bin(r["bytes"])}, {r["seconds"]} s)' + (f'; removed {len(r["removed"])} old' if r['removed'] else ''))
     print('the vault secret is not in it, on purpose: back up secrets/vault_secret separately', file=sys.stderr)
@@ -450,6 +453,43 @@ def cmd_config(args) -> int:
         conn.close()
 
 
+def cmd_site(args) -> int:
+    from . import site
+    from .vault import actor_name
+    _, conn = open_db(args)
+    try:
+        if args.site_cmd == 'rename':
+            print(site.rename(conn, args.name, actor_name()))
+        else:
+            print(f'{site.name(conn) or "(no name)"}  {site.ensure(conn)}')
+        return 0
+    finally:
+        conn.close()
+
+
+def cmd_reset(args) -> int:
+    from . import reset
+    if not args.yes:
+        print(f'This archives everything of the current site and starts "{args.site_name}" with an empty database, a '
+              'new vault and a new vault secret. Stop the server first (docker compose stop storageforge proxy), then '
+              'rerun with --yes.', file=sys.stderr)
+        return 2
+    r = reset.run(Database(args.db), args.site_name, args.archive or os.environ.get('STORAGEFORGE_ARCHIVE_DIR'),
+                  args.abandon_deployed)
+    print(f'{r["name"]} is ready. The old site is in {r["archive"]}: it holds the old keys and their secret, so move it '
+          'off this machine.')
+    if r['abandoned']:
+        print(f'warning: {r["abandoned"]} deployment(s) are still on the old machines; see left-behind.json', file=sys.stderr)
+    if r['left']['keys_on_hosts']:
+        print(f'{len(r["left"]["keys_on_hosts"])} key binding(s) mean old public keys are still in authorized_keys over '
+              'there; see left-behind.json', file=sys.stderr)
+    if not r['secret_installed']:
+        print('Switch STORAGEFORGE_VAULT_SECRET to the value of STORAGEFORGE_VAULT_NEW_SECRET before starting the server.')
+    print('Back up the new vault secret: backups never contain it.')
+    print(f'First admin, once and within 3 days: https://<this machine>/enroll#{r["token"]}')
+    return 0
+
+
 def cmd_restore(args) -> int:
     from . import backup
     if not args.yes:
@@ -457,6 +497,8 @@ def cmd_restore(args) -> int:
               '(docker compose stop storageforge), then rerun with --yes.', file=sys.stderr)
         return 2
     r = backup.restore(Database(args.db), args.file)
+    if r['warning']:
+        print(f'warning: {r["warning"]}', file=sys.stderr)
     print(f'restored {r["restored"]}: {r["keys"]} key(s), {r["files"]:,} indexed files. Previous database kept as {r["previous"]}')
     if not r['files']:
         print('an essentials backup: start the server and the next scans rebuild the file index', file=sys.stderr)
@@ -616,7 +658,7 @@ def _audit(db, conn, v, action, outcome='ok', host=None, fp=None, **detail):
 
 
 def cmd_vault(args) -> int:
-    from .vault import Vault, secret_from_env
+    from .vault import Vault, importable_keys, secret_from_env
     a = args.vault_cmd
     if a == 'init':
         db, conn = open_db(args)
@@ -653,7 +695,7 @@ def cmd_vault(args) -> int:
         elif a == 'list':
             for k in v.list_keys():
                 state = ' (disabled)' if k['disabled_at'] else ''
-                print(f'{k["name"]:<20} {k["type"]:<12} {k["fingerprint"]}  {k["bindings"]} binding(s){state}')
+                print(f'{k["name"]:<20} {k["type"]:<12} {k["fingerprint"]}  {k["bindings"]} binding(s)  {k["origin"]}{state}')
         elif a == 'pubkey':
             print(v.public_key(args.name))
         elif a == 'remove':
@@ -677,6 +719,16 @@ def cmd_vault(args) -> int:
         elif a == 'resolve':
             b = v.resolve(args.host, args.action)
             print(f'{args.host} → key "{b.key_name}" ({b.fingerprint}) as {b.user}@:{b.port} via binding #{b.binding_id} [{b.pattern}]')
+        elif a == 'policy':
+            if args.policy:
+                from .alerts import set_setting
+                from .vault import POLICY_KEY, actor_name
+                set_setting(conn, POLICY_KEY, args.policy, actor_name())
+                _audit(db, conn, v, 'vault.policy', policy=args.policy)
+            print(v.key_policy())
+            imported = [k['name'] for k in v.list_keys() if k['origin'] != 'generated']
+            if imported and v.key_policy() == 'generate-only':
+                print(f'not generated here, or not known to be: {", ".join(imported)}', file=sys.stderr)
         elif a == 'rotate-secret':
             new = os.environ.get('STORAGEFORGE_VAULT_NEW_SECRET', '')
             if len(new) < 32:
@@ -685,10 +737,11 @@ def cmd_vault(args) -> int:
             _audit(db, conn, v, 'vault.rotate-secret', rewrapped=n)
             print(f'rewrapped {n} key(s); switch STORAGEFORGE_VAULT_SECRET to the new value now')
         elif a == 'import-dir':
+            if v.key_policy() == 'generate-only':
+                print(f'this site only takes keys generated in its vault: nothing imported from {args.dir}', file=sys.stderr)
+                return 0
             known = {r[0] for r in conn.all('SELECT name FROM ssh_keys')}
-            for f in sorted(Path(args.dir).iterdir()):
-                if f.suffix in ('.pub', '.md', '.txt') or not f.is_file() or f.name.startswith('.'):
-                    continue
+            for f in importable_keys(args.dir):
                 name = f.stem
                 if name in known:
                     continue
@@ -1189,6 +1242,19 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument('--yes', action='store_true', help='really replace it')
     rs.set_defaults(fn=cmd_restore)
 
+    st = sub.add_parser('site', help='which client this database belongs to')
+    sts = st.add_subparsers(dest='site_cmd')
+    sts.add_parser('show', help='its name and id (the default)')
+    sts.add_parser('rename', help='change its name').add_argument('name')
+    st.set_defaults(fn=cmd_site, site_cmd='show')
+
+    rt = sub.add_parser('reset', help='archive this site and start a new one: new database, vault and vault secret (stop the server first)')
+    rt.add_argument('--site-name', required=True, help='the new site, usually the client')
+    rt.add_argument('--archive', help='folder for the old site, outside the data and backup folders (default $STORAGEFORGE_ARCHIVE_DIR)')
+    rt.add_argument('--abandon-deployed', action='store_true', help='go ahead although jobs and schedules are still on the old machines')
+    rt.add_argument('--yes', action='store_true', help='really do it')
+    rt.set_defaults(fn=cmd_reset)
+
     pr = sub.add_parser('prune', help='drop old change history and job rows (also runs after every scan)')
     pr.add_argument('--days', type=int, help='keep file changes this many days (default $STORAGEFORGE_CHANGE_DAYS or 90)')
     pr.add_argument('--max-rows', type=int, help='and at most this many change rows, oldest scans dropped first '
@@ -1270,6 +1336,8 @@ def build_parser() -> argparse.ArgumentParser:
     x = vs.add_parser('resolve', help='show which key and user a host would use')
     x.add_argument('--host', required=True)
     x.add_argument('--action', default='scan')
+    vs.add_parser('policy', help="show or set where this site's keys may come from").add_argument(
+        'policy', nargs='?', choices=('generate-only', 'open'), help='generate-only: refuse imported keys')
     vs.add_parser('rotate-secret', help='rewrap all keys under STORAGEFORGE_VAULT_NEW_SECRET')
     x = vs.add_parser('import-dir', help='import every private key file in a directory (name = file stem)')
     x.add_argument('dir')

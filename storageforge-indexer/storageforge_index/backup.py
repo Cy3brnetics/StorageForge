@@ -24,6 +24,7 @@ from pathlib import Path
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from . import site
 from .db import Database
 from .vault import derive_kek
 
@@ -226,6 +227,9 @@ def restore(db: Database, source: str) -> dict:
         files = con.execute('SELECT count(*) FROM file_records').fetchone()[0] if 'file_records' in tables else 0
     finally:
         con.close()
+    refused, warning = site.restore_problem(site.read_file(target) if target.exists() else None, site.read_file(src))
+    if refused:
+        raise SystemExit(refused)
     kept = None
     if target.exists():
         kept = target.with_name(f'{target.name}.pre-restore-{dt.datetime.now():%Y%m%d-%H%M%S}')
@@ -242,4 +246,4 @@ def restore(db: Database, source: str) -> dict:
         restored.migrate(c)                       # bring an older backup up to this schema
     finally:
         c.close()
-    return {'restored': str(src), 'keys': keys, 'files': files, 'previous': str(kept) if kept else None}
+    return {'restored': str(src), 'keys': keys, 'files': files, 'previous': str(kept) if kept else None, 'warning': warning}

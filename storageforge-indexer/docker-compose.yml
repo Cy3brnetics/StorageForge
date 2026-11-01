@@ -88,6 +88,41 @@ services:
       driver: json-file
       options: { max-size: 10m, max-file: "5" }
 
+  # For commands that change the secrets themselves; `up` leaves it out:
+  #   docker compose stop storageforge proxy
+  #   docker compose run --rm admin reset --site-name "Acme" --yes
+  # The archive folder holds a client's keys and their secret, so only this service mounts it. Make it first:
+  #   sudo install -d -o 10001 -g 10001 -m 0700 archive
+  admin:
+    profiles: [admin]
+    build: *runtime-build
+    image: storageforge:0.2.0
+    depends_on:
+      init-secrets: { condition: service_completed_successfully }
+    restart: "no"
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    environment:
+      STORAGEFORGE_VAULT_SECRET_FILE: /run/sf-secrets/vault_secret
+      STORAGEFORGE_ARCHIVE_DIR: /app/archive
+    group_add: ["${STORAGEFORGE_SECRETS_GID:-1000}"]   # to check ./keys is empty
+    volumes:
+      - sf-secrets:/run/sf-secrets
+      - sf-data:/app/data
+      - sf-backups:/app/backups
+      - ${STORAGEFORGE_ARCHIVE_DIR:-./archive}:/app/archive
+      - /etc/localtime:/etc/localtime:ro
+      - ${STORAGEFORGE_KEY_IMPORT_DIR:-./keys}:/run/secrets/ssh-import:ro
+    tmpfs:
+      - /run/storageforge:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10001,gid=10001
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    healthcheck:
+      disable: true
+
   # TLS for the LAN: nginx (config built in) with the self-signed certificate from init-secrets
   proxy:
     build:

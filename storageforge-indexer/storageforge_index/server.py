@@ -148,7 +148,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, retire, routes_accounts, routes_git, routes_scheduler, scheduler, shares, snapjobs, tasks, users)
+               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_git, routes_scheduler, scheduler, shares, site, snapjobs, tasks, users)
 from .capacity import parse_size, trends
 from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
@@ -363,7 +363,7 @@ class App:
                 self.audit(conn, 'system', 'backup.create', 'failed', None, {'error': str(exc)[:300]})
             if CONFIG_EXPORT_DIR:
                 try:
-                    out['hostconfigs'] = hostconfig.export_to(conn, CONFIG_EXPORT_DIR)
+                    out['hostconfigs'] = hostconfig.export_to(conn, site.export_dir(conn, CONFIG_EXPORT_DIR))
                     self.audit(conn, 'system', 'hostconfig.export', 'ok', None, out['hostconfigs'])
                 except Exception as exc:
                     out['hostconfigs_error'] = str(exc)
@@ -761,7 +761,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
 
     def me():
         login_at = session.get('login_at', 0)
-        return dict(username=current_user.username, role=current_user.role, permissions=sorted(current_user.permissions), session_minutes=current_user.session_minutes,
+        return dict(site=site.name(conn()), username=current_user.username, role=current_user.role, permissions=sorted(current_user.permissions), session_minutes=current_user.session_minutes,
                     session_ends=login_at + current_user.session_minutes * 60, min_minutes=users.SESSION_MINUTES,
                     max_minutes=users.MAX_SESSION_MINUTES)
 
@@ -2127,8 +2127,10 @@ def planner_activity(c, host: str) -> dict:
 
 def serve(db: Database, host: str, port: int, scan_interval: int | None, parallel: int = 4):
     from waitress import serve as waitress_serve
+    server_lock = reset.hold_server_lock(db)     # noqa: F841  a reset refuses while this is held; freed when the process ends
     conn = db.connect()
     try:
+        site.ensure(conn)
         if not users.count(conn):
             print('warning: no web users yet; create one with: storageforge-index user add <name>', file=sys.stderr)
         stale = conn.all("SELECT scan_id FROM scans WHERE status = 'running'")   # killed by the last shutdown

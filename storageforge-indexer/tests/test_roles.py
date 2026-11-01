@@ -260,7 +260,7 @@ class Migration(unittest.TestCase):
             conn.execute("INSERT INTO users (username, password_hash, created_at, role) VALUES ('old', 'h', :t, 'operator')", {'t': now})
             uid = conn.scalar("SELECT user_id FROM users WHERE username = 'old'")
             conn.execute("INSERT INTO web_sessions (sid_hash, user_id, created_at) VALUES ('s', :u, :t)", {'u': uid, 't': now})
-            self.assertEqual(db.migrate(conn), ['024_roles_invites.sql', '025_invite_grants.sql', '026_job_state.sql'])
+            self.assertEqual(db.migrate(conn), ['024_roles_invites.sql', '025_invite_grants.sql', '026_job_state.sql', '027_key_origin.sql'])
             self.assertEqual(conn.scalar("SELECT role FROM users WHERE username = 'old'"), 'operator')
             self.assertEqual(conn.scalar('SELECT count(*) FROM web_sessions'), 1)
             users.set_role(conn, 'old', 'search')                             # the old CHECK is gone

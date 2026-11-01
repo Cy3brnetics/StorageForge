@@ -5,6 +5,8 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Added
+- **Sites and reset, for moving to a new client.** A database now knows which site it is: the name shows in the web UI, and `restore` refuses another site's backup, because a backup holds that site's SSH keys. `reset --site-name NAME` puts the old site in an archive outside the new site's reach and starts over with a new database, vault and vault secret. It refuses while a server runs, while jobs or deploy access remain on the old machines (`--abandon-deployed` overrides), or while `./keys` still holds keys.
+- **Generate-only vaults.** `vault policy generate-only` refuses imported keys, so a key cannot be reused across clients; sites made by `reset` start this way. `vault list` and the UI show each key's origin.
 - **Import existing rsnapshot and snapper jobs.** Scans now read rsnapshot configs, whatever they are called, with their cron lines and timers, and snapper configs. **Deploy > Existing snapshot jobs** lists them, and **Look as root** finds what the scan account can't read. An imported job stays on its own config and schedule. StorageForge shows its state from the snapshots and log it leaves, raises alerts, fills the 3-2-1 matrix, and can run it, pause it, change retention and restore from it, using the right tool for the job. **Forget** only stops tracking.
 - **Snapshot tool by filesystem.** **New snapshot job** suggests snapper on btrfs and rsnapshot on ext4, xfs and similar, and creates snapper configs. Plan checks refuse rsnapshot on filesystems without hard links, such as vfat and exfat cards.
 - **Sync engine for deployed jobs.** All of it is per step and off by default, and needs a redeploy of the plan:
