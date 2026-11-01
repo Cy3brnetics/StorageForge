@@ -5,7 +5,7 @@
    ignored paths also quiets broken-link flags in the topology. "Structure" shows the force-directed graph.
    Loaded after changes.js; uses the shared helpers. DOM APIs only, never innerHTML. */
 
-const FM = { sub: 'files', data: null, sel: null, view: { x: 0, y: 0, k: 1 }, minSize: '1MiB', scope: 'all', system: false, find: '', seq: 0, comparing: false, open: new Set(), closed: new Set(), listed: new Map(), mountRows: new Set(), more: new Set(), loading: new Map(), tree: null, world: null, view: { x: 0, y: 0, k: 1 }, moved: false };
+const FM = { sub: 'files', data: null, sel: null, view: { x: 0, y: 0, k: 1 }, minSize: '1MiB', scope: 'all', system: false, find: '', seq: 0, comparing: false, open: new Set(), closed: new Set(), listed: new Map(), mountRows: new Set(), more: new Set(), loading: new Map(), byDir: new Map(), tree: null, world: null, view: { x: 0, y: 0, k: 1 }, moved: false };
 const fmBox = $('#filemap');
 const fmKeyOf = (host, path) => `${host}\0${path}`;
 const fmActive = () => T.mode === 'graph' && FM.sub === 'files';
@@ -64,6 +64,7 @@ async function fmLoad() {
 }
 function fmTake(d) {
   FM.data = d; FM.error = '';
+  fmIndexCopies(d);
   FM.listed.clear();
   if (FM.sel && FM.sel.type === 'folder' && !d.folders.some((f) => f.key === FM.sel.key)) FM.sel = null;
   if (FM.sel && FM.sel.type === 'link' && !d.links.some((l) => l.a === FM.sel.a && l.b === FM.sel.b)) FM.sel = null;
@@ -204,16 +205,21 @@ function fmBuildTree() {
   }
   return out;
 }
-function fmFilesOf(n) {                    // the duplicates directly in a folder, as rows of their own
-  const f = n.folder;
-  if (!f) return [];
-  const rows = [];
-  for (const g of FM.data.groups) {
+function fmIndexCopies(d) {                // host + folder → its duplicates, so a row never scans every group
+  FM.byDir = new Map();
+  for (const g of d.groups) {
     for (const c of g.copies) {
-      if (c.host === f.host && dirOf(c.path) === f.path) rows.push({ id: fmId(n.root, c.host, c.path), root: n.root, host: c.host, path: c.path, name: c.path.split('/').pop(), group: g, copy: c, bytes: g.size, kids: new Map() });
+      const k = fmKeyOf(c.host, dirOf(c.path));
+      if (!FM.byDir.has(k)) FM.byDir.set(k, []);
+      FM.byDir.get(k).push({ g, c });
     }
   }
-  return rows.sort((a, b) => b.bytes - a.bytes);
+}
+function fmFilesOf(n) {                    // the duplicates directly in a folder, as rows of their own
+  const here = n.folder && FM.byDir.get(n.folder.key);
+  if (!here) return [];
+  return here.map(({ g, c }) => ({ id: fmId(n.root, c.host, c.path), root: n.root, host: c.host, path: c.path, name: c.path.split('/').pop(), group: g, copy: c, bytes: g.size, kids: new Map() }))
+    .sort((a, b) => b.bytes - a.bytes);
 }
 function fmKids(n) {
   const dirs = [...n.kids.values()].sort((a, b) => (b.bytes + b.links) - (a.bytes + a.links));
@@ -221,7 +227,7 @@ function fmKids(n) {
   const dupes = fmFilesOf(n), known = new Set([...dirs, ...dupes].map((k) => k.path));
   return [...dirs, ...dupes, ...listed.filter((x) => !known.has(x.path))];
 }
-const fmExpandable = (n) => n.kids.size > 0 || Boolean(n.folder) || Boolean(n.lazy) || fmFilesOf(n).length > 0;
+const fmExpandable = (n) => n.kids.size > 0 || Boolean(n.folder) || Boolean(n.lazy);   // every folder row can open
 const fmIsOpen = (n, depth) => FM.open.has(n.id) || (depth < 2 && !FM.closed.has(n.id)) || Boolean(FM.find && n.kids.size);
 function fmLoadKids(n) {                   // anything under a whole-folder copy comes from the index, once, when opened
   if (FM.loading.has(n.id)) return FM.loading.get(n.id);
@@ -434,7 +440,10 @@ function fmBar() {
     s.value = value;
     return s;
   };
-  const find = el('input', { type: 'search', placeholder: 'Filter folders…', 'aria-label': 'Filter folders', autocomplete: 'off', spellcheck: 'false', oninput: () => { FM.find = find.value; FM.moved = false; fmDraw(); } });
+  const find = el('input', { type: 'search', placeholder: 'Filter folders…', 'aria-label': 'Filter folders', autocomplete: 'off', spellcheck: 'false', oninput: () => {
+    clearTimeout(FM.findTimer);            // redraw when typing pauses, not on every key
+    FM.findTimer = setTimeout(() => { FM.find = find.value; FM.moved = false; fmDraw(); }, 150);
+  } });
   find.value = FM.find;
   const sys = el('input', { type: 'checkbox', onchange: () => { FM.system = sys.checked; FM.moved = false; fmLoad(); } });
   sys.checked = FM.system;
