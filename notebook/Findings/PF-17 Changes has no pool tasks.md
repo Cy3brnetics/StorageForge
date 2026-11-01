@@ -1,6 +1,6 @@
 ---
 id: PF-17
-status: in-progress
+status: done
 severity: medium
 effort: M
 area: "[[Plans and the planner]]"
@@ -28,7 +28,7 @@ The old planner Bash script did all of these (unchecked). A design that needs th
 Add task types to `changes.TYPES`, each with its check, Bash function and Ansible task like the existing ones: `zpool-create` (destructive, confirm every member), `zfs-dataset`, `btrfs-mkfs` (multi-device, destructive), `md-create`, `lvm-create`, `bind-mount` (a `mount` with `bind` and a path source), and a `partitions` field on `partition` for more than one partition. Then teach `fromdesign.py` to emit them instead of listing them.
 
 ## Done when
-- [ ] A design with a new mirrored ZFS pool stages a `zpool-create` task that is checked, needs every member device confirmed, and only runs with `--apply --destructive`
+- [x] A design with a new mirrored ZFS pool stages a `zpool-create` task that is checked, needs every member device confirmed, and only runs with `--apply --destructive`
 
 ## Progress 2026-10-30
 Changes now has ZFS pool and dataset tasks and LVM volume group and volume tasks. `fromdesign.plan()` still lists them under "By hand": wiring designs to these tasks is what is left. mdadm has no tasks yet.
@@ -36,3 +36,5 @@ Changes now has ZFS pool and dataset tasks and LVM volume group and volume tasks
 Later on 2026-10-30: designs now stage `zfs-pool`, `zfs-dataset`, `lvm-vg`, `lvm-vg-extend` and `lvm-lv`. Still by hand: mdadm, multi-device btrfs, several partitions on a disk, bind mounts. Those need new destructive task types, which should be run on the lab VMs as they are written.
 
 2026-10-31: left as is. mdadm, multi-device btrfs, several partitions on a disk and bind mounts are new destructive features, not fixes. The Btrfs session has work in this area.
+
+2026-11-01: closed. The ZFS and LVM wiring was already there; only the roadmap was out of date. `test_platform` covers a design staging `zfs-pool` with an empty confirm that cannot be saved, and `test_storage_ops` covers the destructive gate; both pass. Not run on real pools in this check. mdadm, multi-device btrfs, several partitions on a disk and bind mounts stay "By hand": new destructive features, to be raised on their own if wanted.

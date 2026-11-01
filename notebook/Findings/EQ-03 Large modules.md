@@ -23,3 +23,5 @@ Not urgent; worth doing before the next big feature lands in these files.
 Shellcheck (errors only) runs over generated scripts in a test and in CI, and the `yaml` extra is gone. Not done: splitting `server.py` and moving Bash out of Python strings, left until the other sessions editing those files have landed.
 
 2026-10-31, `4b8fb6b`: accounts, Git and scheduler routes moved out of `server.py` (now about 2,040 lines). Not done: the remaining routes, and Bash in Python strings. Worth doing only with a big change to those files.
+
+2026-11-01: still not done, on purpose. `server.py` is about 2,220 lines and Bash stays in Python strings. No big change to these files is planned, and sessions keep landing in them, so a split now would be churn and merge risk with nothing gained.

@@ -36,3 +36,14 @@ The suite passes on SQLite and PostgreSQL, and `.forgejo/workflows/ci.yml` is wr
 Later on 2026-10-30: planner capacity math now has a test. Still needs a Forgejo runner, which only the owner can set up, and browser tests.
 
 2026-10-31: the suite passed on SQLite and PostgreSQL by hand (364 tests), including new browser smoke tests (`2215bfc`). Only the Forgejo runner is left, which only the owner can set up.
+
+2026-11-01: every command in `ci.yml` run by hand in throwaway containers on `e02be16` plus these fixes: SQLite and PostgreSQL 556 tests, 0 failures. This found problems that would have failed or hollowed out the first real run:
+- The `image` job inherited `working-directory: storageforge-indexer`, so neither its build path nor `.trivyignore` existed. Fixed.
+- As root, as CI containers usually run, 35 tests skipped and 6 runner tests errored. `tests/ci.sh` now drops to a normal user, and `RunnerTests` skips as root like the others.
+- `sshd` was not installed, so 6 remote-node tests skipped. Added.
+- The health check test mocked every DNS lookup, which broke a database reached by host name. It now checks only the proxy's name.
+- Three dedup tests failed on a filesystem with reflinks. They now skip there.
+
+**Not proved:** this was `python:3.13-slim`, not the real runner, so `actions/*` steps, `sudo` and the Python path as the second user are untested. No Forgejo token here, so whether a runner exists could not be read.
+
+Runner labels the workflow needs: `ubuntu-latest` (a container image with sudo and node) and `docker:host` (the image job bind-mounts host paths). The first boxes above stay open until a push runs green.

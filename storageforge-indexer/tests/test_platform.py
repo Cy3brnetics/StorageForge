@@ -1705,9 +1705,10 @@ class ServerTests(DBCase):
 
         from storageforge_index import server
         web = server.create_app(server.App(self.db), 's' * 48, proxy_hops=1, proxy_host='proxy')
-        with mock.patch.object(server.socket, 'getaddrinfo', side_effect=AssertionError('looked up')) as lookup:
+        real = server.socket.getaddrinfo        # the database may have a host name to look up, as it does in CI
+        with mock.patch.object(server.socket, 'getaddrinfo', side_effect=real) as lookup:
             self.assertEqual(web.test_client().get('/healthz', environ_base={'REMOTE_ADDR': '127.0.0.1'}).status_code, 200)
-        lookup.assert_not_called()
+        self.assertNotIn('proxy', [c.args[0] for c in lookup.call_args_list])
 
     def test_commands_on_hosts_need_the_password_again(self):
         self.login()

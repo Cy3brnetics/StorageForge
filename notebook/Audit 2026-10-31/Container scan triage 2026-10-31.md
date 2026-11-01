@@ -40,3 +40,12 @@ Trivy over `storageforge:0.2.0`, from a saved image with no Docker socket: Debia
 This settles the table above: zlib and the rest no longer show, and neither does the glibc CVE, at these severities. Trivy's view only; Grype was not rerun.
 
 CI scans each build and fails on a critical not in `.trivyignore`, once a runner exists.
+
+## Rescan, 2026-11-01
+`e02be16`, rebuilt. Trivy 0.76.1: **no criticals, three highs**. Grype: **no criticals**, 13 highs, not reviewed one by one, as no gate reads them.
+
+| CVE | Package | Decision |
+| :-- | :-- | :-- |
+| CVE-2026-54369 | libacl1 | Unchanged: accept for now, no fix available |
+| CVE-2026-119586 | libsqlite3-0 | **Not reachable as described**: the scanner names the `.recover` command, part of the `sqlite3` tool, which the image does not hold |
+| CVE-2026-119373 | libsqlite3-0 | **Accept for now, and watch it**: FTS5 denial of service with no fix available. StorageForge does use FTS5 (`file_fts`, search on SQLite), so this cannot be ruled out. Whether a search or an indexed name can trigger it was not analysed. PostgreSQL installs do not use FTS5. Take the fix when Debian ships it |

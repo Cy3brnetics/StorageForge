@@ -1,14 +1,14 @@
 ---
 tags: [roadmap]
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 # Roadmap
 
 The findings in the order that makes each step easier than the last. Effort: S under a day, M a few days, L a week or more.
 
 ## Now: make change safe
-1. [[EQ-01 No CI and untested paths]] (M): CI is written (`.forgejo/workflows/ci.yml`) and needs a runner. Browser JS is still untested.
-2. ~~[[PF-13 Planner export is a second script generator]]~~ done 2026-10-29. Follow-up: [[PF-17 Changes has no pool tasks]]: the ZFS and LVM tasks exist since 2026-10-30; designs still have to use them.
+1. [[EQ-01 No CI and untested paths]] (M): CI is written and its commands pass by hand on both databases (2026-11-01); it has never run on a runner, which the owner must set up.
+2. ~~[[PF-13 Planner export is a second script generator]]~~ done 2026-10-29. Follow-up: ~~[[PF-17 Changes has no pool tasks]]~~ done 2026-11-01: designs use the ZFS and LVM tasks.
 3. ~~[[EQ-02 Two capacity engines]]~~ done 2026-10-30.
 
 ## Next: from map to monitor
@@ -25,7 +25,7 @@ The findings in the order that makes each step easier than the last. Effort: S u
 
 ## Later: new data
 12. ~~[[PF-05 Capacity history]]~~ done 2026-10-30.
-13. [[PF-04 Disk health and scrubs]]: built 2026-10-30; not yet run against real disks.
+13. [[PF-04 Disk health and scrubs]]: built 2026-10-30; not yet run against real disks. This machine has them; the read needs the owner's sudo password.
 14. ~~[[PF-03 Backup and snapshot detection]]~~ done 2026-10-31.
 15. ~~[[PF-16 One scan worker and one global schedule]]~~ done 2026-10-30.
 16. ~~[[PF-11 File history and content dupes are CLI-only]]~~ done 2026-10-30.
