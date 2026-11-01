@@ -7,7 +7,6 @@
 
 const FM = { sub: 'files', data: null, sel: null, view: { x: 0, y: 0, k: 1 }, minSize: '1MiB', scope: 'all', system: false, find: '', seq: 0, moved: false, comparing: false };
 const fmBox = $('#filemap');
-const FM_TOP = 60;         // clears the toolbar
 const fmKeyOf = (host, path) => `${host}\0${path}`;
 const fmActive = () => T.mode === 'graph' && FM.sub === 'files';
 const fmUnder = (p, dir) => p === dir || p.startsWith(dir.replace(/\/$/, '') + '/');
@@ -18,6 +17,8 @@ function fmSync() {
   const graph = T.mode === 'graph', files = fmActive();
   fmBox.hidden = !files;
   $('#stagebar').classList.toggle('low', files);
+  $('#graphsub').hidden = !graph;
+  document.querySelectorAll('#graphsub button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.sub === FM.sub)));
   for (const s of ['#graph', '.legend', '#hopsfield', '#reset']) document.querySelector(s).hidden = !graph || files;
   if (files) { $('#crumb').hidden = true; $('#empty').hidden = true; $('#detailshint').textContent = ''; }
   else if (graph) {
@@ -33,8 +34,9 @@ function fmSetSub(sub) {
   try { localStorage.setItem('sf.graphview', sub); } catch { /* storage blocked: the default is fine */ }
   S.selected = null;
   fmSync();
-  if (sub === 'structure') { renderSummary(); fmBar(); }
+  if (sub === 'structure') renderSummary();
 }
+document.querySelectorAll('#graphsub button').forEach((b) => b.addEventListener('click', () => fmSetSub(b.dataset.sub)));
 function fmShowStructure() { if (fmActive()) fmSetSub('structure'); }
 
 /* ── data ────────────────────────────────────────────────────────── */
@@ -151,8 +153,6 @@ async function fmEditIgnore() {
 
 /* ── canvas ──────────────────────────────────────────────────────── */
 function fmBar() {
-  const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Graph view' },
-    ...[['files', 'Files'], ['structure', 'Structure']].map(([k, label]) => { const b = button(label, () => fmSetSub(k)); b.setAttribute('aria-pressed', String(FM.sub === k)); return b; }));
   const choice = (label, value, options, fn) => {
     const s = el('select', { 'aria-label': label, onchange: () => fn(s.value) }, ...options.map(([v, t]) => new Option(t, v)));
     s.value = value;
@@ -162,11 +162,11 @@ function fmBar() {
   find.value = FM.find;
   const sys = el('input', { type: 'checkbox', onchange: () => { FM.system = sys.checked; FM.moved = false; fmLoad(); } });
   sys.checked = FM.system;
-  return el('div', { class: 'ttools', role: 'toolbar', 'aria-label': 'File map' }, seg, el('span', { class: 'tsep' }),
+  return el('div', { class: 'ttools', role: 'toolbar', 'aria-label': 'File map' },
     choice('Smallest file', FM.minSize, [['1MiB', '≥ 1 MiB'], ['10MiB', '≥ 10 MiB'], ['100MiB', '≥ 100 MiB'], ['1GiB', '≥ 1 GiB']], (v) => { FM.minSize = v; FM.moved = false; fmLoad(); }),
     choice('Where the copies are', FM.scope, [['all', 'All copies'], ['same', 'Same host'], ['across', 'Across hosts']], (v) => { FM.scope = v; FM.moved = false; fmDraw(); }),
     el('label', { class: 'check small' }, sys, 'System files'),
-    button('Ignored…', fmEditIgnore, 'btn ghost sm'), button('Fit', () => { FM.moved = false; fmFit(); }, 'btn ghost sm'), el('span', { class: 'tsep' }), find);
+    button('Ignored…', fmEditIgnore, 'btn ghost sm'), button('Fit', () => { FM.moved = false; fmFit(); }, 'btn ghost sm'), find);
 }
 function fmBrokenCard(list) {
   if (!list.length) return null;
@@ -287,7 +287,7 @@ function fmFit() {
   const W = fmBox.clientWidth, w = FM.world.offsetWidth;
   if (!W || !w) return;
   const k = Math.max(0.6, Math.min(1, W / w));   // fits the width and scrolls down: a whole index at once is unreadable
-  FM.view = { k, x: Math.max(0, (W - w * k) / 2), y: FM_TOP };
+  FM.view = { k, x: Math.max(0, (W - w * k) / 2), y: fmBox.querySelector('.ttools').offsetHeight + 16 };
   fmApply();
 }
 fmBox.addEventListener('wheel', (ev) => {

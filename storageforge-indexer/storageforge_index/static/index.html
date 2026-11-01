@@ -14,6 +14,7 @@
   <label class="field"><span>Host</span><select id="host"><option value="">All hosts</option></select></label>
   <form id="searchform" class="search" role="search"><input id="q" type="search" placeholder="Search files: *.cr2, IMG_2019*, report.pdf  ( / )" aria-label="Search files across hosts" autocomplete="off"></form>
   <div class="actions">
+    <div id="graphsub" class="seg" role="group" aria-label="Graph view" hidden><button type="button" data-sub="files">Files</button><button type="button" data-sub="structure">Structure</button></div>
     <label id="hopsfield" class="field"><span>Focus</span><select id="hops"><option value="1">1 hop</option><option value="2" selected>2 hops</option><option value="3">3 hops</option></select></label>
     <a id="toplanner" class="btn" href="/planner">Planner</a>
     <button id="reset" type="button" class="btn">Show all</button>
