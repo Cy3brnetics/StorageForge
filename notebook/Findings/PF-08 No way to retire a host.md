@@ -1,6 +1,6 @@
 ---
 id: PF-08
-status: in-progress
+status: done
 severity: medium
 effort: M
 area: "[[Hosts, keys and accounts]]"
@@ -24,8 +24,10 @@ found: 2026-10-29
 3. Show "last scanned N days ago" in grey on hosts not scanned for 3 intervals, with "Retire…" in the host menu.
 
 ## Done when
-- [ ] A host can be retired from the UI and disappears from search, graph and the scheduler
-- [ ] Bindings can be removed from the UI
+- [x] A host can be retired from the UI and disappears from search, graph and the scheduler
+- [x] Bindings can be removed from the UI
 
 ## Progress 2026-10-30
 `retire.py`, `hosts remove`, `DELETE /api/hosts/<name>`, and Remove and Unbind in the Keys tab. Not done: grey "not scanned for N days" on stale hosts.
+
+2026-10-31, `286eacd`: the host picker says "not scanned for N days" from 14 days. Covered by the browser smoke test.

@@ -1,6 +1,6 @@
 ---
 id: PF-23
-status: in-progress
+status: done
 severity: medium
 effort: S
 area: Scheduler
@@ -28,8 +28,11 @@ Silent failures, and in the worst case a plan applied to a host it wasn't review
 Remove `scan`, or make it a server-side schedule. Validate on save that the referenced plan names only this host, and resolve references to ids rather than free text. Use `epoch()` for the timestamp.
 
 ## Done when
-- [ ] Saving a mismatched schedule is refused
-- [ ] The scheduler tests pass on PostgreSQL
+- [x] Saving a mismatched schedule is refused
+- [x] The scheduler tests pass on PostgreSQL
 
 ## Fixed
 2026-10-31, in `6a5a990`. `scan` is refused on save, and a plan, task or share for another host is refused on save and on deploy. The timestamp now uses `epoch()`, not run on PostgreSQL. References are still free text, so this stays in progress. Test: `test_a_schedule_stays_on_its_own_host`.
+
+## Finished
+2026-10-31, `cc5b207`. References are stored as ids on save. The scheduler tests pass on PostgreSQL, after fixing a fixture that had kept them from running there at all (`ced94b5`).

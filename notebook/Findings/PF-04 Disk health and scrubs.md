@@ -31,3 +31,5 @@ Roadmap item #3 from the 10-27 audit. **Not started**, but half of the pieces ex
 
 ## Progress 2026-10-30
 Root-owned collector installed by access setup, so the scan account gets no new sudo rules, unlike the first suggestion. Parsing is tested on fixtures only: **not yet run against real SMART data**, and hosts need access setup rerun.
+
+2026-10-31: still not run against real SMART data. Lab VMs have virtual disks with none, so this needs real hardware.

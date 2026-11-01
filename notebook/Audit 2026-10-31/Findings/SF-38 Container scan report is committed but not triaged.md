@@ -26,8 +26,11 @@ The OpenSSH client entry (CVE-2026-60002, use-after-free when a server changes h
 Triage by reachability into a short table: package, used by us or not, decision. Rebuild on a current base image and rescan. Move raw output out of git, for example into CI artifacts, and keep only the triage.
 
 ## Done when
-- [ ] Each critical has a written decision
+- [x] Each critical has a written decision
 - [ ] CI fails on new reachable criticals
 
 ## Progress
 2026-10-31, in `d3424a1`. Triage in [[Container scan triage 2026-10-31]]: the report describes an older Debian 12 image. The raw file left git and is ignored. **Open:** a fresh scan, and the CI check.
+
+## Progress
+2026-10-31. Fresh Trivy scan in [[Container scan triage 2026-10-31]]: no criticals, one high. CI job written in `7443e46`, with an empty `.trivyignore`. **It has never run: there is no runner yet**, so that box stays open.

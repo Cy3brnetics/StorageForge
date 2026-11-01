@@ -1,6 +1,6 @@
 ---
 id: EQ-03
-status: open
+status: in-progress
 severity: low
 effort: L
 area: "[[Operations and engineering]]"
@@ -21,3 +21,5 @@ Not urgent; worth doing before the next big feature lands in these files.
 
 ## Progress 2026-10-30
 Shellcheck (errors only) runs over generated scripts in a test and in CI, and the `yaml` extra is gone. Not done: splitting `server.py` and moving Bash out of Python strings, left until the other sessions editing those files have landed.
+
+2026-10-31, `4b8fb6b`: accounts, Git and scheduler routes moved out of `server.py` (now about 2,040 lines). Not done: the remaining routes, and Bash in Python strings. Worth doing only with a big change to those files.

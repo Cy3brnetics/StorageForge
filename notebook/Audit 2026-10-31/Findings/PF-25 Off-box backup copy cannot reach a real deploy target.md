@@ -1,6 +1,6 @@
 ---
 id: PF-25
-status: in-progress
+status: done
 severity: high
 effort: S
 area: Backups
@@ -27,7 +27,10 @@ This is the disaster recovery path. Anyone relying on it may have only local bac
 Run the receive step as a signed script with the file as `data` on stdin (`deploy.run` supports that), or use a dedicated upload key with its own forced command. Add it to the KVM lab tier and try a restore from the copy.
 
 ## Done when
-- [ ] Lab test: nightly backup arrives on a real deploy host and restores
+- [x] Lab test: nightly backup arrives on a real deploy host and restores
 
 ## Fixed
 2026-10-31, in `85f805a`. The copy is a signed run with the file on stdin. Tested with the script run locally and a mocked `deploy.run`; **the lab test in Done when has not been run, so that box is open.** Test: `test_a_backup_copy_is_a_signed_run`.
+
+## Finished
+2026-10-31. Lab case `backup-copy-restores` passes in `reports/lab-2026-10-31-1618.md` (344 passed, 0 failed, 4 known): a real copy reached a deploy host through the signed runner, encrypted, and decrypted to a database holding the accounts. It checks the decrypted copy, not a full `restore` over a running system.
