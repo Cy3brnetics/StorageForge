@@ -69,6 +69,27 @@ def has_raw_hooks(plan: dict) -> bool:
                for k in ('pre', 'post') for c in o.get(k) or [])
 
 
+def _only(names, i: int, method: str) -> list[str]:
+    """A copy step can take chosen files from directly in its source folder instead of all of it."""
+    names = [str(n) for n in names or []]
+    if not names:
+        return []
+    if method != 'copy':
+        raise ValueError(f'step {i}: only a copy can take chosen files')
+    if len(names) > 1000 or any(not n or n in ('.', '..') or len(n) > 255 or '/' in n or '\n' in n or '\0' in n for n in names):
+        raise ValueError(f'step {i}: chosen files must be up to 1000 plain file names')
+    return sorted(set(names))
+
+
+def only_filters(names: list[str]) -> list[str]:
+    """rsync arguments that send just these names. rsync reads a backslash as an escape only in a pattern that has
+    wildcards, so a name is escaped only if it has some: they must match themselves."""
+    if not names:
+        return []
+    literal = (re.sub(r'([*?[\\])', r'\\\1', n) if re.search(r'[*?[]', n) else n for n in names)
+    return [*(f'--include=/{n}' for n in literal), '--exclude=*']
+
+
 def _route(r, i: int) -> dict:
     via, addr, iface = str(r.get('via') or ''), str(r.get('address') or '').strip(), str(r.get('iface') or '').strip()
     if via not in ROUTE_VIAS:
@@ -161,11 +182,13 @@ def normalize(body: dict) -> dict:
             if len(cmds) > 10 or any(len(c) > 500 or '\n' in c or '\0' in c for c in cmds):
                 raise ValueError(f'step {i}: up to 10 {k} commands, one line each')
             hooks[k] = cmds
+        only = _only(s.get('only'), i, method)
         steps.append({
             'id': str(s.get('id') or f's{i}'), 'method': method, 'note': one_line(s.get('note') or '')[:300],
             'src': {'host': src_host, 'path': _path(src.get('path'), f'step {i} source')},
             'dst': {'host': dst_host, 'path': _path(dst.get('path'), f'step {i} destination')},
             'excludes': excludes,
+            **({'only': only} if only else {}),
             'options': {'checksum': bool(o.get('checksum')), 'delete': bool(o.get('delete')) and method == 'mirror',
                         'remote_sudo': o.get('remote_sudo', True) is not False, 'one_fs': o.get('one_fs', True) is not False,
                         'link_back': o.get('link_back', True) is not False and method == 'move',
@@ -347,6 +370,14 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
             say('warn', f'{sm["target"]} on {sh["name"]} was not indexed (skipped); size unknown')
         else:
             size = subtree(conn, sm, src)
+            if s.get('only'):                 # just the chosen files, which must be directly in the folder
+                rows = conn.all('''SELECT f.filename, f.file_size_bytes FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
+                                   WHERE d.mount_id = :m AND d.path = :p AND NOT f.is_directory''', {'m': sm['id'], 'p': src})
+                have = {n: b or 0 for n, b in rows if n in set(s['only'])}
+                gone = [n for n in s['only'] if n not in have]
+                if gone:
+                    say('warn', f'not in the index under {src}: {", ".join(gone[:5])}' + (f' and {len(gone) - 5} more' if len(gone) > 5 else ''))
+                size = {'entries': len(have), 'files': len(have), 'bytes': sum(have.values())}
             info['src'] = {'mount': sm['target'], 'fstype': sm['fstype'], **size}
             if not size['entries']:
                 say('warn', f'{src} is not in the index: it may not exist, or the last scan could not read it')
@@ -392,7 +423,7 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
             if size and sm and dm['state'] == 'indexed' and size['files']:
                 there = subtree(conn, dm, dst)
                 if there['files']:
-                    a, b = _relset(conn, sm, src, compare_limit), _relset(conn, dm, dst, compare_limit)
+                    a, b = (None, None) if s.get('only') else (_relset(conn, sm, src, compare_limit), _relset(conn, dm, dst, compare_limit))
                     if a is not None and b is not None:
                         same = a & b
                         say('note', f'{len(same):,} of the files are already at the destination with the same size; '
@@ -533,7 +564,7 @@ def script(conn: Conn, plan: dict) -> str:
     hs, chk = hosts(conn), check(conn, plan)
     q = shlex.quote
     arrays = {k: [] for k in ('S_METHOD', 'S_RUNNER', 'S_SRC_HOST', 'S_SRC', 'S_SRC_LOGIN', 'S_SRC_PORT', 'S_DST',
-                              'S_DST_MOUNT', 'S_BYTES', 'S_FILES', 'S_EXCLUDES', 'S_FLAGS', 'S_SCHEDULE', 'S_KEEP', 'S_DESC')}
+                              'S_DST_MOUNT', 'S_BYTES', 'S_FILES', 'S_EXCLUDES', 'S_ONLY', 'S_FLAGS', 'S_SCHEDULE', 'S_KEEP', 'S_DESC')}
     summary = []
     for s, c in zip(plan['steps'], chk['steps']):
         sh, dh = find_host(hs, s['src']['host']), find_host(hs, s['dst']['host'])
@@ -549,7 +580,7 @@ def script(conn: Conn, plan: dict) -> str:
             'S_SRC_LOGIN': c.get('src_login') or o['src_login'] or '', 'S_SRC_PORT': str((sh or {}).get('ssh_port') or 22),
             'S_DST': s['dst']['path'], 'S_DST_MOUNT': dst_mount,
             'S_BYTES': str((c.get('src') or {}).get('bytes') or 0), 'S_FILES': str((c.get('src') or {}).get('files') or 0),
-            'S_EXCLUDES': '\n'.join(s['excludes']), 'S_FLAGS': flags.strip(), 'S_SCHEDULE': o['schedule'],
+            'S_EXCLUDES': '\n'.join(s['excludes']), 'S_ONLY': '\n'.join(only_filters(s.get('only') or [])), 'S_FLAGS': flags.strip(), 'S_SCHEDULE': o['schedule'],
             'S_KEEP': ' '.join(f'{k}={v}' for k, v in o['keep'].items() if v),
             'S_DESC': f'{s["method"]} {s["src"]["host"]}:{s["src"]["path"]} -> {s["dst"]["host"]}:{s["dst"]["path"]}',
         }
@@ -654,6 +685,7 @@ rsync_args() { # step [extra...] -> RS array
     has "$i" sudo && RS+=(--rsync-path="sudo -n rsync")
   fi
   local x; while IFS= read -r x; do [[ -n $x ]] && RS+=(--exclude="$x"); done <<<"${S_EXCLUDES[$i]}"
+  while IFS= read -r x; do [[ -n $x ]] && RS+=("$x"); done <<<"${S_ONLY[$i]}"
   RS+=("$@" "$(src_spec "$i")" "${S_DST[$i]%/}/")
 }
 avail() { local p=$1; while [[ ! -e $p && $p != / ]]; do p=$(dirname "$p"); done; df -B1 --output=avail "$p" | tail -1 | tr -d ' '; }

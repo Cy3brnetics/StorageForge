@@ -908,6 +908,16 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 .fmrow.staged { border-style: dashed; }
 .fmrow.staged .nm { text-decoration: line-through; color: var(--muted); }
 .fmrow.more { align-items: center; color: var(--accent); background: none; border-style: dashed; }
+.fmedges .ln.plan { stroke: var(--accent); stroke-dasharray: 2 5; opacity: 1; }
+.fmpick { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 6px 12px; background: color-mix(in srgb, var(--accent) 12%, var(--panel)); border-bottom: 1px solid var(--line-2); font-size: 13px; }
+.fmpick[hidden] { display: none; }
+.fmrow .pk { position: absolute; left: -9px; top: 50%; margin: -8px 0 0; width: 16px; height: 16px; cursor: pointer; opacity: 0; }
+.fmrow:hover .pk, .fmrow:focus-within .pk, .fmrow .pk:checked, .filemap.hasp .pk { opacity: 1; }
+.fmrow.picked { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+.fmrow.drop { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 50%, transparent); }
+.filemap.choosing .fmrow.dir:hover { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 50%, transparent); }
+.filemap.choosing .fmrow.file { opacity: .4; }
+.fmrow.note { cursor: default; color: var(--muted); }
 .fmrow .hd { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .fmrow .nm { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .fmrow .sz { flex: none; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--muted); }

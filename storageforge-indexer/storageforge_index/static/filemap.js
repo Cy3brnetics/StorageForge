@@ -1,16 +1,21 @@
 'use strict';
-/* Graph view, Files map: the folders that hold duplicates, as an expandable node map per host, left to right,
-   with lines joining cards that share copies; a collapsed folder gathers its children's lines. Whole-folder copies open from the index. The side panel lists the files and stages "move to trash" tasks into the
+/* Graph view, Files map: every host's files from the index, as an expandable node map, left to right. Pick cards and
+   copy, move or sync them to any folder on any host by clicking or dragging; those steps go in the Moves plan and draw
+   as blue lines. Amber lines join folders that share copies, and a collapsed folder gathers its children's lines.
+   Duplicates mode shows only the folders that hold copies. The side panel lists the files and stages "move to trash" tasks into the
    Changes plan, so nothing touches a host until that plan's script runs. System paths are hidden, and the list of
    ignored paths also quiets broken-link flags in the topology. "Structure" shows the force-directed graph.
    Loaded after changes.js; uses the shared helpers. DOM APIs only, never innerHTML. */
 
-const FM = { sub: 'files', data: null, sel: null, view: { x: 0, y: 0, k: 1 }, minSize: '1MiB', scope: 'all', system: false, find: '', seq: 0, comparing: false, open: new Set(), closed: new Set(), listed: new Map(), mountRows: new Set(), more: new Set(), loading: new Map(), byDir: new Map(), tree: null, world: null, view: { x: 0, y: 0, k: 1 }, moved: false };
+const FM = { sub: 'files', data: null, sel: null, view: { x: 0, y: 0, k: 1 }, minSize: '1MiB', scope: 'all', system: false, find: '', seq: 0, comparing: false, open: new Set(), closed: new Set(), listed: new Map(), mountRows: new Set(), more: new Set(), loading: new Map(), mode: 'browse', hosts: [], picked: new Map(), dest: null, noise: { dirs: [], names: [] }, folderBy: new Map(), byDir: new Map(), tree: null, world: null, view: { x: 0, y: 0, k: 1 }, moved: false };
 const fmBox = $('#filemap');
 const fmKeyOf = (host, path) => `${host}\0${path}`;
 const fmActive = () => T.mode === 'graph' && FM.sub === 'files';
 const fmUnder = (p, dir) => p === dir || p.startsWith(dir.replace(/\/$/, '') + '/');
-try { if (localStorage.getItem('sf.graphview') === 'structure') FM.sub = 'structure'; } catch { /* default */ }
+try {
+  if (localStorage.getItem('sf.graphview') === 'structure') FM.sub = 'structure';
+  if (localStorage.getItem('sf.filemode') === 'dupes') FM.mode = 'dupes';
+} catch { /* default */ }
 
 /* ── which view is showing ───────────────────────────────────────── */
 function fmSync() {
@@ -47,6 +52,9 @@ async function fmLoad() {
   if (FM.system) qs.set('system', '1');
   FM.comparing = true;
   try {
+    const [{ indexed }, ig] = await Promise.all([getJSON('/api/hosts'), getJSON('/api/files/ignore')]);
+    FM.hosts = indexed.map((h) => h.hostname);
+    FM.noise = { dirs: ['/proc', '/sys', '/dev', '/run', ...ig.builtin_dirs], names: ig.builtin_names, ignore: ig.ignore };
     const quick = await getJSON(`/api/filemap?${qs}`);    // checksums only: fast. Comparing folders can take a while
     if (seq !== FM.seq) return;
     fmTake(quick);
@@ -65,7 +73,7 @@ async function fmLoad() {
 function fmTake(d) {
   FM.data = d; FM.error = '';
   fmIndexCopies(d);
-  FM.listed.clear();
+  FM.folderBy = new Map(d.folders.map((f) => [f.key, f]));
   if (FM.sel && FM.sel.type === 'folder' && !d.folders.some((f) => f.key === FM.sel.key)) FM.sel = null;
   if (FM.sel && FM.sel.type === 'link' && !d.links.some((l) => l.a === FM.sel.a && l.b === FM.sel.b)) FM.sel = null;
   fmDraw();
@@ -181,7 +189,17 @@ function fmCompact(n, mounts) {            // /mnt/pool/photos stays one row unt
     fmCompact(c, mounts);
   }
 }
+function fmHidden(host, path, name) {      // the map leaves system paths and the ignored list out unless asked
+  if (FM.system) return false;
+  const lists = [...(FM.noise.ignore?.['*'] || []), ...(FM.noise.ignore?.[host] || [])];
+  if (lists.some((x) => x.startsWith('!') && fmUnder(path, x.slice(1)))) return false;
+  return FM.noise.dirs.some((x) => fmUnder(path, x)) || FM.noise.names.includes(name)
+    || lists.some((x) => !x.startsWith('!') && (x.startsWith('/') ? fmUnder(path, x) : `${path}/`.includes(x)));
+}
 function fmBuildTree() {
+  if (FM.mode === 'browse') {
+    return (S.host ? [S.host] : FM.hosts).map((h) => Object.assign(fmNode('f', h, '/', h), { hostRoot: true, lazy: true, bytes: 0 }));
+  }
   const d = FM.data, tops = new Map(), mounts = new Map();
   for (const f of fmShownFolders()) {
     if (!tops.has(f.host)) { tops.set(f.host, Object.assign(fmNode('f', f.host, '/', f.host), { hostRoot: true })); mounts.set(f.host, new Set()); }
@@ -225,10 +243,13 @@ function fmKids(n) {
   const dirs = [...n.kids.values()].sort((a, b) => (b.bytes + b.links) - (a.bytes + a.links));
   const listed = n.listed || [];           // read from the index when a whole-folder copy was opened
   const dupes = fmFilesOf(n), known = new Set([...dirs, ...dupes].map((k) => k.path));
-  return [...dirs, ...dupes, ...listed.filter((x) => !known.has(x.path))];
+  const q = FM.find.toLowerCase();
+  const rest = listed.filter((x) => !known.has(x.path) && !fmHidden(x.host, x.path, x.name) && (!q || x.name.toLowerCase().includes(q) || x.lazy));
+  for (const x of rest) x.folder = FM.folderBy.get(fmKeyOf(x.host, x.path));
+  return [...dirs, ...dupes, ...rest];
 }
 const fmExpandable = (n) => n.kids.size > 0 || Boolean(n.folder) || Boolean(n.lazy);   // every folder row can open
-const fmIsOpen = (n, depth) => FM.open.has(n.id) || (depth < 2 && !FM.closed.has(n.id)) || Boolean(FM.find && n.kids.size);
+const fmIsOpen = (n, depth) => FM.open.has(n.id) || (depth < (FM.mode === 'browse' ? 1 : 2) && !FM.closed.has(n.id)) || Boolean(FM.find && n.kids.size);
 function fmLoadKids(n) {                   // anything under a whole-folder copy comes from the index, once, when opened
   if (FM.loading.has(n.id)) return FM.loading.get(n.id);
   const job = (async () => {
@@ -236,7 +257,8 @@ function fmLoadKids(n) {                   // anything under a whole-folder copy
     try {
       const r = await getJSON(`/api/fs/browse?host=${encodeURIComponent(n.host)}&path=${encodeURIComponent(n.path)}`);
       const row = (name, bytes, extra) => ({ id: fmId(n.root, n.host, joinPath(n.path, name)), root: n.root, host: n.host, path: joinPath(n.path, name), name, bytes, kids: new Map(), ...extra });
-      rows = [...r.dirs.map((x) => row(x.name, x.bytes, { lazy: true })), ...r.files.map((x) => row(x.name, x.bytes, { plain: true }))];
+      rows = [...r.dirs.map((x) => row(x.name, x.bytes, { lazy: true, isMount: Boolean(x.mount) })), ...r.files.map((x) => row(x.name, x.bytes, { plain: true, link: undefined, linkTo: x.link }))];
+      if (r.more_files) rows.push({ id: fmId(n.root, n.host, `${n.path}\0more-files`), root: n.root, name: `${r.more_files.toLocaleString()} more files`, note: true, kids: new Map() });
     } catch (err) { toast(err.message); }
     FM.listed.set(n.id, rows);
     FM.loading.delete(n.id);
@@ -254,6 +276,11 @@ function fmToggle(n, depth) {
 function fmRowClick(n, depth) {
   FM.anchor = n.id;
   FM.moved = true;
+  if (FM.dest) {                           // choosing where picked files go
+    if (fmIsFolder(n)) fmSend(FM.dest, [...FM.picked.values()], n);
+    else if (fmExpandable(n)) fmToggle(n, depth);
+    return;
+  }
   if (fmExpandable(n) && !fmIsOpen(n, depth)) { FM.closed.delete(n.id); FM.open.add(n.id); }
   if (n.brokenRoot) FM.sel = null;
   else if (n.link) FM.sel = { type: 'broken', link: n.link };
@@ -288,15 +315,21 @@ function fmCard(n, depth, max) {
     m.addEventListener('click', () => { FM.more.add(n.owner); FM.anchor = n.id; fmDraw(); });
     return m;
   }
+  if (n.note) {
+    const m = el('div', { class: 'fmrow more note', role: 'treeitem', tabindex: '-1', 'aria-level': String(depth + 1), title: 'Too many to list here. Use Browse on the folder, or search.' }, text('span', n.name, 'nm'));
+    m.dataset.id = n.id; m._node = n; m._depth = depth;
+    return m;
+  }
   const can = fmExpandable(n), open = can && fmIsOpen(n, depth);
-  const node = FM.mountRows.has(`${n.host}\0${n.path}`) ? S.byId.get(`mnt:${n.host}:${n.path}`) : null;
+  const node = n.isMount || FM.mountRows.has(`${n.host}\0${n.path}`) ? S.byId.get(`mnt:${n.host}:${n.path}`) : null;
   const note = n.brokenRoot ? `${n.links} to look at` : n.link ? `→ ${n.link.target || '?'}`
     : n.group ? `${n.group.copies.length} copies` : n.links ? `${n.links} broken`
     : n.folder?.whole ? `whole copy · ${n.folder.files.toLocaleString()} files` : n.folder ? `${n.folder.files.toLocaleString()} duplicate${n.folder.files === 1 ? '' : 's'}`
-    : n.hostRoot ? 'host' : node ? 'mount' : n.plain ? 'file' : 'folder';
+    : n.hostRoot ? 'host' : n.isMount || node ? 'mount' : n.plain ? (n.linkTo ? `→ ${n.linkTo}` : 'file') : 'folder';
   const staged = !n.brokenRoot && n.host && fmStagedAbove(n.host, n.path);
-  const kind = n.link || n.brokenRoot ? ' bad' : n.hostRoot ? ' host' : node ? ' mnt' : n.folder?.whole ? ' whole' : n.folder ? ' dup' : n.group ? ' dup file' : n.plain ? ' file' : '';
+  const kind = n.link || n.brokenRoot ? ' bad' : n.hostRoot ? ' host' : node || n.isMount ? ' mnt' : n.folder?.whole ? ' whole' : n.folder ? ' dup' : n.group ? ' dup file' : n.plain ? ' file' : '';
   const r = el('div', { class: `fmrow${kind}${staged ? ' staged' : ''}`, role: 'treeitem', tabindex: '-1', 'aria-level': String(depth + 1) },
+    fmCanPick(n) ? fmPickBox(n) : null,
     el('span', { class: 'hd' }, node ? el('i', { class: `dot ${node.health}` }) : null, el('span', { class: 'nm', title: n.path }, el('bdi', {}, n.name)),
       text('span', n.bytes ? fmtBytes(n.bytes) : '', 'sz')),
     text('span', note, 'nt'),
@@ -306,6 +339,20 @@ function fmCard(n, depth, max) {
   r.dataset.id = n.id; r._node = n; r._depth = depth;
   r.addEventListener('click', () => fmRowClick(n, depth));
   r._menu = () => fmMenu(n);
+  if (fmCanPick(n)) {
+    r.draggable = true;
+    r.addEventListener('dragstart', (ev) => {
+      FM.drag = FM.picked.has(n.id) ? [...FM.picked.values()] : [fmItem(n)];
+      ev.dataTransfer.effectAllowed = 'copy';
+      ev.dataTransfer.setData('text/plain', n.path);
+    });
+    r.addEventListener('dragend', () => { FM.drag = null; });
+  }
+  if (fmIsFolder(n)) {
+    r.addEventListener('dragover', (ev) => { if (FM.drag) { ev.preventDefault(); r.classList.add('drop'); } });
+    r.addEventListener('dragleave', () => r.classList.remove('drop'));
+    r.addEventListener('drop', (ev) => { ev.preventDefault(); r.classList.remove('drop'); if (FM.drag) fmSend('copy', FM.drag, n); });
+  }
   return r;
 }
 function fmVisibleKids(n) {                // big folders show a page at a time, so opening one stays quick
@@ -355,7 +402,8 @@ function fmDraw() {
     FM.world = el('div', { class: 'fmworld' });
     FM.tree = el('div', { class: 'fmtree', role: 'tree', 'aria-label': 'Folders holding duplicates', tabindex: '0', onkeydown: fmKey }, FM.world);
     FM.stat = el('div', { class: 'fmstat', role: 'status' });
-    fmBox.replaceChildren(fmBar(), FM.tree, FM.stat);
+    FM.pickbar = el('div', { class: 'fmpick', role: 'status', hidden: true });
+    fmBox.replaceChildren(fmBar(), FM.pickbar, FM.tree, FM.stat);
     fmPanZoom();
   }
   FM.mountRows = new Set(d.folders.map((f) => `${f.host}\0${f.mount}`));
@@ -391,6 +439,7 @@ function fmDraw() {
   }
   FM.anchor = null;
   if (!FM.moved && L.cards.length) fmFit(); else fmApply();
+  fmPickBar();
   fmMark();
   if (L.pending.length) Promise.all(L.pending.map(fmLoadKids)).then(fmDraw);
 }
@@ -447,13 +496,19 @@ function fmBar() {
   find.value = FM.find;
   const sys = el('input', { type: 'checkbox', onchange: () => { FM.system = sys.checked; FM.moved = false; fmLoad(); } });
   sys.checked = FM.system;
-  return el('div', { class: 'ttools', role: 'toolbar', 'aria-label': 'File map' },
-    choice('Smallest file', FM.minSize, [['1MiB', '≥ 1 MiB'], ['10MiB', '≥ 10 MiB'], ['100MiB', '≥ 100 MiB'], ['1GiB', '≥ 1 GiB']], (v) => { FM.minSize = v; FM.moved = false; fmLoad(); }),
-    choice('Where the copies are', FM.scope, [['all', 'All copies'], ['same', 'Same host'], ['across', 'Across hosts']], (v) => { FM.scope = v; FM.moved = false; fmDraw(); }),
+  const seg = el('div', { class: 'seg sm', role: 'group', 'aria-label': 'What the map shows' }, ...[['browse', 'Browse'], ['dupes', 'Duplicates']].map(([m, label]) => {
+    const b = button(label, () => { FM.mode = m; FM.moved = false; try { localStorage.setItem('sf.filemode', m); } catch { /* the default is fine */ } FM.tree = null; FM.sel = null; fmDraw(); fmPanel(); });
+    b.setAttribute('aria-pressed', String(FM.mode === m));
+    return b;
+  }));
+  return el('div', { class: 'ttools', role: 'toolbar', 'aria-label': 'File map' }, seg,
+    FM.mode === 'browse' ? null : choice('Smallest file', FM.minSize, [['1MiB', '≥ 1 MiB'], ['10MiB', '≥ 10 MiB'], ['100MiB', '≥ 100 MiB'], ['1GiB', '≥ 1 GiB']], (v) => { FM.minSize = v; FM.moved = false; fmLoad(); }),
+    FM.mode === 'browse' ? null : choice('Where the copies are', FM.scope, [['all', 'All copies'], ['same', 'Same host'], ['across', 'Across hosts']], (v) => { FM.scope = v; FM.moved = false; fmDraw(); }),
     el('label', { class: 'check small' }, sys, 'System files'),
     button('−', () => fmZoom(1 / 1.2), 'btn ghost sm'), button('+', () => fmZoom(1.2), 'btn ghost sm'),
     button('Fit', () => { FM.moved = false; fmFit(); }, 'btn ghost sm'),
-    button('Expand all', () => { FM.moved = false; fmExpandAll(); }, 'btn ghost sm'), button('Collapse all', () => { FM.moved = false; fmCollapseAll(); }, 'btn ghost sm'),
+    FM.mode === 'browse' ? null : button('Expand all', () => { FM.moved = false; fmExpandAll(); }, 'btn ghost sm'),
+    button('Collapse all', () => { FM.moved = false; fmCollapseAll(); }, 'btn ghost sm'),
     button('Ignored…', fmEditIgnore, 'btn ghost sm'), find);
 }
 function fmWalk(fn) {
@@ -541,6 +596,14 @@ function fmMark() {         // the copy lines. A collapsed folder gathers its ch
     hit.append(title);
     paths.push(hit);
   }
+  for (const st of MV.plan?.steps || []) {  // what the Moves plan will do, as blue lines to where it lands
+    if (!st.src?.path || !st.dst?.path) continue;
+    const a = visible(fmKeyOf(st.src.host, st.src.path)), b = visible(fmKeyOf(st.dst.host, st.dst.path));
+    if (!a || !b || a === b) continue;
+    const p = FM.pos.get(a), q = FM.pos.get(b), [lf, rt] = p.x <= q.x ? [p, q] : [q, p];
+    const sx = lf.x + FM_W, ly = lf.y + FM_H / 2, ry = rt.y + FM_H / 2, mid = lf.x === rt.x ? sx + 40 : (sx + rt.x) / 2, ex = lf.x === rt.x ? sx : rt.x;
+    paths.push(svgEl('path', { d: `M${sx} ${ly}C${mid} ${ly} ${mid} ${ry} ${ex} ${ry}`, class: 'ln plan', 'stroke-width': '2' }));
+  }
   if (s?.type === 'group') for (const c of s.group.copies) if (fmId('f', c.host, c.path) !== s.id) peers.add(fmId('f', c.host, c.path));
   FM.tree.querySelectorAll('.fmrow').forEach((r) => {
     r.classList.toggle('on', r.dataset.id === self);
@@ -557,16 +620,106 @@ function fmSelect(sel) {
   const on = FM.tree?.querySelector('.fmrow.on');
   if (on) fmReveal(on.dataset.id);
 }
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && FM.dest) { FM.dest = null; fmPickBar(); } });
 $('#host').addEventListener('change', () => { FM.data = null; FM.sel = null; FM.tree = null; FM.world = null; FM.moved = false; if (fmActive()) fmLoad(); });
 
+/* ── picking files and sending them somewhere ────────────────────── */
+const fmIsFolder = (n) => !n.plain && !n.group && !n.note && !n.more && !n.link && !n.brokenRoot && n.root === 'f';
+const fmCanPick = (n) => !n.hostRoot && !n.note && !n.more && !n.link && !n.brokenRoot && n.root === 'f';
+const fmItem = (n) => ({ id: n.id, host: n.host, path: n.path, name: n.path.split('/').pop(), bytes: n.bytes || 0, file: Boolean(n.plain || n.group) });
+function fmPickBox(n) {
+  const c = el('input', { type: 'checkbox', class: 'pk', 'aria-label': `Pick ${n.path}`, onclick: (ev) => {
+    ev.stopPropagation();
+    if (c.checked) FM.picked.set(n.id, fmItem(n)); else FM.picked.delete(n.id);
+    fmPickBar();
+    c.closest('.fmrow').classList.toggle('picked', c.checked);
+  } });
+  c.checked = FM.picked.has(n.id);
+  queueMicrotask(() => c.closest('.fmrow')?.classList.toggle('picked', c.checked));
+  return c;
+}
+function fmPickBar() {
+  const bar = FM.pickbar;
+  if (!bar) return;
+  const items = [...FM.picked.values()], folders = items.every((i) => !i.file);
+  bar.hidden = !items.length && !FM.dest;
+  fmBox.classList.toggle('choosing', Boolean(FM.dest));
+  if (FM.dest) {
+    bar.replaceChildren(text('b', `Click a folder to ${FM_OPS[FM.dest].verb} ${items.length === 1 ? items[0].name : `${items.length} items`} there`),
+      text('span', 'Open any host to get to it.', 'muted'), button('Cancel', () => { FM.dest = null; fmPickBar(); }, 'btn ghost sm'));
+    return;
+  }
+  if (!items.length) return;
+  bar.replaceChildren(text('b', `${items.length} picked · ${fmtBytes(items.reduce((a, i) => a + i.bytes, 0))}`), ...fmOpButtons(items, folders),
+    button('Clear', () => { FM.picked.clear(); fmDraw(); }, 'btn ghost sm'));
+}
+const FM_OPS = {
+  copy: { label: 'Copy to…', verb: 'copy', help: 'The source is left alone.' },
+  move: { label: 'Move to…', verb: 'move', help: 'Copy, verify, then rename the source to *.migrated-<date>.', folders: true },
+  mirror: { label: 'Keep in sync…', verb: 'keep in sync', help: 'Runs on a timer once installed.', folders: true },
+  rsnapshot: { label: 'Snapshot backups…', verb: 'back up', help: 'Rotating snapshots there, on timers.', folders: true },
+};
+function fmOpButtons(items, folders) {
+  const start = (op) => () => { items.forEach((i) => FM.picked.set(i.id, i)); FM.dest = op; fmPickBar(); toast(`Now click the folder to ${FM_OPS[op].verb} to`); };
+  const out = Object.entries(FM_OPS).filter(([, o]) => !o.folders || folders).map(([k, o], i) => {
+    const b = button(o.label, start(k), i ? 'btn ghost sm' : 'btn pri sm'); b.title = o.help; return b;
+  });
+  out.push(button('Trash', () => fmTrash(items.map(({ host, path }) => ({ host, path }))), 'btn ghost sm danger'));
+  if (items.length === 1) {
+    const it = items[0], t = (type, preset) => () => openTask(type, it.host, preset);
+    out.push(button('Rename…', t('rename', { path: it.path, dest: it.path }), 'btn ghost sm'),
+      button('Owner…', t('perms', { path: it.path }), 'btn ghost sm'),
+      button('Link…', t('symlink', { target: it.path }), 'btn ghost sm'));
+    if (!it.file) out.push(button('New folder…', t('dir', { path: `${it.path}/` }), 'btn ghost sm'));
+  }
+  return out;
+}
+async function fmSend(method, items, dest) {  // one step per folder, and one for the files picked from each folder
+  FM.dest = null;
+  const toFolder = joinPath;
+  const steps = [], loose = new Map();
+  for (const i of items) {
+    if (i.host === dest.host && fmUnder(dest.path, i.path)) { toast(`${i.path} cannot go inside itself`); fmPickBar(); return; }
+    if (i.file) {
+      if (method !== 'copy') { toast('Only a copy can take single files. Pick the folder to move or sync it.'); fmPickBar(); return; }
+      const k = fmKeyOf(i.host, dirOf(i.path));
+      if (!loose.has(k)) loose.set(k, { host: i.host, path: dirOf(i.path), only: [] });
+      loose.get(k).only.push(i.name);
+    } else {
+      steps.push(Object.assign(blankStep({ host: i.host, path: i.path }, { host: dest.host, path: toFolder(dest.path, i.name) }), { method }));
+    }
+  }
+  for (const l of loose.values()) {
+    if (l.host === dest.host && l.path === dest.path) { toast('Those files are already in that folder'); fmPickBar(); return; }
+    steps.push(Object.assign(blankStep({ host: l.host, path: l.path }, { host: dest.host, path: dest.path }), { method, only: l.only }));
+  }
+  try { await postJSON('/api/moves/check', { name: 'check', steps }); }
+  catch (err) { toast(err.message); fmPickBar(); return; }
+  if (!MV.plan) MV.plan = { name: '', steps: [] };
+  MV.plan.steps.push(...steps);
+  MV.dirty = true; MV.result = null;
+  FM.picked.clear();
+  FM.open.add(dest.id);
+  fmDraw();
+  toast(`Added ${steps.length} step${steps.length === 1 ? '' : 's'} to the Moves plan. Check and run it there.`);
+}
+
 /* ── right-click menus ───────────────────────────────────────────── */
+function fmStart(op, n) { FM.picked.set(n.id, fmItem(n)); FM.dest = op; fmDraw(); }
 function fmMenu(n) {
   if (n.brokenRoot) return null;
   if (n.link) return fmBrokenMenu(n.link);
   if (n.folder) return fmFolderMenu(n.folder);
-  if (n.group || n.plain) return resultMenu({ host: n.host, mount: mountFor(n.host, n.path), path: n.path, type: 'file' });
+  if (n.note || n.more) return null;
+  if (n.group || n.plain) return [...resultMenu({ host: n.host, mount: mountFor(n.host, n.path), path: n.path, type: 'file' }), '-', { label: 'Copy to…', run: () => fmStart('copy', n) }];
   if (n.hostRoot) return [{ heading: n.name }, { label: 'Only this host', run: () => { $('#host').value = n.host; $('#host').dispatchEvent(new Event('change')); } }];
   return [{ heading: n.path },
+    ...Object.entries(FM_OPS).map(([k, o]) => ({ label: o.label, run: () => fmStart(k, n) })),
+    { label: 'Move to trash', danger: true, run: () => fmTrash([{ host: n.host, path: n.path }]) },
+    { label: 'Rename…', run: () => openTask('rename', n.host, { path: n.path, dest: n.path }) },
+    { label: 'New folder here…', run: () => openTask('dir', n.host, { path: `${n.path}/` }) },
+    { label: 'Owner and permissions…', run: () => openTask('perms', n.host, { path: n.path }) },
+    '-',
     { label: 'Browse folder', run: () => browseFolders(n.host, n.path, mountFor(n.host, n.path)) },
     { label: 'Largest files here', run: () => runSearch({ under: n.path, host: n.host, size_gt: '1MiB' }) },
     { label: 'Copy path', run: () => copyText(n.path) },
@@ -577,6 +730,7 @@ function fmFolderMenu(f) {
   const stage = (type, preset) => () => openTask(type, f.host, preset);
   return [{ heading: f.path },
     { label: 'Show duplicates', run: () => fmSelect({ type: 'folder', key: f.key }) },
+    ...Object.entries(FM_OPS).map(([k, o]) => ({ label: o.label, run: () => fmStart(k, { id: fmId('f', f.host, f.path), host: f.host, path: f.path, bytes: f.bytes, root: 'f' }) })),
     { label: 'Browse folder', run: () => browseFolders(f.host, f.path, f.mount) },
     { label: 'Largest files here', run: () => runSearch({ under: f.path, host: f.host, size_gt: '1MiB' }) },
     { label: 'Copy path', run: () => copyText(f.path) },
@@ -638,6 +792,7 @@ function fmFolderPanel(f) {
   const here = groups.flatMap((g) => g.copies.filter((c) => fmInFolder(f, c)).map((c) => ({ host: c.host, path: c.path })));
   const peers = d.links.filter((l) => l.a === f.key || l.b === f.key);
   const out = [el('div', { class: 'node-head' }, text('span', `${f.host} · ${fmtBytes(f.bytes)}`, 'muted'), text('h2', f.path)),
+    el('div', { class: 'fmacts' }, ...fmOpButtons([{ id: fmId('f', f.host, f.path), host: f.host, path: f.path, name: f.path.split('/').pop(), bytes: f.bytes, file: false }], true)),
     el('div', { class: 'fmacts' },
       button('Browse', () => browseFolders(f.host, f.path, f.mount), 'btn ghost sm'),
       button('Move…', () => moveFrom(f.host, f.path), 'btn ghost sm'),
@@ -703,8 +858,8 @@ function fmGroupPanel(g) {
 function fmDirPanel(n) {
   const broken = n.root === 'b';
   return [el('div', { class: 'node-head' }, text('span', `${n.host}${n.bytes ? ` · ${fmtBytes(n.bytes)}` : ''}${n.links ? ` · ${n.links} broken links` : ''}`, 'muted'), text('h2', n.path)),
-    n.plain ? text('p', 'Part of a folder copy. Right-click for what you can do with it.', 'muted small')
-      : text('p', broken ? 'Ignoring this folder stops every link under it being flagged.' : 'Holds folders with duplicates. Open it in the tree to see them.', 'muted small'),
+    broken ? text('p', 'Ignoring this folder stops every link under it being flagged.', 'muted small') : '',
+    broken ? '' : el('div', { class: 'fmacts' }, ...fmOpButtons([fmItem(n)], !n.plain)),
     n.plain ? '' : el('div', { class: 'fmacts' },
       button('Browse', () => browseFolders(n.host, n.path, mountFor(n.host, n.path)), 'btn ghost sm'),
       button('Ignore this folder', () => fmIgnore(n.host, n.path), broken ? 'btn sm' : 'btn ghost sm'))];
@@ -719,7 +874,7 @@ function fmOverview() {
     b.append(text('span', `${g.copies.length}×`, 'rel'), text('span', `${fmtBytes(g.size)} ${c.path.split('/').pop()}`, 'lbl'));
     return el('li', {}, b);
   }));
-  return [text('p', 'Open a card with + to see what is duplicated in it. Select one to see where its other copies are and trash the extras. Right-click for more.', 'muted'),
+  return [text('p', 'Open a card with + to look inside it. Tick cards to pick them, then copy them to any folder on any host, or drag a card onto a folder. Changes go in a plan you check and run.', 'muted'),
     text('h3', 'Duplicates'), el('dl', { class: 'kv' }, text('dt', 'Reclaimable within hosts'), text('dd', fmtBytes(d.reclaimable)),
       text('dt', 'Identical files'), text('dd', d.groups_total.toLocaleString()), text('dt', 'Whole folder copies'), text('dd', FM.comparing ? '…' : d.folder_copies.length.toLocaleString()),
       text('dt', 'Hidden, system or ignored'), text('dd', `${d.hidden.groups.toLocaleString()} sets, ${fmtBytes(d.hidden.bytes)}`)),

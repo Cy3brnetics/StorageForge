@@ -1,6 +1,7 @@
 """Graph view file map: duplicate sets, ignore rules, and broken-link flags that respect them.
 Run with: python3 -m unittest discover -s tests -v"""
 import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -10,7 +11,7 @@ try:
     import dbfactory
 except ImportError:      # run as tests.test_x from the project folder
     from tests import dbfactory
-from storageforge_index import filemap, folders, graph
+from storageforge_index import filemap, folders, graph, moves
 
 
 class FileMap(unittest.TestCase):
@@ -111,6 +112,39 @@ class FileMap(unittest.TestCase):
         self.assertEqual({f['path']: f['bytes'] for f in m['folders']}, {'/data/a': 5 << 20, '/data/b': 5 << 20, '/dl': 5 << 20})
         twin = next(l for l in m['links'] if l['kind'] == 'folder')
         self.assertEqual(twin['bytes'], 5 << 20)
+
+    def test_a_copy_step_can_take_chosen_files(self):
+        self.file('nas', '/data/a/x.iso', 'aa')
+        self.file('nas', '/data/a/y.iso', 'bb', size=1 << 20)
+        self.file('nas', '/data/a/skip.iso', 'cc')
+        step = {'method': 'copy', 'src': {'host': 'nas', 'path': '/data/a'}, 'dst': {'host': 'nas', 'path': '/data/b'}, 'only': ['x.iso', 'y.iso', 'gone.iso']}
+        plan = moves.normalize({'name': 'pick', 'steps': [step]})
+        self.assertEqual(plan['steps'][0]['only'], ['gone.iso', 'x.iso', 'y.iso'])
+        info = moves.check(self.conn, plan)['steps'][0]
+        self.assertEqual(info['src']['bytes'], 6 << 20)
+        self.assertEqual(info['src']['files'], 2)
+        self.assertIn('--include=/x.iso', moves.script(self.conn, plan))
+        self.assertEqual(moves.only_filters(['a*b[1].iso']), [r'--include=/a\*b\[1].iso', '--exclude=*'])
+
+    @unittest.skipUnless(shutil.which('rsync'), 'needs rsync')
+    def test_rsync_sends_exactly_the_chosen_files(self):
+        src, dst = Path(self.tmp) / 'src', Path(self.tmp) / 'dst'
+        (src / 'sub').mkdir(parents=True)
+        dst.mkdir()
+        wanted = ['keep.iso', 'a*b[1].iso', 'back\\slash.iso', 'both\\*.iso', 'with space.iso']
+        for name in [*wanted, 'skip.iso', 'ab1.iso', 'sub/deep.iso']:
+            (src / name).touch()
+        subprocess.run(['rsync', '-a', '--protect-args', *moves.only_filters(wanted), f'{src}/', f'{dst}/'], check=True)
+        self.assertEqual(sorted(p.name for p in dst.iterdir()), sorted(wanted))
+
+    def test_chosen_files_are_plain_names_on_a_copy(self):
+        base = {'src': {'host': 'nas', 'path': '/a'}, 'dst': {'host': 'nas', 'path': '/b'}}
+        with self.assertRaises(ValueError):
+            moves.normalize({'name': 'x', 'steps': [{**base, 'method': 'move', 'only': ['f']}]})
+        for bad in ('../f', 'a/b', '..', 'a\nb'):
+            with self.assertRaises(ValueError):
+                moves.normalize({'name': 'x', 'steps': [{**base, 'method': 'copy', 'only': [bad]}]})
+        self.assertNotIn('only', moves.normalize({'name': 'x', 'steps': [{**base, 'method': 'copy'}]})['steps'][0])
 
     def test_ignored_broken_link_does_not_turn_the_host_red(self):
         node = {'hostname': 'nas', 'links': [{'kind': 'symlink', 'path': '/etc/old', 'target': '/gone', 'state': 'crit', 'note': 'x'},

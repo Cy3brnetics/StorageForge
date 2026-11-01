@@ -188,7 +188,7 @@ serve() { # id "ssh command"
 load() {
   idok "$1"; [[ -f $ETC/jobs/$1.conf ]] || die "no job $1 on $(uname -n)"
   ID= NAME= METHOD= SRC_LOCAL=1 SRC_HOST= SRC_PORT=22 SRC= DST= DST_MOUNT=/ FLAGS= KEEP= LOWEST= WINDOW= BW_DAY= BW_NIGHT=
-  NIGHT= SNAP=0 HOOKS=0 REPORT_URL=; EXCLUDES=(); ROUTES=()
+  NIGHT= SNAP=0 HOOKS=0 REPORT_URL=; EXCLUDES=(); ONLY=(); ROUTES=()
   DEDUP=0 DEDUP_HARDLINK=0 DEDUP_MIN=1048576 HASH=sha256 TRANSPORT=rsync PREFLIGHT=0 RESERVE_GB=1 LOCK_WAIT=3600
   # shellcheck disable=SC1090
   source "$ETC/jobs/$1.conf"
@@ -489,6 +489,7 @@ rsync_cmd() { # source-path extra... -> RS
   ((SRC_LOCAL)) || RS+=(-e "ssh ${SSHO[*]}")
   ((${#ROUTES[@]})) && RS+=(--timeout=120)     # a path that went quiet ends the attempt, and the next one finds another
   local x; for x in "${EXCLUDES[@]}"; do RS+=(--exclude="$x"); done
+  RS+=("${ONLY[@]}")
   # never --inplace: dedup can leave two names on one inode or shared extents, and only a write to a new file keeps them apart
   RS+=(--exclude=.storageforge-snap --exclude=.storage.lock --exclude='.sf-dedup-*' "$@" "$(src_spec "$src")" "${DST%/}/")
 }

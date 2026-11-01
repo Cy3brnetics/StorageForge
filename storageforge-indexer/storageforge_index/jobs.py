@@ -100,7 +100,7 @@ def specs(conn: Conn, plan: dict) -> list[dict]:
             'dst_mount': (c.get('dst') or {}).get('planned_mount') or (c.get('dst') or {}).get('mount') or '/',
             'flags': ' '.join(f for f, on in (('checksum', o['checksum']), ('delete', o['delete']), ('onefs', o['one_fs']),
                                                ('link', o['link_back'])) if on),
-            'excludes': s['excludes'], 'schedule': o['schedule'] if s['method'] in SCHEDULED else None,
+            'excludes': s['excludes'], **({'only': s['only']} if s.get('only') else {}), 'schedule': o['schedule'] if s['method'] in SCHEDULED else None,
             'window': o['window'], 'bw_day': o['bwlimit'], 'bw_night': o['bwlimit_night'], 'night': o['night'],
             'pre': o['pre'], 'post': o['post'], 'snapshot': o['snapshot'], 'verify': o['verify'],
             'keep': ' '.join(keep), 'lowest': next((lv for lv in LEVELS if o['keep'].get(lv)), 'daily'),
@@ -159,6 +159,7 @@ def conf_text(spec: dict, report_url: str | None) -> str:
     return ('# StorageForge job: written by deploys, replaced by the next one\n'
             + ''.join(f'{k}={q(val)}\n' for k, val in v.items())
             + 'EXCLUDES=(' + ' '.join(q(x) for x in spec['excludes']) + ')\n'
+            + ('ONLY=(' + ' '.join(q(x) for x in moves.only_filters(spec['only'])) + ')\n' if spec.get('only') else '')
             + 'ROUTES=(' + ' '.join(q(x) for x in routes) + ')\n')
 
 
