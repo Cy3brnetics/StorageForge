@@ -10,7 +10,7 @@ async function loadAccess() {
   try { ACCESS.hosts = (await getJSON('/api/access')).hosts; }
   catch (err) { box.replaceChildren(text('p', err.message, 'st-failed')); return; }
   renderAccess();
-  if (T.mode === 'topo') renderTopo();          // the unreadable-folder badges on host headers
+  if (T.mode === 'topo') renderTopoSoon();      // the unreadable-folder badges on host headers
 }
 function accessState(h) {
   if (h.access === 'capability') return ['st-ok', 'Read-only scan access is set up'];

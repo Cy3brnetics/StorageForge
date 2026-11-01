@@ -1,6 +1,6 @@
 ---
 id: PF-14
-status: in-progress
+status: done
 severity: low
 effort: M
 area: "[[Reports and exports]]"
@@ -21,7 +21,9 @@ Nothing on git repositories, NFS/SMB shares, Docker stacks and the folders they 
 Add sections 6 to 9 built from the same functions the API uses (`gitrepos`, `shares.check`, `docker`, `jobs.overview`, `alerts.list_alerts`). In the canvas, add share edges (dashed, remote colour, matching U5) and a group per Docker stack.
 
 ## Done when
-- [ ] `report` mentions every deployed job with its last run and every open alert
+- [x] `report` mentions every deployed job with its last run and every open alert
 
 ## Progress 2026-10-30
 `reportextra.py` adds sections 6 to 11. Not done: share edges and stack groups in the canvas.
+
+2026-10-31, `cc5b207`: the canvas has share and stack cards, joined to hosts and client hosts. Not opened in Obsidian; the structure is tested.

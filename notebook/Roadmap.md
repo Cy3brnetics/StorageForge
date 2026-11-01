@@ -18,19 +18,19 @@ The findings in the order that makes each step easier than the last. Effort: S u
 7. ~~[[PF-10 Cleanup cache holds one result]]~~ done (GM-25).
 
 ## Then: lifecycle and admin
-8. [[PF-08 No way to retire a host]]: mostly done 2026-10-30; stale-host hint left.
-9. [[PF-07 Backups have no UI and stay on the same volume]]: done 2026-10-30; off-box copy not yet tried on a real host.
+8. ~~[[PF-08 No way to retire a host]]~~ done 2026-10-31.
+9. ~~[[PF-07 Backups have no UI and stay on the same volume]]~~ done 2026-10-31.
 10. ~~[[PF-09 Accounts are CLI-only and have no roles]]~~ done 2026-10-30.
 11. ~~[[PF-12 Storage tasks lag the other plan types]]~~ done 2026-10-30.
 
 ## Later: new data
 12. ~~[[PF-05 Capacity history]]~~ done 2026-10-30.
 13. [[PF-04 Disk health and scrubs]]: built 2026-10-30; not yet run against real disks.
-14. [[PF-03 Backup and snapshot detection]]: mostly done 2026-10-30; snapper, timeshift, btrbk left.
+14. ~~[[PF-03 Backup and snapshot detection]]~~ done 2026-10-31.
 15. ~~[[PF-16 One scan worker and one global schedule]]~~ done 2026-10-30.
 16. ~~[[PF-11 File history and content dupes are CLI-only]]~~ done 2026-10-30.
 
 ## Whenever
-- [[PF-14 Reports and canvas predate newer features]]: report done 2026-10-30; canvas left.
+- ~~[[PF-14 Reports and canvas predate newer features]]~~ done 2026-10-31.
 - ~~[[PF-15 Moves and Git QoL]]~~ done 2026-10-30.
 - [[EQ-03 Large modules]] (L): best done just before a big change to `server.py` or a script generator.

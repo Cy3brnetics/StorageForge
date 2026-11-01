@@ -100,10 +100,12 @@ def _facts_detected(conn: Conn, host: str) -> list[dict]:
     hid, inv = row[0]
     inv = inv if isinstance(inv, dict) else json.loads(inv or '{}')
     out = []
+    # SQLite's filename index is NOCASE, so a plain = walks every file on the host: this runs on each design load
+    indexed = 'f.filename = :n COLLATE NOCASE AND ' if conn.dialect == 'sqlite' else ''
     for name, tool, siblings in (('keys', 'restic', ('snapshots', 'index', 'data', 'config')), ('hints.1', 'borg', ('config', 'data', 'README')),
                                  ('daily.0', 'rsnapshot', ()), ('hourly.0', 'rsnapshot', ())):
-        for dir_id, path, newest in conn.all("""SELECT d.dir_id, d.path, max(f.modified_at) FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
-                                                 JOIN mounts m ON m.mount_id = f.mount_id WHERE m.host_id = :h AND f.filename = :n
+        for dir_id, path, newest in conn.all(f"""SELECT d.dir_id, d.path, max(f.modified_at) FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
+                                                 JOIN mounts m ON m.mount_id = f.mount_id WHERE {indexed}m.host_id = :h AND f.filename = :n
                                                  GROUP BY d.dir_id, d.path""", {'h': hid, 'n': name}):
             if all(conn.scalar('SELECT 1 FROM file_records WHERE dir_id = :d AND filename = :n', {'d': dir_id, 'n': s}) for s in siblings):
                 out.append({'repo': path, 'why': f'detected {tool} at {path}', 'tool': tool, 'newest': epoch(newest)})
@@ -111,10 +113,20 @@ def _facts_detected(conn: Conn, host: str) -> list[dict]:
     for ds, s in (snaps.get('zfs') or {}).items():
         out.append({'dataset': ds, 'why': f'detected {s["count"]} ZFS snapshots',
                     'snapshots': {'enabled': True, 'tool': 'zfs', 'policy': f'newest {_date(s["newest"])}', 'count': s['count'], 'overhead': 0}})
+    for ds in snaps.get('sanoid') or []:
+        out.append({'dataset': ds, 'why': 'detected a sanoid policy',
+                    'snapshots': {'enabled': True, 'tool': 'sanoid', 'policy': 'sanoid.conf', 'count': 0, 'overhead': 0}})
+    for name, path in (snaps.get('snapper_paths') or {}).items():
+        out.append({'path': path, 'why': f'detected snapper config {name}',
+                    'snapshots': {'enabled': True, 'tool': 'snapper', 'policy': f'config {name}', 'count': 0, 'overhead': 0}})
+    for tool in snaps.get('tools') or []:         # both are set up for the system's own subvolumes as a rule, and their configs need root to read
+        out.append({'path': '/', 'why': f'detected {tool}',
+                    'snapshots': {'enabled': True, 'tool': tool, 'policy': f'{tool} is configured', 'count': 0, 'overhead': 0}})
     for target, b in ((inv.get('health') or {}).get('btrfs') or {}).items():
         if b.get('snapshots'):
             out.append({'path': target, 'why': f'detected {b["snapshots"]} btrfs snapshots',
-                        'snapshots': {'enabled': True, 'tool': 'btrfs', 'policy': 'read-only subvolumes', 'count': b['snapshots'], 'overhead': 0}})
+                        'snapshots': {'enabled': True, 'tool': 'btrfs', 'policy': f'newest {b["newest_snapshot"][:10]}' if b.get('newest_snapshot') else 'read-only subvolumes',
+                                      'count': b['snapshots'], 'overhead': b.get('snapshot_exclusive') or 0}})
     return out
 
 

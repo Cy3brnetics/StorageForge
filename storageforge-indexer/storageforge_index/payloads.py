@@ -514,13 +514,39 @@ def _lvm_pool(name: str, e: dict) -> dict:
             'cap': pool_capacity('lvm', level, [s for _, s in legs], fs=e['fs'])}
 
 
+BTRFS_PROFILES = {'single', 'dup', 'raid0', 'raid1', 'raid1c3', 'raid1c4', 'raid10', 'raid5', 'raid6'}
+
+
+def _btrfs_usage(extra: str) -> dict:
+    """The "key=value ..." field the scan adds per filesystem; byte counts as ints, absent from an older scan."""
+    fields = dict(x.split('=', 1) for x in extra.split() if '=' in x)
+    out = {k: int(fields[k]) for k in ('dev', 'alloc', 'datat', 'datau', 'metat', 'metau', 'rsv', 'missing') if fields.get(k, '').isdigit()}
+    if fields.get('op') not in (None, '', 'none'):
+        out['op'] = fields['op']
+    return out
+
+
 def apply_btrfs(node: dict, text: str):
-    """Real btrfs profiles (raid1, raid10, dup, ...) and labels from /sys/fs/btrfs, readable without root."""
+    """Real btrfs profiles (raid1, raid10, dup, ...), labels and chunk allocation from /sys/fs/btrfs, readable without root.
+    node['btrfs_fs'] has one entry per filesystem, single-device ones too (only multi-device ones are pools)."""
     info = {}
     for line in (text or '').splitlines():
-        uuid, data, meta, label = (line.split('\t') + ['', '', '', ''])[:4]
+        uuid, data, meta, label, extra = (line.split('\t') + ['', '', '', '', ''])[:5]
         if uuid:
-            info[uuid] = {'data': data.split(',')[0] or None, 'meta': meta.split(',')[0] or None, 'label': label or None}
+            # newer kernels keep a size_classes folder beside the profile folders
+            datas = [x for x in data.split(',') if x in BTRFS_PROFILES]
+            metas = [x for x in meta.split(',') if x in BTRFS_PROFILES]
+            info[uuid] = {'data': datas[0] if datas else None, 'meta': metas[0] if metas else None, 'label': label or None,
+                          'datas': datas, 'metas': metas, 'usage': _btrfs_usage(extra)}
+    node['btrfs_fs'] = []
+    for uuid, b in info.items():
+        pool = next((p for p in node['pools'] if p['type'] == 'btrfs' and p.get('uuid') == uuid), None)
+        parts = [x for d in node['disks'] for x in d['parts'] if x.get('uuid') == uuid and x.get('fs') == 'btrfs']
+        if pool or parts:
+            node['btrfs_fs'].append({'uuid': uuid, 'type': 'btrfs', 'pool': pool['name'] if pool else None, 'label': b['label'],
+                                     'name': pool['name'] if pool else b['label'] or parts[0]['dev'],
+                                     'members': pool['members'] if pool else [x['dev'] for x in parts],
+                                     'mount': (pool or parts[0]).get('mount'), 'datas': b['datas'], 'metas': b['metas'], **b['usage']})
     for p in node['pools']:
         b = info.get(p.get('uuid') or '')
         if p['type'] != 'btrfs' or not b or not b['data']:

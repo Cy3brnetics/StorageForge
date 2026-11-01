@@ -1,6 +1,6 @@
 ---
 id: PF-07
-status: in-progress
+status: done
 severity: medium
 effort: M
 area: "[[Operations and engineering]]"
@@ -24,8 +24,10 @@ found: 2026-10-29
 4. Nightly failure becomes an alert ([[PF-01 Alerts only cover deploys|PF-01]]).
 
 ## Done when
-- [ ] The UI shows the newest backup and its age, and can make one
-- [ ] At least one copy can live off the data volume
+- [x] The UI shows the newest backup and its age, and can make one
+- [x] At least one copy can live off the data volume
 
 ## Progress 2026-10-30
 Backups card in the Audit tab and `backup.target` copy over SSH with an alert on failure. Tested over a local transport, not yet to a real host. PostgreSQL stays external and the UI says so.
+
+2026-10-31: a real off-box copy passes in the lab; see [[PF-25 Off-box backup copy cannot reach a real deploy target]].

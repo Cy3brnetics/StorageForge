@@ -35,9 +35,8 @@ data/
 *.dump
 *.sql.gz
 
-# Per-user Claude Code state (launch configs name local paths)
-.claude/settings.local.json
-.claude/launch.json
+# Per-user Claude Code state (launch configs name local paths, worktrees are full checkouts)
+.claude/
 
 # Build and tool caches
 __pycache__/

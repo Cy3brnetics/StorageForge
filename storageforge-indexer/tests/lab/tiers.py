@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Tiers 1, 3 and 4 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py.
+"""Tiers 1, 3, 4 and 5 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py.
 They change the VMs, so run them through examples/lab/lab.sh test --all, which resets the lab around each tier.
 
-    tiers.py run <0|1|3|4>   tier 0 as a result file, or one tier against StorageForge on sf-ctl, through its API
+    tiers.py run <0|1|3|4|5>   tier 0 as a result file, or one tier against StorageForge on sf-ctl, through its API
     tiers.py report          the table per distro from every results file, into reports/
 
 Results are checked on the VMs and against the seed manifests where a VM can answer, and against the running
-StorageForge where the question is what it noticed. A check in KNOWN still fails, but is shown apart: it doesn't fail
+StorageForge where the question is what it noticed. A build runs 7 of the 14 configs, so tests choose hosts by what they
+can do (roles.py), and a check with no suitable host in this build shows as skip. A check in KNOWN still fails, but is shown apart: it doesn't fail
 the run, and it says so when it starts passing.
 """
 import fnmatch
@@ -27,23 +28,17 @@ sys.path[:0] = [str(LAB_DIR), str(ROOT)]
 os.environ.setdefault('SFLAB_STATE', str(Path.home() / '.local' / 'state' / 'sflab'))
 
 import demo  # noqa: E402
+import roles  # noqa: E402
 from demo import COMPOSE, IPS, STATE, cli, ssh  # noqa: E402
 from storageforge_index.remote import DEFAULT_EXCLUDE_NAMES  # noqa: E402
 
 RESULTS = STATE / 'results'
 REPORTS = ROOT / 'reports'
 VMS = list(IPS)
+BUILD = roles.build()
 os.environ['LIBVIRT_DEFAULT_URI'] = 'qemu:///system'
 # (check, vm): why it is expected to fail. Remove the line when the product is fixed.
-KNOWN = {
-    ('scan-status', 'sf-rocky'): "without scan access, Podman's overlay folder counts as a failed mount",
-    ('child-subvolume', 'sf-suse'): 'finding GM-14: find -xdev stops at a child subvolume, so its files are never indexed',
-    ('containers', 'sf-rocky'): "the scan account has no sudo, and rootless podman ps answers for itself alone, so root's containers can't be seen",
-    ('scan', 'sf-rocky'): "without scan access, Podman's overlay folder counts as a failed mount",
-    ('mergerfs-source', 'sf-arch'): 'the scan records the kernel source 1:2, not the branch folders',
-}
-PACKAGE_MANAGERS = {'sf-ctl': 'apt-get', 'sf-ubuntu': 'apt-get', 'sf-fedora': 'dnf', 'sf-rocky': 'dnf', 'sf-suse': 'zypper', 'sf-arch': 'pacman', 'sf-alpine': 'none'}
-TOPOLOGY = {'sf-ubuntu': ['tank', 'backup'], 'sf-rocky': ['vgdata'], 'sf-suse': ['md0'], 'sf-arch': ['secure', 'mergerfs']}
+KNOWN = {}
 
 
 def conf(path):
@@ -90,7 +85,7 @@ def host_ids():
 
 
 def manifests():
-    for vm, root, profile in conf('provision/seed-roots.conf'):
+    for vm, root, profile in (r for r in conf('provision/seed-roots.conf') if r[0] in BUILD):
         yield vm, root, profile, json.loads((STATE / 'manifests' / f'{vm}{root.replace("/", "_")}.json').read_text())
 
 
@@ -178,21 +173,29 @@ def tier1(r):
     for vm in VMS:
         words = [line.split(None, 1) for line in (inventory.get(vm, {}).get('packages') or '').splitlines() if ' ' in line]
         got = next((v for k, v in words if k == 'pm'), 'none')
-        r.add('package-manager', vm, got == PACKAGE_MANAGERS[vm], got)
+        r.add('package-manager', vm, got == BUILD[vm].pm, got)
         init = next((v for k, v in words if k == 'init'), '')
-        want = 'openrc' if vm == 'sf-alpine' else 'systemd'
-        r.add('init-system', vm, init == want or (vm == 'sf-alpine' and init != 'systemd' and bool(init)), init or 'not reported')
+        if BUILD[vm].can('nosystemd'):
+            r.add('init-system', vm, bool(init) and init != 'systemd', init or 'not reported')
+        else:
+            r.add('init-system', vm, init == 'systemd', init or 'not reported')
 
-    for vm, names in TOPOLOGY.items():
-        text = json.dumps(api.get(f'/api/graph?host={vm}'))
-        missing = [n for n in names if n not in text]
-        r.add('topology', vm, not missing, f'missing {missing}' if missing else ', '.join(names))
-    text = json.dumps(api.get('/api/graph?host=sf-suse'))
-    r.add('nested-subvolumes', 'sf-suse', '@/home' in text and '@/.snapshots' in text, 'mounted subvolumes in the graph')
-    p = sql(f"SELECT count(*) n FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id WHERE m.host_id = {ids.get('sf-suse', -1)} AND d.path LIKE '/srv/btrfs/var/lab-seed%'")
-    r.add('child-subvolume', 'sf-suse', bool(p and p[0]['n']), f'{p[0]["n"] if p else 0} files found under the unmounted @/var (finding GM-14)')
-    merged = table.get(('sf-arch', '/mnt/pool'), {})
-    r.add('mergerfs-source', 'sf-arch', '/mnt/disk1' in str(merged.get('source')), f'source reported as {merged.get("source")!r}')
+    for node in BUILD.values():
+        if node.topology:
+            text = json.dumps(api.get(f'/api/graph?host={node.name}'))
+            missing = [n for n in node.topology if n not in text]
+            r.add('topology', node.name, not missing, f'missing {missing}' if missing else ', '.join(node.topology))
+    if 'sf-suse' in BUILD:
+        text = json.dumps(api.get('/api/graph?host=sf-suse'))
+        r.add('nested-subvolumes', 'sf-suse', '@/home' in text and '@/.snapshots' in text, 'mounted subvolumes in the graph')
+    for node in BUILD.values():
+        child = node.tag('btrfs-child')
+        if child:
+            p = sql(f"SELECT count(*) n FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id WHERE m.host_id = {ids.get(node.name, -1)} AND d.path LIKE '{child}%'")
+            r.add('child-subvolume', node.name, bool(p and p[0]['n']), f'{p[0]["n"] if p else 0} files found under the unmounted {child} (finding GM-14)')
+    if 'sf-arch' in BUILD:
+        merged = table.get(('sf-arch', '/mnt/pool'), {})
+        r.add('mergerfs-source', 'sf-arch', '/mnt/disk1' in str(merged.get('source')), f'source reported as {merged.get("source")!r}')
 
     def search():
         hits = api.get('/api/search?q=IMG_0001.cr2&limit=50')
@@ -205,26 +208,30 @@ def tier1(r):
 
     def access_then_rescan():
         for vm, ip in IPS.items():
-            if vm == 'sf-alpine':
+            if BUILD[vm].can('nosystemd'):
                 continue
             script = cli('access', 'script', '--host', ip)
             ssh(vm, 'sudo -n sh -s', stdin=script)
-        demo.scan(api, [ip for vm, ip in IPS.items() if vm != 'sf-alpine'])
+        demo.scan(api, [ip for vm, ip in IPS.items() if not BUILD[vm].can('nosystemd')])
     r.check('scan-access-setup', '-', access_then_rescan)
     latest = {}
     for j in api.get('/api/jobs')['jobs']:
         latest.setdefault(j['host'], j)
     for vm in VMS:
-        if vm != 'sf-alpine':
+        if not BUILD[vm].can('nosystemd'):
             r.add('scan-with-access', vm, latest.get(vm, {}).get('status') == 'ok', latest.get(vm, {}).get('status', 'no job'))
-    index_vs_manifest(r, ids, 'manifest-with-access', denied_ok=False, skip={'sf-alpine'})
+    index_vs_manifest(r, ids, 'manifest-with-access', denied_ok=False, skip={n.name for n in roles.having('nosystemd')})
     # The engine needs its own permission, which the operator gives: the docker group, or sudo for podman.
-    ssh('sf-ubuntu', 'sudo -n usermod -aG docker scan')
-    ssh('sf-rocky', "echo 'scan ALL=(root) NOPASSWD: /usr/bin/podman' | sudo -n tee /etc/sudoers.d/sflab-scan-podman >/dev/null")
-    demo.scan(api, [IPS['sf-ubuntu'], IPS['sf-rocky']])
-    for vm in ('sf-ubuntu', 'sf-rocky'):
-        found = 'sflab-web' in json.dumps(api.get(f'/api/docker?host={vm}'))
-        r.add('containers', vm, found, 'sflab-web found' if found else 'sflab-web not found')
+    for node in roles.having('docker'):
+        ssh(node.name, 'sudo -n usermod -aG docker scan')
+    for node in roles.having('podman'):
+        ssh(node.name, "echo 'scan ALL=(root) NOPASSWD: /usr/bin/podman' | sudo -n tee /etc/sudoers.d/sflab-scan-podman >/dev/null")
+    engines = roles.having('docker') + roles.having('podman')
+    if engines:
+        demo.scan(api, [n.ip for n in engines])
+    for node in engines:
+        found = 'sflab-web' in json.dumps(api.get(f'/api/docker?host={node.name}'))
+        r.add('containers', node.name, found, 'sflab-web found' if found else 'sflab-web not found')
 
 
 def excluded(path):
@@ -234,7 +241,7 @@ def excluded(path):
 def index_vs_manifest(r, ids, check, denied_ok, skip=()):
     """Every seed entry the scan user can read is in the index with the right size, and nothing more is."""
     for vm, root, profile, m in manifests():
-        if vm in skip or root == '/srv/btrfs/var':       # a child subvolume: it has its own check
+        if vm in skip or root == BUILD[vm].tag('btrfs-child'):       # a child subvolume: it has its own check
             continue
         seed = f'{root}/lab-seed'
         rows = sql(f"""SELECT hex(CAST(d.path || '/' || f.filename AS BLOB)) x, f.file_size_bytes s
@@ -268,91 +275,118 @@ def tier3(r):
     handbook = 'lab-seed/shared/docs/handbook.txt'
 
     def nfs():
-        demo.share_nfs(api)
-        want = seed_file('sf-ubuntu', '/tank/media')['sha256']
-        if seed_hash('sf-fedora', f'/mnt/ubuntu-media/{handbook}') != want:
+        server, client = demo.share_nfs(api)
+        want = seed_file(server.name, server.data)['sha256']
+        if seed_hash(client.name, f'/mnt/lab-nfs/{handbook}') != want:
             raise AssertionError('the file reads differently through the mount')
-        return 'sf-ubuntu to sf-fedora, same bytes'
-    r.check('nfs', 'sf-fedora', nfs)
+        return f'{server.name} to {client.name}, same bytes'
+    r.check('nfs', demo.nfs_pair()[1].name, nfs)
 
     def smb():
-        demo.share_smb(api)
-        want = seed_file('sf-rocky', '/srv/data')['sha256']
-        if seed_hash('sf-suse', f'/mnt/rocky-data/{handbook}') != want:
+        server, client = demo.share_smb(api)
+        if client is None:
+            raise AssertionError('no host in this build can mount SMB')
+        want = seed_file(server.name, server.data)['sha256']
+        if seed_hash(client.name, f'/mnt/lab-smb/{handbook}') != want:
             raise AssertionError('the file reads differently through the mount')
-        return 'sf-rocky to sf-suse, same bytes'
-    r.check('smb', 'sf-suse', smb)
+        return f'{server.name} to {client.name}, same bytes'
+    def client_module(node):
+        if demo.can_mount_smb(node):
+            return 'cifs and nls_utf8 are there'
+        demo.share_smb(api, roles.smb_server(), f'labmod{node.name[3:]}', '/mnt/lab-smb-module', client=node)
+        if not demo.can_mount_smb(node):
+            raise AssertionError('the share mounted, but the kernel still lacks cifs or nls_utf8')
+        return 'the deploy installed cifs and nls_utf8, and the share mounted'
+    for node in (n for n in roles.deployable() if n.name != roles.smb_server().name):
+        r.check('smb-client-module', node.name, lambda node=node: client_module(node))
+    client = demo.smb_client()
+    if client:
+        r.check('smb', client.name, smb)
+        for node in (n for n in roles.having('btrfs-nested') if n.can('selinux') and n.name != client.name):
+            def nested(node=node):
+                demo.share_smb(api, node, 'labnested', '/mnt/lab-nested')
+                return f'{node.data} on {node.name} mounted on {client.name}'
+            r.check('smb-unlabeled-parent', node.name, nested)
+    else:
+        r.add('smb', '-', None, 'no host in this build can mount SMB')
 
     job = {}
 
     def rsnapshot():
-        job['id'] = demo.backup_job(api)
-        return job['id']
-    r.check('rsnapshot', 'sf-ubuntu', rsnapshot)
+        job['id'], job['source'], target = demo.backup_job(api)
+        return f'{job["id"]} on {target.name}'
+    r.check('rsnapshot', roles.smb_server().name, rsnapshot)
 
     def restore():
         rel = 'shared/docs/handbook.txt'
-        want = seed_file('sf-rocky', '/srv/data')['sha256']
-        ssh('sf-rocky', f'sudo -n rm /srv/data/{handbook}')
+        source = job['source']
+        want = seed_file(source.name, source.data)['sha256']
+        ssh(source.name, f'sudo -n rm {source.data}/{handbook}')
         out = api.post(f'/api/deploy/jobs/{job["id"]}/restore', {'snapshot': 'daily.0', 'path': rel})
         def done():       # a restore is a task: it has runs, but no group row
             runs = api.get(f'/api/deploy/groups/{out["group"]}')['runs']
             return runs and all(x['status'] not in ('queued', 'running') for x in runs)
         wait_for('the restore', done, 300)
         restored = f'{out["target"]}/handbook.txt'        # beside the original, in a folder of its own
-        if seed_hash('sf-rocky', restored) != want:
+        if seed_hash(source.name, restored) != want:
             raise AssertionError('the restored file has other bytes')
-        ssh('sf-rocky', f'sudo -n mv {restored} /srv/data/{handbook}')
+        ssh(source.name, f'sudo -n mv {restored} {source.data}/{handbook}')
         return f'{restored}, same bytes'
     if job:
-        r.check('rsnapshot-restore', 'sf-rocky', restore)
+        r.check('rsnapshot-restore', job['source'].name, restore)
 
-    def move_steps(name, dst_host, dst):
+    mover = roles.deployable()[0]
+    elsewhere = roles.other_than(mover)
+
+    def move_steps(name, folder, dst_host, dst):
         plan = api.post('/api/moves', {'name': name, 'steps': [{
-            'method': 'move', 'src': {'host': 'sf-suse', 'path': '/mnt/raid/lab-seed'},
+            'method': 'move', 'src': {'host': mover.name, 'path': f'{mover.data}/lab-seed/{folder}'},
             'dst': {'host': dst_host, 'path': dst}, 'options': {'schedule': 'daily'}}]})
         demo.deploy(api, 'jobs', plan['id'], name)
         jid = f'p{plan["id"]}-{plan["steps"][0]["id"]}'
         now = int(ssh(dst_host, 'date +%s'))
         job_run(api, jid, 'run', 'run', now)
         job_run(api, jid, 'verify', 'verify', now)
-        m = json.loads((STATE / 'manifests' / 'sf-suse_mnt_raid.json').read_text())
-        bad = [e['path'] for e in m['entries'] if e['type'] == 'f' and seed_hash(dst_host, f'{dst}/{e["path"]}') != e['sha256']]
+        m = json.loads((STATE / 'manifests' / f'{mover.name}{mover.data.replace("/", "_")}.json').read_text())
+        bad = [e['path'] for e in m['entries'] if e['type'] == 'f' and e['path'].startswith(f'{folder}/')
+               and seed_hash(dst_host, f'{dst}/{e["path"].removeprefix(folder + "/")}') != e['sha256']]
         if bad:
             raise AssertionError(f'other bytes at the destination: {bad[:3]}')
         return jid
 
     def move_across():
-        jid = move_steps('Lab move across', 'sf-arch', '/mnt/disk1/from-suse')
+        jid = move_steps('Lab move across', 'shared', elsewhere.name, f'{elsewhere.room}/from-{mover.name}')
         out = api.post(f'/api/deploy/jobs/{jid}/cutover')
         if out['status'] != 'failed' or 'by hand' not in out['output']:
             raise AssertionError(f'cutover across hosts should leave the source to the operator: {out["output"][-300:]}')
-        if 'lab-seed' not in ssh('sf-suse', 'ls /mnt/raid').split():
+        if 'shared' not in ssh(mover.name, f'ls {mover.data}/lab-seed').split():
             raise AssertionError('the read-only source host was changed')
         return 'copied and verified; cutover refused, source untouched'
-    r.check('move-across-hosts', 'sf-arch', move_across)
+    r.check('move-across-hosts', elsewhere.name, move_across)
 
     def move_here():
-        jid = move_steps('Lab move here', 'sf-suse', '/srv/btrfs/moved')
+        dst = f'{mover.room}/moved-here'
+        jid = move_steps('Lab move here', 'dupes', mover.name, dst)
         out = api.post(f'/api/deploy/jobs/{jid}/cutover')
         if out['status'] != 'ok':
             raise AssertionError(f'cutover: {out["output"][-400:]}')
-        left = ssh('sf-suse', 'ls -l /mnt/raid')
-        if 'lab-seed.migrated-' not in left or '-> /srv/btrfs/moved' not in left:
+        left = ssh(mover.name, f'ls -l {mover.data}/lab-seed')
+        if 'dupes.migrated-' not in left or f'-> {dst}' not in left:
             raise AssertionError(f'expected a renamed source and a link to the destination: {left!r}')
         return 'copied, verified, source renamed, link left behind'
-    r.check('move-cutover', 'sf-suse', move_here)
+    r.check('move-cutover', mover.name, move_here)
 
     task = {}
 
     def send():
-        task['id'] = demo.btrfs_send(api)
-        got = ssh('sf-arch', 'sudo -n ls /srv/fedora-media').split()
-        want = seed_file('sf-fedora', '/data/media')['sha256']
-        if seed_hash('sf-arch', f'/srv/fedora-media/{got[-1]}/{handbook}') != want:
+        task['id'], task['from'], task['to'] = demo.btrfs_send(api)
+        to = task['to']
+        got = ssh(to.name, f'sudo -n ls {to.recv}').split()
+        want = seed_file(task['from'].name, task['from'].data)['sha256']
+        if seed_hash(to.name, f'{to.recv}/{got[-1]}/{handbook}') != want:
             raise AssertionError('the file in the received snapshot has other bytes')
         return got[-1]
-    r.check('btrfs-send', 'sf-arch', send)
+    r.check('btrfs-send', roles.receiver().name, send)
 
     # a schedule on a real host: its timer fires within a minute, it reports, a pause reaches the host, and it can leave
     def schedule_for(vm):
@@ -367,31 +401,94 @@ def tier3(r):
         wait_for('the pause to reach the host', lambda: ssh(vm, f'systemctl is-active sf-sched-{sid}.timer', check=False).strip() != 'active', timeout=120)
         demo.deploy(api, 'schedules', sid, 'uninstall', remove=True)
         api('DELETE', f'/api/scheduler/schedules/{sid}')
-    for vm in ('sf-ubuntu', 'sf-rocky'):
+    for vm in [n.name for n in roles.deployable()[:2]]:
         r.check('schedule-timer', vm, lambda vm=vm: schedule_for(vm))
 
+    keeper = roles.deployable()[-1].name
+
     def backup_copy():
-        api('PUT', '/api/backups/target', {'host': 'sf-arch', 'path': '/srv/sf-backups'})
+        api('PUT', '/api/backups/target', {'host': keeper, 'path': '/srv/sf-backups'})
         made = api.post('/api/backups', {'kind': 'essentials'})
         if made.get('copy_error'):
             raise AssertionError(made['copy_error'])
         api('PUT', '/api/backups/target', {'host': '', 'path': ''})
-        if 'storageforge-essentials-' not in ssh('sf-arch', 'sudo -n ls /srv/sf-backups'):
-            raise AssertionError('the backup did not arrive')
-    r.check('backup-copy', 'sf-arch', backup_copy)
+        name = ssh(keeper, 'sudo -n ls /srv/sf-backups').split()[-1]
+        if not name.endswith('.db.enc'):
+            raise AssertionError(f'expected an encrypted copy, found {name}')
+        copy = ssh(keeper, f'sudo -n base64 -w0 /srv/sf-backups/{name}')
+        # back on the controller: it opens with the vault secret, and is a database holding the accounts
+        check = ('import base64,sqlite3,sys,tempfile,pathlib;from storageforge_index import backup;from storageforge_index.vault import secret_from_env;'
+                 'd=pathlib.Path(tempfile.mkdtemp());(d/"c").write_bytes(base64.b64decode(sys.stdin.read()));'
+                 'backup.decrypt_file(str(d/"c"),str(d/"p"),secret_from_env());'
+                 'print(sqlite3.connect(d/"p").execute("select count(*) from users").fetchone()[0])')
+        out = ssh('sf-ctl', f'{COMPOSE} exec -T storageforge python -c {shlex.quote(check)}', stdin=copy)
+        if int(out.strip().splitlines()[-1]) < 1:
+            raise AssertionError(f'the restored copy holds no accounts: {out[-200:]}')
+    r.check('backup-copy-restores', keeper, backup_copy)
+
+    def by_cron():
+        # no systemd: deploy access refuses this host, so the script is run by hand, and cron wakes the runner
+        vm, marker = roles.having('nosystemd')[0].name, '/tmp/sf-lab-schedule-cron'
+        made = api.post('/api/scheduler/schedules', {'name': 'lab-cron', 'host': vm, 'cron_expr': '* * * * *', 'task_type': 'command', 'task_ref': f'touch {marker}'})['schedule']
+        sid = made['schedule_id']
+        script = api.text(f'/api/scheduler/schedules/{sid}/install-script')
+        ssh(vm, 'sudo -n sh -c "command -v bash >/dev/null && command -v flock >/dev/null && command -v timeout >/dev/null || apk add -q bash util-linux coreutils; rc-service crond start >/dev/null 2>&1 || true"')
+        before = ssh(vm, f'sudo -n bash -s -- --report', stdin=script)
+        if 'needs to be installed' not in before or ssh(vm, f'test -e /usr/local/lib/storageforge/scheduler/run-{sid}.sh && echo there', check=False).strip():
+            raise AssertionError(f'the report changed something: {before[-300:]}')
+        ssh(vm, 'sudo -n bash -s -- --install', stdin=script)
+        wait_for('cron to wake the runner', lambda: ssh(vm, f'test -e {marker} && echo yes', check=False).strip() == 'yes', timeout=150)
+        ssh(vm, 'sudo -n bash -s -- --uninstall', stdin=script)
+        api('DELETE', f'/api/scheduler/schedules/{sid}')
+        return 'report changed nothing, cron ran it, and it left'
+    r.check('schedule-cron', roles.having('nosystemd')[0].name, by_cron)
+
+    def move_by_hand():
+        # a move script run by hand on the host, and the rescan that shows the step as copied
+        plan = api.post('/api/moves', {'name': 'Lab by hand', 'steps': [{'method': 'copy', 'src': {'host': mover.name, 'path': f'{mover.data}/lab-seed/unique'},
+                                                                          'dst': {'host': mover.name, 'path': f'{mover.room}/by-hand'}}]})
+        script = api.text(f'/api/moves/{plan["id"]}/script')
+        ssh(mover.name, 'sudo -n bash -s -- --run', stdin=script)
+        demo.scan(api, [mover.ip])
+        state = api.get(f'/api/moves/{plan["id"]}')['progress'][0]
+        if not state.get('copied'):
+            raise AssertionError(f'the step does not show as copied: {state}')
+        return f'copied {state["copied"]}'
+    r.check('move-progress', mover.name, move_by_hand)
 
     def send_again():
+        frm, to = task['from'], task['to']
         time.sleep(61)                   # snapshot names go down to the minute
-        before = set(ssh('sf-arch', 'sudo -n ls /srv/fedora-media').split())
-        ssh('sf-fedora', 'sudo -n sh -c "echo second >/data/media/lab-seed-second.txt"')
+        before = set(ssh(to.name, f'sudo -n ls {to.recv}').split())
+        ssh(frm.name, f'sudo -n sh -c "echo second >{frm.subvol}/lab-seed-second.txt"')
         demo.deploy(api, 'tasks', task['id'], 'btrfs replication again', run=True)
-        new = set(ssh('sf-arch', 'sudo -n ls /srv/fedora-media').split()) - before
+        new = set(ssh(to.name, f'sudo -n ls {to.recv}').split()) - before
         if not new:
             raise AssertionError('no new snapshot arrived')
-        return f'{sorted(new)[0]} arrived'
+        newest = sorted(new)[0]
+        if ssh(to.name, f'sudo -n cat {to.recv}/{newest}/lab-seed-second.txt').strip() != 'second':
+            raise AssertionError('the change is not in the second snapshot')
+        return f'{newest} arrived with the change'
     if task:
-        r.check('btrfs-send-again', 'sf-arch', send_again)
-    r.add('zfs-send-between-hosts', 'sf-ubuntu', None, 'only one VM has ZFS: tier 2 sends between its two pools')
+        r.check('btrfs-send-again', task['to'].name, send_again)
+
+    pools = roles.having('zfs')
+    if len(pools) < 2:
+        r.add('zfs-send-between-hosts', pools[0].name, None, 'only one ZFS host in this build: tier 2 sends within it')
+    else:
+        def zfs_send():
+            frm, to = pools[:2]
+            demo.root_login(frm, to)
+            data = f'{frm.tag("zfs-pool")}/media'
+            into = f'{to.tag("zfs-pool")}/from-{frm.name}'
+            made = api.post('/api/tasks', {'name': 'Lab ZFS replication', 'host': frm.name, 'schedule': '*-*-* 02:30:00', 'blocks': [
+                {'type': 'zfs_snapshot', 'params': {'dataset': data, 'prefix': 'daily'}},
+                {'type': 'zfs_send', 'params': {'dataset': data, 'prefix': 'daily', 'dst_host': f'root@{to.ip}', 'dst': into, 'keep': 7}}]})
+            demo.deploy(api, 'tasks', made['id'], 'ZFS replication', run=True)
+            if 'daily-' not in ssh(to.name, f'sudo -n zfs list -H -t snapshot -o name {into}'):
+                raise AssertionError('no snapshot arrived')
+            return f'{data} to {to.name}:{into}'
+        r.check('zfs-send-between-hosts', pools[1].name, zfs_send)
 
 
 # ── tier 4: what happens when things go wrong ───────────────────────
@@ -403,7 +500,7 @@ from storageforge_index.remote import Transport, child_env
 from storageforge_index.runner import connect_address, ephemeral_agent, known_hosts_path
 import os
 db = Database(os.environ['STORAGEFORGE_DB']); c = db.connect()
-name = 'sf-fedora'; addr = connect_address(c, name); machine = deploy._machine(c, name)
+name = '@HOST@'; addr = connect_address(c, name); machine = deploy._machine(c, name)
 script = 'echo signed-script-ran\n'
 out = {}
 with vault.Vault(db, c).unlock() as v:
@@ -416,7 +513,7 @@ with vault.Vault(db, c).unlock() as v:
         good = deploy.request(key, name, script, machine=machine)
         out['first'] = send(good)
         out['replay'] = send(good)
-        out['other-host'] = send(deploy.request(key, 'sf-arch', script, machine=machine))
+        out['other-host'] = send(deploy.request(key, '@OTHER@', script, machine=machine))
         out['other-machine'] = send(deploy.request(key, name, script, machine='0' * 32))
         out['expired'] = send(deploy.request(key, name, script, machine=machine, now=time.time() - 1200))
         out['tampered'] = send(deploy.request(key, name, script, machine=machine).replace(b'signed-script-ran', b'signed-script-rax'))
@@ -433,90 +530,313 @@ def tier4(r):
     def has_alert(kind, text):
         return [a for a in alerts_now() if a['kind'].startswith(kind) and text in json.dumps(a)]
 
+    def pull_disk(vm, number=1):
+        lines = subprocess.run(['virsh', 'domblklist', vm], capture_output=True, text=True).stdout.splitlines()
+        disk = next(d.split()[0] for d in lines if f'{vm}-data{number}' in d)
+        subprocess.run(['virsh', '-q', 'detach-disk', vm, disk, '--live'], check=True, capture_output=True)
+
     def degraded():
-        disk = next(d.split()[0] for d in subprocess.run(['virsh', 'domblklist', 'sf-ubuntu'], capture_output=True, text=True).stdout.splitlines() if 'sf-ubuntu-data1' in d)
-        subprocess.run(['virsh', '-q', 'detach-disk', 'sf-ubuntu', disk, '--live'], check=True, capture_output=True)
-        ssh('sf-ubuntu', 'sudo -n sh -c "dd if=/dev/urandom of=/tank/photos/lab-io bs=1M count=20 status=none; sync; zpool scrub tank"')
-        wait_for('tank to degrade', lambda: 'DEGRADED' in ssh('sf-ubuntu', 'sudo -n zpool list -H -o health tank'), 120)
-        demo.scan(api, [IPS['sf-ubuntu']])
-        got = has_alert('pool', 'tank')
+        node = roles.having('zfs')[0]
+        pool = node.tag('zfs-pool')
+        pull_disk(node.name)
+        ssh(node.name, f'sudo -n sh -c "dd if=/dev/urandom of={node.room}/lab-io bs=1M count=20 status=none; sync; zpool scrub {pool}"')
+        wait_for(f'{pool} to degrade', lambda: 'DEGRADED' in ssh(node.name, f'sudo -n zpool list -H -o health {pool}'), 120)
+        demo.scan(api, [node.ip])
+        got = has_alert('pool', pool)
         if not got:
             raise AssertionError(f'no pool alert: {alerts_now()}')
         return got[0]['title']
-    r.check('pool-degraded', 'sf-ubuntu', degraded)
+    r.check('pool-degraded', roles.having('zfs')[0].name, degraded)
 
     def full():
-        demo.open_alert(api)
-        got = has_alert('disk-crit', '/backup')
-        ssh('sf-ubuntu', f'sudo -n rm {demo.FILLED}')
-        ssh('sf-ubuntu', 'sync; sleep 6')
-        demo.scan(api, [IPS['sf-ubuntu']])
-        if has_alert('disk-crit', '/backup'):
+        node = demo.open_alert(api)
+        got = has_alert('disk-crit', node.fill)
+        ssh(node.name, f'sudo -n rm {demo.filled(node)}')
+        ssh(node.name, 'sync; sleep 6')
+        demo.scan(api, [node.ip])
+        if has_alert('disk-crit', node.fill):
             raise AssertionError('the alert stayed open after the space came back')
         return f'{got[0]["title"]}, sent to ntfy, resolved after freeing the space'
-    r.check('disk-full', 'sf-ubuntu', full)
+    r.check('disk-full', roles.fill_host().name, full)
+
+    away = roles.having('nosystemd')[0]
 
     def offline():
-        lines = subprocess.run(['virsh', 'domiflist', 'sf-alpine'], capture_output=True, text=True, check=True).stdout.splitlines()
+        lines = subprocess.run(['virsh', 'domiflist', away.name], capture_output=True, text=True, check=True).stdout.splitlines()
         nic = next(x.split()[0] for x in lines if 'sflab' in x)
-        subprocess.run(['virsh', '-q', 'domif-setlink', 'sf-alpine', nic, 'down'], check=True, capture_output=True)
+        subprocess.run(['virsh', '-q', 'domif-setlink', away.name, nic, 'down'], check=True, capture_output=True)
         try:
-            job = api.post('/api/scan', {'host': IPS['sf-alpine']})['job_id']
+            job = api.post('/api/scan', {'host': away.ip})['job_id']
             ended = wait_for('the scan to fail', lambda: next((j for j in api.get('/api/jobs')['jobs'] if j['job_id'] == job and j['status'] not in ('queued', 'running')), None), 240)
             if ended['status'] != 'failed':
                 raise AssertionError(f'the scan of an unreachable host ended {ended["status"]}')
-            if not has_alert('scan-failed', 'sf-alpine'):
+            if not has_alert('scan-failed', away.name):
                 raise AssertionError(f'no failed-scan alert: {alerts_now()}')
         finally:
-            subprocess.run(['virsh', '-q', 'domif-setlink', 'sf-alpine', nic, 'up'], check=True, capture_output=True)
-        wait_for('sf-alpine to come back', lambda: subprocess.run([demo.LAB, 'ssh', 'sf-alpine', 'true'], stdin=subprocess.DEVNULL, capture_output=True).returncode == 0, 90)
-        demo.scan(api, [IPS['sf-alpine']])
-        if has_alert('scan-failed', 'sf-alpine'):
+            subprocess.run(['virsh', '-q', 'domif-setlink', away.name, nic, 'up'], check=True, capture_output=True)
+        wait_for(f'{away.name} to come back', lambda: subprocess.run([demo.LAB, 'ssh', away.name, 'true'], stdin=subprocess.DEVNULL, capture_output=True).returncode == 0, 90)
+        demo.scan(api, [away.ip])
+        if has_alert('scan-failed', away.name):
             raise AssertionError('the alert stayed open after a good scan')
         return 'scan failed, alert opened, and resolved after the next good scan'
-    r.check('host-offline', 'sf-alpine', offline)
+    r.check('host-offline', away.name, offline)
+
+    client = demo.nfs_pair()[1]
 
     def drift():
         demo.share_nfs(api)
-        demo.scan(api, [IPS['sf-fedora']])
-        clean = [d for d in api.get('/api/deploy')['drift'] if d['host'] == 'sf-fedora' and d['kind'] == 'changed']
+        demo.scan(api, [client.ip])
+        clean = [d for d in api.get('/api/deploy')['drift'] if d['host'] == client.name and d['kind'] == 'changed']
         if clean:
             raise AssertionError(f'drift before anything changed: {clean}')
-        ssh('sf-fedora', "sudo -n sed -i '/ubuntu-media/d' /etc/fstab")
-        demo.scan(api, [IPS['sf-fedora']])
-        seen = [d for d in api.get('/api/deploy')['drift'] if d['host'] == 'sf-fedora' and d['kind'] == 'changed']
+        ssh(client.name, "sudo -n sed -i '/lab-nfs/d' /etc/fstab")
+        demo.scan(api, [client.ip])
+        seen = [d for d in api.get('/api/deploy')['drift'] if d['host'] == client.name and d['kind'] == 'changed']
         if not seen:
             raise AssertionError('removing the managed fstab line was not noticed')
         return seen[0]['text']
-    r.check('drift', 'sf-fedora', drift)
+    r.check('drift', client.name, drift)
 
+    signer = roles.deployable()[0]
     env = 'STORAGEFORGE_VAULT_SECRET_FILE=/run/sf-secrets/vault_secret'
-    p = subprocess.run([demo.LAB, 'ssh', 'sf-ctl', f'{COMPOSE} exec -T -e {env} storageforge python -'], input=REPLAY,
+    helper = REPLAY.replace('@HOST@', signer.name).replace('@OTHER@', roles.other_than(signer).name)
+    p = subprocess.run([demo.LAB, 'ssh', 'sf-ctl', f'{COMPOSE} exec -T -e {env} storageforge python -'], input=helper,
                        capture_output=True, text=True, timeout=180)
     line = next((x for x in p.stdout.splitlines() if x.startswith('RESULT')), None)
     if not line:
-        r.add('signed-requests', 'sf-fedora', False, 'the helper did not finish', p.stdout[-800:] + p.stderr[-1500:])
+        r.add('signed-requests', signer.name, False, 'the helper did not finish', p.stdout[-800:] + p.stderr[-1500:])
     else:
         got = json.loads(line[6:])
-        r.add('signed-request', 'sf-fedora', got['first']['rc'] == 0 and got['first']['ran'], f'exit {got["first"]["rc"]}', got['first']['text'])
+        r.add('signed-request', signer.name, got['first']['rc'] == 0 and got['first']['ran'], f'exit {got["first"]["rc"]}', got['first']['text'])
         for case, row in got.items():
             if case != 'first':
-                r.add(f'refuses-{case}', 'sf-fedora', row['rc'] == 97 and not row['ran'], f'exit {row["rc"]}', row['text'])
+                r.add(f'refuses-{case}', signer.name, row['rc'] == 97 and not row['ran'], f'exit {row["rc"]}', row['text'])
 
     # Last: the lab's own SSH refuses this VM from here on, until the reset after this tier brings its key back.
+    moved = roles.deployable()[-1]
+
     def reinstalled():
-        ssh('sf-suse', "sudo -n sh -c 'rm -f /etc/ssh/ssh_host_*; ssh-keygen -A >/dev/null; systemctl restart sshd'")
-        job = api.post('/api/scan', {'host': IPS['sf-suse']})['job_id']
+        ssh(moved.name, "sudo -n sh -c 'rm -f /etc/ssh/ssh_host_*; ssh-keygen -A >/dev/null; systemctl restart sshd || systemctl restart ssh'")
+        job = api.post('/api/scan', {'host': moved.ip})['job_id']
         ended = wait_for('the scan', lambda: next((j for j in api.get('/api/jobs')['jobs'] if j['job_id'] == job and j['status'] not in ('queued', 'running')), None), 120)
         if ended['status'] != 'failed':
             raise AssertionError(f'a changed host key was accepted: the scan ended {ended["status"]}')
-        cli('hosts', 'rekey', 'sf-suse')
-        job = api.post('/api/scan', {'host': IPS['sf-suse']})['job_id']
+        cli('hosts', 'rekey', moved.name)
+        job = api.post('/api/scan', {'host': moved.ip})['job_id']
         ended = wait_for('the scan', lambda: next((j for j in api.get('/api/jobs')['jobs'] if j['job_id'] == job and j['status'] not in ('queued', 'running')), None), 120)
-        r.add('rescan-after-rekey-api', 'sf-suse', ended['status'] == 'ok', ended['status'], json.dumps(ended['result']))
-        cli('scan', '--host', IPS['sf-suse'])       # what rekey tells the operator to run
+        r.add('rescan-after-rekey-api', moved.name, ended['status'] == 'ok', ended['status'], json.dumps(ended['result']))
+        cli('scan', '--host', moved.ip)       # what rekey tells the operator to run
         return 'refused until rekey, then scanned through the CLI'
-    r.check('changed-host-key', 'sf-suse', reinstalled)
+    r.check('changed-host-key', moved.name, reinstalled)
+
+
+# ── tier 5: btrfs in depth ──────────────────────────────────────────
+def btrfs_plan(api, name, node, tasks, destructive=False):
+    plan = api.post('/api/changes', {'name': name, 'tasks': [{'type': t, 'host': node.name, 'params': p} for t, p in tasks]})
+    return demo.deploy(api, 'changes', plan['id'], name, **({'destructive': True} if destructive else {}))
+
+
+def fs_mount(node, path):
+    """The mount a subvolume path is on: btrfs filesystem show and remount need that, not the path."""
+    return ssh(node.name, f'findmnt -nT {path} -o TARGET').strip()
+
+
+def tier5(r):
+    api = demo.sign_in()
+    demo.scan_everything(api)
+    demo.set_up_deploy_access(api)
+    hosts = roles.having('btrfs')
+    ids = host_ids()
+    for vm, ip in IPS.items():            # scan access: device errors and health need its collector
+        if BUILD[vm].can('btrfs'):
+            ssh(vm, 'sudo -n sh -s', stdin=cli('access', 'script', '--host', ip))
+    demo.scan(api, [n.ip for n in hosts])
+
+    for node in hosts:
+        text = json.dumps(api.get(f'/api/graph?host={node.name}')).lower()
+        profile = node.tag('btrfs-profile')
+        if profile:
+            r.add('btrfs-profile', node.name, profile in text, f'{profile} {"in" if profile in text else "not in"} the graph')
+        child = node.tag('btrfs-child')
+        if child:
+            rows = sql(f"SELECT count(*) n FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id WHERE m.host_id = {ids.get(node.name, -1)} AND d.path LIKE '{child}%'")
+            r.add('btrfs-child-indexed', node.name, bool(rows and rows[0]['n']), f'{rows[0]["n"] if rows else 0} entries under {child}')
+        if node.can('btrfs-reflink'):
+            rows = sql(f"SELECT f.file_size_bytes s FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id WHERE m.host_id = {ids.get(node.name, -1)} AND f.filename LIKE 'reflink-%'")
+            r.add('btrfs-reflink-sizes', node.name, sorted(x['s'] for x in rows) == [64 << 20] * 2, f'{len(rows)} reflinked files indexed at their full size')
+        if node.can('btrfs-quota'):
+            job = next((j for j in api.get('/api/jobs')['jobs'] if j['host'] == node.name), {})
+            r.add('btrfs-quota-scan', node.name, job.get('status') == 'ok', f'scan with quotas on: {job.get("status")}')
+
+    def subvolumes(node):
+        snap = f'{node.snaps}/ch-snap'
+        btrfs_plan(api, f'btrfs basics {node.name}', node, [
+            ('subvolume', {'path': f'{node.subvol}/ch-sub'}),
+            ('snapshot', {'source': node.subvol, 'dest': snap}),
+            ('to-subvolume', {'path': f'{node.data}/lab-seed/shared/docs'}),
+            ('scrub', {'target': node.subvol})])
+        made = ssh(node.name, f'sudo -n btrfs subvolume show {node.subvol}/ch-sub >/dev/null && sudo -n btrfs subvolume show {snap} >/dev/null && sudo -n btrfs subvolume show {node.data}/lab-seed/shared/docs >/dev/null && echo yes').strip()
+        if made != 'yes':
+            raise AssertionError('a subvolume the plan reported is not there')
+        want = seed_file(node.name, node.data)['sha256']
+        if seed_hash(node.name, f'{node.data}/lab-seed/shared/docs/handbook.txt') != want:
+            raise AssertionError('turning the folder into a subvolume changed a file')
+        return 'subvolume, snapshot, folder to subvolume and scrub, files unchanged'
+    def nocow(node):
+        path = f'{node.subvol}/lab-nocow'
+        btrfs_plan(api, f'btrfs nocow {node.name}', node, [('subvolume', {'path': path, 'nocow': True})])
+        flags = ssh(node.name, f'sudo -n lsattr -d {path}').split()[0]
+        if 'C' not in flags:
+            raise AssertionError(f'attributes are {flags}')
+        return f'{path} has no copy-on-write'
+    for node in (n for n in hosts if n.subvol):
+        r.check('btrfs-nocow', node.name, lambda node=node: nocow(node))
+    for node in (n for n in hosts if n.subvol):
+        r.check('btrfs-plan-tasks', node.name, lambda node=node: subvolumes(node))
+
+    frm, to = roles.sender(), roles.receiver()
+    state = {}
+
+    def full_send():
+        state['task'], _, _ = demo.btrfs_send(api)
+        names = ssh(to.name, f'sudo -n ls {to.recv}').split()
+        show = ssh(to.name, f'sudo -n btrfs subvolume show {to.recv}/{names[-1]}')
+        if not re_uuid(show):
+            raise AssertionError(f'the received snapshot has no received UUID: {show[:300]}')
+        state['name'] = names[-1]
+        return f'{names[-1]} is a received, read-only subvolume'
+    r.check('btrfs-send-full', to.name, full_send)
+
+    def incremental():
+        before = set(ssh(to.name, f'sudo -n ls {to.recv}').split())
+        time.sleep(61)
+        big = 'lab-incremental.bin'
+        ssh(frm.name, f'sudo -n sh -c "head -c 32M /dev/urandom >{frm.subvol}/{big}"')
+        want = seed_hash(frm.name, f'{frm.subvol}/{big}')
+        used = lambda: int(ssh(to.name, f'sudo -n btrfs filesystem du -s --raw {to.recv} | tail -1').split()[0])
+        size_before = used()
+        runs = demo.deploy(api, 'tasks', state['task'], 'btrfs incremental', run=True)
+        new = sorted(set(ssh(to.name, f'sudo -n ls {to.recv}').split()) - before)
+        if not new:
+            raise AssertionError('no new snapshot arrived')
+        if seed_hash(to.name, f'{to.recv}/{new[-1]}/{big}') != want:
+            raise AssertionError('the new file has other bytes on the receiver')
+        output = ' '.join(x.get('output') or '' for x in runs)
+        grew = used() - size_before
+        return f'{new[-1]} arrived; receiver grew {grew >> 20} MiB for a 32 MiB change; parent mentioned: {"-p " in output or "parent" in output}'
+    if 'task' in state:
+        r.check('btrfs-send-incremental', to.name, incremental)
+
+    def interrupted():
+        # what a broken receive leaves: a writable subvolume with the right name and no received UUID
+        name = next(n for n in sorted(ssh(frm.name, f'sudo -n ls {frm.snaps}').split(), reverse=True) if n.startswith('daily-'))
+        ssh(to.name, f'sudo -n sh -c "btrfs property set -f {to.recv}/{name} ro false; btrfs subvolume delete {to.recv}/{name} >/dev/null; btrfs subvolume create {to.recv}/{name} >/dev/null"')
+        made = api.post('/api/tasks', {'name': 'Lab send only', 'host': frm.name, 'blocks': [
+            {'type': 'btrfs_send', 'params': {'into': frm.snaps, 'prefix': 'daily', 'dst_host': f'root@{to.ip}', 'dst': to.recv, 'keep': 0}}]})
+        demo.deploy(api, 'tasks', made['id'], 'btrfs send after a broken receive', run=True)
+        show = ssh(to.name, f'sudo -n btrfs subvolume show {to.recv}/{name}')
+        if not re_uuid(show):
+            raise AssertionError('the broken copy was left in place')
+        return f'{name} was removed and sent again'
+    if 'task' in state:
+        r.check('btrfs-receive-interrupted', to.name, interrupted)
+
+    def add_device(node):
+        number = node.tag('btrfs-spare')
+        device = ssh(node.name, f'for d in /sys/block/vd*; do [ "$(cat $d/serial 2>/dev/null)" = sflab-data{number} ] && echo /dev/${{d##*/}}; done').strip()
+        mount = fs_mount(node, node.subvol)
+        before = ssh(node.name, f'sudo -n btrfs filesystem show {mount}').count('devid')
+        btrfs_plan(api, f'btrfs add device {node.name}', node, [('btrfs-add', {'target': mount, 'device': device, 'confirm': device})], destructive=True)
+        after = ssh(node.name, f'sudo -n btrfs filesystem show {mount}').count('devid')
+        if after != before + 1:
+            raise AssertionError(f'{before} devices before, {after} after')
+        return f'{device} joined the filesystem'
+    for node in (n for n in hosts if n.tag('btrfs-spare') and n.subvol):
+        r.check('btrfs-add-device', node.name, lambda node=node: add_device(node))
+
+    def convert(node):
+        mount = fs_mount(node, node.subvol)
+        try:
+            btrfs_plan(api, f'btrfs convert {node.name}', node, [('btrfs-balance', {'target': mount, 'data': 'raid1', 'metadata': 'raid1'})])
+        except demo.DemoError as exc:         # too little room is a right answer, if the filesystem is still writable after it
+            if 'not converted' not in str(exc):
+                raise
+            ssh(node.name, f'sudo -n touch {mount}/lab-still-writable && sudo -n rm {mount}/lab-still-writable')
+            return 'refused for lack of unallocated space, and the filesystem stays writable'
+        wait_for('the balance to end', lambda: 'No balance found' in ssh(node.name, f'sudo -n btrfs balance status {mount}', check=False), 300)
+        out = ssh(node.name, f'sudo -n btrfs filesystem df {mount}').lower()
+        data = [x for x in out.splitlines() if x.startswith(('data', 'metadata'))]
+        if not all(', raid1:' in x for x in data):
+            ended = ssh(node.name, "sudo -n journalctl -k -n 300 --no-pager -o cat | grep -E 'balance: ended|ENOSPC' | tail -2", check=False)
+            raise AssertionError(f'{" / ".join(data)}; {ended.strip()[:160]}')
+        demo.scan(api, [node.ip])
+        text = json.dumps(api.get(f'/api/graph?host={node.name}')).lower()
+        return f'converted to raid1, and the scan {"shows" if "raid1" in text else "does not show"} it'
+    converted = [n for n in hosts if n.tag('btrfs-profile') in ('raid10', 'raid1c3')]
+    for node in converted:
+        r.check('btrfs-balance-convert', node.name, lambda node=node: convert(node))
+
+    def has_alert(kind, text):
+        return [a for a in alerts_now() if a['kind'].startswith(kind) and text in json.dumps(a)]
+
+    # A full filesystem, then a read-only one, then a pulled disk: each host only once, last things last.
+    healthy = [n for n in hosts if ' rw' in f' {ssh(n.name, "findmnt -n -o OPTIONS --target " + (n.subvol or n.recv)).replace(",", " ")}']
+    filler = next((n for n in healthy if n.can('btrfs-raid')), None) or healthy[0]
+
+    def full():
+        path = f'{filler.fill}/lab-fill.bin'
+        # df's available space moves as btrfs frees deleted subvolumes and allocates chunks, so one pass can stop short
+        ssh(filler.name, f'''sudo -n sh -c 'for i in 1 2 3 4; do avail=$(df -m --output=avail {filler.fill} | tail -1); [ "$avail" -gt 96 ] || break; dd if=/dev/urandom of={path}.$i bs=1M count=$((avail - 64)) status=none; sync; btrfs filesystem sync {filler.fill} 2>/dev/null; done; true' ''')
+        demo.scan(api, [filler.ip])
+        got = has_alert('disk', filler.name)
+        usage = ssh(filler.name, f'df -m {filler.fill} | tail -1').split()
+        ssh(filler.name, f'sudo -n sh -c "rm -f {path}.*; sync"')
+        if not got:
+            raise AssertionError(f'no disk alert with {filler.fill} at {usage[4]} ({usage[2]} of {usage[1]} MB): {[a["title"] for a in alerts_now()]}')
+        return got[0]['title']
+    r.check('btrfs-disk-full', filler.name, full)
+
+    def read_only():
+        node = next(n for n in healthy if n.subvol)
+        mount = fs_mount(node, node.subvol)
+        # a task must report a filesystem it can't write to, not call it done
+        ssh(node.name, f'sudo -n mount -o remount,ro {mount}')
+        try:
+            made = api.post('/api/tasks', {'name': 'Lab read-only', 'host': node.name, 'blocks': [
+                {'type': 'btrfs_snapshot', 'params': {'subvol': node.subvol, 'into': node.subvol, 'prefix': 'ro'}}]})
+            group = api.post('/api/deploy/start', {'kind': 'tasks', 'ref': made['id'], 'mode': 'apply', 'run': True, 'title': 'read-only'})['group']
+            out = wait_for('the run', lambda: demo.finished(api, group), 120)
+            if all(x['status'] == 'ok' for x in out['runs']):
+                raise AssertionError('the run reported ok on a read-only filesystem')
+            return out['runs'][0]['status']
+        finally:
+            ssh(node.name, f'sudo -n mount -o remount,rw {mount}')
+    r.check('btrfs-read-only', next(n.name for n in healthy if n.subvol), read_only)
+
+    def pulled(node):
+        # not disk 1: systemd ties the mount to the device it was mounted from, and unmounts the pool when that goes
+        mount = fs_mount(node, node.subvol or node.recv)
+        lines = subprocess.run(['virsh', 'domblklist', node.name], capture_output=True, text=True).stdout.splitlines()
+        disk = next(d.split()[0] for d in lines if f'{node.name}-data2' in d)
+        subprocess.run(['virsh', '-q', 'detach-disk', node.name, disk, '--live'], check=True, capture_output=True)
+        ssh(node.name, f'sudo -n sh -c "dd if=/dev/urandom of={mount}/lab-degraded bs=1M count=32 status=none; sync; /usr/local/lib/storageforge/health >/dev/null 2>&1 || true"', check=False)
+        demo.scan(api, [node.ip])
+        missing = 'missing' in ssh(node.name, f'sudo -n btrfs filesystem show {mount}').lower()
+        titles = [a['title'] for a in alerts_now() if node.name in json.dumps(a)]
+        wanted = [t for t in titles if 'missing' in t.lower() or 'error' in t.lower() or 'degraded' in t.lower()]
+        if not wanted:
+            raise AssertionError(f'no missing-device or error alert (btrfs says missing: {missing}): {titles}')
+        return wanted[0]
+    raid = [n for n in healthy if n.can('btrfs-raid') and n.name != filler.name] or [n for n in healthy if n.can('btrfs-raid')]
+    if raid:
+        r.check('btrfs-disk-pulled', raid[0].name, lambda: pulled(raid[0]))
+    else:
+        r.add('btrfs-disk-pulled', '-', None, 'no btrfs raid host in this build')
+
+
+def re_uuid(show):
+    m = re.search(r'Received UUID:\s*(\S+)', show)
+    return bool(m) and m.group(1) != '-'
 
 
 def tier0(r):
@@ -528,7 +848,7 @@ def tier0(r):
 
 
 # ── report ──────────────────────────────────────────────────────────
-TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure'}
+TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs'}
 CELL = {'pass': 'pass', 'FAIL': '**FAIL**', 'skip': 'skip', 'known': 'known', 'fixed?': 'fixed?'}
 
 
@@ -549,7 +869,7 @@ def report():
     commit = subprocess.run(['git', '-C', str(ROOT), 'log', '-1', '--format=%h'], capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(['git', '-C', str(ROOT), 'status', '--short'], capture_output=True, text=True).stdout.strip()
     count = {s: sum(x['status'] == s for x in rows) for s in CELL}
-    lines = [f'# KVM lab results {stamp}', '', f'Commit `{commit}`{" with uncommitted changes" if dirty else ""}. '
+    lines = [f'# KVM lab results {stamp}', '', f'Build `{roles.seed()}`: {", ".join(VMS)}. Rebuild it with `lab.sh up ' + (f'--pick {",".join(VMS)}' if roles.seed() == 'pick' else f'--seed {roles.seed()}') + '`.', '', f'Commit `{commit}`{" with uncommitted changes" if dirty else ""}. '
              f'{count["pass"]} passed, {count["FAIL"]} failed, {count["known"]} known failures, {count["skip"]} skipped.', '']
     for tier, name in TIERS.items():
         here = [x for x in rows if x['tier'] == tier]
@@ -582,7 +902,7 @@ def main():
     tier = int(sys.argv[2])
     r = Results(tier)
     try:
-        {0: tier0, 1: tier1, 3: tier3, 4: tier4}[tier](r)
+        {0: tier0, 1: tier1, 3: tier3, 4: tier4, 5: tier5}[tier](r)
     except Exception as exc:
         r.add('tier-setup', '-', False, f'{type(exc).__name__}: {str(exc)[:170]}', traceback.format_exc())
     return 0 if r.save() else 1

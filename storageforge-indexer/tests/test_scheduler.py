@@ -43,7 +43,7 @@ class SchedulerBaseTest(unittest.TestCase):
         # Seed files
         p_dir = dir_id(self.conn, self.mid, '/mnt/data')
         self.conn.execute("INSERT INTO file_records (mount_id, dir_id, filename, is_directory, file_size_bytes, modified_at) "
-                          f"VALUES (:m, :d, 'archive.tar.gz', 0, 1024, {self.db.ts('0')})",
+                          f"VALUES (:m, :d, 'archive.tar.gz', FALSE, 1024, {self.db.ts('0')})",
                           {'m': self.mid, 'd': p_dir})
 
         # Seed a storage task
@@ -1354,7 +1354,7 @@ class Step5Tests(SafetyCase):
         did = self.conn.scalar('SELECT dir_id FROM directories LIMIT 1')
         for name, sha in (('a', 'same'), ('b', 'same'), ('c', 'alone')):
             self.conn.execute(f"""INSERT INTO file_records (mount_id, dir_id, filename, is_directory, file_size_bytes, modified_at, is_symlink, checksum_hash)
-                                  VALUES (:m, :d, :n, 0, 5000000, {self.db.ts(':t')}, 0, :s)""", {'m': mid, 'd': did, 'n': name, 't': 1, 's': sha})
+                                  VALUES (:m, :d, :n, FALSE, 5000000, {self.db.ts(':t')}, FALSE, :s)""", {'m': mid, 'd': did, 'n': name, 't': 1, 's': sha})
         groups, _ = filemap.file_groups(self.conn, None, 1, {}, False)
         self.assertEqual([g['sha256'] for g in groups], ['same'])
         self.assertEqual(sorted(c['path'].rsplit('/', 1)[1] for c in groups[0]['copies']), ['a', 'b'])
@@ -1382,3 +1382,47 @@ under "$path" "$ROOT" "$snap" || exit 3
 under "$path" "$ROOT" "$snap" || exit 4
 """
         self.assertEqual(subprocess.run(['bash', '-c', probe], capture_output=True).returncode, 4)
+
+
+class LastItemsTests(SafetyCase):
+    """PF-23, PF-03 and PF-14."""
+
+    def test_a_schedule_keeps_working_after_its_plan_is_renamed(self):   # PF-23
+        task = self.boss.post('/api/tasks', json={'name': 'nightly copy', 'host': 'nas', 'blocks': []}).get_json()['id']
+        sid = self.schedule(task_type='task', task_ref='Nightly Copy')
+        self.assertEqual(scheduler.get_schedule(self.conn, sid)['task_ref'], str(task))
+        self.boss.put(f'/api/tasks/{task}', json={'name': 'renamed', 'host': 'nas', 'blocks': []})
+        self.assertTrue(scheduler.generate_task_script(self.conn, scheduler.get_schedule(self.conn, sid))[0])
+
+    def test_other_snapshot_tools_are_detected(self):        # PF-03
+        from storageforge_index import health, protection
+        snaps = health.parse_snapshots('snapper\troot\t/\nsnapper\thome\t/home\nsnapper\tmystery\t\nsanoid\ttank/data\nsanoid\ttemplate_x\ntool\ttimeshift\n')
+        self.assertEqual(snaps['snapper'], ['root', 'home', 'mystery'])
+        self.assertEqual(snaps['sanoid'], ['tank/data'])
+        self.conn.execute("UPDATE hosts SET inventory_json = :i WHERE hostname = 'nas'", {'i': json.dumps({'snapshots': snaps})})
+        rows = protection.overlay(self.conn, 'nas', [{'path': '/home'}, {'path': '/'}, {'dataset': 'tank/data'}, {'path': '/srv'}])
+        by = {r.get('path') or r['dataset']: (r.get('snapshots') or {}).get('tool') for r in rows}
+        self.assertEqual(by['/home'], 'snapper')
+        self.assertEqual(by['tank/data'], 'sanoid')
+        self.assertIn(by['/'], ('snapper', 'timeshift'))
+
+    def test_the_scan_reads_those_tools(self):               # PF-03
+        from storageforge_index import remote
+        text = open(remote.__file__).read()
+        for path in ('/etc/snapper/configs', '/etc/timeshift/timeshift.json', '/etc/btrbk/btrbk.conf', '/etc/sanoid/sanoid.conf'):
+            self.assertIn(path, text)
+
+    def test_the_canvas_shows_shares_and_stacks(self):       # PF-14
+        from storageforge_index import canvas
+        graph = {'nodes': [{'id': f'host:{h}', 'kind': 'Host', 'label': h, 'host': h, 'health': 'unknown', 'props': {}} for h in ('nas', 'pc')], 'edges': []}
+        extras = {'nas': {'shares': [{'protocol': 'NFSv4.2', 'name': 'media', 'path': '/srv/media', 'clients': 'pc 10.0.0.9'}], 'stacks': ['immich']}}
+        out = canvas.to_canvas(graph, extras)
+        text = ' '.join(n.get('text', '') for n in out['nodes'])
+        self.assertIn('media', text)
+        self.assertIn('immich', text)
+        labels = sorted(e.get('label') for e in out['edges'])
+        self.assertEqual(labels, ['client', 'runs', 'serves'])
+        ids = {n['id'] for n in out['nodes']}
+        for e in out['edges']:
+            self.assertLessEqual({e['fromNode'], e['toNode']}, ids)
+        self.assertEqual(canvas.extras(self.conn, None), {})      # nothing designed or running here: no cards

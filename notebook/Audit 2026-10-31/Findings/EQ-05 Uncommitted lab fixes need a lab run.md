@@ -1,6 +1,6 @@
 ---
 id: EQ-05
-status: in-progress
+status: done
 severity: low
 effort: S
 area: Operations
@@ -30,7 +30,10 @@ A small risk, and worth closing before these get committed.
 Run the lab tiers, fix the symlink case, add the restore note, then commit.
 
 ## Done when
-- [ ] Lab results recorded with no new failures
+- [x] Lab results recorded with no new failures
 
 ## Progress
 2026-10-31, in `d3424a1`. The fixes were committed as `1fea59c`. `serve` re-checks after adding `.git`, and restores note `restorecon` (docs and the API answer). Test: `test_a_git_link_out_of_the_source_is_refused`. **The lab run is still open**, which keeps this in progress.
+
+## Finished
+2026-10-31. `reports/lab-2026-10-31-1618.md` (344 passed, 0 failed, 4 known). The run names `7855063` with uncommitted changes, since other sessions were working in the same tree.

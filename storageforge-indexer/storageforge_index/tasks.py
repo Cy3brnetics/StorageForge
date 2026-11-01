@@ -117,6 +117,10 @@ TYPES: dict[str, dict] = {
                            P('action', 'select', 'Action', 'stop', choices=['stop', 'start', 'restart'])]},
     'mkdir': {'cat': 'other', 'label': 'Make folder', 'text': 'make folder {path}', 'params': [P('path', 'path', 'Folder')]},
     'scrub': {'cat': 'other', 'label': 'btrfs scrub', 'text': 'scrub {path}', 'params': [P('path', 'path', 'Mount point')]},
+    'btrfs_balance': {'cat': 'other', 'label': 'btrfs reclaim space', 'text': 'pack half-empty chunks on {path}',
+                      'help': 'A filtered balance: hands back space stuck in half-empty chunks, so writes never fail with "no space" while df shows room.',
+                      'params': [P('path', 'path', 'Mount point'), P('dusage', 'int', 'Data chunks up to (% full)', 50, min=0, max=100),
+                                 P('musage', 'int', 'Metadata chunks up to (% full)', 30, min=0, max=100)]},
     'command': {'cat': 'other', 'label': 'Run command', 'text': 'run: {cmd}',
                 'help': 'A shell command, run as root with bash. Its failure fails the task (put it in a Try to allow it).',
                 'params': [P('cmd', 'cmd', 'Command', placeholder='echo hello')]},
@@ -156,6 +160,10 @@ TEMPLATES = [
      'blocks': [_b('try', {'do': [_b('compose', project='', action='stop'), _b('btrfs_snapshot', subvol='', prefix='app')],
                            'fallback': [_b('log', message='snapshot failed: starting the stack again')]}),
                 _b('compose', project='', action='start'), _b('btrfs_prune', into='', prefix='app', keep=7)]},
+    {'name': 'Monthly btrfs tidy', 'help': 'Reclaim space stuck in half-empty chunks on the first Sunday of the month, only when the disk is there.',
+     'schedule': 'Sun *-*-01..07 04:00:00',
+     'blocks': [_b('if', {'then': [_b('btrfs_balance', path='')], 'else': [_b('log', message='not mounted: no balance')]},
+                   cond='mounted', arg='')]},
     {'name': 'Weekend scrub', 'help': 'Scrub a btrfs filesystem on Sundays, only when the disk is there.', 'schedule': 'Sun *-*-* 03:00:00',
      'blocks': [_b('if', {'then': [_b('scrub', path='')], 'else': [_b('log', message='not mounted: no scrub')]},
                    cond='mounted', arg='')]},
@@ -456,10 +464,10 @@ def check(conn: Conn, task: dict) -> dict:
                         add('crit', f'{p["dst"]} is on {dm["fstype"]} on {dh["name"]}, not btrfs')
                 if t == 'zfs_send' and p['dst'] and '/' not in p['dst']:
                     add('crit', f'{p["dst"]} is a whole pool, and receiving onto one means overwriting it: give pool/name')
-            elif t == 'scrub' and p['path'] and home:
+            elif t in ('scrub', 'btrfs_balance') and p['path'] and home:
                 m = mount_of(home, p['path'])
                 if m and (m['fstype'] or '').lower() != 'btrfs':
-                    add('crit', f'{p["path"]} is on {m["fstype"]}: scrub is for btrfs')
+                    add('crit', f'{p["path"]} is on {m["fstype"]}: {"scrub" if t == "scrub" else "balance"} is for btrfs')
             elif t == 'command' and p['cmd']:
                 if re.search(r'\brm\s+-[a-z]*r[a-z]*f?\s+/(\s|$)', p['cmd']):
                     add('crit', 'this removes the root of the filesystem')
@@ -625,6 +633,8 @@ class _Emit:
             self.w(d, f'x mkdir -p -- {q(p["path"])} || fail {q("cannot make " + p["path"])}')
         elif t == 'scrub':
             self.w(d, f'x btrfs scrub start -B -- {q(p["path"])} || fail "scrub failed or found errors"')
+        elif t == 'btrfs_balance':
+            self.w(d, f'x btrfs balance start -dusage={int(p["dusage"])} -musage={int(p["musage"])} -- {q(p["path"])} || fail "balance failed"')
         elif t == 'command':
             self.w(d, f'xsh {q(p["cmd"])} || fail "the command failed (exit $?)"')
         elif t == 'wait':

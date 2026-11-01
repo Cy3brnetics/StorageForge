@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Disposable KVM lab for StorageForge. Everything it makes is named here and removed by `down`.
-#   lab.sh up [vm...]     create, start and provision the VMs; a full `up` ends with a golden snapshot
+#   lab.sh up             pick 7 of the 14 configs at random, then create, start and provision them, ending at golden
+#   lab.sh up --seed N    the build that seed picks, to repeat one
+#   lab.sh up --pick a,b  exactly these configs
+#   lab.sh up vm...       only these VMs of the current build, with no snapshot
 #   lab.sh down           remove the VMs, network, pool and lab state, even while an up is running
 #   lab.sh reset          return every VM to the golden snapshot
 #   lab.sh snapshot       retake the golden snapshot from the current state
 #   lab.sh test           check the running lab against what it should hold
-#   lab.sh test --all     tiers 0-4, resetting around them, and write the report into reports/. Takes a while.
+#   lab.sh test --all     tiers 0-5, resetting around them, and write the report into reports/. Takes a while.
 #   lab.sh gauntlet       tier 2 alone: every deploy path on every VM, from golden and back
 #   lab.sh controller     rebuild StorageForge from this tree and restart it on sf-ctl, keeping its data
 #   lab.sh demo           reset, then scan every host and deploy shares, jobs and an alert through StorageForge
@@ -32,9 +35,11 @@ WAIT_SECS=1200
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'lab: %s\n' "$*" >&2; exit 1; }
-nodes() { grep -vE '^\s*(#|$)' "$HERE/nodes.conf"; }
+pool_rows() { grep -vE '^\s*(#|$)' "$HERE/nodes.conf"; }
+selection() { cut -d' ' -f2- "$STATE/selection" 2>/dev/null | tr ' ' '\n'; }
+nodes() { if [ -f "$STATE/selection" ]; then pool_rows | grep -E "^($(selection | paste -sd'|'))\|"; else pool_rows; fi; }
 field() { awk -F'|' -v k="$1" -v f="$2" '$1==k {print $f}' "$HERE/nodes.conf"; }
-is_node() { nodes | cut -d'|' -f1 | grep -qx -- "$1"; }
+is_node() { pool_rows | cut -d'|' -f1 | grep -qx -- "$1"; }
 
 # Only a VM carrying our metadata tag is ever stopped or removed.
 ours() { virsh metadata "$1" "$META_URI" 2>/dev/null | grep -q '<lab\b'; }
@@ -130,7 +135,7 @@ ensure_network() {
       echo "<ip address='$PREFIX.1' netmask='255.255.255.0'><dhcp><range start='$PREFIX.100' end='$PREFIX.200'/>"
       while IFS='|' read -r name _ _ _ _ _ ip _; do
         mac=$(mac_of "$ip"); echo "<host mac='$mac' name='$name' ip='$ip'/>"
-      done < <(nodes)
+      done < <(pool_rows)
       echo '</dhcp></ip></network>'; } >"$xml"
     virsh -q net-define "$xml" >/dev/null
   fi
@@ -150,7 +155,7 @@ ensure_pool() {
 
 create_node() {
   local n=$1 image osinfo vcpu ram root ip disks base seed i=0 d
-  IFS='|' read -r _ image osinfo vcpu ram root ip disks < <(nodes | awk -F'|' -v k="$n" '$1==k')
+  IFS='|' read -r _ image osinfo vcpu ram root ip disks < <(pool_rows | awk -F'|' -v k="$n" '$1==k')
   base=$(image_path "$image")
   local rootdisk="$LAB_DIR/$n-root.qcow2" fmt
   fmt=$(qemu-img info "$base" | sed -n 's/^file format: //p' | head -1)
@@ -162,7 +167,10 @@ create_node() {
     args+=(--disk "path=$LAB_DIR/$n-data$i.qcow2,format=qcow2,bus=virtio,serial=sflab-data$i")
   done
   seed=$(make_seed "$n" "$image")
-  args+=(--disk "path=$seed,device=cdrom,bus=sata,readonly=on")
+  case $image in
+    debian12) args+=(--disk "path=$seed,device=disk,format=raw,bus=virtio,readonly=on") ;;     # its cloud kernel has no SATA driver
+    *) args+=(--disk "path=$seed,device=cdrom,bus=sata,readonly=on") ;;
+  esac
   virt-install --print-xml --import --name "$n" --osinfo "$osinfo" --vcpus "$vcpu" --memory "$ram" --cpu host-passthrough \
     --network "network=$NET,mac=$(mac_of "$ip"),model=virtio" --graphics none --video vga --console pty,target_type=serial \
     --rng /dev/urandom --noautoconsole "${args[@]}" >"$STATE/$n.xml" 2>"$STATE/$n.err" \
@@ -316,7 +324,25 @@ cmd_snapshot() {
 }
 
 cmd_up() {
-  local want=("$@") all=0 n
+  local want=() all=0 n seed='' pick=''
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --seed) seed=${2:?--seed needs a number}; shift 2 ;;
+      --pick) pick=${2:?--pick needs config names}; shift 2 ;;
+      *) want+=("$1"); shift ;;
+    esac
+  done
+  mkdir -p "$STATE"; chmod 700 "$STATE"
+  if [ ! -f "$STATE/selection" ] || [ -n "$seed$pick" ]; then
+    [ -z "$(lab_domains)" ] || die 'a lab is running: use down before picking another build'
+    if [ -n "$pick" ]; then
+      echo "pick ${pick//,/ }" >"$STATE/selection"
+    else
+      seed=${seed:-$(( (RANDOM << 15) | RANDOM ))}
+      echo "$seed $(python3 "$HERE/roles.py" pick "$seed")" >"$STATE/selection"
+    fi
+  fi
+  say "build $(cut -d' ' -f1 "$STATE/selection"): $(selection | paste -sd' ')"
   if [ ${#want[@]} = 0 ]; then mapfile -t want < <(nodes | cut -d'|' -f1); all=1; fi
   for n in "${want[@]}"; do is_node "$n" || die "$n is not in nodes.conf"; done
   preflight "${want[@]}"
@@ -399,7 +425,7 @@ cmd_status() {
     if exists "$n" && ours "$n" && [ "$(state "$n")" = running ] && [ -f "$STATE/id_ed25519" ]; then probe_node "$n" >"$tmp/$n" & fi
   done < <(nodes)
   wait
-  [ "$json" = --json ] && printf '[' || printf '%-10s %-11s %-10s %-4s %-7s %-7s %s\n' VM IP STATE SSH ROOTFS GOLDEN SWAP
+  [ "$json" = --json ] && printf '[' || printf '%-13s %-11s %-10s %-4s %-7s %-7s %s\n' VM IP STATE SSH ROOTFS GOLDEN SWAP
   local first=1 image ip st ssh_ok fs swap golden
   while IFS='|' read -r n image _ _ _ _ ip _; do
     if exists "$n" && ours "$n"; then st=$(state "$n"); else st=absent; fi
@@ -412,7 +438,7 @@ cmd_status() {
       printf '{"name":"%s","image":"%s","ip":"%s","state":"%s","ssh":"%s","rootfs":"%s","golden":"%s","swap":"%s"}' \
         "$n" "$image" "$ip" "$st" "$ssh_ok" "$fs" "$golden" "${swap% }"
     else
-      printf '%-10s %-11s %-10s %-4s %-7s %-7s %s\n' "$n" "$ip" "$st" "$ssh_ok" "${fs:--}" "$golden" "${swap:--}"
+      printf '%-13s %-11s %-10s %-4s %-7s %-7s %s\n' "$n" "$ip" "$st" "$ssh_ok" "${fs:--}" "$golden" "${swap:--}"
     fi
   done < <(nodes)
   [ "$json" = --json ] && printf ']\n'
@@ -443,10 +469,10 @@ cmd_test_all() {
   export SFLAB_STATE="$STATE"
   rm -rf "$STATE/results" "$STATE/gauntlet.json"
   cmd_reset
-  for t in 0 1 2 3 4; do
+  for t in 0 1 2 3 4 5; do
     say "== tier $t =="
     [ "$t" = 0 ] || [ "$t" = 2 ] || cmd_reset
-    if [ "$t" = 2 ]; then cmd_gauntlet || rc=1; else python3 "$tiers" run "$t" || rc=1; fi
+    if [ "$t" = 2 ]; then cmd_gauntlet || true; else python3 "$tiers" run "$t" || true; fi     # the report decides, knowing what is known
   done
   cmd_reset
   python3 "$tiers" report || rc=1
@@ -499,7 +525,7 @@ case ${1:-} in
   gauntlet) shift; lock; cmd_gauntlet "$@" ;;
   controller) lock; cmd_controller ;;
   demo) lock; cmd_demo ;;
-  images) mapfile -t all < <(nodes | cut -d'|' -f1); ensure_images "${all[@]}" ;;
+  images) mapfile -t all < <(pool_rows | cut -d'|' -f1); ensure_images "${all[@]}" ;;
   install-launcher) cmd_install_launcher ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \?//'; exit 2 ;;
+  *) sed -n '2,18p' "$0" | sed 's/^# \?//'; exit 2 ;;
 esac

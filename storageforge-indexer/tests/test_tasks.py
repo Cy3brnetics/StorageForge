@@ -410,7 +410,7 @@ Error summary:    no errors found
         self.assertEqual((r['disks']['sda']['smart'], r['disks']['sda']['reallocated'], r['disks']['sda']['temp']), ('warn', 8, 34))
         self.assertEqual(r['disks']['sdb']['smart'], 'fail')
         self.assertNotIn('sdc', r['disks'])
-        self.assertEqual(r['btrfs']['/mnt/pool'], {'errors': 3, 'last_scrub': 'Sun Oct  4 01:00:00 2026', 'scrub_errors': 0, 'snapshots': 12})
+        self.assertEqual(r['btrfs']['/mnt/pool'], {'errors': 3, 'error_devices': {'sdb1': {'write': 3}}, 'last_scrub': 'Sun Oct  4 01:00:00 2026', 'scrub_errors': 0, 'snapshots': 12})
         self.assertIsNone(health.parse_report(''))
 
     def test_problems(self):

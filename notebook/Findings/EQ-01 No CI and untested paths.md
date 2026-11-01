@@ -34,3 +34,5 @@ found: 2026-10-29
 The suite passes on SQLite and PostgreSQL, and `.forgejo/workflows/ci.yml` is written, but has not run yet: it needs Forgejo Actions and a runner. The browser JavaScript is still untested.
 
 Later on 2026-10-30: planner capacity math now has a test. Still needs a Forgejo runner, which only the owner can set up, and browser tests.
+
+2026-10-31: the suite passed on SQLite and PostgreSQL by hand (364 tests), including new browser smoke tests (`2215bfc`). Only the Forgejo runner is left, which only the owner can set up.

@@ -75,7 +75,10 @@ class Types(Fleet):
         return {'name': 'p', 'tasks': [{'type': kind, 'host': 'nas', 'params': params}]}
 
     def samples(self):
-        return [('btrfs-send', dict(source='/mnt/pool/.snap/a', parent='/mnt/pool/.snap/b', dest_host='pc', dest='/mnt/x')),
+        return [('btrfs-reclaim', dict(target='/mnt/pool', dusage='40')), ('btrfs-replace', dict(target='/mnt/pool', old='2', device='/dev/sdx', confirm='/dev/sdx')),
+                ('btrfs-remove', dict(target='/mnt/pool', device='missing', confirm='missing')), ('btrfs-resize', dict(target='/mnt/pool', devid='2')),
+                ('subvolume-restore', dict(source='/mnt/pool/.snap/a', path='/mnt/pool/my data')), ('btrfs-quota', dict(target='/mnt/pool')),
+                ('btrfs-send', dict(source='/mnt/pool/.snap/a', parent='/mnt/pool/.snap/b', dest_host='pc', dest='/mnt/x')),
                 ('zfs-pool', dict(pool='tank', level='mirror', devices='/dev/sdx /dev/sdy', confirm='/dev/sdx  /dev/sdy')),
                 ('zfs-dataset', dict(dataset='tank/a', mountpoint='/srv/my data', options='compression=zstd')),
                 ('zfs-snapshot', dict(dataset='tank/a', name='s1', recursive=True)),
@@ -162,6 +165,11 @@ class Sends(Stubbed):
         r = self.run_task(self.btrfs_block(), '--run')
         self.assertIn('d-2 is already there', r.stdout)
         self.assertNotIn('btrfs send', self.log.read_text())
+
+    def test_btrfs_balance_block(self):
+        r = self.run_task([{'type': 'btrfs_balance', 'params': {'path': '/mnt/pool', 'dusage': 40, 'musage': 20}}], '--run')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('balance start -dusage=40 -musage=20 -- /mnt/pool', self.log.read_text())
 
     def test_btrfs_report_changes_nothing(self):
         self.snap('d-1')

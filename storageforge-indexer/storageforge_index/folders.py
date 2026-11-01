@@ -11,6 +11,7 @@ Matching structure is strong evidence of a copy, not proof; a --checksum scan co
 from __future__ import annotations
 
 import posixpath
+import re
 
 from .db import Conn, epoch
 from .remote import is_under
@@ -19,11 +20,16 @@ M64 = (1 << 64) - 1
 NOISE_DIRS = ('/usr', '/lib', '/lib32', '/lib64', '/libx32', '/bin', '/sbin', '/boot', '/etc', '/opt/containerd', '/opt/vc', '/snap',
               '/var/lib', '/var/cache', '/var/log', '/var/tmp', '/tmp')
 NOISE_NAMES = frozenset({'node_modules', '__pycache__', '.cache', 'site-packages', '.venv', 'venv', '.git',
-                         '.npm', '.cargo', '.rustup', '.local', '.storageforge-trash'})
+                         '.npm', '.cargo', '.rustup', '.local', '.storageforge-trash',
+                         'overlay2', 'io.containerd.snapshotter.v1.overlayfs'})
+# rsnapshot's daily.0, weekly.1: copies by design, and the links in them point into the host they came from
+BACKUP_ROTATION = re.compile(r'(hourly|daily|weekly|monthly|yearly)\.\d+')
 
 
 def _noise(path: str) -> bool:
-    return any(path == d or path.startswith(d + '/') for d in NOISE_DIRS) or bool(NOISE_NAMES & set(path.split('/')))
+    parts = path.split('/')
+    return (any(path == d or path.startswith(d + '/') for d in NOISE_DIRS) or bool(NOISE_NAMES & set(parts))
+            or any(BACKUP_ROTATION.fullmatch(p) for p in parts))
 
 
 def ignore_lists(conn: Conn) -> dict[str, list[str]]:
@@ -67,18 +73,23 @@ def duplicate_folders(conn: Conn, host: str | None = None, min_files: int = 3, m
         f"WHERE m.scan_state = 'indexed' {hsql}", {'host': host})}
     # per folder: [own-file hash sum, file count, bytes]; children are folded in afterwards
     own: dict[tuple, list] = {}
-    cur = conn.execute(f"""SELECT f.mount_id, d.path, f.filename, f.file_size_bytes, f.is_directory
-                           FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
+    paths = dict(conn.all(f"""SELECT d.dir_id, d.path FROM directories d JOIN mounts m ON m.mount_id = d.mount_id JOIN hosts h ON h.host_id = m.host_id
+                              WHERE m.scan_state = 'indexed' {hsql}""", {'host': host}))
+    cur = conn.execute(f"""SELECT f.mount_id, f.dir_id, f.filename, f.file_size_bytes, f.is_directory
+                           FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
                            WHERE NOT f.is_symlink AND m.scan_state = 'indexed' {hsql}""", {'host': host})
+    at, acc = None, None                   # a folder's files mostly arrive together: one dict lookup per run of them
     while rows := cur.fetchmany(50_000):
-        for mid, parent, name, size, is_dir in rows:
+        for mid, dir_id, name, size, is_dir in rows:
+            parent = paths[dir_id]
             if is_dir:
                 path = posixpath.join(parent, name) if parent else '/'
                 own.setdefault((mid, path), [0, 0, 0])
                 if parent:
                     own.setdefault((mid, parent), [0, 0, 0])
                 continue
-            acc = own.setdefault((mid, parent), [0, 0, 0])
+            if dir_id != at:
+                at, acc = dir_id, own.setdefault((mid, parent), [0, 0, 0])
             acc[0] = (acc[0] + hash((name, size))) & M64
             acc[1] += 1
             acc[2] += size or 0

@@ -30,8 +30,13 @@ Read from the image with `dpkg-query` and `ssh -V`, with no network.
 ## The highs
 None had a fix available in the report. Most belong to packages no longer installed (`util-linux` and its libraries, `gzip`, `perl-base`, `sqlite3`) or the old OpenSSH. Not reviewed one by one: the fresh scan decides what is left.
 
-## Next
-```bash
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --severity CRITICAL,HIGH storageforge:0.2.0
-```
-Update this note from the result. Then add it to CI, failing on a critical not listed here.
+## Fresh scan, 2026-10-31
+Trivy over `storageforge:0.2.0`, from a saved image with no Docker socket: Debian 13.7, **no criticals, one high**.
+
+| CVE | Package | Decision |
+| :-- | :-- | :-- |
+| CVE-2026-54369 | libacl1 2.3.2 | Accept for now: no fix available. The scanner calls it symlink traversal in libacl functions; whether anything in the image reaches them was not analysed. Take the fix when Debian ships it |
+
+This settles the table above: zlib and the rest no longer show, and neither does the glibc CVE, at these severities. Trivy's view only; Grype was not rerun.
+
+CI scans each build and fails on a critical not in `.trivyignore`, once a runner exists.

@@ -283,7 +283,10 @@ def save(db, conn, hostname: str, nodes: dict, edges: list):
         for stale in {r[0] for r in conn.all('SELECT node_id FROM graph_nodes WHERE host = :h', {'h': hostname})} - set(keep):
             conn.execute('DELETE FROM graph_nodes WHERE node_id = :id', {'id': stale})
         for n in nodes.values():
-            if n['host'] not in (None, hostname):      # another scanned host's node: its own build owns it
+            if n['host'] not in (None, hostname):      # another scanned host's node: its own build owns it, but may not
+                conn.execute("""INSERT INTO graph_nodes (node_id, kind, label, host, updated_at)
+                                VALUES (:id, :k, :l, :h, :now) ON CONFLICT (node_id) DO NOTHING""",    # have run yet
+                             {'id': n['id'], 'k': n['kind'], 'l': n['label'], 'h': n['host'], 'now': now})
                 continue
             conn.execute("""INSERT INTO graph_nodes (node_id, kind, label, host, health, props_json, updated_at)
                             VALUES (:id, :k, :l, :h, :he, :p, :now)

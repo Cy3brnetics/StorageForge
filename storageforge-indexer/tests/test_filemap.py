@@ -1,6 +1,7 @@
 """Graph view file map: duplicate sets, ignore rules, and broken-link flags that respect them.
 Run with: python3 -m unittest discover -s tests -v"""
 import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -10,7 +11,7 @@ try:
     import dbfactory
 except ImportError:      # run as tests.test_x from the project folder
     from tests import dbfactory
-from storageforge_index import filemap, folders, graph
+from storageforge_index import filemap, folders, graph, moves
 
 
 class FileMap(unittest.TestCase):
@@ -53,6 +54,10 @@ class FileMap(unittest.TestCase):
         self.assertFalse(folders.is_ignored('nas', '/usr/local/keep/x', lists))
         self.assertFalse(folders.is_ignored('nas', '/usr/lib/x', lists, system=False))
         self.assertTrue(folders.is_ignored('nas', '/data/.storageforge-trash/2026-01-01/x', lists))
+        self.assertTrue(folders.is_ignored('nas', '/mnt/ssd/rsnapshot/daily.0/localhost/data/x', lists))
+        self.assertTrue(folders.is_ignored('nas', '/mnt/ssd/docker/overlay2/abc/etc/mtab', lists))
+        self.assertTrue(folders.is_ignored('nas', '/mnt/c/io.containerd.snapshotter.v1.overlayfs/snapshots/1/fs/x', lists))
+        self.assertFalse(folders.is_ignored('nas', '/data/daily.notes/x', lists))
 
     def test_system_copies_are_hidden_and_folders_joined(self):
         self.file('nas', '/data/a/x.iso', 'aa')
@@ -105,6 +110,65 @@ class FileMap(unittest.TestCase):
         self.assertEqual(len(m['groups']), 1)
         self.assertEqual(m['reclaimable'], 5 << 20)
         self.assertEqual({f['path']: f['bytes'] for f in m['folders']}, {'/data/a': 5 << 20, '/data/b': 5 << 20, '/dl': 5 << 20})
+        twin = next(l for l in m['links'] if l['kind'] == 'folder')
+        self.assertEqual(twin['bytes'], 5 << 20)
+
+    def test_a_copy_step_can_take_chosen_files(self):
+        self.file('nas', '/data/a/x.iso', 'aa')
+        self.file('nas', '/data/a/y.iso', 'bb', size=1 << 20)
+        self.file('nas', '/data/a/skip.iso', 'cc')
+        step = {'method': 'copy', 'src': {'host': 'nas', 'path': '/data/a'}, 'dst': {'host': 'nas', 'path': '/data/b'}, 'only': ['x.iso', 'y.iso', 'gone.iso']}
+        plan = moves.normalize({'name': 'pick', 'steps': [step]})
+        self.assertEqual(plan['steps'][0]['only'], ['gone.iso', 'x.iso', 'y.iso'])
+        info = moves.check(self.conn, plan)['steps'][0]
+        self.assertEqual(info['src']['bytes'], 6 << 20)
+        self.assertEqual(info['src']['files'], 2)
+        self.assertIn('--include=/x.iso', moves.script(self.conn, plan))
+        self.assertEqual(moves.only_filters(['a*b[1].iso']), [r'--include=/a\*b\[1].iso', '--exclude=*'])
+
+    @unittest.skipUnless(shutil.which('rsync'), 'needs rsync')
+    def test_rsync_sends_exactly_the_chosen_files(self):
+        src, dst = Path(self.tmp) / 'src', Path(self.tmp) / 'dst'
+        (src / 'sub').mkdir(parents=True)
+        dst.mkdir()
+        wanted = ['keep.iso', 'a*b[1].iso', 'back\\slash.iso', 'both\\*.iso', 'with space.iso']
+        for name in [*wanted, 'skip.iso', 'ab1.iso', 'sub/deep.iso']:
+            (src / name).touch()
+        subprocess.run(['rsync', '-a', '--protect-args', *moves.only_filters(wanted), f'{src}/', f'{dst}/'], check=True)
+        self.assertEqual(sorted(p.name for p in dst.iterdir()), sorted(wanted))
+
+    def test_chosen_files_are_plain_names_on_a_copy(self):
+        base = {'src': {'host': 'nas', 'path': '/a'}, 'dst': {'host': 'nas', 'path': '/b'}}
+        with self.assertRaises(ValueError):
+            moves.normalize({'name': 'x', 'steps': [{**base, 'method': 'move', 'only': ['f']}]})
+        for bad in ('../f', 'a/b', '..', 'a\nb'):
+            with self.assertRaises(ValueError):
+                moves.normalize({'name': 'x', 'steps': [{**base, 'method': 'copy', 'only': [bad]}]})
+        self.assertNotIn('only', moves.normalize({'name': 'x', 'steps': [{**base, 'method': 'copy'}]})['steps'][0])
+
+    def test_relations_list_what_joins_folders(self):
+        c = self.conn
+        self.file('nas', '/data/x', 'aa')
+        self.file('pc', '/data/x', 'aa')
+        for nid, kind, label, host, props in (
+                ('link:nas:/srv/l', 'Symlink', '/srv/l', 'nas', '{}'), ('link:nas:/etc/l', 'Symlink', '/etc/l', 'nas', '{}'),
+                ('mnt:nas:/data', 'MountPoint', '/data', 'nas', '{}'), ('mnt:pc:/nfs', 'MountPoint', '/nfs', 'pc', '{}'),
+                ('mnt:nas:/bound', 'MountPoint', '/bound', 'nas', '{}'), ('fs:nas:d', 'Filesystem', 'ext4', 'nas', '{}'), ('host:B2', 'Host', 'B2', None, '{}')):
+            c.execute('INSERT INTO graph_nodes (node_id, kind, label, host, health, props_json, updated_at) VALUES (:i, :k, :l, :h, :he, :p, 1)',
+                      {'i': nid, 'k': kind, 'l': label, 'h': host, 'he': 'unknown', 'p': props})
+        for src, dst, rel, props in (
+                ('link:nas:/srv/l', 'mnt:nas:/data', 'SYMLINK_TO', '{"target": "/data/x"}'), ('link:nas:/etc/l', 'mnt:nas:/data', 'SYMLINK_TO', '{"target": "/data/y"}'),
+                ('mnt:nas:/data', 'mnt:pc:/nfs', 'MOUNTED_AT', '{"remote": true, "server": "nas", "path": "/data/share"}'),
+                ('mnt:nas:/data', 'mnt:nas:/bound', 'MOUNTED_AT', '{"bind": true, "source": "/data/b"}'),
+                ('fs:nas:d', 'mnt:nas:/data', 'MOUNTED_AT', '{}'), ('fs:nas:d', 'host:B2', 'REPLICATES_TO', '{"detail": "restic -> B2"}')):
+            c.execute('INSERT INTO graph_edges (src, dst, rel, props_json) VALUES (:s, :d, :r, :p)', {'s': src, 'd': dst, 'r': rel, 'p': props})
+        got = {r['kind']: r for r in filemap.build(c, None, 1 << 20)['relations']}
+        self.assertEqual(got['symlink']['src']['path'], '/srv/l')       # the one in /etc is a system link
+        self.assertEqual(got['symlink']['dst'], {'host': 'nas', 'path': '/data/x'})
+        self.assertEqual((got['share']['src'], got['share']['dst']), ({'host': 'nas', 'path': '/data/share'}, {'host': 'pc', 'path': '/nfs'}))
+        self.assertEqual(got['bind']['src']['path'], '/data/b')
+        self.assertIsNone(got['backup']['dst']['host'])
+        self.assertEqual(got['backup']['src']['path'], '/data')
 
     def test_ignored_broken_link_does_not_turn_the_host_red(self):
         node = {'hostname': 'nas', 'links': [{'kind': 'symlink', 'path': '/etc/old', 'target': '/gone', 'state': 'crit', 'note': 'x'},

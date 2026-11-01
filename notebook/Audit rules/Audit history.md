@@ -4,7 +4,7 @@ updated: 2026-10-31
 ---
 # Audit history
 
-**The next audit's baseline is the newest row's Head.** Audit everything since.
+**The next audit's baseline is `7855063`**, the commit the fixes were tested at, not the Head in the table. Audit everything since.
 
 | Date | Audit | Kind | Baseline | Head | Tree included | Findings |
 | :-- | :-- | :-- | :-- | :-- | :-- | :-- |

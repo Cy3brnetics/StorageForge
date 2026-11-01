@@ -24,10 +24,20 @@ tmp=$(mktemp "$out/.report.XXXXXX") || exit 1
     done
   fi
   if command -v btrfs >/dev/null 2>&1 && command -v findmnt >/dev/null 2>&1; then
-    findmnt -rn -t btrfs -o SOURCE,TARGET | sed 's/\[[^]]*\]//' | sort -u -k1,1 | while read -r _ m; do
+    findmnt -rn -t btrfs -o SOURCE,TARGET | sed 's/\[[^]]*\]//' | sort -u -k1,1 | while read -r s m; do
       echo "## stats $m"; btrfs device stats -c "$m" 2>/dev/null
       echo "## scrub $m"; btrfs scrub status "$m" 2>/dev/null
       echo "## snaps $m"; btrfs subvolume list -r -s "$m" 2>/dev/null | wc -l
+      echo "## snaplist $m"; btrfs subvolume list -r -s "$m" 2>/dev/null | sed -n 's/^ID \([0-9]*\) .* otime \([0-9-]* [0-9:]*\) .*/\1 \2/p'
+      echo "## qgroup $m"; btrfs qgroup show --raw "$m" 2>/dev/null
+      if command -v compsize >/dev/null 2>&1; then   # walks the whole filesystem, so weekly, kept between runs
+        c="$out/compsize$(echo "$m" | tr / _)"     # every mount of this filesystem, or it measures one subvolume
+        all=$(findmnt -rn -t btrfs -o SOURCE,TARGET | sed 's/\[[^]]*\]//' | awk -v s="$s" '$1 == s {print $2}')
+        if [ -z "$(find "$c" -mtime -7 2>/dev/null)" ]; then
+          nice -n 19 compsize -x -b $all 2>/dev/null | grep '^TOTAL' >"$c.new" && mv "$c.new" "$c"; rm -f "$c.new"
+        fi
+        echo "## compsize $m"; cat "$c" 2>/dev/null
+      fi
     done
   fi
 } >"$tmp"
@@ -67,6 +77,8 @@ def install_script(group: str) -> str:
 
 SCRUB_OLD_DAYS = 35
 REPORT_OLD_DAYS = 3
+GIB = 2**30
+METADATA_LOW = GIB // 2      # metadata space left, beyond the global reserve, when no new chunk can be had (less on a tiny filesystem)
 # Attributes where anything above zero means the drive is failing or about to
 BAD_ATTRS = {5: 'reallocated', 197: 'pending', 198: 'uncorrectable'}
 
@@ -108,15 +120,36 @@ def parse_report(text: str) -> dict | None:
             if s := _smart(joined):
                 out['disks'][name] = s
         elif kind == 'stats':
-            out['btrfs'].setdefault(name, {})['errors'] = sum(int(m) for m in re.findall(r'\.\w+_errs\s+(\d+)', joined))
+            b = out['btrfs'].setdefault(name, {})
+            b['errors'] = sum(int(m) for m in re.findall(r'\.\w+_errs\s+(\d+)', joined))
+            for dev, kind_of, n in re.findall(r'\[(.+?)\]\.(\w+?)(?:_io)?_errs\s+(\d+)', joined):
+                if int(n):
+                    b.setdefault('error_devices', {}).setdefault(dev.removeprefix('/dev/'), {})[kind_of] = int(n)
         elif kind == 'scrub':
             b = out['btrfs'].setdefault(name, {})
             started = re.search(r'Scrub started:\s*(.+)', joined)
             errs = re.search(r'Error summary:\s*(.+)', joined)
             b['last_scrub'] = started.group(1).strip() if started else None
             b['scrub_errors'] = None if not errs else 0 if 'no errors' in errs.group(1) else sum(int(x) for x in re.findall(r'=(\d+)', errs.group(1)))
+            if bad := re.search(r'Uncorrectable:\s*(\d+)', joined):
+                b['scrub_unrepaired'] = int(bad.group(1))
         elif kind == 'snaps':
             out['btrfs'].setdefault(name, {})['snapshots'] = int(joined) if joined.strip().isdigit() else 0
+        elif kind == 'snaplist':
+            rows = [line.split(' ', 1) for line in body if ' ' in line]
+            if rows:
+                b = out['btrfs'].setdefault(name, {})
+                b['newest_snapshot'] = max(when for _, when in rows)
+                b['_snapshot_ids'] = [i for i, _ in rows]
+        elif kind == 'qgroup':
+            excl = {m[0]: int(m[1]) for m in re.findall(r'^0/(\d+)\s+\d+\s+(\d+)', joined, re.M)}
+            if excl:
+                b = out['btrfs'].setdefault(name, {})
+                b['_exclusive'] = excl
+        elif kind == 'compsize':
+            m = re.match(r'TOTAL\s+\d+%\s+(\d+)\s+(\d+)', joined.strip())
+            if m:
+                out['btrfs'].setdefault(name, {}).update(disk_bytes=int(m.group(1)), uncompressed_bytes=int(m.group(2)))
     for line in text.splitlines():
         if line.startswith('## '):
             flush()
@@ -124,18 +157,28 @@ def parse_report(text: str) -> dict | None:
         else:
             body.append(line)
     flush()
+    for b in out['btrfs'].values():         # ids are only needed to add up what the snapshots alone hold
+        ids, excl = b.pop('_snapshot_ids', []), b.pop('_exclusive', None)
+        if excl is not None:
+            b['snapshot_exclusive'] = sum(excl.get(i, 0) for i in ids)
     return out
 
 
 def parse_snapshots(text: str) -> dict:
-    """@@snapshots: "zfs<TAB>dataset<TAB>count<TAB>newest" and "snapper<TAB>config" lines."""
-    out = {'zfs': {}, 'snapper': []}
+    """@@snapshots: "zfs<TAB>dataset<TAB>count<TAB>newest", "snapper<TAB>config<TAB>subvolume", "sanoid<TAB>dataset" and "tool<TAB>name" lines."""
+    out = {'zfs': {}, 'snapper': [], 'snapper_paths': {}, 'sanoid': [], 'tools': []}
     for line in (text or '').splitlines():
         f = line.split('\t')
         if f[0] == 'zfs' and len(f) == 4 and f[2].isdigit() and f[3].isdigit():
             out['zfs'][f[1]] = {'count': int(f[2]), 'newest': int(f[3])}
-        elif f[0] == 'snapper' and len(f) == 2:
+        elif f[0] == 'snapper' and len(f) in (2, 3):
             out['snapper'].append(f[1])
+            if len(f) == 3 and f[2].startswith('/'):
+                out['snapper_paths'][f[1]] = f[2]
+        elif f[0] == 'sanoid' and len(f) == 2 and not f[1].startswith('template_'):
+            out['sanoid'].append(f[1])
+        elif f[0] == 'tool' and len(f) == 2:
+            out['tools'].append(f[1])
     return out
 
 
@@ -170,10 +213,61 @@ def apply_report(node: dict, report: dict | None):
     mounts = {m.get('target'): m for m in node.get('mounts') or []}
     for target, b in report['btrfs'].items():
         src = str((mounts.get(target) or {}).get('source') or '').split('[')[0].removeprefix('/dev/')
+        for fs in node.get('btrfs_fs') or []:
+            if src in fs['members'] or fs.get('mount') == target:
+                when = _date(b.get('last_scrub'))
+                fs.update(last_scrub=when.isoformat() if when else None, scrub_errors=b.get('scrub_errors'), device_error_count=b.get('errors'),
+                          **{k: b[k] for k in ('scrub_unrepaired', 'error_devices', 'snapshots', 'newest_snapshot', 'snapshot_exclusive', 'disk_bytes', 'uncompressed_bytes') if k in b})
         for p in node['pools']:
             if p.get('type', 'btrfs') == 'btrfs' and (src in (p.get('members') or []) or p.get('mount') == target or p.get('name') in (src, target)):
                 when = _date(b.get('last_scrub'))
-                p.update(last_scrub=when.isoformat() if when else None, scrub_errors=b.get('scrub_errors'), device_error_count=b.get('errors'))
+                p.update(last_scrub=when.isoformat() if when else None, scrub_errors=b.get('scrub_errors'), device_error_count=b.get('errors'),
+                         error_devices=b.get('error_devices'), scrub_unrepaired=b.get('scrub_unrepaired'))
+
+
+def _error_detail(p: dict) -> str:
+    """Which device, and which kind: write and flush errors point at the drive or cable, corruption at the data."""
+    per = p.get('error_devices') or {}
+    text = '; '.join(f'{d}: ' + ', '.join(f'{n} {k}' for k, n in sorted(kinds.items())) for d, kinds in sorted(per.items()))
+    return text or f'{p.get("device_error_count") or 0} device errors'
+
+
+def unallocated(fs: dict) -> int | None:
+    """None when it can't be known: a missing device's size is not in sysfs, though what it holds counts as allocated."""
+    return fs['dev'] - fs['alloc'] if fs.get('dev') and fs.get('alloc') is not None and not fs.get('missing') else None
+
+
+def btrfs_problems(fs: dict, h: str, mounts: list[dict]) -> list[tuple[str, str, str, str]]:
+    """What df can't show: free space stuck in half-empty chunks, a device gone, a filesystem that turned itself read-only."""
+    out, n = [], fs['name']
+    if fs.get('missing'):
+        out.append(('crit', f'btrfs-missing:{n}', f'btrfs {n} on {h} is missing {fs["missing"]} device(s)',
+                    'it runs without that copy of the data. Replace the device: a "Replace a device" task, by device id if it is gone'))
+    ours = [m for m in mounts if (m.get('fstype') or m.get('fs')) == 'btrfs'
+            and str(m.get('source') or '').split('[')[0].removeprefix('/dev/') in fs['members']]
+    # An image-based system mounts / read-only on purpose but not all of it. An error turns the whole filesystem.
+    if ours and all('ro' in str(m.get('options') or '').split(',') for m in ours):
+        out.append(('warn', f'btrfs-ro:{n}', f'btrfs {n} on {h} is mounted read-only',
+                    'btrfs does this itself after a serious error: check dmesg unless it was on purpose'))
+    if len(fs.get('datas') or []) > 1 or len(fs.get('metas') or []) > 1:
+        out.append(('warn', f'btrfs-mixed:{n}', f'btrfs {n} on {h} has mixed profiles',
+                    f'data {"+".join(fs["datas"])}, metadata {"+".join(fs["metas"])}: some of it has less protection than the rest. '
+                    'Finish the conversion with a "Convert profile" task'))
+    if set(fs.get('metas') or []) & {'raid5', 'raid6'}:
+        out.append(('warn', f'btrfs-meta-parity:{n}', f'btrfs {n} on {h} keeps metadata in {fs["metas"][0]}',
+                    'the write hole can damage the whole filesystem: use raid1 or raid1c3 for metadata'))
+    free = unallocated(fs)
+    if free is not None and 'metat' in fs and not fs.get('op') and free < max(min(GIB, fs['dev'] // 10), fs['dev'] // 100):
+        loose, meta = max(fs.get('datat', 0) - fs.get('datau', 0), 0), fs['metat'] - fs.get('metau', 0) - fs.get('rsv', 0)
+        fix = (f'{loose / GIB:.1f} GiB is stuck in half-empty data chunks: a "Reclaim free space" task returns it'
+               if loose > max(free, fs.get('datat', 0) // 10) else 'there is little to reclaim, so it needs more room or less data')
+        if meta < min(METADATA_LOW, fs['dev'] // 50):
+            out.append(('crit', f'btrfs-metadata:{n}', f'btrfs {n} on {h} is about to run out of metadata space',
+                        f'{free / GIB:.1f} GiB unallocated, {max(meta, 0) / GIB:.2f} GiB of metadata left. Writes will fail with "no space" whatever df says. {fix}'))
+        else:
+            out.append(('warn', f'btrfs-unallocated:{n}', f'btrfs {n} on {h} has almost no unallocated space',
+                        f'{free / GIB:.1f} GiB left of {fs["dev"] / GIB:.0f} GiB. {fix}'))
+    return out
 
 
 def problems(node: dict, today: dt.date | None = None) -> list[tuple[str, str, str, str]]:
@@ -189,15 +283,20 @@ def problems(node: dict, today: dt.date | None = None) -> list[tuple[str, str, s
             out.append(('crit', f'smart:{d["dev"]}', f'/dev/{d["dev"]} on {h} fails its SMART check', bad or 'replace it'))
         elif s['smart'] == 'warn':
             out.append(('warn', f'smart:{d["dev"]}', f'/dev/{d["dev"]} on {h} reports bad sectors', bad))
-    for p in node['pools']:
+    singles = [fs for fs in node.get('btrfs_fs') or [] if not fs.get('pool')]    # one device: a filesystem, but no pool
+    for p in node['pools'] + singles:
         if p.get('device_error_count') or p.get('scrub_errors'):
             out.append(('crit', f'pool-errors:{p["name"]}', f'Pool {p["name"]} on {h} has errors',
-                        f'{p.get("device_error_count") or 0} device errors, {p.get("scrub_errors") or 0} found by the last scrub'))
+                        f'{_error_detail(p)}, {p.get("scrub_errors") or 0} found by the last scrub' + (
+                            f' ({p["scrub_unrepaired"]} could not be repaired)' if p.get('scrub_unrepaired') else
+                            ', all repaired' if p.get('scrub_errors') and p.get('scrub_unrepaired') == 0 else '')))
         if p.get('type') in ('zfs', 'btrfs') and (p.get('last_scrub') or node.get('health_at') or p.get('type') == 'zfs'):
             last = dt.date.fromisoformat(p['last_scrub']) if p.get('last_scrub') else None
             if not last or (today - last).days > SCRUB_OLD_DAYS:
                 out.append(('warn', f'scrub:{p["name"]}', f'Pool {p["name"]} on {h} has not been scrubbed in {SCRUB_OLD_DAYS} days',
                             f'last scrub {last.isoformat()}' if last else 'no scrub on record'))
+    for fs in node.get('btrfs_fs') or []:
+        out += btrfs_problems(fs, h, node.get('mounts') or [])
     if node.get('health_at') and time.time() - node['health_at'] > REPORT_OLD_DAYS * 86400:
         out.append(('warn', 'report-old', f'Disk health on {h} stopped updating', 'its hourly collector has not run for days'))
     return out

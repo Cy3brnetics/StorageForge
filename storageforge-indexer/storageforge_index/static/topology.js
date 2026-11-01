@@ -46,7 +46,7 @@ async function loadDesigns() {
   const want = S.host ? hosts.filter((h) => h.host === S.host) : hosts;
   const docs = new Map();
   if (typeof loadAccess === 'function' && !ACCESS.hosts.length) loadAccess();
-  if (typeof loadDocker === 'function' && !DK.usage.length) getJSON('/api/docker/usage').then((r) => { DK.usage = r.usage; renderTopo(); }).catch(() => {});
+  if (typeof loadDocker === 'function' && !DK.usage.length) getJSON('/api/docker/usage').then((r) => { DK.usage = r.usage; renderTopoSoon(); }).catch(() => {});
   await Promise.all(want.map(async (h) => {
     const keep = T.docs.get(h.host);
     if (keep && keep.dirty) { docs.set(h.host, keep); return; }      // unsaved edits survive a reload
@@ -388,7 +388,13 @@ function hostHead(doc) {
   return head;
 }
 
+let topoSoon = 0;
+function renderTopoSoon() {  // for data arriving in the background: the answers to a page load's requests share one render
+  clearTimeout(topoSoon);
+  topoSoon = setTimeout(renderTopo, 50);
+}
 function renderTopo() {
+  clearTimeout(topoSoon);
   updateSavebar();
   if (T.mode !== 'topo') return;
   initCanvas();
@@ -1108,7 +1114,7 @@ topo.addEventListener('drop', (ev) => {
   if (T.drag && to && to.card !== T.drag.card) backUpTo(T.drag, to);
 });
 topo.addEventListener('dragend', () => { T.drag = null; topo.classList.remove('dragging'); topo.querySelectorAll('.drop').forEach((x) => x.classList.remove('drop')); });
-if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (T.mode === 'topo' && T.order.length) renderTopo(); });
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (T.mode === 'topo' && T.order.length) renderTopoSoon(); });
 
 $('#savedesigns').addEventListener('click', saveDesigns);
 $('#discarddesigns').addEventListener('click', discardDesigns);

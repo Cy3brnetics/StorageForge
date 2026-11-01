@@ -188,7 +188,7 @@ serve() { # id "ssh command"
 load() {
   idok "$1"; [[ -f $ETC/jobs/$1.conf ]] || die "no job $1 on $(uname -n)"
   ID= NAME= METHOD= SRC_LOCAL=1 SRC_HOST= SRC_PORT=22 SRC= DST= DST_MOUNT=/ FLAGS= KEEP= LOWEST= WINDOW= BW_DAY= BW_NIGHT=
-  NIGHT= SNAP=0 HOOKS=0 REPORT_URL=; EXCLUDES=(); ROUTES=()
+  NIGHT= SNAP=0 HOOKS=0 REPORT_URL=; EXCLUDES=(); ONLY=(); ROUTES=()
   DEDUP=0 DEDUP_HARDLINK=0 DEDUP_MIN=1048576 HASH=sha256 TRANSPORT=rsync PREFLIGHT=0 RESERVE_GB=1 LOCK_WAIT=3600
   # shellcheck disable=SC1090
   source "$ETC/jobs/$1.conf"
@@ -489,6 +489,7 @@ rsync_cmd() { # source-path extra... -> RS
   ((SRC_LOCAL)) || RS+=(-e "ssh ${SSHO[*]}")
   ((${#ROUTES[@]})) && RS+=(--timeout=120)     # a path that went quiet ends the attempt, and the next one finds another
   local x; for x in "${EXCLUDES[@]}"; do RS+=(--exclude="$x"); done
+  RS+=("${ONLY[@]}")
   # never --inplace: dedup can leave two names on one inode or shared extents, and only a write to a new file keeps them apart
   RS+=(--exclude=.storageforge-snap --exclude=.storage.lock --exclude='.sf-dedup-*' "$@" "$(src_spec "$src")" "${DST%/}/")
 }
@@ -642,12 +643,21 @@ verify_job() {
   local target=$DST
   if [[ $METHOD == rsnapshot ]]; then target="${DST%/}/$LOWEST.0/$(basename "${SRC%/}")"; fi
   [[ $METHOD == git ]] && { report 0 "nothing to verify for git archives (git checks objects itself)"; exit 0; }
-  local out n
+  local out n err rc=0
   local saved_delete=$FLAGS; FLAGS="$FLAGS checksum"; FLAGS=${FLAGS/delete/}
   local DST=$target; rsync_cmd "$SRC" -n -i
   FLAGS=$saved_delete
   echo "+ ${RS[*]}"
-  out=$("${RS[@]}" 2>&1 | grep -v '^\.d' | grep -v '^cd' | grep -v '^skipping' || true)
+  # The list is on stdout. ssh warnings are on stderr, so stderr counts only when rsync itself failed
+  err=$(mktemp) || die "cannot make a temporary file"
+  out=$("${RS[@]}" 2>"$err") || rc=$?
+  if ((rc != 0 && rc != 24)); then
+    cat "$err" >&2; n=$(tail -n 3 "$err" | paste -sd' '); rm -f "$err"
+    report 1 "could not compare with the source (rsync exit $rc): $n"
+    exit 1
+  fi
+  rm -f "$err"
+  out=$(grep -v '^\.d' <<<"$out" | grep -v '^cd' | grep -v '^skipping' || true)
   n=$(grep -c . <<<"$out" || true)
   if ((n == 0)); then report 0 "every file matches the source (checksums)"; exit 0; fi
   echo "$out" | head -50

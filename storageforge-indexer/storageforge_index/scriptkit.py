@@ -139,3 +139,24 @@ need_cmd() { # command what apt rpm arch suse
   conflict "could not install $pkg with $m: ${out:-it stopped without saying why; if the host is short of memory, it may have been killed (dmesg)}"; return 1
 }
 """
+
+# Needs PACKAGES
+CIFS_KERNEL = r"""cifs_kernel() { # the mount needs cifs and, for iocharset=utf8, nls_utf8. Cloud images keep them in another package
+  command -v modprobe >/dev/null || return 0
+  if modprobe -n cifs 2>/dev/null && modprobe -n nls_utf8 2>/dev/null; then ok "kernel has cifs and nls_utf8"; return 0; fi
+  local m pkg pkgs=() kernel; m=$(pm); kernel=$(uname -r)
+  case $m in
+    apt-get) pkgs=("linux-modules-extra-$kernel") ;;
+    dnf|yum) pkgs=("kernel-modules-$kernel" "kernel-modules-extra-$kernel") ;;
+    zypper) pkgs=(kernel-default-optional) ;;
+    *) conflict "kernel $kernel has no cifs or nls_utf8, and no package I know has them here: install it yourself"; return 1 ;;
+  esac
+  if ((!APPLY)); then missing "kernel modules cifs and nls_utf8 (would install ${pkgs[*]} with $m)"; return 0; fi
+  for pkg in "${pkgs[@]}"; do
+    doing "install kernel modules: $pkg with $m"
+    install_pkg "$m" "$pkg" >/dev/null 2>&1 || true
+    if modprobe -n cifs 2>/dev/null && modprobe -n nls_utf8 2>/dev/null; then ok "kernel has cifs and nls_utf8"; return 0; fi
+  done
+  conflict "kernel $kernel still has no cifs or nls_utf8 after installing ${pkgs[*]}: if the host has a newer kernel waiting, reboot into it"; return 1
+}
+"""

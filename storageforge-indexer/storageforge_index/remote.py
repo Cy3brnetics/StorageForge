@@ -233,7 +233,14 @@ def _tool(name: str) -> str:
 NICE = "$(command -v ionice >/dev/null 2>&1 && echo 'ionice -c3') nice -n 10 "
 
 
-def find_command(root: str, prune_paths, prune_names, nice: bool = True) -> str:
+# Trees of many subvolumes that belong to a tool, not to anyone's files. Writable, so the read-only test can't catch them.
+BTRFS_PRUNE_PATHS = ('*/docker/btrfs', '*/containers/storage/btrfs', '*/timeshift-btrfs')
+# Run by find on a subvolume's top folder (inode 256). Pruned unless it is known to be writable: a read-only subvolume is
+# a snapshot, and a host without btrfs-progs walks what it always did. find's capabilities do not pass to this child.
+BTRFS_IS_SNAPSHOT = """case $(btrfs property get -ts -- "$1" ro 2>/dev/null) in ro=false) exit 1 ;; esac"""
+
+
+def find_command(root: str, prune_paths, prune_names, nice: bool = True, btrfs: bool = False) -> str:
     q = shlex.quote
     # .git is still pruned (its objects are noise), but the .git entry itself is recorded: it marks a repository
     keep = [n for n in prune_names if n in RECORD_PRUNED]
@@ -242,8 +249,16 @@ def find_command(root: str, prune_paths, prune_names, nice: bool = True) -> str:
     prune = marks + (f"\\( {' -o '.join(tests)} \\) -prune -o " if tests else '')
     # -P (default) never follows symlinks, so symlink loops cannot recurse; -xdev stays on one
     # filesystem and every other mount point below the root is pruned explicitly, which also
-    # stops same-device bind mounts from being walked twice.
-    return f"LC_ALL=C {NICE if nice else ''}{_tool('find')} -P {q(root)} -xdev {prune}-printf '{FIND_FORMAT}'"
+    # stops same-device bind mounts from being walked twice. Every btrfs subvolume has its own device number, so -xdev
+    # would also stop at a nested one and lose its files, so a walk on btrfs relies on those explicit prunes alone
+    # (-fstype can't guard it: find matches device numbers against the mount table, and a subvolume's never match).
+    stay = '-xdev '
+    if btrfs:
+        stay = ''
+        prune = ("\\( " + ' -o '.join(f'-path {q(p)}' for p in BTRFS_PRUNE_PATHS) + " \\) -prune -o "
+                 f"\\( -inum 256 ! -path {q(glob_escape(root))} "
+                 f"-exec sh -c {q(BTRFS_IS_SNAPSHOT)} sh {{}} \\; -prune \\) -o ") + prune
+    return f"LC_ALL=C {NICE if nice else ''}{_tool('find')} -P {q(root)} {stay}{prune}-printf '{FIND_FORMAT}'"
 
 
 def checksum_command(nice: bool = True) -> str:
@@ -263,7 +278,8 @@ echo '@@lvs'; lvs --reportformat json --units b --nosuffix -o vg_name,lv_name,se
 echo '@@findmnt'; findmnt -J -b -l -o TARGET,SOURCE,FSTYPE,SIZE,USED,OPTIONS,MAJ:MIN,FSROOT 2>/dev/null
 echo '@@mountinfo'; cat /proc/self/mountinfo 2>/dev/null
 echo '@@df'; df -B1 -P 2>/dev/null
-echo '@@btrfs'; for d in /sys/fs/btrfs/*-*/; do [ -d "$d" ] || continue; printf '%s\t%s\t%s\t%s\n' "$(basename "$d")" "$(ls -d "$d"allocation/data/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(ls -d "$d"allocation/metadata/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(cat "$d"label 2>/dev/null)"; done
+echo '@@mergerfs'; for p in $(pgrep -x mergerfs 2>/dev/null); do xargs -0 </proc/$p/cmdline; done; awk '$1 !~ /^#/ && $3 ~ /mergerfs/ {print $1, $2}' /etc/fstab 2>/dev/null
+echo '@@btrfs'; for d in /sys/fs/btrfs/*-*/; do [ -d "$d" ] || continue; printf '%s\t%s\t%s\t%s\t%s\n' "$(basename "$d")" "$(ls -d "$d"allocation/data/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(ls -d "$d"allocation/metadata/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(cat "$d"label 2>/dev/null)" "$(a="$d"allocation; v() { cat "$@" 2>/dev/null | awk '{s+=$1} END {printf "%.0f", s}'; }; printf 'dev=%s alloc=%s datat=%s datau=%s metat=%s metau=%s rsv=%s missing=%s op=%s' "$(cat "$d"devices/*/size 2>/dev/null | awk '{s+=$1*512} END {printf "%.0f", s}')" "$(v "$a"/*/disk_total)" "$(v "$a"/data/total_bytes)" "$(v "$a"/data/bytes_used)" "$(v "$a"/metadata/total_bytes)" "$(v "$a"/metadata/bytes_used)" "$(v "$a"/global_rsv_size)" "$(v "$d"devinfo/*/missing)" "$(cat "$d"exclusive_operation 2>/dev/null)")"; done
 echo '@@jobs'; for f in /var/lib/storageforge/jobs/*/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
 echo '@@tasks'; for f in /var/lib/storageforge/tasks/*.last /var/lib/storageforge/tasks/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
 for t in /etc/systemd/system/sf-task-*.timer; do [ -e "$t" ] && echo "TASK-TIMER $(basename "$t") $(systemctl is-enabled "$(basename "$t")" 2>/dev/null)"; done
@@ -272,7 +288,10 @@ echo '@@runs'; [ -r /var/lib/storageforge/run/runs.jsonl ] && tail -n 100 /var/l
 echo '@@moves'; for f in /var/lib/storageforge/moves/*/*; do [ -r "$f" ] && printf '%s\t%s\n' "${f#/var/lib/storageforge/moves/}" "$(head -c 200 "$f" | head -n 1)"; done
 echo '@@health'; cat /var/lib/storageforge/health/report 2>/dev/null
 echo '@@snapshots'; command -v zfs >/dev/null 2>&1 && zfs list -H -p -t snapshot -o name,creation 2>/dev/null | awk -F'[@\t]' '{c[$1]++; if ($3 > m[$1]) m[$1] = $3} END {for (d in c) print "zfs\t" d "\t" c[d] "\t" m[d]}'
-for f in /etc/snapper/configs/*; do [ -e "$f" ] && printf 'snapper\t%s\n' "$(basename "$f")"; done
+for f in /etc/snapper/configs/*; do [ -e "$f" ] && printf 'snapper\t%s\t%s\n' "$(basename "$f")" "$(sed -n 's/^SUBVOLUME="\(.*\)"$/\1/p' "$f" 2>/dev/null)"; done
+[ -e /etc/timeshift/timeshift.json ] && printf 'tool\ttimeshift\n'
+[ -e /etc/btrbk/btrbk.conf ] && printf 'tool\tbtrbk\n'
+[ -r /etc/sanoid/sanoid.conf ] && sed -n 's/^\[\([^]]*\)\]$/sanoid\t\1/p' /etc/sanoid/sanoid.conf
 echo '@@managed'; for f in /var/lib/storageforge/managed/*.sha256; do [ -r "$f" ] || continue; echo "## $(basename "$f" .sha256)"; sha256sum -c "$f" 2>&1 | tail -n 300; done
 for f in /var/lib/storageforge/managed/*.lines; do [ -r "$f" ] || continue; echo "## $(basename "$f" .lines)"; while IFS= read -r l; do if grep -Fxq -- "$l" /etc/fstab 2>/dev/null; then echo "LINE-OK $l"; else echo "LINE-MISSING $l"; fi; done <"$f"; done
 for t in /etc/systemd/system/sf-job-*.timer; do [ -e "$t" ] && echo "TIMER $(basename "$t") $(systemctl is-enabled "$(basename "$t")" 2>/dev/null)"; done
@@ -391,6 +410,18 @@ def parse_findmnt(text: str) -> list[MountInfo]:
     return [m for m in out if m.target]
 
 
+def apply_mergerfs(mounts: list[MountInfo], text: str):
+    """The kernel's source for mergerfs says only 1:2. Its command line and fstab both end in branches, then mount point."""
+    branches = {}
+    for line in text.splitlines():
+        words = line.split()
+        if len(words) >= 2:
+            branches.setdefault(words[-1].replace('\\040', ' '), words[-2].replace('\\040', ' '))
+    for m in mounts:
+        if m.fstype == 'fuse.mergerfs' and m.target in branches:
+            m.source = branches[m.target]
+
+
 def parse_mountinfo(text: str, df_text: str = '') -> list[MountInfo]:
     sizes = {}
     for line in df_text.splitlines()[1:]:
@@ -430,6 +461,7 @@ def collect_inventory(t: Transport) -> HostInventory:
     mounts = parse_findmnt(sec.get('findmnt', '')) or parse_mountinfo(sec.get('mountinfo', ''), sec.get('df', ''))
     if not mounts:
         raise RemoteError(f'{t.host}: could not read the mount table (findmnt and /proc/self/mountinfo both failed)')
+    apply_mergerfs(mounts, sec.get('mergerfs', ''))
     access, user = (lines('access') + ['', ''])[:2]
     from .health import parse_report, parse_snapshots
     from .hostconfig import parse_configs

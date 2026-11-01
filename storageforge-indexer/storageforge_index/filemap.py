@@ -10,11 +10,14 @@ from __future__ import annotations
 import json
 import posixpath
 
+from . import moves
+from .analysis import resolve
 from .db import Conn, epoch
 from .folders import ignore_lists, is_ignored
+from .graph import load as graph_load
 from .search import join_path
 
-MAX_GROUPS, MAX_FOLDERS, MAX_PAIRED = 300, 60, 8
+MAX_GROUPS, MAX_FOLDERS, MAX_PAIRED = 300, 500, 8
 APP_DIRS = ('/opt',)                       # packaged apps bundle the same libraries: copies, but not ones to clean up by hand
 
 
@@ -106,10 +109,11 @@ def build(conn: Conn, host: str | None, min_size: int, system: bool = False, twi
             for b in keys[i + 1:]:
                 e = links.setdefault((a, b), {'a': a, 'b': b, 'files': 0, 'bytes': 0, 'kind': 'files',
                                               'scope': 'same host' if a.split('\0')[0] == b.split('\0')[0] else 'across hosts'})
+                if kind == 'files' and e['kind'] == 'folder':
+                    continue                # the folder copy already counts this file
                 e['files'] += files
                 e['bytes'] += size
-                if kind == 'folder':
-                    e['kind'] = 'folder'
+                e['kind'] = kind
 
     for t in folder_copies:
         for c in t['copies']:
@@ -136,7 +140,49 @@ def build(conn: Conn, host: str | None, min_size: int, system: bool = False, twi
     return {'folders': top, 'folders_total': len(folders), 'links': [e for e in links.values() if e['a'] in keep and e['b'] in keep],
             'groups': shown, 'groups_total': total_groups, 'folder_copies': folder_copies, 'folders_compared': twins is not None,
             'reclaimable': sum(g['reclaimable'] for g in groups) + sum(t['reclaimable'] for t in folder_copies),
-            'hidden': hidden, 'checksummed': checksummed or 0, 'broken_links': broken_links(conn, host, ignore), 'ignore': ignore}
+            'hidden': hidden, 'checksummed': checksummed or 0, 'broken_links': broken_links(conn, host, ignore),
+            'relations': relations(conn, host, ignore, system), 'ignore': ignore}
+
+
+def relations(conn: Conn, host: str | None, ignore: dict, system: bool = False) -> list[dict]:
+    """What already joins folders, beyond copies: symlinks, bind mounts, shares mounted from another host, deployed jobs
+    and backups. src and dst are {host, path}; a dst that is not a scanned host has only a name."""
+    g = graph_load(conn)
+    nodes = {n['id']: n for n in g['nodes']}
+    mount_of_fs = {e['src']: nodes[e['dst']]['label'] for e in g['edges'] if e['rel'] == 'MOUNTED_AT' and e['src'] in nodes and e['dst'] in nodes
+                   and nodes[e['src']]['kind'] == 'Filesystem'}
+    names = {moves.host_slug(r[0]): r[0] for r in conn.all('SELECT hostname FROM hosts')}
+    out = []
+
+    def add(kind, shost, spath, dhost, dpath, **extra):
+        out.append({'kind': kind, 'src': {'host': shost, 'path': spath}, 'dst': {'host': dhost, 'path': dpath}, **extra})
+
+    for e in g['edges']:
+        s, t, p = nodes.get(e['src']), nodes.get(e['dst']), e['props']
+        if not s or not t:
+            continue
+        if e['rel'] == 'SYMLINK_TO' and s['kind'] == 'Symlink' and p.get('target'):
+            if not is_ignored(s['host'], s['label'], ignore, system=not system):
+                add('symlink', s['host'], s['label'], s['host'], resolve(s['label'], p['target']), broken=s['health'] == 'broken')
+        elif e['rel'] == 'MOUNTED_AT' and p.get('bind') and p.get('source'):
+            add('bind', t['host'], p['source'], t['host'], t['label'])
+        elif e['rel'] == 'MOUNTED_AT' and p.get('remote') and p.get('server'):
+            add('share', p['server'], p.get('path') or s['label'], t['host'], t['label'], label=p.get('share'))
+        elif e['rel'] == 'REPLICATES_TO' and not str(p.get('detail') or '').startswith('job ') and e['src'] in mount_of_fs:
+            scanned = t['label'] in names.values()
+            add('backup', s['host'], mount_of_fs[e['src']], t['label'] if scanned else None, '/' if scanned else None,
+                label=p.get('detail') or t['label'], broken=p.get('health') == 'broken')
+    try:
+        from .jobs import overview
+        for j in overview(conn):
+            if j.get('src') and j.get('dst'):
+                add('job', names.get(moves.host_slug(j['source']), j['source']), j['src'], names.get(moves.host_slug(j['runner']), j['runner']), j['dst'],
+                    label=f'{j["method"]} job', broken=j.get('state') == 'failed')
+    except Exception:                       # an older schema without jobs: nothing to add
+        pass
+    if host:
+        out = [r for r in out if host in (r['src']['host'], r['dst']['host'])]
+    return out
 
 
 def broken_links(conn: Conn, host: str | None, ignore: dict) -> list[dict]:

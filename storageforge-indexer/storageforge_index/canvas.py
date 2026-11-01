@@ -57,7 +57,55 @@ def node_text(n: dict) -> str:
     return '\n'.join(l for l in lines if l)
 
 
-def to_canvas(graph: dict) -> dict:
+def extras(conn, host: str | None) -> dict:
+    """What each host serves and runs, beside its storage: {host: {'shares': [...], 'stacks': [...]}}."""
+    from . import docker, shares
+    out: dict = {}
+    names = [host] if host else [r[0] for r in conn.all('SELECT hostname FROM hosts ORDER BY hostname')]
+    for name in names:
+        here = {'shares': [], 'stacks': []}
+        try:
+            here['shares'] = [{k: e.get(k) for k in ('protocol', 'name', 'path', 'clients')} for e in shares.check(conn, name)['exports']]
+        except LookupError:
+            pass
+        for view in docker.listing(conn, name):
+            here['stacks'] += [s['name'] for s in view.get('stacks') or [] if s.get('name')]
+        if here['shares'] or here['stacks']:
+            out[name] = here
+    return out
+
+
+def _extra_nodes(extras_by_host: dict, nodes: dict, out_nodes: list, out_edges: list):
+    """A card under the map for each share and stack, joined to its host, and to the client hosts a share names."""
+    y = max((n['y'] + n['height'] for n in out_nodes), default=0) + PAD
+    x = 0
+
+    def card(key, text):
+        nonlocal x
+        out_nodes.append({'id': cid(key), 'type': 'text', 'text': text, 'x': x, 'y': y, 'width': 320, 'height': 120})
+        x += 320 + GAP_Y
+
+    def join(src, dst, label, color):
+        out_edges.append({'id': cid(f'{src}|{dst}'), 'fromNode': cid(src), 'toNode': cid(dst), 'fromSide': 'bottom', 'toSide': 'top',
+                          'toEnd': 'arrow', 'label': label, 'color': color})
+    for host, what in sorted(extras_by_host.items()):
+        hid = f'host:{host}'
+        for s in what['shares']:
+            key = f'share:{host}:{s.get("protocol")}:{s.get("name")}:{s.get("path")}'
+            card(key, f'### {s.get("name") or s.get("path")}\n**{s.get("protocol")} share** on {host}\n`{s.get("path")}`')
+            if hid in nodes:
+                join(hid, key, 'serves', '6')
+            for client in str(s.get('clients') or '').split():
+                if f'host:{client}' in nodes:
+                    join(key, f'host:{client}', 'client', '6')
+        for stack in what['stacks']:
+            key = f'stack:{host}:{stack}'
+            card(key, f'### {stack}\n**Compose stack** on {host}')
+            if hid in nodes:
+                join(hid, key, 'runs', '5')
+
+
+def to_canvas(graph: dict, extras_by_host: dict | None = None) -> dict:
     nodes = {n['id']: n for n in graph['nodes']}
     edges = graph['edges']
     out_nodes, out_edges = [], []
@@ -134,8 +182,10 @@ def to_canvas(graph: dict) -> dict:
         elif e['rel'] == 'MOUNTED_AT' and e['props'].get('subvol'):
             edge['label'] = e['props']['subvol']
         out_edges.append(edge)
+    if extras_by_host:
+        _extra_nodes(extras_by_host, nodes, out_nodes, out_edges)
     return {'nodes': out_nodes, 'edges': out_edges}
 
 
-def dumps(graph: dict) -> str:
-    return json.dumps(to_canvas(graph), indent='\t', ensure_ascii=False)
+def dumps(graph: dict, extras_by_host: dict | None = None) -> str:
+    return json.dumps(to_canvas(graph, extras_by_host), indent='\t', ensure_ascii=False)
