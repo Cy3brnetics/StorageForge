@@ -37,6 +37,8 @@ After the walk, the host's graph is rebuilt from the index plus its saved design
 | Bind mounts | a mount sharing a `maj:min` whose root nests inside a planned mount is recorded as `bind-alias` and not walked twice |
 | Anything else | `--include-fstype overlay` (or `STORAGEFORGE_INCLUDE_FSTYPES` for the server) walks a normally skipped type |
 
+On btrfs a walk also enters subvolumes nested inside the mount, which `-xdev` alone would lose. It skips read-only ones (snapshots), ones with their own mount (those get their own walk) and Docker, Podman and Timeshift's subvolume trees. A writable snapshot elsewhere can't be told apart and is indexed: exclude it by path.
+
 `.git` contents, `node_modules`, `.Trash*`, `__pycache__`, `.snapshots` and `.zfs` are pruned by name. Add your own with `--exclude-name` and `--exclude-path`, or drop the defaults with `--no-default-excludes`.
 
 ### Guardrails

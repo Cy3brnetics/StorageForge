@@ -23,7 +23,14 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 - Accounts that can't edit schedules no longer see their commands or env values. Run output needs `logs.view`. Alert addresses in `/api/deploy` need `settings.manage`.
 - `viewer` can no longer download a schedule's install script (which also minted a report token), its cron line or a host configuration bundle. These now need `plans.scripts`.
 
+### Added
+- **btrfs health beyond df.** Scans now read chunk allocation, every profile in use and missing devices, without new rights. Alerts and findings cover almost no unallocated space, running out of metadata (writes fail with "no space" while df shows room), a missing device, a filesystem gone read-only, mixed profiles and raid5/6 metadata. The report has a btrfs table.
+- **btrfs upkeep tasks:** reclaim free space (filtered balance), replace a device, remove a device, grow to fill a device, restore a subvolume from a snapshot (the current one is kept beside it), and turn on quotas. A **btrfs reclaim space** storage block and a **Monthly btrfs tidy** template.
+- **Rerun the read-only scan access setup** for the rest: errors per device and kind, newest snapshot date, space only the snapshots hold (with quotas on) and compression savings (with `compsize` installed, measured weekly).
+
 ### Fixed
+- **Files in nested btrfs subvolumes are now indexed.** A subvolume inside a scanned mount, without a mount of its own, was silently left out, along with all its files. The next scan adds them. Read-only snapshots stay out.
+- Single-device btrfs filesystems now get the same scrub and device error checks as pools. Their results were dropped, so expect new scrub warnings on hosts with the collector.
 - File map: faster, kept until the index or ignore list changes. Ignore lists are no longer capped at 4 KiB, and saving one no longer holds the request while graphs rebuild.
 - Schedule runs are pruned to the newest 200 per schedule.
 - **The backup copy to another host** now goes through the signed runner. As written it could not get past the deploy key's forced command.

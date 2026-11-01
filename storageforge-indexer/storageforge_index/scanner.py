@@ -107,7 +107,7 @@ def _subvolid(m: MountInfo) -> str | None:
 def _walk_reaches(m: MountInfo, prior: MountInfo) -> bool:
     """Whether the walk of prior (same filesystem, fsroot above m's) sees m's files somewhere besides m's own mount
     point: only then is m a mere bind (alias). A btrfs subvolume nested in another (openSUSE's /@/home) is its own
-    tree that the parent's -xdev walk never enters, and a mount over the very place its files would show up is pruned
+    tree that the parent's walk prunes (build_jobs), and a mount over the very place its files would show up is pruned
     from that walk; either needs a scan of its own."""
     a, b = _subvolid(m), _subvolid(prior)
     if m.fstype == 'btrfs' and a and b and a != b:
@@ -138,6 +138,16 @@ def plan_mounts(mounts: list[MountInfo], opts: ScanOptions) -> list[MountPlan]:
     return plans
 
 
+def _subvolumes_scanned_elsewhere(plan: MountPlan, scan: list[MountPlan]) -> set[str]:
+    """Where plan's walk would meet a subvolume that has its own mount and scan: /mnt/top/@home when @home is at /home.
+    A walk on btrfs crosses into nested subvolumes, and these would be indexed twice."""
+    m = plan.info
+    if m.fstype != 'btrfs' or not m.majmin:
+        return set()
+    return {posixpath.normpath(posixpath.join(m.target, posixpath.relpath(o.info.fsroot or '/', m.fsroot or '/'))) for o in scan
+            if o is not plan and o.info.majmin == m.majmin and is_under(o.info.fsroot or '/', m.fsroot or '/')}
+
+
 def build_jobs(plans: list[MountPlan], opts: ScanOptions) -> list[ScanJob]:
     targets = [p.info.target for p in plans]
     scan = [p for p in plans if p.action == 'scan']
@@ -160,7 +170,8 @@ def build_jobs(plans: list[MountPlan], opts: ScanOptions) -> list[ScanJob]:
     jobs = []
     for i, (plan, root) in enumerate(pairs.values()):
         prune = sorted({t for t in targets if t != root and is_under(t, root)}
-                       | {x for x in opts.exclude_paths if x != root and is_under(x, root)})
+                       | {x for x in opts.exclude_paths if x != root and is_under(x, root)}
+                       | {x for x in _subvolumes_scanned_elsewhere(plan, scan) if x != root and is_under(x, root)})
         jobs.append(ScanJob(i, plan, root, prune))
     return jobs
 
@@ -222,7 +233,7 @@ def stream_job(t: Transport, job: ScanJob, pool: WriterPool, opts: ScanOptions) 
     res = JobResult(job)
     started = time.time()
     pool.send(mid, ('begin', job.id))
-    proc = t.stream(find_command(job.root, job.prune, opts.exclude_names, nice=opts.nice))
+    proc = t.stream(find_command(job.root, job.prune, opts.exclude_names, nice=opts.nice, btrfs=job.plan.info.fstype == 'btrfs'))
     err = StderrTail(proc.stderr)
     try:
         batch = []
@@ -311,7 +322,7 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
             log(f'  {mark}  {p.info.target:<34} {p.info.fstype:<10} {p.reason}')
         if opts.dry_run:
             for j in jobs:
-                log(f'  would run: {find_command(j.root, j.prune, opts.exclude_names, opts.nice)}')
+                log(f'  would run: {find_command(j.root, j.prune, opts.exclude_names, opts.nice, j.plan.info.fstype == "btrfs")}')
             return None
 
         host_id = db.upsert_host(conn, inv, t, t.host_keys())   # refuses a machine claiming another host's name

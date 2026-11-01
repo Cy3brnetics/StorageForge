@@ -73,6 +73,27 @@ TYPES = {
         F('target', 'path', 'Pool mounted at', required=True), F('data', 'choice', 'Data', options=PROFILES, required=True),
         F('metadata', 'choice', 'Metadata', options=PROFILES, required=True)]},
     'scrub': {'group': 'btrfs', 'label': 'Scrub (verify checksums)', 'fields': [F('target', 'path', 'Mounted at', required=True)]},
+    'btrfs-reclaim': {'group': 'btrfs', 'label': 'Reclaim free space (balance)', 'fields': [
+        F('target', 'path', 'Mounted at', required=True), F('dusage', 'number', 'Data chunks fuller than this stay (%)', placeholder='50'),
+        F('musage', 'number', 'Metadata chunks fuller than this stay (%)', placeholder='30')],
+        'help': 'Packs half-empty chunks together and hands the space back, for when writes fail with "no space" while df shows room.'},
+    'btrfs-replace': {'group': 'btrfs', 'label': 'Replace a device', 'destructive': True, 'fields': [
+        F('target', 'path', 'Pool mounted at', required=True), F('old', 'btrfs-device', 'Old device, or its id if it is gone', required=True, placeholder='/dev/sdb or 2'),
+        F('device', 'device', 'New device', required=True), F('wipe', 'bool', 'It has a filesystem: overwrite it'), CONFIRM],
+        'help': 'Copies onto the new device in the background while the pool stays in use. Grow it afterwards if the new device is larger.'},
+    'btrfs-remove': {'group': 'btrfs', 'label': 'Remove a device from a pool', 'destructive': True, 'fields': [
+        F('target', 'path', 'Pool mounted at', required=True), F('device', 'btrfs-device', 'Device, its id, or "missing"', required=True, placeholder='/dev/sdb'),
+        F('confirm', 'confirm', 'Type it again to confirm', required=True)],
+        'help': 'Moves its data onto the other devices first, which can take hours, and stops if they have no room.'},
+    'btrfs-resize': {'group': 'btrfs', 'label': 'Grow to fill a device', 'fields': [
+        F('target', 'path', 'Mounted at', required=True), F('devid', 'number', 'Device id', placeholder='1')],
+        'help': 'For a larger disk or partition under the filesystem. Device ids: btrfs filesystem show.'},
+    'subvolume-restore': {'group': 'btrfs', 'label': 'Restore a subvolume from a snapshot', 'fields': [
+        F('source', 'path', 'Snapshot', required=True), F('path', 'path', 'Subvolume to restore', required=True)],
+        'help': 'Swaps in a writable copy of the snapshot and keeps the current subvolume beside it as <name>.before-restore-<time>. '
+                'A subvolume that is itself a mount point has to be restored by its path under the top level (subvolid=5).'},
+    'btrfs-quota': {'group': 'btrfs', 'label': 'Measure snapshot space (quotas)', 'fields': [F('target', 'path', 'Mounted at', required=True)],
+                    'help': 'Lets scans show how much only the snapshots hold. It costs some speed on busy filesystems and with many snapshots.'},
     'btrfs-send': {'group': 'btrfs', 'label': 'Send a snapshot to another host', 'fields': [
         F('source', 'path', 'Read-only snapshot', required=True), F('parent', 'path', 'Earlier snapshot (sends only the changes)'),
         TO_HOST, F('dest', 'path', 'Into folder there', required=True)],
@@ -157,7 +178,7 @@ CHECKS = {
     'text': re.compile(r'[^\0\n]{0,200}'), 'host': HOST_RE,
     'devices': re.compile(r'/dev/[A-Za-z0-9/_.:+-]+( +/dev/[A-Za-z0-9/_.:+-]+){0,63}'),
     'name': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}'), 'dataset': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}'),
-    'size': re.compile(r'\d{1,12}(\.\d{1,3})?[KMGTP]'), 'number': re.compile(r'\d{1,7}'),
+    'btrfs-device': re.compile(r'/dev/[A-Za-z0-9/_.:+-]+|\d{1,5}|missing'), 'size': re.compile(r'\d{1,12}(\.\d{1,3})?[KMGTP]'), 'number': re.compile(r'\d{1,7}'),
     'mkfs': re.compile(r'[a-z_]+=[A-Za-z0-9_.+:-]+(,[a-z_]+=[A-Za-z0-9_.+:-]+)*'),
     'spec': re.compile(r'(UUID|LABEL|PARTUUID|PARTLABEL)=[A-Za-z0-9_.-]+|/dev/[A-Za-z0-9/_.:+-]+|[A-Za-z0-9_.-]+:/[^\0\n ]*|//[^\0\n /]+/[^\0\n ]+'),
 }
@@ -221,6 +242,9 @@ def title(t: dict) -> str:
         'snapshot': lambda: f'Snapshot {p["source"]} → {p["dest"]}', 'to-subvolume': lambda: f'Turn {p["path"]} into a subvolume',
         'btrfs-add': lambda: f'Add {p["device"]} to the btrfs pool at {p["target"]}',
         'btrfs-balance': lambda: f'Convert {p["target"]} to {p["data"]}/{p["metadata"]}', 'scrub': lambda: f'Scrub {p["target"]}',
+        'btrfs-reclaim': lambda: f'Reclaim free space on {p["target"]}', 'btrfs-replace': lambda: f'Replace {p["old"]} with {p["device"]} in the pool at {p["target"]}',
+        'btrfs-remove': lambda: f'Remove {p["device"]} from the pool at {p["target"]}', 'btrfs-resize': lambda: f'Grow {p["target"]} to fill device {p["devid"] or 1}',
+        'subvolume-restore': lambda: f'Restore {p["path"]} from {p["source"]}', 'btrfs-quota': lambda: f'Turn on quotas for {p["target"]}',
         'mount': lambda: f'Mount {p["source"]}{"[" + p["subvol"] + "]" if p.get("subvol") else ""} at {p["target"]}',
         'mount-options': lambda: f'Mount options of {p["target"]}: {p["options"]}', 'unmount': lambda: f'Unmount {p["target"]}',
         'partition': lambda: f'Partition {p["disk"]}' + (f' and format it {p["fstype"]}' if p.get('fstype') else ''),
@@ -367,6 +391,10 @@ class Host:
 
     def vgs(self) -> set:
         return {p.get('vg') for p in self.node['pools'] if p['type'] == 'lvm'} | self.new_vgs
+
+    def btrfs_pool(self, target: str) -> dict | None:
+        src = (self.mounted.get(target, {}).get('source') or '').split('[')[0].removeprefix('/dev/')
+        return next((p for p in self.node['pools'] if p['type'] == 'btrfs' and (src in p['members'] or src == p['name'])), None)
 
     def pool_devices(self, target: str) -> int:
         src = (self.mounted.get(target, {}).get('source') or '').split('[')[0].removeprefix('/dev/')
@@ -696,6 +724,41 @@ def _check_task(conn, c: Host, h: dict, k: str, p: dict, say):
             say('note', 'a balance runs in the background for hours; the script starts it (btrfs balance status follows it)')
         else:
             say('note', 'reads every block and checks it; runs in the background')
+    elif k in ('btrfs-reclaim', 'btrfs-replace', 'btrfs-remove', 'btrfs-resize', 'btrfs-quota'):
+        mnt, fstype = c.mount_at(p['target'])
+        if fstype != 'btrfs' or mnt != p['target']:
+            say('crit', f'{p["target"]} is not a mounted btrfs filesystem')
+        if k == 'btrfs-reclaim':
+            for name in ('dusage', 'musage'):
+                if p[name] and int(p[name]) > 100:
+                    say('crit', f'{name} is a percentage: 0 to 100')
+            say('note', 'a balance runs in the background and slows the disks while it does')
+        elif k == 'btrfs-replace':
+            if p['old'] == 'missing':
+                say('crit', 'give the missing device by its id: btrfs filesystem show lists it')
+            _check_devices(c, h, [p['device']], p['wipe'], say)
+            say('note', 'the pool stays in use; a larger device needs a "Grow to fill a device" task afterwards')
+        elif k == 'btrfs-remove':
+            pool = c.btrfs_pool(p['target'])
+            n = len(pool['members']) if pool else 1
+            for level in filter(None, (pool.get('level'), pool.get('meta_level')) if pool else ()):
+                if n - 1 < MIN_DEVICES.get(level, 1):
+                    say('crit', f'{level} needs {MIN_DEVICES[level]} devices; this leaves {n - 1}. Convert the profile first')
+            if n < 2:
+                say('crit', 'this filesystem has one device: there is nowhere for its data to go')
+            say('warn', 'runs until all its data has moved, which can take hours, and blocks the rest of the plan until then')
+        elif k == 'btrfs-quota':
+            say('warn', 'quotas cost some speed on busy filesystems and with many snapshots')
+    elif k == 'subvolume-restore':
+        for path in (p['source'], p['path']):
+            if c.mount_at(path)[1] not in ('btrfs', None):
+                say('crit', f'{path} is not on btrfs')
+        if c.mount_at(p['path'])[0] == p['path']:
+            say('crit', f'{p["path"]} is a mount point and can\'t be swapped: mount the top level (subvolid=5) and give its path there')
+        if p['source'] == p['path'] or p['source'].startswith(p['path'].rstrip('/') + '/'):
+            say('crit', 'the snapshot is inside the subvolume being replaced: move it out first')
+        say('warn', 'whatever has files open in it keeps using the old copy: stop those first')
+        say('note', 'the current subvolume is kept beside it as <name>.before-restore-<time>; nothing is deleted')
     elif k == 'btrfs-send':
         if c.mount_at(p['source'])[1] not in ('btrfs', None):
             say('crit', f'{p["source"]} is not on btrfs')
@@ -873,6 +936,8 @@ ARGS = {'dir': ('path', 'owner', 'group', 'mode'), 'rename': ('path', 'dest'), '
         'symlink': ('path', 'target'), 'perms': ('path', 'owner', 'group', 'mode', 'recursive'),
         'subvolume': ('path', 'nocow'), 'snapshot': ('source', 'dest', 'readonly'), 'to-subvolume': ('path',),
         'btrfs-add': ('device', 'target', 'wipe'), 'btrfs-balance': ('target', 'data', 'metadata'), 'scrub': ('target',),
+        'btrfs-reclaim': ('target', 'dusage', 'musage'), 'btrfs-replace': ('target', 'old', 'device', 'wipe'), 'btrfs-remove': ('target', 'device'),
+        'btrfs-resize': ('target', 'devid'), 'subvolume-restore': ('source', 'path'), 'btrfs-quota': ('target',),
         'mount': ('source', 'subvol', 'target', 'fstype', 'options', 'fsck_pass'), 'mount-options': ('target', 'options'),
         'unmount': ('target',), 'partition': ('disk', 'fstype', 'label', 'wipe', 'table', 'flag', 'mkfs'),
         'partition-add': ('disk', 'name', 'size', 'fstype', 'label', 'flag', 'mkfs'),
@@ -1156,8 +1221,8 @@ t_btrfs_add() { local dev=$1 tgt=$2
 }
 t_btrfs_balance() { local tgt=$1 d=$2 m=$3 cd cm
   need btrfs btrfs-progs || return 0
-  cd=$(btrfs filesystem df -- "$tgt" 2>/dev/null | awk -F'[ ,:]+' '/^Data/ {print tolower($2); exit}')
-  cm=$(btrfs filesystem df -- "$tgt" 2>/dev/null | awk -F'[ ,:]+' '/^Metadata/ {print tolower($2); exit}')
+  cd=$(btrfs filesystem df -- "$tgt" 2>/dev/null | awk -F'[ ,:]+' '/^Data/ {print tolower($2)}' | paste -sd+ -)   # raid1+single: part way through a conversion
+  cm=$(btrfs filesystem df -- "$tgt" 2>/dev/null | awk -F'[ ,:]+' '/^Metadata/ {print tolower($2)}' | paste -sd+ -)   # raid1+single: part way through a conversion
   if [[ $cd == "$d" && $cm == "$m" ]]; then ok "$tgt is $d/$m"; return 0; fi
   if btrfs balance status -- "$tgt" 2>/dev/null | grep running >/dev/null; then ok "a balance is running on $tgt"; return 0; fi
   act "btrfs balance start --bg -dconvert=$d -mconvert=$m $tgt (now ${cd:-?}/${cm:-?})" &&
@@ -1169,6 +1234,61 @@ t_scrub() { local tgt=$1
   if [[ -e $STATE/scrub-${tgt//\//_} ]]; then ok "started $(cat "$STATE/scrub-${tgt//\//_}"): btrfs scrub status $tgt"; return 0; fi
   act "btrfs scrub start $tgt" && try btrfs scrub start -- "$tgt" >/dev/null &&
     { mkdir -p "$STATE"; date '+%F %T' >"$STATE/scrub-${tgt//\//_}"; ok "started: btrfs scrub status $tgt"; }
+}
+t_btrfs_reclaim() { local tgt=$1 d=${2:-50} m=${3:-30} mark=$STATE/reclaim-${1//\//_}
+  need btrfs btrfs-progs || return 0
+  [[ $(stat -f -c %T "$tgt" 2>/dev/null) == btrfs ]] && mountpoint -q -- "$tgt" || { later "$tgt must be a mounted btrfs filesystem"; return 0; }
+  if btrfs balance status -- "$tgt" 2>/dev/null | grep running >/dev/null; then ok "a balance is running on $tgt"; return 0; fi
+  if [[ -e $mark ]]; then ok "started $(cat "$mark"): btrfs balance status $tgt"; return 0; fi
+  act "btrfs balance start --bg -dusage=$d -musage=$m $tgt" && try btrfs balance start --bg -dusage="$d" -musage="$m" -- "$tgt" >/dev/null &&
+    { mkdir -p "$STATE"; date '+%F %T' >"$mark"; ok "started: btrfs balance status $tgt"; }
+}
+t_btrfs_replace() { local tgt=$1 old=$2 dev=$3
+  need btrfs btrfs-progs || return 0
+  [[ $(stat -f -c %T "$tgt" 2>/dev/null) == btrfs ]] && mountpoint -q -- "$tgt" || { later "$tgt must be a mounted btrfs filesystem"; return 0; }
+  if btrfs replace status -1 -- "$tgt" 2>/dev/null | grep '% done' >/dev/null; then ok "a replace is running: btrfs replace status $tgt"; return 0; fi
+  if btrfs filesystem show -- "$tgt" 2>/dev/null | grep -E " path $dev\$" >/dev/null; then ok "$dev is in the pool"; return 0; fi
+  dev_guard "$dev" || return 0
+  local have; have=$(blkid -p -o value -s TYPE -- "$dev" 2>/dev/null || true)
+  [[ -n $have && $4 != 1 ]] && { conflict "$dev holds $have; the plan does not allow overwriting it"; return 0; }
+  act "btrfs replace start $old $dev $tgt" && try btrfs replace start ${4:+-f} -- "$old" "$dev" "$tgt" &&
+    { ok "started: btrfs replace status $tgt"; info "if $dev is larger, grow the filesystem once it finishes"; }
+}
+t_btrfs_remove() { local tgt=$1 dev=$2
+  need btrfs btrfs-progs || return 0
+  [[ $(stat -f -c %T "$tgt" 2>/dev/null) == btrfs ]] && mountpoint -q -- "$tgt" || { later "$tgt must be a mounted btrfs filesystem"; return 0; }
+  case $dev in
+    missing) btrfs filesystem show -- "$tgt" 2>/dev/null | grep -i missing >/dev/null || { ok "no device is missing"; return 0; } ;;
+    /dev/*) btrfs filesystem show -- "$tgt" 2>/dev/null | grep -E " path $dev\$" >/dev/null || { ok "$dev is not in the pool"; return 0; } ;;
+    *) btrfs filesystem show -- "$tgt" 2>/dev/null | grep -E "devid +$dev " >/dev/null || { ok "device $dev is not in the pool"; return 0; } ;;
+  esac
+  act "btrfs device remove $dev $tgt (moves its data first: this can take hours)" && try btrfs device remove -- "$dev" "$tgt" && ok "removed"
+}
+t_btrfs_resize() { local tgt=$1 id=${2:-1}
+  need btrfs btrfs-progs || return 0
+  [[ $(stat -f -c %T "$tgt" 2>/dev/null) == btrfs ]] && mountpoint -q -- "$tgt" || { later "$tgt must be a mounted btrfs filesystem"; return 0; }
+  act "btrfs filesystem resize $id:max $tgt" && try btrfs filesystem resize "$id:max" "$tgt" >/dev/null && ok "grown"
+}
+t_subvolume_restore() { local snap=$1 p=$2 mark=$STATE/restore-${2//\//_}-${1//\//_} new=$2.restoring old
+  need btrfs btrfs-progs || return 0
+  if [[ -e $mark ]]; then ok "restored $(cat "$mark")"; return 0; fi
+  btrfs subvolume show -- "$snap" >/dev/null 2>&1 || { later "$snap must be a btrfs subvolume"; return 0; }
+  btrfs subvolume show -- "$p" >/dev/null 2>&1 || { later "$p must be a btrfs subvolume"; return 0; }
+  if mountpoint -q -- "$p"; then conflict "$p is a mount point: mount the top level (subvolid=5) and restore it by its path there"; return 0; fi
+  [[ -n $(btrfs subvolume list -o -- "$p" 2>/dev/null) ]] && { conflict "$p holds other subvolumes, which a restore would leave behind: move them first"; return 0; }
+  [[ -e $new ]] && { conflict "$new is in the way: left over from an interrupted restore?"; return 0; }
+  old=$p.before-restore-$STAMP
+  act "restore $p from $snap (keeps the current one as $old)" || return 0
+  try btrfs subvolume snapshot -- "$snap" "$new" >/dev/null || return 0
+  try mv -T -- "$p" "$old" || return 0
+  if ! try mv -T -- "$new" "$p"; then mv -T -- "$old" "$p" || conflict "$p is now at $old: move it back"; return 0; fi
+  mkdir -p "$STATE"; date '+%F %T' >"$mark"; ok "restored; the previous one is at $old"
+}
+t_btrfs_quota() { local tgt=$1
+  need btrfs btrfs-progs || return 0
+  [[ $(stat -f -c %T "$tgt" 2>/dev/null) == btrfs ]] && mountpoint -q -- "$tgt" || { later "$tgt must be a mounted btrfs filesystem"; return 0; }
+  if btrfs qgroup show -- "$tgt" >/dev/null 2>&1; then ok "quotas are on"; return 0; fi
+  act "btrfs quota enable $tgt" && try btrfs quota enable -- "$tgt" && ok "on; it takes a while to count what is already there"
 }
 t_mount() { local src=$1 sv=$2 tgt=$3 fs=$4 opts=$5 pass=${6:-0} line have
   [[ -n $sv ]] && opts="subvol=$sv${opts:+,$opts}"
@@ -1455,7 +1575,7 @@ run() { # n host type title args...
   section "$n. $desc"
   if [[ $host != "$ME" ]]; then skip "runs on $host: ./$(basename "$0") --host <user>@$host ${ARGS[*]}"; return 0; fi
   if ((STOPPED)); then info "skipped: an earlier task failed"; return 0; fi
-  CUR_DESTRUCTIVE=0; case $type in partition|partition-add|format|btrfs-add|zfs-pool|lvm-vg|lvm-vg-extend) CUR_DESTRUCTIVE=1 ;; esac
+  CUR_DESTRUCTIVE=0; case $type in partition|partition-add|format|btrfs-add|btrfs-replace|btrfs-remove|zfs-pool|lvm-vg|lvm-vg-extend) CUR_DESTRUCTIVE=1 ;; esac
   local before=$PROBLEMS
   "t_${type//-/_}" "$@" '' '' '' '' '' '' '' '' || true      # padded: every task function can read its optional arguments
   if ((APPLY && PROBLEMS > before)); then STOPPED=1; fi
@@ -1555,6 +1675,24 @@ def _ansible_task(t: dict, c: Host | None) -> dict:
                 f'-mconvert={p["metadata"]}', p['target']]}}
     if k == 'scrub':
         return {'name': name, 'ansible.builtin.command': {'argv': ['btrfs', 'scrub', 'start', p['target']]}}
+    if k == 'btrfs-reclaim':
+        return {'name': name, 'ansible.builtin.command': {'argv': ['btrfs', 'balance', 'start', '--bg', f'-dusage={p["dusage"] or 50}',
+                f'-musage={p["musage"] or 30}', p['target']]}}
+    if k == 'btrfs-replace':
+        return {'name': name, 'ansible.builtin.command': {'argv': ['btrfs', 'replace', 'start'] + (['-f'] if p['wipe'] else [])
+                + ['--', p['old'], p['device'], p['target']]}, **gate}
+    if k == 'btrfs-remove':
+        return {'name': name, 'ansible.builtin.command': {'argv': ['btrfs', 'device', 'remove', '--', p['device'], p['target']]}, **gate}
+    if k == 'btrfs-resize':
+        return {'name': name, 'ansible.builtin.command': {'argv': ['btrfs', 'filesystem', 'resize', f'{p["devid"] or 1}:max', p['target']]}}
+    if k == 'btrfs-quota':
+        return {'name': name, 'ansible.builtin.command': {'argv': ['btrfs', 'quota', 'enable', p['target']]}}
+    if k == 'subvolume-restore':
+        return {'name': name, 'ansible.builtin.shell': {'cmd': (
+            f'set -e; s={q(p["source"])}; p={q(p["path"])}; old="$p.before-restore-$(date +%Y%m%d-%H%M%S)"\n'
+            'if mountpoint -q -- "$p"; then echo "$p is a mount point" >&2; exit 1; fi\n'
+            'if [ -n "$(btrfs subvolume list -o -- "$p")" ]; then echo "$p holds other subvolumes" >&2; exit 1; fi\n'
+            'btrfs subvolume snapshot -- "$s" "$p.restoring"\nmv -T -- "$p" "$old"\nmv -T -- "$p.restoring" "$p"\n')}}
     if k == 'label':
         return {'name': name, 'ansible.builtin.shell': {'cmd': (
             f't={q(p["target"])}; l={q(p["label"])}\n'

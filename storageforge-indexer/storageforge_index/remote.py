@@ -233,7 +233,14 @@ def _tool(name: str) -> str:
 NICE = "$(command -v ionice >/dev/null 2>&1 && echo 'ionice -c3') nice -n 10 "
 
 
-def find_command(root: str, prune_paths, prune_names, nice: bool = True) -> str:
+# Trees of many subvolumes that belong to a tool, not to anyone's files. Writable, so the read-only test can't catch them.
+BTRFS_PRUNE_PATHS = ('*/docker/btrfs', '*/containers/storage/btrfs', '*/timeshift-btrfs')
+# Run by find on a subvolume's top folder (inode 256). Pruned unless it is known to be writable: a read-only subvolume is
+# a snapshot, and a host without btrfs-progs walks what it always did. find's capabilities do not pass to this child.
+BTRFS_IS_SNAPSHOT = """case $(btrfs property get -ts -- "$1" ro 2>/dev/null) in ro=false) exit 1 ;; esac"""
+
+
+def find_command(root: str, prune_paths, prune_names, nice: bool = True, btrfs: bool = False) -> str:
     q = shlex.quote
     # .git is still pruned (its objects are noise), but the .git entry itself is recorded: it marks a repository
     keep = [n for n in prune_names if n in RECORD_PRUNED]
@@ -242,8 +249,16 @@ def find_command(root: str, prune_paths, prune_names, nice: bool = True) -> str:
     prune = marks + (f"\\( {' -o '.join(tests)} \\) -prune -o " if tests else '')
     # -P (default) never follows symlinks, so symlink loops cannot recurse; -xdev stays on one
     # filesystem and every other mount point below the root is pruned explicitly, which also
-    # stops same-device bind mounts from being walked twice.
-    return f"LC_ALL=C {NICE if nice else ''}{_tool('find')} -P {q(root)} -xdev {prune}-printf '{FIND_FORMAT}'"
+    # stops same-device bind mounts from being walked twice. Every btrfs subvolume has its own device number, so -xdev
+    # would also stop at a nested one and lose its files, so a walk on btrfs relies on those explicit prunes alone
+    # (-fstype can't guard it: find matches device numbers against the mount table, and a subvolume's never match).
+    stay = '-xdev '
+    if btrfs:
+        stay = ''
+        prune = ("\\( " + ' -o '.join(f'-path {q(p)}' for p in BTRFS_PRUNE_PATHS) + " \\) -prune -o "
+                 f"\\( -inum 256 ! -path {q(glob_escape(root))} "
+                 f"-exec sh -c {q(BTRFS_IS_SNAPSHOT)} sh {{}} \\; -prune \\) -o ") + prune
+    return f"LC_ALL=C {NICE if nice else ''}{_tool('find')} -P {q(root)} {stay}{prune}-printf '{FIND_FORMAT}'"
 
 
 def checksum_command(nice: bool = True) -> str:
@@ -263,7 +278,7 @@ echo '@@lvs'; lvs --reportformat json --units b --nosuffix -o vg_name,lv_name,se
 echo '@@findmnt'; findmnt -J -b -l -o TARGET,SOURCE,FSTYPE,SIZE,USED,OPTIONS,MAJ:MIN,FSROOT 2>/dev/null
 echo '@@mountinfo'; cat /proc/self/mountinfo 2>/dev/null
 echo '@@df'; df -B1 -P 2>/dev/null
-echo '@@btrfs'; for d in /sys/fs/btrfs/*-*/; do [ -d "$d" ] || continue; printf '%s\t%s\t%s\t%s\n' "$(basename "$d")" "$(ls -d "$d"allocation/data/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(ls -d "$d"allocation/metadata/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(cat "$d"label 2>/dev/null)"; done
+echo '@@btrfs'; for d in /sys/fs/btrfs/*-*/; do [ -d "$d" ] || continue; printf '%s\t%s\t%s\t%s\t%s\n' "$(basename "$d")" "$(ls -d "$d"allocation/data/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(ls -d "$d"allocation/metadata/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(cat "$d"label 2>/dev/null)" "$(a="$d"allocation; v() { cat "$@" 2>/dev/null | awk '{s+=$1} END {printf "%.0f", s}'; }; printf 'dev=%s alloc=%s datat=%s datau=%s metat=%s metau=%s rsv=%s missing=%s op=%s' "$(cat "$d"devices/*/size 2>/dev/null | awk '{s+=$1*512} END {printf "%.0f", s}')" "$(v "$a"/*/disk_total)" "$(v "$a"/data/total_bytes)" "$(v "$a"/data/bytes_used)" "$(v "$a"/metadata/total_bytes)" "$(v "$a"/metadata/bytes_used)" "$(v "$a"/global_rsv_size)" "$(v "$d"devinfo/*/missing)" "$(cat "$d"exclusive_operation 2>/dev/null)")"; done
 echo '@@jobs'; for f in /var/lib/storageforge/jobs/*/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
 echo '@@tasks'; for f in /var/lib/storageforge/tasks/*.last /var/lib/storageforge/tasks/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
 for t in /etc/systemd/system/sf-task-*.timer; do [ -e "$t" ] && echo "TASK-TIMER $(basename "$t") $(systemctl is-enabled "$(basename "$t")" 2>/dev/null)"; done

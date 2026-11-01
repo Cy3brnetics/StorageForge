@@ -20,7 +20,7 @@ Change plans work like an Ansible playbook for storage: an ordered list of tasks
 | Group | Tasks |
 | :--- | :--- |
 | Files and folders | create folder, rename or move (same filesystem), move to trash, symlink, owner and permissions |
-| btrfs | create subvolume (optionally no copy-on-write), snapshot, turn a folder into a subvolume, add a device to a pool, convert profile (balance), scrub |
+| btrfs | create subvolume (optionally no copy-on-write), snapshot, turn a folder into a subvolume, add, replace or remove a pool device, convert profile (balance), reclaim free space, grow to fill a device, restore a subvolume from a snapshot, turn on quotas, scrub |
 | ZFS | create a pool, create a dataset with properties, snapshot, send a snapshot to another host, scrub |
 | LVM | create a volume group, add a device to one, create a logical volume, grow one with its filesystem, snapshot one |
 | Mounts | add a mount (fstab), change mount options, unmount |
@@ -144,7 +144,7 @@ Tasks are small programs built from blocks in the **Tasks** view. They run on on
 | Copy | Copy with rsync (copy or mirror; one side may be another host), Rotating backup (dated hard-linked folders, keep N), Verify copy |
 | Snapshots | btrfs snapshot, Prune btrfs snapshots, Send btrfs snapshots, ZFS snapshot, Prune ZFS snapshots, Send ZFS snapshots |
 | Services | Docker compose stop/start/restart, systemd unit stop/start/restart |
-| Other | Make folder, btrfs scrub, Run command, Wait, Log |
+| Other | Make folder, btrfs scrub, btrfs reclaim space, Run command, Wait, Log |
 
 "If the task fails" blocks run after a failure. Templates cover nightly mirrors, btrfs and ZFS snapshot rotations, rotating backups, stop-snapshot-start and a weekend scrub. Schedules are by hand, hourly, daily at 02:30, every 6 hours, Sundays at 03:00, monthly, or any systemd calendar time.
 

@@ -11,6 +11,7 @@ import datetime as dt
 from .analysis import (boot_stages, use_pct, capacity_summary, containing_mount, findings, link_health,
                        local_disks, protection_status, real_mounts)
 from .capacity import fmt_bin, fmt_dec, power_budget
+from .health import unallocated
 
 SEV_ICON = {'crit': '🔴', 'warn': '🟡', 'info': '🔵'}
 PROT_LABEL = {'protected': '🟢 Protected', 'local-only': '🟡 Local Only', 'critical': '🔴 Critical', 'excluded': '⚪ Excluded'}
@@ -113,6 +114,28 @@ def _sync_text(row):
         return 'None'
     extra = ', '.join(x for x in (s.get('target'), f'lag {s["lag"]}' if s.get('lag') else None) if x)
     return f'{state} ({extra})' if extra else state
+
+
+def _btrfs_section(nodes):
+    """Space btrfs has handed out and what it holds, which df does not show. Scrub, errors and the rest need the collector."""
+    rows = []
+    for n in nodes:
+        for fs in n.get('btrfs_fs') or []:
+            if not fs.get('dev'):
+                continue
+            free = unallocated(fs)
+            meta = fs.get('metat', 0) - fs.get('metau', 0) - fs.get('rsv', 0)
+            saved = f'{100 * (1 - fs["disk_bytes"] / fs["uncompressed_bytes"]):.0f}%' if fs.get('uncompressed_bytes') else '—'
+            snaps = f'{fs["snapshots"]}' if fs.get('snapshots') else '—'
+            if fs.get('snapshot_exclusive'):
+                snaps += f' ({fmt_bin(fs["snapshot_exclusive"])} alone)'
+            rows.append([code(fs['name']), n['hostname'], '/'.join(['+'.join(fs['datas']), '+'.join(fs['metas'])]), fmt_bin(fs['dev']),
+                         fmt_bin(free) if free is not None else 'unknown', fmt_bin(max(meta, 0)), fs.get('last_scrub') or '—', snaps, saved])
+    if not rows:
+        return []
+    return ['### btrfs space and upkeep', ''] + table(
+        ['Filesystem', 'Host', 'Data/metadata', 'Devices', 'Unallocated', 'Metadata free', 'Last scrub', 'Snapshots', 'Compression saved'], rows, 'lllrrrlll') + [
+        '', '- Writes fail when unallocated space and free metadata both run out, even if df shows room. A "Reclaim free space" task returns half-empty chunks.', '']
 
 
 def _snap_text(row):
@@ -337,6 +360,7 @@ def render_report(nodes: list[dict], title: str | None = None, as_of: dt.date | 
     unpart = sum((d.get('size') or 0) - sum(p.get('size') or 0 for p in d['parts']) for n in nodes for d in local_disks(n) if not d.get('member'))
     L += ['', f'Unallocated or unaddressable space outside any volume: {cap2(unpart)}. '
           'Partition sizes are counted as usable before filesystem metadata; ZFS figures assume 128 KiB records.', '']
+    L += _btrfs_section(nodes)
     L += ['### 5.2 Power & thermal budget', '']
     L += table(['Drive class', 'Count', 'Idle W / drive', 'Active W / drive', 'Idle total', 'Active total', 'Devices'],
                [[r['label'], r['count'], f'{r["idle_each"]:.1f}', f'{r["active_each"]:.1f}', f'{r["idle_total"]:.1f} W',

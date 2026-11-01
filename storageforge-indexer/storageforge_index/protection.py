@@ -123,7 +123,8 @@ def _facts_detected(conn: Conn, host: str) -> list[dict]:
     for target, b in ((inv.get('health') or {}).get('btrfs') or {}).items():
         if b.get('snapshots'):
             out.append({'path': target, 'why': f'detected {b["snapshots"]} btrfs snapshots',
-                        'snapshots': {'enabled': True, 'tool': 'btrfs', 'policy': 'read-only subvolumes', 'count': b['snapshots'], 'overhead': 0}})
+                        'snapshots': {'enabled': True, 'tool': 'btrfs', 'policy': f'newest {b["newest_snapshot"][:10]}' if b.get('newest_snapshot') else 'read-only subvolumes',
+                                      'count': b['snapshots'], 'overhead': b.get('snapshot_exclusive') or 0}})
     return out
 
 
