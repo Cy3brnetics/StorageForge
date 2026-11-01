@@ -117,7 +117,8 @@ The command prints a one-time link for the first admin, valid for 3 days. Replac
 
 - `left-behind.json` in the archive lists what is still on the old client's machines, including public keys in `authorized_keys`. Remove them there.
 - Copies on a backup target host and in `STORAGEFORGE_CONFIG_EXPORT_DIR` stay where they are. A named site's bundles go in their own subfolder of that directory.
-- Back up the new vault secret. `./secrets/vault_secret`, if you have one, still holds the old one, so replace or delete it.
+- Back up the new vault secret.
+- Delete `./secrets/vault_secret` if you have one. It holds the old secret, so after a reset the stack refuses to start until it is gone or matches the new one. The archive has a copy.
 
 Outside Docker, or when the secret comes from `STORAGEFORGE_VAULT_SECRET`, set `STORAGEFORGE_VAULT_NEW_SECRET` for the reset, then switch to it before starting the server.
 
@@ -144,11 +145,14 @@ docker/sf-site up acme
 | `archive NAME` | stop it and write its archive to `sites/NAME/archive` |
 | `remove NAME` | delete its volumes, once archived, after you type its name |
 | `audit` | keys and machines shared between sites; exits 1 if there are any |
+| `overview [--html FILE]` | every site's hosts, last scan, open alerts, last backup and state |
 | `sync` | tell each site what the others use; `new`, `up` and `remove` do this |
 
 `remove` moves the site's folder to `sites/.removed/`, including its archive, which holds its keys and secret. Move that off the machine.
 
 Run the firewall once per site, naming its bridge from `sites/NAME/site.env`: `sudo STORAGEFORGE_BRIDGE=sf1 docker/egress-firewall.sh`. Each site also has its own **report URL** under **Deploy → Reporting and alerts**, using its own port.
+
+`overview` reads each stack through its `admin` service, so it adds no port, token or server. It only shows counts and times. The HTML file is a snapshot, with links to each site's own sign-in; run it from cron to keep it current.
 
 **How sites are compared.** `sync` gives each stack a read-only list of the fingerprints the others use, naming no sites. An imported key on that list is refused, on any site that allows imports. A key or machine that is already shared raises an alert in that site: `crit` for a key, `warn` for a machine, because a machine can change owners and a cloned VM can share host keys. The list is only as fresh as the last `sync`, so run `audit` from cron if sites change often.
 
@@ -156,7 +160,19 @@ Run the firewall once per site, naming its bridge from `sites/NAME/site.env`: `s
 
 Sites made by `reset` only take keys generated in their own vault. `vault add` and `vault import-dir` refuse, the `./keys` import does nothing, and nothing can export a private key, so one key cannot serve two clients. Put a generated key on a host with **Install** in the web UI, which uses the host's password once.
 
-On an existing install, `vault policy generate-only` turns this on, and lists keys that were imported or whose origin is unknown. `vault policy open` turns it off and is recorded in the audit log. This protects clients from each other inside StorageForge. It does not stop someone with Docker access on this machine, or a key someone adds to a host by hand.
+On an existing install, `vault policy generate-only` turns this on, and lists keys that were imported or whose origin is unknown. `vault policy open` turns it off and is recorded in the audit log. This protects clients from each other inside StorageForge. It does not stop someone with Docker access on this machine.
+
+### Keys added by hand
+
+The vault can't refuse a key someone adds to a host directly, so scans look for them. Each scan reads `authorized_keys` for root and accounts with UID 1000 and up, keeping fingerprints and comments. System accounts aren't read, which leaves out `storageforge-deploy` and its job keys.
+
+```bash
+storageforge-index hosts keys [HOST]
+```
+
+This marks each key `vault`, `allowed` or `UNKNOWN`, and exits 1 if any is unknown. On a generate-only site, unknown keys also raise a `warn` alert. To accept one, run `hosts allow-key FINGERPRINT --note "whose it is"`; `hosts disallow-key` undoes it, and both go in the audit log.
+
+**The check only covers what the scan user can read.** An account it can't read is listed as such, not as clean, and without extra access that usually includes root and other users. It also doesn't see keys from `AuthorizedKeysFile` paths other than `~/.ssh/authorized_keys` and `authorized_keys2`, or from `AuthorizedKeysCommand`.
 
 ### Restoring across sites
 

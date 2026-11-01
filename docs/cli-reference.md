@@ -171,8 +171,11 @@ Both report commands also take `--title`, `--as-of YYYY-MM-DD`, `--kwh-price`, `
 | `backup [create] [--full] [--keep N] [--dir D]` | write a backup (essentials by default) |
 | `backup list [--dir D]` | backups on disk |
 | `restore FILE --yes` | replace the database with a backup from this site; stop the server first |
+| `hosts keys [HOST]` | keys in `authorized_keys` from the last scan, against the vault; exit 1 if any is unknown |
+| `hosts allow-key FP [--note N]`, `hosts disallow-key FP` | accept a key that isn't in the vault, or undo that |
 | `site [show]`, `site rename NAME` | which client this database belongs to |
 | `site init --name NAME` | name a new site, refuse imported keys, print the first admin's link |
+| `site status` | name, hosts, last scan, open alerts and last backup, tab-separated |
 | `site fingerprints` | its key and host key fingerprints, to compare sites |
 | `site archive [--archive D]` | write the archive `reset` makes, changing nothing; stop the server first |
 | `reset --site-name NAME [--archive D] [--abandon-deployed] --yes` | archive this site and start a new one ([details](operations.md#starting-a-new-site)) |

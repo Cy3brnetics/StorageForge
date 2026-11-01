@@ -405,6 +405,7 @@ Not here, on purpose: passwords, LUKS and SSH keys, Samba's password database. K
 def bundle(conn: Conn, hosts: list[str] | None = None, config_id: int | None = None) -> bytes:
     """A .tar.gz with one folder per host: its reinstall script, record, design and config files."""
     from .reinstall import script
+    from .site import stamp
     if config_id is not None:
         one = get(conn, config_id)
         if not one:
@@ -422,7 +423,7 @@ def bundle(conn: Conn, hosts: list[str] | None = None, config_id: int | None = N
             root = host_slug(v['host'])
             when = time.strftime('%Y-%m-%d %H:%M', time.gmtime(at))
             _add(tar, f'{root}/README.txt', README.format(host=v['host'], when=when).encode(), at, 0o644)
-            _add(tar, f'{root}/reinstall.sh', script(v).encode('utf-8', 'surrogateescape'), at, 0o755)
+            _add(tar, f'{root}/reinstall.sh', stamp(conn, script(v)).encode('utf-8', 'surrogateescape'), at, 0o755)
             _add(tar, f'{root}/config.json', json.dumps(body, indent=1).encode(), at)
             if body.get('design'):
                 _add(tar, f'{root}/design.json', json.dumps(body['design'], indent=1).encode(), at)

@@ -15,6 +15,7 @@ import time
 import zoneinfo
 from typing import Any
 
+from . import site
 from . import alerts, changes, moves, schedscript, tasks
 from .db import Conn, epoch
 from .moves import find_host, host_slug, hosts, slug
@@ -1144,6 +1145,7 @@ ls /etc/storageforge/scheduler/*.json >/dev/null 2>&1 || rm -f /usr/local/sbin/s
 """
 
 
+@site.stamped
 def generate_install_script(conn: Conn, schedule: dict, report_url: str | None, token: str) -> str:
     """The script that puts a schedule on its host. With no flags it only reports, like every script StorageForge writes.
     token: empty leaves the host without one, and it reports through scans."""

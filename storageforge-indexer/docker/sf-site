@@ -9,6 +9,7 @@
 #   sf-site archive acme                 stop it and write its archive
 #   sf-site remove acme                  delete its volumes, once archived
 #   sf-site audit                        keys and machines shared between sites; exit 1 if any
+#   sf-site overview [--html FILE]       hosts, last scan, open alerts and last backup of every site
 #   sf-site sync                         tell each site what the others use (up and new do this)
 # "default" is the stack made by a plain docker compose up, when there is one.
 set -euo pipefail
@@ -161,6 +162,39 @@ cmd_audit() {
   return $rc
 }
 
+html() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' <<<"$1"; }
+
+cmd_overview() {  # through each stack's admin service, so there is no new way in: no token, port or server of its own
+  local file='' s line state port host name hosts scan alerts backup rc=0
+  if [ "${1:-}" = --html ]; then file=${2:-}; [ -n "$file" ] || die "--html needs a file"; fi
+  host=$(hostname -f 2>/dev/null || hostname)
+  local rows='' page=''
+  rows=$(printf '%-24s %-28s %5s  %-16s %6s  %-16s %s' SITE NAME HOSTS 'LAST SCAN' ALERTS 'LAST BACKUP' STATE)
+  for s in $(slugs); do
+    state=$(comp "$s" ps --status running -q storageforge 2>/dev/null | grep -q . && echo running || echo stopped)
+    if ! line=$(comp "$s" run --rm -T admin site status 2>/dev/null | grep -P '\t' | tail -1) || [ -z "$line" ]; then
+      say "could not read site $s"; rc=2; line=$(printf '?\t?\t?\t?\t?')
+    fi
+    IFS=$'\t' read -r name hosts scan alerts backup <<<"$line"
+    rows+=$'\n'$(printf '%-24s %-28s %5s  %-16s %6s  %-16s %s' "$s" "$name" "$hosts" "$scan" "$alerts" "$backup" "$state")
+    if [ "$s" = default ]; then port=8443; else port=$(value "$s" STORAGEFORGE_HTTPS_PORT); fi
+    page+="<tr><td><a href=\"https://$(html "$host"):$port\">$(html "$name")</a></td><td>$(html "$s")</td><td>$hosts</td><td>$scan</td><td>$alerts</td><td>$backup</td><td>$state</td></tr>"$'\n'
+  done
+  printf '%s\n' "$rows"
+  if [ -n "$file" ]; then
+    ( umask 077; cat >"$file" <<EOF
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>StorageForge sites</title>
+<style>:root{color-scheme:light dark}body{font:14px system-ui;margin:24px}table{border-collapse:collapse;width:100%}th,td{padding:6px 10px;border-bottom:1px solid #8884;text-align:left}</style></head>
+<body><h1>StorageForge sites</h1><p>As of $(date '+%Y-%m-%d %H:%M'). Read-only: each link opens that site's own sign-in.</p>
+<table><tr><th>Site</th><th>Short name</th><th>Hosts</th><th>Last scan</th><th>Open alerts</th><th>Last backup</th><th>State</th></tr>
+$page</table></body></html>
+EOF
+    )
+    say "wrote $file"
+  fi
+  return $rc
+}
+
 cmd_archive() {
   local s=$1
   comp "$s" stop storageforge proxy 2>/dev/null || true
@@ -189,6 +223,7 @@ case $cmd in
   list) cmd_list ;;
   sync) cmd_sync ;;
   audit) cmd_audit ;;
+  overview) cmd_overview "$@" ;;
   up) need "${1:-}"; cmd_sync; comp "$1" up -d "${@:2}" ;;
   down) need "${1:-}"; comp "$1" stop storageforge proxy ;;
   logs) need "${1:-}"; comp "$1" logs -f "${@:2}" ;;
@@ -197,5 +232,5 @@ case $cmd in
          [ "$1" = default ] || comp "$1" run --rm -T admin site show 2>/dev/null | sed 's/  [0-9a-f]*$//' >"$SITES/$1/name"; cmd_sync ;;
   archive) need "${1:-}"; cmd_archive "$1" ;;
   remove) need "${1:-}"; cmd_remove "$1" ;;
-  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

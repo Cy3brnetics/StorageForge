@@ -21,6 +21,7 @@ import re
 import shlex
 import time
 
+from . import site
 from .db import Conn
 from .moves import _path, _under, find_host, host_slug, hosts, mount_of, slug, subtree
 from .scriptkit import DEST_CMD, HELPERS, REMOTE, comments, one_line
@@ -658,6 +659,7 @@ class _Emit:
         return f'! {{ {expr}; }}' if p['negate'] else expr
 
 
+@site.stamped
 def script(conn: Conn, task: dict) -> str:
     task = normalize(task)
     chk = check(conn, task)

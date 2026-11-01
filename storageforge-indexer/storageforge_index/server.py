@@ -1828,7 +1828,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if not v:
             return jsonify(error=f'nothing captured for {host}: scan it first'), 404
         core.audit(conn(), actor(), 'hostconfig.script', 'ok', v['host'], {'version': v['config_id']})
-        return Response(reinstall.script(v).encode('utf-8', 'surrogateescape'), mimetype='text/x-shellscript',
+        return Response(site.stamp(conn(), reinstall.script(v)).encode('utf-8', 'surrogateescape'), mimetype='text/x-shellscript',
                         headers={'Content-Disposition': f'attachment; filename="reinstall-{moves.host_slug(v["host"])}.sh"'})
 
     @web.get('/api/hostconfigs/bundle')

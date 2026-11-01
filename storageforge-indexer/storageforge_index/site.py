@@ -3,15 +3,18 @@ another's, and the name is shown wherever someone could act on the wrong client 
 backups carry it."""
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import re
 import sqlite3
 import uuid
+from functools import wraps
 from pathlib import Path
 
 from .alerts import get_setting, set_setting
 from .db import Conn
+from .scriptkit import one_line
 
 ID_KEY, NAME_KEY = 'site.id', 'site.name'
 MAX_NAME = 64
@@ -50,6 +53,26 @@ def rename(conn: Conn, new: str, actor: str) -> str:
     new = clean_name(new)
     set_setting(conn, NAME_KEY, new, actor)
     return new
+
+
+def stamp(conn: Conn, script: str) -> str:
+    """A script says which client it is for, so nobody runs it on the wrong client's machines. Nothing for an unnamed site."""
+    named = name(conn)
+    if not named:
+        return script
+    line = f'# Site: {one_line(named)}\n'
+    if script.startswith('#!'):
+        first, _, rest = script.partition('\n')
+        return f'{first}\n{line}{rest}'
+    return line + script
+
+
+def stamped(fn):
+    """For a generator whose first argument is the connection."""
+    @wraps(fn)
+    def inner(conn, *args, **kwargs):
+        return stamp(conn, fn(conn, *args, **kwargs))
+    return inner
 
 
 def export_dir(conn: Conn, root: str) -> str:
@@ -95,6 +118,19 @@ def shared_problems(conn: Conn) -> dict:
                                            f'{fp}: the same SSH host key is in another site. A machine that changed '
                                            'owners should be retired from the old site; a cloned VM needs new host keys.', 'warn')
     return now
+
+
+def status(conn: Conn) -> dict:
+    """The few facts an overview of all sites shows. No file names, paths or addresses."""
+    from .backup import listing
+    from .db import epoch
+    def clock(ts):
+        return dt.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M') if ts else '-'
+    made = [b['created'] for b in listing()]
+    scans = [epoch(r[0]) for r in conn.all('SELECT last_scanned_at FROM hosts WHERE last_scanned_at IS NOT NULL')]
+    return {'name': name(conn) or '(no name)', 'hosts': conn.scalar('SELECT count(*) FROM hosts'),
+            'last_scan': clock(max(scans, default=None)), 'alerts': conn.scalar("SELECT count(*) FROM alerts WHERE state = 'open'"),
+            'last_backup': clock(max(made, default=None))}
 
 
 def read_file(path) -> dict | None:

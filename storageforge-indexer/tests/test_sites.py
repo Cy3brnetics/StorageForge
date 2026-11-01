@@ -1,6 +1,7 @@
 """One database is one site: identity, keys that cannot be shared between clients, and starting a new environment."""
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -16,8 +17,9 @@ try:
     import dbfactory
 except ImportError:      # run as tests.test_x from the project folder
     from tests import dbfactory
-from storageforge_index import alerts, backup, cli, reset, site, users
+from storageforge_index import alerts, authkeys, backup, changes, cli, moves, scheduler, shares, tasks, reset, site, users
 from storageforge_index.db import Database
+from storageforge_index.remote import INVENTORY_SCRIPT
 from storageforge_index.vault import AuditLog, Vault, VaultError
 
 OLD = 'old-secret-' + 'o' * 40
@@ -329,6 +331,99 @@ class Sites(unittest.TestCase):
         with mock.patch.dict(os.environ, {'STORAGEFORGE_COOKIE_SUFFIX': 'a;b=c'}), self.assertRaises(SystemExit):
             session_cookie_name(True)
 
+    # generated scripts
+    def test_scripts_name_their_site(self):
+        conn = self.db.connect()
+        self.assertEqual(site.stamp(conn, '#!/bin/sh\necho hi\n'), '#!/bin/sh\n# Site: Client A\necho hi\n')
+        site.set_setting(conn, 'site.name', 'Bad\nrm -rf /', 'test')      # however it got there, it stays a comment
+        self.assertEqual(site.stamp(conn, '#!/bin/sh\n').count('\n'), 2)
+        conn.execute("DELETE FROM settings WHERE key = 'site.name'")
+        self.assertEqual(site.stamp(conn, '#!/bin/sh\n'), '#!/bin/sh\n')       # unchanged for an unnamed site
+        conn.close()
+        for fn in (moves.script, changes.script, shares.script, tasks.script, scheduler.generate_install_script):
+            self.assertTrue(hasattr(fn, '__wrapped__'), fn)
+
+    def test_a_real_generator_is_stamped(self):
+        conn = self.db.connect()
+        text = changes.script(conn, {'name': 'p', 'tasks': []})
+        conn.close()
+        self.assertEqual(text.splitlines()[1], '# Site: Client A')
+
+    # authorized_keys
+    KEY = 'AAAAC3NzaC1lZDI1NTE5AAAAIGJ1dCBpdCBpcyBub3QgYSByZWFsIGtleSBhdCBhbGw='
+
+    def test_parse_authkeys(self):
+        got = authkeys.parse(f'root\t{self.KEY}\t me@laptop\n!\tbob\nroot\tnot base64!\t\nnoise\n')
+        self.assertEqual(got['unreadable'], ['bob'])
+        self.assertEqual([k['comment'] for k in got['keys']], ['me@laptop'])
+        self.assertTrue(got['keys'][0]['fingerprint'].startswith('SHA256:'))
+
+    @unittest.skipUnless(shutil.which('sh'), 'needs sh')
+    def test_inventory_section_reads_authorized_keys(self):
+        home, locked = self.tmp / 'home', self.tmp / 'locked'
+        (home / '.ssh').mkdir(parents=True)
+        (home / '.ssh' / 'authorized_keys').write_text(
+            f'# a comment\nno-pty,command="x y" ssh-ed25519 {self.KEY} me@laptop\nssh-rsa AAAA\n')
+        (locked / '.ssh').mkdir(parents=True)
+        (locked / '.ssh').chmod(0o000)
+        (self.tmp / 'bin').mkdir()
+        (self.tmp / 'bin' / 'getent').write_text(
+            f'#!/bin/sh\necho "amy:x:1000:1000::{home}:/bin/sh"\necho "lee:x:1001:1001::{locked}:/bin/sh"\n'
+            f'echo "daemon:x:2:2::{home}:/bin/sh"\necho "gone:x:1002:1002::/nonexistent:/bin/sh"\n')
+        (self.tmp / 'bin' / 'getent').chmod(0o755)
+        section = re.search(r"(echo '@@authkeys'.*?)echo '@@accounts'", INVENTORY_SCRIPT, re.S).group(1)
+        try:
+            out = subprocess.run(['sh', '-c', section], env={'PATH': f'{self.tmp}/bin:/usr/bin:/bin'},
+                                 capture_output=True, text=True, timeout=30)
+        finally:
+            (locked / '.ssh').chmod(0o700)
+        self.assertEqual(out.stderr, '')
+        got = authkeys.parse(out.stdout)
+        self.assertEqual(sorted(k['user'] for k in got['keys']), ['amy', 'amy'])     # not daemon: a system account
+        self.assertIn('me@laptop', [k['comment'] for k in got['keys']])
+        if os.geteuid():
+            self.assertEqual(got['unreadable'], ['lee'])
+
+    def host_with_keys(self, conn, **seen):
+        conn.execute("INSERT INTO hosts (hostname, inventory_json) VALUES ('nas-1', :i)",
+                     {'i': json.dumps({'authkeys': {'unreadable': [], **seen}})})
+
+    def test_unknown_keys_alert_only_on_generate_only_sites(self):
+        conn = self.db.connect()
+        vault_fp = conn.scalar('SELECT fingerprint FROM ssh_keys')
+        stranger = 'SHA256:' + 'A' * 43
+        self.host_with_keys(conn, keys=[{'user': 'root', 'fingerprint': vault_fp, 'comment': ''},
+                                        {'user': 'root', 'fingerprint': stranger, 'comment': 'me@laptop'}])
+        self.assertEqual(authkeys.problems(conn), {})
+        self.assertEqual([k['known'] for k in authkeys.report(conn)[0]['keys']], ['vault', None])
+        site.set_setting(conn, 'vault.policy', 'generate-only', 'test')
+        found = alerts.problems(conn)['unknown-key:nas-1']
+        self.assertIn(stranger, found[3])
+        self.assertNotIn(vault_fp, found[3])
+        authkeys.allow(conn, stranger, 'the on-call admin', 'test')
+        self.assertEqual(authkeys.problems(conn), {})
+        authkeys.disallow(conn, stranger, 'test')
+        self.assertIn('unknown-key:nas-1', authkeys.problems(conn))
+        with self.assertRaises(SystemExit):
+            authkeys.allow(conn, 'nonsense', '', 'test')
+        conn.close()
+
+    def test_a_scan_from_before_this_is_not_reported_clean(self):
+        conn = self.db.connect()
+        conn.execute("INSERT INTO hosts (hostname, inventory_json) VALUES ('old', '{}')")
+        self.assertEqual(authkeys.report(conn), [])
+        conn.close()
+
+    def test_reset_marks_the_secret_for_init_volumes(self):
+        self.run_reset()
+        self.assertTrue((self.secrets / 'reset_at').exists())
+
+    def test_status_is_what_an_overview_shows(self):
+        conn = self.db.connect()
+        st = site.status(conn)
+        conn.close()
+        self.assertEqual((st['name'], st['hosts'], st['alerts'], st['last_scan']), ('Client A', 0, 0, '-'))
+
 
 class SfSiteScript(unittest.TestCase):
     """docker/sf-site against a stand-in for docker: which ports and bridges it picks, and what it will not remove."""
@@ -339,7 +434,7 @@ class SfSiteScript(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
         (self.tmp / 'bin').mkdir()
         fake = self.tmp / 'bin' / 'docker'
-        fake.write_text(f'#!/bin/sh\necho "$*" >>{self.tmp}/calls\ncase "$*" in *fingerprints*) cat {self.tmp}/fp-"$3" 2>/dev/null ;; esac\nexit 0\n')
+        fake.write_text(f'#!/bin/sh\necho "$*" >>{self.tmp}/calls\ncase "$*" in *fingerprints*) cat {self.tmp}/fp-"$3" 2>/dev/null ;; *"site status"*) printf "<b>Acme\\t2\\t-\\t1\\t-\\n" ;; esac\nexit 0\n')
         fake.chmod(0o755)
 
     def sf(self, *args, stdin=''):
@@ -391,3 +486,14 @@ class SfSiteScript(unittest.TestCase):
         self.assertEqual(self.sf('sync').returncode, 0)
         self.assertEqual((self.tmp / 'sites' / 'beta' / 'foreign').read_text(), 'host SHA256:box\nkey SHA256:same\n')
         self.assertEqual((self.tmp / 'sites' / 'acme' / 'foreign').read_text(), 'key SHA256:same\n')
+
+    def test_overview_lists_sites_and_escapes_html(self):
+        self.sf('new', 'acme', '--name', 'A')
+        page = self.tmp / 'o.html'
+        r = self.sf('overview', '--html', str(page))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('<b>Acme', r.stdout)
+        text = page.read_text()
+        self.assertIn('&lt;b&gt;Acme', text)
+        self.assertNotIn('<b>Acme', text)
+        self.assertEqual(stat.S_IMODE(page.stat().st_mode), 0o600)

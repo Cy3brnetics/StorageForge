@@ -13,6 +13,7 @@ import json
 import os
 import secrets
 import shutil
+import time
 from pathlib import Path
 
 from . import backup, site, users
@@ -105,6 +106,8 @@ def _install_secret(path: Path, value: str) -> None:
             f.write(value)
         part.chmod(mode)
         os.replace(part, path)
+        # tells init-volumes.sh that a ./secrets/vault_secret differing from this one is the old client's
+        (folder / 'reset_at').write_text(f'{int(time.time())}\n')
     finally:
         folder.chmod(was)
 

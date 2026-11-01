@@ -441,7 +441,8 @@ def cmd_config(args) -> int:
         v = hostconfig.get(conn, args.id) if args.id else hostconfig.latest(conn, args.host)
         if not v:
             raise SystemExit(f'nothing captured for {args.host}: scan it first')
-        text = reinstall.script(v)
+        from . import site
+        text = site.stamp(conn, reinstall.script(v))
         if args.output:
             Path(args.output).write_text(text, errors='surrogateescape')
             os.chmod(args.output, 0o755)
@@ -478,6 +479,9 @@ def cmd_site(args) -> int:
                 print(f'First admin, once and within 3 days: https://<this machine>/enroll#{token}')
         elif args.site_cmd == 'rename':
             print(site.rename(conn, args.name, actor_name()))
+        elif args.site_cmd == 'status':
+            st = site.status(conn)
+            print('\t'.join(str(st[k]) for k in ('name', 'hosts', 'last_scan', 'alerts', 'last_backup')))
         elif args.site_cmd == 'fingerprints':
             for row in site.fingerprints(conn):
                 print('\t'.join(row))
@@ -507,6 +511,8 @@ def cmd_reset(args) -> int:
     if not r['secret_installed']:
         print('Switch STORAGEFORGE_VAULT_SECRET to the value of STORAGEFORGE_VAULT_NEW_SECRET before starting the server.')
     print('Back up the new vault secret: backups never contain it.')
+    if r['secret_installed']:
+        print('If ./secrets/vault_secret exists on the Docker host, delete it: it is the old secret, and the stack will not start until it is gone.')
     print(f'First admin, once and within 3 days: https://<this machine>/enroll#{r["token"]}')
     return 0
 
@@ -536,10 +542,32 @@ def cmd_prune(args) -> int:
     return 0
 
 
+def _host_keys(args, db, conn) -> int:
+    from . import authkeys
+    from .vault import Vault, actor_name
+    if args.hosts_cmd == 'keys':
+        found = authkeys.report(conn, args.host)
+        for h in found:
+            for k in h['keys']:
+                print(f'{h["host"]:<20} {k["user"]:<14} {k["fingerprint"]}  {k["known"] or "UNKNOWN":<8} {k["comment"]}')
+            if h['unreadable']:
+                print(f'{h["host"]:<20} could not read the keys of: {", ".join(h["unreadable"])}')
+        return 1 if any(not k['known'] for h in found for k in h['keys']) else 0
+    if args.hosts_cmd == 'allow-key':
+        authkeys.allow(conn, args.fingerprint, args.note or '', actor_name())
+    else:
+        authkeys.disallow(conn, args.fingerprint, actor_name())
+    with Vault(db, conn).unlock() as v:
+        _audit(db, conn, v, f'hosts.{args.hosts_cmd}', fp=args.fingerprint, note=getattr(args, 'note', None))
+    return 0
+
+
 def cmd_hosts(args) -> int:
     if getattr(args, 'hosts_cmd', None) == 'rekey':
         return _rekey_host(args)
     db, conn = open_db(args)
+    if getattr(args, 'hosts_cmd', None) in ('keys', 'allow-key', 'disallow-key'):
+        return _host_keys(args, db, conn)
     if getattr(args, 'hosts_cmd', None) == 'remove':
         from .retire import retire
         from .vault import Vault, VaultError
@@ -1268,6 +1296,7 @@ def build_parser() -> argparse.ArgumentParser:
     sts.add_parser('show', help='its name and id (the default)')
     sts.add_parser('rename', help='change its name').add_argument('name')
     sts.add_parser('init', help='name a new site, refuse imported keys, and print the first admin\'s link').add_argument('--name', required=True)
+    sts.add_parser('status', help='name, hosts, last scan, open alerts and last backup, tab-separated')
     sts.add_parser('fingerprints', help='its key and host key fingerprints, to compare sites')
     sts.add_parser('archive', help='write the archive reset makes, changing nothing (stop the server first)').add_argument(
         '--archive', help='folder outside the data and backup folders (default $STORAGEFORGE_ARCHIVE_DIR)')
@@ -1289,6 +1318,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     h = sub.add_parser('hosts', help='list indexed hosts')
     hs = h.add_subparsers(dest='hosts_cmd')
+    hk = hs.add_parser('keys', help="keys in accounts' authorized_keys, from the last scan; exit 1 if any is unknown")
+    hk.add_argument('host', nargs='?')
+    ak = hs.add_parser('allow-key', help='a key on hosts that is meant to be there, though not in the vault')
+    ak.add_argument('fingerprint')
+    ak.add_argument('--note', help='whose it is')
+    hs.add_parser('disallow-key', help='undo allow-key').add_argument('fingerprint')
     rk = hs.add_parser('rekey', help='a host was reinstalled or moved: forget its pinned SSH host keys (scan it right after)')
     rk.add_argument('name')
     rk.add_argument('--port', type=int, default=22, help='its SSH port, to drop that known_hosts line too')
