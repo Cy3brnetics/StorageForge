@@ -38,6 +38,7 @@ A host's name is what it reports, so it proves nothing.
 ## Accounts and sessions
 
 - Local accounts only. Werkzeug hashes passwords (scrypt) and Flask-Login manages sessions. Passwords need at least 12 characters. A sign-in with an unknown name costs the same time as a wrong password.
+- Requests that change something must come from this origin (`Sec-Fetch-Site`, or `Origin` where a browser sends no such header). `SameSite` alone would let a page on another port of this host post here.
 - The session cookie is signed with `STORAGEFORGE_SESSION_SECRET`, `HttpOnly` and `SameSite=Strict`. With `STORAGEFORGE_COOKIE_SECURE=1` (compose sets it) it is also `Secure` and named `__Host-sf_session`.
 - Sessions are also kept server-side; only a hash of their id is stored. Signing out ends that session even for a copied cookie. `user signout <name>` ends all of them, as do `user passwd` and `user disable`.
 - A session ends 30 minutes after sign-in. Each user can raise their own to up to 8 hours from the header's **Session** menu. An open page clears itself and goes to `/login` when its session ends.

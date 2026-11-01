@@ -138,7 +138,7 @@ import traceback
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from flask import Flask, Response, abort, g, jsonify, redirect, request, send_from_directory, session
 from flask_limiter import Limiter
@@ -514,6 +514,19 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         def wrapped(*args, **kwargs):
             return password_stale() or view(*args, **kwargs)
         return wrapped
+
+    @web.before_request
+    def same_origin_only():
+        """SameSite counts another port on this host as the same site, so a page there could still post a form here with
+        the cookie. Job reports send no such headers, and browsers that send neither are too old to reach this CSP."""
+        if request.method in ('GET', 'HEAD', 'OPTIONS'):
+            return None
+        fetch, origin = request.headers.get('Sec-Fetch-Site'), request.headers.get('Origin')
+        if fetch:
+            ok = fetch in ('same-origin', 'none')
+        else:
+            ok = not origin or urlsplit(origin).hostname == urlsplit(f'//{request.host}').hostname
+        return None if ok else (jsonify(error='this request came from another site'), 403)
 
     @web.before_request
     def role_allows():
@@ -1504,6 +1517,18 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if holds:
             need('hosts.command')
 
+    def need_for_deploy(c, kind, ref, mode, options):
+        """What a deploy really does decides what it takes. run executes the script whatever the mode says and goes first in
+        the items, so it cannot stand beside report (a dry run's permission) or remove (which needs no hosts.command)."""
+        if options.get('run') and (mode != 'apply' or options.get('remove')):
+            raise ValueError('run needs mode apply, and cannot be combined with remove')
+        if mode == 'apply':
+            need('deploy.apply')
+        if options.get('destructive'):
+            need('deploy.destructive')
+        if mode == 'apply' and not options.get('remove'):
+            need_for_commands(c, kind, ref)
+
     def deploy_digest(c, kind, ref):
         """A fingerprint of what this deploy is made from, to tell whether a dry run still describes it."""
         try:
@@ -1529,14 +1554,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         kind, mode, ref = body.get('kind'), body.get('mode', 'report'), body.get('ref')
         if mode not in ('report', 'apply'):
             raise ValueError('mode is report or apply')
-        if mode == 'apply':
-            need('deploy.apply')
-        if body.get('destructive'):
-            need('deploy.destructive')
         c = conn()
-        if mode == 'apply' and not body.get('remove'):
-            need_for_commands(c, kind, ref)
         options = {k: bool(body[k]) for k in ('remove', 'paused', 'destructive', 'run') if body.get(k)}
+        need_for_deploy(c, kind, ref, mode, options)
         items = deploy_items_for(c, kind, ref, mode, options)
         if not items:
             raise ValueError('nothing to deploy: no hosts are involved')
@@ -1584,10 +1604,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         g = engine.get(c, gid)
         if not g:
             raise LookupError('no such deploy')
-        if g['options'].get('destructive'):
-            need('deploy.destructive')
-        if g['mode'] == 'apply' and not g['options'].get('remove'):
-            need_for_commands(c, g['kind'], g['ref'])
+        need_for_deploy(c, g['kind'], g['ref'], g['mode'], g['options'])
         if engine.running(gid):
             return jsonify(error='that deploy is still running'), 409
         if g['kind'] not in ('jobs', 'shares', 'changes', 'tasks', 'schedules'):

@@ -16,6 +16,11 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
   - **Room check:** data and metadata headroom before a large transfer.
   - **duperemove** on a timer in the run window, with what it freed logged to the job's index.
 
+### Security
+- **A planner or dry-run account could run root commands on a host.** `POST /api/deploy/start` with `mode: report, run: true` ran the script for real on `deploy.report` alone, and `remove: true, run: true` skipped the `hosts.command` check. `task_type: "Command"` got past that check when saving a schedule. Now `run` needs `mode: apply` and refuses `remove`, the check reads the type as it will be saved, and pausing an installed schedule that changed since its deploy takes `hosts.command` if it now holds commands.
+- **Schedule environment variables are for command schedules only.** On a plan or task they could change a program its script calls (`RSYNC_RSH`, `TAR_OPTIONS`). Existing rows keep theirs on record, and no longer deploy them.
+- **State-changing requests must come from this origin.** A page on another port of the same host counts as the same site, so `SameSite=Strict` let it post forms here.
+
 ### Changed
 - **Files map speed.** Opening a folder in the Graph view takes about 50 ms instead of up to 2.7 s on a 5.5M-file index, because listings and folder comparison share one folder index kept until the next scan. Changing the size, host or System files filter no longer re-reads every file to redraw the copy lines, and selecting a card with everything already open no longer redraws the map. A folder still being read shows a Loading card.
 - **Faster views on large indexes.** Opening Topology no longer scans every file record to detect backups (1.9 s to 6 ms per design on 5.5M files). The Files map's folder comparison is ready at startup and after each scan. Topology renders once for a page load's background answers, and the Structure layout is only worked out when shown, with a grid in place of comparing all node pairs.
