@@ -38,30 +38,7 @@ VMS = list(IPS)
 BUILD = roles.build()
 os.environ['LIBVIRT_DEFAULT_URI'] = 'qemu:///system'
 # (check, vm): why it is expected to fail. Remove the line when the product is fixed.
-KNOWN = {
-    ('scan-status', 'sf-rocky'): "without scan access, Podman's overlay folder counts as a failed mount",
-    ('scan', 'sf-rocky'): "without scan access, Podman's overlay folder counts as a failed mount",
-    ('btrfs-balance-convert', 'sf-tumbleweed'): 'the convert task runs with almost no unallocated space: the kernel aborts with ENOSPC and the filesystem goes read-only',
-    ('btrfs-disk-full', 'sf-bookworm'): 'the alert divides used by total, but on btrfs RAID df counts used against used plus available: 99% full by df reads as 85%',
-    ('btrfs-disk-full', 'sf-fedora'): 'the alert divides used by total, but on btrfs RAID df counts used against used plus available: 99% full by df reads as 85%',
-    ('btrfs-disk-full', 'sf-tumbleweed'): 'the alert divides used by total, but on btrfs RAID df counts used against used plus available: 99% full by df reads as 85%',
-    ('job-verify-copy', 'sf-arch'): 'the job counts every output line as a file, including the post-quantum warning a new ssh client prints for an older server',
-    ('job-verify-mirror', 'sf-arch'): 'the job counts every output line as a file, including the post-quantum warning a new ssh client prints for an older server',
-    ('job-verify-rsnapshot', 'sf-arch'): 'the job counts every output line as a file, including the post-quantum warning a new ssh client prints for an older server',
-    ('job-verify-copy', 'sf-tumbleweed'): 'the job counts every output line as a file, including the post-quantum warning a new ssh client prints for an older server',
-    ('job-verify-mirror', 'sf-tumbleweed'): 'the job counts every output line as a file, including the post-quantum warning a new ssh client prints for an older server',
-    ('job-verify-rsnapshot', 'sf-tumbleweed'): 'the job counts every output line as a file, including the post-quantum warning a new ssh client prints for an older server',
-    ('job-verify-copy', 'sf-fedora'): 'the job counts every output line as a file, including the post-quantum warning a new ssh client prints for an older server',
-    ('job-verify-mirror', 'sf-fedora'): 'the job counts every output line as a file, including the post-quantum warning a new ssh client prints for an older server',
-    ('job-verify-rsnapshot', 'sf-fedora'): 'the job counts every output line as a file, including the post-quantum warning a new ssh client prints for an older server',
-    ('smb-client-module', 'sf-ubuntu'): "the stock cloud kernel has no nls_utf8, and the deploy's cifs mount asks for iocharset=utf8: mount error 79",
-    ('smb-client-module', 'sf-jammy'): "the stock cloud kernel has no nls_utf8, and the deploy's cifs mount asks for iocharset=utf8: mount error 79",
-    ('smb-client-module', 'sf-rocky10'): 'the cloud image has no cifs module, and the deploy installs only cifs-utils',
-    ('smb-unlabeled-parent', 'sf-suse'): 'the deploy labels only the shared folder: with no SELinux label on the folder above it, smbd fails canonicalize_connect_path and clients get BAD_NETWORK_NAME',
-    ('change-apply', 'sf-jammy'): "zfs set ... -- dataset: Ubuntu 22.04's ZFS rejects the --",
-    ('change-rerun', 'sf-jammy'): "zfs set ... -- dataset: Ubuntu 22.04's ZFS rejects the --",
-    ('mergerfs-source', 'sf-arch'): 'the scan records the kernel source 1:2, not the branch folders',
-}
+KNOWN = {}
 
 
 def conf(path):
@@ -781,7 +758,7 @@ def tier5(r):
         mount = fs_mount(node, node.subvol)
         try:
             btrfs_plan(api, f'btrfs convert {node.name}', node, [('btrfs-balance', {'target': mount, 'data': 'raid1', 'metadata': 'raid1'})])
-        except BaseException as exc:         # too little room is a right answer, if the filesystem is still writable after it
+        except demo.DemoError as exc:         # too little room is a right answer, if the filesystem is still writable after it
             if 'not converted' not in str(exc):
                 raise
             ssh(node.name, f'sudo -n touch {mount}/lab-still-writable && sudo -n rm {mount}/lab-still-writable')
@@ -808,11 +785,12 @@ def tier5(r):
 
     def full():
         path = f'{filler.fill}/lab-fill.bin'
-        ssh(filler.name, f'''sudo -n sh -c 'avail=$(df -m --output=avail {filler.fill} | tail -1); dd if=/dev/urandom of={path} bs=1M count=$((avail - 64)) status=none; sync' ''')
+        # df's available space moves as btrfs frees deleted subvolumes and allocates chunks, so one pass can stop short
+        ssh(filler.name, f'''sudo -n sh -c 'for i in 1 2 3 4; do avail=$(df -m --output=avail {filler.fill} | tail -1); [ "$avail" -gt 96 ] || break; dd if=/dev/urandom of={path}.$i bs=1M count=$((avail - 64)) status=none; sync; btrfs filesystem sync {filler.fill} 2>/dev/null; done; true' ''')
         demo.scan(api, [filler.ip])
         got = has_alert('disk', filler.name)
         usage = ssh(filler.name, f'df -m {filler.fill} | tail -1').split()
-        ssh(filler.name, f'sudo -n sh -c "rm -f {path}; sync"')
+        ssh(filler.name, f'sudo -n sh -c "rm -f {path}.*; sync"')
         if not got:
             raise AssertionError(f'no disk alert with {filler.fill} at {usage[4]} ({usage[2]} of {usage[1]} MB): {[a["title"] for a in alerts_now()]}')
         return got[0]['title']

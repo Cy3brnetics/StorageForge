@@ -245,7 +245,7 @@ def can_mount_smb(node):
 
 
 def smb_client():
-    # the deploy installs what a kernel lacks, so any host will do. One that has it already first: the first deploy has to be quick to fail
+    # the deploy installs what a kernel lacks, so any host will do. One that has it already first, to test the share itself
     others = [n for n in roles.deployable() if n.name != roles.smb_server().name]
     return next((n for n in others if can_mount_smb(n)), next(iter(others), None))
 

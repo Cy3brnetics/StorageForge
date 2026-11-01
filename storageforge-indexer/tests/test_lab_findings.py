@@ -212,6 +212,13 @@ if [ "$p" = /srv/btrfs ] && [ ! -e "$STUB_DIR/labelled" ]; then echo "system_u:o
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.log(), 'restorecon /srv/btrfs\n')       # not -R: what is below it isn't ours
 
+    def test_a_subvolume_root_shows_no_label_as_a_question_mark(self):
+        self.stub('ls', r'''p=${@: -1}
+if [ "$p" = /srv/btrfs ] && [ ! -e "$STUB_DIR/labelled" ]; then echo "    ? $p"; else echo "system_u:object_r:var_t:s0 $p"; fi''')
+        self.stub('restorecon', 'echo "restorecon $*" >>"$STUB_DIR/log"; touch "$STUB_DIR/labelled"')
+        self.assertEqual(self.run_it().returncode, 0)
+        self.assertEqual(self.log(), 'restorecon /srv/btrfs\n')
+
     def test_chcon_when_policy_leaves_it_unlabelled(self):
         self.ls()
         self.stub('restorecon', 'exit 0')

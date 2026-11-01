@@ -828,12 +828,13 @@ server_smb() {
 
 selinux_parents() { # smbd walks every folder above a share, and can't enter one with no label: BAD_NETWORK_NAME for clients
   local p=$1
+  no_label() { case $(ls -Zd "$1" 2>/dev/null | awk '{print $1}') in '?'|*:unlabeled_t:*) return 0 ;; *) return 1 ;; esac; }   # ls shows a btrfs subvolume's root with no label as "?"
   while p=$(dirname "$p"); [[ $p != / ]]; do
-    ls -Zd "$p" 2>/dev/null | grep unlabeled_t >/dev/null || continue
+    no_label "$p" || continue
     if ((!APPLY)); then missing "SELinux would block Samba from walking through $p (no label)"; continue; fi
     doing "SELinux: label $p, a folder above the share"
     restorecon "$p" 2>/dev/null || true
-    ls -Zd "$p" 2>/dev/null | grep unlabeled_t >/dev/null && { chcon -t samba_share_t "$p" || conflict "could not label $p"; }
+    no_label "$p" && { chcon -t samba_share_t "$p" || conflict "could not label $p"; }
   done
   return 0
 }
