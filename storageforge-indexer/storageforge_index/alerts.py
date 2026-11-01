@@ -336,6 +336,10 @@ def scan_problems(conn: Conn) -> dict:
     for hid, host in hosts:
         newest = epoch(conn.scalar('SELECT max(finished_at) FROM scans WHERE host_id = :h', {'h': hid}))
         seen_fs = set()
+        from .analysis import use_pct
+        from .payloads import parse_df
+        inv = loads(conn.scalar('SELECT inventory_json FROM hosts WHERE host_id = :h', {'h': hid})) or {}
+        avail = {r['target']: r['avail'] for r in parse_df(inv.get('df') or '')}
         for mp, source, fs, total, used, state, seen in conn.all(
                 """SELECT mount_point, source, filesystem_type, total_bytes, used_bytes, scan_state, seen_at
                    FROM mounts WHERE host_id = :h ORDER BY mount_point""", {'h': hid}):
@@ -350,13 +354,15 @@ def scan_problems(conn: Conn) -> dict:
             if state == 'bind-alias' or kind in NO_USAGE_FS or not total or base in seen_fs:
                 continue
             seen_fs.add(base)
-            pct = 100 * (used or 0) / total
+            free = avail.get(mp)        # btrfs RAID: the total is raw, so only used against available says how full it is
+            pct = use_pct({'used': used or 0, 'avail': free, 'total': total})
+            free = total - (used or 0) if free is None else free
             if pct >= DISK_CRIT:
                 now[f'disk-crit:{host}:{mp}'] = ('disk-crit', f'{host}:{mp}', f'{mp} is {pct:.0f}% full on {host}',
-                                                 f'{(total - (used or 0)) / 2**30:,.1f} GiB free at the last scan', 'crit')
+                                                 f'{free / 2**30:,.1f} GiB free at the last scan', 'crit')
             elif pct >= DISK_WARN:
                 now[f'disk-warn:{host}:{mp}'] = ('disk-warn', f'{host}:{mp}', f'{mp} is {pct:.0f}% full on {host}',
-                                                 f'{(total - (used or 0)) / 2**30:,.1f} GiB free at the last scan', 'warn')
+                                                 f'{free / 2**30:,.1f} GiB free at the last scan', 'warn')
         try:
             node = node_from_index(conn, host, symlink_limit=0, stats=False)
             pools = node['pools']

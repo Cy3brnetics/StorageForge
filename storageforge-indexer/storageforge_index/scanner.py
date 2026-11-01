@@ -90,6 +90,8 @@ def skip_reason(m: MountInfo, opts: ScanOptions) -> str | None:
     fs = m.fstype
     if fs in opts.include_fstypes:
         return None
+    if m.target.endswith('/containers/storage/overlay'):     # Podman binds it over itself: image layers, closed to others
+        return 'container image layers'
     if fs in PSEUDO_FS or fs.startswith('cgroup') or (fs.startswith('fuse.') and fs not in NETWORK_FS and fs != 'fuse.mergerfs'):
         return f'pseudo or virtual filesystem ({fs}; use --include-fstype {fs} to walk it)'
     if fs in TMP_FS and not opts.include_tmpfs:

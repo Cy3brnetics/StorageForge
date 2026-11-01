@@ -805,6 +805,7 @@ server_smb() {
   fi
   if [[ $(cat /sys/fs/selinux/enforce 2>/dev/null) == 1 ]]; then     # getenforce is not on every image
     for i in "${!E_PROTO[@]}"; do [[ ${E_PROTO[$i]} == SMB ]] || continue
+      selinux_parents "${E_PATH[$i]}"
       if ls -Zd "${E_PATH[$i]}" 2>/dev/null | grep samba_share_t >/dev/null; then ok "SELinux: ${E_PATH[$i]} is samba_share_t"
       elif ((APPLY)); then doing "SELinux: label ${E_PATH[$i]} samba_share_t"
         if command -v semanage >/dev/null; then semanage fcontext -a -t samba_share_t "${E_PATH[$i]}(/.*)?" 2>/dev/null || true; restorecon -R "${E_PATH[$i]}"
@@ -825,6 +826,36 @@ server_smb() {
   fi
 }
 
+selinux_parents() { # smbd walks every folder above a share, and can't enter one with no label: BAD_NETWORK_NAME for clients
+  local p=$1
+  while p=$(dirname "$p"); [[ $p != / ]]; do
+    ls -Zd "$p" 2>/dev/null | grep unlabeled_t >/dev/null || continue
+    if ((!APPLY)); then missing "SELinux would block Samba from walking through $p (no label)"; continue; fi
+    doing "SELinux: label $p, a folder above the share"
+    restorecon "$p" 2>/dev/null || true
+    ls -Zd "$p" 2>/dev/null | grep unlabeled_t >/dev/null && { chcon -t samba_share_t "$p" || conflict "could not label $p"; }
+  done
+  return 0
+}
+cifs_kernel() { # the mount needs cifs and, for iocharset=utf8, nls_utf8. Cloud images keep them in another package
+  command -v modprobe >/dev/null || return 0
+  if modprobe -n cifs 2>/dev/null && modprobe -n nls_utf8 2>/dev/null; then ok "kernel has cifs and nls_utf8"; return 0; fi
+  local m pkg pkgs=() kernel; m=$(pm); kernel=$(uname -r)
+  case $m in
+    apt-get) pkgs=("linux-modules-extra-$kernel") ;;
+    dnf|yum) pkgs=("kernel-modules-$kernel" "kernel-modules-extra-$kernel") ;;
+    zypper) pkgs=(kernel-default-optional) ;;
+    *) conflict "kernel $kernel has no cifs or nls_utf8, and I don't know which $m package does: install it yourself"; return 1 ;;
+  esac
+  if ((!APPLY)); then missing "kernel modules cifs and nls_utf8 (would install ${pkgs[*]} with $m)"; return 0; fi
+  for pkg in "${pkgs[@]}"; do
+    doing "install kernel modules: $pkg with $m"
+    install_pkg "$m" "$pkg" >/dev/null 2>&1 || true
+    if modprobe -n cifs 2>/dev/null && modprobe -n nls_utf8 2>/dev/null; then ok "kernel has cifs and nls_utf8"; return 0; fi
+  done
+  conflict "kernel $kernel still has no cifs or nls_utf8 after installing ${pkgs[*]}: if the host has a newer kernel waiting, reboot into it"; return 1
+}
+
 client_mount() { # index into C_*
   local i=$1 t=${C_TARGET[$1]} line auto= extra=${C_OPTS[$1]:+,${C_OPTS[$1]}}
   [[ ${C_AUTO[$i]} == 1 ]] && auto=,x-systemd.automount
@@ -834,6 +865,7 @@ client_mount() { # index into C_*
     line="${C_SOURCE[$i]// /\\040} ${t// /\\040} ${C_FS[$i]} _netdev,nofail$auto,x-systemd.mount-timeout=30$extra 0 0"
   else
     need_cmd mount.cifs "SMB client" cifs-utils cifs-utils cifs-utils cifs-utils || return 0
+    cifs_kernel || return 0
     local cred=/etc/samba/credentials/$SERVER-${C_NAME[$i]} who=${SUDO_USER:-root}
     if [[ -s $cred ]]; then ok "credentials $cred"
     elif ((APPLY)) && [[ -t 0 ]]; then

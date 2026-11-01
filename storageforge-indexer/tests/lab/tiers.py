@@ -313,9 +313,15 @@ def tier3(r):
         if seed_hash(client.name, f'/mnt/lab-smb/{handbook}') != want:
             raise AssertionError('the file reads differently through the mount')
         return f'{server.name} to {client.name}, same bytes'
-    for node in roles.deployable():
-        have = demo.can_mount_smb(node)
-        r.add('smb-client-module', node.name, have, 'cifs and nls_utf8 are there' if have else 'the kernel lacks cifs or nls_utf8, which the mount needs')
+    def client_module(node):
+        if demo.can_mount_smb(node):
+            return 'cifs and nls_utf8 are there'
+        demo.share_smb(api, roles.smb_server(), f'labmod{node.name[3:]}', '/mnt/lab-smb-module', client=node)
+        if not demo.can_mount_smb(node):
+            raise AssertionError('the share mounted, but the kernel still lacks cifs or nls_utf8')
+        return 'the deploy installed cifs and nls_utf8, and the share mounted'
+    for node in (n for n in roles.deployable() if n.name != roles.smb_server().name):
+        r.check('smb-client-module', node.name, lambda node=node: client_module(node))
     client = demo.smb_client()
     if client:
         r.check('smb', client.name, smb)
@@ -773,7 +779,13 @@ def tier5(r):
 
     def convert(node):
         mount = fs_mount(node, node.subvol)
-        btrfs_plan(api, f'btrfs convert {node.name}', node, [('btrfs-balance', {'target': mount, 'data': 'raid1', 'metadata': 'raid1'})])
+        try:
+            btrfs_plan(api, f'btrfs convert {node.name}', node, [('btrfs-balance', {'target': mount, 'data': 'raid1', 'metadata': 'raid1'})])
+        except BaseException as exc:         # too little room is a right answer, if the filesystem is still writable after it
+            if 'not converted' not in str(exc):
+                raise
+            ssh(node.name, f'sudo -n touch {mount}/lab-still-writable && sudo -n rm {mount}/lab-still-writable')
+            return 'refused for lack of unallocated space, and the filesystem stays writable'
         wait_for('the balance to end', lambda: 'No balance found' in ssh(node.name, f'sudo -n btrfs balance status {mount}', check=False), 300)
         out = ssh(node.name, f'sudo -n btrfs filesystem df {mount}').lower()
         data = [x for x in out.splitlines() if x.startswith(('data', 'metadata'))]

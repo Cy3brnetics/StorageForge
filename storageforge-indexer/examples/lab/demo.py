@@ -245,12 +245,14 @@ def can_mount_smb(node):
 
 
 def smb_client():
-    return next((n for n in roles.deployable() if n.name != roles.smb_server().name and can_mount_smb(n)), None)
+    # the deploy installs what a kernel lacks, so any host will do. One that has it already first: the first deploy has to be quick to fail
+    others = [n for n in roles.deployable() if n.name != roles.smb_server().name]
+    return next((n for n in others if can_mount_smb(n)), next(iter(others), None))
 
 
-def share_smb(api, server=None, name='labdata', mount='/mnt/lab-smb'):
+def share_smb(api, server=None, name='labdata', mount='/mnt/lab-smb', client=None):
     server = server or roles.smb_server()
-    client = smb_client()
+    client = client or smb_client()
     if client is None:
         say('SMB: skipped, because no host in this build has a kernel that can mount it')
         return server, None
