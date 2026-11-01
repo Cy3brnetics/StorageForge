@@ -281,14 +281,18 @@ class OpsTests(DBCase):
         from unittest import mock
         from storageforge_index import server
         together = threading.Barrier(2, timeout=20)
+        asked_twice = threading.Event()
 
         def scan(db, host, opts, actor=None, log=None):
             together.wait()         # returns only when both hosts are scanning at the same moment
+            asked_twice.wait(20)    # a finished scan may rightly be followed by a new one, so stay busy for the second ask
             return {'status': 'ok', 'host': host}
         with mock.patch.object(server, 'scan_via_vault', scan):
             app = server.App(self.db)
             jobs = [app.enqueue(h, 'test') for h in ('big', 'pi')]
-            self.assertEqual(app.enqueue('big', 'test'), jobs[0])       # one host still never scans twice
+            second = app.enqueue('big', 'test')
+            asked_twice.set()
+            self.assertEqual(second, jobs[0])       # one host still never scans twice
             for _ in range(200):
                 got = [r[0] for r in self.conn.all("SELECT status FROM scan_jobs WHERE status = 'ok'")]
                 if len(got) == 2:
