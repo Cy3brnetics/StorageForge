@@ -32,7 +32,7 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 - **Converting a btrfs profile no longer risks a read-only filesystem.** With too little unallocated space, the script reclaims half-empty chunks first, and stops without converting if that frees too little. The plan check warns, and the Ansible step refuses.
 - Disk alerts on btrfs RAID match `df`: used against used plus available, not against the raw total.
 - An SMB share under a folder with no SELinux label works: the deploy labels the folders above it. **Redeploy existing shares.**
-- SMB client deploys install the kernel modules a cloud image leaves out (`cifs`, `nls_utf8`).
+- SMB client deploys and reinstall scripts install the kernel modules a cloud image leaves out (`cifs`, `nls_utf8`).
 - `zfs set` works on Ubuntu 22.04's ZFS, which rejected `--`.
 - A job's verify no longer counts ssh warnings as differing files, and a failed rsync is reported as such. **Redeploy existing jobs.**
 - Podman's overlay folder is skipped as image layers, so it no longer makes a scan partial.

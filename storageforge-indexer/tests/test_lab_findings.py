@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from storageforge_index import alerts, changes, jobscript, shares
+from storageforge_index import alerts, changes, jobscript, reinstall, scriptkit, shares
 from storageforge_index.remote import MountInfo, apply_mergerfs
 from storageforge_index.scanner import ScanOptions, plan_mounts, skip_reason
 
@@ -128,6 +128,15 @@ class ConvertCheck(unittest.TestCase):
         self.assertIsNone(host.unallocated('/mnt/p'))
 
 
+class ShareScript(Fleet):
+    def test_a_share_script_defines_the_module_install(self):
+        shares.save_export(self.db, self.conn, 'nas', {'protocol': 'NFS', 'path': '/mnt/pool/photos',
+                                                       'rules': [{'clients': 'pc', 'options': 'rw'}]}, None, 'test')
+        text = shares.script(self.conn, 'nas')
+        self.assertEqual(text.count('cifs_kernel() {'), 1)
+        self.assertEqual(subprocess.run(['bash', '-n'], input=text, text=True).returncode, 0)
+
+
 class DiskAlerts(Fleet):
     def test_btrfs_raid_is_as_full_as_df_says(self):
         """df: 850 used, 8 available, 99%. Against the raw total of 1000 that reads 85%."""
@@ -157,7 +166,7 @@ if [ "$1" = get ]; then echo old; fi''')
 
 class SmbKernel(Scripted):
     def run_it(self, **env):
-        return self.run_bash(functions(shares.SHARES_BODY_3, 'cifs_kernel') + 'cifs_kernel || echo "rc=$?"\n', **env)
+        return self.run_bash(functions(scriptkit.CIFS_KERNEL, 'cifs_kernel') + 'cifs_kernel || echo "rc=$?"\n', **env)
 
     def modprobe(self):
         self.stub('modprobe', 'name=$2; [ -e "$STUB_DIR/installed" ] && exit 0; [ "$name" = cifs ]')
@@ -193,6 +202,20 @@ class SmbKernel(Scripted):
 
     def test_client_mount_asks_for_it(self):
         self.assertIn('cifs-utils || return 0\n    cifs_kernel || return 0\n', shares.SHARES_BODY_3)
+
+    def reinstall_script(self, fstypes):
+        return reinstall.script({'host': 'nas', 'config_id': 1, 'captured_at': 0, 'body': {'fstypes': fstypes, 'mounts': []}})
+
+    def test_reinstalling_a_host_with_smb_mounts_gets_the_modules(self):
+        text = self.reinstall_script(['cifs', 'smb3'])
+        self.assertIn('cifs_kernel() {', text)
+        tools = text[text.index('section "Tools"'):]
+        self.assertEqual(tools.count('\n  cifs_kernel\n'), 1)
+        self.assertLess(tools.index('need_cmd mount.cifs'), tools.index('\n  cifs_kernel\n'))
+        self.assertEqual(subprocess.run(['bash', '-n'], input=text, text=True).returncode, 0)
+
+    def test_reinstalling_a_host_without_them_asks_for_nothing(self):
+        self.assertNotIn('\n  cifs_kernel\n', self.reinstall_script(['ext4']))
 
 
 class SelinuxParents(Scripted):

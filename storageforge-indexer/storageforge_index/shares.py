@@ -25,7 +25,7 @@ import shlex
 from .db import Conn, loads
 from .moves import _subtree_sql, find_host, host_slug, hosts, mount_of
 from .payloads import is_designed, share_key
-from .scriptkit import HELPERS, PACKAGES, REMOTE, comments, host_name, one_line, package_check
+from .scriptkit import CIFS_KERNEL, HELPERS, PACKAGES, REMOTE, comments, host_name, one_line, package_check
 
 SMB_NAME = re.compile(r'[A-Za-z0-9_.$-]{1,80}')
 NFS_DEFAULT = 'rw,sync,no_subtree_check'
@@ -605,7 +605,7 @@ def script(conn: Conn, host: str, prev_clients: list[str] | None = None) -> str:
                                shares=comments(lines, '#   (no exports in the design)'), problems=comments(problems, '#   none'))
             + f'SERVER={q(host_slug(c["host"]))}\nSERVER_ADDR={q(c["address"])}\n{decl}\n'
             + f'PREV_CLIENTS=({" ".join(q(host_slug(h)) for h in prev_clients or [])})\n'
-            + SHARES_BODY_1 + HELPERS + SHARES_BODY_2 + REMOTE + SHARES_BODY_3.replace('@@PACKAGES@@\n', PACKAGES))
+            + SHARES_BODY_1 + HELPERS + SHARES_BODY_2 + REMOTE + SHARES_BODY_3.replace('@@PACKAGES@@\n', PACKAGES + CIFS_KERNEL))
 
 
 def deploy_items(db, conn: Conn, host: str, mode: str, actor: str) -> list[dict]:
@@ -837,24 +837,6 @@ selinux_parents() { # smbd walks every folder above a share, and can't enter one
     no_label "$p" && { chcon -t samba_share_t "$p" || conflict "could not label $p"; }
   done
   return 0
-}
-cifs_kernel() { # the mount needs cifs and, for iocharset=utf8, nls_utf8. Cloud images keep them in another package
-  command -v modprobe >/dev/null || return 0
-  if modprobe -n cifs 2>/dev/null && modprobe -n nls_utf8 2>/dev/null; then ok "kernel has cifs and nls_utf8"; return 0; fi
-  local m pkg pkgs=() kernel; m=$(pm); kernel=$(uname -r)
-  case $m in
-    apt-get) pkgs=("linux-modules-extra-$kernel") ;;
-    dnf|yum) pkgs=("kernel-modules-$kernel" "kernel-modules-extra-$kernel") ;;
-    zypper) pkgs=(kernel-default-optional) ;;
-    *) conflict "kernel $kernel has no cifs or nls_utf8, and I don't know which $m package does: install it yourself"; return 1 ;;
-  esac
-  if ((!APPLY)); then missing "kernel modules cifs and nls_utf8 (would install ${pkgs[*]} with $m)"; return 0; fi
-  for pkg in "${pkgs[@]}"; do
-    doing "install kernel modules: $pkg with $m"
-    install_pkg "$m" "$pkg" >/dev/null 2>&1 || true
-    if modprobe -n cifs 2>/dev/null && modprobe -n nls_utf8 2>/dev/null; then ok "kernel has cifs and nls_utf8"; return 0; fi
-  done
-  conflict "kernel $kernel still has no cifs or nls_utf8 after installing ${pkgs[*]}: if the host has a newer kernel waiting, reboot into it"; return 1
 }
 
 client_mount() { # index into C_*
