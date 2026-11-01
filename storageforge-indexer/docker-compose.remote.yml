@@ -1,0 +1,48 @@
+# Remote nodes that dial in: adds the tunnel, and its one published port. Leave this file out to stay LAN-only.
+#   docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d
+# The web UI stays where it was. Open only this port to the internet, and see docs/remote-nodes.md first.
+services:
+  init-secrets:
+    volumes:
+      - sf-tunnel-keys:/secrets/tunnel-keys
+      - sf-tunnel-host:/secrets/tunnel-host
+
+  storageforge:
+    environment:
+      STORAGEFORGE_TUNNEL_KEYS: /run/sf-tunnel-keys
+      STORAGEFORGE_TUNNEL_HOST: /run/sf-tunnel-host
+    volumes:
+      - sf-tunnel-keys:/run/sf-tunnel-keys
+      - sf-tunnel-host:/run/sf-tunnel-host:ro
+    ports:     # published here because the tunnel shares this container's network: that is how its loopback addresses reach scans
+      - "${STORAGEFORGE_TUNNEL_BIND:-0.0.0.0}:${STORAGEFORGE_TUNNEL_PORT:-2222}:2222"
+
+  tunnel:
+    build:
+      context: .
+      target: tunnel
+    image: storageforge-tunnel:0.2.0
+    restart: unless-stopped
+    depends_on:
+      storageforge: { condition: service_healthy }
+    network_mode: "service:storageforge"
+    user: "10002:10002"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - sf-tunnel-keys:/run/sf-tunnel-keys:ro
+      - sf-tunnel-host:/var/lib/sf-tunnel
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=4m
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 128m, pids: 256 }
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+
+volumes:
+  sf-tunnel-keys:
+  sf-tunnel-host:

@@ -56,6 +56,8 @@ SELECT full_path, file_size_bytes FROM v_files WHERE hostname = 'nas-02' ORDER B
 | `scan_denied`, `git_repos`, `docker_hosts` | what scans found besides files |
 | `change_plans`, `move_plans`, `storage_tasks` | saved plans |
 | `deploy_access`, `deploy_runs`, `deployed` | hosts set up for deploys, run history and output, what is deployed where with its hash |
+| `remote_nodes` | hosts that dial in through the tunnel (public keys only); their address comes from the id |
+| `job_state` | each running job's latest state event |
 | `jobs`, `job_runs` | deployed move steps (token hashes, not tokens) and their runs |
 | `alerts`, `settings` | open problems; key/value settings (report URL, alert channels, planner options) |
 

@@ -105,6 +105,10 @@ POST /api/deploy/snapjobs/import     {"host", "tool", "config"}: track a job fou
 GET  /api/deploy/snapjobs/advice?host=&path=   which tool suits that folder's filesystem
 POST /api/deploy/snapjobs/snapper    {"host", "path", "name"}: create a snapper config on btrfs and import it
 GET|PUT /api/deploy/settings         report URL and alert channels;  POST /api/deploy/settings/test sends a test alert
+GET  /api/remote/nodes               nodes that dial in through the tunnel, and whether each is connected
+POST /api/remote/nodes  {"name", "endpoint"}   a new node and its install script (holds its private key; shown once)
+POST /api/remote/nodes/<id>/adopt    scan a connected node and prove signed runs work; call again while it says scanning
+DELETE /api/remote/nodes/<id>        revoke a node: cuts its tunnel now
 POST /api/jobs/report                a job's run result (Authorization: Bearer <job token>; no session)
 POST /api/jobs/state                 a running job's latest state event (same token)
 GET  /api/hostconfigs[?host=]         saved host configurations: the newest of each host, or every version of one
@@ -147,7 +151,7 @@ from flask_login import LoginManager, current_user, login_required, login_user, 
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
+from . import (__version__, access, alerts, remotes, blueprint, canvas, changes, deploy, docker, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
                fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, retire, routes_accounts, routes_git, routes_scheduler, scheduler, shares, snapjobs, tasks, users)
 from .capacity import parse_size, trends
 from .db import Database, epoch
@@ -1752,6 +1756,39 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         core.audit(conn(), actor(), 'deploy.settings.test', 'info', None, {})
         return jsonify(sent=alerts.send(alerts.get_setting(conn(), 'alerts'), 'StorageForge test alert',
                                         f'Sent by {current_user.username} from the Deploy tab.', 'ok', {'state': 'test'}))
+
+    @web.route('/api/remote/nodes', methods=['GET', 'POST'])
+    @login_required
+    def api_remote_nodes():
+        if request.method == 'GET':
+            return jsonify(remotes.overview(conn()))
+        stale = password_stale()         # its script runs as root on the node, and holds a key
+        if stale:
+            return stale
+        body = json_body()
+        return jsonify(remotes.add(db, conn(), body.get('name'), body.get('endpoint'), actor()))
+
+    @web.post('/api/remote/nodes/<int:node_id>/adopt')
+    @login_required
+    def api_remote_adopt(node_id):
+        stale = password_stale()
+        if stale:
+            return stale
+        try:
+            return jsonify(remotes.adopt(db, conn(), node_id, actor(), lambda addr: core.enqueue(addr, actor())))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.delete('/api/remote/nodes/<int:node_id>')
+    @login_required
+    def api_remote_revoke(node_id):
+        stale = password_stale()
+        if stale:
+            return stale
+        try:
+            return jsonify(remotes.revoke(db, conn(), node_id, actor()))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
 
     @web.post('/api/jobs/report')
     @limiter.limit('120 per minute')

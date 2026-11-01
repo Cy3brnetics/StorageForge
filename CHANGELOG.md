@@ -5,6 +5,7 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Added
+- **Remote nodes.** Hosts StorageForge can't reach can dial in over a reverse SSH tunnel, then scan and deploy like any other host. The tunnel is off unless you add `docker-compose.remote.yml`, and it opens one port that carries forwarded connections only. See [Remote nodes](docs/remote-nodes.md).
 - **Import existing rsnapshot and snapper jobs.** Scans now read rsnapshot configs, whatever they are called, with their cron lines and timers, and snapper configs. **Deploy > Existing snapshot jobs** lists them, and **Look as root** finds what the scan account can't read. An imported job stays on its own config and schedule. StorageForge shows its state from the snapshots and log it leaves, raises alerts, fills the 3-2-1 matrix, and can run it, pause it, change retention and restore from it, using the right tool for the job. **Forget** only stops tracking.
 - **Snapshot tool by filesystem.** **New snapshot job** suggests snapper on btrfs and rsnapshot on ext4, xfs and similar, and creates snapper configs. Plan checks refuse rsnapshot on filesystems without hard links, such as vfat and exfat cards.
 - **Sync engine for deployed jobs.** All of it is per step and off by default, and needs a redeploy of the plan:

@@ -103,6 +103,9 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (('POST',), r'/api/jobs/state', 'deploy.apply'),                  # likewise
 
     (READ, r'/api/deploy(/.*)?', 'deploy.view'),
+    (READ, r'/api/remote/nodes', 'deploy.view'),
+    (('POST',), r'/api/remote/nodes(/\d+/adopt)?', 'deploy.setup'),
+    (('DELETE',), r'/api/remote/nodes/\d+', 'deploy.setup'),
     (('POST',), r'/api/deploy/(setup-script|adopt)', 'deploy.setup'),
     (('POST',), r'/api/deploy/access', 'access.manage'),
     (('POST',), r'/api/deploy/start', 'deploy.report'),               # apply and destructive are checked in the route

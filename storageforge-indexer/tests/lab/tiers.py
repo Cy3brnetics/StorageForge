@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Tiers 1, 3, 4, 5 and 6 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py.
+"""Tiers 1, 3, 4, 5, 6 and 7 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py.
 They change the VMs, so run them through examples/lab/lab.sh test --all, which resets the lab around each tier.
 
-    tiers.py run <0|1|3|4|5|6>   tier 0 as a result file, or one tier against StorageForge on sf-ctl, through its API
+    tiers.py run <0|1|3|4|5|6|7>   tier 0 as a result file, or one tier against StorageForge on sf-ctl, through its API
     tiers.py report          the table per distro from every results file, into reports/
 
 Results are checked on the VMs and against the seed manifests where a VM can answer, and against the running
@@ -1058,6 +1058,118 @@ def tier6(r):
         r.check('sync-duperemove', roles.having('btrfs')[0].name, duperemove)
 
 
+def tier7(r):
+    """Hosts the server cannot dial: each VM drops SSH from sf-ctl, so all that works here came through its own tunnel."""
+    remote_compose = f'{COMPOSE} -f docker-compose.remote.yml'
+    ssh('sf-ctl', f'{remote_compose} up -d --no-build --wait --quiet-pull')
+    ctl = BUILD['sf-ctl']
+    api = demo.sign_in()
+    root = lambda vm, command, check=True: ssh(vm, f'sudo -n bash -c {shlex.quote(command)}', check=check)   # noqa: E731
+    in_app = lambda code: ssh('sf-ctl', f'{COMPOSE} exec -T storageforge python -c {shlex.quote(code)}')      # noqa: E731
+    nodes = [roles.deployable()[0], roles.deployable()[-1]]
+
+    def container():
+        info = ssh('sf-ctl', "sudo -n docker inspect --format '{{.Config.User}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}}' storageforge-tunnel-1").strip()
+        if info != '10002:10002 true [ALL]':
+            raise AssertionError(info)
+        ports = ssh('sf-ctl', "sudo -n docker ps --format '{{.Names}} {{.Ports}}'")
+        if '2222->2222' not in ports:
+            raise AssertionError(ports)
+        return info
+    r.check('tunnel-container', 'sf-ctl', container)
+
+    def block(node):
+        rule = (f'nft add table inet sfblock; nft add chain inet sfblock gate "{{ type filter hook input priority -10; }}"; '
+                f'nft add rule inet sfblock gate ip saddr {ctl.ip} tcp dport 22 drop')
+        root(node.name, 'command -v nft >/dev/null || command -v iptables >/dev/null || dnf -y -q install nftables')
+        root(node.name, f'if command -v nft >/dev/null; then {rule}; else iptables -I INPUT -s {ctl.ip} -p tcp --dport 22 -j DROP; fi')
+        if ssh('sf-ctl', f"timeout 4 bash -c 'exec 3<>/dev/tcp/{node.ip}/22' && echo open || echo closed").strip() != 'closed':
+            raise AssertionError('the server can still dial it')
+
+    for node in nodes:
+        made = {}
+
+        def install(node=node, made=made):
+            block(node)
+            made.update(api.post('/api/remote/nodes', {'name': node.name.removeprefix('sf-'), 'endpoint': f'{ctl.ip}:2222'}))
+            ssh(node.name, 'cat >/tmp/sf-remote.sh', stdin=made['script'])
+            report = root(node.name, 'bash /tmp/sf-remote.sh')
+            if 'report only' not in report or root(node.name, 'systemctl is-enabled storageforge-remote 2>/dev/null; true').strip() == 'enabled':
+                raise AssertionError(f'the report changed something, or found a problem: {report[-300:]}')
+            root(node.name, 'bash /tmp/sf-remote.sh --apply')
+            wait_for('the tunnel', lambda: next((n for n in api.get('/api/remote/nodes')['nodes'] if n['id'] == made['id'] and n['online']), None), 120)
+            return f'{made["address"]}, dialled out past its firewall'
+        r.check('remote-install', node.name, install)
+        if not made:
+            continue
+
+        def adopt(node=node, made=made):
+            def step():
+                out = api.post(f'/api/remote/nodes/{made["id"]}/adopt')
+                return out if out['state'] != 'scanning' else None
+            out = wait_for('the scan and signed run', step, 400)
+            if out['state'] != 'ready':
+                raise AssertionError(out)
+            shown = [h for h in api.get('/api/hosts')['indexed'] if h['hostname'].split('.')[0] == node.name]
+            if not shown or not any(a['host'] == out['host'] and a['state'] == 'ready' for a in api.get('/api/deploy')['access']):
+                raise AssertionError(f'not indexed or not deployable: {shown}')
+            return f'scanned through the tunnel, signed run works: {out["host"]}'
+        r.check('remote-adopt', node.name, adopt)
+
+        def job(node=node):
+            area = f'{node.room}/remote7'
+            root(node.name, f'mkdir -p {area}/a; head -c 200000 /dev/urandom >{area}/a/f')
+            plan = api.post('/api/moves', {'name': f'Lab remote {node.name}', 'steps': [{'method': 'copy', 'src': {'host': node.name, 'path': f'{area}/a'},
+                                           'dst': {'host': node.name, 'path': f'{area}/b'}, 'options': {'schedule': 'daily'}}]})
+            demo.deploy(api, 'jobs', plan['id'], f'Lab remote {node.name}')
+            job_run(api, f'p{plan["id"]}-{plan["steps"][0]["id"]}', 'run', 'run', int(ssh(node.name, 'date +%s')))
+            if seed_hash(node.name, f'{area}/b/f') != seed_hash(node.name, f'{area}/a/f'):
+                raise AssertionError('other bytes')
+            return 'deployed and ran a job through the tunnel'
+        r.check('remote-deploy', node.name, job)
+
+        def stolen(node=node, made=made):
+            base = f"ssh -F /dev/null -i /etc/storageforge/remote/key -p 2222 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/storageforge/remote/known_hosts -o ConnectTimeout=10"
+            login = f'sftunnel@{ctl.ip}'
+            bad = {'command': f'{base} {login} id; echo rc=$?',
+                   'other address': f'timeout 10 {base} -N -o ExitOnForwardFailure=yes -R 127.77.200.200:10022:127.0.0.1:22 {login}; echo rc=$?',
+                   'the app port': f'timeout 10 {base} -N -o ExitOnForwardFailure=yes -R 127.0.0.1:8081:127.0.0.1:22 {login}; echo rc=$?',
+                   'every interface': f'timeout 10 {base} -N -o ExitOnForwardFailure=yes -R 0.0.0.0:10022:127.0.0.1:22 {login}; echo rc=$?'}
+            for what, command in bad.items():
+                out = root(node.name, command + ' 2>&1', check=False)
+                if 'uid=' in out or 'rc=124' in out or 'rc=0' in out:
+                    raise AssertionError(f'{what} worked: {out[-200:]}')
+            out = root(node.name, f'timeout 12 {base} -N -L 127.0.0.1:18080:127.0.0.1:8080 {login} & sleep 4; curl -s -m 3 http://127.0.0.1:18080/healthz; echo end; kill %1 2>/dev/null; true', check=False)
+            if 'ok' in out.split('end')[0].lower():
+                raise AssertionError(f'reached the app through the tunnel: {out[-200:]}')
+            return 'no command, no other address, no way back into the server'
+        r.check('remote-stolen-key', node.name, stolen)
+
+        def reconnects(node=node, made=made):
+            root(node.name, 'systemctl kill -s KILL storageforge-remote')
+            time.sleep(2)
+            wait_for('the tunnel back', lambda: next((n for n in api.get('/api/remote/nodes')['nodes'] if n['id'] == made['id'] and n['online']), None), 150)
+            return 'came back by itself'
+        r.check('remote-reconnect', node.name, reconnects)
+
+        def revoke(node=node, made=made):
+            api('DELETE', f'/api/remote/nodes/{made["id"]}')
+            probe = ("import socket\ntry:\n  s = socket.create_connection((%r, 10022), 2); print(s.recv(4))\nexcept OSError as e: print('closed')" % made['address'])
+
+            def gone():
+                return 'closed' in in_app(probe) or None
+            wait_for('the tunnel to drop', gone, 60)
+            time.sleep(25)                  # the node retries every 15 seconds, and must not get back in
+            if 'closed' not in in_app(probe):
+                raise AssertionError('it came back after being revoked')
+            root(node.name, 'bash /tmp/sf-remote.sh --remove; rm -f /tmp/sf-remote.sh')
+            left = root(node.name, 'ls /etc/storageforge/remote /etc/systemd/system/storageforge-remote.service /usr/local/sbin/storageforge-remote 2>/dev/null; id sfscan 2>/dev/null; id storageforge-remote 2>/dev/null; true').strip()
+            if left:
+                raise AssertionError(f'left behind: {left}')
+            return 'cut off at once, stayed out, and the script took itself off'
+        r.check('remote-revoke', node.name, revoke)
+
+
 def tier0(r):
     p = subprocess.run([sys.executable, '-m', 'unittest', 'test_tier0', '-v'], cwd=Path(__file__).parent, capture_output=True, text=True, timeout=600)
     failed = set(re.findall(r'^(?:FAIL|ERROR): (\w+)', p.stderr, re.M))
@@ -1121,7 +1233,7 @@ def main():
     tier = int(sys.argv[2])
     r = Results(tier)
     try:
-        {0: tier0, 1: tier1, 3: tier3, 4: tier4, 5: tier5, 6: tier6}[tier](r)
+        {0: tier0, 1: tier1, 3: tier3, 4: tier4, 5: tier5, 6: tier6, 7: tier7}[tier](r)
     except Exception as exc:
         r.add('tier-setup', '-', False, f'{type(exc).__name__}: {str(exc)[:170]}', traceback.format_exc())
     return 0 if r.save() else 1

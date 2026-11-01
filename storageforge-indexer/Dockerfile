@@ -46,10 +46,11 @@ RUN apt-get update \
  && cd /src \
  && ./configure --prefix=/usr --sysconfdir=/etc/ssh --without-pam --without-selinux --without-kerberos5 --without-libedit \
                 --disable-pkcs11 --disable-security-key \
- && make -j"$(nproc)" ssh ssh-add ssh-agent ssh-keygen \
- && strip ssh ssh-add ssh-agent ssh-keygen \
- && install -d /out \
- && install -m 0755 ssh ssh-add ssh-agent ssh-keygen contrib/ssh-copy-id /out/
+ && make -j"$(nproc)" ssh ssh-add ssh-agent ssh-keygen sshd sshd-session sshd-auth \
+ && strip ssh ssh-add ssh-agent ssh-keygen sshd sshd-session sshd-auth \
+ && install -d /out /out-server \
+ && install -m 0755 ssh ssh-add ssh-agent ssh-keygen contrib/ssh-copy-id /out/ \
+ && install -m 0755 sshd sshd-session sshd-auth ssh-keygen /out-server/
 
 # ── proxy: nginx with its config inside, so a deploy does not need the repo's files on the Docker host ─
 FROM nginxinc/nginx-unprivileged:1.30-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03 AS proxy
@@ -57,6 +58,20 @@ USER 0
 RUN apk upgrade --no-cache && apk del --no-cache curl      # nginx does not use it
 USER 101
 COPY docker/nginx.conf /etc/nginx/nginx.conf
+
+# ── tunnel: sshd for remote nodes that dial in (docker-compose.remote.yml), and nothing that could serve a shell ─
+FROM ${PYTHON_IMAGE} AS tunnel
+RUN groupadd --system --gid 10002 sftunnel \
+ && useradd --system --uid 10002 --gid sftunnel --home-dir /nonexistent --no-create-home --shell /bin/false -p '*' sftunnel \
+ && install -d -o 10002 -g 10002 -m 0755 /var/lib/sf-tunnel \
+ && install -d -m 0755 /run/sf-tunnel-keys /etc/ssh /usr/libexec
+COPY --from=openssh /out-server/sshd /usr/sbin/sshd
+COPY --from=openssh /out-server/sshd-session /out-server/sshd-auth /usr/libexec/
+COPY --from=openssh /out-server/ssh-keygen /usr/bin/ssh-keygen
+COPY docker/tunnel/sshd_config /etc/ssh/sshd_config
+COPY docker/tunnel/entrypoint.sh /usr/local/bin/storageforge-tunnel
+USER 10002:10002
+ENTRYPOINT ["/usr/local/bin/storageforge-tunnel"]
 
 # ── runtime (last, so a plain docker build makes this one) ─────────────────────
 FROM ${PYTHON_IMAGE} AS runtime

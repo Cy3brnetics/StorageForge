@@ -11,6 +11,12 @@ umask 077
 APP=/secrets/app PROXY=/secrets/proxy SEED=/seed
 
 log() { printf 'init-secrets: %s\n' "$*" >&2; }
+
+# only with docker-compose.remote.yml: what the app writes and the tunnel reads, and what the tunnel keeps and shows the app
+if [ -d /secrets/tunnel-keys ]; then
+  chown 10001:10001 /secrets/tunnel-keys; chmod 0755 /secrets/tunnel-keys
+  chown -R 10002:10002 /secrets/tunnel-host; chmod 0755 /secrets/tunnel-host
+fi
 new_secret() { openssl rand -base64 48 | tr -d '\n'; }
 
 if [ ! -s "$APP/vault_secret" ]; then

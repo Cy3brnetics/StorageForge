@@ -2,7 +2,7 @@
 
 StorageForge holds SSH keys that reach every host, and it can run root scripts on hosts set up for deploys. This page describes how those are protected. Findings and fixes from the reviews are in [security-audit-2026-10-28.md](../security-audit-2026-10-28.md).
 
-StorageForge is meant for a LAN behind its TLS proxy. Do not publish it on the internet.
+StorageForge is meant for a LAN behind its TLS proxy. Do not publish it on the internet. The one port that may face it is the optional [tunnel for remote nodes](remote-nodes.md).
 
 ## Key vault
 
@@ -83,6 +83,10 @@ Every connection, scan result, denial, sign-in, plan save, script download, depl
 | Network | the app port is not published; only the nginx proxy is, on 8443 over TLS 1.2/1.3 with HSTS, replacing (not appending) `X-Forwarded-For` |
 | Image | base image pinned by digest, Python packages pinned by hash and installed with `--require-hashes`; pip, `scp`, `sftp` and `ssh-keyscan` removed |
 | Egress | optional `docker/egress-firewall.sh` lets the containers open only SSH and alert ports (`STORAGEFORGE_EGRESS_PORTS`, default `22 443`) out of the `sf0` bridge, to other machines and to the Docker host itself |
+
+## Remote nodes
+
+The tunnel in `docker-compose.remote.yml` is the one port meant to be open beyond the LAN. See [Remote nodes](remote-nodes.md) for what a stolen key can and can't do.
 
 ## On the hosts
 

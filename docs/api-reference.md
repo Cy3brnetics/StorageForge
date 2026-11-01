@@ -144,6 +144,9 @@ Each plan type has the same shape: list, create, one, check, script.
 | GET, PUT | `/api/deploy/settings` | `{"report_url", "alerts": {…}}` | |
 | POST | `/api/deploy/settings/test` | | send a test alert; 10/min |
 | POST | `/api/jobs/report` | a run result; `Authorization: Bearer <job token>` | no session; 120/min |
+| GET, POST | `/api/remote/nodes` | POST `{"name", "endpoint"}` | nodes that dial in; POST returns its install script once |
+| POST | `/api/remote/nodes/<id>/adopt` | | scan a connected node and test a signed run; call again while it says `scanning` |
+| DELETE | `/api/remote/nodes/<id>` | | revoke a node: cuts its tunnel |
 | POST | `/api/jobs/state` | a state event; `Authorization: Bearer <job token>` | no session; 120/min |
 
 ## Scheduler
