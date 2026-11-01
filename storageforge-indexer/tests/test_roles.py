@@ -28,7 +28,7 @@ def old_required_role(method, path):
 
 # Deliberately tighter than before: these handed runnable scripts, and a report token, to viewers.
 TIGHTENED = ('/install-script', '/cron', '/api/hostconfigs/bundle')
-NEW_ROUTES = ('/api/invites', '/api/roles', '/api/search/hosts', '/api/enroll')
+NEW_ROUTES = ('/api/jobs/state', '/dedupe', '/api/invites', '/api/roles', '/api/search/hosts', '/api/enroll')
 
 
 class Base(unittest.TestCase):
@@ -101,7 +101,7 @@ class SearchOnly(Base):
         self.assertEqual(c.get('/api/me').json['permissions'], ['search.files'])
         allowed = {'/api/search', '/api/search/hosts', *permissions.ANYONE}
         for rule in self.web.url_map.iter_rules():
-            if not rule.rule.startswith('/api/') or rule.rule in allowed or rule.rule in ('/api/jobs/report', '/api/scheduler/report'):
+            if not rule.rule.startswith('/api/') or rule.rule in allowed or rule.rule in ('/api/jobs/report', '/api/jobs/state', '/api/scheduler/report'):
                 continue
             path = re.sub(r'<int:\w+>', '1', rule.rule)
             path = re.sub(r'<any\(([^)]*)\):\w+>', lambda m: m[1].split(',')[0].strip(' "'), path)
@@ -260,7 +260,7 @@ class Migration(unittest.TestCase):
             conn.execute("INSERT INTO users (username, password_hash, created_at, role) VALUES ('old', 'h', :t, 'operator')", {'t': now})
             uid = conn.scalar("SELECT user_id FROM users WHERE username = 'old'")
             conn.execute("INSERT INTO web_sessions (sid_hash, user_id, created_at) VALUES ('s', :u, :t)", {'u': uid, 't': now})
-            self.assertEqual(db.migrate(conn), ['024_roles_invites.sql', '025_invite_grants.sql'])
+            self.assertEqual(db.migrate(conn), ['024_roles_invites.sql', '025_invite_grants.sql', '026_job_state.sql'])
             self.assertEqual(conn.scalar("SELECT role FROM users WHERE username = 'old'"), 'operator')
             self.assertEqual(conn.scalar('SELECT count(*) FROM web_sessions'), 1)
             users.set_role(conn, 'old', 'search')                             # the old CHECK is gone

@@ -273,8 +273,8 @@ class VerifyOutput(Scripted):
         self.stub('rsync', rsync)
         code = functions(jobscript.JOB_SCRIPT, 'verify_job')
         return self.run_bash(r'''set +e
-LOCKS=$STUB_DIR ID=j METHOD=copy SRC=/s DST=/d FLAGS=
-load() { :; }; dst_guard() { :; }; die() { echo "die $*"; exit 9; }
+LOCKS=$STUB_DIR ID=j METHOD=copy SRC=/s DST=/d FLAGS= TRANSPORT=rsync
+load() { :; }; dst_guard() { :; }; volume_lock() { :; }; resolve_route() { :; }; die() { echo "die $*"; exit 9; }
 report() { echo "report $1 $2"; }
 rsync_cmd() { RS=(rsync); }
 ''' + code + 'verify_job j; echo "rc=$?"\n')

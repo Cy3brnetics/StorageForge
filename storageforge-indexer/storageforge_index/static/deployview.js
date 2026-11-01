@@ -355,7 +355,7 @@ function jobMenu(j) {
   const a = (label, verb, extra = {}) => ({ label, run: () => jobAction(j, verb), ...extra });
   return [{ heading: j.name }, a('Run now', 'run'), a('Dry run (what it would copy)', 'dryrun'), j.method !== 'git' ? a('Verify checksums now', 'verify') : null,
     j.paused ? a('Resume timers', 'resume') : a('Pause timers', 'pause'), '-', { label: 'History', run: () => jobHistory(j) }, a('Journal log', 'log'),
-    j.snapshots ? a('Snapshots…', 'snapshots') : null, j.method === 'move' ? a('Cut over (rename the source)', 'cutover', { danger: true }) : null,
+    j.snapshots ? a('Snapshots…', 'snapshots') : null, j.extent_dedup ? a('Run duperemove now', 'dedupe') : null, j.method === 'move' ? a('Cut over (rename the source)', 'cutover', { danger: true }) : null,
     '-', { label: 'Open the plan in Moves', run: () => { showTab('moves'); loadMoves(j.plan_id); } },
     { label: 'Copy job id', run: () => copyText(j.id) }];
 }
@@ -367,7 +367,11 @@ function jobRow(j) {
         button('Dry run', () => jobAction(j, 'dryrun'), 'btn ghost sm'), button('⋯', (ev) => openMenu(jobMenu(j), ev.clientX, ev.clientY, li), 'btn ghost sm'))),
     text('span', [j.method, j.schedule ? `on "${j.schedule}"` : 'run on demand', j.window ? `window ${j.window}` : '',
       j.snapshot ? 'btrfs snapshot first' : '', j.pre.length ? `${j.pre.length} pre command(s)` : '', j.verify_schedule ? `verify ${j.verify_schedule}` : '',
+      j.transport && j.transport !== 'rsync' ? `${j.transport} stream` : '', j.routes && j.routes.length ? `routes ${j.routes.map((r) => r.via).join(' > ')}` : '',
+      j.dedup ? 'dedup' : '', j.extent_dedup ? `duperemove ${j.extent_dedup}` : '',
       `runs on ${j.runner}`].filter(Boolean).join(' · '), 'muted small'),
+    j.live && !['finished', 'failed'].includes(j.live.state) ? text('span', [j.live.state, j.live.percent != null ? `${j.live.percent}%` : '', j.live.speed,
+      j.live.route ? `via ${j.live.route} ${j.live.node}` : '', j.live.dedup_ratio ? `dedup ${Math.round(j.live.dedup_ratio * 100)}%` : ''].filter(Boolean).join(' · '), 'small') : '',
     last ? text('span', `last run ${when(last.end || last.start)}: ${last.rc === 0 ? 'ok' : 'exit ' + last.rc}${last.bytes ? ' · ' + fmtBytes(last.bytes) : ''}${last.files ? ` · ${last.files.toLocaleString()} files` : ''} · ${last.message || ''}`,
       last.rc === 0 ? 'small' : 'st-failed small') : text('span', j.paused ? 'paused' : 'no run reported yet', 'muted small'),
     j.last_ok && j.last_ok !== last ? text('span', `last good run ${when(j.last_ok.end)}`, 'muted small') : '',

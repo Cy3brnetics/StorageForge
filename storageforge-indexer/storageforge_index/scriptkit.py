@@ -82,6 +82,8 @@ NEEDS = {'NFS server': ('exportfs', {'apt-get': 'nfs-kernel-server', 'dnf': 'nfs
          'rsync': ('rsync', {'apt-get': 'rsync', 'dnf': 'rsync', 'yum': 'rsync', 'pacman': 'rsync', 'zypper': 'rsync'}),
          'rsnapshot': ('rsnapshot', {'apt-get': 'rsnapshot', 'dnf': 'rsnapshot', 'yum': 'rsnapshot', 'pacman': 'rsnapshot', 'zypper': 'rsnapshot'}),
          'git': ('git', {'apt-get': 'git', 'dnf': 'git', 'yum': 'git', 'pacman': 'git', 'zypper': 'git'}),
+         'python3': ('python3', {'apt-get': 'python3', 'dnf': 'python3', 'yum': 'python3', 'pacman': 'python', 'zypper': 'python3'}),
+         'duperemove': ('duperemove', {'apt-get': 'duperemove', 'dnf': 'duperemove', 'yum': 'duperemove', 'pacman': 'duperemove', 'zypper': 'duperemove'}),
          'btrfs-progs': ('btrfs', {'apt-get': 'btrfs-progs', 'dnf': 'btrfs-progs', 'yum': 'btrfs-progs', 'pacman': 'btrfs-progs', 'zypper': 'btrfsprogs'})}
 
 

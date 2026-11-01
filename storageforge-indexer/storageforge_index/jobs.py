@@ -20,6 +20,7 @@ import os
 import re
 import secrets
 import shlex
+import subprocess
 import time
 import uuid
 
@@ -29,6 +30,8 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from . import deploy, moves
 from .db import Conn
 from .jobscript import JOB_SCRIPT
+from .remote import child_env, known_hosts_name
+from .runner import known_hosts_path
 from .scriptkit import HELPERS, PACKAGES, need_line, one_line
 
 SCHEDULED = ('mirror', 'rsnapshot', 'git')
@@ -36,6 +39,7 @@ REPORT_CA = '/etc/storageforge/report-ca.pem'       # the self-signed certificat
 LEVELS = ('hourly', 'daily', 'weekly', 'monthly')
 LEVEL_CAL = {'hourly': 'hourly', 'daily': '*-*-* 02:30:00', 'weekly': 'Sun *-*-* 02:00:00', 'monthly': '*-*-01 01:30:00'}
 VERIFY_CAL = {'weekly': 'Sat *-*-* 04:00:00', 'monthly': '*-*-15 04:00:00'}
+DEDUPE_CAL = {'weekly': 'Sun *-*-* 05:00:00', 'monthly': '*-*-20 05:00:00'}
 DAY = 86400
 UUID_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 JOB_RE = re.compile(r'[a-z0-9][a-z0-9-]{0,62}')
@@ -101,8 +105,25 @@ def specs(conn: Conn, plan: dict) -> list[dict]:
             'pre': o['pre'], 'post': o['post'], 'snapshot': o['snapshot'], 'verify': o['verify'],
             'keep': ' '.join(keep), 'lowest': next((lv for lv in LEVELS if o['keep'].get(lv)), 'daily'),
             'paused': jid in paused,
+            'routes': o.get('routes') or [], 'dedup': bool(o.get('dedup')), 'hash': o.get('hash') or 'sha256',
+            'dedup_hardlink': bool(o.get('dedup_hardlink')), 'dedup_min_kb': o.get('dedup_min_kb') or 1024,
+            'transport': o.get('transport') or 'rsync', 'preflight': bool(o.get('preflight')),
+            'reserve_gb': o.get('reserve_gb', 1), 'extent_dedup': o.get('extent_dedup'),
+            'hostkey': pinned_key(sh) if o.get('routes') and sh['name'] != dh['name'] else '',
         })
     return out
+
+
+def pinned_key(host: dict) -> str:
+    """The source's key as StorageForge pinned it, for a job that reaches it at addresses it never scanned. Empty when
+    it has none yet (the job then trusts its first connection, as jobs without routes do)."""
+    try:
+        out = subprocess.run(['ssh-keygen', '-F', known_hosts_name(host['ssh_host'], host['ssh_port']), '-f', str(known_hosts_path())],
+                             capture_output=True, text=True, timeout=10, env=child_env()).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+    return ''.join('storageforge-source ' + line.split(None, 1)[1] + '\n' for line in out.splitlines()
+                   if line and not line.startswith('#') and len(line.split()) >= 3)
 
 
 def report_ca(report_url: str | None) -> str | None:
@@ -129,16 +150,24 @@ def conf_text(spec: dict, report_url: str | None) -> str:
          'DST_MOUNT': spec['dst_mount'], 'FLAGS': spec['flags'], 'KEEP': spec['keep'], 'LOWEST': spec['lowest'],
          'WINDOW': spec['window'] or '', 'BW_DAY': str(spec['bw_day'] or ''), 'BW_NIGHT': str(spec['bw_night'] or ''),
          'NIGHT': spec['night'] or '', 'SNAP': '1' if spec['snapshot'] else '0',
-         'HOOKS': '1' if spec['pre'] or spec['post'] else '0', 'REPORT_URL': (report_url or '').rstrip('/')}
+         'HOOKS': '1' if spec['pre'] or spec['post'] else '0', 'REPORT_URL': (report_url or '').rstrip('/'),
+         'DEDUP': '1' if spec.get('dedup') else '0', 'DEDUP_HARDLINK': '1' if spec.get('dedup_hardlink') else '0',
+         'DEDUP_MIN': str((spec.get('dedup_min_kb') or 1024) * 1024), 'HASH': spec.get('hash') or 'sha256',
+         'TRANSPORT': spec.get('transport') or 'rsync', 'PREFLIGHT': '1' if spec.get('preflight') else '0',
+         'RESERVE_GB': str(spec.get('reserve_gb', 1))}
+    routes = [f'{r["via"]}|{r["address"]}|{r["iface"] or ""}' for r in spec.get('routes') or []] if not spec['local'] else []
     return ('# StorageForge job: written by deploys, replaced by the next one\n'
             + ''.join(f'{k}={q(val)}\n' for k, val in v.items())
-            + 'EXCLUDES=(' + ' '.join(q(x) for x in spec['excludes']) + ')\n')
+            + 'EXCLUDES=(' + ' '.join(q(x) for x in spec['excludes']) + ')\n'
+            + 'ROUTES=(' + ' '.join(q(x) for x in routes) + ')\n')
 
 
 def serve_text(spec: dict) -> str:
     q = shlex.quote
     return ('# StorageForge: what job ' + spec['id'] + ' may read and run here (its key\'s forced command)\n'
             f'ROOT={q(spec["src"])}\nSNAP={1 if spec["snapshot"] else 0}\n'
+            f'DEDUP={1 if spec.get("dedup") else 0}\nHASH={q(spec.get("hash") or "sha256")}\n'
+            f'STREAM={q("" if (spec.get("transport") or "rsync") == "rsync" else spec["transport"])}\n'
             f'PRE=({" ".join(q(c) for c in spec["pre"])})\nPOST=({" ".join(q(c) for c in spec["post"])})\n')
 
 
@@ -180,6 +209,10 @@ def units(spec: dict) -> tuple[dict, list[str]]:
         if spec['verify']:
             files[f'{base}-verify.timer'] = timer(' verify', VERIFY_CAL[spec['verify']])
             timers.append(f'{base}-verify.timer')
+    if spec.get('extent_dedup'):
+        files[f'{base}-dedupe.service'] = service(' dedupe', f'duperemove over {_unit_escape(spec["dst"])}', f'dedupe {jid}')
+        files[f'{base}-dedupe.timer'] = timer(' dedupe', DEDUPE_CAL[spec['extent_dedup']])
+        timers.append(f'{base}-dedupe.timer')
     return files, timers
 
 
@@ -220,7 +253,10 @@ for f in "$ETC"/jobs/"$PREFIX"*.conf "$ETC"/serve/"$PREFIX"*.conf "$UNITS"/sf-jo
   stale=1
   if ((APPLY)); then
     [[ $f == *.timer ]] && systemctl disable --now "$(basename "$f")" >/dev/null 2>&1
-    rm -f -- "$f"; [[ $f == *.conf && $f == "$ETC"/jobs/* ]] && rm -f -- "${f%.conf}.key" "${f%.conf}.token"
+    # a removed job's stream snapshots would pin their disk space on the source for good
+    [[ $f == "$ETC"/serve/*.conf && -x $SELF_BIN ]] && grep -q '^STREAM=[a-z]' "$f" && "$SELF_BIN" --serve "$(basename "$f" .conf)" stream-clean >/dev/null 2>&1
+    rm -f -- "$f"; [[ $f == *.conf && $f == "$ETC"/jobs/* ]] && rm -f -- "${f%.conf}.key" "${f%.conf}.token" "${f%.conf}.hostkey"
+    [[ $f == *.conf ]] && rm -f -- "/var/lib/storageforge/index/$(basename "$f" .conf)".*
     doing "removed $f"
   else missing "would remove $f"; fi
 done
@@ -285,6 +321,19 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
             parts.append(need_line('rsnapshot'))
         if 'git' in methods:
             parts.append(need_line('git'))
+        if any(s.get('dedup') for s in runner_specs):
+            parts.append(need_line('python3'))
+        if any(s.get('hash') == 'blake3' and s.get('dedup') for s in runner_specs + source_specs):
+            parts.append('need b3sum "blake3 hashes"\n')
+        if any(s.get('extent_dedup') for s in runner_specs):
+            parts.append(need_line('duperemove'))
+        if any(s.get('transport') == 'btrfs' for s in runner_specs):
+            parts.append(need_line('btrfs-progs'))
+        if any(s.get('transport') == 'zfs' for s in runner_specs):
+            parts.append('need zfs "ZFS snapshot streams"\n')
+        if any(r.get('iface') for s in runner_specs for r in s.get('routes') or []):
+            parts.append('ssh -G -o BindInterface=lo localhost >/dev/null 2>&1 && ok "ssh can bind to an interface" '
+                         '|| conflict "this OpenSSH has no BindInterface: update it, or leave the interface out of the routes"\n')
         if report_url:
             parts.append(f'cacert=(); [[ -r {REPORT_CA} ]] && cacert=(--cacert {REPORT_CA})\n'
                          f'code=$(curl -s -m 5 ${{cacert[@]+"${{cacert[@]}}"}} -o /dev/null -w "%{{http_code}}" {q(report_url.rstrip("/") + "/healthz")} 2>/dev/null || true)\n'
@@ -292,8 +341,12 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
                          f'" from here (HTTP ${{code:-none}}): runs are still picked up by scans"\n')
         else:
             parts.append('info "no report URL set in StorageForge: runs are picked up by scans only"\n')
-    if any(s['snapshot'] for s in source_specs):
+    if any(s['snapshot'] or s.get('transport') == 'btrfs' for s in source_specs):
         parts.append(need_line('btrfs-progs'))
+    if any(s.get('transport') == 'zfs' for s in source_specs):
+        parts.append('need zfs "ZFS snapshot streams"\n')
+    if any(s.get('dedup') for s in source_specs):
+        parts.append(need_line('python3'))
     remote_sources = [s for s in source_specs if not s['local']]
     if any(s['method'] != 'git' for s in remote_sources):
         parts.append(need_line('rsync'))
@@ -311,6 +364,12 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
         parts.append(f'[[ {q(s["dst_mount"])} == / ]] || mountpoint -q {q(s["dst_mount"])} && ok {q("destination mount " + s["dst_mount"])} '
                      f'|| info {q(s["dst_mount"] + " is not mounted now: runs wait for it")}\n')
         parts.append(_heredoc(f'want_file {q("/etc/storageforge/jobs/" + s["id"] + ".conf")} 0644', conf_text(s, report_url)))
+        if s.get('hostkey'):
+            parts.append(_heredoc(f'want_file {q("/etc/storageforge/jobs/" + s["id"] + ".hostkey")} 0644', s['hostkey']))
+        for r in s.get('routes') or []:
+            if r['iface'] and not s['local']:
+                parts.append(f'[[ -e {q("/sys/class/net/" + r["iface"])} ]] && ok {q("interface " + r["iface"])} '
+                             f'|| info {q("no interface " + r["iface"] + " now: the " + r["via"] + " route is skipped until it is up")}\n')
         files, ts = units(s)
         for name, body in files.items():
             parts.append(_heredoc(f'want_file {q("/etc/systemd/system/" + name)} 0644', body))
@@ -430,6 +489,7 @@ ACTIONS = {
     'cutover': lambda j: f'exec {deploy.JOBBIN} cutover {j}',
     'log': lambda j: f'journalctl -u "sf-job-{j}*" -n 300 --no-pager -o short-iso 2>&1 || true',
     'snapshots': lambda j: f'exec {deploy.JOBBIN} snapshots {j}',
+    'dedupe': lambda j: f'systemctl start --no-block sf-job-{j}-dedupe.service && echo "started duperemove"',
 }
 
 
@@ -451,6 +511,8 @@ def action(db, conn: Conn, jid: str, verb: str, actor: str) -> dict:
         raise ValueError(f'unknown action {verb}')
     if verb == 'cutover' and j['method'] != 'move':
         raise ValueError('only move jobs cut over')
+    if verb == 'dedupe' and not j['spec'].get('extent_dedup'):
+        raise ValueError('this job has no extent dedup')
     res = deploy.run(db, j['runner'], ACTIONS[verb](jid), kind='job-action', ref=f'{jid}:{verb}', mode='apply',
                      actor=actor, timeout=600)
     if verb in ('pause', 'resume') and res['status'] == 'ok':
@@ -550,6 +612,26 @@ def ingest(conn: Conn, r: dict, via: str) -> bool:
     return True
 
 
+def ingest_state(conn: Conn, r: dict) -> None:
+    """A running job's latest state event: one row per job, replaced each time. Advisory: runs are what count."""
+    jid, run_uuid = str(r.get('job') or ''), str(r.get('run') or '')
+    if not JOB_RE.fullmatch(jid) or not UUID_RE.fullmatch(run_uuid):
+        raise ValueError('bad state event')
+    try:
+        pct = None if r.get('percent') is None else max(0, min(int(r['percent']), 100))
+        ratio = max(0.0, min(float(r.get('dedup_ratio') or 0), 1.0))
+        at = int(r.get('at') or 0)
+    except (TypeError, ValueError):
+        raise ValueError('bad state event') from None
+    if at > time.time() + 600:
+        raise ValueError('state time is in the future')
+    row = {'j': jid, 'u': run_uuid, 's': str(r.get('state') or '')[:20], 'p': pct, 'sp': str(r.get('speed') or '')[:20], 'd': ratio,
+           'rt': str(r.get('route') or '')[:10], 'n': str(r.get('node') or '')[:255], 'a': at, 't': int(time.time())}
+    conn.execute('DELETE FROM job_state WHERE job_id = :j', row)
+    conn.execute("""INSERT INTO job_state (job_id, run_uuid, state, percent, speed, dedup_ratio, route, node, at, received_at)
+                    VALUES (:j, :u, :s, :p, :sp, :d, :rt, :n, :a, :t)""", row)
+
+
 def ingest_scan(conn: Conn, host: str, text: str) -> int:
     """Run lines a scan read from /var/lib/storageforge/jobs/*/runs.jsonl: the fallback when reports could not post."""
     mine = {r[0] for r in conn.all('SELECT job_id FROM jobs WHERE lower(runner_host) = lower(:h)', {'h': host})}
@@ -581,6 +663,8 @@ def overview(conn: Conn, now: float | None = None) -> list[dict]:
     """Every deployed job with its last runs and a state: ok, failed, stale, never-ran, paused, removed."""
     now = now or time.time()
     out = []
+    live = {r[0]: {'state': r[1], 'percent': r[2], 'speed': r[3], 'dedup_ratio': r[4], 'route': r[5], 'node': r[6], 'at': r[7]}
+            for r in conn.all('SELECT job_id, state, percent, speed, dedup_ratio, route, node, at FROM job_state')}
     for r in conn.all("""SELECT job_id, plan_id, name, method, runner_host, source_host, schedule, paused, deployed_at,
                                 spec_json FROM jobs WHERE removed_at IS NULL ORDER BY plan_id, job_id"""):
         jid, plan_id, name, method, runner, source, schedule, paused, deployed_at, spec = r
@@ -604,5 +688,7 @@ def overview(conn: Conn, now: float | None = None) -> list[dict]:
                     'schedule': schedule, 'paused': bool(paused), 'deployed_at': deployed_at, 'state': state,
                     'last': last, 'last_ok': ok, 'verify': verify, 'period': per, 'src': s.get('src'), 'dst': s.get('dst'),
                     'snapshots': method == 'rsnapshot', 'window': s.get('window'), 'verify_schedule': s.get('verify'),
-                    'pre': s.get('pre') or [], 'post': s.get('post') or [], 'snapshot': s.get('snapshot')})
+                    'pre': s.get('pre') or [], 'post': s.get('post') or [], 'snapshot': s.get('snapshot'),
+                    'live': live.get(jid), 'routes': s.get('routes') or [], 'dedup': bool(s.get('dedup')),
+                    'transport': s.get('transport') or 'rsync', 'extent_dedup': s.get('extent_dedup')})
     return out

@@ -100,6 +100,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (('POST',), r'/api/scheduler/schedules/\d+/verify', 'deploy.report'),
     (_WRITE, r'/api/scheduler/schedules(/\d+)?', 'plans.edit'),
     (('POST',), r'/api/(jobs|scheduler)/report', 'deploy.apply'),     # jobs report with a bearer token and no session
+    (('POST',), r'/api/jobs/state', 'deploy.apply'),                  # likewise
 
     (READ, r'/api/deploy(/.*)?', 'deploy.view'),
     (('POST',), r'/api/deploy/(setup-script|adopt)', 'deploy.setup'),
@@ -109,6 +110,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (('POST',), r'/api/deploy/groups/[^/]+/(cancel|retry)', 'deploy.apply'),
     (('POST',), r'/api/deploy/jobs/[^/]+/(dryrun|log|snapshots|browse)', 'deploy.report'),
     (('POST',), r'/api/deploy/jobs/[^/]+/(cutover|restore)', 'deploy.destructive'),
+    (('POST',), r'/api/deploy/jobs/[^/]+/dedupe', 'deploy.apply'),
     (('POST',), r'/api/deploy/jobs/[^/]+/(run|verify|pause|resume)', 'deploy.apply'),
 
     (_ANY, r'/api/git/(status|history|commit)', 'git.live'),

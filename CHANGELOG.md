@@ -4,6 +4,18 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 
 ## Unreleased
 
+### Added
+- **Sync engine for deployed jobs.** All of it is per step and off by default, and needs a redeploy of the plan:
+  - **Routes:** a job tries its source over the LAN first, then a ZeroTier, NetBird or Tailscale address, optionally bound to the interface, checks the same host key on all of them, and moves route when one drops during a run. The bandwidth limit applies on mesh routes only.
+  - **Pre-transfer dedup:** files already at the destination under another name are hashed (SHA-256 or BLAKE3), checked and made from local data with a reflink, optional hard link or local copy, so they do not cross the network. Same-host jobs reflink from the source. Needs `python3` on both hosts.
+  - **Snapshot streams:** mirror steps can use `btrfs send` or `zfs send` with temporary read-only snapshots, removed once the copy's id checks out.
+  - **Room check:** data and metadata headroom before a large transfer.
+  - **duperemove** on a timer in the run window, with what it freed logged to the job's index.
+
+### Changed
+- **Every deployed job now takes `.storage.lock` on its destination volume.** Copies and mirrors share it; rsnapshot and git take it alone and wait up to an hour, then fail with exit 75 and raise the usual job alert. `storageforge-job with-lock <folder> -- <command>` puts your own timers under the same lock. This applies once a plan is redeployed.
+- Copy, move and mirror runs print JSON state events and post them to `POST /api/jobs/state`. They use `rsync --no-inc-recursive` so the percentage is real, which takes more memory on very large trees.
+
 ### Security
 - **Backup copies on another host are encrypted**, with a key from the vault secret. They hold password hashes and alert tokens. `restore` takes them as they are. Without the vault secret, no copy is made.
 - Invite and reset links die when their role comes to allow more. A reset link also dies when its account is replaced or changes, and a new link cancels the last one. **Open links made before this update stop working: make them again.**

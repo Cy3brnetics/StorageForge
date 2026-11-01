@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import ipaddress
 import posixpath
 import re
 import shlex
@@ -35,6 +36,11 @@ LOGIN_RE = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}@[A-Za-z0-9_.:\[\]%-]{1,
 EXCLUDE_RE = re.compile(r'[^\0\n]{1,400}')
 CALENDAR_RE = re.compile(r'[A-Za-z0-9*][A-Za-z0-9*,./:~ -]{0,79}')      # systemd OnCalendar; checked again on the host
 WINDOW_RE = re.compile(r'([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d')
+ROUTE_VIAS = ('lan', 'mesh')
+ADDRESS_RE = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?')
+IFACE_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,14}')     # what the kernel allows: tailscale0, ztabcdef12, wt0
+TRANSPORTS = ('rsync', 'btrfs', 'zfs')
+HASHES = ('sha256', 'blake3')
 
 
 def slug(text: str) -> str:
@@ -61,6 +67,58 @@ def has_raw_hooks(plan: dict) -> bool:
     """Pre or post commands other than those: they run as root on a host, so they take hosts.command."""
     return any(not PLAIN_HOOK.fullmatch(c) for s in plan.get('steps') or [] for o in (s.get('options') or {}, s)
                for k in ('pre', 'post') for c in o.get(k) or [])
+
+
+def _route(r, i: int) -> dict:
+    via, addr, iface = str(r.get('via') or ''), str(r.get('address') or '').strip(), str(r.get('iface') or '').strip()
+    if via not in ROUTE_VIAS:
+        raise ValueError(f'step {i}: a route is {" or ".join(ROUTE_VIAS)}')
+    try:
+        ipaddress.ip_address(addr)
+    except ValueError:
+        if not ADDRESS_RE.fullmatch(addr):
+            raise ValueError(f'step {i}: route address must be a hostname or IP address') from None
+    if iface and not IFACE_RE.fullmatch(iface):
+        raise ValueError(f'step {i}: route interface must be an interface name such as tailscale0')
+    return {'via': via, 'address': addr, 'iface': iface or None}
+
+
+def _engine(o: dict, i: int, method: str, excludes: list, snapshot: bool) -> dict:
+    """The sync engine's options, for deployed jobs. Only what is switched on is kept: a plan that uses none of them
+    fingerprints as it did before they existed, so deployed plans do not all turn up as changed."""
+    out = {}
+    routes = [_route(r, i) for r in o.get('routes') or []]
+    if len(routes) > 4:
+        raise ValueError(f'step {i}: up to 4 routes')
+    if routes:
+        out['routes'] = routes
+    transport = o.get('transport') or 'rsync'
+    if transport not in TRANSPORTS:
+        raise ValueError(f'step {i}: transport must be one of {", ".join(TRANSPORTS)}')
+    if transport != 'rsync':
+        if method != 'mirror':
+            raise ValueError(f'step {i}: only mirror steps can use {transport} snapshot streams')
+        if excludes or snapshot or o.get('dedup'):
+            raise ValueError(f'step {i}: a snapshot stream sends the whole subvolume or dataset: it takes no excludes, '
+                             'snapshot-first or file dedup')
+        out['transport'] = transport
+    if o.get('dedup'):
+        if method not in ('copy', 'move', 'mirror'):
+            raise ValueError(f'step {i}: file dedup is for copy, move and mirror (rsnapshot already links, git packs)')
+        algo = o.get('hash') or 'sha256'
+        if algo not in HASHES:
+            raise ValueError(f'step {i}: hash must be one of {", ".join(HASHES)}')
+        out.update(dedup=True, hash=algo, dedup_hardlink=bool(o.get('dedup_hardlink')),
+                   dedup_min_kb=max(1, min(int(o.get('dedup_min_kb') or 1024), 1 << 30)))
+    if o.get('preflight'):
+        out.update(preflight=True, reserve_gb=max(0, min(int(o.get('reserve_gb') if o.get('reserve_gb') not in (None, '') else 1), 100_000)))
+    if o.get('extent_dedup'):
+        if o['extent_dedup'] not in ('weekly', 'monthly'):
+            raise ValueError(f'step {i}: extent dedup runs weekly or monthly')
+        if method == 'git' or transport != 'rsync':
+            raise ValueError(f'step {i}: extent dedup needs writable files: not git archives or snapshot streams')
+        out['extent_dedup'] = o['extent_dedup']
+    return out
 
 
 def normalize(body: dict) -> dict:
@@ -117,7 +175,8 @@ def normalize(body: dict) -> dict:
                         'bwlimit_night': int(bwn) if bwn not in (None, '', 0, '0') else None,
                         'window': windows['window'], 'night': windows['night'] or ('22:00-07:00' if bwn else None),
                         'pre': hooks['pre'], 'post': hooks['post'], 'snapshot': bool(o.get('snapshot')),
-                        'verify': o.get('verify') if o.get('verify') in ('weekly', 'monthly') else None},
+                        'verify': o.get('verify') if o.get('verify') in ('weekly', 'monthly') else None,
+                        **_engine(o, i, method, excludes, bool(o.get('snapshot')))},
         })
     return {'name': name, 'notes': str(body.get('notes') or '')[:2000], 'steps': steps,
             'net_mbps': max(1, min(int(body.get('net_mbps') or NET_MBPS), 100_000))}
@@ -243,6 +302,24 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
             say(*package_check(conn, dh, 'git'))
             if not same_host:
                 say(*package_check(conn, sh, 'git'))
+        o = s['options']
+        if o.get('dedup'):
+            say(*package_check(conn, dh, 'python3'))
+            if not same_host:
+                say(*package_check(conn, sh, 'python3'))
+        if o.get('extent_dedup'):
+            say(*package_check(conn, dh, 'duperemove'))
+        if o.get('routes') and same_host:
+            say('note', 'source and destination are the same host: the routes are not used')
+        if o.get('transport') == 'btrfs':
+            say(*package_check(conn, dh, 'btrfs-progs'))
+        if o.get('transport'):
+            for side, h0, p0 in (('source', sh, src), ('destination', dh, dst)):
+                fs = (mount_of(h0, p0) or {}).get('fstype')
+                if fs and fs != o['transport']:
+                    say('crit', f'the {side} {p0} is on {fs}: a {o["transport"]} stream needs {o["transport"]} on both sides')
+            say('note', f'{src} must be the root of its own {"subvolume" if o["transport"] == "btrfs" else "dataset"}: '
+                        'only a whole one can be sent, and the run refuses anything else')
         if same_host and (_under(dst, src) or _under(src, dst)):
             say('crit', 'source and destination overlap: one is inside the other, so rsync would copy into itself')
         for h0, p0 in moved_away:
