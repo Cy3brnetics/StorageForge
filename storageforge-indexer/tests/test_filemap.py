@@ -53,6 +53,10 @@ class FileMap(unittest.TestCase):
         self.assertFalse(folders.is_ignored('nas', '/usr/local/keep/x', lists))
         self.assertFalse(folders.is_ignored('nas', '/usr/lib/x', lists, system=False))
         self.assertTrue(folders.is_ignored('nas', '/data/.storageforge-trash/2026-01-01/x', lists))
+        self.assertTrue(folders.is_ignored('nas', '/mnt/ssd/rsnapshot/daily.0/localhost/data/x', lists))
+        self.assertTrue(folders.is_ignored('nas', '/mnt/ssd/docker/overlay2/abc/etc/mtab', lists))
+        self.assertTrue(folders.is_ignored('nas', '/mnt/c/io.containerd.snapshotter.v1.overlayfs/snapshots/1/fs/x', lists))
+        self.assertFalse(folders.is_ignored('nas', '/data/daily.notes/x', lists))
 
     def test_system_copies_are_hidden_and_folders_joined(self):
         self.file('nas', '/data/a/x.iso', 'aa')
@@ -105,6 +109,8 @@ class FileMap(unittest.TestCase):
         self.assertEqual(len(m['groups']), 1)
         self.assertEqual(m['reclaimable'], 5 << 20)
         self.assertEqual({f['path']: f['bytes'] for f in m['folders']}, {'/data/a': 5 << 20, '/data/b': 5 << 20, '/dl': 5 << 20})
+        twin = next(l for l in m['links'] if l['kind'] == 'folder')
+        self.assertEqual(twin['bytes'], 5 << 20)
 
     def test_ignored_broken_link_does_not_turn_the_host_red(self):
         node = {'hostname': 'nas', 'links': [{'kind': 'symlink', 'path': '/etc/old', 'target': '/gone', 'state': 'crit', 'note': 'x'},

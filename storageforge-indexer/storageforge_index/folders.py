@@ -11,6 +11,7 @@ Matching structure is strong evidence of a copy, not proof; a --checksum scan co
 from __future__ import annotations
 
 import posixpath
+import re
 
 from .db import Conn, epoch
 from .remote import is_under
@@ -19,11 +20,16 @@ M64 = (1 << 64) - 1
 NOISE_DIRS = ('/usr', '/lib', '/lib32', '/lib64', '/libx32', '/bin', '/sbin', '/boot', '/etc', '/opt/containerd', '/opt/vc', '/snap',
               '/var/lib', '/var/cache', '/var/log', '/var/tmp', '/tmp')
 NOISE_NAMES = frozenset({'node_modules', '__pycache__', '.cache', 'site-packages', '.venv', 'venv', '.git',
-                         '.npm', '.cargo', '.rustup', '.local', '.storageforge-trash'})
+                         '.npm', '.cargo', '.rustup', '.local', '.storageforge-trash',
+                         'overlay2', 'io.containerd.snapshotter.v1.overlayfs'})
+# rsnapshot's daily.0, weekly.1: copies by design, and the links in them point into the host they came from
+BACKUP_ROTATION = re.compile(r'(hourly|daily|weekly|monthly|yearly)\.\d+')
 
 
 def _noise(path: str) -> bool:
-    return any(path == d or path.startswith(d + '/') for d in NOISE_DIRS) or bool(NOISE_NAMES & set(path.split('/')))
+    parts = path.split('/')
+    return (any(path == d or path.startswith(d + '/') for d in NOISE_DIRS) or bool(NOISE_NAMES & set(parts))
+            or any(BACKUP_ROTATION.fullmatch(p) for p in parts))
 
 
 def ignore_lists(conn: Conn) -> dict[str, list[str]]:

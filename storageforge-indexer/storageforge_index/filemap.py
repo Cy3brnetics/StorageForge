@@ -14,7 +14,7 @@ from .db import Conn, epoch
 from .folders import ignore_lists, is_ignored
 from .search import join_path
 
-MAX_GROUPS, MAX_FOLDERS, MAX_PAIRED = 300, 60, 8
+MAX_GROUPS, MAX_FOLDERS, MAX_PAIRED = 300, 500, 8
 APP_DIRS = ('/opt',)                       # packaged apps bundle the same libraries: copies, but not ones to clean up by hand
 
 
@@ -106,10 +106,11 @@ def build(conn: Conn, host: str | None, min_size: int, system: bool = False, twi
             for b in keys[i + 1:]:
                 e = links.setdefault((a, b), {'a': a, 'b': b, 'files': 0, 'bytes': 0, 'kind': 'files',
                                               'scope': 'same host' if a.split('\0')[0] == b.split('\0')[0] else 'across hosts'})
+                if kind == 'files' and e['kind'] == 'folder':
+                    continue                # the folder copy already counts this file
                 e['files'] += files
                 e['bytes'] += size
-                if kind == 'folder':
-                    e['kind'] = 'folder'
+                e['kind'] = kind
 
     for t in folder_copies:
         for c in t['copies']:
