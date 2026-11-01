@@ -33,3 +33,5 @@ Roadmap item #3 from the 10-27 audit. **Not started**, but half of the pieces ex
 Root-owned collector installed by access setup, so the scan account gets no new sudo rules, unlike the first suggestion. Parsing is tested on fixtures only: **not yet run against real SMART data**, and hosts need access setup rerun.
 
 2026-10-31: still not run against real SMART data. Lab VMs have virtual disks with none, so this needs real hardware.
+
+2026-11-01: this machine has real disks (4 SATA, 2 NVMe), so real hardware is available after all. Reading them needs root, and sudo here needs the owner's password, so it has still not been run. The running app's database holds no SMART data either.

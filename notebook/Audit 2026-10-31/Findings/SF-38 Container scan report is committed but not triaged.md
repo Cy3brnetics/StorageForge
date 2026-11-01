@@ -34,3 +34,6 @@ Triage by reachability into a short table: package, used by us or not, decision.
 
 ## Progress
 2026-10-31. Fresh Trivy scan in [[Container scan triage 2026-10-31]]: no criticals, one high. CI job written in `7443e46`, with an empty `.trivyignore`. **It has never run: there is no runner yet**, so that box stays open.
+
+## Progress
+2026-11-01. Rescan in [[Container scan triage 2026-10-31]]: no criticals from Trivy or Grype. The CI job had a path bug (see [[EQ-01 No CI and untested paths]]); its commands now work by hand, exit 0 on criticals and exit 1 when pointed at highs. The box stays open until it runs on a runner.

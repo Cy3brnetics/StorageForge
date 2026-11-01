@@ -95,6 +95,16 @@ class Engine(unittest.TestCase):
         self.env = {**os.environ, 'STORAGEFORGE_JOB_ETC': str(self.etc), 'STORAGEFORGE_JOB_VAR': str(self.var), 'T': str(self.t),
                     'JOB': 'p1-a', 'REAL_RSYNC': shutil.which('rsync'), 'REAL_STAT': shutil.which('stat')}
 
+    def need_no_reflinks(self):
+        """Same-host jobs reflink first, on a filesystem that can, and that counts as dedup too."""
+        (self.t / 'r1').write_bytes(b'x')
+        with open(self.t / 'r1', 'rb') as a, open(self.t / 'r2', 'wb') as b:
+            try:
+                fcntl.ioctl(b, 0x40049409, a.fileno())       # FICLONE
+            except OSError:
+                return
+        self.skipTest('this filesystem has reflinks, so hashes are not what dedups here')
+
     def fake(self, name, body):
         p = self.bin / name
         p.write_text(body)
@@ -123,6 +133,7 @@ class Engine(unittest.TestCase):
 
     # ── dedup ──
     def test_a_renamed_file_is_not_sent_again(self):
+        self.need_no_reflinks()
         data = os.urandom(2 * MB)
         (self.dst / 'old-name.bin').write_bytes(data)
         (self.src / 'sub').mkdir()
@@ -141,6 +152,7 @@ class Engine(unittest.TestCase):
         self.assertEqual(self.job('verify', 'p1-a').returncode, 0)
 
     def test_nothing_is_hashed_when_nothing_changed(self):
+        self.need_no_reflinks()
         (self.src / 'a.bin').write_bytes(os.urandom(2 * MB))
         self.conf(dedup=True)
         self.assertEqual(self.job('run', 'p1-a').returncode, 0)
@@ -149,6 +161,7 @@ class Engine(unittest.TestCase):
         self.assertEqual(self.last_run()['dedup_bytes'], 0)
 
     def test_dedup_failure_leaves_it_to_rsync(self):
+        self.need_no_reflinks()
         data = os.urandom(2 * MB)
         (self.dst / 'x.bin').write_bytes(data)
         (self.src / 'y.bin').write_bytes(data)

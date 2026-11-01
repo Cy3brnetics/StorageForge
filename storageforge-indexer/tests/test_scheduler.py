@@ -908,6 +908,7 @@ class HostSideSafetyTests(SafetyCase):
             backup.copy_off(self.db, self.conn, str(src), target, 2)
 
 
+@unittest.skipIf(os.geteuid() == 0, 'as root the runner ignores the test paths and uses /etc/storageforge')
 class RunnerTests(unittest.TestCase):
     """The runner a schedule installs, run for real by bash with a stand-in curl (PF-26)."""
 
