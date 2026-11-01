@@ -7,7 +7,7 @@
    ignored paths also quiets broken-link flags in the topology. "Structure" shows the force-directed graph.
    Loaded after changes.js; uses the shared helpers. DOM APIs only, never innerHTML. */
 
-const FM = { sub: 'files', data: null, sel: null, view: { x: 0, y: 0, k: 1 }, minSize: '1MiB', scope: 'all', system: false, find: '', seq: 0, comparing: false, open: new Set(), closed: new Set(), listed: new Map(), mountRows: new Set(), more: new Set(), loading: new Map(), mode: 'browse', hosts: [], picked: new Map(), dest: null, noise: { dirs: [], names: [] }, folderBy: new Map(), byDir: new Map(), tree: null, world: null, view: { x: 0, y: 0, k: 1 }, moved: false };
+const FM = { sub: 'files', data: null, sel: null, view: { x: 0, y: 0, k: 1 }, minSize: '1MiB', scope: 'all', system: false, find: '', seq: 0, comparing: false, open: new Set(), closed: new Set(), listed: new Map(), mountRows: new Set(), more: new Set(), loading: new Map(), mode: 'browse', dupBelow: new Map(), offsite: new Map(), hosts: [], picked: new Map(), dest: null, noise: { dirs: [], names: [] }, folderBy: new Map(), byDir: new Map(), tree: null, world: null, view: { x: 0, y: 0, k: 1 }, moved: false };
 const fmBox = $('#filemap');
 const fmKeyOf = (host, path) => `${host}\0${path}`;
 const fmActive = () => T.mode === 'graph' && FM.sub === 'files';
@@ -74,6 +74,18 @@ function fmTake(d) {
   FM.data = d; FM.error = '';
   fmIndexCopies(d);
   FM.folderBy = new Map(d.folders.map((f) => [f.key, f]));
+  FM.dupBelow = new Map();                 // host + path → how much below it has copies elsewhere
+  for (const f of d.folders) {
+    for (let p = f.path; ; p = dirOf(p)) {
+      const k = fmKeyOf(f.host, p);
+      FM.dupBelow.set(k, (FM.dupBelow.get(k) || 0) + f.bytes);
+      if (p === '/') break;
+    }
+  }
+  FM.offsite = new Map();                  // backups to somewhere we do not scan: no card to draw a line to
+  for (const r of d.relations || []) {
+    if (!r.dst.host) { const k = fmKeyOf(r.src.host, r.src.path); FM.offsite.set(k, [...(FM.offsite.get(k) || []), r.label]); }
+  }
   if (FM.sel && FM.sel.type === 'folder' && !d.folders.some((f) => f.key === FM.sel.key)) FM.sel = null;
   if (FM.sel && FM.sel.type === 'link' && !d.links.some((l) => l.a === FM.sel.a && l.b === FM.sel.b)) FM.sel = null;
   fmDraw();
@@ -326,14 +338,17 @@ function fmCard(n, depth, max) {
     : n.group ? `${n.group.copies.length} copies` : n.links ? `${n.links} broken`
     : n.folder?.whole ? `whole copy · ${n.folder.files.toLocaleString()} files` : n.folder ? `${n.folder.files.toLocaleString()} duplicate${n.folder.files === 1 ? '' : 's'}`
     : n.hostRoot ? 'host' : n.isMount || node ? 'mount' : n.plain ? (n.linkTo ? `→ ${n.linkTo}` : 'file') : 'folder';
+  const dup = n.host && !n.plain && !n.group ? FM.dupBelow.get(fmKeyOf(n.host, n.path)) || 0 : 0;
+  const away = n.host ? FM.offsite.get(fmKeyOf(n.host, n.path)) : null;
   const staged = !n.brokenRoot && n.host && fmStagedAbove(n.host, n.path);
   const kind = n.link || n.brokenRoot ? ' bad' : n.hostRoot ? ' host' : node || n.isMount ? ' mnt' : n.folder?.whole ? ' whole' : n.folder ? ' dup' : n.group ? ' dup file' : n.plain ? ' file' : '';
   const r = el('div', { class: `fmrow${kind}${staged ? ' staged' : ''}`, role: 'treeitem', tabindex: '-1', 'aria-level': String(depth + 1) },
     fmCanPick(n) ? fmPickBox(n) : null,
     el('span', { class: 'hd' }, node ? el('i', { class: `dot ${node.health}` }) : null, el('span', { class: 'nm', title: n.path }, el('bdi', {}, n.name)),
       text('span', n.bytes ? fmtBytes(n.bytes) : '', 'sz')),
-    text('span', note, 'nt'),
-    el('span', { class: 'mb' }, n.bytes ? el('i', { style: `width:${Math.max(2, (n.bytes / max) * 100).toFixed(1)}%` }) : null),
+    el('span', { class: 'nt' }, note, dup && !n.folder?.whole ? el('span', { class: 'cp' }, ` · ${fmtBytes(dup)} duplicated`) : null, away ? el('span', { class: 'bk', title: away.join(', ') }, ` · backed up`) : null),
+    el('span', { class: 'mb' }, n.bytes ? el('i', { style: `width:${Math.max(2, (n.bytes / max) * 100).toFixed(1)}%` }) : null,
+      n.bytes && dup ? el('b', { style: `width:${Math.min(100, (Math.min(dup, n.bytes) / max) * 100).toFixed(1)}%` }) : null),
     can ? el('button', { type: 'button', class: 'tw', tabindex: '-1', 'aria-label': open ? 'Collapse' : 'Expand', onclick: (ev) => { ev.stopPropagation(); fmToggle(n, depth); } }, open ? '−' : '+') : null);
   if (can) r.setAttribute('aria-expanded', String(open));
   r.dataset.id = n.id; r._node = n; r._depth = depth;
@@ -363,8 +378,7 @@ function fmVisibleKids(n) {                // big folders show a page at a time,
 function fmLayout(roots) {                 // left to right: each open folder sits centred on its children
   const pos = new Map(), cards = [], pending = [];
   let edges = '', y = 0, deep = 0;
-  const max = Math.max(1, ...roots.map((r) => r.bytes));
-  const place = (n, depth) => {
+  const place = (n, depth, max) => {
     const x = depth * (FM_W + FM_GAP_X);
     deep = Math.max(deep, depth);
     const i = cards.length;
@@ -378,7 +392,8 @@ function fmLayout(roots) {                 // left to right: each open folder si
     }
     let cy;
     if (kids.length) {
-      const ys = kids.map((k) => place(k, depth + 1));
+      const widest = Math.max(1, ...kids.map((k) => k.bytes || 0));   // bars compare a card with its siblings
+      const ys = kids.map((k) => place(k, depth + 1, widest));
       cy = (ys[0] + ys[ys.length - 1]) / 2;
       const sx = x + FM_W, mid = sx + FM_GAP_X / 2, ex = x + FM_W + FM_GAP_X;
       for (const ky of ys) edges += `M${sx} ${cy + FM_H / 2}C${mid} ${cy + FM_H / 2} ${mid} ${ky + FM_H / 2} ${ex} ${ky + FM_H / 2}`;
@@ -392,7 +407,8 @@ function fmLayout(roots) {                 // left to right: each open folder si
     pos.set(n.id, { x, y: cy });
     return cy;
   };
-  for (const r of roots) { place(r, 0); y += 22; }
+  const top = Math.max(1, ...roots.map((r) => r.bytes));
+  for (const r of roots) { place(r, 0, top); y += 22; }
   return { cards, pos, edges, pending, width: (deep + 1) * (FM_W + FM_GAP_X), height: y };
 }
 function fmDraw() {
@@ -431,7 +447,9 @@ function fmDraw() {
     d.folders_total > d.folders.length ? text('span', `largest ${d.folders.length} of ${d.folders_total} folders shown`) : '',
     d.hidden.groups ? text('span', `${d.hidden.groups.toLocaleString()} sets hidden as system, backups or ignored`) : '',
     FM.comparing ? text('span', 'Comparing folders…') : '',
-    el('span', {}, el('i', { class: 'k' }), 'same host'), el('span', {}, el('i', { class: 'k across' }), 'across hosts'));
+    el('span', {}, el('i', { class: 'k' }), 'copies'), el('span', {}, el('i', { class: 'k across' }), 'copies across hosts'),
+    el('span', {}, el('i', { class: 'k symlink' }), 'symlink, bind'), el('span', {}, el('i', { class: 'k share' }), 'share'),
+    el('span', {}, el('i', { class: 'k job' }), 'job, backup'), el('span', {}, el('i', { class: 'k plan' }), 'planned'));
   const after = FM.anchor && L.pos.get(FM.anchor);
   if (before && after) {                   // what you clicked stays under the pointer while the map opens around it
     FM.view.x += (before.x - after.x) * FM.view.k;
@@ -547,37 +565,52 @@ function fmReveal(id) {                    // pans only if the card is off scree
   FM.moved = true;
   fmApply();
 }
-function fmMark() {         // the copy lines. A collapsed folder gathers its children's lines
+const FM_LINK_TEXT = { copies: 'copies', symlink: 'symlink', bind: 'bind mount', share: 'share', job: 'job', backup: 'backup', plan: 'planned', link: 'symlink' };
+function fmLinks() {         // everything that joins two places, each end as host + path
+  const out = fmShownLinks().map((l) => {
+    const [ah, ap] = l.a.split('\0'), [bh, bp] = l.b.split('\0');
+    return { kind: 'copies', src: { host: ah, path: ap }, dst: { host: bh, path: bp }, link: l, across: l.scope !== 'same host', bytes: l.bytes, files: l.files };
+  });
+  if (FM.scope === 'all') {
+    for (const r of FM.data.relations || []) if (r.dst.host) out.push(r);
+    for (const st of MV.plan?.steps || []) if (st.src?.path && st.dst?.path) out.push({ kind: 'plan', src: st.src, dst: st.dst, label: `${st.method}, not run yet` });
+    FM.tree.querySelectorAll('.fmrow').forEach((r) => {    // symlinks in the folders opened so far
+      const n = r._node;
+      if (n?.linkTo) out.push({ kind: 'link', src: { host: n.host, path: n.path }, dst: { host: n.host, path: n.linkTo.startsWith('/') ? n.linkTo : joinPath(dirOf(n.path), n.linkTo) } });
+    });
+  }
+  return out;
+}
+function fmMark() {         // the lines. Each end lands on the deepest card showing it, so a line follows down as folders open
   if (!FM.tree || !FM.lines) return;
   const s = FM.sel, peers = new Set();
   const rowId = (key) => { const [host, path] = key.split('\0'); return fmId('f', host, path); };
   let self = s?.id;
-  if (s?.type === 'link') self = rowId(s.a);
   if (s?.type === 'broken') self = fmId('b', s.link.host, s.link.path);
-  const visible = (key) => {              // the card showing this folder: itself, or the nearest collapsed parent
-    const [host, start] = key.split('\0');
+  const visible = (host, start) => {
     for (let p = start; ; p = dirOf(p)) {
       const id = fmId('f', host, p);
       if (FM.pos.has(id)) return id;
-      if (p === '/') return null;
+      if (p === '/' || !p) return null;
     }
   };
   const lines = new Map();
-  for (const l of fmShownLinks()) {
-    const a = visible(l.a), b = visible(l.b);
+  for (const l of fmLinks()) {
+    const a = visible(l.src.host, l.src.path), b = visible(l.dst.host, l.dst.path);
     if (!a || !b || a === b) continue;
-    const k = a < b ? `${a}|${b}` : `${b}|${a}`;
-    const e = lines.get(k) || { a, b, bytes: 0, files: 0, across: l.scope !== 'same host', first: l, lit: false };
-    e.bytes += l.bytes; e.files += l.files;
-    if (s?.type === 'folder' && (l.a === s.key || l.b === s.key)) e.lit = true;
-    if (s?.type === 'link' && l.a === s.a && l.b === s.b) e.lit = true;
-    lines.set(k, e);
+    const k = `${a < b ? `${a}|${b}` : `${b}|${a}`}|${l.kind}`;
+    if (!lines.has(k)) lines.set(k, { a, b, kind: l.kind, items: [], bytes: 0, broken: false, across: false });
+    const e = lines.get(k);
+    e.items.push(l); e.bytes += l.bytes || 0; e.broken = e.broken || Boolean(l.broken); e.across = e.across || Boolean(l.across);
   }
   const max = Math.max(1, ...[...lines.values()].map((e) => e.bytes));
+  for (const e of lines.values()) {
+    e.lit = s?.type === 'lines' ? s.key === `${e.a}|${e.b}|${e.kind}` : Boolean(self) && (e.a === self || e.b === self);
+  }
   const any = [...lines.values()].some((e) => e.lit);
   const paths = [];
   for (const e of [...lines.values()].sort((x, y) => Number(x.lit) - Number(y.lit))) {
-    if (e.lit) { peers.add(e.a); peers.add(e.b); peers.delete(self); }
+    if (e.lit) { peers.add(e.a); peers.add(e.b); if (self) peers.delete(self); }
     const p = FM.pos.get(e.a), q = FM.pos.get(e.b);
     const [l, r] = p.x <= q.x ? [p, q] : [q, p];
     const ly = l.y + FM_H / 2, ry = r.y + FM_H / 2;
@@ -589,28 +622,44 @@ function fmMark() {         // the copy lines. A collapsed folder gathers its ch
       const sx = l.x + FM_W, mid = (sx + r.x) / 2;
       d = `M${sx} ${ly}C${mid} ${ly} ${mid} ${ry} ${r.x} ${ry}`;
     }
-    paths.push(svgEl('path', { d, class: `ln${e.across ? ' across' : ''}${e.lit ? ' lit' : any ? ' dim' : ''}`, 'stroke-width': (1.4 + 4.6 * Math.sqrt(e.bytes / max)).toFixed(1) }));
+    const width = e.kind === 'copies' ? 1.4 + 4.6 * Math.sqrt(e.bytes / max) : 1.8;
+    paths.push(svgEl('path', { d, class: `ln k-${e.kind}${e.across ? ' across' : ''}${e.broken ? ' broke' : ''}${e.lit ? ' lit' : any ? ' dim' : ''}`, 'stroke-width': width.toFixed(1) }));
     const hit = svgEl('path', { d, class: 'hit' });
-    hit.addEventListener('click', () => fmSelect({ type: 'link', a: e.first.a, b: e.first.b }));
-    const title = svgEl('title', {}); title.textContent = `${e.files.toLocaleString()} files, ${fmtBytes(e.bytes)} in both${e.across ? ', on different hosts' : ''}`;
+    hit.addEventListener('click', () => fmFollow(e));
+    const title = svgEl('title', {});
+    title.textContent = `${e.items.length} ${FM_LINK_TEXT[e.kind]}${e.items.length === 1 ? '' : ' links'}${e.bytes ? `, ${fmtBytes(e.bytes)}` : ''}${e.broken ? ', broken' : ''}. Click to follow.`;
     hit.append(title);
     paths.push(hit);
-  }
-  for (const st of MV.plan?.steps || []) {  // what the Moves plan will do, as blue lines to where it lands
-    if (!st.src?.path || !st.dst?.path) continue;
-    const a = visible(fmKeyOf(st.src.host, st.src.path)), b = visible(fmKeyOf(st.dst.host, st.dst.path));
-    if (!a || !b || a === b) continue;
-    const p = FM.pos.get(a), q = FM.pos.get(b), [lf, rt] = p.x <= q.x ? [p, q] : [q, p];
-    const sx = lf.x + FM_W, ly = lf.y + FM_H / 2, ry = rt.y + FM_H / 2, mid = lf.x === rt.x ? sx + 40 : (sx + rt.x) / 2, ex = lf.x === rt.x ? sx : rt.x;
-    paths.push(svgEl('path', { d: `M${sx} ${ly}C${mid} ${ly} ${mid} ${ry} ${ex} ${ry}`, class: 'ln plan', 'stroke-width': '2' }));
   }
   if (s?.type === 'group') for (const c of s.group.copies) if (fmId('f', c.host, c.path) !== s.id) peers.add(fmId('f', c.host, c.path));
   FM.tree.querySelectorAll('.fmrow').forEach((r) => {
     r.classList.toggle('on', r.dataset.id === self);
     r.classList.toggle('peer', peers.has(r.dataset.id));
-    r.classList.toggle('dim', Boolean(self) && (peers.size > 0) && r.dataset.id !== self && !peers.has(r.dataset.id));
+    r.classList.toggle('dim', (Boolean(self) || s?.type === 'lines') && peers.size > 0 && r.dataset.id !== self && !peers.has(r.dataset.id));
   });
   FM.lines.replaceChildren(...paths);
+}
+function fmOpenTo(host, path) {            // opens every card on the way down to a place
+  for (let p = dirOf(path); ; p = dirOf(p)) {
+    const id = fmId('f', host, p);
+    FM.open.add(id); FM.closed.delete(id);
+    if (p === '/') break;
+  }
+}
+function fmFollow(e) {                     // a line with one link opens both ends; a gathered one lists what is in it
+  FM.moved = true;
+  if (e.items.length === 1) { fmOpenTo(e.items[0].src.host, e.items[0].src.path); fmOpenTo(e.items[0].dst.host, e.items[0].dst.path); }
+  FM.sel = { type: 'lines', key: `${e.a}|${e.b}|${e.kind}`, kind: e.kind, items: e.items };
+  fmDraw(); showTab('details'); fmPanel();
+}
+function fmLinesPanel(sel) {
+  const where = (x) => (x.host ? `${x.host}:${x.path}` : x.path);
+  return [el('div', { class: 'node-head' }, text('span', `${sel.items.length} ${FM_LINK_TEXT[sel.kind]} link${sel.items.length === 1 ? '' : 's'}`, 'muted'), text('h2', 'Where this line goes')),
+    el('ul', { class: 'fmlist' }, ...sel.items.slice(0, 100).map((l) => el('li', {}, text('span', ''),
+      el('span', { class: 'p' }, `${where(l.src)} → ${where(l.dst)}`),
+      button('Follow', () => { fmOpenTo(l.src.host, l.src.path); fmOpenTo(l.dst.host, l.dst.path); FM.moved = true; fmDraw(); fmReveal(fmId('f', l.src.host, l.src.path)); }, 'btn ghost sm'),
+      text('span', [l.label, l.bytes ? `${fmtBytes(l.bytes)} in both` : '', l.broken ? 'broken' : ''].filter(Boolean).join(' · '), 'm')))),
+    sel.kind === 'copies' && sel.items.length === 1 ? button('Compare and trash the extras', () => fmSelect({ type: 'link', a: sel.items[0].link.a, b: sel.items[0].link.b }), 'btn sm') : ''];
 }
 function fmSelect(sel) {
   FM.sel = sel;
@@ -757,6 +806,7 @@ function fmPanel() {           // true when the file map owns the panel
   if (FM.sel?.type === 'folder') box.replaceChildren(...fmFolderPanel(fmFolder(FM.sel.key)));
   else if (FM.sel?.type === 'link') box.replaceChildren(...fmLinkPanel(FM.sel.a, FM.sel.b));
   else if (FM.sel?.type === 'broken') box.replaceChildren(...fmBrokenPanel(FM.sel.link));
+  else if (FM.sel?.type === 'lines') box.replaceChildren(...fmLinesPanel(FM.sel));
   else if (FM.sel?.type === 'group') box.replaceChildren(...fmGroupPanel(FM.sel.group));
   else if (FM.sel?.type === 'dir' || FM.sel?.type === 'plain') box.replaceChildren(...fmDirPanel(FM.sel.node));
   else box.replaceChildren(...fmOverview());

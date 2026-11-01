@@ -146,6 +146,30 @@ class FileMap(unittest.TestCase):
                 moves.normalize({'name': 'x', 'steps': [{**base, 'method': 'copy', 'only': [bad]}]})
         self.assertNotIn('only', moves.normalize({'name': 'x', 'steps': [{**base, 'method': 'copy'}]})['steps'][0])
 
+    def test_relations_list_what_joins_folders(self):
+        c = self.conn
+        self.file('nas', '/data/x', 'aa')
+        self.file('pc', '/data/x', 'aa')
+        for nid, kind, label, host, props in (
+                ('link:nas:/srv/l', 'Symlink', '/srv/l', 'nas', '{}'), ('link:nas:/etc/l', 'Symlink', '/etc/l', 'nas', '{}'),
+                ('mnt:nas:/data', 'MountPoint', '/data', 'nas', '{}'), ('mnt:pc:/nfs', 'MountPoint', '/nfs', 'pc', '{}'),
+                ('mnt:nas:/bound', 'MountPoint', '/bound', 'nas', '{}'), ('fs:nas:d', 'Filesystem', 'ext4', 'nas', '{}'), ('host:B2', 'Host', 'B2', None, '{}')):
+            c.execute('INSERT INTO graph_nodes (node_id, kind, label, host, health, props_json, updated_at) VALUES (:i, :k, :l, :h, :he, :p, 1)',
+                      {'i': nid, 'k': kind, 'l': label, 'h': host, 'he': 'unknown', 'p': props})
+        for src, dst, rel, props in (
+                ('link:nas:/srv/l', 'mnt:nas:/data', 'SYMLINK_TO', '{"target": "/data/x"}'), ('link:nas:/etc/l', 'mnt:nas:/data', 'SYMLINK_TO', '{"target": "/data/y"}'),
+                ('mnt:nas:/data', 'mnt:pc:/nfs', 'MOUNTED_AT', '{"remote": true, "server": "nas", "path": "/data/share"}'),
+                ('mnt:nas:/data', 'mnt:nas:/bound', 'MOUNTED_AT', '{"bind": true, "source": "/data/b"}'),
+                ('fs:nas:d', 'mnt:nas:/data', 'MOUNTED_AT', '{}'), ('fs:nas:d', 'host:B2', 'REPLICATES_TO', '{"detail": "restic -> B2"}')):
+            c.execute('INSERT INTO graph_edges (src, dst, rel, props_json) VALUES (:s, :d, :r, :p)', {'s': src, 'd': dst, 'r': rel, 'p': props})
+        got = {r['kind']: r for r in filemap.build(c, None, 1 << 20)['relations']}
+        self.assertEqual(got['symlink']['src']['path'], '/srv/l')       # the one in /etc is a system link
+        self.assertEqual(got['symlink']['dst'], {'host': 'nas', 'path': '/data/x'})
+        self.assertEqual((got['share']['src'], got['share']['dst']), ({'host': 'nas', 'path': '/data/share'}, {'host': 'pc', 'path': '/nfs'}))
+        self.assertEqual(got['bind']['src']['path'], '/data/b')
+        self.assertIsNone(got['backup']['dst']['host'])
+        self.assertEqual(got['backup']['src']['path'], '/data')
+
     def test_ignored_broken_link_does_not_turn_the_host_red(self):
         node = {'hostname': 'nas', 'links': [{'kind': 'symlink', 'path': '/etc/old', 'target': '/gone', 'state': 'crit', 'note': 'x'},
                                              {'kind': 'symlink', 'path': '/srv/mine', 'target': '/gone', 'state': 'crit', 'note': 'x'}],
