@@ -5,6 +5,12 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Added
+- **Sites and reset, for moving to a new client.** A database now knows which site it is: the name shows in the web UI, and `restore` refuses another site's backup, because a backup holds that site's SSH keys. `reset --site-name NAME` puts the old site in an archive outside the new site's reach and starts over with a new database, vault and vault secret. It refuses while a server runs, while jobs or deploy access remain on the old machines (`--abandon-deployed` overrides), or while `./keys` still holds keys.
+- **Several sites on one machine.** `docker/sf-site` makes and runs one isolated compose stack per client, each with its own database, vault, secrets, certificate, port and network. `sf-site audit` reports keys and machines shared between sites, a key another site uses is refused on import, and sharing raises an alert.
+- **Scripts name their site.** Generated move, change, share, task, job, schedule and reinstall scripts carry a `# Site:` line on named sites.
+- **Keys added by hand show up.** Scans read `authorized_keys` for root and accounts with UID 1000 and up. `hosts keys` lists them against the vault, `hosts allow-key` accepts one, and generate-only sites raise an alert for the rest.
+- **`sf-site overview`** shows every site's hosts, last scan, open alerts and last backup, in the terminal or as a static HTML file.
+- **Generate-only vaults.** `vault policy generate-only` refuses imported keys, so a key cannot be reused across clients; sites made by `reset` start this way. `vault list` and the UI show each key's origin.
 - **Remote nodes.** Hosts StorageForge can't reach can dial in over a reverse SSH tunnel, then scan and deploy like any other host. The tunnel is off unless you add `docker-compose.remote.yml`, and it opens one port that carries forwarded connections only. See [Remote nodes](docs/remote-nodes.md).
 - **Import existing rsnapshot and snapper jobs.** Scans now read rsnapshot configs, whatever they are called, with their cron lines and timers, and snapper configs. **Deploy > Existing snapshot jobs** lists them, and **Look as root** finds what the scan account can't read. An imported job stays on its own config and schedule. StorageForge shows its state from the snapshots and log it leaves, raises alerts, fills the 3-2-1 matrix, and can run it, pause it, change retention and restore from it, using the right tool for the job. **Forget** only stops tracking.
 - **Snapshot tool by filesystem.** **New snapshot job** suggests snapper on btrfs and rsnapshot on ext4, xfs and similar, and creates snapper configs. Plan checks refuse rsnapshot on filesystems without hard links, such as vfat and exfat cards.
@@ -14,6 +20,11 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
   - **Snapshot streams:** mirror steps can use `btrfs send` or `zfs send` with temporary read-only snapshots, removed once the copy's id checks out.
   - **Room check:** data and metadata headroom before a large transfer.
   - **duperemove** on a timer in the run window, with what it freed logged to the job's index.
+
+### Security
+- **A planner or dry-run account could run root commands on a host.** `POST /api/deploy/start` with `mode: report, run: true` ran the script for real on `deploy.report` alone, and `remove: true, run: true` skipped the `hosts.command` check. `task_type: "Command"` got past that check when saving a schedule. Now `run` needs `mode: apply` and refuses `remove`, the check reads the type as it will be saved, and pausing an installed schedule that changed since its deploy takes `hosts.command` if it now holds commands.
+- **Schedule environment variables are for command schedules only.** On a plan or task they could change a program its script calls (`RSYNC_RSH`, `TAR_OPTIONS`). Existing rows keep theirs on record, and no longer deploy them.
+- **State-changing requests must come from this origin.** A page on another port of the same host counts as the same site, so `SameSite=Strict` let it post forms here.
 
 ### Changed
 - **Files map speed.** Opening a folder in the Graph view takes about 50 ms instead of up to 2.7 s on a 5.5M-file index, because listings and folder comparison share one folder index kept until the next scan. Changing the size, host or System files filter no longer re-reads every file to redraw the copy lines, and selecting a card with everything already open no longer redraws the map. A folder still being read shows a Loading card.

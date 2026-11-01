@@ -22,6 +22,7 @@ import json
 import re
 import shlex
 
+from . import site
 from .db import Conn, loads
 from .moves import _subtree_sql, find_host, host_slug, hosts, mount_of
 from .payloads import is_designed, share_key
@@ -571,6 +572,7 @@ def remove_export(db, conn: Conn, host: str, index: int, was: dict | None = None
     return {'removed': gone}
 
 
+@site.stamped
 def script(conn: Conn, host: str, prev_clients: list[str] | None = None) -> str:
     """prev_clients: hosts the last deployment mounted shares on; they run the cleanup even when the design dropped them."""
     c = check(conn, host)

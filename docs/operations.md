@@ -22,6 +22,8 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_INCLUDE_FSTYPES` | | Comma list of normally skipped filesystem types the server's scans walk (e.g. `overlay`) |
 | `STORAGEFORGE_RUNTIME_DIR` | `/run/storageforge`, else `$XDG_RUNTIME_DIR` | tmpfs for agent sockets; its path must be short (Unix socket limit) |
 | `STORAGEFORGE_BACKUP_DIR` | `<data>/backups` (`/app/backups`) | Where backups go |
+| `STORAGEFORGE_COOKIE_SUFFIX` | none | Added to the session cookie's name, for sites sharing a machine (`docker/sf-site` sets it) |
+| `STORAGEFORGE_ARCHIVE_DIR` | none (`./archive` for the compose `admin` service) | Where `reset` puts the old site |
 | `STORAGEFORGE_BACKUP_HOUR` | `3` | Local hour for the nightly backup and prune |
 | `STORAGEFORGE_BACKUP_KEEP` | `14` | Essentials backups kept |
 | `STORAGEFORGE_BACKUP_FULL_KEEP` | `0` | Full backups kept nightly (0: on demand only) |
@@ -44,7 +46,7 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_KEY_IMPORT_DIR` | `./keys` | Mounted read-only; each file is imported as a key at start |
 | `STORAGEFORGE_TLS_NAMES` | | Extra names and addresses for the self-signed certificate; used when it is created |
 | `STORAGEFORGE_ALLOW_DISK_RUNTIME` | `0` | Let the entrypoint start when the runtime dir is not tmpfs (not recommended) |
-| `STORAGEFORGE_EGRESS_PORTS`, `STORAGEFORGE_BRIDGE` | `22 443`, `sf0` | For `docker/egress-firewall.sh` |
+| `STORAGEFORGE_EGRESS_PORTS`, `STORAGEFORGE_BRIDGE` | `22 443`, `sf0` | For `docker/egress-firewall.sh`; the bridge name is also used by compose |
 
 ## Health
 
@@ -87,6 +89,94 @@ docker compose start storageforge
 Images built before 2026-10-29 don't recognise `restore` and the other newer subcommands in `docker compose run` (see the [audit](audit-2026-10-29.md#container)). Rebuild the image, or add `--entrypoint storageforge-index` after `--rm`. A restore keeps the current database beside it as `index.db.pre-restore-<time>`. After restoring an essentials backup, rescan to rebuild the index.
 
 Backups live in the `sf-backups` volume on this machine. To keep copies elsewhere, add a Moves **mirror** step from `/var/lib/docker/volumes/storageforge_sf-backups/_data` to another host.
+
+## Starting a new site
+
+One install holds one site, usually one client. `reset` moves this install to a new one. It keeps nothing but the certificate, the session secret and the settings in `.env`, including users, hosts, keys and plans.
+
+```bash
+sudo install -d -o 10001 -g 10001 -m 0700 archive
+docker compose stop storageforge proxy
+docker compose run --rm admin reset --site-name "Acme" --yes
+docker compose up -d
+```
+
+The command prints a one-time link for the first admin, valid for 3 days. Replace `https://<this machine>` in it with the address you use, including the port.
+
+**The archive** (`./archive/<old site>-<time>/`) holds a full backup, the old backups, `known_hosts` and the old vault secret. Together those are the old client's SSH keys, so move it off this machine. Only the `admin` service mounts that folder, and without Docker `--archive` must be outside the data and backup folders.
+
+**What `reset` refuses:**
+
+- A server is running on the database.
+- Deploys, jobs, schedules or deploy access are still recorded. They would keep running as root with nothing managing them: remove them first, or pass `--abandon-deployed`.
+- `./keys` still holds keys. They belong to the old client.
+- The current vault secret does not unlock the vault, since the archive would be unreadable.
+- The database is PostgreSQL: `pg_dump` it, create a new database, point `STORAGEFORGE_DB` at it and change the vault secret.
+
+**What it can't do for you:**
+
+- `left-behind.json` in the archive lists what is still on the old client's machines, including public keys in `authorized_keys`. Remove them there.
+- Copies on a backup target host and in `STORAGEFORGE_CONFIG_EXPORT_DIR` stay where they are. A named site's bundles go in their own subfolder of that directory.
+- Back up the new vault secret.
+- Delete `./secrets/vault_secret` if you have one. It holds the old secret, so after a reset the stack refuses to start until it is gone or matches the new one. The archive has a copy.
+
+Outside Docker, or when the secret comes from `STORAGEFORGE_VAULT_SECRET`, set `STORAGEFORGE_VAULT_NEW_SECRET` for the reset, then switch to it before starting the server.
+
+### Several sites on one machine
+
+Each site made with `docker/sf-site` is its own compose stack, with its own database, vault, secrets, certificate, port and network. A fault in one client's stack can't reach another's machines. Allow up to 2 GB of memory for each busy site.
+
+```bash
+docker/sf-site new acme --name "Acme Ltd"
+```
+```bash
+docker/sf-site up acme
+```
+
+`new` prints the first admin's link, and picks the next free port from 8444 and the next free bridge (`sf1`, `sf2`...). Sites live in `sites/<short name>/`, and the stack from a plain `docker compose up` appears as `default`.
+
+| Command | What it does |
+| :--- | :--- |
+| `new NAME --name "Client" [--port P]` | make a site; it only takes keys generated in its vault |
+| `list` | every site, its address and state |
+| `up`, `down`, `logs NAME` | start, stop, follow its logs |
+| `admin NAME COMMAND...` | run a `storageforge-index` command |
+| `reset NAME --site-name "Other" --yes` | start a new client on it, as [above](#starting-a-new-site) |
+| `archive NAME` | stop it and write its archive to `sites/NAME/archive` |
+| `remove NAME` | delete its volumes, once archived, after you type its name |
+| `audit` | keys and machines shared between sites; exits 1 if there are any |
+| `overview [--html FILE]` | every site's hosts, last scan, open alerts, last backup and state |
+| `sync` | tell each site what the others use; `new`, `up` and `remove` do this |
+
+`remove` moves the site's folder to `sites/.removed/`, including its archive, which holds its keys and secret. Move that off the machine.
+
+Run the firewall once per site, naming its bridge from `sites/NAME/site.env`: `sudo STORAGEFORGE_BRIDGE=sf1 docker/egress-firewall.sh`. Each site also has its own **report URL** under **Deploy → Reporting and alerts**, using its own port.
+
+`overview` reads each stack through its `admin` service, so it adds no port, token or server. It only shows counts and times. The HTML file is a snapshot, with links to each site's own sign-in; run it from cron to keep it current.
+
+**How sites are compared.** `sync` gives each stack a read-only list of the fingerprints the others use, naming no sites. An imported key on that list is refused, on any site that allows imports. A key or machine that is already shared raises an alert in that site: `crit` for a key, `warn` for a machine, because a machine can change owners and a cloned VM can share host keys. The list is only as fresh as the last `sync`, so run `audit` from cron if sites change often.
+
+### Keys stay with their site
+
+Sites made by `reset` only take keys generated in their own vault. `vault add` and `vault import-dir` refuse, the `./keys` import does nothing, and nothing can export a private key, so one key cannot serve two clients. Put a generated key on a host with **Install** in the web UI, which uses the host's password once.
+
+On an existing install, `vault policy generate-only` turns this on, and lists keys that were imported or whose origin is unknown. `vault policy open` turns it off and is recorded in the audit log. This protects clients from each other inside StorageForge. It does not stop someone with Docker access on this machine.
+
+### Keys added by hand
+
+The vault can't refuse a key someone adds to a host directly, so scans look for them. Each scan reads `authorized_keys` for root and accounts with UID 1000 and up, keeping fingerprints and comments. System accounts aren't read, which leaves out `storageforge-deploy` and its job keys.
+
+```bash
+storageforge-index hosts keys [HOST]
+```
+
+This marks each key `vault`, `allowed` or `UNKNOWN`, and exits 1 if any is unknown. On a generate-only site, unknown keys also raise a `warn` alert. To accept one, run `hosts allow-key FINGERPRINT --note "whose it is"`; `hosts disallow-key` undoes it, and both go in the audit log.
+
+**The check only covers what the scan user can read.** An account it can't read is listed as such, not as clean, and without extra access that usually includes root and other users. It also doesn't see keys from `AuthorizedKeysFile` paths other than `~/.ssh/authorized_keys` and `authorized_keys2`, or from `AuthorizedKeysCommand`.
+
+### Restoring across sites
+
+`restore` only accepts a backup from the same site, or onto a database with no name, hosts or keys. Backups made before sites existed name no site: they restore with a warning, and are refused on a generate-only site.
 
 ## Certificates
 

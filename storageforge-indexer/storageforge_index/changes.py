@@ -21,6 +21,7 @@ import re
 import shlex
 import time
 
+from . import site
 from .db import Conn
 from .moves import _fmt, _path, find_host, host_slug, hosts, mount_of, slug, subtree
 from .scriptkit import DEST_CMD, HELPERS, REMOTE, comments, host_name, one_line
@@ -990,6 +991,7 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, actor: str, destructive:
              **({'on_ok': mark(h)} if mode == 'apply' and plan_id else {})} for h in order]
 
 
+@site.stamped
 def script(conn: Conn, plan: dict) -> str:
     plan = normalize(plan)
     hs, chk = hosts(conn), check(conn, plan)

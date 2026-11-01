@@ -3,6 +3,8 @@ __pycache__/
 .ruff_cache/
 secrets/
 keys/
+archive/
+sites/
 data/
 *.db
 *.db-*

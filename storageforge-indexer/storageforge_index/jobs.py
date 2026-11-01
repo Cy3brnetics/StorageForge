@@ -27,6 +27,7 @@ import uuid
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
+from . import site
 from . import deploy, moves, snapjobs
 from .db import Conn
 from .jobscript import JOB_SCRIPT
@@ -457,8 +458,8 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, report_url: str | None, 
             conn.execute('UPDATE jobs SET removed_at = :t WHERE job_id = :j', {'t': now, 'j': jid})
     items = []
     for h in order:
-        script = host_script(plan, h, [s for s in sp if s['runner'] == h], [s for s in sp if s['source'] == h],
-                             report_url, sec)
+        script = site.stamp(conn, host_script(plan, h, [s for s in sp if s['runner'] == h], [s for s in sp if s['source'] == h],
+                                              report_url, sec))
 
         def done(res, h=h):
             c = db.connect()

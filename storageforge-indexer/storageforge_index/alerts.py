@@ -428,8 +428,9 @@ def cert_problems() -> dict:
 
 # ── evaluation ──────────────────────────────────────────────────────
 def problems(conn: Conn) -> dict:
-    from . import jobs, scheduler
-    now = {**scan_problems(conn), **backup_problems(conn), **cert_problems()}
+    from . import authkeys, jobs, scheduler, site
+    now = {**scan_problems(conn), **backup_problems(conn), **cert_problems(), **site.shared_problems(conn),
+           **authkeys.problems(conn)}
     for j in jobs.overview(conn):
         if j['state'] == 'failed':
             now[f'job-failed:{j["id"]}'] = ('job-failed', j['id'], f'Job failed: {j["name"]}',

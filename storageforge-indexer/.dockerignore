@@ -3,6 +3,8 @@
 *.pyc
 secrets/
 keys/
+archive/
+sites/
 reports/
 *.db
 *.db-*

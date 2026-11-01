@@ -29,6 +29,10 @@ if [ ! -s "$APP/vault_secret" ]; then
     new_secret > "$APP/vault_secret"; log "vault_secret created. Back it up: without it the vault cannot be decrypted"
   fi
 fi
+# After a reset, ./secrets/vault_secret is the old client's: their keys, for anyone with their archive
+if [ -e "$APP/reset_at" ] && [ -s "$SEED/vault_secret" ] && [ "$(cat "$SEED/vault_secret")" != "$(cat "$APP/vault_secret")" ]; then
+  log "error: ./secrets/vault_secret is the secret from before the reset. Delete it (the archive has a copy), then start again"; exit 64
+fi
 if [ ! -s "$APP/session_secret" ]; then
   if [ -s "$SEED/session_secret" ]; then cp "$SEED/session_secret" "$APP/session_secret"
   else new_secret > "$APP/session_secret"; fi

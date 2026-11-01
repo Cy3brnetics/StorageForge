@@ -46,6 +46,9 @@ VERIFIER = b'storageforge-vault-v1'
 GENESIS = '0' * 64
 
 
+POLICY_KEY = 'vault.policy'
+
+
 class VaultError(RuntimeError):
     pass
 
@@ -152,6 +155,12 @@ def derive_kek(secret: bytes, salt: bytes, p: dict) -> SecretBuffer:
         kdf.derive_into(secret, out.buf)
     out.length = 32
     return out
+
+
+def importable_keys(folder) -> list[Path]:
+    """The files vault import-dir would take from a folder."""
+    return [f for f in sorted(Path(folder).iterdir())
+            if f.suffix not in ('.pub', '.md', '.txt') and f.is_file() and not f.name.startswith('.')]
 
 
 def secret_from_env() -> bytes:
@@ -292,7 +301,19 @@ class Vault:
     def _aad(uuid: str, purpose: str) -> bytes:
         return f'storageforge:{purpose}:{uuid}'.encode()
 
+    def key_policy(self) -> str:
+        """'generate-only': this site's keys are made in this vault and never leave it, so none can be shared with
+        another client. 'open' takes imports too."""
+        v = self.conn.scalar('SELECT value_json FROM settings WHERE key = :k', {'k': POLICY_KEY})
+        return json.loads(v) if v else 'open'
+
     def add_key(self, name: str, private_bytes: bytes, passphrase: bytes | None = None, comment: str | None = None) -> dict:
+        if self.key_policy() == 'generate-only':
+            raise VaultError('This site only takes keys generated in its vault, so no key is shared between clients. '
+                             'Use: vault generate')
+        return self._store_key(name, private_bytes, passphrase, comment, 'imported')
+
+    def _store_key(self, name: str, private_bytes: bytes, passphrase: bytes | None, comment: str | None, origin: str) -> dict:
         kek = self._need_kek()
         try:
             key = serialization.load_ssh_private_key(private_bytes, passphrase)
@@ -310,6 +331,11 @@ class Vault:
         comment = comment or f'storageforge:{name}'
         public_line = f'{public} {comment}'
         fp = fingerprint(public_line)
+        if origin == 'imported':
+            from .site import foreign
+            if fp in foreign()['key']:
+                raise VaultError('Another site on this machine already uses this key, and one key should not serve two '
+                                 'clients. Generate a new one.')
         uuid = secrets.token_hex(16)
         with SecretBuffer(32) as dek:
             dek.buf[:] = os.urandom(32)
@@ -318,22 +344,22 @@ class Vault:
             kn, ct = seal(dek.view(), pem, self._aad(uuid, 'key'))
         del pem
         self.conn.execute("""INSERT INTO ssh_keys (key_uuid, name, key_type, public_key, fingerprint, comment,
-                                 dek_nonce, wrapped_dek, key_nonce, ciphertext, created_at)
-                             VALUES (:u, :n, :t, :p, :f, :c, :dn, :wd, :kn, :ct, :now)""",
+                                 dek_nonce, wrapped_dek, key_nonce, ciphertext, created_at, origin)
+                             VALUES (:u, :n, :t, :p, :f, :c, :dn, :wd, :kn, :ct, :now, :o)""",
                           {'u': uuid, 'n': name, 't': public.split()[0], 'p': public_line, 'f': fp, 'c': comment,
-                           'dn': dn, 'wd': wdek, 'kn': kn, 'ct': ct, 'now': int(time.time())})
+                           'dn': dn, 'wd': wdek, 'kn': kn, 'ct': ct, 'now': int(time.time()), 'o': origin})
         return {'name': name, 'type': public.split()[0], 'fingerprint': fp, 'public_key': public_line}
 
     def generate_key(self, name: str, kind: str = 'ed25519', comment: str | None = None) -> dict:
         key = ed25519.Ed25519PrivateKey.generate() if kind == 'ed25519' else rsa.generate_private_key(65537, 4096)
         pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
-        return self.add_key(name, pem, comment=comment)
+        return self._store_key(name, pem, None, comment, 'generated')
 
     def list_keys(self) -> list[dict]:
-        rows = self.conn.all("""SELECT k.key_id, k.name, k.key_type, k.fingerprint, k.created_at, k.disabled_at,
+        rows = self.conn.all("""SELECT k.key_id, k.name, k.key_type, k.fingerprint, k.created_at, k.disabled_at, k.origin,
                                        (SELECT count(*) FROM key_bindings b WHERE b.key_id = k.key_id)
                                 FROM ssh_keys k ORDER BY k.name""")
-        return [dict(zip(('key_id', 'name', 'type', 'fingerprint', 'created_at', 'disabled_at', 'bindings'), r)) for r in rows]
+        return [dict(zip(('key_id', 'name', 'type', 'fingerprint', 'created_at', 'disabled_at', 'origin', 'bindings'), r)) for r in rows]
 
     def public_key(self, name: str) -> str:
         v = self.conn.scalar('SELECT public_key FROM ssh_keys WHERE name = :n', {'n': name})

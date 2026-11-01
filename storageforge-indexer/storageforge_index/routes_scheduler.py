@@ -25,7 +25,7 @@ def register(web, ctx):
             if stale:
                 return stale
             body = json_body()
-            if body.get('task_type') == 'command':
+            if scheduler.normalize_schedule(body)['task_type'] == 'command':
                 need('hosts.command')
             sched, token = scheduler.create_schedule(c, body, actor())
             core.audit(c, actor(), 'scheduler.create', 'ok', sched['host'], {'schedule_id': sched['schedule_id'], 'name': sched['name']})
@@ -47,7 +47,8 @@ def register(web, ctx):
         try:
             if request.method == 'PUT':
                 body = json_body()
-                if 'command' in (body.get('task_type'), scheduler.get_schedule(c, schedule_id)['task_type']):
+                curr = scheduler.get_schedule(c, schedule_id)
+                if 'command' in (scheduler.normalize_schedule(scheduler.merged(curr, body))['task_type'], curr['task_type']):
                     need('hosts.command')
                 sched = scheduler.update_schedule(c, schedule_id, body, actor())
                 core.audit(c, actor(), 'scheduler.update', 'ok', sched['host'], {'schedule_id': schedule_id, 'name': sched['name']})
@@ -72,7 +73,8 @@ def register(web, ctx):
         try:
             body = json_body()
             paused = bool(body.get('paused', True))
-            if not paused:                   # stopping is always allowed; starting puts the commands back on the host
+            # stopping is allowed, but it deploys what the schedule says now: an edit since the last deploy is a deploy like any other
+            if not paused or scheduler.changed_since_deploy(c, scheduler.get_schedule(c, schedule_id)):
                 need_for_commands(c, 'schedules', schedule_id)
             sched = scheduler.pause_schedule(c, schedule_id, paused, actor())
             who = actor()

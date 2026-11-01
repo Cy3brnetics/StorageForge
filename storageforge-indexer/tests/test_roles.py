@@ -4,8 +4,9 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from unittest import mock
 
-from storageforge_index import permissions, server, users
+from storageforge_index import deploy, permissions, preflight, scheduler, server, users
 from storageforge_index.db import MIGRATIONS, Database
 
 PW = 'a long enough password'
@@ -260,7 +261,7 @@ class Migration(unittest.TestCase):
             conn.execute("INSERT INTO users (username, password_hash, created_at, role) VALUES ('old', 'h', :t, 'operator')", {'t': now})
             uid = conn.scalar("SELECT user_id FROM users WHERE username = 'old'")
             conn.execute("INSERT INTO web_sessions (sid_hash, user_id, created_at) VALUES ('s', :u, :t)", {'u': uid, 't': now})
-            self.assertEqual(db.migrate(conn), ['024_roles_invites.sql', '025_invite_grants.sql', '026_job_state.sql', '028_remote_nodes.sql'])
+            self.assertEqual(db.migrate(conn), ['024_roles_invites.sql', '025_invite_grants.sql', '026_job_state.sql', '027_key_origin.sql', '028_remote_nodes.sql'])
             self.assertEqual(conn.scalar("SELECT role FROM users WHERE username = 'old'"), 'operator')
             self.assertEqual(conn.scalar('SELECT count(*) FROM web_sessions'), 1)
             users.set_role(conn, 'old', 'search')                             # the old CHECK is gone
@@ -271,6 +272,66 @@ class Migration(unittest.TestCase):
             conn.close()
         self.assertTrue(sqlite3.sqlite_version_info >= (3, 35))
 
+
+
+class PrivilegeChain(Base):
+    """A planner or dry-run account must not reach root on a host through how a request is spelled."""
+    def setUp(self):
+        super().setUp()
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, ssh_port) VALUES ('h1', '10.9.9.9', 'root', 22)")
+        self.started = []
+        for target, attr, stub in ((deploy, 'start_group', lambda _db, items, _who, **_k: (self.started.extend(items), 'a' * 32)[1]),
+                                   (deploy, 'ready', lambda *_a, **_k: True), (preflight, 'blockers', lambda *_a, **_k: [])):
+            patcher = mock.patch.object(target, attr, stub)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.admin = self.as_user('root')
+        self.task = self.admin.post('/api/tasks', json={'name': 'raw', 'host': 'h1', 'blocks': [{'type': 'command', 'params': {'cmd': 'id'}}]}).json['id']
+
+    def with_perms(self, name, *perms):
+        users.save_role(self.conn, name, '', list(perms), 'root', True)
+        return self.as_user(name, name)
+
+    def test_a_dry_run_cannot_run_for_real(self):
+        c = self.with_perms('dry', 'deploy.report', 'deploy.view')
+        self.assertEqual(c.post('/api/deploy/start', json={'kind': 'tasks', 'ref': self.task, 'mode': 'report', 'run': True}).status_code, 400)
+        self.assertEqual(self.started, [])
+
+    def test_remove_does_not_excuse_a_run(self):
+        c = self.with_perms('applier', 'deploy.report', 'deploy.apply', 'deploy.view')
+        self.assertEqual(c.post('/api/deploy/start', json={'kind': 'tasks', 'ref': self.task, 'mode': 'apply', 'remove': True, 'run': True}).status_code, 400)
+        self.assertEqual(c.post('/api/deploy/start', json={'kind': 'tasks', 'ref': self.task, 'mode': 'apply', 'run': True}).status_code, 403)
+        self.assertEqual(self.started, [])
+
+    def test_the_command_check_sees_the_saved_type(self):
+        c = self.with_perms('planner', 'plans.view', 'plans.edit')
+        base = {'host': 'h1', 'cron_expr': '0 3 * * *', 'task_ref': 'id'}
+        for i, spelled in enumerate(('command', 'Command', ' COMMAND ')):
+            self.assertEqual((spelled, c.post('/api/scheduler/schedules', json={**base, 'name': f's{i}', 'task_type': spelled}).status_code), (spelled, 403))
+        plain = self.admin.post('/api/tasks', json={'name': 'plain', 'host': 'h1', 'blocks': [{'type': 'require_mounted', 'params': {'path': '/'}}]}).json['id']
+        sid = c.post('/api/scheduler/schedules', json={**base, 'name': 'ok', 'task_type': 'task', 'task_ref': str(plain)}).json['schedule']['schedule_id']
+        self.assertEqual(c.put(f'/api/scheduler/schedules/{sid}', json={'task_type': 'COMMAND'}).status_code, 403)
+        c2 = self.with_perms('pauser', 'plans.view', 'plans.edit', 'deploy.apply')
+        unchanged = scheduler.schedule_hash(self.conn, scheduler.get_schedule(self.conn, sid))
+        with mock.patch.object(scheduler, 'installed', lambda _c: {str(sid): [{'host': 'h1', 'hash': unchanged, 'at': 0, 'by': 'x'}]}):
+            self.assertEqual(c2.put(f'/api/scheduler/schedules/{sid}', json={'task_ref': str(self.task)}).status_code, 200)    # planning it is allowed
+            self.assertEqual(c2.post(f'/api/scheduler/schedules/{sid}/pause', json={'paused': True}).status_code, 403)         # pushing it is not
+            self.assertEqual(self.started, [])
+            c2.put(f'/api/scheduler/schedules/{sid}', json={'task_ref': str(plain)})
+            self.assertEqual(c2.post(f'/api/scheduler/schedules/{sid}/pause', json={'paused': True}).status_code, 200)         # an unchanged one stops
+
+    def test_env_is_for_commands_only(self):
+        plain = self.admin.post('/api/tasks', json={'name': 'plain', 'host': 'h1', 'blocks': [{'type': 'require_mounted', 'params': {'path': '/'}}]}).json['id']
+        r = self.admin.post('/api/scheduler/schedules', json={'name': 'e', 'host': 'h1', 'cron_expr': '0 3 * * *', 'task_type': 'task', 'task_ref': str(plain), 'config': {'env': {'RSYNC_RSH': 'x'}}})
+        self.assertEqual(r.status_code, 400)
+
+    def test_state_changes_come_from_this_origin(self):
+        for headers in ({'Sec-Fetch-Site': 'same-site'}, {'Sec-Fetch-Site': 'cross-site'}, {'Origin': 'https://evil.example'}, {'Origin': 'null'}):
+            self.assertEqual((headers, self.admin.post('/api/logout', headers=headers).status_code), (headers, 403))
+        self.assertEqual(self.admin.get('/api/me', headers={'Sec-Fetch-Site': 'cross-site'}).status_code, 200)
+        self.assertEqual(self.admin.post('/api/jobs/report', json={}).status_code, 401)     # no browser headers: judged by its token
+        self.assertEqual(self.admin.post('/api/reauth', json={'password': PW}, headers={'Sec-Fetch-Site': 'same-origin'}).status_code, 200)
+        self.assertEqual(self.admin.post('/api/reauth', json={'password': PW}, headers={'Origin': 'https://localhost:8443'}).status_code, 200)   # the proxy passes the Host without its port
 
 if __name__ == '__main__':
     unittest.main()

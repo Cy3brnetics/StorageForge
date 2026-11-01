@@ -15,6 +15,7 @@ import time
 import zoneinfo
 from typing import Any
 
+from . import site
 from . import alerts, changes, moves, schedscript, tasks
 from .db import Conn, epoch
 from .moves import find_host, host_slug, hosts, slug
@@ -386,6 +387,10 @@ def _check_save(conn: Conn, body: dict, s: dict):
     unsafe = sorted(k for k in (raw.get('env') or {}) if UNSAFE_ENV.fullmatch(str(k)))
     if unsafe:
         raise ValueError(f'these variables would change what the script runs: {", ".join(unsafe)}')
+    # Generated scripts read no variables, so here one could only change a program they call (RSYNC_RSH, TAR_OPTIONS and
+    # more than any list can name), which would make a plan a root shell without hosts.command.
+    if s['config']['env'] and s['task_type'] != 'command':
+        raise ValueError('only a command schedule takes environment variables')
     for key in ('output_must_match', 'output_must_not_match'):
         try:
             re.compile(s['config']['verify_rules'][key])
@@ -535,10 +540,9 @@ def list_schedules(conn: Conn, host: str | None = None, task_type: str | None = 
     return out
 
 
-def update_schedule(conn: Conn, schedule_id: int, body: dict, actor: str) -> dict:
-    curr = get_schedule(conn, schedule_id)
-    # Merge existing fields
-    merged = {
+def merged(curr: dict, body: dict) -> dict:
+    """A saved schedule with an edit's fields over it."""
+    return {
         'name': body.get('name', curr['name']),
         'host': body.get('host', curr['host']),
         'cron_expr': body.get('cron_expr', curr['cron_expr']),
@@ -547,7 +551,11 @@ def update_schedule(conn: Conn, schedule_id: int, body: dict, actor: str) -> dic
         'config': {**curr['config'], **(body.get('config') or body.get('config_json') or {})},
         'paused': body.get('paused', curr['paused']),
     }
-    s = normalize_schedule(merged)
+
+
+def update_schedule(conn: Conn, schedule_id: int, body: dict, actor: str) -> dict:
+    curr = get_schedule(conn, schedule_id)
+    s = normalize_schedule(merged(curr, body))
     _check_save(conn, body, s)
     now = int(time.time())
 
@@ -576,6 +584,12 @@ def update_schedule(conn: Conn, schedule_id: int, body: dict, actor: str) -> dic
                         config_json = :cfg, paused = :p, updated_at = :now, next_run_at = :nxt
                     WHERE schedule_id = :id""", params)
     return get_schedule(conn, schedule_id)
+
+
+def changed_since_deploy(conn: Conn, schedule: dict) -> bool:
+    """Whether a host holds this schedule in another form than it has now. Pausing alone is not a change."""
+    same = {schedule_hash(conn, {**schedule, 'paused': p}) for p in (0, 1)}
+    return any(d['hash'] not in same for d in installed(conn).get(str(schedule['schedule_id']), []))
 
 
 def delete_schedule(conn: Conn, schedule_id: int, actor: str):
@@ -1131,6 +1145,7 @@ ls /etc/storageforge/scheduler/*.json >/dev/null 2>&1 || rm -f /usr/local/sbin/s
 """
 
 
+@site.stamped
 def generate_install_script(conn: Conn, schedule: dict, report_url: str | None, token: str) -> str:
     """The script that puts a schedule on its host. With no flags it only reports, like every script StorageForge writes.
     token: empty leaves the host without one, and it reports through scans."""
@@ -1139,7 +1154,7 @@ def generate_install_script(conn: Conn, schedule: dict, report_url: str | None, 
     cfg = schedule['config']
     q = shlex.quote
     task_script, script_args = generate_task_script(conn, schedule)
-    env = {k: v for k, v in (cfg.get('env') or {}).items() if not UNSAFE_ENV.fullmatch(k)}    # a row from before the env rules too
+    env = {k: v for k, v in (cfg.get('env') or {}).items() if not UNSAFE_ENV.fullmatch(k)} if schedule['task_type'] == 'command' else {}    # a row from before the env rules too
     task_sh, run_sh = f'{LIB}/task-{sid}.sh', f'{LIB}/run-{sid}.sh'
     runner = schedscript.runner_script(schedule, script_args, parse_cron(schedule['cron_expr']), report_url, env, task_sh)
     paused = 1 if schedule.get('paused') else 0

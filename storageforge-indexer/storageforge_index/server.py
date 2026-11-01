@@ -142,7 +142,7 @@ import traceback
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from flask import Flask, Response, abort, g, jsonify, redirect, request, send_from_directory, session
 from flask_limiter import Limiter
@@ -152,7 +152,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, remotes, blueprint, canvas, changes, deploy, docker, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, retire, routes_accounts, routes_git, routes_scheduler, scheduler, shares, snapjobs, tasks, users)
+               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_git, routes_scheduler, scheduler, shares, site, snapjobs, tasks, users)
 from .capacity import parse_size, trends
 from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
@@ -367,7 +367,7 @@ class App:
                 self.audit(conn, 'system', 'backup.create', 'failed', None, {'error': str(exc)[:300]})
             if CONFIG_EXPORT_DIR:
                 try:
-                    out['hostconfigs'] = hostconfig.export_to(conn, CONFIG_EXPORT_DIR)
+                    out['hostconfigs'] = hostconfig.export_to(conn, site.export_dir(conn, CONFIG_EXPORT_DIR))
                     self.audit(conn, 'system', 'hostconfig.export', 'ok', None, out['hostconfigs'])
                 except Exception as exc:
                     out['hostconfigs_error'] = str(exc)
@@ -459,6 +459,15 @@ class _FromProxy:
         return self.plain(environ, start_response)
 
 
+def session_cookie_name(secure: bool) -> str:
+    """Browsers keep cookies by host, not port: sites on one machine need their own name, or signing in to one signs
+    you out of the other."""
+    suffix = os.environ.get('STORAGEFORGE_COOKIE_SUFFIX', '')
+    if suffix and not re.fullmatch(r'[a-z0-9-]{1,32}', suffix):
+        raise SystemExit('STORAGEFORGE_COOKIE_SUFFIX: lowercase letters, digits and - only (max 32)')
+    return f'{"__Host-" if secure else ""}sf_session{"_" + suffix if suffix else ""}'
+
+
 def create_app(core: App, session_secret: str, secure_cookies: bool = False, proxy_hops: int = 0,
                proxy_host: str = '') -> Flask:
     web = Flask(__name__, static_folder=None)
@@ -467,7 +476,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     web.config.update(
         SECRET_KEY=session_secret, MAX_CONTENT_LENGTH=MAX_BODY,
         # __Host-: browsers only accept it over https, for Path=/ and without Domain, so no other site or subdomain can set it
-        SESSION_COOKIE_NAME='__Host-sf_session' if secure_cookies else 'sf_session',
+        SESSION_COOKIE_NAME=session_cookie_name(secure_cookies),
         SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Strict',
         SESSION_COOKIE_SECURE=secure_cookies,
         # the cookie signature's age limit; each user's own (shorter) session length is checked in load_user
@@ -518,6 +527,19 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         def wrapped(*args, **kwargs):
             return password_stale() or view(*args, **kwargs)
         return wrapped
+
+    @web.before_request
+    def same_origin_only():
+        """SameSite counts another port on this host as the same site, so a page there could still post a form here with
+        the cookie. Job reports send no such headers, and browsers that send neither are too old to reach this CSP."""
+        if request.method in ('GET', 'HEAD', 'OPTIONS'):
+            return None
+        fetch, origin = request.headers.get('Sec-Fetch-Site'), request.headers.get('Origin')
+        if fetch:
+            ok = fetch in ('same-origin', 'none')
+        else:
+            ok = not origin or urlsplit(origin).hostname == urlsplit(f'//{request.host}').hostname
+        return None if ok else (jsonify(error='this request came from another site'), 403)
 
     @web.before_request
     def role_allows():
@@ -765,7 +787,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
 
     def me():
         login_at = session.get('login_at', 0)
-        return dict(username=current_user.username, role=current_user.role, permissions=sorted(current_user.permissions), session_minutes=current_user.session_minutes,
+        return dict(site=site.name(conn()), username=current_user.username, role=current_user.role, permissions=sorted(current_user.permissions), session_minutes=current_user.session_minutes,
                     session_ends=login_at + current_user.session_minutes * 60, min_minutes=users.SESSION_MINUTES,
                     max_minutes=users.MAX_SESSION_MINUTES)
 
@@ -1508,6 +1530,18 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if holds:
             need('hosts.command')
 
+    def need_for_deploy(c, kind, ref, mode, options):
+        """What a deploy really does decides what it takes. run executes the script whatever the mode says and goes first in
+        the items, so it cannot stand beside report (a dry run's permission) or remove (which needs no hosts.command)."""
+        if options.get('run') and (mode != 'apply' or options.get('remove')):
+            raise ValueError('run needs mode apply, and cannot be combined with remove')
+        if mode == 'apply':
+            need('deploy.apply')
+        if options.get('destructive'):
+            need('deploy.destructive')
+        if mode == 'apply' and not options.get('remove'):
+            need_for_commands(c, kind, ref)
+
     def deploy_digest(c, kind, ref):
         """A fingerprint of what this deploy is made from, to tell whether a dry run still describes it."""
         try:
@@ -1533,14 +1567,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         kind, mode, ref = body.get('kind'), body.get('mode', 'report'), body.get('ref')
         if mode not in ('report', 'apply'):
             raise ValueError('mode is report or apply')
-        if mode == 'apply':
-            need('deploy.apply')
-        if body.get('destructive'):
-            need('deploy.destructive')
         c = conn()
-        if mode == 'apply' and not body.get('remove'):
-            need_for_commands(c, kind, ref)
         options = {k: bool(body[k]) for k in ('remove', 'paused', 'destructive', 'run') if body.get(k)}
+        need_for_deploy(c, kind, ref, mode, options)
         items = deploy_items_for(c, kind, ref, mode, options)
         if not items:
             raise ValueError('nothing to deploy: no hosts are involved')
@@ -1588,10 +1617,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         g = engine.get(c, gid)
         if not g:
             raise LookupError('no such deploy')
-        if g['options'].get('destructive'):
-            need('deploy.destructive')
-        if g['mode'] == 'apply' and not g['options'].get('remove'):
-            need_for_commands(c, g['kind'], g['ref'])
+        need_for_deploy(c, g['kind'], g['ref'], g['mode'], g['options'])
         if engine.running(gid):
             return jsonify(error='that deploy is still running'), 409
         if g['kind'] not in ('jobs', 'shares', 'changes', 'tasks', 'schedules'):
@@ -1839,7 +1865,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if not v:
             return jsonify(error=f'nothing captured for {host}: scan it first'), 404
         core.audit(conn(), actor(), 'hostconfig.script', 'ok', v['host'], {'version': v['config_id']})
-        return Response(reinstall.script(v).encode('utf-8', 'surrogateescape'), mimetype='text/x-shellscript',
+        return Response(site.stamp(conn(), reinstall.script(v)).encode('utf-8', 'surrogateescape'), mimetype='text/x-shellscript',
                         headers={'Content-Disposition': f'attachment; filename="reinstall-{moves.host_slug(v["host"])}.sh"'})
 
     @web.get('/api/hostconfigs/bundle')
@@ -2164,8 +2190,10 @@ def planner_activity(c, host: str) -> dict:
 
 def serve(db: Database, host: str, port: int, scan_interval: int | None, parallel: int = 4):
     from waitress import serve as waitress_serve
+    server_lock = reset.hold_server_lock(db)     # noqa: F841  a reset refuses while this is held; freed when the process ends
     conn = db.connect()
     try:
+        site.ensure(conn)
         if not users.count(conn):
             print('warning: no web users yet; create one with: storageforge-index user add <name>', file=sys.stderr)
         stale = conn.all("SELECT scan_id FROM scans WHERE status = 'running'")   # killed by the last shutdown

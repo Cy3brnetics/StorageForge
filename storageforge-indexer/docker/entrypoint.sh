@@ -16,7 +16,7 @@ IMPORT_DIR=${STORAGEFORGE_IMPORT_DIR:-/run/secrets/ssh-import}
 
 # every storageforge-index subcommand (tests/test_consistency.py fails when one is missing)
 case "${1:-serve}" in
-  remote|scan|search|changes|dupes|folders|access|moves|tasks|git|shares|plan|deploy|schedule|docker|backup|restore|prune|hosts|config|\
+  remote|scan|search|changes|dupes|folders|access|moves|tasks|git|shares|plan|deploy|schedule|docker|backup|restore|reset|site|prune|hosts|config|\
   export-markdown|report|vault|audit|log|graph|canvas|blueprint|migrate|serve|healthcheck|user|-*) ;;
   *) exec "$@" ;;
 esac
@@ -69,8 +69,8 @@ find "$RUNTIME" -mindepth 1 -maxdepth 1 -name 'agent-*' -exec rm -rf {} + 2>/dev
 # A restore replaces the database: migrating it, creating a vault in it or importing keys into it first would fail on
 # the damaged database it is meant to replace, or be thrown away with an empty one. The next start migrates the
 # restored database and checks that the vault secret unlocks it.
-if [ "$cmd" = restore ]; then
-  log "restore: data=$DATA"
+if [ "$cmd" = restore ] || [ "$cmd" = reset ]; then
+  log "$cmd: data=$DATA"
   exec storageforge-index "$@"
 fi
 

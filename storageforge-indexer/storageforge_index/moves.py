@@ -25,6 +25,7 @@ import re
 import shlex
 import time
 
+from . import site
 from .db import Conn
 from .scriptkit import HELPERS, REMOTE, comments, host_name, one_line, package_check
 
@@ -573,6 +574,7 @@ def delete_plan(conn: Conn, plan_id: int):
 
 
 # ── the script ─────────────────────────────────────────────────────────
+@site.stamped
 def script(conn: Conn, plan: dict) -> str:
     plan = normalize(plan)
     hs, chk = hosts(conn), check(conn, plan)

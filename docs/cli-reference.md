@@ -126,6 +126,7 @@ Both report commands also take `--title`, `--as-of YYYY-MM-DD`, `--kwh-price`, `
 | `vault bind --key K --host H --user U [--port P] [--actions scan,checksum] [--priority N]` | allow a key to reach a host, glob or CIDR |
 | `vault unbind --id ID`, `vault bindings` | |
 | `vault resolve --host H [--action A]` | which key and user a host would use |
+| `vault policy [generate-only\|open]` | show or set whether imported keys are refused |
 | `vault rotate-secret` | rewrap everything under `$STORAGEFORGE_VAULT_NEW_SECRET` |
 | `audit tail [--limit N] [--format table\|json]` | newest entries |
 | `audit verify` | check the HMAC chain |
@@ -180,7 +181,15 @@ See [Remote nodes](remote-nodes.md).
 | `config export [HOST] [--id N] -o FILE` | a `.tar.gz` of scripts, records and config files |
 | `backup [create] [--full] [--keep N] [--dir D]` | write a backup (essentials by default) |
 | `backup list [--dir D]` | backups on disk |
-| `restore FILE --yes` | replace the database with a backup; stop the server first |
+| `restore FILE --yes` | replace the database with a backup from this site; stop the server first |
+| `hosts keys [HOST]` | keys in `authorized_keys` from the last scan, against the vault; exit 1 if any is unknown |
+| `hosts allow-key FP [--note N]`, `hosts disallow-key FP` | accept a key that isn't in the vault, or undo that |
+| `site [show]`, `site rename NAME` | which client this database belongs to |
+| `site init --name NAME` | name a new site, refuse imported keys, print the first admin's link |
+| `site status` | name, hosts, last scan, open alerts and last backup, tab-separated |
+| `site fingerprints` | its key and host key fingerprints, to compare sites |
+| `site archive [--archive D]` | write the archive `reset` makes, changing nothing; stop the server first |
+| `reset --site-name NAME [--archive D] [--abandon-deployed] --yes` | archive this site and start a new one ([details](operations.md#starting-a-new-site)) |
 | `prune [--days N] [--max-rows N] [--vacuum]` | drop old change history and job rows; `--vacuum` shrinks the file |
 
 ## Exit codes

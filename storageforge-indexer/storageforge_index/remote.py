@@ -303,6 +303,13 @@ echo '@@smb'; if command -v smbd >/dev/null 2>&1 || [ -f /etc/samba/smb.conf ]; 
   pgrep -x smbd >/dev/null 2>&1 && echo '# smbd running'; testparm -s 2>/dev/null || cat /etc/samba/smb.conf 2>/dev/null; fi
 echo '@@configs'; for f in /etc/fstab /etc/crypttab /etc/mdadm.conf /etc/mdadm/mdadm.conf /etc/exports /etc/exports.d/*.exports /etc/samba/*.conf; do
   [ -f "$f" ] || continue; if [ -r "$f" ]; then printf '%s\t' "$f"; head -c 262144 "$f" | base64 | tr -d '\n'; echo; else printf '%s\t!\n' "$f"; fi; done
+echo '@@authkeys'; getent passwd 2>/dev/null | awk -F: '$3==0 || ($3>=1000 && $3<60000) {print $1 ":" $6}' | while IFS=: read -r u h; do
+  if [ -e "$h" ] && [ ! -x "$h" ] || { [ -d "$h/.ssh" ] && [ ! -x "$h/.ssh" ]; }; then printf '!\t%s\n' "$u"; continue; fi
+  for f in "$h/.ssh/authorized_keys" "$h/.ssh/authorized_keys2"; do
+    [ -e "$f" ] || continue; if [ -r "$f" ]; then head -c 262144 "$f" | awk -v u="$u" '!/^[ \t]*#/ { for (i = 1; i < NF; i++) if ($i ~ /^(ssh-|ecdsa-|sk-)/) { c = ""; for (j = i + 2; j <= NF; j++) c = c " " $j; print u "\t" $(i + 1) "\t" c; break } }'
+    else printf '!\t%s\n' "$u"; fi
+  done
+done
 echo '@@accounts'; getent passwd 2>/dev/null | awk -F: '$3>=1000 && $3<60000 {print "u\t" $1 "\t" $3 "\t" $4 "\t" $6 "\t" $7}'
 getent group 2>/dev/null | awk -F: '$4!="" || ($3>=1000 && $3<60000) {print "g\t" $1 "\t" $3 "\t" $4}'
 echo '@@packages'; (PATH="$PATH:/usr/sbin:/sbin"; for m in apt-get dnf yum zypper pacman; do command -v "$m" >/dev/null 2>&1 && { echo "pm $m"; break; }; done
@@ -356,6 +363,7 @@ class HostInventory:
     moves: str = ''     # <plan>/<step>.done and .cutover from move scripts run by hand
     health: dict | None = None     # disk health from the root-owned collector, if installed (health.py)
     snapshots: dict | None = None  # ZFS snapshot counts and snapper configs
+    authkeys: dict | None = None   # fingerprints in accounts' authorized_keys (authkeys.py); None from older scans
     snapjobs: list | None = None   # rsnapshot and snapper jobs on the host, whoever set them up (snapfind.py)
 
     def to_json(self) -> str:
@@ -363,7 +371,7 @@ class HostInventory:
             'collected_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
             'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb, 'btrfs': self.btrfs,
             'jobs': self.jobs, 'tasks': self.tasks, 'schedules': self.schedules, 'runs': self.runs, 'managed': self.managed, 'ids': self.ids, 'packages': self.packages,
-            'configs': self.configs, 'accounts': self.accounts, 'moves': self.moves, 'health': self.health, 'snapshots': self.snapshots, 'snapjobs': self.snapjobs,
+            'configs': self.configs, 'accounts': self.accounts, 'authkeys': self.authkeys, 'moves': self.moves, 'health': self.health, 'snapshots': self.snapshots, 'snapjobs': self.snapjobs,
             'mounts': [asdict(m) for m in self.mounts],
         })
 
@@ -469,6 +477,7 @@ def collect_inventory(t: Transport) -> HostInventory:
     apply_mergerfs(mounts, sec.get('mergerfs', ''))
     access, user = (lines('access') + ['', ''])[:2]
     from .health import parse_report, parse_snapshots
+    from .authkeys import parse as parse_authkeys
     from .hostconfig import parse_configs
     return HostInventory(hostname, ip, ' · '.join(lines('os')) or None, mounts, lsblk,   # optional fields by name: order-proof
                          sec.get('zpool', '').strip(), sec.get('df', '').strip(), lvs=sec.get('lvs', '').strip(),
@@ -482,4 +491,5 @@ def collect_inventory(t: Transport) -> HostInventory:
                          snapjobs=snapfind.parse(sec.get('snapjobs', '')),
                          configs=parse_configs(sec['configs']) if 'configs' in sec else None,
                          accounts=sec.get('accounts', '').strip(),
+                         authkeys=parse_authkeys(sec['authkeys']) if 'authkeys' in sec else None,
                          machine_id=next((m for m in lines('machineid') if re.fullmatch(r'[0-9a-f]{32}', m)), ''))
