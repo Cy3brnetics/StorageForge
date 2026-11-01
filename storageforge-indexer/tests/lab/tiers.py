@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Tiers 1, 3, 4 and 5 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py.
+"""Tiers 1, 3, 4, 5 and 6 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py.
 They change the VMs, so run them through examples/lab/lab.sh test --all, which resets the lab around each tier.
 
-    tiers.py run <0|1|3|4|5>   tier 0 as a result file, or one tier against StorageForge on sf-ctl, through its API
+    tiers.py run <0|1|3|4|5|6>   tier 0 as a result file, or one tier against StorageForge on sf-ctl, through its API
     tiers.py report          the table per distro from every results file, into reports/
 
 Results are checked on the VMs and against the seed manifests where a VM can answer, and against the running
@@ -839,6 +839,225 @@ def re_uuid(show):
     return bool(m) and m.group(1) != '-'
 
 
+def tier6(r):
+    """The sync engine on real hosts: real ssh and the chrooted daemon, root btrfs and zfs. The overlays themselves are not
+    here: a second address on the source stands in for a mesh address, which is all the job can see of one."""
+    api = demo.sign_in()
+    demo.scan_everything(api)
+    demo.set_up_deploy_access(api)
+    root = lambda vm, command: ssh(vm, f'sudo -n bash -c {shlex.quote(command)}')   # noqa: E731
+    deployable = roles.deployable()
+    source, runner = deployable[0], roles.other_than(deployable[0])
+    base = f'{source.room}/sync6'
+
+    def job(name, method, src_node, src, dst_node, dst, **options):
+        plan = api.post('/api/moves', {'name': name, 'steps': [{'method': method, 'src': {'host': src_node.name, 'path': src},
+                                       'dst': {'host': dst_node.name, 'path': dst}, 'options': {'schedule': 'daily', **options}}]})
+        demo.deploy(api, 'jobs', plan['id'], name)
+        return f'p{plan["id"]}-{plan["steps"][0]["id"]}'
+
+    def run(jid, node, verb='run', kind='run'):
+        return job_run(api, jid, verb, kind, int(ssh(node.name, 'date +%s')))
+
+    def run_fails(jid, node):
+        since = int(ssh(node.name, 'date +%s'))
+        api.post(f'/api/deploy/jobs/{jid}/run')
+
+        def done():
+            got = [x for x in api.get(f'/api/deploy/jobs/{jid}')['runs'] if x['kind'] == 'run' and x['start'] >= since - 5]
+            return got[0] if got else None
+        return wait_for(f'{jid} run', done, 300)
+
+    def state(jid, node):
+        return json.loads(root(node.name, f'cat /var/lib/storageforge/jobs/{jid}/state.json'))
+
+    def digest(node, path):
+        return root(node.name, f'sha256sum {shlex.quote(path)}').split()[0]
+
+    def nic(node):
+        return ssh(node.name, 'ip -4 route show default').split(' dev ')[1].split()[0]
+
+    def dedup_across():
+        src, dst = f'{base}/dedup-src', f'{runner.room}/sync6-dedup'
+        root(source.name, f'mkdir -p {src}/sub; head -c 8000000 /dev/urandom >{src}/sub/new-name.bin')
+        same = root(source.name, f'base64 {src}/sub/new-name.bin')
+        root(runner.name, f'mkdir -p {dst}')
+        ssh(runner.name, f'sudo -n bash -c "base64 -d >{dst}/old-name.bin"', stdin=same)
+        jid = job('Lab sync dedup', 'mirror', source, src, runner, dst, dedup=True)
+        got = run(jid, runner)
+        if 'dedup kept 8000000' not in (got['message'] or ''):
+            raise AssertionError(f'the file went over the network: {got["message"]}')
+        if digest(runner, f'{dst}/sub/new-name.bin') != digest(source, f'{src}/sub/new-name.bin'):
+            raise AssertionError('other bytes at the destination')
+        run(jid, runner, 'verify', 'verify')
+        return got['message']
+    r.check('sync-dedup', runner.name, dedup_across)
+
+    def reflink():
+        node = next((n for n in roles.having('btrfs') if n.recv), None)
+        if not node:
+            return 'no btrfs host'
+        area = f'{node.recv}/sync6-reflink'
+        root(node.name, f'mkdir -p {area}/a; head -c 5000000 /dev/urandom >{area}/a/f')
+        got = run(job('Lab sync reflink', 'copy', node, f'{area}/a', node, f'{area}/b', dedup=True), node)
+        if 'dedup kept 5000000' not in (got['message'] or ''):
+            raise AssertionError(got['message'])
+        shared = root(node.name, f'btrfs filesystem du -s --raw {area}').splitlines()[1].split()[2]
+        if int(shared) < 5000000:
+            raise AssertionError(f'{shared} bytes shared: it was copied, not cloned')
+        return f'{shared} bytes shared'
+    r.check('sync-reflink', 'btrfs', reflink)
+
+    def routes_and_failover():
+        """Two addresses on the source; the first goes away while a limited transfer runs."""
+        dev = nic(source)
+        spare = source.ip.rsplit('.', 1)[0] + '.211'
+        root(source.name, f'ip addr add {spare}/24 dev {dev}')
+        src, dst = f'{base}/route-src', f'{runner.room}/sync6-route'
+        root(source.name, f'mkdir -p {src}; head -c 100000000 /dev/urandom >{src}/big.bin')
+        try:
+            jid = job('Lab sync routes', 'mirror', source, src, runner, dst, bwlimit=2000, routes=[
+                {'via': 'mesh', 'address': spare}, {'via': 'mesh', 'address': source.ip, 'iface': nic(runner)}])
+            if 'storageforge-source' not in root(runner.name, f'cat /etc/storageforge/jobs/{jid}.hostkey'):
+                raise AssertionError('no pinned key reached the runner')
+            since = int(ssh(runner.name, 'date +%s'))
+            api.post(f'/api/deploy/jobs/{jid}/run')
+            wait_for('the transfer to start', lambda: root(runner.name, f'grep -q transferring /var/lib/storageforge/jobs/{jid}/state.json && echo y; true').strip(), 120)
+            time.sleep(10)
+            first = state(jid, runner)
+            if first['node'] != spare:
+                raise AssertionError(f'did not start on the first route: {first}')
+            locked = ssh(runner.name, f'sudo -n env LOCK_WAIT=0 /usr/local/sbin/storageforge-job with-lock {dst} -- true; echo rc=$?', check=False)
+            if 'rc=75' not in locked:
+                raise AssertionError(f'a rotation could have run during a sync stream: {locked[-200:]}')
+            root(source.name, f'ip addr del {spare}/24 dev {dev}')
+
+            def done():
+                got = [x for x in api.get(f'/api/deploy/jobs/{jid}')['runs'] if x['kind'] == 'run' and x['start'] >= since - 5]
+                return got[0] if got else None
+            got = wait_for('the run to finish', done, 500)
+            if got['rc'] != 0:
+                raise AssertionError(f'rc {got["rc"]}: {got["message"]}')
+            end = state(jid, runner)
+            if end['node'] != source.ip:
+                raise AssertionError(f'finished on {end["node"]}')
+            if digest(runner, f'{dst}/big.bin') != digest(source, f'{src}/big.bin'):
+                raise AssertionError('other bytes after the failover')
+            live = next(j for j in api.get('/api/deploy')['jobs'] if j['id'] == jid).get('live') or {}
+            return f'moved to {end["node"]} mid-run, same bytes, API shows {live.get("state")}'
+        finally:
+            root(source.name, f'ip addr del {spare}/24 dev {dev} 2>/dev/null; true')
+    r.check('sync-failover', runner.name, routes_and_failover)
+
+    def room_check(node, area):
+        def check():
+            root(node.name, f'mkdir -p {area}/src; echo x >{area}/src/f')
+            no = job(f'Lab sync no room {node.name}', 'copy', node, f'{area}/src', node, f'{area}/no', preflight=True, reserve_gb=100000)
+            got = run_fails(no, node)
+            if got['rc'] != 6:
+                raise AssertionError(f'rc {got["rc"]}: {got["message"]}')
+            if root(node.name, f'ls {area}/no 2>/dev/null; true').strip():
+                raise AssertionError('it copied anyway')
+            run(job(f'Lab sync room {node.name}', 'copy', node, f'{area}/src', node, f'{area}/yes', preflight=True, reserve_gb=0), node)
+            return got['message'][:120]
+        return check
+    for node in [next(iter(roles.having('btrfs')), None), next(iter(roles.having('zfs')), None), next((n for n in deployable if not n.can('btrfs') and not n.can('zfs')), None)]:
+        if node:
+            r.check('sync-room', node.name, room_check(node, f'{node.room}/sync6-room'))
+
+    def btrfs_stream():
+        frm, to = roles.sender(), roles.receiver()
+        dst = f'{to.recv}/sync6-stream'
+        root(frm.name, f'echo one >{frm.subvol}/sync6-marker')
+        jid = job('Lab sync btrfs', 'mirror', frm, frm.subvol, to, dst, transport='btrfs', preflight=True, reserve_gb=0)
+        first = run(jid, to)
+        if root(to.name, f'cat {dst}/latest/sync6-marker').strip() != 'one':
+            raise AssertionError('the first stream did not arrive')
+        root(frm.name, f'echo two >{frm.subvol}/sync6-marker')
+        time.sleep(7)                      # job_run takes any run since 5 seconds ago
+        second = run(jid, to)
+        if 'incremental' not in second['message']:
+            raise AssertionError(f'not incremental: {second["message"]}')
+        if root(to.name, f'cat {dst}/latest/sync6-marker').strip() != 'two':
+            raise AssertionError('the second stream did not arrive')
+        if second['bytes'] >= max(first['bytes'], 1):
+            raise AssertionError(f'incremental sent {second["bytes"]}, the full one {first["bytes"]}')
+        if len(root(to.name, f'ls {dst}/.storageforge-stream').split()) != 1:
+            raise AssertionError('older copies were left on the receiver')
+        kept = root(frm.name, f'ls {frm.subvol}/.storageforge-snap/stream-{jid}').split()
+        if len(kept) != 1:
+            raise AssertionError(f'source snapshots left: {kept}')
+        if 'true' not in root(to.name, f'btrfs property get -ts {dst}/latest/ ro'):
+            raise AssertionError('the copy is writable')
+        run(jid, to, 'verify', 'verify')
+        return f'full {first["bytes"]} bytes, incremental {second["bytes"]}'
+    if len(roles.having('btrfs')) > 1:
+        r.check('sync-btrfs-stream', roles.receiver().name, btrfs_stream)
+
+    def inner_refused():
+        frm, to = roles.sender(), roles.receiver()
+        root(frm.name, f'mkdir -p {frm.subvol}/sync6-inner')
+        got = run_fails(job('Lab sync inner', 'mirror', frm, f'{frm.subvol}/sync6-inner', to, f'{to.recv}/sync6-inner', transport='btrfs'), to)
+        if got['rc'] == 0:
+            raise AssertionError('a folder inside a subvolume was sent as the whole subvolume')
+        return got['message'][:100]
+    if len(roles.having('btrfs')) > 1:
+        r.check('sync-btrfs-inner', roles.sender().name, inner_refused)
+
+    pools = roles.having('zfs')
+
+    def zfs_stream():
+        frm, to = pools[0], pools[1]
+        a, b = frm.tag('zfs-pool'), to.tag('zfs-pool')
+        src, dst = f'/{a}/sf6', f'/{b}/sf6'
+        root(frm.name, f'zfs create -o mountpoint={src} {a}/sf6; echo one >{src}/marker')
+        root(to.name, f'zfs create -o mountpoint={dst} {b}/sf6')
+        jid = job('Lab sync zfs', 'mirror', frm, src, to, dst, transport='zfs', preflight=True, reserve_gb=0)
+        first = run(jid, to)
+        root(frm.name, f'echo two >{src}/marker')
+        time.sleep(7)                      # job_run takes any run since 5 seconds ago
+        second = run(jid, to)
+        if 'incremental' not in second['message']:
+            raise AssertionError(f'not incremental: {second["message"]}')
+        target = f'{b}/sf6/sf-{jid}'
+        here = root(to.name, f'zfs list -H -t snapshot -d 1 -o name {target}').split()
+        there = root(frm.name, f'zfs list -H -t snapshot -d 1 -o name {a}/sf6').split()
+        if len(here) != 1 or len(there) != 1 or here[0].split('@')[1] != there[0].split('@')[1]:
+            raise AssertionError(f'snapshots: {here} and {there}')
+        guid = lambda vm, snap: root(vm, f'zfs get -Hp -o value guid {snap}').strip()   # noqa: E731
+        if guid(to.name, here[0]) != guid(frm.name, there[0]):
+            raise AssertionError('the guids differ')
+        if root(to.name, f'zfs get -H -o value mounted {target}').strip() != 'no':
+            raise AssertionError('the copy was mounted over a folder')
+        run(jid, to, 'verify', 'verify')
+        root(to.name, f'zfs set mountpoint=/mnt/sf6check {target}; zfs mount {target}')
+        text = root(to.name, 'cat /mnt/sf6check/marker').strip()
+        if text != 'two':
+            raise AssertionError(f'the copy reads {text}')
+        return f'full {first["bytes"]} bytes, incremental {second["bytes"]}, guids match'
+    if len(pools) > 1:
+        r.check('sync-zfs-stream', pools[1].name, zfs_stream)
+    else:
+        r.add('sync-zfs-stream', pools[0].name if pools else '-', None, 'needs two ZFS hosts in this build')
+
+    def duperemove():
+        node = next(n for n in roles.having('btrfs') if n.recv and n.pm != 'none')
+        area = f'{node.recv}/sync6-dupes'
+        root(node.name, f'mkdir -p {area}/src; head -c 4000000 /dev/urandom >{area}/src/a; cp --reflink=never {area}/src/a {area}/src/b')
+        jid = job('Lab sync duperemove', 'copy', node, f'{area}/src', node, f'{area}/dst', extent_dedup='weekly')
+        run(jid, node)
+        before = root(node.name, f'btrfs filesystem du -s --raw {area}/dst').splitlines()[1].split()
+        got = run(jid, node, 'dedupe', 'dedupe')
+        after = root(node.name, f'btrfs filesystem du -s --raw {area}/dst').splitlines()[1].split()
+        if int(after[1]) + int(after[2]) > 4500000:
+            raise AssertionError(f'still taking {after}, was {before}: {got["message"]}')
+        if not 3000000 <= int(got['bytes'] or 0) <= 4500000:
+            raise AssertionError(f'reported {got["bytes"]} bytes freed, from {before} to {after}')
+        return f'{before[1:3]} to {after[1:3]}: {got["message"]}'
+    if roles.having('btrfs'):
+        r.check('sync-duperemove', roles.having('btrfs')[0].name, duperemove)
+
+
 def tier0(r):
     p = subprocess.run([sys.executable, '-m', 'unittest', 'test_tier0', '-v'], cwd=Path(__file__).parent, capture_output=True, text=True, timeout=600)
     failed = set(re.findall(r'^(?:FAIL|ERROR): (\w+)', p.stderr, re.M))
@@ -902,7 +1121,7 @@ def main():
     tier = int(sys.argv[2])
     r = Results(tier)
     try:
-        {0: tier0, 1: tier1, 3: tier3, 4: tier4, 5: tier5}[tier](r)
+        {0: tier0, 1: tier1, 3: tier3, 4: tier4, 5: tier5, 6: tier6}[tier](r)
     except Exception as exc:
         r.add('tier-setup', '-', False, f'{type(exc).__name__}: {str(exc)[:170]}', traceback.format_exc())
     return 0 if r.save() else 1

@@ -393,7 +393,7 @@ stream_run() { # -> rc, msg; pre and post are the caller's, the snapshot is take
   if [[ $TRANSPORT == btrfs ]]; then   # a receive that was cut off: rw, with no received UUID. Only this job's own folder
     for n in $(stream_list); do [[ -n $(stream_received "$n") ]] || btrfs subvolume delete "$STREAM_DIR/$n" >/dev/null; done
   fi
-  name=$(hook stream-snap); [[ $name =~ ^sf-[0-9]{8}T[0-9]{6}$ ]] || { rc=7 msg="the source could not make a snapshot to send"; return; }
+  name=$(hook stream-snap 2>&1); [[ $name =~ ^sf-[0-9]{8}T[0-9]{6}$ ]] || { rc=7 msg="the source could not make a snapshot to send: ${name:0:300}"; return; }
   if ((HOOKS && !posted)); then hook post && posted=1; fi
   parent=$(stream_list | tail -1)
   if [[ -n $parent && $(hook "stream-has $parent") != yes ]]; then
@@ -447,6 +447,7 @@ stream_verify() {
 
 # ── out-of-band extent dedup on archives ──
 space_shared() { # folder -> total exclusive shared in bytes (btrfs), or just what df says is used
+  sync -f "$1" 2>/dev/null     # data still in memory has no extents yet, and counts as nothing
   if [[ $(stat -f -c %T "$1" 2>/dev/null) == btrfs ]]; then
     btrfs filesystem du -s --raw "$1" 2>/dev/null | awk 'NR == 2 { print $1, $2, $3 }'
   else df -B1 --output=used "$1" 2>/dev/null | tail -1 | awk '{ print $1, 0, 0 }'; fi
@@ -466,7 +467,8 @@ dedupe_job() {
   # the kernel compares the bytes before it shares any, and the hash file means a later run only reads what changed
   "${stop[@]}" duperemove -dr --hashfile="$VAR/index/$ID.dupehash" -- "$DST"; rc=$?
   read -r t1 e1 s1 <<<"$(space_shared "$DST")"
-  saved=$(( (${e0:-0} - ${e1:-0}) )); ((saved < 0)) && saved=0
+  # on disk, a folder takes its exclusive bytes plus its shared bytes once: two copies made one go 8->0 exclusive, 0->4 shared
+  saved=$(( ${e0:-0} + ${s0:-0} - ${e1:-0} - ${s1:-0} )); ((saved < 0)) && saved=0
   [[ $(stat -f -c %T "$DST" 2>/dev/null) == btrfs ]] || saved=$(( ${t0:-0} > ${t1:-0} ? ${t0:-0} - ${t1:-0} : 0 ))
   local msg="duperemove: $saved bytes freed; ${s1:-0} of ${t1:-0} bytes shared"
   ((rc == 124)) && { rc=0; msg+=" (stopped at the end of the run window; the next run goes on)"; }

@@ -1,6 +1,7 @@
 """The sync engine in storageforge-job: routes, pre-transfer dedup, the volume lock, state events, snapshot streams,
 duperemove and the room check. The real program runs; ssh, btrfs and duperemove are stand-ins, since they need root, a
 second host or a real pool (the KVM lab is where those get proven)."""
+import ast
 import fcntl
 import json
 import os
@@ -481,6 +482,13 @@ class Engine(unittest.TestCase):
         self.hold(fcntl.LOCK_SH)
         self.assertEqual(self.job('dedupe', 'p1-a').returncode, 75)
         self.assertFalse((self.t / 'ran').exists())
+
+
+class Portable(unittest.TestCase):
+    def test_the_helper_runs_on_python_3_6(self):
+        """openSUSE Leap 15 and RHEL 8 ship it: anything newer and dedup is quietly skipped on them."""
+        ast.parse(SYNC_PY, feature_version=(3, 6))
+        self.assertNotIn('capture_output', SYNC_PY)
 
 
 class Plans(unittest.TestCase):
