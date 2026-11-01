@@ -29,7 +29,7 @@ FROM build AS test
 COPY tests ./tests
 COPY examples ./examples
 COPY docker ./docker
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client util-linux rsync git \
+RUN apt-get update --error-on=any && apt-get install -y --no-install-recommends openssh-client util-linux rsync git \
  && /opt/venv/bin/python -m unittest discover -s tests
 
 # ── openssh: the ssh client, newer than Debian ships. Debian 13 has 10.0, with CVE-2026-60002 (critical) and CVE-2026-106583
@@ -39,7 +39,7 @@ FROM ${PYTHON_IMAGE} AS openssh
 ARG OPENSSH_VERSION=10.6p1
 ADD --checksum=sha256:a9dc9565dffe8640f64d863cd29a32bc4a3dbdec0566a7fc44c5d6ee767d5f39 \
     https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${OPENSSH_VERSION}.tar.gz /src/openssh.tar.gz
-RUN apt-get update \
+RUN apt-get update --error-on=any \
  && apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends gcc make libc6-dev libssl-dev zlib1g-dev \
  && tar -xzf /src/openssh.tar.gz -C /src --strip-components=1 \
@@ -78,7 +78,7 @@ FROM ${PYTHON_IMAGE} AS runtime
 LABEL org.opencontainers.image.title="StorageForge" \
       org.opencontainers.image.description="Encrypted SSH key vault, agentless file indexer and storage graph" \
       org.opencontainers.image.version="0.2.0"
-RUN apt-get update \
+RUN apt-get update --error-on=any \
  && apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends tini ca-certificates \
  && groupadd --system --gid 10001 storageforge \
