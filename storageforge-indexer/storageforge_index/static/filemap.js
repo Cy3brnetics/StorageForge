@@ -91,7 +91,7 @@ function fmTake(d) {
   fmDraw();
   fmPanel();
 }
-const fmFolder = (key) => FM.data.folders.find((f) => f.key === key);
+const fmFolder = (key) => FM.folderBy.get(key);
 function fmShownLinks() {
   const d = FM.data, shown = new Set(fmShownFolders().map((f) => f.key));
   return d.links.filter((l) => shown.has(l.a) && shown.has(l.b) && (FM.scope === 'all' || (FM.scope === 'same') === (l.scope === 'same host')));
@@ -267,7 +267,7 @@ function fmLoadKids(n) {                   // anything under a whole-folder copy
   const job = (async () => {
     let rows = [];                         // a failure is remembered too: the redraw after it must not ask again
     try {
-      const r = await getJSON(`/api/fs/browse?host=${encodeURIComponent(n.host)}&path=${encodeURIComponent(n.path)}`);
+      const r = await getJSON(`/api/fs/browse?brief=1&host=${encodeURIComponent(n.host)}&path=${encodeURIComponent(n.path)}`);
       const row = (name, bytes, extra) => ({ id: fmId(n.root, n.host, joinPath(n.path, name)), root: n.root, host: n.host, path: joinPath(n.path, name), name, bytes, kids: new Map(), ...extra });
       rows = [...r.dirs.map((x) => row(x.name, x.bytes, { lazy: true, isMount: Boolean(x.mount) })), ...r.files.map((x) => row(x.name, x.bytes, { plain: true, link: undefined, linkTo: x.link }))];
       if (r.more_files) rows.push({ id: fmId(n.root, n.host, `${n.path}\0more-files`), root: n.root, name: `${r.more_files.toLocaleString()} more files`, note: true, kids: new Map() });
@@ -293,6 +293,7 @@ function fmRowClick(n, depth) {
     else if (fmExpandable(n)) fmToggle(n, depth);
     return;
   }
+  const was = fmOpenCount();
   if (fmExpandable(n) && !fmIsOpen(n, depth)) { FM.closed.delete(n.id); FM.open.add(n.id); }
   if (n.brokenRoot) FM.sel = null;
   else if (n.link) FM.sel = { type: 'broken', link: n.link };
@@ -300,12 +301,14 @@ function fmRowClick(n, depth) {
   else if (n.folder) { FM.sel = { type: 'folder', key: n.folder.key, id: n.id }; fmOpenPeers(n.folder.key); }
   else if (n.plain) FM.sel = { type: 'plain', id: n.id, node: n };
   else FM.sel = { type: 'dir', id: n.id, node: n };
-  fmDraw(); showTab('details'); fmPanel();
+  if (fmOpenCount() === was) fmMark(); else fmDraw();   // nothing opened: the cards stand, only the highlights move
+  showTab('details'); fmPanel();
   if (FM.view.k < 0.6) {                   // selected from far out: come close enough to read it
     const p = FM.pos.get(n.id);
     if (p) { FM.view.k = 0.8; FM.view.x = FM.tree.clientWidth / 2 - (p.x + FM_W / 2) * 0.8; FM.view.y = FM.tree.clientHeight / 2 - (p.y + FM_H / 2) * 0.8; fmApply(); }
   }
 }
+const fmOpenCount = () => FM.open.size - FM.closed.size;   // selecting only ever opens, so this moves whenever it does
 function fmOpenPeers(key) {                // selecting a folder opens the way to its other copies
   for (const l of FM.data.links) {
     const other = l.a === key ? l.b : l.b === key ? l.a : null;
@@ -328,7 +331,7 @@ function fmCard(n, depth, max) {
     return m;
   }
   if (n.note) {
-    const m = el('div', { class: 'fmrow more note', role: 'treeitem', tabindex: '-1', 'aria-level': String(depth + 1), title: 'Too many to list here. Use Browse on the folder, or search.' }, text('span', n.name, 'nm'));
+    const m = el('div', { class: 'fmrow more note', role: 'treeitem', tabindex: '-1', 'aria-level': String(depth + 1), title: n.waiting ? null : 'Too many to list here. Use Browse on the folder, or search.' }, text('span', n.name, 'nm'));
     m.dataset.id = n.id; m._node = n; m._depth = depth;
     return m;
   }
@@ -389,6 +392,7 @@ function fmLayout(roots) {                 // left to right: each open folder si
         if (FM.listed.has(n.id)) n.listed = FM.listed.get(n.id); else if (!FM.loading.has(n.id)) pending.push(n);
       }
       kids = fmVisibleKids(n);
+      if ((n.folder?.whole || n.lazy) && !FM.listed.has(n.id)) kids = [...kids, { id: `${n.id}\0loading`, root: n.root, name: 'Loading…', note: true, waiting: true, kids: new Map() }];
     }
     let cy;
     if (kids.length) {

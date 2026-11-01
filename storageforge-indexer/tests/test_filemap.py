@@ -11,7 +11,7 @@ try:
     import dbfactory
 except ImportError:      # run as tests.test_x from the project folder
     from tests import dbfactory
-from storageforge_index import filemap, folders, graph, moves
+from storageforge_index import filemap, folders, fsmap, graph, moves
 
 
 class FileMap(unittest.TestCase):
@@ -180,6 +180,29 @@ class FileMap(unittest.TestCase):
         nodes, _ = graph.build({**node, 'link_ignore': {'nas': ['/srv/mine']}})
         self.assertNotIn('link:nas:/srv/mine', nodes)
         self.assertEqual(nodes['host:nas']['health'], 'unknown')
+
+    def test_kept_folder_index_lists_what_the_tables_do(self):
+        for path in ('/data/a/one', '/data/a/two', '/data/a/sub/three', '/data/a-b/four', '/data/a0/five', '/data/z/deep/er/six', '/top'):
+            self.file('nas', path, None, size=7)
+        index = folders.dir_index(self.conn)
+        for path in ('/', '/data', '/data/a', '/data/z', '/data/a-b', '/nothing'):
+            kept, read = fsmap.listing(self.conn, 'nas', path, index), fsmap.browse(self.conn, 'nas', path)
+            self.assertEqual(kept['dirs'], read['dirs'], path)
+            self.assertEqual(kept['files'], read['files'], path)
+        self.assertEqual({d['name']: (d['bytes'], d['entries']) for d in fsmap.listing(self.conn, 'nas', '/data', index)['dirs']},
+                         {'a': (21, 3), 'a-b': (7, 1), 'a0': (7, 1), 'z': (7, 1)})
+
+    def test_folder_comparison_is_the_same_from_a_kept_index(self):
+        for root in ('/data/one', '/data/two', '/other/three'):
+            for name in ('a', 'b', 'sub/c'):
+                self.file('nas' if root != '/other/three' else 'pc', f'{root}/{name}', None)
+        everywhere = folders.dir_index(self.conn)
+        for host in (None, 'nas', 'pc'):
+            built, kept = (folders.duplicate_folders(self.conn, host, 3, 1, include_system=True, index=i) for i in (None, everywhere))
+            self.assertEqual(built['groups'], kept['groups'], host)
+        self.assertEqual({c['path'] for c in kept['groups'][0]['copies']} if kept['groups'] else set(), set())   # pc alone has one copy
+        both = folders.duplicate_folders(self.conn, None, 3, 1, include_system=True, index=everywhere)['groups']
+        self.assertEqual({c['path'] for c in both[0]['copies']}, {'/data/one', '/data/two', '/other/three'})
 
 
 if __name__ == '__main__':
