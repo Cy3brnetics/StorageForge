@@ -100,10 +100,12 @@ def _facts_detected(conn: Conn, host: str) -> list[dict]:
     hid, inv = row[0]
     inv = inv if isinstance(inv, dict) else json.loads(inv or '{}')
     out = []
+    # SQLite's filename index is NOCASE, so a plain = walks every file on the host: this runs on each design load
+    indexed = 'f.filename = :n COLLATE NOCASE AND ' if conn.dialect == 'sqlite' else ''
     for name, tool, siblings in (('keys', 'restic', ('snapshots', 'index', 'data', 'config')), ('hints.1', 'borg', ('config', 'data', 'README')),
                                  ('daily.0', 'rsnapshot', ()), ('hourly.0', 'rsnapshot', ())):
-        for dir_id, path, newest in conn.all("""SELECT d.dir_id, d.path, max(f.modified_at) FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
-                                                 JOIN mounts m ON m.mount_id = f.mount_id WHERE m.host_id = :h AND f.filename = :n
+        for dir_id, path, newest in conn.all(f"""SELECT d.dir_id, d.path, max(f.modified_at) FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
+                                                 JOIN mounts m ON m.mount_id = f.mount_id WHERE {indexed}m.host_id = :h AND f.filename = :n
                                                  GROUP BY d.dir_id, d.path""", {'h': hid, 'n': name}):
             if all(conn.scalar('SELECT 1 FROM file_records WHERE dir_id = :d AND filename = :n', {'d': dir_id, 'n': s}) for s in siblings):
                 out.append({'repo': path, 'why': f'detected {tool} at {path}', 'tool': tool, 'newest': epoch(newest)})

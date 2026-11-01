@@ -223,6 +223,7 @@ class App:
         finally:
             conn.close()
         self.queue: queue.Queue[int] = queue.Queue()
+        self.scan_done = threading.Event()
         self.enqueue_lock = threading.Lock()
         self.workers = [threading.Thread(target=self._work, name=f'scan-worker-{i}', daemon=True) for i in range(SCAN_WORKERS)]
         for w in self.workers:
@@ -306,6 +307,7 @@ class App:
                 traceback.print_exc()
             finally:
                 conn.close()
+                self.scan_done.set()
 
     def bound_hosts(self) -> list[str]:
         """Hosts bound by name for scanning, under their indexed hostnames."""
@@ -1844,21 +1846,27 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         return jsonify(folder_result(('dupes', host, min_files, min_size),
                                      lambda: folders.duplicate_folders(conn(), host, min_files, min_size, limit=200)))
 
-    @web.get('/api/filemap')
-    @login_required
-    def api_filemap():
-        host = request.args.get('host') or None
-        system = bool(request.args.get('system'))
-        min_size = parse_size(request.args.get('min_size') or '1MiB')
-        with_folders = bool(request.args.get('folders'))
-
+    def filemap_result(host, min_size, system, with_folders):
         def compute():
             twins = None
             if with_folders:
                 key = ('dupes', host, 3, min_size) if not system else ('dupes-system', host, 3, min_size)
                 twins = folder_result(key, lambda: folders.duplicate_folders(conn(), host, 3, min_size, limit=200, include_system=system))
             return filemap.build(conn(), host, min_size, system, twins)
-        return jsonify(folder_result(('filemap', host, min_size, system, with_folders, json.dumps(folders.ignore_lists(conn()), sort_keys=True)), compute))
+        return folder_result(('filemap', host, min_size, system, with_folders, json.dumps(folders.ignore_lists(conn()), sort_keys=True)), compute)
+
+    @web.get('/api/filemap')
+    @login_required
+    def api_filemap():
+        return jsonify(filemap_result(request.args.get('host') or None, parse_size(request.args.get('min_size') or '1MiB'),
+                                      bool(request.args.get('system')), bool(request.args.get('folders'))))
+
+    def warm_filemap():
+        """The file map as the page first asks for it, so nobody waits for the folder comparison after a scan."""
+        with web.app_context():
+            if not conn().scalar("SELECT count(*) FROM scans WHERE status = 'running'"):   # the last one to finish wakes this again
+                filemap_result(None, parse_size('1MiB'), False, True)
+    web.warm_filemap = warm_filemap
 
     @web.route('/api/files/ignore', methods=['GET', 'PUT'])
     @login_required
@@ -2049,7 +2057,18 @@ def serve(db: Database, host: str, port: int, scan_interval: int | None, paralle
         conn.close()
     secure = os.environ.get('STORAGEFORGE_COOKIE_SECURE', '0').lower() in ('1', 'true', 'yes')
     hops = int(os.environ.get('STORAGEFORGE_PROXY_HOPS', '0'))
-    web = create_app(App(db, scan_interval, parallel), session_secret_from_env(), secure, hops,
+    web_core = App(db, scan_interval, parallel)
+    web = create_app(web_core, session_secret_from_env(), secure, hops,
                      os.environ.get('STORAGEFORGE_PROXY_HOST', ''))
+
+    def warm():
+        while True:
+            try:
+                web.warm_filemap()
+            except Exception:
+                traceback.print_exc()
+            web_core.scan_done.wait()
+            web_core.scan_done.clear()
+    threading.Thread(target=warm, name='filemap-warm', daemon=True).start()
     print(f'StorageForge {__version__} listening on http://{host}:{port}', file=sys.stderr, flush=True)
     waitress_serve(web, host=host, port=port, threads=8, ident='StorageForge', _quiet=True)

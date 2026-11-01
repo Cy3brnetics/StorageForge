@@ -73,18 +73,23 @@ def duplicate_folders(conn: Conn, host: str | None = None, min_files: int = 3, m
         f"WHERE m.scan_state = 'indexed' {hsql}", {'host': host})}
     # per folder: [own-file hash sum, file count, bytes]; children are folded in afterwards
     own: dict[tuple, list] = {}
-    cur = conn.execute(f"""SELECT f.mount_id, d.path, f.filename, f.file_size_bytes, f.is_directory
-                           FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
+    paths = dict(conn.all(f"""SELECT d.dir_id, d.path FROM directories d JOIN mounts m ON m.mount_id = d.mount_id JOIN hosts h ON h.host_id = m.host_id
+                              WHERE m.scan_state = 'indexed' {hsql}""", {'host': host}))
+    cur = conn.execute(f"""SELECT f.mount_id, f.dir_id, f.filename, f.file_size_bytes, f.is_directory
+                           FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
                            WHERE NOT f.is_symlink AND m.scan_state = 'indexed' {hsql}""", {'host': host})
+    at, acc = None, None                   # a folder's files mostly arrive together: one dict lookup per run of them
     while rows := cur.fetchmany(50_000):
-        for mid, parent, name, size, is_dir in rows:
+        for mid, dir_id, name, size, is_dir in rows:
+            parent = paths[dir_id]
             if is_dir:
                 path = posixpath.join(parent, name) if parent else '/'
                 own.setdefault((mid, path), [0, 0, 0])
                 if parent:
                     own.setdefault((mid, parent), [0, 0, 0])
                 continue
-            acc = own.setdefault((mid, parent), [0, 0, 0])
+            if dir_id != at:
+                at, acc = dir_id, own.setdefault((mid, parent), [0, 0, 0])
             acc[0] = (acc[0] + hash((name, size))) & M64
             acc[1] += 1
             acc[2] += size or 0

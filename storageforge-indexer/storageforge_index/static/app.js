@@ -57,7 +57,7 @@ let raf = 0;
 const canvas = $('#graph');
 const ctx = canvas.getContext('2d');
 let W = 0, H = 0, DPR = 1;
-let fitted = false;
+let fitted = false, cold = false;
 function resize() {
   const r = canvas.getBoundingClientRect();
   DPR = window.devicePixelRatio || 1;
@@ -97,28 +97,67 @@ async function loadGraph() {
   if (S.focus && !S.byId.has(S.focus)) S.focus = null;
   if (S.selected && !S.byId.has(S.selected)) S.selected = null;
   applyFocus(false);
-  if (!old.size) { warmUp(); if (W) { fitted = true; fit(); } }
+  if (!old.size) cold = true;                         // laid out when it is first shown: other views never pay for it
   alpha = Math.max(alpha, old.size ? 0.4 : 0.15);
   wake();
   renderSummary();
-  if (T.mode === 'topo' && T.order.length) renderTopo();   // refresh the health dots
+  if (T.mode === 'topo' && T.order.length) renderTopoSoon();   // refresh the health dots
 }
 
 /* ── physics ─────────────────────────────────────────────────────── */
-function tick() {
-  const ns = activeNodes();
-  const n = ns.length;
-  for (let i = 0; i < n; i++) {                       // charge (inverse-square repulsion)
-    const a = ns[i];
-    for (let j = i + 1; j < n; j++) {
-      const b = ns[j];
-      let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
-      if (d2 > 360000) continue;
-      if (d2 < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1; }
-      const f = (-700 * alpha) / d2;
-      a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
+function eachNear(ns, cell, visit) {                  // every pair closer than cell, from a grid instead of all n² pairs
+  const grid = new Map();
+  for (const a of ns) {
+    const k = Math.floor(a.x / cell) * 65536 + Math.floor(a.y / cell);
+    const c = grid.get(k);
+    if (c) c.push(a); else grid.set(k, [a]);
+  }
+  for (const [k, c] of grid) {
+    for (let i = 0; i < c.length; i++) for (let j = i + 1; j < c.length; j++) visit(c[i], c[j]);
+    for (const step of [1, 65535, 65536, 65537]) {    // half the neighbours, so each pair of cells is seen once
+      const o = grid.get(k + step);
+      if (o) for (const a of c) for (const b of o) visit(a, b);
     }
   }
+}
+function repel(a, b) {                                // inverse-square, out to 600
+  let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
+  if (d2 > 360000) return;
+  if (d2 < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1; }
+  const f = (-700 * alpha) / d2;
+  a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
+}
+function charge(ns) {                                 // node by node next door; further away a cell of nodes acts as one
+  const CELL = 150, grid = new Map();
+  for (const a of ns) {
+    const gx = Math.floor(a.x / CELL), gy = Math.floor(a.y / CELL), k = gx * 65536 + gy;
+    let c = grid.get(k);
+    if (!c) { c = { gx, gy, x: 0, y: 0, fx: 0, fy: 0, nodes: [] }; grid.set(k, c); }
+    c.x += a.x; c.y += a.y; c.nodes.push(a);
+  }
+  const cells = [...grid.values()];
+  for (const c of cells) { c.x /= c.nodes.length; c.y /= c.nodes.length; }
+  for (let i = 0; i < cells.length; i++) {
+    const c = cells[i];
+    for (let p = 0; p < c.nodes.length; p++) for (let q = p + 1; q < c.nodes.length; q++) repel(c.nodes[p], c.nodes[q]);
+    for (let j = i + 1; j < cells.length; j++) {
+      const o = cells[j];
+      if (Math.abs(c.gx - o.gx) <= 1 && Math.abs(c.gy - o.gy) <= 1) {
+        for (const a of c.nodes) for (const b of o.nodes) repel(a, b);
+        continue;
+      }
+      const dx = o.x - c.x, dy = o.y - c.y, d2 = dx * dx + dy * dy;
+      if (d2 > 360000) continue;
+      const f = (-700 * alpha) / d2;
+      c.fx += dx * f * o.nodes.length; c.fy += dy * f * o.nodes.length;
+      o.fx -= dx * f * c.nodes.length; o.fy -= dy * f * c.nodes.length;
+    }
+    for (const a of c.nodes) { a.vx += c.fx; a.vy += c.fy; }
+  }
+}
+function tick() {
+  const ns = activeNodes();
+  charge(ns);
   // springs, scaled like d3-force: a hub with hundreds of links (a mount full of symlinks) would otherwise get
   // hundreds of full-strength pulls per tick, overshoot further every tick and fling the layout to infinity
   for (const e of activeEdges()) {
@@ -137,31 +176,27 @@ function tick() {
     a.x += a.vx; a.y += a.vy;
   }
   for (let pass = 0; pass < 2; pass++) {              // collision
-    for (let i = 0; i < n; i++) {
-      const a = ns[i];
-      for (let j = i + 1; j < n; j++) {
-        const b = ns[j];
-        const min = a.r + b.r + 8;
-        const dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
-        if (d2 >= min * min) continue;
-        const d = Math.sqrt(d2) || 0.01, push = (min - d) / d / 2;
-        if (!a.fixed) { a.x -= dx * push; a.y -= dy * push; }
-        if (!b.fixed) { b.x += dx * push; b.y += dy * push; }
-      }
-    }
+    eachNear(ns, 2 * RADIUS.Host + 8, (a, b) => {
+      const min = a.r + b.r + 8;
+      const dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
+      if (d2 >= min * min) return;
+      const d = Math.sqrt(d2) || 0.01, push = (min - d) / d / 2;
+      if (!a.fixed) { a.x -= dx * push; a.y -= dy * push; }
+      if (!b.fixed) { b.x += dx * push; b.y += dy * push; }
+    });
   }
   alpha = Math.max(0, alpha * 0.985 - 0.0005);
 }
 function warmUp() {
-  const n = Math.max(1, activeNodes().length);
   alpha = 1;
-  const ticks = Math.min(300, Math.floor(4e7 / (n * n)));
-  for (let i = 0; i < ticks; i++) tick();
+  const until = performance.now() + 150;              // whatever fits before the first frame; the rest settles on screen
+  for (let i = 0; i < 300 && performance.now() < until; i++) tick();
 }
 function wake() { if (!raf) raf = requestAnimationFrame(frame); }
 function frame() {
   raf = 0;
   if (canvas.hidden) return;                          // topology view: resize() wakes it again
+  if (cold && W) { cold = false; warmUp(); fitted = true; fit(); }
   if (alpha > 0.002) tick();
   draw();
   if (alpha > 0.002 || drag) wake();
@@ -192,16 +227,25 @@ function draw() {
   ctx.translate(W / 2 + view.x, H / 2 + view.y);
   ctx.scale(view.k, view.k);
   const near = neighbourhood(S.hover || S.selected);
+  const batches = new Map();                          // one stroke per look: a canvas state change per edge is what costs
   for (const e of activeEdges()) {
     const lit = !near || (near.has(e.src) && near.has(e.dst) && (e.src === (S.hover || S.selected) || e.dst === (S.hover || S.selected)));
-    ctx.globalAlpha = lit ? 0.9 : 0.15;
-    ctx.lineWidth = (e.rel === 'REPLICATES_TO' ? 2 : 1.3) / Math.sqrt(view.k);
-    ctx.setLineDash(e.rel === 'SYMLINK_TO' || e.rel === 'REPLICATES_TO' ? [6, 4] : []);
-    ctx.strokeStyle = e.rel === 'MOUNTED_AT' ? (e.props.bind ? COL.fast : COL.accent)
+    const stroke = e.rel === 'MOUNTED_AT' ? (e.props.bind ? COL.fast : COL.accent)
       : e.rel === 'SYMLINK_TO' ? COL.fast
       : e.rel === 'REPLICATES_TO' ? (COL[e.props.health] || COL.muted) : COL.line;
-    ctx.beginPath(); ctx.moveTo(e.s.x, e.s.y); ctx.lineTo(e.t.x, e.t.y); ctx.stroke();
-    if (e.rel === 'REPLICATES_TO' || e.rel === 'SYMLINK_TO') arrow(e);
+    const look = `${lit}|${e.rel === 'REPLICATES_TO'}|${e.rel === 'SYMLINK_TO'}|${stroke}`;
+    const b = batches.get(look);
+    if (b) b.edges.push(e); else batches.set(look, { lit, rel: e.rel, stroke, edges: [e] });
+  }
+  for (const { lit, rel, stroke, edges } of batches.values()) {
+    ctx.globalAlpha = lit ? 0.9 : 0.15;
+    ctx.lineWidth = (rel === 'REPLICATES_TO' ? 2 : 1.3) / Math.sqrt(view.k);
+    ctx.setLineDash(rel === 'SYMLINK_TO' || rel === 'REPLICATES_TO' ? [6, 4] : []);
+    ctx.strokeStyle = stroke;
+    ctx.beginPath();
+    for (const e of edges) { ctx.moveTo(e.s.x, e.s.y); ctx.lineTo(e.t.x, e.t.y); }
+    ctx.stroke();
+    if (rel === 'REPLICATES_TO' || rel === 'SYMLINK_TO') { ctx.setLineDash([]); ctx.fillStyle = stroke; ctx.beginPath(); for (const e of edges) arrow(e); ctx.fill(); }
   }
   ctx.setLineDash([]);
   const ns = activeNodes();
@@ -237,11 +281,10 @@ function arrow(e) {
   const dx = e.t.x - e.s.x, dy = e.t.y - e.s.y, d = Math.hypot(dx, dy) || 1;
   const ux = dx / d, uy = dy / d, tip = e.t.r + 4;
   const x = e.t.x - ux * tip, y = e.t.y - uy * tip, s = 7 / Math.sqrt(view.k);
-  ctx.setLineDash([]);
-  ctx.beginPath(); ctx.moveTo(x, y);
+  ctx.moveTo(x, y);
   ctx.lineTo(x - ux * s - uy * s * 0.6, y - uy * s + ux * s * 0.6);
   ctx.lineTo(x - ux * s + uy * s * 0.6, y - uy * s - ux * s * 0.6);
-  ctx.closePath(); ctx.fillStyle = ctx.strokeStyle; ctx.fill();
+  ctx.closePath();
 }
 function fit() {
   const ns = activeNodes();
