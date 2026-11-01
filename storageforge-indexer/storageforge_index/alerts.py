@@ -237,7 +237,7 @@ def drift(conn: Conn) -> list[dict]:
     from . import deploy, jobs, moves, scheduler, shares
     out = []
     expected = {}
-    for r in conn.all('SELECT job_id, runner_host, spec_json, paused FROM jobs WHERE removed_at IS NULL'):
+    for r in conn.all('SELECT job_id, runner_host, spec_json, paused FROM jobs WHERE removed_at IS NULL AND plan_id IS NOT NULL'):      # an imported job's timers are its own
         spec = json.loads(r[2] or '{}')
         if spec and not r[3]:
             try:

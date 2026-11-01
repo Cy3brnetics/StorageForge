@@ -35,6 +35,9 @@ def _facts_from_jobs(conn: Conn, host: str, offsite: set[str]) -> list[dict]:
     out = []
     for j in overview(conn):
         source = j['source'] or j['runner']
+        if j['method'] == 'snapper' and j['src'] and host_slug(source) == host_slug(host):
+            out.append({'path': j['src'], 'why': f'job {j["name"]}', 'job': j['id'],
+                        'snapshots': {'enabled': True, 'tool': 'snapper', 'policy': j['schedule'] or 'imported', 'count': j.get('count') or 0, 'overhead': 0}})
         if j['method'] not in ('mirror', 'rsnapshot') or not j['src'] or host_slug(source) != host_slug(host):
             continue
         ok = j['last_ok'] or {}
@@ -47,7 +50,7 @@ def _facts_from_jobs(conn: Conn, host: str, offsite: set[str]) -> list[dict]:
         if j['method'] == 'mirror':
             bad = {'failed': 'last run failed', 'stale': 'no good run on schedule', 'paused': 'paused'}.get(j['state'])
             fact['sync'] = {'state': 'Lagging' if bad else 'Rsync Scheduled', 'target': fact['backup']['target'], 'lag': bad or ''}
-        out.append(fact)
+        out.extend({**fact, 'path': src} for src in j.get('sources') or [j['src']])     # an imported rsnapshot can back up several
     return out
 
 
@@ -100,6 +103,8 @@ def _facts_detected(conn: Conn, host: str) -> list[dict]:
     hid, inv = row[0]
     inv = inv if isinstance(inv, dict) else json.loads(inv or '{}')
     out = []
+    tracked = [json.loads(r[0]).get('root') or '\0' for r in conn.all(     # already a job, so no second guess at what it backs up
+        "SELECT spec_json FROM jobs WHERE plan_id IS NULL AND removed_at IS NULL AND method = 'rsnapshot' AND lower(runner_host) = lower(:h)", {'h': host})]
     # SQLite's filename index is NOCASE, so a plain = walks every file on the host: this runs on each design load
     indexed = 'f.filename = :n COLLATE NOCASE AND ' if conn.dialect == 'sqlite' else ''
     for name, tool, siblings in (('keys', 'restic', ('snapshots', 'index', 'data', 'config')), ('hints.1', 'borg', ('config', 'data', 'README')),
@@ -107,6 +112,8 @@ def _facts_detected(conn: Conn, host: str) -> list[dict]:
         for dir_id, path, newest in conn.all(f"""SELECT d.dir_id, d.path, max(f.modified_at) FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
                                                  JOIN mounts m ON m.mount_id = f.mount_id WHERE {indexed}m.host_id = :h AND f.filename = :n
                                                  GROUP BY d.dir_id, d.path""", {'h': hid, 'n': name}):
+            if tool == 'rsnapshot' and any(is_under(path, r) for r in tracked):
+                continue
             if all(conn.scalar('SELECT 1 FROM file_records WHERE dir_id = :d AND filename = :n', {'d': dir_id, 'n': s}) for s in siblings):
                 out.append({'repo': path, 'why': f'detected {tool} at {path}', 'tool': tool, 'newest': epoch(newest)})
     snaps = inv.get('snapshots') or {}

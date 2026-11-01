@@ -27,7 +27,7 @@ import uuid
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from . import deploy, moves
+from . import deploy, moves, snapjobs
 from .db import Conn
 from .jobscript import JOB_SCRIPT
 from .remote import child_env, known_hosts_name
@@ -508,6 +508,8 @@ def get(conn: Conn, jid: str) -> dict:
 
 def action(db, conn: Conn, jid: str, verb: str, actor: str) -> dict:
     j = get(conn, jid)
+    if snapjobs.is_imported(j):
+        return snapjobs.action(db, conn, j, verb, actor)
     if verb not in ACTIONS:
         raise ValueError(f'unknown action {verb}')
     if verb == 'cutover' and j['method'] != 'move':
@@ -526,6 +528,8 @@ def action(db, conn: Conn, jid: str, verb: str, actor: str) -> dict:
 
 def browse(db, conn: Conn, jid: str, snapshot: str, rel: str, actor: str) -> dict:
     j = get(conn, jid)
+    if snapjobs.is_imported(j):
+        return snapjobs.browse(db, conn, j, snapshot, rel, actor)
     _snap_args(snapshot, rel)
     res = deploy.run(db, j['runner'], f'exec {deploy.JOBBIN} ls {jid} {shlex.quote(snapshot)} {shlex.quote(rel)}',
                      kind='job-action', ref=f'{jid}:ls', mode='apply', actor=actor, timeout=120)
@@ -548,6 +552,8 @@ def _snap_args(snapshot: str, rel: str):
 def restore_target(conn: Conn, jid: str, snapshot: str, rel: str) -> tuple[dict, str, str]:
     """Checks a restore request: (job, target, parent folder). The target is new: <original>.restored-<time>."""
     j = get(conn, jid)
+    if snapjobs.is_imported(j):
+        return (j, *snapjobs.restore_target(j, snapshot, rel))
     _snap_args(snapshot, rel)
     if not rel:
         raise ValueError('pick a file or folder to restore')
@@ -561,6 +567,8 @@ def restore(db, conn: Conn, jid: str, snapshot: str, rel: str, actor: str, gid: 
     """Copy rel from a snapshot back to the source host, beside the original: <original>.restored-<time>/<name>."""
     j, made, parent = restore_target(conn, jid, snapshot, rel)
     target = target or made
+    if snapjobs.is_imported(j):
+        return {**snapjobs.restore(db, j, snapshot, rel, target, actor, gid), 'parent': parent}
     q = shlex.quote
     pack = f'exec {deploy.JOBBIN} pack {jid} {q(snapshot)} {q(rel)}'
     unpack = f'exec {deploy.JOBBIN} unpack {jid} {q(target)}'
@@ -673,9 +681,15 @@ def overview(conn: Conn, now: float | None = None) -> list[dict]:
         last = next((x for x in recent if x['kind'] == 'run' and not str(x['message'] or '').startswith('skipped')), None)
         ok = next((x for x in recent if good(x)), None)
         verify = next((x for x in recent if x['kind'] == 'verify'), None)
-        per = period(schedule) if method in SCHEDULED else None
-        if paused:
+        s = json.loads(spec or '{}')
+        imported = bool(s.get('imported'))      # no schedule found for it means nobody can say it is late
+        per = (period(schedule) if schedule else None) if imported else (period(schedule) if method in SCHEDULED else None)
+        if s.get('missing'):
+            state = 'missing'
+        elif paused:
             state = 'paused'
+        elif last is None and imported:
+            state = 'unseen'
         elif last is None:
             state = 'never-ran' if not per or now - (deployed_at or now) < 2 * per + 3600 else 'stale'
         elif last['rc'] not in (0, 124):
@@ -684,12 +698,13 @@ def overview(conn: Conn, now: float | None = None) -> list[dict]:
             state = 'stale'
         else:
             state = 'ok'
-        s = json.loads(spec or '{}')
         out.append({'id': jid, 'plan_id': plan_id, 'name': name, 'method': method, 'runner': runner, 'source': source,
                     'schedule': schedule, 'paused': bool(paused), 'deployed_at': deployed_at, 'state': state,
                     'last': last, 'last_ok': ok, 'verify': verify, 'period': per, 'src': s.get('src'), 'dst': s.get('dst'),
-                    'snapshots': method == 'rsnapshot', 'window': s.get('window'), 'verify_schedule': s.get('verify'),
+                    'snapshots': method in ('rsnapshot', 'snapper'), 'window': s.get('window'), 'verify_schedule': s.get('verify'),
                     'pre': s.get('pre') or [], 'post': s.get('post') or [], 'snapshot': s.get('snapshot'),
                     'live': live.get(jid), 'routes': s.get('routes') or [], 'dedup': bool(s.get('dedup')),
-                    'transport': s.get('transport') or 'rsync', 'extent_dedup': s.get('extent_dedup')})
+                    'transport': s.get('transport') or 'rsync', 'extent_dedup': s.get('extent_dedup'),
+                    'imported': imported, 'sources': s.get('sources') or ([s['src']] if s.get('src') else []), 'config': s.get('config'), 'levels': s.get('levels'),
+                    'fstype': s.get('fstype'), 'mount': s.get('mount'), 'fit': s.get('fit') or [], 'count': s.get('count')})
     return out

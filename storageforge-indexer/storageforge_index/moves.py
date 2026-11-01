@@ -413,6 +413,10 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
         elif dm:
             free = (dm['total'] or 0) - (dm['used'] or 0) if dm['total'] else None
             info['dst'].update(fstype=dm['fstype'], free=free)
+            if s['method'] == 'rsnapshot' and dm['fstype'] in ('vfat', 'msdos', 'exfat', 'fuse.exfat', 'cifs', 'smb3'):
+                say('crit', f'{dst} is on {dm["fstype"]}, which has no hard links: each rsnapshot snapshot would be a full copy. Use ext4 or xfs there, or a mirror step.')
+            elif s['method'] == 'rsnapshot' and same_host and dm['fstype'] == 'btrfs' and mount_of(sh, src) == dm:
+                say('note', 'source and destination share one btrfs volume: snapper is instant and takes less room (Deploy > New snapshot job).')
             if dm['target'] == '/' and dst.startswith(('/mnt/', '/media/', '/srv/')):
                 say('warn', f'{dst} is on the root filesystem of {dh["name"]}. If a disk should be mounted there, '
                             'mount it first')

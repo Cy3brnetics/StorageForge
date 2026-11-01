@@ -21,6 +21,8 @@ import datetime as dt
 from collections import deque
 from dataclasses import asdict, dataclass, field
 
+from . import snapfind
+from .snapfind import SNAPFIND
 from .stream import FIND_FORMAT
 
 PSEUDO_FS = frozenset({
@@ -308,8 +310,10 @@ echo '@@packages'; (PATH="$PATH:/usr/sbin:/sbin"; for m in apt-get dnf yum zyppe
   echo 'probed 1'; if [ -d /run/systemd/system ]; then echo 'init systemd'; else echo 'init other'; fi
   v=$(ssh -V 2>&1 | sed -n 's/^OpenSSH_\([0-9]*\.[0-9]*\).*/\1/p'); [ -n "$v" ] && echo "openssh $v")
 echo '@@access'; if [ -x /usr/local/lib/storageforge/find ]; then echo capability; else echo user; fi; id -un 2>/dev/null
+echo '@@snapjobs'
+@@SNAPFIND@@
 echo '@@end'
-"""
+""".replace('@@SNAPFIND@@', SNAPFIND)
 
 
 @dataclass
@@ -352,13 +356,14 @@ class HostInventory:
     moves: str = ''     # <plan>/<step>.done and .cutover from move scripts run by hand
     health: dict | None = None     # disk health from the root-owned collector, if installed (health.py)
     snapshots: dict | None = None  # ZFS snapshot counts and snapper configs
+    snapjobs: list | None = None   # rsnapshot and snapper jobs on the host, whoever set them up (snapfind.py)
 
     def to_json(self) -> str:
         return json.dumps({
             'collected_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
             'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb, 'btrfs': self.btrfs,
             'jobs': self.jobs, 'tasks': self.tasks, 'schedules': self.schedules, 'runs': self.runs, 'managed': self.managed, 'ids': self.ids, 'packages': self.packages,
-            'configs': self.configs, 'accounts': self.accounts, 'moves': self.moves, 'health': self.health, 'snapshots': self.snapshots,
+            'configs': self.configs, 'accounts': self.accounts, 'moves': self.moves, 'health': self.health, 'snapshots': self.snapshots, 'snapjobs': self.snapjobs,
             'mounts': [asdict(m) for m in self.mounts],
         })
 
@@ -474,6 +479,7 @@ def collect_inventory(t: Transport) -> HostInventory:
                          managed=sec.get('managed', '').strip(), ids=sec.get('ids', '').strip(),
                          packages=sec.get('packages', '').strip(), moves=sec.get('moves', '').strip(),
                          health=parse_report(sec.get('health', '')), snapshots=parse_snapshots(sec.get('snapshots', '')),
+                         snapjobs=snapfind.parse(sec.get('snapjobs', '')),
                          configs=parse_configs(sec['configs']) if 'configs' in sec else None,
                          accounts=sec.get('accounts', '').strip(),
                          machine_id=next((m for m in lines('machineid') if re.fullmatch(r'[0-9a-f]{32}', m)), ''))

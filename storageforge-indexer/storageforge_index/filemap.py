@@ -175,8 +175,8 @@ def relations(conn: Conn, host: str | None, ignore: dict, system: bool = False) 
     try:
         from .jobs import overview
         for j in overview(conn):
-            if j.get('src') and j.get('dst'):
-                add('job', names.get(moves.host_slug(j['source']), j['source']), j['src'], names.get(moves.host_slug(j['runner']), j['runner']), j['dst'],
+            for src in (j.get('sources') or [j.get('src')]) if j.get('dst') else ():
+                add('job', names.get(moves.host_slug(j['source']), j['source']), src, names.get(moves.host_slug(j['runner']), j['runner']), j['dst'],
                     label=f'{j["method"]} job', broken=j.get('state') == 'failed')
     except Exception:                       # an older schema without jobs: nothing to add
         pass
