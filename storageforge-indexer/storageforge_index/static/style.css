@@ -881,38 +881,49 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 .filemap { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
 .filemap[hidden] { display: none; }
 .filemap .ttools { position: static; max-width: none; flex: none; border-width: 0 0 1px; border-radius: 0; box-shadow: none; padding: 6px 12px; }
-.fmtree { position: relative; flex: 1; min-height: 0; overflow: auto; padding: 8px 130px 16px 12px; font-family: var(--mono); font-size: 12.5px; outline: none; }
-.fmedges { position: absolute; left: 0; top: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.fmtree { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; cursor: grab; outline: none; }
+.fmtree.panning { cursor: grabbing; }
+.fmworld { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-origin: 0 0; will-change: transform; }
+.fmedges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
 .fmedges path { fill: none; stroke-linecap: round; }
-.fmedges .ln { stroke: var(--local-only); opacity: .55; }
+.fmedges .tr { stroke: var(--line-2); stroke-width: 1.5; }
+.fmedges .ln { stroke: var(--local-only); opacity: .6; }
 .fmedges .ln.across { stroke: var(--unknown); stroke-dasharray: 6 5; }
 .fmedges .ln.lit { opacity: 1; }
-.fmedges .ln.dim { opacity: .12; }
-.fmedges .hit { stroke: transparent; stroke-width: 10; pointer-events: stroke; cursor: pointer; }
-.fmstat i.k { display: inline-block; width: 18px; border-top: 2px solid var(--local-only); vertical-align: middle; margin-right: 5px; }
-.fmstat i.k.across { border-top: 2px dashed var(--unknown); }
-.fmrow { display: flex; align-items: center; gap: 6px; min-height: 24px; padding: 0 8px 0 4px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
-.fmrow:hover { background: var(--panel-2); }
-.fmrow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.fmrow.on { background: color-mix(in srgb, var(--accent) 18%, transparent); }
-.fmrow.peer { background: color-mix(in srgb, var(--local-only) 15%, transparent); }
+.fmedges .ln.dim { opacity: .1; }
+.fmedges .hit { stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: pointer; }
+/* Cards have a fixed size and contain their own layout and paint, so a redraw never measures text */
+.fmrow { position: absolute; left: 0; top: 0; box-sizing: border-box; width: 250px; height: 50px; contain: layout style; display: flex; flex-direction: column; justify-content: center; gap: 1px; padding: 4px 10px 6px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 8px; cursor: pointer; }
+.fmrow:hover { border-color: var(--accent); }
+.fmrow:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fmrow.dim { opacity: .4; }
+.fmrow.on { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+.fmrow.peer { border-color: var(--local-only); box-shadow: 0 0 0 2px color-mix(in srgb, var(--local-only) 40%, transparent); }
+.fmrow.host { background: var(--raise); }
+.fmrow.host .nm { font-weight: 600; }
+.fmrow.mnt { background: var(--panel-2); }
+.fmrow.whole, .fmrow.dup { border-left: 3px solid var(--local-only); }
+.fmrow.bad { border-left: 3px solid var(--broken); }
+.fmrow.file { background: var(--bg); }
+.fmrow.staged { border-style: dashed; }
 .fmrow.staged .nm { text-decoration: line-through; color: var(--muted); }
-.fmrow.top { font-weight: 600; margin-top: 8px; }
-.fmrow .tp { color: var(--unknown); white-space: pre; flex: none; }
-.fmrow .tw { all: unset; flex: none; width: 14px; text-align: center; color: var(--muted); cursor: pointer; }
-.fmrow .nm { color: var(--fg); overflow: hidden; text-overflow: ellipsis; min-width: 40px; }
-.fmrow.dir .nm { color: var(--accent); }
-.fmrow.top .nm { color: var(--fg); }
+.fmrow.more { align-items: center; color: var(--accent); background: none; border-style: dashed; }
+.fmrow .hd { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.fmrow .nm { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.fmrow .sz { flex: none; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.fmrow .nt { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fmrow.bad .nm { color: var(--broken); }
-.fmrow .nt { color: var(--muted); font-family: var(--sans, inherit); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
-.fmrow .nt.whole { color: var(--local-only); }
-.fmrow .sz { margin-left: auto; padding-left: 12px; flex: none; font-variant-numeric: tabular-nums; color: var(--muted); }
-.fmrow .mb { flex: none; width: 60px; height: 3px; border-radius: 2px; background: var(--raise); overflow: hidden; }
-.fmrow .mb:empty { background: none; }
+.fmrow.whole .nt { color: var(--local-only); }
+.fmrow .mb { position: absolute; left: 10px; right: 10px; bottom: 3px; height: 2px; border-radius: 1px; overflow: hidden; }
 .fmrow .mb i { display: block; height: 100%; background: var(--local-only); }
+.fmrow.host .mb i, .fmrow.mnt .mb i { background: var(--accent); }
+.fmrow .tw { all: unset; position: absolute; right: -11px; top: 50%; width: 20px; height: 20px; margin-top: -10px; border-radius: 50%; background: var(--raise); border: 1px solid var(--line-2); text-align: center; line-height: 18px; font-size: 13px; color: var(--fg); cursor: pointer; box-sizing: border-box; }
+.fmrow .tw:hover { border-color: var(--accent); color: var(--accent); }
 .fmstat { flex: none; border-top: 1px solid var(--line); background: var(--panel); padding: 6px 12px; font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; }
 .fmstat b { color: var(--fg); font-weight: 600; }
-.fmempty { display: grid; place-content: center; text-align: center; gap: 6px; padding: 48px 16px; font-family: var(--sans, inherit); }
+.fmstat i.k { display: inline-block; width: 18px; border-top: 2px solid var(--local-only); vertical-align: middle; margin-right: 5px; }
+.fmstat i.k.across { border-top: 2px dashed var(--unknown); }
+.fmempty { display: grid; place-content: center; text-align: center; gap: 6px; padding: 48px 16px; }
 .fmlist { list-style: none; margin: 0 0 8px; padding: 0; }
 .fmlist li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 8px; align-items: start; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .fmlist .p { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
