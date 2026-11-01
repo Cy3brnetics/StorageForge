@@ -364,6 +364,8 @@ pre.script { background: var(--bg); border: 1px solid var(--line); border-radius
 .jobopts { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 4px; }
 .jobopts summary { cursor: pointer; font-size: 12.5px; }
 .jobopts textarea { width: 100%; }
+.jobopts .field:not(.col) { flex-wrap: wrap; max-width: 100%; }
+.jobopts select { min-width: 0; max-width: 100%; }
 .nfsrule { padding-left: 8px; border-left: 2px solid var(--line-2); gap: 4px; }
 .link { all: unset; cursor: pointer; } .link:hover, .link:focus-visible { color: var(--accent); text-decoration: underline; }
 

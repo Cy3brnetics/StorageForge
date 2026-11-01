@@ -1,5 +1,6 @@
 """The per-job file index storageforge-job keeps on hosts, and the pre-transfer dedup built on it. SYNC_PY is embedded in
-JOB_SCRIPT and runs under python3 -I, so it uses the standard library only and needs no second file on the host.
+JOB_SCRIPT and runs under python3 -I, so it uses the standard library only and needs no second file on the host. It keeps to Python 3.6, what
+openSUSE Leap 15 and RHEL 8 ship.
 
   hashes <db> <root> <algo>          source side: hex paths on fd 3 -> one JSON line per file: its stat and hash
   clone <src> <dst> <want>           same-host jobs: reflink what rsync would copy straight from the source
@@ -40,11 +41,11 @@ def digest(fd, algo):
     os.lseek(fd, 0, 0)
     if algo == 'sha256':
         h = hashlib.sha256()
-        while chunk := os.read(fd, 1 << 20):
+        for chunk in iter(lambda: os.read(fd, 1 << 20), b''):
             h.update(chunk)
         return h.hexdigest()
     if algo == 'blake3':
-        return subprocess.run(['b3sum', '--no-names'], stdin=fd, capture_output=True, check=True, text=True).stdout.split()[0]
+        return subprocess.run(['b3sum', '--no-names'], stdin=fd, stdout=subprocess.PIPE, check=True, universal_newlines=True).stdout.split()[0]
     raise SystemExit(f'unknown hash {algo}')
 
 
@@ -206,7 +207,7 @@ def copy_into(src_fd, mtime_ns):
         os.lseek(src_fd, 0, 0)
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600, dir_fd=d)
         try:
-            while chunk := os.read(src_fd, 1 << 20):
+            for chunk in iter(lambda: os.read(src_fd, 1 << 20), b''):
                 os.write(fd, chunk)
             os.utime(fd, ns=(mtime_ns, mtime_ns))
         finally:

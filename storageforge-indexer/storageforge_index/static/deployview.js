@@ -374,7 +374,9 @@ function jobRow(j) {
       j.dedup ? 'dedup' : '', j.extent_dedup ? `duperemove ${j.extent_dedup}` : '',
       `runs on ${j.runner}`].filter(Boolean).join(' · '), 'muted small'),
     j.live && !['finished', 'failed'].includes(j.live.state) ? text('span', [j.live.state, j.live.percent != null ? `${j.live.percent}%` : '', j.live.speed,
-      j.live.route ? `via ${j.live.route} ${j.live.node}` : '', j.live.dedup_ratio ? `dedup ${Math.round(j.live.dedup_ratio * 100)}%` : ''].filter(Boolean).join(' · '), 'small') : '',
+      j.live.route ? `via ${j.live.route} ${j.live.node}` : '', j.live.dedup_ratio ? `dedup ${Math.round(j.live.dedup_ratio * 100)}%` : '',
+      // a killed run never says it ended, and a stream says nothing while it sends: show how old this is, not that it is current
+      Date.now() / 1000 - j.live.at > 300 ? `last heard ${when(j.live.at)}` : ''].filter(Boolean).join(' · '), Date.now() / 1000 - j.live.at > 300 ? 'muted small' : 'small') : '',
     last ? text('span', `last run ${when(last.end || last.start)}: ${last.rc === 0 ? 'ok' : 'exit ' + last.rc}${last.bytes ? ' · ' + fmtBytes(last.bytes) : ''}${last.files ? ` · ${last.files.toLocaleString()} files` : ''} · ${last.message || ''}`,
       last.rc === 0 ? 'small' : 'st-failed small') : text('span', j.paused ? 'paused' : 'no run reported yet', 'muted small'),
     j.last_ok && j.last_ok !== last ? text('span', `last good run ${when(j.last_ok.end)}`, 'muted small') : '',

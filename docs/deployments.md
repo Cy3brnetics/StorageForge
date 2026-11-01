@@ -139,7 +139,7 @@ Options on a move step, under **When deployed as a job**. All are off by default
 - **When a route drops mid-run:** SSH notices within about 30 seconds, the job looks for a route up to 5 times and rsync resumes from `--partial-dir`. rsnapshot and git runs pick a route at the start and do not move during a run: they fail and the next run tries again, because retrying rsnapshot would rotate twice. A running transfer does not move back when the LAN returns; the next run uses it.
 - OpenSSH on the runner needs `BindInterface` if a route names an interface. The deploy report checks this.
 
-**Dedup before transfer** (copy, move and mirror; needs `python3` 3.8 or later on both hosts):
+**Dedup before transfer** (copy, move and mirror; needs `python3` on both hosts):
 
 1. An rsync dry run lists what would be copied, so excludes and rsync's own checks apply. If nothing changed, nothing is hashed.
 2. Only files of at least the minimum size (1 MiB) with a same-sized file at the destination are hashed on the source, through the job key's `hashes` command.

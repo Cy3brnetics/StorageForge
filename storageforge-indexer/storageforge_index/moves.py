@@ -104,6 +104,13 @@ def _route(r, i: int) -> dict:
     return {'via': via, 'address': addr, 'iface': iface or None}
 
 
+def _whole(value, what: str, i: int, low: int, high: int) -> int:
+    try:
+        return max(low, min(int(value), high))
+    except (TypeError, ValueError):
+        raise ValueError(f'step {i}: {what} must be a whole number') from None
+
+
 def _engine(o: dict, i: int, method: str, excludes: list, snapshot: bool) -> dict:
     """The sync engine's options, for deployed jobs. Only what is switched on is kept: a plan that uses none of them
     fingerprints as it did before they existed, so deployed plans do not all turn up as changed."""
@@ -130,9 +137,9 @@ def _engine(o: dict, i: int, method: str, excludes: list, snapshot: bool) -> dic
         if algo not in HASHES:
             raise ValueError(f'step {i}: hash must be one of {", ".join(HASHES)}')
         out.update(dedup=True, hash=algo, dedup_hardlink=bool(o.get('dedup_hardlink')),
-                   dedup_min_kb=max(1, min(int(o.get('dedup_min_kb') or 1024), 1 << 30)))
+                   dedup_min_kb=_whole(o.get('dedup_min_kb') or 1024, 'the smallest file to dedup', i, 1, 1 << 30))
     if o.get('preflight'):
-        out.update(preflight=True, reserve_gb=max(0, min(int(o.get('reserve_gb') if o.get('reserve_gb') not in (None, '') else 1), 100_000)))
+        out.update(preflight=True, reserve_gb=_whole(o.get('reserve_gb') if o.get('reserve_gb') not in (None, '') else 1, 'the space to keep free', i, 0, 100_000))
     if o.get('extent_dedup'):
         if o['extent_dedup'] not in ('weekly', 'monthly'):
             raise ValueError(f'step {i}: extent dedup runs weekly or monthly')

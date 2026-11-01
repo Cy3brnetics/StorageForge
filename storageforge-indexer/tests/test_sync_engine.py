@@ -1,6 +1,7 @@
 """The sync engine in storageforge-job: routes, pre-transfer dedup, the volume lock, state events, snapshot streams,
 duperemove and the room check. The real program runs; ssh, btrfs and duperemove are stand-ins, since they need root, a
 second host or a real pool (the KVM lab is where those get proven)."""
+import ast
 import fcntl
 import json
 import os
@@ -483,6 +484,13 @@ class Engine(unittest.TestCase):
         self.assertFalse((self.t / 'ran').exists())
 
 
+class Portable(unittest.TestCase):
+    def test_the_helper_runs_on_python_3_6(self):
+        """openSUSE Leap 15 and RHEL 8 ship it: anything newer and dedup is quietly skipped on them."""
+        ast.parse(SYNC_PY, feature_version=(3, 6))
+        self.assertNotIn('capture_output', SYNC_PY)
+
+
 class Plans(unittest.TestCase):
     def setUp(self):
         d = tempfile.mkdtemp()
@@ -514,6 +522,13 @@ class Plans(unittest.TestCase):
                           ({'extent_dedup': 'weekly'}, 'git')):
             with self.assertRaises(ValueError, msg=str(o)):
                 moves.normalize(self.plan(method, **o))
+        for o in ({'preflight': True, 'reserve_gb': 'lots'}, {'dedup': True, 'dedup_min_kb': 'x'}):
+            with self.assertRaisesRegex(ValueError, 'whole number'):
+                moves.normalize(self.plan(**o))
+
+    def test_no_reserve_given_means_the_default_and_zero_means_zero(self):
+        norm = lambda **o: moves.normalize(self.plan(preflight=True, **o))['steps'][0]['options']['reserve_gb']   # noqa: E731
+        self.assertEqual((norm(), norm(reserve_gb=''), norm(reserve_gb='0')), (1, 1, 0))
 
     def test_ipv6_routes_and_interfaces_are_kept(self):
         o = moves.normalize(self.plan(routes=[{'via': 'mesh', 'address': 'fd7a:115c:a1e0::1', 'iface': 'tailscale0'}]))['steps'][0]['options']

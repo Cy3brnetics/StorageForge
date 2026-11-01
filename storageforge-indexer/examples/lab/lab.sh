@@ -469,7 +469,7 @@ cmd_test_all() {
   export SFLAB_STATE="$STATE"
   rm -rf "$STATE/results" "$STATE/gauntlet.json"
   cmd_reset
-  for t in 0 1 2 3 4 5; do
+  for t in 0 1 2 3 4 5 6; do
     say "== tier $t =="
     [ "$t" = 0 ] || [ "$t" = 2 ] || cmd_reset
     if [ "$t" = 2 ]; then cmd_gauntlet || true; else python3 "$tiers" run "$t" || true; fi     # the report decides, knowing what is known
