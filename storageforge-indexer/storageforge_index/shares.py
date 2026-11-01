@@ -25,7 +25,7 @@ import shlex
 from .db import Conn, loads
 from .moves import _subtree_sql, find_host, host_slug, hosts, mount_of
 from .payloads import is_designed, share_key
-from .scriptkit import HELPERS, PACKAGES, REMOTE, comments, host_name, one_line, package_check
+from .scriptkit import CIFS_KERNEL, HELPERS, PACKAGES, REMOTE, comments, host_name, one_line, package_check
 
 SMB_NAME = re.compile(r'[A-Za-z0-9_.$-]{1,80}')
 NFS_DEFAULT = 'rw,sync,no_subtree_check'
@@ -605,7 +605,7 @@ def script(conn: Conn, host: str, prev_clients: list[str] | None = None) -> str:
                                shares=comments(lines, '#   (no exports in the design)'), problems=comments(problems, '#   none'))
             + f'SERVER={q(host_slug(c["host"]))}\nSERVER_ADDR={q(c["address"])}\n{decl}\n'
             + f'PREV_CLIENTS=({" ".join(q(host_slug(h)) for h in prev_clients or [])})\n'
-            + SHARES_BODY_1 + HELPERS + SHARES_BODY_2 + REMOTE + SHARES_BODY_3.replace('@@PACKAGES@@\n', PACKAGES))
+            + SHARES_BODY_1 + HELPERS + SHARES_BODY_2 + REMOTE + SHARES_BODY_3.replace('@@PACKAGES@@\n', PACKAGES + CIFS_KERNEL))
 
 
 def deploy_items(db, conn: Conn, host: str, mode: str, actor: str) -> list[dict]:
@@ -805,6 +805,7 @@ server_smb() {
   fi
   if [[ $(cat /sys/fs/selinux/enforce 2>/dev/null) == 1 ]]; then     # getenforce is not on every image
     for i in "${!E_PROTO[@]}"; do [[ ${E_PROTO[$i]} == SMB ]] || continue
+      selinux_parents "${E_PATH[$i]}"
       if ls -Zd "${E_PATH[$i]}" 2>/dev/null | grep samba_share_t >/dev/null; then ok "SELinux: ${E_PATH[$i]} is samba_share_t"
       elif ((APPLY)); then doing "SELinux: label ${E_PATH[$i]} samba_share_t"
         if command -v semanage >/dev/null; then semanage fcontext -a -t samba_share_t "${E_PATH[$i]}(/.*)?" 2>/dev/null || true; restorecon -R "${E_PATH[$i]}"
@@ -825,6 +826,19 @@ server_smb() {
   fi
 }
 
+selinux_parents() { # smbd walks every folder above a share, and can't enter one with no label: BAD_NETWORK_NAME for clients
+  local p=$1
+  no_label() { case $(ls -Zd "$1" 2>/dev/null | awk '{print $1}') in '?'|*:unlabeled_t:*) return 0 ;; *) return 1 ;; esac; }   # ls shows a btrfs subvolume's root with no label as "?"
+  while p=$(dirname "$p"); [[ $p != / ]]; do
+    no_label "$p" || continue
+    if ((!APPLY)); then missing "SELinux would block Samba from walking through $p (no label)"; continue; fi
+    doing "SELinux: label $p, a folder above the share"
+    restorecon "$p" 2>/dev/null || true
+    no_label "$p" && { chcon -t samba_share_t "$p" || conflict "could not label $p"; }
+  done
+  return 0
+}
+
 client_mount() { # index into C_*
   local i=$1 t=${C_TARGET[$1]} line auto= extra=${C_OPTS[$1]:+,${C_OPTS[$1]}}
   [[ ${C_AUTO[$i]} == 1 ]] && auto=,x-systemd.automount
@@ -834,6 +848,7 @@ client_mount() { # index into C_*
     line="${C_SOURCE[$i]// /\\040} ${t// /\\040} ${C_FS[$i]} _netdev,nofail$auto,x-systemd.mount-timeout=30$extra 0 0"
   else
     need_cmd mount.cifs "SMB client" cifs-utils cifs-utils cifs-utils cifs-utils || return 0
+    cifs_kernel || return 0
     local cred=/etc/samba/credentials/$SERVER-${C_NAME[$i]} who=${SUDO_USER:-root}
     if [[ -s $cred ]]; then ok "credentials $cred"
     elif ((APPLY)) && [[ -t 0 ]]; then

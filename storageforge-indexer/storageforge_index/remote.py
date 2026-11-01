@@ -278,6 +278,7 @@ echo '@@lvs'; lvs --reportformat json --units b --nosuffix -o vg_name,lv_name,se
 echo '@@findmnt'; findmnt -J -b -l -o TARGET,SOURCE,FSTYPE,SIZE,USED,OPTIONS,MAJ:MIN,FSROOT 2>/dev/null
 echo '@@mountinfo'; cat /proc/self/mountinfo 2>/dev/null
 echo '@@df'; df -B1 -P 2>/dev/null
+echo '@@mergerfs'; for p in $(pgrep -x mergerfs 2>/dev/null); do xargs -0 </proc/$p/cmdline; done; awk '$1 !~ /^#/ && $3 ~ /mergerfs/ {print $1, $2}' /etc/fstab 2>/dev/null
 echo '@@btrfs'; for d in /sys/fs/btrfs/*-*/; do [ -d "$d" ] || continue; printf '%s\t%s\t%s\t%s\t%s\n' "$(basename "$d")" "$(ls -d "$d"allocation/data/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(ls -d "$d"allocation/metadata/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(cat "$d"label 2>/dev/null)" "$(a="$d"allocation; v() { cat "$@" 2>/dev/null | awk '{s+=$1} END {printf "%.0f", s}'; }; printf 'dev=%s alloc=%s datat=%s datau=%s metat=%s metau=%s rsv=%s missing=%s op=%s' "$(cat "$d"devices/*/size 2>/dev/null | awk '{s+=$1*512} END {printf "%.0f", s}')" "$(v "$a"/*/disk_total)" "$(v "$a"/data/total_bytes)" "$(v "$a"/data/bytes_used)" "$(v "$a"/metadata/total_bytes)" "$(v "$a"/metadata/bytes_used)" "$(v "$a"/global_rsv_size)" "$(v "$d"devinfo/*/missing)" "$(cat "$d"exclusive_operation 2>/dev/null)")"; done
 echo '@@jobs'; for f in /var/lib/storageforge/jobs/*/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
 echo '@@tasks'; for f in /var/lib/storageforge/tasks/*.last /var/lib/storageforge/tasks/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
@@ -409,6 +410,18 @@ def parse_findmnt(text: str) -> list[MountInfo]:
     return [m for m in out if m.target]
 
 
+def apply_mergerfs(mounts: list[MountInfo], text: str):
+    """The kernel's source for mergerfs says only 1:2. Its command line and fstab both end in branches, then mount point."""
+    branches = {}
+    for line in text.splitlines():
+        words = line.split()
+        if len(words) >= 2:
+            branches.setdefault(words[-1].replace('\\040', ' '), words[-2].replace('\\040', ' '))
+    for m in mounts:
+        if m.fstype == 'fuse.mergerfs' and m.target in branches:
+            m.source = branches[m.target]
+
+
 def parse_mountinfo(text: str, df_text: str = '') -> list[MountInfo]:
     sizes = {}
     for line in df_text.splitlines()[1:]:
@@ -448,6 +461,7 @@ def collect_inventory(t: Transport) -> HostInventory:
     mounts = parse_findmnt(sec.get('findmnt', '')) or parse_mountinfo(sec.get('mountinfo', ''), sec.get('df', ''))
     if not mounts:
         raise RemoteError(f'{t.host}: could not read the mount table (findmnt and /proc/self/mountinfo both failed)')
+    apply_mergerfs(mounts, sec.get('mergerfs', ''))
     access, user = (lines('access') + ['', ''])[:2]
     from .health import parse_report, parse_snapshots
     from .hostconfig import parse_configs

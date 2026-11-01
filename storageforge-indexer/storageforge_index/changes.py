@@ -27,6 +27,7 @@ from .scriptkit import DEST_CMD, HELPERS, REMOTE, comments, host_name, one_line
 from .tasks import HOST_RE, _login
 
 PROFILES = ['single', 'dup', 'raid1', 'raid1c3', 'raid1c4', 'raid10', 'raid5', 'raid6']
+BTRFS_ROOM_AWK = '/Device size:/ {size = $NF} /Unallocated:/ {seen = 1; want = size / 10; if (want < 268435456) want = 268435456; if (want > 1073741824) want = 1073741824; if ($NF + 0 >= want) n++} END {print seen ? n + 0 : -1}'    # how many devices have room for a new chunk (10% of the device, 256 MiB to 1 GiB)
 MIN_DEVICES = {'single': 1, 'dup': 1, 'raid1': 2, 'raid1c3': 3, 'raid1c4': 4, 'raid10': 4, 'raid5': 2, 'raid6': 3}
 MKFS = ['ext4', 'xfs', 'btrfs', 'vfat', 'exfat']
 MOUNT_FS = ['btrfs', 'ext4', 'xfs', 'vfat', 'exfat', 'ntfs3', 'f2fs', 'nfs4', 'nfs', 'cifs', 'zfs', 'none']
@@ -403,6 +404,12 @@ class Host:
                 return len(p['members'])
         return 1
 
+    def unallocated(self, target: str) -> int | None:
+        from .health import unallocated
+        src = (self.mounted.get(target, {}).get('source') or '').split('[')[0].removeprefix('/dev/')
+        fs = next((f for f in self.node.get('btrfs_fs') or [] if src in f['members'] or src == f['name']), None)
+        return unallocated(fs) if fs else None
+
 
 def _users(conn, host, path):
     from .docker import users_of
@@ -719,6 +726,11 @@ def _check_task(conn, c: Host, h: dict, k: str, p: dict, say):
                 need = MIN_DEVICES[p[kind]]
                 if n < need:
                     say('crit', f'{p[kind]} needs {need} devices; this filesystem has {n}')
+            room = max(MIN_DEVICES[p['data']], MIN_DEVICES[p['metadata']]) * 2**28
+            free = c.unallocated(p['target'])
+            if free is not None and free < room:
+                say('warn', f'{p["target"]} has only {free / 2**30:.2f} GiB unallocated at the last scan: the script reclaims half-empty '
+                            'chunks first, and stops without converting if that frees too little')
             if 'raid5' in (p['data'], p['metadata']) or 'raid6' in (p['data'], p['metadata']):
                 say('warn', 'btrfs raid5/6 still has a write hole; raid1/raid1c3 is the safe choice')
             say('note', 'a balance runs in the background for hours; the script starts it (btrfs balance status follows it)')
@@ -1219,12 +1231,27 @@ t_btrfs_add() { local dev=$1 tgt=$2
   act "btrfs device add $dev $tgt" && try btrfs device add ${3:+-f} -- "$dev" "$tgt" &&
     { ok "added"; info "existing data stays where it is until a balance spreads it"; }
 }
-t_btrfs_balance() { local tgt=$1 d=$2 m=$3 cd cm
+btrfs_room() { # devices with unallocated room for a new chunk, or -1 when btrfs can't say
+  btrfs device usage -b -- "$1" 2>/dev/null | awk '/Device size:/ {size = $NF} /Unallocated:/ {seen = 1; want = size / 10; if (want < 268435456) want = 268435456; if (want > 1073741824) want = 1073741824; if ($NF + 0 >= want) n++} END {print seen ? n + 0 : -1}'
+}
+profile_devices() { case $1 in raid1c4|raid10) echo 4 ;; raid1c3|raid6) echo 3 ;; raid1|raid5) echo 2 ;; *) echo 1 ;; esac; }
+t_btrfs_balance() { local tgt=$1 d=$2 m=$3 cd cm room u need nd
   need btrfs btrfs-progs || return 0
   cd=$(btrfs filesystem df -- "$tgt" 2>/dev/null | awk -F'[ ,:]+' '/^Data/ {print tolower($2)}' | paste -sd+ -)   # raid1+single: part way through a conversion
   cm=$(btrfs filesystem df -- "$tgt" 2>/dev/null | awk -F'[ ,:]+' '/^Metadata/ {print tolower($2)}' | paste -sd+ -)   # raid1+single: part way through a conversion
   if [[ $cd == "$d" && $cm == "$m" ]]; then ok "$tgt is $d/$m"; return 0; fi
   if btrfs balance status -- "$tgt" 2>/dev/null | grep running >/dev/null; then ok "a balance is running on $tgt"; return 0; fi
+  need=$(profile_devices "$d"); nd=$(profile_devices "$m"); ((nd > need)) && need=$nd
+  # Converting writes new chunks first. With nowhere to put them the kernel can abort the transaction, and the filesystem goes read-only
+  room=$(btrfs_room "$tgt") || true
+  if ((room >= 0 && room < need)); then
+    act "reclaim half-empty chunks on $tgt: a conversion needs room on $need device(s), and $room have it" || return 0
+    for u in 0 10 25 50; do
+      btrfs balance start -dusage="$u" -- "$tgt" >/dev/null 2>&1 || true
+      room=$(btrfs_room "$tgt") || true; ((room >= need)) && break
+    done
+    if ((room < need)); then conflict "not converted: only $room device(s) of $tgt have unallocated room after reclaiming, and $d/$m needs $need. Free some space or add a device"; return 1; fi
+  fi
   act "btrfs balance start --bg -dconvert=$d -mconvert=$m $tgt (now ${cd:-?}/${cm:-?})" &&
     try btrfs balance start --bg -dconvert="$d" -mconvert="$m" -- "$tgt" >/dev/null && ok "started: btrfs balance status $tgt"
 }
@@ -1469,6 +1496,8 @@ t_zfs_pool() { local pool=$1 level=$2 devs=$3 mp=$4 wipe=$5 ashift=${6:-12} vdev
 }
 t_zfs_dataset() { local ds=$1 mp=$2 opts=$3 o k v have
   need zfs zfsutils-linux || return 0
+  # zfs set before OpenZFS 2.2 parses no options, so it takes "--" for a dataset: the name can't be an option
+  [[ $ds == -* ]] && { conflict "$ds is not a dataset name"; return 1; }
   if ! zfs_exists "$ds" filesystem; then
     zfs_exists "${ds%%/*}" filesystem || { later "pool ${ds%%/*} must exist"; return 0; }
     act "zfs create -p $ds" && try zfs create -p -- "$ds" && ok "created" || return 0
@@ -1480,7 +1509,7 @@ t_zfs_dataset() { local ds=$1 mp=$2 opts=$3 o k v have
     k=${o%%=*}; v=${o#*=}
     have=$(zfs get -H -o value "$k" -- "$ds" 2>/dev/null || true)
     if [[ $have == "$v" ]]; then ok "$k=$v"
-    elif act "zfs set $k=$v $ds (now ${have:-unset})"; then try zfs set "$k=$v" -- "$ds" && ok "$k=$v"; fi
+    elif act "zfs set $k=$v $ds (now ${have:-unset})"; then try zfs set "$k=$v" "$ds" && ok "$k=$v"; fi
   done
 }
 t_zfs_snapshot() { local ds=$1 name=$2
@@ -1671,8 +1700,13 @@ def _ansible_task(t: dict, c: Host | None) -> dict:
         return {'name': name, 'ansible.builtin.command': {'argv': ['btrfs', 'device', 'add'] + (['-f'] if p['wipe'] else [])
                 + [p['device'], p['target']]}, **gate}
     if k == 'btrfs-balance':
-        return {'name': name, 'ansible.builtin.command': {'argv': ['btrfs', 'balance', 'start', '--bg', f'-dconvert={p["data"]}',
-                f'-mconvert={p["metadata"]}', p['target']]}}
+        need = max(MIN_DEVICES[p['data']], MIN_DEVICES[p['metadata']])
+        t = shlex.quote(p['target'])
+        return {'name': name, 'ansible.builtin.shell': {'executable': '/bin/bash', 'cmd': (
+            f'room=$(btrfs device usage -b -- {t} | awk {shlex.quote(BTRFS_ROOM_AWK)})\n'
+            f'if ((room >= 0 && room < {need})); then echo "not converted: only $room device(s) have unallocated room, and this needs {need}. '
+            f'Reclaim free space first" >&2; exit 1; fi\n'
+            f'btrfs balance start --bg -dconvert={p["data"]} -mconvert={p["metadata"]} -- {t}')}}
     if k == 'scrub':
         return {'name': name, 'ansible.builtin.command': {'argv': ['btrfs', 'scrub', 'start', p['target']]}}
     if k == 'btrfs-reclaim':

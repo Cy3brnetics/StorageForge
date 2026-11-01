@@ -51,28 +51,17 @@ A check listed in `KNOWN` in `tiers.py` still fails, but shows as `known` and do
 
 Every config went through every tier in at least one of four builds on 2026-10-31, at commit `2b27ab0` with the lab's own changes uncommitted. The last build, seed `500277455`, had 337 passed, 0 failed, 5 known and 1 skipped. The first three builds used earlier versions of the tests, so their failures led to the fixes and findings below.
 
+The known failures from those builds were fixed and rechecked on 2026-11-01, on two `--pick` builds of the configs they affected. The second, `sf-ctl,sf-ubuntu,sf-fedora,sf-suse,sf-alpine,sf-bookworm,sf-alma9`, had 346 passed, 0 failed, 0 known and 1 skipped. Other configs last ran on 2026-10-31.
+
 | Config | Scans | Deploys |
 | :--- | :--- | :--- |
 | Debian 12, Debian 13 | Yes | Yes |
-| Ubuntu 22.04 | Yes | Yes, except `zfs set` and mounting SMB (below) |
-| Ubuntu 24.04 | Yes | Yes, except mounting SMB (below) |
+| Ubuntu 22.04, Ubuntu 24.04 | Yes | Yes |
 | Fedora 44, Arch | Yes | Yes |
-| openSUSE Leap 15.6, Leap 16, Tumbleweed | Yes | Yes, except sharing a folder under an unlabelled one on Leap 16 (below) |
-| Rocky Linux 9 | Partial until scan access is set up | Yes |
-| Rocky Linux 10 | Yes | Yes, except mounting SMB (below) |
+| openSUSE Leap 15.6, Leap 16, Tumbleweed | Yes | Yes |
+| Rocky Linux 9, Rocky Linux 10 | Yes | Yes |
 | AlmaLinux 9, AlmaLinux 10 | Yes | Yes |
 | Alpine 3.24 | Yes | Refused with a clear message: it has no bash or systemd |
-
-### Known failures
-
-- **Converting a btrfs profile with no unallocated space:** on `sf-tumbleweed` the kernel aborts with `ENOSPC` and the filesystem goes read-only, while the task has already reported that the balance started.
-- **Disk-full alerts on btrfs RAID:** the alert divides used by total, but `df` counts used against used plus available. `/srv/pool/backups` at 99% by `df` read as 85%, below the 90% threshold, so no disk alert opened.
-- **SMB share under an unlabelled folder on SELinux:** the deploy labels only the shared folder. If the folder above it has no label, `smbd` fails `canonicalize_connect_path` and clients get `BAD_NETWORK_NAME`. This was seen on `sf-fedora`, and the same `mount error(2)` came from a share on `sf-suse`.
-- **SMB mounts on some cloud kernels:** Ubuntu's stock kernels have no `nls_utf8`, which the mount's `iocharset=utf8` needs, and Rocky 10's image has no `cifs`. The deploy installs only `cifs-utils`.
-- **`zfs set` on Ubuntu 22.04:** the task passes `--`, which this ZFS release rejects with `cannot open '--'`.
-- **Verify on a newer SSH client:** a job's verify counts every output line as a differing file, including the post-quantum warning a new client prints for an older server.
-- **Podman's overlay folder:** without scan access, it counts as a failed mount, so the scan is partial.
-- **mergerfs:** the scan records the source as `1:2`, not the branch folders.
 
 ## What the lab can't test
 

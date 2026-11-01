@@ -31,6 +31,14 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ### Fixed
 - **Scans no longer fail with "FOREIGN KEY constraint failed"** when a host mounts from, or backs up to, a host that has no graph yet, as when a new install scans several hosts at once. The scan's data was saved, but the job showed as failed and the host's graph was not updated. Scan the host again to update it.
 - Scanning a host by name while its first scan, queued by address, is still running now joins that scan. It used to add a failed job saying the host was already being scanned.
+- **Converting a btrfs profile no longer risks a read-only filesystem.** With too little unallocated space, the script reclaims half-empty chunks first, and stops without converting if that frees too little. The plan check warns, and the Ansible step refuses.
+- Disk alerts on btrfs RAID match `df`: used against used plus available, not against the raw total.
+- An SMB share under a folder with no SELinux label works: the deploy labels the folders above it. **Redeploy existing shares.**
+- SMB client deploys and reinstall scripts install the kernel modules a cloud image leaves out (`cifs`, `nls_utf8`).
+- `zfs set` works on Ubuntu 22.04's ZFS, which rejected `--`.
+- A job's verify no longer counts ssh warnings as differing files, and a failed rsync is reported as such. **Redeploy existing jobs.**
+- Podman's overlay folder is skipped as image layers, so it no longer makes a scan partial.
+- A scan records mergerfs's branch folders as its source, not `1:2`.
 - **Files in nested btrfs subvolumes are now indexed.** A subvolume inside a scanned mount, without a mount of its own, was silently left out, along with all its files. The next scan adds them. Read-only snapshots stay out.
 - Single-device btrfs filesystems now get the same scrub and device error checks as pools. Their results were dropped, so expect new scrub warnings on hosts with the collector.
 - File map: faster, kept until the index or ignore list changes. Ignore lists are no longer capped at 4 KiB, and saving one no longer holds the request while graphs rebuild.

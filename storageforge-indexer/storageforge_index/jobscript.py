@@ -264,12 +264,21 @@ verify_job() {
   local target=$DST
   if [[ $METHOD == rsnapshot ]]; then target="${DST%/}/$LOWEST.0/$(basename "${SRC%/}")"; fi
   [[ $METHOD == git ]] && { report 0 "nothing to verify for git archives (git checks objects itself)"; exit 0; }
-  local out n
+  local out n err rc=0
   local saved_delete=$FLAGS; FLAGS="$FLAGS checksum"; FLAGS=${FLAGS/delete/}
   local DST=$target; rsync_cmd "$SRC" -n -i
   FLAGS=$saved_delete
   echo "+ ${RS[*]}"
-  out=$("${RS[@]}" 2>&1 | grep -v '^\.d' | grep -v '^cd' | grep -v '^skipping' || true)
+  # The list is on stdout. ssh warnings are on stderr, so stderr counts only when rsync itself failed
+  err=$(mktemp) || die "cannot make a temporary file"
+  out=$("${RS[@]}" 2>"$err") || rc=$?
+  if ((rc != 0 && rc != 24)); then
+    cat "$err" >&2; n=$(tail -n 3 "$err" | paste -sd' '); rm -f "$err"
+    report 1 "could not compare with the source (rsync exit $rc): $n"
+    exit 1
+  fi
+  rm -f "$err"
+  out=$(grep -v '^\.d' <<<"$out" | grep -v '^cd' | grep -v '^skipping' || true)
   n=$(grep -c . <<<"$out" || true)
   if ((n == 0)); then report 0 "every file matches the source (checksums)"; exit 0; fi
   echo "$out" | head -50

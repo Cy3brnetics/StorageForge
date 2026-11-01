@@ -17,7 +17,7 @@ import time
 from . import __version__
 from .hostconfig import CONFIG_PATH, REBUILT_MARK
 from .moves import host_slug
-from .scriptkit import HELPERS, PACKAGES, REMOTE, comments, one_line
+from .scriptkit import CIFS_KERNEL, HELPERS, PACKAGES, REMOTE, comments, one_line
 
 # filesystem or layer -> the program that shows its tools are there, then packages for apt, dnf, pacman, zypper
 TOOLS = {'btrfs': ('btrfs', 'btrfs-progs', 'btrfs-progs', 'btrfs-progs', 'btrfsprogs'),
@@ -310,7 +310,7 @@ def script(version: dict) -> str:
         for d in drives:
             head.append(f'#   {d["uuid"]}  {d["fstype"]}  {d.get("label") or "-"}  {d.get("dev") or ""}  {d.get("model") or ""}  {d.get("serial") or ""}')
     out = [comments(head, ''), '', USAGE.replace('@@FILE@@', file_name), 'set -u']
-    body = (BODY.replace('@@REMOTE@@', REMOTE).replace('@@HELPERS@@', HELPERS).replace('@@PACKAGES@@', PACKAGES)
+    body = (BODY.replace('@@REMOTE@@', REMOTE).replace('@@HELPERS@@', HELPERS).replace('@@PACKAGES@@', PACKAGES + CIFS_KERNEL)
             .replace('@@MARK@@', REBUILT_MARK).replace('@@WHEN@@', when).replace('@@NAME@@', re.sub(r'[^A-Za-z0-9._-]', '_', name)).replace('@@QNAME@@', _q(name)))
     out.append(body)
     out.append(f'LAYERED={int(bool(b.get("has_md") or b.get("has_lvm") or b.get("crypt")))}\n')
@@ -323,6 +323,8 @@ def script(version: dict) -> str:
             s += '  ' + _tool(key, t).replace('need_cmd', 'fs_tool', 1)
         elif key in fstypes or (key == 'crypto_LUKS' and b.get('crypt')):
             s += '  ' + _tool(key, t)
+    if fstypes & {'cifs', 'smb3'}:
+        s += '  cifs_kernel\n'
     if b.get('has_md'):
         s += '  ' + _tool('mdadm', LAYERS['md'])
     if b.get('has_lvm'):
