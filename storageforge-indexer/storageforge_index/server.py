@@ -455,6 +455,15 @@ class _FromProxy:
         return self.plain(environ, start_response)
 
 
+def session_cookie_name(secure: bool) -> str:
+    """Browsers keep cookies by host, not port: sites on one machine need their own name, or signing in to one signs
+    you out of the other."""
+    suffix = os.environ.get('STORAGEFORGE_COOKIE_SUFFIX', '')
+    if suffix and not re.fullmatch(r'[a-z0-9-]{1,32}', suffix):
+        raise SystemExit('STORAGEFORGE_COOKIE_SUFFIX: lowercase letters, digits and - only (max 32)')
+    return f'{"__Host-" if secure else ""}sf_session{"_" + suffix if suffix else ""}'
+
+
 def create_app(core: App, session_secret: str, secure_cookies: bool = False, proxy_hops: int = 0,
                proxy_host: str = '') -> Flask:
     web = Flask(__name__, static_folder=None)
@@ -463,7 +472,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     web.config.update(
         SECRET_KEY=session_secret, MAX_CONTENT_LENGTH=MAX_BODY,
         # __Host-: browsers only accept it over https, for Path=/ and without Domain, so no other site or subdomain can set it
-        SESSION_COOKIE_NAME='__Host-sf_session' if secure_cookies else 'sf_session',
+        SESSION_COOKIE_NAME=session_cookie_name(secure_cookies),
         SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Strict',
         SESSION_COOKIE_SECURE=secure_cookies,
         # the cookie signature's age limit; each user's own (shorter) session length is checked in load_user

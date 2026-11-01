@@ -20,8 +20,8 @@ if [ ! -s secrets/tls_cert ] || [ ! -s secrets/tls_key ]; then
   sans="DNS:localhost,IP:127.0.0.1,IP:::1,DNS:$short,DNS:$short.local,DNS:$short.lan"
   full=$(hostname -f 2>/dev/null || true)
   case $full in *.*) sans="$sans,DNS:$full" ;; esac
-  # this machine's addresses, without Docker's own bridges (docker0, br-<id>, sf0)
-  addrs=$(ip -o addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|veth|sf0)/ { sub(/\/.*/, "", $4); print $4 }')
+  # this machine's addresses, without Docker's own bridges (docker0, br-<id>, sf0, sf1...)
+  addrs=$(ip -o addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|veth)/ && $2 !~ /^sf[0-9]+$/ { sub(/\/.*/, "", $4); print $4 }')
   [ -n "$addrs" ] || addrs=$(hostname -I 2>/dev/null) || addrs=""
   for n in $addrs ${STORAGEFORGE_TLS_NAMES:-}; do
     case $n in

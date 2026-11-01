@@ -1,0 +1,201 @@
+#!/bin/bash
+# Several sites on one machine, each its own compose stack: its own database, vault, secrets, certificate and network,
+# so a fault in one client's stack cannot reach another's machines. Run from anywhere, as a user in the docker group.
+#   sf-site new acme --name "Acme Ltd"   make a site and print its first admin's link
+#   sf-site up|down|logs acme            start, stop, follow
+#   sf-site list                         every site, its address and state
+#   sf-site admin acme vault list        a storageforge-index command (the server may be running)
+#   sf-site reset acme --site-name "Other" --yes
+#   sf-site archive acme                 stop it and write its archive
+#   sf-site remove acme                  delete its volumes, once archived
+#   sf-site audit                        keys and machines shared between sites; exit 1 if any
+#   sf-site sync                         tell each site what the others use (up and new do this)
+# "default" is the stack made by a plain docker compose up, when there is one.
+set -euo pipefail
+
+HERE=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+COMPOSE=${SF_COMPOSE_FILE:-$HERE/docker-compose.yml}
+SITES=${SF_SITES_DIR:-$HERE/sites}
+FIRST_PORT=${SF_FIRST_PORT:-8444}
+
+die() { printf 'sf-site: %s\n' "$*" >&2; exit 2; }
+say() { printf 'sf-site: %s\n' "$*" >&2; }
+
+slugs() {
+  [ -z "${SF_NO_DEFAULT:-}" ] && docker volume inspect storageforge_sf-data >/dev/null 2>&1 && echo default
+  local d
+  for d in "$SITES"/*/; do [ -f "${d}site.env" ] && basename "$d"; done
+  return 0
+}
+
+exists() { [ "$1" = default ] && slugs | grep -qx default || [ -f "$SITES/$1/site.env" ]; }
+need() { [ -n "${1:-}" ] || die "which site? (sf-site list)"; exists "$1" || die "no site named $1"; }
+
+comp() {  # comp SLUG compose-args...
+  local s=$1; shift
+  if [ "$s" = default ]; then
+    mkdir -p "$SITES/.default"; touch "$SITES/.default/foreign"
+    STORAGEFORGE_FOREIGN_KEYS="$SITES/.default/foreign" docker compose -p storageforge --project-directory "$HERE" -f "$COMPOSE" "$@"
+  else
+    docker compose -p "sf-$s" --project-directory "$HERE" -f "$COMPOSE" --env-file "$SITES/$s/site.env" "$@"
+  fi
+}
+
+quiet() {  # compose's progress only matters when it fails
+  local err rc=0; err=$(mktemp)
+  "$@" 2>"$err" || rc=$?
+  if [ "$rc" != 0 ]; then grep -vE '^ *(Container|Network|Volume) ' "$err" >&2 || true; fi
+  rm -f "$err"
+  return "$rc"
+}
+
+value() { sed -n "s/^$2=//p" "$SITES/$1/site.env"; }   # value SLUG VARIABLE
+
+free_port() {
+  local p=$FIRST_PORT used
+  used=$(cat "$SITES"/*/site.env 2>/dev/null | sed -n 's/^STORAGEFORGE_HTTPS_PORT=//p'; ss -ltnH 2>/dev/null | awk '{ sub(/.*:/, "", $4); print $4 }')
+  while grep -qx "$p" <<<"$used"; do p=$((p + 1)); done
+  echo "$p"
+}
+
+free_bridge() {
+  local n=1 used
+  used=$(cat "$SITES"/*/site.env 2>/dev/null | sed -n 's/^STORAGEFORGE_BRIDGE=//p'; ip -o link 2>/dev/null | awk -F': ' '{ print $2 }')
+  while grep -qx "sf$n" <<<"$used"; do n=$((n + 1)); done
+  echo "sf$n"
+}
+
+collect() {  # every site's fingerprints as: slug TAB kind TAB fingerprint TAB label. Returns 1 if a site could not be read.
+  local s out rc=0
+  for s in $(slugs); do
+    if out=$(comp "$s" run --rm -T admin site fingerprints 2>/dev/null); then
+      grep -P '^(key|host)\t' <<<"$out" | sed "s/^/$s\t/" || true
+    else
+      say "could not read site $s"; rc=1
+    fi
+  done
+  return $rc
+}
+
+write_foreign() {  # write_foreign FILE: for each site, what the others use. In place: the stacks have the file mounted.
+  local s dest
+  for s in $(slugs); do
+    if [ "$s" = default ]; then dest=$SITES/.default/foreign; mkdir -p "$SITES/.default"; else dest=$SITES/$s/foreign; fi
+    awk -F'\t' -v me="$s" '$1 != me { print $2 " " $3 }' "$1" | sort -u >"$dest"
+    chmod 0644 "$dest"
+  done
+}
+
+cmd_sync() {
+  local all rc=0; all=$(mktemp)
+  collect >"$all" || rc=1
+  write_foreign "$all"
+  rm -f "$all"
+  [ "$rc" = 0 ] || say "some sites were not read, so a key they use will not be refused elsewhere"
+}
+
+cmd_new() {
+  local s=${1:-} name='' port=''; shift || true
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --name) name=${2:-}; shift 2 ;;
+      --port) port=${2:-}; shift 2 ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+  [[ $s =~ ^[a-z][a-z0-9-]{0,23}$ ]] || die "a site's short name: lowercase letters, digits and -, starting with a letter (max 24)"
+  [ "$s" != default ] || die "default is the plain docker compose stack"
+  [ ! -e "$SITES/$s" ] || die "$SITES/$s already exists"
+  [ -n "$name" ] || die "give it a --name, usually the client's"
+  [ -n "$port" ] || port=$(free_port)
+  local d=$SITES/$s
+  mkdir -p "$SITES"; chmod 0700 "$SITES"
+  mkdir -m 0700 "$d" "$d/secrets" "$d/archive"; mkdir -m 0750 "$d/keys"; touch "$d/foreign"; chmod 0644 "$d/foreign"
+  printf '%s\n' "$name" >"$d/name"
+  cat >"$d/site.env" <<EOF
+STORAGEFORGE_HTTPS_PORT=$port
+STORAGEFORGE_BRIDGE=$(free_bridge)
+STORAGEFORGE_COOKIE_SUFFIX=$s
+STORAGEFORGE_SECRETS_GID=$(id -g)
+STORAGEFORGE_SECRETS_DIR=$d/secrets
+STORAGEFORGE_KEY_IMPORT_DIR=$d/keys
+STORAGEFORGE_ARCHIVE_DIR=$d/archive
+STORAGEFORGE_FOREIGN_KEYS=$d/foreign
+EOF
+  chmod 0755 "$d" "$d/archive"            # for the moment: the container's root may only chown what it can reach
+  quiet comp "$s" run --rm -T --no-deps --user 0:0 --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --entrypoint sh admin \
+    -c 'chown 10001:10001 /app/archive && chmod 0700 /app/archive' \
+    || { rm -rf "$d"; die "could not prepare $s (docker compose failed)"; }
+  chmod 0700 "$d"
+  quiet comp "$s" run --rm -T admin site init --name "$name"
+  cmd_sync
+  say "made $s on port $port. Start it: sf-site up $s"
+  say "use 'sudo STORAGEFORGE_BRIDGE=$(value "$s" STORAGEFORGE_BRIDGE) docker/egress-firewall.sh' for its firewall, once it is up"
+}
+
+cmd_list() {
+  local s state url
+  printf '%-24s %-28s %-30s %s\n' SITE NAME ADDRESS STATE
+  for s in $(slugs); do
+    state=$(comp "$s" ps --status running -q storageforge 2>/dev/null | grep -q . && echo running || echo stopped)
+    if [ "$s" = default ]; then
+      printf '%-24s %-28s %-30s %s\n' default - "https://<this machine>:8443" "$state"
+    else
+      url="https://<this machine>:$(value "$s" STORAGEFORGE_HTTPS_PORT)"
+      printf '%-24s %-28s %-30s %s\n' "$s" "$(cat "$SITES/$s/name")" "$url" "$state"
+    fi
+  done
+}
+
+cmd_audit() {
+  local all rc=0 found; all=$(mktemp)
+  collect >"$all" || rc=2
+  found=$(awk -F'\t' '
+    { k = $2 " " $3; if (index(seen[k], "|" $1 "|") == 0) { seen[k] = seen[k] "|" $1 "|"; n[k]++ } who[k] = who[k] " " $1 ":" $4 }
+    END { for (k in n) if (n[k] > 1) print k " ->" who[k] }' "$all" | sort)
+  rm -f "$all"
+  if [ -n "$found" ]; then
+    printf 'shared between sites:\n%s\n' "$found"; return 1
+  fi
+  [ "$rc" != 0 ] || echo 'nothing shared between sites'
+  return $rc
+}
+
+cmd_archive() {
+  local s=$1
+  comp "$s" stop storageforge proxy 2>/dev/null || true
+  quiet comp "$s" run --rm -T admin site archive
+  [ "$s" = default ] || date +%s >"$SITES/$s/.archived"
+}
+
+cmd_remove() {
+  local s=$1 answer
+  [ "$s" != default ] || die "remove the default stack yourself: docker compose down -v"
+  [ -f "$SITES/$s/.archived" ] || die "archive it first: sf-site archive $s"
+  printf 'This deletes the volumes of %s (%s). Type its short name to go ahead: ' "$s" "$(cat "$SITES/$s/name")" >&2
+  read -r answer || answer=
+  [ "$answer" = "$s" ] || die "not removed"
+  quiet comp "$s" down -v --remove-orphans
+  local gone
+  gone=$SITES/.removed/$s-$(date +%Y%m%d-%H%M%S)
+  mkdir -p "$SITES/.removed"; mv "$SITES/$s" "$gone"
+  say "removed $s. Its archive is in $gone/archive and holds its keys and their secret: move it off this machine"
+  cmd_sync
+}
+
+cmd=${1:-}; shift || true
+case $cmd in
+  new) cmd_new "$@" ;;
+  list) cmd_list ;;
+  sync) cmd_sync ;;
+  audit) cmd_audit ;;
+  up) need "${1:-}"; cmd_sync; comp "$1" up -d "${@:2}" ;;
+  down) need "${1:-}"; comp "$1" stop storageforge proxy ;;
+  logs) need "${1:-}"; comp "$1" logs -f "${@:2}" ;;
+  admin) need "${1:-}"; comp "$1" run --rm admin "${@:2}" ;;
+  reset) need "${1:-}"; comp "$1" stop storageforge proxy 2>/dev/null || true; comp "$1" run --rm admin reset "${@:2}"
+         [ "$1" = default ] || comp "$1" run --rm -T admin site show 2>/dev/null | sed 's/  [0-9a-f]*$//' >"$SITES/$1/name"; cmd_sync ;;
+  archive) need "${1:-}"; cmd_archive "$1" ;;
+  remove) need "${1:-}"; cmd_remove "$1" ;;
+  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac

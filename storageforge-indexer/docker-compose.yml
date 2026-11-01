@@ -47,6 +47,7 @@ services:
       STORAGEFORGE_VAULT_SECRET_FILE: /run/sf-secrets/vault_secret
       STORAGEFORGE_SESSION_SECRET_FILE: /run/sf-secrets/session_secret
       STORAGEFORGE_COOKIE_SECURE: ${STORAGEFORGE_COOKIE_SECURE:-1}   # the session cookie only travels over https (proxy below)
+      STORAGEFORGE_COOKIE_SUFFIX: ${STORAGEFORGE_COOKIE_SUFFIX:-}    # its own session cookie when sites share a machine (docker/sf-site)
       STORAGEFORGE_PROXY_HOPS: ${STORAGEFORGE_PROXY_HOPS:-1}         # the proxy below sets X-Forwarded-For (real client IP)
       STORAGEFORGE_PROXY_HOST: proxy                                  # ...believed only from it, not from other containers
       STORAGEFORGE_SCAN_INTERVAL: ${STORAGEFORGE_SCAN_INTERVAL:-6h}
@@ -65,6 +66,8 @@ services:
       - /etc/localtime:/etc/localtime:ro   # nightly jobs run at the host's local time
       # Optional one-shot key import (file name = key name). Read-only.
       - ${STORAGEFORGE_KEY_IMPORT_DIR:-./keys}:/run/secrets/ssh-import:ro
+      # Fingerprints in use on other sites of this machine, written by docker/sf-site
+      - ${STORAGEFORGE_FOREIGN_KEYS:-/dev/null}:/run/sf-foreign:ro
     tmpfs:
       # Ephemeral ssh-agent sockets live here; never on disk.
       - /run/storageforge:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10001,gid=10001
@@ -117,6 +120,7 @@ services:
       - ${STORAGEFORGE_ARCHIVE_DIR:-./archive}:/app/archive
       - /etc/localtime:/etc/localtime:ro
       - ${STORAGEFORGE_KEY_IMPORT_DIR:-./keys}:/run/secrets/ssh-import:ro
+      - ${STORAGEFORGE_FOREIGN_KEYS:-/dev/null}:/run/sf-foreign:ro
     tmpfs:
       - /run/storageforge:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10001,gid=10001
       - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
@@ -163,4 +167,4 @@ networks:
     driver_opts:
       # A fixed bridge name, so a host firewall can allow SSH from this container to the Docker host itself:
       #   sudo ufw allow in on sf0 to any port 22 proto tcp
-      com.docker.network.bridge.name: sf0
+      com.docker.network.bridge.name: ${STORAGEFORGE_BRIDGE:-sf0}

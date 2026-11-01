@@ -331,6 +331,11 @@ class Vault:
         comment = comment or f'storageforge:{name}'
         public_line = f'{public} {comment}'
         fp = fingerprint(public_line)
+        if origin == 'imported':
+            from .site import foreign
+            if fp in foreign()['key']:
+                raise VaultError('Another site on this machine already uses this key, and one key should not serve two '
+                                 'clients. Generate a new one.')
         uuid = secrets.token_hex(16)
         with SecretBuffer(32) as dek:
             dek.buf[:] = os.urandom(32)

@@ -454,12 +454,33 @@ def cmd_config(args) -> int:
 
 
 def cmd_site(args) -> int:
-    from . import site
-    from .vault import actor_name
-    _, conn = open_db(args)
+    from . import reset, site, users
+    from .alerts import set_setting
+    from .vault import POLICY_KEY, actor_name
+    if args.site_cmd == 'archive':
+        r = reset.archive(Database(args.db), args.archive or os.environ.get('STORAGEFORGE_ARCHIVE_DIR'))
+        print(f'{r["archive"]}: it holds the keys and their secret, so move it off this machine')
+        return 0
+    db, conn = open_db(args)
     try:
-        if args.site_cmd == 'rename':
+        if args.site_cmd == 'init':
+            if site.name(conn):
+                raise SystemExit(f'this database is already {site.name(conn)}')
+            db, conn2, v = _vault(args)
+            with v:
+                site.ensure(conn)
+                print(f'{site.rename(conn, args.name, actor_name())} only takes keys generated in its vault')
+                set_setting(conn, POLICY_KEY, 'generate-only', actor_name())
+                _audit(db, conn2, v, 'site.created', name=args.name)
+            conn2.close()
+            if not users.count(conn):
+                token = users.create_invite(conn, 'admin', 'site init', hours=72, note='first admin')[1]
+                print(f'First admin, once and within 3 days: https://<this machine>/enroll#{token}')
+        elif args.site_cmd == 'rename':
             print(site.rename(conn, args.name, actor_name()))
+        elif args.site_cmd == 'fingerprints':
+            for row in site.fingerprints(conn):
+                print('\t'.join(row))
         else:
             print(f'{site.name(conn) or "(no name)"}  {site.ensure(conn)}')
         return 0
@@ -1246,6 +1267,10 @@ def build_parser() -> argparse.ArgumentParser:
     sts = st.add_subparsers(dest='site_cmd')
     sts.add_parser('show', help='its name and id (the default)')
     sts.add_parser('rename', help='change its name').add_argument('name')
+    sts.add_parser('init', help='name a new site, refuse imported keys, and print the first admin\'s link').add_argument('--name', required=True)
+    sts.add_parser('fingerprints', help='its key and host key fingerprints, to compare sites')
+    sts.add_parser('archive', help='write the archive reset makes, changing nothing (stop the server first)').add_argument(
+        '--archive', help='folder outside the data and backup folders (default $STORAGEFORGE_ARCHIVE_DIR)')
     st.set_defaults(fn=cmd_site, site_cmd='show')
 
     rt = sub.add_parser('reset', help='archive this site and start a new one: new database, vault and vault secret (stop the server first)')

@@ -172,6 +172,9 @@ Both report commands also take `--title`, `--as-of YYYY-MM-DD`, `--kwh-price`, `
 | `backup list [--dir D]` | backups on disk |
 | `restore FILE --yes` | replace the database with a backup from this site; stop the server first |
 | `site [show]`, `site rename NAME` | which client this database belongs to |
+| `site init --name NAME` | name a new site, refuse imported keys, print the first admin's link |
+| `site fingerprints` | its key and host key fingerprints, to compare sites |
+| `site archive [--archive D]` | write the archive `reset` makes, changing nothing; stop the server first |
 | `reset --site-name NAME [--archive D] [--abandon-deployed] --yes` | archive this site and start a new one ([details](operations.md#starting-a-new-site)) |
 | `prune [--days N] [--max-rows N] [--vacuum]` | drop old change history and job rows; `--vacuum` shrinks the file |
 

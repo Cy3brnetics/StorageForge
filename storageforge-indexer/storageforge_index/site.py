@@ -4,6 +4,7 @@ backups carry it."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import uuid
@@ -55,6 +56,45 @@ def export_dir(conn: Conn, root: str) -> str:
     """A named site's host configuration bundles get their own folder, so a shared mount never mixes two clients."""
     named = name(conn)
     return str(Path(root) / slug(named)) if named else root
+
+
+def fingerprints(conn: Conn) -> list[tuple[str, str, str]]:
+    """(kind, fingerprint, label) of this site's keys and machines, for comparing sites. Public values only."""
+    out = [('key', fp, n) for n, fp in conn.all('SELECT name, fingerprint FROM ssh_keys')]
+    for hostname, keys in conn.all('SELECT hostname, host_keys FROM hosts WHERE host_keys IS NOT NULL'):
+        out += [('host', fp, hostname) for fp in json.loads(keys) if fp.startswith('SHA256:')]
+    return out
+
+
+def foreign() -> dict[str, set[str]]:
+    """Fingerprints in use on other sites of this machine, from the file sf-site writes. It names no sites, so one
+    client's stack learns nothing about another's. Empty when there is no such file."""
+    found = {'key': set(), 'host': set()}
+    try:
+        lines = Path(os.environ.get('STORAGEFORGE_FOREIGN_FILE', '/run/sf-foreign')).read_text().splitlines()
+    except OSError:
+        return found
+    for line in lines:
+        kind, _, fp = line.partition(' ')
+        if kind in found and fp:
+            found[kind].add(fp)
+    return found
+
+
+def shared_problems(conn: Conn) -> dict:
+    """Alerts for what this site shares with another. Not refused: a machine can change owners, or a VM be cloned."""
+    other, now = foreign(), {}
+    for kind, fp, label in fingerprints(conn):
+        if fp not in other[kind]:
+            continue
+        if kind == 'key':
+            now[f'shared-key:{label}'] = ('shared-key', label, f'Key {label} is also in another site',
+                                          f'{fp}: one key should not serve two clients. Generate a new one here.', 'crit')
+        else:
+            now[f'shared-host:{label}'] = ('shared-host', label, f'{label} is also in another site',
+                                           f'{fp}: the same SSH host key is in another site. A machine that changed '
+                                           'owners should be retired from the old site; a cloned VM needs new host keys.', 'warn')
+    return now
 
 
 def read_file(path) -> dict | None:

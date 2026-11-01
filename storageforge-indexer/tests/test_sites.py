@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +16,7 @@ try:
     import dbfactory
 except ImportError:      # run as tests.test_x from the project folder
     from tests import dbfactory
-from storageforge_index import backup, cli, reset, site, users
+from storageforge_index import alerts, backup, cli, reset, site, users
 from storageforge_index.db import Database
 from storageforge_index.vault import AuditLog, Vault, VaultError
 
@@ -257,3 +258,136 @@ class Sites(unittest.TestCase):
         conn = self.db.connect()
         self.assertEqual(site.export_dir(conn, '/mnt/x'), '/mnt/x/client-a')
         conn.close()
+
+    # sites sharing a machine
+    def foreign_file(self, *lines):
+        path = self.tmp / 'foreign'
+        path.write_text(''.join(f'{x}\n' for x in lines))
+        patcher = mock.patch.dict(os.environ, {'STORAGEFORGE_FOREIGN_FILE': str(path)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_key_another_site_uses_is_refused(self):
+        pem = private_pem()
+        conn = self.db.connect()
+        with Vault(self.db, conn, OLD.encode()).unlock() as v:
+            fp = v.add_key('here', pem)['fingerprint']
+            v.remove_key('here')
+            self.foreign_file(f'key {fp}')
+            with self.assertRaisesRegex(VaultError, 'Another site'):
+                v.add_key('again', pem)
+            v.add_key('different', private_pem())
+        conn.close()
+
+    def test_no_foreign_file_refuses_nothing(self):
+        with mock.patch.dict(os.environ, {'STORAGEFORGE_FOREIGN_FILE': str(self.tmp / 'none')}):
+            self.assertEqual(site.foreign(), {'key': set(), 'host': set()})
+
+    def test_shared_keys_and_machines_raise_alerts(self):
+        conn = self.db.connect()
+        fp = conn.scalar('SELECT fingerprint FROM ssh_keys')
+        conn.execute("""INSERT INTO hosts (hostname, host_keys)
+                        VALUES ('nas-1', :k)""", {'k': json.dumps(['SHA256:machine', 'local'])})
+        self.assertEqual(site.shared_problems(conn), {})
+        self.foreign_file(f'key {fp}', 'host SHA256:machine')
+        found = site.shared_problems(conn)
+        self.assertEqual(found['shared-key:client-a'][4], 'crit')
+        self.assertEqual(found['shared-host:nas-1'][4], 'warn')
+        self.assertIn('shared-host:nas-1', alerts.problems(conn))
+        rows = sorted(r[0] for r in site.fingerprints(conn))
+        self.assertEqual(rows, ['host', 'key'])      # 'local' is not a machine to compare
+        conn.close()
+
+    def test_site_init_names_it_and_refuses_imports(self):
+        path = self.tmp / 'new.db'
+        fresh = Database(str(path))
+        conn = fresh.connect()
+        fresh.migrate(conn)
+        Vault(fresh, conn, OLD.encode()).init()
+        conn.close()
+        self.assertEqual(cli.main(['--db', str(path), 'site', 'init', '--name', 'Acme']), 0)
+        info = site.read_file(path)
+        self.assertEqual((info['name'], info['policy']), ('Acme', 'generate-only'))
+        self.assertTrue(info['id'])
+        with self.assertRaisesRegex(SystemExit, 'already Acme'):
+            cli.main(['--db', str(path), 'site', 'init', '--name', 'Other'])
+
+    def test_site_archive_changes_nothing(self):
+        r = reset.archive(Database(str(self.path)), str(self.archive))
+        self.assertEqual((Path(r['archive']) / 'vault_secret').read_text(), OLD)
+        self.assertTrue((Path(r['archive']) / 'data' / 'ssh' / 'known_hosts').exists())
+        self.assertEqual(self.secret_file.read_text(), OLD)
+        self.assertEqual(site.read_file(self.path)['name'], 'Client A')
+        self.assertTrue((self.data / 'ssh' / 'known_hosts').exists())
+
+    def test_session_cookie_is_per_site(self):
+        from storageforge_index.server import session_cookie_name
+        self.assertEqual(session_cookie_name(True), '__Host-sf_session')
+        self.assertEqual(session_cookie_name(False), 'sf_session')
+        with mock.patch.dict(os.environ, {'STORAGEFORGE_COOKIE_SUFFIX': 'acme'}):
+            self.assertEqual(session_cookie_name(True), '__Host-sf_session_acme')
+        with mock.patch.dict(os.environ, {'STORAGEFORGE_COOKIE_SUFFIX': 'a;b=c'}), self.assertRaises(SystemExit):
+            session_cookie_name(True)
+
+
+class SfSiteScript(unittest.TestCase):
+    """docker/sf-site against a stand-in for docker: which ports and bridges it picks, and what it will not remove."""
+    SCRIPT = Path(__file__).resolve().parents[1] / 'docker' / 'sf-site'
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        (self.tmp / 'bin').mkdir()
+        fake = self.tmp / 'bin' / 'docker'
+        fake.write_text(f'#!/bin/sh\necho "$*" >>{self.tmp}/calls\ncase "$*" in *fingerprints*) cat {self.tmp}/fp-"$3" 2>/dev/null ;; esac\nexit 0\n')
+        fake.chmod(0o755)
+
+    def sf(self, *args, stdin=''):
+        env = {**os.environ, 'PATH': f'{self.tmp}/bin:/usr/bin:/bin', 'SF_SITES_DIR': str(self.tmp / 'sites'),
+               'SF_NO_DEFAULT': '1', 'SF_FIRST_PORT': '48444'}
+        return subprocess.run(['bash', str(self.SCRIPT), *args], env=env, input=stdin, capture_output=True, text=True, timeout=30)
+
+    def env_of(self, slug):
+        return dict(x.split('=', 1) for x in (self.tmp / 'sites' / slug / 'site.env').read_text().splitlines())
+
+    def test_new_sites_get_their_own_port_bridge_and_cookie(self):
+        self.assertEqual(self.sf('new', 'acme', '--name', 'Acme Ltd').returncode, 0)
+        self.assertEqual(self.sf('new', 'beta', '--name', 'Beta').returncode, 0)
+        a, b = self.env_of('acme'), self.env_of('beta')
+        self.assertNotEqual(a['STORAGEFORGE_HTTPS_PORT'], b['STORAGEFORGE_HTTPS_PORT'])
+        self.assertNotEqual(a['STORAGEFORGE_BRIDGE'], b['STORAGEFORGE_BRIDGE'])
+        self.assertEqual(b['STORAGEFORGE_COOKIE_SUFFIX'], 'beta')
+        self.assertLessEqual(len(a['STORAGEFORGE_BRIDGE']), 15)
+        self.assertIn('site init --name Acme Ltd', (self.tmp / 'calls').read_text())
+
+    def test_new_refuses_bad_names_and_duplicates(self):
+        self.assertNotEqual(self.sf('new', 'Bad/name', '--name', 'x').returncode, 0)
+        self.assertNotEqual(self.sf('new', 'default', '--name', 'x').returncode, 0)
+        self.assertNotEqual(self.sf('new', 'noname').returncode, 0)
+        self.sf('new', 'acme', '--name', 'A')
+        self.assertNotEqual(self.sf('new', 'acme', '--name', 'B').returncode, 0)
+
+    def test_remove_needs_an_archive_and_the_typed_name(self):
+        self.sf('new', 'acme', '--name', 'A')
+        self.assertIn('archive it first', self.sf('remove', 'acme', stdin='acme\n').stderr)
+        self.assertEqual(self.sf('archive', 'acme').returncode, 0)
+        self.assertNotEqual(self.sf('remove', 'acme', stdin='nope\n').returncode, 0)
+        self.assertNotIn('down -v', (self.tmp / 'calls').read_text())
+        self.assertEqual(self.sf('remove', 'acme', stdin='acme\n').returncode, 0)
+        self.assertIn('-p sf-acme', [x for x in (self.tmp / 'calls').read_text().splitlines() if 'down -v' in x][0])
+        self.assertFalse((self.tmp / 'sites' / 'acme').exists())
+        self.assertEqual(len(list((self.tmp / 'sites' / '.removed').iterdir())), 1)
+
+    def test_audit_and_sync_compare_sites(self):
+        self.sf('new', 'acme', '--name', 'A')
+        self.sf('new', 'beta', '--name', 'B')
+        self.assertEqual(self.sf('audit').returncode, 0)
+        (self.tmp / 'fp-sf-acme').write_text('key\tSHA256:same\tk1\nhost\tSHA256:box\tnas\n')
+        (self.tmp / 'fp-sf-beta').write_text('key\tSHA256:same\tk2\n')
+        r = self.sf('audit')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('key SHA256:same', r.stdout)
+        self.assertNotIn('SHA256:box', r.stdout)
+        self.assertEqual(self.sf('sync').returncode, 0)
+        self.assertEqual((self.tmp / 'sites' / 'beta' / 'foreign').read_text(), 'host SHA256:box\nkey SHA256:same\n')
+        self.assertEqual((self.tmp / 'sites' / 'acme' / 'foreign').read_text(), 'key SHA256:same\n')

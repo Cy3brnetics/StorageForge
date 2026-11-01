@@ -172,6 +172,62 @@ def _build(path: Path, new_name: str, secret: str, previous: str | None, actor: 
         conn.close()
 
 
+def _old_files(target: Path, backups: Path) -> tuple[list[Path], list[Path]]:
+    kept = [p for p in (data_dir() / d for d in ('ssh', 'home')) if p.exists()] + sorted(
+        target.parent.glob(f'{target.name}.pre-restore-*'))
+    return kept, sorted(backups.glob('storageforge-*'))
+
+
+def _check_space(root: Path, target: Path, old_backups: list[Path]) -> None:
+    need = target.stat().st_size + sum(p.stat().st_size for p in old_backups if p.is_file())
+    if shutil.disk_usage(root).free < need * 1.1:
+        raise SystemExit(f'{root} has too little free space for the archive ({need:,} bytes)')
+
+
+def _write_archive(db: Database, part: Path, secret: bytes, old_backups, kept_data, left: dict, old_name, old_id) -> None:
+    part.mkdir(mode=0o700)
+    (part / 'database').mkdir(mode=0o700)
+    backup.create(db, 'full', part / 'database')
+    _copy_into(old_backups, part / 'backups')
+    _copy_into(kept_data, part / 'data')
+    fd = os.open(part / 'vault_secret', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'wb') as f:
+        f.write(secret)
+    (part / 'left-behind.json').write_text(json.dumps(left, indent=2) + '\n')
+    (part / 'README.txt').write_text(README.format(name=old_name or 'an unnamed site', id=old_id,
+                                                   when=dt.datetime.now().strftime('%Y-%m-%d %H:%M')))
+
+
+def archive(db: Database, archive_root: str | None) -> dict:
+    """The same archive reset makes, leaving the site as it is. A site that is leaving, before its volumes go."""
+    if db.dialect != 'sqlite':
+        raise SystemExit('archives are of SQLite databases (PostgreSQL: pg_dump -Fc)')
+    target, backups = Path(db.path), backup.backup_dir()
+    archive_root = _check_archive(archive_root, target, backups)
+    lock = hold_server_lock(db)
+    conn = db.connect()
+    try:
+        db.migrate(conn)
+        current = secret_from_env()
+        v = Vault(db, conn, current)
+        audit_key = v.unlock().audit_key if v.initialized else None     # a wrong secret stops here: the archive would be unreadable
+        kept_data, old_backups = _old_files(target, backups)
+        _check_space(archive_root, target, old_backups)
+        left, old_id, old_name = left_behind(conn), site.ensure(conn), site.name(conn)
+        name = f'{site.slug(old_name)}-{dt.datetime.now():%Y%m%d-%H%M%S}'
+        AuditLog(db, conn, audit_key).append(actor_name(), 'site.archive', 'ok', None, None, {'archive': name})
+        if v.initialized:
+            v.close()
+        part = archive_root / f'.{name}.part'
+        _write_archive(db, part, current, old_backups, kept_data, left, old_name, old_id)
+        part.rename(archive_root / name)
+        return {'archive': str(archive_root / name), 'left': left}
+    finally:
+        conn.close()
+        if lock:
+            lock.close()
+
+
 def run(db: Database, new_name: str, archive_root: str | None, abandon_deployed: bool) -> dict:
     if db.dialect != 'sqlite':
         raise SystemExit('reset works on SQLite. For PostgreSQL: pg_dump -Fc the database, create a new one, point '
@@ -195,12 +251,8 @@ def run(db: Database, new_name: str, archive_root: str | None, abandon_deployed:
                              'storageforge-index schedule remove), or pass --abandon-deployed to leave them there; '
                              'the list goes in the archive.')
         old_id, old_name = site.ensure(conn), site.name(conn)
-        kept_data = [p for p in (data_dir() / d for d in ('ssh', 'home')) if p.exists()] + sorted(
-            target.parent.glob(f'{target.name}.pre-restore-*'))
-        old_backups = sorted(backups.glob('storageforge-*'))
-        need = target.stat().st_size + sum(p.stat().st_size for p in old_backups if p.is_file())
-        if shutil.disk_usage(archive_root).free < need * 1.1:
-            raise SystemExit(f'{archive_root} has too little free space for the archive ({need:,} bytes)')
+        kept_data, old_backups = _old_files(target, backups)
+        _check_space(archive_root, target, old_backups)
         name = f'{site.slug(old_name)}-{dt.datetime.now():%Y%m%d-%H%M%S}'
         final, part = archive_root / name, archive_root / f'.{name}.part'
         actor = actor_name()
@@ -209,17 +261,7 @@ def run(db: Database, new_name: str, archive_root: str | None, abandon_deployed:
             v.close()
 
         # the archive, whole, before anything goes
-        part.mkdir(mode=0o700)
-        (part / 'database').mkdir(mode=0o700)
-        backup.create(db, 'full', part / 'database')
-        _copy_into(old_backups, part / 'backups')
-        _copy_into(kept_data, part / 'data')
-        fd = os.open(part / 'vault_secret', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, 'wb') as f:
-            f.write(current)
-        (part / 'left-behind.json').write_text(json.dumps(left, indent=2) + '\n')
-        (part / 'README.txt').write_text(README.format(name=old_name or 'an unnamed site', id=old_id,
-                                                       when=dt.datetime.now().strftime('%Y-%m-%d %H:%M')))
+        _write_archive(db, part, current, old_backups, kept_data, left, old_name, old_id)
         conn.close()
         conn = None
 

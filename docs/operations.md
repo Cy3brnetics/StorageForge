@@ -22,6 +22,7 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_INCLUDE_FSTYPES` | | Comma list of normally skipped filesystem types the server's scans walk (e.g. `overlay`) |
 | `STORAGEFORGE_RUNTIME_DIR` | `/run/storageforge`, else `$XDG_RUNTIME_DIR` | tmpfs for agent sockets; its path must be short (Unix socket limit) |
 | `STORAGEFORGE_BACKUP_DIR` | `<data>/backups` (`/app/backups`) | Where backups go |
+| `STORAGEFORGE_COOKIE_SUFFIX` | none | Added to the session cookie's name, for sites sharing a machine (`docker/sf-site` sets it) |
 | `STORAGEFORGE_ARCHIVE_DIR` | none (`./archive` for the compose `admin` service) | Where `reset` puts the old site |
 | `STORAGEFORGE_BACKUP_HOUR` | `3` | Local hour for the nightly backup and prune |
 | `STORAGEFORGE_BACKUP_KEEP` | `14` | Essentials backups kept |
@@ -45,7 +46,7 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_KEY_IMPORT_DIR` | `./keys` | Mounted read-only; each file is imported as a key at start |
 | `STORAGEFORGE_TLS_NAMES` | | Extra names and addresses for the self-signed certificate; used when it is created |
 | `STORAGEFORGE_ALLOW_DISK_RUNTIME` | `0` | Let the entrypoint start when the runtime dir is not tmpfs (not recommended) |
-| `STORAGEFORGE_EGRESS_PORTS`, `STORAGEFORGE_BRIDGE` | `22 443`, `sf0` | For `docker/egress-firewall.sh` |
+| `STORAGEFORGE_EGRESS_PORTS`, `STORAGEFORGE_BRIDGE` | `22 443`, `sf0` | For `docker/egress-firewall.sh`; the bridge name is also used by compose |
 
 ## Health
 
@@ -119,6 +120,37 @@ The command prints a one-time link for the first admin, valid for 3 days. Replac
 - Back up the new vault secret. `./secrets/vault_secret`, if you have one, still holds the old one, so replace or delete it.
 
 Outside Docker, or when the secret comes from `STORAGEFORGE_VAULT_SECRET`, set `STORAGEFORGE_VAULT_NEW_SECRET` for the reset, then switch to it before starting the server.
+
+### Several sites on one machine
+
+Each site made with `docker/sf-site` is its own compose stack, with its own database, vault, secrets, certificate, port and network. A fault in one client's stack can't reach another's machines. Allow up to 2 GB of memory for each busy site.
+
+```bash
+docker/sf-site new acme --name "Acme Ltd"
+```
+```bash
+docker/sf-site up acme
+```
+
+`new` prints the first admin's link, and picks the next free port from 8444 and the next free bridge (`sf1`, `sf2`...). Sites live in `sites/<short name>/`, and the stack from a plain `docker compose up` appears as `default`.
+
+| Command | What it does |
+| :--- | :--- |
+| `new NAME --name "Client" [--port P]` | make a site; it only takes keys generated in its vault |
+| `list` | every site, its address and state |
+| `up`, `down`, `logs NAME` | start, stop, follow its logs |
+| `admin NAME COMMAND...` | run a `storageforge-index` command |
+| `reset NAME --site-name "Other" --yes` | start a new client on it, as [above](#starting-a-new-site) |
+| `archive NAME` | stop it and write its archive to `sites/NAME/archive` |
+| `remove NAME` | delete its volumes, once archived, after you type its name |
+| `audit` | keys and machines shared between sites; exits 1 if there are any |
+| `sync` | tell each site what the others use; `new`, `up` and `remove` do this |
+
+`remove` moves the site's folder to `sites/.removed/`, including its archive, which holds its keys and secret. Move that off the machine.
+
+Run the firewall once per site, naming its bridge from `sites/NAME/site.env`: `sudo STORAGEFORGE_BRIDGE=sf1 docker/egress-firewall.sh`. Each site also has its own **report URL** under **Deploy → Reporting and alerts**, using its own port.
+
+**How sites are compared.** `sync` gives each stack a read-only list of the fingerprints the others use, naming no sites. An imported key on that list is refused, on any site that allows imports. A key or machine that is already shared raises an alert in that site: `crit` for a key, `warn` for a machine, because a machine can change owners and a cloned VM can share host keys. The list is only as fresh as the last `sync`, so run `audit` from cron if sites change often.
 
 ### Keys stay with their site
 
