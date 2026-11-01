@@ -514,6 +514,13 @@ class Plans(unittest.TestCase):
                           ({'extent_dedup': 'weekly'}, 'git')):
             with self.assertRaises(ValueError, msg=str(o)):
                 moves.normalize(self.plan(method, **o))
+        for o in ({'preflight': True, 'reserve_gb': 'lots'}, {'dedup': True, 'dedup_min_kb': 'x'}):
+            with self.assertRaisesRegex(ValueError, 'whole number'):
+                moves.normalize(self.plan(**o))
+
+    def test_no_reserve_given_means_the_default_and_zero_means_zero(self):
+        norm = lambda **o: moves.normalize(self.plan(preflight=True, **o))['steps'][0]['options']['reserve_gb']   # noqa: E731
+        self.assertEqual((norm(), norm(reserve_gb=''), norm(reserve_gb='0')), (1, 1, 0))
 
     def test_ipv6_routes_and_interfaces_are_kept(self):
         o = moves.normalize(self.plan(routes=[{'via': 'mesh', 'address': 'fd7a:115c:a1e0::1', 'iface': 'tailscale0'}]))['steps'][0]['options']
