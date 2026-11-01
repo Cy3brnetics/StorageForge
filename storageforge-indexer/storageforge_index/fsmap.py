@@ -117,6 +117,59 @@ def path_info(conn: Conn, h: dict, path: str) -> dict:
     return out
 
 
+def listing(conn: Conn, host_name: str, path: str, index: dict) -> dict:
+    """Only what a Files map card needs to open: folders with their sizes, from the kept folder index, and files."""
+    h = find_host(hosts(conn), host_name)
+    if not h:
+        raise LookupError(f'{host_name} has not been scanned')
+    path = _path(path or '/', 'path')
+    m = mount_of(h, path)
+    indexed = bool(m and m['state'] == 'indexed')
+    children: dict[str, dict] = {}
+    if indexed:
+        md = index.get(m['id'])
+        if md:
+            children = md.children(path)
+        for name, size in _dir_rows(conn, m, path):
+            children.setdefault(name, {'name': name, 'bytes': 0, 'entries': 0})
+    _add_mounts_below(h, path, children)
+    files, more = _files_at(conn, m, path) if indexed else ([], 0)
+    return {'host': h['name'], 'path': path, 'dirs': sorted(children.values(), key=lambda c: c['name'].lower()), 'files': files, 'more_files': more}
+
+
+def _dir_rows(conn: Conn, m: dict, path: str) -> list:
+    return conn.all("""SELECT f.filename, f.file_size_bytes FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
+                       WHERE d.mount_id = :m AND d.path = :p AND f.is_directory""", {'m': m['id'], 'p': path})
+
+
+def _add_mounts_below(h: dict, path: str, children: dict):
+    for mm in h['mounts']:                      # a mount below: list its first folder on the way down, badge the mount itself
+        if mm['target'] == path or not _under(mm['target'], path):
+            continue
+        rel = mm['target'][len(path.rstrip('/')) + 1:]
+        first = rel.split('/', 1)[0]
+        c = children.setdefault(first, {'name': first, 'bytes': 0, 'entries': None})
+        if '/' not in rel:
+            c['mount'] = _mount_row(mm)
+            c['bytes'] = mm['used'] or c['bytes']
+        elif mount_kind(mm) != 'virtual':          # container overlays and the like deeper down are noise
+            c.setdefault('mounts_inside', []).append(mm['target'])
+
+
+def _files_at(conn: Conn, m: dict, path: str) -> tuple[list[dict], int]:
+    rows = conn.all("""SELECT f.filename, f.file_size_bytes, f.modified_at, f.is_symlink, f.symlink_target
+                       FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
+                       WHERE d.mount_id = :m AND d.path = :p AND NOT f.is_directory ORDER BY f.filename LIMIT :n""",
+                    {'m': m['id'], 'p': path, 'n': FILE_LIMIT + 1})
+    files = [{'name': n, 'bytes': s or 0, 'mtime': t, 'link': lt if ln else None} for n, s, t, ln, lt in rows[:FILE_LIMIT]]
+    more = 0
+    if len(rows) > FILE_LIMIT:
+        more = conn.scalar('SELECT count(*) FROM file_records f JOIN directories d ON d.dir_id = f.dir_id '
+                           'WHERE d.mount_id = :m AND d.path = :p AND NOT f.is_directory',
+                           {'m': m['id'], 'p': path}) - FILE_LIMIT
+    return files, more
+
+
 def browse(conn: Conn, host_name: str, path: str = '/') -> dict:
     hs = hosts(conn)
     h = find_host(hs, host_name)
@@ -136,31 +189,10 @@ def browse(conn: Conn, host_name: str, path: str = '/') -> dict:
             c = children.setdefault(first, {'name': first, 'bytes': 0, 'entries': 0})
             c['bytes'] += size
             c['entries'] += n
-        for name, size in conn.all("""SELECT f.filename, f.file_size_bytes FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
-                                      WHERE d.mount_id = :m AND d.path = :p AND f.is_directory""", {'m': m['id'], 'p': path}):
+        for name, size in _dir_rows(conn, m, path):
             children.setdefault(name, {'name': name, 'bytes': 0, 'entries': 0})
-    for mm in h['mounts']:                      # a mount below: list its first folder on the way down, badge the mount itself
-        if mm['target'] == path or not _under(mm['target'], path):
-            continue
-        rel = mm['target'][len(path.rstrip('/')) + 1:]
-        first = rel.split('/', 1)[0]
-        c = children.setdefault(first, {'name': first, 'bytes': 0, 'entries': None})
-        if '/' not in rel:
-            c['mount'] = _mount_row(mm)
-            c['bytes'] = mm['used'] or c['bytes']
-        elif mount_kind(mm) != 'virtual':          # container overlays and the like deeper down are noise
-            c.setdefault('mounts_inside', []).append(mm['target'])
-    files, more = [], 0
-    if m and m['state'] == 'indexed':
-        rows = conn.all("""SELECT f.filename, f.file_size_bytes, f.modified_at, f.is_symlink, f.symlink_target
-                           FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
-                           WHERE d.mount_id = :m AND d.path = :p AND NOT f.is_directory ORDER BY f.filename LIMIT :n""",
-                        {'m': m['id'], 'p': path, 'n': FILE_LIMIT + 1})
-        files = [{'name': n, 'bytes': s or 0, 'mtime': t, 'link': lt if ln else None} for n, s, t, ln, lt in rows[:FILE_LIMIT]]
-        if len(rows) > FILE_LIMIT:
-            more = conn.scalar('SELECT count(*) FROM file_records f JOIN directories d ON d.dir_id = f.dir_id '
-                               'WHERE d.mount_id = :m AND d.path = :p AND NOT f.is_directory',
-                               {'m': m['id'], 'p': path}) - FILE_LIMIT
+    _add_mounts_below(h, path, children)
+    files, more = _files_at(conn, m, path) if m and m['state'] == 'indexed' else ([], 0)
     exps = exports_of(conn, h['name'])
     for e in exps:                              # shares at or below each child folder
         if e['path'] == path:

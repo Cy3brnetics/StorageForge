@@ -13,6 +13,7 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
   - **duperemove** on a timer in the run window, with what it freed logged to the job's index.
 
 ### Changed
+- **Files map speed.** Opening a folder in the Graph view takes about 50 ms instead of up to 2.7 s on a 5.5M-file index, because listings and folder comparison share one folder index kept until the next scan. Changing the size, host or System files filter no longer re-reads every file to redraw the copy lines, and selecting a card with everything already open no longer redraws the map. A folder still being read shows a Loading card.
 - **Faster views on large indexes.** Opening Topology no longer scans every file record to detect backups (1.9 s to 6 ms per design on 5.5M files). The Files map's folder comparison is ready at startup and after each scan. Topology renders once for a page load's background answers, and the Structure layout is only worked out when shown, with a grid in place of comparing all node pairs.
 - **Every deployed job now takes `.storage.lock` on its destination volume.** Copies and mirrors share it; rsnapshot and git take it alone and wait up to an hour, then fail with exit 75 and raise the usual job alert. `storageforge-job with-lock <folder> -- <command>` puts your own timers under the same lock. This applies once a plan is redeployed.
 - Copy, move and mirror runs print JSON state events and post them to `POST /api/jobs/state`. They use `rsync --no-inc-recursive` so the percentage is real, which takes more memory on very large trees.

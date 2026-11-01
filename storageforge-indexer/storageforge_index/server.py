@@ -68,7 +68,7 @@ GET  /api/shares/script?host=        the script that deploys them on the server 
 POST /api/shares/validate  {"host", "export", "index"|"was"}   check one share before saving it (folder, access, mount points)
 POST /api/shares  {"host", "export", "index"|"was"}   add the share to the host's design, or replace share #index or the share "was" {protocol, name, path}
 DELETE /api/shares?host=&index= or &protocol=&name=&path=      remove a designed share from the host's design
-GET  /api/fs/browse?host=&path=      folders and files at a path from the index, with mounts, shares and planned mounts
+GET  /api/fs/browse?host=&path=&brief=  folders and files at a path from the index, with mounts, shares and planned mounts; brief=1 only folders and files
 GET  /api/tasks                      saved storage tasks, block types, templates and where tasks are installed
 POST /api/tasks  {"name", "host", "schedule", "blocks": [...], "on_fail": [...]}   save a new task
 GET|PUT|DELETE /api/tasks/<id>       one task
@@ -1282,7 +1282,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     def api_fs_browse():
         try:
-            return jsonify(fsmap.browse(conn(), request.args.get('host', ''), request.args.get('path') or '/'))
+            host, path = request.args.get('host', ''), request.args.get('path') or '/'
+            index = kept_dir_index() if request.args.get('brief') else None    # still being built or a scan is running: read the tables
+            return jsonify(fsmap.listing(conn(), host, path, index) if index is not None else fsmap.browse(conn(), host, path))
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
 
@@ -1828,6 +1830,25 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 folder_cache[key] = result
         return result
 
+    dir_kept: list = [None]                   # (scan id, folder index): listings and comparisons share it. Replaced whole, never edited
+    dir_build = threading.Lock()
+
+    def kept_dir_index():
+        kept = dir_kept[0]
+        return kept[1] if kept and kept[0] == conn().scalar('SELECT max(scan_id) FROM scans') else None
+
+    def build_dir_index(host):
+        """One build at a time. A scan changes rows as it goes, so nothing is kept while one runs, as in folder_result."""
+        with dir_build:
+            if (index := kept_dir_index()) is not None:
+                return index
+            latest, running = conn().all("SELECT max(scan_id), count(CASE WHEN status = 'running' THEN 1 END) FROM scans")[0]
+            if running:
+                return folders.dir_index(conn(), host)
+            dir_kept[0] = None                # the old one goes first: two at once is a lot of memory
+            dir_kept[0] = (latest, folders.dir_index(conn()))
+            return dir_kept[0][1]
+
     @web.get('/api/folders/cold')
     @login_required
     def api_folders_cold():
@@ -1844,14 +1865,14 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         min_files = arg_num('min_files', 3, 1, 1_000_000)
         min_size = parse_size(request.args.get('min_size') or '1MiB')
         return jsonify(folder_result(('dupes', host, min_files, min_size),
-                                     lambda: folders.duplicate_folders(conn(), host, min_files, min_size, limit=200)))
+                                     lambda: folders.duplicate_folders(conn(), host, min_files, min_size, limit=200, index=build_dir_index(host))))
 
     def filemap_result(host, min_size, system, with_folders):
         def compute():
             twins = None
             if with_folders:
                 key = ('dupes', host, 3, min_size) if not system else ('dupes-system', host, 3, min_size)
-                twins = folder_result(key, lambda: folders.duplicate_folders(conn(), host, 3, min_size, limit=200, include_system=system))
+                twins = folder_result(key, lambda: folders.duplicate_folders(conn(), host, 3, min_size, limit=200, include_system=system, index=build_dir_index(host)))
             return filemap.build(conn(), host, min_size, system, twins)
         return folder_result(('filemap', host, min_size, system, with_folders, json.dumps(folders.ignore_lists(conn()), sort_keys=True)), compute)
 
