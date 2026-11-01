@@ -43,6 +43,7 @@ Every build has `sf-ctl` and `sf-alpine`, the only config without systemd, plus 
 | 4: Failure | `tests/lab/tiers.py` | A degraded pool, a full disk, a host going offline, drift, a changed host key, and signed requests that are replayed, expired, tampered with or meant for another machine |
 | 5: Btrfs | `tests/lab/tiers.py` | Profiles and child subvolumes through a real scan, reflinks, no-copy-on-write, plan tasks, full and incremental sends between hosts, a broken receive, adding a device, converting a profile, a full disk, a read-only filesystem and a pulled disk |
 | 6: Sync engine | `tests/lab/tiers.py` | Routes with one pinned host key, a route lost during a run, dedup and reflinks, the volume lock, btrfs and ZFS snapshot streams, the room check and duperemove, between real hosts |
+| 7: Remote nodes | `tests/lab/tiers.py` | The tunnel container, and hosts that can't be dialled: the install script, adopting, signed deploys and scans through the tunnel, reconnecting, what a stolen key can't do, revoking and removal |
 
 `lab.sh test --all`, or **Full test** in the panel, resets the lab around the tiers that change VMs, and writes `reports/lab-<date>.md` with a table per distro. Reports aren't committed. Tiers 1, 3, 4 and 5 run against the real Docker stack on `sf-ctl` through its API. Tier 2 runs on the libvirt host, on a throwaway database. `lab.sh gauntlet` runs tier 2 alone.
 

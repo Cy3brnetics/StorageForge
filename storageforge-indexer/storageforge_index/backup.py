@@ -31,7 +31,7 @@ _names = threading.Lock()
 
 ESSENTIAL = ('vault_meta', 'ssh_keys', 'key_bindings', 'users', 'hosts', 'blueprints', 'move_plans', 'audit_log',
              'change_plans', 'storage_tasks', 'settings', 'deploy_access', 'deployed', 'jobs',
-             'host_key_confirmations', 'host_configs', 'schedules', 'roles', 'invites')
+             'host_key_confirmations', 'host_configs', 'schedules', 'roles', 'invites', 'remote_nodes')
 # Left out of essentials: a rescan or the next deploy rebuilds these, they are history, or they are sessions.
 # Every table is in exactly one of the two lists (tests/test_consistency.py).
 REBUILDABLE = ('mounts', 'scans', 'directories', 'file_records', 'file_fts', 'file_changes', 'scan_denied', 'scan_jobs',

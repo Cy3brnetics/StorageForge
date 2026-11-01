@@ -130,6 +130,17 @@ Both report commands also take `--title`, `--as-of YYYY-MM-DD`, `--kwh-price`, `
 | `audit tail [--limit N] [--format table\|json]` | newest entries |
 | `audit verify` | check the HMAC chain |
 
+## Remote nodes
+
+```bash
+storageforge-index remote add NAME [--endpoint HOST:PORT] > node.sh   # holds its private key: delete it after use
+storageforge-index remote list
+storageforge-index remote adopt NAME
+storageforge-index remote revoke NAME
+```
+
+See [Remote nodes](remote-nodes.md).
+
 ## Accounts
 
 | Command | Does |

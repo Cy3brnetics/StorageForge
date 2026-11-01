@@ -281,12 +281,12 @@ install_controller() {   # StorageForge from this tree, in the repo's own compos
   local root=$HERE/../.. ntfy compose='sudo -n docker compose -f docker-compose.yml -f compose.lab.yml' sf
   ntfy=$(sed -n 's/^ *image: //p' "$HERE/controller/compose.lab.yml")
   say 'building StorageForge images'
-  docker compose --project-directory "$root" -f "$root/docker-compose.yml" build -q storageforge proxy
+  docker compose --project-directory "$root" -f "$root/docker-compose.yml" -f "$root/docker-compose.remote.yml" build -q storageforge proxy tunnel
   docker image inspect "$ntfy" >/dev/null 2>&1 || docker pull -q "$ntfy" >/dev/null
   say 'loading images on sf-ctl'
   # shellcheck disable=SC2046
-  docker save $(sed -n 's/^ *image: //p' "$root/docker-compose.yml" | sort -u) "$ntfy" | gzip -1 | SSH_TIMEOUT=30 lab_pipe sf-ctl 'gunzip | sudo -n docker load -q >/dev/null'
-  tar -C "$root" -c docker-compose.yml -C "$HERE/controller" compose.lab.yml | lab_pipe sf-ctl \
+  docker save $(sed -n 's/^ *image: //p' "$root/docker-compose.yml" "$root/docker-compose.remote.yml" | sort -u) "$ntfy" | gzip -1 | SSH_TIMEOUT=30 lab_pipe sf-ctl 'gunzip | sudo -n docker load -q >/dev/null'
+  tar -C "$root" -c docker-compose.yml docker-compose.remote.yml -C "$HERE/controller" compose.lab.yml | lab_pipe sf-ctl \
     'sudo -n mkdir -p /opt/storageforge/keys /opt/storageforge/secrets && sudo -n tar -x --no-same-owner -C /opt/storageforge'
   say 'starting StorageForge on sf-ctl'
   lab_ssh sf-ctl "cd /opt/storageforge && $compose up -d --no-build --wait --quiet-pull" >"$STATE/controller.log" 2>&1 \
@@ -469,7 +469,7 @@ cmd_test_all() {
   export SFLAB_STATE="$STATE"
   rm -rf "$STATE/results" "$STATE/gauntlet.json"
   cmd_reset
-  for t in 0 1 2 3 4 5 6; do
+  for t in 0 1 2 3 4 5 6 7; do
     say "== tier $t =="
     [ "$t" = 0 ] || [ "$t" = 2 ] || cmd_reset
     if [ "$t" = 2 ]; then cmd_gauntlet || true; else python3 "$tiers" run "$t" || true; fi     # the report decides, knowing what is known

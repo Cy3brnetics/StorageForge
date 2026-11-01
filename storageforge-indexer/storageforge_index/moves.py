@@ -339,6 +339,9 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
                 say(*package_check(conn, sh, 'python3'))
         if o.get('extent_dedup'):
             say(*package_check(conn, dh, 'duperemove'))
+        if not same_host and not o.get('routes') and (sh['ssh_host'] or '').startswith('127.77.'):
+            say('crit', f'{sh["name"]} is a remote node, reachable only from StorageForge through its tunnel, so {dh["name"]} '
+                        'cannot pull from it: add a route, such as a mesh address')
         if o.get('routes') and same_host:
             say('note', 'source and destination are the same host: the routes are not used')
         if o.get('transport') == 'btrfs':

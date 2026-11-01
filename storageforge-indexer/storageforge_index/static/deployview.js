@@ -323,6 +323,40 @@ function setupForm(host, remove = false) {
   pw.focus();
 }
 
+/* Hosts behind NAT that dial in through the tunnel. The install script holds the node's private key and comes only once. */
+function remoteNodesCard() {
+  const list = el('div', { class: 'stack' });
+  const name = el('input', { type: 'text', class: 'mono', placeholder: 'node name, e.g. cabin-nas', 'aria-label': 'Node name' });
+  const endpoint = el('input', { type: 'text', class: 'mono', placeholder: 'forge.example.com:2222', 'aria-label': 'Address nodes dial' });
+  const refresh = async () => {
+    try {
+      const r = await getJSON('/api/remote/nodes');
+      if (!endpoint.value) endpoint.value = r.endpoint;
+      if (!r.tunnel) { list.replaceChildren(text('p', 'The tunnel is not running. Start the stack with docker-compose.remote.yml as well: see docs/remote-nodes.md.', 'muted small')); return; }
+      list.replaceChildren(...r.nodes.map((n) => el('div', { class: 'row wrap' }, text('span', n.state, `pill ${n.state === 'ready' ? 'ok' : n.state === 'expired' ? 'failed' : 'unknown'}`), el('b', {}, n.name),
+        text('span', [n.host, n.address, n.expires_at ? `key expires ${when(n.expires_at)}` : ''].filter(Boolean).join(' · '), 'muted small'),
+        n.online && n.state !== 'ready' || n.state === 'connected' ? button('Adopt', async () => {
+          try { const out = await (await postJSON(`/api/remote/nodes/${n.id}/adopt`, {})).json(); toast(out.state === 'scanning' ? 'Scanning it: press Adopt again when the scan is done' : `${n.name}: ${out.state}`); refresh(); } catch (err) { toast(err.message); }
+        }, 'btn sm') : '',
+        button('Revoke…', async () => {
+          if (!confirm(`Cut off ${n.name} now? It can only come back with a new install script.`)) return;
+          try { await api(`/api/remote/nodes/${n.id}`, { method: 'DELETE' }); refresh(); } catch (err) { toast(err.message); }
+        }, 'btn ghost sm danger'))));
+    } catch (err) { list.replaceChildren(text('p', err.message, 'st-failed small')); }
+  };
+  refresh();
+  return el('details', { class: 'card stack' }, el('summary', {}, 'Remote nodes'),
+    text('p', 'For hosts StorageForge cannot reach: they dial in through the tunnel. Only that port needs to be open to them.', 'muted small'),
+    list, el('div', { class: 'row wrap' }, name, endpoint, button('Add node', async () => {
+      try {
+        const r = await (await postJSON('/api/remote/nodes', { name: name.value.trim(), endpoint: endpoint.value.trim() })).json();
+        const a = el('a', { href: URL.createObjectURL(new Blob([r.script], { type: 'text/x-shellscript' })), download: `storageforge-remote-${r.name}.sh` });
+        a.click(); URL.revokeObjectURL(a.href);
+        toast(`Run the downloaded script as root on ${r.name} with --apply. Its key expires ${when(r.expires_at)}. It holds a private key: delete it afterwards.`);
+        name.value = ''; refresh();
+      } catch (err) { toast(err.message); }
+    }, 'btn sm')));
+}
 async function download(url, fallback, body) {   // body: POST it as JSON (for a download that changes something)
   try {
     const res = await (body ? postJSON(url, body) : api(url));
@@ -587,6 +621,7 @@ function renderDeploy() {
     changed.length ? el('ul', { class: 'mvcheck' }, ...changed.map((x) => el('li', { class: 'lv-warn' }, `${x.host}: ${x.text}`)))
       : text('p', 'Nothing deployed was changed by hand, as of each host\'s last scan.', 'muted small')));
 
+  parts.push(remoteNodesCard());
   // Recent deploys (groups from engine.py recent, with mode, state, hosts and click-to-view/retry)
   const groupsList = d.groups || [];
   parts.push(el('details', { class: 'card' }, el('summary', {}, `Recent deploys (${groupsList.length})`),

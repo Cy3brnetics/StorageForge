@@ -12,6 +12,9 @@ PW = 'a long enough password'
 
 # Changes something, runs on a host or touches accounts and keys: asks for a password typed in the last 5 minutes.
 FRESH_PASSWORD = {
+    ('POST', '/api/remote/nodes'),
+    ('POST', '/api/remote/nodes/<int:node_id>/adopt'),
+    ('DELETE', '/api/remote/nodes/<int:node_id>'),
     ('POST', '/api/access/grant'),
     ('PUT', '/api/backups/target'),
     ('DELETE', '/api/bindings/<int:binding_id>'),
@@ -109,6 +112,9 @@ AUDITED_ELSEWHERE = {
     'api_deploy_job_browse': 'jobs.browse goes through deploy.run',
     'api_deploy_job_restore': 'jobs.restore goes through deploy.run',
     'api_roles': 'save_role writes role.add',
+    'api_remote_nodes': 'remotes.add writes remote.add',
+    'api_remote_adopt': 'deploy.adopt goes through deploy.run',
+    'api_remote_revoke': 'remotes.revoke writes remote.revoke',
 }
 NOT_AUDITED = {
     'api_logout': 'the session simply ends',

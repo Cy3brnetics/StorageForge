@@ -1,0 +1,32 @@
+# StorageForge tunnel: remote nodes dial in here and offer their own SSH on one loopback address. It carries bytes and
+# nothing else: no shells, no outbound forwarding, no passwords. What each key may listen on is in its authorized_keys
+# line (remotes.py), so GatewayPorts clientspecified lets a key bind its own 127.77.x.y and no other.
+Port 2222
+HostKey /var/lib/sf-tunnel/ssh_host_ed25519_key
+PidFile none
+AuthorizedKeysFile /run/sf-tunnel-keys/authorized_keys
+AllowUsers sftunnel
+StrictModes no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+PermitEmptyPasswords no
+PermitUserEnvironment no
+AllowTcpForwarding remote
+GatewayPorts clientspecified
+PermitOpen none
+AllowAgentForwarding no
+AllowStreamLocalForwarding no
+X11Forwarding no
+PermitTunnel no
+PermitTTY no
+PermitUserRC no
+ForceCommand /bin/false
+ClientAliveInterval 15
+ClientAliveCountMax 3
+LoginGraceTime 15
+MaxAuthTries 2
+MaxSessions 0
+MaxStartups 10:30:60
+LogLevel VERBOSE

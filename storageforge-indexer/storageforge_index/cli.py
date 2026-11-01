@@ -792,6 +792,28 @@ def cmd_migrate(args) -> int:
     return 0
 
 
+def cmd_remote(args) -> int:
+    from . import remotes
+    from .runner import scan_via_vault
+    from .vault import actor_name
+    db, conn = open_db(args)
+    if args.remote_cmd == 'add':
+        print(remotes.add(db, conn, args.name, args.endpoint, actor_name())['script'], end='')
+    elif args.remote_cmd == 'list':
+        for n in remotes.overview(conn)['nodes']:
+            print(f'{n["name"]}\t{n["address"]}\t{n["state"]}\t{n["host"] or "-"}')
+    elif args.remote_cmd == 'adopt':
+        node = remotes.find(conn, args.name)
+        out = remotes.adopt(db, conn, node['id'], actor_name(), lambda addr: scan_via_vault(db, addr, ScanOptions()))
+        print(f'{args.name}: {out["state"]}')
+        return 0 if out['state'] == 'ready' else 1
+    else:
+        node = remotes.find(conn, args.name)
+        remotes.revoke(db, conn, node['id'], actor_name())
+        print(f'{args.name}: revoked, and its tunnel is cut')
+    return 0
+
+
 def cmd_serve(args) -> int:
     from .server import serve
     db, conn = open_db(args)
@@ -1324,6 +1346,16 @@ def build_parser() -> argparse.ArgumentParser:
                     metavar='AGE', help='rescan every host bound in the vault, e.g. 6h')
     sv.add_argument('--parallel', type=int, default=4)
     sv.set_defaults(fn=cmd_serve)
+
+    rn = sub.add_parser('remote', help='nodes that dial in through the tunnel (docker-compose.remote.yml)')
+    rns = rn.add_subparsers(dest='remote_cmd', required=True)
+    x = rns.add_parser('add', help='a new node: writes its install script, which holds its private key, to stdout')
+    x.add_argument('name')
+    x.add_argument('--endpoint', help='what nodes dial, such as forge.example.com:2222 (remembered)')
+    rns.add_parser('list', help='nodes, and which are connected')
+    for verb, text in (('adopt', 'scan a connected node and prove signed runs work'), ('revoke', 'cut a node off now')):
+        rns.add_parser(verb, help=text).add_argument('name')
+    rn.set_defaults(fn=cmd_remote)
 
     u = sub.add_parser('user', help='web UI accounts')
     us = u.add_subparsers(dest='user_cmd', required=True)
