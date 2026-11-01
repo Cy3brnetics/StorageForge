@@ -112,6 +112,10 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (('POST',), r'/api/deploy/jobs/[^/]+/(cutover|restore)', 'deploy.destructive'),
     (('POST',), r'/api/deploy/jobs/[^/]+/dedupe', 'deploy.apply'),
     (('POST',), r'/api/deploy/jobs/[^/]+/(run|verify|pause|resume)', 'deploy.apply'),
+    (('POST',), r'/api/deploy/jobs/[^/]+/retention', 'deploy.destructive'),      # a lower count deletes snapshots
+    (('POST',), r'/api/deploy/jobs/[^/]+/forget', 'deploy.apply'),
+    (('POST',), r'/api/deploy/snapjobs/probe', 'deploy.report'),
+    (('POST',), r'/api/deploy/snapjobs/(import|snapper)', 'deploy.apply'),
 
     (_ANY, r'/api/git/(status|history|commit)', 'git.live'),
     (_WRITE, r'/api/git/sync', 'git.sync'),

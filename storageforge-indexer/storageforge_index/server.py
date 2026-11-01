@@ -97,6 +97,13 @@ GET  /api/deploy/jobs/<id>           one deployed job and its run history
 POST /api/deploy/jobs/<id>/<verb>    run, dryrun, verify, pause, resume, cutover, log, snapshots, dedupe
 POST /api/deploy/jobs/<id>/browse  {"snapshot", "path"}   a folder inside an rsnapshot snapshot (runs ls on the host)
 POST /api/deploy/jobs/<id>/restore   {"snapshot", "path"}: copy it back to the source as <path>.restored-<time>
+POST /api/deploy/jobs/<id>/retention {"keep": {level: count}}: how many an imported job keeps (a lower count deletes snapshots)
+POST /api/deploy/jobs/<id>/forget    stop tracking an imported job; nothing changes on the host
+GET  /api/deploy/snapjobs            rsnapshot and snapper jobs found on hosts, imported or not
+POST /api/deploy/snapjobs/probe      {"host"}: look again as root (signed, read-only)
+POST /api/deploy/snapjobs/import     {"host", "tool", "config"}: track a job found on a host, leaving it as it is
+GET  /api/deploy/snapjobs/advice?host=&path=   which tool suits that folder's filesystem
+POST /api/deploy/snapjobs/snapper    {"host", "path", "name"}: create a snapper config on btrfs and import it
 GET|PUT /api/deploy/settings         report URL and alert channels;  POST /api/deploy/settings/test sends a test alert
 POST /api/jobs/report                a job's run result (Authorization: Bearer <job token>; no session)
 POST /api/jobs/state                 a running job's latest state event (same token)
@@ -141,7 +148,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, blueprint, canvas, changes, deploy, docker, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, retire, routes_accounts, routes_git, routes_scheduler, scheduler, shares, tasks, users)
+               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, retire, routes_accounts, routes_git, routes_scheduler, scheduler, shares, snapjobs, tasks, users)
 from .capacity import parse_size, trends
 from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
@@ -1645,6 +1652,61 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return jsonify(jobs.action(db, conn(), jid, verb, actor()))
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
+
+    @web.post('/api/deploy/jobs/<jid>/retention')
+    @login_required
+    @password_confirmed
+    def api_deploy_job_retention(jid):
+        res = snapjobs.retention(db, conn(), jid, json_body().get('keep'), actor())
+        core.audit(conn(), actor(), 'deploy.job-retention', deploy.audit_outcome(res['status']), None, {'job': jid})
+        return jsonify(res)
+
+    @web.post('/api/deploy/jobs/<jid>/forget')
+    @login_required
+    @password_confirmed
+    def api_deploy_job_forget(jid):
+        snapjobs.forget(conn(), jid)
+        core.audit(conn(), actor(), 'deploy.job-forget', 'ok', None, {'job': jid})
+        return jsonify(forgotten=jid)
+
+    @web.get('/api/deploy/snapjobs')
+    @login_required
+    def api_snapjobs():
+        return jsonify(found=snapjobs.candidates(conn()))
+
+    @web.get('/api/deploy/snapjobs/advice')
+    @login_required
+    def api_snapjobs_advice():
+        return jsonify(snapjobs.advice_for(conn(), request.args.get('host', ''), request.args.get('path', '')))
+
+    @web.post('/api/deploy/snapjobs/probe')
+    @login_required
+    @password_confirmed
+    def api_snapjobs_probe():
+        host = str(json_body().get('host', ''))
+        found = snapjobs.probe(db, conn(), host, actor())
+        core.audit(conn(), actor(), 'deploy.snapjobs-probe', 'ok', host, {'found': len(found)})
+        return jsonify(found=snapjobs.candidates(conn()))
+
+    @web.post('/api/deploy/snapjobs/import')
+    @login_required
+    @password_confirmed
+    def api_snapjobs_import():
+        body = json_body()
+        host, tool, config = str(body.get('host', '')), str(body.get('tool', '')), str(body.get('config', ''))
+        jid = snapjobs.import_job(conn(), host, tool, config, actor())
+        core.audit(conn(), actor(), 'deploy.job-import', 'ok', host, {'job': jid, 'tool': tool, 'config': config})
+        return jsonify(job=jid)
+
+    @web.post('/api/deploy/snapjobs/snapper')
+    @login_required
+    @password_confirmed
+    def api_snapjobs_snapper():
+        body = json_body()
+        host = str(body.get('host', ''))
+        res = snapjobs.create_snapper(db, conn(), host, str(body.get('path', '')), str(body.get('name', '')), actor())
+        core.audit(conn(), actor(), 'deploy.snapper-create', deploy.audit_outcome(res['status']), host, {'path': body.get('path'), 'name': body.get('name')})
+        return jsonify(res)
 
     @web.post('/api/deploy/jobs/<jid>/browse')     # POST: it runs a command on the host, so no GET can trigger it
     @login_required

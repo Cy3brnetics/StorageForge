@@ -5,6 +5,8 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Added
+- **Import existing rsnapshot and snapper jobs.** Scans now read rsnapshot configs, whatever they are called, with their cron lines and timers, and snapper configs. **Deploy > Existing snapshot jobs** lists them, and **Look as root** finds what the scan account can't read. An imported job stays on its own config and schedule. StorageForge shows its state from the snapshots and log it leaves, raises alerts, fills the 3-2-1 matrix, and can run it, pause it, change retention and restore from it, using the right tool for the job. **Forget** only stops tracking.
+- **Snapshot tool by filesystem.** **New snapshot job** suggests snapper on btrfs and rsnapshot on ext4, xfs and similar, and creates snapper configs. Plan checks refuse rsnapshot on filesystems without hard links, such as vfat and exfat cards.
 - **Sync engine for deployed jobs.** All of it is per step and off by default, and needs a redeploy of the plan:
   - **Routes:** a job tries its source over the LAN first, then a ZeroTier, NetBird or Tailscale address, optionally bound to the interface, checks the same host key on all of them, and moves route when one drops during a run. The bandwidth limit applies on mesh routes only.
   - **Pre-transfer dedup:** files already at the destination under another name are hashed (SHA-256 or BLAKE3), checked and made from local data with a reflink, optional hard link or local copy, so they do not cross the network. Same-host jobs reflink from the source. Needs `python3` on both hosts.

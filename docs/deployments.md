@@ -59,6 +59,39 @@ The report runs first on every host. Apply stops at the first host that fails. E
 - **Stale dry run protection:** Applying from a report checks that the plan has not changed since the dry run was inspected (`report_group`). If modified, Apply refuses with code 409 so changes are reviewed before running.
 - **Scan confirmation & log capture:** Scans read completion records written by the runner (`/var/lib/storageforge/run/runs.jsonl`) and storage tasks (`/var/lib/storageforge/tasks/`). A scan matches nonces to confirm actual execution results on the host. If a script or scheduled task failed, a signed read-only log fetch runs automatically over deploy access (once per problem) to retrieve journal and runner logs.
 
+## Existing rsnapshot and snapper jobs
+
+Jobs set up by hand don't need redeploying. Each scan looks for them read-only:
+
+- **rsnapshot:** `/etc/rsnapshot*.conf`, `/etc/rsnapshot.d/`, any file under `/etc` or `/usr/local/etc` with a `snapshot_root` line, and any `-c` path named by cron or a systemd unit. Then its cron lines, timers, snapshot folders and last log line.
+- **snapper:** `/etc/snapper/configs/*`, its snapshots and the snapper timers.
+
+**Deploy > Existing snapshot jobs** lists what was found. **Look as root** runs the same search as a signed, read-only script, for what the scan account can't read: root's crontab, `/root`, a config or snapshot folder with mode 0700. Snapshot folders with no config found are listed too, so they can prompt that look.
+
+**Import** adds a tracked job with an `x-` id and changes nothing on the host. The job keeps its own config and schedule.
+
+| Action | rsnapshot | snapper |
+| :--- | :--- | :--- |
+| Run now | `rsnapshot <lowest level>` in a transient unit, refused if its mount is gone | `snapper create -c timeline` |
+| Dry run | `configtest`, then `-t` | shows the config and snapshot list |
+| Pause, resume | timers; exact cron lines commented with `#sf-paused `; x bit on `cron.daily` scripts | `TIMELINE_CREATE` |
+| Retention | counts on `retain` lines, undone if `configtest` fails (old copy in `<config>.sf-bak`) | `TIMELINE_LIMIT_*`, `NUMBER_LIMIT` |
+| Restore | `cp -a` to `<original>.restored-<time>`, local sources only | the same, from `.snapshots/<n>/snapshot` |
+| Forget | stops tracking; nothing changes on the host | the same |
+
+These jobs can't report runs, so state comes from what they leave. A new snapshot counts as a good run and an error in the rsnapshot log as a failed one. A job with no schedule found is never counted as late, and one whose snapshots can't be seen shows `unseen`. If a scan can't see a job's snapshots and the host has deploy access, the scan also runs the signed look. Without deploy access, a job can be imported but not managed.
+
+Before running a config as root, the script refuses one not owned by root or writable by group or others, because `cmd_preexec` in it would run as root. A lower retention count deletes the oldest snapshots at the next rotation or cleanup, so it needs `deploy.destructive`.
+
+**New snapshot job** picks the tool from the folder's filesystem:
+
+| Filesystem | Tool |
+| :--- | :--- |
+| btrfs | snapper: the config is created here, on a subvolume |
+| ext4, xfs, f2fs and others with hard links | rsnapshot: plan a step in Moves |
+| zfs | neither: a ZFS snapshot task or sanoid |
+| vfat, exfat, cifs | neither: no hard links, so each snapshot would be a full copy |
+
 ## Deployed jobs
 
 Deploying a move plan turns each step into a job with the id `p<plan>-<step>`. A job runs on its destination host and pulls from its source through `storageforge-job`, a static program the deploy installs.

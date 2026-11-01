@@ -4,7 +4,7 @@
    Loaded after dockerview.js; uses the shared helpers. */
 
 const DP = { data: null, group: null, poll: 0, job: null, err: '', setup: null, settingsForm: null, openRuns: new Set(), cancelRequested: false };
-const JOB_STATE = { ok: 'protected', failed: 'broken', stale: 'local-only', 'never-ran': 'unknown', paused: 'unknown' };
+const JOB_STATE = { ok: 'protected', failed: 'broken', stale: 'local-only', 'never-ran': 'unknown', paused: 'unknown', unseen: 'unknown', missing: 'broken' };
 const RUN_LINE = /^\s{2}(ok|missing|conflict|->|other)\s/;
 
 function when(ts) {
@@ -19,6 +19,7 @@ async function loadDeploy() {
   try {
     DP.data = await getJSON('/api/deploy');
     DP.err = '';
+    getJSON('/api/deploy/snapjobs').then((r) => { DP.found = r.found; renderSnapFound(); }).catch(() => {});
     // If no deploy panel is open, resume watching any active deploy from recent groups
     if (!DP.group && DP.data?.groups) {
       const active = DP.data.groups.find((g) => ['running', 'queued'].includes(g.state));
@@ -353,6 +354,7 @@ async function jobHistory(j) {
 }
 function jobMenu(j) {
   const a = (label, verb, extra = {}) => ({ label, run: () => jobAction(j, verb), ...extra });
+  if (j.imported) return snapJobMenu(j, a);
   return [{ heading: j.name }, a('Run now', 'run'), a('Dry run (what it would copy)', 'dryrun'), j.method !== 'git' ? a('Verify checksums now', 'verify') : null,
     j.paused ? a('Resume timers', 'resume') : a('Pause timers', 'pause'), '-', { label: 'History', run: () => jobHistory(j) }, a('Journal log', 'log'),
     j.snapshots ? a('Snapshots…', 'snapshots') : null, j.extent_dedup ? a('Run duperemove now', 'dedupe') : null, j.method === 'move' ? a('Cut over (rename the source)', 'cutover', { danger: true }) : null,
@@ -364,8 +366,9 @@ function jobRow(j) {
   const li = el('li', { class: 'card dpjob' },
     el('div', { class: 'row' }, text('span', j.state, `pill ${JOB_STATE[j.state] || 'unknown'}`), el('b', {}, j.name),
       el('span', { class: 'row tools' }, button('Run now', () => jobAction(j, 'run'), 'btn ghost sm'),
-        button('Dry run', () => jobAction(j, 'dryrun'), 'btn ghost sm'), button('⋯', (ev) => openMenu(jobMenu(j), ev.clientX, ev.clientY, li), 'btn ghost sm'))),
-    text('span', [j.method, j.schedule ? `on "${j.schedule}"` : 'run on demand', j.window ? `window ${j.window}` : '',
+        button(j.method === 'snapper' ? 'Show config' : 'Dry run', () => jobAction(j, 'dryrun'), 'btn ghost sm'), button('⋯', (ev) => openMenu(jobMenu(j), ev.clientX, ev.clientY, li), 'btn ghost sm'))),
+    text('span', [j.method, j.imported ? 'imported' : '', j.schedule ? `on "${j.schedule}"` : j.imported ? 'no schedule found' : 'run on demand',
+      j.imported && j.levels ? Object.entries(j.levels).map(([k, v]) => `${k} ${v}`).join(', ') : '', j.fstype ? `on ${j.fstype}` : '', j.window ? `window ${j.window}` : '',
       j.snapshot ? 'btrfs snapshot first' : '', j.pre.length ? `${j.pre.length} pre command(s)` : '', j.verify_schedule ? `verify ${j.verify_schedule}` : '',
       j.transport && j.transport !== 'rsync' ? `${j.transport} stream` : '', j.routes && j.routes.length ? `routes ${j.routes.map((r) => r.via).join(' > ')}` : '',
       j.dedup ? 'dedup' : '', j.extent_dedup ? `duperemove ${j.extent_dedup}` : '',
@@ -375,7 +378,8 @@ function jobRow(j) {
     last ? text('span', `last run ${when(last.end || last.start)}: ${last.rc === 0 ? 'ok' : 'exit ' + last.rc}${last.bytes ? ' · ' + fmtBytes(last.bytes) : ''}${last.files ? ` · ${last.files.toLocaleString()} files` : ''} · ${last.message || ''}`,
       last.rc === 0 ? 'small' : 'st-failed small') : text('span', j.paused ? 'paused' : 'no run reported yet', 'muted small'),
     j.last_ok && j.last_ok !== last ? text('span', `last good run ${when(j.last_ok.end)}`, 'muted small') : '',
-    verify ? text('span', `verify ${when(verify.end)}: ${verify.message}`, verify.rc === 0 ? 'muted small' : 'st-failed small') : '');
+    verify ? text('span', `verify ${when(verify.end)}: ${verify.message}`, verify.rc === 0 ? 'muted small' : 'st-failed small') : '',
+    ...(j.fit || []).map(fitLine));
   li._menu = () => jobMenu(j);
   return li;
 }
@@ -431,6 +435,78 @@ async function restoreFrom(j, snapshot, path) {
   } catch (err) { toast(err.message); }
 }
 
+/* ── rsnapshot and snapper jobs StorageForge did not deploy ─────── */
+function fitLine(f) { return text('span', f.text, f.level === 'crit' ? 'st-failed small' : 'muted small'); }
+function snapJobMenu(j, a) {
+  return [{ heading: j.name }, a('Run now', 'run'), a(j.method === 'snapper' ? 'Show config and snapshots' : 'Dry run (what it would copy)', 'dryrun'),
+    j.paused ? a('Resume its schedule', 'resume') : a('Pause its schedule', 'pause'), '-', { label: 'History', run: () => jobHistory(j) }, a('Log', 'log'), a('Snapshots…', 'snapshots'),
+    { label: 'Retention…', run: () => editRetention(j) }, '-',
+    { label: 'Forget (leaves the host as it is)', run: () => forgetJob(j), danger: true }, { label: 'Copy job id', run: () => copyText(j.id) }];
+}
+async function editRetention(j) {
+  const now = Object.entries(j.levels || {}).map(([k, v]) => `${k}=${v}`).join(' ');
+  const typed = prompt(`How many to keep, per level. A lower count deletes older snapshots at the next ${j.method === 'snapper' ? 'cleanup' : 'rotation'}.`, now);
+  if (typed === null || typed.trim() === now) return;
+  const keep = {};
+  for (const w of typed.trim().split(/\s+/)) { const [k, v] = w.split('='); keep[k] = Number(v); }
+  try {
+    const r = await (await postJSON(`/api/deploy/jobs/${j.id}/retention`, { keep })).json();
+    DP.job = { job: j, title: 'retention', output: r.output }; renderJobPanel(); loadDeploy();
+  } catch (err) { toast(err.message); }
+}
+async function forgetJob(j) {
+  if (!confirm(`Stop tracking ${j.name}?\n\nIt keeps running on ${j.runner}, and its snapshots stay.`)) return;
+  try { await postJSON(`/api/deploy/jobs/${j.id}/forget`, {}); toast('Forgotten'); loadDeploy(); } catch (err) { toast(err.message); }
+}
+async function importFound(f) {
+  try { await postJSON('/api/deploy/snapjobs/import', { host: f.host, tool: f.tool, config: f.config }); toast(`Imported ${f.name}`); loadDeploy(); }
+  catch (err) { toast(err.message); }
+}
+async function lookAsRoot(host) {
+  toast(`Looking on ${host} as root…`);
+  try { const r = await (await postJSON('/api/deploy/snapjobs/probe', { host })).json(); DP.found = r.found; renderSnapFound(); loadDeploy(); toast('Done'); }
+  catch (err) { toast(err.message); }
+}
+function foundRow(f, ready) {
+  const levels = Object.entries(f.levels || {}).map(([k, v]) => (v === null ? k : `${k} ${v}`)).join(', ');
+  const usable = !f.orphan && f.readable !== false && f.root;
+  return el('li', {}, el('div', { class: 'row wrap' }, text('span', f.tool, 'pill unknown'), el('b', { class: 'mono' }, `${f.host}:${f.root || f.config}`),
+    el('span', { class: 'row tools' },
+      ready.has(f.host) && !usable ? button('Look as root', () => lookAsRoot(f.host), 'btn ghost sm') : '',
+      usable ? button('Import', () => importFound(f), 'btn sm') : '')),
+  text('span', [f.config, f.fstype ? `on ${f.fstype}` : '', levels, f.count ? `${f.count} snapshots, newest ${when(f.newest)}` : '',
+    (f.schedule || []).map((e) => e.unit || e.file).join(', ')].filter(Boolean).join(' · '), 'muted small'),
+  !usable && !f.orphan ? text('span', ready.has(f.host) ? 'The scan account cannot read it: look as root.' : 'The scan account cannot read it: set up deploy access to look as root.', 'muted small') : '',
+  f.orphan && !ready.has(f.host) ? text('span', 'Set up deploy access to look for its config as root.', 'muted small') : '',
+  ...(f.fit || []).map(fitLine));
+}
+function newSnapForm(d) {
+  const host = el('select', {}, ...d.access.map((a) => new Option(a.host, a.host))), path = el('input', { type: 'text', class: 'mono', placeholder: '/home' });
+  const out = el('div', { class: 'stack' });
+  const check = async () => {
+    try {
+      const a = await getJSON(`/api/deploy/snapjobs/advice?host=${encodeURIComponent(host.value)}&path=${encodeURIComponent(path.value.trim())}`);
+      const name = el('input', { type: 'text', class: 'mono', placeholder: 'config name, e.g. home' });
+      out.replaceChildren(text('p', `${a.path} is on ${a.fstype || 'an unknown filesystem'} (${a.mount || '?'}). ${a.why}`, a.level === 'crit' ? 'st-failed small' : 'small'),
+        a.tool === 'snapper' ? el('div', { class: 'row' }, name, button('Create snapper config', async () => {
+          try { const r = await (await postJSON('/api/deploy/snapjobs/snapper', { host: a.host, path: a.path, name: name.value.trim() })).json();
+            out.append(outputBlock(r.output)); loadDeploy(); } catch (err) { toast(err.message); }
+        }, 'btn sm')) : a.tool === 'rsnapshot' ? button('Plan an rsnapshot step in Moves', () => showTab('moves'), 'btn sm') : '');
+    } catch (err) { out.replaceChildren(text('p', err.message, 'st-failed small')); }
+  };
+  return el('details', { class: 'card stack' }, el('summary', {}, 'New snapshot job'),
+    text('p', 'Picks the tool for the folder\'s filesystem: snapper on btrfs, rsnapshot on ext4, xfs and others with hard links.', 'muted small'),
+    el('div', { class: 'row wrap' }, host, path, button('Check', check, 'btn ghost sm')), out);
+}
+function renderSnapFound() {
+  const box = $('#dpsnapfound');
+  if (!box) return;
+  const ready = new Set((DP.data?.access || []).filter((a) => a.state === 'ready').map((a) => a.host));
+  const fresh = (DP.found || []).filter((f) => !f.job);
+  box.replaceChildren(fresh.length ? el('ul', { class: 'dklist' }, ...fresh.map((f) => foundRow(f, ready)))
+    : text('p', DP.found ? 'Nothing new found. Scans look at /etc, cron and systemd; Look as root also reads what only root can.' : 'Looking…', 'muted small'));
+}
+
 /* ── the tab ────────────────────────────────────────────────────── */
 function renderDeploy() {
   const box = $('#deploybox');
@@ -459,7 +535,7 @@ function renderDeploy() {
     }))));
   // jobs by plan
   const byPlan = new Map();
-  for (const j of d.jobs) { if (!byPlan.has(j.plan_id)) byPlan.set(j.plan_id, []); byPlan.get(j.plan_id).push(j); }
+  for (const j of d.jobs.filter((x) => !x.imported)) { if (!byPlan.has(j.plan_id)) byPlan.set(j.plan_id, []); byPlan.get(j.plan_id).push(j); }
   const pending = new Map(d.drift.filter((x) => x.kind === 'pending').map((x) => [x.ref, x.text]));
   const planName = (id) => (d.plans.find((p) => p.id === id) || {}).name || `deleted plan ${id}`;
   const jobsBox = el('section', { class: 'stack' }, el('h3', {}, 'Jobs (rsync, rsnapshot, git)'));
@@ -476,6 +552,13 @@ function renderDeploy() {
   }
   if (!byPlan.size) jobsBox.append(text('p', 'No move plans yet. Plan rsync, rsnapshot or git steps in the Moves tab, then deploy them here.', 'muted'));
   parts.push(jobsBox);
+  const imported = d.jobs.filter((x) => x.imported);
+  parts.push(el('section', { class: 'stack' }, el('h3', {}, 'Existing snapshot jobs (rsnapshot, snapper)'),
+    text('p', 'Importing tracks a job and lets you run, pause and restore from it here. Its config, cron lines and timers stay where they are.', 'muted small'),
+    imported.length ? el('ol', { class: 'chtasks' }, ...imported.map(jobRow)) : '',
+    el('div', { id: 'dpsnapfound' }),
+    ready.size ? el('div', { class: 'row wrap' }, ...[...ready].map((h) => button(`Look on ${h} as root`, () => lookAsRoot(h), 'btn ghost sm'))) : '',
+    DP.newSnap || (DP.newSnap = newSnapForm(d))));
   // shares
   const shareHosts = [...new Set([...d.deployed.filter((x) => x.kind === 'shares').map((x) => x.ref),
     ...[...T.docs.values()].filter((doc) => doc.bp && designedShares(doc).length).map((doc) => doc.host)])].sort();
@@ -519,7 +602,7 @@ function renderDeploy() {
   parts.push(settingsForm(d.settings));
   box.replaceChildren(...parts);
   typing?.focus();
-  renderGroup(); renderJobPanel();
+  renderGroup(); renderJobPanel(); renderSnapFound();
 }
 
 async function showHistory(host) {
