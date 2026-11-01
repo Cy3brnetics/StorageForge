@@ -12,7 +12,7 @@ try:
 except ImportError:
     sync_playwright = None
 PW = 'a long enough password'
-TABS = ('details', 'search', 'changes', 'moves', 'schedule', 'deploy', 'docker', 'git', 'rebuild', 'cleanup', 'access')
+TABS = ('details', 'search', 'changes', 'moves', 'schedule', 'deploy', 'docker', 'git', 'rebuild', 'cleanup', 'malware', 'access')
 
 
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')

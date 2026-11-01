@@ -28,6 +28,10 @@ FRESH_PASSWORD = {
     ('PUT', '/api/deploy/settings'),
     ('POST', '/api/deploy/start'),
     ('POST', '/api/git/sync'),
+    ('POST', '/api/clamav/hosts/<host>/config'),
+    ('POST', '/api/clamav/detections/<int:did>/quarantine'),
+    ('POST', '/api/clamav/detections/<int:did>/restore'),
+    ('POST', '/api/clamav/detections/<int:did>/ignore'),
     ('POST', '/api/hostkey/confirm'),
     ('DELETE', '/api/hosts/<name>'),
     ('POST', '/api/invites'),
@@ -51,6 +55,7 @@ FRESH_PASSWORD = {
 }
 # No fresh password: plans that only sit in the database, reads over SSH or signed read-only probes, or the sign-in routes themselves.
 NO_FRESH_PASSWORD = {
+    ('POST', '/api/clamav/hosts/<host>/collect'),
     ('POST', '/api/backups'),
     ('POST', '/api/changes'),
     ('DELETE', '/api/changes/<int:plan_id>'),

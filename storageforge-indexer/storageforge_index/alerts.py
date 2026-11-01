@@ -428,8 +428,8 @@ def cert_problems() -> dict:
 
 # ── evaluation ──────────────────────────────────────────────────────
 def problems(conn: Conn) -> dict:
-    from . import jobs, scheduler
-    now = {**scan_problems(conn), **backup_problems(conn), **cert_problems()}
+    from . import clamav, jobs, scheduler
+    now = {**scan_problems(conn), **backup_problems(conn), **cert_problems(), **clamav.problems(conn)}
     for j in jobs.overview(conn):
         if j['state'] == 'failed':
             now[f'job-failed:{j["id"]}'] = ('job-failed', j['id'], f'Job failed: {j["name"]}',

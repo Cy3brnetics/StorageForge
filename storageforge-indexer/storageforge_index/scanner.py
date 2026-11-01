@@ -335,6 +335,13 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
                     log(f'  picked up {n} job run(s) the jobs could not report')
             except Exception as exc:
                 log(f'  job runs: {exc}')
+        if inv.clamav:
+            try:
+                from .clamav import ingest
+                if ingest(conn, inv.hostname, inv.clamav):
+                    log('  picked up a new ClamAV result')
+            except Exception as exc:
+                log(f'  ClamAV result: {exc}')
         try:                                             # rsnapshot and snapper jobs nobody here deployed: they can't report
             from .snapjobs import after_scan
             after_scan(db, conn, inv.hostname, inv.snapjobs, log=log)

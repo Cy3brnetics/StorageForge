@@ -95,6 +95,12 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <p class="muted">Folders the latest scan of each host could not open, and read-only scan access to fix it without running scans as root.</p>
       <div id="accessbox" class="stack"></div>
     </div>
+    <div id="tab-malware" class="tab" hidden>
+      <p class="muted">ClamAV runs on each host you deploy it to and only reports. Files move to quarantine only when you say so, and nothing is deleted. Results arrive with the next scan of the host, or use Collect. One engine misses things: no detections does not prove a host is clean.</p>
+      <div id="malwarehosts" class="stack"></div>
+      <h3>Detections</h3>
+      <div id="malwarebox" class="stack"></div>
+    </div>
     <div id="tab-copies" class="tab" hidden>
       <p class="muted">Folders that hold the same file names and sizes in the same layout, so they are likely copies. Checksums are not needed; a <code>--checksum</code> scan confirms them.</p>
       <form id="copyform" class="row">
@@ -249,6 +255,7 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <button type="button" role="tab" data-tab="git" title="Git repositories and their copies" aria-label="Git repositories and their copies"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 5-8 4-11 8.5"/></svg><span class="lbl">Git</span></button>
       <button type="button" role="tab" data-tab="rebuild" title="Host configurations and reinstall scripts" aria-label="Host configurations and reinstall scripts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 14-5.3L20 9M20 4v5h-5M20 12a8 8 0 0 1-14 5.3L4 15M4 20v-5h5"/></svg><span class="lbl">Rebuild</span></button>
       <button type="button" role="tab" data-tab="copies" title="Likely copies and cold data" aria-label="Likely copies and cold data"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg><span class="lbl">Cleanup</span></button>
+      <button type="button" role="tab" data-tab="malware" title="ClamAV on hosts: detections and quarantine" aria-label="ClamAV on hosts: detections and quarantine"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" fill="none" stroke="currentColor" stroke-width="2"/></svg><span class="lbl">Malware</span></button>
       <button type="button" role="tab" data-tab="access" title="Folders scans could not read" aria-label="Folders scans could not read"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg><span class="lbl">Access</span><span id="naccess" class="cnt"></span></button>
       <span class="rgroup" aria-hidden="true">Admin</span>
       <button type="button" role="tab" data-tab="jobs" title="Scan jobs" aria-label="Scan jobs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/></svg><span class="lbl">Scans</span></button>

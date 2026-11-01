@@ -1,5 +1,6 @@
 """Vault, ephemeral agent, audit chain, graph, .canvas export and HTTP API.
 Run with: python3 -m unittest discover -s tests -v"""
+import base64
 import datetime as dt
 import json
 import os
@@ -2074,6 +2075,11 @@ class ScriptHeaderTests(DBCase):
             t = re.sub(r"'[^']*'", "''", t)
             return [l for l in t.splitlines() if 'CANARY' in l and not l.lstrip().startswith('#')]
         out = {}
+        from storageforge_index import clamav
+        out['clamav install'] = clamav.install_script({'schedule': 'daily', 'paths': [path]})
+        hostile = {'b64': base64.b64encode(path.encode()).decode(), 'signature': canary, 'qid': 'a' * 32}
+        out['clamav quarantine'] = clamav.quarantine_script(hostile, 'a' * 32)
+        out['clamav restore'] = clamav.restore_script(hostile)
         for kind, spec in changes.TYPES.items():
             params = {f['name']: next(o for o in f['options'] if o) if f['kind'] == 'choice' else
                       {'path': path, 'text': text, 'spec': 'nas:/srv/' + canary.replace(' ', ''), 'bool': True, 'device': '/dev/sdb',

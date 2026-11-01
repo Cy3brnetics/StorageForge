@@ -80,6 +80,10 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/(hosts|graph|canvas|capacity|planner/.*)', 'hosts.view'),
     (READ, r'/api/hosts/[^/]+/schedule', 'hosts.view'),
     (READ, r'/api/(browse|fs/browse|file-changes|dupes|filemap|files/ignore|folders/.*)', 'files.browse'),
+    (READ, r'/api/clamav', 'files.browse'),
+    (('POST',), r'/api/clamav/hosts/[^/]+/config', 'deploy.apply'),
+    (('POST',), r'/api/clamav/hosts/[^/]+/collect', 'deploy.report'),
+    (('POST',), r'/api/clamav/detections/\d+/(quarantine|restore|ignore)', 'deploy.destructive'),
     (READ, r'/api/(docker(/.*)?|git|git/ignore|shares/check)', 'services.view'),
 
     # generated scripts name paths, logins and hosts in a form that can be run

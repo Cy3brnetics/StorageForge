@@ -165,6 +165,21 @@ def cmd_changes(args) -> int:
     return 0
 
 
+def cmd_clamav(args) -> int:
+    from . import clamav
+    _, conn = open_db(args)
+    if args.clamav_cmd == 'list':
+        found = clamav.detections(conn, args.host)
+        for d in found:
+            print(f'{d["state"]}{" (ignored)" if d["ignored"] else ""}  {d["host"]}:{d["path"]}  {d["signature"]}')
+        return 1 if any(d['state'] == 'open' and not d['ignored'] for d in found) else 0
+    for h in clamav.hosts(conn, args.host):
+        run = h['last_run']
+        last = f'exit {run["exit_code"]}, {run["scanned"]:,} scanned, {run["found"]} found, {run["version"]}' if run else 'no result yet'
+        print(f'{h["host"]}: {"installed" if h["installed"] else "not installed"}, {last}')
+    return 0
+
+
 def cmd_dupes(args) -> int:
     _, conn = open_db(args)
     groups = run_dupes(conn, args.host, args.min_size, args.limit)
@@ -1132,6 +1147,12 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument('--limit', type=int, default=50)
     d.add_argument('--format', choices=['table', 'json'], default='table')
     d.set_defaults(fn=cmd_dupes)
+
+    cv = sub.add_parser('clamav', help='ClamAV on hosts: where it runs and what it found (deploy and quarantine from the web UI)')
+    cv.set_defaults(fn=cmd_clamav, clamav_cmd='status', host=None)
+    cvs = cv.add_subparsers(dest='clamav_cmd')
+    cvs.add_parser('status', help='each host and its last result (the default)').add_argument('--host')
+    cvs.add_parser('list', help='what is open or in quarantine; exit 1 if anything is open').add_argument('--host')
 
     fo = sub.add_parser('folders', help='duplicate folders by name and structure (no checksums needed)')
     fo.add_argument('--host')
