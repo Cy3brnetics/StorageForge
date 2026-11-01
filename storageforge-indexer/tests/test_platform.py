@@ -240,8 +240,30 @@ class ShareLineTests(DBCase):
         graph.save(self.db, self.conn, 'server', *graph.build(server))         # rebuilding the server keeps them
         self.assertEqual(set(lines()), set(got))
 
+    def test_client_finishing_before_its_server_keeps_the_line(self):
+        client = self.node('client', ['/'], [('10.42.0.10:/srv/shared', 'nfs4', '/mnt/shared')])
+        graph.save(self.db, self.conn, 'client', *graph.build(client))         # the server's scan is still running
+        stub = self.conn.all("SELECT host FROM graph_nodes WHERE node_id = 'host:server'")
+        self.assertEqual(stub, [('server',)])
+        server = self.node('server', ['/'])
+        server['ip'] = '10.42.0.10'
+        graph.save(self.db, self.conn, 'server', *graph.build(server))         # its own build fills the stub in
+        props = json.loads(self.conn.scalar("SELECT props_json FROM graph_nodes WHERE node_id = 'host:server'"))
+        self.assertEqual(props['ip'], '10.42.0.10')
+        self.assertEqual(self.conn.scalar("SELECT count(*) FROM graph_edges WHERE src = 'host:server' AND built_by = 'client'"), 1)
+
 
 class OpsTests(DBCase):
+    def test_a_host_first_queued_by_address_is_not_queued_again_by_name(self):
+        from unittest import mock
+        from storageforge_index import server
+        with mock.patch.object(server.threading.Thread, 'start'):
+            app = server.App(self.db)
+        job = app.enqueue('10.42.0.10', 'test')          # the first scan of a host: no name for it yet
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, inventory_json) VALUES ('pi', '10.42.0.10', '{}')")
+        self.assertEqual(app.enqueue('pi', 'test'), job)
+
+
     def test_deployed_share_is_one_share_and_keeps_its_clients(self):
         scanned = {'metadata': {'host': 'nas'}, 'devices': [], 'pools': [], 'remotes': [], 'links': [], 'protection': [],
                    'exports': [{'protocol': 'NFS', 'name': '/srv/media', 'path': '/srv/media/', 'fromScan': True},

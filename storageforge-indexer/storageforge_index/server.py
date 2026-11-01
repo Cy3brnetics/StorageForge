@@ -267,7 +267,9 @@ class App:
         try:
             host = self.canonical(conn, host)
             with self.enqueue_lock:     # workers run side by side: two requests at once must not start one host twice
-                busy = conn.scalar("SELECT job_id FROM scan_jobs WHERE host = :h AND status IN ('queued', 'running')", {'h': host})
+                # a first scan was queued by address and gives the host its name while it runs
+                busy = conn.scalar("""SELECT job_id FROM scan_jobs WHERE status IN ('queued', 'running')
+                                      AND (host = :h OR host IN (SELECT ssh_host FROM hosts WHERE hostname = :h))""", {'h': host})
                 if busy:
                     return busy
                 jid = conn.scalar("INSERT INTO scan_jobs (host, requested_by, queued_at) VALUES (:h, :a, :t) RETURNING job_id",
