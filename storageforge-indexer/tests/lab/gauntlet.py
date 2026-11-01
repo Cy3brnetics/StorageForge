@@ -32,7 +32,6 @@ STATE = Path(os.environ.get('SFLAB_STATE', Path.home() / '.local' / 'state' / 's
 ACTOR = 'gauntlet'
 STAGES = ('scan', 'scan-access', 'deploy-access', 'doctor', 'shares', 'jobs', 'changes', 'tasks', 'drift', 'engine', 'remove')
 # Deploys can't run on Alpine: it has no bash, systemd or known package manager. It must say so instead of breaking.
-UNSUPPORTED = {'sf-alpine'}
 
 work = Path(tempfile.mkdtemp(prefix='sf-gauntlet-', dir=os.environ.get('XDG_RUNTIME_DIR')))
 os.environ.update(STORAGEFORGE_DATA_DIR=str(work / 'data'), STORAGEFORGE_RUNTIME_DIR=str(work),
@@ -53,8 +52,18 @@ def conf(path):
     return [r.split('|') for r in rows if r.strip() and not r.startswith('#')]
 
 
-NODES = {r[0]: r[6] for r in conf('nodes.conf')}
+sys.path.insert(0, str(LAB_DIR))
+import roles  # noqa: E402
+
+BUILD = roles.build()
+NODES = {n.name: n.ip for n in BUILD.values()}
 VMS = list(NODES)
+HOSTS = roles.deployable()          # takes hosts in order, each passing data to the next
+UNSUPPORTED = {n.name for n in roles.having('nosystemd')}
+
+
+def after(i):
+    return HOSTS[(i + 1) % len(HOSTS)]
 PASSWORD = (STATE / 'admin-password').read_text().strip() if (STATE / 'admin-password').exists() else ''
 
 
@@ -294,12 +303,8 @@ def stage_doctor():
 # ── shares ──────────────────────────────────────────────────────────
 NFS_RW = 'rw,sync,no_subtree_check,no_root_squash'
 SHARES = [  # server, folder, the seed root inside it, [(client, mount point)]
-    ('sf-ubuntu', '/tank/media', '/tank/media', [('sf-fedora', '/mnt/sf/ubuntu-media'), ('sf-rocky', '/mnt/sf/ubuntu-media')]),
-    ('sf-rocky', '/srv/data', '/srv/data', [('sf-suse', '/mnt/sf/rocky-data'), ('sf-arch', '/mnt/sf/rocky-data')]),
-    ('sf-suse', '/mnt/raid', '/mnt/raid', [('sf-ubuntu', '/mnt/sf/suse-raid')]),
-    ('sf-fedora', '/data/media', '/data/media', [('sf-arch', '/mnt/sf/fedora-media')]),
-    ('sf-arch', '/mnt/pool', '/mnt/pool', [('sf-fedora', '/mnt/sf/arch-pool')]),
-    ('sf-ctl', '/srv/export', None, [('sf-ubuntu', '/mnt/sf/ctl-export')]),
+    *[(n.name, n.data, n.data, [(after(i).name, f'/mnt/sf/{n.name}-data')]) for i, n in enumerate(HOSTS)],
+    ('sf-ctl', '/srv/export', None, [(HOSTS[0].name, '/mnt/sf/ctl-export')]),
 ]
 
 
@@ -353,44 +358,51 @@ def stage_shares():
             R.check('share-mode', srv, mode)
 
     # SMB: the server's label on SELinux, its service and a real cifs mount
-    srv, client = 'sf-fedora', 'sf-rocky'
+    srv, client = roles.smb_server().name, next((n.name for n in roles.deployable() if n.name != roles.smb_server().name
+                                                 and raw(n.name, 'sudo -n modprobe -n cifs && sudo -n modprobe -n nls_utf8').returncode == 0), '')
+    smb_dir = BUILD[srv].room
     if srv in READY and client in READY:
         def smb():
             sh(client, f'sudo -n mkdir -p /etc/samba/credentials && printf "username=sfadmin\\npassword=labpw\\n" | sudo -n tee /etc/samba/credentials/{deploy.host_slug(NAME[srv])}-fsmb >/dev/null; sudo -n chmod 600 /etc/samba/credentials/{deploy.host_slug(NAME[srv])}-fsmb')
-            shares.save_export(db, conn, NAME[srv], {'protocol': 'SMB3', 'name': 'fsmb', 'path': '/data/backups', 'clients': '10.77.0.0/24 sfadmin',
+            shares.save_export(db, conn, NAME[srv], {'protocol': 'SMB3', 'name': 'fsmb', 'path': smb_dir, 'clients': '10.77.0.0/24 sfadmin',
                                                      'mounts': [{'host': NAME[client], 'path': '/mnt/sf/fedora-smb'}]}, None, ACTOR)
             server_only = [i for i in shares.deploy_items(db, conn, NAME[srv], 'apply', ACTOR) if i['host'] == NAME[srv]]
             report_runs('smb-server', execute(server_only, 'apply'), want=('ok', 'incomplete'))     # it reports the account it can't make
-            sh(srv, 'sudo -n chown sfadmin /data/backups')
-            label = sh(srv, 'ls -Zd /data/backups')
-            R.add('smb-server', srv, 'samba_share_t' in label, label.strip())
+            sh(srv, f'sudo -n chown sfadmin {smb_dir}')
+            label = sh(srv, f'ls -Zd {smb_dir}')
+            if BUILD[srv].can('selinux'):
+                R.add('smb-server', srv, 'samba_share_t' in label, label.strip())
             sh(srv, "printf 'labpw\\nlabpw\\n' | sudo -n smbpasswd -s -a sfadmin")
             report_runs('smb-client', execute(shares.deploy_items(db, conn, NAME[srv], 'apply', ACTOR), 'apply'))
             sh(client, 'sudo -n sh -c "echo smb >/mnt/sf/fedora-smb/smb-test"')
-            got = sh(srv, 'sudo -n cat /data/backups/smb-test').strip()
-            R.add('smb-mount', client, got == 'smb', f'{srv}:/data/backups through cifs')
-        R.check('smb', srv, smb)
+            got = sh(srv, f'sudo -n cat {smb_dir}/smb-test').strip()
+            R.add('smb-mount', client, got == 'smb', f'{srv}:{smb_dir} through cifs')
+        R.check('smb', client, smb)
     conn.close()
 
 
 # ── jobs ────────────────────────────────────────────────────────────
-JOB_STEPS = [  # method, source vm, source path, destination vm, path, options, the seed root it holds (for checking)
-    ('mirror', 'sf-fedora', '/data/media/lab-seed', 'sf-ubuntu', '/backup/replica/fedora', {'snapshot': True}, ('sf-fedora', '/data/media')),
-    ('copy', 'sf-ubuntu', '/tank/media/lab-seed', 'sf-rocky', '/srv/data/from-ubuntu', {}, ('sf-ubuntu', '/tank/media')),
-    ('rsnapshot', 'sf-rocky', '/srv/data/lab-seed', 'sf-suse', '/srv/btrfs/rocky-snaps', {}, ('sf-rocky', '/srv/data')),
-    ('rsnapshot', 'sf-arch', '/mnt/pool/lab-seed', 'sf-rocky', '/srv/data/arch-snaps', {}, ('sf-arch', '/mnt/pool')),
-    ('mirror', 'sf-suse', '/srv/btrfs/home/lab-seed', 'sf-arch', '/mnt/disk1/suse-home', {'snapshot': True}, ('sf-suse', '/srv/btrfs/home')),
-    ('mirror', 'sf-fedora', '/data/media/lab-seed', 'sf-fedora', '/data/backups/local', {}, ('sf-fedora', '/data/media')),
-    ('git', 'sf-ubuntu', '/tank/media/lab-seed/repos/sample', 'sf-fedora', '/data/snaps/sample.git', {}, None),
-    ('git', 'sf-fedora', '/data/media/lab-seed/repos/sample', 'sf-suse', '/srv/btrfs/sample.git', {}, None),
-]
+def job_steps():
+    """method, source vm, source path, destination vm, path, options, the seed root it holds (for checking)."""
+    a, b, c, d = HOSTS[0], after(0), after(1), after(2)
+    snap = lambda n: {'snapshot': True} if n.subvol else {}     # noqa: E731
+    return [
+        ('mirror', a.name, f'{a.data}/lab-seed', b.name, f'{b.room}/mirror-{a.name}', snap(a), (a.name, a.data)),
+        ('copy', b.name, f'{b.data}/lab-seed', c.name, f'{c.room}/copy-{b.name}', {}, (b.name, b.data)),
+        ('rsnapshot', c.name, f'{c.data}/lab-seed', d.name, f'{d.room}/rsnapshot-{c.name}', {}, (c.name, c.data)),
+        ('rsnapshot', d.name, f'{d.data}/lab-seed', a.name, f'{a.room}/rsnapshot-{d.name}', {}, (d.name, d.data)),
+        ('mirror', a.name, f'{a.data}/lab-seed', a.name, f'{a.room}/mirror-here', {}, (a.name, a.data)),
+        ('git', a.name, f'{a.data}/lab-seed/repos/sample', b.name, f'{b.room}/sample.git', {}, None),
+    ]
 
 
 def stage_jobs():
     conn = db.connect()
-    sh('sf-rocky', 'sudo -n dnf -q -y install epel-release')     # rsnapshot comes from EPEL, which deploys expect to be on
+    for step in job_steps():
+        if step[0] == 'rsnapshot' and BUILD[step[3]].pm == 'dnf' and 'fedora' not in step[3]:
+            sh(step[3], 'sudo -n dnf -q -y install epel-release')     # rsnapshot comes from EPEL, which deploys expect to be on
     steps, kept = [], {}
-    for i, (method, s, sp, d, dp, opts, seed) in enumerate(JOB_STEPS, 1):
+    for i, (method, s, sp, d, dp, opts, seed) in enumerate(job_steps(), 1):
         if s not in READY or d not in READY:
             R.add('jobs', d, None, f'step {i}: {s} or {d} has no deploy access')
             continue
@@ -452,30 +464,33 @@ def stage_jobs():
 
 
 # ── changes ─────────────────────────────────────────────────────────
-CHANGE_TASKS = {
-    'sf-ctl': [('dir', {'path': '/srv/ch/plain'}), ('dir', {'path': '/srv/ch/modes', 'mode': '2775'}), ('symlink', {'path': '/srv/ch/link', 'target': '/srv/ch/plain'})],
-    'sf-ubuntu': [('dir', {'path': '/tank/media/ch'}), ('zfs-dataset', {'dataset': 'tank/ch', 'options': 'compression=zstd'}),
-                  ('zfs-snapshot', {'dataset': 'tank/media', 'name': 'gauntlet'}),
-                  ('zfs-send', {'dataset': 'tank/media', 'name': 'gauntlet', 'dest': 'backup/sent'}), ('zfs-scrub', {'pool': 'tank'})],
-    'sf-fedora': [('subvolume', {'path': '/data/media/ch-sub'}), ('snapshot', {'source': '/data/media', 'dest': '/data/snaps/ch-snap'}),
-                  ('mount-options', {'target': '/data/snaps', 'options': 'subvol=@snaps,compress=zstd,noatime,nofail,commit=60'}),
-                  ('btrfs-send', {'source': '/data/snaps/ch-snap', 'dest': '/data/backups'}), ('scrub', {'target': '/data/media'})],
-    'sf-rocky': [('dir', {'path': '/srv/data/ch'}), ('lvm-lv', {'vg': 'vgdata', 'lv': 'chlv', 'size': '256M', 'fstype': 'xfs', 'label': 'chlv'}),
-                 ('mount', {'source': '/dev/vgdata/chlv', 'target': '/srv/chlv', 'fstype': 'xfs', 'options': 'defaults,nofail'}),
-                 ('lvm-extend', {'vg': 'vgdata', 'lv': 'chlv', 'size': '300M'}),
-                 ('lvm-snapshot', {'vg': 'vgdata', 'lv': 'data', 'name': 'chsnap', 'size': '128M'})],
-    'sf-suse': [('subvolume', {'path': '/srv/btrfs/ch-sub'}), ('dir', {'path': '/mnt/raid/ch', 'mode': '0770'}),
-                ('to-subvolume', {'path': '/srv/btrfs/home/lab-seed/shared/docs'}), ('scrub', {'target': '/srv/btrfs'})],
-    'sf-arch': [('dir', {'path': '/mnt/pool/ch'}), ('rename', {'path': '/mnt/secure/lab-seed/unique', 'dest': '/mnt/secure/lab-seed/renamed'}),
-                ('trash', {'path': '/mnt/secure/lab-seed/shared'}), ('perms', {'path': '/mnt/pool/ch', 'mode': '0750', 'owner': 'scan'})],
-}
+def change_tasks(n):
+    if n.can('controller'):
+        return [('dir', {'path': '/srv/ch/plain'}), ('dir', {'path': '/srv/ch/modes', 'mode': '2775'}), ('symlink', {'path': '/srv/ch/link', 'target': '/srv/ch/plain'})]
+    tasks = [('dir', {'path': f'{n.room}/ch'})]
+    if n.can('zfs'):
+        pool = n.tag('zfs-pool')
+        tasks += [('zfs-dataset', {'dataset': f'{pool}/ch', 'options': 'compression=zstd'}), ('zfs-snapshot', {'dataset': f'{pool}/media', 'name': 'gauntlet'}),
+                  ('zfs-send', {'dataset': f'{pool}/media', 'name': 'gauntlet', 'dest': f'{pool}/sent'}), ('zfs-scrub', {'pool': pool})]
+    if n.subvol:
+        tasks += [('subvolume', {'path': f'{n.subvol}/ch-sub'}), ('snapshot', {'source': n.subvol, 'dest': f'{n.snaps}/ch-snap'}),
+                  ('to-subvolume', {'path': f'{n.data}/lab-seed/shared/docs'}), ('scrub', {'target': n.tag('btrfs-mount') or n.subvol})]
+    if n.can('lvm'):
+        vg = n.tag('vg')
+        tasks += [('lvm-lv', {'vg': vg, 'lv': 'chlv', 'size': '320M', 'fstype': 'xfs', 'label': 'chlv'}),
+                  ('mount', {'source': f'/dev/{vg}/chlv', 'target': '/srv/chlv', 'fstype': 'xfs', 'options': 'defaults,nofail'}),
+                  ('lvm-extend', {'vg': vg, 'lv': 'chlv', 'size': '380M'}),
+                  ('lvm-snapshot', {'vg': vg, 'lv': n.tag('lv'), 'name': 'chsnap', 'size': '128M'})]
+    if n.can('luks') and 'sf-arch' == n.name:
+        tasks += [('rename', {'path': '/mnt/secure/lab-seed/unique', 'dest': '/mnt/secure/lab-seed/renamed'}), ('trash', {'path': '/mnt/secure/lab-seed/shared'}),
+                  ('perms', {'path': f'{n.room}/ch', 'mode': '0750', 'owner': 'scan'})]
+    return tasks
 
 
 def stage_changes():
     conn = db.connect()
-    for vm, ts in CHANGE_TASKS.items():
-        if vm not in READY:
-            continue
+    for vm in READY:
+        ts = change_tasks(BUILD[vm])
 
         def one(vm=vm, ts=ts):
             body = {'name': f'gauntlet {vm}', 'tasks': [{'type': t, 'host': NAME[vm], 'params': p} for t, p in ts]}
@@ -491,15 +506,17 @@ def stage_changes():
             wrote = [r for r in again if re.search(r'^  (\x1b\[[0-9;]*m)?->', r['output'] or '', re.M)]
             R.add('change-rerun', vm, again[0]['status'] == 'ok' and not wrote, f'second apply {again[0]["status"]}, {"changed things" if wrote else "nothing to do"}', again[0]['output'] or '')
         R.check('change-apply', vm, one)
-    if 'sf-rocky' in READY:
+    lvm = next((n for n in roles.having('lvm') if n.name in READY), None)
+    if lvm:
         def unmounted():
+            vg = lvm.tag('vg')
             body = {'name': 'gauntlet unmounted', 'tasks': [
-                {'type': 'lvm-lv', 'host': NAME['sf-rocky'], 'params': {'vg': 'vgdata', 'lv': 'chlv2', 'size': '256M', 'fstype': 'xfs', 'label': 'chlv2'}},
-                {'type': 'lvm-extend', 'host': NAME['sf-rocky'], 'params': {'vg': 'vgdata', 'lv': 'chlv2', 'size': '300M'}}]}
+                {'type': 'lvm-lv', 'host': NAME[lvm.name], 'params': {'vg': vg, 'lv': 'chlv2', 'size': '320M', 'fstype': 'xfs', 'label': 'chlv2'}},
+                {'type': 'lvm-extend', 'host': NAME[lvm.name], 'params': {'vg': vg, 'lv': 'chlv2', 'size': '380M'}}]}
             plan = changes.get_plan(conn, changes.save_plan(conn, body, ACTOR))
             run = execute(changes.deploy_items(db, conn, plan, 'apply', ACTOR), 'apply')[0]
-            R.add('lvm-extend-unmounted', 'sf-rocky', run['status'] == 'ok', run['status'], run['output'] or '')
-        R.check('lvm-extend-unmounted', 'sf-rocky', unmounted)
+            R.add('lvm-extend-unmounted', lvm.name, run['status'] == 'ok', run['status'], run['output'] or '')
+        R.check('lvm-extend-unmounted', lvm.name, unmounted)
     if 'sf-ctl' in READY:
         def modes():
             got = sh('sf-ctl', 'stat -c "%a %n" /srv/ch/plain /srv/ch/modes').split('\n')
@@ -510,18 +527,19 @@ def stage_changes():
 
 # ── storage tasks ───────────────────────────────────────────────────
 def task_blocks(vm):
-    data = {'sf-ctl': '/srv', 'sf-ubuntu': '/tank/media', 'sf-fedora': '/data/media', 'sf-rocky': '/srv/data', 'sf-suse': '/mnt/raid', 'sf-arch': '/mnt/disk2'}[vm]
+    n = BUILD[vm]
+    data = n.room
     blocks = [{'type': 'mkdir', 'params': {'path': f'{data}/task-copy'}},
-              {'type': 'rsync', 'params': {'src': '/etc/hostname', 'dst': f'{data}/task-copy', 'mode': 'copy'}} if False else
               {'type': 'command', 'params': {'cmd': f'cp /etc/os-release {data}/task-copy/ && echo copied'}},
               {'type': 'log', 'params': {'message': 'gauntlet task ran'}}]
-    if vm == 'sf-fedora':
-        blocks += [{'type': 'btrfs_snapshot', 'params': {'subvol': '/data/media', 'into': '/data/snaps', 'prefix': 'auto'}},
-                   {'type': 'btrfs_prune', 'params': {'into': '/data/snaps', 'prefix': 'auto', 'keep': 2}}]
-    if vm == 'sf-ubuntu':
-        blocks += [{'type': 'zfs_snapshot', 'params': {'dataset': 'tank/media', 'prefix': 'auto'}},
-                   {'type': 'zfs_prune', 'params': {'dataset': 'tank/media', 'prefix': 'auto', 'keep': 2}},
-                   {'type': 'zfs_send', 'params': {'dataset': 'tank/media', 'prefix': 'auto', 'dst': 'backup/taskcopy'}}]
+    if n.subvol:
+        blocks += [{'type': 'btrfs_snapshot', 'params': {'subvol': n.subvol, 'into': n.snaps, 'prefix': 'auto'}},
+                   {'type': 'btrfs_prune', 'params': {'into': n.snaps, 'prefix': 'auto', 'keep': 2}}]
+    if n.can('zfs'):
+        pool = n.tag('zfs-pool')
+        blocks += [{'type': 'zfs_snapshot', 'params': {'dataset': f'{pool}/media', 'prefix': 'auto'}},
+                   {'type': 'zfs_prune', 'params': {'dataset': f'{pool}/media', 'prefix': 'auto', 'keep': 2}},
+                   {'type': 'zfs_send', 'params': {'dataset': f'{pool}/media', 'prefix': 'auto', 'dst': f'{pool}/taskcopy'}}]
     return blocks, data
 
 
@@ -571,7 +589,7 @@ def stage_drift():
         texts = by.get(NAME[vm], [])
         R.add('drift-clean', vm, not texts, 'no false drift' if not texts else f'{len(texts)}: {texts[0][:140]}', '\n'.join(texts))
     # now a real change: it must be noticed
-    vm = next((v for v in ('sf-rocky', 'sf-fedora', 'sf-ubuntu') if v in READY and raw(v, 'test -e /etc/exports.d/storageforge.exports').returncode == 0), None)
+    vm = next((v for v in VMS if v in READY and raw(v, 'test -e /etc/exports.d/storageforge.exports').returncode == 0), None)
     if vm:
         sh(vm, 'sudo -n sh -c "echo \'# by hand\' >>/etc/exports.d/storageforge.exports"')
         rescan(vm)

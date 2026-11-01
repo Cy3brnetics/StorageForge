@@ -8,3 +8,5 @@ mnt "UUID=$(uuid "$(disk 2)")" /srv/plain xfs
 btrfs -q subvolume create /srv/deep/a
 btrfs -q subvolume create /srv/deep/a/b
 btrfs -q subvolume create /srv/deep/a/b/c
+echo "in a child subvolume" >/srv/deep/a/b/child-file.txt
+mkdir -p /srv/deep/snaps /srv/deep/recv

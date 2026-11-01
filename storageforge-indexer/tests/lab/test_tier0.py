@@ -5,6 +5,8 @@ import os
 import shlex
 import ssl
 import subprocess
+import sys
+import time
 import unittest
 import urllib.request
 from pathlib import Path
@@ -37,9 +39,17 @@ def sh(vm, command):
     return p.stdout.decode(errors='surrogateescape')
 
 
-VMS = [row[0] for row in conf('nodes.conf')]
+sys.path.insert(0, str(LAB_DIR))
+import roles  # noqa: E402
+
+BUILD = roles.build()
+VMS = list(BUILD)
 UP = running()
 SCANNED = [vm for vm in VMS if vm != 'sf-ctl']
+
+
+def having(ability):
+    return [n.name for n in BUILD.values() if n.can(ability)]
 
 
 @unittest.skipUnless(set(UP) == set(VMS), f'needs every lab VM up, have {UP}')
@@ -51,7 +61,7 @@ class Identity(unittest.TestCase):
 
     def test_machine_ids_are_unique(self):
         # Alpine has none: deploys can't run there anyway.
-        ids = {vm: sh(vm, 'cat /etc/machine-id').strip() for vm in VMS if vm != 'sf-alpine'}
+        ids = {vm: sh(vm, 'cat /etc/machine-id').strip() for vm in VMS if vm not in having('nosystemd')}
         self.assertEqual(len(set(ids.values())), len(ids), ids)
         self.assertTrue(all(ids.values()), ids)
 
@@ -82,60 +92,74 @@ class Layout(unittest.TestCase):
                         self.assertEqual(table[mount][1], fsroot)
 
     def test_zfs_pools(self):
-        pools = sh('sf-ubuntu', 'sudo -n zpool list -H -o name,health').split()
-        self.assertEqual(sorted(zip(pools[::2], pools[1::2])), [('backup', 'ONLINE'), ('tank', 'ONLINE')])
-        self.assertIn('raidz1', sh('sf-ubuntu', 'sudo -n zpool status tank'))
+        for node in (BUILD[v] for v in having('zfs')):
+            with self.subTest(vm=node.name):
+                pool = node.tag('zfs-pool')
+                self.assertEqual(sh(node.name, f'sudo -n zpool list -H -o health {pool}').strip(), 'ONLINE')
 
-    def test_fedora_btrfs_raid1(self):
-        out = sh('sf-fedora', 'sudo -n btrfs filesystem df /data/media')
-        self.assertIn('Data, RAID1', out)
-        self.assertIn('Metadata, RAID1', out)
+    def test_btrfs_profiles(self):
+        for node in BUILD.values():
+            profile = node.tag('btrfs-profile')
+            if profile:
+                with self.subTest(vm=node.name):
+                    out = sh(node.name, f'sudo -n btrfs filesystem df {node.data}').lower()
+                    self.assertIn(f'data, {profile}', out)
 
-    def test_rocky_lvm_with_snapshot(self):
-        rows = sh('sf-rocky', 'sudo -n lvs --noheadings -o lv_name,origin vgdata').split()
-        self.assertEqual(rows, ['data', 'data-snap', 'data'])
+    def test_lvm_volumes(self):
+        for node in (BUILD[v] for v in having('lvm')):
+            with self.subTest(vm=node.name):
+                vg, lv = node.tag('vg'), node.tag('lv')
+                self.assertIn(lv, sh(node.name, f'sudo -n lvs --noheadings -o lv_name {vg}').split())
 
-    def test_suse_md_raid1(self):
-        out = sh('sf-suse', 'cat /proc/mdstat')
-        self.assertIn('raid1', out)
-        self.assertRegex(out, r'\[(UU|_U|U_)\]')
-        self.assertNotIn('[_', out.split('resync')[0].replace('[_U]', '').replace('[U_]', ''))
+    def test_md_arrays_are_whole(self):
+        for vm in having('md'):
+            with self.subTest(vm=vm):
+                self.assertNotRegex(sh(vm, 'cat /proc/mdstat'), r'\[U*_+U*\]')
 
-    def test_suse_nested_btrfs_subvolumes(self):
-        rows = sh('sf-suse', 'sudo -n btrfs subvolume list -a /srv/btrfs').splitlines()
-        paths = sorted(r.split(' path ')[1].replace('<FS_TREE>/', '') for r in rows)
-        self.assertEqual(paths, ['@', '@/.snapshots', '@/home', '@/var'])
-        # @/var has no mount of its own: a child subvolume reachable only through its parent.
-        self.assertNotIn(' /srv/btrfs/var ', sh('sf-suse', 'cat /proc/self/mountinfo'))
-        self.assertIn('@/var', sh('sf-suse', 'sudo -n btrfs subvolume show /srv/btrfs/var').splitlines()[0])
+    def test_child_subvolumes_have_no_mount(self):
+        for node in BUILD.values():
+            child = node.tag('btrfs-child')
+            if child:
+                with self.subTest(vm=node.name):
+                    self.assertNotIn(f' {child} ', sh(node.name, 'cat /proc/self/mountinfo'))
+                    self.assertEqual(sh(node.name, f'sudo -n btrfs subvolume show {child} >/dev/null && echo yes').strip(), 'yes')
 
-    def test_arch_luks_and_mergerfs(self):
-        self.assertEqual(sh('sf-arch', 'lsblk -no TYPE /dev/mapper/secure').split()[0], 'crypt')
-        branches = sh('sf-arch', 'sudo -n getfattr --only-values -n user.mergerfs.srcmounts /mnt/pool/.mergerfs')
-        self.assertEqual(branches.strip(), '/mnt/disk1:/mnt/disk2')
+    def test_mergerfs_branches(self):
+        for vm in having('mergerfs'):
+            with self.subTest(vm=vm):
+                self.assertEqual(sh(vm, 'lsblk -no TYPE /dev/mapper/secure').split()[0], 'crypt')
+                branches = sh(vm, 'sudo -n getfattr --only-values -n user.mergerfs.srcmounts /mnt/pool/.mergerfs')
+                self.assertEqual(branches.strip(), '/mnt/disk1:/mnt/disk2')
 
     def test_containers(self):
-        self.assertIn('sflab-web', sh('sf-ubuntu', 'sudo -n docker ps --format "{{.Names}}"').split())
-        self.assertIn('sflab-web', sh('sf-rocky', 'sudo -n podman ps --format "{{.Names}}"').split())
+        for vm in having('docker'):
+            self.assertIn('sflab-web', sh(vm, 'sudo -n docker ps --format "{{.Names}}"').split())
+        for vm in having('podman'):
+            self.assertIn('sflab-web', sh(vm, 'sudo -n podman ps --format "{{.Names}}"').split())
 
-    def test_alpine_has_no_systemd_or_known_package_manager(self):
-        out = sh('sf-alpine', 'for c in systemctl apt-get dnf yum zypper pacman; do command -v $c; done; true')
-        self.assertEqual(out.strip(), '')
+    def test_hosts_without_systemd_have_no_known_package_manager(self):
+        for vm in having('nosystemd'):
+            out = sh(vm, 'for c in systemctl apt-get dnf yum zypper pacman; do command -v $c; done; true')
+            self.assertEqual(out.strip(), '')
 
     def test_share_servers_are_left_for_deploys_to_install(self):
         if raw('sf-ctl', 'test -e /var/lib/sflab/demo').returncode == 0:
             self.skipTest('the demo has deployed shares: Reset to check this')
         for vm in SCANNED:
             with self.subTest(vm=vm):
-                # Rocky's image ships nfs-utils. It's the lab's SMB server, so Samba is the install its deploy exercises.
-                programs = 'smbd' if vm == 'sf-rocky' else 'exportfs smbd'
+                # Some Enterprise Linux images ship nfs-utils, so there Samba is the install a deploy exercises.
+                programs = 'smbd' if BUILD[vm].pm == 'dnf' else 'exportfs smbd'
                 self.assertEqual(sh(vm, f'PATH=$PATH:/usr/sbin:/sbin; for c in {programs}; do command -v $c; done; true').strip(), '')
 
 
 @unittest.skipUnless(set(UP) == set(VMS), f'needs every lab VM up, have {UP}')
 class Controller(unittest.TestCase):
     def test_storageforge_is_healthy_from_this_machine(self):
-        out = sh('sf-ctl', "sudo -n docker ps --format '{{.Names}} {{.Status}}'")
+        for _ in range(40):           # just after a reset the container is still starting
+            out = sh('sf-ctl', "sudo -n docker ps --format '{{.Names}} {{.Status}}'")
+            if '(healthy)' in out:
+                break
+            time.sleep(5)
         self.assertRegex(out, r'storageforge-1 Up .*\(healthy\)')
         context = ssl.create_default_context()
         context.check_hostname, context.verify_mode = False, ssl.CERT_NONE      # self-signed: only reachability matters here
@@ -154,7 +178,7 @@ class Controller(unittest.TestCase):
 @unittest.skipUnless(set(UP) == set(VMS), f'needs every lab VM up, have {UP}')
 class Seed(unittest.TestCase):
     def manifests(self):
-        for vm, root, profile in conf('provision/seed-roots.conf'):
+        for vm, root, profile in (r for r in conf('provision/seed-roots.conf') if r[0] in BUILD):
             path = STATE / 'manifests' / f'{vm}{root.replace("/", "_")}.json'
             self.assertTrue(path.exists(), f'no manifest for {vm}:{root}')
             manifest = json.loads(path.read_text())

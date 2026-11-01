@@ -11,5 +11,6 @@ btrfs -q subvolume create /srv/c3/media
 btrfs -q subvolume create /srv/c3/nocow
 chattr +C /srv/c3/nocow
 btrfs -q subvolume create /srv/c3/snaps
+mkdir -p /srv/c3/backups /srv/c3/recv
 head -c 64M /dev/urandom >/srv/c3/reflink-a.bin
 cp --reflink=always /srv/c3/reflink-a.bin /srv/c3/reflink-b.bin

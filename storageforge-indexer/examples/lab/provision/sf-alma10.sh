@@ -6,8 +6,8 @@ cryptsetup open --key-file /etc/sflab-luks.key "$(disk 1)" sealed
 echo "sealed UUID=$(uuid "$(disk 1)") /etc/sflab-luks.key luks,nofail" >>/etc/crypttab
 pvcreate -q /dev/mapper/sealed
 vgcreate -q vgsealed /dev/mapper/sealed
-lvcreate -q -y -L 1G -n docs vgsealed
-lvcreate -q -y -L 1G -n media vgsealed
+lvcreate -q -y -L 1500M -n docs vgsealed
+lvcreate -q -y -L 2G -n media vgsealed
 mkfs.ext4 -q /dev/vgsealed/docs
 mkfs.xfs -q /dev/vgsealed/media
 mnt /dev/vgsealed/docs /srv/docs ext4
