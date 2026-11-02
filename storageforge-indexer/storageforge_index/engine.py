@@ -19,10 +19,9 @@ import os
 import re
 import threading
 import time
-import traceback
 import uuid
 
-from . import deploy
+from . import deploy, errlog
 from .db import Database
 
 PARALLEL = max(1, int(os.environ.get('STORAGEFORGE_DEPLOY_PARALLEL', '4')))
@@ -106,7 +105,7 @@ def _work(db, gid, ids, items, phases, live, stop_on_failure, limit, after):
             if res['status'] not in deploy.FINISHED and stop_on_failure:
                 state['failed'] = True
         except Exception:
-            traceback.print_exc()
+            errlog.trace()
             state['failed'] = state['failed'] or stop_on_failure
         finally:
             with wake:
@@ -183,7 +182,7 @@ def _protect(fn):
     try:
         fn()
     except Exception:
-        traceback.print_exc()
+        errlog.trace()
 
 
 def cancel(db, gid: str, actor: str, force: bool = False) -> dict:

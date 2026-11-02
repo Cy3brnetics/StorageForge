@@ -24,13 +24,13 @@ import struct
 import subprocess
 import threading
 import time
-import traceback
 import uuid
 from contextlib import contextmanager
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
+from . import errlog
 from .db import Database
 from .moves import host_slug
 from .remote import RemoteError, Transport, child_env
@@ -497,7 +497,7 @@ def run(db: Database, host: str, script: str, args=(), *, kind: str, ref: str | 
     except (DeployError, VaultError, ValueError) as exc:
         out.append(f'{exc}\n')
     except Exception as exc:                       # never leave a run "running"
-        traceback.print_exc()
+        errlog.trace()
         out.append(f'internal error: {type(exc).__name__}: {exc}\n')
     finally:
         if live and live.cancelled and rc is None and status == 'failed':    # stopped while it waited for the host
@@ -567,7 +567,7 @@ def _guard(fn):
     try:
         fn()
     except Exception:
-        traceback.print_exc()
+        errlog.trace()
 
 
 def start_task(db: Database, host: str, kind: str, ref: str | None, actor: str, fn) -> str:
@@ -586,7 +586,7 @@ def start_task(db: Database, host: str, kind: str, ref: str | None, actor: str, 
         try:
             fn(gid)
         except Exception as exc:     # failed before (or between) its runs: the task's row says why
-            traceback.print_exc()
+            errlog.trace()
             c = db.connect()
             try:
                 c.execute("""UPDATE deploy_runs SET status = 'failed', output = :o, finished_at = :t WHERE run_id = :r""",
