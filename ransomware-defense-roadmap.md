@@ -1,5 +1,19 @@
 # Ransomware Defense & Host Security: Complete System Architecture, Admin Panels, Custom Views, & Global Compliance Roadmap
 
+> [!IMPORTANT]
+> **This is a plan, and it promises more than exists.** What is really built, what it protects against and what is not built is in [Ransomware defense](docs/ransomware-defense.md). The first attempt at this roadmap faked it: see the [audit](docs/audit-2026-11-02-ransomware-defense.md).
+>
+> **Corrections.** Building it showed that some of what follows cannot work as written, so do not implement it as described:
+>
+> - **The VSS shadow trap (Layer 2) is not possible.** `vssadmin delete shadows` acts on the Windows client's own shadow copies through its local VSS service. Nothing crosses SMB, so Samba never sees it, and `vfs_shadow_copy2` only exposes snapshots read-only. There is no RPC to intercept. Decoys and change detection are what catch these clients.
+> - **"Immutable" and "kernel-level WORM" overstate it.** Root can `zfs release` a hold and make a btrfs snapshot writable. These guard against mistakes, scripts and stolen web logins, not against root on the host. Only a copy on another machine is out of its reach.
+> - **Cryptographic shred (Layer 7) does not work on ZFS or btrfs.** They are copy-on-write: overwriting writes new blocks, and the old ones stay, in snapshots too. It also breaks the rule that nothing is deleted. It is not built.
+> - **Memory triage will rarely recover keys (Layer 8).** When a workstation encrypts a share, the keys are in memory on the workstation, not in the server's smbd. Triage saves connections, processes and, where it can, a core dump of a local process. That is useful evidence, not a decryption route.
+> - **Entropy bands (Layer 5) are wrong.** On a 4 KiB sample, compressed data reads about 7.9 or higher, the same as ciphertext, not "7.2 to 7.6". Entropy alone cannot tell them apart, so a known file header has to clear a file.
+> - **Snapshot before freezing (Layer 8).** A btrfs snapshot cannot be taken of a read-only filesystem, so the order is triage, drop, snapshot, freeze.
+> - **Sub-500 ms and "microsecond" figures are not measured.** **Test it** in the Decoys panel gives the real figure for a host.
+> - **A compliance "score" and "certificate" must not claim more than a reading.** A check passing is not a control met, and only an auditor can attest. There is no certificate.
+
 A comprehensive engineering roadmap and UI/UX specification to equip StorageForge with multi-layered ransomware defense, native Linux host security engines (SELinux, AppArmor, auditd, Falco, AIDE, Lynis, and firewalls), automated containment, rapid immutable recovery, dedicated administrative control panels with expanded customization views, **automated multi-distro package provisioning**, **turnkey init scripts mapped to global compliance standards (CIS, NIST SP 800-53, HIPAA, PCI-DSS, SOC 2, ISO 27001, CMMC)**, and **hardened enterprise defenses (Anti-NTP clock guards, Single/Multi-Admin adaptive quorum, VSS shadow traps, and volatile forensic triage)**.
 
 ---

@@ -2,6 +2,11 @@
 
 Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
+## Unreleased
+
+### Changed
+- **Ransomware defense rebuilt, because the first version did nothing.** It never ran anything on a host, displayed invented figures, and said "SECURE" with no hosts at all. It now reads what hosts really report and says *not measured* otherwise, records a hold, quarantine or decoy only after a signed run confirmed it, and offers show script, dry run and apply for everything it does. See [Ransomware defense](docs/ransomware-defense.md), including what it does not protect against and what is not built, and the [audit](docs/audit-2026-11-02-ransomware-defense.md). Migration 032 drops everything the old tables held, since none of it was real, including any offline key: make a new one. Not yet run in the KVM lab.
+
 ## 0.3.2 — 2026-11-02
 
 ### Fixed

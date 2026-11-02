@@ -186,6 +186,48 @@ Each plan type has the same shape: list, create, one, check, script.
 | POST | `/api/deploy/snapjobs/import` | 🔑 `{"host", "tool", "config"}`: track a job found on a host |
 | POST | `/api/deploy/snapjobs/snapper` | 🔑 create a snapper config on a btrfs subvolume |
 
+## Security
+
+See [Ransomware defense](ransomware-defense.md). Reads need `security.view`. 🔑 runs on a host or changes state, and asks for a fresh password. Where it says *mode*, `preview` returns the script, `report` dry-runs it (the default) and `apply` does it; the answer has `ok`, `status` and `output`, and is 409 with `error` if the run failed. Nothing is recorded unless the host confirmed it.
+
+| Method | Path | Body or query | Needs |
+| :--- | :--- | :--- | :--- |
+| GET | `/api/security/posture` | `?host=` | what is known about each host, and every reason it is not fine |
+| GET | `/api/security/events` | `?host=&all=1` | alarms; `all` includes routine events |
+| POST 🔑 | `/api/security/events/<id>/ack` | | `security.emergency` |
+| POST 🔑 | `/api/security/measure` | `{"host"}` | `security.manage` |
+| POST | `/api/security/report` | `{"lines": [...]}`, `Authorization: Bearer <sentinel token>`, no session | a sentinel's token; it speaks only for its own host |
+| GET | `/api/security/worm/holds` | `?host=` | holds, quorum, what is waiting, the clock |
+| POST 🔑 | `/api/security/worm/hold` | `{"host", "snapshot", "retention_days"\|"legal_hold", "hold_tag"?, "create"?, "mode"}` | `security.emergency` |
+| POST 🔑 | `/api/security/worm/release` | `{"hold_id", "release_legal"?}` | `security.emergency` |
+| POST 🔑 | `/api/security/worm/quorum/approve` | `{"timelock_id"}` | `security.emergency`, a different established admin |
+| POST 🔑 | `/api/security/worm/abort` | `{"timelock_id"}` | `security.emergency` |
+| POST 🔑 | `/api/security/worm/break-glass` | `{"timelock_id", "break_glass_key"}` | `security.emergency` |
+| POST 🔑 | `/api/security/worm/break-glass/key` | | `security.emergency`; the first key at once, a replacement after a timelock |
+| POST 🔑 | `/api/security/worm/cool-off` | `{"hours": 12\|24\|48\|72}` | `security.emergency`; it cannot be shortened |
+| POST 🔑 | `/api/security/worm/clock/clear` | `{"host"}` or `{"controller": true}` | `security.emergency` |
+| GET | `/api/security/canaries` | `?host=` | decoys and, for a host, its sentinel |
+| POST 🔑 | `/api/security/sentinel` | `{"host", "folders", "names"?, "armed"?, "actions"?, "minutes"?}` | `security.emergency`; takes effect at the next deploy (`/api/deploy/start`, kind `security`, with `remove` or `rearm`) |
+| POST 🔑 | `/api/security/canaries/test` | `{"host"}` | `security.manage`; returns `latency_ms` |
+| GET | `/api/security/mac/status` | `?host=` | access control as measured |
+| POST 🔑 | `/api/security/mac/remediate` | `{"host", "boolean", "value", "mode"}` or `{"host", "path", "type", "mode"}` | `security.manage` |
+| GET | `/api/security/firewall/quarantine` | `?host=` | |
+| POST 🔑 | `/api/security/firewall/quarantine` | `{"host", "ip_address", "minutes"?, "reason"?, "mode"}` | `security.manage` |
+| DELETE 🔑 | `/api/security/firewall/quarantine/<ip>` | `?host=&mode=` | `security.manage` |
+| POST 🔑 | `/api/security/firewall/vip` | `{"vips": [...]}` | `security.emergency` |
+| POST 🔑 | `/api/security/firewall/airgap` | `{"host", "enabled"?, "mode"}` | `security.emergency` |
+| GET | `/api/security/behavior` | `?host=` | change rate, ransom names, entropy |
+| POST 🔑 | `/api/security/behavior/entropy` | `{"host"}` | `security.manage` |
+| POST 🔑 | `/api/security/behavior/diff-scan` | `{"host"}` | `security.manage` |
+| GET | `/api/security/integrity` | `?host=` | AIDE and Lynis as last read |
+| POST 🔑 | `/api/security/integrity/run` | `{"host", "tool": "aide-init"\|"aide-check"\|"lynis", "mode"}` | `security.manage` |
+| GET | `/api/security/compliance/standards` | | |
+| GET | `/api/security/compliance/status/<host>` | `?profile=` | readings against a standard; `score` is null until measured |
+| POST 🔑 | `/api/security/compliance/init` | `{"host", "profile", "mode"}` | `security.manage` |
+| GET | `/api/security/incident/blast-radius` | `?host=&at=` | no file counts without a scan since the incident |
+| POST 🔑 | `/api/security/incident/brake` | `{"host", "path"?, "client_ip"?, "pid"?, "minutes"?, "actions"?, "mode"}` | `security.emergency`; returns the outcome of each step |
+| POST 🔑 | `/api/security/incident/clean-room` | `{"host", "snapshot", "mount"?, "remove"?, "mode"}` | `security.emergency` |
+
 ## Scheduler
 
 | Method | Path | Body | |
