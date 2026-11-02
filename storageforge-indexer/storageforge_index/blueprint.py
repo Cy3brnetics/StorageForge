@@ -7,6 +7,7 @@ operator chose, so those come from the saved design when there is one and start 
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 
 from .payloads import merge_shares, node_from_index
@@ -154,7 +155,25 @@ def from_node(node: dict, as_of: dt.date | None = None) -> dict:
 
 
 def from_index(conn, host: str) -> dict:
-    return from_node(node_from_index(conn, host, stats=False))
+    return _with_zfs_props(conn, host, from_node(node_from_index(conn, host, stats=False)))
+
+
+def _with_zfs_props(conn, host: str, bp: dict) -> dict:
+    """What a pool's and its datasets' properties were set to: a rebuild would otherwise get ZFS's defaults."""
+    raw = conn.scalar('SELECT inventory_json FROM hosts WHERE lower(hostname) = lower(:h)', {'h': host})
+    props: dict[str, dict] = {}
+    for line in (json.loads(raw or '{}').get('zfs_props') or '').splitlines():
+        parts = line.split('\t')
+        if len(parts) == 3:
+            props.setdefault(parts[0], {})[parts[1]] = parts[2]
+    for pool in bp.get('pools') or []:
+        if pool.get('type') != 'zfs':
+            continue
+        if props.get(pool['name']):
+            pool['fsProperties'] = ','.join(f'{k}={v}' for k, v in sorted(props[pool['name']].items()))
+        for ds in pool.get('datasets') or []:
+            ds.update(props.get(f'{pool["name"]}/{ds["name"]}') or {})
+    return bp
 
 
 def scan_mark(conn, host: str) -> list:

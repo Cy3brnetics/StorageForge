@@ -713,7 +713,7 @@ service_on() { # unit...
   if systemctl is-active -q "$u" && systemctl is-enabled -q "$u" 2>/dev/null; then ok "$u running and enabled"; return 0; fi
   if ((!APPLY)); then missing "$u not running/enabled"; return 0; fi
   doing "systemctl enable --now $u"
-  systemctl daemon-reload
+  reload_systemd || return 0
   systemctl enable --now "$u" 2>&1 || conflict "could not start $u: $(systemctl status "$u" --no-pager -n 3 2>&1 | tail -n 3 | tr '\n' ' ')"
 }
 reexport() {
@@ -841,12 +841,21 @@ selinux_parents() { # smbd walks every folder above a share, and can't enter one
   return 0
 }
 
+mount_share() { # a mount left from before its server was rebuilt answers "stale file handle" until it is let go
+  local err; err=$(timeout -k 2 60 mount "$1" 2>&1) && return 0
+  printf '%s\n' "$err"
+  [[ $err == *[Ss]tale* ]] || return 1
+  doing "let go of the stale mount at $1"
+  umount -l "$1" && timeout -k 2 60 mount "$1"
+}
 client_mount() { # index into C_*
   local i=$1 t=${C_TARGET[$1]} line auto= extra=${C_OPTS[$1]:+,${C_OPTS[$1]}}
   [[ ${C_AUTO[$i]} == 1 ]] && auto=,x-systemd.automount
   section "mount ${C_SOURCE[$i]} at $t"
   if [[ ${C_PROTO[$i]} == NFS ]]; then
     need_cmd mount.nfs "NFS client" nfs-common nfs-utils nfs-utils nfs-client || return 0
+    # Idle mounts let go, so a server that dies later gives an error on the next access and not a process stuck for good
+    [[ -n $auto && $extra != *x-systemd.idle-timeout=* ]] && extra+=,x-systemd.idle-timeout=10min
     line="${C_SOURCE[$i]// /\\040} ${t// /\\040} ${C_FS[$i]} _netdev,nofail$auto,x-systemd.mount-timeout=30$extra 0 0"
   else
     need_cmd mount.cifs "SMB client" cifs-utils cifs-utils cifs-utils cifs-utils || return 0
@@ -873,16 +882,16 @@ client_mount() { # index into C_*
         if ! findmnt --verify --tab-file /etc/fstab >/dev/null 2>&1; then
           cp -a "/etc/fstab.storageforge-$STAMP" /etc/fstab; conflict "findmnt --verify rejected the new options: fstab was put back"; return 1
         fi
-        systemctl daemon-reload; doing "new options in /etc/fstab: they apply the next time $t is mounted"
+        reload_systemd; doing "new options in /etc/fstab: they apply the next time $t is mounted"
       else missing "fstab options differ: $line"; fi
     else ok "fstab line (its own options kept)"; rec=$have; fi
   elif [[ -n $have ]]; then conflict "fstab already has a different line for $t: $have"; rec=
   elif ((APPLY)); then
     backup /etc/fstab; mkdir -p "$t"; printf '# storageforge share %s:%s\n%s\n' "$SERVER" "$t" "$line" >>/etc/fstab; doing "appended to /etc/fstab"
     if ! findmnt --verify --tab-file /etc/fstab >/dev/null 2>&1; then conflict "findmnt --verify complains about /etc/fstab; the backup is /etc/fstab.storageforge-$STAMP"; return 1; fi
-    systemctl daemon-reload
+    reload_systemd
   else missing "fstab: $line"; fi
-  if mountpoint -q "$t"; then ok "mounted"; elif ((APPLY)); then doing "mount $t"; mount "$t" && ok "mounted" || conflict "mount $t failed"
+  if timeout -k 2 10 mountpoint -q "$t"; then ok "mounted"; elif ((APPLY)); then doing "mount $t"; mount_share "$t" && ok "mounted" || conflict "mount $t failed"
   else missing "not mounted"; fi
   [[ -n $rec ]] && WANT_LINES+=("$rec")
   return 0
@@ -905,7 +914,7 @@ client_cleanup() { # StorageForge's fstab lines for this server that the design 
     backup /etc/fstab
     awk -v m="$marker" 'skip { skip = 0; next } $0 == m { skip = 1; next } { print }' /etc/fstab >/etc/fstab.storageforge-new \
       && cat /etc/fstab.storageforge-new >/etc/fstab && rm -f /etc/fstab.storageforge-new
-    systemctl daemon-reload
+    reload_systemd
     rmdir -- "$t" 2>/dev/null || true
     doing "unmounted $t and removed its fstab line (backup: /etc/fstab.storageforge-$STAMP)"
   done < <(grep -F "# storageforge share $SERVER:" /etc/fstab 2>/dev/null || true)

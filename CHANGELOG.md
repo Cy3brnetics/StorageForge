@@ -14,6 +14,7 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 - **Remote node addresses** run out with an error at 65535 instead of wrapping onto node 1's.
 
 ### Added
+- **Rebuilding onto new disks.** The planner builds a btrfs pool of several devices in one plan, ZFS pools and datasets get back the properties set on them, and [Disaster recovery](docs/disaster-recovery.md#rebuild-onto-new-drives) gives the order to do it in. Found by a drill that wiped two of three hosts.
 - **A warning when sudo takes no password.** Deploy access and scan access setup check for passwordless sudo first. When the account has it, the result says the password you typed was not checked, and, when the scan user's own sudo was used, that its scan key has full root on that host. The audit log records it too.
 - **Sites and reset, for moving to a new client.** A database now knows which site it is: the name shows in the web UI, and `restore` refuses another site's backup, because a backup holds that site's SSH keys. `reset --site-name NAME` puts the old site in an archive outside the new site's reach and starts over with a new database, vault and vault secret. It refuses while a server runs, while jobs or deploy access remain on the old machines (`--abandon-deployed` overrides), or while `./keys` still holds keys.
 - **Several sites on one machine.** `docker/sf-site` makes and runs one isolated compose stack per client, each with its own database, vault, secrets, certificate, port and network. `sf-site audit` reports keys and machines shared between sites, a key another site uses is refused on import, and sharing raises an alert.
@@ -67,6 +68,13 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 - **Rerun the read-only scan access setup** for the rest: errors per device and kind, newest snapshot date, space only the snapshots hold (with quotas on) and compression savings (with `compsize` installed, measured weekly).
 
 ### Fixed
+- **A rebuild no longer gets an empty script.** A scan of the blank new install became the newest configuration, so the reinstall script had nothing to do and said "no conflicts". It now uses the last version from before the reinstall and says so.
+- **A deploy no longer locks you out of a client whose NFS server is down.** `systemctl daemon-reload` blocks on such a mount and every new SSH login waits behind it. Share, job, move, task, change and reinstall scripts now check first and stop with a conflict.
+- **Scans finish while an NFS server is down.** `findmnt` and `df` called statfs on the dead mount and never returned, so the scan job stayed running. They are bounded now, a walk blocked on such a mount is stopped after 5 minutes without removing anything from the index, and automounted NFS shares let go after 10 idle minutes.
+- **Survivors reconnect to a rebuilt host.** Jobs check the key StorageForge pinned, so deploying again after a rekey is enough, and a share deploy lets go of a stale mount.
+- **Restores keep sparse files sparse.** A restored 1 GiB sparse file took 1 GiB on btrfs.
+- **Change plan checks count what earlier tasks make:** partitions, added btrfs devices and new labels no longer read as missing.
+- **A design with jobs deployed can be saved.** The job names filled in on load held `->`, which the save refused.
 - **Scans no longer fail with "FOREIGN KEY constraint failed"** when a host mounts from, or backs up to, a host that has no graph yet, as when a new install scans several hosts at once. The scan's data was saved, but the job showed as failed and the host's graph was not updated. Scan the host again to update it.
 - Scanning a host by name while its first scan, queued by address, is still running now joins that scan. It used to add a failed job saying the host was already being scanned.
 - **Converting a btrfs profile no longer risks a read-only filesystem.** With too little unallocated space, the script reclaims half-empty chunks first, and stops without converting if that frees too little. The plan check warns, and the Ansible step refuses.

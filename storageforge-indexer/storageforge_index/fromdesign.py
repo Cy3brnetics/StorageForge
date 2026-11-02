@@ -7,7 +7,7 @@ change plans get. Now the planner hands the design to this module, which compare
 staged in the Changes tab like any other, so they are checked, saved, deployed and audited the same way.
 
 Only additions and edits become tasks. Things the scan has and the design dropped are listed and left alone, and
-anything Changes has no task type for (mdadm, multi-device btrfs, encrypted ZFS pools, ZFS log and cache devices, bind
+anything Changes has no task type for (mdadm, encrypted ZFS pools, ZFS log and cache devices, bind
 mounts, hard links) is listed as "by hand" with the reason. Drive tasks keep an empty confirm field, so nobody can save
 them without typing the device again in the Changes tab. Every task still goes through changes.normalize before it
 can be saved or scripted, so text from the design reaches a script only through those field checks.
@@ -27,6 +27,7 @@ DS_PROPS = ('recordsize', 'compression', 'sync', 'atime', 'xattr', 'acltype', 'd
 WHOLE_DISK_SLACK = 64 << 20        # a design's "rest of the disk" stops short of the end by the GPT backup and alignment
 REMOTE_FS = {'NFSv3': 'nfs', 'NFSv4': 'nfs4', 'NFSv4.1': 'nfs4', 'NFSv4.2': 'nfs4', 'SMB3': 'cifs', 'SMB2': 'cifs'}
 IGNORED_OPTS = ('defaults', 'rw', 'relatime', 'seclabel')
+SESSION_OPTS = ('subvol=', 'subvolid=', 'clientaddr=', 'addr=')     # what the kernel reports about one live mount, not settings
 
 
 def _bare(dev) -> str:
@@ -34,7 +35,7 @@ def _bare(dev) -> str:
 
 
 def _opts(opts) -> list[str]:
-    return [o for o in (opts or []) if o and o not in IGNORED_OPTS and not o.startswith(('subvol=', 'subvolid='))]
+    return [o for o in (opts or []) if o and o not in IGNORED_OPTS and not o.startswith(SESSION_OPTS)]
 
 
 def _spec(part: dict, scanned: bool, id_mode: str) -> str:
@@ -83,6 +84,10 @@ def plan(conn, design: dict) -> dict:
     # ── devices and partitions ───────────────────────────────────────────
     have_disks = {_bare(d['dev']): d for d in have['devices']}
     have_parts = {p['id']: (p, d) for d in have['devices'] for p in d['partitions']}
+    have_pool_names = {p['name'] for p in have['pools']}
+    # members of a btrfs pool still to be made: the pool's own tasks format them, and only the first one holds a filesystem
+    new_btrfs = {_bare(m) for p in design.get('pools') or [] if p.get('type') == 'btrfs' and p.get('name') not in have_pool_names
+                 for m in p.get('members') or []}
     for d in design.get('devices') or []:
         dev = _bare(d.get('dev'))
         hd = have_disks.get(dev)
@@ -96,7 +101,7 @@ def plan(conn, design: dict) -> dict:
         os_disk = any(p.get('mount') in OS_MOUNTS or any(s.get('mount') in OS_MOUNTS for s in p.get('subvolumes') or [])
                       for p in hd['partitions'])
         want, now = d.get('partitions') or [], hd['partitions']
-        new_parts = [p for p in want if p.get('id') not in have_parts]
+        new_parts = [p for p in want if p.get('id') not in have_parts and not (p.get('id') == dev and dev in new_btrfs)]
         kept = {p.get('id') for p in want}
         spans = len(want) == 1 and (not want[0].get('sizeBytes') or want[0]['sizeBytes'] >= (hd.get('sizeBytes') or 0) - WHOLE_DISK_SLACK)
         if d.get('member') or not new_parts:
@@ -110,7 +115,8 @@ def plan(conn, design: dict) -> dict:
             by_hand(f'Partitions on /dev/{dev}', 'adding partitions one at a time needs a GPT table: change the table, or partition it by hand')
         else:
             for i, p in enumerate(new_parts):
-                fs = p.get('fs') if p.get('fs') in MKFS else ''
+                member = p.get('id') in new_btrfs
+                fs = p.get('fs') if p.get('fs') in MKFS and not member else ''
                 if spans and not now:
                     task('partition', disk=f'/dev/{dev}', fstype=fs, label=p.get('label') or '', wipe=False, confirm='',
                          table={'mbr': 'msdos'}.get(d.get('table'), d.get('table') or ''), flag=p.get('flag') or '', mkfs=p.get('mkfs') or '')
@@ -119,7 +125,9 @@ def plan(conn, design: dict) -> dict:
                     task('partition-add', disk=f'/dev/{dev}', name=p.get('label') or f'{dev}-{p.get("num") or i + 1}',
                          size='' if last else f'{(p.get("sizeBytes") or 0) >> 20}M', fstype=fs, label=p.get('label') or '',
                          flag=p.get('flag') or '', mkfs=p.get('mkfs') or '', confirm='')
-                if p.get('fs') not in (None, '', 'none') and not fs:
+                if member:
+                    continue
+                if p.get('fs') not in (None, '', 'none', 'zfs_member') and not fs:      # zpool create makes its own
                     by_hand(f'{p["fs"]} on the new partition of /dev/{dev}', f'Changes formats as {", ".join(MKFS)} only')
                 for sv in p.get('subvolumes') or []:
                     by_hand(f'Subvolume {sv.get("name")} on /dev/{dev}', 'the filesystem does not exist yet: '
@@ -192,6 +200,30 @@ def plan(conn, design: dict) -> dict:
                 mount(f'/dev/{vg}/{lv.get("name")}', lv['mount'], fs, _opts(lv.get('options')))
 
     have_pools = {p['name']: p for p in have['pools']}
+    blocks = []     # tasks that must stay in the order they were made, where the type order would pull them apart
+
+    def new_btrfs_pool(pool, members):
+        """mkfs on the first member, mount, add the others, convert, make the subvolumes and mount them."""
+        part = next((p for d in design.get('devices') or [] for p in d.get('partitions') or [] if p.get('id') == members[0]), {})
+        label, subvols = pool.get('label') or part.get('label') or pool['name'], part.get('subvolumes') or []
+        spec, opts = f'LABEL={label}', _opts(part.get('options') or pool.get('options'))
+        direct = None if subvols else pool.get('mount') or part.get('mount')
+        top = direct or f'/mnt/{pool["name"]}-top'
+        task('format', device=f'/dev/{members[0]}', fstype='btrfs', label=label, wipe=False, confirm='', mkfs=part.get('mkfs') or '')
+        if len(members) > 1 or subvols or direct:     # the first mount sets compress and the like for the whole filesystem
+            mount(spec, top, 'btrfs', opts or ['noatime'])
+        for m in members[1:]:
+            task('btrfs-add', device=f'/dev/{m}', target=top, wipe=False, confirm='')
+        if len(members) > 1:
+            task('btrfs-balance', target=top, data=pool.get('level'), metadata=pool.get('metaLevel') or pool.get('level'))
+        for sv in subvols:
+            task('subvolume', path=f'{top}/{sv["name"]}', nocow=False)
+        for sv in subvols:
+            if sv.get('mount'):
+                mount(spec, sv['mount'], 'btrfs', opts or ['noatime'], subvol=sv['name'])
+        if not direct and (len(members) > 1 or subvols):
+            task('unmount', target=top)
+
     for pool in design.get('pools') or []:
         name, kind = pool.get('name'), pool.get('type')
         hp = have_pools.get(name)
@@ -211,6 +243,13 @@ def plan(conn, design: dict) -> dict:
         elif not hp and kind == 'lvm' and members and pool.get('vg'):
             task('lvm-vg', vg=pool['vg'], devices=' '.join(f'/dev/{m}' for m in members), wipe=False, confirm='')
             lvm_volumes(pool['vg'], pool.get('datasets'))
+            continue
+        elif not hp and kind == 'btrfs' and members and (len(members) == 1 or (pool.get('level') in PROFILES
+                                                                               and (pool.get('metaLevel') or pool.get('level')) in PROFILES)):
+            at = len(tasks)
+            new_btrfs_pool(pool, members)
+            blocks.extend(tasks[at:])
+            del tasks[at:]
             continue
         elif not hp:
             what = {'mdadm': 'mdadm array', 'lvm': 'LVM volume group', 'btrfs': 'btrfs pool'}.get(kind, 'pool')
@@ -304,6 +343,8 @@ def plan(conn, design: dict) -> dict:
                     left.append(f'subvolume {s["name"]} mounted at {s["mount"]}')
 
     tasks.sort(key=lambda t: (ORDER.index(t['type']), t['params'].get('target', '').count('/')))
+    first_rest = next((i for i, t in enumerate(tasks) if ORDER.index(t['type']) > ORDER.index('format')), len(tasks))
+    tasks[first_rest:first_rest] = blocks
     for i, t in enumerate(tasks, 1):
         t['id'] = f'd{i}'
     return {'host': host, 'name': f'Design for {host}', 'tasks': tasks, 'manual': manual, 'left': sorted(set(left)),

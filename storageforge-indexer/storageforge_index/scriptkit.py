@@ -28,7 +28,20 @@ def comments(lines, empty: str) -> str:
     return '\n'.join(one_line(l) for l in lines) or empty
 
 
-HELPERS = r"""if [[ -t 1 ]]; then G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' B=$'\e[34m' H=$'\e[1m' N0=$'\e[0m'; else G= Y= R= B= H= N0=; fi
+HELPERS = r"""reload_systemd() { # a reload waits on a hard network mount whose server is gone, and every new login then waits on systemd
+  local t fs rc
+  while read -r _ t fs _; do
+    case $fs in nfs|nfs4|cifs|smb3) ;; *) continue ;; esac
+    t=$(printf '%b' "$t")
+    timeout -k 1 5 stat -t -- "$t" >/dev/null 2>&1; rc=$?
+    if ((rc == 124 || rc == 137)); then
+      conflict "$t is not answering: reloading systemd now would block logins here until it does. Bring its server back, or: umount -l $t"
+      return 1
+    fi
+  done </proc/self/mounts
+  systemctl daemon-reload
+}
+if [[ -t 1 ]]; then G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' B=$'\e[34m' H=$'\e[1m' N0=$'\e[0m'; else G= Y= R= B= H= N0=; fi
 section()  { printf '\n%s== %s ==%s\n' "$H" "$*" "$N0"; }
 ok()       { printf '  %-9s %s\n' "${G}ok${N0}" "$*"; }
 missing()  { printf '  %-9s %s\n' "${Y}missing${N0}" "$*"; MISSING=$((MISSING + 1)); }

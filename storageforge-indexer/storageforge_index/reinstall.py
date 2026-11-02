@@ -63,6 +63,7 @@ backup() { [[ -e $1 ]] && cp -a -- "$1" "$1.storageforge-$STAMP"; }
 
 this=$(uname -n)
 section "Rebuilding @@NAME@@ from its configuration of @@WHEN@@"
+@@NOTE@@
 if [[ $(host_slug "$this") != $(host_slug @@QNAME@@) ]]; then
   if ((APPLY && !ANY_HOST)); then echo "This is $this, and this script is for "@@QNAME@@". If that is right, add --any-host." >&2; exit 1; fi
   info "this is $this, and the script is for "@@QNAME@@" (--apply will want --any-host)"
@@ -201,7 +202,7 @@ fstab_line() { # target line: 0 when the line is there or was added
 }
 
 mount_it() { # target
-  [[ -z ${RELOAD:-} ]] || { command -v systemctl >/dev/null && systemctl daemon-reload; RELOAD=; }
+  [[ -z ${RELOAD:-} ]] || { command -v systemctl >/dev/null && reload_systemd; RELOAD=; }
   mkdir -p -- "$1"
   local out; if out=$(mount -- "$1" 2>&1); then doing "mounted $1"; return 0; fi
   conflict "$1 did not mount: $(tail -n 2 <<<"$out" | tr '\n' ' ')"; return 1
@@ -296,6 +297,8 @@ def script(version: dict) -> str:
     active = [m for m in mounts if m['kind'] not in ('system', 'rootfs')]
     nfs, smb = _nfs_has_shares(files), _smb_has_shares(files)
     file_name = f'reinstall-{host_slug(name)}.sh'
+    newer = version.get('instead_of')
+    note = (f'info "from before the reinstall: version {newer["config_id"]} is a scan of the new install, with less on it"' if newer else '')
 
     head = ['#!/usr/bin/env bash', f'# Reinstall script for {name}, from its configuration of {when} (version {version.get("config_id", "live")}).',
             f'# Written by StorageForge {__version__}. Run after reinstalling the operating system. It holds everything it needs.', '#',
@@ -311,7 +314,7 @@ def script(version: dict) -> str:
             head.append(f'#   {d["uuid"]}  {d["fstype"]}  {d.get("label") or "-"}  {d.get("dev") or ""}  {d.get("model") or ""}  {d.get("serial") or ""}')
     out = [comments(head, ''), '', USAGE.replace('@@FILE@@', file_name), 'set -u']
     body = (BODY.replace('@@REMOTE@@', REMOTE).replace('@@HELPERS@@', HELPERS).replace('@@PACKAGES@@', PACKAGES + CIFS_KERNEL)
-            .replace('@@MARK@@', REBUILT_MARK).replace('@@WHEN@@', when).replace('@@NAME@@', re.sub(r'[^A-Za-z0-9._-]', '_', name)).replace('@@QNAME@@', _q(name)))
+            .replace('@@MARK@@', REBUILT_MARK).replace('@@WHEN@@', when).replace('@@NOTE@@', note).replace('@@NAME@@', re.sub(r'[^A-Za-z0-9._-]', '_', name)).replace('@@QNAME@@', _q(name)))
     out.append(body)
     out.append(f'LAYERED={int(bool(b.get("has_md") or b.get("has_lvm") or b.get("crypt")))}\n')
 

@@ -134,7 +134,7 @@ Options on a move step, under **When deployed as a job**. All are off by default
 
 - Each run takes the first route that answers, in the listed order. A route whose interface does not exist is skipped.
 - All traffic is inside SSH on every route, so the LAN path is encrypted too, and the overlay adds its own tunnel.
-- Every route must present the same host key: the one StorageForge pinned when it scanned the source. Without a pin, the first connection is trusted. Rescan before deploying to get one. A different machine holding the LAN address on another network fails this check and the job moves to the mesh.
+- Every route must present the same host key: the one StorageForge pinned when it scanned the source. Without a pin, the first connection is trusted. Rescan before deploying to get one. A different machine holding the LAN address on another network fails this check and the job moves to the mesh. Jobs without routes check the pinned key too, so after a source is reinstalled and rekeyed, deploying again gives them the new one.
 - **A bandwidth limit applies only on a `mesh` route.** The `lan` route runs unthrottled.
 - **When a route drops mid-run:** SSH notices within about 30 seconds, the job looks for a route up to 5 times and rsync resumes from `--partial-dir`. rsnapshot and git runs pick a route at the start and do not move during a run: they fail and the next run tries again, because retrying rsnapshot would rotate twice. A running transfer does not move back when the LAN returns; the next run uses it.
 - OpenSSH on the runner needs `BindInterface` if a route names an interface. The deploy report checks this.

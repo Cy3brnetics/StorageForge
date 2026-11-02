@@ -199,14 +199,19 @@ load() {
 ssh_options() { # SSHO for the current route
   local wait=15; [[ $ROUTE_VIA == lan ]] && wait=4     # ssh keeps the first value of an option it is given twice
   SSHO=(-o BatchMode=yes -o "ConnectTimeout=$wait" -o IdentitiesOnly=yes -i "$KEY" -p "$SRC_PORT")
-  if ((${#ROUTES[@]} == 0)); then
+  # The key StorageForge pinned when it scanned the source, when it has one. Deploying again after a rekey brings the new
+  # key, so a source that was reinstalled needs no cleanup here. Without one, the job trusts its first connection.
+  if [[ -s $ETC/jobs/$ID.hostkey ]]; then
+    SSHO+=(-o HostKeyAlias=storageforge-source -o "UserKnownHostsFile=$ETC/jobs/$ID.hostkey" -o StrictHostKeyChecking=yes)
+  elif ((${#ROUTES[@]} == 0)); then
     SSHO+=(-o "UserKnownHostsFile=$VAR/known_hosts" -o StrictHostKeyChecking=accept-new)
   else
+    SSHO+=(-o HostKeyAlias=storageforge-source -o "UserKnownHostsFile=$VAR/known_hosts-$ID" -o StrictHostKeyChecking=accept-new)
+  fi
+  if ((${#ROUTES[@]})); then
     # One key, whichever address answers: a stranger holding the LAN address on another network fails this check, and the
-    # job moves on to the mesh. The key StorageForge pinned when it scanned the source, when it has one.
-    SSHO+=(-o HostKeyAlias=storageforge-source -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
-    if [[ -s $ETC/jobs/$ID.hostkey ]]; then SSHO+=(-o "UserKnownHostsFile=$ETC/jobs/$ID.hostkey" -o StrictHostKeyChecking=yes)
-    else SSHO+=(-o "UserKnownHostsFile=$VAR/known_hosts-$ID" -o StrictHostKeyChecking=accept-new); fi
+    # job moves on to the mesh.
+    SSHO+=(-o ServerAliveInterval=10 -o ServerAliveCountMax=3)
     [[ -n $ROUTE_IFACE ]] && SSHO+=(-o "BindInterface=$ROUTE_IFACE")
   fi
   # rsnapshot accepts a daemon source only as rsync://host/module (it rejects host::module) and passes no -e: this
@@ -737,7 +742,7 @@ pack() { # id snapshot relpath -> tar on stdout
   local base; base=$(snap_base "$2")
   [[ -e $base/$3 ]] || die "$3 is not in $2"
   echo "$(du -sb "$base/$3" | cut -f1)" >&2
-  tar -C "$(dirname -- "$base/$3")" -cf - -- "$(basename -- "$3")"
+  tar -C "$(dirname -- "$base/$3")" --sparse -cf - -- "$(basename -- "$3")"     # or a sparse file comes back at its full size
 }
 unpack() { # id target -> extracts tar from stdin into target (a new folder under the job's root)
   serve_load "$1"; local t=$2

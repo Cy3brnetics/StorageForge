@@ -13,9 +13,12 @@ diffs it against the previous index in a single transaction.
 """
 from __future__ import annotations
 
+import io
+import os
 import posixpath
 import queue
 import re
+import select
 import sys
 import threading
 import time
@@ -230,6 +233,36 @@ class WriterPool:
             conn.close()
 
 
+def stall_limit() -> int:
+    try:
+        return max(5, int(os.environ.get('STORAGEFORGE_SCAN_STALL_SECS', '') or 300))
+    except ValueError:
+        return 300
+
+
+class StallGuard(io.RawIOBase):
+    """Stops a walk that has sent nothing for limit seconds. find has to lstat a mount point even to prune it, and on a
+    hard NFS mount whose server is gone that never returns. Only time spent waiting for the host counts: a reader held
+    up by a busy database is not a stalled walk. It polls, because killing the ssh client gives no end of file: on a
+    shared connection the master holds the other end of the pipe."""
+
+    def __init__(self, raw, kill, limit: int):
+        super().__init__()
+        self.raw, self.kill, self.limit, self.stalled = raw, kill, limit, False
+
+    def readable(self):
+        return True
+
+    def readinto(self, buf):
+        started = time.monotonic()
+        while not select.select([self.raw], [], [], min(5, self.limit))[0]:
+            if time.monotonic() - started > self.limit:
+                self.stalled = True
+                self.kill()
+                return 0
+        return self.raw.readinto(buf)
+
+
 def stream_job(t: Transport, job: ScanJob, pool: WriterPool, opts: ScanOptions) -> JobResult:
     mid = job.plan.mount_id
     res = JobResult(job)
@@ -237,9 +270,10 @@ def stream_job(t: Transport, job: ScanJob, pool: WriterPool, opts: ScanOptions) 
     pool.send(mid, ('begin', job.id))
     proc = t.stream(find_command(job.root, job.prune, opts.exclude_names, nice=opts.nice, btrfs=job.plan.info.fstype == 'btrfs'))
     err = StderrTail(proc.stderr)
+    guard = StallGuard(proc.stdout.raw, proc.kill, stall_limit())
     try:
         batch = []
-        for row in iter_rows(proc.stdout):
+        for row in iter_rows(io.BufferedReader(guard, 1 << 20)):
             batch.append(row)
             res.entries += 1
             res.bytes += row[3]
@@ -250,6 +284,9 @@ def stream_job(t: Transport, job: ScanJob, pool: WriterPool, opts: ScanOptions) 
             pool.send(mid, ('rows', job.id, batch))
         rc = proc.wait()
         err.join(5)
+        if guard.stalled:
+            raise RemoteError(f'find {job.root} sent nothing for {guard.limit}s and was stopped: a network mount under it may not be '
+                              'answering. Nothing was removed from the index')
         # find exits 1 when some directories were unreadable; that is a partial but usable walk.
         # Exit 1 with no output, or anything else, means the walk did not happen and nothing may be deleted.
         if rc not in (0, 1) or (rc == 1 and res.entries == 0):
@@ -258,11 +295,15 @@ def stream_job(t: Transport, job: ScanJob, pool: WriterPool, opts: ScanOptions) 
     except Exception as exc:
         proc.kill()
         proc.wait()
+        if guard.stalled and not isinstance(exc, RemoteError):      # the cut-off stream reads as truncated: say why
+            exc = RemoteError(f'find {job.root} sent nothing for {guard.limit}s and was stopped: a network mount under it may not be '
+                              'answering. Nothing was removed from the index')
         res.error = exc
         pool.send(mid, ('abort', job.id, exc))
     err.join(5)
-    for pipe in (proc.stdout, proc.stderr):
-        pipe.close()
+    proc.stdout.close()
+    if not err.is_alive():      # still reading a stalled walk's stderr, which closing would wait for: it dies with the process
+        proc.stderr.close()
     res.read_errors = err.count
     res.denied = err.denied
     res.seconds = time.time() - started

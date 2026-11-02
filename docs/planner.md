@@ -67,7 +67,7 @@ The 3-2-1 grid per dataset: sync, snapshots, backup, encryption. Click a sync or
 **Change plan** (the first tab) compares the design with the host's latest scan and lists what it would take to get there, as [change-plan tasks](plans-and-scripts.md#staged-changes): partitioning an empty disk, formatting an empty partition, labels, adding devices to a btrfs pool, converting its profile, subvolumes, mounts, mount options, NFS/SMB mounts and symlinks. The design doesn't have to be saved first. **Stage in Changes** adds the tasks to the staged plan in the **Changes** tab, where they are checked, saved, downloaded or deployed like any other.
 
 - **Drive tasks arrive unconfirmed.** A partition, format or add-device task can't be checked or saved until you open it with **Edit** and type the device again.
-- **By hand** lists what the design has but no task type covers: creating ZFS pools and datasets, mdadm arrays and LVM, layouts with more than one partition, bind mounts and hard links. Do those yourself, rescan, and the rest of the plan follows.
+- **By hand** lists what the design has but no task type covers: mdadm arrays, encrypted ZFS pools and ones with log or cache devices, bind mounts and hard links. Do those yourself, rescan, and the rest of the plan follows.
 - **Only additions and edits.** Anything that would erase data the scan saw (repartitioning a disk that has partitions, reformatting a filesystem, anything on the system disk) is listed under By hand, never staged. Things on the host that the design dropped are listed under **Left alone**.
 - The host must have been scanned. For the example host, or a design for a machine not yet scanned, use the other tabs.
 

@@ -110,7 +110,7 @@ def specs(conn: Conn, plan: dict) -> list[dict]:
             'dedup_hardlink': bool(o.get('dedup_hardlink')), 'dedup_min_kb': o.get('dedup_min_kb') or 1024,
             'transport': o.get('transport') or 'rsync', 'preflight': bool(o.get('preflight')),
             'reserve_gb': o.get('reserve_gb', 1), 'extent_dedup': o.get('extent_dedup'),
-            'hostkey': pinned_key(sh) if o.get('routes') and sh['name'] != dh['name'] else '',
+            'hostkey': pinned_key(sh) if sh['name'] != dh['name'] else '',
         })
     return out
 
@@ -274,7 +274,7 @@ if ((APPLY)) && [[ -n $KEYLINES_SET ]]; then
 fi
 if command -v systemctl >/dev/null; then
   section "timers"
-  ((APPLY)) && systemctl daemon-reload
+  if ((APPLY)) && ! reload_systemd; then info "timers left as they were"; TIMERS=() PAUSED=(); fi
   for t in "${TIMERS[@]}"; do
     if ((APPLY)); then systemctl enable --now "$t" >/dev/null 2>&1 && ok "$t enabled" || conflict "could not enable $t"
     else [[ $(systemctl is-enabled "$t" 2>/dev/null) == enabled ]] && ok "$t enabled" || missing "would enable $t"; fi
