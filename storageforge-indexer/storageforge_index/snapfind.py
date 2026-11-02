@@ -7,10 +7,11 @@ from __future__ import annotations
 import re
 
 # POSIX sh, no exit (it runs inside the inventory script). Every value goes through printf %s after a tag, so a line of
-# a config can't pass for one of ours. The capability find, where set up, reads snapshot folders a plain user can't.
+# a config can't pass for one of ours. The capability find, where set up, reads snapshot folders a plain user can't,
+# and is used only if it runs: a capability the kernel refuses would hide every snapshot.
 SNAPFIND = r"""(
 PATH="$PATH:/usr/sbin:/sbin:/usr/local/sbin"
-F=find; [ -x /usr/local/lib/storageforge/find ] && F=/usr/local/lib/storageforge/find
+F=find; /usr/local/lib/storageforge/find / -maxdepth 0 >/dev/null 2>&1 && F=/usr/local/lib/storageforge/find
 T=; command -v timeout >/dev/null 2>&1 && T='timeout 15'
 CRON='/etc/crontab /etc/cron.d/*'
 CRONDIRS='/etc/cron.hourly/* /etc/cron.daily/* /etc/cron.weekly/* /etc/cron.monthly/*'

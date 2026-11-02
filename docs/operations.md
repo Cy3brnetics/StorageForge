@@ -120,7 +120,7 @@ The command prints a one-time link for the first admin, valid for 3 days. Replac
 - Back up the new vault secret.
 - Delete `./secrets/vault_secret` if you have one. It holds the old secret, so after a reset the stack refuses to start until it is gone or matches the new one. The archive has a copy.
 
-Outside Docker, or when the secret comes from `STORAGEFORGE_VAULT_SECRET`, set `STORAGEFORGE_VAULT_NEW_SECRET` for the reset, then switch to it before starting the server.
+Outside Docker, or when the secret comes from `STORAGEFORGE_VAULT_SECRET`, set `STORAGEFORGE_VAULT_NEW_SECRET` for the reset. A secret file this command can write gets the new value. Otherwise it says so, and you switch to it before starting the server.
 
 ### Several sites on one machine
 

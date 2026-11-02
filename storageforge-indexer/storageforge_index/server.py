@@ -184,6 +184,7 @@ SCHEDULE_TICK = 600               # the scheduler looks for due hosts this often
 MAX_BLUEPRINT = 2 << 20           # planner designs are the largest body we accept
 MAX_IGNORE = 256 << 10            # ignore lists: up to 2000 paths
 MAX_REPORT = 512 << 10            # a schedule's run report: the runner keeps its output under this
+MAX_JOB_REPORT = 16 << 10         # a job's run line: 2000 characters of message, which JSON escaping can take to 12 KiB
 # Failed sign-ins allowed before /api/login answers 429; successful ones are not counted.
 LOGIN_LIMIT_PER_IP = '10 per minute; 50 per hour'
 LOGIN_LIMIT_PER_USER = '5 per minute; 20 per hour'     # per account and client network (/24, /64)
@@ -528,6 +529,16 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return password_stale() or view(*args, **kwargs)
         return wrapped
 
+    def same_host_and_port(origin: str, host: str) -> bool:
+        """Plain HTTP gets no Sec-Fetch-Site, so this is all that tells a page on another port apart. A Host without a port
+        says nothing about it: a proxy may have dropped it."""
+        try:
+            o, h = urlsplit(origin), urlsplit(f'//{host}')
+            port = o.port or {'http': 80, 'https': 443}.get(o.scheme)
+            return o.hostname == h.hostname and (h.port is None or port == h.port)
+        except ValueError:
+            return False
+
     @web.before_request
     def same_origin_only():
         """SameSite counts another port on this host as the same site, so a page there could still post a form here with
@@ -538,7 +549,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if fetch:
             ok = fetch in ('same-origin', 'none')
         else:
-            ok = not origin or urlsplit(origin).hostname == urlsplit(f'//{request.host}').hostname
+            ok = not origin or same_host_and_port(origin, request.host)
         return None if ok else (jsonify(error='this request came from another site'), 403)
 
     @web.before_request
@@ -566,6 +577,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             request.max_content_length = MAX_IGNORE
         elif request.path == '/api/scheduler/report' and request.method == 'POST':
             request.max_content_length = MAX_REPORT
+        elif request.path == '/api/jobs/report' and request.method == 'POST':
+            request.max_content_length = MAX_JOB_REPORT
 
     @web.after_request
     def headers(resp: Response):

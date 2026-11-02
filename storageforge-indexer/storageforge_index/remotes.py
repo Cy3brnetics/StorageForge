@@ -15,7 +15,9 @@ import os
 import re
 import shlex
 import socket
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -34,6 +36,7 @@ SCAN_USER = 'sfscan'
 SCAN_KEY = 'storageforge-remote-scan'
 ENDPOINT_KEY = 'remote.endpoint'
 INVITE_SECONDS = 24 * 3600
+MAX_NODE_ID = 65535      # all of 127.77.x.y: ids are never reused, and one more would share node 1's address
 NAME_RE = re.compile(r'[a-z0-9][a-z0-9-]{0,62}')
 ENDPOINT_RE = re.compile(r'(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:]{2,45}\])(?::(?P<port>[0-9]{1,5}))?')
 
@@ -96,10 +99,12 @@ def sync(conn: Conn, drop_sessions: bool = False) -> None:
     folder = _keys_dir()
     if not folder:
         return
-    tmp = folder / 'authorized_keys.new'
-    tmp.write_text(authorized_lines(conn))
-    tmp.chmod(0o644)
-    tmp.replace(folder / 'authorized_keys')
+    lines, live = authorized_lines(conn), folder / 'authorized_keys'
+    if not live.exists() or live.read_text() != lines:     # every look at the page lands here, and only a change writes
+        tmp = folder / f'authorized_keys.{os.getpid()}.{threading.get_ident()}.new'
+        tmp.write_text(lines)
+        tmp.chmod(0o644)
+        tmp.replace(live)
     if drop_sessions:
         tmp = folder / 'generation.new'
         tmp.write_text(f'{time.time_ns()}\n')
@@ -125,10 +130,13 @@ def overview(conn: Conn) -> dict:
     sync(conn)
     nodes = []
     now = time.time()
-    for n in _rows(conn):
+    rows = _rows(conn)
+    # together: a node that hung holds its probe for seconds, and this runs on a web worker
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        ups = list(pool.map(online, [address(n['id']) for n in rows]))
+    for n, up in zip(rows, ups):
         addr = address(n['id'])
         host = _host_of(conn, addr)
-        up = online(addr)
         expired = not n['adopted_at'] and n['expires_at'] <= now
         nodes.append({'id': n['id'], 'name': n['name'], 'address': addr, 'host': host, 'online': up, 'created_at': n['created_at'],
                       'expires_at': None if n['adopted_at'] else n['expires_at'], 'adopted_at': n['adopted_at'],
@@ -264,6 +272,8 @@ def add(db, conn: Conn, name: str, endpoint: str | None, actor: str) -> dict:
         raise ValueError('a node name is lowercase letters, digits and dashes')
     if _rows(conn, 'revoked_at IS NULL AND name = :n', {'n': name}):
         raise ValueError(f'there is already a remote node named {name}')
+    if (conn.scalar('SELECT max(node_id) FROM remote_nodes') or 0) >= MAX_NODE_ID:
+        raise ValueError('this install has used every remote node address')
     text = endpoint or get_setting(conn, ENDPOINT_KEY)
     where = parse_endpoint(text)
     tunnel_key = host_key_line()
@@ -321,6 +331,16 @@ def adopt(db, conn: Conn, node_id: int, actor: str, scan) -> dict:
             return {'id': node_id, 'state': 'scanning'}
     out = deploy.adopt(db, conn, host, actor=actor)
     return {'id': node_id, 'state': out['state'], 'host': host, 'output': out['output']}
+
+
+def retired(conn: Conn, addr: str | None) -> str | None:
+    """The host at this address is being retired: its node goes too. Retiring drops the host's bindings and audits this,
+    and calls sync once the row is committed. Returns the node's name, if there was one."""
+    for n in _rows(conn):
+        if address(n['id']) == addr:
+            conn.execute('UPDATE remote_nodes SET revoked_at = :t WHERE node_id = :i', {'t': int(time.time()), 'i': n['id']})
+            return n['name']
+    return None
 
 
 def revoke(db, conn: Conn, node_id: int, actor: str) -> dict:

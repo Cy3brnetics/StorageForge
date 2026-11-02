@@ -509,7 +509,8 @@ def cmd_reset(args) -> int:
         print(f'{len(r["left"]["keys_on_hosts"])} key binding(s) mean old public keys are still in authorized_keys over '
               'there; see left-behind.json', file=sys.stderr)
     if not r['secret_installed']:
-        print('Switch STORAGEFORGE_VAULT_SECRET to the value of STORAGEFORGE_VAULT_NEW_SECRET before starting the server.')
+        print('Switch the server to the value of STORAGEFORGE_VAULT_NEW_SECRET before starting it: this command could not, so '
+              'STORAGEFORGE_VAULT_SECRET or its secret file still holds the old one.')
     print('Back up the new vault secret: backups never contain it.')
     if r['secret_installed']:
         print('If ./secrets/vault_secret exists on the Docker host, delete it: it is the old secret, and the stack will not start until it is gone.')

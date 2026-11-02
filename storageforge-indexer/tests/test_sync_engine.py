@@ -584,6 +584,21 @@ class Plans(unittest.TestCase):
         self.assertEqual(c.scalar("SELECT percent FROM job_state WHERE job_id = 'p1-a'"), 4)
         self.assertEqual(jobs.overview(c)[0]['live']['state'], 'transferring')
 
+    def test_a_full_length_run_message_is_not_refused(self):
+        """PF-28: the script cuts a message at 2000 characters, which is more than 4 KiB of JSON when they are not ASCII."""
+        c = self.db.connect()
+        self.addCleanup(c.close)
+        self.db.migrate(c)
+        c.execute("""INSERT INTO jobs (job_id, plan_id, step_id, name, method, runner_host, source_host, spec_json, token_hash, paused, deployed_at)
+                     VALUES ('p1-a', 1, 'a', 'n', 'mirror', 'b', 'a', '{}', :t, 0, 1)""", {'t': jobs.token_hash('tok')})
+        web = server.create_app(server.App(self.db), 's' * 48).test_client()
+        ok = {'Authorization': 'Bearer tok', 'Content-Type': 'application/json'}
+        line = json.dumps({'job': 'p1-a', 'run': '12345678-1234-1234-1234-123456789012', 'start': 1, 'end': 2, 'rc': 1, 'message': 'é' * 2000}, ensure_ascii=False).encode()
+        self.assertGreater(len(line), server.MAX_BODY)
+        self.assertEqual(web.post('/api/jobs/report', data=line, headers=ok).status_code, 200)
+        self.assertEqual(c.scalar('SELECT length(message) FROM job_runs'), 2000)
+        self.assertEqual(web.post('/api/jobs/report', data=b'x' * (server.MAX_JOB_REPORT + 1), headers=ok).status_code, 413)
+
     def test_running_duperemove_is_not_a_read(self):
         self.assertEqual(permissions.required('POST', '/api/deploy/jobs/p1-a/dedupe'), 'deploy.apply')
 

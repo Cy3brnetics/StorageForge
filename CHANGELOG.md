@@ -4,6 +4,15 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 
 ## Unreleased
 
+### Fixed
+- **Retiring a remote node's host cuts its tunnel.** Its key stayed authorized, and the machine kept its address on this server.
+- **Snapshot discovery passes over a capability `find` that cannot run**, instead of reporting no snapshots.
+- **Plain HTTP tells ports apart.** Browsers send no `Sec-Fetch-Site` there, so a page on another port of the same host could post with the session cookie.
+- **Job reports of up to 16 KiB are accepted.** A long non-ASCII message went over the 4 KiB limit, and the run only arrived with the next scan.
+- **`reset` installs `STORAGEFORGE_VAULT_NEW_SECRET`** in a secret file it can write, rather than leaving the old secret for the server to refuse.
+- **The remote nodes list** writes `authorized_keys` only when it changed, and probes nodes together, so a hung node can't hold a web worker for seconds per node.
+- **Remote node addresses** run out with an error at 65535 instead of wrapping onto node 1's.
+
 ### Added
 - **A warning when sudo takes no password.** Deploy access and scan access setup check for passwordless sudo first. When the account has it, the result says the password you typed was not checked, and, when the scan user's own sudo was used, that its scan key has full root on that host. The audit log records it too.
 - **Sites and reset, for moving to a new client.** A database now knows which site it is: the name shows in the web UI, and `restore` refuses another site's backup, because a backup holds that site's SSH keys. `reset --site-name NAME` puts the old site in an archive outside the new site's reach and starts over with a new database, vault and vault secret. It refuses while a server runs, while jobs or deploy access remain on the old machines (`--abandon-deployed` overrides), or while `./keys` still holds keys.

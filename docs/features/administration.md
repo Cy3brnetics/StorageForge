@@ -94,7 +94,7 @@ Generated scripts on a named site carry a `# Site:` line. See [Starting a new si
 
 ## Retire a host
 
-**Retire…** on a host's menu, `hosts remove NAME`, or `DELETE /api/hosts/<name>` removes it from search, the graph, the scheduler and alerts. The audit log and deploy history stay. It is refused while anything is deployed there or a scan is running.
+**Retire…** on a host's menu, `hosts remove NAME`, or `DELETE /api/hosts/<name>` removes it from search, the graph, the scheduler and alerts. The audit log and deploy history stay. A remote node's tunnel is revoked with its host. It is refused while anything is deployed there or a scan is running.
 
 ## Databases
 
