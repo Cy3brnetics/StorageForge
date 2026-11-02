@@ -156,18 +156,9 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <div id="rebuildbox" class="stack"></div>
     </div>
     <div id="tab-security" class="tab" hidden>
-      <div id="sec-header-banner" class="sec-banner sec-secure mb-3"></div>
-      <div id="sec-subnav" class="seg sm mb-3" role="tablist" aria-label="Security subpanels">
-        <button type="button" data-sub="soc" class="active" onclick="renderSecurityNav('soc')">SOC Center</button>
-        <button type="button" data-sub="worm" onclick="renderSecurityNav('worm')">WORM & Holds</button>
-        <button type="button" data-sub="canaries" onclick="renderSecurityNav('canaries')">Canaries & VSS</button>
-        <button type="button" data-sub="mac" onclick="renderSecurityNav('mac')">MAC & AVC</button>
-        <button type="button" data-sub="firewall" onclick="renderSecurityNav('firewall')">Firewall</button>
-        <button type="button" data-sub="ebpf" onclick="renderSecurityNav('ebpf')">Behavior</button>
-        <button type="button" data-sub="integrity" onclick="renderSecurityNav('integrity')">Integrity</button>
-        <button type="button" data-sub="compliance" onclick="renderSecurityNav('compliance')">Compliance</button>
-      </div>
-      <div id="sec-subpanel-content" class="stack"></div>
+      <div id="sec-banner" class="sec-banner sec-unknown"></div>
+      <div id="sec-subnav" class="seg sm" role="group" aria-label="Security panels"></div>
+      <div id="sec-content" class="stack"></div>
     </div>
     <div id="tab-audit" class="tab" hidden>
       <div class="row"><button id="verify" type="button" class="btn">Verify chain</button><span id="verified" class="muted"></span></div>

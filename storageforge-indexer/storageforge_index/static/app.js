@@ -1151,6 +1151,7 @@ function takeLink() {
     $('#toplanner').href = `/planner#overview@${encodeURIComponent(host)}`;
   }
   const tab = q.get('tab');
+  if (tab === 'security') window.SEC_LINK_PANEL = q.get('panel');
   return tab && document.querySelector(`.tabs button[data-tab="${CSS.escape(tab)}"]`) ? tab : null;
 }
 

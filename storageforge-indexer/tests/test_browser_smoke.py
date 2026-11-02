@@ -65,6 +65,33 @@ class BrowserSmoke(unittest.TestCase):
             self.page.wait_for_timeout(250)
             self.assertEqual(self.errors, [], tab)
 
+    def settled(self):       # polled from here: wait_for_function evaluates in the page, which this CSP rightly refuses
+        for _ in range(100):
+            if 'Loading' not in self.page.inner_text('#sec-content'):
+                return
+            self.page.wait_for_timeout(100)
+        self.fail('the security panel never finished loading')
+
+    def test_the_security_panels_really_open_under_the_csp(self):       # they were onclick= attributes once, which the CSP refuses in silence
+        self.page.click('.tabs button[data-tab="security"]')
+        self.page.wait_for_selector('#sec-subnav button')
+        self.page.wait_for_selector('#sec-content .sec-card')
+        self.assertIn('never measured', self.page.inner_text('#sec-content'))
+        self.assertIn('Not known', self.page.inner_text('#sec-banner'))
+        self.assertNotIn('SECURE', self.page.inner_text('#tab-security'))
+        for panel in ('worm', 'firewall', 'overview'):
+            self.page.click(f'#sec-subnav button[data-sub="{panel}"]')
+            self.page.wait_for_selector(f'#sec-subnav button[data-sub="{panel}"][aria-pressed="true"]')
+            self.settled()
+        self.page.select_option('#host', 'nas')
+        for panel in ('decoys', 'mac', 'behavior', 'integrity', 'compliance', 'worm', 'firewall', 'overview'):
+            self.page.click(f'#sec-subnav button[data-sub="{panel}"]')
+            self.settled()
+            self.assertEqual(self.errors, [], panel)
+        self.page.click('#sec-subnav button[data-sub="mac"]')
+        self.settled()
+        self.assertIn('has not been measured', self.page.inner_text('#sec-content'))
+
     def test_the_planner_and_search_pages_load(self):
         for path in ('/planner', '/search'):
             self.page.goto(self.base + path)
