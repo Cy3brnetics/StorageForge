@@ -1,19 +1,28 @@
 # Ransomware Defense & Host Security: Complete System Architecture, Admin Panels, Custom Views, & Global Compliance Roadmap
 
-A comprehensive engineering roadmap and UI/UX specification to equip StorageForge with multi-layered ransomware defense, native Linux host security engines (SELinux, AppArmor, auditd, Falco, AIDE, Lynis, and firewalls), automated containment, rapid immutable recovery, dedicated administrative control panels with expanded customization views, **automated multi-distro package provisioning**, and **turnkey init scripts mapped to global compliance standards (CIS, NIST SP 800-53, HIPAA, PCI-DSS, SOC 2, ISO 27001, CMMC)**.
+A comprehensive engineering roadmap and UI/UX specification to equip StorageForge with multi-layered ransomware defense, native Linux host security engines (SELinux, AppArmor, auditd, Falco, AIDE, Lynis, and firewalls), automated containment, rapid immutable recovery, dedicated administrative control panels with expanded customization views, **automated multi-distro package provisioning**, **turnkey init scripts mapped to global compliance standards (CIS, NIST SP 800-53, HIPAA, PCI-DSS, SOC 2, ISO 27001, CMMC)**, and **hardened enterprise defenses (Anti-NTP clock guards, Single/Multi-Admin adaptive quorum, VSS shadow traps, and volatile forensic triage)**.
 
 ---
 
 ## 1. Executive Summary & Design Philosophy
 
+### 1.1 The Threat Reality
 Storage is the ultimate battleground for modern ransomware attacks. Threat actors operate with sophisticated playbooks:
 1. **Initial Lateral Movement & Privilege Escalation:** Exploiting unhardened host services, unconfined daemons, or stolen SSH keys to gain root/operator privileges.
 2. **Network Share Traversal:** Abusing authenticated SMB and NFS client sessions to silently traverse shares, renaming and encrypting multi-terabyte data stores.
-3. **Recovery Destruction:** Deliberately attempting to destroy volume managers, purge snapshots (`zfs destroy`, `btrfs subvolume delete`), wipe backup histories, or disable auditing.
+3. **Recovery Destruction:** Deliberately attempting to destroy volume managers, purge snapshots (`zfs destroy`, `btrfs subvolume delete`), manipulate system clocks to prematurely expire retention holds, wipe backup histories, or disable auditing.
 
 Traditional antivirus sweeps (e.g. naive ClamAV full-disk scans over multi-terabyte pools) fail catastrophically: they induce massive I/O bottlenecks, degrade storage performance, cannot detect zero-day encryption behaviors, and offer zero containment when an active attack is underway.
 
-StorageForge addresses this threat through **kernel-native defense-in-depth**, coupled with **agentless guarded execution** (signed SSH payloads via `/usr/local/sbin/storageforge-run`), providing continuous detection, sub-second automated containment, cryptographic audit trails, instant immutable recovery, and **declarative compliance baseline provisioning**.
+### 1.2 The Operator-First Philosophy (Amplification, Not Replacement)
+> [!IMPORTANT]
+> **StorageForge is deliberately engineered NOT as an opaque, black-box AI replacement for experienced systems administrators and storage architects, but as a high-leverage force multiplier.**
+
+Systems administration and disaster recovery are high-stakes domains where automated "magic" without operator transparency breeds distrust or catastrophic outages. StorageForge adheres to four core operational tenets:
+1. **Total Visibility & Inspection:** Every action is inspectable. Generated scripts (bash, ansible, audit rules, firewall sets) are visible in plain text with complete syntax highlighting, diffs, and downloadable artifacts before execution.
+2. **Operator Authority & Guardrails:** Automations act as intelligent early-warning tripwires, safety nets, and rapid-response levers. The administrator always maintains supervisory authority, with granular control to dry-run, customize, override, or disarm any automated brake.
+3. **No Deadlocks in Solo-Admin Fleets:** Enterprise safeguards like "Multi-Party Quorum / Four-Eyes Principle" adapt intelligently: large enterprise teams get dual-custody authorization, while solo sysadmins get timelocked cool-off windows and physical offline break-glass keys rather than paralyzing deadlocks.
+4. **Kernel-Native Defense-in-Depth:** Rather than running fragile proprietary userspace agents, StorageForge leverages the native security primitives already built into Linux (ZFS holds, Btrfs subvolumes, `auditd`, `nftables`, `SELinux`, `AppArmor`, and eBPF), managed agentlessly over SSH with signed payloads (`/usr/local/sbin/storageforge-run`).
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -22,13 +31,14 @@ StorageForge addresses this threat through **kernel-native defense-in-depth**, c
 │  ADMIN CONTROL PANELS & CUSTOM VIEWS (Web UI & SOC Command Center)                                     │
 │  ├── SOC Threat Center  ├── WORM & Snapshots ├── Canary Decoys      ├── Mandatory Access Control (MAC) │
 │  ├── Storage Firewall   ├── Behavioral eBPF  ├── Host FIM & Hardening├── Differential Malware & YARA   │
-│  ├── Compliance Center  ├── Distro Packages  ├── Rule Editors       ├── Playbook Designer              │
+│  ├── Compliance Center  ├── Distro Packages  ├── Quorum & Timelocks ├── Blast-Radius & Clean-Room     │
 │  └── Custom Dashboards  └── Waiver Manager   └── Sensitivity Curves └── Audit Certifiers               │
 ├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
 │  CENTRAL CONTROLLER & REPOSITORY INDEX (FastAPI / SQLite / PostgreSQL / Hash-Chained Audit Log)        │
 │  ├── Retention Manager   ├── Auditd Tripwire Engine ├── MAC Engine (SELinux/AppArmor)                  │
 │  ├── Firewall Controller ├── Falco / Entropy Engine ├── FIM & Lynis Parser  ├── Diff ClamAV / YARA    │
-│  ├── Package Auto-Deploy ├── Compliance Init Engine └── Playbook Dispatcher ├── Signed Deploy Runner   │
+│  ├── Package Auto-Deploy ├── Compliance Init Engine ├── Adaptive Quorum     ├── Blast-Radius Engine    │
+│  └── Playbook Dispatcher ├── VSS Decoy Interceptor  └── Clock Guard (NTS)   ├── Signed Deploy Runner   │
 ├───────────────────────────────────┬─────────────────────────────────┬──────────────────────────────────┤
 │ SSH (Agentless Read-Only Scans)   │ Signed Payloads (Deploy Runner) │ Live Event Telemetry (audit/eBPF)│
 │                                   ▼                                 ▼                                  ▼
@@ -39,19 +49,21 @@ StorageForge addresses this threat through **kernel-native defense-in-depth**, c
 │ │  ├──────────────────────────────────────────────────────────────────────────────────────────────┤  │ │
 │ │  │ 1. Compliance Baseline: sf-init-compliance.sh (CIS L1/L2, NIST 800-53, HIPAA, PCI-DSS, SOC 2) │  │ │
 │ │  ├──────────────────────────────────────────────────────────────────────────────────────────────┤  │ │
-│ │  │ 2. Network Perimeter & Fencing: nftables / firewalld / ufw / client CIDR fencing             │  │ │
+│ │  │ 2. Monotonic Clock Guard: NTS multi-peer verification + Chrony drift & time-jump tripwire    │  │ │
 │ │  ├──────────────────────────────────────────────────────────────────────────────────────────────┤  │ │
-│ │  │ 3. Mandatory Access Control: SELinux (fcontext, booleans, AVCs) & AppArmor (profiles)        │  │ │
+│ │  │ 3. Network Perimeter & Fencing: nftables / firewalld / ufw / client CIDR fencing             │  │ │
 │ │  ├──────────────────────────────────────────────────────────────────────────────────────────────┤  │ │
-│ │  │ 4. Kernel Tripwires: Decoy canaries + auditd watch rules (-w canary -p wa) + audispd hook     │  │ │
+│ │  │ 4. Mandatory Access Control: SELinux (fcontext, booleans, AVCs) & AppArmor (profiles)        │  │ │
 │ │  ├──────────────────────────────────────────────────────────────────────────────────────────────┤  │ │
-│ │  │ 5. Runtime Behavioral eBPF: Falco mass-rename, chattr tampering & Shannon entropy checks      │  │ │
+│ │  │ 5. Tripwires: Canaries + Samba VSS shadow traps + auditd rules (-w canary -p wa)             │  │ │
 │ │  ├──────────────────────────────────────────────────────────────────────────────────────────────┤  │ │
-│ │  │ 6. Host Integrity & Compliance: AIDE cryptographic FIM + Lynis automated CIS hardening audits │  │ │
+│ │  │ 6. Runtime Behavioral eBPF: Falco mass-rename, chattr tampering & Shannon entropy checks      │  │ │
 │ │  ├──────────────────────────────────────────────────────────────────────────────────────────────┤  │ │
-│ │  │ 7. Automated Emergency Brake: sub-second client drop, remount RO, auto-snapshot, alert team  │  │ │
+│ │  │ 7. Host Integrity & Compliance: AIDE cryptographic FIM + Lynis automated CIS hardening audits │  │ │
 │ │  ├──────────────────────────────────────────────────────────────────────────────────────────────┤  │ │
-│ │  │ 8. Storage Immutability: ZFS hold retention locks, Btrfs read-only subvolumes, chattr +i      │  │ │
+│ │  │ 8. Automated Emergency Brake: Volatile triage RAM dump -> Drop client IP -> Remount RO -> snap│  │ │
+│ │  ├──────────────────────────────────────────────────────────────────────────────────────────────┤  │ │
+│ │  │ 9. Storage Immutability: ZFS hold retention locks, Btrfs read-only subvolumes, chattr +i      │  │ │
 │ │  └──────────────────────────────────────────────────────────────────────────────────────────────┘  │ │
 │ └────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -70,8 +82,8 @@ The Web UI navigation expands with a dedicated **Security** section on the right
 Inspect          Plan             Inventory        Security (New)          Admin
 ├── Details      ├── Changes      ├── Docker       ├── SOC Center (Cmd)    ├── Scans
 └── Search       ├── Moves        ├── Git          ├── WORM & Locks        ├── Keys
-                 ├── Schedule     ├── Rebuild      ├── Canaries            └── Audit
-                 └── Deploy       ├── Cleanup      ├── MAC (SELinux/AA)
+                 ├── Schedule     ├── Rebuild      ├── Canaries & VSS      └── Audit
+                 └── Deploy       ├── Cleanup      ├── MAC & Identity
                                   └── Access       ├── Firewall
                                                    ├── Behavior & eBPF
                                                    ├── Host Integrity
@@ -85,13 +97,14 @@ Inspect          Plan             Inventory        Security (New)          Admin
   * 🔴 **CRITICAL INCIDENT:** Active tripwire tripped, Falco mass-rename caught, or client quarantined. Includes 1-click jump to the SOC Command Center.
 * **Canvas Badging (Topology & Graph):**
   * Mount points and pool nodes display an **"Immutable Lock"** badge with expiration countdown.
-  * Active canaries appear as distinctive target icons on share nodes.
+  * Active canaries and VSS shadow decoys appear as distinctive target icons on share nodes.
   * Confined daemons display MAC status badges (SELinux Shield / AppArmor Armor).
   * Fenced/quarantined network links are highlighted with an amber/red pulse.
 * **Deep Linking Format:** Direct hash routing for SOC workflows:
   * `/#host=nas-01&tab=security&panel=soc`
   * `/#host=nas-01&tab=security&panel=worm&pool=tank`
   * `/#host=nas-01&tab=security&panel=canaries`
+  * `/#host=nas-01&tab=security&panel=mac&subtab=identity`
   * `/#host=nas-01&tab=security&panel=mac&subtab=avc`
   * `/#host=nas-01&tab=security&panel=firewall&subtab=quarantine`
   * `/#host=nas-01&tab=security&panel=behavior&subtab=entropy`
@@ -100,12 +113,13 @@ Inspect          Plan             Inventory        Security (New)          Admin
   * `/#host=nas-01&tab=security&panel=compliance&standard=cis-l2`
 
 ### 2.2 Sysadmin Customization Model
-Every sysadmin operates with distinct environment constraints (e.g. archival media storage vs high-churn database servers). StorageForge provides five pillars of customization:
+Every sysadmin operates with distinct environment constraints (e.g. archival media storage vs high-churn database servers). StorageForge provides six pillars of customization:
 1. **Custom Security Dashboards & Widget Grids:** Sysadmins can build personalized dashboard views with draggable, resizable telemetry tiles (e.g. canary status, top blocked IPs, entropy outliers, AVC feed, Lynis posture, compliance score).
 2. **Custom Baseline & Threshold Tuners:** Interactive sensitivity sliders for entropy calculations, modification velocities, and alert thresholds per dataset.
 3. **Custom Rule & Persona Editors:** Syntax-highlighted in-browser editors for Falco eBPF rules, YARA malware signatures, and Canary decoy generators.
-4. **Custom Compliance Baseline Customizer:** Tailor global compliance standards by adding organization-specific waivers, customized sysctl lists, or custom AIDE watchpaths.
-5. **Custom Incident Playbook Matrix:** Visual trigger-to-action builder ("If *Canary X* trips on *Share Y*, then *Drop IP via nftables* AND *Freeze RO* AND *Snapshot with Hold* AND *Notify Slack*").
+4. **Adaptive Quorum & Timelock Tuners:** Configurable cool-off delay windows (24h/48h/72h) and Break-Glass offline emergency key generation for solo operators.
+5. **Custom Compliance Baseline Customizer:** Tailor global compliance standards by adding organization-specific waivers, customized sysctl lists, or custom AIDE watchpaths.
+6. **Custom Incident Playbook Matrix:** Visual trigger-to-action builder ("If *Canary X* trips on *Share Y*, then *Dump RAM Triage* AND *Drop IP via nftables* AND *Freeze RO* AND *Snapshot with Hold* AND *Notify Slack*").
 
 ---
 
@@ -113,16 +127,27 @@ Every sysadmin operates with distinct environment constraints (e.g. archival med
 
 ---
 
-### Layer 1: Immutable Snapshots & WORM Retention Locks
+### Layer 1: Immutable Snapshots, Anti-NTP Clock Guards, & Adaptive Quorum
 
 #### 1. Technical Engine & Capabilities
-* **ZFS Hold Enforcement:** Applies `zfs hold sf-retention-<epoch> <dataset@snap>` during snapshot creation. Prevents `zfs destroy` at the kernel level.
+* **ZFS Hold Enforcement:** Applies `zfs hold sf-retention-<epoch> <dataset@snap>` during snapshot creation. Prevents `zfs destroy` at the kernel level until release.
 * **Btrfs Read-Only & Subvolume Locks:** Strictly mounts snapshots with `-o ro`, applies directory immutable flags (`chattr +i`), and enforces remote backup receive staging.
 * **Safe Delegation Matrix:** Validates that backup/scan users hold only `snapshot,send,hold` permissions, never `destroy,release`.
 * **Legal Hold System:** Allows sysadmins to pin critical snapshots indefinitely during active investigations.
+* **Anti-NTP Clock Poisoning Guard:**
+  * Attackers often forge NTP packets or run `timedatectl set-time` forward by 30 days to force WORM time-locks to expire.
+  * StorageForge implements **Monotonic Clock Verification**: cross-checks system time across multiple authenticated NTS (Network Time Security) servers and hardware RTC drift.
+  * **Time-Jump Tripwire:** A sudden time leap forward ($>60\text{s}$) immediately suspends all hold release operations, locks retention policies into an indefinite emergency freeze, and dispatches an emergency alarm.
+* **Adaptive Quorum Engine (Dual-Admin vs Single-Admin Guarded Mode):**
+  * **Multi-Admin Fleet ($\ge 2$ Admins):** Dual-custody quorum enforced. Releasing a hold prior to natural expiration requires initiation by Admin A and cryptographic signature approval from Admin B.
+  * **Single-Admin Fleet (Solo Operator):** Automatically engages **Single-Operator Guarded Mode**:
+    1. *Mandatory 24h–48h Cool-Off Delay Window:* Destructive action is staged and queued. Immediate execution is blocked.
+    2. *Out-of-Band Broadcast:* Emergency alerts fire via SMS, PagerDuty, and email with a 1-click `[ ABORT & REVOKE ]` link if the account was compromised.
+    3. *Physical Offline Break-Glass Key:* During site setup, a 64-character offline recovery secret is printed on a physical sheet for safe-box storage. Entering this key bypasses the cool-off delay for legitimate disasters.
+    4. *Hardware Step-Up:* Mandatory FIDO2 / WebAuthn physical token touch or local TTY/IPMI console verification.
 
 #### 2. Admin Panel: "WORM Retention & Snapshot Vault"
-The primary administrative console for managing immutable retention policies, active holds, and secure recovery points.
+The primary administrative console for managing immutable retention policies, active holds, clock health, and quorum approvals.
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -130,9 +155,10 @@ The primary administrative console for managing immutable retention policies, ac
 ├────────────────────────────────────────────────────────────────────────────────────────┤
 │  Host: [ nas-01 (Rocky 9) ▼ ]   Pool: [ tank (ZFS) ▼ ]   Dataset: [ tank/data/shares ▼] │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
-│  RETENTION OVERVIEW                                                                    │
+│  RETENTION & CLOCK INTEGRITY                                                           │
 │  Active Holds: 42 snapshots      Expiring <24h: 3 snapshots     Legal Holds: 2 pinned │
-│  WORM Enforcement: ZFS Kernel Hold (Active)    3-2-1 Immutability Score: 100% (Pass)   │
+│  WORM Enforcement: ZFS Kernel Hold (Active)    Clock Guard: 🟢 NTS Monotonic (Drift 2ms)│
+│  Quorum Mode: 👤 Single-Operator Guarded (24h Delay Active / Break-Glass Armed)        │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
 │  SNAPSHOT RETENTION REPOSITORY                                                         │
 │  [ Filter: All Holds ▼ ]  [ Search Snapshot Name...                                  ] │
@@ -144,7 +170,11 @@ The primary administrative console for managing immutable retention policies, ac
 │  │ tank/shares@incident-202610 │ sf-legal  │ Oct 28 14:15 │ Permanent    │ 📌 Pinned │ │
 │  └─────────────────────────────┴───────────┴──────────────┴──────────────┴───────────┘ │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
-│  ACTIONS: [ 🔒 Apply Hold ]  [ 🔓 Release Hold (Password Req.) ]  [ 🔄 Rollback Preview]│
+│  PENDING TIMELOCK ACTIONS (COOL-OFF BUFFER)                                            │
+│  • Release Hold: tank/shares@daily-20261020 | Requested by: admin (14h remaining)      │
+│    [ 🛑 ABORT & REVOKE IMMEDIATELY ]   [ 🔑 Enter Offline Break-Glass Key (Bypass) ]   │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  ACTIONS: [ 🔒 Apply Hold ]  [ 🔓 Request Release ]  [ ❄️ Emergency Legal Freeze ]     │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -154,12 +184,15 @@ The primary administrative console for managing immutable retention policies, ac
   * **Delegation Safety Check:** Scans `zfs allow` permissions; alerts if the unprivileged SSH scan user has `destroy` or `release` rights.
   * **1-Click Rollback Preview:** Compares current live filesystem state against an immutable snapshot, generates a visual diff, and prepares a signed rollback plan.
   * **Guarded Actions:** Releasing a hold prior to its expiration requires admin password re-entry and creates a signed audit event.
+  * **NTS Clock Guard Health:** Shows synchronization status with trusted external atomic/NTS servers and drift telemetry.
 
 #### 3. Expanded Sysadmin Custom Views & Customization
 * **Custom Retention Tier Policy Designer:**
   * Define automated retention rules by dataset tag or path pattern:
     * E.g., `tag:prod` $\rightarrow$ 30-day kernel WORM hold; `tag:compliance` $\rightarrow$ 365-day legal hold; `tag:scratch` $\rightarrow$ no hold.
   * Set grace periods and minimum offsite airgap retention requirements.
+* **Custom Timelock & Quorum Configurator:**
+  * Configure cool-off delay duration (12h to 72h) for single-admin mode; configure secondary notification webhooks and SMS endpoints.
 * **Custom Legal Hold & Freeze Mode:**
   * Sysadmins can trigger an instant freeze on a pool or dataset. During a freeze, all automated retention purges are suspended, preserving forensic history regardless of scheduled expiration.
 * **Custom Immutability Compliance Auditor:**
@@ -167,38 +200,43 @@ The primary administrative console for managing immutable retention policies, ac
 
 ---
 
-### Layer 2: Early Warning Canaries & Auditd Tripwire Engine
+### Layer 2: Early Warning Canaries, VSS Decoys, & Auditd Watchers
 
 #### 1. Technical Engine & Capabilities
 * **Strategic Decoy Placement:** Automatically deploys synthetic, convincing decoy files (`_AAAPasswords.docx`, `!Financial_2026.xlsx`, `00_Index.pdf`) positioned at the beginning of directory traversals.
+* **Samba Shadow Copy (VSS) Trap (`vfs_shadow_copy2`):**
+  * Windows ransomware invariably executes commands like `vssadmin.exe delete shadows /all /quiet` or `wmic shadowcopy delete` before encrypting files.
+  * StorageForge exposes ZFS/Btrfs snapshots via Samba's `vfs_shadow_copy2` module as read-only Previous Versions.
+  * **VSS Deletion Interceptor:** Intercepts unauthorized Windows RPC shadow-deletion requests over SMB and trips the emergency brake **before any files on the filesystem are touched**.
 * **Kernel-Level Audit Rules:** Generates persistent `/etc/audit/rules.d/storageforge-canary.rules` watching canaries with `-p wa` (write/attribute change).
 * **Config File Watchdogs:** Watches `/etc/fstab`, `/etc/samba/smb.conf`, `/etc/exports`, and `/usr/local/sbin/storageforge-run`.
-* **Automated Emergency Brake:** Microsecond trigger via `audispd` hook or inotify: severs client connection, drops client IP in firewall, remounts filesystem read-only, takes immediate snapshot.
+* **Automated Emergency Brake:** Microsecond trigger via `audispd` hook or inotify: captures volatile RAM triage, severs client connection, drops client IP in firewall, remounts filesystem read-only, takes immediate snapshot.
 
 #### 2. Admin Panel: "Canaries & Tripwires Console"
-The command center for monitoring tripwire health, reviewing decoy baselines, and managing kernel audit rules.
+The command center for monitoring tripwire health, reviewing decoy baselines, managing VSS traps, and auditing kernel watch rules.
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │  CANARIES & TRIPWIRES CONSOLE                                   [ + Deploy Canaries ]  │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
-│  CANARY FLEET STATUS                                                                   │
+│  CANARY & VSS DECOY FLEET STATUS                                                       │
 │  Active Canaries: 184 files    Protected Shares: 16 SMB / 8 NFS   Tripwire State: ARMED│
+│  Samba VSS Shadow Traps: 16 shares protected (vfs_shadow_copy2 RPC Interceptor: ACTIVE)│
 │  Auditd Watchers: 24 active rules    audispd Event Hook: Active & Latency: 1.2ms       │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
-│  CANARY DECOY INVENTORY                                                                │
+│  TRIPWIRE INVENTORY & VSS STATUS                                                       │
 │  [ Filter: All Shares ▼ ]  [ Host: atlas ▼ ]  [ Status: Normal ▼ ]                     │
 │  ┌──────────────────────────────┬──────────────┬─────────────┬───────────┬───────────┐ │
-│  │ Decoy Path                   │ Target Share │ Baseline SHA│ Last Test │ Status    │ │
+│  │ Decoy Path / Trap            │ Target Share │ Trap Type   │ Last Test │ Status    │ │
 │  ├─────────────────────────────┼──────────────┼─────────────┼───────────┼───────────┤ │
-│  │ /srv/shares/hr/_AAAPass.docx │ //atlas/hr   │ e3b0c44298f…│ 2 hrs ago │ 🟢 Untouch│ │
-│  │ /srv/shares/fin/!2026.xlsx   │ //atlas/fin  │ 8f43a9b1c2d…│ 2 hrs ago │ 🟢 Untouch│ │
-│  │ /srv/nfs/dev/00_readme.pdf   │ nfs:dev      │ c2a4b89e10f…│ 2 hrs ago │ 🟢 Untouch│ │
+│  │ /srv/shares/hr/_AAAPass.docx │ //atlas/hr   │ File Canary │ 2 hrs ago │ 🟢 Untouch│ │
+│  │ VSS RPC: vssadmin Intercept  │ //atlas/fin  │ VSS Decoy   │ 1 day ago │ 🛡️ Armed  │ │
+│  │ /srv/nfs/dev/00_readme.pdf   │ nfs:dev      │ File Canary │ 2 hrs ago │ 🟢 Untouch│ │
 │  └─────────────────────────────┴──────────────┴─────────────┴───────────┴───────────┘ │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
 │  RECENT TRIPWIRE EVENTS & AUDIT LOG                                                    │
-│  2026-11-01 23:14:02 | Host: atlas | Key: sf_storage_config | File: /etc/fstab        │
-│  Event: WRITE by PID 14201 (/usr/bin/nano) UID 0 (root) -> [ View Audit Record ]       │
+│  2026-11-01 23:14:02 | Host: atlas | Key: sf_vss_trap | Client: 10.0.1.42 (WORKSTATION)│
+│  Event: Intercepted 'vssadmin delete shadows' RPC -> [ ⚠️ Emergency Brake Executed ]  │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
 │  ACTIONS: [ 🧪 Simulate Canary Trip ]  [ 🔄 Refresh Decoy Hashes ]  [ ⚠️ Disarm Brake ] │
 └────────────────────────────────────────────────────────────────────────────────────────┘
@@ -214,6 +252,8 @@ The command center for monitoring tripwire health, reviewing decoy baselines, an
 * **Custom Canary Persona & Decoy Generator:**
   * Customize decoy naming conventions to match corporate naming standards (e.g. `{Dept}_Confidential_Salaries_{Year}.xlsx` or `sysadmin_backup_keys.kdbx`).
   * Custom payload synthesizer: embeds believable metadata, headers, and randomized binary streams so sophisticated ransomware cannot distinguish canaries via static file size or null bytes.
+* **Custom VSS Policy Tuner:**
+  * Configure how Samba responds to shadow copy deletion calls: instant client drop, silent fake success (honey-token delay), or immediate full-share freeze.
 * **Custom Watch Profile Builder (Kernel Auditd vs Inotify vs Fanotify):**
   * Select watcher backend per share:
     * *High-Security Archival Shares:* `auditd` kernel rules with `-p wa` (captures PID, UID, SELinux context, and syscall sequence).
@@ -223,24 +263,38 @@ The command center for monitoring tripwire health, reviewing decoy baselines, an
 
 ---
 
-### Layer 3: Mandatory Access Control (MAC) Engine (SELinux & AppArmor)
+### Layer 3: Mandatory Access Control (MAC) & Identity Anomaly Detection
 
 #### 1. Technical Engine & Capabilities
 * **SELinux Fleet Discovery:** Indexes mode (`enforcing`, `permissive`, `disabled`), active policy (`targeted`, `mls`), and storage booleans (`samba_export_all_rw`, `nfs_export_all_rw`, `virt_use_nfs`, etc.).
 * **Persistent Context Management:** Generates declarative `semanage fcontext` rules rather than fragile `chcon` commands; executes `restorecon -Rv` on drifted shares.
-* **AVC Denial Correlation:** Analyzes `audit.log` via `ausearch -m avc -ts recent` for storage-related daemons (`smbd`, `nfsd`, `container_t`); maps denied target contexts to StorageForge mount paths.
+* **Storage AVC Denial Correlation:** Analyzes `audit.log` via `ausearch -m avc -ts recent` for storage-related daemons (`smbd`, `nfsd`, `container_t`); maps denied target contexts to StorageForge mount paths.
 * **AppArmor Profile Confinement:** Indexes profile enforcement across storage daemons; enforces confinement paths ensuring daemons cannot access paths outside declared pools.
+* **Identity & SMB/NFS Credential Anomaly Detection:**
+  * Analyzes Samba connection sessions and RPC telemetry to detect stolen Active Directory / Kerberos credentials:
+    1. *Mass Share Enumeration:* Rapid sequential binding to $>10$ departmental shares within 30 seconds.
+    2. *Impossible Travel / Concurrent Logins:* Same user credential authenticating from two distinct subnets simultaneously.
+    3. *Off-Hours High-Velocity Reads:* Anomalous batch read patterns outside normal business hours.
 
-#### 2. Admin Panel: "Mandatory Access Control (MAC) Hub"
-The central pane for auditing, configuring, and remediating SELinux and AppArmor host protections.
+#### 2. Admin Panel: "Mandatory Access Control (MAC) & Identity Hub"
+The central pane for auditing, configuring, and remediating SELinux and AppArmor host protections, and monitoring credential anomalies.
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│  MANDATORY ACCESS CONTROL (MAC) HUB                                [ 🔄 Re-scan MAC ] │
+│  MANDATORY ACCESS CONTROL (MAC) & IDENTITY HUB                     [ 🔄 Re-scan MAC ] │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
-│  HOST MAC STATUS                                                                       │
+│  HOST MAC & IDENTITY STATUS                                                            │
 │  Host: [ storage-node-02 (AlmaLinux 9) ▼ ]                                             │
 │  MAC Technology: SELinux (Targeted)     Mode: 🛡️ Enforcing     Drift: 2 paths unaligned │
+│  Active SMB Sessions: 34 clients        Credential Anomalies: 1 flagged (Suspicious)   │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  CREDENTIAL ANOMALY & TRAVERSAL ALERTS                                                 │
+│  ┌──────────────┬─────────────┬──────────────┬───────────────────────────┬───────────┐ │
+│  │ Timestamp    │ User / Acct │ Client IP    │ Detected Behavior         │ Action    │ │
+│  ├──────────────┼─────────────┼──────────────┼───────────────────────────┼───────────┤ │
+│  │ 02:14:02 UTC │ j.smith     │ 192.168.1.99 │ Mass Enumeration (14 sh.) │ [ Block ] │ │
+│  │ Yesterday    │ service_adm │ 10.0.50.12   │ Off-hours bulk read (40GB)│ [ Inspect]│ │
+│  └──────────────┴─────────────┴──────────────┴───────────────────────────┴───────────┘ │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
 │  STORAGE BOOLEAN SWITCHBOARD                                                           │
 │  ┌──────────────────────────────┬─────────┬──────────┬───────────────────────────────┐ │
@@ -275,6 +329,8 @@ The central pane for auditing, configuring, and remediating SELinux and AppArmor
 * **Custom Storage Context Mapping Matrix:**
   * Define corporate-wide path-to-context rules (e.g. `/data/dept_*` $\rightarrow$ `samba_share_t`; `/data/containers/*` $\rightarrow$ `container_file_t`).
   * Automatically scans for parent directory permission and context traversal bottlenecks that cause silent service failures.
+* **Custom Credential Velocity & Traversal Thresholds:**
+  * Customize sensitivity: set maximum allowable share mounts per minute per client before automated rate-limiting or alerting kicks in.
 * **Custom AVC Noise Filter & Exception Manager:**
   * Filter out repetitive benign AVC denials (e.g., systemd probes or unconfined desktop indexing services) while highlighting lateral movement attempts (e.g., Samba attempting to read `/etc/shadow` or `/root/.ssh`).
 * **Custom AppArmor Confinement Sandbox Profiler:**
@@ -506,26 +562,47 @@ The operational dashboard for differential scanning schedules, signature health,
 
 #### 3. Expanded Sysadmin Custom Views & Customization
 * **Custom YARA Rule Repository & Syntax Editor:**
-  * Built-in syntax-highlighted editor with rule validation.
+  * Built-in syntax-highlighted editor with rule validation:
+    ```yara
+    rule Ransomware_Extortion_Note_Pattern {
+        strings:
+            $s1 = "your files have been encrypted" nocase
+            $s2 = "send bitcoin to the following address" nocase
+            $s3 = "DECRYPT_FILES" ascii
+        condition:
+            2 of ($s*)
+    }
+    ```
   * Test YARA rules against the StorageForge indexed file database before saving.
 * **Custom Differential Scan Filtering Matrix:**
-  * Configure file filters to optimize scan performance (skip large media $>500\text{MB}$, enforce deep scan on scripts/executables/macros).
+  * Configure file filters to optimize scan performance:
+    * *Skip Large Media:* Skip non-executable media files $> 500\text{MB}$ (`.mkv`, `.iso`, `.tar`).
+    * *Deep Inspection:* Force YARA scan on all executable formats (`.exe`, `.elf`, `.sh`, `.bat`, `.ps1`), macros (`.docm`, `.xlsm`), and compressed archives (`.zip`, `.7z`).
 
 ---
 
-### Layer 8: SOC Command Center & Incident Containment Orchestrator
+### Layer 8: SOC Command Center, Volatile Triage, Blast-Radius, & Clean-Room Recovery
 
 #### 1. Technical Engine & Capabilities
-* **Unified Threat Correlation Engine:** Merges telemetry from all 7 layers (Canaries, auditd, SELinux AVCs, firewall set entries, Falco alerts, entropy spikes, and AIDE drift) into a unified timeline.
-* **Autonomous Emergency Brake Orchestration:** Orchestrates instant multi-step containment:
-  1. Drops offending client IP in `nftables`/`firewalld` set.
-  2. Remounts target share or dataset read-only.
-  3. Executes emergency snapshot tagged `@ransomware-incident-<timestamp>`.
-  4. Dispatches priority alert notifications via Webhooks, Slack, Discord, Telegram, or PagerDuty.
-* **1-Click Immutable Forensic Rollback Wizard:** Analyzes pre-incident immutable snapshots, verifies data integrity, and generates a guided rollback change plan.
+* **Unified Threat Correlation Engine:** Merges telemetry from all layers into a unified real-time incident timeline.
+* **Autonomous Emergency Brake Orchestration:**
+  1. **Pre-Freeze Volatile Memory Triage Dump:** Before severing connections or remounting `ro`, captures a non-intrusive snapshot of the tripping process (`/proc/<pid>/maps`, `/proc/<pid>/environ`, open network sockets, and memory strings) saved to an immutable forensic volume. This preserves unencrypted in-memory AES keys and C2 IP artifacts for recovery and law enforcement.
+  2. **Sever Connection & Quarantine IP:** Drops client IP via `nftables`/`firewalld` set.
+  3. **Freeze Filesystem:** Remounts target share or dataset read-only.
+  4. **Emergency Snapshot:** Takes immediate snapshot tagged `@ransomware-incident-<timestamp>`.
+  5. **Dispatches Priority Alerts:** PagerDuty, Slack, Discord, SMS, or Webhook.
+* **Automated Blast-Radius & RPO Calculator:**
+  * Compares the pre-incident immutable snapshot against the live filesystem:
+    * 🟢 **Clean / Untouched:** Files with identical checksums.
+    * 🟡 **Suspect / Renamed:** Files modified or renamed right before containment.
+    * 🔴 **Corrupted / High-Entropy:** Confirmed encrypted ciphertext files.
+  * Calculates exact Recovery Point Objective (RPO) and downtime loss metrics for cyber insurance.
+* **Clean-Room Airgap Sandbox & Safe Staging Wizard:**
+  * Prevents immediate re-infection upon share restore by mounting pre-incident snapshots into an isolated quarantine loopback share/VLAN.
+  * Enables sysadmins to execute deep YARA sweeps and verify clean integrity before cutting over production shares.
 
 #### 2. Admin Panel: "Ransomware Defense & SOC Command Center"
-The high-level dashboard for real-time fleet threat status, active containment, and recovery.
+The high-level dashboard for real-time fleet threat status, active containment, blast-radius analysis, and clean-room recovery.
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -533,7 +610,7 @@ The high-level dashboard for real-time fleet threat status, active containment, 
 ├────────────────────────────────────────────────────────────────────────────────────────┤
 │  FLEET THREAT POSTURE                                                                  │
 │  Overall Status: 🟢 SECURE (No Active Incidents)   Monitored Hosts: 6 nodes            │
-│  Canary Decoys: 184/184 Armed    eBPF Probes: 6/6 Online    Immutable Recovery: 100%   │
+│  Canary Decoys: 184/184 Armed    VSS Traps: Armed    Immutable Recovery: 100%          │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
 │  UNIFIED INCIDENT TIMELINE & THREAT STREAM                                             │
 │  [ Filter: Severity All ▼ ]  [ Host: All Hosts ▼ ]                                     │
@@ -545,26 +622,45 @@ The high-level dashboard for real-time fleet threat status, active containment, 
 │  │ Yesterday    │ 🔴 CRIT  │ atlas        │ Canary tripped by 10.0.1.42 │ Contained  │ │
 │  └──────────────┴──────────┴──────────────┴─────────────────────────────┴────────────┘ │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
-│  MANUAL CONTAINMENT SWITCHBOARD                                                        │
-│  ┌──────────────────────┬─────────────────────────────┬──────────────────────────────┐ │
-│  │ Target Host / Share  │ Action                      │ Trigger                      │ │
-│  ├──────────────────────┼─────────────────────────────┼──────────────────────────────┤ │
-│  │ atlas://shares/hr    │ Remount Read-Only           │ [ ❄️ Freeze Share ]          │ │
-│  │ nas-01 (All Shares)  │ Drop Client Network Packets │ [ ⛔ Drop Client IP... ]      │ │
-│  │ storage-node-02      │ Total Host Airgap           │ [ 🛡️ Trigger Airgap ]        │ │
-│  └──────────────────────┴─────────────────────────────┴──────────────────────────────┘ │
+│  INCIDENT FORENSICS & BLAST-RADIUS ASSESSMENT (atlas://shares/finance)                 │
+│  Incident Snapshot: @ransomware-incident-20261101-231402                               │
+│  Clean Files: 42,109 (99.8%)   Suspect: 12 files   Corrupted: 4 files (Contained)      │
+│  Volatile RAM Triage: Preserved (PID 14201 memory dump -> /var/log/forensics/dump.bin) │
+│  Calculated RPO Loss: < 12 seconds of data | Blast Radius: Contained to single client  │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
-│  FORENSIC RECOVERY: [ 🔄 Launch Immutable Rollback Wizard ]  [ 📋 Export Forensic Log ] │
+│  MANUAL CONTAINMENT & RECOVERY ACTIONS                                                 │
+│  [ 🧪 Stage Clean-Room Sandbox ]  [ 🔄 Launch Guided Rollback ]  [ 📋 Export Insurance]│
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+* **Interactive Elements & Workflows:**
+  * **Unified Incident Timeline:** Chronological feed linking canary triggers, auditd logs, and firewall quarantines.
+  * **Blast-Radius Inspector:** Visual breakdown of untouched vs damaged data with single-click restore staging.
+  * **Manual Containment Switchboard:** High-visibility levers to freeze shares, drop IPs, or airgap nodes.
+  * **Clean-Room Staging Trigger:** Mounts recovery points into an isolated sandbox with zero host exposure.
+  * **Forensic Export:** Generates hash-signed JSON/PDF summaries for cyber insurance audits.
+
 #### 3. Expanded Sysadmin Custom Views & Customization
 * **Custom Incident Playbook Designer (Trigger-Action Matrix):**
-  * A visual rule builder allowing sysadmins to construct custom autonomous response workflows.
+  * A visual rule builder allowing sysadmins to construct custom autonomous response workflows:
+
+```mermaid
+flowchart LR
+    A["Event Trigger"] --> B{"Condition Check"}
+    B -->|"Canary or VSS Intercept"| C["Dump RAM Triage (Proc/Maps)"]
+    C --> D["Auto Drop IP (nftables)"]
+    D --> E["Auto Remount RO"]
+    E --> F["Auto Snapshot (@incident)"]
+    F --> G["Dispatch PagerDuty / Webhook"]
+    B -->|"Entropy Spike > 7.92"| H["Auto Snapshot (@entropy)"]
+    H --> I["Notify Sysadmin (Confirmation Required)"]
+    B -->|"SELinux AVC Denial"| J["Log to Audit Chain & Alert Doctor"]
+```
+
 * **Custom Notification Channel Router:**
-  * Route security alerts to different channels depending on severity and host tags.
+  * Route security alerts to different channels depending on severity and host tags (Critical alarms page PagerDuty + SMS; Warnings post to `#storage-security` on Discord/Slack; Info logs stream to central syslog/SIEM).
 * **Custom Forensic Timeline Filter:**
-  * Filter incident history by client IP, affected user, specific dataset, or protocol.
+  * Filter incident history by client IP, affected user, specific dataset, or protocol (SMB vs NFS) to reconstruct attack timelines for cyber insurance and incident response reports.
 
 ---
 
@@ -589,6 +685,7 @@ StorageForge automatically discovers the target host's operating system, package
 | **Rule Scanning Engine**| `yara`, `libyara-dev` | `yara`, `yara-devel` (EPEL) | `yara`, `yara-devel` | `yara` |
 | **Storage Utilities** | `zfsutils-linux`, `btrfs-progs`, `e2fsprogs` | `zfs`, `btrfs-progs`, `e2fsprogs` | `zfs`, `btrfsprogs`, `e2fsprogs` | `zfs-utils`, `btrfs-progs` |
 | **Kernel File Watchers**| `inotify-tools` | `inotify-tools` (EPEL) | `inotify-tools` | `inotify-tools` |
+| **Time & NTS Sync** | `chrony` | `chrony` | `chrony` | `chrony` |
 
 ### 4.2 Automated Installation Architecture in Generated Scripts
 When an operator approves a security deployment or compliance baseline initialization, StorageForge generates a signed, self-contained Bash script executed via `/usr/local/sbin/storageforge-run`. The script includes an automated dependency resolver:
@@ -598,24 +695,23 @@ When an operator approves a security deployment or compliance baseline initializ
 sf_install_security_prereqs() {
     info "Resolving required security packages for host..."
     if command -v dnf >/dev/null 2>&1; then
-        # Enable EPEL if required for Lynis / Inotify-tools / YARA on RHEL/Rocky/Alma
         if ! rpm -q epel-release >/dev/null 2>&1; then
             doing "Enabling EPEL repository for security utilities"
             dnf install -y -q epel-release || true
         fi
         doing "Installing security packages via dnf"
         dnf install -y -q audit aide lynis nftables firewalld inotify-tools \
-            policycoreutils-python-utils clamav clamd yara e2fsprogs
+            policycoreutils-python-utils clamav clamd yara e2fsprogs chrony
     elif command -v apt-get >/dev/null 2>&1; then
         export DEBIAN_FRONTEND=noninteractive
         doing "Updating apt cache and installing security packages"
         apt-get update -qq
         apt-get install -y -qq auditd audispd-plugins aide lynis nftables ufw \
-            inotify-tools apparmor-utils clamav clamdscan yara e2fsprogs
+            inotify-tools apparmor-utils clamav clamdscan yara e2fsprogs chrony
     elif command -v zypper >/dev/null 2>&1; then
         doing "Installing security packages via zypper"
         zypper --non-interactive install -y audit aide lynis nftables firewalld \
-            inotify-tools apparmor-utils clamav yara e2fsprogs
+            inotify-tools apparmor-utils clamav yara e2fsprogs chrony
     fi
     ok "Security prerequisites installed and verified"
 }
@@ -707,7 +803,7 @@ Located under `Security -> Compliance & Init`, this panel enables sysadmins to s
 │  │ 4 │ MAC Enforcement               │ SELinux Enforcing, Booleans │ 🟢 Enforcing    │ │
 │  │ 5 │ Firewall Fencing              │ nftables client CIDRs       │ 🟢 Active       │ │
 │  │ 6 │ AIDE FIM Initialization       │ aide --init & baseline pin  │ 🟢 Verified     │ │
-│  │ 7 │ Deploy Canary Decoys          │ 12 decoys across 3 shares   │ 🟢 Armed        │ │
+│  │ 7 │ Deploy Canary & VSS Traps     │ Canaries + vfs_shadow_copy2 │ 🟢 Armed        │ │
 │  │ 8 │ WORM Retention Policy         │ 14-day immutable hold       │ ⚠️ Expired (Fix)│ │
 │  └───┴───────────────────────────────┴─────────────────────────────┴─────────────────┘ │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
@@ -756,7 +852,7 @@ Options:
 
 ## 6. API Endpoints & Data Model Architecture
 
-The ransomware defense and compliance features are exposed through a clean REST and WebSocket API (`/api/security/...`), backed by dedicated database models with cryptographic audit logging.
+The ransomware defense, compliance, and adaptive quorum features are exposed through a clean REST and WebSocket API (`/api/security/...`), backed by dedicated database models with cryptographic audit logging.
 
 ### 6.1 REST & WebSocket Endpoints
 
@@ -766,13 +862,17 @@ The ransomware defense and compliance features are exposed through a clean REST 
 | `GET` | `/api/security/compliance/standards` | List supported compliance standards and profiles | No |
 | `GET` | `/api/security/compliance/status/{host}` | Compliance score, drift, and findings for a host | No |
 | `POST` | `/api/security/compliance/init` | Stage or deploy `sf-init-compliance.sh` plan | **Yes** |
-| `GET` | `/api/security/canaries` | List all deployed canaries, hashes, and active audit rules | No |
-| `POST` | `/api/security/canaries/deploy` | Deploy/refresh canaries on selected shares | **Yes** |
-| `POST` | `/api/security/canaries/test` | Run simulated non-destructive tripwire verification | No |
 | `GET` | `/api/security/worm/holds` | List snapshot retention holds and expiration dates | No |
 | `POST` | `/api/security/worm/hold` | Apply kernel retention hold to snapshot (`zfs hold`) | **Yes** |
-| `POST` | `/api/security/worm/release` | Release kernel hold on snapshot (`zfs release`) | **Yes** |
+| `POST` | `/api/security/worm/release` | Request release of kernel hold (initiates quorum or 24h delay) | **Yes** |
+| `POST` | `/api/security/worm/quorum/approve` | Second admin approval for pending WORM release | **Yes** |
+| `POST` | `/api/security/worm/break-glass` | Instant bypass of WORM timelock using offline physical secret | **Yes** |
+| `POST` | `/api/security/worm/abort` | Cancel pending timelocked WORM release immediately | **Yes** |
+| `GET` | `/api/security/canaries` | List all deployed canaries, hashes, and active audit rules | No |
+| `POST` | `/api/security/canaries/deploy` | Deploy/refresh canaries and VSS shadow decoys | **Yes** |
+| `POST` | `/api/security/canaries/test` | Run simulated non-destructive tripwire verification | No |
 | `GET` | `/api/security/mac/status` | Host MAC mode, storage booleans, and persistent fcontexts | No |
+| `GET` | `/api/security/mac/identity-anomalies`| Stolen credential traversal alerts and session anomalies | No |
 | `GET` | `/api/security/mac/avc` | Recent storage-related AVC denial events | No |
 | `POST` | `/api/security/mac/remediate` | Generate signed change plan to fix file context or boolean | **Yes** |
 | `GET` | `/api/security/firewall/quarantine` | Active quarantined attacker IPs and expiration timers | No |
@@ -787,11 +887,14 @@ The ransomware defense and compliance features are exposed through a clean REST 
 | `GET` | `/api/security/malware/quarantine` | List files in quarantine vault | No |
 | `POST` | `/api/security/malware/restore` | Restore false-positive file from quarantine | **Yes** |
 | `DELETE`| `/api/security/malware/shred` | Cryptographically shred quarantined file | **Yes** |
+| `GET` | `/api/security/incident/blast-radius`| Query blast radius, corrupted files, and RPO calculation | No |
+| `POST` | `/api/security/incident/clean-room` | Mount isolated sandbox snapshot for clean verification | **Yes** |
 | `POST` | `/api/security/incident/brake` | Manual execution of the emergency brake sequence | **Yes** |
 
 ### 6.2 Database Models
 Stored within SQLite (`/var/lib/storageforge/storageforge.db`) or PostgreSQL:
 
+* **`security_timelock_queue`:** `id`, `action_type`, `target_ref`, `actor`, `requested_at`, `executes_at`, `status` (`pending`, `aborted`, `executed`), `break_glass_used`.
 * **`security_compliance_profiles`:** `id`, `name`, `standard`, `version`, `config_yaml`, `created_at`.
 * **`security_compliance_status`:** `id`, `host_name`, `profile_id`, `score`, `drift_count`, `last_checked`, `drift_json`.
 * **`security_canaries`:** `id`, `host_name`, `share_path`, `file_name`, `baseline_sha256`, `deployed_at`, `status` (`armed`, `tripped`, `degraded`).
@@ -808,15 +911,15 @@ Stored within SQLite (`/var/lib/storageforge/storageforge.db`) or PostgreSQL:
 
 | Phase | Milestone Deliverables | Modules Touched | Admin Panels & Custom Views | Estimated Effort |
 | :--- | :--- | :--- | :--- | :---: |
-| **Phase 1** | **WORM Retention & Immutable Snapshots**<br>• ZFS hold/release integration<br>• Btrfs read-only subvolume locks<br>• Legal hold pinning & 3-2-1 health engine | `moves.py`<br>`protection.py`<br>`graph.py` | • **WORM Retention & Snapshot Vault Panel**<br>• Expiration Heatmap & Calendar View<br>• Custom Retention Tier Policy Designer | **4–5 days** |
-| **Phase 2** | **Canary Decoys & Auditd Tripwire Engine**<br>• Decoy file generator on SMB/NFS<br>• Persistent auditd ruleset generator<br>• Sub-second emergency brake hook | `shares.py`<br>`preflight.py`<br>`deploy.py` | • **Canaries & Tripwires Console**<br>• Live Tripwire Event Feed<br>• Custom Canary Persona & Decoy Builder | **4–5 days** |
-| **Phase 3** | **MAC Engine (SELinux & AppArmor)**<br>• Storage booleans & `semanage fcontext`<br>• Storage AVC denial correlation<br>• AppArmor daemon profile confinement | `preflight.py`<br>`shares.py`<br>`doctor.py` | • **Mandatory Access Control (MAC) Hub**<br>• Boolean Switchboard & 1-Click Remediation<br>• Custom Path-Context Matrix & AVC Filters | **5–6 days** |
+| **Phase 1** | **WORM Retention, Anti-NTP Guard, & Adaptive Quorum**<br>• ZFS hold/release integration & NTS clock monitor<br>• Dual-Admin Quorum + Single-Admin Timelock delay<br>• Physical Break-Glass offline key generator | `moves.py`<br>`protection.py`<br>`vault.py` | • **WORM Retention & Snapshot Vault Panel**<br>• Pending Timelock Buffer & Break-Glass Modal<br>• Custom Retention Tier & Timelock Tuner | **5–6 days** |
+| **Phase 2** | **Canary Decoys, VSS Traps, & Auditd Engine**<br>• Decoy file generator on SMB/NFS<br>• Samba VSS `vssadmin delete` RPC interceptor<br>• Persistent auditd ruleset & emergency brake hook | `shares.py`<br>`preflight.py`<br>`deploy.py` | • **Canaries & Tripwires Console**<br>• VSS Shadow Trap Monitor<br>• Custom Canary Persona & Decoy Builder | **4–5 days** |
+| **Phase 3** | **MAC Engine & Credential Anomaly Detection**<br>• Storage booleans & `semanage fcontext`<br>• AppArmor daemon profile confinement<br>• Stolen AD/Kerberos traversal & enumeration detector | `preflight.py`<br>`shares.py`<br>`doctor.py` | • **Mandatory Access Control (MAC) Hub**<br>• Credential Anomaly & Traversal Feed<br>• Custom Path-Context Matrix & AVC Filters | **5–6 days** |
 | **Phase 4** | **Firewall Engine & Network Fencing**<br>• Multi-backend (`nftables`, `firewalld`, `ufw`)<br>• Share client CIDR fencing<br>• Dynamic quarantine pool & host airgap | `shares.py`<br>`deployments.py`<br>`server.py` | • **Storage Firewall & Fencing Panel**<br>• Dynamic Quarantine Pool Inspector<br>• Visual Share-Subnet Matrix & Airgap Trigger | **4–5 days** |
 | **Phase 5** | **Behavioral eBPF & Entropy Analysis**<br>• Falco eBPF storage ruleset & parser<br>• Scan-diff velocity & mass rename alarm<br>• Shannon entropy sampler on diffs | `scanner.py`<br>`changes.py`<br>`tasks.py` | • **Behavioral eBPF & Entropy Analytics Center**<br>• Entropy Outlier Inspector & Velocity Charts<br>• Custom Falco Rule Editor & Baseline Tuners | **5–6 days** |
 | **Phase 6** | **Host Integrity & Hardening (AIDE/Lynis)**<br>• AIDE FIM cryptographic baselines<br>• Lynis automated CIS audit parser<br>• 1-click hardening change plans | `preflight.py`<br>`planner.py`<br>`reports.py` | • **Host Integrity & Hardening Console**<br>• AIDE FIM Status & Binary Drift Tracker<br>• Custom Compliance Profiles & Waiver Manager | **4–5 days** |
 | **Phase 7** | **Differential Malware & YARA Engine**<br>• Targeted `file_changes` scan list<br>• Differential `clamdscan` / YARA runner<br>• Quarantine vault browser & shredder | `scanner.py`<br>`jobscript.py`<br>`changes.py` | • **Targeted Malware & YARA Center**<br>• Quarantine Vault Browser & File Hex Preview<br>• Custom YARA Rule Repository & Syntax Editor | **3–4 days** |
-| **Phase 8** | **Automated Package Provisioning & Compliance Init Scripts**<br>• Multi-distro package resolver (`apt`, `dnf`, `zypper`)<br>• `sf-init-compliance.sh` generator (CIS L1/L2, NIST, HIPAA, PCI-DSS)<br>• Airgap / offline bundle support | `reinstall.py`<br>`scriptkit.py`<br>`deploy.py` | • **Compliance & Init Baseline Wizard**<br>• Global Compliance Standards Matrix<br>• Custom Baseline Profile Editor & Waiver Manager | **5–6 days** |
-| **Phase 9** | **Unified SOC Command Center & Orchestrator**<br>• Correlated incident timeline & threat status<br>• Multi-action emergency brake switchboard<br>• 1-Click immutable forensic rollback wizard | `server.py`<br>`alerts.py`<br>`static/` | • **Ransomware Defense & SOC Command Center**<br>• Custom Incident Playbook Matrix (Trigger-Action)<br>• Custom Notification Channel Router | **5–6 days** |
+| **Phase 8** | **Package Provisioning & Compliance Init Scripts**<br>• Multi-distro package resolver (`apt`, `dnf`, `zypper`)<br>• `sf-init-compliance.sh` generator (CIS L1/L2, NIST, HIPAA, PCI-DSS)<br>• Airgap / offline bundle support | `reinstall.py`<br>`scriptkit.py`<br>`deploy.py` | • **Compliance & Init Baseline Wizard**<br>• Global Compliance Standards Matrix<br>• Custom Baseline Profile Editor & Waiver Manager | **5–6 days** |
+| **Phase 9** | **SOC Command Center, Volatile Triage, & Clean-Room**<br>• Pre-freeze volatile RAM triage dump<br>• Automated blast-radius & RPO calculator<br>• Clean-room isolated sandbox staging & recovery | `server.py`<br>`alerts.py`<br>`changes.py` | • **Ransomware Defense & SOC Command Center**<br>• Blast-Radius Damage Assessment View<br>• Clean-Room Sandbox Staging Wizard | **6–7 days** |
 
 ---
 
@@ -825,24 +928,21 @@ Stored within SQLite (`/var/lib/storageforge/storageforge.db`) or PostgreSQL:
 1. **Lab Topology Setup:**
    * Multi-distro VMs in the KVM test lab (Debian/Ubuntu for AppArmor/UFW, Rocky/Alma/Fedora for SELinux/Firewalld/nftables, openSUSE for Zypper).
    * Shared ZFS pool and Samba/NFS exports with staged canaries.
-2. **Automated Package Provisioning Gauntlet:**
+2. **Automated Package Provisioning & Compliance Gauntlet:**
    * Execute clean installation on bare Rocky Linux 9, Ubuntu 24.04 LTS, and openSUSE Leap VMs.
-   * **Verification:** Verify that all packages (`auditd`, `aide`, `lynis`, `falco`, `nftables`, `clamav`, `yara`, SELinux/AppArmor utilities) are resolved and installed cleanly with zero operator intervention. Test offline bundle deployment in an isolated air-gapped subnet.
-3. **Global Compliance Baseline Initialization Gauntlet:**
-   * Run `sf-init-compliance.sh --profile cis-l2` and `--profile hipaa` on target VMs.
-   * **Verification:** Verify that sysctls are hardened, audit rules active, AIDE initialized, SELinux enforcing, and Lynis CIS compliance index reaches $\ge 85\%$.
-4. **Canary Tripwire & Emergency Brake Gauntlet:**
-   * Execute an automated encryptor simulator modifying `_AAAPasswords.docx`.
-   * **Verification:** Verify that the kernel auditd/inotify hook triggers within $<500\text{ms}$, drops the simulated client IP via `nftables`, remounts the dataset `ro`, and takes an immutable `@ransomware-incident` snapshot.
-5. **SELinux & AppArmor Confinement Verification:**
-   * Attempt to traverse outside designated share boundaries using a simulated compromised `smbd` daemon.
-   * **Verification:** Verify that AVC denials are captured, correlated in the MAC Hub, and presented with an actionable 1-click `semanage` remediation plan.
-6. **Behavioral eBPF & Entropy Gauntlet:**
-   * Simulate a batch encryption attack (altering file headers to high-entropy ciphertext and appending `.locked`).
-   * **Verification:** Verify Falco flags mass-renaming within 2 seconds; verify the scan-diff engine flags the Shannon entropy spike ($>7.92$) and prompts containment.
-7. **AIDE & Hardening Drift Verification:**
-   * Modify `/usr/local/sbin/storageforge-run` and `/etc/fstab` out-of-band.
-   * **Verification:** Verify AIDE flags SHA-256 drift on the next check; verify Lynis scores the host accurately and generates valid hardening change plans.
-8. **Immutable Rollback Gauntlet:**
-   * Simulate total filesystem destruction after triggering containment.
-   * **Verification:** Execute the 1-click Rollback Wizard; verify that 100% of uncorrupted data is restored from the kernel-locked snapshot within seconds without data loss.
+   * Verify all security packages are auto-resolved; verify `sf-init-compliance.sh --profile cis-l2` sets sysctls, AIDE, audit rules, and reaches Lynis score $\ge 85\%$.
+3. **Anti-NTP Poisoning & Monotonic Clock Gauntlet:**
+   * Run an automated attack manipulating system time forward 30 days (`date -s "+30 days"` or forged local NTP responses).
+   * **Verification:** Verify the Clock Guard detects the monotonic time anomaly, suspends snapshot releases, engages legal freeze mode, and dispatches critical alerts.
+4. **Adaptive Quorum & Break-Glass Gauntlet:**
+   * Test hold release in Single-Admin mode: verify 24h cool-off delay buffer engages and out-of-band warning alerts fire.
+   * Enter offline Break-Glass emergency key: verify delay is safely bypassed only when the valid key is supplied.
+5. **VSS Shadow Copy Interception Gauntlet:**
+   * Simulate a Windows endpoint executing `vssadmin.exe delete shadows /all /quiet` over SMB.
+   * **Verification:** Verify Samba's `vfs_shadow_copy2` interceptor catches the call and triggers the emergency brake prior to any file modifications.
+6. **Volatile RAM Triage & Emergency Brake Gauntlet:**
+   * Run an encryptor touching `_AAAPasswords.docx`.
+   * **Verification:** Verify that $<500\text{ms}$ volatile memory dump (`/proc/<pid>/maps`, sockets, strings) is written to the forensic volume, client IP is dropped via `nftables`, and share is remounted read-only.
+7. **Blast-Radius & Clean-Room Recovery Gauntlet:**
+   * Run the Blast-Radius calculator post-incident: verify it accurately identifies corrupted vs clean files and outputs exact RPO data.
+   * Mount the pre-incident snapshot in the Clean-Room isolated sandbox VLAN: verify clean differential YARA verification succeeds before cutover.
