@@ -55,7 +55,7 @@ Then open `https://<this machine>:8443` and sign in. To try it without touching 
 
 ## Where it stands
 
-- Version 0.3.1. Releases are tagged `vX.Y.Z`; see the [changelog](CHANGELOG.md).
+- Version 0.3.2. Releases are tagged `vX.Y.Z`; see the [changelog](CHANGELOG.md).
 - It is meant for a LAN behind its TLS proxy. Do not publish it on the internet. The one port that may face it is the optional [tunnel for remote nodes](docs/remote-nodes.md).
 - The [KVM lab](docs/kvm-lab.md) tests scans and deploys on real VMs across Debian, Ubuntu, Fedora, Arch, openSUSE, Rocky Linux and AlmaLinux. Alpine can be scanned, but deploys are refused because it has no bash or systemd. The lab tests through the API, not the web pages.
 - The CI workflow is written and its commands pass by hand, but it has not run on a runner yet.

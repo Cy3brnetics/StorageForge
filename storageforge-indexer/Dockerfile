@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # StorageForge: multi-stage build, non-root slim runtime.
-#   docker build -t storageforge:0.3.1 .
-#   docker build --build-arg EXTRAS=postgres -t storageforge:0.3.1-pg .
+#   docker build -t storageforge:0.3.2 .
+#   docker build --build-arg EXTRAS=postgres -t storageforge:0.3.2-pg .
 # The base images are pinned by digest and every Python package by hash (docker/requirements*.lock). Debian packages
 # are not: a rebuild picks up the latest security updates. README "Updating dependencies" has the commands that refresh the pins.
 ARG PYTHON_IMAGE=python:3.13-slim-trixie@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb
@@ -77,7 +77,7 @@ ENTRYPOINT ["/usr/local/bin/storageforge-tunnel"]
 FROM ${PYTHON_IMAGE} AS runtime
 LABEL org.opencontainers.image.title="StorageForge" \
       org.opencontainers.image.description="Encrypted SSH key vault, agentless file indexer and storage graph" \
-      org.opencontainers.image.version="0.3.1"
+      org.opencontainers.image.version="0.3.2"
 RUN apt-get update --error-on=any \
  && apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends tini ca-certificates \

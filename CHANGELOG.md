@@ -2,6 +2,11 @@
 
 Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
+## 0.3.2 — 2026-11-02
+
+### Fixed
+- **Imported rsnapshot jobs detect remote backup sources.** Backup lines pulling from remote hosts (`[user@]host:/path`) were omitted from tracked sources, leaving remote targets unprotected in the 3-2-1 matrix, the graph, and the Files map. Remote sources are now resolved to scanned hosts and attributed to each source machine with their runner target.
+
 ## 0.3.1 — 2026-11-01
 
 ### Fixed
