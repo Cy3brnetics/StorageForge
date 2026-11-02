@@ -5,6 +5,7 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Fixed
+- **A share or job deployed moments before a power cut survives it.** An NFS export file came back empty about 40 seconds after a deploy reported success, so clients were locked out until the next deploy. Export and Samba files are now swapped in whole and synced to disk, and fstab lines and job files are synced as they are written.
 - **Lab reports include tiers 6 and 7.** They ran, but a failure there never reached the report or its result.
 - **Scans find ZFS pools and LVM volumes as an ordinary user on Debian-based hosts.** `zpool` and `lvs` were off that user's `PATH`, so pools came back empty with no error.
 - **A failed move no longer reports success.** Move scripts printed "copied", recorded the step and exited 0 when rsync or git failed, so scheduled moves counted as good runs. Cutover and timer failures now count too.

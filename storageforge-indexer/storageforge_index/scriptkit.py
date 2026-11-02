@@ -45,7 +45,10 @@ def comments(lines, empty: str) -> str:
     return '\n'.join(one_line(l) for l in lines) or empty
 
 
-HELPERS = r"""reload_systemd() { # a reload waits on a hard network mount whose server is gone, and every new login then waits on systemd
+HELPERS = r"""durable() { # to disk now: a config file written moments before a power cut can otherwise come back empty
+  sync -- "$@" 2>/dev/null || sync
+}
+reload_systemd() { # a reload waits on a hard network mount whose server is gone, and every new login then waits on systemd
   local t fs rc
   while read -r _ t fs _; do
     case $fs in nfs|nfs4|cifs|smb3) ;; *) continue ;; esac

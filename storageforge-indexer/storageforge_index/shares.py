@@ -696,7 +696,12 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 backup() { [[ -e $1 ]] && cp -a -- "$1" "$1.storageforge-$STAMP"; }
 own_file() { # path content -> StorageForge's own file: written whole (after a backup) when it differs
   if [[ -e $1 && $(cat "$1") == "$2" ]]; then ok "$1"; return 1; fi
-  if ((APPLY)); then mkdir -p "$(dirname "$1")"; backup "$1"; printf '%s\n' "$2" >"$1"; chmod 0644 "$1"; doing "wrote $1"; return 0     # scans check its checksum
+  if ((APPLY)); then     # scans check its checksum. Swapped in whole, so a crash leaves the old file or the new one
+    mkdir -p "$(dirname "$1")"; backup "$1"
+    if printf '%s\n' "$2" >"$1.storageforge-new" && chmod 0644 "$1.storageforge-new" && durable "$1.storageforge-new" && mv -f -- "$1.storageforge-new" "$1"; then
+      durable "$(dirname "$1")"; doing "wrote $1"; return 0
+    fi
+    rm -f -- "$1.storageforge-new"; conflict "could not write $1"; return 1
   else
     missing "$1 $([[ -e $1 ]] && echo '(differs)')"
     if [[ -e $1 ]] && command -v diff >/dev/null; then diff -u "$1" <(printf '%s\n' "$2") | sed -n '3,40p' | sed 's/^/            /' || true; fi
@@ -878,7 +883,7 @@ client_mount() { # index into C_*
       if ((APPLY)); then
         backup /etc/fstab
         MARK="# storageforge share $SERVER:$t" LINE=$line awk 'next_one { print ENVIRON["LINE"]; next_one = 0; next } $0 == ENVIRON["MARK"] { next_one = 1 } { print }' /etc/fstab >/etc/fstab.storageforge-new \
-          && cat /etc/fstab.storageforge-new >/etc/fstab && rm -f /etc/fstab.storageforge-new
+          && cat /etc/fstab.storageforge-new >/etc/fstab && rm -f /etc/fstab.storageforge-new && durable /etc/fstab
         if ! findmnt --verify --tab-file /etc/fstab >/dev/null 2>&1; then
           cp -a "/etc/fstab.storageforge-$STAMP" /etc/fstab; conflict "findmnt --verify rejected the new options: fstab was put back"; return 1
         fi
@@ -887,7 +892,7 @@ client_mount() { # index into C_*
     else ok "fstab line (its own options kept)"; rec=$have; fi
   elif [[ -n $have ]]; then conflict "fstab already has a different line for $t: $have"; rec=
   elif ((APPLY)); then
-    backup /etc/fstab; mkdir -p "$t"; printf '# storageforge share %s:%s\n%s\n' "$SERVER" "$t" "$line" >>/etc/fstab; doing "appended to /etc/fstab"
+    backup /etc/fstab; mkdir -p "$t"; printf '# storageforge share %s:%s\n%s\n' "$SERVER" "$t" "$line" >>/etc/fstab; durable /etc/fstab; doing "appended to /etc/fstab"
     if ! findmnt --verify --tab-file /etc/fstab >/dev/null 2>&1; then conflict "findmnt --verify complains about /etc/fstab; the backup is /etc/fstab.storageforge-$STAMP"; return 1; fi
     reload_systemd
   else missing "fstab: $line"; fi
@@ -913,7 +918,7 @@ client_cleanup() { # StorageForge's fstab lines for this server that the design 
     systemctl stop "$(systemd-escape -p --suffix=automount "$t")" 2>/dev/null || true
     backup /etc/fstab
     awk -v m="$marker" 'skip { skip = 0; next } $0 == m { skip = 1; next } { print }' /etc/fstab >/etc/fstab.storageforge-new \
-      && cat /etc/fstab.storageforge-new >/etc/fstab && rm -f /etc/fstab.storageforge-new
+      && cat /etc/fstab.storageforge-new >/etc/fstab && rm -f /etc/fstab.storageforge-new && durable /etc/fstab
     reload_systemd
     rmdir -- "$t" 2>/dev/null || true
     doing "unmounted $t and removed its fstab line (backup: /etc/fstab.storageforge-$STAMP)"
