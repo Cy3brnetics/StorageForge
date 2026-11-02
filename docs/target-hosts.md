@@ -23,6 +23,7 @@ An ordinary user works, but it can only index what it can read. [Read-only scan 
 | `rsync` | moves and copies; a deploy installs it if it is missing |
 | `python3` | only for jobs with dedup, on both hosts; a deploy installs it if it is missing |
 | `duperemove` | only for jobs with extent dedup; a deploy installs it if it is missing |
+| `clamav` | only on hosts you deploy the ClamAV scan to; the deploy installs it |
 | `b3sum` | only for jobs that hash with BLAKE3, on both hosts; install it yourself |
 | `pv` | only to limit the bandwidth of a snapshot stream |
 | `btrfs-progs`, `zfsutils-linux` or `zfs`, `lvm2`, `parted` | the tasks that use them; the script reports a conflict if one is missing |

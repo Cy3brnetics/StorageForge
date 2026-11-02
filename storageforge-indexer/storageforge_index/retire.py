@@ -38,6 +38,9 @@ def retire(conn: Conn, name: str, keep_design: bool = False) -> dict:
             out['still_on_host'] = 'its storageforge-deploy account and runner stay on the machine, but nothing here can use them: remove them there'
         conn.execute('DELETE FROM deploy_access WHERE lower(host) = lower(:h)', {'h': name})
         out['graph_nodes'] = conn.execute('DELETE FROM graph_nodes WHERE lower(host) = lower(:h)', {'h': name}).rowcount
+        out['clamav'] = conn.execute('DELETE FROM clamav_detections WHERE lower(host) = lower(:h)', {'h': name}).rowcount
+        conn.execute('DELETE FROM clamav_runs WHERE lower(host) = lower(:h)', {'h': name})
+        conn.execute('DELETE FROM settings WHERE key = :k', {'k': f'clamav.host:{name.lower()}'})
         out['scan_jobs'] = conn.execute('DELETE FROM scan_jobs WHERE lower(host) = lower(:h)', {'h': name}).rowcount
         if not keep_design:
             out['design'] = conn.execute('DELETE FROM blueprints WHERE lower(hostname) = lower(:h)', {'h': name}).rowcount

@@ -613,6 +613,7 @@ function showTab(name) {
   if (name === 'keys') loadKeys();
   if (name === 'access') loadAccess();
   if (name === 'copies') loadCopies();
+  if (name === 'malware') loadMalware();
   if (name === 'moves') loadMoves();
   if (name === 'changes') loadChanges();
   if (name === 'schedule' && typeof loadScheduler === 'function') loadScheduler();
@@ -826,7 +827,7 @@ $('#installform').addEventListener('submit', async (ev) => {
 let ME = null;
 const can = (perm) => !!ME && ME.permissions.includes(perm);
 const TAB_NEEDS = { search: 'search.files', changes: 'plans.view', moves: 'plans.view', schedule: 'plans.view', deploy: 'deploy.view',
-                    docker: 'services.view', git: 'services.view', rebuild: 'configs.view', copies: 'files.browse', access: 'keys.view',
+                    docker: 'services.view', git: 'services.view', rebuild: 'configs.view', copies: 'files.browse', malware: 'files.browse', access: 'keys.view',
                     jobs: 'scans.view', keys: 'keys.view' };
 function applyPermissions(me) {          // only hides what would answer 403: the server decides
   ME = me;

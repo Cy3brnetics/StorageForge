@@ -129,6 +129,66 @@ async function loadChanged() {
         text('span', `+${f.added.toLocaleString()} ~${f.modified.toLocaleString()} -${f.deleted.toLocaleString()} · ${f.delta < 0 ? '-' : '+'}${fmtBytes(Math.abs(f.delta))}`, 'muted small')))));
   } catch (err) { box.replaceChildren(text('p', err.message, 'muted')); }
 }
+/* ── malware ─────────────────────────────────────────────────────── */
+async function malwarePost(path, body, box) {
+  try {
+    const res = await postJSON(path, body);
+    const r = await res.json().catch(() => ({}));
+    if (res.ok) return r;
+    box.append(text('p', r.error || 'That was refused', 'st-failed'));
+    if (r.output) box.append(el('pre', { class: 'small' }, r.output));
+  } catch (err) { box.append(text('p', err.message, 'st-failed')); }
+  return null;
+}
+function malwareHost(h) {
+  const run = h.last_run, box = el('div', { class: 'stack' });
+  const when = (t) => new Date(t * 1000).toLocaleString();
+  box.append(text('strong', h.host));
+  box.append(text('p', !h.installed ? 'ClamAV scan not deployed.' : !run ? 'Deployed. No result yet.'
+    : `Last scan ${when(run.finished_at)}: ${run.scanned.toLocaleString()} files, ${run.found} found. ${run.version || ''}${[0, 1].includes(run.exit_code) ? '' : ` Exit code ${run.exit_code}: it may be incomplete.`}`,
+  run && ![0, 1].includes(run.exit_code) ? 'st-failed small' : 'muted small'));
+  if (can('deploy.apply')) {
+    const schedule = el('select', { 'aria-label': 'Schedule' }, ...['daily', 'weekly', 'monthly'].map((s) => new Option(s, s)));
+    schedule.value = h.config.schedule;
+    const paths = el('input', { type: 'text', 'aria-label': 'Folders to scan, separated by spaces', value: h.config.paths.join(' '), title: 'Folders to scan, separated by spaces. Each stays on its own filesystem.' });
+    const save = async () => malwarePost(`/api/clamav/hosts/${encodeURIComponent(h.host)}/config`, { schedule: schedule.value, paths: paths.value.split(/\s+/).filter(Boolean) }, box);
+    const go = (mode, title, extra) => async () => { if (await save()) startDeploy('clamav', h.host, mode, title, extra); };
+    box.append(el('div', { class: 'row' }, schedule, paths));
+    const buttons = [button('Dry run', go('report', `ClamAV dry run on ${h.host}`, {}), 'btn sm ghost'), button(h.installed ? 'Update' : 'Deploy', go('apply', `Deploy ClamAV to ${h.host}`, {}), 'btn sm')];
+    if (h.installed) buttons.push(button('Scan now', go('apply', `ClamAV scan on ${h.host}`, { run: true }), 'btn sm ghost'), button('Remove', () => { if (confirm(`Remove the ClamAV scan from ${h.host}? Quarantined files stay.`)) startDeploy('clamav', h.host, 'apply', `Remove ClamAV scan from ${h.host}`, { remove: true }); }, 'btn sm ghost'));
+    if (h.installed && can('deploy.report')) buttons.push(button('Collect', async () => { if (await malwarePost(`/api/clamav/hosts/${encodeURIComponent(h.host)}/collect`, {}, box)) loadMalware(); }, 'btn sm ghost'));
+    box.append(el('div', { class: 'row' }, ...buttons));
+    if (!h.deploy_ready) box.append(text('p', 'Set up deploy access for this host first.', 'muted small'));
+  }
+  return box;
+}
+function malwareDetection(d, box) {
+  const act = (verb, body) => async () => { if (await malwarePost(`/api/clamav/detections/${d.id}/${verb}`, body, box)) loadMalware(); };
+  const acts = [];
+  if (can('deploy.destructive')) {
+    if (d.state === 'open') {
+      acts.push(button('Quarantine', () => {
+        const sys = d.system_path;
+        if (!confirm(`Move ${d.path} on ${d.host} to quarantine?${sys ? '\n\nThis is a system path: moving it can stop the host from booting.' : ''}\n\nA running process that has it open keeps running.`)) return;
+        act('quarantine', { allow_system: sys })();
+      }, 'btn sm'));
+      acts.push(button(d.ignored ? 'Stop ignoring' : 'Not malware: ignore', act('ignore', { ignore: !d.ignored, reason: 'marked in the Malware panel' }), 'btn sm ghost'));
+    } else if (d.state === 'quarantined') {
+      acts.push(button('Restore', () => { if (confirm(`Move ${d.path} back to where it was on ${d.host}? It will be ignored from then on.`)) act('restore', {})(); }, 'btn sm ghost'));
+    }
+  }
+  const cls = d.ignored ? 'muted' : d.state === 'open' ? 'st-failed' : 'muted';
+  return el('div', { class: 'stack' }, text('strong', `${d.signature}${d.state === 'quarantined' ? ' (in quarantine)' : ''}${d.ignored ? ' (ignored)' : ''}`, cls),
+    text('span', `${d.host}:${d.path}`, 'mono small'), el('div', { class: 'row' }, ...acts));
+}
+async function loadMalware() {
+  const hostsBox = $('#malwarehosts'), box = $('#malwarebox');
+  try {
+    const { hosts, detections } = await getJSON(`/api/clamav${S.host ? `?host=${encodeURIComponent(S.host)}` : ''}`);
+    hostsBox.replaceChildren(...hosts.map(malwareHost));
+    box.replaceChildren(...(detections.length ? detections.map((d) => malwareDetection(d, box)) : [text('p', 'No detections reported.', 'muted')]));
+  } catch (err) { box.replaceChildren(text('p', err.message, 'st-failed')); }
+}
 async function loadDupes() {
   try {
     const { groups } = await getJSON(`/api/dupes${S.host ? `?host=${encodeURIComponent(S.host)}` : ''}`);

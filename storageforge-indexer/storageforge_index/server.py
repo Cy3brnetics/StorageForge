@@ -27,6 +27,7 @@ PUT  /api/backups/target  {"host", "path"}   after each nightly backup, copy it 
 GET  /api/capacity?host=             each mount's usage over 30 days and when it fills up at that rate
 GET  /api/file-changes?host=&scan=&limit=   what a scan found changed, grouped by folder (not /api/changes: those are change plans)
 GET  /api/dupes?host=&min_size=&limit=   identical files from checksum scans
+GET  /api/clamav?host=&closed=           ClamAV on each host and what it found; POST .../detections/<id>/quarantine|restore|ignore
 GET  /api/hosts                     indexed hosts
 GET  /api/graph[?host=]             nodes and edges
 GET  /api/canvas[?host=]            Obsidian .canvas download
@@ -86,7 +87,7 @@ GET  /api/deploy                     deploy access per host, deployed jobs and s
 POST /api/deploy/setup-script        {"remove"?}: the deploy setup script, to run as root by hand (makes the deploy keys)
 POST /api/deploy/access              {"host", "password", "admin_user"?, "remove"?}: set deploy access up (or remove it) with sudo once
 POST /api/deploy/adopt               {"host"}: after running the setup script by hand, bind the key and test a signed run
-POST /api/deploy/start               {"kind": jobs|shares|changes|tasks, "ref", "mode": report|apply, "title"?, "report_group"?, "paused"?, "destructive"?}
+POST /api/deploy/start               {"kind": jobs|shares|changes|tasks|clamav, "ref", "mode": report|apply, "title"?, "report_group"?, "paused"?, "destructive"?}
 GET  /api/deploy/groups              recent deploys and how their hosts went
 GET  /api/deploy/groups/<id>         one deploy and its runs, with their output (poll while running)
 POST /api/deploy/groups/<id>/cancel  {"force"?}: nothing new starts; force also stops what is running
@@ -150,8 +151,8 @@ from flask_login import LoginManager, current_user, login_required, login_user, 
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import (__version__, access, alerts, errlog, remotes, blueprint, canvas, changes, deploy, docker, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_git, routes_scheduler, scheduler, shares, site, snapjobs, tasks, updates, users)
+from . import (__version__, access, alerts, errlog, remotes, blueprint, canvas, changes, clamav, deploy, docker, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
+               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_scheduler, scheduler, shares, site, snapjobs, tasks, updates, users)
 from .capacity import parse_size, trends
 from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
@@ -1283,6 +1284,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return jsonify(error=str(exc)), 502
 
     routes_git.register(web, ctx)
+    routes_clamav.register(web, ctx)
 
     @web.get('/api/shares/check')
     @login_required
@@ -1543,7 +1545,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                                           bool(options.get('run')), bool(options.get('remove')))
         if kind == updates.KIND:
             return updates.deploy_items(c, str(ref or updates.ALL), mode)
-        raise ValueError('kind is jobs, shares, changes, tasks, schedules or updates')
+        if kind == 'clamav':
+            return clamav.deploy_items(db, c, str(ref or ''), mode, actor(), bool(options.get('run')), bool(options.get('remove')))
+        raise ValueError('kind is jobs, shares, changes, tasks, schedules, updates or clamav')
 
     def need_for_commands(c, kind, ref):
         """Raw commands run as root, so deploying them takes hosts.command, whoever wrote them. Taking them off a host doesn't."""
@@ -1581,6 +1585,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 return tasks.task_hash(tasks.get_task(c, int(ref)))
             if kind == 'schedules':
                 return scheduler.schedule_hash(c, scheduler.get_schedule(c, int(ref)))
+            if kind == 'clamav':
+                return clamav.digest(c, str(ref or ''))
         except LookupError:
             return None
         return None
@@ -1646,7 +1652,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         need_for_deploy(c, g['kind'], g['ref'], g['mode'], g['options'])
         if engine.running(gid):
             return jsonify(error='that deploy is still running'), 409
-        if g['kind'] not in ('jobs', 'shares', 'changes', 'tasks', 'schedules', updates.KIND):
+        if g['kind'] not in ('jobs', 'shares', 'changes', 'tasks', 'schedules', updates.KIND, 'clamav'):
             raise ValueError('only plans and designs can be retried')
         items = deploy_items_for(c, g['kind'], g['ref'], g['mode'], g['options'])
         if g['kind'] != 'jobs':       # job keys are new on every apply, so a job's two hosts must get them together

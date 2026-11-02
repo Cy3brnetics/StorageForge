@@ -29,7 +29,7 @@ def old_required_role(method, path):
 
 # Deliberately tighter than before: these handed runnable scripts, and a report token, to viewers.
 TIGHTENED = ('/install-script', '/cron', '/api/hostconfigs/bundle')
-NEW_ROUTES = ('/api/remote/nodes', '/api/jobs/state', '/dedupe', '/api/invites', '/api/roles', '/api/search/hosts', '/api/enroll')
+NEW_ROUTES = ('/api/remote/nodes', '/api/jobs/state', '/dedupe', '/api/invites', '/api/roles', '/api/search/hosts', '/api/enroll', '/api/clamav')
 
 
 class Base(unittest.TestCase):
@@ -261,7 +261,7 @@ class Migration(unittest.TestCase):
             conn.execute("INSERT INTO users (username, password_hash, created_at, role) VALUES ('old', 'h', :t, 'operator')", {'t': now})
             uid = conn.scalar("SELECT user_id FROM users WHERE username = 'old'")
             conn.execute("INSERT INTO web_sessions (sid_hash, user_id, created_at) VALUES ('s', :u, :t)", {'u': uid, 't': now})
-            self.assertEqual(db.migrate(conn), ['024_roles_invites.sql', '025_invite_grants.sql', '026_job_state.sql', '027_key_origin.sql', '028_remote_nodes.sql', '029_schedule_pending_token.sql'])
+            self.assertEqual(db.migrate(conn), ['024_roles_invites.sql', '025_invite_grants.sql', '026_job_state.sql', '027_key_origin.sql', '028_remote_nodes.sql', '029_schedule_pending_token.sql', '030_clamav.sql'])
             self.assertEqual(conn.scalar("SELECT role FROM users WHERE username = 'old'"), 'operator')
             self.assertEqual(conn.scalar('SELECT count(*) FROM web_sessions'), 1)
             users.set_role(conn, 'old', 'search')                             # the old CHECK is gone

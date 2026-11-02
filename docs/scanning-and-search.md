@@ -68,6 +68,24 @@ Added entries are logged only after a mount's first scan, so a first index doesn
 
 `scan --checksum` hashes only files whose size collides with another file (at least `--checksum-min-size`, 1 MiB). `dupes` then lists identical files. The **Cleanup** panel and `folders` find likely duplicate *folders* from the index alone, by matching file names, sizes and subfolder layout; renamed copies still match.
 
+## ClamAV
+
+Scans install nothing on a host. ClamAV is the exception, and only on hosts you deploy it to from the **Malware** tab: **Dry run** shows what it would do, **Deploy** installs it.
+
+| What | How |
+| :--- | :--- |
+| Installed | The `clamav` package and its signature updater, the `storageforge-clamav` account, `sf-clamav.timer` |
+| What it scans | The host's indexed mounts, or the folders you give, daily, weekly or monthly. It does not cross filesystems, and skips `.snapshots` and `.zfs` |
+| How it runs | Unprivileged with read-only access to files (`CAP_DAC_READ_SEARCH`), no network, lowest CPU and disk priority, first in line if memory runs out |
+| What it costs | Reads every file, and about 1 GiB of memory during a scan. A deploy refuses hosts under 2 GiB |
+| Network | The host's signature updater must reach `database.clamav.net` |
+
+A scan only reports. StorageForge reads the result on the next scan of the host, or at once with **Collect**. Detections raise a critical alert per signature per host. Alerts also fire when a scan fails, stops reporting, or its signatures are over 7 days old. `clamav status` and `clamav list` show the same from the CLI.
+
+**Quarantine** runs ClamAV on the file again, refuses if it is no longer detected, then moves it to `/var/lib/storageforge/quarantine/<id>/` with no permissions. System paths such as `/usr` and `/etc` need a further confirmation. It does not stop a running process, and hard links to the file stay. **Restore** puts the file back with its mode and owner, refuses to overwrite anything, and ignores the detection from then on. **Not malware: ignore** silences a false positive. All of these need `deploy.destructive` and a recent password, and are audited. Nothing is deleted: empty quarantine by hand.
+
+ClamAV is one engine. It misses things, especially new malware, so no detections does not prove a host is clean.
+
 ## Scheduling
 
 The server rescans every host that has a `scan` binding when its last scan job is older than `STORAGEFORGE_SCAN_INTERVAL` (default `6h` in compose), checking every 10 minutes. A restart does not trigger a burst of scans, and a failing host is retried once per interval. A host is always queued under its indexed hostname, whether it was named by IP, alias or hostname, and duplicate requests collapse into the queued job. A host can have its own interval and quiet hours (the host's menu in the topology, or `PUT /api/hosts/<name>/schedule`); it then scans on those even when no global interval is set. Up to `STORAGEFORGE_SCAN_WORKERS` hosts (default 4) scan at once, and further jobs wait for a free worker. With SQLite they walk side by side but apply their results to the index one at a time.
