@@ -1,5 +1,7 @@
 # Web UI
 
+For a guided tour of every feature, see the [feature guide](features/README.md).
+
 The main page (`/`) has three views in the header (**Topology**, **Graph** and **Tasks**) and a rail of panels on the right. Every page except `/login` needs a session; an open page clears itself and returns to the sign-in page when the session ends.
 
 The header also holds the host filter, file search, a link to the [Planner](planner.md), **Export .canvas**, the session length menu and **Sign out**.
@@ -36,9 +38,11 @@ Right-click almost anything. The menu key and Shift+F10 open the menu on the foc
 
 ## Graph
 
+The view has two modes. **Files** is a map of a host's folders from the index, with lines between folders holding copies: **Browse** or **Duplicates**, size, host and **System files** filters, and an ignore list. See [the file map](features/views.md#files). **Structure** is described below.
+
 ![Graph view](images/graph.jpg)
 
-A force-directed view of the same data: hosts, pools, filesystems, mount points and symlinks, coloured by 3-2-1 health (see [Concepts](concepts.md#health-colours)).
+**Structure** is a force-directed view of the same data: hosts, pools, filesystems, mount points and symlinks, coloured by 3-2-1 health (see [Concepts](concepts.md#health-colours)).
 
 - Drag the background to pan, scroll to zoom, drag a node to pin it where you drop it. Shift-drag lets it spring back; **Show all** releases every pinned node.
 - Click a node for details; double-click to focus on its neighbourhood (1–3 hops, set by **Focus**).
@@ -106,11 +110,15 @@ The rail on the right opens panels in the inspector. The first panel, **Details*
 | :--- | :--- |
 | **Scans** | Queue a scan of a bound host, or **Scan all hosts**, and follow recent scan jobs |
 | **Keys** | Generate a key in the vault, install it on a host with its password once, list keys and bindings, **Scan now** per binding |
-| **Audit** | The newest audit entries, and **Verify chain** |
+| **Audit** | The newest audit entries and **Verify chain**. Also your own password, backups, and for admins [accounts, invite links and roles](features/administration.md#accounts-and-sign-in). |
 
 ![Keys panel](images/keys.jpg)
 
 ![Audit panel](images/audit.jpg)
+
+## Git Inspector
+
+**▾ Inspect** on a repository in the **Git** panel opens a drawer along the bottom of the page with **Status**, **Sync**, **Commits** and **Changelog** tabs. See [Git](features/discovery.md#git).
 
 ## Deep links
 

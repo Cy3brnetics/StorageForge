@@ -118,7 +118,7 @@ After the walk, each scan asks the host's engine what is there. It tries Docker,
 
 Managers that run in a container (Dockhand, Portainer, Komodo, Dockge) record stack folders as they see them inside their own container. Those paths are translated to host paths through the manager's mounts.
 
-Mount boxes in the topology show how many containers use them, and the Moves and Changes checks warn when a step touches a folder a running container uses, naming the stacks to stop first. (Task checks do not yet.) On the CLI: `storageforge-index docker [--host H] [--path P]`.
+Mount boxes in the topology show how many containers use them, and the Moves and Changes checks warn when a step touches a folder a running container uses, naming the stacks to stop first. Task checks warn too, naming the containers. On the CLI: `storageforge-index docker [--host H] [--path P]`.
 
 ## Search
 

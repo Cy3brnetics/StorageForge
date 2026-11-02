@@ -43,7 +43,7 @@ A host's name is what it reports, so it proves nothing.
 - Sessions are also kept server-side; only a hash of their id is stored. Signing out ends that session even for a copied cookie. `user signout <name>` ends all of them, as do `user passwd` and `user disable`.
 - A session ends 30 minutes after sign-in. Each user can raise their own to up to 8 hours from the header's **Session** menu. An open page clears itself and goes to `/login` when its session ends.
 - **Re-authentication:** anything that runs commands on hosts, and changing the session length, needs the password typed within the last 5 minutes (`POST /api/reauth`).
-- There are no roles yet: every account can do everything, including deploys to every enrolled host.
+- **Roles:** an account can do only what its role allows. The built-in roles are `search`, `viewer`, `operator` and `admin`, and custom roles draw on the permission catalogue in `permissions.py`. `operator` can deploy to every enrolled host, including destructive deploys. Only `admin` can write raw commands (`hosts.command`). See [Roles](features/administration.md#roles).
 
 ### Sign-in limits
 

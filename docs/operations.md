@@ -191,12 +191,10 @@ To use your own, put `tls_cert` and `tls_key` in `./secrets` before that second 
 
 ## Retiring a host
 
-StorageForge has no way to remove a host yet. To stop using one:
+1. Remove what you deployed to it, from the **Deploy** tab. Retiring is refused while anything is deployed there or a scan is running.
+2. Choose **Retire…** on the host's menu in the topology, or run `storageforge-index hosts remove NAME`. Add `--keep-design` to keep its design.
 
-1. Remove what you deployed to it, from the **Deploy** tab.
-2. Stop scanning it: `storageforge-index vault unbind` (see the [CLI reference](cli-reference.md)).
-
-Its index, graph entries and design stay, so it still shows up in search.
+The host leaves search, the graph, the scheduler and the alerts. The audit log and deploy history stay.
 
 ## Retention
 

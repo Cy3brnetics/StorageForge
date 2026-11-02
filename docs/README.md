@@ -13,6 +13,10 @@ The code lives in [`storageforge-indexer/`](../storageforge-indexer). Its [READM
 | [Getting started](getting-started.md) | Install with Docker or pip, create an account, add a key, scan your first host, run the demo |
 | [Concepts](concepts.md) | How the parts fit together, and the rules every feature follows |
 
+## Every feature
+
+The [feature guide](features/README.md) catalogues every feature, with how it works and screenshots from the KVM lab.
+
 ## Using it
 
 | Page | What it covers |
@@ -42,6 +46,7 @@ The code lives in [`storageforge-indexer/`](../storageforge-indexer). Its [READM
 
 | Page | What it covers |
 | :--- | :--- |
+| [Feature audit, 2026-11-01](audit-2026-11-01-features.md) | Code compared with the docs and exercised in the lab, and what disagreed |
 | [Consistency audit, 2026-10-29](audit-2026-10-29.md) | Places where the code, the README and the rules in [Concepts](concepts.md) disagree, found while writing these pages |
 | [Deployments design](../deployments-design.md) | The original design for deploys (2026-10-27) |
 | [Security audit, 2026-10-28](../security-audit-2026-10-28.md) | Findings and fixes |

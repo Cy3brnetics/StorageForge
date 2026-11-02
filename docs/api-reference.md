@@ -31,9 +31,17 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/login` | sign-in page; the only page served without a session |
 | GET | `/` | main page; without a session, a redirect to `/login?next=/` |
 | GET | `/planner` | planner; likewise |
+| GET | `/search` | the plain search page; without a session, a redirect to sign in |
+| GET | `/enroll#<token>` | the page an invite or reset link opens; no session needed |
 | POST | `/api/me/password` | `{"password", "new_password"}`: change your own password; your sessions end |
 | GET, POST | `/api/users` | accounts (admin, password confirmed); POST `{"username", "password", "role"}` |
 | PUT, DELETE | `/api/users/<name>` | `{"role", "disabled"}`; the last enabled admin can't be removed, disabled or demoted |
+| GET, POST | `/api/invites` | single-use sign-up links (`users.manage`); POST `{"role", "hours"?, "note"?}` returns the token once |
+| DELETE | `/api/invites/<id>` | revoke an open link |
+| GET, POST | `/api/roles` | built-in and custom roles and the permission catalogue; POST `{"name", "description", "permissions"}` adds a custom role |
+| PUT, DELETE | `/api/roles/<name>` | change or remove a custom role; built-in roles stay as they are |
+| POST | `/api/enroll/check` | `{"token"}`: what the link gives; no session needed |
+| POST | `/api/enroll` | `{"token", "username", "password"}`: use the link to make the account or set its new password; no session needed |
 | GET | `/healthz` | `{"status"}`; also version, database, vault, worker and user count from inside the container or when signed in |
 
 ## Session
@@ -77,6 +85,18 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | POST | `/api/scan` | `{"host"}`: queue a vault-backed scan (202, `{"job_id"}`); duplicates collapse |
 | POST | `/api/scan/all` | `{}`: queue a scan of every host bound by name for scanning (202, `{"jobs": {host: job_id}}`); duplicates collapse |
 
+### Also in the index
+
+| Method | Path | |
+| :--- | :--- | :--- |
+| GET | `/api/search/hosts` | host names, for filtering a search |
+| GET | `/api/filemap?host=&min_size=&folders=&system=` | the Graph view's file map: folders holding copies and the lines between them |
+| GET, PUT | `/api/files/ignore` | paths and fragments left out of the file map and of broken-link flags |
+| POST | `/api/git/survey` | `{"host"}`: ask a host for its repositories over SSH |
+| GET | `/api/log?host=&sources=&outcomes=&q=&since=&until=&limit=&offset=` | what has been done: audit log, deploys, scans and task runs in one list |
+| GET | `/api/log/output?id=` | the full output of one deploy run or fetched log |
+| GET | `/api/log/export?format=csv\|json\|text&output=1` | the same list as a file |
+
 ## Keys, access and audit
 
 | Method | Path | Body | |
@@ -101,6 +121,12 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | POST | `/api/planner/changes` | a `storageforge/v1` `StorageBlueprint` (saved or not) | `{host, name, tasks, manual, left, destructive}`: the change-plan tasks that bring the scanned host to the design, what needs doing by hand, and what the design leaves alone. Stages nothing; 409 when the host has not been scanned |
 | PUT | `/api/planner/example` | `{"show"}` | show or hide the example host for everyone |
 | GET | `/api/planner/activity?host=` | | staged changes, moves, shares, jobs, drift and unreadable folders on a host |
+
+### Also for designs
+
+| Method | Path | |
+| :--- | :--- | :--- |
+| PUT | `/api/planner/offsite` | `{"host", "offsite"}`: mark whether a host counts as offsite |
 
 ## Plans
 
@@ -148,6 +174,17 @@ Each plan type has the same shape: list, create, one, check, script.
 | POST | `/api/remote/nodes/<id>/adopt` | | scan a connected node and test a signed run; call again while it says `scanning` |
 | DELETE | `/api/remote/nodes/<id>` | | revoke a node: cuts its tunnel |
 | POST | `/api/jobs/state` | a state event; `Authorization: Bearer <job token>` | no session; 120/min |
+
+### Also for deploys
+
+| Method | Path | |
+| :--- | :--- | :--- |
+| POST | `/api/deploy/check` | 🔑 `{"host"}`: what the host can run, by a signed probe, or from its last scan if not set up |
+| GET | `/api/deploy/snapjobs` | rsnapshot and snapper jobs found on hosts, imported or not |
+| GET | `/api/deploy/snapjobs/advice` | which snapshot tool suits a folder's filesystem |
+| POST | `/api/deploy/snapjobs/probe` | 🔑 `{"host"}`: look again as root (signed, read-only) |
+| POST | `/api/deploy/snapjobs/import` | 🔑 `{"host", "tool", "config"}`: track a job found on a host |
+| POST | `/api/deploy/snapjobs/snapper` | 🔑 create a snapper config on a btrfs subvolume |
 
 ## Scheduler
 
