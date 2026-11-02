@@ -233,6 +233,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 4px 18px; }
       <a href="#why">Why</a>
       <a href="#what">What it does</a>
       <a href="#how">How it works</a>
+      <a href="#tools">Tools</a>
       <a href="#safety">Safety</a>
       <a href="#install">Install</a>
     </nav>
@@ -516,11 +517,37 @@ footer nav { display: flex; flex-wrap: wrap; gap: 4px 18px; }
       <div>
         <h2>What to know first</h2>
         <ul class="plain">
-          <li>Keep it on your LAN. It isn't meant to face the internet.</li>
-          <li>Linux hosts only. Views are as current as the last scan, every 6 hours by default.</li>
-          <li>A scan account indexes only what it can read. Read-only scan access fixes that without scanning as root.</li>
-          <li>It's at version 0.2.0 with no tagged releases. The CI workflow hasn't run on a runner yet, and the lab tests the API, not the web pages.</li>
+          <li><strong>Keep it off the internet.</strong> It holds SSH keys that reach your machines, so run it on your LAN.</li>
+          <li><strong>It only manages Linux machines.</strong> Alpine can be scanned, but not deployed to.</li>
+          <li><strong>It shows the last scan, not this second.</strong> Scans run every 6 hours by default, or whenever you start one.</li>
+          <li><strong>It only sees what the scan account can read.</strong> An optional setup step lets that account read everything without scanning as root.</li>
+          <li><strong>It's early.</strong> It's at version 0.2.0 with no tagged releases. CI hasn't run on a runner yet, and the lab tests go through the API, so they don't cover the web pages.</li>
         </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="tools">
+    <div class="wrap section">
+      <div class="intro">
+        <h2>The tools doing the work</h2>
+        <p>StorageForge doesn't replace your Linux tools. It decides what to run, checks it against the index, then calls the same programs you'd use by hand. That's why you can read every script before it runs.</p>
+      </div>
+      <div class="scroll">
+        <table class="spec">
+          <tbody>
+            <tr><th scope="row">Connecting</th><td>OpenSSH: <code>ssh</code>, a short-lived <code>ssh-agent</code>, and <code>ssh-copy-id</code> to install keys.</td></tr>
+            <tr><th scope="row">Reading a host</th><td><code>find</code>, <code>findmnt</code>, <code>lsblk</code> and <code>df</code>. It also uses <code>zpool</code>, <code>btrfs</code>, <code>lvs</code>, <code>git</code> and <code>docker</code> or <code>podman</code> when they're present, and <code>sha256sum</code> for checksum scans.</td></tr>
+            <tr><th scope="row">Copying data</th><td><code>rsync</code> for copies and mirrors, <code>rsnapshot</code> for rotating snapshots, <code>git clone --mirror</code> for repositories, and <code>btrfs send</code> or <code>zfs send</code> for snapshot streams. <code>duperemove</code> is optional.</td></tr>
+            <tr><th scope="row">Snapshots</th><td><code>snapper</code>, <code>rsnapshot</code>, and native btrfs and ZFS snapshots.</td></tr>
+            <tr><th scope="row">Changing disks</th><td><code>parted</code>, <code>mkfs</code>, <code>btrfs-progs</code>, ZFS tools and <code>lvm2</code>, plus <code>findmnt --verify</code> to check each fstab edit.</td></tr>
+            <tr><th scope="row">Shares</th><td>The NFS server and Samba, checked with <code>testparm</code>, with firewalld or ufw opened for the listed clients.</td></tr>
+            <tr><th scope="row">Running jobs</th><td><code>bash</code> scripts, <code>systemd</code> timers, <code>flock</code> so runs don't overlap, and <code>apt</code>, <code>dnf</code>, <code>yum</code>, <code>zypper</code> or <code>pacman</code> to install what's missing.</td></tr>
+            <tr><th scope="row">Signing deploys</th><td><code>ssh-keygen -Y</code> signs each script, and a small runner on the host verifies it.</td></tr>
+            <tr><th scope="row">Alerts and exports</th><td>ntfy, Gotify or a webhook for alerts. Ansible playbooks, Markdown reports and Obsidian <code>.canvas</code> files for exports.</td></tr>
+            <tr><th scope="row">The server</th><td>Python with Flask and waitress behind nginx, in Docker. The index is SQLite with FTS5 or PostgreSQL with <code>pg_trgm</code>. Keys are encrypted with the <code>cryptography</code> library, using AES-256-GCM and Argon2id.</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </section>
