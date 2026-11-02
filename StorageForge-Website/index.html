@@ -111,7 +111,8 @@ h3 { font: 600 1.2rem/1.3 var(--body); margin: 0; text-wrap: balance; }
 .term-foot { padding: 10px 14px; border-top: 1px solid #2c3a47; color: var(--term-dim); font-size: 0.76rem; }
 
 /* The drive label */
-.drive-label { background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-top: clamp(32px, 5vw, 52px); }
+.drive-label { background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: clamp(32px, 5vw, 52px); }
+.drive-label p { color: var(--muted); font-size: 0.92rem; line-height: 1.5; margin-top: 4px; }
 .drive-label div { padding: 14px 16px; display: grid; gap: 4px; align-content: start; border-left: 1px solid var(--rule); min-width: 0; }
 .drive-label div:first-child { border-left: 0; }
 .drive-label b { font: 800 1.55rem/1.1 var(--display); text-transform: uppercase; letter-spacing: 0.01em; }
@@ -205,16 +206,16 @@ footer nav { display: flex; flex-wrap: wrap; gap: 4px 18px; }
   .drive-label { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .drive-label div { border-left: 0; border-top: 1px solid var(--rule); }
   .drive-label div:nth-child(even) { border-left: 1px solid var(--rule); }
-  .drive-label div:first-child { grid-column: 1 / -1; border-top: 0; }
-  .drive-label div:nth-child(2), .drive-label div:nth-child(4) { border-left: 0; }
-  .drive-label div:nth-child(3), .drive-label div:nth-child(5) { border-left: 1px solid var(--rule); }
+  .drive-label div:nth-child(-n+2) { border-top: 0; }
   .flow-map { grid-template-columns: minmax(0, 1fr); }
   .flow-map > div + div { border-left: 0; border-top: 1px solid var(--rule); }
   .legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .bays { grid-template-columns: repeat(20, minmax(0, 1fr)); }
 }
 @media (max-width: 560px) {
-  .steps, .rules { grid-template-columns: minmax(0, 1fr); }
+  .steps, .rules, .drive-label { grid-template-columns: minmax(0, 1fr); }
+  .drive-label div:nth-child(even) { border-left: 0; }
+  .drive-label div:nth-child(2) { border-top: 1px solid var(--rule); }
   .spec th { white-space: normal; }
 }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
@@ -243,7 +244,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 4px 18px; }
     <div class="hero-grid">
       <div class="hero-copy">
         <h1>Know every disk before you touch one</h1>
-        <p class="lede">StorageForge maps, plans and changes the storage on a fleet of Linux machines from one place. It indexes every host over SSH with no agent, checks every plan against that index, and writes scripts that report before they change anything.</p>
+        <p class="lede">StorageForge knows what's on all your Linux machines. It logs in over SSH, records every disk and file, and shows you the whole layout in one place. When you want to change something, it checks your plan first, then writes a script that tells you what it would do before it does it.</p>
         <div class="actions">
           <a class="btn solid" href="#install">Run it with Docker</a>
           <a class="btn" href="#how">See how it works</a>
@@ -263,7 +264,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 4px 18px; }
 <span class="ok">ok</span>        /srv/data/projects exists
 <span class="mi">missing</span>   rename /srv/data/docs to documents
 <span class="mi">missing</span>   trash /srv/broken-link
-<span class="co">conflict</span>  format /dev/sdd: mounted at /srv/archive
+<span class="co">conflict</span>  format /dev/sdd: it is mounted
 <span class="d">report only. Nothing changed.</span></pre>
 <pre id="out-apply" tabindex="0" hidden><span class="c">$ sudo ./changes-tidy-srv.sh --apply</span>
 <span class="d">in order; stops at the first failure</span>
@@ -271,18 +272,17 @@ footer nav { display: flex; flex-wrap: wrap; gap: 4px 18px; }
 <span class="ok">ok</span>        /srv/data/projects exists
 <span class="d">-&gt;</span>        rename /srv/data/docs to documents
 <span class="d">-&gt;</span>        trash /srv/broken-link
-<span class="co">conflict</span>  format /dev/sdd: mounted at /srv/archive
+<span class="co">conflict</span>  format /dev/sdd: it is mounted
 <span class="d">stopped. /dev/sdd was not touched.</span></pre>
         <div class="term-foot">Example, shortened. Every generated script uses these same words.</div>
       </div>
     </div>
 
     <div class="drive-label">
-      <div><span class="label">Installed to scan</span><b>Nothing</b></div>
-      <div><span class="label">Interface</span><b>SSH + keys</b></div>
-      <div><span class="label">Index</span><b>SQLite or PostgreSQL</b></div>
-      <div><span class="label">Reads</span><b>btrfs ZFS LVM mdadm LUKS</b></div>
-      <div><span class="label">Version</span><b>0.2.0</b></div>
+      <div><span class="label">Install on your machines</span><b>Nothing</b><p>No agent and no service. It logs in over SSH and runs tools Linux already has. The one exception is deploys, which add a small runner on the machines you pick.</p></div>
+      <div><span class="label">What it needs</span><b>An SSH key</b><p>It keeps the key encrypted. You decide which machines it can reach.</p></div>
+      <div><span class="label">What it knows</span><b>Where it all is</b><p>The name, size, age and location of your files on every machine, plus how the disks fit together. It stores this on your server. It doesn't store file contents.</p></div>
+      <div><span class="label">What it won't do</span><b>Surprise you</b><p>A scan changes nothing. A script only reports until you tell it to act. Wiping a drive has to get past three separate locks.</p></div>
     </div>
   </div>
 
@@ -292,7 +292,8 @@ footer nav { display: flex; flex-wrap: wrap; gap: 4px 18px; }
         <div class="why-text">
           <h2>Storage knowledge shouldn't live in one person's head</h2>
           <p>On a handful of Linux machines, the storage layout usually lives in shell history, an old wiki page and somebody's memory. That holds up until a disk fails or a copy lands on the system drive because a mount was missing.</p>
-          <p>Monitoring shows how full a disk is. Backup tools copy what you point them at. Configuration tools apply what you describe, without knowing what's on the disk. StorageForge joins these up: it keeps a searchable record of every host and checks your plan against it before anything runs.</p>
+          <p>You've probably never used a tool like this, so here's the short version. Monitoring tells you a disk is full. Backup tools copy what you point them at. Configuration tools apply what you describe, without knowing what's on the disk. None of them can tell you whether your plan is a bad idea.</p>
+          <p>StorageForge can. It keeps a searchable record of every machine and checks your plan against it before anything runs.</p>
         </div>
         <dl class="qa">
           <div><dt>Where is that file?</dt><dd>Search every host by name, size, age or folder, without connecting to any of them.</dd></div>
