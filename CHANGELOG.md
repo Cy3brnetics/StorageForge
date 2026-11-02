@@ -1,8 +1,8 @@
 # Changelog
 
-Newest first. Versions are not tagged yet: everything so far is 0.2.0.
+Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
-## Unreleased
+## 0.3.0 — 2026-11-01
 
 ### Fixed
 - **Lab reports include tiers 6 and 7.** They ran, but a failure there never reached the report or its result.
