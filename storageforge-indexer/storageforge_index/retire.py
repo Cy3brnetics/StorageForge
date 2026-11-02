@@ -19,10 +19,10 @@ def blockers(conn: Conn, name: str) -> list[str]:
 
 def retire(conn: Conn, name: str, keep_design: bool = False) -> dict:
     """Returns what went. LookupError when no such host, ValueError (with the reasons) when something still needs it."""
-    rows = conn.all('SELECT host_id, ssh_host, ip_address FROM hosts WHERE lower(hostname) = lower(:h)', {'h': name})
+    rows = conn.all('SELECT host_id, ssh_host FROM hosts WHERE lower(hostname) = lower(:h)', {'h': name})
     if not rows:
         raise LookupError(f'{name} is not an indexed host')
-    host_id, ssh_host, ip = rows[0]
+    host_id, ssh_host = rows[0]
     if why := blockers(conn, name):
         raise ValueError(f'{name} is still in use: ' + '; '.join(why))
     out = {}
@@ -32,7 +32,11 @@ def retire(conn: Conn, name: str, keep_design: bool = False) -> dict:
                             SELECT 'delete', f.file_id, f.filename FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id
                             WHERE m.host_id = :i""", {'i': host_id})
         out['bindings'] = conn.execute("""DELETE FROM key_bindings WHERE pattern_kind = 'host'
-                                          AND host_pattern IN (:h, :s, :ip)""", {'h': name, 's': ssh_host or name, 'ip': ip or name}).rowcount
+                                          AND host_pattern IN (:h, :s)""", {'h': name, 's': ssh_host or name}).rowcount     # not the IP it reports: another host can have that address
+        access = conn.all('SELECT state FROM deploy_access WHERE lower(host) = lower(:h)', {'h': name})
+        if access and access[0][0] != 'removed':
+            out['still_on_host'] = 'its storageforge-deploy account and runner stay on the machine, but nothing here can use them: remove them there'
+        conn.execute('DELETE FROM deploy_access WHERE lower(host) = lower(:h)', {'h': name})
         out['graph_nodes'] = conn.execute('DELETE FROM graph_nodes WHERE lower(host) = lower(:h)', {'h': name}).rowcount
         out['scan_jobs'] = conn.execute('DELETE FROM scan_jobs WHERE lower(host) = lower(:h)', {'h': name}).rowcount
         if not keep_design:

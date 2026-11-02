@@ -4,6 +4,7 @@ Move plans, Host scans, and arbitrary Commands) as cron jobs on client hosts wit
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import hashlib
 import json
 import re
@@ -19,7 +20,7 @@ from . import site
 from . import alerts, changes, moves, schedscript, tasks
 from .db import Conn, epoch
 from .moves import find_host, host_slug, hosts, slug
-from .scriptkit import HELPERS
+from .scriptkit import HELPERS, longest_gap
 
 CRON_ALIASES = {
     '@yearly': '0 0 1 1 *',
@@ -165,14 +166,15 @@ def next_run(expr: str, after_ts: int | None = None, tz_name: str = 'UTC') -> in
     raise ValueError(f'cannot find next run occurrence within 5 years for cron: {expr}')
 
 
+@functools.lru_cache(maxsize=512)
 def period(expr: str) -> int:
-    """Estimates the period in seconds between runs of a cron expression (used for staleness alerts)."""
+    """The longest wait between runs of a cron expression, in seconds: a schedule is only late once that has passed."""
     try:
-        t1 = next_run(expr, 1700000000)
-        t2 = next_run(expr, t1)
-        return max(60, t2 - t1)
-    except Exception:
+        mins, hours, doms, months, dows = parse_cron(expr)
+    except ValueError:
         return 86400
+    gap = longest_gap(lambda d: d.month in months and d.day in doms and (d.weekday() + 1) % 7 in dows, [h * 60 + m for h in hours for m in mins])
+    return max(60, gap) if gap else 86400
 
 
 # ── Configuration Normalization ───────────────────────────────────────────────
@@ -1173,6 +1175,9 @@ def generate_install_script(conn: Conn, schedule: dict, report_url: str | None, 
     task_script, script_args = generate_task_script(conn, schedule)
     env = {k: v for k, v in (cfg.get('env') or {}).items() if not UNSAFE_ENV.fullmatch(k)} if schedule['task_type'] == 'command' else {}    # a row from before the env rules too
     task_sh, run_sh = f'{LIB}/task-{sid}.sh', f'{LIB}/run-{sid}.sh'
+    # it can hold what the schedule view masks: only whoever runs it reads it
+    user = cfg.get('user') or 'root'
+    task_access = 'chmod 0700 "$TASK_SH"' if user == 'root' else f'chgrp "$(id -g {q(user)} 2>/dev/null || echo 0)" "$TASK_SH"; chmod 0750 "$TASK_SH"'
     runner = schedscript.runner_script(schedule, script_args, parse_cron(schedule['cron_expr']), report_url, env, task_sh)
     paused = 1 if schedule.get('paused') else 0
     # a dry run shows the command itself: the person reading it is who approves it
@@ -1244,7 +1249,7 @@ section "Installing schedule $SCHED_NAME (#$SID)"
 {_remove_block(sid, token=False)}mkdir -p {LIB} /etc/storageforge/scheduler /var/lib/storageforge/scheduler/$SID /var/lib/storageforge/managed
 chmod 0755 /var/lib/storageforge /var/lib/storageforge/scheduler /var/lib/storageforge/scheduler/$SID /var/lib/storageforge/managed 2>/dev/null || true
 chmod 0700 /etc/storageforge/scheduler
-{_heredoc('"$TASK_SH"', task_script)}chmod 0755 "$TASK_SH"
+{_heredoc('"$TASK_SH"', task_script)}{task_access}
 ok "$TASK_SH"
 {_heredoc('"$RUN_SH"', runner)}chmod 0700 "$RUN_SH"
 ok "$RUN_SH"

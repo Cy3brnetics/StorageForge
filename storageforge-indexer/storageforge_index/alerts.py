@@ -304,6 +304,7 @@ def drift(conn: Conn) -> list[dict]:
 # ── what the scans and this server know ─────────────────────────────
 DISK_WARN = int(os.environ.get('STORAGEFORGE_DISK_WARN_PCT', '90'))
 DISK_CRIT = int(os.environ.get('STORAGEFORGE_DISK_CRIT_PCT', '95'))
+UNKNOWN_SCAN_DAYS = 7            # how long a failed scan of something not yet a host keeps its alert
 GONE_DAYS = 30                   # a mount missing this long was removed on purpose: stop alerting
 CERT_WARN_DAYS, CERT_CRIT_DAYS = 30, 7
 BACKUP_STALE_DAYS = 3
@@ -324,11 +325,13 @@ def scan_problems(conn: Conn) -> dict:
         if last and (last[0][0] or 0) >= LARGE_DELETE:
             now[f'large-delete:{host}'] = ('large-delete', host, f'{last[0][0]:,} files vanished on {host}', f'in scan #{last[0][1]}: check that this was meant', 'warn')
     latest = {}
-    for host, status, result in conn.all("""SELECT host, status, result_json FROM scan_jobs
-                                            WHERE status NOT IN ('queued', 'running') ORDER BY job_id"""):
-        latest[host] = (status, result)
-    for host, (status, result) in latest.items():
-        if status == 'failed':
+    for host, status, result, queued in conn.all("""SELECT host, status, result_json, queued_at FROM scan_jobs
+                                                    WHERE status NOT IN ('queued', 'running') ORDER BY job_id"""):
+        latest[host] = (status, result, queued)
+    known = {r[0] for r in conn.all('SELECT hostname FROM hosts')}
+    for host, (status, result, queued) in latest.items():
+        # a name no host answers to may be a typo, and nothing can retire it: it stops alerting after a while
+        if status == 'failed' and (host in known or time.time() - (queued or 0) < UNKNOWN_SCAN_DAYS * 86400):
             why = str((loads(result) or {}).get('error') or '')
             now[f'scan-failed:{host}'] = ('scan-failed', host, f'Scan failed on {host}', why, 'warn')
     cutoff = time.time() - GONE_DAYS * 86400

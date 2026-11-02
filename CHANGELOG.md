@@ -5,6 +5,12 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Fixed
+- **A failed move no longer reports success.** Move scripts printed "copied", recorded the step and exited 0 when rsync or git failed, so scheduled moves counted as good runs. Cutover and timer failures now count too.
+- **A saved host check no longer blocks deploys.** Five minutes after a signed check, every deploy to that host was refused with a false clock error.
+- **Fewer false "stale" alerts.** Weekday-only, monthly and other uneven schedules are judged by their longest wait.
+- **Scans leave running deploys alone,** and failed log fetches no longer trigger more of them.
+- **Retiring a host** no longer removes another host's binding through a shared private address, no longer blocks `reset`, and says what stays on the machine.
+- **Smaller fixes from the audit's second pass.** A failed scan of an unknown name stops alerting after 7 days, command schedule scripts are private on their host (after the next deploy), failed rotating backups no longer leave folders behind for good, share options are read as whole words, planner volumes sized in bytes can be staged, and Git handles non-UTF-8 paths.
 - **Checksum scans reach files with non-UTF-8 names.** The host was asked for the escaped form of the name, which does not exist, so those files never got a checksum.
 - **An unreadable job schedule no longer fails the Deploy tab.** One calendar string that passed validation could make `/api/deploy` answer 400.
 - **Smaller audit fixes.** Move and change locks no longer fall back to `/tmp`, a schedule's `verify` refuses another schedule's run, schedule windows must be real times, filtered log pages no longer come up short on fetched logs, and the folder cache evicts its oldest entry rather than all of them.

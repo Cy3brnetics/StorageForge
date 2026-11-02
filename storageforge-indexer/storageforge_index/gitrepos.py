@@ -16,6 +16,8 @@ import threading
 import time
 
 from .db import Conn
+from .scanner import _raw_names
+from .stream import decode
 
 MAX_REPOS = 3000
 # Checkouts that tools make for themselves: package caches, AUR helpers, build trees, the trash, container layers.
@@ -76,6 +78,15 @@ done
 # read -d is bash: a login shell or sh that is dash would stop at it and report no repositories at all
 SURVEY = ("command -v git >/dev/null 2>&1 || { echo '@@nogit'; exit 0; }\n"
           f'exec bash -c {shlex.quote(_SURVEY_BASH)}\n')
+
+
+def _sh_path(path: str) -> str:
+    """A stored path as one shell word. An odd name is stored as text (\\xNN), so its real bytes go through printf."""
+    raw = _raw_names(path)[-1]
+    if raw == path.encode('utf-8', 'surrogateescape'):
+        return shlex.quote(path)
+    fmt = ''.join(chr(b) if chr(b).isascii() and (chr(b).isalnum() or chr(b) in '/._-') else f'\\{b:03o}' for b in raw)
+    return f'"$(printf \'{fmt}\')"'
 
 
 def candidates(conn: Conn, host_id: int) -> tuple[list[str], set[str]]:
@@ -140,7 +151,8 @@ def survey(db, conn: Conn, t, host_id: int, scan_id: int) -> dict:
     def feed():
         try:
             for p in paths:
-                proc.stdin.write(p.encode('utf-8', 'surrogateescape') + b'\0')
+                for name in _raw_names(p):
+                    proc.stdin.write(name + b'\0')
         except BrokenPipeError:
             pass
         finally:
@@ -152,7 +164,7 @@ def survey(db, conn: Conn, t, host_id: int, scan_id: int) -> dict:
     from .remote import StderrTail
     err = StderrTail(proc.stderr)
     from .remote import read_capped
-    out = read_capped(proc, 'git survey').decode('utf-8', 'replace')
+    out = decode(read_capped(proc, 'git survey'))       # as the index writes names, so a path comes back as asked
     proc.wait()
     err.join(5)
     proc.stdout.close()
@@ -160,6 +172,11 @@ def survey(db, conn: Conn, t, host_id: int, scan_id: int) -> dict:
     repos, have_git = parse_survey(out)
     if not have_git:
         return {'repos': len(paths), 'error': 'git is not installed on the host'}
+    best: dict[str, dict] = {}       # both forms of an odd name were asked for: the one that exists wins
+    for r in repos:
+        if r['path'] not in best or best[r['path']].get('error'):
+            best[r['path']] = r
+    repos = list(best.values())
     # a folder that merely looks bare (HEAD, config, objects/, refs/) but git rejects is not a repository
     repos = [r for r in repos if not (r.get('error') and r['path'] not in working)]
     with conn.tx():
@@ -322,7 +339,7 @@ def repo_status(db, host_name: str, path: str, actor: str | None = None) -> dict
         host_id = row[0][0] if row else None
         _known_repo(conn, canonical_name, path)
 
-        script = f'R={shlex.quote(path)}\n' + _STATUS_BASH
+        script = f'R={_sh_path(path)}\n' + _STATUS_BASH
         with open_host_transport(db, conn, canonical_name, 'scan') as t:
             out = t.run(script, timeout=30)
 
@@ -576,7 +593,7 @@ def repo_sync(db, host_name: str, path: str, action: str = 'sync', actor: str | 
         _known_repo(conn, canonical_name, path)
         if not deploy.ready(conn, canonical_name):
             raise deploy.DeployError(f'{canonical_name} is not set up for deploys yet: syncing changes the host, so it needs deploy access')
-        script = f'R={shlex.quote(path)}\nACT={shlex.quote(action)}\n' + _SYNC_BASH
+        script = f'R={_sh_path(path)}\nACT={shlex.quote(action)}\n' + _SYNC_BASH
         run = deploy.run(db, canonical_name, script, kind='git_sync', ref=path[:200], mode='apply', actor=actor, timeout=300)
         ok = run['status'] in deploy.FINISHED
         out = run['output']
@@ -628,7 +645,7 @@ def repo_history(db, host_name: str, path: str, max_commits: int = 50) -> dict:
         canonical_name = row[0][0] if row else host_name
         _known_repo(conn, canonical_name, path)
 
-        script = f'R={shlex.quote(path)}\nMAX={int(max_commits)}\n' + _HISTORY_BASH
+        script = f'R={_sh_path(path)}\nMAX={int(max_commits)}\n' + _HISTORY_BASH
         with open_host_transport(db, conn, canonical_name, 'scan') as t:
             out = t.run(script, timeout=30)
 
@@ -766,7 +783,7 @@ def repo_commit(db, host_name: str, path: str, sha: str) -> dict:
         canonical_name = row[0][0] if row else host_name
 
         _known_repo(conn, canonical_name, path)
-        script = f'timeout 25 git {SAFE_GIT} -C {shlex.quote(path)} show --stat --no-ext-diff --no-textconv --pretty=fuller {shlex.quote(sha)}'
+        script = f'timeout 25 git {SAFE_GIT} -C {_sh_path(path)} show --stat --no-ext-diff --no-textconv --pretty=fuller {shlex.quote(sha)}'
         with open_host_transport(db, conn, canonical_name, 'scan') as t:
             out = t.run(script, timeout=30)
 

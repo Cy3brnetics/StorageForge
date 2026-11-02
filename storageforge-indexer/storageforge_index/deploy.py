@@ -50,6 +50,7 @@ UNFINISHED = re.compile(r'^  (?:\x1b\[[0-9;]*m)?missing\b', re.M)   # during an 
 FINISHED = ('ok', 'incomplete')                # the script ran to its end; 'incomplete' left steps for the operator
 _host_locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
+_running_nonces: set[str] = set()      # runs this process has under way: the host only records a run when it ends
 
 
 class DeployError(RuntimeError):
@@ -374,6 +375,22 @@ def _lock(host: str) -> threading.Lock:
         return _host_locks.setdefault(host, threading.Lock())
 
 
+def is_running(nonce: str) -> bool:
+    with _locks_guard:
+        return nonce in _running_nonces
+
+
+@contextmanager
+def _track(nonce: str):
+    with _locks_guard:
+        _running_nonces.add(nonce)
+    try:
+        yield
+    finally:
+        with _locks_guard:
+            _running_nonces.discard(nonce)
+
+
 @contextmanager
 def _host_turn(name: str, out: list, save, live=None):
     """One script per host at a time, across every deploy. A wait says so, or the run just looks hung."""
@@ -431,7 +448,7 @@ def run(db: Database, host: str, script: str, args=(), *, kind: str, ref: str | 
         if require_ready and not ready(conn, name):
             raise DeployError(f'{name} is not set up for deploys yet (Deploy tab → Set up deploy access)')
         addr = connect_address(conn, name)
-        with _host_turn(name, out, save, live), Vault(db, conn).unlock() as v:
+        with _track(nonce), _host_turn(name, out, save, live), Vault(db, conn).unlock() as v:
             audit = AuditLog(db, conn, v.audit_key)
             try:
                 b = v.resolve(addr, 'deploy')
@@ -525,7 +542,7 @@ def raw(db: Database, host: str, script: str, *, kind: str, ref: str | None = No
     status, rc, t = 'failed', None, None
     try:
         addr = connect_address(conn, name)
-        with _lock(name), Vault(db, conn).unlock() as v:     # one run per host at a time, like run()
+        with _track(nonce), _lock(name), Vault(db, conn).unlock() as v:     # one run per host at a time, like run()
             b = v.resolve(addr, 'deploy')
             req = request(_signer(v), name, RUNNER_UPDATE + script, machine=_machine(conn, name), nonce=nonce)
             with ephemeral_agent(v.decrypt_key(b.key_id)) as sock:

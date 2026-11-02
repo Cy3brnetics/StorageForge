@@ -142,9 +142,9 @@ def blockers(conn, hosts: list[str], kind: str) -> list[dict]:
         return []
     out = []
     for host in dict.fromkeys(hosts):
-        rows = conn.all('SELECT facts_json FROM host_checks WHERE host = :h', {'h': host})
+        rows = conn.all('SELECT facts_json, checked_at FROM host_checks WHERE host = :h', {'h': host})
         facts = (loads(rows[0][0]) or {}) if rows else facts_from_scan(conn, host)
-        for it in findings(facts):
+        for it in findings(facts, rows[0][1] if rows else None):     # a saved clock reading is compared with when it was read
             if it['level'] == 'crit' and (kind not in ('changes', 'schedules') or 'systemd' not in it['text']):   # change plans and cron schedules need no units
                 out.append({'host': host, 'text': it['text']})
     return out

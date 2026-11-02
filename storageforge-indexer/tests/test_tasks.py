@@ -598,6 +598,18 @@ class TaskRuns(Fleet):
         env = {**os.environ, 'STORAGEFORGE_TASK_STATE': f'{self.tmp}/state'}
         return subprocess.run(['bash', str(sh)] + ([mode] if mode else []), capture_output=True, text=True, env=env, timeout=60)
 
+    def test_a_failed_rotation_leaves_nothing_for_good(self):
+        src, snaps = Path(self.tmp) / 'rot-src', Path(self.tmp) / 'rot-snaps'
+        src.mkdir()
+        (src / 'a').write_text('x')
+        left = snaps / '2020-01-01_000000.partial'
+        left.mkdir(parents=True)
+        r = self.run_task([{'type': 'rotate', 'params': {'src': str(src), 'dst': str(snaps), 'keep': 2, 'one_fs': False}}])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(left.exists())
+        self.assertEqual(len(list(snaps.glob('*.partial'))), 0)
+        self.assertEqual(len(list(snaps.iterdir())), 1)
+
     def test_copy_rotate_conditions_and_failure(self):
         src, dst = Path(self.tmp) / 'src', Path(self.tmp) / 'dst'
         (src / 'sub').mkdir(parents=True)

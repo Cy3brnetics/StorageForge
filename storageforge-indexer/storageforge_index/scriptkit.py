@@ -1,6 +1,7 @@
 """Shared pieces of the Bash scripts StorageForge writes (moves, share deployment): output in storage-setup.sh's
 style (ok / missing / conflict / ->), and --host, which copies the script to another machine and runs it there
 with sudo, forwarding your SSH agent."""
+import datetime as dt
 import re
 
 from .db import Conn, loads
@@ -16,6 +17,22 @@ def host_name(value, what: str) -> str:
     if not HOST_RE.fullmatch(h) or h.startswith('-'):
         raise ValueError(f'{what} must be a host name or address')
     return h
+
+
+def longest_gap(day_matches, minutes: list[int]) -> int | None:
+    """Seconds between the two furthest-apart runs of a schedule, over four years so leap days count. day_matches(date) says
+    whether it runs that day, minutes when in the day. None when it never runs."""
+    first = dt.date(2024, 1, 1).toordinal()
+    span = 1461
+    days = [o for o in range(first, first + span) if day_matches(dt.date.fromordinal(o))]
+    times = sorted(set(minutes))
+    if not days or not times:
+        return None
+    within = max((b - a for a, b in zip(times, times[1:])), default=0)
+    # a day that comes once in the four years waits for its next time round; otherwise the window's own seam is no real gap
+    pairs = zip(days, days[1:]) if len(days) > 1 else [(days[0], days[0] + span)]
+    across = max((b - a) * 1440 + times[0] - times[-1] for a, b in pairs)
+    return max(within, across) * 60
 
 
 def one_line(text) -> str:

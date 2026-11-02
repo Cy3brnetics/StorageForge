@@ -118,23 +118,23 @@ Static read plus small Python repros for anything claimed as confirmed (B1's was
 
 ## Second pass: what the first one missed
 
-After B1 to B7 and N1 to N4 were fixed, the modules the first pass skipped were read: `shares`, `jobscript`, `schedscript`, `scriptkit`, `syncindex`, `retire`, `reset`, `preflight`, `confirm`, `routes_git`, `hostkeys`, `keyinstall`, `access`, `remotes`, `snapfind`, `snapjobs`, `authkeys`, `site`, `protection`, `blueprint`, `fromdesign`, `analysis`, `folders`, `hostconfig`, `reinstall`, `gitrepos`, the first part of `docker`, `health` and `filemap`, part of `payloads` and `graph`, and the rest of `tasks` and `moves`. **None of these are fixed yet.**
+After B1 to B7 and N1 to N4 were fixed, the modules the first pass skipped were read: `shares`, `jobscript`, `schedscript`, `scriptkit`, `syncindex`, `retire`, `reset`, `preflight`, `confirm`, `routes_git`, `hostkeys`, `keyinstall`, `access`, `remotes`, `snapfind`, `snapjobs`, `authkeys`, `site`, `protection`, `blueprint`, `fromdesign`, `analysis`, `folders`, `hostconfig`, `reinstall`, `gitrepos`, the first part of `docker`, `health` and `filemap`, part of `payloads` and `graph`, and the rest of `tasks` and `moves`. All 13 were fixed afterwards, with tests. How each fix went is at the end of this section.
 
 | # | Area | Finding | Severity | Evidence |
 | :--- | :--- | :--- | :--- | :--- |
-| M1 | Move scripts | A failed copy reports success | **High** | Ran it |
-| M2 | Deploys | A saved host check blocks every deploy to that host after 5 minutes | **High** | Ran the check function |
-| M3 | Alerts | Schedules with uneven gaps raise false "stale" alerts | Medium | Ran it |
-| M4 | Scans | A scan during a long deploy marks it failed, then waits for it | Medium | Ran the status change; the wait is from reading |
-| M5 | Scans | Failed log fetches trigger more log fetches | Medium | Ran it with a stubbed run |
-| M6 | Retire | Retiring a host can delete another host's key binding | Low | Ran it |
-| M7 | Retire and reset | Retiring leaves `deploy_access`, which then blocks `reset` | Low | Ran it |
-| M8 | Alerts | A mistyped scan leaves an alert for up to 90 days | Low | Ran it |
-| M9 | Schedules | A command schedule's script is world-readable on its host | Low | Read |
-| M10 | Tasks | Failed rotating backups leave `.partial` folders that are never removed | Low | Read |
-| M11 | Shares | Substring matches misread share options | Low | Ran two of three |
-| M12 | Planner | A logical volume sized in bytes makes a change plan unsaveable | Low | Ran it |
-| M13 | Git | Repositories with non-UTF-8 paths have the same escaped-name problem as B6 | Low | Read |
+| M1 | Move scripts | A failed copy reports success | **High**, fixed | Ran it |
+| M2 | Deploys | A saved host check blocks every deploy to that host after 5 minutes | **High**, fixed | Ran the check function |
+| M3 | Alerts | Schedules with uneven gaps raise false "stale" alerts | Medium, fixed | Ran it |
+| M4 | Scans | A scan during a long deploy marks it failed, then waits for it | Medium, fixed | Ran the status change; the wait is from reading |
+| M5 | Scans | Failed log fetches trigger more log fetches | Medium, fixed | Ran it with a stubbed run |
+| M6 | Retire | Retiring a host can delete another host's key binding | Low, fixed | Ran it |
+| M7 | Retire and reset | Retiring leaves `deploy_access`, which then blocks `reset` | Low, fixed | Ran it |
+| M8 | Alerts | A mistyped scan leaves an alert for up to 90 days | Low, fixed | Ran it |
+| M9 | Schedules | A command schedule's script is world-readable on its host | Low, fixed | Read |
+| M10 | Tasks | Failed rotating backups leave `.partial` folders that are never removed | Low, fixed | Read |
+| M11 | Shares | Substring matches misread share options | Low, fixed | Ran two of three |
+| M12 | Planner | A logical volume sized in bytes makes a change plan unsaveable | Low, fixed | Ran it |
+| M13 | Git | Repositories with non-UTF-8 paths have the same escaped-name problem as B6 | Low, fixed | Read |
 
 **M1. Move scripts report failed copies as success.** The main loop runs `run_step "$i" || true`, and Bash ignores `set -e` inside anything called that way. So when `rsync` fails, `run_step` carries on, writes `$STATE/$i.done` and prints `ok copied`. Run against a missing source, the script printed rsync's code 23, then `ok copied` and `done`, wrote `0.done`, and exited 0. The Moves page reads that file as progress. A schedule of type `move` runs this same script with `--run`, and `verify_run` looks for text the script never prints, so a failed scheduled move counts as a good run. Git steps have the same shape. `cutover_step` does too: if `mv` fails it goes on to `ln -s` and records the cutover. Deployed jobs use `storageforge-job` instead and aren't affected. *Fix:* check each command's exit status in those functions, as `verify_step` already does.
 
@@ -169,6 +169,20 @@ After B1 to B7 and N1 to N4 were fixed, the modules the first pass skipped were 
 - **`syncindex`:** paths from the other host are walked with `O_NOFOLLOW` and hashes are re-read before linking.
 - **Secrets:** docker and fstab redaction, and how `access.sudo_run` and `keyinstall` pass passwords.
 - **`snapjobs`:** script quoting, and the ownership check on configs before running them as root.
+
+### How they were fixed
+
+- **M1:** each failure in the move script's step functions is now caught where it happens, including timers that would not enable. Exit 24 (files vanished) still counts as copied, as in deployed jobs.
+- **M2:** a saved clock reading is compared with when it was read, so a clock that really was off at the check still blocks.
+- **M3:** both estimates now work out the longest wait over a four-year calendar, shared in `scriptkit.longest_gap`. A systemd time it can't read counts as daily.
+- **M4:** runs under way in this process are no longer marked absent. A CLI scan is a separate process and can't see them, so it can still do this. The log fetch for a run that really failed still waits its turn on the host lock.
+- **M5:** `log_fetch` runs never get logs fetched for them.
+- **M6, M7:** retire matches bindings by name and scan address only, drops the `deploy_access` row, and says what stays on the machine.
+- **M8:** a failed scan of a name that isn't a host alerts for 7 days. A new host that really is unreachable also stops alerting then, until it is scanned again.
+- **M9:** the task script is 0700 for root and 0750 with the runner's group otherwise. Hosts keep the old mode until the schedule is deployed again.
+- **M10:** each rotating backup removes earlier `.partial` folders when it starts, so one stays until the next run.
+- **M11, M12:** options are compared as whole words, and a volume's bytes become a size in MiB.
+- **M13:** both forms of an odd path are asked for in surveys, and live Git routes send the real bytes through `printf`.
 
 ### Still not audited
 

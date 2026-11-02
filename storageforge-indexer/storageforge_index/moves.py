@@ -734,8 +734,8 @@ git_step() { # step mode
       if [[ -d ${S_DST[$i]} ]]; then "${GIT[@]}" -C "${S_DST[$i]}" fetch --dry-run --prune origin 2>&1 | sed 's/^/            /' || true
       else info "would run: git clone --mirror $url ${S_DST[$i]}"; fi ;;
     run)
-      if [[ -d ${S_DST[$i]} ]]; then doing "git remote update --prune in ${S_DST[$i]}"; "${GIT[@]}" -C "${S_DST[$i]}" remote update --prune
-      else mkdir -p "$(dirname "${S_DST[$i]}")"; doing "git clone --mirror $url ${S_DST[$i]}"; "${GIT[@]}" clone --mirror "$url" "${S_DST[$i]}"; fi
+      if [[ -d ${S_DST[$i]} ]]; then doing "git remote update --prune in ${S_DST[$i]}"; "${GIT[@]}" -C "${S_DST[$i]}" remote update --prune || { conflict "git failed: the archive was not updated"; return 1; }
+      else mkdir -p "$(dirname "${S_DST[$i]}")"; doing "git clone --mirror $url ${S_DST[$i]}"; "${GIT[@]}" clone --mirror "$url" "${S_DST[$i]}" || { conflict "git failed: no archive was made"; return 1; }; fi
       mkdir -p "$STATE"; date '+%F %T' >"$STATE/$i.done"; ok "archive up to date" ;;
     verify)
       local a b
@@ -770,14 +770,16 @@ check_step() {
   [[ -e $STATE/$i.cutover ]] && info "cut over: $(cat "$STATE/$i.cutover")"
   return 0
 }
+# The loop below calls these with || true, and bash ignores set -e inside such a call: each failure has to be caught here.
 run_step() {
-  local i=$1
+  local i=$1 rc=0
   dst_guard "$i" || return 1
   [[ ${S_METHOD[$i]} == git ]] && { git_step "$i" run; return; }
   mkdir -p "${S_DST[$i]}"
   rsync_args "$i" --info=progress2,stats2
   doing "${RS[*]}"
-  "${RS[@]}"
+  "${RS[@]}" || rc=$?
+  ((rc == 0 || rc == 24)) || { conflict "rsync failed (exit $rc): this step is not copied"; return 1; }     # 24: files vanished while copying
   mkdir -p "$STATE"; date '+%F %T' >"$STATE/$i.done"
   ok "copied"
 }
@@ -786,7 +788,8 @@ dryrun_step() {
   dst_guard "$i" || return 1
   [[ ${S_METHOD[$i]} == git ]] && { git_step "$i" dryrun; return; }
   rsync_args "$i" -n --stats
-  "${RS[@]}" | grep -E '^(Number of (created|regular) files|Number of regular files transferred|Total file size|Total transferred file size)' | sed 's/^/            /'
+  "${RS[@]}" | grep -E '^(Number of (created|regular) files|Number of regular files transferred|Total file size|Total transferred file size)' | sed 's/^/            /' \
+    || conflict "rsync could not list what this step would transfer"
 }
 verify_step() { # -> 0 if destination matches source
   local i=$1 out n rc=0
@@ -810,11 +813,11 @@ cutover_step() {
   local src=${S_SRC[$i]%/} old="${S_SRC[$i]%/}.migrated-$when"
   if src_is_local "$i"; then
     [[ -e $old ]] && { conflict "$old already exists"; return 1; }
-    doing "mv $src $old"; mv -- "$src" "$old"
-    if has "$i" link; then doing "ln -s ${S_DST[$i]%/} $src"; ln -s -- "${S_DST[$i]%/}" "$src"; fi
+    doing "mv $src $old"; mv -- "$src" "$old" || { conflict "could not rename $src: not cut over"; return 1; }
+    if has "$i" link; then doing "ln -s ${S_DST[$i]%/} $src"; ln -s -- "${S_DST[$i]%/}" "$src" || conflict "renamed, but could not link $src to ${S_DST[$i]%/}"; fi
   else
     doing "on ${S_SRC_LOGIN[$i]}: mv $src $old"
-    ssh_src "$i" sudo -n mv -- "$(printf %q "$src")" "$(printf %q "$old")"
+    ssh_src "$i" sudo -n mv -- "$(printf %q "$src")" "$(printf %q "$old")" || { conflict "could not rename $src on the source: not cut over"; return 1; }
     info "nothing links the old path on the source host to this one; repoint its users (NFS export, mounts) by hand"
   fi
   mkdir -p "$STATE"; echo "$(date '+%F %T') · source kept as $old" >"$STATE/$i.cutover"
@@ -872,7 +875,7 @@ RandomizedDelaySec=10min
 
 [Install]
 WantedBy=timers.target"
-      systemctl daemon-reload; systemctl enable --now "$u.timer"; ok "timer $u.timer (${S_SCHEDULE[$i]})" ;;
+      systemctl daemon-reload; if systemctl enable --now "$u.timer"; then ok "timer $u.timer (${S_SCHEDULE[$i]})"; else conflict "could not enable $u.timer"; fi ;;
     rsnapshot)
       command -v rsnapshot >/dev/null || { conflict "rsnapshot is not installed"; return 1; }
       root_key_ok "$i" || return 1
@@ -910,8 +913,9 @@ Persistent=true
 WantedBy=timers.target"
       done
       systemctl daemon-reload
-      for kv in ${S_KEEP[$i]}; do ((${kv#*=} > 0)) && systemctl enable --now "$u-${kv%=*}.timer"; done
-      ok "rsnapshot timers enabled" ;;
+      local bad=0
+      for kv in ${S_KEEP[$i]}; do ((${kv#*=} > 0)) || continue; systemctl enable --now "$u-${kv%=*}.timer" || { conflict "could not enable $u-${kv%=*}.timer"; bad=1; }; done
+      ((bad)) || ok "rsnapshot timers enabled" ;;
     git)
       root_key_ok "$i" || return 1
       [[ -d ${S_DST[$i]} ]] || { conflict "run --run first to create the archive"; return 1; }
@@ -936,7 +940,7 @@ RandomizedDelaySec=10min
 
 [Install]
 WantedBy=timers.target"
-      systemctl daemon-reload; systemctl enable --now "$u.timer"; ok "timer $u.timer (${S_SCHEDULE[$i]})" ;;
+      systemctl daemon-reload; if systemctl enable --now "$u.timer"; then ok "timer $u.timer (${S_SCHEDULE[$i]})"; else conflict "could not enable $u.timer"; fi ;;
     *) info "nothing to install for a ${S_METHOD[$i]} step" ;;
   esac
 }

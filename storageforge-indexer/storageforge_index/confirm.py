@@ -107,7 +107,7 @@ def ingest_runs(conn: Conn, host: str, text: str) -> list[dict]:
                        WHERE lower(host) = lower(:h) AND status IN ('running', 'queued') AND started_at < :cutoff""",
                     {'h': host, 'cutoff': stale_cutoff})
     for rid, nonce in rows:
-        if nonce and nonce not in seen_nonces:
+        if nonce and nonce not in seen_nonces and not deploy.is_running(nonce):
             note = f"\n[scan at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}: no record of this run on host; marked absent]\n"
             conn.execute("""UPDATE deploy_runs
                             SET host_state = 'absent', confirmed_at = :now, status = 'failed',
@@ -132,7 +132,7 @@ def fetch_problem_logs(db: Database, conn: Conn, host: str, confirmed: list[dict
     failed_runs = [c for c in confirmed if c.get('rc') != 0]
     if not failed_runs:
         rows = conn.all("""SELECT run_id, nonce, exit_code FROM deploy_runs
-                           WHERE lower(host) = lower(:h) AND status IN ('failed', 'refused')
+                           WHERE lower(host) = lower(:h) AND status IN ('failed', 'refused') AND kind <> 'log_fetch'
                              AND started_at > :since ORDER BY run_id DESC LIMIT 5""",
                         {'h': host, 'since': now - 7 * 86400})
         failed_runs = [{'run_id': r[0], 'nonce': r[1], 'rc': r[2]} for r in rows]
@@ -140,6 +140,8 @@ def fetch_problem_logs(db: Database, conn: Conn, host: str, confirmed: list[dict
     for fr in failed_runs:
         rid = fr['run_id']
         nonce = fr.get('nonce')
+        if conn.scalar('SELECT kind FROM deploy_runs WHERE run_id = :r', {'r': rid}) == 'log_fetch':     # or each failure would make another
+            continue
         log_key = f'deploy:{rid}'
         existing = conn.scalar("SELECT state FROM host_logs WHERE log_key = :k", {'k': log_key})
         if existing in ('fetched', 'failed'):
