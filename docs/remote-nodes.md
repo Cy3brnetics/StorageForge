@@ -38,7 +38,7 @@ An unused key stops working after 24 hours. Adopting removes that limit.
 
 ## Remove a node
 
-**Revoke** in the UI, or `storageforge-index remote revoke cabin`, cuts the tunnel within about 10 seconds. Every other node is dropped too and reconnects within about 20 seconds. Then run the script on the node with `--remove` to take off the service and its accounts. If you've deleted the script, make a new one with the same name, since `--remove` works from any copy. Retire the host as usual to remove its index data.
+**Revoke** in the UI, or `storageforge-index remote revoke cabin`, cuts the tunnel within about 10 seconds. Every other node is dropped too and reconnects within about 20 seconds. Then run the script on the node with `--remove` to take off the service and its accounts. If you've deleted the script, make a new one with the same name, since `--remove` works from any copy. Retire the host as usual to remove its index data. Retiring an adopted node's host revokes the node as well, so its tunnel is cut even if you skip **Revoke**. The machine keeps retrying until its script runs with `--remove`.
 
 ## What a tunnel key can do
 

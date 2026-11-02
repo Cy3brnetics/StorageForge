@@ -1,10 +1,10 @@
 ---
 tags: [audit-rules, tracking]
-updated: 2026-10-31
+updated: 2026-11-01
 ---
 # Audit history
 
-**The next audit's baseline is `7855063`**, the commit the fixes were tested at, not the Head in the table. Audit everything since.
+**The next audit's baseline is `31fc091`**. Audit everything since.
 
 | Date | Audit | Kind | Baseline | Head | Tree included | Findings |
 | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
@@ -13,6 +13,7 @@ updated: 2026-10-31
 | 2026-10-29 | [[Audit 2026-10-29 - features]] | Features | not recorded | `bc12d9c` | yes | PF-01 to PF-16, EQ-01 to EQ-03 |
 | 2026-10-29 to 30 | [[Review of Gemini audit 2026-10-29]] | Security and bugs, external | not recorded | `68a6d73` | yes | GM-01 to GM-25 |
 | 2026-10-31 | [[Audit 2026-10-31]] | Security and new features | `68a6d73` | `82b0eb0` | **yes** | SF-23 to SF-39, PF-18 to PF-27, EQ-04, EQ-05 |
+| 2026-11-01 | [[Audit 2026-11-01]] | Remote nodes, snapshot engine, site isolation | `7855063` | `31fc091` | clean | SF-40 to SF-43, PF-28 to PF-30, EQ-06 |
 
 ## Not code audits
 These don't move the baseline.

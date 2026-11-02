@@ -333,5 +333,12 @@ class PrivilegeChain(Base):
         self.assertEqual(self.admin.post('/api/reauth', json={'password': PW}, headers={'Sec-Fetch-Site': 'same-origin'}).status_code, 200)
         self.assertEqual(self.admin.post('/api/reauth', json={'password': PW}, headers={'Origin': 'https://localhost:8443'}).status_code, 200)   # the proxy passes the Host without its port
 
+    def test_plain_http_tells_ports_apart(self):
+        """SF-42: browsers send no Sec-Fetch-Site over plain HTTP, and SameSite lets a page on another port send the cookie."""
+        for origin, host in (('http://nas:3000', 'nas:8000'), ('http://nas', 'nas:8000'), ('https://nas:8000:x', 'nas:8000'), ('http://nas:bad', 'nas:8000')):
+            self.assertEqual(self.admin.post('/api/logout', headers={'Origin': origin, 'Host': host}).status_code, 403, origin)
+        for origin, host in (('http://nas:8000', 'nas:8000'), ('https://nas', 'nas:443'), ('http://nas', 'nas:80')):
+            self.assertNotEqual(self.admin.post('/api/logout', headers={'Origin': origin, 'Host': host}).status_code, 403, origin)
+
 if __name__ == '__main__':
     unittest.main()

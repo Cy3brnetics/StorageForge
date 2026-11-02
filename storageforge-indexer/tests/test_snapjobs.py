@@ -97,6 +97,20 @@ class Parse(unittest.TestCase):
         self.assertEqual([s['name'] for s in by[str(conf)]['snapshots']], ['daily.0'])
         self.assertEqual(by[f'{tmp}/other.conf']['schedule'][0]['level'], 'daily')
 
+    def test_a_capability_find_that_cannot_run_is_passed_over(self):
+        """PF-29: executable by its mode, refused by the kernel. Every snapshot went missing without a word."""
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / 'snaps' / 'daily.0').mkdir(parents=True)
+        (tmp / 'x.conf').write_text(f'snapshot_root\t{tmp}/snaps/\nretain\tdaily\t7\n')
+        broken = tmp / 'find'
+        broken.write_text('#!/bin/sh\nexit 126\n')
+        broken.chmod(0o755)
+        script = snapfind.SNAPFIND.replace('/usr/local/lib/storageforge/find', str(broken)).replace('/etc /usr/local/etc /root', str(tmp))
+        out = subprocess.run(['sh', '-c', script], capture_output=True, text=True, timeout=60).stdout
+        by = {j['config']: j for j in snapfind.parse(out) if j['tool'] == 'rsnapshot'}
+        self.assertEqual([s['name'] for s in by[f'{tmp}/x.conf']['snapshots']], ['daily.0'])
+
 
 class Advice(unittest.TestCase):
     def test_each_filesystem_gets_its_tool(self):

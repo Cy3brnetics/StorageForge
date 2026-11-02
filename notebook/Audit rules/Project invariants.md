@@ -22,3 +22,8 @@ Promises from `docs/concepts.md`, `CONTRIBUTING.md` and `security-parm.md`. Ever
 | Nobody hands out more than they hold | Try it from a limited custom role |
 | Browser code uses DOM APIs for data | Search for `innerHTML` in changed JS |
 | New scripts bring tests | Check the test exists, and that it can fail |
+| Remote nodes dial in safely: reverse SSH tunnel allows no server shell or unverified forwarding | Check tunnel authorized_keys options: forced command, no-pty, no-agent-forwarding, loopback-only port forward |
+| Sites never leak across boundaries: keys, vaults, and configs are strictly site-isolated | Attempt to access another site's keys or data through site-scoped endpoints |
+| Generate-only key vaults never expose private keys once written | Request private key download/export from generate-only vault |
+| Reset links and invite tokens are single-use, time-bounded, and invalidate sessions on password reset | Use token twice; verify previous session cookies become invalid on reset |
+| Sync and snapshot jobs acquire volume locks and run only signed scripts through `storageforge-run` | Attempt concurrent syncs on the same volume; inspect generated job scripts |

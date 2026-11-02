@@ -76,6 +76,14 @@ def _blocking(left: dict) -> list[str]:
     return lines
 
 
+def _can_install() -> bool:
+    path = os.environ.get('STORAGEFORGE_VAULT_SECRET_FILE')
+    if not path or os.environ.get('STORAGEFORGE_VAULT_SECRET'):
+        return False
+    folder = Path(path).parent
+    return folder.stat().st_uid == os.getuid() and not os.statvfs(folder).f_flag & os.ST_RDONLY
+
+
 def _new_secret(current: bytes) -> tuple[str, bool]:
     """(the new vault secret, whether this command can put it in place)."""
     given = os.environ.get('STORAGEFORGE_VAULT_NEW_SECRET')
@@ -84,7 +92,7 @@ def _new_secret(current: bytes) -> tuple[str, bool]:
             raise SystemExit(f'STORAGEFORGE_VAULT_NEW_SECRET must be at least {MIN_SECRET_LEN} characters')
         if given.encode() == current:
             raise SystemExit("STORAGEFORGE_VAULT_NEW_SECRET is the old secret; a new site never shares its client's secret")
-        return given, False
+        return given, _can_install()
     path = os.environ.get('STORAGEFORGE_VAULT_SECRET_FILE')
     if not path or os.environ.get('STORAGEFORGE_VAULT_SECRET'):
         raise SystemExit('the vault secret comes from the environment, which this command cannot change. '

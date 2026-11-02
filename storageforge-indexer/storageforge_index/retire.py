@@ -1,7 +1,8 @@
 """Retire a host: it leaves search, the graph, the scheduler and the alerts. The audit log keeps what happened to it,
-and deploy history stays. Refused while anything is deployed there or a scan is running: remove those first."""
+and deploy history stays. A remote node's tunnel is cut with it. Refused while anything is deployed there or a scan is running: remove those first."""
 from __future__ import annotations
 
+from . import remotes
 from .db import Conn
 
 
@@ -36,5 +37,10 @@ def retire(conn: Conn, name: str, keep_design: bool = False) -> dict:
         out['scan_jobs'] = conn.execute('DELETE FROM scan_jobs WHERE lower(host) = lower(:h)', {'h': name}).rowcount
         if not keep_design:
             out['design'] = conn.execute('DELETE FROM blueprints WHERE lower(hostname) = lower(:h)', {'h': name}).rowcount
+        node = remotes.retired(conn, ssh_host)
+        if node:
+            out['remote_node'] = node
         conn.execute('DELETE FROM hosts WHERE host_id = :i', {'i': host_id})
+    if node:
+        remotes.sync(conn, drop_sessions=True)
     return out

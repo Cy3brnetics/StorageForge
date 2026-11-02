@@ -18,7 +18,7 @@ try:
     import dbfactory
 except ImportError:      # run as tests.test_x from the project folder
     from tests import dbfactory
-from storageforge_index import moves, remotes, server, users, vault
+from storageforge_index import moves, remotes, retire, server, users, vault
 
 CONFIG = Path(__file__).resolve().parents[1] / 'docker' / 'tunnel' / 'sshd_config'
 SECRET = 'x' * 48
@@ -102,6 +102,59 @@ class Nodes(Base):
         (self.tmp / 'keys' / 'authorized_keys').write_text('ssh-ed25519 AAAASOMEONE planted\n')
         remotes.overview(self.conn)
         self.assertNotIn('planted', self.authorized())
+
+    def test_looking_at_the_list_writes_nothing_when_nothing_changed(self):
+        self.add()
+        before = (self.tmp / 'keys' / 'authorized_keys').stat().st_ino
+        remotes.overview(self.conn)
+        self.assertEqual((self.tmp / 'keys' / 'authorized_keys').stat().st_ino, before)
+
+    def test_nodes_are_probed_together(self):
+        for name in ('a', 'b', 'c'):
+            self.add(name)
+        met = threading.Barrier(3, timeout=10)      # passes only if all three probes are out at once
+
+        def probe(addr):
+            met.wait()
+            return False
+        with mock.patch.object(remotes, 'online', probe):
+            self.assertEqual(len(remotes.overview(self.conn)['nodes']), 3)
+
+    def test_a_node_nobody_is_behind_answers_at_once(self):
+        """The tunnel shares this network: no forward means a refusal, so only a hung node can use the timeout."""
+        started = time.monotonic()
+        self.assertFalse(remotes.online(remotes.address(60000)))
+        self.assertLess(time.monotonic() - started, 1)
+
+    def test_addresses_run_out_rather_than_wrap(self):
+        self.assertEqual(remotes.address(remotes.MAX_NODE_ID), '127.77.255.255')
+        self.conn.execute("""INSERT INTO remote_nodes (node_id, name, public_key, created_at, created_by, expires_at, revoked_at)
+                             VALUES (:i, 'old', 'k', 1, 't', 1, 1)""", {'i': remotes.MAX_NODE_ID})
+        with self.assertRaisesRegex(ValueError, 'every remote node address'):
+            self.add()
+
+    def retiring(self, name, node_address):
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json) VALUES (:h, :a, 'sfscan', '{}')", {'h': name, 'a': node_address})
+        return retire.retire(self.conn, name)
+
+    def test_retiring_its_host_cuts_the_tunnel(self):
+        """SF-40, EQ-06: the key stayed in authorized_keys, and the machine kept its address here for good."""
+        node, other = self.add('cabin'), self.add('barn')
+        self.assertEqual(self.retiring('cabin-host', node['address'])['remote_node'], 'cabin')
+        self.assertNotIn('storageforge:node:cabin', self.authorized())
+        self.assertIn('storageforge:node:barn', self.authorized())
+        self.assertTrue((self.tmp / 'keys' / 'generation').read_text().strip())
+        self.assertEqual([n['name'] for n in remotes.overview(self.conn)['nodes']], ['barn'])
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            self.assertFalse([b for b in v.bindings() if b['pattern'] == node['address']])
+            self.assertTrue([b for b in v.bindings() if b['pattern'] == other['address']])
+
+    def test_retiring_any_other_host_leaves_the_nodes_alone(self):
+        self.add()
+        keys = self.authorized()
+        self.assertNotIn('remote_node', self.retiring('lan-host', '10.0.0.9'))
+        self.assertEqual(self.authorized(), keys)
+        self.assertFalse((self.tmp / 'keys' / 'generation').exists())
 
     def test_bad_values_are_refused(self):
         for name in ('', '-x', 'a b', '$(id)', "a'b", 'a/b', 'x' * 64):

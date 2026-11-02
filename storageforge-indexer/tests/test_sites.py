@@ -246,6 +246,11 @@ class Sites(unittest.TestCase):
             self.run_reset()
         self.assertEqual(list(self.archive.iterdir()), [])
 
+    def test_a_given_secret_goes_in_a_file_this_command_can_write(self):
+        with mock.patch.dict(os.environ, {'STORAGEFORGE_VAULT_NEW_SECRET': 'n' * 40}):
+            self.assertTrue(self.run_reset()['secret_installed'])
+        self.assertEqual(self.secret_file.read_text(), 'n' * 40)
+
     def test_secret_from_the_environment_needs_a_new_one(self):
         with mock.patch.dict(os.environ, {'STORAGEFORGE_VAULT_SECRET': OLD}):
             with self.assertRaisesRegex(SystemExit, 'NEW_SECRET'):

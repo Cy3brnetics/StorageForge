@@ -49,6 +49,31 @@ tags: [audit-rules, checklist]
 - [ ] DOM APIs only for host data, with no `innerHTML`
 - [ ] CSP unchanged
 - [ ] CSV and exports safe from spreadsheet formulas
+- [ ] Tree and card maps: do file names, paths, dataset tags, or snapshot labels pass into DOM attributes or markup safely?
+- [ ] Folder picker and navigation: can path traversal (`../`) escape the index root or leak parent folder contents?
+
+## For remote nodes and reverse SSH tunnels
+- [ ] Does the tunnel server configuration strictly constrain incoming connections?
+- [ ] Does `authorized_keys` enforce forced commands (`command=...`), `no-pty`, `no-agent-forwarding`, `no-X11-forwarding`?
+- [ ] Are port forwards restricted to loopback (`permitopen="127.0.0.1:..."`) so external networks cannot be pivoted through?
+- [ ] Can a remote host forge another host's identity or hijack its assigned reverse tunnel port?
+- [ ] Are tunnel authorized_keys and config files written atomically with strict `0600` permissions?
+- [ ] Does terminating or removing a remote node revoke its key and close active tunnel connections immediately?
+
+## For multi-tenant sites and key vaults
+- [ ] Does every site-scoped route enforce site ownership and prevent cross-site object references?
+- [ ] Can an operator in site A view, read, or execute plans against hosts in site B?
+- [ ] Key vaults: do generate-only vaults strictly prohibit reading or exporting private keys once created?
+- [ ] Does site deletion or reset clean up keys, credentials, and state cleanly without leaving orphaned tokens?
+- [ ] Reset links: are reset tokens single-use, bounded by time, invalidated after password reset, and do they terminate all active sessions?
+- [ ] Role escalation via reset/invite: can an admin in a restricted site generate an invite or reset link with permissions exceeding their own role?
+
+## For sync engine, snapshot jobs and external tool configs
+- [ ] Do snapshot jobs (rsnapshot, snapper) validate configuration files and parameters before running?
+- [ ] Can malicious or malformed options in job specs lead to arbitrary command execution on target hosts?
+- [ ] Does the sync engine acquire volume locks before running, and are locks reliably released on errors or timeouts?
+- [ ] Do sync scripts go through `storageforge-run` with signed nonces and execution tracking?
+- [ ] Are remote rsync/ssh transfer commands properly escaped and restricted?
 
 ## For dependencies and containers
 - [ ] Scanner results triaged by reachability, each critical with a written decision
