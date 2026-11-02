@@ -155,6 +155,20 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <p class="muted">What it takes to rebuild each host: its fstab, mounts, subvolumes, accounts, shares and symlinks. Each scan saves a version when any of it changed, and these versions are in every essentials backup. The reinstall script mounts everything again on a fresh install. It never formats a drive.</p>
       <div id="rebuildbox" class="stack"></div>
     </div>
+    <div id="tab-security" class="tab" hidden>
+      <div id="sec-header-banner" class="sec-banner sec-secure mb-3"></div>
+      <div id="sec-subnav" class="seg sm mb-3" role="tablist" aria-label="Security subpanels">
+        <button type="button" data-sub="soc" class="active" onclick="renderSecurityNav('soc')">SOC Center</button>
+        <button type="button" data-sub="worm" onclick="renderSecurityNav('worm')">WORM & Holds</button>
+        <button type="button" data-sub="canaries" onclick="renderSecurityNav('canaries')">Canaries & VSS</button>
+        <button type="button" data-sub="mac" onclick="renderSecurityNav('mac')">MAC & AVC</button>
+        <button type="button" data-sub="firewall" onclick="renderSecurityNav('firewall')">Firewall</button>
+        <button type="button" data-sub="ebpf" onclick="renderSecurityNav('ebpf')">Behavior</button>
+        <button type="button" data-sub="integrity" onclick="renderSecurityNav('integrity')">Integrity</button>
+        <button type="button" data-sub="compliance" onclick="renderSecurityNav('compliance')">Compliance</button>
+      </div>
+      <div id="sec-subpanel-content" class="stack"></div>
+    </div>
     <div id="tab-audit" class="tab" hidden>
       <div class="row"><button id="verify" type="button" class="btn">Verify chain</button><span id="verified" class="muted"></span></div>
       <ol id="audit" class="list"></ol>
@@ -257,6 +271,8 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <button type="button" role="tab" data-tab="copies" title="Likely copies and cold data" aria-label="Likely copies and cold data"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg><span class="lbl">Cleanup</span></button>
       <button type="button" role="tab" data-tab="malware" title="ClamAV on hosts: detections and quarantine" aria-label="ClamAV on hosts: detections and quarantine"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" fill="none" stroke="currentColor" stroke-width="2"/></svg><span class="lbl">Malware</span></button>
       <button type="button" role="tab" data-tab="access" title="Folders scans could not read" aria-label="Folders scans could not read"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg><span class="lbl">Access</span><span id="naccess" class="cnt"></span></button>
+      <span class="rgroup" aria-hidden="true">Security</span>
+      <button type="button" role="tab" data-tab="security" title="Ransomware defense, WORM retention, canaries and SOC center" aria-label="Ransomware defense, WORM retention, canaries and SOC center"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l7 4v6c0 5-3.5 9-7 10-3.5-1-7-5-7-10V6l7-4z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 8v5M12 16h.01"/></svg><span class="lbl">Security</span></button>
       <span class="rgroup" aria-hidden="true">Admin</span>
       <button type="button" role="tab" data-tab="jobs" title="Scan jobs" aria-label="Scan jobs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/></svg><span class="lbl">Scans</span></button>
       <button type="button" role="tab" data-tab="keys" title="SSH keys and host bindings" aria-label="SSH keys and host bindings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l3 3"/></svg><span class="lbl">Keys</span></button>
@@ -301,5 +317,6 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/sharewiz.js"></script>
 <script src="/tasks.js"></script>
 <script src="/scheduler.js"></script>
+<script src="/securityview.js"></script>
 </body>
 </html>

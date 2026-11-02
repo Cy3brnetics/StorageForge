@@ -118,7 +118,14 @@ NEEDS = {'NFS server': ('exportfs', {'apt-get': 'nfs-kernel-server', 'dnf': 'nfs
          'python3': ('python3', {'apt-get': 'python3', 'dnf': 'python3', 'yum': 'python3', 'pacman': 'python', 'zypper': 'python3'}),
          'duperemove': ('duperemove', {'apt-get': 'duperemove', 'dnf': 'duperemove', 'yum': 'duperemove', 'pacman': 'duperemove', 'zypper': 'duperemove'}),
          'snapper': ('snapper', {'apt-get': 'snapper', 'dnf': 'snapper', 'yum': 'snapper', 'pacman': 'snapper', 'zypper': 'snapper'}),
-         'btrfs-progs': ('btrfs', {'apt-get': 'btrfs-progs', 'dnf': 'btrfs-progs', 'yum': 'btrfs-progs', 'pacman': 'btrfs-progs', 'zypper': 'btrfsprogs'})}
+         'btrfs-progs': ('btrfs', {'apt-get': 'btrfs-progs', 'dnf': 'btrfs-progs', 'yum': 'btrfs-progs', 'pacman': 'btrfs-progs', 'zypper': 'btrfsprogs'}),
+         'auditd': ('auditctl', {'apt-get': 'auditd', 'dnf': 'audit', 'yum': 'audit', 'pacman': 'audit', 'zypper': 'audit'}),
+         'aide': ('aide', {'apt-get': 'aide', 'dnf': 'aide', 'yum': 'aide', 'pacman': 'aide', 'zypper': 'aide'}),
+         'lynis': ('lynis', {'apt-get': 'lynis', 'dnf': 'lynis', 'yum': 'lynis', 'pacman': 'lynis', 'zypper': 'lynis'}),
+         'nftables': ('nft', {'apt-get': 'nftables', 'dnf': 'nftables', 'yum': 'nftables', 'pacman': 'nftables', 'zypper': 'nftables'}),
+         'yara': ('yara', {'apt-get': 'yara', 'dnf': 'yara', 'yum': 'yara', 'pacman': 'yara', 'zypper': 'yara'}),
+         'chrony': ('chronyc', {'apt-get': 'chrony', 'dnf': 'chrony', 'yum': 'chrony', 'pacman': 'chrony', 'zypper': 'chrony'}),
+         'inotify-tools': ('inotifywait', {'apt-get': 'inotify-tools', 'dnf': 'inotify-tools', 'yum': 'inotify-tools', 'pacman': 'inotify-tools', 'zypper': 'inotify-tools'})}
 
 
 def package_check(conn: Conn, h: dict, what: str) -> tuple[str, str]:
@@ -154,7 +161,7 @@ install_pkg() { # manager package
     apt-get) apt_install "$2" || { apt-get -o DPkg::Lock::Timeout=120 update -qq 2>&1 && apt_install "$2"; } ;;   # the package lists may be stale
     dnf|yum) "$1" install -y -q "$2" 2>&1 && return 0
       # some packages only come from EPEL on RHEL and its rebuilds. Rocky and Alma carry epel-release in their own repos.
-      [[ $2 == rsnapshot ]] || return 1
+      case $2 in rsnapshot|lynis|yara|inotify-tools|clamav) ;; *) return 1 ;; esac
       "$1" install -y -q epel-release 2>&1 && "$1" install -y -q "$2" 2>&1 ;;
     zypper) zypper -nq install "$2" 2>&1 ;;
     pacman) pacman -S --needed --noconfirm "$2" 2>&1 || { echo "(the pacman package lists may be out of date: run pacman -Syu on the host, reboot if the kernel changed, then deploy again)"; return 1; } ;;   # no -Sy: refreshing without upgrading is a partial upgrade

@@ -621,6 +621,7 @@ function showTab(name) {
   if (name === 'rebuild') loadRebuild();
   if (name === 'docker') loadDocker();
   if (name === 'deploy') loadDeploy();
+  if (name === 'security' && typeof loadSecurity === 'function') loadSecurity();
 }
 const curTab = () => $('.tabs button.on')?.dataset.tab;
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => {
@@ -828,7 +829,7 @@ let ME = null;
 const can = (perm) => !!ME && ME.permissions.includes(perm);
 const TAB_NEEDS = { search: 'search.files', changes: 'plans.view', moves: 'plans.view', schedule: 'plans.view', deploy: 'deploy.view',
                     docker: 'services.view', git: 'services.view', rebuild: 'configs.view', copies: 'files.browse', malware: 'files.browse', access: 'keys.view',
-                    jobs: 'scans.view', keys: 'keys.view' };
+                    security: 'security.view', jobs: 'scans.view', keys: 'keys.view' };
 function applyPermissions(me) {          // only hides what would answer 403: the server decides
   ME = me;
   document.querySelectorAll('.tabs button[data-tab]').forEach((b) => { const need = TAB_NEEDS[b.dataset.tab]; b.hidden = !!need && !can(need); });

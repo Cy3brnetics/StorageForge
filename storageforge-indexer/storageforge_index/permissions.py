@@ -34,6 +34,10 @@ CATALOG = (
     ('Live hosts', (
         ('git.live', 'Read Git status and history over SSH', False),
         ('git.sync', 'Run Git sync on hosts', True),)),
+    ('Security', (
+        ('security.view', 'See security posture, WORM holds, canaries, MAC, quarantine, eBPF, compliance and playbooks', False),
+        ('security.manage', 'Deploy canaries, configure MAC contexts, manage quarantine, and save playbooks', True),
+        ('security.emergency', 'Execute emergency brake, trigger host airgap, manage WORM holds, and break glass', True),)),
     ('Host access', (
         ('keys.view', 'See public keys, bindings and scan access', False),
         ('keys.manage', 'Generate, install, bind and remove SSH keys', True),
@@ -50,13 +54,13 @@ ALL = frozenset(p for _, perms in CATALOG for p, _, _ in perms)
 HIGH_RISK = frozenset(p for _, perms in CATALOG for p, _, risky in perms if risky)
 
 _VIEWER = frozenset({'search.files', 'hosts.view', 'files.browse', 'services.view', 'configs.view', 'logs.view', 'audit.view',
-                     'scans.view', 'plans.view', 'deploy.view', 'keys.view', 'backups.view'})
+                     'scans.view', 'plans.view', 'deploy.view', 'keys.view', 'backups.view', 'security.view'})
 # Built-in roles cannot be changed or removed. Without a role here or in `roles`, an account may do nothing.
 BUILTIN = {
     'search': ('Searches files across hosts, and nothing else', frozenset({'search.files'})),
     'viewer': ('Browses and searches', _VIEWER),
     'operator': ('Also plans, scans and deploys', _VIEWER | {'scans.run', 'plans.edit', 'plans.scripts', 'deploy.report', 'deploy.apply',
-                                                            'deploy.destructive', 'deploy.setup', 'git.live', 'git.sync'}),
+                                                            'deploy.destructive', 'deploy.setup', 'git.live', 'git.sync', 'security.manage'}),
     'admin': ('Everything, including keys, accounts and settings', ALL),
 }
 
@@ -131,6 +135,11 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (_WRITE, r'/api/(keys|bindings)(/.*)?', 'keys.manage'),
     (_WRITE, r'/api/(hostkey|access/grant)(/.*)?', 'access.manage'),
     (('DELETE',), r'/api/hosts/[^/]+', 'hosts.retire'),
+
+    # Security & Ransomware Defense
+    (READ, r'/api/security/.*', 'security.view'),
+    (('POST',), r'/api/security/(incident/brake|incident/clean-room|firewall/airgap|worm/.*)', 'security.emergency'),
+    (_WRITE, r'/api/security/.*', 'security.manage'),
 
     (READ, r'/api/backups', 'backups.view'),
     (_WRITE, r'/api/backups(/.*)?', 'backups.manage'),

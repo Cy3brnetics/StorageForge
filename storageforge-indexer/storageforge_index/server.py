@@ -152,7 +152,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, errlog, remotes, blueprint, canvas, changes, clamav, deploy, docker, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_scheduler, scheduler, shares, site, snapjobs, tasks, updates, users)
+               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_scheduler, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
 from .capacity import parse_size, trends
 from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
@@ -1285,6 +1285,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
 
     routes_git.register(web, ctx)
     routes_clamav.register(web, ctx)
+    routes_security.register(web, ctx)
 
     @web.get('/api/shares/check')
     @login_required

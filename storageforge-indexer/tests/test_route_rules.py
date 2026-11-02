@@ -55,6 +55,23 @@ FRESH_PASSWORD = {
     ('DELETE', '/api/users/<name>'),
     ('PUT', '/api/users/<name>'),
     ('POST', '/api/users/<name>/reset-link'),
+    ('POST', '/api/security/incident/clean-room'),
+    ('POST', '/api/security/incident/brake'),
+    ('POST', '/api/security/playbooks'),
+    ('POST', '/api/security/worm/hold'),
+    ('POST', '/api/security/worm/release'),
+    ('POST', '/api/security/worm/quorum/approve'),
+    ('POST', '/api/security/worm/break-glass'),
+    ('POST', '/api/security/worm/abort'),
+    ('POST', '/api/security/canaries/deploy'),
+    ('POST', '/api/security/mac/remediate'),
+    ('POST', '/api/security/firewall/quarantine'),
+    ('DELETE', '/api/security/firewall/quarantine/<path:ip>'),
+    ('POST', '/api/security/firewall/airgap'),
+    ('POST', '/api/security/integrity/aide/init'),
+    ('POST', '/api/security/malware/restore'),
+    ('DELETE', '/api/security/malware/shred'),
+    ('POST', '/api/security/compliance/init'),
 }
 # No fresh password: plans that only sit in the database, reads over SSH or signed read-only probes, or the sign-in routes themselves.
 NO_FRESH_PASSWORD = {
@@ -107,6 +124,7 @@ NO_FRESH_PASSWORD = {
     ('PUT', '/api/tasks/<int:task_id>'),
     ('POST', '/api/tasks/check'),
     ('POST', '/api/tasks/script'),
+    ('POST', '/api/security/canaries/test'),
 }
 # Writes no audit row in its own view, and why that is fine. Anything else must call audit() or git_call().
 AUDITED_ELSEWHERE = {
