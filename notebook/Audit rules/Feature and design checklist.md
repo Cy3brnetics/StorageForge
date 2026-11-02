@@ -23,6 +23,10 @@ Walk each one. Most gaps are here.
 - [ ] Pause and resume, on the host
 - [ ] Delete while deployed: refused, or cleaned up? Can it still be uninstalled afterwards?
 - [ ] Host retired, renamed or rekeyed
+- [ ] Remote node disconnected, reconnected, or assigned port in use
+- [ ] Site reset, renamed, or deleted: are vaults, keys, and tokens removed cleanly?
+- [ ] Snapshot job import from unmanaged host: does discovery match existing schedule?
+- [ ] Volume fills up or unmounts during active sync: does the lock release?
 - [ ] Server restored from backup
 - [ ] Upgrade from an older version on the host
 - [ ] A dependency deleted (the plan a schedule runs)
