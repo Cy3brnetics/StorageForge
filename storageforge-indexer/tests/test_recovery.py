@@ -15,7 +15,7 @@ try:
     import dbfactory
 except ImportError:      # run as tests.test_x from the project folder
     from tests import dbfactory
-from storageforge_index import blueprint, changes, fromdesign, hostconfig, jobscript, protection, reinstall, remote, scanner, shares, server, users
+from storageforge_index import blueprint, changes, fromdesign, hostconfig, jobs, jobscript, protection, reinstall, remote, scanner, shares, server, users
 
 
 class Case(unittest.TestCase):
@@ -234,6 +234,42 @@ class ReloadGuard(unittest.TestCase):
         out = self.run_guard(124, 'xfs')
         self.assertNotIn('probed', out)
         self.assertIn('reloaded', out)
+
+
+class OwnFile(unittest.TestCase):
+    """A share's config file reported as deployed came back empty when the server lost power 40 seconds later."""
+    def run_it(self, path, content, stubs=''):
+        body = shares.SHARES_BODY_3
+        fn = body[body.index('own_file()'):].split('\n}\n')[0] + '\n}\n'
+        script = (f'APPLY=1; STAMP=x; ok() {{ echo "ok $*"; }}; doing() {{ echo "doing $*"; }}; conflict() {{ echo "conflict $*"; }}; missing() {{ echo "missing $*"; }}\n'
+                  f'backup() {{ :; }}; durable() {{ echo "durable $*"; }}\n{stubs}\n{fn}own_file "$1" "$2"; echo rc=$?')
+        return subprocess.run(['bash', '-c', script, 'x', str(path), content], capture_output=True, text=True).stdout
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.path = Path(self.tmp) / 'a.exports'
+
+    def test_it_reaches_the_disk_before_it_takes_the_old_files_place(self):
+        out = self.run_it(self.path, 'new')
+        self.assertLess(out.index('durable ' + str(self.path) + '.storageforge-new'), out.index('durable ' + self.tmp + '\n'))
+        self.assertEqual(self.path.read_text(), 'new\n')
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o644)
+        self.assertEqual([x.name for x in Path(self.tmp).iterdir()], ['a.exports'])
+        self.assertIn('rc=0', out)
+
+    def test_a_failed_write_keeps_the_old_file_and_says_so(self):
+        self.path.write_text('old\n')
+        out = self.run_it(self.path, 'new', 'mv() { return 1; }')
+        self.assertEqual(self.path.read_text(), 'old\n')
+        self.assertIn('conflict could not write', out)
+        self.assertIn('rc=1', out)
+        self.assertEqual([x.name for x in Path(self.tmp).iterdir()], ['a.exports'])
+
+    def test_the_helper_is_in_every_script_that_uses_it(self):
+        from storageforge_index.scriptkit import HELPERS
+        self.assertIn('durable()', HELPERS)
+        self.assertIn('durable "$p"', jobs.HOST_FUNCS)
 
 
 class PlanScript(unittest.TestCase):

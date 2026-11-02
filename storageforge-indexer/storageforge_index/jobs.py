@@ -259,7 +259,7 @@ WANT=()
 want_file() { # path mode, content on stdin -> ok | would write | written
   local p=$1 mode=$2 tmp; tmp=$(mktemp); cat >"$tmp"; WANT+=("$p")
   if [[ -f $p ]] && cmp -s "$tmp" "$p"; then ok "$p"; rm -f "$tmp"; return 0; fi
-  if ((APPLY)); then install -D -o root -g root -m "$mode" "$tmp" "$p" && doing "wrote $p" || conflict "could not write $p"
+  if ((APPLY)); then install -D -o root -g root -m "$mode" "$tmp" "$p" && durable "$p" && doing "wrote $p" || conflict "could not write $p"
   else
     missing "$( [[ -e $p ]] && echo 'would update' || echo 'would write') $p"
     if [[ -e $p && $p != "$SELF_BIN" ]] && command -v diff >/dev/null; then diff -u "$p" "$tmp" | sed -n '3,40p' | sed 's/^/            /'; fi
@@ -268,7 +268,7 @@ want_file() { # path mode, content on stdin -> ok | would write | written
 }
 secret_file() { # path, content on stdin (apply only)
   local p=$1 tmp; tmp=$(mktemp); cat >"$tmp"; WANT+=("$p")
-  install -D -o root -g root -m 0600 "$tmp" "$p" && doing "wrote $p (secret)"; rm -f "$tmp"
+  install -D -o root -g root -m 0600 "$tmp" "$p" && durable "$p" && doing "wrote $p (secret)"; rm -f "$tmp"
 }
 need() { command -v "$1" >/dev/null 2>&1 && ok "$1: $(command -v "$1")" || conflict "$1 is not installed ($2)"; }
 """ + PACKAGES
