@@ -140,17 +140,14 @@ def _task(conn: Conn, f: dict, n: int) -> list[dict]:
 
 
 def _hostlog(conn: Conn, f: dict, n: int) -> list[dict]:
-    if f.get('outcomes') and not {'info', 'failed', 'running'} & f['outcomes']:
-        return []
     p = {'n': n}
-    where = _where('host', 'found_at', f, ('host', 'kind', 'ref', 'reason', 'detail_json'), p)
+    where = _where('host', 'found_at', f, ('host', 'kind', 'ref', 'reason', 'detail_json'), p,
+                   status_col='state', statuses=_statuses(HOSTLOG, f.get('outcomes')))
     rows = conn.all(f"""SELECT log_key, host, kind, ref, reason, detail_json, state, found_at, fetched_at, length(output)
                         FROM host_logs{where} ORDER BY found_at DESC LIMIT :n""", p)
     out = []
     for r in rows:
         outcome = HOSTLOG.get(r[6], 'info')
-        if f.get('outcomes') and outcome not in f['outcomes']:
-            continue
         out.append({'id': f'hostlog:{r[0]}', 'ts': _ts(r[7]), 'source': 'hostlog', 'host': r[1], 'actor': 'scan', 'action': f'hostlog.{r[2]}',
                     'outcome': outcome, 'summary': f'{r[4]}' + (f' ({r[3]})' if r[3] else ''),
                     'detail': {**_detail(r[5]), 'state': r[6], 'fetched_at': r[8]}, 'has_output': bool(r[9])})

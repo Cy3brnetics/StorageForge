@@ -773,6 +773,17 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual([f['path'] for f in r['folders']], [str(self.tree / 'archive')])   # outermost cold folder only
         self.assertEqual((r['folders'][0]['files'], r['folders'][0]['bytes']), (3, 3000))
 
+    def test_checksums_reach_files_with_non_utf8_names(self):
+        a, b = os.fsencode(self.tree) + b'/caf\xe9.bin', os.fsencode(self.tree) + b'/plain.bin'
+        for p in (a, b):
+            with open(p, 'wb') as f:
+                f.write(b'same' * 1000)
+        self.assertEqual(self.scan(checksum=True, checksum_min_size=1000)['status'], 'ok')
+        found = self.search(pattern='*.bin')
+        self.assertEqual(len(found), 2)
+        self.assertEqual(len({r['sha256'] for r in found}), 1)
+        self.assertIsNotNone(found[0]['sha256'])
+
     def test_patterns_the_extension_column_cannot_answer(self):
         (self.tree / 'backup.tar.gz').write_text('x')
         (self.tree / 'other.gz').write_text('x')

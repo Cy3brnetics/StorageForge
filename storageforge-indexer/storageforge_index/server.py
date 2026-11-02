@@ -459,6 +459,16 @@ class _FromProxy:
         return self.plain(environ, start_response)
 
 
+def remember(cache: dict, key: tuple, result, latest, keep: int = 8):
+    """Into a cache keyed by (..., scan id): what an older scan left goes, then the oldest entries beyond keep. The Cleanup
+    tab asks for cold and duplicate folders at once: both stay."""
+    for k in [k for k in cache if k[-1] != latest]:
+        del cache[k]
+    while len(cache) >= keep:
+        del cache[next(iter(cache))]
+    cache[key] = result
+
+
 def session_cookie_name(secure: bool) -> str:
     """Browsers keep cookies by host, not port: sites on one machine need their own name, or signing in to one signs
     you out of the other."""
@@ -774,6 +784,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         session.clear()
         session['login_at'] = session['auth_at'] = int(time.time())
         session['sid'] = users.start_session(conn(), user.user_id, request.remote_addr)
+        if len(signed_in_from) >= 10_000:       # forgetting only drops an exemption from the daily limit
+            signed_in_from.clear()
         signed_in_from.add((user.username.lower(), client_net()))
         login_user(user)
         return jsonify(username=user.username)
@@ -1973,9 +1985,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         result = compute()
         if not running:
             with folder_lock:
-                for k in [k for k in folder_cache if k[-1] != latest or len(folder_cache) >= 8]:
-                    del folder_cache[k]       # the Cleanup tab asks for cold and duplicate folders at once: both stay
-                folder_cache[key] = result
+                remember(folder_cache, key, result, latest)
         return result
 
     dir_kept: list = [None]                   # (scan id, folder index): listings and comparisons share it. Replaced whole, never edited

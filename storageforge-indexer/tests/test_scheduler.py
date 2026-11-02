@@ -671,6 +671,19 @@ class SchedulerSafetyTests(SafetyCase):
         for route in ('script', 'install-script'):         # nothing masked in these: plans.scripts is enough
             self.assertEqual(reader.get(f'/api/scheduler/schedules/{plain}/{route}').status_code, 200, route)
 
+    def test_a_run_is_verified_only_under_its_own_schedule(self):
+        sid, token = self.created()
+        other = self.schedule()
+        run = self.report(sid, token, nonce='a').get_json()['run_id']
+        self.assertEqual(self.boss.post(f'/api/scheduler/schedules/{other}/verify', json={'run_id': run}).status_code, 404)
+        self.assertEqual(self.boss.post(f'/api/scheduler/schedules/{sid}/verify', json={'run_id': run}).status_code, 200)
+
+    def test_a_window_is_real_times(self):
+        r = self.boss.post('/api/scheduler/schedules', json={'name': 'w', 'host': 'nas', 'cron_expr': '0 3 * * *', 'task_type': 'command',
+                                                             'task_ref': 'true', 'config': {'window': '99:99-99:99'}})
+        self.assertEqual(r.status_code, 400)
+        self.schedule(name='ok', config={'window': '22:00-05:00'})
+
     def test_a_slow_pattern_is_stopped(self):                # SF-32
         from unittest import mock
         with mock.patch.object(scheduler, 'REGEX_SECONDS', 0.5):

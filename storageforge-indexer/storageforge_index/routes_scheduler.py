@@ -146,7 +146,7 @@ def register(web, ctx):
             body = (request.get_json(silent=True) or {}) if request.is_json else {}
             run_id = body.get('run_id')
             if run_id is not None:
-                res = scheduler.reverify_run(c, int(run_id))
+                res = scheduler.reverify_run(c, int(run_id), schedule_id)
             else:
                 res = scheduler.verify_schedule(c, schedule_id)
             sched = scheduler.get_schedule(c, schedule_id)

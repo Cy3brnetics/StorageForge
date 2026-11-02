@@ -1066,7 +1066,7 @@ if ((APPLY)) && [[ $EUID -ne 0 ]]; then echo "--apply needs root: sudo $0 ${ARGS
 STAMP=$(date +%Y%m%d-%H%M%S); TODAY=$(date +%F)
 STATE=/var/lib/storageforge/changes/$PLAN
 if ((APPLY)); then
-  exec 9>"/run/lock/sf-changes-$PLAN.lock" 2>/dev/null || exec 9>"/tmp/sf-changes-$PLAN.lock"
+  exec 9>"/run/lock/sf-changes-$PLAN.lock" 2>/dev/null || { mkdir -p /var/lib/storageforge/locks; exec 9>"/var/lib/storageforge/locks/sf-changes-$PLAN.lock"; }
   flock -n 9 || { echo "another run of this plan is in progress" >&2; exit 1; }
   export LVM_SUPPRESS_FD_WARNINGS=1   # LVM complains about the lock on every command
   mkdir -p /var/log/storageforge; LOG=/var/log/storageforge/changes-$PLAN-$STAMP.log

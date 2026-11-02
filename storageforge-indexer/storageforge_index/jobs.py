@@ -68,10 +68,13 @@ def period(schedule: str | None) -> int:
         return 31 * DAY if date.split('-')[1] == '*' else 366 * DAY
     hh, _, rest = clock.partition(':')
     mm = rest.split(':')[0]
-    if '/' in hh:
-        return max(1, int(hh.split('/')[1] or 1)) * 3600
-    if hh == '*':
-        return max(1, int(mm.split('/')[1])) * 60 if '/' in mm else 3600
+    try:
+        if '/' in hh:
+            return max(1, int(hh.split('/')[1] or 1)) * 3600
+        if hh == '*':
+            return max(1, int(mm.split('/')[1])) * 60 if '/' in mm else 3600
+    except ValueError:       # the pattern lets through what systemd will refuse, and this only judges lateness
+        return DAY
     if ',' in hh:
         return DAY // (hh.count(',') + 1)
     return DAY

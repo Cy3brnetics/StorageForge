@@ -391,6 +391,8 @@ def _check_save(conn: Conn, body: dict, s: dict):
     # more than any list can name), which would make a plan a root shell without hosts.command.
     if s['config']['env'] and s['task_type'] != 'command':
         raise ValueError('only a command schedule takes environment variables')
+    if s['config']['window'] and not moves.WINDOW_RE.fullmatch(s['config']['window']):
+        raise ValueError('window must be real times, e.g. "02:00-05:00"')
     for key in ('output_must_match', 'output_must_not_match'):
         try:
             re.compile(s['config']['verify_rules'][key])
@@ -897,11 +899,12 @@ def pause_pending(conn: Conn, schedule: dict) -> bool:
     return any(d['ref'] == str(schedule['schedule_id']) and d['hash'] != want for d in deploy.deployed(conn, kind='schedules'))
 
 
-def reverify_run(conn: Conn, run_id: int) -> dict:
-    """Re-runs server verification on an existing schedule_run against the latest StorageForge index."""
+def reverify_run(conn: Conn, run_id: int, schedule_id: int | None = None) -> dict:
+    """Re-runs server verification on an existing schedule_run against the latest StorageForge index. schedule_id: the
+    schedule the caller means; a run of another one is not found."""
     rows = conn.all("""SELECT run_id, schedule_id, host, status, started_at, finished_at, exit_code, output, nonce
                        FROM schedule_runs WHERE run_id = :id""", {'id': run_id})
-    if not rows:
+    if not rows or (schedule_id is not None and rows[0][1] != schedule_id):
         raise LookupError(f'no schedule run #{run_id}')
     r = rows[0]
     schedule = get_schedule(conn, r[1])

@@ -5,6 +5,9 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Fixed
+- **Checksum scans reach files with non-UTF-8 names.** The host was asked for the escaped form of the name, which does not exist, so those files never got a checksum.
+- **An unreadable job schedule no longer fails the Deploy tab.** One calendar string that passed validation could make `/api/deploy` answer 400.
+- **Smaller audit fixes.** Move and change locks no longer fall back to `/tmp`, a schedule's `verify` refuses another schedule's run, schedule windows must be real times, filtered log pages no longer come up short on fetched logs, and the folder cache evicts its oldest entry rather than all of them.
 - **No abort at exit.** A background thread writing to stderr as the process ended could kill it with exit 134, on a server shutting down and in test runs that had otherwise passed. Those writes now stop before Python finalizes.
 - **`*.tar.gz` finds files.** A search for a two-dot suffix looked in the extension column, which holds only `gz`, and silently found nothing. So did suffixes with a space or over 16 characters.
 - **A failed schedule deploy no longer stops the host's reports.** Run now changed the report token before the host had it, so a host it never reached got 401 on every report. A new token now works beside the old one until the host reports with it or the deploy ends well. This also covers an apply that fails after writing the token.

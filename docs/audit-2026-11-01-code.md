@@ -13,11 +13,11 @@ A read of the indexer's code looking for bugs, done after the [feature audit of 
 | B1 | Search | `*.tar.gz` (any two-dot pattern) silently matches nothing | **Medium**, fixed |
 | B2 | Scheduler | A failed **Run now** leaves the schedule unable to report | Medium–low, fixed |
 | B3 | Permissions | The schedule mask (`••••••`) is bypassed by the script download routes | Low, fixed |
-| B4 | Change scripts | The `/tmp` lock-file fallback follows symlinks as root | Low |
-| B5 | Scheduler API | `verify` accepts a `run_id` belonging to another schedule | Low |
-| B6 | Scans | Checksums of files with non-UTF-8 names are silently dropped | Low |
-| B7 | Jobs | A calendar expression `period()` cannot parse breaks `/api/deploy` | Low (plausible) |
-| N1–N4 | Various | Unbounded in-memory sets, cache wipe, pagination under-fill | Cosmetic |
+| B4 | Change scripts | The `/tmp` lock-file fallback follows symlinks as root | Low, fixed |
+| B5 | Scheduler API | `verify` accepts a `run_id` belonging to another schedule | Low, fixed |
+| B6 | Scans | Checksums of files with non-UTF-8 names are silently dropped | Low, fixed |
+| B7 | Jobs | A calendar expression `period()` cannot parse breaks `/api/deploy` | Low, fixed |
+| N1–N4 | Various | Unbounded in-memory sets, cache wipe, pagination under-fill | Cosmetic, fixed |
 
 ## B1. A search for `*.tar.gz` finds nothing
 
@@ -64,33 +64,36 @@ gates them on `plans.scripts` only. `/api/scheduler/schedules/<id>/script` retur
 exec 9>"/run/lock/sf-changes-$PLAN.lock" 2>/dev/null || exec 9>"/tmp/sf-changes-$PLAN.lock"
 ```
 
-On a host without `/run/lock`, root opens (and truncates) a predictable name in the world-writable `/tmp`; `>` follows symlinks, so a local user who pre-creates `/tmp/sf-changes-<plan>.lock → /etc/something` gets that file truncated by root. The plan slug is guessable from the plan name. Low severity — it needs a hostile local user and a host without `/run/lock` — but the fix is one line (`/var/lock`, or `mkdir /run/storageforge` first, or `flock` on the script file itself).
+On a host without `/run/lock`, root opens (and truncates) a predictable name in the world-writable `/tmp`; `>` follows symlinks, so a local user who pre-creates `/tmp/sf-changes-<plan>.lock → /etc/something` gets that file truncated by root. The plan slug is guessable from the plan name. Low severity — it needs a hostile local user and a host without `/run/lock` — but the fix is one line.
+
+**Fixed.** The fallback is now a root-owned folder, `/var/lib/storageforge/locks`. `moves.py` had the same line, which this audit missed. A non-root `--dry-run` of a move on a host without `/run/lock` now stops at the lock instead of using `/tmp`.
 
 ## B5. Re-verify takes a run of another schedule
 
 `POST /api/scheduler/schedules/<sid>/verify` with `{"run_id": N}` calls `reverify_run(conn, N)` without checking that run N belongs to schedule `<sid>` (routes_scheduler.py). Any `deploy.report` holder can re-verify any run, and the audit entry names the wrong schedule. Consequences are mild (statuses are recomputed, not forged), but the route's shape promises a binding it does not enforce.
 
+**Fixed.** A run of another schedule now answers 404.
+
 ## B6. Checksum results are dropped for non-UTF-8 file names
 
-`scanner.checksum_pass()` feeds paths to `sha256sum -z` encoded with `surrogateescape` (the original bytes), but parses the answers with `backslashreplace`:
+*Corrected: the cause first written here was wrong.* The symptom is right, but the answer's lookup was never the problem. `stream.decode()` stores a non-UTF-8 byte as the text `\xNN`, and `scanner.checksum_pass()` sent that text to the host as the file name. So `sha256sum` was asked for a file that does not exist, and the checksum was never computed. Confirmed by running `sha256sum` on such a name.
 
-```python
-line = rec.decode('utf-8', 'backslashreplace')
-fid = by_path.get(line[66:])          # by_path keys were decoded with surrogateescape
-```
-
-For a file whose name is not valid UTF-8 the two decodings differ, the lookup misses, and the checksum is computed on the host but never stored — silently, on every scan. *Fix:* decode with `surrogateescape` (or match on bytes).
+**Fixed.** The bytes are recovered from the stored text. A real name can also contain the text `\xNN`, so both forms are sent: the host hashes whichever exists, and both decode to the same stored path.
 
 ## B7. `jobs.period()` can raise on a schedule the validators accept
 
-`moves.CALENDAR_RE` accepts strings like `*-*-* *:5/x:00`; `jobs.period()` then runs `int(mm.split('/')[1])` on `x` and raises `ValueError`. `jobs.overview()` calls `period()` unguarded, and `/api/deploy` turns a `ValueError` into a 400 — so one deployed mirror job with such a schedule would blank the whole Deploy tab. Not confirmed end-to-end (the host-side `systemd-analyze calendar` check flags the bad time at install, but the job row is written regardless). *Fix:* a `try/except` in `period()` returning the daily default, as `scheduler.period()` already does.
+`moves.CALENDAR_RE` accepts strings like `*-*-* *:5/x:00`; `jobs.period()` then runs `int(mm.split('/')[1])` on `x` and raises `ValueError`. `jobs.overview()` calls `period()` unguarded, and `/api/deploy` turns a `ValueError` into a 400 — so one deployed mirror job with such a schedule would blank the whole Deploy tab. Not confirmed end-to-end (the host-side `systemd-analyze calendar` check flags the bad time at install, but the job row is written regardless). Confirmed by running `period()` on that string.
 
-## Nits (no action needed, noted for completeness)
+**Fixed.** `period()` falls back to daily, as `scheduler.period()` already does.
 
-- **N1** `server.py`: `signed_in_from`, `breaches` and `deploy._host_locks` grow without bound for the life of the process. Tiny entries; only worth a cap if servers run for months against hostile traffic.
-- **N2** `server.folder_result()`: once the cache holds 8 entries, the next insert clears *all* of them (the `len() >= 8` arm of the eviction list) rather than the oldest. Harmless; a scan invalidates everything anyway.
-- **N3** `logbook._hostlog()`: outcome filtering happens after the per-source `LIMIT`, so a page filtered to rare outcomes can under-fill even when older matching rows exist.
-- **N4** `scheduler.normalize_config()`: `WINDOW_RE` accepts `99:99-99:99` (moves.py's stricter `WINDOW_RE` does not). The runner treats an unparseable window as "no window".
+## Nits
+
+All closed.
+
+- **N1** Partly overstated. `breaches` already prunes itself, and `_host_locks` grows only with the number of hosts, so neither changed. `signed_in_from` grows only on successful sign-ins, and it now clears at 10,000 entries, which at worst drops an exemption from the daily limit.
+- **N2** `server.remember()` now evicts only the oldest entry.
+- **N3** `logbook._hostlog()` filters by outcome in the SQL, before the `LIMIT`.
+- **N4** New and edited schedules must have a real window time. Saved rows are not re-checked, so old ones can still be read, hashed and uninstalled.
 
 ## Checked and fine
 
@@ -111,4 +114,4 @@ Things specifically looked at because they smelled risky, and found correct:
 
 ## How this was checked
 
-Static read plus small Python repros for anything claimed as confirmed (B1's was run; B2, B3 are confirmed by reading the single code path involved; B4–B7 are plausible-to-likely but were not exercised against a live host). No code was changed by the audit itself. B1 to B3 were fixed afterwards with tests, and B4 to B7 are still open.
+Static read plus small Python repros for anything claimed as confirmed (B1's was run; B2, B3 are confirmed by reading the single code path involved; B4–B7 are plausible-to-likely but were not exercised against a live host). No code was changed by the audit itself. All findings above were fixed afterwards. B4 to B7 were rechecked first, which is where the B6 correction comes from.

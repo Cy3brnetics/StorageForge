@@ -27,7 +27,7 @@ from .db import Database, DiffStats
 from .remote import (DEFAULT_EXCLUDE_NAMES, DEFAULT_EXCLUDE_PATHS, NETWORK_FS, PSEUDO_FS, TMP_FS,
                      MountInfo, RemoteError, StderrTail, Transport, checksum_command, collect_inventory,
                      find_command, is_under)
-from .stream import iter_fields, iter_rows, join_path
+from .stream import decode, iter_fields, iter_rows, join_path
 
 
 def log_err(msg: str):
@@ -269,6 +269,14 @@ def stream_job(t: Transport, job: ScanJob, pool: WriterPool, opts: ScanOptions) 
     return res
 
 
+def _raw_names(path: str) -> list[bytes]:
+    """The bytes a stored path can stand for. stream.decode() wrote a non-UTF-8 byte as the text \\xNN, and a real name can
+    hold that text too, so both are asked for: the host hashes whichever exists, and the answer decodes to the same path."""
+    raw = path.encode('utf-8', 'surrogateescape')
+    undone = re.sub(rb'\\x([0-9a-f]{2})', lambda m: bytes([int(m[1], 16)]), raw)
+    return [raw, undone] if undone != raw and decode(undone) == path else [raw]
+
+
 def checksum_pass(db: Database, conn, t: Transport, host_id: int, min_size: int, nice: bool = True) -> int:
     """Hash only files whose size collides with another file: the only possible duplicates."""
     cands = db.checksum_candidates(conn, host_id, min_size)
@@ -280,7 +288,8 @@ def checksum_pass(db: Database, conn, t: Transport, host_id: int, min_size: int,
     def feed():
         try:
             for path in by_path:
-                proc.stdin.write(path.encode('utf-8', 'surrogateescape') + b'\0')
+                for name in _raw_names(path):
+                    proc.stdin.write(name + b'\0')
         except BrokenPipeError:
             pass
         finally:
@@ -293,7 +302,7 @@ def checksum_pass(db: Database, conn, t: Transport, host_id: int, min_size: int,
     err = StderrTail(proc.stderr)
     done, updates = 0, []
     for (rec,) in iter_fields(proc.stdout, nfields=1):
-        line = rec.decode('utf-8', 'backslashreplace')
+        line = decode(rec)
         fid = by_path.get(line[66:])
         if fid is not None:
             updates.append((line[:64], fid))

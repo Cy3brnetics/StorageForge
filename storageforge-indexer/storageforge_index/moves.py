@@ -675,7 +675,7 @@ if [[ $MODE =~ ^(run|verify|cutover|install)$ && $EUID -ne 0 ]]; then
 fi
 command -v rsync >/dev/null || { echo "rsync is not installed on $(uname -n)" >&2; exit 1; }
 if [[ $MODE != check ]]; then
-  exec 9>"/run/lock/sf-move-$PLAN.lock" 2>/dev/null || exec 9>"/tmp/sf-move-$PLAN.lock"
+  exec 9>"/run/lock/sf-move-$PLAN.lock" 2>/dev/null || { mkdir -p /var/lib/storageforge/locks; exec 9>"/var/lib/storageforge/locks/sf-move-$PLAN.lock"; }
   flock -n 9 || { echo "another run of $PLAN_NAME is in progress on this machine" >&2; exit 1; }
 fi
 if [[ $MODE =~ ^(run|cutover|install)$ ]]; then
