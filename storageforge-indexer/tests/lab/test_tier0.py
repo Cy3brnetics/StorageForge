@@ -45,7 +45,8 @@ import roles  # noqa: E402
 BUILD = roles.build()
 VMS = list(BUILD)
 UP = running()
-SCANNED = [vm for vm in VMS if vm != 'sf-ctl']
+CTL = os.environ.get('SFLAB_PREFIX', '10.77.0') + '.10'
+SCANNED = [vm for vm in VMS if vm != 'sf-ctl' and not BUILD[vm].can('appliance')]    # appliances come with their share servers
 
 
 def having(ability):
@@ -152,7 +153,7 @@ class Layout(unittest.TestCase):
                 self.assertEqual(sh(vm, f'PATH=$PATH:/usr/sbin:/sbin; for c in {programs}; do command -v $c; done; true').strip(), '')
 
 
-@unittest.skipUnless(set(UP) == set(VMS), f'needs every lab VM up, have {UP}')
+@unittest.skipUnless('sf-ctl' in UP and set(UP) == set(VMS), f'needs sf-ctl and every lab VM up, have {UP}')
 class Controller(unittest.TestCase):
     def test_storageforge_is_healthy_from_this_machine(self):
         for _ in range(40):           # just after a reset the container is still starting
@@ -163,11 +164,11 @@ class Controller(unittest.TestCase):
         self.assertRegex(out, r'storageforge-1 Up .*\(healthy\)')
         context = ssl.create_default_context()
         context.check_hostname, context.verify_mode = False, ssl.CERT_NONE      # self-signed: only reachability matters here
-        with urllib.request.urlopen('https://10.77.0.10:8443/healthz', context=context, timeout=15) as r:
+        with urllib.request.urlopen(f'https://{CTL}:8443/healthz', context=context, timeout=15) as r:
             self.assertEqual(json.load(r)['status'], 'ok')
 
     def test_ntfy_answers(self):
-        with urllib.request.urlopen('http://10.77.0.10:8090/v1/health', timeout=15) as r:
+        with urllib.request.urlopen(f'http://{CTL}:8090/v1/health', timeout=15) as r:
             self.assertTrue(json.load(r)['healthy'])
 
     def test_stack_does_not_build_on_the_vm(self):

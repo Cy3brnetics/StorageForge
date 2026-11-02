@@ -25,6 +25,10 @@ Each script is signed for one machine and one run. Replayed, expired, tampered o
 
 Running deploys can be cancelled, with **Force stop** to end running SSH sessions. **Retry failed hosts** re-runs only what didn't finish. Scans read the runner's completion records, so an outcome is confirmed even if the connection dropped, and an apply that left steps undone shows as `incomplete`, not `ok`.
 
+## System updates
+
+**Update all hosts** installs operating system updates on every host set up for deploys, all at once. **Check for updates** shows what is waiting first. One host failing doesn't stop the others, and nothing reboots: hosts waiting for a reboot are marked. See [Deployments](../deployments.md#system-updates).
+
 ## Deployed jobs
 
 A deployed move plan step becomes a job, `p<plan>-<step>`, run on its destination by `storageforge-job` from systemd timers. Each job has its own SSH key, limited by a forced command on the source, and its own report token.

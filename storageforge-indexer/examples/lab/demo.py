@@ -21,8 +21,9 @@ import roles
 HERE = Path(__file__).resolve().parent
 LAB = str(HERE / 'lab.sh')
 STATE = Path(os.environ['SFLAB_STATE'])
-BASE = 'https://10.77.0.10:8443'
-NTFY = 'http://10.77.0.10:8090'
+CTL = os.environ.get('SFLAB_PREFIX', '10.77.0') + '.10'
+BASE = f'https://{CTL}:8443'
+NTFY = f'http://{CTL}:8090'
 TOPIC = 'storageforge-lab'
 COMPOSE = 'cd /opt/storageforge && sudo -n docker compose -f docker-compose.yml -f compose.lab.yml'
 IPS = {n.name: n.ip for n in roles.build().values()}

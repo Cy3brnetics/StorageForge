@@ -15,8 +15,11 @@ import json
 import os
 import re
 import shlex
+import shutil
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 import urllib.request
@@ -1170,6 +1173,98 @@ def tier7(r):
         r.check('remote-revoke', node.name, revoke)
 
 
+def tier8(r):
+    """Proxmox, TrueNAS and XCP-ng through the real scanner, as an ordinary user, and what that means for deploys."""
+    from storageforge_index import preflight
+    from storageforge_index.db import loads
+    appliances = roles.having('appliance')
+    if not appliances:
+        r.add('appliances', '-', None, 'none in this build: use up --pick')
+        return
+    tmp = tempfile.mkdtemp(prefix='sflab-tier8-')
+    db = f'{tmp}/index.db'
+    key = str(STATE / 'id_ed25519')
+
+    def cli_access():
+        return subprocess.run([sys.executable, '-m', 'storageforge_index', '--db', db, 'access', 'script', '--user', 'scan'],
+                              cwd=ROOT, capture_output=True, text=True, timeout=60, check=True).stdout
+
+    def scan(node, partial=False):
+        argv = [sys.executable, '-m', 'storageforge_index', '--db', db, 'scan', '--host', node.ip, '--user', 'scan', '--key', key,
+                '--ssh-option', f'UserKnownHostsFile={tmp}/known_hosts', '--json']
+        out = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, timeout=600)
+        if out.returncode and not partial:
+            raise AssertionError(out.stdout[-800:] + out.stderr[-800:])
+        return out.stdout
+
+    def inventory(node):
+        rows = sqlite3.connect(db).execute('SELECT inventory_json FROM hosts WHERE ssh_host = ? OR hostname LIKE ?', (node.ip, f'{node.name}%')).fetchall()
+        return loads(rows[0][0])
+
+    def facts(node):
+        conn = sqlite3.connect(db)
+        wrapper = type('C', (), {'all': lambda self, q, p: conn.execute('SELECT inventory_json FROM hosts WHERE ssh_host = ? OR hostname LIKE ?', (node.ip, f'{node.name}%')).fetchall()})()
+        return preflight.facts_from_scan(wrapper, node.name)
+
+    for node in appliances:
+        kind = next(a for a in ('proxmox', 'truenas', 'xen') if node.can(a))
+
+        def scanned(node=node, kind=kind):
+            if kind == 'xen':      # attached late in boot, and a scan before that would miss it without saying so
+                wait_for('the storage repository', lambda: 'sr-mount' in ssh(node.name, 'findmnt -l -o TARGET'), timeout=300)
+                got = scan(node, partial=True)
+                assert '"status": "partial"' in got, f'/run/sr-mount is root-only, yet: {got[-200:]}'
+                install = cli_access()
+                ssh_in = subprocess.run(['ssh', '-i', key, '-o', 'BatchMode=yes', '-o', f'UserKnownHostsFile={tmp}/known_hosts', '-o', 'StrictHostKeyChecking=accept-new',
+                                         f'lab@{node.ip}', 'sudo -n sh -s -- --apply'], input=install, capture_output=True, text=True, timeout=120)
+                assert not ssh_in.returncode, ssh_in.stdout[-400:] + ssh_in.stderr[-400:]
+            return scan(node).strip().splitlines()[-1][:120]
+        r.check('scan', node.name, scanned)
+
+        def platform(node=node, kind=kind):
+            got = facts(node).get('platform', '')
+            assert got.startswith('xcp-ng ' if kind == 'xen' else kind + ' '), f'platform is {got!r}'
+            return got
+        r.check('platform', node.name, platform)
+
+        def verdict(node=node, kind=kind):
+            items = preflight.findings(facts(node))
+            blocked = [i['text'] for i in items if i['level'] == 'crit']
+            if kind == 'proxmox':
+                assert not blocked, blocked
+                return 'deploys allowed'
+            assert any('nothing can be deployed' in t for t in blocked), blocked
+            return 'deploys refused, with the reason'
+        r.check('deploy-verdict', node.name, verdict)
+
+        if node.tag('zfs-pool'):
+            def pool(node=node):
+                status = inventory(node)['zpool_status']
+                assert f'pool: {node.tag("zfs-pool")}' in status, f'zpool status as scan: {status[:200]!r}'
+            r.check('zfs-pool-seen', node.name, pool)
+
+        if node.data:
+            def seeded(node=node):
+                seen = sqlite3.connect(db).execute("SELECT count(*) FROM mounts WHERE mount_point = ? AND scan_state = 'indexed'", (node.data,)).fetchone()[0]
+                assert seen, f'{node.data} is not among the scanned mounts'
+            r.check('data-indexed', node.name, seeded)
+
+        def mounts(node=node, kind=kind):
+            have = [row[0] for row in sqlite3.connect(db).execute("SELECT mount_point FROM mounts WHERE scan_state = 'indexed'")]
+            if kind == 'proxmox':
+                assert '/etc/pve' not in have, 'the cluster filesystem was indexed'
+            if kind == 'xen':
+                assert any(t.startswith('/run/sr-mount/') for t in have), f'no storage repository among {have}'
+        r.check('mounts', node.name, mounts)
+
+        if kind == 'truenas':
+            def read_only(node=node):      # why deploys are refused: if a release changes this, the refusal needs another look
+                out = ssh(node.name, 'sudo -n touch /usr/sflab-test 2>&1 || true; sudo -n apt-get --version 2>&1 | head -1')
+                assert 'Read-only' in out and 'disabled' in out, out
+            r.check('appliance-locked', node.name, read_only)
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 def tier0(r):
     p = subprocess.run([sys.executable, '-m', 'unittest', 'test_tier0', '-v'], cwd=Path(__file__).parent, capture_output=True, text=True, timeout=600)
     failed = set(re.findall(r'^(?:FAIL|ERROR): (\w+)', p.stderr, re.M))
@@ -1179,7 +1274,7 @@ def tier0(r):
 
 
 # ── report ──────────────────────────────────────────────────────────
-TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs'}
+TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs', 6: 'Sync engine', 7: 'Remote nodes', 8: 'Appliances'}
 CELL = {'pass': 'pass', 'FAIL': '**FAIL**', 'skip': 'skip', 'known': 'known', 'fixed?': 'fixed?'}
 
 
@@ -1233,7 +1328,7 @@ def main():
     tier = int(sys.argv[2])
     r = Results(tier)
     try:
-        {0: tier0, 1: tier1, 3: tier3, 4: tier4, 5: tier5, 6: tier6, 7: tier7}[tier](r)
+        {0: tier0, 1: tier1, 3: tier3, 4: tier4, 5: tier5, 6: tier6, 7: tier7, 8: tier8}[tier](r)
     except Exception as exc:
         r.add('tier-setup', '-', False, f'{type(exc).__name__}: {str(exc)[:170]}', traceback.format_exc())
     return 0 if r.save() else 1

@@ -152,7 +152,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, remotes, blueprint, canvas, changes, deploy, docker, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_git, routes_scheduler, scheduler, shares, site, snapjobs, tasks, users)
+               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_git, routes_scheduler, scheduler, shares, site, snapjobs, tasks, updates, users)
 from .capacity import parse_size, trends
 from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
@@ -1469,7 +1469,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                        groups=engine.recent(c, 25), keys=[r[0] for r in c.all('SELECT name FROM ssh_keys ORDER BY name')],
                        alerts=alerts.list_alerts(c), drift=alerts.drift(c),
                        settings=alerts.settings(c) if 'settings.manage' in current_user.permissions else alerts.public_settings(c),
-                       runs=deploy.history(c, limit=30), plans=moves.list_plans(c))
+                       runs=deploy.history(c, limit=30), plans=moves.list_plans(c), updates=updates.overview(c))
 
     @web.post('/api/deploy/setup-script')     # POST with a JSON body: it makes the deploy keys on first use
     @login_required
@@ -1530,7 +1530,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             report_url = alerts.get_setting(c, 'report_url')
             return scheduler.deploy_items(db, c, sched, mode, report_url, actor(),
                                           bool(options.get('run')), bool(options.get('remove')))
-        raise ValueError('kind is jobs, shares, changes, tasks or schedules')
+        if kind == updates.KIND:
+            return updates.deploy_items(c, str(ref or updates.ALL), mode)
+        raise ValueError('kind is jobs, shares, changes, tasks, schedules or updates')
 
     def need_for_commands(c, kind, ref):
         """Raw commands run as root, so deploying them takes hosts.command, whoever wrote them. Taking them off a host doesn't."""
@@ -1601,7 +1603,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         who = actor()
         # every view reads the index: without a rescan, an apply that worked looks like nothing changed
         title = str(body.get('title') or f'{kind} {ref}')[:200]
-        gid = deploy.start_group(db, items, who, stop_on_failure=mode == 'apply', after=lambda h: core.enqueue(h, who), title=title,
+        gid = deploy.start_group(db, items, who, after=lambda h: core.enqueue(h, who), title=title, **updates.group_options(kind, mode),
                                  kind=kind, ref=str(ref), mode=mode, options=options, digest=digest, report_group=report or None)
         core.audit(c, actor(), 'deploy.start', 'ok', None, {'kind': kind, 'ref': ref, 'mode': mode, 'group': gid})
         return jsonify(group=gid, hosts=[it['host'] for it in items], digest=digest)
@@ -1633,7 +1635,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         need_for_deploy(c, g['kind'], g['ref'], g['mode'], g['options'])
         if engine.running(gid):
             return jsonify(error='that deploy is still running'), 409
-        if g['kind'] not in ('jobs', 'shares', 'changes', 'tasks', 'schedules'):
+        if g['kind'] not in ('jobs', 'shares', 'changes', 'tasks', 'schedules', updates.KIND):
             raise ValueError('only plans and designs can be retried')
         items = deploy_items_for(c, g['kind'], g['ref'], g['mode'], g['options'])
         if g['kind'] != 'jobs':       # job keys are new on every apply, so a job's two hosts must get them together
@@ -1642,7 +1644,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if not items:
             raise ValueError('every host of that deploy finished')
         who = actor()
-        new = deploy.start_group(db, items, who, stop_on_failure=g['mode'] == 'apply', after=lambda h: core.enqueue(h, who),
+        new = deploy.start_group(db, items, who, after=lambda h: core.enqueue(h, who), **updates.group_options(g['kind'], g['mode']),
                                  title=g['title'], kind=g['kind'], ref=g['ref'], mode=g['mode'], options=g['options'],
                                  digest=deploy_digest(c, g['kind'], g['ref']), retry_of=gid)
         core.audit(c, who, 'deploy.retry', 'ok', None, {'group': new, 'retry_of': gid})

@@ -15,7 +15,7 @@ import subprocess
 import time
 
 from .db import loads
-from .remote import child_env
+from .remote import PLATFORM, PVE_ENTERPRISE, child_env
 
 # Read-only. Runs through storageforge-run, so it has bash and a root's view; each line is key=value.
 PROBE = r"""export LC_ALL=C
@@ -39,11 +39,22 @@ f free_var "$(df -Pm /var 2>/dev/null | awk 'NR==2 {print $4}')"
 f free_tmp "$(df -Pm /run 2>/dev/null | awk 'NR==2 {print $4}')"
 have=; for c in rsync rsnapshot git exportfs smbd mount.nfs mount.cifs btrfs zfs lvs parted setcap semanage restorecon; do command -v "$c" >/dev/null && have="$have $c"; done; f have "${have# }"
 f reboot "$([ -e /run/reboot-required ] && echo yes || echo no)"
-"""
-PROBE_LINE = re.compile(r'^(os|kernel|clock|init|bash|openssh|sudo|pm|selinux|firewall|modules|mod_\w+|free_\w+|have|reboot)=(.*)$', re.M)
+@@PLATFORM@@; f platform "$platform"
+if @@PVE_ENTERPRISE@@; then f pve_enterprise yes; fi
+""".replace('@@PLATFORM@@', PLATFORM).replace('@@PVE_ENTERPRISE@@', PVE_ENTERPRISE)
+PROBE_LINE = re.compile(r'^(os|kernel|clock|init|bash|openssh|sudo|pm|selinux|firewall|modules|mod_\w+|free_\w+|have|reboot|platform|pve_enterprise)=(.*)$', re.M)
 OPENSSH_MIN = (8, 1)
 CLOCK_REFUSED, CLOCK_WARN = 300, 60     # storageforge-run refuses a request issued 5 minutes in its future
 LOW_DISK_MIB = 200
+# Appliances whose own system StorageForge must not change. Scans still work; anything it deployed would not last.
+APPLIANCES = {
+    'truenas': 'TrueNAS manages this system itself and an upgrade replaces it, so nothing can be deployed here. '
+               'Scans still work: set up shares and jobs in TrueNAS',
+    'xcp-ng': 'this is an XCP-ng control domain, which is not meant to carry extra services and which an upgrade replaces, '
+              'so nothing can be deployed here. Scans still work',
+    'xenserver': 'this is a XenServer control domain, which is not meant to carry extra services and which an upgrade replaces, '
+                 'so nothing can be deployed here. Scans still work',
+}
 
 
 def _version(text: str | None) -> tuple[int, ...]:
@@ -68,6 +79,10 @@ def facts_from_scan(conn, host: str) -> dict:
     version = next((v for k, v in words if k == 'openssh'), None)
     if version:
         facts['openssh'] = version
+    if platform := next((v for k, v in words if k == 'platform'), None):
+        facts['platform'] = platform
+    if next((v for k, v in words if k == 'pve_enterprise'), None):
+        facts['pve_enterprise'] = 'yes'
     if 'init' in (k for k, _ in words):
         facts['init'] = next(v for k, v in words if k == 'init')
     if 'probed' in (k for k, _ in words):        # newer scans say which of these they looked for
@@ -87,9 +102,15 @@ def findings(facts: dict, now: float | None = None) -> list[dict]:
     if facts.get('init') and facts['init'] != 'systemd':
         say('crit', 'no systemd: shares, jobs and storage tasks are installed as systemd units, so they cannot run here. '
                     'Scans still work, and generated scripts can be read and adapted by hand')
+    platform = (facts.get('platform') or '').split()[:1]
+    if platform and platform[0] in APPLIANCES:
+        say('crit', APPLIANCES[platform[0]])
     version = _version(facts.get('openssh'))
     if version and version < OPENSSH_MIN:
         say('crit', f'OpenSSH {facts["openssh"]} is too old: signed deploys need ssh-keygen -Y (8.1 or later)')
+    if facts.get('pve_enterprise'):
+        say('warn', "Proxmox's paid repository is on: without a subscription apt-get update fails with a 401, so deploys can't install "
+                    'packages. Turn it off and turn on the no-subscription repository under Node > Updates > Repositories')
     if facts.get('pm') == 'none':
         say('warn', 'no package manager StorageForge knows (apt, dnf, yum, zypper, pacman): install what a deploy needs by hand')
     if facts.get('clock'):
@@ -138,14 +159,14 @@ def takes_password(methods: list[str] | None) -> bool:
 
 def blockers(conn, hosts: list[str], kind: str) -> list[dict]:
     """Hosts a deploy of this kind cannot run on, from what is known without touching them."""
-    if kind not in ('shares', 'jobs', 'tasks', 'changes', 'schedules'):
+    if kind not in ('shares', 'jobs', 'tasks', 'changes', 'schedules', 'updates'):
         return []
     out = []
     for host in dict.fromkeys(hosts):
         rows = conn.all('SELECT facts_json FROM host_checks WHERE host = :h', {'h': host})
         facts = (loads(rows[0][0]) or {}) if rows else facts_from_scan(conn, host)
         for it in findings(facts):
-            if it['level'] == 'crit' and (kind not in ('changes', 'schedules') or 'systemd' not in it['text']):   # change plans and cron schedules need no units
+            if it['level'] == 'crit' and (kind not in ('changes', 'schedules', 'updates') or 'systemd' not in it['text']):   # change plans, cron schedules and updates need no units
                 out.append({'host': host, 'text': it['text']})
     return out
 

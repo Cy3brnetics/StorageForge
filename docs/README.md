@@ -27,6 +27,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Plans and scripts](plans-and-scripts.md) | Staged changes, data moves, NFS/SMB shares and block-built storage tasks, and the scripts they produce |
 | [Deployments](deployments.md) | Deploy access, the signed runner, deployed jobs, alerts and drift |
 | [Remote nodes](remote-nodes.md) | Hosts behind NAT that dial in through a locked-down tunnel |
+| [Proxmox, TrueNAS and XCP-ng](appliances.md) | Connecting to these platforms, and what StorageForge can do on each |
 
 ## Running it
 

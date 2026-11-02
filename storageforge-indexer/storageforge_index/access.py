@@ -38,6 +38,9 @@ U=%(user)s
 D=%(dir)s
 G=%(group)s
 PATH=$PATH:/usr/sbin:/sbin
+if [ -x /usr/bin/midclt ] && [ -r /etc/version ]; then    # read-only /usr, so nowhere to put a capability program
+  echo "TrueNAS keeps its system read-only, so scan access can't be added here. Scans still work: they see what $U may read." >&2; exit 3
+fi
 id "$U" >/dev/null 2>&1 || { echo "there is no user $U on this host" >&2; exit 3; }
 if ! command -v setcap >/dev/null 2>&1; then      # not every image has it: openSUSE's and Alpine's minimal ones don't
   if command -v apt-get >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libcap2-bin >&2 || true
