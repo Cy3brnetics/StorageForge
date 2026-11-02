@@ -107,15 +107,32 @@ def status(conn, host: str | None = None, limit: int = 200) -> list[dict]:
     return out
 
 
+NO_PASSWORD_MARK = 'storageforge-sudo-took-no-password'
+
+
 def _clean(out: str, password: str) -> str:
     out = out.replace(password, '********') if password else out
     return '\n'.join(l for l in out.splitlines() if l.strip() and not l.startswith('[sudo]'))[-2000:]
 
 
-def _finish(p: subprocess.CompletedProcess, password: str) -> dict:
-    out = _clean((p.stdout or '') + (p.stderr or ''), password)
+def _no_password_warning(host: str, login: str, how: str) -> str:
+    if how == 'password':       # ssh checked it, sudo didn't
+        return (f'sudo on {host} did not ask {login} for a password: only the SSH login checked the one you typed. '
+                f'{login} can become root without a sudo password.')
+    head = f'sudo on {host} did not ask {login} for a password, so the one you typed was not checked. '
+    if how == 'scan':
+        return (head + f'{login} can become root without a password, so its scan key has full root on {host}, '
+                f'not read-only access. Remove the NOPASSWD rule for {login}, or scan with a low-privilege account.')
+    return head + f'Anyone with the key {login} logs in with has full root on {host}.'
+
+
+def _finish(p: subprocess.CompletedProcess, password: str, host: str, login: str, how: str) -> dict:
+    lines = (p.stdout or '').splitlines()
+    passwordless = NO_PASSWORD_MARK in lines
+    out = _clean('\n'.join(l for l in lines if l != NO_PASSWORD_MARK) + '\n' + (p.stderr or ''), password)
     if p.returncode == 0:
-        return {'ok': True, 'output': out}
+        res = {'ok': True, 'output': out, 'passwordless': passwordless}
+        return {**res, 'warning': _no_password_warning(host, login, how)} if passwordless else res
     if re.search(r'incorrect password|Sorry, try again|no password was provided|a password is required', out, re.I):
         raise RemoteError('sudo did not accept that password (openSUSE\'s default sudo asks for root\'s password, not the user\'s)')
     if re.search(r'not in the sudoers|not allowed to (run|execute)', out, re.I):
@@ -157,8 +174,10 @@ def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | 
         require_confirmed(conn, host, port)            # a password goes only to a host key a person confirmed
         script = make_script(b.user if b else None)
         # stdin carries the password to sudo -S. With NOPASSWD, or as root, sudo reads none of it: the script starts
-        # on /dev/null, so nothing it runs can read the password that is left there.
-        sudo = 'sudo -S -p "" sh -c ' + shlex.quote('exec </dev/null\n' + script)
+        # on /dev/null, so nothing it runs can read the password that is left there. The probe says when that happened:
+        # -k ignores a cached sudo login, and it asks for sh because that is what the script runs as root.
+        sudo = (f'sudo -n -k sh -c : </dev/null >/dev/null 2>&1 && echo {NO_PASSWORD_MARK}; '
+                'sudo -S -p "" sh -c ' + shlex.quote('exec </dev/null\n' + script))
         if b and (not admin_user or admin_user == b.user):
             # the scan user's own sudo rights, connecting with its vault key
             with ephemeral_agent(v.decrypt_key(b.key_id), ttl=120) as sock:
@@ -169,7 +188,7 @@ def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | 
                                        timeout=TIMEOUT, env=child_env())
                 finally:
                     t.close()
-            return {'host': host, 'port': port, 'user': b.user, 'via': b.user, **_finish(p, password)}
+            return {'host': host, 'port': port, 'user': b.user, 'via': b.user, **_finish(p, password, host, b.user, 'scan')}
         if admin_key:         # an admin account with a key from the vault
             if not admin_user:
                 raise ValueError('name the admin account the key logs in as')
@@ -185,7 +204,8 @@ def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | 
                                        timeout=TIMEOUT, env=child_env())
                 finally:
                     t.close()
-            return {'host': host, 'port': port, 'user': b.user if b else None, 'via': f'{admin_user} (key {admin_key})', **_finish(p, password)}
+            return {'host': host, 'port': port, 'user': b.user if b else None, 'via': f'{admin_user} (key {admin_key})',
+                    **_finish(p, password, host, admin_user, 'key')}
     # an admin account: password login (askpass answers ssh once), then sudo with the same password on stdin
     validate(host, admin_user, port)
     work = Path(tempfile.mkdtemp(prefix='grant-', dir=runtime_dir()))
@@ -206,4 +226,4 @@ def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | 
         if not takes_password(methods):
             raise RemoteError(f'{host} takes no SSH passwords (it offers: {", ".join(methods)}). Pick a vault key {admin_user} can log '
                               f'in with and give its sudo password, or run the setup script as root yourself')
-    return {'host': host, 'port': port, 'user': b.user if b else None, 'via': admin_user, **_finish(p, password)}
+    return {'host': host, 'port': port, 'user': b.user if b else None, 'via': admin_user, **_finish(p, password, host, admin_user, 'password')}

@@ -272,6 +272,7 @@ function setupForm(host, remove = false) {
   const pw = el('input', { type: 'password', autocomplete: 'off', placeholder: 'sudo password', 'aria-label': 'sudo password' });
   const admin = el('input', { type: 'text', autocomplete: 'off', placeholder: 'admin user (optional)', 'aria-label': 'Admin user' });
   const msg = el('p', { class: 'muted small', hidden: true });
+  const warn = el('p', { class: 'st-warn small', hidden: true });
 
   const title = remove ? `Remove deploy access from ${host}` : `Set up deploy access on ${host}`;
   const intro = remove
@@ -302,17 +303,19 @@ function setupForm(host, remove = false) {
         }, 'btn ghost sm'))
     );
   }
-  formKids.push(msg);
+  formKids.push(msg, warn);
 
   const form = el('form', { class: 'card stack' }, ...formKids);
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
+    warn.hidden = true;
     msg.hidden = false; msg.className = 'muted small'; msg.textContent = remove ? 'Removing access…' : 'Setting up…';
     try {
       const r = await (await postJSON('/api/deploy/access', { host, password: pw.value, admin_user: admin.value.trim() || null, remove })).json();
       pw.value = '';
       msg.className = (r.state === 'ready' || r.state === 'removed') ? 'st-ok small' : 'st-failed small';
       msg.textContent = r.output || `Deploy access ${r.state}`;
+      warn.textContent = r.warning || ''; warn.hidden = !r.warning;
       loadDeploy();
     } catch (err) { pw.value = ''; msg.className = 'st-failed small'; msg.textContent = err.message; }
   });

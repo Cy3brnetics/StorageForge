@@ -1116,7 +1116,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return jsonify(error=msg), 502
         finally:
             del password
-        core.audit(conn(), actor(), action, 'ok', host, {'user': res['user'], 'via': res['via']})
+        core.audit(conn(), actor(), action, 'ok', host, {'user': res['user'], 'via': res['via'], 'passwordless': res.get('passwordless')})
         return jsonify(res)
 
     @web.get('/api/browse')

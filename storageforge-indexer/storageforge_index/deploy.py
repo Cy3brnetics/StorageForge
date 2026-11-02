@@ -334,15 +334,15 @@ def enroll(db, conn, host: str, password: str, admin_user: str | None = None, ac
                 v.unbind(b['binding_id'])
             set_access(conn, name, 'removed', r['output'], actor)
             audit.append(actor, 'deploy.remove', 'ok', name, None, {})
-            return {'host': name, 'state': 'removed', 'output': r['output']}
+            return {'host': name, 'state': 'removed', 'output': r['output'], 'warning': r.get('warning')}
         if not mine:
             v.bind(DEPLOY_KEY, addr, DEPLOY_USER, port, actions='deploy', priority=50)
-        audit.append(actor, 'deploy.setup', 'ok', name, None, {'via': r.get('via')})
+        audit.append(actor, 'deploy.setup', 'ok', name, None, {'via': r.get('via'), 'passwordless': r.get('passwordless')})
     probe = run(db, name, 'echo "signed runs work on $(uname -n): $(id -un), $(ssh -V 2>&1)"', kind='setup', ref='probe',
                 mode='apply', actor=actor, require_ready=False)
     state = 'ready' if probe['status'] == 'ok' else 'failed'
     set_access(conn, name, state, r['output'] + '\n' + probe['output'], actor)
-    return {'host': name, 'state': state, 'output': (r['output'] + '\n' + probe['output']).strip()}
+    return {'host': name, 'state': state, 'output': (r['output'] + '\n' + probe['output']).strip(), 'warning': r.get('warning')}
 
 
 # ── runs ────────────────────────────────────────────────────────────

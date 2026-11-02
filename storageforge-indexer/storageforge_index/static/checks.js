@@ -46,6 +46,7 @@ function renderAccess() {
 }
 function grantForm(h, remove) {
   const msg = el('p', { class: 'muted', hidden: true });
+  const warn = el('p', { class: 'st-warn', hidden: true });
   const viaScan = el('input', { type: 'radio', name: 'via', value: 'scan', checked: true });
   const viaAdmin = el('input', { type: 'radio', name: 'via', value: 'admin' });
   const admin = el('input', { type: 'text', placeholder: 'admin account, e.g. root or your login', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', disabled: true });
@@ -70,18 +71,20 @@ function grantForm(h, remove) {
         } catch (err) { msg.hidden = false; msg.textContent = err.message; msg.className = 'st-failed'; }
       }, 'btn ghost sm'),
       el('button', { type: 'submit', class: 'btn pri sm' }, remove ? 'Remove' : 'Run it now')),
-    pre, msg);
+    pre, msg, warn);
   sync();
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const body = { host: h.host, password: pw.value, admin_user: viaAdmin.checked ? admin.value.trim() : null, remove };
     pw.value = '';
     const btn = ev.submitter; btn.disabled = true;
+    warn.hidden = true;
     msg.hidden = false; msg.className = 'muted'; msg.textContent = `Running on ${h.host} with sudo…`;
     try {
       const r = await (await postJSON('/api/access/grant', body)).json();
       msg.className = 'st-ok';
       msg.textContent = remove ? 'Removed.' : `Done via ${r.via}. Rescan ${h.host} to read the folders that were missing.`;
+      warn.textContent = r.warning || ''; warn.hidden = !r.warning;
       if (!remove) form.append(el('div', { class: 'row end' }, button(`Scan ${h.host} now`, () => queueScan(h.host), 'btn pri sm')));
     } catch (err) { msg.className = 'st-failed'; msg.textContent = err.message; }
     finally { btn.disabled = false; }

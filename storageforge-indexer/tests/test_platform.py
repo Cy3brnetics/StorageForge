@@ -1934,8 +1934,37 @@ class HostAccessTests(DBCase):
         argv, stdin = calls[0]
         self.assertEqual(argv[argv.index('-p') + 1], '2222')
         self.assertIn('admin@10.0.0.5', argv)
-        self.assertTrue(argv[-1].startswith('sudo -S -p "" sh -c ') and 'exec </dev/null' in argv[-1])   # no read of the pw
+        self.assertIn('; sudo -S -p "" sh -c ', argv[-1])
+        self.assertIn('exec </dev/null', argv[-1])                       # no read of the pw
+        self.assertTrue(argv[-1].startswith('sudo -n -k sh -c : </dev/null'))   # the probe can't read it either
         self.assertEqual(stdin, 'pw\n')
+        self.assertFalse(r['passwordless'])
+        self.assertNotIn('warning', r)
+
+    def test_sudo_run_warns_when_sudo_took_no_password(self):
+        from unittest import mock
+        from storageforge_index import access, hostkeys
+
+        def fake_run(argv, **kw):
+            return subprocess.CompletedProcess(argv, 0, f'{access.NO_PASSWORD_MARK}\ndone\n', '')
+        with mock.patch.object(hostkeys, 'require_confirmed', lambda *a: None), \
+             mock.patch.object(access, 'askpass_path', lambda: '/bin/true'), \
+             mock.patch.object(access.subprocess, 'run', fake_run):
+            r = access.sudo_run(self.db, self.conn, 'nas', lambda u: 'id', 'pw', admin_user='admin')
+        self.assertTrue(r['passwordless'])
+        self.assertEqual(r['output'], 'done')                            # the marker stays out of what people read
+        self.assertIn('only the SSH login checked', r['warning'])
+
+    def test_passwordless_warning_says_the_scan_key_has_root(self):
+        from storageforge_index import access
+        p = subprocess.CompletedProcess([], 0, f'{access.NO_PASSWORD_MARK}\nok\n', '')
+        warning = access._finish(p, 'pw', 'nas', 'rpi', 'scan')['warning']
+        self.assertIn('was not checked', warning)
+        self.assertIn('scan key has full root on nas', warning)
+        self.assertNotIn('scan key', access._finish(p, 'pw', 'nas', 'admin', 'key')['warning'])
+        wrong = subprocess.CompletedProcess([], 1, '', 'Sorry, try again.')
+        with self.assertRaisesRegex(access.RemoteError, 'did not accept'):      # a password sudo does check is still refused
+            access._finish(wrong, 'pw', 'nas', 'rpi', 'scan')
 
     def test_adopt_binds_one_host_and_only_while_it_works(self):
         from unittest import mock
