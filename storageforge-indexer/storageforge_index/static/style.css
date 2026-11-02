@@ -978,4 +978,15 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 .pill.ok { background: color-mix(in srgb, #2e7d32 20%, transparent); color: #4caf50; }
 .pill.warning { background: color-mix(in srgb, #ed6c02 20%, transparent); color: #ff9800; }
 .pill.danger { background: color-mix(in srgb, #d32f2f 25%, transparent); color: #f44336; }
+.mb-2 { margin-bottom: 8px; }
+.mb-3 { margin-bottom: 12px; }
+.mt-2 { margin-top: 8px; }
+.mt-3 { margin-top: 12px; }
+.p-2 { padding: 8px; }
+.p-4 { padding: 16px; }
+.pl-4 { padding-left: 16px; }
+.gap-2 { gap: 8px; }
+.between { justify-content: space-between; }
+.items-center { align-items: center; }
+.border-b { border-bottom: 1px solid var(--line); }
 
