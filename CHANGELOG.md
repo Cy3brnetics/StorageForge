@@ -7,6 +7,19 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ### Fixed
 - **Lab reports include tiers 6 and 7.** They ran, but a failure there never reached the report or its result.
 - **Scans find ZFS pools and LVM volumes as an ordinary user on Debian-based hosts.** `zpool` and `lvs` were off that user's `PATH`, so pools came back empty with no error.
+- **A failed move no longer reports success.** Move scripts printed "copied", recorded the step and exited 0 when rsync or git failed, so scheduled moves counted as good runs. Cutover and timer failures now count too.
+- **A saved host check no longer blocks deploys.** Five minutes after a signed check, every deploy to that host was refused with a false clock error.
+- **Fewer false "stale" alerts.** Weekday-only, monthly and other uneven schedules are judged by their longest wait.
+- **Scans leave running deploys alone,** and failed log fetches no longer trigger more of them.
+- **Retiring a host** no longer removes another host's binding through a shared private address, no longer blocks `reset`, and says what stays on the machine.
+- **Smaller fixes from the audit's second pass.** A failed scan of an unknown name stops alerting after 7 days, command schedule scripts are private on their host (after the next deploy), failed rotating backups no longer leave folders behind for good, share options are read as whole words, planner volumes sized in bytes can be staged, and Git handles non-UTF-8 paths.
+- **Checksum scans reach files with non-UTF-8 names.** The host was asked for the escaped form of the name, which does not exist, so those files never got a checksum.
+- **An unreadable job schedule no longer fails the Deploy tab.** One calendar string that passed validation could make `/api/deploy` answer 400.
+- **Smaller audit fixes.** Move and change locks no longer fall back to `/tmp`, a schedule's `verify` refuses another schedule's run, schedule windows must be real times, filtered log pages no longer come up short on fetched logs, and the folder cache evicts its oldest entry rather than all of them.
+- **No abort at exit.** A background thread writing to stderr as the process ended could kill it with exit 134, on a server shutting down and in test runs that had otherwise passed. Those writes now stop before Python finalizes.
+- **`*.tar.gz` finds files.** A search for a two-dot suffix looked in the extension column, which holds only `gz`, and silently found nothing. So did suffixes with a space or over 16 characters.
+- **A failed schedule deploy no longer stops the host's reports.** Run now changed the report token before the host had it, so a host it never reached got 401 on every report. A new token now works beside the old one until the host reports with it or the deploy ends well. This also covers an apply that fails after writing the token.
+- **A command schedule's script downloads take `plans.edit`**, as reading the command does. `plans.scripts` alone showed what the schedule view masks.
 - **Retiring a remote node's host cuts its tunnel.** Its key stayed authorized, and the machine kept its address on this server.
 - **Snapshot discovery passes over a capability `find` that cannot run**, instead of reporting no snapshots.
 - **Plain HTTP tells ports apart.** Browsers send no `Sec-Fetch-Site` there, so a page on another port of the same host could post with the session cookie.

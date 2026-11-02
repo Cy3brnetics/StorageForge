@@ -810,6 +810,8 @@ rotate() {   # rotate <into> <keep> <src> <rsync args...>: dated, hard-linked co
   local into=$1 keep=$2 src=$3; shift 3
   local prev; prev=$(find "$into" -mindepth 1 -maxdepth 1 -type d -name '20??-??-??_??????' 2>/dev/null | sort | tail -n 1)
   x mkdir -p -- "$into" || return 1
+  local left; mapfile -t left < <(find "$into" -mindepth 1 -maxdepth 1 -type d -name '20??-??-??_??????.partial' 2>/dev/null)     # left by a failed run: each run starts its own
+  for o in "${left[@]}"; do x rm -rf --one-file-system -- "$o"; done
   if [[ -n $prev ]]; then info "unchanged files link to $(basename "$prev")"; set -- "$@" --link-dest="$prev"; fi
   rs "$@" --delete "$src" "$into/$STAMP.partial/" || return 1
   x mv -- "$into/$STAMP.partial" "$into/$STAMP" || return 1

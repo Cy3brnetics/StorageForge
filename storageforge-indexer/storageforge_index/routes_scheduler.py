@@ -11,6 +11,11 @@ def register(web, ctx):
     core, db, limiter, conn, actor, need, json_body, arg_num = ctx.core, ctx.db, ctx.limiter, ctx.conn, ctx.actor, ctx.need, ctx.json_body, ctx.arg_num
     password_stale, password_confirmed, need_for_commands, may_hand_out = ctx.password_stale, ctx.password_confirmed, ctx.need_for_commands, ctx.may_hand_out
 
+    def need_to_read_commands(sched: dict):
+        """A command schedule's script holds what schedule_view masks."""
+        if sched['task_type'] == 'command':
+            need('plans.edit')
+
     # ── Scheduler API ──────────────────────────────────────────────────────────
     def schedule_view(sched: dict) -> dict:
         """Commands and env values can hold secrets: only those who may edit a schedule read them."""
@@ -141,7 +146,7 @@ def register(web, ctx):
             body = (request.get_json(silent=True) or {}) if request.is_json else {}
             run_id = body.get('run_id')
             if run_id is not None:
-                res = scheduler.reverify_run(c, int(run_id))
+                res = scheduler.reverify_run(c, int(run_id), schedule_id)
             else:
                 res = scheduler.verify_schedule(c, schedule_id)
             sched = scheduler.get_schedule(c, schedule_id)
@@ -158,6 +163,7 @@ def register(web, ctx):
         c = conn()
         try:
             sched = scheduler.get_schedule(c, schedule_id)
+            need_to_read_commands(sched)
             script, args = scheduler.generate_task_script(c, sched)
             core.audit(c, actor(), 'scheduler.script', 'ok', sched['host'], {'schedule_id': schedule_id})
             return Response(script, mimetype='text/x-shellscript',
@@ -171,6 +177,7 @@ def register(web, ctx):
         c = conn()
         try:
             sched = scheduler.get_schedule(c, schedule_id)
+            need_to_read_commands(sched)
             # A GET changes nothing, so this carries no token and the host reports through scans. To report directly, rotate
             # the token and add it to the config on the host, or deploy over SSH
             scr = scheduler.generate_install_script(c, sched, alerts.get_setting(c, 'report_url'), '')

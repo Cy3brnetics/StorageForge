@@ -14,6 +14,7 @@ runs.jsonl, which scans read as a fallback.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -33,7 +34,7 @@ from .db import Conn
 from .jobscript import JOB_SCRIPT
 from .remote import child_env, known_hosts_name
 from .runner import known_hosts_path
-from .scriptkit import HELPERS, PACKAGES, need_line, one_line
+from .scriptkit import HELPERS, PACKAGES, longest_gap, need_line, one_line
 
 SCHEDULED = ('mirror', 'rsnapshot', 'git')
 REPORT_CA = '/etc/storageforge/report-ca.pem'       # the self-signed certificate an https report URL is checked against
@@ -50,8 +51,38 @@ def job_id(plan_id: int, step_id: str) -> str:
     return f'p{int(plan_id)}-{re.sub(r"[^a-z0-9-]", "", str(step_id).lower())[:40] or "s"}'
 
 
+WEEKDAYS = {'mon': 0, 'tue': 1, 'wed': 2, 'thu': 3, 'fri': 4, 'sat': 5, 'sun': 6}
+
+
+def _calendar_values(text: str, low: int, high: int) -> set[int]:
+    """One field of a systemd calendar time: *, 5, 1,15, 1..7 or 0/6. ValueError for anything else."""
+    out = set()
+    for item in text.split(','):
+        item = item.split('.')[0] if '.' in item and '..' not in item else item      # seconds' fractions
+        base, _, step = item.partition('/')
+        lo, _, hi = base.partition('..')
+        start = low if lo == '*' else int(lo)
+        end = high if lo == '*' or (step and not hi) else int(hi or lo)
+        out.update(range(start, end + 1, int(step) if step else 1))
+    return {v for v in out if low <= v <= high}
+
+
+def _calendar_weekdays(word: str) -> set[int] | None:
+    """Mon, Mon,Tue or Mon..Fri as weekday numbers; None when word is not one of those (a timezone, say)."""
+    out: set[int] = set()
+    for item in word.lower().split(','):
+        a, _, b = item.partition('..')
+        if a[:3] not in WEEKDAYS or (b and b[:3] not in WEEKDAYS):
+            return None
+        first, last = WEEKDAYS[a[:3]], WEEKDAYS[(b or a)[:3]]
+        out.update(range(first, last + 1) if first <= last else [*range(first, 7), *range(0, last + 1)])
+    return out
+
+
+@functools.lru_cache(maxsize=512)
 def period(schedule: str | None) -> int:
-    """Seconds between runs, roughly, from a systemd OnCalendar expression (for staleness, not for scheduling)."""
+    """The longest wait between runs, in seconds, from a systemd OnCalendar expression (for staleness, not for scheduling).
+    A time it cannot read counts as daily: systemd is what refuses a bad one."""
     s = (schedule or 'daily').strip()
     if s in ('minutely',):
         return 60
@@ -59,22 +90,18 @@ def period(schedule: str | None) -> int:
     if s in named:
         return named[s]
     parts = s.split()
-    clock = next((p for p in reversed(parts) if ':' in p), '')
-    date = next((p for p in parts if '-' in p and ':' not in p), '*-*-*')
-    days = [p for p in parts if re.fullmatch(r'[A-Za-z].*', p)]
-    if days:
-        return DAY if any(c in days[0] for c in ',.') else 7 * DAY
-    if re.fullmatch(r'(\*|\d+)-(\*|\d+)-\d+', date) and not date.endswith('*'):
-        return 31 * DAY if date.split('-')[1] == '*' else 366 * DAY
-    hh, _, rest = clock.partition(':')
-    mm = rest.split(':')[0]
-    if '/' in hh:
-        return max(1, int(hh.split('/')[1] or 1)) * 3600
-    if hh == '*':
-        return max(1, int(mm.split('/')[1])) * 60 if '/' in mm else 3600
-    if ',' in hh:
-        return DAY // (hh.count(',') + 1)
-    return DAY
+    weekdays = _calendar_weekdays(parts[0]) if parts and parts[0][0].isalpha() else None
+    clock = next((p for p in reversed(parts) if ':' in p), '0:0')
+    date = next((p for p in parts if '-' in p and ':' not in p), '*-*-*').split('-')
+    try:
+        hours, mins = clock.split(':')[:2]
+        months = _calendar_values(date[-2], 1, 12)
+        doms = _calendar_values(date[-1], 1, 31)
+        times = [h * 60 + m for h in _calendar_values(hours, 0, 23) for m in _calendar_values(mins, 0, 59)]
+    except (ValueError, IndexError):
+        return DAY
+    gap = longest_gap(lambda d: d.month in months and d.day in doms and (weekdays is None or d.weekday() in weekdays), times)
+    return gap or DAY
 
 
 # ── plan steps → job specs ──────────────────────────────────────────

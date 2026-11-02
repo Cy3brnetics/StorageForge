@@ -4,6 +4,7 @@ Move plans, Host scans, and arbitrary Commands) as cron jobs on client hosts wit
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import hashlib
 import json
 import re
@@ -19,7 +20,7 @@ from . import site
 from . import alerts, changes, moves, schedscript, tasks
 from .db import Conn, epoch
 from .moves import find_host, host_slug, hosts, slug
-from .scriptkit import HELPERS
+from .scriptkit import HELPERS, longest_gap
 
 CRON_ALIASES = {
     '@yearly': '0 0 1 1 *',
@@ -165,14 +166,15 @@ def next_run(expr: str, after_ts: int | None = None, tz_name: str = 'UTC') -> in
     raise ValueError(f'cannot find next run occurrence within 5 years for cron: {expr}')
 
 
+@functools.lru_cache(maxsize=512)
 def period(expr: str) -> int:
-    """Estimates the period in seconds between runs of a cron expression (used for staleness alerts)."""
+    """The longest wait between runs of a cron expression, in seconds: a schedule is only late once that has passed."""
     try:
-        t1 = next_run(expr, 1700000000)
-        t2 = next_run(expr, t1)
-        return max(60, t2 - t1)
-    except Exception:
+        mins, hours, doms, months, dows = parse_cron(expr)
+    except ValueError:
         return 86400
+    gap = longest_gap(lambda d: d.month in months and d.day in doms and (d.weekday() + 1) % 7 in dows, [h * 60 + m for h in hours for m in mins])
+    return max(60, gap) if gap else 86400
 
 
 # ── Configuration Normalization ───────────────────────────────────────────────
@@ -391,6 +393,8 @@ def _check_save(conn: Conn, body: dict, s: dict):
     # more than any list can name), which would make a plan a root shell without hosts.command.
     if s['config']['env'] and s['task_type'] != 'command':
         raise ValueError('only a command schedule takes environment variables')
+    if s['config']['window'] and not moves.WINDOW_RE.fullmatch(s['config']['window']):
+        raise ValueError('window must be real times, e.g. "02:00-05:00"')
     for key in ('output_must_match', 'output_must_not_match'):
         try:
             re.compile(s['config']['verify_rules'][key])
@@ -615,16 +619,30 @@ def token_for_schedule(conn: Conn, schedule_id: int, actor: str) -> str:
 
 
 def _set_token(conn: Conn, schedule_id: int, token: str):
-    conn.execute('UPDATE schedules SET auth_token_hash = :th, updated_at = :now WHERE schedule_id = :id',
+    conn.execute('UPDATE schedules SET auth_token_hash = :th, pending_token_hash = NULL, updated_at = :now WHERE schedule_id = :id',
                  {'id': schedule_id, 'th': hashlib.sha256(token.encode()).hexdigest(), 'now': int(time.time())})
+
+
+def _pending_token(conn: Conn, schedule_id: int) -> str:
+    """A token for a deploy to carry. A deploy that fails says nothing about whether the host got it (the install may have
+    finished before the task failed), so it works beside the current one until the host reports with it or the deploy ends well."""
+    token = secrets.token_hex(32)
+    conn.execute('UPDATE schedules SET pending_token_hash = :th WHERE schedule_id = :id',
+                 {'id': schedule_id, 'th': hashlib.sha256(token.encode()).hexdigest()})
+    return token
 
 
 def schedule_for_token(conn: Conn, token: str) -> dict | None:
     if not token or len(token) < 16:
         return None
     th = hashlib.sha256(token.encode()).hexdigest()
-    sid = conn.scalar('SELECT schedule_id FROM schedules WHERE auth_token_hash = :th', {'th': th})
-    return get_schedule(conn, sid) if sid else None
+    rows = conn.all('SELECT schedule_id, auth_token_hash FROM schedules WHERE auth_token_hash = :th OR pending_token_hash = :th', {'th': th})
+    if not rows:
+        return None
+    sid, current = rows[0]
+    if current != th:            # the host has the new token: the old one is done
+        conn.execute('UPDATE schedules SET auth_token_hash = :th, pending_token_hash = NULL WHERE schedule_id = :id', {'id': sid, 'th': th})
+    return get_schedule(conn, sid)
 
 
 # ── Unified Script Generator ──────────────────────────────────────────────────
@@ -883,11 +901,12 @@ def pause_pending(conn: Conn, schedule: dict) -> bool:
     return any(d['ref'] == str(schedule['schedule_id']) and d['hash'] != want for d in deploy.deployed(conn, kind='schedules'))
 
 
-def reverify_run(conn: Conn, run_id: int) -> dict:
-    """Re-runs server verification on an existing schedule_run against the latest StorageForge index."""
+def reverify_run(conn: Conn, run_id: int, schedule_id: int | None = None) -> dict:
+    """Re-runs server verification on an existing schedule_run against the latest StorageForge index. schedule_id: the
+    schedule the caller means; a run of another one is not found."""
     rows = conn.all("""SELECT run_id, schedule_id, host, status, started_at, finished_at, exit_code, output, nonce
                        FROM schedule_runs WHERE run_id = :id""", {'id': run_id})
-    if not rows:
+    if not rows or (schedule_id is not None and rows[0][1] != schedule_id):
         raise LookupError(f'no schedule run #{run_id}')
     r = rows[0]
     schedule = get_schedule(conn, r[1])
@@ -1156,6 +1175,9 @@ def generate_install_script(conn: Conn, schedule: dict, report_url: str | None, 
     task_script, script_args = generate_task_script(conn, schedule)
     env = {k: v for k, v in (cfg.get('env') or {}).items() if not UNSAFE_ENV.fullmatch(k)} if schedule['task_type'] == 'command' else {}    # a row from before the env rules too
     task_sh, run_sh = f'{LIB}/task-{sid}.sh', f'{LIB}/run-{sid}.sh'
+    # it can hold what the schedule view masks: only whoever runs it reads it
+    user = cfg.get('user') or 'root'
+    task_access = 'chmod 0700 "$TASK_SH"' if user == 'root' else f'chgrp "$(id -g {q(user)} 2>/dev/null || echo 0)" "$TASK_SH"; chmod 0750 "$TASK_SH"'
     runner = schedscript.runner_script(schedule, script_args, parse_cron(schedule['cron_expr']), report_url, env, task_sh)
     paused = 1 if schedule.get('paused') else 0
     # a dry run shows the command itself: the person reading it is who approves it
@@ -1227,7 +1249,7 @@ section "Installing schedule $SCHED_NAME (#$SID)"
 {_remove_block(sid, token=False)}mkdir -p {LIB} /etc/storageforge/scheduler /var/lib/storageforge/scheduler/$SID /var/lib/storageforge/managed
 chmod 0755 /var/lib/storageforge /var/lib/storageforge/scheduler /var/lib/storageforge/scheduler/$SID /var/lib/storageforge/managed 2>/dev/null || true
 chmod 0700 /etc/storageforge/scheduler
-{_heredoc('"$TASK_SH"', task_script)}chmod 0755 "$TASK_SH"
+{_heredoc('"$TASK_SH"', task_script)}{task_access}
 ok "$TASK_SH"
 {_heredoc('"$RUN_SH"', runner)}chmod 0700 "$RUN_SH"
 ok "$RUN_SH"
@@ -1272,15 +1294,12 @@ def deploy_items(db, conn: Conn, schedule: dict, mode: str, report_url: str | No
     if not remove and not schedule.get('paused'):
         check_target(conn, schedule)
 
-    # The old token keeps working until the host holds the new one, so a deploy that fails leaves reports working. A run
-    # now is the exception: it reports during the deploy, with the new token.
+    # The old token keeps working until the host holds the new one, so a deploy that fails leaves reports working
     promote = None
     if remove:
         token = 'uninstall'
-    elif run_now:
-        token = token_for_schedule(conn, sid, actor)
-    elif mode == 'apply':
-        token = promote = secrets.token_hex(32)
+    elif run_now or mode == 'apply':
+        token = promote = _pending_token(conn, sid)
     else:
         token = '<issued-on-deploy>'
 

@@ -138,7 +138,6 @@ import subprocess
 import sys
 import threading
 import time
-import traceback
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -151,7 +150,7 @@ from flask_login import LoginManager, current_user, login_required, login_user, 
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import (__version__, access, alerts, remotes, blueprint, canvas, changes, deploy, docker, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
+from . import (__version__, access, alerts, errlog, remotes, blueprint, canvas, changes, deploy, docker, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
                fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_git, routes_scheduler, scheduler, shares, site, snapjobs, tasks, updates, users)
 from .capacity import parse_size, trends
 from .db import Database, epoch
@@ -262,7 +261,7 @@ class App:
             try:
                 alerts.evaluate(self.db)
             except Exception:
-                traceback.print_exc()
+                errlog.trace()
             self.alerts_wake.wait(ALERT_TICK)
             self.alerts_wake.clear()
 
@@ -308,7 +307,7 @@ class App:
                     opts = ScanOptions(parallel=self.parallel, include_fstypes=[
                         x for x in os.environ.get('STORAGEFORGE_INCLUDE_FSTYPES', '').split(',') if x])
                     res = scan_via_vault(self.scan_db, host, opts, actor=actor,
-                                         log=lambda m: print(f'[job {jid}] {m}', file=sys.stderr, flush=True))
+                                         log=lambda m: errlog.say(f'[job {jid}] {m}'))
                     status, result = res['status'], res
                 except Exception as exc:
                     status, result = 'failed', {'error': str(exc)}
@@ -316,7 +315,7 @@ class App:
                              {'s': status, 't': int(time.time()), 'r': json.dumps(result, default=str), 'j': jid})
                 self.scan_db.prune(conn)             # cheap deletes; keeps change history and denied lists bounded
             except Exception:
-                traceback.print_exc()
+                errlog.trace()
             finally:
                 conn.close()
                 self.scan_done.set()
@@ -376,7 +375,7 @@ class App:
             out['pruned'] = self.db.prune(conn)
         finally:
             conn.close()
-        print(f'nightly: {out}', file=sys.stderr, flush=True)
+        errlog.say(f'nightly: {out}')
         return out
 
     def copy_off(self, conn, path: str, actor: str) -> str | None:
@@ -402,7 +401,7 @@ class App:
                                                 or time.time() - newest[0]['created'] > 86400):
                 self.nightly_once()
         except Exception:
-            traceback.print_exc()
+            errlog.trace()
         while True:
             now = time.localtime()
             wait = ((BACKUP_HOUR - now.tm_hour) % 24) * 3600 - now.tm_min * 60 - now.tm_sec
@@ -417,7 +416,7 @@ class App:
                     finally:
                         conn.close()
             except Exception:
-                traceback.print_exc()
+                errlog.trace()
 
     def _schedule(self, interval: int | None):
         while True:
@@ -425,7 +424,7 @@ class App:
                 for h in self.due_hosts(interval):
                     self.enqueue(h, 'scheduler')
             except Exception:
-                traceback.print_exc()
+                errlog.trace()
             time.sleep(min(interval or SCHEDULE_TICK, SCHEDULE_TICK))
 
 
@@ -458,6 +457,16 @@ class _FromProxy:
         if not self.proxy_host or self._is_proxy(environ.get('REMOTE_ADDR', '')):
             return self.fixed(environ, start_response)
         return self.plain(environ, start_response)
+
+
+def remember(cache: dict, key: tuple, result, latest, keep: int = 8):
+    """Into a cache keyed by (..., scan id): what an older scan left goes, then the oldest entries beyond keep. The Cleanup
+    tab asks for cold and duplicate folders at once: both stay."""
+    for k in [k for k in cache if k[-1] != latest]:
+        del cache[k]
+    while len(cache) >= keep:
+        del cache[next(iter(cache))]
+    cache[key] = result
 
 
 def session_cookie_name(secure: bool) -> str:
@@ -587,7 +596,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         resp.headers['Server'] = 'StorageForge'
         if ACCESS_LOG == 'all' or (ACCESS_LOG == 'changes' and (request.method not in ('GET', 'HEAD') or resp.status_code >= 500
                                                                   or resp.status_code == 429)):
-            print(f'{request.remote_addr} {request.method} {request.path} {resp.status_code}', file=sys.stderr, flush=True)
+            errlog.say(f'{request.remote_addr} {request.method} {request.path} {resp.status_code}')
         return resp
 
     @web.errorhandler(Exception)
@@ -600,7 +609,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return jsonify(error=str(exc)), 400
         if isinstance(exc, LookupError) and not isinstance(exc, (KeyError, IndexError)):     # "no such deploy", from a route with no handler of its own
             return jsonify(error=str(exc)), 404
-        traceback.print_exc()
+        errlog.trace()
         return jsonify(error=f'internal error: {type(exc).__name__}'), 500
 
     def actor() -> str:
@@ -775,6 +784,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         session.clear()
         session['login_at'] = session['auth_at'] = int(time.time())
         session['sid'] = users.start_session(conn(), user.user_id, request.remote_addr)
+        if len(signed_in_from) >= 10_000:       # forgetting only drops an exemption from the daily limit
+            signed_in_from.clear()
         signed_in_from.add((user.username.lower(), client_net()))
         login_user(user)
         return jsonify(username=user.username)
@@ -1976,9 +1987,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         result = compute()
         if not running:
             with folder_lock:
-                for k in [k for k in folder_cache if k[-1] != latest or len(folder_cache) >= 8]:
-                    del folder_cache[k]       # the Cleanup tab asks for cold and duplicate folders at once: both stay
-                folder_cache[key] = result
+                remember(folder_cache, key, result, latest)
         return result
 
     dir_kept: list = [None]                   # (scan id, folder index): listings and comparisons share it. Replaced whole, never edited
@@ -2061,7 +2070,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                     for name in names:
                         graph.rebuild_host(db, c, name)
                 except Exception:
-                    traceback.print_exc()
+                    errlog.trace()
                 finally:
                     c.close()
             threading.Thread(target=rebuild, name='ignore-rebuild', daemon=True).start()
@@ -2244,7 +2253,7 @@ def serve(db: Database, host: str, port: int, scan_interval: int | None, paralle
             try:
                 web.warm_filemap()
             except Exception:
-                traceback.print_exc()
+                errlog.trace()
             web_core.scan_done.wait()
             web_core.scan_done.clear()
     threading.Thread(target=warm, name='filemap-warm', daemon=True).start()

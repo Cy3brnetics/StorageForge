@@ -243,8 +243,8 @@ function renderScheduler() {
           inst.length ? button('Uninstall', () => {
             startDeploy('schedules', cur.schedule_id, 'apply', `uninstall schedule ${cur.name}`, { remove: true });
           }, 'btn ghost sm danger') : null,
-          el('a', { class: 'btn ghost sm', href: `/api/scheduler/schedules/${cur.schedule_id}/install-script`, download: `install-schedule-${cur.schedule_id}.sh` }, 'Install .sh'),
-          el('a', { class: 'btn ghost sm', href: `/api/scheduler/schedules/${cur.schedule_id}/script`, download: `task-${cur.schedule_id}.sh` }, 'Task .sh'),
+          cur.task_ref !== '••••••' ? el('a', { class: 'btn ghost sm', href: `/api/scheduler/schedules/${cur.schedule_id}/install-script`, download: `install-schedule-${cur.schedule_id}.sh` }, 'Install .sh') : null,
+          cur.task_ref !== '••••••' ? el('a', { class: 'btn ghost sm', href: `/api/scheduler/schedules/${cur.schedule_id}/script`, download: `task-${cur.schedule_id}.sh` }, 'Task .sh') : null,
           button('Rotate token', async () => {
             try {
               const r = await (await postJSON(`/api/scheduler/schedules/${cur.schedule_id}/token`, {})).json();

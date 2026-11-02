@@ -190,7 +190,7 @@ def plan(conn, design: dict) -> dict:
         for lv in volumes or []:
             if lv.get('name') in existing:
                 continue
-            size = lv.get('size') or lv.get('sizeBytes')
+            size = lv.get('size') or (f'{int(lv["sizeBytes"]) >> 20}M' if lv.get('sizeBytes') else None)
             if not size:
                 by_hand(f'Logical volume {vg}/{lv.get("name")}', 'the design gives it no size')
                 continue

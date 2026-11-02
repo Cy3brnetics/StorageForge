@@ -892,7 +892,8 @@ async function editSchedule(host) {
 async function retireHost(host) {
   if (!confirm(`Retire ${host}? Its index, graph, scan history, bindings and design are removed, and a remote node's tunnel is cut. The audit log stays, and a new scan would add it back only with a new binding.`)) return;
   try {
-    await api(`/api/hosts/${encodeURIComponent(host)}`, { method: 'DELETE' });
+    const res = await api(`/api/hosts/${encodeURIComponent(host)}`, { method: 'DELETE' });
+    if (res?.removed?.still_on_host) alert(`${host}: ${res.removed.still_on_host}`);
     location.reload();
   } catch (err) { alert(err.message); }
 }

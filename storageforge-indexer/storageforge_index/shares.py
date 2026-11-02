@@ -231,7 +231,7 @@ def _ids(inv: dict) -> tuple[dict, dict] | None:
 
 def id_check(conn: Conn, srv: dict, e: dict, clients: list[dict]) -> list[tuple[str, str]]:
     """NFS (sec=sys) trusts numeric UIDs: the owners of an export's files should have the same UID on each client."""
-    if all('all_squash' in (r['options'] or '') for r in e['rules']) and e['rules']:
+    if all('all_squash' in (r['options'] or '').split(',') for r in e['rules']) and e['rules']:
         return [('ok', 'all users are mapped to one owner (all_squash): user IDs do not need to match')]
     inv = lambda h: loads(conn.scalar('SELECT inventory_json FROM hosts WHERE host_id = :h', {'h': h['id']})) or {}   # noqa: E731
     mine = _ids(inv(srv))
@@ -324,7 +324,7 @@ def check_exports(conn: Conn, hs: dict, srv: dict, exports: list[dict], only: in
                                f'depending on the path they mount; one export is simpler')
         below = [x for x in info['mounts_below'] if x['kind'] == 'local']
         if below and e['proto'] == 'NFS':
-            opts = ' '.join(r['options'] or e['options'] or '' for r in e['rules'])
+            opts = re.split(r'[ ,]+', ' '.join(r['options'] or e['options'] or '' for r in e['rules']))
             names = ', '.join(x['target'] for x in below[:4]) + (' …' if len(below) > 4 else '')
             if 'crossmnt' in opts or 'nohide' in opts:
                 say(i, 'ok', f'filesystems mounted inside ({names}) are visible through crossmnt')
@@ -786,7 +786,7 @@ server_smb() {
     for c in ${E_CLIENTS[$i]}; do if [[ $c =~ ^[0-9.:]+(/[0-9]+)?$ ]]; then hostsallow+=("$c"); else users+=("$c"); fi; done
     body+=$'\n'"[${E_NAME[$i]}]"$'\n'"   path = ${E_PATH[$i]}"
     [[ ${E_SMB[$i]} == *"browseable = "* ]] || body+=$'\n'"   browseable = yes"
-    body+=$'\n'"   read only = $([[ ${E_OPTS[$i]} == *ro* ]] && echo yes || echo no)"
+    body+=$'\n'"   read only = $([[ ,${E_OPTS[$i]}, == *,ro,* ]] && echo yes || echo no)"
     ((${#users[@]})) && body+=$'\n'"   valid users = ${users[*]}"
     ((${#hostsallow[@]})) && body+=$'\n'"   hosts allow = ${hostsallow[*]} 127.0.0.1"
     [[ -z ${E_SMB[$i]} ]] || body+=$'\n'"${E_SMB[$i]}"

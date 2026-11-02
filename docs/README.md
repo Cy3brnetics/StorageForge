@@ -48,6 +48,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | Page | What it covers |
 | :--- | :--- |
 | [Feature audit, 2026-11-01](audit-2026-11-01-features.md) | Code compared with the docs and exercised in the lab, and what disagreed |
+| [Code audit, 2026-11-01](audit-2026-11-01-code.md) | Bugs found by reading the code, and what was checked and found fine |
 | [Consistency audit, 2026-10-29](audit-2026-10-29.md) | Places where the code, the README and the rules in [Concepts](concepts.md) disagree, found while writing these pages |
 | [Deployments design](../deployments-design.md) | The original design for deploys (2026-10-27) |
 | [Security audit, 2026-10-28](../security-audit-2026-10-28.md) | Findings and fixes |

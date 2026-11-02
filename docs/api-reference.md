@@ -198,8 +198,8 @@ Each plan type has the same shape: list, create, one, check, script.
 | POST | `/api/scheduler/schedules/<id>/run` | | run schedule immediately over SSH deploy access (password confirmed) |
 | POST | `/api/scheduler/report` | run report, up to 512 KiB (`Authorization: Bearer <token>`) | a host reports a run; a repeated nonce is ignored |
 | POST | `/api/scheduler/schedules/<id>/verify` | `{"run_id"?}` | re-verify schedule or specific run against the StorageForge index |
-| GET | `/api/scheduler/schedules/<id>/script` | | download compiled shell script for the task |
-| GET | `/api/scheduler/schedules/<id>/install-script` | | download full installer script (config, script, cron entry) |
+| GET | `/api/scheduler/schedules/<id>/script` | | download compiled shell script for the task (a command schedule also takes `plans.edit`) |
+| GET | `/api/scheduler/schedules/<id>/install-script` | | download full installer script (config, script, cron entry; a command schedule also takes `plans.edit`) |
 | GET | `/api/scheduler/schedules/<id>/cron` | | output `/etc/cron.d/` entry string |
 | GET | `/api/scheduler/schedules/<id>/runs[?limit=]` | | execution history and server verification reports for schedule |
 | GET | `/api/scheduler/runs[?host=&limit=]` | | global schedule runs history |

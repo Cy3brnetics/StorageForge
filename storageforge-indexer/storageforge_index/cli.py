@@ -585,7 +585,10 @@ def cmd_hosts(args) -> int:
                 _audit(db, conn, v, 'hosts.retire', host=args.name, **gone)
         except VaultError:
             _audit(db, conn, None, 'hosts.retire', host=args.name, **gone)
+        stays = gone.pop('still_on_host', None)
         print(f'retired {args.name}: ' + ', '.join(f'{v} {k}' for k, v in gone.items()))
+        if stays:
+            print(f'note: {stays}')
         return 0
     rows = conn.all("""SELECT h.hostname, h.ip_address, h.last_scanned_at,
                               (SELECT count(*) FROM mounts m WHERE m.host_id = h.host_id AND m.scan_state = 'indexed'),

@@ -12,12 +12,12 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from . import errlog
 from .db import Database
 from .remote import Transport, child_env
 from .scanner import ScanOptions, scan_host
@@ -61,7 +61,7 @@ def ephemeral_agent(key: SecretBuffer, ttl: int = AGENT_TTL):
     """Start a private ssh-agent, load the key from memory, yield its socket, then tear it all down."""
     base = runtime_dir()
     if not is_memory_backed(base):
-        print(f'warning: {base} is not tmpfs; the agent socket (never the key) is on disk', file=sys.stderr)
+        errlog.say(f'warning: {base} is not tmpfs; the agent socket (never the key) is on disk')
     d = Path(tempfile.mkdtemp(prefix='agent-', dir=base))
     os.chmod(d, 0o700)
     sock = d / 'agent.sock'
