@@ -267,7 +267,21 @@ def checksum_command(nice: bool = True) -> str:
     return f"LC_ALL=C {NICE if nice else ''}xargs -0 -r {_tool('sha256sum')} -z --"
 
 
+# Sets $platform to "<name> <version>" on a host that is a storage or virtualization appliance. Reads only what any user can.
+PLATFORM = r"""platform=; if [ -x /usr/bin/pveversion ]; then platform="proxmox $(pveversion 2>/dev/null | sed -n 's|^pve-manager/\([0-9.]*\).*|\1|p')"
+  elif [ -x /usr/bin/midclt ] && [ -r /etc/version ]; then platform="truenas $(head -n 1 /etc/version)"
+  elif [ -r /etc/xensource-inventory ]; then platform="$(. /etc/os-release 2>/dev/null; [ "$NAME" = XCP-ng ] && echo xcp-ng || echo xenserver) $(. /etc/os-release 2>/dev/null; echo "$VERSION_ID")"; fi"""
+
+# Setup scripts stop here before changing anything, on an appliance deploys can't last on. preflight.APPLIANCES says why.
+REFUSE_APPLIANCE = PLATFORM + r"""
+case "$platform" in truenas*|xcp-ng*|xenserver*) echo "${platform%% *} manages this system itself and an upgrade replaces it, so nothing can be deployed here. Scans still work." >&2; exit 3 ;; esac
+"""
+
+# True on a Proxmox host with its paid repository on, as every new install has. Without a subscription apt-get update gets a 401.
+PVE_ENTERPRISE = r"""{ for f in /etc/apt/sources.list.d/*.sources; do [ -r "$f" ] && grep -qs '^URIs:.*enterprise\.proxmox\.com/debian/pve' "$f" && ! grep -qsi '^Enabled: *no' "$f" && break; f=; done; [ -n "$f" ]; }"""
+
 INVENTORY_SCRIPT = r"""
+PATH="$PATH:/usr/sbin:/sbin"    # zpool and lvs live here, and Debian leaves these off an ordinary user's PATH
 echo '@@hostname'; hostname -f 2>/dev/null || hostname 2>/dev/null || uname -n
 echo '@@machineid'; cat /etc/machine-id 2>/dev/null || cat /var/lib/dbus/machine-id 2>/dev/null
 echo '@@ip'; hostname -I 2>/dev/null || ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}'
@@ -319,12 +333,14 @@ getent group 2>/dev/null | awk -F: '$4!="" || ($3>=1000 && $3<60000) {print "g\t
 echo '@@packages'; (PATH="$PATH:/usr/sbin:/sbin"; for m in apt-get dnf yum zypper pacman; do command -v "$m" >/dev/null 2>&1 && { echo "pm $m"; break; }; done
   for c in exportfs smbd mount.nfs mount.cifs rsync rsnapshot git btrfs bash sudo; do command -v "$c" >/dev/null 2>&1 && echo "have $c"; done
   echo 'probed 1'; if [ -d /run/systemd/system ]; then echo 'init systemd'; else echo 'init other'; fi
-  v=$(ssh -V 2>&1 | sed -n 's/^OpenSSH_\([0-9]*\.[0-9]*\).*/\1/p'); [ -n "$v" ] && echo "openssh $v")
+  v=$(ssh -V 2>&1 | sed -n 's/^OpenSSH_\([0-9]*\.[0-9]*\).*/\1/p'); [ -n "$v" ] && echo "openssh $v"
+  @@PLATFORM@@; [ -n "$platform" ] && echo "platform $platform"
+  @@PVE_ENTERPRISE@@ && echo 'pve_enterprise yes')
 echo '@@access'; if [ -x /usr/local/lib/storageforge/find ]; then echo capability; else echo user; fi; id -un 2>/dev/null
 echo '@@snapjobs'
 @@SNAPFIND@@
 echo '@@end'
-""".replace('@@SNAPFIND@@', SNAPFIND)
+""".replace('@@SNAPFIND@@', SNAPFIND).replace('@@PLATFORM@@', PLATFORM).replace('@@PVE_ENTERPRISE@@', PVE_ENTERPRISE)
 
 
 @dataclass

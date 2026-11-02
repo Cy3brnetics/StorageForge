@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The configs of the KVM lab, which of them this build runs, and what each can do, so tests never name a host for its
 abilities. Run directly, it picks a build: sf-ctl, sf-alpine (the only host without systemd) and 5 more at random, with
-at least two btrfs hosts and one each of ZFS, LVM and SELinux. The same seed always gives the same build.
+at least two btrfs hosts and one each of ZFS, LVM and SELinux, and never an appliance. The same seed always gives the same build.
 
     roles.py pick <seed>
 """
@@ -45,7 +45,8 @@ class Node:
 
 
 def pool():
-    ips = {r[0]: r[6] for r in rows('nodes.conf')}
+    prefix = os.environ.get('SFLAB_PREFIX', '10.77.0')
+    ips = {r[0]: r[6].replace('10.77.0', prefix, 1) for r in rows('nodes.conf')}
     out = {}
     for name, abilities, pm, data, room, subvol, snaps, recv, fill, topology in rows('roles.conf'):
         out[name] = Node(name, ips[name], frozenset(abilities.split(',')), pm, data, room, subvol, snaps, recv, fill,
@@ -105,7 +106,7 @@ def fill_host():
 def pick(number):
     everything = pool()
     rng = random.Random(number)
-    rest = sorted(set(everything) - set(ALWAYS))
+    rest = sorted(n for n, node in everything.items() if n not in ALWAYS and not node.can('appliance'))   # heavy: only by --pick
     while True:
         names = {*ALWAYS, *rng.sample(rest, BUILD_SIZE - len(ALWAYS))}
         chosen = [everything[n] for n in names]

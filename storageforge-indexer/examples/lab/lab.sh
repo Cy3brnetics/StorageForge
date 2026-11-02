@@ -8,8 +8,9 @@
 #   lab.sh reset          return every VM to the golden snapshot
 #   lab.sh snapshot       retake the golden snapshot from the current state
 #   lab.sh test           check the running lab against what it should hold
-#   lab.sh test --all     tiers 0-5, resetting around them, and write the report into reports/. Takes a while.
+#   lab.sh test --all     tiers 0-8, resetting around them, and write the report into reports/. Takes a while.
 #   lab.sh gauntlet       tier 2 alone: every deploy path on every VM, from golden and back
+#   lab.sh appliances     tier 8 alone: Proxmox, TrueNAS and XCP-ng, when the build has them
 #   lab.sh controller     rebuild StorageForge from this tree and restart it on sf-ctl, keeping its data
 #   lab.sh demo           reset, then scan every host and deploy shares, jobs and an alert through StorageForge
 #   lab.sh status [--json]
@@ -20,25 +21,30 @@ set -euo pipefail
 
 export LIBVIRT_DEFAULT_URI=qemu:///system
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
-LAB_DIR=${SFLAB_DIR:-/mnt/ssd/Data/KVM/sflab}
+# SFLAB_INSTANCE=N (1-9) is a second lab beside the first, with nothing shared but the base images: its own network, pool,
+# state and VM tag, so its `down` can't touch the first. Two labs can't both hold a config, since VM names are libvirt's.
+INSTANCE=${SFLAB_INSTANCE:-}
+case $INSTANCE in ''|[1-9]) ;; *) echo 'lab: SFLAB_INSTANCE must be 1-9' >&2; exit 1 ;; esac
+LAB_DIR=${SFLAB_DIR:-/mnt/ssd/Data/KVM/sflab$INSTANCE}
 IMG_DIR=${SFLAB_IMAGES:-/mnt/ssd/Data/KVM/sflab-images}
-STATE=${XDG_STATE_HOME:-$HOME/.local/state}/sflab
-LOCK=${XDG_RUNTIME_DIR:-/tmp}/sflab-$(id -u).lock
-NET=sflab
-BRIDGE=sflab0
-PREFIX=10.77.0
-POOL=sflab
+STATE=${XDG_STATE_HOME:-$HOME/.local/state}/sflab$INSTANCE
+LOCK=${XDG_RUNTIME_DIR:-/tmp}/sflab$INSTANCE-$(id -u).lock
+NET=sflab$INSTANCE
+BRIDGE=sflab${INSTANCE:-0}
+PREFIX=10.$((77 + ${INSTANCE:-0})).0
+POOL=sflab$INSTANCE
 MARKER=.sflab-lab                     # `down` deletes a folder only if this file is in it
-META_URI=https://storageforge.invalid/sflab
+META_URI=https://storageforge.invalid/sflab$INSTANCE
+export SFLAB_PREFIX=$PREFIX SFLAB_STATE=$STATE SFLAB_META=$META_URI
 DISK_NEEDED_GB=30
 WAIT_SECS=1200
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'lab: %s\n' "$*" >&2; exit 1; }
-pool_rows() { grep -vE '^\s*(#|$)' "$HERE/nodes.conf"; }
+pool_rows() { grep -vE '^\s*(#|$)' "$HERE/nodes.conf" | sed "s/|10\.77\.0\./|$PREFIX./"; }
 selection() { cut -d' ' -f2- "$STATE/selection" 2>/dev/null | tr ' ' '\n'; }
 nodes() { if [ -f "$STATE/selection" ]; then pool_rows | grep -E "^($(selection | paste -sd'|'))\|"; else pool_rows; fi; }
-field() { awk -F'|' -v k="$1" -v f="$2" '$1==k {print $f}' "$HERE/nodes.conf"; }
+field() { pool_rows | awk -F'|' -v k="$1" -v f="$2" '$1==k {print $f}'; }
 is_node() { pool_rows | cut -d'|' -f1 | grep -qx -- "$1"; }
 
 # Only a VM carrying our metadata tag is ever stopped or removed.
@@ -157,6 +163,11 @@ create_node() {
   local n=$1 image osinfo vcpu ram root ip disks base seed i=0 d
   IFS='|' read -r _ image osinfo vcpu ram root ip disks < <(pool_rows | awk -F'|' -v k="$n" '$1==k')
   base=$(image_path "$image")
+  case $image in
+    proxmox|truenas|xcp-ng)    # installers, not cloud images: see provision/appliance.py
+      python3 "$HERE/provision/appliance.py" "$image" "$n" "$ip" "$NET" "$LAB_DIR" "$base" "$STATE/id_ed25519.pub" "$STATE/admin-password" "$root" "$ram" "$vcpu" "$disks" || die "$n: install failed"
+      return ;;
+  esac
   local rootdisk="$LAB_DIR/$n-root.qcow2" fmt
   fmt=$(qemu-img info "$base" | sed -n 's/^file format: //p' | head -1)
   qemu-img create -q -f qcow2 -F "$fmt" -b "$base" "$rootdisk" "${root}G"
@@ -197,6 +208,11 @@ wait_ready() {   # the first boot's cloud-init finished, and sudo works
   local n=$1 until=$((SECONDS + WAIT_SECS)) rc
   while [ $SECONDS -lt $until ]; do
     if lab_ssh "$n" true 2>/dev/null; then
+      if ! lab_ssh "$n" 'command -v cloud-init' >/dev/null 2>&1; then   # an appliance: appliance.py finished setting it up
+        lab_ssh "$n" 'sudo -n true' || { say "$n: sudo does not work for lab"; return 1; }
+        say "$n: ready"
+        return 0
+      fi
       # through sudo once it works: some distros stop a plain user reading cloud-init's runtime files
       rc=0; lab_ssh "$n" 'if sudo -n true 2>/dev/null; then sudo -n cloud-init status --wait; else cloud-init status --wait; fi >/dev/null 2>&1' || rc=$?
       case $rc in
@@ -452,13 +468,23 @@ cmd_ssh() {
   ssh -i "$STATE/id_ed25519" -o UserKnownHostsFile="$STATE/known_hosts" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -o ConnectTimeout=10 "lab@$(field "$n" 7)" "$@"
 }
 
+ensure_venv() {
+  # installed, not from source: password logins need its storageforge-askpass program
+  [ -x "$STATE/venv/bin/storageforge-askpass" ] || { python3 -m venv "$STATE/venv" && "$STATE/venv/bin/pip" install -q -e "$HERE/../.." ; } || die 'could not install StorageForge for the tests'
+}
+
+cmd_appliances() {    # tier 8, on a throwaway database. It needs no sf-ctl, so it also runs in a lab of appliances alone.
+  [ -f "$STATE/id_ed25519" ] || die 'no lab is running: use up'
+  ensure_venv
+  "$STATE/venv/bin/python" "$HERE/../../tests/lab/tiers.py" run 8
+}
+
 cmd_gauntlet() {
   [ -f "$STATE/id_ed25519" ] || die 'no lab is running: use up'
-  # installed, not from source: password logins need its storageforge-askpass program
-  [ -x "$STATE/venv/bin/storageforge-askpass" ] || { python3 -m venv "$STATE/venv" && "$STATE/venv/bin/pip" install -q -e "$HERE/../.." ; } || die 'could not install StorageForge for the gauntlet'
+  ensure_venv
   cmd_reset
   local rc=0
-  SFLAB_STATE="$STATE" "$STATE/venv/bin/python" "$HERE/../../tests/lab/gauntlet.py" "$@" || rc=$?
+  "$STATE/venv/bin/python" "$HERE/../../tests/lab/gauntlet.py" "$@" || rc=$?
   cmd_reset
   return $rc
 }
@@ -469,10 +495,14 @@ cmd_test_all() {
   export SFLAB_STATE="$STATE"
   rm -rf "$STATE/results" "$STATE/gauntlet.json"
   cmd_reset
-  for t in 0 1 2 3 4 5 6 7; do
+  for t in 0 1 2 3 4 5 6 7 8; do
     say "== tier $t =="
     [ "$t" = 0 ] || [ "$t" = 2 ] || cmd_reset
-    if [ "$t" = 2 ]; then cmd_gauntlet || true; else python3 "$tiers" run "$t" || true; fi     # the report decides, knowing what is known
+    case $t in    # the report decides, knowing what is known
+      2) cmd_gauntlet || true ;;
+      8) cmd_appliances || true ;;
+      *) python3 "$tiers" run "$t" || true ;;
+    esac
   done
   cmd_reset
   python3 "$tiers" report || rc=1
@@ -483,7 +513,7 @@ cmd_test() {
   [ -f "$STATE/id_ed25519" ] || die 'no lab is running: use up'
   [ "${1:-}" != --all ] || { cmd_test_all; return; }
   cd "$HERE/../.."
-  SFLAB_STATE="$STATE" python3 -m unittest discover -s tests/lab -v
+  python3 -m unittest discover -s tests/lab -v
 }
 
 cmd_controller() {
@@ -495,7 +525,7 @@ cmd_controller() {
 cmd_demo() {
   [ -f "$STATE/id_ed25519" ] || die 'no lab is running: use up'
   cmd_reset
-  SFLAB_STATE="$STATE" python3 "$HERE/demo.py"
+  python3 "$HERE/demo.py"
 }
 
 cmd_install_launcher() {
@@ -523,9 +553,10 @@ case ${1:-} in
   ssh) shift; cmd_ssh "$@" ;;
   test) shift; lock; cmd_test "$@" ;;
   gauntlet) shift; lock; cmd_gauntlet "$@" ;;
+  appliances) lock; cmd_appliances ;;
   controller) lock; cmd_controller ;;
   demo) lock; cmd_demo ;;
   images) mapfile -t all < <(pool_rows | cut -d'|' -f1); ensure_images "${all[@]}" ;;
   install-launcher) cmd_install_launcher ;;
-  *) sed -n '2,18p' "$0" | sed 's/^# \?//'; exit 2 ;;
+  *) sed -n '2,19p' "$0" | sed 's/^# \?//'; exit 2 ;;
 esac

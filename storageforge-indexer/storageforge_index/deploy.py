@@ -33,7 +33,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from .db import Database
 from .moves import host_slug
-from .remote import RemoteError, Transport, child_env
+from .remote import REFUSE_APPLIANCE, RemoteError, Transport, child_env
 from .runner import connect_address, ephemeral_agent, known_hosts_path
 from .vault import AuditLog, NoBinding, Vault, VaultError, actor_name
 
@@ -179,6 +179,7 @@ RUNNER_UPDATE = ('#!/bin/bash\n'
                  'umask 022\n')         # an older runner still in charge of this very run leaves 077
 
 SETUP = r"""set -eu
+%(refuse)s
 U=%(user)s
 HOME_DIR=/var/lib/storageforge/deploy
 command -v ssh-keygen >/dev/null 2>&1 || { echo "ssh-keygen is missing: install openssh-client" >&2; exit 3; }
@@ -242,7 +243,7 @@ echo "deploy access removed (installed jobs keep running on their timers; remove
 
 
 def setup_script(signer_pub: str, deploy_pub: str) -> str:
-    return SETUP % {'user': DEPLOY_USER, 'signer': shlex.quote(' '.join(signer_pub.split()[:2])),
+    return SETUP % {'refuse': REFUSE_APPLIANCE, 'user': DEPLOY_USER, 'signer': shlex.quote(' '.join(signer_pub.split()[:2])),
                     'deploy': shlex.quote(' '.join(deploy_pub.split()[:2]) + ' storageforge:deploy'),
                     'runner': RUNNER_SCRIPT, 'runner_path': RUNNER, 'job_path': JOBBIN}
 

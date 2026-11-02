@@ -7,7 +7,7 @@ examples/lab/lab.sh install-launcher   # adds "StorageForge Lab" to the desktop 
 examples/lab/lab.sh up                 # pick and build 7: about 5 minutes with base images cached
 examples/lab/lab.sh up --seed 500277455   # the same 7 as an earlier build
 examples/lab/lab.sh up --pick sf-ctl,sf-fedora,sf-arch   # exactly these configs
-examples/lab/lab.sh test --all         # tiers 0-7 and a report: about 30 minutes
+examples/lab/lab.sh test --all         # tiers 0-8 and a report: about 30 minutes
 examples/lab/lab.sh down               # remove it all
 ```
 
@@ -32,6 +32,27 @@ Every build has `sf-ctl` and `sf-alpine`, the only config without systemd, plus 
 | `sf-alma10` | AlmaLinux 10 | LVM on LUKS, with ext4 and XFS |
 | `sf-alpine` | Alpine 3.24 | vfat and exFAT, OpenRC |
 
+## Appliances
+
+Three more configs install from their vendors' ISOs, with nobody at the console. They need more memory and a larger download, so only `--pick` builds them:
+
+| Config | System | Storage | RAM |
+| :--- | :--- | :--- | :--- |
+| `sf-pve` | Proxmox VE 9.2 | LVM thin root, ZFS mirror `tank` registered as guest storage | 2 GB |
+| `sf-truenas` | TrueNAS 25.10 | ZFS mirror `tank` | 4 GB |
+| `sf-xcp` | XCP-ng 8.3, nested Xen | Local ext storage repository | 3 GB |
+
+```bash
+examples/lab/lab.sh up --pick sf-pve,sf-truenas,sf-xcp,sf-bookworm
+examples/lab/lab.sh appliances
+```
+
+`provision/appliance.py` drives each installer: Proxmox's answer file in a container, XCP-ng's inside its initrd, and TrueNAS's own install function over the serial console, then its API. `sf-pve` gets the no-subscription repository and `sudo`, as [Proxmox needs](appliances.md#proxmox-ve). XCP-ng needs nested virtualization on the libvirt host.
+
+To run a lab beside one already running, set `SFLAB_INSTANCE=1`, up to 9. It has its own network (10.78.0.0/24 for 1), pool, state and VM tag, so its `down` can't touch the other. Only the base images are shared. Two labs can't hold the same config, because libvirt names VMs. The panel only drives the first lab.
+
+The build above ran on 2026-11-01 with the work uncommitted, as instance 1 beside another lab: tiers 0, 2 and 8 passed, with tier 2 at 98 passed, 0 failed. Tier 2 ran NFS, SMB, jobs, tasks, change plans, drift and removal on `sf-pve` against `sf-bookworm`. It didn't run with `sf-ctl`, so tiers 1 and 3 to 7 haven't run against an appliance.
+
 ## Test tiers
 
 | Tier | File | Checks |
@@ -44,8 +65,9 @@ Every build has `sf-ctl` and `sf-alpine`, the only config without systemd, plus 
 | 5: Btrfs | `tests/lab/tiers.py` | Profiles and child subvolumes through a real scan, reflinks, no-copy-on-write, plan tasks, full and incremental sends between hosts, a broken receive, adding a device, converting a profile, a full disk, a read-only filesystem and a pulled disk |
 | 6: Sync engine | `tests/lab/tiers.py` | Routes with one pinned host key, a route lost during a run, dedup and reflinks, the volume lock, btrfs and ZFS snapshot streams, the room check and duperemove, between real hosts |
 | 7: Remote nodes | `tests/lab/tiers.py` | The tunnel container, and hosts that can't be dialled: the install script, adopting, signed deploys and scans through the tunnel, reconnecting, what a stolen key can't do, revoking and removal |
+| 8: Appliances | `tests/lab/tiers.py` | Proxmox, TrueNAS and XCP-ng, when the build has them: a scan as an ordinary user, the platform it finds, whether deploys are allowed, ZFS pools, and XCP-ng's storage repository before and after scan access |
 
-`lab.sh test --all`, or **Full test** in the panel, runs tiers 0 to 7, resets the lab around the tiers that change VMs, and writes `reports/lab-<date>.md` with a table per distro. Reports aren't committed. Tiers 1, 3, 4 and 5 run against the real Docker stack on `sf-ctl` through its API. Tier 2 runs on the libvirt host, on a throwaway database. `lab.sh gauntlet` runs tier 2 alone.
+`lab.sh test --all`, or **Full test** in the panel, runs tiers 0 to 8, resets the lab around the tiers that change VMs, and writes `reports/lab-<date>.md` with a table per distro. Reports aren't committed. Tiers 1, 3, 4 and 5 run against the real Docker stack on `sf-ctl` through its API. Tiers 2 and 8 run on the libvirt host, on a throwaway database. `lab.sh gauntlet` runs tier 2 alone and `lab.sh appliances` runs tier 8 alone.
 
 A check listed in `KNOWN` in `tiers.py` still fails, but shows as `known` and doesn't fail the run. In tiers 1, 3, 4 and 5, it shows as `fixed?` once it starts passing, which means the line should go.
 

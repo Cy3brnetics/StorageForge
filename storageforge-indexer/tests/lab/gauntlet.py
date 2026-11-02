@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 LAB_DIR = ROOT / 'examples' / 'lab'
 LAB = str(LAB_DIR / 'lab.sh')
 STATE = Path(os.environ.get('SFLAB_STATE', Path.home() / '.local' / 'state' / 'sflab'))
+LAB_NET = os.environ.get('SFLAB_PREFIX', '10.77.0') + '.0/24'
 ACTOR = 'gauntlet'
 STAGES = ('scan', 'scan-access', 'deploy-access', 'doctor', 'shares', 'jobs', 'changes', 'tasks', 'drift', 'engine', 'remove')
 # Deploys can't run on Alpine: it has no bash, systemd or known package manager. It must say so instead of breaking.
@@ -59,7 +60,7 @@ BUILD = roles.build()
 NODES = {n.name: n.ip for n in BUILD.values()}
 VMS = list(NODES)
 HOSTS = roles.deployable()          # takes hosts in order, each passing data to the next
-UNSUPPORTED = {n.name for n in roles.having('nosystemd')}
+UNSUPPORTED = {n.name for n in roles.having('nosystemd') + roles.having('truenas') + roles.having('xen')}
 
 
 def after(i):
@@ -236,6 +237,12 @@ def stage_scan_access():
             continue
 
         def run(vm=vm, ip=ip):
+            if BUILD[vm].can('truenas'):
+                try:
+                    access.grant(db, main_conn, ip, PASSWORD, 'sfadmin', admin_key='lab-admin')
+                except Exception as exc:
+                    return R.add('scan-access', vm, 'read-only' in str(exc), f'refused: {str(exc)[:120]}')
+                return R.add('scan-access', vm, False, 'set up on a read-only system')
             r = access.grant(db, main_conn, ip, PASSWORD, 'sfadmin', admin_key='lab-admin')
             have = raw(vm, 'sudo -n -u scan /usr/local/lib/storageforge/find /root -maxdepth 0')
             R.add('scan-access', vm, have.returncode == 0, r['output'].splitlines()[-1][:120] if r.get('output') else '', r.get('output', ''))
@@ -262,7 +269,7 @@ def stage_deploy_access():
                 R.add('deploy-access', vm, ok, r['state'], r['output'])
         except Exception as exc:
             if vm in UNSUPPORTED:
-                good = any(w in str(exc) for w in ('bash', 'systemd'))
+                good = any(w in str(exc) for w in ('bash', 'systemd', 'nothing can be deployed'))
                 R.add('deploy-access', vm, good, f'refused: {str(exc)[:150]}', traceback.format_exc() if not good else '')
             else:
                 R.add('deploy-access', vm, False, f'{type(exc).__name__}: {str(exc)[:150]}', traceback.format_exc())
@@ -313,7 +320,7 @@ def stage_shares():
     servers = [s for s in SHARES if s[0] in READY]
     for srv, folder, _, clients in servers:
         R.check('shares', srv, lambda srv=srv, folder=folder, clients=clients: shares.save_export(
-            db, conn, NAME[srv], {'protocol': 'NFSv4.2', 'path': folder, 'rules': [{'clients': '10.77.0.0/24', 'options': NFS_RW}],
+            db, conn, NAME[srv], {'protocol': 'NFSv4.2', 'path': folder, 'rules': [{'clients': LAB_NET, 'options': NFS_RW}],
                                   'mounts': [{'host': NAME[c], 'path': p} for c, p in clients if c in READY]}, None, ACTOR))
         chk = R.check('shares', srv, lambda srv=srv: shares.check(conn, NAME[srv]))
         for x in (chk or {}).get('items', []):
@@ -364,7 +371,7 @@ def stage_shares():
     if srv in READY and client in READY:
         def smb():
             sh(client, f'sudo -n mkdir -p /etc/samba/credentials && printf "username=sfadmin\\npassword=labpw\\n" | sudo -n tee /etc/samba/credentials/{deploy.host_slug(NAME[srv])}-fsmb >/dev/null; sudo -n chmod 600 /etc/samba/credentials/{deploy.host_slug(NAME[srv])}-fsmb')
-            shares.save_export(db, conn, NAME[srv], {'protocol': 'SMB3', 'name': 'fsmb', 'path': smb_dir, 'clients': '10.77.0.0/24 sfadmin',
+            shares.save_export(db, conn, NAME[srv], {'protocol': 'SMB3', 'name': 'fsmb', 'path': smb_dir, 'clients': f'{LAB_NET} sfadmin',
                                                      'mounts': [{'host': NAME[client], 'path': '/mnt/sf/fedora-smb'}]}, None, ACTOR)
             server_only = [i for i in shares.deploy_items(db, conn, NAME[srv], 'apply', ACTOR) if i['host'] == NAME[srv]]
             report_runs('smb-server', execute(server_only, 'apply'), want=('ok', 'incomplete'))     # it reports the account it can't make
@@ -612,7 +619,7 @@ def stage_engine():
     gid = engine.start(db, items, ACTOR, title='parallel report', kind='probe', ref='parallel', mode='report')
     runs = wait_group(gid)
     took = time.time() - t
-    R.add('engine', '-', all(r['status'] == 'ok' for r in runs) and took < 6 * len(ready) / 2,
+    R.add('engine', '-', all(r['status'] == 'ok' for r in runs) and took < 6 * max(len(ready) / 2, 1.5),   # one at a time, two hosts would take 12 s
           f'{len(ready)} hosts, 6 s each, took {took:.0f} s')
     # cancel: a queued host never starts, a running one is stopped
     items = [{'host': NAME[v], 'kind': 'probe', 'ref': 'cancel', 'mode': 'apply', 'script': 'sleep 60; echo finished\n', 'phase': i} for i, v in enumerate(ready[:2])]

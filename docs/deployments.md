@@ -46,6 +46,7 @@ The setup creates the `storageforge-deploy` system user (no password, root-owned
 | `changes` | change plan id | each host in the plan | `changes-<plan>.sh` | `--apply`, plus `--destructive` when asked |
 | `tasks` | task id | the task's host (and its previous host, to uninstall) | dry run | `--install`; `run: true` runs once; `remove: true` uninstalls |
 | `schedules` | schedule id | the scheduled task's host | dry run (`--report`) | install client runner, config, cron file; `run: true` runs once; `remove: true` uninstalls |
+| `updates` | `all`, or one host | every host set up for deploys, side by side | refresh the package lists and list what would be installed | install it with the host's package manager |
 
 Scans record each host's package manager (apt, dnf, yum, zypper or pacman) and whether it has the NFS server (`exportfs`), Samba (`smbd`), the client mount helpers (`mount.nfs`, `mount.cifs`), `rsync` and `rsnapshot`. The share check uses this to say what a deploy would install, such as `the deploy installs nfs-kernel-server with apt-get`. A host that lacks a program and has no known package manager is a critical problem: install the program by hand and rescan. When the deploy runs, the script looks again on the host itself, and installs what is missing at that moment with the package manager it finds. A failed install is a conflict that shows the package manager's last lines and fails that host.
 
@@ -58,6 +59,29 @@ The report runs first on every host. Apply stops at the first host that fails. E
 - **Retry:** If a deploy fails, is cancelled, or finishes incompletely, **Retry failed hosts** (`POST /api/deploy/groups/<id>/retry`) re-runs only the unfinished hosts with fresh keys.
 - **Stale dry run protection:** Applying from a report checks that the plan has not changed since the dry run was inspected (`report_group`). If modified, Apply refuses with code 409 so changes are reviewed before running.
 - **Scan confirmation & log capture:** Scans read completion records written by the runner (`/var/lib/storageforge/run/runs.jsonl`) and storage tasks (`/var/lib/storageforge/tasks/`). A scan matches nonces to confirm actual execution results on the host. If a script or scheduled task failed, a signed read-only log fetch runs automatically over deploy access (once per problem) to retrieve journal and runner logs.
+
+## System updates
+
+**Deploy > System updates** updates hosts' operating system packages. **Update all hosts** installs every pending update on every host set up for deploys, and **Check for updates** only reports them. Each host also has its own **Update** button. Starting one needs `deploy.apply` (`deploy.report` for a check) and a password typed in the last 5 minutes, like any other deploy.
+
+| Manager | Update | How it is counted |
+| :--- | :--- | :--- |
+| apt | `upgrade --with-new-pkgs`; `dist-upgrade` on Proxmox | simulated run |
+| dnf, yum | `upgrade` | `check-update` |
+| zypper | `update`; `dist-upgrade` on Tumbleweed | `list-updates` |
+| pacman | `-Syu` | `checkupdates`, from pacman-contrib. Without it the count is unknown, because `-Sy` alone risks a partial upgrade |
+
+What it does differently from other deploys, and what to expect:
+
+- **One host failing stops none of the others.** Up to 16 hosts run at once. **Retry failed hosts** runs only the ones that did not finish.
+- **It never reboots.** Hosts waiting for a reboot are marked in the list.
+- **Local config files are kept.** On apt, an upgrade keeps your version of a changed config file. Other managers keep theirs or save the new one beside it, as they do by default.
+- **Services can restart.** Package scripts restart their own services, so a Docker or Samba update interrupts what is using them. Updating the host StorageForge itself runs on can restart StorageForge and end the run's tracking, so update that host separately.
+- **Running jobs are not waited for.** Pause or finish a long backup on a host before updating it.
+- **Losing the connection does not stop the package manager.** It runs detached on the host, so Cancel, Force stop and network failures leave it to finish. The run then shows as stopped: **Check for updates** shows where the host ended up.
+- **Appliances are left out.** TrueNAS, XCP-ng and XenServer are listed as unable to update and skipped. Proxmox is updated, and a host with its paid repository on fails at the refresh, with what to change.
+
+Nothing new is stored: the list reads each host's last `updates` run from `deploy_runs`.
 
 ## Existing rsnapshot and snapper jobs
 

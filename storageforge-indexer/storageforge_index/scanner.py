@@ -89,10 +89,15 @@ class JobResult:
     diff: DiffStats | None = None
 
 
+XEN_SR_MOUNTS = '/run/sr-mount'    # where XCP-ng and XenServer keep guest disks: under /run, but real storage
+
+
 def skip_reason(m: MountInfo, opts: ScanOptions) -> str | None:
     fs = m.fstype
     if fs in opts.include_fstypes:
         return None
+    if m.target == '/etc/pve' and fs == 'fuse':
+        return "Proxmox's cluster configuration, not storage"
     if m.target.endswith('/containers/storage/overlay'):     # Podman binds it over itself: image layers, closed to others
         return 'container image layers'
     if fs in PSEUDO_FS or fs.startswith('cgroup') or (fs.startswith('fuse.') and fs not in NETWORK_FS and fs != 'fuse.mergerfs'):
@@ -127,7 +132,7 @@ def plan_mounts(mounts: list[MountInfo], opts: ScanOptions) -> list[MountPlan]:
     # Broadest filesystem root first, so a bind of a subdirectory is recognised as an alias.
     for m in sorted(mounts, key=lambda m: (len(m.fsroot or '/'), len(m.target))):
         why = skip_reason(m, opts)
-        if why is None and any(is_under(m.target, p) for p in opts.exclude_paths):
+        if why is None and any(is_under(m.target, p) for p in opts.exclude_paths) and not is_under(m.target, XEN_SR_MOUNTS):
             why = 'excluded path'
         if why:
             plans.append(MountPlan(m, 'skip', why))

@@ -5,6 +5,8 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Fixed
+- **Lab reports include tiers 6 and 7.** They ran, but a failure there never reached the report or its result.
+- **Scans find ZFS pools and LVM volumes as an ordinary user on Debian-based hosts.** `zpool` and `lvs` were off that user's `PATH`, so pools came back empty with no error.
 - **Retiring a remote node's host cuts its tunnel.** Its key stayed authorized, and the machine kept its address on this server.
 - **Snapshot discovery passes over a capability `find` that cannot run**, instead of reporting no snapshots.
 - **Plain HTTP tells ports apart.** Browsers send no `Sec-Fetch-Site` there, so a page on another port of the same host could post with the session cookie.
@@ -14,7 +16,10 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 - **Remote node addresses** run out with an error at 65535 instead of wrapping onto node 1's.
 
 ### Added
+- **One-click system updates.** **Deploy > System updates** installs operating system updates on every host set up for deploys at once, with apt, dnf, yum, zypper or pacman, and shows what is pending and which hosts wait for a reboot. It never reboots, keeps local config files, and skips TrueNAS, XCP-ng and XenServer. See [Deployments](docs/deployments.md#system-updates).
 - **Rebuilding onto new disks.** The planner builds a btrfs pool of several devices in one plan, ZFS pools and datasets get back the properties set on them, and [Disaster recovery](docs/disaster-recovery.md#rebuild-onto-new-drives) gives the order to do it in. Found by a drill that wiped two of three hosts.
+- **Proxmox, TrueNAS and XCP-ng.** Scans recognise them. Deploys work on Proxmox, and on TrueNAS, XCP-ng and XenServer they are refused before anything changes, because an upgrade replaces those systems. Scans index XCP-ng's storage repositories, skip Proxmox's `/etc/pve`, and warn when Proxmox's paid repository would stop package installs. See [Proxmox, TrueNAS and XCP-ng](docs/appliances.md).
+- **Appliances in the lab.** `sf-pve`, `sf-truenas` and `sf-xcp` install unattended from vendor ISOs, by `--pick`, with a new tier 8. `SFLAB_INSTANCE` runs a second lab beside the first.
 - **A warning when sudo takes no password.** Deploy access and scan access setup check for passwordless sudo first. When the account has it, the result says the password you typed was not checked, and, when the scan user's own sudo was used, that its scan key has full root on that host. The audit log records it too.
 - **Sites and reset, for moving to a new client.** A database now knows which site it is: the name shows in the web UI, and `restore` refuses another site's backup, because a backup holds that site's SSH keys. `reset --site-name NAME` puts the old site in an archive outside the new site's reach and starts over with a new database, vault and vault secret. It refuses while a server runs, while jobs or deploy access remain on the old machines (`--abandon-deployed` overrides), or while `./keys` still holds keys.
 - **Several sites on one machine.** `docker/sf-site` makes and runs one isolated compose stack per client, each with its own database, vault, secrets, certificate, port and network. `sf-site audit` reports keys and machines shared between sites, a key another site uses is refused on import, and sharing raises an alert.

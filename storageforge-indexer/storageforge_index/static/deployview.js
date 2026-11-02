@@ -102,6 +102,7 @@ async function pollGroup() {
   } catch (err) { g.error = err.message; g.done = true; }
   renderGroup();
   if (!g.done) DP.poll = setTimeout(pollGroup, 1000);
+  else if (g.kind === 'updates' && g.mode === 'report') loadDeploy();     // the System updates list shows what the check found
   else if (g.mode === 'apply') {
     loadDeploy();
     if (g.error) return;
@@ -373,6 +374,35 @@ function removeAccess(host) {
   setupForm(host, true);
 }
 
+/* ── system updates ─────────────────────────────────────────────── */
+function updatePill(u) {
+  if (u.blocked) return text('span', 'cannot update', 'pill unknown');
+  if (['running', 'queued'].includes(u.status)) return text('span', u.status, 'pill local-only');
+  if (u.status && !['ok', 'incomplete'].includes(u.status)) return text('span', u.status, 'pill broken');
+  if (u.pending === null) return text('span', u.status ? 'count unknown' : 'not checked', 'pill unknown');
+  return u.pending ? text('span', `${u.pending} update${u.pending === 1 ? '' : 's'}`, 'pill local-only') : text('span', 'up to date', 'pill protected');
+}
+function updatesSection(d) {
+  const rows = d.updates || [], able = rows.filter((u) => !u.blocked);
+  const running = (d.groups || []).some((g) => g.kind === 'updates' && g.state === 'running');
+  const updateAll = button(`Update all ${able.length} host${able.length === 1 ? '' : 's'}`, () => {
+    if (confirm(`Install all system updates on ${able.length} host${able.length === 1 ? '' : 's'} now? Services whose packages change may restart. Nothing reboots.`)) startDeploy('updates', 'all', 'apply', 'system updates on all hosts');
+  }, 'btn pri sm');
+  const check = button('Check for updates', () => startDeploy('updates', 'all', 'report', 'system updates on all hosts'), 'btn sm');
+  updateAll.disabled = check.disabled = running || !able.length;
+  return el('section', { class: 'stack' },
+    el('div', { class: 'row wrap' }, el('h3', {}, 'System updates'), el('span', { class: 'row tools' }, check, updateAll)),
+    text('p', 'Runs each host\'s own package manager, on every host at once. One host failing does not stop the others, local config files are kept, and nothing reboots: hosts that need it are marked here.', 'muted small'),
+    rows.length ? el('ul', { class: 'dklist' }, ...rows.map((u) => el('li', {}, el('div', { class: 'row wrap' }, el('b', { class: 'mono' }, u.host), updatePill(u),
+      u.reboot ? text('span', 'reboot waiting', 'pill local-only') : '',
+      text('span', u.blocked || [u.manager, u.checked_at ? `checked ${when(u.checked_at)}` : '', u.updated_at ? `updated ${when(u.updated_at)}` : ''].filter(Boolean).join(' · '), 'muted small'),
+      el('span', { class: 'row tools' }, u.group ? button('Output', () => openGroup(u.group), 'btn ghost sm') : '',
+        u.blocked ? '' : button('Update', () => {
+          if (confirm(`Install all system updates on ${u.host} now? Services whose packages change may restart. Nothing reboots.`)) startDeploy('updates', u.host, 'apply', `system updates on ${u.host}`);
+        }, 'btn ghost sm'))))))
+      : text('p', 'No hosts are set up for deploys yet: set one up under Deploy access.', 'muted small'));
+}
+
 /* ── jobs ───────────────────────────────────────────────────────── */
 async function jobAction(j, verb) {
   if (verb === 'cutover' && !confirm(`Cut over ${j.name}? The source is renamed to *.migrated-<date> after a clean verify.`)) return;
@@ -577,6 +607,7 @@ function renderDeploy() {
         { label: 'Deploy history', run: () => showHistory(a.host) }, { label: 'Copy hostname', run: () => copyText(a.host) }];
       return li;
     }))));
+  parts.push(updatesSection(d));
   // jobs by plan
   const byPlan = new Map();
   for (const j of d.jobs.filter((x) => !x.imported)) { if (!byPlan.has(j.plan_id)) byPlan.set(j.plan_id, []); byPlan.get(j.plan_id).push(j); }
