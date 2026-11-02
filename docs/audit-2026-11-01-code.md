@@ -115,3 +115,61 @@ Things specifically looked at because they smelled risky, and found correct:
 ## How this was checked
 
 Static read plus small Python repros for anything claimed as confirmed (B1's was run; B2, B3 are confirmed by reading the single code path involved; B4–B7 are plausible-to-likely but were not exercised against a live host). No code was changed by the audit itself. All findings above were fixed afterwards. B4 to B7 were rechecked first, which is where the B6 correction comes from.
+
+## Second pass: what the first one missed
+
+After B1 to B7 and N1 to N4 were fixed, the modules the first pass skipped were read: `shares`, `jobscript`, `schedscript`, `scriptkit`, `syncindex`, `retire`, `reset`, `preflight`, `confirm`, `routes_git`, `hostkeys`, `keyinstall`, `access`, `remotes`, `snapfind`, `snapjobs`, `authkeys`, `site`, `protection`, `blueprint`, `fromdesign`, `analysis`, `folders`, `hostconfig`, `reinstall`, `gitrepos`, the first part of `docker`, `health` and `filemap`, part of `payloads` and `graph`, and the rest of `tasks` and `moves`. **None of these are fixed yet.**
+
+| # | Area | Finding | Severity | Evidence |
+| :--- | :--- | :--- | :--- | :--- |
+| M1 | Move scripts | A failed copy reports success | **High** | Ran it |
+| M2 | Deploys | A saved host check blocks every deploy to that host after 5 minutes | **High** | Ran the check function |
+| M3 | Alerts | Schedules with uneven gaps raise false "stale" alerts | Medium | Ran it |
+| M4 | Scans | A scan during a long deploy marks it failed, then waits for it | Medium | Ran the status change; the wait is from reading |
+| M5 | Scans | Failed log fetches trigger more log fetches | Medium | Ran it with a stubbed run |
+| M6 | Retire | Retiring a host can delete another host's key binding | Low | Ran it |
+| M7 | Retire and reset | Retiring leaves `deploy_access`, which then blocks `reset` | Low | Ran it |
+| M8 | Alerts | A mistyped scan leaves an alert for up to 90 days | Low | Ran it |
+| M9 | Schedules | A command schedule's script is world-readable on its host | Low | Read |
+| M10 | Tasks | Failed rotating backups leave `.partial` folders that are never removed | Low | Read |
+| M11 | Shares | Substring matches misread share options | Low | Ran two of three |
+| M12 | Planner | A logical volume sized in bytes makes a change plan unsaveable | Low | Ran it |
+| M13 | Git | Repositories with non-UTF-8 paths have the same escaped-name problem as B6 | Low | Read |
+
+**M1. Move scripts report failed copies as success.** The main loop runs `run_step "$i" || true`, and Bash ignores `set -e` inside anything called that way. So when `rsync` fails, `run_step` carries on, writes `$STATE/$i.done` and prints `ok copied`. Run against a missing source, the script printed rsync's code 23, then `ok copied` and `done`, wrote `0.done`, and exited 0. The Moves page reads that file as progress. A schedule of type `move` runs this same script with `--run`, and `verify_run` looks for text the script never prints, so a failed scheduled move counts as a good run. Git steps have the same shape. `cutover_step` does too: if `mv` fails it goes on to `ln -s` and records the cutover. Deployed jobs use `storageforge-job` instead and aren't affected. *Fix:* check each command's exit status in those functions, as `verify_step` already does.
+
+**M2. A saved host check blocks deploys.** `preflight.save()` stores the probe's facts, including `clock`. `blockers()` later passes those stored facts to `findings()`, which compares the old `clock` with the current time. Once 300 seconds have passed, that reads as "its clock is N s off" at crit level, and `/api/deploy/start` and the schedule Run route refuse with 409. With a saved probe, 10 minutes later `blockers()` returned `its clock is 600 s off`. Checking again only clears it for another 5 minutes. Only hosts checked by a signed probe are affected, since a check from the last scan has no `clock`. This was run against the function, not through a live deploy. *Fix:* leave `clock` out of what `blockers()` judges, or compare it with `checked_at`.
+
+**M3. False "stale" alerts.** Both period estimates are wrong for schedules with uneven gaps, and an alert fires at twice the period plus an hour. `scheduler.period()` measures one gap only: `0 3 * * 1,2` reads as 1 day against a real 6-day gap, and `0 9 * * 1-5` as 1 day against a 3-day weekend, so both alert every week. `0 8,9 * * *` reads as 1 hour against a 23-hour gap, so it alerts daily. `jobs.period()` reads the shipped template **Monthly btrfs tidy** (`Sun *-*-01..07`) as weekly, so it alerts about two weeks after each run. *Fix:* use the longest gap over a longer sample; `next_run` can already produce one for cron, while systemd calendars need weekdays and date ranges parsed.
+
+**M4. A scan during a long deploy.** `confirm.ingest_runs()` marks any run older than 10 minutes as failed when the host's `runs.jsonl` has no line for its nonce, but the runner only writes that line when the run ends. So a scan during a long deploy marks it `failed` and `absent`. The run's own final save corrects the status later, but the UI shows a failure meanwhile. `fetch_problem_logs` then signs a log fetch for that host, which waits on the host lock, so the scan stalls until the deploy ends. *Fix:* skip runs that `engine.running()` or this process knows are live.
+
+**M5. Log fetches feeding themselves.** `fetch_problem_logs` looks at recent failed runs of every kind, including its own `log_fetch` runs. While signed runs keep failing on a host (clock skew, broken sudo), each scan adds another failed run to fetch logs for: with a stubbed failing run, four scans added four runs. It stops at 7 days old per run, but new ones keep replacing them. *Fix:* leave `kind = 'log_fetch'` out of the query.
+
+**M6. Retire and another host's binding.** `retire` deletes bindings matching the host's name, address or *self-reported* IP. Two sites behind NAT can report the same private address, and a remote node reports its LAN address, so retiring one can silently remove the scan binding of a different host at that address. `App.canonical` already treats the self-reported IP as untrustworthy. *Fix:* match only the name and `ssh_host`.
+
+**M7. Retire and `deploy_access`.** The row stays after a host is retired. It's hidden in the UI, since that list joins on `hosts`, but `reset` lists it as blocking, and there's nothing left to remove it from. Only `--abandon-deployed` gets past it. The refusal has some truth to it: the machine does still have the account, and `retire` never says so. *Fix:* report what stays on the machine at retire time, then drop the row.
+
+**M8. A mistyped scan's alert.** `scan_problems` raises `scan-failed` for the latest job of each name in `scan_jobs`, including names that are not hosts. `POST /api/scan` with a typo opens an alert that stays until `prune` removes the job after 90 days, and retire can't remove it because no such host exists.
+
+**M9. World-readable command scripts.** `generate_install_script` installs `task-<id>.sh` with mode 0755. The server masks a command schedule's text because it can hold secrets, and env values on the host are in a 0700 file, but the command itself can be read by any local user. It needs to be readable by `RUNAS`, so a root schedule could use 0700 and others a group.
+
+**M10. Rotating backups' `.partial` folders.** A failed `rotate` leaves `<stamp>.partial`. Later runs use a new stamp and the cleanup only matches finished names, so each failure can leave a folder behind for good.
+
+**M11. Substring matches on share options.** The script's `[[ ${E_OPTS[$i]} == *ro* ]]` makes an SMB share read-only for any option containing "ro". `id_check`'s `'all_squash' in options` accepts `no_all_squash` and says user IDs don't need to match, which was confirmed. `'crossmnt' in opts` accepts `nocrossmnt`.
+
+**M12. Planner logical volumes.** `fromdesign.lvm_volumes` passes `sizeBytes` straight through as a size. `changes.normalize` wants a unit, so `1073741824` is refused and the whole staged plan with it. Whether the planner page itself can produce such a volume wasn't checked.
+
+**M13. Non-UTF-8 repository paths.** `gitrepos.survey` sends stored escaped text as the path, as `checksum_pass` did before B6 was fixed, so such a repository shows as unreadable.
+
+### Checked and fine in this pass
+
+- **Planner HTML:** this page builds HTML from strings, and scan values skip `check_text`. Hostile disk models, serials, labels, mount paths and options were seeded into a throwaway server and opened in a real browser. Across all 8 views nothing became an element, and the values showed as plain text. The other pages use DOM APIs: a search found `innerHTML` used on data only in `planner.js`.
+- **`storageforge-job` serving:** the chrooted rsync daemon, job key limits, and the restore cleanup of setuid files and device nodes.
+- **`syncindex`:** paths from the other host are walked with `O_NOFOLLOW` and hashes are re-read before linking.
+- **Secrets:** docker and fstab redaction, and how `access.sudo_run` and `keyinstall` pass passwords.
+- **`snapjobs`:** script quoting, and the ownership check on configs before running them as root.
+
+### Still not audited
+
+`cli.py` beyond what is noted above, `report.py`, `reportextra.py`, `canvas.py`, the rest of `payloads.py` and `graph.py`, the rest of `filemap.py` and `health.py`, and the UI JavaScript beyond the injection check. The KVM lab tests and PostgreSQL were not run, so nothing here has been tried on a real remote host.
