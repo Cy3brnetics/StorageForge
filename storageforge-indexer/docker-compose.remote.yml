@@ -21,7 +21,7 @@ services:
     build:
       context: .
       target: tunnel
-    image: storageforge-tunnel:0.3.0
+    image: storageforge-tunnel:0.3.1
     restart: unless-stopped
     depends_on:
       storageforge: { condition: service_healthy }
