@@ -38,11 +38,15 @@ def _facts_from_jobs(conn: Conn, host: str, offsite: set[str]) -> list[dict]:
         if j['method'] == 'snapper' and j['src'] and host_slug(source) == host_slug(host):
             out.append({'path': j['src'], 'why': f'job {j["name"]}', 'job': j['id'],
                         'snapshots': {'enabled': True, 'tool': 'snapper', 'policy': j['schedule'] or 'imported', 'count': j.get('count') or 0, 'overhead': 0}})
-        if j['method'] not in ('mirror', 'rsnapshot') or not j['src'] or host_slug(source) != host_slug(host):
+        if j['method'] not in ('mirror', 'rsnapshot'):
+            continue
+        places = j.get('places') or [{'host': source, 'path': s} for s in (j.get('sources') or ([j['src']] if j.get('src') else []))]
+        here = [p['path'] for p in places if host_slug(p['host']) == host_slug(host)]
+        if not here:
             continue
         ok = j['last_ok'] or {}
-        away = host_slug(j['runner']) != host_slug(source)
-        fact = {'path': j['src'], 'why': f'job {j["name"]}', 'job': j['id']}
+        away = host_slug(j['runner']) != host_slug(host)     # an imported rsnapshot can pull from other hosts, so ask per host
+        fact = {'why': f'job {j["name"]}', 'job': j['id']}
         if j['method'] == 'rsnapshot' and not away:
             fact['snapshots'] = {'enabled': True, 'tool': 'rsnapshot', 'policy': j['schedule'] or '', 'count': 0, 'overhead': 0}
         fact['backup'] = {'target': f'{j["runner"]}:{j["dst"]}', 'last': _date(ok.get('end') or ok.get('start')),
@@ -50,7 +54,7 @@ def _facts_from_jobs(conn: Conn, host: str, offsite: set[str]) -> list[dict]:
         if j['method'] == 'mirror':
             bad = {'failed': 'last run failed', 'stale': 'no good run on schedule', 'paused': 'paused'}.get(j['state'])
             fact['sync'] = {'state': 'Lagging' if bad else 'Rsync Scheduled', 'target': fact['backup']['target'], 'lag': bad or ''}
-        out.extend({**fact, 'path': src} for src in j.get('sources') or [j['src']])     # an imported rsnapshot can back up several
+        out.extend({**fact, 'path': src} for src in here)     # an imported rsnapshot can back up several
     return out
 
 

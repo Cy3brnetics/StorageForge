@@ -350,10 +350,16 @@ def rebuild_host(db, conn, hostname: str, rebuild_clients: bool = True) -> tuple
         merge_blueprint(node, node_from_blueprint(bp))
     try:
         from .jobs import overview
-        node['jobs'] = [{'id': j['id'], 'src': j['src'] or '', 'sources': j['sources'], 'dst': j['dst'], 'runner': j['runner'], 'method': j['method'],
-                         'state': j['state'], 'validated': dt.date.fromtimestamp(j['last_ok']['end']).isoformat()
-                         if j['last_ok'] and j['last_ok'].get('end') else None}
-                        for j in overview(conn) if j['source'] == node['hostname'] and j['method'] in ('mirror', 'rsnapshot')]
+        from .moves import host_slug
+        mine = host_slug(node['hostname'])
+        node['jobs'] = []
+        for j in overview(conn):              # by where each source is: an imported rsnapshot can pull from other hosts
+            places = j.get('places') or [{'host': j.get('source') or j.get('runner'), 'path': s} for s in (j.get('sources') or ([j['src']] if j.get('src') else []))]
+            here = [p['path'] for p in places if host_slug(p['host']) == mine]
+            if here and j['method'] in ('mirror', 'rsnapshot'):
+                node['jobs'].append({'id': j['id'], 'src': here[0], 'sources': here, 'dst': j['dst'], 'runner': j['runner'], 'method': j['method'],
+                                     'state': j['state'], 'validated': dt.date.fromtimestamp(j['last_ok']['end']).isoformat()
+                                     if j['last_ok'] and j['last_ok'].get('end') else None})
     except Exception:                         # an older schema (no jobs table yet) or no jobs: nothing to add
         node['jobs'] = []
     from .protection import fill_node

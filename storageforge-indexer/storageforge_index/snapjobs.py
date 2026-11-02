@@ -152,11 +152,45 @@ def _schedule(found: dict) -> str | None:
     return chosen['calendar'] if chosen else None
 
 
+_REMOTE_SRC = re.compile(r'(?:[^@\s/:]+@)?(?P<host>\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9][A-Za-z0-9.-]*):(?P<path>/\S*)')
+
+
+def remote_source(src: str) -> tuple[str, str] | None:
+    """[user@]host:/path from a backup line, as (host, path). None for a local path, an rsync daemon (host::module,
+    rsync://) or anything else that names no folder on a host."""
+    m = _REMOTE_SRC.fullmatch(src or '')
+    if not m or m['path'].startswith('//'):      # rsync://host/module
+        return None
+    return m['host'].strip('[]'), m['path'].rstrip('/') or '/'
+
+
+def remote_sources(backups: list[dict]) -> list[dict]:
+    """The backup lines of an rsnapshot config that pull from another host: [{host, path, dst}], host as the config names it."""
+    return [{'host': r[0], 'path': r[1], 'dst': b.get('dst')} for b in backups or [] if (r := remote_source(b.get('src') or ''))]
+
+
+def _alnum(name: str) -> str:
+    return re.sub(r'[^a-z0-9]', '', host_slug(name))
+
+
+def resolve_host(known: list[tuple], name: str) -> str:
+    """The scanned host a config's host name means. known: (hostname, ssh_host, ip) rows. By name, address or short name,
+    then ignoring dashes and dots (rpi02-docker is rpi02docker) when only one host matches. Otherwise the name as given."""
+    n = (name or '').lower()
+    for test in (lambda h, s, i: h.lower() == n or (s or '').lower() == n or (i or '') == n,
+                 lambda h, s, i: host_slug(h) == host_slug(n)):
+        hit = [h for h, s, i in known if test(h, s, i)]
+        if hit:
+            return hit[0]
+    loose = [h for h, _, _ in known if _alnum(h) and _alnum(h) == _alnum(n)]
+    return loose[0] if len(loose) == 1 else name
+
+
 def _spec(found: dict) -> dict:
     local = [b['src'] for b in found.get('backups') or [] if b['src'].startswith('/')]
     is_snapper = found['tool'] == 'snapper'
     return {'imported': True, 'find_key': [found['tool'], found['config']], 'tool': found['tool'], 'config': found['config'], 'root': found.get('root'),
-            'src': found.get('root') if is_snapper else (local[0] if local else next((b['src'] for b in found.get('backups') or []), None)),
+            'src': found.get('root') if is_snapper else (local[0] if local else None),     # a remote line is not a path here: see remote_sources()
             'sources': [found['root']] if is_snapper and found.get('root') else local, 'dst': None if is_snapper else found.get('root'),
             'backups': found.get('backups') or [], 'levels': found.get('levels') or {}, 'lowest': found.get('lowest'), 'schedule': found.get('schedule') or [],
             'fstype': found.get('fstype') or '', 'mount': found.get('mount') or '', 'root_exists': found.get('root_exists'),

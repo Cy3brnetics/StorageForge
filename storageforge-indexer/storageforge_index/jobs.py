@@ -702,6 +702,7 @@ def overview(conn: Conn, now: float | None = None) -> list[dict]:
     out = []
     live = {r[0]: {'state': r[1], 'percent': r[2], 'speed': r[3], 'dedup_ratio': r[4], 'route': r[5], 'node': r[6], 'at': r[7]}
             for r in conn.all('SELECT job_id, state, percent, speed, dedup_ratio, route, node, at FROM job_state')}
+    known = [tuple(r) for r in conn.all('SELECT hostname, ssh_host, ip_address FROM hosts')]
     for r in conn.all("""SELECT job_id, plan_id, name, method, runner_host, source_host, schedule, paused, deployed_at,
                                 spec_json FROM jobs WHERE removed_at IS NULL ORDER BY plan_id, job_id"""):
         jid, plan_id, name, method, runner, source, schedule, paused, deployed_at, spec = r
@@ -726,6 +727,13 @@ def overview(conn: Conn, now: float | None = None) -> list[dict]:
             state = 'stale'
         else:
             state = 'ok'
+        if imported and method == 'rsnapshot':      # local lines are on the runner; user@host:/path lines are on that host
+            sources = [p.rstrip('/') or '/' for p in s.get('sources') or [] if p.startswith('/')]
+            places = [{'host': runner, 'path': p} for p in sources] + [
+                {'host': snapjobs.resolve_host(known, r['host']), 'path': r['path']} for r in snapjobs.remote_sources(s.get('backups'))]
+        else:
+            sources = [p.rstrip('/') or '/' for p in s.get('sources') or ([s['src']] if s.get('src') else [])]
+            places = [{'host': source or runner, 'path': p} for p in sources]
         out.append({'id': jid, 'plan_id': plan_id, 'name': name, 'method': method, 'runner': runner, 'source': source,
                     'schedule': schedule, 'paused': bool(paused), 'deployed_at': deployed_at, 'state': state,
                     'last': last, 'last_ok': ok, 'verify': verify, 'period': per, 'src': s.get('src'), 'dst': s.get('dst'),
@@ -733,6 +741,6 @@ def overview(conn: Conn, now: float | None = None) -> list[dict]:
                     'pre': s.get('pre') or [], 'post': s.get('post') or [], 'snapshot': s.get('snapshot'),
                     'live': live.get(jid), 'routes': s.get('routes') or [], 'dedup': bool(s.get('dedup')),
                     'transport': s.get('transport') or 'rsync', 'extent_dedup': s.get('extent_dedup'),
-                    'imported': imported, 'sources': [p.rstrip('/') or '/' for p in s.get('sources') or ([s['src']] if s.get('src') else [])], 'config': s.get('config'), 'levels': s.get('levels'),
+                    'imported': imported, 'sources': sources, 'places': places, 'config': s.get('config'), 'levels': s.get('levels'),
                     'fstype': s.get('fstype'), 'mount': s.get('mount'), 'fit': s.get('fit') or [], 'count': s.get('count')})
     return out
