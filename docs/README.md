@@ -53,4 +53,6 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Security parameters](../security-parm.md) | The threat model and hardening checklist, from 2026-10-26 |
 | [Roadmap](../notebook/Roadmap.md) | What is planned next, and every finding behind it |
 
+These pages are also published as the project wiki. Edit them here, then run `python3 docs/build-wiki.py --push`: each build replaces the wiki, and a link that leads nowhere stops it.
+
 Screenshots were taken from a local instance with one scanned demo host (`nas-demo`, the container from `examples/demo`) and the `atlas` example design.
