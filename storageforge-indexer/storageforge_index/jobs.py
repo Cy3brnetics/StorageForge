@@ -706,6 +706,6 @@ def overview(conn: Conn, now: float | None = None) -> list[dict]:
                     'pre': s.get('pre') or [], 'post': s.get('post') or [], 'snapshot': s.get('snapshot'),
                     'live': live.get(jid), 'routes': s.get('routes') or [], 'dedup': bool(s.get('dedup')),
                     'transport': s.get('transport') or 'rsync', 'extent_dedup': s.get('extent_dedup'),
-                    'imported': imported, 'sources': s.get('sources') or ([s['src']] if s.get('src') else []), 'config': s.get('config'), 'levels': s.get('levels'),
+                    'imported': imported, 'sources': [p.rstrip('/') or '/' for p in s.get('sources') or ([s['src']] if s.get('src') else [])], 'config': s.get('config'), 'levels': s.get('levels'),
                     'fstype': s.get('fstype'), 'mount': s.get('mount'), 'fit': s.get('fit') or [], 'count': s.get('count')})
     return out

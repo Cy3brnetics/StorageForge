@@ -479,6 +479,11 @@ function snapJobMenu(j, a) {
     { label: 'Retention…', run: () => editRetention(j) }, '-',
     { label: 'Forget (leaves the host as it is)', run: () => forgetJob(j), danger: true }, { label: 'Copy job id', run: () => copyText(j.id) }];
 }
+function snapMapsChanged() {       // the graphs and the Files map hold what they last loaded
+  FM.data = null;
+  loadGraph(); loadDesigns();
+  if (fmActive()) fmLoad();
+}
 async function editRetention(j) {
   const now = Object.entries(j.levels || {}).map(([k, v]) => `${k}=${v}`).join(' ');
   const typed = prompt(`How many to keep, per level. A lower count deletes older snapshots at the next ${j.method === 'snapper' ? 'cleanup' : 'rotation'}.`, now);
@@ -492,15 +497,15 @@ async function editRetention(j) {
 }
 async function forgetJob(j) {
   if (!confirm(`Stop tracking ${j.name}?\n\nIt keeps running on ${j.runner}, and its snapshots stay.`)) return;
-  try { await postJSON(`/api/deploy/jobs/${j.id}/forget`, {}); toast('Forgotten'); loadDeploy(); } catch (err) { toast(err.message); }
+  try { await postJSON(`/api/deploy/jobs/${j.id}/forget`, {}); toast('Forgotten'); loadDeploy(); snapMapsChanged(); } catch (err) { toast(err.message); }
 }
 async function importFound(f) {
-  try { await postJSON('/api/deploy/snapjobs/import', { host: f.host, tool: f.tool, config: f.config }); toast(`Imported ${f.name}`); loadDeploy(); }
+  try { await postJSON('/api/deploy/snapjobs/import', { host: f.host, tool: f.tool, config: f.config }); toast(`Imported ${f.name}`); loadDeploy(); snapMapsChanged(); }
   catch (err) { toast(err.message); }
 }
 async function lookAsRoot(host) {
   toast(`Looking on ${host} as root…`);
-  try { const r = await (await postJSON('/api/deploy/snapjobs/probe', { host })).json(); DP.found = r.found; renderSnapFound(); loadDeploy(); toast('Done'); }
+  try { const r = await (await postJSON('/api/deploy/snapjobs/probe', { host })).json(); DP.found = r.found; renderSnapFound(); loadDeploy(); snapMapsChanged(); toast('Done'); }
   catch (err) { toast(err.message); }
 }
 function foundRow(f, ready) {
@@ -526,7 +531,7 @@ function newSnapForm(d) {
       out.replaceChildren(text('p', `${a.path} is on ${a.fstype || 'an unknown filesystem'} (${a.mount || '?'}). ${a.why}`, a.level === 'crit' ? 'st-failed small' : 'small'),
         a.tool === 'snapper' ? el('div', { class: 'row' }, name, button('Create snapper config', async () => {
           try { const r = await (await postJSON('/api/deploy/snapjobs/snapper', { host: a.host, path: a.path, name: name.value.trim() })).json();
-            out.append(outputBlock(r.output)); loadDeploy(); } catch (err) { toast(err.message); }
+            out.append(outputBlock(r.output)); loadDeploy(); snapMapsChanged(); } catch (err) { toast(err.message); }
         }, 'btn sm')) : a.tool === 'rsnapshot' ? button('Plan an rsnapshot step in Moves', () => showTab('moves'), 'btn sm') : '');
     } catch (err) { out.replaceChildren(text('p', err.message, 'st-failed small')); }
   };

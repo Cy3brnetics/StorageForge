@@ -1683,6 +1683,11 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
 
+    def redraw_host(host: str):
+        """The maps and the 3-2-1 matrix are built at scan time: after a job comes or goes they can't wait for the next scan."""
+        scan_designs.pop(deploy.canonical(conn(), host), None)
+        graph.rebuild_host(db, conn(), deploy.canonical(conn(), host))
+
     @web.post('/api/deploy/jobs/<jid>/retention')
     @login_required
     @password_confirmed
@@ -1695,7 +1700,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     @password_confirmed
     def api_deploy_job_forget(jid):
+        host = jobs.get(conn(), jid)['runner']
         snapjobs.forget(conn(), jid)
+        redraw_host(host)
         core.audit(conn(), actor(), 'deploy.job-forget', 'ok', None, {'job': jid})
         return jsonify(forgotten=jid)
 
@@ -1715,6 +1722,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def api_snapjobs_probe():
         host = str(json_body().get('host', ''))
         found = snapjobs.probe(db, conn(), host, actor())
+        redraw_host(host)
         core.audit(conn(), actor(), 'deploy.snapjobs-probe', 'ok', host, {'found': len(found)})
         return jsonify(found=snapjobs.candidates(conn()))
 
@@ -1725,6 +1733,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         body = json_body()
         host, tool, config = str(body.get('host', '')), str(body.get('tool', '')), str(body.get('config', ''))
         jid = snapjobs.import_job(conn(), host, tool, config, actor())
+        redraw_host(host)
         core.audit(conn(), actor(), 'deploy.job-import', 'ok', host, {'job': jid, 'tool': tool, 'config': config})
         return jsonify(job=jid)
 
@@ -1735,6 +1744,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         body = json_body()
         host = str(body.get('host', ''))
         res = snapjobs.create_snapper(db, conn(), host, str(body.get('path', '')), str(body.get('name', '')), actor())
+        if res['status'] == 'ok':
+            redraw_host(host)
         core.audit(conn(), actor(), 'deploy.snapper-create', deploy.audit_outcome(res['status']), host, {'path': body.get('path'), 'name': body.get('name')})
         return jsonify(res)
 
@@ -1999,7 +2010,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 key = ('dupes', host, 3, min_size) if not system else ('dupes-system', host, 3, min_size)
                 twins = folder_result(key, lambda: folders.duplicate_folders(conn(), host, 3, min_size, limit=200, include_system=system, index=build_dir_index(host)))
             return filemap.build(conn(), host, min_size, system, twins)
-        return folder_result(('filemap', host, min_size, system, with_folders, json.dumps(folders.ignore_lists(conn()), sort_keys=True)), compute)
+        # its job lines change without a scan: importing or removing a job has to show now
+        job_mark = tuple(conn().all('SELECT count(*), max(deployed_at), max(removed_at) FROM jobs')[0])
+        return folder_result(('filemap', host, min_size, system, with_folders, json.dumps(folders.ignore_lists(conn()), sort_keys=True), job_mark), compute)
 
     @web.get('/api/filemap')
     @login_required

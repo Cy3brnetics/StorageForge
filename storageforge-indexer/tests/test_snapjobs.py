@@ -15,7 +15,8 @@ try:
     import dbfactory
 except ImportError:      # run as tests.test_x from the project folder
     from tests import dbfactory
-from storageforge_index import alerts, deploy, jobs, moves, protection, snapfind, snapjobs
+from storageforge_index import alerts, deploy, graph, jobs, moves, protection, server, snapfind, snapjobs, users
+from storageforge_index.db import Database
 from storageforge_index.remote import INVENTORY_SCRIPT, SECTIONS
 
 CONF = '/etc/rsnapshot-sdcard.conf'
@@ -144,7 +145,7 @@ class Imported(unittest.TestCase):
         self.assertEqual({c['job'] for c in snapjobs.candidates(self.conn) if c['config'] == CONF}, {jid})
         j = self.job(jid)
         self.assertEqual((j['state'], j['imported'], j['method'], j['dst']), ('ok', True, 'rsnapshot', '/mnt/sdcard/snapshots'))
-        self.assertEqual(j['sources'], ['/home/', '/etc/'])
+        self.assertEqual(j['sources'], ['/home', '/etc'])
         self.assertEqual(j['last_ok']['message'], 'snapshot daily.0 seen')
 
     def test_the_same_snapshot_seen_twice_is_one_run(self):
@@ -261,6 +262,47 @@ class Imported(unittest.TestCase):
                 snapjobs.create_snapper(None, self.conn, 'pi', '/home', 'home', 't')
             with self.assertRaisesRegex(ValueError, 'config name'):
                 snapjobs.create_snapper(None, self.conn, 'pi', '/data', 'a b; x', 't')
+
+
+class Maps(unittest.TestCase):
+    """Importing has to show on the maps straight away, not after the next scan."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Database(f'sqlite:///{self.tmp.name}/idx.db')
+        conn = self.db.connect()
+        self.addCleanup(conn.close)
+        self.db.migrate(conn)
+        users.create(conn, 'root', 'a long enough password', 'admin')
+        conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json, last_scanned_at) VALUES ('pi', 'pi', 'scan', :i, 1)",
+                     {'i': json.dumps({'snapjobs': snapfind.parse(found_text())})})
+        hid = conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'pi'")
+        for target, fs in (('/', 'ext4'), ('/mnt/sdcard', 'ext4')):
+            conn.execute("""INSERT INTO mounts (host_id, mount_point, source, filesystem_type, scan_state)
+                            VALUES (:h, :m, '/dev/x', :f, 'indexed')""", {'h': hid, 'm': target, 'f': fs})
+        conn.execute("INSERT INTO scans (host_id, status, started_at) VALUES (:h, 'ok', 1)", {'h': hid})
+        self.conn = conn
+        self.web = server.create_app(server.App(self.db), 'x' * 32)
+        self.c = self.web.test_client()
+        self.assertEqual(self.c.post('/api/login', json={'username': 'root', 'password': 'a long enough password'}).status_code, 200)
+
+    def lines(self):
+        r = self.c.get('/api/filemap')
+        self.assertEqual(r.status_code, 200, r.text)
+        return sorted((x['src']['path'], x['dst']['path']) for x in r.json['relations'] if x['kind'] == 'job')
+
+    def edges(self):
+        return [e for e in graph.load(self.conn)['edges'] if e['rel'] == 'REPLICATES_TO' and str(e['props'].get('detail', '')).startswith('job ')]
+
+    def test_import_and_forget_redraw_the_maps_without_a_scan(self):
+        self.assertEqual(self.lines(), [])                  # and this answer is now cached
+        r = self.c.post('/api/deploy/snapjobs/import', json={'host': 'pi', 'tool': 'rsnapshot', 'config': CONF})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.lines(), [('/etc', '/mnt/sdcard/snapshots'), ('/home', '/mnt/sdcard/snapshots')])     # every backup line, no trailing slash
+        self.assertEqual(len(self.edges()), 1)              # both on / : one line from that filesystem
+        self.assertEqual(self.c.post(f'/api/deploy/jobs/{r.json["job"]}/forget', json={}).status_code, 200)
+        self.assertEqual(self.lines(), [])
+        self.assertEqual(self.edges(), [])
 
 
 class Scripts(unittest.TestCase):

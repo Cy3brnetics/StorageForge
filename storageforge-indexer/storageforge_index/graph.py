@@ -240,14 +240,14 @@ def build(node: dict, as_of: dt.date | None = None) -> tuple[dict, list]:
                  health='broken' if age is None or age > 90 else 'local-only' if age > 30 or not bk.get('offsite') else 'protected')
 
     for j in node.get('jobs') or []:          # deployed mirror/rsnapshot jobs count as backups, as fresh as their last good run
-        at = max((m for m in fs_of_mount if j['src'] == m or j['src'].startswith(m.rstrip('/') + '/')), key=len, default=None)
-        if not at:
-            continue
         same = j['runner'] == h
         health = {'ok': 'local-only' if same else 'protected', 'stale': 'local-only', 'paused': 'local-only',
                   'failed': 'broken', 'never-ran': 'unknown'}.get(j['state'], 'unknown')
-        edge(fs_of_mount[at], host_id if same else external(j['runner']), 'REPLICATES_TO', mode=j['method'],
-             detail=f'job {j["id"]}: {j["runner"]}:{j["dst"]}', state=j['state'], validated=j.get('validated'), health=health)
+        held = {max((m for m in fs_of_mount if src == m or src.startswith(m.rstrip('/') + '/')), key=len, default=None)
+                for src in j.get('sources') or [j['src']]} - {None}      # an imported rsnapshot can back up several places
+        for at in sorted(held):
+            edge(fs_of_mount[at], host_id if same else external(j['runner']), 'REPLICATES_TO', mode=j['method'],
+                 detail=f'job {j["id"]}: {j["runner"]}:{j["dst"]}', state=j['state'], validated=j.get('validated'), health=health)
 
     scanned_shares = [f'{e["protocol"]} {e["name"] if e["protocol"] == "SMB" else e["path"]}' for e in node.get('exports') or []
                       if e.get('fromScan')]
@@ -350,7 +350,7 @@ def rebuild_host(db, conn, hostname: str, rebuild_clients: bool = True) -> tuple
         merge_blueprint(node, node_from_blueprint(bp))
     try:
         from .jobs import overview
-        node['jobs'] = [{'id': j['id'], 'src': j['src'] or '', 'dst': j['dst'], 'runner': j['runner'], 'method': j['method'],
+        node['jobs'] = [{'id': j['id'], 'src': j['src'] or '', 'sources': j['sources'], 'dst': j['dst'], 'runner': j['runner'], 'method': j['method'],
                          'state': j['state'], 'validated': dt.date.fromtimestamp(j['last_ok']['end']).isoformat()
                          if j['last_ok'] and j['last_ok'].get('end') else None}
                         for j in overview(conn) if j['source'] == node['hostname'] and j['method'] in ('mirror', 'rsnapshot')]
