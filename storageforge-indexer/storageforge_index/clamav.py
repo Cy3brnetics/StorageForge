@@ -399,6 +399,30 @@ def ingest(conn: Conn, host: str, text: str, via: str = 'scan') -> bool:
     return True
 
 
+def add_found(conn: Conn, host: str, text: str) -> int:
+    """Detections from a scan of only some files: found\\tpath_b64\\tsignature lines. Unlike ingest this closes nothing,
+    since it says nothing about the files it did not read. Returns how many are new."""
+    now, new = int(time.time()), 0
+    known = {(r[1], r[2]): r[0] for r in conn.all('SELECT detection_id, path_b64, signature FROM clamav_detections WHERE host = :h', {'h': host})}
+    for line in (text or '').splitlines():
+        f = line.split('\t')
+        if len(f) != 3 or f[0] != 'found' or not SIG_RE.fullmatch(f[2]):
+            continue
+        try:
+            raw = base64.b64decode(f[1], validate=True)
+        except (binascii.Error, ValueError):
+            continue
+        if not raw.startswith(b'/') or b'\0' in raw or len(raw) > 4096:
+            continue
+        if (f[1], f[2]) in known:
+            conn.execute("UPDATE clamav_detections SET last_seen = :t, state = CASE WHEN state = 'gone' THEN 'open' ELSE state END WHERE detection_id = :i", {'t': now, 'i': known[(f[1], f[2])]})
+        else:
+            conn.execute("""INSERT INTO clamav_detections (host, path_b64, path, signature, state, ignored, first_seen, last_seen)
+                            VALUES (:h, :b, :p, :s, 'open', 0, :t, :t)""", {'h': host, 'b': f[1], 'p': raw.decode('utf-8', 'replace'), 's': f[2], 't': now})
+            new += 1
+    return new
+
+
 def detections(conn: Conn, host: str | None = None, include_closed: bool = False) -> list[dict]:
     where = ["(lower(host) = lower(:h))"] if host else []
     if not include_closed:

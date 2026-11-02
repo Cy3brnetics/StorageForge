@@ -159,7 +159,7 @@ def takes_password(methods: list[str] | None) -> bool:
 
 def blockers(conn, hosts: list[str], kind: str) -> list[dict]:
     """Hosts a deploy of this kind cannot run on, from what is known without touching them."""
-    if kind not in ('shares', 'jobs', 'tasks', 'changes', 'schedules', 'updates', 'clamav'):
+    if kind not in ('shares', 'jobs', 'tasks', 'changes', 'schedules', 'updates', 'clamav', 'security'):
         return []
     out = []
     for host in dict.fromkeys(hosts):

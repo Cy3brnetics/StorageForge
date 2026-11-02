@@ -35,9 +35,9 @@ CATALOG = (
         ('git.live', 'Read Git status and history over SSH', False),
         ('git.sync', 'Run Git sync on hosts', True),)),
     ('Security', (
-        ('security.view', 'See security posture, WORM holds, canaries, MAC, quarantine, eBPF, compliance and playbooks', False),
-        ('security.manage', 'Deploy canaries, configure MAC contexts, manage quarantine, and save playbooks', True),
-        ('security.emergency', 'Execute emergency brake, trigger host airgap, manage WORM holds, and break glass', True),)),
+        ('security.view', 'See what hosts report: posture, holds, decoys, access control, quarantine, integrity and compliance', False),
+        ('security.manage', 'Measure hosts, relabel, quarantine addresses, run AIDE and Lynis, sample files and set baselines', True),
+        ('security.emergency', 'Pull the brake, airgap a host, arm the sentinel, apply and release holds, and use the offline key', True),)),
     ('Host access', (
         ('keys.view', 'See public keys, bindings and scan access', False),
         ('keys.manage', 'Generate, install, bind and remove SSH keys', True),
@@ -138,7 +138,8 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
 
     # Security & Ransomware Defense
     (READ, r'/api/security/.*', 'security.view'),
-    (('POST',), r'/api/security/(incident/brake|incident/clean-room|firewall/airgap|worm/.*)', 'security.emergency'),
+    (('POST',), r'/api/security/report', 'deploy.apply'),       # sentinels report with a bearer token and no session
+    (('POST',), r'/api/security/(incident/(brake|clean-room)|firewall/(airgap|vip)|worm/.*|sentinel|events/\d+/ack)', 'security.emergency'),
     (_WRITE, r'/api/security/.*', 'security.manage'),
 
     (READ, r'/api/backups', 'backups.view'),

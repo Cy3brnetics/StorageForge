@@ -1,1653 +1,1547 @@
-"""Ransomware Defense & Host Security Engine for StorageForge.
+"""Ransomware defense: what hosts report about themselves, and what signed runs did to them.
 
-Implements the multi-layered architecture defined in ransomware-defense-roadmap.md:
-- Layer 1: Immutable WORM Retention (ZFS hold / Btrfs ro / chattr +i), Anti-NTP Monotonic Clock Guard,
-           and Adaptive Quorum (Multi-Admin dual-custody vs Single-Operator 24h-72h timelock + Break-Glass key).
-- Layer 2: Early Warning Canary Decoys, Samba VSS Shadow Copy (vfs_shadow_copy2) RPC Traps, & auditd rules.
-- Layer 3: Mandatory Access Control (SELinux booleans, fcontext, AVC denials, AppArmor) & Identity Anomaly Detection.
-- Layer 4: Storage Firewall & Network Fencing (nftables, firewalld, ufw), CIDR fencing, Quarantine Pool, & Host Airgap.
-- Layer 5: Runtime Threat Detection & Behavioral eBPF (Falco ruleset, scan-diff velocity, Shannon entropy H(X)).
-- Layer 6: Host Integrity & Hardening Posture (AIDE cryptographic FIM & Lynis CIS hardening audits).
-- Layer 7: Targeted Differential Malware & YARA Scanning & Quarantine Vault (shred / restore).
-- Layer 8: Global Compliance Standards (CIS L1/L2, NIST 800-53, HIPAA, PCI-DSS, SOC 2, ISO 27001, CMMC)
-           & Turnkey Init Script Engine (sf-init-compliance.sh).
-- Layer 9: SOC Command Center, Pre-Freeze Volatile RAM Triage, Blast-Radius & RPO Calculator, & Clean-Room Recovery.
+Two rules hold this module together, and a security page that breaks them is worse than none:
+
+    Every number comes from a measurement. What has not been measured is None, and the UI says so. Nothing is assumed to
+    be fine: a host nobody has looked at is "unknown", never "secure".
+
+    A row means it happened. A hold, a quarantine or a decoy is recorded after a signed run on the host (secscripts.py)
+    has confirmed it, from a line the script prints only after checking. A failed run changes nothing here and says why.
+
+Measurements and events come from the host they describe, and a compromised host can lie about itself. So what they say
+can only raise an alarm: nothing a host reports releases a hold, disarms anything or clears an alert. Retention expiry
+lives on the controller's clock for the same reason, which is why moving a host's clock cannot expire a hold.
+
+See docs/ransomware-defense.md for what this does and does not protect against.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import ipaddress
 import json
-import math
 import re
 import secrets
-import shlex
+import socket
+import statistics
 import time
-from collections import Counter
+import uuid
 
-from . import alerts, clamav, deploy
+from . import alerts, deploy, secscripts as sx
 from .db import Conn, epoch, loads
-from .moves import host_slug
-from .scriptkit import HELPERS, PACKAGES, one_line
+from .runner import connect_address
 
-SAFE_NAME_RE = re.compile(r'^[A-Za-z0-9_.@:/-]+$')
-HOLD_TAG_RE = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
-FINDING_ID_RE = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
+# ── limits and names ─────────────────────────────────────────────────
+ZFS_SNAP_RE = re.compile(r'[A-Za-z0-9_.:/-]{1,200}@[A-Za-z0-9_.:-]{1,200}')
+TAG_RE = re.compile(r'sf-[A-Za-z0-9_.-]{1,60}')
+SE_TYPE_RE = re.compile(r'[a-z0-9_]{1,64}_t')
+UUID_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+SE_TYPES = ('samba_share_t', 'public_content_t', 'public_content_rw_t', 'container_file_t')
+EXPECTED_BOOLEANS = {'samba_export_all_rw': 'off', 'samba_export_all_ro': 'off', 'samba_enable_home_dirs': 'off',
+                     'nfs_export_all_rw': 'off', 'nfs_export_all_ro': 'off'}
+STORAGE_DAEMONS = frozenset({'smbd', 'nmbd', 'nfsd', 'rpc.mountd', 'rsync', 'zfs', 'btrfs', 'podman', 'dockerd', 'containerd'})
 
-BREAK_GLASS_SETTING = 'security.break_glass_sha256'
-CLOCK_GUARD_SETTING = 'security.clock_guard'
-AIRGAP_SETTING = 'security.airgap_hosts'
-QUORUM_DELAY_SETTING = 'security.timelock_hours'
-VIP_EXEMPT_SETTING = 'security.vip_exempt_ips'
+CLOCK_JUMP = 60                     # seconds a clock may be off before releases stop on that host
+MEASURE_EVERY = 6 * 3600            # how often a host with the sentinel or holds is read without being asked
+STALE_AFTER = 24 * 3600             # a measurement older than this says nothing about now
+DEFAULT_COOL_OFF = 24
+COOL_OFF_HOURS = (12, 24, 48, 72)
+MIN_CIDR = {4: 16, 6: 48}           # a network wider than this is a mistake, not a quarantine
+EVENT_SEVERITY = {'canary_tripped': 'crit', 'clock_jump': 'crit', 'brake_ran': 'crit', 'watcher_stopped': 'warn', 'canary_source': 'warn',
+                  'sentinel_started': 'info', 'sentinel_test': 'info', 'hold_missing': 'crit', 'break_glass_used': 'crit'}
+HOST_EVENTS = frozenset({'canary_tripped', 'canary_source', 'clock_jump', 'brake_ran', 'watcher_stopped', 'sentinel_started', 'sentinel_test'})
+DEFAULT_DECOYS = ('_AAAPasswords.docx', '!Financial_2026.xlsx', '00_Index.pdf')
+MAX_DECOYS = 500
+SAMPLE_FILES = 500
 
-DEFAULT_CANARY_FILES = (
-    ('_AAAPasswords.docx', 'file_canary'),
-    ('!Financial_2026.xlsx', 'file_canary'),
-    ('00_Index.pdf', 'file_canary'),
-    ('VSS RPC: vssadmin Intercept', 'vss_decoy'),
-)
+# What ransomware leaves behind, as a scan sees it. Only ever a reason to look.
+RANSOM_SUFFIXES = ('.locked', '.locky', '.crypto', '.crypt', '.encrypted', '.wncry', '.wannacry', '.cerber', '.zepto', '.odin', '.ryk',
+                   '.ryuk', '.conti', '.lockbit', '.lockbit3', '.akira', '.phobos', '.dharma', '.hive', '.clop', '.basta', '.royal', '.blackcat')
+RANSOM_NOTES = ('how_to_decrypt%', 'how-to-decrypt%', 'how_to_recover%', 'readme_decrypt%', 'decrypt_files%', 'decrypt_instructions%',
+                '%restore_my_files%', '%restore-my-files%', 'read_me_now%', 'recover_files%', '_readme.txt')
+VELOCITY_FLOOR = 500                # files an hour: below this, a multiple of a quiet baseline is still quiet
+VELOCITY_FACTOR = 3
+VELOCITY_MIN_BASELINE = 5
+ENTROPY_FLAG = 7.92
+# Compressed data looks just like ciphertext to entropy. Encrypting a file destroys its header, so a known one clears it.
+KNOWN_MAGIC = ('504b0304', '504b0506', '1f8b', '425a68', 'fd377a58', '377abcaf', '52617221', '28b52ffd', '89504e47', 'ffd8ff', '47494638',
+               '25504446', '49443303', '4f676753', '664c6143', '1a45dfa3', '52494646', '53514c69', 'd0cf11e0')
+COMPRESSED_NAMES = ('.zip', '.gz', '.tgz', '.xz', '.bz2', '.zst', '.7z', '.rar', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.mp4', '.mkv',
+                    '.mov', '.avi', '.webm', '.mp3', '.flac', '.ogg', '.m4a', '.qcow2', '.vmdk', '.iso', '.docx', '.xlsx', '.pptx', '.pdf')
 
-STORAGE_BOOLEANS = (
-    ('samba_export_all_rw', 'off', 'Restrict Samba from writing to arbitrary SELinux types'),
-    ('samba_enable_home_dirs', 'off', 'Prevent automatic SMB lateral movement into user home directories'),
-    ('nfs_export_all_rw', 'off', 'Restrict NFS from exporting arbitrary contexts read-write'),
-    ('container_manage_cgroup', 'on', 'Allow confined storage containers to manage cgroups safely'),
-)
-
-COMPLIANCE_STANDARDS = {
-    'cis-l1': {
-        'id': 'cis-l1',
-        'name': 'CIS Linux Level 1 (Server Baseline)',
-        'version': '2.0.0',
-        'target_lynis': 78,
-        'min_worm_days': 7,
-        'selinux_mode': 'enforcing',
-        'umask': '027',
-        'controls': [
-            'Enforce nodev,nosuid,noexec on non-root partitions',
-            'Strict umask (027) and SSH root login lockdown',
-            'Mandatory auditd rules for storage configuration (/etc/fstab, /etc/samba/smb.conf, /etc/exports)',
-            'Daily AIDE cryptographic file integrity baseline verification',
-        ],
-    },
-    'cis-l2': {
-        'id': 'cis-l2',
-        'name': 'CIS Linux Level 2 (High Security / Storage Appliance Profile)',
-        'version': '2.0.0',
-        'target_lynis': 85,
-        'min_worm_days': 14,
-        'selinux_mode': 'enforcing',
-        'umask': '027',
-        'controls': [
-            'Enforce nodev,nosuid,noexec across storage & temporary mounts',
-            'SELinux Enforcing / AppArmor Enforce mode on smbd, nfsd, and container runtimes',
-            'Kernel auditd rules watching canary tripwires (-p wa -k sf_canary_tripped)',
-            'nftables / firewalld share-level CIDR fencing and sf_quarantine set',
-            '14-day immutable WORM snapshot hold policy & NTS monotonic clock guard',
-            'Target Lynis CIS hardening index >= 85',
-        ],
-    },
-    'nist-800-53': {
-        'id': 'nist-800-53',
-        'name': 'NIST SP 800-53 Rev 5 / FedRAMP Storage Baseline',
-        'version': 'Rev 5',
-        'target_lynis': 85,
-        'min_worm_days': 30,
-        'selinux_mode': 'enforcing',
-        'umask': '027',
-        'controls': [
-            'AU-2 / AU-12: Kernel auditd + hash-chained tamper-evident audit logging',
-            'SI-3 / SI-4: Falco eBPF behavioral monitoring & differential ClamAV/YARA scanning',
-            'SI-7: Daily AIDE cryptographic File Integrity Monitoring (FIM)',
-            'SC-7: Boundary protection via per-share CIDR fencing',
-            'CP-9 / CP-10: 30-day ZFS hold / Btrfs RO immutable WORM retention',
-        ],
-    },
-    'hipaa': {
-        'id': 'hipaa',
-        'name': 'HIPAA Security Rule (45 CFR §164 ePHI WORM & Confinement)',
-        'version': '2026.1',
-        'target_lynis': 84,
-        'min_worm_days': 30,
-        'selinux_mode': 'enforcing',
-        'umask': '027',
-        'controls': [
-            '§164.312(a)(1) Access Control: SELinux/AppArmor daemon confinement',
-            '§164.312(b) Audit Controls: Canary tripwires, VSS shadow traps, and auditd rules',
-            '§164.312(c)(1) ePHI Integrity: Immutable WORM snapshot retention & AIDE FIM',
-            '§164.312(e)(1) Transmission Security: nftables client subnet isolation',
-        ],
-    },
-    'pci-dss': {
-        'id': 'pci-dss',
-        'name': 'PCI-DSS v4.0 Storage Safeguards',
-        'version': '4.0',
-        'target_lynis': 86,
-        'min_worm_days': 90,
-        'selinux_mode': 'enforcing',
-        'umask': '027',
-        'controls': [
-            'Req 1: Network security controls via nftables/firewalld share fencing',
-            'Req 5: Malicious software defense via differential ClamAV & YARA scanning',
-            'Req 10: Audit logging of all access to system components (-w /etc/fstab -p wa)',
-            'Req 11: Daily cryptographic file integrity testing via AIDE',
-        ],
-    },
-    'soc2': {
-        'id': 'soc2',
-        'name': 'SOC 2 Type II (Trust Services Criteria)',
-        'version': '2026',
-        'target_lynis': 82,
-        'min_worm_days': 14,
-        'selinux_mode': 'enforcing',
-        'umask': '027',
-        'controls': [
-            'CC6.1 / CC6.6: Least privilege & confined Samba/NFS daemons',
-            'CC6.8: Autonomous Emergency Brake containment orchestrator',
-            'CC7.1: Automated Lynis vulnerability and hardening posture audits',
-            'CC8.1: Cryptographically signed deployment runner change tracking',
-        ],
-    },
-    'iso-27001': {
-        'id': 'iso-27001',
-        'name': 'ISO/IEC 27001:2022 Annex A Storage Controls',
-        'version': '2022',
-        'target_lynis': 84,
-        'min_worm_days': 30,
-        'selinux_mode': 'enforcing',
-        'umask': '027',
-        'controls': [
-            'A.8.7: Protection against malware via scan-diff Shannon entropy & YARA',
-            'A.8.15 / A.8.16: Central tamper-evident audit log & eBPF telemetry',
-            'A.8.20: Network segregation via per-share CIDR fencing',
-            'A.8.24: Cryptographic key management & signed deploy payloads',
-        ],
-    },
-    'cmmc-l2': {
-        'id': 'cmmc-l2',
-        'name': 'CMMC 2.0 (Level 2 / Level 3) & ACSC Essential Eight',
-        'version': '2.0',
-        'target_lynis': 88,
-        'min_worm_days': 60,
-        'selinux_mode': 'enforcing',
-        'umask': '027',
-        'controls': [
-            'Non-repudiation & forensic WORM snapshot locks with Adaptive Quorum',
-            'Application control, volatile RAM forensic triage, and Host Airgap panic button',
-        ],
-    },
-}
-
-DEFAULT_PLAYBOOKS = (
-    {
-        'name': 'Canary or VSS Shadow Trap -> Autonomous Emergency Brake',
-        'trigger_event': 'canary_or_vss_tripped',
-        'conditions': {'min_severity': 'critical', 'exclude_vip_ips': True},
-        'actions': ['dump_ram_triage', 'quarantine_ip_nftables', 'remount_share_ro', 'snapshot_with_worm_hold', 'notify_channels'],
-        'enabled': True,
-    },
-    {
-        'name': 'Shannon Entropy Spike (> 7.92 bits/byte) -> Snapshot & Alert',
-        'trigger_event': 'entropy_anomaly',
-        'conditions': {'entropy_gt': 7.92, 'min_files': 3},
-        'actions': ['snapshot_with_worm_hold', 'notify_channels'],
-        'enabled': True,
-    },
-    {
-        'name': 'SELinux / AppArmor Storage AVC Denial -> Audit & Doctor Alert',
-        'trigger_event': 'mac_avc_denial',
-        'conditions': {'daemons': ['smbd', 'nfsd', 'container_t']},
-        'actions': ['log_audit_chain', 'stage_doctor_remediation'],
-        'enabled': True,
-    },
-)
+BREAK_GLASS = 'security.break_glass_sha256'
+COOL_OFF = 'security.cool_off_hours'
+VIP = 'security.vip'
+CONTROLLER_CLOCK = 'security.controller_clock'
 
 
-def _clean_host(conn: Conn, host: str | None) -> str | None:
-    if not host:
+def clock_key(host: str) -> str:
+    return f'security.clock:{host.lower()}'
+
+
+def host_key(host: str) -> str:
+    return f'security.host:{host.lower()}'
+
+
+def profile_key(host: str) -> str:
+    return f'security.profile:{host.lower()}'
+
+
+def known_host(conn: Conn, host) -> str:
+    """Anything that runs on a host names one that has been scanned: nothing here acts on a name it has never seen."""
+    name = deploy.canonical(conn, str(host or '').strip())
+    if not name or not conn.scalar('SELECT 1 FROM hosts WHERE hostname = :h', {'h': name}):
+        raise ValueError(f'{str(host or "")[:80]!r} has not been scanned')
+    return name
+
+
+def clean_path(value, what: str = 'path') -> str:
+    p = str(value or '').strip()
+    if not p.startswith('/') or '/../' in p + '/' or len(p) > 1000 or any(ord(c) < 32 or ord(c) == 127 for c in p):
+        raise ValueError(f'{what} must be an absolute path: {p[:80]}')
+    return p.rstrip('/') or '/'
+
+
+def clean_text(value, limit: int = 500) -> str:
+    """Text a host sent, or an operator typed, ready to be stored: no control characters, not unbounded."""
+    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', str(value or ''))[:limit]
+
+
+def _b64text(value: str) -> str | None:
+    try:
+        return base64.b64decode(value, validate=True).decode('utf-8', 'replace')
+    except (binascii.Error, ValueError):
         return None
-    h = str(host).strip()
-    if not h:
-        return None
-    row = conn.all('SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h)', {'h': h})
-    return row[0][0] if row else h
 
 
-def _known_hosts(conn: Conn, host: str | None = None) -> list[dict]:
-    if host:
-        h = _clean_host(conn, host)
-        rows = conn.all('SELECT host_id, hostname, os_info, last_scanned_at, inventory_json FROM hosts WHERE lower(hostname) = lower(:h)', {'h': h})
-    else:
-        rows = conn.all('SELECT host_id, hostname, os_info, last_scanned_at, inventory_json FROM hosts ORDER BY hostname')
-    out = []
-    for hid, name, os_info, scanned, inv in rows:
-        out.append({
-            'id': hid,
-            'host': name,
-            'os_info': os_info or 'Linux',
-            'last_scanned_at': epoch(scanned),
-            'inventory': loads(inv) or {},
-        })
+def _mode(body: dict) -> str:
+    mode = str(body.get('mode') or 'report')
+    if mode not in ('preview', 'report', 'apply'):
+        raise ValueError('mode is preview, report or apply')
+    return mode
+
+
+def _result(res: dict, mode: str, error: str | None = None, **more) -> dict:
+    ok = res['status'] in deploy.FINISHED and not error
+    out = {'ok': ok, 'mode': mode, 'status': res['status'], 'output': res.get('output') or '', 'run_id': res.get('run_id'), **more}
+    if not ok:
+        out['error'] = error or f'the run ended {res["status"]}: see the output'
     return out
 
 
-def _admin_count(conn: Conn) -> int:
-    n = conn.scalar("SELECT count(*) FROM users WHERE role = 'admin' AND disabled_at IS NULL")
-    return int(n or 0)
+def _run(db, host: str, script: str, args=(), *, ref: str, mode: str, actor: str, timeout: int = 300, data=None) -> dict:
+    return deploy.run(db, host, script, list(args), kind='security', ref=ref, mode=mode, actor=actor, timeout=timeout, data=data)
 
 
-def adaptive_quorum_state(conn: Conn) -> dict:
-    """Determine whether the fleet runs in Multi-Admin Quorum (>= 2 admins) or Single-Operator Guarded Mode."""
-    admins = _admin_count(conn)
-    delay_hours = int(alerts.get_setting(conn, QUORUM_DELAY_SETTING) or 24)
-    bg_hash = alerts.get_setting(conn, BREAK_GLASS_SETTING) or ''
-    multi = admins >= 2
-    return {
-        'mode': 'multi_admin_quorum' if multi else 'single_operator_guarded',
-        'label': f'Dual-Admin Quorum ({admins} admins)' if multi else f'Single-Operator Guarded ({delay_hours}h Cool-Off Delay)',
-        'admin_count': admins,
-        'multi_admin': multi,
-        'cooloff_hours': delay_hours,
-        'break_glass_armed': bool(bg_hash),
-    }
+def _act(db, host: str, script: str, mode: str, ref: str, actor: str, marker: str | None = None, timeout: int = 300) -> tuple[dict | None, dict]:
+    """Show the script, dry-run it or apply it. Returns (the run, or None for a preview, and the answer so far)."""
+    if mode == 'preview':
+        return None, {'ok': True, 'mode': mode, 'script': script}
+    res = _run(db, host, script, ['--apply'] if mode == 'apply' else [], ref=ref, mode=mode, actor=actor, timeout=timeout)
+    missing_marker = mode == 'apply' and marker and res['status'] in deploy.FINISHED and not re.search(marker, res.get('output') or '', re.M)
+    return res, _result(res, mode, 'the script ended without confirming it' if missing_marker else None)
 
 
-def ensure_break_glass_key(conn: Conn, actor: str, rotate: bool = False) -> str | None:
-    """Generate a 64-character offline recovery secret if none exists (or when rotating). Returns plaintext once."""
-    existing = alerts.get_setting(conn, BREAK_GLASS_SETTING)
-    if existing and not rotate:
+# ── events ───────────────────────────────────────────────────────────
+def record_event(conn: Conn, host: str, kind: str, summary: str, detail: str = '', via: str = 'controller', occurred: int | None = None, event_uuid: str | None = None) -> bool:
+    """False if this event was already recorded. The severity is decided here, not by whoever reported it."""
+    event_uuid = event_uuid or str(uuid.uuid4())
+    if conn.scalar('SELECT 1 FROM security_events WHERE uuid = :u', {'u': event_uuid}):
+        return False
+    now = int(time.time())
+    conn.execute("""INSERT INTO security_events (uuid, host, kind, severity, occurred_at, received_at, via, summary, detail)
+                    VALUES (:u, :h, :k, :s, :o, :r, :v, :su, :d)""",
+                 {'u': event_uuid, 'h': host, 'k': kind, 's': EVENT_SEVERITY.get(kind, 'warn'), 'o': occurred or now, 'r': now, 'v': via[:60],
+                  'su': clean_text(summary), 'd': clean_text(detail, 8000)})
+    return True
+
+
+def parse_event_line(line: str) -> dict | None:
+    """ev, uuid, kind, epoch, summary (base64), detail (base64). None for anything else."""
+    f = line.split('\t')
+    if len(f) != 6 or f[0] != 'ev' or not UUID_RE.fullmatch(f[1]) or f[2] not in HOST_EVENTS or not f[3].isdigit():
         return None
-    secret = secrets.token_hex(32)
-    digest = hashlib.sha256(secret.encode()).hexdigest()
-    alerts.set_setting(conn, BREAK_GLASS_SETTING, digest, actor)
-    return secret
+    summary, detail = _b64text(f[4]), _b64text(f[5])
+    if summary is None or detail is None:
+        return None
+    return {'uuid': f[1], 'kind': f[2], 'at': int(f[3]), 'summary': summary, 'detail': detail}
 
 
-# ── Layer 1: WORM Retention, Anti-NTP Clock Guards, & Adaptive Quorum ─────────
-def clock_guard_status(conn: Conn, host: str | None = None) -> dict:
-    state = alerts.get_setting(conn, CLOCK_GUARD_SETTING) or {}
-    frozen = bool(state.get('emergency_freeze'))
-    drift_ms = int(state.get('drift_ms', 2))
-    peers = int(state.get('nts_peers', 3))
-    anomaly = state.get('anomaly')
+def ingest_events(conn: Conn, host: str, text: str, via: str = 'scan') -> int:
+    """Event lines from a host: its report, a scan or a measurement carry the same file, so each counts once."""
+    now, new = int(time.time()), 0
+    for line in (text or '').splitlines()[:2000]:
+        ev = parse_event_line(line)
+        if not ev:
+            continue
+        # a clock moved forward must not push the alarm it set off out of sight: nothing is dated ahead of us
+        if not record_event(conn, host, ev['kind'], ev['summary'], ev['detail'], via, min(ev['at'], now), ev['uuid']):
+            continue
+        new += 1
+        if ev['kind'] == 'canary_tripped':
+            m = re.search(r'path_b64=([A-Za-z0-9+/=]+)', ev['detail'])
+            path = _b64text(m[1]) if m else None
+            if path:
+                conn.execute("""UPDATE security_canaries SET status = 'tripped', tripped_at = :t
+                                WHERE lower(host) = lower(:h) AND path = :p AND status = 'armed'""", {'t': min(ev['at'], now), 'h': host, 'p': path})
+        elif ev['kind'] == 'clock_jump':
+            freeze_clock(conn, host, ev['summary'], via)
+        elif ev['kind'] == 'brake_ran':
+            _record_brake_output(conn, host, ev['detail'], 'sentinel', min(ev['at'], now))
+    return new
+
+
+def _record_brake_output(conn: Conn, host: str, output: str, actor: str, now: int):
+    """What the brake confirmed it did. Rows only for lines it printed after checking."""
+    for ip in re.findall(r'^QUARANTINED (\S+)$', output or '', re.M):
+        conn.execute('DELETE FROM security_quarantine WHERE lower(host) = lower(:h) AND ip_address = :ip', {'h': host, 'ip': ip})
+        conn.execute("""INSERT INTO security_quarantine (host, ip_address, reason, added_at, expires_at, actor)
+                        VALUES (:h, :ip, 'emergency brake', :t, NULL, :a)""", {'h': host, 'ip': ip, 't': now, 'a': actor})
+    for fs, snap, tag in re.findall(r'^HELD (zfs|btrfs) (\S+) (\S+)$', output or '', re.M):
+        s, t = _b64text(snap), _b64text(tag)
+        if s and t:
+            _record_hold(conn, host, fs, s, t, None, True, actor, now)
+
+
+def list_events(conn: Conn, host: str | None = None, limit: int = 200, include_info: bool = True) -> list[dict]:
+    where = ['lower(host) = lower(:h)'] if host else []
+    if not include_info:
+        where.append("severity <> 'info'")
+    rows = conn.all(f"""SELECT event_id, host, kind, severity, occurred_at, received_at, via, summary, detail, acknowledged_by, acknowledged_at
+                        FROM security_events {'WHERE ' + ' AND '.join(where) if where else ''} ORDER BY occurred_at DESC, event_id DESC LIMIT {int(limit)}""", {'h': host})
+    keys = ('id', 'host', 'kind', 'severity', 'occurred_at', 'received_at', 'via', 'summary', 'detail', 'acknowledged_by', 'acknowledged_at')
+    return [dict(zip(keys, r)) for r in rows]
+
+
+def acknowledge_event(conn: Conn, event_id: int, actor: str) -> dict:
+    rows = conn.all('SELECT host, kind FROM security_events WHERE event_id = :i', {'i': event_id})
+    if not rows:
+        raise LookupError(f'no event {event_id}')
+    conn.execute('UPDATE security_events SET acknowledged_by = :a, acknowledged_at = :t WHERE event_id = :i', {'a': actor, 't': int(time.time()), 'i': event_id})
+    return {'ok': True, 'host': rows[0][0], 'kind': rows[0][1]}
+
+
+def report_host(conn: Conn, token: str) -> str | None:
+    """The host a sentinel's report token belongs to. It can only add events about itself."""
+    if not token:
+        return None
+    want = hashlib.sha256(token.encode()).hexdigest()
+    for key, value in conn.all("SELECT key, value_json FROM settings WHERE key LIKE 'security.host:%'"):
+        saved = loads(value) or {}
+        if saved.get('token_sha') and secrets.compare_digest(saved['token_sha'], want):
+            return saved.get('host') or key.split(':', 1)[1]
+    return None
+
+
+# ── measuring ────────────────────────────────────────────────────────
+def _sections(text: str) -> dict | None:
+    out: dict[str, list[str]] = {}
+    cur = None
+    for line in (text or '').splitlines():
+        if line.startswith('@@') and re.fullmatch(r'@@[a-z_0-9]+', line):
+            cur = line[2:]
+            out[cur] = []
+        elif cur:
+            out[cur].append(line)
+    return out if 'end' in out and 'now' in out else None     # cut short: a part reading must not look like a whole one
+
+
+def _int(text, default=None):
+    try:
+        return int(str(text).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_avc(line: str) -> dict | None:
+    def field(name):
+        m = re.search(rf'\b{name}="?([^" ]+)"?', line)
+        return clean_text(m[1], 300) if m else None
+    at = re.search(r'audit\((\d+)', line)
+    action = re.search(r'denied\s+\{\s*([^}]*?)\s*\}', line)
+    if not action:
+        return None
+    comm = field('comm')
+    return {'at': int(at[1]) if at else None, 'daemon': comm, 'action': clean_text(action[1], 100), 'path': field('path') or field('name'),
+            'scontext': field('scontext'), 'tcontext': field('tcontext'), 'storage': comm in STORAGE_DAEMONS}
+
+
+def _parse_chrony(lines: list[str]) -> dict | None:
+    if not lines or not lines[0].strip():
+        return None
+    f = lines[0].split(',')
+    try:
+        return {'source': clean_text(f[1], 100), 'stratum': int(f[2]), 'offset_ms': round(abs(float(f[4])) * 1000, 3), 'leap': clean_text(f[-1], 40),
+                'synced': f[-1].strip() != 'Not synchronised'}
+    except (IndexError, ValueError):
+        return None
+
+
+def _parse_aide(lines: list[str]) -> dict:
+    out = {'baseline_at': None, 'last_action': None, 'last_at': None, 'exit_code': None, 'added': None, 'removed': None, 'changed': None, 'entries': []}
+    for line in lines:
+        w = line.split()
+        if len(w) == 2 and w[0] == 'db':
+            out['baseline_at'] = _int(w[1])
+        elif len(w) == 3 and w[0] in ('init', 'check'):
+            out.update(last_action=w[0], last_at=_int(w[1]), exit_code=_int(w[2]))
+        elif (m := re.match(r'\s*(Added|Removed|Changed) (?:entries|files):\s*(\d+)', line)):
+            out[m[1].lower()] = int(m[2])
+        elif len(out['entries']) < 100 and re.search(r': /', line):
+            out['entries'].append(clean_text(line, 300))
+    return out
+
+
+def _parse_lynis(lines: list[str]) -> dict | None:
+    if not lines:
+        return None
+    out = {'at': None, 'hardening_index': None, 'warnings': [], 'suggestions': []}
+    for line in lines:
+        if line.startswith('at '):
+            out['at'] = _int(line[3:])
+        elif line.startswith('hardening_index='):
+            out['hardening_index'] = _int(line.split('=', 1)[1])
+        elif line.startswith(('warning[]=', 'suggestion[]=')):
+            bucket = 'warnings' if line.startswith('w') else 'suggestions'
+            f = line.split('=', 1)[1].split('|')
+            out[bucket].append({'id': clean_text(f[0], 40), 'text': clean_text(f[1] if len(f) > 1 else '', 300)})
+    return out
+
+
+def parse_measure(text: str) -> dict | None:
+    """One reading of a host. None unless the script ran to its end. Nothing is filled in: absent stays absent."""
+    s = _sections(text)
+    if s is None:
+        return None
+    host_now = _int(s['now'][0]) if s['now'] else None
+    if host_now is None:
+        return None
+    tools = [t.strip() for t in s.get('tools', []) if t.strip()]
+    booleans = []
+    for line in s.get('sebool', []):
+        m = re.match(r'(\S+) --> (on|off)$', line.strip())
+        if m:
+            booleans.append({'name': m[1], 'value': m[2], 'expected': EXPECTED_BOOLEANS.get(m[1]), 'ok': EXPECTED_BOOLEANS.get(m[1]) in (None, m[2])})
+    apparmor = {'enabled': 'enabled' in [x.strip() for x in s.get('apparmor', [])], 'enforce': None, 'complain': None}
+    for line in s.get('apparmor', []):
+        w = line.split()
+        if len(w) == 2 and w[0] in ('enforce', 'complain'):
+            apparmor[w[0]] = _int(w[1])
+    audit = [x.strip() for x in s.get('auditd', []) if x.strip()]
+    sentinel = [x.strip() for x in s.get('sentinel', []) if x.strip()]
+    fence = [x.strip() for x in s.get('fence', [])]
+    sysctl = {}
+    for line in s.get('sysctl', []):
+        if '=' in line:
+            k, v = line.split('=', 1)
+            sysctl[k.strip()] = v.strip() or None
+    canaries, btrfs, fcontext = {}, {}, []
+    for line in s.get('canaries', []):
+        f = line.split('\t')
+        path = _b64text(f[0]) if len(f) == 2 else None
+        if path:
+            canaries[path] = None if f[1] == 'gone' else f[1]
+    for line in s.get('holds_btrfs', []):
+        f = line.split('\t')
+        path = _b64text(f[0]) if len(f) == 2 else None
+        if path:
+            btrfs[path] = f[1].strip() == 'ro=true'
+    for line in s.get('fcontext', []):
+        f = line.split('\t')
+        path = _b64text(f[0]) if len(f) == 3 else None
+        if path and f[1]:
+            live = (f[1].split(':') + [''] * 3)[2]
+            want = (f[2].split(':') + [''] * 3)[2] if f[2] else None
+            fcontext.append({'path': path, 'live': clean_text(live, 80), 'expected': clean_text(want, 80) if want else None, 'aligned': None if not want else live == want})
+    ntp = dict(line.split('=', 1) for line in s.get('timedatectl', []) if '=' in line)
+    falco = [x.strip() for x in s.get('falco', [])]
     return {
-        'status': 'frozen' if frozen else 'monotonic_ok',
-        'label': 'EMERGENCY CLOCK FREEZE (Time-Jump Detected)' if frozen else f'NTS Monotonic (Drift {drift_ms}ms, {peers} peers)',
-        'nts_authenticated': True,
-        'drift_ms': drift_ms,
-        'nts_peers': peers,
-        'emergency_freeze': frozen,
-        'anomaly': anomaly,
-        'last_checked': int(state.get('last_checked') or time.time()),
+        'host_now': host_now,
+        'uptime': _int(s['uptime'][0]) if s.get('uptime') else None,
+        'tools': tools,
+        'selinux': (s.get('selinux') or [None])[0],
+        'booleans': booleans,
+        'apparmor': apparmor,
+        'avc': [a for a in map(_parse_avc, s.get('avc', [])) if a],
+        'chrony': _parse_chrony(s.get('chrony', [])),
+        'nts_sources': sum(1 for line in s.get('chrony_auth', []) if ',NTS,' in line),
+        'ntp_synced': {'yes': True, 'no': False}.get(ntp.get('NTPSynchronized', '').strip()),
+        'auditd': {'active': audit[0] == 'active' if audit else None, 'storageforge_rules': _int(audit[1]) if len(audit) > 1 else None},
+        'fence': 'storageforge_fence' in fence,
+        'airgap': 'storageforge_airgap' in fence,
+        'quarantined': [q.strip() for q in s.get('quarantined', [])[:2000] if q.strip()],
+        'sysctl': sysctl,
+        'umask': next((m[1] for line in s.get('umask', []) if (m := re.match(r'umask (\d{3,4})$', line.strip()))), None),
+        'aide': _parse_aide(s.get('aide', [])) if 'aide' in tools else None,
+        'lynis': _parse_lynis(s.get('lynis', [])),
+        'falco': {'installed': 'falco' in tools, 'active': 'active' in falco},
+        'sentinel': {'active': bool(sentinel) and sentinel[0] == 'active', 'armed': any(x == 'ARMED=1' for x in sentinel)},
+        'holds_zfs': [line.split('\t')[:2] for line in s.get('holds_zfs', []) if line.count('\t') == 1],
+        'holds_btrfs': btrfs,
+        'zfs_allow': [clean_text(x, 300) for x in s.get('zfs_allow', [])],
+        'canaries': canaries,
+        'fcontext': fcontext,
+        'shadow_copy2_shares': _int((s.get('samba') or [None])[0]),
     }
 
 
-def check_clock_jump(conn: Conn, host: str, jump_seconds: int, actor: str) -> dict:
-    """Anti-NTP Clock Poisoning Guard: if a forward jump > 60s is observed, freeze all WORM hold releases."""
+def freeze_clock(conn: Conn, host: str, reason: str, by: str):
+    """Releases stop on this host until someone looks. Only a person clears it: a good reading afterwards proves nothing,
+    and neither does a reading from another host."""
+    state = alerts.get_setting(conn, clock_key(host)) or {}
+    if state.get('frozen'):
+        return
     now = int(time.time())
-    if abs(jump_seconds) > 60:
-        state = {
-            'emergency_freeze': True,
-            'drift_ms': jump_seconds * 1000,
-            'nts_peers': 3,
-            'anomaly': f'Host {host} clock jumped by {jump_seconds}s (>60s threshold). All WORM hold releases frozen.',
-            'last_checked': now,
-        }
-        alerts.set_setting(conn, CLOCK_GUARD_SETTING, state, actor)
-        conn.execute("UPDATE security_retention_holds SET legal_hold = 1 WHERE lower(host_name) = lower(:h) AND status = 'locked'",
-                     {'h': host})
-        return {'ok': True, 'tripped': True, 'clock_guard': state}
-    state = {'emergency_freeze': False, 'drift_ms': 2, 'nts_peers': 3, 'anomaly': None, 'last_checked': now}
-    alerts.set_setting(conn, CLOCK_GUARD_SETTING, state, actor)
-    return {'ok': True, 'tripped': False, 'clock_guard': state}
+    alerts.set_setting(conn, clock_key(host), {'frozen': True, 'reason': clean_text(reason), 'at': now}, by[:60])
 
 
-def worm_holds(conn: Conn, host: str | None = None) -> dict:
+def clear_clock(conn: Conn, host: str, actor: str) -> dict:
+    name = known_host(conn, host)
+    was = alerts.get_setting(conn, clock_key(name)) or {}
+    alerts.set_setting(conn, clock_key(name), {'frozen': False, 'cleared_by': actor, 'cleared_at': int(time.time())}, actor)
+    return {'ok': True, 'host': name, 'was_frozen': bool(was.get('frozen')), 'reason': was.get('reason')}
+
+
+def clock_frozen(conn: Conn, host: str) -> bool:
+    return bool((alerts.get_setting(conn, clock_key(host)) or {}).get('frozen'))
+
+
+def _measure_inputs(conn: Conn, host: str) -> dict:
+    holds = conn.all("""SELECT snapshot, filesystem FROM security_retention_holds WHERE lower(host) = lower(:h) AND status <> 'released'""", {'h': host})
+    canaries = [r[0] for r in conn.all('SELECT path FROM security_canaries WHERE lower(host) = lower(:h)', {'h': host})]
+    mounts = [r[0] for r in conn.all("""SELECT m.mount_point FROM mounts m JOIN hosts h ON h.host_id = m.host_id
+                                        WHERE lower(h.hostname) = lower(:h) AND m.scan_state = 'indexed' ORDER BY m.mount_point LIMIT 100""", {'h': host})]
+    return {'zfs_snaps': sorted({s for s, fs in holds if fs == 'zfs'}), 'btrfs_paths': sorted({s for s, fs in holds if fs == 'btrfs'}),
+            'canaries': canaries, 'mounts': mounts}
+
+
+def measure(db, conn: Conn, host, actor: str) -> dict:
+    """Read the host now, through the runner. The only thing it changes is what we know."""
+    name = known_host(conn, host)
+    started = int(time.time())
+    res = _run(db, name, sx.measure_script(**_measure_inputs(conn, name)), ref='measure', mode='report', actor=actor, timeout=300)
+    finished = int(time.time())
+    output = res.get('output') or ''
+    if res['status'] == 'refused' and 'clocks differ' in output:     # the runner's own check caught it first
+        freeze_clock(conn, name, 'the host refused a signed run because the clocks differ by more than the runner allows', 'measure')
+    if res['status'] != 'ok':
+        return _result(res, 'report', host=name)
+    data = parse_measure(output)
+    if data is None:
+        return _result(res, 'report', 'the reading was cut short: nothing was recorded', host=name)
+    ingest_events(conn, name, '\n'.join(_sections(output).get('events', [])), 'measure')
+    store_measurement(conn, name, data, started, finished, 'measure')
+    return {'ok': True, 'host': name, 'measured_at': finished, 'run_id': res.get('run_id')}
+
+
+def store_measurement(conn: Conn, host: str, data: dict, started: int, finished: int, via: str):
+    # The host's clock was read between these two moments, so anything outside them by more than the margin is real.
+    off = 0 if started - CLOCK_JUMP <= data['host_now'] <= finished + CLOCK_JUMP else data['host_now'] - finished
+    data['clock_offset'] = off
+    if off:
+        freeze_clock(conn, host, f'the clock on {host} is {off} s off the controller', via)
+    _save_measurement(conn, host, 'host', finished, via, data)
+    _reconcile(conn, host, data, finished)
+
+
+def _save_measurement(conn: Conn, host: str, kind: str, at: int, via: str, data: dict):
+    conn.execute('DELETE FROM security_measurements WHERE host = :h AND kind = :k', {'h': host, 'k': kind})
+    conn.execute('INSERT INTO security_measurements (host, kind, measured_at, via, data_json) VALUES (:h, :k, :t, :v, :d)',
+                 {'h': host, 'k': kind, 't': at, 'v': via, 'd': json.dumps(data)})
+
+
+def measurement(conn: Conn, host: str, kind: str = 'host') -> dict | None:
+    rows = conn.all('SELECT measured_at, via, data_json FROM security_measurements WHERE lower(host) = lower(:h) AND kind = :k', {'h': host, 'k': kind})
+    if not rows:
+        return None
+    return {**(loads(rows[0][2]) or {}), 'measured_at': rows[0][0], 'via': rows[0][1], 'stale': time.time() - rows[0][0] > STALE_AFTER}
+
+
+def _reconcile(conn: Conn, host: str, data: dict, now: int):
+    """What we recorded against what the host shows. Something gone that should be there is an alarm: that is what it looks
+    like when someone with root has been at the holds or the decoys."""
+    live = {(s, t) for s, t in data['holds_zfs']}
+    for hid, snap, tag, fs, missing in conn.all("""SELECT id, snapshot, hold_tag, filesystem, missing_at FROM security_retention_holds
+                                                   WHERE lower(host) = lower(:h) AND status <> 'released'""", {'h': host}):
+        there = (snap, tag) in live if fs == 'zfs' else data['holds_btrfs'].get(snap) is True
+        if there:
+            conn.execute('UPDATE security_retention_holds SET verified_at = :t, missing_at = NULL WHERE id = :i', {'t': now, 'i': hid})
+        elif not missing:
+            conn.execute('UPDATE security_retention_holds SET missing_at = :t WHERE id = :i', {'t': now, 'i': hid})
+            record_event(conn, host, 'hold_missing', f'the hold {tag} on {snap} is gone from the host', via='measure')
+    for cid, path, sha, status in conn.all('SELECT id, path, sha256, status FROM security_canaries WHERE lower(host) = lower(:h)', {'h': host}):
+        if path not in data['canaries']:
+            continue
+        seen = data['canaries'][path]
+        if seen == sha:
+            conn.execute('UPDATE security_canaries SET verified_at = :t WHERE id = :i', {'t': now, 'i': cid})
+        elif status == 'armed':
+            conn.execute("UPDATE security_canaries SET status = 'tripped', tripped_at = :t WHERE id = :i", {'t': now, 'i': cid})
+            what = 'is gone' if seen is None else 'no longer matches what was written'
+            record_event(conn, host, 'canary_tripped', f'{path} {what}', f'path_b64={sx.b64(path)};event=MEASURED', 'measure', now,
+                         str(uuid.uuid5(uuid.NAMESPACE_URL, f'{host}:{path}:{seen}:{sha}')))
+
+
+# ── retention holds and who may release them ─────────────────────────
+def cool_off_hours(conn: Conn) -> int:
+    h = _int(alerts.get_setting(conn, COOL_OFF), DEFAULT_COOL_OFF)
+    return h if h in COOL_OFF_HOURS else DEFAULT_COOL_OFF
+
+
+def set_cool_off(conn: Conn, hours, actor: str) -> dict:
+    """It can only go up from here. Shortening it is what an attacker would do first."""
+    h = _int(hours)
+    if h not in COOL_OFF_HOURS:
+        raise ValueError('the cool-off is 12, 24, 48 or 72 hours')
+    if h < cool_off_hours(conn):
+        raise ValueError(f'the cool-off cannot be shortened from here: it is {cool_off_hours(conn)} h')
+    alerts.set_setting(conn, COOL_OFF, h, actor)
+    return {'ok': True, 'hours': h}
+
+
+def established_admins(conn: Conn, now: int | None = None) -> list[str]:
+    """Admins old enough to count. An attacker who has one admin account could make a second and approve themselves,
+    so an account counts only after it has existed for longer than the cool-off."""
+    cutoff = (now or int(time.time())) - cool_off_hours(conn) * 3600
+    return [r[0] for r in conn.all("SELECT username FROM users WHERE role = 'admin' AND disabled_at IS NULL AND created_at <= :c", {'c': cutoff})]
+
+
+def _person(actor: str) -> str:
+    """The account behind an actor: audit rows and timelocks say web:name, and accounts just name."""
+    return str(actor).removeprefix('web:').lower()
+
+
+def quorum_state(conn: Conn) -> dict:
+    admins = established_admins(conn)
+    dual, hours = len(admins) >= 2, cool_off_hours(conn)
+    return {'mode': 'dual_admin' if dual else 'cool_off', 'label': f'Two admins must agree ({len(admins)} established)' if dual else f'One admin: {hours} h cool-off',
+            'established_admins': len(admins), 'cool_off_hours': hours, 'break_glass_armed': bool(alerts.get_setting(conn, BREAK_GLASS))}
+
+
+def _record_hold(conn: Conn, host: str, fs: str, snapshot: str, tag: str, expires: int | None, legal: bool, actor: str, now: int) -> int:
+    """A hold can only get stronger here: a later date stands, a legal hold stays, and asking again shortens nothing."""
+    rows = conn.all('SELECT id, expires_at, legal_hold FROM security_retention_holds WHERE lower(host) = lower(:h) AND snapshot = :s AND hold_tag = :t',
+                    {'h': host, 's': snapshot, 't': tag})
+    never = legal or expires is None
+    if rows:
+        hid, old_exp, old_legal = rows[0]
+        keep_legal = bool(old_legal) or legal
+        new_exp = None if keep_legal or never or old_exp is None else max(old_exp, expires)
+        conn.execute("""UPDATE security_retention_holds SET expires_at = :e, legal_hold = :l, status = 'locked', verified_at = :t, missing_at = NULL WHERE id = :i""",
+                     {'e': new_exp, 'l': 1 if keep_legal else 0, 't': now, 'i': hid})
+        return hid
+    return conn.scalar("""INSERT INTO security_retention_holds (host, snapshot, hold_tag, filesystem, created_at, expires_at, legal_hold, status, applied_by, verified_at)
+                          VALUES (:h, :s, :t, :f, :c, :e, :l, 'locked', :a, :c) RETURNING id""",
+                       {'h': host, 's': snapshot, 't': tag, 'f': fs, 'c': now, 'e': None if never else expires, 'l': 1 if legal else 0, 'a': actor})
+
+
+def apply_hold(db, conn: Conn, body: dict, actor: str) -> dict:
+    host, mode = known_host(conn, body.get('host')), _mode(body)
+    snapshot = str(body.get('snapshot') or '').strip()
+    if not ZFS_SNAP_RE.fullmatch(snapshot):
+        snapshot = clean_path(snapshot, 'the snapshot (dataset@name, or a btrfs path)')
+    legal = body.get('legal_hold') is True
+    days = _int(body.get('retention_days'), 0) or 0
+    if not legal and not 1 <= days <= 3650:
+        raise ValueError('retention_days is 1 to 3650, or ask for a legal hold')
+    tag = str(body.get('hold_tag') or ('sf-legal' if legal else f'sf-worm-{days}d'))
+    if not TAG_RE.fullmatch(tag):
+        raise ValueError('a hold tag starts with sf- and holds only letters, digits, ., _ and -')
+    res, out = _act(db, host, sx.hold_script(snapshot, tag, body.get('create') is True), mode, f'hold:{snapshot}'[:200], actor, r'^HELD ')
+    out.update(host=host, snapshot=snapshot, hold_tag=tag)
+    if res and mode == 'apply' and out['ok']:
+        fs = re.search(r'^HELD (zfs|btrfs) ', res['output'], re.M)[1]
+        now = int(time.time())
+        out['hold_id'] = _record_hold(conn, host, fs, snapshot, tag, now + days * 86400, legal, actor, now)
+    return out
+
+
+def hold_rows(conn: Conn, host: str | None = None) -> list[dict]:
+    rows = conn.all(f"""SELECT id, host, snapshot, hold_tag, filesystem, created_at, expires_at, legal_hold, status, applied_by, verified_at, missing_at
+                        FROM security_retention_holds {'WHERE lower(host) = lower(:h)' if host else ''} ORDER BY created_at DESC LIMIT 1000""", {'h': host})
+    keys = ('id', 'host', 'snapshot', 'hold_tag', 'filesystem', 'created_at', 'expires_at', 'legal_hold', 'status', 'applied_by', 'verified_at', 'missing_at')
     now = int(time.time())
-    h = _clean_host(conn, host)
-    where = 'WHERE lower(host_name) = lower(:h)' if h else ''
-    params = {'h': h} if h else {}
-    rows = conn.all(f"""SELECT id, host_name, dataset_name, snapshot_name, hold_tag, created_at, expires_at, legal_hold, status
-                        FROM security_retention_holds {where} ORDER BY created_at DESC""", params)
-    holds = []
-    active_count = 0
-    expiring_24h = 0
-    legal_count = 0
-    for hid, hname, ds, snap, tag, created, expires, legal, status in rows:
-        if status == 'locked' and expires and expires <= now and not legal:
-            status = 'expired'
-        if status in ('locked', 'pending_release'):
-            active_count += 1
-            if expires and 0 < (expires - now) <= 86400 and not legal:
-                expiring_24h += 1
-        if legal:
-            legal_count += 1
-        holds.append({
-            'id': hid,
-            'host': hname,
-            'dataset': ds,
-            'snapshot': snap,
-            'hold_tag': tag,
-            'created_at': int(created),
-            'expires_at': int(expires) if expires else None,
-            'legal_hold': bool(legal),
-            'status': status,
-        })
+    out = [dict(zip(keys, r)) for r in rows]
+    for h in out:
+        h['legal_hold'] = bool(h['legal_hold'])
+        h['expired'] = bool(h['expires_at'] and h['expires_at'] <= now and not h['legal_hold'])
+    return out
 
-    q_where = "WHERE status = 'pending'" + (' AND lower(host_name) = lower(:h)' if h else '')
-    q_rows = conn.all(f"""SELECT id, action_type, target_ref, host_name, actor, approved_by, requested_at, executes_at, status, break_glass_used, detail_json
-                          FROM security_timelock_queue {q_where} ORDER BY requested_at DESC""", params)
-    timelocks = [{
-        'id': qid,
-        'action_type': act,
-        'target_ref': ref,
-        'host': qhost,
-        'actor': who,
-        'approved_by': app_by,
-        'requested_at': int(req_at),
-        'executes_at': int(exec_at),
-        'remaining_seconds': max(0, int(exec_at) - now),
-        'status': st,
-        'break_glass_used': bool(bg),
-        'detail': loads(det) or {},
-    } for qid, act, ref, qhost, who, app_by, req_at, exec_at, st, bg, det in q_rows]
 
+def _timelocks(conn: Conn, host: str | None = None, status: str = 'pending') -> list[dict]:
+    where = ['status = :st'] + (["(host = '' OR lower(host) = lower(:h))"] if host else [])
+    rows = conn.all(f"""SELECT id, action, target_ref, host, actor, mode, requested_at, executes_at, status, decided_by, decided_at, break_glass_used, detail_json, output
+                        FROM security_timelock_queue WHERE {' AND '.join(where)} ORDER BY requested_at DESC LIMIT 200""", {'st': status, 'h': host})
+    keys = ('id', 'action', 'target_ref', 'host', 'actor', 'mode', 'requested_at', 'executes_at', 'status', 'decided_by', 'decided_at', 'break_glass_used', 'detail', 'output')
+    out = [dict(zip(keys, r)) for r in rows]
+    now = int(time.time())
+    for t in out:
+        t['detail'] = loads(t['detail']) or {}
+        t['break_glass_used'] = bool(t['break_glass_used'])
+        t['remaining_seconds'] = max(0, t['executes_at'] - now) if t['mode'] == 'cool_off' else None
+    return out
+
+
+def worm_view(conn: Conn, host: str | None = None) -> dict:
+    holds = hold_rows(conn, host)
+    active = [h for h in holds if h['status'] != 'released']
+    now = int(time.time())
     return {
         'holds': holds,
-        'summary': {
-            'active_holds': active_count,
-            'expiring_24h': expiring_24h,
-            'legal_holds': legal_count,
-        },
-        'clock_guard': clock_guard_status(conn, h),
-        'quorum': adaptive_quorum_state(conn),
-        'pending_timelocks': timelocks,
+        'summary': {'active': len(active), 'verified': sum(1 for h in active if h['verified_at'] and not h['missing_at']),
+                    'missing': sum(1 for h in active if h['missing_at']), 'legal': sum(1 for h in active if h['legal_hold']),
+                    'expired': sum(1 for h in active if h['expired']),
+                    'expiring_24h': sum(1 for h in active if h['expires_at'] and 0 < h['expires_at'] - now <= 86400 and not h['legal_hold'])},
+        'quorum': quorum_state(conn),
+        'pending': _timelocks(conn, host),
+        'clock': clock_view(conn, host) if host else None,
     }
 
 
-def apply_worm_hold(conn: Conn, body: dict, actor: str) -> dict:
-    host = _clean_host(conn, body.get('host')) or 'localhost'
-    dataset = str(body.get('dataset') or 'tank/shares').strip()
-    snapshot = str(body.get('snapshot') or f'{dataset}@daily-{time.strftime("%Y%m%d", time.gmtime())}').strip()
-    days = int(body.get('retention_days') or 7)
-    legal_hold = 1 if body.get('legal_hold') else 0
-    hold_tag = str(body.get('hold_tag') or ('sf-legal' if legal_hold else f'sf-worm-{days}d')).strip()
-    if not SAFE_NAME_RE.fullmatch(dataset) or not SAFE_NAME_RE.fullmatch(snapshot):
-        raise ValueError('dataset and snapshot must contain only letters, digits, and . _ - : / @')
-    if not HOLD_TAG_RE.fullmatch(hold_tag):
-        raise ValueError('hold_tag must be 1-64 characters of letters, digits, ., _, or -')
-    now = int(time.time())
-    expires_at = None if legal_hold else now + max(1, days) * 86400
-
-    existing = conn.scalar(
-        'SELECT id FROM security_retention_holds WHERE lower(host_name) = lower(:h) AND snapshot_name = :s AND hold_tag = :t',
-        {'h': host, 's': snapshot, 't': hold_tag}
-    )
-    if existing:
-        conn.execute(
-            "UPDATE security_retention_holds SET expires_at = :e, legal_hold = :l, status = 'locked' WHERE id = :id",
-            {'e': expires_at, 'l': legal_hold, 'id': existing}
-        )
-        hold_id = int(existing)
-    else:
-        hold_id = int(conn.scalar(
-            """INSERT INTO security_retention_holds
-               (host_name, dataset_name, snapshot_name, hold_tag, created_at, expires_at, legal_hold, status)
-               VALUES (:h, :d, :s, :t, :c, :e, :l, 'locked') RETURNING id""",
-            {'h': host, 'd': dataset, 's': snapshot, 't': hold_tag, 'c': now, 'e': expires_at, 'l': legal_hold}
-        ))
-
-    script = (
-        f"#!/bin/bash\n# StorageForge WORM Kernel Hold for {one_line(host)}\nset -euo pipefail\n"
-        f"if command -v zfs >/dev/null 2>&1; then\n"
-        f"  zfs hold {shlex.quote(hold_tag)} {shlex.quote(snapshot)}\n"
-        f"elif command -v btrfs >/dev/null 2>&1; then\n"
-        f"  btrfs property set -ts {shlex.quote(dataset)} ro true\n"
-        f"fi\n"
-    )
-    return {
-        'ok': True,
-        'hold_id': hold_id,
-        'host': host,
-        'dataset': dataset,
-        'snapshot': snapshot,
-        'hold_tag': hold_tag,
-        'expires_at': expires_at,
-        'legal_hold': bool(legal_hold),
-        'script': script,
-    }
-
-
-def request_worm_release(conn: Conn, body: dict, actor: str) -> dict:
-    clock = clock_guard_status(conn)
-    if clock['emergency_freeze']:
-        return {'ok': False, 'error': 'Clock Guard emergency freeze is active: WORM hold releases are suspended.'}
-
-    hold_id = body.get('hold_id')
-    snapshot = str(body.get('snapshot') or '').strip()
-    host = _clean_host(conn, body.get('host'))
-    if hold_id:
-        row = conn.all('SELECT id, host_name, snapshot_name, hold_tag, status FROM security_retention_holds WHERE id = :id',
-                       {'id': int(hold_id)})
-    elif snapshot:
-        q = 'SELECT id, host_name, snapshot_name, hold_tag, status FROM security_retention_holds WHERE snapshot_name = :s'
-        p = {'s': snapshot}
-        if host:
-            q += ' AND lower(host_name) = lower(:h)'
-            p['h'] = host
-        row = conn.all(q, p)
-    else:
-        raise ValueError('hold_id or snapshot is required')
-
-    if not row:
-        return {'ok': False, 'error': 'Retention hold not found'}
-    hid, hname, snap, tag, status = row[0]
-    now = int(time.time())
-    quorum = adaptive_quorum_state(conn)
-    delay_sec = int(quorum['cooloff_hours']) * 3600
-    exec_at = now + delay_sec
-
-    conn.execute("UPDATE security_retention_holds SET status = 'pending_release' WHERE id = :id", {'id': hid})
-    qid = int(conn.scalar(
-        """INSERT INTO security_timelock_queue
-           (action_type, target_ref, host_name, actor, requested_at, executes_at, status, break_glass_used, detail_json)
-           VALUES ('worm_release', :ref, :h, :a, :r, :e, 'pending', 0, :d) RETURNING id""",
-        {
-            'ref': f'{snap}#{tag}',
-            'h': hname,
-            'a': actor,
-            'r': now,
-            'e': exec_at,
-            'd': json.dumps({'hold_id': hid, 'snapshot': snap, 'hold_tag': tag, 'mode': quorum['mode']}),
-        }
-    ))
-    return {
-        'ok': True,
-        'timelock_id': qid,
-        'hold_id': hid,
-        'host': hname,
-        'snapshot': snap,
-        'hold_tag': tag,
-        'quorum_mode': quorum['mode'],
-        'executes_at': exec_at,
-        'cooloff_hours': quorum['cooloff_hours'],
-    }
-
-
-def approve_worm_quorum(conn: Conn, body: dict, actor: str) -> dict:
-    tid = int(body.get('timelock_id') or 0)
-    if not tid:
-        raise ValueError('timelock_id is required')
-    row = conn.all('SELECT id, target_ref, host_name, actor, status, detail_json FROM security_timelock_queue WHERE id = :id',
-                   {'id': tid})
-    if not row:
-        return {'ok': False, 'error': 'Pending timelock entry not found'}
-    _, ref, hname, requester, status, det_json = row[0]
-    if status != 'pending':
-        return {'ok': False, 'error': f'Timelock entry is already {status}'}
-    quorum = adaptive_quorum_state(conn)
-    if quorum['multi_admin'] and requester.lower() == actor.lower():
-        return {'ok': False, 'error': 'Dual-Admin Quorum requires approval from a second administrator different from the initiator.'}
-
-    det = loads(det_json) or {}
-    now = int(time.time())
-    conn.execute("UPDATE security_timelock_queue SET status = 'executed', approved_by = :a, executes_at = :t WHERE id = :id",
-                 {'a': actor, 't': now, 'id': tid})
-    if det.get('hold_id'):
-        conn.execute("UPDATE security_retention_holds SET status = 'released', legal_hold = 0 WHERE id = :id",
-                     {'id': int(det['hold_id'])})
-    return {'ok': True, 'timelock_id': tid, 'target_ref': ref, 'host': hname, 'approved_by': actor, 'status': 'executed'}
-
-
-def break_glass_worm(conn: Conn, body: dict, actor: str) -> dict:
-    """Verify or initialize the physical offline Break-Glass key and bypass the cool-off delay."""
-    action = str(body.get('action') or 'bypass').strip()
-    if action == 'generate':
-        secret = ensure_break_glass_key(conn, actor, rotate=True)
-        return {'ok': True, 'generated': True, 'break_glass_key': secret}
-
-    key = str(body.get('break_glass_key') or '').strip()
-    tid = int(body.get('timelock_id') or 0)
-    if not key or not tid:
-        raise ValueError('timelock_id and break_glass_key are required')
-    stored_hash = alerts.get_setting(conn, BREAK_GLASS_SETTING)
-    given_hash = hashlib.sha256(key.encode()).hexdigest()
-    if not stored_hash or not secrets.compare_digest(str(stored_hash), given_hash):
-        return {'ok': False, 'error': 'Invalid offline Break-Glass recovery key'}
-
-    row = conn.all('SELECT id, target_ref, host_name, status, detail_json FROM security_timelock_queue WHERE id = :id',
-                   {'id': tid})
-    if not row:
-        return {'ok': False, 'error': 'Pending timelock entry not found'}
-    _, ref, hname, status, det_json = row[0]
-    if status != 'pending':
-        return {'ok': False, 'error': f'Timelock entry is already {status}'}
-    det = loads(det_json) or {}
-    now = int(time.time())
-    conn.execute("UPDATE security_timelock_queue SET status = 'executed', break_glass_used = 1, approved_by = :a, executes_at = :t WHERE id = :id",
-                 {'a': actor, 't': now, 'id': tid})
-    if det.get('hold_id'):
-        conn.execute("UPDATE security_retention_holds SET status = 'released', legal_hold = 0 WHERE id = :id",
-                     {'id': int(det['hold_id'])})
-    return {'ok': True, 'timelock_id': tid, 'target_ref': ref, 'host': hname, 'status': 'executed', 'break_glass_used': True}
-
-
-def abort_worm_release(conn: Conn, body: dict, actor: str) -> dict:
-    tid = int(body.get('timelock_id') or 0)
-    if not tid:
-        raise ValueError('timelock_id is required')
-    row = conn.all('SELECT id, target_ref, host_name, status, detail_json FROM security_timelock_queue WHERE id = :id',
-                   {'id': tid})
-    if not row:
-        return {'ok': False, 'error': 'Pending timelock entry not found'}
-    _, ref, hname, status, det_json = row[0]
-    if status != 'pending':
-        return {'ok': False, 'error': f'Timelock entry is already {status}'}
-    det = loads(det_json) or {}
-    conn.execute("UPDATE security_timelock_queue SET status = 'aborted', approved_by = :a WHERE id = :id",
-                 {'a': actor, 'id': tid})
-    if det.get('hold_id'):
-        conn.execute("UPDATE security_retention_holds SET status = 'locked' WHERE id = :id",
-                     {'id': int(det['hold_id'])})
-    return {'ok': True, 'timelock_id': tid, 'target_ref': ref, 'host': hname, 'status': 'aborted'}
-
-
-# ── Layer 2: Early Warning Canaries, VSS Decoys, & Auditd Watchers ───────────
-def list_canaries(conn: Conn, host: str | None = None) -> dict:
-    h = _clean_host(conn, host)
-    where = 'WHERE lower(host_name) = lower(:h)' if h else ''
-    params = {'h': h} if h else {}
-    rows = conn.all(f"""SELECT id, host_name, share_path, file_name, trap_type, baseline_sha256, deployed_at, status
-                        FROM security_canaries {where} ORDER BY host_name, share_path, file_name""", params)
-    canaries = [{
-        'id': cid,
-        'host': hname,
-        'share_path': spath,
-        'file_name': fname,
-        'trap_type': ttype,
-        'baseline_sha256': sha,
-        'deployed_at': int(dep),
-        'status': st,
-    } for cid, hname, spath, fname, ttype, sha, dep, st in rows]
-
-    armed = sum(1 for c in canaries if c['status'] == 'armed')
-    tripped = sum(1 for c in canaries if c['status'] == 'tripped')
-    vss_traps = sum(1 for c in canaries if c['trap_type'] == 'vss_decoy')
-    shares_protected = len({(c['host'], c['share_path']) for c in canaries})
-
-    audit_rules = [
-        f"-w {c['share_path'].rstrip('/')}/{c['file_name']} -p wa -k sf_canary_tripped"
-        for c in canaries if c['trap_type'] == 'file_canary'
-    ]
-    audit_rules.extend([
-        '-w /etc/fstab -p wa -k sf_config_tamper',
-        '-w /etc/samba/smb.conf -p wa -k sf_config_tamper',
-        '-w /etc/exports -p wa -k sf_config_tamper',
-        '-w /usr/local/sbin/storageforge-run -p wa -k sf_runner_tamper',
-    ])
-
-    return {
-        'canaries': canaries,
-        'summary': {
-            'total_canaries': len(canaries),
-            'armed_canaries': armed,
-            'tripped_canaries': tripped,
-            'vss_traps': vss_traps,
-            'protected_shares': shares_protected,
-            'tripwire_state': 'TRIPPED' if tripped else ('ARMED' if armed else 'UNARMED'),
-        },
-        'auditd_rules': audit_rules,
-    }
-
-
-def deploy_canaries(conn: Conn, body: dict, actor: str) -> dict:
-    host = _clean_host(conn, body.get('host')) or 'localhost'
-    shares = body.get('shares') or ['/srv/shares/general']
-    if isinstance(shares, str):
-        shares = [s.strip() for s in shares.split(',') if s.strip()]
-    custom_files = body.get('files')
-    decoys = [(str(f), 'file_canary') for f in custom_files] if custom_files else list(DEFAULT_CANARY_FILES)
-    if body.get('enable_vss_trap', True) and not any(t == 'vss_decoy' for _, t in decoys):
-        decoys.append(('VSS RPC: vssadmin Intercept', 'vss_decoy'))
-
-    now = int(time.time())
-    deployed = []
-    for spath in shares:
-        spath = str(spath).strip()
-        if not spath.startswith('/'):
-            raise ValueError('share_path must be an absolute path starting with /')
-        for fname, ttype in decoys:
-            digest = hashlib.sha256(f'storageforge-canary:{host}:{spath}:{fname}'.encode()).hexdigest()
-            existing = conn.scalar(
-                'SELECT id FROM security_canaries WHERE lower(host_name) = lower(:h) AND share_path = :p AND file_name = :f',
-                {'h': host, 'p': spath, 'f': fname}
-            )
-            if existing:
-                conn.execute(
-                    "UPDATE security_canaries SET trap_type = :t, baseline_sha256 = :s, deployed_at = :d, status = 'armed' WHERE id = :id",
-                    {'t': ttype, 's': digest, 'd': now, 'id': existing}
-                )
-                cid = int(existing)
-            else:
-                cid = int(conn.scalar(
-                    """INSERT INTO security_canaries
-                       (host_name, share_path, file_name, trap_type, baseline_sha256, deployed_at, status)
-                       VALUES (:h, :p, :f, :t, :s, :d, 'armed') RETURNING id""",
-                    {'h': host, 'p': spath, 'f': fname, 't': ttype, 's': digest, 'd': now}
-                ))
-            deployed.append({'id': cid, 'host': host, 'share_path': spath, 'file_name': fname, 'trap_type': ttype, 'baseline_sha256': digest})
-
-    rule_lines = [
-        f"-w {d['share_path'].rstrip('/')}/{d['file_name']} -p wa -k sf_canary_tripped"
-        for d in deployed if d['trap_type'] == 'file_canary'
-    ]
-    script = (
-        f"#!/bin/bash\n# StorageForge Canary & VSS Shadow Trap Deployment for {one_line(host)}\nset -euo pipefail\n"
-        f"mkdir -p /etc/audit/rules.d\n"
-        f"cat <<'EOF' >/etc/audit/rules.d/storageforge-canary.rules\n"
-        + '\n'.join(rule_lines) + "\n"
-        f"-w /etc/fstab -p wa -k sf_config_tamper\n"
-        f"-w /etc/samba/smb.conf -p wa -k sf_config_tamper\n"
-        f"-w /etc/exports -p wa -k sf_config_tamper\n"
-        f"EOF\n"
-        f"augenrules --load 2>/dev/null || service auditd restart 2>/dev/null || true\n"
-    )
-    return {'ok': True, 'host': host, 'deployed': deployed, 'count': len(deployed), 'script': script}
-
-
-def test_canary_tripwire(conn: Conn, body: dict, actor: str) -> dict:
-    host = _clean_host(conn, body.get('host')) or 'localhost'
-    simulate_trip = bool(body.get('simulate_trip'))
-    rows = conn.all('SELECT id, share_path, file_name, trap_type, baseline_sha256 FROM security_canaries WHERE lower(host_name) = lower(:h)',
-                    {'h': host})
-    if simulate_trip and rows:
-        cid = rows[0][0]
-        conn.execute("UPDATE security_canaries SET status = 'tripped' WHERE id = :id", {'id': cid})
-    return {
-        'ok': True,
-        'host': host,
-        'tested_canaries': len(rows),
-        'simulated_trip': simulate_trip,
-        'latency_ms': 1.2,
-        'auditd_hook': 'active',
-        'vss_interceptor': 'armed',
-        'verified_at': int(time.time()),
-    }
-
-
-# ── Layer 3: Mandatory Access Control (MAC) & Identity Anomaly Detection ─────
-def mac_status(conn: Conn, host: str | None = None) -> dict:
-    h = _clean_host(conn, host)
-    hosts = _known_hosts(conn, h)
-    target_host = h or (hosts[0]['host'] if hosts else 'localhost')
-    os_info = (hosts[0]['os_info'] if hosts else 'Linux').lower()
-    is_debian = any(k in os_info for k in ('debian', 'ubuntu'))
-    framework = 'AppArmor' if is_debian else 'SELinux (Targeted)'
-    mode = 'Enforcing'
-
-    mounts = conn.all(
-        """SELECT m.mount_point, m.fstype FROM mounts m
-           JOIN hosts h ON h.host_id = m.host_id
-           WHERE lower(h.hostname) = lower(:h) ORDER BY m.mount_point""",
-        {'h': target_host}
-    )
-    fcontexts = []
-    for mp, fstype in mounts:
-        expected = 'samba_share_t' if 'srv' in mp or 'share' in mp else ('nfs_t' if 'nfs' in mp else 'var_t')
-        fcontexts.append({
-            'path': mp,
-            'fstype': fstype or 'zfs',
-            'expected_context': expected,
-            'live_context': expected,
-            'persistent_fcontext': True,
-            'aligned': True,
-        })
-    if not fcontexts:
-        fcontexts = [
-            {'path': '/srv/shares', 'fstype': 'zfs', 'expected_context': 'samba_share_t', 'live_context': 'samba_share_t', 'persistent_fcontext': True, 'aligned': True},
-            {'path': '/srv/nfs', 'fstype': 'zfs', 'expected_context': 'nfs_t', 'live_context': 'nfs_t', 'persistent_fcontext': True, 'aligned': True},
-        ]
-
-    booleans = [
-        {'name': name, 'current': expected, 'expected': expected, 'compliant': True, 'description': desc}
-        for name, expected, desc in STORAGE_BOOLEANS
-    ]
-    unremediated_avc = int(conn.scalar(
-        'SELECT count(*) FROM security_avc_events WHERE lower(host_name) = lower(:h) AND remediated = 0',
-        {'h': target_host}
-    ) or 0)
-
-    return {
-        'host': target_host,
-        'framework': framework,
-        'mode': mode,
-        'drift_count': unremediated_avc,
-        'booleans': booleans,
-        'fcontexts': fcontexts,
-    }
-
-
-def identity_anomalies(conn: Conn, host: str | None = None) -> dict:
-    h = _clean_host(conn, host)
-    quarantined = conn.all(
-        'SELECT host_name, ip_address, reason, tripped_at, actor FROM security_quarantine'
-        + (' WHERE lower(host_name) = lower(:h)' if h else '')
-        + ' ORDER BY tripped_at DESC',
-        {'h': h} if h else {}
-    )
-    anomalies = [{
-        'timestamp': int(tripped),
-        'host': hname,
-        'user': actor_name,
-        'client_ip': ip,
-        'behavior': reason,
-        'severity': 'critical',
-    } for hname, ip, reason, tripped, actor_name in quarantined]
-    return {
-        'anomalies': anomalies,
-        'total': len(anomalies),
-        'thresholds': {
-            'max_share_mounts_per_30s': 10,
-            'concurrent_subnet_check': True,
-            'off_hours_bulk_read_gb': 25,
-        },
-    }
-
-
-def avc_events(conn: Conn, host: str | None = None) -> dict:
-    h = _clean_host(conn, host)
-    where = 'WHERE lower(host_name) = lower(:h)' if h else ''
-    params = {'h': h} if h else {}
-    rows = conn.all(f"""SELECT id, host_name, timestamp, daemon, syscall, target_path, scontext, tcontext, remediated
-                        FROM security_avc_events {where} ORDER BY timestamp DESC LIMIT 100""", params)
-    events = [{
-        'id': eid,
-        'host': hname,
-        'timestamp': int(ts),
-        'daemon': daemon,
-        'syscall': syscall,
-        'target_path': tpath,
-        'scontext': scontext,
-        'tcontext': tcontext,
-        'remediated': bool(rem),
-    } for eid, hname, ts, daemon, syscall, tpath, scontext, tcontext, rem in rows]
-    return {'events': events, 'count': len(events)}
-
-
-def remediate_mac(conn: Conn, body: dict, actor: str) -> dict:
-    host = _clean_host(conn, body.get('host')) or 'localhost'
-    avc_id = body.get('avc_id')
-    target_path = str(body.get('target_path') or '/srv/shares').strip()
-    target_context = str(body.get('target_context') or 'samba_share_t').strip()
-    boolean_name = str(body.get('boolean_name') or '').strip()
-    boolean_val = 'on' if body.get('boolean_value') in (True, 'on', '1', 1) else 'off'
-
-    if not target_path.startswith('/') or not SAFE_NAME_RE.fullmatch(target_path):
-        raise ValueError('target_path must be a valid absolute path')
-    if not SAFE_NAME_RE.fullmatch(target_context):
-        raise ValueError('target_context must be a valid SELinux context type')
-
-    if avc_id:
-        conn.execute('UPDATE security_avc_events SET remediated = 1 WHERE id = :id', {'id': int(avc_id)})
-
-    cmds = [
-        f"semanage fcontext -a -t {shlex.quote(target_context)} {shlex.quote(target_path + '(/.*)?')} 2>/dev/null || "
-        f"semanage fcontext -m -t {shlex.quote(target_context)} {shlex.quote(target_path + '(/.*)?')}",
-        f"restorecon -Rv {shlex.quote(target_path)}",
-    ]
-    if boolean_name and SAFE_NAME_RE.fullmatch(boolean_name):
-        cmds.append(f"setsebool -P {shlex.quote(boolean_name)} {boolean_val}")
-
-    script = "#!/bin/bash\n# StorageForge MAC Doctor Remediation\nset -euo pipefail\n" + '\n'.join(cmds) + "\n"
-    return {
-        'ok': True,
-        'host': host,
-        'target_path': target_path,
-        'target_context': target_context,
-        'avc_id': avc_id,
-        'script': script,
-    }
-
-
-# ── Layer 4: Storage Firewall & Network Fencing Engine ───────────────────────
-def list_quarantine(conn: Conn, host: str | None = None) -> dict:
-    h = _clean_host(conn, host)
-    where = 'WHERE lower(host_name) = lower(:h)' if h else ''
-    params = {'h': h} if h else {}
-    now = int(time.time())
-    rows = conn.all(f"""SELECT id, host_name, ip_address, reason, tripped_at, expires_at, permanent, actor
-                        FROM security_quarantine {where} ORDER BY tripped_at DESC""", params)
-    quarantined = [{
-        'id': qid,
-        'host': hname,
-        'ip_address': ip,
-        'reason': reason,
-        'tripped_at': int(tripped),
-        'expires_at': int(exp) if exp else None,
-        'remaining_seconds': None if perm or not exp else max(0, int(exp) - now),
-        'permanent': bool(perm),
-        'actor': who,
-    } for qid, hname, ip, reason, tripped, exp, perm, who in rows]
-
-    airgapped = set(alerts.get_setting(conn, AIRGAP_SETTING) or [])
-    vips = list(alerts.get_setting(conn, VIP_EXEMPT_SETTING) or ['127.0.0.1'])
-
-    return {
-        'quarantine': quarantined,
-        'backend': 'nftables',
-        'airgap_hosts': sorted(airgapped),
-        'airgap_active': bool(h and host_slug(h) in airgapped) if h else bool(airgapped),
-        'vip_exempt_ips': vips,
-        'fenced_ports': ['445/tcp (SMB)', '139/tcp (NetBIOS)', '2049/tcp (NFS)', '3260/tcp (iSCSI)'],
-    }
-
-
-def quarantine_ip(conn: Conn, body: dict, actor: str) -> dict:
-    host = _clean_host(conn, body.get('host')) or 'localhost'
-    raw_ip = str(body.get('ip_address') or body.get('ip') or '').strip()
-    if not raw_ip:
-        raise ValueError('ip_address is required')
-    try:
-        ip_obj = ipaddress.ip_interface(raw_ip) if '/' in raw_ip else ipaddress.ip_address(raw_ip)
-    except ValueError as exc:
-        raise ValueError(f'Invalid IP address or CIDR: {raw_ip}') from exc
-    ip_str = str(ip_obj)
-
-    vips = set(alerts.get_setting(conn, VIP_EXEMPT_SETTING) or ['127.0.0.1'])
-    if ip_str in vips or getattr(ip_obj, 'is_loopback', False):
-        return {'ok': False, 'error': f'IP {ip_str} is in the Trusted VIP & Infrastructure Exemption list and cannot be quarantined.'}
-
-    reason = str(body.get('reason') or 'Manual quarantine via SOC Firewall Panel').strip()[:200]
-    permanent = 1 if body.get('permanent') else 0
-    duration_minutes = int(body.get('duration_minutes') or 60)
-    now = int(time.time())
-    expires_at = None if permanent else now + max(1, duration_minutes) * 60
-
-    existing = conn.scalar('SELECT id FROM security_quarantine WHERE lower(host_name) = lower(:h) AND ip_address = :ip',
-                           {'h': host, 'ip': ip_str})
-    if existing:
-        conn.execute(
-            'UPDATE security_quarantine SET reason = :r, tripped_at = :t, expires_at = :e, permanent = :p, actor = :a WHERE id = :id',
-            {'r': reason, 't': now, 'e': expires_at, 'p': permanent, 'a': actor, 'id': existing}
-        )
-        qid = int(existing)
-    else:
-        qid = int(conn.scalar(
-            """INSERT INTO security_quarantine (host_name, ip_address, reason, tripped_at, expires_at, permanent, actor)
-               VALUES (:h, :ip, :r, :t, :e, :p, :a) RETURNING id""",
-            {'h': host, 'ip': ip_str, 'r': reason, 't': now, 'e': expires_at, 'p': permanent, 'a': actor}
-        ))
-
-    script = (
-        f"#!/bin/bash\n# StorageForge Sub-Second Attacker Isolation for {one_line(host)}\nset -euo pipefail\n"
-        f"nft add table inet sf_filter 2>/dev/null || true\n"
-        f"nft add set inet sf_filter sf_quarantine '{{ type ipv4_addr; flags interval,timeout; }}' 2>/dev/null || true\n"
-        f"nft add element inet sf_filter sf_quarantine '{{ {ip_str} }}' 2>/dev/null || true\n"
-    )
-    return {
-        'ok': True,
-        'id': qid,
-        'host': host,
-        'ip_address': ip_str,
-        'reason': reason,
-        'permanent': bool(permanent),
-        'expires_at': expires_at,
-        'script': script,
-    }
-
-
-def release_quarantine_ip(conn: Conn, ip: str, host: str | None, actor: str) -> dict:
-    ip_str = str(ip or '').strip()
-    h = _clean_host(conn, host)
-    if h:
-        conn.execute('DELETE FROM security_quarantine WHERE lower(host_name) = lower(:h) AND ip_address = :ip',
-                     {'h': h, 'ip': ip_str})
-    else:
-        conn.execute('DELETE FROM security_quarantine WHERE ip_address = :ip', {'ip': ip_str})
-    return {'ok': True, 'ip_address': ip_str, 'host': h or 'all', 'released_by': actor}
-
-
-def trigger_airgap(conn: Conn, body: dict, actor: str) -> dict:
-    host = _clean_host(conn, body.get('host')) or 'localhost'
-    slug = host_slug(host)
-    enable = body.get('enabled') is not False
-    cur = set(alerts.get_setting(conn, AIRGAP_SETTING) or [])
-    if enable:
-        cur.add(slug)
-    else:
-        cur.discard(slug)
-    alerts.set_setting(conn, AIRGAP_SETTING, sorted(cur), actor)
-    script = (
-        f"#!/bin/bash\n# StorageForge Emergency Host Airgap Mode ({'ENGAGE' if enable else 'DISARM'})\nset -euo pipefail\n"
-        f"nft add table inet sf_airgap 2>/dev/null || true\n"
-        + ("nft flush table inet sf_airgap\n" if not enable else
-           "nft add chain inet sf_airgap input '{ type filter hook input priority -100; policy drop; }'\n"
-           "nft add rule inet sf_airgap input iif lo accept\n"
-           "nft add rule inet sf_airgap input ct state established,related accept\n"
-           "nft add rule inet sf_airgap input tcp dport 22 accept\n")
-    )
-    return {'ok': True, 'host': host, 'airgap_enabled': enable, 'airgap_hosts': sorted(cur), 'script': script}
-
-
-# ── Layer 5: Runtime Threat Detection & Behavioral eBPF (Falco & Entropy) ────
-def calculate_shannon_entropy(data: bytes) -> float:
-    """Calculate Shannon entropy H(X) in bits per byte [0.0, 8.0] over a byte sample."""
-    if not data:
-        return 0.0
-    length = len(data)
-    counts = Counter(data)
-    return round(-sum((c / length) * math.log2(c / length) for c in counts.values()), 4)
-
-
-def ebpf_events(conn: Conn, host: str | None = None) -> dict:
-    h = _clean_host(conn, host)
-    if h:
-        changes = conn.all(
-            """SELECT c.change_type, count(*) FROM file_changes c
-               JOIN scans s ON s.scan_id = c.scan_id
-               JOIN hosts h ON h.host_id = s.host_id
-               WHERE lower(h.hostname) = lower(:h)
-               GROUP BY c.change_type""",
-            {'h': h}
-        )
-    else:
-        changes = conn.all('SELECT change_type, count(*) FROM file_changes GROUP BY change_type')
-    counts = {ctype: int(cnt) for ctype, cnt in changes}
-    velocity = counts.get('modified', 0) + counts.get('added', 0) + counts.get('deleted', 0)
-
-    tripped_canaries = conn.all(
-        "SELECT host_name, share_path, file_name, deployed_at FROM security_canaries WHERE status = 'tripped'"
-        + (' AND lower(host_name) = lower(:h)' if h else ''),
-        {'h': h} if h else {}
-    )
-    falco_feed = [{
-        'timestamp': int(ts),
-        'priority': 'CRITICAL',
-        'rule': 'Mass Rename / Canary Touch Detected',
-        'host': hname,
-        'target': f'{spath.rstrip("/")}/{fname}',
-        'action': 'Emergency Brake Armed',
-    } for hname, spath, fname, ts in tripped_canaries]
-
-    return {
-        'driver': 'Falco eBPF Ring Buffer (0% drops)',
-        'ruleset_version': 'StorageForge Ruleset v2.4',
-        'velocity_files_hr': velocity,
-        'velocity_threshold': 500,
-        'velocity_breakdown': {
-            'added': counts.get('added', 0),
-            'modified': counts.get('modified', 0),
-            'deleted': counts.get('deleted', 0),
-        },
-        'entropy_distribution': {
-            'plaintext_pct': 65,
-            'compressed_pct': 35,
-            'ciphertext_pct': 0,
-            'threshold_bits_per_byte': 7.92,
-        },
-        'events': falco_feed,
-    }
-
-
-# ── Layer 6: Host Integrity & Hardening Posture (AIDE & Lynis) ───────────────
-def aide_status(conn: Conn, host: str | None = None) -> dict:
-    h = _clean_host(conn, host)
-    where = 'WHERE lower(host_name) = lower(:h)' if h else ''
-    params = {'h': h} if h else {}
-    rows = conn.all(f"""SELECT id, host_name, checked_at, status, modified_count, added_count, removed_count, details_json
-                        FROM security_aide_checks {where} ORDER BY checked_at DESC LIMIT 25""", params)
-    checks = [{
-        'id': cid,
-        'host': hname,
-        'checked_at': int(ts),
-        'status': st,
-        'modified_count': int(mod),
-        'added_count': int(add),
-        'removed_count': int(rem),
-        'details': loads(det) or [],
-    } for cid, hname, ts, st, mod, add, rem, det in rows]
-    watched_paths = [
-        '/usr/local/sbin/storageforge-run',
-        '/usr/sbin/zfs',
-        '/usr/sbin/btrfs',
-        '/sbin/cryptsetup',
-        '/etc/fstab',
-        '/etc/samba/smb.conf',
-        '/etc/exports',
-        '/etc/ssh/sshd_config',
-    ]
-    return {
-        'checks': checks,
-        'watched_paths': watched_paths,
-        'database_path': '/var/lib/aide/aide.db.gz',
-        'baseline_verified': all(c['modified_count'] == 0 for c in checks) if checks else True,
-    }
-
-
-def aide_init(conn: Conn, body: dict, actor: str) -> dict:
-    host = _clean_host(conn, body.get('host')) or 'localhost'
-    now = int(time.time())
-    cid = int(conn.scalar(
-        """INSERT INTO security_aide_checks (host_name, checked_at, status, modified_count, added_count, removed_count, details_json)
-           VALUES (:h, :t, 'verified', 0, 0, 0, :d) RETURNING id""",
-        {'h': host, 't': now, 'd': json.dumps([{'path': '/usr/local/sbin/storageforge-run', 'status': 'SHA256 OK'},
-                                               {'path': '/etc/fstab', 'status': 'SHA256 OK'}])}
-    ))
-    script = (
-        f"#!/bin/bash\n# StorageForge AIDE Cryptographic Baseline Init for {one_line(host)}\nset -euo pipefail\n"
-        f"aide --init\n"
-        f"mv -f /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz\n"
-    )
-    return {'ok': True, 'check_id': cid, 'host': host, 'checked_at': now, 'status': 'verified', 'script': script}
-
-
-def lynis_status(conn: Conn, host: str | None = None) -> dict:
-    h = _clean_host(conn, host)
-    where = 'WHERE lower(host_name) = lower(:h)' if h else ''
-    params = {'h': h} if h else {}
-    rows = conn.all(f"""SELECT id, host_name, audited_at, hardening_index, findings_json, recommendations_json
-                        FROM security_lynis_audits {where} ORDER BY audited_at DESC LIMIT 20""", params)
-    audits = [{
-        'id': aid,
-        'host': hname,
-        'audited_at': int(ts),
-        'hardening_index': int(idx),
-        'findings': loads(fjson) or [],
-        'recommendations': loads(rjson) or [],
-    } for aid, hname, ts, idx, fjson, rjson in rows]
-
-    default_recommendations = [
-        {'id': 'KRNL-6000', 'severity': 'high', 'category': 'Kernel', 'finding': 'fs.protected_hardlinks = 0', 'recommendation': 'Set fs.protected_hardlinks=1 and fs.protected_symlinks=1 in /etc/sysctl.d/99-storageforge.conf'},
-        {'id': 'SSH-7408', 'severity': 'medium', 'category': 'SSH', 'finding': 'PermitRootLogin not restricted', 'recommendation': 'Set PermitRootLogin no in /etc/ssh/sshd_config'},
-        {'id': 'AUTH-9328', 'severity': 'low', 'category': 'Storage', 'finding': 'Default umask is 022', 'recommendation': 'Set umask 027 in /etc/profile.d/storageforge-umask.sh'},
-    ]
-    score = audits[0]['hardening_index'] if audits else 86
-    return {
-        'audits': audits,
-        'hardening_index': score,
-        'target_index': 85,
-        'recommendations': audits[0]['recommendations'] if audits and audits[0]['recommendations'] else default_recommendations,
-    }
-
-
-# ── Layer 7: Targeted Differential Malware & YARA Scanning ───────────────────
-def malware_quarantine_list(conn: Conn, host: str | None = None) -> dict:
-    h = _clean_host(conn, host)
-    detections = clamav.detections(conn, h, closed=True)
-    quarantined = [d for d in detections if d.get('state') == 'quarantined']
-
-    if h:
-        diff_files = conn.scalar(
-            """SELECT count(*) FROM file_changes c
-               JOIN scans s ON s.scan_id = c.scan_id
-               JOIN hosts h ON h.host_id = s.host_id
-               WHERE lower(h.hostname) = lower(:h) AND c.change_type IN ('added', 'modified')""",
-            {'h': h}
-        )
-    else:
-        diff_files = conn.scalar("SELECT count(*) FROM file_changes WHERE change_type IN ('added', 'modified')")
-
-    yara_rules = [
-        {
-            'name': 'Ransomware_Extortion_Note_Pattern',
-            'description': 'Detects common ransomware extortion notes dropped in shared folders',
-            'enabled': True,
-        },
-        {
-            'name': 'High_Entropy_Header_Mismatch',
-            'description': 'Flags office documents (.docx, .xlsx, .pdf) whose magic bytes were overwritten with ciphertext',
-            'enabled': True,
-        },
-    ]
-    return {
-        'quarantine': quarantined,
-        'detections': detections,
-        'differential_queue_count': int(diff_files or 0),
-        'yara_rules': yara_rules,
-    }
-
-
-def malware_restore(conn: Conn, body: dict, actor: str) -> dict:
-    did = int(body.get('detection_id') or 0)
-    if not did:
-        raise ValueError('detection_id is required')
-    row = conn.all('SELECT detection_id, host, path, state FROM clamav_detections WHERE detection_id = :d', {'d': did})
-    if not row:
-        return {'ok': False, 'error': 'Quarantined detection not found'}
-    _, host, path, state = row[0]
-    now = int(time.time())
-    conn.execute("UPDATE clamav_detections SET state = 'open', handled_by = :a, handled_at = :t WHERE detection_id = :d",
-                 {'a': actor, 't': now, 'd': did})
-    return {'ok': True, 'detection_id': did, 'host': host, 'path': path, 'status': 'restored'}
-
-
-def malware_shred(conn: Conn, body: dict, actor: str) -> dict:
-    did = int(body.get('detection_id') or 0)
-    if not did:
-        raise ValueError('detection_id is required')
-    row = conn.all('SELECT detection_id, host, path, quarantine_id FROM clamav_detections WHERE detection_id = :d', {'d': did})
-    if not row:
-        return {'ok': False, 'error': 'Quarantined detection not found'}
-    _, host, path, qid = row[0]
-    now = int(time.time())
-    conn.execute("UPDATE clamav_detections SET state = 'gone', handled_by = :a, handled_at = :t WHERE detection_id = :d",
-                 {'a': actor, 't': now, 'd': did})
-    script = (
-        f"#!/bin/bash\n# StorageForge Cryptographic Quarantine Shred\nset -euo pipefail\n"
-        f"shred -u -z -n 3 {shlex.quote('/var/lib/storageforge/quarantine/' + str(qid or did))} 2>/dev/null || true\n"
-    )
-    return {'ok': True, 'detection_id': did, 'host': host, 'path': path, 'status': 'shredded', 'script': script}
-
-
-# ── Layer 8: Global Compliance Standards & Turnkey Init Script Engine ────────
-def compliance_standards(conn: Conn) -> dict:
-    custom_rows = conn.all('SELECT id, name, standard, version, config_yaml, created_at FROM security_compliance_profiles ORDER BY id')
-    custom = [{
-        'id': f'custom-{cid}',
-        'name': name,
-        'standard': std,
-        'version': ver,
-        'config_yaml': yaml_txt,
-        'created_at': int(created),
-    } for cid, name, std, ver, yaml_txt, created in custom_rows]
-    return {
-        'standards': list(COMPLIANCE_STANDARDS.values()),
-        'custom_profiles': custom,
-    }
-
-
-def compliance_status(conn: Conn, host: str) -> dict:
-    h = _clean_host(conn, host) or host
-    rows = conn.all(
-        'SELECT profile_id, score, drift_count, last_checked, drift_json FROM security_compliance_status WHERE lower(host_name) = lower(:h) ORDER BY last_checked DESC',
-        {'h': h}
-    )
-    canaries = list_canaries(conn, h)
-    holds = worm_holds(conn, h)
-    profile_id = rows[0][0] if rows else 'cis-l2'
-    std = COMPLIANCE_STANDARDS.get(profile_id, COMPLIANCE_STANDARDS['cis-l2'])
-
-    stages = [
-        {'stage': 1, 'name': 'Install Required Packages', 'config': 'auditd, aide, lynis, nftables, yara, chrony', 'status': 'satisfied'},
-        {'stage': 2, 'name': 'Kernel Sysctl Hardening', 'config': 'fs.protected_symlinks=1, fs.protected_hardlinks=1, umask 027', 'status': 'enforced'},
-        {'stage': 3, 'name': 'Auditd Storage Ruleset', 'config': '-w /etc/fstab -p wa, -w canary -p wa -k sf_canary_tripped', 'status': 'active'},
-        {'stage': 4, 'name': 'MAC Enforcement', 'config': f"{std['selinux_mode'].title()} mode & storage booleans", 'status': 'enforcing'},
-        {'stage': 5, 'name': 'Firewall Fencing', 'config': 'nftables share client CIDRs & sf_quarantine set', 'status': 'active'},
-        {'stage': 6, 'name': 'AIDE FIM Initialization', 'config': 'aide --init & cryptographic baseline pin', 'status': 'verified'},
-        {'stage': 7, 'name': 'Deploy Canary & VSS Traps', 'config': 'Canary decoys + Samba vfs_shadow_copy2 RPC trap',
-         'status': 'armed' if canaries['summary']['armed_canaries'] > 0 else 'pending'},
-        {'stage': 8, 'name': 'WORM Retention Policy', 'config': f"{std['min_worm_days']}-day immutable snapshot hold",
-         'status': 'locked' if holds['summary']['active_holds'] > 0 else 'pending'},
-    ]
-    if rows:
-        score = int(rows[0][1])
-        drift_count = int(rows[0][2])
-        last_checked = int(rows[0][3])
-        drifts = loads(rows[0][4]) or []
-    else:
-        pending = sum(1 for s in stages if s['status'] == 'pending')
-        score = max(75, 100 - pending * 6)
-        drift_count = pending
-        last_checked = int(time.time())
-        drifts = [s['name'] for s in stages if s['status'] == 'pending']
-
-    return {
-        'host': h,
-        'profile_id': profile_id,
-        'standard_name': std['name'],
-        'score': score,
-        'drift_count': drift_count,
-        'last_checked': last_checked,
-        'drifts': drifts,
-        'stages': stages,
-    }
-
-
-def generate_compliance_init_script(profile: str = 'cis-l2', host: str | None = None,
-                                    waivers: list[str] | tuple[str, ...] = (), offline_bundle: str = '') -> str:
-    """Generate standalone, audit-ready sf-init-compliance.sh mapped to global compliance standards."""
-    std = COMPLIANCE_STANDARDS.get(profile, COMPLIANCE_STANDARDS['cis-l2'])
-    clean_waivers = [w for w in waivers if FINDING_ID_RE.fullmatch(str(w))]
-    waiver_str = ' '.join(clean_waivers)
-    host_comment = one_line(host or 'target-host')
-    return f"""#!/bin/bash
-# sf-init-compliance.sh — StorageForge Turnkey Host Security & Compliance Init Script
-# Target Host: {host_comment}
-# Default Profile: {std['id']} ({one_line(std['name'])})
-set -euo pipefail
-
-PROFILE={shlex.quote(std['id'])}
-APPLY=0
-DRY_RUN=1
-OFFLINE_BUNDLE={shlex.quote(offline_bundle)}
-EXPORT_CERT=""
-WAIVERS=({waiver_str})
-
-usage() {{
-  cat <<'EOF'
-Usage: sf-init-compliance.sh [OPTIONS]
-Options:
-  --profile PROFILE      cis-l1, cis-l2, nist-800-53, hipaa, pci-dss, soc2, iso-27001, cmmc-l2
-  --apply                Apply the compliance changes (root required)
-  --dry-run              Audit and report drift without making modifications
-  --offline-bundle PATH  Path to pre-downloaded package bundle for airgapped nodes
-  --waive FINDING_ID     Suppress/waive specific rule (e.g. --waive CIS-2.1.4)
-  --export-cert PATH     Output signed cryptographic compliance certificate
-EOF
-}}
-
-while (($#)); do
-  case "$1" in
-    --profile) PROFILE="$2"; shift 2 ;;
-    --apply) APPLY=1; DRY_RUN=0; shift ;;
-    --dry-run) APPLY=0; DRY_RUN=1; shift ;;
-    --offline-bundle) OFFLINE_BUNDLE="$2"; shift 2 ;;
-    --waive) WAIVERS+=("$2"); shift 2 ;;
-    --export-cert) EXPORT_CERT="$2"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
-  esac
-done
-
-{HELPERS}
-{PACKAGES}
-
-sf_install_security_prereqs() {{
-  section "Stage 1 · Multi-Distro Security Package Provisioning ($PROFILE)"
-  if [[ -n "$OFFLINE_BUNDLE" && -f "$OFFLINE_BUNDLE" ]]; then
-    if ((APPLY)); then
-      doing "Installing security packages from offline airgap bundle $OFFLINE_BUNDLE"
-      tar -xzf "$OFFLINE_BUNDLE" -C /tmp/
-    else
-      info "Offline bundle staged: $OFFLINE_BUNDLE"
-    fi
-    return 0
-  fi
-  for spec in \\
-    "auditctl:auditd:auditd:audit:audit:audit" \\
-    "aide:AIDE FIM:aide:aide:aide:aide" \\
-    "lynis:Lynis CIS Auditor:lynis:lynis:lynis:lynis" \\
-    "nft:nftables Firewall:nftables:nftables:nftables:nftables" \\
-    "yara:YARA Engine:yara:yara:yara:yara" \\
-    "chronyc:Chrony NTS Clock Guard:chrony:chrony:chrony:chrony" \\
-    "inotifywait:Inotify Watchers:inotify-tools:inotify-tools:inotify-tools:inotify-tools"; do
-    IFS=: read -r cmd label apt_pkg dnf_pkg pac_pkg zyp_pkg <<<"$spec"
-    need_cmd "$cmd" "$label" "$apt_pkg" "$dnf_pkg" "$pac_pkg" "$zyp_pkg" || true
-  done
-}}
-
-sf_harden_sysctl_and_umask() {{
-  section "Stage 2 · Kernel Sysctl & Umask Baseline ($PROFILE)"
-  if ((APPLY)); then
-    doing "Writing /etc/sysctl.d/99-storageforge-security.conf"
-    cat <<'EOF' >/etc/sysctl.d/99-storageforge-security.conf
-fs.protected_symlinks = 1
-fs.protected_hardlinks = 1
-fs.suid_dumpable = 0
-kernel.kptr_restrict = 2
-kernel.dmesg_restrict = 1
-kernel.randomize_va_space = 2
-net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.all.accept_Redirects = 0
-net.ipv4.tcp_syncookies = 1
-EOF
-    sysctl --system >/dev/null 2>&1 || true
-    printf 'umask {std["umask"]}\\n' >/etc/profile.d/storageforge-umask.sh
-    durable /etc/sysctl.d/99-storageforge-security.conf /etc/profile.d/storageforge-umask.sh
-    ok "Sysctl and umask ({std['umask']}) enforced"
-  else
-    info "Dry-run: would enforce /etc/sysctl.d/99-storageforge-security.conf and umask {std['umask']}"
-  fi
-}}
-
-sf_configure_auditd() {{
-  section "Stage 3 · Kernel Auditd Storage & Canary Watch Rules"
-  if ((APPLY)); then
-    mkdir -p /etc/audit/rules.d
-    cat <<'EOF' >/etc/audit/rules.d/storageforge-compliance.rules
--w /etc/fstab -p wa -k sf_config_tamper
--w /etc/samba/smb.conf -p wa -k sf_config_tamper
--w /etc/exports -p wa -k sf_config_tamper
--w /usr/local/sbin/storageforge-run -p wa -k sf_runner_tamper
-EOF
-    durable /etc/audit/rules.d/storageforge-compliance.rules
-    augenrules --load >/dev/null 2>&1 || true
-    ok "Auditd storage ruleset loaded"
-  else
-    info "Dry-run: would configure /etc/audit/rules.d/storageforge-compliance.rules"
-  fi
-}}
-
-sf_configure_mac_and_firewall() {{
-  section "Stage 4 & 5 · Mandatory Access Control & Storage Firewall Fencing"
-  if ((APPLY)); then
-    if command -v setsebool >/dev/null 2>&1; then
-      setsebool -P samba_export_all_rw off 2>/dev/null || true
-      setsebool -P samba_enable_home_dirs off 2>/dev/null || true
-      setsebool -P nfs_export_all_rw off 2>/dev/null || true
-    fi
-    if command -v nft >/dev/null 2>&1; then
-      nft add table inet sf_filter 2>/dev/null || true
-      nft add set inet sf_filter sf_quarantine '{{ type ipv4_addr; flags interval,timeout; }}' 2>/dev/null || true
-    fi
-    ok "MAC storage booleans and nftables sf_quarantine set verified"
-  else
-    info "Dry-run: would verify SELinux/AppArmor confinement and nftables sf_quarantine set"
-  fi
-}}
-
-sf_export_compliance_cert() {{
-  if [[ -n "$EXPORT_CERT" ]]; then
-    section "Exporting Compliance Certificate"
-    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    cat <<EOF >"$EXPORT_CERT"
-{{"profile": "$PROFILE", "standard": "{one_line(std['name'])}", "timestamp": "$ts", "min_worm_days": {std['min_worm_days']}, "waivers": "${{WAIVERS[*]}}"}}
-EOF
-    ok "Compliance certificate written to $EXPORT_CERT"
-  fi
-}}
-
-sf_install_security_prereqs
-sf_harden_sysctl_and_umask
-sf_configure_auditd
-sf_configure_mac_and_firewall
-sf_export_compliance_cert
-finished
-"""
-
-
-def stage_compliance_init(conn: Conn, body: dict, actor: str) -> dict:
-    host = _clean_host(conn, body.get('host')) or 'localhost'
-    profile = str(body.get('profile') or 'cis-l2').strip()
-    if profile not in COMPLIANCE_STANDARDS:
-        raise ValueError(f'Unsupported compliance profile: {profile}')
-    waivers = body.get('waivers') or []
-    offline_bundle = str(body.get('offline_bundle') or '').strip()
-    now = int(time.time())
-
-    if body.get('custom_name') and body.get('config_yaml'):
-        cname = str(body['custom_name']).strip()
-        cyaml = str(body['config_yaml'])
-        conn.execute('DELETE FROM security_compliance_profiles WHERE name = :n', {'n': cname})
-        conn.execute(
-            'INSERT INTO security_compliance_profiles (name, standard, version, config_yaml, created_at) VALUES (:n, :s, :v, :c, :t)',
-            {'n': cname, 's': profile, 'v': '1.0', 'c': cyaml, 't': now}
-        )
-
-    conn.execute('DELETE FROM security_compliance_status WHERE lower(host_name) = lower(:h) AND profile_id = :p',
-                 {'h': host, 'p': profile})
-    conn.execute(
-        """INSERT INTO security_compliance_status (host_name, profile_id, score, drift_count, last_checked, drift_json)
-           VALUES (:h, :p, 100, 0, :t, '[]')""",
-        {'h': host, 'p': profile, 't': now}
-    )
-    script = generate_compliance_init_script(profile=profile, host=host, waivers=waivers, offline_bundle=offline_bundle)
-    return {
-        'ok': True,
-        'host': host,
-        'profile': profile,
-        'standard_name': COMPLIANCE_STANDARDS[profile]['name'],
-        'score': 100,
-        'drift_count': 0,
-        'script': script,
-    }
-
-
-# ── Layer 9: SOC Command Center, Volatile Triage, Blast-Radius, & Clean-Room ─
-def list_playbooks(conn: Conn) -> list[dict]:
-    rows = conn.all('SELECT id, name, trigger_event, conditions_json, actions_json, enabled FROM security_playbooks ORDER BY id')
+def clock_view(conn: Conn, host: str) -> dict:
+    state = alerts.get_setting(conn, clock_key(host)) or {}
+    m = measurement(conn, host)
+    out = {'frozen': bool(state.get('frozen')), 'reason': state.get('reason'), 'frozen_at': state.get('at'), 'measured_at': None, 'offset_seconds': None,
+           'chrony': None, 'nts_sources': None, 'ntp_synced': None, 'stale': None}
+    if m:
+        out.update(measured_at=m['measured_at'], offset_seconds=m.get('clock_offset'), chrony=m.get('chrony'), nts_sources=m.get('nts_sources'),
+                   ntp_synced=m.get('ntp_synced'), stale=m['stale'])
+    return out
+
+
+def request_release(db, conn: Conn, body: dict, actor: str) -> dict:
+    """Asking starts the wait; it releases nothing. A hold past its date needs no wait. A legal hold has to be named as one."""
+    rows = conn.all('SELECT id, host, snapshot, hold_tag, status, legal_hold, expires_at FROM security_retention_holds WHERE id = :i', {'i': _int(body.get('hold_id'), 0)})
     if not rows:
-        return [
-            {'id': idx + 1, **pb}
-            for idx, pb in enumerate(DEFAULT_PLAYBOOKS)
-        ]
-    return [{
-        'id': pid,
-        'name': name,
-        'trigger_event': trig,
-        'conditions': loads(cond) or {},
-        'actions': loads(act) or [],
-        'enabled': bool(en),
-    } for pid, name, trig, cond, act, en in rows]
-
-
-def save_playbook(conn: Conn, body: dict, actor: str) -> dict:
-    name = str(body.get('name') or '').strip()
-    trigger_event = str(body.get('trigger_event') or 'canary_or_vss_tripped').strip()
-    if not name:
-        raise ValueError('Playbook name is required')
-    conditions = body.get('conditions') or {}
-    actions = body.get('actions') or ['dump_ram_triage', 'quarantine_ip_nftables', 'remount_share_ro', 'snapshot_with_worm_hold']
-    enabled = 1 if body.get('enabled', True) else 0
-    conn.execute('DELETE FROM security_playbooks WHERE name = :n', {'n': name})
-    pid = int(conn.scalar(
-        """INSERT INTO security_playbooks (name, trigger_event, conditions_json, actions_json, enabled)
-           VALUES (:n, :t, :c, :a, :e) RETURNING id""",
-        {'n': name, 't': trigger_event, 'c': json.dumps(conditions), 'a': json.dumps(actions), 'e': enabled}
-    ))
-    return {'ok': True, 'id': pid, 'name': name, 'trigger_event': trigger_event, 'conditions': conditions, 'actions': actions, 'enabled': bool(enabled)}
-
-
-def blast_radius(conn: Conn, host: str | None = None) -> dict:
-    h = _clean_host(conn, host)
-    if h:
-        total_files = int(conn.scalar(
-            """SELECT count(*) FROM file_records f
-               JOIN mounts m ON m.mount_id = f.mount_id
-               JOIN hosts h ON h.host_id = m.host_id
-               WHERE lower(h.hostname) = lower(:h)""",
-            {'h': h}
-        ) or 0)
-        modified_files = int(conn.scalar(
-            """SELECT count(*) FROM file_changes c
-               JOIN scans s ON s.scan_id = c.scan_id
-               JOIN hosts h ON h.host_id = s.host_id
-               WHERE lower(h.hostname) = lower(:h) AND c.change_type IN ('modified', 'deleted')""",
-            {'h': h}
-        ) or 0)
-    else:
-        total_files = int(conn.scalar('SELECT count(*) FROM file_records') or 0)
-        modified_files = int(conn.scalar("SELECT count(*) FROM file_changes WHERE change_type IN ('modified', 'deleted')") or 0)
-
-    tripped = int(conn.scalar(
-        "SELECT count(*) FROM security_canaries WHERE status = 'tripped'"
-        + (' AND lower(host_name) = lower(:h)' if h else ''),
-        {'h': h} if h else {}
-    ) or 0)
-    corrupted = tripped
-    clean = max(0, total_files - modified_files - corrupted)
-    clean_pct = round((clean / total_files) * 100.0, 2) if total_files > 0 else 100.0
-
-    latest_hold = conn.all(
-        'SELECT snapshot_name, created_at FROM security_retention_holds'
-        + (' WHERE lower(host_name) = lower(:h)' if h else '')
-        + ' ORDER BY created_at DESC LIMIT 1',
-        {'h': h} if h else {}
-    )
-    snap_name = latest_hold[0][0] if latest_hold else '@ransomware-incident-latest'
-    return {
-        'host': h or 'all',
-        'incident_snapshot': snap_name,
-        'total_files': total_files,
-        'clean_files': clean,
-        'clean_pct': clean_pct,
-        'suspect_files': modified_files,
-        'corrupted_files': corrupted,
-        'rpo_seconds': 12 if latest_hold else 0,
-        'volatile_triage_path': '/var/log/storageforge/forensics/volatile-triage.tar.gz',
-    }
-
-
-def stage_clean_room(conn: Conn, body: dict, actor: str) -> dict:
-    host = _clean_host(conn, body.get('host')) or 'localhost'
-    snapshot = str(body.get('snapshot') or 'tank/shares@ransomware-incident').strip()
-    sandbox_mount = str(body.get('sandbox_mount') or '/mnt/sf-cleanroom').strip()
-    if not SAFE_NAME_RE.fullmatch(snapshot) or not sandbox_mount.startswith('/'):
-        raise ValueError('snapshot and sandbox_mount must be valid paths/identifiers')
-    script = (
-        f"#!/bin/bash\n# StorageForge Clean-Room Airgap Sandbox Staging for {one_line(host)}\nset -euo pipefail\n"
-        f"mkdir -p {shlex.quote(sandbox_mount)}\n"
-        f"if command -v zfs >/dev/null 2>&1; then\n"
-        f"  mount -t zfs -o ro,noexec,nodev,nosuid {shlex.quote(snapshot)} {shlex.quote(sandbox_mount)}\n"
-        f"fi\n"
-        f"if command -v yara >/dev/null 2>&1 && [[ -d /etc/storageforge/yara ]]; then\n"
-        f"  yara -r /etc/storageforge/yara/rules.yar {shlex.quote(sandbox_mount)} || true\n"
-        f"fi\n"
-    )
-    return {
-        'ok': True,
-        'host': host,
-        'snapshot': snapshot,
-        'sandbox_mount': sandbox_mount,
-        'mount_options': 'ro,noexec,nodev,nosuid',
-        'isolation': 'Clean-Room Loopback Sandbox',
-        'script': script,
-    }
-
-
-def execute_emergency_brake(conn: Conn, body: dict, actor: str) -> dict:
-    """Autonomous Emergency Brake Orchestration:
-    1. Pre-Freeze Volatile RAM Triage Dump (/proc/<pid>/maps, environ, sockets)
-    2. Quarantine attacker IP via nftables
-    3. Remount target share/dataset read-only
-    4. Immediate immutable snapshot with WORM hold (@ransomware-incident-<ts>)
-    """
-    host = _clean_host(conn, body.get('host')) or 'localhost'
-    client_ip = str(body.get('client_ip') or '').strip()
-    share_path = str(body.get('share_path') or '/srv/shares').strip()
-    dataset = str(body.get('dataset') or 'tank/shares').strip()
-    pid = int(body.get('pid') or 0)
-    reason = str(body.get('reason') or 'Emergency Brake Triggered').strip()[:200]
+        raise LookupError('no such hold')
+    hid, host, snap, tag, status, legal, expires = rows[0]
+    if status != 'locked':
+        return {'ok': False, 'host': host, 'error': f'this hold is {status}'}
+    if clock_frozen(conn, host):
+        return {'ok': False, 'host': host, 'error': f'the clock guard has stopped releases on {host}: look at why, then clear it'}
+    if legal and body.get('release_legal') is not True:
+        return {'ok': False, 'host': host, 'error': 'this is a legal hold: say so explicitly to ask for its release'}
     now = int(time.time())
-    stamp = time.strftime('%Y%m%d-%H%M%S', time.gmtime(now))
-    snap_name = f'{dataset}@ransomware-incident-{stamp}'
-    hold_tag = f'sf-incident-{now}'
-
-    quarantined_ip = None
-    if client_ip:
-        q_res = quarantine_ip(conn, {'host': host, 'ip_address': client_ip, 'reason': reason, 'permanent': True}, actor)
-        if q_res.get('ok'):
-            quarantined_ip = client_ip
-
-    hold_res = apply_worm_hold(conn, {
-        'host': host,
-        'dataset': dataset,
-        'snapshot': snap_name,
-        'hold_tag': hold_tag,
-        'legal_hold': True,
-    }, actor)
-
-    triage_dir = f'/var/log/storageforge/forensics/incident-{stamp}'
-    script = (
-        f"#!/bin/bash\n# StorageForge Autonomous Emergency Brake for {one_line(host)}\nset -uo pipefail\n"
-        f"mkdir -p {shlex.quote(triage_dir)}\n"
-        f"# 1. Pre-Freeze Volatile RAM Triage Dump\n"
-        f"ss -tulpn >{shlex.quote(triage_dir)}/sockets.txt 2>/dev/null || true\n"
-        f"smbstatus -b >{shlex.quote(triage_dir)}/smbstatus.txt 2>/dev/null || true\n"
-        + (f"if [[ -d /proc/{pid} ]]; then\n"
-           f"  cp -a /proc/{pid}/maps /proc/{pid}/environ /proc/{pid}/cmdline {shlex.quote(triage_dir)}/ 2>/dev/null || true\n"
-           f"fi\n" if pid > 0 else "")
-        + (f"# 2. Sever Connection & Quarantine Client IP\n"
-           f"nft add table inet sf_filter 2>/dev/null || true\n"
-           f"nft add set inet sf_filter sf_quarantine '{{ type ipv4_addr; flags interval,timeout; }}' 2>/dev/null || true\n"
-           f"nft add element inet sf_filter sf_quarantine '{{ {shlex.quote(quarantined_ip)} }}' 2>/dev/null || true\n"
-           if quarantined_ip else "")
-        + f"# 3. Freeze Share Filesystem Read-Only\n"
-        f"mount -o remount,ro {shlex.quote(share_path)} 2>/dev/null || true\n"
-        f"# 4. Take Immediate Immutable Snapshot with Kernel Hold\n"
-        f"if command -v zfs >/dev/null 2>&1; then\n"
-        f"  zfs snapshot {shlex.quote(snap_name)} 2>/dev/null || true\n"
-        f"  zfs hold {shlex.quote(hold_tag)} {shlex.quote(snap_name)} 2>/dev/null || true\n"
-        f"fi\n"
-    )
-    return {
-        'ok': True,
-        'host': host,
-        'timestamp': now,
-        'quarantined_ip': quarantined_ip,
-        'share_path': share_path,
-        'incident_snapshot': snap_name,
-        'hold_id': hold_res['hold_id'],
-        'triage_dir': triage_dir,
-        'steps_executed': [
-            'volatile_ram_triage_dump',
-            'ip_quarantined' if quarantined_ip else 'ip_quarantine_skipped',
-            'filesystem_remounted_ro',
-            'immutable_snapshot_locked',
-        ],
-        'script': script,
-    }
+    if expires and expires <= now and not legal:
+        return _execute_release(db, conn, {'id': None, 'host': host, 'detail': {'hold_id': hid, 'snapshot': snap, 'hold_tag': tag}}, actor)
+    q = quorum_state(conn)
+    executes = now if q['mode'] == 'dual_admin' else now + q['cool_off_hours'] * 3600
+    tid = conn.scalar("""INSERT INTO security_timelock_queue (action, target_ref, host, actor, mode, requested_at, executes_at, status, detail_json)
+                         VALUES ('worm_release', :ref, :h, :a, :m, :r, :e, 'pending', :d) RETURNING id""",
+                      {'ref': f'{snap}#{tag}', 'h': host, 'a': actor, 'm': q['mode'], 'r': now, 'e': executes,
+                       'd': json.dumps({'hold_id': hid, 'snapshot': snap, 'hold_tag': tag})})
+    conn.execute("UPDATE security_retention_holds SET status = 'release_pending' WHERE id = :i", {'i': hid})
+    return {'ok': True, 'host': host, 'timelock_id': tid, 'mode': q['mode'], 'executes_at': executes if q['mode'] == 'cool_off' else None,
+            'message': 'waiting for a second admin' if q['mode'] == 'dual_admin' else f'releases in {q["cool_off_hours"]} h unless someone aborts it'}
 
 
-def security_posture(conn: Conn, host: str | None = None) -> dict:
-    """Global fleet security posture, active alarms, and health totals for the Header Banner and SOC Command Center."""
-    h = _clean_host(conn, host)
-    hosts = _known_hosts(conn, h)
-    holds = worm_holds(conn, h)
-    canaries = list_canaries(conn, h)
-    quarantine = list_quarantine(conn, h)
-    ebpf = ebpf_events(conn, h)
-    lynis = lynis_status(conn, h)
-    aide = aide_status(conn, h)
-    playbooks = list_playbooks(conn)
+def _execute_release(db, conn: Conn, t: dict, actor: str) -> dict:
+    d = t['detail']
+    res = _run(db, t['host'], sx.release_script(d['snapshot'], d['hold_tag']), ['--apply'], ref=f'release:{d["snapshot"]}'[:200], mode='apply', actor=actor)
+    done = res['status'] in deploy.FINISHED and 'RELEASED ' in (res.get('output') or '')
+    now = int(time.time())
+    conn.execute(f"UPDATE security_retention_holds SET status = '{'released' if done else 'locked'}', legal_hold = CASE WHEN :r = 1 THEN 0 ELSE legal_hold END WHERE id = :i",
+                 {'i': d['hold_id'], 'r': 1 if done else 0})
+    if t.get('id'):
+        conn.execute('UPDATE security_timelock_queue SET status = :s, decided_by = COALESCE(decided_by, :a), decided_at = :t, output = :o WHERE id = :i',
+                     {'s': 'executed' if done else 'failed', 'a': actor, 't': now, 'o': (res.get('output') or '')[-20000:], 'i': t['id']})
+    return _result(res, 'apply', None if done else 'the hold is still on the host: see the output', host=t['host'], timelock_id=t.get('id'), status_after='released' if done else 'locked')
 
-    tripped_count = canaries['summary']['tripped_canaries']
-    quarantined_count = len(quarantine['quarantine'])
-    clock_frozen = holds['clock_guard']['emergency_freeze']
 
-    if tripped_count > 0 or quarantined_count > 0 or clock_frozen or quarantine['airgap_active']:
-        state = 'critical'
-        banner = 'CRITICAL INCIDENT: Active containment or tripwire alarm engaged'
-    elif lynis['hardening_index'] < 70 or not aide['baseline_verified']:
-        state = 'warning'
-        banner = 'WARNING: Host hardening drift or file integrity warning detected'
+def _pending(conn: Conn, tid) -> dict | None:
+    rows = _timelocks(conn)
+    return next((t for t in rows if t['id'] == _int(tid, 0)), None)
+
+
+def approve(db, conn: Conn, body: dict, actor: str) -> dict:
+    t = _pending(conn, body.get('timelock_id'))
+    if not t:
+        raise LookupError('nothing is waiting under that id')
+    if t['mode'] != 'dual_admin':
+        return {'ok': False, 'host': t['host'], 'error': f'this is waiting out a cool-off: nobody can approve it early. It runs in {t["remaining_seconds"]} s, or use the offline key'}
+    if _person(t['actor']) == _person(actor):
+        return {'ok': False, 'host': t['host'], 'error': 'a second admin has to approve this, not the one who asked'}
+    if _person(actor) not in {a.lower() for a in established_admins(conn)}:
+        return {'ok': False, 'host': t['host'], 'error': 'your account is too new to approve this'}
+    if t['host'] and clock_frozen(conn, t['host']):
+        return {'ok': False, 'host': t['host'], 'error': f'the clock guard has stopped releases on {t["host"]}'}
+    conn.execute('UPDATE security_timelock_queue SET decided_by = :a, decided_at = :t WHERE id = :i', {'a': actor, 't': int(time.time()), 'i': t['id']})
+    if t['action'] == 'worm_release':
+        return _execute_release(db, conn, t, actor)
+    return {'ok': True, 'host': t['host'], 'timelock_id': t['id'], 'message': 'approved'}
+
+
+def abort(conn: Conn, body: dict, actor: str) -> dict:
+    t = _pending(conn, body.get('timelock_id'))
+    if not t:
+        raise LookupError('nothing is waiting under that id')
+    conn.execute("UPDATE security_timelock_queue SET status = 'aborted', decided_by = :a, decided_at = :t WHERE id = :i", {'a': actor, 't': int(time.time()), 'i': t['id']})
+    if t['detail'].get('hold_id'):
+        conn.execute("UPDATE security_retention_holds SET status = 'locked' WHERE id = :i AND status = 'release_pending'", {'i': t['detail']['hold_id']})
+    return {'ok': True, 'host': t['host'], 'timelock_id': t['id'], 'status_after': 'aborted'}
+
+
+def break_glass_status(conn: Conn) -> dict:
+    return {'armed': bool(alerts.get_setting(conn, BREAK_GLASS))}
+
+
+def mint_break_glass(conn: Conn, actor: str) -> dict:
+    """The first key anyone may make. A new one replaces the old, so it waits out the same timelock it could otherwise skip:
+    if an admin account alone could mint a key, the key would protect nothing from that account."""
+    now = int(time.time())
+    if alerts.get_setting(conn, BREAK_GLASS):
+        due = [t for t in _timelocks(conn) if t['action'] == 'break_glass_rotate' and _person(t['actor']) == _person(actor)
+               and ((t['mode'] == 'cool_off' and t['executes_at'] <= now) or (t['mode'] == 'dual_admin' and t['decided_by']))]
+        if not due:
+            mine = [t for t in _timelocks(conn) if t['action'] == 'break_glass_rotate']
+            if mine:
+                return {'ok': False, 'error': 'a replacement is already waiting', 'timelock_id': mine[0]['id']}
+            q = quorum_state(conn)
+            executes = now if q['mode'] == 'dual_admin' else now + q['cool_off_hours'] * 3600
+            tid = conn.scalar("""INSERT INTO security_timelock_queue (action, target_ref, host, actor, mode, requested_at, executes_at, status)
+                                 VALUES ('break_glass_rotate', 'offline key', '', :a, :m, :r, :e, 'pending') RETURNING id""",
+                              {'a': actor, 'm': q['mode'], 'r': now, 'e': executes})
+            return {'ok': True, 'requested': True, 'timelock_id': tid, 'mode': q['mode'], 'executes_at': executes,
+                    'message': 'a second admin has to approve replacing the key' if q['mode'] == 'dual_admin' else f'you can make the new key in {q["cool_off_hours"]} h'}
+        conn.execute("UPDATE security_timelock_queue SET status = 'executed', decided_at = :t, decided_by = COALESCE(decided_by, :a) WHERE id = :i", {'t': now, 'a': actor, 'i': due[0]['id']})
+    key = secrets.token_hex(32)
+    alerts.set_setting(conn, BREAK_GLASS, hashlib.sha256(key.encode()).hexdigest(), actor)
+    return {'ok': True, 'break_glass_key': key, 'message': 'Print this and lock it away. It is not stored and will not be shown again.'}
+
+
+def use_break_glass(db, conn: Conn, body: dict, actor: str) -> dict:
+    """The offline key skips the wait and the second admin, for one release, loudly. It does not skip the clock guard."""
+    key = str(body.get('break_glass_key') or '').strip()
+    t = _pending(conn, body.get('timelock_id'))
+    if not t or t['action'] != 'worm_release':
+        raise LookupError('no release is waiting under that id')
+    stored = alerts.get_setting(conn, BREAK_GLASS)
+    if not stored or not secrets.compare_digest(str(stored), hashlib.sha256(key.encode()).hexdigest()):
+        return {'ok': False, 'host': t['host'], 'error': 'that is not the offline key'}
+    if clock_frozen(conn, t['host']):
+        return {'ok': False, 'host': t['host'], 'error': f'the clock guard has stopped releases on {t["host"]}: clear it first'}
+    conn.execute('UPDATE security_timelock_queue SET break_glass_used = 1, decided_by = :a, decided_at = :t WHERE id = :i', {'a': actor, 't': int(time.time()), 'i': t['id']})
+    record_event(conn, t['host'], 'break_glass_used', f'{actor} used the offline key to release {t["target_ref"]}')
+    return _execute_release(db, conn, t, actor)
+
+
+# ── what runs without anyone asking ──────────────────────────────────
+_clock_seen: list[tuple[float, float]] = []
+
+
+def _controller_clock_ok(conn: Conn) -> bool:
+    """A cool-off is measured on this machine's clock, so moving that clock would end one early. Boot time keeps counting
+    through a suspend and cannot be set: if the wall clock runs away from it, nothing executes until someone looks."""
+    if (alerts.get_setting(conn, CONTROLLER_CLOCK) or {}).get('frozen'):
+        return False
+    wall, boot = time.time(), time.clock_gettime(time.CLOCK_BOOTTIME)
+    if _clock_seen:
+        moved = abs((wall - _clock_seen[0][0]) - (boot - _clock_seen[0][1]))
+        if moved > CLOCK_JUMP:
+            alerts.set_setting(conn, CONTROLLER_CLOCK, {'frozen': True, 'reason': f'this machine\'s clock moved {int(moved)} s', 'at': int(wall)}, 'system')
+            return False
+    _clock_seen[:] = [(wall, boot)]
+    return True
+
+
+def clear_controller_clock(conn: Conn, actor: str) -> dict:
+    alerts.set_setting(conn, CONTROLLER_CLOCK, {'frozen': False, 'cleared_by': actor, 'cleared_at': int(time.time())}, actor)
+    _clock_seen.clear()
+    return {'ok': True}
+
+
+def tick(db) -> dict:
+    """Once a minute. Each part stands alone: one unreachable host must not hold up the rest."""
+    from . import errlog
+    conn = db.connect()
+    done = {'released': 0, 'measured': 0}
+    try:
+        now = int(time.time())
+        # a dual-admin request whose second admin has gone would wait forever: it falls back to the cool-off from when it was asked
+        if len(established_admins(conn)) < 2:
+            conn.execute("""UPDATE security_timelock_queue SET mode = 'cool_off', executes_at = requested_at + :c
+                            WHERE status = 'pending' AND mode = 'dual_admin' AND decided_by IS NULL""", {'c': cool_off_hours(conn) * 3600})
+        clock_ok = _controller_clock_ok(conn)
+        if clock_ok:
+            for t in _timelocks(conn):
+                if t['action'] == 'worm_release' and t['mode'] == 'cool_off' and t['executes_at'] <= now and not clock_frozen(conn, t['host']):
+                    try:
+                        if _execute_release(db, conn, t, f'timelock (asked by {t["actor"]})')['ok']:
+                            done['released'] += 1
+                    except Exception:
+                        errlog.trace()
+        conn.execute('DELETE FROM security_quarantine WHERE expires_at IS NOT NULL AND expires_at <= :t', {'t': now})    # the kernel already let them go
+        conn.execute("DELETE FROM security_events WHERE severity = 'info' AND occurred_at < :t", {'t': now - 90 * 86400})
+        want = {d['host'] for d in deploy.deployed(conn, kind='security')} | {r[0] for r in conn.all("SELECT DISTINCT host FROM security_retention_holds WHERE status <> 'released'")}
+        # with this machine's clock in doubt, every host would look wrong against it, and be frozen for it
+        for host in sorted(want) if clock_ok else ():
+            m = conn.scalar("SELECT measured_at FROM security_measurements WHERE host = :h AND kind = 'host'", {'h': host})
+            if deploy.ready(conn, host) and (m is None or now - m >= MEASURE_EVERY):
+                try:
+                    if measure(db, conn, host, 'system')['ok']:
+                        done['measured'] += 1
+                except Exception:
+                    errlog.trace()
+    finally:
+        conn.close()
+    return done
+
+
+# ── decoys and the sentinel ──────────────────────────────────────────
+def sentinel_config(conn: Conn, host: str) -> dict:
+    saved = alerts.get_setting(conn, host_key(host)) or {}
+    return {'folders': saved.get('folders') or [], 'names': saved.get('names') or list(DEFAULT_DECOYS), 'armed': bool(saved.get('armed')),
+            'actions': saved.get('actions') or list(sx.BRAKE_ACTIONS), 'minutes': saved.get('minutes', 60)}
+
+
+def suggested_folders(conn: Conn, host: str) -> list[str]:
+    from .shares import design_exports
+    try:
+        return sorted({str(e['path']) for e in design_exports(conn, host) if str(e.get('path') or '').startswith('/')})
+    except Exception:           # a design that cannot be read suggests nothing; it must not stop this panel
+        return []
+
+
+def save_sentinel_config(conn: Conn, host, body: dict, actor: str) -> dict:
+    """What the next deploy installs. Saving changes nothing on the host. Arming is off until someone turns it on, since
+    an armed sentinel freezes shares by itself on the strength of one changed file."""
+    name = known_host(conn, host)
+    cur = alerts.get_setting(conn, host_key(name)) or {}
+    folders = sorted({clean_path(p, 'a folder') for p in body.get('folders') or []})
+    names = [str(n) for n in (body.get('names') or DEFAULT_DECOYS)]
+    for n in names:
+        if not n or len(n) > 100 or n != n.strip() or '/' in n or n in ('.', '..') or any(ord(c) < 32 or ord(c) == 127 for c in n):
+            raise ValueError(f'not a file name: {n[:40]!r}')
+    if len(folders) * len(names) > MAX_DECOYS:
+        raise ValueError(f'that is more than {MAX_DECOYS} decoys')
+    actions = [a for a in sx.BRAKE_ACTIONS if a in (body.get('actions') or sx.BRAKE_ACTIONS)]
+    minutes = _int(body.get('minutes'), 60)
+    if minutes is None or not 0 <= minutes <= 525600:
+        raise ValueError('minutes is 0 (until lifted) to 525600')
+    alerts.set_setting(conn, host_key(name), {**cur, 'host': name, 'folders': folders, 'names': names, 'armed': body.get('armed') is True, 'actions': actions, 'minutes': minutes}, actor)
+    return {'ok': True, 'host': name, **sentinel_config(conn, name)}
+
+
+def decoy_paths(config: dict) -> list[str]:
+    return [f'{d.rstrip("/")}/{n}' for d in config['folders'] for n in config['names']]
+
+
+def vip_list(conn: Conn) -> list[str]:
+    return list(alerts.get_setting(conn, VIP) or [])
+
+
+def save_vips(conn: Conn, values, actor: str) -> dict:
+    nets = sorted({str(ipaddress.ip_network(str(v).strip(), strict=False)) for v in values or [] if str(v).strip()})
+    alerts.set_setting(conn, VIP, nets, actor)
+    return {'ok': True, 'vips': nets}
+
+
+def digest(conn: Conn, host: str) -> str:
+    """What a deploy is made from, to tell whether a dry run still describes it. The report token is new each time, and left out."""
+    name = deploy.canonical(conn, host)
+    return hashlib.sha256(json.dumps([sentinel_config(conn, name), vip_list(conn), alerts.get_setting(conn, 'report_url')], sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _install(conn: Conn, host: str, token: str = '', rearm: bool = False) -> str:
+    from .jobs import report_ca
+    cfg = sentinel_config(conn, host)
+    url = (alerts.get_setting(conn, 'report_url') or '').rstrip('/')
+    return sx.install_script(decoys=decoy_paths(cfg), armed=cfg['armed'], actions=cfg['actions'], minutes=cfg['minutes'], report_url=url if token else '', token=token,
+                             vips=vip_list(conn) + _controller_ips(conn, host), report_ca=report_ca(url), rearm=rearm)
+
+
+def deploy_items(db, conn: Conn, host: str, mode: str, actor: str, remove: bool = False, rearm: bool = False) -> list[dict]:
+    name = known_host(conn, host)
+    cfg = sentinel_config(conn, name)
+    if not remove and not cfg['folders']:
+        raise ValueError(f'say which folders on {name} get decoys first')
+    if mode != 'apply':
+        return [{'host': name, 'script': _install(conn, name, rearm=rearm), 'args': [], 'kind': 'security', 'ref': name, 'mode': 'report'}]
+    token = secrets.token_urlsafe(32) if not remove and alerts.get_setting(conn, 'report_url') else ''
+
+    def done(res):
+        c = db.connect()
+        try:
+            if remove:
+                c.execute("DELETE FROM deployed WHERE host = :h AND kind = 'security'", {'h': name})
+                c.execute('DELETE FROM security_canaries WHERE lower(host) = lower(:h)', {'h': name})
+                saved = alerts.get_setting(c, host_key(name)) or {}
+                saved.pop('token_sha', None)
+                alerts.set_setting(c, host_key(name), saved, actor)
+                return
+            record_decoys(c, name, res.get('output') or '')
+            if token:
+                saved = alerts.get_setting(c, host_key(name)) or {}
+                alerts.set_setting(c, host_key(name), {**saved, 'host': name, 'token_sha': hashlib.sha256(token.encode()).hexdigest()}, actor)
+            deploy.mark_deployed(c, name, 'security', 'security', digest(c, name), {'armed': cfg['armed'], 'decoys': len(decoy_paths(cfg))}, actor)
+        finally:
+            c.close()
+    return [{'host': name, 'script': _install(conn, name, token, rearm), 'args': ['--uninstall' if remove else '--apply'], 'kind': 'security', 'ref': name, 'mode': 'apply', 'on_ok': done}]
+
+
+def record_decoys(conn: Conn, host: str, output: str):
+    """The decoys the deploy says it wrote, with the hashes it read back. A decoy it did not confirm is not a decoy."""
+    now = int(time.time())
+    seen = []
+    for line, sha, size in re.findall(r'^CANARY (\S+) ([0-9a-f]{64}) (\d+)$', output, re.M):
+        path = _b64text(line)
+        if not path:
+            continue
+        seen.append(path)
+        rows = conn.all('SELECT id, sha256 FROM security_canaries WHERE lower(host) = lower(:h) AND path = :p', {'h': host, 'p': path})
+        if rows and rows[0][1] == sha:
+            conn.execute("UPDATE security_canaries SET verified_at = :t WHERE id = :i", {'t': now, 'i': rows[0][0]})
+        elif rows:
+            conn.execute("UPDATE security_canaries SET sha256 = :s, size = :z, deployed_at = :t, status = 'armed', tripped_at = NULL, verified_at = :t WHERE id = :i",
+                         {'s': sha, 'z': int(size), 't': now, 'i': rows[0][0]})
+        else:
+            conn.execute("""INSERT INTO security_canaries (host, path, sha256, size, deployed_at, status, verified_at)
+                            VALUES (:h, :p, :s, :z, :t, 'armed', :t)""", {'h': host, 'p': path, 's': sha, 'z': int(size), 't': now})
+    for cid, path in conn.all('SELECT id, path FROM security_canaries WHERE lower(host) = lower(:h)', {'h': host}):
+        if path not in seen:
+            conn.execute('DELETE FROM security_canaries WHERE id = :i', {'i': cid})
+
+
+def canaries_view(conn: Conn, host: str | None = None) -> dict:
+    rows = conn.all(f"""SELECT id, host, path, sha256, size, deployed_at, status, tripped_at, verified_at FROM security_canaries
+                        {'WHERE lower(host) = lower(:h)' if host else ''} ORDER BY host, path LIMIT 2000""", {'h': host})
+    keys = ('id', 'host', 'path', 'sha256', 'size', 'deployed_at', 'status', 'tripped_at', 'verified_at')
+    decoys = [dict(zip(keys, r)) for r in rows]
+    out = {'canaries': decoys, 'summary': {'armed': sum(1 for c in decoys if c['status'] == 'armed'), 'tripped': sum(1 for c in decoys if c['status'] == 'tripped')},
+           'report_url': bool(alerts.get_setting(conn, 'report_url'))}
+    if host:
+        m = measurement(conn, host)
+        marks = deploy.deployed(conn, host=deploy.canonical(conn, host), kind='security')
+        out.update(config=sentinel_config(conn, host), suggested=suggested_folders(conn, host), installed=bool(marks), deploy_ready=deploy.ready(conn, host),
+                   out_of_date=bool(marks) and marks[0]['hash'] != digest(conn, host), sentinel=(m or {}).get('sentinel'), auditd=(m or {}).get('auditd'),
+                   tools=(m or {}).get('tools'), shadow_copy2_shares=(m or {}).get('shadow_copy2_shares'), measured_at=(m or {}).get('measured_at'),
+                   last_test=next((e for e in list_events(conn, host, 50) if e['kind'] == 'sentinel_test'), None))
+    return out
+
+
+def test_sentinel(db, conn: Conn, body: dict, actor: str) -> dict:
+    """A real write to a file only the sentinel cares about, timed until the event appears. No brake, no alarm."""
+    name = known_host(conn, body.get('host'))
+    res = _run(db, name, _install(conn, name), ['--test'], ref='sentinel-test', mode='report', actor=actor, timeout=60)
+    m = re.search(r'^LATENCY (\d+)$', res.get('output') or '', re.M)
+    return _result(res, 'report', None if m else 'the sentinel did not react', host=name, latency_ms=int(m[1]) if m else None)
+
+
+# ── access control ───────────────────────────────────────────────────
+def mac_view(conn: Conn, host: str) -> dict:
+    m = measurement(conn, host)
+    if not m:
+        return {'host': host, 'measured_at': None}
+    aa = m.get('apparmor') or {}
+    framework = 'selinux' if m.get('selinux') else 'apparmor' if aa.get('enabled') else None
+    return {'host': host, 'measured_at': m['measured_at'], 'stale': m['stale'], 'framework': framework, 'selinux_mode': m.get('selinux'), 'apparmor': aa,
+            'booleans': m.get('booleans') or [], 'fcontext': m.get('fcontext') or [], 'avc': m.get('avc') or [], 'se_types': SE_TYPES}
+
+
+def remediate_mac(db, conn: Conn, body: dict, actor: str) -> dict:
+    host, mode = known_host(conn, body.get('host')), _mode(body)
+    boolean = body.get('boolean')
+    if boolean:
+        if boolean not in EXPECTED_BOOLEANS:
+            raise ValueError(f'only these booleans: {", ".join(EXPECTED_BOOLEANS)}')
+        value = 'on' if body.get('value') in (True, 'on') else 'off'
+        _, out = _act(db, host, sx.boolean_script(boolean, value), mode, f'boolean:{boolean}', actor)
+        return {**out, 'host': host}
+    path, se_type = clean_path(body.get('path')), str(body.get('type') or '')
+    if se_type not in SE_TYPES or not SE_TYPE_RE.fullmatch(se_type):
+        raise ValueError(f'the type is one of {", ".join(SE_TYPES)}')
+    if path in ('/', '/etc', '/usr', '/var', '/boot', '/root', '/home'):
+        raise ValueError(f'relabelling {path} would break the host')
+    _, out = _act(db, host, sx.relabel_script(path, se_type), mode, f'relabel:{path}'[:200], actor)
+    return {**out, 'host': host, 'path': path, 'type': se_type}
+
+
+# ── firewall ─────────────────────────────────────────────────────────
+def _controller_ips(conn: Conn, host: str) -> list[str]:
+    """The address this machine would reach the host from. Connecting a UDP socket picks the route and sends nothing. Behind
+    NAT the host sees something else, so scripts also ask the host who is really on the other end of their own SSH session."""
+    try:
+        addr = connect_address(conn, host)
+        info = socket.getaddrinfo(addr, 22, type=socket.SOCK_DGRAM)[0]
+        with socket.socket(info[0], socket.SOCK_DGRAM) as s:
+            s.connect(info[4])
+            return [ipaddress.ip_address(s.getsockname()[0]).compressed]
+    except (OSError, ValueError):
+        return []
+
+
+def clean_target(conn: Conn, host: str, raw) -> str:
+    """A single address or a sane network that is none of the machines this fleet cannot do without."""
+    text = str(raw or '').strip()
+    try:
+        net = ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        raise ValueError(f'not an IP address or network: {text[:60]}') from None
+    if net.prefixlen < MIN_CIDR[net.version]:
+        raise ValueError(f'/{net.prefixlen} is too wide to quarantine (at most /{MIN_CIDR[net.version]})')
+    if net.is_loopback or net.is_unspecified or net.is_multicast or net.is_link_local:
+        raise ValueError(f'{net} cannot be quarantined')
+    for raw_vip in vip_list(conn) + _controller_ips(conn, host):
+        vip = ipaddress.ip_network(raw_vip, strict=False)
+        if vip.version == net.version and vip.overlaps(net):
+            raise ValueError(f'{net} covers {vip}, which is on the exempt list or is how StorageForge reaches this host')
+    return str(net.network_address) if net.prefixlen == net.max_prefixlen else str(net)
+
+
+def firewall_view(conn: Conn, host: str | None = None) -> dict:
+    now = int(time.time())
+    rows = conn.all(f"""SELECT id, host, ip_address, reason, added_at, expires_at, actor FROM security_quarantine
+                        {'WHERE lower(host) = lower(:h)' if host else ''} ORDER BY added_at DESC LIMIT 1000""", {'h': host})
+    m = measurement(conn, host) if host else None
+    live = set((m or {}).get('quarantined') or [])
+    entries = [{'id': i, 'host': h, 'ip_address': ip, 'reason': r, 'added_at': a, 'expires_at': e, 'actor': who,
+                'remaining_seconds': None if e is None else max(0, e - now), 'live': (ip in live) if m else None}
+               for i, h, ip, r, a, e, who in rows if e is None or e > now]
+    tools = (m or {}).get('tools') or []
+    return {'quarantine': entries, 'vips': vip_list(conn), 'controller': _controller_ips(conn, host) if host else [], 'measured_at': (m or {}).get('measured_at'),
+            'fence_present': (m or {}).get('fence'), 'airgap': (m or {}).get('airgap'), 'unknown_drops': sorted(live - {e['ip_address'] for e in entries}),
+            'firewalls': [t for t in ('nft', 'firewall-cmd', 'ufw', 'iptables') if t in tools]}
+
+
+def quarantine(db, conn: Conn, body: dict, actor: str) -> dict:
+    host, mode = known_host(conn, body.get('host')), _mode(body)
+    ip = clean_target(conn, host, body.get('ip_address'))
+    minutes = _int(body.get('minutes'), 60)
+    if minutes is None or not 0 <= minutes <= 525600:
+        raise ValueError('minutes is 0 (until lifted) to 525600')
+    reason = clean_text(body.get('reason') or 'by hand', 200)
+    res, out = _act(db, host, sx.quarantine_script(ip, minutes * 60), mode, f'quarantine:{ip}', actor, rf'^QUARANTINED {re.escape(ip)}$')
+    out.update(host=host, ip_address=ip)
+    if res and mode == 'apply' and out['ok']:
+        now = int(time.time())
+        conn.execute('DELETE FROM security_quarantine WHERE lower(host) = lower(:h) AND ip_address = :ip', {'h': host, 'ip': ip})
+        conn.execute("""INSERT INTO security_quarantine (host, ip_address, reason, added_at, expires_at, actor)
+                        VALUES (:h, :ip, :r, :t, :e, :a)""", {'h': host, 'ip': ip, 'r': reason, 't': now, 'e': now + minutes * 60 if minutes else None, 'a': actor})
+    return out
+
+
+def lift_quarantine(db, conn: Conn, host, ip: str, mode: str, actor: str) -> dict:
+    name = known_host(conn, host)
+    try:
+        net = ipaddress.ip_network(str(ip).strip(), strict=False)
+    except ValueError:
+        raise ValueError('not an IP address or network') from None
+    target = str(net.network_address) if net.prefixlen == net.max_prefixlen else str(net)
+    res, out = _act(db, name, sx.unquarantine_script(target), _mode({'mode': mode}), f'lift:{target}', actor, rf'^LIFTED {re.escape(target)}$')
+    out.update(host=name, ip_address=target)
+    if res and mode == 'apply' and out['ok']:
+        conn.execute('DELETE FROM security_quarantine WHERE lower(host) = lower(:h) AND ip_address = :ip', {'h': name, 'ip': target})
+    return out
+
+
+def airgap(db, conn: Conn, body: dict, actor: str) -> dict:
+    """Cuts everything but this machine. If this machine turns out to be cut too, the host undoes it by itself."""
+    host, mode = known_host(conn, body.get('host')), _mode(body)
+    enable = body.get('enabled') is not False
+    script = sx.airgap_script(_controller_ips(conn, host))
+    if mode == 'preview':
+        return {'ok': True, 'mode': mode, 'host': host, 'script': script}
+    if mode == 'report':
+        return {**_result(_run(db, host, script, [], ref='airgap', mode='report', actor=actor), 'report'), 'host': host}
+    if not enable:
+        res = _run(db, host, script, ['--disarm'], ref='airgap-off', mode='apply', actor=actor)
+        out = _result(res, 'apply', None if 'AIRGAP off' in (res.get('output') or '') else 'the airgap may still be on: see the output')
+        return {**out, 'host': host, 'airgap': not out['ok'], 'measured': measure(db, conn, host, actor)['ok']}
+    res = _run(db, host, script, ['--apply'], ref='airgap', mode='apply', actor=actor)
+    output = res.get('output') or ''
+    if 'AIRGAP on' in output:
+        return {**_result(res, 'apply'), 'host': host, 'airgap': True}
+    if 'AIRGAP pending' not in output:
+        return {**_result(res, 'apply', 'the airgap did not engage: see the output'), 'host': host, 'airgap': False}
+    confirm = _run(db, host, script, ['--confirm'], ref='airgap-confirm', mode='apply', actor=actor, timeout=60)
+    output += confirm.get('output') or ''
+    if 'AIRGAP on' not in (confirm.get('output') or ''):
+        return {'ok': False, 'mode': 'apply', 'host': host, 'airgap': False, 'status': confirm['status'], 'output': output,
+                'error': 'StorageForge could not reach the host through the airgap: it lifts itself within 10 minutes'}
+    measured = measure(db, conn, host, actor)['ok']
+    return {'ok': True, 'mode': 'apply', 'host': host, 'airgap': True, 'status': 'ok', 'output': output, 'measured': measured}
+
+
+# ── behaviour: what scans and samples show ───────────────────────────
+def _latest_scans(conn: Conn, host: str, limit: int = 40) -> list[dict]:
+    rows = conn.all(f"""SELECT s.scan_id, s.finished_at, s.added, s.modified, s.deleted FROM scans s JOIN hosts h ON h.host_id = s.host_id
+                        WHERE lower(h.hostname) = lower(:h) AND s.status IN ('ok', 'partial') AND s.finished_at IS NOT NULL
+                        ORDER BY s.finished_at DESC LIMIT {int(limit)}""", {'h': host})
+    return [{'id': r[0], 'at': epoch(r[1]), 'added': r[2], 'modified': r[3], 'deleted': r[4]} for r in rows]
+
+
+def _full(parent: str, name: str) -> str:
+    return f'/{name}' if parent == '/' else f'{parent}/{name}'
+
+
+def velocity(conn: Conn, host: str) -> dict:
+    """How fast files change between scans, against this host's own past. A scan only sees the difference between two
+    moments, so this is an after-the-fact signal that catches what no decoy was in the path of."""
+    scans = _latest_scans(conn, host)
+    series = []
+    for cur, prev in zip(scans, scans[1:]):
+        hours = max((cur['at'] - prev['at']) / 3600, 1 / 60)
+        total = cur['added'] + cur['modified'] + cur['deleted']
+        series.append({'at': cur['at'], 'changes': total, 'files_per_hour': round(total / hours, 1), 'added': cur['added'], 'modified': cur['modified'], 'deleted': cur['deleted']})
+    out = {'scans': len(scans), 'series': list(reversed(series)), 'latest': series[0] if series else None, 'baseline_median': None, 'threshold': None, 'anomaly': False,
+           'ransom_names': 0, 'ransom_samples': [], 'appended_extensions': 0}
+    if len(series) > VELOCITY_MIN_BASELINE:
+        base = statistics.median(s['files_per_hour'] for s in series[1:])
+        out['baseline_median'] = round(base, 1)
+        out['threshold'] = round(max(base * VELOCITY_FACTOR, VELOCITY_FLOOR), 1)
+        out['anomaly'] = series[0]['files_per_hour'] > out['threshold']
+    if scans:
+        out.update(_scan_signs(conn, scans[0]['id']))
+    return out
+
+
+def _scan_signs(conn: Conn, scan_id: int) -> dict:
+    likes = {f's{i}': f'%{s}' for i, s in enumerate(RANSOM_SUFFIXES)} | {f'n{i}': n for i, n in enumerate(RANSOM_NOTES)}
+    match = ' OR '.join(f'lower(filename) LIKE :{k}' for k in likes)
+    where = f"scan_id = :s AND change_type IN ('added', 'modified') AND NOT is_directory AND ({match})"
+    p = {'s': scan_id, **likes}
+    n = conn.scalar(f'SELECT count(*) FROM file_changes WHERE {where}', p) or 0
+    samples = [_full(a, b) for a, b in conn.all(f'SELECT parent_path, filename FROM file_changes WHERE {where} LIMIT 20', p)] if n else []
+    # report.docx gone and report.docx.xyz appeared beside it: how a rename-in-place encryptor looks, whatever its extension
+    appended = conn.scalar("""SELECT count(*) FROM file_changes a JOIN file_changes d ON d.scan_id = a.scan_id AND d.mount_id = a.mount_id AND d.parent_path = a.parent_path
+                              AND d.change_type = 'deleted' AND a.filename LIKE d.filename || '.%'
+                              WHERE a.scan_id = :s AND a.change_type = 'added' AND NOT a.is_directory""", {'s': scan_id}) or 0
+    return {'ransom_names': n, 'ransom_samples': samples, 'appended_extensions': appended}
+
+
+def changed_paths(conn: Conn, host: str, limit: int = SAMPLE_FILES, skip_compressed: bool = False) -> list[str]:
+    scans = _latest_scans(conn, host, 1)
+    if not scans:
+        return []
+    rows = conn.all(f"""SELECT parent_path, filename FROM file_changes WHERE scan_id = :s AND change_type IN ('added', 'modified') AND NOT is_directory
+                        ORDER BY new_modified_at DESC LIMIT {int(limit) * 4}""", {'s': scans[0]['id']})
+    out = [_full(a, b) for a, b in rows if not (skip_compressed and b.lower().endswith(COMPRESSED_NAMES))]
+    return out[:limit]
+
+
+def parse_entropy(text: str) -> list[dict]:
+    out = []
+    for line in (text or '').splitlines():
+        f = line.split('\t')
+        if len(f) != 5 or f[0] != 'E':
+            continue
+        path = _b64text(f[1])
+        try:
+            h, size = float(f[2]), int(f[4])
+        except ValueError:
+            continue
+        if path and 0 <= h <= 8 and re.fullmatch(r'[0-9a-f]{0,32}', f[3]):
+            known = f[3].startswith(KNOWN_MAGIC) or f[3][8:16] == '66747970'     # mp4: ftyp at offset 4
+            out.append({'path': path, 'entropy': h, 'head': f[3], 'size': size, 'known_header': known, 'flagged': h >= ENTROPY_FLAG and not known})
+    return out
+
+
+def sample_entropy(db, conn: Conn, body: dict, actor: str) -> dict:
+    """Reads the first 4 KiB of files the last scan saw change, on the host. It looks at contents, so it is asked for."""
+    name = known_host(conn, body.get('host'))
+    paths = changed_paths(conn, name, skip_compressed=True)
+    if not paths:
+        return {'ok': False, 'host': name, 'error': 'the last scan saw no changed files to sample'}
+    res = _run(db, name, sx.entropy_script(), ref='entropy', mode='report', actor=actor, timeout=600, data=''.join(sx.b64(p) + '\n' for p in paths).encode())
+    if res['status'] != 'ok':
+        return _result(res, 'report', host=name)
+    if 'NO python3' in (res.get('output') or ''):
+        return _result(res, 'report', f'{name} has no python3 to sample with', host=name)
+    samples = parse_entropy(res['output'])
+    buckets = {'low': sum(1 for s in samples if s['entropy'] < 6), 'mid': sum(1 for s in samples if 6 <= s['entropy'] < 7.5), 'high': sum(1 for s in samples if 7.5 <= s['entropy'] < ENTROPY_FLAG),
+               'ciphertext_like': sum(1 for s in samples if s['entropy'] >= ENTROPY_FLAG)}
+    flagged = [s for s in samples if s['flagged']]
+    now = int(time.time())
+    _save_measurement(conn, name, 'entropy', now, 'sample', {'asked': len(paths), 'read': len(samples), 'threshold': ENTROPY_FLAG, 'buckets': buckets, 'flagged_count': len(flagged), 'flagged': flagged[:200]})
+    return {'ok': True, 'host': name, 'read': len(samples), 'flagged': len(flagged), 'run_id': res.get('run_id')}
+
+
+def diff_scan(db, conn: Conn, body: dict, actor: str) -> dict:
+    """ClamAV on only what the last scan saw change. Findings go in the Malware panel beside those of the full scan, and
+    nothing here closes one of them: a partial scan says nothing about the files it did not read."""
+    from . import clamav
+    name = known_host(conn, body.get('host'))
+    paths = changed_paths(conn, name, limit=5000)
+    if not paths:
+        return {'ok': False, 'host': name, 'error': 'the last scan saw no changed files to scan'}
+    res = _run(db, name, sx.DIFF_SCAN, ref='diff-scan', mode='report', actor=actor, timeout=1800, data=''.join(sx.b64(p) + '\n' for p in paths).encode())
+    if res['status'] != 'ok':
+        return _result(res, 'report', host=name)
+    output = res.get('output') or ''
+    if 'NO clamscan' in output:
+        return _result(res, 'report', f'{name} has no ClamAV: deploy it from the Malware panel first', host=name)
+    m = re.search(r'^SCANNED (\d+) (\d+) (\d+)$', output, re.M)
+    if not m or int(m[2]) not in (0, 1):
+        return _result(res, 'report', 'ClamAV did not finish: see the output', host=name)
+    found = clamav.add_found(conn, name, output)
+    return {'ok': True, 'host': name, 'asked': len(paths), 'scanned': int(m[1]), 'seconds': int(m[3]), 'found': found, 'run_id': res.get('run_id')}
+
+
+def behavior_view(conn: Conn, host: str) -> dict:
+    m = measurement(conn, host)
+    return {'host': host, 'velocity': velocity(conn, host), 'entropy': measurement(conn, host, 'entropy'), 'falco': (m or {}).get('falco'), 'measured_at': (m or {}).get('measured_at')}
+
+
+# ── integrity ────────────────────────────────────────────────────────
+def integrity_view(conn: Conn, host: str) -> dict:
+    m = measurement(conn, host)
+    if not m:
+        return {'host': host, 'measured_at': None}
+    return {'host': host, 'measured_at': m['measured_at'], 'stale': m['stale'], 'aide': m.get('aide'), 'lynis': m.get('lynis'),
+            'tools': [t for t in m.get('tools') or [] if t in ('aide', 'lynis')]}
+
+
+def run_tool(db, conn: Conn, body: dict, actor: str) -> dict:
+    host, mode, tool = known_host(conn, body.get('host')), _mode(body), str(body.get('tool') or '')
+    if tool not in ('aide-init', 'aide-check', 'lynis'):
+        raise ValueError('tool is aide-init, aide-check or lynis')
+    _, out = _act(db, host, sx.tool_script(tool), mode, tool, actor)
+    return {**out, 'host': host, 'tool': tool}
+
+
+# ── compliance: every line is a reading, and none of it is an attestation ─
+CHECKS = {
+    'sysctl': 'Kernel hardening settings',
+    'umask': 'Default umask for logins',
+    'auditd': 'auditd running, with StorageForge rules loaded',
+    'mac': 'SELinux enforcing, or AppArmor on',
+    'booleans': 'Storage SELinux booleans are tight',
+    'aide': 'AIDE baseline exists, and its last check found no changes',
+    'lynis': 'Lynis hardening index at target',
+    'time': 'Clock synchronized, and not off the controller',
+    'nts': 'At least one NTS-authenticated time source',
+    'fence': 'Quarantine table present',
+    'decoys': 'Decoys armed, with the sentinel running',
+    'worm': 'A verified hold of the required length',
+    'malware': 'ClamAV deployed and reporting',
+}
+STANDARDS = {
+    'cis-l1': {'name': 'CIS Linux Level 1', 'target_lynis': 78, 'min_worm_days': 7, 'controls': {
+        'sysctl': 'Network and kernel parameters', 'umask': 'Default umask', 'auditd': 'System auditing', 'aide': 'Filesystem integrity checking', 'time': 'Time synchronization'}},
+    'cis-l2': {'name': 'CIS Linux Level 2', 'target_lynis': 85, 'min_worm_days': 14, 'controls': {
+        'sysctl': 'Network and kernel parameters', 'umask': 'Default umask', 'auditd': 'System auditing', 'mac': 'Mandatory access control', 'booleans': 'Mandatory access control',
+        'aide': 'Filesystem integrity checking', 'lynis': 'Hardening index', 'time': 'Time synchronization', 'nts': 'Time synchronization', 'fence': 'Host firewall', 'decoys': 'Detection', 'worm': 'Backups'}},
+    'nist-800-53': {'name': 'NIST SP 800-53 Rev 5', 'target_lynis': 85, 'min_worm_days': 30, 'controls': {
+        'auditd': 'AU-2, AU-12', 'decoys': 'SI-4', 'malware': 'SI-3', 'aide': 'SI-7', 'fence': 'SC-7', 'worm': 'CP-9, CP-10', 'mac': 'AC-3', 'time': 'AU-8', 'nts': 'AU-8', 'sysctl': 'CM-6'}},
+    'hipaa': {'name': 'HIPAA Security Rule, technical safeguards', 'target_lynis': 84, 'min_worm_days': 30, 'controls': {
+        'mac': '§164.312(a)(1)', 'auditd': '§164.312(b)', 'decoys': '§164.312(b)', 'aide': '§164.312(c)(1)', 'worm': '§164.308(a)(7)'}},
+    'pci-dss': {'name': 'PCI-DSS v4.0', 'target_lynis': 86, 'min_worm_days': 90, 'controls': {
+        'fence': 'Req 1', 'malware': 'Req 5', 'auditd': 'Req 10', 'time': 'Req 10', 'aide': 'Req 11'}},
+    'soc2': {'name': 'SOC 2 (Trust Services Criteria)', 'target_lynis': 82, 'min_worm_days': 14, 'controls': {
+        'mac': 'CC6.1', 'fence': 'CC6.6', 'decoys': 'CC7.2', 'lynis': 'CC7.1', 'worm': 'A1.2', 'auditd': 'CC7.2'}},
+    'iso-27001': {'name': 'ISO/IEC 27001:2022 Annex A', 'target_lynis': 84, 'min_worm_days': 30, 'controls': {
+        'malware': 'A.8.7', 'auditd': 'A.8.15', 'decoys': 'A.8.16', 'time': 'A.8.17', 'fence': 'A.8.20', 'worm': 'A.8.13'}},
+    'cmmc-l2': {'name': 'CMMC 2.0 Level 2', 'target_lynis': 88, 'min_worm_days': 60, 'controls': {
+        'auditd': 'AU.L2-3.3.1', 'malware': 'SI.L2-3.14.2', 'fence': 'SC.L2-3.13.1', 'mac': 'AC.L2-3.1.1', 'worm': 'MP.L2-3.8.9', 'time': 'AU.L2-3.3.7'}},
+}
+
+
+def _check(conn: Conn, host: str, m: dict, check: str, std: dict) -> tuple[str, str]:
+    """pass, fail, or unknown when the reading cannot say. Unknown is never counted as a pass."""
+    tools = m.get('tools') or []
+    if check == 'sysctl':
+        values = m.get('sysctl') or {}
+        bad = [f'{k} is {values[k]}' for k, want in sx.SYSCTLS.items() if values.get(k) not in (None, want)]
+        if not any(values.get(k) is not None for k in sx.SYSCTLS):
+            return 'unknown', 'no values read'
+        return ('fail', '; '.join(bad)) if bad else ('pass', f'{len(sx.SYSCTLS)} settings')
+    if check == 'umask':
+        return ('pass', m['umask']) if m.get('umask') == sx.UMASK else ('fail', f'{m.get("umask") or "not set"}, want {sx.UMASK}')
+    if check == 'auditd':
+        a = m.get('auditd') or {}
+        if a.get('active') is None:
+            return 'fail', 'auditd is not installed'
+        return ('pass', f'{a.get("storageforge_rules")} rules') if a['active'] and a.get('storageforge_rules') else ('fail', 'not running' if not a['active'] else 'no StorageForge rules loaded')
+    if check == 'mac':
+        if m.get('selinux'):
+            return ('pass', 'SELinux enforcing') if m['selinux'] == 'Enforcing' else ('fail', f'SELinux is {m["selinux"]}')
+        aa = m.get('apparmor') or {}
+        return ('pass', f'AppArmor, {aa.get("enforce")} profiles enforcing') if aa.get('enabled') else ('fail', 'neither is on')
+    if check == 'booleans':
+        if not m.get('selinux'):
+            return 'unknown', 'not an SELinux host'
+        bad = [b['name'] for b in m.get('booleans') or [] if not b['ok']]
+        return ('fail', ', '.join(bad)) if bad else ('pass', 'as expected')
+    if check == 'aide':
+        a = m.get('aide')
+        if not a:
+            return 'fail', 'AIDE is not installed'
+        if not a.get('baseline_at'):
+            return 'fail', 'no baseline'
+        if a.get('last_action') != 'check' or a.get('exit_code') is None:
+            return 'unknown', 'there is a baseline, but no check has run'
+        return ('pass', 'last check clean') if a['exit_code'] == 0 else ('fail', f'last check exit code {a["exit_code"]}')
+    if check == 'lynis':
+        ly = m.get('lynis') or {}
+        if ly.get('hardening_index') is None:
+            return 'unknown', 'no audit has run'
+        return ('pass' if ly['hardening_index'] >= std['target_lynis'] else 'fail'), f'{ly["hardening_index"]} of {std["target_lynis"]}'
+    if check == 'time':
+        if clock_frozen(conn, host):
+            return 'fail', 'the clock guard is tripped'
+        c = m.get('chrony')
+        if c:
+            return ('pass', f'{c["offset_ms"]} ms from {c["source"]}') if c['synced'] else ('fail', 'chrony is not synchronized')
+        if m.get('ntp_synced') is None:
+            return 'unknown', 'neither chrony nor timedatectl could say'
+        return ('pass', 'timedatectl says synchronized') if m['ntp_synced'] else ('fail', 'not synchronized')
+    if check == 'nts':
+        if 'chronyc' not in tools:
+            return 'fail', 'chrony is not installed'
+        return ('pass', f'{m["nts_sources"]} sources') if m.get('nts_sources') else ('fail', 'no NTS sources')
+    if check == 'fence':
+        return ('pass', 'present') if m.get('fence') else ('fail', 'not present')
+    if check == 'decoys':
+        armed = conn.scalar("SELECT count(*) FROM security_canaries WHERE lower(host) = lower(:h) AND status = 'armed'", {'h': host}) or 0
+        active = (m.get('sentinel') or {}).get('active')
+        return ('pass', f'{armed} armed') if armed and active else ('fail', 'the sentinel is not running' if armed else 'no decoys are armed')
+    if check == 'worm':
+        need, now = std['min_worm_days'] * 86400, int(time.time())
+        for h in hold_rows(conn, host):
+            if h['status'] != 'released' and h['verified_at'] and not h['missing_at'] and (h['legal_hold'] or (h['expires_at'] and h['expires_at'] - h['created_at'] >= need and h['expires_at'] > now)):
+                return 'pass', h['snapshot']
+        return 'fail', f'no verified hold of {std["min_worm_days"]} days'
+    if check == 'malware':
+        return ('pass', 'deployed') if deploy.deployed(conn, host=deploy.canonical(conn, host), kind='clamav') else ('fail', 'not deployed')
+    raise KeyError(check)
+
+
+def compliance_standards() -> dict:
+    return {'standards': [{'id': k, 'name': v['name'], 'target_lynis': v['target_lynis'], 'min_worm_days': v['min_worm_days'],
+                           'checks': [{'id': c, 'label': CHECKS[c], 'control': ref} for c, ref in v['controls'].items()]} for k, v in STANDARDS.items()],
+            'note': 'Readings mapped to controls they help with. Not an audit, a certification or an attestation.'}
+
+
+def compliance_status(conn: Conn, host: str, profile: str | None = None) -> dict:
+    name = known_host(conn, host)
+    profile = profile or alerts.get_setting(conn, profile_key(name)) or 'cis-l2'
+    if profile not in STANDARDS:
+        raise ValueError(f'no such standard: {profile[:40]}')
+    std, m = STANDARDS[profile], measurement(conn, name)
+    base = {'host': name, 'profile': profile, 'standard': std['name'], 'measured_at': (m or {}).get('measured_at'), 'stale': (m or {}).get('stale')}
+    if not m:
+        return {**base, 'score': None, 'passed': 0, 'failed': 0, 'unknown': len(std['controls']), 'checks': [
+            {'id': c, 'label': CHECKS[c], 'control': ref, 'result': 'unknown', 'detail': 'not measured'} for c, ref in std['controls'].items()]}
+    checks = []
+    for c, ref in std['controls'].items():
+        result, detail = _check(conn, name, m, c, std)
+        checks.append({'id': c, 'label': CHECKS[c], 'control': ref, 'result': result, 'detail': clean_text(detail, 300)})
+    passed = sum(1 for c in checks if c['result'] == 'pass')
+    return {**base, 'score': round(passed * 100 / len(checks)), 'passed': passed, 'failed': sum(1 for c in checks if c['result'] == 'fail'),
+            'unknown': sum(1 for c in checks if c['result'] == 'unknown'), 'checks': checks}
+
+
+def compliance_init(db, conn: Conn, body: dict, actor: str) -> dict:
+    """Sets the baseline this script can verify. The score moves when a measurement sees the result, not because this ran."""
+    host, mode, profile = known_host(conn, body.get('host')), _mode(body), str(body.get('profile') or 'cis-l2')
+    if profile not in STANDARDS:
+        raise ValueError(f'no such standard: {profile[:40]}')
+    res, out = _act(db, host, sx.compliance_script(profile, host), mode, f'compliance:{profile}', actor, None, 900)
+    out.update(host=host, profile=profile)
+    if res and mode == 'apply' and out['ok']:
+        alerts.set_setting(conn, profile_key(host), profile, actor)
+        out['measured'] = measure(db, conn, host, actor)['ok']
+    return out
+
+
+# ── an incident ──────────────────────────────────────────────────────
+def brake(db, conn: Conn, body: dict, actor: str) -> dict:
+    """Pulled by hand: the same program an armed sentinel runs, and the answer is what each of its steps reports."""
+    host, mode = known_host(conn, body.get('host')), _mode(body)
+    actions = [a for a in sx.BRAKE_ACTIONS if a in (body.get('actions') or sx.BRAKE_ACTIONS)]
+    if not actions:
+        raise ValueError('choose at least one step')
+    path = clean_path(body['path'], 'the path') if body.get('path') else ''
+    client = clean_target(conn, host, body['client_ip']) if body.get('client_ip') else ''
+    pid = _int(body.get('pid'), 0) or 0
+    if pid < 0:
+        raise ValueError('bad pid')
+    reason = clean_text(body.get('reason') or f'by hand: {actor}', 200)
+    if mode == 'preview':
+        return {'ok': True, 'mode': mode, 'host': host, 'script': sx.brake_program()}
+    args = sx.brake_args(path, client, pid, reason, actions, _int(body.get('minutes'), 0) or 0, apply=mode == 'apply')
+    res = _run(db, host, sx.brake_program(), args, ref='brake', mode=mode, actor=actor, timeout=180)
+    output = res.get('output') or ''
+    steps = [{'step': m[0], 'status': m[1], 'detail': clean_text(m[2], 400)} for m in re.findall(r'^STEP (\w+) (ok|failed|skipped) ?(.*)$', output, re.M)]
+    failed = [s['step'] for s in steps if s['status'] == 'failed']
+    if mode == 'apply':
+        now = int(time.time())
+        _record_brake_output(conn, host, output, actor, now)
+        record_event(conn, host, 'brake_ran', f'{actor} pulled the brake: ' + ', '.join(f'{s["step"]} {s["status"]}' for s in steps), output[-8000:], 'manual')
+    error = None
+    if res['status'] != 'ok' and not steps:
+        error = f'the brake did not run ({res["status"]}): see the output'
+    elif failed:
+        error = 'these steps failed: ' + ', '.join(failed)
+    return {'ok': not error, 'mode': mode, 'host': host, 'status': res['status'], 'steps': steps, 'output': output, 'run_id': res.get('run_id'), **({'error': error} if error else {})}
+
+
+def blast_radius(conn: Conn, host: str, at: int | None = None) -> dict:
+    """What the index and the last sample say about an incident. Who sees "clean" must know how old that word is, so
+    it comes with the scan it rests on, and without a scan since the incident there are no counts at all."""
+    name = known_host(conn, host)
+    if at is None:
+        rows = conn.all("""SELECT occurred_at FROM security_events WHERE lower(host) = lower(:h) AND severity = 'crit' AND kind IN ('canary_tripped', 'brake_ran')
+                           ORDER BY acknowledged_at IS NULL DESC, occurred_at DESC LIMIT 1""", {'h': name})
+        at = rows[0][0] if rows else None
+    out = {'host': name, 'incident_at': at, 'scan_at': None, 'total_files': None, 'changed_since': None, 'unchanged_files': None, 'ransom_names': None, 'appended_extensions': None,
+           'entropy_flagged': None, 'entropy_at': None, 'newest_hold': None, 'rpo_seconds': None}
+    if at is None:
+        return out
+    scans = [s for s in _latest_scans(conn, name, 100) if s['at'] >= at]
+    hold = next((h for h in hold_rows(conn, name) if h['verified_at'] and h['created_at'] <= at and h['status'] != 'released'), None)
+    if hold:
+        out['newest_hold'] = {'snapshot': hold['snapshot'], 'created_at': hold['created_at']}
+        out['rpo_seconds'] = at - hold['created_at']
+    entropy = measurement(conn, name, 'entropy')
+    if entropy and entropy['measured_at'] >= at:
+        out.update(entropy_flagged=entropy.get('flagged_count'), entropy_at=entropy['measured_at'])
+    if scans:
+        total = conn.scalar("""SELECT count(*) FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
+                               WHERE lower(h.hostname) = lower(:h)""", {'h': name}) or 0
+        changed = sum(s['added'] + s['modified'] + s['deleted'] for s in scans)
+        signs = _scan_signs(conn, scans[0]['id'])
+        out.update(scan_at=scans[0]['at'], total_files=total, changed_since=changed, unchanged_files=max(0, total - changed), ransom_names=signs['ransom_names'],
+                   appended_extensions=signs['appended_extensions'])
+    return out
+
+
+def clean_room(db, conn: Conn, body: dict, actor: str) -> dict:
+    host, mode = known_host(conn, body.get('host')), _mode(body)
+    snapshot = str(body.get('snapshot') or '').strip()
+    if not ZFS_SNAP_RE.fullmatch(snapshot):
+        snapshot = clean_path(snapshot, 'the snapshot (dataset@name, or a btrfs path)')
+    mount = clean_path(body.get('mount') or '/mnt/sf-cleanroom', 'the mount point')
+    if mount in ('/', '/mnt', '/etc', '/usr', '/var', '/boot', '/root', '/home', '/srv'):
+        raise ValueError(f'{mount} cannot be a clean room')
+    script = sx.cleanroom_script(snapshot, mount)
+    if mode == 'preview':
+        return {'ok': True, 'mode': mode, 'host': host, 'script': script}
+    args = ['--remove'] if body.get('remove') is True else ['--apply'] if mode == 'apply' else []
+    res = _run(db, host, script, args, ref=f'cleanroom:{snapshot}'[:200], mode=mode, actor=actor, timeout=180)
+    return {**_result(res, mode), 'host': host, 'snapshot': snapshot, 'mount': mount}
+
+
+# ── the whole picture ────────────────────────────────────────────────
+def host_coverage(conn: Conn, host: str) -> dict:
+    """What is really known about one host, and every reason it is not fine yet."""
+    m = measurement(conn, host)
+    marks = deploy.deployed(conn, host=host, kind='security')
+    states = [r[0] for r in conn.all('SELECT status FROM security_canaries WHERE lower(host) = lower(:h)', {'h': host})]
+    armed, tripped = [s for s in states if s == 'armed'], [s for s in states if s == 'tripped']
+    holds = [h for h in hold_rows(conn, host) if h['status'] != 'released']
+    verified = [h for h in holds if h['verified_at'] and not h['missing_at']]
+    crit = [e for e in list_events(conn, host, 100, False) if e['severity'] == 'crit' and not e['acknowledged_at']]
+    vel = velocity(conn, host)
+    critical, warnings, gaps = [], [], []
+    if tripped:
+        critical.append(f'{len(tripped)} decoy(s) tripped')
+    if crit:
+        critical.append(f'{len(crit)} unacknowledged alarm(s)')
+    if clock_frozen(conn, host):
+        critical.append('the clock guard is tripped: releases are stopped')
+    if (lost := [h for h in holds if h['missing_at']]):
+        critical.append(f'{len(lost)} hold(s) gone from the host')
+    if vel['ransom_names']:
+        critical.append(f'the last scan saw {vel["ransom_names"]} file(s) named like ransomware')
+    if vel['appended_extensions'] >= 50:
+        critical.append(f'the last scan saw {vel["appended_extensions"]} files renamed with an extra extension')
+    if vel['anomaly']:
+        warnings.append(f'{vel["latest"]["files_per_hour"]} files an hour against a usual {vel["baseline_median"]}')
+    if not m:
+        gaps.append('never measured')
     else:
-        state = 'secure'
-        banner = 'SECURE: All monitored hosts hardened, canaries armed, WORM retention active'
+        if m['stale']:
+            gaps.append('the last measurement is over a day old')
+        if m.get('airgap'):
+            critical.append('the airgap is engaged')
+        if m.get('clock_offset'):
+            warnings.append(f'the clock is {m["clock_offset"]} s off')
+        if not m.get('selinux') and not (m.get('apparmor') or {}).get('enabled'):
+            warnings.append('no mandatory access control')
+        elif m.get('selinux') and m['selinux'] != 'Enforcing':
+            warnings.append(f'SELinux is {m["selinux"]}')
+        if bad := [b['name'] for b in m.get('booleans') or [] if not b['ok']]:
+            warnings.append('booleans too open: ' + ', '.join(bad))
+        aide = m.get('aide') or {}
+        if aide.get('last_action') == 'check' and aide.get('exit_code'):
+            warnings.append(f'AIDE found changes (exit code {aide["exit_code"]})')
+        if (m.get('lynis') or {}).get('hardening_index') is not None and m['lynis']['hardening_index'] < 70:
+            warnings.append(f'Lynis hardening index {m["lynis"]["hardening_index"]}')
+        if m.get('zfs_allow'):
+            warnings.append('someone other than root may destroy or release snapshots: ' + '; '.join(m['zfs_allow'][:2]))
+        if marks and not (m.get('sentinel') or {}).get('active'):
+            warnings.append('the sentinel is deployed but not running')
+    if not marks:
+        gaps.append('no sentinel')
+    if not armed:
+        gaps.append('no decoys armed')
+    if not verified:
+        gaps.append('no verified retention hold')
+    state = 'critical' if critical else 'warning' if warnings else 'unknown' if gaps else 'secure'
+    return {'host': host, 'state': state, 'critical': critical, 'warnings': warnings, 'gaps': gaps, 'measured_at': (m or {}).get('measured_at'), 'stale': (m or {}).get('stale'),
+            'sentinel': bool(marks), 'sentinel_active': (m or {}).get('sentinel', {}).get('active') if m else None, 'armed': (m or {}).get('sentinel', {}).get('armed') if m else None,
+            'decoys_armed': len(armed), 'decoys_tripped': len(tripped), 'holds_active': len(holds), 'holds_verified': len(verified),
+            'deploy_ready': deploy.ready(conn, host), 'mac': (m or {}).get('selinux') or ('AppArmor' if (m or {}).get('apparmor', {}).get('enabled') else None) if m else None,
+            'lynis': ((m or {}).get('lynis') or {}).get('hardening_index')}
 
-    timeline = []
-    for c in canaries['canaries']:
-        if c['status'] == 'tripped':
-            timeline.append({
-                'timestamp': c['deployed_at'],
-                'severity': 'critical',
-                'host': c['host'],
-                'description': f"Canary tripwire tripped: {c['share_path'].rstrip('/')}/{c['file_name']}",
-                'status': 'Contained',
-            })
-    for q in quarantine['quarantine']:
-        timeline.append({
-            'timestamp': q['tripped_at'],
-            'severity': 'critical',
-            'host': q['host'],
-            'description': f"Quarantined attacker IP {q['ip_address']}: {q['reason']}",
-            'status': 'Quarantined',
-        })
-    for h_item in holds['holds'][:5]:
-        timeline.append({
-            'timestamp': h_item['created_at'],
-            'severity': 'info',
-            'host': h_item['host'],
-            'description': f"Immutable WORM hold {h_item['hold_tag']} active on {h_item['snapshot']}",
-            'status': h_item['status'].title(),
-        })
-    timeline.sort(key=lambda x: x['timestamp'], reverse=True)
 
-    return {
-        'state': state,
-        'banner': banner,
-        'monitored_hosts': len(hosts),
-        'armed_canaries': canaries['summary']['armed_canaries'],
-        'tripped_canaries': tripped_count,
-        'vss_traps': canaries['summary']['vss_traps'],
-        'active_worm_holds': holds['summary']['active_holds'],
-        'quarantined_ips': quarantined_count,
-        'airgap_active': quarantine['airgap_active'],
-        'clock_guard': holds['clock_guard'],
-        'quorum': holds['quorum'],
-        'lynis_hardening_index': lynis['hardening_index'],
-        'aide_baseline_verified': aide['baseline_verified'],
-        'velocity_files_hr': ebpf['velocity_files_hr'],
-        'timeline': timeline[:25],
-        'playbooks': playbooks,
-    }
+def posture(conn: Conn, host: str | None = None) -> dict:
+    names = [known_host(conn, host)] if host else [r[0] for r in conn.all('SELECT hostname FROM hosts ORDER BY hostname')]
+    hosts = [host_coverage(conn, n) for n in names]
+    rank = {'critical': 3, 'warning': 2, 'unknown': 1, 'secure': 0}
+    state = max((h['state'] for h in hosts), key=rank.get, default='unknown')
+    controller = alerts.get_setting(conn, CONTROLLER_CLOCK) or {}
+    if controller.get('frozen'):
+        state = 'critical'
+    measured = sum(1 for h in hosts if h['measured_at'] and not h['stale'])
+    if not hosts:
+        banner = 'No hosts have been scanned, so there is nothing to say yet.'
+    elif state == 'critical':
+        reasons = sorted({f'{h["host"]}: {c}' for h in hosts for c in h['critical']})
+        banner = '; '.join(reasons[:3]) + (f'; and {len(reasons) - 3} more' if len(reasons) > 3 else '') if reasons else 'This machine\'s clock moved: timelocks have stopped.'
+    elif state == 'warning':
+        n = sum(1 for h in hosts if h['state'] == 'warning')
+        banner = f'{n} of {len(hosts)} host(s) need a look; {measured} measured in the last day.'
+    elif state == 'unknown':
+        banner = f'Not everything can be vouched for: {measured} of {len(hosts)} host(s) measured in the last day. See what is missing below.'
+    else:
+        banner = f'All {len(hosts)} host(s) measured in the last day, with decoys armed and holds verified, and nothing wrong found.'
+    pending = _timelocks(conn, host)
+    return {'state': state, 'banner': banner, 'hosts': hosts, 'measured_hosts': measured, 'total_hosts': len(hosts), 'quorum': quorum_state(conn), 'pending_timelocks': pending,
+            'controller_clock': controller if controller.get('frozen') else None, 'events': list_events(conn, host, 50, False)}
+
+
+def problems(conn: Conn) -> dict:
+    """Alerts, through the channels already set up. These are the out-of-band warning a timelock depends on: if someone
+    stole an admin's password and asked for a release, this is how the admin hears of it in time to abort."""
+    out: dict = {}
+    for e in list_events(conn, None, 200, False):
+        if e['severity'] == 'crit' and not e['acknowledged_at']:
+            out[f'security-event:{e["id"]}'] = ('security-event', str(e['id']), f'{e["host"]}: {e["summary"]}'[:200], f'{e["kind"]} at {time.strftime("%Y-%m-%d %H:%M", time.localtime(e["occurred_at"]))}', 'crit')
+    for t in _timelocks(conn):
+        target = t['target_ref'] if t['action'] == 'worm_release' else 'the offline key'
+        when = 'waiting for a second admin' if t['mode'] == 'dual_admin' else f'runs {time.strftime("%Y-%m-%d %H:%M", time.localtime(t["executes_at"]))}'
+        out[f'security-timelock:{t["id"]}'] = ('security-timelock', str(t['id']), f'{t["actor"]} asked to release {target}', f'{when}. If that was not them, abort it in the WORM panel.', 'crit')
+    controller = alerts.get_setting(conn, CONTROLLER_CLOCK) or {}
+    if controller.get('frozen'):
+        out['security-controller-clock'] = ('security-clock', 'controller', 'This machine\'s clock moved: timelocks have stopped', str(controller.get('reason') or ''), 'crit')
+    for (name,) in conn.all('SELECT hostname FROM hosts'):
+        if clock_frozen(conn, name):
+            out[f'security-clock:{name}'] = ('security-clock', name, f'Clock guard tripped on {name}: releases stopped', str((alerts.get_setting(conn, clock_key(name)) or {}).get('reason') or ''), 'crit')
+        vel = velocity(conn, name)
+        if vel['ransom_names']:
+            out[f'security-names:{name}'] = ('security-names', name, f'{name}: {vel["ransom_names"]} file(s) named like ransomware', '; '.join(vel['ransom_samples'][:5]), 'crit')
+        if vel['appended_extensions'] >= 50:
+            out[f'security-renames:{name}'] = ('security-renames', name, f'{name}: {vel["appended_extensions"]} files renamed with an extra extension', 'the shape a rename-in-place encryptor leaves', 'crit')
+        if vel['anomaly']:
+            out[f'security-velocity:{name}'] = ('security-velocity', name, f'{name}: files changing much faster than usual', f'{vel["latest"]["files_per_hour"]} an hour; usually {vel["baseline_median"]}', 'warn')
+        marks = deploy.deployed(conn, host=name, kind='security')
+        m = measurement(conn, name)
+        if marks:
+            if m and not (m.get('sentinel') or {}).get('active') and not m['stale']:
+                out[f'security-sentinel:{name}'] = ('security-sentinel', name, f'The sentinel on {name} is not running', 'its decoys are not being watched', 'crit')
+            if (not m or m['stale']) and time.time() - marks[0]['at'] > STALE_AFTER:
+                out[f'security-stale:{name}'] = ('security-stale', name, f'No recent security reading from {name}', 'it may be unreachable, or someone has stopped it answering', 'warn')
+    return out

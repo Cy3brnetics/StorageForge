@@ -28,6 +28,7 @@ GET  /api/capacity?host=             each mount's usage over 30 days and when it
 GET  /api/file-changes?host=&scan=&limit=   what a scan found changed, grouped by folder (not /api/changes: those are change plans)
 GET  /api/dupes?host=&min_size=&limit=   identical files from checksum scans
 GET  /api/clamav?host=&closed=           ClamAV on each host and what it found; POST .../detections/<id>/quarantine|restore|ignore
+GET  /api/security/posture?host=         What is known about each host's defenses, and what is not. The rest of /api/security is in docs/api-reference.md
 GET  /api/hosts                     indexed hosts
 GET  /api/graph[?host=]             nodes and edges
 GET  /api/canvas[?host=]            Obsidian .canvas download
@@ -87,7 +88,7 @@ GET  /api/deploy                     deploy access per host, deployed jobs and s
 POST /api/deploy/setup-script        {"remove"?}: the deploy setup script, to run as root by hand (makes the deploy keys)
 POST /api/deploy/access              {"host", "password", "admin_user"?, "remove"?}: set deploy access up (or remove it) with sudo once
 POST /api/deploy/adopt               {"host"}: after running the setup script by hand, bind the key and test a signed run
-POST /api/deploy/start               {"kind": jobs|shares|changes|tasks|clamav, "ref", "mode": report|apply, "title"?, "report_group"?, "paused"?, "destructive"?}
+POST /api/deploy/start               {"kind": jobs|shares|changes|tasks|clamav|security, "ref", "mode": report|apply, "title"?, "report_group"?, "paused"?, "destructive"?}
 GET  /api/deploy/groups              recent deploys and how their hosts went
 GET  /api/deploy/groups/<id>         one deploy and its runs, with their output (poll while running)
 POST /api/deploy/groups/<id>/cancel  {"force"?}: nothing new starts; force also stops what is running
@@ -255,6 +256,7 @@ class App:
         threading.Thread(target=self._nightly, name='nightly', daemon=True).start()
         self.alerts_wake = threading.Event()
         threading.Thread(target=self._alerts, name='alerts', daemon=True).start()
+        threading.Thread(target=self._security, name='security', daemon=True).start()
 
     def _alerts(self):
         time.sleep(30)
@@ -265,6 +267,18 @@ class App:
                 errlog.trace()
             self.alerts_wake.wait(ALERT_TICK)
             self.alerts_wake.clear()
+
+    def _security(self):
+        """Timelocks that have waited long enough, and hosts due for a reading. Each run on a host can take a while, so not on the alerts thread."""
+        time.sleep(60)
+        while True:
+            try:
+                done = security.tick(self.db)
+                if any(done.values()):
+                    self.alerts_wake.set()
+            except Exception:
+                errlog.trace()
+            time.sleep(60)
 
     @staticmethod
     def canonical(conn, host: str) -> str:
@@ -1548,7 +1562,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return updates.deploy_items(c, str(ref or updates.ALL), mode)
         if kind == 'clamav':
             return clamav.deploy_items(db, c, str(ref or ''), mode, actor(), bool(options.get('run')), bool(options.get('remove')))
-        raise ValueError('kind is jobs, shares, changes, tasks, schedules, updates or clamav')
+        if kind == 'security':
+            return security.deploy_items(db, c, str(ref or ''), mode, actor(), bool(options.get('remove')), bool(options.get('rearm')))
+        raise ValueError('kind is jobs, shares, changes, tasks, schedules, updates, clamav or security')
 
     def need_for_commands(c, kind, ref):
         """Raw commands run as root, so deploying them takes hosts.command, whoever wrote them. Taking them off a host doesn't."""
@@ -1588,6 +1604,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 return scheduler.schedule_hash(c, scheduler.get_schedule(c, int(ref)))
             if kind == 'clamav':
                 return clamav.digest(c, str(ref or ''))
+            if kind == 'security':
+                return security.digest(c, str(ref or ''))
         except LookupError:
             return None
         return None
@@ -1601,7 +1619,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if mode not in ('report', 'apply'):
             raise ValueError('mode is report or apply')
         c = conn()
-        options = {k: bool(body[k]) for k in ('remove', 'paused', 'destructive', 'run') if body.get(k)}
+        options = {k: bool(body[k]) for k in ('remove', 'paused', 'destructive', 'run', 'rearm') if body.get(k)}
         need_for_deploy(c, kind, ref, mode, options)
         items = deploy_items_for(c, kind, ref, mode, options)
         if not items:
@@ -1653,7 +1671,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         need_for_deploy(c, g['kind'], g['ref'], g['mode'], g['options'])
         if engine.running(gid):
             return jsonify(error='that deploy is still running'), 409
-        if g['kind'] not in ('jobs', 'shares', 'changes', 'tasks', 'schedules', updates.KIND, 'clamav'):
+        if g['kind'] not in ('jobs', 'shares', 'changes', 'tasks', 'schedules', updates.KIND, 'clamav', 'security'):
             raise ValueError('only plans and designs can be retried')
         items = deploy_items_for(c, g['kind'], g['ref'], g['mode'], g['options'])
         if g['kind'] != 'jobs':       # job keys are new on every apply, so a job's two hosts must get them together

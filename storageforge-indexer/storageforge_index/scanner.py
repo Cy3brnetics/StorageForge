@@ -397,6 +397,13 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
                     log('  picked up a new ClamAV result')
             except Exception as exc:
                 log(f'  ClamAV result: {exc}')
+        if inv.secevents:
+            try:
+                from .security import ingest_events
+                if n := ingest_events(conn, inv.hostname, inv.secevents, 'scan'):
+                    log(f'  picked up {n} security event(s) the sentinel could not report')
+            except Exception as exc:
+                log(f'  security events: {exc}')
         try:                                             # rsnapshot and snapper jobs nobody here deployed: they can't report
             from .snapjobs import after_scan
             after_scan(db, conn, inv.hostname, inv.snapjobs, log=log)

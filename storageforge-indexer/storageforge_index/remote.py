@@ -302,6 +302,7 @@ echo '@@mergerfs'; for p in $(pgrep -x mergerfs 2>/dev/null); do xargs -0 </proc
 echo '@@btrfs'; for d in /sys/fs/btrfs/*-*/; do [ -d "$d" ] || continue; printf '%s\t%s\t%s\t%s\t%s\n' "$(basename "$d")" "$(ls -d "$d"allocation/data/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(ls -d "$d"allocation/metadata/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(cat "$d"label 2>/dev/null)" "$(a="$d"allocation; v() { cat "$@" 2>/dev/null | awk '{s+=$1} END {printf "%.0f", s}'; }; printf 'dev=%s alloc=%s datat=%s datau=%s metat=%s metau=%s rsv=%s missing=%s op=%s' "$(cat "$d"devices/*/size 2>/dev/null | awk '{s+=$1*512} END {printf "%.0f", s}')" "$(v "$a"/*/disk_total)" "$(v "$a"/data/total_bytes)" "$(v "$a"/data/bytes_used)" "$(v "$a"/metadata/total_bytes)" "$(v "$a"/metadata/bytes_used)" "$(v "$a"/global_rsv_size)" "$(v "$d"devinfo/*/missing)" "$(cat "$d"exclusive_operation 2>/dev/null)")"; done
 echo '@@jobs'; for f in /var/lib/storageforge/jobs/*/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
 echo '@@clamav'; [ -r /var/lib/storageforge/clamav/last.tsv ] && head -n 5001 /var/lib/storageforge/clamav/last.tsv
+echo '@@secevents'; [ -r /var/lib/storageforge/security/events.tsv ] && tail -n 500 /var/lib/storageforge/security/events.tsv
 echo '@@tasks'; for f in /var/lib/storageforge/tasks/*.last /var/lib/storageforge/tasks/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
 for t in /etc/systemd/system/sf-task-*.timer; do [ -e "$t" ] && echo "TASK-TIMER $(basename "$t") $(systemctl is-enabled "$(basename "$t")" 2>/dev/null)"; done
 echo '@@schedules'; for f in /var/lib/storageforge/scheduler/*/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
@@ -373,6 +374,7 @@ class HostInventory:
     smb: str = ''     # testparm -s or smb.conf
     jobs: str = ''    # run lines of StorageForge jobs (the fallback when a run could not report)
     clamav: str = ''  # the last ClamAV result of a deployed scan (clamav.py)
+    secevents: str = ''  # what the sentinel on this host saw, if it could not report it (security.py)
     tasks: str = ''   # run lines / status of storage tasks
     schedules: str = ''  # run lines of StorageForge unified scheduler tasks
     runs: str = ''    # nonces and exit codes of StorageForge deploy runs
@@ -519,7 +521,7 @@ def collect_inventory(t: Transport) -> HostInventory:
     return HostInventory(hostname, ip, ' · '.join(lines('os')) or None, mounts, lsblk,   # optional fields by name: order-proof
                          sec.get('zpool', '').strip(), sec.get('df', '').strip(), lvs=sec.get('lvs', '').strip(), zfs_props=sec.get('zfsprops', '').strip(),
                          access=access, user=user, nfs=sec.get('nfs', '').strip(), smb=sec.get('smb', '').strip(),
-                         btrfs=sec.get('btrfs', '').strip(), jobs=sec.get('jobs', '').strip(), clamav=sec.get('clamav', '').strip(),
+                         btrfs=sec.get('btrfs', '').strip(), jobs=sec.get('jobs', '').strip(), clamav=sec.get('clamav', '').strip(), secevents=sec.get('secevents', '').strip(),
                          tasks=sec.get('tasks', '').strip(), schedules=sec.get('schedules', '').strip(),
                          runs=sec.get('runs', '').strip(),
                          managed=sec.get('managed', '').strip(), ids=sec.get('ids', '').strip(),

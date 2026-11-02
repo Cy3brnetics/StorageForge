@@ -41,6 +41,11 @@ def retire(conn: Conn, name: str, keep_design: bool = False) -> dict:
         out['clamav'] = conn.execute('DELETE FROM clamav_detections WHERE lower(host) = lower(:h)', {'h': name}).rowcount
         conn.execute('DELETE FROM clamav_runs WHERE lower(host) = lower(:h)', {'h': name})
         conn.execute('DELETE FROM settings WHERE key = :k', {'k': f'clamav.host:{name.lower()}'})
+        for table in ('security_events', 'security_measurements', 'security_canaries', 'security_quarantine', 'security_retention_holds'):
+            conn.execute(f'DELETE FROM {table} WHERE lower(host) = lower(:h)', {'h': name})
+        conn.execute("DELETE FROM security_timelock_queue WHERE lower(host) = lower(:h)", {'h': name})
+        for prefix in ('security.host', 'security.clock', 'security.profile'):
+            conn.execute('DELETE FROM settings WHERE key = :k', {'k': f'{prefix}:{name.lower()}'})
         out['scan_jobs'] = conn.execute('DELETE FROM scan_jobs WHERE lower(host) = lower(:h)', {'h': name}).rowcount
         if not keep_design:
             out['design'] = conn.execute('DELETE FROM blueprints WHERE lower(hostname) = lower(:h)', {'h': name}).rowcount
