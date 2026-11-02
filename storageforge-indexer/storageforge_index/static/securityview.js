@@ -4,6 +4,16 @@
  */
 let SEC_POSTURE = null;
 
+function escapeHTML(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 async function loadSecurity(subpanel) {
   const panel = $('#tab-security');
   if (!panel) return;

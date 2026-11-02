@@ -197,6 +197,17 @@ class TestSecurityEngine(unittest.TestCase):
         self.assertIn('sf_install_security_prereqs', data['script'])
         self.assertIn('sf_harden_sysctl_and_umask', data['script'])
 
+    def test_securityview_static_asset(self):
+        # Unauthenticated request should be rejected
+        unauth = self.client.get('/securityview.js')
+        self.assertEqual(unauth.status_code, 401)
+        # Authenticated request returns the asset
+        self._login('admin1')
+        auth = self.client.get('/securityview.js')
+        self.assertEqual(auth.status_code, 200)
+        self.assertIn(b'loadSecurity', auth.data)
+        self.assertIn(b'escapeHTML', auth.data)
+
 
 if __name__ == '__main__':
     unittest.main()
