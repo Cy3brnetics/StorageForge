@@ -7,7 +7,7 @@ examples/lab/lab.sh install-launcher   # adds "StorageForge Lab" to the desktop 
 examples/lab/lab.sh up                 # pick and build 7: about 5 minutes with base images cached
 examples/lab/lab.sh up --seed 500277455   # the same 7 as an earlier build
 examples/lab/lab.sh up --pick sf-ctl,sf-fedora,sf-arch   # exactly these configs
-examples/lab/lab.sh test --all         # tiers 0-5 and a report: about 30 minutes
+examples/lab/lab.sh test --all         # tiers 0-7 and a report: about 30 minutes
 examples/lab/lab.sh down               # remove it all
 ```
 
@@ -45,7 +45,7 @@ Every build has `sf-ctl` and `sf-alpine`, the only config without systemd, plus 
 | 6: Sync engine | `tests/lab/tiers.py` | Routes with one pinned host key, a route lost during a run, dedup and reflinks, the volume lock, btrfs and ZFS snapshot streams, the room check and duperemove, between real hosts |
 | 7: Remote nodes | `tests/lab/tiers.py` | The tunnel container, and hosts that can't be dialled: the install script, adopting, signed deploys and scans through the tunnel, reconnecting, what a stolen key can't do, revoking and removal |
 
-`lab.sh test --all`, or **Full test** in the panel, resets the lab around the tiers that change VMs, and writes `reports/lab-<date>.md` with a table per distro. Reports aren't committed. Tiers 1, 3, 4 and 5 run against the real Docker stack on `sf-ctl` through its API. Tier 2 runs on the libvirt host, on a throwaway database. `lab.sh gauntlet` runs tier 2 alone.
+`lab.sh test --all`, or **Full test** in the panel, runs tiers 0 to 7, resets the lab around the tiers that change VMs, and writes `reports/lab-<date>.md` with a table per distro. Reports aren't committed. Tiers 1, 3, 4 and 5 run against the real Docker stack on `sf-ctl` through its API. Tier 2 runs on the libvirt host, on a throwaway database. `lab.sh gauntlet` runs tier 2 alone.
 
 A check listed in `KNOWN` in `tiers.py` still fails, but shows as `known` and doesn't fail the run. In tiers 1, 3, 4 and 5, it shows as `fixed?` once it starts passing, which means the line should go.
 

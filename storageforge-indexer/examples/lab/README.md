@@ -19,7 +19,7 @@ python3 examples/lab/panel.py --open   # or start the panel directly
 | **Reset** | `lab.sh reset` | Returns every VM to `golden`. |
 | **Demo** | `lab.sh demo` | Resets the lab, then fills StorageForge through its own API. Takes about 3 minutes. |
 | **Test** | `lab.sh test` | Checks the running lab against what it should hold. Reads only. |
-| **Full test** | `lab.sh test --all` | Runs tiers 0-5, resetting around them, and writes `reports/lab-<date>.md`. Takes about 30 minutes, and changes the VMs while it runs. |
+| **Full test** | `lab.sh test --all` | Runs tiers 0-7, resetting around them, and writes `reports/lab-<date>.md`. Takes about 30 minutes, and changes the VMs while it runs. |
 | **Destroy** | `lab.sh down` | Removes the lab straight away with no confirmation, stopping any running command first. |
 
 Also: `lab.sh status`, `lab.sh ssh <vm> [command]`, and `lab.sh snapshot` to retake `golden`, and `lab.sh controller` to rebuild StorageForge from this tree and restart it on `sf-ctl`, keeping its data. `lab.sh up --seed N` repeats a build and `lab.sh up --pick a,b,c` builds exactly those configs. `lab.sh up <vm>...` creates only the named VMs of the current build and takes no snapshot.

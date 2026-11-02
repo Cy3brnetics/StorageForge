@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>StorageForge</title>
+<meta name="description" content="Map, plan and change the storage on a fleet of Linux machines from one place. Agentless indexing over SSH, plans checked against the index, and scripts that report before they change anything.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='2' width='14' height='3' rx='1' fill='%237a5fd0'/%3E%3Crect x='1' y='6.5' width='14' height='3' rx='1' fill='%231f5fd0'/%3E%3Crect x='1' y='11' width='14' height='3' rx='1' fill='%23c98a14'/%3E%3C/svg%3E">
+<style>
+/* Layout: a drive's top label and its datasheet. A label panel opens the page; ruled spec rows carry the detail. */
+:root {
+  --bg: #e8edf1;
+  --surface: #f6f8fa;
+  --ink: #15212c;
+  --muted: #4c5c6b;
+  --rule: #c2ccd5;
+  --accent: #1a57c4;
+  --accent-ink: #ffffff;
+  --term-bg: #15202b;
+  --term-ink: #dbe4ec;
+  --term-dim: #8fa1b2;
+  --ok: #17803d;
+  --warn: #a86a00;
+  --crit: #c2281f;
+  --none: #8795a3;
+  --term-ok: #5fd08a;
+  --term-warn: #f0b64a;
+  --term-crit: #ff8278;
+  --display: "Big Shoulders Display", "Arial Narrow", Impact, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101820; --surface: #18232d; --ink: #e4ebf1; --muted: #a0afbc; --rule: #2e3c49;
+    --accent: #8db6ff; --accent-ink: #0d1722; --term-bg: #0a1118; --term-ink: #dbe4ec; --term-dim: #8fa1b2;
+    --ok: #55c982; --warn: #e6ad43; --crit: #ff7b70; --none: #6c7b89;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101820; --surface: #18232d; --ink: #e4ebf1; --muted: #a0afbc; --rule: #2e3c49;
+  --accent: #8db6ff; --accent-ink: #0d1722; --term-bg: #0a1118; --term-ink: #dbe4ec; --term-dim: #8fa1b2;
+  --ok: #55c982; --warn: #e6ad43; --crit: #ff7b70; --none: #6c7b89;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 1.0625rem/1.6 var(--body);
+}
+img { display: block; max-width: 100%; height: auto; }
+a { color: var(--accent); text-underline-offset: 0.18em; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+code { font: 400 0.9em var(--mono); }
+p { margin: 0; }
+
+.wrap {
+  max-width: 1120px;
+  margin-inline: auto;
+  padding-left: max(20px, env(safe-area-inset-left, 0px));
+  padding-right: max(20px, env(safe-area-inset-right, 0px));
+}
+
+.top { border-bottom: 1px solid var(--rule); }
+.top .wrap { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; padding-block: 14px; }
+.brand { display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font: 800 1.45rem/1 var(--display); letter-spacing: 0.02em; text-transform: uppercase; }
+.brand svg { width: 22px; height: 22px; }
+.top nav { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 0.94rem; }
+.top nav a { color: var(--muted); text-decoration: none; }
+.top nav a:hover { color: var(--ink); text-decoration: underline; }
+
+h1, h2 { font-family: var(--display); font-weight: 800; text-transform: uppercase; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(3.3rem, 8.6vw, 6.4rem); line-height: 0.92; letter-spacing: 0.002em; }
+h2 { font-size: clamp(2.3rem, 5vw, 3.6rem); line-height: 0.98; }
+h3 { font: 600 1.2rem/1.3 var(--body); margin: 0; text-wrap: balance; }
+
+.label { font: 500 0.75rem/1.3 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+
+/* Hero */
+.hero { padding-block: clamp(36px, 6vw, 72px) clamp(36px, 5vw, 56px); }
+.hero-grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: clamp(28px, 5vw, 56px); align-items: center; }
+.hero-copy { display: grid; gap: 22px; min-width: 0; }
+.lede { font-size: 1.2rem; line-height: 1.5; max-width: 34em; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.btn { display: inline-block; padding: 11px 20px; font-weight: 600; text-decoration: none; border: 2px solid var(--accent); border-radius: 3px; }
+.btn.solid { background: var(--accent); color: var(--accent-ink); }
+.btn:not(.solid):hover { background: var(--surface); }
+.btn.solid:hover { filter: brightness(1.12); }
+
+.term { background: var(--term-bg); color: var(--term-ink); border-radius: 6px; min-width: 0; font: 400 0.84rem/1.65 var(--mono); }
+.term-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 10px 14px; border-bottom: 1px solid #2c3a47; }
+.term-name { color: var(--term-dim); }
+.tabs { display: flex; gap: 4px; }
+.tabs button { font: 500 0.8rem/1 var(--mono); padding: 7px 10px; background: transparent; color: var(--term-dim); border: 1px solid #3a4957; border-radius: 3px; cursor: pointer; }
+.tabs button[aria-pressed="true"] { background: var(--term-ink); color: var(--term-bg); border-color: var(--term-ink); }
+.term pre { margin: 0; padding: 14px; overflow-x: auto; font: inherit; }
+.term .c { color: var(--term-ink); font-weight: 500; }
+.term .d { color: var(--term-dim); }
+.term .ok { color: var(--term-ok); }
+.term .mi { color: var(--term-warn); }
+.term .co { color: var(--term-crit); }
+.term-foot { padding: 10px 14px; border-top: 1px solid #2c3a47; color: var(--term-dim); font-size: 0.76rem; }
+
+/* The drive label */
+.drive-label { background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: clamp(32px, 5vw, 52px); }
+.drive-label p { color: var(--muted); font-size: 0.92rem; line-height: 1.5; margin-top: 4px; }
+.drive-label div { padding: 14px 16px; display: grid; gap: 4px; align-content: start; border-left: 1px solid var(--rule); min-width: 0; }
+.drive-label div:first-child { border-left: 0; }
+.drive-label b { font: 800 1.55rem/1.1 var(--display); text-transform: uppercase; letter-spacing: 0.01em; }
+
+/* Sections */
+section { border-top: 1px solid var(--rule); }
+.section { padding-block: clamp(44px, 7vw, 80px); display: grid; gap: clamp(28px, 4vw, 44px); }
+.intro { display: grid; gap: 14px; max-width: 44em; }
+.intro p { max-width: 40em; }
+
+/* Why */
+.why-cols { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: clamp(28px, 5vw, 64px); align-items: start; }
+.why-text { display: grid; gap: 16px; }
+.qa { margin: 0; display: grid; }
+.qa div { display: grid; gap: 3px; padding-block: 13px; border-top: 1px solid var(--rule); }
+.qa div:first-child { border-top: 2px solid var(--ink); }
+.qa dt { font-weight: 600; }
+.qa dd { margin: 0; color: var(--muted); font-size: 0.97rem; }
+
+/* Features */
+.feature { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: clamp(20px, 4vw, 52px); align-items: center; }
+.feature:nth-of-type(even) .shot { order: -1; }
+.feature-text { display: grid; gap: 12px; min-width: 0; }
+.feature ul { margin: 0; padding-left: 1.1em; display: grid; gap: 5px; font-size: 0.97rem; color: var(--muted); }
+.shot { margin: 0; min-width: 0; }
+.shot img { width: 100%; border: 1px solid var(--rule); border-radius: 4px; }
+.features { display: grid; gap: clamp(36px, 6vw, 64px); }
+
+.spec { width: 100%; border-collapse: collapse; font-size: 0.97rem; }
+.spec th, .spec td { text-align: left; vertical-align: top; padding: 11px 16px 11px 0; border-top: 1px solid var(--rule); }
+.spec tr:first-child th, .spec tr:first-child td { border-top: 2px solid var(--ink); }
+.spec th { font-weight: 600; white-space: nowrap; }
+.spec td { color: var(--muted); }
+.spec .num { font: 500 0.94rem var(--mono); text-align: right; color: var(--ink); white-space: nowrap; font-variant-numeric: tabular-nums; padding-right: 0; }
+.scroll { overflow-x: auto; }
+
+/* 3-2-1 bays */
+.health { background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: clamp(16px, 3vw, 24px); display: grid; gap: 16px; }
+.bays { display: grid; grid-template-columns: repeat(30, minmax(0, 1fr)); gap: 4px; }
+.bays i { display: block; height: 22px; border-radius: 2px; background: var(--c); }
+.legend { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 20px; margin: 0; }
+.legend div { display: grid; grid-template-columns: 12px minmax(0, 1fr); column-gap: 8px; align-content: start; }
+.legend i { width: 12px; height: 12px; border-radius: 2px; margin-top: 6px; background: var(--c); }
+.legend dt { font-weight: 600; font-size: 0.97rem; }
+.legend dd { margin: 0; grid-column: 2; color: var(--muted); font-size: 0.88rem; line-height: 1.4; }
+
+/* How */
+.flow-map { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1.3fr); gap: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; }
+.flow-map > div { padding: 18px; min-width: 0; display: grid; gap: 10px; align-content: start; }
+.flow-map > div + div { border-left: 1px solid var(--rule); }
+.flow-map ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 0.92rem; }
+.wire li { display: grid; gap: 1px; }
+.wire b { font: 500 0.82rem var(--mono); color: var(--accent); }
+.wire span { color: var(--muted); font-size: 0.88rem; line-height: 1.4; }
+.steps { list-style: none; counter-reset: step; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 26px clamp(20px, 3vw, 36px); }
+.steps li { counter-increment: step; display: grid; gap: 5px; align-content: start; border-top: 2px solid var(--ink); padding-top: 10px; }
+.steps li::before { content: counter(step); font: 800 2.1rem/1 var(--display); color: var(--accent); }
+.steps p { color: var(--muted); font-size: 0.97rem; }
+
+/* Safety */
+.rules { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 clamp(28px, 5vw, 56px); }
+.rules > div { display: grid; gap: 5px; align-content: start; padding-block: 16px; border-top: 1px solid var(--rule); }
+.rules p { color: var(--muted); font-size: 0.97rem; }
+
+/* Numbers */
+.numbers { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(28px, 5vw, 56px); align-items: start; }
+.numbers > div { display: grid; gap: 12px; min-width: 0; }
+.note { color: var(--muted); font-size: 0.9rem; line-height: 1.5; }
+
+/* Limits and audience */
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(28px, 5vw, 56px); align-items: start; }
+.two > div { display: grid; gap: 14px; min-width: 0; }
+.two h2 { font-size: clamp(2rem, 4vw, 2.8rem); }
+.plain { margin: 0; padding-left: 1.1em; display: grid; gap: 9px; }
+
+/* Install */
+.code { position: relative; background: var(--term-bg); color: var(--term-ink); border-radius: 6px; min-width: 0; }
+.code pre { margin: 0; padding: 16px; overflow-x: auto; font: 400 0.84rem/1.75 var(--mono); }
+.code .d { color: var(--term-dim); }
+.copy { position: absolute; top: 8px; right: 8px; font: 500 0.76rem/1 var(--mono); padding: 7px 10px; background: var(--term-bg); color: var(--term-ink); border: 1px solid #4a5a69; border-radius: 3px; cursor: pointer; }
+.copy:hover { background: #2c3a47; }
+
+footer { border-top: 1px solid var(--rule); }
+footer .wrap { padding-block: 28px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px 32px; color: var(--muted); font-size: 0.92rem; }
+footer nav { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+
+@media (max-width: 860px) {
+  .hero-grid, .why-cols, .feature, .numbers, .two { grid-template-columns: minmax(0, 1fr); }
+  .feature:nth-of-type(even) .shot { order: 0; }
+  .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .drive-label { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .drive-label div { border-left: 0; border-top: 1px solid var(--rule); }
+  .drive-label div:nth-child(even) { border-left: 1px solid var(--rule); }
+  .drive-label div:nth-child(-n+2) { border-top: 0; }
+  .flow-map { grid-template-columns: minmax(0, 1fr); }
+  .flow-map > div + div { border-left: 0; border-top: 1px solid var(--rule); }
+  .legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bays { grid-template-columns: repeat(20, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .steps, .rules, .drive-label { grid-template-columns: minmax(0, 1fr); }
+  .drive-label div:nth-child(even) { border-left: 0; }
+  .drive-label div:nth-child(2) { border-top: 1px solid var(--rule); }
+  .spec th { white-space: normal; }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="2" width="14" height="3" rx="1" fill="#7a5fd0"/><rect x="1" y="6.5" width="14" height="3" rx="1" fill="#2f73e0"/><rect x="1" y="11" width="14" height="3" rx="1" fill="#c98a14"/></svg>
+      StorageForge
+    </a>
+    <nav aria-label="Page sections">
+      <a href="#why">Why</a>
+      <a href="#what">What it does</a>
+      <a href="#how">How it works</a>
+      <a href="#safety">Safety</a>
+      <a href="#install">Install</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <div class="wrap hero">
+    <div class="hero-grid">
+      <div class="hero-copy">
+        <h1>Know every disk before you touch one</h1>
+        <p class="lede">StorageForge knows what's on all your Linux machines. It logs in over SSH, records every disk and file, and shows you the whole layout in one place. When you want to change something, it checks your plan first, then writes a script that tells you what it would do before it does it.</p>
+        <div class="actions">
+          <a class="btn solid" href="#install">Run it with Docker</a>
+          <a class="btn" href="#how">See how it works</a>
+        </div>
+      </div>
+      <div class="term">
+        <div class="term-bar">
+          <span class="term-name">changes-tidy-srv.sh</span>
+          <div class="tabs" role="group" aria-label="Script mode">
+            <button type="button" id="tab-report" aria-pressed="true" data-show="out-report">report</button>
+            <button type="button" id="tab-apply" aria-pressed="false" data-show="out-apply">--apply</button>
+          </div>
+        </div>
+<pre id="out-report" tabindex="0"><span class="c">$ ./changes-tidy-srv.sh</span>
+<span class="d">no options: nothing will be changed</span>
+
+<span class="ok">ok</span>        /srv/data/projects exists
+<span class="mi">missing</span>   rename /srv/data/docs to documents
+<span class="mi">missing</span>   trash /srv/broken-link
+<span class="co">conflict</span>  format /dev/sdd: it is mounted
+<span class="d">report only. Nothing changed.</span></pre>
+<pre id="out-apply" tabindex="0" hidden><span class="c">$ sudo ./changes-tidy-srv.sh --apply</span>
+<span class="d">in order; stops at the first failure</span>
+
+<span class="ok">ok</span>        /srv/data/projects exists
+<span class="d">-&gt;</span>        rename /srv/data/docs to documents
+<span class="d">-&gt;</span>        trash /srv/broken-link
+<span class="co">conflict</span>  format /dev/sdd: it is mounted
+<span class="d">stopped. /dev/sdd was not touched.</span></pre>
+        <div class="term-foot">Example, shortened. Every generated script uses these same words.</div>
+      </div>
+    </div>
+
+    <div class="drive-label">
+      <div><span class="label">Install on your machines</span><b>Nothing</b><p>No agent and no service. It logs in over SSH and runs tools Linux already has. The one exception is deploys, which add a small runner on the machines you pick.</p></div>
+      <div><span class="label">What it needs</span><b>An SSH key</b><p>It keeps the key encrypted. You decide which machines it can reach.</p></div>
+      <div><span class="label">What it knows</span><b>Where it all is</b><p>The name, size, age and location of your files on every machine, plus how the disks fit together. It stores this on your server. It doesn't store file contents.</p></div>
+      <div><span class="label">What it won't do</span><b>Surprise you</b><p>A scan changes nothing. A script only reports until you tell it to act. Wiping a drive has to get past three separate locks.</p></div>
+    </div>
+  </div>
+
+  <section id="why">
+    <div class="wrap section">
+      <div class="why-cols">
+        <div class="why-text">
+          <h2>Storage knowledge shouldn't live in one person's head</h2>
+          <p>On a handful of Linux machines, the storage layout usually lives in shell history, an old wiki page and somebody's memory. That holds up until a disk fails or a copy lands on the system drive because a mount was missing.</p>
+          <p>You've probably never used a tool like this, so here's the short version. Monitoring tells you a disk is full. Backup tools copy what you point them at. Configuration tools apply what you describe, without knowing what's on the disk. None of them can tell you whether your plan is a bad idea.</p>
+          <p>StorageForge can. It keeps a searchable record of every machine and checks your plan against it before anything runs.</p>
+        </div>
+        <dl class="qa">
+          <div><dt>Where is that file?</dt><dd>Search every host by name, size, age or folder, without connecting to any of them.</dd></div>
+          <div><dt>Which data has only one copy?</dt><dd>The 3-2-1 matrix shows snapshots, sync and offsite state for each dataset.</dd></div>
+          <div><dt>Will this copy fit?</dt><dd>A move plan's check adds up each step against free space on the destination mount.</dd></div>
+          <div><dt>What happens if that disk is missing tonight?</dt><dd>Task checks warn when a copy could fill the system disk, and add the guard in one click.</dd></div>
+          <div><dt>Which containers use this folder?</dt><dd>Docker and Podman inventory comes with each scan, so moves name the stacks to stop first.</dd></div>
+          <div><dt>Did anyone change this by hand?</dt><dd>Each scan compares deployed files against their checksums and flags drift.</dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section id="what">
+    <div class="wrap section">
+      <div class="intro">
+        <h2>What it does</h2>
+        <p>One web UI and one CLI, from finding a file to deploying a mirror job.</p>
+      </div>
+
+      <div class="features">
+        <article class="feature">
+          <div class="feature-text">
+            <h3>See the whole layout</h3>
+            <p>The topology draws each host's disks, pools, datasets, mounts, links and shares, with lines between them. Hardware comes from the scan. Tiers, protection and exports are yours to edit, and they survive rescans.</p>
+            <ul>
+              <li>Right-click almost anything for its actions</li>
+              <li>Force-directed graph and a Files map of copies between hosts</li>
+              <li>Markdown architecture reports and Obsidian <code>.canvas</code> export</li>
+            </ul>
+          </div>
+          <figure class="shot"><img src="images/topology.jpg" width="800" height="600" alt="Topology view of the example host atlas, with disks and pools joined by lines to mounts, and a side panel listing what needs attention." loading="lazy"></figure>
+        </article>
+
+        <article class="feature">
+          <div class="feature-text">
+            <h3>Find anything on any host</h3>
+            <p>Patterns such as <code>*.cr2</code> or <code>*invoice*2024*</code> answer from the index, filtered by host, folder, size or age. A separate role can use search and nothing else.</p>
+            <ul>
+              <li>What changed between scans</li>
+              <li>Duplicate folders, even renamed ones, and checksum duplicates</li>
+              <li>Cold data, listed by the age of each folder's newest file</li>
+            </ul>
+          </div>
+          <figure class="shot"><img src="images/search.jpg" width="800" height="600" alt="The Search panel beside the topology, listing matching files across hosts." loading="lazy"></figure>
+        </article>
+
+        <article class="feature">
+          <div class="feature-text">
+            <h3>Plan changes like a playbook</h3>
+            <p>Stage folder, btrfs, ZFS, LVM, mount and drive tasks in order, each on its host. The check walks the plan so later tasks see what earlier ones create, and flags a formatted pool member or a mount over folders that hold files.</p>
+            <ul>
+              <li>Download as Bash or an Ansible playbook</li>
+              <li>The planner designs a host from bare disks, with a RAID calculator</li>
+            </ul>
+          </div>
+          <figure class="shot"><img src="images/changes.jpg" width="800" height="600" alt="The Changes panel showing a three-step plan named Tidy srv: create a folder, rename a folder and move a broken link to the trash, each with its check result." loading="lazy"></figure>
+        </article>
+
+        <article class="feature">
+          <div class="feature-text">
+            <h3>Build storage jobs from blocks</h3>
+            <p>Tasks are small programs on one host, by hand or on a systemd timer: guards, conditions, rsync, rotating backups, snapshots and service restarts. Each block is checked against the index as you edit.</p>
+            <ul>
+              <li>Templates for nightly mirrors and snapshot rotations</li>
+              <li>Runs take a lock, so they never overlap</li>
+            </ul>
+          </div>
+          <figure class="shot"><img src="images/tasks.jpg" width="800" height="600" alt="The Tasks view with a nightly-archive task: a Require mounted block above a Copy with rsync block, and a palette of blocks at the left." loading="lazy"></figure>
+        </article>
+      </div>
+
+      <div class="health">
+        <span class="label">3-2-1 health of the built-in example host, 60 nodes, one cell each</span>
+        <div class="bays" id="bays" role="img" aria-label="8 protected, 8 local-only, 17 broken or offline, 27 with no protection data"></div>
+        <dl class="legend">
+          <div style="--c: var(--ok)"><i></i><dt>8 protected</dt><dd>Snapshots and a validated offsite copy</dd></div>
+          <div style="--c: var(--warn)"><i></i><dt>8 local-only</dt><dd>A single site, or a stale copy</dd></div>
+          <div style="--c: var(--crit)"><i></i><dt>17 broken</dt><dd>Broken link, offline target, failed pool</dd></div>
+          <div style="--c: var(--none)"><i></i><dt>27 no data</dt><dd>A scan can't see backup policy until a design or job says so</dd></div>
+        </dl>
+      </div>
+
+      <div class="scroll">
+        <table class="spec">
+          <tbody>
+            <tr><th scope="row">Moves</th><td>Copy, move with verify and cutover, mirror on a timer, rsnapshot and git mirrors, between any scanned hosts.</td></tr>
+            <tr><th scope="row">Protection jobs</th><td>Deployed jobs report their runs. Existing rsnapshot and snapper jobs can be imported and managed where they are. btrfs and ZFS snapshots can be sent to other hosts.</td></tr>
+            <tr><th scope="row">Shares</th><td>A wizard for NFS and SMB that covers the server, its firewall and each client's mount, checked at every step.</td></tr>
+            <tr><th scope="row">Alerts</th><td>Failed or late jobs, drift, and btrfs and pool problems, sent to ntfy, Gotify or a webhook.</td></tr>
+            <tr><th scope="row">Git</th><td>Finds repositories on every host and matches copies by first commit, so you can see uncommitted, unpushed and single-copy work.</td></tr>
+            <tr><th scope="row">Teams</th><td>Invite links, built-in and custom roles, and a hash-chained audit log.</td></tr>
+            <tr><th scope="row">More than one site</th><td>Hosts behind NAT dial in through a locked-down tunnel. <code>sf-site</code> runs one isolated stack per client on a single machine.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap section">
+      <div class="intro">
+        <h2>How it works</h2>
+        <p>Reading and changing are separate paths. Scans use the tools a Linux install already has. Changes arrive as scripts you can read first.</p>
+      </div>
+
+      <div class="flow-map">
+        <div>
+          <span class="label">Your hosts</span>
+          <ul>
+            <li><code>find</code>, <code>findmnt</code>, <code>lsblk</code>, <code>df</code></li>
+            <li><code>zpool</code>, <code>git</code>, <code>docker</code> when present</li>
+            <li><code>storageforge-run</code> and <code>storageforge-job</code>, only on hosts you set up for deploys</li>
+          </ul>
+        </div>
+        <div>
+          <span class="label">Between them</span>
+          <ul class="wire">
+            <li><b>ssh &rarr; host</b><span>Read-only scans, with a key from the vault</span></li>
+            <li><b>signed script &rarr; host</b><span>Deploys, each for one machine and valid 10 minutes</span></li>
+            <li><b>host &rarr; run report</b><span>Job results and state</span></li>
+          </ul>
+        </div>
+        <div>
+          <span class="label">StorageForge, one container behind nginx</span>
+          <ul>
+            <li>Scanner, then an index of every file and folder</li>
+            <li>Designs, the graph, topology and reports</li>
+            <li>Plans: changes, moves, shares and tasks</li>
+            <li>Encrypted key vault and audit log</li>
+          </ul>
+        </div>
+      </div>
+
+      <ol class="steps">
+        <li><h3>Scan</h3><p>A bound key connects and reads the host under <code>nice</code> and <code>ionice</code>. Each scan is diffed against the last, and a failed walk deletes nothing from the index.</p></li>
+        <li><h3>Look</h3><p>Topology, search and inventory answer from the index and never open a connection, so browsing puts no load on your hosts.</p></li>
+        <li><h3>Design</h3><p>Mark what a scan can't know: tiers, protection, exports and links. Hardware refreshes on rescan and your intent stays.</p></li>
+        <li><h3>Plan</h3><p>Stage changes, moves, shares or a task. Each step gets <code>ok</code>, <code>warn</code> or <code>crit</code> as you edit.</p></li>
+        <li><h3>Act</h3><p>Download the script and run it yourself, or deploy it from the UI. Either way it reports first and changes things only when asked.</p></li>
+        <li><h3>Rescan</h3><p>The next scan shows the result and flags drift if something deployed was changed by hand.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="safety">
+    <div class="wrap section">
+      <div class="intro">
+        <h2>Built for machines you can't afford to break</h2>
+        <p>StorageForge holds keys that reach every host, and can run root scripts on hosts set up for deploys. These rules apply across the product.</p>
+      </div>
+      <div class="rules">
+        <div><h3>Report first</h3><p>A script run with no options only reports. Changing things takes a mode flag such as <code>--apply</code> or <code>--run</code>.</p></div>
+        <div><h3>Three locks on drives</h3><p>The device typed twice in the plan, <code>--destructive</code> on the command line, and a refusal to touch anything mounted, swapped on, or part of RAID, LVM or LUKS.</p></div>
+        <div><h3>Trash is a rename</h3><p>Trash goes to <code>.storageforge-trash/&lt;date&gt;/</code>, a moved source becomes <code>&lt;name&gt;.migrated-&lt;date&gt;</code>, and fstab is restored if verification fails.</p></div>
+        <div><h3>Safe to rerun</h3><p>Every step looks before it acts, so a rerun after a failure picks up where it stopped.</p></div>
+        <div><h3>Keys stay encrypted</h3><p>AES-256-GCM under an Argon2id-derived key. Each task decrypts its key into locked memory and hands it to a short-lived <code>ssh-agent</code> on tmpfs.</p></div>
+        <div><h3>Signed deploys</h3><p>The host runner checks the signature, machine id, age and a one-use nonce. The deploy key alone runs nothing.</p></div>
+        <div><h3>A name proves nothing</h3><p>Hosts are pinned to their SSH host keys. A machine claiming an indexed name is refused and audited.</p></div>
+        <div><h3>An audit log you can verify</h3><p>Every connection, scan, sign-in and deploy is chained with an HMAC. <code>audit verify</code> finds an edited, deleted or reordered row.</p></div>
+        <div><h3>A fresh password for host commands</h3><p>Anything that runs on a host from the web UI asks again unless you typed your password in the last 5 minutes.</p></div>
+        <div><h3>A hardened container</h3><p>Non-root, read-only root filesystem, all capabilities dropped, and images pinned by digest with dependencies pinned by hash.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="evidence">
+    <div class="wrap section">
+      <div class="intro">
+        <h2>Measured and tested</h2>
+      </div>
+      <div class="numbers">
+        <div>
+          <span class="label">Index speed, 1,172,684 entries, 23.3 GiB</span>
+          <div class="scroll">
+            <table class="spec">
+              <tbody>
+                <tr><th scope="row">Walk and parse</th><td class="num">5.2 s</td></tr>
+                <tr><th scope="row">First index, total</th><td class="num">18.0 s</td></tr>
+                <tr><th scope="row">Rescan, no changes</th><td class="num">8.3 s</td></tr>
+                <tr><th scope="row"><code>search "*.so"</code>, 7,604 hits</th><td class="num">26 ms</td></tr>
+                <tr><th scope="row"><code>search "*python3*config*"</code></th><td class="num">3 ms</td></tr>
+                <tr><th scope="row">Index size per entry</th><td class="num">&asymp; 410 bytes</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="note">A local scan of <code>/usr</code> with no SSH hop, a warm page cache, SQLite and NVMe. Over SSH, the remote disk and the link usually set the pace.</p>
+        </div>
+        <div>
+          <span class="label">KVM lab, real VMs, real pools</span>
+          <div class="scroll">
+            <table class="spec">
+              <tbody>
+                <tr><th scope="row">Debian 12, 13</th><td>Scans, deploys</td></tr>
+                <tr><th scope="row">Ubuntu 22.04, 24.04</th><td>Scans, deploys</td></tr>
+                <tr><th scope="row">Fedora 44, Arch</th><td>Scans, deploys</td></tr>
+                <tr><th scope="row">openSUSE Leap 15.6, 16, Tumbleweed</th><td>Scans, deploys</td></tr>
+                <tr><th scope="row">Rocky Linux 9, 10</th><td>Scans, deploys</td></tr>
+                <tr><th scope="row">AlmaLinux 9, 10</th><td>Scans, deploys</td></tr>
+                <tr><th scope="row">Alpine 3.24</th><td>Scans. Deploys refused: no bash or systemd</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="note">The lab covers degraded pools, full disks, pulled disks, changed host keys and tampered requests. Its latest build, on 2026-11-01 with 7 of the 14 configs, had 346 passed, 0 failed and 1 skipped. Other configs last ran on 2026-10-31.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="fit">
+    <div class="wrap section two">
+      <div>
+        <h2>Who it's for</h2>
+        <ul class="plain">
+          <li>Home lab owners with a NAS, a few servers and a mix of btrfs and ZFS</li>
+          <li>Small teams that run their own Linux storage and want it written down</li>
+          <li>Consultants looking after several clients, each on an isolated site with its own keys</li>
+        </ul>
+      </div>
+      <div>
+        <h2>What to know first</h2>
+        <ul class="plain">
+          <li>Keep it on your LAN. It isn't meant to face the internet.</li>
+          <li>Linux hosts only. Views are as current as the last scan, every 6 hours by default.</li>
+          <li>A scan account indexes only what it can read. Read-only scan access fixes that without scanning as root.</li>
+          <li>It's at version 0.2.0 with no tagged releases. The CI workflow hasn't run on a runner yet, and the lab tests the API, not the web pages.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap section">
+      <div class="intro">
+        <h2>Run it with Docker</h2>
+        <p>You need Docker with Compose v2. Hosts need SSH and a user with your public key. Run these from <code>storageforge-indexer/</code>.</p>
+      </div>
+      <div class="code">
+        <button type="button" class="copy" id="copy-install">Copy</button>
+<pre id="install-cmds" tabindex="0">docker compose up -d --build
+docker compose exec storageforge storageforge-index user add admin
+docker compose exec storageforge storageforge-index vault generate --name fleet
+<span class="d"># add the printed public key to ~scan/.ssh/authorized_keys on a host, then:</span>
+docker compose exec storageforge storageforge-index vault bind --key fleet --host 10.0.20.0/24 --user scan
+docker compose exec storageforge storageforge-index scan --host 10.0.20.5</pre>
+      </div>
+      <p>Then open <code>https://&lt;this machine&gt;:8443</code> and sign in. To try it without a real host, <code>examples/demo/demo.sh</code> runs the whole flow against a disposable SSH target. <a href="../docs/getting-started.md">Read the getting started guide</a> for the details.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>StorageForge 0.2.0</span>
+    <nav aria-label="Documentation">
+      <a href="../docs/README.md">Docs</a>
+      <a href="../docs/concepts.md">Concepts</a>
+      <a href="../docs/security.md">Security</a>
+      <a href="../docs/cli-reference.md">CLI</a>
+      <a href="../docs/api-reference.md">API</a>
+      <a href="../CHANGELOG.md">Changelog</a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+  // Same counts and order as the legend.
+  var bays = document.getElementById('bays');
+  [['--ok', 8], ['--warn', 8], ['--crit', 17], ['--none', 27]].forEach(function (group) {
+    for (var i = 0; i < group[1]; i++) {
+      var cell = document.createElement('i');
+      cell.style.setProperty('--c', 'var(' + group[0] + ')');
+      bays.appendChild(cell);
+    }
+  });
+
+  var tabs = document.querySelectorAll('.tabs button');
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      tabs.forEach(function (other) {
+        var active = other === tab;
+        other.setAttribute('aria-pressed', active ? 'true' : 'false');
+        document.getElementById(other.dataset.show).hidden = !active;
+      });
+    });
+  });
+
+  var copy = document.getElementById('copy-install');
+  copy.addEventListener('click', function () {
+    var text = document.getElementById('install-cmds').textContent;
+    var done = function (label) {
+      copy.textContent = label;
+      setTimeout(function () { copy.textContent = 'Copy'; }, 1800);
+    };
+    if (!navigator.clipboard) { done('Select the text'); return; }
+    navigator.clipboard.writeText(text).then(function () { done('Copied'); }, function () { done('Select the text'); });
+  });
+</script>
+</body>
+</html>

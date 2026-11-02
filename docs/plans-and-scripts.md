@@ -7,7 +7,7 @@ StorageForge never changes a host while you plan. Each plan type is saved in the
 | [Staged changes](#staged-changes) | Folders, btrfs, mounts, drives on any hosts | Topology, **Changes** | `changes-<plan>.sh`, or an Ansible playbook | `--apply` (+ `--destructive`) | `plan` |
 | [Data moves](#data-moves) | Copies between folders on any hosts | **Moves** | `<plan>.sh` | `--run`, `--verify`, `--cutover`, `--install` | `moves` |
 | [Shares](#nfs-and-smb-shares) | NFS and SMB exports of one server and its clients | Topology, share wizard | `shares-<host>.sh` | `--apply` | `shares` |
-| [Storage tasks](#storage-tasks) | A block program on one host, by hand or on a timer | **Tasks** view | `task-<name>.sh` | `--run`, `--install`, `--uninstall` | none yet |
+| [Storage tasks](#storage-tasks) | A block program on one host, by hand or on a timer | **Tasks** view | `task-<name>.sh` | `--run`, `--install`, `--uninstall` | `tasks` |
 
 Every script prints in the same words: `ok` (already so), `missing` (would change), `conflict` (blocked) and `->` for each action taken. `--help` prints the script's header.
 
