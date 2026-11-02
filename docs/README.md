@@ -51,9 +51,11 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Code audit, 2026-11-01](audit-2026-11-01-code.md) | Bugs found by reading the code, and what was checked and found fine |
 | [Consistency audit, 2026-10-29](audit-2026-10-29.md) | Places where the code, the README and the rules in [Concepts](concepts.md) disagree, found while writing these pages |
 | [Deployments design](../deployments-design.md) | The original design for deploys (2026-10-27) |
+| [Competitive landscape](competitive-landscape.md) | Similar tools across the industry, historical precedents (EPICSHELTER), and feature matrix |
 | [Security audit, 2026-10-28](../security-audit-2026-10-28.md) | Findings and fixes |
 | [Security parameters](../security-parm.md) | The threat model and hardening checklist, from 2026-10-26 |
 | [Roadmap](../notebook/Roadmap.md) | What is planned next, and every finding behind it |
+| [Ransomware defense & host security roadmap](../ransomware-defense-roadmap.md) | Architecture and phased milestones for automated ransomware defense, host security engines (SELinux, AppArmor, auditd, Falco, AIDE, Lynis), and firewall fencing |
 
 These pages are also published as the project wiki. Edit them here, then run `python3 docs/build-wiki.py --push`: each build replaces the wiki, and a link that leads nowhere stops it.
 
