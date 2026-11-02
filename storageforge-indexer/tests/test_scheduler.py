@@ -626,6 +626,51 @@ class SchedulerSafetyTests(SafetyCase):
         self.assertEqual(self.report(sid, token, exit_code=1, output='failed').status_code, 200)
         self.assertEqual(self.conn.scalar('SELECT count(*) FROM schedule_runs WHERE schedule_id = :s', {'s': sid}), 1)
 
+    def run_now(self, sid):
+        items = scheduler.deploy_items(self.db, self.conn, scheduler.get_schedule(self.conn, sid), 'apply', 'https://sf.example.test', 'boss', run_now=True)
+        return items[0], re.search(r"printf '%s\\n' (\w+) >/etc/storageforge", items[0]['script'])[1]
+
+    def test_a_run_that_never_reached_the_host_leaves_reports_working(self):
+        sid, old = self.created()
+        item, new = self.run_now(sid)
+        item['on_ok']({'status': 'failed'})
+        self.assertEqual(self.report(sid, old, nonce='a').status_code, 200)
+
+    def test_a_host_reporting_with_the_new_token_retires_the_old(self):
+        sid, old = self.created()        # the task can fail after the install wrote the token: the deploy fails, the host has it
+        item, new = self.run_now(sid)
+        self.assertEqual(self.report(sid, new, nonce='a', exit_code=1).status_code, 200)
+        self.assertEqual(self.report(sid, old, nonce='b').status_code, 401)
+        self.assertEqual(self.report(sid, new, nonce='c').status_code, 200)
+
+    def test_a_run_that_ended_well_retires_the_old_token(self):
+        sid, old = self.created()
+        item, new = self.run_now(sid)
+        item['on_ok']({'status': 'ok'})
+        self.assertEqual(self.report(sid, old, nonce='a').status_code, 401)
+        self.assertEqual(self.report(sid, new, nonce='b').status_code, 200)
+
+    def test_rotating_a_token_ends_a_pending_one(self):
+        sid, old = self.created()
+        item, pending = self.run_now(sid)
+        fresh = self.boss.post(f'/api/scheduler/schedules/{sid}/token', json={}).get_json()['token']
+        self.assertEqual(self.report(sid, pending, nonce='a').status_code, 401)
+        self.assertEqual(self.report(sid, old, nonce='b').status_code, 401)
+        self.assertEqual(self.report(sid, fresh, nonce='c').status_code, 200)
+
+    def test_scripts_do_not_show_what_the_mask_hides(self):
+        self.users.save_role(self.conn, 'scripts', '', ['plans.view', 'plans.scripts'], 'boss', True)
+        self.users.create(self.conn, 'reader', self.PW, 'scripts')
+        reader = self.client('reader')
+        sid, _ = self.created(task_ref='curl -H "Authorization: secret" https://example.test', config={'env': {'API_KEY': 'hunter2'}})
+        for route in ('script', 'install-script'):
+            path = f'/api/scheduler/schedules/{sid}/{route}'
+            self.assertEqual(reader.get(path).status_code, 403, route)
+            self.assertIn('Authorization: secret', self.boss.get(path).get_data(as_text=True))
+        plain = self.schedule(name='plain', task_type='task', task_ref=str(self.task_id))
+        for route in ('script', 'install-script'):         # nothing masked in these: plans.scripts is enough
+            self.assertEqual(reader.get(f'/api/scheduler/schedules/{plain}/{route}').status_code, 200, route)
+
     def test_a_slow_pattern_is_stopped(self):                # SF-32
         from unittest import mock
         with mock.patch.object(scheduler, 'REGEX_SECONDS', 0.5):

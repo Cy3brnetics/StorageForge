@@ -135,6 +135,7 @@ Each pattern takes the cheapest index that can answer it:
 | Pattern | SQLite | PostgreSQL |
 | :--- | :--- | :--- |
 | `*.cr2` | `extension = 'cr2'` (B-tree, with size from the same index) | same |
+| `*.tar.gz` | as `*raw*2019*`: only the part after the last dot is stored as the extension | same |
 | `report.pdf` | `filename = … COLLATE NOCASE` | `lower(filename) = lower(…)` |
 | `IMG_2019*` | `filename LIKE 'IMG_2019%'` (B-tree prefix range) | `filename ~* '^IMG_2019.*$'` (trigram GIN) |
 | `*raw*2019*` | FTS5 trigram for candidates, then exact `GLOB` | `filename ~* …` (trigram GIN) |

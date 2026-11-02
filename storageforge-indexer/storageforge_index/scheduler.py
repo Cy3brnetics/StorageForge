@@ -615,16 +615,30 @@ def token_for_schedule(conn: Conn, schedule_id: int, actor: str) -> str:
 
 
 def _set_token(conn: Conn, schedule_id: int, token: str):
-    conn.execute('UPDATE schedules SET auth_token_hash = :th, updated_at = :now WHERE schedule_id = :id',
+    conn.execute('UPDATE schedules SET auth_token_hash = :th, pending_token_hash = NULL, updated_at = :now WHERE schedule_id = :id',
                  {'id': schedule_id, 'th': hashlib.sha256(token.encode()).hexdigest(), 'now': int(time.time())})
+
+
+def _pending_token(conn: Conn, schedule_id: int) -> str:
+    """A token for a deploy to carry. A deploy that fails says nothing about whether the host got it (the install may have
+    finished before the task failed), so it works beside the current one until the host reports with it or the deploy ends well."""
+    token = secrets.token_hex(32)
+    conn.execute('UPDATE schedules SET pending_token_hash = :th WHERE schedule_id = :id',
+                 {'id': schedule_id, 'th': hashlib.sha256(token.encode()).hexdigest()})
+    return token
 
 
 def schedule_for_token(conn: Conn, token: str) -> dict | None:
     if not token or len(token) < 16:
         return None
     th = hashlib.sha256(token.encode()).hexdigest()
-    sid = conn.scalar('SELECT schedule_id FROM schedules WHERE auth_token_hash = :th', {'th': th})
-    return get_schedule(conn, sid) if sid else None
+    rows = conn.all('SELECT schedule_id, auth_token_hash FROM schedules WHERE auth_token_hash = :th OR pending_token_hash = :th', {'th': th})
+    if not rows:
+        return None
+    sid, current = rows[0]
+    if current != th:            # the host has the new token: the old one is done
+        conn.execute('UPDATE schedules SET auth_token_hash = :th, pending_token_hash = NULL WHERE schedule_id = :id', {'id': sid, 'th': th})
+    return get_schedule(conn, sid)
 
 
 # ── Unified Script Generator ──────────────────────────────────────────────────
@@ -1272,15 +1286,12 @@ def deploy_items(db, conn: Conn, schedule: dict, mode: str, report_url: str | No
     if not remove and not schedule.get('paused'):
         check_target(conn, schedule)
 
-    # The old token keeps working until the host holds the new one, so a deploy that fails leaves reports working. A run
-    # now is the exception: it reports during the deploy, with the new token.
+    # The old token keeps working until the host holds the new one, so a deploy that fails leaves reports working
     promote = None
     if remove:
         token = 'uninstall'
-    elif run_now:
-        token = token_for_schedule(conn, sid, actor)
-    elif mode == 'apply':
-        token = promote = secrets.token_hex(32)
+    elif run_now or mode == 'apply':
+        token = promote = _pending_token(conn, sid)
     else:
         token = '<issued-on-deploy>'
 

@@ -74,6 +74,8 @@ class Patterns(unittest.TestCase):
         self.assertEqual(classify('report.pdf'), ('exact', 'report.pdf'))
         self.assertEqual(classify('IMG_*'), ('prefix', 'IMG_'))
         self.assertEqual(classify('*2019*raw*')[0], 'glob')
+        for pattern in ('*.tar.gz', '*.my file', '*.' + 'x' * 17):      # no file is stored with such an extension
+            self.assertEqual(classify(pattern)[0], 'glob')
 
     def test_translations(self):
         self.assertEqual(glob_to_like('IMG_?[0-9]*.cr2'), 'IMG___%.cr2')
@@ -770,6 +772,13 @@ class EndToEnd(unittest.TestCase):
             conn.close()
         self.assertEqual([f['path'] for f in r['folders']], [str(self.tree / 'archive')])   # outermost cold folder only
         self.assertEqual((r['folders'][0]['files'], r['folders'][0]['bytes']), (3, 3000))
+
+    def test_patterns_the_extension_column_cannot_answer(self):
+        (self.tree / 'backup.tar.gz').write_text('x')
+        (self.tree / 'other.gz').write_text('x')
+        self.assertEqual(self.scan()['status'], 'ok')
+        self.assertEqual([r['path'] for r in self.search(pattern='*.tar.gz')], [str(self.tree / 'backup.tar.gz')])
+        self.assertEqual(len(self.search(pattern='*.gz')), 2)
 
     def test_scan_search_and_incremental_diff(self):
         first = self.scan()

@@ -5,6 +5,9 @@ Newest first. Versions are not tagged yet: everything so far is 0.2.0.
 ## Unreleased
 
 ### Fixed
+- **`*.tar.gz` finds files.** A search for a two-dot suffix looked in the extension column, which holds only `gz`, and silently found nothing. So did suffixes with a space or over 16 characters.
+- **A failed schedule deploy no longer stops the host's reports.** Run now changed the report token before the host had it, so a host it never reached got 401 on every report. A new token now works beside the old one until the host reports with it or the deploy ends well. This also covers an apply that fails after writing the token.
+- **A command schedule's script downloads take `plans.edit`**, as reading the command does. `plans.scripts` alone showed what the schedule view masks.
 - **Retiring a remote node's host cuts its tunnel.** Its key stayed authorized, and the machine kept its address on this server.
 - **Snapshot discovery passes over a capability `find` that cannot run**, instead of reporting no snapshots.
 - **Plain HTTP tells ports apart.** Browsers send no `Sec-Fetch-Site` there, so a page on another port of the same host could post with the session cookie.

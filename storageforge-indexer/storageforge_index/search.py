@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 
 from .db import Conn, Database, epoch
-from .stream import join_path
+from .stream import extension, join_path
 
 GLOB_CHARS = '*?['
 EXT_RE = re.compile(r'^\*\.([^*?\[\]/]+)$')
@@ -42,7 +42,8 @@ def classify(pattern: str | None):
     if not pattern:
         return 'any', None
     m = EXT_RE.match(pattern)
-    if m:
+    # only what stream.extension() can have stored: of backup.tar.gz it keeps gz, so *.tar.gz has to match by name
+    if m and extension('x.' + m.group(1), False) == m.group(1).lower():
         return 'ext', m.group(1).lower()
     if not any(c in pattern for c in GLOB_CHARS):
         return 'exact', pattern

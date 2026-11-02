@@ -10,9 +10,9 @@ A read of the indexer's code looking for bugs, done after the [feature audit of 
 
 | # | Area | Finding | Severity |
 | :--- | :--- | :--- | :--- |
-| B1 | Search | `*.tar.gz` (any two-dot pattern) silently matches nothing | **Medium** |
-| B2 | Scheduler | A failed **Run now** leaves the schedule unable to report | Medium–low |
-| B3 | Permissions | The schedule mask (`••••••`) is bypassed by the script download routes | Low |
+| B1 | Search | `*.tar.gz` (any two-dot pattern) silently matches nothing | **Medium**, fixed |
+| B2 | Scheduler | A failed **Run now** leaves the schedule unable to report | Medium–low, fixed |
+| B3 | Permissions | The schedule mask (`••••••`) is bypassed by the script download routes | Low, fixed |
 | B4 | Change scripts | The `/tmp` lock-file fallback follows symlinks as root | Low |
 | B5 | Scheduler API | `verify` accepts a `run_id` belonging to another schedule | Low |
 | B6 | Scans | Checksums of files with non-UTF-8 names are silently dropped | Low |
@@ -29,7 +29,7 @@ EXT_RE = re.compile(r'^\*\.([^*?\[\]/]+)$')      # search.py
 
 so `*.tar.gz` becomes `WHERE f.extension = 'tar.gz'`. But `stream.extension()` stores only the text after the **last** dot (`gz` for `backup.tar.gz`). The query is valid, runs fast, and returns zero rows — in the web UI, the API and the CLI alike. `*.gz` works, `*tar.gz` works (glob path), `*.tar.gz` does not, with no hint why. Verified by running `classify('*.tar.gz')` → `('ext', 'tar.gz')` against `extension('backup.tar.gz', False)` → `'gz'`.
 
-*Fix:* exclude dots from the extension fast path (`[^*?\[\]/.]+`); a two-dot pattern then falls through to the glob branch, which handles it correctly (its longest literal `tar.gz` is ≥ 3 characters, so the FTS candidate filter still applies). One test in `test_indexer.py` or `tests/test_route_rules.py` pinning `*.tar.gz` would hold it.
+**Fixed.** The fast path now applies only to what `stream.extension()` could have stored. That also covers two cases this audit missed: suffixes with a space and suffixes over 16 characters, which `extension()` stores as empty. Everything else goes to the glob branch. Left as it is: `*.env` does not match a file named exactly `.env`, which has no extension. A shell glob doesn't match it either.
 
 ## B2. A failed "Run now" breaks a schedule's direct reporting
 
@@ -42,7 +42,7 @@ elif run_now:
 
 That is deliberate for the success path — the run reports *during* the deploy, with the new token the script just wrote. But when the deploy fails (host down, SSH refused, script error), the database now only accepts the new token while the host still holds the old one. Every later timer-fired report answers 401 until someone deploys the schedule again; runs are then only picked up by scans, and nothing says why. The ordinary apply path avoids exactly this with its `promote`-on-success pattern.
 
-*Fix:* remember the old `auth_token_hash` and restore it in an `on_fail` hook (deploy items already support hooks), or mark the schedule's access state so the UI says "redeploy to restore reporting".
+**Fixed**, though not as this audit first suggested. Restoring the old hash in an `on_fail` hook would be wrong: the install writes the token before the task runs, so a task that exits non-zero fails the deploy while the host already holds the new token. The server can't tell the two cases apart. A new `pending_token_hash` (migration 029) is accepted beside the current hash, and becomes the current one when the host reports with it or the deploy ends well. Rotating the token clears it. The ordinary apply path had the same gap when it failed after writing the token, and now shares this. One gap remains: if a failed deploy did reach the host and a later one never does, the host holds a token that is no longer accepted until the next deploy.
 
 ## B3. The schedule mask is bypassed by the script downloads
 
@@ -54,7 +54,7 @@ That is deliberate for the success path — the run reports *during* the deploy,
 
 gates them on `plans.scripts` only. `/api/scheduler/schedules/<id>/script` returns the raw command inline; `/install-script` additionally embeds the env values and `info 'runs: <command>'`. So a custom role holding `plans.view` + `plans.scripts` but not `plans.edit` reads everything the mask hides. No built-in role is affected (viewer lacks `plans.scripts`; operator has `plans.edit`), so this needs a custom role to matter.
 
-*Fix:* require `plans.edit` for `/api/scheduler/.*/(script|install-script)` (a rule above the generic one), or mask command schedules' scripts for non-editors.
+**Fixed.** Both routes now also require `plans.edit` for command schedules, and the UI hides the links. Other schedule types keep `plans.scripts` alone, since nothing in them is masked. Not changed: a dry run prints the command on purpose (`runs: …`), so a `deploy.report` holder can still start one and read it, and `deploy.view` can read that run's output. The code treats this as the approver reading what they approve. A role that must not see commands should not hold those permissions.
 
 ## B4. The change-plan lock falls back to a predictable /tmp path
 
@@ -111,4 +111,4 @@ Things specifically looked at because they smelled risky, and found correct:
 
 ## How this was checked
 
-Static read plus small Python repros for anything claimed as confirmed (B1's was run; B2, B3 are confirmed by reading the single code path involved; B4–B7 are plausible-to-likely but were not exercised against a live host). No code was changed.
+Static read plus small Python repros for anything claimed as confirmed (B1's was run; B2, B3 are confirmed by reading the single code path involved; B4–B7 are plausible-to-likely but were not exercised against a live host). No code was changed by the audit itself. B1 to B3 were fixed afterwards with tests, and B4 to B7 are still open.
