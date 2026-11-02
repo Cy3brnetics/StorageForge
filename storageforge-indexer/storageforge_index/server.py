@@ -1720,6 +1720,15 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         scan_designs.pop(deploy.canonical(conn(), host), None)
         graph.rebuild_host(db, conn(), deploy.canonical(conn(), host))
 
+    def job_hosts(runner: str, jid: str | None = None) -> set[str]:
+        """The runner, and every scanned host its jobs (or just jid) pull from: an imported rsnapshot can back up other hosts."""
+        known = {r[0].lower() for r in conn().all('SELECT hostname FROM hosts')}
+        out = {runner}
+        for j in jobs.overview(conn()):
+            if (j['id'] == jid) if jid else fsmap.same_host(j['runner'] or '', runner):
+                out |= {p['host'] for p in j.get('places') or [] if p['host'].lower() in known}
+        return out
+
     @web.post('/api/deploy/jobs/<jid>/retention')
     @login_required
     @password_confirmed
@@ -1732,9 +1741,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     @password_confirmed
     def api_deploy_job_forget(jid):
-        host = jobs.get(conn(), jid)['runner']
+        hosts = job_hosts(jobs.get(conn(), jid)['runner'], jid)
         snapjobs.forget(conn(), jid)
-        redraw_host(host)
+        for h in hosts:
+            redraw_host(h)
         core.audit(conn(), actor(), 'deploy.job-forget', 'ok', None, {'job': jid})
         return jsonify(forgotten=jid)
 
@@ -1754,7 +1764,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def api_snapjobs_probe():
         host = str(json_body().get('host', ''))
         found = snapjobs.probe(db, conn(), host, actor())
-        redraw_host(host)
+        for h in job_hosts(deploy.canonical(conn(), host)):
+            redraw_host(h)
         core.audit(conn(), actor(), 'deploy.snapjobs-probe', 'ok', host, {'found': len(found)})
         return jsonify(found=snapjobs.candidates(conn()))
 
@@ -1765,7 +1776,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         body = json_body()
         host, tool, config = str(body.get('host', '')), str(body.get('tool', '')), str(body.get('config', ''))
         jid = snapjobs.import_job(conn(), host, tool, config, actor())
-        redraw_host(host)
+        for h in job_hosts(deploy.canonical(conn(), host), jid):
+            redraw_host(h)
         core.audit(conn(), actor(), 'deploy.job-import', 'ok', host, {'job': jid, 'tool': tool, 'config': config})
         return jsonify(job=jid)
 
@@ -2225,7 +2237,8 @@ def planner_activity(c, host: str) -> dict:
     except LookupError:
         designed = None
     running = [{'id': j['id'], 'name': j['name'], 'method': j['method'], 'state': j['state'], 'src': j['src'], 'dst': j['dst']}
-               for j in jobs.overview(c) if same_host(j['runner'] or '', host) or same_host(j['source'] or '', host)]
+               for j in jobs.overview(c) if same_host(j['runner'] or '', host) or same_host(j['source'] or '', host)
+               or any(same_host(p['host'], host) for p in j.get('places') or [])]
     acc = next(iter(access.status(c, host, limit=0)), None)
     return {'host': host, 'changes': staged, 'moves': moving, 'shares': designed, 'jobs': running,
             'deployed': [{'kind': d['kind'], 'ref': d['ref'], 'at': d['at']} for d in deploy.deployed(c) if same_host(d['host'], host)],

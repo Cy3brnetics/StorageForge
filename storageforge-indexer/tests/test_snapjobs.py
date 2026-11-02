@@ -73,6 +73,30 @@ class Parse(unittest.TestCase):
         self.assertEqual(j['schedule'][0]['unit'], 'snapper-timeline.timer')
         self.assertFalse(j['cleanup_on'])
 
+    def test_remote_sources_parsing_and_resolution(self):
+        self.assertEqual(snapjobs.remote_source('rpi@rpi02-docker:/mnt/storage/volumes/'), ('rpi02-docker', '/mnt/storage/volumes'))
+        self.assertEqual(snapjobs.remote_source('backup-box:/data'), ('backup-box', '/data'))
+        self.assertEqual(snapjobs.remote_source('[::1]:/etc'), ('::1', '/etc'))
+        self.assertIsNone(snapjobs.remote_source('/home/'))
+        self.assertIsNone(snapjobs.remote_source('daemon::module'))
+        self.assertIsNone(snapjobs.remote_source('rsync://host/module'))
+
+        backups = [
+            {'src': '/', 'dst': 'localhost/'},
+            {'src': 'rpi@rpi02-docker:/var/lib/docker/', 'dst': 'rpi02-docker/'},
+            {'src': 'rpi@rpi03-docker:/mnt/storage/', 'dst': 'rpi03-docker/'},
+        ]
+        rem = snapjobs.remote_sources(backups)
+        self.assertEqual(rem, [
+            {'host': 'rpi02-docker', 'path': '/var/lib/docker', 'dst': 'rpi02-docker/'},
+            {'host': 'rpi03-docker', 'path': '/mnt/storage', 'dst': 'rpi03-docker/'},
+        ])
+
+        known = [('rpi01docker', '10.42.0.10', '10.42.0.10'), ('rpi02docker', '10.42.0.11', '10.42.0.11')]
+        self.assertEqual(snapjobs.resolve_host(known, 'rpi02-docker'), 'rpi02docker')
+        self.assertEqual(snapjobs.resolve_host(known, '10.42.0.10'), 'rpi01docker')
+        self.assertEqual(snapjobs.resolve_host(known, 'otherhost'), 'otherhost')
+
     def test_the_section_is_in_the_scan(self):
         self.assertIn('snapjobs', SECTIONS)
         self.assertNotIn('@@SNAPFIND@@', INVENTORY_SCRIPT)
@@ -221,6 +245,49 @@ class Imported(unittest.TestCase):
         self.assertEqual(rows[1]['backup']['target'], 'pi:/mnt/sdcard/snapshots')
         self.assertEqual(rows[2]['snapshots']['tool'], 'snapper')
         self.assertEqual(alerts.drift(self.conn), [])
+
+    def test_remote_rsnapshot_backups_attributed_to_remote_hosts(self):
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json) VALUES ('rpi02docker', '10.42.0.11', 'scan', '{}')")
+        remote_conf = '\n'.join([
+            'R\t/etc/rsnapshot.conf\tsnapshot_root\t/mnt/ssd/backups/rpi01-sdcard/',
+            'R\t/etc/rsnapshot.conf\tretain\tdaily\t7',
+            'R\t/etc/rsnapshot.conf\tbackup\t/\tlocalhost/',
+            'R\t/etc/rsnapshot.conf\tbackup\trpi@rpi02-docker:/mnt/storage/docker-data/volumes/\trpi02-docker-volumes/',
+            'M\t/etc/rsnapshot.conf\text4\t/mnt/ssd\t1',
+            f'S\t/etc/rsnapshot.conf\tdaily.0\t{NOW - 3600}.0',
+        ])
+        self.scan(remote_conf, host='rpi01docker')
+        jid = snapjobs.import_job(self.conn, 'rpi01docker', 'rsnapshot', '/etc/rsnapshot.conf', 't')
+        j = self.job(jid)
+        self.assertEqual(j['runner'], 'rpi01docker')
+        self.assertEqual(j['places'], [
+            {'host': 'rpi01docker', 'path': '/'},
+            {'host': 'rpi02docker', 'path': '/mnt/storage/docker-data/volumes'},
+        ])
+        rpi02_rows = protection.overlay(self.conn, 'rpi02docker', [{'path': '/mnt/storage/docker-data/volumes', 'node': 'a'}])
+        self.assertEqual(rpi02_rows[0]['backup']['target'], 'rpi01docker:/mnt/ssd/backups/rpi01-sdcard')
+        self.assertFalse(rpi02_rows[0]['backup']['offsite'])
+        protection.set_offsite(self.conn, 'rpi01docker', True, 'test')
+        rpi02_rows = protection.overlay(self.conn, 'rpi02docker', [{'path': '/mnt/storage/docker-data/volumes', 'node': 'a'}])
+        self.assertTrue(rpi02_rows[0]['backup']['offsite'])
+
+    def test_purely_remote_rsnapshot_job(self):
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json) VALUES ('rpi03docker', '10.42.0.12', 'scan', '{}')")
+        pure_remote = '\n'.join([
+            'R\t/etc/rsnapshot-pure.conf\tsnapshot_root\t/mnt/ssd/backups/rpi03-only/',
+            'R\t/etc/rsnapshot-pure.conf\tretain\tdaily\t7',
+            'R\t/etc/rsnapshot-pure.conf\tbackup\trpi@rpi03-docker:/var/data/\trpi03-data/',
+            'M\t/etc/rsnapshot-pure.conf\text4\t/mnt/ssd\t1',
+            f'S\t/etc/rsnapshot-pure.conf\tdaily.0\t{NOW - 1800}.0',
+        ])
+        self.scan(pure_remote, host='rpi01docker')
+        jid = snapjobs.import_job(self.conn, 'rpi01docker', 'rsnapshot', '/etc/rsnapshot-pure.conf', 't')
+        j = self.job(jid)
+        self.assertIsNone(j['src'])
+        self.assertEqual(j['sources'], [])
+        self.assertEqual(j['places'], [{'host': 'rpi03docker', 'path': '/var/data'}])
+        rpi03_rows = protection.overlay(self.conn, 'rpi03docker', [{'path': '/var/data', 'node': 'x'}])
+        self.assertEqual(rpi03_rows[0]['backup']['target'], 'rpi01docker:/mnt/ssd/backups/rpi03-only')
 
     def test_actions_go_to_the_right_tool(self):
         rs = jobs.get(self.conn, snapjobs.import_job(self.conn, 'pi', 'rsnapshot', CONF, 't'))
