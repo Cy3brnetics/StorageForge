@@ -438,9 +438,12 @@ def cmd_config(args) -> int:
             os.chmod(args.output, 0o600)
             print(f'wrote {args.output} ({fmt_bin(len(data))})')
             return 0
-        v = hostconfig.get(conn, args.id) if args.id else hostconfig.latest(conn, args.host)
+        v = hostconfig.get(conn, args.id) if args.id else hostconfig.for_rebuild(conn, args.host)
         if not v:
             raise SystemExit(f'nothing captured for {args.host}: scan it first')
+        if v.get('instead_of'):
+            print(f'using version {v["config_id"]}, from before the reinstall: version {v["instead_of"]["config_id"]} is a scan of '
+                  'the new install. --id picks another', file=sys.stderr)
         from . import site
         text = site.stamp(conn, reinstall.script(v))
         if args.output:
@@ -620,7 +623,8 @@ def _rekey_host(args) -> int:
     except VaultError:
         _audit(db, conn, None, 'host.rekey', host=name, address=addr)
     print(f'forgot the pinned SSH host keys of {name}' + (f' (and {addr} in known_hosts)' if addr else '')
-          + f'. Scan it now: storageforge-index scan --host <its address>; that scan pins it again.')
+          + f'. Scan it now: storageforge-index scan --host <its address>; that scan pins it again. '
+          'Then deploy again any jobs that use it as a source, on every host, so they take the new key.')
     return 0
 
 

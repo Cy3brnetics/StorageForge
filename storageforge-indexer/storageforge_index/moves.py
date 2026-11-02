@@ -872,7 +872,7 @@ RandomizedDelaySec=10min
 
 [Install]
 WantedBy=timers.target"
-      systemctl daemon-reload; systemctl enable --now "$u.timer"; ok "timer $u.timer (${S_SCHEDULE[$i]})" ;;
+      reload_systemd && systemctl enable --now "$u.timer" && ok "timer $u.timer (${S_SCHEDULE[$i]})" ;;
     rsnapshot)
       command -v rsnapshot >/dev/null || { conflict "rsnapshot is not installed"; return 1; }
       root_key_ok "$i" || return 1
@@ -909,7 +909,7 @@ Persistent=true
 [Install]
 WantedBy=timers.target"
       done
-      systemctl daemon-reload
+      reload_systemd || return 0
       for kv in ${S_KEEP[$i]}; do ((${kv#*=} > 0)) && systemctl enable --now "$u-${kv%=*}.timer"; done
       ok "rsnapshot timers enabled" ;;
     git)
@@ -936,7 +936,7 @@ RandomizedDelaySec=10min
 
 [Install]
 WantedBy=timers.target"
-      systemctl daemon-reload; systemctl enable --now "$u.timer"; ok "timer $u.timer (${S_SCHEDULE[$i]})" ;;
+      reload_systemd && systemctl enable --now "$u.timer" && ok "timer $u.timer (${S_SCHEDULE[$i]})" ;;
     *) info "nothing to install for a ${S_METHOD[$i]} step" ;;
   esac
 }

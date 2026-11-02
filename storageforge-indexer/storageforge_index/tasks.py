@@ -947,7 +947,7 @@ case $MODE in
     else
       rm -f "/etc/systemd/system/$UNIT.timer"
     fi
-    systemctl daemon-reload
+    reload_systemd || exit 1
     if [[ -n $SCHEDULE ]]; then
       systemctl enable --now "$UNIT.timer" >/dev/null && ok "timer on: next run $(systemctl show -p NextElapseUSecRealtime --value "$UNIT.timer" 2>/dev/null)"
     else
@@ -959,7 +959,7 @@ case $MODE in
     section "Remove $UNIT"
     systemctl disable --now "$UNIT.timer" >/dev/null 2>&1 || true
     rm -f "/etc/systemd/system/$UNIT.service" "/etc/systemd/system/$UNIT.timer" "$LIB/$TASK.sh"
-    systemctl daemon-reload
+    reload_systemd || exit 1
     ok "removed (its run history stays in $STATE/$TASK.last and the journal)"
     exit 0 ;;
 esac

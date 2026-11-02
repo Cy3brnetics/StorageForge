@@ -1872,7 +1872,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     def api_hostconfig_script():
         host, cid = request.args.get('host', ''), arg_num('id', 0, 0, 2**53)
-        v = hostconfig.get(conn(), cid) if cid else hostconfig.latest(conn(), host)
+        v = hostconfig.get(conn(), cid) if cid else hostconfig.for_rebuild(conn(), host)
         if not v:
             return jsonify(error=f'nothing captured for {host}: scan it first'), 404
         core.audit(conn(), actor(), 'hostconfig.script', 'ok', v['host'], {'version': v['config_id']})
@@ -2146,6 +2146,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         bp = json_body()
         if bp.get('apiVersion') != 'storageforge/v1' or bp.get('kind') != 'StorageBlueprint':
             raise ValueError('expected a storageforge/v1 StorageBlueprint')
+        if bp.get('protection'):             # a design as loaded carries job names, which hold arrows: never part of a save
+            bp['protection'] = protection.as_typed(bp['protection'])
         blueprint.check_text(bp)             # it ends up in build, share and change scripts, and in every view
         host = str((bp.get('metadata') or {}).get('host') or '').strip()
         if not host or len(host) > 253 or any(c.isspace() for c in host):

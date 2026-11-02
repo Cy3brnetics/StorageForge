@@ -220,10 +220,10 @@ def _links(node: dict, mounts: list[dict], design: dict | None) -> tuple[list, i
 def build(conn: Conn, host: str) -> dict:
     """The rebuild record of a scanned host, from its latest scan and saved design."""
     from .graph import stored_blueprint
-    rows = conn.all('SELECT hostname, ip_address, os_info, inventory_json FROM hosts WHERE lower(hostname) = lower(:h)', {'h': host})
+    rows = conn.all('SELECT hostname, ip_address, os_info, inventory_json, machine_id FROM hosts WHERE lower(hostname) = lower(:h)', {'h': host})
     if not rows:
         raise LookupError(f'{host} has not been scanned')
-    name, ip, os_info, inv_json = rows[0]
+    name, ip, os_info, inv_json, machine_id = rows[0]
     inv = loads(inv_json) or {}
     node = node_from_index(conn, name, stats=False)
     design = stored_blueprint(conn, name)
@@ -271,7 +271,7 @@ def build(conn: Conn, host: str) -> dict:
     used = {m['spec'].removeprefix('UUID=') for m in mounts}
     links, more_links = _links(node, mounts, design)
     fstypes = sorted({m['fstype'] for m in mounts if m['kind'] not in ('system', 'rootfs')} | {d['fstype'] for d in drives if d['uuid'] in used})
-    return {'host': name, 'ip': ip, 'os': os_info, 'collected_at': inv.get('collected_at'),
+    return {'host': name, 'ip': ip, 'os': os_info, 'machine_id': machine_id, 'collected_at': inv.get('collected_at'),
             'files': files, 'unreadable': unreadable, 'captured_files': bool(configs),
             'mounts': mounts, 'drives': sorted(drives, key=lambda d: d['uuid']), 'crypt': crypt,
             'zpools': zpools, 'datasets': datasets, 'has_md': any(re.search(r'^\s*ARRAY\b', files.get(p, ''), re.M) for p in ('/etc/mdadm.conf', '/etc/mdadm/mdadm.conf'))
@@ -333,6 +333,28 @@ def get(conn: Conn, config_id: int) -> dict | None:
 def latest(conn: Conn, host: str) -> dict | None:
     cid = conn.scalar('SELECT max(config_id) FROM host_configs WHERE lower(hostname) = lower(:h)', {'h': host})
     return get(conn, cid) if cid else None
+
+
+def _holds(body: dict) -> int:
+    s = summary(body)
+    return s['mounts'] + s['zfs_pools'] + s['subvolumes'] + s['shares']
+
+
+def for_rebuild(conn: Conn, host: str) -> dict | None:
+    """The version a rebuild should use: the newest, unless that is a scan of the blank new install (or of one part way
+    through its rebuild), which would make a script with nothing to do. Then the newest version from before the reinstall,
+    with 'instead_of' set to what it passed over. A smaller machine on purpose can still pick its version by id."""
+    newest = latest(conn, host)
+    if not newest:
+        return None
+    held, machine = _holds(newest['body']), newest['body'].get('machine_id')
+    for cid, in conn.all('SELECT config_id FROM host_configs WHERE hostname = :h AND config_id < :c ORDER BY config_id DESC',
+                         {'h': newest['host'], 'c': newest['config_id']}):
+        old = get(conn, cid)
+        reinstalled = machine and old['body'].get('machine_id') and old['body']['machine_id'] != machine
+        if (reinstalled or not held) and _holds(old['body']) > held:
+            return {**old, 'instead_of': {'config_id': newest['config_id'], 'captured_at': newest['captured_at']}}
+    return newest
 
 
 def summary(body: dict) -> dict:
@@ -413,7 +435,7 @@ def bundle(conn: Conn, hosts: list[str] | None = None, config_id: int | None = N
         picked = [one]
     else:
         names = hosts or [r[0] for r in conn.all('SELECT DISTINCT hostname FROM host_configs ORDER BY hostname')]
-        picked = [v for v in (latest(conn, h) for h in names) if v]
+        picked = [v for v in (for_rebuild(conn, h) for h in names) if v]
     if not picked:
         raise LookupError('no host configuration captured yet: scan a host first')
     buf = io.BytesIO()

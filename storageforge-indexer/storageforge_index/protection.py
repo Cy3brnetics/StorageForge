@@ -151,14 +151,21 @@ def _better(new: dict, old: dict | None) -> bool:
     return (bool(new.get('offsite')), new.get('last') or '') > (bool(old.get('offsite')), old.get('last') or '')
 
 
-def overlay(conn: Conn, host: str, rows: list[dict]) -> list[dict]:
-    """A copy of the rows with what is deployed for this host filled in, marked row['deployed'] = [what covers it]."""
+def as_typed(rows: list[dict]) -> list[dict]:
+    """Rows as the operator typed them, without what overlay filled in. A design is saved like this, and what is deployed
+    is looked up afresh each time it is read."""
     out = []
     for r in rows or []:
         r = json.loads(json.dumps(r))
-        r.update(r.pop('hand', None) or {})        # a saved row comes back as typed; the jobs below are looked up afresh
+        r.update(r.pop('hand', None) or {})
         r.pop('deployed', None)
         out.append(r)
+    return out
+
+
+def overlay(conn: Conn, host: str, rows: list[dict]) -> list[dict]:
+    """A copy of the rows with what is deployed for this host filled in, marked row['deployed'] = [what covers it]."""
+    out = as_typed(rows)
     offsite = offsite_hosts(conn)
     live = [r for r in out if not r.get('ephemeral')]
     taken = {}

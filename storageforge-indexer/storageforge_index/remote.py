@@ -276,10 +276,14 @@ echo '@@lsblk'
 lsblk -J -b -o NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,LABEL,UUID,PARTLABEL,SERIAL,MODEL,TRAN,ROTA,PTTYPE,START,LOG-SEC,PHY-SEC 2>/dev/null \
   || lsblk -J -b -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,LABEL,UUID,SERIAL,MODEL,TRAN,ROTA 2>/dev/null
 echo '@@zpool'; zpool status -P 2>/dev/null
+echo '@@zfsprops'; command -v zfs >/dev/null 2>&1 && zfs get -H -s local -t filesystem -o name,property,value recordsize,compression,sync,atime,xattr,acltype,dnodesize,logbias,primarycache,copies,quota,reservation 2>/dev/null
 echo '@@lvs'; lvs --reportformat json --units b --nosuffix -o vg_name,lv_name,segtype,lv_size,data_stripes,lv_health_status,copy_percent 2>/dev/null
-echo '@@findmnt'; findmnt -J -b -l -o TARGET,SOURCE,FSTYPE,SIZE,USED,OPTIONS,MAJ:MIN,FSROOT 2>/dev/null
+# SIZE and USED call statfs, which never returns on a hard NFS mount whose server is gone. Bounded, then without them.
+bounded() { if command -v timeout >/dev/null 2>&1; then timeout -k 2 20 "$@"; else "$@"; fi; }
+echo '@@findmnt'; bounded findmnt -J -b -l -o TARGET,SOURCE,FSTYPE,SIZE,USED,OPTIONS,MAJ:MIN,FSROOT 2>/dev/null \
+  || findmnt -J -b -l -o TARGET,SOURCE,FSTYPE,OPTIONS,MAJ:MIN,FSROOT 2>/dev/null
 echo '@@mountinfo'; cat /proc/self/mountinfo 2>/dev/null
-echo '@@df'; df -B1 -P 2>/dev/null
+echo '@@df'; bounded df -B1 -P 2>/dev/null || df -B1 -P -l 2>/dev/null
 echo '@@mergerfs'; for p in $(pgrep -x mergerfs 2>/dev/null); do xargs -0 </proc/$p/cmdline; done; awk '$1 !~ /^#/ && $3 ~ /mergerfs/ {print $1, $2}' /etc/fstab 2>/dev/null
 echo '@@btrfs'; for d in /sys/fs/btrfs/*-*/; do [ -d "$d" ] || continue; printf '%s\t%s\t%s\t%s\t%s\n' "$(basename "$d")" "$(ls -d "$d"allocation/data/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(ls -d "$d"allocation/metadata/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(cat "$d"label 2>/dev/null)" "$(a="$d"allocation; v() { cat "$@" 2>/dev/null | awk '{s+=$1} END {printf "%.0f", s}'; }; printf 'dev=%s alloc=%s datat=%s datau=%s metat=%s metau=%s rsv=%s missing=%s op=%s' "$(cat "$d"devices/*/size 2>/dev/null | awk '{s+=$1*512} END {printf "%.0f", s}')" "$(v "$a"/*/disk_total)" "$(v "$a"/data/total_bytes)" "$(v "$a"/data/bytes_used)" "$(v "$a"/metadata/total_bytes)" "$(v "$a"/metadata/bytes_used)" "$(v "$a"/global_rsv_size)" "$(v "$d"devinfo/*/missing)" "$(cat "$d"exclusive_operation 2>/dev/null)")"; done
 echo '@@jobs'; for f in /var/lib/storageforge/jobs/*/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
@@ -365,11 +369,12 @@ class HostInventory:
     snapshots: dict | None = None  # ZFS snapshot counts and snapper configs
     authkeys: dict | None = None   # fingerprints in accounts' authorized_keys (authkeys.py); None from older scans
     snapjobs: list | None = None   # rsnapshot and snapper jobs on the host, whoever set them up (snapfind.py)
+    zfs_props: str = ''            # ZFS properties set on purpose, not inherited: name, property, value per line
 
     def to_json(self) -> str:
         return json.dumps({
             'collected_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
-            'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb, 'btrfs': self.btrfs,
+            'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'zfs_props': self.zfs_props, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb, 'btrfs': self.btrfs,
             'jobs': self.jobs, 'tasks': self.tasks, 'schedules': self.schedules, 'runs': self.runs, 'managed': self.managed, 'ids': self.ids, 'packages': self.packages,
             'configs': self.configs, 'accounts': self.accounts, 'authkeys': self.authkeys, 'moves': self.moves, 'health': self.health, 'snapshots': self.snapshots, 'snapjobs': self.snapjobs,
             'mounts': [asdict(m) for m in self.mounts],
@@ -435,12 +440,25 @@ def apply_mergerfs(mounts: list[MountInfo], text: str):
             m.source = branches[m.target]
 
 
-def parse_mountinfo(text: str, df_text: str = '') -> list[MountInfo]:
+def _df_sizes(df_text: str) -> dict:
     sizes = {}
     for line in df_text.splitlines()[1:]:
         parts = line.split()
         if len(parts) >= 6:
             sizes[' '.join(parts[5:])] = (_int(parts[1]), _int(parts[2]))
+    return sizes
+
+
+def fill_sizes(mounts: list[MountInfo], df_text: str) -> None:
+    """A findmnt that had to skip sizes, because a network mount stopped answering: local ones still come from df."""
+    sizes = _df_sizes(df_text)
+    for m in mounts:
+        if m.total is None and m.target in sizes:
+            m.total, m.used = sizes[m.target]
+
+
+def parse_mountinfo(text: str, df_text: str = '') -> list[MountInfo]:
+    sizes = _df_sizes(df_text)
     out = []
     for line in text.splitlines():
         left, sep, right = line.partition(' - ')
@@ -472,6 +490,7 @@ def collect_inventory(t: Transport) -> HostInventory:
     except ValueError:
         lsblk = None
     mounts = parse_findmnt(sec.get('findmnt', '')) or parse_mountinfo(sec.get('mountinfo', ''), sec.get('df', ''))
+    fill_sizes(mounts, sec.get('df', ''))
     if not mounts:
         raise RemoteError(f'{t.host}: could not read the mount table (findmnt and /proc/self/mountinfo both failed)')
     apply_mergerfs(mounts, sec.get('mergerfs', ''))
@@ -480,7 +499,7 @@ def collect_inventory(t: Transport) -> HostInventory:
     from .authkeys import parse as parse_authkeys
     from .hostconfig import parse_configs
     return HostInventory(hostname, ip, ' · '.join(lines('os')) or None, mounts, lsblk,   # optional fields by name: order-proof
-                         sec.get('zpool', '').strip(), sec.get('df', '').strip(), lvs=sec.get('lvs', '').strip(),
+                         sec.get('zpool', '').strip(), sec.get('df', '').strip(), lvs=sec.get('lvs', '').strip(), zfs_props=sec.get('zfsprops', '').strip(),
                          access=access, user=user, nfs=sec.get('nfs', '').strip(), smb=sec.get('smb', '').strip(),
                          btrfs=sec.get('btrfs', '').strip(), jobs=sec.get('jobs', '').strip(),
                          tasks=sec.get('tasks', '').strip(), schedules=sec.get('schedules', '').strip(),

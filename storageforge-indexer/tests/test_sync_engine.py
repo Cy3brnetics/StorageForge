@@ -329,6 +329,16 @@ class Engine(unittest.TestCase):
         self.assertIn('StrictHostKeyChecking=accept-new', log)
         self.assertNotIn('HostKeyAlias', log)
 
+    def test_a_job_without_routes_checks_the_pinned_key(self):
+        (self.src / 'f').write_text('x')
+        self.conf(local=False)
+        (self.etc / 'jobs' / 'p1-a.hostkey').write_text('storageforge-source ssh-ed25519 AAAA\n')
+        self.assertEqual(self.job('run', 'p1-a').returncode, 0)
+        log = (self.t / 'rsync.log').read_text()
+        self.assertIn('HostKeyAlias=storageforge-source', log)
+        self.assertIn('StrictHostKeyChecking=yes', log)
+        self.assertNotIn('ServerAlive', log)
+
     # ── lock, events ──
     def hold(self, mode):
         lock = self.var / 'locks' / '.storage.lock'

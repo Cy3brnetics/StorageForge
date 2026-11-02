@@ -328,7 +328,8 @@ class Host:
             apply_btrfs(self.node, inv['btrfs'])
         self.mounted = {m['target']: m for m in h['mounts'] if m['state'] != 'gone'}
         self.made, self.gone, self.subvols, self.unmounted = set(), set(), set(), set()
-        self.new_zpools, self.new_vgs = set(), set()
+        self.new_zpools, self.new_vgs, self.new_labels = set(), set(), set()
+        self.btrfs_added: dict[str, int] = {}
         self.new_mounts: dict[str, dict] = {}
 
     def mount_at(self, path: str):
@@ -374,6 +375,12 @@ class Host:
                     return {'kind': 'part', 'disk': d, 'part': p, 'fs': p.get('fs'), 'member': p.get('member'), 'label': p.get('label')}
         return None
 
+    def plan_partition(self, disk: dict, fs: str = '', label: str = '', size: int | None = None) -> None:
+        """A partition an earlier task in the plan makes, so later tasks can name it. Numbered as the kernel will."""
+        nums = [int(m.group(1)) for x in disk['parts'] if (m := re.search(r'(\d+)$', x['dev']))]
+        sep = 'p' if disk['dev'][-1].isdigit() else ''
+        disk['parts'].append({'dev': f'{disk["dev"]}{sep}{max(nums, default=0) + 1}', 'fs': fs or None, 'label': label or None, 'size': size})
+
     def mounted_from(self, dev: str) -> list[str]:
         """Mount points using dev or a partition on it (LUKS mappers included through their partition)."""
         info = self.device(dev)
@@ -402,8 +409,8 @@ class Host:
         src = (self.mounted.get(target, {}).get('source') or '').split('[')[0].removeprefix('/dev/')
         for p in self.node['pools']:
             if p['type'] == 'btrfs' and (src in p['members'] or src == p['name']):
-                return len(p['members'])
-        return 1
+                return len(p['members']) + self.btrfs_added.get(target, 0)
+        return 1 + self.btrfs_added.get(target, 0)
 
     def unallocated(self, target: str) -> int | None:
         from .health import unallocated
@@ -574,7 +581,8 @@ def _check_task(conn, c: Host, h: dict, k: str, p: dict, say):
             found = [x for d in c.node['disks'] for x in d['parts'] if (x.get(key) or '').lower() == m.group(2).lower()]
             found += [x for x in c.node['pools'] if (x.get(key) or '').lower() == m.group(2).lower()]
             if not found:
-                say('warn', f'no device with {src} was seen by the last scan')
+                if not (key == 'label' and m.group(2).lower() in c.new_labels):
+                    say('warn', f'no device with {src} was seen by the last scan')
             elif found[0].get('fs') and found[0]['fs'] != p['fstype'] and p['fstype'] != 'none':
                 say('warn', f'{src} holds {found[0]["fs"]}, not {p["fstype"]}')
             else:
@@ -643,6 +651,8 @@ def _check_task(conn, c: Host, h: dict, k: str, p: dict, say):
             say('crit', str(exc))
         if not used:
             say('ok', f'{info["disk"].get("model") or p["disk"]}: {_fmt(size - taken)} free' if size else p['disk'])
+        c.plan_partition(info['disk'], p['fstype'], p['label'],
+                         int(float(p['size'][:-1]) * 1024 ** ('KMGTP'.index(p['size'][-1]) + 1)) if p['size'] else max(size - taken, 0))
     elif k == 'drive-tune':
         info = c.device(p['device'])
         if not info:
@@ -698,8 +708,14 @@ def _check_task(conn, c: Host, h: dict, k: str, p: dict, say):
                 if fstype != 'btrfs' or mnt != p['target']:
                     say('crit', f'{p["target"]} is not a mounted btrfs filesystem')
                 say('note', 'existing data stays on the old devices until a balance spreads it')
+                c.btrfs_added[p['target']] = c.btrfs_added.get(p['target'], 0) + 1
             elif p.get('label') and len(p['label']) > LABEL_MAX.get(p['fstype'], 64):
                 say('crit', f'{p["fstype"]} labels are at most {LABEL_MAX[p["fstype"]]} characters')
+        if k != 'btrfs-add' and p.get('label') and (k == 'format' or p.get('fstype')):
+            c.new_labels.add(p['label'].lower())
+        if k == 'partition' and info['kind'] == 'disk':
+            info['disk']['parts'] = []
+            c.plan_partition(info['disk'], p.get('fstype'), p.get('label'))
     elif k == 'label':
         tgt = p['target']
         if tgt.startswith('/dev/'):
@@ -1088,7 +1104,7 @@ esc() { local s=${1// /\\040}; printf '%s' "${s//$'\t'/\\011}"; }
 fstab_line() { awk -v t="$(esc "$1")" '!/^[[:space:]]*#/ && $2 == t' /etc/fstab; }
 fstab_backup() { FSTAB_BAK=/etc/fstab.storageforge-$STAMP; [[ -e $FSTAB_BAK ]] || cp -a /etc/fstab "$FSTAB_BAK"; }
 fstab_verify() {
-  if findmnt --verify --tab-file /etc/fstab >/dev/null 2>&1; then systemctl daemon-reload 2>/dev/null || true; return 0; fi
+  if findmnt --verify --tab-file /etc/fstab >/dev/null 2>&1; then reload_systemd 2>/dev/null || true; return 0; fi
   cp -a "$FSTAB_BAK" /etc/fstab; conflict "findmnt --verify rejected the edited /etc/fstab: restored $FSTAB_BAK"; return 1
 }
 fs_top() { # path -> the top folder of its filesystem or btrfs subvolume (where a rename stays a rename)
@@ -1105,7 +1121,10 @@ devs_guard() { # wipe-allowed devices... -> 0 if each is free and, unless allowe
   done
 }
 dev_guard() { # device -> 0 if nothing on it is mounted, swapped on, or part of RAID/LVM/LUKS
-  [[ -b $1 ]] || { conflict "$1 is not a block device on $(uname -n)"; return 1; }
+  if [[ ! -b $1 ]]; then    # a report does not make the partitions earlier tasks would, so it cannot see them
+    [[ " ${PLANNED_PARTS:-} " == *" $1 "* ]] && ((!APPLY)) && { later "$1 is made by an earlier task"; return 1; }
+    conflict "$1 is not a block device on $(uname -n)"; return 1
+  fi
   local used; used=$(lsblk -nro MOUNTPOINT "$1" | grep . | paste -sd' ' -) || true
   [[ -z $used ]] || { conflict "$1 is in use: $used"; return 1; }
   if lsblk -nro TYPE "$1" | tail -n +2 | grep -E 'raid|lvm|crypt' >/dev/null; then conflict "$1 holds RAID, LVM or LUKS volumes"; return 1; fi
@@ -1363,6 +1382,7 @@ t_unmount() { local tgt=$1 have inner
   fi
 }
 t_partition() { local disk=$1 fs=$2 label=$3 wipe=$4 table=${5:-gpt} flag=$6 more=$7 n part
+  ((APPLY)) || plan_part "$disk"
   need parted parted || return 0
   part=$(part_of "$disk" 1); n=$(lsblk -nro TYPE -- "$disk" 2>/dev/null | grep -c part || true)
   if ((n == 1)) && [[ -b $part ]] && [[ -z $fs || $(blkid -p -o value -s TYPE -- "$part" 2>/dev/null) == "$fs" ]]; then
@@ -1379,6 +1399,11 @@ t_partition() { local disk=$1 fs=$2 label=$3 wipe=$4 table=${5:-gpt} flag=$6 mor
   [[ -n $fs ]] && { mkfs_dev "$part" "$fs" "$label" "$more" && ok "formatted $part as $fs" || conflict "mkfs.$fs $part failed"; }
 }
 named_part() { lsblk -nrpo NAME,PARTLABEL -- "$1" 2>/dev/null | awk -v n="$2" '$2 == n { print $1; exit }'; }
+plan_part() { # the next partition of disk, as the kernel will name it
+  local n=$(lsblk -nro NAME "$1" | tail -n +2 | wc -l) sep=; [[ $1 == *[0-9] ]] && sep=p
+  local p; for p in ${PLANNED_PARTS:-}; do [[ $p == "$1"* ]] && n=$((n + 1)); done
+  PLANNED_PARTS+=" $1$sep$((n + 1))"
+}
 t_partition_add() { local disk=$1 name=$2 size=$3 fs=$4 label=$5 flag=$6 more=$7 part table start end num have
   need parted parted || return 0
   part=$(named_part "$disk" "$name")
@@ -1391,6 +1416,7 @@ t_partition_add() { local disk=$1 name=$2 size=$3 fs=$4 label=$5 flag=$6 more=$7
     start=$(parted -sm -- "$disk" unit MiB print 2>/dev/null | awk -F: '/^[0-9]+:/ { e = $3 + 0; if (e > m) m = e } END { printf "%d", (m == int(m) ? m : int(m) + 1) }')
     ((start >= 1)) || start=1
     if [[ -n $size ]]; then end=$((start + $(numfmt --from=iec "$size") / 1048576))MiB; else end=100%; fi
+    ((APPLY)) || plan_part "$disk"
     act "add partition $name on $disk (${start}MiB to $end)${flag:+, flag $flag}" || { [[ -z $fs ]] || missing "would format it $fs"; return 0; }
     if [[ $table == unknown || -z $table ]]; then try parted -s -- "$disk" mklabel gpt || return 0; fi
     try parted -s -- "$disk" mkpart "$name" "${start}MiB" "$end" || return 0

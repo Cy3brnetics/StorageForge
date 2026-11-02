@@ -91,7 +91,9 @@ sudo bash reinstall.sh --apply
 
 It installs the tools it needs, restores `mdadm.conf`, opens LUKS volumes, activates md and LVM, imports ZFS pools, adds accounts with their old IDs, adds fstab lines, mounts everything, and restores shares and symlinks. It's safe to run again.
 
-**It never partitions or formats.** It finds filesystems by UUID, and reports one that isn't there. To rebuild onto new drives, restore their data first, or use the planner's build script.
+**It never partitions or formats.** It finds filesystems by UUID, and reports one that isn't there. To rebuild onto new drives, follow [Rebuild onto new drives](#rebuild-onto-new-drives).
+
+**Which version you get.** A scan of the blank new install is saved as a version too. The script, `config script` and the bundle don't use a version like that: when the newest holds less than the last version from before the reinstall, they use the older one and say so. `--id` or `id=` picks any version.
 
 | Option | What it does |
 | :--- | :--- |
@@ -105,3 +107,16 @@ It installs the tools it needs, restores `mdadm.conf`, opens LUKS volumes, activ
 - **Afterwards:** set passwords for restored accounts, run `smbpasswd -a` for Samba users, open firewall ports, then scan the host. If its SSH host keys changed, run `storageforge-index hosts rekey` before that scan.
 - **What can stop it:** a kernel without md modules (some minimal cloud images, so install the full kernel first), a package that isn't in the distro's repositories (mergerfs and ZFS on some distros), and a LUKS volume with a key file, which you put back before running it again.
 - **Alpine:** the script needs bash, so run `apk add bash util-linux shadow` first. It doesn't start services there, because Alpine has no systemd.
+
+### Rebuild onto new drives
+
+When the disks are gone too, in this order:
+
+1. Install the OS with the old host name and address, add the login keys, and run `storageforge-index hosts rekey <host>`. Scan the host and set up deploy access again.
+2. Run the reinstall script with `--apply --only tools,accounts`.
+3. In the planner's **Change plan** tab, stage the saved design in **Changes**, confirm the drive tasks and deploy it. It covers ZFS pools and datasets with the properties they had, and btrfs pools of one or more devices with their profile and subvolumes. Anything it lists under **By hand** is yours to do; rescan afterwards.
+4. Deploy the shares, for this host as server and for the shares it mounts, before any jobs. They are empty for now, but their clients stop blocking on them (see below), and a client still holding a stale mount lets go of it during this deploy.
+5. Deploy the backup plans again, on every host. This brings jobs on other hosts the new host key, and puts `storageforge-job` back on this one.
+6. Restore each top-level folder from a snapshot, and move it into place from its `.restored-<time>` folder with a change plan's **Rename**. On an SELinux host, run `restorecon -R`. Do this before the next scheduled backup of this host, or pause its jobs: a run takes a snapshot of whatever the source holds, and an earlier snapshot rotates one place along.
+
+**While a server is gone,** its clients' hard NFS mounts block any process that touches them, as NFS is meant to. `systemctl daemon-reload` is one of those, and every new SSH login then waits for it, so deploys that would reload systemd check the host's network mounts first and stop with a conflict naming the one that isn't answering. Bring its server back, or run `umount -l` on it. Scans skip the sizes of a mount that doesn't answer in 20 seconds. A file walk that has to pass such a mount sends nothing, so it is stopped after 5 minutes (`STORAGEFORGE_SCAN_STALL_SECS`) and that filesystem shows as failed in the scan, with nothing removed from the index; the rest of the host is still scanned. A stopped walk's process on the host stays blocked until the server returns or the mount is released. Automounted NFS shares deployed from now on let go after 10 idle minutes, so a share nobody is using fails with an error instead of blocking.
