@@ -38,8 +38,9 @@ TAG_RE = re.compile(r'sf-[A-Za-z0-9_.-]{1,60}')
 SE_TYPE_RE = re.compile(r'[a-z0-9_]{1,64}_t')
 UUID_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 SE_TYPES = ('samba_share_t', 'public_content_t', 'public_content_rw_t', 'container_file_t')
-EXPECTED_BOOLEANS = {'samba_export_all_rw': 'off', 'samba_export_all_ro': 'off', 'samba_enable_home_dirs': 'off',
-                     'nfs_export_all_rw': 'off', 'nfs_export_all_ro': 'off'}
+# Only what is off on a stock host, so "too open" means someone opened it. The nfs_export_all_* pair is shown but not judged:
+# it is on by default on the RHEL family, and turning it off stops exports that are not specially labelled.
+EXPECTED_BOOLEANS = {'samba_export_all_rw': 'off', 'samba_export_all_ro': 'off', 'samba_enable_home_dirs': 'off'}
 STORAGE_DAEMONS = frozenset({'smbd', 'nmbd', 'nfsd', 'rpc.mountd', 'rsync', 'zfs', 'btrfs', 'podman', 'dockerd', 'containerd'})
 
 CLOCK_JUMP = 60                     # seconds a clock may be off before releases stop on that host
@@ -386,14 +387,14 @@ def parse_measure(text: str) -> dict | None:
     }
 
 
-def freeze_clock(conn: Conn, host: str, reason: str, by: str):
+def freeze_clock(conn: Conn, host: str, reason: str, by: str, cause: str = 'jump'):
     """Releases stop on this host until someone looks. Only a person clears it: a good reading afterwards proves nothing,
     and neither does a reading from another host."""
     state = alerts.get_setting(conn, clock_key(host)) or {}
     if state.get('frozen'):
         return
     now = int(time.time())
-    alerts.set_setting(conn, clock_key(host), {'frozen': True, 'reason': clean_text(reason), 'at': now}, by[:60])
+    alerts.set_setting(conn, clock_key(host), {'frozen': True, 'reason': clean_text(reason), 'at': now, 'cause': cause}, by[:60])
 
 
 def clear_clock(conn: Conn, host: str, actor: str) -> dict:
@@ -440,7 +441,7 @@ def store_measurement(conn: Conn, host: str, data: dict, started: int, finished:
     off = 0 if started - CLOCK_JUMP <= data['host_now'] <= finished + CLOCK_JUMP else data['host_now'] - finished
     data['clock_offset'] = off
     if off:
-        freeze_clock(conn, host, f'the clock on {host} is {off} s off the controller', via)
+        freeze_clock(conn, host, f'the clock on {host} and the controller differ by {off} s', via, 'offset')
     _save_measurement(conn, host, 'host', finished, via, data)
     _reconcile(conn, host, data, finished)
 
@@ -745,10 +746,33 @@ def _controller_clock_ok(conn: Conn) -> bool:
     return True
 
 
+def controller_clock_suspect(conn: Conn) -> dict | None:
+    """Each host is compared only with this machine, so a wrong clock here looks like every host being wrong. Several hosts
+    off by the same amount, and the most of them at that, points back here: unrelated clocks do not drift in step."""
+    now = int(time.time())
+    offsets = [(loads(d) or {}).get('clock_offset') or 0 for d, at in conn.all("SELECT data_json, measured_at FROM security_measurements WHERE kind = 'host'") if now - at <= STALE_AFTER]
+    off = [o for o in offsets if o]
+    if len(off) < 2:
+        return None
+    middle = statistics.median(off)
+    agree = sum(1 for o in off if abs(o - middle) <= 10)
+    if agree < 2 or agree * 2 <= len(offsets):
+        return None
+    return {'seconds': abs(int(middle)), 'direction': 'behind' if middle > 0 else 'ahead', 'agree': agree, 'measured': len(offsets)}
+
+
 def clear_controller_clock(conn: Conn, actor: str) -> dict:
+    """A person saying this machine's clock was the trouble, and is right now. So hosts frozen only for differing from it go
+    too. A host whose own clock jumped stays frozen: that is about the host."""
     alerts.set_setting(conn, CONTROLLER_CLOCK, {'frozen': False, 'cleared_by': actor, 'cleared_at': int(time.time())}, actor)
     _clock_seen.clear()
-    return {'ok': True}
+    cleared = []
+    for key, value in conn.all("SELECT key, value_json FROM settings WHERE key LIKE 'security.clock:%'"):
+        state = loads(value) or {}
+        if state.get('frozen') and state.get('cause') == 'offset':
+            alerts.set_setting(conn, key, {'frozen': False, 'cleared_by': actor, 'cleared_at': int(time.time())}, actor)
+            cleared.append(key.split(':', 1)[1])
+    return {'ok': True, 'hosts_cleared': cleared}
 
 
 def tick(db) -> dict:
@@ -762,7 +786,7 @@ def tick(db) -> dict:
         if len(established_admins(conn)) < 2:
             conn.execute("""UPDATE security_timelock_queue SET mode = 'cool_off', executes_at = requested_at + :c
                             WHERE status = 'pending' AND mode = 'dual_admin' AND decided_by IS NULL""", {'c': cool_off_hours(conn) * 3600})
-        clock_ok = _controller_clock_ok(conn)
+        clock_ok = _controller_clock_ok(conn) and not controller_clock_suspect(conn)
         if clock_ok:
             for t in _timelocks(conn):
                 if t['action'] == 'worm_release' and t['mode'] == 'cool_off' and t['executes_at'] <= now and not clock_frozen(conn, t['host']):
@@ -1496,7 +1520,13 @@ def posture(conn: Conn, host: str | None = None) -> dict:
     if controller.get('frozen'):
         state = 'critical'
     measured = sum(1 for h in hosts if h['measured_at'] and not h['stale'])
-    if not hosts:
+    suspect = controller_clock_suspect(conn)
+    if suspect:
+        state = 'critical'
+    if suspect:
+        banner = (f'This machine\'s clock looks {suspect["seconds"]} s {suspect["direction"]}: {suspect["agree"]} of {suspect["measured"]} hosts differ from it by the same amount. '
+                  'Fix its time sync first; the hosts are probably fine.')
+    elif not hosts:
         banner = 'No hosts have been scanned, so there is nothing to say yet.'
     elif state == 'critical':
         reasons = sorted({f'{h["host"]}: {c}' for h in hosts for c in h['critical']})
@@ -1510,7 +1540,7 @@ def posture(conn: Conn, host: str | None = None) -> dict:
         banner = f'All {len(hosts)} host(s) measured in the last day, with decoys armed and holds verified, and nothing wrong found.'
     pending = _timelocks(conn, host)
     return {'state': state, 'banner': banner, 'hosts': hosts, 'measured_hosts': measured, 'total_hosts': len(hosts), 'quorum': quorum_state(conn), 'pending_timelocks': pending,
-            'controller_clock': controller if controller.get('frozen') else None, 'events': list_events(conn, host, 50, False)}
+            'controller_clock': controller if controller.get('frozen') else None, 'clock_suspect': suspect, 'events': list_events(conn, host, 50, False)}
 
 
 def problems(conn: Conn) -> dict:
@@ -1527,8 +1557,12 @@ def problems(conn: Conn) -> dict:
     controller = alerts.get_setting(conn, CONTROLLER_CLOCK) or {}
     if controller.get('frozen'):
         out['security-controller-clock'] = ('security-clock', 'controller', 'This machine\'s clock moved: timelocks have stopped', str(controller.get('reason') or ''), 'crit')
+    suspect = controller_clock_suspect(conn)
+    if suspect:
+        out['security-controller-suspect'] = ('security-clock', 'controller', f'This machine\'s clock looks {suspect["seconds"]} s {suspect["direction"]}',
+                                              f'{suspect["agree"]} of {suspect["measured"]} hosts differ from it by the same amount. Timelocks have stopped. Past 10 minutes, hosts refuse signed runs.', 'crit')
     for (name,) in conn.all('SELECT hostname FROM hosts'):
-        if clock_frozen(conn, name):
+        if clock_frozen(conn, name) and not suspect:
             out[f'security-clock:{name}'] = ('security-clock', name, f'Clock guard tripped on {name}: releases stopped', str((alerts.get_setting(conn, clock_key(name)) or {}).get('reason') or ''), 'crit')
         vel = velocity(conn, name)
         if vel['ransom_names']:

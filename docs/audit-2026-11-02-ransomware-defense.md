@@ -71,4 +71,6 @@ Worth recording, because reading the code would not have found them. Each has a 
 | A real second admin could never approve: `web:admin2` was compared with `admin2` | Running a release end to end |
 | With this machine's clock moved, an automatic measurement blamed the host's clock and froze it too | A test of the controller's clock guard |
 | `is_directory = 0` fails on PostgreSQL, where it is a boolean | Running the flows on PostgreSQL 16 |
+| One slow clock made a whole fleet critical. Each host is compared only with the controller, so a controller 515 s behind reported every other host as wrong. Now most hosts off by the same amount points at the controller | A screenshot of a real fleet |
+| `nfs_export_all_rw` and `_ro` were called too open, with a button to turn them off. They are on by default on the RHEL family, and turning them off can stop exports | The same screenshot |
 | Wide tables were unreadable and the panel navigation collapsed to nothing in the narrow side panel | Looking at a screenshot |

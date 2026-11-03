@@ -475,6 +475,63 @@ class ClockGuard(Base):
             self.assertEqual(self.post('/api/security/measure', host='nas').status_code, 409)
         self.assertTrue(security.clock_frozen(self.conn, 'nas'))
 
+    def off_by(self, host, seconds):
+        data = security.parse_measure(self.sh(sx.measure_script()).stdout.decode())
+        data['host_now'] += seconds
+        now = data['host_now'] - seconds
+        security.store_measurement(self.conn, host, data, now, now, 'test')
+
+    def test_most_hosts_off_by_the_same_amount_points_at_this_machine(self):
+        """Seen on a real fleet: this machine 515 s behind, and every other host reported as critical."""
+        for h in ('pi1', 'pi2'):
+            self.add_host(h)
+        self.off_by('pi1', 515)
+        self.assertIsNone(security.controller_clock_suspect(self.conn))      # one host off is that host's business
+        self.off_by('pi2', 517)
+        self.off_by('nas', 0)
+        s = security.controller_clock_suspect(self.conn)
+        self.assertEqual((s['direction'], s['agree'], s['measured']), ('behind', 2, 3))
+        p = self.client.get('/api/security/posture').get_json()
+        self.assertIn('the hosts are probably fine', p['banner'])
+        problems = security.problems(self.conn)
+        self.assertIn('security-controller-suspect', problems)
+        self.assertNotIn('security-clock:pi1', problems)                     # one alert, not one per host
+
+    def test_clocks_off_by_different_amounts_are_each_their_own_problem(self):
+        for h in ('pi1', 'pi2'):
+            self.add_host(h)
+        self.off_by('pi1', 515)
+        self.off_by('pi2', 9000)
+        self.off_by('nas', 0)
+        self.assertIsNone(security.controller_clock_suspect(self.conn))
+        self.assertIn('security-clock:pi1', security.problems(self.conn))
+
+    def test_a_suspect_clock_stops_cool_offs(self):
+        self.solo()
+        hid = self.hold()
+        self.post('/api/security/worm/release', hold_id=hid)
+        self.conn.execute('UPDATE security_timelock_queue SET executes_at = 1')
+        for h in ('pi1', 'pi2'):
+            self.add_host(h)
+            self.off_by(h, 515)
+        security.tick(self.db)
+        self.assertEqual(self.hold_status(hid), 'release_pending')
+
+    def test_clearing_this_machine_frees_hosts_blamed_for_it_but_not_a_real_jump(self):
+        for h in ('pi1', 'pi2'):
+            self.add_host(h)
+        self.off_by('pi1', 515)
+        self.off_by('pi2', 515)
+        security.ingest_events(self.conn, 'nas', event_line('clock_jump', 'moved 30 days'))
+        self.assertEqual(self.post('/api/security/worm/clock/clear', controller=True).status_code, 200)
+        self.assertFalse(security.clock_frozen(self.conn, 'pi1'))
+        self.assertTrue(security.clock_frozen(self.conn, 'nas'))
+
+    def test_a_stock_nfs_boolean_is_not_called_too_open(self):
+        m = security.parse_measure('@@now\n1\n@@sebool\nnfs_export_all_rw --> on\nsamba_export_all_rw --> on\n@@end\n')
+        self.assertEqual({b['name']: b['ok'] for b in m['booleans']}, {'nfs_export_all_rw': True, 'samba_export_all_rw': False})
+        self.assertEqual(self.post('/api/security/mac/remediate', host='nas', boolean='nfs_export_all_rw', value='off', mode='apply').status_code, 400)
+
     def test_moving_this_machines_clock_stops_cool_offs(self):
         self.solo()
         hid = self.hold()

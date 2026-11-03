@@ -128,7 +128,7 @@ def register(web, ctx):
     def api_security_clock_clear():
         body = json_body()
         res = security.clear_controller_clock(conn(), actor()) if body.get('controller') is True else security.clear_clock(conn(), body.get('host'), actor())
-        return audit('security.clock.clear', res, controller=body.get('controller') is True, reason=res.get('reason'))
+        return audit('security.clock.clear', res, controller=body.get('controller') is True, reason=res.get('reason'), hosts=res.get('hosts_cleared'))
 
     # ── decoys and the sentinel ─────────────────────────────────────────
     @web.get('/api/security/canaries')

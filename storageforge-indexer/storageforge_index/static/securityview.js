@@ -146,6 +146,13 @@ async function secOverview() {
             secCan('security.manage') && h.deploy_ready ? secMeasureButton(h.host, out) : text('span', h.deploy_ready ? '' : 'set up deploy access first', 'muted small')];
   });
   const kids = [secCard('Hosts', p.hosts.length ? secTable(['Host', 'State', 'Measured', 'Sentinel', 'Decoys', 'Holds', 'Access control', 'What is known', ''], rows) : text('p', 'No hosts have been scanned yet.', 'muted'), out)];
+  if (p.clock_suspect) {
+    const c = p.clock_suspect;
+    kids.unshift(secCard('This machine\'s clock looks wrong',
+      text('p', `${c.agree} of ${c.measured} hosts differ from it by the same ${c.seconds} s, which unrelated clocks do not do. It looks ${c.direction}, so the hosts are probably fine. Timelocks have stopped, and past 10 minutes hosts refuse signed runs.`, 'st-failed'),
+      text('p', 'Fix time sync on the machine StorageForge runs on, and in its container if it has its own clock. Then measure the hosts again and clear this.', 'muted small'),
+      secCan('security.emergency') ? button('Fixed and measured: clear the hosts', async () => { if (await secPost('/api/security/worm/clock/clear', { controller: true }, out)) secRender(); }, 'btn sm') : ''));
+  }
   if (p.controller_clock) {
     kids.unshift(secCard('This machine\'s clock moved', text('p', `${p.controller_clock.reason}. Cool-offs are timed on this clock, so none will run until someone has looked.`, 'st-failed'),
       button('It is right now: clear this', async () => { if (await secPost('/api/security/worm/clock/clear', { controller: true }, out)) secRender(); }, 'btn sm')));

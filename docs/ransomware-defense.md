@@ -19,6 +19,7 @@ Everything that changes a host offers **Show script**, **Dry run** and **Apply**
 | A stolen admin account making a second admin to approve itself | An account does not count until it is older than the cool-off |
 | `date -s` or forged NTP to expire holds early | Expiry is kept on the controller's clock, so the host's cannot end it. A jump also stops releases on that host until someone clears it |
 | Moving the **controller's** clock to end a cool-off | Measured against boot time: cool-offs stop until someone clears it. **Not** covered across a restart of StorageForge |
+| This machine's clock itself drifting | When most hosts differ from it by the same amount, it says so instead of blaming them, and cool-offs stop. Past 10 minutes, hosts refuse signed runs |
 | Someone quietly releasing holds or replacing decoys | Each measurement compares them with what was recorded, and raises an alarm |
 
 **What this does not stop: an attacker with root on the host.** A ZFS hold stops `zfs destroy`, including from a script or by mistake, but root can `zfs release` first, and a btrfs snapshot can be made writable. Root can also stop the sentinel. You would see it: the alarm on the next measurement, and an alert when readings stop. But seeing it is all this does. **The only thing out of reach of root on a host is a copy on another machine**, so keep [offsite backups](disaster-recovery.md) that hosts cannot delete. "WORM" in this project means *guarded*, not *impossible*.
