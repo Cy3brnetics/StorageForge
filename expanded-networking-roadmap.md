@@ -34,7 +34,11 @@ Status: **planned** on branch `dev-expanded-networking`. Builds on [infrastructu
 5. **Safe Changes & Automated Rollback**:
    - Stage, diff, and dry-run configuration changes through the Plan → Report → Apply loop.
    - Enforce commit-confirmed / safety rollback timers across all platforms (RouterOS Safe Mode, Cisco `configure replace ... revert`, OpenWrt UCI rollback watchdog, pfSense revision backups).
-6. **Isolated KVM Testing Lab**:
+6. **Standardized User Input & Multi-Backend Transpiler**:
+   - Standardize all operator firewall rules, NAT policies, and network config inputs on an intuitive, declarative **MikroTik-style DSL** across all fleet targets.
+   - Deploy-time compiler (**RosTranspiler**) translates the universal rules into native targets: Linux `nftables`, `firewalld`, `ufw`, `iptables`/`DOCKER-USER`, OpenWrt `fw4`/UCI, pfSense `pf`/XML, Cisco ACLs, and native RouterOS.
+   - Bidirectional normalization: live rules parsed from any backend render back into uniform MikroTik DSL for consistent inspection across the fleet.
+7. **Isolated KVM Testing Lab**:
    - Multi-homed, segmented virtual network topology (WAN, LAN1, LAN2, DMZ, Management) on isolated libvirt bridges.
    - Automated VM provisioning for router appliances (MikroTik CHR, OpenWrt x86, pfSense CE, Cisco virtual routers).
    - Test suite integration: **Tier 12 (Network Appliances & Routers)**.
@@ -420,11 +424,74 @@ Today, `reach.py` calculates whether Host A can reach Host B assuming a flat dir
 
 ---
 
-## 6. Isolated KVM Test Lab Architecture
+## 6. Standardized User Input (MikroTik DSL) & Multi-Backend Transpiler
+
+To eliminate cognitive friction across diverse environments, StorageForge **standardizes all operator input for firewall filters, NAT rules, and address lists on an intuitive MikroTik RouterOS declarative DSL**. 
+
+At deploy time, the StorageForge **`RosTranspiler`** compiles this standardized definition into the target host's native firewall configuration syntax, while preserving commit-confirmed rollback guards. Full specification in [docs/standardized-firewall-mikrotik.md](docs/standardized-firewall-mikrotik.md).
+
+```text
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │                    USER INPUT (MIKROTIK STANDARD)                      │
+ │ /ip firewall filter add chain=input protocol=tcp dst-port=22 ...       │
+ └──────────────────────────────────┬─────────────────────────────────────┘
+                                    │
+                                    ▼
+                 ┌──────────────────────────────────────┐
+                 │ StorageForge RosTranspiler Engine    │
+                 │ (AST Parser, Validator, & Generator) │
+                 └──────────────────┬───────────────────┘
+                                    │
+    ┌──────────────┬────────────────┼──────────────┬────────────────┐
+    ▼              ▼                ▼              ▼                ▼
+┌──────────┐ ┌──────────┐     ┌──────────┐   ┌───────────┐    ┌───────────┐
+│ nftables │ │firewalld │     │   ufw    │   │  OpenWrt  │    │  pfSense  │
+│ (Linux)  │ │ (RHEL)   │     │ (Ubuntu) │   │ (fw4/UCI) │    │  (BSD pf) │
+└──────────┘ └──────────┘     └──────────┘   └───────────┘    └───────────┘
+```
+
+### 6.1 Standard Input Formats
+Operators can provide input via CLI strings or structured JSON in plan steps:
+- **CLI String**:
+  ```text
+  /ip firewall filter add chain=input protocol=tcp dst-port=22 src-address=10.0.0.0/8 action=accept comment="Allow SSH"
+  /ip firewall nat add chain=dstnat protocol=tcp dst-port=443 in-interface=wan action=dst-nat to-addresses=10.77.20.80 to-ports=443 comment="DMZ HTTPS"
+  ```
+- **Plan Step Dictionary (`changes.py`)**:
+  ```python
+  {
+      'type': 'fw_rule_v2',
+      'scope': 'filter',
+      'chain': 'input',
+      'action': 'accept',
+      'protocol': 'tcp',
+      'dst_port': '22',
+      'src_address': '10.0.0.0/8',
+      'comment': 'Allow SSH',
+      'rollback': 10
+  }
+  ```
+
+### 6.2 Deploy-Time Target Compilation
+- **Linux (`nftables`)**: Injected into `table inet storageforge_rules { chain input { ... } }`.
+- **Linux (`firewalld`)**: Compiled to `firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.0.0.0/8" port port="22" protocol="tcp" accept'`.
+- **Linux (`ufw`)**: Compiled to `ufw allow in on ... proto tcp from 10.0.0.0/8 to any port 22`.
+- **Linux (`iptables` / `DOCKER-USER`)**: Compiled to `iptables -I INPUT 1 ...` (or `DOCKER-USER` for published container ports).
+- **OpenWrt (`uci` / `fw4`)**: Appended as a `config rule` or `config redirect` section in `/etc/config/firewall`.
+- **pfSense / OPNsense**: Injected as a `<rule>` element inside `<filter>` or `<nat>` in `/conf/config.xml`.
+- **Cisco IOS/IOS-XE**: Compiled to extended access-list statements (`permit tcp 10.0.0.0 0.255.255.255 any eq 22`).
+- **MikroTik RouterOS**: Direct execution over SSH or v7 REST API.
+
+### 6.3 Bidirectional Normalization
+When inspecting live rules on ANY managed node, StorageForge reverse-normalizes the target's native ruleset into standard MikroTik DSL syntax, giving operators one consistent syntax across the entire fleet in both the Web UI and CLI.
+
+---
+
+## 7. Isolated KVM Test Lab Architecture
 
 To thoroughly test router adaptations, multi-transport connectivity, and multi-hop reachability without affecting external networks, the KVM test lab (`examples/lab/lab.sh`) is extended with an **isolated, multi-subnet virtual topology**.
 
-### 6.1 Isolated Network Topology
+### 7.1 Isolated Network Topology
 
 The lab topology deploys 4 isolated libvirt bridges with no default masquerade to the host:
 
@@ -467,7 +534,7 @@ The lab topology deploys 4 isolated libvirt bridges with no default masquerade t
 - **`sflab-lan1` (`10.77.10.0/24`)**: Internal corporate/client network. Protected behind the router NAT/firewall.
 - **`sflab-dmz` (`10.77.20.0/24`)**: Demilitarized zone for exposed services (e.g. mock web/NFS servers).
 
-### 6.2 Router Appliance VM Specifications
+### 7.2 Router Appliance VM Specifications
 
 | VM Name | Operating System | Base Image / Source | vCPU | RAM | Disk | Interfaces Attached |
 | :--- | :--- | :--- | :---: | :---: | :---: | :--- |
@@ -476,7 +543,7 @@ The lab topology deploys 4 isolated libvirt bridges with no default masquerade t
 | `sf-pfsense` | pfSense CE 2.7.x | Official ISO / Pre-seeded UFS QCOW2 disk | 1 | 1024 MB | 8 GB | mgmt, wan, lan1, dmz |
 | `sf-cisco` | Cisco IOSv / VyOS | IOSv QCOW2 / VyOS 1.4 rolling cloud-init | 1 | 1024 MB | 4 GB | mgmt, wan, lan1, dmz |
 
-### 6.3 Automated VM Provisioning & Pre-Seeding
+### 7.3 Automated VM Provisioning & Pre-Seeding
 
 1. **MikroTik CHR (`sf-mikrotik`)**:
    - Download official `chr-7.x.vmdk` or `.img.zip`, convert to QCOW2.
@@ -493,7 +560,7 @@ The lab topology deploys 4 isolated libvirt bridges with no default masquerade t
 
 ---
 
-## 7. Test Tier 12: Network Appliances & Routers
+## 8. Test Tier 12: Network Appliances & Routers
 
 Extending the test suite (`tests/lab/tiers_network.py`) to validate all capabilities systematically:
 
@@ -523,7 +590,11 @@ Extending the test suite (`tests/lab/tiers_network.py`) to validate all capabili
 - **12.4: WAN Exposure Badging (`exposure.py`)**:
   - Verify that a service on `sf-dmz-server:443` with a port-forward rule on the router is marked as `exposure: 'any'` (publicly exposed).
   - Verify that an internal service on `sf-lan-client` with no port forward is marked as `exposure: 'lan'`.
-- **12.5: Safe Configuration & Rollback Testing**:
+- **12.5: Standardized Input & Transpilation Verification**:
+  - Submit rules via MikroTik DSL for all targets.
+  - Verify `RosTranspiler` compiles valid native rulesets for `nftables`, `firewalld`, `ufw`, `iptables`, `OpenWrt`, `pfSense`, and `Cisco`.
+  - Verify reverse normalization correctly renders active rules back into standard MikroTik DSL.
+- **12.6: Safe Configuration & Rollback Testing**:
   - Stage a dangerous plan step: insert a firewall rule blocking SSH port 22 on the management interface.
   - Apply the plan step with a 3-minute rollback timer.
   - Verify that the connection is severed, triggering the safety mechanism.
@@ -532,7 +603,7 @@ Extending the test suite (`tests/lab/tiers_network.py`) to validate all capabili
 
 ---
 
-## 8. Implementation Phases & Milestones
+## 9. Implementation Phases & Milestones
 
 ```text
  ┌────────────────────────────────────────────────────────────────────────┐
@@ -543,8 +614,9 @@ Extending the test suite (`tests/lab/tiers_network.py`) to validate all capabili
  │ Phase 3: OpenWrt Adapter (UCI & fw4/nftables Parser)                   │
  │ Phase 4: pfSense / OPNsense Adapter (config.xml & pfctl Engine)        │
  │ Phase 5: Cisco IOS/IOS-XE Adapter (CLI parser & commit-confirmed)      │
- │ Phase 6: Normalization, Multi-Hop reach.py & exposure.py Updates       │
- │ Phase 7: Isolated KVM Lab Environment & Tier 12 Test Suite             │
+ │ Phase 6: RosTranspiler (MikroTik DSL Compiler & Target Emitters)       │
+ │ Phase 7: Normalization, Multi-Hop reach.py & exposure.py Updates       │
+ │ Phase 8: Isolated KVM Lab Environment & Tier 12 Test Suite             │
  └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -553,5 +625,6 @@ Extending the test suite (`tests/lab/tiers_network.py`) to validate all capabili
 - **Phase 3: OpenWrt Adapter**: Implement `openwrt.py` collector using `ubus` and `uci`, normalizing `fw4` nftables JSON.
 - **Phase 4: pfSense Adapter**: Implement `pfsense.py` XML reader, extracting full configuration directly from `config.xml`.
 - **Phase 5: Cisco Adapter**: Implement `cisco.py` CLI parser for `show` commands, supporting Cisco ACLs and `configure replace ... revert`.
-- **Phase 6: Multi-Hop Reasoning**: Update `reach.py` to trace hops through intermediate routers and firewalls; update `exposure.py` for router DNAT mappings.
-- **Phase 7: KVM Lab & Tier 12 Tests**: Add router configurations to `images.conf`, `nodes.conf`, and `roles.conf`, configure multi-bridge topologies in `lab.sh`, and build Tier 12 test coverage.
+- **Phase 6: RosTranspiler**: Build `rostranspiler.py` to parse MikroTik DSL and compile to native `nftables`, `firewalld`, `ufw`, `iptables`, OpenWrt UCI, pfSense XML, and Cisco ACLs.
+- **Phase 7: Multi-Hop Reasoning**: Update `reach.py` to trace hops through intermediate routers and firewalls; update `exposure.py` for router DNAT mappings.
+- **Phase 8: KVM Lab & Tier 12 Tests**: Add router configurations to `images.conf`, `nodes.conf`, and `roles.conf`, configure multi-bridge topologies in `lab.sh`, and build Tier 12 test coverage.
