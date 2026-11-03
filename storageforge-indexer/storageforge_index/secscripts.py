@@ -147,6 +147,15 @@ sec canaries; while IFS=' ' read -r line; do [[ -n $line ]] || continue; p=$(bas
 sec fcontext; for m in "${MOUNTS[@]}"; do if has getenforce && [[ -e $m ]]; then c=$(stat -c %C -- "$m" 2>/dev/null) || c=; e=$(has matchpathcon && matchpathcon -n -- "$m" 2>/dev/null) || e=; printf '%s\t%s\t%s\n' "$(printf %s "$m" | base64 -w0)" "$c" "$e"; fi; done
 sec samba; has testparm && try testparm -sl | grep -aEc 'shadow_copy2' || :
 sec events; [[ -r $STATE/events.tsv ]] && tail -n 500 "$STATE/events.tsv"
+sec audit_rules; has auditctl && try auditctl -l | grep -a 'sf_' | head -n 60
+sec snapshots; has zfs && try zfs list -H -t snapshot -o name -s creation | tail -n 500
+sec sessions; [[ -r $STATE/sessions.tsv ]] && tail -n 200 "$STATE/sessions.tsv"
+sec falco_alerts
+# named fields only: a rule's output text can hold a command line, and everything printed here lands in deploy_runs
+if [[ -r $STATE/falco.jsonl ]]; then tail -n 200 "$STATE/falco.jsonl" | while IFS= read -r l; do
+  f() { if [[ $l =~ \"$1\":\"([^\"]*)\" ]]; then printf '%s' "${BASH_REMATCH[1]}"; fi; }
+  printf 'a\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(f rule)" "$(f priority)" "$(f time)" "$(f proc.name)" "$(f fs.path.target)$(f fd.name)" "$(f user.name)"
+done; fi
 sec end
 """
 
@@ -229,7 +238,11 @@ def release_script(snapshot: str, tag: str) -> str:
 # ── firewall ─────────────────────────────────────────────────────────
 QUARANTINE_BODY = r"""
 section "Quarantine $IP"
-command -v nft >/dev/null || { conflict "nft is not on this host: install nftables first"; exit 1; }
+if ! command -v nft >/dev/null; then
+  if ((APPLY == 0)); then missing "nftables is not installed: --apply installs it first"; finished; exit 0; fi
+  @NEED@
+  command -v nft >/dev/null || { conflict "nft is not on this host, and could not be installed"; exit 1; }
+fi
 peer=$(run_peer)
 if [[ -n $peer ]] && overlaps "$IP" "$peer"; then
   conflict "$IP covers $peer, the address StorageForge reaches this host from: this would cut it off"; exit 1
@@ -266,7 +279,11 @@ ACTION=report
 for a in "$@"; do case $a in --apply) ACTION=engage ;; --confirm) ACTION=confirm ;; --disarm) ACTION=disarm ;; *) echo "unknown option: $a" >&2; exit 2 ;; esac; done
 APPLY=0; [[ $ACTION == report ]] || APPLY=1
 section "Emergency airgap"
-command -v nft >/dev/null || { conflict "nft is not on this host"; exit 1; }
+if ! command -v nft >/dev/null; then # asked for in an emergency, so it gets what it needs, while the host can still reach a mirror
+  if [[ $ACTION == report ]]; then missing "nftables is not installed: --apply installs it first"; finished; exit 0; fi
+  @NEED@
+  command -v nft >/dev/null || { conflict "nft is not on this host, and could not be installed"; exit 1; }
+fi
 engaged=0; nft list table inet storageforge_airgap >/dev/null 2>&1 && engaged=1
 case $ACTION in
   disarm)
@@ -314,7 +331,7 @@ echo "AIRGAP pending"
 
 
 def quarantine_script(ip: str, seconds: int) -> str:
-    return head(FENCE_LIB, PEER_LIB) + APPLY_ONLY + f'IP={shlex.quote(ip)} SECONDS_FOR={int(seconds)}\n' + QUARANTINE_BODY
+    return head(FENCE_LIB, PEER_LIB) + PACKAGES + APPLY_ONLY + f'IP={shlex.quote(ip)} SECONDS_FOR={int(seconds)}\n' + QUARANTINE_BODY.replace('@NEED@', need_line('nftables').strip())
 
 
 def unquarantine_script(ip: str) -> str:
@@ -322,7 +339,7 @@ def unquarantine_script(ip: str) -> str:
 
 
 def airgap_script(controllers=(), rollback: str = '10min') -> str:
-    return head(PEER_LIB) + bash_array('CONTROLLERS', controllers) + f'ROLLBACK={shlex.quote(rollback)}\n' + AIRGAP_BODY
+    return head(PEER_LIB) + PACKAGES + bash_array('CONTROLLERS', controllers) + f'ROLLBACK={shlex.quote(rollback)}\n' + AIRGAP_BODY.replace('@NEED@', need_line('nftables').strip())
 
 
 # ── the emergency brake ──────────────────────────────────────────────
@@ -504,10 +521,11 @@ trip() { # event path. In its own process with stdin closed: finding out who did
   emit brake_ran "the brake ran on $2 (exit $rc)" "$(tail -c 8000 <<<"$out")"
 }
 clock_loop() { # wall clock against uptime: this catches date -s and a forged NTP answer, which NTP's own status would not
-  local last= now up boot
+  local now up boot last
+  last=$(($(date +%s) - $(cut -d. -f1 /proc/uptime)))    # from the start: a jump in the first half minute must not become the baseline
   while sleep "$CLOCK_EVERY"; do
     now=$(date +%s); up=$(cut -d. -f1 /proc/uptime); boot=$((now - up))
-    if [[ -n $last ]] && ((boot - last > 60 || last - boot > 60)); then
+    if ((boot - last > 60 || last - boot > 60)); then
       emit clock_jump "the clock moved $((boot - last)) s against uptime" "from=$last;to=$boot"
     fi
     last=$boot
@@ -657,7 +675,8 @@ for line in "${DECOYS[@]}"; do
   esac
   head -c "$((16384 + RANDOM))" /dev/urandom >>"$tmp"
   chown --reference="$dir" "$tmp" 2>/dev/null || :
-  chmod 0664 "$tmp"
+  # as writable as the folder it is in: a decoy whoever can change the files here cannot change would never trip
+  if (((8#$(stat -c %a -- "$dir")) & 2)); then chmod 0666 "$tmp"; else chmod 0664 "$tmp"; fi
   mv -f -- "$tmp" "$p"
   sha=$(sha256sum -- "$p" | cut -d' ' -f1)
   doing "wrote $p"
@@ -761,7 +780,7 @@ if ((APPLY == 0)); then missing "$TARGET is $current: --apply registers $TYPE an
 doing "semanage fcontext for $TARGET"
 semanage fcontext -a -t "$TYPE" "$TARGET(/.*)?" 2>/dev/null || semanage fcontext -m -t "$TYPE" "$TARGET(/.*)?"
 doing "restorecon $TARGET"
-restorecon -R -- "$TARGET"
+relabel_tree "$TARGET"
 [[ $(stat -c %C -- "$TARGET" | cut -d: -f3) == "$TYPE" ]] || { conflict "$TARGET still is not $TYPE"; exit 1; }
 ok "$TARGET is $TYPE"
 finished
@@ -830,12 +849,15 @@ if [[ -s $STATE/lynis-report.new ]]; then chmod 0644 "$STATE/lynis-report.new"; 
 """
 
 
-def tool_script(tool: str) -> str:
+def tool_script(tool: str, watch=()) -> str:
     job, title, need, what, unit = {
         'aide-init': (AIDE_INIT, 'Make the AIDE baseline', 'aide', 'aide', 'sf-aide'),
         'aide-check': (AIDE_CHECK, 'Check files against the AIDE baseline', 'aide', 'aide', 'sf-aide'),
         'lynis': (LYNIS_RUN, 'Lynis audit', 'lynis', 'lynis', 'sf-lynis'),
     }[tool]
+    if watch and tool.startswith('aide'):              # extra paths, on the command line of aide itself. Validated by the controller, then quoted
+        rules = ''.join(f'{shlex.quote(p + " p+i+n+u+g+s+b+sha256")} ' for p in watch)
+        job = job.replace('aide ${conf[@]+"${conf[@]}"} --', f'aide ${{conf[@]+"${{conf[@]}}"}} $(for r in {rules}; do printf -- "--before=%s\\n" "$r"; done | tr "\\n" " ") --')
     body = TOOL_BODY.replace('@JOB@', job).replace('@NEED@', need_line(what).strip() + ';')
     return (head() + PACKAGES + APPLY_ONLY + f'TITLE={shlex.quote(title)} NEEDS={shlex.quote(need)} UNIT={shlex.quote(unit)}\n' + body)
 
@@ -993,10 +1015,46 @@ finished
 """
 
 
+COMPLIANCE_ARGS = r"""APPLY=0 BUNDLE= WAIVE=
+while (($#)); do
+  case $1 in
+    --apply) APPLY=1 ;;
+    --dry-run) APPLY=0 ;;
+    --offline-bundle) BUNDLE=${2:?--offline-bundle needs the path of a bundle}; shift ;;
+    --waive) WAIVE="$WAIVE ${2:?--waive needs a section: sysctl, umask, auditd, mac, fence or aide}"; shift ;;
+    --export-cert) echo "there is no certificate: a check passing is not a control met, and only an auditor can attest. StorageForge can export signed evidence instead" >&2; exit 2 ;;
+    -h|--help) sed -n '/^# Usage/,/^$/p' "$0"; exit 0 ;;
+    *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
+  esac
+  shift
+done
+waived() { [[ " $WAIVE " == *" $1 "* ]]; }
+if [[ -n $BUNDLE ]]; then
+  [[ -r $BUNDLE ]] || { echo "cannot read $BUNDLE" >&2; exit 1; }
+  if ((APPLY)); then
+    work=$(mktemp -d); tar -C "$work" -xzf "$BUNDLE"
+    case $(pm) in
+      apt-get) dpkg -i --force-confold "$work"/*.deb ;;
+      dnf|yum|zypper) rpm -Uvh --replacefiles --replacepkgs "$work"/*.rpm ;;
+      pacman) pacman -U --noconfirm --needed "$work"/* ;;
+    esac
+    rm -rf "$work"
+  fi
+fi
+"""
+
+
 def compliance_script(profile: str, host: str) -> str:
     from .scriptkit import one_line
     needs = ''.join(need_line(w) for w in ('auditd', 'aide', 'lynis', 'nftables', 'chrony', 'inotify-tools'))
     sysctl = ''.join(f'{k} = {v}\n' for k, v in SYSCTLS.items())
     body = COMPLIANCE_BODY.replace('@NEEDS@', needs.rstrip()).replace('@SYSCTL@', sysctl)
-    return (head(FENCE_LIB) + PACKAGES + f'# sf-init-compliance.sh for {one_line(host)}: {one_line(profile)}. Sets a baseline; the score comes from measuring afterwards.\n'
-            + APPLY_ONLY + f'PROFILE={shlex.quote(profile)} UMASK_VALUE={UMASK}\n' + body)
+    for section, name in (('Kernel settings', 'sysctl'), ('Default umask', 'umask'), ('Audit rules for storage configuration', 'auditd'), ('Mandatory access control', 'mac'), ('Quarantine table', 'fence'), ('File integrity baseline', 'aide')):
+        body = body.replace(f'section "{section}"\n', f'section "{section}"\nif waived {name}; then info "waived on the command line"; else\n', 1)
+    for start, end in (('section "Default umask"', None), ('section "Audit rules for storage configuration"', None), ('section "Mandatory access control"', None), ('section "Quarantine table"', None), ('section "File integrity baseline"', None), ('echo "Not touched by this script', None)):
+        body = body.replace(start, 'fi\n' + start, 1)
+    usage = ('# Usage: sf-init-compliance.sh [--apply] [--dry-run] [--offline-bundle PATH] [--waive SECTION]...\n'
+             '#   With no flags it only reports. --waive skips a section: sysctl, umask, auditd, mac, fence or aide.\n'
+             '#   --offline-bundle installs from a bundle made by StorageForge, for a host with no route to a mirror.\n\n')
+    return (head(FENCE_LIB) + usage + PACKAGES + f'# sf-init-compliance.sh for {one_line(host)}: {one_line(profile)}. Sets a baseline; the score comes from measuring afterwards.\n'
+            + COMPLIANCE_ARGS + f'PROFILE={shlex.quote(profile)} UMASK_VALUE={UMASK}\n' + body)

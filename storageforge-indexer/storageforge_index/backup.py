@@ -33,13 +33,14 @@ _names = threading.Lock()
 ESSENTIAL = ('vault_meta', 'ssh_keys', 'key_bindings', 'users', 'hosts', 'blueprints', 'move_plans', 'audit_log',
              'change_plans', 'storage_tasks', 'settings', 'deploy_access', 'deployed', 'jobs',
              'host_key_confirmations', 'host_configs', 'schedules', 'roles', 'invites', 'remote_nodes', 'clamav_detections',
-             'security_timelock_queue', 'security_canaries', 'security_quarantine', 'security_retention_holds', 'security_events', 'map_views', 'map_manual', 'map_annotations', 'map_designs')
+             'security_timelock_queue', 'security_canaries', 'security_quarantine', 'security_retention_holds', 'security_events', 'map_views', 'map_manual', 'map_annotations', 'map_designs',
+             'security_waivers', 'security_profiles', 'security_retention_policies', 'security_playbooks', 'security_yara_rules', 'security_dashboards', 'security_webauthn')
 # Left out of essentials: a rescan or the next deploy rebuilds these, they are history, or they are sessions.
 # Every table is in exactly one of the two lists (tests/test_consistency.py).
 REBUILDABLE = ('mounts', 'scans', 'directories', 'file_records', 'file_fts', 'file_changes', 'scan_denied', 'scan_jobs',
                'graph_nodes', 'graph_edges', 'git_repos', 'docker_hosts', 'host_network', 'deploy_runs', 'deploy_groups', 'host_checks', 'job_runs', 'alerts',
                'web_sessions', 'schema_version', 'task_runs', 'host_logs', 'mount_usage', 'schedule_runs', 'job_state', 'clamav_runs',
-               'security_measurements', 'graph_snapshots')
+               'security_measurements', 'graph_snapshots', 'security_playbook_runs', 'security_readings', 'security_ban_history')
 ENC_MAGIC, ENC_SUFFIX, ENC_CHUNK = b'STORAGEFORGE-BACKUP-1\n', '.enc', 1 << 20
 ENC_KDF = {'time_cost': 3, 'memory_kib': 65536, 'lanes': 4}    # as the vault's own key
 PREFIX = {'essentials': 'storageforge-essentials-', 'full': 'storageforge-full-'}

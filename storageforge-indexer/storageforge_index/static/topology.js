@@ -41,6 +41,7 @@ const bare = (d) => String(d || '').replace(/^\/dev\//, '');
 async function loadDesigns() {
   if (T.mode !== 'topo') return;
   let hosts;
+  if (typeof can === 'function' && can('security.view')) getJSON('/api/security/badges').then((b) => { T.security = b.mounts; renderTopoSoon(); }).catch(() => {});
   try { ({ hosts } = await getJSON('/api/planner/hosts')); }
   catch (err) { T.error = err.message; renderTopo(); return; }
   const want = S.host ? hosts.filter((h) => h.host === S.host) : hosts;
@@ -318,6 +319,9 @@ function badges(doc, n) {
     }
     const c = new Set((n.containers || []).map((u) => u.container)).size;
     if (c) out.push([`C${c}`, `${c} container${c === 1 ? '' : 's'} use this mount`, 'info']);
+    const sec = (T.security || {})[doc.host || doc.bp?.host || doc.name]?.[n.target];
+    if (sec?.holds) out.push([`🔒${sec.holds}`, `${sec.holds} retention hold(s)${sec.expires_at ? `, the soonest ends ${new Date(sec.expires_at * 1000).toLocaleDateString()}` : ''}${sec.missing ? `. ${sec.missing} gone from the host` : ''}`, sec.missing ? 'warn' : 'ok']);
+    if (sec?.decoys) out.push([`🎯${sec.decoys}`, `${sec.decoys} decoy file(s)${sec.tripped ? `, ${sec.tripped} tripped` : ''}`, sec.tripped ? 'warn' : 'ok']);
   }
   if (n.pending) out.push(['±', 'Staged: ' + n.pending.join(', '), 'plan']);
   if (n.removing) out.push(['−', 'Staged: unmount', 'plan']);

@@ -13,6 +13,7 @@
   <div id="viewmode" class="seg" role="group" aria-label="View"><button type="button" data-mode="topo" aria-pressed="true">Topology</button><button type="button" data-mode="graph" aria-pressed="false">Graph</button><button type="button" data-mode="tasks" aria-pressed="false">Tasks</button><button type="button" data-mode="map" aria-pressed="false">Map</button></div>
   <label class="field"><span>Host</span><select id="host"><option value="">All hosts</option></select></label>
   <form id="searchform" class="search" role="search"><input id="q" type="search" placeholder="Search files: *.cr2, IMG_2019*, report.pdf  ( / )" aria-label="Search files across hosts" autocomplete="off"></form>
+  <button id="threatbanner" type="button" class="threat sec-unknown" hidden></button>
   <div class="actions">
     <div id="graphsub" class="seg" role="group" aria-label="Graph view" hidden><button type="button" data-sub="files">Files</button><button type="button" data-sub="structure">Structure</button></div>
     <label id="hopsfield" class="field"><span>Focus</span><select id="hops"><option value="1">1 hop</option><option value="2" selected>2 hops</option><option value="3">3 hops</option></select></label>
@@ -317,5 +318,6 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/tasks.js"></script>
 <script src="/scheduler.js"></script>
 <script src="/securityview.js"></script>
+<script src="/securitymore.js"></script>
 </body>
 </html>

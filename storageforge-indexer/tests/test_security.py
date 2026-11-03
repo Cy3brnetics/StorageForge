@@ -239,7 +239,7 @@ class NothingIsInvented(Base):
         for invented in ('Ring Buffer (0% drops)', 'latency_ms\': 1.2', 'rpo_seconds\': 12', "'plaintext_pct': 65", 'KRNL-6000'):
             self.assertNotIn(invented, src)
         rules = {r.rule for r in self.web.url_map.iter_rules()}
-        for gone in ('/api/security/malware/shred', '/api/security/malware/restore', '/api/security/mac/identity-anomalies', '/api/security/playbooks'):
+        for gone in ('/api/security/malware/shred', '/api/security/malware/restore'):
             self.assertNotIn(gone, rules)
 
 
@@ -1441,13 +1441,14 @@ class Migration(unittest.TestCase):
             old = Path(tmp) / 'migrations'
             shutil.copytree(real, old)
             (old / 'sqlite' / '032_security_measured.sql').unlink()
+            (old / 'sqlite' / '036_security_more.sql').unlink()      # it makes tables with the names v31 used, as 032 leaves them free
             db = Database(f'sqlite:///{tmp}/t.db')
             conn = db.connect()
             with mock.patch.object(dbmod, 'MIGRATIONS', old):
                 db.migrate(conn)
             conn.execute("INSERT INTO security_retention_holds (host_name, dataset_name, snapshot_name, hold_tag, created_at) VALUES ('h', 'd', 's', 't', 1)")
             conn.execute("INSERT INTO settings (key, value_json, updated_at, updated_by) VALUES ('security.break_glass_sha256', '\"x\"', 1, 'a')")
-            self.assertEqual(db.migrate(conn), ['032_security_measured.sql'])
+            self.assertEqual(db.migrate(conn), ['032_security_measured.sql', '036_security_more.sql'])
             self.assertEqual(conn.scalar('SELECT count(*) FROM security_retention_holds'), 0)
             self.assertEqual(conn.scalar("SELECT count(*) FROM settings WHERE key LIKE 'security.%'"), 0)
             conn.close()

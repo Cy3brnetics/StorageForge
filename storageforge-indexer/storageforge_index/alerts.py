@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import fnmatch
 import json
 import os
 import re
@@ -28,10 +29,10 @@ URL_RE = re.compile(r'https?://[^\s"<>]{3,500}')
 REPORT_URL_RE = re.compile(r'https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]{1,253})(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?')
 TOPIC_RE = re.compile(r'[A-Za-z0-9_-]{1,64}')
 DEFAULTS = {'report_url': '', 'alerts': {'ntfy': {'url': '', 'topic': '', 'token': ''}, 'gotify': {'url': '', 'token': ''},
-                                         'webhook': {'url': ''}, 'notify_resolved': True}}
+                                         'webhook': {'url': ''}, 'pagerduty': {'routing_key': ''}, 'routes': [], 'notify_resolved': True}}
 FILLS_UP_DAYS = int(os.environ.get('STORAGEFORGE_FILLS_UP_DAYS', '14'))
 LARGE_DELETE = int(os.environ.get('STORAGEFORGE_LARGE_DELETE', '10000'))   # files gone in one scan
-SECRET_FIELDS = (('ntfy', 'token'), ('gotify', 'token'))
+SECRET_FIELDS = (('ntfy', 'token'), ('gotify', 'token'), ('pagerduty', 'routing_key'))
 _lock = threading.Lock()
 
 
@@ -51,7 +52,7 @@ def settings(conn: Conn, reveal: bool = False) -> dict:
     s = {'report_url': get_setting(conn, 'report_url'), 'alerts': get_setting(conn, 'alerts')}
     if not reveal:      # tokens are write-only from the UI
         for ch, f in SECRET_FIELDS:
-            s['alerts'][ch][f] = '••••••' if s['alerts'][ch].get(f) else ''
+            s['alerts'].setdefault(ch, {})[f] = '••••••' if s['alerts'][ch].get(f) else ''
     return s
 
 
@@ -90,6 +91,21 @@ def save_settings(conn: Conn, body: dict, actor: str) -> dict:
             if f == 'topic' and v and not TOPIC_RE.fullmatch(v):
                 raise ValueError('ntfy topic: letters, digits, - and _ only')
             cur[ch][f] = v.rstrip('/') if f == 'url' else v
+    key = (new.get('pagerduty') or {}).get('routing_key')
+    if key is not None:
+        if key != '••••••':
+            if key and not re.fullmatch(r'[A-Za-z0-9_-]{20,64}', str(key)):
+                raise ValueError('pagerduty: that is not a routing key')
+            cur['pagerduty'] = {'routing_key': str(key)}
+    if new.get('routes') is not None:
+        routes = []
+        for r in new['routes'][:50]:
+            level = r.get('level') if r.get('level') in ('any', 'crit', 'warn') else 'any'
+            channels = [c for c in r.get('channels') or [] if c in CHANNELS]
+            if not channels:
+                raise ValueError('a route needs at least one channel')
+            routes.append({'level': level, 'host': re.sub(r'[^A-Za-z0-9_.*?-]', '', str(r.get('host') or '*'))[:100] or '*', 'channels': channels})
+        cur['routes'] = routes
     cur['notify_resolved'] = bool(new.get('notify_resolved', cur.get('notify_resolved', True)))
     set_setting(conn, 'alerts', cur, actor)
     return settings(conn)
@@ -198,11 +214,36 @@ def _why(exc: Exception) -> str:
     return 'could not deliver it'
 
 
+PAGERDUTY_URL = 'https://events.pagerduty.com/v2/enqueue'
+CHANNELS = ('ntfy', 'gotify', 'webhook', 'pagerduty')
+
+
+def routed(cfg: dict, level: str, ref) -> set | None:
+    """Which channels this goes to. None: all of them. With routes set and none matching it still goes everywhere, because an alert
+    nobody receives is worse than one too many."""
+    routes = cfg.get('routes') or []
+    if not routes:
+        return None
+    hits = [r for r in routes if r.get('level') in ('any', level) and fnmatch.fnmatch(str(ref or ''), r.get('host') or '*')]
+    return {c for r in hits for c in r.get('channels') or []} or None
+
+
 def send(cfg: dict, title: str, message: str, level: str = 'warn', extra: dict | None = None) -> list[str]:
     """Push one notification to every configured channel. Returns what was sent (or why not), per channel."""
     out = []
     prio = {'crit': 5, 'warn': 4, 'ok': 2}.get(level, 3)
-    n, g, w = cfg.get('ntfy') or {}, cfg.get('gotify') or {}, cfg.get('webhook') or {}
+    n, g, w, pd = cfg.get('ntfy') or {}, cfg.get('gotify') or {}, cfg.get('webhook') or {}, cfg.get('pagerduty') or {}
+    chosen = routed(cfg, level, (extra or {}).get('ref'))
+    if chosen is not None:
+        n, g, w, pd = (x if name in chosen else {} for x, name in ((n, 'ntfy'), (g, 'gotify'), (w, 'webhook'), (pd, 'pagerduty')))
+    if pd.get('routing_key') and level != 'ok':
+        try:
+            _post(PAGERDUTY_URL, json.dumps({'routing_key': pd['routing_key'], 'event_action': 'trigger', 'dedup_key': str((extra or {}).get('key') or title)[:255],
+                                             'payload': {'summary': title[:1024], 'source': 'storageforge', 'severity': 'critical' if level == 'crit' else 'warning', 'custom_details': {'message': message[:2000]}}}).encode(),
+                  {'Content-Type': 'application/json'})
+            out.append('pagerduty: sent')
+        except Exception as exc:
+            out.append(f'pagerduty: {_why(exc)}')
     if n.get('url') and n.get('topic'):
         try:
             h = {'Title': title.encode('ascii', 'replace').decode(), 'Priority': str(prio),

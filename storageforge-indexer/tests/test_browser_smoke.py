@@ -156,6 +156,82 @@ class BrowserSmoke(unittest.TestCase):
         self.assertEqual(self.errors, [])
         self.page.click('#viewmode button[data-mode="topo"]')
 
+    def test_a_hardware_key_enrolls_and_touches_through_the_browser(self):
+        """Chromium's own virtual authenticator, so the browser's API and the server's checks meet. A browser only offers this on HTTPS or localhost."""
+        port = self.http.server_port
+        base = f'http://localhost:{port}'
+        page = self.browser.new_page()
+        self.addCleanup(page.close)
+        errors = []
+        page.on('pageerror', lambda e: errors.append(str(e)))
+        cdp = page.context.new_cdp_session(page)
+        cdp.send('WebAuthn.enable')
+        cdp.send('WebAuthn.addVirtualAuthenticator', {'options': {'protocol': 'ctap2', 'transport': 'usb', 'hasResidentKey': False, 'hasUserVerification': True, 'isUserVerified': True, 'automaticPresenceSimulation': True}})
+        page.goto(base + '/login')
+        page.fill('input[type=text], input[name=username], #username', 'admin')
+        page.fill('input[type=password]', PW)
+        page.press('input[type=password]', 'Enter')
+        page.wait_for_url(base + '/**')
+        page.wait_for_selector('.tabs button')
+        self.assertEqual(page.request.post(base + '/api/reauth', data={'password': PW}).status, 200)
+        page.click('.tabs button[data-tab="security"]')
+        page.wait_for_selector('#sec-subnav button')
+        page.click('#sec-subnav button[data-sub="seckeys"]')
+        page.wait_for_selector('#sec-content button:has-text("Enroll a key")')
+        page.click('#sec-content button:has-text("Enroll a key")')
+        page.wait_for_selector('#sec-content button:has-text("Touched")', timeout=15000)
+        c = self.db.connect()
+        self.assertEqual(c.scalar("SELECT count(*) FROM security_webauthn WHERE username = 'admin'"), 1)
+        c.execute("DELETE FROM security_webauthn")
+        c.close()
+        self.assertEqual(errors, [])
+
+    def test_every_new_security_panel_really_opens_under_the_csp(self):
+        self.page.click('.tabs button[data-tab="security"]')
+        self.page.wait_for_selector('#sec-subnav button')
+        for sub in ('policy', 'playbooks', 'dash', 'timeline', 'seckeys'):
+            self.page.click(f'#sec-subnav button[data-sub="{sub}"]')
+            self.settled()
+            self.page.wait_for_timeout(200)
+            self.assertEqual(self.errors, [], sub)
+
+    def a_read_host(self):
+        """A host with a reading, for this one test: with it there, the fleet is no longer 'not known', which another test checks."""
+        from storageforge_index import security
+        c = self.db.connect()
+        c.execute(f"""INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json, last_scanned_at)
+                         VALUES ('read', 'read', 'scan', '{{}}', {self.db.ts(':t')})""", {'t': 1600000000})
+        security._save_measurement(c, 'read', 'host', int(time.time()), 'test', {   # a reading, so the panels that wait for one draw all they have
+            'host_now': int(time.time()), 'tools': ['nft', 'aide', 'lynis'], 'selinux': 'Enforcing', 'booleans': [{'name': 'samba_export_all_rw', 'value': 'on', 'expected': 'off', 'ok': False}], 'apparmor': {'enabled': True, 'enforce': 3, 'complain': 0},
+            'avc': [{'at': 1, 'daemon': 'smbd', 'action': 'read', 'path': '/etc/shadow', 'scontext': 's', 'tcontext': 't', 'storage': True}], 'fcontext': [{'path': '/srv', 'live': 'var_t', 'expected': 'var_t', 'aligned': True}], 'sysctl': {'fs.protected_hardlinks': '0'},
+            'aide': {'baseline_at': 1, 'last_action': 'check', 'last_at': 1, 'added': 0, 'removed': 0, 'changed': 0, 'entries': []}, 'lynis': {'at': 1, 'hardening_index': 70, 'warnings': [], 'suggestions': [{'id': 'AUTH-9328', 'text': 'umask', 'detail': ''}]},
+            'falco': {'installed': True, 'active': True}, 'sentinel': {'active': True, 'armed': False}, 'holds_zfs': [], 'holds_btrfs': {}, 'zfs_allow': [], 'canaries': {}, 'auditd': {'active': True, 'storageforge_rules': 1}, 'audit_rules': ['-w /etc/fstab -p wa -k sf_config'],
+            'snapshots': ['tank/a@1'], 'sessions': [{'at': 1, 'user': 'alice', 'client': '10.0.0.5', 'share': 'hr'}], 'falco_alerts': [], 'quarantined': [], 'chrony': None, 'nts_sources': 0, 'ntp_synced': True, 'fence': True, 'airgap': False, 'umask': '027', 'clock_offset': 0, 'uptime': 100})
+        c.close()
+
+        def gone():
+            d = self.db.connect()
+            d.execute("DELETE FROM security_measurements WHERE host = 'read'")
+            d.execute("DELETE FROM hosts WHERE hostname = 'read'")
+            d.close()
+        self.addCleanup(gone)
+        self.page.reload()
+        self.page.wait_for_selector('.tabs button')
+
+    def test_the_panels_about_one_host_really_draw_under_the_csp(self):
+        self.a_read_host()
+        self.page.wait_for_selector('#host option[value="read"]', state='attached')
+        self.page.select_option('#host', 'read')
+        self.page.click('.tabs button[data-tab="security"]')
+        self.page.wait_for_selector('#sec-subnav button')
+        for sub in ('overview', 'worm', 'decoys', 'mac', 'firewall', 'behavior', 'integrity', 'compliance', 'policy', 'fencing', 'identity', 'detect', 'playbooks', 'dash', 'timeline', 'seckeys'):
+            self.page.click(f'#sec-subnav button[data-sub="{sub}"]')
+            self.settled()
+            self.page.wait_for_timeout(200)
+            self.assertEqual(self.errors, [], sub)
+            self.assertFalse(self.page.query_selector('#sec-content p.st-failed'), f'{sub}: {self.page.inner_text("#sec-content")[:300]}')
+        self.page.select_option('#host', '')
+
     def settled(self):       # polled from here: wait_for_function evaluates in the page, which this CSP rightly refuses
         for _ in range(100):
             if 'Loading' not in self.page.inner_text('#sec-content'):

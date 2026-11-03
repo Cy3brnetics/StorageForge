@@ -1034,6 +1034,22 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 .inf-table td:empty { display: none; }
 .inf-table td::before { content: attr(data-label) ": "; color: var(--muted); font-size: 12px; }
 
+/* the line at the top of every page, and the security grid */
+.threat { border: 1px solid var(--line); border-radius: 4px; padding: 2px 8px; font-size: 12px; cursor: pointer; background: var(--panel); color: inherit; white-space: nowrap; }
+.threat.sec-critical { background: #7a1f1f; color: #fff; border-color: #a33; }
+.threat.sec-warning { background: #7a5a1f; color: #fff; border-color: #a83; }
+.threat.sec-secure { color: #6c6; }
+.sec-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.sec-tile { border: 1px solid var(--line); border-radius: 6px; padding: 8px; background: var(--panel); min-width: 0; }
+.sec-tile .row { justify-content: space-between; align-items: center; gap: 4px; }
+.sec-tile-body { margin-top: 6px; overflow: auto; max-height: 220px; }
+.sec-spark { vertical-align: middle; margin-right: 6px; }
+.sec-spark polyline { fill: none; stroke: currentColor; stroke-width: 1.5; }
+.sec-heat { display: grid; grid-template-columns: repeat(15, 1fr); gap: 2px; max-width: 300px; }
+.sec-heat i { display: block; aspect-ratio: 1; background: var(--line); border-radius: 2px; }
+.sec-heat i.h1 { background: #7a5a1f; }
+.sec-heat i.h2 { background: #a8701f; }
+.sec-heat i.h3 { background: #d9531f; }
 /* the map's own controls */
 .mpmodes { display: flex; gap: 2px; }
 .mpmodes button[aria-pressed="true"] { background: var(--accent, #357); color: #fff; }

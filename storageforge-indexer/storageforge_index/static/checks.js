@@ -167,6 +167,7 @@ function malwareDetection(d, box) {
   const acts = [];
   if (can('deploy.destructive')) {
     if (d.state === 'open') {
+      acts.push(button('Look at it', async () => { const r = await malwarePost('/api/security/malware/preview', { id: d.id }, box); if (r?.output) box.append(el('pre', { class: 'small sec-out' }, r.output)); }, 'btn sm ghost'));
       acts.push(button('Quarantine', () => {
         const sys = d.system_path;
         if (!confirm(`Move ${d.path} on ${d.host} to quarantine?${sys ? '\n\nThis is a system path: moving it can stop the host from booting.' : ''}\n\nA running process that has it open keeps running.`)) return;

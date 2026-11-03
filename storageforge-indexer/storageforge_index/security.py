@@ -50,8 +50,10 @@ DEFAULT_COOL_OFF = 24
 COOL_OFF_HOURS = (12, 24, 48, 72)
 MIN_CIDR = {4: 16, 6: 48}           # a network wider than this is a mistake, not a quarantine
 EVENT_SEVERITY = {'canary_tripped': 'crit', 'clock_jump': 'crit', 'brake_ran': 'crit', 'watcher_stopped': 'warn', 'canary_source': 'warn',
-                  'sentinel_started': 'info', 'sentinel_test': 'info', 'hold_missing': 'crit', 'break_glass_used': 'crit'}
-HOST_EVENTS = frozenset({'canary_tripped', 'canary_source', 'clock_jump', 'brake_ran', 'watcher_stopped', 'sentinel_started', 'sentinel_test'})
+                  'sentinel_started': 'info', 'sentinel_test': 'info', 'hold_missing': 'crit', 'break_glass_used': 'crit',
+                  'falco_crit': 'crit', 'falco_warn': 'warn', 'identity_enumeration': 'crit', 'identity_multi_subnet': 'warn', 'identity_off_hours': 'warn', 'entropy_flagged': 'warn', 'velocity': 'warn'}
+HOST_EVENTS = frozenset({'canary_tripped', 'canary_source', 'clock_jump', 'brake_ran', 'watcher_stopped', 'sentinel_started', 'sentinel_test',
+                         'identity_enumeration', 'identity_multi_subnet', 'identity_off_hours'})
 DEFAULT_DECOYS = ('_AAAPasswords.docx', '!Financial_2026.xlsx', '00_Index.pdf')
 MAX_DECOYS = 500
 SAMPLE_FILES = 500
@@ -306,7 +308,7 @@ def _parse_lynis(lines: list[str]) -> dict | None:
         elif line.startswith(('warning[]=', 'suggestion[]=')):
             bucket = 'warnings' if line.startswith('w') else 'suggestions'
             f = line.split('=', 1)[1].split('|')
-            out[bucket].append({'id': clean_text(f[0], 40), 'text': clean_text(f[1] if len(f) > 1 else '', 300)})
+            out[bucket].append({'id': clean_text(f[0], 40), 'text': clean_text(f[1] if len(f) > 1 else '', 300), 'detail': clean_text(f[2], 200) if len(f) > 2 and f[2] not in ('-', '') else ''})
     return out
 
 
@@ -384,7 +386,16 @@ def parse_measure(text: str) -> dict | None:
         'canaries': canaries,
         'fcontext': fcontext,
         'shadow_copy2_shares': _int((s.get('samba') or [None])[0]),
+        'audit_rules': [clean_text(x, 300) for x in s.get('audit_rules', [])[:60]],
+        'snapshots': [x.strip() for x in s.get('snapshots', [])[-500:] if ZFS_SNAP_RE.fullmatch(x.strip())],
+        'sessions': _secplus().parse_sessions(s.get('sessions', [])),
+        'falco_alerts': _secplus().parse_falco(s.get('falco_alerts', [])),
     }
+
+
+def _secplus():
+    from . import secplus
+    return secplus
 
 
 def freeze_clock(conn: Conn, host: str, reason: str, by: str, cause: str = 'jump'):
@@ -444,6 +455,7 @@ def store_measurement(conn: Conn, host: str, data: dict, started: int, finished:
         freeze_clock(conn, host, f'the clock on {host} and the controller differ by {off} s', via, 'offset')
     _save_measurement(conn, host, 'host', finished, via, data)
     _reconcile(conn, host, data, finished)
+    _secplus().after_measure(conn, host, data, finished)
 
 
 def _save_measurement(conn: Conn, host: str, kind: str, at: int, via: str, data: dict):
@@ -809,6 +821,10 @@ def tick(db) -> dict:
                     errlog.trace()
     finally:
         conn.close()
+    try:
+        done.update(_secplus().tick(db))
+    except Exception:
+        errlog.trace()
     return done
 
 
@@ -816,7 +832,41 @@ def tick(db) -> dict:
 def sentinel_config(conn: Conn, host: str) -> dict:
     saved = alerts.get_setting(conn, host_key(host)) or {}
     return {'folders': saved.get('folders') or [], 'names': saved.get('names') or list(DEFAULT_DECOYS), 'armed': bool(saved.get('armed')),
-            'actions': saved.get('actions') or list(sx.BRAKE_ACTIONS), 'minutes': saved.get('minutes', 60)}
+            'actions': saved.get('actions') or list(sx.BRAKE_ACTIONS), 'minutes': saved.get('minutes', 60),
+            'spread': saved.get('spread') or 'root', 'paths': saved.get('paths') or []}
+
+
+SPREADS = ('root', 'top', 'random', 'recent')
+
+
+def spread_folders(conn: Conn, host: str, folders: list[str], how: str) -> list[str]:
+    """Where decoys go inside each folder, from the index. root: only there. top: its first level too. random: some folders further
+    down, the same ones each time for this host. recent: folders the last scan saw change, where encryption would start."""
+    if how == 'root':
+        return list(folders)
+    out = list(folders)
+    for root in folders:
+        prefix = root.rstrip('/') + '/'
+        if how == 'recent':
+            scans = _latest_scans(conn, host, 1)
+            rows = conn.all('SELECT DISTINCT parent_path FROM file_changes WHERE scan_id = :s AND parent_path LIKE :p LIMIT 500', {'s': scans[0]['id'], 'p': prefix + '%'}) if scans else []
+            found = sorted(r[0] for r in rows)
+        else:
+            rows = conn.all("""SELECT d.path FROM directories d JOIN mounts m ON m.mount_id = d.mount_id JOIN hosts h ON h.host_id = m.host_id
+                                WHERE lower(h.hostname) = lower(:h) AND d.path LIKE :p LIMIT 5000""", {'h': host, 'p': prefix + '%'})
+            found = sorted(r[0] for r in rows)
+            if how == 'top':
+                found = [d for d in found if '/' not in d[len(prefix):]]
+            else:
+                found = sorted(found, key=lambda d: hashlib.sha256(f'{host}:{d}'.encode()).hexdigest())[:40]
+        out += [d for d in found if '/.' not in d[len(prefix) - 1:]]
+    return sorted(set(out))
+
+
+def decoy_name(pattern: str, folder: str) -> str:
+    """{Dept} is the folder's own name and {Year} this year, so a decoy looks like it belongs where it is."""
+    dept = re.sub(r'[^A-Za-z0-9_-]', '', folder.rstrip('/').rsplit('/', 1)[-1]).capitalize() or 'Share'
+    return pattern.replace('{Dept}', dept).replace('{Year}', time.strftime('%Y'))
 
 
 def suggested_folders(conn: Conn, host: str) -> list[str]:
@@ -837,18 +887,24 @@ def save_sentinel_config(conn: Conn, host, body: dict, actor: str) -> dict:
     for n in names:
         if not n or len(n) > 100 or n != n.strip() or '/' in n or n in ('.', '..') or any(ord(c) < 32 or ord(c) == 127 for c in n):
             raise ValueError(f'not a file name: {n[:40]!r}')
-    if len(folders) * len(names) > MAX_DECOYS:
+    spread = str(body.get('spread') or 'root')
+    if spread not in SPREADS:
+        raise ValueError('spread is one of ' + ', '.join(SPREADS))
+    expanded = spread_folders(conn, name, folders, spread)
+    if len(expanded) * len(names) > MAX_DECOYS:
         raise ValueError(f'that is more than {MAX_DECOYS} decoys')
+    paths = [f'{d.rstrip("/")}/{decoy_name(n, d)}' for d in expanded for n in names]
+    body = {**body, '_spread': {'spread': spread, 'paths': paths}}
     actions = [a for a in sx.BRAKE_ACTIONS if a in (body.get('actions') or sx.BRAKE_ACTIONS)]
     minutes = _int(body.get('minutes'), 60)
     if minutes is None or not 0 <= minutes <= 525600:
         raise ValueError('minutes is 0 (until lifted) to 525600')
-    alerts.set_setting(conn, host_key(name), {**cur, 'host': name, 'folders': folders, 'names': names, 'armed': body.get('armed') is True, 'actions': actions, 'minutes': minutes}, actor)
+    alerts.set_setting(conn, host_key(name), {**cur, **body['_spread'], 'host': name, 'folders': folders, 'names': names, 'armed': body.get('armed') is True, 'actions': actions, 'minutes': minutes}, actor)
     return {'ok': True, 'host': name, **sentinel_config(conn, name)}
 
 
 def decoy_paths(config: dict) -> list[str]:
-    return [f'{d.rstrip("/")}/{n}' for d in config['folders'] for n in config['names']]
+    return config.get('paths') or [f'{d.rstrip("/")}/{n}' for d in config['folders'] for n in config['names']]
 
 
 def vip_list(conn: Conn) -> list[str]:
@@ -939,7 +995,7 @@ def canaries_view(conn: Conn, host: str | None = None) -> dict:
         marks = deploy.deployed(conn, host=deploy.canonical(conn, host), kind='security')
         out.update(config=sentinel_config(conn, host), suggested=suggested_folders(conn, host), installed=bool(marks), deploy_ready=deploy.ready(conn, host),
                    out_of_date=bool(marks) and marks[0]['hash'] != digest(conn, host), sentinel=(m or {}).get('sentinel'), auditd=(m or {}).get('auditd'),
-                   tools=(m or {}).get('tools'), shadow_copy2_shares=(m or {}).get('shadow_copy2_shares'), measured_at=(m or {}).get('measured_at'),
+                   tools=(m or {}).get('tools'), shadow_copy2_shares=(m or {}).get('shadow_copy2_shares'), measured_at=(m or {}).get('measured_at'), audit_rules=(m or {}).get('audit_rules') or [],
                    last_test=next((e for e in list_events(conn, host, 50) if e['kind'] == 'sentinel_test'), None))
     return out
 
@@ -960,7 +1016,8 @@ def mac_view(conn: Conn, host: str) -> dict:
     aa = m.get('apparmor') or {}
     framework = 'selinux' if m.get('selinux') else 'apparmor' if aa.get('enabled') else None
     return {'host': host, 'measured_at': m['measured_at'], 'stale': m['stale'], 'framework': framework, 'selinux_mode': m.get('selinux'), 'apparmor': aa,
-            'booleans': m.get('booleans') or [], 'fcontext': m.get('fcontext') or [], 'avc': m.get('avc') or [], 'se_types': SE_TYPES}
+            'booleans': m.get('booleans') or [], 'fcontext': m.get('fcontext') or [], 'avc': _secplus().mark_avc(conn, m.get('avc') or []), 'se_types': SE_TYPES,
+            'context_map': _secplus().context_map(conn), 'context_drift': _secplus().context_drift(conn, host, m.get('fcontext') or []), 'noise_rules': _secplus().avc_noise(conn)}
 
 
 def remediate_mac(db, conn: Conn, body: dict, actor: str) -> dict:
@@ -1031,14 +1088,22 @@ def firewall_view(conn: Conn, host: str | None = None) -> dict:
 def quarantine(db, conn: Conn, body: dict, actor: str) -> dict:
     host, mode = known_host(conn, body.get('host')), _mode(body)
     ip = clean_target(conn, host, body.get('ip_address'))
-    minutes = _int(body.get('minutes'), 60)
+    tier = _int(body.get('tier'))
+    if tier is not None:                                # a repeat offender goes up a tier by itself
+        if tier not in (1, 2, 3):
+            raise ValueError('a tier is 1, 2 or 3')
+        tier = _secplus().next_tier(conn, host, ip, tier)
+        minutes = _secplus().ban_minutes(conn, tier)
+    else:
+        minutes = _int(body.get('minutes'), 60)
     if minutes is None or not 0 <= minutes <= 525600:
         raise ValueError('minutes is 0 (until lifted) to 525600')
     reason = clean_text(body.get('reason') or 'by hand', 200)
     res, out = _act(db, host, sx.quarantine_script(ip, minutes * 60), mode, f'quarantine:{ip}', actor, rf'^QUARANTINED {re.escape(ip)}$')
-    out.update(host=host, ip_address=ip)
+    out.update(host=host, ip_address=ip, tier=tier, minutes=minutes)
     if res and mode == 'apply' and out['ok']:
         now = int(time.time())
+        _secplus().record_ban(conn, host, ip, tier or 0, reason)
         conn.execute('DELETE FROM security_quarantine WHERE lower(host) = lower(:h) AND ip_address = :ip', {'h': host, 'ip': ip})
         conn.execute("""INSERT INTO security_quarantine (host, ip_address, reason, added_at, expires_at, actor)
                         VALUES (:h, :ip, :r, :t, :e, :a)""", {'h': host, 'ip': ip, 'r': reason, 't': now, 'e': now + minutes * 60 if minutes else None, 'a': actor})
@@ -1113,7 +1178,8 @@ def velocity(conn: Conn, host: str) -> dict:
     if len(series) > VELOCITY_MIN_BASELINE:
         base = statistics.median(s['files_per_hour'] for s in series[1:])
         out['baseline_median'] = round(base, 1)
-        out['threshold'] = round(max(base * VELOCITY_FACTOR, VELOCITY_FLOOR), 1)
+        factor, floor = _secplus().velocity_limits(conn, host)
+        out['threshold'] = round(max(base * factor, floor), 1)
         out['anomaly'] = series[0]['files_per_hour'] > out['threshold']
     if scans:
         out.update(_scan_signs(conn, scans[0]['id']))
@@ -1173,10 +1239,16 @@ def sample_entropy(db, conn: Conn, body: dict, actor: str) -> dict:
     if 'NO python3' in (res.get('output') or ''):
         return _result(res, 'report', f'{name} has no python3 to sample with', host=name)
     samples = parse_entropy(res['output'])
+    for sample in samples:                                 # a folder can have its own line: stricter for documents, looser for media
+        limit = _secplus().entropy_limit(conn, sample['path'])
+        if limit != ENTROPY_FLAG:
+            sample['flagged'] = sample['entropy'] >= limit and not sample['known_header']
     buckets = {'low': sum(1 for s in samples if s['entropy'] < 6), 'mid': sum(1 for s in samples if 6 <= s['entropy'] < 7.5), 'high': sum(1 for s in samples if 7.5 <= s['entropy'] < ENTROPY_FLAG),
                'ciphertext_like': sum(1 for s in samples if s['entropy'] >= ENTROPY_FLAG)}
     flagged = [s for s in samples if s['flagged']]
     now = int(time.time())
+    if flagged:
+        record_event(conn, name, 'entropy_flagged', f'{len(flagged)} changed file(s) look encrypted on {name}', json.dumps([f['path'] for f in flagged[:20]]), 'sample', now)
     _save_measurement(conn, name, 'entropy', now, 'sample', {'asked': len(paths), 'read': len(samples), 'threshold': ENTROPY_FLAG, 'buckets': buckets, 'flagged_count': len(flagged), 'flagged': flagged[:200]})
     return {'ok': True, 'host': name, 'read': len(samples), 'flagged': len(flagged), 'run_id': res.get('run_id')}
 
@@ -1204,7 +1276,9 @@ def diff_scan(db, conn: Conn, body: dict, actor: str) -> dict:
 
 def behavior_view(conn: Conn, host: str) -> dict:
     m = measurement(conn, host)
-    return {'host': host, 'velocity': velocity(conn, host), 'entropy': measurement(conn, host, 'entropy'), 'falco': (m or {}).get('falco'), 'measured_at': (m or {}).get('measured_at')}
+    sp = _secplus()
+    return {'host': host, 'velocity': velocity(conn, host), 'entropy': measurement(conn, host, 'entropy'), 'falco': (m or {}).get('falco'), 'measured_at': (m or {}).get('measured_at'),
+            'falco_events': [e for e in list_events(conn, host, 100) if e['kind'] in ('falco_crit', 'falco_warn')][:50], 'falco_rules': sp.falco_rules(conn), 'thresholds': sp.thresholds(conn), 'scan_filters': sp.scan_filters(conn), 'yara': sp.list_yara(conn)}
 
 
 # ── integrity ────────────────────────────────────────────────────────
@@ -1220,7 +1294,7 @@ def run_tool(db, conn: Conn, body: dict, actor: str) -> dict:
     host, mode, tool = known_host(conn, body.get('host')), _mode(body), str(body.get('tool') or '')
     if tool not in ('aide-init', 'aide-check', 'lynis'):
         raise ValueError('tool is aide-init, aide-check or lynis')
-    _, out = _act(db, host, sx.tool_script(tool), mode, tool, actor)
+    _, out = _act(db, host, sx.tool_script(tool, _secplus().aide_watch(conn)), mode, tool, actor)
     return {**out, 'host': host, 'tool': tool}
 
 
@@ -1331,36 +1405,44 @@ def _check(conn: Conn, host: str, m: dict, check: str, std: dict) -> tuple[str, 
     raise KeyError(check)
 
 
-def compliance_standards() -> dict:
-    return {'standards': [{'id': k, 'name': v['name'], 'target_lynis': v['target_lynis'], 'min_worm_days': v['min_worm_days'],
-                           'checks': [{'id': c, 'label': CHECKS[c], 'control': ref} for c, ref in v['controls'].items()]} for k, v in STANDARDS.items()],
-            'note': 'Readings mapped to controls they help with. Not an audit, a certification or an attestation.'}
+def compliance_standards(conn: Conn | None = None) -> dict:
+    out = {'standards': [{'id': k, 'name': v['name'], 'target_lynis': v['target_lynis'], 'min_worm_days': v['min_worm_days'],
+                          'checks': [{'id': c, 'label': CHECKS[c], 'control': ref} for c, ref in v['controls'].items()]} for k, v in STANDARDS.items()],
+           'note': 'Readings mapped to controls they help with. Not an audit, a certification or an attestation. The Lynis and retention targets are StorageForge\'s suggestions: no standard sets those numbers, and a custom profile can change them.'}
+    if conn is not None:
+        sp = _secplus()
+        out['presets'] = [{'id': f'preset:{k}', 'name': v['label'], 'base': v['base'], 'overrides': v['overrides']} for k, v in sp.PROFILE_PRESETS.items()]
+        out['custom'] = [{'id': f'custom:{p["name"]}', 'pk': p['id'], 'name': p['name'], 'base': p['base'], 'overrides': p['overrides']} for p in sp.list_profiles(conn)]
+        out['checks'] = CHECKS
+    return out
 
 
 def compliance_status(conn: Conn, host: str, profile: str | None = None) -> dict:
     name = known_host(conn, host)
     profile = profile or alerts.get_setting(conn, profile_key(name)) or 'cis-l2'
-    if profile not in STANDARDS:
-        raise ValueError(f'no such standard: {profile[:40]}')
-    std, m = STANDARDS[profile], measurement(conn, name)
+    std, m = _secplus().std_for(conn, profile), measurement(conn, name)
     base = {'host': name, 'profile': profile, 'standard': std['name'], 'measured_at': (m or {}).get('measured_at'), 'stale': (m or {}).get('stale')}
     if not m:
         return {**base, 'score': None, 'passed': 0, 'failed': 0, 'unknown': len(std['controls']), 'checks': [
             {'id': c, 'label': CHECKS[c], 'control': ref, 'result': 'unknown', 'detail': 'not measured'} for c, ref in std['controls'].items()]}
     checks = []
+    waivers = _secplus().waived(conn, name)
     for c, ref in std['controls'].items():
         result, detail = _check(conn, name, m, c, std)
-        checks.append({'id': c, 'label': CHECKS[c], 'control': ref, 'result': result, 'detail': clean_text(detail, 300)})
-    passed = sum(1 for c in checks if c['result'] == 'pass')
-    return {**base, 'score': round(passed * 100 / len(checks)), 'passed': passed, 'failed': sum(1 for c in checks if c['result'] == 'fail'),
-            'unknown': sum(1 for c in checks if c['result'] == 'unknown'), 'checks': checks}
+        row = {'id': c, 'label': CHECKS[c], 'control': ref, 'result': result, 'detail': clean_text(detail, 300)}
+        if result == 'fail' and c in waivers:     # still shown, and it says why it does not count
+            row.update(result='waived', waiver={k: waivers[c][k] for k in ('reason', 'approver', 'expires_at')})
+        checks.append(row)
+    counted = [c for c in checks if c['result'] != 'waived']
+    passed = sum(1 for c in counted if c['result'] == 'pass')
+    return {**base, 'score': round(passed * 100 / len(counted)) if counted else None, 'passed': passed, 'failed': sum(1 for c in counted if c['result'] == 'fail'),
+            'unknown': sum(1 for c in counted if c['result'] == 'unknown'), 'waived': len(checks) - len(counted), 'checks': checks, 'drift': _secplus().drift_of(conn, name).get('new') or []}
 
 
 def compliance_init(db, conn: Conn, body: dict, actor: str) -> dict:
     """Sets the baseline this script can verify. The score moves when a measurement sees the result, not because this ran."""
     host, mode, profile = known_host(conn, body.get('host')), _mode(body), str(body.get('profile') or 'cis-l2')
-    if profile not in STANDARDS:
-        raise ValueError(f'no such standard: {profile[:40]}')
+    _secplus().std_for(conn, profile)
     res, out = _act(db, host, sx.compliance_script(profile, host), mode, f'compliance:{profile}', actor, None, 900)
     out.update(host=host, profile=profile)
     if res and mode == 'apply' and out['ok']:
@@ -1578,4 +1660,5 @@ def problems(conn: Conn) -> dict:
                 out[f'security-sentinel:{name}'] = ('security-sentinel', name, f'The sentinel on {name} is not running', 'its decoys are not being watched', 'crit')
             if (not m or m['stale']) and time.time() - marks[0]['at'] > STALE_AFTER:
                 out[f'security-stale:{name}'] = ('security-stale', name, f'No recent security reading from {name}', 'it may be unreachable, or someone has stopped it answering', 'warn')
+    out.update(_secplus().problems(conn))
     return out

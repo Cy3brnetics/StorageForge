@@ -36,13 +36,18 @@ function secArea(placeholder, value = '') { const i = el('textarea', { rows: '3'
 const secCan = (perm) => can(perm);
 
 /* Posts, then shows the answer in place. api() throws on a refusal: the body explains why, and the run's output belongs beside it. */
-async function secPost(path, body, out, method = 'POST') {
+async function secPost(path, body, out, method = 'POST', touched = false) {
   out.replaceChildren(text('p', 'Working…', 'muted small'));
   try {
     const opts = method === 'DELETE' ? { method } : null;
     const res = opts ? await api(path, opts) : await postJSON(path, body);
     return secShow(await res.json(), out);
   } catch (err) {
+    if (err.body?.webauthn && !touched) {
+      out.replaceChildren(text('p', 'Touch your security key.', 'st-warn'));
+      try { await secTouchKey(); } catch (e) { out.replaceChildren(text('p', e.message, 'st-failed')); return null; }
+      return secPost(path, body, out, method, true);
+    }
     if (err.body) return secShow(err.body, out);
     out.replaceChildren(text('p', err.message, 'st-failed'));
     return null;
@@ -106,7 +111,7 @@ async function secRender() {
     return;
   }
   try {
-    const built = await ({ overview: secOverview, worm: secWorm, decoys: secDecoys, mac: secMac, firewall: secFirewall, behavior: secBehavior, integrity: secIntegrity, compliance: secCompliance })[SEC.panel]();
+    const built = await ({ overview: secOverview, worm: secWorm, decoys: secDecoys, mac: secMac, firewall: secFirewall, behavior: secBehavior, integrity: secIntegrity, compliance: secCompliance, ...SEC_MORE })[SEC.panel]();
     if (turn === SEC.turn) box.replaceChildren(built);
   } catch (err) {
     if (turn === SEC.turn) box.replaceChildren(text('p', err.message, 'st-failed'));
@@ -185,7 +190,8 @@ async function secIncident(host) {
       text('p', 'Mounts a snapshot read-only with no programs or devices, shared with nobody, to look at before trusting it.', 'muted small'),
       el('div', { class: 'sec-form' }, secField('Snapshot', snap), secField('Mount at', mnt)),
       secActions('/api/security/incident/clean-room', () => ({ host, snapshot: snap.value.trim(), mount: mnt.value.trim() }), out, { apply: 'Mount it', need: 'security.emergency' }),
-      button('Take it down', () => secPost('/api/security/incident/clean-room', { host, snapshot: snap.value.trim(), mount: mnt.value.trim(), mode: 'apply', remove: true }, out), 'btn sm ghost')) : el('div', {}));
+      el('div', { class: 'row wrap' }, button('Sweep it with ClamAV and YARA', async () => { const r = await secPost('/api/security/incident/clean-room/sweep', { host, mount: mnt.value.trim() }, out); if (r) out.prepend(text('p', r.clean ? `${r.message}, in ${r.files} files.` : r.hits.length ? `${r.hits.length} found in ${r.files} files: ${r.hits.slice(0, 5).map((h) => h.what).join('; ')}` : 'Neither ClamAV nor YARA is on this host, so nothing was checked.', r.clean ? 'st-ok' : 'st-failed')); }, 'btn sm'),
+        button('Take it down', () => secPost('/api/security/incident/clean-room', { host, snapshot: snap.value.trim(), mount: mnt.value.trim(), mode: 'apply', remove: true }, out), 'btn sm ghost'))) : el('div', {}));
 }
 
 /* ── holds ────────────────────────────────────────────────────────── */
@@ -246,8 +252,10 @@ async function secDecoys() {
   const folders = secArea('/srv/shares/finance', (c.folders.length ? c.folders : d.suggested).join('\n')), names = secArea('', c.names.join('\n'));
   const armed = el('input', { type: 'checkbox' }); armed.checked = c.armed;
   const minutes = secInput('60', String(c.minutes));
+  const spread = el('select', { 'aria-label': 'Where decoys go' }, new Option('Only in these folders', 'root'), new Option('Their first level too', 'top'), new Option('Some folders further down', 'random'), new Option('Folders the last scan saw change', 'recent'));
+  spread.value = c.spread || 'root';
   const checks = ['triage', 'quarantine', 'snapshot', 'freeze'].map((a) => { const i = el('input', { type: 'checkbox' }); i.checked = c.actions.includes(a); i.value = a; return i; });
-  const save = async () => secPost('/api/security/sentinel', { host, folders: folders.value.split('\n').map((s) => s.trim()).filter(Boolean), names: names.value.split('\n').map((s) => s.trim()).filter(Boolean), armed: armed.checked, minutes: minutes.value.trim(), actions: checks.filter((i) => i.checked).map((i) => i.value) }, out);
+  const save = async () => secPost('/api/security/sentinel', { host, spread: spread.value, folders: folders.value.split('\n').map((s) => s.trim()).filter(Boolean), names: names.value.split('\n').map((s) => s.trim()).filter(Boolean), armed: armed.checked, minutes: minutes.value.trim(), actions: checks.filter((i) => i.checked).map((i) => i.value) }, out);
   const go = (mode, title, extra = {}) => async () => { if (await save()) startDeploy('security', host, mode, title, extra); };
   const test = d.last_test;
   const kids = [secCard(`Sentinel on ${host}`,
@@ -260,12 +268,13 @@ async function secDecoys() {
       d.summary.tripped ? button('Re-arm tripped decoys', go('apply', `Security: re-arm on ${host}`, { rearm: true }), 'btn sm') : '',
       d.installed ? button('Remove', () => { if (confirm(`Remove the sentinel from ${host}? Unchanged decoys are deleted; changed ones stay.`)) startDeploy('security', host, 'apply', `Security: remove from ${host}`, { remove: true }); }, 'btn sm ghost') : '') : '', out),
   secCard('What the next deploy installs',
-    el('div', { class: 'sec-form' }, secField('Folders, one a line', folders), secField('File names, one a line', names)),
+    el('div', { class: 'sec-form' }, secField('Folders, one a line', folders), secField('File names, one a line. {Dept} is the folder\'s name, {Year} this year', names), secField('Where in them', spread)),
     !c.folders.length && d.suggested.length ? text('p', 'Suggested from the shares in this host\'s design.', 'muted small') : '',
     secCan('security.emergency') ? el('div', { class: 'stack' },
       el('label', {}, armed, ' Armed: when a decoy changes, the host pulls the brake by itself'),
       el('div', { class: 'row wrap' }, ...checks.map((i) => el('label', { class: 'small' }, i, ` ${i.value}`)), secField('Drop for minutes (0: until lifted)', minutes)),
       text('p', 'Off by default. One changed file then cuts off a client and can make a share read-only: a user or a sync tool opening the wrong file will do it too. Add machines that must never be cut off under Firewall.', 'muted small')) : ''),
+  d.audit_rules?.length ? secCard('Audit rules on the host', el('pre', { class: 'small sec-out' }, d.audit_rules.join('\n')), text('p', 'As auditctl lists them, at the last measurement.', 'muted small')) : '',
   secCard('Decoys', el('div', { class: 'stat-row' }, secStat('Armed', d.summary.armed), secStat('Tripped', d.summary.tripped, d.summary.tripped ? 'st-failed' : ''), secStat('Samba shares with previous versions', secVal(d.shadow_copy2_shares))),
     d.canaries.length ? secTable(['File', 'State', 'Written', 'Last seen intact', 'SHA-256'], d.canaries.map((k) => [k.path, secPill(k.status, k.status === 'armed' ? 'secure' : 'critical'), secWhen(k.deployed_at), k.status === 'tripped' ? `tripped ${secWhen(k.tripped_at)}` : secAgo(k.verified_at), text('code', k.sha256.slice(0, 16), 'small')])) : text('p', 'None deployed. A decoy appears here once a deploy has written it and read its hash back.', 'muted'))];
   return el('div', { class: 'stack' }, ...kids);
@@ -284,6 +293,7 @@ async function secMac() {
     d.booleans.length ? secCard('Storage booleans', secTable(['Boolean', 'Now', 'Should be', '', ''], d.booleans.map((b) => [b.name, b.value, secVal(b.expected), secOkPill(b.ok, 'as expected', 'too open'), b.ok ? '' : fix(b.name, b.expected)]))) : '',
     d.fcontext.length ? secCard('Mount labels', secTable(['Mount', 'Now', 'Policy says', ''], d.fcontext.map((f) => [f.path, f.live, secVal(f.expected), secOkPill(f.aligned, 'matches', 'drifted')]))) : '',
     secCard('Recent denials', d.avc.length ? secTable(['When', 'Program', 'Asked for', 'On', 'Its context', 'Target'], d.avc.slice(0, 50).map((a) => [secWhen(a.at), text('span', a.daemon, a.storage ? 'st-warn' : ''), a.action, a.path, a.scontext, a.tcontext])) : text('p', 'None in the last 10 minutes, as far as ausearch can say.', 'muted')),
+    SEC_MORE.macExtra(host, d),
     d.selinux_mode ? secCard('Relabel a share', text('p', 'Registers the type with semanage, so it survives a relabel, then runs restorecon. This is the usual fix for a denial on a share.', 'muted small'), el('div', { class: 'sec-form' }, secField('Path', path), secField('Type', type)), relabel) : '',
     out);
 }
@@ -292,13 +302,14 @@ async function secMac() {
 async function secFirewall() {
   const host = S.host, d = await getJSON(`/api/security/firewall/quarantine${secQ(host)}`), out = el('div', { class: 'stack' });
   const ip = secInput('10.0.1.42 or 10.0.1.0/24'), minutes = secInput('60', '60'), reason = secInput('why');
+  const tier = el('select', { 'aria-label': 'Tier' }, new Option('These minutes', ''), new Option('Tier 1', '1'), new Option('Tier 2', '2'), new Option('Tier 3', '3'));
   const vips = secArea('one address or network a line', d.vips.join('\n'));
   const lift = (q) => async () => { if (await secPost(`/api/security/firewall/quarantine/${encodeURIComponent(q.ip_address)}?host=${encodeURIComponent(q.host)}&mode=apply`, null, out, 'DELETE')) secRender(); };
   return el('div', { class: 'stack' },
     secCard('Quarantine', d.quarantine.length ? secTable(['Host', 'Address', 'Why', 'Since', 'Ends', 'In the firewall', ''], d.quarantine.map((q) => [q.host, q.ip_address, q.reason, secWhen(q.added_at), q.expires_at ? `in ${secSpan(q.remaining_seconds)}` : 'until lifted', secOkPill(q.live, 'yes', 'no, it is gone'), secCan('security.manage') ? button('Lift', lift(q), 'btn sm ghost') : ''])) : text('p', 'Nobody is quarantined.', 'muted'),
       d.unknown_drops?.length ? text('p', `Dropped on the host with no record here: ${d.unknown_drops.join(', ')}`, 'st-warn') : '',
-      host ? el('div', { class: 'stack' }, el('div', { class: 'sec-form' }, secField('Address', ip), secField('Minutes (0: until lifted)', minutes), secField('Why', reason)),
-        secActions('/api/security/firewall/quarantine', () => ({ host, ip_address: ip.value.trim(), minutes: minutes.value.trim(), reason: reason.value.trim() }), out, { apply: 'Drop it', after: () => secRender() })) : text('p', 'Pick a host to add an address.', 'muted')),
+      host ? el('div', { class: 'stack' }, el('div', { class: 'sec-form' }, secField('Address', ip), secField('Minutes (0: until lifted)', minutes), secField('Or a tier', tier), secField('Why', reason)),
+        secActions('/api/security/firewall/quarantine', () => ({ host, ip_address: ip.value.trim(), minutes: minutes.value.trim(), ...(tier.value ? { tier: tier.value } : {}), reason: reason.value.trim() }), out, { apply: 'Drop it', after: () => secRender() })) : text('p', 'Pick a host to add an address.', 'muted')),
     host ? secCard(`Firewall on ${host}`, el('div', { class: 'stat-row' }, secStat('Found', d.measured_at ? (d.firewalls.join(', ') || 'none') : NOT_MEASURED), secStat('Quarantine table', d.measured_at ? (d.fence_present ? 'present' : 'not yet') : NOT_MEASURED), secStat('Airgap', d.measured_at ? (d.airgap ? 'ENGAGED' : 'off') : NOT_MEASURED, d.airgap ? 'st-failed' : ''), secStat('StorageForge reaches it from', d.controller.join(', ') || 'unknown')),
       text('p', 'The quarantine is its own nftables table, ahead of firewalld or ufw, so it works beside either and neither can undo it.', 'muted small'),
       secCan('security.emergency') ? el('div', { class: 'stack' }, text('h4', 'Emergency airgap'), text('p', 'Cuts everything except StorageForge, open connections included. It undoes itself in 10 minutes unless StorageForge can still reach the host through it, so it cannot lock you out for good.', 'muted small'),
@@ -331,7 +342,7 @@ async function secBehavior() {
       e.flagged.length ? secTable(['File', 'Bits per byte', 'Size', 'First bytes'], e.flagged.slice(0, 50).map((f) => [f.path, f.entropy, f.size, text('code', f.head, 'small')])) : '') : text('p', 'No sample yet. Sampling reads the first 4 KiB of what the last scan saw change, on the host.', 'muted'),
       text('p', 'Compressed data looks just like ciphertext, so archives, images and video are skipped, and a known file header clears a file. What is left is a reason to look, not proof.', 'muted small'),
       secCan('security.manage') ? el('div', { class: 'row wrap sec-acts' }, button('Sample changed files', async () => { if (await secPost('/api/security/behavior/entropy', { host }, out)) secRender(); }, 'btn sm'), button('ClamAV on changed files', async () => { const r = await secPost('/api/security/behavior/diff-scan', { host }, out); if (r) out.prepend(text('p', `Scanned ${r.scanned} changed files in ${r.seconds} s: ${r.found} new detections. They are in the Malware panel.`, r.found ? 'st-failed' : 'st-ok')); }, 'btn sm')) : ''),
-    secCard('Falco', text('p', d.measured_at ? (d.falco?.installed ? `Installed, ${d.falco.active ? 'running' : 'not running'}. StorageForge does not deploy rules for it or read its alerts yet.` : 'Not installed. StorageForge does not deploy it yet.') : `${NOT_MEASURED}.`, 'muted')),
+    secCard('Falco', text('p', d.measured_at ? (d.falco?.installed ? `Installed, ${d.falco.active ? 'running' : 'not running'}.` : 'Not installed.') : `${NOT_MEASURED}.`, 'muted'), button('Rules, alerts and YARA', () => secOpen('detect'), 'btn sm')),
     out);
 }
 
@@ -348,24 +359,25 @@ async function secIntegrity() {
       text('h4', 'Check files'), run('aide-check', 'Run a check'), text('h4', 'Make a new baseline'), text('p', 'After an upgrade you trust. Anything already changed becomes the new normal.', 'muted small'), run('aide-init', 'Make the baseline')),
     secCard('Lynis', l ? el('div', { class: 'stack' }, el('div', { class: 'stat-row' }, secStat('Hardening index', secVal(l.hardening_index)), secStat('Audited', secWhen(l.at)), secStat('Warnings', l.warnings.length), secStat('Suggestions', l.suggestions.length)),
       l.warnings.length ? secTable(['Warning', ''], l.warnings.map((w) => [w.id, w.text])) : '', l.suggestions.length ? secTable(['Suggestion', ''], l.suggestions.slice(0, 50).map((w) => [w.id, w.text])) : '') : text('p', 'No audit has run.', 'muted'), run('lynis', 'Run an audit')),
-    text('p', 'These run in the background on the host. Measure again when they are done.', 'muted small'), secCan('security.manage') ? secMeasureButton(host, out) : '', out);
+    text('p', 'These run in the background on the host. Measure again when they are done.', 'muted small'), secCan('security.manage') ? secMeasureButton(host, out) : '', out, await SEC_MORE.integrityExtra(host));
 }
 
 /* ── compliance ───────────────────────────────────────────────────── */
 async function secCompliance() {
-  const host = S.host, { standards, note } = await getJSON('/api/security/compliance/standards'), out = el('div', { class: 'stack' });
-  const pick = el('select', { 'aria-label': 'Standard' }, ...standards.map((s) => new Option(s.name, s.id)));
+  const host = S.host, { standards, note, presets = [], custom = [] } = await getJSON('/api/security/compliance/standards'), out = el('div', { class: 'stack' });
+  const pick = el('select', { 'aria-label': 'Standard' }, ...standards.map((s) => new Option(s.name, s.id)), ...presets.map((s) => new Option(`Role: ${s.name}`, s.id)), ...custom.map((s) => new Option(`Yours: ${s.name}`, s.id)));
   const body = el('div', { class: 'stack' });
   const show = async () => {
     const d = await getJSON(`/api/security/compliance/status/${encodeURIComponent(host)}?profile=${encodeURIComponent(pick.value)}`);
     pick.value = d.profile;
-    body.replaceChildren(el('div', { class: 'stat-row' }, secStat('Checks passing', d.score === null ? NOT_MEASURED : `${d.passed} of ${d.checks.length}`), secStat('Failing', d.failed, d.failed ? 'st-warn' : ''), secStat('Cannot tell', d.unknown), secStat('Measured', d.measured_at ? secAgo(d.measured_at) : 'never')),
-      secTable(['Check', 'Control', 'Result', 'Reading'], d.checks.map((c) => [c.label, c.control, secPill(c.result, c.result === 'pass' ? 'secure' : c.result === 'fail' ? 'warning' : 'unknown'), c.detail])));
+    body.replaceChildren(el('div', { class: 'stat-row' }, secStat('Checks passing', d.score === null ? NOT_MEASURED : `${d.passed} of ${d.checks.length}`), secStat('Failing', d.failed, d.failed ? 'st-warn' : ''), secStat('Cannot tell', d.unknown), secStat('Waived', d.waived || 0), secStat('Measured', d.measured_at ? secAgo(d.measured_at) : 'never')),
+      d.drift?.length ? text('p', `Passed before and fails now: ${d.drift.join(', ')}`, 'st-warn') : '',
+      secTable(['Check', 'Control', 'Result', 'Reading'], d.checks.map((c) => [c.label, c.control, secPill(c.result, c.result === 'pass' ? 'secure' : c.result === 'fail' ? 'warning' : 'unknown'), c.waiver ? `${c.detail}. Waived by ${c.waiver.approver}: ${c.waiver.reason}` : c.detail])));
   };
   pick.addEventListener('change', show);
   await show();
   return el('div', { class: 'stack' }, secCard(`Baseline on ${host}`, text('p', note, 'muted small'), secField('Standard', pick), body, secCan('security.manage') ? secMeasureButton(host, out) : ''),
     secCard('Set the baseline', text('p', 'Packages, kernel settings, umask, audit rules and the quarantine table. It leaves SELinux, decoys and holds to you, and the numbers above change only when a measurement sees the result.', 'muted small'),
       secActions('/api/security/compliance/init', () => ({ host, profile: pick.value }), out, { apply: 'Set the baseline', danger: `Change kernel settings, umask and audit rules on ${host}?`, after: () => secRender() })),
-    out);
+    SEC_MORE.complianceExtra(host, pick, standards), out);
 }

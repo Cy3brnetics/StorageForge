@@ -13,6 +13,7 @@ from . import security
 
 def register(web, ctx):
     core, db, conn, actor, json_body, password_confirmed, limiter = (ctx.core, ctx.db, ctx.conn, ctx.actor, ctx.json_body, ctx.password_confirmed, ctx.limiter)
+    step_up = ctx.step_up
 
     def audit(action: str, res: dict, **detail):
         """Previews change nothing and run nothing, so they leave no row."""
@@ -82,6 +83,7 @@ def register(web, ctx):
     @web.post('/api/security/worm/release')
     @login_required
     @password_confirmed
+    @step_up
     def api_security_worm_release():
         body = json_body()
         res = security.request_release(db, conn(), body, actor())
@@ -90,6 +92,7 @@ def register(web, ctx):
     @web.post('/api/security/worm/quorum/approve')
     @login_required
     @password_confirmed
+    @step_up
     def api_security_worm_approve():
         body = json_body()
         return audit('security.worm.approve', security.approve(db, conn(), body, actor()), timelock=body.get('timelock_id'))
@@ -104,6 +107,7 @@ def register(web, ctx):
     @web.post('/api/security/worm/break-glass')
     @login_required
     @password_confirmed
+    @step_up
     def api_security_worm_break_glass():
         body = json_body()
         return audit('security.worm.break_glass', security.use_break_glass(db, conn(), body, actor()), timelock=body.get('timelock_id'))
@@ -111,6 +115,7 @@ def register(web, ctx):
     @web.post('/api/security/worm/break-glass/key')
     @login_required
     @password_confirmed
+    @step_up
     def api_security_worm_key():
         res = security.mint_break_glass(conn(), actor())
         return audit('security.worm.key', res, minted='break_glass_key' in res, timelock=res.get('timelock_id'))
@@ -195,6 +200,7 @@ def register(web, ctx):
     @web.post('/api/security/firewall/airgap')
     @login_required
     @password_confirmed
+    @step_up
     def api_security_airgap():
         body = json_body()
         res = security.airgap(db, conn(), body, actor())
@@ -237,7 +243,7 @@ def register(web, ctx):
     @web.get('/api/security/compliance/standards')
     @login_required
     def api_security_compliance_standards():
-        return jsonify(security.compliance_standards())
+        return jsonify(security.compliance_standards(conn()))
 
     @web.get('/api/security/compliance/status/<host>')
     @login_required
