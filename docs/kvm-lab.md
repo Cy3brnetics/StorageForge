@@ -34,13 +34,22 @@ Every build has `sf-ctl` and `sf-alpine`, the only config without systemd, plus 
 
 ## Appliances
 
-Three more configs install from their vendors' ISOs, with nobody at the console. They need more memory and a larger download, so only `--pick` builds them:
+Three server hypervisor/storage configs install from their vendors' ISOs, with nobody at the console. They need more memory and a larger download, so only `--pick` builds them:
 
 | Config | System | Storage | RAM |
 | :--- | :--- | :--- | :--- |
 | `sf-pve` | Proxmox VE 9.2 | LVM thin root, ZFS mirror `tank` registered as guest storage | 2 GB |
 | `sf-truenas` | TrueNAS 25.10 | ZFS mirror `tank` | 4 GB |
 | `sf-xcp` | XCP-ng 8.3, nested Xen | Local ext storage repository | 3 GB |
+
+On the `dev-expanded-networking` branch, four dedicated router and firewall appliances join the lab to exercise multi-transport discovery (SSH, Telnet, REST) and multi-hop reachability in isolated virtual networks (see [Expanded Networking Roadmap](../expanded-networking-roadmap.md)):
+
+| Config | System | Interfaces / Network | RAM |
+| :--- | :--- | :--- | :--- |
+| `sf-mikrotik` | MikroTik RouterOS 7 CHR | mgmt (10.77.0.27), wan, lan1, dmz | 128 MB |
+| `sf-openwrt` | OpenWrt 23.05 x86 | mgmt (10.77.0.28), wan, lan1, dmz | 128 MB |
+| `sf-pfsense` | pfSense CE 2.7 / OPNsense | mgmt (10.77.0.29), wan, lan1, dmz | 1 GB |
+| `sf-cisco` | Cisco IOSv / VyOS | mgmt (10.77.0.30), wan, lan1, dmz | 1 GB |
 
 ```bash
 examples/lab/lab.sh up --pick sf-pve,sf-truenas,sf-xcp,sf-bookworm
@@ -69,6 +78,7 @@ The build above ran on 2026-11-01 with the work uncommitted, as instance 1 besid
 | 9: Security | `tests/lab/tiers_platform.py` | Holds on real ZFS and btrfs, the cool-off, two admins, the offline key, the clock guard, decoys, the armed brake, Samba and NFS attribution, the airgap and its timer, quarantine, blast radius and the clean room, SELinux, AppArmor and the baseline |
 | 10: Infrastructure | `tests/lab/tiers_platform.py` | What scans read against each VM, nothing invented, a capture proving nothing is probed, a failed collector, a port ufw looks like it blocks, every firewall giving the same model, workloads on each runtime, change tracking, redacted exports, and whether a quarantine reaches a published port |
 | 11: Changes | `tests/lab/tiers_platform.py` | Firewall rules on ufw, nftables and firewalld, a published port's fix, a fence across a reboot, a timer undoing a cut SSH path, reach against real connections, what-if against the next reading, a design, hardening steps, WireGuard, a placeholder, retention, YARA, a playbook, packages and Falco |
+| 12: Network | `tests/lab/tiers_network.py` | Routers (MikroTik, OpenWrt, pfSense, Cisco) over SSH and Telnet, passive facts, normalized firewall/NAT rules, multi-hop reachability across isolated segments, and safe rollback testing |
 
 `lab.sh test --all`, or **Full test** in the panel, runs tiers 0 to 11, resets the lab around the tiers that change VMs, and writes `reports/lab-<date>.md` with a table per distro. Reports aren't committed. Tiers 1, 3, 4, 5, 9, 10 and 11 run against the real Docker stack on `sf-ctl` through its API. Tiers 2 and 8 run on the libvirt host, on a throwaway database. `lab.sh gauntlet` runs tier 2 alone and `lab.sh appliances` runs tier 8 alone.
 
