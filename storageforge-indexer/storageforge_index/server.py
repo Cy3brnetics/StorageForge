@@ -152,8 +152,9 @@ from flask_login import LoginManager, current_user, login_required, login_user, 
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import (__version__, access, alerts, errlog, remotes, blueprint, canvas, changes, clamav, deploy, docker, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_scheduler, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
+from . import (__version__, access, alerts, inframeasure, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
+               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_infra, routes_scheduler, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
+from .runtimes import docker
 from .capacity import parse_size, trends
 from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
@@ -274,6 +275,7 @@ class App:
         while True:
             try:
                 done = security.tick(self.db)
+                done['infra'] = inframeasure.tick(self.db)
                 if any(done.values()):
                     self.alerts_wake.set()
             except Exception:
@@ -699,7 +701,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js"):name>')
+    @web.get('/<any("session.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "mapview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
@@ -1300,6 +1302,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     routes_git.register(web, ctx)
     routes_clamav.register(web, ctx)
     routes_security.register(web, ctx)
+    routes_infra.register(web, ctx)
 
     @web.get('/api/shares/check')
     @login_required

@@ -815,8 +815,8 @@ server_smb() {
       selinux_parents "${E_PATH[$i]}"
       if ls -Zd "${E_PATH[$i]}" 2>/dev/null | grep samba_share_t >/dev/null; then ok "SELinux: ${E_PATH[$i]} is samba_share_t"
       elif ((APPLY)); then doing "SELinux: label ${E_PATH[$i]} samba_share_t"
-        if command -v semanage >/dev/null; then semanage fcontext -a -t samba_share_t "${E_PATH[$i]}(/.*)?" 2>/dev/null || true; restorecon -R "${E_PATH[$i]}"
-        else chcon -R -t samba_share_t "${E_PATH[$i]}"; fi
+        if command -v semanage >/dev/null; then semanage fcontext -a -t samba_share_t "${E_PATH[$i]}(/.*)?" 2>/dev/null || true; relabel_tree "${E_PATH[$i]}"
+        else skip=(); while IFS= read -r d; do skip+=(! -path "$d"); done < <(other_fs_dirs "${E_PATH[$i]}"); find "${E_PATH[$i]}" -xdev ${skip[@]+"${skip[@]}"} -exec chcon -h -t samba_share_t {} +; fi
       else missing "SELinux would block Samba from ${E_PATH[$i]} (needs samba_share_t)"; fi
     done
   fi

@@ -42,6 +42,18 @@ def F(name, kind, label, **kw):
     return {'name': name, 'kind': kind, 'label': label, **kw}
 
 
+# Step types registered from other modules (steps_infra.py), so changes.py does not have to grow with every new kind of step.
+EXTRA: dict[str, dict] = {}
+EXTRA_BASH: list[str] = []
+
+
+def register(kind: str, spec: dict, args: tuple, title_of, check_of, ansible_of):
+    """A new step type: its fields, what reaches its t_<kind> Bash function, its title, its check against the index, its Ansible."""
+    TYPES[kind] = spec
+    ARGS[kind] = args
+    EXTRA[kind] = {'title': title_of, 'check': check_of, 'ansible': ansible_of}
+
+
 PATH, TARGET = F('path', 'path', 'Path', required=True), F('target', 'path', 'Mount point', required=True)
 OWNER, GROUP, MODE = F('owner', 'user', 'Owner'), F('group', 'user', 'Group'), F('mode', 'mode', 'Mode', placeholder='0755')
 CONFIRM = F('confirm', 'confirm', 'Type the device again to confirm', required=True)
@@ -237,6 +249,8 @@ def mkfs_args(fstype: str, opts: str) -> str:
 
 def title(t: dict) -> str:
     p, k = t['params'], t['type']
+    if k in EXTRA:
+        return EXTRA[k]['title'](p)
     return {
         'dir': lambda: f'Create folder {p["path"]}', 'rename': lambda: f'Rename {p["path"]} → {p["dest"]}',
         'trash': lambda: f'Move {p["path"]} to the trash', 'symlink': lambda: f'Link {p["path"]} → {p["target"]}',
@@ -420,7 +434,7 @@ class Host:
 
 
 def _users(conn, host, path):
-    from .docker import users_of
+    from .runtimes.docker import users_of
     try:
         return sorted({u['container'] for u in users_of(conn, host, path) if u['state'] == 'running'})
     except Exception:
@@ -469,6 +483,10 @@ def check(conn: Conn, plan: dict) -> dict:
 
 
 def _check_task(conn, c: Host, h: dict, k: str, p: dict, say):
+    if k in EXTRA:
+        EXTRA[k]['check'](conn, c, h, p, say)
+        return
+
     def parent_ok(path, what='parent folder'):
         par = posixpath.dirname(path)
         st = c.state(par)
@@ -995,6 +1013,11 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, actor: str, destructive:
 
     def mark(host):
         def hook(res):
+            if 'FW-ROLLBACK armed' in res['output']:     # the second signed run: getting through at all is the proof
+                from .steps_infra import CONFIRM_SCRIPT
+                done = deploy.run(db, host, CONFIRM_SCRIPT, [], kind='changes', ref=f'{plan["name"]}: confirm', mode='apply', actor=actor, timeout=60)
+                if 'FW-ROLLBACK confirmed' not in (done.get('output') or ''):
+                    return                                 # the timer undoes the change: this plan did not finish
             if 'destructive, skipped' in res['output']:
                 return
             c = db.connect()
@@ -1029,7 +1052,8 @@ def script(conn: Conn, plan: dict) -> str:
     return (CHANGE_HEAD.format(name=one_line(plan['name']), slug=slug(plan['name']),
                                date=dt.datetime.now().strftime('%Y-%m-%d %H:%M'), tasks=comments(summary, '#   (no tasks)'),
                                problems=comments(problems, '#   none'))
-            + f'PLAN={q(slug(plan["name"]))}\n' + CHANGE_BODY_1 + HELPERS + DEST_CMD + CHANGE_BODY_2 + REMOTE + CHANGE_BODY_3
+            + f'PLAN={q(slug(plan["name"]))}\n' + CHANGE_BODY_1 + HELPERS + DEST_CMD + CHANGE_BODY_2 + REMOTE
+            + CHANGE_BODY_3.replace('@DESTRUCTIVE@', '|'.join(k for k, v in EXTRA.items() if TYPES[k].get('destructive')) or 'zfs-pool') + ''.join(EXTRA_BASH)
             + '\n'.join(calls) + CHANGE_TAIL)
 
 
@@ -1632,7 +1656,7 @@ run() { # n host type title args...
   section "$n. $desc"
   if [[ $host != "$ME" ]]; then skip "runs on $host: ./$(basename "$0") --host <user>@$host ${ARGS[*]}"; return 0; fi
   if ((STOPPED)); then info "skipped: an earlier task failed"; return 0; fi
-  CUR_DESTRUCTIVE=0; case $type in partition|partition-add|format|btrfs-add|btrfs-replace|btrfs-remove|zfs-pool|lvm-vg|lvm-vg-extend) CUR_DESTRUCTIVE=1 ;; esac
+  CUR_DESTRUCTIVE=0; case $type in partition|partition-add|format|btrfs-add|btrfs-replace|btrfs-remove|zfs-pool|lvm-vg|lvm-vg-extend) CUR_DESTRUCTIVE=1 ;; @DESTRUCTIVE@) CUR_DESTRUCTIVE=1 ;; esac
   local before=$PROBLEMS
   "t_${type//-/_}" "$@" '' '' '' '' '' '' '' '' || true      # padded: every task function can read its optional arguments
   if ((APPLY && PROBLEMS > before)); then STOPPED=1; fi
@@ -1652,6 +1676,8 @@ finished
 # ── the Ansible playbook ────────────────────────────────────────────────
 def _ansible_task(t: dict, c: Host | None) -> dict:
     p, k = t['params'], t['type']
+    if k in EXTRA:
+        return EXTRA[k]['ansible'](t)
     name = title(t)
     q = shlex.quote
     if k == 'dir':
@@ -1904,3 +1930,6 @@ def ansible(conn: Conn, plan: dict) -> str:
             '# Unlike the Bash script, unmount removes the fstab line (a backup is kept) and trash has no "already done" check.\n'
             '# inventory.ini from the last scans:\n' + (inventory or '#   (no scanned hosts)') + '\n')
     return head + yaml.dump(lit(plays), Dumper=Dumper, sort_keys=False, default_flow_style=False, width=120, allow_unicode=True)
+
+
+from . import steps_infra  # noqa: E402,F401  (registers its step types, and imports this module)

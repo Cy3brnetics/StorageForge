@@ -457,7 +457,7 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
             say('note', f'runs on {dh["name"]} and pulls from {login} over SSH'
                         + (' (git reads the repository as that user)' if s['method'] == 'git'
                            else ' with sudo rsync there' if s['options']['remote_sudo'] else ''))
-        from .docker import users_of
+        from .runtimes.docker import users_of
         for side, h0, p0 in (('source', sh, src), ('destination', dh, dst)):
             users = [u for u in users_of(conn, h0['name'], p0) if u['state'] == 'running']
             if users:

@@ -20,7 +20,7 @@ import re
 import threading
 import time
 
-from .db import Conn
+from ..db import Conn
 
 COMPOSE_NAMES = ('docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml')
 NOT_STACKS = ('/overlay2/', '/containerd/', '/node_modules/', '/.cache/', '/fuse-overlayfs/', '/vfs/dir/',
@@ -33,6 +33,20 @@ FMT_C = ('{"id":"{{.Id}}","name":{{json .Name}},"image":{{json .Config.Image}},"
          '"started":{{json .State.StartedAt}},"labels":{{json .Config.Labels}},"mounts":{{json .Mounts}},'
          '"restart":{{json .HostConfig.RestartPolicy.Name}}}')
 FMT_V = '{"name":{{json .Name}},"driver":{{json .Driver}},"mountpoint":{{json .Mountpoint}},"options":{{json .Options}},"labels":{{json .Labels}}}'
+
+# A separate pass, so an engine that lacks one of these fields loses the detail and keeps the inventory. Docker's .State is a map
+# with no Health key when there is no healthcheck, and naming a missing key stops the whole command, so it needs index, which
+# Podman's struct refuses: hence one format each. Never .Config.Env: its values would cross the wire. The image's digest comes from the image, because a container only records its id.
+FMT_D = ('{"id":"{{.Id}}","image_id":{{json .Image}},"user":{{json .Config.User}},"privileged":{{json .HostConfig.Privileged}},'
+         '"network_mode":{{json .HostConfig.NetworkMode}},"cap_add":{{json .HostConfig.CapAdd}},"cap_drop":{{json .HostConfig.CapDrop}},'
+         '"security_opt":{{json .HostConfig.SecurityOpt}},"readonly_root":{{json .HostConfig.ReadonlyRootfs}},'
+         '"ports":{{json .NetworkSettings.Ports}},"networks":{{json .NetworkSettings.Networks}},'
+         '"apparmor":{{json .AppArmorProfile}},"selinux":{{json .ProcessLabel}},"health":HEALTH}')
+FMT_D_DOCKER = FMT_D.replace('HEALTH', '{{with index .State "Health"}}{{json (index . "Status")}}{{else}}null{{end}}')
+# Podman 5 leaves Health nil with no healthcheck, and one bad field fails the whole inspect
+FMT_D_PODMAN = FMT_D.replace('HEALTH', '{{with .State.Health}}{{json .Status}}{{else}}null{{end}}')
+FMT_I = '{"id":"{{.Id}}","digests":{{json .RepoDigests}}}'
+FMT_N = '{"name":{{json .Name}},"driver":{{json .Driver}},"internal":{{json .Internal}}}'
 
 ENGINE = r"""
 D=; how=
@@ -51,10 +65,14 @@ printf '@@engine\t%s\t%s\n' "${D##* }" "$how"
 [ -n "$D" ] || exit 0
 echo '@@root'; $D info --format '{{.DockerRootDir}}' 2>/dev/null || $D info --format '{{.Store.GraphRoot}}' 2>/dev/null
 echo '@@containers'; ids=$($D ps -aq); [ -n "$ids" ] && $D container inspect --format 'FMT_C' $ids
+if [ "${D##* }" = podman ]; then F='FMT_P'; else F='FMT_D'; fi
+echo '@@details'; [ -n "$ids" ] && $D container inspect --format "$F" $ids 2>/dev/null
+echo '@@images'; im=$($D images -q --no-trunc 2>/dev/null | sort -u); [ -n "$im" ] && $D image inspect --format 'FMT_I' $im 2>/dev/null
+echo '@@networks'; ns=$($D network ls -q 2>/dev/null); [ -n "$ns" ] && $D network inspect --format 'FMT_N' $ns 2>/dev/null
 echo '@@volumes'; vs=$($D volume ls -q); [ -n "$vs" ] && $D volume inspect --format 'FMT_V' $vs
 echo '@@sizes'; [ "${D##* }" = docker ] && timeout 90 $D system df -v --format '{{json .Volumes}}' 2>/dev/null
 echo; echo '@@end'                               # df prints no trailing newline
-""".replace('FMT_C', FMT_C).replace('FMT_V', FMT_V)
+""".replace('FMT_C', FMT_C).replace('FMT_V', FMT_V).replace('FMT_D', FMT_D_DOCKER).replace('FMT_P', FMT_D_PODMAN).replace('FMT_I', FMT_I).replace('FMT_N', FMT_N)
 
 READ = r"""
 while IFS= read -r -d '' f; do
@@ -67,7 +85,7 @@ done
 def _sections(text: str) -> dict:
     out, cur, buf = {}, None, []
     for line in text.splitlines():
-        if line.startswith('@@') and line[2:].split('\t')[0] in ('engine', 'root', 'containers', 'volumes', 'sizes', 'end'):
+        if line.startswith('@@') and line[2:].split('\t')[0] in ('engine', 'root', 'containers', 'details', 'images', 'networks', 'volumes', 'sizes', 'end'):
             if cur:
                 out[cur] = '\n'.join(buf)
             head = line[2:].split('\t')
@@ -101,17 +119,44 @@ def _size(text) -> int | None:
     return int(float(m.group(1)) * UNITS.get(m.group(2), 1)) if m else None
 
 
+def _ports(raw) -> list[dict]:
+    """NetworkSettings.Ports: {"80/tcp": [{"HostIp": "0.0.0.0", "HostPort": "8080"}], "443/tcp": null}. Only what is published."""
+    out = []
+    for key, binds in (raw or {}).items():
+        port, _, proto = str(key).partition('/')
+        for b in binds or []:
+            if str(b.get('HostPort') or '').isdigit() and port.isdigit():
+                out.append({'host_ip': b.get('HostIp') or '0.0.0.0', 'host_port': int(b['HostPort']), 'port': int(port), 'proto': proto or 'tcp'})
+    return out
+
+
+def _details(c: dict, d: dict, digests: dict) -> dict:
+    """What a container exposes and how it is confined. A field the engine did not give stays absent: absent is not 'safe'."""
+    nets = [{'name': name, 'ip': n.get('IPAddress') or None, 'ip6': n.get('GlobalIPv6Address') or None, 'mac': n.get('MacAddress') or None,
+             'gateway': n.get('Gateway') or None} for name, n in (d.get('networks') or {}).items() if isinstance(n, dict)]
+    c.update({'image_id': d.get('image_id'), 'digests': digests.get(d.get('image_id')) or [], 'user': d.get('user') or None,
+              'privileged': d.get('privileged'), 'network_mode': d.get('network_mode') or None, 'ports': _ports(d.get('ports')), 'networks': nets,
+              'cap_add': d.get('cap_add') or [], 'cap_drop': d.get('cap_drop') or [], 'security_opt': d.get('security_opt') or [],
+              'readonly_root': d.get('readonly_root'), 'apparmor': d.get('apparmor') or None, 'selinux': d.get('selinux') or None,
+              'health': d.get('health') or None, 'detail': True})
+    return c
+
+
 def parse_engine(text: str) -> dict:
     sec = _sections(text)
+    details = {(d.get('id') or '')[:12]: d for d in _jsonl(sec.get('details', ''))}
+    digests = {i.get('id'): i.get('digests') or [] for i in _jsonl(sec.get('images', ''))}
     engine, _, how = (sec.get('engine') or '\t').partition('\t')
     containers = []
     for c in _jsonl(sec.get('containers', '')):
-        containers.append({
+        container = ({
             'id': (c.get('id') or '')[:12], 'name': (c.get('name') or '').lstrip('/'), 'image': c.get('image'),
             'state': c.get('state'), 'started': c.get('started'), 'restart': c.get('restart'),
             'labels': {k: v for k, v in (c.get('labels') or {}).items() if KEEP_LABELS.match(k)},
             'mounts': [{'type': m.get('Type'), 'source': m.get('Source'), 'dest': m.get('Destination'),
                         'name': m.get('Name') or None, 'rw': bool(m.get('RW'))} for m in c.get('mounts') or []]})
+        d = details.get(container['id'])
+        containers.append(_details(container, d, digests) if d else container)
     sizes = {}
     for line in (sec.get('sizes') or '').splitlines():
         try:
@@ -124,7 +169,7 @@ def parse_engine(text: str) -> dict:
                 'project': (v.get('labels') or {}).get('com.docker.compose.project'),
                 'size': sizes.get(v.get('name'))} for v in _jsonl(sec.get('volumes', ''))]
     return {'engine': engine or None, 'access': how or None, 'root_dir': (sec.get('root') or '').strip() or None,
-            'containers': containers, 'volumes': volumes}
+            'containers': containers, 'volumes': volumes, 'networks': _jsonl(sec.get('networks', ''))}
 
 
 def _interp(text: str) -> bool:
@@ -211,9 +256,9 @@ def _stream(t, script: str, items: list[str] | None = None) -> str:
                 except BrokenPipeError:
                     pass
         threading.Thread(target=feed, daemon=True).start()
-    from .remote import StderrTail
+    from ..remote import StderrTail
     err = StderrTail(proc.stderr)
-    from .remote import read_capped
+    from ..remote import read_capped
     out = read_capped(proc, 'docker inventory').decode('utf-8', 'replace')
     proc.wait()
     err.join(5)

@@ -2,6 +2,7 @@
 without them this skips and says so."""
 import tempfile
 import threading
+import time
 import unittest
 
 from storageforge_index import scheduler, server, users
@@ -12,7 +13,7 @@ try:
 except ImportError:
     sync_playwright = None
 PW = 'a long enough password'
-TABS = ('details', 'search', 'changes', 'moves', 'schedule', 'deploy', 'docker', 'git', 'rebuild', 'cleanup', 'malware', 'access')
+TABS = ('details', 'search', 'changes', 'moves', 'schedule', 'deploy', 'docker', 'infra', 'git', 'rebuild', 'cleanup', 'malware', 'access')
 
 
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
@@ -31,6 +32,15 @@ class BrowserSmoke(unittest.TestCase):
         conn.execute("INSERT INTO git_repos (host_id, path, remotes_json, scan_id) VALUES (:h, '/srv/repo', '[]', 0)", {'h': hid})
         sid = scheduler.create_schedule(conn, {'name': 'nightly', 'host': 'nas', 'cron_expr': '0 3 * * *', 'task_type': 'command', 'task_ref': 'true'}, 'test')[0]['schedule_id']
         scheduler.ingest_report(conn, {'schedule_id': sid, 'exit_code': 0, 'output': 'fine'}, 'test')
+        from storageforge_index import security
+        import json
+        from storageforge_index import firewall, infragraph
+        net = {'interfaces': [{'name': 'eth0', 'kind': 'ethernet', 'state': 'up', 'mac': '52:54:00:00:00:01', 'addresses': [{'ip': '192.168.1.10', 'prefix': 24}]}], 'routes': [{'dst': '192.168.1.0/24', 'via': None, 'dev': 'eth0', 'family': 4}, {'dst': 'default', 'via': '192.168.1.1', 'dev': 'eth0', 'family': 4}],
+               'gateways': ['192.168.1.1'], 'dns': {'nameservers': []}, 'neighbours': [{'ip': '192.168.1.77', 'mac': 'b8:27:eb:00:00:01', 'dev': 'eth0'}], 'listeners': [{'proto': 'tcp', 'addr': '0.0.0.0', 'port': 8000, 'scope': 'any'}], 'unreadable': []}
+        conn.execute('INSERT INTO host_network (host_id, data_json, scan_id, updated_at) VALUES (:h, :d, 1, 1)', {'h': hid, 'd': json.dumps(net)})
+        security._save_measurement(conn, 'nas', 'infra', int(time.time()), 'test', {'firewall': firewall.model({'tools': []}), 'listeners': net['listeners'], 'storage_clients': [], 'libvirt': [], 'incus': [], 'lxc': [], 'proxmox': [], 'podman_rootless': [], 'access': {'wireguard': None, 'tailscale': None, 'proxy_routes': [], 'units': []}})
+        conn.execute("INSERT INTO graph_nodes (node_id, kind, label, host, updated_at) VALUES ('host:nas', 'Host', 'nas', 'nas', 1)")
+        infragraph.rebuild(conn, 'nas')
         conn.close()
         cls.http = make_server('127.0.0.1', 0, server.create_app(server.App(cls.db), 's' * 48), threaded=True)
         threading.Thread(target=cls.http.serve_forever, daemon=True).start()
@@ -64,6 +74,87 @@ class BrowserSmoke(unittest.TestCase):
             self.page.click(f'.tabs button[data-tab="{tab}"]')
             self.page.wait_for_timeout(250)
             self.assertEqual(self.errors, [], tab)
+
+    def test_the_infrastructure_panel_and_map_really_open_under_the_csp(self):
+        self.page.click('.tabs button[data-tab="infra"]')
+        self.page.wait_for_selector('#infrabox button')
+        for label in ('Exposure', 'Network', 'Firewall', 'Workloads'):
+            self.page.click(f'#infrabox .seg button:has-text("{label}")')
+            self.page.wait_for_timeout(200)
+            self.assertNotIn('Loading', self.page.inner_text('#infrabox'))
+            self.assertEqual(self.errors, [], label)
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.wait_for_selector('.mpbar')
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.errors, [])
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+    def test_the_map_controls_really_work_under_the_csp(self):
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.wait_for_selector('.mpmodes')
+        for mode in ('Network', 'Flow', 'Workloads', 'Storage', 'Security', 'Custom'):
+            self.page.click(f'.mpmodes button:has-text("{mode}")')
+            self.page.wait_for_selector('.mpmodes')
+            self.page.wait_for_timeout(200)
+            self.assertEqual(self.errors, [], mode)
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+    def confirm_password(self):
+        self.page.on('dialog', lambda d: d.accept(PW))
+
+    def test_from_the_map_a_step_is_drawn_first_and_then_staged(self):
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.wait_for_selector('#mpsvg g.k-listener')
+        self.page.click('#mpsvg g.k-listener')
+        self.page.click('#mpdetail button:has-text("Block it from everyone")')
+        self.page.wait_for_selector('#mpwhatif h4')
+        self.page.wait_for_selector('#mpwhatif >> text=Private networks to Blocked')
+        self.page.wait_for_selector('#mpsvg')
+        self.page.click('#mpwhatif button:has-text("Stage in Changes")')
+        self.page.wait_for_selector('#mpwhatif >> text=The Report on the host comes next')
+        self.assertEqual(self.errors, [])
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+    def test_the_exports_drawn_in_the_browser_really_download(self):
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.wait_for_selector('#mpsvg g.k-listener')
+        for choice, name in (('png', 'storageforge-map.png'), ('drawn', 'storageforge-map.svg')):
+            with self.page.expect_download(timeout=15000) as got:
+                self.page.select_option('select[aria-label="Export as"]', choice)
+            self.assertEqual(got.value.suggested_filename, name)
+            with open(got.value.path(), 'rb') as f:
+                head = f.read(8)
+            self.assertTrue(head.startswith(b'\x89PNG') if choice == 'png' else head.startswith(b'<svg'), head)
+        self.assertEqual(self.errors, [])
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+    def test_a_path_query_answers_in_the_panel(self):
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.wait_for_selector('#mpreach input')
+        inputs = self.page.query_selector_all('#mpreach input')
+        inputs[0].fill('192.168.1.20')
+        inputs[1].fill('nas')
+        inputs[2].fill('8000')
+        self.page.click('#mpreach button:has-text("Work it out")')
+        self.page.wait_for_selector('#mpreach >> text=Per configuration')
+        self.assertEqual(self.errors, [])
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+    def test_a_placeholder_says_who_made_it_and_a_design_compares(self):
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.wait_for_selector('.mpmodes')
+        self.page.click('.mpbar label:has-text("Devices nearby")')
+        self.page.wait_for_selector('#mpsvg g.k-neighbour')
+        self.page.click('#mpsvg g.k-neighbour')
+        self.page.wait_for_selector('#mpdetail >> text=made by Raspberry Pi')
+        self.page.fill('#mpdesigns input', 'smoke')
+        self.page.fill('#mpdesigns textarea', '{"hosts": [{"name": "nas", "firewall": [{"action": "allow", "proto": "tcp", "port": "8000"}]}]}')
+        self.page.click('#mpdesigns button:has-text("Save design")')
+        self.page.wait_for_selector('#mpdesigns b:has-text("smoke")')
+        self.page.click('#mpdesigns button:has-text("Compare")')
+        self.page.wait_for_selector('#mpdesigns >> text=Missing: 1')
+        self.assertEqual(self.errors, [])
+        self.page.click('#viewmode button[data-mode="topo"]')
 
     def settled(self):       # polled from here: wait_for_function evaluates in the page, which this CSP rightly refuses
         for _ in range(100):
@@ -112,3 +203,60 @@ class BrowserSmoke(unittest.TestCase):
     def test_git_calls_go_out_as_post(self):                 # SF-29
         self.page.evaluate("""async () => { window.__h = await postJSON('/api/git/history', {host: 'localhost', path: '/x'}).catch(e => e.message); }""")
         self.assertIn('is not a repository found', str(self.page.evaluate('window.__h')))
+
+
+@unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
+class MapAtScale(unittest.TestCase):
+    """A synthetic 200 hosts and 2,000 workloads. It has to stay usable: the numbers here decide whether the map needs more."""
+
+    def test_a_large_fleet_draws_and_stays_usable(self):
+        import json
+        import time
+        from werkzeug.serving import make_server
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(f'sqlite:///{tmp}/idx.db')
+            conn = db.connect()
+            db.migrate(conn)
+            users.create(conn, 'admin', PW, 'admin')
+            now = int(time.time())
+            with conn.tx():
+                for h in range(200):
+                    name = f'host{h:03}'
+                    conn.execute(f"""INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json, last_scanned_at) VALUES (:n, :n, 'scan', '{{}}', {db.ts(':t')})""", {'n': name, 't': now})
+                    conn.execute("INSERT INTO graph_nodes (node_id, kind, label, host, updated_at, layer) VALUES (:i, 'Host', :n, :n, :t, 'storage')", {'i': f'host:{name}', 'n': name, 't': now})
+                    nic = f'nic:{name}:eth0'
+                    conn.execute("INSERT INTO graph_nodes (node_id, kind, label, host, updated_at, layer, props_json) VALUES (:i, 'NIC', 'eth0', :n, :t, 'network', :p)", {'i': nic, 'n': name, 't': now, 'p': json.dumps({'addresses': [f'10.0.{h // 250}.{h % 250 + 1}/16']})})
+                    conn.execute("INSERT INTO graph_edges (src, dst, rel, props_json, built_by) VALUES (:s, :d, 'ATTACHED_TO', '{}', :b)", {'s': nic, 'd': f'host:{name}', 'b': f'infra:{name}'})
+                    for w in range(10):
+                        wid = f'wl:{name}:docker::c{w}'
+                        conn.execute("INSERT INTO graph_nodes (node_id, kind, label, host, updated_at, layer, props_json) VALUES (:i, 'Container', :l, :n, :t, 'workloads', :p)", {'i': wid, 'l': f'c{w}', 'n': name, 't': now, 'p': json.dumps({'runtime': 'docker', 'state': 'running'})})
+                        conn.execute("INSERT INTO graph_edges (src, dst, rel, props_json, built_by) VALUES (:s, :d, 'RUNS_ON', '{}', :b)", {'s': wid, 'd': f'host:{name}', 'b': f'infra:{name}'})
+            conn.close()
+            http = make_server('127.0.0.1', 0, server.create_app(server.App(db), 's' * 48), threaded=True)
+            threading.Thread(target=http.serve_forever, daemon=True).start()
+            base = f'http://127.0.0.1:{http.server_port}'
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch()
+                page = browser.new_page(viewport={'width': 1500, 'height': 900})
+                errors = []
+                page.on('pageerror', lambda e: errors.append(str(e)))
+                page.goto(base + '/login')
+                page.fill('input[type=text], input[name=username], #username', 'admin')
+                page.fill('input[type=password]', PW)
+                page.press('input[type=password]', 'Enter')
+                page.wait_for_url(base + '/**')
+                page.wait_for_selector('.tabs button')
+                start = time.time()
+                page.click('#viewmode button[data-mode="map"]')
+                page.wait_for_selector('#mpsvg', timeout=30000)
+                drawn = time.time() - start
+                start = time.time()
+                page.fill('#mpfilter', 'host150')
+                page.wait_for_timeout(50)
+                filtered = time.time() - start
+                self.assertEqual(errors, [])
+                self.assertLess(drawn, 15, f'took {drawn:.1f} s to draw')
+                self.assertLess(filtered, 8, f'took {filtered:.1f} s to filter')
+                browser.close()
+            http.shutdown()
+

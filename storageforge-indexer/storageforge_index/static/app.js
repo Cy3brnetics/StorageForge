@@ -620,6 +620,7 @@ function showTab(name) {
   if (name === 'git') loadGit();
   if (name === 'rebuild') loadRebuild();
   if (name === 'docker') loadDocker();
+  if (name === 'infra') loadInfra();
   if (name === 'deploy') loadDeploy();
   if (name === 'security' && typeof loadSecurity === 'function') loadSecurity();
 }
@@ -828,7 +829,7 @@ $('#installform').addEventListener('submit', async (ev) => {
 let ME = null;
 const can = (perm) => !!ME && ME.permissions.includes(perm);
 const TAB_NEEDS = { search: 'search.files', changes: 'plans.view', moves: 'plans.view', schedule: 'plans.view', deploy: 'deploy.view',
-                    docker: 'services.view', git: 'services.view', rebuild: 'configs.view', copies: 'files.browse', malware: 'files.browse', access: 'keys.view',
+                    docker: 'services.view', infra: 'workloads.view', git: 'services.view', rebuild: 'configs.view', copies: 'files.browse', malware: 'files.browse', access: 'keys.view',
                     security: 'security.view', jobs: 'scans.view', keys: 'keys.view' };
 function applyPermissions(me) {          // only hides what would answer 403: the server decides
   ME = me;
@@ -1143,7 +1144,7 @@ $('#lock').addEventListener('click', sfSignOut);
 // links from the planner: /#host=nas-02&tab=changes opens that host on that panel
 function takeLink() {
   const q = new URLSearchParams(location.hash.slice(1));
-  if (!q.has('host') && !q.has('tab')) return null;
+  if (!q.has('host') && !q.has('tab') && !q.has('view')) return null;
   history.replaceState(null, '', location.pathname + location.search);
   const host = q.get('host');
   if (host && [...$('#host').options].some((o) => o.value === host)) {
@@ -1152,6 +1153,7 @@ function takeLink() {
   }
   const tab = q.get('tab');
   if (tab === 'security') window.SEC_LINK_PANEL = q.get('panel');
+  if (q.get('view') === 'map' && typeof mapTakeLink === 'function') { mapTakeLink(q); document.querySelector('#viewmode button[data-mode="map"]')?.click(); }
   return tab && document.querySelector(`.tabs button[data-tab="${CSS.escape(tab)}"]`) ? tab : null;
 }
 

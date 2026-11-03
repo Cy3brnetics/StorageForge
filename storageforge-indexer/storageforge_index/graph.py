@@ -280,7 +280,7 @@ def save(db, conn, hostname: str, nodes: dict, edges: list):
                             src IN (SELECT node_id FROM graph_nodes WHERE host = :h AND kind <> 'Host')
                             OR dst IN (SELECT node_id FROM graph_nodes WHERE host = :h AND kind <> 'Host')))""", {'h': hostname})
         keep = [n['id'] for n in nodes.values() if n['host'] == hostname]
-        for stale in {r[0] for r in conn.all('SELECT node_id FROM graph_nodes WHERE host = :h', {'h': hostname})} - set(keep):
+        for stale in {r[0] for r in conn.all("SELECT node_id FROM graph_nodes WHERE host = :h AND layer = 'storage'", {'h': hostname})} - set(keep):
             conn.execute('DELETE FROM graph_nodes WHERE node_id = :id', {'id': stale})
         for n in nodes.values():
             if n['host'] not in (None, hostname):      # another scanned host's node: its own build owns it, but may not
@@ -299,15 +299,21 @@ def save(db, conn, hostname: str, nodes: dict, edges: list):
             conn.execute("""INSERT INTO graph_edges (src, dst, rel, props_json, built_by) VALUES (:s, :d, :r, :p, :h)
                             ON CONFLICT (src, dst, rel) DO UPDATE SET props_json = excluded.props_json, built_by = excluded.built_by""",
                          {'s': e['src'], 'd': e['dst'], 'r': e['rel'], 'p': json.dumps(e['props'], default=str), 'h': hostname})
-        conn.execute("""DELETE FROM graph_nodes WHERE host IS NULL AND node_id NOT IN
+        conn.execute("""DELETE FROM graph_nodes WHERE host IS NULL AND layer = 'storage' AND node_id NOT IN
                         (SELECT src FROM graph_edges UNION SELECT dst FROM graph_edges)""")
 
 
-def load(conn, host: str | None = None) -> dict:
-    nodes = [{'id': r[0], 'kind': r[1], 'label': r[2], 'host': r[3], 'health': r[4], 'props': json.loads(r[5] or '{}')}
-             for r in conn.all('SELECT node_id, kind, label, host, health, props_json FROM graph_nodes ORDER BY node_id')]
+def load(conn, host: str | None = None, layers=('storage',)) -> dict:
+    """Only the storage layer unless asked: reports, the canvas and the graph view know nothing of the others."""
+    nodes = [{'id': r[0], 'kind': r[1], 'label': r[2], 'host': r[3], 'health': r[4], 'props': json.loads(r[5] or '{}'), 'layer': r[6], 'confidence': r[7], 'first_seen': r[8]}
+             for r in conn.all('SELECT node_id, kind, label, host, health, props_json, layer, confidence, first_seen FROM graph_nodes ORDER BY node_id') if r[6] in layers]
+    if tuple(layers) == ('storage',):           # the shape every older caller expects
+        for n in nodes:
+            del n['layer'], n['confidence'], n['first_seen']
     edges = [{'src': r[0], 'dst': r[1], 'rel': r[2], 'props': json.loads(r[3] or '{}')}
              for r in conn.all('SELECT src, dst, rel, props_json FROM graph_edges ORDER BY src, dst, rel')]
+    known = {n['id'] for n in nodes}
+    edges = [e for e in edges if e['src'] in known and e['dst'] in known]
     if host:
         keep = {n['id'] for n in nodes if n['host'] == host}
         keep |= {e['dst'] for e in edges if e['src'] in keep} | {e['src'] for e in edges if e['dst'] in keep}
@@ -367,9 +373,16 @@ def rebuild_host(db, conn, hostname: str, rebuild_clients: bool = True) -> tuple
     node['link_ignore'] = ignore_lists(conn)
     nodes, edges = build(node)
     save(db, conn, node['hostname'], nodes, edges)
+    try:                                      # the other layers read the mount nodes just saved. A failure there leaves storage right
+        from .infragraph import rebuild
+        rebuild(conn, node['hostname'])
+    except Exception:
+        from . import errlog
+        errlog.trace()
     if rebuild_clients:   # hosts that mount from this one draw their line to its folders: redraw them too
         clients = {r[0] for r in conn.all("""SELECT DISTINCT n.host FROM graph_edges e JOIN graph_nodes n ON n.node_id = e.dst
-                                             WHERE e.src = :h AND n.host IS NOT NULL AND n.host <> :name""",
+                                             WHERE e.src = :h AND n.host IS NOT NULL AND n.host <> :name
+                                               AND (e.built_by IS NULL OR e.built_by NOT LIKE 'infra:%')""",
                                           {'h': f'host:{node["hostname"]}', 'name': node['hostname']})}
         for c in sorted(clients):
             rebuild_host(db, conn, c, rebuild_clients=False)

@@ -57,6 +57,11 @@ FRESH_PASSWORD = {
     ('POST', '/api/users/<name>/reset-link'),
     ('POST', '/api/security/events/<int:event_id>/ack'),
     ('POST', '/api/security/measure'),
+    ('POST', '/api/infra/measure'),
+    ('POST', '/api/infra/settings'),
+    ('POST', '/api/map/placeholders/<path:node_id>/promote'),
+    ('POST', '/api/map/manual'),
+    ('DELETE', '/api/map/manual/<int:manual_id>'),
     ('POST', '/api/security/worm/hold'),
     ('POST', '/api/security/worm/release'),
     ('POST', '/api/security/worm/quorum/approve'),
@@ -81,6 +86,15 @@ FRESH_PASSWORD = {
 }
 # No fresh password: plans that only sit in the database, reads over SSH or signed read-only probes, or the sign-in routes themselves.
 NO_FRESH_PASSWORD = {
+    ('POST', '/api/map/views'),
+    ('DELETE', '/api/map/views/<int:view_id>'),
+    ('POST', '/api/map/whatif'),
+    ('POST', '/api/map/stage'),
+    ('POST', '/api/map/annotations'),
+    ('DELETE', '/api/map/annotations/<int:note_id>'),
+    ('POST', '/api/map/designs'),
+    ('DELETE', '/api/map/designs/<int:design_id>'),
+    ('POST', '/api/map/designs/<int:design_id>/stage'),
     ('POST', '/api/clamav/hosts/<host>/collect'),
     ('POST', '/api/backups'),
     ('POST', '/api/changes'),
@@ -146,6 +160,7 @@ AUDITED_ELSEWHERE = {
     'api_remote_revoke': 'remotes.revoke writes remote.revoke',
 }
 NOT_AUDITED = {
+    'api_map_whatif': 'reads only: a draft plan against a copy of the facts',
     'api_logout': 'the session simply ends',
     'api_enroll_check': 'reads one link and changes nothing',
     'api_jobs_report': 'recorded as a job run',

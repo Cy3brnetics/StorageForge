@@ -348,7 +348,7 @@ CONTAINER_PATHS = {'rsync': _copy_paths, 'rotate': _copy_paths,
 
 def check(conn: Conn, task: dict) -> dict:
     """Per block: [{level, text, fix?}] in run order. fix is a block the editor can insert before this one."""
-    from .docker import users_of
+    from .runtimes.docker import users_of
     task = normalize({**task, 'name': str(task.get('name') or '').strip() or 'untitled'})   # a draft may have no name yet
     hs = hosts(conn)
     home = find_host(hs, task['host']) if task['host'] else None

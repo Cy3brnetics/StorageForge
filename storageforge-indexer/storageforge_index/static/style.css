@@ -993,3 +993,63 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 .sec-k { color: var(--muted); }
 .sec-v { min-width: 0; overflow-wrap: anywhere; }
 .st-warn { color: var(--local-only); }
+
+/* map */
+.mapview { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; background: var(--bg); }
+.mapview[hidden] { display: none; }
+.mpbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line, #333); }
+.mpbar input[type=search] { min-width: 200px; }
+.mpbody { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; }
+.mpcanvas { position: relative; min-height: 0; overflow: hidden; }
+.mpside { overflow: auto; padding: 12px; border-left: 1px solid var(--line, #333); }
+.mpsvg { width: 100%; height: 100%; cursor: grab; display: block; }
+.mpframe { fill: var(--panel, #1a1a1a); stroke: var(--line, #444); }
+.mphit { fill: transparent; cursor: pointer; }
+.mphost { font-weight: 600; font-size: 13px; fill: currentColor; pointer-events: none; }
+.mpedge { fill: none; stroke: var(--muted, #777); stroke-width: 1; opacity: .35; pointer-events: none; }
+.mpedge.inferred { stroke-dasharray: 4 4; }
+.mpedge.on { stroke-width: 2; opacity: 1; }
+.mpnode { cursor: pointer; }
+.mpnode rect { fill: var(--bg, #222); stroke: var(--line, #555); }
+.mpnode.inferred rect, .mpnode.placeholder rect { stroke-dasharray: 4 3; }
+.mpnode.flagged rect { stroke: #d9a441; }
+.mpnode.dim { opacity: .2; }
+.mplabel { font-size: 11px; fill: currentColor; font-family: var(--mono, monospace); pointer-events: none; }
+.mpsvg.far .mplabel { display: none; }
+.mpnode.x-any rect, .mpchip.x-any { fill: #7a1f1f; background: #7a1f1f; color: #fff; }
+.mpnode.x-lan rect, .mpchip.x-lan { fill: #7a5a1f; background: #7a5a1f; color: #fff; }
+.mpnode.x-vpn rect, .mpchip.x-vpn { fill: #1f5a7a; background: #1f5a7a; color: #fff; }
+.mpnode.x-unknown rect, .mpchip.x-unknown { fill: #5a1f7a; background: #5a1f7a; color: #fff; }
+.mpnode.x-blocked rect, .mpchip.x-blocked { fill: #2a4a2a; background: #2a4a2a; color: #fff; }
+.mpnode.x-loopback rect, .mpchip.x-loopback { fill: #333; background: #333; color: #fff; }
+.mplegend { position: absolute; left: 8px; bottom: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.mpchip { padding: 1px 6px; border-radius: 3px; }
+.mpnode.x-any .mplabel, .mpnode.x-lan .mplabel, .mpnode.x-vpn .mplabel, .mpnode.x-unknown .mplabel, .mpnode.x-blocked .mplabel, .mpnode.x-loopback .mplabel { fill: #fff; }
+
+/* infrastructure panel: the side panel is too narrow for columns, so each row stacks */
+.inf-table table, .inf-table tbody, .inf-table tr, .inf-table td { display: block; width: 100%; }
+.inf-table thead { display: none; }
+.inf-table tr { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.inf-table td { padding: 1px 0; overflow-wrap: anywhere; }
+.inf-table td:empty { display: none; }
+.inf-table td::before { content: attr(data-label) ": "; color: var(--muted); font-size: 12px; }
+
+/* the map's own controls */
+.mpmodes { display: flex; gap: 2px; }
+.mpmodes button[aria-pressed="true"] { background: var(--accent, #357); color: #fff; }
+.mpnode.ghost rect { fill: none; stroke: #6cf; stroke-dasharray: 3 3; }
+.mpnode.gone rect { stroke: #d33; }
+.mpnode.gone .mplabel { text-decoration: line-through; }
+.mpnode.changed rect { stroke: #fc3; stroke-width: 2; }
+.mpedge.ghost { stroke: #6cf; opacity: .9; stroke-dasharray: 3 3; }
+.mpedge.trace { stroke: #fc3; stroke-width: 2.5; opacity: 1; }
+.mpnode.confidence-manual rect { stroke: #8a8; stroke-dasharray: 8 3; }
+.mpnode.trace rect { stroke: #fc3; stroke-width: 2; }
+.mpnode.unprotected rect { stroke: #e77; stroke-width: 2; }
+.mpnote { font-size: 11px; fill: #fc6; pointer-events: none; }
+.mpsvg.far .mpnode:not(.k-host) { opacity: .75; }
+.mpside h4 { margin: 12px 0 4px; }
+.mpform { display: grid; gap: 4px; margin: 6px 0; }
+.mpform input, .mpform select, .mpform textarea { width: 100%; box-sizing: border-box; }
+.mptime { min-width: 180px; }
+@media print { .mpbar, .mpside, .bar, .tabs, .rail, .panel { display: none !important; } .mapview { position: static; } .mpsvg { height: auto; } }

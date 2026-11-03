@@ -63,7 +63,7 @@ def _git(conn: Conn) -> list[str]:
 
 
 def _docker(conn: Conn) -> list[str]:
-    from .docker import listing
+    from .runtimes.docker import listing
     rows = [[h['host'] if 'host' in h else h.get('hostname'), s['project'] or 'standalone', s.get('state') or '',
              len(s.get('containers') or [])] for h in listing(conn) for s in h['stacks']]
     return table(['Host', 'Stack', 'State', 'Containers'], rows) if rows else ['No container engines found.']

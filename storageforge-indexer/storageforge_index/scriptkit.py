@@ -45,7 +45,15 @@ def comments(lines, empty: str) -> str:
     return '\n'.join(one_line(l) for l in lines) or empty
 
 
-HELPERS = r"""durable() { # to disk now: a config file written moments before a power cut can otherwise come back empty
+HELPERS = r"""other_fs_dirs() { # path -> the folders under it that are another filesystem: a held snapshot is read-only, and is not for relabelling
+  local dev; dev=$(stat -c %d -- "$1") || return 0
+  find "$1" -xdev -type d -printf '%D\t%p\n' 2>/dev/null | awk -F'\t' -v d="$dev" '$1 != d {print $2}'
+}
+relabel_tree() { # path: restorecon, leaving out what other_fs_dirs finds
+  local d skip=(); while IFS= read -r d; do skip+=(-e "$d"); done < <(other_fs_dirs "$1")
+  restorecon -R -x ${skip[@]+"${skip[@]}"} -- "$1"
+}
+durable() { # to disk now: a config file written moments before a power cut can otherwise come back empty
   sync -- "$@" 2>/dev/null || sync
 }
 reload_systemd() { # a reload waits on a hard network mount whose server is gone, and every new login then waits on systemd

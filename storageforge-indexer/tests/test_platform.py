@@ -458,7 +458,7 @@ class DockerTests(DBCase):
         '@@sizes', json.dumps([{'Name': 'old', 'Size': '1.5GB'}, {'Name': 'jellyfin_cache', 'Size': '200MB'}]) + '@@end'])
 
     def test_engine_compose_stacks_and_usage(self):
-        from storageforge_index import docker
+        from storageforge_index.runtimes import docker
         d = docker.parse_engine(self.ENGINE.replace('@@end', '\n@@end'))
         self.assertEqual((d['engine'], d['root_dir'], len(d['containers'])), ('docker', '/home/docker/imgs', 2))
         self.assertEqual(d['containers'][0]['labels'], {})                              # unknown labels are not kept
@@ -1457,7 +1457,7 @@ class ServerTests(DBCase):
         self.assertEqual(self.client.post('/api/login', json={'username': 'vera', 'password': 'x' * 16}).status_code, 200)
         self.assertEqual(self.client.get('/api/me').get_json()['role'], 'viewer')
         self.assertEqual(self.client.get('/api/hosts').status_code, 200)
-        allowed = {'/api/login', '/api/logout', '/api/reauth', '/api/me', '/api/me/password', '/api/jobs/report', '/api/jobs/state'}
+        allowed = {'/api/login', '/api/logout', '/api/reauth', '/api/me', '/api/me/password', '/api/jobs/report', '/api/jobs/state', '/api/map/whatif'}    # a what-if reads only
         wrote = []
         for rule in self.web.url_map.iter_rules():
             path = re.sub(r'<int:\w+>', '1', rule.rule)
@@ -2114,7 +2114,9 @@ class ScriptHeaderTests(DBCase):
             params = {f['name']: next(o for o in f['options'] if o) if f['kind'] == 'choice' else
                       {'path': path, 'text': text, 'spec': 'nas:/srv/' + canary.replace(' ', ''), 'bool': True, 'device': '/dev/sdb',
                        'user': 'root', 'mode': '0755', 'options': 'defaults', 'label': 'data', 'confirm': '/dev/sdb', 'host': 'pc',
-                       'devices': '/dev/sdb', 'btrfs-device': '/dev/sdb', 'name': 'snap', 'dataset': 'tank/data', 'size': '10G', 'mkfs': '', 'number': '4096'}[f['kind']]
+                       'devices': '/dev/sdb', 'btrfs-device': '/dev/sdb', 'name': 'snap', 'dataset': 'tank/data', 'size': '10G', 'mkfs': '', 'number': '4096',
+                       'port': '8080', 'ports': '445,139', 'cidr': '10.0.0.0/24', 'cidrs': '10.0.0.0/24,10.0.1.0/24', 'iface': 'eth0', 'sysctl': 'fs.protected_hardlinks', 'word': 'yes',
+                       'wgkey': 'a' * 43 + '=', 'image': 'nginx:1', 'publish': '127.0.0.1:8080:80/tcp', 'binds': '/srv/a:/data', 'lines': text}[f['kind']]
                       for f in spec['fields']}
             out[f'changes {kind}'] = changes.script(self.conn, {'name': 'p', 'tasks': [{'type': kind, 'host': 'nas', 'params': params, 'note': text}]})
         for kind, spec in tasks.TYPES.items():

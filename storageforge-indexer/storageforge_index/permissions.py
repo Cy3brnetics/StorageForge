@@ -38,6 +38,10 @@ CATALOG = (
         ('security.view', 'See what hosts report: posture, holds, decoys, access control, quarantine, integrity and compliance', False),
         ('security.manage', 'Measure hosts, relabel, quarantine addresses, run AIDE and Lynis, sample files and set baselines', True),
         ('security.emergency', 'Pull the brake, airgap a host, arm the sentinel, apply and release holds, and use the offline key', True),)),
+    ('Infrastructure', (
+        ('workloads.view', 'See containers, VMs and instances across hosts, from the index', False),
+        ('map.view', 'See interfaces, routes and listeners, from the index. Firewall rules and exposure also need security.view', False),
+        ('map.edit', 'Save map views', False),)),
     ('Host access', (
         ('keys.view', 'See public keys, bindings and scan access', False),
         ('keys.manage', 'Generate, install, bind and remove SSH keys', True),
@@ -54,13 +58,13 @@ ALL = frozenset(p for _, perms in CATALOG for p, _, _ in perms)
 HIGH_RISK = frozenset(p for _, perms in CATALOG for p, _, risky in perms if risky)
 
 _VIEWER = frozenset({'search.files', 'hosts.view', 'files.browse', 'services.view', 'configs.view', 'logs.view', 'audit.view',
-                     'scans.view', 'plans.view', 'deploy.view', 'keys.view', 'backups.view', 'security.view'})
+                     'scans.view', 'plans.view', 'deploy.view', 'keys.view', 'backups.view', 'security.view', 'workloads.view', 'map.view'})
 # Built-in roles cannot be changed or removed. Without a role here or in `roles`, an account may do nothing.
 BUILTIN = {
     'search': ('Searches files across hosts, and nothing else', frozenset({'search.files'})),
     'viewer': ('Browses and searches', _VIEWER),
     'operator': ('Also plans, scans and deploys', _VIEWER | {'scans.run', 'plans.edit', 'plans.scripts', 'deploy.report', 'deploy.apply',
-                                                            'deploy.destructive', 'deploy.setup', 'git.live', 'git.sync', 'security.manage'}),
+                                                            'deploy.destructive', 'deploy.setup', 'git.live', 'git.sync', 'security.manage', 'map.edit'}),
     'admin': ('Everything, including keys, accounts and settings', ALL),
 }
 
@@ -89,6 +93,20 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (('POST',), r'/api/clamav/hosts/[^/]+/collect', 'deploy.report'),
     (('POST',), r'/api/clamav/detections/\d+/(quarantine|restore|ignore)', 'deploy.destructive'),
     (READ, r'/api/(docker(/.*)?|git|git/ignore|shares/check)', 'services.view'),
+    (READ, r'/api/workloads(/.*)?', 'workloads.view'),
+    (READ, r'/api/map/(exposure|reach|coverage)', 'security.view'),
+    (READ, r'/api/map/designs/\d+/export', 'plans.scripts'),
+    (READ, r'/api/(network|map(/.*)?)', 'map.view'),
+    (_WRITE, r'/api/map/(views|manual|annotations)(/\d+)?', 'map.edit'),
+    (('POST',), r'/api/map/whatif', 'security.view'),
+    (('POST',), r'/api/map/stage', 'plans.edit'),
+    (('POST',), r'/api/map/placeholders/.+/promote', 'keys.manage'),
+    (_WRITE, r'/api/map/designs(/\d+)?', 'plans.edit'),
+    (('POST',), r'/api/map/designs/\d+/stage', 'plans.edit'),
+    (READ, r'/api/(firewall|exposure)', 'security.view'),
+    (('POST',), r'/api/infra/measure', 'security.manage'),
+    (READ, r'/api/infra/settings', 'hosts.view'),
+    (('POST',), r'/api/infra/settings', 'security.manage'),
 
     # generated scripts name paths, logins and hosts in a form that can be run
     (READ, r'/api/.*/(script|ansible|install-script|cron|bundle)', 'plans.scripts'),

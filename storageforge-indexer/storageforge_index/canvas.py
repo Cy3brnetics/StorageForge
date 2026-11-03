@@ -59,7 +59,8 @@ def node_text(n: dict) -> str:
 
 def extras(conn, host: str | None) -> dict:
     """What each host serves and runs, beside its storage: {host: {'shares': [...], 'stacks': [...]}}."""
-    from . import docker, shares
+    from . import shares
+    from .runtimes import docker
     out: dict = {}
     names = [host] if host else [r[0] for r in conn.all('SELECT hostname FROM hosts ORDER BY hostname')]
     for name in names:

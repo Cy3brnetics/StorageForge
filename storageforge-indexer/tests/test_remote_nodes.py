@@ -128,7 +128,8 @@ class Nodes(Base):
 
     def test_addresses_run_out_rather_than_wrap(self):
         self.assertEqual(remotes.address(remotes.MAX_NODE_ID), '127.77.255.255')
-        self.conn.execute("""INSERT INTO remote_nodes (node_id, name, public_key, created_at, created_by, expires_at, revoked_at)
+        override = 'OVERRIDING SYSTEM VALUE' if self.db.dialect == 'postgres' else ''      # PostgreSQL's identity column takes no value otherwise
+        self.conn.execute(f"""INSERT INTO remote_nodes (node_id, name, public_key, created_at, created_by, expires_at, revoked_at) {override}
                              VALUES (:i, 'old', 'k', 1, 't', 1, 1)""", {'i': remotes.MAX_NODE_ID})
         with self.assertRaisesRegex(ValueError, 'every remote node address'):
             self.add()

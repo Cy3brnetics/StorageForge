@@ -395,7 +395,7 @@ def cmd_deploy(args) -> int:
 
 
 def cmd_docker(args) -> int:
-    from . import docker
+    from .runtimes import docker
     _, conn = open_db(args)
     if args.path:
         if not args.host:

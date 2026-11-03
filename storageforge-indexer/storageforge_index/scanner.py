@@ -50,6 +50,7 @@ class ScanOptions:
     checksum: bool = False
     git: bool = True                 # read every repository the walk found through the host's git
     docker: bool = True              # containers, volumes and compose stacks, and which folders they use
+    network: bool = True             # interfaces, routes, neighbours and listeners, read from the host: no probes
     checksum_min_size: int = 1 << 20
     nice: bool = True
     dry_run: bool = False
@@ -467,7 +468,7 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
             except Exception as exc:                      # never fail a finished scan over the git pass
                 log(f'  git survey failed: {exc}')
         if opts.docker:
-            from .docker import survey as docker_survey
+            from .runtimes.docker import survey as docker_survey
             try:
                 d = docker_survey(db, conn, t, host_id, scan_id)
                 if d.get('engine'):
@@ -477,6 +478,17 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
                     log(f'  {d["compose"]} compose files (no container engine reachable)')
             except Exception as exc:                      # never fail a finished scan over the docker pass
                 log(f'  docker survey failed: {exc}')
+        if opts.network:
+            from .netfacts import survey as network_survey
+            try:
+                n = network_survey(conn, t, host_id, scan_id)
+                if n.get('error'):
+                    log(f'  network: {n["error"]}')
+                else:
+                    log(f'  network: {n["interfaces"]} interfaces, {n["listeners"]} listeners'
+                        + (f'; could not read {", ".join(n["unreadable"])}' if n['unreadable'] else ''))
+            except Exception as exc:                      # never fail a finished scan over the network pass
+                log(f'  network survey failed: {exc}')
         if opts.checksum:
             hashed = checksum_pass(db, conn, t, host_id, opts.checksum_min_size, opts.nice)
             log(f'  checksummed {hashed:,} size-collision candidates')
