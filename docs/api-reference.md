@@ -228,6 +228,63 @@ See [Ransomware defense](ransomware-defense.md). Reads need `security.view`. �
 | POST 🔑 | `/api/security/incident/brake` | `{"host", "path"?, "client_ip"?, "pid"?, "minutes"?, "actions"?, "mode"}` | `security.emergency`; returns the outcome of each step |
 | POST 🔑 | `/api/security/incident/clean-room` | `{"host", "snapshot", "mount"?, "remove"?, "mode"}` | `security.emergency` |
 
+
+### Policy, detection and response
+
+| Method | Path | Body | |
+| :--- | :--- | :--- | :--- |
+| GET, POST 🔑 | `/api/security/waivers` | `{"host", "finding", "reason", "days"}` | `security.manage`; a host may be `*` |
+| GET, POST 🔑 | `/api/security/profiles` | `{"name", "base", "overrides": {"target_lynis", "min_worm_days", "add", "drop"}}` | use as `custom:<name>` |
+| POST | `/api/security/compliance/reconverge` | `{"host", "profile"}` | stages a plan: `plans.edit` |
+| GET | `/api/security/compliance/script` | `?host=&profile=` | `sf-init-compliance.sh`: `plans.scripts` |
+| POST | `/api/security/integrity/stage` | `{"host"}` | Lynis findings as a plan |
+| GET, POST 🔑 | `/api/security/worm/policies` | `{"host", "pattern", "days", "legal", "auto"}` | |
+| POST 🔑 | `/api/security/worm/policies/apply` | `{"host", "mode"}` | |
+| POST 🔑 | `/api/security/worm/freeze` | `{"host", "target", "mode"}` | `security.emergency` |
+| POST 🔑 | `/api/security/worm/preview` | `{"host", "snapshot", "live"}` | what a rollback would change. Only reads |
+| POST | `/api/security/worm/preview/stage` | same | |
+| GET | `/api/security/evidence` | `?host=&from=&to=` | signed record: `audit.view` |
+| GET | `/api/security/mac/identity-anomalies` | `?host=` | sessions and flags |
+| POST 🔑 | `/api/security/mac/identity/deploy` | `{"host", "enabled", "max_shares", "off_from", "off_to", "mode"}` | |
+| GET | `/api/security/firewall/shares` | `?host=` | declared clients, what the firewall allows, who is connected |
+| POST | `/api/security/firewall/shares/stage` | `{"host", "name", "service", "clients", "iface"}` | stages a fence |
+| GET, POST 🔑 | `/api/security/firewall/tiers` | `{"tiers"}` | |
+| POST 🔑 | `/api/security/behavior/falco` | `{"host", "rules", "enabled", "mode"}` | |
+| POST 🔑 | `/api/security/behavior/yara` | `{"host", "dry", "rules"}` | |
+| GET, POST 🔑 | `/api/security/behavior/yara/rules` | `{"name", "body", "enabled"}` | |
+| POST 🔑 | `/api/security/behavior/thresholds`, `/filters` | | |
+| GET, POST 🔑 | `/api/security/playbooks` | `{"name", "trigger", "conditions", "actions", "mode"}` | mode: `dry_run`, `confirm`, `live` |
+| POST 🔑 | `/api/security/playbooks/runs/<id>` | `{"confirm"}` | |
+| POST 🔑 | `/api/security/packages/check`, `/bundle` | `{"host"}` | |
+| POST 🔑 | `/api/security/incident/clean-room/sweep` | `{"host", "mount"}` | |
+| GET | `/api/security/dash/tile/<kind>`, `/api/security/timeline`, `/api/security/badges` | | |
+| POST | `/api/security/webauthn/assert/begin`, `/finish` | | a touch, good for 5 minutes |
+| POST 🔑 | `/api/security/webauthn/register/begin`, `/finish` | | enroll a key |
+
+## Map
+
+See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure, reach and firewall detail also need `security.view`.
+
+| Method | Path | Body | |
+| :--- | :--- | :--- | :--- |
+| GET | `/api/map` | `?layers=&host=&at=&redact=1` | nodes and edges; `at` goes back in time |
+| GET | `/api/map/node/<id>`, `/api/map/edge` | `?src=&dst=&rel=` | evidence and history |
+| GET | `/api/map/snapshots` | `?host=` | the timeline |
+| GET | `/api/map/exposure` | `?scope=lan\|vpn\|any&host=` | |
+| GET | `/api/map/reach` | `?from=&to=&port=&proto=` | |
+| GET | `/api/map/coverage` | `?host=` | workloads no hold or decoy reaches |
+| POST | `/api/map/whatif` | `{"tasks", "flows"}` | reads only |
+| POST | `/api/map/stage` | `{"plan", "tasks"}` | `plans.edit` |
+| POST 🔑 | `/api/map/placeholders/<id>/promote` | | `keys.manage` |
+| GET | `/api/map/export` | `?format=&layers=&redact=1` | audited |
+| GET, POST, DELETE | `/api/map/views`, `/api/map/annotations` | | `map.edit` |
+| GET, POST 🔑, DELETE 🔑 | `/api/map/manual` | `{"kind", "label", "url", "links"}` | `map.edit` |
+| GET, POST, DELETE | `/api/map/designs` | `{"name", "doc"}` | `plans.edit` |
+| GET | `/api/map/designs/<id>/compare`, `/export` | `?target=bash\|ansible\|terraform\|puppet` | |
+| POST | `/api/map/designs/<id>/stage` | | what is missing, as a plan |
+| GET | `/api/workloads`, `/api/network`, `/api/firewall`, `/api/exposure` | `?host=` | |
+| POST 🔑 | `/api/infra/measure` | `{"host"}` | `security.manage` |
+
 ## Scheduler
 
 | Method | Path | Body | |

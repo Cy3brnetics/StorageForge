@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Tiers 1, 3, 4, 5, 6 and 7 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py.
+"""Tiers 1, 3, 4, 5, 6 and 7 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py, tiers 9 to 11 are tiers_platform.py.
 They change the VMs, so run them through examples/lab/lab.sh test --all, which resets the lab around each tier.
 
-    tiers.py run <0|1|3|4|5|6|7>   tier 0 as a result file, or one tier against StorageForge on sf-ctl, through its API
+    tiers.py run <0|1|3|4|5|6|7|9|10|11>   tier 0 as a result file, or one tier against StorageForge on sf-ctl, through its API
     tiers.py report          the table per distro from every results file, into reports/
 
 Results are checked on the VMs and against the seed manifests where a VM can answer, and against the running
@@ -1274,7 +1274,7 @@ def tier0(r):
 
 
 # ── report ──────────────────────────────────────────────────────────
-TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs', 6: 'Sync engine', 7: 'Remote nodes', 8: 'Appliances'}
+TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs', 6: 'Sync engine', 7: 'Remote nodes', 8: 'Appliances', 9: 'Security', 10: 'Infrastructure', 11: 'Changes'}
 CELL = {'pass': 'pass', 'FAIL': '**FAIL**', 'skip': 'skip', 'known': 'known', 'fixed?': 'fixed?'}
 
 
@@ -1328,7 +1328,11 @@ def main():
     tier = int(sys.argv[2])
     r = Results(tier)
     try:
-        {0: tier0, 1: tier1, 3: tier3, 4: tier4, 5: tier5, 6: tier6, 7: tier7, 8: tier8}[tier](r)
+        if tier >= 9:
+            import tiers_platform     # it imports this file for its helpers, so it comes in here and not at the top
+            getattr(tiers_platform, f'tier{tier}')(r)
+        else:
+            {0: tier0, 1: tier1, 3: tier3, 4: tier4, 5: tier5, 6: tier6, 7: tier7, 8: tier8}[tier](r)
     except Exception as exc:
         r.add('tier-setup', '-', False, f'{type(exc).__name__}: {str(exc)[:170]}', traceback.format_exc())
     return 0 if r.save() else 1

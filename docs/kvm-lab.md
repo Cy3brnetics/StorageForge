@@ -7,7 +7,7 @@ examples/lab/lab.sh install-launcher   # adds "StorageForge Lab" to the desktop 
 examples/lab/lab.sh up                 # pick and build 7: about 5 minutes with base images cached
 examples/lab/lab.sh up --seed 500277455   # the same 7 as an earlier build
 examples/lab/lab.sh up --pick sf-ctl,sf-fedora,sf-arch   # exactly these configs
-examples/lab/lab.sh test --all         # tiers 0-8 and a report: about 30 minutes
+examples/lab/lab.sh test --all         # tiers 0-11 and a report: about an hour
 examples/lab/lab.sh down               # remove it all
 ```
 
@@ -66,8 +66,13 @@ The build above ran on 2026-11-01 with the work uncommitted, as instance 1 besid
 | 6: Sync engine | `tests/lab/tiers.py` | Routes with one pinned host key, a route lost during a run, dedup and reflinks, the volume lock, btrfs and ZFS snapshot streams, the room check and duperemove, between real hosts |
 | 7: Remote nodes | `tests/lab/tiers.py` | The tunnel container, and hosts that can't be dialled: the install script, adopting, signed deploys and scans through the tunnel, reconnecting, what a stolen key can't do, revoking and removal |
 | 8: Appliances | `tests/lab/tiers.py` | Proxmox, TrueNAS and XCP-ng, when the build has them: a scan as an ordinary user, the platform it finds, whether deploys are allowed, ZFS pools, and XCP-ng's storage repository before and after scan access |
+| 9: Security | `tests/lab/tiers_platform.py` | Holds on real ZFS and btrfs, the cool-off, two admins, the offline key, the clock guard, decoys, the armed brake, Samba and NFS attribution, the airgap and its timer, quarantine, blast radius and the clean room, SELinux, AppArmor and the baseline |
+| 10: Infrastructure | `tests/lab/tiers_platform.py` | What scans read against each VM, nothing invented, a capture proving nothing is probed, a failed collector, a port ufw looks like it blocks, every firewall giving the same model, workloads on each runtime, change tracking, redacted exports, and whether a quarantine reaches a published port |
+| 11: Changes | `tests/lab/tiers_platform.py` | Firewall rules on ufw, nftables and firewalld, a published port's fix, a fence across a reboot, a timer undoing a cut SSH path, reach against real connections, what-if against the next reading, a design, hardening steps, WireGuard, a placeholder, retention, YARA, a playbook, packages and Falco |
 
-`lab.sh test --all`, or **Full test** in the panel, runs tiers 0 to 8, resets the lab around the tiers that change VMs, and writes `reports/lab-<date>.md` with a table per distro. Reports aren't committed. Tiers 1, 3, 4 and 5 run against the real Docker stack on `sf-ctl` through its API. Tiers 2 and 8 run on the libvirt host, on a throwaway database. `lab.sh gauntlet` runs tier 2 alone and `lab.sh appliances` runs tier 8 alone.
+`lab.sh test --all`, or **Full test** in the panel, runs tiers 0 to 11, resets the lab around the tiers that change VMs, and writes `reports/lab-<date>.md` with a table per distro. Reports aren't committed. Tiers 1, 3, 4, 5, 9, 10 and 11 run against the real Docker stack on `sf-ctl` through its API. Tiers 2 and 8 run on the libvirt host, on a throwaway database. `lab.sh gauntlet` runs tier 2 alone and `lab.sh appliances` runs tier 8 alone.
+
+Tiers 9 to 11 last ran on 2026-11-03, with the work uncommitted, on `--pick sf-ctl,sf-ubuntu,sf-fedora,sf-rocky,sf-suse,sf-alpine,sf-bookworm`: all tiers gave 441 passed, 0 failed and 3 skipped. The skips were ZFS send and the sync engine's ZFS stream, which need two ZFS hosts, and appliances, which need `--pick`. The other configs have not run tiers 9 to 11.
 
 A check listed in `KNOWN` in `tiers.py` still fails, but shows as `known` and doesn't fail the run. In tiers 1, 3, 4 and 5, it shows as `fixed?` once it starts passing, which means the line should go.
 

@@ -70,6 +70,10 @@ Keep the last snapshot you sent on the sender until the next send finishes, or t
 
 LVM has no equivalent. To copy an LVM snapshot, mount it and use a Moves step.
 
+### Firewalls, networks and hardening
+
+These steps come from the [map](infrastructure-map.md#planning-from-it) and from Security, and work the same as any other: report first, Apply through a signed run. `storageforge-fwrules`, shown in full in the script, writes each firewall rule in whichever firewall the host runs. nftables and iptables forget their rules at a reboot unless told otherwise, so it keeps them and a unit puts them back. firewalld and ufw keep their own. A step with a rollback timer undoes itself unless StorageForge can still reach the host to stop the timer.
+
 ## Data moves
 
 A move plan is a list of steps. Each takes one folder on a scanned host to a folder on another (or the same) host:

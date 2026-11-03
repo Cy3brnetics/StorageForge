@@ -13,6 +13,7 @@ Everything that changes a host offers **Show script**, **Dry run** and **Apply**
 
 | Threat | What happens |
 | :--- | :--- |
+| A stolen account on a share | With sampling on, one user on many shares at once, or from several networks at once, raises an alarm within a minute |
 | Ransomware on a workstation encrypting a share | It walks into a decoy. The sentinel sees the write at once and reports it. If armed, the host drops the client, snapshots and freezes, without waiting for the controller |
 | Encryption of folders with no decoy | The next scan's change rate, ransom-note names and renamed files raise an alert. This is after the fact: as soon as the next scan, no sooner |
 | A stolen admin password used to release a hold | Releasing waits out a cool-off or needs a second admin. The request raises an alert at once, so you can abort it |
@@ -61,7 +62,15 @@ A **measurement** is a read-only signed run. It happens when you ask, and every 
 | **Firewall** | Quarantine, the exempt list, the airgap |
 | **Behaviour** | Change rate against the host's own past, ransom names, renamed files, entropy of changed files, ClamAV on changed files |
 | **Integrity** | AIDE and Lynis, run in the background and read by the next measurement |
-| **Compliance** | Readings against a chosen standard, and the baseline script |
+| **Compliance** | Readings against a chosen standard or your own profile, waivers, drift, a plan to re-converge, and the baseline script |
+| **Retention** | Tier policies, a legal freeze, what a rollback would change, expiry days, signed evidence |
+| **Fencing** | Each share's declared clients, what the firewall allows, who is connected, and how long a client stays dropped |
+| **Identity** | Who is connected to Samba, sampled each minute. Off until you turn it on |
+| **Falco and YARA** | Rules as data, alerts as alarms, matches in the Malware list, thresholds and scan filters |
+| **Playbooks** | If this happens, do that. A new one only says what it would do |
+| **Dashboard** | Your own tiles, each from a real reading |
+| **Timeline** | Alarms, actions and drops in one line, narrowed to a client, user or dataset |
+| **Hardware keys** | FIDO2: a touch before releasing a hold, using the offline key, or the airgap |
 
 ## Getting started on a host
 
@@ -84,11 +93,25 @@ A **measurement** is a read-only signed run. It happens when you ask, and every 
 | Clock guard tripped | Nothing releases until someone clears it. Not even the offline key |
 | Offline key | Skips the wait and the second admin for one release, and raises an alarm. Replacing the key waits out the same timelock |
 
+## Things worth knowing
+
+- **A waiver hides a finding from the count, with a reason, a name and an end date.** It still shows, and when it ends the finding counts again.
+- **The targets are ours.** No standard sets a Lynis score or a number of hold days. Those are StorageForge's suggestions, and your own profile can change them.
+- **Identity is sampled.** It sees what is connected at that moment, each minute, and nothing that came and went between. It cannot see how much was read: that takes per-file auditing, which is not built. It writes down who connected from where on the host, so it starts off.
+- **Falco sees one event at a time.** "Many renames fast" cannot be a Falco rule: that is what the change rate between scans is for. Only named fields of an alert are read: its output text can hold a command line.
+- **Playbooks need StorageForge up and the host reachable.** An armed sentinel acts on the host by itself, with neither. A playbook's first look starts from now, so old alarms do not fire it.
+- **A fence only ever takes away.** A client inside still needs the host firewall to let it in. It does not cover a published container port.
+- **Evidence is not a certificate.** It is a signed record of what was measured and done, and checks with `ssh-keygen -Y verify`. Only an auditor can attest.
+- **Freezing btrfs is weaker than ZFS.** Read-only stops writes and does not stop `btrfs subvolume delete`.
+- **A hardware key is only offered over HTTPS or on localhost,** by the browser. Enrolling one makes the touch required on that account.
+
 ## Not built
 
 The roadmap goes further than this. None of the following exists, and none of it is shown as if it did.
 
-Share-level CIDR fencing and the client matrix · credential and identity anomaly detection · Falco rules and alerts (the panel only says whether Falco is installed) · YARA and its editor · the playbook designer and custom dashboards · canvas badges · retention tier policies · waivers and custom compliance profiles · staging Lynis findings into change plans · signed compliance certificates and PDF exports · offline package bundles · FIDO2 step-up · per-dataset entropy thresholds · the rollback preview and expiry heatmap · the WebSocket stream · the banner on every page (alerts cover this for now) · SMS and PagerDuty as such (alerts go through the ntfy, Gotify and webhook channels).
+Fanotify watchers · a simulator for Falco rules against recorded sessions · off-hours read volume by user (it needs `vfs_full_audit`) · a visual drag-and-drop subnet matrix (fences are typed) · a visual builder for playbooks beyond the form · SMS as such (it goes through a webhook) · FIDO2 at sign-in (only for guarded actions) · local mirror discovery (a host uses the mirrors it is already set up for).
+
+These will not be built, because they cannot work or would claim too much: the Samba VSS trap, cryptographic shred, compliance certificates, a *SECURE* banner, and the WebSocket stream. See the [roadmap's corrections](../ransomware-defense-roadmap.md).
 
 ## What has been tested, and how
 
@@ -99,4 +122,8 @@ Share-level CIDR fencing and the client matrix · credential and identity anomal
 | By hand, 2026-11-02: as root in a privileged Debian 12 container | Real btrfs on a loop device, real nftables, real inotify, real auditd: decoys, a trip, the armed brake down to a real `remount,ro`, holds, the clean room, quarantine, the exempt list, airgap, uninstall |
 | By hand, 2026-11-02: PostgreSQL 16 | The migration and the controller's queries |
 
-**Not yet tested:** real **ZFS** (stand-in only), real **SELinux** or **AppArmor** hosts, attribution with real **Samba** clients, the airgap's rollback timer under real systemd, and the whole path through a real signed deploy. None of this has been through the [KVM lab](kvm-lab.md). Do that before relying on it, and especially before arming a sentinel.
+| [KVM lab](kvm-lab.md) tier 9 | On real ZFS, btrfs, SELinux and AppArmor, through real signed deploys: holds, the cool-off, two admins, the offline key, the clock guard, decoys, the armed brake down to a real read-only remount, Samba and NFS attribution, the airgap and its timer, blast radius, the clean room, the baseline |
+| KVM lab tier 11 | Retention policies, a freeze, a rollback preview, YARA, a playbook on a real trip, package checks and a bundle, Falco from its repository with a real `chattr -i`, identity sampling from real `smbstatus`, evidence checked with `ssh-keygen`, a plan that re-converges a failing check, and waivers |
+| `tests/test_browser_smoke.py` | FIDO2 enrollment and touch through Chromium's virtual authenticator, dashboards and every panel |
+
+The lab runs StorageForge on SQLite. A real Windows client has not been used: the Samba client is Linux. No physical FIDO2 token has been used. A playbook has run in the lab only in the mode that says what it would do: the live path is tested with the real brake script and stand-ins.

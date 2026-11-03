@@ -37,6 +37,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Operations](operations.md) | Configuration, backups, certificates, retention, logs, upgrades, dependency updates |
 | [Disaster recovery](disaster-recovery.md) | What to keep elsewhere, and rebuilding on a new machine |
 | [Target hosts](target-hosts.md) | What a scanned or changed machine needs, and SSH for sending snapshots |
+| [Infrastructure map](infrastructure-map.md) | Networks, firewalls, listeners, containers and VMs across hosts, who can reach what, and planning from it |
 | [KVM lab](kvm-lab.md) | The disposable test VMs, the test tiers and the distributions they cover |
 | [Troubleshooting](troubleshooting.md) | Common messages, what causes them and what to do |
 | [CLI reference](cli-reference.md) | Every `storageforge-index` command |

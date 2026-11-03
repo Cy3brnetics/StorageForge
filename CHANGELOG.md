@@ -4,6 +4,24 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 
 ## Unreleased
 
+### Added
+- **An infrastructure map.** Networks, firewalls, listeners, containers, VMs and VPNs across hosts, drawn from what they report, with evidence on every line and no probes. Layers and modes, grouping, saved views, notes, things placed by hand, a timeline of earlier readings, and exports to SVG, PNG, PDF, Mermaid, DOT, draw.io, canvas and JSON, redacted if you ask. See [Infrastructure map](docs/infrastructure-map.md).
+- **Who can reach what.** One exposure engine over nftables, firewalld, ufw, iptables and Docker's NAT, which says *unknown* rather than guess, and shows a port ufw looks like it blocks as reachable. **Can A reach B?** names the rule that decides it and lists what it cannot see.
+- **Planning from the map.** Stage a step and see it drawn first: exposure changes, duplicate addresses, port clashes, and anything that would cut StorageForge off.
+- **New plan steps:** firewall rules in whichever firewall a host runs, share fences, bridges, VLANs, MTU, WireGuard peers, containers, VMs from a disk, start, stop and snapshot, kernel and SSH settings, umask, SELinux booleans and labels, AppArmor, NTS time and ZFS rollback, each with Bash and Ansible. A step that could cut StorageForge off can carry a timer that undoes it unless StorageForge can still reach the host.
+- **Design mode.** Say what should be there, compare it with what scans found, stage what is missing, and export it to Bash, Ansible, Terraform or Puppet.
+- **Workloads across runtimes.** Docker, Podman (rootless too), libvirt, Incus, LXC and Proxmox in one list, each mount tied to the mount it sits on, with findings such as a mounted Docker socket.
+- **Ransomware defense, the rest of it.** Retention tier policies, a legal freeze, rollback previews, waivers, custom compliance profiles, drift alerts, plans to re-converge, Lynis findings as steps, signed evidence, share fencing, ban tiers, identity sampling, Falco rules and alerts, YARA on changed files, per-folder thresholds, playbooks, tile dashboards, a timeline, offline package bundles, FIDO2 step-up, decoy names and spread, PagerDuty and alert routing, and a line at the top of every page saying what is known. See [Ransomware defense](docs/ransomware-defense.md). The Samba VSS trap, cryptographic shred, compliance certificates and the WebSocket stream are left out on purpose, as the roadmap's corrections say.
+- **Lab tiers 9, 10 and 11:** security, infrastructure and changes on real hosts, each change judged by a real connection between two VMs.
+
+### Fixed
+- **A held snapshot inside a share no longer fails the next SMB deploy** on an SELinux host: relabelling tried to write into the read-only snapshot.
+- **A clock jump in a sentinel's first 30 seconds is noticed.** It became the baseline instead.
+- **A host with no `ss` says its listeners could not be read,** rather than that nothing listens.
+- **Scan designs work on PostgreSQL with ZFS properties.** It read the inventory as text when PostgreSQL had already parsed it.
+- **A decoy in a folder anyone can write to can be written by anyone.** It only trips if it can be changed, and it kept group write only.
+- **The airgap and quarantine install nftables** on a host without it, instead of refusing in the middle of an incident.
+
 ### Changed
 - **Ransomware defense rebuilt, because the first version did nothing.** It never ran anything on a host, displayed invented figures, and said "SECURE" with no hosts at all. It now reads what hosts really report and says *not measured* otherwise, records a hold, quarantine or decoy only after a signed run confirmed it, and offers show script, dry run and apply for everything it does. See [Ransomware defense](docs/ransomware-defense.md), including what it does not protect against and what is not built, and the [audit](docs/audit-2026-11-02-ransomware-defense.md). Migration 032 drops everything the old tables held, since none of it was real, including any offline key: make a new one. Not yet run in the KVM lab.
 
