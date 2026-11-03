@@ -424,16 +424,17 @@ Today, `reach.py` calculates whether Host A can reach Host B assuming a flat dir
 
 ---
 
-## 6. Standardized User Input (MikroTik DSL) & Multi-Backend Transpiler
+## 6. Standardized User Input (MikroTik DSL) & Full-Stack Multi-Backend Transpiler
 
-To eliminate cognitive friction across diverse environments, StorageForge **standardizes all operator input for firewall filters, NAT rules, and address lists on an intuitive MikroTik RouterOS declarative DSL**. 
+To eliminate cognitive friction across diverse environments, StorageForge **standardizes all operator input across the entire networking stack—L2 switching, VLANs, bridges, bonding, IP addressing, static and policy routing, DNS, DHCP, WireGuard overlay tunnels, and firewalls—on an intuitive MikroTik RouterOS declarative DSL**. 
 
-At deploy time, the StorageForge **`RosTranspiler`** compiles this standardized definition into the target host's native firewall configuration syntax, while preserving commit-confirmed rollback guards. Full specification in [docs/standardized-firewall-mikrotik.md](docs/standardized-firewall-mikrotik.md).
+At deploy time, the StorageForge **`RosTranspiler`** compiles this standardized definition into the target host's native configuration syntax, while preserving commit-confirmed rollback guards. Full technical specification in [docs/standardized-network-stack-mikrotik.md](docs/standardized-network-stack-mikrotik.md).
 
 ```text
  ┌────────────────────────────────────────────────────────────────────────┐
- │                    USER INPUT (MIKROTIK STANDARD)                      │
- │ /ip firewall filter add chain=input protocol=tcp dst-port=22 ...       │
+ │           UNIVERSAL FULL-STACK NETWORKING SPECIFICATION (DSL)          │
+ │   /interface bridge ... | /ip address ... | /ip route ... | /ip dns ...│
+ │   /ip dhcp-server ... | /interface wireguard ... | /ip firewall ...    │
  └──────────────────────────────────┬─────────────────────────────────────┘
                                     │
                                     ▼
@@ -445,45 +446,70 @@ At deploy time, the StorageForge **`RosTranspiler`** compiles this standardized 
     ┌──────────────┬────────────────┼──────────────┬────────────────┐
     ▼              ▼                ▼              ▼                ▼
 ┌──────────┐ ┌──────────┐     ┌──────────┐   ┌───────────┐    ┌───────────┐
-│ nftables │ │firewalld │     │   ufw    │   │  OpenWrt  │    │  pfSense  │
-│ (Linux)  │ │ (RHEL)   │     │ (Ubuntu) │   │ (fw4/UCI) │    │  (BSD pf) │
+│ Linux    │ │ Linux    │     │  OpenWrt │   │  pfSense  │    │ Cisco IOS │
+│systemd-nt│ │NetworkMgr│     │ (UCI/fw4)│   │ (BSD XML) │    │  (CLI)    │
 └──────────┘ └──────────┘     └──────────┘   └───────────┘    └───────────┘
 ```
 
-### 6.1 Standard Input Formats
+### 6.1 Full-Stack DSL Taxonomy
 Operators can provide input via CLI strings or structured JSON in plan steps:
-- **CLI String**:
-  ```text
-  /ip firewall filter add chain=input protocol=tcp dst-port=22 src-address=10.0.0.0/8 action=accept comment="Allow SSH"
-  /ip firewall nat add chain=dstnat protocol=tcp dst-port=443 in-interface=wan action=dst-nat to-addresses=10.77.20.80 to-ports=443 comment="DMZ HTTPS"
+- **Layer 2 (Bridges, Ports, VLANs, Bonds)**:
+  ```routeros
+  /interface bridge add name=br-lan vlan-filtering=yes
+  /interface bridge port add bridge=br-lan interface=eth1 pvid=10
+  /interface bridge vlan add bridge=br-lan vlan-ids=10,20 tagged=br-lan,eth3 untagged=eth1
+  /interface vlan add name=vlan10 vlan-id=10 interface=br-lan
+  /interface bonding add name=bond0 slaves=eth1,eth2 mode=802.3ad
   ```
-- **Plan Step Dictionary (`changes.py`)**:
-  ```python
-  {
-      'type': 'fw_rule_v2',
-      'scope': 'filter',
-      'chain': 'input',
-      'action': 'accept',
-      'protocol': 'tcp',
-      'dst_port': '22',
-      'src_address': '10.0.0.0/8',
-      'comment': 'Allow SSH',
-      'rollback': 10
-  }
+- **Layer 3 (IP Addressing, Subnets, Pools)**:
+  ```routeros
+  /ip address add address=192.168.10.1/24 interface=vlan10 comment="Gateway"
+  /ip pool add name=dhcp-pool ranges=192.168.10.100-192.168.10.200
+  ```
+- **Routing & Policy Routing**:
+  ```routeros
+  /ip route add dst-address=0.0.0.0/0 gateway=198.51.100.1 distance=1
+  /routing table add name=dmz-table fib
+  /routing rule add src-address=10.77.20.0/24 table=dmz-table
+  ```
+- **Core Network Services (DNS & DHCP)**:
+  ```routeros
+  /ip dns set servers=1.1.1.1,8.8.8.8 allow-remote-requests=yes
+  /ip dhcp-server add name=dhcp-lan interface=vlan10 address-pool=dhcp-pool
+  /ip dhcp-server lease add address=192.168.10.50 mac-address=52:54:00:12:34:56
+  ```
+- **VPN & Tunnels (WireGuard)**:
+  ```routeros
+  /interface wireguard add name=wg0 listen-port=51820 private-key="<key>"
+  /interface wireguard peers add interface=wg0 public-key="<pubkey>" allowed-address=10.99.0.0/24
+  ```
+- **Firewall & NAT**:
+  ```routeros
+  /ip firewall filter add chain=input protocol=tcp dst-port=22 src-address=10.0.0.0/8 action=accept
+  /ip firewall nat add chain=dstnat protocol=tcp dst-port=443 in-interface=wan action=dst-nat to-addresses=10.77.20.80 to-ports=443
   ```
 
-### 6.2 Deploy-Time Target Compilation
-- **Linux (`nftables`)**: Injected into `table inet storageforge_rules { chain input { ... } }`.
-- **Linux (`firewalld`)**: Compiled to `firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.0.0.0/8" port port="22" protocol="tcp" accept'`.
-- **Linux (`ufw`)**: Compiled to `ufw allow in on ... proto tcp from 10.0.0.0/8 to any port 22`.
-- **Linux (`iptables` / `DOCKER-USER`)**: Compiled to `iptables -I INPUT 1 ...` (or `DOCKER-USER` for published container ports).
-- **OpenWrt (`uci` / `fw4`)**: Appended as a `config rule` or `config redirect` section in `/etc/config/firewall`.
-- **pfSense / OPNsense**: Injected as a `<rule>` element inside `<filter>` or `<nat>` in `/conf/config.xml`.
-- **Cisco IOS/IOS-XE**: Compiled to extended access-list statements (`permit tcp 10.0.0.0 0.255.255.255 any eq 22`).
-- **MikroTik RouterOS**: Direct execution over SSH or v7 REST API.
+### 6.2 Deploy-Time Target Compilation Across the Stack
+- **Linux Hosts (`systemd-networkd` / `NetworkManager`)**:
+  - Bridges, VLANs, and Bonds generate atomic `.netdev` and `.network` configuration units (or `nmcli` connection profiles).
+  - Routes and DNS populate `.network` `[Route]` and `[Network] DNS=` sections.
+  - DHCP services generate lightweight `dnsmasq` or `kea` configuration blocks.
+  - WireGuard maps to `wg-quick` or systemd `[WireGuard]`.
+  - Firewall and NAT compile via `storageforge-fwrules` into `nftables`, `firewalld`, or `ufw`.
+- **OpenWrt (`uci`)**:
+  - Bridges, interfaces, and routes compile to `/etc/config/network`.
+  - DNS and DHCP compile to `/etc/config/dhcp`.
+  - WireGuard compiles to `proto 'wireguard'` interface sections.
+  - Firewall and NAT compile to `/etc/config/firewall` (`fw4` rules and redirects).
+- **pfSense / OPNsense**:
+  - Compiles into respective nodes within `/conf/config.xml`: `<interfaces>`, `<vlans>`, `<bridges>`, `<laggs>`, `<gateways>`, `<staticroutes>`, `<dns>`, `<dhcpd>`, `<wireguard>`, `<filter>`, and `<nat>`.
+- **Cisco IOS/IOS-XE**:
+  - Compiles to native interface definitions (`switchport mode trunk`, `ip address ...`), `ip route`, `ip name-server`, `ip dhcp pool`, and extended access-lists.
+- **MikroTik RouterOS**:
+  - Executed directly over SSH CLI or v7 REST API.
 
-### 6.3 Bidirectional Normalization
-When inspecting live rules on ANY managed node, StorageForge reverse-normalizes the target's native ruleset into standard MikroTik DSL syntax, giving operators one consistent syntax across the entire fleet in both the Web UI and CLI.
+### 6.3 Universal Bidirectional Normalization
+When inspecting live state on ANY managed server, router, or switch, StorageForge reverse-normalizes the target's native configuration into standard MikroTik DSL syntax, giving operators one consistent syntax across the entire fleet in both the Web UI and CLI.
 
 ---
 
