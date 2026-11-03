@@ -40,10 +40,11 @@ const bare = (d) => String(d || '').replace(/^\/dev\//, '');
 /* ── loading and saving designs ──────────────────────────────────── */
 async function loadDesigns() {
   if (T.mode !== 'topo') return;
+  const n = T.loadReq = (T.loadReq || 0) + 1;      // loads overlap (a save, a deploy's end, a scan's end): the last one started wins
   let hosts;
   if (typeof can === 'function' && can('security.view')) getJSON('/api/security/badges').then((b) => { T.security = b.mounts; renderTopoSoon(); }).catch(() => {});
   try { ({ hosts } = await getJSON('/api/planner/hosts')); }
-  catch (err) { T.error = err.message; renderTopo(); return; }
+  catch (err) { if (n === T.loadReq) { T.error = err.message; renderTopo(); } return; }
   const want = S.host ? hosts.filter((h) => h.host === S.host) : hosts;
   const docs = new Map();
   if (typeof loadAccess === 'function' && !ACCESS.hosts.length) loadAccess();
@@ -53,9 +54,11 @@ async function loadDesigns() {
     if (keep && keep.dirty) { docs.set(h.host, keep); return; }      // unsaved edits survive a reload
     try {   // a scanned host: fresh hardware from the scan plus the intent in its saved design
       const r = await getJSON(`/api/planner/design?host=${encodeURIComponent(h.host)}${h.scanned ? '&source=scan' : ''}`);
-      docs.set(h.host, { host: h.host, bp: r.blueprint, source: r.source, savedAt: r.saved_at, dirty: false, changed: new Set() });
+      docs.set(h.host, { host: h.host, bp: r.blueprint, source: r.source, savedAt: r.saved_at, sharesDeployed: r.shares_deployed, dirty: false, changed: new Set() });
     } catch (err) { docs.set(h.host, { host: h.host, error: err.message }); }
   }));
+  if (n !== T.loadReq) return;
+  for (const h of docs.keys()) if (T.docs.get(h)?.dirty) docs.set(h, T.docs.get(h));      // edited while this load was out
   T.docs = docs; T.order = want.map((h) => h.host); T.error = '';
   if (S.host && !want.length) T.error = `${S.host} has no design: it is not scanned and has no saved plan.`;
   if (T.sel && !(T.docs.get(T.sel.host) || {}).bp) T.sel = null;
@@ -948,7 +951,7 @@ function mountOnEditor(doc, e, key) {
     el('div', { class: 'row' }, button('+ Client', () => { e.mounts.push({ host: '', path: '' }); touched(doc, key); }, 'btn ghost sm')));
 }
 const designedShares = (doc) => (doc.bp && doc.bp.exports || []).filter((e) => (e.designed || !e.fromScan) && /^(NFS|SMB|CIFS)/i.test(e.protocol || e.proto || ''));
-const plannedShares = (doc) => designedShares(doc).filter((e) => !e.fromScan).length;
+const plannedShares = (doc) => (doc.sharesDeployed ? 0 : designedShares(doc).filter((e) => !e.fromScan).length);   // deployed, and the rescan has not said so yet: not planned any more
 async function deployShares(doc) {
   showTab('details');
   T.sel = null;
@@ -962,7 +965,7 @@ async function deployShares(doc) {
       const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob());
       a.download = `shares-${doc.host.split('.')[0].toLowerCase()}.sh`; document.body.append(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    }, 'btn pri sm');
+    }, 'btn ghost sm');
     box.replaceChildren(
       el('div', { class: 'node-head' }, el('span', { class: 'muted' }, 'share deployment'), el('h2', {}, doc.host)),
       ...c.exports.map((e, i) => el('section', { class: 'card' },
@@ -970,8 +973,8 @@ async function deployShares(doc) {
         el('span', { class: 'mono small' }, `${e.path} → ${e.clients || 'anyone'}`),
         el('ul', { class: 'mvcheck' }, ...c.items.filter((x) => x.export === i).map((x) => el('li', { class: `lv-${x.level}` }, x.text))))),
       el('p', { class: c.crit ? 'st-failed' : 'muted' }, c.crit ? `${c.crit} problem(s) to fix in the design first` :
-        `Run it on ${doc.host} (read-only report first), then sudo … --apply; then on each client, or from here with --host.`),
-      el('div', { class: 'row end' }, dl, button('Deploy from here…', () => startDeploy('shares', doc.host, 'report', `shares of ${doc.host}`), 'btn sm')));
+        `Deploying runs a read-only report on ${doc.host} and its clients first. Or run the script yourself: read-only with no flags, then sudo … --apply.`),
+      el('div', { class: 'row end' }, dl, button('Deploy (report first)…', () => startDeploy('shares', doc.host, 'report', `shares of ${doc.host}`), 'btn pri sm')));
   } catch (err) { box.replaceChildren(text('p', err.message, 'st-failed')); }
 }
 function addLink(doc, into = '') {

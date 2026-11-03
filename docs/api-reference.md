@@ -116,7 +116,7 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | Method | Path | Body | |
 | :--- | :--- | :--- | :--- |
 | GET | `/api/planner/hosts` | | scanned hosts and saved designs; whether the example shows |
-| GET | `/api/planner/design?host=&source=saved\|scan` | | the saved design, or one built from the latest scan plus saved intent |
+| GET | `/api/planner/design?host=&source=saved\|scan` | | the saved design, or one built from the latest scan plus saved intent; `shares_deployed` says this design's shares are the ones last deployed |
 | PUT | `/api/planner/design` | a `storageforge/v1` `StorageBlueprint` | save and rebuild the host's graph |
 | POST | `/api/planner/changes` | a `storageforge/v1` `StorageBlueprint` (saved or not) | `{host, name, tasks, manual, left, destructive}`: the change-plan tasks that bring the scanned host to the design, what needs doing by hand, and what the design leaves alone. Stages nothing; 409 when the host has not been scanned |
 | PUT | `/api/planner/example` | `{"show"}` | show or hide the example host for everyone |
@@ -156,7 +156,7 @@ Each plan type has the same shape: list, create, one, check, script.
 
 | Method | Path | Body | |
 | :--- | :--- | :--- | :--- |
-| GET | `/api/deploy` | | access per host, jobs, deployed, alerts, drift, settings, recent runs |
+| GET | `/api/deploy` | | access per host, jobs, deployed, alerts, drift, settings, recent runs, `share_hosts` (scanned hosts with designed shares) |
 | POST | `/api/deploy/setup-script` | `{"remove"?}` | download; makes the deploy keys on first use |
 | POST 🔑 | `/api/deploy/access` | `{"host", "password", "admin_user"?, "remove"?}` | set deploy access up (or remove it) with sudo once; 10/min |
 | POST 🔑 | `/api/deploy/adopt` | `{"host"}` | after running the setup by hand: bind and test |

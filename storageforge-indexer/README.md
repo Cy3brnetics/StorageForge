@@ -368,7 +368,7 @@ Shares you add to a host's design can be deployed. Scanned shares are only repor
 1. **Folder**: browse the server's file system from the index. Each folder shows the disk or network mount it lives on, mounts below it, shares already there and shares other designs mount there; the side list shows every mount of the host with its free space.
 2. **Access**: NFS (one rule per client or subnet, with presets and one-click subnets of the scanned hosts, and crossmnt when filesystems are mounted inside) or SMB (users and read-only).
 3. **Clients**: where each client mounts it, picked by browsing that client's own file system.
-4. **Review**: what will happen, then **Save** into the design and **Deploy**.
+4. **Review**: what will happen, then **Save and deploy** (a read-only report first), or **Save only**.
 
 Every step is checked against the index as you go: system and pseudo paths, re-exporting a network mount, folders not in the index, duplicate names and paths, nested exports, filesystems inside the share, and per client a mount point that already holds a disk or another share, sits inside a network mount, is a system folder, or would hide files. Each share can list **Mount on** clients. **Deploy shares** on the host checks the design, then downloads `shares-<host>.sh`. Without `--apply` the script only reports.
 

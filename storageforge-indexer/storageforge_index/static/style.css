@@ -362,6 +362,7 @@ pre.script { background: var(--bg); border: 1px solid var(--line); border-radius
 .dptable th, .dptable td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .dpjob .tools { margin-left: auto; gap: 4px; }
 #dpgroup .card { padding: 6px 8px; } #dpgroup summary { cursor: pointer; }
+.dpactions { position: sticky; bottom: -14px; z-index: 1; padding: 8px 0 14px; background: var(--panel); border-top: 1px solid var(--line); }
 .jobopts { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 4px; }
 .jobopts summary { cursor: pointer; font-size: 12.5px; }
 .jobopts textarea { width: 100%; }
@@ -389,7 +390,7 @@ span.grow { flex: 1; }
 .fsb { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .fsb.loading { opacity: .6; transition: opacity .2s .15s; }
 .fstop { justify-content: space-between; flex-wrap: nowrap; }
-.fstools { flex-wrap: nowrap; } .fstools input { width: 120px; }
+.fstools { flex-wrap: nowrap; } .fstools input[type=search] { width: 120px; }
 .fscrumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; font-family: var(--mono); font-size: 13px; min-width: 0; }
 .fscrumbs .sep { color: var(--muted); }
 .fscrumbs .crumb { all: unset; cursor: pointer; padding: 2px 5px; border-radius: 4px; }
@@ -404,9 +405,9 @@ span.grow { flex: 1; }
 .fslist { list-style: none; margin: 0; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); max-height: 46vh; min-height: 160px; overflow: auto; }
 .fsrow { display: flex; align-items: center; gap: 8px; width: 100%; padding: 3px 6px; border-radius: 5px; font-family: var(--mono); font-size: 12.5px; }
 .fsrow.dir { padding: 0; }
-.fsrow .fsopen, button.fsrow { all: unset; cursor: pointer; display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; padding: 3px 6px; border-radius: 5px; box-sizing: border-box; width: 100%; }
+.fsrow .fsopen, button.fsrow { all: unset; cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; flex: 1; min-width: 0; padding: 3px 6px; border-radius: 5px; box-sizing: border-box; width: 100%; }
 .fsrow .fsopen:hover, .fsrow .fsopen:focus-visible, button.fsrow:hover { background: var(--raise); }
-.fsrow .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.fsrow .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: calc(100% - 22px); }
 .fsrow .s { margin-left: auto; color: var(--muted); font-size: 11.5px; white-space: nowrap; }
 .fsrow .ic { width: 14px; text-align: center; color: var(--muted); flex: none; }
 .fsrow.mnt .ic { color: var(--protected); } .fsrow.k-nfs .ic, .fsrow.k-smb .ic { color: var(--remote); }
@@ -433,7 +434,8 @@ dialog.swdlg { width: min(1180px, calc(100vw - 24px)); height: min(900px, calc(1
 dialog.swdlg[open] { display: flex; }
 .swhead { padding: 12px 16px; border-bottom: 1px solid var(--line); flex-wrap: nowrap; }
 .swhead h2 { margin: 0; white-space: nowrap; }
-.swsteps { display: flex; list-style: none; margin: 0 0 0 8px; padding: 0; gap: 4px; }
+.swhead .fsk { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.swsteps { display: flex; flex: none; list-style: none; margin: 0 0 0 8px; padding: 0; gap: 4px; }
 .swsteps button { all: unset; cursor: pointer; display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 99px; font-size: 13px; color: var(--muted); }
 .swsteps button:disabled { cursor: default; opacity: .5; }
 .swsteps button b { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--raise); font-size: 11px; }
@@ -453,7 +455,7 @@ dialog.swdlg[open] { display: flex; }
 .smfacts dt { color: var(--muted); }
 .smfacts dd { margin: 0; }
 .swfoot { padding: 10px 16px; border-top: 1px solid var(--line); }
-.swchosen { flex: 1; justify-content: flex-end; }
+.swchosen { flex: 1; min-width: 0; justify-content: flex-end; flex-wrap: nowrap; }
 .swsummary { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
 .swclient .row { flex-wrap: nowrap; } .swclient input { flex: 1; min-width: 0; } .swclient select { max-width: 40%; }
 #swmain input[type=text], #swmain select { background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; padding: 6px 9px; }

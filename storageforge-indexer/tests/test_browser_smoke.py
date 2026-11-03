@@ -259,6 +259,58 @@ class BrowserSmoke(unittest.TestCase):
         self.settled()
         self.assertIn('has not been measured', self.page.inner_text('#sec-content'))
 
+    def running_deploy(self, gid):
+        conn = self.db.connect()
+        now = int(time.time())
+        conn.execute("""INSERT INTO deploy_groups (group_id, kind, ref, mode, title, state, options_json, actor, started_at)
+                        VALUES (:g, 'shares', 'nas', 'report', 'shares of nas', 'running', '{}', 'test', :t)""", {'g': gid, 't': now})
+        run = conn.scalar("""INSERT INTO deploy_runs (group_id, host, kind, ref, mode, status, actor, started_at, phase, output)
+                              VALUES (:g, 'nas', 'shares', 'nas', 'report', 'running', 'test', :t, 0, 'line 1') RETURNING run_id""", {'g': gid, 't': now})
+        return conn, run
+
+    def test_a_running_deploy_keeps_its_output_on_screen(self):
+        """Each poll built a new card and put the new output in the old one, so the output went away on every other poll."""
+        gid = 'a' * 32
+        conn, run = self.running_deploy(gid)
+        self.addCleanup(conn.close)
+        self.page.click('.tabs button[data-tab="deploy"]')
+        self.page.wait_for_selector('#deploybox section')
+        self.page.evaluate('(g) => openGroup(g)', gid)
+        card = self.page.wait_for_selector(f'#dp-run-{run}')
+        self.page.evaluate("(c) => { window.seen = []; window.same = c; setInterval(() => { const n = document.querySelector('[id^=dp-run-]'); window.seen.push([n === window.same, Boolean(n.querySelector(':scope > pre.dpout'))]); }, 50); }", card)
+        for n in range(2, 5):
+            conn.execute('UPDATE deploy_runs SET output = :o WHERE run_id = :r', {'o': ''.join(f'line {i}\n' for i in range(1, n + 1)), 'r': run})
+            self.page.wait_for_function('(n) => document.querySelector("#dpgroup pre.dpout").textContent.includes(`line ${n}`)', arg=n, timeout=5000)
+        self.assertTrue(all(same and output for same, output in self.page.evaluate('window.seen')))
+        self.page.click(f'#dp-run-{run} > summary')                 # closed by hand, it stays closed through polls
+        conn.execute('UPDATE deploy_runs SET output = :o WHERE run_id = :r', {'o': 'changed', 'r': run})
+        self.page.wait_for_function('() => document.querySelector("#dpgroup pre.dpout").textContent.includes("changed")', timeout=5000)
+        self.assertFalse(self.page.evaluate('document.querySelector("[id^=dp-run-]").open'))
+        self.page.evaluate('DP.group = null; renderGroup();')
+        conn.execute("UPDATE deploy_groups SET state = 'cancelled' WHERE group_id = :g", {'g': gid})
+        conn.execute("UPDATE deploy_runs SET status = 'cancelled' WHERE group_id = :g", {'g': gid})
+
+    def test_a_second_click_does_not_start_a_second_deploy(self):
+        posts = []
+
+        def answer(route):
+            posts.append(route.request.post_data_json)
+            self.page.wait_for_timeout(50)
+            route.fulfill(status=409, json={'error': 'not this time'})
+        self.page.route('**/api/deploy/start', answer)
+        self.page.evaluate("startDeploy('shares', 'nas', 'report', 'shares of nas'); startDeploy('shares', 'nas', 'report', 'shares of nas');")
+        self.page.wait_for_selector('#dpgroup .st-failed')
+        self.assertEqual(len(posts), 1)
+        self.assertIn('not this time', self.page.inner_text('#dpgroup'))
+
+    def test_choosing_the_folder_goes_on_to_who_may_use_it(self):
+        self.page.click('#viewmode button[data-mode="topo"]')
+        self.page.evaluate("openShareWizard({ host: 'nas', path: '/' })")
+        self.page.click('.swdlg .fsfoot button:has-text("Share this folder")')
+        self.page.wait_for_selector('.swdlg [aria-label="Protocol"]')
+        self.assertEqual(self.errors, [])
+        self.page.click('.swdlg .swhead button:has-text("Close")')
+
     def test_the_planner_and_search_pages_load(self):
         for path in ('/planner', '/search'):
             self.page.goto(self.base + path)

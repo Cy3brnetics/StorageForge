@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from storageforge_index import alerts, changes, jobscript, reinstall, scriptkit, shares
+from storageforge_index import alerts, changes, deploy, graph, jobscript, payloads, reinstall, scriptkit, shares
 from storageforge_index.remote import MountInfo, apply_mergerfs
 from storageforge_index.scanner import ScanOptions, plan_mounts, skip_reason
 
@@ -135,6 +135,39 @@ class ShareScript(Fleet):
         text = shares.script(self.conn, 'nas')
         self.assertEqual(text.count('cifs_kernel() {'), 1)
         self.assertEqual(subprocess.run(['bash', '-n'], input=text, text=True).returncode, 0)
+
+    def share(self):
+        shares.save_export(self.db, self.conn, 'nas', {'protocol': 'NFS', 'path': '/mnt/pool/photos',
+                                                       'rules': [{'clients': 'pc', 'options': 'rw'}]}, None, 'test')
+
+    def test_a_scan_finding_a_share_is_no_change_to_the_design(self):
+        """Once a scan finds a deployed share the topology marks it fromScan, and any later save stores that. It asked for
+        the same deploy again, and made a dry run stale."""
+        self.share()
+        deployed = shares.design_hash(self.conn, 'nas')
+        bp = graph.stored_blueprint(self.conn, 'nas')
+        bp['exports'] = payloads.merge_shares([{'protocol': 'NFSv4.2', 'path': '/mnt/pool/photos', 'fromScan': True}], bp['exports'])
+        self.assertTrue(bp['exports'][0]['fromScan'])
+        graph.store_blueprint(self.conn, bp)
+        self.assertEqual(shares.design_hash(self.conn, 'nas'), deployed)
+        bp['exports'][0]['rules'][0]['options'] = 'ro'     # a real edit still counts
+        graph.store_blueprint(self.conn, bp)
+        self.assertNotEqual(shares.design_hash(self.conn, 'nas'), deployed)
+
+    def test_a_deployed_design_is_in_sync_until_it_changes(self):
+        self.assertFalse(shares.in_sync(self.conn, 'nas'))
+        self.share()
+        self.assertFalse(shares.in_sync(self.conn, 'nas'))
+        deploy.mark_deployed(self.conn, 'nas', 'shares', 'nas', shares.design_hash(self.conn, 'nas'), {'clients': []}, 'test')
+        self.assertTrue(shares.in_sync(self.conn, 'nas'))
+        shares.save_export(self.db, self.conn, 'nas', {'protocol': 'NFS', 'path': '/mnt/backup',
+                                                       'rules': [{'clients': 'pc', 'options': 'rw'}]}, None, 'test')
+        self.assertFalse(shares.in_sync(self.conn, 'nas'))
+
+    def test_the_deploy_tab_lists_designed_shares_without_the_topology(self):
+        self.assertEqual(shares.designed_hosts(self.conn), [])
+        self.share()
+        self.assertEqual(shares.designed_hosts(self.conn), ['nas'])
 
 
 class DiskAlerts(Fleet):

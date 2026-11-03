@@ -1501,7 +1501,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                        groups=engine.recent(c, 25), keys=[r[0] for r in c.all('SELECT name FROM ssh_keys ORDER BY name')],
                        alerts=alerts.list_alerts(c), drift=alerts.drift(c),
                        settings=alerts.settings(c) if 'settings.manage' in current_user.permissions else alerts.public_settings(c),
-                       runs=deploy.history(c, limit=30), plans=moves.list_plans(c), updates=updates.overview(c))
+                       runs=deploy.history(c, limit=30), plans=moves.list_plans(c), updates=updates.overview(c),
+                       share_hosts=shares.designed_hosts(c))
 
     @web.post('/api/deploy/setup-script')     # POST with a JSON body: it makes the deploy keys on first use
     @login_required
@@ -2175,13 +2176,13 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if source == 'saved' and saved:
             saved['links'] = quiet_links(host, saved.get('links'))
             saved['protection'] = protection.overlay(conn(), host, saved.get('protection') or [])
-            return jsonify(host=host, source='saved', saved_at=saved_at, scanned=scanned(host), offsite=offsite, blueprint=saved)
+            return jsonify(host=host, source='saved', saved_at=saved_at, scanned=scanned(host), offsite=offsite, blueprint=saved, shares_deployed=shares.in_sync(conn(), host))
         if not scanned(host):
             return jsonify(error=f'{host} has no saved design and has not been scanned'), 404
         bp = blueprint.merge_intent(scan_design(host), saved)
         bp['links'] = quiet_links(host, bp.get('links'))
         bp['protection'] = protection.overlay(conn(), host, bp['protection'])
-        return jsonify(host=host, source='scan', saved_at=saved_at, scanned=True, offsite=offsite, blueprint=bp)
+        return jsonify(host=host, source='scan', saved_at=saved_at, scanned=True, offsite=offsite, blueprint=bp, shares_deployed=shares.in_sync(conn(), host))
 
     @web.put('/api/planner/offsite')
     @login_required

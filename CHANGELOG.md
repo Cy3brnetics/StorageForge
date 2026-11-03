@@ -15,6 +15,13 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 - **Lab tiers 9, 10 and 11:** security, infrastructure and changes on real hosts, each change judged by a real connection between two VMs.
 
 ### Fixed
+- **A deploy's report stays on screen while it runs.** Every other poll dropped its output, which also threw away what was open or scrolled, and a dry run could end with its reports empty. Cards now stay put and only their contents change.
+- **One click starts one deploy.** A deploy shows as starting the moment it is pressed, so Apply cannot be pressed twice, a save cannot be pressed twice into a "duplicate share" error, and the deploy shows even when the tab was scrolled down to its button. Cancelling the password prompt leaves the last report where it was.
+- **Apply stays in view** below a long report, instead of at the very bottom of the tab.
+- **A share deploys in fewer steps.** Choosing the folder moves on to Access, the wizard's review can save and deploy with one button, and the Deploy tab lists designed shares and checks them from any view. Before, it depended on the topology having been opened.
+- **A share just deployed no longer says "planned" or offers to deploy again** while its rescan runs.
+- **Saving a design after a scan found its shares no longer says "design changed"** and asks for a deploy that would change nothing. A host deployed that way may say it once more after this update.
+- **The share wizard and folder browser look right:** the `files` checkbox sits by its label, a folder's name stays visible in a narrow window, and a long path no longer pushes the steps out of the header.
 - **A held snapshot inside a share no longer fails the next SMB deploy** on an SELinux host: relabelling tried to write into the read-only snapshot.
 - **A clock jump in a sentinel's first 30 seconds is noticed.** It became the baseline instead.
 - **A host with no `ss` says its listeners could not be read,** rather than that nothing listens.

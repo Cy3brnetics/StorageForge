@@ -3,7 +3,8 @@
    drift, alerts and their channels. Every deploy runs the read-only report on each host first; Apply comes after.
    Loaded after dockerview.js; uses the shared helpers. */
 
-const DP = { data: null, group: null, poll: 0, job: null, err: '', setup: null, settingsForm: null, openRuns: new Set(), cancelRequested: false };
+const DP = { data: null, group: null, poll: 0, job: null, err: '', setup: null, settingsForm: null, openRuns: new Set(), cancelRequested: false,
+  groupBox: null, rest: null, dismissed: new Set(), starting: false, pollTick: 0 };
 const JOB_STATE = { ok: 'protected', failed: 'broken', stale: 'local-only', 'never-ran': 'unknown', paused: 'unknown', unseen: 'unknown', missing: 'broken' };
 const RUN_LINE = /^\s{2}(ok|missing|conflict|->|other)\s/;
 
@@ -22,7 +23,7 @@ async function loadDeploy() {
     getJSON('/api/deploy/snapjobs').then((r) => { DP.found = r.found; renderSnapFound(); }).catch(() => {});
     // If no deploy panel is open, resume watching any active deploy from recent groups
     if (!DP.group && DP.data?.groups) {
-      const active = DP.data.groups.find((g) => ['running', 'queued'].includes(g.state));
+      const active = DP.data.groups.find((g) => ['running', 'queued'].includes(g.state) && !DP.dismissed.has(g.group_id));
       if (active) {
         DP.group = { gid: active.group_id, kind: active.kind, ref: active.ref, mode: active.mode, title: active.title, extra: active.options, runs: [], done: false };
         pollGroup();
@@ -34,23 +35,36 @@ async function loadDeploy() {
 
 /* ── running a deploy: report first, then apply ─────────────────── */
 async function startDeploy(kind, ref, mode, title, extra = {}) {
-  showTab('deploy');
+  if (DP.starting) return;           // one click starts one deploy, however long the answer takes
+  DP.starting = true;
+  const before = DP.group;
   DP.cancelRequested = false;
+  // on screen at once, in place of the button that was pressed; it also keeps loadDeploy from adopting this deploy as a stranger
+  DP.group = { kind, ref, mode, title, extra, runs: [], done: false, starting: true };
+  showTab('deploy');
+  deployBoxes();
+  renderGroup();
+  DP.groupBox.closest('.tab').scrollTop = 0;   // the deploy shows at the top of a tab that may be scrolled to its button
   try {
     const r = await (await postJSON('/api/deploy/start', { kind, ref, mode, ...extra })).json();
     DP.group = { gid: r.group, kind, ref, mode, title, extra, runs: [], done: false };
   } catch (err) {
-    const body = err.body || {};
-    DP.group = {
-      kind, ref, mode, title, extra,
-      error: err.message,
-      stale: Boolean(body.stale),
-      missingHosts: body.hosts || null,
-      blockers: body.blockers || null,
-      runs: [], done: true
-    };
-  }
-  renderDeploy();
+    if (/not confirmed/.test(err.message)) {   // the password or host key prompt was cancelled: nothing changed, so neither does the panel
+      DP.group = before;
+      toast(err.message);
+    } else {
+      const body = err.body || {};
+      DP.group = {
+        kind, ref, mode, title, extra,
+        error: err.message,
+        stale: Boolean(body.stale),
+        missingHosts: body.hosts || null,
+        blockers: body.blockers || null,
+        runs: [], done: true
+      };
+    }
+  } finally { DP.starting = false; }
+  renderGroup();
   if (DP.group?.gid) pollGroup();
 }
 
@@ -70,7 +84,7 @@ async function retryGroup(gid) {
     const r = await (await postJSON(`/api/deploy/groups/${gid}/retry`, {})).json();
     DP.cancelRequested = false;
     DP.group = { gid: r.group, kind: r.kind, ref: r.ref, mode: r.mode, title: r.title, extra: r.extra, runs: [], done: false };
-    renderDeploy();
+    renderGroup();
     pollGroup();
   } catch (err) { toast(err.message); }
 }
@@ -80,7 +94,8 @@ async function openGroup(gid, title, kind, ref, mode, extra = {}) {
     const data = await getJSON(`/api/deploy/groups/${gid}`);
     const g = data.group || {};
     DP.group = { gid, title: title || g.title, kind: kind || g.kind, ref: ref || g.ref, mode: mode || g.mode, extra: extra || g.options || {}, runs: data.runs || [], done: g.state !== 'running' };
-    renderDeploy();
+    DP.dismissed.delete(gid);
+    renderGroup();
     if (!DP.group.done) pollGroup();
     $('#dpgroup')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   } catch (err) { toast(err.message); }
@@ -90,8 +105,11 @@ async function pollGroup() {
   clearTimeout(DP.poll);
   const g = DP.group;
   if (!g || !g.gid || g.done) return;
+  const tick = ++DP.pollTick;                // a newer poll, or another deploy on screen, makes this answer old news
+  const current = () => tick === DP.pollTick && g === DP.group;
   try {
     const data = await getJSON(`/api/deploy/groups/${g.gid}`);
+    g.fails = 0;
     g.runs = data.runs || [];
     const grp = data.group;
     if (grp) g.state = grp.state;
@@ -99,7 +117,15 @@ async function pollGroup() {
       ['ok', 'failed', 'incomplete', 'cancelled', 'interrupted'].includes(grp?.state) ||
       g.runs.every((r) => !['running', 'queued'].includes(r.status))
     );
-  } catch (err) { g.error = err.message; g.done = true; }
+  } catch (err) {
+    g.fails = (g.fails || 0) + 1;
+    if (g.fails < 5) {                       // the deploy goes on without this page: one lost answer must not end the view of it
+      if (current()) DP.poll = setTimeout(pollGroup, 2000);
+      return;
+    }
+    g.error = err.message; g.done = true;
+  }
+  if (!current()) return;
   renderGroup();
   if (!g.done) DP.poll = setTimeout(pollGroup, 1000);
   else if (g.kind === 'updates' && g.mode === 'report') loadDeploy();     // the System updates list shows what the check found
@@ -107,79 +133,83 @@ async function pollGroup() {
     loadDeploy();
     if (g.error) return;
     if (g.kind === 'changes') chApplied(g.ref);
-    if (g.kind === 'shares') {
-      if (typeof loadDesigns === 'function') loadDesigns();
-      if (typeof smLoad === 'function') smLoad();
-    }
+    if (g.kind === 'shares' && typeof loadDesigns === 'function') loadDesigns();     // it refreshes the shares manager too
     if (g.kind === 'jobs') loadMoves(!MV.dirty && MV.plan?.id === g.ref ? g.ref : undefined);
     setTimeout(followJobs, 1000);    // the group's rescans are queued as it ends; the graph and designs reload after them
   }
 }
 
+function fillOutput(pre, out) {
+  pre.replaceChildren(...(out || '').replace(/\n$/, '').split('\n').map((line) => {
+    const m = line.match(RUN_LINE);
+    return m ? text('span', line + '\n', `dl-${{ ok: 'ok', missing: 'miss', conflict: 'crit', '->': 'do', other: 'note' }[m[1]]}`) : line + '\n';
+  }));
+}
 function outputBlock(out) {
   const pre = el('pre', { class: 'dpout' });
-  for (const line of (out || '').split('\n')) {
-    const m = line.match(RUN_LINE);
-    pre.append(m ? text('span', line + '\n', `dl-${{ ok: 'ok', missing: 'miss', conflict: 'crit', '->': 'do', other: 'note' }[m[1]]}`) : line + '\n');
-  }
+  fillOutput(pre, out);
   return pre;
 }
+function redraw(node, sig, build) {          // only when something shown changed: a button rebuilt under the pointer loses its click
+  if (node._sig === sig) return;
+  node._sig = sig;
+  node.replaceChildren(...build().filter(Boolean));
+}
 
-function runCard(r, g) {
+/* A run's card lives as long as the deploy is on screen and polls only update it, so what is open, scrolled or selected stays. */
+function runCard(r, g, cards) {
+  let c = cards.get(r.run_id);
+  if (!c) {
+    const node = el('details', { class: 'card', id: `dp-run-${r.run_id}`, open: DP.openRuns.has(r.run_id) || !g.done || r.status !== 'ok' || g.runs.length === 1 });
+    node.addEventListener('toggle', () => {
+      if (node.open) DP.openRuns.add(r.run_id);
+      else DP.openRuns.delete(r.run_id);
+    });
+    c = { node, head: el('summary'), fetched: el('div'), out: outputBlock(''), text: null };
+    node.append(c.head, c.fetched, c.out);
+    cards.set(r.run_id, c);
+  }
   const label = { ok: 'protected', failed: 'broken', refused: 'broken', incomplete: 'local-only', running: 'local-only', queued: 'unknown', skipped: 'unknown', cancelled: 'unknown' }[r.status] || 'unknown';
-  const cardId = `dp-run-${r.run_id}`;
-  const existing = document.getElementById(cardId);
-  const wasOpen = existing ? existing.open : (DP.openRuns.has(r.run_id) || !g.done || r.status !== 'ok' || g.runs.length === 1);
-
-  const summaryParts = [el('b', { class: 'mono' }, r.host), ` · ${r.kind}${r.mode === 'apply' ? '' : ' report'} · `, text('span', r.status, `pill ${label}`)];
-  if (r.summary) {
-    const sm = r.summary;
-    const bits = [sm.ok ? `${sm.ok} ok` : '', sm.missing ? `${sm.missing} missing` : '', sm.conflict ? `${sm.conflict} conflict` : '', sm.did ? `${sm.did} did` : ''].filter(Boolean);
-    if (bits.length) summaryParts.push(' · ', text('span', bits.join(', '), 'muted small'));
-  }
-  if (r.confirmed_at) {
-    const confPill = r.host_exit === 0 ? text('span', 'confirmed by scan', 'pill protected small') : text('span', `scan: exit ${r.host_exit}`, 'pill broken small');
-    confPill.title = `Host finished with exit ${r.host_exit} (confirmed ${stamp(r.confirmed_at)})`;
-    summaryParts.push(' · ', confPill);
-  }
-
-  const details = el('details', { class: 'card', id: cardId, open: wasOpen });
-  details.addEventListener('toggle', () => {
-    if (details.open) DP.openRuns.add(r.run_id);
-    else DP.openRuns.delete(r.run_id);
-  });
-  details.append(el('summary', {}, ...summaryParts));
-
-  if (r.fetched_log?.output) {
-    details.append(el('details', { class: 'card stack', open: true },
-      el('summary', {}, text('b', 'Host log fetched by scan', 'muted small'), text('span', `fetched ${when(r.fetched_log.fetched_at)}`, 'muted small')),
-      outputBlock(r.fetched_log.output)));
-  }
-
-  const preText = r.output || (r.status === 'queued' ? 'waiting for the hosts before it' : '');
-  const outPre = outputBlock(preText);
-  if (existing) {
-    const oldPre = existing.querySelector('pre.dpout');
-    if (oldPre) {
-      const wasAtBottom = (oldPre.scrollHeight - oldPre.scrollTop <= oldPre.clientHeight + 40);
-      oldPre.replaceWith(outPre);
-      if (wasAtBottom) outPre.scrollTop = outPre.scrollHeight;
-      else outPre.scrollTop = oldPre.scrollTop;
-    } else {
-      details.append(outPre);
+  redraw(c.head, JSON.stringify([r.host, r.kind, r.mode, r.status, r.summary, r.confirmed_at, r.host_exit]), () => {
+    const parts = [el('b', { class: 'mono' }, r.host), ` · ${r.kind}${r.mode === 'apply' ? '' : ' report'} · `, text('span', r.status, `pill ${label}`)];
+    if (r.summary) {
+      const sm = r.summary;
+      const bits = [sm.ok ? `${sm.ok} ok` : '', sm.missing ? `${sm.missing} missing` : '', sm.conflict ? `${sm.conflict} conflict` : '', sm.did ? `${sm.did} did` : ''].filter(Boolean);
+      if (bits.length) parts.push(' · ', text('span', bits.join(', '), 'muted small'));
     }
-  } else {
-    details.append(outPre);
+    if (r.confirmed_at) {
+      const confPill = r.host_exit === 0 ? text('span', 'confirmed by scan', 'pill protected small') : text('span', `scan: exit ${r.host_exit}`, 'pill broken small');
+      confPill.title = `Host finished with exit ${r.host_exit} (confirmed ${stamp(r.confirmed_at)})`;
+      parts.push(' · ', confPill);
+    }
+    return parts;
+  });
+  redraw(c.fetched, String(r.fetched_log?.fetched_at || ''), () => (r.fetched_log?.output ? [el('details', { class: 'card stack', open: true },
+    el('summary', {}, text('b', 'Host log fetched by scan', 'muted small'), text('span', `fetched ${when(r.fetched_log.fetched_at)}`, 'muted small')),
+    outputBlock(r.fetched_log.output))] : []));
+  const shown = r.output || (r.status === 'queued' ? 'waiting for the hosts before it' : r.status === 'running' ? 'connecting…' : '');
+  if (c.text !== shown) {
+    const pre = c.out, follow = pre.scrollHeight - pre.scrollTop <= pre.clientHeight + 40;
+    c.text = shown;
+    fillOutput(pre, shown);
+    if (follow) pre.scrollTop = pre.scrollHeight;
   }
-  return details;
+  return c.node;
 }
 
 function renderGroup() {
-  const box = $('#dpgroup');
+  const box = DP.groupBox;
   const g = DP.group;
   if (!box) return;
-  if (!g) { box.replaceChildren(); box.hidden = true; return; }
+  if (!g) { box.replaceChildren(); box.hidden = true; box._key = null; return; }
   box.hidden = false;
+  const key = g.gid || g;
+  if (box._key !== key) {
+    box._key = key;
+    box._parts = { head: el('div', { class: 'stack' }), runs: el('div', { class: 'stack' }), foot: el('div', { class: 'stack' }), cards: new Map() };
+    box.replaceChildren(box._parts.head, box._parts.runs, box._parts.foot);
+  }
+  const { head, runs, foot, cards } = box._parts;
   const failed = g.runs.filter((r) => ['failed', 'refused'].includes(r.status));
   const unfinished = g.runs.filter((r) => r.status === 'incomplete');
 
@@ -195,77 +225,87 @@ function renderGroup() {
   }
   const totals = [totOk ? `${totOk} ok` : '', totMiss ? `${totMiss} missing` : '', totCrit ? `${totCrit} conflict` : '', totDid ? `${totDid} did` : ''].filter(Boolean).join(' · ');
 
-  const statusLabel = g.done ? (g.error ? (g.stale ? 'plan changed' : 'could not start') : failed.length ? `${failed.length} host(s) failed` : unfinished.length ? `${unfinished.length} host(s) not finished` : 'finished') : (DP.cancelRequested ? 'stopping…' : 'running…');
+  const statusLabel = g.starting ? 'starting…' : g.done ? (g.error ? (g.stale ? 'plan changed' : g.gid ? 'lost contact' : 'could not start') : failed.length ? `${failed.length} host(s) failed` : unfinished.length ? `${unfinished.length} host(s) not finished` : 'finished') : (DP.cancelRequested ? 'stopping…' : 'running…');
   const statusClass = g.done ? (g.error || failed.length ? 'st-failed' : unfinished.length ? 'st-running' : 'st-ok') : 'st-running';
+  const retry = g.done && g.gid && (failed.length || unfinished.length || ['failed', 'incomplete', 'cancelled', 'interrupted'].includes(g.state));
 
-  const tools = el('span', { class: 'row tools' });
-  if (!g.done && g.gid) {
-    if (!DP.cancelRequested) {
-      tools.append(button('Cancel', () => cancelGroup(g.gid, false), 'btn ghost sm danger'));
-    } else {
-      tools.append(button('Force stop', () => cancelGroup(g.gid, true), 'btn sm danger'));
+  redraw(head, JSON.stringify([statusLabel, totals, Boolean(retry), DP.cancelRequested, g.done, g.error, g.starting]), () => {
+    const tools = el('span', { class: 'row tools' });
+    if (!g.done && g.gid) {
+      if (!DP.cancelRequested) {
+        tools.append(button('Cancel', () => cancelGroup(g.gid, false), 'btn ghost sm danger'));
+      } else {
+        tools.append(button('Force stop', () => cancelGroup(g.gid, true), 'btn sm danger'));
+      }
     }
-  }
-  if (g.done && g.gid && (failed.length || unfinished.length || ['failed', 'incomplete', 'cancelled', 'interrupted'].includes(g.state))) {
-    tools.append(button('Retry failed hosts', () => retryGroup(g.gid), 'btn pri sm'));
-  }
-  tools.append(button('Close', () => { DP.group = null; renderGroup(); }, 'btn ghost sm'));
+    if (retry) tools.append(button('Retry failed hosts', () => retryGroup(g.gid), 'btn pri sm'));
+    if (!g.starting) {
+      tools.append(button('Close', () => {
+        if (g.gid && !g.done) DP.dismissed.add(g.gid);     // closed while it runs: it stays closed when the tab reloads
+        DP.group = null; renderGroup();
+      }, 'btn ghost sm'));
+    }
+    const kids = [el('div', { class: 'row' },
+      el('div', { class: 'row wrap' },
+        el('b', {}, `${g.mode === 'apply' ? 'Applying' : 'Dry run (report)'}: ${g.title}`),
+        text('span', statusLabel, statusClass),
+        totals ? text('span', `(${totals})`, 'muted small') : ''),
+      tools)];
+    if (g.error) {
+      kids.push(text('p', g.error, 'st-failed'));
+      if (g.stale) {
+        kids.push(el('div', { class: 'row wrap' },
+          button('Run dry run again', () => startDeploy(g.kind, g.ref, 'report', g.title, g.extra), 'btn pri sm')));
+      }
+      const missing = g.missingHosts || (g.error.match(/on: (.+)$/) || [])[1]?.split(', ');
+      if (missing?.length) {
+        kids.push(el('div', { class: 'row wrap' }, ...missing.map((h) => button(`Set up ${h}…`, () => setupForm(h), 'btn sm'))));
+      }
+      if (g.blockers?.length) {
+        kids.push(el('ul', { class: 'mvcheck' }, ...g.blockers.map((b) => el('li', { class: 'lv-crit' }, `${b.host}: ${b.text}`))));
+      }
+    }
+    return kids;
+  });
 
-  const head = el('div', { class: 'row' },
-    el('div', { class: 'row wrap' },
-      el('b', {}, `${g.mode === 'apply' ? 'Applying' : 'Dry run (report)'}: ${g.title}`),
-      text('span', statusLabel, statusClass),
-      totals ? text('span', `(${totals})`, 'muted small') : ''),
-    tools);
-
-  const kids = [head];
-  if (g.error) {
-    kids.push(text('p', g.error, 'st-failed'));
-    if (g.stale) {
-      kids.push(el('div', { class: 'row wrap' },
-        button('Run dry run again', () => startDeploy(g.kind, g.ref, 'report', g.title, g.extra), 'btn pri sm')));
-    }
-    const missing = g.missingHosts || (g.error.match(/on: (.+)$/) || [])[1]?.split(', ');
-    if (missing?.length) {
-      kids.push(el('div', { class: 'row wrap' }, ...missing.map((h) => button(`Set up ${h}…`, () => setupForm(h), 'btn sm'))));
-    }
-    if (g.blockers?.length) {
-      kids.push(el('ul', { class: 'mvcheck' }, ...g.blockers.map((b) => el('li', { class: 'lv-crit' }, `${b.host}: ${b.text}`))));
-    }
-  }
-
+  const live = new Set(g.runs.map((r) => r.run_id));
+  for (const [id, c] of cards) if (!live.has(id)) { c.node.remove(); cards.delete(id); }
   for (const r of g.runs) {
-    kids.push(runCard(r, g));
+    const node = runCard(r, g, cards);
+    if (!node.parentNode) runs.append(node);
   }
 
-  if (g.done && !g.error && g.mode === 'apply') {
-    if (g.runs.some((r) => (r.output || '').includes('destructive, skipped'))) {
-      kids.push(text('p', 'Drive tasks were skipped, so this plan has not finished. Deploy it again with "include drive tasks" ticked.', 'st-failed small'));
-    } else if (unfinished.length) {
-      kids.push(text('p', 'The "missing" lines above were not done. Each says what it needs; do that, then deploy again.', 'st-running small'));
+  const skipped = g.runs.some((r) => (r.output || '').includes('destructive, skipped'));
+  foot.classList.toggle('dpactions', g.done && !g.error && g.mode === 'report');     // stays in view: the reports above it can be long
+  redraw(foot, JSON.stringify([g.done, Boolean(g.error), g.mode, failed.length, unfinished.length, skipped]), () => {
+    const kids = [];
+    if (g.done && !g.error && g.mode === 'apply') {
+      if (skipped) {
+        kids.push(text('p', 'Drive tasks were skipped, so this plan has not finished. Deploy it again with "include drive tasks" ticked.', 'st-failed small'));
+      } else if (unfinished.length) {
+        kids.push(text('p', 'The "missing" lines above were not done. Each says what it needs; do that, then deploy again.', 'st-running small'));
+      }
+      kids.push(text('p', 'These hosts are being rescanned, so the other tabs catch up once their scans end.', 'muted small'));
     }
-    kids.push(text('p', 'These hosts are being rescanned, so the other tabs catch up once their scans end.', 'muted small'));
-  }
-
-  if (g.done && !g.error && g.mode === 'report') {
-    // When applying from a dry run, pass the dry run's group ID as report_group so the backend checks for plan staleness
-    const again = (extra = {}) => startDeploy(g.kind, g.ref, 'apply', g.title, { ...g.extra, ...extra, report_group: g.gid });
-    const row = el('div', { class: 'row end wrap' });
-    if (g.kind === 'changes') {
-      const destr = el('input', { type: 'checkbox' });
-      row.append(el('label', { class: 'check' }, destr, 'include drive tasks (partition, format, add device)'));
-      row.append(button(failed.length ? 'Apply anyway' : 'Apply', () => again({ destructive: destr.checked }), failed.length ? 'btn danger' : 'btn pri'));
-    } else if (g.kind === 'jobs') {
-      if (!g.extra.remove) row.append(button('Apply, timers paused', () => again({ paused: true }), 'btn'));
-      row.append(button(failed.length ? 'Apply anyway' : g.extra.remove ? 'Remove the jobs' : 'Apply', () => again(), failed.length || g.extra.remove ? 'btn danger' : 'btn pri'));
-    } else {
-      row.append(button(failed.length ? 'Apply anyway' : 'Apply', () => again(), failed.length ? 'btn danger' : 'btn pri'));
+    if (g.done && !g.error && g.mode === 'report') {
+      // When applying from a dry run, pass the dry run's group ID as report_group so the backend checks for plan staleness
+      const again = (extra = {}) => startDeploy(g.kind, g.ref, 'apply', g.title, { ...g.extra, ...extra, report_group: g.gid });
+      const row = el('div', { class: 'row end wrap' });
+      if (g.kind === 'changes') {
+        const destr = el('input', { type: 'checkbox' });
+        row.append(el('label', { class: 'check' }, destr, 'include drive tasks (partition, format, add device)'));
+        row.append(button(failed.length ? 'Apply anyway' : 'Apply', () => again({ destructive: destr.checked }), failed.length ? 'btn danger' : 'btn pri'));
+      } else if (g.kind === 'jobs') {
+        if (!g.extra.remove) row.append(button('Apply, timers paused', () => again({ paused: true }), 'btn'));
+        row.append(button(failed.length ? 'Apply anyway' : g.extra.remove ? 'Remove the jobs' : 'Apply', () => again(), failed.length || g.extra.remove ? 'btn danger' : 'btn pri'));
+      } else {
+        row.append(button(failed.length ? 'Apply anyway' : 'Apply', () => again(), failed.length ? 'btn danger' : 'btn pri'));
+      }
+      kids.push(text('p', failed.length ? 'The report found problems (conflict lines). Fix them and run the dry run again, or apply anyway.'
+        : 'Nothing was changed. "missing" lines are what Apply would do.', failed.length ? 'st-failed small' : 'muted small'), row);
     }
-    kids.push(text('p', failed.length ? 'The report found problems (conflict lines). Fix them and run the dry run again, or apply anyway.'
-      : 'Nothing was changed. "missing" lines are what Apply would do.', failed.length ? 'st-failed small' : 'muted small'), row);
-  }
-
-  box.replaceChildren(...kids);
+    return kids;
+  });
 }
 
 /* ── deploy access per host ─────────────────────────────────────── */
@@ -582,14 +622,26 @@ function renderSnapFound() {
 }
 
 /* ── the tab ────────────────────────────────────────────────────── */
+/* The running deploy has its own box, which stays put while the rest of the tab reloads around it. */
+function deployBoxes() {
+  if (!DP.rest) {
+    DP.groupBox = el('div', { id: 'dpgroup', class: 'stack', hidden: true });
+    DP.rest = el('div', { class: 'stack' });
+    $('#deploybox').replaceChildren(DP.groupBox, DP.rest);
+  }
+  return DP.rest;
+}
+const foldKey = (d) => (d.querySelector(':scope > summary')?.textContent || '').replace(/\d+/g, '#');   // "Recent deploys (3)" stays itself at 4
+
 function renderDeploy() {
-  const box = $('#deploybox');
-  if (!box) return;
+  const box = deployBoxes();
   if (DP.err) { box.replaceChildren(text('p', DP.err, 'st-failed')); return; }
   const d = DP.data;
   if (!d) { box.replaceChildren(text('p', 'Loading…', 'muted')); return; }
+  const scroller = box.closest('.tab'), top = scroller ? scroller.scrollTop : 0;
+  const folds = new Map([...box.querySelectorAll('details')].map((x) => [foldKey(x), x.open]));
   const typing = DP.setup?.contains(document.activeElement) ? document.activeElement : null;
-  const parts = [el('div', { id: 'dpgroup', class: 'stack', hidden: true }), el('div', { id: 'dpsetup' }, DP.setup || ''), el('div', { id: 'dpjobpanel', class: 'card stack', hidden: true })];
+  const parts = [el('div', { id: 'dpsetup' }, DP.setup || ''), el('div', { id: 'dpjobpanel', class: 'card stack', hidden: true })];
   if (d.alerts?.length) {
     parts.push(el('section', { class: 'stack' }, el('h3', {}, `Alerts (${d.alerts.length})`), el('ul', { class: 'mvcheck' },
       ...d.alerts.map((a) => el('li', { class: a.kind.includes('fail') ? 'lv-crit' : 'lv-warn' }, `${a.title}${a.message ? ': ' + a.message : ''} · since ${when(a.first_at)}`)))));
@@ -635,17 +687,17 @@ function renderDeploy() {
     ready.size ? el('div', { class: 'row wrap' }, ...[...ready].map((h) => button(`Look on ${h} as root`, () => lookAsRoot(h), 'btn ghost sm'))) : '',
     DP.newSnap || (DP.newSnap = newSnapForm(d))));
   // shares
-  const shareHosts = [...new Set([...d.deployed.filter((x) => x.kind === 'shares').map((x) => x.ref),
-    ...[...T.docs.values()].filter((doc) => doc.bp && designedShares(doc).length).map((doc) => doc.host)])].sort();
-  parts.push(el('section', { class: 'stack' }, el('h3', {}, 'Shares (NFS, SMB)'),
+  const shareHosts = [...new Set([...d.deployed.filter((x) => x.kind === 'shares').map((x) => x.ref), ...(d.share_hosts || [])])].sort();
+  parts.push(el('section', { class: 'stack' }, el('div', { class: 'row' }, el('h3', {}, 'Shares (NFS, SMB)'), el('span', { class: 'grow' }),
+    button('+ New share', () => openShareWizard({}), 'btn ghost sm')),
     shareHosts.length ? el('ul', { class: 'dklist' }, ...shareHosts.map((h) => {
       const dep = d.deployed.find((x) => x.kind === 'shares' && x.host === h && x.ref === h);
       return el('li', {}, el('div', { class: 'row wrap' }, el('b', { class: 'mono' }, h),
         text('span', dep ? `deployed ${when(dep.at)} · clients: ${(dep.detail.clients || []).join(', ') || 'none'}` : 'not deployed', 'muted small'),
         pending.get(h) ? text('span', 'design changed', 'pill local-only') : '',
-        el('span', { class: 'row tools' }, button('Check', () => { const doc = T.docs.get(h); if (doc) deployShares(doc); }, 'btn ghost sm'),
-          button('Dry run', () => startDeploy('shares', h, 'report', `shares of ${h}`), 'btn sm'))));
-    })) : text('p', 'No shares designed yet: add an export to a mount in the topology (+ Export this), save the design, then deploy it here.', 'muted small')));
+        el('span', { class: 'row tools' }, button('Check', () => deployShares(T.docs.get(h) || { host: h }), 'btn ghost sm'),
+          button('Deploy (report first)…', () => startDeploy('shares', h, 'report', `shares of ${h}`), 'btn sm'))));
+    })) : text('p', 'No shares designed yet. Add one with + New share, then deploy it here.', 'muted small')));
   // schedules deleted while installed (older versions allowed it): a timer still runs them as root
   const orphans = [...new Set(d.drift.filter((x) => x.deleted).map((x) => x.schedule))];
   if (orphans.length) {
@@ -677,8 +729,10 @@ function renderDeploy() {
 
   parts.push(settingsForm(d.settings));
   box.replaceChildren(...parts);
+  for (const x of box.querySelectorAll('details')) if (folds.has(foldKey(x))) x.open = folds.get(foldKey(x));
   typing?.focus();
   renderGroup(); renderJobPanel(); renderSnapFound();
+  if (scroller) scroller.scrollTop = top;
 }
 
 async function showHistory(host) {

@@ -639,10 +639,29 @@ def deploy_items(db, conn: Conn, host: str, mode: str, actor: str) -> list[dict]
 
 def design_hash(conn: Conn, host: str) -> str | None:
     """A fingerprint of the host's designed shares: a deployment whose hash differs has changes not deployed yet."""
-    try:
-        return hashlib.sha256(json.dumps(design_exports(conn, host), sort_keys=True).encode()).hexdigest()[:16]
+    try:   # whether a scan has found a share yet is not the design: saving the design after that scan must not ask for a deploy
+        exports = [{**e, 'deployed': False} for e in design_exports(conn, host)]
+        return hashlib.sha256(json.dumps(exports, sort_keys=True).encode()).hexdigest()[:16]
     except LookupError:
         return None
+
+
+def designed_hosts(conn: Conn) -> list[str]:
+    """The scanned hosts with NFS or SMB shares in their saved design: what can be deployed, whichever view is open."""
+    scanned = hosts(conn)
+    out = []
+    for host, body in conn.all('SELECT hostname, body_json FROM blueprints'):
+        exports = (json.loads(body) or {}).get('exports') or []
+        if find_host(scanned, host) and any(is_designed(e) and proto(e) in ('NFS', 'SMB') for e in exports):
+            out.append(host)
+    return out
+
+
+def in_sync(conn: Conn, host: str) -> bool:
+    """Was exactly this design deployed? True before the rescan that finds the shares has ended."""
+    from . import deploy
+    now = design_hash(conn, host)
+    return bool(now) and any(d['ref'] == host and d['hash'] == now for d in deploy.deployed(conn, host=host, kind='shares'))
 
 
 SHARES_HEAD = r"""#!/usr/bin/env bash

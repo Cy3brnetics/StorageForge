@@ -16,7 +16,7 @@ async function openShareWizard({ host = '', path = '', index = null, share = nul
   const e = share || {};
   const isSmb = /^(SMB|CIFS)/i.test(e.protocol || e.proto || '');
   Object.assign(SW, {
-    step: share ? 1 : 0, hosts: hostsList, index, share, saved: null, check: null, here: null, anyway: false,
+    step: share ? 1 : 0, hosts: hostsList, index, share, saved: null, check: null, here: null, anyway: false, checking: false, busy: false,
     s: { host: host || (hostsList[0] || {}).hostname || '', path: e.path || path || '', proto: isSmb ? 'SMB' : 'NFS',
          version: isSmb ? 'SMB3' : (/^NFS/i.test(e.protocol || '') ? e.protocol : 'NFSv4.2'), name: e.name || '',
          rules: (e.rules && e.rules.length ? e.rules : e.clients && !isSmb ? [{ clients: e.clients, options: e.options || NFS_PRESETS['read-write'] }] : [])
@@ -42,17 +42,33 @@ function swExport() {
     ? { protocol: s.version, name, path: s.path, rules: s.rules.filter((r) => r.clients.trim()), mounts: s.mounts.filter((m) => m.host) }
     : { protocol: 'SMB3', name, path: s.path, clients: s.users, options: s.readonly ? 'ro' : '', mounts: s.mounts.filter((m) => m.host), ...(s.smb ? { smb: s.smb } : {}) };
 }
-function swChanged() { SW.saved = null; clearTimeout(SW.timer); SW.timer = setTimeout(swValidate, 350); }
+function swChanged(ms = 350) { SW.saved = null; SW.checking = true; clearTimeout(SW.timer); SW.timer = setTimeout(swValidate, ms); swRenderChecks(); }
 async function swValidate() {
   const s = SW.s;
-  if (!s.host || !s.path) { SW.check = null; swRenderChecks(); return; }
+  clearTimeout(SW.timer);
+  if (!s.host || !s.path) { SW.check = null; SW.checking = false; swRenderChecks(); return; }
   const n = ++SW.req;
+  SW.checking = true;
   try {
     const r = await (await postJSON('/api/shares/validate', { host: s.host, export: swExport(), index: SW.index, was: swWas(SW.share) })).json();
     if (n === SW.req) SW.check = r;
   } catch (err) { if (n === SW.req) SW.check = { error: err.message, items: [], crit: 1, warn: 0 }; }
+  if (n !== SW.req) return;                       // a newer check is on its way and will draw
+  SW.checking = false;
   swRenderChecks();
-  if (SW.step >= 2) swRenderStep(false);          // per-client results sit next to each client
+  if (SW.step === 2) swRenderStep(false);         // per-client results sit next to each client
+}
+async function swPick(p) {                        // choosing the folder is the whole step: go on to who may use it
+  const s = SW.s;
+  const auto = !s.name || s.name === (s.path.split('/').pop() || 'share');     // a name the last folder gave it follows the folder
+  s.path = p;
+  if (auto) s.name = p.split('/').pop() || 'share';
+  try { SW.here = await getJSON(`/api/fs/browse?host=${encodeURIComponent(s.host)}&path=${encodeURIComponent(p)}`); }   // what is mounted inside it, for its rules
+  catch { SW.here = null; }
+  if (!SW.dlg) return;
+  SW.step = 1;
+  swRender();
+  swChanged(0);
 }
 
 function swRender() {
@@ -61,12 +77,12 @@ function swRender() {
     el('button', { type: 'button', disabled: i > 0 && !s.path, onclick: () => { SW.step = i; swRender(); } }, text('b', String(i + 1)), t))));
   SW.dlg.replaceChildren(
     el('header', { class: 'row swhead' }, el('h2', {}, SW.index != null ? 'Edit share' : 'New share'),
-      s.host ? text('span', s.path ? `${s.host}:${s.path}` : s.host, 'fsk mono') : null, nav, el('span', { class: 'grow' }),
+      s.host ? Object.assign(text('span', s.path ? `${s.host}:${s.path}` : s.host, 'fsk mono'), { title: s.path ? `${s.host}:${s.path}` : s.host }) : null, nav, el('span', { class: 'grow' }),
       button('Close', closeShareWizard, 'btn ghost sm')),
     el('div', { class: 'swbody' }, el('section', { id: 'swmain', class: 'stack' }), el('aside', { id: 'swchecks', class: 'stack' })),
-    el('footer', { class: 'row swfoot' },
+    !SW.step && !s.path ? null : el('footer', { class: 'row swfoot' },
       SW.step ? button('← Back', () => { SW.step--; swRender(); }, 'btn ghost') : null, el('span', { class: 'grow' }),
-      SW.step < 3 ? el('button', { type: 'button', class: 'btn pri', disabled: !s.path, onclick: () => { SW.step++; swRender(); } }, `Next: ${SW_STEPS[SW.step + 1]} →`) : null));
+      SW.step < 3 && s.path ? el('button', { type: 'button', class: 'btn pri', onclick: () => { SW.step++; swRender(); } }, `Next: ${SW_STEPS[SW.step + 1]} →`) : null));
   swRenderStep(true);
   swRenderChecks();
 }
@@ -85,7 +101,7 @@ function swRenderStep(full) {
       s.path ? text('b', s.path, 'mono') : text('span', 'browse to a folder, then "Share this folder"', 'muted')].filter(Boolean));
     const br = fsBrowser({ host: s.host, path: s.path || '/', pick: 'folder', pickLabel: 'Share this folder',
       onChange: (_p, d) => { SW.here = d; },
-      onPick: (p) => { s.path = p; if (!s.name) s.name = p.split('/').pop() || 'share'; showChosen(); swChanged(); swRender(); } });
+      onPick: swPick });
     showChosen();
     main.replaceChildren(el('div', { class: 'row' }, field('Server', hostSel), chosen),
       text('p', 'Browse the server\'s folders as the last scan saw them. Badges show disks (◉), network mounts (⇄), shares and planned mounts.', 'muted small'), br);
@@ -118,8 +134,11 @@ function swRenderStep(full) {
   }
   // review
   const ex = swExport();
-  const crit = SW.check ? SW.check.crit : 0;
+  const crit = SW.check && !SW.checking ? SW.check.crit : 0;
   const docDirty = typeof T !== 'undefined' && T.docs.get(s.host) && T.docs.get(s.host).dirty;
+  const sig = JSON.stringify([ex, crit, docDirty, SW.anyway, SW.saved, SW.busy, SW.index]);
+  if (!full && main._sig === sig) return;         // the same page: a button rebuilt under the pointer loses its click
+  main._sig = sig;
   const anyway = check('Save even with problems (the deploy check still blocks them)', SW.anyway, (v) => { SW.anyway = v; swRenderStep(true); });
   const what = [
     `${s.host} shares ${ex.path} over ${ex.protocol}${ex.protocol.startsWith('SMB') ? ` as //${s.host}/${ex.name}` : ''}`,
@@ -130,13 +149,15 @@ function swRenderStep(full) {
     el('ul', { class: 'swsummary' }, ...what.map((t) => text('li', t))),
     SW.saved ? el('div', { class: 'card' }, text('b', `Saved in ${SW.saved.host}'s design.`, 'st-ok'),
       text('p', 'Deploying installs the server side on the server and mounts it on each client. It starts with a read-only report.', 'muted small'),
-      el('div', { class: 'row start' }, button('Deploy (report first)…', () => { closeSharesManager(); closeShareWizard(); startDeploy('shares', SW.saved.host, 'report', `shares of ${SW.saved.host}`); }, 'btn pri sm'),
+      el('div', { class: 'row start' }, button('Deploy (report first)…', () => swDeploy(SW.saved.host), 'btn pri sm'),
         button('Download the script', () => swDownload(SW.saved.host), 'btn sm'), button('Close', closeShareWizard, 'btn ghost sm')))
       : el('div', { class: 'stack' },
         docDirty ? text('p', `The topology has unsaved edits on ${s.host}: save or discard them first.`, 'st-failed') : null,
         crit ? anyway : null,
-        el('div', { class: 'row' }, el('button', { type: 'button', class: 'btn pri', disabled: !!docDirty || (crit && !SW.anyway) || !s.path, onclick: swSave },
-          SW.index != null ? 'Save changes' : 'Save share'),
+        el('div', { class: 'row' }, el('button', { type: 'button', class: 'btn pri', disabled: !!docDirty || (crit && !SW.anyway) || !s.path || !!SW.busy, onclick: () => swSave(true) },
+          'Save and deploy (report first)…'),
+        el('button', { type: 'button', class: 'btn', disabled: !!docDirty || (crit && !SW.anyway) || !s.path || !!SW.busy, onclick: () => swSave() },
+          SW.index != null ? 'Save changes only' : 'Save only'),
         SW.index != null ? button('Remove share', swRemove, 'btn ghost danger') : null)));
 }
 
@@ -221,26 +242,37 @@ function swRenderChecks() {
   const box = $('#swchecks');
   if (!box) return;
   const c = SW.check;
-  if (!c) { box.replaceChildren(text('h3', 'Checks'), text('p', 'Pick a folder to start.', 'muted small')); return; }
+  if (!c) { box.replaceChildren(text('h3', 'Checks'), text('p', SW.checking ? 'Checking…' : 'Pick a folder to start.', 'muted small')); return; }
   const order = { crit: 0, warn: 1, ok: 2, note: 3 };
   const items = [...c.items].sort((a, b) => order[a.level] - order[b.level]);
   box.replaceChildren(...[el('div', { class: 'row' }, text('h3', 'Checks'),
-    text('span', c.error ? 'error' : c.crit ? `${c.crit} to fix` : c.warn ? `${c.warn} warning${c.warn === 1 ? '' : 's'}` : 'all good', c.crit || c.error ? 'st-failed' : c.warn ? 'st-running' : 'st-ok')),
+    text('span', SW.checking ? 'checking…' : c.error ? 'error' : c.crit ? `${c.crit} to fix` : c.warn ? `${c.warn} warning${c.warn === 1 ? '' : 's'}` : 'all good', SW.checking ? 'muted' : c.crit || c.error ? 'st-failed' : c.warn ? 'st-running' : 'st-ok')),
   c.error ? text('p', c.error, 'st-failed') : null,
   el('ul', { class: 'mvcheck' }, ...items.map((x) => text('li', x.text, `lv-${x.level}`))),
   text('p', 'Checked against the last scan of each host. Nothing is changed until you deploy.', 'muted small')].filter(Boolean));
-  if (SW.step === 3) swRenderStep(true);
+  if (SW.step === 3) swRenderStep(false);
 }
 
-async function swSave() {
+function swDeploy(host) {
+  closeSharesManager(); closeShareWizard();
+  startDeploy('shares', host, 'report', `shares of ${host}`);
+}
+async function swSave(thenDeploy = false) {
+  if (SW.busy) return;                            // two quick clicks would add the share, then refuse it as a duplicate
   const s = SW.s;
+  SW.busy = true; swRenderStep(false);
   try {
+    if (SW.checking) await swValidate();          // the last edit's check decides, not the one before it
+    if (SW.check && SW.check.crit && !SW.anyway) return;
     const r = await (await postJSON('/api/shares', { host: s.host, export: swExport(), index: SW.index, was: swWas(SW.share) })).json();
     SW.saved = r; SW.index = r.index; SW.share = r.export;
     smReload(r.host);
     if (typeof loadGraph === 'function') loadGraph();
-    swRender();
+    if (curTab() === 'deploy' && !thenDeploy) loadDeploy();
+    if (thenDeploy) swDeploy(r.host);
+    else swRender();
   } catch (err) { toast(err.message); }
+  finally { SW.busy = false; if (SW.dlg) swRenderStep(false); }
 }
 async function swRemove() {
   const s = SW.s;
@@ -301,9 +333,10 @@ async function smLoad() {          // the checks and what is not deployed yet; t
   SM.pending = new Set(deployed ? deployed.drift.filter((x) => x.kind === 'pending').map((x) => x.ref) : []);
   smRender();
 }
-function smState(e) {
+function smState(doc, e) {
   if (!e.designed && e.fromScan) return ['on the host only', 'unknown', 'Found by the scan in the host\'s own config. StorageForge did not deploy it and does not change it.'];
   if (e.fromScan) return ['deployed', 'protected', 'In the design and found on the host by the last scan.'];
+  if (doc.sharesDeployed) return ['deployed', 'protected', 'Deployed from this design. The next scan of the host confirms it.'];
   return ['planned', 'local-only', 'In the design, not found on the host yet: deploy it, or scan again if it is already there.'];
 }
 function smMountedBy(doc, i, e) {
@@ -323,7 +356,7 @@ async function smEdit(doc, i, e) {
   smShow(doc.host, `exp:${i}`);                   // a planned host, or SFTP/S3: the topology's own form
 }
 async function smRemove(doc, i, e) {
-  const [state] = smState(e);
+  const [state] = smState(doc, e);
   const label = `${e.protocol || e.proto} ${e.name || e.path}`;
   if (!confirm(state === 'deployed'
     ? `Remove ${label} from ${doc.host}'s design? It stays on the host and its clients until you deploy ${doc.host}'s shares again, which takes it down.`
@@ -339,7 +372,7 @@ async function smRemove(doc, i, e) {
   try { await smDelete(doc.host, e); } catch (err) { SM.error = err.message; smRender(); }
 }
 function smRow(doc, i, e, chk) {
-  const [state, cls, why] = smState(e);
+  const [state, cls, why] = smState(doc, e);
   const scanOnly = !e.designed && e.fromScan;
   const dirty = doc.dirty ? `Save or discard the edits on ${doc.host} first` : '';
   const items = chk ? chk.items.filter((x) => ['crit', 'warn'].includes(x.level) && chk.exports[x.export] && smKey(chk.exports[x.export]) === smKey(e)) : [];
