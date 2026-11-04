@@ -49,6 +49,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 
 | Page | What it covers |
 | :--- | :--- |
+| [UI audit, 2026-11-04](audit-2026-11-04-ui.md) | How the screens are organised and behave, the planner against what the platform has learned since it was written, and 41 findings with evidence |
 | [Test audit, 2026-11-03](test-audit-2026-11-03.md) | What the test suites covered, the lab tier and feature map added, and the bugs they found |
 | [Ransomware defense audit, 2026-11-02](audit-2026-11-02-ransomware-defense.md) | The first implementation of the roadmap, what was wrong with it, and what was found while replacing it |
 | [Feature audit, 2026-11-01](audit-2026-11-01-features.md) | Code compared with the docs and exercised in the lab, and what disagreed |
@@ -60,6 +61,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Security parameters](../security-parm.md) | The threat model and hardening checklist, from 2026-10-26 |
 | [Roadmap](../notebook/Roadmap.md) | What is planned next, and every finding behind it |
 | [Roadmap](../roadmap.md) | What's left to build. Finished and superseded roadmaps are in [the archive](../archive/roadmaps/) |
+| [UI and UX roadmap](../ui-ux-roadmap.md) | How the screens should change, in order, and how the planner grows to match the platform |
 
 These pages are also published as the project wiki. Edit them here, then run `python3 docs/build-wiki.py --push`: each build replaces the wiki, and a link that leads nowhere stops it.
 
