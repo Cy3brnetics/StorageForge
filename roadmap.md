@@ -99,7 +99,7 @@ Each needs its own decision, not a slot on a calendar.
 
 ## Will not be built
 
-The Samba VSS trap, cryptographic shred, compliance certificates and a WebSocket event stream, because they can't work or would claim too much: see [ransomware defense](docs/ransomware-defense.md). StorageForge stays agentless and builds no log viewer, and it isn't a replacement for NetBox, LibreNMS or Zabbix.
+The Samba VSS trap, cryptographic shred, compliance certificates and a WebSocket event stream, because they can't work or would claim too much: see [ransomware defense](docs/ransomware-defense.md). StorageForge stays agentless and builds no live log viewer: scans collect host journals for searching later ([Host logs](docs/api-reference.md)), and nothing tails or streams them. It isn't a replacement for NetBox, LibreNMS or Zabbix.
 
 ## Decision still open
 

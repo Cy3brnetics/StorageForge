@@ -56,6 +56,8 @@ if ! getent group "$G" >/dev/null 2>&1; then
   groupadd --system "$G" 2>/dev/null || groupadd "$G" 2>/dev/null || addgroup -S "$G"      # addgroup: BusyBox has no groupadd
 fi
 usermod -a -G "$G" "$U" 2>/dev/null || addgroup "$U" "$G"
+# so scans can collect the journal (hostlogs.py). No such group, no journal to read.
+if getent group systemd-journal >/dev/null 2>&1; then usermod -a -G systemd-journal "$U" 2>/dev/null || addgroup "$U" systemd-journal 2>/dev/null || true; fi
 install -d -o root -g "$G" -m 0750 "$D"
 for t in find sha256sum; do
   src=$(command -v "$t") || { echo "$t is not installed" >&2; exit 3; }
@@ -76,6 +78,7 @@ echo "read-only scan access is ready for $U"
 REMOVE = r"""set -eu
 """ + health.UNINSTALL + r"""rm -rf %(dir)s
 gpasswd -d %(user)s %(group)s 2>/dev/null || delgroup %(user)s %(group)s 2>/dev/null || true
+gpasswd -d %(user)s systemd-journal 2>/dev/null || delgroup %(user)s systemd-journal 2>/dev/null || true
 groupdel %(group)s 2>/dev/null || delgroup %(group)s 2>/dev/null || true
 echo "read-only scan access removed"
 """

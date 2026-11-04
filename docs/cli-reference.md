@@ -69,6 +69,8 @@ storageforge-index search [PATTERN] [options]
 | `hosts rekey NAME [--port P]` | forget a host's pinned SSH host keys after a reinstall; scan it right after |
 | `access status [--host H]` | folders the latest scans could not read |
 | `access script [--host H \| --user U] [--remove]` | the read-only scan access setup script; pipe it to `ssh admin@host sudo sh` |
+| `hostlogs [--host H] [--unit U] [--level L] [--grep TEXT] [--since T] [--until T] [--limit N] [--format text\|csv\|json] [-o FILE]` | search hosts' journal lines as scans collected them; `--level warning` means warning or worse. Scan a host to get newer lines |
+| `hostlogs --status [--host H]` | how the last pickup from each host went |
 | `git [--host H]` | repositories, copies and archive state |
 | `docker [--host H] [--path P]` | stacks, containers and folders; with `--path`, which containers use that folder |
 

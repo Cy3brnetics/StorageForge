@@ -110,6 +110,6 @@ The Falco install fetches its vendor's key at run time, which a signature cannot
 | Feature | What it adds | Removal |
 | :--- | :--- | :--- |
 | Scanning | nothing; a user with your public key | remove the key |
-| Read-only scan access | `find` and `sha256sum` copies with `CAP_DAC_READ_SEARCH`, executable only by `storageforge-scan` | `access script --remove` |
+| Read-only scan access | `find` and `sha256sum` copies with `CAP_DAC_READ_SEARCH`, executable only by `storageforge-scan`; the scan user in `systemd-journal`, so it can read every journal line for scans to collect | `access script --remove` |
 | Deploy access | `storageforge-deploy` user, a sudoers file allowing two commands, `storageforge-run`, `allowed_signers` | the setup script's `--remove` |
 | Deployed jobs | `storageforge-job`, per-job configs, keys and timers; forced-command keys on sources | deploy the plan empty (**Remove from hosts**) |

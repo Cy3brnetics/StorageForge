@@ -844,6 +844,29 @@ def cmd_log(args) -> int:
     return 0
 
 
+def cmd_hostlogs(args) -> int:
+    from . import hostlogs
+    db, conn = open_db(args)
+    if args.status:
+        for s in hostlogs.status(conn, args.host):
+            when = time.strftime('%Y-%m-%d %H:%M', time.localtime(s['collected_at']))
+            print(f'{s["host"]}  {s["state"]}  collected {when}, {s["new_lines"]} new, {s["lines"]} kept' + (f'\n  {s["note"]}' if s['note'] else ''))
+        return 0
+    try:
+        f = hostlogs.clean_filter(args.host, args.unit, args.level, args.grep, args.since, args.until)
+        text, n = hostlogs.export(conn, f, args.format, args.limit)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    if not args.output:
+        print(text, end='')
+        return 0
+    with open(args.output, 'w', encoding='utf-8', newline='') as out:
+        out.write(text)
+    _audit(db, conn, None, 'hostlogs.export', host=f['host'], format=args.format, lines=n, file=args.output)
+    print(f'{n} lines written to {args.output}')
+    return 0
+
+
 def cmd_audit(args) -> int:
     from .vault import AuditLog, Vault, VaultError
     db, conn = open_db(args)
@@ -1470,6 +1493,19 @@ def build_parser() -> argparse.ArgumentParser:
     lg.add_argument('--with-output', action='store_true', help='include the full output of deploy runs and fetched logs')
     lg.add_argument('-o', '--output', help='write to this file instead of the terminal')
     lg.set_defaults(fn=cmd_log)
+
+    hl = sub.add_parser('hostlogs', help="search hosts' journals as scans collected them; scan a host to get newer lines")
+    hl.add_argument('--host', help='only this host')
+    hl.add_argument('--unit', help='only this systemd unit or program (sshd finds sshd.service too)')
+    hl.add_argument('--level', help='this level or worse: emerg, alert, crit, err, warning, notice, info, debug')
+    hl.add_argument('--grep', help='only lines holding this text')
+    hl.add_argument('--since', help='unix seconds or a date like 2026-10-30')
+    hl.add_argument('--until', help='unix seconds or a date like 2026-10-30 (the whole day)')
+    hl.add_argument('--limit', type=int, default=100)
+    hl.add_argument('--format', choices=['text', 'csv', 'json'], default='text')
+    hl.add_argument('--status', action='store_true', help='how the last pickup from each host went')
+    hl.add_argument('-o', '--output', help='write to this file instead of the terminal')
+    hl.set_defaults(fn=cmd_hostlogs)
 
     a = sub.add_parser('audit', help='append-only audit log')
     asub = a.add_subparsers(dest='audit_cmd', required=True)

@@ -15,6 +15,7 @@ CATALOG = (
         ('configs.view', 'See saved host configurations', False),)),
     ('Logs', (
         ('logs.view', 'Read the activity log and command output', False),
+        ('hostlogs.view', "Read hosts' journals as scans collected them: sign-ins, sudo commands, service output", False),
         ('audit.view', 'Read the audit log', False),
         ('audit.verify', 'Verify the audit chain and sign evidence (unlocks the vault)', False),)),
     ('Scans', (
@@ -70,7 +71,7 @@ _VIEWER = frozenset({'search.files', 'hosts.view', 'files.browse', 'services.vie
 BUILTIN = {
     'search': ('Searches files across hosts, and nothing else', frozenset({'search.files'})),
     'viewer': ('Browses and searches', _VIEWER),
-    'operator': ('Also plans, scans and deploys', _VIEWER | {'scans.run', 'plans.edit', 'plans.scripts', 'deploy.report', 'deploy.apply',
+    'operator': ('Also plans, scans and deploys', _VIEWER | {'hostlogs.view', 'scans.run','plans.edit', 'plans.scripts', 'deploy.report', 'deploy.apply',
                                                             'deploy.destructive', 'deploy.setup', 'git.live', 'git.sync', 'security.manage', 'map.edit', 'devices.manage', 'devices.apply', 'netscan.run'}),
     'admin': ('Everything, including keys, accounts and settings', ALL),
 }
@@ -90,6 +91,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (_ANY, r'/api/audit/verify', 'audit.verify'),
     (READ, r'/api/audit', 'audit.view'),
     (READ, r'/api/log(/.*)?', 'logs.view'),
+    (READ, r'/api/hostlogs(/.*)?', 'hostlogs.view'),
 
     (READ, r'/api/search(/hosts)?', 'search.files'),
     (READ, r'/api/(hosts|graph|canvas|capacity|planner/.*)', 'hosts.view'),

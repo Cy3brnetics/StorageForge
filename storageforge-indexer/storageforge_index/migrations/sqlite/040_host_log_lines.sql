@@ -1,0 +1,32 @@
+-- StorageForge schema v40 · sqlite: host journals as scans collect them (hostlogs.py)
+-- line_key: a hash of the journal's own cursor, so a line read twice is stored once. at_us: the host's clock, microseconds.
+CREATE TABLE host_log_lines (
+    line_id      INTEGER PRIMARY KEY,
+    host         TEXT    NOT NULL,
+    line_key     TEXT    NOT NULL,
+    at_us        INTEGER NOT NULL,
+    priority     INTEGER NOT NULL,
+    unit         TEXT,
+    ident        TEXT,
+    pid          INTEGER,
+    message      TEXT    NOT NULL,
+    collected_at INTEGER NOT NULL,
+    UNIQUE (host, line_key)
+);
+CREATE INDEX host_log_lines_at ON host_log_lines (at_us);
+CREATE INDEX host_log_lines_host ON host_log_lines (host, at_us);
+CREATE INDEX host_log_lines_unit ON host_log_lines (host, unit, at_us);
+
+-- how the last pickup from each host went. newest_us: where the next one starts reading.
+CREATE TABLE host_log_status (
+    host         TEXT    PRIMARY KEY,
+    collected_at INTEGER NOT NULL,
+    state        TEXT    NOT NULL,
+    new_lines    INTEGER NOT NULL DEFAULT 0,
+    cut          INTEGER NOT NULL DEFAULT 0,
+    newest_us    INTEGER,
+    note         TEXT    NOT NULL DEFAULT ''
+);
+
+INSERT INTO schema_version (version, name, applied_at)
+VALUES (40, 'host_log_lines', CAST(strftime('%s', 'now') AS INTEGER));

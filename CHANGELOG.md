@@ -4,6 +4,12 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 
 ## Unreleased
 
+### Added
+- **Scans collect host logs.** Each scan picks up what is new in the host's journal: up to 2,000 lines at warning or worse and 5,000 at info or worse. Search them by host, level, unit, text and time in the Logs tab, `hostlogs` on the CLI or `/api/hostlogs`, and export them as CSV, JSON or text. Nothing tails or streams: to see newer lines, scan the host. Lines are kept 30 days and at most 500,000 per host (`STORAGEFORGE_LOG_KEEP_DAYS`, `STORAGEFORGE_LOG_KEEP_ROWS`). `STORAGEFORGE_HOST_LOGS=0` turns collection off.
+- **Hosts need their scan access script run again to collect logs.** It now adds the scan user to `systemd-journal`, which lets that user read everything in the journal. Until then the Logs tab says so for that host and stores nothing.
+- **Reading host logs takes a new permission, `hostlogs.view`.** Operators and admins have it. Viewers don't, because journals hold sign-ins and sudo commands. Custom roles don't get it on upgrade.
+- Known secret shapes are removed from lines before they are stored (passwords, tokens, API keys, URL credentials, private keys). This catches common forms, not every form.
+
 ### Security
 - **The sentinel has its own permission, `security.sentinel`.** Setting it up takes it. Deploying, re-arming and removing it take it and `deploy.apply`. Operators no longer hold it: `deploy.apply` alone could take the sentinel off a host. Custom roles with `security.emergency` get it on upgrade, to keep what they could do.
 - **A security key guards its own replacement.** Adding or removing a key on an account that has one takes a touch. `user clear-keys` is the way back from a lost key.

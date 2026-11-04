@@ -384,7 +384,12 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
             return None
 
         host_id = db.upsert_host(conn, inv, t, t.host_keys())   # refuses a machine claiming another host's name
-        if inv.jobs:                                     # runs of deployed jobs that could not report themselves
+        try:
+            from .hostlogs import collect as collect_logs
+            collect_logs(conn, t, inv.hostname, log=log)
+        except Exception as exc:
+            log(f'  host logs: {exc}')
+        if inv.jobs:                                   # runs of deployed jobs that could not report themselves
             try:
                 from .jobs import ingest_scan
                 if n := ingest_scan(conn, inv.hostname, inv.jobs):

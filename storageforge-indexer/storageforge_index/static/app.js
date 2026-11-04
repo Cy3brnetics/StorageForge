@@ -610,6 +610,7 @@ function showTab(name) {
   clearInterval(jobTimer);
   if (name === 'jobs') { loadJobs(); jobTimer = setInterval(loadJobs, 3000); }
   if (name === 'audit') loadAudit();
+  if (name === 'hostlogs') loadHostLogs();
   if (name === 'keys') loadKeys();
   if (name === 'access') loadAccess();
   if (name === 'copies') loadCopies();
@@ -830,7 +831,7 @@ let ME = null;
 const can = (perm) => !!ME && ME.permissions.includes(perm);
 const TAB_NEEDS = { search: 'search.files', changes: 'plans.view', moves: 'plans.view', schedule: 'plans.view', deploy: 'deploy.view',
                     docker: 'services.view', infra: 'workloads.view', git: 'services.view', rebuild: 'configs.view', copies: 'files.browse', malware: 'files.browse', access: 'keys.view',
-                    security: 'security.view', jobs: 'scans.view', keys: 'keys.view' };
+                    security: 'security.view', jobs: 'scans.view', keys: 'keys.view', hostlogs: 'hostlogs.view' };
 function applyPermissions(me) {          // only hides what would answer 403: the server decides
   ME = me;
   document.querySelectorAll('.tabs button[data-tab]').forEach((b) => { const need = TAB_NEEDS[b.dataset.tab]; b.hidden = !!need && !can(need); });
@@ -1025,6 +1026,57 @@ async function loadAudit() {
     }));
   } catch (err) { $('#audit').replaceChildren(text('li', err.message, 'muted')); }
 }
+
+/* Host logs: what scans collected. Nothing here refreshes by itself, and every value is the host's own text, so textContent only. */
+let hlOffset = 0;
+const hlWhen = (ts) => new Date(ts * 1000).toISOString().replace('T', ' ').slice(0, 19);
+function hlQuery() {
+  const q = new URLSearchParams();
+  for (const [key, id] of [['host', '#hl-host'], ['level', '#hl-level'], ['unit', '#hl-unit'], ['q', '#hl-q']]) {
+    const v = $(id).value.trim();
+    if (v) q.set(key, v);
+  }
+  return q;
+}
+async function hlSearch(more) {
+  hlOffset = more ? hlOffset + 100 : 0;
+  const q = hlQuery();
+  q.set('limit', '100'); q.set('offset', String(hlOffset));
+  try {
+    const { entries, more: hasMore } = await getJSON(`/api/hostlogs?${q}`);
+    const rows = entries.map((e) => {
+      const li = document.createElement('li');
+      const cls = e.priority <= 3 ? 'st-failed' : e.priority === 4 ? 'st-warn' : '';
+      li.append(text('span', e.message, cls),
+        text('span', `${hlWhen(e.ts)} · ${e.host} · ${e.level} · ${e.unit || e.ident || '-'}${e.pid ? ` [${e.pid}]` : ''}`, 'm'));
+      return li;
+    });
+    if (more) $('#hl-lines').append(...rows);
+    else $('#hl-lines').replaceChildren(...(rows.length ? rows : [text('li', 'No lines match. Newer lines arrive when a host is scanned.', 'muted')]));
+    $('#hl-more').hidden = !hasMore;
+    const file = new URLSearchParams(hlQuery()); file.set('format', 'csv');
+    $('#hl-export').href = `/api/hostlogs/export?${file}`;
+  } catch (err) { $('#hl-lines').replaceChildren(text('li', err.message, 'muted')); $('#hl-more').hidden = true; }
+}
+async function loadHostLogs() {
+  if (!can('hostlogs.view')) return;
+  try {
+    const { hosts } = await getJSON('/api/hostlogs/status');
+    const pick = $('#hl-host'), chosen = pick.value;
+    pick.replaceChildren(text('option', 'All hosts'), ...hosts.map((s) => { const o = text('option', s.host); o.value = s.host; return o; }));
+    pick.options[0].value = '';
+    pick.value = hosts.some((s) => s.host === chosen) ? chosen : '';
+    // only what needs doing: a host collected without trouble says nothing here
+    $('#hl-status').replaceChildren(...hosts.filter((s) => s.note).map((s) => {
+      const li = document.createElement('li');
+      li.append(text('span', `${s.host}: ${s.note}`, 'st-warn'), text('span', `last tried ${hlWhen(s.collected_at)}`, 'm'));
+      return li;
+    }));
+  } catch (err) { $('#hl-status').replaceChildren(text('li', err.message, 'muted')); }
+  hlSearch(false);
+}
+$('#hl-form').addEventListener('submit', (ev) => { ev.preventDefault(); hlSearch(false); });
+$('#hl-more').addEventListener('click', () => hlSearch(true));
 $('#verify').addEventListener('click', async () => {
   $('#verified').textContent = 'Checking…';
   try {

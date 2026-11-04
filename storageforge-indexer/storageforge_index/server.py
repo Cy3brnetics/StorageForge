@@ -40,6 +40,9 @@ GET  /api/audit/verify              hash-chain verification (unlocks the vault)
 GET  /api/log[?host=&sources=&outcomes=&q=&since=&until=&limit=&offset=]   what has been done, from every source
 GET  /api/log/output?id=             the full output of one deploy run or fetched log
 GET  /api/log/export?format=csv|json|text[&output=1&...]   the same list as a file
+GET  /api/hostlogs[?host=&unit=&level=&q=&since=&until=&limit=&offset=]   hosts' journal lines, as scans collected them
+GET  /api/hostlogs/status[?host=]    how the last pickup from each host went
+GET  /api/hostlogs/export?format=csv|json|text[&...]   the same lines as a file
 POST /api/scan  {"host": "…"}       queue a vault-backed scan
 POST /api/scan/all                  queue a scan of every host with a scan binding
 GET  /api/keys                      vault keys (public halves) and host bindings
@@ -154,7 +157,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
+               fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
 from .runtimes import docker
 from .capacity import parse_size, trends
 from .db import Database, epoch
@@ -1011,6 +1014,31 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         stamp = time.strftime('%Y%m%d-%H%M%S', time.gmtime())
         return Response(text, mimetype=mime.split(';')[0], headers={
             'Content-Disposition': f'attachment; filename="storageforge-log-{stamp}.{ext}"', 'X-Content-Type-Options': 'nosniff'})
+
+    def hostlog_filter():
+        a = request.args
+        return hostlogs.clean_filter(a.get('host'), a.get('unit'), a.get('level'), a.get('q'), a.get('since'), a.get('until'))
+
+    @web.get('/api/hostlogs')
+    @login_required
+    def api_hostlogs():
+        return jsonify(hostlogs.page(conn(), hostlog_filter(), arg_num('limit', 100, 1, 500), arg_num('offset', 0, 0, hostlogs.MAX_EXPORT)))
+
+    @web.get('/api/hostlogs/status')
+    @login_required
+    def api_hostlogs_status():
+        return jsonify(hosts=hostlogs.status(conn(), request.args.get('host') or None))
+
+    @web.get('/api/hostlogs/export')
+    @login_required
+    def api_hostlogs_export():
+        f, fmt = hostlog_filter(), request.args.get('format') or 'csv'
+        text, n = hostlogs.export(conn(), f, fmt)
+        core.audit(conn(), actor(), 'hostlogs.export', 'ok', f['host'], {'format': fmt, 'lines': n, 'q': f['q'], 'unit': f['unit'], 'level': f['level']})
+        mime, ext = hostlogs.FORMATS[fmt]
+        stamp = time.strftime('%Y%m%d-%H%M%S', time.gmtime())
+        return Response(text, mimetype=mime.split(';')[0], headers={
+            'Content-Disposition': f'attachment; filename="storageforge-hostlogs-{stamp}.{ext}"', 'X-Content-Type-Options': 'nosniff'})
 
     @web.post('/api/scan')
     @login_required
