@@ -1,5 +1,7 @@
 # Infrastructure Map: Layered Topology for Networks, Firewalls, Containers & VMs
 
+> **Archived 2026-11-04.** Merged into the Infrastructure Platform Roadmap, and M1 to M8 are done.
+
 A roadmap for extending the StorageForge topology and canvas from a **storage graph** (Host → Pool → Filesystem → Mount → Symlink) into a **full infrastructure map**: networking, firewalls, containers, VMs, VPNs, panels and the security controls around them. It is drawn from what the managed hosts actually report, and it doubles as the planning surface for deployments.
 
 It builds on the existing graph (`graph.py`, `canvas.py`) and planner topology, and it is the visual layer for [Workload Platform Roadmap](workload-platform-roadmap.md), [Toolbox Catalog Roadmap](toolbox-catalog-roadmap.md) and [Ransomware Defense Roadmap](ransomware-defense-roadmap.md).

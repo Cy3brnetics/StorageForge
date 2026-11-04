@@ -1,5 +1,7 @@
 # Sysadmin Toolbox Catalog: Deploy Scripts & GUI Integration Roadmap
 
+> **Archived 2026-11-04.** A draft, merged into the Infrastructure Platform Roadmap. None of it is built. What is left moved to the [roadmap](../../roadmap.md), and this keeps the detail.
+
 A roadmap for a catalog of **deploy scripts for common sysadmin tools** (VPNs, zero trust, identity, reverse proxies, intrusion prevention, vulnerability scanning, monitoring, backup, secrets, DNS, provisioning) and for how each one **ties back into a graphical interface**, either its own UI or a StorageForge panel built on its API.
 
 This extends [Workload Platform Roadmap](workload-platform-roadmap.md). The catalog format, plan step types, report-then-apply flow and IaC export from that document are reused unchanged. It also relies on the MAC, firewall and compliance engines in the [Ransomware Defense Roadmap](ransomware-defense-roadmap.md).

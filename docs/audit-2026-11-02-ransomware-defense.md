@@ -1,6 +1,6 @@
 # Ransomware defense audit, 2026-11-02
 
-A review of the first implementation of the [ransomware defense roadmap](../ransomware-defense-roadmap.md) (branch `dev`, commits `c21e652`, `1f2df07`, `d29bf2f`), and what replaced it.
+A review of the first implementation of the [ransomware defense roadmap](../archive/roadmaps/ransomware-defense-roadmap.md) (branch `dev`, commits `c21e652`, `1f2df07`, `d29bf2f`), and what replaced it.
 
 **Scope.** Read in full: `security.py`, `routes_security.py`, `securityview.js`, both `031` migrations, `test_security.py`, and the diff to existing files. Every finding marked *confirmed* was reproduced against the running API, in a browser, or by running the generated script.
 

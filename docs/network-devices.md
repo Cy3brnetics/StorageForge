@@ -16,7 +16,7 @@ A real device of an untested kind may well behave differently. Start with one yo
 
 ## The management planner
 
-`/manage` lists every host and device, and is where a change is written. See [the roadmap](../management-planner-roadmap.md) for why it's separate from the [storage planner](planner.md). It's linked from **Manage** in the top bar.
+`/manage` lists every host and device, and is where a change is written. See [the roadmap](../archive/roadmaps/management-planner-roadmap.md) for why it's separate from the [storage planner](planner.md). It's linked from **Manage** in the top bar.
 
 ## Adding a device
 

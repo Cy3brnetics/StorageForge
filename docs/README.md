@@ -59,7 +59,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Security audit, 2026-10-28](../security-audit-2026-10-28.md) | Findings and fixes |
 | [Security parameters](../security-parm.md) | The threat model and hardening checklist, from 2026-10-26 |
 | [Roadmap](../notebook/Roadmap.md) | What is planned next, and every finding behind it |
-| [Ransomware defense & host security roadmap](../ransomware-defense-roadmap.md) | Architecture and phased milestones for automated ransomware defense, host security engines (SELinux, AppArmor, auditd, Falco, AIDE, Lynis), and firewall fencing |
+| [Roadmap](../roadmap.md) | What's left to build. Finished and superseded roadmaps are in [the archive](../archive/roadmaps/) |
 
 These pages are also published as the project wiki. Edit them here, then run `python3 docs/build-wiki.py --push`: each build replaces the wiki, and a link that leads nowhere stops it.
 

@@ -42,14 +42,15 @@ Three server hypervisor/storage configs install from their vendors' ISOs, with n
 | `sf-truenas` | TrueNAS 25.10 | ZFS mirror `tank` | 4 GB |
 | `sf-xcp` | XCP-ng 8.3, nested Xen | Local ext storage repository | 3 GB |
 
-On the `dev-expanded-networking` branch, four dedicated router and firewall appliances join the lab to exercise multi-transport discovery (SSH, Telnet, REST) and multi-hop reachability in isolated virtual networks (see [Expanded Networking Roadmap](../expanded-networking-roadmap.md)):
+Routers and the machines behind them join a running build with `lab.sh up --join sf-mikrotik,sf-openwrt,sf-wan-host,sf-lan-client,sf-dmz-server`, on isolated WAN, LAN and DMZ networks with no route out. Only tier 12 uses them. There's no free pfSense or Cisco image the lab can install unattended, so neither is here: see [what has been tested on what](network-devices.md#what-has-been-tested-on-what).
 
 | Config | System | Interfaces / Network | RAM |
 | :--- | :--- | :--- | :--- |
-| `sf-mikrotik` | MikroTik RouterOS 7 CHR | mgmt (10.77.0.27), wan, lan1, dmz | 128 MB |
-| `sf-openwrt` | OpenWrt 23.05 x86 | mgmt (10.77.0.28), wan, lan1, dmz | 128 MB |
-| `sf-pfsense` | pfSense CE 2.7 / OPNsense | mgmt (10.77.0.29), wan, lan1, dmz | 1 GB |
-| `sf-cisco` | Cisco IOSv / VyOS | mgmt (10.77.0.30), wan, lan1, dmz | 1 GB |
+| `sf-mikrotik` | MikroTik RouterOS 7.25 CHR | mgmt (10.77.0.30), wan, lan1, dmz | 256 MB |
+| `sf-openwrt` | OpenWrt 25.12 x86 | mgmt (10.77.0.31), wan, lan1, dmz | 256 MB |
+| `sf-wan-host` | Alpine 3.24, the outside | mgmt (10.77.0.34), wan | 384 MB |
+| `sf-lan-client` | Alpine 3.24, behind the LAN | mgmt (10.77.0.35), lan1 | 384 MB |
+| `sf-dmz-server` | Alpine 3.24, answers on 80 and 443 | mgmt (10.77.0.36), dmz | 384 MB |
 
 ```bash
 examples/lab/lab.sh up --pick sf-pve,sf-truenas,sf-xcp,sf-bookworm

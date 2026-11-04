@@ -1,5 +1,7 @@
 # Management Planner: One Place to Plan the Fleet and Its Network
 
+> **Archived 2026-11-04.** Done. What is left moved to the [roadmap](../../roadmap.md).
+
 The plan for `/manage`, which the [Expanded Networking Roadmap](expanded-networking-roadmap.md) needed once routers joined hosts.
 
 Status: **built**, and through the KVM lab (tier 12). What's left is under [Later](#later).
@@ -48,4 +50,4 @@ A Linux host doesn't take this route. Its rules become `fw-rule` steps in Change
 - Moving a rule to a position. RouterOS appends, and a rule below a chain's final drop does nothing. The what-if shows that honestly, but the language has no `place-before` yet.
 - Drawing scan results on the Map as placeholders. The Scan tab links to the Map, but they're separate drawings.
 - Scheduled reports of what the scanner found new, through the existing alert channels.
-- A real pfSense and Cisco, if an image can be had. See [what has been tested on what](docs/network-devices.md#what-has-been-tested-on-what).
+- A real pfSense and Cisco, if an image can be had. See [what has been tested on what](../../docs/network-devices.md#what-has-been-tested-on-what).

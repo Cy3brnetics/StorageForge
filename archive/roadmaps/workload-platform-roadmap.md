@@ -1,8 +1,10 @@
 # Workload Platform: Container & VM Discovery, Management, Deployment & IaC Roadmap
 
+> **Archived 2026-11-04.** A draft, merged into the Infrastructure Platform Roadmap. Part of it is built. What is left moved to the [roadmap](../../roadmap.md), and this keeps the detail.
+
 A roadmap for turning StorageForge from a storage-aware *inventory* of containers into a place where an operator can **scan, import, install, set up, deploy and manage** workloads: Docker, Podman, LXC/LXD/Incus containers and KVM/libvirt virtual machines. It also covers **deploying other management panels** (Dockhand, Komodo, Dockge, Portainer, Dockploy, Cockpit and similar) and exporting everything as **Bash, Terraform, Puppet and Ansible** artifacts. It all runs through the existing **staging toolbox** (change plans, report-then-apply, signed deploys) and works alongside the MAC, firewall and host-hardening engines in the [Ransomware Defense Roadmap](ransomware-defense-roadmap.md).
 
-Status: **planned**. Nothing here is built yet. Today StorageForge only *reads* Docker/Podman state (`docker.py`, [Docker and Podman inventory](docs/features/discovery.md#docker-and-podman)) and deploys signed scripts through `deploy.py`.
+Status: **planned**. Nothing here is built yet. Today StorageForge only *reads* Docker/Podman state (`docker.py`, [Docker and Podman inventory](../../docs/features/discovery.md#docker-and-podman)) and deploys signed scripts through `deploy.py`.
 
 ---
 
@@ -330,7 +332,7 @@ Dependencies: W3 reuses the ransomware roadmap's Phase 8 package resolver. W8 de
 
 ## 11. Verification (KVM Lab Gauntlet)
 
-The existing [KVM lab](docs/kvm-lab.md) is the proving ground. Tests go through the API like the rest of the suite.
+The existing [KVM lab](../../docs/kvm-lab.md) is the proving ground. Tests go through the API like the rest of the suite.
 
 1. **Discovery**: on Debian, Ubuntu, Fedora, Rocky, Alma, openSUSE and Arch, install Docker, rootless Podman, Incus and libvirt. Create known workloads and assert the scan finds every one with correct mounts, ports and labels. Alpine is scanned only, since it has no bash or systemd.
 2. **Nested KVM**: confirm a lab VM can run `virt-install` (nested virt) and a Proxmox template boots to an installer prompt.

@@ -1,10 +1,12 @@
 # Ransomware Defense & Host Security: Complete System Architecture, Admin Panels, Custom Views, & Global Compliance Roadmap
 
+> **Archived 2026-11-04.** Done: see [progress.md](../../progress.md). Its corrections stand.
+
 > [!NOTE]
 > **Replaced as the plan by the [Infrastructure Platform Roadmap](infrastructure-platform-roadmap.md#9-security),** which says what is left and when. Kept for its panel designs and detail.
 
 > [!IMPORTANT]
-> **This is a plan, and it promises more than exists.** What is really built, what it protects against and what is not built is in [Ransomware defense](docs/ransomware-defense.md). The first attempt at this roadmap faked it: see the [audit](docs/audit-2026-11-02-ransomware-defense.md).
+> **This is a plan, and it promises more than exists.** What is really built, what it protects against and what is not built is in [Ransomware defense](../../docs/ransomware-defense.md). The first attempt at this roadmap faked it: see the [audit](../../docs/audit-2026-11-02-ransomware-defense.md).
 >
 > **Corrections.** Building it showed that some of what follows cannot work as written, so do not implement it as described:
 >

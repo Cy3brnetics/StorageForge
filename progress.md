@@ -1,6 +1,6 @@
 # Progress
 
-Where the build of the [Infrastructure Platform Roadmap](infrastructure-platform-roadmap.md) and the [Ransomware Defense Roadmap](ransomware-defense-roadmap.md) stands. **Done** means the roadmap's definition of done (§2), including the KVM lab. Code that passes unit tests but has not been in the lab is **Built, not lab-tested**.
+Where the build stands. [roadmap.md](roadmap.md) says what's left, and the plans these rows come from are in [the archive](archive/roadmaps/). **Done** means the roadmap's definition of done (§2), including the KVM lab. Code that passes unit tests but has not been in the lab is **Built, not lab-tested**.
 
 Last updated: 2026-11-03.
 
@@ -15,7 +15,7 @@ Built and through the KVM lab, apart from what each row says.
 | M1 Network, M2 Services and Firewall, M3 Containers and VMs | Done: tier 10. Incus, LXC and Proxmox guests are parsed and unit-tested, not lab-tested |
 | M4 Map UI foundations | Done, except the [listed](docs/infrastructure-map.md#not-built) layouts and colour rules |
 | M5 Placeholders, manual nodes, change tracking | Done: tiers 10, 11 |
-| M6 Path query, what-if, plan actions | Done for firewall, network, WireGuard and container steps: tier 11. Stacks, LXC and catalog tools need the Workload and Toolbox roadmaps |
+| M6 Path query, what-if, plan actions | Done for firewall, network, WireGuard and container steps: tier 11. Stacks, LXC and catalog tools aren't built: see the [roadmap](roadmap.md) |
 | M7 Access and Security layers | WireGuard done: tier 11. Tailscale, proxies and identity providers are parsed and unit-tested, not lab-tested |
 | M8 Design mode | Done: tier 11. Terraform and Puppet exports render and hold values as data, and have not been applied by those tools |
 | M9 Scale and integrations | Later, as the roadmap says. A synthetic 200 hosts and 2,000 workloads draws within limits in the browser test |

@@ -1,10 +1,12 @@
 # Expanded Networking Roadmap: Router & Switch Support, Multi-Transport (SSH/Telnet), and Isolated KVM Lab
 
+> **Archived 2026-11-04.** Done, on real RouterOS and OpenWrt. What is left moved to the [roadmap](../../roadmap.md).
+
 A comprehensive engineering roadmap for expanding StorageForge from host-based networking into **full network infrastructure**: routers, managed switches, and firewalls running **MikroTik RouterOS, Cisco IOS/IOS-XE, OpenWrt, and pfSense/OPNsense**.
 
 It establishes the multi-transport layer (SSH with PTY/legacy cipher support, Telnet, and REST APIs), maps out the complete feature capabilities of each router operating system, normalizes network and firewall facts into the existing StorageForge engines (`netfacts.py`, `firewall.py`, `reach.py`, `exposure.py`), and details the **isolated KVM lab architecture** (multi-segmented virtual topologies and Tier 12 tests) to validate everything without touching production traffic.
 
-Status: **built** on branch `dev-expanded-networking`, and through the KVM lab on real RouterOS and OpenWrt. pfSense, OPNsense and Cisco have only met published formats and a simulated shell, because the lab has no free image of them. See [Network devices](docs/network-devices.md). Builds on [infrastructure-platform-roadmap.md](infrastructure-platform-roadmap.md) and [docs/kvm-lab.md](docs/kvm-lab.md).
+Status: **built** on branch `dev-expanded-networking`, and through the KVM lab on real RouterOS and OpenWrt. pfSense, OPNsense and Cisco have only met published formats and a simulated shell, because the lab has no free image of them. See [Network devices](../../docs/network-devices.md). Builds on [infrastructure-platform-roadmap.md](infrastructure-platform-roadmap.md) and [docs/kvm-lab.md](../../docs/kvm-lab.md).
 
 ---
 
@@ -428,7 +430,7 @@ Today, `reach.py` calculates whether Host A can reach Host B assuming a flat dir
 
 To eliminate cognitive friction across diverse environments, StorageForge **standardizes all operator input across the entire networking stack—L2 switching, VLANs, bridges, bonding, IP addressing, static and policy routing, DNS, DHCP, WireGuard overlay tunnels, and firewalls—on an intuitive MikroTik RouterOS declarative DSL**. 
 
-At deploy time, the StorageForge **`RosTranspiler`** compiles this standardized definition into the target host's native configuration syntax, while preserving commit-confirmed rollback guards. Full technical specification in [docs/standardized-network-stack-mikrotik.md](docs/standardized-network-stack-mikrotik.md).
+At deploy time, the StorageForge **`RosTranspiler`** compiles this standardized definition into the target host's native configuration syntax, while preserving commit-confirmed rollback guards. Full technical specification in [docs/standardized-network-stack-mikrotik.md](../../docs/standardized-network-stack-mikrotik.md).
 
 ```text
  ┌────────────────────────────────────────────────────────────────────────┐

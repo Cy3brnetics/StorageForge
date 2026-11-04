@@ -1,6 +1,6 @@
 # Infrastructure map
 
-The **Map** view: networks, firewalls, listeners, containers, VMs and VPNs across your hosts, drawn from what those hosts report. The **Infra** panel holds the same facts as lists. A plan is [the roadmap](../infrastructure-platform-roadmap.md); this page is what exists.
+The **Map** view: networks, firewalls, listeners, containers, VMs and VPNs across your hosts, drawn from what those hosts report. The **Infra** panel holds the same facts as lists. A plan is [the roadmap](../archive/roadmaps/infrastructure-platform-roadmap.md); this page is what exists.
 
 ## How it knows
 
@@ -85,7 +85,7 @@ Firewall rules and exposure say how to get in, so they need `security.view`. The
 
 The roadmap goes further than this.
 
-- Deploying a stack, an LXC instance or a catalog tool from the map, or a VM from an ISO or cloud image. Those are the Workload Platform and Toolbox roadmaps.
+- Deploying a stack, an LXC instance or a catalog tool from the map, or a VM from an ISO or cloud image. Those are in the [roadmap](../roadmap.md).
 - From the map: moving, cloning or resizing a VM, restricting a service's bind address, putting a listener behind a proxy, rotating a peer's key.
 - `bridge`-family firewall rules for bridged VMs. A quarantine has `input` and `forward` hooks, and bridged VMs bypass both: the map says a bridged VM is outside host rules.
 - Reading a rich firewalld rule beyond source, port and verdict. The others stay unmodelled, which gives **Unknown**.

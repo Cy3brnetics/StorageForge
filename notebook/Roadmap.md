@@ -34,4 +34,4 @@ The findings in the order that makes each step easier than the last. Effort: S u
 - ~~[[PF-14 Reports and canvas predate newer features]]~~ done 2026-10-31.
 - ~~[[PF-15 Moves and Git QoL]]~~ done 2026-10-30.
 - [[EQ-03 Large modules]] (L): best done just before a big change to `server.py` or a script generator.
-- [Ransomware Defense & Host Security Engines](../ransomware-defense-roadmap.md): Phased roadmap for immutable snapshots, canary tripwires, SELinux/AppArmor MAC, firewalls (nftables/iptables), auditd, Falco, AIDE, and Lynis hardening.
+- [Ransomware Defense & Host Security Engines](../archive/roadmaps/ransomware-defense-roadmap.md): Phased roadmap for immutable snapshots, canary tripwires, SELinux/AppArmor MAC, firewalls (nftables/iptables), auditd, Falco, AIDE, and Lynis hardening.

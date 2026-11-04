@@ -19,6 +19,7 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 - Removed `backup.send_file`, an unsigned sender nothing used, and a site-wide security key setting nothing could set.
 
 ### Added
+- **One [roadmap](roadmap.md) of what's left.** Finished and superseded roadmaps moved to [archive/roadmaps](archive/roadmaps/).
 - **Routers, switches and firewalls.** MikroTik RouterOS and OpenWrt, through the KVM lab on real images, and pfSense, OPNsense and Cisco IOS, tested against published formats only. A device's interfaces, routes, firewall and NAT land in the same records a host's do, so the map, reach and exposure all see them. See [Network devices](docs/network-devices.md).
 - **Paths through routers.** The path query walks router by router and through port forwards, naming the rule that decides. A listener a router forwards to now shows as reachable from anywhere, which used to be out of sight.
 - **One network language.** RouterOS syntax, compiled for RouterOS, nftables, iptables, firewalld, ufw, OpenWrt, pfSense, Cisco, networkd and NetworkManager, saying what each target can't express. Any firewall reads back in the same syntax.

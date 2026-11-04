@@ -1,10 +1,12 @@
 # Infrastructure Platform Roadmap: Map, Workloads, Toolbox and Security
 
+> **Archived 2026-11-04.** Most of Stages 0 to 2, all of 6, and much of 3 and 7 are done. What is left moved to the [roadmap](../../roadmap.md).
+
 One plan for growing StorageForge from a map of storage into a map of the infrastructure around it, and a safe way to change that infrastructure: networks, firewalls, containers, VMs and the sysadmin tools that run on them.
 
 It merges three drafts (Infrastructure Map, Workload Platform, Toolbox Catalog) and the [ransomware defense roadmap](ransomware-defense-roadmap.md), and checks them against the code as of `7302691` plus the uncommitted clock and SELinux-boolean fixes in the working tree. Where a draft and the code disagreed, the code won: see [What changed from the drafts](#3-what-changed-from-the-drafts). [Appendix A](#appendix-a-where-each-draft-phase-went) shows where every draft phase went, and [Appendix B](#appendix-b-where-each-security-phase-went) does the same for the security phases.
 
-Status: **[progress.md](progress.md) says what has been built and lab-tested since this was written.** When this was written: planned, except the security work in [§9.1](#91-what-exists-today), which was built but not yet lab-tested. Today StorageForge also reads Docker and Podman containers, their mounts and volumes ([discovery](docs/features/discovery.md#docker-and-podman)), and deploys signed scripts ([deployments](docs/deployments.md)). When a stage ships, what it really does goes in a page under `docs/`, and this file stays the plan, as [Ransomware defense](docs/ransomware-defense.md) already does for security.
+Status: **[progress.md](../../progress.md) says what has been built and lab-tested since this was written.** When this was written: planned, except the security work in [§9.1](#91-what-exists-today), which was built but not yet lab-tested. Today StorageForge also reads Docker and Podman containers, their mounts and volumes ([discovery](../../docs/features/discovery.md#docker-and-podman)), and deploys signed scripts ([deployments](../../docs/deployments.md)). When a stage ships, what it really does goes in a page under `docs/`, and this file stays the plan, as [Ransomware defense](../../docs/ransomware-defense.md) already does for security.
 
 ---
 
@@ -52,7 +54,7 @@ A feature that does not get better from knowing the storage and the host's real 
 
 ## 2. The rules this plan is held to
 
-The [rules every feature follows](docs/concepts.md#the-rules) apply unchanged. These are the ones this work leans on, and what each means here:
+The [rules every feature follows](../../docs/concepts.md#the-rules) apply unchanged. These are the ones this work leans on, and what each means here:
 
 | Rule | Here |
 | :--- | :--- |
@@ -64,7 +66,7 @@ The [rules every feature follows](docs/concepts.md#the-rules) apply unchanged. T
 | Values reach Bash as data | Every new field kind joins `test_no_generator_lets_a_value_run_as_code` |
 | A name proves nothing | A placeholder promoted to a host goes through normal enrollment and key pinning |
 
-The [ransomware audit](docs/audit-2026-11-02-ransomware-defense.md) found the first version of that roadmap was a mock-up with 694 passing tests. A plan this size invites the same failure, so every stage has this **definition of done**:
+The [ransomware audit](../../docs/audit-2026-11-02-ransomware-defense.md) found the first version of that roadmap was a mock-up with 694 passing tests. A plan this size invites the same failure, so every stage has this **definition of done**:
 
 1. **It reaches a host.** Anything that claims to change a host goes through `deploy.run`, and a test proves it ran.
 2. **Every number was measured.** Unknown says *not measured*, a command that failed says *not readable*, and neither ever reads as fine or empty.
@@ -106,7 +108,7 @@ The [ransomware audit](docs/audit-2026-11-02-ransomware-defense.md) found the fi
 | Controller fetches catalog updates, checksums and images | The optional egress firewall limits the controller to SSH and alert ports | **All downloads happen on the target host,** inside the signed script. The catalog ships in the package |
 | Depends on ransomware Phases 3, 4, 5 and 8 as designed | Built: quarantine, exempt list, airgap, MAC reading and relabel, AIDE and Lynis, compliance readings, sentinel, brake, clean room, holds. **Not built:** share CIDR fencing, a multi-backend firewall engine, Falco rules, custom dashboards, canvas badges, waivers, offline bundles | Dependencies below name only what exists. The firewall writer and tile grid are scheduled here |
 | The brake and quarantine still need extending to workload traffic | The fence already has `input` and `forward` hooks, which should catch published ports. An `inet` forward hook will likely not see VMs bridged at L2 | Lab test in Stage 2, and a `bridge`-family table if it fails |
-| A libvirt and LXC adapter covers hypervisors | **Proxmox runs neither through `virsh` nor plain `lxc`.** It is `qm` and `pct`, and the [appliances page](docs/appliances.md#limits) says guests are not listed | Read-only `proxmox` adapter added. No lifecycle there: Proxmox does that |
+| A libvirt and LXC adapter covers hypervisors | **Proxmox runs neither through `virsh` nor plain `lxc`.** It is `qm` and `pct`, and the [appliances page](../../docs/appliances.md#limits) says guests are not listed | Read-only `proxmox` adapter added. No lifecycle there: Proxmox does that |
 | Runtime and catalog steps can target any managed host | Deploys are **refused on TrueNAS and XCP-ng**, and Alpine has no bash or systemd | Those are scan-only; layers needing a signed read say *not readable*. No install is offered |
 | React Flow as a rendering option | No build step, no framework, no npm, and a strict CSP | Out. See §6.1 |
 | "Dockploy" | The project is **Dokploy** | Fixed |
@@ -146,7 +148,7 @@ Already true and reused as is: the 409 on a plan changed since its dry run (`ser
 | Alerts | `alerts.py` and its channels |
 | Host-and-kind tracking | `deployed`, `deploy_runs` |
 
-`changes.py` is 1,900 lines and `server.py` 2,300. The [EQ-03 finding](notebook/Findings/EQ-03%20Large%20modules.md) says to split them only "with a big change to those files". This is it. **Stage 0** makes `TYPES` accept registrations from other modules, so workload and catalog steps can live in their own files. It is deliberately not the wider `server.py` split: new routes simply go elsewhere.
+`changes.py` is 1,900 lines and `server.py` 2,300. The [EQ-03 finding](../../notebook/Findings/EQ-03%20Large%20modules.md) says to split them only "with a big change to those files". This is it. **Stage 0** makes `TYPES` accept registrations from other modules, so workload and catalog steps can live in their own files. It is deliberately not the wider `server.py` split: new routes simply go elsewhere.
 
 ### 4.2 Scan or measurement: where each fact comes from
 
@@ -239,9 +241,9 @@ Days are carried over from the drafts or are new rough guesses. **None has been 
 #### Stage 0: Groundwork (5 to 7 days)
 What the rest stands on, and it is not new features.
 - **Land the uncommitted clock and boolean fixes** ([§9.1](#91-what-exists-today)).
-- **Add a security lab tier and run it,** which [its page](docs/ransomware-defense.md#what-has-been-tested-and-how) says has not happened: the whole signed path, real ZFS, real SELinux and AppArmor, Samba attribution with real clients, and **the airgap's rollback timer under real systemd**, which Stage 3 reuses for bridge changes.
+- **Add a security lab tier and run it,** which [its page](../../docs/ransomware-defense.md#what-has-been-tested-and-how) says has not happened: the whole signed path, real ZFS, real SELinux and AppArmor, Samba attribution with real clients, and **the airgap's rollback timer under real systemd**, which Stage 3 reuses for bridge changes.
 - **Own up to the compliance thresholds.** `security.STANDARDS` gives each standard a `target_lynis` and `min_worm_days`, such as 86 for PCI-DSS. Those standards set no Lynis score, so the UI must call these StorageForge's suggestions and let them be changed, or drop them.
-- **Get CI running on a real runner** ([EQ-01](notebook/Findings/EQ-01%20No%20CI%20and%20untested%20paths.md) says this was not proved as of its last entry).
+- **Get CI running on a real runner** ([EQ-01](../../notebook/Findings/EQ-01%20No%20CI%20and%20untested%20paths.md) says this was not proved as of its last entry).
 - `changes.TYPES` takes registrations. `docker.py` moves to `runtimes/docker.py` with no behaviour change.
 - Lab: add `libvirt` and `incus` abilities and a nested-virt config, firewall variety (`ufw`, `firewalld`, plain nftables), and tier stubs.
 
@@ -587,7 +589,7 @@ An ordered list of entries with shared parameters: one plan, one Report, one App
 
 ## 9. Security
 
-This is what remains of the [ransomware defense roadmap](ransomware-defense-roadmap.md), which this section replaces as the plan. [Ransomware defense](docs/ransomware-defense.md) says what exists and what it protects against. **The limit stands throughout: none of this stops an attacker with root on the host. Only a copy on another machine is out of reach.** "WORM" here means *guarded*, not *impossible*.
+This is what remains of the [ransomware defense roadmap](ransomware-defense-roadmap.md), which this section replaces as the plan. [Ransomware defense](../../docs/ransomware-defense.md) says what exists and what it protects against. **The limit stands throughout: none of this stops an attacker with root on the host. Only a copy on another machine is out of reach.** "WORM" here means *guarded*, not *impossible*.
 
 ### 9.1 What exists today
 
@@ -672,7 +674,7 @@ This is the reason to keep them in one plan. Each row is something neither could
 
 ## 10. Proving it
 
-The [KVM lab](docs/kvm-lab.md) is the proving ground, and tests go through the API. Tiers 0 to 8 exist. Add **tier 9: Security** for Stage 0, **tier 10: Infrastructure (read)** for Stages 1 and 2 and **tier 11: Workloads and tools** for Stages 3 to 6.
+The [KVM lab](../../docs/kvm-lab.md) is the proving ground, and tests go through the API. Tiers 0 to 8 exist. Add **tier 9: Security** for Stage 0, **tier 10: Infrastructure (read)** for Stages 1 and 2 and **tier 11: Workloads and tools** for Stages 3 to 6.
 
 | Stage | Exit check |
 | :--- | :--- |
