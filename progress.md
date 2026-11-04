@@ -46,7 +46,7 @@ Corrections stand: no VSS trap, no cryptographic shred, no certificates, no WebS
 - 2026-11-02: Stage 0 to 2 code from the earlier session picked up: 847 tests.
 - 2026-11-03: final code: 940 unit tests pass on SQLite (4 skipped) and on PostgreSQL (42 skipped). KVM lab tiers 0 to 11: 441 passed, 0 failed, 3 skipped, on 7 of the 14 configs.
 - 2026-11-03: [test audit](docs/test-audit-2026-11-03.md): every feature mapped to a test and a lab check, or a stated reason. 1043 tests on SQLite (4 skipped) and PostgreSQL (78 skipped). KVM lab tiers 0 to 11 and 13: 482 passed, 0 failed, 3 skipped, on 7 of the 14 configs.
-- 2026-11-04: expanded networking and the management planner: 1200 tests on SQLite (5 skipped) and PostgreSQL (79 skipped). KVM lab tiers 0 to 13: 512 passed, 0 failed, 4 skipped, on 7 of the 14 configs plus a real RouterOS, a real OpenWrt and three machines behind them. Tiers 1 to 11 and 13 ran before the last changes, which touched only the management planner's CSS and test code: tiers 0 and 12 and the browser check ran again after them.
+- 2026-11-04: expanded networking, the management planner and the audit of 2026-11-03: 1243 tests on SQLite (7 skipped) and PostgreSQL (80 skipped). KVM lab tiers 0 to 13: 511 passed, 0 failed, 5 skipped, on 7 of the 14 configs plus a real RouterOS, a real OpenWrt and three machines behind them.
 
 What the lab found that unit tests had not:
 

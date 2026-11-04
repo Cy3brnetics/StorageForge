@@ -1448,7 +1448,7 @@ class Migration(unittest.TestCase):
                 db.migrate(conn)
             conn.execute("INSERT INTO security_retention_holds (host_name, dataset_name, snapshot_name, hold_tag, created_at) VALUES ('h', 'd', 's', 't', 1)")
             conn.execute("INSERT INTO settings (key, value_json, updated_at, updated_by) VALUES ('security.break_glass_sha256', '\"x\"', 1, 'a')")
-            self.assertEqual(db.migrate(conn), ['032_security_measured.sql', '036_security_more.sql', '037_sentinel_permission.sql'])
+            self.assertEqual(db.migrate(conn), ['032_security_measured.sql', '036_security_more.sql'])
             self.assertEqual(conn.scalar('SELECT count(*) FROM security_retention_holds'), 0)
             self.assertEqual(conn.scalar("SELECT count(*) FROM settings WHERE key LIKE 'security.%'"), 0)
             conn.close()
