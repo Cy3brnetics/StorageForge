@@ -4,6 +4,20 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 
 ## Unreleased
 
+### Security
+- **The sentinel has its own permission, `security.sentinel`.** Setting it up takes it. Deploying, re-arming and removing it take it and `deploy.apply`. Operators no longer hold it: `deploy.apply` alone could take the sentinel off a host. Custom roles with `security.emergency` get it on upgrade, to keep what they could do.
+- **A security key guards its own replacement.** Adding or removing a key on an account that has one takes a touch. `user clear-keys` is the way back from a lost key.
+- **Retention policies take `security.emergency`,** as a hold does. Operators could apply legal holds through them. They can still preview.
+- **`/api/security/evidence` is a POST, needs `audit.verify` as well, and is limited to 10 a minute.** A viewer could unlock the vault with a GET.
+- **Falco's signing key is pinned,** and its repository file is written by the script, not downloaded.
+- **Map views belong to whoever saved them.** Others see one only if it is shared, and can't change it.
+- Comparing a design no longer writes to the database. Audit rows name the second hosts a send logs in to, and the check warns about them plainly.
+
+### Fixed
+- Rule sets, map views, designs and long sentinel events over 4 KiB were refused before their validators saw them.
+- Malware preview answered `GONE` for a quarantined file. It now says the file is in quarantine.
+- Removed `backup.send_file`, an unsigned sender nothing used, and a site-wide security key setting nothing could set.
+
 ### Added
 - **Routers, switches and firewalls.** MikroTik RouterOS and OpenWrt, through the KVM lab on real images, and pfSense, OPNsense and Cisco IOS, tested against published formats only. A device's interfaces, routes, firewall and NAT land in the same records a host's do, so the map, reach and exposure all see them. See [Network devices](docs/network-devices.md).
 - **Paths through routers.** The path query walks router by router and through port forwards, naming the rule that decides. A listener a router forwards to now shows as reachable from anywhere, which used to be out of sight.

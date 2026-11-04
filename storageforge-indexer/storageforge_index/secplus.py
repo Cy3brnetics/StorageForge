@@ -639,6 +639,30 @@ DEFAULT_FALCO = r"""# StorageForge rules. Falco rules look at one event at a tim
   priority: WARNING
 """
 
+# Falco's package signing key, from its documentation's key table and the key its site serves. It expires 2028-12-10: when Falco
+# moves to a new one, installs refuse here until this changes, which is the point. A host that has Falco already never gets this far.
+FALCO_KEY_FINGERPRINT = '478B2FBBC75F4237B731DA4365106822B35B1B1F'
+# Downloads the key to $FK, and refuses a file that is not exactly that key. The script's signature says nothing about what a download returns.
+FALCO_KEY_FETCH = r"""
+FK=$(mktemp); trap 'rm -f "$FK"' EXIT
+curl -fsSL https://falco.org/repo/falcosecurity-packages.asc -o "$FK" || { conflict "could not fetch Falco's key"; exit 1; }
+command -v gpg >/dev/null || { conflict "gpg is needed to check Falco's key: install gnupg"; exit 1; }
+listed=$(gpg --show-keys --with-colons "$FK" 2>/dev/null)
+fpr=$(awk -F: '$1 == "fpr" {print $10; exit}' <<<"$listed")
+if [[ $(grep -c '^pub:' <<<"$listed") != 1 || $fpr != "@FINGERPRINT@" ]]; then
+  conflict "Falco's key is not the expected one (got ${fpr:-nothing}): nothing was installed. If Falco has moved to a new key, check it against falco.org and update StorageForge"; exit 1
+fi
+""".replace('@FINGERPRINT@', FALCO_KEY_FINGERPRINT)
+# Written here rather than downloaded, since this file decides whether packages are checked at all. No gpgkey line: a package manager
+# told to say yes would import whatever that URL returned, so only the key checked above is trusted.
+FALCO_RPM_REPO = '''[falcosecurity-rpm]
+name=falcosecurity-rpm
+baseurl=https://download.falco.org/packages/rpm
+gpgcheck=1
+repo_gpgcheck=0
+enabled=1
+'''
+
 FALCO_BODY = r"""
 section "Falco"
 if ((UNINSTALL)); then
@@ -654,21 +678,24 @@ if ! command -v falco >/dev/null; then
   # it comes from its vendor, not the distro. The key and the repository are what is written here, and nothing else
   export FALCO_FRONTEND=noninteractive FALCO_DRIVER_CHOICE=modern_ebpf
   m=$(pm)
+  @KEY_FETCH@
   case $m in
     apt-get)
       mkdir -p /usr/share/keyrings
-      curl -fsSL https://falco.org/repo/falcosecurity-packages.asc | gpg --dearmor --batch --yes -o /usr/share/keyrings/falco-archive-keyring.gpg || { conflict "could not fetch Falco's key"; exit 1; }
+      gpg --dearmor --batch --yes -o /usr/share/keyrings/falco-archive-keyring.gpg <"$FK" || { conflict "could not store Falco's key"; exit 1; }
       echo "deb [signed-by=/usr/share/keyrings/falco-archive-keyring.gpg] https://download.falco.org/packages/deb stable main" >/etc/apt/sources.list.d/falcosecurity.list
       apt-get -o DPkg::Lock::Timeout=120 update -qq 2>&1 | tail -n 2
       DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y -qq dialog falco 2>&1 | tail -n 3 ;;
     dnf|yum)
-      rpm --import https://falco.org/repo/falcosecurity-packages.asc || { conflict "could not fetch Falco's key"; exit 1; }
-      curl -fsSL -o /etc/yum.repos.d/falcosecurity.repo https://falco.org/repo/falcosecurity-rpm.repo || { conflict "could not fetch Falco's repository"; exit 1; }
+      rpm --import "$FK" || { conflict "could not store Falco's key"; exit 1; }
+      cat >/etc/yum.repos.d/falcosecurity.repo <<'SF_FALCO_REPO'
+@RPM_REPO@SF_FALCO_REPO
       "$m" install -y -q falco 2>&1 | tail -n 3 ;;
     zypper)
-      rpm --import https://falco.org/repo/falcosecurity-packages.asc || { conflict "could not fetch Falco's key"; exit 1; }
-      curl -fsSL -o /etc/zypp/repos.d/falcosecurity.repo https://falco.org/repo/falcosecurity-rpm.repo || { conflict "could not fetch Falco's repository"; exit 1; }
-      zypper -nq --gpg-auto-import-keys install falco 2>&1 | tail -n 3 ;;
+      rpm --import "$FK" || { conflict "could not store Falco's key"; exit 1; }
+      cat >/etc/zypp/repos.d/falcosecurity.repo <<'SF_FALCO_REPO'
+@RPM_REPO@SF_FALCO_REPO
+      zypper -nq install falco 2>&1 | tail -n 3 ;;
     *) conflict "Falco has no repository for $m: install it by hand"; exit 1 ;;
   esac
   command -v falco >/dev/null || { conflict "Falco did not install"; exit 1; }
@@ -724,7 +751,7 @@ def falco_script(rules: str, remove: bool = False) -> str:
     # a quoted heredoc: the rules reach the host as data, and the terminator cannot appear in them
     if 'SF_FALCO_RULES' in rules:
         raise ValueError('the rules may not hold that word')
-    return sx.head() + PACKAGES + sx.APPLY_ONLY + f'UNINSTALL={int(remove)}\n' + FALCO_BODY.replace('@RULES@', rules.rstrip('\n'))
+    return sx.head() + PACKAGES + sx.APPLY_ONLY + f'UNINSTALL={int(remove)}\n' + FALCO_BODY.replace('@KEY_FETCH@', FALCO_KEY_FETCH).replace('@RPM_REPO@', FALCO_RPM_REPO).replace('@RULES@', rules.rstrip('\n'))
 
 
 def falco_deploy(db, conn: Conn, body: dict, actor: str) -> dict:

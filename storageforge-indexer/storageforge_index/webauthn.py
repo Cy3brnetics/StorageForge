@@ -1,8 +1,9 @@
 """FIDO2 step-up: a touch on a hardware token before a guarded action. The server side of WebAuthn, with no new dependency.
 
 Only ES256 (every FIDO2 token has it) and attestation is not checked: this asks "is it the token enrolled here", not "who made the
-token". The browser only offers WebAuthn on HTTPS or localhost. Having a key enrolled, or the site asking for one, makes the
-step-up required on that account for the actions that take it. Losing the token is what the offline key is for.
+token". The browser only offers WebAuthn on HTTPS or localhost. Having a key enrolled makes the step-up required on that account
+for the actions that take it, adding or removing a key among them. Someone who lost their only token clears it from the server's
+shell (`user clear-keys`), which is audited: the offline key covers the holds meanwhile.
 """
 from __future__ import annotations
 
@@ -20,7 +21,6 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from .db import Conn
 
 FRESH = 300                 # how long one touch counts for
-REQUIRE = 'security.webauthn_required'
 
 
 def b64u(data: bytes) -> str:
@@ -158,6 +158,12 @@ def delete_key(conn: Conn, username: str, key_id: int):
     conn.execute('DELETE FROM security_webauthn WHERE id = :i AND username = :u', {'i': key_id, 'u': username})
 
 
+def clear_keys(conn: Conn, username: str) -> int:
+    """Every key of one account: for a lost token, and only from the server's shell. The web routes cannot do this without a touch."""
+    n = len(keys_of(conn, username))
+    conn.execute('DELETE FROM security_webauthn WHERE username = :u', {'u': username})
+    return n
+
+
 def required(conn: Conn, username: str) -> bool:
-    from . import alerts
-    return bool(keys_of(conn, username)) or bool(alerts.get_setting(conn, REQUIRE))
+    return bool(keys_of(conn, username))

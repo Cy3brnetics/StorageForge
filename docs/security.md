@@ -40,7 +40,7 @@ A host's name is what it reports, so it proves nothing.
 - Local accounts only. Werkzeug hashes passwords (scrypt) and Flask-Login manages sessions. Passwords need at least 12 characters. A sign-in with an unknown name costs the same time as a wrong password.
 - Requests that change something must come from this origin (`Sec-Fetch-Site`, or `Origin` where a browser sends no such header). `SameSite` alone would let a page on another port of this host post here.
 - The session cookie is signed with `STORAGEFORGE_SESSION_SECRET`, `HttpOnly` and `SameSite=Strict`. With `STORAGEFORGE_COOKIE_SECURE=1` (compose sets it) it is also `Secure` and named `__Host-sf_session`.
-- Sessions are also kept server-side; only a hash of their id is stored. Signing out ends that session even for a copied cookie. `user signout <name>` ends all of them, as do `user passwd` and `user disable`.
+- Sessions are also kept server-side; only a hash of their id is stored. Signing out ends that session even for a copied cookie. `user signout <name>` ends all of them (`user clear-keys <name>` removes a lost security key, from the server's shell only, and is audited), as do `user passwd` and `user disable`.
 - A session ends 30 minutes after sign-in. Each user can raise their own to up to 8 hours from the header's **Session** menu. An open page clears itself and goes to `/login` when its session ends.
 - **Re-authentication:** anything that runs commands on hosts, and changing the session length, needs the password typed within the last 5 minutes (`POST /api/reauth`).
 - **Roles:** an account can do only what its role allows. The built-in roles are `search`, `viewer`, `operator` and `admin`, and custom roles draw on the permission catalogue in `permissions.py`. `operator` can deploy to every enrolled host, including destructive deploys. Only `admin` can write raw commands (`hosts.command`). See [Roles](features/administration.md#roles).
@@ -62,7 +62,7 @@ The per-network limit means a stranger elsewhere cannot lock the owner out; the 
 - Pages and their scripts are served only with a valid session; `/login`, `login.js`, `style.css` and `favicon.svg` are the exceptions. Without a session the app redirects to `/login?next=…`, and `next` must be a path on this site.
 - State-changing routes accept only `application/json`, so a cross-site form cannot reach them; no CORS is granted.
 - Strict CSP (`'self'` only; the one relaxation is `style-src-attr 'unsafe-inline'` for sized bars), `nosniff`, `frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`.
-- Request bodies are capped at 4 KiB (2 MiB for a design). List sizes and limits are clamped.
+- Request bodies are capped at 4 KiB. A route that takes more says how much in `server.BODY_LIMITS` (2 MiB for a design, 512 KiB for rule sets, map views and reports), and a test walks that table in both directions. List sizes and limits are clamped.
 - `/healthz` returns only `{"status"}` unless asked from inside the container or by a signed-in user.
 - Behind a reverse proxy, set `STORAGEFORGE_PROXY_HOPS=1` so limits and the audit log see the real client IP, and `STORAGEFORGE_PROXY_HOST` to the proxy so nothing else can claim a client address (compose sets both).
 - The UI builds the DOM with `textContent`. Designs and plans reject control characters and `< > " \`` in text (see [Concepts](concepts.md#the-rules)).
@@ -88,6 +88,22 @@ Every connection, scan result, denial, sign-in, plan save, script download, depl
 ## Remote nodes
 
 The tunnel in `docker-compose.remote.yml` is the one port meant to be open beyond the LAN. See [Remote nodes](remote-nodes.md) for what a stolen key can and can't do.
+
+## What is signed
+
+Everything sent to a host to run as root is signed, with these named exceptions. A signature covers the host, machine id, issue time, nonce, args and script, and not what a run reads on stdin, which is only ever data.
+
+| What | Signed | Why |
+| :--- | :--- | :--- |
+| Deploys, security actions, measurements, updates, playbooks | **Yes, on each run** | Through `storageforge-run` |
+| Timers on a host: jobs, tasks, schedules, the sentinel, ClamAV | **At install** | A signed deploy puts them there, root-owned. They are not checked again on each run |
+| `storageforge-job --serve` on a job source | **At install** | A job key's forced command with a fixed list of actions, from a config a signed deploy wrote |
+| Scans: inventory, file walk, checksums, network, containers, Git | No | Read-only, as the scan user |
+| First-time scan and deploy access | No | No signer is on the host yet. It takes a fresh password and a host key a person confirmed |
+| **The receiving side of a ZFS or btrfs send, and `rsync` to another host** | **No** | The signed script on the first host logs in with that host's own root key. Nothing is signed there and no run is recorded, so the check warns and the `deploy.start` audit row names the host (`second_hops`) |
+| Scripts you download and run yourself | No | Yours to read |
+
+The Falco install fetches its vendor's key at run time, which a signature cannot vouch for, so the script compares it with a fingerprint it carries.
 
 ## On the hosts
 

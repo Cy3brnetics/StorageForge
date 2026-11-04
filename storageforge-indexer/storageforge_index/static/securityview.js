@@ -257,20 +257,21 @@ async function secDecoys() {
   const checks = ['triage', 'quarantine', 'snapshot', 'freeze'].map((a) => { const i = el('input', { type: 'checkbox' }); i.checked = c.actions.includes(a); i.value = a; return i; });
   const save = async () => secPost('/api/security/sentinel', { host, spread: spread.value, folders: folders.value.split('\n').map((s) => s.trim()).filter(Boolean), names: names.value.split('\n').map((s) => s.trim()).filter(Boolean), armed: armed.checked, minutes: minutes.value.trim(), actions: checks.filter((i) => i.checked).map((i) => i.value) }, out);
   const go = (mode, title, extra = {}) => async () => { if (await save()) startDeploy('security', host, mode, title, extra); };
+  const sentinelDeploy = secCan('security.sentinel') && secCan('deploy.apply');      // every button below but the test saves the settings first
   const test = d.last_test;
   const kids = [secCard(`Sentinel on ${host}`,
     el('div', { class: 'stat-row' }, secStat('Deployed', d.installed ? (d.out_of_date ? 'yes, an older version' : 'yes') : 'no', d.out_of_date ? 'st-warn' : ''), secStat('Running', d.measured_at ? (d.sentinel?.active ? 'yes' : 'no') : NOT_MEASURED), secStat('Armed', d.measured_at ? (d.sentinel?.armed ? 'yes' : 'no') : NOT_MEASURED),
       secStat('Audit rules', d.auditd ? secVal(d.auditd.storageforge_rules) : NOT_MEASURED), secStat('Last test', test ? secAgo(test.occurred_at) : 'never')),
     text('p', d.report_url ? 'A trip reports here within seconds.' : 'No report URL is set (Settings), so a trip reaches this page only with the next scan or measurement. The brake on the host does not wait for it.', d.report_url ? 'muted small' : 'st-warn small'),
     text('p', 'Decoys catch what walks into them. They watch for changes, not reads, so backups and indexing do not trip them. Attribution comes from the audit log and smbd: over NFS the server cannot tell which client did it, so there is no address to drop.', 'muted small'),
-    secCan('deploy.apply') ? el('div', { class: 'row wrap sec-acts' }, button('Dry run', go('report', `Security: dry run on ${host}`), 'btn sm'), button('Save and deploy', go('apply', `Security: deploy on ${host}`), 'btn sm pri'),
-      d.installed ? button('Test it', async () => { const r = await secPost('/api/security/canaries/test', { host }, out); if (r) out.prepend(text('p', `The sentinel saw the write in ${r.latency_ms} ms.`, 'st-ok')); }, 'btn sm') : '',
-      d.summary.tripped ? button('Re-arm tripped decoys', go('apply', `Security: re-arm on ${host}`, { rearm: true }), 'btn sm') : '',
-      d.installed ? button('Remove', () => { if (confirm(`Remove the sentinel from ${host}? Unchanged decoys are deleted; changed ones stay.`)) startDeploy('security', host, 'apply', `Security: remove from ${host}`, { remove: true }); }, 'btn sm ghost') : '') : '', out),
+    secCan('deploy.report') || secCan('security.manage') ? el('div', { class: 'row wrap sec-acts' }, secCan('security.sentinel') && secCan('deploy.report') ? button('Dry run', go('report', `Security: dry run on ${host}`), 'btn sm') : '', sentinelDeploy ? button('Save and deploy', go('apply', `Security: deploy on ${host}`), 'btn sm pri') : '',
+      d.installed && secCan('security.manage') ? button('Test it', async () => { const r = await secPost('/api/security/canaries/test', { host }, out); if (r) out.prepend(text('p', `The sentinel saw the write in ${r.latency_ms} ms.`, 'st-ok')); }, 'btn sm') : '',
+      sentinelDeploy && d.summary.tripped ? button('Re-arm tripped decoys', go('apply', `Security: re-arm on ${host}`, { rearm: true }), 'btn sm') : '',
+      sentinelDeploy && d.installed ? button('Remove', () => { if (confirm(`Remove the sentinel from ${host}? Unchanged decoys are deleted; changed ones stay.`)) startDeploy('security', host, 'apply', `Security: remove from ${host}`, { remove: true }); }, 'btn sm ghost') : '') : '', out),
   secCard('What the next deploy installs',
     el('div', { class: 'sec-form' }, secField('Folders, one a line', folders), secField('File names, one a line. {Dept} is the folder\'s name, {Year} this year', names), secField('Where in them', spread)),
     !c.folders.length && d.suggested.length ? text('p', 'Suggested from the shares in this host\'s design.', 'muted small') : '',
-    secCan('security.emergency') ? el('div', { class: 'stack' },
+    secCan('security.sentinel') ? el('div', { class: 'stack' },
       el('label', {}, armed, ' Armed: when a decoy changes, the host pulls the brake by itself'),
       el('div', { class: 'row wrap' }, ...checks.map((i) => el('label', { class: 'small' }, i, ` ${i.value}`)), secField('Drop for minutes (0: until lifted)', minutes)),
       text('p', 'Off by default. One changed file then cuts off a client and can make a share read-only: a user or a sync tool opening the wrong file will do it too. Add machines that must never be cut off under Firewall.', 'muted small')) : ''),

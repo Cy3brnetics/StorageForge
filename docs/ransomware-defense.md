@@ -103,7 +103,7 @@ A **measurement** is a read-only signed run. It happens when you ask, and every 
 - **A fence only ever takes away.** A client inside still needs the host firewall to let it in. It does not cover a published container port.
 - **Evidence is not a certificate.** It is a signed record of what was measured and done, and checks with `ssh-keygen -Y verify`. Only an auditor can attest.
 - **Freezing btrfs is weaker than ZFS.** Read-only stops writes and does not stop `btrfs subvolume delete`.
-- **A hardware key is only offered over HTTPS or on localhost,** by the browser. Enrolling one makes the touch required on that account.
+- **A hardware key is only offered over HTTPS or on localhost,** by the browser. Enrolling one makes the touch required on that account, for adding or removing a key too. If the only key is lost, `storageforge-index user clear-keys <name>` on the server removes it, and is audited.
 
 ## Not built
 

@@ -198,7 +198,7 @@ TOKEN = re.compile(r'''([A-Za-z.][\w.-]*)=(?:"([^"]*)"|([^\s"]*))|(\S+)''')
 
 def parse(text: str) -> list[Stmt]:
     """A `/ip firewall filter` line sets the path for what follows, as an export does. Both /ip/firewall/filter and /ip firewall filter name it."""
-    if len(text or '') > 400_000:
+    if len(text or '') > 200_000:
         raise DslError('that is too long to read')
     out, path = [], None
     joined, start = [], 0

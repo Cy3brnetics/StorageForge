@@ -702,6 +702,16 @@ class Api(Base):
         self.assertNotIn('gw', self.app.bound_hosts())
         self.assertNotIn('10.77.0.30', self.app.bound_hosts())
 
+    def test_a_long_script_reaches_the_language_and_a_longer_one_is_refused_by_it(self):
+        line = '/ip firewall filter add chain=forward protocol=tcp dst-port=80 action=accept comment="a rule among many"\n'
+        big = line * 200
+        self.assertGreater(len(big), 16384)
+        self.assertEqual(self.client.post('/api/dsl/compile', json={'dsl': big, 'targets': ['nftables']}).status_code, 200)
+        self.assertEqual(self.client.post('/api/devices/gw/report', json={'dsl': big}).status_code, 200)
+        self.assertEqual(self.client.post('/api/dsl/stage', json={'host': 'dmzbox', 'dsl': big}).status_code, 200)
+        got = self.client.post('/api/dsl/compile', json={'dsl': line * 2100})
+        self.assertEqual(got.status_code, 400)
+
     def test_the_dsl_of_a_machine(self):
         self.assertIn('lan-to-dmz-web', self.client.get('/api/dsl/of?host=gw').get_json()['dsl'])
 

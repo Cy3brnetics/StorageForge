@@ -234,9 +234,7 @@ def register(web, ctx):
     @login_required
     def api_map_design_compare(design_id):
         d = mapdesign.get_design(conn(), design_id)
-        res = mapdesign.compare(conn(), d['doc'])
-        mapdesign.mark_compared(conn(), design_id, res['compared_at'])
-        return jsonify(name=d['name'], **res)
+        return jsonify(name=d['name'], **mapdesign.compare(conn(), d['doc']))
 
     @web.post('/api/map/designs/<int:design_id>/stage')
     @login_required
@@ -278,7 +276,10 @@ def register(web, ctx):
     @web.get('/api/map/views')
     @login_required
     def api_map_views():
-        return jsonify(views=[{'id': i, 'name': n, 'owner': o, 'body': json.loads(b), 'updated_at': t} for i, n, o, b, t in conn().all('SELECT id, name, owner, body_json, updated_at FROM map_views ORDER BY name')])
+        """Your own, and those someone chose to share. Nobody but its owner changes a view."""
+        me = actor()
+        views = [{'id': i, 'name': n, 'owner': o, 'mine': o == me, 'body': json.loads(b), 'updated_at': t} for i, n, o, b, t in conn().all('SELECT id, name, owner, body_json, updated_at FROM map_views ORDER BY name')]
+        return jsonify(views=[v for v in views if v['mine'] or v['body'].get('shared') is True])
 
     @web.post('/api/map/views')
     @login_required
@@ -288,9 +289,13 @@ def register(web, ctx):
         if not name or any(c in name for c in '<>"`') or any(ord(c) < 32 for c in name):
             raise ValueError('a view needs a plain name')
         keep = {k: body.get(k) for k in ('layers', 'filter', 'positions', 'host', 'mode', 'group', 'shared', 'rules') if k in (body or {})}
+        keep['shared'] = keep.get('shared') is True
         text = json.dumps(keep)
         if len(text) > 200_000:
             raise ValueError('that view is too large to save')
+        taken = conn().scalar('SELECT owner FROM map_views WHERE name = :n', {'n': name})
+        if taken is not None and taken != actor():       # names are unique across the site, so this says only that the name is in use
+            return jsonify(error='someone else has a view with that name: choose another'), 409
         conn().execute("""INSERT INTO map_views (name, owner, body_json, updated_at) VALUES (:n, :o, :b, :t)
                           ON CONFLICT (name) DO UPDATE SET body_json = excluded.body_json, owner = excluded.owner, updated_at = excluded.updated_at""",
                        {'n': name, 'o': actor(), 'b': text, 't': int(time.time())})
@@ -300,6 +305,11 @@ def register(web, ctx):
     @web.delete('/api/map/views/<int:view_id>')
     @login_required
     def api_map_views_delete(view_id):
+        owner = conn().scalar('SELECT owner FROM map_views WHERE id = :i', {'i': view_id})
+        if owner is None:
+            return jsonify(error='no such view'), 404
+        if owner != actor():
+            return jsonify(error='only the person who saved a view can remove it'), 403
         conn().execute('DELETE FROM map_views WHERE id = :i', {'i': view_id})
         core.audit(conn(), actor(), 'map.view.delete', 'ok', None, {'id': view_id})
         return jsonify(ok=True)

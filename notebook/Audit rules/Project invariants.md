@@ -10,14 +10,14 @@ Promises from `docs/concepts.md`, `CONTRIBUTING.md` and `security-parm.md`. Ever
 | With no flags, a generated script only reports | Run it with no flags: nothing changes |
 | Reruns are safe; every step looks before it acts | Run it twice |
 | Destructive needs three locks: device typed twice, `--destructive`, device not in use | Try to reach `--destructive` by any route without `deploy.destructive` |
-| Values reach Bash as data | The generator is in `test_no_generator_lets_a_value_run_as_code` |
+| Values reach Bash as data | The generator is in `test_no_generator_lets_a_value_run_as_code`, or for the Security panel `SecurityGenerators` in `test_audit_2026_11_03.py` |
 | Nothing is deleted outright: trash, `.migrated-<date>`, backups of fstab | Read the delete paths |
 | Every table is in `backup.ESSENTIAL` or `backup.REBUILDABLE`, both databases | `tests/test_consistency.py` |
 | Secrets never touch disk in plaintext | Search the new code for tokens and keys being written |
 | Commands on hosts need a password typed in the last 5 minutes | Age `auth_at` in the session, then call the route |
 | Everything is audited; the log is append-only and chained | Count audit rows before and after; `audit verify` |
 | Scan access is read-only | No change is made using a `scan` binding |
-| Deploys run only signed scripts through `storageforge-run` | No raw command over the deploy key |
+| What a deploy sends runs only as a signed script through `storageforge-run`. Named exceptions are in `docs/security.md`: scans, first-time setup and the receiving side of a send | No raw command over the deploy key. A new unsigned path is a finding unless that table lists it |
 | New `/api` routes are denied until listed | `test_every_route_is_listed` |
 | Nobody hands out more than they hold | Try it from a limited custom role |
 | Browser code uses DOM APIs for data | Search for `innerHTML` in changed JS |
@@ -26,4 +26,4 @@ Promises from `docs/concepts.md`, `CONTRIBUTING.md` and `security-parm.md`. Ever
 | Sites never leak across boundaries: keys, vaults, and configs are strictly site-isolated | Attempt to access another site's keys or data through site-scoped endpoints |
 | Generate-only key vaults never expose private keys once written | Request private key download/export from generate-only vault |
 | Reset links and invite tokens are single-use, time-bounded, and invalidate sessions on password reset | Use token twice; verify previous session cookies become invalid on reset |
-| Sync and snapshot jobs acquire volume locks and run only signed scripts through `storageforge-run` | Attempt concurrent syncs on the same volume; inspect generated job scripts |
+| Sync and snapshot jobs acquire volume locks. They are installed by a signed deploy, and their timers run what was installed without checking it again | Attempt concurrent syncs on the same volume; inspect generated job scripts |

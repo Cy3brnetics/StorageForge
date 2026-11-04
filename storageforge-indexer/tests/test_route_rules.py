@@ -2,10 +2,15 @@
 does for permissions. Docs: concepts rules 13 and 14."""
 import inspect
 import re
+import subprocess
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
-from storageforge_index import server, users
+from flask_login import login_required
+
+from storageforge_index import deploy, server, users
 from storageforge_index.db import Database
 
 PW = 'a long enough password'
@@ -131,6 +136,7 @@ NO_FRESH_PASSWORD = {
     ('POST', '/api/dsl/whatif'),
     ('POST', '/api/dsl/stage'),                  # a plan in the database, as /api/map/stage is
     ('POST', '/api/netscan/run'),                # only of ranges someone named behind a fresh password
+    ('POST', '/api/security/evidence'),
     ('POST', '/api/security/webauthn/assert/begin'),
     ('POST', '/api/security/webauthn/assert/finish'),
     ('POST', '/api/security/compliance/reconverge'),
@@ -229,8 +235,6 @@ NOT_AUDITED = {
     'api_shares_validate': 'compares with the index and saves nothing',
     'api_planner_changes': 'compares with the index and saves nothing',
 }
-# What it takes to run something on a host: never reachable from a GET.
-RUNS_ON_HOST = re.compile(r'open_host_transport|deploy\.run\(|start_group|jobs\.action|repo_(status|sync|history|commit)|survey_host')
 
 
 class RouteRules(unittest.TestCase):
@@ -282,10 +286,55 @@ class RouteRules(unittest.TestCase):
             src = inspect.getsource(inspect.unwrap(view))
             self.assertRegex(src, r'audit\(|git_call\(|save_role\(', f'{method} {rule.rule}: add an audit row, or a reason to the table')
 
+    def gets_reaching_a_host(self, web):
+        """Calls every GET-only route as an admin, with a host it could reach, and notes what tries to: a signed run, or any ssh at
+        all. Actually calling them sees through helpers, which reading a view's own source cannot. Only this thread counts: the
+        app's background loops measure hosts by themselves."""
+        host = 'walkhost'
+        conn = self.db.connect()
+        conn.execute(f"""INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json, last_scanned_at) VALUES (:n, :n, 'scan', '{{}}', {self.db.ts(':t')})
+                         ON CONFLICT (hostname) DO NOTHING""", {'n': host, 't': 1600000000})
+        deploy.set_access(conn, host, 'ready', '', 'test')
+        conn.close()
+        here, reached, real_popen = threading.current_thread(), [], subprocess.Popen
+
+        class Spy(real_popen):
+            def __init__(self, args, *a, **k):
+                if threading.current_thread() is here and isinstance(args, (list, tuple)) and args and args[0] == 'ssh':
+                    reached.append(current[0])
+                super().__init__(args, *a, **k)
+
+        def signed(*_a, **_k):
+            if threading.current_thread() is here:
+                reached.append(current[0])
+            return {'run_id': 1, 'group_id': 'g', 'host': host, 'status': 'ok', 'exit_code': 0, 'output': ''}
+        current = [None]
+        c = web.test_client()
+        self.assertEqual(c.post('/api/login', json={'username': 'root', 'password': PW}).status_code, 200)
+        q = {'host': host, 'from': host, 'to': host, 'port': '445', 'src': 'x', 'dst': 'y', 'rel': 'z', 'path': '/', 'q': 'x'}
+        with mock.patch.object(subprocess, 'Popen', Spy), mock.patch.object(deploy, 'run', signed), mock.patch.object(deploy, 'raw', signed):
+            for rule in web.url_map.iter_rules():
+                if not rule.rule.startswith('/api/') or rule.methods - {'GET', 'HEAD', 'OPTIONS'}:
+                    continue                      # shared with a write: the write is what runs
+                current[0] = rule.rule
+                path = re.sub(r'<int:\w+>', '1', rule.rule)
+                path = re.sub(r'<any\(([^)]*)\):\w+>', lambda m: m[1].split(',')[0].strip(' "'), path)
+                c.get(re.sub(r'<[^>]+>', host, path), query_string=q)
+        return reached
+
     def test_no_get_runs_on_a_host(self):
-        for rule in self.web.url_map.iter_rules():
-            if 'GET' in rule.methods and rule.rule.startswith('/api/'):
-                if rule.methods - {'GET', 'HEAD', 'OPTIONS'}:
-                    continue                          # shared with a write: the write is what runs
-                src = inspect.getsource(inspect.unwrap(self.web.view_functions[rule.endpoint]))
-                self.assertIsNone(RUNS_ON_HOST.search(src), f'GET {rule.rule} runs on a host: make it a POST')
+        self.assertEqual(self.gets_reaching_a_host(self.web), [], 'make it a POST')
+
+    def test_the_walk_catches_a_get_that_reaches_a_host_through_a_helper(self):
+        """Otherwise the test above could pass by seeing nothing."""
+        web = server.create_app(server.App(self.db), 's' * 48)
+
+        def helper():
+            return deploy.run(self.db, 'walkhost', 'true', kind='test')
+
+        @web.get('/api/planted')
+        @login_required
+        def planted():
+            helper()
+            return {}
+        self.assertEqual(self.gets_reaching_a_host(web), ['/api/planted'])

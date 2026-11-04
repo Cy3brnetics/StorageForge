@@ -463,7 +463,7 @@ def check(conn: Conn, plan: dict) -> dict:
         if TYPES[k].get('destructive'):
             say('note', 'destroys data on the device: the script only does it with --apply --destructive')
         if k in ('btrfs-send', 'zfs-send') and p['dest_host']:
-            say('note', f'root on {h["name"]} logs in to {p["dest_host"]} with its SSH key (/root/.ssh): set that up once (ssh-copy-id)')
+            say('warn', f'root on {h["name"]} logs in to {p["dest_host"]} with its own SSH key (/root/.ssh; set that up once with ssh-copy-id) and runs commands there as root. The signature stops at {h["name"]}, and {p["dest_host"]} keeps no run record')
         undo = {'unmount': ('mount', 'target'), 'trash': ('dir', 'path')}.get(k)
         if undo:
             for j, e in enumerate(plan['tasks'][:i - 1], 1):
@@ -994,6 +994,11 @@ ARGS = {'dir': ('path', 'owner', 'group', 'mode'), 'rename': ('path', 'dest'), '
         'zfs-snapshot': ('dataset', 'name', 'recursive'), 'zfs-send': ('dataset', 'name', 'base', 'dest', 'recursive', 'raw'),
         'zfs-scrub': ('pool',), 'lvm-vg': ('vg', 'devices', 'wipe'), 'lvm-vg-extend': ('vg', 'device', 'wipe'),
         'lvm-lv': ('vg', 'lv', 'size', 'fstype', 'label'), 'lvm-extend': ('vg', 'lv', 'size'), 'lvm-snapshot': ('vg', 'lv', 'name', 'size')}
+
+
+def second_hops(plan: dict) -> list[str]:
+    """The machines a send step's script logs in to with the first host's root key, where nothing is signed."""
+    return sorted({t['params']['dest_host'] for t in normalize(plan)['tasks'] if t['type'] in ('btrfs-send', 'zfs-send') and t['params'].get('dest_host')})
 
 
 def deploy_items(db, conn: Conn, plan: dict, mode: str, actor: str, destructive: bool = False) -> list[dict]:

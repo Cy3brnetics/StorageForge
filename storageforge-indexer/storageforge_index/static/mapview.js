@@ -353,14 +353,17 @@ async function mapViews() {
         MP.layers = new Set(v.body.layers || []); MP.filter = v.body.filter || ''; MP.positions = v.body.positions || {}; MP.mode = v.body.mode || 'custom'; MP.group = v.body.group || 'host';
         const f = $('#mpfilter'); if (f) f.value = MP.filter;
         $('#mapview').replaceChildren(); loadMap();
-      }, 'btn small'), can('map.edit') ? button('Remove', async () => { await api(`/api/map/views/${v.id}`, { method: 'DELETE' }); mapViews(); }, 'btn small') : document.createTextNode('')));
+      }, 'btn small'), can('map.edit') && v.mine ? button('Remove', async () => { await api(`/api/map/views/${v.id}`, { method: 'DELETE' }); mapViews(); }, 'btn small') : document.createTextNode('')));
     }
     if (can('map.edit')) {
       const name = el('input', { type: 'text', placeholder: 'Name this view', 'aria-label': 'View name' });
-      rows.push(el('div', { class: 'row small' }, name, button('Save', async () => {
-        await postJSON('/api/map/views', { name: name.value, layers: [...MP.layers], filter: MP.filter, positions: MP.positions, mode: MP.mode, group: MP.group });
-        mapViews();
-      }, 'btn small')));
+      const shared = el('input', { type: 'checkbox' }), said = el('span', { class: 'small st-failed' });
+      rows.push(el('div', { class: 'row small' }, name, el('label', { class: 'small' }, shared, ' Share with everyone'), button('Save', async () => {
+        try {
+          await postJSON('/api/map/views', { name: name.value, layers: [...MP.layers], filter: MP.filter, positions: MP.positions, mode: MP.mode, group: MP.group, shared: shared.checked });
+          mapViews();
+        } catch (err) { said.textContent = err.message; }
+      }, 'btn small'), said));
     }
     box.replaceChildren(...rows);
   } catch { box.replaceChildren(); }

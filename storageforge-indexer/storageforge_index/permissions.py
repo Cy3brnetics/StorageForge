@@ -16,7 +16,7 @@ CATALOG = (
     ('Logs', (
         ('logs.view', 'Read the activity log and command output', False),
         ('audit.view', 'Read the audit log', False),
-        ('audit.verify', 'Verify the audit chain (unlocks the vault)', False),)),
+        ('audit.verify', 'Verify the audit chain and sign evidence (unlocks the vault)', False),)),
     ('Scans', (
         ('scans.view', 'See scan jobs', False),
         ('scans.run', 'Run scans, set scan schedules and ignore lists', False),)),
@@ -37,7 +37,8 @@ CATALOG = (
     ('Security', (
         ('security.view', 'See what hosts report: posture, holds, decoys, access control, quarantine, integrity and compliance', False),
         ('security.manage', 'Measure hosts, relabel, quarantine addresses, run AIDE and Lynis, sample files and set baselines', True),
-        ('security.emergency', 'Pull the brake, airgap a host, arm the sentinel, apply and release holds, and use the offline key', True),)),
+        ('security.emergency', 'Pull the brake, airgap a host, apply and release holds, set retention policies, and use the offline key', True),
+        ('security.sentinel', 'Set up the sentinel and its decoys, arm it, and with deploy.apply deploy, re-arm or remove it', True),)),
     ('Infrastructure', (
         ('workloads.view', 'See containers, VMs and instances across hosts, from the index', False),
         ('map.view', 'See interfaces, routes and listeners, from the index. Firewall rules and exposure also need security.view', False),
@@ -100,13 +101,15 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (('POST',), r'/api/clamav/detections/\d+/(quarantine|restore|ignore)', 'deploy.destructive'),
     (READ, r'/api/(docker(/.*)?|git|git/ignore|shares/check)', 'services.view'),
     (READ, r'/api/security/compliance/script', 'plans.scripts'),
-    (READ, r'/api/security/evidence', 'audit.view'),
+    (('POST',), r'/api/security/evidence', 'audit.verify'),                 # unlocks the vault, so not audit.view alone: the view checks that too
+    (('POST',), r'/api/security/sentinel', 'security.sentinel'),
     (('POST',), r'/api/security/(compliance/reconverge|integrity/stage|worm/preview/stage|mac/context/stage|firewall/shares/stage)', 'plans.edit'),
     (('POST', 'DELETE'), r'/api/security/webauthn(/.*)?', 'security.emergency'),    # the touch only guards what this permission allows
     (_WRITE, r'/api/security/dash(/\d+)?', 'security.manage'),
-    (('POST',), r'/api/security/(waivers|profiles|worm/policies|worm/policies/apply|worm/preview|integrity/aide/watch|mac/identity/deploy|mac/noise|mac/context|firewall/tiers|behavior/thresholds|behavior/filters|behavior/falco|behavior/yara|behavior/yara/rules|malware/preview|packages/check|packages/bundle)', 'security.manage'),
-    (('DELETE',), r'/api/security/(waivers|profiles|worm/policies|behavior/yara/rules)/\d+', 'security.manage'),
-    (('POST',), r'/api/security/(worm/freeze|incident/clean-room/sweep|playbooks|playbooks/runs/\d+)', 'security.emergency'),
+    (('POST',), r'/api/security/(waivers|profiles|worm/policies/apply|worm/preview|integrity/aide/watch|mac/identity/deploy|mac/noise|mac/context|firewall/tiers|behavior/thresholds|behavior/filters|behavior/falco|behavior/yara|behavior/yara/rules|malware/preview|packages/check|packages/bundle)', 'security.manage'),
+    (('DELETE',), r'/api/security/(waivers|profiles|behavior/yara/rules)/\d+', 'security.manage'),
+    (('DELETE',), r'/api/security/worm/policies/\d+', 'security.emergency'),
+    (('POST',), r'/api/security/(worm/freeze|worm/policies|incident/clean-room/sweep|playbooks|playbooks/runs/\d+)', 'security.emergency'),
     (('DELETE',), r'/api/security/playbooks/\d+', 'security.emergency'),
     (READ, r'/api/workloads(/.*)?', 'workloads.view'),
     (READ, r'/api/netscan(/.*)?', 'netscan.view'),
@@ -185,7 +188,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     # Security & Ransomware Defense
     (READ, r'/api/security/.*', 'security.view'),
     (('POST',), r'/api/security/report', 'deploy.apply'),       # sentinels report with a bearer token and no session
-    (('POST',), r'/api/security/(incident/(brake|clean-room)|firewall/(airgap|vip)|worm/.*|sentinel|events/\d+/ack)', 'security.emergency'),
+    (('POST',), r'/api/security/(incident/(brake|clean-room)|firewall/(airgap|vip)|worm/.*|events/\d+/ack)', 'security.emergency'),
     (_WRITE, r'/api/security/.*', 'security.manage'),
 
     (READ, r'/api/backups', 'backups.view'),

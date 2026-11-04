@@ -366,27 +366,6 @@ class OpsTests(DBCase):
         self.assertEqual(app.due_hosts(300), [])
 
     @unittest.skipIf(dbfactory.PG, 'backups are of SQLite databases (PostgreSQL: pg_dump)')
-    def test_a_backup_is_copied_off_and_only_backups_are_pruned(self):
-        from storageforge_index import backup
-        from storageforge_index.remote import Transport
-        import tempfile
-        src, dst = tempfile.mkdtemp(), tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, src, True)
-        self.addCleanup(shutil.rmtree, dst, True)
-        Path(dst, 'notes.txt').write_text('mine')
-        t = Transport('localhost', local=True)
-        for i in range(4):
-            f = Path(src, f'storageforge-essentials-{i}.db')
-            f.write_bytes(b'x' * (i + 1))
-            backup.send_file(t, str(f), f'{dst}/backups', keep=2)
-            time.sleep(0.02)
-        self.assertEqual(sorted(x.name for x in Path(dst, 'backups').iterdir()), ['storageforge-essentials-2.db', 'storageforge-essentials-3.db'])
-        self.assertEqual(Path(dst, 'backups', 'storageforge-essentials-3.db').read_bytes(), b'xxxx')
-        self.assertTrue(Path(dst, 'notes.txt').exists())
-        with self.assertRaises(RuntimeError):
-            backup.send_file(t, str(f), '/proc/nope/here', keep=2)
-
-    @unittest.skipIf(dbfactory.PG, 'backups are of SQLite databases (PostgreSQL: pg_dump)')
     def test_backup_restore_and_prune(self):
         from storageforge_index import backup
         vlt = vault.Vault(self.db, self.conn, SECRET)

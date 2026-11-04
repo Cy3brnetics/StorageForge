@@ -188,6 +188,15 @@ MAX_BLUEPRINT = 2 << 20           # planner designs are the largest body we acce
 MAX_IGNORE = 256 << 10            # ignore lists: up to 2000 paths
 MAX_REPORT = 512 << 10            # a schedule's run report: the runner keeps its output under this
 MAX_JOB_REPORT = 16 << 10         # a job's run line: 2000 characters of message, which JSON escaping can take to 12 KiB
+MAX_LONG_TEXT = 512 << 10         # 200,000 characters saved, which JSON escaping can more than double
+# Routes that take more than MAX_BODY, and how much. A validator that accepts more than this never gets to see it, so they go together.
+BODY_LIMITS = {('PUT', '/api/planner/design'): MAX_BLUEPRINT, ('POST', '/api/planner/changes'): MAX_BLUEPRINT,
+               ('PUT', '/api/files/ignore'): MAX_IGNORE, ('PUT', '/api/git/ignore'): MAX_IGNORE,
+               ('POST', '/api/scheduler/report'): MAX_REPORT, ('POST', '/api/jobs/report'): MAX_JOB_REPORT,
+               ('POST', '/api/security/report'): MAX_REPORT,       # a sentinel's path can be 4 KiB, which base64 makes 5.5
+               ('POST', '/api/dsl/compile'): MAX_LONG_TEXT, ('POST', '/api/dsl/whatif'): MAX_LONG_TEXT, ('POST', '/api/dsl/stage'): MAX_LONG_TEXT,
+               ('POST', '/api/map/views'): MAX_LONG_TEXT, ('POST', '/api/map/designs'): MAX_LONG_TEXT,
+               ('POST', '/api/security/behavior/yara/rules'): MAX_LONG_TEXT, ('POST', '/api/security/behavior/falco'): MAX_LONG_TEXT}
 # Failed sign-ins allowed before /api/login answers 429; successful ones are not counted.
 LOGIN_LIMIT_PER_IP = '10 per minute; 50 per hour'
 LOGIN_LIMIT_PER_USER = '5 per minute; 20 per hour'     # per account and client network (/24, /64)
@@ -603,14 +612,11 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
 
     @web.before_request
     def body_limit():
-        if request.path in ('/api/planner/design', '/api/planner/changes') and request.method in ('PUT', 'POST'):
-            request.max_content_length = MAX_BLUEPRINT
-        elif request.path in ('/api/files/ignore', '/api/git/ignore') and request.method == 'PUT':
-            request.max_content_length = MAX_IGNORE
-        elif request.path == '/api/scheduler/report' and request.method == 'POST':
-            request.max_content_length = MAX_REPORT
-        elif request.path == '/api/jobs/report' and request.method == 'POST':
-            request.max_content_length = MAX_JOB_REPORT
+        limit = BODY_LIMITS.get((request.method, request.path))
+        if request.method == 'POST' and re.fullmatch(r'/api/devices/[^/]+/report', request.path):     # a route with a name in it, as long as the others in the language
+            limit = MAX_LONG_TEXT
+        if limit:
+            request.max_content_length = limit
 
     @web.after_request
     def headers(resp: Response):
@@ -1593,6 +1599,20 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if holds:
             need('hosts.command')
 
+    def second_hops(c, kind, ref):
+        """Hosts this deploy's script logs in to by itself, with the first host's own key. No signature reaches them and no run
+        is recorded there, so the audit row is what says they were involved."""
+        try:
+            if kind == 'changes':
+                return changes.second_hops(changes.get_plan(c, int(ref)))
+            if kind == 'tasks':
+                return tasks.second_hops(tasks.get_task(c, int(ref)))
+            if kind == 'schedules':
+                return scheduler.second_hops(c, scheduler.get_schedule(c, int(ref)))
+        except (LookupError, TypeError, ValueError):
+            pass
+        return []
+
     def need_for_deploy(c, kind, ref, mode, options):
         """What a deploy really does decides what it takes. run executes the script whatever the mode says and goes first in
         the items, so it cannot stand beside report (a dry run's permission) or remove (which needs no hosts.command)."""
@@ -1600,6 +1620,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             raise ValueError('run needs mode apply, and cannot be combined with remove')
         if mode == 'apply':
             need('deploy.apply')
+            if kind == 'security':     # the sentinel is what catches ransomware, so taking it off a host is not an ordinary deploy
+                need('security.sentinel')
         if options.get('destructive'):
             need('deploy.destructive')
         if mode == 'apply' and not options.get('remove'):
@@ -1657,7 +1679,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         title = str(body.get('title') or f'{kind} {ref}')[:200]
         gid = deploy.start_group(db, items, who, after=lambda h: core.enqueue(h, who), title=title, **updates.group_options(kind, mode),
                                  kind=kind, ref=str(ref), mode=mode, options=options, digest=digest, report_group=report or None)
-        core.audit(c, actor(), 'deploy.start', 'ok', None, {'kind': kind, 'ref': ref, 'mode': mode, 'group': gid})
+        hops = second_hops(c, kind, ref)
+        core.audit(c, actor(), 'deploy.start', 'ok', None, {'kind': kind, 'ref': ref, 'mode': mode, 'group': gid, **({'second_hops': hops} if hops else {})})
         return jsonify(group=gid, hosts=[it['host'] for it in items], digest=digest)
 
     @web.get('/api/deploy/groups')

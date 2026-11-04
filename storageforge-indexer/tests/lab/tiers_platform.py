@@ -1040,7 +1040,7 @@ def tier11(r):
     # evidence: signed by the controller, and checked with nothing but ssh-keygen
     def evidence():
         node = vms[0]
-        got = api.get(f'/api/security/evidence?host={node.name}')
+        got = api.post('/api/security/evidence', {'host': node.name})
         doc = json.loads(got['document'])
         if 'not an attestation' not in doc['statement']:
             demo.fail('it should say what it is not')

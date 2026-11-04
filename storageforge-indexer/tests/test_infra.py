@@ -498,7 +498,7 @@ class TheMap(unittest.TestCase):
     def test_views_are_kept_and_plain(self):
         self.assertEqual(self.client.post('/api/map/views', json={'name': 'mine', 'layers': ['network'], 'filter': 'x', 'other': 'dropped'}).status_code, 200)
         v = self.client.get('/api/map/views').get_json()['views'][0]
-        self.assertEqual(v['body'], {'layers': ['network'], 'filter': 'x'})
+        self.assertEqual(v['body'], {'layers': ['network'], 'filter': 'x', 'shared': False})
         self.assertEqual(self.client.post('/api/map/views', json={'name': '<b>'}).status_code, 400)
         self.assertEqual(self.client.delete(f'/api/map/views/{v["id"]}').status_code, 200)
 

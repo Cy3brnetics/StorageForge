@@ -456,8 +456,8 @@ def check(conn: Conn, task: dict) -> dict:
                 if p['dst_host']:
                     if not host_of(p['dst_host']) and '@' not in p['dst_host']:
                         add('warn', f'{p["dst_host"]} has not been scanned: give it as user@address if it is not')
-                    add('note', f'root on {task["host"] or "the task host"} logs in to {p["dst_host"]} with its SSH key '
-                                f'(/root/.ssh): set that up once (ssh-copy-id)')
+                    add('warn', f'root on {task["host"] or "the task host"} logs in to {p["dst_host"]} with its own SSH key (/root/.ssh; set that up '
+                                f'once with ssh-copy-id) and runs commands there as root. The signature stops at the task host, and {p["dst_host"]} keeps no run record')
                 if t == 'btrfs_send' and p['dst']:
                     dh = host_of(p['dst_host'])
                     dm = dh and mount_of(dh, p['dst'])
@@ -696,6 +696,18 @@ def script(conn: Conn, task: dict) -> str:
 
 def task_hash(task: dict) -> str:
     return hashlib.sha256(json.dumps(normalize(task), sort_keys=True).encode()).hexdigest()[:16]
+
+
+def second_hops(task: dict) -> list[str]:
+    """The machines this task's script logs in to with its host's own key, where nothing is signed. Blocks nest, so it walks them."""
+    found, stack = set(), list(normalize(task)['blocks'])
+    while stack:
+        b = stack.pop()
+        if isinstance(b, dict):
+            found.update(x for x in (((b.get('params') or {}).get(k)) for k in ('src_host', 'dst_host')) if isinstance(x, str) and x)
+            stack.extend(v for k, v in b.items() if k != 'params' and isinstance(v, dict))
+            stack.extend(x for v in b.values() if isinstance(v, list) for x in v)
+    return sorted(found)
 
 
 def deploy_items(db, conn: Conn, task: dict, mode: str, actor: str, run_now: bool = False, remove: bool = False) -> list[dict]:

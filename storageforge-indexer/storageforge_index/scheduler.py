@@ -347,6 +347,11 @@ def schedule_hash(conn: Conn, schedule: dict) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
+def second_hops(conn: Conn, schedule: dict) -> list[str]:
+    """The machines what this schedule runs logs in to with its host's own key, where nothing is signed."""
+    return tasks.second_hops(_resolve_task(conn, schedule['task_ref'])) if schedule['task_type'] == 'task' else []
+
+
 def holds_commands(conn: Conn, schedule: dict) -> bool:
     """Whether deploying this schedule puts raw commands on its host, in itself or in what it runs."""
     ttype, ref = schedule['task_type'], schedule['task_ref']

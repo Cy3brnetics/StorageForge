@@ -12,6 +12,7 @@ tags: [audit-rules, checklist]
 - [ ] Writes an audit row? Does an audit failure stop the action, or get swallowed?
 - [ ] Does a broader read route return the same data a narrower route refuses? Compare `/api/x` with `/api/x/settings`
 - [ ] Is body size right? The 4 KiB default also breaks legitimate large bodies, so test both directions
+- [ ] Does the route's validator accept more than its body limit lets through?
 - [ ] Is it expensive (Argon2 unlock, whole-table read, SSH)? Rate limit and cap it
 - [ ] Do numeric inputs have limits on both sides? Negative values often mean "no limit"
 - [ ] Does it trust the `Host` header or another request value when building something that outlives the request?
@@ -22,6 +23,8 @@ tags: [audit-rules, checklist]
 - [ ] With no flags, does it only report?
 - [ ] Which key and binding does it use? A `scan` binding must never change anything
 - [ ] Does it go through the signed runner, so it gets the nonce, run record and audit?
+- [ ] Does a signed script reach a second machine over SSH? The signature ends at the first host
+- [ ] Does it fetch a key, package or script at run time? The signature says nothing about what comes back, so pin it
 - [ ] Does it run with no person involved? Text from the host must never shape what gets signed
 - [ ] Are files it leaves readable only by who should read them? Do logs grow without limit?
 - [ ] Does it run a tool that reads config from a place an unprivileged user controls? `git` in a repository is the known example
@@ -44,6 +47,8 @@ tags: [audit-rules, checklist]
 - [ ] Is the same action reachable another way, with a weaker check? Schedules against deploys was the 2026-10-31 example
 - [ ] Do custom roles and built-in roles both behave?
 - [ ] Can anyone grant more than they hold?
+- [ ] Does a second factor guard its own removal and replacement? Otherwise whoever it stops can take it away
+- [ ] Does every route ending in the same action take the same permission? Walk from the action back to its routes, including policies, playbooks and deploy options
 
 ## For the browser
 - [ ] DOM APIs only for host data, with no `innerHTML`

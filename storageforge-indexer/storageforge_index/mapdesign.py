@@ -267,15 +267,15 @@ def puppet(doc: dict) -> str:
 
 # ── storing them ────────────────────────────────────────────────────
 def list_designs(conn: Conn) -> list[dict]:
-    return [{'id': i, 'name': n, 'owner': o, 'compared_at': c, 'updated_at': u, 'hosts': len((loads(g) or {}).get('hosts') or [])} for i, n, o, g, c, u in conn.all('SELECT id, name, owner, graph_json, compared_at, updated_at FROM map_designs ORDER BY name')]
+    return [{'id': i, 'name': n, 'owner': o, 'updated_at': u, 'hosts': len((loads(g) or {}).get('hosts') or [])} for i, n, o, g, u in conn.all('SELECT id, name, owner, graph_json, updated_at FROM map_designs ORDER BY name')]
 
 
 def get_design(conn: Conn, design_id: int) -> dict:
-    rows = conn.all('SELECT id, name, owner, graph_json, compared_at, updated_at FROM map_designs WHERE id = :i', {'i': design_id})
+    rows = conn.all('SELECT id, name, owner, graph_json, updated_at FROM map_designs WHERE id = :i', {'i': design_id})
     if not rows:
         raise LookupError(f'no design #{design_id}')
     r = rows[0]
-    return {'id': r[0], 'name': r[1], 'owner': r[2], 'doc': loads(r[3]) or {'hosts': []}, 'compared_at': r[4], 'updated_at': r[5]}
+    return {'id': r[0], 'name': r[1], 'owner': r[2], 'doc': loads(r[3]) or {'hosts': []}, 'updated_at': r[4]}
 
 
 def save_design(conn: Conn, body: dict, actor: str) -> dict:
@@ -296,5 +296,3 @@ def delete_design(conn: Conn, design_id: int):
     conn.execute('DELETE FROM map_designs WHERE id = :i', {'i': design_id})
 
 
-def mark_compared(conn: Conn, design_id: int, at: int):
-    conn.execute('UPDATE map_designs SET compared_at = :t WHERE id = :i', {'t': at, 'i': design_id})

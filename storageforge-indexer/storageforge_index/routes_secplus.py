@@ -15,6 +15,7 @@ from . import alerts, clamav, deploy, secplus, secscripts as sx, security, webau
 
 def register(web, ctx):
     core, db, conn, actor, json_body, password_confirmed = ctx.core, ctx.db, ctx.conn, ctx.actor, ctx.json_body, ctx.password_confirmed
+    limiter, need = ctx.limiter, ctx.need
 
     def audit(action: str, res: dict, **detail):
         if res.get('mode') != 'preview':
@@ -51,9 +52,11 @@ def register(web, ctx):
     def api_webauthn():
         return jsonify(keys=[{k: v for k, v in x.items() if k in ('id', 'name', 'created_at')} for x in webauthn.keys_of(conn(), current_user.username)], required=webauthn.required(conn(), current_user.username), stepped_up=stepped_up())
 
+    # A key guards its own replacement: otherwise whoever the touch is there to stop could add a key, or take this one away.
     @web.post('/api/security/webauthn/register/begin')
     @login_required
     @password_confirmed
+    @step_up
     def api_webauthn_register_begin():
         host, _ = rp()
         options, challenge = webauthn.register_options(current_user.username, host, [k['credential_id'] for k in webauthn.keys_of(conn(), current_user.username)])
@@ -64,6 +67,7 @@ def register(web, ctx):
     @web.post('/api/security/webauthn/register/finish')
     @login_required
     @password_confirmed
+    @step_up
     def api_webauthn_register_finish():
         body = json_body()
         host, origin = rp()
@@ -109,6 +113,7 @@ def register(web, ctx):
     @web.delete('/api/security/webauthn/<int:key_id>')
     @login_required
     @password_confirmed
+    @step_up
     def api_webauthn_delete(key_id):
         webauthn.delete_key(conn(), current_user.username, key_id)
         core.audit(conn(), actor(), 'security.webauthn.remove', 'ok', None, {'key': key_id})
@@ -215,7 +220,10 @@ def register(web, ctx):
     @login_required
     @password_confirmed
     def api_policies_apply():
-        return audit('security.policy.apply', secplus.apply_policies(db, conn(), json_body(), actor()))
+        body = json_body()
+        if security._mode(body) == 'apply':      # seeing what it would hold is security.manage; a hold takes what worm/hold takes
+            need('security.emergency')
+        return audit('security.policy.apply', secplus.apply_policies(db, conn(), body, actor()))
 
     @web.post('/api/security/worm/freeze')
     @login_required
@@ -236,12 +244,17 @@ def register(web, ctx):
         res = secplus.stage_rollback(conn(), json_body(), actor())
         return note_audit('security.rollback.stage', res, plan=res['plan_id'])
 
-    @web.get('/api/security/evidence')
+    @web.post('/api/security/evidence')
     @login_required
+    @limiter.limit('10 per minute', key_func=lambda: f'evidence:{current_user.get_id()}')
     def api_evidence():
-        since, until = request.args.get('from'), request.args.get('to')
-        out = secplus.evidence(db, conn(), request.args.get('host') or None, int(since) if since and since.isdigit() else None, int(until) if until and until.isdigit() else None, actor())
-        core.audit(conn(), actor(), 'security.evidence', 'ok', request.args.get('host') or None, {})
+        """A POST: it unlocks the vault, takes the signing key out and writes an audit row."""
+        need('audit.view')                        # it hands over audit rows, and the rule only asked for audit.verify
+        body = json_body()
+        whole = lambda v: v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None      # noqa: E731
+        host = str(body['host']) if body.get('host') else None
+        out = secplus.evidence(db, conn(), host, whole(body.get('from')), whole(body.get('to')), actor())
+        core.audit(conn(), actor(), 'security.evidence', 'ok', host, {})
         return jsonify(out)
 
     # ── identity ────────────────────────────────────────────────────
@@ -360,7 +373,9 @@ def register(web, ctx):
         """The first bytes and any readable text of a detected file, read on the host. Only reads, and nothing runs it."""
         did = security._int(json_body().get('id'))
         d = clamav.get_detection(conn(), did)
-        path = d.get('quarantine_path') or d['path']
+        if d['state'] == 'quarantined':
+            raise ValueError('that file is in quarantine, so it is not at its path: restore it to look at it')
+        path = d['path']
         script = ('#!/usr/bin/env bash\n# Written by StorageForge. Only reads.\nset -u\nexport LC_ALL=C\n' f'p=$(base64 -d <<<{sx.b64(path)!r})\n' r"""[[ -f $p && ! -L $p ]] || { echo "GONE"; exit 0; }
 sha256sum -- "$p" | cut -d' ' -f1 | sed 's/^/SHA /'; stat -c 'SIZE %s %a %U:%G' -- "$p"
 echo "@@HEX"; head -c 512 -- "$p" | od -An -tx1 -v

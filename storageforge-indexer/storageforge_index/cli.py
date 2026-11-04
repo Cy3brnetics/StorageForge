@@ -985,6 +985,10 @@ def cmd_user(args) -> int:
             users.remove(conn, args.name)
         elif a == 'signout':
             users.end_all_sessions(conn, args.name)
+        elif a == 'clear-keys':
+            from . import webauthn
+            if not webauthn.clear_keys(conn, args.name):
+                raise users.UserError(f'{args.name} has no security keys')
     except users.UserError as exc:
         print(f'error: {exc}', file=sys.stderr)
         return 2
@@ -994,7 +998,7 @@ def cmd_user(args) -> int:
     except VaultError:
         _audit(db, conn, None, f'user.{a}', username=args.name)
     print({'add': 'created', 'role': f'role {getattr(args, "new_role", "")} for', 'passwd': 'password changed for', 'disable': 'disabled', 'enable': 'enabled',
-           'remove': 'removed', 'signout': 'signed out every session of'}[a] + f' user {args.name}' + (' (existing sessions signed out)' if a in ('passwd', 'disable') else ''))
+           'remove': 'removed', 'signout': 'signed out every session of', 'clear-keys': 'cleared the security keys of'}[a] + f' user {args.name}' + (' (existing sessions signed out)' if a in ('passwd', 'disable') else ''))
     return 0
 
 
@@ -1527,7 +1531,8 @@ def build_parser() -> argparse.ArgumentParser:
     ro = us.add_parser('role', help='set what an account may do')
     ro.add_argument('name'); ro.add_argument('new_role', help='a built-in or custom role')
     for name, text in (('disable', 'block sign-in and sign out its sessions'), ('enable', 'allow sign-in again'),
-                       ('remove', 'delete an account'), ('signout', 'end every web session of an account')):
+                       ('remove', 'delete an account'), ('signout', 'end every web session of an account'),
+                       ('clear-keys', 'remove every security key of an account, for a lost token')):
         us.add_parser(name, help=text).add_argument('name')
     u.set_defaults(fn=cmd_user)
 

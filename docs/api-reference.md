@@ -207,7 +207,7 @@ See [Ransomware defense](ransomware-defense.md). Reads need `security.view`. �
 | POST 🔑 | `/api/security/worm/cool-off` | `{"hours": 12\|24\|48\|72}` | `security.emergency`; it cannot be shortened |
 | POST 🔑 | `/api/security/worm/clock/clear` | `{"host"}` or `{"controller": true}` | `security.emergency` |
 | GET | `/api/security/canaries` | `?host=` | decoys and, for a host, its sentinel |
-| POST 🔑 | `/api/security/sentinel` | `{"host", "folders", "names"?, "armed"?, "actions"?, "minutes"?}` | `security.emergency`; takes effect at the next deploy (`/api/deploy/start`, kind `security`, with `remove` or `rearm`) |
+| POST 🔑 | `/api/security/sentinel` | `{"host", "folders", "names"?, "armed"?, "actions"?, "minutes"?}` | `security.sentinel`; takes effect at the next deploy (`/api/deploy/start`, kind `security`, with `remove` or `rearm`) Deploying it (`/api/deploy/start`, mode `apply`) takes this and `deploy.apply` |
 | POST 🔑 | `/api/security/canaries/test` | `{"host"}` | `security.manage`; returns `latency_ms` |
 | GET | `/api/security/mac/status` | `?host=` | access control as measured |
 | POST 🔑 | `/api/security/mac/remediate` | `{"host", "boolean", "value", "mode"}` or `{"host", "path", "type", "mode"}` | `security.manage` |
@@ -238,12 +238,12 @@ See [Ransomware defense](ransomware-defense.md). Reads need `security.view`. �
 | POST | `/api/security/compliance/reconverge` | `{"host", "profile"}` | stages a plan: `plans.edit` |
 | GET | `/api/security/compliance/script` | `?host=&profile=` | `sf-init-compliance.sh`: `plans.scripts` |
 | POST | `/api/security/integrity/stage` | `{"host"}` | Lynis findings as a plan |
-| GET, POST 🔑 | `/api/security/worm/policies` | `{"host", "pattern", "days", "legal", "auto"}` | |
-| POST 🔑 | `/api/security/worm/policies/apply` | `{"host", "mode"}` | |
+| GET, POST 🔑 | `/api/security/worm/policies` | `{"host", "pattern", "days", "legal", "auto"}` | saving and removing: `security.emergency` |
+| POST 🔑 | `/api/security/worm/policies/apply` | `{"host", "mode"}` | `security.manage`; mode `apply` also takes `security.emergency` |
 | POST 🔑 | `/api/security/worm/freeze` | `{"host", "target", "mode"}` | `security.emergency` |
 | POST 🔑 | `/api/security/worm/preview` | `{"host", "snapshot", "live"}` | what a rollback would change. Only reads |
 | POST | `/api/security/worm/preview/stage` | same | |
-| GET | `/api/security/evidence` | `?host=&from=&to=` | signed record: `audit.view` |
+| POST | `/api/security/evidence` | `{"host"?, "from"?, "to"?}` | signed record: `audit.view` and `audit.verify`, 10 a minute |
 | GET | `/api/security/mac/identity-anomalies` | `?host=` | sessions and flags |
 | POST 🔑 | `/api/security/mac/identity/deploy` | `{"host", "enabled", "max_shares", "off_from", "off_to", "mode"}` | |
 | GET | `/api/security/firewall/shares` | `?host=` | declared clients, what the firewall allows, who is connected |
@@ -259,7 +259,7 @@ See [Ransomware defense](ransomware-defense.md). Reads need `security.view`. �
 | POST 🔑 | `/api/security/incident/clean-room/sweep` | `{"host", "mount"}` | |
 | GET | `/api/security/dash/tile/<kind>`, `/api/security/timeline`, `/api/security/badges` | | |
 | POST | `/api/security/webauthn/assert/begin`, `/finish` | | a touch, good for 5 minutes |
-| POST 🔑 | `/api/security/webauthn/register/begin`, `/finish` | | enroll a key |
+| POST 🔑 | `/api/security/webauthn/register/begin`, `/finish` | | enroll a key: an account that has one touches it first. Removing a key takes the same |
 
 ## Map
 
@@ -277,7 +277,7 @@ See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure
 | POST | `/api/map/stage` | `{"plan", "tasks"}` | `plans.edit` |
 | POST 🔑 | `/api/map/placeholders/<id>/promote` | | `keys.manage` |
 | GET | `/api/map/export` | `?format=&layers=&redact=1` | audited |
-| GET, POST, DELETE | `/api/map/views`, `/api/map/annotations` | | `map.edit` |
+| GET, POST, DELETE | `/api/map/views`, `/api/map/annotations` | | `map.edit`. A view is seen by its owner, or by everyone with `"shared": true`, and changed only by its owner |
 | GET, POST 🔑, DELETE 🔑 | `/api/map/manual` | `{"kind", "label", "url", "links"}` | `map.edit` |
 | GET, POST, DELETE | `/api/map/designs` | `{"name", "doc"}` | `plans.edit` |
 | GET | `/api/map/designs/<id>/compare`, `/export` | `?target=bash\|ansible\|terraform\|puppet` | |

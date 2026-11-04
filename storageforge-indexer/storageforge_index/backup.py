@@ -117,23 +117,6 @@ def receive_script(path: str, directory: str, keep: int, suffix: str = '') -> st
             f'ls -1t {d} | grep "^{PREFIX["essentials"]}" | grep -v "\\.part$" | tail -n +{keep + 1} | while read -r f; do rm -f -- {d}/"$f"; done')
 
 
-def send_file(t, path: str, directory: str, keep: int) -> None:
-    """Write one essentials backup into a folder over t, then keep the newest few there. Only the folder's own backups
-    are ever removed."""
-    script = receive_script(path, directory, keep)
-    proc = t.stream(script, stdin=True)
-    try:
-        with open(path, 'rb') as f:
-            shutil.copyfileobj(f, proc.stdin)
-        proc.stdin.close()
-        err = proc.stderr.read().decode('utf-8', 'replace').strip()
-        if proc.wait() != 0:
-            raise RuntimeError(err[-300:] or f'copy to {directory} failed')
-    finally:
-        proc.stdout.close()
-        proc.stderr.close()
-
-
 def encrypted(path: str, secret: bytes):
     """A backup as chunks of ciphertext. It holds password hashes, alert tokens and host configs in the clear, and the key
     comes from the vault secret alone: the backup is what you restore a lost vault from, so nothing inside it can be needed."""

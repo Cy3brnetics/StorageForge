@@ -38,10 +38,10 @@ SEC_MORE.policy = async function secPolicy() {
   }
   const from = secInput('days back', '90'), ev = el('div', { class: 'stack' });
   kids.push(secCard('Expiry', secHeatmap(w.holds), text('p', 'One square a day for the next 90 days. Darker means more holds expire that day.', 'muted small')));
-  kids.push(secCard('Evidence', text('p', 'A signed record of holds, alarms and what was done, to hand to an auditor. It is evidence and not a certificate: only an auditor can attest. It can be checked with ssh-keygen and the key in the file.', 'muted small'),
+  if (secCan('audit.verify') && secCan('audit.view')) kids.push(secCard('Evidence', text('p', 'A signed record of holds, alarms and what was done, to hand to an auditor. It is evidence and not a certificate: only an auditor can attest. It can be checked with ssh-keygen and the key in the file.', 'muted small'),
     secField('Days back', from), button('Download', async () => {
       try {
-        const r = await getJSON(`/api/security/evidence?${new URLSearchParams({ ...(host ? { host } : {}), from: String(Math.floor(Date.now() / 1000) - Number(from.value || 90) * 86400) })}`);
+        const r = await (await postJSON('/api/security/evidence', { ...(host ? { host } : {}), from: Math.floor(Date.now() / 1000) - Number(from.value || 90) * 86400 })).json();
         const a = el('a', { href: URL.createObjectURL(new Blob([JSON.stringify(r, null, 1)], { type: 'application/json' })), download: `storageforge-evidence${host ? `-${host}` : ''}.json` }); a.click();
         ev.replaceChildren(text('p', r.verify, 'small mono'));
       } catch (err) { ev.replaceChildren(text('p', err.message, 'st-failed')); }
@@ -211,7 +211,14 @@ const secB64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).repla
 const secUnb64u = (t) => Uint8Array.from(atob(t.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
 
 async function secEnrollKey(name) {
-  const o = await (await postJSON('/api/security/webauthn/register/begin', {})).json();
+  const begin = () => postJSON('/api/security/webauthn/register/begin', {});
+  let res;
+  try { res = await begin(); } catch (err) {      // an account with a key: adding another takes a touch on it first
+    if (!err.body?.webauthn) throw err;
+    await secTouchKey();
+    res = await begin();
+  }
+  const o = await res.json();
   const cred = await navigator.credentials.create({ publicKey: { ...o, challenge: secUnb64u(o.challenge), user: { ...o.user, id: secUnb64u(o.user.id) }, excludeCredentials: o.excludeCredentials.map((c) => ({ ...c, id: secUnb64u(c.id) })) } });
   return (await postJSON('/api/security/webauthn/register/finish', { name, clientDataJSON: secB64u(cred.response.clientDataJSON), attestationObject: secB64u(cred.response.attestationObject) })).json();
 }
