@@ -5,6 +5,13 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 ## Unreleased
 
 ### Added
+- **Routers, switches and firewalls.** MikroTik RouterOS and OpenWrt, through the KVM lab on real images, and pfSense, OPNsense and Cisco IOS, tested against published formats only. A device's interfaces, routes, firewall and NAT land in the same records a host's do, so the map, reach and exposure all see them. See [Network devices](docs/network-devices.md).
+- **Paths through routers.** The path query walks router by router and through port forwards, naming the rule that decides. A listener a router forwards to now shows as reachable from anywhere, which used to be out of sight.
+- **One network language.** RouterOS syntax, compiled for RouterOS, nftables, iptables, firewalld, ufw, OpenWrt, pfSense, Cisco, networkd and NetworkManager, saying what each target can't express. Any firewall reads back in the same syntax.
+- **Device changes with a rollback on the device.** A report first, then an apply that plants a timer on the device before anything changes. A change that cuts StorageForge off undoes itself.
+- **A management planner at `/manage`.** Every host and device in one list, and one place to write a change, see what it becomes, and ask what it would do to a path.
+- **A network scanner, off by default.** nmap, in a Scan tab beside the map, only of private networks someone named. Results link back to each machine's pages. Nothing else in StorageForge sends a packet to find out what exists.
+- **Traffic monitoring, off by default.** Interface rates over time from devices' own counters, and what stands out in them.
 - **An infrastructure map.** Networks, firewalls, listeners, containers, VMs and VPNs across hosts, drawn from what they report, with evidence on every line and no probes. Layers and modes, grouping, saved views, notes, things placed by hand, a timeline of earlier readings, and exports to SVG, PNG, PDF, Mermaid, DOT, draw.io, canvas and JSON, redacted if you ask. See [Infrastructure map](docs/infrastructure-map.md).
 - **Who can reach what.** One exposure engine over nftables, firewalld, ufw, iptables and Docker's NAT, which says *unknown* rather than guess, and shows a port ufw looks like it blocks as reachable. **Can A reach B?** names the rule that decides it and lists what it cannot see.
 - **Planning from the map.** Stage a step and see it drawn first: exposure changes, duplicate addresses, port clashes, and anything that would cut StorageForge off.
@@ -15,6 +22,9 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 - **Lab tiers 9, 10 and 11:** security, infrastructure and changes on real hosts, each change judged by a real connection between two VMs.
 
 ### Fixed
+- **Snapper configs work under SELinux.** A new config said it had worked while every snapshot was denied, and the timeline service still exited 0, so no backups were taken and nothing said so. The SELinux rule now goes in first, and a config only counts as created once its first snapshot exists.
+- **Removing a plan's jobs finishes the job.** Remove from hosts left a mark behind, so the plan could never be deleted and the host could never be retired.
+- **A rollback preview says what is missing,** instead of "did not finish".
 - **A deploy's report stays on screen while it runs.** Every other poll dropped its output, which also threw away what was open or scrolled, and a dry run could end with its reports empty. Cards now stay put and only their contents change.
 - **One click starts one deploy.** A deploy shows as starting the moment it is pressed, so Apply cannot be pressed twice, a save cannot be pressed twice into a "duplicate share" error, and the deploy shows even when the tab was scrolled down to its button. Cancelling the password prompt leaves the last report where it was.
 - **Apply stays in view** below a long report, instead of at the very bottom of the tab.

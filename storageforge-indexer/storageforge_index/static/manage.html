@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>StorageForge Management Planner</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/manage.css">
+</head>
+<body>
+<div class="mg">
+  <aside class="mg-rail">
+    <div class="mg-brand"><b>StorageForge</b><small>Management planner</small></div>
+    <nav id="mgnav" aria-label="Views"></nav>
+    <div class="mg-rail-end">
+      <a class="mg-btn" href="/">← Topology &amp; map</a>
+      <a class="mg-btn" href="/planner">Storage planner</a>
+    </div>
+  </aside>
+  <main class="mg-main">
+    <header class="mg-head"><h1 id="mgtitle">Fleet</h1><p id="mgsub" class="muted"></p></header>
+    <div id="mgview"></div>
+  </main>
+</div>
+<dialog id="mgreauth" class="mg-dialog">
+  <form method="dialog" id="mgreauthform">
+    <p>Confirm your password to do this.</p>
+    <input id="mgreauthpw" type="password" autocomplete="current-password" aria-label="Your password">
+    <p id="mgreautherr" class="bad" hidden></p>
+    <div class="mg-row"><button type="submit" class="mg-btn pri">Confirm</button><button type="button" class="mg-btn" id="mgreauthno">Cancel</button></div>
+  </form>
+</dialog>
+<script src="/session.js"></script>
+<script src="/manage.js"></script>
+</body>
+</html>

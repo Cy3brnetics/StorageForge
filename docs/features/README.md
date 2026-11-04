@@ -40,6 +40,14 @@ Every feature StorageForge has, what it does, how it works and where to find it.
 | [Canvas export](views.md#canvas-export) | **Export .canvas** | `graph canvas` | Not run |
 | [Markdown report](views.md#reports) | | `export-markdown`, `report` | Not run |
 | [Planner](planning.md#planner) | `/planner` | | Shown |
+| [Management planner](../network-devices.md#the-management-planner) | `/manage` | | Tier 12 |
+| [Network devices](../network-devices.md#adding-a-device) | `/manage` | | Tier 12 |
+| [pfSense and Cisco devices](../network-devices.md#what-has-been-tested-on-what) | `/manage` | | Not in the lab |
+| [Network language](../network-devices.md#the-network-language) | `/manage` | | Tier 12 |
+| [Device changes with a rollback](../network-devices.md#changing-a-device) | `/manage` | | Tier 12 |
+| [Paths through routers](../network-devices.md#paths-and-exposure) | **Map**, `/manage` | | Tier 12 |
+| [Network scanner](../network-devices.md#the-network-scanner) | **Scan** | | Tier 12 |
+| [Traffic monitoring](../network-devices.md#traffic-monitoring) | `/manage` | | Tier 12 |
 | [Change plans](planning.md#change-plans) | **Changes** | `plan` | Used (check only), Tiers |
 | [Move plans](planning.md#move-plans) | **Moves** | `moves` | Used |
 | [NFS and SMB shares](planning.md#shares) | Topology, **Deploy** | `shares` | Used |
@@ -65,6 +73,8 @@ Every feature StorageForge has, what it does, how it works and where to find it.
 | [Sites and reset](administration.md#sites-and-reset) | Site name in header | `site`, `reset`, `docker/sf-site` | Not run |
 | [Retire a host](administration.md#retire-a-host) | Host menu | `hosts remove` | Not run |
 | [PostgreSQL](administration.md#databases) | | | Not run: the lab uses SQLite |
+
+That column records how these pages were made. For how each feature is verified now, including everything marked **Shown** or **Not run** above, see [`tests/feature_map.py`](../../storageforge-indexer/tests/feature_map.py) and [lab tier 13](../kvm-lab.md#test-tiers).
 
 The panels and routes this guide was checked against, and what disagreed, are in the [feature audit](../audit-2026-11-01-features.md).
 

@@ -10,7 +10,7 @@
 <body>
 <header class="bar">
   <div class="brand"><svg width="22" height="22" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="3" width="24" height="6" rx="1.5" class="t1"/><rect x="2" y="11" width="24" height="6" rx="1.5" class="t2"/><rect x="2" y="19" width="24" height="6" rx="1.5" class="t3"/></svg><b>StorageForge</b><span id="sitename" class="sitename" hidden></span></div>
-  <div id="viewmode" class="seg" role="group" aria-label="View"><button type="button" data-mode="topo" aria-pressed="true">Topology</button><button type="button" data-mode="graph" aria-pressed="false">Graph</button><button type="button" data-mode="tasks" aria-pressed="false">Tasks</button><button type="button" data-mode="map" aria-pressed="false">Map</button></div>
+  <div id="viewmode" class="seg" role="group" aria-label="View"><button type="button" data-mode="topo" aria-pressed="true">Topology</button><button type="button" data-mode="graph" aria-pressed="false">Graph</button><button type="button" data-mode="tasks" aria-pressed="false">Tasks</button><button type="button" data-mode="map" aria-pressed="false">Map</button><button type="button" data-mode="scan" aria-pressed="false">Scan</button></div>
   <label class="field"><span>Host</span><select id="host"><option value="">All hosts</option></select></label>
   <form id="searchform" class="search" role="search"><input id="q" type="search" placeholder="Search files: *.cr2, IMG_2019*, report.pdf  ( / )" aria-label="Search files across hosts" autocomplete="off"></form>
   <button id="threatbanner" type="button" class="threat sec-unknown" hidden></button>
@@ -18,6 +18,7 @@
     <div id="graphsub" class="seg" role="group" aria-label="Graph view" hidden><button type="button" data-sub="files">Files</button><button type="button" data-sub="structure">Structure</button></div>
     <label id="hopsfield" class="field"><span>Focus</span><select id="hops"><option value="1">1 hop</option><option value="2" selected>2 hops</option><option value="3">3 hops</option></select></label>
     <a id="toplanner" class="btn" href="/planner">Planner</a>
+    <a id="tomanage" class="btn" href="/manage">Manage</a>
     <button id="reset" type="button" class="btn">Show all</button>
     <button id="export" type="button" class="btn pri">Export .canvas</button>
     <label id="sessfield" class="field" title="How long a sign-in lasts (changing it asks for your password)" hidden><span>Session</span><select id="sesslen" aria-label="Session length"><option value="30">30 min</option><option value="60">1 h</option><option value="120">2 h</option><option value="240">4 h</option><option value="480">8 h</option></select></label>
@@ -31,6 +32,7 @@
     <div id="stagebar" class="stagebar" role="status" hidden></div>
     <div id="savebar" class="savebar" role="status" hidden><span id="savemsg" class="muted"></span><button id="discarddesigns" type="button" class="btn ghost">Discard</button><button id="savedesigns" type="button" class="btn pri">Save design</button></div>
     <div id="mapview" class="mapview" hidden aria-label="Infrastructure map: hosts, networks, services and workloads, derived from what hosts report"></div>
+    <div id="netscanview" class="netscanview" hidden aria-label="Network scan: what the opt-in nmap scanner found, linked back to what StorageForge manages"></div>
     <div id="tasksview" class="tasksview" hidden aria-label="Storage tasks: blocks that copy, snapshot and check, run on a schedule"></div>
     <canvas id="graph" aria-label="Force-directed storage graph. Select a node to see details; double-click to focus on its neighbourhood."></canvas>
     <div id="filemap" class="filemap" hidden aria-label="File map: folders holding duplicate files, per host, with lines between the copies"></div>
@@ -313,6 +315,7 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/dockerview.js"></script>
 <script src="/infraview.js"></script>
 <script src="/mapview.js"></script>
+<script src="/netscanview.js"></script>
 <script src="/deployview.js"></script>
 <script src="/sharewiz.js"></script>
 <script src="/tasks.js"></script>

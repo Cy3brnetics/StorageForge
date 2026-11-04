@@ -12,6 +12,15 @@ PW = 'a long enough password'
 
 # Changes something, runs on a host or touches accounts and keys: asks for a password typed in the last 5 minutes.
 FRESH_PASSWORD = {
+    ('POST', '/api/devices'),
+    ('DELETE', '/api/devices/<name>'),
+    ('POST', '/api/devices/credentials'),
+    ('DELETE', '/api/devices/credentials/<name>'),
+    ('POST', '/api/devices/<name>/hostkey'),
+    ('POST', '/api/devices/changes/<int:change_id>/apply'),
+    ('POST', '/api/devices/changes/<int:change_id>/confirm'),
+    ('POST', '/api/netscan/settings'),
+    ('POST', '/api/traffic/settings'),
     ('POST', '/api/remote/nodes'),
     ('POST', '/api/remote/nodes/<int:node_id>/adopt'),
     ('DELETE', '/api/remote/nodes/<int:node_id>'),
@@ -116,6 +125,12 @@ FRESH_PASSWORD = {
 }
 # No fresh password: plans that only sit in the database, reads over SSH or signed read-only probes, or the sign-in routes themselves.
 NO_FRESH_PASSWORD = {
+    ('POST', '/api/devices/<name>/read'),        # reads, as a scan does, through the account bound for reading
+    ('POST', '/api/devices/<name>/report'),      # saves what an apply would do. The apply asks
+    ('POST', '/api/dsl/compile'),
+    ('POST', '/api/dsl/whatif'),
+    ('POST', '/api/dsl/stage'),                  # a plan in the database, as /api/map/stage is
+    ('POST', '/api/netscan/run'),                # only of ranges someone named behind a fresh password
     ('POST', '/api/security/webauthn/assert/begin'),
     ('POST', '/api/security/webauthn/assert/finish'),
     ('POST', '/api/security/compliance/reconverge'),
@@ -199,6 +214,8 @@ AUDITED_ELSEWHERE = {
     'api_remote_revoke': 'remotes.revoke writes remote.revoke',
 }
 NOT_AUDITED = {
+    'api_dsl_compile': 'reads only: text in, text out',
+    'api_dsl_whatif': 'reads only: rules against a copy of the facts',
     'api_map_whatif': 'reads only: a draft plan against a copy of the facts',
     'api_logout': 'the session simply ends',
     'api_enroll_check': 'reads one link and changes nothing',

@@ -1,0 +1,1 @@
+[{".id":"*1","action":"dst-nat","chain":"dstnat","comment":"dmz-https","dst-port":443.000000,"dynamic":false,"in-interface":"ether2","invalid":false,"protocol":"tcp","to-addresses":"10.77.20.80","to-ports":443.000000},{".id":"*2","action":"masquerade","chain":"srcnat","comment":"wan-out","dynamic":false,"invalid":false,"out-interface":"ether2"}]

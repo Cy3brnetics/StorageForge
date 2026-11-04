@@ -1138,6 +1138,8 @@ function setMode(mode, load = true) {
   $('#tasksview').hidden = mode !== 'tasks';
   $('#mapview').hidden = mode !== 'map';
   if (mode === 'map' && typeof loadMap === 'function') loadMap();
+  $('#netscanview').hidden = mode !== 'scan';
+  if (mode === 'scan' && typeof loadNetScan === 'function') loadNetScan();
   $('#detailshint').textContent = mode === 'topo'
     ? 'Select a box to edit it, or right-click it for its actions. Tiers, protection, links and exports are yours; the rest comes from the scan.'
     : 'Select a node. Double-click one to focus on everything within the chosen number of hops; right-click it for its actions.';
@@ -1151,7 +1153,7 @@ function setMode(mode, load = true) {
   if (typeof fmSync === 'function') fmSync();
 }
 document.querySelectorAll('#viewmode button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
-try { T.mode = ['graph', 'tasks', 'map'].includes(localStorage.getItem('sf.view')) ? localStorage.getItem('sf.view') : 'topo'; } catch { /* default */ }
+try { T.mode = ['graph', 'tasks', 'map', 'scan'].includes(localStorage.getItem('sf.view')) ? localStorage.getItem('sf.view') : 'topo'; } catch { /* default */ }
 
 setMode(T.mode, false);
 boot();

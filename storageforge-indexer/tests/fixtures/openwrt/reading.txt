@@ -1,0 +1,490 @@
+@@link
+
+@@addr
+
+@@route
+
+@@route6
+
+@@neigh
+
+@@bridge
+
+@@listen
+@@listen_failed
+
+@@resolv
+search lan
+nameserver 127.0.0.1
+nameserver ::1
+
+@@ubus
+{
+	"interface": [
+		{
+			"interface": "dmz",
+			"up": true,
+			"pending": false,
+			"available": true,
+			"autostart": true,
+			"dynamic": false,
+			"uptime": 777,
+			"l3_device": "eth3",
+			"proto": "static",
+			"device": "eth3",
+			"updated": [
+				"addresses"
+			],
+			"metric": 0,
+			"dns_metric": 0,
+			"delegation": true,
+			"ipv4-address": [
+				{
+					"address": "10.77.20.2",
+					"mask": 24
+				}
+			],
+			"ipv6-address": [
+				
+			],
+			"ipv6-prefix": [
+				
+			],
+			"ipv6-prefix-assignment": [
+				
+			],
+			"route": [
+				
+			],
+			"dns-server": [
+				
+			],
+			"dns-search": [
+				
+			],
+			"neighbors": [
+				
+			],
+			"inactive": {
+				"ipv4-address": [
+					
+				],
+				"ipv6-address": [
+					
+				],
+				"route": [
+					
+				],
+				"dns-server": [
+					
+				],
+				"dns-search": [
+					
+				],
+				"neighbors": [
+					
+				]
+			},
+			"data": {
+				
+			}
+		},
+		{
+			"interface": "lan1",
+			"up": true,
+			"pending": false,
+			"available": true,
+			"autostart": true,
+			"dynamic": false,
+			"uptime": 777,
+			"l3_device": "eth2",
+			"proto": "static",
+			"device": "eth2",
+			"updated": [
+				"addresses"
+			],
+			"metric": 0,
+			"dns_metric": 0,
+			"delegation": true,
+			"ipv4-address": [
+				{
+					"address": "10.77.10.2",
+					"mask": 24
+				}
+			],
+			"ipv6-address": [
+				
+			],
+			"ipv6-prefix": [
+				
+			],
+			"ipv6-prefix-assignment": [
+				
+			],
+			"route": [
+				
+			],
+			"dns-server": [
+				
+			],
+			"dns-search": [
+				
+			],
+			"neighbors": [
+				
+			],
+			"inactive": {
+				"ipv4-address": [
+					
+				],
+				"ipv6-address": [
+					
+				],
+				"route": [
+					
+				],
+				"dns-server": [
+					
+				],
+				"dns-search": [
+					
+				],
+				"neighbors": [
+					
+				]
+			},
+			"data": {
+				
+			}
+		},
+		{
+			"interface": "loopback",
+			"up": true,
+			"pending": false,
+			"available": true,
+			"autostart": true,
+			"dynamic": false,
+			"uptime": 777,
+			"l3_device": "lo",
+			"proto": "static",
+			"device": "lo",
+			"updated": [
+				"addresses"
+			],
+			"metric": 0,
+			"dns_metric": 0,
+			"delegation": true,
+			"ipv4-address": [
+				{
+					"address": "127.0.0.1",
+					"mask": 8
+				}
+			],
+			"ipv6-address": [
+				
+			],
+			"ipv6-prefix": [
+				
+			],
+			"ipv6-prefix-assignment": [
+				
+			],
+			"route": [
+				
+			],
+			"dns-server": [
+				
+			],
+			"dns-search": [
+				
+			],
+			"neighbors": [
+				
+			],
+			"inactive": {
+				"ipv4-address": [
+					
+				],
+				"ipv6-address": [
+					
+				],
+				"route": [
+					
+				],
+				"dns-server": [
+					
+				],
+				"dns-search": [
+					
+				],
+				"neighbors": [
+					
+				]
+			},
+			"data": {
+				
+			}
+		},
+		{
+			"interface": "mgmt",
+			"up": true,
+			"pending": false,
+			"available": true,
+			"autostart": true,
+			"dynamic": false,
+			"uptime": 777,
+			"l3_device": "eth0",
+			"proto": "static",
+			"device": "eth0",
+			"updated": [
+				"addresses",
+				"routes"
+			],
+			"metric": 0,
+			"dns_metric": 0,
+			"delegation": true,
+			"ipv4-address": [
+				{
+					"address": "10.77.0.31",
+					"mask": 24
+				}
+			],
+			"ipv6-address": [
+				
+			],
+			"ipv6-prefix": [
+				
+			],
+			"ipv6-prefix-assignment": [
+				
+			],
+			"route": [
+				{
+					"target": "0.0.0.0",
+					"mask": 0,
+					"nexthop": "10.77.0.1",
+					"source": "0.0.0.0/0"
+				}
+			],
+			"dns-server": [
+				"1.1.1.1"
+			],
+			"dns-search": [
+				
+			],
+			"neighbors": [
+				
+			],
+			"inactive": {
+				"ipv4-address": [
+					
+				],
+				"ipv6-address": [
+					
+				],
+				"route": [
+					
+				],
+				"dns-server": [
+					
+				],
+				"dns-search": [
+					
+				],
+				"neighbors": [
+					
+				]
+			},
+			"data": {
+				
+			}
+		},
+		{
+			"interface": "wan",
+			"up": true,
+			"pending": false,
+			"available": true,
+			"autostart": true,
+			"dynamic": false,
+			"uptime": 777,
+			"l3_device": "eth1",
+			"proto": "static",
+			"device": "eth1",
+			"updated": [
+				"addresses"
+			],
+			"metric": 0,
+			"dns_metric": 0,
+			"delegation": true,
+			"ipv4-address": [
+				{
+					"address": "198.51.100.2",
+					"mask": 24
+				}
+			],
+			"ipv6-address": [
+				
+			],
+			"ipv6-prefix": [
+				
+			],
+			"ipv6-prefix-assignment": [
+				
+			],
+			"route": [
+				
+			],
+			"dns-server": [
+				
+			],
+			"dns-search": [
+				
+			],
+			"neighbors": [
+				
+			],
+			"inactive": {
+				"ipv4-address": [
+					
+				],
+				"ipv6-address": [
+					
+				],
+				"route": [
+					
+				],
+				"dns-server": [
+					
+				],
+				"dns-search": [
+					
+				],
+				"neighbors": [
+					
+				]
+			},
+			"data": {
+				
+			}
+		}
+	]
+}
+
+@@board
+{
+	"kernel": "6.12.112",
+	"hostname": "sf-openwrt",
+	"system": "AMD Ryzen 9 5900X 12-Core Processor",
+	"model": "QEMU Standard PC (Q35 + ICH9, 2009)",
+	"board_name": "qemu-standard-pc-q35-ich9-2009",
+	"rootfs_type": "ext4",
+	"release": {
+		"distribution": "OpenWrt",
+		"version": "25.12.6",
+		"firmware_url": "https://downloads.openwrt.org/",
+		"revision": "r33311-981c978eff",
+		"target": "x86/64",
+		"description": "OpenWrt 25.12.6 r33311-981c978eff",
+		"builddate": "1792273538"
+	}
+}
+
+@@uci_network
+network.loopback=interface
+network.loopback.device='lo'
+network.loopback.proto='static'
+network.loopback.ipaddr='127.0.0.1/8'
+network.globals=globals
+network.globals.dhcp_default_duid='0004936152cd80334f39a11a5611e36ed030'
+network.globals.ula_prefix='fd3b:637e:e417::/48'
+network.mgmt=interface
+network.mgmt.device='eth0'
+network.mgmt.proto='static'
+network.mgmt.ipaddr='10.77.0.31'
+network.mgmt.netmask='255.255.255.0'
+network.mgmt.gateway='10.77.0.1'
+network.mgmt.dns='1.1.1.1'
+network.wan=interface
+network.wan.device='eth1'
+network.wan.proto='static'
+network.wan.ipaddr='198.51.100.2'
+network.wan.netmask='255.255.255.0'
+network.lan1=interface
+network.lan1.device='eth2'
+network.lan1.proto='static'
+network.lan1.ipaddr='10.77.10.2'
+network.lan1.netmask='255.255.255.0'
+network.dmz=interface
+network.dmz.device='eth3'
+network.dmz.proto='static'
+network.dmz.ipaddr='10.77.20.2'
+network.dmz.netmask='255.255.255.0'
+
+@@uci_firewall
+firewall.@defaults[0]=defaults
+firewall.@defaults[0].syn_flood='1'
+firewall.@defaults[0].input='REJECT'
+firewall.@defaults[0].output='ACCEPT'
+firewall.@defaults[0].forward='REJECT'
+firewall.@zone[0]=zone
+firewall.@zone[0].name='mgmt'
+firewall.@zone[0].network='mgmt'
+firewall.@zone[0].input='ACCEPT'
+firewall.@zone[0].output='ACCEPT'
+firewall.@zone[0].forward='REJECT'
+firewall.@zone[1]=zone
+firewall.@zone[1].name='wan'
+firewall.@zone[1].network='wan'
+firewall.@zone[1].input='REJECT'
+firewall.@zone[1].output='ACCEPT'
+firewall.@zone[1].forward='REJECT'
+firewall.@zone[1].masq='1'
+firewall.@zone[2]=zone
+firewall.@zone[2].name='lan1'
+firewall.@zone[2].network='lan1'
+firewall.@zone[2].input='ACCEPT'
+firewall.@zone[2].output='ACCEPT'
+firewall.@zone[2].forward='REJECT'
+firewall.@zone[3]=zone
+firewall.@zone[3].name='dmz'
+firewall.@zone[3].network='dmz'
+firewall.@zone[3].input='REJECT'
+firewall.@zone[3].output='ACCEPT'
+firewall.@zone[3].forward='REJECT'
+firewall.@rule[0]=rule
+firewall.@rule[0].name='lan-to-dmz-web'
+firewall.@rule[0].src='lan1'
+firewall.@rule[0].dest='dmz'
+firewall.@rule[0].proto='tcp'
+firewall.@rule[0].dest_port='80'
+firewall.@rule[0].dest_ip='10.77.20.80'
+firewall.@rule[0].target='ACCEPT'
+firewall.@redirect[0]=redirect
+firewall.@redirect[0].name='dmz-https'
+firewall.@redirect[0].src='wan'
+firewall.@redirect[0].dest='dmz'
+firewall.@redirect[0].proto='tcp'
+firewall.@redirect[0].src_dport='443'
+firewall.@redirect[0].dest_ip='10.77.20.80'
+firewall.@redirect[0].dest_port='443'
+firewall.@redirect[0].target='DNAT'
+
+@@leases
+
+@@nft
+{"nftables": [{"metainfo": {"version": "1.1.6", "release_name": "Commodore Bullmoose #7", "json_schema_version": 1}}, {"table": {"family": "inet", "name": "fw4", "handle": 1}}, {"chain": {"family": "inet", "table": "fw4", "name": "input", "handle": 1, "type": "filter", "hook": "input", "prio": 0, "policy": "drop"}}, {"chain": {"family": "inet", "table": "fw4", "name": "forward", "handle": 2, "type": "filter", "hook": "forward", "prio": 0, "policy": "drop"}}, {"chain": {"family": "inet", "table": "fw4", "name": "output", "handle": 3, "type": "filter", "hook": "output", "prio": 0, "policy": "accept"}}, {"chain": {"family": "inet", "table": "fw4", "name": "prerouting", "handle": 4, "type": "filter", "hook": "prerouting", "prio": 0, "policy": "accept"}}, {"chain": {"family": "inet", "table": "fw4", "name": "handle_reject", "handle": 5}}, {"chain": {"family": "inet", "table": "fw4", "name": "syn_flood", "handle": 6}}, {"chain": {"family": "inet", "table": "fw4", "name": "input_mgmt", "handle": 7}}, {"chain": {"family": "inet", "table": "fw4", "name": "output_mgmt", "handle": 8}}, {"chain": {"family": "inet", "table": "fw4", "name": "forward_mgmt", "handle": 9}}, {"chain": {"family": "inet", "table": "fw4", "name": "helper_mgmt", "handle": 10}}, {"chain": {"family": "inet", "table": "fw4", "name": "accept_from_mgmt", "handle": 11}}, {"chain": {"family": "inet", "table": "fw4", "name": "accept_to_mgmt", "handle": 12}}, {"chain": {"family": "inet", "table": "fw4", "name": "reject_to_mgmt", "handle": 13}}, {"chain": {"family": "inet", "table": "fw4", "name": "input_wan", "handle": 14}}, {"chain": {"family": "inet", "table": "fw4", "name": "output_wan", "handle": 15}}, {"chain": {"family": "inet", "table": "fw4", "name": "forward_wan", "handle": 16}}, {"chain": {"family": "inet", "table": "fw4", "name": "accept_to_wan", "handle": 17}}, {"chain": {"family": "inet", "table": "fw4", "name": "reject_from_wan", "handle": 18}}, {"chain": {"family": "inet", "table": "fw4", "name": "reject_to_wan", "handle": 19}}, {"chain": {"family": "inet", "table": "fw4", "name": "input_lan1", "handle": 20}}, {"chain": {"family": "inet", "table": "fw4", "name": "output_lan1", "handle": 21}}, {"chain": {"family": "inet", "table": "fw4", "name": "forward_lan1", "handle": 22}}, {"chain": {"family": "inet", "table": "fw4", "name": "helper_lan1", "handle": 23}}, {"chain": {"family": "inet", "table": "fw4", "name": "accept_from_lan1", "handle": 24}}, {"chain": {"family": "inet", "table": "fw4", "name": "accept_to_lan1", "handle": 25}}, {"chain": {"family": "inet", "table": "fw4", "name": "reject_to_lan1", "handle": 26}}, {"chain": {"family": "inet", "table": "fw4", "name": "input_dmz", "handle": 27}}, {"chain": {"family": "inet", "table": "fw4", "name": "output_dmz", "handle": 28}}, {"chain": {"family": "inet", "table": "fw4", "name": "forward_dmz", "handle": 29}}, {"chain": {"family": "inet", "table": "fw4", "name": "helper_dmz", "handle": 30}}, {"chain": {"family": "inet", "table": "fw4", "name": "accept_to_dmz", "handle": 31}}, {"chain": {"family": "inet", "table": "fw4", "name": "reject_from_dmz", "handle": 32}}, {"chain": {"family": "inet", "table": "fw4", "name": "reject_to_dmz", "handle": 33}}, {"chain": {"family": "inet", "table": "fw4", "name": "dstnat", "handle": 34, "type": "nat", "hook": "prerouting", "prio": -100, "policy": "accept"}}, {"chain": {"family": "inet", "table": "fw4", "name": "srcnat", "handle": 35, "type": "nat", "hook": "postrouting", "prio": 100, "policy": "accept"}}, {"chain": {"family": "inet", "table": "fw4", "name": "dstnat_wan", "handle": 36}}, {"chain": {"family": "inet", "table": "fw4", "name": "srcnat_wan", "handle": 37}}, {"chain": {"family": "inet", "table": "fw4", "name": "dstnat_dmz", "handle": 38}}, {"chain": {"family": "inet", "table": "fw4", "name": "srcnat_dmz", "handle": 39}}, {"chain": {"family": "inet", "table": "fw4", "name": "raw_prerouting", "handle": 40, "type": "filter", "hook": "prerouting", "prio": -300, "policy": "accept"}}, {"chain": {"family": "inet", "table": "fw4", "name": "raw_output", "handle": 41, "type": "filter", "hook": "output", "prio": -300, "policy": "accept"}}, {"chain": {"family": "inet", "table": "fw4", "name": "mangle_prerouting", "handle": 42, "type": "filter", "hook": "prerouting", "prio": -150, "policy": "accept"}}, {"chain": {"family": "inet", "table": "fw4", "name": "mangle_postrouting", "handle": 43, "type": "filter", "hook": "postrouting", "prio": -150, "policy": "accept"}}, {"chain": {"family": "inet", "table": "fw4", "name": "mangle_input", "handle": 44, "type": "filter", "hook": "input", "prio": -150, "policy": "accept"}}, {"chain": {"family": "inet", "table": "fw4", "name": "mangle_output", "handle": 45, "type": "route", "hook": "output", "prio": -150, "policy": "accept"}}, {"chain": {"family": "inet", "table": "fw4", "name": "mangle_forward", "handle": 46, "type": "filter", "hook": "forward", "prio": -150, "policy": "accept"}}, {"rule": {"family": "inet", "table": "fw4", "chain": "input", "handle": 285, "comment": "!fw4: Accept traffic from loopback", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iif"}}, "right": "lo"}}, {"accept": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "input", "handle": 287, "comment": "!fw4: Handle inbound flows", "expr": [{"vmap": {"key": {"ct": {"key": "state"}}, "data": {"set": [["established", {"accept": null}], ["related", {"accept": null}]]}}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "input", "handle": 288, "comment": "!fw4: Rate limit TCP syn packets", "expr": [{"match": {"op": "==", "left": {"&": [{"payload": {"protocol": "tcp", "field": "flags"}}, {"|": ["fin", "syn", "rst", "ack"]}]}, "right": "syn"}}, {"jump": {"target": "syn_flood"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "input", "handle": 289, "comment": "!fw4: Handle mgmt IPv4/IPv6 input traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth0"}}, {"jump": {"target": "input_mgmt"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "input", "handle": 290, "comment": "!fw4: Handle wan IPv4/IPv6 input traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth1"}}, {"jump": {"target": "input_wan"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "input", "handle": 291, "comment": "!fw4: Handle lan1 IPv4/IPv6 input traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth2"}}, {"jump": {"target": "input_lan1"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "input", "handle": 292, "comment": "!fw4: Handle dmz IPv4/IPv6 input traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth3"}}, {"jump": {"target": "input_dmz"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "input", "handle": 293, "expr": [{"jump": {"target": "handle_reject"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "forward", "handle": 295, "comment": "!fw4: Handle forwarded flows", "expr": [{"vmap": {"key": {"ct": {"key": "state"}}, "data": {"set": [["established", {"accept": null}], ["related", {"accept": null}]]}}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "forward", "handle": 296, "comment": "!fw4: Handle mgmt IPv4/IPv6 forward traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth0"}}, {"jump": {"target": "forward_mgmt"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "forward", "handle": 297, "comment": "!fw4: Handle wan IPv4/IPv6 forward traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth1"}}, {"jump": {"target": "forward_wan"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "forward", "handle": 298, "comment": "!fw4: Handle lan1 IPv4/IPv6 forward traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth2"}}, {"jump": {"target": "forward_lan1"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "forward", "handle": 299, "comment": "!fw4: Handle dmz IPv4/IPv6 forward traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth3"}}, {"jump": {"target": "forward_dmz"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "forward", "handle": 300, "expr": [{"jump": {"target": "handle_reject"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "output", "handle": 301, "comment": "!fw4: Accept traffic towards loopback", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oif"}}, "right": "lo"}}, {"accept": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "output", "handle": 303, "comment": "!fw4: Handle outbound flows", "expr": [{"vmap": {"key": {"ct": {"key": "state"}}, "data": {"set": [["established", {"accept": null}], ["related", {"accept": null}]]}}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "output", "handle": 304, "comment": "!fw4: Handle mgmt IPv4/IPv6 output traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth0"}}, {"jump": {"target": "output_mgmt"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "output", "handle": 305, "comment": "!fw4: Handle wan IPv4/IPv6 output traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth1"}}, {"jump": {"target": "output_wan"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "output", "handle": 306, "comment": "!fw4: Handle lan1 IPv4/IPv6 output traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth2"}}, {"jump": {"target": "output_lan1"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "output", "handle": 307, "comment": "!fw4: Handle dmz IPv4/IPv6 output traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth3"}}, {"jump": {"target": "output_dmz"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "prerouting", "handle": 308, "comment": "!fw4: Handle mgmt IPv4/IPv6 helper assignment", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth0"}}, {"jump": {"target": "helper_mgmt"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "prerouting", "handle": 309, "comment": "!fw4: Handle lan1 IPv4/IPv6 helper assignment", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth2"}}, {"jump": {"target": "helper_lan1"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "prerouting", "handle": 310, "comment": "!fw4: Handle dmz IPv4/IPv6 helper assignment", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth3"}}, {"jump": {"target": "helper_dmz"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "handle_reject", "handle": 311, "comment": "!fw4: Reject TCP traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "tcp"}}, {"reject": {"type": "tcp reset"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "handle_reject", "handle": 312, "comment": "!fw4: Reject any other traffic", "expr": [{"reject": {"type": "icmpx", "expr": "port-unreachable"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "syn_flood", "handle": 313, "comment": "!fw4: Accept SYN packets below rate-limit", "expr": [{"limit": {"rate": 25, "burst": 50, "per": "second"}}, {"return": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "syn_flood", "handle": 314, "comment": "!fw4: Drop excess packets", "expr": [{"drop": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "input_mgmt", "handle": 315, "expr": [{"jump": {"target": "accept_from_mgmt"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "output_mgmt", "handle": 316, "expr": [{"jump": {"target": "accept_to_mgmt"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "forward_mgmt", "handle": 317, "expr": [{"jump": {"target": "reject_to_mgmt"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "accept_from_mgmt", "handle": 318, "comment": "!fw4: accept mgmt IPv4/IPv6 traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth0"}}, {"counter": {"packets": 77, "bytes": 12228}}, {"accept": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "accept_to_mgmt", "handle": 319, "comment": "!fw4: accept mgmt IPv4/IPv6 traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth0"}}, {"counter": {"packets": 76, "bytes": 5932}}, {"accept": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "reject_to_mgmt", "handle": 320, "comment": "!fw4: reject mgmt IPv4/IPv6 traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth0"}}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "handle_reject"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "input_wan", "handle": 321, "comment": "!fw4: Accept port redirections", "expr": [{"match": {"op": "in", "left": {"ct": {"key": "status"}}, "right": "dnat"}}, {"accept": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "input_wan", "handle": 322, "expr": [{"jump": {"target": "reject_from_wan"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "output_wan", "handle": 323, "expr": [{"jump": {"target": "accept_to_wan"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "forward_wan", "handle": 324, "comment": "!fw4: Accept port forwards", "expr": [{"match": {"op": "in", "left": {"ct": {"key": "status"}}, "right": "dnat"}}, {"accept": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "forward_wan", "handle": 325, "expr": [{"jump": {"target": "reject_to_wan"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "accept_to_wan", "handle": 326, "comment": "!fw4: Prevent NAT leakage", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "nfproto"}}, "right": "ipv4"}}, {"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth1"}}, {"match": {"op": "in", "left": {"ct": {"key": "state"}}, "right": "invalid"}}, {"counter": {"packets": 0, "bytes": 0}}, {"drop": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "accept_to_wan", "handle": 327, "comment": "!fw4: accept wan IPv4/IPv6 traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth1"}}, {"counter": {"packets": 6, "bytes": 612}}, {"accept": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "reject_from_wan", "handle": 328, "comment": "!fw4: reject wan IPv4/IPv6 traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth1"}}, {"counter": {"packets": 66, "bytes": 10768}}, {"jump": {"target": "handle_reject"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "reject_to_wan", "handle": 329, "comment": "!fw4: reject wan IPv4/IPv6 traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth1"}}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "handle_reject"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "input_lan1", "handle": 330, "expr": [{"jump": {"target": "accept_from_lan1"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "output_lan1", "handle": 331, "expr": [{"jump": {"target": "accept_to_lan1"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "forward_lan1", "handle": 332, "comment": "!fw4: lan-to-dmz-web", "expr": [{"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "daddr"}}, "right": "10.77.20.80"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 80}}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "accept_to_dmz"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "forward_lan1", "handle": 333, "expr": [{"jump": {"target": "reject_to_lan1"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "accept_from_lan1", "handle": 334, "comment": "!fw4: accept lan1 IPv4/IPv6 traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth2"}}, {"counter": {"packets": 66, "bytes": 10768}}, {"accept": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "accept_to_lan1", "handle": 335, "comment": "!fw4: accept lan1 IPv4/IPv6 traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth2"}}, {"counter": {"packets": 6, "bytes": 612}}, {"accept": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "reject_to_lan1", "handle": 336, "comment": "!fw4: reject lan1 IPv4/IPv6 traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth2"}}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "handle_reject"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "input_dmz", "handle": 337, "comment": "!fw4: Accept port redirections", "expr": [{"match": {"op": "in", "left": {"ct": {"key": "status"}}, "right": "dnat"}}, {"accept": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "input_dmz", "handle": 338, "expr": [{"jump": {"target": "reject_from_dmz"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "output_dmz", "handle": 339, "expr": [{"jump": {"target": "accept_to_dmz"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "forward_dmz", "handle": 340, "comment": "!fw4: Accept port forwards", "expr": [{"match": {"op": "in", "left": {"ct": {"key": "status"}}, "right": "dnat"}}, {"accept": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "forward_dmz", "handle": 341, "expr": [{"jump": {"target": "reject_to_dmz"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "accept_to_dmz", "handle": 342, "comment": "!fw4: accept dmz IPv4/IPv6 traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth3"}}, {"counter": {"packets": 6, "bytes": 612}}, {"accept": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "reject_from_dmz", "handle": 343, "comment": "!fw4: reject dmz IPv4/IPv6 traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth3"}}, {"counter": {"packets": 67, "bytes": 10824}}, {"jump": {"target": "handle_reject"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "reject_to_dmz", "handle": 344, "comment": "!fw4: reject dmz IPv4/IPv6 traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth3"}}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "handle_reject"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "dstnat", "handle": 345, "comment": "!fw4: Handle wan IPv4/IPv6 dstnat traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth1"}}, {"jump": {"target": "dstnat_wan"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "dstnat", "handle": 346, "comment": "!fw4: Handle dmz IPv4/IPv6 dstnat traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth3"}}, {"jump": {"target": "dstnat_dmz"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "srcnat", "handle": 347, "comment": "!fw4: Handle wan IPv4/IPv6 srcnat traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth1"}}, {"jump": {"target": "srcnat_wan"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "srcnat", "handle": 348, "comment": "!fw4: Handle dmz IPv4/IPv6 srcnat traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth3"}}, {"jump": {"target": "srcnat_dmz"}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "dstnat_wan", "handle": 349, "comment": "!fw4: dmz-https", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "nfproto"}}, "right": "ipv4"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 443}}, {"counter": {"packets": 0, "bytes": 0}}, {"dnat": {"family": "ip", "addr": "10.77.20.80", "port": 443}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "srcnat_wan", "handle": 350, "comment": "!fw4: Masquerade IPv4 wan traffic", "expr": [{"match": {"op": "==", "left": {"meta": {"key": "nfproto"}}, "right": "ipv4"}}, {"masquerade": null}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "dstnat_dmz", "handle": 351, "comment": "!fw4: dmz-https (reflection)", "expr": [{"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "saddr"}}, "right": {"prefix": {"addr": "10.77.20.0", "len": 24}}}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "daddr"}}, "right": "198.51.100.2"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 443}}, {"dnat": {"family": "ip", "addr": "10.77.20.80", "port": 443}}]}}, {"rule": {"family": "inet", "table": "fw4", "chain": "srcnat_dmz", "handle": 352, "comment": "!fw4: dmz-https (reflection)", "expr": [{"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "saddr"}}, "right": {"prefix": {"addr": "10.77.20.0", "len": 24}}}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "daddr"}}, "right": "10.77.20.80"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 443}}, {"snat": {"family": "ip", "addr": "10.77.20.2"}}]}}]}
+
+@@iptables
+
+@@dev
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo:    3921      34    0    0    0     0          0         0     3921      34    0    0    0     0       0          0
+  eth0:   76353     816    0    0    0     0          0         0    58394     228    0    0    0     0       0          0
+  eth1:   22575     142    0    0    0     0          0         0      826       7    0    0    0     0       0          0
+  eth2:   22645     143    0    0    0     0          0         0      826       7    0    0    0     0       0          0
+  eth3:   22715     144    0    0    0     0          0         0      826       7    0    0    0     0       0          0
+
+@@wifi
+
+@@end

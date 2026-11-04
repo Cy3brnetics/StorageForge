@@ -316,6 +316,8 @@ def enroll(db, conn, host: str, password: str, admin_user: str | None = None, ac
     from .preflight import facts_from_scan, findings
     actor = actor or actor_name()
     name, addr = canonical(conn, host), connect_address(conn, host)
+    if conn.scalar('SELECT count(*) FROM network_devices WHERE name = :n', {'n': name}):
+        raise DeployError(f'{name} is a network device: it takes changes from the management planner, not deploys')
     if not remove:      # a host deploys can't run on: say so before any password goes anywhere
         crit = [i['text'] for i in findings(facts_from_scan(conn, name)) if i['level'] == 'crit']
         if crit:

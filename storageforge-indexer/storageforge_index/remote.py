@@ -163,9 +163,12 @@ class Transport:
         proved by holding the private keys, unlike anything it prints about itself. ['local'] for local scans."""
         return ['local'] if self.local else known_host_keys(self.host, self.port, self.known_hosts)
 
+    def env(self) -> dict:
+        return child_env()
+
     def run(self, script: str, timeout: int = 120) -> str:
         proc = subprocess.Popen(self.argv(script), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                stdin=subprocess.DEVNULL, env=child_env())
+                                stdin=subprocess.DEVNULL, env=self.env())
         expired = threading.Event()
         timer = threading.Timer(timeout, lambda: (expired.set(), proc.kill()))
         timer.start()

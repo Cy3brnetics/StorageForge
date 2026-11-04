@@ -42,6 +42,12 @@ CATALOG = (
         ('workloads.view', 'See containers, VMs and instances across hosts, from the index', False),
         ('map.view', 'See interfaces, routes and listeners, from the index. Firewall rules and exposure also need security.view', False),
         ('map.edit', 'Save map views', False),)),
+    ('Network devices', (
+        ('devices.view', 'See routers, switches and firewalls, and the changes made to them, from the index', False),
+        ('devices.manage', 'Add and remove devices, and read them', True),
+        ('devices.apply', 'Change a device. Each change has a rollback timer on the device, and this is still root on your network', True),
+        ('netscan.view', 'See what the nmap scanner found, and traffic statistics', False),
+        ('netscan.run', 'Turn the nmap scanner and traffic monitoring on and off, name the ranges, run a scan', True),)),
     ('Host access', (
         ('keys.view', 'See public keys, bindings and scan access', False),
         ('keys.manage', 'Generate, install, bind and remove SSH keys', True),
@@ -58,13 +64,13 @@ ALL = frozenset(p for _, perms in CATALOG for p, _, _ in perms)
 HIGH_RISK = frozenset(p for _, perms in CATALOG for p, _, risky in perms if risky)
 
 _VIEWER = frozenset({'search.files', 'hosts.view', 'files.browse', 'services.view', 'configs.view', 'logs.view', 'audit.view',
-                     'scans.view', 'plans.view', 'deploy.view', 'keys.view', 'backups.view', 'security.view', 'workloads.view', 'map.view'})
+                     'scans.view', 'plans.view', 'deploy.view', 'keys.view', 'backups.view', 'security.view', 'workloads.view', 'map.view', 'devices.view', 'netscan.view'})
 # Built-in roles cannot be changed or removed. Without a role here or in `roles`, an account may do nothing.
 BUILTIN = {
     'search': ('Searches files across hosts, and nothing else', frozenset({'search.files'})),
     'viewer': ('Browses and searches', _VIEWER),
     'operator': ('Also plans, scans and deploys', _VIEWER | {'scans.run', 'plans.edit', 'plans.scripts', 'deploy.report', 'deploy.apply',
-                                                            'deploy.destructive', 'deploy.setup', 'git.live', 'git.sync', 'security.manage', 'map.edit'}),
+                                                            'deploy.destructive', 'deploy.setup', 'git.live', 'git.sync', 'security.manage', 'map.edit', 'devices.manage', 'devices.apply', 'netscan.run'}),
     'admin': ('Everything, including keys, accounts and settings', ALL),
 }
 
@@ -103,6 +109,19 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (('POST',), r'/api/security/(worm/freeze|incident/clean-room/sweep|playbooks|playbooks/runs/\d+)', 'security.emergency'),
     (('DELETE',), r'/api/security/playbooks/\d+', 'security.emergency'),
     (READ, r'/api/workloads(/.*)?', 'workloads.view'),
+    (READ, r'/api/netscan(/.*)?', 'netscan.view'),
+    (_WRITE, r'/api/netscan(/.*)?', 'netscan.run'),
+    (READ, r'/api/traffic', 'netscan.view'),
+    (_WRITE, r'/api/traffic(/.*)?', 'netscan.run'),
+    (('POST',), r'/api/devices/changes/\d+/(apply|confirm)', 'devices.apply'),
+    (('POST',), r'/api/devices/[^/]+/report', 'devices.apply'),
+    (READ, r'/api/devices(/.*)?', 'devices.view'),
+    (READ, r'/api/fleet', 'devices.view'),
+    (('POST',), r'/api/dsl/compile', 'devices.view'),
+    (('POST',), r'/api/dsl/whatif', 'security.view'),
+    (('POST',), r'/api/dsl/stage', 'plans.edit'),
+    (READ, r'/api/dsl/of', 'security.view'),
+    (_WRITE, r'/api/devices(/.*)?', 'devices.manage'),
     (READ, r'/api/map/(exposure|reach|coverage)', 'security.view'),
     (READ, r'/api/map/designs/\d+/export', 'plans.scripts'),
     (READ, r'/api/(network|map(/.*)?)', 'map.view'),

@@ -4,7 +4,7 @@ A comprehensive engineering roadmap for expanding StorageForge from host-based n
 
 It establishes the multi-transport layer (SSH with PTY/legacy cipher support, Telnet, and REST APIs), maps out the complete feature capabilities of each router operating system, normalizes network and firewall facts into the existing StorageForge engines (`netfacts.py`, `firewall.py`, `reach.py`, `exposure.py`), and details the **isolated KVM lab architecture** (multi-segmented virtual topologies and Tier 12 tests) to validate everything without touching production traffic.
 
-Status: **planned** on branch `dev-expanded-networking`. Builds on [infrastructure-platform-roadmap.md](infrastructure-platform-roadmap.md) and [docs/kvm-lab.md](docs/kvm-lab.md).
+Status: **built** on branch `dev-expanded-networking`, and through the KVM lab on real RouterOS and OpenWrt. pfSense, OPNsense and Cisco have only met published formats and a simulated shell, because the lab has no free image of them. See [Network devices](docs/network-devices.md). Builds on [infrastructure-platform-roadmap.md](infrastructure-platform-roadmap.md) and [docs/kvm-lab.md](docs/kvm-lab.md).
 
 ---
 
@@ -21,7 +21,7 @@ Status: **planned** on branch `dev-expanded-networking`. Builds on [infrastructu
    - Network CLI SSH (interactive pseudo-terminal / PTY allocation, paging suppression, prompt detection).
    - Legacy SSH negotiation (compatibility ciphers and key exchanges for older Cisco/legacy hardware: `diffie-hellman-group1-sha1`, `ssh-rsa`, `aes128-cbc`).
    - Telnet transport with safe credential handling, banner negotiation, and strict timeout boundaries.
-   - Native REST API adapters where available (MikroTik v7 REST, OPNsense REST, Cisco RESTCONF).
+   - Native REST API adapters where available (MikroTik v7 REST, OPNsense REST, Cisco RESTCONF). *Not built: see Phase 1.*
 3. **Passive Facts Extraction**:
    - Extract interfaces, bridges, VLANs, MAC address tables, ARP caches, routing tables, DNS, and DHCP lease allocations.
    - Extract firewall filter rules, NAT/port-forwarding rules, mangle tables, and address-lists/aliases.
@@ -44,7 +44,7 @@ Status: **planned** on branch `dev-expanded-networking`. Builds on [infrastructu
    - Test suite integration: **Tier 12 (Network Appliances & Routers)**.
 
 ### 1.2 Non-Goals
-- No active network scanning, ping sweeps, or port probes. Topology discovery remains strictly passive and derived from authenticated router/switch state.
+- No active network scanning, ping sweeps or port probes by default. Topology discovery remains strictly passive and derived from authenticated router and switch state. A toggleable nmap scanner and traffic monitoring for abnormalities and statistics are the exceptions: Phase 9, both off until someone turns them on.
 - Not a replacement for NetBox, LibreNMS, or Zabbix. StorageForge observes network state to provide unified storage, workload, and security context.
 - No unverified direct configuration pushes. Every change must be dry-runnable, reported first, and protected by automatic rollback.
 
@@ -643,14 +643,16 @@ Extending the test suite (`tests/lab/tiers_network.py`) to validate all capabili
  │ Phase 6: RosTranspiler (MikroTik DSL Compiler & Target Emitters)       │
  │ Phase 7: Normalization, Multi-Hop reach.py & exposure.py Updates       │
  │ Phase 8: Isolated KVM Lab Environment & Tier 12 Test Suite             │
+ │ Phase 9: Opt-In Scanner (nmap) & Traffic Monitoring                    │
  └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Phase 1: Transports**: Develop `NetworkTransport` and `TelnetTransport` classes in `remote.py` with PTY allocation, prompt detection, and legacy cipher profiles.
-- **Phase 2: MikroTik Adapter**: Implement `routeros.py` collector, extracting interfaces, routes, neighbors, and firewall filter/NAT.
-- **Phase 3: OpenWrt Adapter**: Implement `openwrt.py` collector using `ubus` and `uci`, normalizing `fw4` nftables JSON.
-- **Phase 4: pfSense Adapter**: Implement `pfsense.py` XML reader, extracting full configuration directly from `config.xml`.
-- **Phase 5: Cisco Adapter**: Implement `cisco.py` CLI parser for `show` commands, supporting Cisco ACLs and `configure replace ... revert`.
-- **Phase 6: RosTranspiler**: Build `rostranspiler.py` to parse MikroTik DSL and compile to native `nftables`, `firewalld`, `ufw`, `iptables`, OpenWrt UCI, pfSense XML, and Cisco ACLs.
-- **Phase 7: Multi-Hop Reasoning**: Update `reach.py` to trace hops through intermediate routers and firewalls; update `exposure.py` for router DNAT mappings.
-- **Phase 8: KVM Lab & Tier 12 Tests**: Add router configurations to `images.conf`, `nodes.conf`, and `roles.conf`, configure multi-bridge topologies in `lab.sh`, and build Tier 12 test coverage.
+- **Phase 1: Transports** (*done, lab: tier 12*): `NetworkTransport`, `TelnetTransport` and `DirectTransport` in `nettransport.py`, not `remote.py`, with PTY allocation, prompt detection and legacy cipher profiles, and device passwords sealed in the vault. Old ciphers have not met a device old enough to need them. The REST adapters of 2.3 were not built: SSH reads everything on all four platforms, and a second way to do the same thing is more to secure.
+- **Phase 2: MikroTik Adapter** (*done, lab: tier 12*): `routeros.py`. Written against a real CHR, which corrected this roadmap: `print as-value` prints nothing over SSH, so tables come through `:serialize to=json`, with `print terse` for v6 and early v7. The router VM moved up to this phase from Phase 8.
+- **Phase 3: OpenWrt Adapter** (*done, lab: tier 12*): `openwrt.py`, on a real OpenWrt 25.12.
+- **Phase 4: pfSense Adapter** (*built, not lab-tested*): `pfsense.py`. No free image: tested against a written-to-format `config.xml`.
+- **Phase 5: Cisco Adapter** (*built, not lab-tested*): `cisco.py`, with `configure terminal revert timer`. No free image: tested against published output formats.
+- **Phase 6: RosTranspiler** (*done, lab: tier 12*): `rostranspiler.py`, compiling to `nftables`, `iptables`, `firewalld`, `ufw`, OpenWrt UCI, pfSense XML, Cisco, `networkd` and NetworkManager, and `from_model` for going back. Real `nft` and `iptables-restore` take what it writes for them; firewalld and ufw output is unit-tested. What a target can't express is listed, and an apply refuses it.
+- **Phase 7: Multi-Hop Reasoning** (*done, lab: tier 12*): `reach.py` walks router by router and through a port forward. `exposure.py` widens a listener a router forwards to.
+- **Phase 8: KVM Lab & Tier 12 Tests** (*done*): `lab.sh` with isolated segments, `provision/router.py`, `tests/lab/tiers_network.py`.
+- **Phase 9: Scanner and Traffic** (*done, lab: tier 12*): `netscan.py`, an nmap connect scan with a tab of its own beside the map, off by default, with each machine it finds linked back to its pages in StorageForge. `traffic.py`, interface counters over time with anomalies, off by default and sending nothing. See the [management planner roadmap](management-planner-roadmap.md) for where these are operated from.

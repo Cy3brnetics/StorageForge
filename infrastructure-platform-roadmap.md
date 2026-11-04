@@ -42,7 +42,7 @@ A feature that does not get better from knowing the storage and the host's real 
 
 - No Kubernetes or Swarm orchestration, no replacing Portainer, Komodo, Cockpit or Proxmox, and no CMDB.
 - No agent and no new listeners. Agentless SSH and the signed runner, as now.
-- No probing. Nothing here sends a packet to find out what exists: no nmap, ping sweeps, ARP or port scans.
+- No probing by default. Nothing here sends a packet to find out what exists: no nmap, ping sweeps, ARP or port scans. The [Expanded Networking Roadmap](expanded-networking-roadmap.md) adds one exception, an nmap scanner that is off until someone turns it on and names a network.
 - No import of scripts or `.tf` files into plans. Exports go one way. Capturing a *running* workload as a definition is a different thing, and is in scope.
 - No silent internet exposure. Going public is always its own reported step.
 - No re-implementing a tool's UI.

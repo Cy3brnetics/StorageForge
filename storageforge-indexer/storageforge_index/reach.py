@@ -15,6 +15,7 @@ from . import exposure, inframeasure, netfacts, workloads
 from .db import Conn
 
 CAVEAT = 'Per configuration, from the last readings. Nothing was sent to test it.'
+MAX_HOPS = 8
 
 
 def _ip(text):
@@ -68,7 +69,7 @@ def route_to(net: dict, dest: str) -> dict | None:
         return None
     best, best_len = None, -1
     for r in (net or {}).get('routes') or []:
-        if r.get('family') != ip.version:
+        if r.get('family') != ip.version or r.get('table', 'main') != 'main':
             continue
         if r.get('dst') == 'default':
             length = 0
@@ -88,6 +89,27 @@ def route_to(net: dict, dest: str) -> dict | None:
 def _fw_readable(h: dict) -> dict | None:
     fw = (h.get('infra') or {}).get('firewall')
     return fw if fw and fw.get('readable') else None
+
+
+def _dnat(fleet: Fleet, host: str | None, dst_ip, port: int, proto: str, src_ip) -> tuple | None:
+    """A port forward on this host that this packet matches: (rule, address, port, interface it leaves by). Only a device's: a Linux host's DNAT is its containers, which are handled by name."""
+    if not host:
+        return None
+    h = fleet.hosts[host]
+    fw = _fw_readable(h)
+    if not fw or not (h.get('infra') or {}).get('device'):
+        return None
+    iif = fleet.by_addr.get(dst_ip, (None, None))[1]
+    for rule in fw.get('nat') or []:
+        if rule.get('action') != 'dnat' or not rule.get('to_addr') or (rule.get('proto') and proto not in str(rule['proto']).split(',')):
+            continue
+        if not rule.get('dports') or not exposure.port_matches(rule['dports'], port):
+            continue
+        if not exposure._ifname_match(rule.get('iif'), iif) or (rule.get('daddr') and rule['daddr'] != dst_ip):
+            continue
+        out = route_to(h.get('net'), rule['to_addr'])
+        return rule, rule['to_addr'], rule.get('to_port') or port, (out or {}).get('dev')
+    return None
 
 
 def _hop(name: str, what: str, verdict: str, rule=None, why=None) -> dict:
@@ -151,26 +173,65 @@ def query(fleet: Fleet, src: str, dst: str, port: int, proto: str = 'tcp') -> di
         elif not fw:
             blind.append(f'the firewall of {src_host} has not been read: outgoing rules are not counted')
 
-    # across the middle
-    route = route_to(fleet.hosts[src_host].get('net'), dst_ip) if src_host and dst_ip else None
-    gateway = (route or {}).get('via')
-    if gateway:
+    # across the middle: router by router, each one's own routes saying where next
+    here = fleet.hosts[src_host].get('net') if src_host else None
+    route = route_to(here, dst_ip) if here and dst_ip else None
+    seen = {src_host}
+    for _ in range(MAX_HOPS):
+        gateway = (route or {}).get('via')
+        if not gateway:
+            break
         router = fleet.by_addr.get(gateway, (None,))[0]
-        if router:
-            g = fleet.hosts[router]
-            fw = _fw_readable(g)
-            if not fw:
-                blind.append(f'the firewall of {router}, which routes this, has not been read')
-            elif fw.get('backends'):
-                res = exposure.kernel_path(fw, 'forward', {'proto': proto, 'port': port, 'daddr': dst_ip, 'saddr': src_ip, 'family': 'ip6' if ':' in str(dst_ip) else 'ip'})
-                state = _decided(res)
-                hops.append(_hop(router, 'forward rules', state, res['rule'], res['unknown']))
-                if state == 'drop':
-                    return {**out, 'verdict': 'blocked', 'decided_by': f'{router}: {res["rule"]}'}
-                if state == 'unknown':
-                    blind.append(f'a forward rule on {router} could not be understood')
-        else:
+        if not router:
             blind.append(f'{gateway} routes this and is not scanned: whatever it filters is out of sight')
+            break
+        if router in seen:
+            hops.append(_hop(router, f'a routing loop back to {router}', 'drop', 'routing loop'))
+            return {**out, 'verdict': 'blocked', 'decided_by': f'{router}: a routing loop'}
+        seen.add(router)
+        g = fleet.hosts[router]
+        next_route = route_to(g.get('net'), dst_ip) if g.get('net') else None
+        iif = fleet.by_addr.get(gateway, (None, None))[1]
+        if router == dst_host:
+            break                  # it's for the router itself: its own input rules decide, below
+        if not g.get('net'):
+            blind.append(f'the routes of {router} have not been read')
+            break
+        if not next_route:
+            hops.append(_hop(router, f'no route to {dst_ip}', 'drop', 'no matching route'))
+            return {**out, 'verdict': 'blocked', 'decided_by': f'{router} has no route to {dst_ip}'}
+        fw = _fw_readable(g)
+        if not fw:
+            blind.append(f'the firewall of {router}, which routes this, has not been read')
+        elif fw.get('backends'):
+            res = exposure.kernel_path(fw, 'forward', {'proto': proto, 'port': port, 'iif': iif, 'oif': next_route.get('dev'), 'daddr': dst_ip, 'saddr': src_ip, 'family': 'ip6' if ':' in str(dst_ip) else 'ip'})
+            state = _decided(res)
+            hops.append(_hop(router, f'forward rules, {iif} to {next_route.get("dev")}', state, res['rule'], res['unknown']))
+            if state == 'drop':
+                return {**out, 'verdict': 'blocked', 'decided_by': f'{router}: {res["rule"]}'}
+            if state == 'unknown':
+                blind.append(f'a forward rule on {router} could not be understood')
+        route = next_route
+    else:
+        blind.append(f'the path is more than {MAX_HOPS} routers long: only those were followed')
+
+    # into a router that forwards this port on
+    target = _dnat(fleet, dst_host, dst_ip, port, proto, src_ip)
+    if target:
+        g = fleet.hosts[dst_host]
+        fw = _fw_readable(g)
+        rule, to_ip, to_port, oif = target
+        iif = fleet.by_addr.get(dst_ip, (None, None))[1]
+        res = exposure.kernel_path(fw, 'forward', {'proto': proto, 'port': to_port, 'iif': iif, 'oif': oif, 'daddr': to_ip, 'saddr': src_ip, 'family': 'ip', 'dnat': True})
+        state = _decided(res)
+        hops.append(_hop(dst_host, f'forwards {port} to {to_ip}:{to_port} ({rule.get("comment") or "port forward"})', state, res['rule'], res['unknown']))
+        if state == 'drop':
+            return {**out, 'verdict': 'blocked', 'decided_by': f'{dst_host}: {res["rule"]}'}
+        if state == 'unknown':
+            blind.append(f'a forward rule on {dst_host} could not be understood')
+        port, dst_ip = to_port, to_ip
+        dst_host = fleet.by_addr.get(to_ip, (None,))[0]
+        out = {**out, 'to_host': dst_host, 'forwarded_to': f'{to_ip}:{to_port}', 'to_ip': to_ip}
 
     # into B
     if not dst_host:

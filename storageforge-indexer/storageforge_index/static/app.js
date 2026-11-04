@@ -1154,6 +1154,7 @@ function takeLink() {
   const tab = q.get('tab');
   if (tab === 'security') window.SEC_LINK_PANEL = q.get('panel');
   if (q.get('view') === 'map' && typeof mapTakeLink === 'function') { mapTakeLink(q); document.querySelector('#viewmode button[data-mode="map"]')?.click(); }
+  if (q.get('view') === 'scan') document.querySelector('#viewmode button[data-mode="scan"]')?.click();
   return tab && document.querySelector(`.tabs button[data-tab="${CSS.escape(tab)}"]`) ? tab : null;
 }
 

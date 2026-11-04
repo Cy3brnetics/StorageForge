@@ -44,7 +44,7 @@ import roles  # noqa: E402
 
 BUILD = roles.build()
 VMS = list(BUILD)
-UP = running()
+UP = [vm for vm in running() if vm in BUILD]       # routers and what's behind them are tier 12's, and take no shell commands
 CTL = os.environ.get('SFLAB_PREFIX', '10.77.0') + '.10'
 SCANNED = [vm for vm in VMS if vm != 'sf-ctl' and not BUILD[vm].can('appliance')]    # appliances come with their share servers
 

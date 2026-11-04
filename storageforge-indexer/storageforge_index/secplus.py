@@ -414,11 +414,11 @@ def rollback_preview(db, conn: Conn, body: dict, actor: str) -> dict:
     script = '#!/usr/bin/env bash\n# Written by StorageForge. Only reads.\nset -u\nexport LC_ALL=C\n' + f'SNAP={shlex.quote(snap)} LIVE={shlex.quote(live)}\n' + PREVIEW_BODY
     res = security._run(db, host, script, ref=f'preview:{snap}'[:200], mode='report', actor=actor, timeout=400)
     output = res.get('output') or ''
+    err = re.search(r'^ERROR (.*)$', output, re.M)     # the script stops here with no DONE, so this comes first
+    if res['status'] == 'ok' and err:
+        return {'ok': False, 'host': host, 'error': err[1]}
     if res['status'] != 'ok' or 'DONE' not in output:
         return security._result(res, 'report', 'the preview did not finish: see the output', host=host)
-    err = re.search(r'^ERROR (.*)$', output, re.M)
-    if err:
-        return {'ok': False, 'host': host, 'error': err[1]}
     counts = {m[1]: int(m[2]) for m in re.finditer(r'^C\t(\S+)\t(\d+)$', output, re.M)}
     samples = [{'what': m[1], 'path': m[2]} for m in re.finditer(r'^S\t(\S+)\t(.*)$', output, re.M)]
     return {'ok': True, 'host': host, 'snapshot': snap, 'counts': counts, 'samples': samples, 'run_id': res.get('run_id')}
@@ -1358,7 +1358,7 @@ def tile(conn: Conn, kind: str, host: str | None) -> dict:
         from . import exposure, inframeasure, netfacts, workloads
         rows = []
         for n in names:
-            rep = exposure.host_report(netfacts.reading(conn, n), inframeasure.reading(conn, n), workloads.containers_of(conn, n), n)
+            rep = exposure.host_report(netfacts.reading(conn, n), inframeasure.reading(conn, n), workloads.containers_of(conn, n), n, _router_forwards(conn))
             rows += [{'label': f'{i["port"]}/{i["proto"]} {i.get("container") or ",".join(i.get("process") or [])}', 'value': i['level'], 'host': n} for i in rep['items'] if i['level'] in ('any', 'lan', 'vpn', 'unknown')]
         rows.sort(key=lambda r: -exposure.ORDER[r['value']])
         return {'rows': rows[:10]} if rows else {'none': 'Nothing reachable from outside in what was read'}
@@ -1396,7 +1396,7 @@ def share_matrix(conn: Conn, host: str) -> dict:
     from . import exposure, inframeasure, netfacts, shares, workloads
     from .steps_infra import NFS, SMB
     name = security.known_host(conn, host)
-    report = exposure.host_report(netfacts.reading(conn, name), inframeasure.reading(conn, name), workloads.containers_of(conn, name), name)
+    report = exposure.host_report(netfacts.reading(conn, name), inframeasure.reading(conn, name), workloads.containers_of(conn, name), name, _router_forwards(conn))
     infra = inframeasure.reading(conn, name) or {}
     levels = {i['port']: i for i in report['items'] if i['proto'] == 'tcp'}
     connected = infra.get('storage_clients') or []
@@ -1485,3 +1485,8 @@ def tick(db) -> dict:
 
 
 _ = (hashlib, HELPERS, need_line)
+
+
+def _router_forwards(conn) -> list[dict]:
+    from . import netdevice
+    return netdevice.forwards(conn)

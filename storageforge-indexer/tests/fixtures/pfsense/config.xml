@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<pfsense>
+  <system><hostname>pf1</hostname><domain>lab</domain><dnsserver>9.9.9.9</dnsserver><password>$2y$secret-hash</password></system>
+  <interfaces>
+    <wan><enable/><if>vtnet1</if><ipaddr>198.51.100.3</ipaddr><subnet>24</subnet><descr>WAN</descr></wan>
+    <lan><enable/><if>vtnet2</if><ipaddr>10.77.10.3</ipaddr><subnet>24</subnet></lan>
+    <opt1><enable/><if>vtnet3</if><ipaddr>10.77.20.3</ipaddr><subnet>24</subnet><descr>DMZ</descr></opt1>
+  </interfaces>
+  <vlans><vlan><if>vtnet2</if><tag>30</tag><vlanif>vtnet2.30</vlanif></vlan></vlans>
+  <aliases><alias><name>webports</name><type>port</type><address>80 443</address></alias><alias><name>admins</name><type>network</type><address>10.0.0.0/8 inner</address></alias><alias><name>inner</name><type>host</type><address>192.168.5.5</address></alias></aliases>
+  <gateways><gateway_item><interface>wan</interface><gateway>198.51.100.254</gateway><name>WANGW</name><defaultgw/></gateway_item></gateways>
+  <filter>
+    <rule><type>pass</type><interface>lan</interface><ipprotocol>inet</ipprotocol><protocol>tcp</protocol><source><network>lan</network></source><destination><address>10.77.20.80</address><port>webports</port></destination><descr>lan to web</descr></rule>
+    <rule><type>block</type><interface>lan</interface><protocol>tcp</protocol><source><any/></source><destination><address>10.77.20.80</address><port>22</port></destination><descr>no ssh</descr></rule>
+    <rule><type>pass</type><disabled/><interface>wan</interface><source><any/></source><destination><any/></destination><descr>off</descr></rule>
+    <rule><type>pass</type><interface>wan</interface><protocol>tcp</protocol><source><address>urltable</address></source><destination><address>10.77.20.80</address><port>443</port></destination><descr>an alias not known here</descr></rule>
+  </filter>
+  <nat><rule><protocol>tcp</protocol><interface>wan</interface><source><any/></source><destination><network>wanip</network><port>443</port></destination><target>10.77.20.80</target><local-port>443</local-port><descr>dmz https</descr></rule></nat>
+  <dhcpd><lan><staticmap><mac>52:54:00:AA:BB:CC</mac><ipaddr>10.77.10.9</ipaddr><hostname>printer</hostname></staticmap></lan></dhcpd>
+</pfsense>

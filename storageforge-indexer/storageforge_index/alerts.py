@@ -476,10 +476,15 @@ def _map_problems(conn: Conn) -> dict:
     return map_problems(conn)
 
 
+def _device_problems(conn: Conn) -> dict:
+    from .netdevice import warnings
+    return {f'device-telnet:{w["device"]}': ('device-telnet', w['device'], f'{w["device"]} is managed over Telnet', w['text'], 'warn') for w in warnings(conn) if w['level'] == 'warn'}
+
+
 def problems(conn: Conn) -> dict:
     from . import authkeys, clamav, jobs, scheduler, security, site
     now = {**scan_problems(conn), **backup_problems(conn), **cert_problems(), **site.shared_problems(conn),
-           **authkeys.problems(conn), **clamav.problems(conn), **security.problems(conn), **_map_problems(conn)}
+           **authkeys.problems(conn), **clamav.problems(conn), **security.problems(conn), **_map_problems(conn), **_device_problems(conn)}
     for j in jobs.overview(conn):
         if j['state'] == 'failed':
             now[f'job-failed:{j["id"]}'] = ('job-failed', j['id'], f'Job failed: {j["name"]}',

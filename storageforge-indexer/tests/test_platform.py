@@ -1457,7 +1457,7 @@ class ServerTests(DBCase):
         self.assertEqual(self.client.post('/api/login', json={'username': 'vera', 'password': 'x' * 16}).status_code, 200)
         self.assertEqual(self.client.get('/api/me').get_json()['role'], 'viewer')
         self.assertEqual(self.client.get('/api/hosts').status_code, 200)
-        allowed = {'/api/login', '/api/logout', '/api/reauth', '/api/me', '/api/me/password', '/api/jobs/report', '/api/jobs/state', '/api/map/whatif'}    # a what-if reads only
+        allowed = {'/api/login', '/api/logout', '/api/reauth', '/api/me', '/api/me/password', '/api/jobs/report', '/api/jobs/state', '/api/map/whatif', '/api/dsl/compile', '/api/dsl/whatif'}    # a what-if and a compile read only
         wrote = []
         for rule in self.web.url_map.iter_rules():
             path = re.sub(r'<int:\w+>', '1', rule.rule)

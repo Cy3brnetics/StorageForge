@@ -4,11 +4,12 @@
 #   lab.sh up --seed N    the build that seed picks, to repeat one
 #   lab.sh up --pick a,b  exactly these configs
 #   lab.sh up vm...       only these VMs of the current build, with no snapshot
+#   lab.sh up --join a,b  add configs to the running build: routers and their client VMs join this way
 #   lab.sh down           remove the VMs, network, pool and lab state, even while an up is running
 #   lab.sh reset          return every VM to the golden snapshot
 #   lab.sh snapshot       retake the golden snapshot from the current state
 #   lab.sh test           check the running lab against what it should hold
-#   lab.sh test --all     tiers 0-8, resetting around them, and write the report into reports/. Takes a while.
+#   lab.sh test --all     tiers 0-13, resetting around them, and write the report into reports/. Takes a while.
 #   lab.sh gauntlet       tier 2 alone: every deploy path on every VM, from golden and back
 #   lab.sh appliances     tier 8 alone: Proxmox, TrueNAS and XCP-ng, when the build has them
 #   lab.sh controller     rebuild StorageForge from this tree and restart it on sf-ctl, keeping its data
@@ -126,6 +127,15 @@ fetch_image() {
   say "verified $(basename "$file")"
 }
 
+base_of() {     # a router image comes compressed. The checked download stays, beside the disk image made from it
+  local key=$1 file; file=$(image_path "$key")
+  case $file in
+    *.img.zip) local out=${file%.zip}; [ -f "$out" ] || { python3 -c 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); open(sys.argv[2]+".part","wb").write(z.read(z.namelist()[0]))' "$file" "$out" && mv "$out.part" "$out"; }; echo "$out" ;;
+    *.img.gz) local out=${file%.gz}; [ -f "$out" ] || { gunzip -c "$file" >"$out.part" 2>/dev/null || [ -s "$out.part" ]; mv "$out.part" "$out"; }; echo "$out" ;;
+    *) echo "$file" ;;
+  esac
+}
+
 ensure_images() {
   mkdir -p "$IMG_DIR"; chmod 755 "$IMG_DIR"; chattr +C "$IMG_DIR" 2>/dev/null || true
   local pids=() rc=0 k p
@@ -146,7 +156,44 @@ ensure_network() {
     virsh -q net-define "$xml" >/dev/null
   fi
   [ "$(virsh net-info "$NET" | awk '/^Active:/ {print $2}')" = yes ] || virsh -q net-start "$NET" >/dev/null
+  # a lab defined before a config joined nodes.conf: its address is reserved now, not at the next define
+  while IFS='|' read -r name _ _ _ _ _ ip _; do
+    mac=$(mac_of "$ip")
+    virsh net-dumpxml "$NET" | grep -qF "mac='$mac'" || virsh -q net-update "$NET" add ip-dhcp-host "<host mac='$mac' name='$name' ip='$ip'/>" --live --config >/dev/null
+  done < <(pool_rows)
 }
+
+# Router networks: no forward, no address on this machine, no DHCP. Nothing in them can reach anything but each other.
+SEGMENTS='wan lan1 dmz'
+segment_net() { echo "$NET-$1"; }
+segment_bridge() { echo "sflab${INSTANCE:-0}${1:0:1}"; }
+ensure_segments() {
+  local s n xml="$STATE/segment.xml"
+  for s in $SEGMENTS; do
+    n=$(segment_net "$s")
+    if ! virsh net-info "$n" >/dev/null 2>&1; then
+      echo "<network><name>$n</name><bridge name='$(segment_bridge "$s")' stp='off' delay='0'/></network>" >"$xml"
+      virsh -q net-define "$xml" >/dev/null
+    fi
+    [ "$(virsh net-info "$n" | awk '/^Active:/ {print $2}')" = yes ] || virsh -q net-start "$n" >/dev/null
+  done
+}
+remove_segments() {
+  local s n
+  for s in $SEGMENTS; do
+    n=$(segment_net "$s")
+    virsh net-info "$n" >/dev/null 2>&1 || continue
+    if virsh net-dumpxml "$n" | grep -qF "name='$(segment_bridge "$s")'"; then
+      say "removing network $n"
+      virsh -q net-destroy "$n" >/dev/null 2>&1 || true
+      virsh -q net-undefine "$n" >/dev/null || left=1
+    else
+      say "a network named $n is not the lab's: left alone"; left=1
+    fi
+  done
+}
+segment_mac() { printf '52:54:00:77:%02x:%02x' "$2" "${1##*.}"; }
+is_router() { case $(field "$1" 2) in chr|openwrt) return 0 ;; *) return 1 ;; esac; }
 mac_of() { printf '52:54:00:77:00:%02x' "${1##*.}"; }
 
 ensure_pool() {
@@ -160,9 +207,14 @@ ensure_pool() {
 }
 
 create_node() {
-  local n=$1 image osinfo vcpu ram root ip disks base seed i=0 d
-  IFS='|' read -r _ image osinfo vcpu ram root ip disks < <(pool_rows | awk -F'|' -v k="$n" '$1==k')
-  base=$(image_path "$image")
+  local n=$1 image osinfo vcpu ram root ip disks nets base seed i=0 d extra=() seg
+  IFS='|' read -r _ image osinfo vcpu ram root ip disks nets < <(pool_rows | awk -F'|' -v k="$n" '$1==k')
+  base=$(base_of "$image")
+  for seg in ${nets//,/ }; do
+    i=$((i + 1))
+    extra+=(--network "network=$(segment_net "$seg"),mac=$(segment_mac "$ip" "$i"),model=virtio")
+  done
+  i=0
   case $image in
     proxmox|truenas|xcp-ng)    # installers, not cloud images: see provision/appliance.py
       python3 "$HERE/provision/appliance.py" "$image" "$n" "$ip" "$NET" "$LAB_DIR" "$base" "$STATE/id_ed25519.pub" "$STATE/admin-password" "$root" "$ram" "$vcpu" "$disks" || die "$n: install failed"
@@ -171,6 +223,17 @@ create_node() {
   local rootdisk="$LAB_DIR/$n-root.qcow2" fmt
   fmt=$(qemu-img info "$base" | sed -n 's/^file format: //p' | head -1)
   qemu-img create -q -f qcow2 -F "$fmt" -b "$base" "$rootdisk" "${root}G"
+  case $image in
+    chr|openwrt)    # no cloud-init: provision/router.py sets each up over its first boot
+      virt-install --print-xml --import --name "$n" --osinfo "$osinfo" --vcpus "$vcpu" --memory "$ram" --cpu host-passthrough \
+        --network "network=$NET,mac=$(mac_of "$ip"),model=virtio" "${extra[@]}" --graphics none --video none \
+        --serial "tcp,host=127.0.0.1:$(console_port "$ip"),mode=bind,protocol.type=raw" --rng /dev/urandom --noautoconsole \
+        --disk "path=$rootdisk,format=qcow2,bus=virtio" >"$STATE/$n.xml" 2>"$STATE/$n.err" \
+        || { cat "$STATE/$n.err" >&2; die "$n: virt-install failed"; }
+      virsh -q define "$STATE/$n.xml" >/dev/null
+      virsh -q metadata "$n" "$META_URI" --key sflab --set '<lab/>' --config >/dev/null
+      return ;;
+  esac
   local args=(--disk "path=$rootdisk,format=qcow2,bus=virtio")
   for d in ${disks//,/ }; do
     i=$((i + 1))
@@ -183,12 +246,14 @@ create_node() {
     *) args+=(--disk "path=$seed,device=cdrom,bus=sata,readonly=on") ;;
   esac
   virt-install --print-xml --import --name "$n" --osinfo "$osinfo" --vcpus "$vcpu" --memory "$ram" --cpu host-passthrough \
-    --network "network=$NET,mac=$(mac_of "$ip"),model=virtio" --graphics none --video vga --console pty,target_type=serial \
+    --network "network=$NET,mac=$(mac_of "$ip"),model=virtio" "${extra[@]}" --graphics none --video vga --console pty,target_type=serial \
     --rng /dev/urandom --noautoconsole "${args[@]}" >"$STATE/$n.xml" 2>"$STATE/$n.err" \
     || { cat "$STATE/$n.err" >&2; die "$n: virt-install failed"; }
   virsh -q define "$STATE/$n.xml" >/dev/null
   virsh -q metadata "$n" "$META_URI" --key sflab --set '<lab/>' --config >/dev/null
 }
+
+console_port() { echo $((44000 + ${INSTANCE:-0} * 300 + ${1##*.})); }
 
 make_seed() {
   local n=$1 image=$2 dir="$STATE/seed-$n" packages='' pub
@@ -206,6 +271,11 @@ make_seed() {
 
 wait_ready() {   # the first boot's cloud-init finished, and sudo works
   local n=$1 until=$((SECONDS + WAIT_SECS)) rc
+  if is_router "$n"; then
+    python3 "$HERE/provision/router.py" "$(field "$n" 2)" "$n" "$(field "$n" 7)" "$(console_port "$(field "$n" 7)")" "$STATE" || { say "$n: router setup failed"; return 1; }
+    say "$n: ready"
+    return 0
+  fi
   while [ $SECONDS -lt $until ]; do
     if lab_ssh "$n" true 2>/dev/null; then
       if ! lab_ssh "$n" 'command -v cloud-init' >/dev/null 2>&1; then   # an appliance: appliance.py finished setting it up
@@ -240,9 +310,10 @@ wait_all() {
 check_identity() {   # deploys check the short host name and /etc/machine-id, so both must be right
   local n dup
   for n in "$@"; do
+    is_router "$n" && continue
     [ "$(lab_ssh "$n" uname -n)" = "$n" ] || die "$n: host name is $(lab_ssh "$n" uname -n)"
   done
-  dup=$(for n in "$@"; do lab_ssh "$n" 'cat /etc/machine-id 2>/dev/null' || true; done | grep . | sort | uniq -d)
+  dup=$(for n in "$@"; do is_router "$n" || lab_ssh "$n" 'cat /etc/machine-id 2>/dev/null' || true; done | { grep . || true; } | sort | uniq -d)
   [ -z "$dup" ] || die "VMs share a machine-id: $dup"
 }
 
@@ -278,6 +349,7 @@ run_seed() {
 
 provision_node() {
   local n=$1
+  is_router "$n" && return 0
   lab_ssh "$n" 'test -e /var/lib/sflab/provisioned' && return 0
   run_layout "$n" || return 1
   run_seed "$n" || { say "$n: seeding failed"; return 1; }
@@ -318,9 +390,18 @@ has_golden() { qemu-img snapshot -U -l "$LAB_DIR/$1-root.qcow2" 2>/dev/null | gr
 stop_vm() {  # clean shutdown from inside, so nothing is left in a guest's cache, then force
   local n=$1 i
   [ "$(state "$n")" = running ] || return 0
+  if is_router "$n"; then virsh -q shutdown "$n" >/dev/null 2>&1 || true; for i in $(seq 1 15); do [ "$(state "$n")" = 'shut off' ] && return 0; sleep 2; done; virsh -q destroy "$n" >/dev/null; return 0; fi
   lab_ssh "$n" 'sudo -n sync; sudo -n poweroff' >/dev/null 2>&1 || true
   for i in $(seq 1 30); do [ "$(state "$n")" = 'shut off' ] && return 0; sleep 2; done
   virsh -q destroy "$n" >/dev/null
+}
+
+snapshot_one() {   # one VM that joined: the others keep the golden they have
+  local n=$1 f
+  stop_vm "$n"
+  for f in $(node_disks "$n"); do qemu-img snapshot -c golden "$f"; done
+  virsh -q start "$n" >/dev/null
+  wait_ready "$n"
 }
 
 cmd_snapshot() {
@@ -340,9 +421,10 @@ cmd_snapshot() {
 }
 
 cmd_up() {
-  local want=() all=0 n seed='' pick=''
+  local want=() all=0 n seed='' pick='' join=''
   while [ $# -gt 0 ]; do
     case $1 in
+      --join) join=${2:?--join needs config names}; shift 2 ;;
       --seed) seed=${2:?--seed needs a number}; shift 2 ;;
       --pick) pick=${2:?--pick needs config names}; shift 2 ;;
       *) want+=("$1"); shift ;;
@@ -358,11 +440,15 @@ cmd_up() {
       echo "$seed $(python3 "$HERE/roles.py" pick "$seed")" >"$STATE/selection"
     fi
   fi
+  if [ -n "$join" ]; then     # more configs in the running build, which keeps its seed and its golden on the rest
+    for n in ${join//,/ }; do is_node "$n" || die "$n is not in nodes.conf"; selection | grep -qx "$n" || sed -i "s/\$/ $n/" "$STATE/selection"; done
+    want=(${join//,/ }); all=1
+  fi
   say "build $(cut -d' ' -f1 "$STATE/selection"): $(selection | paste -sd' ')"
-  if [ ${#want[@]} = 0 ]; then mapfile -t want < <(nodes | cut -d'|' -f1); all=1; fi
+  if [ ${#want[@]} = 0 ] && [ -z "$join" ]; then mapfile -t want < <(nodes | cut -d'|' -f1); all=1; fi
   for n in "${want[@]}"; do is_node "$n" || die "$n is not in nodes.conf"; done
   preflight "${want[@]}"
-  ensure_state; ensure_images "${want[@]}"; ensure_network; ensure_pool
+  ensure_state; ensure_images "${want[@]}"; ensure_network; ensure_segments; ensure_pool
   for n in "${want[@]}"; do
     exists "$n" || { say "$n: creating"; create_node "$n"; }
     [ "$(state "$n")" = running ] || virsh -q start "$n" >/dev/null
@@ -376,7 +462,9 @@ cmd_up() {
     install_controller || die 'StorageForge did not start on sf-ctl: see above. Run up again, or use down.'
     : >"$STATE/needs-snapshot"
   fi
-  if [ $all = 1 ]; then
+  if [ -n "$join" ]; then
+    for n in "${want[@]}"; do has_golden "$n" || snapshot_one "$n"; done
+  elif [ $all = 1 ]; then
     for n in "${want[@]}"; do has_golden "$n" || : >"$STATE/needs-snapshot"; done
     if [ -e "$STATE/needs-snapshot" ]; then cmd_snapshot; rm -f "$STATE/needs-snapshot"; fi
   fi
@@ -413,6 +501,7 @@ cmd_down() {
       say "a network named $NET is not the lab's: left alone"; left=1
     fi
   fi
+  remove_segments
   if virsh pool-info "$POOL" >/dev/null 2>&1; then
     if virsh pool-dumpxml "$POOL" | grep -qF "<path>$LAB_DIR</path>"; then
       say "removing pool $POOL"
@@ -432,6 +521,11 @@ cmd_down() {
 }
 
 probe_node() {   # ssh|root filesystem|swap in use on one line
+  if is_router "$1"; then
+    if [ "$(field "$1" 2)" = chr ]; then SSH_TIMEOUT=2 lab_ssh "$1" ':put ok' >/dev/null 2>&1 && echo 'yes|routeros|' || echo 'no||'
+    else SSH_TIMEOUT=2 lab_ssh "$1" 'true' >/dev/null 2>&1 && echo 'yes|openwrt|' || echo 'no||'; fi
+    return
+  fi
   SSH_TIMEOUT=2 lab_ssh "$1" 'printf "yes|%s|%s\n" "$(awk "\$2==\"/\" {f=\$3} END {print f}" /proc/mounts)" "$(awk "NR>1 {print \$1}" /proc/swaps | tr "\n" " ")"' 2>/dev/null || echo 'no||'
 }
 
@@ -495,12 +589,13 @@ cmd_test_all() {
   export SFLAB_STATE="$STATE"
   rm -rf "$STATE/results" "$STATE/gauntlet.json"
   cmd_reset
-  for t in 0 1 2 3 4 5 6 7 8 9 10 11; do
+  for t in 0 1 2 3 4 5 6 7 8 9 10 11 12 13; do
     say "== tier $t =="
     [ "$t" = 0 ] || [ "$t" = 2 ] || cmd_reset
     case $t in    # the report decides, knowing what is known
       2) cmd_gauntlet || true ;;
       8) cmd_appliances || true ;;
+      12) ensure_venv; PYTHONPATH="$HERE/../.." "$STATE/venv/bin/python" "$tiers" run "$t" || true ;;    # it reads with the product's own parsers
       *) python3 "$tiers" run "$t" || true ;;
     esac
   done
@@ -558,5 +653,5 @@ case ${1:-} in
   demo) lock; cmd_demo ;;
   images) mapfile -t all < <(pool_rows | cut -d'|' -f1); ensure_images "${all[@]}" ;;
   install-launcher) cmd_install_launcher ;;
-  *) sed -n '2,19p' "$0" | sed 's/^# \?//'; exit 2 ;;
+  *) sed -n '2,20p' "$0" | sed 's/^# \?//'; exit 2 ;;
 esac

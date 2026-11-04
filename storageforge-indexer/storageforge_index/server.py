@@ -5,6 +5,7 @@ GET  /healthz                       liveness + readiness (no auth)
 GET  /login                         sign-in page (the only page served without a session)
 GET  /                              graph UI; without a valid session, a redirect to /login?next=/
 GET  /planner                       storage planner UI; likewise
+GET  /manage                        management planner UI: devices, the network language, changes with a rollback; likewise
 POST /api/login  {"username", "password"}   start a session (cookie)
 POST /api/logout                    end it
 POST /api/reauth  {"password"}      confirm the password before commands run on hosts (good for REAUTH_WINDOW)
@@ -152,8 +153,8 @@ from flask_login import LoginManager, current_user, login_required, login_user, 
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import (__version__, access, alerts, inframeasure, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_infra, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
+from . import (__version__, access, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
+               fromdesign, fsmap, hostconfig, hostkeys, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
 from .runtimes import docker
 from .capacity import parse_size, trends
 from .db import Database, epoch
@@ -276,6 +277,8 @@ class App:
             try:
                 done = security.tick(self.db)
                 done['infra'] = inframeasure.tick(self.db)
+                done['devices'] = netdevice.tick(self.db)
+                done['netscan'] = netscan.tick(self.db)
                 if any(done.values()):
                     self.alerts_wake.set()
             except Exception:
@@ -349,9 +352,12 @@ class App:
         conn = self.db.connect()
         try:
             due = []
+            devices = {x for row in conn.all('SELECT name, address FROM network_devices') for x in row}       # bound for reading, and read in their own way
             for (pattern,) in conn.all("""SELECT DISTINCT host_pattern FROM key_bindings
                                           WHERE pattern_kind = 'host' AND allowed_actions LIKE :a""", {'a': '%scan%'}):
                 name = self.canonical(conn, pattern)
+                if pattern in devices or name in devices:
+                    continue
                 last = conn.scalar('SELECT max(queued_at) FROM scan_jobs WHERE host IN (:n, :p)', {'n': name, 'p': pattern})
                 done = epoch(conn.scalar('SELECT last_scanned_at FROM hosts WHERE hostname = :n', {'n': name}))
                 last = max(x for x in (last, done, 0) if x is not None) or None     # CLI scans count too
@@ -676,6 +682,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def planner():
         return app_page('planner.html')
 
+    @web.get('/manage')
+    def manage_page():
+        return app_page('manage.html')
+
     def app_page(name):
         if not current_user.is_authenticated:
             return to_login()
@@ -701,7 +711,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "mapview.js", "securitymore.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js"):name>')
+    @web.get('/<any("session.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
@@ -1304,6 +1314,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     routes_secplus.register(web, ctx)      # first: it gives the others ctx.step_up
     routes_security.register(web, ctx)
     routes_infra.register(web, ctx)
+    routes_network.register(web, ctx)
 
     @web.get('/api/shares/check')
     @login_required

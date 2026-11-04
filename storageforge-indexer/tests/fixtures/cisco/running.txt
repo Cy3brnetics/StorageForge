@@ -1,0 +1,28 @@
+hostname R1
+!
+enable secret 5 $1$abcd$hash
+username admin privilege 15 secret 5 $1$xyz$hash
+snmp-server community public RO
+ip name-server 9.9.9.9
+!
+interface GigabitEthernet0/0
+ description WAN
+ ip address 198.51.100.4 255.255.255.0
+ ip nat outside
+ ip access-group OUTSIDE_IN in
+!
+interface GigabitEthernet0/1
+ ip address 10.77.10.4 255.255.255.0
+ ip nat inside
+ ip access-group 110 in
+!
+interface GigabitEthernet0/2
+ ip address 10.77.20.4 255.255.255.0
+ shutdown
+!
+interface FastEthernet1/0
+ switchport mode trunk
+ switchport trunk allowed vlan 10,20-22
+ channel-group 3 mode active
+!
+ip nat inside source static tcp 10.77.20.80 443 interface GigabitEthernet0/0 443

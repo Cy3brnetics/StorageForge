@@ -134,6 +134,8 @@ def _nft_expr(rule: dict, expr: dict):
         if not negated and right in ('ipv4', 'ipv6'):
             rule['family'] = 'ip' if right == 'ipv4' else 'ip6'
         return
+    elif ct and ct.get('key') == 'status' and right == 'dnat' and not negated:      # fw4's zones: only what a port forward already chose
+        rule['ct_dnat'] = True
     elif ct and ct.get('key') == 'state':
         rule['ct'] = _nft_value(right) if not isinstance(right, list) else ','.join(map(str, right))
     else:

@@ -23,7 +23,7 @@ from .firewall import port_matches
 ORDER = {'loopback': 0, 'blocked': 1, 'vpn': 2, 'lan': 3, 'any': 4, 'unknown': 5}
 VPN_NAMES = ('wg', 'tun', 'tap', 'tailscale', 'nebula', 'zt', 'netbird')
 LOCAL_KINDS = ('veth', 'dummy', 'loopback')
-CAVEAT = 'Per configuration, from the last reading. Anything between hosts, such as a router, is not seen.'
+CAVEAT = 'Per configuration, from the last reading. Anything between hosts, such as a router, is only seen if it is enrolled as a device.'
 
 
 def _net(text):
@@ -80,6 +80,8 @@ def _match(rule: dict, flow: dict) -> str:
         if not port_matches(rule['orig_dports'], flow['orig_port']):
             return 'no'
     if rule.get('ct') and 'new' not in str(rule['ct']).lower():
+        return 'no'
+    if rule.get('ct_dnat') and not flow.get('dnat'):
         return 'no'
     if not _ifname_match(rule.get('iif'), flow.get('iif')) or not _ifname_match(rule.get('oif'), flow.get('oif')):
         return 'no'
@@ -360,8 +362,60 @@ def published_item(container: dict, port: dict, net: dict, fw: dict | None, host
     return out
 
 
-def host_report(net: dict | None, infra: dict | None, containers: list[dict], host: str) -> dict:
-    """Everything this host listens on, widest first. Without a network reading there is nothing to say."""
+def _dnat_port(rule: dict) -> int | None:
+    """The one outside port of a forward, when it has one. A range is taken by its start: it's only ever compared with the listener it lands on."""
+    ports = rule.get('dports') or []
+    if not ports:
+        return None
+    return ports[0] if isinstance(ports[0], int) else ports[0][0]
+
+
+def forwards_of(device: str, fw: dict, wan: list[str], net: dict) -> list[dict]:
+    """Each port forward on a router: where it lands, whether it comes in from outside, and whether the router's own forward rules let it through."""
+    out = []
+    if not fw or not fw.get('readable'):
+        return out
+    for rule in fw.get('nat') or []:
+        if rule.get('action') != 'dnat' or not rule.get('to_addr'):
+            continue
+        port = _dnat_port(rule)
+        target = rule.get('to_port') or port
+        outside = rule.get('iif') is None or any(_ifname_match(rule['iif'], w) for w in wan) if wan else rule.get('iif') is None
+        oif = next((i['name'] for i in net.get('interfaces') or [] for a in i.get('addresses') or [] if a.get('prefix') is not None and _addr_in(rule['to_addr'], a['ip'], a['prefix'])), None)
+        flow = {'proto': str(rule.get('proto') or 'tcp').split(',')[0], 'port': target, 'iif': str(rule.get('iif') or (wan[0] if wan else '')).split(',')[0] or None, 'oif': oif, 'daddr': rule['to_addr'], 'family': _family(rule['to_addr']) or 'ip', 'dnat': True}
+        res = kernel_path(fw, 'forward', flow) if target else {'verdict': 'unknown', 'rule': None, 'unknown': ['a forward with no port'], 'sources': [], 'may_allow': True}
+        verdict = 'unknown' if res['verdict'] == 'unknown' or (res['verdict'] != 'accept' and res.get('may_allow')) else res['verdict']
+        out.append({'device': device, 'proto': flow['proto'], 'outside_port': port, 'to_addr': rule['to_addr'], 'to_port': target, 'iif': rule.get('iif'), 'from_wan': bool(outside), 'verdict': verdict, 'sources': res.get('sources') or [], 'rule': res.get('rule'), 'nat_rule': rule.get('comment') or _label(rule), 'why': res.get('unknown') or []})
+    return out
+
+
+def _addr_in(addr, ip, prefix) -> bool:
+    try:
+        return ipaddress.ip_address(addr) in ipaddress.ip_network(f'{ip}/{prefix}', strict=False)
+    except ValueError:
+        return False
+
+
+def _forwarded(item: dict, forwards: list[dict], own: set, target_port: int) -> dict:
+    """A listener that a router forwards to is as reachable as the forward makes it, if nothing on this host stops it first. Only ever widens: a router can't make something less exposed than it already is."""
+    if item['level'] in ('loopback', 'blocked'):
+        return item
+    for f in forwards:
+        if f['to_addr'] not in own or f['to_port'] != target_port or f['proto'] != item['proto']:
+            continue
+        item = {**item, 'forwarded_by': [*item.get('forwarded_by', []), {k: f[k] for k in ('device', 'outside_port', 'nat_rule', 'verdict', 'rule')}]}
+        if f['verdict'] == 'drop':
+            continue
+        level = 'unknown' if f['verdict'] == 'unknown' else 'any' if f['from_wan'] and not f.get('sources') else 'lan'
+        if level == 'unknown':
+            item['why'] = [*item['why'], f'{f["device"]} forwards to this, through a rule that could not be understood']
+        if ORDER[level] > ORDER[item['level']]:
+            item = {**item, 'level': level, 'rule': f'{f["device"]}: forward of {f["outside_port"]} ({f["nat_rule"]})'}
+    return item
+
+
+def host_report(net: dict | None, infra: dict | None, containers: list[dict], host: str, forwards: list[dict] | None = None) -> dict:
+    """Everything this host listens on, widest first. Without a network reading there is nothing to say. forwards: every router's, from netdevice.forwards."""
     if not net:
         return {'host': host, 'read': False, 'items': [], 'caveat': CAVEAT, 'why': 'not scanned since this was added'}
     fw = (infra or {}).get('firewall')
@@ -369,6 +423,9 @@ def host_report(net: dict | None, infra: dict | None, containers: list[dict], ho
     listeners = (infra or {}).get('listeners') or net.get('listeners') or []
     items = [listener_item(lsn, net, fw) for lsn in listeners if (lsn['proto'], lsn['port']) not in published]
     items += [published_item(c, p, net, fw, host) for c in containers for p in c.get('ports') or []]
+    if forwards:
+        own = {a['ip'] for i in net.get('interfaces') or [] for a in i.get('addresses') or []}
+        items = [_forwarded(i, forwards, own, i['port']) for i in items]
     items.sort(key=lambda i: (-ORDER[i['level']], i['port']))
     return {'host': host, 'read': True, 'firewall_read': bool(fw and fw.get('readable')), 'backends': (fw or {}).get('backends') or [], 'items': items,
             'measured_at': (infra or {}).get('measured_at'), 'network_read_at': net.get('read_at'), 'caveat': CAVEAT}

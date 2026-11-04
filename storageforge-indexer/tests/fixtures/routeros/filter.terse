@@ -1,0 +1,9 @@
+0 comment=return-traffic chain=input action=accept connection-state=established,related
+1 comment=management chain=input action=accept in-interface=ether1
+2 comment=icmp chain=input action=accept protocol=icmp
+3 comment=input-default chain=input action=drop
+4 comment=return-traffic chain=forward action=accept connection-state=established,related
+5 comment=lan-to-dmz-web chain=forward action=accept protocol=tcp dst-address=10.77.20.80 in-interface=ether3 out-interface=ether4 dst-port=80
+6 comment=wan-to-dmz-https chain=forward action=accept protocol=tcp dst-address=10.77.20.80 in-interface=ether2 out-interface=ether4 dst-port=443
+7 comment=forward-default chain=forward action=drop
+

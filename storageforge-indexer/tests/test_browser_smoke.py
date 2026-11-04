@@ -311,6 +311,59 @@ class BrowserSmoke(unittest.TestCase):
         self.assertEqual(self.errors, [])
         self.page.click('.swdlg .swhead button:has-text("Close")')
 
+    def test_the_scan_tab_says_it_is_off_and_turns_on_under_the_csp(self):
+        self.page.click('#viewmode button[data-mode="scan"]')
+        self.page.wait_for_selector('.nscan')
+        self.assertIn('Off', self.page.inner_text('.nscan-head'))
+        self.assertTrue(self.page.is_hidden('#mapview'))
+        self.page.fill('input[aria-label="Networks to scan"]', '10.77.0.0/28')
+        self.page.click('.nscan-head button')
+        self.page.wait_for_selector('.nscan-head .nscan-chip.on')
+        self.assertIn('Scan now', self.page.inner_text('.nscan-ctl'))
+        self.page.click('.nscan-head button')       # and back off, for the next test
+        self.page.wait_for_selector('.nscan-head:has-text("Off")')
+        self.assertEqual(self.errors, [])
+
+    def test_a_scan_result_links_back_to_that_machines_pages(self):
+        from storageforge_index import netscan
+        conn = self.db.connect()
+        ip = conn.scalar("SELECT ip_address FROM hosts WHERE hostname = 'nas'") or '192.168.1.10'
+        conn.execute("UPDATE hosts SET ip_address = :i WHERE hostname = 'nas'", {'i': ip})
+        netscan.save_settings(conn, {'enabled': True, 'ranges': [f'{ip}/24']}, 'test')
+        port = '<ports><port protocol="tcp" portid="22"><state state="open"/><service name="ssh"/></port></ports>'
+        xml = f'<nmaprun><host><status state="up"/><address addr="{ip}" addrtype="ipv4"/>{port}</host><host><status state="up"/><address addr="192.168.1.250" addrtype="ipv4"/>{port}</host></nmaprun>'
+        netscan.run(self.db, conn, None, 'test', wait=True, runner=lambda argv: xml)
+        netscan.save_settings(conn, {'enabled': False}, 'test')
+        conn.close()
+        self.page.click('#viewmode button[data-mode="scan"]')
+        self.page.wait_for_selector('.nscan-card')
+        self.page.click('.nscan-card:has-text("nas") a:has-text("Config")')
+        self.page.wait_for_selector('.tabs button[data-tab="rebuild"][aria-selected="true"]')
+        self.assertEqual(self.page.input_value('#host'), 'nas')
+        self.page.click('#viewmode button[data-mode="scan"]')
+        self.page.wait_for_selector('.nscan-card.unknown')
+        self.page.click('.nscan-card.unknown a:has-text("Add as a device")')
+        self.page.wait_for_selector('input[aria-label="Address"]')
+        self.assertEqual(self.page.input_value('input[aria-label="Address"]'), '192.168.1.250')
+        self.assertEqual(self.errors, [])
+
+    def test_the_management_planner_opens_every_view_and_compiles_under_the_csp(self):
+        self.page.goto(self.base + '/manage')
+        self.page.wait_for_selector('#mgnav button')
+        for view in ('devices', 'changes', 'traffic', 'scanner', 'fleet'):
+            self.page.click(f'#mgnav button[data-v="{view}"]')
+            self.page.wait_for_timeout(400)
+            self.assertEqual(self.errors, [], view)
+            self.assertEqual(self.page.locator('#mgview p.bad').count(), 0, view)
+        self.page.click('#mgnav button[data-v="compose"]')
+        self.page.wait_for_selector('textarea')
+        self.page.fill('textarea', '/ip firewall filter add chain=input protocol=tcp dst-port=22 action=accept')
+        self.page.select_option('select[aria-label="Show as"]', 'iptables')
+        self.page.wait_for_selector('.mg-cols pre:has-text("--dport 22")')
+        self.page.fill('textarea', '/nonsense add a=1')
+        self.page.wait_for_selector('.mg-cols p.bad')
+        self.assertEqual(self.errors, [])
+
     def test_the_planner_and_search_pages_load(self):
         for path in ('/planner', '/search'):
             self.page.goto(self.base + path)

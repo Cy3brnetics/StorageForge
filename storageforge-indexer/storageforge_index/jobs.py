@@ -466,6 +466,7 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, report_url: str | None, 
     runners = {s['runner'] for s in sp}
     sources = {s['source'] for s in sp}
     order = sorted(sources) + sorted(runners - sources) + sorted(before - sources - runners)
+    serving = sorted(sources | runners)
     phase = {h: 0 if h in sources else 1 for h in order}    # a source's serve config and keys go first: runners test them
     sec = new_secrets(sp) if mode == 'apply' else None     # {} for a plan with no steps left: apply still cleans up
     if sec is not None:      # store before the hosts get them: a run may report the moment its timer fires
@@ -491,8 +492,10 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, report_url: str | None, 
         def done(res, h=h):
             c = db.connect()
             try:
-                deploy.mark_deployed(c, h, 'jobs', ref, plan_hash(plan),
-                                     {'jobs': [s['id'] for s in sp if h in (s['runner'], s['source'])], 'hosts': order}, actor)
+                if h in serving:
+                    deploy.mark_deployed(c, h, 'jobs', ref, plan_hash(plan), {'jobs': [s['id'] for s in sp if h in (s['runner'], s['source'])], 'hosts': serving}, actor)
+                else:   # its jobs have just been removed: a mark would keep the plan from being deleted, and the host from being retired
+                    c.execute("DELETE FROM deployed WHERE host = :h AND kind = 'jobs' AND ref = :r", {'h': h, 'r': ref})
             finally:
                 c.close()
         items.append({'host': h, 'script': script, 'args': ['--apply'] if mode == 'apply' else [], 'kind': 'jobs', 'ref': ref,

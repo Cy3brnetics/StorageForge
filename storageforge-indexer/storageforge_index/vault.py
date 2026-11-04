@@ -27,6 +27,7 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import secrets
 import socket
 import threading
@@ -380,6 +381,45 @@ class Vault:
         with open_into(kek, self._blob(dn), self._blob(wd), self._aad(uuid, 'dek')) as dek:
             return open_into(dek.view(), self._blob(kn), self._blob(ct), self._aad(uuid, 'key'))
 
+    # device passwords: for gear that takes no SSH key. Each has its own key, wrapped as an SSH key's is
+    def store_credential(self, name: str, username: str | None, password: str, enable_password: str | None = None) -> dict:
+        kek = self._need_kek()
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', name or ''):
+            raise VaultError('a credential name is letters, digits, dot, dash and underscore')
+        if not password:
+            raise VaultError('a credential needs a password')
+        uuid = secrets.token_hex(16)
+        body = json.dumps({'password': password, 'enable': enable_password}).encode()
+        with SecretBuffer(32) as dek:
+            dek.buf[:] = os.urandom(32)
+            dek.length = 32
+            dn, wdek = seal(kek, dek.view(), self._aad(uuid, 'dek'))
+            n, ct = seal(dek.view(), body, self._aad(uuid, 'credential'))
+        with self.conn.tx():
+            self.conn.execute('DELETE FROM device_credentials WHERE name = :n', {'n': name})
+            self.conn.execute("""INSERT INTO device_credentials (cred_uuid, name, username, dek_nonce, wrapped_dek, nonce, ciphertext, created_at)
+                                 VALUES (:u, :n, :un, :dn, :wd, :non, :ct, :t)""",
+                              {'u': uuid, 'n': name, 'un': username, 'dn': dn, 'wd': wdek, 'non': n, 'ct': ct, 't': int(time.time())})
+        return {'name': name, 'username': username}
+
+    def credential(self, name: str) -> dict:
+        """{'username', 'password', 'enable'}. For the moment of connecting: a transport needs them as plain strings."""
+        kek = self._need_kek()
+        rows = self.conn.all('SELECT cred_uuid, username, dek_nonce, wrapped_dek, nonce, ciphertext FROM device_credentials WHERE name = :n', {'n': name})
+        if not rows:
+            raise VaultError(f'no credential named {name!r}')
+        uuid, username, dn, wd, n, ct = rows[0]
+        with open_into(kek, self._blob(dn), self._blob(wd), self._aad(uuid, 'dek')) as dek:
+            with open_into(dek.view(), self._blob(n), self._blob(ct), self._aad(uuid, 'credential')) as body:
+                return {'username': username, **json.loads(bytes(body.view()))}
+
+    def list_credentials(self) -> list[dict]:
+        return [dict(zip(('name', 'username', 'created_at', 'rotated_at'), r))
+                for r in self.conn.all('SELECT name, username, created_at, rotated_at FROM device_credentials ORDER BY name')]
+
+    def remove_credential(self, name: str) -> int:
+        return self.conn.execute('DELETE FROM device_credentials WHERE name = :n', {'n': name}).rowcount
+
     def rotate_secret(self, new_secret: bytes) -> int:
         """Rewrap every DEK, the audit key and the verifier under a KEK derived from new_secret."""
         kek = self._need_kek()
@@ -394,6 +434,11 @@ class Vault:
                         n2, w2 = seal(new.view(), dek.view(), self._aad(uuid, 'dek'))
                     self.conn.execute('UPDATE ssh_keys SET dek_nonce = :n, wrapped_dek = :w, rotated_at = :t WHERE key_id = :k',
                                       {'n': n2, 'w': w2, 't': int(time.time()), 'k': kid})
+                for cid, uuid, dn, wd in self.conn.all('SELECT credential_id, cred_uuid, dek_nonce, wrapped_dek FROM device_credentials'):
+                    with open_into(kek, self._blob(dn), self._blob(wd), self._aad(uuid, 'dek')) as dek:
+                        n2, w2 = seal(new.view(), dek.view(), self._aad(uuid, 'dek'))
+                    self.conn.execute('UPDATE device_credentials SET dek_nonce = :n, wrapped_dek = :w, rotated_at = :t WHERE credential_id = :c',
+                                      {'n': n2, 'w': w2, 't': int(time.time()), 'c': cid})
                 vn, vct = seal(new.view(), VERIFIER, b'storageforge:verifier')
                 an, act = seal(new.view(), self.audit_key.view(), b'storageforge:audit-key')
                 self.conn.execute("""UPDATE vault_meta SET kdf_salt = :s, kdf_time_cost = :t, kdf_memory_kib = :m,

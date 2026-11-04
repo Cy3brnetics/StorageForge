@@ -65,7 +65,15 @@ def build():
     if not path.exists():
         return everything
     chosen = path.read_text().split()[1:]
-    return {name: node for name, node in everything.items() if name in chosen}
+    return {name: node for name, node in everything.items() if name in chosen and not (node.can('router') or node.can('segment'))}
+
+
+def network_lab():
+    """The routers and the machines behind them, when this build has them. Only tier 12 uses them: to every other tier they aren't part of the build."""
+    everything = pool()
+    path = state_dir() / 'selection'
+    chosen = path.read_text().split()[1:] if path.exists() else []
+    return {name: node for name, node in everything.items() if name in chosen and (node.can('router') or node.can('segment'))}
 
 
 def seed():

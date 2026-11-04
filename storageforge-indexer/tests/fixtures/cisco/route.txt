@@ -1,0 +1,10 @@
+Codes: L - local, C - connected, S - static
+Gateway of last resort is 198.51.100.254 to network 0.0.0.0
+
+S*    0.0.0.0/0 [1/0] via 198.51.100.254
+      10.0.0.0/8 is variably subnetted, 4 subnets, 2 masks
+C        10.77.10.0/24 is directly connected, GigabitEthernet0/1
+L        10.77.10.4/32 is directly connected, GigabitEthernet0/1
+C        10.77.20.0/24 is directly connected, GigabitEthernet0/2
+S        172.16.0.0/16 [1/0] via 10.77.10.254
+C     198.51.100.0/24 is directly connected, GigabitEthernet0/0

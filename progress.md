@@ -20,6 +20,13 @@ Built and through the KVM lab, apart from what each row says.
 | M8 Design mode | Done: tier 11. Terraform and Puppet exports render and hold values as data, and have not been applied by those tools |
 | M9 Scale and integrations | Later, as the roadmap says. A synthetic 200 hosts and 2,000 workloads draws within limits in the browser test |
 
+## Expanded networking
+
+| Phase | State |
+| :--- | :--- |
+| 1 Transports, 2 RouterOS, 3 OpenWrt, 6 Language, 7 Multi-hop, 8 Lab and tier 12, 9 Scanner and traffic, Management planner | Done: tier 12, on real RouterOS 7.25 and OpenWrt 25.12. Old SSH ciphers have not met a device that needs them. Language output for firewalld and ufw is unit-tested only |
+| 4 pfSense and OPNsense, 5 Cisco | Built, not lab-tested: no free image. Written against published formats and a simulated shell |
+
 ## Ransomware defense
 
 Corrections stand: no VSS trap, no cryptographic shred, no certificates, no WebSocket stream. See [the page](docs/ransomware-defense.md).
@@ -38,9 +45,17 @@ Corrections stand: no VSS trap, no cryptographic shred, no certificates, no WebS
 - 2026-11-02: baseline 807 tests passing, 4 skipped. Clock and boolean fixes landed by the owner as `db53dcb`.
 - 2026-11-02: Stage 0 to 2 code from the earlier session picked up: 847 tests.
 - 2026-11-03: final code: 940 unit tests pass on SQLite (4 skipped) and on PostgreSQL (42 skipped). KVM lab tiers 0 to 11: 441 passed, 0 failed, 3 skipped, on 7 of the 14 configs.
+- 2026-11-03: [test audit](docs/test-audit-2026-11-03.md): every feature mapped to a test and a lab check, or a stated reason. 1043 tests on SQLite (4 skipped) and PostgreSQL (78 skipped). KVM lab tiers 0 to 11 and 13: 482 passed, 0 failed, 3 skipped, on 7 of the 14 configs.
+- 2026-11-04: expanded networking and the management planner: 1200 tests on SQLite (5 skipped) and PostgreSQL (79 skipped). KVM lab tiers 0 to 13: 512 passed, 0 failed, 4 skipped, on 7 of the 14 configs plus a real RouterOS, a real OpenWrt and three machines behind them. Tiers 1 to 11 and 13 ran before the last changes, which touched only the management planner's CSS and test code: tiers 0 and 12 and the browser check ran again after them.
 
 What the lab found that unit tests had not:
 
+- `print as-value` prints nothing over RouterOS's SSH, which the roadmap had as the way to read it.
+- RouterOS serializes a port as `80.000000`.
+- RouterOS redraws its prompt with bare carriage returns, which read as no prompt at all, so its terminal and Telnet both timed out. The simulated shell never did this.
+- `iptables-restore` doesn't take shell quoting, so any rule with a comment was refused.
+- fw4 lets a port forward through with `ct status dnat`, which read as a rule nobody understood, and made a real forward unknown.
+- nmap needed two libraries the image removes on purpose, which only a real scan in the real image showed.
 - A held snapshot inside a share failed the next SMB deploy on an SELinux host.
 - The airgap and quarantine refused to run on a host with no nftables.
 - A clock jump in a sentinel's first 30 seconds became its baseline, and was never reported.

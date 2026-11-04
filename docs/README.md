@@ -37,6 +37,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Operations](operations.md) | Configuration, backups, certificates, retention, logs, upgrades, dependency updates |
 | [Disaster recovery](disaster-recovery.md) | What to keep elsewhere, and rebuilding on a new machine |
 | [Target hosts](target-hosts.md) | What a scanned or changed machine needs, and SSH for sending snapshots |
+| [Network devices](network-devices.md) | Routers, switches and firewalls, the one network language, changes with a rollback on the device, the opt-in scanner, the management planner |
 | [Infrastructure map](infrastructure-map.md) | Networks, firewalls, listeners, containers and VMs across hosts, who can reach what, and planning from it |
 | [KVM lab](kvm-lab.md) | The disposable test VMs, the test tiers and the distributions they cover |
 | [Troubleshooting](troubleshooting.md) | Common messages, what causes them and what to do |
@@ -48,6 +49,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 
 | Page | What it covers |
 | :--- | :--- |
+| [Test audit, 2026-11-03](test-audit-2026-11-03.md) | What the test suites covered, the lab tier and feature map added, and the bugs they found |
 | [Ransomware defense audit, 2026-11-02](audit-2026-11-02-ransomware-defense.md) | The first implementation of the roadmap, what was wrong with it, and what was found while replacing it |
 | [Feature audit, 2026-11-01](audit-2026-11-01-features.md) | Code compared with the docs and exercised in the lab, and what disagreed |
 | [Code audit, 2026-11-01](audit-2026-11-01-code.md) | Bugs found by reading the code, and what was checked and found fine |

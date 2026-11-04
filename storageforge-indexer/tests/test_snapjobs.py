@@ -423,6 +423,42 @@ class Scripts(unittest.TestCase):
         self.assertEqual(cron.read_text(), f'MAILTO=me\n{line}\n# another\n')
         self.assertEqual(stat.S_IMODE(cron.stat().st_mode), 0o640)
 
+    def snapper_host(self, selinux):
+        """As on Fedora with SELinux enforcing: a config made with no file-context rule for its .snapshots can never take a snapshot."""
+        stubs = self.tmp / 'bin'
+        stubs.mkdir()
+        rule, good = self.tmp / 'rule', self.tmp / 'good'
+        bodies = {'findmnt': 'echo btrfs', 'systemctl': 'exit 0', 'selinuxenabled': f'exit {0 if selinux else 1}', 'restorecon': 'exit 0',
+                  'semanage': f'echo "$*" >{rule}',
+                  'snapper': f'case "$3" in create-config) {f"[ -e {rule} ] && touch {good}" if selinux else f"touch {good}"}; exit 0 ;; '
+                             f'create) [ -e {good} ] || {{ echo "IO Error (mkdir failed errno:13)" >&2; exit 1; }} ;; esac'}
+        for name, body in bodies.items():
+            f = stubs / name
+            f.write_text(f'#!/bin/bash\n{body}\n')
+            f.chmod(0o755)
+        return {'PATH': f'{stubs}:{os.environ["PATH"]}'}, stubs, rule
+
+    def test_a_new_snapper_config_can_snapshot_under_selinux(self):
+        env, _, rule = self.snapper_host(selinux=True)
+        r = self.bash(snapjobs.snapper_script('/data/media.x', 'media'), env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('snapperd_data_t /data/media\\.x/\\.snapshots(/.*)?', rule.read_text())
+        self.assertIn('created snapper config media', r.stdout)
+
+    def test_a_snapper_config_that_cannot_snapshot_is_not_called_created(self):
+        env, stubs, _ = self.snapper_host(selinux=True)
+        (stubs / 'semanage').write_text('#!/bin/bash\nexit 1\n')
+        r = self.bash(snapjobs.snapper_script('/data/media', 'media'), env)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('cannot take a snapshot', r.stderr)
+        self.assertNotIn('created snapper config', r.stdout)
+
+    def test_no_selinux_needs_no_rule(self):
+        env, _, rule = self.snapper_host(selinux=False)
+        r = self.bash(snapjobs.snapper_script('/data/media', 'media'), env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(rule.exists())
+
     def test_only_cron_files_can_be_edited(self):
         for bad in ('/etc/passwd', '/etc/cron.d/../shadow', '/tmp/cron'):
             with self.assertRaises(ValueError):

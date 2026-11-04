@@ -1,0 +1,11 @@
+Extended IP access list 110
+    10 permit tcp 10.77.10.0 0.0.0.255 host 10.77.20.80 eq www (12 matches)
+    20 deny tcp any host 10.77.20.80 eq 22
+    30 permit ip any any log
+Extended IP access list OUTSIDE_IN
+    10 permit tcp any host 10.77.20.80 eq 443
+    20 permit udp any any range 5000 5010
+    30 permit tcp any 10.0.0.0 0.255.0.255 eq 80
+    40 deny ip any any
+Standard IP access list 5
+    10 permit 10.0.0.0 0.0.0.255

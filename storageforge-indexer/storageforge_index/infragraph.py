@@ -36,7 +36,7 @@ def _bridge_name(iface: dict) -> bool:
     return iface['kind'] == 'bridge' and (iface['name'] or '').startswith(('docker', 'br-', 'podman', 'cni', 'virbr', 'lxdbr', 'incusbr'))
 
 
-def build(host: str, net: dict | None, infra: dict | None, containers: list[dict], loads_workloads: list[dict], peers: dict, mount_nodes: set, wg_keys: dict | None = None) -> tuple[dict, list]:
+def build(host: str, net: dict | None, infra: dict | None, containers: list[dict], loads_workloads: list[dict], peers: dict, mount_nodes: set, wg_keys: dict | None = None, forwards: list | None = None) -> tuple[dict, list]:
     """peers: every other scanned host's addresses, address → name. wg_keys: every scanned host's WireGuard public keys. Pure, so
     it can be tested with no database."""
     wg_keys = wg_keys or {}
@@ -110,7 +110,7 @@ def build(host: str, net: dict | None, infra: dict | None, containers: list[dict
         seen += 1
         edge(host_id, placeholder(n['ip'], 'Neighbour', f'in the neighbour table of {host}', mac=n.get('mac')), 'NEIGHBOUR_OF', f'ip neigh: {n["ip"]} on {n["dev"]}', 'inferred')
 
-    report = exposure.host_report(net, infra, containers, host)
+    report = exposure.host_report(net, infra, containers, host, forwards)
     for item in report['items']:
         nid = add(f'lsn:{host}:{item["proto"]}:{item["port"]}', 'Listener', f'{item["port"]}/{item["proto"]}', 'services', bind=item.get('addr'), process=item.get('process'), exposure=item['level'], rule=item.get('rule'), why=item.get('why'),
                   container=item.get('container'), bypasses_frontend=item.get('bypasses_frontend'))
@@ -250,7 +250,8 @@ def rebuild(conn: Conn, host: str) -> tuple[int, int]:
     net, infra = netfacts.reading(conn, host), inframeasure.reading(conn, host)
     listed = workloads.listing(conn, host)['workloads']
     mount_nodes = {r[0] for r in conn.all("SELECT node_id FROM graph_nodes WHERE host = :h AND kind = 'MountPoint'", {'h': host})}
-    nodes, edges = build(host, net, infra, workloads.containers_of(conn, host), listed, _peers(conn), mount_nodes, _wg_keys(conn))
+    from .netdevice import forwards
+    nodes, edges = build(host, net, infra, workloads.containers_of(conn, host), listed, _peers(conn), mount_nodes, _wg_keys(conn), forwards(conn))
     built_by = f'infra:{host}'
     with conn.tx():
         conn.execute('DELETE FROM graph_edges WHERE built_by = :b', {'b': built_by})

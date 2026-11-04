@@ -7,7 +7,7 @@ import time
 from flask import Response, jsonify, request
 from flask_login import current_user, login_required
 
-from . import changes, exposure, graph, infragraph, inframeasure, mapdesign, mapexport, netfacts, reach, security, whatif, workloads
+from . import changes, exposure, graph, infragraph, inframeasure, mapdesign, mapexport, netdevice, netfacts, reach, security, whatif, workloads
 
 
 def register(web, ctx):
@@ -49,7 +49,10 @@ def register(web, ctx):
         else:
             badges = infragraph.security_badges(conn())
             mounts = infragraph.mount_badges(conn())
+            devices = netdevice.names(conn())
             for n in g['nodes']:
+                if n['kind'] == 'Host' and n['label'] in devices:
+                    n['props']['device'] = devices[n['label']]
                 if n['kind'] == 'Host' and n['label'] in badges:
                     n['props']['security'] = badges[n['label']]
                 elif n['kind'] == 'MountPoint' and (m := mounts.get(n.get('host'), {}).get(n['label'])):
@@ -110,7 +113,8 @@ def register(web, ctx):
         if scope not in ('all', 'lan', 'vpn', 'any'):
             raise ValueError('scope is lan, vpn or any')
         names = [security.known_host(conn(), request.args['host'])] if request.args.get('host') else [r[0] for r in conn().all('SELECT hostname FROM hosts ORDER BY hostname')]
-        reports = [exposure.host_report(netfacts.reading(conn(), n), inframeasure.reading(conn(), n), workloads.containers_of(conn(), n), n) for n in names]
+        forwards = netdevice.forwards(conn())
+        reports = [exposure.host_report(netfacts.reading(conn(), n), inframeasure.reading(conn(), n), workloads.containers_of(conn(), n), n, forwards) for n in names]
         for r in reports:
             r['items'] = [i for i in r['items'] if i['level'] not in ('loopback', 'blocked') and exposure.in_scope(i['level'], scope)]
         return jsonify(scope=scope, hosts=reports)
@@ -133,7 +137,7 @@ def register(web, ctx):
     @web.get('/api/map/coverage')
     @login_required
     def api_map_coverage():
-        return jsonify(coverage=infragraph.coverage(conn(), request.args.get('host') or None), warnings=infragraph.warnings(conn()))
+        return jsonify(coverage=infragraph.coverage(conn(), request.args.get('host') or None), warnings=infragraph.warnings(conn()), device_warnings=netdevice.warnings(conn()))
 
     @web.post('/api/map/stage')
     @login_required
@@ -322,13 +326,20 @@ def register(web, ctx):
     @login_required
     def api_exposure():
         names = [security.known_host(conn(), request.args['host'])] if request.args.get('host') else [r[0] for r in conn().all('SELECT hostname FROM hosts ORDER BY hostname')]
-        return jsonify(hosts=[exposure.host_report(netfacts.reading(conn(), n), inframeasure.reading(conn(), n), workloads.containers_of(conn(), n), n) for n in names])
+        forwards = netdevice.forwards(conn())
+        return jsonify(hosts=[exposure.host_report(netfacts.reading(conn(), n), inframeasure.reading(conn(), n), workloads.containers_of(conn(), n), n, forwards) for n in names])
 
     @web.post('/api/infra/measure')
     @login_required
     @password_confirmed
     def api_infra_measure():
-        res = inframeasure.measure(db, conn(), json_body().get('host'), actor())
+        wanted = json_body().get('host')
+        if netdevice.is_device(conn(), str(wanted or '')):       # a device is read as a device: it takes no signed run
+            res = netdevice.read(db, conn(), wanted, actor())
+            res['host'] = res.pop('device')
+            core.audit(conn(), actor(), 'infra.measure', 'ok' if res.get('ok') else 'failed', res['host'], {})
+            return jsonify(res), 200 if res.get('ok') else 409
+        res = inframeasure.measure(db, conn(), wanted, actor())
         core.audit(conn(), actor(), 'infra.measure', 'ok' if res.get('ok') else 'failed', res.get('host'), {'run_id': res.get('run_id')})
         return jsonify(res), 200 if res.get('ok') else 409
 

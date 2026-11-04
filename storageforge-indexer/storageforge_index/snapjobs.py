@@ -521,6 +521,30 @@ def advice_for(conn: Conn, host: str, path: str) -> dict:
     return {'host': h['name'], 'path': path, 'fstype': m.get('fstype'), 'mount': m.get('target'), **recommend(m.get('fstype'))}
 
 
+def snapper_script(path: str, name: str) -> str:
+    """Ends well only when a snapshot was really taken. snapperd asks SELinux's file contexts what a snapshot should be labelled. Under a path the
+    policy doesn't know that's default_t, which it may not write: every timeline run fails, while its service still exits 0. So the rule goes in
+    before the config exists: a label alone (chcon) is gone by the next daemon. Found on Fedora 44, and lab tier 13 checks it, timeline run included."""
+    q = shlex.quote
+    p, n = q(_safe_path(path)), q(name)
+    snaps = _safe_path(path).rstrip('/') + '/.snapshots'
+    rule = q(re.sub(r'([.+*?()\[\]{}|^$])', r'\\\1', snaps) + '(/.*)?')
+    return (HELPERS + PACKAGES + 'APPLY=1\n' + need_line('snapper') + 'set -uo pipefail\ndie() { echo "$*" >&2; exit 1; }\n'
+            'command -v snapper >/dev/null || die "snapper could not be installed"\n'
+            f'[[ $(findmnt -n -o FSTYPE --target {p}) == btrfs ]] || die {q(path + " is not on btrfs")}\n'
+            f'[[ ! -e /etc/snapper/configs/{name} ]] || die {q("there is already a snapper config " + name)}\n'
+            'selinux=0; command -v selinuxenabled >/dev/null && selinuxenabled && selinux=1\n'
+            'if ((selinux)); then\n'
+            '  command -v semanage >/dev/null || install_pkg "$(pm)" policycoreutils-python-utils\n'
+            f'  semanage fcontext -a -t snapperd_data_t {rule} 2>/dev/null || semanage fcontext -m -t snapperd_data_t {rule} || echo "could not add the SELinux rule for snapper"\n'
+            'fi\n'
+            f'snapper -c {n} create-config {p} || die "snapper refused: the path must be a btrfs subvolume"\n'
+            f'((selinux == 0)) || restorecon -RF {q(snaps)}\n'
+            f'snapper -c {n} create -c number --description "first snapshot, from StorageForge" || die {q("the config exists, but snapper cannot take a snapshot on " + path)}\n'
+            'systemctl enable --now snapper-timeline.timer snapper-cleanup.timer || echo "could not enable the snapper timers"\n'
+            f'echo {q("created snapper config " + name)}\n')
+
+
 def create_snapper(db, conn: Conn, host: str, path: str, name: str, actor: str) -> dict:
     """snapper create-config on a btrfs subvolume, then import it. The host checks the filesystem again before it starts."""
     q = shlex.quote
@@ -529,15 +553,7 @@ def create_snapper(db, conn: Conn, host: str, path: str, name: str, actor: str) 
     a = advice_for(conn, host, path)
     if a['fstype'] != 'btrfs':
         raise ValueError(f'{path} is on {a["fstype"] or "an unknown filesystem"}: {a["why"]}')
-    p, n = q(_safe_path(path)), q(name)
-    body = (HELPERS + PACKAGES + 'APPLY=1\n' + need_line('snapper') + 'set -uo pipefail\ndie() { echo "$*" >&2; exit 1; }\n'
-            'command -v snapper >/dev/null || die "snapper could not be installed"\n'
-            f'[[ $(findmnt -n -o FSTYPE --target {p}) == btrfs ]] || die {q(path + " is not on btrfs")}\n'
-            f'[[ ! -e /etc/snapper/configs/{name} ]] || die {q("there is already a snapper config " + name)}\n'
-            f'snapper -c {n} create-config {p} || die "snapper refused: the path must be a btrfs subvolume"\n'
-            'systemctl enable --now snapper-timeline.timer snapper-cleanup.timer || echo "could not enable the snapper timers"\n'
-            f'echo {q("created snapper config " + name)}\n')
-    res = deploy.run(db, a['host'], body, kind='job-action', ref=f'snapper:{name}', mode='apply', actor=actor, timeout=600)
+    res = deploy.run(db, a['host'], snapper_script(path, name), kind='job-action', ref=f'snapper:{name}', mode='apply', actor=actor, timeout=600)
     if res['status'] != 'ok':
         return res
     probe(db, conn, a['host'], actor)

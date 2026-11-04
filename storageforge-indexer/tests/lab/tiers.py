@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Tiers 1, 3, 4, 5, 6 and 7 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py, tiers 9 to 11 are tiers_platform.py.
+"""Tiers 1, 3, 4, 5, 6 and 7 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py, tiers 9 to 11 are tiers_platform.py, tier 13 is tiers_features.py.
 They change the VMs, so run them through examples/lab/lab.sh test --all, which resets the lab around each tier.
 
-    tiers.py run <0|1|3|4|5|6|7|9|10|11>   tier 0 as a result file, or one tier against StorageForge on sf-ctl, through its API
+    tiers.py run <0|1|3|4|5|6|7|9|10|11|13>   tier 0 as a result file, or one tier against StorageForge on sf-ctl, through its API
     tiers.py report          the table per distro from every results file, into reports/
 
 Results are checked on the VMs and against the seed manifests where a VM can answer, and against the running
@@ -1271,10 +1271,13 @@ def tier0(r):
     for name, end in re.findall(r'^(test_\w+) \(.*?\)(?: \.\.\. (ok|skipped.*|FAIL|ERROR))?$', p.stderr, re.M):
         ok = None if end.startswith('skipped') else name not in failed
         r.add(name.removeprefix('test_'), '-', ok, '', p.stderr[-2000:] if not ok and ok is not None else '')
+    # a skip is a check that didn't happen: with a lab up, all of them skipping is a broken tier, and must not look like a quiet one
+    ran = len(re.findall(r' \.\.\. (?:ok|FAIL|ERROR)$', p.stderr, re.M))
+    r.add('tier0-ran', '-', ran > 0, f'{ran} checks ran' if ran else 'every check skipped: is every VM of the build answering?')
 
 
 # ── report ──────────────────────────────────────────────────────────
-TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs', 6: 'Sync engine', 7: 'Remote nodes', 8: 'Appliances', 9: 'Security', 10: 'Infrastructure', 11: 'Changes'}
+TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs', 6: 'Sync engine', 7: 'Remote nodes', 8: 'Appliances', 9: 'Security', 10: 'Infrastructure', 11: 'Changes', 12: 'Network appliances', 13: 'Features'}
 CELL = {'pass': 'pass', 'FAIL': '**FAIL**', 'skip': 'skip', 'known': 'known', 'fixed?': 'fixed?'}
 
 
@@ -1328,7 +1331,13 @@ def main():
     tier = int(sys.argv[2])
     r = Results(tier)
     try:
-        if tier >= 9:
+        if tier == 13:
+            import tiers_features
+            tiers_features.tier13(r)
+        elif tier == 12:
+            import tiers_network
+            tiers_network.tier12(r)
+        elif tier >= 9:
             import tiers_platform     # it imports this file for its helpers, so it comes in here and not at the top
             getattr(tiers_platform, f'tier{tier}')(r)
         else:

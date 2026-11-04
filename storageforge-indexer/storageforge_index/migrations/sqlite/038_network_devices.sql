@@ -1,0 +1,70 @@
+-- StorageForge schema v38 · sqlite: routers, switches and firewalls; changes made to them; the opt-in nmap scanner; interface counters over time.
+CREATE TABLE network_devices (
+    device_id     INTEGER PRIMARY KEY,
+    name          TEXT    NOT NULL UNIQUE,
+    platform      TEXT    NOT NULL,
+    address       TEXT    NOT NULL,
+    port          INTEGER NOT NULL,
+    transport     TEXT    NOT NULL DEFAULT 'default',
+    username      TEXT,
+    credential    TEXT,                 -- a name in device_credentials, or none to use the vault's key bindings
+    legacy        INTEGER NOT NULL DEFAULT 0,
+    wan_json      TEXT    NOT NULL DEFAULT '[]',
+    last_read_at  BIGINT,
+    last_error    TEXT,
+    created_by    TEXT,
+    created_at    BIGINT  NOT NULL
+);
+
+CREATE TABLE network_changes (
+    change_id    INTEGER PRIMARY KEY,
+    device       TEXT    NOT NULL,
+    dsl          TEXT    NOT NULL,      -- as shown: a secret in it is already <hidden>
+    source       TEXT,                  -- what was written, until it's applied. None when it holds a secret
+    report_json  TEXT    NOT NULL,
+    status       TEXT    NOT NULL,
+    actor        TEXT,
+    created_at   BIGINT  NOT NULL,
+    applied_at   BIGINT,
+    rollback_at  BIGINT,
+    finished_at  BIGINT,
+    output       TEXT
+);
+CREATE INDEX network_changes_device ON network_changes (device, change_id);
+
+CREATE TABLE network_scans (
+    scan_id      INTEGER PRIMARY KEY,
+    target       TEXT    NOT NULL,
+    started_at   BIGINT  NOT NULL,
+    finished_at  BIGINT,
+    status       TEXT    NOT NULL,
+    actor        TEXT,
+    error        TEXT,
+    host_count   INTEGER
+);
+
+CREATE TABLE network_scan_hosts (
+    scan_id     BIGINT  NOT NULL REFERENCES network_scans (scan_id) ON DELETE CASCADE,
+    ip          TEXT    NOT NULL,
+    mac         TEXT,
+    vendor      TEXT,
+    name        TEXT,
+    ports_json  TEXT    NOT NULL DEFAULT '[]',
+    PRIMARY KEY (scan_id, ip)
+);
+
+CREATE TABLE traffic_samples (
+    host      TEXT    NOT NULL,
+    iface     TEXT    NOT NULL,
+    at        BIGINT  NOT NULL,
+    rx_bytes  BIGINT  NOT NULL,
+    tx_bytes  BIGINT  NOT NULL,
+    rx_drop   BIGINT  NOT NULL DEFAULT 0,
+    tx_drop   BIGINT  NOT NULL DEFAULT 0,
+    rx_error  BIGINT  NOT NULL DEFAULT 0,
+    tx_error  BIGINT  NOT NULL DEFAULT 0,
+    PRIMARY KEY (host, iface, at)
+);
+
+INSERT INTO schema_version (version, name, applied_at)
+VALUES (38, 'network_devices', CAST(strftime('%s', 'now') AS INTEGER));

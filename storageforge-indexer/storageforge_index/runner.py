@@ -115,6 +115,8 @@ def scan_via_vault(db: Database, host: str, opts: ScanOptions, actor: str | None
     actor = actor or actor_name()
     conn = db.connect()
     try:
+        if conn.scalar('SELECT count(*) FROM network_devices WHERE lower(name) = lower(:h) OR address = :h', {'h': host}):
+            raise ValueError(f'{host} is a network device: it has no filesystem to scan. Read it from the management planner')
         host = connect_address(conn, host)
         with Vault(db, conn).unlock() as vault:
             audit = AuditLog(db, conn, vault.audit_key)

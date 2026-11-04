@@ -80,7 +80,7 @@ LABEL org.opencontainers.image.title="StorageForge" \
       org.opencontainers.image.version="0.3.2"
 RUN apt-get update --error-on=any \
  && apt-get upgrade -y --no-install-recommends \
- && apt-get install -y --no-install-recommends tini ca-certificates \
+ && apt-get install -y --no-install-recommends tini ca-certificates nmap \
  && groupadd --system --gid 10001 storageforge \
  && useradd --system --uid 10001 --gid storageforge --home-dir /app/data/home --no-create-home \
             --shell /usr/sbin/nologin storageforge \
@@ -91,10 +91,10 @@ RUN apt-get update --error-on=any \
  && dpkg --purge --force-remove-essential --force-remove-protected --force-depends \
       apt libapt-pkg7.0 sqv debian-archive-keyring adduser debconf libdebconfclient0 init-system-helpers \
       perl-base bash tar gzip diffutils sysvinit-utils ncurses-bin ncurses-base libncursesw6 libtinfo6 \
-      libreadline8t64 readline-common libdb5.3t64 libgdbm6t64 libstdc++6 \
+      libreadline8t64 readline-common libdb5.3t64 libgdbm6t64 \
       util-linux bsdutils mount login login.defs passwd liblastlog2-2 libmount1 libblkid1 libsmartcols1 libuuid1 \
       libpam-modules libpam-modules-bin libpam-runtime libpam0g libsemanage2 libsemanage-common libsepol2 \
-      libaudit1 libaudit-common libcap-ng0 libseccomp2 libsystemd0 libudev1 liblz4-1 libxxhash0 \
+      libaudit1 libaudit-common libcap-ng0 libseccomp2 libudev1 liblz4-1 libxxhash0 \
       libgssapi-krb5-2 libkrb5-3 libk5crypto3 libkrb5support0 libkeyutils1 libcom-err2 \
  && rm -rf /var/lib/apt /var/cache/apt /var/cache/debconf /var/log/apt      # nothing installs packages at runtime; dpkg stays as the record scanners read
 COPY --from=build /opt/venv /opt/venv

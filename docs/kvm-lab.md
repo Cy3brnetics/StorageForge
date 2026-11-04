@@ -7,7 +7,7 @@ examples/lab/lab.sh install-launcher   # adds "StorageForge Lab" to the desktop 
 examples/lab/lab.sh up                 # pick and build 7: about 5 minutes with base images cached
 examples/lab/lab.sh up --seed 500277455   # the same 7 as an earlier build
 examples/lab/lab.sh up --pick sf-ctl,sf-fedora,sf-arch   # exactly these configs
-examples/lab/lab.sh test --all         # tiers 0-11 and a report: about an hour
+examples/lab/lab.sh test --all         # tiers 0-11 and 13 and a report: over an hour
 examples/lab/lab.sh down               # remove it all
 ```
 
@@ -78,11 +78,16 @@ The build above ran on 2026-11-01 with the work uncommitted, as instance 1 besid
 | 9: Security | `tests/lab/tiers_platform.py` | Holds on real ZFS and btrfs, the cool-off, two admins, the offline key, the clock guard, decoys, the armed brake, Samba and NFS attribution, the airgap and its timer, quarantine, blast radius and the clean room, SELinux, AppArmor and the baseline |
 | 10: Infrastructure | `tests/lab/tiers_platform.py` | What scans read against each VM, nothing invented, a capture proving nothing is probed, a failed collector, a port ufw looks like it blocks, every firewall giving the same model, workloads on each runtime, change tracking, redacted exports, and whether a quarantine reaches a published port |
 | 11: Changes | `tests/lab/tiers_platform.py` | Firewall rules on ufw, nftables and firewalld, a published port's fix, a fence across a reboot, a timer undoing a cut SSH path, reach against real connections, what-if against the next reading, a design, hardening steps, WireGuard, a placeholder, retention, YARA, a playbook, packages and Falco |
-| 12: Network | `tests/lab/tiers_network.py` | Routers (MikroTik, OpenWrt, pfSense, Cisco) over SSH and Telnet, passive facts, normalized firewall/NAT rules, multi-hop reachability across isolated segments, and safe rollback testing |
+| 12: Network appliances | `tests/lab/tiers_network.py` | Real RouterOS and OpenWrt on isolated WAN, LAN and DMZ networks, with real machines behind them: reading over SSH, an interactive terminal, Telnet and a password; the path query and exposure against real curl; a rule changed on the router flipping both; the language given to real nft and iptables-restore; a change kept, and a change that cuts StorageForge off and the router putting itself back; the scanner sending nothing when off, then found and heard when on. Only when the build has the routers: `lab.sh up --join sf-mikrotik,sf-openwrt,sf-wan-host,sf-lan-client,sf-dmz-server` |
+| 13: Features | `tests/lab/tiers_features.py` | Every feature no other tier reached: file changes, capacity, duplicates, cold data, containers, Git, host configs and the reinstall script applied, canvas, reports, file map, planner, keys added by hand, the vault and accounts through real sign-ins, the activity log, backups copied and restored, audit tampering, snapshot jobs, ClamAV on the EICAR file, LXC and Incus, the map's views, stale dry runs, scan schedules and quiet hours, every read-only command and route, every page in a browser, retiring a host, and site reset |
 
-`lab.sh test --all`, or **Full test** in the panel, runs tiers 0 to 11, resets the lab around the tiers that change VMs, and writes `reports/lab-<date>.md` with a table per distro. Reports aren't committed. Tiers 1, 3, 4, 5, 9, 10 and 11 run against the real Docker stack on `sf-ctl` through its API. Tiers 2 and 8 run on the libvirt host, on a throwaway database. `lab.sh gauntlet` runs tier 2 alone and `lab.sh appliances` runs tier 8 alone.
+`lab.sh test --all`, or **Full test** in the panel, runs tiers 0 to 11 and 13, resets the lab around the tiers that change VMs, and writes `reports/lab-<date>.md` with a table per distro. Reports aren't committed. Tiers 1, 3, 4, 5, 9, 10, 11 and 13 run against the real Docker stack on `sf-ctl` through its API. Tiers 2 and 8 run on the libvirt host, on a throwaway database. `lab.sh gauntlet` runs tier 2 alone and `lab.sh appliances` runs tier 8 alone.
 
 Tiers 9 to 11 last ran on 2026-11-03, with the work uncommitted, on `--pick sf-ctl,sf-ubuntu,sf-fedora,sf-rocky,sf-suse,sf-alpine,sf-bookworm`: all tiers gave 441 passed, 0 failed and 3 skipped. The skips were ZFS send and the sync engine's ZFS stream, which need two ZFS hosts, and appliances, which need `--pick`. The other configs have not run tiers 9 to 11.
+
+[`tests/feature_map.py`](../storageforge-indexer/tests/feature_map.py) lists every feature with its unit tests and lab checks, and `test_feature_map.py` fails if a feature, web route or command has none. A feature the lab can't verify has to say why. The [test audit](test-audit-2026-11-03.md) has the coverage and what the new checks found.
+
+Tiers 0 to 11 and 13 last ran on 2026-11-03, with the work uncommitted, on the same seven configs: 482 passed, 0 failed and 3 skipped. Tier 13 has not run on the other seven configs or on appliances.
 
 A check listed in `KNOWN` in `tiers.py` still fails, but shows as `known` and doesn't fail the run. In tiers 1, 3, 4 and 5, it shows as `fixed?` once it starts passing, which means the line should go.
 
@@ -106,6 +111,9 @@ The known failures from those builds were fixed and rechecked on 2026-11-01, on 
 
 - **ZFS send between hosts in every build:** it needs both ZFS configs, and most builds pick one, so it usually shows as skip.
 - **`yum`-only systems:** those distros are end-of-life.
-- **PostgreSQL:** the lab runs StorageForge on SQLite.
-- **The web UI itself:** the tests use its API, not its pages.
+- **PostgreSQL:** the lab runs StorageForge on SQLite. CI runs the unit tests on PostgreSQL instead, apart from those about SQLite files and the command line tests that drive one.
+- **Real updates:** what a mirror holds changes daily, so no tier can state the result. Update scripts run against stand-ins.
+- **Outside services and hardware:** Tailscale, PagerDuty and a physical FIDO2 token.
+- **The web UI, partly:** tier 13 opens every page and tab in Chromium on real data, when `playwright` is installed where the tier runs. Otherwise that check shows as skip. Actions in the UI are the browser tests' job, on local data.
+- **ClamAV's memory rule:** its script refuses under 2 GiB, and the lab's largest VMs report about 1.7 GiB. Tier 13 checks the refusal, then hides the real figure from that one check to test the rest.
 - **Enterprise Linux at 1 GB:** those configs have 2 GB, because `dnf` is killed for lack of memory at 1 GB once EPEL is enabled.
