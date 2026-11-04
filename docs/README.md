@@ -59,9 +59,9 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Competitive landscape](competitive-landscape.md) | Similar tools across the industry, historical precedents (EPICSHELTER), and feature matrix |
 | [Security audit, 2026-10-28](../security-audit-2026-10-28.md) | Findings and fixes |
 | [Security parameters](../security-parm.md) | The threat model and hardening checklist, from 2026-10-26 |
-| [Roadmap](../notebook/Roadmap.md) | What is planned next, and every finding behind it |
-| [Roadmap](../roadmap.md) | What's left to build. Finished and superseded roadmaps are in [the archive](../archive/roadmaps/) |
-| [UI and UX roadmap](../ui-ux-roadmap.md) | How the screens should change, in order, and how the planner grows to match the platform |
+| [Roadmap](../notebook/Roadmap.md) | The order the findings were worked in, up to 2026-11-01. The release plan is the roadmap below |
+| [Roadmap](../roadmap.md) | The final roadmap before release 0.4.0, and what comes after it. Finished and superseded roadmaps are in [the archive](../archive/roadmaps/) |
+| [UI and UX roadmap](../archive/roadmaps/ui-ux-roadmap.md) | The detail behind the roadmap's UI and UX items: how the screens should change, in order, and how the planner grows to match the platform |
 
 These pages are also published as the project wiki. Edit them here, then run `python3 docs/build-wiki.py --push`: each build replaces the wiki, and a link that leads nowhere stops it.
 

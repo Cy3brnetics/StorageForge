@@ -1,6 +1,6 @@
 # UI and UX roadmap
 
-How the screens should change, in order. [roadmap.md](roadmap.md) says what features are left to build and [progress.md](progress.md) says what is built. This page is about the screens that carry them: how they are organised, how they behave, and how the planner grows to match the rest of the platform. The evidence, with a number for each finding, is the [UI audit of 2026-11-04](docs/audit-2026-11-04-ui.md), and `UX-nn` below refers to it. **This page decides what to do about the audit, and the audit doesn't.**
+The detail behind the UI and UX items in [roadmap.md](../../roadmap.md), which decides what is done and when: how the screens are organised, how they behave, and how the planner grows to match the rest of the platform. The evidence, with a number for each finding, is the [UI audit of 2026-11-04](../../docs/audit-2026-11-04-ui.md), and `UX-nn` below refers to it. [progress.md](../../progress.md) says what is built. Every phase here is in release 0.4.0 except the steps the roadmap names under *Decisions taken for 0.4.0*.
 
 Checked against the code on 2026-11-04.
 
@@ -17,11 +17,11 @@ The phases run in order because each makes the next cheaper, but any phase can s
 | 4. Map, Compose, Scan, Logs | 26 to 32 | A map with space, an editor for the network language, Scan and Logs as real views |
 | 5. Polish and scale | 8 to 12 | Preferences, `Ctrl+K`, a first-run checklist, colour never alone, long lists |
 
-All of it is about 110 to 145 days. **A first cut of about 45 to 50 days** is phase 0, phase 1, and steps 3a, 3b, 3c and 3h: no known defects, one kernel, and a planner that can design a host and say who could reach its shares. If you do only one thing, do phase 0.
+All of it is about 110 to 145 days, and all of it is in release 0.4.0 except step 3i. The order still matters, because each phase makes the next one cheaper.
 
 ## Principles
 
-They settle arguments about the screens, the way [concepts](docs/concepts.md) does for the code.
+They settle arguments about the screens, the way [concepts](../../docs/concepts.md) does for the code.
 
 1. **Say what is known.** *Not measured*, *inferred* and *out of sight* stay. Every new view shows where its facts came from and how old they are.
 2. **One pipeline.** Anything that changes a machine goes through the same report, check and apply component. No screen grows its own variant.
@@ -86,11 +86,11 @@ Everything after this is cheaper once the three pages share what they should sha
 
 ## 3. The planner grows (about 35 to 45 days)
 
-The planner designs storage only. The platform now knows networks, shares, workloads, security and logs, and the planner should show what a design means for each of them, then hand a checked plan to the pipeline that already exists. Each step is useful alone, and most use endpoints that exist. The table in the [audit](docs/audit-2026-11-04-ui.md#the-planner) shows what the platform knows against what the planner shows.
+The planner designs storage only. The platform now knows networks, shares, workloads, security and logs, and the planner should show what a design means for each of them, then hand a checked plan to the pipeline that already exists. Each step is useful alone, and most use endpoints that exist. The table in the [audit](../../docs/audit-2026-11-04-ui.md#the-planner) shows what the platform knows against what the planner shows.
 
 | Step | Audit | What it adds |
 | :--- | :--- | :--- |
-| **3a. Design what isn't there yet** | UX-31 | Add, edit and remove a planned disk, partition, pool, remote mount and export. Planned things are drawn dashed, as the map draws ghosts. A pool is created from the RAID calculator's answer, and a partition editor sees free space. The change plan covers the task types that exist and the rest stays under *By hand*. ZFS and mdadm pools as steps wait for `pooldef` in [roadmap.md](roadmap.md) §2 |
+| **3a. Design what isn't there yet** | UX-31 | Add, edit and remove a planned disk, partition, pool, remote mount and export. Planned things are drawn dashed, as the map draws ghosts. A pool is created from the RAID calculator's answer, and a partition editor sees free space. The change plan covers the task types that exist and the rest stays under *By hand*. ZFS and mdadm pools as steps wait for `pooldef` in [roadmap.md](../../roadmap.md) (B1) |
 | **3b. Shares as first-class** | UX-31 | A Shares view: designed and found shares together, the share wizard and its checks embedded, deploy state, and the clients that mount each one |
 | **3c. The network lens** | UX-34 | *Reachable from* on every export and remote, naming the deciding rule and what is out of sight (`/api/map/reach`, `/api/map/exposure`). A Network tab with the host's interfaces, bridges, VLANs, MTU and routes (`/api/network`), and validated forms that stage the `net-*` and `fw-rule` steps with the map's ghost preview and conflict list. Where Traffic is on, the interface rates behind a mount. Warnings such as "this NFS export is open to any address" |
 | **3d. The workloads lens, and placement advice** | UX-35 | Which containers and VMs sit on each mount (`/api/workloads`); a dependency preview before an edit ("changing `/mnt/x` touches 3 containers and a VM"); guardrails for the placement advice the main roadmap promises (a database on bulk storage, a bind mount on a network filesystem, a Docker root on a slow disk, a stateful stack beside its own backups); service drop-ins from services found on the host, not a fixed list |
@@ -110,7 +110,7 @@ The planner designs storage only. The platform now knows networks, shares, workl
 | **The map's planning tools say what they do** | UX-27 | What-if steps in plain words; staging forms check their fields before asking the server; staged steps survive a reload; the three requests behind a load run together |
 | **Design mode that starts from what was read** | UX-27 | A form editor and a "start from what was read" button (*needs API*), with compare, stage and export as today |
 | **Compose as an editor** | UX-28 | Line numbers, highlighting for the language, unsupported lines marked in the margin, snippets and a form for the common rules (allow, forward, NAT). A diff against what the target runs now in place of the overwrite, saved drafts, the what-if prefilled from the rules written, and *paths that must stay open or stay blocked* checked on every edit (*needs API*). One change history for devices and hosts, from one request |
-| **Scan as a table and a diff** | UX-29 | A table or grid, sort and filter, a diff against the last scan with the new and gone listed, and an action on every unmanaged machine. Scan results as map placeholders and scanner findings through alerts are in [roadmap.md](roadmap.md) §6 |
+| **Scan as a table and a diff** | UX-29 | A table or grid, sort and filter, a diff against the last scan with the new and gone listed, and an action on every unmanaged machine. Scan results as map placeholders and scanner findings through alerts are in [roadmap.md](../../roadmap.md) (B5) |
 | **Logs as a view** | UX-30, 37 | A full-width view with a time range, a per-host freshness list, filters that apply as you type, the query in the URL, UTC or local on a switch, and entry points from a host, an alert, a mount and a device. Counts by level and hour need *a small API*. Still no tail and no stream |
 
 **Exit:** the whole map can be operated from the keyboard; Compose marks the line that cannot be written for the target; every host in a scan has an action; a link from a failing disk opens Logs filtered to it.
@@ -128,14 +128,14 @@ The planner designs storage only. The platform now knows networks, shares, workl
 
 **Exit:** `Ctrl+K` reaches any host or panel in a few keystrokes; density and theme persist; the browser test draws the synthetic fleet inside its budget.
 
-## Needs a feature from roadmap.md
+## Waits for a feature after 0.4.0
 
 | Step here | Needs |
 | :--- | :--- |
-| 3a, ZFS and mdadm pools as steps | `pooldef` and `netdef` (§2) |
-| 3d, placement advice | Placement advice, "the differentiator" (§3) |
-| 4, Compose with positions | A rule at a position, `place-before` (§6) |
-| 4, Scan | Scan results as map placeholders, scanner findings through alerts (§6) |
+| 3a, ZFS and mdadm pools as steps | `pooldef` and `netdef` (B1) |
+| 3d, placement advice | Placement advice, "the differentiator" (B2) |
+| 4, Compose with positions | A rule at a position, `place-before` (B5) |
+| 4, Scan | Scan results as map placeholders, scanner findings through alerts (B5) |
 | 4, the map | The map extras under *Later*: force-directed and rack layouts, custom icons, per-role views |
 
 ## Not audited
@@ -146,13 +146,13 @@ The Files map, Git, Docker, Rebuild and the folder browser were not read (see th
 
 A framework, a build step, a CDN or any third-party script, because the strict CSP and the offline promise are features. A live log tail or any push channel, for the reason the main roadmap gives. Telemetry about how the UI is used. A mobile-first redesign: this is a tool for a desk, or a tablet in a server room, and phase 5 only stops it breaking. A dashboard builder: the Security dashboard stays a fixed set of tiles.
 
-## Decisions still open
+## Decisions
 
-| Decision | Recommendation |
+| Decision | Taken for 0.4.0, and why |
 | :--- | :--- |
 | **One shell, or keep three pages?** | One shell with routed workspaces, reached in steps: shared chrome in phase 1, then the router and the Plan workspace in phase 2. The three pages stay as entry routes. A big-bang rewrite is not on the table |
 | **Native modules?** | Yes, under the current CSP, one file at a time. No bundler |
 | **What becomes of Graph, Structure?** | Keep **Files**, which nothing else does. Retire **Structure** once the map's Storage layer has time travel and a focus-by-hops view, so decide after phase 4 |
 | **Names** | **Plan** for the workspace, **Design** for the storage tool, **Network and devices** for the other; drop "Manage" |
 | **One design document, or two?** | Two documents share a word: the storage blueprint, and the map's design (hosts, networks, workloads, firewall). They should become one per host with sections, with the planner as its editor and the map showing it as ghosts. That is server work, so first ship 3a to 3h on the two as they are |
-| **An accessibility target** | WCAG 2.2 AA, stated in [concepts](docs/concepts.md) and held by a check in `test_browser_smoke.py` |
+| **An accessibility target** | WCAG 2.2 AA, stated in [concepts](../../docs/concepts.md) and held by a check in `test_browser_smoke.py` |

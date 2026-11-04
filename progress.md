@@ -2,7 +2,7 @@
 
 Where the build stands. [roadmap.md](roadmap.md) says what's left, and the plans these rows come from are in [the archive](archive/roadmaps/). **Done** means the roadmap's definition of done (§2), including the KVM lab. Code that passes unit tests but has not been in the lab is **Built, not lab-tested**.
 
-Last updated: 2026-11-03.
+Last updated: 2026-11-04.
 
 ## Now
 
@@ -40,6 +40,12 @@ Corrections stand: no VSS trap, no cryptographic shred, no certificates, no WebS
 | Dashboards, custom profiles, ban tiers, alert routes, PagerDuty | Unit and browser tests. PagerDuty has not reached the real service |
 | FIDO2 step-up | Chromium's virtual authenticator. No physical token |
 
+## Host logs
+
+| Work | State |
+| :--- | :--- |
+| Scans collect host journals; the Logs tab, `hostlogs` on the CLI, `/api/hostlogs` and the `hostlogs.view` permission | Built, and committed on 2026-11-04 as it stood. Its unit tests exist, and neither they nor the lab have run since |
+
 ## Log
 
 - 2026-11-02: baseline 807 tests passing, 4 skipped. Clock and boolean fixes landed by the owner as `db53dcb`.
@@ -47,6 +53,8 @@ Corrections stand: no VSS trap, no cryptographic shred, no certificates, no WebS
 - 2026-11-03: final code: 940 unit tests pass on SQLite (4 skipped) and on PostgreSQL (42 skipped). KVM lab tiers 0 to 11: 441 passed, 0 failed, 3 skipped, on 7 of the 14 configs.
 - 2026-11-03: [test audit](docs/test-audit-2026-11-03.md): every feature mapped to a test and a lab check, or a stated reason. 1043 tests on SQLite (4 skipped) and PostgreSQL (78 skipped). KVM lab tiers 0 to 11 and 13: 482 passed, 0 failed, 3 skipped, on 7 of the 14 configs.
 - 2026-11-04: expanded networking, the management planner and the audit of 2026-11-03: 1243 tests on SQLite (7 skipped) and PostgreSQL (80 skipped). KVM lab tiers 0 to 13: 511 passed, 0 failed, 5 skipped, on 7 of the 14 configs plus a real RouterOS, a real OpenWrt and three machines behind them.
+- 2026-11-04: the open branches were brought together. Every branch, local and remote, is in `dev-expanded-networking`, which is ahead of `main` and not behind it. The host logs work, which had not been committed, was committed on it. No tests have run since.
+- 2026-11-04: [UI audit](docs/audit-2026-11-04-ui.md): 41 findings, from a read of the web UI and a pass through it in a real browser. None is fixed yet.
 
 What the lab found that unit tests had not:
 

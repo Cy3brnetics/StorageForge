@@ -4,6 +4,8 @@ updated: 2026-11-01
 ---
 # Roadmap
 
+> The release plan, and everything else still open, is now in [the roadmap](../roadmap.md). This page keeps the order the findings were worked in, up to 2026-11-01.
+
 The findings in the order that makes each step easier than the last. Effort: S under a day, M a few days, L a week or more.
 
 ## Now: make change safe
