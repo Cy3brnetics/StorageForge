@@ -373,16 +373,9 @@ canvas.addEventListener('wheel', (ev) => {
   view.x = mx - (mx - view.x) * (k / view.k); view.y = my - (my - view.y) * (k / view.k); view.k = k;
   wake();
 }, { passive: false });
-/* A shortcut acts on a key nobody is typing: not inside a text field, not under an open dialog, and not with Ctrl, Alt or
-   Meta held (UX-40, UX-41). Typing a path starts with a slash, so a shortcut that takes `/` anywhere takes it from the
-   path, and from a password in the confirm dialog. Every global shortcut asks these two before it acts. */
-const inField = (ev) => !!ev.target.closest?.('input, textarea, select, [contenteditable]');
-const typing = (ev) => inField(ev) || !!document.querySelector('dialog[open]');
-const plain = (ev) => !(ev.ctrlKey || ev.metaKey || ev.altKey || ev.isComposing);
-document.addEventListener('keydown', (ev) => {
-  if (ev.key === '/' && plain(ev) && !typing(ev)) { ev.preventDefault(); $('#q').focus(); }
-  if (ev.key === 'Escape' && S.focus && !typing(ev)) setFocus(null);
-});
+/* The global shortcuts are declared with sfShortcut(), which is the kernel's, and its one rule keeps them off a key somebody is typing (UX-40, UX-41). */
+sfShortcut({ id: 'search-focus', key: '/', label: 'Go to the file search', run: (ev) => { ev.preventDefault(); $('#q').focus(); } });
+sfShortcut({ id: 'clear-focus', key: 'Escape', mods: 'any', label: 'Clear the focus on a node', where: 'Graph', when: () => !!S.focus, run: () => { setFocus(null); } });
 function tooltip(n, ev) {
   const tip = $('#tip');
   if (!n) { tip.hidden = true; return; }
@@ -555,11 +548,14 @@ document.addEventListener('contextmenu', (ev) => {
   const owner = menuFor(t);
   if (owner && menuAt(owner, ev)) ev.preventDefault();
 });
-document.addEventListener('keydown', (ev) => {   // ContextMenu key and Shift+F10 on a focused element, but not in a text field: that keeps the browser's own menu, as right-click does
-  if (!(ev.key === 'ContextMenu' || (ev.key === 'F10' && ev.shiftKey)) || menuEl || inField(ev)) return;
+// the Menu key and Shift+F10 open the menu of the focused item, but not in a text field, which keeps the browser's own menu as right-click does; under a dialog they act, because the focused item is in it
+const menuFromKey = (ev) => {
   const owner = menuFor(document.activeElement);
-  if (owner && owner !== canvas && menuAt(owner, ev)) { ev.preventDefault(); menuKeyAt = Date.now(); }
-});
+  if (owner && owner !== canvas && menuAt(owner, ev)) { ev.preventDefault(); menuKeyAt = Date.now(); return true; }
+  return false;
+};
+sfShortcut({ id: 'context-menu', key: 'ContextMenu', mods: 'any', label: 'Open the menu of the focused item', dialogs: true, when: () => !menuEl, run: menuFromKey });
+sfShortcut({ id: 'context-menu-f10', key: 'F10', mods: 'shift', label: 'Open the menu of the focused item', dialogs: true, when: () => !menuEl, run: menuFromKey });
 document.addEventListener('pointerdown', (ev) => { if (menuEl && !menuEl.contains(ev.target)) closeMenu(); }, true);
 document.addEventListener('scroll', (ev) => { if (menuEl && !menuEl.contains(ev.target)) closeMenu(); }, true);
 window.addEventListener('resize', () => closeMenu());
@@ -667,10 +663,7 @@ grip.setAttribute('aria-valuemin', PW.min); grip.setAttribute('aria-valuemax', 7
 setPanelWidth(Number(prefs('sf.panelw')) || PW.def);
 showTab('details');
 if (prefs('sf.panel') === 'closed') setPanelOpen(false);
-document.addEventListener('keydown', (ev) => {   // \ shows or hides the panel
-  if (ev.key !== '\\' || !plain(ev) || typing(ev)) return;
-  ev.preventDefault(); setPanelOpen(panel.classList.contains('collapsed'));
-});
+sfShortcut({ id: 'panel-toggle', key: '\\', label: 'Show or hide the panel', run: (ev) => { ev.preventDefault(); setPanelOpen(panel.classList.contains('collapsed')); } });
 
 async function runSearch(params) {
   const fresh = latest('search');

@@ -1029,6 +1029,43 @@ class BrowserSmoke(unittest.TestCase):
             self.page.wait_for_selector('.tabs button')
 
 
+    # ── one place for shortcuts: UX-20, UX-40 and UX-41 ──────────────────────────────────────────────────────────────
+    def test_every_global_shortcut_is_declared_with_what_it_is_for(self):               # UX-20
+        got = self.page.evaluate('sfShortcuts()')
+        self.assertEqual({s['id'] for s in got}, {'search-focus', 'clear-focus', 'context-menu', 'context-menu-f10', 'panel-toggle', 'tasks-undo', 'file-map-dest'})
+        for s in got:
+            self.assertTrue(s['label'] and s['where'] and s['key'], s)             # what a help overlay would show
+
+    def test_the_registry_keeps_a_shortcut_off_a_key_somebody_is_typing(self):            # UX-40, UX-41
+        self.page.evaluate("""() => {
+          window.__hits = [];
+          const hit = (n) => () => { __hits.push(n); };
+          sfShortcut({ id: 't-plain', key: 'q', label: 't', run: hit('plain') });
+          sfShortcut({ id: 't-fields', key: 'w', label: 't', fields: true, run: hit('fields') });
+          sfShortcut({ id: 't-dialogs', key: 'e', label: 't', dialogs: true, run: hit('dialogs') });
+          sfShortcut({ id: 't-mod', key: 'y', mods: 'mod', label: 't', run: hit('mod') });
+          sfShortcut({ id: 't-pass', key: 't', label: 't', run: () => false });
+          sfShortcut({ id: 't-next', key: 't', label: 't', run: hit('next') });
+          const i = document.createElement('input'); i.id = 'tf'; document.body.append(i);
+        }""")
+        hits = lambda: self.page.evaluate('__hits.splice(0)')
+        press = lambda *keys: [self.page.keyboard.press(k) for k in keys]
+        self.page.evaluate('document.activeElement.blur()')
+        press('q', 'w', 'e', 't')
+        self.assertEqual(hits(), ['plain', 'fields', 'dialogs', 'next'])               # on the page they all act, and a shortcut that finds nothing hands the key on
+        press('Control+q', 'Alt+q', 'Control+y')
+        self.assertEqual(hits(), ['mod'])                                                # Ctrl or Alt held is not a plain key; Ctrl is what a "mod" shortcut asks for
+        self.page.focus('#tf')
+        press('q', 'w', 'e', 'Control+y')
+        self.assertEqual(hits(), ['fields'])                                             # in a text field only the one that says so acts
+        self.page.evaluate('document.activeElement.blur()')
+        self.page.evaluate("() => { confirmDialog({ title: 'Sure?', confirm: 'Yes' }); }")
+        self.page.wait_for_selector('dialog.sf-dialog[open]')
+        press('q', 'w', 'e')
+        self.assertEqual(hits(), ['dialogs'])                                            # under a dialog, the same
+        self.assertEqual(self.errors, [])
+
+
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
 class MapAtScale(unittest.TestCase):
     """A synthetic 200 hosts and 2,000 workloads. It has to stay usable: the numbers here decide whether the map needs more."""

@@ -463,9 +463,5 @@ async function newTaskAt(host, path, kind = 'backup', fstype = '') {
   });
 }
 
-document.addEventListener('keydown', (ev) => {
-  if (T.mode !== 'tasks' || !(ev.ctrlKey || ev.metaKey) || ev.key.toLowerCase() !== 'z') return;
-  if (typing(ev)) return;
-  ev.preventDefault(); tkUndo(ev.shiftKey);
-});
+sfShortcut({ id: 'tasks-undo', key: 'z', mods: 'mod', label: 'Undo, and with Shift redo', where: 'Tasks', when: () => T.mode === 'tasks', run: (ev) => { ev.preventDefault(); tkUndo(ev.shiftKey); } });
 window.addEventListener('beforeunload', (ev) => { if (TK.dirty) ev.preventDefault(); });

@@ -59,6 +59,18 @@ class Kernel(unittest.TestCase):
             self.assertIn('await api(', m.group(0), f'{name}: {wrapper}() does not go through api()')
             self.assertNotIn('fetch(', m.group(0))
 
+    def test_no_global_shortcut_is_registered_outside_the_registry(self):             # UX-20, UX-40, UX-41
+        """A key handler on the document that forgot to ask whether somebody is typing took a slash from a path and from a password. Each global
+        one is declared with sfShortcut(), and the kernel's one listener asks. A widget's own keys, on its own element, are not global."""
+        found = []
+        for path in scripts():
+            if path.name == 'kernel.js':
+                continue
+            for m in re.finditer(r"(?:document|window|document\.body|document\.documentElement)\.addEventListener\(\s*['\"](?:keydown|keyup|keypress)['\"]", code(path)):
+                found.append(f'{path.name}: {m.group(0)}')
+        self.assertEqual(found, [], 'declare it with sfShortcut()')
+        self.assertEqual(len(re.findall(r"document\.addEventListener\(\s*'keydown'", code(STATIC / 'kernel.js'))), 1, 'one listener applies the rule')
+
     def test_the_kernel_builds_no_markup_from_text(self):
         """Dialog titles and bodies carry paths and host names that machines report: they are shown as text, never parsed."""
         self.assertNotRegex(code(STATIC / 'kernel.js'), r'innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\s*\(|new Function')

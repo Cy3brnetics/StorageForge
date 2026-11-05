@@ -64,6 +64,47 @@ function notify(message, kind = 'info') {        // a toast. An error stays unti
 
 const toast = (message, kind) => notify(message, kind);          // the name the main page's scripts already use
 
+/* ── one place for keyboard shortcuts (UX-40, UX-41, UX-20) ──────── */
+/* Every global shortcut declares itself with sfShortcut(), and the one listener below applies the one rule for "someone is typing": a
+   shortcut does not act inside a text field or under an open dialog, and not with Ctrl, Alt or Meta held, unless it says it may. Typing a
+   path starts with a slash, so a shortcut that took `/` from anywhere took it from the path, and from a password in the confirm dialog.
+   A shortcut declares what it is for, so the list of them (sfShortcuts()) can be shown to a person. A widget's own keys, on its own
+   element, are not global shortcuts and stay where they are. tests/test_ui_kernel.py fails when a script registers a keydown on the
+   document itself. */
+const inField = (ev) => !!ev.target.closest?.('input, textarea, select, [contenteditable]');
+const dialogOpen = () => !!document.querySelector('dialog[open]');
+const typing = (ev) => inField(ev) || dialogOpen();
+const plain = (ev) => !(ev.ctrlKey || ev.metaKey || ev.altKey || ev.isComposing);
+const SF_SHORTCUTS = [];
+
+/* { id, key, mods, label, where, fields, dialogs, when(ev), run(ev) }. mods: 'none' (no Ctrl, Alt or Meta; Shift may be held, as a slash
+   needs it on some keyboards), 'shift' (Shift and nothing else), 'mod' (Ctrl or Meta, with Shift as it likes, no Alt) or 'any'.
+   fields and dialogs let it act inside a text field or under an open dialog. run() may return false to say it found nothing to do,
+   and the next shortcut for the key gets it; anything else is the key taken. */
+function sfShortcut({ id, key, mods = 'none', label, where = 'Anywhere on the page', fields = false, dialogs = false, when = null, run }) {
+  const spec = { id, key, mods, label, where, fields, dialogs, when, run };
+  SF_SHORTCUTS.push(spec);
+  return spec;
+}
+function sfShortcuts() { return SF_SHORTCUTS.map(({ id, key, mods, label, where }) => ({ id, key, mods, label, where })); }
+function sfModsOk(mods, ev) {
+  const mod = ev.ctrlKey || ev.metaKey;
+  if (mods === 'any') return true;
+  if (mods === 'shift') return ev.shiftKey && !mod && !ev.altKey;
+  if (mods === 'mod') return mod && !ev.altKey;
+  return !mod && !ev.altKey;
+}
+document.addEventListener('keydown', (ev) => {
+  if (ev.isComposing || typeof ev.key !== 'string') return;
+  const typingNow = inField(ev), dialogNow = dialogOpen();
+  for (const sc of SF_SHORTCUTS) {
+    if (ev.key.toLowerCase() !== sc.key.toLowerCase() || !sfModsOk(sc.mods, ev)) continue;
+    if ((typingNow && !sc.fields) || (dialogNow && !sc.dialogs)) continue;
+    if (sc.when && !sc.when(ev)) continue;
+    if (sc.run(ev) !== false) return;
+  }
+});
+
 /* ── dialogs ─────────────────────────────────────────────────────── */
 function sfModal(content, labelledby) {          // a native modal <dialog>: focus stays inside, Escape closes it, and focus goes back to where it was
   const opener = document.activeElement;
