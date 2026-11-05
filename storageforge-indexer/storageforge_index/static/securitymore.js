@@ -282,19 +282,5 @@ SEC_MORE.macExtra = function secMacExtra(host, d) {
 };
 
 /* ── the line at the top of every page ────────────────────────────── */
-async function threatBanner() {
-  const b = $('#threatbanner');
-  if (!b || !can('security.view')) return;
-  try {
-    const p = await getJSON('/api/security/posture');
-    b.hidden = false;
-    b.className = `threat sec-${p.state}`;
-    // always "Security: …", and the detail is on the page: it was a tooltip, which a keyboard or a finger never saw (UX-09)
-    const label = { secure: 'Security: nothing wrong found', warning: 'Security: needs a look', critical: 'Security: incident', unknown: 'Security: not known' }[p.state] || 'Security: not known';
-    b.replaceChildren(text('b', label), text('span', p.banner, 'threat-detail'));
-    b.title = p.banner;                 // the detail is cut to two lines in the header; hovering still gives all of it
-  } catch { b.hidden = true; }
-}
-$('#threatbanner')?.addEventListener('click', () => { showTab('security'); });
-setInterval(threatBanner, 60000);
-setTimeout(threatBanner, 1500);
+// the chip is chrome.js's, so the planner, /manage and the search page show the same one; a click here opens the Security panel
+const threatBanner = sfSecurityChip($('#threatbanner'), () => { showTab('security'); }, () => can('security.view'), 1500);

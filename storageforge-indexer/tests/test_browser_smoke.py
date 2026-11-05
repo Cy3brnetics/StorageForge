@@ -993,6 +993,42 @@ class BrowserSmoke(unittest.TestCase):
         self.assertEqual(len(confirmed), 1)
 
 
+    # ── shared chrome: the security chip and the way between the pages: UX-09 and UX-03 ───────────────────────────────
+    def test_every_page_shows_the_security_chip_and_the_way_to_the_others(self):     # UX-09, UX-03
+        """Only the main page had a line about security, though the changelog said "a line at the top of every page"."""
+        for path, here in (('/planner', '/planner'), ('/manage', '/manage')):
+            self.page.goto(self.base + path)
+            self.page.wait_for_selector('.sf-chrome .threat:not([hidden])', timeout=9000)
+            self.assertTrue(self.page.inner_text('.sf-chrome .threat').startswith('Security: '), path)
+            self.assertIn('measured in the last day', self.page.inner_text('.sf-chrome .threat-detail'))
+            self.assertEqual(self.page.eval_on_selector_all('.sf-chrome nav a', 'as => as.map((a) => a.textContent)'), ['Topology and map', 'Storage planner', 'Network management'])
+            self.assertEqual(self.page.get_attribute('.sf-chrome nav a[aria-current="page"]', 'href'), here)
+            self.assertIn('admin', self.page.inner_text('.sf-user'))
+        self.page.goto(self.base + '/search')
+        self.page.wait_for_selector('.sf-chrome .threat:not([hidden])', timeout=9000)
+        self.assertTrue(self.page.is_visible('.sf-user button:has-text("Sign out")'))
+        self.assertEqual(self.errors, [])
+
+    def test_the_chip_on_another_page_opens_the_security_panel(self):                 # UX-09
+        self.page.goto(self.base + '/manage')
+        self.page.wait_for_selector('.sf-chrome .threat:not([hidden])', timeout=9000)
+        self.page.click('.sf-chrome .threat')
+        self.page.wait_for_selector('.tabs button[data-tab="security"][aria-selected="true"]')
+        self.assertEqual(self.errors, [])
+
+    def test_the_planner_and_manage_can_sign_out(self):                               # UX-03
+        for path in ('/planner', '/manage'):
+            self.page.goto(self.base + path)
+            self.page.wait_for_selector('.sf-user button')
+            self.page.click('.sf-user button:has-text("Sign out")')
+            self.page.wait_for_url(self.base + '/login*')
+            self.page.goto(self.base + '/login')
+            self.page.fill('input[type=text], input[name=username], #username', 'admin')           # the next pass needs a session again
+            self.page.fill('input[type=password]', PW)
+            self.page.press('input[type=password]', 'Enter')
+            self.page.wait_for_selector('.tabs button')
+
+
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
 class MapAtScale(unittest.TestCase):
     """A synthetic 200 hosts and 2,000 workloads. It has to stay usable: the numbers here decide whether the map needs more."""

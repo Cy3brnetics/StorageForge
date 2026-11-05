@@ -39,3 +39,25 @@
 button[aria-busy="true"]::after { content: ""; display: inline-block; width: .8em; height: .8em; margin-left: .5em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: sf-spin .8s linear infinite; vertical-align: -0.1em; }
 @keyframes sf-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { button[aria-busy="true"]::after { animation: none; border-right-color: currentColor; } }
+
+/* The security chip, on every page (UX-09): where the posture of every host adds up to, always "Security: …", with the reason under it. */
+.threat { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 1px; max-width: 26em; border: 1px solid var(--sf-line); border-radius: 4px; padding: 2px 8px; font: var(--sf-t2)/1.25 var(--sf-sans); text-align: left; cursor: pointer; background: var(--sf-panel); color: inherit; }
+.threat b { font-weight: 600; }
+.threat-detail { font-size: var(--sf-t1); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.threat.sec-critical { background: #7a1f1f; color: #fff; border-color: #a33; }
+.threat.sec-warning { background: #7a5a1f; color: #fff; border-color: #a83; }
+.threat.sec-secure { color: var(--sf-ok); }
+.threat:focus-visible { outline: 2px solid var(--sf-accent); outline-offset: 2px; }
+
+/* The chrome a page without a header of its own mounts (chrome.js): the site, the other pages, the chip, and who is signed in. */
+.sf-chrome { display: flex; flex-direction: column; gap: var(--sf-s2); align-items: stretch; min-width: 0; font-family: var(--sf-sans); }
+.sf-chrome nav { display: flex; flex-direction: column; gap: var(--sf-s1); }
+.sf-chrome .sf-btn { text-align: left; }
+.sf-chrome .threat { max-width: none; }
+.sf-chrome[data-layout="row"] { flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--sf-s2) var(--sf-s3); }
+.sf-chrome[data-layout="row"] nav { flex-direction: row; flex-wrap: wrap; }
+a.sf-btn { display: inline-block; text-decoration: none; }
+.sf-btn[aria-current="page"] { border-color: var(--sf-accent); font-weight: 600; }
+.sf-site { font-size: var(--sf-t2); color: var(--sf-muted); }
+.sf-user { display: flex; align-items: center; justify-content: space-between; gap: var(--sf-s2); font-size: var(--sf-t2); color: var(--sf-muted); }
+.sf-user span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

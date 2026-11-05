@@ -111,13 +111,13 @@ class TextContrast(unittest.TestCase):
     def test_the_security_banner_chips_clear_aa_in_both_themes(self):          # UX-09
         """The header's security chip: white on a fixed red or amber for the two states that need a look, and the theme's own green when
         nothing is wrong. It was a fixed light green (#6c6), which is 2.0 to 1 on the light theme's white panel."""
-        css = (STATIC / 'style.css').read_text()
+        css = (STATIC / 'components.css').read_text()
         full = lambda h: '#' + ''.join(c * 2 for c in h[1:]) if len(h) == 4 else h          # #fff is #ffffff
         for state in ('critical', 'warning'):
             rule = block(css, f'.threat.sec-{state} ')
             bg, fg = (full(re.search(rf'{prop}:\s*(#[0-9a-fA-F]{{3,6}})\b', rule).group(1)) for prop in ('background', r'(?<!-)color'))
             self.assertGreaterEqual(ratio(bg, fg), AA, state)
-        self.assertRegex(block(css, '.threat.sec-secure '), r'color:\s*var\(--protected\)')     # the token the test above holds, in both themes
+        self.assertRegex(block(css, '.threat.sec-secure '), r'color:\s*var\(--sf-ok\)')     # the token the test above holds, in both themes
 
     def test_the_rail_group_labels_are_readable(self):
         rule = block((STATIC / 'style.css').read_text(), '.rgroup {')

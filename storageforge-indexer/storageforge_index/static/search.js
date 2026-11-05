@@ -11,7 +11,6 @@ const size = (n) => {
 async function call(path, opts) {         // the kernel's api(): a 401 ends the page, and an error carries the server's message
   return (await api(path, opts)).json().catch(() => ({}));
 }
-$id('signout').addEventListener('click', sfSignOut);
 call('/api/search/hosts').then(({ hosts }) => $id('shost').append(...hosts.map((h) => new Option(h, h)))).catch(() => {});
 
 $id('sform').addEventListener('submit', async (ev) => {

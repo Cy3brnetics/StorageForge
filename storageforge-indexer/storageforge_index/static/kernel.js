@@ -161,9 +161,14 @@ function formDialog({ title, body = '', fields = [], confirm = 'Save', cancel = 
 }
 
 /* ── password again before commands run on hosts ─────────────────── */
-async function sfKnowUser() {     // who is signed in, so a password manager can offer the right password; asked only when a password is wanted
+let sfMePromise = null;
+function sfMe() {                 // who is signed in and what they may do, asked once for the page
+  if (!sfMePromise) sfMePromise = getJSON('/api/me').catch((err) => { sfMePromise = null; throw err; });
+  return sfMePromise;
+}
+async function sfKnowUser() {     // so a password manager can offer the right password; asked only when a password is wanted
   if (sfUserName) return;
-  try { const r = await fetch('/api/me', { credentials: 'same-origin' }); if (r.ok) sfUserName = (await r.json()).username || ''; } catch { /* the hint is optional */ }
+  try { sfUserName = (await sfMe()).username || ''; } catch { /* the hint is optional */ }
 }
 let sfReauth = null;
 function confirmPassword() {      // one dialog however many calls are waiting on it

@@ -72,6 +72,7 @@ class Kernel(unittest.TestCase):
                 self.assertNotEqual(later, '/session.js', page)
             scripts_ = [t for t in tags if t.endswith('.js')]
             self.assertEqual(scripts_.index('/kernel.js'), scripts_.index('/session.js') + 1, f'{page}: the kernel is the script after session.js')
+            self.assertEqual(scripts_.index('/chrome.js'), scripts_.index('/kernel.js') + 1, f'{page}: the shared chrome is the script after the kernel')
             sheets = [t for t in tags if t.endswith('.css')]
             self.assertEqual(sheets[:2], ['/tokens.css', '/components.css'], f'{page}: tokens, then components, then the page\'s own sheet')
             self.assertEqual(len(sheets), 3, page)

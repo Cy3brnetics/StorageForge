@@ -150,6 +150,8 @@ The rail on the right opens panels in the inspector: 18 of them in five groups. 
 | `/search` | File search on a page of its own, with a host picker |
 | `/login`, `/enroll` | Sign-in, and the page an invite or reset link opens |
 
+The planner, `/manage` and `/search` show the same security chip as the main page, with the links between the pages and **Sign out**: in the planner's page header and rail, in `/manage`'s rail and in the search page's header.
+
 ## Keyboard
 
 | Key | What it does |

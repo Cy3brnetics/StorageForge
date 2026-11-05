@@ -1036,12 +1036,6 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 .inf-table td::before { content: attr(data-label) ": "; color: var(--muted); font-size: 12px; }
 
 /* the line at the top of every page, and the security grid */
-.threat { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 1px; max-width: 26em; border: 1px solid var(--line); border-radius: 4px; padding: 2px 8px; font-size: 12px; line-height: 1.25; text-align: left; cursor: pointer; background: var(--panel); color: inherit; }
-.threat b { font-weight: 600; }
-.threat-detail { font-size: 11px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-.threat.sec-critical { background: #7a1f1f; color: #fff; border-color: #a33; }
-.threat.sec-warning { background: #7a5a1f; color: #fff; border-color: #a83; }
-.threat.sec-secure { color: var(--protected); }
 .sec-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .sec-tile { border: 1px solid var(--line); border-radius: 6px; padding: 8px; background: var(--panel); min-width: 0; }
 .sec-tile .row { justify-content: space-between; align-items: center; gap: 4px; }
