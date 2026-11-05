@@ -3,10 +3,12 @@ stand-ins for btrfs, zfs, ssh and sudo, in a folder for each host. The stand-in 
 authorized_keys and runs that line's forced command, with the real storageforge-job. What real tools do with real streams is the KVM lab's part
 (tests/lab/tiers_sends.py)."""
 import fcntl
+import getpass
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -20,6 +22,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from storageforge_index import changes, deploy, engine, jobs, moves, preflight, receiving, scheduler, tasks
 from storageforge_index.jobscript import JOB_SCRIPT
+from storageforge_index.remote import child_env
 
 from test_tasks import Fleet
 
@@ -995,6 +998,134 @@ class HostileValues(TwoHosts):
                 changes.normalize({'name': 'p', 'tasks': [{'type': 'btrfs-send', 'host': 'nas', 'params': {'source': '/mnt/s', 'dest_host': 'pc', 'dest': dest}}]})
             with self.assertRaises(ValueError):
                 tasks.normalize({'name': 't', 'host': 'nas', 'blocks': [{'type': 'btrfs_send', 'params': {'into': '/mnt/s', 'prefix': 'd', 'dst_host': 'pc', 'dst': dest, 'keep': 0}}]})
+
+
+@unittest.skipUnless(shutil.which('ssh') and (shutil.which('sshd') or os.path.exists('/usr/sbin/sshd')), 'needs OpenSSH (CI has it)')
+@unittest.skipIf(os.geteuid() == 0, 'runs sshd as the test user')
+class RealSshd(TwoHosts):
+    """A real sshd on a port of its own, real ssh on the sender and the key line as a deploy wrote it, with sudo, btrfs and zfs still stand-ins.
+    What this shows: what the job key really can and cannot do once sshd has it. The tools themselves are the lab's part."""
+
+    def setUp(self):
+        super().setUp()
+        (self.bin / 'ssh').unlink()     # the real one
+        for name in ('btrfs', 'zfs'):       # sshd clears the environment
+            f = self.bin / name
+            text = f.read_text()
+            for k, v in self.env('pc').items():
+                if k.startswith('STUB_'):
+                    text = text.replace('$' + k, v).replace('"$' + k + '"', f'"{v}"')
+            f.write_text(text)
+        self.user = getpass.getuser()
+        self.d = self.t / 'sshd'
+        self.d.mkdir()
+        self.hostkey = self.d / 'host'
+        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(self.hostkey)], check=True, env=child_env())
+        self.pin = 'storageforge-source ' + ' '.join((self.d / 'host.pub').read_text().split()[:2]) + '\n'
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', 0))
+            self.port = sock.getsockname()[1]
+        keys = self.t / 'pc/var/lib/storageforge/deploy/.ssh/authorized_keys'
+        keys.write_text('')
+        conf = self.d / 'sshd_config'
+        conf.write_text(f'Port {self.port}\nListenAddress 127.0.0.1\nHostKey {self.hostkey}\nAuthorizedKeysFile {keys}\nPidFile none\nUsePAM no\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nLogLevel ERROR\n')
+        sshd = shutil.which('sshd') or '/usr/sbin/sshd'
+        self.sshd = subprocess.Popen([sshd, '-D', '-e', '-f', str(conf)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(self.sshd.wait)
+        self.addCleanup(self.sshd.kill)
+        for _ in range(100):
+            with socket.socket() as sock:
+                if not sock.connect_ex(('127.0.0.1', self.port)):
+                    break
+            time.sleep(0.05)
+        else:
+            self.skipTest('sshd would not start here')
+        self.conn.execute("UPDATE hosts SET ssh_host = '127.0.0.1', ssh_port = :p WHERE hostname = 'pc'", {'p': self.port})
+        p = mock.patch.object(jobs, 'pinned_key', lambda host: self.pin)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def localize(self, text, host):
+        text = text.replace('"storageforge-deploy@$S_ADDR"', f'"{self.user}@$S_ADDR"').replace('sudo -n /usr/local/sbin/storageforge-job', f'{self.bin}/sudo -n /usr/local/sbin/storageforge-job')
+        text = text.replace('LOCKS=/run/lock TMPD=/run', f'LOCKS={self.d} TMPD={self.d}')
+        return super().localize(text, host)
+
+    def key_of(self):
+        """The first send's key, as the sender holds it."""
+        return next((self.t / 'nas/etc/storageforge/sends').glob('*.key'))
+
+    def by_hand(self, line, *options, key=None, known=None):
+        """What someone holding the key can try: real ssh, with what they like on the command line."""
+        key = key or self.key_of()
+        known = known or next((self.t / 'nas/etc/storageforge/sends').glob('*.hostkey'))
+        return subprocess.run(['ssh', '-F', '/dev/null', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'IdentitiesOnly=yes', '-i', str(key), '-p', str(self.port), '-o', 'HostKeyAlias=storageforge-source',
+                               '-o', f'UserKnownHostsFile={known}', '-o', 'StrictHostKeyChecking=yes', *options, '--', f'{self.user}@127.0.0.1', *([line] if line is not None else [])],
+                              capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, env=child_env())
+
+    def test_a_task_sends_through_a_real_sshd_and_says_so_on_the_other_side(self):
+        task = self.task(self.btrfs_block(keep=1))
+        self.install_task(task)
+        self.snap('d-1')
+        r = self.timer_run(task)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((self.there / 'd-1').is_dir())
+        self.assertEqual(self.recorded()[-1]['verb'], 'receive')
+        self.snap('d-2')
+        r = self.timer_run(task)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(sorted(p.name for p in self.there.iterdir()), ['d-2'])
+
+    def test_a_failed_receive_comes_back_through_ssh_as_a_failure_with_its_reason(self):
+        task = self.task(self.btrfs_block())
+        self.install_task(task)
+        self.snap('d-1')
+        (self.flags / 'receive-fails').write_text('')
+        r = self.timer_run(task)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('checksum mismatch', r.stderr)
+        self.assertIn('exit 1', r.stderr)
+
+    def test_the_key_runs_the_verbs_and_nothing_else(self):
+        self.install_task(self.task(self.btrfs_block()))
+        self.assertEqual(self.by_hand('recv-probe').stdout.strip(), 'ok btrfs')
+        mark = self.t / 'RAN'
+        for line in (None, 'id', f'touch {mark}', f'recv-probe; touch {mark}', f'recv-list $(touch {mark})', f'recv-list `touch {mark}`', f'recv-state "a" | touch {mark}', f'bash -c "touch {mark}"', 'rsync --server --daemon .', 'stream-send x -'):
+            with self.subTest(line):
+                r = self.by_hand(line)
+                self.assertEqual(r.returncode, 97, r.stdout + r.stderr)
+                self.assertFalse(mark.exists())
+        self.assertIn('PTY allocation request failed', self.by_hand('recv-probe', '-tt').stderr, 'restrict: no terminal')
+        self.assertNotEqual(self.by_hand(None, '-N', '-L', f'127.0.0.1:1:127.0.0.1:{self.port}', '-o', 'ExitOnForwardFailure=yes').returncode, 0, 'restrict: no forwarding')
+
+    def test_another_key_gets_nothing(self):
+        self.install_task(self.task(self.btrfs_block()))
+        other = self.d / 'other'
+        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(other)], check=True, env=child_env())
+        r = self.by_hand('recv-probe', key=other)
+        self.assertEqual(r.returncode, 255)
+        self.assertIn('Permission denied', r.stderr)
+
+    def test_a_machine_holding_the_address_with_another_host_key_gets_no_data(self):
+        task = self.task(self.btrfs_block())
+        self.install_task(task)
+        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(self.d / 'stranger')], check=True, env=child_env())
+        known = next((self.t / 'nas/etc/storageforge/sends').glob('*.hostkey'))
+        known.write_text('storageforge-source ' + ' '.join((self.d / 'stranger.pub').read_text().split()[:2]) + '\n')
+        self.snap('d-1')
+        r = self.timer_run(task)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('Host key verification failed', r.stdout + r.stderr)
+        self.assertFalse((self.there / 'd-1').exists())
+
+    def test_an_uninstall_ends_the_key_on_the_spot(self):
+        task = self.task(self.btrfs_block())
+        self.install_task(task)
+        key, known = self.t / 'held.key', self.t / 'held.hostkey'
+        shutil.copy(self.key_of(), key)
+        shutil.copy(next((self.t / 'nas/etc/storageforge/sends').glob('*.hostkey')), known)
+        self.assertEqual(self.by_hand('recv-probe', key=key, known=known).returncode, 0)
+        self.run_items([it for it in tasks.deploy_items(self.db, self.conn, task, 'apply', 'tester', remove=True) if it['kind'] == receiving.KIND])
+        self.assertEqual(self.by_hand('recv-probe', key=key, known=known).returncode, 255)
 
 
 class SignedReceive(unittest.TestCase):

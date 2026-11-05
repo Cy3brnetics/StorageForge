@@ -298,6 +298,7 @@ send_state() { # can this send reach its other side from here? There is no root 
 NOT_ENROLLED='is not enrolled, and a send reaches only an enrolled host: there is no unsigned way. Set up deploy access on it (Deploy tab), check the plan again and deploy'
 NO_KEY='this send has no job key on this host yet. It comes with a deploy from StorageForge: a script run by hand cannot reach the other host'
 send_nonce() { od -An -tx1 -N16 /dev/urandom | tr -d ' \n'; }
+send_why() { printf '%s' "$1" | tail -c 300 | tr '\n' ' '; }    # the end of what ssh or the other side said: where the reason is
 send_id_btrfs() { # snapshot -> what the Received UUID of its copy will say: what it came from, if it was received itself, or else its own UUID
   local show id
   show=$(btrfs subvolume show -- "$1" 2>/dev/null) || return 0

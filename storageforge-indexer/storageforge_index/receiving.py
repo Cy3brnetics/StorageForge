@@ -297,7 +297,7 @@ def send_script(prefix: str, title: str, host: str, sends: list[dict], secrets_:
     parts.append(STALE.replace('@PATTERNS@', '/etc/storageforge/sends/"$PREFIX"*.key /etc/storageforge/sends/"$PREFIX"*.hostkey'))
     probes = ''.join(f'  send_to {q(s["tool"])} {q(s["id"])} {q(s["address"])} {int(s["port"])} {q(s["root"])}\n'
                      f'  if out=$(there recv-probe 2>&1); then ok {q("this key reaches " + s["receiver"])}\n'
-                     f'  else conflict {q("this key does not reach " + s["receiver"] + ": ")}"${{out:0:300}}"; fi\n' for s in sends)
+                     f'  else conflict {q("this key does not reach " + s["receiver"] + ": ")}"$(send_why "$out")"; fi\n' for s in sends)
     parts.append(SEND_KIT + 'if ((APPLY)); then\n  section "does each key work?"\n' + probes + 'fi\n' + ENDING)
     return ''.join(parts)
 

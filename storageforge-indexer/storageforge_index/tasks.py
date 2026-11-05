@@ -887,7 +887,7 @@ send_reach() {   # the other side of this send, as far as it can be seen from he
     no-key) if ((DRY)); then missing "$NO_KEY"; else warnl "$NO_KEY"; fi; return 1 ;;
   esac
   out=$(there recv-probe 2>&1) && return 0
-  if ((DRY)); then conflict "cannot run $S_TOOL on $(there_name): ${out:0:300}: a real run fails here"; else warnl "cannot run $S_TOOL on $(there_name): ${out:0:300}"; fi
+  if ((DRY)); then conflict "cannot run $S_TOOL on $(there_name): $(send_why "$out"): a real run fails here"; else warnl "cannot run $S_TOOL on $(there_name): $(send_why "$out")"; fi
   return 1
 }
 send_prune() {   # retention on the other side: how many and which names are in the signed conf over there, not in this script

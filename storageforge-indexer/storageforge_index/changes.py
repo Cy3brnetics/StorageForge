@@ -1538,7 +1538,7 @@ send_reach() { # the other side of this send, as far as it can be seen from here
     no-key) later "$NO_KEY"; return 1 ;;
   esac
   out=$(there recv-probe 2>&1) && return 0
-  later "cannot run $S_TOOL on $(there_name): ${out:0:300}"; return 1
+  later "cannot run $S_TOOL on $(there_name): $(send_why "$out")"; return 1
 }
 t_btrfs_send() { local s=$1 par=$2 dir=$3 name=${1##*/} st want ro
   need btrfs btrfs-progs || return 0
