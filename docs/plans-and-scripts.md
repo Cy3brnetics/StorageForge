@@ -51,7 +51,7 @@ fstab is backed up before each edit and restored if `findmnt --verify` rejects t
 
 Drive tasks have three locks: the device typed twice in the plan, `--destructive` on the command line, and a refusal to touch anything mounted, swapped on, or part of RAID, LVM or LUKS.
 
-**Ansible playbook** (`changes-<plan>.yml`) writes the same tasks with standard modules (`ansible.builtin.file`, `ansible.posix.mount`, `community.general.parted` and `filesystem`, `command` for btrfs). The inventory lines from the last scans are at the top. Drive tasks run only with `-e storageforge_destructive=true`.
+**Ansible playbook** (`changes-<plan>.yml`) writes the same tasks with standard modules (`ansible.builtin.file`, `ansible.posix.mount`, `community.general.parted` and `filesystem`, `command` for btrfs). The inventory lines from the last scans are at the top. Drive tasks run only with `-e storageforge_destructive=true`. A send to another host stops the playbook with the reason, since a playbook has no signature and no key: deploy that plan from StorageForge.
 
 ### Sending snapshots
 
@@ -61,12 +61,18 @@ Use the **btrfs** and **ZFS** send tasks for a one-off copy, and the **Send** bl
 | :--- | :--- | :--- |
 | Which snapshot | The one you name | The newest with the prefix |
 | Earlier snapshot | The one you name | The newest both sides have |
-| Interrupted btrfs receive | Reported, you delete it | Removed and sent again |
+| A receive that was cut off, so never finished | Reported, you delete it | Removed and sent again |
 | Old copies on the receiver | Left alone | Pruned to **Keep there** |
 
-ZFS sends use `zfs receive -u`, so nothing is mounted over a folder on the receiver, and never `-F`, so an existing dataset is never overwritten. Raw sends keep an encrypted dataset encrypted, and the receiver does not need its key.
+ZFS sends use `zfs receive -u -x mountpoint`, so nothing is mounted over a folder on the receiver, now or at its next boot, and never `-F`, so an existing dataset is never overwritten. Raw sends keep an encrypted dataset encrypted, and the receiver does not need its key.
 
-Keep the last snapshot you sent on the sender until the next send finishes, or the next one is a full copy. See [Target hosts](target-hosts.md#sending-snapshots-between-hosts) for the SSH setup.
+Keep the last snapshot you sent on the sender until the next send finishes, or the next one is a full copy.
+
+A send to another host needs that host [enrolled](deployments.md#setting-up-deploy-access): each side is a signed run, with a key between them that can do nothing else, and no root key between the hosts. Until it is enrolled the check says `crit` with the steps, and a deploy is refused. There is no other way there, so a script you download and an Ansible playbook hold no key, and stop and say so. Each deploy brings a new key, and the [receiving host keeps its own record](security.md#sends-between-hosts). A send on one host needs none of this: leave the host empty.
+
+Names cross hosts as plain words: a snapshot sent to another host starts with a letter, digit or `_`, and holds only those and `. : + -`. **Keep there** goes in the signed run on the receiver, so changing it takes a deploy. The sender cannot ask for fewer.
+
+A failed receive fails the send: the sender's exit code, its output and the receiver's record all say so, with what the tool said. What it left is removed, and nothing is pruned.
 
 LVM has no equivalent. To copy an LVM snapshot, mount it and use a Moves step.
 

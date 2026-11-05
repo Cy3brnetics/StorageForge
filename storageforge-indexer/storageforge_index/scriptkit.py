@@ -83,14 +83,238 @@ host_slug() { local n=${1%%.*}; n=$(tr 'A-Z' 'a-z' <<<"$n" | tr -cd 'a-z0-9_-');
 human() { numfmt --to=iec-i --suffix=B "${1:-0}" 2>/dev/null || echo "$1 B"; }
 """
 
-# Run a command where a btrfs or ZFS stream lands: here when the login is empty, else over SSH as root on this host,
-# with sudo unless it logs in as root. The stream is the command's stdin, so checks give it </dev/null.
-DEST_CMD = r"""dest_cmd() { # login port command...
-  local login=$1 port=$2 line; shift 2
-  if [[ -z $login ]]; then "$@"; return; fi
-  [[ $login == root@* ]] || set -- sudo -n "$@"
-  printf -v line ' %q' "$@"
-  ssh -p "$port" -o BatchMode=yes -o ConnectTimeout=15 -- "$login" "$line"
+# The receiving side of a btrfs or ZFS send. In storageforge-job (needs ETC, VAR, LOCKS) this is all a send's job key can reach, through its
+# forced command, as root. A send on the same host runs the same verbs here, with RECV_LOCAL=1. A signed deploy wrote the conf, which says
+# the tool, the folder or dataset and the retention: a sender names a verb, a nonce and a snapshot, and never a path, an option or a command.
+RECEIVE_KIT = r"""RECV_LOCAL=0 RID= TOOL= ROOT= PREFIX= KEEP=0 RECURSIVE=0 EXPIRES=0 SENDER=
+recv_esc() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; printf '%s' "$s" | tr -d '\000-\037\177'; }
+recv_tail() { if (($(wc -l <"$1") > 600)); then tail -n 500 "$1" >"$1.tmp" && mv "$1.tmp" "$1"; fi; chmod 0644 "$1" 2>/dev/null; return 0; }
+recv_record() { # verb nonce name rc started message: the own record of this send, and a line where scans read task runs
+  ((RECV_LOCAL)) && return 0
+  [[ -n $RID ]] || return 0
+  local line dir=$VAR/receive/$RID
+  line=$(printf '{"task":"receive-%s","verb":"%s","nonce":"%s","name":"%s","rc":%d,"started":%d,"finished":%d,"sender":"%s","host":"%s","message":"%s"}' \
+    "$RID" "$1" "$(recv_esc "$2")" "$(recv_esc "$3")" "$4" "$5" "$(date +%s)" "$(recv_esc "$SENDER")" "$(recv_esc "$(uname -n)")" "$(recv_esc "${6:0:400}")")
+  mkdir -p "$dir" "$VAR/tasks" 2>/dev/null; chmod 0755 "$VAR" "$VAR/receive" "$dir" "$VAR/tasks" 2>/dev/null
+  printf '%s\n' "$line" >>"$dir/runs.jsonl" && recv_tail "$dir/runs.jsonl"
+  printf '%s\n' "$line" >>"$VAR/tasks/runs.jsonl" && recv_tail "$VAR/tasks/runs.jsonl"
+}
+recv_refuse() { # why [nonce]: exit 97, as the runner does for a request it will not run
+  printf 'storageforge-job: refused: %s\n' "$1" >&2
+  recv_record refused "${2:-}" '' 97 "$(date +%s)" "$1"
+  exit 97
+}
+recv_name_ok() { # a snapshot name. Between hosts a strict word. On one host there is no boundary to guard, only a path not to leave
+  if ((RECV_LOCAL)); then [[ -n $1 && $1 != */* && $1 != . && $1 != .. ]]; else [[ $1 =~ ^[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}$ ]]; fi
+}
+recv_load() { # id: read line by line and never run, so nothing in the conf can be a command. A signed deploy wrote it; a hand edit is still checked
+  local conf=$ETC/receive/$1.conf line
+  [[ -f $conf ]] || recv_refuse "this host has no send $1"
+  while IFS= read -r line; do
+    case $line in
+      TOOL=*) TOOL=${line#TOOL=} ;; ROOT=*) ROOT=${line#ROOT=} ;; PREFIX=*) PREFIX=${line#PREFIX=} ;; KEEP=*) KEEP=${line#KEEP=} ;;
+      RECURSIVE=*) RECURSIVE=${line#RECURSIVE=} ;; EXPIRES=*) EXPIRES=${line#EXPIRES=} ;; SENDER=*) SENDER=${line#SENDER=} ;;
+    esac
+  done <"$conf"
+  RID=$1
+  case $TOOL in
+    btrfs) [[ $ROOT == /?* && /$ROOT/ != */../* && /$ROOT/ != */./* ]] || recv_refuse "send $1: not a folder to receive into" ;;
+    zfs) [[ $ROOT =~ ^[A-Za-z0-9_][A-Za-z0-9_.:-]*(/[A-Za-z0-9_][A-Za-z0-9_.:-]*)+$ && $ROOT != *..* ]] || recv_refuse "send $1: not a dataset to receive into" ;;
+    *) recv_refuse "send $1: no tool I know" ;;
+  esac
+  [[ $KEEP =~ ^[0-9]{1,4}$ && $RECURSIVE =~ ^[01]$ && $EXPIRES =~ ^[0-9]{1,11}$ && $PREFIX =~ ^([A-Za-z0-9_][A-Za-z0-9_.-]{0,39})?$ ]] || recv_refuse "send $1: its settings are not valid"
+  ((EXPIRES == 0 || $(date +%s) < EXPIRES)) || recv_refuse "send $1 has ended: deploy it again"
+}
+recv_lock() { # -n or -w seconds, and what to say: one change at a time in a folder or dataset, whichever send asks. Two sends may share one
+  ((RECV_LOCAL)) && return 0   # the plan or task holds its own lock, and no key is involved
+  exec 7>"$LOCKS/sf-recv-$(printf '%s' "$ROOT" | sha256sum | cut -c1-16).lock" || recv_refuse "cannot open the lock"
+  flock "$@" 7 || recv_refuse "another send is receiving into $ROOT"
+}
+recv_probe() {
+  command -v "$TOOL" >/dev/null || { echo "$TOOL is not installed on $(uname -n)" >&2; exit 3; }
+  if [[ $TOOL == btrfs ]]; then btrfs --version >/dev/null 2>&1; else zfs version >/dev/null 2>&1; fi || { echo "$TOOL does not run on $(uname -n)" >&2; exit 3; }
+  echo "ok $TOOL"
+}
+recv_root() { # is the folder or dataset there yet?
+  if [[ $TOOL == btrfs ]]; then [[ -d $ROOT ]] && echo present || echo absent
+  elif zfs list -H -o name -- "$ROOT" >/dev/null 2>&1; then echo present; else echo absent; fi
+  return 0
+}
+recv_list() { # what is there: by name for btrfs, oldest first for ZFS
+  local d n
+  if [[ $TOOL == btrfs ]]; then
+    shopt -s dotglob nullglob
+    for d in "$ROOT"/*; do
+      [[ -d $d && ! -L $d ]] || continue
+      n=${d##*/}
+      if recv_name_ok "$n"; then printf '%s\n' "$n"; fi
+    done | sort
+  else
+    zfs list -H -t snapshot -o name -s creation -d 1 -- "$ROOT" 2>/dev/null | while IFS= read -r n; do
+      n=${n#*@}
+      if recv_name_ok "$n"; then printf '%s\n' "$n"; fi
+    done
+  fi
+  return 0
+}
+recv_state() { # name -> done <what it came from> | partial | other | absent
+  local n=$1 show id
+  if [[ $TOOL == btrfs ]]; then
+    [[ -e $ROOT/$n || -L $ROOT/$n ]] || { echo absent; return 0; }
+    [[ -d $ROOT/$n && ! -L $ROOT/$n ]] && show=$(btrfs subvolume show -- "$ROOT/$n" 2>/dev/null) || { echo other; return 0; }
+    id=$(awk '$1 == "Received" && $2 == "UUID:" { print $3; exit }' <<<"$show")
+    if [[ $id =~ ^[0-9a-f][0-9a-f-]*$ ]]; then echo "done $id"; else echo partial; fi
+  else
+    id=$(zfs get -Hp -o value guid "$ROOT@$n" 2>/dev/null) || id=
+    if [[ $id =~ ^[0-9]+$ ]]; then echo "done $id"; else echo absent; fi
+  fi
+  return 0
+}
+recv_drop() { # what a failed receive left: it never verified, and the next send must not build on it
+  if [[ $TOOL == btrfs ]]; then
+    if [[ -d $ROOT/$1 && ! -L $ROOT/$1 ]]; then btrfs subvolume delete -- "$ROOT/$1" >/dev/null 2>&1; fi
+  elif zfs list -H -o name -t snapshot -- "$ROOT@$1" >/dev/null 2>&1; then zfs destroy -- "$ROOT@$1" >/dev/null 2>&1; fi
+  return 0
+}
+recv_receive() { # nonce name, the stream on stdin. It only ever makes something new under the folder or dataset of the conf
+  local nonce=$1 n=$2 started st err before extra x rc=0 msg=
+  started=$(date +%s)
+  recv_name_ok "$n" || recv_refuse "not a snapshot name" "$nonce"
+  if ((!RECV_LOCAL)); then
+    [[ $nonce =~ ^[0-9a-f]{32}$ ]] || recv_refuse "bad nonce"
+    mkdir -p "$VAR/receive/$RID/seen" || recv_refuse "cannot write $VAR/receive/$RID"
+    find "$VAR/receive/$RID/seen" -type f -mtime +30 -delete 2>/dev/null
+    ( set -o noclobber; : >"$VAR/receive/$RID/seen/$nonce" ) 2>/dev/null || recv_refuse "this request was already used" "$nonce"   # atomic: one receive per nonce
+    trap '' HUP      # a dropped connection is an end of stream: the tool fails on it, and this still cleans up and records why
+  fi
+  recv_lock -w 3600
+  st=$(recv_state "$n")
+  [[ $st == absent ]] || recv_refuse "$n is already there (${st%% *})" "$nonce"
+  err=$(mktemp) || recv_refuse "no temporary file" "$nonce"
+  before=$(recv_list)
+  # -C: btrfs receive runs chrooted into the folder, so a path in the stream cannot leave it. -x: a mountpoint in the stream cannot mount it over a folder at the next boot
+  if [[ $TOOL == btrfs ]]; then
+    mkdir -p -- "$ROOT" >"$err" 2>&1 && btrfs receive -C "$ROOT" >"$err" 2>&1; rc=$?
+  else
+    zfs receive -u -x mountpoint -- "$ROOT" >"$err" 2>&1; rc=$?
+  fi
+  cat "$err" >&2          # never hidden: a corrupt stream says so here, and over ssh on the sender
+  msg=$(tail -n 3 "$err" | tr '\n' ' '); rm -f "$err"
+  st=$(recv_state "$n")
+  # names that were not there before: a stream can hold any number of subvolumes. A plain folder is not a stream's doing
+  extra=
+  while IFS= read -r x; do
+    if [[ -n $x && $x != "$n" && $(recv_state "$x") != other ]]; then extra+="$x "; fi
+  done < <(comm -13 <(printf '%s\n' "$before" | sort) <(recv_list | sort))
+  if ((rc == 0)) && [[ $st != done\ * ]]; then rc=6; msg="the stream ended, but $n is not a finished copy here (${st%% *})"; fi
+  if ((rc == 0)) && [[ -n $extra ]]; then rc=6; msg="the stream held more than $n, and what else it made is left for you to look at: ${extra:0:300}"; fi
+  if ((rc)); then
+    recv_drop "$n"     # absent before, and under the lock: this is what this receive made, and nothing else is
+    printf 'storageforge-job: the receive of %s failed (exit %d): %s\n' "$n" "$rc" "$msg" >&2
+  fi
+  recv_record receive "$nonce" "$n" "$rc" "$started" "${msg:-received}"
+  ((rc)) && exit "$rc"
+  echo "received $n ${st#done }"
+}
+recv_discard() { # name: an unfinished copy an interrupted receive left. A finished one is refused: only retention removes those
+  local n=$1 st started rc=0
+  started=$(date +%s)
+  recv_name_ok "$n" || recv_refuse "not a snapshot name"
+  [[ $TOOL == btrfs ]] || recv_refuse "a ZFS receive that was cut off leaves nothing to discard"
+  recv_lock -n          # one being received right now also looks unfinished
+  st=$(recv_state "$n")
+  [[ $st == partial ]] || recv_refuse "$n is not an unfinished copy (${st%% *})"
+  btrfs subvolume delete -- "$ROOT/$n" >/dev/null || rc=$?
+  recv_record discard '' "$n" "$rc" "$started" "unfinished copy removed"
+  exit "$rc"
+}
+recv_prune() { # [dry]: the newest KEEP stay. The conf says how many and which names: a sender cannot ask for more
+  local dry=${1:-} n old=() rc=0 started gone=
+  started=$(date +%s)
+  [[ -z $dry || $dry == dry ]] || recv_refuse "prune takes only: dry"
+  ((KEEP > 0)) && [[ -n $PREFIX ]] || recv_refuse "this send keeps everything: nothing may be pruned"
+  [[ $dry == dry ]] || recv_lock -w 3600
+  mapfile -t old < <(recv_list | while IFS= read -r n; do if [[ $n == "$PREFIX-"* ]]; then printf '%s\n' "$n"; fi; done | head -n "-$KEEP")
+  for n in ${old[@]+"${old[@]}"}; do
+    if [[ $dry == dry ]]; then echo "would remove $n"; continue; fi
+    if [[ $TOOL == btrfs ]]; then btrfs subvolume delete -- "$ROOT/$n" >/dev/null || { rc=$?; continue; }
+    elif ((RECURSIVE)); then zfs destroy -r -- "$ROOT@$n" || { rc=$?; continue; }
+    else zfs destroy -- "$ROOT@$n" || { rc=$?; continue; }; fi
+    echo "removed $n"; gone+="$n "
+  done
+  if [[ $dry != dry && ( -n $gone || $rc != 0 ) ]]; then recv_record prune '' '' "$rc" "$started" "removed ${gone:-nothing}"; fi
+  exit "$rc"
+}
+recv_verb() { # verb [word] [word]: only these, each with only what it takes
+  local verb=$1 a=${2:-} b=${3:-}
+  case $verb in
+    recv-probe|recv-root|recv-list|recv-mkdir) [[ -z $a ]] || recv_refuse "$verb takes nothing" ;;
+    recv-state|recv-discard) [[ -n $a && -z $b ]] || recv_refuse "$verb takes a snapshot name" ;;
+    recv-receive) [[ -n $b ]] || recv_refuse "$verb takes a nonce and a snapshot name" ;;
+    recv-prune) [[ -z $b ]] || recv_refuse "$verb takes at most: dry" ;;
+    *) recv_refuse "not allowed: ${verb:0:40}" ;;
+  esac
+  case $verb in
+    recv-probe) recv_probe ;;
+    recv-root) recv_root ;;
+    recv-list) recv_list ;;
+    recv-state) recv_name_ok "$a" || recv_refuse "not a snapshot name"; recv_state "$a" ;;
+    recv-mkdir) if [[ $TOOL == btrfs ]]; then mkdir -p -- "$ROOT"; fi ;;
+    recv-receive) recv_receive "$a" "$b" ;;
+    recv-discard) recv_discard "$a" ;;
+    recv-prune) recv_prune "$a" ;;
+  esac
+}
+recv_serve() { # id "ssh command": the whole line is checked before it is split, so nothing past this point can hold what a shell treats as special
+  local re='^recv-[a-z]+( [A-Za-z0-9_.:+-]{1,128}){0,2}$' verb= a= b=
+  recv_load "$1"
+  [[ ${2:-} =~ $re ]] || recv_refuse "not allowed: $(printf '%s' "${2:0:80}" | tr -cd '[:alnum:] ._:+/=@-')"
+  read -r verb a b <<<"$2"
+  recv_verb "$verb" "$a" "$b"
+}
+"""
+
+# A send's other side, for the scripts on the sending host (needs RECEIVE_KIT). On this host the verbs run here. On another each is one line
+# over this send's own key, which that host's forced command takes and nothing else; the host key is the one StorageForge pinned.
+SEND_KIT = r"""SENDS=/etc/storageforge/sends
+S_TOOL= S_ID=local S_ADDR= S_PORT=22 S_ROOT= S_PREFIX= S_KEEP=0 S_REC=0
+send_to() { S_TOOL=$1 S_ID=$2 S_ADDR=$3 S_PORT=$4 S_ROOT=$5 S_PREFIX=${6:-} S_KEEP=${7:-0} S_REC=${8:-0}; }
+there_ssh() { # one line. The forced command over there checks it, runs it, and can run nothing else
+  ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o IdentitiesOnly=yes -i "$SENDS/$S_ID.key" -p "$S_PORT" \
+    -o HostKeyAlias=storageforge-source -o "UserKnownHostsFile=$SENDS/$S_ID.hostkey" -o StrictHostKeyChecking=yes -- "storageforge-deploy@$S_ADDR" "$1"
+}
+there() { # verb [word...]. Only a receive takes what is on stdin
+  if [[ $S_ID == local ]]; then
+    ( RECV_LOCAL=1 RID=local TOOL=$S_TOOL ROOT=$S_ROOT PREFIX=$S_PREFIX KEEP=$S_KEEP RECURSIVE=$S_REC; recv_verb "$@" )
+  elif [[ $1 == recv-receive ]]; then there_ssh "$*"
+  else there_ssh "$*" </dev/null; fi
+}
+there_name() { if [[ $S_ID == local ]]; then echo "this host"; else echo "$S_ADDR"; fi; }
+send_state() { # can this send reach its other side from here? There is no root key to fall back on
+  [[ $S_ID == local ]] && { echo ready; return; }
+  [[ $S_ID == none ]] && { echo "not-enrolled"; return; }
+  [[ -r $SENDS/$S_ID.key && -s $SENDS/$S_ID.hostkey ]] && echo ready || echo no-key
+}
+NOT_ENROLLED='is not enrolled, and a send reaches only an enrolled host: there is no unsigned way. Set up deploy access on it (Deploy tab), check the plan again and deploy'
+NO_KEY='this send has no job key on this host yet. It comes with a deploy from StorageForge: a script run by hand cannot reach the other host'
+send_nonce() { od -An -tx1 -N16 /dev/urandom | tr -d ' \n'; }
+send_why() { printf '%s' "$1" | tail -c 300 | tr '\n' ' '; }    # the end of what ssh or the other side said: where the reason is
+send_id_btrfs() { # snapshot -> what the Received UUID of its copy will say: what it came from, if it was received itself, or else its own UUID
+  local show id
+  show=$(btrfs subvolume show -- "$1" 2>/dev/null) || return 0
+  id=$(awk '$1 == "Received" && $2 == "UUID:" { print $3; exit }' <<<"$show")
+  [[ $id =~ ^[0-9a-f][0-9a-f-]*$ ]] || id=$(awk '$1 == "UUID:" { print $2; exit }' <<<"$show")
+  printf '%s' "$id"
+}
+send_id_zfs() { zfs get -Hp -o value guid "$1" 2>/dev/null || true; }
+send_stream() { # name what-it-should-be-on-the-other-side stream-command...: true only when both ends finished and the copy there is this snapshot
+  local name=$1 want=$2 got rc id
+  shift 2
+  got=$(set -o pipefail; "$@" | there recv-receive "$(send_nonce)" "$name"); rc=$?
+  if ((rc)); then echo "the stream did not finish: exit $rc from one of its ends, whatever it says above" >&2; return "$rc"; fi
+  [[ $got == "received $name "* ]] || { echo "the other side did not say it finished: ${got:0:200}" >&2; return 7; }
+  id=${got##* }
+  if [[ -n $want && $id != "$want" ]]; then echo "$name arrived, but it is not this snapshot (sent $want, there $id)" >&2; return 7; fi
 }
 """
 

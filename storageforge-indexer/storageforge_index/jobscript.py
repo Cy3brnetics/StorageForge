@@ -13,6 +13,8 @@ their sources. Deploys install and update it; it is static, and everything per j
         pre | post | snap | unsnap | ping, rsync --server --daemon . (chrooted into the job's root: modules src and snap),
         git-upload-pack '<path>' (under the root only)
         hashes (hashes of the paths on stdin, under the root), stream-* (btrfs or ZFS snapshot streams of the root)
+  on the receiving host of a send, through that send's own key's forced command (receive/<id>.conf, a signed deploy wrote it):
+    storageforge-job --serve r<owner>-<hash> "recv-<verb> ..."   scriptkit.RECEIVE_KIT: nothing else, and no path from the sender
   restores, on the source host (run through storageforge-run):
     storageforge-job unpack <id> <target>   tar on stdin into <target>, a new folder under the job's root
   maintenance, on the host that runs a job:
@@ -20,6 +22,7 @@ their sources. Deploys install and update it; it is static, and everything per j
     storageforge-job with-lock <folder> [--shared] -- <command...>   wait for sync streams on that volume, then run it
 """
 
+from .scriptkit import RECEIVE_KIT
 from .syncindex import SYNC_PY
 
 JOB_SCRIPT = r"""#!/bin/bash
@@ -50,6 +53,8 @@ syncpy() { # the file index (syncindex.py). The heredoc is python's program, so 
 SF_SYNC_PY
 }
 
+# ── receiving side of a send ──
+@@RECEIVE_KIT@@
 # ── source side: what a job key may do (forced command, as root) ──
 serve_load() {
   idok "$1"; [[ -f $ETC/serve/$1.conf ]] || die "this host does not serve job $1"
@@ -130,6 +135,7 @@ stream_serve() { # "stream-<verb> [name] [parent]"
   esac
 }
 serve() { # id "ssh command"
+  if [[ $1 == r* ]]; then recv_serve "$1" "${2:-}"; exit $?; fi       # job ids start with p or x, and a send's with r
   serve_load "$1"
   local cmd=${2:-} sv snap
   case $cmd in
@@ -784,4 +790,4 @@ case ${1:-} in
   version) echo "storageforge-job 1" ;;
   *) echo "usage: storageforge-job run|verify|cutover|test|status|snapshots|ls|pack|unpack|dedupe|with-lock|version ..." >&2; exit 2 ;;
 esac
-""".replace('@@SYNC_PY@@', SYNC_PY.strip('\n'))
+""".replace('@@SYNC_PY@@', SYNC_PY.strip('\n')).replace('@@RECEIVE_KIT@@', RECEIVE_KIT.rstrip('\n'))

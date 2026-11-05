@@ -21,10 +21,10 @@ import re
 import shlex
 import time
 
-from . import site
+from . import receiving, site
 from .db import Conn
 from .moves import _path, _under, find_host, host_slug, hosts, mount_of, slug, subtree
-from .scriptkit import DEST_CMD, HELPERS, REMOTE, comments, one_line
+from .scriptkit import HELPERS, RECEIVE_KIT, REMOTE, SEND_KIT, comments, one_line
 
 NAME_RE = re.compile(r'[^\n\r\t]{1,80}')
 # [user@]host; neither part starts with '-', which rsync and ssh would read as an option
@@ -99,13 +99,15 @@ TYPES: dict[str, dict] = {
                              P('keep', 'int', 'Keep', 14, min=1, max=9999), P('recursive', 'bool', 'with child datasets', False)]},
     'btrfs_send': {'cat': 'snapshot', 'label': 'Send btrfs snapshots', 'text': 'send the newest {prefix}-* in {into} to {dst}',
                    'help': 'Sends the newest read-only snapshot with btrfs send, only the changes when both sides still share an '
-                           'earlier one. Keep at least that one when you prune here. Older snapshots on this host are not sent.',
+                           'earlier one. Keep at least that one when you prune here. Older snapshots on this host are not sent. '
+                           'Another host must be enrolled for deploys: each side is a signed run, and no root key is needed between them.',
                    'params': [P('into', 'path', 'Snapshot folder'), P('prefix', 'prefix', 'Name prefix', 'auto'),
                               P('dst_host', 'host', 'To host', '', optional=True), P('dst', 'path', 'Into folder', on='dst_host'),
                               P('keep', 'int', 'Keep there (0 = all)', 0, min=0, max=9999)]},
     'zfs_send': {'cat': 'snapshot', 'label': 'Send ZFS snapshots', 'text': 'send the newest {dataset}@{prefix}-* to {dst}',
                  'help': 'Sends the newest snapshot with zfs send, only the changes when both sides still share an earlier one. '
-                         'It never overwrites a dataset it shares nothing with. Keep at least the shared one when you prune here.',
+                         'It never overwrites a dataset it shares nothing with. Keep at least the shared one when you prune here. '
+                         'Another host must be enrolled for deploys: each side is a signed run, and no root key is needed between them.',
                  'params': [P('dataset', 'dataset', 'Dataset'), P('prefix', 'prefix', 'Name prefix', 'auto'),
                             P('dst_host', 'host', 'To host', '', optional=True), P('dst', 'dataset', 'Into dataset', placeholder='backup/media'),
                             P('keep', 'int', 'Keep there (0 = all)', 0, min=0, max=9999), P('recursive', 'bool', 'with child datasets', False),
@@ -453,11 +455,10 @@ def check(conn: Conn, task: dict) -> dict:
                 if known and p['dataset'] not in known:
                     add('warn', f'{p["dataset"]} is not a mounted dataset on {home["name"]} at the last scan')
             elif t in ('btrfs_send', 'zfs_send'):
-                if p['dst_host']:
-                    if not host_of(p['dst_host']) and '@' not in p['dst_host']:
-                        add('warn', f'{p["dst_host"]} has not been scanned: give it as user@address if it is not')
-                    add('warn', f'root on {task["host"] or "the task host"} logs in to {p["dst_host"]} with its own SSH key (/root/.ssh; set that up '
-                                f'once with ssh-copy-id) and runs commands there as root. The signature stops at the task host, and {p["dst_host"]} keeps no run record')
+                for level, text in receiving.check(conn, hs, home, p['dst_host'], t.split('_')[0], p['dst'], prefix=p['prefix']):
+                    add(level, text)
+                if p['dst_host'] and p['keep'] and not receiving.is_local(hs, home, p['dst_host']):
+                    add('note', f'keeps the newest {p["keep"]} there: the signed run on the receiver holds that number, so this key cannot ask for fewer')
                 if t == 'btrfs_send' and p['dst']:
                     dh = host_of(p['dst_host'])
                     dm = dh and mount_of(dh, p['dst'])
@@ -510,8 +511,8 @@ def _login(hs: dict, name: str) -> tuple[str, int]:
 
 
 class _Emit:
-    def __init__(self, hs: dict, task: dict):
-        self.hs, self.task, self.lines, self.n = hs, task, [], 0
+    def __init__(self, conn: Conn, hs: dict, task: dict, owner: str):
+        self.conn, self.hs, self.task, self.owner, self.lines, self.n = conn, hs, task, owner, [], 0
         self.home = find_host(hs, task['host']) if task['host'] else None
 
     def local(self, name: str) -> bool:
@@ -620,11 +621,11 @@ class _Emit:
         elif t == 'zfs_prune':
             self.w(d, f'prune_zfs {q(p["dataset"])} {q(p["prefix"])} {int(p["keep"])} {1 if p["recursive"] else 0} || fail "prune failed"')
         elif t in ('btrfs_send', 'zfs_send'):
-            login, port = ('', 22) if self.local(p['dst_host']) else _login(self.hs, p['dst_host'])
+            sid, addr, port = receiving.script_args(block_send(self.conn, self.hs, self.home, self.task, b, self.owner))
             if t == 'btrfs_send':
-                self.w(d, f'send_btrfs {q(p["into"])} {q(p["prefix"])} {q(login)} {int(port)} {q(p["dst"])} {int(p["keep"])} || fail "send failed"')
+                self.w(d, f'send_btrfs {q(p["into"])} {q(p["prefix"])} {q(sid)} {q(addr)} {int(port)} {q(p["dst"])} {int(p["keep"])} || fail "send failed"')
             else:
-                self.w(d, f'send_zfs {q(p["dataset"])} {q(p["prefix"])} {q(login)} {int(port)} {q(p["dst"])} {int(p["keep"])} '
+                self.w(d, f'send_zfs {q(p["dataset"])} {q(p["prefix"])} {q(sid)} {q(addr)} {int(port)} {q(p["dst"])} {int(p["keep"])} '
                           f'{1 if p["recursive"] else 0} {1 if p["raw"] else 0} || fail "send failed"')
         elif t == 'compose':
             self.w(d, f'x docker compose -p {q(p["project"])} {p["action"]} || fail "docker compose {p["action"]} failed"')
@@ -659,12 +660,33 @@ class _Emit:
         return f'! {{ {expr}; }}' if p['negate'] else expr
 
 
+def block_send(conn: Conn, hs: dict, home: dict | None, task: dict, b: dict, owner: str) -> dict:
+    """What a Send block is to receiving.py."""
+    p = b['params']
+    return receiving.send(conn, hs, home, task['host'], p['dst_host'], b['type'].split('_')[0], p['dst'], owner, p['prefix'], p['keep'], p.get('recursive', False))
+
+
+def _send_time(task: dict) -> dict:
+    """A run that holds a send may take hours, and a deploy stopped halfway starts the send again from nothing."""
+    return {'timeout': receiving.LONG_RUN} if any(b['type'] in ('btrfs_send', 'zfs_send') for _, b in (*walk(task['blocks']), *walk(task['on_fail']))) else {}
+
+
+def sends(conn: Conn, task: dict, owner: str) -> list[dict]:
+    """This task's sends to other hosts, in its blocks and in what runs when it fails. A block turned off sends nothing."""
+    hs = hosts(conn)
+    home = find_host(hs, task['host']) if task['host'] else None
+    made = [block_send(conn, hs, home, task, b, owner) for _, b in (*walk(task['blocks']), *walk(task['on_fail'])) if b['type'] in ('btrfs_send', 'zfs_send') and not b['off']]
+    return receiving.only_between_hosts(made)
+
+
 @site.stamped
-def script(conn: Conn, task: dict) -> str:
+def script(conn: Conn, task: dict, owner: str | None = None) -> str:
+    """owner: whose sends these are, when a schedule runs this task and keeps its own keys."""
+    owner = owner or f't{task.get("id") or 0}'
     task = normalize(task)
     chk = check(conn, task)
     hs = hosts(conn)
-    em = _Emit(hs, task)
+    em = _Emit(conn, hs, task, owner)
     em.blocks(task['blocks'], 1)
     main = '\n'.join(em.lines) or '  info "no blocks"'
     em.lines = []
@@ -690,7 +712,7 @@ def script(conn: Conn, task: dict) -> str:
                              problems=comments(problems, '#   none'))
             + f'TASK={q(sl)}\nTASK_NAME={q(task["name"])}\nTASK_HOST={q(host_slug(task["host"]) if task["host"] else "")}\n'
             + f'SCHEDULE={q(task["schedule"])}\nTIMEOUT_MIN={int(task["timeout_min"])}\n'
-            + TASK_BODY_1 + HELPERS + DEST_CMD + TASK_FUNCS + REMOTE.replace('sf-move', 'sf-task').replace('move.sh', 'task.sh')
+            + TASK_BODY_1 + HELPERS + RECEIVE_KIT + SEND_KIT + TASK_FUNCS + REMOTE.replace('sf-move', 'sf-task').replace('move.sh', 'task.sh')
             + f'\nmain() {{\n{main}\n}}\n\non_failure() {{\n{fail_body}\n}}\n' + TASK_TAIL)
 
 
@@ -699,26 +721,28 @@ def task_hash(task: dict) -> str:
 
 
 def second_hops(task: dict) -> list[str]:
-    """The machines this task's script logs in to with its host's own key, where nothing is signed. Blocks nest, so it walks them."""
-    found, stack = set(), list(normalize(task)['blocks'])
-    while stack:
-        b = stack.pop()
-        if isinstance(b, dict):
-            found.update(x for x in (((b.get('params') or {}).get(k)) for k in ('src_host', 'dst_host')) if isinstance(x, str) and x)
-            stack.extend(v for k, v in b.items() if k != 'params' and isinstance(v, dict))
-            stack.extend(x for v in b.values() if isinstance(v, list) for x in v)
-    return sorted(found)
+    """The machines this task's rsync blocks log in to with its host's own key, where nothing is signed. A send's other side is not one: see receivers."""
+    task = normalize(task)
+    return sorted({x for _, b in (*walk(task['blocks']), *walk(task['on_fail'])) if b['type'] not in ('btrfs_send', 'zfs_send')
+                   for x in (b['params'].get(k) for k in ('src_host', 'dst_host')) if isinstance(x, str) and x})
+
+
+def receivers(conn: Conn, task: dict) -> list[str]:
+    """The hosts this task's sends reach, each through a signed run of its own: what the audit row of a deploy names."""
+    return receiving.receivers(sends(conn, normalize(task), 't0'))
 
 
 def deploy_items(db, conn: Conn, task: dict, mode: str, actor: str, run_now: bool = False, remove: bool = False) -> list[dict]:
     """deploy.start_group items. report: the dry run; apply: --install (--uninstall with remove); run_now: --run once.
     A task moved to another host is uninstalled from the host it was installed on."""
     from . import deploy
+    owner = f't{task.get("id") or 0}'
     task = normalize(task)
     home = find_host(hosts(conn), task['host'])
     if not home:
         raise ValueError(f'{task["host"] or "the task host"} has not been scanned')
-    sl, text = slug(task['name']), script(conn, task)
+    sl, text = slug(task['name']), script(conn, task, owner=owner)
+    wanted = sends(conn, task, owner)
 
     def mark(host, gone=False):
         def hook(_res):
@@ -732,17 +756,21 @@ def deploy_items(db, conn: Conn, task: dict, mode: str, actor: str, run_now: boo
             finally:
                 c.close()
         return hook
-    if run_now:
-        return [{'host': home['name'], 'script': text, 'args': ['--run'], 'kind': 'tasks', 'ref': sl, 'mode': 'apply'}]
+    if run_now:          # the key goes again after a run of a task not installed here: nothing on a timer needs it
+        stays = any(d['ref'] == sl and d['host'] == home['name'] for d in deploy.deployed(conn, kind='tasks'))
+        before, after = receiving.items(db, conn, wanted, owner, 'apply', actor, task['name'], one_off=not stays)
+        return [*before, {'host': home['name'], 'script': text, 'args': ['--run'], 'kind': 'tasks', 'ref': sl, 'mode': 'apply', **_send_time(task)}, *after]
     if mode != 'apply':
-        return [{'host': home['name'], 'script': text, 'args': [], 'kind': 'tasks', 'ref': sl, 'mode': 'report'}]
-    items = [{'host': home['name'], 'script': text, 'args': ['--uninstall' if remove else '--install'], 'kind': 'tasks',
-              'ref': sl, 'mode': 'apply', 'on_ok': mark(home['name'], remove)}]
+        before, _ = receiving.items(db, conn, wanted, owner, mode, actor, task['name'])
+        return [*before, {'host': home['name'], 'script': text, 'args': [], 'kind': 'tasks', 'ref': sl, 'mode': 'report'}]
+    before, after = receiving.items(db, conn, wanted, owner, mode, actor, task['name'], remove=remove)
+    items = [*before, {'host': home['name'], 'script': text, 'args': ['--uninstall' if remove else '--install'], 'kind': 'tasks',
+                       'ref': sl, 'mode': 'apply', 'on_ok': mark(home['name'], remove)}]
     for d in deploy.deployed(conn, kind='tasks'):
         if d['ref'] == sl and d['host'] != home['name']:
             items.append({'host': d['host'], 'script': text, 'args': ['--uninstall'], 'kind': 'tasks', 'ref': sl,
                           'mode': 'apply', 'on_ok': mark(d['host'], True)})
-    return items
+    return [*items, *after]
 
 
 def installed(conn: Conn) -> dict:
@@ -852,75 +880,109 @@ prune_zfs() {   # prune_zfs <dataset> <prefix> <keep> <recursive>
   ((${#old[@]})) || { ok "nothing to prune on $1"; return 0; }
   for o in "${old[@]}"; do x zfs destroy $r -- "$o" || return 1; done
 }
-send_reach() {   # send_reach <login> <port> <tool> <its version argument>: can the receiving side run it?
-  dest_cmd "$1" "$2" "$3" "$4" >/dev/null 2>&1 </dev/null && return 0
-  if ((DRY)); then conflict "cannot run $3 on ${1:-this host} (SSH key, sudo, is it installed?): a real run fails here"; else
-    warnl "cannot run $3 on ${1:-this host} (SSH key, sudo, is it installed?)"; fi
+send_reach() {   # the other side of this send, as far as it can be seen from here. 1: a real run cannot go on, and this says why
+  local out
+  case $(send_state) in
+    not-enrolled) if ((DRY)); then conflict "$S_ADDR $NOT_ENROLLED: a real run fails here"; else warnl "$S_ADDR $NOT_ENROLLED"; fi; return 1 ;;
+    no-key) if ((DRY)); then missing "$NO_KEY"; else warnl "$NO_KEY"; fi; return 1 ;;
+  esac
+  out=$(there recv-probe 2>&1) && return 0
+  if ((DRY)); then conflict "cannot run $S_TOOL on $(there_name): $(send_why "$out"): a real run fails here"; else warnl "cannot run $S_TOOL on $(there_name): $(send_why "$out")"; fi
   return 1
 }
-send_btrfs() {   # send_btrfs <folder> <prefix> <login> <port> <into> <keep>
-  local into=$1 prefix=$2 login=$3 port=$4 dest=$5 keep=$6 newest parent= n done_=0 there old
+send_prune() {   # retention on the other side: how many and which names are in the signed conf over there, not in this script
+  local n
+  if ((DRY)); then
+    while IFS= read -r n; do doing "$n on $(there_name)"; done < <(there recv-prune dry 2>/dev/null)
+    return 0
+  fi
+  there recv-prune
+}
+send_btrfs() {   # send_btrfs <folder> <prefix> <send id> <address> <port> <into> <keep>
+  local into=$1 prefix=$2 dest=$6 keep=$7 newest parent= n done_=0 names=() listing st want
+  send_to btrfs "$3" "$4" "$5" "$dest" "$prefix" "$keep"
   newest=$(find "$into" -mindepth 1 -maxdepth 1 -name "$prefix-*" 2>/dev/null | sort | tail -n 1); newest=${newest##*/}
   if [[ -z $newest ]]; then
     if ((DRY)); then info "no $prefix-* in $into yet: a real run sends the snapshot taken before this block"; return 0; fi
     warnl "no $prefix-* in $into to send"; return 1
   fi
-  send_reach "$login" "$port" btrfs --version || { ((DRY)) && return 0; return 1; }
-  mapfile -t there < <(dest_cmd "$login" "$port" find "$dest" -mindepth 1 -maxdepth 1 -name "$prefix-*" -printf '%f\n' 2>/dev/null </dev/null | sort -r)
-  for n in "${there[@]}"; do   # newest first: an interrupted receive leaves a subvolume that was never finished
+  if ! send_reach; then
+    ((DRY)) || return 1
+    doing "would run: btrfs send $into/$newest | btrfs receive $dest on $(there_name)"; return 0
+  fi
+  if ! listing=$(there recv-list); then warnl "could not list $dest on $(there_name)"; ((DRY)) && return 0; return 1; fi
+  mapfile -t names < <(printf '%s\n' "$listing" | sort -r)
+  for n in ${names[@]+"${names[@]}"}; do   # newest first: an interrupted receive leaves a subvolume that was never finished
+    [[ $n == "$prefix-"* && $n != */* ]] || continue     # the name came from the other host, and is about to be a path here
     if ((!done_)); then
-      if dest_cmd "$login" "$port" btrfs subvolume show -- "$dest/$n" 2>/dev/null </dev/null | grep -E 'Received UUID:[[:space:]]+[0-9a-f]' >/dev/null; then done_=1
-      else warnl "$n on the other side is unfinished: removing it"; x dest_cmd "$login" "$port" btrfs subvolume delete -- "$dest/$n" </dev/null || return 1; continue; fi
+      st=$(there recv-state "$n" 2>/dev/null)
+      case $st in
+        done\ *) done_=1 ;;
+        partial) warnl "$n on the other side is unfinished: removing it"; x there recv-discard "$n" || return 1; continue ;;
+        *) warnl "$n on the other side is not a snapshot of this send (${st:-no answer}): leaving it"; continue ;;
+      esac
     fi
     if [[ -d $into/$n ]]; then parent=$n; break; fi
   done
-  if [[ $parent == "$newest" ]]; then ok "$newest is already there"
+  want=$(send_id_btrfs "$into/$newest")
+  if [[ $parent == "$newest" ]]; then
+    st=$(there recv-state "$newest" 2>/dev/null)
+    if [[ -n $want && $st != "done $want" ]]; then warnl "$newest on the other side is another snapshot with this name (${st:-no answer}): leaving it"; ((DRY)) && return 0; return 1; fi
+    ok "$newest is already there"
   else
     [[ -n $parent ]] && info "changes since $parent" || info "no shared snapshot: sending all of $newest"
-    if ((DRY)); then doing "would run: btrfs send ${parent:+-p $into/$parent }$into/$newest | btrfs receive $dest on ${login:-this host}"
+    if ((DRY)); then doing "would run: btrfs send ${parent:+-p $into/$parent }$into/$newest | btrfs receive $dest on $(there_name)"
     else
-      doing "btrfs send ${parent:+-p $into/$parent }$into/$newest | btrfs receive $dest on ${login:-this host}"
-      dest_cmd "$login" "$port" mkdir -p -- "$dest" </dev/null || return 1
-      btrfs send ${parent:+-p "$into/$parent"} -- "$into/$newest" | dest_cmd "$login" "$port" btrfs receive -- "$dest" || return 1
-      ok "sent $newest"
+      doing "btrfs send ${parent:+-p $into/$parent }$into/$newest | btrfs receive $dest on $(there_name)"
+      there recv-mkdir || return 1
+      send_stream "$newest" "$want" btrfs send ${parent:+-p "$into/$parent"} -- "$into/$newest" || return 1
+      ok "sent $newest, and the copy there says it is this snapshot"
     fi
   fi
   ((keep)) || return 0
-  mapfile -t old < <(dest_cmd "$login" "$port" find "$dest" -mindepth 1 -maxdepth 1 -name "$prefix-*" -printf '%f\n' 2>/dev/null </dev/null | sort | head -n "-$keep")
-  for n in "${old[@]}"; do x dest_cmd "$login" "$port" btrfs subvolume delete -- "$dest/$n" </dev/null || return 1; done
+  send_prune
 }
-send_zfs() {   # send_zfs <dataset> <prefix> <login> <port> <into> <keep> <recursive> <raw>
-  local ds=$1 prefix=$2 login=$3 port=$4 dest=$5 keep=$6 flags=() r= here there newest parent= n old
-  ((${7})) && { flags+=(-R); r=-r; }
-  ((${8})) && flags+=(-w)
+send_zfs() {   # send_zfs <dataset> <prefix> <send id> <address> <port> <into> <keep> <recursive> <raw>
+  local ds=$1 prefix=$2 dest=$6 keep=$7 flags=() here=() names=() listing newest parent= n want st
+  send_to zfs "$3" "$4" "$5" "$dest" "$prefix" "$keep" "$8"
+  ((${8})) && flags+=(-R)
+  ((${9})) && flags+=(-w)
   mapfile -t here < <(zfs list -H -t snapshot -o name -s creation -d 1 -- "$ds" 2>/dev/null | grep -F "@$prefix-" | cut -d@ -f2)
   newest=; ((${#here[@]})) && newest=${here[${#here[@]}-1]}
   if [[ -z $newest ]]; then
     if ((DRY)); then info "no $ds@$prefix-* yet: a real run sends the snapshot taken before this block"; return 0; fi
     warnl "no $ds@$prefix-* to send"; return 1
   fi
-  send_reach "$login" "$port" zfs version || { ((DRY)) && return 0; return 1; }
-  mapfile -t there < <(dest_cmd "$login" "$port" zfs list -H -t snapshot -o name -s creation -d 1 -- "$dest" 2>/dev/null </dev/null | grep -F "@$prefix-" | cut -d@ -f2)
-  for ((n = ${#there[@]} - 1; n >= 0; n--)); do   # newest shared snapshot
-    if printf '%s\n' "${here[@]}" | grep -xF -- "${there[n]}" >/dev/null; then parent=${there[n]}; break; fi
+  if ! send_reach; then
+    ((DRY)) || return 1
+    doing "would run: zfs send ${flags[*]-} $ds@$newest | zfs receive -u $dest on $(there_name)"; return 0
+  fi
+  if ! listing=$(there recv-list); then warnl "could not list $dest on $(there_name)"; ((DRY)) && return 0; return 1; fi
+  mapfile -t names <<<"$listing"
+  for ((n = ${#names[@]} - 1; n >= 0; n--)); do   # newest shared snapshot
+    [[ ${names[n]} == "$prefix-"* ]] || continue
+    if printf '%s\n' "${here[@]}" | grep -xF -- "${names[n]}" >/dev/null; then parent=${names[n]}; break; fi
   done
-  if [[ $parent == "$newest" ]]; then ok "$newest is already there"
+  want=$(send_id_zfs "$ds@$newest")
+  if [[ $parent == "$newest" ]]; then
+    st=$(there recv-state "$newest" 2>/dev/null)
+    if [[ -n $want && $st != "done $want" ]]; then warnl "$newest on the other side is another snapshot with this name (${st:-no answer}): leaving it"; ((DRY)) && return 0; return 1; fi
+    ok "$newest is already there"
   else
-    if [[ -z $parent ]] && dest_cmd "$login" "$port" zfs list -H -o name -- "$dest" >/dev/null 2>&1 </dev/null; then
+    if [[ -z $parent && $(there recv-root 2>/dev/null) == present ]]; then
       if ((DRY)); then conflict "$dest exists there and shares no snapshot with $ds: a real run fails here"; return 0; fi
       warnl "$dest exists there and shares no snapshot with $ds: not overwriting it"; return 1
     fi
     [[ -n $parent ]] && { flags+=(-i "@$parent"); info "changes since $parent"; } || info "no shared snapshot: sending all of $newest"
-    if ((DRY)); then doing "would run: zfs send ${flags[*]-} $ds@$newest | zfs receive -u $dest on ${login:-this host}"
+    if ((DRY)); then doing "would run: zfs send ${flags[*]-} $ds@$newest | zfs receive -u $dest on $(there_name)"
     else
-      doing "zfs send ${flags[*]-} $ds@$newest | zfs receive -u $dest on ${login:-this host}"
-      zfs send ${flags[@]+"${flags[@]}"} -- "$ds@$newest" | dest_cmd "$login" "$port" zfs receive -u -- "$dest" || return 1
-      ok "sent $newest"
+      doing "zfs send ${flags[*]-} $ds@$newest | zfs receive -u $dest on $(there_name)"
+      send_stream "$newest" "$want" zfs send ${flags[@]+"${flags[@]}"} -- "$ds@$newest" || return 1
+      ok "sent $newest, and the copy there says it is this snapshot"
     fi
   fi
   ((keep)) || return 0
-  mapfile -t old < <(dest_cmd "$login" "$port" zfs list -H -t snapshot -o name -s creation -d 1 -- "$dest" 2>/dev/null </dev/null | grep -F "@$prefix-" | head -n "-$keep")
-  for n in "${old[@]}"; do x dest_cmd "$login" "$port" zfs destroy $r -- "$n" </dev/null || return 1; done
+  send_prune
 }
 """
 

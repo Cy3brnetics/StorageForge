@@ -97,13 +97,52 @@ Everything sent to a host to run as root is signed, with these named exceptions.
 | :--- | :--- | :--- |
 | Deploys, security actions, measurements, updates, playbooks | **Yes, on each run** | Through `storageforge-run` |
 | Timers on a host: jobs, tasks, schedules, the sentinel, ClamAV | **At install** | A signed deploy puts them there, root-owned. They are not checked again on each run |
-| `storageforge-job --serve` on a job source | **At install** | A job key's forced command with a fixed list of actions, from a config a signed deploy wrote |
+| `storageforge-job --serve` on a job source, and on the receiving host of a send | **At install** | A job key's forced command with a fixed list of actions, from a config a signed deploy wrote |
+| Each side of a ZFS or btrfs send to another host | **Yes, on each deploy** | A signed run on the receiver says what it may receive and writes the key's forced command. A signed run on the sender writes the key. See [Sends between hosts](#sends-between-hosts) |
 | Scans: inventory, file walk, checksums, network, containers, Git | No | Read-only, as the scan user |
 | First-time scan and deploy access | No | No signer is on the host yet. It takes a fresh password and a host key a person confirmed |
-| **The receiving side of a ZFS or btrfs send, and `rsync` to another host** | **No** | The signed script on the first host logs in with that host's own root key. Nothing is signed there and no run is recorded, so the check warns and the `deploy.start` audit row names the host (`second_hops`) |
+| **`rsync` to or from another host in a task block** | **No** | The signed script on the first host logs in with that host's own root key. Nothing is signed there and no run is recorded, so the check says so and the `deploy.start` audit row names the host (`second_hops`). Use a Moves step instead: a [deployed job](deployments.md#deployed-jobs) has a forced-command key of its own |
 | Scripts you download and run yourself | No | Yours to read |
 
 The Falco install fetches its vendor's key at run time, which a signature cannot vouch for, so the script compares it with a fingerprint it carries.
+
+### Sends between hosts
+
+A send to another host needs no root key between the hosts. Each side is a signed run on an enrolled host, and the stream goes over one key that can do nothing else. [Deployments](deployments.md#sends-between-hosts) has the steps.
+
+**What the receiver holds.** A signed run writes `/etc/storageforge/receive/<id>.conf`, which says the tool, the folder or dataset, and how many copies retention keeps. It also adds a line for this send's key in `storageforge-deploy`'s `authorized_keys`: `restrict,command="sudo -n storageforge-job --serve <id> \"$SSH_ORIGINAL_COMMAND\""`. No change to sudoers is needed, because `storageforge-job --serve *` is already there.
+
+**What a key can ask.** A fixed list of verbs. The whole line must match a strict pattern before it is split, and anything else exits 97 and is recorded.
+
+| Verb | Does |
+| :--- | :--- |
+| `recv-probe` | Is the tool here, and does it run? |
+| `recv-root`, `recv-list`, `recv-state <name>` | Is the folder or dataset there, what is in it, and is this copy finished? |
+| `recv-mkdir` | Makes the folder from the conf |
+| `recv-receive <nonce> <name>` | The stream on stdin into the folder or dataset from the conf. `btrfs receive -C`, chrooted into that folder, or `zfs receive -u -x mountpoint`, never `-F` |
+| `recv-discard <name>` | Removes one unfinished btrfs copy. A finished one is refused |
+| `recv-prune [dry]` | Keeps the newest copies the conf says, of the prefix the conf says |
+
+The sender names a verb, a nonce and a snapshot. It never names a path, an option or a command, so nothing it says can change where data lands or how much retention keeps. The conf is read line by line and never run.
+
+**What a failure looks like.** The sender checks both ends of the pipe, the exit code that comes back through ssh, the receiver's acknowledgement, and then the copy's id against its own: btrfs Received UUID, ZFS guid. A failed receive removes what it made, says why on stderr, which reaches the sender's output, and leaves a line in the record. Nothing is pruned after a failure.
+
+**The record.** `/var/lib/storageforge/receive/<id>/runs.jsonl` on the receiver, with the verb, nonce, name, exit code and the tool's last words. A line also goes to `/var/lib/storageforge/tasks/runs.jsonl`, so the next scan of that host files it under `receive-<id>`. The signed runs are in that host's runner log, in `deploy_runs` under its name and in the audit log, and the `deploy.start` row names it under `receivers`.
+
+**How long a key lasts.** A change plan's key ends with the plan: a signed `--remove` follows the run, and the conf carries an expiry 12 hours out in case that run never happens. So does **Run now** of a task that is not installed. An installed task or a schedule fires with nobody there, so its key stays until it is uninstalled, like a job's key. Keys are new on every apply. A timer's run has no fresh signature: it was signed at install, as a job is.
+
+**A scan binding reaches none of this.** Being bound for scans is not being enrolled, so the check says `crit` and a deploy is refused with 409. On the host, sudo lets only `storageforge-deploy` start the verbs, and the key is root's, mode 0600.
+
+**What a stolen job key can still do.** Someone who takes a sender can use its key. These can't be taken away while the sender is trusted to send:
+
+- **Send junk under newer names.** Retention then removes older good copies, because the newest count win. With **Keep there** at 0 the key can remove no finished copy. A ZFS hold on the receiver also stops `zfs destroy`. A btrfs copy has no such stop, so a backup you must keep should have its retention set to 0 and its pruning done by a task on the receiver.
+- **Fill the receiver's disk.** There is no quota on a send. Give the dataset a quota, or the folder a btrfs quota group, if that matters.
+- **Feed a hostile stream to the tool.** A stream is the sender's data, and `btrfs receive` and `zfs receive` read it as root. The chroot and `-x mountpoint` confine what a stream can name, but a bug in the kernel or the tool is out of reach.
+- **Pick a new nonce.** The nonce stops a repeat by accident or from a log. It does not stop someone holding the key.
+
+It can't read the receiver: no verb sends anything back but names, ids and what happened. It can't remove anything outside the conf's folder or dataset, or run anything at all. A stream that makes more than it was asked for fails, and says which names it made. Those stay for you to look at.
+
+**What this does not cover.** Scripts you download and Ansible playbooks hold no key, so a send to another host stops and says so. `rsync` blocks are the row above.
 
 ## On the hosts
 
@@ -113,3 +152,4 @@ The Falco install fetches its vendor's key at run time, which a signature cannot
 | Read-only scan access | `find` and `sha256sum` copies with `CAP_DAC_READ_SEARCH`, executable only by `storageforge-scan`; the scan user in `systemd-journal`, so it can read every journal line for scans to collect | `access script --remove` |
 | Deploy access | `storageforge-deploy` user, a sudoers file allowing two commands, `storageforge-run`, `allowed_signers` | the setup script's `--remove` |
 | Deployed jobs | `storageforge-job`, per-job configs, keys and timers; forced-command keys on sources | deploy the plan empty (**Remove from hosts**) |
+| Sends between hosts | On the receiver: `storageforge-job`, `/etc/storageforge/receive/<id>.conf` and a forced-command key. On the sender: `/etc/storageforge/sends/<id>.key` and `.hostkey` | goes when a plan ends; **Uninstall** for a task or schedule. Records stay in `/var/lib/storageforge/receive/` |

@@ -1,5 +1,5 @@
-"""btrfs, ZFS and LVM operations: forms and checks, the generated scripts, and send/receive run against stand-ins for
-btrfs, zfs, ssh and sudo (nothing here needs a real pool or root). Alerts from what scans and the server already know."""
+"""btrfs, ZFS and LVM operations: forms and checks, the generated scripts, and send/receive on one host run against stand-ins for
+btrfs and zfs (nothing here needs a real pool or root). Alerts from what scans and the server already know. A send between two hosts: test_sends.py."""
 import datetime as dt
 import json
 import os
@@ -36,16 +36,12 @@ case $1 in
   list) t=${@: -1}
     if [[ " $* " == *" -t snapshot "* && $t != *@* ]]; then grep "^$t@" "$STUB_ZFS"; exit 0; fi
     grep -q "^$t\(@\|$\)" "$STUB_ZFS" && { echo "$t"; exit 0; }; exit 1 ;;
+  get) t=${@: -1}; grep -q "^$t$" "$STUB_ZFS" || exit 1; echo "${t#*@}" | cksum | cut -d' ' -f1 ;;
   send) echo "${@: -1}" | cut -d@ -f2 ;;
   receive) read -r n; echo "${@: -1}@$n" >>"$STUB_ZFS" ;;
   destroy) sed -i "\|^${@: -1}\$|d" "$STUB_ZFS" ;;
 esac
 """
-SSH = r"""#!/bin/bash
-while [ "$1" != -- ]; do shift; done
-echo "ssh $2" >>"$STUB_LOG"; exec bash -c "$3"
-"""
-SUDO = '#!/bin/bash\n[ "$1" = -n ] && shift\nexec "$@"\n'
 
 
 class Stubbed(Fleet):
@@ -54,7 +50,7 @@ class Stubbed(Fleet):
         self.t = Path(self.tmp)
         self.bin = self.t / 'bin'
         self.bin.mkdir()
-        for name, body in (('btrfs', BTRFS), ('zfs', ZFS), ('ssh', SSH), ('sudo', SUDO)):
+        for name, body in (('btrfs', BTRFS), ('zfs', ZFS)):
             (self.bin / name).write_text(body)
             (self.bin / name).chmod(0o755)
         self.log, self.zstate = self.t / 'log', self.t / 'zfs'
@@ -144,7 +140,7 @@ class LvmScript(Stubbed):
 
 class Sends(Stubbed):
     def btrfs_block(self, keep=0):
-        return [{'type': 'btrfs_send', 'params': {'into': f'{self.tmp}/here', 'prefix': 'd', 'dst_host': 'root@10.0.0.9', 'dst': f'{self.tmp}/there', 'keep': keep}}]
+        return [{'type': 'btrfs_send', 'params': {'into': f'{self.tmp}/here', 'prefix': 'd', 'dst_host': '', 'dst': f'{self.tmp}/there', 'keep': keep}}]
 
     def snap(self, *names):
         for n in names:
@@ -161,7 +157,6 @@ class Sends(Stubbed):
         r = self.run_task(self.btrfs_block(), '--run')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(f'btrfs send -p {self.tmp}/here/d-1', self.log.read_text())
-        self.assertIn('ssh root@10.0.0.9', self.log.read_text())
         r = self.run_task(self.btrfs_block(), '--run')
         self.assertIn('d-2 is already there', r.stdout)
         self.assertNotIn('btrfs send', self.log.read_text())
@@ -202,7 +197,7 @@ class Sends(Stubbed):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('send failed', r.stdout)
 
-    def zfs_block(self, keep=0, dst_host='pc'):
+    def zfs_block(self, keep=0, dst_host=''):
         return [{'type': 'zfs_send', 'params': {'dataset': 'tank/a', 'prefix': 'd', 'dst_host': dst_host, 'dst': 'back/a', 'keep': keep}}]
 
     def test_zfs_report_before_any_snapshot_exists(self):
@@ -216,8 +211,7 @@ class Sends(Stubbed):
         r = self.run_task(self.zfs_block(), '--run')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('back/a@d-1', self.zstate.read_text())
-        self.assertIn('zfs receive -u -- back/a', self.log.read_text())
-        self.assertIn('ssh scan@10.0.0.9', self.log.read_text())
+        self.assertIn('zfs receive -u -x mountpoint -- back/a', self.log.read_text())
         with self.zstate.open('a') as f:
             f.write('tank/a@d-2\n')
         r = self.run_task(self.zfs_block(keep=1), '--run')
@@ -236,14 +230,12 @@ class Sends(Stubbed):
 
     def test_new_blocks_in_a_host_local_send_use_no_ssh(self):
         self.snap('d-1')
-        block = self.btrfs_block()
-        block[0]['params']['dst_host'] = ''
-        self.assertEqual(self.run_task(block, '--run').returncode, 0)
+        self.assertEqual(self.run_task(self.btrfs_block(), '--run').returncode, 0)
         self.assertNotIn('ssh', self.log.read_text())
 
     def test_change_plan_reports_send_and_refuses_a_writable_snapshot(self):
         self.snap('d-1')
-        plan = {'name': 'p', 'tasks': [{'type': 'btrfs-send', 'host': 'nas', 'params': {'source': f'{self.tmp}/here/d-1', 'dest_host': 'pc', 'dest': f'{self.tmp}/there'}}]}
+        plan = {'name': 'p', 'tasks': [{'type': 'btrfs-send', 'host': 'nas', 'params': {'source': f'{self.tmp}/here/d-1', 'dest_host': '', 'dest': f'{self.tmp}/there'}}]}
         text = changes.script(self.conn, plan)
         text = text.replace('ME=$(host_slug "$(uname -n)")', 'ME=nas')
         sh = self.t / 'c.sh'

@@ -2121,6 +2121,21 @@ class ScriptHeaderTests(DBCase):
         sched = {'schedule_id': 1, 'name': 'n', 'host': 'nas', 'cron_expr': '0 3 * * *', 'task_type': 'shares', 'task_ref': 'nas', 'paused': False,
                  'config': {'timezone': 'UTC', 'window': '', 'env': {'X': canary}, 'user': 'root'}}
         out['schedule'] = scheduler.generate_install_script(self.conn, sched, 'https://sf.example.test', 'tok')
+        from storageforge_index import receiving
+        hs = moves.hosts(self.conn)
+        for tool, root in (('btrfs', path), ('zfs', 'tank/data')):      # a dataset's validator allows nothing hostile: the path is the value that could carry it
+            grant = [receiving.send(self.conn, hs, hs['nas'], 'nas', 'pc', tool, root, 't1', 'snap', 2, True)]
+            keys = jobs.new_secrets(grant)
+            out[f'send {tool} receiver report'] = receiving.receive_script('rt1-', text, 'pc', grant, None)
+            out[f'send {tool} receiver apply'] = receiving.receive_script('rt1-', text, 'pc', grant, keys, 1)
+            out[f'send {tool} sender report'] = receiving.send_script('rt1-', text, 'nas', grant, None, {})
+            out[f'send {tool} sender apply'] = receiving.send_script('rt1-', text, 'nas', grant, keys, {grant[0]['id']: 'storageforge-source ssh-ed25519 AAAA\n'})
+        self.conn.execute("INSERT INTO deploy_access (host, state, detail, updated_at, updated_by) VALUES ('pc', 'ready', '', 1, 't')")
+        for kind in ('btrfs-send', 'zfs-send'):        # now a receiver the script can reach: its address and id are in the script as well
+            spec = {'btrfs-send': {'source': path, 'parent': path, 'dest_host': 'pc', 'dest': path}, 'zfs-send': {'dataset': 'tank/data', 'name': 'snap', 'dest_host': 'pc', 'dest': 'tank/data'}}[kind]
+            out[f'changes {kind} enrolled'] = changes.script(self.conn, {'name': 'p', 'tasks': [{'type': kind, 'host': 'nas', 'params': spec, 'note': text}]})
+        out['tasks send enrolled'] = tasks.script(self.conn, tasks.normalize({'name': 't', 'host': 'nas', 'blocks': [
+            {'type': 'btrfs_send', 'params': {'into': path, 'prefix': 'snap', 'dst_host': 'pc', 'dst': path, 'keep': 1}}]}))
         self.assertGreater(len(out), 30)
         self.assertEqual({k: runnable(v) for k, v in out.items() if runnable(v)}, {})
         y = changes.ansible(self.conn, {'name': 'p', 'tasks': [{'type': 'dir', 'host': 'nas', 'params': {'path': "/srv/{{ lookup('pipe','id') }}"}}]})

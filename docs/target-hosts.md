@@ -32,11 +32,7 @@ Deploys can install packages for shares and jobs with apt, dnf, yum, zypper or p
 
 ## Sending snapshots between hosts
 
-`btrfs-send`, `zfs-send` and their storage task blocks run on the sending host, as root, and log in to the receiving host:
-
-- **SSH key:** root on the sender needs a key the receiver accepts. StorageForge does not set this up, because that key would let the sender log in on its own. Run `ssh-copy-id` once as root.
-- **Host key:** root on the sender must already know the receiver's host key, since the login is non-interactive. Run `ssh` to it once by hand.
-- **Privileges:** unless it logs in as `root@…`, the login user needs passwordless `sudo` for `btrfs` or `zfs`, plus `mkdir` for btrfs.
+`btrfs-send`, `zfs-send` and their storage task blocks run as a signed run on each host, so **both hosts need [deploy access](deployments.md#setting-up-deploy-access)**. There is no SSH setup to do: a deploy gives each send a key of its own, and that key can do nothing but this send. No root key is needed between the hosts, and an older one made for sends can go. The sender must be able to reach the receiver at the address StorageForge scanned it at, on its SSH port.
 
 Sending to the same machine, such as to a second pool, needs none of this: leave the host empty.
 

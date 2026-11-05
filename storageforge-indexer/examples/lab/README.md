@@ -75,10 +75,10 @@ The panel shows the address and the password while `sf-ctl` is up: `https://10.7
 | NFS share | The first ZFS host's data folder, mounted read-only on another host at `/mnt/lab-nfs` |
 | SMB share | An SELinux host's data folder, mounted on another host at `/mnt/lab-smb`. Skipped if no other host's kernel can mount it. |
 | rsnapshot job | From that SELinux host to a host whose repositories have rsnapshot, with one snapshot taken |
-| btrfs send task | From one btrfs host to another, with one snapshot sent |
+| btrfs send task | From one btrfs host to another, each side a signed run with no root key between them, with one snapshot sent |
 | One open alert | A ZFS mount 96% full, in the Deploy tab and at `http://10.77.0.10:8090/storageforge-lab` |
 
-A few steps StorageForge leaves to an operator go over the lab's own SSH: installing login keys, adding the Samba account and its client credentials, and root's key for the btrfs send. The Samba account needs the Samba that the deploy installs, so the demo applies the SMB share, adds the account, and applies again.
+A few steps StorageForge leaves to an operator go over the lab's own SSH: installing login keys, and adding the Samba account and its client credentials. The Samba account needs the Samba that the deploy installs, so the demo applies the SMB share, adds the account, and applies again.
 
 ## Accounts on each VM
 

@@ -21,11 +21,11 @@ import re
 import shlex
 import time
 
-from . import site
+from . import receiving, site
 from .db import Conn
 from .moves import _fmt, _path, find_host, host_slug, hosts, mount_of, slug, subtree
-from .scriptkit import DEST_CMD, HELPERS, REMOTE, comments, host_name, one_line
-from .tasks import HOST_RE, _login
+from .scriptkit import HELPERS, RECEIVE_KIT, REMOTE, SEND_KIT, comments, host_name, one_line
+from .tasks import HOST_RE
 
 PROFILES = ['single', 'dup', 'raid1', 'raid1c3', 'raid1c4', 'raid10', 'raid5', 'raid6']
 BTRFS_ROOM_AWK = '/Device size:/ {size = $NF} /Unallocated:/ {seen = 1; want = size / 10; if (want < 268435456) want = 268435456; if (want > 1073741824) want = 1073741824; if ($NF + 0 >= want) n++} END {print seen ? n + 0 : -1}'    # how many devices have room for a new chunk (10% of the device, 256 MiB to 1 GiB)
@@ -59,7 +59,7 @@ OWNER, GROUP, MODE = F('owner', 'user', 'Owner'), F('group', 'user', 'Group'), F
 CONFIRM = F('confirm', 'confirm', 'Type the device again to confirm', required=True)
 DEVICES = F('devices', 'devices', 'Devices', required=True, placeholder='/dev/sdb /dev/sdc')
 CONFIRM_ALL = F('confirm', 'confirm', 'Type the devices again to confirm', required=True)
-TO_HOST = F('dest_host', 'host', 'To host', placeholder='this host, or nas-02, or root@10.0.0.9')
+TO_HOST = F('dest_host', 'host', 'To host', placeholder='this host, or an enrolled host such as nas-02')
 # added=True: a field newer than plans already saved and deployed. Left empty it does not count towards the plan's hash.
 MKFS_FIELD = F('mkfs', 'mkfs', 'Format options', added=True, placeholder='reserved=1,bytes_per_inode=16384')
 TYPES = {
@@ -111,7 +111,7 @@ TYPES = {
     'btrfs-send': {'group': 'btrfs', 'label': 'Send a snapshot to another host', 'fields': [
         F('source', 'path', 'Read-only snapshot', required=True), F('parent', 'path', 'Earlier snapshot (sends only the changes)'),
         TO_HOST, F('dest', 'path', 'Into folder there', required=True)],
-        'help': 'btrfs send piped to btrfs receive. The earlier snapshot must exist on both sides. Root on this host logs in to the other one with its SSH key.'},
+        'help': 'btrfs send piped to btrfs receive. The earlier snapshot must exist on both sides. Another host must be enrolled for deploys: each side is a signed run, and no root key is needed between them.'},
     'zfs-pool': {'group': 'ZFS', 'label': 'Create a pool', 'destructive': True, 'fields': [
         F('pool', 'name', 'Pool name', required=True), F('level', 'choice', 'Layout', options=ZPOOL_LEVELS, required=True),
         DEVICES, F('mountpoint', 'path', 'Mount at'), F('wipe', 'bool', 'They have a filesystem: overwrite it'), CONFIRM_ALL,
@@ -131,7 +131,7 @@ TYPES = {
         F('base', 'name', 'Earlier snapshot (sends only the changes)'), TO_HOST,
         F('dest', 'dataset', 'Into dataset there', required=True, placeholder='backup/media'),
         F('recursive', 'bool', 'With child datasets'), F('raw', 'bool', 'Raw (an encrypted dataset stays encrypted, without its key)')],
-        'help': 'zfs send piped to zfs receive -u. It never overwrites: without an earlier snapshot the dataset there must not exist yet.'},
+        'help': 'zfs send piped to zfs receive -u. It never overwrites: without an earlier snapshot the dataset there must not exist yet. Another host must be enrolled for deploys: each side is a signed run, and no root key is needed between them.'},
     'zfs-scrub': {'group': 'ZFS', 'label': 'Scrub a pool', 'fields': [F('pool', 'name', 'Pool name', required=True)]},
     'lvm-vg': {'group': 'LVM', 'label': 'Create a volume group', 'destructive': True, 'fields': [
         F('vg', 'name', 'Volume group', required=True), DEVICES, F('wipe', 'bool', 'They have a filesystem: overwrite it'), CONFIRM_ALL]},
@@ -462,8 +462,6 @@ def check(conn: Conn, plan: dict) -> dict:
             say('warn', f'running containers use this: {", ".join(names[:6])}{" …" if len(names) > 6 else ""}. Stop them first')
         if TYPES[k].get('destructive'):
             say('note', 'destroys data on the device: the script only does it with --apply --destructive')
-        if k in ('btrfs-send', 'zfs-send') and p['dest_host']:
-            say('warn', f'root on {h["name"]} logs in to {p["dest_host"]} with its own SSH key (/root/.ssh; set that up once with ssh-copy-id) and runs commands there as root. The signature stops at {h["name"]}, and {p["dest_host"]} keeps no run record')
         undo = {'unmount': ('mount', 'target'), 'trash': ('dir', 'path')}.get(k)
         if undo:
             for j, e in enumerate(plan['tasks'][:i - 1], 1):
@@ -811,10 +809,11 @@ def _check_task(conn, c: Host, h: dict, k: str, p: dict, say):
             say('crit', f'{p["source"]} is not on btrfs')
         if p['parent'] and p['parent'] == p['source']:
             say('crit', 'the earlier snapshot is the one being sent')
-        other = find_host(hosts(conn), p['dest_host'].split('@')[-1]) if p['dest_host'] else h
+        hs = hosts(conn)
+        other = find_host(hs, p['dest_host'].split('@')[-1]) if p['dest_host'] else h
         dm = other and mount_of(other, p['dest'])
-        if p['dest_host'] and not other and '@' not in p['dest_host']:
-            say('warn', f'{p["dest_host"]} has not been scanned: give it as user@address if it is not')
+        for level, text in receiving.check(conn, hs, h, p['dest_host'], 'btrfs', p['dest'], name=posixpath.basename(p['source'])):
+            say(level, text)
         if dm and (dm['fstype'] or '').lower() != 'btrfs':
             say('crit', f'{p["dest"]} is on {dm["fstype"]} on {other["name"]}, not btrfs')
         elif dm:
@@ -857,8 +856,8 @@ def _check_task(conn, c: Host, h: dict, k: str, p: dict, say):
             say('crit', f'{p["dest"]} is a whole pool, and receiving onto one means overwriting it: give pool/name')
         if p['base'] and p['base'] == p['name']:
             say('crit', 'the earlier snapshot is the one being sent')
-        if p['dest_host'] and not find_host(hosts(conn), p['dest_host'].split('@')[-1]) and '@' not in p['dest_host']:
-            say('warn', f'{p["dest_host"]} has not been scanned: give it as user@address if it is not')
+        for level, text in receiving.check(conn, hosts(conn), h, p['dest_host'], 'zfs', p['dest'], name=p['name']):
+            say(level, text)
         say('note', 'received with -u, so it is not mounted over anything there' + ('' if p['base'] else '. No earlier snapshot, so all of it is copied'))
     elif k in ('lvm-vg', 'lvm-vg-extend'):
         if k == 'lvm-vg' and p['vg'] in c.vgs():
@@ -996,9 +995,21 @@ ARGS = {'dir': ('path', 'owner', 'group', 'mode'), 'rename': ('path', 'dest'), '
         'lvm-lv': ('vg', 'lv', 'size', 'fstype', 'label'), 'lvm-extend': ('vg', 'lv', 'size'), 'lvm-snapshot': ('vg', 'lv', 'name', 'size')}
 
 
-def second_hops(plan: dict) -> list[str]:
-    """The machines a send step's script logs in to with the first host's root key, where nothing is signed."""
-    return sorted({t['params']['dest_host'] for t in normalize(plan)['tasks'] if t['type'] in ('btrfs-send', 'zfs-send') and t['params'].get('dest_host')})
+def step_send(conn: Conn, hs: dict, t: dict, owner: str) -> dict:
+    """What a send step is to receiving.py."""
+    return receiving.send(conn, hs, find_host(hs, t['host']), t['host'], t['params']['dest_host'], t['type'].split('-')[0], t['params']['dest'], owner,
+                          recursive=t['params'].get('recursive', False))
+
+
+def sends(conn: Conn, plan: dict, owner: str) -> list[dict]:
+    """This plan's sends to other hosts."""
+    hs = hosts(conn)
+    return receiving.only_between_hosts([step_send(conn, hs, t, owner) for t in plan['tasks'] if t['type'] in ('btrfs-send', 'zfs-send')])
+
+
+def receivers(conn: Conn, plan: dict) -> list[str]:
+    """The hosts this plan's sends reach, each through a signed run of its own: what the audit row of a deploy names."""
+    return receiving.receivers(sends(conn, normalize(plan), 'c0'))
 
 
 def deploy_items(db, conn: Conn, plan: dict, mode: str, actor: str, destructive: bool = False) -> list[dict]:
@@ -1006,6 +1017,7 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, actor: str, destructive:
     An apply that ends clean on every host marks the plan as ran; one that skipped drive tasks has not finished."""
     from . import deploy
     plan_id, digest = plan.get('id'), plan_hash(plan)
+    owner = f'c{plan_id or 0}'
     plan = normalize(plan)
     hs, order = hosts(conn), []
     for t in plan['tasks']:
@@ -1013,8 +1025,9 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, actor: str, destructive:
         name = h['name'] if h else t['host']
         if name not in order:
             order.append(name)
-    text = script(conn, plan)
+    text = script(conn, plan, owner=owner)
     args = (['--apply'] + (['--destructive'] if destructive else [])) if mode == 'apply' else []
+    before, after = receiving.items(db, conn, sends(conn, plan, owner), owner, mode, actor, plan['name'], one_off=True)
 
     def mark(host):
         def hook(res):
@@ -1031,12 +1044,15 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, actor: str, destructive:
             finally:
                 c.close()
         return hook
-    return [{'host': h, 'script': text, 'args': args, 'kind': 'changes', 'ref': plan['name'], 'mode': mode,
-             **({'on_ok': mark(h)} if mode == 'apply' and plan_id else {})} for h in order]
+    long_run = {'timeout': receiving.LONG_RUN} if any(t['type'] in ('btrfs-send', 'zfs-send') for t in plan['tasks']) else {}    # stopped halfway, a send starts again from nothing
+    return [*before, *({'host': h, 'script': text, 'args': args, 'kind': 'changes', 'ref': plan['name'], 'mode': mode, **long_run,
+                        **({'on_ok': mark(h)} if mode == 'apply' and plan_id else {})} for h in order), *after]
 
 
 @site.stamped
-def script(conn: Conn, plan: dict) -> str:
+def script(conn: Conn, plan: dict, owner: str | None = None) -> str:
+    """owner: whose sends these are, when a schedule runs this plan and keeps its own keys."""
+    owner = owner or f'c{plan.get("id") or 0}'
     plan = normalize(plan)
     hs, chk = hosts(conn), check(conn, plan)
     q = shlex.quote
@@ -1045,11 +1061,9 @@ def script(conn: Conn, plan: dict) -> str:
         h = find_host(hs, t['host'])
         args = [('1' if t['params'][a] else '') if isinstance(t['params'][a], bool) else
                 mkfs_args(t['params']['fstype'], t['params'][a]) if a == 'mkfs' else t['params'][a] for a in ARGS[t['type']]]
-        if t['type'] in ('btrfs-send', 'zfs-send'):        # the receiving side: empty login when that is this host
-            there = t['params']['dest_host']
-            same = not there or (h and find_host(hs, there.split('@')[-1]) is h)
-            login, port = ('', 22) if same else _login(hs, there)
-            args += [login, str(port)]
+        if t['type'] in ('btrfs-send', 'zfs-send'):        # the receiving side: which send, and where. This host has its own id for that
+            sid, address, port = receiving.script_args(step_send(conn, hs, t, owner))
+            args += [sid, address, str(port)]
         calls.append(f'run {i} {q(host_slug(h["name"] if h else t["host"]))} {t["type"]} {q(title(t))} ' + ' '.join(q(a) for a in args))
         summary.append(f'#   {i:>2}. [{t["host"]}] {title(t)}' + ('   (destructive)' if TYPES[t['type']].get('destructive') else ''))
     problems = [f'#   task {x["task"]}: {it["level"].upper()}: {it["text"]}' for x in chk['tasks'] for it in x['items']
@@ -1057,7 +1071,7 @@ def script(conn: Conn, plan: dict) -> str:
     return (CHANGE_HEAD.format(name=one_line(plan['name']), slug=slug(plan['name']),
                                date=dt.datetime.now().strftime('%Y-%m-%d %H:%M'), tasks=comments(summary, '#   (no tasks)'),
                                problems=comments(problems, '#   none'))
-            + f'PLAN={q(slug(plan["name"]))}\n' + CHANGE_BODY_1 + HELPERS + DEST_CMD + CHANGE_BODY_2 + REMOTE
+            + f'PLAN={q(slug(plan["name"]))}\n' + CHANGE_BODY_1 + HELPERS + RECEIVE_KIT + SEND_KIT + CHANGE_BODY_2 + REMOTE
             + CHANGE_BODY_3.replace('@DESTRUCTIVE@', '|'.join(k for k, v in EXTRA.items() if TYPES[k].get('destructive')) or 'zfs-pool') + ''.join(EXTRA_BASH)
             + '\n'.join(calls) + CHANGE_TAIL)
 
@@ -1517,26 +1531,38 @@ t_label() { local tgt=$1 label=$2 dev fs cur
     *) conflict "labels on $fs are not handled"; return 0 ;;
   esac && ok "labelled"
 }
-t_btrfs_send() { local s=$1 par=$2 dir=$3 login=$4 port=$5 name=${1##*/} there ro
+send_reach() { # the other side of this send, as far as it can be seen from here. 1: this step stops, having said why
+  local out
+  case $(send_state) in
+    not-enrolled) conflict "$S_ADDR $NOT_ENROLLED"; return 1 ;;
+    no-key) later "$NO_KEY"; return 1 ;;
+  esac
+  out=$(there recv-probe 2>&1) && return 0
+  later "cannot run $S_TOOL on $(there_name): $(send_why "$out")"; return 1
+}
+t_btrfs_send() { local s=$1 par=$2 dir=$3 name=${1##*/} st want ro
   need btrfs btrfs-progs || return 0
-  if ! dest_cmd "$login" "$port" btrfs --version >/dev/null 2>&1 </dev/null; then later "cannot run btrfs on ${login:-this host} (SSH key, sudo, btrfs-progs)"; return 0; fi
-  if there=$(dest_cmd "$login" "$port" btrfs subvolume show -- "$dir/$name" 2>/dev/null </dev/null); then
-    if grep -qE 'Received UUID:[[:space:]]+[0-9a-f]' <<<"$there"; then ok "$dir/$name is already there"
-    else conflict "$dir/$name is there but is not a finished copy (an interrupted send?): delete it with btrfs subvolume delete, then rerun"; fi
-    return 0
-  fi
+  send_to btrfs "$4" "$5" "$6" "$dir"
+  send_reach || return 0
+  if ! st=$(there recv-state "$name"); then conflict "could not look at $dir/$name on $(there_name)"; return 0; fi
+  want=$(send_id_btrfs "$s")
+  case $st in
+    done\ *) if [[ -n $want && $st != "done $want" ]]; then conflict "$dir/$name on $(there_name) is another snapshot with this name"; else ok "$dir/$name is already there"; fi; return 0 ;;
+    partial) conflict "$dir/$name is there but is not a finished copy (an interrupted send?): delete it with btrfs subvolume delete, then rerun"; return 0 ;;
+    other) conflict "$dir/$name is there, and it is not a subvolume"; return 0 ;;
+  esac
   btrfs subvolume show -- "$s" >/dev/null 2>&1 || { later "$s must be a btrfs subvolume"; return 0; }
   ro=$(btrfs property get -ts -- "$s" ro 2>/dev/null || true)
   [[ $ro == ro=true ]] || { conflict "$s is not read-only: btrfs only sends read-only snapshots"; return 0; }
   if [[ -n $par ]]; then
     btrfs subvolume show -- "$par" >/dev/null 2>&1 || { later "$par must exist here"; return 0; }
-    dest_cmd "$login" "$port" btrfs subvolume show -- "$dir/${par##*/}" >/dev/null 2>&1 </dev/null ||
+    st=$(there recv-state "${par##*/}" 2>/dev/null) && [[ $st == done\ * ]] ||
       { conflict "$dir/${par##*/} is not on the other side: send $par there first"; return 0; }
   fi
-  act "btrfs send ${par:+-p $par }$s | btrfs receive $dir on ${login:-this host}" || return 0
-  dest_cmd "$login" "$port" mkdir -p -- "$dir" </dev/null || { conflict "cannot make $dir"; return 0; }
-  if btrfs send ${par:+-p "$par"} -- "$s" | dest_cmd "$login" "$port" btrfs receive -- "$dir"; then ok "sent"
-  else conflict "the send failed: delete a partial $dir/$name on the other side before you rerun"; fi
+  act "btrfs send ${par:+-p $par }$s | btrfs receive $dir on $(there_name)" || return 0
+  there recv-mkdir || { conflict "cannot make $dir"; return 0; }
+  if send_stream "$name" "$want" btrfs send ${par:+-p "$par"} -- "$s"; then ok "sent, and the copy there says it is this snapshot"
+  else conflict "the send failed, and nothing it left stays on $(there_name): see above. Rerun when the cause is gone"; fi
 }
 zfs_exists() { zfs list -H -o name -t "${2:-all}" -- "$1" >/dev/null 2>&1; }
 t_zfs_pool() { local pool=$1 level=$2 devs=$3 mp=$4 wipe=$5 ashift=${6:-12} vdev=() d arr props=() x more=()
@@ -1575,24 +1601,30 @@ t_zfs_snapshot() { local ds=$1 name=$2
   zfs_exists "$ds" filesystem || { later "dataset $ds must exist"; return 0; }
   act "zfs snapshot ${3:+-r }$ds@$name" && try zfs snapshot ${3:+-r} -- "$ds@$name" && ok "snapshot taken"
 }
-t_zfs_send() { local ds=$1 name=$2 base=$3 dest=$4 rec=$5 raw=$6 login=$7 port=$8 flags=()
+t_zfs_send() { local ds=$1 name=$2 base=$3 dest=$4 rec=$5 raw=$6 flags=() st want
   need zfs zfsutils-linux || return 0
-  if ! dest_cmd "$login" "$port" zfs version >/dev/null 2>&1 </dev/null; then later "cannot run zfs on ${login:-this host} (SSH key, sudo, ZFS tools)"; return 0; fi
-  if dest_cmd "$login" "$port" zfs list -H -o name -t snapshot -- "$dest@$name" >/dev/null 2>&1 </dev/null; then ok "$dest@$name is already there"; return 0; fi
+  send_to zfs "$7" "$8" "$9" "$dest"
+  send_reach || return 0
+  if ! st=$(there recv-state "$name"); then conflict "could not look at $dest@$name on $(there_name)"; return 0; fi
+  want=$(send_id_zfs "$ds@$name")
+  if [[ $st == done\ * ]]; then
+    if [[ -n $want && $st != "done $want" ]]; then conflict "$dest@$name on $(there_name) is another snapshot with this name"; else ok "$dest@$name is already there"; fi
+    return 0
+  fi
   zfs_exists "$ds@$name" snapshot || { later "snapshot $ds@$name must exist"; return 0; }
   if [[ -n $base ]]; then
     zfs_exists "$ds@$base" snapshot || { later "snapshot $ds@$base must exist here"; return 0; }
-    dest_cmd "$login" "$port" zfs list -H -o name -t snapshot -- "$dest@$base" >/dev/null 2>&1 </dev/null ||
+    st=$(there recv-state "$base" 2>/dev/null) && [[ $st == done\ * ]] ||
       { conflict "$dest@$base is not on the other side: send it there first"; return 0; }
-  elif dest_cmd "$login" "$port" zfs list -H -o name -- "$dest" >/dev/null 2>&1 </dev/null; then
+  elif [[ $(there recv-root 2>/dev/null) == present ]]; then
     conflict "$dest already exists there and I never overwrite it: give an earlier snapshot both sides have"; return 0
   fi
   [[ -n $rec ]] && flags+=(-R)
   [[ -n $raw ]] && flags+=(-w)
   [[ -n $base ]] && flags+=(-i "@$base")
-  act "zfs send ${flags[*]-} $ds@$name | zfs receive -u $dest on ${login:-this host}" || return 0
-  if zfs send ${flags[@]+"${flags[@]}"} -- "$ds@$name" | dest_cmd "$login" "$port" zfs receive -u -- "$dest"; then ok "sent"
-  else conflict "the send failed"; fi
+  act "zfs send ${flags[*]-} $ds@$name | zfs receive -u $dest on $(there_name)" || return 0
+  if send_stream "$name" "$want" zfs send ${flags[@]+"${flags[@]}"} -- "$ds@$name"; then ok "sent, and the copy there says it is this snapshot"
+  else conflict "the send failed: see above"; fi
 }
 t_zfs_scrub() { local pool=$1
   need zpool zfsutils-linux || return 0
@@ -1794,7 +1826,7 @@ def _ansible_task(t: dict, c: Host | None) -> dict:
             'case $fs in ext*) e2label "$d" "$l" ;; btrfs) btrfs filesystem label "$t" "$l" ;; xfs) xfs_admin -L "$l" "$d" ;;\n'
             '  vfat) fatlabel "$d" "$l" ;; exfat) exfatlabel "$d" "$l" ;; *) echo "labels on $fs are not handled" >&2; exit 1 ;; esac\n')},
             'register': 'sf_out', 'changed_when': "'unchanged' not in sf_out.stdout"}
-    return _ansible_storage(t, gate)
+    return _ansible_storage(t, gate, c)
 
 
 def _mkfs_opts(p: dict) -> str | None:
@@ -1802,7 +1834,7 @@ def _mkfs_opts(p: dict) -> str | None:
     return ' '.join(x for x in (label, mkfs_args(p['fstype'], p.get('mkfs') or '')) if x) or None
 
 
-def _ansible_storage(t: dict, gate: dict) -> dict:
+def _ansible_storage(t: dict, gate: dict, c: Host | None = None) -> dict:
     """ZFS, LVM and send tasks, which have no module every install has: a shell step that looks first, like the script."""
     p, k = t['params'], t['type']
     q = shlex.quote
@@ -1812,20 +1844,18 @@ def _ansible_storage(t: dict, gate: dict) -> dict:
             f'set -euo pipefail\nif {test}; then echo unchanged; exit 0; fi\n{cmd}\n')},
             'register': 'sf_out', 'changed_when': "'unchanged' not in sf_out.stdout", **extra}
 
-    def to(cmd: str) -> str:                 # on the receiving side
-        host = p['dest_host']
-        return cmd if not host else f'ssh -o BatchMode=yes -- {q(host)} {q(("sudo -n " if not host.startswith("root@") else "") + cmd)}'
+    if k in ('btrfs-send', 'zfs-send') and p['dest_host'] and not (c and receiving.is_local(hosts(c.conn), c.h, p['dest_host'])):
+        return {'name': title(t), 'ansible.builtin.fail': {'msg': (
+            f'A send to {p["dest_host"]} is a signed run on both hosts, with a key of its own and no root login between them. A playbook has neither: deploy this plan from StorageForge.')}}
     if k == 'btrfs-send':
         name = p['source'].rstrip('/').rsplit('/', 1)[-1]
         flag = f'-p {q(p["parent"])} ' if p['parent'] else ''
-        recv = to(f'btrfs receive -- {q(p["dest"])}')
-        return guarded(to(f'btrfs subvolume show -- {q(p["dest"] + "/" + name)}') + ' >/dev/null 2>&1',
-                       f'btrfs send {flag}-- {q(p["source"])} | {recv}')
+        return guarded(f'btrfs subvolume show -- {q(p["dest"] + "/" + name)} >/dev/null 2>&1',
+                       f'btrfs send {flag}-- {q(p["source"])} | btrfs receive -- {q(p["dest"])}')
     if k == 'zfs-send':
         flags = ('-R ' if p['recursive'] else '') + ('-w ' if p['raw'] else '') + (f'-i {q("@" + p["base"])} ' if p['base'] else '')
-        recv = to(f'zfs receive -u -- {q(p["dest"])}')
-        return guarded(to(f'zfs list -H -t snapshot -- {q(p["dest"] + "@" + p["name"])}') + ' >/dev/null 2>&1',
-                       f'zfs send {flags}-- {q(p["dataset"] + "@" + p["name"])} | {recv}')
+        return guarded(f'zfs list -H -t snapshot -- {q(p["dest"] + "@" + p["name"])} >/dev/null 2>&1',
+                       f'zfs send {flags}-- {q(p["dataset"] + "@" + p["name"])} | zfs receive -u -- {q(p["dest"])}')
     if k == 'zfs-pool':
         vdev = '' if p['level'] == 'stripe' else p['level'] + ' '
         force = '-f ' if p['wipe'] else ''

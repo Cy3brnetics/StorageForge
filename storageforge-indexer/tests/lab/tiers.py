@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Tiers 1, 3, 4, 5, 6 and 7 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py, tiers 9 to 11 are tiers_platform.py, tier 13 is tiers_features.py.
+"""Tiers 1, 3, 4, 5, 6 and 7 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py, tiers 9 to 11 are tiers_platform.py, tier 13 is tiers_features.py, tier 16 is tiers_sends.py.
 They change the VMs, so run them through examples/lab/lab.sh test --all, which resets the lab around each tier.
 
-    tiers.py run <0|1|3|4|5|6|7|9|10|11|13>   tier 0 as a result file, or one tier against StorageForge on sf-ctl, through its API
+    tiers.py run <0|1|3|4|5|6|7|9|10|11|13|16>   tier 0 as a result file, or one tier against StorageForge on sf-ctl, through its API
     tiers.py report          the table per distro from every results file, into reports/
 
 Results are checked on the VMs and against the seed manifests where a VM can answer, and against the running
@@ -481,12 +481,11 @@ def tier3(r):
     else:
         def zfs_send():
             frm, to = pools[:2]
-            demo.root_login(frm, to)
             data = f'{frm.tag("zfs-pool")}/media'
             into = f'{to.tag("zfs-pool")}/from-{frm.name}'
             made = api.post('/api/tasks', {'name': 'Lab ZFS replication', 'host': frm.name, 'schedule': '*-*-* 02:30:00', 'blocks': [
                 {'type': 'zfs_snapshot', 'params': {'dataset': data, 'prefix': 'daily'}},
-                {'type': 'zfs_send', 'params': {'dataset': data, 'prefix': 'daily', 'dst_host': f'root@{to.ip}', 'dst': into, 'keep': 7}}]})
+                {'type': 'zfs_send', 'params': {'dataset': data, 'prefix': 'daily', 'dst_host': to.name, 'dst': into, 'keep': 7}}]})
             demo.deploy(api, 'tasks', made['id'], 'ZFS replication', run=True)
             if 'daily-' not in ssh(to.name, f'sudo -n zfs list -H -t snapshot -o name {into}'):
                 raise AssertionError('no snapshot arrived')
@@ -735,7 +734,7 @@ def tier5(r):
         name = next(n for n in sorted(ssh(frm.name, f'sudo -n ls {frm.snaps}').split(), reverse=True) if n.startswith('daily-'))
         ssh(to.name, f'sudo -n sh -c "btrfs property set -f {to.recv}/{name} ro false; btrfs subvolume delete {to.recv}/{name} >/dev/null; btrfs subvolume create {to.recv}/{name} >/dev/null"')
         made = api.post('/api/tasks', {'name': 'Lab send only', 'host': frm.name, 'blocks': [
-            {'type': 'btrfs_send', 'params': {'into': frm.snaps, 'prefix': 'daily', 'dst_host': f'root@{to.ip}', 'dst': to.recv, 'keep': 0}}]})
+            {'type': 'btrfs_send', 'params': {'into': frm.snaps, 'prefix': 'daily', 'dst_host': to.name, 'dst': to.recv, 'keep': 0}}]})
         demo.deploy(api, 'tasks', made['id'], 'btrfs send after a broken receive', run=True)
         show = ssh(to.name, f'sudo -n btrfs subvolume show {to.recv}/{name}')
         if not re_uuid(show):
@@ -1277,7 +1276,7 @@ def tier0(r):
 
 
 # ── report ──────────────────────────────────────────────────────────
-TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs', 6: 'Sync engine', 7: 'Remote nodes', 8: 'Appliances', 9: 'Security', 10: 'Infrastructure', 11: 'Changes', 12: 'Network appliances', 13: 'Features'}
+TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs', 6: 'Sync engine', 7: 'Remote nodes', 8: 'Appliances', 9: 'Security', 10: 'Infrastructure', 11: 'Changes', 12: 'Network appliances', 13: 'Features', 16: 'Sends'}
 CELL = {'pass': 'pass', 'FAIL': '**FAIL**', 'skip': 'skip', 'known': 'known', 'fixed?': 'fixed?'}
 
 
@@ -1331,7 +1330,10 @@ def main():
     tier = int(sys.argv[2])
     r = Results(tier)
     try:
-        if tier == 13:
+        if tier == 16:
+            import tiers_sends
+            tiers_sends.tier16(r)
+        elif tier == 13:
             import tiers_features
             tiers_features.tier13(r)
         elif tier == 12:
