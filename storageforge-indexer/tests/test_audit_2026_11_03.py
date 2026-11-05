@@ -1,4 +1,6 @@
 """The 2026-11-03 audit: routes reaching around a permission, the runner's refusals, and the limits new routes need."""
+import ast
+import inspect
 import json
 import os
 import re
@@ -208,6 +210,115 @@ class Evidence(Accounts):
             codes = [self.post('/api/security/evidence', host='nas').status_code for _ in range(12)]
         self.assertEqual(codes, [200] * 10 + [429] * 2)
         self.assertEqual(unlock.call_count, 10)
+
+
+class EveryWayToAHold(Accounts):
+    """SF-46, as a walk: from what makes a hold back to the routes, so a new route, policy or playbook is found without anyone listing it."""
+    ENDS = {('security', 'apply_hold'), ('secplus', 'freeze'), ('security', 'brake')}     # the three things that sign a script holding snapshots on a host
+    # Code that runs later, on what a route saved: a call graph cannot see these, so each is named with what it reads
+    FEEDS = {('secplus', 'tick'): {('secplus', 'save_policy')}, ('secplus', 'run_actions'): {('secplus', 'save_playbook')}}
+
+    def setUp(self):
+        super().setUp()
+        self.ran = []
+        run = mock.patch.object(deploy, 'run', lambda db, host, script, *a, **k: self.ran.append(host) or {'run_id': 1, 'group_id': 'g', 'host': host, 'status': 'failed', 'exit_code': 1, 'output': 'not run: test'})
+        run.start()     # nothing in this class may run a script on the machine under the tests
+        self.addCleanup(run.stop)
+
+    @staticmethod
+    def graph():
+        """{(module, function): what it uses}. A name in its own module, module.name through an import, and anything else by its last word."""
+        out = {}
+        for path in Path(server.__file__).parent.rglob('*.py'):
+            tree, mod = ast.parse(path.read_text()), path.stem
+            modules = {a.asname or a.name.split('.')[-1] for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+
+            def uses(fn):
+                stack, found = list(fn.body), set()
+                while stack:
+                    n = stack.pop()
+                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):      # its own entry: it runs if someone uses its name
+                        continue
+                    if isinstance(n, ast.Attribute):
+                        base = n.value.id if isinstance(n.value, ast.Name) else None
+                        found.add((base if base in modules else None, n.attr))
+                    elif isinstance(n, ast.Name):
+                        found.add((mod, n.id))
+                    stack.extend(ast.iter_child_nodes(n))
+                return found
+            for fn in ast.walk(tree):
+                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    out.setdefault((mod, fn.name), set()).update(uses(fn))
+        return out
+
+    def leading_to(self, ends):
+        graph, reached = self.graph(), set(ends)
+
+        def hits(u):
+            return u in reached or (u[0] is None and not u[1].startswith('__') and any(r[1] == u[1] for r in reached))
+        while True:
+            more = {f for f, used in graph.items() if f not in reached and any(hits(u) for u in used)}
+            more |= {w for f, writers in self.FEEDS.items() if f in reached for w in writers} - reached
+            if not more:
+                return reached
+            reached |= more
+
+    def routes(self, ends=None):
+        """(method, rule, view function) of each route whose view reaches a hold, from the URL map."""
+        reached = self.leading_to(ends or self.ENDS)
+        for rule in self.web.url_map.iter_rules():
+            view = self.web.view_functions[rule.endpoint]
+            if (view.__module__.rsplit('.', 1)[-1], view.__name__) in reached:
+                for method in rule.methods - {'HEAD', 'OPTIONS'}:
+                    yield method, rule.rule, view
+
+    @staticmethod
+    def url(rule):
+        return re.sub(r'<[^>]+>', 'x', re.sub(r'<int:\w+>', '1', rule))
+
+    def takes_it(self, method, rule, view):
+        need = permissions.required(method, self.url(rule))
+        return need == 'security.emergency' or "need('security.emergency')" in inspect.getsource(inspect.unwrap(view))
+
+    def test_the_walk_finds_the_ways_there_are(self):
+        """If this goes wrong the walk is blind, and the tests below pass by finding nothing."""
+        found = {(m, r) for m, r, _ in self.routes()}
+        for way in (('POST', '/api/security/worm/hold'), ('POST', '/api/security/worm/policies/apply'), ('POST', '/api/security/worm/policies'),
+                    ('POST', '/api/security/worm/freeze'), ('POST', '/api/security/incident/brake'), ('POST', '/api/security/playbooks'),
+                    ('POST', '/api/security/playbooks/runs/<int:run_id>')):
+            self.assertIn(way, found)
+
+    def test_every_route_ending_in_a_hold_takes_security_emergency(self):
+        for method, rule, view in self.routes():
+            with self.subTest(route=f'{method} {rule}'):
+                self.assertTrue(self.takes_it(method, rule, view), f'{rule} takes {permissions.required(method, self.url(rule))}')
+
+    def test_without_the_permission_no_route_gets_to_a_hold(self):
+        """Everything else in the catalogue, and still nothing: each route is called as it would be to make a hold."""
+        self.custom('allbut', permissions.ALL - {'security.emergency'})
+        body = {'mode': 'apply', 'host': 'nas', 'snapshot': 'tank/shares@s1', 'retention_days': 1, 'legal_hold': True, 'target': 'tank/shares', 'pattern': 'tank/*',
+                'legal': True, 'auto': True, 'actions': ['snapshot'], 'trigger': 'canary_tripped', 'name': 'p', 'confirm': True, 'path': '/srv/x', 'reason': 'test'}
+        with mock.patch.object(security, 'apply_hold', side_effect=AssertionError('apply_hold was reached')) as held:
+            for method, rule, _ in self.routes():
+                with self.subTest(route=f'{method} {rule}'):
+                    r = self.client.open(self.url(rule), method=method, json=body)
+                    self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        self.assertEqual((held.call_count, self.ran, self.conn.scalar('SELECT count(*) FROM security_retention_holds')), (0, [], 0))
+
+    def test_with_it_none_is_refused_for_want_of_a_permission(self):
+        """Applying policies also takes what its route takes for a preview, security.manage: it asks for more than a hold does, never less."""
+        body = {'mode': 'apply', 'host': 'nas', 'snapshot': 'tank/shares@s1', 'retention_days': 1, 'pattern': 'tank/*', 'days': 1, 'target': 'tank/shares', 'name': 'p',
+                'trigger': 'canary_tripped', 'actions': ['notify'], 'path': '/srv/x', 'reason': 'test'}
+        for i, (method, rule, _) in enumerate(self.routes()):
+            with self.subTest(route=f'{method} {rule}'):
+                self.custom(f'em{i}', {'security.emergency', permissions.required(method, self.url(rule))})
+                r = self.client.open(self.url(rule), method=method, json=body)
+                self.assertNotEqual(r.status_code, 403, r.get_data(as_text=True))
+
+    def test_the_check_can_fail(self):
+        """Measuring a host takes security.manage: walked from there, the same check has to say so."""
+        found = [(m, r) for m, r, v in self.routes({('security', 'measure')}) if not self.takes_it(m, r, v)]
+        self.assertIn(('POST', '/api/security/measure'), found)
 
 
 class SecondHops(Accounts):
