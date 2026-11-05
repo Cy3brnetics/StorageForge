@@ -43,9 +43,9 @@ The setup creates the `storageforge-deploy` system user (no password, root-owned
 | :--- | :--- | :--- | :--- | :--- |
 | `shares` | server host | the server, then each client (including clients the last deploy had and the design dropped, so their mounts are removed) | `shares-<host>.sh` | `--apply` |
 | `jobs` | move plan id | source hosts first (serve config and keys), then the hosts that run the jobs | job configs that would change | install jobs and timers; `remove: true` deploys an empty plan, removing its jobs |
-| `changes` | change plan id | each host in the plan | `changes-<plan>.sh` | `--apply`, plus `--destructive` when asked |
-| `tasks` | task id | the task's host (and its previous host, to uninstall) | dry run | `--install`; `run: true` runs once; `remove: true` uninstalls |
-| `schedules` | schedule id | the scheduled task's host | dry run (`--report`) | install client runner, config, cron file; `run: true` runs once; `remove: true` uninstalls |
+| `changes` | change plan id | each host in the plan, and the receiving and sending hosts of its [sends](#sends-between-hosts) | `changes-<plan>.sh` | `--apply`, plus `--destructive` when asked |
+| `tasks` | task id | the task's host (and its previous host, to uninstall), and those of its sends | dry run | `--install`; `run: true` runs once; `remove: true` uninstalls |
+| `schedules` | schedule id | the scheduled task's host, and those of its sends | dry run (`--report`) | install client runner, config, cron file; `run: true` runs once; `remove: true` uninstalls |
 | `updates` | `all`, or one host | every host set up for deploys, side by side | refresh the package lists and list what would be installed | install it with the host's package manager |
 
 Scans record each host's package manager (apt, dnf, yum, zypper or pacman) and whether it has the NFS server (`exportfs`), Samba (`smbd`), the client mount helpers (`mount.nfs`, `mount.cifs`), `rsync` and `rsnapshot`. The share check uses this to say what a deploy would install, such as `the deploy installs nfs-kernel-server with apt-get`. A host that lacks a program and has no known package manager is a critical problem: install the program by hand and rescan. When the deploy runs, the script looks again on the host itself, and installs what is missing at that moment with the package manager it finds. A failed install is a conflict that shows the package manager's last lines and fails that host.
@@ -56,7 +56,7 @@ The report runs first on every host. Apply stops at the first host that fails. E
 
 **Smooth execution:**
 - **Cancel:** A running deploy can be cancelled (`POST /api/deploy/groups/<id>/cancel`). Upcoming queued hosts will not start; **Force stop** additionally terminates SSH processes for any currently running scripts.
-- **Retry:** If a deploy fails, is cancelled, or finishes incompletely, **Retry failed hosts** (`POST /api/deploy/groups/<id>/retry`) re-runs only the unfinished hosts with fresh keys.
+- **Retry:** If a deploy fails, is cancelled, or finishes incompletely, **Retry failed hosts** (`POST /api/deploy/groups/<id>/retry`) re-runs only the unfinished hosts with fresh keys. A send's hosts get theirs together.
 - **Stale dry run protection:** Applying from a report checks that the plan has not changed since the dry run was inspected (`report_group`). If modified, Apply refuses with code 409 so changes are reviewed before running.
 - **Scan confirmation & log capture:** Scans read completion records written by the runner (`/var/lib/storageforge/run/runs.jsonl`) and storage tasks (`/var/lib/storageforge/tasks/`). A scan matches nonces to confirm actual execution results on the host. If a script or scheduled task failed, a signed read-only log fetch runs automatically over deploy access (once per problem) to retrieve journal and runner logs.
 
@@ -202,6 +202,33 @@ storageforge-job with-lock /srv/data -- git -C /srv/data/repo commit -am auto
 ```
 
 States are `starting`, `route`, `transferring`, `streaming`, `failover`, `finished` and `failed`. Progress goes up to 100% for rsync transfers only; a stream shows `streaming` with no percentage.
+
+## Sends between hosts
+
+A btrfs or ZFS send to another host, from a [change plan, a task or a schedule](plans-and-scripts.md#sending-snapshots), runs as signed runs on both hosts. **Both hosts need deploy access**: until the receiver has it, the check says `crit` with the steps and `POST /api/deploy/start` answers 409, with a `denied` audit row. There is no unsigned way there, and no root key is needed between the hosts.
+
+```text
+ a report    receiver: report, what is there and what it would hold    sender: report    the plan's script, reading the receiver if it has a key yet
+ an apply    1. receiver: /etc/storageforge/receive/<id>.conf, a forced-command line for this send's new key, storageforge-job if it is older
+             2. sender: /etc/storageforge/sends/<id>.key and .hostkey (the receiver's key, as StorageForge pinned it), then a test of the key
+             3. sender: the plan's or task's own script, which sends over that key
+             4. a plan, or Run now of a task not installed: a signed --remove on both hosts, which also prints the receiver's record
+```
+
+Each is a run of its own, in order, with the kind `sends`, under the host it ran on. With no flags each script only reports. A deploy of a plan or task touches only its own sends: `r<owner>-` in the id, with `c<plan>`, `t<task>` or `s<schedule>` for the owner, and it removes those it no longer has, on hosts it no longer uses. **Retry failed hosts** runs both hosts' `sends` runs again, whichever host failed, because the key is new on every apply.
+
+| | Change plan, Run now of a task not installed | Installed task, schedule |
+| :--- | :--- | :--- |
+| When it fires | With a person there, through a deploy | On a timer, with nobody there |
+| The key | Removed after the run, and ended by an expiry 12 hours out if that removal never runs. The next apply on that host takes off what expired | Stays until **Uninstall**, which removes it from both hosts |
+
+A run that holds a send gets up to 6 hours, as a restore does, where other deploys get 30 minutes.
+
+**What can't receive.** A host that cannot be enrolled cannot be a receiver. TrueNAS, XCP-ng and XenServer refuse deploy access, so sending to one needs a Moves step or the appliance's own replication. A [remote node](remote-nodes.md) is reached only through its tunnel, so another host cannot send to its `127.77.x.y` address, and the check says so.
+
+**After an upgrade.** A plan or task that sends to another host needs its receiver enrolled, and then one deploy, to get its key. A task or schedule installed by an earlier version keeps its old script, which logs in with root's key, until you deploy it again. Remove the root key from the receiver's `authorized_keys` once you have.
+
+[Security](security.md#sends-between-hosts) has the verbs, the record and what a stolen key can still do.
 
 ## Reporting, alerts and drift
 
