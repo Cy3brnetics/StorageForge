@@ -156,7 +156,7 @@ from flask_login import LoginManager, current_user, login_required, login_user, 
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import (__version__, access, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, preflight, protection,
+from . import (__version__, access, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
                fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
 from .runtimes import docker
 from .capacity import parse_size, trends
@@ -1628,15 +1628,26 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             need('hosts.command')
 
     def second_hops(c, kind, ref):
-        """Hosts this deploy's script logs in to by itself, with the first host's own key. No signature reaches them and no run
+        """Hosts this deploy's rsync blocks log in to by themselves, with the first host's own key. No signature reaches them and no run
         is recorded there, so the audit row is what says they were involved."""
         try:
-            if kind == 'changes':
-                return changes.second_hops(changes.get_plan(c, int(ref)))
             if kind == 'tasks':
                 return tasks.second_hops(tasks.get_task(c, int(ref)))
             if kind == 'schedules':
                 return scheduler.second_hops(c, scheduler.get_schedule(c, int(ref)))
+        except (LookupError, TypeError, ValueError):
+            pass
+        return []
+
+    def send_receivers(c, kind, ref):
+        """Hosts this deploy's sends reach. Each gets a signed run of its own, and the audit row of the deploy says which."""
+        try:
+            if kind == 'changes':
+                return changes.receivers(c, changes.get_plan(c, int(ref)))
+            if kind == 'tasks':
+                return tasks.receivers(c, tasks.get_task(c, int(ref)))
+            if kind == 'schedules':
+                return scheduler.receivers(c, scheduler.get_schedule(c, int(ref)))
         except (LookupError, TypeError, ValueError):
             pass
         return []
@@ -1687,7 +1698,11 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         c = conn()
         options = {k: bool(body[k]) for k in ('remove', 'paused', 'destructive', 'run', 'rearm') if body.get(k)}
         need_for_deploy(c, kind, ref, mode, options)
-        items = deploy_items_for(c, kind, ref, mode, options)
+        try:
+            items = deploy_items_for(c, kind, ref, mode, options)
+        except receiving.NotEnrolled as exc:        # there is no unsigned way to a host, so this is the end of it, and the row says who asked
+            core.audit(c, actor(), 'deploy.start', 'denied', None, {'kind': kind, 'ref': ref, 'mode': mode, 'receivers': exc.hosts, 'error': str(exc)[:500]})
+            return jsonify(error=str(exc), hosts=exc.hosts), 409
         if not items:
             raise ValueError('nothing to deploy: no hosts are involved')
         missing = [it['host'] for it in items if not deploy.ready(c, it['host'])]
@@ -1707,8 +1722,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         title = str(body.get('title') or f'{kind} {ref}')[:200]
         gid = deploy.start_group(db, items, who, after=lambda h: core.enqueue(h, who), title=title, **updates.group_options(kind, mode),
                                  kind=kind, ref=str(ref), mode=mode, options=options, digest=digest, report_group=report or None)
-        hops = second_hops(c, kind, ref)
-        core.audit(c, actor(), 'deploy.start', 'ok', None, {'kind': kind, 'ref': ref, 'mode': mode, 'group': gid, **({'second_hops': hops} if hops else {})})
+        hops, got = second_hops(c, kind, ref), send_receivers(c, kind, ref)
+        core.audit(c, actor(), 'deploy.start', 'ok', None, {'kind': kind, 'ref': ref, 'mode': mode, 'group': gid, **({'second_hops': hops} if hops else {}), **({'receivers': got} if got else {})})
         return jsonify(group=gid, hosts=[it['host'] for it in items], digest=digest)
 
     @web.get('/api/deploy/groups')
@@ -1741,9 +1756,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if g['kind'] not in ('jobs', 'shares', 'changes', 'tasks', 'schedules', updates.KIND, 'clamav', 'security'):
             raise ValueError('only plans and designs can be retried')
         items = deploy_items_for(c, g['kind'], g['ref'], g['mode'], g['options'])
-        if g['kind'] != 'jobs':       # job keys are new on every apply, so a job's two hosts must get them together
+        if g['kind'] != 'jobs':       # job keys are new on every apply, so a job's two hosts must get them together. A send's too
             left = set(engine.unfinished_hosts(c, gid))
-            items = [it for it in items if it['host'] in left]
+            items = [it for it in items if it['host'] in left or it['kind'] == receiving.KIND]
         if not items:
             raise ValueError('every host of that deploy finished')
         who = actor()

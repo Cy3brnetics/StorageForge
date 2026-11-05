@@ -17,7 +17,7 @@ import zoneinfo
 from typing import Any
 
 from . import site
-from . import alerts, changes, moves, schedscript, tasks
+from . import alerts, changes, moves, receiving, schedscript, tasks
 from .db import Conn, epoch
 from .moves import find_host, host_slug, hosts, slug
 from .scriptkit import HELPERS, longest_gap
@@ -348,8 +348,23 @@ def schedule_hash(conn: Conn, schedule: dict) -> str:
 
 
 def second_hops(conn: Conn, schedule: dict) -> list[str]:
-    """The machines what this schedule runs logs in to with its host's own key, where nothing is signed."""
+    """The machines what this schedule's rsync blocks log in to with its host's own key, where nothing is signed. A send's other side is not one."""
     return tasks.second_hops(_resolve_task(conn, schedule['task_ref'])) if schedule['task_type'] == 'task' else []
+
+
+def sends(conn: Conn, schedule: dict) -> list[dict]:
+    """The sends to other hosts of what this schedule runs, under keys of its own: taking the schedule off leaves the plan's or task's own in place."""
+    owner, ttype, ref = f's{schedule.get("schedule_id") or 0}', schedule['task_type'], schedule['task_ref']
+    if ttype == 'task':
+        return tasks.sends(conn, tasks.normalize(_resolve_task(conn, ref)), owner)
+    if ttype == 'change':
+        return changes.sends(conn, changes.normalize(changes.get_plan(conn, _plan_id(conn, 'change_plans', ref))), owner)
+    return []
+
+
+def receivers(conn: Conn, schedule: dict) -> list[str]:
+    """The hosts this schedule's sends reach, each through a signed run of its own: what the audit row of a deploy names."""
+    return receiving.receivers(sends(conn, schedule))
 
 
 def holds_commands(conn: Conn, schedule: dict) -> bool:
@@ -676,7 +691,7 @@ def generate_task_script(conn: Conn, schedule: dict) -> tuple[str, list[str]]:
 
     if ttype == 'task':
         task_obj = _resolve_task(conn, tref)
-        return tasks.script(conn, task_obj), ['--run']
+        return tasks.script(conn, task_obj, owner=f's{schedule.get("schedule_id") or 0}'), ['--run']
 
     elif ttype == 'change':
         plan_id = int(tref) if tref.isdigit() else conn.scalar(
@@ -684,7 +699,7 @@ def generate_task_script(conn: Conn, schedule: dict) -> tuple[str, list[str]]:
         if not plan_id:
             raise LookupError(f'change plan "{tref}" not found')
         p = changes.get_plan(conn, plan_id)
-        return changes.script(conn, p), ['--apply']
+        return changes.script(conn, p, owner=f's{schedule.get("schedule_id") or 0}'), ['--apply']
 
     elif ttype == 'move':
         plan_id = int(tref) if tref.isdigit() else conn.scalar(
@@ -1329,19 +1344,21 @@ def deploy_items(db, conn: Conn, schedule: dict, mode: str, report_url: str | No
                 c.close()
         return hook
 
+    # a schedule's timer needs its key whether or not this run is the first, so the key stays until the schedule is taken off
+    before, after = receiving.items(db, conn, sends(conn, schedule), f's{sid}', 'apply' if run_now else mode, actor, schedule['name'], remove=remove and not run_now)
     if run_now:
-        return [{'host': host_name, 'script': text, 'args': ['--run'], 'kind': 'schedules', 'ref': ref,
-                 'mode': 'apply', 'on_ok': mark(host_name, False)}]
+        return [*before, {'host': host_name, 'script': text, 'args': ['--run'], 'kind': 'schedules', 'ref': ref,
+                          'mode': 'apply', 'on_ok': mark(host_name, False)}]
     if mode != 'apply':
-        return [{'host': host_name, 'script': text, 'args': ['--report'], 'kind': 'schedules', 'ref': ref, 'mode': 'report'}]
+        return [*before, {'host': host_name, 'script': text, 'args': ['--report'], 'kind': 'schedules', 'ref': ref, 'mode': 'report'}]
 
-    items = [{'host': host_name, 'script': text, 'args': ['--uninstall' if remove else '--install'],
-              'kind': 'schedules', 'ref': ref, 'mode': 'apply', 'on_ok': mark(host_name, remove)}]
+    items = [*before, {'host': host_name, 'script': text, 'args': ['--uninstall' if remove else '--install'],
+                       'kind': 'schedules', 'ref': ref, 'mode': 'apply', 'on_ok': mark(host_name, remove)}]
     for d in deploy.deployed(conn, kind='schedules'):
         if d['ref'] == ref and d['host'] != host_name:
             items.append({'host': d['host'], 'script': text, 'args': ['--uninstall'], 'kind': 'schedules',
                           'ref': ref, 'mode': 'apply', 'on_ok': mark(d['host'], True)})
-    return items
+    return [*items, *after]
 
 
 def orphan_script(sid: int) -> str:
@@ -1381,8 +1398,10 @@ def orphan_items(db, conn: Conn, schedule_id: int, mode: str, actor: str) -> lis
     hosts_with = [d['host'] for d in deploy.deployed(conn, kind='schedules') if d['ref'] == ref]
     if mode != 'apply':
         return [{'host': h, 'script': text, 'args': [], 'kind': 'schedules', 'ref': ref, 'mode': 'report'} for h in hosts_with]
-    return [{'host': h, 'script': text, 'args': ['--uninstall'], 'kind': 'schedules', 'ref': ref, 'mode': 'apply', 'on_ok': forget(h)}
-            for h in hosts_with]
+    # what it ran is gone too, perhaps, so what it holds on other hosts comes from the deployed table alone
+    _, after = receiving.items(db, conn, [], f's{sid}', mode, actor, f'deleted schedule #{sid}', remove=True)
+    return [*({'host': h, 'script': text, 'args': ['--uninstall'], 'kind': 'schedules', 'ref': ref, 'mode': 'apply', 'on_ok': forget(h)}
+              for h in hosts_with), *after]
 
 
 def installed(conn: Conn) -> dict:

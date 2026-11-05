@@ -322,14 +322,19 @@ class EveryWayToAHold(Accounts):
 
 
 class SecondHops(Accounts):
-    """SF-48: the signature stops at the first host, and the record says who else was involved."""
+    """SF-48: a send's other side has a signed run of its own, and the audit row names it. An rsync block to another host is what is left of a second hop."""
 
-    def test_plans_and_tasks_name_their_receivers(self):
-        self.assertEqual(changes.second_hops({'name': 'p', 'tasks': [{'type': 'zfs-send', 'host': 'nas', 'params': {'dataset': 'tank/a', 'name': 's', 'dest_host': 'root@10.0.0.9', 'dest': 'b/a'}},
-                                                                    {'type': 'dir', 'host': 'nas', 'params': {'path': '/srv'}}]}), ['root@10.0.0.9'])
-        task = {'name': 't', 'host': 'nas', 'blocks': [{'type': 'if', 'params': {'kind': 'exists', 'path': '/x'}, 'then': [{'type': 'zfs_send', 'params': {'dataset': 'tank/a', 'prefix': 'd', 'dst_host': 'backup', 'dst': 'b/a', 'keep': 3}}]}]}
-        with mock.patch.object(tasks, 'normalize', lambda t: t):
-            self.assertEqual(tasks.second_hops(task), ['backup'])
+    def test_a_send_is_not_a_second_hop_and_the_audit_helpers_say_who_it_reaches(self):
+        plan = {'name': 'p', 'tasks': [{'type': 'zfs-send', 'host': 'nas', 'params': {'dataset': 'tank/a', 'name': 's', 'dest_host': 'root@10.0.0.9', 'dest': 'b/a'}}, {'type': 'dir', 'host': 'nas', 'params': {'path': '/srv'}}]}
+        self.assertEqual(changes.receivers(self.conn, plan), ['10.0.0.9'])
+        task = {'name': 't', 'host': 'nas', 'blocks': [{'type': 'if', 'params': {'cond': 'exists', 'arg': '/x'}, 'slots': {'then': [{'type': 'zfs_send', 'params': {'dataset': 'tank/a', 'prefix': 'd', 'dst_host': 'backup', 'dst': 'b/a', 'keep': 3}}]}}]}
+        self.assertEqual(tasks.receivers(self.conn, task), ['backup'])
+        self.assertEqual(tasks.second_hops(task), [])
+
+    def test_an_rsync_block_stays_one_and_blocks_nest(self):
+        rsync = {'type': 'rsync', 'params': {'src': '/srv/a', 'dst_host': 'backup', 'dst': '/srv/b', 'mode': 'copy'}}
+        self.assertEqual(tasks.second_hops({'name': 't', 'host': 'nas', 'blocks': [{'type': 'if', 'params': {'cond': 'exists', 'arg': '/x'}, 'slots': {'then': [rsync]}}]}), ['backup'])
+        self.assertEqual(tasks.second_hops({'name': 't', 'host': 'nas', 'blocks': [], 'on_fail': [rsync]}), ['backup'], 'what runs on a failure runs too')
 
     def test_the_audit_row_says_so(self):
         plan = changes.save_plan(self.conn, {'name': 'send', 'tasks': [{'type': 'zfs-send', 'host': 'nas', 'params': {'dataset': 'tank/a', 'name': 's', 'dest_host': 'root@10.0.0.9', 'dest': 'b/a'}}]}, 'admin1', None)
@@ -337,8 +342,9 @@ class SecondHops(Accounts):
             r = self.post('/api/deploy/start', kind='changes', ref=plan, mode='report')
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         detail = self.conn.scalar("SELECT detail_json FROM audit_log WHERE action = 'deploy.start' ORDER BY audit_id DESC LIMIT 1")
-        self.assertIn('root@10.0.0.9', detail)
-        self.assertIn('second_hops', detail)
+        self.assertIn('10.0.0.9', detail)
+        self.assertIn('receivers', detail)
+        self.assertNotIn('second_hops', detail)
 
 
 class FalcoKey(unittest.TestCase):
