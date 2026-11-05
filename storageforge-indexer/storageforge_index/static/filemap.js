@@ -28,7 +28,7 @@ function fmSync() {
   if (files) { $('#crumb').hidden = true; $('#empty').hidden = true; $('#detailshint').textContent = ''; }
   else if (graph) {
     $('#crumb').hidden = !S.focus;
-    $('#detailshint').textContent = 'Select a node. Double-click one to focus on everything within the chosen number of hops; right-click it for its actions.';
+    $('#detailshint').textContent = MODE_HINT.graph;
     $('#empty').hidden = S.nodes.length > 0;
     resize();
   }

@@ -484,8 +484,12 @@ function renderDetails(n) {
 
   box.replaceChildren(...sections);
 }
+const NEEDS_SHOWN = 12;
+let needsAll = false;       // "Needs attention" lists the first twelve and says how many more there are: this shows them all
 function renderSummary() {
   if (typeof fmPanel === 'function' && fmPanel()) return;
+  // Map, Tasks and Scan have their own panels and draw no storage graph: its counts here described something that was not on screen (UX-14)
+  if (T.mode === 'map' || T.mode === 'tasks' || T.mode === 'scan') { $('#summary').replaceChildren(); return; }
   if (S.selected) return;
   if (T.mode === 'topo' && T.sel) { renderEditor(); return; }
   const counts = {}; const health = {};
@@ -494,15 +498,22 @@ function renderSummary() {
   for (const k of KINDS) dl.append(text('dt', k), text('dd', String(counts[k] || 0)));
   const hl = document.createElement('dl'); hl.className = 'kv';
   for (const h of ['protected', 'local-only', 'broken', 'unknown']) hl.append(text('dt', HEALTH_TEXT[h]), text('dd', String(health[h] || 0)));
-  const broken = S.nodes.filter((n) => n.health === 'broken' && n.kind !== 'Host').slice(0, 12);
+  const all = S.nodes.filter((n) => n.health === 'broken' && n.kind !== 'Host');
+  const broken = needsAll ? all : all.slice(0, NEEDS_SHOWN);
   const ul = document.createElement('ul'); ul.className = 'nbrs';
   for (const n of broken) {
     const li = document.createElement('li'); const b = button('', () => { select(n.id, true); });
     const dot = text('i', ''); dot.className = 'dot broken';
     b.append(dot, text('span', n.kind, 'rel'), text('span', n.label, 'lbl')); li.append(b); ul.append(li);
   }
+  let more = null;                                    // a list that is cut says so, and the same button shows the rest and hides it again (UX-13)
+  if (all.length > NEEDS_SHOWN) {
+    more = button(needsAll ? 'Show fewer' : `+${all.length - NEEDS_SHOWN} more`, () => { needsAll = !needsAll; renderSummary(); $('#needsmore')?.focus(); }, 'btn ghost sm');
+    more.id = 'needsmore';
+    more.setAttribute('aria-expanded', String(needsAll));
+  }
   $('#summary').replaceChildren(text('h3', 'Nodes'), dl, text('h3', 'Health'), hl,
-    ...(broken.length ? [text('h3', 'Needs attention'), ul] : []));
+    ...(broken.length ? [text('h3', 'Needs attention'), ul, ...(more ? [more] : [])] : []));
 }
 
 /* ── right-click menus: an element with _menu(ev) returning items gets one ──

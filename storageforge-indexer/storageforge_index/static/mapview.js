@@ -4,13 +4,29 @@
    per configuration. Positions, layers and the filter can be saved as a view; the facts always come from the index. */
 
 const MP = { layers: new Set(['network', 'services', 'workloads', 'firewall', 'access', 'manual']), redact: false, filter: '', graph: null, sel: null, hover: null, mode: 'custom', at: null, group: 'host', scope: 'all', ghost: null, notes: [], coverage: null, trace: new Set(), collapsed: new Set(),
-             view: { x: 0, y: 0, k: 1 }, positions: {}, exposed: false, loopback: false, neighbours: false, bridges: false, fitted: false, drag: null, rects: new Map() };
+             view: { x: 0, y: 0, k: 1 }, positions: {}, exposed: false, loopback: false, neighbours: false, bridges: false, fitted: false, drag: null, rects: new Map(),
+             open: {} };      // which cut lists are showing all their rows (see mapMore)
 const MP_LAYERS = [['storage', 'Storage'], ['network', 'Network'], ['services', 'Services'], ['firewall', 'Firewall'], ['workloads', 'Workloads'], ['access', 'Access'], ['manual', 'Placed by hand']];
-const MP_MODES = { network: { label: 'Network', layers: ['network', 'manual'] }, flow: { label: 'Flow', layers: ['network', 'services', 'firewall', 'access'] }, workloads: { label: 'Workloads', layers: ['workloads', 'services'] }, storage: { label: 'Storage', layers: ['storage'] },
+const MP_MODES = { network: { label: 'Network', layers: ['network', 'manual'] }, flow: { label: 'Flow', layers: ['network', 'services', 'firewall', 'access'] }, workloads: { label: 'Workloads', layers: ['workloads', 'services'] }, storage: { label: 'Storage only', layers: ['storage'] },
                    security: { label: 'Security', layers: ['services', 'firewall', 'workloads', 'storage'], exposed: true }, custom: { label: 'Custom', layers: null } };
 const MP_LEVEL = { any: 'Any address', lan: 'Private networks', vpn: 'VPN only', blocked: 'Blocked', loopback: 'This machine only', unknown: 'Unknown' };
 const SVGNS = 'http://www.w3.org/2000/svg';
 const MP_ROW = 24, MP_W = 300, MP_GAP = 44;
+const MP_SHOWN = { changes: 20, cover: 20, warn: 10, compare: 30 };      // rows a list shows before it says "+N more"
+
+/* A list that shows its first rows says how many it leaves out, and the same button shows the rest and hides them again (UX-13).
+   Returns [] or [button], so a caller can spread it into its rows. */
+function mapMore(key, total, shown, redraw) {
+  if (total <= shown) return [];
+  const open = !!MP.open[key];
+  const b = button(open ? 'Show fewer' : `+${total - shown} more`, () => {
+    MP.open[key] = !open;
+    Promise.resolve(redraw()).then(() => document.querySelector(`#mapview [data-more="${key}"]`)?.focus());
+  }, 'btn small');
+  b.setAttribute('aria-expanded', String(open));
+  b.dataset.more = key;
+  return [b];
+}
 
 function sv(tag, attrs = {}, ...kids) {
   const e = document.createElementNS(SVGNS, tag);
@@ -52,12 +68,20 @@ function mapSetMode(mode) {
 
 function mapShell(box) {
   const bar = el('div', { class: 'mpbar' });
-  bar.append(el('div', { class: 'mpmodes', role: 'group', 'aria-label': 'What to look at' }, ...Object.entries(MP_MODES).map(([k, m]) => { const b = button(m.label, () => mapSetMode(k), 'btn small'); b.setAttribute('aria-pressed', String(MP.mode === k)); return b; })));
+  // two groups that name the same things (Network, Workloads, Storage): a preset picks layers, and each says which it is
+  bar.append(el('span', { class: 'mpcap' }, 'Look at'),
+    el('div', { class: 'mpmodes', role: 'group', 'aria-label': 'What to look at' }, ...Object.entries(MP_MODES).map(([k, m]) => { const b = button(m.label, () => mapSetMode(k), 'btn small'); b.dataset.mode = k; b.setAttribute('aria-pressed', String(MP.mode === k)); return b; })));
+  const layers = el('div', { class: 'mplayers', role: 'group', 'aria-label': 'Layers' }, el('span', { class: 'mpcap' }, 'Layers'));
   for (const [id, label] of MP_LAYERS) {
     const c = el('input', { type: 'checkbox' }); c.checked = MP.layers.has(id);
-    c.addEventListener('change', () => { MP.mode = 'custom'; if (c.checked) MP.layers.add(id); else MP.layers.delete(id); loadMap(); });
-    bar.append(el('label', { class: 'small' }, c, ' ' + label));
+    c.addEventListener('change', () => {
+      MP.mode = 'custom'; if (c.checked) MP.layers.add(id); else MP.layers.delete(id);
+      bar.querySelectorAll('.mpmodes button').forEach((m) => m.setAttribute('aria-pressed', String(m.dataset.mode === 'custom')));   // the preset no longer describes what is drawn
+      loadMap();
+    });
+    layers.append(el('label', { class: 'small' }, c, ' ' + label));
   }
+  bar.append(layers);
   const group = el('select', { 'aria-label': 'Group by' }, new Option('By host', 'host'), new Option('By subnet', 'subnet'), new Option('By runtime', 'runtime'));
   group.value = MP.group;
   group.addEventListener('change', () => { MP.group = group.value; MP.fitted = false; mapDraw(); });
@@ -334,10 +358,11 @@ async function mapChanges() {
       rows.push(el('div', { class: 'stack small' }, text('span', 'Go back to an earlier reading. Storage is not kept: this shows the other layers as they stood.', 'muted'), slider, when));
     }
     if (!real.length) rows.push(text('p', 'Nothing since the first reading.', 'muted small'));
-    for (const c of real.slice(0, 20)) {
+    for (const c of real.slice(0, MP.open.changes ? real.length : MP_SHOWN.changes)) {
       const short = (ids) => ids.map((i) => (MP.redact ? '…' : i.split(':').slice(2).join(':') || i)).join(', ');
       rows.push(text('p', `${MP.redact ? 'a host' : c.host}, ${new Date(c.taken_at * 1000).toLocaleString()}: ${[c.added.length ? `new ${short(c.added)}` : '', c.removed.length ? `gone ${short(c.removed)}` : '', c.changed.length ? `changed ${short(c.changed)}` : ''].filter(Boolean).join('; ')}`, 'small'));
     }
+    rows.push(...mapMore('changes', real.length, MP_SHOWN.changes, mapChanges));
     box.replaceChildren(...rows);
   } catch { box.replaceChildren(); }
 }
@@ -542,7 +567,13 @@ async function mapDesignsPanel() {
       button('Edit', async () => { const f = await getJSON(`/api/map/designs/${d.id}`); name.value = f.name; doc.value = JSON.stringify(f.doc, null, 1); }, 'btn small'),
       button('Compare', async () => {
         const c = await getJSON(`/api/map/designs/${d.id}/compare`);
-        const line = (head, items, f) => (items.length ? [text('p', `${head}: ${items.length}`, 'small'), ...items.slice(0, 30).map((x) => text('p', `${x.host}: ${x.kind} ${x.what}${f ? f(x) : ''}`, 'muted small'))] : []);
+        const row = (x, f) => text('p', `${x.host}: ${x.kind} ${x.what}${f ? f(x) : ''}`, 'muted small');
+        const line = (head, items, f) => {         // the heading counts them all, so the cut says so and the button shows the rest (UX-13)
+          if (!items.length) return [];
+          const rest = items.slice(MP_SHOWN.compare);
+          const more = rest.length ? [button(`+${rest.length} more`, (ev) => { const rows = rest.map((x) => row(x, f)); rows[0].tabIndex = -1; ev.currentTarget.replaceWith(...rows); rows[0].focus(); }, 'btn small')] : [];
+          return [text('p', `${head}: ${items.length}`, 'small'), ...items.slice(0, MP_SHOWN.compare).map((x) => row(x, f)), ...more];
+        };
         out.replaceChildren(text('h4', `${d.name} against what was read`), ...line('Missing', c.missing), ...line('Different', c.different, (x) => `: wanted ${x.want}, is ${x.have}`), ...line('Not in the design', c.extra), ...line('Not read, so not known', c.unknown, (x) => `: ${x.why}`), text('p', `In place: ${c.there.length}`, 'st-ok small'),
           can('plans.edit') && c.missing.length ? button('Stage what is missing', async () => { const r = await (await postJSON(`/api/map/designs/${d.id}/stage`, {})).json(); out.append(text('p', `In plan #${r.plan_id}: ${r.tasks} step(s).`, 'st-ok small')); }, 'btn small pri') : '');
       }, 'btn small'),
@@ -559,8 +590,12 @@ function mapCoverage() {
   if (!box) return;
   const c = MP.coverage;
   if (!c || (!c.coverage.length && !c.warnings.length)) { box.replaceChildren(); return; }
-  box.replaceChildren(text('h4', 'Not covered'), ...c.coverage.slice(0, 20).map((x) => text('p', `${x.host}: ${x.workload} on ${x.mount}: ${x.hold ? '' : 'no hold'}${!x.hold && !x.decoy ? ', ' : ''}${x.decoy ? '' : 'no decoy'}`, 'st-warn small')),
-    ...c.warnings.slice(0, 10).map((w) => text('p', `An armed sentinel could cut off ${w.address}, ${w.why.join(', ')}. Put it on the exempt list.`, 'st-failed small')));
+  const cov = c.coverage.slice(0, MP.open.cover ? c.coverage.length : MP_SHOWN.cover);
+  const warn = c.warnings.slice(0, MP.open.warn ? c.warnings.length : MP_SHOWN.warn);
+  box.replaceChildren(text('h4', 'Not covered'), ...cov.map((x) => text('p', `${x.host}: ${x.workload} on ${x.mount}: ${x.hold ? '' : 'no hold'}${!x.hold && !x.decoy ? ', ' : ''}${x.decoy ? '' : 'no decoy'}`, 'st-warn small')),
+    ...mapMore('cover', c.coverage.length, MP_SHOWN.cover, mapCoverage),
+    ...warn.map((w) => text('p', `An armed sentinel could cut off ${w.address}, ${w.why.join(', ')}. Put it on the exempt list.`, 'st-failed small')),
+    ...mapMore('warn', c.warnings.length, MP_SHOWN.warn, mapCoverage));
 }
 
 /* deep links: /#view=map&layers=network,firewall&host=gw-01&from=a&to=b&port=445 */

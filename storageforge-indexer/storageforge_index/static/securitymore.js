@@ -289,8 +289,10 @@ async function threatBanner() {
     const p = await getJSON('/api/security/posture');
     b.hidden = false;
     b.className = `threat sec-${p.state}`;
-    b.textContent = { secure: 'Nothing wrong found', warning: 'Security: needs a look', critical: 'Security: incident', unknown: 'Security: not known' }[p.state];
-    b.title = p.banner;
+    // always "Security: …", and the detail is on the page: it was a tooltip, which a keyboard or a finger never saw (UX-09)
+    const label = { secure: 'Security: nothing wrong found', warning: 'Security: needs a look', critical: 'Security: incident', unknown: 'Security: not known' }[p.state] || 'Security: not known';
+    b.replaceChildren(text('b', label), text('span', p.banner, 'threat-detail'));
+    b.title = p.banner;                 // the detail is cut to two lines in the header; hovering still gives all of it
   } catch { b.hidden = true; }
 }
 $('#threatbanner')?.addEventListener('click', () => { showTab('security'); });

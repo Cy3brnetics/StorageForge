@@ -167,7 +167,7 @@ async function viewCompose(box) {
       notes.append(...(got.unsupported || []).map((u) => el('p', { class: 'warn small' }, `Line ${u.line} can't be written for ${as.value}: ${u.why}`)), ...(got.notes || []).map((n) => el('p', { class: 'muted small' }, n)));
     } catch (err) { native.textContent = ''; notes.replaceChildren(el('p', { class: 'bad' }, err.message)); }
   }
-  on.addEventListener('change', () => { MG.target = on.value; syncTarget(); render(); });
+  on.addEventListener('change', () => { MG.target = on.value; syncTarget(); labelGo(); render(); });
   as.addEventListener('change', render);
   editor.addEventListener('input', () => { clearTimeout(MG.timer); MG.timer = setTimeout(render, 350); });
 
@@ -186,7 +186,7 @@ async function viewCompose(box) {
   const result = el('div', {});
   const secs = el('input', { type: 'number', min: 60, max: 3600, value: 180, 'aria-label': 'Rollback seconds', size: 6 });
   const hold = el('input', { type: 'checkbox', 'aria-label': 'Confirm it myself' });
-  const go = btn('Report', async () => {
+  const go = btn('', async () => {
     result.replaceChildren(el('p', { class: 'muted small' }, 'Working it out…'));
     try {
       const m = machine();
@@ -215,10 +215,13 @@ async function viewCompose(box) {
       result.replaceChildren(el('div', { class: 'mg-card' }, parts));
     } catch (err) { result.replaceChildren(el('p', { class: 'bad' }, err.message)); }
   }, 'pri');
+  // the button says what it will do: a device is checked first, and a Linux host's rules become steps in Changes (UX-14)
+  const labelGo = () => { go.textContent = machine()?.kind === 'device' ? 'Check' : 'Stage in Changes'; };
+  labelGo();
 
   box.replaceChildren(
     el('div', { class: 'mg-card' }, el('div', { class: 'mg-row' }, el('label', { class: 'fld' }, 'On', on), el('label', { class: 'fld' }, 'Show as', as), go, btn('Load what it runs', async () => { try { const r = await call(`/api/dsl/of?host=${encodeURIComponent(on.value)}`); editor.value = r.dsl; MG.draft = r.dsl; render(); } catch (err) { notes.replaceChildren(el('p', { class: 'bad' }, err.message)); } })),
-      el('p', { class: 'small muted' }, 'A device takes a report, then an apply with its own rollback timer. A Linux host’s rules become steps in Changes.')),
+      el('p', { class: 'small muted' }, 'On a device, Check reports what would be sent and whether it cuts StorageForge off, and Apply then has its own rollback timer. On a Linux host, Stage in Changes turns the rules into steps there, to check and deploy like any other.')),
     el('div', { class: 'mg-cols' }, el('div', { class: 'mg-card' }, el('h2', {}, 'What you write'), editor), el('div', { class: 'mg-card' }, el('h2', {}, 'What it becomes'), native, notes)),
     result,
     el('div', { class: 'mg-card' }, el('h2', {}, 'Try a path'), el('div', { class: 'mg-row' }, a, b, port, ask), whatif));

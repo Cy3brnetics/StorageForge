@@ -558,6 +558,142 @@ class BrowserSmoke(unittest.TestCase):
         self.assertNotIn('offsite ✓', row)
 
 
+    # ── what is cut, and copy that fits the screen: UX-13, UX-14 and UX-09 ──────────────────────────────────────────────
+    def test_needs_attention_says_what_it_leaves_out(self):                     # UX-13
+        """It listed twelve broken things and said nothing about the rest, with the Health block above it counting all of them."""
+        self.page.click('#viewmode button[data-mode="graph"]')
+        self.page.click('#graphsub button[data-sub="structure"]')                 # Files, the default, owns the panel with its own overview
+        base = self.page.evaluate("S.nodes.filter((n) => n.health === 'broken' && n.kind !== 'Host').length")
+        self.page.evaluate("""() => { for (let i = 0; i < 15; i++) S.nodes.push({id: `x:${i}`, kind: 'Share', label: `broken ${i}`, health: 'broken', props: {}}); renderSummary(); }""")
+        rows = lambda: self.page.locator('#summary ul.nbrs li').count()
+        self.assertEqual(rows(), 12)
+        self.assertEqual(self.page.inner_text('#needsmore'), f'+{base + 15 - 12} more')
+        self.assertEqual(self.page.get_attribute('#needsmore', 'aria-expanded'), 'false')
+        self.page.click('#needsmore')
+        self.assertEqual(rows(), base + 15)                                       # a way to see them
+        self.assertEqual(self.page.inner_text('#needsmore'), 'Show fewer')
+        self.assertEqual(self.page.get_attribute('#needsmore', 'aria-expanded'), 'true')
+        self.assertEqual(self.page.evaluate('document.activeElement.id'), 'needsmore')        # and the keyboard stays where it was
+        self.page.keyboard.press('Enter')
+        self.assertEqual(rows(), 12)
+        self.page.evaluate("() => { S.nodes.splice(S.nodes.length - 15, 15); renderSummary(); }")
+        if base <= 12:                                                            # nothing was left out, so nothing is said
+            self.assertEqual(self.page.locator('#needsmore').count(), 0)
+        self.assertEqual(self.errors, [])
+
+    def test_the_maps_lists_say_what_they_leave_out(self):                     # UX-13
+        import json
+        changes = [{'host': 'nas', 'taken_at': 1700000000 + i * 60, 'first': False, 'added': [f'h:nas:svc{i}'], 'removed': [], 'changed': []} for i in range(23)]
+        cover = {'coverage': [{'host': 'nas', 'workload': f'w{i}', 'mount': f'/m{i}', 'hold': False, 'decoy': False} for i in range(23)],
+                 'warnings': [{'address': f'10.0.0.{i}', 'why': ['a rule']} for i in range(12)]}
+        compare = {'missing': [{'host': 'nas', 'kind': 'port', 'what': str(8000 + i)} for i in range(33)], 'different': [], 'extra': [], 'unknown': [], 'there': []}
+        answer = lambda body: (lambda route: route.fulfill(body=json.dumps(body), content_type='application/json'))
+        self.page.route('**/api/map/snapshots', answer({'changes': changes}))
+        self.page.route('**/api/map/coverage', answer(cover))
+        self.page.route('**/api/map/designs', answer({'designs': [{'id': 7, 'name': 'wanted'}]}))
+        self.page.route('**/api/map/designs/7/compare', answer(compare))
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.wait_for_selector('#mpchanges [data-more="changes"]')
+        self.page.wait_for_selector('#mpcover [data-more="warn"]')
+        count = lambda box: self.page.locator(f'{box} p').count()
+        self.assertEqual((count('#mpchanges'), self.page.inner_text('#mpchanges [data-more="changes"]')), (20, '+3 more'))
+        self.assertEqual((count('#mpcover'), self.page.inner_text('#mpcover [data-more="cover"]'), self.page.inner_text('#mpcover [data-more="warn"]')), (30, '+3 more', '+2 more'))
+        self.page.click('#mpchanges [data-more="changes"]')
+        self.page.wait_for_selector('#mpchanges [data-more="changes"]:has-text("Show fewer")')
+        self.assertEqual(self.page.evaluate('document.activeElement.dataset.more'), 'changes')
+        self.assertEqual(self.page.inner_text('#mpchanges [data-more="changes"]'), 'Show fewer')
+        self.page.click('#mpcover [data-more="cover"]')
+        self.page.click('#mpcover [data-more="warn"]')
+        self.assertEqual(count('#mpcover'), 35)
+        self.page.click('#mpcover [data-more="cover"]')                           # and the same button puts them away again
+        self.assertEqual(count('#mpcover'), 32)
+        self.page.click('#mpdesigns button:has-text("Compare")')                   # the comparison counts all 33 and used to show 30 without saying so
+        self.page.wait_for_selector('#mpdesigns >> text=Missing: 33')
+        shown = lambda: self.page.locator('#mpdesigns p', has_text='nas: port').count()
+        self.assertEqual(shown(), 30)
+        self.page.click('#mpdesigns button:has-text("+3 more")')
+        self.assertEqual(shown(), 33)
+        self.assertEqual(self.errors, [])
+
+    def test_details_says_what_it_is_for_in_every_view(self):                  # UX-14
+        """Map, Tasks and Scan kept the graph's instructions and counted nodes of a graph that was not on screen."""
+        hints = {}
+        for mode in ('topo', 'graph', 'tasks', 'map', 'scan'):
+            self.page.click(f'#viewmode button[data-mode="{mode}"]')
+            if mode == 'graph':
+                self.page.click('#graphsub button[data-sub="structure"]')           # Files, the default, owns the panel with its own overview
+            hints[mode] = self.page.text_content('#detailshint')
+            summary = self.page.text_content('#summary')
+            if mode in ('tasks', 'map', 'scan'):
+                self.assertNotIn('Health', summary, mode)
+                self.assertNotIn('Double-click', hints[mode], mode)
+                self.assertIn('Topology and Graph', hints[mode], mode)
+        self.assertEqual(len(set(hints.values())), 5, hints)                      # one hint for each
+        self.assertIn('Double-click', hints['graph'])
+        self.page.click('#viewmode button[data-mode="graph"]')
+        self.assertIn('Health', self.page.text_content('#summary'))
+        node = self.page.evaluate("() => { const n = S.nodes[0]; select(n.id); return [n.id, n.label]; }")
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.click('#viewmode button[data-mode="graph"]')                    # a node picked in Graph is still picked, and its details with it
+        self.assertIn(node[1], self.page.text_content('#summary'))
+        self.assertEqual(self.errors, [])
+
+    def test_the_map_names_its_presets_and_its_layers_apart(self):             # UX-14
+        """A preset and a layer were both called Storage, in one unlabelled row."""
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.wait_for_selector('.mpmodes')
+        modes = self.page.eval_on_selector_all('.mpmodes button', 'bs => bs.map((b) => b.textContent)')
+        layers = self.page.eval_on_selector_all('.mplayers label', 'ls => ls.map((l) => l.textContent.trim())')
+        self.assertIn('Storage only', modes)
+        self.assertNotIn('Storage', modes)
+        self.assertEqual(layers[0], 'Storage')
+        self.assertEqual(self.page.eval_on_selector_all('.mpbar .mpcap', 'cs => cs.map((c) => c.textContent)'), ['Look at', 'Layers'])
+        self.assertEqual(self.page.get_attribute('.mplayers', 'aria-label'), 'Layers')
+        self.page.click('.mpmodes button:has-text("Storage only")')
+        self.page.wait_for_selector('.mpmodes button[aria-pressed="true"]:has-text("Storage only")')
+        self.page.click('.mplayers label:has-text("Network") input')                # a layer picked by hand means no preset describes the map any more
+        self.assertEqual(self.page.eval_on_selector_all('.mpmodes button[aria-pressed="true"]', 'bs => bs.map((b) => b.textContent)'), ['Custom'])
+        self.assertEqual(self.errors, [])
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+    def test_compose_says_what_its_button_will_do(self):                       # UX-14
+        """It said Report for both, though a Linux host's rules become steps in Changes and only a device is reported on."""
+        import json
+
+        def fleet(route):
+            real = route.fetch().json()
+            real['machines'].append(dict(real['machines'][0], name='edge-fw', kind='device', platform='routeros', label='MikroTik RouterOS', target='routeros'))
+            route.fulfill(body=json.dumps(real), content_type='application/json')
+        self.page.route('**/api/fleet', fleet)
+        self.page.goto(self.base + '/manage')
+        self.page.click('#mgnav button[data-v="compose"]')
+        self.page.wait_for_selector('select[aria-label="Machine"]')
+        label = lambda: self.page.inner_text('#mgview .mg-row button.pri')
+        self.assertEqual(label(), 'Stage in Changes')
+        self.page.select_option('select[aria-label="Machine"]', 'edge-fw')
+        self.assertEqual(label(), 'Check')
+        self.page.select_option('select[aria-label="Machine"]', 'nas')
+        self.assertEqual(label(), 'Stage in Changes')
+        self.assertEqual(self.errors, [])
+
+    def test_the_security_banner_always_says_security_and_shows_its_detail(self):    # UX-09
+        """The secure state read 'Nothing wrong found' with no 'Security:' in front, and the detail was a tooltip no keyboard or finger could reach."""
+        import json
+        self.page.wait_for_selector('#threatbanner:not([hidden])', timeout=8000)
+        self.assertTrue(self.page.inner_text('#threatbanner').startswith('Security: '), self.page.inner_text('#threatbanner'))
+        self.assertIn('measured in the last day', self.page.inner_text('#threatbanner .threat-detail'))     # the real detail, on the page
+        posture = {'state': 'secure', 'banner': 'All 1 host(s) measured in the last day, and nothing wrong found.'}
+        self.page.route('**/api/security/posture', lambda route: route.fulfill(body=json.dumps(posture), content_type='application/json'))
+        for state, label in (('secure', 'Security: nothing wrong found'), ('warning', 'Security: needs a look'), ('critical', 'Security: incident'), ('unknown', 'Security: not known')):
+            posture.update(state=state, banner=f'the detail for {state}')
+            self.page.evaluate('threatBanner()')
+            self.page.wait_for_selector(f'#threatbanner b:text-is({json.dumps(label)})')
+            self.assertEqual(self.page.inner_text('#threatbanner .threat-detail'), f'the detail for {state}')
+            self.assertTrue(self.page.is_visible('#threatbanner .threat-detail'))
+            self.assertIn(f'sec-{state}', self.page.get_attribute('#threatbanner', 'class'))
+        self.assertEqual(self.errors, [])
+
+
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
 class MapAtScale(unittest.TestCase):
     """A synthetic 200 hosts and 2,000 workloads. It has to stay usable: the numbers here decide whether the map needs more."""

@@ -1128,6 +1128,15 @@ $('#savedesigns').addEventListener('click', saveDesigns);
 $('#discarddesigns').addEventListener('click', discardDesigns);
 window.addEventListener('beforeunload', (ev) => { if (dirtyDocs().length) ev.preventDefault(); });
 
+// what the Details tab is for in each view (UX-14): Map, Tasks and Scan keep their own panels, so Details says where to go and shows no storage-graph counts
+const MODE_HINT = {
+  topo: 'Select a box to edit it, or right-click it for its actions. Tiers, protection, links and exports are yours; the rest comes from the scan.',
+  graph: 'Select a node. Double-click one to focus on everything within the chosen number of hops; right-click it for its actions.',
+  tasks: 'Tasks is the block editor for storage tasks, in the middle of the page. Details is for Topology and Graph: switch to one and select a box or a node.',
+  map: 'The map shows what you select in its own panel, beside the map. Details is for Topology and Graph.',
+  scan: 'Scan lists what the network scanner found, in the middle of the page. Details is for Topology and Graph.',
+};
+
 function setMode(mode, load = true) {
   T.mode = mode;
   try { localStorage.setItem('sf.view', mode); } catch { /* storage blocked: the default is fine */ }
@@ -1141,13 +1150,16 @@ function setMode(mode, load = true) {
   if (mode === 'map' && typeof loadMap === 'function') loadMap();
   $('#netscanview').hidden = mode !== 'scan';
   if (mode === 'scan' && typeof loadNetScan === 'function') loadNetScan();
-  $('#detailshint').textContent = mode === 'topo'
-    ? 'Select a box to edit it, or right-click it for its actions. Tiers, protection, links and exports are yours; the rest comes from the scan.'
-    : 'Select a node. Double-click one to focus on everything within the chosen number of hops; right-click it for its actions.';
+  $('#detailshint').textContent = MODE_HINT[mode] || MODE_HINT.graph;
   $('#crumb').hidden = mode !== 'graph' || !S.focus;
   $('#empty').hidden = mode !== 'graph' || S.nodes.length > 0;
   if (mode === 'topo') { S.selected = null; if (load) loadDesigns(); }
-  else { T.sel = null; renderSummary(); if (mode === 'graph') resize(); }
+  else {
+    T.sel = null;
+    // a node picked in Graph is still picked when Graph comes back, and its details with it
+    if (mode === 'graph' && S.selected && S.byId.has(S.selected)) renderDetails(S.byId.get(S.selected)); else renderSummary();
+    if (mode === 'graph') resize();
+  }
   if (mode === 'tasks' && load && typeof loadTasks === 'function' && !TK.loaded) loadTasks();
   updateSavebar();
   if (typeof renderStageBar === 'function') renderStageBar();
