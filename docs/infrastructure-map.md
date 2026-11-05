@@ -71,7 +71,7 @@ Exports go one way: nothing is read back from a script. Bash and Ansible come fr
 
 ## On the map
 
-- **Modes:** Network, Flow, Workloads, Storage, Security, Custom. Layers can be stacked.
+- **Modes:** Network, Flow, Workloads, Storage only, Security, Custom. They are presets of the layers (Storage, Network, Services, Firewall, Workloads, Access, Placed by hand), which can also be stacked by hand; doing so makes the mode Custom.
 - **Grouping:** by host, subnet or runtime. Double-click a frame to shut it. Far out, frames stay and their rows go.
 - **Saved views** keep layers, filter, grouping and where you dragged things.
 - **Timeline:** go back to an earlier reading. Storage is not kept: it shows the other layers as they stood.
