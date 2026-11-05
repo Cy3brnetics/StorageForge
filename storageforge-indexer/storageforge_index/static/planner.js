@@ -90,12 +90,12 @@ function sample(){
     known:['/opt/app/releases','/home/ops','/srv','/var/lib','/var/cache'],
     protection:[
       {node:'sv:nvme0n1p2/@',name:'@ (root)',sync:{state:'None'},snap:{on:true,tool:'snapper',policy:'hourly 24 · daily 7 · pre/post pacman',count:61,overhead:18.4*GiB},backup:{target:'restic → B2',enc:'restic AES-256',ratio:1.9,last:'2026-10-24',offsite:true}},
-      {node:'sv:nvme0n1p2/@home',name:'@home',sync:{state:'Rsync Scheduled',target:'nas-02 nightly 02:30'},snap:{on:true,tool:'snapper',policy:'hourly 12 · daily 14',count:26,overhead:9.1*GiB},backup:{target:'restic → B2',enc:'restic AES-256',ratio:1.4,last:'2026-10-24',offsite:true}},
-      {node:'ds:tank/media',name:'tank/media',sync:{state:'Active Sync',target:'syncoid → nas-02/media',lag:'12 min'},snap:{on:true,tool:'sanoid',policy:'daily 30 · monthly 6',count:36,overhead:212*GiB},backup:{target:null,enc:'ZFS native aes-256-gcm',ratio:1.01,last:null,offsite:false}},
-      {node:'ds:tank/photos',name:'tank/photos',sync:{state:'Active Sync',target:'syncoid → nas-02/photos',lag:'9 min'},snap:{on:true,tool:'sanoid',policy:'hourly 24 · daily 30 · monthly 12',count:66,overhead:41*GiB},backup:{target:'restic → B2',enc:'ZFS native + restic',ratio:1.03,last:'2026-10-19',offsite:true}},
-      {node:'ds:tank/vm',name:'tank/vm',sync:{state:'Lagging',target:'syncoid → nas-02/vm',lag:'6 h 40 min'},snap:{on:true,tool:'sanoid',policy:'frequent 4 · hourly 48',count:52,overhead:380*GiB},backup:{target:'PBS → pbs-02',enc:'PBS AES-256-GCM',ratio:2.3,last:'2026-07-02',offsite:true}},
-      {node:'ds:tank/backups',name:'tank/backups',sync:{state:'Active Sync',target:'zfs send → nas-02',lag:'31 min'},snap:{on:true,tool:'sanoid',policy:'daily 14 · weekly 8',count:22,overhead:66*GiB},backup:{target:'age → S3 Glacier IR',enc:'age X25519',ratio:1.0,last:'2026-10-01',offsite:true}},
-      {node:'pool:md0',name:'md0 (cold)',sync:{state:'Disconnected',target:'rsync → office-nas'},snap:{on:false,tool:'none (ext4)',policy:'',count:0,overhead:0},backup:{target:null,enc:'LUKS2 (aes-xts-plain64)',ratio:1,last:null,offsite:false}},
+      {node:'sv:nvme0n1p2/@home',name:'@home',sync:{state:'Rsync Scheduled',target:'nas-02 nightly 02:30',offsite:true},snap:{on:true,tool:'snapper',policy:'hourly 12 · daily 14',count:26,overhead:9.1*GiB},backup:{target:'restic → B2',enc:'restic AES-256',ratio:1.4,last:'2026-10-24',offsite:true}},
+      {node:'ds:tank/media',name:'tank/media',sync:{state:'Active Sync',target:'syncoid → nas-02/media',lag:'12 min',offsite:true},snap:{on:true,tool:'sanoid',policy:'daily 30 · monthly 6',count:36,overhead:212*GiB},backup:{target:null,enc:'ZFS native aes-256-gcm',ratio:1.01,last:null,offsite:false}},
+      {node:'ds:tank/photos',name:'tank/photos',sync:{state:'Active Sync',target:'syncoid → nas-02/photos',lag:'9 min',offsite:true},snap:{on:true,tool:'sanoid',policy:'hourly 24 · daily 30 · monthly 12',count:66,overhead:41*GiB},backup:{target:'restic → B2',enc:'ZFS native + restic',ratio:1.03,last:'2026-10-19',offsite:true}},
+      {node:'ds:tank/vm',name:'tank/vm',sync:{state:'Lagging',target:'syncoid → nas-02/vm',lag:'6 h 40 min',offsite:true},snap:{on:true,tool:'sanoid',policy:'frequent 4 · hourly 48',count:52,overhead:380*GiB},backup:{target:'PBS → pbs-02',enc:'PBS AES-256-GCM',ratio:2.3,last:'2026-07-02',offsite:true}},
+      {node:'ds:tank/backups',name:'tank/backups',sync:{state:'Active Sync',target:'zfs send → nas-02',lag:'31 min',offsite:true},snap:{on:true,tool:'sanoid',policy:'daily 14 · weekly 8',count:22,overhead:66*GiB},backup:{target:'age → S3 Glacier IR',enc:'age X25519',ratio:1.0,last:'2026-10-01',offsite:true}},
+      {node:'pool:md0',name:'md0 (cold)',sync:{state:'Disconnected',target:'rsync → office-nas',offsite:true},snap:{on:false,tool:'none (ext4)',policy:'',count:0,overhead:0},backup:{target:null,enc:'LUKS2 (aes-xts-plain64)',ratio:1,last:null,offsite:false}},
       {node:'part:nvme1n1p1',name:'fast_scratch',ephemeral:true,sync:{state:'None'},snap:{on:false,tool:'none',policy:'',count:0,overhead:0},backup:{target:null,enc:'none',ratio:1,last:null,offsite:false}},
       {node:'part:sdi1',name:'legacy',sync:{state:'None'},snap:{on:false,tool:'none',policy:'',count:0,overhead:0},backup:{target:null,enc:'none',ratio:1,last:null,offsite:false}},
       {node:'part:sdj1',name:'iscsi_vm',sync:{state:'None'},snap:{on:true,tool:'zvol snapshots on nas-02',policy:'daily 7',count:7,overhead:22*GiB},backup:{target:'PBS → pbs-02',enc:'PBS AES-256-GCM',ratio:2.1,last:'2026-10-20',offsite:false}}
@@ -339,6 +339,7 @@ function protStatus(row){
   if(row.ephemeral) return {k:'muted',t:'Excluded',why:['Marked ephemeral scratch space']};
   const why=[];const age=row.backup.target?daysSince(row.backup.last):Infinity;
   const badSync=['Lagging','Disconnected'].includes(row.sync.state);
+  const replica=['Active Sync','Rsync Scheduled'].includes(row.sync.state)&&row.sync.offsite===true;
   if(row.sync.state==='Lagging') why.push(`Replication lagging ${row.sync.lag||''}`.trim());
   if(row.sync.state==='Disconnected') why.push('Replication target unreachable');
   if(row.backup.target&&age>90) why.push(`Backup not validated for ${age} days`);
@@ -346,15 +347,17 @@ function protStatus(row){
   if(nothing) why.push('Single copy: no snapshots, sync or backup');
   if(badSync||(row.backup.target&&age>90)||nothing||(!row.snap.on&&!row.backup.target)) { if(!why.length) why.push('No snapshots and no backup'); return {k:'crit',t:'Critical',why} }
   if(row.snap.on&&row.backup.target&&row.backup.offsite&&age<=30) return {k:'ok',t:'Protected',why:['Snapshots, offsite backup validated '+(age===0?'today':age+' d ago')]};
-  if(!row.backup.target) why.push('No backup target'); else if(!row.backup.offsite) why.push('Backup is not offsite'); else if(age>30) why.push(`Validation ${age} d old`);
+  if(!row.backup.target) why.push(replica?'No backup target: the replica is a copy, not a backup':'No backup target'); else if(!row.backup.offsite) why.push('Backup is not offsite'); else if(age>30) why.push(`Validation ${age} d old`);
   if(!row.snap.on) why.push('No snapshots');
   return {k:'warn',t:'Local only',why};
 }
 function copies321(row){
   const syncOk=['Active Sync','Rsync Scheduled'].includes(row.sync.state);
   const c=1+(syncOk?1:0)+(row.backup.target?1:0);
-  const off=row.backup.offsite||(syncOk&&/nas-02|office|b2|S3/i.test(row.sync.target||''));
-  return {c,off};
+  // offsite is what the design or the deploy says: a backup's flag (the host it runs on is marked offsite), or a sync's own flag. A name proves nothing (UX-32).
+  const off=!!row.backup.offsite||(syncOk&&row.sync.offsite===true);
+  const unstated=!off&&syncOk&&row.sync.offsite===undefined;      // a replica nobody said anything about: not offsite, and not known to be local either
+  return {c,off,unstated};
 }
 
 /* ───────────── link health & guardrails ───────────── */
@@ -543,13 +546,37 @@ function nav(){
   $('#topchips').innerHTML=`<span class="pill ${crit?'crit':'ok'}">${crit} critical</span><span class="pill ${warn?'warn':'ok'}">${warn} warnings</span>`;
   $('#hostline').textContent=(DOC.host?(DOC.source==='scan'?'from scan · ':'design · '):'example · ')+S.host;
 }
+/* A render replaces the whole view, and whatever had focus goes with it: after a change the keyboard user was dropped on the page and had to tab in
+   from the top (UX-18). So say which element had focus, and put focus on its twin in the new view, caret and all. */
+const FOCUS_BOXES=['#nav','#view'];
+const attrq=s=>String(s).replace(/["\\]/g,'\\$&');
+function focusState(){
+  const a=document.activeElement;if(!a||a===document.body) return null;
+  const box=FOCUS_BOXES.find(b=>$(b).contains(a));if(!box) return null;
+  const sel=a.id?'#'+CSS.escape(a.id):a.tagName.toLowerCase()+Object.entries(a.dataset).map(([k,x])=>`[data-${k.replace(/[A-Z]/g,m=>'-'+m.toLowerCase())}="${attrq(x)}"]`).join('');
+  const st={box,sel,idx:Math.max(0,[...$(box).querySelectorAll(sel)].indexOf(a)),act:a.dataset.act};
+  if(typeof a.selectionStart==='number'){ try{ st.start=a.selectionStart;st.end=a.selectionEnd }catch(e){} }
+  return st;
+}
+function restoreFocus(st){
+  if(!st) return;
+  let same=[...$(st.box).querySelectorAll(st.sel)];
+  if(!same.length&&st.act){ same=[...$(st.box).querySelectorAll(`[data-act="${attrq(st.act)}"]`)];st.idx=Math.min(st.idx,same.length-1) }   // it was removed (a deleted row): the next one of its kind
+  const el=same[Math.min(st.idx,same.length-1)];if(!el) return;
+  el.focus({preventScroll:true});
+  if(st.start!=null&&typeof el.setSelectionRange==='function'){ try{ el.setSelectionRange(st.start,st.end) }catch(e){} }
+}
+let renderTimer=0;
+function renderSoon(){ clearTimeout(renderTimer);renderTimer=setTimeout(render,0) }   // a change that came with Tab: let focus move on first, so the next field is the one that keeps it
 function render(){
+  const keep=focusState();
   nav();
   const v=VIEWS.find(x=>x[0]===UI.view);$('#vt').textContent=v[1];$('#vs').textContent=v[2];
   const fn={overview:vOverview,devices:vDevices,mounts:vMounts,links:vLinks,topology:vTopology,raid:vRaid,protection:vProtection,export:vExport}[UI.view];
   $('#view').innerHTML=fn();
   if(UI.view==='topology') requestAnimationFrame(drawEdges);
   setChain(null);
+  restoreFocus(keep);
 }
 function setChain(id){
   const view=$('#view');view.querySelectorAll('.lit').forEach(x=>x.classList.remove('lit'));
@@ -883,7 +910,7 @@ function vProtection(){
       <td><span class="st ${r.backup.target?(r.backup.offsite?'ok':'warn'):'crit'}">${esc(r.backup.target||'No backup')}</span><div class="muted mono" style="font-size:11px">${r.backup.target?`${r.backup.offsite?'offsite':'same site'} · ${r.backup.ratio.toFixed(2)}× compression`:''}</div></td>
       <td class="mono" style="font-size:11.5px">${esc(r.backup.enc)}</td>
       <td>${r.backup.target?`<span class="st ${age>90?'crit':age>30?'warn':'ok'} num">${r.backup.last?esc(r.backup.last):'No good run yet'}</span>${r.backup.last?`<div class="muted" style="font-size:11px">${age} days ago</div>`:''}${r.deployed?'':`<button type="button" class="btn sm ghost" style="margin-top:4px" data-act="pval" data-i="${i}">Mark validated</button>`}`:'<span class="muted">—</span>'}</td>
-      <td class="num mono" style="font-size:12px">${c.c} cop${c.c>1?'ies':'y'}<br><span class="muted">${c.off?'offsite ✓':'no offsite'}</span></td>
+      <td class="num mono" style="font-size:12px">${c.c} cop${c.c>1?'ies':'y'}<br><span class="muted">${c.off?'offsite ✓':c.unstated?'offsite not stated':'no offsite'}</span></td>
       <td><span class="pill ${st.k}">${st.t}</span><div class="why">${esc(st.why.join(' · '))}</div></td></tr>`}).join('');
   const P=S.protection.map(protStatus);
   return `<div class="grid g4">${[['ok','Protected','Snapshots plus a validated offsite copy'],['warn','Local only','A copy is missing, stale or on the same site'],['crit','Critical','Stale sync, unvalidated backup or a single copy'],['muted','Excluded','Ephemeral scratch, not tracked']].map(([k,t,d])=>`<div class="panel kpi"><span class="pill ${k}">${t}</span><span class="v">${P.filter(x=>x.k===k).length}</span><span class="s">${d}</span></div>`).join('')}</div>
@@ -1068,6 +1095,7 @@ function selObj(){
   if(s.type==='rem') return remoteBy(s.id);
 }
 function commit(){ save(); render(); }
+function commitSoon(){ save(); renderSoon(); }
 function selectNode(node){
   const [t,...r]=node.split(':');const v=r.join(':');
   if(t==='part') UI.sel={type:'part',id:v};
@@ -1134,7 +1162,7 @@ view.addEventListener('change',e=>{
     else if(k==='reserve') c.reserve=t.value==='1';
     else if(k==='virt') c.virt=(+t.value||0)*1e12;
     else c[k]=t.value;
-    render();return }
+    renderSoon();return }
   const f=t.dataset.f;if(!f) return;const o=selObj();if(!o) return;const v=t.value.trim();
   const path=x=>x&&!x.startsWith('/')?'/'+x:x;
   switch(f){
@@ -1159,7 +1187,7 @@ view.addEventListener('change',e=>{
     case 'rstatus':o.status=v;break;
     case 'rmount':o.mount=path(v);break;
   }
-  commit();
+  commitSoon();
 });
 view.addEventListener('submit',e=>{
   if(e.target.id!=='addlink') return;e.preventDefault();

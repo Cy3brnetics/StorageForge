@@ -514,6 +514,50 @@ class BrowserSmoke(unittest.TestCase):
         self.page.click('#viewmode button[data-mode="topo"]')
 
 
+    # ── the planner: UX-18 and UX-32 ───────────────────────────────────────────────────────────────────────────────────
+    def test_the_planner_keeps_focus_when_a_field_is_changed(self):             # UX-18
+        """Every change re-rendered the whole view: Tab out of an edited field and focus landed on the page, not on the next field."""
+        self.page.goto(self.base + '/planner#devices')
+        self.page.wait_for_selector('#view .seg[data-act=sel][data-id="nvme0n1p1"]')
+        self.page.click('#view .seg[data-act=sel][data-id="nvme0n1p1"]')
+        self.page.wait_for_selector('#i-label')
+        self.page.focus('#i-label')
+        self.page.keyboard.press('Control+A')
+        self.page.keyboard.type('boot')
+        self.page.keyboard.press('Tab')
+        self.page.wait_for_timeout(250)
+        self.assertEqual(self.page.evaluate('document.activeElement.id'), 'i-fs')
+        self.assertEqual(self.page.input_value('#i-label'), 'boot')               # and the change was kept
+        self.page.click('#view .seg[data-act=sel][data-id="nvme0n1p2"]')          # Enter adds a subvolume and keeps the field for the next one
+        self.page.wait_for_selector('#i-newsv')
+        self.page.focus('#i-newsv')
+        self.page.keyboard.type('docker')
+        self.page.keyboard.press('Enter')
+        self.page.wait_for_timeout(250)
+        self.assertEqual(self.page.evaluate('document.activeElement.id'), 'i-newsv')
+        self.assertIn('@docker', self.page.inner_text('#view'))
+        self.page.focus('#nav button[data-view="mounts"]')                       # changing view from the keyboard keeps focus on the nav
+        self.page.keyboard.press('Enter')
+        self.page.wait_for_timeout(250)
+        self.assertEqual(self.page.evaluate('document.activeElement.dataset.view'), 'mounts')
+
+    def test_offsite_is_what_the_design_says_and_not_what_a_name_looks_like(self):   # UX-32
+        self.page.goto(self.base + '/planner#protection')
+        self.page.wait_for_selector('#view table')
+        got = self.page.evaluate("""() => [copies321({sync:{state:'Active Sync',target:'rsync → office-nas'},backup:{target:null,offsite:false}}),
+                                           copies321({sync:{state:'Active Sync',target:'rsync → x',offsite:true},backup:{target:null,offsite:false}}),
+                                           copies321({sync:{state:'None'},backup:{target:'restic → B2',offsite:true}}),
+                                           copies321({sync:{state:'Active Sync',target:'rsync → nas-02',offsite:false},backup:{target:null,offsite:false}})]""")
+        self.assertEqual([(r['c'], r['off'], r['unstated']) for r in got], [(2, False, True), (2, True, False), (2, True, False), (2, False, False)])
+        example = self.page.evaluate("""() => { const r = S.protection.find(x => x.name === 'tank/media'); return [r.sync.offsite, protStatus(r).why.join(' ')]; }""")
+        self.assertTrue(example[0])                                              # the example says where its replica is, and the reason no longer calls a replica a backup
+        self.assertIn('the replica is a copy, not a backup', example[1])
+        self.page.evaluate("() => { S.protection.find(x => x.name === 'tank/media').sync = {state: 'Active Sync', target: 'rsync → office-nas'}; render(); }")
+        row = self.page.locator('#view tbody tr', has_text='tank/media').first.inner_text()
+        self.assertIn('offsite not stated', row)                                 # the same row with a name that sounds remote and nothing said
+        self.assertNotIn('offsite ✓', row)
+
+
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
 class MapAtScale(unittest.TestCase):
     """A synthetic 200 hosts and 2,000 workloads. It has to stay usable: the numbers here decide whether the map needs more."""
