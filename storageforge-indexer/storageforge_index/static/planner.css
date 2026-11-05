@@ -3,7 +3,7 @@
    Dark-first systems palette: graphite with a cold blue bias; tiers carry their own hue, semantics stay separate. */
 :root{
   --bg:#0d1015; --panel:#141921; --panel-2:#1a2029; --raise:#212835; --line:#262e3b; --line-2:#323c4c;
-  --fg:#d9dfe9; --muted:#8a95a8; --faint:#5d6879;
+  --fg:#d9dfe9; --muted:#8a95a8; --faint:#7f8aa0;
   --accent:#6aa5ff; --accent-ink:#0b1730;
   --fast:#b592ff; --mass:#41c3c9; --remote:#e3b46c;
   --ok:#43d17f; --warn:#f2b632; --crit:#ff6464; --info:#6aa5ff;
@@ -17,7 +17,7 @@
 @media (prefers-color-scheme: light){
   :root:not([data-theme="dark"]){
     --bg:#eef1f5; --panel:#ffffff; --panel-2:#f5f7fa; --raise:#e8ecf2; --line:#d8dee7; --line-2:#c3ccd8;
-    --fg:#17202c; --muted:#556275; --faint:#8a95a6;
+    --fg:#17202c; --muted:#556275; --faint:#5f6b7e;
     --accent:#1d68d8; --accent-ink:#ffffff;
     --fast:#7346d6; --mass:#0b8c93; --remote:#a06a12;
     --ok:#15884a; --warn:#a56800; --crit:#cf2c2c; --info:#1d68d8;
@@ -27,7 +27,7 @@
 }
 :root[data-theme="light"]{
   --bg:#eef1f5; --panel:#ffffff; --panel-2:#f5f7fa; --raise:#e8ecf2; --line:#d8dee7; --line-2:#c3ccd8;
-  --fg:#17202c; --muted:#556275; --faint:#8a95a6;
+  --fg:#17202c; --muted:#556275; --faint:#5f6b7e;
   --accent:#1d68d8; --accent-ink:#ffffff;
   --fast:#7346d6; --mass:#0b8c93; --remote:#a06a12;
   --ok:#15884a; --warn:#a56800; --crit:#cf2c2c; --info:#1d68d8;

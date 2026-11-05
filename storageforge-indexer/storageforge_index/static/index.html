@@ -20,7 +20,7 @@
     <a id="toplanner" class="btn" href="/planner">Planner</a>
     <a id="tomanage" class="btn" href="/manage">Manage</a>
     <button id="reset" type="button" class="btn">Show all</button>
-    <button id="export" type="button" class="btn pri">Export .canvas</button>
+    <button id="export" type="button" class="btn">Export .canvas</button>
     <label id="sessfield" class="field" title="How long a sign-in lasts (changing it asks for your password)" hidden><span>Session</span><select id="sesslen" aria-label="Session length"><option value="30">30 min</option><option value="60">1 h</option><option value="120">2 h</option><option value="240">4 h</option><option value="480">8 h</option></select></label>
     <button id="lock" type="button" class="btn ghost" title="Sign out">Sign out</button>
   </div>
@@ -292,6 +292,7 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <button type="button" role="tab" data-tab="hostlogs" title="Host logs" aria-label="Host logs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M9 11h7M9 15h7"/></svg><span class="lbl">Logs</span></button>
       <button type="button" role="tab" data-tab="audit" title="Audit log" aria-label="Audit log"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="m9 12 2 2 4-4"/></svg><span class="lbl">Audit</span></button>
     </nav>
+    <button type="button" id="railmore" class="railmore" aria-hidden="true" tabindex="-1" title="More panels below: scroll the list" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
   </aside>
 </main>
 

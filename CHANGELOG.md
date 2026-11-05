@@ -25,6 +25,9 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 - Removed `backup.send_file`, an unsigned sender nothing used, and a site-wide security key setting nothing could set.
 - **A slash typed into a text field arrives.** `/` moved focus to the search box from anywhere, so a path lost its first character and started a file search. A password with a slash in it lost the rest of itself into the search box, and from there into the server's request log; in the confirm dialog the slash vanished, so that password could not be typed at all. The shortcut now acts only when nothing is being typed and no dialog is open, and the other shortcuts follow the same rule: `\` leaves an open dialog alone, the menu key and Shift+F10 leave a text field's own menu alone, and so do Ctrl+Z in Tasks and Escape.
 - **Escape asks before it throws away a half-made share.** In the share wizard, Escape after the first step with something changed asks first. The Close button still closes at once.
+- **The side rail says when it goes on.** On a laptop it needs about 1000 pixels and its scrollbar is hidden, so Security, Scans, Keys, Logs and Audit were out of sight with nothing to say so. The last visible button now fades, a chevron scrolls the list, and a panel opened from a link scrolls into view. The group labels are 10 pixels at full strength instead of 8.5 pixels at 70%.
+- **`Export .canvas` is no longer the header's one blue button,** and it shows only in Topology and Graph, where it exports what is on screen.
+- **Text colours that missed 4.5 to 1 now clear it:** the planner's column heads and labels in both themes, the light theme's Access badge, and the status colours on the `/manage` page background. A test reads the stylesheets and holds every text colour to it.
 
 ### Added
 - **One [roadmap](roadmap.md) of what's left.** Finished and superseded roadmaps moved to [archive/roadmaps](archive/roadmaps/).

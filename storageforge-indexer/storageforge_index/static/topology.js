@@ -1134,6 +1134,7 @@ function setMode(mode, load = true) {
   document.querySelectorAll('#viewmode button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
   const graphOnly = ['#graph', '.legend', '#hopsfield', '#reset'];
   for (const s of graphOnly) document.querySelector(s).hidden = mode !== 'graph';
+  $('#export').hidden = !(mode === 'topo' || mode === 'graph');       // the canvas export is of the topology and the graph: in the other views it exported something that was not on screen
   topo.hidden = mode !== 'topo';
   $('#tasksview').hidden = mode !== 'tasks';
   $('#mapview').hidden = mode !== 'map';

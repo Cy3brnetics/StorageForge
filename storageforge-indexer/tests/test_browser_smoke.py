@@ -473,6 +473,47 @@ class BrowserSmoke(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
 
+    # ── the chrome: UX-01 and UX-02 ────────────────────────────────────────────────────────────────────────────────────
+    IN_VIEW = """(tab) => { const r = document.querySelector('.rail').getBoundingClientRect(), b = document.querySelector(`.tabs button[data-tab="${tab}"]`).getBoundingClientRect();
+                          return b.top >= r.top - 1 && b.bottom <= r.bottom + 1; }"""
+
+    def test_the_rail_says_when_more_of_it_is_below_the_fold(self):            # UX-01
+        """The rail needs about 1000 px and scrolls with its scrollbar hidden: Security and Logs were out of sight, with nothing to say so."""
+        self.page.set_viewport_size({'width': 1366, 'height': 768})
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.page.evaluate("document.querySelector('.rail').dataset.more"), 'after')
+        self.assertTrue(self.page.is_visible('#railmore'))
+        self.assertFalse(self.page.evaluate(self.IN_VIEW, 'audit'))
+        for _ in range(8):                                        # the chevron scrolls it, until there is no more
+            if not self.page.is_visible('#railmore'):
+                break
+            self.page.click('#railmore')
+            self.page.wait_for_timeout(500)
+        self.assertFalse(self.page.is_visible('#railmore'))
+        self.assertEqual(self.page.evaluate("document.querySelector('.rail').dataset.more"), 'before')
+        self.assertTrue(self.page.evaluate(self.IN_VIEW, 'audit'))
+        self.page.set_viewport_size({'width': 1920, 'height': 1200})   # with room for all of it there is nothing to say
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.page.evaluate("document.querySelector('.rail').dataset.more"), '')
+        self.assertFalse(self.page.is_visible('#railmore'))
+        self.assertEqual(self.errors, [])
+
+    def test_a_panel_opened_from_a_link_is_in_view_in_the_rail(self):          # UX-01
+        self.page.set_viewport_size({'width': 1366, 'height': 768})
+        self.page.goto(self.base + '/search')                      # from another page, as a link from the planner is: on the same page a hash change is not read (UX-08)
+        self.page.goto(self.base + '/#tab=audit')
+        self.page.wait_for_selector('.tabs button[data-tab="audit"][aria-selected="true"]')
+        self.page.wait_for_timeout(400)
+        self.assertTrue(self.page.evaluate(self.IN_VIEW, 'audit'))
+
+    def test_the_header_has_no_primary_button_and_export_shows_only_where_it_applies(self):    # UX-02
+        for mode, shown in (('topo', True), ('graph', True), ('tasks', False), ('map', False), ('scan', False)):
+            self.page.click(f'#viewmode button[data-mode="{mode}"]')
+            self.assertEqual(self.page.is_visible('#export'), shown, mode)
+        self.assertEqual(self.page.locator('.bar .btn.pri').count(), 0)
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
 class MapAtScale(unittest.TestCase):
     """A synthetic 200 hosts and 2,000 workloads. It has to stay usable: the numbers here decide whether the map needs more."""

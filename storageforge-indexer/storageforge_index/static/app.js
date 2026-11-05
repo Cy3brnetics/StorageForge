@@ -606,6 +606,7 @@ function showTab(name) {
     const on = b.dataset.tab === name;
     b.classList.toggle('on', on); b.setAttribute('aria-selected', on);
     if (!on) return;
+    b.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });        // a panel opened from a link must not sit below the fold of the rail
     $('#ptitle').textContent = b.querySelector('.lbl').textContent;
     let g = b.previousElementSibling;
     while (g && !g.classList.contains('rgroup')) g = g.previousElementSibling;
@@ -631,6 +632,19 @@ function showTab(name) {
   if (name === 'deploy') loadDeploy();
   if (name === 'security' && typeof loadSecurity === 'function') loadSecurity();
 }
+/* The rail scrolls with its scrollbar hidden, so a fade and a chevron say that more of it is out of sight (UX-01). */
+const railEl = $('.rail'), railMore = $('#railmore'), railNarrow = matchMedia('(max-width: 900px)');
+function railHint() {
+  const h = railNarrow.matches;
+  const pos = h ? railEl.scrollLeft : railEl.scrollTop, size = h ? railEl.scrollWidth : railEl.scrollHeight, view = h ? railEl.clientWidth : railEl.clientHeight;
+  const before = pos > 4, after = size - view - pos > 4;
+  railEl.dataset.more = before && after ? 'both' : before ? 'before' : after ? 'after' : '';
+  railMore.hidden = h || !after;
+}
+railEl.addEventListener('scroll', railHint, { passive: true });
+new ResizeObserver(railHint).observe(railEl);
+railNarrow.addEventListener('change', railHint);
+railMore.addEventListener('click', () => railEl.scrollBy({ top: railEl.clientHeight * 0.8, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }));
 const curTab = () => $('.tabs button.on')?.dataset.tab;
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => {
   if (b.dataset.tab === curTab() && !panel.classList.contains('collapsed')) setPanelOpen(false);   // the open one again hides the panel
@@ -846,6 +860,7 @@ function applyPermissions(me) {          // only hides what would answer 403: th
     while (n && !n.classList.contains('rgroup')) { any = any || !n.hidden; n = n.nextElementSibling; }
     g.hidden = !any;
   });
+  railHint();                              // fewer tabs for this account: the rail may now fit
   $('#searchform').hidden = !can('search.files');
   $('#verify').hidden = !can('audit.verify');
   $('#audit').hidden = !can('audit.view');

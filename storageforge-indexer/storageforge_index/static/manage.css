@@ -3,7 +3,7 @@
   --mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace; color-scheme: dark;
 }
 @media (prefers-color-scheme: light) {
-  :root { --bg: #eef1f5; --panel: #ffffff; --panel-2: #f5f7fa; --raise: #e8ecf2; --line: #d8dee7; --line-2: #c3ccd8; --text: #17202c; --muted: #556275; --pri: #1d68d8; --pri-ink: #fff; --bad: #cf2c2c; --warn: #a56800; --ok: #15884a; color-scheme: light; }
+  :root { --bg: #eef1f5; --panel: #ffffff; --panel-2: #f5f7fa; --raise: #e8ecf2; --line: #d8dee7; --line-2: #c3ccd8; --text: #17202c; --muted: #556275; --pri: #1d68d8; --pri-ink: #fff; --bad: #cf2c2c; --warn: #996000; --ok: #0f7a3c; color-scheme: light; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
