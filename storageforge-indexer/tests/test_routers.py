@@ -583,6 +583,43 @@ class Scanner(unittest.TestCase):
         self.assertTrue(res['hosts'][0]['new'])
         self.assertEqual(res['gone'], ['10.0.0.5'])
 
+    @staticmethod
+    def found(ip):
+        return f'<host><status state="up"/><address addr="{ip}" addrtype="ipv4"/><ports><port protocol="tcp" portid="22"><state state="open"/></port></ports></host>'
+
+    def test_results_are_grouped_by_the_ranges_that_were_scanned(self):            # UX-29
+        """The page put every address in an assumed /24, which is wrong for a /20, a /22 or a /25."""
+        netscan.save_settings(self.conn, {'enabled': True, 'ranges': ['10.20.0.0/20', '192.168.7.0/25', '10.30.0.0/24']}, 'a')
+        answers = {'10.20.0.0/20': ['10.20.5.9', '10.20.15.1'], '192.168.7.0/25': ['192.168.7.9', '172.16.0.4'], '10.30.0.0/24': []}    # the second sends one back from outside its range
+        got = netscan.run(self.db, self.conn, None, 'a', wait=True, runner=lambda argv: '<nmaprun>' + ''.join(self.found(ip) for ip in answers[argv[-1]]) + '</nmaprun>')
+        res = netscan.results(self.conn, got['scan_id'])
+        self.assertEqual(res['ranges'], ['10.20.0.0/20', '192.168.7.0/25', '10.30.0.0/24'])
+        self.assertEqual({h['ip']: h['range'] for h in res['hosts']},
+                         {'10.20.5.9': '10.20.0.0/20', '10.20.15.1': '10.20.0.0/20', '192.168.7.9': '192.168.7.0/25', '172.16.0.4': None})
+        nets = netscan.graph(self.conn, got['scan_id'])['networks']
+        self.assertEqual([(n['network'], [h['ip'] for h in n['hosts']]) for n in nets],
+                         [('10.20.0.0/20', ['10.20.5.9', '10.20.15.1']), ('192.168.7.0/25', ['192.168.7.9']), ('other', ['172.16.0.4'])])   # one /20, not two /24s, and the stray last
+
+    def test_range_of_picks_the_narrowest_range_and_never_fails(self):             # UX-29
+        r = ['10.0.0.0/8', '10.1.0.0/16', '192.168.1.0/24']
+        self.assertEqual(netscan.range_of('10.1.2.3', r), '10.1.0.0/16')
+        self.assertEqual(netscan.range_of('10.9.9.9', r), '10.0.0.0/8')
+        self.assertIsNone(netscan.range_of('172.16.0.1', r))
+        for odd in ('fd00::1', 'not an address', '', '10.0.0'):
+            self.assertIsNone(netscan.range_of(odd, r), odd)
+        self.assertIsNone(netscan.range_of('10.1.2.3', ['junk', '']))
+        self.assertEqual(netscan.range_of('fd00::5', ['fd00::/64']), 'fd00::/64')            # an address matches only a range of its own family
+        self.assertEqual(sorted(['b', '10.0.0.10', 'fd00::1', '10.0.0.9'], key=netscan._address_order), ['10.0.0.9', '10.0.0.10', 'fd00::1', 'b'])
+
+    def test_a_stored_address_that_is_not_ipv4_does_not_break_the_results(self):   # UX-29
+        netscan.save_settings(self.conn, {'enabled': True, 'ranges': ['10.0.0.0/24']}, 'a')
+        got = netscan.run(self.db, self.conn, None, 'a', wait=True, runner=lambda argv: self.XML)
+        self.conn.execute("INSERT INTO network_scan_hosts (scan_id, ip, ports_json) VALUES (:s, 'fd00::7', '[]')", {'s': got['scan_id']})
+        res = netscan.results(self.conn, got['scan_id'])
+        self.assertEqual([h['ip'] for h in res['hosts']], ['10.0.0.5', 'fd00::7'])          # int() of an octet raised on this before
+        self.assertIsNone(res['hosts'][1]['range'])
+        self.assertEqual(netscan.graph(self.conn, got['scan_id'])['networks'][-1]['network'], 'other')
+
     def test_a_failed_scan_says_so(self):
         netscan.save_settings(self.conn, {'enabled': True, 'ranges': ['10.0.0.0/24']}, 'a')
         def boom(argv):

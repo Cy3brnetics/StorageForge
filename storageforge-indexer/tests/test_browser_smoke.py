@@ -347,6 +347,23 @@ class BrowserSmoke(unittest.TestCase):
         self.assertEqual(self.page.input_value('input[aria-label="Address"]'), '192.168.1.250')
         self.assertEqual(self.errors, [])
 
+    def test_scan_groups_hosts_by_the_ranges_that_were_scanned(self):              # UX-29
+        """Every address went under an assumed /24: two hosts of one /20 came out as two networks, and a range that found nothing was not there at all."""
+        from storageforge_index import netscan
+        conn = self.db.connect()
+        netscan.save_settings(conn, {'enabled': True, 'ranges': ['10.20.0.0/20', '192.168.7.0/25', '10.30.0.0/24']}, 'test')
+        up = lambda ip: f'<host><status state="up"/><address addr="{ip}" addrtype="ipv4"/></host>'
+        answers = {'10.20.0.0/20': ['10.20.5.9', '10.20.15.1'], '192.168.7.0/25': ['192.168.7.9', '172.16.0.4'], '10.30.0.0/24': []}      # the second one sends back a stray
+        netscan.run(self.db, conn, None, 'test', wait=True, runner=lambda argv: '<nmaprun>' + ''.join(up(ip) for ip in answers[argv[-1]]) + '</nmaprun>')
+        netscan.save_settings(conn, {'enabled': False}, 'test')
+        conn.close()
+        self.page.click('#viewmode button[data-mode="scan"]')
+        self.page.wait_for_selector('.nscan-net')
+        heads = self.page.eval_on_selector_all('.nscan-net h3', 'hs => hs.map((h) => h.textContent)')
+        self.assertEqual(heads, ['10.20.0.0/20 · 2', '192.168.7.0/25 · 1', '10.30.0.0/24 · 0', 'Outside the scanned ranges · 1'])
+        self.assertIn('Nothing answered.', self.page.inner_text('.nscan-net:has(h3:has-text("10.30.0.0/24"))'))
+        self.assertEqual(self.errors, [])
+
     def test_the_management_planner_opens_every_view_and_compiles_under_the_csp(self):
         self.page.goto(self.base + '/manage')
         self.page.wait_for_selector('#mgnav button')

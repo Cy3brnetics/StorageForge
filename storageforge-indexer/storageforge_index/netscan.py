@@ -194,38 +194,67 @@ def scans(conn: Conn, limit: int = 20) -> list[dict]:
     return [dict(zip(keys, r)) for r in conn.all('SELECT scan_id, target, started_at, finished_at, status, actor, error, host_count FROM network_scans ORDER BY scan_id DESC LIMIT :l', {'l': limit})]
 
 
+def range_of(ip: str, targets: list[str]) -> str | None:
+    """The scanned range an address falls in, the narrowest when ranges overlap. None for an address in none of them, and for anything that is not an address."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    best = None
+    for t in targets:
+        try:
+            net = ipaddress.ip_network(t, strict=False)
+        except ValueError:
+            continue
+        if net.version == addr.version and addr in net and (best is None or net.prefixlen > best.prefixlen):
+            best = net
+    return str(best) if best else None
+
+
+def _address_order(ip: str) -> tuple:
+    """A sort key that cannot fail: IPv4 numerically, then IPv6, then whatever else there is, as text."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return (2, 0, ip)
+    return (0 if addr.version == 4 else 1, int(addr), '')
+
+
 def results(conn: Conn, scan_id: int | None = None) -> dict:
-    """A scan's results, each linked to what it is, with what's changed from the scan before."""
+    """A scan's results, each linked to what it is and to the range that was scanned for it, with what's changed from the scan before."""
     sid = scan_id or conn.scalar("SELECT max(scan_id) FROM network_scans WHERE status <> 'running'")
     if not sid:
-        return {'scan': None, 'hosts': []}
+        return {'scan': None, 'ranges': [], 'hosts': []}
     rows = conn.all('SELECT ip, mac, vendor, name, ports_json FROM network_scan_hosts WHERE scan_id = :s ORDER BY ip', {'s': sid})
     before = conn.scalar("SELECT max(scan_id) FROM network_scans WHERE scan_id < :s AND status = 'done'", {'s': sid})
     previous = {r[0]: loads(r[1]) if isinstance(r[1], str) else r[1] for r in conn.all('SELECT ip, ports_json FROM network_scan_hosts WHERE scan_id = :s', {'s': before})} if before else None
     known = known_addresses(conn)
+    scan = next((s for s in scans(conn, 100) if s['id'] == sid), None)
+    ranges = (scan['target'] or '').split() if scan else []
     out = []
     for ip, mac, vendor, name, ports in rows:
         row = {'ip': ip, 'mac': mac, 'vendor': vendor, 'name': name, 'ports': loads(ports) if isinstance(ports, str) else ports}
+        row['range'] = range_of(ip, ranges)
         row['link'] = link_of(row, known)
         if previous is not None:
             old = previous.get(ip)
             row['new'] = old is None
             row['new_ports'] = [] if old is None else sorted({p['port'] for p in row['ports']} - {p['port'] for p in old})
         out.append(row)
-    out.sort(key=lambda r: tuple(int(x) for x in r['ip'].split('.')))
-    gone = sorted(set(previous or {}) - {r['ip'] for r in out}) if previous is not None else []
-    scan = next((s for s in scans(conn, 100) if s['id'] == sid), None)
-    return {'scan': scan, 'hosts': out, 'gone': gone, 'previous': before}
+    out.sort(key=lambda r: _address_order(r['ip']))
+    gone = sorted(set(previous or {}) - {r['ip'] for r in out}, key=_address_order) if previous is not None else []
+    return {'scan': scan, 'ranges': ranges, 'hosts': out, 'gone': gone, 'previous': before}
 
 
 def graph(conn: Conn, scan_id: int | None = None) -> dict:
-    """The same results as a drawing: what was found grouped by network."""
+    """The same results as a drawing: what was found grouped by the range that was scanned for it, in the order the ranges were named, and anything outside them last as 'other'."""
     res = results(conn, scan_id)
     nets: dict = {}
     for h in res['hosts']:
-        net = str(ipaddress.ip_network(f'{h["ip"]}/24', strict=False))
-        nets.setdefault(net, []).append(h)
-    return {'scan': res['scan'], 'networks': [{'network': n, 'hosts': rows} for n, rows in sorted(nets.items())], 'gone': res.get('gone') or []}
+        nets.setdefault(h['range'] or 'other', []).append(h)
+    order = {r: i for i, r in enumerate(res.get('ranges') or [])}
+    ranked = sorted(nets.items(), key=lambda kv: (kv[0] == 'other', order.get(kv[0], len(order)), kv[0]))
+    return {'scan': res['scan'], 'networks': [{'network': n, 'hosts': rows} for n, rows in ranked], 'gone': res.get('gone') or []}
 
 
 def tick(db) -> int:
