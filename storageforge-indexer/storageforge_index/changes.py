@@ -1044,7 +1044,8 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, actor: str, destructive:
             finally:
                 c.close()
         return hook
-    return [*before, *({'host': h, 'script': text, 'args': args, 'kind': 'changes', 'ref': plan['name'], 'mode': mode,
+    long_run = {'timeout': receiving.LONG_RUN} if any(t['type'] in ('btrfs-send', 'zfs-send') for t in plan['tasks']) else {}    # stopped halfway, a send starts again from nothing
+    return [*before, *({'host': h, 'script': text, 'args': args, 'kind': 'changes', 'ref': plan['name'], 'mode': mode, **long_run,
                         **({'on_ok': mark(h)} if mode == 'apply' and plan_id else {})} for h in order), *after]
 
 

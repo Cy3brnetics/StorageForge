@@ -27,7 +27,8 @@ from .moves import find_host
 from .scriptkit import SEND_KIT, need_line, one_line
 
 KIND = 'sends'                     # deploy_runs and deployed: what this module's runs are called
-ONE_OFF_SECONDS = 12 * 3600        # how long a plan's key can be used if the signed removal after it never runs
+LONG_RUN = 6 * 3600                # how long a deploy lets a run holding a send go on, as a restore gets
+ONE_OFF_SECONDS = 12 * 3600        # how long a plan's key can be used if the signed removal after it never runs: past that long run
 NAME_RE = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}')       # what a snapshot may be called, to cross hosts: RECEIVE_KIT's recv_name_ok
 PREFIX_RE = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,39}')
 DATASET_RE = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:-]*(/[A-Za-z0-9_][A-Za-z0-9_.:-]*)+')
@@ -226,20 +227,24 @@ def _head(prefix: str, title: str, host: str, role: str) -> str:
     return head + HOST_FUNCS + KEY_FUNCS + 'if [[ $MODE == remove ]]; then take_off; fi\n'
 
 
+REPORT_ONLY = 'if ((APPLY)); then echo "this copy was made for a report and holds no keys: deploy it from StorageForge" >&2; exit 2; fi\n'
+
+
 def receive_script(prefix: str, title: str, host: str, sends: list[dict], secrets_: dict | None, expires: int = 0) -> str:
     """The signed run on a receiving host: what each send may do here, and its key's forced command. With no flags it only reports."""
     from .deploy import JOBBIN
     from .jobs import _heredoc
     from .jobscript import JOB_SCRIPT
     q = shlex.quote
-    parts = [_head(prefix, title, host, 'receiving'), 'section "tools"\n']
+    parts = [_head(prefix, title, host, 'receiving'), '' if secrets_ is not None else REPORT_ONLY, 'section "tools"\n']
     if any(s['tool'] == 'btrfs' for s in sends):
         parts.append(need_line('btrfs-progs'))
     if any(s['tool'] == 'zfs' for s in sends):
         parts.append('need zfs "ZFS receive"\n')
     parts.append('if [[ ! -e /etc/sudoers.d/storageforge-deploy ]] || grep -Fq -- "--serve" /etc/sudoers.d/storageforge-deploy; then ok "job keys may start storageforge-job --serve"\n'
                  'else conflict "the sudoers file here lets no job key start storageforge-job --serve: run Set up again on this host"; fi\n')
-    parts.append('section "storageforge-job"\n' + _heredoc(f'want_file {JOBBIN} 0755', JOB_SCRIPT))
+    if sends:
+        parts.append('section "storageforge-job"\n' + _heredoc(f'want_file {JOBBIN} 0755', JOB_SCRIPT))
     keylines = []
     for s in sends:
         parts.append(f'section {q("receives for " + s["sender"] + " into " + s["root"] + " (" + s["id"] + ")")}\n')
@@ -279,12 +284,12 @@ def send_script(prefix: str, title: str, host: str, sends: list[dict], secrets_:
     task copies itself to disk when it is installed, and a private key must not go with it. pins: {send id: known_hosts lines}."""
     from .jobs import _heredoc
     q = shlex.quote
-    parts = [_head(prefix, title, host, 'sending'), 'section "tools"\nneed ssh "the OpenSSH client"\n']
+    parts = [_head(prefix, title, host, 'sending'), '' if secrets_ is not None else REPORT_ONLY, 'section "tools"\nneed ssh "the OpenSSH client"\n']
     for s in sends:
         key, known = f'/etc/storageforge/sends/{s["id"]}.key', f'/etc/storageforge/sends/{s["id"]}.hostkey'
         parts.append(f'section {q("sends to " + s["receiver"] + ":" + s["root"] + " (" + s["id"] + ")")}\n')
         if secrets_:
-            parts.append(_heredoc(f'secret_file {q(key)}', secrets_[s['id']]['key']))
+            parts.append(f'if ((!APPLY)); then missing "--apply writes the job key of this send"; fi\n' + _heredoc(f'((APPLY)) && secret_file {q(key)}', secrets_[s['id']]['key']))
             parts.append(_heredoc(f'want_file {q(known)} 0644', pins[s['id']]))
         else:
             parts.append(f'WANT+=({q(key)} {q(known)})\n'
@@ -343,8 +348,11 @@ def items(db, conn, sends: list[dict], owner: str, mode: str, actor: str, title:
                 c.close()
         return hook
     extra = (lambda host: {}) if one_off else (lambda host: {'on_ok': mark(host)})
-    first = [{**_item(conn, h, receive_script(prefix, title, h, [s for s in sends if s['receiver'] == h], secrets_, expires), ['--apply'], prefix, mode), **extra(h)} for h in sorted({s['receiver'] for s in sends})]
-    then = [{**_item(conn, h, send_script(prefix, title, h, [s for s in sends if s['sender'] == h], secrets_, pins), ['--apply'], prefix, mode), **extra(h)} for h in sorted({s['sender'] for s in sends})]
+    # a host of this owner's before that has only one role now also runs the other's script, which takes off what is left of it
+    first = [{**_item(conn, h, receive_script(prefix, title, h, [s for s in sends if s['receiver'] == h], secrets_, expires), ['--apply'], prefix, mode), **extra(h)}
+             for h in sorted({s['receiver'] for s in sends} | (before_hosts & used))]
+    then = [{**_item(conn, h, send_script(prefix, title, h, [s for s in sends if s['sender'] == h], secrets_, pins), ['--apply'], prefix, mode), **extra(h)}
+            for h in sorted({s['sender'] for s in sends} | (before_hosts & used))]
     return gone + first + then, _removals(db, conn, sorted(used), prefix, actor, title) if one_off else []
 
 

@@ -2,6 +2,7 @@
 stand-ins for btrfs, zfs, ssh and sudo, in a folder for each host. The stand-in ssh acts as sshd does: it finds the key's line in the receiver's
 authorized_keys and runs that line's forced command, with the real storageforge-job. What real tools do with real streams is the KVM lab's part
 (tests/lab/tiers_sends.py)."""
+import fcntl
 import json
 import os
 import re
@@ -242,12 +243,35 @@ class Verbs(TwoHosts):
         self.assertIn('not a finished copy', r.stderr)
         self.assertEqual(self.serve('rt1-b', 'recv-state d-1').stdout.strip(), 'absent')
 
-    def test_a_stream_that_makes_other_subvolumes_fails_and_they_go(self):
+    def test_a_stream_that_makes_other_subvolumes_fails_and_says_which(self):
         self.there.mkdir()
         r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-1', 'd-1\nd-999\n')
         self.assertEqual(r.returncode, 6)
         self.assertIn('d-999', r.stderr)
-        self.assertEqual(sorted(x.name for x in self.there.iterdir()), [])
+        self.assertEqual(sorted(x.name for x in self.there.iterdir()), ['d-999'], 'the copy it was asked for is gone. Nothing else is deleted on the word of a list')
+
+    def test_one_receive_at_a_time_in_a_folder_whichever_send_it_is_for(self):
+        """Two sends can share a folder: one holds the lock, and the other waits, so neither takes the other's copy for its own or for an unfinished one."""
+        self.conf('rt2-b', TOOL='btrfs', ROOT=str(self.there), PREFIX='e', KEEP=0)
+        (self.there / 'd-1').mkdir(parents=True)
+        (self.there / 'd-1/.partial').write_text('')
+        hashed = subprocess.run(['sha256sum'], input=str(self.there), capture_output=True, text=True).stdout[:16]
+        lock = self.t / 'pc/var/lib/storageforge' / f'sf-recv-{hashed}.lock'
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock, os.O_CREAT | os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        self.refused('rt2-b', 'recv-discard d-1', 'another send')
+        self.assertTrue((self.there / 'd-1').exists(), 'being received, as far as anyone can tell')
+        os.close(fd)
+        self.assertEqual(self.serve('rt2-b', 'recv-discard d-1').returncode, 0)
+
+    def test_a_plain_folder_someone_made_during_a_receive_is_no_failure_and_stays(self):
+        (self.bin / 'btrfs').write_text(BTRFS.replace('while read -r n; do mkdir -p "${@: -1}/$n"; done', 'read -r n; mkdir -p "${@: -1}/$n" "${@: -1}/notes"; : >"$STUB_LOG.notes"'))
+        real = self.bin / 'btrfs'
+        real.write_text(real.read_text().replace('"subvolume show") p=${@: -1}; [ -d "$p" ] || exit 1', '"subvolume show") p=${@: -1}; [ -d "$p" ] || exit 1; [ "${p##*/}" = notes ] && exit 1'))
+        r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-1', 'd-1\n')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.there / 'notes').is_dir())
 
     def test_a_name_already_there_is_refused_and_not_received_over(self):
         (self.there / 'd-1').mkdir(parents=True)
@@ -564,6 +588,59 @@ class Generated(TwoHosts):
         self.assertIn('retention here: the newest 1 of d-*', runs[0]['output'])
         self.assertIn('would write the job key', runs[1]['output'])
         self.assertIn('no job key', runs[2]['output'], 'before the first apply the sender cannot look, and says so')
+
+    def test_a_script_made_for_an_apply_only_reports_with_no_flags(self):
+        items = tasks.deploy_items(self.db, self.conn, self.task(self.btrfs_block()), 'apply', 'tester')
+        for it in (x for x in items if x['kind'] == receiving.KIND):
+            r = self.run_script(it['host'], it['script'])
+            self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((self.t / 'pc/etc/storageforge/receive').exists())
+        self.assertFalse((self.t / 'nas/etc/storageforge/sends').exists())
+        self.assertNotIn('storageforge:recv', (self.t / 'pc/var/lib/storageforge/deploy/.ssh/authorized_keys').read_text())
+
+    def test_a_script_made_for_a_report_cannot_take_the_keys_away(self):
+        task = self.task(self.btrfs_block())
+        self.install_task(task)
+        before = (self.t / 'pc/var/lib/storageforge/deploy/.ssh/authorized_keys').read_text()
+        for it in (x for x in tasks.deploy_items(self.db, self.conn, task, 'report', 'tester') if x['kind'] == receiving.KIND):
+            self.assertEqual(self.run_script(it['host'], it['script'], ['--apply']).returncode, 2)
+        self.assertEqual((self.t / 'pc/var/lib/storageforge/deploy/.ssh/authorized_keys').read_text(), before)
+        self.assertEqual(len(list((self.t / 'nas/etc/storageforge/sends').glob('*.key'))), 1)
+
+    def test_a_task_or_plan_holding_a_send_gets_longer_than_a_deploy_does(self):
+        task = self.task(self.btrfs_block())
+        run = next(it for it in tasks.deploy_items(self.db, self.conn, task, 'apply', 'tester', run_now=True) if it['kind'] == 'tasks')
+        self.assertEqual(run['timeout'], receiving.LONG_RUN)
+        self.assertGreater(receiving.ONE_OFF_SECONDS, receiving.LONG_RUN, 'the key outlasts the longest run it can serve')
+        plan = {'name': 'p', 'tasks': [{'type': 'btrfs-send', 'host': 'nas', 'params': {'source': '/mnt/pool/s', 'dest_host': 'pc', 'dest': '/mnt/x'}}]}
+        self.assertEqual(next(it for it in changes.deploy_items(self.db, self.conn, plan, 'report', 'tester') if it['kind'] == 'changes')['timeout'], receiving.LONG_RUN)
+        plain = {'name': 'p', 'tasks': [{'type': 'dir', 'host': 'nas', 'params': {'path': '/srv'}}]}
+        self.assertNotIn('timeout', changes.deploy_items(self.db, self.conn, plain, 'report', 'tester')[0])
+
+    def test_a_name_from_the_other_host_cannot_become_a_path_here(self):
+        """A receiver that was taken over answers a listing with what it likes: here it names a folder outside the snapshots."""
+        task = self.task(self.btrfs_block())
+        self.install_task(task)
+        self.snap('d-1')
+        outside = self.t / 'outside'
+        outside.mkdir()
+        (self.t / 'pc/usr/storageforge-job').write_text('#!/bin/bash\ncase $3 in recv-list) echo "d-/../../outside" ;; recv-state*) echo "done 1234abcd" ;; recv-probe) echo ok ;; recv-mkdir) ;; recv-receive*) cat >/dev/null; echo "received d-1 1234abcd" ;; esac\n')
+        r = self.timer_run(task)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn('outside', self.log.read_text())
+        self.assertIn('no shared snapshot', r.stdout)
+
+    def test_a_host_that_lost_a_role_keeps_nothing_from_it(self):
+        back = [{'type': 'btrfs_send', 'params': {'into': str(self.here), 'prefix': 'd', 'dst_host': 'nas', 'dst': str(self.there), 'keep': 0}}]
+        task = self.task(self.btrfs_block())
+        self.install_task(task)
+        self.assertEqual(len(list((self.t / 'nas/etc/storageforge/sends').glob('*.key'))), 1)
+        self.conn.execute("UPDATE storage_tasks SET body_json = :b WHERE task_id = :i", {'b': json.dumps(tasks.normalize({'name': 'T', 'host': 'pc', 'blocks': back})), 'i': task['id']})
+        self.run_items([it for it in tasks.deploy_items(self.db, self.conn, tasks.get_task(self.conn, task['id']), 'apply', 'tester') if it['kind'] == receiving.KIND])
+        self.assertEqual(list((self.t / 'nas/etc/storageforge/sends').glob('*')), [], 'nas only receives now')
+        self.assertEqual(list((self.t / 'pc/etc/storageforge/receive').glob('*.conf')), [], 'pc only sends now')
+        self.assertEqual(len(list((self.t / 'nas/etc/storageforge/receive').glob('*.conf'))), 1)
+        self.assertEqual(len(list((self.t / 'pc/etc/storageforge/sends').glob('*.key'))), 1)
 
     def test_a_second_apply_changes_nothing_but_the_key(self):
         task = self.task(self.btrfs_block())
@@ -900,6 +977,17 @@ class HostileValues(TwoHosts):
         r = self.run_script('pc', script + f'\ntouch {mark}\n')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue(mark.exists(), 'the whole script ran: nothing ended early')
+
+    @unittest.skipUnless(shutil.which('shellcheck'), 'needs shellcheck (CI has it)')
+    def test_shellcheck_finds_no_errors(self):
+        s = self.grants('/srv/x') + self.grants('back/a', 'zfs')
+        keys = jobs.new_secrets(s)
+        scripts = {'receive': receiving.receive_script('rt9-', 't', 'pc', s, keys, 1), 'send': receiving.send_script('rt9-', 't', 'nas', s, keys, {x['id']: PIN for x in s}),
+                   'report': receiving.receive_script('rt9-', 't', 'pc', s, None), 'task': tasks.script(self.conn, tasks.normalize({'name': 't', 'host': 'nas', 'blocks': self.btrfs_block() + self.zfs_block()})),
+                   'job': JOB_SCRIPT, 'plan': changes.script(self.conn, {'name': 'p', 'tasks': [{'type': 'btrfs-send', 'host': 'nas', 'params': {'source': '/mnt/s', 'dest_host': 'pc', 'dest': '/mnt/x'}}]})}
+        for name, text in scripts.items():
+            r = subprocess.run(['shellcheck', '--severity=error', '-s', 'bash', '-'], input=text, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, name + r.stdout[:2000])
 
     def test_a_whole_line_in_a_value_cannot_get_that_far(self):
         for dest in (f'/srv/x\nSF_00AA11BB22CC\ntouch /tmp/{self.MARK}', '/srv/x\nEOF'):

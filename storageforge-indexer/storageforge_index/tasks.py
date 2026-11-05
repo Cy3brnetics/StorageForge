@@ -666,6 +666,11 @@ def block_send(conn: Conn, hs: dict, home: dict | None, task: dict, b: dict, own
     return receiving.send(conn, hs, home, task['host'], p['dst_host'], b['type'].split('_')[0], p['dst'], owner, p['prefix'], p['keep'], p.get('recursive', False))
 
 
+def _send_time(task: dict) -> dict:
+    """A run that holds a send may take hours, and a deploy stopped halfway starts the send again from nothing."""
+    return {'timeout': receiving.LONG_RUN} if any(b['type'] in ('btrfs_send', 'zfs_send') for _, b in (*walk(task['blocks']), *walk(task['on_fail']))) else {}
+
+
 def sends(conn: Conn, task: dict, owner: str) -> list[dict]:
     """This task's sends to other hosts, in its blocks and in what runs when it fails. A block turned off sends nothing."""
     hs = hosts(conn)
@@ -754,7 +759,7 @@ def deploy_items(db, conn: Conn, task: dict, mode: str, actor: str, run_now: boo
     if run_now:          # the key goes again after a run of a task not installed here: nothing on a timer needs it
         stays = any(d['ref'] == sl and d['host'] == home['name'] for d in deploy.deployed(conn, kind='tasks'))
         before, after = receiving.items(db, conn, wanted, owner, 'apply', actor, task['name'], one_off=not stays)
-        return [*before, {'host': home['name'], 'script': text, 'args': ['--run'], 'kind': 'tasks', 'ref': sl, 'mode': 'apply'}, *after]
+        return [*before, {'host': home['name'], 'script': text, 'args': ['--run'], 'kind': 'tasks', 'ref': sl, 'mode': 'apply', **_send_time(task)}, *after]
     if mode != 'apply':
         before, _ = receiving.items(db, conn, wanted, owner, mode, actor, task['name'])
         return [*before, {'host': home['name'], 'script': text, 'args': [], 'kind': 'tasks', 'ref': sl, 'mode': 'report'}]
@@ -908,7 +913,7 @@ send_btrfs() {   # send_btrfs <folder> <prefix> <send id> <address> <port> <into
   if ! listing=$(there recv-list); then warnl "could not list $dest on $(there_name)"; ((DRY)) && return 0; return 1; fi
   mapfile -t names < <(printf '%s\n' "$listing" | sort -r)
   for n in ${names[@]+"${names[@]}"}; do   # newest first: an interrupted receive leaves a subvolume that was never finished
-    [[ $n == "$prefix-"* ]] || continue
+    [[ $n == "$prefix-"* && $n != */* ]] || continue     # the name came from the other host, and is about to be a path here
     if ((!done_)); then
       st=$(there recv-state "$n" 2>/dev/null)
       case $st in

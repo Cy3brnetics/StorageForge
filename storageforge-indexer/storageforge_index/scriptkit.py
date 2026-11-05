@@ -125,6 +125,11 @@ recv_load() { # id: read line by line and never run, so nothing in the conf can 
   [[ $KEEP =~ ^[0-9]{1,4}$ && $RECURSIVE =~ ^[01]$ && $EXPIRES =~ ^[0-9]{1,11}$ && $PREFIX =~ ^([A-Za-z0-9_][A-Za-z0-9_.-]{0,39})?$ ]] || recv_refuse "send $1: its settings are not valid"
   ((EXPIRES == 0 || $(date +%s) < EXPIRES)) || recv_refuse "send $1 has ended: deploy it again"
 }
+recv_lock() { # -n or -w seconds, and what to say: one change at a time in a folder or dataset, whichever send asks. Two sends may share one
+  ((RECV_LOCAL)) && return 0   # the plan or task holds its own lock, and no key is involved
+  exec 7>"$LOCKS/sf-recv-$(printf '%s' "$ROOT" | sha256sum | cut -c1-16).lock" || recv_refuse "cannot open the lock"
+  flock "$@" 7 || recv_refuse "another send is receiving into $ROOT"
+}
 recv_probe() {
   command -v "$TOOL" >/dev/null || { echo "$TOOL is not installed on $(uname -n)" >&2; exit 3; }
   if [[ $TOOL == btrfs ]]; then btrfs --version >/dev/null 2>&1; else zfs version >/dev/null 2>&1; fi || { echo "$TOOL does not run on $(uname -n)" >&2; exit 3; }
@@ -180,10 +185,9 @@ recv_receive() { # nonce name, the stream on stdin. It only ever makes something
     mkdir -p "$VAR/receive/$RID/seen" || recv_refuse "cannot write $VAR/receive/$RID"
     find "$VAR/receive/$RID/seen" -type f -mtime +30 -delete 2>/dev/null
     ( set -o noclobber; : >"$VAR/receive/$RID/seen/$nonce" ) 2>/dev/null || recv_refuse "this request was already used" "$nonce"   # atomic: one receive per nonce
-    exec 7>"$LOCKS/sf-recv-$RID.lock" || recv_refuse "cannot open the lock"
-    flock -n 7 || recv_refuse "another receive for this send is running" "$nonce"
     trap '' HUP      # a dropped connection is an end of stream: the tool fails on it, and this still cleans up and records why
   fi
+  recv_lock -w 3600
   st=$(recv_state "$n")
   [[ $st == absent ]] || recv_refuse "$n is already there (${st%% *})" "$nonce"
   err=$(mktemp) || recv_refuse "no temporary file" "$nonce"
@@ -197,12 +201,15 @@ recv_receive() { # nonce name, the stream on stdin. It only ever makes something
   cat "$err" >&2          # never hidden: a corrupt stream says so here, and over ssh on the sender
   msg=$(tail -n 3 "$err" | tr '\n' ' '); rm -f "$err"
   st=$(recv_state "$n")
-  extra=$(comm -13 <(printf '%s\n' "$before" | sort) <(recv_list | sort) | grep -vxF -- "$n")
+  # names that were not there before: a stream can hold any number of subvolumes. A plain folder is not a stream's doing
+  extra=
+  while IFS= read -r x; do
+    if [[ -n $x && $x != "$n" && $(recv_state "$x") != other ]]; then extra+="$x "; fi
+  done < <(comm -13 <(printf '%s\n' "$before" | sort) <(recv_list | sort))
   if ((rc == 0)) && [[ $st != done\ * ]]; then rc=6; msg="the stream ended, but $n is not a finished copy here (${st%% *})"; fi
-  if ((rc == 0)) && [[ -n $extra ]]; then rc=6; msg="the stream held more than $n: $(head -n 3 <<<"$extra" | tr '\n' ' ')"; fi
+  if ((rc == 0)) && [[ -n $extra ]]; then rc=6; msg="the stream held more than $n, and what else it made is left for you to look at: ${extra:0:300}"; fi
   if ((rc)); then
-    recv_drop "$n"
-    while IFS= read -r x; do if [[ -n $x ]]; then recv_drop "$x"; fi; done <<<"$extra"
+    recv_drop "$n"     # absent before, and under the lock: this is what this receive made, and nothing else is
     printf 'storageforge-job: the receive of %s failed (exit %d): %s\n' "$n" "$rc" "$msg" >&2
   fi
   recv_record receive "$nonce" "$n" "$rc" "$started" "${msg:-received}"
@@ -214,6 +221,7 @@ recv_discard() { # name: an unfinished copy an interrupted receive left. A finis
   started=$(date +%s)
   recv_name_ok "$n" || recv_refuse "not a snapshot name"
   [[ $TOOL == btrfs ]] || recv_refuse "a ZFS receive that was cut off leaves nothing to discard"
+  recv_lock -n          # one being received right now also looks unfinished
   st=$(recv_state "$n")
   [[ $st == partial ]] || recv_refuse "$n is not an unfinished copy (${st%% *})"
   btrfs subvolume delete -- "$ROOT/$n" >/dev/null || rc=$?
@@ -225,6 +233,7 @@ recv_prune() { # [dry]: the newest KEEP stay. The conf says how many and which n
   started=$(date +%s)
   [[ -z $dry || $dry == dry ]] || recv_refuse "prune takes only: dry"
   ((KEEP > 0)) && [[ -n $PREFIX ]] || recv_refuse "this send keeps everything: nothing may be pruned"
+  [[ $dry == dry ]] || recv_lock -w 3600
   mapfile -t old < <(recv_list | while IFS= read -r n; do if [[ $n == "$PREFIX-"* ]]; then printf '%s\n' "$n"; fi; done | head -n "-$KEEP")
   for n in ${old[@]+"${old[@]}"}; do
     if [[ $dry == dry ]]; then echo "would remove $n"; continue; fi
