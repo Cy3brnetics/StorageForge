@@ -8,7 +8,7 @@ const INF_VIEWS = [['workloads', 'Workloads'], ['exposure', 'Exposure'], ['netwo
 const INF_LEVEL = { any: 'Any address', lan: 'Private networks', vpn: 'VPN only', blocked: 'Blocked', loopback: 'This machine only', unknown: 'Unknown' };
 const INF_CLASS = { any: 'st-failed', lan: 'st-warn', vpn: 'muted', blocked: 'muted', loopback: 'muted', unknown: 'st-warn' };
 
-function infWhen(t) { return t ? new Date(t * 1000).toLocaleString() : 'not read'; }
+function infWhen(t) { return t ? fmtTime(t) : 'not read'; }
 function infTable(heads, rows) {
   const table = document.createElement('table');
   const tr = document.createElement('tr');

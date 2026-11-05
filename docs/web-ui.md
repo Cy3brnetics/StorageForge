@@ -134,7 +134,7 @@ The rail on the right opens panels in the inspector: 18 of them in five groups. 
 | :--- | :--- |
 | **Scans** | Queue a scan of a bound host, or **Scan all hosts**, and follow recent scan jobs |
 | **Keys** | Generate a key in the vault, install it on a host with its password once, list keys and bindings, **Scan now** per binding |
-| **Logs** | What each host's journal said, as the last scan collected it: filter by host, level, unit and text, **Load more**, and export as a file. Nothing streams: a line arrives with the scan that reads it, and a host that could not be read says why. Times are UTC. Also [`storageforge-index hostlogs`](cli-reference.md) |
+| **Logs** | What each host's journal said, as the last scan collected it: filter by host, level, unit and text, **Load more**, and export as a file. Nothing streams: a line arrives with the scan that reads it, and a host that could not be read says why. Times are in your time zone, with the UTC form on hover. Also [`storageforge-index hostlogs`](cli-reference.md) |
 | **Audit** | The newest audit entries and **Verify chain**. Also your own password, backups, and for admins [accounts, invite links and roles](features/administration.md#accounts-and-sign-in). |
 
 ![Keys panel](images/keys.jpg)

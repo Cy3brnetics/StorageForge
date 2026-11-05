@@ -59,7 +59,7 @@ function secHeatmap(holds) {
   }
   const grid = el('div', { class: 'sec-heat', role: 'img', 'aria-label': 'Holds expiring in the next 90 days' });
   for (let i = 0; i < 90; i++) {
-    const n = days.get(i) || 0, c = el('i', { title: `${new Date((now + i * 86400) * 1000).toLocaleDateString()}: ${n} hold(s) expire` });
+    const n = days.get(i) || 0, c = el('i', { title: `${fmtDate(now + i * 86400)}: ${n} hold(s) expire` });
     c.className = n === 0 ? '' : n < 3 ? 'h1' : n < 10 ? 'h2' : 'h3';
     grid.append(c);
   }

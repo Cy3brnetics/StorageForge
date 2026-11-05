@@ -40,7 +40,7 @@ function renderNetScan(box, data) {
   const scan = res.scan;
   if (data.scans?.length) {
     const pick = document.createElement('select'); pick.setAttribute('aria-label', 'Which scan');
-    for (const s of data.scans) { const o = document.createElement('option'); o.value = s.id; o.textContent = `${new Date(s.started_at * 1000).toLocaleString()} · ${s.target} · ${s.status}${s.hosts != null ? ` · ${s.hosts} found` : ''}`; o.selected = scan && s.id === scan.id; pick.append(o); }
+    for (const s of data.scans) { const o = document.createElement('option'); o.value = s.id; o.textContent = `${fmtTime(s.started_at)} · ${s.target} · ${s.status}${s.hosts != null ? ` · ${s.hosts} found` : ''}`; o.selected = scan && s.id === scan.id; pick.append(o); }
     pick.addEventListener('change', () => { NS.scan = Number(pick.value); loadNetScan(); });
     out.append(pick);
   }

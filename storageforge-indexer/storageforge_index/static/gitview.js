@@ -15,11 +15,7 @@ const GIT_STATE = {
   error: ['broken', 'git could not read it'],
 };
 
-const ago = (t) => {
-  if (!t) return 'no commits';
-  const d = (Date.now() / 1000 - t) / 86400;
-  return d < 1 ? 'today' : d < 60 ? `${Math.round(d)} days ago` : d < 730 ? `${Math.round(d / 30)} months ago` : `${Math.round(d / 365)} years ago`;
-};
+const ago = (t) => fmtAgo(t, { never: 'no commits' });
 
 async function loadGit() {
   const box = $('#gitbox');
@@ -560,7 +556,7 @@ function renderDrawerChangelog() {
   const copyBtn = button('Copy Markdown', () => {
     let md = `# Changelog - ${GITD.repo.name}\n\n`;
     for (const rel of changelog) {
-      md += `## ${rel.version} ${rel.date ? '(' + new Date(rel.date * 1000).toISOString().slice(0, 10) + ')' : ''}\n\n`;
+      md += `## ${rel.version} ${rel.date ? '(' + fmtDate(rel.date) + ')' : ''}\n\n`;
       for (const [catName, items] of Object.entries(rel.categories)) {
         if (!items || !items.length) continue;
         const heading = catName === 'features' ? 'Features' :
@@ -626,7 +622,7 @@ function renderDrawerChangelog() {
     return el('div', { class: 'git-cl-release' },
       el('div', { class: 'git-cl-header' },
         el('b', {}, rel.version),
-        el('span', { class: 'muted small' }, rel.date ? new Date(rel.date * 1000).toISOString().slice(0, 10) : `${rel.count} commits`)
+        el('span', { class: 'muted small' }, rel.date ? fmtDate(rel.date) : `${rel.count} commits`)
       ),
       ...cats
     );

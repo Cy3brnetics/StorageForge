@@ -1044,7 +1044,7 @@ function docState(msg,cls){
   el.textContent=msg||(!DOC.host?'Example design. Edits stay in this browser.'
     :DOC.dirty?'Unsaved changes (kept in this browser).'
     :DOC.source==='scan'?'Built from the latest scan. Save it to keep your design.'
-    :'Saved design · '+new Date(DOC.savedAt*1000).toLocaleString());
+    :'Saved design · '+fmtTime(DOC.savedAt));
   $('#savedesign').hidden=!DOC.host||!DOC.signedIn;$('#fromscan').hidden=!DOC.host||!DOC.scanned||!DOC.signedIn;
   $('#reset').hidden=!!DOC.host;$('#hostpick').value=DOC.host;
   $('#dropexample').hidden=!!DOC.host||!DOC.signedIn||!DOC.example||!DOC.hosts.length||!$('#dropconfirm').hidden;

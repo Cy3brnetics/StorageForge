@@ -21,8 +21,8 @@ function el(tag, attrs = {}, ...kids) {
   e.append(...kids.flat().filter((x) => x !== null && x !== undefined && x !== false));
   return e;
 }
-const btn = (label, fn, cls = '') => el('button', { type: 'button', class: `mg-btn ${cls}`, onclick: fn }, label);
-const when = (t) => (t ? new Date(t * 1000).toLocaleString() : 'not yet');
+const btn = (label, fn, cls = '') => sfOnClick(el('button', { type: 'button', class: `mg-btn ${cls}` }, label), fn);      // busy while an async handler runs
+const when = (t) => (t ? fmtTime(t) : 'not yet');
 
 // The kernel's api() does what this page used to do for itself (the 401, the password dialog, the host key), so this only keeps the shape its views were written for: JSON in, JSON out.
 async function call(path, method = 'GET', body = undefined) {
@@ -66,7 +66,7 @@ async function viewFleet(box) {
 }
 
 function pendingRows(rows) {
-  return table(['Change', 'Device', 'State', 'Goes back at', ''], rows.map((c) => [`#${c.id}`, c.device, c.status, c.rollback_at ? new Date(c.rollback_at * 1000).toLocaleTimeString() : '', c.status === 'unconfirmed' && can('devices.apply') ? btn('Keep it', async () => { await call(`/api/devices/changes/${c.id}/confirm`, 'POST', {}); setView(MG.view); }, 'pri') : '']));
+  return table(['Change', 'Device', 'State', 'Goes back at', ''], rows.map((c) => [`#${c.id}`, c.device, c.status, c.rollback_at ? fmtClock(c.rollback_at) : '', c.status === 'unconfirmed' && can('devices.apply') ? btn('Keep it', async () => { await call(`/api/devices/changes/${c.id}/confirm`, 'POST', {}); setView(MG.view); }, 'pri') : '']));
 }
 
 // ── devices ─────────────────────────────────────────────────────────
@@ -186,7 +186,7 @@ async function viewCompose(box) {
             try {
               const r = await call(`/api/devices/changes/${rep.id}/apply`, 'POST', { rollback: Number(secs.value), hold: hold.checked });
               follow(rep.id, state);
-              state.textContent = r.message || `Applied. It goes back at ${new Date(r.rollback_at * 1000).toLocaleTimeString()} unless confirmed.`;
+              state.textContent = r.message || `Applied. It goes back at ${fmtClock(r.rollback_at)} unless confirmed.`;
             } catch (err) { state.textContent = err.message; state.className = 'small bad'; }
           }, rep.cuts_off?.cuts ? 'danger' : 'pri')), state);
       }

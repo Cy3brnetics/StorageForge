@@ -360,15 +360,15 @@ async function mapChanges() {
     if (changes.length) {
       const times = [...new Set(changes.map((c) => c.taken_at))].sort((a, b) => a - b);
       const slider = el('input', { type: 'range', class: 'mptime', min: '0', max: String(times.length), 'aria-label': 'Go back in time' }); slider.value = MP.at ? String(times.findIndex((t) => t >= MP.at)) : String(times.length);
-      const when = text('span', MP.at ? new Date(MP.at * 1000).toLocaleString() : 'Now', 'small');
-      slider.addEventListener('input', () => { when.textContent = Number(slider.value) >= times.length ? 'Now' : new Date(times[Number(slider.value)] * 1000).toLocaleString(); });
+      const when = text('span', MP.at ? fmtTime(MP.at) : 'Now', 'small');
+      slider.addEventListener('input', () => { when.textContent = Number(slider.value) >= times.length ? 'Now' : fmtTime(times[Number(slider.value)]); });
       slider.addEventListener('change', () => { MP.at = Number(slider.value) >= times.length ? null : times[Number(slider.value)]; MP.fitted = true; loadMap(); });
       rows.push(el('div', { class: 'stack small' }, text('span', 'Go back to an earlier reading. Storage is not kept: this shows the other layers as they stood.', 'muted'), slider, when));
     }
     if (!real.length) rows.push(text('p', 'Nothing since the first reading.', 'muted small'));
     for (const c of real.slice(0, MP.open.changes ? real.length : MP_SHOWN.changes)) {
       const short = (ids) => ids.map((i) => (MP.redact ? '…' : i.split(':').slice(2).join(':') || i)).join(', ');
-      rows.push(text('p', `${MP.redact ? 'a host' : c.host}, ${new Date(c.taken_at * 1000).toLocaleString()}: ${[c.added.length ? `new ${short(c.added)}` : '', c.removed.length ? `gone ${short(c.removed)}` : '', c.changed.length ? `changed ${short(c.changed)}` : ''].filter(Boolean).join('; ')}`, 'small'));
+      rows.push(text('p', `${MP.redact ? 'a host' : c.host}, ${fmtTime(c.taken_at)}: ${[c.added.length ? `new ${short(c.added)}` : '', c.removed.length ? `gone ${short(c.removed)}` : '', c.changed.length ? `changed ${short(c.changed)}` : ''].filter(Boolean).join('; ')}`, 'small'));
     }
     rows.push(...mapMore('changes', real.length, MP_SHOWN.changes, mapChanges));
     box.replaceChildren(...rows);

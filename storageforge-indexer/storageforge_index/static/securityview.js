@@ -9,12 +9,8 @@ const SEC_PANELS = [['overview', 'Overview'], ['worm', 'Holds'], ['decoys', 'Dec
                     ['behavior', 'Behaviour'], ['integrity', 'Integrity'], ['compliance', 'Compliance']];
 const SEC_NEEDS_HOST = new Set(['decoys', 'mac', 'behavior', 'integrity', 'compliance']);
 
-const secWhen = (t) => (t ? new Date(t * 1000).toLocaleString() : 'never');
-const secAgo = (t) => {
-  if (!t) return 'never';
-  const s = Math.max(0, Date.now() / 1000 - t);
-  return s < 90 ? 'just now' : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} days ago`;
-};
+const secWhen = (t) => (t ? fmtTime(t) : 'never');
+const secAgo = (t) => fmtAgo(t);
 const secSpan = (s) => (s === null || s === undefined ? '' : s < 5400 ? `${Math.round(s / 60)} min` : s < 129600 ? `${Math.round(s / 3600)} h` : `${Math.round(s / 86400)} days`);
 const secQ = (host) => (host ? `?host=${encodeURIComponent(host)}` : '');
 const NOT_MEASURED = 'not measured';

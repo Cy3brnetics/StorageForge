@@ -31,15 +31,26 @@ function latest(key) {
 }
 
 /* ── busy and announced ──────────────────────────────────────────── */
+/* A busy element says so (aria-busy, and a spinner on a button) and cannot be clicked again meanwhile. It is not `disabled`, because a
+   disabled button cannot take focus back when a dialog it opened closes, and a keyboard user would lose their place. */
 function busy(el, on = true) {
   if (!el) return;
   if (on) {
     el.setAttribute('aria-busy', 'true');
-    if ('disabled' in el) { el.dataset.sfWasDisabled = el.disabled ? '1' : ''; el.disabled = true; }
+    if (el.tagName === 'BUTTON') el.setAttribute('aria-disabled', 'true');
   } else {
     el.removeAttribute('aria-busy');
-    if ('disabled' in el) { el.disabled = el.dataset.sfWasDisabled === '1'; delete el.dataset.sfWasDisabled; }
+    if (el.tagName === 'BUTTON') el.removeAttribute('aria-disabled');
   }
+}
+/* A click handler that shows its button busy while an async handler runs, and ignores a second click meanwhile (UX-11). */
+function sfOnClick(button, handler) {
+  button.addEventListener('click', (ev) => {
+    if (button.getAttribute('aria-busy') === 'true') return;
+    const r = handler(ev);
+    if (r && typeof r.then === 'function') { busy(button, true); r.finally(() => busy(button, false)); }       // finally() passes a failure on, so it is still reported
+  });
+  return button;
 }
 async function withBusy(el, work) {
   busy(el, true);
@@ -63,6 +74,51 @@ function notify(message, kind = 'info') {        // a toast. An error stays unti
 }
 
 const toast = (message, kind) => notify(message, kind);          // the name the main page's scripts already use
+
+/* ── one way to show a time and a size (UX-16) ───────────────────── */
+/* A time is shown in local time, because that is the clock a person is reading, with its UTC form on hover (title) for matching it against a
+   host's own logs. Times come as seconds since the epoch. fmtTime() is the text, timeEl() the <time> element that carries the hover, fmtDate()
+   the day, fmtClock() the time of day, and fmtAgo() "5 min ago" or "in 2 h". Sizes are binary units (KiB, MiB) from fmtBytes(). */
+const sfPad = (n) => String(n).padStart(2, '0');
+function fmtDate(ts) {
+  if (ts == null || ts === '') return '';
+  const d = new Date(ts * 1000);
+  return `${d.getFullYear()}-${sfPad(d.getMonth() + 1)}-${sfPad(d.getDate())}`;
+}
+function fmtClock(ts) {
+  if (ts == null || ts === '') return '';
+  const d = new Date(ts * 1000);
+  return `${sfPad(d.getHours())}:${sfPad(d.getMinutes())}:${sfPad(d.getSeconds())}`;
+}
+function fmtTime(ts, { seconds = false } = {}) {
+  if (ts == null || ts === '') return '';
+  return `${fmtDate(ts)} ${fmtClock(ts).slice(0, seconds ? 8 : 5)}`;
+}
+function fmtUtc(ts) {
+  if (ts == null || ts === '') return '';
+  return `${new Date(ts * 1000).toISOString().replace('T', ' ').slice(0, 19)} UTC`;
+}
+function timeEl(ts, opts) {
+  const t = document.createElement('time');
+  if (ts == null || ts === '') return t;
+  t.dateTime = new Date(ts * 1000).toISOString();
+  t.title = fmtUtc(ts);
+  t.textContent = fmtTime(ts, opts);
+  return t;
+}
+function fmtAgo(ts, { never = 'never' } = {}) {
+  if (!ts) return never;
+  const s = Math.round(Date.now() / 1000 - ts), a = Math.abs(s);
+  const t = a < 90 ? `${a} s` : a < 5400 ? `${Math.round(a / 60)} min` : a < 129600 ? `${Math.round(a / 3600)} h` : a < 5184000 ? `${Math.round(a / 86400)} days`
+    : a < 63072000 ? `${Math.round(a / 2592000)} months` : `${Math.round(a / 31536000)} years`;
+  return s >= 0 ? `${t} ago` : `in ${t}`;
+}
+function fmtBytes(n) {
+  if (n == null || n === '') return '—';
+  const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']; let v = Number(n), i = 0;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(i < 2 ? 0 : 2)} ${u[i]}`;
+}
 
 /* ── one place for keyboard shortcuts (UX-40, UX-41, UX-20) ──────── */
 /* Every global shortcut declares itself with sfShortcut(), and the one listener below applies the one rule for "someone is typing": a

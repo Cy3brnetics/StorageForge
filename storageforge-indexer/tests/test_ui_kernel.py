@@ -71,6 +71,20 @@ class Kernel(unittest.TestCase):
         self.assertEqual(found, [], 'declare it with sfShortcut()')
         self.assertEqual(len(re.findall(r"document\.addEventListener\(\s*'keydown'", code(STATIC / 'kernel.js'))), 1, 'one listener applies the rule')
 
+    def test_times_and_sizes_have_one_formatter(self):                                # UX-16
+        """Seven small time formatters showed a time three ways, UTC with no label in one panel and local in the next. A time is shown by
+        fmtTime(), fmtDate(), fmtClock(), fmtAgo() or timeEl() from kernel.js, and a size by fmtBytes(). The date of today, for a name, is not a display."""
+        found = []
+        for path in scripts():
+            if path.name == 'kernel.js':
+                continue
+            text = code(path)
+            for m in re.finditer(r"new Date\((?!\))[^;\n]*?\)\.(?:toLocale\w*String|toISOString\(\)\.(?:slice|replace))", text):
+                found.append(f'{path.name}: {m.group(0)[:70]}')
+            if re.search(r'(?m)^\s*(?:function|const)\s+(?:fmtBytes|fmtTime|fmtDate|fmtAgo)\b', text):
+                found.append(f'{path.name}: defines its own formatter')
+        self.assertEqual(found, [], 'use the kernel\'s formatter')
+
     def test_the_kernel_builds_no_markup_from_text(self):
         """Dialog titles and bodies carry paths and host names that machines report: they are shown as text, never parsed."""
         self.assertNotRegex(code(STATIC / 'kernel.js'), r'innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\s*\(|new Function')

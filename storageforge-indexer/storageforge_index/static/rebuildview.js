@@ -3,7 +3,7 @@
    Uses download() from deployview.js. */
 
 const RB = { list: null, host: null, versions: [], version: null, detail: null };
-const rbWhen = (t) => new Date(t * 1000).toLocaleString();
+const rbWhen = (t) => fmtTime(t);
 
 async function loadRebuild() {
   const box = $('#rebuildbox');

@@ -934,11 +934,26 @@ class BrowserSmoke(unittest.TestCase):
         self.page.evaluate("""() => { const b = document.createElement('button'); b.id = 'busybtn'; b.textContent = 'Go'; document.body.append(b);
                                       api('/api/search/hosts', { busy: b }).then((r) => r.json()).then((j) => { window.__hosts = j.hosts; }); }""")
         self.page.wait_for_selector('#busybtn[aria-busy="true"]')
-        self.assertTrue(self.page.is_disabled('#busybtn'))
+        self.assertEqual(self.page.get_attribute('#busybtn', 'aria-disabled'), 'true')
+        self.assertIs(self.page.evaluate("document.getElementById('busybtn').disabled"), False)      # not `disabled`: it could not take focus back from a dialog
         held[0].continue_()
         self.page.wait_for_selector('#busybtn:not([aria-busy])')
-        self.assertTrue(self.page.is_enabled('#busybtn'))
+        self.assertIsNone(self.page.get_attribute('#busybtn', 'aria-disabled'))
         self.assertIsInstance(self.page.evaluate('window.__hosts'), list)
+
+    def test_a_button_whose_handler_is_slow_shows_it_and_ignores_a_second_click(self):  # UX-11
+        self.page.evaluate("""() => { window.__calls = 0;
+          const b = button('Slow', () => { __calls += 1; return new Promise((r) => { window.__release = r; }); }); b.id = 'slowbtn'; document.body.append(b); }""")
+        self.page.focus('#slowbtn')
+        self.page.keyboard.press('Enter')
+        self.page.wait_for_selector('#slowbtn[aria-busy="true"]')
+        self.page.keyboard.press('Enter')                                              # a keyboard user can press it again, and nothing starts twice
+        self.assertEqual(self.page.evaluate('__calls'), 1)
+        self.assertEqual(self.page.evaluate('document.activeElement.id'), 'slowbtn')    # and it keeps focus while it works
+        self.page.evaluate('__release()')
+        self.page.wait_for_selector('#slowbtn:not([aria-busy])')
+        self.page.keyboard.press('Enter')
+        self.assertEqual(self.page.evaluate('__calls'), 2)
 
     def test_the_planner_asks_for_the_password_in_place_and_goes_on(self):           # UX-23
         """It said "run the change from the main page". Now the kernel asks on the page, and the call that wanted it is retried."""
@@ -1063,6 +1078,37 @@ class BrowserSmoke(unittest.TestCase):
         self.page.wait_for_selector('dialog.sf-dialog[open]')
         press('q', 'w', 'e')
         self.assertEqual(hits(), ['dialogs'])                                            # under a dialog, the same
+        self.assertEqual(self.errors, [])
+
+
+    # ── one way to show a time and a size: UX-16 ─────────────────────────────────────────────────────────────────────
+    def test_a_time_is_local_with_its_utc_form_on_hover_and_a_size_has_one_unit_system(self):    # UX-16
+        got = self.page.evaluate("""() => ({
+          utc: fmtUtc(1700000000), local: fmtTime(1700000000), withSeconds: fmtTime(1700000000, { seconds: true }), day: fmtDate(1700000000), clock: fmtClock(1700000000),
+          el: (() => { const t = timeEl(1700000000, { seconds: true }); return [t.tagName, t.title, t.dateTime, t.textContent]; })(),
+          never: [fmtTime(null), fmtTime(0 || null), fmtAgo(0), fmtAgo(null, { never: 'no commits' })],
+          ago: [fmtAgo(Date.now() / 1000 - 300), fmtAgo(Date.now() / 1000 - 7200), fmtAgo(Date.now() / 1000 + 7200), fmtAgo(Date.now() / 1000 - 86400 * 400), fmtAgo(Date.now() / 1000 - 86400 * 800)],
+          bytes: [fmtBytes(null), fmtBytes(1536), fmtBytes(5 * 1024 ** 3), fmtBytes(0)],
+          what: [typeof size, typeof secAgo, typeof hlWhen] })""")
+        self.assertEqual(got['utc'], '2023-11-14 22:13:20 UTC')
+        self.assertRegex(got['local'], r'^\d{4}-\d\d-\d\d \d\d:\d\d$')
+        self.assertRegex(got['withSeconds'], r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$')
+        self.assertTrue(got['withSeconds'].startswith(got['local']))
+        self.assertRegex(got['day'], r'^\d{4}-\d\d-\d\d$')
+        self.assertEqual(got['el'][:3], ['TIME', '2023-11-14 22:13:20 UTC', '2023-11-14T22:13:20.000Z'])
+        self.assertEqual(got['el'][3], got['withSeconds'])
+        self.assertEqual(got['never'], ['', '', 'never', 'no commits'])
+        self.assertEqual(got['ago'], ['5 min ago', '2 h ago', 'in 2 h', '13 months ago', '2 years ago'])
+        self.assertEqual(got['bytes'], ['—', '2 KiB', '5.00 GiB', '0 B'])
+
+    def test_a_log_line_shows_local_time_and_its_utc_form_on_hover(self):               # UX-16
+        import re
+        self.json_route(re.compile(r'/api/hostlogs\?'), body={'entries': [{'message': 'link is up', 'priority': 6, 'ts': 1700000000, 'host': 'nas', 'level': 'info', 'unit': 'x', 'pid': None, 'ident': None}], 'more': False})
+        self.open_tab('hostlogs')
+        self.page.wait_for_selector('#hl-lines li:has-text("link is up")')
+        meta = self.page.locator('#hl-lines li span.m').first
+        self.assertEqual(meta.get_attribute('title'), '2023-11-14 22:13:20 UTC')
+        self.assertTrue(meta.inner_text().startswith(self.page.evaluate('fmtTime(1700000000, { seconds: true })')))
         self.assertEqual(self.errors, [])
 
 

@@ -8,13 +8,8 @@ const DP = { data: null, group: null, poll: 0, job: null, err: '', setup: null, 
 const JOB_STATE = { ok: 'protected', failed: 'broken', stale: 'local-only', 'never-ran': 'unknown', paused: 'unknown', unseen: 'unknown', missing: 'broken' };
 const RUN_LINE = /^\s{2}(ok|missing|conflict|->|other)\s/;
 
-function when(ts) {
-  if (!ts) return 'never';
-  const s = Math.round(Date.now() / 1000 - ts), a = Math.abs(s);
-  const t = a < 90 ? `${a} s` : a < 5400 ? `${Math.round(a / 60)} min` : a < 129600 ? `${Math.round(a / 3600)} h` : `${Math.round(a / 86400)} days`;
-  return s >= 0 ? `${t} ago` : `in ${t}`;
-}
-const stamp = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : '');
+const when = (ts) => fmtAgo(ts);
+const stamp = (ts) => fmtTime(ts);
 
 async function loadDeploy() {
   try {

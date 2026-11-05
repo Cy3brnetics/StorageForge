@@ -1,13 +1,7 @@
 /* The search-only page: accounts that may search files but not see hosts land here instead of the app. */
 'use strict';
 const $id = (id) => document.getElementById(id);
-const size = (n) => {
-  if (n == null) return '';
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-  let i = 0;
-  while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
-  return `${i ? n.toFixed(1) : n} ${units[i]}`;
-};
+const size = (n) => (n == null ? '' : fmtBytes(n));        // the kernel's, like every page
 async function call(path, opts) {         // the kernel's api(): a 401 ends the page, and an error carries the server's message
   return (await api(path, opts)).json().catch(() => ({}));
 }

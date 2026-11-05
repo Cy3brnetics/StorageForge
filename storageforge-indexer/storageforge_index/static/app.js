@@ -388,17 +388,11 @@ function tooltip(n, ev) {
 
 /* ── panel rendering (DOM APIs only, never innerHTML with data) ──── */
 function text(tag, t, cls) { const el = document.createElement(tag); el.textContent = t; if (cls) el.className = cls; return el; }
-function button(label, fn, cls = '') { const b = text('button', label, cls); b.type = 'button'; b.addEventListener('click', fn); return b; }
+function button(label, fn, cls = '') { const b = text('button', label, cls); b.type = 'button'; return sfOnClick(b, fn); }      // busy while an async handler runs
 function pill(h) { return text('span', HEALTH_TEXT[h] || h, `pill ${h}`); }
-function fmtBytes(n) {
-  if (n == null || n === '') return '—';
-  const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']; let v = Number(n), i = 0;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(i < 2 ? 0 : 2)} ${u[i]}`;
-}
 function fmtValue(k, v) {
   if (k.endsWith('_bytes')) return fmtBytes(v);
-  if (k === 'last_scanned' && v) return new Date(v * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+  if (k === 'last_scanned' && v) return fmtTime(v);
   if (Array.isArray(v)) return v.map((x) => (typeof x === 'object' ? JSON.stringify(x) : x)).join(', ');
   if (typeof v === 'object') return JSON.stringify(v);
   return String(v);
@@ -682,7 +676,7 @@ async function runSearch(params) {
         if (S.byId.has(id)) { setFocus(id); select(id); }
         else { b.querySelector('.m').textContent = `${r.mount} is not in the graph yet; rebuild it after the next scan`; }
       });
-      b.append(text('span', r.path, 'p'), text('span', `${r.host} · ${fmtBytes(r.size)} · ${r.type} · ${new Date(r.modified_at * 1000).toISOString().slice(0, 10)}`, 'm'));
+      b.append(text('span', r.path, 'p'), text('span', `${r.host} · ${fmtBytes(r.size)} · ${r.type} · ${fmtDate(r.modified_at)}`, 'm'));
       li.append(b);
       li._menu = () => resultMenu(r);
       return li;
@@ -719,7 +713,7 @@ async function loadJobs() {
       const r = j.result || {};
       const summary = r.error ? r.error : r.entries != null ? `${r.entries.toLocaleString()} entries · +${r.added} ~${r.modified} -${r.deleted}` : '';
       li.append(text('span', `#${j.job_id} ${j.host} · ${j.status}`, `st-${j.status}`),
-        text('span', `${j.requested_by} · ${new Date(j.queued_at * 1000).toLocaleString()}${summary ? ' · ' + summary : ''}`, 'm'));
+        text('span', `${j.requested_by} · ${fmtTime(j.queued_at)}${summary ? ' · ' + summary : ''}`, 'm'));
       return li;
     }));
     if (!jobs.some((j) => j.status === 'queued' || j.status === 'running')) {
@@ -841,7 +835,7 @@ function applyPermissions(me) {          // only hides what would answer 403: th
 }
 
 const jsonOpts = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-const untilText = (t) => new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 16);
+const untilText = (t) => fmtTime(t);
 function showLink(what, token) {
   $('#linkwhat').textContent = what;
   $('#linkurl').value = `${location.origin}/enroll#${token}`;
@@ -988,7 +982,7 @@ async function loadBackups() {
     const host = el('input', { type: 'text', placeholder: 'host', 'aria-label': 'Copy backups to host' }); host.value = b.target?.host || '';
     const path = el('input', { type: 'text', class: 'mono', placeholder: '/srv/storageforge-backups', 'aria-label': 'Folder on that host' }); path.value = b.target?.path || '';
     const msg = text('span', '', 'muted');
-    const when_ = (x) => new Date(x * 1000).toLocaleString();
+    const when_ = (x) => fmtTime(x);
     box.replaceChildren(
       text('p', newest ? `Newest: ${newest.kind}, ${fmtBytes(newest.bytes)}, ${hours < 48 ? `${Math.round(hours)} h` : `${Math.round(hours / 24)} days`} ago. Runs nightly at ${b.hour}:00, keeps ${b.keep}.` : 'No backups yet.', newest && hours < 48 ? 'st-ok' : 'st-failed'),
       b.nightly ? text('p', `Last nightly: ${b.nightly.outcome}, ${when_(b.nightly.at)}`, `small st-${b.nightly.outcome}`) : '',
@@ -1014,7 +1008,7 @@ async function loadAudit() {
     $('#audit').replaceChildren(...entries.map((a) => {
       const li = document.createElement('li');
       li.append(text('span', `${a.action} · ${a.outcome}${a.host ? ' · ' + a.host : ''}`, `st-${a.outcome}`),
-        text('span', `${new Date(a.ts * 1000).toISOString().replace('T', ' ').slice(0, 19)} · ${a.actor}${a.key ? ' · ' + a.key : ''}`, 'm'),
+        Object.assign(text('span', `${fmtTime(a.ts, { seconds: true })} · ${a.actor}${a.key ? ' · ' + a.key : ''}`, 'm'), { title: fmtUtc(a.ts) }),
         ...(Object.keys(a.detail).length ? [text('span', JSON.stringify(a.detail), 'm')] : []));
       return li;
     }));
@@ -1023,7 +1017,7 @@ async function loadAudit() {
 
 /* Host logs: what scans collected. Nothing here refreshes by itself, and every value is the host's own text, so textContent only. */
 let hlOffset = 0;
-const hlWhen = (ts) => new Date(ts * 1000).toISOString().replace('T', ' ').slice(0, 19);
+const hlWhen = (ts) => fmtTime(ts, { seconds: true });
 function hlQuery() {
   const q = new URLSearchParams();
   for (const [key, id] of [['host', '#hl-host'], ['level', '#hl-level'], ['unit', '#hl-unit'], ['q', '#hl-q']]) {
@@ -1044,7 +1038,7 @@ async function hlSearch(more) {
       const li = document.createElement('li');
       const cls = e.priority <= 3 ? 'st-failed' : e.priority === 4 ? 'st-warn' : '';
       li.append(text('span', e.message, cls),
-        text('span', `${hlWhen(e.ts)} · ${e.host} · ${e.level} · ${e.unit || e.ident || '-'}${e.pid ? ` [${e.pid}]` : ''}`, 'm'));
+        Object.assign(text('span', `${hlWhen(e.ts)} · ${e.host} · ${e.level} · ${e.unit || e.ident || '-'}${e.pid ? ` [${e.pid}]` : ''}`, 'm'), { title: fmtUtc(e.ts) }));
       return li;
     });
     if (more) $('#hl-lines').append(...rows);

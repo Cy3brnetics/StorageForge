@@ -124,7 +124,7 @@ async function loadChanged() {
     const r = await getJSON(`/api/file-changes?host=${encodeURIComponent(S.host)}`);
     if (!r.scan) { box.replaceChildren(text('p', 'No finished scans of this host yet.', 'muted')); return; }
     box.replaceChildren(
-      text('p', `Scan #${r.scan.scan_id}, ${new Date(r.scan.started_at * 1000).toLocaleString()}: +${r.scan.added.toLocaleString()} ~${r.scan.modified.toLocaleString()} -${r.scan.deleted.toLocaleString()}${r.truncated ? ' (folders below cover the first 20,000)' : ''}`, 'small'),
+      text('p', `Scan #${r.scan.scan_id}, ${fmtTime(r.scan.started_at)}: +${r.scan.added.toLocaleString()} ~${r.scan.modified.toLocaleString()} -${r.scan.deleted.toLocaleString()}${r.truncated ? ' (folders below cover the first 20,000)' : ''}`, 'small'),
       el('ol', { class: 'copies' }, ...r.folders.map((f) => el('li', { class: 'row' }, el('span', { class: 'mono small' }, f.folder),
         text('span', `+${f.added.toLocaleString()} ~${f.modified.toLocaleString()} -${f.deleted.toLocaleString()} · ${f.delta < 0 ? '-' : '+'}${fmtBytes(Math.abs(f.delta))}`, 'muted small')))));
   } catch (err) { box.replaceChildren(text('p', err.message, 'muted')); }
@@ -142,7 +142,7 @@ async function malwarePost(path, body, box) {
 }
 function malwareHost(h) {
   const run = h.last_run, box = el('div', { class: 'stack' });
-  const when = (t) => new Date(t * 1000).toLocaleString();
+  const when = (t) => fmtTime(t);
   box.append(text('strong', h.host));
   box.append(text('p', !h.installed ? 'ClamAV scan not deployed.' : !run ? 'Deployed. No result yet.'
     : `Last scan ${when(run.finished_at)}: ${run.scanned.toLocaleString()} files, ${run.found} found. ${run.version || ''}${[0, 1].includes(run.exit_code) ? '' : ` Exit code ${run.exit_code}: it may be incomplete.`}`,
@@ -236,10 +236,10 @@ async function loadCold() {
   if (S.host) qs.set('host', S.host);
   try {
     const r = await getJSON(`/api/folders/cold?${qs}`);
-    box.replaceChildren(text('p', `${r.total} folder${r.total === 1 ? '' : 's'}, ${fmtBytes(r.bytes)} untouched since ${new Date(r.cutoff * 1000).toISOString().slice(0, 10)}`, 'muted'),
+    box.replaceChildren(text('p', `${r.total} folder${r.total === 1 ? '' : 's'}, ${fmtBytes(r.bytes)} untouched since ${fmtDate(r.cutoff)}`, 'muted'),
       el('ol', { class: 'copies' }, ...r.folders.map((f) => el('li', { class: 'coldrow' },
         el('span', { class: 'p' }, f.path),
-        el('span', { class: 'm' }, `${f.host} · ${fmtBytes(f.bytes)} · ${f.files.toLocaleString()} files · newest ${new Date(f.newest * 1000).toISOString().slice(0, 10)}`),
+        el('span', { class: 'm' }, `${f.host} · ${fmtBytes(f.bytes)} · ${f.files.toLocaleString()} files · newest ${fmtDate(f.newest)}`),
         button('Move…', () => moveFrom(f.host, f.path), 'btn ghost sm')))));
   } catch (err) { box.replaceChildren(text('p', err.message, 'st-failed')); }
 }

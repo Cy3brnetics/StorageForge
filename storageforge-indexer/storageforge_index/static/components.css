@@ -36,6 +36,7 @@
 .sf-toast span { flex: 1; overflow-wrap: anywhere; }
 
 [aria-busy="true"] { cursor: progress; }
+button[aria-busy="true"] { pointer-events: none; }
 button[aria-busy="true"]::after { content: ""; display: inline-block; width: .8em; height: .8em; margin-left: .5em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: sf-spin .8s linear infinite; vertical-align: -0.1em; }
 @keyframes sf-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { button[aria-busy="true"]::after { animation: none; border-right-color: currentColor; } }
