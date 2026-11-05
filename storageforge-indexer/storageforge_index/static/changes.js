@@ -316,7 +316,7 @@ function renderChanges() {
   const planOption = (x) => new Option(`${x.name} (${x.tasks})${x.ran_at ? ` · ran ${stamp(x.ran_at)}` : ''}`, x.id);
   const ran = CH.plans.filter((x) => x.ran_at);
   const pick = el('select', { 'aria-label': 'Change plan', onchange: async () => {
-    if (CH.dirty && p.tasks.length && !confirm('Leave this plan? Its unsaved changes are lost.')) { pick.value = p.id || ''; return; }
+    if (CH.dirty && p.tasks.length && !(await confirmDialog({ title: 'Leave this plan?', body: 'Its unsaved changes are lost.', confirm: 'Leave', danger: true }))) { pick.value = p.id || ''; return; }
     CH.result = null;
     if (pick.value) await loadChanges(pick.value); else { CH.plan = { name: '', tasks: [] }; CH.dirty = false; chKeep(); renderChanges(); renderStageBar(); }
   } }, new Option('New plan…', ''), ...CH.plans.filter((x) => !x.ran_at).map(planOption),
@@ -404,7 +404,7 @@ async function chDownload(kind) {
   } catch (err) { chMsg(err.message); }
 }
 async function chDelete() {
-  if (!confirm(`Delete the plan "${CH.plan.name}"? Downloaded scripts keep working.`)) return;
+  if (!(await confirmDialog({ title: `Delete the plan “${CH.plan.name}”?`, body: 'Downloaded scripts keep working.', confirm: 'Delete plan', danger: true, typed: CH.plan.name }))) return;
   try { await api(`/api/changes/${CH.plan.id}`, { method: 'DELETE' }); CH.plan = { name: '', tasks: [] }; CH.dirty = false; chKeep(); renderStageBar(); loadChanges(); }
   catch (err) { chMsg(err.message); }
 }

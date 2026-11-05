@@ -163,7 +163,7 @@ function ignoreEditor() {
     try {
       await api('/api/git/ignore', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host, paths: list.value.split('\n') }) });
       await loadGit();
-    } catch (err) { alert(err.message); }
+    } catch (err) { notify(err.message, 'error'); }
   }, 'btn sm');
   return el('details', {}, el('summary', {}, `Hide repositories ${host ? `on ${host}` : 'on every host'}`),
     text('p', 'One path fragment per line. A line starting with ! shows matching repositories even if they would be hidden.', 'muted small'), list, save);
@@ -181,7 +181,7 @@ function archiveRepo(r) {
 }
 function archiveSelected(dstHost) {
   const repos = GITV.data.repos.filter((r) => GITV.picked.has(`${r.host}:${r.path}`) && r.host !== dstHost);
-  if (!dstHost || !repos.length) { alert(dstHost ? 'Select repositories on other hosts first.' : 'Pick the host to archive to first.'); return; }
+  if (!dstHost || !repos.length) { notify(dstHost ? 'Select repositories on other hosts first.' : 'Pick the host to archive to first.', 'error'); return; }
   repos.forEach((r) => addArchiveStep(r, dstHost));
   GITV.picked.clear();
   showTab('moves');

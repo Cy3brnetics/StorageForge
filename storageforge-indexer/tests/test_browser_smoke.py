@@ -807,6 +807,192 @@ class BrowserSmoke(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
 
+    # ── the kernel: dialogs, errors, busy, the password and the host key: UX-10, UX-11 and UX-23 ───────────────────────
+    def json_route(self, pattern, status=200, body=None, seen=None):
+        """Answers requests matching `pattern` (a compiled regex) with JSON, and notes what each one sent."""
+        import json
+
+        def handle(route):
+            if seen is not None:
+                seen.append((route.request.method, route.request.post_data))
+            route.fulfill(status=status, body=json.dumps(body if body is not None else {}), content_type='application/json')
+        self.page.route(pattern, handle)
+
+    def test_a_confirm_names_what_will_happen_and_cancel_does_nothing(self):       # UX-10
+        import re
+        seen = []
+        self.json_route(re.compile(r'/api/keys/x$'), seen=seen)
+        self.page.evaluate("() => { removeVaultItem('/api/keys/x', 'Remove key x? It cannot be recovered.'); }")
+        self.page.wait_for_selector('dialog.sf-dialog[open]')
+        self.assertEqual(self.page.inner_text('dialog.sf-dialog h2'), 'Remove key x? It cannot be recovered.')
+        self.assertEqual(self.page.evaluate('document.activeElement.textContent'), 'Cancel')          # what cannot be undone starts on the safe button
+        self.assertTrue(self.page.is_visible('dialog.sf-dialog .sf-btn.danger:has-text("Remove")'))
+        self.page.keyboard.press('Escape')
+        self.page.wait_for_selector('dialog.sf-dialog', state='detached')
+        self.page.wait_for_timeout(200)
+        self.assertEqual(seen, [])
+        self.page.evaluate("() => { removeVaultItem('/api/keys/x', 'Remove key x?'); }")
+        self.page.click('dialog.sf-dialog .sf-btn.danger')
+        self.page.wait_for_selector('dialog.sf-dialog', state='detached')
+        self.page.wait_for_timeout(300)
+        self.assertEqual([m for m, _ in seen], ['DELETE'])
+        self.assertEqual(self.page.locator('.sf-toast.error').count(), 0)
+
+    def test_a_dialog_gives_focus_back_to_what_opened_it(self):                    # UX-10
+        self.page.evaluate("""() => { const b = document.createElement('button'); b.id = 'opener'; b.textContent = 'Open'; document.body.append(b);
+                                      b.addEventListener('click', () => { confirmDialog({ title: 'Sure?', confirm: 'Yes' }); }); }""")
+        self.page.focus('#opener')
+        self.page.keyboard.press('Enter')
+        self.page.wait_for_selector('dialog.sf-dialog[open]')
+        self.assertEqual(self.page.evaluate('document.activeElement.textContent'), 'Yes')             # a plain question starts on the answer
+        self.page.keyboard.press('Escape')
+        self.page.wait_for_selector('dialog.sf-dialog', state='detached')
+        self.assertEqual(self.page.evaluate('document.activeElement.id'), 'opener')
+
+    def test_what_cannot_be_undone_asks_for_the_name(self):                         # UX-10
+        self.page.evaluate("() => { confirmDialog({ title: 'Retire nas?', body: 'Gone.', confirm: 'Retire host', danger: true, typed: 'nas' }).then((v) => { window.__answer = v; }); }")
+        self.page.wait_for_selector('dialog.sf-dialog[open] input')
+        self.assertEqual(self.page.evaluate('document.activeElement.tagName'), 'INPUT')
+        ok = self.page.locator('dialog.sf-dialog .sf-btn.danger')
+        self.assertTrue(ok.is_disabled())
+        self.page.fill('dialog.sf-dialog input', 'na')
+        self.assertTrue(ok.is_disabled())
+        self.page.fill('dialog.sf-dialog input', 'nas')
+        self.assertTrue(ok.is_enabled())
+        self.page.keyboard.press('Enter')
+        self.page.wait_for_selector('dialog.sf-dialog', state='detached')
+        self.assertIs(self.page.evaluate('window.__answer'), True)
+
+    def test_a_dialog_shows_text_and_never_markup(self):                             # UX-10
+        evil = '<img src=x onerror=window.__pwned=1> /srv/<b>x</b>'
+        self.page.evaluate("(t) => { confirmDialog({ title: t, body: t, items: [t], confirm: 'Go' }); }", evil)
+        self.page.wait_for_selector('dialog.sf-dialog[open]')
+        self.assertEqual(self.page.locator('dialog.sf-dialog img, dialog.sf-dialog b').count(), 0)
+        self.assertIn(evil, self.page.inner_text('dialog.sf-dialog h2'))
+        self.assertIsNone(self.page.evaluate('window.__pwned || null'))
+
+    def test_retiring_a_host_asks_for_its_name_and_then_says_what_is_left_on_it(self):    # UX-10
+        import re
+        seen = []
+        self.json_route(re.compile(r'/api/hosts/ghost$'), body={'removed': {'still_on_host': 'its scan key is still in authorized_keys'}}, seen=seen)
+        self.page.evaluate("() => { retireHost('ghost'); }")
+        self.page.wait_for_selector('dialog.sf-dialog input')
+        self.page.fill('dialog.sf-dialog input', 'ghost')
+        self.page.click('dialog.sf-dialog .sf-btn.danger')
+        self.page.wait_for_selector('dialog.sf-dialog h2:has-text("ghost is retired")')      # api() gave a Response, so this never showed before
+        self.assertIn('authorized_keys', self.page.inner_text('dialog.sf-dialog'))
+        self.assertEqual([m for m, _ in seen], ['DELETE'])
+
+    def test_a_schedule_is_edited_in_one_form_and_not_two_prompts(self):            # UX-10
+        import json
+        import re
+        seen = []
+        self.page.route(re.compile(r'/api/hosts/nas/schedule$'), lambda route: (seen.append(route.request.post_data), route.fulfill(status=200, body='{}', content_type='application/json'))
+                        if route.request.method == 'PUT' else route.continue_())
+        self.page.evaluate("() => { editSchedule('nas'); }")
+        self.page.wait_for_selector('dialog.sf-dialog input')
+        self.assertEqual(self.page.locator('dialog.sf-dialog input').count(), 2)
+        self.page.locator('dialog.sf-dialog input').nth(0).fill('6h')
+        self.page.locator('dialog.sf-dialog input').nth(1).fill('22-6')
+        self.page.click('dialog.sf-dialog .sf-btn.pri')
+        self.page.wait_for_selector('dialog.sf-dialog', state='detached')
+        self.page.wait_for_timeout(200)
+        self.assertEqual(json.loads(seen[0]), {'interval': '6h', 'quiet_hours': '22-6'})
+
+    def test_retention_counts_are_checked_before_they_are_sent(self):                # UX-10
+        import json
+        import re
+        seen = []
+        self.json_route(re.compile(r'/api/deploy/jobs/7/retention$'), body={'output': 'ok'}, seen=seen)
+        self.open_tab('deploy')
+        self.page.evaluate("() => { editRetention({ id: 7, name: 'snaps', method: 'snapper', levels: { daily: 7 } }); }")
+        self.page.wait_for_selector('dialog.sf-dialog input')
+        self.assertEqual(self.page.input_value('dialog.sf-dialog input'), 'daily=7')
+        self.page.fill('dialog.sf-dialog input', 'daily seven')
+        self.page.click('dialog.sf-dialog .sf-btn.pri')
+        self.assertIn('level=count', self.page.inner_text('dialog.sf-dialog .sf-err'))
+        self.assertEqual(seen, [])                                                          # refused in the form, so nothing was sent
+        self.page.fill('dialog.sf-dialog input', 'daily=3 weekly=2')
+        self.page.click('dialog.sf-dialog .sf-btn.pri')
+        self.page.wait_for_selector('dialog.sf-dialog', state='detached')
+        self.page.wait_for_timeout(200)
+        self.assertEqual(json.loads(seen[0][1]), {'keep': {'daily': 3, 'weekly': 2}})
+
+    def test_an_error_stays_until_it_is_dismissed_and_a_notice_goes_by_itself(self):   # UX-10, UX-11
+        self.page.evaluate("() => { notify('it broke', 'error'); notify('saved'); announce('Saved the design'); }")
+        self.assertEqual(self.page.get_attribute('.sf-toast.error', 'role'), 'alert')
+        self.assertEqual(self.page.get_attribute('.sf-toast:not(.error)', 'role'), 'status')
+        self.page.wait_for_selector('.sf-live:has-text("Saved the design")')
+        self.page.wait_for_selector('.sf-toast:not(.error)', state='detached', timeout=9000)
+        self.assertEqual(self.page.locator('.sf-toast.error').count(), 1)                  # the notice went, and the error is still there
+        self.page.click('.sf-toast.error button')
+        self.assertEqual(self.page.locator('.sf-toast').count(), 0)
+
+    def test_a_busy_button_says_so_while_its_call_is_out(self):                        # UX-11
+        import re
+        held = self.hold_first(re.compile(r'/api/search/hosts'))
+        self.page.evaluate("""() => { const b = document.createElement('button'); b.id = 'busybtn'; b.textContent = 'Go'; document.body.append(b);
+                                      api('/api/search/hosts', { busy: b }).then((r) => r.json()).then((j) => { window.__hosts = j.hosts; }); }""")
+        self.page.wait_for_selector('#busybtn[aria-busy="true"]')
+        self.assertTrue(self.page.is_disabled('#busybtn'))
+        held[0].continue_()
+        self.page.wait_for_selector('#busybtn:not([aria-busy])')
+        self.assertTrue(self.page.is_enabled('#busybtn'))
+        self.assertIsInstance(self.page.evaluate('window.__hosts'), list)
+
+    def test_the_planner_asks_for_the_password_in_place_and_goes_on(self):           # UX-23
+        """It said "run the change from the main page". Now the kernel asks on the page, and the call that wanted it is retried."""
+        import json
+        import re
+        seen = []
+
+        def hosts(route):
+            seen.append(1)
+            if len(seen) == 1:
+                route.fulfill(status=403, body=json.dumps({'error': 'confirm your password', 'reauth': True}), content_type='application/json')
+            else:
+                route.continue_()
+        self.page.route(re.compile(r'/api/planner/hosts$'), hosts)
+        self.page.goto(self.base + '/planner')
+        self.page.wait_for_selector('#reauthpw', state='visible')
+        self.assertIn('/planner', self.page.url)
+        self.page.fill('#reauthpw', PW)
+        self.page.keyboard.press('Enter')
+        self.page.wait_for_selector('#reauthpw', state='detached')
+        self.page.wait_for_selector('#hostpick option:has-text("nas")', state='attached')
+        self.assertEqual(len(seen), 2)
+
+    def test_a_host_key_is_shown_before_a_password_goes_to_it(self):                  # UX-23
+        import json
+        import re
+        calls, confirmed = [], []
+
+        def hosts(route):
+            calls.append(1)
+            if len(calls) % 2 == 1:
+                route.fulfill(status=409, body=json.dumps({'error': 'host key not confirmed', 'hostkey': {'host': 'edge', 'port': 2222, 'keys': [{'fingerprint': 'SHA256:abcdef', 'type': 'ED25519'}]}}),
+                              content_type='application/json')
+            else:
+                route.continue_()
+        self.page.route(re.compile(r'/api/search/hosts$'), hosts)
+        self.json_route(re.compile(r'/api/hostkey/confirm$'), seen=confirmed)
+        ask = "() => { getJSON('/api/search/hosts').then((j) => { window.__hosts = j.hosts; }, (e) => { window.__err = e.message; }); }"
+        self.page.evaluate(ask)
+        self.page.wait_for_selector('dialog.sf-dialog:has-text("SHA256:abcdef")')
+        self.assertIn('edge (port 2222)', self.page.inner_text('dialog.sf-dialog'))
+        self.page.click('dialog.sf-dialog button:has-text("They match")')
+        self.page.wait_for_selector('dialog.sf-dialog', state='detached')
+        self.page.wait_for_timeout(300)
+        self.assertEqual(json.loads(confirmed[0][1]), {'host': 'edge', 'port': 2222, 'fingerprint': 'SHA256:abcdef'})
+        self.assertIsInstance(self.page.evaluate('window.__hosts'), list)
+        self.page.evaluate(ask)                                                            # and with Cancel, nothing is confirmed and the call fails
+        self.page.wait_for_selector('dialog.sf-dialog:has-text("SHA256:abcdef")')
+        self.page.click('dialog.sf-dialog button:has-text("Cancel")')
+        self.page.wait_for_timeout(300)
+        self.assertIn('Host key not confirmed', self.page.evaluate('window.__err'))
+        self.assertEqual(len(confirmed), 1)
+
+
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
 class MapAtScale(unittest.TestCase):
     """A synthetic 200 hosts and 2,000 workloads. It has to stay usable: the numbers here decide whether the map needs more."""

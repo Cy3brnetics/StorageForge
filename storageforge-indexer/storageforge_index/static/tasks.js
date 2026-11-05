@@ -135,7 +135,7 @@ function tkHead() {
     openMenu([{ heading: `On ${t.host || 'its host'}` },
       { label: 'Dry run (report only)', run: () => go('report', {}, 'dry run of') },
       { label: t.schedule ? 'Install with its timer' : 'Install (run by hand)', run: () => go('apply', {}, 'install') },
-      { label: 'Run now', run: () => { if (confirm(`Run "${t.name}" on ${t.host} now? This makes its changes for real.`)) go('apply', { run: true }, 'run'); } },
+      { label: 'Run now', run: async () => { if (await confirmDialog({ title: `Run “${t.name}” on ${t.host} now?`, body: 'This makes its changes for real.', confirm: 'Run now', danger: true })) go('apply', { run: true }, 'run'); } },
       '-', { label: 'Uninstall', danger: true, disabled: !inst.length, run: () => go('apply', { remove: true }, 'uninstall') }], r.left, r.bottom + 4, ev.currentTarget);
   };
   return el('header', { class: 'tkhead' },
@@ -255,7 +255,12 @@ function tkParam(b, s) {
   }
   if (s.kind === 'host') {
     const sel = el('select', { onchange: async () => {
-      if (sel.value === '\u0000') { const v = prompt('user@host for a host that was not scanned', p[s.name] || 'root@'); if (v) set(v.trim(), true); else sel.value = p[s.name] || ''; return; }
+      if (sel.value === '\u0000') {
+        const form = await formDialog({ title: 'Another host', body: 'A host that was not scanned.', confirm: 'Use it',
+          fields: [{ name: 'target', label: 'user@host', value: p[s.name] || 'root@', validate: (v) => (/^[^@\s]+@[^@\s]+$/.test(v) ? '' : 'Write it as user@host.') }] });
+        if (form) set(form.target, true); else sel.value = p[s.name] || '';
+        return;
+      }
       set(sel.value, true);
     } }, new Option(s.required ? 'pick a host…' : `this host (${TK.task.host || 'the task host'})`, ''), ...TK.hosts.filter((h) => h !== TK.task.host).map((h) => new Option(h, h)), new Option('other (user@host)…', '\u0000'));
     if (p[s.name] && ![...sel.options].some((o) => o.value === p[s.name])) sel.add(new Option(p[s.name], p[s.name]), sel.options.length - 1);
@@ -391,23 +396,23 @@ async function tkSave(quiet = false) {
     await loadTasks(r.id);
     if (!quiet) toast('Saved');
     return r.id;
-  } catch (err) { toast(err.message); return null; }
+  } catch (err) { notify(err.message, 'error'); return null; }
 }
 async function tkOpen(id) {
-  if (TK.dirty && !confirm('Discard unsaved changes to this task?')) return;
+  if (TK.dirty && !(await confirmDialog({ title: 'Discard unsaved changes to this task?', confirm: 'Discard', danger: true }))) return;
   TK.target = null;
   await loadTasks(id);
 }
-function tkNew(host) {
-  if (TK.dirty && !confirm('Discard unsaved changes to this task?')) return false;
+async function tkNew(host) {
+  if (TK.dirty && !(await confirmDialog({ title: 'Discard unsaved changes to this task?', confirm: 'Discard', danger: true }))) return false;
   TK.task = blankTask(host); TK.dirty = false; TK.undo = []; TK.redo = []; TK.target = null; TK.check = null;
   renderTasks(); tkCheckSoon(0);
   return true;
 }
 async function tkDelete() {
-  if (!confirm(`Delete the task "${TK.task.name}"?`)) return;
+  if (!(await confirmDialog({ title: `Delete the task “${TK.task.name}”?`, confirm: 'Delete task', danger: true }))) return;
   try { await api(`/api/tasks/${TK.task.id}`, { method: 'DELETE' }); TK.task = null; TK.dirty = false; loadTasks(); }
-  catch (err) { toast(err.message); }
+  catch (err) { notify(err.message, 'error'); }
 }
 async function tkScript() {
   try {
@@ -434,14 +439,14 @@ async function tkScript() {
     text('p', `./${name} reports what it would do; sudo ./${name} --run runs it; --install adds the systemd service${TK.task.schedule ? ' and timer' : ''}.`, 'muted small'),
     text('pre', body, 'script tkscript'));
     document.body.append(dlg); dlg.showModal();
-  } catch (err) { toast(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 
 /* from elsewhere: a new task with a first block at a folder of a host */
 async function newTaskAt(host, path, kind = 'backup', fstype = '') {
   setMode('tasks');
   if (!TK.loaded) await loadTasks();
-  if (!tkNew(host)) return;
+  if (!(await tkNew(host))) return;
   const name = path.split('/').pop() || host;
   tkEdit(() => {
     const t = TK.task;

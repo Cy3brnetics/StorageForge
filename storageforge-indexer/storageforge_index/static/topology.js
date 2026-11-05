@@ -889,20 +889,22 @@ async function editSchedule(host) {
   const path = `/api/hosts/${encodeURIComponent(host)}/schedule`;
   try {
     const cur = await getJSON(path);
-    const interval = prompt(`Scan ${host} how often? For example 90m, 6h or 1d. Empty uses the global interval.`, cur.interval ? `${Math.round(cur.interval / 60)}m` : '');
-    if (interval === null) return;
-    const quiet = prompt('Quiet hours, when no scheduled scan starts? For example 22-6. Empty means none.', cur.quiet_hours || '');
-    if (quiet === null) return;
-    await api(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ interval, quiet_hours: quiet }) });
-  } catch (err) { alert(err.message); }
+    const form = await formDialog({
+      title: `Scan ${host} how often?`, body: 'Leave the interval empty to use the global one, and the quiet hours empty for none.',
+      fields: [{ name: 'interval', label: 'How often', value: cur.interval ? `${Math.round(cur.interval / 60)}m` : '', placeholder: '90m, 6h or 1d' },
+               { name: 'quiet_hours', label: 'Quiet hours, when no scheduled scan starts', value: cur.quiet_hours || '', placeholder: '22-6' }],
+    });
+    if (form === null) return;
+    await api(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ interval: form.interval, quiet_hours: form.quiet_hours }) });
+  } catch (err) { notify(err.message, 'error'); }
 }
 async function retireHost(host) {
-  if (!confirm(`Retire ${host}? Its index, graph, scan history, bindings and design are removed, and a remote node's tunnel is cut. The audit log stays, and a new scan would add it back only with a new binding.`)) return;
+  if (!(await confirmDialog({ title: `Retire ${host}?`, body: 'Its index, graph, scan history, bindings and design are removed, and a remote node’s tunnel is cut.\n\nThe audit log stays, and a new scan would add it back only with a new binding.', confirm: 'Retire host', danger: true, typed: host }))) return;
   try {
-    const res = await api(`/api/hosts/${encodeURIComponent(host)}`, { method: 'DELETE' });
-    if (res?.removed?.still_on_host) alert(`${host}: ${res.removed.still_on_host}`);
+    const res = await (await api(`/api/hosts/${encodeURIComponent(host)}`, { method: 'DELETE' })).json().catch(() => ({}));    // api() gives the Response: the message below never showed
+    if (res?.removed?.still_on_host) await noticeDialog({ title: `${host} is retired`, body: res.removed.still_on_host });
     location.reload();
-  } catch (err) { alert(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 function hostMenu(doc) {
   const h = doc.host;

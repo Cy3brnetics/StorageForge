@@ -8,12 +8,8 @@ const size = (n) => {
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
   return `${i ? n.toFixed(1) : n} ${units[i]}`;
 };
-async function call(path, opts) {
-  const res = await fetch(path, { credentials: 'same-origin', ...opts });
-  const body = await res.json().catch(() => ({}));
-  if (res.status === 401) { sfSignedOut(''); throw new Error('Sign in required'); }
-  if (!res.ok) throw new Error(body.error || res.statusText);
-  return body;
+async function call(path, opts) {         // the kernel's api(): a 401 ends the page, and an error carries the server's message
+  return (await api(path, opts)).json().catch(() => ({}));
 }
 $id('signout').addEventListener('click', sfSignOut);
 call('/api/search/hosts').then(({ hosts }) => $id('shost').append(...hosts.map((h) => new Option(h, h)))).catch(() => {});

@@ -118,7 +118,7 @@ async function fmTrash(items) {
   if (last.length) { toast(`Stopped: that would trash every copy of ${last.length === 1 ? 'a file' : `${last.length} files`}. Keep one.`); return; }
   const tasks = items.map((i) => ({ type: 'trash', host: i.host, params: { path: i.path } }));
   try { await postJSON('/api/changes/check', { name: 'check', tasks }); }
-  catch (err) { toast(err.message); return; }
+  catch (err) { notify(err.message, 'error'); return; }
   const stamp = Date.now().toString(36);
   tasks.forEach((t, n) => CH.plan.tasks.push({ id: `t${stamp}${n}`, ...t }));
   chTouch();
@@ -144,7 +144,7 @@ async function fmIgnore(host, path) {
     const { ignore } = await getJSON('/api/files/ignore');
     await fmSaveIgnore(host, [...(ignore[host] || []), path]);
     toast(`Ignoring ${path} on ${host}`);
-  } catch (err) { toast(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 async function fmEditIgnore() {
   FM.sel = { type: 'ignore' };
@@ -271,7 +271,7 @@ function fmLoadKids(n) {                   // anything under a whole-folder copy
       const row = (name, bytes, extra) => ({ id: fmId(n.root, n.host, joinPath(n.path, name)), root: n.root, host: n.host, path: joinPath(n.path, name), name, bytes, kids: new Map(), ...extra });
       rows = [...r.dirs.map((x) => row(x.name, x.bytes, { lazy: true, isMount: Boolean(x.mount) })), ...r.files.map((x) => row(x.name, x.bytes, { plain: true, link: undefined, linkTo: x.link }))];
       if (r.more_files) rows.push({ id: fmId(n.root, n.host, `${n.path}\0more-files`), root: n.root, name: `${r.more_files.toLocaleString()} more files`, note: true, kids: new Map() });
-    } catch (err) { toast(err.message); }
+    } catch (err) { notify(err.message, 'error'); }
     FM.listed.set(n.id, rows);
     FM.loading.delete(n.id);
   })();
@@ -747,7 +747,7 @@ async function fmSend(method, items, dest) {  // one step per folder, and one fo
     steps.push(Object.assign(blankStep({ host: l.host, path: l.path }, { host: dest.host, path: dest.path }), { method, only: l.only }));
   }
   try { await postJSON('/api/moves/check', { name: 'check', steps }); }
-  catch (err) { toast(err.message); fmPickBar(); return; }
+  catch (err) { notify(err.message, 'error'); fmPickBar(); return; }
   if (!MV.plan) MV.plan = { name: '', steps: [] };
   MV.plan.steps.push(...steps);
   MV.dirty = true; MV.result = null;

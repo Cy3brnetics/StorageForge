@@ -714,13 +714,13 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return redirect(safe_next(request.args.get('next')))
         return page('login.html')
 
-    @web.get('/<any("login.js", "enroll.js", "style.css", "favicon.svg"):name>')
+    @web.get('/<any("login.js", "enroll.js", "style.css", "tokens.css", "components.css", "favicon.svg"):name>')
     def public_static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js"):name>')
+    @web.get('/<any("session.js", "kernel.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)

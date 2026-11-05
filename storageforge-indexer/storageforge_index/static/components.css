@@ -1,0 +1,41 @@
+/* The components every page shares (UX-22): the button, the dialog, the field, the toast, the live region and the busy state. They are
+   named sf-* so they cannot collide with a page's own classes, and they use only the tokens in tokens.css, so a dialog looks the same
+   on the main page, the planner and /manage, in both themes. A page's old classes keep working and move over one at a time. */
+
+.sf-live { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.sf-btn { font: inherit; font-size: var(--sf-t3); cursor: pointer; color: var(--sf-text); background: var(--sf-raise); border: 1px solid var(--sf-line-2); border-radius: var(--sf-radius); padding: 6px var(--sf-s3); white-space: nowrap; }
+.sf-btn:hover { border-color: var(--sf-accent); }
+.sf-btn:focus-visible { outline: 2px solid var(--sf-accent); outline-offset: 2px; }
+.sf-btn.ghost { background: none; }
+.sf-btn.pri { background: var(--sf-accent); border-color: var(--sf-accent); color: var(--sf-accent-ink); font-weight: 600; }
+.sf-btn.danger { background: var(--sf-bad); border-color: var(--sf-bad); color: var(--sf-bad-ink); font-weight: 600; }
+.sf-btn:disabled { opacity: .55; cursor: not-allowed; }
+
+.sf-dialog { background: var(--sf-panel); color: var(--sf-text); border: 1px solid var(--sf-line-2); border-radius: 10px; padding: var(--sf-s5); width: min(92vw, 520px); max-height: 86vh; overflow: auto; font: var(--sf-t4)/1.45 var(--sf-sans); }
+.sf-dialog::backdrop { background: rgba(0, 0, 0, .55); }
+.sf-dialog form { display: flex; flex-direction: column; gap: var(--sf-s3); margin: 0; }
+.sf-dialog h2, .sf-dialog p, .sf-dialog ul, .sf-dialog pre, .sf-dialog .sf-field, .sf-dialog .sf-err, .sf-dialog .sf-keys { margin: 0; }
+.sf-dialog h2 { font-size: var(--sf-t5); }
+.sf-dialog ul { padding-left: 1.2em; }
+.sf-dialog code, .sf-dialog pre { font-family: var(--sf-mono); font-size: 12.5px; }
+.sf-dialog pre { background: var(--sf-bg); border: 1px solid var(--sf-line); border-radius: var(--sf-radius); padding: var(--sf-s2) var(--sf-s3); overflow: auto; }
+.sf-dialog .muted { color: var(--sf-muted); }
+.sf-dialog .small { font-size: var(--sf-t2); }
+.sf-field { display: flex; flex-direction: column; gap: var(--sf-s1); font-size: var(--sf-t2); color: var(--sf-muted); }
+.sf-field input { font: inherit; font-size: var(--sf-t4); color: var(--sf-text); background: var(--sf-bg); border: 1px solid var(--sf-line-2); border-radius: var(--sf-radius); padding: 6px 9px; min-width: 0; }
+.sf-field small { color: var(--sf-muted); }
+.sf-actions { display: flex; justify-content: flex-end; gap: var(--sf-s2); margin-top: var(--sf-s2); }
+.sf-err { color: var(--sf-bad); }
+.sf-keys { list-style: none; padding: 0; }
+.sf-keys li { margin: 0 0 var(--sf-s1); }
+
+.sf-toasts { position: fixed; right: var(--sf-s4); bottom: var(--sf-s4); z-index: 1000; display: flex; flex-direction: column; gap: var(--sf-s2); max-width: min(92vw, 420px); }
+.sf-toast { display: flex; align-items: center; gap: var(--sf-s3); background: var(--sf-raise); color: var(--sf-text); border: 1px solid var(--sf-line-2); border-radius: var(--sf-radius); padding: var(--sf-s2) var(--sf-s3); box-shadow: 0 4px 16px rgba(0, 0, 0, .35); font: var(--sf-t3)/1.4 var(--sf-sans); }
+.sf-toast.error { border-color: var(--sf-bad); }
+.sf-toast span { flex: 1; overflow-wrap: anywhere; }
+
+[aria-busy="true"] { cursor: progress; }
+button[aria-busy="true"]::after { content: ""; display: inline-block; width: .8em; height: .8em; margin-left: .5em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: sf-spin .8s linear infinite; vertical-align: -0.1em; }
+@keyframes sf-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { button[aria-busy="true"]::after { animation: none; border-right-color: currentColor; } }

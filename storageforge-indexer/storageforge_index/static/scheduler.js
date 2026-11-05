@@ -225,7 +225,7 @@ function renderScheduler() {
               toast(r.host_pending ? `Saved, but ${r.host_pending.join(', ')} has no deploy access: its timer has not changed`
                 : r.group ? `${verb}ing on ${r.hosts.join(', ')}…` : `Schedule ${verb.toLowerCase()}ed`);
               await loadScheduler(cur.schedule_id);
-            } catch (e) { toast(e.message); }
+            } catch (e) { notify(e.message, 'error'); }
           }, 'btn sm'),
           button('Run now (SSH)', async () => {
             startDeploy('schedules', cur.schedule_id, 'apply', `run schedule ${cur.name}`, { run: true });
@@ -235,7 +235,7 @@ function renderScheduler() {
               const r = await (await postJSON(`/api/scheduler/schedules/${cur.schedule_id}/verify`, {})).json();
               toast(`Verification: ${r.status} — ${r.verify_result?.summary || ''}`);
               await loadScheduler(cur.schedule_id);
-            } catch (e) { toast(e.message); }
+            } catch (e) { notify(e.message, 'error'); }
           }, 'btn sm'),
           button('Deploy (SSH)', () => {
             startDeploy('schedules', cur.schedule_id, 'report', `schedule ${cur.name}`);
@@ -250,16 +250,16 @@ function renderScheduler() {
               const r = await (await postJSON(`/api/scheduler/schedules/${cur.schedule_id}/token`, {})).json();
               SCH.tokenMsg = r.token;
               renderScheduler();
-            } catch (e) { toast(e.message); }
+            } catch (e) { notify(e.message, 'error'); }
           }, 'btn ghost sm'),
           button('Delete', async () => {
-            if (!confirm(`Delete schedule "${cur.name}" (#${cur.schedule_id})?`)) return;
+            if (!(await confirmDialog({ title: `Delete the schedule “${cur.name}”?`, body: `It is schedule #${cur.schedule_id}.`, confirm: 'Delete schedule', danger: true }))) return;
             try {
               await api(`/api/scheduler/schedules/${cur.schedule_id}`, { method: 'DELETE' });
               SCH.current = null;
               toast('Schedule deleted');
               await loadScheduler();
-            } catch (e) { toast(e.message); }
+            } catch (e) { notify(e.message, 'error'); }
           }, 'btn ghost sm danger')
         )
       )
@@ -439,7 +439,7 @@ function renderScheduler() {
           await loadScheduler(created.schedule.schedule_id);
         }
       } catch (e) {
-        toast(e.message);
+        notify(e.message, 'error');
       }
     },
   },
@@ -543,7 +543,7 @@ function renderScheduler() {
             toast(`Run #${r.run_id}: ${rev.status}`);
             await loadScheduleRuns();
             renderScheduler();
-          } catch (e) { toast(e.message); }
+          } catch (e) { notify(e.message, 'error'); }
         }, 'btn ghost sm')
       ),
       vrSummary ? text('span', `${vrSummary} (${r.report_source || 'report'})`, 'small muted') : null

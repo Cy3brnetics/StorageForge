@@ -20,32 +20,7 @@ function readColors() {
 readColors();
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { readColors(); wake(); });
 
-/* ── API (session cookie, set by /api/login) ─────────────────────── */
-async function api(path, opts = {}, confirmed = false) {
-  const res = await fetch(path, { credentials: 'same-origin', ...opts });
-  if (res.status === 401) {          // the session is gone: session.js empties the page and goes to /login
-    const msg = (await res.json().catch(() => ({}))).error || '';
-    sfSignedOut(/ended/.test(msg) ? 'ended' : ''); throw new Error('Sign in required');
-  }
-  if (res.status === 403 && !confirmed && (await res.clone().json().catch(() => ({}))).reauth) {
-    await confirmPassword();                     // commands on hosts: type the password again, then retry once
-    return api(path, opts, true);
-  }
-  if (res.status === 409) {                      // a password would go to a host key nobody checked: show it first
-    const hk = (await res.clone().json().catch(() => ({}))).hostkey;
-    if (hk) { await confirmHostKey(hk); return api(path, opts, confirmed); }
-  }
-  if (!res.ok) {
-    let msg = res.statusText, body = null;
-    try { body = await res.json(); msg = body.error || msg; } catch { /* not JSON */ }
-    const err = new Error(msg);
-    err.status = res.status;
-    err.body = body;
-    throw err;
-  }
-  return res;
-}
-const getJSON = async (p) => (await api(p)).json();
+/* api(), getJSON() and postJSON() are the kernel's (kernel.js), and so are the dialogs and the toast. */
 
 /* ── state ───────────────────────────────────────────────────────── */
 const S = { nodes: [], edges: [], byId: new Map(), adj: new Map(), visible: null, focus: null, selected: null,
@@ -422,13 +397,6 @@ function tooltip(n, ev) {
 function text(tag, t, cls) { const el = document.createElement(tag); el.textContent = t; if (cls) el.className = cls; return el; }
 function button(label, fn, cls = '') { const b = text('button', label, cls); b.type = 'button'; b.addEventListener('click', fn); return b; }
 function pill(h) { return text('span', HEALTH_TEXT[h] || h, `pill ${h}`); }
-/* Latest answer wins (UX-12): `const fresh = latest('search')` when a request starts and `if (!fresh()) return` after each await, so a slow
-   answer never lands on top of the one asked for after it, and never changes state the newer one has already set. */
-const LATEST = {};
-function latest(key) {
-  const n = LATEST[key] = (LATEST[key] || 0) + 1;
-  return () => LATEST[key] === n;
-}
 function fmtBytes(n) {
   if (n == null || n === '') return '—';
   const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']; let v = Number(n), i = 0;
@@ -607,13 +575,6 @@ function copyText(s, what = 'Copied') {
   if (ok) done();
   else if (navigator.clipboard && isSecureContext) navigator.clipboard.writeText(s).then(done, () => toast('Could not copy'));
   else toast('Could not copy');
-}
-let toastTimer = 0;
-function toast(msg) {
-  let t = $('#toast');
-  if (!t) { t = text('div', '', 'toast'); t.id = 'toast'; t.setAttribute('role', 'status'); document.body.append(t); }
-  t.textContent = msg; t.hidden = false;
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 2200);
 }
 const dirOf = (p) => p.replace(/\/[^/]*$/, '') || '/';
 
@@ -802,7 +763,6 @@ $('#scanall').addEventListener('click', scanAll);
 $('#scanform').addEventListener('submit', (ev) => { ev.preventDefault(); const h = $('#scanhost').value.trim(); if (h) queueScan(h); });
 
 /* ── keys: generate in the vault, install with ssh-copy-id ────────── */
-const postJSON = (path, body) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 function keyMsg(msg, ok) { const m = $('#instmsg'); m.hidden = false; m.textContent = msg; m.className = ok ? 'st-ok' : 'st-failed'; }
 async function loadKeys(select) {
   try {
@@ -834,7 +794,7 @@ async function loadKeys(select) {
   } catch (err) { $('#keys').replaceChildren(text('li', err.message, 'muted')); }
 }
 async function removeVaultItem(path, question) {
-  if (!confirm(question)) return;
+  if (!(await confirmDialog({ title: question, confirm: 'Remove', danger: true }))) return;
   try { await api(path, { method: 'DELETE' }); loadKeys(); }
   catch (err) { keyMsg(err.message, false); }
 }
@@ -933,7 +893,7 @@ async function loadUsers() {
           catch (err) { $('#usermsg').textContent = err.message; }
         }, 'btn ghost sm'),
         button('Remove', async () => {
-          if (!confirm(`Remove account ${u.username}?`)) return;
+          if (!(await confirmDialog({ title: `Remove account ${u.username}?`, confirm: 'Remove account', danger: true }))) return;
           try { await api(`/api/users/${encodeURIComponent(u.username)}`, { method: 'DELETE' }); }
           catch (err) { $('#usermsg').textContent = err.message; }
           loadUsers();
@@ -981,9 +941,9 @@ function renderRoles(roles, mine) {
     ...(r.builtin || !mine.includes(r) ? [] : [
       button('Edit', () => openRoleForm(r), 'btn ghost sm'),
       button('Remove', async () => {
-        if (!confirm(`Remove role ${r.name}?`)) return;
+        if (!(await confirmDialog({ title: `Remove role ${r.name}?`, confirm: 'Remove role', danger: true }))) return;
         try { await api(`/api/roles/${encodeURIComponent(r.name)}`, { method: 'DELETE' }); $('#rolemsg').textContent = ''; }
-        catch (err) { toast(err.message); }
+        catch (err) { notify(err.message, 'error'); }
         loadUsers();
       }, 'btn ghost sm danger')]))));
 }
@@ -1165,65 +1125,13 @@ function alertPanel(msg) { showTab('details'); $('#summary').prepend(text('p', m
 /* ── signed-in user (signing in happens on /login; session.js handles the session ending) ── */
 let user = null;
 function setUser(name, me = null) {
-  user = name;
+  user = name; sfUserName = name || '';
   $('#lock').textContent = name ? `Sign out ${name}` : 'Sign in';
   $('#lock').classList.toggle('locked', !name);
   $('#sessfield').hidden = !name;
   if (me) { $('#sesslen').value = String(me.session_minutes); sfSessionEnds(me.session_ends); }
 }
 
-/* ── password again before commands run on hosts ─────────────────── */
-const reauthDlg = $('#reauthdlg');
-let reauthWait = null;
-function confirmPassword() {
-  if (!reauthWait) {
-    reauthWait = new Promise((resolve, reject) => { reauthDlg._done = { resolve, reject }; })
-      .finally(() => { reauthWait = null; });
-    $('#reauthuser').value = user || '';
-    $('#reauthpw').value = ''; $('#reauthmsg').hidden = true;
-    reauthDlg.showModal(); $('#reauthpw').focus();
-  }
-  return reauthWait;
-}
-$('#reauthform').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  const password = $('#reauthpw').value;
-  $('#reauthpw').value = '';
-  const res = await fetch('/api/reauth', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-                                          body: JSON.stringify({ password }) });
-  if (res.status === 401) { reauthDlg.close(); reauthDlg._done.reject(new Error('Sign in required')); sfSignedOut(); return; }
-  if (!res.ok) {
-    $('#reauthmsg').textContent = (await res.json().catch(() => ({}))).error || res.statusText;
-    $('#reauthmsg').hidden = false; $('#reauthpw').focus(); return;
-  }
-  reauthDlg.close(); reauthDlg._done.resolve();
-});
-/* ── a person checks a host's SSH key before a password goes to it ── */
-const hkDlg = $('#hostkeydlg');
-function confirmHostKey(hk) {
-  return new Promise((resolve, reject) => {
-    $('#hkhost').textContent = hk.port && hk.port !== 22 ? `${hk.host} (port ${hk.port})` : hk.host;
-    $('#hkkeys').replaceChildren(...hk.keys.map((k) => el('li', {}, text('code', k.fingerprint), k.type ? ` ${k.type}` : '')));
-    $('#hkmsg').hidden = true;
-    hkDlg._done = { resolve, reject, hk };
-    hkDlg.showModal();
-  });
-}
-$('#hostkeyform').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  const { resolve, hk } = hkDlg._done;
-  try {
-    await api('/api/hostkey/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ host: hk.host, port: hk.port, fingerprint: hk.keys[0].fingerprint }) });
-    hkDlg.close(); resolve();
-  } catch (err) { $('#hkmsg').textContent = err.message; $('#hkmsg').hidden = false; }
-});
-const hkCancel = () => { if (hkDlg._done) hkDlg._done.reject(new Error('Host key not confirmed: no password was sent')); hkDlg._done = null; };
-$('#hkcancel').addEventListener('click', () => { hkDlg.close(); hkCancel(); });
-hkDlg.addEventListener('cancel', hkCancel);
-const reauthCancel = () => { if (reauthWait) reauthDlg._done.reject(new Error('Password not confirmed: nothing was run')); };
-$('#reauthcancel').addEventListener('click', () => { reauthDlg.close(); reauthCancel(); });
-reauthDlg.addEventListener('cancel', reauthCancel);
 $('#sesslen').addEventListener('change', async (ev) => {
   try {
     const me = await (await api('/api/me', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -1233,7 +1141,7 @@ $('#sesslen').addEventListener('change', async (ev) => {
   } catch (err) {
     const me = await getJSON('/api/me').catch(() => null);
     if (me) setUser(me.username, me);
-    if (!/Sign in/.test(err.message)) toast(err.message);
+    if (!/Sign in/.test(err.message)) notify(err.message, 'error');
   }
 });
 $('#lock').addEventListener('click', sfSignOut);

@@ -1009,13 +1009,9 @@ function nodeForPath(bp,path){ const S0=S;try{ S=fromBlueprint({...bp,protection
 
 /* ───────────── server: hosts, load, save ───────────── */
 async function apiJSON(path,opts={}){
-  const r=await fetch(path,{credentials:'same-origin',...opts});
-  if(r.status===401){DOC.signedIn=false;sfSignedOut(/ended/.test((await r.json().catch(()=>({}))).error||'')?'ended':'');throw new Error('Sign in required')}
-  const j=await r.json().catch(()=>({}));
-  // the planner has no password dialog of its own; the main page asks, and the confirmation counts here too
-  if(r.status===403&&j.reauth) throw new Error('Confirm your password first: run the change from the main page, or sign in again');
-  if(!r.ok) throw new Error(j.error||r.statusText);
-  return j;
+  // the kernel's api() ends the page on a 401, and on a 403 that wants the password it asks right here and retries: this used to say "run the change from the main page"
+  const r=await api(path,opts);
+  return r.json().catch(()=>({}));
 }
 /* the main page on one of its panels for this host: /#host=…&tab=… */
 const APP_TABS=[['changes','Changes'],['moves','Moves'],['deploy','Deploy'],['docker','Docker'],['git','Git'],['copies','Cleanup'],['access','Access']];
@@ -1064,7 +1060,7 @@ async function loadHosts(){
   }catch(e){ /* signed out: the example still works */ }
 }
 async function openDoc(host,source){
-  if(DOC.host&&DOC.dirty&&!confirm(`Leave ${DOC.host} with unsaved changes? They stay as a draft in this browser.`)){ $('#hostpick').value=DOC.host;return }
+  if(DOC.host&&DOC.dirty&&!(await confirmDialog({ title: `Leave ${DOC.host} with unsaved changes?`, body: 'They stay as a draft in this browser.', confirm: 'Leave', danger: true }))){ $('#hostpick').value=DOC.host;return }
   if(!host){ DOC.host='';DOC.source='example';DOC.dirty=false;DOC.activity=null;S=load('')||sample();UI.sel=null;UI.calc=null;render();docState();setHash();return }
   docState('Loading '+host+'…');
   try{

@@ -51,7 +51,7 @@ async function startDeploy(kind, ref, mode, title, extra = {}) {
   } catch (err) {
     if (/not confirmed/.test(err.message)) {   // the password or host key prompt was cancelled: nothing changed, so neither does the panel
       DP.group = before;
-      toast(err.message);
+      notify(err.message, 'error');
     } else {
       const body = err.body || {};
       DP.group = {
@@ -75,7 +75,7 @@ async function cancelGroup(gid, force = false) {
     const r = await (await postJSON(`/api/deploy/groups/${gid}/cancel`, { force })).json();
     toast(force ? 'Deploy force stopped' : 'Cancel requested; stopping remaining hosts');
     pollGroup();
-  } catch (err) { toast(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 
 async function retryGroup(gid) {
@@ -86,7 +86,7 @@ async function retryGroup(gid) {
     DP.group = { gid: r.group, kind: r.kind, ref: r.ref, mode: r.mode, title: r.title, extra: r.extra, runs: [], done: false };
     renderGroup();
     pollGroup();
-  } catch (err) { toast(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 
 async function openGroup(gid, title, kind, ref, mode, extra = {}) {
@@ -98,7 +98,7 @@ async function openGroup(gid, title, kind, ref, mode, extra = {}) {
     renderGroup();
     if (!DP.group.done) pollGroup();
     $('#dpgroup')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-  } catch (err) { toast(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 
 async function pollGroup() {
@@ -380,11 +380,11 @@ function remoteNodesCard() {
       list.replaceChildren(...r.nodes.map((n) => el('div', { class: 'row wrap' }, text('span', n.state, `pill ${n.state === 'ready' ? 'ok' : n.state === 'expired' ? 'failed' : 'unknown'}`), el('b', {}, n.name),
         text('span', [n.host, n.address, n.expires_at ? `key expires ${when(n.expires_at)}` : ''].filter(Boolean).join(' · '), 'muted small'),
         n.online && n.state !== 'ready' || n.state === 'connected' ? button('Adopt', async () => {
-          try { const out = await (await postJSON(`/api/remote/nodes/${n.id}/adopt`, {})).json(); toast(out.state === 'scanning' ? 'Scanning it: press Adopt again when the scan is done' : `${n.name}: ${out.state}`); refresh(); } catch (err) { toast(err.message); }
+          try { const out = await (await postJSON(`/api/remote/nodes/${n.id}/adopt`, {})).json(); toast(out.state === 'scanning' ? 'Scanning it: press Adopt again when the scan is done' : `${n.name}: ${out.state}`); refresh(); } catch (err) { notify(err.message, 'error'); }
         }, 'btn sm') : '',
         button('Revoke…', async () => {
-          if (!confirm(`Cut off ${n.name} now? It can only come back with a new install script.`)) return;
-          try { await api(`/api/remote/nodes/${n.id}`, { method: 'DELETE' }); refresh(); } catch (err) { toast(err.message); }
+          if (!(await confirmDialog({ title: `Cut off ${n.name} now?`, body: 'It can only come back with a new install script.', confirm: 'Cut off', danger: true }))) return;
+          try { await api(`/api/remote/nodes/${n.id}`, { method: 'DELETE' }); refresh(); } catch (err) { notify(err.message, 'error'); }
         }, 'btn ghost sm danger'))));
     } catch (err) { list.replaceChildren(text('p', err.message, 'st-failed small')); }
   };
@@ -398,7 +398,7 @@ function remoteNodesCard() {
         a.click(); URL.revokeObjectURL(a.href);
         toast(`Run the downloaded script as root on ${r.name} with --apply. Its key expires ${when(r.expires_at)}. It holds a private key: delete it afterwards.`);
         name.value = ''; refresh();
-      } catch (err) { toast(err.message); }
+      } catch (err) { notify(err.message, 'error'); }
     }, 'btn sm')));
 }
 async function download(url, fallback, body) {   // body: POST it as JSON (for a download that changes something)
@@ -407,7 +407,7 @@ async function download(url, fallback, body) {   // body: POST it as JSON (for a
     const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob());
     a.download = (res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/)?.[1] || fallback;
     document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  } catch (err) { toast(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 
 function removeAccess(host) {
@@ -425,8 +425,8 @@ function updatePill(u) {
 function updatesSection(d) {
   const rows = d.updates || [], able = rows.filter((u) => !u.blocked);
   const running = (d.groups || []).some((g) => g.kind === 'updates' && g.state === 'running');
-  const updateAll = button(`Update all ${able.length} host${able.length === 1 ? '' : 's'}`, () => {
-    if (confirm(`Install all system updates on ${able.length} host${able.length === 1 ? '' : 's'} now? Services whose packages change may restart. Nothing reboots.`)) startDeploy('updates', 'all', 'apply', 'system updates on all hosts');
+  const updateAll = button(`Update all ${able.length} host${able.length === 1 ? '' : 's'}`, async () => {
+    if (await confirmDialog({ title: `Install all system updates on ${able.length} host${able.length === 1 ? '' : 's'} now?`, body: 'Services whose packages change may restart. Nothing reboots.', confirm: 'Install updates' })) startDeploy('updates', 'all', 'apply', 'system updates on all hosts');
   }, 'btn pri sm');
   const check = button('Check for updates', () => startDeploy('updates', 'all', 'report', 'system updates on all hosts'), 'btn sm');
   updateAll.disabled = check.disabled = running || !able.length;
@@ -437,15 +437,15 @@ function updatesSection(d) {
       u.reboot ? text('span', 'reboot waiting', 'pill local-only') : '',
       text('span', u.blocked || [u.manager, u.checked_at ? `checked ${when(u.checked_at)}` : '', u.updated_at ? `updated ${when(u.updated_at)}` : ''].filter(Boolean).join(' · '), 'muted small'),
       el('span', { class: 'row tools' }, u.group ? button('Output', () => openGroup(u.group), 'btn ghost sm') : '',
-        u.blocked ? '' : button('Update', () => {
-          if (confirm(`Install all system updates on ${u.host} now? Services whose packages change may restart. Nothing reboots.`)) startDeploy('updates', u.host, 'apply', `system updates on ${u.host}`);
+        u.blocked ? '' : button('Update', async () => {
+          if (await confirmDialog({ title: `Install all system updates on ${u.host} now?`, body: 'Services whose packages change may restart. Nothing reboots.', confirm: 'Install updates' })) startDeploy('updates', u.host, 'apply', `system updates on ${u.host}`);
         }, 'btn ghost sm'))))))
       : text('p', 'No hosts are set up for deploys yet: set one up under Deploy access.', 'muted small'));
 }
 
 /* ── jobs ───────────────────────────────────────────────────────── */
 async function jobAction(j, verb) {
-  if (verb === 'cutover' && !confirm(`Cut over ${j.name}? The source is renamed to *.migrated-<date> after a clean verify.`)) return;
+  if (verb === 'cutover' && !(await confirmDialog({ title: `Cut over ${j.name}?`, body: 'The source is renamed to *.migrated-<date> after a clean verify.', confirm: 'Cut over', danger: true }))) return;
   toast(`${verb}: ${j.id}…`);
   try {
     const r = await (await postJSON(`/api/deploy/jobs/${j.id}/${verb}`, {})).json();
@@ -453,11 +453,11 @@ async function jobAction(j, verb) {
     if (['dryrun', 'log', 'cutover'].includes(verb) || r.status !== 'ok') { DP.job = { job: j, title: verb, output: r.output }; renderJobPanel(); }
     toast(r.status === 'ok' ? `${verb}: done` : `${verb}: ${r.status}`);
     if (['pause', 'resume', 'run', 'verify'].includes(verb)) setTimeout(loadDeploy, verb === 'run' || verb === 'verify' ? 4000 : 300);
-  } catch (err) { toast(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 async function jobHistory(j) {
   try { const r = await getJSON(`/api/deploy/jobs/${j.id}`); DP.job = { job: j, runs: r.runs }; renderJobPanel(); }
-  catch (err) { toast(err.message); }
+  catch (err) { notify(err.message, 'error'); }
 }
 function jobMenu(j) {
   const a = (label, verb, extra = {}) => ({ label, run: () => jobAction(j, verb), ...extra });
@@ -532,16 +532,16 @@ async function browseSnapshot(j, snapshot, path) {
   try {
     const b = await (await postJSON(`/api/deploy/jobs/${j.id}/browse`, { snapshot, path })).json();
     DP.job = { ...DP.job, job: j, browse: b }; renderJobPanel();
-  } catch (err) { toast(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 async function restoreFrom(j, snapshot, path) {
-  if (!confirm(`Restore ${path} from ${snapshot} to ${j.source}?\n\nIt lands beside the original as ${path}.restored-<time>; nothing is overwritten.`)) return;
+  if (!(await confirmDialog({ title: `Restore ${path} from ${snapshot}?`, body: `It goes to ${j.source}, beside the original as ${path}.restored-<time>. Nothing is overwritten.`, confirm: 'Restore' }))) return;
   try {   // it runs in the background; its runs show like a deploy's
     const r = await (await postJSON(`/api/deploy/jobs/${j.id}/restore`, { snapshot, path })).json();
     DP.group = { gid: r.group, kind: 'restore', ref: j.id, mode: 'apply', title: `restore ${path} from ${snapshot} into ${j.source}:${r.target}`,
                  extra: {}, runs: [], done: false };
     renderGroup(); pollGroup(); toast('Restore started');
-  } catch (err) { toast(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 
 /* ── rsnapshot and snapper jobs StorageForge did not deploy ─────── */
@@ -559,27 +559,32 @@ function snapMapsChanged() {       // the graphs and the Files map hold what the
 }
 async function editRetention(j) {
   const now = Object.entries(j.levels || {}).map(([k, v]) => `${k}=${v}`).join(' ');
-  const typed = prompt(`How many to keep, per level. A lower count deletes older snapshots at the next ${j.method === 'snapper' ? 'cleanup' : 'rotation'}.`, now);
-  if (typed === null || typed.trim() === now) return;
+  const form = await formDialog({
+    title: `How many of ${j.name}'s snapshots to keep?`,
+    body: `A lower count deletes older snapshots at the next ${j.method === 'snapper' ? 'cleanup' : 'rotation'}.`,
+    fields: [{ name: 'keep', label: 'Keep, per level', value: now, placeholder: 'daily=7 weekly=4', hint: 'A level, an equals sign and a count, with a space between levels.',
+               validate: (v) => (/^\w+=\d+(\s+\w+=\d+)*$/.test(v) ? '' : 'Write it as level=count, like daily=7 weekly=4.') }],
+  });
+  if (form === null || form.keep === now) return;
   const keep = {};
-  for (const w of typed.trim().split(/\s+/)) { const [k, v] = w.split('='); keep[k] = Number(v); }
+  for (const w of form.keep.split(/\s+/)) { const [k, v] = w.split('='); keep[k] = Number(v); }
   try {
     const r = await (await postJSON(`/api/deploy/jobs/${j.id}/retention`, { keep })).json();
     DP.job = { job: j, title: 'retention', output: r.output }; renderJobPanel(); loadDeploy();
-  } catch (err) { toast(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 async function forgetJob(j) {
-  if (!confirm(`Stop tracking ${j.name}?\n\nIt keeps running on ${j.runner}, and its snapshots stay.`)) return;
-  try { await postJSON(`/api/deploy/jobs/${j.id}/forget`, {}); toast('Forgotten'); loadDeploy(); snapMapsChanged(); } catch (err) { toast(err.message); }
+  if (!(await confirmDialog({ title: `Stop tracking ${j.name}?`, body: `It keeps running on ${j.runner}, and its snapshots stay.`, confirm: 'Stop tracking' }))) return;
+  try { await postJSON(`/api/deploy/jobs/${j.id}/forget`, {}); toast('Forgotten'); loadDeploy(); snapMapsChanged(); } catch (err) { notify(err.message, 'error'); }
 }
 async function importFound(f) {
   try { await postJSON('/api/deploy/snapjobs/import', { host: f.host, tool: f.tool, config: f.config }); toast(`Imported ${f.name}`); loadDeploy(); snapMapsChanged(); }
-  catch (err) { toast(err.message); }
+  catch (err) { notify(err.message, 'error'); }
 }
 async function lookAsRoot(host) {
   toast(`Looking on ${host} as root…`);
   try { const r = await (await postJSON('/api/deploy/snapjobs/probe', { host })).json(); DP.found = r.found; renderSnapFound(); loadDeploy(); snapMapsChanged(); toast('Done'); }
-  catch (err) { toast(err.message); }
+  catch (err) { notify(err.message, 'error'); }
 }
 function foundRow(f, ready) {
   const levels = Object.entries(f.levels || {}).map(([k, v]) => (v === null ? k : `${k} ${v}`)).join(', ');
@@ -604,7 +609,7 @@ function newSnapForm(d) {
       out.replaceChildren(text('p', `${a.path} is on ${a.fstype || 'an unknown filesystem'} (${a.mount || '?'}). ${a.why}`, a.level === 'crit' ? 'st-failed small' : 'small'),
         a.tool === 'snapper' ? el('div', { class: 'row' }, name, button('Create snapper config', async () => {
           try { const r = await (await postJSON('/api/deploy/snapjobs/snapper', { host: a.host, path: a.path, name: name.value.trim() })).json();
-            out.append(outputBlock(r.output)); loadDeploy(); snapMapsChanged(); } catch (err) { toast(err.message); }
+            out.append(outputBlock(r.output)); loadDeploy(); snapMapsChanged(); } catch (err) { notify(err.message, 'error'); }
         }, 'btn sm')) : a.tool === 'rsnapshot' ? button('Plan an rsnapshot step in Moves', () => showTab('moves'), 'btn sm') : '');
     } catch (err) { out.replaceChildren(text('p', err.message, 'st-failed small')); }
   };
@@ -740,7 +745,7 @@ async function showHistory(host) {
     const { runs } = await getJSON(`/api/deploy/runs?host=${encodeURIComponent(host)}&limit=30`);
     DP.job = { job: { name: `deploy history of ${host}` }, title: '', output: runs.map((r) => `${stamp(r.started_at)}  ${r.kind} ${r.ref || ''}  ${r.mode}  ${r.status}${r.confirmed_at ? ' (confirmed: ' + (r.host_exit === 0 ? 'ok' : 'exit ' + r.host_exit) + ')' : ''}`).join('\n') || 'nothing yet' };
     renderJobPanel();
-  } catch (err) { toast(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 
 function settingsForm(s) {

@@ -1,22 +1,14 @@
 /* Layout: header bar, full-bleed graph stage, side panel (stacks below at narrow widths).
    Dark-first graphite palette shared with the StorageForge dashboard; health colours are semantic. */
 :root {
-  --bg: #0d1015; --panel: #141921; --panel-2: #1a2029; --raise: #212835; --line: #262e3b; --line-2: #323c4c;
-  --fg: #d9dfe9; --muted: #8a95a8; --accent: #6aa5ff; --accent-ink: #0b1730;
-  --protected: #43d17f; --local-only: #f2b632; --broken: #ff6464; --unknown: #6b7586;
-  --fast: #b592ff; --mass: #41c3c9; --remote: #e3b46c;
-  --mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", "IBM Plex Sans", Roboto, sans-serif;
-  color-scheme: dark;
+  /* the colours are tokens.css's: these are the names this page's rules use for them */
+  --bg: var(--sf-bg); --panel: var(--sf-panel); --panel-2: var(--sf-panel-2); --raise: var(--sf-raise); --line: var(--sf-line); --line-2: var(--sf-line-2);
+  --fg: var(--sf-text); --muted: var(--sf-muted); --accent: var(--sf-accent); --accent-ink: var(--sf-accent-ink);
+  --protected: var(--sf-ok); --local-only: var(--sf-warn); --broken: var(--sf-bad); --unknown: var(--sf-unknown);
+  --fast: var(--sf-fast); --mass: var(--sf-mass); --remote: var(--sf-remote);
+  --mono: var(--sf-mono); --sans: var(--sf-sans);
 }
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #eef1f5; --panel: #ffffff; --panel-2: #f5f7fa; --raise: #e8ecf2; --line: #d8dee7; --line-2: #c3ccd8;
-    --fg: #17202c; --muted: #556275; --accent: #1d68d8; --accent-ink: #fff;
-    --protected: #15884a; --local-only: #a56800; --broken: #cf2c2c; --unknown: #8a95a6;
-    color-scheme: light;
-  }
-}
+
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--fg); font: 14px/1.45 var(--sans); display: flex; flex-direction: column; }
@@ -361,9 +353,6 @@ pre.script { background: var(--bg); border: 1px solid var(--line); border-radius
 .ctxi.danger { color: var(--broken); }
 .ctxi:disabled { cursor: default; opacity: .45; background: none; }
 .menu-open { outline: 2px solid var(--accent); outline-offset: 1px; }
-.toast { position: fixed; z-index: 60; left: 50%; bottom: 24px; transform: translateX(-50%); max-width: calc(100vw - 32px);
-  background: var(--raise); border: 1px solid var(--line-2); border-radius: 8px; padding: 8px 14px; font-size: 13px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-shadow: 0 4px 16px rgb(0 0 0 / .3); }
 /* Deploy tab (deployview.js) */
 .dpout { max-height: 360px; overflow: auto; margin: 0; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
   font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -576,8 +565,6 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 .searchmain code { overflow-wrap: anywhere; }
 .searchaccount { margin-top: 16px; font-size: 12.5px; }
 .searchaccount summary { cursor: pointer; margin-bottom: 8px; }
-.hkcmd { margin: 0; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; font-size: 12px; overflow-x: auto; }
-.hkkeys { margin: 0; padding-left: 18px; font-size: 13px; word-break: break-all; }
 #rebuildbox pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* ── Git Drawer / Inspector (bottom corner of detail panel) ──────── */

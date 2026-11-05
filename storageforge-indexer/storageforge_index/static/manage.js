@@ -24,32 +24,10 @@ function el(tag, attrs = {}, ...kids) {
 const btn = (label, fn, cls = '') => el('button', { type: 'button', class: `mg-btn ${cls}`, onclick: fn }, label);
 const when = (t) => (t ? new Date(t * 1000).toLocaleString() : 'not yet');
 
-async function askPassword() {
-  const dlg = $('#mgreauth');
-  $('#mgreauthpw').value = ''; $('#mgreautherr').hidden = true;
-  dlg.showModal();
-  return new Promise((resolve) => {
-    $('#mgreauthno').onclick = () => { dlg.close(); resolve(false); };
-    $('#mgreauthform').onsubmit = async (ev) => {
-      ev.preventDefault();
-      const r = await fetch('/api/reauth', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('#mgreauthpw').value }) });
-      if (r.ok) { dlg.close(); resolve(true); return; }
-      const err = $('#mgreautherr'); err.textContent = 'That is not your password.'; err.hidden = false;
-    };
-  });
-}
-
-async function call(path, method = 'GET', body = undefined, again = true) {
-  const res = await fetch(path, { method, credentials: 'same-origin', headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
-  if (res.status === 401) { sfSignedOut(); throw new Error('signed out'); }
-  const data = await res.json().catch(() => ({}));
-  if (res.status === 403 && data.reauth && again) {
-    if (await askPassword()) return call(path, method, body, false);
-    throw new Error('Not confirmed: nothing was done.');
-  }
-  if (!res.ok && res.status !== 409) throw new Error(data.error || `${res.status}`);
-  if (res.status === 409) throw new Error(data.error || 'refused');
-  return data;
+// The kernel's api() does what this page used to do for itself (the 401, the password dialog, the host key), so this only keeps the shape its views were written for: JSON in, JSON out.
+async function call(path, method = 'GET', body = undefined) {
+  const res = await api(path, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  return res.json().catch(() => ({}));
 }
 
 function table(heads, rows, onpick) {
@@ -277,6 +255,7 @@ async function viewTraffic(box) {
 // ── start ───────────────────────────────────────────────────────────
 (async function start() {
   MG.me = await call('/api/me');
+  sfUserName = MG.me.username || '';
   const nav = $('#mgnav');
   for (const [id, label] of VIEWS) if (can(WANT[id])) { const b = el('button', { type: 'button', onclick: () => setView(id) }, label); b.dataset.v = id; nav.append(b); }
   const q = new URLSearchParams(location.hash.slice(1));

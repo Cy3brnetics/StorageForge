@@ -1,10 +1,10 @@
 :root {
-  --bg: #0d1015; --panel: #141921; --panel-2: #1a2029; --raise: #212835; --line: #262e3b; --line-2: #323c4c; --text: #d9dfe9; --muted: #8a95a8; --pri: #6aa5ff; --pri-ink: #0b1730; --bad: #ff6464; --warn: #f2b632; --ok: #43d17f;
-  --mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace; color-scheme: dark;
+  /* the colours are tokens.css's: these are the names this page's rules use for them */
+  --bg: var(--sf-bg); --panel: var(--sf-panel); --panel-2: var(--sf-panel-2); --raise: var(--sf-raise); --line: var(--sf-line); --line-2: var(--sf-line-2);
+  --text: var(--sf-text); --muted: var(--sf-muted); --pri: var(--sf-accent); --pri-ink: var(--sf-accent-ink); --bad: var(--sf-bad); --warn: var(--sf-warn); --ok: var(--sf-ok);
+  --mono: var(--sf-mono);
 }
-@media (prefers-color-scheme: light) {
-  :root { --bg: #eef1f5; --panel: #ffffff; --panel-2: #f5f7fa; --raise: #e8ecf2; --line: #d8dee7; --line-2: #c3ccd8; --text: #17202c; --muted: #556275; --pri: #1d68d8; --pri-ink: #fff; --bad: #cf2c2c; --warn: #996000; --ok: #0f7a3c; color-scheme: light; }
-}
+
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
 .mg { display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: 100vh; }
@@ -34,6 +34,5 @@ pre { background: var(--panel-2); border: 1px solid var(--line); border-radius: 
 .chip.bad { border-color: var(--bad); } .chip.warn { border-color: var(--warn); } .chip.ok { border-color: var(--ok); }
 .mg-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 14px; }
 .mg-stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; } .mg-stat b { display: block; font-size: 22px; } .mg-stat span { color: var(--muted); font-size: 12px; }
-.mg-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; } .mg-dialog::backdrop { background: rgba(0, 0, 0, .55); }
 .spark { display: block; width: 180px; height: 28px; } .spark path { fill: none; stroke: var(--pri); stroke-width: 1.4; }
 @media (max-width: 760px) { .mg { grid-template-columns: minmax(0, 1fr); } .mg-rail { position: static; height: auto; } #mgnav { flex-direction: row; flex-wrap: wrap; } .mg-main { padding: 14px; } }

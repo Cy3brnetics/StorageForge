@@ -1,0 +1,35 @@
+/* One set of colours, type and spacing for every page (UX-22). Each page's stylesheet maps its own names onto these and keeps layout only;
+   the shared components (components.css) use them directly. Dark is the default. Light follows the system, unless a page has set
+   data-theme="dark" (the planner's toggle does), and data-theme="light" forces it. tests/test_ui_contrast.py holds every text colour
+   here to 4.5 to 1 on the surfaces it sits on, in both themes. */
+:root {
+  --sf-bg: #0d1015; --sf-panel: #141921; --sf-panel-2: #1a2029; --sf-raise: #212835; --sf-line: #262e3b; --sf-line-2: #323c4c;
+  --sf-text: #d9dfe9; --sf-muted: #8a95a8; --sf-faint: #7f8aa0;
+  --sf-accent: #6aa5ff; --sf-accent-ink: #0b1730;
+  --sf-ok: #43d17f; --sf-warn: #f2b632; --sf-bad: #ff6464; --sf-bad-ink: #2a0a0a; --sf-info: #6aa5ff; --sf-unknown: #6b7586;
+  --sf-fast: #b592ff; --sf-mass: #41c3c9; --sf-remote: #e3b46c;
+  --sf-mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+  --sf-sans: system-ui, -apple-system, "Segoe UI", "IBM Plex Sans", Roboto, sans-serif;
+  --sf-radius: 6px;
+  --sf-s1: 4px; --sf-s2: 8px; --sf-s3: 12px; --sf-s4: 16px; --sf-s5: 24px; --sf-s6: 32px;
+  --sf-t1: 11px; --sf-t2: 12px; --sf-t3: 13px; --sf-t4: 14px; --sf-t5: 16px; --sf-t6: 22px;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --sf-bg: #eef1f5; --sf-panel: #ffffff; --sf-panel-2: #f5f7fa; --sf-raise: #e8ecf2; --sf-line: #d8dee7; --sf-line-2: #c3ccd8;
+    --sf-text: #17202c; --sf-muted: #556275; --sf-faint: #5f6b7e;
+    --sf-accent: #1d68d8; --sf-accent-ink: #ffffff;
+    --sf-ok: #0f7a3c; --sf-warn: #8f5a00; --sf-bad: #c42727; --sf-bad-ink: #ffffff; --sf-info: #1d68d8; --sf-unknown: #8a95a6;
+    --sf-fast: #7346d6; --sf-mass: #0b8c93; --sf-remote: #a06a12;
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --sf-bg: #eef1f5; --sf-panel: #ffffff; --sf-panel-2: #f5f7fa; --sf-raise: #e8ecf2; --sf-line: #d8dee7; --sf-line-2: #c3ccd8;
+  --sf-text: #17202c; --sf-muted: #556275; --sf-faint: #5f6b7e;
+  --sf-accent: #1d68d8; --sf-accent-ink: #ffffff;
+  --sf-ok: #0f7a3c; --sf-warn: #8f5a00; --sf-bad: #c42727; --sf-bad-ink: #ffffff; --sf-info: #1d68d8; --sf-unknown: #8a95a6;
+  --sf-fast: #7346d6; --sf-mass: #0b8c93; --sf-remote: #a06a12;
+  color-scheme: light;
+}

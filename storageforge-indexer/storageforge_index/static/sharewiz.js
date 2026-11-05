@@ -11,7 +11,7 @@ const swWas = (e) => (e ? { protocol: e.protocol || e.proto, name: e.name, path:
 
 async function openShareWizard({ host = '', path = '', index = null, share = null } = {}) {
   let hostsList = [];
-  try { hostsList = (await getJSON('/api/hosts')).indexed; } catch (err) { toast(err.message); return false; }
+  try { hostsList = (await getJSON('/api/hosts')).indexed; } catch (err) { notify(err.message, 'error'); return false; }
   if (host && !hostsList.some((h) => h.hostname === host)) return false;      // a planned host: nothing to browse
   const e = share || {};
   const isSmb = /^(SMB|CIFS)/i.test(e.protocol || e.proto || '');
@@ -284,17 +284,17 @@ async function swSave(thenDeploy = false) {
     if (curTab() === 'deploy' && !thenDeploy) loadDeploy();
     if (thenDeploy) swDeploy(r.host);
     else swRender();
-  } catch (err) { toast(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
   finally { SW.busy = false; if (SW.dlg) swRenderStep(false); }
 }
 async function swRemove() {
   const s = SW.s;
-  if (!confirm(`Remove the share of ${s.path} from ${s.host}'s design? Hosts keep it until you deploy again.`)) return;
+  if (!(await confirmDialog({ title: `Remove the share of ${s.path} from ${s.host}’s design?`, body: 'Hosts keep it until you deploy again.', confirm: 'Remove share', danger: true }))) return;
   try {
     await smDelete(s.host, SW.share);
     closeShareWizard();
     toast('Share removed from the design');
-  } catch (err) { toast(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 async function swDownload(host) {
   try {
@@ -302,7 +302,7 @@ async function swDownload(host) {
     const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob());
     a.download = `shares-${host.split('.')[0].toLowerCase()}.sh`; document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  } catch (err) { toast(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 
 /* The shares manager: every share on the hosts in view, with who may use it, who mounts it and what the checks say.
@@ -371,9 +371,8 @@ async function smEdit(doc, i, e) {
 async function smRemove(doc, i, e) {
   const [state] = smState(doc, e);
   const label = `${e.protocol || e.proto} ${e.name || e.path}`;
-  if (!confirm(state === 'deployed'
-    ? `Remove ${label} from ${doc.host}'s design? It stays on the host and its clients until you deploy ${doc.host}'s shares again, which takes it down.`
-    : `Remove ${label} from ${doc.host}'s design?`)) return;
+  if (!(await confirmDialog({ title: `Remove ${label} from ${doc.host}’s design?`, confirm: 'Remove share', danger: true,
+    body: state === 'deployed' ? `It stays on the host and its clients until you deploy ${doc.host}’s shares again, which takes it down.` : '' }))) return;
   SM.error = '';
   if (doc.source !== 'scan') {                    // a planned host's design: an unsaved edit like any other
     doc.bp.exports.splice(i, 1);

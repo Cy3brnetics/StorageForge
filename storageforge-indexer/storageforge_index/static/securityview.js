@@ -74,7 +74,7 @@ function secShow(r, out) {
 /* The three things every action on a host can do. The UI never skips straight to a change without the dry run being one click away. */
 function secActions(path, body, out, { apply = 'Apply', after, danger, need = 'security.manage' } = {}) {
   const go = (mode) => async () => {
-    if (mode === 'apply' && danger && !confirm(danger)) return;
+    if (mode === 'apply' && danger && !(await confirmDialog({ ...sfQuestion(danger), confirm: apply, danger: true }))) return;
     const r = await secPost(path, { ...body(), mode }, out);
     if (r && mode === 'apply' && after) after(r);
   };
@@ -203,7 +203,7 @@ async function secWorm() {
     const release = el('div', { class: 'row wrap' });
     if (emergency && h.status === 'locked') {
       release.append(button(h.expired ? 'Release' : 'Ask to release', async () => {
-        const legal = h.legal_hold && confirm(`${h.snapshot} is a legal hold. Ask to release it anyway?`);
+        const legal = h.legal_hold && (await confirmDialog({ title: `${h.snapshot} is a legal hold`, body: 'Ask to release it anyway?', confirm: 'Ask to release', danger: true }));
         if (h.legal_hold && !legal) return;
         redo(await secPost('/api/security/worm/release', { hold_id: h.id, release_legal: legal }, out));
       }, 'btn sm ghost'));
@@ -267,7 +267,7 @@ async function secDecoys() {
     secCan('deploy.report') || secCan('security.manage') ? el('div', { class: 'row wrap sec-acts' }, secCan('security.sentinel') && secCan('deploy.report') ? button('Dry run', go('report', `Security: dry run on ${host}`), 'btn sm') : '', sentinelDeploy ? button('Save and deploy', go('apply', `Security: deploy on ${host}`), 'btn sm pri') : '',
       d.installed && secCan('security.manage') ? button('Test it', async () => { const r = await secPost('/api/security/canaries/test', { host }, out); if (r) out.prepend(text('p', `The sentinel saw the write in ${r.latency_ms} ms.`, 'st-ok')); }, 'btn sm') : '',
       sentinelDeploy && d.summary.tripped ? button('Re-arm tripped decoys', go('apply', `Security: re-arm on ${host}`, { rearm: true }), 'btn sm') : '',
-      sentinelDeploy && d.installed ? button('Remove', () => { if (confirm(`Remove the sentinel from ${host}? Unchanged decoys are deleted; changed ones stay.`)) startDeploy('security', host, 'apply', `Security: remove from ${host}`, { remove: true }); }, 'btn sm ghost') : '') : '', out),
+      sentinelDeploy && d.installed ? button('Remove', async () => { if (await confirmDialog({ title: `Remove the sentinel from ${host}?`, body: 'Unchanged decoys are deleted; changed ones stay.', confirm: 'Remove', danger: true })) startDeploy('security', host, 'apply', `Security: remove from ${host}`, { remove: true }); }, 'btn sm ghost') : '') : '', out),
   secCard('What the next deploy installs',
     el('div', { class: 'sec-form' }, secField('Folders, one a line', folders), secField('File names, one a line. {Dept} is the folder\'s name, {Year} this year', names), secField('Where in them', spread)),
     !c.folders.length && d.suggested.length ? text('p', 'Suggested from the shares in this host\'s design.', 'muted small') : '',

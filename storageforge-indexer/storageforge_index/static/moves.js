@@ -36,7 +36,7 @@ function renderMoves() {
   const planOption = (x) => new Option(`${x.name} (${x.steps})${x.deployed_at ? ` · deployed ${stamp(x.deployed_at)}` : ''}`, x.id);
   const live = MV.plans.filter((x) => x.deployed_at);
   const pick = el('select', { 'aria-label': 'Move plan', onchange: async () => {
-    if (MV.dirty && !confirm('Discard unsaved changes to this plan?')) { pick.value = p.id || ''; return; }
+    if (MV.dirty && !(await confirmDialog({ title: 'Discard unsaved changes to this plan?', confirm: 'Discard', danger: true }))) { pick.value = p.id || ''; return; }
     MV.dirty = false; MV.result = null; MV.plan = pick.value ? await getJSON(`/api/moves/${pick.value}`) : { name: '', steps: [] }; renderMoves();
   } }, new Option('New plan…', ''), ...MV.plans.filter((x) => !x.deployed_at).map(planOption),
     live.length ? el('optgroup', { label: 'Deployed as jobs' }, ...live.map(planOption)) : '');
@@ -231,12 +231,12 @@ async function savePlan() {
   } catch (err) { alertMv(err.message); return null; }
 }
 async function copyPlan() {
-  if (MV.dirty && !confirm('The copy is made from the saved plan, without your unsaved changes. Continue?')) return;
+  if (MV.dirty && !(await confirmDialog({ title: 'Copy the saved plan?', body: 'The copy is made from the saved plan, without your unsaved changes.', confirm: 'Copy' }))) return;
   try {
     const copy = await (await api(`/api/moves/${MV.plan.id}/copy`, { method: 'POST' })).json();
     MV.dirty = false; MV.result = null;
     await loadMoves(copy.id);
-  } catch (err) { alert(err.message); }
+  } catch (err) { notify(err.message, 'error'); }
 }
 function exportPlan() {   // the same shape `storageforge-index moves import` reads
   const { name, steps } = MV.plan;
@@ -265,7 +265,7 @@ async function deployPlan() {   // the Deploy tab runs the read-only report on e
   if (id) startDeploy('jobs', id, 'report', `move plan "${MV.plan.name}"`);
 }
 async function delPlan() {
-  if (!confirm(`Delete the plan "${MV.plan.name}"? Scripts you downloaded keep working.`)) return;
+  if (!(await confirmDialog({ title: `Delete the plan “${MV.plan.name}”?`, body: 'Scripts you downloaded keep working.', confirm: 'Delete plan', danger: true, typed: MV.plan.name }))) return;
   try { await api(`/api/moves/${MV.plan.id}`, { method: 'DELETE' }); MV.plan = null; MV.dirty = false; loadMoves(); }
   catch (err) { alertMv(err.message); }
 }

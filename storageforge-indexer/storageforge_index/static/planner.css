@@ -2,37 +2,25 @@
 /* Layout: fixed left rail (views) + scrolling workspace; a sticky chain bar at the bottom traces the hovered disk→mount→link path.
    Dark-first systems palette: graphite with a cold blue bias; tiers carry their own hue, semantics stay separate. */
 :root{
-  --bg:#0d1015; --panel:#141921; --panel-2:#1a2029; --raise:#212835; --line:#262e3b; --line-2:#323c4c;
-  --fg:#d9dfe9; --muted:#8a95a8; --faint:#7f8aa0;
-  --accent:#6aa5ff; --accent-ink:#0b1730;
-  --fast:#b592ff; --mass:#41c3c9; --remote:#e3b46c;
-  --ok:#43d17f; --warn:#f2b632; --crit:#ff6464; --info:#6aa5ff;
+  /* the colours are tokens.css's: these are the names this page's rules use for them; the filesystem colours are the planner's own */
+  --bg:var(--sf-bg); --panel:var(--sf-panel); --panel-2:var(--sf-panel-2); --raise:var(--sf-raise); --line:var(--sf-line); --line-2:var(--sf-line-2);
+  --fg:var(--sf-text); --muted:var(--sf-muted); --faint:var(--sf-faint);
+  --accent:var(--sf-accent); --accent-ink:var(--sf-accent-ink);
+  --fast:var(--sf-fast); --mass:var(--sf-mass); --remote:var(--sf-remote);
+  --ok:var(--sf-ok); --warn:var(--sf-warn); --crit:var(--sf-bad); --info:var(--sf-info);
   --fs-vfat:#8f9bb3; --fs-ext4:#5fb3ff; --fs-xfs:#4fd1b0; --fs-btrfs:#e58fc6; --fs-f2fs:#f0a35e; --fs-zfs:#41c3c9; --fs-md:#9ccc65; --fs-swap:#c4a6ff;
   --f-display:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;
   --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
   --f-mono:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
   --r:6px;
-  color-scheme:dark;
 }
 @media (prefers-color-scheme: light){
   :root:not([data-theme="dark"]){
-    --bg:#eef1f5; --panel:#ffffff; --panel-2:#f5f7fa; --raise:#e8ecf2; --line:#d8dee7; --line-2:#c3ccd8;
-    --fg:#17202c; --muted:#556275; --faint:#5f6b7e;
-    --accent:#1d68d8; --accent-ink:#ffffff;
-    --fast:#7346d6; --mass:#0b8c93; --remote:#a06a12;
-    --ok:#15884a; --warn:#a56800; --crit:#cf2c2c; --info:#1d68d8;
     --fs-vfat:#66728a; --fs-ext4:#1f79d1; --fs-xfs:#0f9a7a; --fs-btrfs:#c0418f; --fs-f2fs:#c2650f; --fs-zfs:#0b8c93; --fs-md:#4f8a17; --fs-swap:#7a55cc;
-    color-scheme:light;
   }
 }
 :root[data-theme="light"]{
-  --bg:#eef1f5; --panel:#ffffff; --panel-2:#f5f7fa; --raise:#e8ecf2; --line:#d8dee7; --line-2:#c3ccd8;
-  --fg:#17202c; --muted:#556275; --faint:#5f6b7e;
-  --accent:#1d68d8; --accent-ink:#ffffff;
-  --fast:#7346d6; --mass:#0b8c93; --remote:#a06a12;
-  --ok:#15884a; --warn:#a56800; --crit:#cf2c2c; --info:#1d68d8;
   --fs-vfat:#66728a; --fs-ext4:#1f79d1; --fs-xfs:#0f9a7a; --fs-btrfs:#c0418f; --fs-f2fs:#c2650f; --fs-zfs:#0b8c93; --fs-md:#4f8a17; --fs-swap:#7a55cc;
-  color-scheme:light;
 }
 html,body{height:100%}
 body{background:var(--bg);color:var(--fg);font:14px/1.45 var(--f-body);-webkit-font-smoothing:antialiased}

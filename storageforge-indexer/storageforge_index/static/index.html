@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>StorageForge</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/tokens.css">
+<link rel="stylesheet" href="/components.css">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -296,28 +298,8 @@ storageforge-index graph import --blueprint atlas.json</pre>
   </aside>
 </main>
 
-<dialog id="reauthdlg">
-  <form id="reauthform">
-    <h2>Confirm your password</h2>
-    <p class="muted">Running commands on your hosts (and changing how long sessions last) needs your password again. It stays confirmed for 5 minutes.</p>
-    <input type="text" autocomplete="username" id="reauthuser" hidden>
-    <label class="field col"><span>Password</span><input id="reauthpw" type="password" autocomplete="current-password" required></label>
-    <p id="reauthmsg" class="st-failed" hidden></p>
-    <div class="row end"><button id="reauthcancel" type="button" class="btn ghost">Cancel</button><button type="submit" class="btn pri">Confirm</button></div>
-  </form>
-</dialog>
-<dialog id="hostkeydlg">
-  <form id="hostkeyform">
-    <h2>Check this host's SSH key</h2>
-    <p class="muted">A password is about to go to <b id="hkhost"></b>. StorageForge has not talked to it before, or nobody has checked its key yet. Run this on that machine and compare:</p>
-    <pre class="hkcmd">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</pre>
-    <ul id="hkkeys" class="hkkeys"></ul>
-    <p class="muted small">If the fingerprints differ, something else answered at that address: cancel, and nothing is sent.</p>
-    <p id="hkmsg" class="st-failed" hidden></p>
-    <div class="row end"><button id="hkcancel" type="button" class="btn ghost">Cancel</button><button type="submit" class="btn pri">They match</button></div>
-  </form>
-</dialog>
 <script src="/session.js"></script>
+<script src="/kernel.js"></script>
 <script src="/app.js"></script>
 <script src="/topology.js"></script>
 <script src="/fsbrowse.js"></script>

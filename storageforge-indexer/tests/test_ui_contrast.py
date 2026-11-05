@@ -1,8 +1,9 @@
-"""The UI's text colours keep their contrast (UX-19 of the UI audit of 2026-11-04).
+"""The UI's text colours keep their contrast (UX-19 and UX-22 of the UI audit of 2026-11-04).
 
-Every text token against the surfaces it sits on, in both themes, at WCAG AA for small text: 4.5 to 1. The rail's group
-labels are 10 px and not faded, because 8.5 px at 70% opacity read as 3.1 to 1. A colour that only marks something (a dot,
-a bar) needs 3 to 1 and is not in this table. The stylesheets are read as text: no browser needed."""
+The colours live in one file, tokens.css, in both themes, and every page's stylesheet only maps its own names onto them, so this holds one
+place to WCAG AA for small text, 4.5 to 1, for every text colour against the surfaces it sits on. The rail's group labels are 10 px and not
+faded, because 8.5 px at 70% opacity read as 3.1 to 1. A colour that only marks something (a dot, a bar) needs 3 to 1 and is not in this
+table. The stylesheets are read as text: no browser needed."""
 import re
 import unittest
 from pathlib import Path
@@ -48,47 +49,58 @@ def tokens(text):
     return out
 
 
-def themes(name):
-    """(dark, light) tokens of a stylesheet: the light theme is the dark one with its own values over it."""
-    css = (STATIC / name).read_text()
-    dark = tokens(block(css, ':root'))
-    if name == 'planner.css':
-        light = dict(dark, **tokens(block(css, ':root:not([data-theme="dark"])')))
-    else:
-        light = dict(dark, **tokens(block(block(css, '@media (prefers-color-scheme: light)'), ':root')))
-    return {'dark': dark, 'light': light}
+def themes():
+    """The tokens of each theme: the light ones are the dark ones with their own values over them, as the browser applies them."""
+    css = (STATIC / 'tokens.css').read_text()
+    dark = tokens(block(css, ':root {'))
+    return {'dark': dark,
+            'light, from the system': dict(dark, **tokens(block(css, ':root:not([data-theme="dark"])'))),
+            'light, forced': dict(dark, **tokens(block(css, ':root[data-theme="light"]')))}
 
 
-# each stylesheet: the text tokens, and the surfaces they are drawn on
-TEXT = {
-    'style.css': ([('fg', ['bg', 'panel', 'panel-2']), ('muted', ['bg', 'panel', 'panel-2']), ('accent', ['panel']), ('accent-ink', ['accent']),
-                   ('protected', ['panel']), ('local-only', ['panel']), ('broken', ['panel'])]),
-    'planner.css': ([('fg', ['bg', 'panel', 'panel-2']), ('muted', ['bg', 'panel', 'panel-2']), ('faint', ['bg', 'panel', 'panel-2']), ('accent', ['panel']),
-                     ('accent-ink', ['accent']), ('ok', ['panel']), ('warn', ['panel']), ('crit', ['panel']), ('info', ['panel'])]),
-    'manage.css': ([('text', ['bg', 'panel', 'panel-2']), ('muted', ['bg', 'panel', 'panel-2']), ('pri', ['panel']), ('pri-ink', ['pri']),
-                    ('bad', ['bg', 'panel']), ('warn', ['bg', 'panel']), ('ok', ['bg', 'panel'])]),
+SURFACES = ['sf-bg', 'sf-panel', 'sf-panel-2']
+# each text token, and the surfaces it is drawn on
+TEXT = [('sf-text', SURFACES + ['sf-raise']), ('sf-muted', SURFACES + ['sf-raise']), ('sf-faint', SURFACES),
+        ('sf-accent', ['sf-bg', 'sf-panel']), ('sf-info', ['sf-bg', 'sf-panel']), ('sf-accent-ink', ['sf-accent']),
+        ('sf-ok', SURFACES), ('sf-warn', SURFACES), ('sf-bad', SURFACES), ('sf-bad-ink', ['sf-bad'])]
+
+# the names each page's stylesheet uses for the shared colours: they have to be aliases of tokens.css, not colours of their own
+ALIASES = {
+    'style.css': ['bg', 'panel', 'panel-2', 'raise', 'line', 'line-2', 'fg', 'muted', 'accent', 'accent-ink', 'protected', 'local-only', 'broken', 'unknown', 'fast', 'mass', 'remote'],
+    'planner.css': ['bg', 'panel', 'panel-2', 'raise', 'line', 'line-2', 'fg', 'muted', 'faint', 'accent', 'accent-ink', 'fast', 'mass', 'remote', 'ok', 'warn', 'crit', 'info'],
+    'manage.css': ['bg', 'panel', 'panel-2', 'raise', 'line', 'line-2', 'text', 'muted', 'pri', 'pri-ink', 'bad', 'warn', 'ok'],
 }
 
 
 class TextContrast(unittest.TestCase):
     def test_every_text_token_clears_aa_on_the_surfaces_it_sits_on(self):
         failures = []
-        for sheet, pairs in TEXT.items():
-            for theme, tok in themes(sheet).items():
-                for fg, surfaces in pairs:
-                    for surface in surfaces:
-                        r = ratio(tok[fg], tok[surface])
-                        if r < AA:
-                            failures.append(f'{sheet} {theme}: --{fg} {tok[fg]} on --{surface} {tok[surface]} is {r:.2f}')
+        for theme, tok in themes().items():
+            for fg, surfaces in TEXT:
+                for surface in surfaces:
+                    r = ratio(tok[fg], tok[surface])
+                    if r < AA:
+                        failures.append(f'{theme}: --{fg} {tok[fg]} on --{surface} {tok[surface]} is {r:.2f}')
         self.assertEqual(failures, [], '\n' + '\n'.join(failures))
 
-    def test_the_stylesheets_define_the_tokens_this_test_reads(self):
+    def test_every_theme_defines_the_tokens_this_test_reads(self):
         """A renamed token must not make the test above pass by finding nothing."""
-        for sheet, pairs in TEXT.items():
-            for theme, tok in themes(sheet).items():
-                for fg, surfaces in pairs:
-                    for name in [fg, *surfaces]:
-                        self.assertIn(name, tok, f'{sheet} {theme} has no --{name}')
+        for theme, tok in themes().items():
+            for fg, surfaces in TEXT:
+                for name in [fg, *surfaces]:
+                    self.assertIn(name, tok, f'{theme} has no --{name}')
+
+    def test_a_pages_stylesheet_takes_its_colours_from_the_tokens(self):
+        """Three palettes drifted apart once (UX-22): the light theme's amber was one colour on one page and another on the next."""
+        for sheet, names in ALIASES.items():
+            css = (STATIC / sheet).read_text()
+            root = block(css, ':root{' if sheet == 'planner.css' else ':root {')
+            for name in names:
+                m = re.search(rf'--{re.escape(name)}\s*:\s*([^;]+);', root)
+                self.assertIsNotNone(m, f'{sheet} has no --{name}')
+                self.assertTrue(m.group(1).strip().startswith('var(--sf-'), f'{sheet}: --{name} is {m.group(1).strip()!r}, not a token')
+            self.assertNotRegex(css, r'--(bg|panel|panel-2|raise|line|line-2|fg|text|muted|faint|accent|accent-ink|pri|pri-ink|ok|warn|bad|crit|info|protected|local-only|broken)\s*:\s*#',
+                                f'{sheet} gives a shared colour a value of its own')
 
     def test_the_access_badge_is_dark_on_amber_in_both_themes(self):
         css = (STATIC / 'style.css').read_text()
