@@ -299,22 +299,13 @@ def backup_job(api):
     return job, source, target
 
 
-def root_login(frm, to):
-    """StorageForge leaves this login to the operator on purpose (docs/target-hosts.md): root on the sender needs a key."""
-    public = ssh(frm.name, 'sudo -n sh -c "mkdir -p /root/.ssh; test -f /root/.ssh/id_ed25519 || ssh-keygen -q -t ed25519 -N \'\' -f /root/.ssh/id_ed25519; cat /root/.ssh/id_ed25519.pub"').strip()
-    ssh(to.name, f'sudo -n sh -c {shlex.quote(f"mkdir -p /root/.ssh; echo {shlex.quote(public)} >>/root/.ssh/authorized_keys; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys")}')
-    ssh(to.name, "sudo -n sh -c \"mkdir -p /etc/ssh/sshd_config.d; printf 'PermitRootLogin prohibit-password\\n' >/etc/ssh/sshd_config.d/10-sflab-root.conf; systemctl reload sshd || systemctl reload ssh\"")
-    ssh(frm.name, f'sudo -n ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new root@{to.ip} true')
-
-
 def btrfs_send(api):
     frm, to = roles.sender(), roles.receiver()
-    say(f'btrfs send: {frm.name} {frm.subvol} to {to.name}')
-    root_login(frm, to)
+    say(f'btrfs send: {frm.name} {frm.subvol} to {to.name}, each side a signed run, with no root key between them')
     ssh(to.name, f'sudo -n mkdir -p {to.recv}')
     task = api.post('/api/tasks', {'name': 'Lab media replication', 'host': frm.name, 'schedule': '*-*-* 02:30:00', 'blocks': [
         {'type': 'btrfs_snapshot', 'params': {'subvol': frm.subvol, 'into': frm.snaps, 'prefix': 'daily'}},
-        {'type': 'btrfs_send', 'params': {'into': frm.snaps, 'prefix': 'daily', 'dst_host': f'root@{to.ip}', 'dst': to.recv, 'keep': 7}},
+        {'type': 'btrfs_send', 'params': {'into': frm.snaps, 'prefix': 'daily', 'dst_host': to.name, 'dst': to.recv, 'keep': 7}},
     ]})
     deploy(api, 'tasks', task['id'], 'btrfs replication', run=True)
     if 'daily-' not in ssh(to.name, f'sudo -n ls {to.recv}'):
