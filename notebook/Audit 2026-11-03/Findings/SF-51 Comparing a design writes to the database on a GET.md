@@ -1,6 +1,6 @@
 ---
 id: SF-51
-status: in-progress
+status: done
 severity: low
 effort: S
 area: Infrastructure map
@@ -27,4 +27,4 @@ Keep the GET read-only and return `compared_at` without saving it, or move the s
 ## Done when
 - [x] A GET leaves the row unchanged
 
-**Fix:** in the working tree on 2026-11-03, not committed, so this is `in-progress` until a commit can be recorded here. The GET no longer writes. It still returns `compared_at`. The `map_designs.compared_at` column stays, unused, since nothing read it and dropping it is not worth a migration.
+**Fixed** in `a267227` (committed 2026-11-04), checked on 2026-11-04 by `MapViews.test_comparing_a_design_changes_nothing` in `tests/test_audit_2026_11_03.py` (passing). The GET no longer writes. It still returns `compared_at`. The `map_designs.compared_at` column stays, unused, since nothing read it and dropping it is not worth a migration.

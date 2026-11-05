@@ -1,6 +1,6 @@
 ---
 id: EQ-08
-status: in-progress
+status: done
 severity: low
 effort: S
 area: Backups
@@ -27,4 +27,4 @@ Delete `send_file` and its tests. `receive_script` stays, since `copy_off` uses 
 ## Done when
 - [x] `send_file` is gone, and `copy_off` is the only way a backup leaves the server
 
-**Fix:** in the working tree on 2026-11-03, not committed, so this is `in-progress` until a commit can be recorded here. `send_file` and its test are deleted.
+**Fixed** in `a267227` (committed 2026-11-04), checked on 2026-11-04 by searching: `send_file` is nowhere in `storageforge_index` or `tests`, and `backup.copy_off` is the one way a backup leaves the server. `send_file` and its test are deleted.

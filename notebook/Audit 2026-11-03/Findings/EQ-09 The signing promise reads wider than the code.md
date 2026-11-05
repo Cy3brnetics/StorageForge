@@ -1,6 +1,6 @@
 ---
 id: EQ-09
-status: in-progress
+status: done
 severity: low
 effort: S
 area: Docs
@@ -29,4 +29,4 @@ Reword the invariant: what is sent to a host is signed, what runs later from a t
 ## Done when
 - [x] The invariant and `docs/security.md` list what is signed, what isn't, and why
 
-**Fix:** in the working tree on 2026-11-03, not committed, so this is `in-progress` until a commit can be recorded here. The invariants are reworded, and `docs/security.md` has a table of what is signed.
+**Fixed** in `a267227` (committed 2026-11-04), checked on 2026-11-04 by reading: `docs/security.md` ("What is signed") and the invariants row say what is signed, what is not, and why. The invariants are reworded, and `docs/security.md` has a table of what is signed.

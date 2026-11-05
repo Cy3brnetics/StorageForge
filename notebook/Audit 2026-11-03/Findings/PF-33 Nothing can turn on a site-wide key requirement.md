@@ -1,6 +1,6 @@
 ---
 id: PF-33
-status: in-progress
+status: done
 severity: low
 effort: S
 area: Security key step-up
@@ -27,4 +27,4 @@ Add it to the settings route under `settings.manage`, and audit the change. Enro
 ## Done when
 - [x] The setting can be changed from the UI and CLI, and takes effect, or it's gone and the docstring says so
 
-**Fix:** in the working tree on 2026-11-03, not committed, so this is `in-progress` until a commit can be recorded here. The setting and its docstring claim are removed.
+**Fixed** in `a267227` (committed 2026-11-04), checked on 2026-11-04 by searching the code and the docs: no setting and no claim of one remains. The setting and its docstring claim are removed.

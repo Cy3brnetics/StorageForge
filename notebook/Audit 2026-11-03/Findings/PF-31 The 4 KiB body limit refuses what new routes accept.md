@@ -1,6 +1,6 @@
 ---
 id: PF-31
-status: in-progress
+status: done
 severity: medium
 effort: S
 area: Request limits
@@ -39,4 +39,4 @@ Add these paths to `body_limit`, each with a limit matching what its validator a
 - [x] A map view with several hundred pins saves
 - [x] A test walks the table in both directions
 
-**Fix:** in the working tree on 2026-11-03, not committed, so this is `in-progress` until a commit can be recorded here. `server.BODY_LIMITS` holds each route's limit, and a test walks it in both directions. The report routes check the token first, so a stranger cannot make them read a large body.
+**Fixed** in `a267227` (committed 2026-11-04), checked on 2026-11-04 by `BodyLimits` in `tests/test_audit_2026_11_03.py` (4 tests, passing). `server.BODY_LIMITS` holds each route's limit, and a test walks it in both directions. The report routes check the token first, so a stranger cannot make them read a large body.

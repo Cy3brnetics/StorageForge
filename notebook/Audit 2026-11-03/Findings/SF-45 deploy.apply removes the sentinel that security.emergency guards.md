@@ -1,6 +1,6 @@
 ---
 id: SF-45
-status: in-progress
+status: done
 severity: high
 effort: S
 area: Sentinel and permissions
@@ -46,4 +46,4 @@ Hide the Remove button to match. Untested. If operators are meant to keep this, 
 - [x] An admin can still remove and re-arm
 - [x] A test walks every deploy option for this kind against the role
 
-**Fix:** in the working tree on 2026-11-03, not committed, so this is `in-progress` until a commit can be recorded here. Decided 2026-11-03: the sentinel gets its own permission, `security.sentinel`, held by admins and not operators. Setting it up takes it. Deploying, re-arming and removing take it and `deploy.apply`, retries included. A dry run stays with `deploy.report`. Migration 037 gives it to custom roles holding `security.emergency`. The real uninstall script was not run in this check, only the route's decision.
+**Fixed** in `a267227` (committed 2026-11-04), checked on 2026-11-04 by `SentinelPermission` in `tests/test_audit_2026_11_03.py` (7 tests, passing). Decided 2026-11-03: the sentinel gets its own permission, `security.sentinel`, held by admins and not operators. Setting it up takes it. Deploying, re-arming and removing take it and `deploy.apply`, retries included. A dry run stays with `deploy.report`. Migration 037 gives it to custom roles holding `security.emergency`. The real uninstall script was not run in this check, only the route's decision.

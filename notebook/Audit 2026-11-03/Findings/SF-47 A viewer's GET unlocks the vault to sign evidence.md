@@ -1,6 +1,6 @@
 ---
 id: SF-47
-status: in-progress
+status: done
 severity: medium
 effort: S
 area: Evidence export
@@ -41,4 +41,4 @@ Make it a POST, require `audit.verify` as well, and rate limit it as the other c
 - [x] Past the limit the route answers 429 without unlocking the vault
 - [x] A GET leaves the audit log unchanged
 
-**Fix:** in the working tree on 2026-11-03, not committed, so this is `in-progress` until a commit can be recorded here. Now a POST that takes `audit.view` and `audit.verify`, limited to 10 a minute per account, and past the limit it does not unlock the vault. A separate evidence signing key was not done: this path still loads the key that signs root scripts, for those allowed to use it.
+**Fixed** in `a267227` (committed 2026-11-04), checked on 2026-11-04 by `Evidence` in `tests/test_audit_2026_11_03.py` (3 tests, passing). Now a POST that takes `audit.view` and `audit.verify`, limited to 10 a minute per account, and past the limit it does not unlock the vault. A separate evidence signing key was not done: this path still loads the key that signs root scripts, for those allowed to use it.

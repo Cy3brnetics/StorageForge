@@ -1,6 +1,6 @@
 ---
 id: EQ-07
-status: in-progress
+status: done
 severity: low
 effort: S
 area: Tests
@@ -34,4 +34,4 @@ Add `secscripts` and `secplus` generators to the walk. Replace the source search
 - [x] A GET route added for the test that reaches `deploy.run` through a helper makes the test fail
 - [x] Each forged-request case in that table is a test that the runner refuses it and the script doesn't run
 
-**Fix:** in the working tree on 2026-11-03, not committed, so this is `in-progress` until a commit can be recorded here. `SecurityGenerators`, `ForgedRequests` and a GET walk that really calls every route are in the suite. Each main check was also removed by hand to confirm its test fails.
+**Fixed** in `a267227` (committed 2026-11-04), checked on 2026-11-04 by `SecurityGenerators` and `ForgedRequests` in `tests/test_audit_2026_11_03.py` (11 tests), and by `test_no_generator_lets_a_value_run_as_code` and `test_no_get_runs_on_a_host` in the full suite (all passing). `SecurityGenerators`, `ForgedRequests` and a GET walk that really calls every route are in the suite. Each main check was also removed by hand to confirm its test fails.

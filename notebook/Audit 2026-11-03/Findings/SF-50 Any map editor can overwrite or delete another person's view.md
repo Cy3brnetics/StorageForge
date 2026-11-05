@@ -1,6 +1,6 @@
 ---
 id: SF-50
-status: in-progress
+status: done
 severity: low
 effort: S
 area: Infrastructure map
@@ -37,4 +37,4 @@ Do as dashboards do: key views on owner and name, list only the account's own an
 - [x] Another account cannot see an unshared view, overwrite it, or delete it
 - [x] A shared view is visible to all with `map.view`, and only its owner can change it
 
-**Fix:** in the working tree on 2026-11-03, not committed, so this is `in-progress` until a commit can be recorded here. Views are visible to their owner or to all if shared, and only the owner changes them. Names stay unique across the site, so another person's name answers 409. Views saved before this have no `shared` flag and become private to their owner: nothing is lost. Designs were left as team objects under `plans.edit`, on purpose.
+**Fixed** in `a267227` (committed 2026-11-04), checked on 2026-11-04 by `MapViews` in `tests/test_audit_2026_11_03.py` (`test_a_view_is_its_owners` and `test_a_shared_view_is_seen_by_all_and_changed_by_one`, passing). Views are visible to their owner or to all if shared, and only the owner changes them. Names stay unique across the site, so another person's name answers 409. Views saved before this have no `shared` flag and become private to their owner: nothing is lost. Designs were left as team objects under `plans.edit`, on purpose.

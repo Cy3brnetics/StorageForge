@@ -1,6 +1,6 @@
 ---
 id: SF-49
-status: in-progress
+status: done
 severity: low
 effort: S
 area: Falco install
@@ -30,4 +30,4 @@ Keep the expected key fingerprint in the script and refuse to continue when the 
 - [x] A key with another fingerprint stops the install with a `conflict` line, on apt, rpm and zypper
 - [x] A test covers the refusal with a stand-in key
 
-**Fix:** in the working tree on 2026-11-03, not committed, so this is `in-progress` until a commit can be recorded here. Pinned `478B2FBBC75F4237B731DA4365106822B35B1B1F`, checked against the key Falco serves and the trusted entry in Falco's documentation table, which gives its expiry as 2028-12-10 (the older `2005399…7A8D` is marked revoked). The repository file is written by the script with no `gpgkey` line, and `--gpg-auto-import-keys` is gone. Tested with stand-ins. **KVM lab tier 11 must confirm real installs on apt, dnf and zypper**, zypper especially.
+**Fixed** in `a267227` (committed 2026-11-04), checked on 2026-11-04 by `FalcoKey` in `tests/test_audit_2026_11_03.py` (2 tests, passing). Pinned `478B2FBBC75F4237B731DA4365106822B35B1B1F`, checked against the key Falco serves and the trusted entry in Falco's documentation table, which gives its expiry as 2028-12-10 (the older `2005399…7A8D` is marked revoked). The repository file is written by the script with no `gpgkey` line, and `--gpg-auto-import-keys` is gone. Tested with stand-ins. **KVM lab tier 11 must confirm real installs on apt, dnf and zypper**, zypper especially.

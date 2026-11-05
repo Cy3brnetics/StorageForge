@@ -1,6 +1,6 @@
 ---
 id: SF-44
-status: in-progress
+status: done
 severity: high
 effort: S
 area: Security key step-up
@@ -39,4 +39,4 @@ Add `@step_up` to delete and to both register routes when the account already ha
 - [x] Enrolling the first key still works with only a fresh password
 - [x] A person who lost their only key has a documented way back, and it is audited
 
-**Fix:** in the working tree on 2026-11-03, not committed, so this is `in-progress` until a commit can be recorded here. `@step_up` on key removal and both register routes. A first key needs no touch. `user clear-keys <name>` on the server is the way back from a lost key, and is audited.
+**Fixed** in `a267227` (committed 2026-11-04), checked on 2026-11-04 by `SecurityKeys` in `tests/test_audit_2026_11_03.py` (5 tests, passing). `@step_up` on key removal and both register routes. A first key needs no touch. `user clear-keys <name>` on the server is the way back from a lost key, and is audited.
