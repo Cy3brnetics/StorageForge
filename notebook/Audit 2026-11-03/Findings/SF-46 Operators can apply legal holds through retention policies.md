@@ -1,6 +1,6 @@
 ---
 id: SF-46
-status: in-progress
+status: done
 severity: medium
 effort: S
 area: Retention holds and permissions
@@ -36,6 +36,6 @@ Move saving, deleting and applying policies to `security.emergency`. Previewing 
 ## Done when
 - [x] An operator gets 403 for saving a policy and for applying one in `apply` mode
 - [x] A person with `security.emergency` can still do both
-- [ ] A test states that every route ending in `apply_hold` takes the same permission. The new tests cover the policy routes one by one, not as a walk
+- [x] A test states that every route ending in `apply_hold` takes the same permission. It walks the package's call graph from what signs a script that holds snapshots back to the URL map, so a new route is found without anyone naming it (`ca2eacb`)
 
-**Fix:** in the working tree on 2026-11-03, not committed, so this is `in-progress` until a commit can be recorded here. Saving and deleting policies take `security.emergency`, and so does `apply` mode. Preview and report stay with `security.manage`.
+**Fixed** in `a267227`, with the walk test in `ca2eacb` (merged in `4d8b083`); checked on 2026-11-05 by running it, 48 tests of that file passing. The walk found seven routes, six taking `security.emergency` by rule and applying policies taking it in the view when the mode is apply, so none asks for less than a hold needs, and nothing needed fixing. Saving and deleting policies take `security.emergency`, and so does `apply` mode. Preview and report stay with `security.manage`.

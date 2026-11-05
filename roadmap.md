@@ -54,7 +54,7 @@ Each is a claim that hasn't been proved or a known gap in something shipped.
 
 | Item | Why it matters | For 0.4.0 | Status |
 | :--- | :--- | :--- | :--- |
-| **SF-48: the receiving host of a send** | Signed scripts still run root commands on the receiving host with no signature there. It's named in the audit row, warned about in the check and listed in [security.md](docs/security.md) | Build it. Each side of a send becomes its own signed run on an enrolled host, with the stream between them carried by a forced-command job key, as `storageforge-job --serve` does for rsync. Add a lab tier: a send between two enrolled hosts with no root key between them. About a week | open |
+| **SF-48: the receiving host of a send** | Signed scripts still run root commands on the receiving host with no signature there. It's named in the audit row, warned about in the check and listed in [security.md](docs/security.md) | Build it. Each side of a send becomes its own signed run on an enrolled host, with the stream between them carried by a forced-command job key, as `storageforge-job --serve` does for rsync. Add a lab tier: a send between two enrolled hosts with no root key between them. About a week | built and unit-tested in `4d8b083`; lab tier 16 written, not run |
 | **pfSense, OPNsense and Cisco on real devices** | Reading and rollback have only met published formats and a simulated shell | No image or device, so it ships labelled *not lab-tested*, unless one turns up | open |
 | **Old SSH ciphers on a device that needs them** | Built and unit-tested, with nothing old enough in the lab | Same | open |
 | **firewalld and ufw output from the network language** | Unit-tested. nft and iptables-restore took theirs for real, and these two should as well | Lab: apply the compiled output on a firewalld host and a ufw host, and read it back | open |
@@ -78,8 +78,8 @@ The notebook has 18 findings marked in progress. Twelve say *fixed in the workin
 
 | Finding | What's left | Who | Status |
 | :--- | :--- | :--- | :--- |
-| **SF-48** | See A1 | the release run | in progress, on branch `t3/2ea1b266` |
-| **SF-46** operators can apply legal holds | A test that every route ending in `apply_hold` takes the same permission, walked as a list and not one route at a time | the release run | in progress, on branch `t3/2ea1b266` (`ca2eacb`), not merged |
+| **SF-48** | See A1 | the release run | built and unit-tested in `4d8b083` (`bab3165` to `2d578f1`); stays in progress until lab tier 16, which is written and has not run, passes |
+| **SF-46** operators can apply legal holds | A test that every route ending in `apply_hold` takes the same permission, walked as a list and not one route at a time | the release run | done: `ca2eacb`, merged in `4d8b083` |
 | **SF-38** container scan | CI fails on a new reachable critical. The job exists, and has never run | the owner | open |
 | **EQ-01** no CI | A runner, so every push runs the suite on SQLite and PostgreSQL | the owner | open |
 | **PF-04** disk health | The collector run against real disks: a disk with reallocated sectors shows warn and raises an alert, and each pool shows its last scrub. It ships labelled *not run against real disks* until then | the owner | open |

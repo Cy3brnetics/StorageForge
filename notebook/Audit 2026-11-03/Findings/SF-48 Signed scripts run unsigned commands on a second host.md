@@ -33,6 +33,8 @@ Have the controller run each side as its own signed run on an enrolled host, wit
 ## Done when
 - [x] The docs state this exception and why, in `docs/security.md`. The signed receiving run itself is not built
 - [x] The audit row names the receiving host (`second_hops`)
-- [ ] A lab tier exercises a send between two enrolled hosts with no root key between them
+- [ ] A lab tier exercises a send between two enrolled hosts with no root key between them. Tier 16 is written (`5f3bc50`) and has not run, so this stays open until it passes
 
 **Partly fixed,** in the working tree on 2026-11-03, not committed. Done: the interim steps above, for plans, tasks and task schedules, and a plain warning in the check. **Not done:** running the receiver as its own signed run, which removes the root-to-root key. That is the real fix, a week's work, and it needs the lab, because it changes how data moves between hosts. Until then the unsigned second hop remains.
+
+**Built on 2026-11-05, not yet lab-tested.** Each side of a send is now its own signed run on an enrolled host, with one forced-command key for the send and no root key between the hosts (`bab3165`), a fix found on reading it again, that two sends could delete each other's copy in progress (`5fe6500`), a test of the key against a real `sshd` (`4a9111c`), lab tier 16 and the docs (`5f3bc50`, `2d578f1`); merged in `4d8b083`. 93 tests in `test_sends.py` pass, with `sudo`, `btrfs` and `zfs` as stand-ins. A send to a host that is not enrolled is refused with the steps. Tier 16 has not run, so the finding stays `in-progress`: it is done when the lab passes it. `rsync` to another host inside a task block is still an unsigned exception, named in `docs/security.md` with what to use instead.
