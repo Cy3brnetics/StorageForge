@@ -422,6 +422,13 @@ function tooltip(n, ev) {
 function text(tag, t, cls) { const el = document.createElement(tag); el.textContent = t; if (cls) el.className = cls; return el; }
 function button(label, fn, cls = '') { const b = text('button', label, cls); b.type = 'button'; b.addEventListener('click', fn); return b; }
 function pill(h) { return text('span', HEALTH_TEXT[h] || h, `pill ${h}`); }
+/* Latest answer wins (UX-12): `const fresh = latest('search')` when a request starts and `if (!fresh()) return` after each await, so a slow
+   answer never lands on top of the one asked for after it, and never changes state the newer one has already set. */
+const LATEST = {};
+function latest(key) {
+  const n = LATEST[key] = (LATEST[key] || 0) + 1;
+  return () => LATEST[key] === n;
+}
 function fmtBytes(n) {
   if (n == null || n === '') return '—';
   const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']; let v = Number(n), i = 0;
@@ -705,12 +712,14 @@ document.addEventListener('keydown', (ev) => {   // \ shows or hides the panel
 });
 
 async function runSearch(params) {
+  const fresh = latest('search');
   const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v));
   showTab('search');
   const ol = $('#results');
   ol.replaceChildren(text('li', 'Searching…', 'muted'));
   try {
     const { results } = await getJSON(`/api/search?${qs}`);
+    if (!fresh()) return;
     $('#nres').textContent = results.length || '';
     ol.replaceChildren(...results.map((r) => {
       const li = document.createElement('li');
@@ -725,7 +734,7 @@ async function runSearch(params) {
       return li;
     }));
     if (!results.length) ol.replaceChildren(text('li', 'No matches.', 'muted'));
-  } catch (err) { ol.replaceChildren(text('li', err.message, 'muted')); }
+  } catch (err) { if (fresh()) ol.replaceChildren(text('li', err.message, 'muted')); }
 }
 function resultMenu(r) {
   const dir = r.type === 'dir' ? r.path : dirOf(r.path), stage = (type, preset) => () => openTask(type, r.host, preset);
@@ -1071,11 +1080,13 @@ function hlQuery() {
   return q;
 }
 async function hlSearch(more) {
+  const fresh = latest('hostlogs');
   hlOffset = more ? hlOffset + 100 : 0;
   const q = hlQuery();
   q.set('limit', '100'); q.set('offset', String(hlOffset));
   try {
     const { entries, more: hasMore } = await getJSON(`/api/hostlogs?${q}`);
+    if (!fresh()) return;                         // a newer search was asked for while this one was on its way
     const rows = entries.map((e) => {
       const li = document.createElement('li');
       const cls = e.priority <= 3 ? 'st-failed' : e.priority === 4 ? 'st-warn' : '';
@@ -1088,12 +1099,14 @@ async function hlSearch(more) {
     $('#hl-more').hidden = !hasMore;
     const file = new URLSearchParams(hlQuery()); file.set('format', 'csv');
     $('#hl-export').href = `/api/hostlogs/export?${file}`;
-  } catch (err) { $('#hl-lines').replaceChildren(text('li', err.message, 'muted')); $('#hl-more').hidden = true; }
+  } catch (err) { if (fresh()) { $('#hl-lines').replaceChildren(text('li', err.message, 'muted')); $('#hl-more').hidden = true; } }
 }
 async function loadHostLogs() {
   if (!can('hostlogs.view')) return;
+  const fresh = latest('hostlogs-status');
   try {
     const { hosts } = await getJSON('/api/hostlogs/status');
+    if (!fresh()) return;
     const pick = $('#hl-host'), chosen = pick.value;
     pick.replaceChildren(text('option', 'All hosts'), ...hosts.map((s) => { const o = text('option', s.host); o.value = s.host; return o; }));
     pick.options[0].value = '';
@@ -1104,7 +1117,7 @@ async function loadHostLogs() {
       li.append(text('span', `${s.host}: ${s.note}`, 'st-warn'), text('span', `last tried ${hlWhen(s.collected_at)}`, 'm'));
       return li;
     }));
-  } catch (err) { $('#hl-status').replaceChildren(text('li', err.message, 'muted')); }
+  } catch (err) { if (fresh()) $('#hl-status').replaceChildren(text('li', err.message, 'muted')); }
   hlSearch(false);
 }
 $('#hl-form').addEventListener('submit', (ev) => { ev.preventDefault(); hlSearch(false); });

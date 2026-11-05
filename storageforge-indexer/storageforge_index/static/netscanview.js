@@ -5,12 +5,14 @@
 const NS = { scan: null, timer: 0 };
 
 async function loadNetScan() {
+  const fresh = latest('netscan');                  // UX-12: the scan picked last is the one shown, whichever answer comes back first
   const box = $('#netscanview');
   box.replaceChildren(text('p', 'Loading…', 'muted small'));
   try {
     const data = await getJSON('/api/netscan' + (NS.scan ? `?scan=${NS.scan}` : ''));
+    if (!fresh()) return;
     renderNetScan(box, data);
-  } catch (err) { box.replaceChildren(text('p', err.message, 'st-failed')); }
+  } catch (err) { if (fresh()) box.replaceChildren(text('p', err.message, 'st-failed')); }
 }
 
 function renderNetScan(box, data) {

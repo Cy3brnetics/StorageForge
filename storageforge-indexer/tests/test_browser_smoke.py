@@ -367,7 +367,7 @@ class BrowserSmoke(unittest.TestCase):
     def test_the_management_planner_opens_every_view_and_compiles_under_the_csp(self):
         self.page.goto(self.base + '/manage')
         self.page.wait_for_selector('#mgnav button')
-        for view in ('devices', 'changes', 'traffic', 'scanner', 'fleet'):
+        for view in ('devices', 'changes', 'traffic', 'fleet'):
             self.page.click(f'#mgnav button[data-v="{view}"]')
             self.page.wait_for_timeout(400)
             self.assertEqual(self.errors, [], view)
@@ -379,6 +379,17 @@ class BrowserSmoke(unittest.TestCase):
         self.page.wait_for_selector('.mg-cols pre:has-text("--dport 22")')
         self.page.fill('textarea', '/nonsense add a=1')
         self.page.wait_for_selector('.mg-cols p.bad')
+        self.assertEqual(self.errors, [])
+
+    def test_manage_has_no_scanner_stub_and_traffic_points_to_scan(self):             # UX-28
+        """A view whose whole content was a link to another page is gone; the one way from here to the scanner is on Traffic, which says it sends nothing."""
+        self.page.goto(self.base + '/manage')
+        self.page.wait_for_selector('#mgnav button')
+        self.assertEqual(self.page.eval_on_selector_all('#mgnav button', 'bs => bs.map((b) => b.textContent)'), ['Fleet', 'Devices', 'Compose', 'Changes', 'Traffic'])
+        self.page.click('#mgnav button[data-v="traffic"]')
+        self.page.click('#mgview a:has-text("Open Scan")')
+        self.page.wait_for_selector('.nscan')
+        self.assertTrue(self.page.is_visible('#netscanview'))
         self.assertEqual(self.errors, [])
 
     def test_the_planner_and_search_pages_load(self):
@@ -708,6 +719,91 @@ class BrowserSmoke(unittest.TestCase):
             self.assertEqual(self.page.inner_text('#threatbanner .threat-detail'), f'the detail for {state}')
             self.assertTrue(self.page.is_visible('#threatbanner .threat-detail'))
             self.assertIn(f'sec-{state}', self.page.get_attribute('#threatbanner', 'class'))
+        self.assertEqual(self.errors, [])
+
+
+    # ── the latest answer wins: UX-12 ────────────────────────────────────────────────────────────────────────────────────
+    def hold_first(self, pattern):
+        """Routes the requests matching `pattern` (a compiled regex): the first is left waiting, in the list this returns, and every later one goes straight through."""
+        held = []
+        self.page.route(pattern, lambda route: held.append(route) if not held else route.continue_())
+        return held
+
+    def answer(self, route, body):
+        import json
+        route.fulfill(body=json.dumps(body), content_type='application/json')
+
+    def test_a_slow_search_does_not_land_on_top_of_a_newer_one(self):            # UX-12
+        import re
+        held = self.hold_first(re.compile(r'/api/search\?'))
+        self.page.evaluate("() => { runSearch({q: 'one'}); runSearch({q: 'two'}); }")         # asked in this order, and the first answer is kept back
+        self.page.wait_for_selector('#results li:has-text("No matches.")')
+        self.answer(held[0], {'results': [{'host': 'nas', 'mount': '/', 'path': '/stale.txt', 'size': 1, 'type': 'file', 'modified_at': 1700000000}]})
+        self.page.wait_for_timeout(400)
+        self.assertNotIn('stale.txt', self.page.inner_text('#results'))
+        self.assertEqual(self.page.inner_text('#nres'), '')
+        self.assertEqual(self.errors, [])
+
+    def test_slow_host_logs_do_not_land_on_top_of_a_newer_search(self):          # UX-12
+        import re
+        self.open_tab('hostlogs')
+        self.page.wait_for_selector('#hl-lines li')
+        held = self.hold_first(re.compile(r'/api/hostlogs\?'))
+        self.page.evaluate("() => { hlSearch(false); hlSearch(false); }")
+        self.page.wait_for_selector('#hl-lines li:has-text("No lines match")')
+        self.answer(held[0], {'entries': [{'message': 'stale line', 'priority': 6, 'ts': 1700000000, 'host': 'nas', 'level': 'info', 'unit': 'x', 'pid': None, 'ident': None}], 'more': True})
+        self.page.wait_for_timeout(400)
+        self.assertNotIn('stale line', self.page.inner_text('#hl-lines'))
+        self.assertTrue(self.page.is_hidden('#hl-more'))                          # nor did it bring a "load more" with it
+        self.assertEqual(self.errors, [])
+
+    def test_the_scan_picked_last_is_the_one_shown(self):                         # UX-12
+        import re
+        self.page.click('#viewmode button[data-mode="scan"]')
+        self.page.wait_for_selector('.nscan')
+        held = self.hold_first(re.compile(r'/api/netscan(\?|$)'))
+        self.page.evaluate("() => { loadNetScan(); loadNetScan(); }")
+        self.page.wait_for_selector('input[aria-label="Networks to scan"]')
+        self.assertNotEqual(self.page.input_value('input[aria-label="Networks to scan"]'), '10.9.9.0/24')
+        self.answer(held[0], {'settings': {'enabled': False, 'ranges': ['10.9.9.0/24'], 'every_hours': 0, 'nmap': True, 'top_ports': 100}, 'scans': [], 'results': {'scan': None, 'ranges': [], 'hosts': []}})
+        self.page.wait_for_timeout(400)
+        self.assertNotEqual(self.page.input_value('input[aria-label="Networks to scan"]'), '10.9.9.0/24')
+        self.assertEqual(self.errors, [])
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+    def test_a_slow_map_load_does_not_draw_over_a_newer_one(self):               # UX-12
+        import re
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.wait_for_selector('#mpsvg')
+        held = self.hold_first(re.compile(r'/api/map\?'))
+        self.page.evaluate("() => { loadMap(); loadMap(); }")
+        self.page.wait_for_selector('#mpsvg')
+        stale = held[0].fetch().json()
+        for node in stale['nodes']:
+            node['label'] = 'STALE ' + node['label']
+        self.answer(held[0], stale)
+        self.page.wait_for_timeout(400)
+        self.assertNotIn('STALE', self.page.inner_text('#mpcanvas'))
+        self.assertFalse(self.page.evaluate("MP.graph.nodes.some((n) => n.label.startsWith('STALE'))"))     # and it did not change what the page holds either
+        self.assertEqual(self.errors, [])
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+    def test_a_slow_infra_view_does_not_replace_the_one_chosen_after_it(self):    # UX-12
+        """Safe because each load fills an element of its own, which a newer load has already replaced: this holds it that way."""
+        import re
+        self.page.click('.tabs button[data-tab="infra"]')
+        self.page.wait_for_selector('#infrabox .seg button')
+        self.page.click('#infrabox .seg button:has-text("Exposure")')
+        self.page.wait_for_timeout(300)
+        held = self.hold_first(re.compile(r'/api/workloads'))
+        self.page.click('#infrabox .seg button:has-text("Workloads")')
+        self.page.wait_for_selector('#infrabox >> text=Loading')
+        self.page.click('#infrabox .seg button:has-text("Exposure")')
+        self.page.wait_for_timeout(500)
+        self.assertNotIn('containers read', self.page.inner_text('#infrabox'))
+        held[0].continue_()                                                        # the slow Workloads answer arrives last
+        self.page.wait_for_timeout(500)
+        self.assertNotIn('containers read', self.page.inner_text('#infrabox'))
         self.assertEqual(self.errors, [])
 
 

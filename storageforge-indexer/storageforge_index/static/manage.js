@@ -4,8 +4,8 @@
 
 const $ = (s) => document.querySelector(s);
 const MG = { view: 'fleet', me: null, device: null, draft: '', target: null, platforms: {} };
-const VIEWS = [['fleet', 'Fleet'], ['devices', 'Devices'], ['compose', 'Compose'], ['changes', 'Changes'], ['traffic', 'Traffic'], ['scanner', 'Scanner']];
-const WANT = { fleet: 'devices.view', devices: 'devices.view', compose: 'devices.view', changes: 'devices.view', traffic: 'netscan.view', scanner: 'netscan.view' };
+const VIEWS = [['fleet', 'Fleet'], ['devices', 'Devices'], ['compose', 'Compose'], ['changes', 'Changes'], ['traffic', 'Traffic']];
+const WANT = { fleet: 'devices.view', devices: 'devices.view', compose: 'devices.view', changes: 'devices.view', traffic: 'netscan.view' };
 const TARGETS = ['routeros', 'nftables', 'iptables', 'firewalld', 'ufw', 'openwrt', 'pfsense', 'cisco', 'networkd', 'networkmanager'];
 const can = (p) => (MG.me?.permissions || []).includes(p);
 
@@ -60,13 +60,13 @@ function table(heads, rows, onpick) {
 
 function setView(view) {
   MG.view = view;
-  const sub = { fleet: 'Every machine StorageForge knows, and how it stands.', devices: 'Routers, switches and firewalls.', compose: 'One language for every target. Nothing goes anywhere until you apply it.', changes: 'What was reported, applied, confirmed and rolled back.', traffic: 'Interface counters over time, from readings only.', scanner: 'The opt-in nmap scanner. It also has its own tab beside the map.' };
+  const sub = { fleet: 'Every machine StorageForge knows, and how it stands.', devices: 'Routers, switches and firewalls.', compose: 'One language for every target. Nothing goes anywhere until you apply it.', changes: 'What was reported, applied, confirmed and rolled back.', traffic: 'Interface counters over time, from readings only.' };
   $('#mgtitle').textContent = VIEWS.find((v) => v[0] === view)[1];
   $('#mgsub').textContent = sub[view];
   document.querySelectorAll('#mgnav button').forEach((b) => (b.dataset.v === view ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
   const box = $('#mgview');
   box.replaceChildren(el('p', { class: 'muted' }, 'Loading…'));
-  ({ fleet: viewFleet, devices: viewDevices, compose: viewCompose, changes: viewChanges, traffic: viewTraffic, scanner: viewScanner })[view](box).catch((err) => box.replaceChildren(el('p', { class: 'bad' }, err.message)));
+  ({ fleet: viewFleet, devices: viewDevices, compose: viewCompose, changes: viewChanges, traffic: viewTraffic })[view](box).catch((err) => box.replaceChildren(el('p', { class: 'bad' }, err.message)));
 }
 
 // ── fleet ───────────────────────────────────────────────────────────
@@ -268,15 +268,10 @@ const rate = (v) => (v == null ? '' : v > 1048576 ? `${(v / 1048576).toFixed(1)}
 async function viewTraffic(box) {
   const t = await call('/api/traffic');
   const toggle = can('netscan.run') ? btn(t.enabled ? 'Turn off' : 'Turn on', async () => { await call('/api/traffic/settings', 'POST', { enabled: !t.enabled }); setView('traffic'); }, t.enabled ? '' : 'pri') : null;
-  const kids = [el('div', { class: 'mg-card' }, el('div', { class: 'mg-row' }, el('b', {}, t.enabled ? 'Monitoring is on' : 'Monitoring is off'), toggle), el('p', { class: 'small muted' }, 'Sends nothing. Each number comes from a device’s own counters at an ordinary reading, every 5 minutes while this is on.'))];
+  const kids = [el('div', { class: 'mg-card' }, el('div', { class: 'mg-row' }, el('b', {}, t.enabled ? 'Monitoring is on' : 'Monitoring is off'), toggle), el('p', { class: 'small muted' }, 'Sends nothing. Each number comes from a device’s own counters at an ordinary reading, every 5 minutes while this is on.'), el('p', { class: 'small muted' }, 'Looking for what else is on the network? The network scanner is a separate opt-in on the main page, and it does send packets. ', el('a', { class: 'mg-btn', href: '/#view=scan' }, 'Open Scan')))];
   if (t.anomalies.length) kids.push(el('div', { class: 'mg-card' }, el('h2', {}, 'Out of the ordinary'), t.anomalies.map((a) => el('p', { class: 'warn' }, `${a.host} ${a.iface}: ${a.text}`))));
   if (t.interfaces.length) kids.push(el('div', { class: 'mg-card' }, table(['Machine', 'Interface', 'In', '', 'Out', '', 'Errors', 'Drops'], t.interfaces.map((i) => [i.host, i.iface, rate(i.latest?.rx_rate), spark(i.series, 'rx_rate'), rate(i.latest?.tx_rate), spark(i.series, 'tx_rate'), String(i.latest?.errors ?? ''), String(i.latest?.drops ?? '')]))));
   box.replaceChildren(...kids);
-}
-
-// ── scanner ─────────────────────────────────────────────────────────
-async function viewScanner(box) {
-  box.replaceChildren(el('div', { class: 'mg-card' }, el('p', {}, 'The scanner has its own tab beside the map, with its results linked back to each machine’s pages.'), el('a', { class: 'mg-btn pri', href: '/#view=scan' }, 'Open the Scan tab')));
 }
 
 // ── start ───────────────────────────────────────────────────────────

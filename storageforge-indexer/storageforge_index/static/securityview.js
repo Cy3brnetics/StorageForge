@@ -102,19 +102,19 @@ function secOpen(panel) {
 }
 
 async function secRender() {
-  const box = $('#sec-content'), turn = (SEC.turn = (SEC.turn || 0) + 1);      // a slow panel must not land on top of the one clicked after it
+  const box = $('#sec-content'), fresh = latest('security');      // a slow panel must not land on top of the one clicked after it
   box.replaceChildren(text('p', 'Loading…', 'muted'));
   await secBanner();
-  if (turn !== SEC.turn) return;
+  if (!fresh()) return;
   if (SEC_NEEDS_HOST.has(SEC.panel) && !S.host) {
     box.replaceChildren(text('p', 'Pick a host at the top of the page: this panel is about one host at a time.', 'muted'));
     return;
   }
   try {
     const built = await ({ overview: secOverview, worm: secWorm, decoys: secDecoys, mac: secMac, firewall: secFirewall, behavior: secBehavior, integrity: secIntegrity, compliance: secCompliance, ...SEC_MORE })[SEC.panel]();
-    if (turn === SEC.turn) box.replaceChildren(built);
+    if (fresh()) box.replaceChildren(built);
   } catch (err) {
-    if (turn === SEC.turn) box.replaceChildren(text('p', err.message, 'st-failed'));
+    if (fresh()) box.replaceChildren(text('p', err.message, 'st-failed'));
   }
 }
 

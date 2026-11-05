@@ -36,6 +36,7 @@ function sv(tag, attrs = {}, ...kids) {
 }
 
 async function loadMap() {
+  const fresh = latest('map');                      // a slow answer must not draw over, or replace the state of, the one asked for after it (UX-12)
   const box = $('#mapview');
   if (!box.firstChild) mapShell(box);
   $('#mpcanvas').replaceChildren(text('p', 'Loading…', 'muted small'));
@@ -43,17 +44,22 @@ async function loadMap() {
     const qs = new URLSearchParams({ layers: [...MP.layers].join(',') || 'network' });
     if (MP.redact) qs.set('redact', '1');
     if (MP.at) qs.set('at', String(MP.at));
-    MP.graph = await getJSON('/api/map?' + qs);
+    const graph = await getJSON('/api/map?' + qs);
+    if (!fresh()) return;
+    MP.graph = graph;
     mapGhostApply();
-    if (can('security.view')) { try { MP.coverage = await getJSON('/api/map/coverage'); } catch { MP.coverage = null; } }
-    try { MP.notes = (await getJSON('/api/map/annotations')).annotations; } catch { MP.notes = []; }
+    let coverage = null, notes = [];
+    if (can('security.view')) { try { coverage = await getJSON('/api/map/coverage'); } catch { coverage = null; } }
+    try { notes = (await getJSON('/api/map/annotations')).annotations; } catch { notes = []; }
+    if (!fresh()) return;
+    MP.coverage = coverage; MP.notes = notes;
     MP.sel = null;
     MP.fitted = false;
     mapDraw();
     mapDetail();
     mapChanges();
     mapCoverage();
-  } catch (err) { $('#mpcanvas').replaceChildren(text('p', err.message, 'st-failed')); }
+  } catch (err) { if (fresh()) $('#mpcanvas').replaceChildren(text('p', err.message, 'st-failed')); }
 }
 
 function mapSetMode(mode) {
@@ -344,9 +350,11 @@ function mapDetail() {
 }
 
 async function mapChanges() {
+  const fresh = latest('mapchanges');
   const box = $('#mpchanges');
   try {
     const { changes } = await getJSON('/api/map/snapshots');
+    if (!fresh()) return;
     const rows = [text('h4', 'What changed')];
     const real = changes.filter((c) => !c.first);
     if (changes.length) {
