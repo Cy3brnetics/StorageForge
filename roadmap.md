@@ -74,12 +74,12 @@ Built and committed on 2026-11-04 as it stood in the working tree. Neither its u
 
 ### A3. Findings still in progress
 
-The notebook has 18 findings marked in progress. Twelve say *fixed in the working tree on 2026-11-03, not committed*: that work was committed in `a267227`. Each is marked done once its test is seen to pass, with the commit written in its note. They are `SF-44`, `SF-45`, `SF-47`, `SF-49`, `SF-50`, `SF-51`, `PF-31`, `PF-32`, `PF-33`, `EQ-07`, `EQ-08` and `EQ-09`. The other six:
+The notebook has 18 findings marked in progress. Twelve say *fixed in the working tree on 2026-11-03, not committed*: that work was committed in `a267227`. Each was marked done in the notebook on 2026-11-04 (`418856d`), with its test seen to pass and the commit written in its note. They are `SF-44`, `SF-45`, `SF-47`, `SF-49`, `SF-50`, `SF-51`, `PF-31`, `PF-32`, `PF-33`, `EQ-07`, `EQ-08` and `EQ-09`. The other six:
 
 | Finding | What's left | Who | Status |
 | :--- | :--- | :--- | :--- |
-| **SF-48** | See A1 | the release run | open |
-| **SF-46** operators can apply legal holds | A test that every route ending in `apply_hold` takes the same permission, walked as a list and not one route at a time | the release run | open |
+| **SF-48** | See A1 | the release run | in progress, on branch `t3/2ea1b266` |
+| **SF-46** operators can apply legal holds | A test that every route ending in `apply_hold` takes the same permission, walked as a list and not one route at a time | the release run | in progress, on branch `t3/2ea1b266` (`ca2eacb`), not merged |
 | **SF-38** container scan | CI fails on a new reachable critical. The job exists, and has never run | the owner | open |
 | **EQ-01** no CI | A runner, so every push runs the suite on SQLite and PostgreSQL | the owner | open |
 | **PF-04** disk health | The collector run against real disks: a disk with reallocated sectors shows warn and raises an alert, and each pool shows its last scrub. It ships labelled *not run against real disks* until then | the owner | open |
@@ -91,7 +91,7 @@ All six phases of the [UI and UX roadmap](archive/roadmaps/ui-ux-roadmap.md), ab
 
 | Phase | Days | What it holds | Status |
 | :--- | :--- | :--- | :--- |
-| **0. Small and sure** | 6 to 8 | The `/` shortcut that eats typing, and the other keyboard handlers (UX-40, 41), the rail that hides Security and Logs (UX-01), the header (UX-02), planner focus (UX-18), "offsite" from data (UX-32), "+N more" (UX-13), copy that fits the screen (UX-14, 09), Scan by what was scanned (UX-29), contrast tokens (UX-19), a latest-wins guard (UX-12), the Scanner stub (UX-28), the Web UI page (UX-39) | open |
+| **0. Small and sure** | 6 to 8 | The `/` shortcut that eats typing, and the other keyboard handlers (UX-40, 41), the rail that hides Security and Logs (UX-01), the header (UX-02), planner focus (UX-18), "offsite" from data (UX-32), "+N more" (UX-13), copy that fits the screen (UX-14, 09), Scan by what was scanned (UX-29), contrast tokens (UX-19), a latest-wins guard (UX-12), the Scanner stub (UX-28), the Web UI page (UX-39) | done on 2026-11-05: `7f749d1`, `eb6b9f6`, `0e3e7d6`, `84a7775`, `5d194bc`, `607fd65`, `ac79c0f`. Three parts moved on: collapsible rail groups (UX-01) to phase 2, the security chip on `/planner` and `/manage` (UX-09) to phase 1, and the other lists that cut their rows without saying (UX-13) to phase 1's list component |
 | **1. One kernel** | 15 to 19 | One `api()`, one dialog in place of 39 native calls, announce and busy, one vocabulary of tokens and components, one time policy, shared chrome with the security banner on every page, one place for shortcuts, native modules, safer work in progress | open |
 | **2. Routes and workspaces** | 22 to 28 | A router, a rail that matches what is in it, Security and Settings as workspaces, the planners under one Plan roof, the map by keyboard, a host picker where it is needed | open |
 | **3. The planner grows** | 35 to 45 | Steps 3a to 3h: design what isn't there yet, Shares, the network lens, the workloads lens with placement guardrails, the security lens, the health lens, compare and adopt, one Change review | open |

@@ -2,7 +2,7 @@
 
 Where the build stands. [roadmap.md](roadmap.md) says what's left, and the plans these rows come from are in [the archive](archive/roadmaps/). **Done** means the roadmap's definition of done (§2), including the KVM lab. Code that passes unit tests but has not been in the lab is **Built, not lab-tested**.
 
-Last updated: 2026-11-04.
+Last updated: 2026-11-05.
 
 ## Now
 
@@ -55,6 +55,8 @@ Corrections stand: no VSS trap, no cryptographic shred, no certificates, no WebS
 - 2026-11-04: expanded networking, the management planner and the audit of 2026-11-03: 1243 tests on SQLite (7 skipped) and PostgreSQL (80 skipped). KVM lab tiers 0 to 13: 511 passed, 0 failed, 5 skipped, on 7 of the 14 configs plus a real RouterOS, a real OpenWrt and three machines behind them.
 - 2026-11-04: the open branches were brought together. Every branch, local and remote, is in `dev-expanded-networking`, which is ahead of `main` and not behind it. The host logs work, which had not been committed, was committed on it. No tests have run since.
 - 2026-11-04: [UI audit](docs/audit-2026-11-04-ui.md): 41 findings, from a read of the web UI and a pass through it in a real browser. None is fixed yet.
+- 2026-11-04: baseline of the merged branch before the release work, at `36d8eb5`: 1286 tests passing on SQLite, 5 skipped, in 593 s. PostgreSQL was not run.
+- 2026-11-05: phase 0 of the UI roadmap is done: 14 of the 41 findings, three of them in part, each with a browser or unit test that fails on the old code. The full suite on SQLite after it: 1321 tests passing, 5 skipped, in 598 s (the baseline above was 1286). PostgreSQL has not been run since.
 
 What the lab found that unit tests had not:
 
