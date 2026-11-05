@@ -460,7 +460,7 @@ async function newTaskAt(host, path, kind = 'backup', fstype = '') {
 
 document.addEventListener('keydown', (ev) => {
   if (T.mode !== 'tasks' || !(ev.ctrlKey || ev.metaKey) || ev.key.toLowerCase() !== 'z') return;
-  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '')) return;
+  if (typing(ev)) return;
   ev.preventDefault(); tkUndo(ev.shiftKey);
 });
 window.addEventListener('beforeunload', (ev) => { if (TK.dirty) ev.preventDefault(); });

@@ -16,7 +16,7 @@ async function openShareWizard({ host = '', path = '', index = null, share = nul
   const e = share || {};
   const isSmb = /^(SMB|CIFS)/i.test(e.protocol || e.proto || '');
   Object.assign(SW, {
-    step: share ? 1 : 0, hosts: hostsList, index, share, saved: null, check: null, here: null, anyway: false, checking: false, busy: false,
+    step: share ? 1 : 0, hosts: hostsList, index, share, saved: null, check: null, here: null, anyway: false, checking: false, busy: false, touched: false,
     s: { host: host || (hostsList[0] || {}).hostname || '', path: e.path || path || '', proto: isSmb ? 'SMB' : 'NFS',
          version: isSmb ? 'SMB3' : (/^NFS/i.test(e.protocol || '') ? e.protocol : 'NFSv4.2'), name: e.name || '',
          rules: (e.rules && e.rules.length ? e.rules : e.clients && !isSmb ? [{ clients: e.clients, options: e.options || NFS_PRESETS['read-write'] }] : [])
@@ -26,12 +26,25 @@ async function openShareWizard({ host = '', path = '', index = null, share = nul
   });
   if (SW.dlg) SW.dlg.remove();
   SW.dlg = el('dialog', { class: 'swdlg', 'aria-label': 'Share wizard' });
-  SW.dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); closeShareWizard(); });
+  SW.dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); swLeave(); });
+  SW.dlg.addEventListener('input', () => { SW.touched = true; });          // typing counts before the field is left: entry() only reports on change
   document.body.append(SW.dlg);
   SW.dlg.showModal();
   swRender();
   swValidate();
   return true;
+}
+/* Escape in the wizard asks before it throws away a share that was edited and not saved (UX-41). Past the first step,
+   with something changed: the folder pick alone costs nothing to redo. The Close button is a deliberate click and closes. */
+function swLeave() {
+  if (!SW.dlg) return;
+  if (!(SW.step > 0 && SW.touched && !SW.saved)) { closeShareWizard(); return; }
+  if (SW.dlg.querySelector('.swdiscard')) return;
+  const keep = button('Keep editing', () => ask.remove(), 'btn sm');
+  const ask = el('div', { class: 'swdiscard row', role: 'alertdialog', 'aria-label': 'Discard what you entered?' },
+    text('span', 'Discard what you entered? The share is not saved.'), el('span', { class: 'grow' }), keep, button('Discard', closeShareWizard, 'btn danger sm'));
+  SW.dlg.prepend(ask);
+  keep.focus();
 }
 function closeShareWizard() { if (SW.dlg) { SW.dlg.close(); SW.dlg.remove(); SW.dlg = null; } if (SM.dlg) smRender(); }
 
@@ -42,7 +55,7 @@ function swExport() {
     ? { protocol: s.version, name, path: s.path, rules: s.rules.filter((r) => r.clients.trim()), mounts: s.mounts.filter((m) => m.host) }
     : { protocol: 'SMB3', name, path: s.path, clients: s.users, options: s.readonly ? 'ro' : '', mounts: s.mounts.filter((m) => m.host), ...(s.smb ? { smb: s.smb } : {}) };
 }
-function swChanged(ms = 350) { SW.saved = null; SW.checking = true; clearTimeout(SW.timer); SW.timer = setTimeout(swValidate, ms); swRenderChecks(); }
+function swChanged(ms = 350) { SW.touched = true; SW.saved = null; SW.checking = true; clearTimeout(SW.timer); SW.timer = setTimeout(swValidate, ms); swRenderChecks(); }
 async function swValidate() {
   const s = SW.s;
   clearTimeout(SW.timer);

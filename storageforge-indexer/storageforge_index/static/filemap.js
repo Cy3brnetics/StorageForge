@@ -673,7 +673,7 @@ function fmSelect(sel) {
   const on = FM.tree?.querySelector('.fmrow.on');
   if (on) fmReveal(on.dataset.id);
 }
-document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && FM.dest) { FM.dest = null; fmPickBar(); } });
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && FM.dest && !typing(ev)) { FM.dest = null; fmPickBar(); } });
 $('#host').addEventListener('change', () => { FM.data = null; FM.sel = null; FM.tree = null; FM.world = null; FM.moved = false; if (fmActive()) fmLoad(); });
 
 /* ── picking files and sending them somewhere ────────────────────── */

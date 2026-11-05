@@ -398,9 +398,15 @@ canvas.addEventListener('wheel', (ev) => {
   view.x = mx - (mx - view.x) * (k / view.k); view.y = my - (my - view.y) * (k / view.k); view.k = k;
   wake();
 }, { passive: false });
+/* A shortcut acts on a key nobody is typing: not inside a text field, not under an open dialog, and not with Ctrl, Alt or
+   Meta held (UX-40, UX-41). Typing a path starts with a slash, so a shortcut that takes `/` anywhere takes it from the
+   path, and from a password in the confirm dialog. Every global shortcut asks these two before it acts. */
+const inField = (ev) => !!ev.target.closest?.('input, textarea, select, [contenteditable]');
+const typing = (ev) => inField(ev) || !!document.querySelector('dialog[open]');
+const plain = (ev) => !(ev.ctrlKey || ev.metaKey || ev.altKey || ev.isComposing);
 document.addEventListener('keydown', (ev) => {
-  if (ev.key === '/' && document.activeElement !== $('#q')) { ev.preventDefault(); $('#q').focus(); }
-  if (ev.key === 'Escape' && S.focus) setFocus(null);
+  if (ev.key === '/' && plain(ev) && !typing(ev)) { ev.preventDefault(); $('#q').focus(); }
+  if (ev.key === 'Escape' && S.focus && !typing(ev)) setFocus(null);
 });
 function tooltip(n, ev) {
   const tip = $('#tip');
@@ -563,8 +569,8 @@ document.addEventListener('contextmenu', (ev) => {
   const owner = menuFor(t);
   if (owner && menuAt(owner, ev)) ev.preventDefault();
 });
-document.addEventListener('keydown', (ev) => {   // ContextMenu key and Shift+F10 on a focused element
-  if (!(ev.key === 'ContextMenu' || (ev.key === 'F10' && ev.shiftKey)) || menuEl) return;
+document.addEventListener('keydown', (ev) => {   // ContextMenu key and Shift+F10 on a focused element, but not in a text field: that keeps the browser's own menu, as right-click does
+  if (!(ev.key === 'ContextMenu' || (ev.key === 'F10' && ev.shiftKey)) || menuEl || inField(ev)) return;
   const owner = menuFor(document.activeElement);
   if (owner && owner !== canvas && menuAt(owner, ev)) { ev.preventDefault(); menuKeyAt = Date.now(); }
 });
@@ -669,7 +675,7 @@ setPanelWidth(Number(prefs('sf.panelw')) || PW.def);
 showTab('details');
 if (prefs('sf.panel') === 'closed') setPanelOpen(false);
 document.addEventListener('keydown', (ev) => {   // \ shows or hides the panel
-  if (ev.key !== '\\' || ev.ctrlKey || ev.metaKey || ev.altKey || ev.target.closest?.('input, textarea, select, [contenteditable]')) return;
+  if (ev.key !== '\\' || !plain(ev) || typing(ev)) return;
   ev.preventDefault(); setPanelOpen(panel.classList.contains('collapsed'));
 });
 

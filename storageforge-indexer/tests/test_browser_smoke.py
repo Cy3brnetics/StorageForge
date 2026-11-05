@@ -386,6 +386,93 @@ class BrowserSmoke(unittest.TestCase):
         self.assertIn('is not a repository found', str(self.page.evaluate('window.__h')))
 
 
+    def open_tab(self, tab):
+        """The rail button of the tab that is already open hides the panel, so click it only when it is another one."""
+        if self.page.evaluate("document.querySelector('.tabs button.on')?.dataset.tab") != tab or self.page.evaluate("document.querySelector('#panel').classList.contains('collapsed')"):
+            self.page.click(f'.tabs button[data-tab="{tab}"]')
+
+    # ── the keyboard: UX-40 and UX-41 of the UI audit of 2026-11-04 ─────────────────────────────────────────────────────
+    def test_a_slash_types_into_every_kind_of_field_and_the_shortcut_still_works(self):       # UX-40
+        """`/` moved focus to the search box from anywhere, so a path lost its first character and a password its tail."""
+        searches = []
+        self.page.on('request', lambda r: searches.append(r.url) if '/api/search' in r.url else None)
+        for tab, sel, typed in (('jobs', '#scanhost', '/mnt/x'), ('keys', '#genname', 'a/b'), ('keys', '#instpw', 'pa/ss'),
+                                ('audit', '#pwnew', 'pa/ss'), ('hostlogs', '#hl-q', '/var/log')):
+            self.open_tab(tab)
+            self.page.wait_for_selector(sel, state='visible')
+            self.page.fill(sel, '')
+            self.page.focus(sel)
+            self.page.keyboard.type(typed)
+            self.assertEqual(self.page.input_value(sel), typed, sel)
+        self.page.wait_for_timeout(500)                          # the search box debounces: a stolen tail would be sent by now
+        self.assertEqual(self.page.input_value('#q'), '')
+        self.assertEqual(searches, [])
+        self.page.evaluate('document.activeElement.blur()')      # the shortcut itself, with nothing focused
+        self.page.keyboard.press('/')
+        self.assertEqual(self.page.evaluate('document.activeElement.id'), 'q')
+        self.page.evaluate('document.activeElement.blur()')      # and a modifier makes it something else
+        self.page.keyboard.press('Control+/')
+        self.assertNotEqual(self.page.evaluate('document.activeElement.id'), 'q')
+        self.assertEqual(self.errors, [])
+
+    def test_a_password_with_a_slash_can_be_typed_into_the_confirm_dialog(self):               # UX-40
+        self.page.evaluate('() => { window.__p = confirmPassword(); window.__p.catch(() => {}); }')
+        self.page.wait_for_selector('#reauthpw', state='visible')
+        self.page.focus('#reauthpw')
+        self.page.keyboard.type('pa/ss')
+        self.assertEqual(self.page.input_value('#reauthpw'), 'pa/ss')
+        self.page.click('#reauthcancel')
+
+    def test_the_menu_key_in_a_text_field_leaves_the_browsers_own_menu_alone(self):           # UX-41
+        self.page.click('#viewmode button[data-mode="tasks"]')
+        self.page.click('.tkchip:has-text("Copy with rsync")')
+        self.page.wait_for_selector('.tkblist input')
+        self.page.evaluate("""() => { for (const i of document.querySelectorAll('#tasksview input[type=text]')) { let n = i; while (n && !n._menu) n = n.parentElement;
+                                       if (n) { i.setAttribute('data-probe', '1'); break; } } }""")
+        for key in ('Shift+F10', 'ContextMenu'):
+            self.page.focus('[data-probe="1"]')
+            self.page.keyboard.press(key)
+            self.assertEqual(self.page.locator('.ctxmenu').count(), 0, key)
+        self.page.focus('.tkblist .tkhead button, .tkblist button')      # on a button of the block, the app's menu is still there
+        self.page.keyboard.press('Shift+F10')
+        self.page.wait_for_selector('.ctxmenu')
+        self.page.keyboard.press('Escape')
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+    def test_backslash_leaves_the_panel_alone_under_an_open_dialog(self):                       # UX-41
+        was = self.page.evaluate("document.querySelector('#panel').classList.contains('collapsed')")
+        self.page.evaluate('() => { window.__p = confirmPassword(); window.__p.catch(() => {}); }')
+        self.page.wait_for_selector('#reauthcancel', state='visible')
+        self.page.focus('#reauthcancel')
+        self.page.keyboard.press('\\')
+        self.assertEqual(self.page.evaluate("document.querySelector('#panel').classList.contains('collapsed')"), was)
+        self.page.click('#reauthcancel')
+        self.page.evaluate('document.activeElement.blur()')      # with the dialog gone it is the shortcut again
+        self.page.keyboard.press('\\')
+        self.assertNotEqual(self.page.evaluate("document.querySelector('#panel').classList.contains('collapsed')"), was)
+        self.page.keyboard.press('\\')
+
+    def test_escape_asks_before_it_throws_away_a_share_that_was_edited(self):                   # UX-41
+        share = "{ path: '/srv/photos', name: 'photos', protocol: 'NFSv4.2', clients: '10.0.0.0/24', options: 'rw' }"
+        self.page.evaluate(f"openShareWizard({{ host: 'nas', share: {share} }})")
+        self.page.wait_for_selector('dialog.swdlg[open]')
+        self.page.keyboard.press('Escape')                      # nothing edited: it just closes
+        self.page.wait_for_selector('dialog.swdlg', state='detached')
+        self.page.evaluate(f"openShareWizard({{ host: 'nas', share: {share} }})")
+        self.page.wait_for_selector('dialog.swdlg[open] input[placeholder="photos"]')
+        self.page.fill('dialog.swdlg input[placeholder="photos"]', 'photos-renamed')
+        self.page.keyboard.press('Escape')
+        self.page.wait_for_selector('.swdiscard')               # edited: it asks, and the wizard stays
+        self.assertEqual(self.page.locator('dialog.swdlg[open]').count(), 1)
+        self.page.click('.swdiscard button:has-text("Keep editing")')
+        self.assertEqual(self.page.locator('.swdiscard').count(), 0)
+        self.assertEqual(self.page.input_value('dialog.swdlg input[placeholder="photos"]'), 'photos-renamed')
+        self.page.keyboard.press('Escape')
+        self.page.click('.swdiscard button:has-text("Discard")')
+        self.page.wait_for_selector('dialog.swdlg', state='detached')
+        self.assertEqual(self.errors, [])
+
+
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
 class MapAtScale(unittest.TestCase):
     """A synthetic 200 hosts and 2,000 workloads. It has to stay usable: the numbers here decide whether the map needs more."""

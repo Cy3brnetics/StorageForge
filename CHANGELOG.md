@@ -23,6 +23,8 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 - Rule sets, map views, designs and long sentinel events over 4 KiB were refused before their validators saw them.
 - Malware preview answered `GONE` for a quarantined file. It now says the file is in quarantine.
 - Removed `backup.send_file`, an unsigned sender nothing used, and a site-wide security key setting nothing could set.
+- **A slash typed into a text field arrives.** `/` moved focus to the search box from anywhere, so a path lost its first character and started a file search. A password with a slash in it lost the rest of itself into the search box, and from there into the server's request log; in the confirm dialog the slash vanished, so that password could not be typed at all. The shortcut now acts only when nothing is being typed and no dialog is open, and the other shortcuts follow the same rule: `\` leaves an open dialog alone, the menu key and Shift+F10 leave a text field's own menu alone, and so do Ctrl+Z in Tasks and Escape.
+- **Escape asks before it throws away a half-made share.** In the share wizard, Escape after the first step with something changed asks first. The Close button still closes at once.
 
 ### Added
 - **One [roadmap](roadmap.md) of what's left.** Finished and superseded roadmaps moved to [archive/roadmaps](archive/roadmaps/).
