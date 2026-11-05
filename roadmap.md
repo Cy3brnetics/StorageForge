@@ -92,7 +92,7 @@ All six phases of the [UI and UX roadmap](archive/roadmaps/ui-ux-roadmap.md), ab
 | Phase | Days | What it holds | Status |
 | :--- | :--- | :--- | :--- |
 | **0. Small and sure** | 6 to 8 | The `/` shortcut that eats typing, and the other keyboard handlers (UX-40, 41), the rail that hides Security and Logs (UX-01), the header (UX-02), planner focus (UX-18), "offsite" from data (UX-32), "+N more" (UX-13), copy that fits the screen (UX-14, 09), Scan by what was scanned (UX-29), contrast tokens (UX-19), a latest-wins guard (UX-12), the Scanner stub (UX-28), the Web UI page (UX-39) | done on 2026-11-05: `7f749d1`, `eb6b9f6`, `0e3e7d6`, `84a7775`, `5d194bc`, `607fd65`, `ac79c0f`. Three parts moved on: collapsible rail groups (UX-01) to phase 2, the security chip on `/planner` and `/manage` (UX-09) to phase 1, and the other lists that cut their rows without saying (UX-13) to phase 1's list component |
-| **1. One kernel** | 15 to 19 | One `api()`, one dialog in place of 39 native calls, announce and busy, one vocabulary of tokens and components, one time policy, shared chrome with the security banner on every page, one place for shortcuts, native modules, safer work in progress | open |
+| **1. One kernel** | 15 to 19 | One `api()`, one dialog in place of 39 native calls, announce and busy, one vocabulary of tokens and components, one time policy, shared chrome with the security banner on every page, one place for shortcuts, native modules, safer work in progress | done on 2026-11-05: `a80bfa7` (kernel, dialogs, tokens and components), `8260a13` (chrome and the chip on every page), `e3b4b09` (shortcuts), `2e91cf5` (times, sizes, busy), `7b04018` (work in progress). Held back: native modules (B6), and the card, table and pill components, which move page by page in phases 2 to 5 as each page is rebuilt |
 | **2. Routes and workspaces** | 22 to 28 | A router, a rail that matches what is in it, Security and Settings as workspaces, the planners under one Plan roof, the map by keyboard, a host picker where it is needed | open |
 | **3. The planner grows** | 35 to 45 | Steps 3a to 3h: design what isn't there yet, Shares, the network lens, the workloads lens with placement guardrails, the security lens, the health lens, compare and adopt, one Change review | open |
 | **4. Map, Compose, Scan, Logs** | 26 to 32 | A map with room, what-if in plain words, Design mode from what was read, Compose as an editor, Scan as a table and a diff, Logs as a view | open |
@@ -103,6 +103,7 @@ Some of it waits, and is not in 0.4.0:
 - 3a: ZFS and mdadm pools as plan steps wait for `pooldef` (B1). Until then a planned pool of those kinds stays under *By hand*.
 - 3d: only the placement guardrails that can be worked out from what `/api/workloads` already reads ship. Dataset-tuning advice waits for the workloads stage (B2).
 - 4: a rule at a position in Compose waits for `place-before`, and scan results as map placeholders and scanner findings through alerts wait too (B5).
+- Native modules wait too (B6), and the phase 1 list component ("+N more") is the one item of that phase still to build.
 - Four items need a small API: saved versions of a design (3g), "start from what was read" for Design mode, paths that must stay open or blocked in Compose, and counts by level and hour for Logs.
 
 ### A5. The security audit and the bugfix round (step 3)
@@ -183,9 +184,11 @@ Compliance depth, retention depth, YARA, incident evidence and clean room are do
 - **`bridge`-family firewall rules** for bridged VMs, which bypass a quarantine's hooks. The map says so.
 - **REST adapters: only if a device needs one.** SSH reads everything on all four platforms, and a second way in is a second thing to secure.
 
-### B6. The two UI items held back
+### B6. The UI items held back
 
 One design document in place of the storage blueprint and the map's design, with the planner as its editor and the map showing it as ghosts (step 3i, which needs a migration), and retiring Graph, Structure once the map's Storage layer can do what it does.
+
+Native ES modules for the scripts (an item of UI phase 1, held back on purpose). A module runs after every classic script has run, so converting the files one at a time changes the order at which they load, and the `typeof f === 'function'` guards, which are what make that order not matter today, would hide what breaks. It has no effect a person can see. It wants one pass that goes leaf first with a test of the load order, and `kernel.js` and `chrome.js` are written so they can be the first two.
 
 ## Later, when something asks for it
 

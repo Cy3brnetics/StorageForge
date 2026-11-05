@@ -57,6 +57,7 @@ Corrections stand: no VSS trap, no cryptographic shred, no certificates, no WebS
 - 2026-11-04: [UI audit](docs/audit-2026-11-04-ui.md): 41 findings, from a read of the web UI and a pass through it in a real browser. None is fixed yet.
 - 2026-11-04: baseline of the merged branch before the release work, at `36d8eb5`: 1286 tests passing on SQLite, 5 skipped, in 593 s. PostgreSQL was not run.
 - 2026-11-05: phase 0 of the UI roadmap is done: 14 of the 41 findings, three of them in part, each with a browser or unit test that fails on the old code. The full suite on SQLite after it: 1321 tests passing, 5 skipped, in 598 s (the baseline above was 1286). PostgreSQL has not been run since.
+- 2026-11-05: phase 1 of the UI roadmap is done but for native modules (held back, see the roadmap's B6) and the list component: one `api()` for the four pages, 39 native dialogs replaced, one palette, one shortcut registry, the security chip on every page, one time and size formatter, busy buttons, and drafts that survive a reload. The browser file is 69 tests and passes; `test_ui_kernel.py` (12), `test_ui_contrast.py` (6) and `test_docs_web_ui.py` (4) read the scripts and stylesheets as text. The full suite has not been re-run since phase 0.
 
 What the lab found that unit tests had not:
 
