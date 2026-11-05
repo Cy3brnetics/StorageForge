@@ -464,4 +464,4 @@ async function newTaskAt(host, path, kind = 'backup', fstype = '') {
 }
 
 sfShortcut({ id: 'tasks-undo', key: 'z', mods: 'mod', label: 'Undo, and with Shift redo', where: 'Tasks', when: () => T.mode === 'tasks', run: (ev) => { ev.preventDefault(); tkUndo(ev.shiftKey); } });
-window.addEventListener('beforeunload', (ev) => { if (TK.dirty) ev.preventDefault(); });
+sfUnsaved({ id: 'task', label: 'the task you were editing', kept: false, dirty: () => !!TK.dirty });

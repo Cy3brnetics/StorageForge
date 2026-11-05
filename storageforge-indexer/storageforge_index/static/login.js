@@ -7,6 +7,15 @@ const msg = document.getElementById('loginmsg');
 function say(text) { msg.textContent = text; msg.hidden = !text; }
 if (q.get('ended')) say('Your session ended. Sign in again.');
 else if (q.get('out')) say('Signed out.');
+// work the page held when the session ended: what is still in this browser, and what could not be kept (kernel.js, sfLostWork)
+try {
+  const lost = JSON.parse(localStorage.getItem('sf.lostwork') || 'null');
+  localStorage.removeItem('sf.lostwork');
+  if (lost && Date.now() - lost.at < 3600000) {
+    const parts = [lost.kept.length ? `Kept in this browser until you sign in again: ${lost.kept.join(', ')}.` : '', lost.lost.length ? `Could not be kept: ${lost.lost.join(', ')}.` : ''];
+    say([msg.textContent, ...parts].filter(Boolean).join(' '));
+  }
+} catch { /* nothing to say */ }
 
 document.getElementById('loginform').addEventListener('submit', async (ev) => {
   ev.preventDefault();

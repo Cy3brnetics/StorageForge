@@ -1112,6 +1112,71 @@ class BrowserSmoke(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
 
+    # ── work in progress: UX-15 ─────────────────────────────────────────────────────────────────────────────────────
+    def test_compose_text_survives_a_reload_and_is_not_replaced_without_asking(self):       # UX-15
+        self.page.goto(self.base + '/manage')
+        self.page.click('#mgnav button[data-v="compose"]')
+        self.page.wait_for_selector('textarea')
+        self.page.fill('textarea', '/ip firewall filter add chain=input protocol=tcp dst-port=2222 action=accept')
+        self.page.reload()
+        self.page.click('#mgnav button[data-v="compose"]')
+        self.page.wait_for_selector('textarea')
+        self.assertIn('dst-port=2222', self.page.input_value('textarea'))                   # it was in memory only, so a reload threw it away
+        self.page.click('button:has-text("Load what it runs")')
+        self.page.wait_for_selector('dialog.sf-dialog h2:has-text("Replace what you have written?")')
+        self.page.click('dialog.sf-dialog button:has-text("Cancel")')
+        self.page.wait_for_selector('dialog.sf-dialog', state='detached')
+        self.assertIn('dst-port=2222', self.page.input_value('textarea'))                   # and Load did not take it over without asking
+        self.assertEqual(self.errors, [])
+
+    def test_a_kept_draft_belongs_to_the_person_who_wrote_it(self):                          # UX-15
+        self.page.goto(self.base + '/manage')
+        self.page.wait_for_selector('#mgnav button')
+        self.page.evaluate("""() => { localStorage.setItem('sf.compose.draft', JSON.stringify({ user: 'someone-else', value: 'their secret rules' })); }""")
+        self.page.reload()
+        self.page.click('#mgnav button[data-v="compose"]')
+        self.page.wait_for_selector('textarea')
+        self.assertNotIn('their secret rules', self.page.input_value('textarea'))
+        self.assertEqual(self.errors, [])
+
+    def test_the_maps_staged_steps_survive_a_reload(self):                                    # UX-15
+        self.page.evaluate("""() => { MP.draft.push({ type: 'fw-rule', host: 'nas', params: { action: 'allow', proto: 'tcp', port: '8000', source: '10.0.0.0/8' } }); mapWhatIf(); }""")
+        self.page.reload()
+        self.page.wait_for_selector('.tabs button')
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.wait_for_selector('#mpwhatif h4:has-text("What this would do")')
+        self.assertIn('nas: fw-rule', self.page.inner_text('#mpwhatif'))
+        self.page.click('#mpwhatif button:has-text("Forget it")')                           # forgetting them forgets the kept copy too
+        self.page.reload()
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.wait_for_selector('.mpmodes')
+        self.assertEqual(self.page.locator('#mpwhatif h4').count(), 0)
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+    def test_one_rule_asks_before_work_that_would_be_lost_is_closed(self):                   # UX-15
+        ids = self.page.evaluate('SF_UNSAVED.map((u) => u.id)')
+        self.assertEqual(set(ids), {'designs', 'task', 'changes', 'moves', 'map-steps'})
+        asks = lambda: self.page.evaluate("() => { const ev = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(ev); return ev.defaultPrevented; }")
+        self.assertFalse(asks())
+        self.page.evaluate('CH.dirty = true')                                                 # a change plan keeps a draft in the browser: nothing is lost
+        self.assertFalse(asks())
+        self.page.evaluate('TK.dirty = true')                                                 # a task being edited is not kept anywhere
+        self.assertTrue(asks())
+        self.page.evaluate('TK.dirty = false; CH.dirty = false')
+        self.assertFalse(asks())
+
+    def test_a_lost_session_says_what_was_kept_and_what_could_not_be(self):                  # UX-15
+        self.page.evaluate("""() => { CH.dirty = true; TK.dirty = true; MP.draft.push({ type: 'net-mtu', host: 'nas', params: { iface: 'eth0', mtu: '1400', rollback: '10' } });
+                                      fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }).then(() => sfSignedOut('ended')); }""")      # the session really is gone, so /login stays
+        self.page.wait_for_url(self.base + '/login*')
+        msg = self.page.inner_text('#loginmsg')
+        self.assertIn('Your session ended.', msg)
+        self.assertIn('Kept in this browser until you sign in again: the change plan you were editing, the steps staged on the map.', msg)
+        self.assertIn('Could not be kept: the task you were editing.', msg)
+        self.page.goto(self.base + '/login')                                                  # said once, then forgotten
+        self.assertNotIn('Kept in this browser', self.page.inner_text('#loginmsg'))
+
+
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
 class MapAtScale(unittest.TestCase):
     """A synthetic 200 hosts and 2,000 workloads. It has to stay usable: the numbers here decide whether the map needs more."""

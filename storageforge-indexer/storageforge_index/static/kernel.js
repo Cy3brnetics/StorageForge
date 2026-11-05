@@ -75,6 +75,33 @@ function notify(message, kind = 'info') {        // a toast. An error stays unti
 
 const toast = (message, kind) => notify(message, kind);          // the name the main page's scripts already use
 
+/* ── work that is not saved: one rule for every editor (UX-15) ───── */
+/* An editor says when it holds work nobody has saved: sfUnsaved({ id, label, dirty(), kept }). `kept: true` means it already keeps its own draft in
+   this browser (Compose, the map's staged steps, a change plan, the planner), so leaving the page loses nothing and nothing is asked. For any
+   other, the one beforeunload below asks before the page goes away, and if the session ends first sfLostWork() leaves a note for the sign-in
+   page that names what was kept and what could not be. */
+const SF_UNSAVED = [];
+function sfUnsaved(spec) { SF_UNSAVED.push(spec); }
+window.addEventListener('beforeunload', (ev) => { if (SF_UNSAVED.some((u) => !u.kept && u.dirty())) ev.preventDefault(); });
+function sfLostWork() {          // session.js calls this just before it empties the page
+  const dirty = SF_UNSAVED.filter((u) => u.dirty());
+  if (!dirty.length) return;
+  try { localStorage.setItem('sf.lostwork', JSON.stringify({ at: Date.now(), kept: dirty.filter((u) => u.kept).map((u) => u.label), lost: dirty.filter((u) => !u.kept).map((u) => u.label) })); } catch { /* storage blocked */ }
+}
+/* A draft kept in this browser belongs to the person who wrote it, so another account on the same browser never sees it. */
+function sfStash(key, value, user) {
+  try {
+    if (value == null || value === '' || (Array.isArray(value) && !value.length)) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify({ user: user || '', value }));
+  } catch { /* storage blocked: the draft lasts until the page does */ }
+}
+function sfRecall(key, fallback, user) {
+  try {
+    const got = JSON.parse(localStorage.getItem(key) || 'null');
+    return got && got.user === (user || '') ? got.value : fallback;
+  } catch { return fallback; }
+}
+
 /* ── one way to show a time and a size (UX-16) ───────────────────── */
 /* A time is shown in local time, because that is the clock a person is reading, with its UTC form on hover (title) for matching it against a
    host's own logs. Times come as seconds since the epoch. fmtTime() is the text, timeEl() the <time> element that carries the hover, fmtDate()

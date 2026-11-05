@@ -3,6 +3,7 @@
    against the index, and download the script that runs it. Loaded after app.js, topology.js and checks.js. */
 
 const MV = { plans: [], plan: null, hosts: [], result: null, dirty: false };
+sfUnsaved({ id: 'moves', label: 'the move plan you were editing', kept: false, dirty: () => MV.dirty });
 const METHOD_HELP = {
   copy: 'Copy the folder. The source is left alone.',
   move: 'Copy, verify, then cut over: the source is renamed to *.migrated-<date> (never deleted) and, on the same host, linked to the new place.',

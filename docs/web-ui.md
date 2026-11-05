@@ -175,6 +175,10 @@ The main page reads `#host=<name>&tab=<panel>`, for example `/#host=nas-02&tab=c
 
 `#view=map` opens the map, with `layers=`, `mode=` and `filter=` to set what it shows, for example `/#view=map&layers=network,firewall&mode=security`. `#view=scan` opens the Scan view, which is where `/manage` sends you.
 
+## Unsaved work
+
+Compose's text, the steps staged on the map, change plans and the planner's designs are kept in this browser as you work, for your account only, so a reload does not lose them. A design edited in Topology, a task and a move plan are not kept anywhere until you save them: the page asks before it closes with one of them unsaved, and if your session ends first, the sign-in page says which work was kept and which could not be. **Load what it runs** in Compose asks before it replaces text you wrote.
+
 ## Passwords for host commands
 
 Anything that runs a command on a host from the web UI (key install, scan access, deploy access, deploys, job runs and cutovers, restores) and changing your session length asks for your password again unless you typed it in the last 5 minutes. Read-only job actions (dry run, log, list snapshots) do not. The question is the same dialog on every page: on the planner and `/manage` it opens in place, and the change goes on once the password is right. A command to a host that has not been seen before first shows its SSH key to compare with the machine's own, and nothing is sent until you say they match.

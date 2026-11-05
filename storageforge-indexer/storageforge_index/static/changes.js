@@ -4,6 +4,7 @@
    playbook. Task forms are built from /api/changes/types. Loaded after moves.js; uses the shared helpers. */
 
 const CH = { types: null, plans: [], plan: { name: '', tasks: [] }, dirty: false, result: null };
+sfUnsaved({ id: 'changes', label: 'the change plan you were editing', kept: true, dirty: () => CH.dirty });      // chKeep() holds its draft in this browser
 const CH_DRAFT = 'sf.changes.draft';
 try {
   const d = JSON.parse(localStorage.getItem(CH_DRAFT) || 'null');

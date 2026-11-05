@@ -23,6 +23,7 @@ function el(tag, attrs = {}, ...kids) {
 }
 const btn = (label, fn, cls = '') => sfOnClick(el('button', { type: 'button', class: `mg-btn ${cls}` }, label), fn);      // busy while an async handler runs
 const when = (t) => (t ? fmtTime(t) : 'not yet');
+sfUnsaved({ id: 'compose', label: 'the network language you were writing', kept: true, dirty: () => !!MG.draft && MG.draft !== EXAMPLE });      // and it is kept in this browser as it is typed
 
 // The kernel's api() does what this page used to do for itself (the 401, the password dialog, the host key), so this only keeps the shape its views were written for: JSON in, JSON out.
 async function call(path, method = 'GET', body = undefined) {
@@ -129,7 +130,8 @@ const EXAMPLE = '# Allow web from the LAN into the DMZ, and forward HTTPS in fro
 
 async function viewCompose(box) {
   const f = await call('/api/fleet');
-  const editor = el('textarea', { spellcheck: false, 'aria-label': 'Network language', value: MG.draft || EXAMPLE, oninput: () => { MG.draft = editor.value; } });
+  if (!MG.draft) MG.draft = sfRecall('sf.compose.draft', '', MG.me?.username);      // what was written before the page was reloaded, or the session ended
+  const editor = el('textarea', { spellcheck: false, 'aria-label': 'Network language', value: MG.draft || EXAMPLE, oninput: () => { MG.draft = editor.value; sfStash('sf.compose.draft', MG.draft === EXAMPLE ? '' : MG.draft, MG.me?.username); } });
   const on = el('select', { 'aria-label': 'Machine' }, f.machines.map((m) => el('option', { value: m.name, selected: m.name === MG.target }, `${m.name} (${m.label})`)));
   const as = el('select', { 'aria-label': 'Show as' }, TARGETS.map((t) => el('option', { value: t }, t)));
   const native = el('pre', {}, ''); const notes = el('div', {});
@@ -198,7 +200,9 @@ async function viewCompose(box) {
   labelGo();
 
   box.replaceChildren(
-    el('div', { class: 'mg-card' }, el('div', { class: 'mg-row' }, el('label', { class: 'fld' }, 'On', on), el('label', { class: 'fld' }, 'Show as', as), go, btn('Load what it runs', async () => { try { const r = await call(`/api/dsl/of?host=${encodeURIComponent(on.value)}`); editor.value = r.dsl; MG.draft = r.dsl; render(); } catch (err) { notes.replaceChildren(el('p', { class: 'bad' }, err.message)); } })),
+    el('div', { class: 'mg-card' }, el('div', { class: 'mg-row' }, el('label', { class: 'fld' }, 'On', on), el('label', { class: 'fld' }, 'Show as', as), go, btn('Load what it runs', async () => { try { const r = await call(`/api/dsl/of?host=${encodeURIComponent(on.value)}`);
+      if (MG.draft && MG.draft !== EXAMPLE && MG.draft !== r.dsl && !(await confirmDialog({ title: 'Replace what you have written?', body: `The editor holds your own text. This puts what ${on.value} runs now in its place.`, confirm: 'Replace it', danger: true }))) return;
+      editor.value = r.dsl; MG.draft = r.dsl; sfStash('sf.compose.draft', MG.draft, MG.me?.username); render(); } catch (err) { notes.replaceChildren(el('p', { class: 'bad' }, err.message)); } })),
       el('p', { class: 'small muted' }, 'On a device, Check reports what would be sent and whether it cuts StorageForge off, and Apply then has its own rollback timer. On a Linux host, Stage in Changes turns the rules into steps there, to check and deploy like any other.')),
     el('div', { class: 'mg-cols' }, el('div', { class: 'mg-card' }, el('h2', {}, 'What you write'), editor), el('div', { class: 'mg-card' }, el('h2', {}, 'What it becomes'), native, notes)),
     result,

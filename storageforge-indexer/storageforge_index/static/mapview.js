@@ -475,6 +475,7 @@ function mapReachPanel() {
 
 /* ── staging from the map, and what it would do ───────────────────── */
 MP.draft = [];
+sfUnsaved({ id: 'map-steps', label: 'the steps staged on the map', kept: true, dirty: () => MP.draft.length > 0 });      // and they are kept in this browser as they are staged
 
 function mapActions(n) {
   const host = n.host || (n.kind === 'Host' ? n.label : null);
@@ -516,7 +517,10 @@ function mapActions(n) {
   return acts.length ? [text('h4', 'Stage a step'), ...acts] : [];
 }
 
-function mapWhatIfPanel() { mapWhatIf(); }
+function mapWhatIfPanel() {
+  if (!MP.restored) { MP.restored = true; if (!MP.draft.length) MP.draft = sfRecall('sf.map.draft', [], ME?.username); }       // what was staged before a reload or an ended session
+  mapWhatIf();
+}
 
 function mapGhostApply() {
   const g = MP.graph, res = MP.ghost;
@@ -531,6 +535,7 @@ function mapGhostApply() {
 }
 
 async function mapWhatIf() {
+  sfStash('sf.map.draft', MP.draft, ME?.username);       // every change to the staged steps comes through here
   const box = $('#mpwhatif');
   if (!box) return;
   if (!MP.draft.length) { MP.ghost = null; box.replaceChildren(); mapGhostApply(); if ($('#mpsvg')) mapDraw(); return; }

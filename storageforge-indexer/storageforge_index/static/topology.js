@@ -1128,7 +1128,7 @@ if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if
 
 $('#savedesigns').addEventListener('click', saveDesigns);
 $('#discarddesigns').addEventListener('click', discardDesigns);
-window.addEventListener('beforeunload', (ev) => { if (dirtyDocs().length) ev.preventDefault(); });
+sfUnsaved({ id: 'designs', label: 'the design changes in Topology that were not saved', kept: false, dirty: () => dirtyDocs().length > 0 });
 
 // what the Details tab is for in each view (UX-14): Map, Tasks and Scan keep their own panels, so Details says where to go and shows no storage-graph counts
 const MODE_HINT = {

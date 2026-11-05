@@ -109,6 +109,7 @@ function normalize(s){
 /* ───────────── documents: the example, or a host's design from the server ───────────── */
 // DOC.host is '' for the built-in example. Every edit is kept as a per-host draft in this browser until saved.
 const DOC={host:'',source:'example',dirty:false,savedAt:null,scanned:false,hosts:[],signedIn:false,example:true,activity:null};
+sfUnsaved({ id: 'planner', label: 'the planner edits', kept: true, dirty: () => DOC.dirty });      // save() keeps a draft per host in this browser
 // the example stays when there is nothing else to show, even after it is removed
 const exampleShown=()=>DOC.example||!DOC.hosts.length;
 const draftKey=h=>'storageforge.v1'+(h?':'+h:'');
