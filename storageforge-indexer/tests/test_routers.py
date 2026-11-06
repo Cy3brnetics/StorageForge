@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from storageforge_index import changes, cisco, deploy, exposure, netdevice, netscan, openwrt, permissions, pfsense, reach, routeros, rostranspiler as ros, security, traffic, vault
+from storageforge_index import changes, cisco, deploy, exposure, netdevice, netscan, openwrt, permissions, pfsense, reach, routeros, rostranspiler as ros, security, traffic, users, vault
 from storageforge_index.db import Database
 from storageforge_index.nettransport import DirectTransport
-from test_security import Base
+from test_security import PW, Base
 
 FIX = Path(__file__).parent / 'fixtures'
 ROS_FILES = {'address': 'ip_address', 'interface': 'interface', 'route': 'ip_route', 'filter': 'ip_firewall_filter', 'nat': 'ip_firewall_nat', 'neighbor': 'ip_neighbor', 'bridge_port': 'interface_bridge_port', 'bridge_vlan': 'interface_bridge_vlan', 'vlan': 'interface_vlan',
@@ -269,6 +269,19 @@ class OpenWrtReading(unittest.TestCase):
         with self.assertRaises(ValueError):
             openwrt.parse('@@link\n[]')
 
+    UCI_KEYS = ("network.wg0=interface\nnetwork.wg0.proto='wireguard'\nnetwork.wg0.private_key='SYNTHETICPRIVATEKEYSYNTHETICPRIVATEKEY12='\nnetwork.wg0.listen_port='51820'\n"
+                "network.@wireguard_wg0[0]=wireguard_wg0\nnetwork.@wireguard_wg0[0].public_key='SYNTHETICPUBLICKEY'\nnetwork.@wireguard_wg0[0].preshared_key='SYNTHETICPSKSYNTHETICPSKSYNTHETICPSKSYNT1='\n"
+                "network.@wireguard_wg0[0].persistent_keepalive='25'\nnetwork.wan.password='SYNTHETICPPPOEPASSWORD'\nnetwork.wan.proto='pppoe'\n")
+
+    def test_wireguard_keys_and_passwords_stay_out_of_the_saved_config(self):      # SF-62
+        got = openwrt.parse('@@uci_network\n' + self.UCI_KEYS + '\n@@end\n')['config']
+        for secret in ('SYNTHETICPRIVATEKEY', 'SYNTHETICPSK', 'SYNTHETICPPPOEPASSWORD'):
+            self.assertNotIn(secret, got)
+        for kept in ("network.wg0.listen_port='51820'", "network.@wireguard_wg0[0].public_key='SYNTHETICPUBLICKEY'", "persistent_keepalive='25'", "network.wan.proto='pppoe'"):
+            self.assertIn(kept, got)
+        self.assertEqual(got.count('<removed>'), 3)
+        self.assertEqual(openwrt.strip_secrets(got), got, 'again changes nothing')
+
 
 class PfSenseReading(unittest.TestCase):
     def setUp(self):
@@ -407,6 +420,35 @@ class Language(unittest.TestCase):
                     '/ip address add address=1.1.1.1/24 interface="eth0 && id"', '/ip firewall filter add chain=input action=accept dst-port=22;id', '/interface vlan add name=a vlan-id=$(id) interface=b', '/ip firewall filter add chain=input action=accept src-address=1.1.1.1/24;drop', '/ip dns set servers=1.1.1.1\x01'):
             with self.assertRaises(ros.DslError, msg=bad):
                 ros.parse(bad)
+
+    def test_an_address_is_ascii_digits_and_colons_and_a_zone_is_not_one(self):      # SF-64
+        # Python's ipaddress takes an IPv6 zone (fe80::1%anything but / and %) since 3.9, and the emitters of nftables, iptables, ufw, RouterOS, Cisco and networkd do not quote
+        for bad in ('/ip firewall filter add chain=input action=accept src-address=fe80::1%$(id)', '/ip firewall filter add chain=input action=accept src-address="fe80::1%a;touch${IFS}x;id\'"',
+                    '/ip firewall filter add chain=input action=accept src-address=fe80::1%eth0', '/ip firewall filter add chain=input action=accept dst-address=!fe80::1%eth0', '/ip firewall filter add chain=input action=accept src-address=fe80::1%a-fe80::2%b',
+                    '/ip dns set servers=fe80::1%a;:error', '/ip dns set servers=1.1.1.1,fe80::1%x', '/ip address add address=fe80::1%eth0/64 interface=eth0', '/ipv6 route add dst-address=::/0 gateway=fe80::1%eth0',
+                    '/ip firewall nat add chain=dstnat action=dst-nat to-addresses=fe80::1%a', '/ip dhcp-server network add address=10.0.0.0/24 gateway=fe80::1%a', '/ip pool add name=p ranges=fe80::1%a-fe80::9',
+                    '/interface wireguard peers add interface=wg0 public-key=' + 'A' * 42 + '= allowed-address=fe80::/64,fe80::1%a',
+                    '/ip firewall address-list add list=l address=１０.0.0.1', '/ip firewall filter add chain=input action=accept src-address=١٢.0.0.1/8',
+                    '/ip route add dst-address=10.0.0.0/8 gateway=10.0.0.1 distance=²', '/interface vlan add name=v vlan-id=٣ interface=e0', '/ip firewall filter add chain=input action=accept protocol=tcp dst-port=١٢',
+                    '/ip firewall filter add chain=input action=accept protocol=²', '/interface bridge vlan add bridge=b vlan-ids=١٠', '/interface bridge add name=b mtu=¹²', '/ip firewall filter add chain=input action=accept protocol=tcp dst-port=1-²'):
+            with self.assertRaises(ros.DslError, msg=bad):
+                ros.parse(bad)
+        for fine in ('/ip firewall filter add chain=input action=accept src-address=fe80::1', '/ip firewall filter add chain=input action=accept src-address=!2001:db8::/32', '/ip firewall address-list add list=l address=10.0.0.1-10.0.0.9',
+                     '/ip dns set servers=2001:db8::1,1.1.1.1', '/ip address add address=2001:db8::1/64 interface=eth0', '/ip firewall filter add chain=input action=accept src-address=::ffff:10.0.0.1'):
+            self.assertTrue(ros.parse(fine), fine)
+
+    def test_what_an_address_field_lets_through_is_not_shell(self):                # SF-64
+        text = self.TEXT + '/ip firewall filter add chain=input protocol=tcp dst-port=22 src-address=2001:db8::/32 action=accept\n/ip dns set servers=2001:db8::1,9.9.9.9\n'
+        stmts = ros.parse(text)
+        for stmt in stmts:
+            for key, value in stmt.attrs.items():
+                if key in ('address', 'src-address', 'dst-address', 'to-addresses', 'gateway', 'servers', 'dns-server', 'ranges', 'allowed-address'):
+                    self.assertRegex(value, r'^[!0-9A-Fa-f:./,-]+$', key)
+        for target in ros.TARGETS:
+            got = ros.emit(stmts, target)
+            shell = {'`', '%'} | (set() if target == 'openwrt' else {'$'})       # OpenWrt's script uses $r and $(uci add ...) of its own
+            for out in [got['text'], *got['files'].values()]:
+                self.assertFalse(shell & set(out), (target, sorted(shell & set(out))))
 
     def test_a_comment_can_not_be_a_command_to_routeros(self):
         for bad in ('/ip firewall filter add chain=input action=accept comment=[/system/reboot]', '/ip firewall filter add chain=input action=accept comment="[/system/reset-configuration]"', '/ip firewall filter add chain=input action=accept comment={x}'):
@@ -727,6 +769,57 @@ class Api(Base):
         self.assertNotIn(key, json.dumps(got))
         self.assertEqual(self.client.post('/api/dsl/compile', json={'dsl': '/nonsense add a=1'}).status_code, 400)
 
+    def test_the_targets_of_a_compile_are_a_short_list_of_known_names(self):      # SF-60
+        import time
+        dsl = '\n'.join(f'/ip firewall filter add chain=input protocol=tcp dst-port={1000 + i} action=accept' for i in range(2000))
+        t = time.perf_counter()
+        got = self.client.post('/api/dsl/compile', json={'dsl': dsl, 'targets': ['nftables'] * 5000})
+        self.assertEqual(got.status_code, 400)
+        self.assertLess(time.perf_counter() - t, 1.0, 'refused before any compiling')
+        for targets in (['nftables', 'nftables'], list(ros.TARGETS) + ['ufw'], ['nope'], 5, {'nftables': 1}, [5], [['ufw']], 'nftables'):
+            self.assertEqual(self.client.post('/api/dsl/compile', json={'dsl': '/ip dns set servers=1.1.1.1', 'targets': targets}).status_code, 400, repr(targets))
+        every = self.client.post('/api/dsl/compile', json={'dsl': '/ip dns set servers=1.1.1.1', 'targets': list(ros.TARGETS)})
+        self.assertEqual((every.status_code, sorted(every.get_json()['targets'])), (200, sorted(ros.TARGETS)))
+        for empty in ({}, {'targets': []}, {'targets': None}):
+            self.assertEqual(self.client.post('/api/dsl/compile', json={'dsl': '/ip dns set servers=1.1.1.1', **empty}).status_code, 200)
+
+    def test_a_viewer_never_reads_a_routers_wireguard_keys(self):                  # SF-62
+        users.create(self.conn, 'viewer1', PW, 'viewer')
+        netdevice.add(self.conn, {'name': 'wrt', 'platform': 'openwrt', 'address': '10.77.0.31'}, 'a')
+        d = netdevice.get(self.conn, 'wrt')
+        reading = openwrt.parse('@@uci_network\n' + OpenWrtReading.UCI_KEYS + '\n@@end\n')
+        netdevice.store(self.db, self.conn, d, reading)
+        stored = json.dumps([[str(c) for c in r] for r in self.conn.all("SELECT * FROM security_measurements WHERE host = 'wrt'")])
+        self.assertNotIn('SYNTHETICPRIVATEKEY', stored)
+        # a row stored before the fix, with the text as it came, is scrubbed when read and where it lies
+        row = json.loads(self.conn.scalar("SELECT data_json FROM security_measurements WHERE host = 'wrt' AND kind = 'device'"))
+        row['config'] = OpenWrtReading.UCI_KEYS
+        self.conn.execute("UPDATE security_measurements SET data_json = :d WHERE host = 'wrt' AND kind = 'device'", {'d': json.dumps(row)})
+        self.login('viewer1')
+        body = self.client.get('/api/devices/wrt').get_data(as_text=True)
+        for secret in ('SYNTHETICPRIVATEKEY', 'SYNTHETICPSK', 'SYNTHETICPPPOEPASSWORD'):
+            self.assertNotIn(secret, body)
+        self.assertIn('listen_port', body, 'the rest of the config is still there')
+        stored = self.conn.scalar("SELECT data_json FROM security_measurements WHERE host = 'wrt' AND kind = 'device'")
+        self.assertNotIn('SYNTHETICPRIVATEKEY', stored)
+
+    def test_a_role_without_security_view_does_not_read_a_change(self):           # SF-63
+        users.save_role(self.conn, 'devlook', 'devices, no firewall rules', ['devices.view'], 'a', True)
+        users.create(self.conn, 'devlook1', PW, 'devlook')
+        rep = netdevice.report(self.db, self.conn, 'gw', '/ip firewall filter add chain=input protocol=tcp dst-port=8080 src-address=10.1.2.0/24 action=accept comment="secret-rule"', 'a')
+        self.assertEqual(self.client.get(f'/api/devices/changes/{rep["id"]}').status_code, 200, 'whoever holds security.view still reads it')
+        self.assertEqual(permissions.required('GET', f'/api/devices/changes/{rep["id"]}'), permissions.required('GET', '/api/firewall'))
+        self.login('devlook1')
+        mine = self.client.get('/api/devices/gw')
+        self.assertEqual(mine.status_code, 200)
+        self.assertNotIn('secret-rule', mine.get_data(as_text=True))
+        for path in (f'/api/devices/changes/{rep["id"]}', '/api/devices/changes/1', '/api/firewall', '/api/dsl/of?host=gw'):
+            got = self.client.get(path)
+            self.assertEqual(got.status_code, 403, path)
+            self.assertNotIn('secret-rule', got.get_data(as_text=True), path)
+        viewer = permissions.BUILTIN['viewer'][1]
+        self.assertTrue(permissions.allows(viewer, 'GET', f'/api/devices/changes/{rep["id"]}'))
+
     def test_a_what_if_flips_on_the_rule_it_was_given(self):
         got = self.client.post('/api/dsl/whatif', json={'host': 'gw', 'dsl': '/ip firewall filter add chain=input in-interface=ether2 protocol=tcp dst-port=8291 action=accept', 'from': '198.51.100.9', 'to': '198.51.100.1', 'port': 8291}).get_json()
         self.assertEqual((got['before']['verdict'], got['changed']), ('blocked', False), 'it goes after the final drop, where RouterOS would append it')
@@ -940,7 +1033,7 @@ class Devices(unittest.TestCase):
 
         class Fake:
             def __enter__(self):
-                return lambda c, timeout=None: calls.append(c) or 'ok'
+                return lambda c, timeout=None: calls.append(c) or ('1' if 'count-only' in c else 'ok')
 
             def __exit__(self, *a):
                 return False
@@ -973,7 +1066,7 @@ class Devices(unittest.TestCase):
             def __enter__(self):
                 def run(c, timeout=None):
                     calls.append(c)
-                    return 'failure: bad thing' if 'firewall' in c else 'ok'
+                    return 'failure: bad thing' if 'firewall' in c else '1' if 'count-only' in c else 'ok'
                 return run
 
             def __exit__(self, *a):
@@ -986,6 +1079,45 @@ class Devices(unittest.TestCase):
             netdevice.session = keep
         self.assertEqual(got['status'], 'rolling-back')
         self.assertFalse(any('scheduler/remove' in c for c in calls[2:]), 'the timer stays')
+
+    def test_a_timer_that_could_not_be_planted_stops_the_change(self):         # SF-61
+        self.stored()
+        change = '/ip firewall filter add chain=forward action=drop'
+        refusals = {'the backup is not saved': {'backup/save': 'failure: not enough disk space\n'},
+                    'the scheduler is refused': {'scheduler/add': 'failure: not enough permissions (9)\n'},
+                    'the scheduler is not there when read back': {'count-only': '0\n'}}
+        for why, answers in refusals.items():
+            calls = []
+
+            class Fake:
+                def __enter__(self):
+                    def run(c, timeout=None):
+                        calls.append(c)
+                        return next((v for k, v in answers.items() if k in c), '1\n' if 'count-only' in c else '')
+                    return run
+
+                def __exit__(self, *a):
+                    return False
+            rep = netdevice.report(self.db, self.conn, 'gw', change, 'a')
+            with mock.patch.object(netdevice, 'session', lambda *a, **k: Fake()), mock.patch.object(netdevice, '_settle', lambda *a: None):
+                got = netdevice.apply(self.db, self.conn, rep['id'], 'a', rollback=120, hold=True)
+            self.assertFalse(got['ok'], why)
+            self.assertEqual(got['status'], 'reported', why)
+            self.assertIn('rollback', got['error'], why)
+            self.assertNotIn(change, calls, f'{why}: the change went on with no timer')
+            self.assertEqual(netdevice.change(self.conn, rep['id'])['status'], 'reported', why)
+            if 'scheduler/add' in ' '.join(calls):
+                self.assertTrue(any('scheduler/remove' in c for c in calls[calls.index(next(c for c in calls if 'scheduler/add' in c)):]), f'{why}: a timer that may be half there is taken off')
+
+    def test_a_timer_read_back_is_the_one_that_goes_on(self):                  # SF-61
+        calls = []
+
+        def run(c, timeout=None):
+            calls.append(c)
+            return '1\n' if 'count-only' in c else ''
+        netdevice.RouterOsApply(9).plant(run, 180)
+        self.assertEqual([c.split()[0] for c in calls], ['/system/backup/save', '/system/scheduler/remove', '/system/scheduler/add', '/system/scheduler/print'])
+        self.assertIn('name=sf-9', calls[-1])
 
     def test_the_timer_has_limits(self):
         self.stored()

@@ -30,8 +30,32 @@ class DslError(ValueError):
     pass
 
 
+# ipaddress takes more than an address: since Python 3.9 an IPv6 zone after a % (any text but % and /: spaces, ;, $, backticks), and str.isdigit() is true of digits in other scripts. These
+# values become unquoted shell lines and device commands, so each is first held to its plain alphabet, and only then handed to ipaddress (SF-64). A zone is refused: no target takes one.
+ADDR = re.compile(r'[0-9A-Fa-f:.]+', re.ASCII)
+PLAIN_DIGITS = re.compile(r'[0-9]+', re.ASCII)
+PREFIX = re.compile(r'[0-9]{1,3}', re.ASCII)
+
+
+def _digits(v: str) -> bool:
+    return bool(PLAIN_DIGITS.fullmatch(v))
+
+
+def _addr(v):
+    if not ADDR.fullmatch(v):
+        raise ValueError('not an address')
+    return ipaddress.ip_address(v)
+
+
+def _net(v, strict=False):
+    host, slash, prefix = v.partition('/')
+    if not ADDR.fullmatch(host) or (slash and not (PREFIX.fullmatch(prefix) or ADDR.fullmatch(prefix))):
+        raise ValueError('not an address')
+    return ipaddress.ip_network(v, strict=strict)
+
+
 def _ip_ok(v):
-    ipaddress.ip_address(v)
+    _addr(v)
 
 
 def _cidr(v):
@@ -39,26 +63,30 @@ def _cidr(v):
         v = v[1:]
     if '-' in v:
         a, b = v.split('-', 1)
-        ipaddress.ip_address(a), ipaddress.ip_address(b)
+        _addr(a), _addr(b)
     else:
-        ipaddress.ip_network(v, strict=False)
+        _net(v)
 
 
 def _iface_addr(v):
-    ipaddress.ip_interface(v)
-    if '/' not in v:
+    host, slash, prefix = v.partition('/')
+    if not slash:
         raise ValueError('needs a prefix')
+    _addr(host)
+    if not (PREFIX.fullmatch(prefix) or ADDR.fullmatch(prefix)):
+        raise ValueError('not a prefix')
+    ipaddress.ip_interface(v)
 
 
 def _ports(v):
     for part in v.lstrip('!').split(','):
         low, _, high = part.partition('-')
-        if not low.isdigit() or not 0 < int(low) < 65536 or (high and (not high.isdigit() or not int(low) <= int(high) < 65536)):
+        if not _digits(low) or not 0 < int(low) < 65536 or (high and (not _digits(high) or not int(low) <= int(high) < 65536)):
             raise ValueError('not a port')
 
 
 def _int(v):
-    if not v.isdigit() or len(v) > 9:
+    if not _digits(v) or len(v) > 9:
         raise ValueError('not a number')
 
 
@@ -100,7 +128,7 @@ def _oneof(*options):
 
 
 def _proto(v):
-    if v not in PROTOS and not (v.isdigit() and int(v) < 256):
+    if v not in PROTOS and not (_digits(v) and int(v) < 256):
         raise ValueError('not a protocol')
 
 
@@ -112,31 +140,31 @@ def _state(v):
 def _vlans(v):
     for part in v.split(','):
         low, _, high = part.partition('-')
-        if not low.isdigit() or not 0 < int(low) < 4095 or (high and (not high.isdigit() or not 0 < int(high) < 4095)):
+        if not _digits(low) or not 0 < int(low) < 4095 or (high and (not _digits(high) or not 0 < int(high) < 4095)):
             raise ValueError('not a VLAN')
 
 
 def _ips(v):
     for x in v.split(','):
-        ipaddress.ip_address(x)
+        _addr(x)
 
 
 def _cidrs(v):
     for x in v.split(','):
-        ipaddress.ip_network(x, strict=False)
+        _net(x)
 
 
 def _range(v):
     for part in v.split(','):
         a, _, b = part.partition('-')
-        ipaddress.ip_address(a)
+        _addr(a)
         if b:
-            ipaddress.ip_address(b)
+            _addr(b)
 
 
 def _endpoint(v):
     host, _, port = v.rpartition(':')
-    if not host or not port.isdigit() or not 0 < int(port) < 65536 or not re.fullmatch(r'[A-Za-z0-9.:-]+', host):
+    if not host or not _digits(port) or not 0 < int(port) < 65536 or not re.fullmatch(r'[A-Za-z0-9.:-]+', host):
         raise ValueError('host:port')
 
 
@@ -988,7 +1016,7 @@ def to_model_rules(stmts: list[Stmt], start: int = 0) -> dict:
             rules.append(_rule('routeros', 'filter', s['chain'], order, action=action, hook=s['chain'], **kw))
         else:
             action = 'dnat' if s['action'] in ('dst-nat', 'redirect') else 'snat'
-            nat.append(_rule('routeros', 'nat', s['chain'], order, action=action, to_addr=s.get('to-addresses'), to_port=int(s['to-ports']) if str(s.get('to-ports') or '').isdigit() else None, **kw))
+            nat.append(_rule('routeros', 'nat', s['chain'], order, action=action, to_addr=s.get('to-addresses'), to_port=int(s['to-ports']) if _digits(str(s.get('to-ports') or '')) else None, **kw))
     return {'rules': rules, 'nat': nat}
 
 

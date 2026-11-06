@@ -237,7 +237,14 @@ def store(db, conn: Conn, d: dict, data: dict) -> dict:
 
 
 def facts_of(conn: Conn, name: str) -> dict | None:
-    return security.measurement(conn, name, 'device')
+    got = security.measurement(conn, name, 'device')
+    if got and got.get('config'):
+        clean = openwrt.strip_secrets(got['config'])
+        if clean != got['config']:       # stored before keys were left out of it (SF-62): said without them now, and written back without them
+            got['config'] = clean
+            row = {k: v for k, v in got.items() if k not in ('measured_at', 'via', 'stale')}
+            conn.execute("UPDATE security_measurements SET data_json = :d WHERE lower(host) = lower(:h) AND kind = 'device'", {'d': json.dumps(row), 'h': name})
+    return got
 
 
 def off_devices(conn: Conn) -> list[str]:
@@ -381,18 +388,40 @@ class RouterOsApply:
     def __init__(self, cid: int):
         self.tag = f'sf-{cid}'
 
+    # the words RouterOS puts in the text of a command it refused: it still exits 0 (SF-61)
+    REFUSED = re.compile(r'(?:failure|bad command|syntax error|expected|invalid value|not enough permissions|no such item|input does not match)')
+
     def plant(self, run, secs: int):
-        out = [run(f'/system/backup/save name={self.tag} dont-encrypt=yes')]
-        run(f'/system/scheduler/remove [find name={self.tag}]')
-        out.append(run(f'/system/scheduler/add name={self.tag} interval={secs}s on-event="/system/backup/load name={self.tag} password=\\"\\""'))
+        """Every answer is read (SF-61): a backup that was not saved or a scheduler that is not there raises, so the change does not go on with no way back."""
+        out = []
+        try:
+            out.append(self._ask(run, f'/system/backup/save name={self.tag} dont-encrypt=yes', 'save the backup'))
+            run(f'/system/scheduler/remove [find name={self.tag}]')       # an old one of this name; if it stays, the add below is refused
+            out.append(self._ask(run, f'/system/scheduler/add name={self.tag} interval={secs}s on-event="/system/backup/load name={self.tag} password=\\"\\""', 'add the scheduler'))
+            got = run(f'/system/scheduler/print count-only where name={self.tag}')
+            if not re.search(r'\b[1-9][0-9]*\b', got or '') or self.REFUSED.search(got or ''):
+                raise DeviceError(f'could not plant the rollback: the timer is not on the router (read back: {(got or "").strip()[:100] or "nothing"}). Nothing was changed')
+            out.append(got)
+        except Exception:
+            try:       # a timer that may be half there must not load a backup later with nobody told
+                run(f'/system/scheduler/remove [find name={self.tag}]')
+            except Exception:       # the session may be what failed
+                pass
+            raise
         return out
+
+    def _ask(self, run, command: str, what: str) -> str:
+        got = run(command)
+        if self.REFUSED.search(got or ''):
+            raise DeviceError(f'could not plant the rollback: the router could not {what}: {got.strip()[:200]}. Nothing was changed')
+        return got
 
     def apply(self, run, compiled: dict) -> list[str]:
         out = []
         for line in compiled['text'].splitlines():
             if line.strip():
                 got = run(line)
-                if re.search(r'(?:failure|bad command|syntax error|expected|invalid value|not enough permissions|no such item|input does not match)', got or ''):
+                if self.REFUSED.search(got or ''):
                     raise DeviceError(f'the router refused `{line[:120]}`: {got.strip()[:200]}')
                 out.append(got)
         return out
@@ -559,9 +588,11 @@ def apply(db, conn: Conn, cid: int, actor: str, rollback: int = DEFAULT_ROLLBACK
     applier = APPLIERS[d['platform']](cid)
     now = int(time.time())
     _set(conn, cid, status='applying', applied_at=now, rollback_at=now + rollback, actor=actor[:60])
+    planted = False
     try:
         with session(db, conn, d, 'deploy') as run:
             applier.plant(run, rollback)
+            planted = True
             try:
                 applier.apply(run, compiled)
             except Exception as exc:
@@ -569,6 +600,9 @@ def apply(db, conn: Conn, cid: int, actor: str, rollback: int = DEFAULT_ROLLBACK
                 _set(conn, cid, status='rolling-back', output=str(exc)[:2000])
                 return {'ok': False, 'id': cid, 'status': 'rolling-back', 'error': str(exc)[:500]}
     except (RemoteError, DeviceError, OSError) as exc:
+        if not planted:       # no way back on the device, so nothing was changed, and it can be tried again (SF-61)
+            _set(conn, cid, status='reported', applied_at=None, rollback_at=None, output=str(exc)[:2000])
+            return {'ok': False, 'id': cid, 'status': 'reported', 'error': f'the rollback could not be planted, so nothing was changed: {exc}'[:500]}
         # the session may have died because the change cut it off, which is what the timer is for
         _set(conn, cid, status='unconfirmed', output=str(exc)[:2000])
     else:
