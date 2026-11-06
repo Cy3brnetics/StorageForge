@@ -11,6 +11,7 @@ const MP_MODES = { network: { label: 'Network', layers: ['network', 'manual'] },
                    security: { label: 'Security', layers: ['services', 'firewall', 'workloads', 'storage'], exposed: true }, custom: { label: 'Custom', layers: null } };
 const MP_LEVEL = { any: 'Any address', lan: 'Private networks', vpn: 'VPN only', blocked: 'Blocked', loopback: 'This machine only', unknown: 'Unknown' };
 const SVGNS = 'http://www.w3.org/2000/svg';
+const MP_TAG = { any: 'ANY', lan: 'LAN', vpn: 'VPN', blocked: 'BLOCKED', loopback: 'LOCAL', unknown: 'UNKNOWN' };
 const MP_ROW = 24, MP_W = 300, MP_GAP = 44;
 const MP_SHOWN = { changes: 20, cover: 20, warn: 10, compare: 30 };      // rows a list shows before it says "+N more"
 
@@ -118,7 +119,7 @@ function mapShell(box) {
     else if (f === 'pdf') window.print();
     else if (f) location.href = `/api/map/export?format=${f}&layers=${[...MP.layers].join(',')}${MP.redact ? '&redact=1' : ''}`;
   });
-  bar.append(fmts, button('Fit', () => mapFit(0), 'btn small'), button('Clear pins', () => { MP.positions = {}; mapDraw(); }, 'btn small'));
+  bar.append(fmts, button('Clear pins', () => { MP.positions = {}; mapDraw(); }, 'btn small'));
   const canvas = el('div', { id: 'mpcanvas', class: 'mpcanvas' });
   const side = el('aside', { class: 'mpside' }, el('div', { id: 'mpdetail' }), el('div', { id: 'mpreach' }), el('div', { id: 'mpwhatif' }), el('div', { id: 'mpcover' }), el('div', { id: 'mpmanual' }), el('div', { id: 'mpdesigns' }), el('div', { id: 'mpviews' }), el('div', { id: 'mpchanges' }));
   box.append(bar, el('div', { class: 'mpbody' }, canvas, side));
@@ -247,7 +248,11 @@ function mapDraw() {
     const label = sv('text', { x: r.x + 8, y: r.y + r.h / 2 + 4, class: 'mplabel' });
     label.textContent = mapText(n);
     const dim = !mapMatches(n);
-    return sv('g', { class: mapClass(n) + (dim ? ' dim' : ''), 'data-id': n.id, tabindex: '0', role: 'button', 'aria-label': `${n.kind}: ${n.label}` }, sv('rect', { x: r.x, y: r.y, width: r.w, height: r.h, rx: 4 }), label);
+    const tag = MP_TAG[n.props.exposure];          // the second cue beside the colour: who can reach it, in a word at the right end
+    const word = tag ? sv('text', { x: r.x + r.w - 6, y: r.y + r.h / 2 + 4, class: 'mplabel mptag', 'text-anchor': 'end' }) : null;
+    if (word) word.textContent = tag;
+    const said = n.props.exposure ? `, ${MP_LEVEL[n.props.exposure]}` : '';
+    return sv('g', { class: mapClass(n) + (dim ? ' dim' : ''), 'data-id': n.id, tabindex: '0', role: 'button', 'aria-label': `${n.kind}: ${n.label}${said}` }, sv('rect', { x: r.x, y: r.y, width: r.w, height: r.h, rx: 4 }), label, ...(word ? [word] : []));
   };
   const loose = [...rects.values()].filter((r) => !r.frame && !r.inside);
   const inFrame = (r, f) => r.x >= f.x && r.y >= f.y && r.x + r.w <= f.x + f.w + 1 && r.y + r.h <= f.y + f.h + 1;
@@ -267,10 +272,11 @@ function mapDraw() {
     if (r) { const t = sv('text', { x: r.x + r.w - 6, y: r.y - 2, class: 'mpnote', 'text-anchor': 'end' }); t.textContent = `✎ ${x.text.slice(0, 40)}`; root.append(t); }
   }
   const svg = sv('svg', { id: 'mpsvg', class: 'mpsvg', role: 'group', 'aria-label': `Infrastructure map, ${loose.length + frames.length} items` }, root);
-  canvas.replaceChildren(svg, mapLegend());
+  canvas.replaceChildren(svg, mapTools(), mapLegend());
   svg.addEventListener('dblclick', (ev) => { const f = ev.target.closest('[data-frame]'); if (f) { const h = f.dataset.frame; if (MP.collapsed.has(h)) MP.collapsed.delete(h); else MP.collapsed.add(h); mapDraw(); } });
   svg.addEventListener('click', (ev) => { const t = ev.target.closest('[data-id]'); MP.sel = t ? t.dataset.id : null; mapDetail(); mapHighlight(MP.sel); });
   svg.addEventListener('keydown', (ev) => {      // the map's own keys, on the map: Enter on a node, Enter or Space on a host's header, as a click and a double click are
+    if (!ev.ctrlKey && !ev.metaKey && !ev.altKey && MP_ZOOM_KEYS[ev.key]) { ev.preventDefault(); MP_ZOOM_KEYS[ev.key](); return; }      // + - 0 and F, as the buttons are
     if ((ev.key !== 'Enter' && ev.key !== ' ') || ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const t = ev.target.closest?.('[data-id]'), f = ev.target.closest?.('[data-frame]');
     if (!t && !f) return;
@@ -318,7 +324,7 @@ function mapFit(least) {
 
 function mapText(n) {
   const p = n.props;
-  if (n.kind === 'Listener') return `${n.label} ${(p.process || []).join(',') || p.container || ''}`.slice(0, 40);
+  if (n.kind === 'Listener') return `${n.label} ${(p.process || []).join(',') || p.container || ''}`.slice(0, p.exposure ? 32 : 40);
   if (['NIC', 'Bond', 'Bridge', 'VLAN', 'VPNInterface'].includes(n.kind)) return `${n.label} ${(p.addresses || []).slice(0, 1).join('')}`.slice(0, 40);
   if (['Container', 'VM', 'Instance'].includes(n.kind)) return `${n.kind === 'VM' ? 'VM ' : ''}${n.label}${p.state && p.state !== 'running' ? ` (${p.state})` : ''}`.slice(0, 40);
   if (n.kind === 'FirewallPolicy') return `Firewall: ${n.label}`.slice(0, 40);
@@ -330,6 +336,7 @@ function mapApply() {
   if (r) {
     r.setAttribute('transform', `translate(${MP.view.x} ${MP.view.y}) scale(${MP.view.k})`);
     $('#mpsvg').classList.toggle('far', MP.view.k < 0.5);
+    const z = $('#mpzoom'); if (z) z.textContent = `${Math.round(MP.view.k * 100)}%`;
     mapSemantic();
   }
 }
@@ -340,10 +347,50 @@ function mapHighlight(id) {
   svg.querySelectorAll('.mpedge').forEach((p) => { p.classList.toggle('on', !!id && (p.dataset.src === id || p.dataset.dst === id)); });
 }
 
+/* Zoom without a wheel: − and + about the middle of the canvas, the percentage resets to 100%, Fit puts everything on screen.
+   The same four are the keys - + 0 and F while focus is on the map. */
+function mapZoomTo(k, say = true) {
+  const svg = $('#mpsvg');
+  if (!svg) return;
+  const next = Math.min(3, Math.max(0.2, k)), cx = (svg.clientWidth || 800) / 2, cy = (svg.clientHeight || 600) / 2, f = next / MP.view.k;
+  MP.view = { k: next, x: cx - (cx - MP.view.x) * f, y: cy - (cy - MP.view.y) * f };
+  mapApply();
+  if (say) announce(`Zoom ${Math.round(next * 100)} percent`);
+}
+const MP_ZOOM_KEYS = { '+': () => mapZoomTo(MP.view.k * 1.25), '=': () => mapZoomTo(MP.view.k * 1.25), '-': () => mapZoomTo(MP.view.k / 1.25), 0: () => mapZoomTo(1), '0': () => mapZoomTo(1), f: () => { mapFit(0); announce('Fitted to the screen'); }, F: () => { mapFit(0); announce('Fitted to the screen'); } };
+
+function mapTools() {
+  const tool = (label, name, fn, id) => { const b = button(label, fn, 'btn ghost small'); b.setAttribute('aria-label', name); b.title = name; if (id) b.id = id; return b; };
+  const pct = tool(`${Math.round(MP.view.k * 100)}%`, 'Reset the zoom to 100 percent (0)', () => mapZoomTo(1), 'mpzoom');
+  return el('div', { class: 'mptools', role: 'toolbar', 'aria-label': 'Zoom the map' }, tool('−', 'Zoom out (−)', () => mapZoomTo(MP.view.k / 1.25)), pct, tool('+', 'Zoom in (+)', () => mapZoomTo(MP.view.k * 1.25)),
+    tool('Fit to screen', 'Fit the whole map on screen (F)', () => { mapFit(0); announce('Fitted to the screen'); }, 'mpfit'));
+}
+
+/* What the colours and the line styles mean, in words. Each style has a shape of its own as well as a colour, and the word at the
+   right end of a port says who can reach it, so no meaning rests on colour alone. */
+const MP_STYLES = [
+  ['node', '', 'Read on a host'],
+  ['node', 'inferred', 'Dashed outline or line: inferred, not confirmed'],
+  ['node', 'confidence-manual', 'Long dashes: placed by hand'],
+  ['node', 'ghost', 'Dotted outline: staged, not applied yet'],
+  ['node', 'gone', 'Struck-through name: would be removed'],
+  ['node', 'changed', 'Thick outline: would change'],
+  ['node', 'unprotected', 'Thick outline: no hold or decoy covers it'],
+  ['node', 'flagged', 'Outline with a finding to look at'],
+  ['edge', 'ghost', 'Dotted line: staged link'],
+  ['edge', 'trace', 'Thick line: the path you asked about'],
+];
 function mapLegend() {
-  const l = el('div', { class: 'mplegend small' });
-  for (const [k, v] of Object.entries(MP_LEVEL)) l.append(el('span', { class: `mpchip x-${k}` }, v));
-  l.append(el('span', { class: 'muted' }, 'Dashed: inferred. Per configuration: nothing here was probed.'));
+  const swatch = ([kind, cls]) => {
+    const shape = kind === 'node' ? sv('g', { class: `mpnode ${cls}` }, sv('rect', { x: 1, y: 1, width: 26, height: 12, rx: 3 })) : sv('path', { d: 'M1 7 H27', class: `mpedge ${cls}` });
+    return sv('svg', { class: 'mpsw', width: 28, height: 14, 'aria-hidden': 'true', focusable: 'false' }, shape);
+  };
+  const l = el('details', { class: 'mplegend small', open: !MP.legendShut }, el('summary', {}, 'Legend'),
+    el('p', { class: 'muted' }, 'Who can reach a port, per configuration. The same word is at the right end of the port.'),
+    el('div', { class: 'mpchips' }, ...Object.entries(MP_LEVEL).map(([k, v]) => el('span', { class: `mpchip x-${k}` }, v))),
+    el('ul', { class: 'mpstyles' }, ...MP_STYLES.map((x) => el('li', {}, swatch(x), ' ' + x[2]))),
+    el('p', { class: 'muted' }, 'Per configuration: nothing here was probed.'));
+  l.addEventListener('toggle', () => { MP.legendShut = !l.open; });
   return l;
 }
 
@@ -577,15 +624,25 @@ async function mapWhatIf() {
     mapGhostApply();
     mapDraw();
     const plan = el('input', { type: 'text', 'aria-label': 'Plan name', placeholder: 'From the map' });
-    box.replaceChildren(text('h4', 'What this would do'), ...MP.draft.map((t, i) => el('div', { class: 'row small' }, text('span', `${t.host}: ${t.type}`), button('✕', () => { MP.draft.splice(i, 1); mapWhatIf(); }, 'btn small'))),
-      ...res.conflicts.map((c) => text('p', c.text, c.level === 'crit' ? 'st-failed small' : 'st-warn small')),
+    // the answer in sentences first, worst first, each starting with its own severity word; the table-ish lines are the Details (UX-27)
+    const said = res.sentences || [];
+    const words = el('div', { class: 'mpsay', role: 'group', 'aria-label': 'What this would do, in words', tabindex: '0' },
+      sfMoreList(said, (s) => el('li', { class: `mpsay-${s.level}` }, s.text), { limit: 8, label: 'sentences', tag: 'ul', className: 'mpsay-list' }));
+    const details = el('details', { class: 'mpdetails' }, el('summary', {}, 'Details'),
       ...res.exposure.flatMap((h) => h.changes.map((c) => text('p', `${h.host} ${c.port}/${c.proto}: ${MP_LEVEL[c.before] || 'nothing'} to ${MP_LEVEL[c.after] || 'nothing'}${c.rule ? `, by ${c.rule}` : ''}`, c.wider ? 'st-warn small' : 'small'))),
-      ...res.not_modelled.map((b) => text('p', `Not shown: ${b}`, 'muted small')), text('p', res.caveat, 'muted small'),
+      ...res.conflicts.map((c) => text('p', `${c.level === 'crit' ? 'Stops the change' : 'Warning'}: ${c.text}`, 'small')),
+      ...res.not_modelled.map((b) => text('p', `Not shown: ${b}`, 'muted small')), text('p', res.caveat, 'muted small'));
+    details.open = !!MP.detailsOpen;
+    details.addEventListener('toggle', () => { MP.detailsOpen = details.open; });
+    const worst = said.some((s) => s.level === 'crit') ? 'serious' : said.some((s) => s.level === 'warn') ? 'careful' : 'fine';
+    box.replaceChildren(text('h4', 'What this would do'), ...MP.draft.map((t, i) => el('div', { class: 'row small' }, text('span', `${t.host}: ${t.type}`), ...(res.steps?.[i] ? [text('span', res.steps[i], 'muted')] : []), button('✕', () => { MP.draft.splice(i, 1); mapWhatIf(); }, 'btn small'))),
+      words, details,
       el('div', { class: 'row small' }, plan, button('Stage in Changes', async () => {
         const r = await (await postJSON('/api/map/stage', { plan: plan.value.trim() || 'From the map', tasks: MP.draft })).json();
         MP.draft = []; mapWhatIf();
         box.replaceChildren(text('p', `In plan #${r.plan_id}: ${r.tasks} step(s). The Report on the host comes next, in Changes.`, 'st-ok small'), button('Open Changes', () => { showTab('changes'); }, 'btn small'));
       }, res.blocked ? 'btn small danger' : 'btn small pri'), button('Forget it', () => { MP.draft = []; mapWhatIf(); }, 'btn small')));
+    announce(`What this would do: ${said.length} ${said.length === 1 ? 'point' : 'points'}, the worst is ${worst}. ${said[0]?.text || ''}`);
   } catch (err) {
     box.replaceChildren(text('p', err.body?.error || err.message, 'st-failed small'), button('Forget it', () => { MP.draft = []; mapWhatIf(); }, 'btn small'));
   }
