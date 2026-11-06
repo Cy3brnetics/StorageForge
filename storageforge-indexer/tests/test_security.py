@@ -705,6 +705,37 @@ class Events(Base):
         self.report([event_line('brake_ran', 'brake', f'HELD zfs {enc("tank/never@made")} {enc("sf-legal")}\n')])
         self.assertNotEqual(security._check(self.conn, 'nas', {}, 'worm', security.STANDARDS['pci-dss'])[0], 'pass')
 
+    def test_a_token_cannot_fill_the_table(self):
+        """SF-73: 10,000 distinct lines with a valid token leave a bounded table, the cap shows in the answer, and one summary event says so."""
+        big = 'x' * 3000      # 100 of these stay under the report body limit
+        first = None
+        for batch in range(100):
+            r = self.report([event_line('canary_tripped' if i % 2 else 'watcher_stopped', 's', big) for i in range(100)]).get_json()
+            first = first or r
+        self.assertLessEqual(self.conn.scalar("SELECT count(*) FROM security_events WHERE kind <> 'events_dropped'"), security.EVENTS_PER_HOUR)
+        self.assertEqual(self.conn.scalar("SELECT count(*) FROM security_events WHERE kind = 'events_dropped'"), 1)
+        self.assertEqual(r['new'], 0)
+        self.assertEqual(r['dropped'], 100)
+        self.assertLessEqual(self.conn.scalar('SELECT max(length(detail)) FROM security_events'), security.HOST_DETAIL)
+
+    def test_one_noisy_kind_does_not_use_up_another_kinds_room(self):
+        for _ in range(3):
+            self.report([event_line('watcher_stopped', 's') for _ in range(100)])
+        self.assertEqual(self.report([event_line('canary_tripped', 'real')]).get_json()['new'], 1)
+        self.assertEqual(self.conn.scalar("SELECT count(*) FROM security_events WHERE kind = 'watcher_stopped'"), security.EVENTS_PER_KIND)
+
+    def test_old_events_are_pruned_and_the_newest_kept(self):
+        now = int(time.time())
+        for kind, days, ack in (('watcher_stopped', 400, now), ('watcher_stopped', 400, None), ('watcher_stopped', 10, now)):
+            security.record_event(self.conn, 'nas', kind, 's')
+            self.conn.execute('UPDATE security_events SET occurred_at = :o, acknowledged_at = :a WHERE event_id = (SELECT max(event_id) FROM security_events)',
+                              {'o': now - days * DAY, 'a': ack})
+        security.prune_events(self.conn, now)
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM security_events'), 2)       # only the old acknowledged one is gone
+        with mock.patch.object(security, 'MAX_EVENTS_PER_HOST', 1):
+            security.prune_events(self.conn, now)
+        self.assertEqual(self.conn.all('SELECT occurred_at FROM security_events'), [(now - 10 * DAY,)])
+
     def test_a_signed_runs_brake_output_is_recorded_but_only_valid_values(self):
         enc = lambda s: base64.b64encode(s.encode()).decode()
         out = ('QUARANTINED 10.0.0.9\nQUARANTINED not-an-ip\nQUARANTINED 0.0.0.0/0\n'
