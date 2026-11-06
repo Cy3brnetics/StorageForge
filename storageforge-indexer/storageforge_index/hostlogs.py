@@ -275,6 +275,57 @@ def status(conn: Conn, host: str | None = None) -> list[dict]:
              'oldest': r[7] / 1e6 if r[7] else None, 'newest': r[8] / 1e6 if r[8] else None} for r in rows]
 
 
+# ── counts and units, for the Logs view ─────────────────────────────
+HOUR_US = 3600 * 1000000
+MAX_HOURS = 24 * 31 + 48        # hours in one answer, newest kept: a month of retention plus a day each way
+MAX_UNITS = 200
+
+
+def range_filter(host=None, since=None, until=None) -> dict:
+    """Host and time range only. Raises ValueError for a time that can't be read or a range that ends before it starts."""
+    f = clean_filter(host, None, None, None, since, until)
+    if f['since'] is not None and f['until'] is not None and f['since'] > f['until']:
+        raise ValueError('since is after until')
+    return f
+
+
+def counts(conn: Conn, f: dict) -> dict:
+    """Stored lines in the range by level and by UTC hour. by_hour is oldest first, holds only hours with lines, and is cut to
+    the newest MAX_HOURS (truncated says so); by_level always lists every level."""
+    p: dict = {}
+    where = logbook._where('host', 'at_us', f, (), p, scale=1000000)
+    totals = dict(conn.all(f'SELECT priority, count(*) FROM host_log_lines{where} GROUP BY priority', p))
+    cap = MAX_HOURS * len(LEVELS)
+    p = {'n': cap + 1}
+    where = logbook._where('host', 'at_us', f, (), p, scale=1000000)
+    rows = conn.all(f"""SELECT at_us / {HOUR_US}, priority, count(*) FROM host_log_lines{where}
+                        GROUP BY 1, 2 ORDER BY 1 DESC, 2 LIMIT :n""", p)
+    truncated = len(rows) > cap
+    hours: dict[int, dict] = {}
+    for hour, priority, n in rows[:cap]:
+        hours.setdefault(int(hour), {})[LEVELS[priority]] = n
+    if truncated:                              # the oldest hour read may be only part of an hour: leave it out
+        hours.pop(min(hours), None)
+    for h in sorted(hours)[:-MAX_HOURS] if len(hours) > MAX_HOURS else ():
+        del hours[h]
+        truncated = True
+    by_hour = [{'hour': dt.datetime.fromtimestamp(h * 3600, dt.timezone.utc).strftime('%Y-%m-%dT%H:00:00Z'),
+                'total': sum(lv.values()), 'levels': lv} for h, lv in sorted(hours.items())]
+    return {'host': f['host'], 'total': sum(totals.values()), 'by_level': {name: totals.get(i, 0) for i, name in enumerate(LEVELS)},
+            'by_hour': by_hour, 'truncated': truncated}
+
+
+def units(conn: Conn, host: str | None = None) -> list[dict]:
+    """The unit names stored (a line with none is not counted), most lines first, at most MAX_UNITS."""
+    p: dict = {'n': MAX_UNITS}
+    where = ' AND host = :h' if host else ''
+    if host:
+        p['h'] = host
+    rows = conn.all(f"""SELECT unit, count(*) FROM host_log_lines WHERE unit IS NOT NULL{where}
+                        GROUP BY unit ORDER BY 2 DESC, 1 LIMIT :n""", p)
+    return [{'unit': r[0], 'lines': r[1]} for r in rows]
+
+
 # ── files ───────────────────────────────────────────────────────────
 FORMATS = logbook.FORMATS
 COLUMNS = ('time', 'host', 'level', 'unit', 'ident', 'pid', 'message')

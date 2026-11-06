@@ -42,6 +42,8 @@ GET  /api/log/output?id=             the full output of one deploy run or fetche
 GET  /api/log/export?format=csv|json|text[&output=1&...]   the same list as a file
 GET  /api/hostlogs[?host=&unit=&level=&q=&since=&until=&limit=&offset=]   hosts' journal lines, as scans collected them
 GET  /api/hostlogs/status[?host=]    how the last pickup from each host went
+GET  /api/hostlogs/counts[?host=&since=&until=]   stored lines by level and by UTC hour
+GET  /api/hostlogs/units[?host=]     the unit names stored, with a line count each, most first
 GET  /api/hostlogs/export?format=csv|json|text[&...]   the same lines as a file
 POST /api/scan  {"host": "…"}       queue a vault-backed scan
 POST /api/scan/all                  queue a scan of every host with a scan binding
@@ -1028,6 +1030,18 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     def api_hostlogs_status():
         return jsonify(hosts=hostlogs.status(conn(), request.args.get('host') or None))
+
+    @web.get('/api/hostlogs/counts')
+    @login_required
+    def api_hostlogs_counts():
+        a = request.args
+        return jsonify(hostlogs.counts(conn(), hostlogs.range_filter(a.get('host'), a.get('since'), a.get('until'))))
+
+    @web.get('/api/hostlogs/units')
+    @login_required
+    def api_hostlogs_units():
+        host = hostlogs.range_filter(request.args.get('host'))['host']
+        return jsonify(host=host, units=hostlogs.units(conn(), host))
 
     @web.get('/api/hostlogs/export')
     @login_required

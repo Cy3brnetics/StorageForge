@@ -65,6 +65,8 @@ PLATFORM = {
     'Signed scan payloads': {'unit': ['test_scansign.Signed', 'test_scansign.SignedScan', 'test_scansign.Setup', 'test_scansign.Records'], 'lab': [(2, 'scan-signed')]},
     'Signed sends between hosts': {'unit': ['test_sends.Verbs', 'test_sends.Generated', 'test_sends.Checks', 'test_sends.RealSshd', 'test_sends.SignedReceive', 'test_sends.Route'],
                                    'lab': [(16, 'send-btrfs-full'), (16, 'send-btrfs-incremental'), (16, 'send-btrfs-retention'), (16, 'send-receiver-record'), (16, 'send-refused-not-enrolled'), (16, 'send-zfs-full')]},
+    'Host logs': {'unit': ['test_hostlogs.Parsing', 'test_hostlogs.Secrets', 'test_hostlogs.Storing', 'test_hostlogs.Searching', 'test_hostlogs.Counting', 'test_hostlogs.Entrances'],
+                  'lab': [(14, 'hostlogs-read'), (14, 'hostlogs-limited'), (14, 'hostlogs-no-journald'), (14, 'hostlogs-secrets-removed'), (14, 'hostlogs-caps')]},
     'Holds, cool-off and two admins': {'unit': ['test_security.Holds', 'test_security.OfflineKey'], 'lab': [(9, 'hold-zfs'), (9, 'hold-btrfs'), (9, 'release-cool-off'), (9, 'dual-admin'), (9, 'offline-key')]},
     'Clock guard': {'unit': ['test_security.ClockGuard'], 'lab': [(9, 'clock-guard'), (9, 'clock-30-days')]},
     'Decoys and the brake': {'unit': ['test_security.Decoys', 'test_security.RealSentinel', 'test_security.Brake'], 'lab': [(9, 'decoy-trip'), (9, 'brake-armed')]},
