@@ -172,17 +172,36 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <div id="sec-content" class="stack"></div>
     </div>
     <div id="tab-hostlogs" class="tab" role="tabpanel" aria-labelledby="tabbtn-hostlogs" hidden>
-      <p class="muted">What hosts' journals said, as of each host's last scan. Scan a host to get newer lines.</p>
+      <p class="muted">What hosts' journals said, as of each host's last scan. Nothing here streams: scan a host to get newer lines.</p>
+      <div id="hl-range" class="seg sm" role="group" aria-label="Time range">
+        <button type="button" data-range="hour" aria-pressed="false">Last hour</button>
+        <button type="button" data-range="day" aria-pressed="false">Last day</button>
+        <button type="button" data-range="week" aria-pressed="true">Last 7 days</button>
+        <button type="button" data-range="month" aria-pressed="false">Last 30 days</button>
+        <button type="button" data-range="custom" aria-pressed="false">Custom</button>
+      </div>
+      <form id="hl-custom" class="row wrap" hidden>
+        <label class="field"><span>From</span><input id="hl-from" type="datetime-local"></label>
+        <label class="field"><span>To</span><input id="hl-to" type="datetime-local"></label>
+        <button type="submit" class="btn">Apply</button>
+        <span id="hl-custom-msg" class="st-failed" role="alert" hidden></span>
+      </form>
+      <h3>Lines by level and hour</h3>
+      <div id="hl-chart" aria-live="polite"></div>
+      <h3>Lines</h3>
       <form id="hl-form" class="stack">
         <label class="field"><span>Host</span><select id="hl-host"><option value="">All hosts</option></select></label>
         <label class="field"><span>Level</span><select id="hl-level"><option value="">Any</option><option value="err">Errors or worse</option><option value="warning">Warnings or worse</option><option value="notice">Notices or worse</option></select></label>
-        <label class="field"><span>Unit</span><input id="hl-unit" type="text" maxlength="200" placeholder="sshd" autocomplete="off"></label>
+        <label class="field"><span>Unit</span><input id="hl-unit" type="text" maxlength="200" placeholder="sshd" autocomplete="off" list="hl-units" spellcheck="false"></label>
+        <datalist id="hl-units"></datalist>
         <label class="field"><span>Text</span><input id="hl-q" type="search" maxlength="200" autocomplete="off"></label>
         <div class="row"><button type="submit" class="btn">Search</button><a id="hl-export" class="btn" download>Export CSV</a></div>
       </form>
-      <ul id="hl-status" class="list"></ul>
+      <p id="hl-count" class="muted small" role="status"></p>
       <ol id="hl-lines" class="list"></ol>
       <div class="row"><button id="hl-more" type="button" class="btn" hidden>Older</button></div>
+      <h3>Hosts: when each was last collected</h3>
+      <div id="hl-status"></div>
     </div>
     <div id="tab-audit" class="tab" role="tabpanel" aria-labelledby="tabbtn-audit" hidden>
       <div class="row"><button id="verify" type="button" class="btn">Verify chain</button><span id="verified" class="muted"></span></div>
@@ -304,6 +323,7 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/chrome.js"></script>
 <script src="/router.js"></script>
 <script src="/app.js"></script>
+<script src="/hostlogsview.js"></script>
 <script src="/topology.js"></script>
 <script src="/fsbrowse.js"></script>
 <script src="/checks.js"></script>

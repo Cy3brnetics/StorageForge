@@ -137,7 +137,7 @@ The rail on the right opens panels in the inspector: 18 of them in five groups. 
 | :--- | :--- |
 | **Scans** | Queue a scan of a bound host, or **Scan all hosts**, and follow recent scan jobs |
 | **Keys** | Generate a key in the vault, install it on a host with its password once, list keys and bindings, **Scan now** per binding |
-| **Logs** | What each host's journal said, as the last scan collected it: filter by host, level, unit and text, **Load more**, and export as a file. Nothing streams: a line arrives with the scan that reads it, and a host that could not be read says why. Times are in your time zone, with the UTC form on hover. Also [`storageforge-index hostlogs`](cli-reference.md) |
+| **Logs** | What each host's journal said, as the last scan collected it: a time range (last hour, day, 7 or 30 days, or from and to), a bar chart of lines by level and hour with the same numbers as a list, a list of when each host was last collected (or that it never was), and filters by host, level, unit (a list of the units stored) and text that apply as you type, **Older**, and export as a file. The range and filters are in the URL (`range`, `from`, `to`, `lhost`, `level`, `unit`, `q`), and a host's Details has a link to its logs. Nothing streams: a line arrives with the scan that reads it, and a host that could not be read says why. Times are in your time zone, with the UTC form on hover. Also [`storageforge-index hostlogs`](cli-reference.md) |
 | **Audit** | The newest audit entries and **Verify chain**. Also your own password, backups, and for admins [accounts, invite links and roles](features/administration.md#accounts-and-sign-in). |
 
 ![Keys panel](images/keys.jpg)

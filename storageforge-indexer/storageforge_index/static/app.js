@@ -408,6 +408,7 @@ function renderDetails(n) {
   const actions = document.createElement('div'); actions.className = 'row';
   actions.append(button(`Focus ${S.hops} hops`, () => setFocus(n.id), 'btn'), button('Center', () => select(n.id, true), 'btn ghost'));
   if (n.kind === 'Host' && !n.props.external) actions.append(button('Scan now', () => queueScan(n.label), 'btn pri'));
+  if (n.kind === 'Host' && !n.props.external && can('hostlogs.view') && typeof hlLinkEl === 'function') actions.append(hlLinkEl(n.label));
   if (n.kind === 'Host' && !n.props.external) actions.append(button('Open in planner', () => { location.href = `/planner#overview@${encodeURIComponent(n.label)}`; }, 'btn'));
   if (n.kind === 'MountPoint' && n.host) actions.append(button('Largest files', () => runSearch({ under: n.label, host: n.host, size_gt: '1MiB' }), 'btn'));
   if ((n.kind === 'Host' || n.kind === 'MountPoint') && typeof openGitForPath === 'function') {
@@ -475,7 +476,8 @@ function renderSummary() {
     more.setAttribute('aria-expanded', String(needsAll));
   }
   $('#summary').replaceChildren(text('h3', 'Nodes'), dl, text('h3', 'Health'), hl,
-    ...(broken.length ? [text('h3', 'Needs attention'), ul, ...(more ? [more] : [])] : []));
+    ...(broken.length ? [text('h3', 'Needs attention'), ul, ...(more ? [more] : [])] : []),
+    ...(S.host && can('hostlogs.view') && typeof hlLinkEl === 'function' ? [text('h3', 'Logs'), hlLinkEl(S.host, `${S.host}'s logs`)] : []));
 }
 
 /* ── right-click menus: an element with _menu(ev) returning items gets one ──
@@ -1066,60 +1068,7 @@ async function loadAudit() {
   } catch (err) { $('#audit').replaceChildren(text('li', err.message, 'muted')); }
 }
 
-/* Host logs: what scans collected. Nothing here refreshes by itself, and every value is the host's own text, so textContent only. */
-let hlOffset = 0;
-const hlWhen = (ts) => fmtTime(ts, { seconds: true });
-function hlQuery() {
-  const q = new URLSearchParams();
-  for (const [key, id] of [['host', '#hl-host'], ['level', '#hl-level'], ['unit', '#hl-unit'], ['q', '#hl-q']]) {
-    const v = $(id).value.trim();
-    if (v) q.set(key, v);
-  }
-  return q;
-}
-async function hlSearch(more) {
-  const fresh = latest('hostlogs');
-  hlOffset = more ? hlOffset + 100 : 0;
-  const q = hlQuery();
-  q.set('limit', '100'); q.set('offset', String(hlOffset));
-  try {
-    const { entries, more: hasMore } = await getJSON(`/api/hostlogs?${q}`);
-    if (!fresh()) return;                         // a newer search was asked for while this one was on its way
-    const rows = entries.map((e) => {
-      const li = document.createElement('li');
-      const cls = e.priority <= 3 ? 'st-failed' : e.priority === 4 ? 'st-warn' : '';
-      li.append(text('span', e.message, cls),
-        Object.assign(text('span', `${hlWhen(e.ts)} · ${e.host} · ${e.level} · ${e.unit || e.ident || '-'}${e.pid ? ` [${e.pid}]` : ''}`, 'm'), { title: fmtUtc(e.ts) }));
-      return li;
-    });
-    if (more) $('#hl-lines').append(...rows);
-    else $('#hl-lines').replaceChildren(...(rows.length ? rows : [text('li', 'No lines match. Newer lines arrive when a host is scanned.', 'muted')]));
-    $('#hl-more').hidden = !hasMore;
-    const file = new URLSearchParams(hlQuery()); file.set('format', 'csv');
-    $('#hl-export').href = `/api/hostlogs/export?${file}`;
-  } catch (err) { if (fresh()) { $('#hl-lines').replaceChildren(text('li', err.message, 'muted')); $('#hl-more').hidden = true; } }
-}
-async function loadHostLogs() {
-  if (!can('hostlogs.view')) return;
-  const fresh = latest('hostlogs-status');
-  try {
-    const { hosts } = await getJSON('/api/hostlogs/status');
-    if (!fresh()) return;
-    const pick = $('#hl-host'), chosen = pick.value;
-    pick.replaceChildren(text('option', 'All hosts'), ...hosts.map((s) => { const o = text('option', s.host); o.value = s.host; return o; }));
-    pick.options[0].value = '';
-    pick.value = hosts.some((s) => s.host === chosen) ? chosen : '';
-    // only what needs doing: a host collected without trouble says nothing here
-    $('#hl-status').replaceChildren(...hosts.filter((s) => s.note).map((s) => {
-      const li = document.createElement('li');
-      li.append(text('span', `${s.host}: ${s.note}`, 'st-warn'), text('span', `last tried ${hlWhen(s.collected_at)}`, 'm'));
-      return li;
-    }));
-  } catch (err) { if (fresh()) $('#hl-status').replaceChildren(text('li', err.message, 'muted')); }
-  hlSearch(false);
-}
-$('#hl-form').addEventListener('submit', (ev) => { ev.preventDefault(); hlSearch(false); });
-$('#hl-more').addEventListener('click', () => hlSearch(true));
+/* Host logs are hostlogsview.js: loadHostLogs() opens the panel, hlLinkEl() is the link from a host. */
 $('#verify').addEventListener('click', async () => {
   $('#verified').textContent = 'Checking…';
   try {
