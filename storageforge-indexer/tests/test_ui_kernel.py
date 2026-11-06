@@ -120,6 +120,32 @@ class Kernel(unittest.TestCase):
             sheets = re.findall(r'<link rel="stylesheet" href="(/[^"]+)"', (STATIC / page).read_text())
             self.assertEqual(sheets, ['/tokens.css', '/style.css'], page)
 
+    def test_the_palette_is_registered_like_any_shortcut_and_builds_no_markup(self):      # phase 5
+        """Ctrl+K is declared with sfShortcut() (so the one listener and the help know it), is a native <dialog> through sfModal(), exposes the
+        combobox and listbox roles, and sets every label as text."""
+        kernel = code(STATIC / 'kernel.js')
+        self.assertRegex(kernel, r"sfShortcut\(\{ id: 'palette', key: 'k', mods: 'mod'")
+        m = re.search(r'function sfPalette\(.*?\n\}\n', kernel, re.S)
+        self.assertIsNotNone(m)
+        body = m.group(0)
+        for needle in ("role: 'combobox'", "role: 'listbox'", "role: 'option'", 'aria-activedescendant', 'sfModal(', "'ArrowDown'", "'Enter'", 'aria-selected'):
+            self.assertIn(needle, body, f'sfPalette() lacks {needle}')
+        self.assertNotRegex(body, r'innerHTML|outerHTML|insertAdjacentHTML')
+        self.assertIn('sfShortcuts()', kernel[kernel.index('function sfShortcutHelp'):], 'the help is generated from the registry')
+
+    def test_preferences_are_kept_per_user_in_the_browser_and_never_sent_to_the_server(self):      # phase 5
+        kernel, chrome = code(STATIC / 'kernel.js'), code(STATIC / 'chrome.js')
+        body = re.search(r'function sfPrefsSave\(.*?\n\}\n', kernel, re.S).group(0)
+        self.assertIn('sfStash(', body)
+        self.assertNotRegex(body + chrome[chrome.index('async function sfPreferences'):], r'api\(|postJSON|getJSON|fetch\(')
+        self.assertIn("sfPrefKey = (user) => `sf.prefs.${user}`", kernel)
+        self.assertRegex((STATIC / 'tokens.css').read_text(), r':root\[data-density="compact"\]')
+
+    def test_a_dot_is_never_only_a_colour(self):                                          # phase 5, colour never alone
+        css = (STATIC / 'style.css').read_text()
+        for health in ('local-only', 'broken', 'unknown'):
+            self.assertRegex(css, rf'\.dot\.{health}[^{{]*\{{[^}}]*(?:clip-path|box-shadow)', f'.dot.{health} has no shape of its own')
+
     def test_the_server_serves_every_file_a_page_names(self):
         served = set(re.findall(r'"([\w.-]+\.(?:js|css|svg))"', ' '.join(re.findall(r'@web\.get\(\'/<any\(([^)]*)\):name>\'\)', SERVER))))
         for page in PAGES + SIGN_IN_PAGES:

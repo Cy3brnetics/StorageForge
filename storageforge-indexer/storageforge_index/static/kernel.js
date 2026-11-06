@@ -159,6 +159,38 @@ function sfRecall(key, fallback, user) {
   } catch { return fallback; }
 }
 
+/* ── preferences: kept in this browser, for the person who chose them ── */
+/* Theme, density and reduced motion are how this browser shows the page, not something the server needs to know, so they live in localStorage
+   through sfStash(), one key per account (sf.prefs.<name>) and so never leak to another account on the same browser. The choice becomes an
+   attribute of <html>: data-theme (tokens.css already follows it), data-density and data-motion (components.css and style.css). It is applied
+   the moment the kernel loads, from the account last seen here, and again once /api/me says who is signed in. The dialog is in chrome.js. */
+const SF_PREF_CHOICES = { theme: ['system', 'light', 'dark'], density: ['comfortable', 'compact'], motion: ['system', 'reduce'] };
+const sfPrefKey = (user) => `sf.prefs.${user}`;
+function sfPrefsRead(user) {
+  const got = sfRecall(sfPrefKey(user), {}, user), out = {};
+  for (const [name, choices] of Object.entries(SF_PREF_CHOICES)) out[name] = choices.includes(got && got[name]) ? got[name] : choices[0];
+  return out;
+}
+function sfPrefsApply(prefs) {
+  const root = document.documentElement;
+  const set = (name, value, normal) => { if (value === normal) delete root.dataset[name]; else root.dataset[name] = value; };
+  set('theme', prefs.theme, 'system');
+  set('density', prefs.density, 'comfortable');
+  set('motion', prefs.motion, 'system');
+  document.dispatchEvent(new CustomEvent('sf:prefs', { detail: prefs }));          // a canvas that read the colours once reads them again
+}
+function sfPrefsSave(prefs, user) {
+  const kept = Object.fromEntries(Object.entries(prefs).filter(([name, value]) => value !== SF_PREF_CHOICES[name][0]));
+  sfStash(sfPrefKey(user), Object.keys(kept).length ? kept : '', user);          // all defaults: nothing to remember
+  try { localStorage.setItem('sf.prefs.who', user); } catch { /* storage blocked */ }
+}
+const sfReducedMotion = () => document.documentElement.dataset.motion === 'reduce' || matchMedia('(prefers-reduced-motion: reduce)').matches;
+(() => {
+  let who = '';
+  try { who = localStorage.getItem('sf.prefs.who') || ''; } catch { /* storage blocked */ }
+  if (who) sfPrefsApply(sfPrefsRead(who));          // before anything is drawn
+})();
+
 /* ── one way to show a time and a size (UX-16) ───────────────────── */
 /* A time is shown in local time, because that is the clock a person is reading, with its UTC form on hover (title) for matching it against a
    host's own logs. Times come as seconds since the epoch. fmtTime() is the text, timeEl() the <time> element that carries the hover, fmtDate()
@@ -341,6 +373,87 @@ function formDialog({ title, body = '', fields = [], confirm = 'Save', cancel = 
   });
 }
 
+/* ── Ctrl+K: one box for everything that can be reached by name ─── */
+/* A native <dialog> with a text box and a list: type to filter by plain substring, Up and Down to move, Enter to run, Escape to close, and focus
+   goes back to where it was. It lists the shortcuts in the registry above that can act right now, and whatever a page offers through
+   sfPaletteSource(() => [{ label, hint, run }]): the main page offers its views and panels, chrome.js the other pages, each only when this
+   account may use it. Every string is set as text. */
+const SF_PALETTE_SOURCES = [];
+function sfPaletteSource(fn) { SF_PALETTE_SOURCES.push(fn); }
+function sfKeyLabel({ key, mods }) {
+  const k = key.length === 1 ? key.toUpperCase() : key === ' ' ? 'Space' : key;
+  return (mods === 'mod' ? 'Ctrl+' : mods === 'shift' ? 'Shift+' : '') + k;
+}
+function sfPaletteItems() {
+  const items = [];
+  for (const source of SF_PALETTE_SOURCES) { try { items.push(...source()); } catch { /* a source that fails offers nothing */ } }
+  for (const sc of SF_SHORTCUTS) {
+    if (sc.id === 'palette') continue;
+    const ev = { key: sc.key, shiftKey: sc.mods === 'shift', ctrlKey: sc.mods === 'mod', metaKey: false, altKey: false, isComposing: false, target: document.body, preventDefault() {}, stopPropagation() {} };
+    if (sc.when && !sc.when(ev)) continue;
+    items.push({ label: sc.label, hint: `Shortcut ${sfKeyLabel(sc)}`, run: () => sc.run(ev) });
+  }
+  return items;
+}
+function sfPalette() {
+  if (document.querySelector('dialog.sf-palette')) return;
+  const items = sfPaletteItems();
+  const id = `sf-pal-${++sfSeq}`;
+  let shown = [], active = 0, chosen = null;
+  const input = sfNode('input', { type: 'text', class: 'sf-pal-input', role: 'combobox', 'aria-expanded': 'true', 'aria-controls': `${id}-list`, 'aria-autocomplete': 'list',
+                                  'aria-label': 'Find a page, a panel or an action', placeholder: 'Find a page, a panel or an action', autocomplete: 'off', spellcheck: false });
+  const list = sfNode('ul', { class: 'sf-pal-list', id: `${id}-list`, role: 'listbox', 'aria-label': 'Matches' });
+  const status = sfNode('p', { class: 'sf-pal-status muted small', role: 'status' });
+  const dlg = sfModal(sfNode('div', { class: 'sf-pal' }, sfNode('h2', { id, class: 'sf-sr' }, 'Command palette'), input, list, status), id);
+  dlg.classList.add('sf-palette');
+  const mark = () => {
+    [...list.children].forEach((li, i) => li.setAttribute('aria-selected', String(i === active)));
+    const li = list.children[active];
+    if (li) { input.setAttribute('aria-activedescendant', li.id); li.scrollIntoView?.({ block: 'nearest' }); } else input.removeAttribute('aria-activedescendant');
+  };
+  const pick = (item) => { chosen = item; dlg.close(); };
+  const draw = () => {
+    const q = input.value.trim().toLowerCase();
+    shown = items.filter((it) => !q || `${it.label} ${it.hint || ''}`.toLowerCase().includes(q));
+    active = Math.min(active, Math.max(0, shown.length - 1));
+    list.replaceChildren(...shown.map((it, i) => {
+      const li = sfNode('li', { class: 'sf-pal-opt', role: 'option', id: `${id}-o${i}`, 'aria-selected': 'false' }, sfNode('span', { class: 'sf-pal-label' }, it.label), it.hint ? sfNode('span', { class: 'sf-pal-hint' }, it.hint) : null);
+      li.addEventListener('mousedown', (ev) => ev.preventDefault());          // the text box keeps focus
+      li.addEventListener('click', () => pick(it));
+      return li;
+    }));
+    status.textContent = shown.length ? `${shown.length} ${shown.length === 1 ? 'match' : 'matches'}` : 'Nothing matches that.';
+    mark();
+  };
+  input.addEventListener('input', () => { active = 0; draw(); });
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      if (shown.length) { active = (active + (ev.key === 'ArrowDown' ? 1 : shown.length - 1)) % shown.length; mark(); }
+    } else if (ev.key === 'Enter') {
+      ev.preventDefault();
+      if (shown[active]) pick(shown[active]);
+    } else if (ev.key.toLowerCase() === 'k' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); dlg.close(); }
+  });
+  dlg.addEventListener('close', () => { if (chosen) chosen.run(); });          // after sfModal has put focus back, so an action starts from where the person was
+  draw();
+  input.focus();
+}
+sfShortcut({ id: 'palette', key: 'k', mods: 'mod', label: 'Open the command palette', fields: true, run: (ev) => { ev.preventDefault(); sfPalette(); } });
+
+/* The shortcut help is the registry, read back: what a shortcut is called, where it works and its key. */
+function sfShortcutHelp() {
+  const id = `sf-dlg-${++sfSeq}`;
+  const done = sfNode('button', { type: 'submit', class: 'sf-btn pri' }, 'Close');
+  const rows = sfShortcuts().map((s) => sfNode('div', { class: 'sf-keyrow' }, sfNode('dt', {}, sfNode('kbd', {}, sfKeyLabel(s))), sfNode('dd', {}, s.label, s.where && s.where !== 'Anywhere on the page' ? sfNode('small', {}, ` (${s.where})`) : null)));
+  const form = sfNode('form', { method: 'dialog' }, sfNode('h2', { id }, 'Keyboard shortcuts'),
+    sfNode('p', { class: 'muted small' }, 'A shortcut does nothing while you type in a field or while a dialog is open.'),
+    sfNode('dl', { class: 'sf-keys-list' }, rows), sfNode('div', { class: 'sf-actions' }, done));
+  sfModal(form, id);
+  done.focus();
+}
+sfShortcut({ id: 'shortcut-help', key: '?', label: 'Show the keyboard shortcuts', run: (ev) => { ev.preventDefault(); sfShortcutHelp(); } });
+
 /* ── password again before commands run on hosts ─────────────────── */
 let sfMePromise = null;
 function sfMe() {                 // who is signed in and what they may do, asked once for the page
@@ -447,3 +560,10 @@ async function sfFetch(path, init, confirmed) {
 }
 const getJSON = async (path, opts) => (await api(path, opts)).json();
 const postJSON = (path, body, opts = {}) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), ...opts });
+
+/* Who is signed in decides whose preferences apply: the account last seen here was applied at the top, this makes sure it was the right one. */
+sfMe().then((me) => {
+  if (!me || !me.username) return;
+  try { localStorage.setItem('sf.prefs.who', me.username); } catch { /* storage blocked */ }
+  sfPrefsApply(sfPrefsRead(me.username));
+}).catch(() => { /* a 401 has already sent the page to /login */ });

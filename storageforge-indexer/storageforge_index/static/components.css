@@ -2,7 +2,7 @@
    named sf-* so they cannot collide with a page's own classes, and they use only the tokens in tokens.css, so a dialog looks the same
    on the main page, the planner and /manage, in both themes. A page's old classes keep working and move over one at a time. */
 
-.sf-live { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.sf-live, .sf-sr { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .sf-btn { font: inherit; font-size: var(--sf-t3); cursor: pointer; color: var(--sf-text); background: var(--sf-raise); border: 1px solid var(--sf-line-2); border-radius: var(--sf-radius); padding: 6px var(--sf-s3); white-space: nowrap; }
 .sf-btn:hover { border-color: var(--sf-accent); }
@@ -46,11 +46,17 @@ button[aria-busy="true"] { pointer-events: none; }
 button[aria-busy="true"]::after { content: ""; display: inline-block; width: .8em; height: .8em; margin-left: .5em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: sf-spin .8s linear infinite; vertical-align: -0.1em; }
 @keyframes sf-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { button[aria-busy="true"]::after { animation: none; border-right-color: currentColor; } }
+:root[data-motion="reduce"] button[aria-busy="true"]::after { animation: none; border-right-color: currentColor; }
+/* "Reduce motion" in Preferences (kernel.js sets data-motion): the same as the system setting, for a person whose system does not say it. */
+:root[data-motion="reduce"] *, :root[data-motion="reduce"] *::before, :root[data-motion="reduce"] *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
+/* "Compact" in Preferences: tighter controls on every page that uses the shared components. */
+:root[data-density="compact"] .sf-btn { padding: 3px var(--sf-s2); }
+:root[data-density="compact"] .sf-dialog { padding: var(--sf-s4); }
 
 /* The security chip, on every page (UX-09): where the posture of every host adds up to, always "Security: …", with the reason under it. */
 .threat { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 1px; max-width: 26em; border: 1px solid var(--sf-line); border-radius: 4px; padding: 2px 8px; font: var(--sf-t2)/1.25 var(--sf-sans); text-align: left; cursor: pointer; background: var(--sf-panel); color: inherit; }
 .threat b { font-weight: 600; }
-.threat-detail { font-size: var(--sf-t1); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.threat-detail { min-width: 0; max-width: 100%; overflow-wrap: anywhere; font-size: var(--sf-t1); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .threat.sec-critical { background: #7a1f1f; color: #fff; border-color: #a33; }
 .threat.sec-warning { background: #7a5a1f; color: #fff; border-color: #a83; }
 .threat.sec-secure { color: var(--sf-ok); }
@@ -66,5 +72,30 @@ button[aria-busy="true"]::after { content: ""; display: inline-block; width: .8e
 a.sf-btn { display: inline-block; text-decoration: none; }
 .sf-btn[aria-current="page"] { border-color: var(--sf-accent); font-weight: 600; }
 .sf-site { font-size: var(--sf-t2); color: var(--sf-muted); }
-.sf-user { display: flex; align-items: center; justify-content: space-between; gap: var(--sf-s2); font-size: var(--sf-t2); color: var(--sf-muted); }
+.sf-user { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sf-s2); font-size: var(--sf-t2); color: var(--sf-muted); }
 .sf-user span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The command palette (Ctrl+K, in kernel.js): a text box over a list. The chosen row is marked by a bar on its left as well as by its fill. */
+.sf-dialog.sf-palette { width: min(92vw, 560px); padding: 0; margin: 12vh auto auto; }
+.sf-pal { display: flex; flex-direction: column; }
+.sf-pal-input { font: inherit; font-size: var(--sf-t5); color: var(--sf-text); background: var(--sf-bg); border: 0; border-bottom: 1px solid var(--sf-line-2); padding: var(--sf-s3) var(--sf-s4); min-width: 0; }
+.sf-pal-input:focus-visible { outline: 2px solid var(--sf-accent); outline-offset: -2px; }
+.sf-pal-list { list-style: none; margin: 0; padding: var(--sf-s1) 0; max-height: min(52vh, 420px); overflow: auto; }
+.sf-dialog .sf-pal-list { padding: var(--sf-s1) 0; }
+.sf-pal-opt { display: flex; justify-content: space-between; align-items: baseline; gap: var(--sf-s3); padding: 7px var(--sf-s4); border-left: 3px solid transparent; cursor: pointer; }
+.sf-pal-opt:hover { background: var(--sf-panel-2); }
+.sf-pal-opt[aria-selected="true"] { background: var(--sf-raise); border-left-color: var(--sf-accent); }
+.sf-pal-label { overflow-wrap: anywhere; }
+.sf-pal-hint { color: var(--sf-muted); font-size: var(--sf-t2); white-space: nowrap; }
+.sf-dialog .sf-pal-status { margin: 0; padding: var(--sf-s2) var(--sf-s4); border-top: 1px solid var(--sf-line); }
+
+/* The shortcut help, and the Preferences dialog (chrome.js). */
+.sf-keys-list { margin: 0; display: flex; flex-direction: column; gap: var(--sf-s2); }
+.sf-keyrow { display: grid; grid-template-columns: 8.5em minmax(0, 1fr); gap: var(--sf-s3); align-items: baseline; }
+.sf-keyrow dt, .sf-keyrow dd { margin: 0; }
+.sf-keyrow small { color: var(--sf-muted); }
+kbd { font-family: var(--sf-mono); font-size: var(--sf-t2); background: var(--sf-bg); border: 1px solid var(--sf-line-2); border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px; }
+.sf-prefs fieldset { border: 1px solid var(--sf-line); border-radius: var(--sf-radius); margin: 0; padding: var(--sf-s2) var(--sf-s3) var(--sf-s3); display: flex; flex-direction: column; gap: var(--sf-s2); }
+.sf-prefs legend { color: var(--sf-muted); font-size: var(--sf-t2); padding: 0 var(--sf-s1); }
+.sf-prefs label { display: flex; align-items: center; gap: var(--sf-s2); cursor: pointer; }
+.sf-prefs input { accent-color: var(--sf-accent); margin: 0; }

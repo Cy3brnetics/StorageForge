@@ -1143,7 +1143,7 @@ class BrowserSmoke(unittest.TestCase):
     # ── one place for shortcuts: UX-20, UX-40 and UX-41 ──────────────────────────────────────────────────────────────
     def test_every_global_shortcut_is_declared_with_what_it_is_for(self):               # UX-20
         got = self.page.evaluate('sfShortcuts()')
-        self.assertEqual({s['id'] for s in got}, {'search-focus', 'clear-focus', 'context-menu', 'context-menu-f10', 'panel-toggle', 'tasks-undo', 'file-map-dest'})
+        self.assertEqual({s['id'] for s in got}, {'search-focus', 'clear-focus', 'context-menu', 'context-menu-f10', 'panel-toggle', 'tasks-undo', 'file-map-dest', 'palette', 'shortcut-help'})
         for s in got:
             self.assertTrue(s['label'] and s['where'] and s['key'], s)             # what a help overlay would show
 

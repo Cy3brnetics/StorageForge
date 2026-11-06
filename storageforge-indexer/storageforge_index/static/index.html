@@ -20,11 +20,16 @@
   <div class="actions">
     <div id="graphsub" class="seg" role="group" aria-label="Graph view" hidden><button type="button" data-sub="files">Files</button><button type="button" data-sub="structure">Structure</button></div>
     <label id="hopsfield" class="field"><span>Focus</span><select id="hops"><option value="1">1 hop</option><option value="2" selected>2 hops</option><option value="3">3 hops</option></select></label>
-    <a id="toplanner" class="btn" href="/planner">Planner</a>
-    <a id="tomanage" class="btn" href="/manage">Manage</a>
     <button id="reset" type="button" class="btn">Show all</button>
     <button id="export" type="button" class="btn">Export .canvas</button>
-    <label id="sessfield" class="field" title="How long a sign-in lasts (changing it asks for your password)" hidden><span>Session</span><select id="sesslen" aria-label="Session length"><option value="30">30 min</option><option value="60">1 h</option><option value="120">2 h</option><option value="240">4 h</option><option value="480">8 h</option></select></label>
+    <button id="cmdk" type="button" class="btn ghost" title="Find a page, a panel or an action ( Ctrl+K )">Commands</button>
+    <button id="hmore" type="button" class="btn ghost hmore" aria-expanded="false" aria-controls="hextra">More</button>
+    <span id="hextra" class="hextra">
+      <a id="toplanner" class="btn" href="/planner">Planner</a>
+      <a id="tomanage" class="btn" href="/manage">Manage</a>
+      <label id="sessfield" class="field" title="How long a sign-in lasts (changing it asks for your password)" hidden><span>Session</span><select id="sesslen" aria-label="Session length"><option value="30">30 min</option><option value="60">1 h</option><option value="120">2 h</option><option value="240">4 h</option><option value="480">8 h</option></select></label>
+      <button id="prefs" type="button" class="btn ghost" title="Theme, density and motion, kept in this browser">Preferences</button>
+    </span>
     <button id="lock" type="button" class="btn ghost" title="Sign out">Sign out</button>
   </div>
 </header>
@@ -32,6 +37,11 @@
 <main class="layout">
   <section class="stage" id="stage" tabindex="-1" aria-label="Storage topology">
     <div id="topo" class="topo" aria-label="Editable topology: devices, pools, datasets, mount points, links and exports per host"></div>
+    <section id="firstrun" class="firstrun" aria-labelledby="frtitle" hidden>
+      <div class="frhead"><h2 id="frtitle">Get started</h2><button type="button" class="btn ghost sm">Dismiss</button></div>
+      <p class="muted small">Three steps from an empty install to a first alert. Each one opens the panel where it is done.</p>
+      <ol class="frlist"></ol>
+    </section>
     <div id="stagebar" class="stagebar" role="status" hidden></div>
     <div id="savebar" class="savebar" role="status" hidden><span id="savemsg" class="muted"></span><button id="discarddesigns" type="button" class="btn ghost">Discard</button><button id="savedesigns" type="button" class="btn pri">Save design</button></div>
     <div id="mapview" class="mapview" hidden aria-label="Infrastructure map: hosts, networks, services and workloads, derived from what hosts report"></div>
