@@ -1,6 +1,6 @@
 ---
 id: SF-71
-status: open
+status: done
 severity: medium
 effort: S
 area: Ransomware defense
@@ -27,6 +27,9 @@ Any local account (or an NFS client, which can create symlinks) that can write t
 Do not make the file in the shared folder under a guessable-by-watching name that is then edited by path. Build the decoy in a root-private temporary folder (`mktemp -d` under `$STATE`, mode 0700), set owner and mode there, then put it in place with a single operation that does not follow a link at the destination (`install -T` or `ln`+`rename` on the same filesystem, with `mv -T`), after checking the destination is not a link. Test it as `RollbackFolder` in `test_routers.py` does for SF-55: run the loop under a stand-in shell with a pre-made link of the temporary name.
 
 ## Done when
-- [ ] No step of the decoy write follows a link made by another account in the share folder
-- [ ] A test swaps the temporary file for a link during the loop and sees the target unchanged
-- [ ] The decoy still has the folder's owner and mode, so a user who can change files there can trip it
+- [x] No step of the decoy write follows a link made by another account in the share folder
+- [x] A test swaps the temporary file for a link during the loop and sees the target unchanged
+- [x] The decoy still has the folder's owner and mode, so a user who can change files there can trip it
+
+## Fixed
+2026-11-06, in `225cfef`. Each decoy is built in a root-only `mktemp -d` folder and moved into the share with `mv -T -f`, so no name in the share is written through. The privilege step of the old attack was read, not run; the test swaps the temporary name for a link and checks the target is unchanged. Unit-tested, with the test seen to fail on the old code. Not lab-tested.

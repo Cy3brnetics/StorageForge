@@ -1,6 +1,6 @@
 ---
 id: SF-63
-status: open
+status: done
 severity: low
 effort: S
 area: Network devices
@@ -27,6 +27,9 @@ A custom role made to see devices but not firewall rules sees the rules, includi
 Apply the same filter in `api_device_change`: without `security.view`, return only the id, device, status, actor and times. Better, put the filter in one helper used by the three routes.
 
 ## Done when
-- [ ] `GET /api/devices/changes/<id>` for a role without `security.view` returns no statements, report or output
-- [ ] A test in `test_routers.py` with a `devices.view`-only role covers the change route next to the device route
-- [ ] The commit is written here
+- [x] `GET /api/devices/changes/<id>` for a role without `security.view` returns no statements, report or output
+- [x] A test in `test_routers.py` with a `devices.view`-only role covers the change route next to the device route
+- [x] The commit is written here
+
+## Fixed
+2026-11-06, in `0eb25b7`. A permission rule gives the change route `security.view`, like `/api/firewall`. A role with `devices.apply` and not `security.view` now gets 403 on the read the manage page makes after a report; the built-in roles are unaffected. Unit-tested, with the test seen to fail on the old code. Not lab-tested.

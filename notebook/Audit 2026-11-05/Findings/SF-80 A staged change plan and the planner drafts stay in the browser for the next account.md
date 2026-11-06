@@ -1,6 +1,6 @@
 ---
 id: SF-80
-status: open
+status: done
 severity: low
 effort: S
 area: Web UI
@@ -27,7 +27,10 @@ On a browser shared by two people (a shared admin workstation, a jump host), the
 Move both to `sfStash`/`sfRecall` with the signed-in name (the planner already learns it from `/api/me`). Signing out can then leave the drafts in place (the same person finds them again), because the stash hides them from other accounts. Old unstamped keys have no owner: remove them rather than hand them to whoever signs in next. Add a case to `tests/test_ui_kernel.py` that fails when a script writes a `localStorage` key not routed through the stash.
 
 ## Done when
-- [ ] The Changes draft and the planner drafts are stamped with the user and not shown to another account
-- [ ] Unstamped drafts from earlier versions are dropped, not handed to whoever signs in next
-- [ ] A browser test signs in as two accounts and sees the second get an empty plan
-- [ ] The commit is written here
+- [x] The Changes draft and the planner drafts are stamped with the user and not shown to another account
+- [x] Unstamped drafts from earlier versions are dropped, not handed to whoever signs in next
+- [x] A browser test signs in as two accounts and sees the second get an empty plan
+- [x] The commit is written here
+
+## Fixed
+2026-11-06, in `3c1f9b6`. The change plan and planner drafts go through `sfStash`/`sfRecall`, stamped with the account, and old unstamped keys are removed on load. Signing out still leaves the drafts, now under their own account. The suggested rule in `test_ui_kernel.py` against any `localStorage` key outside the stash was not added. Unit-tested, with the test seen to fail on the old code. Not lab-tested.

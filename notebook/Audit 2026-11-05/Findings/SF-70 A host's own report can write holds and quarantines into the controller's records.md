@@ -1,6 +1,6 @@
 ---
 id: SF-70
-status: open
+status: done
 severity: medium
 effort: S
 area: Ransomware defense
@@ -33,6 +33,9 @@ The module exists because a compromised host lies. This path lets the lying host
 Do not parse `brake_ran` detail for rows when the event came in by `report` or `scan`. Rows from brake output should come only from a signed run (`security.brake`, playbooks), which already calls `_record_brake_output` with the run's own output. If the sentinel's own brake output must be learned, make it a request to measure (the next signed measurement reads the table and holds). Validate whatever is parsed: `clean_target` for addresses, `ZFS_SNAP_RE` or `clean_path` for snapshots, `TAG_RE` for tags. Never clear `missing_at` outside a signed measurement.
 
 ## Done when
-- [ ] A report carrying `QUARANTINED` or `HELD` lines in a `brake_ran` event writes no row
-- [ ] A test posts that report with a valid token and checks the three tables are unchanged, including a hold marked missing
-- [ ] Rows from `security.brake` (signed run) still arrive, with their values checked
+- [x] A report carrying `QUARANTINED` or `HELD` lines in a `brake_ran` event writes no row
+- [x] A test posts that report with a valid token and checks the three tables are unchanged, including a hold marked missing
+- [x] Rows from `security.brake` (signed run) still arrive, with their values checked
+
+## Fixed
+2026-11-06, in `6bd3aa3`. A `brake_ran` line from a host is only an event. The signed brake run still writes holds and quarantines, and each value is checked first. Unit-tested, with the test seen to fail on the old code. Not lab-tested.

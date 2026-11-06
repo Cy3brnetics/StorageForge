@@ -1,6 +1,6 @@
 ---
 id: SF-65
-status: open
+status: done
 severity: low
 effort: S
 area: Hardening steps
@@ -25,6 +25,9 @@ The same class as [[SF-55 A device rollback script runs from a guessable tempora
 Use `mktemp` for both files and remove them when the step ends (`err=$(mktemp) ... rm -f "$err"`), as `fw_tool` already does for its own copy.
 
 ## Done when
-- [ ] Neither step names a fixed file under `/tmp`
-- [ ] A test runs each step under a stand-in shell with a pre-made file of the old name and sees it not used
-- [ ] The commit is written here
+- [x] Neither step names a fixed file under `/tmp`
+- [x] A test runs each step under a stand-in shell with a pre-made file of the old name and sees it not used
+- [x] The commit is written here
+
+## Fixed
+2026-11-06, in `fc977b2`. Both steps keep their error output in a `mktemp` file. The apparmor step's own `before=$(mktemp)` file is still not removed, which is not part of this finding. Unit-tested, with the test seen to fail on the old code. Not lab-tested.

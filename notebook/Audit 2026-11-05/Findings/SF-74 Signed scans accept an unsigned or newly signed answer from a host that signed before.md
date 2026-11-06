@@ -1,6 +1,6 @@
 ---
 id: SF-74
-status: open
+status: done
 severity: low
 effort: S
 area: Signed scan payloads
@@ -29,6 +29,9 @@ The signature is meant to show that the payload came from that host's signer, un
 Once a host has signed (a pinned key, or `scan_signatures.state = 'signed'`), treat `SFSIG0` or a missing mark as a failure for that host and say why, with a one-click "this host no longer signs" accept that keeps the old key pinned. For root-scanned hosts pin the host key too (pin when `key in host_keys`) so a different key is a mismatch. Tests: pinned host with `SFSIG0`; root-scanned host with a foreign key.
 
 ## Done when
-- [ ] A host that signed before and now returns unsigned is refused or flagged, not silently used
-- [ ] A host that signs with its SSH host key refuses a different signer
-- [ ] Tests for both, and `docs/security.md` says what the default does
+- [x] A host that signed before and now returns unsigned is refused or flagged, not silently used
+- [x] A host that signs with its SSH host key refuses a different signer
+- [x] Tests for both, and `docs/security.md` says what the default does
+
+## Fixed
+2026-11-06, in `bc7cc95`. A host that signed before is refused when it answers unsigned or under a new key, even with `scans.require_signed` off. The way out is to forget the host's key (`access signing --forget` or `DELETE /api/scans/signing/<address>`); its scans then count as unsigned until it signs again and the new key is pinned. Host-key signers are pinned on their next signed scan, not retroactively. Unit-tested, with the test seen to fail on the old code. Not lab-tested.

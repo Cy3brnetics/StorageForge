@@ -1,6 +1,6 @@
 ---
 id: SF-61
-status: open
+status: done
 severity: medium
 effort: S
 area: Network devices
@@ -27,7 +27,10 @@ When the backup cannot be saved (disk full, a read-only account) or the schedule
 Have `RouterOsApply.plant` check each answer with the same failure words `apply` uses, and read the scheduler back (`/system/scheduler/print count-only where name=sf-<id>`) before it returns, raising `DeviceError` if it is not there. A test feeds a stand-in `run` the failure text and asserts that `apply` sends no change line.
 
 ## Done when
-- [ ] A failed `backup/save` or `scheduler/add` stops `apply()` before the first change line, with status back at `reported` and an error saying the rollback could not be planted
-- [ ] The scheduler is read back before the change goes on
-- [ ] A test in `test_routers.py` holds both
-- [ ] The commit is written here
+- [x] A failed `backup/save` or `scheduler/add` stops `apply()` before the first change line, with status back at `reported` and an error saying the rollback could not be planted
+- [x] The scheduler is read back before the change goes on
+- [x] A test in `test_routers.py` holds both
+- [x] The commit is written here
+
+## Fixed
+2026-11-06, in `b934d6c`. RouterOS plant checks the backup, the scheduler answer and a read-back, and the change stops before its first command if the timer is not set. Any failure before the timer is on now leaves the change at `reported` with `ok: false`, for every platform. Unit-tested, with the test seen to fail on the old code. Not lab-tested.

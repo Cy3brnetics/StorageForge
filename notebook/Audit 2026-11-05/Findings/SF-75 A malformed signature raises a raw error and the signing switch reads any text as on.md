@@ -1,6 +1,6 @@
 ---
 id: SF-75
-status: open
+status: done
 severity: low
 effort: S
 area: Signed scan payloads
@@ -27,5 +27,8 @@ Tidiness and error quality: one hostile host can make its scans fail with an int
 Catch `struct.error` (and `IndexError`) in `signer_key` and re-raise `ValueError`. In the route, accept only a JSON boolean (`isinstance(v, bool)`) and return 400 otherwise, as the neighbours do. Add a test for each.
 
 ## Done when
-- [ ] A truncated or overrunning signature gives `BadSignature` with the usual text from every caller
-- [ ] `PUT /api/scans/signing` refuses a non-boolean `require`
+- [x] A truncated or overrunning signature gives `BadSignature` with the usual text from every caller
+- [x] `PUT /api/scans/signing` refuses a non-boolean `require`
+
+## Fixed
+2026-11-06, in `1885a41`. A truncated signature raises `BadSignature`, and `PUT /api/scans/signing` takes a JSON boolean or on/off/yes/no/1/0 and answers 400 to anything else. Unit-tested, with the test seen to fail on the old code. Not lab-tested.

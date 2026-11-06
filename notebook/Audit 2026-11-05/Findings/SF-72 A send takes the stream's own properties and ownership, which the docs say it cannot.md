@@ -33,3 +33,6 @@ For ZFS, receive with `-o` overrides that are safe by construction (`-o canmount
 - [ ] A received btrfs folder cannot give a local account a setuid root file
 - [ ] The docs list what a stolen send key can still put on the receiver
 - [ ] Lab tier 16 includes a hostile stream and passes
+
+## Progress
+2026-11-06, in `3de010a`: the ZFS receive adds `-x sharenfs -x sharesmb -o setuid=off -o devices=off -o canmount=noauto`, so a stream cannot bring an export or a setuid file with it; `docs/security.md` advises `nosuid,nodev` or a 0700 parent for a btrfs receive folder. **Still open**, because it needs a lab run (tier 16) with a hostile stream: on ZFS, a `zfs send -p` or `-R` stream carrying `sharenfs`, `sharesmb`, a setuid file, a device node and `canmount=on`; confirm `-x` and `-o` work together including an incremental receive, that no export appears, `setuid` and `devices` read `off`, and the dataset does not mount at boot. On btrfs, a subvolume with a root-owned setuid file: confirm it arrives intact and whether `nosuid` or a 0700 parent stops a local account using it. `canmount=noauto` means a received dataset no longer mounts at boot.

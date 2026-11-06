@@ -1,6 +1,6 @@
 ---
 id: SF-73
-status: open
+status: done
 severity: medium
 effort: S
 area: Ransomware defense
@@ -27,6 +27,9 @@ Any host with a token (any host with the sentinel and a report URL) can run the 
 Cap events per host per hour in `ingest_events` (a few hundred) and drop beyond it with one summary event; cap the `detail` stored for host-sent events well below 8,000 (1 KiB is enough for every kind the sentinel emits); prune warn and crit events that are acknowledged and older than a year, or all events beyond a row count per host. Rate limit by token as well as by address.
 
 ## Done when
-- [ ] A host's report beyond the cap writes no more rows, and the cap is visible in the response
-- [ ] A test posts 10,000 distinct lines with a valid token and checks the table size is bounded
-- [ ] Old acknowledged events are pruned
+- [x] A host's report beyond the cap writes no more rows, and the cap is visible in the response
+- [x] A test posts 10,000 distinct lines with a valid token and checks the table size is bounded
+- [x] Old acknowledged events are pruned
+
+## Fixed
+2026-11-06, in `1e528bb`. At most 300 events an hour per host and 100 of any one kind, detail cut at 2048 characters, an `events_dropped` warning once an hour, acknowledged events older than a year pruned and the newest 5000 per host kept. No per-token rate limiter was added. Unit-tested, with the test seen to fail on the old code. Not lab-tested.

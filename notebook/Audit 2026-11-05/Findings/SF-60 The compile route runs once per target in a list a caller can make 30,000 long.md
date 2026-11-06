@@ -1,6 +1,6 @@
 ---
 id: SF-60
-status: open
+status: done
 severity: medium
 effort: S
 area: Network language
@@ -35,6 +35,9 @@ Any account that may see devices can keep a server thread busy for minutes with 
 Accept `targets` only as a list of at most ten strings, each one of `rostranspiler.TARGETS`, de-duplicated, and answer 400 otherwise. Also refuse a non-list (`targets: 5` and a dict currently reach the loop as other types). Keep the 512 KiB body limit, which is right for the text.
 
 ## Done when
-- [ ] A `targets` list longer than the ten known names, or with repeats or a non-string, answers 400
-- [ ] A test posts a 2,000-statement text with 5,000 repeats of one target and sees 400 in well under a second
-- [ ] The commit is written here
+- [x] A `targets` list longer than the ten known names, or with repeats or a non-string, answers 400
+- [x] A test posts a 2,000-statement text with 5,000 repeats of one target and sees 400 in well under a second
+- [x] The commit is written here
+
+## Fixed
+2026-11-06, in `6452a81`. The route takes `targets` only as a list of at most ten different known names and answers 400 otherwise. A repeated name is refused, not quietly merged. Unit-tested, with the test seen to fail on the old code. Not lab-tested.

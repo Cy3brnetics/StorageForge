@@ -1,6 +1,6 @@
 ---
 id: SF-64
-status: open
+status: done
 severity: low
 effort: S
 area: Network language
@@ -33,6 +33,9 @@ Nobody gains code execution on a host or router from this alone: the shell-capab
 Make one `_addr` helper: the value must match `[0-9A-Fa-f:.]+` (plus `/` and a number where a prefix is allowed, and `-` for a range), and then pass `ipaddress`. Use `re.fullmatch('[0-9]+')` instead of `isdigit()`. Add the lines `src-address=fe80::1%$(id)` and `distance=²` to the language's rejection tests, and add these emitters to the check that every generator keeps values as data.
 
 ## Done when
-- [ ] A `%` in any address field, and a non-ASCII digit in any number field, are refused by `parse`
-- [ ] A test holds both, and a property test checks that no emitted line has `;`, `$`, a backtick or a quote that was not in the validated alphabet
-- [ ] The commit is written here
+- [x] A `%` in any address field, and a non-ASCII digit in any number field, are refused by `parse`
+- [x] A test holds both, and a property test checks that no emitted line has `;`, `$`, a backtick or a quote that was not in the validated alphabet
+- [x] The commit is written here
+
+## Fixed
+2026-11-06, in `0d73e81`. A `%` zone is refused outright (no emitter takes one), and number and address checks are ASCII only. Unit-tested, with the test seen to fail on the old code. Not lab-tested.
