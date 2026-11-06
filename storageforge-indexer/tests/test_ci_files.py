@@ -9,7 +9,7 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 FOLDERS = [REPO / '.forgejo', REPO / '.github']
 # the Unicode bidirectional controls and isolates, and the zero-width characters that hide in a diff
-HIDDEN = re.compile('[‪-‮⁦-⁩​-‏⁠﻿]')
+HIDDEN = re.compile('[\\u202a-\\u202e\\u2066-\\u2069\\u200b-\\u200f\\u2060\\ufeff]')
 
 
 def ci_files():
