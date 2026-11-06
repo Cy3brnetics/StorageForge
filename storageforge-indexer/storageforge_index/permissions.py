@@ -122,6 +122,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (_WRITE, r'/api/traffic(/.*)?', 'netscan.run'),
     (('POST',), r'/api/devices/changes/\d+/(apply|confirm)', 'devices.apply'),
     (('POST',), r'/api/devices/[^/]+/report', 'devices.apply'),
+    (READ, r'/api/devices/changes/\d+', 'security.view'),       # a change holds the rule and its device commands, which /api/devices/<name> cuts out for a role without this (SF-63)
     (READ, r'/api/devices(/.*)?', 'devices.view'),
     (READ, r'/api/fleet', 'devices.view'),
     (('POST',), r'/api/dsl/compile', 'devices.view'),

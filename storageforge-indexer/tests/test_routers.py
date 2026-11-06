@@ -774,6 +774,23 @@ class Api(Base):
         stored = self.conn.scalar("SELECT data_json FROM security_measurements WHERE host = 'wrt' AND kind = 'device'")
         self.assertNotIn('SYNTHETICPRIVATEKEY', stored)
 
+    def test_a_role_without_security_view_does_not_read_a_change(self):           # SF-63
+        users.save_role(self.conn, 'devlook', 'devices, no firewall rules', ['devices.view'], 'a', True)
+        users.create(self.conn, 'devlook1', PW, 'devlook')
+        rep = netdevice.report(self.db, self.conn, 'gw', '/ip firewall filter add chain=input protocol=tcp dst-port=8080 src-address=10.1.2.0/24 action=accept comment="secret-rule"', 'a')
+        self.assertEqual(self.client.get(f'/api/devices/changes/{rep["id"]}').status_code, 200, 'whoever holds security.view still reads it')
+        self.assertEqual(permissions.required('GET', f'/api/devices/changes/{rep["id"]}'), permissions.required('GET', '/api/firewall'))
+        self.login('devlook1')
+        mine = self.client.get('/api/devices/gw')
+        self.assertEqual(mine.status_code, 200)
+        self.assertNotIn('secret-rule', mine.get_data(as_text=True))
+        for path in (f'/api/devices/changes/{rep["id"]}', '/api/devices/changes/1', '/api/firewall', '/api/dsl/of?host=gw'):
+            got = self.client.get(path)
+            self.assertEqual(got.status_code, 403, path)
+            self.assertNotIn('secret-rule', got.get_data(as_text=True), path)
+        viewer = permissions.BUILTIN['viewer'][1]
+        self.assertTrue(permissions.allows(viewer, 'GET', f'/api/devices/changes/{rep["id"]}'))
+
     def test_a_what_if_flips_on_the_rule_it_was_given(self):
         got = self.client.post('/api/dsl/whatif', json={'host': 'gw', 'dsl': '/ip firewall filter add chain=input in-interface=ether2 protocol=tcp dst-port=8291 action=accept', 'from': '198.51.100.9', 'to': '198.51.100.1', 'port': 8291}).get_json()
         self.assertEqual((got['before']['verdict'], got['changed']), ('blocked', False), 'it goes after the final drop, where RouterOS would append it')
