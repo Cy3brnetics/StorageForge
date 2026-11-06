@@ -198,7 +198,11 @@ def register(web, ctx):
         body = json_body()
         stmts = rostranspiler.parse(str(body.get('dsl') or ''))
         wanted = body.get('targets') or list(rostranspiler.TARGETS)
-        out = {t: rostranspiler.emit(stmts, t) for t in wanted}
+        # a short list of known names, each once (SF-60): a long one made the same text compile again and again, and the cost was checked only after
+        if not isinstance(wanted, list) or len(wanted) > len(rostranspiler.TARGETS) or len(set(map(str, wanted))) != len(wanted) \
+                or any(not isinstance(t, str) or t not in rostranspiler.TARGETS for t in wanted):
+            raise rostranspiler.DslError('targets: a list of at most ' + str(len(rostranspiler.TARGETS)) + ' different names, from ' + ', '.join(rostranspiler.TARGETS))
+        out ={t: rostranspiler.emit(stmts, t) for t in wanted}
         for got in out.values():         # a private key stays out of what's shown
             for s in stmts:
                 for k in rostranspiler.SECRET_ATTRS:

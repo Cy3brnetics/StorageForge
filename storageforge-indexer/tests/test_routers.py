@@ -727,6 +727,20 @@ class Api(Base):
         self.assertNotIn(key, json.dumps(got))
         self.assertEqual(self.client.post('/api/dsl/compile', json={'dsl': '/nonsense add a=1'}).status_code, 400)
 
+    def test_the_targets_of_a_compile_are_a_short_list_of_known_names(self):      # SF-60
+        import time
+        dsl = '\n'.join(f'/ip firewall filter add chain=input protocol=tcp dst-port={1000 + i} action=accept' for i in range(2000))
+        t = time.perf_counter()
+        got = self.client.post('/api/dsl/compile', json={'dsl': dsl, 'targets': ['nftables'] * 5000})
+        self.assertEqual(got.status_code, 400)
+        self.assertLess(time.perf_counter() - t, 1.0, 'refused before any compiling')
+        for targets in (['nftables', 'nftables'], list(ros.TARGETS) + ['ufw'], ['nope'], 5, {'nftables': 1}, [5], [['ufw']], 'nftables'):
+            self.assertEqual(self.client.post('/api/dsl/compile', json={'dsl': '/ip dns set servers=1.1.1.1', 'targets': targets}).status_code, 400, repr(targets))
+        every = self.client.post('/api/dsl/compile', json={'dsl': '/ip dns set servers=1.1.1.1', 'targets': list(ros.TARGETS)})
+        self.assertEqual((every.status_code, sorted(every.get_json()['targets'])), (200, sorted(ros.TARGETS)))
+        for empty in ({}, {'targets': []}, {'targets': None}):
+            self.assertEqual(self.client.post('/api/dsl/compile', json={'dsl': '/ip dns set servers=1.1.1.1', **empty}).status_code, 200)
+
     def test_a_what_if_flips_on_the_rule_it_was_given(self):
         got = self.client.post('/api/dsl/whatif', json={'host': 'gw', 'dsl': '/ip firewall filter add chain=input in-interface=ether2 protocol=tcp dst-port=8291 action=accept', 'from': '198.51.100.9', 'to': '198.51.100.1', 'port': 8291}).get_json()
         self.assertEqual((got['before']['verdict'], got['changed']), ('blocked', False), 'it goes after the final drop, where RouterOS would append it')
