@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tiers 1, 3, 4, 5, 6 and 7 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py, tiers 9 to 11 are tiers_platform.py, tier 13 is tiers_features.py, tier 14 is tiers_hostlogs.py, tier 17 is tiers_netlang.py, tier 17 is tiers_netlang.py, tier 16 is tiers_sends.py.
+"""Tiers 1, 3, 4, 5, 6 and 7 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py, tiers 9 to 11 are tiers_platform.py, tier 13 is tiers_features.py, tier 14 is tiers_hostlogs.py, tier 17 is tiers_netlang.py, tier 16 is tiers_sends.py.
 They change the VMs, so run them through examples/lab/lab.sh test --all, which resets the lab around each tier.
 
     tiers.py run <0|1|3|4|5|6|7|9|10|11|13|14|16>   tier 0 as a result file, or one tier against StorageForge on sf-ctl, through its API
