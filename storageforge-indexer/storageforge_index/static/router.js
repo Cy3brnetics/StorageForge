@@ -13,6 +13,7 @@ function routeState() {
   const params = { host: S.host };
   if (T.mode === 'map' && typeof mapRouteParams === 'function') Object.assign(params, mapRouteParams());
   if (tab === 'security' && typeof SEC !== 'undefined' && SEC.panel && SEC.panel !== 'overview') params.sec = SEC.panel;
+  if (tab === 'hostlogs' && typeof hlRouteParams === 'function') Object.assign(params, hlRouteParams());      // the Logs range and filters (hostlogsview.js)
   return { parts: [T.mode, tab], params };
 }
 
@@ -45,6 +46,7 @@ function routeApply(r) {
     if (r.view === 'map' && typeof mapTakeLink === 'function') mapTakeLink(r.q);
     if (r.view && r.view !== T.mode) setMode(r.view);
     if (r.sec) window.SEC_LINK_PANEL = r.sec;
+    if (r.panel === 'hostlogs' && typeof hlTakeLink === 'function') hlTakeLink(r.q);
     if (routeHasTab(r.panel)) showTab(r.panel);
   } finally { ROUTE.applying = was; }
 }
@@ -55,6 +57,7 @@ function routeTake() {
   if (!r.view && !r.panel && !r.host) return null;
   routeApply({ ...r, panel: null });
   if (r.sec) window.SEC_LINK_PANEL = r.sec;
+  if (r.panel === 'hostlogs' && typeof hlTakeLink === 'function') hlTakeLink(r.q);
   return routeHasTab(r.panel) ? r.panel : null;
 }
 
