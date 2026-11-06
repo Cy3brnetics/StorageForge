@@ -35,6 +35,12 @@
 .sf-toast.error { border-color: var(--sf-bad); }
 .sf-toast span { flex: 1; overflow-wrap: anywhere; }
 
+/* A list that is cut (sfMoreList in kernel.js): the items, then one button that shows the rest and hides them again (UX-13). */
+.sf-more { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sf-s2); min-width: 0; }
+.sf-more > :first-child { align-self: stretch; min-width: 0; }
+.sf-more-btn { font-size: var(--sf-t2); padding: 3px var(--sf-s3); color: var(--sf-muted); }
+.sf-more-btn:hover, .sf-more-btn[aria-expanded="true"] { color: var(--sf-text); }
+
 [aria-busy="true"] { cursor: progress; }
 button[aria-busy="true"] { pointer-events: none; }
 button[aria-busy="true"]::after { content: ""; display: inline-block; width: .8em; height: .8em; margin-left: .5em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: sf-spin .8s linear infinite; vertical-align: -0.1em; }

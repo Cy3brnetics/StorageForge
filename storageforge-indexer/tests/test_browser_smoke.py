@@ -644,6 +644,95 @@ class BrowserSmoke(unittest.TestCase):
         self.assertEqual(shown(), 33)
         self.assertEqual(self.errors, [])
 
+    def mount_more_list(self, count, **opts):
+        """Mounts an sfMoreList of `count` items on the page, the third of them named like markup, and returns the id of its holder."""
+        return self.page.evaluate("""([count, opts]) => {
+            document.getElementById('t-more')?.remove();
+            const names = Array.from({ length: count }, (_, i) => (i === 2 ? '<b>bold</b> <img src=x onerror=window.__pwned=1>' : `item ${i}`));
+            const host = document.createElement('div');
+            host.id = 't-more';
+            host.append(sfMoreList(names, (n) => { const li = document.createElement('li'); li.textContent = n; return li; }, { tag: 'ul', ...opts }));
+            document.body.append(host);
+            return host.querySelector('ul').id;
+        }""", [count, opts])
+
+    def test_a_cut_list_is_a_button_that_shows_the_rest_and_hides_it_again(self):        # UX-13, sfMoreList
+        list_id = self.mount_more_list(30, label='findings')
+        items = lambda: self.page.locator('#t-more ul li').count()
+        button = '#t-more button.sf-more-btn'
+        self.assertEqual(items(), 12)                                                  # cut at the default twelve
+        self.assertEqual(self.page.inner_text(button), 'Show 18 more')
+        self.assertEqual(self.page.evaluate(f"document.querySelector('{button}').tagName + document.querySelector('{button}').type"), 'BUTTONbutton')
+        self.assertEqual(self.page.get_attribute(button, 'aria-expanded'), 'false')
+        self.assertEqual(self.page.get_attribute(button, 'aria-controls'), list_id)
+        self.page.click(button)
+        self.assertEqual(items(), 30)
+        self.assertEqual(self.page.inner_text(button), 'Show fewer')
+        self.assertEqual(self.page.get_attribute(button, 'aria-expanded'), 'true')
+        self.page.wait_for_selector('.sf-live:has-text("Showing all 30 findings")')       # said aloud, not only shown
+        self.assertEqual(self.page.evaluate("document.activeElement.className"), 'sf-btn ghost sf-more-btn')     # focus did not move
+        self.page.click(button)
+        self.assertEqual(items(), 12)
+        self.assertEqual(self.page.inner_text(button), 'Show 18 more')
+        self.assertEqual(self.page.get_attribute(button, 'aria-expanded'), 'false')
+        self.page.wait_for_selector('.sf-live:has-text("Showing the first 12 of 30 findings")')
+        self.assertEqual(self.errors, [])
+
+    def test_a_cut_list_opens_and_closes_from_the_keyboard(self):                        # UX-13, sfMoreList
+        self.mount_more_list(30)
+        items = lambda: self.page.locator('#t-more ul li').count()
+        button = '#t-more button.sf-more-btn'
+        self.page.focus(button)
+        self.page.keyboard.press('Enter')
+        self.assertEqual((items(), self.page.get_attribute(button, 'aria-expanded')), (30, 'true'))
+        self.assertTrue(self.page.evaluate(f"document.activeElement === document.querySelector('{button}')"))
+        self.page.keyboard.press('Enter')
+        self.assertEqual((items(), self.page.get_attribute(button, 'aria-expanded')), (12, 'false'))
+        self.page.keyboard.press('Space')
+        self.assertEqual((items(), self.page.get_attribute(button, 'aria-expanded')), (30, 'true'))
+        self.assertEqual(self.page.inner_text(button), 'Show fewer')
+        self.page.keyboard.press('Space')
+        self.assertEqual((items(), self.page.inner_text(button)), (12, 'Show 18 more'))
+        self.assertEqual(self.errors, [])
+
+    def test_a_cut_list_shows_a_name_that_looks_like_markup_as_text(self):                # UX-13, sfMoreList
+        self.mount_more_list(30, limit=2)                                               # the markup-like name is third: it is in the part that opens
+        self.page.click('#t-more button.sf-more-btn')
+        row = self.page.locator('#t-more ul li').nth(2)
+        self.assertEqual(row.inner_text(), '<b>bold</b> <img src=x onerror=window.__pwned=1>')
+        self.assertEqual(self.page.locator('#t-more ul b, #t-more ul img').count(), 0)
+        self.page.wait_for_timeout(100)
+        self.assertIsNone(self.page.evaluate('window.__pwned'))
+        self.mount_more_list(30)                                                        # and in the part that is shown at first
+        self.assertEqual(self.page.locator('#t-more ul li').nth(2).inner_text(), '<b>bold</b> <img src=x onerror=window.__pwned=1>')
+        self.assertEqual(self.page.locator('#t-more ul b, #t-more ul img').count(), 0)
+        self.assertEqual(self.errors, [])
+
+    def test_a_list_that_is_not_cut_has_no_button(self):                                   # UX-13, sfMoreList
+        self.mount_more_list(12)
+        self.assertEqual((self.page.locator('#t-more ul li').count(), self.page.locator('#t-more button').count()), (12, 0))
+        self.mount_more_list(13)
+        self.assertEqual((self.page.locator('#t-more ul li').count(), self.page.inner_text('#t-more button')), (12, 'Show 1 more'))
+        self.mount_more_list(0)
+        self.assertEqual((self.page.locator('#t-more ul li').count(), self.page.locator('#t-more button').count()), (0, 0))
+        self.assertEqual(self.errors, [])
+
+    def test_the_security_rows_say_what_they_leave_out(self):                             # UX-13, sfMoreList
+        """Four of its tables showed the first fifty (forty, three hundred) rows of a longer answer and said nothing."""
+        self.page.evaluate("""() => {
+            document.getElementById('t-more')?.remove();
+            const host = document.createElement('div');
+            host.id = 't-more';
+            host.append(secTable(['Path', 'What'], Array.from({ length: 30 }, (_, i) => [`/srv/file${i}`, i === 0 ? '<i>x</i>' : 'changed']), 20));
+            document.body.append(host);
+        }""")
+        self.assertEqual(self.page.locator('#t-more .sec-row').count(), 20)
+        self.assertEqual(self.page.inner_text('#t-more button'), 'Show 10 more')
+        self.page.click('#t-more button')
+        self.assertEqual(self.page.locator('#t-more .sec-row').count(), 30)
+        self.assertEqual(self.page.locator('#t-more i').count(), 0)
+        self.assertEqual(self.errors, [])
+
     def test_details_says_what_it_is_for_in_every_view(self):                  # UX-14
         """Map, Tasks and Scan kept the graph's instructions and counted nodes of a graph that was not on screen."""
         hints = {}

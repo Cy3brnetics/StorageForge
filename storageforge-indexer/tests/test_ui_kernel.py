@@ -89,6 +89,18 @@ class Kernel(unittest.TestCase):
         """Dialog titles and bodies carry paths and host names that machines report: they are shown as text, never parsed."""
         self.assertNotRegex(code(STATIC / 'kernel.js'), r'innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\s*\(|new Function')
 
+    def test_a_cut_list_is_a_component_of_the_kernel_and_builds_no_markup(self):        # UX-13
+        """A list that shows the first rows says so with one button, sfMoreList(), not a line of text that cannot be opened. It is made with
+        DOM calls and textContent only, and its button is a real <button> that says whether it is expanded."""
+        kernel = code(STATIC / 'kernel.js')
+        m = re.search(r'function sfMoreList\(.*?\n\}\n', kernel, re.S)
+        self.assertIsNotNone(m, 'kernel.js has no sfMoreList()')
+        body = m.group(0)
+        self.assertNotRegex(body, r'innerHTML|outerHTML|insertAdjacentHTML|document\.write')
+        for needle in ("'button'", "type: 'button'", 'sf-btn ghost', 'aria-expanded', 'aria-controls', 'announce(', 'Show fewer', 'Show ${hidden} more', 'limit = 12'):
+            self.assertIn(needle, body, f'sfMoreList() lacks {needle}')
+        self.assertIn('.sf-more', (STATIC / 'components.css').read_text())
+
     def test_every_page_loads_what_the_kernel_needs_in_order(self):
         for page in PAGES:
             html = (STATIC / page).read_text()
