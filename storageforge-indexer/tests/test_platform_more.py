@@ -12,6 +12,7 @@ import time
 import unittest
 import uuid
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from unittest import mock
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -184,6 +185,59 @@ class ChangePlanSteps(unittest.TestCase):
     def test_the_rollback_comes_with_a_second_run_that_stops_it(self):
         self.assertIn('storageforge-fwrules confirm', steps_infra.CONFIRM_SCRIPT)
         self.assertIn('FW-ROLLBACK armed', steps_infra.FWRULES)
+
+    # SF-65: the sshd-option and apparmor-local steps kept a tool's complaint in /tmp/sf-sshd.err and /tmp/sf-aa.err, names any local account could have made first
+    OLD_NAMES = ('/tmp/sf-sshd.err', '/tmp/sf-aa.err')
+
+    def run_step(self, fn, args, setup):
+        """The step's own text, with the system folders pointed at a scratch one and stand-ins for the tools that reject the change. Returns (output, the text of what is left in its temp folder)."""
+        import stat
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            (root / 'bin').mkdir()
+            (root / 'tmp').mkdir()
+            for name in ('sshd', 'apparmor_parser'):
+                tool = root / 'bin' / name
+                tool.write_text('#!/bin/bash\n[[ $1 == -T ]] && exit 0\necho "STUBERR from ' + name + '" >&2\nexit 1\n')
+                tool.chmod(tool.stat().st_mode | stat.S_IEXEC)
+            setup(root)
+            body = re.search(rf'^{fn}\(\) \{{.*?^\}}$', steps_infra.BASH, re.M | re.S)[0].replace('/etc/ssh', f'{root}/ssh').replace('/etc/apparmor.d', f'{root}/aa')
+            script = ('STAMP=1; APPLY=1; ok() { echo "ok: $*"; }; conflict() { echo "conflict: $*"; }; act() { return 0; }; try() { "$@"; }; durable() { :; }; fw_tool() { :; }; fw_arm() { :; }\n'
+                      + body + f'\n{fn} {args}\n')
+            p = subprocess.run(['bash', '-c', script], capture_output=True, text=True, env={'PATH': f'{root}/bin:' + os.environ['PATH'], 'TMPDIR': str(root / 'tmp')}, timeout=30)
+            return p.stdout + p.stderr, [x.read_text() for x in sorted((root / 'tmp').iterdir())]
+
+    def test_no_step_names_a_fixed_file_in_tmp(self):
+        for old in self.OLD_NAMES:
+            self.assertNotIn(old, steps_infra.BASH)
+        self.assertNotRegex(steps_infra.BASH, r'>\s*/tmp/sf-|2>\s*/tmp/sf-')
+
+    def test_a_rejected_change_reports_the_tools_words_and_leaves_a_pre_made_file_alone(self):
+        planted, made = {}, []
+        for old in self.OLD_NAMES:
+            path = Path(old)
+            if not path.exists():
+                path.write_text('PLANTED by another account\n')
+                made.append(path)
+                self.addCleanup(path.unlink, True)
+            planted[old] = path.read_bytes()
+
+        def ssh(root):
+            (root / 'ssh').mkdir()
+            (root / 'ssh' / 'sshd_config').write_text('Include /etc/ssh/sshd_config.d/*.conf\n')
+
+        def aa(root):
+            (root / 'aa' / 'local').mkdir(parents=True)
+            (root / 'aa' / 'usr.sbin.test').write_text('profile test {}\n')
+        out, left = self.run_step('t_sshd_option', 'AllowTcpForwarding no 10', ssh)
+        self.assertIn('conflict: sshd -t rejected it, so it was put back: STUBERR from sshd', out)
+        self.assertEqual(left, [], 'the error file is taken away again')
+        out, left = self.run_step('t_apparmor_local', 'usr.sbin.test "/srv/** r,"', aa)
+        self.assertIn('conflict: apparmor_parser rejected it, so it was put back: STUBERR from apparmor_parser', out)
+        self.assertFalse([x for x in left if 'STUBERR' in x], 'the error file is taken away again (the step\'s own copy of the profile may stay)')
+        for old, was in planted.items():
+            self.assertEqual(Path(old).read_bytes(), was, f'{old} was written to')
 
 
 class Reach(unittest.TestCase):

@@ -479,7 +479,7 @@ t_sysctl_set() { local key=$1 value=$2 file=/etc/sysctl.d/90-storageforge-plan.c
   try sysctl -q -w "$key=$value" && ok "$key = $value"
 }
 
-t_sshd_option() { local key=$1 value=$2 roll=$3 dir=/etc/ssh/sshd_config.d file conf=/etc/ssh/sshd_config have
+t_sshd_option() { local key=$1 value=$2 roll=$3 dir=/etc/ssh/sshd_config.d file conf=/etc/ssh/sshd_config have err
   file=$dir/90-storageforge.conf
   have=$(sshd -T 2>/dev/null | awk -v k="$(tr 'A-Z' 'a-z' <<<"$key")" '$1 == k {print $2; exit}')
   if [[ ${have,,} == "${value,,}" ]]; then ok "$key is $value"; return 0; fi
@@ -491,10 +491,13 @@ t_sshd_option() { local key=$1 value=$2 roll=$3 dir=/etc/ssh/sshd_config.d file 
   fw_arm "$roll" "if [ -e $before ]; then mv -f $before $file; else rm -f $file; fi; systemctl reload sshd 2>/dev/null || systemctl reload ssh"
   { [[ -e $file ]] && grep -viE "^${key}[[:space:]]" "$file"; printf '%s %s\n' "$key" "$value"; } >"$file.new"
   mv -f "$file.new" "$file"; chmod 0644 "$file"
-  if ! sshd -t 2>/tmp/sf-sshd.err; then
+  err=$(mktemp)       # not a fixed name in /tmp, where another account could have made it first (SF-65)
+  if ! sshd -t 2>"$err"; then
     if [[ -e $before ]]; then mv -f "$before" "$file"; else rm -f "$file"; fi
-    conflict "sshd -t rejected it, so it was put back: $(cat /tmp/sf-sshd.err)"; return 0
+    local said; said=$(cat "$err"); rm -f "$err"
+    conflict "sshd -t rejected it, so it was put back: $said"; return 0
   fi
+  rm -f "$err"
   durable "$file"
   systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || { conflict "sshd did not reload"; return 0; }
   ok "$key = $value"
@@ -526,7 +529,7 @@ t_selinux_relabel() { local path=$1 type=$2 now
   try relabel_tree "$path" && ok "$path is $type"
 }
 
-t_apparmor_local() { local profile=$1 rules=$2 file
+t_apparmor_local() { local profile=$1 rules=$2 file err
   file=/etc/apparmor.d/local/$profile
   command -v apparmor_parser >/dev/null || { conflict "this host has no apparmor_parser"; return 0; }
   [[ -r /etc/apparmor.d/$profile ]] || { conflict "no AppArmor profile named $profile"; return 0; }
@@ -535,10 +538,13 @@ t_apparmor_local() { local profile=$1 rules=$2 file
   local before; before=$(mktemp); cp -a "$file" "$before" 2>/dev/null
   mkdir -p /etc/apparmor.d/local
   printf '%s\n' "$rules" >"$file"
-  if ! apparmor_parser -Q -K "/etc/apparmor.d/$profile" >/tmp/sf-aa.err 2>&1; then
+  err=$(mktemp)       # as at t_sshd_option (SF-65)
+  if ! apparmor_parser -Q -K "/etc/apparmor.d/$profile" >"$err" 2>&1; then
     if [[ -s $before ]]; then cp -a "$before" "$file"; else rm -f "$file"; fi
-    conflict "apparmor_parser rejected it, so it was put back: $(tail -n 3 /tmp/sf-aa.err)"; return 0
+    local said; said=$(tail -n 3 "$err"); rm -f "$err"
+    conflict "apparmor_parser rejected it, so it was put back: $said"; return 0
   fi
+  rm -f "$err"
   try apparmor_parser -r "/etc/apparmor.d/$profile" && ok "$profile reloaded with these paths"
 }
 
