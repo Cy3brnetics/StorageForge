@@ -120,6 +120,15 @@ class TheDocs(unittest.TestCase):
         for tier, name in re.findall(r'^\| (\d+): [^|]+\| `tests/lab/([a-z0-9_]+\.py)` \|', text, re.M):
             self.assertTrue((LAB / name).exists(), f'tier {tier} names {name}, which does not exist')
 
+    def test_what_the_lab_has_not_tested_says_so_where_the_lab_is_described(self):
+        """Each of these is a line of kvm-lab.md that carries the label, so a reader does not have to infer it from a missing row."""
+        lines = (DOCS / 'kvm-lab.md').read_text().splitlines()
+        wanted = {'pfSense': 'pfSense, OPNsense and Cisco', 'old SSH ciphers': 'Old SSH ciphers', 'Incus and LXC': 'Incus and LXC guests', 'Tailscale': 'Tailscale, proxy routes and identity providers',
+                  'Terraform and Puppet': 'Terraform and Puppet apply', 'PagerDuty': 'PagerDuty', 'FIDO2': 'FIDO2', 'signed scan payloads': 'Signed scan payloads',
+                  'SF-48 receiving run': 'The SF-48 receiving run, tier 16', 'tier 17': 'tier 17'}
+        for what, phrase in wanted.items():
+            self.assertTrue(any(phrase in x and 'not lab-tested' in x for x in lines), f'{what} does not say "not lab-tested" in docs/kvm-lab.md')
+
     def test_lab_sh_and_the_report_run_every_tier_there_is(self):
         lab = (ROOT / 'examples' / 'lab' / 'lab.sh').read_text()
         loop = re.search(r'for t in ([\d ]+); do', lab)[1].split()

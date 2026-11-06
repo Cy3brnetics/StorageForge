@@ -116,7 +116,15 @@ The known failures from those builds were fixed and rechecked on 2026-11-01, on 
 - **`yum`-only systems:** those distros are end-of-life.
 - **PostgreSQL:** the lab runs StorageForge on SQLite. CI runs the unit tests on PostgreSQL instead, apart from those about SQLite files and the command line tests that drive one.
 - **Real updates:** what a mirror holds changes daily, so no tier can state the result. Update scripts run against stand-ins.
-- **Outside services and hardware:** Tailscale, PagerDuty and a physical FIDO2 token.
+- **Outside services and hardware (not lab-tested):** PagerDuty and a physical FIDO2 token.
+- **Real network devices (not lab-tested):** pfSense, OPNsense and Cisco IOS or IOS-XE on a real device. Only a parser and unit tests have seen them, and no free image exists for the lab. [What has been tested on what](network-devices.md#what-has-been-tested-on-what) has the table.
+- **Old SSH ciphers (not lab-tested):** the legacy key exchange, host key and cipher options for old routers and switches are checked against the option strings in unit tests, and no device in the lab is old enough to need them.
+- **Incus and LXC guests (not lab-tested):** they have parsers and unit tests. Tier 13's `lxc-guests` and `incus-guests` checks make one empty guest each, and this page records no run of them.
+- **Tailscale, proxy routes and identity providers (not lab-tested):** they have parsers and unit tests, and need an account on an outside service.
+- **Terraform and Puppet apply (not lab-tested):** the exports are checked for structure, for values held as data, and by `terraform validate` and `puppet parser validate` where those tools are installed. Nothing has applied one.
+- **Signed scan payloads, tier 2's `scan-signed` stage (not lab-tested):** the stage is written and has not run. The signing itself has unit tests.
+- **The SF-48 receiving run, tier 16 (not lab-tested):** a send between two enrolled hosts with each side a signed run. The tier is written and has not run.
+- **The network language on firewalld and ufw, tier 17 (not lab-tested):** written and not run.
 - **The web UI, partly:** tier 13 opens every page and tab in Chromium on real data, when `playwright` is installed where the tier runs. Otherwise that check shows as skip. Actions in the UI are the browser tests' job, on local data.
 - **ClamAV's memory rule:** its script refuses under 2 GiB, and the lab's largest VMs report about 1.7 GiB. Tier 13 checks the refusal, then hides the real figure from that one check to test the rest.
 - **Enterprise Linux at 1 GB:** those configs have 2 GB, because `dnf` is killed for lack of memory at 1 GB once EPEL is enabled.
