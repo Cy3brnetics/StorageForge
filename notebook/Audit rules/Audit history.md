@@ -4,7 +4,7 @@ updated: 2026-11-03
 ---
 # Audit history
 
-**The next audit's baseline is `d78881b`**. Audit everything since.
+**The next audit's baseline is still `d78881b`**: the audit of 2026-11-05 was partial and did not reach the areas listed in its first page, so it does not move it. Audit everything since.
 
 | Date | Audit | Kind | Baseline | Head | Tree included | Findings |
 | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
@@ -15,6 +15,7 @@ updated: 2026-11-03
 | 2026-10-31 | [[Audit 2026-10-31]] | Security and new features | `68a6d73` | `82b0eb0` | **yes** | SF-23 to SF-39, PF-18 to PF-27, EQ-04, EQ-05 |
 | 2026-11-01 | [[Audit 2026-11-01]] | Remote nodes, snapshot engine, site isolation | `7855063` | `31fc091` | clean | SF-40 to SF-43, PF-28 to PF-30, EQ-06 |
 | 2026-11-03 | [[Audit 2026-11-03]] | Unsigned scripts and auth on new routes | `31fc091` | `d78881b` | clean | SF-44 to SF-51, PF-31 to PF-33, EQ-07 to EQ-09 |
+| 2026-11-05 | [[Audit 2026-11-05]] | Security, **partial**: network devices, host logs, the network language | `d78881b` | `fc1bb8a` | clean | SF-52 to SF-55 |
 
 ## Not code audits
 These don't move the baseline.
@@ -24,6 +25,7 @@ These don't move the baseline.
 The 10-31 audit read uncommitted changes in 10 files. **If those are committed, the commit still counts as new since `82b0eb0`**: diff it, but the review of them is in [[EQ-05 Uncommitted lab fixes need a lab run]].
 
 ## Follow-ups to check next time
+- The audit of 2026-11-05 did not reach `steps_infra.py`, `whatif.py`, `reach.py`, `mapdesign.py`, most of `security.py`, `secplus.py` and `secscripts.py`, `traffic.py`, `routes_network.py`, the device change flow's confirm and rollback, the second half of `receiving.py`, or the KVM lab. Its first page lists them, and a second reader should take the signed scan payloads and the UI kernel, which the auditing model wrote itself
 - Whether the findings of [[Audit 2026-10-31]] were fixed, and whether the fixes hold
 - The areas it did not review: the rest of `changes.py`, `tasks.py` and `moves.py` diffs, `fromdesign.py`, `engine.py`, `capacity.py`, `protection.py`, and the lab scripts
 - `git` use in `_SURVEY_BASH`: it was missed for several audits, so check other old host scripts for tools that read config from places users control

@@ -5,7 +5,8 @@ tags: [moc]
 
 Working notes for the StorageForge indexer. Start with the latest audit, then the roadmap.
 
-- [[Audit 2026-11-03]]: the newest audit, unsigned scripts and auth on new routes since `31fc091`
+- [[Audit 2026-11-05]]: the newest audit, partial: network devices, host logs and the network language since `d78881b`
+- [[Audit 2026-11-03]]: the audit before it, unsigned scripts and auth on new routes since `31fc091`
 - [[Audit 2026-11-01]]: remote nodes, snapshot engine, and site isolation since `7855063`
 - [[Audit 2026-10-31]]: security and new features since `68a6d73`
 - [[Audit rules]]: how every audit is run, and where the next one starts
