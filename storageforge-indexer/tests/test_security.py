@@ -681,6 +681,38 @@ class Events(Base):
         self.assertIn("echo '@@secevents'", Path(remote.__file__).read_text())
         self.assertEqual(security.ingest_events(self.conn, 'nas', event_line() + '\n' + event_line(), 'scan'), 2)
 
+    def test_a_report_cannot_write_holds_or_quarantines_or_clear_a_missing_hold(self):
+        """SF-70: a brake_ran line from a host is an event, never a row. Rows come from the signed run the controller made itself."""
+        enc = lambda s: base64.b64encode(s.encode()).decode()
+        now = int(time.time())
+        hid = security._record_hold(self.conn, 'nas', 'zfs', 'tank/data@sf-1', 'sf-worm-30d', now + 30 * DAY, False, 'alice', now)
+        self.conn.execute('UPDATE security_retention_holds SET missing_at = :t WHERE id = :i', {'t': now, 'i': hid})
+        detail = ('QUARANTINED not-an-ip-' + 'A' * 300 + '\nQUARANTINED 10.9.9.9\n'
+                  f'HELD zfs {enc("tank/data@sf-1")} {enc("sf-worm-30d")}\nHELD btrfs {enc("<img src=x onerror=alert(1)>")} {enc("--not a tag--")}\n'
+                  f'HELD zfs {enc("tank/never@made")} {enc("sf-legal")}\n')
+        tables = ('security_quarantine', 'security_retention_holds')
+        for via in ('report', 'scan'):
+            before = [self.conn.all(f'SELECT * FROM {t} ORDER BY 1') for t in tables]
+            if via == 'report':
+                self.assertEqual(self.report([event_line('brake_ran', 'brake', detail)]).get_json()['new'], 1)
+            else:
+                security.ingest_events(self.conn, 'nas', event_line('brake_ran', 'brake', detail), 'scan')
+            self.assertEqual([self.conn.all(f'SELECT * FROM {t} ORDER BY 1') for t in tables], before)
+        self.assertIsNotNone(self.conn.scalar('SELECT missing_at FROM security_retention_holds WHERE id = :i', {'i': hid}))
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM security_quarantine'), 0)
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM security_retention_holds'), 1)
+        self.conn.execute('DELETE FROM security_retention_holds')
+        self.report([event_line('brake_ran', 'brake', f'HELD zfs {enc("tank/never@made")} {enc("sf-legal")}\n')])
+        self.assertNotEqual(security._check(self.conn, 'nas', {}, 'worm', security.STANDARDS['pci-dss'])[0], 'pass')
+
+    def test_a_signed_runs_brake_output_is_recorded_but_only_valid_values(self):
+        enc = lambda s: base64.b64encode(s.encode()).decode()
+        out = ('QUARANTINED 10.0.0.9\nQUARANTINED not-an-ip\nQUARANTINED 0.0.0.0/0\n'
+               f'HELD zfs {enc("tank/shares@s1")} {enc("sf-brake-1")}\nHELD zfs {enc("<img src=x>")} {enc("sf-x")}\nHELD zfs {enc("tank/a@b")} {enc("not a tag")}\n')
+        security._record_brake_output(self.conn, 'nas', out, 'admin1', int(time.time()))
+        self.assertEqual([r[0] for r in self.conn.all('SELECT ip_address FROM security_quarantine')], ['10.0.0.9'])
+        self.assertEqual([(r[0], r[1]) for r in self.conn.all('SELECT snapshot, hold_tag FROM security_retention_holds')], [('tank/shares@s1', 'sf-brake-1')])
+
     def test_seeing_an_alarm_quiets_it(self):
         security.ingest_events(self.conn, 'nas', event_line('clock_jump', 'x'))
         security.clear_clock(self.conn, 'nas', 'admin1')

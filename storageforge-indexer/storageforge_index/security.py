@@ -190,21 +190,31 @@ def ingest_events(conn: Conn, host: str, text: str, via: str = 'scan') -> int:
                                 WHERE lower(host) = lower(:h) AND path = :p AND status = 'armed'""", {'t': min(ev['at'], now), 'h': host, 'p': path})
         elif ev['kind'] == 'clock_jump':
             freeze_clock(conn, host, ev['summary'], via)
-        elif ev['kind'] == 'brake_ran':
-            _record_brake_output(conn, host, ev['detail'], 'sentinel', min(ev['at'], now))
+        # brake_ran is only an alarm here: its text came from the host, so it writes no hold and no quarantine (the signed run does)
     return new
 
 
 def _record_brake_output(conn: Conn, host: str, output: str, actor: str, now: int):
-    """What the brake confirmed it did. Rows only for lines it printed after checking."""
-    for ip in re.findall(r'^QUARANTINED (\S+)$', output or '', re.M):
+    """What the brake confirmed it did, from the output of a signed run the controller made. Never from text a host sent on its own
+    (a report, a scan): see ingest_events. Even so, each value is checked before it becomes a row."""
+    for raw in re.findall(r'^QUARANTINED (\S+)$', output or '', re.M):
+        try:
+            ip = clean_target(conn, host, raw)
+        except ValueError:
+            continue
         conn.execute('DELETE FROM security_quarantine WHERE lower(host) = lower(:h) AND ip_address = :ip', {'h': host, 'ip': ip})
         conn.execute("""INSERT INTO security_quarantine (host, ip_address, reason, added_at, expires_at, actor)
                         VALUES (:h, :ip, 'emergency brake', :t, NULL, :a)""", {'h': host, 'ip': ip, 't': now, 'a': actor})
     for fs, snap, tag in re.findall(r'^HELD (zfs|btrfs) (\S+) (\S+)$', output or '', re.M):
         s, t = _b64text(snap), _b64text(tag)
-        if s and t:
-            _record_hold(conn, host, fs, s, t, None, True, actor, now)
+        if not s or not t or not TAG_RE.fullmatch(t):
+            continue
+        if not ZFS_SNAP_RE.fullmatch(s):
+            try:
+                s = clean_path(s, 'the snapshot')
+            except ValueError:
+                continue
+        _record_hold(conn, host, fs, s, t, None, True, actor, now)
 
 
 def list_events(conn: Conn, host: str | None = None, limit: int = 200, include_info: bool = True) -> list[dict]:
