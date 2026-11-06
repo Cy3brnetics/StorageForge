@@ -112,11 +112,21 @@ const DOC={host:'',source:'example',dirty:false,savedAt:null,scanned:false,hosts
 sfUnsaved({ id: 'planner', label: 'the planner edits', kept: true, dirty: () => DOC.dirty });      // save() keeps a draft per host in this browser
 // the example stays when there is nothing else to show, even after it is removed
 const exampleShown=()=>DOC.example||!DOC.hosts.length;
+/* A draft belongs to the account that wrote it: sfStash and sfRecall stamp it with the signed-in name, so another account on this browser never
+   sees it. USER is known once /api/me answers, before the first draft is read. A draft from before the stamp has no owner and is removed. */
+let USER=null;
 const draftKey=h=>'storageforge.v1'+(h?':'+h:'');
-function load(h){ try{ const t=localStorage.getItem(draftKey(h||'')); return t?tidy(scrub(JSON.parse(t))):null }catch(e){ return null } }
-function save(){ try{ localStorage.setItem(draftKey(DOC.host),JSON.stringify(S)) }catch(e){} if(DOC.host){DOC.dirty=true;docState()} }
-function dropDraft(h){ try{ localStorage.removeItem(draftKey(h)) }catch(e){} }
-let S=load('')||sample();
+const stamped=v=>!!v&&typeof v==='object'&&typeof v.user==='string'&&'value' in v;
+function dropUnowned(){ try{ for(const k of Object.keys(localStorage)){
+  if(k!=='storageforge.v1'&&!k.startsWith('storageforge.v1:')&&k!=='sf.changes.draft') continue;
+  let v=null;try{ v=JSON.parse(localStorage.getItem(k)) }catch(e){}
+  if(!stamped(v)) localStorage.removeItem(k) } }catch(e){} }
+dropUnowned();
+async function whoAmI(){ try{ USER=(await sfMe()).username||'' }catch(e){ USER='' } }
+function load(h){ const d=USER===null?null:sfRecall(draftKey(h||''),null,USER); return d?tidy(scrub(d)):null }
+function save(){ if(USER!==null) sfStash(draftKey(DOC.host),S,USER); if(DOC.host){DOC.dirty=true;docState()} }
+function dropDraft(h){ if(USER!==null&&sfRecall(draftKey(h),null,USER)) sfStash(draftKey(h),null,USER) }      // only its own: another account's draft is not this one's to remove
+let S=sample();
 
 const UI={view:'overview',sel:null,mountSel:'/',mountTab:'fstab',exportTab:'changes',diff:null,calc:null,hover:null};
 const VIEWS=[
@@ -959,14 +969,15 @@ function taskLabel(t){ const p=t.params;
     symlink:()=>`Link ${p.path} → ${p.target}`}[t.type]||(()=>t.type))() }
 function stageDesignChanges(){
   const r=UI.diff&&UI.diff.r;if(!r||!r.tasks.length) return;
-  let draft;try{ draft=JSON.parse(localStorage.getItem(CH_DRAFT)||'null') }catch(e){ draft=null }
+  let draft=sfRecall(CH_DRAFT,null,USER);
   if(!draft||!Array.isArray(draft.tasks)) draft={name:'',tasks:[]};
   const same=(a,b)=>a.type===b.type&&a.host===b.host&&JSON.stringify(a.params)===JSON.stringify(b.params);
   const stamp=Date.now().toString(36);
   const add=r.tasks.filter(t=>!draft.tasks.some(x=>same(x,t))).map((t,i)=>({...t,id:'d'+stamp+i}));
   draft.tasks.push(...add);
   if(!draft.name) draft.name=r.name;
-  try{ localStorage.setItem(CH_DRAFT,JSON.stringify(draft)) }catch(e){ docState('Your browser blocks storage, so the plan cannot be handed to Changes','err');return }
+  sfStash(CH_DRAFT,draft,USER);
+  if(!sfRecall(CH_DRAFT,null,USER)){ docState('Your browser blocks storage, so the plan cannot be handed to Changes','err');return }
   location.href=appLink('changes');
 }
 function vExport(){
@@ -1286,7 +1297,7 @@ if(document.fonts&&document.fonts.ready) document.fonts.ready.then(()=>{if(UI.vi
 const {view:h,host:hh}=readHash();if(VIEWS.some(v=>v[0]===h)) UI.view=h;
 docState();
 // wait for the host list before the first render, so a removed example never flashes up
-loadHosts().then(async()=>{
+whoAmI().then(()=>{ S=load('')||S; return loadHosts() }).then(async()=>{
   const want=hh||(!exampleShown()?DOC.hosts[0].host:'');
   if(want&&DOC.signedIn) await openDoc(want);
   if(!DOC.host) render();

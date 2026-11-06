@@ -6,22 +6,32 @@
 const CH = { types: null, plans: [], plan: { name: '', tasks: [] }, dirty: false, result: null };
 sfUnsaved({ id: 'changes', label: 'the change plan you were editing', kept: true, dirty: () => CH.dirty });      // chKeep() holds its draft in this browser
 const CH_DRAFT = 'sf.changes.draft';
+/* The draft belongs to the account that staged it (sfStash and sfRecall stamp it with the name), so another account on this browser never sees
+   it, and the same account finds it again after a reload or a new session. A draft from before the stamp has no owner: it is removed, not
+   handed to whoever signs in next. */
 try {
-  const d = JSON.parse(localStorage.getItem(CH_DRAFT) || 'null');
-  if (d && Array.isArray(d.tasks)) {
+  const old = JSON.parse(localStorage.getItem(CH_DRAFT) || 'null');
+  if (old && !(typeof old.user === 'string' && 'value' in old)) localStorage.removeItem(CH_DRAFT);
+} catch { try { localStorage.removeItem(CH_DRAFT); } catch { /* storage blocked */ } }
+CH.user = null;                  // who is signed in, known when /api/me answers; nothing is recalled or kept before that
+function chRestore(user) {
+  CH.user = user || '';
+  const d = sfRecall(CH_DRAFT, null, CH.user);
+  if (!CH.dirty && !CH.plan.tasks.length && !CH.plan.name && !CH.plan.id && d && Array.isArray(d.tasks)) {
     CH.plan = d;
     CH.dirty = Boolean(d.dirty);
-  }
-} catch { /* no draft */ }
+  } else chKeep();               // something was staged before the answer came: it is this account's, so it is kept
+  renderStageBar();
+  if (T.mode === 'topo') renderTopo();
+  if (!$('#tab-changes').hidden) renderChanges();
+}
+sfMe().then((me) => chRestore(me.username), () => { /* signed out: the page is on its way to /login */ });
 
 function chKeep() {
-  try {
-    if (!CH.plan.tasks.length && !CH.plan.name && !CH.plan.id) {
-      localStorage.removeItem(CH_DRAFT);
-    } else {
-      localStorage.setItem(CH_DRAFT, JSON.stringify({ ...CH.plan, dirty: CH.dirty }));
-    }
-  } catch { /* storage blocked */ }
+  if (CH.user === null) return;
+  if (!CH.plan.tasks.length && !CH.plan.name && !CH.plan.id) {
+    if (sfRecall(CH_DRAFT, null, CH.user)) sfStash(CH_DRAFT, null, CH.user);      // only its own: another account's draft is not this one's to remove
+  } else sfStash(CH_DRAFT, { ...CH.plan, dirty: CH.dirty }, CH.user);
 }
 async function chTypes() { if (!CH.types) CH.types = (await getJSON('/api/changes/types')).types; return CH.types; }
 function chTouch() {
