@@ -414,6 +414,16 @@ class Language(unittest.TestCase):
                 ros.parse(bad)
         self.assertIn('comment="plain"', ros.parse('/ip firewall filter add chain=input action=accept comment=plain')[0].text())
 
+    def test_a_comment_can_not_hold_a_character_that_changes_how_it_reads(self):
+        # SF-53: a text-direction or zero-width character in a comment reorders or hides what a person reads in the emitted text, the review screen and a device's own log
+        for char in ('\u202e', '\u2066', '\u200b', '\u200f', '\u2060', '\ufeff'):
+            with self.assertRaisesRegex(ros.DslError, 'text-direction or zero-width', msg=repr(char)):
+                ros.parse(f'/ip firewall filter add chain=input action=accept comment="ok{char}allow"')
+        with self.assertRaises(ros.DslError):      # a line separator cuts the statement in two before the comment is read, which is refused for another reason
+            ros.parse('/ip firewall filter add chain=input action=accept comment="ok\u2028allow"')
+        for fine in ('caf\u00e9 in', '\u05e9\u05dc\u05d5\u05dd', '\u0645\u0631\u062d\u0628\u0627'):      # letters of other scripts are fine; it is the controls that are refused
+            self.assertIn(fine, ros.parse(f'/ip firewall filter add chain=input action=accept comment="{fine}"')[0].text())
+
     def test_it_says_what_is_wrong_and_where(self):
         with self.assertRaisesRegex(ros.DslError, 'line 2: /ip firewall filter has no bogus'):
             ros.parse('/ip firewall filter add chain=input action=drop\n/ip firewall filter add chain=input action=drop bogus=1')

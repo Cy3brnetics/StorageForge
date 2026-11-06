@@ -77,7 +77,12 @@ def _names(v):
         _name(x)
 
 
+HIDDEN = re.compile(r'[\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]')      # they reorder or hide what a person reads in the output (SF-53)
+
+
 def _comment(v):
+    if HIDDEN.search(v):
+        raise ValueError('holds a text-direction or zero-width character')
     if not COMMENT.fullmatch(v):
         raise ValueError('holds a character that would not survive a target')
 

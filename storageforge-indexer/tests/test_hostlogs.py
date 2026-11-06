@@ -99,7 +99,7 @@ class Parsing(unittest.TestCase):
         self.assertEqual(got[3]['priority'], 6)
 
     def test_terminal_escapes_and_line_breaks_are_removed(self):
-        x = hostlogs.parse(output(row('\x1b[2Jwiped\nfake line‮', unit='evil\x1b]0;x\x07')), NOW)['lines'][0]
+        x = hostlogs.parse(output(row('\x1b[2Jwiped\nfake line\u202e', unit='evil\x1b]0;x\x07')), NOW)['lines'][0]
         self.assertEqual(x['message'], '[2Jwiped fake line')
         self.assertNotIn('\x1b', x['unit'])
 
@@ -123,6 +123,22 @@ class Secrets(unittest.TestCase):
     def test_token_shapes_go(self):
         for text in ('ghp_' + 'a' * 36, 'AKIA' + 'A' * 16, 'eyJhbGciOiJI.eyJzdWIiOiIx.abc123', 'xoxb-1234567890-abcdef', 'glpat-' + 'a' * 20):
             self.assertNotIn(text, hostlogs.scrub(f'x {text} y'), text)
+
+    def test_a_long_line_cannot_hold_the_server(self):
+        # SF-52: each of these cost between 0.7 seconds and 2.5 minutes at the real cap, with the GIL held, and a line is anything a machine's journal is told to hold.
+        # They cost a few milliseconds now; the bound is a hundred times that so a slow machine passes and a pattern that reads on from every character does not.
+        n = hostlogs.MESSAGE_CHARS
+        for name, text in (('one long name', 'a' * (n - 3) + 'key'), ('flags', '--a' * (n // 3 - 2) + 'token'), ('token starts', 'eyJ-' * (n // 4)),
+                           ('secret words', 'pwd' * (n // 3)), ('longer words', 'password' * (n // 8))):
+            began = time.perf_counter()
+            hostlogs.scrub(text)
+            self.assertLess(time.perf_counter() - began, 0.1, name)
+
+    def test_a_secret_stays_secret_in_a_long_name_and_in_odd_letters(self):
+        # what the patterns match is the same as before the lookahead: the key's length either side of the word, a value inside a value, letters that only look like others
+        for text in ('x_' + 'a' * 300 + '_PASSWORD=hunter2', 'password_for_the_database_of_the_billing_department_prod=hunter2', 'foo="a password=hunter2"',
+                     'x --db-password hunter2', 'pa\u017f\u017fword=hunter2', 'COOK\u0130E=hunter2', 'to\u212aen=hunter2', 'a' * 3000 + ' api_key=hunter2'):
+            self.assertNotIn('hunter2', hostlogs.scrub(text), text[:80])
 
     def test_a_private_key_takes_the_whole_line(self):
         self.assertEqual(hostlogs.scrub('leak -----BEGIN OPENSSH PRIVATE KEY----- abc'), '[redacted: this line held a private key]')

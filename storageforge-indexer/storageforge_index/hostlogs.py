@@ -62,22 +62,32 @@ _SECRET_WORD = r'(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|acce
 _VALUE = r'''(?:"[^"]*"|'[^']*'|\S+)'''
 _SCRUB = (
     # key=value, key: value, "key":"value", and an optional scheme word: PASSWORD=x, MYSQL_PASSWORD=x, Authorization: Bearer x
-    (re.compile(rf'''(?i)([\w.-]*{_SECRET_WORD}[\w.-]*["']?\s*[=:]\s*)(?:(?:bearer|basic|token)\s+)?{_VALUE}'''), r'\1[redacted]'),
-    (re.compile(rf'(?i)(--[\w-]*(?:password|passwd|passphrase|token|secret|api-?key)[\w-]*[\s=]+){_VALUE}'), r'\1[redacted]'),
+    # Both of these start only where a run of word characters starts, and a lookahead reads the run once for the secret word. Written the plain way
+    # (the key's own characters before and after the word) they began at every character of a long run and read on from each: the square of the
+    # run's length, 0.8 seconds for one line of 4000 letters (SF-52). The match still begins at the start of the key, so what is kept is the same.
+    (re.compile(rf'''(?i)(?<![\w.-])(?=[\w.-]*?{_SECRET_WORD})([\w.-]+["']?\s*[=:]\s*)(?:(?:bearer|basic|token)\s+)?{_VALUE}'''), r'\1[redacted]'),
+    (re.compile(rf'(?i)(?<![\w-])(--(?=[\w-]*?(?:password|passwd|passphrase|token|secret|api-?key))[\w-]+[\s=]+){_VALUE}'), r'\1[redacted]'),
     (re.compile(r'(?i)\b(sshpass\s+-p\s*)\S+'), r'\1[redacted]'),
-    (re.compile(r'(?i)\b(mysql(?:dump|admin)?\b[^|;&]*?\s-p)\S+'), r'\1[redacted]'),
+    (re.compile(r'(?i)\b(mysql(?:dump|admin)?\b[^|;&]{0,200}?\s-p)\S+'), r'\1[redacted]'),
     (re.compile(r'(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{8,}'), r'\1[redacted]'),
     (re.compile(r'(://[^/\s:@]+:)[^/\s@]+(@)'), r'\1[redacted]\2'),
     (re.compile(r'\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+'), '[redacted]'),     # JWT
     (re.compile(r'\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}|xox[abprs]-[\w-]{10,}|sk-[\w-]{20,}|AKIA[0-9A-Z]{16})\b'), '[redacted]'),
 )
 _PRIVATE_KEY = re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY')
-_CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f  ‪-‮⁦-⁩]+')    # terminal escapes, line breaks, text direction
+# what a line has to hold for any pattern above to match: a check that is linear in the line, so most lines never reach the patterns
+_HINTS = ('password', 'passwd', 'passphrase', 'pwd', 'secret', 'token', 'key', 'authorization', 'cookie', 'bearer', 'sshpass', 'mysql', '://', 'eyj',
+          'ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_', 'glpat-', 'xox', 'sk-', 'akia')
+_CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]+')    # terminal escapes, line breaks, text direction
 
 
 def scrub(message: str) -> str:
     if _PRIVATE_KEY.search(message):
         return '[redacted: this line held a private key]'
+    if message.isascii():                # (a letter that only looks like another one matches in the patterns, so the shortcut is for plain text)
+        low = message.lower()
+        if not any(h in low for h in _HINTS):
+            return message
     for pattern, replacement in _SCRUB:
         message = pattern.sub(replacement, message)
     return message
