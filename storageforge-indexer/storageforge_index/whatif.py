@@ -4,6 +4,7 @@
     exposure     which listeners would become reachable from further, or less far
     reach        any flow asked about, before and after
     conflicts    duplicate addresses, port clashes, and anything that would cut StorageForge's own way in
+    sentences    the same answer in plain words, worst first, and steps: one plain title for each staged step (see `sentences()`)
 
 Only analysis of configuration, and it says so. Steps it does not model are listed, not assumed harmless. The Report on the
 host, which looks at the real thing, stays the source of truth before Apply.
@@ -158,12 +159,14 @@ def _apply_task(t: dict, facts: dict, ghost: dict, conflicts: list, host: str, f
     if k == 'workload-action':
         ghost['changed'].append({'id': f'wl:{host}:{p["runtime"]}::{p["name"]}', 'what': p['action']})
         if p['action'] == 'stop':
+            ghost['stops'].append(_stop(facts, host, p, 'stopped'))
             for c in facts['containers']:
                 if c.get('name') == p['name']:
                     c['state'] = 'exited'
         return None
     if k == 'workload-remove':
         ghost['remove'].append({'id': f'wl:{host}:{p["runtime"]}::{p["name"]}'})
+        ghost['stops'].append(_stop(facts, host, p, 'removed'))
         facts['containers'] = [c for c in facts['containers'] if c.get('name') != p['name']]
         return None
     if k == 'wg-peer':
@@ -231,7 +234,7 @@ def run(conn: Conn, body: dict) -> dict:
     """body: {'tasks': [...], 'flows': [{'from', 'to', 'port', 'proto'}]}. Reads only."""
     plan = changes.normalize({'name': body.get('name') or 'what if', 'tasks': body.get('tasks') or []})
     hs = hosts(conn)
-    ghost = {'add': [], 'remove': [], 'edges': [], 'changed': []}
+    ghost = {'add': [], 'remove': [], 'edges': [], 'changed': [], 'stops': []}
     conflicts, blind = [], []
     before = reach.load(conn)
     after = reach.Fleet(copy.deepcopy(before.hosts))
@@ -270,7 +273,110 @@ def run(conn: Conn, body: dict) -> dict:
         proto = 'udp' if f.get('proto') == 'udp' else 'tcp'
         a, b = reach.query(before, str(f.get('from')), str(f.get('to')), port, proto), reach.query(after, str(f.get('from')), str(f.get('to')), port, proto)
         flows.append({'from': f.get('from'), 'to': f.get('to'), 'port': port, 'proto': proto, 'before': a['verdict'], 'after': b['verdict'], 'decided_by': b.get('decided_by'), 'blind_spots': b['blind_spots']})
-    return {'ghost': ghost, 'exposure': report, 'flows': flows, 'conflicts': conflicts, 'blocked': any(c['level'] == 'crit' for c in conflicts), 'not_modelled': blind, 'caveat': CAVEAT}
+    out = {'ghost': ghost, 'exposure': report, 'flows': flows, 'conflicts': conflicts, 'blocked': any(c['level'] == 'crit' for c in conflicts), 'not_modelled': blind, 'caveat': CAVEAT, 'steps': [_step_title(t) for t in plan['tasks']]}
+    return {**out, 'sentences': sentences(out)}
+
+
+# ── the answer in plain words ────────────────────────────────────────
+LEVEL_WORDS = {'any': 'any address', 'lan': 'private networks', 'vpn': 'the VPN only', 'blocked': 'blocked', 'loopback': 'this machine only', 'unknown': 'not known'}
+LEVEL_SO = {'blocked': 'so nothing else can reach it', 'any': 'so any address that can get to the host can reach it', 'lan': 'so only machines on private networks can reach it', 'vpn': 'so only the VPN can reach it',
+            'loopback': 'so only the host itself can use it', 'unknown': 'and who can reach it cannot be told from what was read'}
+SEVERITY = {'crit': 'Danger', 'warn': 'Careful', 'info': 'Note', 'ok': 'Fine'}
+KIND_WORDS = {'Bridge': 'bridge', 'VLAN': 'VLAN', 'Container': 'container', 'VM': 'virtual machine'}
+
+
+def _step_title(t: dict) -> str:
+    try:
+        return changes.title(t)
+    except (KeyError, TypeError):
+        return str(t.get('type'))
+
+
+def _stop(facts: dict, host: str, p: dict, how: str) -> dict:
+    """A workload that goes away, with the ports it was publishing, read before the step is applied to the copy."""
+    ports = [f'{q["host_port"]}/{q.get("proto") or "tcp"}' for c in facts['containers'] if c.get('name') == p['name'] for q in c.get('ports') or [] if q.get('host_port')]
+    return {'host': host, 'name': p['name'], 'how': how, 'ports': sorted(set(ports))}
+
+
+def _end(text) -> str:
+    text = str(text).strip()
+    return text if text[-1:] in ('.', '!', '?') else text + '.'
+
+
+def _port_sentence(host: str, c: dict) -> tuple[str, str]:
+    what = f'port {c["port"]}/{c["proto"]}' + (f' (container {c["container"]})' if c.get('container') else '')
+    before, after = c.get('before'), c.get('after')
+    so = LEVEL_SO.get(after, 'and who can reach it is not known')
+    if before is None:
+        return ('warn' if after in ('any', 'unknown') else 'info'), f'on {host}, {what} would start listening, {so}.'
+    if after is None:
+        return 'info', f'on {host}, {what} would stop listening, so nothing can reach it.'
+    return ('warn' if c.get('wider') or after == 'unknown' else 'info'), f'on {host}, {what} goes from {LEVEL_WORDS.get(before, before)} to {LEVEL_WORDS.get(after, after)}, {so}.'
+
+
+def _flow_sentence(f: dict) -> tuple[str, str, bool]:
+    """(level, sentence, whether it changed) for one path that was asked about."""
+    a, b = f.get('before'), f.get('after')
+    by = f', by {f["decided_by"]}' if f.get('decided_by') else ''
+    if b == 'unknown':
+        return 'warn', f'whether {f.get("from")} can reach {f.get("to")} on {f.get("port")}/{f.get("proto")} cannot be told from what was read.', True
+    if b == 'blocked':
+        if a == 'blocked':
+            return 'info', f'{f.get("from")} still cannot reach {f.get("to")} on {f.get("port")}/{f.get("proto")}{by}.', False
+        return 'warn', f'{f.get("from")} would no longer be able to reach {f.get("to")} on {f.get("port")}/{f.get("proto")}{by}.', True
+    if a == 'allowed':
+        return 'info', f'{f.get("from")} can still reach {f.get("to")} on {f.get("port")}/{f.get("proto")}.', False
+    return 'warn', f'{f.get("from")} would be able to reach {f.get("to")} on {f.get("port")}/{f.get("proto")}{", which was blocked before" if a == "blocked" else ""}{by}.', True
+
+
+def sentences(result: dict) -> list[dict]:
+    """The answer of run() as short plain sentences, worst first: [{'level': crit|warn|info|ok, 'label': Danger|Careful|Note|Fine, 'text'}].
+    The text starts with its severity word, so colour is never the only cue. It says "nothing else is affected" only when nothing in the
+    answer says otherwise, and never for a step that could not be modelled. Pure: it reads nothing."""
+    out: list[tuple[str, str]] = []
+    ghost = result.get('ghost') or {}
+    affected = False
+    for c in result.get('conflicts') or []:
+        level = 'crit' if c.get('level') == 'crit' else 'warn'
+        out.append((level, _end(c.get('text') or '') + (' Stage a rollback timer first, or do not apply it.' if level == 'crit' and c.get('blocks_ssh') else '')))
+        affected = True
+    for h in result.get('exposure') or []:
+        for c in h.get('changes') or []:
+            out.append(_port_sentence(h['host'], c))
+            affected = True
+    for f in result.get('flows') or []:
+        level, text, changed = _flow_sentence(f)
+        out.append((level, text))
+        affected = affected or changed
+    for s in ghost.get('stops') or []:
+        verb = 'is stopped on' if s['how'] == 'stopped' else 'is removed from'
+        if s.get('ports'):
+            out.append(('warn', f'if {s["name"]} {verb} {s["host"]}, {", ".join(s["ports"])} stops answering.'))
+            affected = True
+        else:
+            out.append(('info', f'if {s["name"]} {verb} {s["host"]}, no port stops answering, because it publishes none.'))
+    for n in ghost.get('add') or []:
+        if n.get('kind') != 'Listener':
+            out.append(('info', f'it adds a {KIND_WORDS.get(n.get("kind"), str(n.get("kind")).lower())} called {n.get("label")} on {n.get("host")}.'))
+    for c in ghost.get('changed') or []:
+        kind, _, rest = str(c.get('id')).partition(':')
+        host, _, name = rest.partition(':')
+        if kind == 'nic':
+            out.append(('info', f'on {host}, {name} is set to {c.get("what")}.'))
+        elif kind == 'vpn':
+            out.append(('info', f'on {host}, {name}: {c.get("what")}.'))
+        elif kind == 'wl' and c.get('what') != 'stop':
+            out.append(('info', f'on {host}, {name.split("::")[-1]} would be told to {c.get("what")}.'))
+    for note in result.get('not_modelled') or []:
+        out.append(('info', f'not shown here: {_end(note)}'))
+        affected = True
+    if not out and not (any(ghost.values()) or result.get('steps')):
+        out = [('ok', 'nothing is staged, so nothing would change.')]
+    elif not affected:
+        out.append(('ok', 'nothing else is affected, as far as the last readings show.'))
+    rank = {'crit': 0, 'warn': 1, 'info': 2, 'ok': 3}
+    out.sort(key=lambda x: rank[x[0]])                 # a stable sort: inside a level, the order of the steps stays
+    return [{'level': lv, 'label': SEVERITY[lv], 'text': f'{SEVERITY[lv]}: {t}'} for lv, t in out]
 
 
 def plan_summary_for(conn: Conn, plan: dict) -> dict:
