@@ -209,7 +209,8 @@ class Verbs(TwoHosts):
         r = self.serve('rt1-z', f'recv-receive {self.nonce()} d-1', 'd-1\n')
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertRegex(r.stdout, r'^received d-1 \d+\n$')
-        self.assertIn('zfs receive -u -x mountpoint -- back/a', self.log.read_text())
+        # SF-72: a stream cannot carry its own mountpoint or exports, nor mount itself at boot, nor allow setuid or devices
+        self.assertIn('zfs receive -u -x mountpoint -x sharenfs -x sharesmb -o setuid=off -o devices=off -o canmount=noauto -- back/a', self.log.read_text())
         self.assertNotIn(' -F', self.log.read_text())
         self.assertEqual(self.serve('rt1-z', 'recv-root').stdout.strip(), 'present')
         self.assertEqual(self.serve('rt1-z', 'recv-list').stdout.split(), ['d-1'])

@@ -132,7 +132,7 @@ A send to another host needs no root key between the hosts. Each side is a signe
 | `recv-probe` | Is the tool here, and does it run? |
 | `recv-root`, `recv-list`, `recv-state <name>` | Is the folder or dataset there, what is in it, and is this copy finished? |
 | `recv-mkdir` | Makes the folder from the conf |
-| `recv-receive <nonce> <name>` | The stream on stdin into the folder or dataset from the conf. `btrfs receive -C`, chrooted into that folder, or `zfs receive -u -x mountpoint`, never `-F` |
+| `recv-receive <nonce> <name>` | The stream on stdin into the folder or dataset from the conf. `btrfs receive -C`, chrooted into that folder, or `zfs receive -u -x mountpoint -x sharenfs -x sharesmb -o setuid=off -o devices=off -o canmount=noauto`, never `-F` |
 | `recv-discard <name>` | Removes one unfinished btrfs copy. A finished one is refused |
 | `recv-prune [dry]` | Keeps the newest copies the conf says, of the prefix the conf says |
 
@@ -150,6 +150,7 @@ The sender names a verb, a nonce and a snapshot. It never names a path, an optio
 
 - **Send junk under newer names.** Retention then removes older good copies, because the newest count win. With **Keep there** at 0 the key can remove no finished copy. A ZFS hold on the receiver also stops `zfs destroy`. A btrfs copy has no such stop, so a backup you must keep should have its retention set to 0 and its pruning done by a task on the receiver.
 - **Fill the receiver's disk.** There is no quota on a send. Give the dataset a quota, or the folder a btrfs quota group, if that matters.
+- **Put files with the sender's owner and mode into a btrfs copy.** `btrfs receive` keeps the owner, group, mode and setuid bits a stream carries, so a stolen key can leave a root-owned setuid file in the received folder. Nothing on the receiver strips it. Mount the folder `nosuid,nodev` (or keep it unreachable to local accounts, mode 0700 on the folder above the copies) if other accounts can log in on the receiver, and do not run files from a copy. A ZFS receive sets `setuid=off`, `devices=off` and `canmount=noauto` itself and takes no `mountpoint`, `sharenfs` or `sharesmb` from the stream, so a received dataset does not export itself, mount at boot, or honour setuid. Mount it by hand to look. These ZFS settings have not been run against a real pool yet (lab tier 16: send a stream with a setuid file and `sharenfs` set).
 - **Feed a hostile stream to the tool.** A stream is the sender's data, and `btrfs receive` and `zfs receive` read it as root. The chroot and `-x mountpoint` confine what a stream can name, but a bug in the kernel or the tool is out of reach.
 - **Pick a new nonce.** The nonce stops a repeat by accident or from a log. It does not stop someone holding the key.
 
