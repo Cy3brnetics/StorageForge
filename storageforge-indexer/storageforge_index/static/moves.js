@@ -139,7 +139,7 @@ function stepCard(s, i) {
     text('p', METHOD_HELP[s.method], 'muted small'),
     marks.length ? text('p', `${marks.join(' · ')} (at the last scan of ${s.dst.host})`, 'st-ok small') : '',
     endEditor(s, 'src', 'From'), endEditor(s, 'dst', 'To'),
-    s.only?.length ? text('p', `Only these ${s.only.length} file${s.only.length === 1 ? '' : 's'} from that folder: ${s.only.slice(0, 8).join(', ')}${s.only.length > 8 ? ' and more' : ''}`, 'muted small') : null,
+    s.only?.length ? el('div', { class: 'muted small' }, text('p', `Only these ${s.only.length} file${s.only.length === 1 ? '' : 's'} from that folder:`), sfMoreList(s.only, (f) => el('li', { class: 'mono' }, f), { limit: 8, label: 'files', tag: 'ul' })) : null,
     el('details', {}, el('summary', {}, 'Options'), opts, excl, s.src.host && s.dst.host && s.src.host !== s.dst.host ? login : ''),
     result ? el('ul', { class: 'mvcheck' }, ...result.items.map((it) => el('li', { class: `lv-${it.level}` }, it.text))) : '');
   const redo = (fn) => () => { fn(); touch(); renderMoves(); };

@@ -75,6 +75,41 @@ function notify(message, kind = 'info') {        // a toast. An error stays unti
 
 const toast = (message, kind) => notify(message, kind);          // the name the main page's scripts already use
 
+/* ── a list that is cut says so (UX-13) ───────────────────────────── */
+/* sfMoreList(items, render, { limit = 12, label, tag = 'div', className }) shows the first `limit` items and, when there are more, a real
+   button "Show N more" that shows the rest in place and then reads "Show fewer". render(item, index) returns a Node. Items are only ever
+   built with DOM calls, so a name that a host reports as `<b>x</b>` stays text. The button is never replaced, so focus stays on it, and
+   aria-expanded and aria-controls say what it does. `label` names the things ("findings") for the screen reader's announcement. `tag` is the
+   element that holds the items ('ul' or 'ol' when render() returns <li>) and `className` goes on it. The rest is built on the first
+   expansion only. */
+function sfMoreList(items, render, { limit = 12, label = '', tag = 'div', className = '' } = {}) {
+  const all = Array.from(items || []);
+  const cut = Math.max(0, limit | 0);
+  const box = sfNode(tag, { class: className, id: `sf-more-${++sfSeq}` });
+  box.append(...all.slice(0, cut).map((item, i) => render(item, i)));
+  const wrap = sfNode('div', { class: 'sf-more' }, box);
+  if (all.length <= cut) return wrap;
+  const hidden = all.length - cut;
+  const noun = label ? ` ${label}` : '';
+  let rest = null, open = false;
+  const button = sfNode('button', { type: 'button', class: 'sf-btn ghost sf-more-btn', 'aria-expanded': 'false', 'aria-controls': box.id }, `Show ${hidden} more`);
+  button.addEventListener('click', () => {
+    open = !open;
+    if (open) {
+      rest = rest || all.slice(cut).map((item, i) => render(item, cut + i));
+      box.append(...rest);
+    } else {
+      for (const node of rest) node.remove();
+      button.scrollIntoView?.({ block: 'nearest' });          // the list got shorter above the button: keep it in sight
+    }
+    button.setAttribute('aria-expanded', String(open));
+    button.textContent = open ? 'Show fewer' : `Show ${hidden} more`;
+    announce(open ? `Showing all ${all.length}${noun}` : `Showing the first ${cut} of ${all.length}${noun}`);
+  });
+  wrap.append(button);
+  return wrap;
+}
+
 /* ── what a URL says (UX-08) ──────────────────────────────────────── */
 /* A page's place is in its URL after the #: #/map/firewall?host=nas. sfParseHash() reads that form; the old forms (#host=nas&tab=changes,
    #overview@atlas) come back with `parts` empty and `legacy` true, for the page to read as it always did. sfPushHash() makes a step of

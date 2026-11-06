@@ -22,9 +22,11 @@ const secStat = (label, value, cls = '') => el('div', {}, text('small', label), 
 /* The panel is a narrow rail, so a "table" is a stack of rows: the first cell heads each one, the rest are labelled lines. */
 const secCell = (c) => (c instanceof Node ? c : text('span', c === null || c === undefined ? '' : String(c)));
 const secEmpty = (c) => c === null || c === undefined || c === '' || (c instanceof Node && !c.textContent && !c.childElementCount);
-const secTable = (heads, rows) => el('div', { class: 'sec-rows' }, ...rows.map((r) => el('div', { class: 'sec-row' },
+/* Given a `limit`, a long table shows that many rows and a button for the rest (sfMoreList): nothing is cut without saying so. */
+const secRow = (heads) => (r) => el('div', { class: 'sec-row' },
   el('div', { class: 'sec-row-head' }, secCell(r[0])),
-  ...r.slice(1).map((c, i) => (secEmpty(c) ? null : heads[i + 1] ? el('div', { class: 'sec-kv' }, text('span', heads[i + 1], 'sec-k'), el('div', { class: 'sec-v' }, secCell(c))) : el('div', { class: 'sec-v' }, secCell(c)))))));
+  ...r.slice(1).map((c, i) => (secEmpty(c) ? null : heads[i + 1] ? el('div', { class: 'sec-kv' }, text('span', heads[i + 1], 'sec-k'), el('div', { class: 'sec-v' }, secCell(c))) : el('div', { class: 'sec-v' }, secCell(c)))));
+const secTable = (heads, rows, limit = Infinity) => limit === Infinity ? el('div', { class: 'sec-rows' }, ...rows.map(secRow(heads))) : sfMoreList(rows, secRow(heads), { limit, label: 'rows', className: 'sec-rows' });
 const secField = (label, input) => el('label', { class: 'sec-field' }, text('span', label), input);
 
 function secInput(placeholder, value = '') { const i = el('input', { type: 'text', placeholder }); i.value = value; return i; }
@@ -304,7 +306,7 @@ async function secMac() {
       text('p', 'Turning SELinux on from here is not offered: it can stop services that have been relying on it being off. Look at the denials first.', 'muted small'), secCan('security.manage') ? secMeasureButton(host, out) : ''),
     d.booleans.length ? secCard('Storage booleans', secTable(['Boolean', 'Now', 'Should be', '', ''], d.booleans.map((b) => [b.name, b.value, secVal(b.expected), secOkPill(b.ok, 'as expected', 'too open'), b.ok ? '' : fix(b.name, b.expected)]))) : '',
     d.fcontext.length ? secCard('Mount labels', secTable(['Mount', 'Now', 'Policy says', ''], d.fcontext.map((f) => [f.path, f.live, secVal(f.expected), secOkPill(f.aligned, 'matches', 'drifted')]))) : '',
-    secCard('Recent denials', d.avc.length ? secTable(['When', 'Program', 'Asked for', 'On', 'Its context', 'Target'], d.avc.slice(0, 50).map((a) => [secWhen(a.at), text('span', a.daemon, a.storage ? 'st-warn' : ''), a.action, a.path, a.scontext, a.tcontext])) : text('p', 'None in the last 10 minutes, as far as ausearch can say.', 'muted')),
+    secCard('Recent denials', d.avc.length ? secTable(['When', 'Program', 'Asked for', 'On', 'Its context', 'Target'], d.avc.map((a) => [secWhen(a.at), text('span', a.daemon, a.storage ? 'st-warn' : ''), a.action, a.path, a.scontext, a.tcontext]), 20) : text('p', 'None in the last 10 minutes, as far as ausearch can say.', 'muted')),
     SEC_MORE.macExtra(host, d),
     d.selinux_mode ? secCard('Relabel a share', text('p', 'Registers the type with semanage, so it survives a relabel, then runs restorecon. This is the usual fix for a denial on a share.', 'muted small'), el('div', { class: 'sec-form' }, secField('Path', path), secField('Type', type)), relabel) : '',
     out);
@@ -351,7 +353,7 @@ async function secBehavior() {
       text('p', 'From the difference between scans, so it catches damage no decoy was in the path of, but only after the next scan. Oldest on the left.', 'muted small')) : text('p', 'It takes two scans of this host to compare.', 'muted')),
     secCard('Do changed files look encrypted?', e ? el('div', { class: 'stack' },
       el('div', { class: 'stat-row' }, secStat('Sampled', secAgo(e.measured_at)), secStat('Files read', `${e.read} of ${e.asked}`), secStat('Plain', e.buckets.low), secStat('Dense', e.buckets.mid + e.buckets.high), secStat('Random-looking', e.buckets.ciphertext_like), secStat('With no known header', e.flagged_count, e.flagged_count ? 'st-failed' : '')),
-      e.flagged.length ? secTable(['File', 'Bits per byte', 'Size', 'First bytes'], e.flagged.slice(0, 50).map((f) => [f.path, f.entropy, f.size, text('code', f.head, 'small')])) : '') : text('p', 'No sample yet. Sampling reads the first 4 KiB of what the last scan saw change, on the host.', 'muted'),
+      e.flagged.length ? secTable(['File', 'Bits per byte', 'Size', 'First bytes'], e.flagged.map((f) => [f.path, f.entropy, f.size, text('code', f.head, 'small')]), 20) : '') : text('p', 'No sample yet. Sampling reads the first 4 KiB of what the last scan saw change, on the host.', 'muted'),
       text('p', 'Compressed data looks just like ciphertext, so archives, images and video are skipped, and a known file header clears a file. What is left is a reason to look, not proof.', 'muted small'),
       secCan('security.manage') ? el('div', { class: 'row wrap sec-acts' }, button('Sample changed files', async () => { if (await secPost('/api/security/behavior/entropy', { host }, out)) secRender(); }, 'btn sm'), button('ClamAV on changed files', async () => { const r = await secPost('/api/security/behavior/diff-scan', { host }, out); if (r) out.prepend(text('p', `Scanned ${r.scanned} changed files in ${r.seconds} s: ${r.found} new detections. They are in the Malware panel.`, r.found ? 'st-failed' : 'st-ok')); }, 'btn sm')) : ''),
     secCard('Falco', text('p', d.measured_at ? (d.falco?.installed ? `Installed, ${d.falco.active ? 'running' : 'not running'}.` : 'Not installed.') : `${NOT_MEASURED}.`, 'muted'), button('Rules, alerts and YARA', () => secOpen('detect'), 'btn sm')),
@@ -370,7 +372,7 @@ async function secIntegrity() {
       a.entries.length ? el('pre', { class: 'small sec-out' }, a.entries.join('\n')) : '') : text('p', 'Not installed. Making a baseline installs it.', 'muted'),
       text('h4', 'Check files'), run('aide-check', 'Run a check'), text('h4', 'Make a new baseline'), text('p', 'After an upgrade you trust. Anything already changed becomes the new normal.', 'muted small'), run('aide-init', 'Make the baseline')),
     secCard('Lynis', l ? el('div', { class: 'stack' }, el('div', { class: 'stat-row' }, secStat('Hardening index', secVal(l.hardening_index)), secStat('Audited', secWhen(l.at)), secStat('Warnings', l.warnings.length), secStat('Suggestions', l.suggestions.length)),
-      l.warnings.length ? secTable(['Warning', ''], l.warnings.map((w) => [w.id, w.text])) : '', l.suggestions.length ? secTable(['Suggestion', ''], l.suggestions.slice(0, 50).map((w) => [w.id, w.text])) : '') : text('p', 'No audit has run.', 'muted'), run('lynis', 'Run an audit')),
+      l.warnings.length ? secTable(['Warning', ''], l.warnings.map((w) => [w.id, w.text])) : '', l.suggestions.length ? secTable(['Suggestion', ''], l.suggestions.map((w) => [w.id, w.text]), 20) : '') : text('p', 'No audit has run.', 'muted'), run('lynis', 'Run an audit')),
     text('p', 'These run in the background on the host. Measure again when they are done.', 'muted small'), secCan('security.manage') ? secMeasureButton(host, out) : '', out, await SEC_MORE.integrityExtra(host));
 }
 

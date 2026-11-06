@@ -659,10 +659,10 @@ function fmFollow(e) {                     // a line with one link opens both en
 function fmLinesPanel(sel) {
   const where = (x) => (x.host ? `${x.host}:${x.path}` : x.path);
   return [el('div', { class: 'node-head' }, text('span', `${sel.items.length} ${FM_LINK_TEXT[sel.kind]} link${sel.items.length === 1 ? '' : 's'}`, 'muted'), text('h2', 'Where this line goes')),
-    el('ul', { class: 'fmlist' }, ...sel.items.slice(0, 100).map((l) => el('li', {}, text('span', ''),
+    sfMoreList(sel.items, (l) => el('li', {}, text('span', ''),
       el('span', { class: 'p' }, `${where(l.src)} → ${where(l.dst)}`),
       button('Follow', () => { fmOpenTo(l.src.host, l.src.path); fmOpenTo(l.dst.host, l.dst.path); FM.moved = true; fmDraw(); fmReveal(fmId('f', l.src.host, l.src.path)); }, 'btn ghost sm'),
-      text('span', [l.label, l.bytes ? `${fmtBytes(l.bytes)} in both` : '', l.broken ? 'broken' : ''].filter(Boolean).join(' · '), 'm')))),
+      text('span', [l.label, l.bytes ? `${fmtBytes(l.bytes)} in both` : '', l.broken ? 'broken' : ''].filter(Boolean).join(' · '), 'm')), { limit: 100, label: 'links', tag: 'ul', className: 'fmlist' }),
     sel.kind === 'copies' && sel.items.length === 1 ? button('Compare and trash the extras', () => fmSelect({ type: 'link', a: sel.items[0].link.a, b: sel.items[0].link.b }), 'btn sm') : ''];
 }
 function fmSelect(sel) {
@@ -920,14 +920,14 @@ function fmDirPanel(n) {
 }
 function fmOverview() {
   const d = FM.data;
-  const top = d.groups.slice(0, 12);
-  const ul = el('ul', { class: 'nbrs' }, ...top.map((g) => {
+  const top = d.groups;
+  const ul = sfMoreList(top, (g) => {
     const c = g.copies[0];
     const key = fmKeyOf(c.host, dirOf(c.path));
     const b = button('', () => { if (fmFolder(key)) fmSelect({ type: 'folder', key }); });
     b.append(text('span', `${g.copies.length}×`, 'rel'), text('span', `${fmtBytes(g.size)} ${c.path.split('/').pop()}`, 'lbl'));
     return el('li', {}, b);
-  }));
+  }, { limit: 12, label: 'duplicate sets', tag: 'ul', className: 'nbrs' });
   return [text('p', 'Open a card with + to look inside it. Tick cards to pick them, then copy them to any folder on any host, or drag a card onto a folder. Changes go in a plan you check and run.', 'muted'),
     text('h3', 'Duplicates'), el('dl', { class: 'kv' }, text('dt', 'Reclaimable within hosts'), text('dd', fmtBytes(d.reclaimable)),
       text('dt', 'Identical files'), text('dd', d.groups_total.toLocaleString()), text('dt', 'Whole folder copies'), text('dd', FM.comparing ? '…' : d.folder_copies.length.toLocaleString()),
