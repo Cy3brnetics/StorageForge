@@ -421,6 +421,35 @@ class Language(unittest.TestCase):
             with self.assertRaises(ros.DslError, msg=bad):
                 ros.parse(bad)
 
+    def test_an_address_is_ascii_digits_and_colons_and_a_zone_is_not_one(self):      # SF-64
+        # Python's ipaddress takes an IPv6 zone (fe80::1%anything but / and %) since 3.9, and the emitters of nftables, iptables, ufw, RouterOS, Cisco and networkd do not quote
+        for bad in ('/ip firewall filter add chain=input action=accept src-address=fe80::1%$(id)', '/ip firewall filter add chain=input action=accept src-address="fe80::1%a;touch${IFS}x;id\'"',
+                    '/ip firewall filter add chain=input action=accept src-address=fe80::1%eth0', '/ip firewall filter add chain=input action=accept dst-address=!fe80::1%eth0', '/ip firewall filter add chain=input action=accept src-address=fe80::1%a-fe80::2%b',
+                    '/ip dns set servers=fe80::1%a;:error', '/ip dns set servers=1.1.1.1,fe80::1%x', '/ip address add address=fe80::1%eth0/64 interface=eth0', '/ipv6 route add dst-address=::/0 gateway=fe80::1%eth0',
+                    '/ip firewall nat add chain=dstnat action=dst-nat to-addresses=fe80::1%a', '/ip dhcp-server network add address=10.0.0.0/24 gateway=fe80::1%a', '/ip pool add name=p ranges=fe80::1%a-fe80::9',
+                    '/interface wireguard peers add interface=wg0 public-key=' + 'A' * 42 + '= allowed-address=fe80::/64,fe80::1%a',
+                    '/ip firewall address-list add list=l address=１０.0.0.1', '/ip firewall filter add chain=input action=accept src-address=١٢.0.0.1/8',
+                    '/ip route add dst-address=10.0.0.0/8 gateway=10.0.0.1 distance=²', '/interface vlan add name=v vlan-id=٣ interface=e0', '/ip firewall filter add chain=input action=accept protocol=tcp dst-port=١٢',
+                    '/ip firewall filter add chain=input action=accept protocol=²', '/interface bridge vlan add bridge=b vlan-ids=١٠', '/interface bridge add name=b mtu=¹²', '/ip firewall filter add chain=input action=accept protocol=tcp dst-port=1-²'):
+            with self.assertRaises(ros.DslError, msg=bad):
+                ros.parse(bad)
+        for fine in ('/ip firewall filter add chain=input action=accept src-address=fe80::1', '/ip firewall filter add chain=input action=accept src-address=!2001:db8::/32', '/ip firewall address-list add list=l address=10.0.0.1-10.0.0.9',
+                     '/ip dns set servers=2001:db8::1,1.1.1.1', '/ip address add address=2001:db8::1/64 interface=eth0', '/ip firewall filter add chain=input action=accept src-address=::ffff:10.0.0.1'):
+            self.assertTrue(ros.parse(fine), fine)
+
+    def test_what_an_address_field_lets_through_is_not_shell(self):                # SF-64
+        text = self.TEXT + '/ip firewall filter add chain=input protocol=tcp dst-port=22 src-address=2001:db8::/32 action=accept\n/ip dns set servers=2001:db8::1,9.9.9.9\n'
+        stmts = ros.parse(text)
+        for stmt in stmts:
+            for key, value in stmt.attrs.items():
+                if key in ('address', 'src-address', 'dst-address', 'to-addresses', 'gateway', 'servers', 'dns-server', 'ranges', 'allowed-address'):
+                    self.assertRegex(value, r'^[!0-9A-Fa-f:./,-]+$', key)
+        for target in ros.TARGETS:
+            got = ros.emit(stmts, target)
+            shell = {'`', '%'} | (set() if target == 'openwrt' else {'$'})       # OpenWrt's script uses $r and $(uci add ...) of its own
+            for out in [got['text'], *got['files'].values()]:
+                self.assertFalse(shell & set(out), (target, sorted(shell & set(out))))
+
     def test_a_comment_can_not_be_a_command_to_routeros(self):
         for bad in ('/ip firewall filter add chain=input action=accept comment=[/system/reboot]', '/ip firewall filter add chain=input action=accept comment="[/system/reset-configuration]"', '/ip firewall filter add chain=input action=accept comment={x}'):
             with self.assertRaises(ros.DslError, msg=bad):
