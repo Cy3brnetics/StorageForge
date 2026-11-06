@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tiers 1, 3, 4, 5, 6 and 7 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py, tiers 9 to 11 are tiers_platform.py, tier 13 is tiers_features.py, tier 16 is tiers_sends.py.
+"""Tiers 1, 3, 4, 5, 6 and 7 of the KVM lab tests, and the report over all tiers. Tier 0 is test_tier0.py, tier 2 is gauntlet.py, tiers 9 to 11 are tiers_platform.py, tier 13 is tiers_features.py, tier 16 is tiers_sends.py, tier 17 is tiers_netlang.py.
 They change the VMs, so run them through examples/lab/lab.sh test --all, which resets the lab around each tier.
 
     tiers.py run <0|1|3|4|5|6|7|9|10|11|13|16>   tier 0 as a result file, or one tier against StorageForge on sf-ctl, through its API
@@ -1276,7 +1276,7 @@ def tier0(r):
 
 
 # ── report ──────────────────────────────────────────────────────────
-TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs', 6: 'Sync engine', 7: 'Remote nodes', 8: 'Appliances', 9: 'Security', 10: 'Infrastructure', 11: 'Changes', 12: 'Network appliances', 13: 'Features', 16: 'Sends'}
+TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs', 6: 'Sync engine', 7: 'Remote nodes', 8: 'Appliances', 9: 'Security', 10: 'Infrastructure', 11: 'Changes', 12: 'Network appliances', 13: 'Features', 16: 'Sends', 17: 'Network language on firewalld and ufw'}
 CELL = {'pass': 'pass', 'FAIL': '**FAIL**', 'skip': 'skip', 'known': 'known', 'fixed?': 'fixed?'}
 
 
@@ -1330,7 +1330,10 @@ def main():
     tier = int(sys.argv[2])
     r = Results(tier)
     try:
-        if tier == 16:
+        if tier == 17:
+            import tiers_netlang
+            tiers_netlang.tier17(r)
+        elif tier == 16:
             import tiers_sends
             tiers_sends.tier16(r)
         elif tier == 13:
