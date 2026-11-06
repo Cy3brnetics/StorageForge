@@ -62,6 +62,7 @@ CATALOGUE = {
 
 # What the roadmaps added since the catalogue was written (docs/ransomware-defense.md, docs/infrastructure-map.md).
 PLATFORM = {
+    'Signed scan payloads': {'unit': ['test_scansign.Signed', 'test_scansign.SignedScan', 'test_scansign.Setup', 'test_scansign.Records'], 'lab': [(2, 'scan-signed')]},
     'Signed sends between hosts': {'unit': ['test_sends.Verbs', 'test_sends.Generated', 'test_sends.Checks', 'test_sends.RealSshd', 'test_sends.SignedReceive', 'test_sends.Route'],
                                    'lab': [(16, 'send-btrfs-full'), (16, 'send-btrfs-incremental'), (16, 'send-btrfs-retention'), (16, 'send-receiver-record'), (16, 'send-refused-not-enrolled'), (16, 'send-zfs-full')]},
     'Holds, cool-off and two admins': {'unit': ['test_security.Holds', 'test_security.OfflineKey'], 'lab': [(9, 'hold-zfs'), (9, 'hold-btrfs'), (9, 'release-cool-off'), (9, 'dual-admin'), (9, 'offline-key')]},

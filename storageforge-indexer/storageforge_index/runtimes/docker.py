@@ -259,12 +259,14 @@ def _stream(t, script: str, items: list[str] | None = None) -> str:
     from ..remote import StderrTail
     err = StderrTail(proc.stderr)
     from ..remote import read_capped
-    out = read_capped(proc, 'docker inventory').decode('utf-8', 'replace')
+    raw = read_capped(proc, 'docker inventory')
     proc.wait()
     err.join(5)
     proc.stdout.close()
     proc.stderr.close()
-    return out
+    import hashlib
+    t.check_stream(proc, hashlib.sha256(raw).hexdigest(), err.tail, 'the container survey')      # signed on the host (scansign.py)
+    return raw.decode('utf-8', 'replace')
 
 
 def parse_files(text: str) -> tuple[dict, list]:

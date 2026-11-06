@@ -147,6 +147,9 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/hostconfigs(/.*)?', 'configs.view'),
 
     (READ, r'/api/jobs', 'scans.view'),
+    (READ, r'/api/scans/signing', 'scans.view'),                       # signed scan payloads (scansign.py): what each host's last scan was
+    (('PUT',), r'/api/scans/signing', 'keys.manage'),                  # what a host is trusted to sign with is key management: admins, not operators
+    (('DELETE',), r'/api/scans/signing/[^/]+', 'keys.manage'),         # forgetting a pinned key lets the next signer be pinned in its place
     (_WRITE, r'/api/scan(/all)?', 'scans.run'),
     (_WRITE, r'/api/hosts/[^/]+/schedule', 'scans.run'),
     (_WRITE, r'/api/(files/ignore|git/ignore|git/survey)', 'scans.run'),

@@ -134,6 +134,8 @@ def scan_via_vault(db: Database, host: str, opts: ScanOptions, actor: str | None
                 with ephemeral_agent(vault.decrypt_key(b.key_id)) as sock:
                     t = Transport(host=host, user=b.user, port=b.port, agent_sock=sock,
                                   known_hosts=str(known_hosts_path()), isolated=True)
+                    from .scansign import for_scan
+                    t.signing = for_scan(conn, host, b.port, str(known_hosts_path()))      # every payload signed on the host, checked here
                     kw = {'log': log} if log else {}
                     result = scan_host(db, t, opts, **kw)
             except Exception as exc:

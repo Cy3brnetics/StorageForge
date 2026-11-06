@@ -17,6 +17,8 @@ PW = 'a long enough password'
 
 # Changes something, runs on a host or touches accounts and keys: asks for a password typed in the last 5 minutes.
 FRESH_PASSWORD = {
+    ('PUT', '/api/scans/signing'),                # whether unsigned scans are refused
+    ('DELETE', '/api/scans/signing/<path:addr>'),  # forgetting a pinned key lets the next signer take its place
     ('POST', '/api/devices'),
     ('DELETE', '/api/devices/<name>'),
     ('POST', '/api/devices/credentials'),

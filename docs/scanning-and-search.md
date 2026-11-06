@@ -98,6 +98,8 @@ Scans run as an ordinary user, so `find` cannot open folders such as `/root`, `/
 
 Read-only scan access fixes this without scanning as root. It gives the scan user private copies of `find` and `sha256sum` that carry `CAP_DAC_READ_SEARCH`, the approach restic documents for backup users. The copies live in `/usr/local/lib/storageforge`, owned by root and executable only by the `storageforge-scan` group. They can list and checksum every file; they cannot write, change ownership or run anything as root, and programs they start do not inherit the capability. Scans use them when present and fall back to the plain tools.
 
+The setup also makes the key the host signs its scan payloads with, `scan-sign` in the same folder, readable only by that group, and prints its public half for StorageForge to pin. A scan checks every payload's signature before it uses any of it: see [signed scan payloads](security.md#signed-scan-payloads). Hosts set up before this need the setup run again to sign; until then their scans are used and shown as unsigned.
+
 Three ways to set it up:
 
 - **Access → Set up read-only access.** StorageForge runs the script once over SSH with sudo, using either the scan user's sudo password (connecting with its vault key) or an admin account's password. The password goes only to that one session.

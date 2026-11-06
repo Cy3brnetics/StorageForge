@@ -164,11 +164,14 @@ def survey(db, conn: Conn, t, host_id: int, scan_id: int) -> dict:
     from .remote import StderrTail
     err = StderrTail(proc.stderr)
     from .remote import read_capped
-    out = decode(read_capped(proc, 'git survey'))       # as the index writes names, so a path comes back as asked
+    raw = read_capped(proc, 'git survey')
+    out = decode(raw)                                    # as the index writes names, so a path comes back as asked
     proc.wait()
     err.join(5)
     proc.stdout.close()
     proc.stderr.close()
+    import hashlib
+    t.check_stream(proc, hashlib.sha256(raw).hexdigest(), err.tail, 'the git survey')      # signed on the host (scansign.py)
     repos, have_git = parse_survey(out)
     if not have_git:
         return {'repos': len(paths), 'error': 'git is not installed on the host'}

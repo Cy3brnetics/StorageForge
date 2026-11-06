@@ -2221,6 +2221,34 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         return jsonify(hosts=sorted(hosts.values(), key=lambda h: h['host']),
                        example=not alerts.get_setting(conn(), 'planner.hide_example'))
 
+    @web.get('/api/scans/signing')
+    @login_required
+    def api_scans_signing():
+        from . import scansign
+        pinned = [dict(zip(('address', 'fingerprint', 'pinned_at', 'how'), r))
+                  for r in conn().all('SELECT address, fingerprint, pinned_at, how FROM scan_signers ORDER BY address')]
+        return jsonify(require=scansign.required(conn()), hosts=scansign.status(conn()), pinned=pinned)
+
+    @web.put('/api/scans/signing')
+    @login_required
+    @password_confirmed
+    def api_scans_signing_set():
+        from . import scansign
+        need = bool(json_body().get('require'))
+        alerts.set_setting(conn(), scansign.REQUIRE, need, actor())
+        core.audit(conn(), actor(), 'scans.require_signed', 'ok', None, {'require': need})
+        return jsonify(require=need)
+
+    @web.delete('/api/scans/signing/<path:addr>')
+    @login_required
+    @password_confirmed
+    def api_scans_signing_forget(addr):
+        from . import scansign
+        host, _, port = addr.rpartition(':') if addr.count(':') == 1 else (addr, '', '22')
+        gone = scansign.forget(conn(), host or addr, int(port or 22))
+        core.audit(conn(), actor(), 'scans.signing_key.forget', 'ok' if gone else 'failed', host or addr, {'address': addr})
+        return jsonify(forgotten=gone)
+
     @web.put('/api/planner/example')
     @login_required
     def api_planner_example():

@@ -1415,7 +1415,7 @@ class ServerTests(DBCase):
         import re
         public = {('GET', '/login'), ('GET', '/healthz'), ('POST', '/api/logout'), ('POST', '/api/login'),
                   ('GET', '/enroll'), ('POST', '/api/enroll'), ('POST', '/api/enroll/check'),
-                  ('GET', '/<any("login.js", "enroll.js", "style.css", "favicon.svg"):name>')}
+                  ('GET', '/<any("login.js", "enroll.js", "style.css", "tokens.css", "components.css", "favicon.svg"):name>')}
         answered = []
         for rule in self.web.url_map.iter_rules():
             path = re.sub(r'<int:\w+>', '1', rule.rule)

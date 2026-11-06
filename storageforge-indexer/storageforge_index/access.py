@@ -72,6 +72,17 @@ if command -v runuser >/dev/null 2>&1 && ! runuser -u "$U" -- "$D/find" /root -m
   rm -rf "$D"
   exit 4
 fi
+# the key this host signs its scan payloads with (scansign.py): readable by the scan group only. Its public half is printed so that
+# StorageForge, which runs this over a connection that accepts only the host key a person confirmed, can pin it.
+if command -v ssh-keygen >/dev/null 2>&1; then
+  [ -f "$D/scan-sign" ] || ssh-keygen -q -t ed25519 -N '' -C "storageforge-scan@$(hostname 2>/dev/null || echo host)" -f "$D/scan-sign" </dev/null >/dev/null
+  chown root:"$G" "$D/scan-sign" "$D/scan-sign.pub"
+  chmod 0640 "$D/scan-sign"
+  chmod 0644 "$D/scan-sign.pub"
+  echo "SFSIGNKEY $(cut -d' ' -f1,2 "$D/scan-sign.pub")"
+else
+  echo "ssh-keygen is not installed here, so this host cannot sign its scans" >&2
+fi
 echo "read-only scan access is ready for $U"
 """
 
@@ -155,7 +166,16 @@ def grant(db, conn, host: str, password: str, admin_user: str | None = None, rem
         if not scan_user:
             raise ValueError(f'no scan key is bound to {host}: bind one first (Keys tab, or storageforge-index vault bind)')
         return (remove_script if remove else setup_script)(scan_user)
-    return sudo_run(db, conn, host, make, password, admin_user, admin_key)
+    res = sudo_run(db, conn, host, make, password, admin_user, admin_key)
+    from . import scansign
+    if remove:
+        scansign.forget(conn, res['host'], res['port'])
+    elif res.get('ok'):
+        m = re.search(r'^SFSIGNKEY (ssh-ed25519 [A-Za-z0-9+/=]+)$', res.get('output') or '', re.M)
+        if m:                  # it came over a connection bound to the confirmed host key: the strongest pin there is
+            scansign.pin(conn, res['host'], res['port'], m.group(1), 'scan access setup, host key confirmed')
+            res['scan_signing_key'] = scansign.fingerprint(m.group(1))
+    return res
 
 
 def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | None = None,

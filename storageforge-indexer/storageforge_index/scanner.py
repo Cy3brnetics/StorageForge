@@ -30,6 +30,7 @@ from .db import Database, DiffStats
 from .remote import (DEFAULT_EXCLUDE_NAMES, DEFAULT_EXCLUDE_PATHS, NETWORK_FS, PSEUDO_FS, TMP_FS,
                      MountInfo, RemoteError, StderrTail, Transport, checksum_command, collect_inventory,
                      find_command, is_under)
+from .scansign import HashingReader
 from .stream import decode, iter_fields, iter_rows, join_path
 
 
@@ -276,7 +277,8 @@ def stream_job(t: Transport, job: ScanJob, pool: WriterPool, opts: ScanOptions) 
     pool.send(mid, ('begin', job.id))
     proc = t.stream(find_command(job.root, job.prune, opts.exclude_names, nice=opts.nice, btrfs=job.plan.info.fstype == 'btrfs'))
     err = StderrTail(proc.stderr)
-    guard = StallGuard(proc.stdout.raw, proc.kill, stall_limit())
+    reader = HashingReader(proc.stdout.raw)          # what arrived, byte for byte, for the host's signature (scansign.py)
+    guard = StallGuard(reader, proc.kill, stall_limit())
     try:
         batch = []
         for row in iter_rows(io.BufferedReader(guard, 1 << 20)):
@@ -297,6 +299,7 @@ def stream_job(t: Transport, job: ScanJob, pool: WriterPool, opts: ScanOptions) 
         # Exit 1 with no output, or anything else, means the walk did not happen and nothing may be deleted.
         if rc not in (0, 1) or (rc == 1 and res.entries == 0):
             raise RemoteError(f'find {job.root} exited {rc}: ' + ('; '.join(err.tail) or 'no output'))
+        t.check_stream(proc, reader.digest(), err.tail, f'the walk of {job.root}')     # a bad one aborts: the mount's index stays as it was
         pool.send(mid, ('end', job.id, mid, job.root, job.full))
     except Exception as exc:
         proc.kill()
@@ -347,20 +350,22 @@ def checksum_pass(db: Database, conn, t: Transport, host_id: int, min_size: int,
 
     threading.Thread(target=feed, daemon=True).start()
     err = StderrTail(proc.stderr)
-    done, updates = 0, []
-    for (rec,) in iter_fields(proc.stdout, nfields=1):
+    reader = HashingReader(proc.stdout.raw)
+    updates = []                                  # kept until the payload is checked: nothing is written on the word of a bad one
+    for (rec,) in iter_fields(io.BufferedReader(reader, 1 << 20), nfields=1):
         line = decode(rec)
         fid = by_path.get(line[66:])
         if fid is not None:
             updates.append((line[:64], fid))
-        if len(updates) >= 5000:
-            done += db.set_checksums(conn, updates)
-            updates = []
     proc.wait()
     err.join(5)
     proc.stdout.close()
     proc.stderr.close()
-    return done + (db.set_checksums(conn, updates) if updates else 0)
+    t.check_stream(proc, reader.digest(), err.tail, 'the checksum pass')
+    done = 0
+    for i in range(0, len(updates), 5000):
+        done += db.set_checksums(conn, updates[i:i + 5000])
+    return done
 
 
 def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dict | None:
@@ -515,6 +520,13 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
                 log(f'  host configuration not saved: {exc}')
         log(f'scan #{scan_id} {status}: {tot["entries"]:,} entries, {fmt_bin(tot["bytes"])} in '
             f'{time.time() - started:.1f}s · +{tot["added"]:,} ~{tot["modified"]:,} -{tot["deleted"]:,}')
-        return {'scan_id': scan_id, 'host': inv.hostname, 'status': status, **tot}
+        signed = None
+        if getattr(t, 'signing', None):                # what was signed, by which key, and why the rest was not (scansign.py)
+            from .scansign import record
+            record(conn, inv.hostname, t.signing)
+            signed = t.signing.summary()
+            log(f'  payloads: {signed["state"]} ({signed["signed"]} signed, {signed["unsigned"]} not)'
+                + (f'; {"; ".join(signed["reasons"])}' if signed['reasons'] else ''))
+        return {'scan_id': scan_id, 'host': inv.hostname, 'status': status, **tot, 'signed': signed}
     finally:
         conn.close()

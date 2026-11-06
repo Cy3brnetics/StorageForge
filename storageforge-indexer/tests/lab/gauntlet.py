@@ -31,7 +31,7 @@ LAB = str(LAB_DIR / 'lab.sh')
 STATE = Path(os.environ.get('SFLAB_STATE', Path.home() / '.local' / 'state' / 'sflab'))
 LAB_NET = os.environ.get('SFLAB_PREFIX', '10.77.0') + '.0/24'
 ACTOR = 'gauntlet'
-STAGES = ('scan', 'scan-access', 'deploy-access', 'doctor', 'shares', 'jobs', 'changes', 'tasks', 'drift', 'engine', 'remove')
+STAGES = ('scan', 'scan-access', 'scan-signed', 'deploy-access', 'doctor', 'shares', 'jobs', 'changes', 'tasks', 'drift', 'engine', 'remove')
 # Deploys can't run on Alpine: it has no bash, systemd or known package manager. It must say so instead of breaking.
 
 work = Path(tempfile.mkdtemp(prefix='sf-gauntlet-', dir=os.environ.get('XDG_RUNTIME_DIR')))
@@ -39,7 +39,7 @@ os.environ.update(STORAGEFORGE_DATA_DIR=str(work / 'data'), STORAGEFORGE_RUNTIME
                   STORAGEFORGE_VAULT_SECRET='lab gauntlet secret, thrown away with its database',
                   PATH=f'{Path(sys.executable).parent}:{os.environ["PATH"]}')
 
-from storageforge_index import access, alerts, changes, deploy, hostkeys, jobs, moves, shares, tasks, vault  # noqa: E402
+from storageforge_index import access, alerts, changes, deploy, hostkeys, jobs, moves, scansign, shares, tasks, vault  # noqa: E402
 from storageforge_index.db import Database  # noqa: E402
 from storageforge_index.remote import known_host_keys  # noqa: E402
 from storageforge_index.runner import known_hosts_path, scan_via_vault  # noqa: E402
@@ -247,6 +247,63 @@ def stage_scan_access():
             have = raw(vm, 'sudo -n -u scan /usr/local/lib/storageforge/find /root -maxdepth 0')
             R.add('scan-access', vm, have.returncode == 0, r['output'].splitlines()[-1][:120] if r.get('output') else '', r.get('output', ''))
         R.check('scan-access', vm, run)
+
+
+
+# ── signed scan payloads (scansign.py): WRITTEN, NOT RUN YET ───────────
+def stage_scan_signed():
+    """With scan access set up, every payload of a scan is signed with the key the setup made, and pinned from the setup's own connection.
+    What the unit tests cannot show: a real distro's ssh-keygen, sha256sum or shasum, mktemp and mkfifo, and the scan account reading only
+    its own group's key. Then a key swapped on the host is refused, forgetting it and setting up again recovers, and requiring signed
+    scans refuses a host whose scan account cannot read a key. Each answer is read on the VM or from the index, never from a log."""
+    key = '/usr/local/lib/storageforge/scan-sign'
+    for vm, ip in NODES.items():
+        if vm not in NAME or BUILD[vm].can('truenas'):
+            continue
+
+        def run(vm=vm, ip=ip):
+            mode = sh(vm, f'sudo -n stat -c "%a %U %G" {key}').strip()
+            if mode != '640 root storageforge-scan':
+                return R.add('scan-signed', vm, False, f'the signing key is {mode or "missing"}, not 640 root storageforge-scan')
+            on_host = ' '.join(sh(vm, f'cat {key}.pub').split()[:2])
+            pinned = scansign.pinned_key(main_conn, ip, 22)
+            if pinned != on_host:
+                return R.add('scan-signed', vm, False, f'pinned {pinned and scansign.fingerprint(pinned)}, the host has {scansign.fingerprint(on_host)}')
+            res = scan_via_vault(db, ip, ScanOptions(), actor=ACTOR)
+            got = (res or {}).get('signed') or {}
+            if got.get('state') != 'signed':
+                return R.add('scan-signed', vm, False, f'the scan was {got.get("state")}: {got.get("reasons")}', json.dumps(res, default=str))
+            # someone puts another key in its place: the next scan is refused, and the index keeps what it had
+            swap = f'mv {key} {key}.lab && mv {key}.pub {key}.pub.lab && ssh-keygen -q -t ed25519 -N "" -f {key} && chown root:storageforge-scan {key} && chmod 640 {key}'
+            raw(vm, 'sudo -n sh -c ' + shlex.quote(swap))
+            try:
+                scan_via_vault(db, ip, ScanOptions(), actor=ACTOR)
+                swapped = 'a scan signed with a swapped key was used'
+            except Exception as exc:
+                swapped = '' if 'not pinned' in str(exc) else f'refused, but not for the key: {str(exc)[:120]}'
+            finally:
+                raw(vm, 'sudo -n sh -c ' + shlex.quote(f'mv {key}.lab {key} && mv {key}.pub.lab {key}.pub'))
+            if swapped:
+                return R.add('scan-signed', vm, False, swapped)
+            # what someone does after a real rebuild: forget the key, set up again, and it signs and is pinned again
+            scansign.forget(main_conn, ip, 22)
+            access.grant(db, main_conn, ip, PASSWORD, 'sfadmin', admin_key='lab-admin')
+            again = (scan_via_vault(db, ip, ScanOptions(), actor=ACTOR) or {}).get('signed') or {}
+            if again.get('state') != 'signed':
+                return R.add('scan-signed', vm, False, f'after forgetting and setting up again the scan was {again.get("state")}')
+            # required, and the scan account can read no key: refused
+            alerts.set_setting(main_conn, scansign.REQUIRE, True, ACTOR)
+            raw(vm, f'sudo -n chmod 600 {key}')
+            try:
+                scan_via_vault(db, ip, ScanOptions(), actor=ACTOR)
+                required = 'an unsigned scan was used while signed scans were required'
+            except Exception as exc:
+                required = '' if 'requires signed scans' in str(exc) else f'refused, but not as unsigned: {str(exc)[:120]}'
+            finally:
+                raw(vm, f'sudo -n chmod 640 {key}')
+                alerts.set_setting(main_conn, scansign.REQUIRE, False, ACTOR)
+            R.add('scan-signed', vm, not required, required or f'signed by {scansign.fingerprint(on_host)}; a swapped key and an unsigned scan were refused')
+        R.check('scan-signed', vm, run)
 
 
 def stage_deploy_access():

@@ -124,6 +124,7 @@ class Transport:
     known_hosts: str | None = None     # persistent known_hosts (trust on first use)
     isolated: bool = False             # ignore ~/.ssh/config so only vault settings apply
     strict: bool = False               # only a host key already in known_hosts (password flows); else trust on first use
+    signing: object = None             # scansign.Signing: every payload signed on the host and checked before it is used
 
     def __post_init__(self):
         self._ctl_dir = None if self.local else tempfile.mkdtemp(prefix='sfidx-ssh-')
@@ -167,6 +168,10 @@ class Transport:
         return child_env()
 
     def run(self, script: str, timeout: int = 120) -> str:
+        sig = None if self.local else self.signing
+        if sig:
+            nonce = sig.nonce()
+            script = sig.wrap(script, nonce)
         proc = subprocess.Popen(self.argv(script), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 stdin=subprocess.DEVNULL, env=self.env())
         expired = threading.Event()
@@ -185,11 +190,26 @@ class Transport:
             raise subprocess.TimeoutExpired(self.argv(script), timeout)
         if rc == 255 and not self.local:
             raise RemoteError(f'ssh {self.target}: {" ".join(err.tail).strip() or "connection failed"}')
+        if sig:                                       # before any of it is used: a payload that fails this raises
+            sig.check(nonce, hashlib.sha256(out).hexdigest(), err.tail, f'a scan command on {self.target}')
         return out.decode('utf-8', 'replace')
 
     def stream(self, script: str, stdin: bool = False) -> subprocess.Popen:
-        return subprocess.Popen(self.argv(script), stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=child_env(),
+        """A command whose output is read as it comes. With signing on, the caller hashes what it reads (scansign.HashingReader)
+        and calls check_stream() before it uses any of it."""
+        sig, nonce = (None if self.local else self.signing), None
+        if sig:
+            nonce = sig.nonce()
+            script = sig.wrap(script, nonce)
+        proc = subprocess.Popen(self.argv(script), stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=child_env(),
                                 stdin=subprocess.PIPE if stdin else subprocess.DEVNULL, bufsize=1 << 20)
+        proc.sf_nonce = nonce
+        return proc
+
+    def check_stream(self, proc, digest: str, stderr_tail, what: str):
+        """Raises scansign.BadSignature when a streamed payload must not be used. Nothing to check when signing is off."""
+        if self.signing and getattr(proc, 'sf_nonce', None):
+            self.signing.check(proc.sf_nonce, digest, stderr_tail, what)
 
     def close(self):
         if self._ctl_dir:

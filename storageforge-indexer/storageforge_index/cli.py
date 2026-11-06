@@ -83,7 +83,11 @@ def cmd_scan(args) -> int:
                 failures += 1
             continue
         t = Transport(host=host, user=args.user, key=args.key, port=args.port, local=local, extra_opts=args.ssh_option or [])
+        sconn = db.connect()
         try:
+            if not local:
+                from .scansign import for_scan
+                t.signing = for_scan(sconn, host, args.port, None)       # as the runner does: signed on the host, checked here
             result = scan_host(db, t, opts)
             if result and not opts.dry_run:
                 _audit_plain_scan(db, host, args.key, result)
@@ -96,6 +100,7 @@ def cmd_scan(args) -> int:
             failures += 1
         finally:
             t.close()
+            sconn.close()
     return 1 if failures else 0
 
 
@@ -225,6 +230,19 @@ def cmd_access(args) -> int:
                   f'{h["denied_total"]} unreadable folder(s) in scan #{h["scan_id"]}')
             for d in h['denied']:
                 print(f'    {d["path"]}')
+        return 0
+    if args.access_cmd == 'signing':
+        from . import alerts, scansign
+        if args.require:
+            alerts.set_setting(conn, scansign.REQUIRE, args.require == 'on', 'cli')
+        if args.forget:
+            host, _, port = args.forget.rpartition(':') if args.forget.count(':') == 1 else (args.forget, '', '22')
+            print('forgotten' if scansign.forget(conn, host or args.forget, int(port or 22)) else 'nothing was pinned for it')
+        print(f'signed scans are {"required" if scansign.required(conn) else "checked, and unsigned ones used"}')
+        for r in conn.all('SELECT address, fingerprint, how FROM scan_signers ORDER BY address'):
+            print(f'  pinned {r[0]}: {r[1]} ({r[2]})')
+        for h in scansign.status(conn):
+            print(f'  {h["host"]}: {h["state"]}, {h["signed"]} signed, {h["unsigned"]} not' + (f' ({h["reason"]})' if h['reason'] else ''))
         return 0
     user = args.user
     if not user:
@@ -1278,6 +1296,9 @@ def build_parser() -> argparse.ArgumentParser:
     a2.add_argument('--host', help="use this host's bound scan user")
     a2.add_argument('--user', help='scan user name')
     a2.add_argument('--remove', action='store_true', help='print the removal script instead')
+    a3 = acs.add_parser('signing', help='signed scan payloads: what each host\'s last scan was, and whether they are required')
+    a3.add_argument('--require', choices=('on', 'off'), help='refuse payloads a host did not sign (a bad signature is always refused)')
+    a3.add_argument('--forget', metavar='ADDRESS', help='forget the scan signing key pinned for an address (host, or host:port)')
     ac.set_defaults(fn=cmd_access)
 
     mv = sub.add_parser('moves', help='data move plans: list, check against the index, write the rsync script')

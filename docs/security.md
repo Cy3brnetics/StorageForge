@@ -35,6 +35,18 @@ A host's name is what it reports, so it proves nothing.
 - Before a **password** is sent (key install, read-only scan access, deploy access), the host key must be confirmed by a person: the UI shows the fingerprint to compare with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the host, and the password then goes over a connection that accepts only that key. *(This confirmation step was being added while these pages were written; see the [audit](audit-2026-10-29.md).)*
 - Signed deploy requests carry the host's `/etc/machine-id` from its last scan, so a request runs on no other machine, even one with the same short name.
 
+### Signed scan payloads
+
+Everything a scan reads from a host (the inventory, each folder walk, the checksum pass, the journal, the network and container surveys, the git survey) is signed on the host and checked here before any of it is used.
+
+- For every command the scan sends a new random nonce. The host hashes exactly the bytes it sends back (SHA-256) and signs `storageforge-scan-v1`, the nonce and that hash with `ssh-keygen -Y sign` in the namespace `storageforge-scan`. StorageForge hashes what arrived, compares, and verifies the signature with a key pinned for that host.
+- The key is the scan signing key that read-only scan access makes (`/usr/local/lib/storageforge/scan-sign`, readable only by the `storageforge-scan` group), or the host's own SSH host key when the scan logs in as root. When StorageForge runs the scan access setup itself, the setup's connection accepts only the host key a person confirmed, so the signing key it prints is pinned from there. A key first seen on a scan is pinned on first use, as host keys are. The namespace means these signatures count for nothing to SSH, git or anything else that verifies SSH signatures.
+- A payload whose signature does not verify, that was signed by another key than the pinned one, or whose bytes differ from what the host signed, is refused. A refused folder walk leaves that mount's index as it was; a refused inventory stops the scan before anything in it (job runs, ClamAV results, security events) is taken in.
+- A host that cannot sign (no key the scan account can read, or OpenSSH older than 8.0) says why. Its payloads are used and shown as unsigned, unless signed scans are required: `storageforge-index access signing --require on`, or `PUT /api/scans/signing`, which takes `keys.manage` (admins, not operators: it is about which keys a host is trusted with). Then they are refused too.
+- After rebuilding a host, forget its scan signing key (`storageforge-index access signing --forget <address>`) and run the scan access setup again.
+
+What it does not stop: an attacker who controls the host's scan account, or root, can sign whatever they like, because that account is what reads the host. It proves a payload came unchanged from the machine the key belongs to, for this request and no other, and it cannot be replayed. Reports that hosts send on their own (deployed jobs, schedules and the sentinel, with a bearer token) are not scan payloads and are not signed this way.
+
 ## Accounts and sessions
 
 - Local accounts only. Werkzeug hashes passwords (scrypt) and Flask-Login manages sessions. Passwords need at least 12 characters. A sign-in with an unknown name costs the same time as a wrong password.

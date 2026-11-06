@@ -75,6 +75,9 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/docker?host=` | containers, stacks, volumes |
 | GET | `/api/docker/usage?host=&path=` | containers using a folder (or all usage for a host) |
 | GET | `/api/jobs` | the last 50 scan jobs |
+| GET | `/api/scans/signing` | signed scan payloads: whether they are required, each host's last scan (signed, partly signed or unsigned, by which keys, and why not), and the pinned scan signing keys |
+| PUT | `/api/scans/signing` | `{"require": true}` refuses payloads a host did not sign; `keys.manage`, audited |
+| DELETE | `/api/scans/signing/<address>` | forget the scan signing key pinned for an address, after a rebuild; `keys.manage`, audited |
 | DELETE | `/api/hosts/<name>[?keep_design=1]` | retire a host (password confirmed); 409 while anything is deployed there |
 | DELETE | `/api/keys/<name>`, `/api/bindings/<id>` | remove a key with no bindings, or a binding (password confirmed) |
 | PUT | `/api/backups/target` | `{"host", "path"}`: copy each backup to that host; empty stops copying |

@@ -66,6 +66,7 @@ class BrowserSmoke(unittest.TestCase):
         self.page.press('input[type=password]', 'Enter')
         self.page.wait_for_url(self.base + '/**')
         self.page.wait_for_selector('.tabs button')
+        self.page.wait_for_load_state('load')                    # the markup is there before the last script has run: a test that asks for a global waits for it
 
     def test_every_tab_opens_without_a_script_error(self):
         found = self.page.eval_on_selector_all('.tabs button', 'bs => bs.map(b => b.dataset.tab)')
@@ -969,11 +970,17 @@ class BrowserSmoke(unittest.TestCase):
                 route.continue_()
         self.page.route(re.compile(r'/api/planner/hosts$'), hosts)
         self.page.goto(self.base + '/planner')
-        self.page.wait_for_selector('#reauthpw', state='visible')
+        try:
+            self.page.wait_for_selector('#reauthpw', state='visible', timeout=15000)
+        except Exception as exc:                      # say what the page showed: this test has failed only inside the whole run
+            raise AssertionError(f'no password dialog at {self.page.url}; requests to the host list: {len(seen)}; the page says: {self.page.inner_text("body")[:300]!r}; errors: {self.errors}') from exc
         self.assertIn('/planner', self.page.url)
         self.page.fill('#reauthpw', PW)
         self.page.keyboard.press('Enter')
-        self.page.wait_for_selector('#reauthpw', state='detached')
+        try:
+            self.page.wait_for_selector('#reauthpw', state='detached', timeout=15000)
+        except Exception as exc:
+            raise AssertionError(f'the dialog stayed: {self.page.inner_text("dialog.sf-dialog")[:300]!r}') from exc
         self.page.wait_for_selector('#hostpick option:has-text("nas")', state='attached')
         self.assertEqual(len(seen), 2)
 
