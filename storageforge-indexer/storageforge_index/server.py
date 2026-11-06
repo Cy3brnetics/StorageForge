@@ -131,6 +131,11 @@ GET  /api/planner/activity?host=     staged changes, moves, shares, deployed job
 PUT  /api/planner/design            save a storageforge/v1 blueprint (overlaid on the graph and reports)
 POST /api/planner/changes           a design (saved or not) against the latest scan: the change-plan tasks it needs,
                                     what Changes can't do, and what the design leaves alone. Stages nothing
+GET  /api/planner/versions?host=    saved versions of a design, newest first;  GET /api/planner/versions/<id> holds the design
+POST /api/planner/versions          {"host", "blueprint", "name"?, "note"?} keep the design on screen as a version
+POST /api/planner/versions/compare  {"id", "blueprint"?} a version against the design on screen (or the saved one), in words
+POST /api/planner/versions/restore  {"id", "current"?} put a version back, keeping the design it replaces as an automatic version
+DELETE /api/planner/versions/<id>   delete a version
 """
 from __future__ import annotations
 
@@ -160,6 +165,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
                fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
+from . import routes_planner
 from .runtimes import docker
 from .capacity import parse_size, trends
 from .db import Database, epoch
@@ -196,6 +202,8 @@ MAX_JOB_REPORT = 16 << 10         # a job's run line: 2000 characters of message
 MAX_LONG_TEXT = 512 << 10         # 200,000 characters saved, which JSON escaping can more than double
 # Routes that take more than MAX_BODY, and how much. A validator that accepts more than this never gets to see it, so they go together.
 BODY_LIMITS = {('PUT', '/api/planner/design'): MAX_BLUEPRINT, ('POST', '/api/planner/changes'): MAX_BLUEPRINT,
+               ('POST', '/api/planner/versions'): MAX_BLUEPRINT + MAX_BODY, ('POST', '/api/planner/versions/compare'): MAX_BLUEPRINT + MAX_BODY,
+               ('POST', '/api/planner/versions/restore'): MAX_BLUEPRINT + MAX_BODY,       # a design, and the few words that go with it
                ('PUT', '/api/files/ignore'): MAX_IGNORE, ('PUT', '/api/git/ignore'): MAX_IGNORE,
                ('POST', '/api/scheduler/report'): MAX_REPORT, ('POST', '/api/jobs/report'): MAX_JOB_REPORT,
                ('POST', '/api/security/report'): MAX_REPORT,       # a sentinel's path can be 4 KiB, which base64 makes 5.5
@@ -1363,6 +1371,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     routes_security.register(web, ctx)
     routes_infra.register(web, ctx)
     routes_network.register(web, ctx)
+    routes_planner.register(web, ctx)
 
     @web.get('/api/shares/check')
     @login_required

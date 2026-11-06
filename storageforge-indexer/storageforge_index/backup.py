@@ -34,7 +34,8 @@ ESSENTIAL = ('vault_meta', 'ssh_keys', 'device_credentials', 'key_bindings', 'us
              'change_plans', 'storage_tasks', 'settings', 'deploy_access', 'deployed', 'jobs',
              'host_key_confirmations', 'host_configs', 'network_devices', 'network_changes', 'schedules', 'roles', 'invites', 'remote_nodes', 'clamav_detections',
              'security_timelock_queue', 'security_canaries', 'security_quarantine', 'security_retention_holds', 'security_events', 'map_views', 'map_manual', 'map_annotations', 'map_designs',
-             'scan_signers', 'security_waivers', 'security_profiles', 'security_retention_policies', 'security_playbooks', 'security_yara_rules', 'security_dashboards', 'security_webauthn')
+             'scan_signers', 'security_waivers', 'security_profiles', 'security_retention_policies', 'security_playbooks', 'security_yara_rules', 'security_dashboards', 'security_webauthn',
+             'design_versions')
 # Left out of essentials: a rescan or the next deploy rebuilds these, they are history, or they are sessions.
 # Every table is in exactly one of the two lists (tests/test_consistency.py).
 REBUILDABLE = ('network_scans', 'network_scan_hosts', 'traffic_samples', 'mounts', 'scans', 'directories', 'file_records', 'file_fts', 'file_changes', 'scan_denied', 'scan_jobs',
