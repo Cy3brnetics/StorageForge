@@ -79,6 +79,9 @@ select, input[type=search], input[type=text], input[type=password] { background:
 .iconbtn:focus-visible { outline: 2px solid var(--accent); }
 .iconbtn svg, .rail svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .rail { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 6px 6px 10px; border-left: 1px solid var(--line); background: var(--panel-2); overflow-y: auto; scrollbar-width: none; }
+.skip { position: absolute; left: -9999px; top: 8px; z-index: 100; padding: 8px 12px; background: var(--accent); color: var(--accent-ink); border-radius: 6px; font-weight: 600; text-decoration: none; }
+.skip:focus { left: 8px; }
+#stage:focus, #panel:focus { outline: none; }
 .rgroup { font-size: 10px; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); text-align: center; padding: 10px 0 3px; margin: 0 -4px; }
 .rgroup:not(:first-child) { border-top: 1px solid var(--line); margin-top: 4px; }
 .rail button { all: unset; cursor: pointer; position: relative; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 2px 6px; border-radius: 7px; color: var(--muted); }
@@ -137,7 +140,23 @@ dialog::backdrop { background: rgb(0 0 0 / .5); }
 dialog form { display: flex; flex-direction: column; gap: 12px; }
 dialog h2 { margin: 0; font-size: 17px; }
 
+.pbtns { display: flex; gap: 2px; }
+/* a panel with the whole page: the view is out of the way, and the panel's content stays at a width a form can be read at */
+.layout.wide { grid-template-columns: minmax(0, 1fr); }
+.layout.wide .stage { display: none; }
+.layout.wide .panel { grid-template-columns: minmax(0, 1fr) 64px; }
+.layout.wide .pgrip { display: none; }
+.layout.wide .tab { max-width: 1200px; margin: 0 auto; width: 100%; }
+.layout.wide .tab .field.col input, .layout.wide .tab .field.col select { max-width: 460px; }
+.layout.wide .sec-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+.layout.wide #sec-subnav { flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 4px 18px; }
+.layout.wide .sec-navgroup { grid-template-columns: repeat(auto-fit, minmax(96px, max-content)); }
+
 @media (max-width: 900px) {
+  #pwide { display: none; }
+  .layout.wide { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(360px, 60vh) auto; }
+  .layout.wide .stage { display: block; }
+  .layout.wide .panel { grid-template-columns: minmax(0, 1fr); }
   .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(360px, 60vh) auto; }
   .panel { border-left: 0; border-top: 1px solid var(--line); grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; }
   .panel.collapsed { grid-template-columns: minmax(0, 1fr); }
@@ -959,7 +978,9 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 
 /* ── Security ─────────────────────────────────────────────────────── */
 #tab-security > * + * { margin-top: 12px; }
-#sec-subnav { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); overflow: visible; }
+#sec-subnav { display: flex; flex-direction: column; gap: 8px; overflow: visible; }
+.sec-navgroup { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 4px; align-items: stretch; }
+.sec-navlabel { grid-column: 1 / -1; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 #sec-subnav button { text-align: center; padding: 5px 4px; font-size: 12px; }
 .sec-banner { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; padding: 10px 14px; border-radius: 8px; font-size: 13px; border: 1px solid var(--line); background: var(--panel); }
 .sec-banner.sec-secure { border-color: var(--protected); }

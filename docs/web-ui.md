@@ -80,7 +80,7 @@ What the opt-in network scanner found. It is off until someone turns it on and n
 
 ## Panels
 
-The rail on the right opens panels in the inspector: 18 of them in five groups. The first panel, **Details**, describes the selection or summarises health across every host. It belongs to Topology and Graph: in Tasks, Map and Scan it says where to go instead.
+The rail on the right opens panels in the inspector: 18 of them in five groups. It is one tab stop: Up and Down move between the panels, Home and End go to the first and the last, and Enter or Space opens the one that has focus. A skip link at the top of the page, the first thing Tab reaches, goes to the view or to the panel. **Security** and the settings panels (**Audit**, which holds accounts, roles, invites, backups and your password, **Keys**, **Scans**, **Access** and **Logs**) open with the whole page, and the button in any panel's header (⤢) gives that panel the whole page too, which the browser remembers for that panel. Hiding the panel gives the view its room back. The first panel, **Details**, describes the selection or summarises health across every host. It belongs to Topology and Graph: in Tasks, Map and Scan it says where to go instead.
 
 ### Inspect
 
@@ -106,7 +106,7 @@ The rail on the right opens panels in the inspector: 18 of them in five groups. 
 
 ![Deploy panel](images/deploy.jpg)
 
-### Inventory
+### Estate
 
 | Panel | What it does |
 | :--- | :--- |
@@ -126,7 +126,7 @@ The rail on the right opens panels in the inspector: 18 of them in five groups. 
 
 | Panel | What it does |
 | :--- | :--- |
-| **Security** | [Ransomware defense](ransomware-defense.md): the posture of every host, WORM retention holds, decoys, behaviour, integrity, fencing, playbooks, compliance and the rest, in sixteen sub-panels under one page. See [its panels](ransomware-defense.md#panels) |
+| **Security** | [Ransomware defense](ransomware-defense.md): the posture of every host on top, then sixteen sub-panels grouped by what you are doing: **Prepare** (Holds, Retention, Access control, Firewall, Hardware keys), **Detect** (Decoys, Behaviour, Integrity, Falco and YARA, Identity), **Respond** (Fencing, Playbooks, Timeline) and **Prove** (Compliance, Dashboard). See [its panels](ransomware-defense.md#panels) |
 
 ### Admin
 
@@ -158,6 +158,7 @@ The planner, `/manage` and `/search` show the same security chip as the main pag
 | :--- | :--- |
 | `/` | Focus the file search. Not while typing in a field, not with a dialog open, and not with Ctrl, Alt or Meta held, so a path or a password with a slash in it arrives whole |
 | `\` | Show or hide the rail's panel, under the same rules |
+| Up, Down, Home, End | In the rail of panels: move between the panels, and Enter or Space opens one |
 | Esc | Clear the graph focus or the file map's selection, unless a field or dialog has the key. In a dialog it closes the dialog; the share wizard asks first when something was changed |
 | Menu, Shift+F10 | Open the context menu on the focused box or block, except in a text field, which keeps the browser's own |
 | Ctrl or Cmd+Z, with Shift to redo | Undo in the Tasks editor |

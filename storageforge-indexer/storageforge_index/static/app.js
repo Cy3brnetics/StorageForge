@@ -570,10 +570,32 @@ const dirOf = (p) => p.replace(/\/[^/]*$/, '') || '/';
 
 /* ── tabs, search, jobs, audit ───────────────────────────────────── */
 let jobTimer = 0, followingScans = false;
+/* The rail is one tab stop and takes arrow keys (UX-20): Up and Down move between the visible tabs, Home and End go to the first and the last, and
+   Enter or Space opens the one that has focus, as its buttons do. It is the rail's own key handling, not a global shortcut. */
+document.querySelector('.tabs').addEventListener('keydown', (ev) => {
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key) || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  const tabs = [...document.querySelectorAll('.tabs button[role=tab]')].filter((b) => !b.hidden && b.offsetParent !== null);
+  const at = tabs.indexOf(document.activeElement);
+  if (at < 0) return;
+  ev.preventDefault();
+  const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: tabs.length - 1 }[ev.key];
+  const next = tabs[(to + tabs.length) % tabs.length];
+  next.focus();
+  next.scrollIntoView?.({ block: 'nearest' });
+});
+/* The skip links go to the view or the panel by moving focus there; they do not write the URL, which the router owns. */
+document.querySelectorAll('.skip').forEach((a) => a.addEventListener('click', (ev) => {
+  ev.preventDefault();
+  const target = a.dataset.skip === 'panel' ? $('#panel') : $('#stage');
+  if (a.dataset.skip === 'panel') setPanelOpen(true);
+  target.focus();
+}));
+
 function showTab(name) {
   document.querySelectorAll('.tabs button').forEach((b) => {
     const on = b.dataset.tab === name;
     b.classList.toggle('on', on); b.setAttribute('aria-selected', on);
+    b.tabIndex = on ? 0 : -1;                                              // one stop in the rail: arrow keys move inside it
     if (!on) return;
     b.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });        // a panel opened from a link must not sit below the fold of the rail
     $('#ptitle').textContent = b.querySelector('.lbl').textContent;
@@ -600,6 +622,7 @@ function showTab(name) {
   if (name === 'infra') loadInfra();
   if (name === 'deploy') loadDeploy();
   if (name === 'security' && typeof loadSecurity === 'function') loadSecurity();
+  applyWide();
   routeSync();
 }
 /* The rail scrolls with its scrollbar hidden, so a fade and a chevron say that more of it is out of sight (UX-01). */
@@ -636,7 +659,24 @@ function setPanelOpen(open) {
   panel.classList.toggle('collapsed', !open);
   prefs('sf.panel', open ? 'open' : 'closed');
   if (!open && panel.contains(document.activeElement)) $('.tabs button.on')?.focus();
+  applyWide();
 }
+/* A panel can have the whole page (UX-04): Security and the settings panels (the audit log with accounts and roles, keys, scans, scan access,
+   host logs) open that way, and the button in the panel's header gives any other panel the same, remembered per panel. The view behind
+   it keeps its place and comes back when the panel is narrow again. */
+const WIDE_BY_DEFAULT = new Set(['security', 'audit', 'keys', 'jobs', 'access', 'hostlogs']);
+function wantsWide(name) {
+  const v = prefs(`sf.wide.${name}`);
+  return v ? v === '1' : WIDE_BY_DEFAULT.has(name);
+}
+function applyWide() {
+  const wide = wantsWide(routeTab()) && !panel.classList.contains('collapsed');
+  document.querySelector('.layout').classList.toggle('wide', wide);
+  $('#pwide').setAttribute('aria-pressed', String(wide));
+  $('#pwide').title = wide ? 'Give the view its room back' : 'Use the whole page for this panel';
+  $('#pwide').setAttribute('aria-label', $('#pwide').title);
+}
+$('#pwide').addEventListener('click', () => { prefs(`sf.wide.${routeTab()}`, wantsWide(routeTab()) ? '0' : '1'); applyWide(); });
 $('#pclose').addEventListener('click', () => setPanelOpen(false));
 const grip = $('#pgrip');
 grip.addEventListener('pointerdown', (ev) => {

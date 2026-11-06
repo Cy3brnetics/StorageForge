@@ -81,11 +81,23 @@ function secActions(path, body, out, { apply = 'Apply', after, danger, need = 's
 async function loadSecurity() {
   const nav = $('#sec-subnav');
   if (!nav.childElementCount) {
-    nav.append(...SEC_PANELS.map(([id, label]) => {
-      const b = button(label, () => secOpen(id));
-      b.dataset.sub = id;
-      return b;
-    }));
+    // sixteen panels in a row was a wall: grouped by what a person is doing, Overview on its own on top (the grouping is a first one, to be checked against use)
+    const groups = [['', ['overview']], ['Prepare', ['worm', 'policy', 'mac', 'firewall', 'seckeys']], ['Detect', ['decoys', 'behavior', 'integrity', 'detect', 'identity']],
+                    ['Respond', ['fencing', 'playbooks', 'timeline']], ['Prove', ['compliance', 'dash']]];
+    const placed = new Set(groups.flatMap(([, ids]) => ids));
+    const rest = SEC_PANELS.map(([id]) => id).filter((id) => !placed.has(id));       // a panel added later still shows
+    if (rest.length) groups.push(['More', rest]);
+    for (const [name, ids] of groups) {
+      const box = el('div', { class: 'sec-navgroup', role: 'group', 'aria-label': name || 'Overview' }, name ? text('span', name, 'sec-navlabel') : null);
+      for (const id of ids) {
+        const label = (SEC_PANELS.find(([i]) => i === id) || [])[1];
+        if (!label) continue;
+        const b = button(label, () => secOpen(id));
+        b.dataset.sub = id;
+        box.append(b);
+      }
+      nav.append(box);
+    }
   }
   secOpen(window.SEC_LINK_PANEL || SEC.panel);
   window.SEC_LINK_PANEL = null;

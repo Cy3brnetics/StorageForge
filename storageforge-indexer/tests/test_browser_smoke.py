@@ -1288,6 +1288,113 @@ class BrowserSmoke(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
 
+    # ── the rail as a tab list: UX-05 and UX-20 ──────────────────────────────────────────────────────────────────────
+    def test_every_rail_tab_names_its_panel_and_every_panel_names_its_tab(self):        # UX-20
+        got = self.page.evaluate("""() => [...document.querySelectorAll('.tabs button[role=tab]')].map((b) => {
+          const p = document.getElementById(b.getAttribute('aria-controls'));
+          return [b.dataset.tab, !!p, p && p.getAttribute('role'), p && p.getAttribute('aria-labelledby') === b.id]; })""")
+        self.assertEqual(len(got), 18)
+        for tab, found, role, back in got:
+            self.assertEqual((found, role, back), (True, 'tabpanel', True), tab)
+
+    def test_the_rail_is_one_tab_stop_and_takes_arrow_keys(self):                        # UX-20
+        stops = lambda: self.page.evaluate("[...document.querySelectorAll('.tabs button[role=tab]')].filter((b) => b.tabIndex === 0).map((b) => b.dataset.tab)")
+        self.assertEqual(stops(), ['details'])                                            # one stop, and it is the selected tab
+        self.page.focus('.tabs button[data-tab="details"]')
+        focused = lambda: self.page.evaluate('document.activeElement.dataset.tab')
+        self.page.keyboard.press('ArrowDown')
+        self.assertEqual(focused(), 'search')
+        self.page.keyboard.press('ArrowDown')
+        self.assertEqual(focused(), 'changes')
+        self.assertEqual(stops(), ['details'])                                            # moving does not open: Enter or Space does
+        self.page.keyboard.press('Enter')
+        self.page.wait_for_selector('.tabs button[data-tab="changes"][aria-selected="true"]')
+        self.assertEqual(stops(), ['changes'])
+        self.page.keyboard.press('Home')
+        self.assertEqual(focused(), 'details')
+        self.page.keyboard.press('End')
+        self.assertEqual(focused(), self.page.evaluate("[...document.querySelectorAll('.tabs button[role=tab]')].filter((b) => !b.hidden).pop().dataset.tab"))
+        self.page.keyboard.press('ArrowDown')                                             # and the end wraps to the start
+        self.assertEqual(focused(), 'details')
+        self.assertEqual(self.errors, [])
+
+    def test_a_skip_link_is_first_and_moves_focus_into_the_page(self):                    # UX-20
+        self.page.evaluate('document.activeElement.blur()')
+        self.page.keyboard.press('Tab')
+        self.assertEqual(self.page.evaluate('document.activeElement.textContent'), 'Skip to the view')
+        self.assertTrue(self.page.is_visible('.skip:focus'))                               # it shows itself when it has focus
+        self.page.keyboard.press('Enter')
+        self.assertEqual(self.page.evaluate('document.activeElement.id'), 'stage')
+        self.page.focus('.skip[data-skip="panel"]')
+        self.page.keyboard.press('Enter')
+        self.assertEqual(self.page.evaluate('document.activeElement.id'), 'panel')
+        self.assertNotIn('#stage', self.page.url)                                          # the router owns the hash: a skip does not write it
+        self.assertEqual(self.errors, [])
+
+    def test_the_group_that_held_the_inventory_is_called_the_estate(self):               # UX-05
+        groups = self.page.eval_on_selector_all('.tabs .rgroup', 'gs => gs.map((g) => g.textContent)')
+        self.assertEqual(groups, ['Inspect', 'Plan', 'Estate', 'Security', 'Admin'])
+
+
+    # ── Security and the settings with room: UX-04 ───────────────────────────────────────────────────────────────────
+    def wide(self):
+        return self.page.evaluate("document.querySelector('.layout').classList.contains('wide')")
+
+    def test_security_and_the_settings_panels_open_with_the_whole_page(self):            # UX-04
+        """Sixteen security panels and the accounts, roles and invites were laid out in a 380 px column."""
+        self.assertFalse(self.wide())
+        for tab in ('security', 'audit', 'keys', 'jobs', 'access', 'hostlogs'):
+            self.open_tab(tab)
+            self.page.wait_for_selector(f'#tab-{tab}', state='visible')
+            self.assertTrue(self.wide(), tab)
+            self.assertEqual(self.page.evaluate("getComputedStyle(document.querySelector('#stage')).display"), 'none', tab)
+            self.assertGreater(self.page.evaluate(f"document.getElementById('tab-{tab}').getBoundingClientRect().width"), 800, tab)
+        self.open_tab('changes')
+        self.assertFalse(self.wide())
+        self.assertTrue(self.page.is_visible('#stage'))                                  # the view is back, and it kept its place
+        self.assertEqual(self.errors, [])
+
+    def test_any_panel_can_take_the_page_and_the_choice_is_remembered_per_panel(self):    # UX-04
+        self.open_tab('changes')
+        self.assertFalse(self.wide())
+        self.page.click('#pwide')
+        self.assertTrue(self.wide())
+        self.assertEqual(self.page.get_attribute('#pwide', 'aria-pressed'), 'true')
+        self.page.reload()
+        self.page.wait_for_selector('.tabs button')
+        self.open_tab('changes')
+        self.assertTrue(self.wide())                                                      # after a reload
+        self.open_tab('moves')
+        self.assertFalse(self.wide())                                                     # another panel is its own choice
+        self.open_tab('security')
+        self.assertTrue(self.wide())
+        self.page.click('#pwide')                                                         # and the default can be undone
+        self.assertFalse(self.wide())
+        self.assertEqual(self.errors, [])
+        self.page.evaluate("localStorage.removeItem('sf.wide.changes'); localStorage.removeItem('sf.wide.security')")
+
+    def test_hiding_the_panel_gives_the_view_back(self):                                  # UX-04
+        self.open_tab('security')
+        self.assertTrue(self.wide())
+        self.page.click('#pclose')
+        self.assertFalse(self.wide())
+        self.assertTrue(self.page.is_visible('#stage'))
+        self.page.click('.tabs button[data-tab="security"]')
+        self.assertTrue(self.wide())
+
+    def test_the_security_panels_are_grouped_by_what_a_person_is_doing(self):           # UX-04
+        self.open_tab('security')
+        self.page.wait_for_selector('#sec-subnav .sec-navgroup')
+        groups = self.page.eval_on_selector_all('#sec-subnav .sec-navgroup', 'gs => gs.map((g) => g.getAttribute("aria-label"))')
+        self.assertEqual(groups, ['Overview', 'Prepare', 'Detect', 'Respond', 'Prove'])
+        subs = self.page.eval_on_selector_all('#sec-subnav button', 'bs => bs.map((b) => b.dataset.sub)')
+        self.assertEqual(len(subs), 16)
+        self.assertEqual(len(set(subs)), 16)                                              # every panel once, none lost in the regrouping
+        self.page.click('#sec-subnav button[data-sub="firewall"]')
+        self.page.wait_for_selector('#sec-subnav button[data-sub="firewall"][aria-pressed="true"]')
+        self.assertEqual(self.errors, [])
+
+
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
 class MapAtScale(unittest.TestCase):
     """A synthetic 200 hosts and 2,000 workloads. It has to stay usable: the numbers here decide whether the map needs more."""
