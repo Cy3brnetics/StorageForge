@@ -50,6 +50,22 @@ def parse_leases(text: str) -> list[dict]:
     return out[:2000]
 
 
+# an option that holds a secret, by the words in its name: private_key, preshared_key, password, psk, secret... A public key is not one (SF-62)
+_UCI_OPTION = re.compile(r"^(?P<name>[\w-]+\.@?[\w\[\]-]+\.(?P<option>[\w-]+))=.*$", re.M)
+_SECRET_WORDS = {'key', 'psk', 'pass', 'passwd', 'password', 'passphrase', 'secret', 'token'}
+
+
+def strip_secrets(text: str | None) -> str | None:
+    """`uci show` prints a WireGuard interface's private_key, each peer's preshared_key and a PPPoE or Wi-Fi password in the clear. What is kept for a person to read has those
+    values replaced, as cisco.strip_secrets does for a running config. Doing it again changes nothing."""
+    def one(m):
+        option = m['option'].lower()
+        if option != 'public_key' and _SECRET_WORDS & set(re.split(r'[_-]', option)):
+            return f"{m['name']}='<removed>'"
+        return m[0]
+    return _UCI_OPTION.sub(one, text) if text else text
+
+
 def parse_uci(text: str) -> dict:
     """`uci show`: package.section.option='value'. {section: {'.type': ..., option: value}}. A list is space-separated quoted values."""
     out: dict = {}
@@ -190,7 +206,7 @@ def parse(text: str) -> dict:
             rows.append({'name': name.strip(), 'rx-byte': f[0], 'rx-error': f[2], 'rx-drop': f[3], 'tx-byte': f[8], 'tx-error': f[10], 'tx-drop': f[11]})
     return {'net': net, 'firewall': fw, 'os': f'OpenWrt {version or "unknown"}', 'identity': board.get('hostname'),
             'facts': {'platform': 'openwrt', 'version': version, 'identity': board.get('hostname'), 'board': board.get('model'), 'leases': parse_leases(s.get('leases')), 'discovered': [],
-                      'wan': wan_devices(ubus, zone_rows), 'zones': zone_rows, 'counters': counters(rows), 'wifi': (s.get('wifi') or '')[:4000]}, 'config': s.get('uci_network')}
+                      'wan': wan_devices(ubus, zone_rows), 'zones': zone_rows, 'counters': counters(rows), 'wifi': (s.get('wifi') or '')[:4000]}, 'config': strip_secrets(s.get('uci_network'))}
 
 
 def collect(run) -> dict:

@@ -237,7 +237,14 @@ def store(db, conn: Conn, d: dict, data: dict) -> dict:
 
 
 def facts_of(conn: Conn, name: str) -> dict | None:
-    return security.measurement(conn, name, 'device')
+    got = security.measurement(conn, name, 'device')
+    if got and got.get('config'):
+        clean = openwrt.strip_secrets(got['config'])
+        if clean != got['config']:       # stored before keys were left out of it (SF-62): said without them now, and written back without them
+            got['config'] = clean
+            row = {k: v for k, v in got.items() if k not in ('measured_at', 'via', 'stale')}
+            conn.execute("UPDATE security_measurements SET data_json = :d WHERE lower(host) = lower(:h) AND kind = 'device'", {'d': json.dumps(row), 'h': name})
+    return got
 
 
 def off_devices(conn: Conn) -> list[str]:

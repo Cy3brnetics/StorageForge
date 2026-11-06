@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from storageforge_index import changes, cisco, deploy, exposure, netdevice, netscan, openwrt, permissions, pfsense, reach, routeros, rostranspiler as ros, security, traffic, vault
+from storageforge_index import changes, cisco, deploy, exposure, netdevice, netscan, openwrt, permissions, pfsense, reach, routeros, rostranspiler as ros, security, traffic, users, vault
 from storageforge_index.db import Database
 from storageforge_index.nettransport import DirectTransport
-from test_security import Base
+from test_security import PW, Base
 
 FIX = Path(__file__).parent / 'fixtures'
 ROS_FILES = {'address': 'ip_address', 'interface': 'interface', 'route': 'ip_route', 'filter': 'ip_firewall_filter', 'nat': 'ip_firewall_nat', 'neighbor': 'ip_neighbor', 'bridge_port': 'interface_bridge_port', 'bridge_vlan': 'interface_bridge_vlan', 'vlan': 'interface_vlan',
@@ -268,6 +268,19 @@ class OpenWrtReading(unittest.TestCase):
     def test_cut_short_is_refused(self):
         with self.assertRaises(ValueError):
             openwrt.parse('@@link\n[]')
+
+    UCI_KEYS = ("network.wg0=interface\nnetwork.wg0.proto='wireguard'\nnetwork.wg0.private_key='SYNTHETICPRIVATEKEYSYNTHETICPRIVATEKEY12='\nnetwork.wg0.listen_port='51820'\n"
+                "network.@wireguard_wg0[0]=wireguard_wg0\nnetwork.@wireguard_wg0[0].public_key='SYNTHETICPUBLICKEY'\nnetwork.@wireguard_wg0[0].preshared_key='SYNTHETICPSKSYNTHETICPSKSYNTHETICPSKSYNT1='\n"
+                "network.@wireguard_wg0[0].persistent_keepalive='25'\nnetwork.wan.password='SYNTHETICPPPOEPASSWORD'\nnetwork.wan.proto='pppoe'\n")
+
+    def test_wireguard_keys_and_passwords_stay_out_of_the_saved_config(self):      # SF-62
+        got = openwrt.parse('@@uci_network\n' + self.UCI_KEYS + '\n@@end\n')['config']
+        for secret in ('SYNTHETICPRIVATEKEY', 'SYNTHETICPSK', 'SYNTHETICPPPOEPASSWORD'):
+            self.assertNotIn(secret, got)
+        for kept in ("network.wg0.listen_port='51820'", "network.@wireguard_wg0[0].public_key='SYNTHETICPUBLICKEY'", "persistent_keepalive='25'", "network.wan.proto='pppoe'"):
+            self.assertIn(kept, got)
+        self.assertEqual(got.count('<removed>'), 3)
+        self.assertEqual(openwrt.strip_secrets(got), got, 'again changes nothing')
 
 
 class PfSenseReading(unittest.TestCase):
@@ -740,6 +753,26 @@ class Api(Base):
         self.assertEqual((every.status_code, sorted(every.get_json()['targets'])), (200, sorted(ros.TARGETS)))
         for empty in ({}, {'targets': []}, {'targets': None}):
             self.assertEqual(self.client.post('/api/dsl/compile', json={'dsl': '/ip dns set servers=1.1.1.1', **empty}).status_code, 200)
+
+    def test_a_viewer_never_reads_a_routers_wireguard_keys(self):                  # SF-62
+        users.create(self.conn, 'viewer1', PW, 'viewer')
+        netdevice.add(self.conn, {'name': 'wrt', 'platform': 'openwrt', 'address': '10.77.0.31'}, 'a')
+        d = netdevice.get(self.conn, 'wrt')
+        reading = openwrt.parse('@@uci_network\n' + OpenWrtReading.UCI_KEYS + '\n@@end\n')
+        netdevice.store(self.db, self.conn, d, reading)
+        stored = json.dumps([[str(c) for c in r] for r in self.conn.all("SELECT * FROM security_measurements WHERE host = 'wrt'")])
+        self.assertNotIn('SYNTHETICPRIVATEKEY', stored)
+        # a row stored before the fix, with the text as it came, is scrubbed when read and where it lies
+        row = json.loads(self.conn.scalar("SELECT data_json FROM security_measurements WHERE host = 'wrt' AND kind = 'device'"))
+        row['config'] = OpenWrtReading.UCI_KEYS
+        self.conn.execute("UPDATE security_measurements SET data_json = :d WHERE host = 'wrt' AND kind = 'device'", {'d': json.dumps(row)})
+        self.login('viewer1')
+        body = self.client.get('/api/devices/wrt').get_data(as_text=True)
+        for secret in ('SYNTHETICPRIVATEKEY', 'SYNTHETICPSK', 'SYNTHETICPPPOEPASSWORD'):
+            self.assertNotIn(secret, body)
+        self.assertIn('listen_port', body, 'the rest of the config is still there')
+        stored = self.conn.scalar("SELECT data_json FROM security_measurements WHERE host = 'wrt' AND kind = 'device'")
+        self.assertNotIn('SYNTHETICPRIVATEKEY', stored)
 
     def test_a_what_if_flips_on_the_rule_it_was_given(self):
         got = self.client.post('/api/dsl/whatif', json={'host': 'gw', 'dsl': '/ip firewall filter add chain=input in-interface=ether2 protocol=tcp dst-port=8291 action=accept', 'from': '198.51.100.9', 'to': '198.51.100.1', 'port': 8291}).get_json()
