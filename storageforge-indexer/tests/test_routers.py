@@ -954,7 +954,7 @@ class Devices(unittest.TestCase):
 
         class Fake:
             def __enter__(self):
-                return lambda c, timeout=None: calls.append(c) or 'ok'
+                return lambda c, timeout=None: calls.append(c) or ('1' if 'count-only' in c else 'ok')
 
             def __exit__(self, *a):
                 return False
@@ -987,7 +987,7 @@ class Devices(unittest.TestCase):
             def __enter__(self):
                 def run(c, timeout=None):
                     calls.append(c)
-                    return 'failure: bad thing' if 'firewall' in c else 'ok'
+                    return 'failure: bad thing' if 'firewall' in c else '1' if 'count-only' in c else 'ok'
                 return run
 
             def __exit__(self, *a):
@@ -1000,6 +1000,45 @@ class Devices(unittest.TestCase):
             netdevice.session = keep
         self.assertEqual(got['status'], 'rolling-back')
         self.assertFalse(any('scheduler/remove' in c for c in calls[2:]), 'the timer stays')
+
+    def test_a_timer_that_could_not_be_planted_stops_the_change(self):         # SF-61
+        self.stored()
+        change = '/ip firewall filter add chain=forward action=drop'
+        refusals = {'the backup is not saved': {'backup/save': 'failure: not enough disk space\n'},
+                    'the scheduler is refused': {'scheduler/add': 'failure: not enough permissions (9)\n'},
+                    'the scheduler is not there when read back': {'count-only': '0\n'}}
+        for why, answers in refusals.items():
+            calls = []
+
+            class Fake:
+                def __enter__(self):
+                    def run(c, timeout=None):
+                        calls.append(c)
+                        return next((v for k, v in answers.items() if k in c), '1\n' if 'count-only' in c else '')
+                    return run
+
+                def __exit__(self, *a):
+                    return False
+            rep = netdevice.report(self.db, self.conn, 'gw', change, 'a')
+            with mock.patch.object(netdevice, 'session', lambda *a, **k: Fake()), mock.patch.object(netdevice, '_settle', lambda *a: None):
+                got = netdevice.apply(self.db, self.conn, rep['id'], 'a', rollback=120, hold=True)
+            self.assertFalse(got['ok'], why)
+            self.assertEqual(got['status'], 'reported', why)
+            self.assertIn('rollback', got['error'], why)
+            self.assertNotIn(change, calls, f'{why}: the change went on with no timer')
+            self.assertEqual(netdevice.change(self.conn, rep['id'])['status'], 'reported', why)
+            if 'scheduler/add' in ' '.join(calls):
+                self.assertTrue(any('scheduler/remove' in c for c in calls[calls.index(next(c for c in calls if 'scheduler/add' in c)):]), f'{why}: a timer that may be half there is taken off')
+
+    def test_a_timer_read_back_is_the_one_that_goes_on(self):                  # SF-61
+        calls = []
+
+        def run(c, timeout=None):
+            calls.append(c)
+            return '1\n' if 'count-only' in c else ''
+        netdevice.RouterOsApply(9).plant(run, 180)
+        self.assertEqual([c.split()[0] for c in calls], ['/system/backup/save', '/system/scheduler/remove', '/system/scheduler/add', '/system/scheduler/print'])
+        self.assertIn('name=sf-9', calls[-1])
 
     def test_the_timer_has_limits(self):
         self.stored()
