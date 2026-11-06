@@ -19,8 +19,9 @@ meaning anything to SSH, git or anything else that verifies SSHSIG.
 What it does not do: a host whose scan account is taken over can sign whatever that account sends, because the account is what
 reads the host. It proves the payload came from the host the key belongs to, unchanged, and for this request. docs/security.md.
 
-A host that cannot sign (no key it can read, OpenSSH older than 8.0) says why, and its payloads count as unsigned:
+A host that has never signed and cannot (no key it can read, OpenSSH older than 8.0) says why, and its payloads count as unsigned:
 used, and shown as unsigned, unless the site requires signed scans (setting scans.require_signed), when they are refused like a bad one.
+A host that has signed before is never downgraded quietly: unsigned, or a new key, is refused until a person forgets its key.
 """
 from __future__ import annotations
 
@@ -167,6 +168,7 @@ class Signing:
         # host_keys may be a function: on a host's first scan, known_hosts learns its key only once the connection is made
         self._host_keys, self.pinned, self.require, self._pin, self.key_paths = host_keys, pinned, require, pin, tuple(key_paths)
         self.signed, self.unsigned, self.keys, self.reasons = 0, 0, set(), []
+        self.host_key_signed = False                # the host key signed in this scan: it has signed, though nothing is pinned yet
 
     def nonce(self) -> str:
         return secrets.token_hex(16)
@@ -179,6 +181,12 @@ class Signing:
         mark = next((line for line in reversed(list(stderr_tail)) if line.startswith((MARK_SIGNED, MARK_UNSIGNED))), None)
         if mark is None or mark.startswith(MARK_UNSIGNED):
             reason = mark[len(MARK_UNSIGNED):] if mark else 'no signature came back with it'
+            if (self.pinned or self.host_key_signed) and not self.require:
+                # a host that has signed and now does not is a downgrade, not a host that never could: someone made signing fail, or
+                # replaced the host. A person decides (forget its key), whatever scans.require_signed says.
+                raise BadSignature(f'{what}: not signed ({reason}), but this host has signed its scans before. Nothing it sent was used. If it '
+                                   'no longer can sign, forget its scan signing key (storageforge-index access signing --forget <host>, or the forget '
+                                   'button) and its scans are used unsigned until it signs again')
             if self.require:
                 raise BadSignature(f'{what}: not signed ({reason}), and this site requires signed scans. Nothing it sent was used')
             self.unsigned += 1
@@ -197,8 +205,12 @@ class Signing:
         host_keys = list(self._host_keys() if callable(self._host_keys) else self._host_keys)
         allowed = host_keys + ([self.pinned] if self.pinned else [])
         if key in allowed and _verify(msg, armored, [key]):
-            pass
-        elif not self.pinned and key not in host_keys and _valid_alone(msg, armored):
+            if key in host_keys and not self.pinned and not self.host_key_signed:
+                # signed with the SSH host key (a root scan): pinned too, so a different signer is a mismatch from now on
+                self.host_key_signed = True
+                if self._pin:
+                    self._pin(key)
+        elif not self.pinned and not self.host_key_signed and key not in host_keys and _valid_alone(msg, armored):
             self.pinned = key                      # the first signature from this host's scan key: pinned, and said so
             if self._pin:
                 self._pin(key)
