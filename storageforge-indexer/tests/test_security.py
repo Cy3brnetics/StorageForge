@@ -916,6 +916,39 @@ class DecoyBase(Base):
 
 
 class Decoys(DecoyBase):
+    def test_a_neighbour_swapping_the_temporary_file_for_a_link_changes_nothing(self):
+        """SF-71: whoever can write in the share swaps every name the installer makes there for a link to a root file, between each step.
+        Stand-ins for head, chown, chmod and mv do the swap and then run the real tool; the target must stay as it was."""
+        share = self.configure()
+        victim = self.tmp / 'victim'
+        victim.write_text('root-only content\n')
+        victim.chmod(0o600)
+        swap = ('#!/bin/bash\nfor f in "$SF_SHARE"/.sf.*; do if [[ -e $f || -L $f ]]; then rm -f -- "$f"; ln -s "$SF_VICTIM" "$f"; fi; done\n'
+                'dest=${@: -1}; if [[ $dest == "$SF_SHARE"/* ]]; then rm -f -- "$dest"; ln -s "$SF_VICTIM" "$dest"; fi\n')
+        for name in ('head', 'chown', 'chmod', 'mv'):
+            (self.bin / name).write_text(swap + f'exec {shutil.which(name)} "$@"\n')
+            (self.bin / name).chmod(0o755)
+        self.env.update(SF_SHARE=str(share), SF_VICTIM=str(victim))
+        self.deploy('apply')
+        self.assertEqual(victim.read_text(), 'root-only content\n')
+        self.assertEqual(oct(victim.stat().st_mode & 0o777), '0o600')
+        self.assertEqual([p.name for p in share.iterdir() if p.name.startswith('.sf.')], [])
+
+    def test_a_decoy_keeps_the_folders_owner_and_is_as_writable_as_it(self):
+        share = self.configure()
+        for mode, want in ((0o777, 0o666), (0o755, 0o664)):
+            share.chmod(mode)
+            for p in share.iterdir():
+                p.unlink()
+            self.conn.execute('DELETE FROM security_canaries')
+            self.deploy('apply')
+            files = list(share.iterdir())
+            self.assertTrue(files)
+            for p in files:
+                self.assertEqual(p.stat().st_mode & 0o777, want, p.name)
+                self.assertEqual(p.stat().st_uid, share.stat().st_uid)
+        self.assertEqual(list((self.root / 'var/lib/storageforge/security').glob('.decoy.*')), [])
+
     def test_nothing_is_written_without_apply(self):
         share = self.configure()
         self.deploy('report')
