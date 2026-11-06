@@ -1046,7 +1046,7 @@ function docState(msg,cls){
     :DOC.dirty?'Unsaved changes (kept in this browser).'
     :DOC.source==='scan'?'Built from the latest scan. Save it to keep your design.'
     :'Saved design · '+fmtTime(DOC.savedAt));
-  $('#savedesign').hidden=!DOC.host||!DOC.signedIn;$('#fromscan').hidden=!DOC.host||!DOC.scanned||!DOC.signedIn;
+  $('#savedesign').hidden=!DOC.host||!DOC.signedIn;$('#versions').hidden=!DOC.host||!DOC.signedIn;$('#fromscan').hidden=!DOC.host||!DOC.scanned||!DOC.signedIn;
   $('#reset').hidden=!!DOC.host;$('#hostpick').value=DOC.host;
   $('#dropexample').hidden=!!DOC.host||!DOC.signedIn||!DOC.example||!DOC.hosts.length||!$('#dropconfirm').hidden;
   $('#showexample').hidden=!DOC.signedIn||DOC.example;
@@ -1080,6 +1080,85 @@ async function saveDesign(){
     dropDraft(DOC.host);Object.assign(DOC,{source:'saved',savedAt:r.saved_at,dirty:false});
     docState(`Saved · graph ${r.graph?r.graph.nodes+' nodes':'unchanged'}`,'muted');setTimeout(()=>docState(),4000);loadHosts();render();
   }catch(e){ docState(e.message,'err') }
+}
+/* ───────────── versions: named copies of the design, to compare, restore or delete (UX-38, 3g) ─────────────
+   The panel is the kernel's modal, built with DOM calls only: every name, note, author and sentence the server sends goes in as text. A
+   version is kept from, and compared with, the design on screen (saved or not). Restoring writes the version as the host's saved design;
+   the server keeps the design it replaces as an automatic version first, and the page then reloads the host's design from the server. */
+const jsonOpts=(method,body)=>({method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+const CHANGE_GROUPS=[['only_version','Only in this version','Restoring brings these back.'],
+  ['only_current','Only in the current design','Restoring takes these away.'],
+  ['different','Different','Restoring sets these as the version had them.']];
+async function openVersions(){
+  const host=DOC.host;if(!host||!DOC.signedIn) return;
+  const title=sfNode('h2',{id:'pv-title'},'Versions of ',sfNode('code',{},host));
+  const intro=sfNode('p',{class:'muted'},'A version is a copy of the whole design as it is on screen now, saved or not. Restoring one replaces the saved design and first keeps the current one as an automatic version, so nothing is lost.');
+  const name=sfNode('input',{type:'text',id:'pv-name',maxlength:80,autocomplete:'off',spellcheck:false,placeholder:'Version name (optional)','aria-label':'Version name'});
+  const note=sfNode('input',{type:'text',id:'pv-note',maxlength:500,autocomplete:'off',spellcheck:false,placeholder:'Note (optional)','aria-label':'Note'});
+  const keep=sfNode('button',{type:'button',class:'sf-btn pri',id:'pv-save'},'Save this design as a version');
+  const err=sfNode('p',{class:'sf-err',role:'alert',id:'pv-err',hidden:true});
+  const count=sfNode('p',{class:'muted small',id:'pv-count'});
+  const list=sfNode('ul',{class:'pv-list',id:'pv-list'});
+  const result=sfNode('div',{class:'pv-result',id:'pv-result',tabindex:-1});
+  const close=sfNode('button',{type:'button',class:'sf-btn ghost',id:'pv-close'},'Close');
+  const root=sfNode('div',{class:'pv-body'},title,intro,sfNode('div',{class:'pv-save'},name,note,keep),err,count,list,result,sfNode('div',{class:'sf-actions'},close));
+  const dlg=sfModal(root,'pv-title');dlg.classList.add('pv');
+  close.addEventListener('click',()=>dlg.close());
+  const say=msg=>{err.textContent=msg||'';err.hidden=!msg};
+  const attempt=async work=>{ say(''); try{ return await work() }catch(e){ say(e.message); return null } };
+
+  function showCompare(c){
+    const kids=[sfNode('h3',{},`“${c.version.name}” against the current design`),sfNode('p',{class:c.same?'':'muted'},c.summary)];
+    for(const [key,head,hint] of CHANGE_GROUPS){
+      const rows=c.changes.filter(x=>x.change===key);if(!rows.length) continue;
+      kids.push(sfNode('h4',{},`${head} (${rows.length})`),sfNode('p',{class:'muted small'},hint),sfNode('ul',{},rows.map(r=>sfNode('li',{},r.text))));
+    }
+    if(c.truncated) kids.push(sfNode('p',{class:'muted small'},`${c.truncated} more are not listed.`));
+    result.replaceChildren(...kids);result.focus();
+  }
+  async function compare(v,button){
+    const c=await attempt(()=>withBusy(button,async()=>apiJSON('/api/planner/versions/compare',jsonOpts('POST',{id:v.id,blueprint:blueprint()}))));
+    if(c) showCompare(c);return c;
+  }
+  async function restore(v,button){
+    const c=await attempt(()=>apiJSON('/api/planner/versions/compare',jsonOpts('POST',{id:v.id,blueprint:blueprint()})));
+    if(!c) return;
+    const ok=await confirmDialog({title:`Restore “${v.name}”?`,confirm:'Restore',
+      body:`${c.summary}\n\nThe design on screen is replaced by this version and saved as the design for ${host}. The design it replaces is kept first as an automatic version, so you can come back to it.`,
+      items:c.changes.slice(0,8).map(x=>x.text)});
+    if(!ok) return;
+    const r=await attempt(()=>withBusy(button,()=>apiJSON('/api/planner/versions/restore',jsonOpts('POST',{id:v.id,current:blueprint()}))));
+    if(!r) return;
+    dropDraft(host);DOC.dirty=false;dlg.close();
+    await openDoc(host);loadHosts();
+    notify(r.kept?`Restored “${v.name}”. The design it replaced is kept as “${r.kept.name}”.`:`Restored “${v.name}”.`);
+  }
+  async function remove(v,button){
+    const ok=await confirmDialog({title:`Delete “${v.name}”?`,body:'The version is deleted. The design on screen and the saved design are not changed.',confirm:'Delete',danger:true});
+    if(!ok) return;
+    if(await attempt(()=>withBusy(button,()=>apiJSON('/api/planner/versions/'+v.id,{method:'DELETE'})))){ result.replaceChildren();await refresh() }
+  }
+  function row(v){
+    const btn=(label,cls,fn)=>{const b=sfNode('button',{type:'button',class:'sf-btn '+cls,'data-act':label.toLowerCase(),'aria-label':`${label} ${v.name}`},label);sfOnClick(b,()=>fn(v,b));return b};
+    return sfNode('li',{class:'pv-item','data-id':v.id},
+      sfNode('div',{class:'pv-head'},sfNode('b',{class:'pv-name'},v.name),v.auto?sfNode('span',{class:'pv-auto'},'kept automatically'):null),
+      sfNode('div',{class:'muted small'},`${v.author} · ${fmtTime(v.created_at)} · ${fmtBytes(v.size_bytes)}`),
+      v.note?sfNode('div',{class:'pv-note small'},v.note):null,
+      sfNode('div',{class:'pv-actions'},btn('Compare','ghost',compare),btn('Restore','',restore),btn('Delete','ghost',remove)));
+  }
+  async function refresh(){
+    const r=await attempt(()=>apiJSON('/api/planner/versions?host='+encodeURIComponent(host)));
+    if(!r) return;
+    list.replaceChildren(...(r.versions.length?r.versions.map(row):[sfNode('li',{class:'muted',id:'pv-empty'},'No versions yet.')]));
+    count.textContent=`${r.versions.length} of at most ${r.max_versions} kept for this host.`;
+  }
+  sfOnClick(keep,async()=>{
+    const v=await attempt(()=>apiJSON('/api/planner/versions',jsonOpts('POST',{host,blueprint:blueprint(),name:name.value,note:note.value})));
+    if(!v) return;
+    name.value='';note.value='';await refresh();announce(`Saved ${v.name}`);
+  });
+  await refresh();
+  name.focus();
 }
 /* The planner's place is in its URL too (UX-08): #/devices?host=nas, the way the main page writes its own. The old #devices@nas is still read.
    Choosing a view or a host is a step in the history, so Back goes where the person was; loading a design is not. */
@@ -1118,6 +1197,7 @@ $('#resetno').addEventListener('click',()=>{$('#resetconfirm').hidden=true;$('#r
 $('#resetyes').addEventListener('click',()=>{S=sample();UI.sel=null;UI.calc=null;$('#resetconfirm').hidden=true;$('#reset').hidden=false;commit()});
 $('#hostpick').addEventListener('change',e=>openDoc(e.target.value,undefined,true));
 $('#savedesign').addEventListener('click',saveDesign);
+$('#versions').addEventListener('click',openVersions);
 $('#fromscan').addEventListener('click',()=>openDoc(DOC.host,'scan'));
 $('#dropexample').addEventListener('click',()=>{$('#dropconfirm').hidden=false;docState()});
 $('#dropno').addEventListener('click',()=>{$('#dropconfirm').hidden=true;docState()});

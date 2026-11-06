@@ -275,3 +275,17 @@ path.edge.lit{stroke:var(--accent);stroke-width:2.2}
 #applinks a{text-decoration:none;display:inline-block}
 .titem .n a,.note a{color:var(--accent);text-underline-offset:2px}
 [hidden]{display:none!important}
+/* Versions panel (UX-38, 3g): the kernel's modal, a little wider, with its list of saved copies */
+.sf-dialog.pv{width:min(94vw,720px)}
+.pv-body{display:flex;flex-direction:column;gap:var(--sf-s3)}
+.pv-body h3,.pv-body h4{margin:0;font-size:var(--sf-t4)}
+.pv-save{display:flex;flex-wrap:wrap;gap:var(--sf-s2)}
+.pv-save input{flex:1 1 200px;font:inherit;color:var(--sf-text);background:var(--sf-bg);border:1px solid var(--sf-line-2);border-radius:var(--sf-radius);padding:6px 9px;min-width:0}
+.pv-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--sf-s2);max-height:34vh;overflow:auto}
+.pv-item{border:1px solid var(--sf-line);border-radius:var(--sf-radius);padding:var(--sf-s2) var(--sf-s3);display:flex;flex-direction:column;gap:4px}
+.pv-head{display:flex;gap:var(--sf-s2);align-items:baseline;flex-wrap:wrap}
+.pv-auto{font-size:var(--sf-t2);color:var(--sf-muted);border:1px solid var(--sf-line-2);border-radius:999px;padding:0 8px}
+.pv-actions{display:flex;gap:var(--sf-s2);flex-wrap:wrap}
+.pv-result{display:flex;flex-direction:column;gap:var(--sf-s2)}
+.pv-result:empty{display:none}
+.pv-result ul{padding-left:1.2em;margin:0;display:flex;flex-direction:column;gap:2px}
