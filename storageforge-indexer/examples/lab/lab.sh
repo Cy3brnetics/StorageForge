@@ -589,7 +589,7 @@ cmd_test_all() {
   export SFLAB_STATE="$STATE"
   rm -rf "$STATE/results" "$STATE/gauntlet.json"
   cmd_reset
-  for t in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 16; do
+  for t in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 16 17; do
     say "== tier $t =="
     [ "$t" = 0 ] || [ "$t" = 2 ] || cmd_reset
     case $t in    # the report decides, knowing what is known

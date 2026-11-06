@@ -12,7 +12,7 @@ ROOT = TESTS.parent
 DOCS = ROOT.parent / 'docs'
 LAB = TESTS / 'lab'
 TIER_FILE = {1: 'tiers.py', 3: 'tiers.py', 4: 'tiers.py', 5: 'tiers.py', 6: 'tiers.py', 7: 'tiers.py', 8: 'tiers.py', 2: 'gauntlet.py',
-             9: 'tiers_platform.py', 10: 'tiers_platform.py', 11: 'tiers_platform.py', 12: 'tiers_network.py', 13: 'tiers_features.py', 14: 'tiers_hostlogs.py', 16: 'tiers_sends.py'}
+             9: 'tiers_platform.py', 10: 'tiers_platform.py', 11: 'tiers_platform.py', 12: 'tiers_network.py', 13: 'tiers_features.py', 14: 'tiers_hostlogs.py', 16: 'tiers_sends.py', 17: 'tiers_netlang.py'}
 
 
 def unit_names():
@@ -119,6 +119,15 @@ class TheDocs(unittest.TestCase):
         text = (DOCS / 'kvm-lab.md').read_text()
         for tier, name in re.findall(r'^\| (\d+): [^|]+\| `tests/lab/([a-z0-9_]+\.py)` \|', text, re.M):
             self.assertTrue((LAB / name).exists(), f'tier {tier} names {name}, which does not exist')
+
+    def test_what_the_lab_has_not_tested_says_so_where_the_lab_is_described(self):
+        """Each of these is a line of kvm-lab.md that carries the label, so a reader does not have to infer it from a missing row."""
+        lines = (DOCS / 'kvm-lab.md').read_text().splitlines()
+        wanted = {'pfSense': 'pfSense, OPNsense and Cisco', 'old SSH ciphers': 'Old SSH ciphers', 'Incus and LXC': 'Incus and LXC guests', 'Tailscale': 'Tailscale, proxy routes and identity providers',
+                  'Terraform and Puppet': 'Terraform and Puppet apply', 'PagerDuty': 'PagerDuty', 'FIDO2': 'FIDO2', 'signed scan payloads': 'Signed scan payloads',
+                  'SF-48 receiving run': 'The SF-48 receiving run, tier 16', 'tier 17': 'tier 17'}
+        for what, phrase in wanted.items():
+            self.assertTrue(any(phrase in x and 'not lab-tested' in x for x in lines), f'{what} does not say "not lab-tested" in docs/kvm-lab.md')
 
     def test_lab_sh_and_the_report_run_every_tier_there_is(self):
         lab = (ROOT / 'examples' / 'lab' / 'lab.sh').read_text()
