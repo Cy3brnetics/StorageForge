@@ -28,12 +28,8 @@ function renderAccess() {
       card.append(text('p', 'This scan predates per-folder reporting; rescan to list the folders.', 'muted'));
     }
     if (h.denied.length) {
-      const list = el('ol', { class: 'denied' }, ...h.denied.slice(0, 12).map((d) => el('li', { class: 'mono' }, d.path)));
-      card.append(list);
-      if (h.denied.length > 12) card.append(button(`Show all ${h.denied_total}`, () => {
-        list.replaceChildren(...h.denied.map((d) => el('li', { class: 'mono' }, d.path)));
-        if (h.denied_total > h.denied.length) list.append(el('li', { class: 'muted' }, `…and ${h.denied_total - h.denied.length} more`));
-      }, 'btn ghost sm'));
+      card.append(sfMoreList(h.denied, (d) => el('li', { class: 'mono' }, d.path), { limit: 12, label: 'folders', tag: 'ol', className: 'denied' }));
+      if (h.denied_total > h.denied.length) card.append(text('p', `…and ${h.denied_total - h.denied.length} more that the scan did not keep`, 'muted small'));
     }
     const acts = el('div', { class: 'row' });
     if (h.access !== 'capability' && h.scan_id) acts.append(button('Set up read-only access…', () => { ACCESS.open = ACCESS.open === h.host ? null : h.host; renderAccess(); }, 'btn pri sm'));

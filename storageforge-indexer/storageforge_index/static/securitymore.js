@@ -33,7 +33,7 @@ SEC_MORE.policy = async function secPolicy() {
     kids.push(secCard('What would a rollback change?', text('p', 'Compares the snapshot with what is there now, on the host, and changes nothing. Then you can stage it.', 'muted small'),
       el('div', { class: 'sec-form' }, secField('Snapshot', snap), secField('Live folder', live)),
       el('div', { class: 'row wrap sec-acts' },
-        button('Compare', async () => { const r = await secPost('/api/security/worm/preview', { host, snapshot: snap.value.trim(), live: live.value.trim() }, pv); if (r) pv.replaceChildren(el('div', { class: 'stat-row' }, ...Object.entries(r.counts).map(([k, v]) => secStat({ M: 'Changed', '+': 'Added since', '-': 'Gone since', R: 'Renamed' }[k] || k, v))), r.samples.length ? secTable(['Path', 'What'], r.samples.slice(0, 40).map((x) => [x.path, x.what])) : text('p', 'No differences.', 'st-ok')); }, 'btn sm'),
+        button('Compare', async () => { const r = await secPost('/api/security/worm/preview', { host, snapshot: snap.value.trim(), live: live.value.trim() }, pv); if (r) pv.replaceChildren(el('div', { class: 'stat-row' }, ...Object.entries(r.counts).map(([k, v]) => secStat({ M: 'Changed', '+': 'Added since', '-': 'Gone since', R: 'Renamed' }[k] || k, v))), r.samples.length ? secTable(['Path', 'What'], r.samples.map((x) => [x.path, x.what]), 20) : text('p', 'No differences.', 'st-ok')); }, 'btn sm'),
         button('Stage the rollback', async () => { const r = await secPost('/api/security/worm/preview/stage', { host, snapshot: snap.value.trim(), live: live.value.trim() }, pv); secChanges(r, pv); }, 'btn sm')), pv));
   }
   const from = secInput('days back', '90'), ev = el('div', { class: 'stack' });
@@ -140,7 +140,7 @@ SEC_MORE.playbooks = async function secPlaybooks() {
       emergency ? el('div', { class: 'stack' }, el('div', { class: 'sec-form' }, secField('Name', name), secField('When', trig), secField('On which hosts', host), secField('Under which path', path), secField('How', mode)), el('div', { class: 'row wrap' }, ...acts),
         button('Save', () => secSave('/api/security/playbooks', { name: name.value.trim(), trigger: trig.value, mode: mode.value === 'confirm' ? 'confirm' : mode.value, conditions: { host: host.value.trim(), path: path.value.trim() }, actions: acts.map((l) => l.firstChild).filter((c) => c.checked).map((c) => c.value) }, out, () => secRender()), 'btn sm pri')) : ''),
     await secRoutesCard(out),
-    secCard('What they have done', d.runs.length ? secTable(['When', 'Playbook', 'Host', 'Outcome', 'Why'], d.runs.slice(0, 50).map((r) => [secWhen(r.at), r.playbook, r.host, secPill(r.outcome, r.outcome === 'failed' ? 'critical' : r.outcome === 'ran' ? 'secure' : 'unknown'), r.detail.summary])) : text('p', 'Nothing yet.', 'muted')), out);
+    secCard('What they have done', d.runs.length ? secTable(['When', 'Playbook', 'Host', 'Outcome', 'Why'], d.runs.map((r) => [secWhen(r.at), r.playbook, r.host, secPill(r.outcome, r.outcome === 'failed' ? 'critical' : r.outcome === 'ran' ? 'secure' : 'unknown'), r.detail.summary]), 20) : text('p', 'Nothing yet.', 'muted')), out);
 };
 
 async function secRoutesCard(out) {
@@ -200,7 +200,7 @@ SEC_MORE.timeline = async function secTimeline() {
     const q = new URLSearchParams(S.host ? { host: S.host } : {});
     for (const [k, i] of Object.entries(fields)) if (i.value.trim()) q.set(k, i.value.trim());
     const { rows } = await getJSON(`/api/security/timeline?${q}`);
-    body.replaceChildren(rows.length ? secTable(['When', 'Host', 'What', 'Source'], rows.slice(0, 300).map((r) => [secWhen(r.at), r.host, el('div', {}, secPill(r.severity, r.severity === 'crit' ? 'critical' : r.severity === 'warn' ? 'warning' : 'unknown'), text('span', ` ${r.text}`)), r.source])) : text('p', 'Nothing matches.', 'muted'));
+    body.replaceChildren(rows.length ? secTable(['When', 'Host', 'What', 'Source'], rows.map((r) => [secWhen(r.at), r.host, el('div', {}, secPill(r.severity, r.severity === 'crit' ? 'critical' : r.severity === 'warn' ? 'warning' : 'unknown'), text('span', ` ${r.text}`)), r.source]), 50) : text('p', 'Nothing matches.', 'muted'));
   };
   await go();
   return el('div', { class: 'stack' }, secCard('Timeline', text('p', 'Alarms, what people and playbooks did, and who was dropped, in one line.', 'muted small'), el('div', { class: 'sec-form' }, ...Object.entries(fields).map(([k, i]) => secField(k, i))), button('Filter', go, 'btn sm')), body);
@@ -263,7 +263,7 @@ SEC_MORE.integrityExtra = async function secIntegrityExtra(host) {
   return el('div', { class: 'stack' },
     secCard('Stage the fixes', text('p', 'Turns the Lynis findings that map to a safe step into a plan: SSH settings, kernel settings, umask. The rest is listed for a person, not guessed at.', 'muted small'),
       lynis.length ? el('div', { class: 'row wrap' }, secSpark(lynis.map((x) => x.value)), text('span', `Hardening index ${lynis[lynis.length - 1].value}, over ${lynis.length} readings`, 'small')) : '',
-      secCan('plans.edit') ? button('Stage them', async () => { const r = await secPost('/api/security/integrity/stage', { host }, out); secChanges(r, out); if (r?.by_hand?.length) out.append(secTable(['For a person', ''], r.by_hand.slice(0, 50).map((x) => [x.id, x.text]))); }, 'btn sm') : '', out),
+      secCan('plans.edit') ? button('Stage them', async () => { const r = await secPost('/api/security/integrity/stage', { host }, out); secChanges(r, out); if (r?.by_hand?.length) out.append(secTable(['For a person', ''], r.by_hand.map((x) => [x.id, x.text]), 20)); }, 'btn sm') : '', out),
     secCard('Extra paths for AIDE', text('p', 'In-house scripts and tools to watch, on the next baseline and check.', 'muted small'), watch, secCan('security.manage') ? button('Save', () => secSave('/api/security/integrity/aide/watch', { paths: secLines(watch) }, out), 'btn sm') : ''));
 };
 
