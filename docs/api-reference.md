@@ -101,6 +101,8 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/log/export?format=csv\|json\|text&output=1` | the same list as a file |
 | GET | `/api/hostlogs?host=&unit=&level=&q=&since=&until=&limit=&offset=` | hosts' journal lines as scans collected them, newest first; `level=warning` means warning or worse; takes `hostlogs.view` |
 | GET | `/api/hostlogs/status?host=` | how the last pickup from each host went, and what to do if it couldn't read the journal |
+| GET | `/api/hostlogs/counts?host=&since=&until=` | stored lines by level and by UTC hour (ISO strings) for the Logs view; `since` after `until` is refused; at most 792 hours, newest kept (`truncated` says so); takes `hostlogs.view` |
+| GET | `/api/hostlogs/units?host=` | the unit names stored with a line count each, most lines first, at most 200; takes `hostlogs.view` |
 | GET | `/api/hostlogs/export?format=csv\|json\|text` | the same lines as a file, up to 20,000; audited |
 
 ## Keys, access and audit

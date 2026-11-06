@@ -269,6 +269,80 @@ class Searching(Base):
             hostlogs.export(self.conn, f, 'xml')
 
 
+class Counting(Base):
+    """The counts and the unit list behind the Logs view."""
+    HOUR = 3600
+    T0 = 1999998000.0                 # 2033-05-18T03:00:00Z, an exact UTC hour, so the buckets below are easy to read
+
+    def setUp(self):
+        super().setUp()
+        t = self.T0
+        self.assertEqual(int(t) % self.HOUR, 0)
+        self.rows = [row('a', at=t + 10, priority='3', unit='smartd.service', cursor='1'),
+                     row('b', at=t + 20, priority='3', unit='smartd.service', cursor='2'),
+                     row('c', at=t + 30, priority='6', unit='sshd.service', cursor='3'),
+                     row('d', at=t + self.HOUR - 1, priority='4', unit='sshd.service', cursor='4'),      # still the first hour
+                     row('e', at=t + self.HOUR, priority='6', unit='sshd.service', cursor='5'),          # the next hour starts here
+                     row('f', at=t + 3 * self.HOUR + 5, priority='0', unit=None, ident='kernel', cursor='6')]
+        hostlogs.store(self.conn, 'nas', hostlogs.parse(output(*self.rows), NOW), NOW)
+        hostlogs.store(self.conn, 'pc', hostlogs.parse(output(row('pc', at=t + 40, priority='6', unit='cron.service', cursor='7')), NOW), NOW)
+
+    def counts(self, **kw):
+        return hostlogs.counts(self.conn, hostlogs.range_filter(**kw))
+
+    def test_by_level_and_by_hour(self):
+        got = self.counts(host='nas')
+        self.assertEqual(got['total'], 6)
+        self.assertEqual(list(got['by_level']), list(hostlogs.LEVELS))
+        self.assertEqual({k: v for k, v in got['by_level'].items() if v}, {'emerg': 1, 'err': 2, 'warning': 1, 'info': 2})
+        self.assertEqual([(h['hour'], h['total'], h['levels']) for h in got['by_hour']], [
+            ('2033-05-18T03:00:00Z', 4, {'err': 2, 'info': 1, 'warning': 1}),
+            ('2033-05-18T04:00:00Z', 1, {'info': 1}),
+            ('2033-05-18T06:00:00Z', 1, {'emerg': 1})])
+        self.assertFalse(got['truncated'])
+
+    def test_without_a_host_it_is_all_hosts(self):
+        got = self.counts()
+        self.assertEqual((got['total'], got['by_level']['info'], got['by_hour'][0]['total']), (7, 3, 5))
+
+    def test_the_time_range_narrows_it(self):
+        got = self.counts(host='nas', since=self.T0 + self.HOUR, until=self.T0 + self.HOUR + 1)
+        self.assertEqual((got['total'], [h['hour'] for h in got['by_hour']]), (1, ['2033-05-18T04:00:00Z']))
+        self.assertEqual(self.counts(host='nas', since=self.T0 + 7 * self.HOUR)['total'], 0)
+        self.assertEqual(self.counts(host='nobody')['by_hour'], [])
+
+    def test_a_range_that_ends_before_it_starts_or_isnt_a_time_is_refused(self):
+        with self.assertRaises(ValueError):
+            hostlogs.range_filter('nas', since=self.T0 + 5, until=self.T0)
+        with self.assertRaises(ValueError):
+            hostlogs.range_filter('nas', since='yesterday-ish')
+
+    def test_the_answer_is_bounded(self):
+        t = self.T0
+        many = [row(f'm{i}', at=t - i * self.HOUR, priority='6', cursor=f'h{i}') for i in range(hostlogs.MAX_HOURS + 30)]
+        for r in many:
+            self.conn.execute("""INSERT INTO host_log_lines (host, line_key, at_us, priority, unit, ident, pid, message, collected_at)
+                                 VALUES ('big', :k, :a, 6, 'u', 'u', 1, 'x', 0)""", {'k': r['__CURSOR'], 'a': int(r['__REALTIME_TIMESTAMP'])})
+        got = self.counts(host='big')
+        self.assertEqual(len(got['by_hour']), hostlogs.MAX_HOURS)
+        self.assertTrue(got['truncated'])
+        self.assertEqual(got['total'], hostlogs.MAX_HOURS + 30)       # the totals still say how much there is
+        self.assertEqual(got['by_hour'][-1]['hour'], '2033-05-18T03:00:00Z')          # the newest are the ones kept
+
+    def test_units_most_lines_first_and_per_host(self):
+        self.assertEqual(hostlogs.units(self.conn, 'nas'), [{'unit': 'sshd.service', 'lines': 3}, {'unit': 'smartd.service', 'lines': 2}])
+        self.assertEqual(hostlogs.units(self.conn, 'pc'), [{'unit': 'cron.service', 'lines': 1}])
+        self.assertEqual(hostlogs.units(self.conn, 'nobody'), [])
+        self.assertEqual([u['unit'] for u in hostlogs.units(self.conn)], ['sshd.service', 'smartd.service', 'cron.service'])
+
+    def test_units_are_capped_and_a_name_is_only_a_value(self):
+        for i in range(hostlogs.MAX_UNITS + 20):
+            self.conn.execute("""INSERT INTO host_log_lines (host, line_key, at_us, priority, unit, ident, pid, message, collected_at)
+                                 VALUES ('many', :k, 1, 6, :u, 'u', 1, 'x', 0)""", {'k': f'k{i}', 'u': f'u{i:04}.service'})
+        self.assertEqual(len(hostlogs.units(self.conn, 'many')), hostlogs.MAX_UNITS)
+        self.assertEqual(hostlogs.units(self.conn, "x' OR '1'='1"), [])
+
+
 class TheScript(unittest.TestCase):
     """The real script, in the real shell, against a stand-in journalctl."""
 
@@ -365,6 +439,23 @@ class Entrances(unittest.TestCase):
         c = self.client('viewer')
         for path in ('/api/hostlogs', '/api/hostlogs/status', '/api/hostlogs/export'):
             self.assertEqual(c.get(path).status_code, 403, path)
+
+    def test_counts_and_units_over_the_web(self):
+        c = self.client('operator')
+        got = c.get('/api/hostlogs/counts?host=nas').get_json()
+        self.assertEqual((got['total'], got['by_level']['err'], len(got['by_hour'])), (1, 1, 1))
+        self.assertRegex(got['by_hour'][0]['hour'], r'^\d{4}-\d\d-\d\dT\d\d:00:00Z$')
+        self.assertEqual(c.get('/api/hostlogs/units?host=nas').get_json(), {'host': 'nas', 'units': [{'unit': 'sshd.service', 'lines': 1}]})
+        self.assertEqual(c.get('/api/hostlogs/counts?host=nas&since=2000-01-01&until=1999-01-01').status_code, 400)
+        self.assertEqual(c.get('/api/hostlogs/counts?since=never').status_code, 400)
+        self.assertEqual(c.get('/api/hostlogs/counts?host=nas&since=0&until=1').get_json()['total'], 0)
+
+    def test_a_viewer_is_turned_away_from_counts_and_units(self):
+        c = self.client('viewer')
+        for path in ('/api/hostlogs/counts', '/api/hostlogs/counts?host=nas', '/api/hostlogs/units', '/api/hostlogs/units?host=nas'):
+            self.assertEqual(c.get(path).status_code, 403, path)
+        self.assertEqual(permissions.required('GET', '/api/hostlogs/counts'), 'hostlogs.view')
+        self.assertEqual(permissions.required('GET', '/api/hostlogs/units'), 'hostlogs.view')
 
     def run_cli(self, *args):
         out = io.StringIO()
