@@ -2257,7 +2257,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @password_confirmed
     def api_scans_signing_set():
         from . import scansign
-        need = bool(json_body().get('require'))
+        need = scansign.parse_switch(json_body().get('require'))
         alerts.set_setting(conn(), scansign.REQUIRE, need, actor())
         core.audit(conn(), actor(), 'scans.require_signed', 'ok', None, {'require': need})
         return jsonify(require=need)

@@ -19,8 +19,8 @@ meaning anything to SSH, git or anything else that verifies SSHSIG.
 What it does not do: a host whose scan account is taken over can sign whatever that account sends, because the account is what
 reads the host. It proves the payload came from the host the key belongs to, unchanged, and for this request. docs/security.md.
 
-A host that cannot sign (no key it can read, OpenSSH older than 8.0) says why, and its payloads count as unsigned: used, and
-shown as unsigned, unless the site requires signed scans (setting scans.require_signed), when they are refused like a bad one.
+A host that cannot sign (no key it can read, OpenSSH older than 8.0) says why, and its payloads count as unsigned:
+used, and shown as unsigned, unless the site requires signed scans (setting scans.require_signed), when they are refused like a bad one.
 """
 from __future__ import annotations
 
@@ -93,7 +93,13 @@ def message(nonce: str, digest: str) -> bytes:
 
 
 def _ssh_string(buf: bytes, at: int) -> tuple[bytes, int]:
-    (n,) = struct.unpack('>I', buf[at:at + 4])
+    """A length-prefixed string. ValueError, never struct.error, when the buffer is too short for it: a host chooses these bytes."""
+    try:
+        (n,) = struct.unpack('>I', buf[at:at + 4])
+    except struct.error:
+        raise ValueError('the signature is cut short') from None
+    if len(buf) < at + 4 + n:
+        raise ValueError('the signature is cut short')
     return buf[at + 4:at + 4 + n], at + 4 + n
 
 
@@ -249,6 +255,18 @@ def pin(conn, host: str, port: int, key_line: str, how: str):
 
 def forget(conn, host: str, port: int = 22) -> bool:
     return bool(conn.execute('DELETE FROM scan_signers WHERE address = :a', {'a': address(host, port)}).rowcount)
+
+
+def parse_switch(value) -> bool:
+    """The signing switch from a request: a JSON boolean, or text that plainly says on or off. Anything else is ValueError (a 400), never 'on'."""
+    if isinstance(value, bool):
+        return value
+    text = value.strip().lower() if isinstance(value, str) else None
+    if text in ('true', 'on', 'yes', '1'):
+        return True
+    if text in ('false', 'off', 'no', '0'):
+        return False
+    raise ValueError('require must be true or false')
 
 
 def required(conn) -> bool:
