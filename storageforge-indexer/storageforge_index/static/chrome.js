@@ -30,6 +30,9 @@ function sfSecurityChip(chip, open, allowed = () => true, delay = 0) {
 const SF_PAGES = [['main', '/', 'Topology and map', 'hosts.view'], ['planner', '/planner', 'Storage planner', 'hosts.view'],
                   ['manage', '/manage', 'Network management', 'devices.view']];
 
+// the steps of a plan live in the main page's rail: one way in from here, under one name each
+const SF_PLAN = [['changes', '/#/topo/changes', 'Changes', 'plans.view'], ['moves', '/#/topo/moves', 'Moves', 'plans.view'], ['schedule', '/#/topo/schedule', 'Schedule', 'plans.view']];
+
 /* The chrome of a page that has none of its own. A slot says which parts it wants in data-sf-chrome ("site pages chip user", the default),
    so a page can put the chip at the top where it is seen and the rest further down. */
 async function sfMountChrome(slot) {
@@ -38,7 +41,7 @@ async function sfMountChrome(slot) {
   const perms = new Set(me.permissions || []);
   const here = slot.dataset.here;
   const want = new Set((slot.dataset.sfChrome || 'site pages chip user').split(/\s+/));
-  const links = SF_PAGES.filter(([, , , need]) => perms.has(need));
+  const links = [...SF_PAGES, ...SF_PLAN].filter(([, , , need]) => perms.has(need));          // the pages, then the way into the plan's steps on the main page
   if (!perms.has('hosts.view')) links.push(['search', '/search', 'File search', null]);      // the one page an account with no hosts can use
   const chip = sfNode('button', { type: 'button', class: 'threat sec-unknown', hidden: true });
   const parts = [

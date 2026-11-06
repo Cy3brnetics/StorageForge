@@ -119,7 +119,7 @@ async function loadTrends() {
 }
 async function loadChanged() {
   const box = $('#changedbox');
-  if (!S.host) { box.replaceChildren(text('p', 'Pick a host at the top to see what its last scan found changed.', 'muted')); return; }
+  if (!S.host) { needHost(box, 'What a scan changed', loadChanged); return; }
   try {
     const r = await getJSON(`/api/file-changes?host=${encodeURIComponent(S.host)}`);
     if (!r.scan) { box.replaceChildren(text('p', 'No finished scans of this host yet.', 'muted')); return; }

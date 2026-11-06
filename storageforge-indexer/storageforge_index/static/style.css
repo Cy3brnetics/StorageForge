@@ -1019,6 +1019,8 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 /* map */
 .mapview { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; background: var(--bg); }
 .mapview[hidden] { display: none; }
+.mpsvg [tabindex]:focus { outline: none; }
+.mpsvg g[data-id]:focus-visible > rect, .mpsvg rect.mphit:focus-visible { stroke: var(--accent); stroke-width: 3; }
 .mpbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line, #333); }
 .mpbar input[type=search] { min-width: 200px; }
 .mpbody { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; }

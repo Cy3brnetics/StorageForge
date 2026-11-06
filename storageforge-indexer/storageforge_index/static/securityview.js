@@ -116,7 +116,9 @@ async function secRender() {
   await secBanner();
   if (!fresh()) return;
   if (SEC_NEEDS_HOST.has(SEC.panel) && !S.host) {
-    box.replaceChildren(text('p', 'Pick a host at the top of the page: this panel is about one host at a time.', 'muted'));
+    const rank = { critical: 3, warning: 2, unknown: 1, secure: 0 };
+    const worst = [...(SEC.posture?.hosts || [])].sort((a, b) => (rank[b.state] - rank[a.state]) || (b.critical.length + b.warnings.length) - (a.critical.length + a.warnings.length))[0];
+    needHost(box, 'This panel', secRender, worst?.host);                  // it opens on the host with the most to look at
     return;
   }
   try {

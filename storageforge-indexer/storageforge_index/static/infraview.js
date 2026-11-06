@@ -55,7 +55,7 @@ function infMeasure(host, out) {
 
 function infNeedHost(content) {
   if (S.host) return false;
-  content.replaceChildren(text('p', 'Select a host to see this.', 'muted'));
+  needHost(content, 'This view', loadInfra);
   return true;
 }
 

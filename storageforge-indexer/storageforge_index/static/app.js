@@ -648,6 +648,16 @@ document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('cli
 const panel = $('#panel');
 const PW = { min: 300, def: 380, max: () => Math.max(300, Math.min(760, innerWidth - 420)) };
 const prefs = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch { /* storage blocked: the default is fine */ } return null; };
+/* A panel that is about one host carries its own picker (UX-07), instead of telling a person to look at the top of the page. Choosing sets the page's
+   host, as the one at the top does, and draws the panel again. `preferred` is the host to start on: the one with the most to look at. */
+function needHost(box, what, redraw, preferred) {
+  const hosts = [...$('#host').options].map((o) => o.value).filter(Boolean);
+  if (!hosts.length) { box.replaceChildren(text('p', 'No host has been scanned yet.', 'muted')); return; }
+  const start = hosts.includes(preferred) ? preferred : hosts[0];
+  const pick = el('select', { 'aria-label': 'Host' }, hosts.map((h) => el('option', { value: h, selected: h === start }, h)));
+  box.replaceChildren(text('p', `${what} is about one host at a time.`, 'muted'),
+    el('div', { class: 'row' }, pick, button('Open', () => { const top = $('#host'); top.value = pick.value; top.dispatchEvent(new Event('change')); redraw(); }, 'btn pri sm')));
+}
 function setPanelWidth(w, save) {
   w = Math.round(Math.min(PW.max(), Math.max(PW.min, w)));
   panel.style.setProperty('--pw', `${w}px`);

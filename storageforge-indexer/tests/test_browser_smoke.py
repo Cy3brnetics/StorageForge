@@ -1023,7 +1023,7 @@ class BrowserSmoke(unittest.TestCase):
             self.page.wait_for_selector('.sf-chrome .threat:not([hidden])', timeout=9000)
             self.assertTrue(self.page.inner_text('.sf-chrome .threat').startswith('Security: '), path)
             self.assertIn('measured in the last day', self.page.inner_text('.sf-chrome .threat-detail'))
-            self.assertEqual(self.page.eval_on_selector_all('.sf-chrome nav a', 'as => as.map((a) => a.textContent)'), ['Topology and map', 'Storage planner', 'Network management'])
+            self.assertEqual(self.page.eval_on_selector_all('.sf-chrome nav a', 'as => as.map((a) => a.textContent)'), ['Topology and map', 'Storage planner', 'Network management', 'Changes', 'Moves', 'Schedule'])
             self.assertEqual(self.page.get_attribute('.sf-chrome nav a[aria-current="page"]', 'href'), here)
             self.assertIn('admin', self.page.inner_text('.sf-user'))
         self.page.goto(self.base + '/search')
@@ -1392,6 +1392,85 @@ class BrowserSmoke(unittest.TestCase):
         self.assertEqual(len(set(subs)), 16)                                              # every panel once, none lost in the regrouping
         self.page.click('#sec-subnav button[data-sub="firewall"]')
         self.page.wait_for_selector('#sec-subnav button[data-sub="firewall"][aria-pressed="true"]')
+        self.assertEqual(self.errors, [])
+
+
+    # ── the map by keyboard: UX-17 ───────────────────────────────────────────────────────────────────────────────────
+    def test_every_map_node_is_a_button_in_reading_order(self):                          # UX-17
+        """The map was an image to a keyboard and a screen reader: nothing on it could be reached, and it said only "Infrastructure map"."""
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.wait_for_selector('#mpsvg g.k-listener')
+        self.assertEqual(self.page.get_attribute('#mpsvg', 'role'), 'group')
+        self.assertIn('items', self.page.get_attribute('#mpsvg', 'aria-label'))
+        got = self.page.evaluate("""() => [...document.querySelectorAll('#mpsvg [data-id]')].map((e) => [e.getAttribute('role'), e.getAttribute('tabindex'), !!e.getAttribute('aria-label')])""")
+        self.assertGreaterEqual(len(got), 5)
+        self.assertTrue(all(g == ['button', '0', True] for g in got), got)
+        order = self.page.evaluate("[...document.querySelectorAll('#mpsvg [role=button]')].map((e) => e.getAttribute('aria-label'))")
+        header = next(i for i, x in enumerate(order) if x.startswith('nas, open'))
+        self.assertTrue(any(x.startswith('Listener: ') for x in order[header + 1:]))             # the host's header comes before what is in its frame
+        self.assertFalse(any(x.startswith('Listener: ') for x in order[:header]))
+        self.assertEqual(self.errors, [])
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+    def test_enter_opens_a_nodes_details_and_a_hosts_header_closes_and_opens_it(self):   # UX-17
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.wait_for_selector('#mpsvg g.k-listener')
+        self.page.focus('#mpsvg g.k-listener')
+        self.page.keyboard.press('Enter')
+        self.page.wait_for_selector('#mpdetail h4, #mpdetail b, #mpdetail p')
+        self.assertTrue(self.page.inner_text('#mpdetail').strip())
+        self.assertEqual(self.page.evaluate('document.activeElement.getAttribute("role")'), 'button')       # it keeps focus where it was
+        self.page.wait_for_selector('.sf-live:has-text("selected")')
+        self.page.focus('#mpsvg rect.mphit')
+        self.page.keyboard.press('Enter')
+        self.page.wait_for_selector('#mpsvg g.k-listener', state='detached')                      # closed: what was in the frame is gone
+        self.assertEqual(self.page.evaluate('document.activeElement.dataset.frame'), 'nas')        # and focus is still on the header
+        self.page.keyboard.press('Enter')
+        self.page.wait_for_selector('#mpsvg g.k-listener')
+        self.assertEqual(self.page.evaluate('document.activeElement.dataset.frame'), 'nas')
+        self.assertEqual(self.errors, [])
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+
+    # ── a host where a panel needs one, one way into the plan, which view for what: UX-07, UX-03 and UX-06 ───────────
+    def test_a_panel_about_one_host_carries_its_own_picker(self):                          # UX-07
+        """It said "pick a host at the top of the page", which is a dead end for a person looking at the panel."""
+        self.assertEqual(self.page.input_value('#host'), '')
+        self.open_tab('security')
+        self.page.wait_for_selector('#sec-subnav')
+        self.page.click('#sec-subnav button[data-sub="decoys"]')
+        self.page.wait_for_selector('#sec-content select[aria-label="Host"]')
+        self.assertNotIn('top of the page', self.page.inner_text('#sec-content'))
+        self.assertEqual(self.page.input_value('#sec-content select[aria-label="Host"]'), 'nas')
+        self.page.click('#sec-content button:has-text("Open")')
+        self.page.wait_for_selector('#sec-content select[aria-label="Host"]', state='detached')
+        self.assertEqual(self.page.input_value('#host'), 'nas')                             # the page's own host moved with it
+        self.assertIn('host=nas', self.page.url)
+        self.assertEqual(self.errors, [])
+
+    def test_the_infra_views_that_need_a_host_say_the_same(self):                            # UX-07
+        self.open_tab('infra')
+        self.page.wait_for_selector('#infrabox .seg button')
+        self.page.click('#infrabox .seg button:has-text("Network")')
+        self.page.wait_for_selector('#infrabox select[aria-label="Host"]')
+        self.assertNotIn('Select a host', self.page.inner_text('#infrabox'))
+        self.page.click('#infrabox button:has-text("Open")')
+        self.page.wait_for_selector('#infrabox select[aria-label="Host"]', state='detached')
+        self.assertEqual(self.page.input_value('#host'), 'nas')
+        self.assertEqual(self.errors, [])
+
+    def test_the_views_say_what_each_is_for(self):                                           # UX-06
+        tips = self.page.eval_on_selector_all('#viewmode button', 'bs => bs.map((b) => [b.dataset.mode, b.title])')
+        self.assertEqual([m for m, _ in tips], ['topo', 'graph', 'tasks', 'map', 'scan'])
+        self.assertTrue(all(len(t) > 40 for _, t in tips), tips)
+        self.assertIn('Edit', dict(tips)['topo'])
+        self.assertIn('edit in Topology', dict(tips)['graph'])                               # three canvases draw the same storage: this says which to use for what
+
+    def test_the_planner_and_manage_lead_into_the_steps_of_a_plan(self):                  # UX-03
+        self.page.goto(self.base + '/manage')
+        self.page.wait_for_selector('.sf-chrome nav a:has-text("Changes")')
+        self.page.click('.sf-chrome nav a:has-text("Changes")')
+        self.page.wait_for_selector('.tabs button[data-tab="changes"].on')
         self.assertEqual(self.errors, [])
 
 

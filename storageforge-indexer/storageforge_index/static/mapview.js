@@ -228,7 +228,6 @@ function mapDraw() {
     if (f.shut) t.push(`(${f.count} inside)`);
     const head = sv('text', { x: f.x + 12, y: f.y + 24, class: 'mphost' }); head.textContent = t.join('  ');
     root.append(sv('rect', { x: f.x, y: f.y, width: f.w, height: f.h, rx: 8, class: 'mpframe' }), head);
-    const hit = sv('rect', { x: f.x, y: f.y, width: f.w, height: 36, class: 'mphit', ...(f.node ? { 'data-id': f.node.id } : {}), 'data-frame': f.host }); root.append(hit);
   }
   const edgeLayer = sv('g', { id: 'mpedges' });
   for (const e of g.edges) {
@@ -242,22 +241,48 @@ function mapDraw() {
     edgeLayer.append(sv('path', { d: `M${ax} ${ay} C${ax} ${my} ${bx} ${my} ${bx} ${by}`, class: `mpedge${conf === 'inferred' || conf === 'manual' ? ' inferred' : ''}${e.ghost ? ' ghost' : ''}${trace ? ' trace' : ''}`, 'data-src': e.src, 'data-dst': e.dst }));
   }
   root.append(edgeLayer);
-  for (const r of rects.values()) {
-    if (r.frame || r.inside) continue;
+  /* Every node is a button a keyboard can reach (UX-17), in reading order: the shared band first, then each host's header followed by what is in its frame. */
+  const nodeEl = (r) => {
     const n = r.node;
     const label = sv('text', { x: r.x + 8, y: r.y + r.h / 2 + 4, class: 'mplabel' });
     label.textContent = mapText(n);
     const dim = !mapMatches(n);
-    root.append(sv('g', { class: mapClass(n) + (dim ? ' dim' : ''), 'data-id': n.id }, sv('rect', { x: r.x, y: r.y, width: r.w, height: r.h, rx: 4 }), label));
+    return sv('g', { class: mapClass(n) + (dim ? ' dim' : ''), 'data-id': n.id, tabindex: '0', role: 'button', 'aria-label': `${n.kind}: ${n.label}` }, sv('rect', { x: r.x, y: r.y, width: r.w, height: r.h, rx: 4 }), label);
+  };
+  const loose = [...rects.values()].filter((r) => !r.frame && !r.inside);
+  const inFrame = (r, f) => r.x >= f.x && r.y >= f.y && r.x + r.w <= f.x + f.w + 1 && r.y + r.h <= f.y + f.h + 1;
+  const byPlace = (a, b) => a.y - b.y || a.x - b.x;
+  const groups = frames.map((f) => ({ f, mine: loose.filter((r) => inFrame(r, f)).sort(byPlace) }));
+  const taken = new Set(groups.flatMap((x) => x.mine));
+  for (const r of loose.filter((x) => !taken.has(x)).sort(byPlace)) root.append(nodeEl(r));
+  for (const { f, mine } of groups) {
+    const grp = sv('g', { class: 'mphostgroup', role: 'group', 'aria-label': f.host });
+    grp.append(sv('rect', { x: f.x, y: f.y, width: f.w, height: 36, class: 'mphit', tabindex: '0', role: 'button', 'data-frame': f.host, ...(f.node ? { 'data-id': f.node.id } : {}),
+      'aria-label': `${f.host}, ${f.shut ? 'closed' : 'open'}. Enter ${f.shut ? 'opens' : 'closes'} it, Space shows its details` }));
+    for (const r of mine) grp.append(nodeEl(r));
+    root.append(grp);
   }
   for (const x of MP.notes) {
     const r = rects.get(x.target);
     if (r) { const t = sv('text', { x: r.x + r.w - 6, y: r.y - 2, class: 'mpnote', 'text-anchor': 'end' }); t.textContent = `✎ ${x.text.slice(0, 40)}`; root.append(t); }
   }
-  const svg = sv('svg', { id: 'mpsvg', class: 'mpsvg', role: 'img', 'aria-label': 'Infrastructure map' }, root);
+  const svg = sv('svg', { id: 'mpsvg', class: 'mpsvg', role: 'group', 'aria-label': `Infrastructure map, ${loose.length + frames.length} items` }, root);
   canvas.replaceChildren(svg, mapLegend());
   svg.addEventListener('dblclick', (ev) => { const f = ev.target.closest('[data-frame]'); if (f) { const h = f.dataset.frame; if (MP.collapsed.has(h)) MP.collapsed.delete(h); else MP.collapsed.add(h); mapDraw(); } });
   svg.addEventListener('click', (ev) => { const t = ev.target.closest('[data-id]'); MP.sel = t ? t.dataset.id : null; mapDetail(); mapHighlight(MP.sel); });
+  svg.addEventListener('keydown', (ev) => {      // the map's own keys, on the map: Enter on a node, Enter or Space on a host's header, as a click and a double click are
+    if ((ev.key !== 'Enter' && ev.key !== ' ') || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const t = ev.target.closest?.('[data-id]'), f = ev.target.closest?.('[data-frame]');
+    if (!t && !f) return;
+    ev.preventDefault();
+    if (t && (ev.key === 'Enter' ? !f : true)) { MP.sel = t.dataset.id; mapDetail(); mapHighlight(MP.sel); announce(`${t.getAttribute('aria-label')} selected: its details are in the panel beside the map`); }
+    if (f && ev.key === 'Enter') {
+      const h = f.dataset.frame;
+      if (MP.collapsed.has(h)) MP.collapsed.delete(h); else MP.collapsed.add(h);
+      mapDraw();
+      document.querySelector(`#mpsvg [data-frame="${CSS.escape(h)}"]`)?.focus();
+    }
+  });
   svg.addEventListener('mouseover', (ev) => { const t = ev.target.closest('[data-id]'); if (t) mapHighlight(t.dataset.id); });
   svg.addEventListener('mouseout', () => mapHighlight(MP.sel));
   svg.addEventListener('wheel', (ev) => { ev.preventDefault(); const f = ev.deltaY < 0 ? 1.15 : 0.87; MP.view.k = Math.min(3, Math.max(0.2, MP.view.k * f)); mapApply(); }, { passive: false });

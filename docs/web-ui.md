@@ -6,6 +6,8 @@ The main page (`/`) has five views in the header (**Topology**, **Graph**, **Tas
 
 The header also holds the host filter, file search, the security chip, links to the [Planner](planner.md) and to [Manage](#other-pages), **Export .canvas** (in Topology and Graph, the two views it exports), the session length menu and **Sign out**. The chip says in a line where the [security posture](ransomware-defense.md) stands (*Security: nothing wrong found*, *needs a look*, *incident* or *not known*), with the reason under it, and a click opens the **Security** panel. Accounts that may not view security do not see it.
 
+Which view is for what: **Topology** is where you edit what you own, **Graph** is for exploring how hosts, pools and mounts relate and where copies of files are (look here, edit in Topology), **Tasks** builds storage tasks from blocks, **Map** shows networks, listeners, firewalls and workloads and who can reach what, and **Scan** shows what the network scanner found. Hovering a view's button says the same.
+
 ## Topology
 
 ![Topology view](images/topology.jpg)
@@ -70,6 +72,7 @@ What hosts report, drawn as an infrastructure map: each host a frame holding its
 - Group by host, subnet or runtime; filter by name, address or port; show this-machine-only ports, container networks and devices nearby; show only what others can reach.
 - **What changed** lists the differences between readings, and its slider goes back to an earlier one. Storage is not kept, so going back shows the other layers as they stood.
 - A list longer than the page shows says how many it leaves out (*+3 more*), and the same button shows the rest.
+- From the keyboard, every node is a button in reading order, each host's header followed by what is in its frame: Enter shows a node's details, Enter on a host's header closes or opens it, and Space on a header shows its details.
 - Exports: JSON, Mermaid, DOT, SVG, draw.io, Obsidian canvas, PNG as drawn, and PDF through the browser's print.
 
 The map's layers, the paths through routers and the security mode are described in [Infrastructure map](infrastructure-map.md#on-the-map). Firewall rules and exposure need `security.view`; the map itself needs `map.view`.
@@ -80,7 +83,7 @@ What the opt-in network scanner found. It is off until someone turns it on and n
 
 ## Panels
 
-The rail on the right opens panels in the inspector: 18 of them in five groups. It is one tab stop: Up and Down move between the panels, Home and End go to the first and the last, and Enter or Space opens the one that has focus. A skip link at the top of the page, the first thing Tab reaches, goes to the view or to the panel. **Security** and the settings panels (**Audit**, which holds accounts, roles, invites, backups and your password, **Keys**, **Scans**, **Access** and **Logs**) open with the whole page, and the button in any panel's header (⤢) gives that panel the whole page too, which the browser remembers for that panel. Hiding the panel gives the view its room back. The first panel, **Details**, describes the selection or summarises health across every host. It belongs to Topology and Graph: in Tasks, Map and Scan it says where to go instead.
+The rail on the right opens panels in the inspector: 18 of them in five groups. It is one tab stop: Up and Down move between the panels, Home and End go to the first and the last, and Enter or Space opens the one that has focus. A panel that is about one host (the Security panels that need one, the Infra views, what a scan changed) has its own host picker when none is chosen, starting on the host with the most to look at, and choosing sets the page's host. A skip link at the top of the page, the first thing Tab reaches, goes to the view or to the panel. **Security** and the settings panels (**Audit**, which holds accounts, roles, invites, backups and your password, **Keys**, **Scans**, **Access** and **Logs**) open with the whole page, and the button in any panel's header (⤢) gives that panel the whole page too, which the browser remembers for that panel. Hiding the panel gives the view its room back. The first panel, **Details**, describes the selection or summarises health across every host. It belongs to Topology and Graph: in Tasks, Map and Scan it says where to go instead.
 
 ### Inspect
 
@@ -145,7 +148,7 @@ The rail on the right opens panels in the inspector: 18 of them in five groups. 
 
 | Page | What it is |
 | :--- | :--- |
-| `/planner` | The [storage design tool](planner.md): devices, mounts, links, RAID, protection and export. **Planner** in the header |
+| `/planner` | The [storage design tool](planner.md): devices, mounts, links, RAID, protection and export. **Planner** in the header. Its rail, like `/manage`'s, leads to the main page's **Changes**, **Moves** and **Schedule** |
 | `/manage` | The [management planner](network-devices.md#the-management-planner), **Manage** in the header. **Fleet** is every host and device and how it stands; **Devices** are routers, switches and firewalls; **Compose** writes the one network language, shows what each target makes of it, and **Stage in Changes** turns a Linux host's rules into steps there, or **Check** reports on a device before **Apply**; **Changes** is what was reported, applied, confirmed and rolled back; **Traffic** is interface counters over time, with a way to the Scan view |
 | `/search` | File search on a page of its own, with a host picker |
 | `/login`, `/enroll` | Sign-in, and the page an invite or reset link opens |
