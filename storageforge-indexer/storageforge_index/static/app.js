@@ -600,6 +600,7 @@ function showTab(name) {
   if (name === 'infra') loadInfra();
   if (name === 'deploy') loadDeploy();
   if (name === 'security' && typeof loadSecurity === 'function') loadSecurity();
+  routeSync();
 }
 /* The rail scrolls with its scrollbar hidden, so a fade and a chevron say that more of it is out of sight (UX-01). */
 const railEl = $('.rail'), railMore = $('#railmore'), railNarrow = matchMedia('(max-width: 900px)');
@@ -1093,7 +1094,7 @@ async function loadHosts() {
   sel.value = S.host;
 }
 $('#host').addEventListener('change', () => { $('#toplanner').href = '/planner' + (S.host ? `#overview@${encodeURIComponent(S.host)}` : ''); });
-$('#host').addEventListener('change', async () => { S.host = $('#host').value; S.focus = null; S.selected = null; S.byId = new Map(); T.sel = null; await Promise.all([loadGraph(), loadDesigns()]); });
+$('#host').addEventListener('change', async () => { S.host = $('#host').value; S.focus = null; S.selected = null; S.byId = new Map(); T.sel = null; routeSync(); await Promise.all([loadGraph(), loadDesigns()]); });
 $('#hops').addEventListener('change', () => { S.hops = Number($('#hops').value); if (S.focus) applyFocus(); });
 $('#reset').addEventListener('click', () => { for (const n of S.nodes) n.fixed = false; alpha = 0.5; setFocus(null); S.selected = null; renderSummary(); fit(); });
 $('#export').addEventListener('click', async () => {
@@ -1133,22 +1134,8 @@ $('#sesslen').addEventListener('change', async (ev) => {
 });
 $('#lock').addEventListener('click', sfSignOut);
 
-// links from the planner: /#host=nas-02&tab=changes opens that host on that panel
-function takeLink() {
-  const q = new URLSearchParams(location.hash.slice(1));
-  if (!q.has('host') && !q.has('tab') && !q.has('view')) return null;
-  history.replaceState(null, '', location.pathname + location.search);
-  const host = q.get('host');
-  if (host && [...$('#host').options].some((o) => o.value === host)) {
-    $('#host').value = S.host = host;
-    $('#toplanner').href = `/planner#overview@${encodeURIComponent(host)}`;
-  }
-  const tab = q.get('tab');
-  if (tab === 'security') window.SEC_LINK_PANEL = q.get('panel');
-  if (q.get('view') === 'map' && typeof mapTakeLink === 'function') { mapTakeLink(q); document.querySelector('#viewmode button[data-mode="map"]')?.click(); }
-  if (q.get('view') === 'scan') document.querySelector('#viewmode button[data-mode="scan"]')?.click();
-  return tab && document.querySelector(`.tabs button[data-tab="${CSS.escape(tab)}"]`) ? tab : null;
-}
+// a link, or the URL the page was opened with, says where to be (router.js): #/graph/changes?host=nas-02, or the old #host=nas-02&tab=changes
+const takeLink = routeTake;
 
 function showSite(name) {   // on every page, so nobody acts on the wrong client
   if (!name) return;
@@ -1166,5 +1153,6 @@ async function boot() {
     if (T.mode === 'tasks' && typeof loadTasks === 'function') loadTasks();
   }
   catch (err) { if (!/Sign in/.test(err.message)) alertPanel(err.message); }
+  finally { routeStart(); }
 }
 // boot() runs at the end of topology.js, once both scripts are loaded

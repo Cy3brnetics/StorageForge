@@ -77,7 +77,7 @@ Exports go one way: nothing is read back from a script. Bash and Ansible come fr
 - **Timeline:** go back to an earlier reading. Storage is not kept: it shows the other layers as they stood.
 - **Security mode** shows who can reach what, holds and decoys on mounts, and workloads no hold or decoy reaches. It warns when an armed sentinel could cut off a gateway, DNS server or hypervisor that is not on the exempt list.
 - **Exports:** JSON, Mermaid, DOT, SVG, draw.io, Obsidian canvas, PNG, and PDF through the browser's print. Redacting them hides addresses, host names and MACs, and each export is audited.
-- **Links:** `/#view=map&layers=network,firewall&mode=security`.
+- **Links:** `/#/map/details?mode=security`, or `/#/map/details?layers=network,firewall`; the older `/#view=map&layers=network,firewall&mode=security` works too.
 
 Firewall rules and exposure say how to get in, so they need `security.view`. The map itself needs `map.view`.
 

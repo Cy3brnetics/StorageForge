@@ -71,4 +71,4 @@ With nothing selected, the **Details** panel summarises the fleet: node counts, 
 
 ## Deep links
 
-The main page reads `#host=<name>&tab=<panel>`, for example `/#host=nas-02&tab=changes`. The planner's **In StorageForge** links use this.
+The main page keeps its place in its address, for example `/#/graph/changes?host=nas-02`, and still reads the older `#host=<name>&tab=<panel>`. The planner's **In StorageForge** links use this. See [deep links](../web-ui.md#deep-links).

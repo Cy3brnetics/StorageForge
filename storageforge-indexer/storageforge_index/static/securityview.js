@@ -94,6 +94,7 @@ async function loadSecurity() {
 function secOpen(panel) {
   SEC.panel = SEC_PANELS.some(([id]) => id === panel) ? panel : 'overview';
   document.querySelectorAll('#sec-subnav button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.sub === SEC.panel));
+  routeSync();
   secRender();
 }
 

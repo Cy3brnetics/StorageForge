@@ -1060,16 +1060,16 @@ async function loadHosts(){
     sel.value=DOC.host;docState();
   }catch(e){ /* signed out: the example still works */ }
 }
-async function openDoc(host,source){
+async function openDoc(host,source,push){
   if(DOC.host&&DOC.dirty&&!(await confirmDialog({ title: `Leave ${DOC.host} with unsaved changes?`, body: 'They stay as a draft in this browser.', confirm: 'Leave', danger: true }))){ $('#hostpick').value=DOC.host;return }
-  if(!host){ DOC.host='';DOC.source='example';DOC.dirty=false;DOC.activity=null;S=load('')||sample();UI.sel=null;UI.calc=null;render();docState();setHash();return }
+  if(!host){ DOC.host='';DOC.source='example';DOC.dirty=false;DOC.activity=null;S=load('')||sample();UI.sel=null;UI.calc=null;render();docState();setHash(push);return }
   docState('Loading '+host+'…');
   try{
     const r=await apiJSON('/api/planner/design?host='+encodeURIComponent(host)+(source?'&source='+source:''));
     DOC.offsite=!!r.offsite;
     const draft=!source&&load(host);
     Object.assign(DOC,{host,source:r.source,savedAt:r.saved_at,scanned:r.scanned,dirty:!!draft});
-    S=draft||fromBlueprint(r.blueprint);if(!source) normalizeIds();UI.sel=null;UI.calc=null;render();docState();setHash();loadActivity();
+    S=draft||fromBlueprint(r.blueprint);if(!source) normalizeIds();UI.sel=null;UI.calc=null;render();docState();setHash(push);loadActivity();
   }catch(e){ docState(e.message,'err') }
 }
 function normalizeIds(){ S.links.forEach((l,i)=>{l.id=l.id||'L'+i}); }
@@ -1081,7 +1081,15 @@ async function saveDesign(){
     docState(`Saved · graph ${r.graph?r.graph.nodes+' nodes':'unchanged'}`,'muted');setTimeout(()=>docState(),4000);loadHosts();render();
   }catch(e){ docState(e.message,'err') }
 }
-function setHash(){ try{ history.replaceState(null,'','#'+UI.view+(DOC.host?'@'+encodeURIComponent(DOC.host):'')) }catch(e){} }
+/* The planner's place is in its URL too (UX-08): #/devices?host=nas, the way the main page writes its own. The old #devices@nas is still read.
+   Choosing a view or a host is a step in the history, so Back goes where the person was; loading a design is not. */
+function readHash(){
+  const p=sfParseHash();
+  if(!p.legacy&&p.parts.length) return {view:p.parts[0],host:p.q.get('host')||''};
+  const [view,host]=(location.hash||'').slice(1).split('@');
+  return {view:view||'',host:decodeURIComponent(host||'')};
+}
+function setHash(push){ try{ (push?sfPushHash:sfReplaceHash)(sfFormatHash([UI.view],{host:DOC.host})) }catch(e){} }
 
 /* ───────────── events ───────────── */
 function selObj(){
@@ -1102,13 +1110,13 @@ function selectNode(node){
   else if(t==='ds') UI.sel={type:'pool',id:v.split('/')[0]};
   else if(t==='rem') UI.sel={type:'rem',id:v};
 }
-function go(view){ UI.view=view; setHash(); render(); $('#main').scrollTop=0; }
+function go(view){ UI.view=view; setHash(true); render(); $('#main').scrollTop=0; }
 $('#nav').addEventListener('click',e=>{const b=e.target.closest('[data-view]');if(b) go(b.dataset.view)});
 $('#idmode').addEventListener('click',e=>{const b=e.target.closest('[data-id]');if(!b) return;S.idMode=b.dataset.id;commit()});
 $('#reset').addEventListener('click',()=>{$('#resetconfirm').hidden=false;$('#reset').hidden=true});
 $('#resetno').addEventListener('click',()=>{$('#resetconfirm').hidden=true;$('#reset').hidden=false});
 $('#resetyes').addEventListener('click',()=>{S=sample();UI.sel=null;UI.calc=null;$('#resetconfirm').hidden=true;$('#reset').hidden=false;commit()});
-$('#hostpick').addEventListener('change',e=>openDoc(e.target.value));
+$('#hostpick').addEventListener('change',e=>openDoc(e.target.value,undefined,true));
 $('#savedesign').addEventListener('click',saveDesign);
 $('#fromscan').addEventListener('click',()=>openDoc(DOC.host,'scan'));
 $('#dropexample').addEventListener('click',()=>{$('#dropconfirm').hidden=false;docState()});
@@ -1195,11 +1203,17 @@ view.addEventListener('submit',e=>{
 let rz;window.addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(()=>{if(UI.view==='topology')drawEdges()},120)});
 if(document.fonts&&document.fonts.ready) document.fonts.ready.then(()=>{if(UI.view==='topology')drawEdges()});
 
-const [h,hh]=(location.hash||'').slice(1).split('@');if(VIEWS.some(v=>v[0]===h)) UI.view=h;
+const {view:h,host:hh}=readHash();if(VIEWS.some(v=>v[0]===h)) UI.view=h;
 docState();
 // wait for the host list before the first render, so a removed example never flashes up
 loadHosts().then(async()=>{
-  const want=decodeURIComponent(hh||'')||(!exampleShown()?DOC.hosts[0].host:'');
+  const want=hh||(!exampleShown()?DOC.hosts[0].host:'');
   if(want&&DOC.signedIn) await openDoc(want);
   if(!DOC.host) render();
+  setHash();
+  addEventListener('hashchange',async()=>{            // Back, Forward, a typed URL: the view and the design it names
+    const r=readHash();
+    if(VIEWS.some(v=>v[0]===r.view)&&r.view!==UI.view){ UI.view=r.view; render(); $('#main').scrollTop=0 }
+    if(r.host!==DOC.host&&(r.host===''||DOC.hosts.some(x=>x.host===r.host))){ await openDoc(r.host); $('#hostpick').value=DOC.host }
+  });
 });

@@ -171,9 +171,11 @@ The planner, `/manage` and `/search` show the same security chip as the main pag
 
 ## Deep links
 
-The main page reads `#host=<name>&tab=<panel>`, for example `/#host=nas-02&tab=changes`. The planner's **In StorageForge** links use this to open a host's Changes, Moves, Deploy, Docker, Git, Cleanup or Access panel. `<panel>` is one of `details`, `search`, `changes`, `moves`, `schedule`, `deploy`, `docker`, `infra`, `git`, `rebuild`, `copies` (Cleanup), `malware`, `access`, `security`, `jobs` (Scans), `keys`, `hostlogs` (Logs) or `audit`.
+Every place in the main page is in its URL: `/#/<view>/<panel>?host=<name>`, for example `/#/graph/changes?host=nas-02`. `<view>` is `topo`, `graph`, `tasks`, `map` or `scan`. Copy the address from one browser and it opens on the same view, panel and host in another, and **Back** and **Forward** go where you were: each view, panel and host you choose is a step in the history. A link inside the page changes the hash and does not reload it. The planner's **In StorageForge** links use this to open a host's Changes, Moves, Deploy, Docker, Git, Cleanup or Access panel. The old form, `#host=<name>&tab=<panel>`, still works and is rewritten as the new one. `<panel>` is one of `details`, `search`, `changes`, `moves`, `schedule`, `deploy`, `docker`, `infra`, `git`, `rebuild`, `copies` (Cleanup), `malware`, `access`, `security`, `jobs` (Scans), `keys`, `hostlogs` (Logs) or `audit`.
 
-`#view=map` opens the map, with `layers=`, `mode=` and `filter=` to set what it shows, for example `/#view=map&layers=network,firewall&mode=security`. `#view=scan` opens the Scan view, which is where `/manage` sends you.
+The map says what it shows in the same address: `/#/map/details?mode=security`, or `layers=network,firewall` when no preset fits, and `filter=`. The old `#view=map&layers=…&mode=…` and `#view=scan` work too. Security's sub-panel is `sec=`, as in `/#/topo/security?host=nas-02&sec=firewall`.
+
+The planner keeps its place the same way, `/planner#/devices?host=nas-02` (the old `#devices@nas-02` still opens), and so does `/manage`, `/manage#/compose` (and `#/devices?device=gw`, with the old `#device=gw`).
 
 ## Unsaved work
 

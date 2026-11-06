@@ -84,7 +84,6 @@ function netScanCard(h) {
   const links = document.createElement('div'); links.className = 'nscan-links';
   for (const l of h.link.links || []) {
     const a = document.createElement('a'); a.className = 'btn'; a.href = l.url; a.textContent = l.label;
-    a.addEventListener('click', () => setTimeout(() => { if (location.pathname === '/' && location.hash) location.reload(); }, 0));
     links.append(a);
   }
   c.append(links);

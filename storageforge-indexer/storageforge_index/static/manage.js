@@ -37,8 +37,17 @@ function table(heads, rows, onpick) {
     el('tbody', {}, rows.map((r, i) => el('tr', onpick ? { class: 'pick', onclick: () => onpick(i) } : {}, r.map((c) => el('td', {}, c ?? '')))))));
 }
 
+/* /manage's place is in its URL (UX-08): #/compose, or #/devices?device=gw. The old #device=gw and #add=10.0.0.1 are still read. */
+const manageHash = () => sfFormatHash([MG.view], { device: MG.view === 'devices' ? MG.device : '' });
+function manageRead() {
+  const p = sfParseHash();
+  if (!p.legacy && p.parts.length) return { view: VIEWS.some(([id]) => id === p.parts[0] && can(WANT[id])) ? p.parts[0] : null, device: p.q.get('device') || null, add: null };
+  return { view: p.q.get('device') || p.q.get('add') ? 'devices' : null, device: p.q.get('device'), add: p.q.get('add') };
+}
+
 function setView(view) {
   MG.view = view;
+  if (!MG.applying) sfPushHash(manageHash());
   const sub = { fleet: 'Every machine StorageForge knows, and how it stands.', devices: 'Routers, switches and firewalls.', compose: 'One language for every target. Nothing goes anywhere until you apply it.', changes: 'What was reported, applied, confirmed and rolled back.', traffic: 'Interface counters over time, from readings only.' };
   $('#mgtitle').textContent = VIEWS.find((v) => v[0] === view)[1];
   $('#mgsub').textContent = sub[view];
@@ -262,9 +271,22 @@ async function viewTraffic(box) {
   sfUserName = MG.me.username || '';
   const nav = $('#mgnav');
   for (const [id, label] of VIEWS) if (can(WANT[id])) { const b = el('button', { type: 'button', onclick: () => setView(id) }, label); b.dataset.v = id; nav.append(b); }
-  const q = new URLSearchParams(location.hash.slice(1));
-  if (q.get('device')) { MG.device = q.get('device'); setView('devices'); return; }
-  if (q.get('add')) { MG.addAddress = q.get('add'); setView('devices'); return; }
   if (!VIEWS.some(([id]) => can(WANT[id]))) { $('#mgview').replaceChildren(el('p', { class: 'muted' }, 'This account has no network access.')); return; }
-  setView(VIEWS.find(([id]) => can(WANT[id]))[0]);
+  const at = manageRead();
+  MG.applying = true;                                           // opening on what the URL says is not a step in the history
+  if (at.device) MG.device = at.device;
+  if (at.add) MG.addAddress = at.add;
+  setView(at.view || VIEWS.find(([id]) => can(WANT[id]))[0]);
+  MG.applying = false;
+  sfReplaceHash(manageHash());
+  addEventListener('hashchange', () => {                        // Back, Forward, a typed URL
+    const r = manageRead();
+    if (!r.view) return;
+    MG.applying = true;
+    MG.device = r.device;
+    if (r.add) MG.addAddress = r.add;
+    setView(r.view);
+    MG.applying = false;
+    sfReplaceHash(manageHash());
+  });
 })().catch((err) => $('#mgview').replaceChildren(el('p', { class: 'bad' }, err.message)));

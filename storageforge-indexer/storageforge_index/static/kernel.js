@@ -75,6 +75,28 @@ function notify(message, kind = 'info') {        // a toast. An error stays unti
 
 const toast = (message, kind) => notify(message, kind);          // the name the main page's scripts already use
 
+/* ── what a URL says (UX-08) ──────────────────────────────────────── */
+/* A page's place is in its URL after the #: #/map/firewall?host=nas. sfParseHash() reads that form; the old forms (#host=nas&tab=changes,
+   #overview@atlas) come back with `parts` empty and `legacy` true, for the page to read as it always did. sfPushHash() makes a step of
+   its own in the history, so Back goes where the person was, and sfReplaceHash() tidies the URL without one. */
+function sfParseHash(hash = location.hash) {
+  const h = hash.replace(/^#/, '');
+  if (!h.startsWith('/')) return { parts: [], q: new URLSearchParams(h.includes('=') ? h : ''), legacy: !!h, raw: h };
+  const cut = h.indexOf('?');
+  const path = cut < 0 ? h.slice(1) : h.slice(1, cut);
+  const parts = path.split('/').filter(Boolean).map((p) => { try { return decodeURIComponent(p); } catch { return p; } });
+  return { parts, q: new URLSearchParams(cut < 0 ? '' : h.slice(cut + 1)), legacy: false, raw: h };
+}
+function sfFormatHash(parts, params = {}) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v !== '' && v != null) q.set(k, v);
+  const qs = q.toString();
+  return '#/' + parts.map(encodeURIComponent).join('/') + (qs ? `?${qs}` : '');
+}
+const sfSameHash = (a, b) => new URL(a, location.href).hash === new URL(b, location.href).hash;
+function sfPushHash(hash) { if (!sfSameHash(hash, location.hash)) history.pushState(null, '', location.pathname + location.search + hash); }
+function sfReplaceHash(hash) { if (!sfSameHash(hash, location.hash)) history.replaceState(null, '', location.pathname + location.search + hash); }
+
 /* ── work that is not saved: one rule for every editor (UX-15) ───── */
 /* An editor says when it holds work nobody has saved: sfUnsaved({ id, label, dirty(), kept }). `kept: true` means it already keeps its own draft in
    this browser (Compose, the map's staged steps, a change plan, the planner), so leaving the page loses nothing and nothing is asked. For any

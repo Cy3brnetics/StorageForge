@@ -62,6 +62,11 @@ async function loadMap() {
   } catch (err) { if (fresh()) $('#mpcanvas').replaceChildren(text('p', err.message, 'st-failed')); }
 }
 
+/* what the URL says of the map (router.js): the preset, or the layers when none is, and the filter */
+function mapRouteParams() {
+  return { mode: MP.mode !== 'custom' ? MP.mode : '', layers: MP.mode === 'custom' ? [...MP.layers].join(',') : '', filter: MP.filter };
+}
+
 function mapSetMode(mode) {
   const m = MP_MODES[mode];
   MP.mode = mode;
@@ -70,6 +75,7 @@ function mapSetMode(mode) {
   $('#mapview').replaceChildren();
   MP.fitted = false;
   loadMap();
+  routeSync();
 }
 
 function mapShell(box) {
@@ -84,6 +90,7 @@ function mapShell(box) {
       MP.mode = 'custom'; if (c.checked) MP.layers.add(id); else MP.layers.delete(id);
       bar.querySelectorAll('.mpmodes button').forEach((m) => m.setAttribute('aria-pressed', String(m.dataset.mode === 'custom')));   // the preset no longer describes what is drawn
       loadMap();
+      routeSync();
     });
     layers.append(el('label', { class: 'small' }, c, ' ' + label));
   }
@@ -96,7 +103,7 @@ function mapShell(box) {
   scope.addEventListener('change', () => { MP.scope = scope.value; MP.fitted = false; mapDraw(); });
   bar.append(group, scope);
   const search = el('input', { type: 'search', placeholder: 'Filter by name, address or port', 'aria-label': 'Filter the map', id: 'mpfilter' });
-  search.addEventListener('input', () => { MP.filter = search.value.trim().toLowerCase(); mapDraw(); });
+  search.addEventListener('input', () => { MP.filter = search.value.trim().toLowerCase(); mapDraw(); routeSync(true); });
   const exposed = el('input', { type: 'checkbox' }); exposed.checked = MP.exposed;
   exposed.addEventListener('change', () => { MP.exposed = exposed.checked; mapDraw(); });
   const redact = el('input', { type: 'checkbox' });

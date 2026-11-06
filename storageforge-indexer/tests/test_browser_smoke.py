@@ -1184,6 +1184,110 @@ class BrowserSmoke(unittest.TestCase):
         self.assertNotIn('Kept in this browser', self.page.inner_text('#loginmsg'))
 
 
+    # ── a router: UX-08 ──────────────────────────────────────────────────────────────────────────────────────────────
+    def view_and_panel(self):
+        return self.page.evaluate("[document.querySelector('#viewmode button[aria-pressed=true]').dataset.mode, document.querySelector('.tabs button.on').dataset.tab]")
+
+    def test_back_and_forward_go_where_the_person_was(self):                         # UX-08
+        """The page kept its place in memory, so Back left it: a person who looked at Graph, then the map, and pressed Back was somewhere else."""
+        self.assertEqual(self.view_and_panel(), ['topo', 'details'])
+        self.page.click('#viewmode button[data-mode="graph"]')
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.click('.tabs button[data-tab="search"]')
+        self.assertIn('#/map/search', self.page.url)
+        self.page.go_back()
+        self.assertEqual(self.view_and_panel(), ['map', 'details'])
+        self.page.go_back()
+        self.assertEqual(self.view_and_panel(), ['graph', 'details'])
+        self.page.go_forward()
+        self.assertEqual(self.view_and_panel(), ['map', 'details'])
+        self.assertEqual(self.errors, [])
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+    def test_a_copied_url_lands_where_it_was_copied(self):                           # UX-08
+        self.page.goto(self.base + '/manage')
+        self.page.goto(self.base + '/#/graph/changes?host=nas')
+        self.page.wait_for_selector('.tabs button[data-tab="changes"].on')
+        self.assertEqual(self.view_and_panel(), ['graph', 'changes'])
+        self.assertEqual(self.page.input_value('#host'), 'nas')
+        self.assertEqual(self.errors, [])
+
+    def test_the_security_sub_panel_is_part_of_the_url(self):                        # UX-08
+        self.page.goto(self.base + '/manage')
+        self.page.goto(self.base + '/#/topo/security?host=nas&sec=firewall')
+        self.page.wait_for_selector('#sec-subnav button[data-sub="firewall"][aria-pressed="true"]')
+        self.page.click('#sec-subnav button[data-sub="worm"]')
+        self.assertIn('sec=worm', self.page.url)
+        self.assertIn('host=nas', self.page.url)
+        self.page.go_back()
+        self.page.wait_for_selector('#sec-subnav button[data-sub="firewall"][aria-pressed="true"]')
+        self.assertEqual(self.errors, [])
+
+    def test_the_old_links_still_work_and_are_tidied_into_the_new_form(self):        # UX-08
+        self.page.goto(self.base + '/manage')
+        self.page.goto(self.base + '/#host=nas&tab=audit')
+        self.page.wait_for_selector('.tabs button[data-tab="audit"].on')
+        self.assertEqual(self.page.input_value('#host'), 'nas')
+        self.assertIn('#/topo/audit?host=nas', self.page.url)
+        self.page.goto(self.base + '/manage')
+        self.page.goto(self.base + '/#view=map&mode=storage')                           # what the map's own links wrote
+        self.page.wait_for_selector('.mpmodes button[aria-pressed="true"]:has-text("Storage only")')
+        self.assertEqual(self.view_and_panel()[0], 'map')
+        self.assertIn('mode=storage', self.page.url)
+
+    def test_a_link_inside_the_page_changes_the_hash_and_not_the_page(self):          # UX-08
+        self.page.evaluate("() => { window.__same = 42; location.hash = '#/graph/rebuild?host=nas'; }")
+        self.page.wait_for_selector('.tabs button[data-tab="rebuild"].on')
+        self.assertEqual(self.page.evaluate('window.__same'), 42)                       # nothing reloaded
+        self.assertEqual(self.view_and_panel(), ['graph', 'rebuild'])
+        self.page.evaluate("() => { location.hash = '#host=nas&tab=schedule'; }")        # the old form, the same way
+        self.page.wait_for_selector('.tabs button[data-tab="schedule"].on')
+        self.assertEqual(self.page.evaluate('window.__same'), 42)
+        self.assertEqual(self.errors, [])
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+    def test_choosing_a_host_is_a_step_in_the_history(self):                          # UX-08
+        self.page.select_option('#host', 'nas')
+        self.assertIn('host=nas', self.page.url)
+        self.page.go_back()
+        self.assertEqual(self.page.input_value('#host'), '')
+        self.assertNotIn('host=', self.page.url)
+        self.assertEqual(self.errors, [])
+
+    def test_the_map_says_its_layers_in_the_url_when_no_preset_does(self):            # UX-08
+        self.page.click('#viewmode button[data-mode="map"]')
+        self.page.wait_for_selector('.mplayers')
+        self.page.click('.mpmodes button:has-text("Storage only")')
+        self.page.wait_for_selector('.mpmodes button[aria-pressed="true"]:has-text("Storage only")')
+        self.assertIn('mode=storage', self.page.url)
+        self.page.click('.mplayers label:has-text("Network") input')
+        self.assertIn('layers=', self.page.url)
+        self.assertNotIn('mode=', self.page.url)
+        self.assertEqual(self.errors, [])
+        self.page.click('#viewmode button[data-mode="topo"]')
+
+
+    def test_the_planner_and_manage_keep_their_place_in_the_url_too(self):             # UX-08
+        self.page.goto(self.base + '/planner#devices@nas')                              # the old form still opens on that view and design
+        self.page.wait_for_selector('#nav button[data-view="devices"].on')
+        self.page.wait_for_selector('#hostpick option:has-text("nas")', state='attached')
+        self.page.click('#nav button[data-view="mounts"]')
+        self.assertIn('#/mounts', self.page.url)
+        self.assertIn('host=nas', self.page.url)
+        self.page.go_back()
+        self.page.wait_for_selector('#nav button[data-view="devices"].on')
+        self.assertIn('#/devices', self.page.url)
+        self.page.goto(self.base + '/manage#/compose')
+        self.page.wait_for_selector('#mgnav button[data-v="compose"][aria-current="page"]')
+        self.page.click('#mgnav button[data-v="traffic"]')
+        self.assertIn('#/traffic', self.page.url)
+        self.page.go_back()
+        self.page.wait_for_selector('#mgnav button[data-v="compose"][aria-current="page"]')
+        self.page.goto(self.base + '/manage#device=gw')                                  # and the old form of a device link
+        self.page.wait_for_selector('#mgnav button[data-v="devices"][aria-current="page"]')
+        self.assertEqual(self.errors, [])
+
+
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
 class MapAtScale(unittest.TestCase):
     """A synthetic 200 hosts and 2,000 workloads. It has to stay usable: the numbers here decide whether the map needs more."""

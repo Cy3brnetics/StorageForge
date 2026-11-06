@@ -1166,6 +1166,7 @@ function setMode(mode, load = true) {
   updateSavebar();
   if (typeof renderStageBar === 'function') renderStageBar();
   if (typeof fmSync === 'function') fmSync();
+  routeSync();
 }
 document.querySelectorAll('#viewmode button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
 try { T.mode = ['graph', 'tasks', 'map', 'scan'].includes(localStorage.getItem('sf.view')) ? localStorage.getItem('sf.view') : 'topo'; } catch { /* default */ }
