@@ -1,6 +1,6 @@
 ---
 id: SF-54
-status: open
+status: done
 severity: low
 effort: S
 area: Source hygiene
@@ -25,7 +25,9 @@ Nothing is wrong with what these two lines do. The risk is the next change: a re
 Write them as escapes (`\u202a-\u202e`), and add a test that fails when any bidirectional control appears literally in a source file.
 
 ## Done when
-- [ ] No source file holds one, and the pattern's behaviour is unchanged
-- [ ] A test scans the sources
-- [ ] The commit is written here
+- [x] No source file holds one, and the pattern's behaviour is unchanged
+- [x] A test scans the sources
+- [x] The commit is written here
 
+## Fixed
+2026-11-05, in `b7c34bd`. The class in `hostlogs.py` and the string in `tests/test_hostlogs.py` write the characters as escapes, and the pattern matches the same set. `tests/test_source_hygiene.py` walks every `.py`, `.js`, `.mjs`, `.css`, `.html`, `.sql`, `.sh`, `.yml`, `.toml` and `.json` file in the repository (not `archive/`, `.git`, `.obsidian`) and fails if one holds U+202A to U+202E or U+2066 to U+2069. It found nothing else. It reads lines with `split('\n')`, because `splitlines()` splits on two of those characters.

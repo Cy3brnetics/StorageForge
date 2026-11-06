@@ -1,6 +1,6 @@
 ---
 id: SF-53
-status: open
+status: done
 severity: low
 effort: S
 area: Network language
@@ -25,7 +25,9 @@ Compiled output is what a person reads before they apply it to a firewall. A rig
 Refuse bidirectional controls and zero-width characters in `COMMENT`, and in `NAME` if it is ever loosened, and say so in the message instead of the tokenizer's.
 
 ## Done when
-- [ ] A comment with any of those characters is refused, with a message that names the character
-- [ ] A test lists them, so a new one cannot be added to the allowed set unseen
-- [ ] The commit is written here
+- [x] A comment with any of those characters is refused, with a message that names the character
+- [x] A test lists them, so a new one cannot be added to the allowed set unseen
+- [x] The commit is written here
 
+## Fixed
+2026-11-05, in `b7c34bd`. `rostranspiler._comment` refuses U+200B to U+200F, U+2028, U+2029, U+202A to U+202E, U+2060 to U+2064, U+2066 to U+2069 and U+FEFF with "holds a text-direction or zero-width character", before the old pattern is tried, so the message names the cause. Letters of other scripts (Hebrew, Arabic, accented Latin) are still allowed. A line separator is refused earlier still, because the tokenizer cuts the statement at it. Test: `test_a_comment_can_not_hold_a_character_that_changes_how_it_reads`. Not lab-tested.

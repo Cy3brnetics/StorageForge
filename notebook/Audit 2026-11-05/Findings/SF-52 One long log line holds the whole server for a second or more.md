@@ -1,6 +1,6 @@
 ---
 id: SF-52
-status: open
+status: done
 severity: medium
 effort: S
 area: Host logs
@@ -34,7 +34,11 @@ A managed host that has been taken over, or one with a noisy daemon, can stall t
 Bound the repetitions (`[\w.-]{0,64}` on both sides of the secret word) and skip the secret patterns altogether when a cheap linear check finds none of their words in the line. Then time the worst lines, including ones that are full of secret words, and assert a ceiling in a test. Not yet tried: this approach was only reasoned, so the test decides.
 
 ## Done when
-- [ ] `scrub` of a 4,000-character run of word characters, and of 4,000 characters made of secret words, each takes under 100 ms
-- [ ] A secret with a long prefix (`MYSQL_ROOT_PASSWORD=x`) is still redacted, and every existing scrub test still passes
-- [ ] The commit is written here
+- [x] `scrub` of a 4,000-character run of word characters, and of 4,000 characters made of secret words, each takes under 100 ms
+- [x] A secret with a long prefix (`MYSQL_ROOT_PASSWORD=x`) is still redacted, and every existing scrub test still passes
+- [x] The commit is written here
 
+## Fixed
+2026-11-05, in `b7c34bd`. The first two patterns now start only where a run of word characters starts, and a lookahead reads the run once for the secret word, so they match what they matched and keep what they kept, with no bound on the key's length. A check that is linear in the line skips the patterns for plain text with none of their words. The suggested bounds were not used as written: bounded repetitions still cost 24 ms a line at the cap, because they read up to 64 characters from each start.
+
+The first measurement understated the problem. At 4,000 characters the old code took 0.7 s for plain letters, 0.8 s for a line of `--a--a--a` ending in the word `token`, **58 s for `password` repeated and 154 s for `pwd` repeated**, one line each. After the fix every shape tried, including those, takes under 4 ms (the slowest is `eyJ-` repeated, 3 ms, from the token pattern's own start rule, left as it is). Probe: `/tmp/sfaudit/probe_scrub.py`, not kept. Tests: `test_a_long_line_cannot_hold_the_server` (five shapes at the real cap, 0.1 s each, so a slow machine passes and a quadratic pattern does not) and `test_a_secret_stays_secret_in_a_long_name_and_in_odd_letters` (a 300-character prefix, a long suffix, a value inside a value, and letters that only look like others). All 43 earlier scrub tests pass. Not lab-tested.
