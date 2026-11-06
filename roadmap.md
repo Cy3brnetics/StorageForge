@@ -57,9 +57,9 @@ Each is a claim that hasn't been proved or a known gap in something shipped.
 | **SF-48: the receiving host of a send** | Signed scripts still run root commands on the receiving host with no signature there. It's named in the audit row, warned about in the check and listed in [security.md](docs/security.md) | Build it. Each side of a send becomes its own signed run on an enrolled host, with the stream between them carried by a forced-command job key, as `storageforge-job --serve` does for rsync. Add a lab tier: a send between two enrolled hosts with no root key between them. About a week | built and unit-tested in `4d8b083`; lab tier 16 written, not run |
 | **pfSense, OPNsense and Cisco on real devices** | Reading and rollback have only met published formats and a simulated shell | No image or device, so it ships labelled *not lab-tested*, unless one turns up | open |
 | **Old SSH ciphers on a device that needs them** | Built and unit-tested, with nothing old enough in the lab | Same | open |
-| **firewalld and ufw output from the network language** | Unit-tested. nft and iptables-restore took theirs for real, and these two should as well | Lab: apply the compiled output on a firewalld host and a ufw host, and read it back | open |
+| **firewalld and ufw output from the network language** | Unit-tested. nft and iptables-restore took theirs for real, and these two should as well | Lab: apply the compiled output on a firewalld host and a ufw host, and read it back | lab tier 17 written in `0fb131d`, not run |
 | **Incus, LXC and Proxmox guests; Tailscale, proxies, identity providers** | Parsed and unit-tested, not lab-tested | Lab, where the lab has the platform (it has a Proxmox image). The rest ships labelled | open |
-| **Terraform and Puppet exports** | They render, and no tool has applied them | Run them through the tools' own validators where they can be installed (`terraform validate`, `puppet parser validate`). Applying them is out of reach, so they ship labelled | open |
+| **Terraform and Puppet exports** | They render, and no tool has applied them | Run them through the tools' own validators where they can be installed (`terraform validate`, `puppet parser validate`). Applying them is out of reach, so they ship labelled | tests in `a1bf8f1` skip where the tools are missing (both, here); labelled *not lab-tested* |
 | **Signed scan payloads** (added by the owner on 2026-11-05) | Scans trusted whatever a host's output said, over an SSH connection that only pins the host key | Built: every payload is signed on the host and checked before use (`5916ce1`). Lab stage `scan-signed` is written and not run, and a host that cannot sign (OpenSSH before 8.0, or no readable key) shows as unsigned unless signing is required | built and unit-tested in `5916ce1`; lab stage not run |
 | **PagerDuty and FIDO2** | PagerDuty has not reached the real service. FIDO2 has only met Chromium's virtual authenticator | An outside service and a physical token, so both ship labelled | open |
 
@@ -69,8 +69,8 @@ Built and committed on 2026-11-04 as it stood in the working tree. Neither its u
 
 | Item | For 0.4.0 | Status |
 | :--- | :--- | :--- |
-| **Its tests** | Run them, and fix what fails. The consistency tests that list routes, permissions and CLI subcommands were already updated for it | open |
-| **A lab tier** | Real distros: the `systemd-journal` group, a host with no journald saying so, secret removal on real lines, the 30-day and row caps, and the scan-access script run again | open |
+| **Its tests** | Run them, and fix what fails. The consistency tests that list routes, permissions and CLI subcommands were already updated for it | done: they pass in the full runs of 2026-11-06 |
+| **A lab tier** | Real distros: the `systemd-journal` group, a host with no journald saying so, secret removal on real lines, the 30-day and row caps, and the scan-access script run again | tier 14 written in `4640b6b`, not run |
 | **The Logs view** | UI phase 4 (UX-30): a time range, per-host freshness, entry points from a host, an alert, a mount and a device. Still no tail and no stream | open |
 
 ### A3. Findings still in progress
@@ -104,7 +104,7 @@ Some of it waits, and is not in 0.4.0:
 - 3a: ZFS and mdadm pools as plan steps wait for `pooldef` (B1). Until then a planned pool of those kinds stays under *By hand*.
 - 3d: only the placement guardrails that can be worked out from what `/api/workloads` already reads ship. Dataset-tuning advice waits for the workloads stage (B2).
 - 4: a rule at a position in Compose waits for `place-before`, and scan results as map placeholders and scanner findings through alerts wait too (B5).
-- Native modules wait too (B6), and the phase 1 list component ("+N more") is the one item of that phase still to build.
+- Native modules wait too (B6), and the phase 1 list component ("+N more") is built as `sfMoreList` (`0945d83`, `4fcd358`) for the lists that were cut in silence.
 - Four items need a small API: saved versions of a design (3g), "start from what was read" for Design mode, paths that must stay open or blocked in Compose, and counts by level and hour for Logs.
 
 ### A5. The security audit and the bugfix round (step 3)

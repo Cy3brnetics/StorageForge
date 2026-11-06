@@ -1060,14 +1060,14 @@ class BrowserSmoke(unittest.TestCase):
         self.page.route(re.compile(r'/api/planner/hosts$'), hosts)
         self.page.goto(self.base + '/planner')
         try:
-            self.page.wait_for_selector('#reauthpw', state='visible', timeout=15000)
+            self.page.wait_for_selector('#reauthpw', state='visible', timeout=30000)
         except Exception as exc:                      # say what the page showed: this test has failed only inside the whole run
             raise AssertionError(f'no password dialog at {self.page.url}; requests to the host list: {len(seen)}; the page says: {self.page.inner_text("body")[:300]!r}; errors: {self.errors}') from exc
         self.assertIn('/planner', self.page.url)
         self.page.fill('#reauthpw', PW)
         self.page.keyboard.press('Enter')
         try:
-            self.page.wait_for_selector('#reauthpw', state='detached', timeout=15000)
+            self.page.wait_for_selector('#reauthpw', state='detached', timeout=30000)
         except Exception as exc:
             raise AssertionError(f'the dialog stayed: {self.page.inner_text("dialog.sf-dialog")[:300]!r}') from exc
         self.page.wait_for_selector('#hostpick option:has-text("nas")', state='attached')
@@ -1337,10 +1337,10 @@ class BrowserSmoke(unittest.TestCase):
 
     def test_choosing_a_host_is_a_step_in_the_history(self):                          # UX-08
         self.page.select_option('#host', 'nas')
-        self.assertIn('host=nas', self.page.url)
+        self.page.wait_for_url('**host=nas**')                                        # the address follows the choice a moment later on a slow machine
         self.page.go_back()
+        self.page.wait_for_url(lambda url: 'host=' not in url)
         self.assertEqual(self.page.input_value('#host'), '')
-        self.assertNotIn('host=', self.page.url)
         self.assertEqual(self.errors, [])
 
     def test_the_map_says_its_layers_in_the_url_when_no_preset_does(self):            # UX-08

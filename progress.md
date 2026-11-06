@@ -44,7 +44,8 @@ Corrections stand: no VSS trap, no cryptographic shred, no certificates, no WebS
 
 | Work | State |
 | :--- | :--- |
-| Scans collect host journals; the Logs tab, `hostlogs` on the CLI, `/api/hostlogs` and the `hostlogs.view` permission | Built, and committed on 2026-11-04 as it stood. Its unit tests exist, and neither they nor the lab have run since |
+| Scans collect host journals; the Logs tab, `hostlogs` on the CLI, `/api/hostlogs` and the `hostlogs.view` permission | Built, committed on 2026-11-04. Its unit tests have run since and pass (see the log, 2026-11-06). Lab tier 14 is written and has not run, so it is not lab-tested |
+| `/api/hostlogs/counts` and `/api/hostlogs/units` | Built and unit-tested on 2026-11-06. The Logs view that uses them is UI phase 4, not started |
 
 ## Log
 
@@ -81,3 +82,5 @@ What the lab found that unit tests had not:
 - A what-if missed an SSH cut on a host with no firewall, and any change to the interface StorageForge comes in on.
 - PNG export was blocked by the page's own CSP, found by the browser test.
 - PostgreSQL could not build a scan design holding ZFS properties, found by running the suite there.
+- 2026-11-05: partial security audit ([Audit 2026-11-05](notebook/Audit%202026-11-05/Audit%202026-11-05.md)): SF-52 to SF-55, all fixed in `b7c34bd` and `26bd037` with tests. SF-52 was worse than first measured: one 4,000-character line took up to 154 s. The audit was done before UI phases 3 to 5 because the working windows kept running out; it did not reach most of `security.py`, `secplus.py`, `secscripts.py`, `traffic.py`, `routes_network.py` and the second half of `receiving.py`, and gives no verdict.
+- 2026-11-06: three small agents built the host log counts and units routes with lab tier 14, lab tier 17 with the export validators and CI file check, and the "Show N more" list component; merged in `f6e1d15`. Full unit suite on SQLite: 1532 tests, 9 skipped, in 697 s, OK. On PostgreSQL: 1532 tests, 88 skipped, in 2252 s, two failures, both browser tests that wait on a timer (`test_choosing_a_host_is_a_step_in_the_history`, `test_the_planner_asks_for_the_password_in_place_and_goes_on`): they pass alone twice and in the SQLite run, the PostgreSQL run was three times slower, and their waits were made longer. Browser file after that: 96 tests OK in 98 s. `ruff` clean, `node tests/vectors/check.mjs` exit 0, the wiki builds (38 pages). `shellcheck` is not installed on this machine, so it has not run. The KVM lab has not run: tiers 14, 16 and 17 and the `scan-signed` stage are written, not run.
