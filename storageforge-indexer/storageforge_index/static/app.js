@@ -19,6 +19,7 @@ function readColors() {
 }
 readColors();
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { readColors(); wake(); });
+document.addEventListener('sf:prefs', () => { readColors(); wake(); });          // Preferences changed the theme (kernel.js)
 
 /* api(), getJSON() and postJSON() are the kernel's (kernel.js), and so are the dialogs and the toast. */
 
@@ -637,7 +638,7 @@ function railHint() {
 railEl.addEventListener('scroll', railHint, { passive: true });
 new ResizeObserver(railHint).observe(railEl);
 railNarrow.addEventListener('change', railHint);
-railMore.addEventListener('click', () => railEl.scrollBy({ top: railEl.clientHeight * 0.8, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }));
+railMore.addEventListener('click', () => railEl.scrollBy({ top: railEl.clientHeight * 0.8, behavior: sfReducedMotion() ? 'auto' : 'smooth' }));
 const curTab = () => $('.tabs button.on')?.dataset.tab;
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => {
   if (b.dataset.tab === curTab() && !panel.classList.contains('collapsed')) setPanelOpen(false);   // the open one again hides the panel
@@ -1183,6 +1184,29 @@ $('#sesslen').addEventListener('change', async (ev) => {
   }
 });
 $('#lock').addEventListener('click', sfSignOut);
+$('#cmdk').addEventListener('click', sfPalette);
+$('#hmore').addEventListener('click', () => {          // on a tablet the header keeps its extra controls behind this button
+  const open = $('.bar').dataset.more !== 'open';
+  $('.bar').dataset.more = open ? 'open' : '';
+  $('#hmore').setAttribute('aria-expanded', String(open));
+  $('#hmore').textContent = open ? 'Fewer' : 'More';
+});
+
+/* The command palette (Ctrl+K) offers the views and the panels the router knows, and the Security sub-panels, to the account that may use them. */
+const routeGo = (view, panel, params = {}) => () => {          // the router's own grammar and one step in the history; pushState fires no hashchange, so the page is told here
+  sfPushHash(sfFormatHash([view, panel], { host: S.host, ...params }));
+  routeApply(routeRead());
+  routeSync(true);
+};
+sfPaletteSource(() => {
+  if (!ME) return [];
+  const views = [...document.querySelectorAll('#viewmode button[data-mode]')].map((b) => ({ label: `Go to ${b.textContent}`, hint: 'View', run: routeGo(b.dataset.mode, routeTab()) }));
+  const panels = [...document.querySelectorAll('.tabs button[data-tab]')].filter((b) => !b.hidden && (!TAB_NEEDS[b.dataset.tab] || can(TAB_NEEDS[b.dataset.tab])))
+    .map((b) => ({ label: `Go to ${b.querySelector('.lbl').textContent}`, hint: `Panel, ${b.previousElementSibling?.classList.contains('rgroup') ? b.previousElementSibling.textContent : 'rail'}`, run: routeGo(T.mode, b.dataset.tab) }));
+  const sec = can('security.view') && typeof SEC_PANELS !== 'undefined' ? SEC_PANELS.filter(([id]) => id !== 'overview')
+    .map(([id, name]) => ({ label: `Go to Security: ${name}`, hint: 'Security panel', run: routeGo(T.mode, 'security', { sec: id }) })) : [];
+  return [...views, ...panels, ...sec];
+});
 
 // a link, or the URL the page was opened with, says where to be (router.js): #/graph/changes?host=nas-02, or the old #host=nas-02&tab=changes
 const takeLink = routeTake;
@@ -1193,6 +1217,24 @@ function showSite(name) {   // on every page, so nobody acts on the wrong client
   const b = $('#sitename'); b.textContent = name; b.hidden = false;
 }
 
+/* An empty install: three steps, each a link into the panel where it is done, ticked when they can be seen to be done. Gone once dismissed. */
+async function firstRun(who) {
+  const card = $('#firstrun');
+  try {
+    const { indexed, graph } = await getJSON('/api/hosts');
+    if (indexed.length || graph.length) { card.hidden = true; return; }
+    const ask = async (perm, path, done) => { try { return can(perm) ? done(await getJSON(path)) : false; } catch { return false; } };
+    const [bound, scanned, alerting] = await Promise.all([
+      ask('keys.view', '/api/keys', (d) => d.bindings.length > 0),
+      ask('scans.view', '/api/jobs', (d) => d.jobs.some((j) => j.result && j.result.scan_id)),
+      ask('settings.manage', '/api/deploy/settings', (d) => ['ntfy', 'gotify', 'webhook'].some((ch) => d.alerts?.[ch]?.url))]);
+    const steps = [['keys.view', 'Enrol a host', 'Install a key on it, so scans can log in', '#/topo/keys', bound],
+                   ['scans.view', 'Run the first scan', 'Scans reads its disks, mounts and files', '#/topo/jobs', scanned],
+                   ['deploy.view', 'Set up a backup alert', 'Say where a failed or stale job is pushed', '#/topo/deploy', alerting]]
+      .filter(([need]) => can(need)).map(([, label, detail, href, done]) => ({ label, detail, href, done }));
+    sfFirstRun(card, { user: who, steps });
+  } catch { card.hidden = true; }
+}
 async function boot() {
   try {
     const me = await getJSON('/api/me');
@@ -1201,6 +1243,7 @@ async function boot() {
     await Promise.all([loadGraph(), loadDesigns()]);
     if (tab) showTab(tab);
     if (T.mode === 'tasks' && typeof loadTasks === 'function') loadTasks();
+    firstRun(me.username);
   }
   catch (err) { if (!/Sign in/.test(err.message)) alertPanel(err.message); }
   finally { routeStart(); }

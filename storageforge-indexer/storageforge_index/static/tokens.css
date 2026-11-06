@@ -33,3 +33,5 @@
   --sf-fast: #7346d6; --sf-mass: #0b8c93; --sf-remote: #a06a12;
   color-scheme: light;
 }
+/* Preferences > Density > Compact (kernel.js sets data-density on <html>): the spacing and the type one step tighter, for every rule that uses them. */
+:root[data-density="compact"] { --sf-s2: 6px; --sf-s3: 9px; --sf-s4: 12px; --sf-s5: 18px; --sf-t3: 12.5px; --sf-t4: 13px; }

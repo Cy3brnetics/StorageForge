@@ -1104,3 +1104,49 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 .nscan-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .nscan-ports { display: flex; flex-wrap: wrap; gap: 4px; } .nscan-port { font: 12px ui-monospace, monospace; padding: 0 6px; border: 1px solid var(--line, #444); border-radius: 4px; } .nscan-port.new { border-color: var(--local-only); color: var(--local-only); }
 .nscan-links { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* The first-run checklist on an empty main page (chrome.js: sfFirstRun). Each step says Done or To do in words, so the state is not carried by a colour. */
+.firstrun { position: absolute; z-index: 5; left: 16px; top: 112px; width: min(460px, calc(100% - 32px)); background: var(--panel); border: 1px solid var(--line-2); border-radius: 10px; padding: 12px 16px 14px; box-shadow: 0 6px 24px rgb(0 0 0 / .25); display: flex; flex-direction: column; gap: 6px; }
+.firstrun h2 { margin: 0; font-size: 15px; }
+.firstrun p { margin: 0; }
+.frhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.frlist { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.frlist li { display: grid; grid-template-columns: 5.2em minmax(0, 1fr); gap: 2px 8px; align-items: baseline; }
+.frlist li .frstate { font-size: 11.5px; font-weight: 600; border: 1px solid var(--line-2); border-radius: 99px; padding: 0 8px; text-align: center; color: var(--muted); }
+.frlist li.done .frstate { border-style: solid; color: var(--fg); background: var(--raise); }
+.frlist li:not(.done) .frstate { border-style: dashed; }
+.frlist li a { color: var(--accent); font-weight: 600; }
+.frlist li .small { grid-column: 2; }
+
+/* The header on a tablet (700 to 1000 px): Planner, Manage, Session and Preferences sit behind a More button, so the bar stays two rows. */
+.hextra { display: contents; }
+.hmore { display: none; }
+@media (max-width: 1000px) {
+  .hmore { display: inline-block; }
+  .hextra { display: none; }
+  .bar[data-more="open"] .hextra { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex-basis: 100%; }
+  .bar .actions { flex: 1 1 auto; min-width: 0; justify-content: flex-end; }
+  .bar .search { flex: 1 1 200px; min-width: 0; }
+  .bar .threat { max-width: 100%; }
+}
+
+/* Preferences > Density > Compact (kernel.js sets data-density on <html>). */
+:root[data-density="compact"] body { font-size: 13px; }
+:root[data-density="compact"] .bar { padding: 6px 12px; gap: 6px 12px; }
+:root[data-density="compact"] .btn { padding: 4px 9px; }
+:root[data-density="compact"] .btn.sm { padding: 2px 7px; }
+:root[data-density="compact"] .list li { padding: 4px 6px; }
+:root[data-density="compact"] .results button { padding: 3px 6px; }
+:root[data-density="compact"] .phead { padding-top: 6px; padding-bottom: 6px; }
+:root[data-density="compact"] .stack { gap: 5px; }
+
+/* Colour never alone: each health has its own shape as well as its colour, so a dot reads the same to a person who cannot tell green from red.
+   Protected is a filled circle, local-only a triangle, broken a diamond and no data a hollow ring (the legend's dots follow the same rules). */
+.dot.local-only, .mvcheck .lv-warn::before { clip-path: polygon(50% 0, 100% 100%, 0 100%); border-radius: 0; }
+.dot.broken, .mvcheck .lv-crit::before { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); border-radius: 0; }
+.dot.unknown, .mvcheck .lv-note::before { background: transparent; box-shadow: inset 0 0 0 2px var(--unknown); }
+/* a status written in words is also marked in front of the words, where a whole line is coloured by its state */
+.st-failed::before, .st-denied::before { content: "✕ "; }
+.st-warn::before, .st-partial::before { content: "! "; }
+.st-ok::before { content: "✓ "; }
+.sec-pill.sec-critical::before { content: "✕ "; } .sec-pill.sec-warning::before { content: "! "; } .sec-pill.sec-secure::before { content: "✓ "; }
