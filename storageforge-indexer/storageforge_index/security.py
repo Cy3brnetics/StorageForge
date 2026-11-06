@@ -50,10 +50,14 @@ DEFAULT_COOL_OFF = 24
 COOL_OFF_HOURS = (12, 24, 48, 72)
 MIN_CIDR = {4: 16, 6: 48}           # a network wider than this is a mistake, not a quarantine
 EVENT_SEVERITY = {'canary_tripped': 'crit', 'clock_jump': 'crit', 'brake_ran': 'crit', 'watcher_stopped': 'warn', 'canary_source': 'warn',
-                  'sentinel_started': 'info', 'sentinel_test': 'info', 'hold_missing': 'crit', 'break_glass_used': 'crit',
+                  'sentinel_started': 'info', 'sentinel_test': 'info', 'hold_missing': 'crit', 'events_dropped': 'warn', 'break_glass_used': 'crit',
                   'falco_crit': 'crit', 'falco_warn': 'warn', 'identity_enumeration': 'crit', 'identity_multi_subnet': 'warn', 'identity_off_hours': 'warn', 'entropy_flagged': 'warn', 'velocity': 'warn'}
 HOST_EVENTS = frozenset({'canary_tripped', 'canary_source', 'clock_jump', 'brake_ran', 'watcher_stopped', 'sentinel_started', 'sentinel_test',
                          'identity_enumeration', 'identity_multi_subnet', 'identity_off_hours'})
+EVENTS_PER_HOUR = 300               # what one host may store in an hour, whatever its token sends
+EVENTS_PER_KIND = 100               # ... and of any one kind, so a flood of one cannot hide another
+HOST_DETAIL = 2048                  # characters of detail kept for an event a host sent (a decoy path is well under this)
+MAX_EVENTS_PER_HOST = 5000          # the newest this many stay, however old
 DEFAULT_DECOYS = ('_AAAPasswords.docx', '!Financial_2026.xlsx', '00_Index.pdf')
 MAX_DECOYS = 500
 SAMPLE_FILES = 500
@@ -171,15 +175,27 @@ def parse_event_line(line: str) -> dict | None:
     return {'uuid': f[1], 'kind': f[2], 'at': int(f[3]), 'summary': summary, 'detail': detail}
 
 
-def ingest_events(conn: Conn, host: str, text: str, via: str = 'scan') -> int:
-    """Event lines from a host: its report, a scan or a measurement carry the same file, so each counts once."""
-    now, new = int(time.time()), 0
+def ingest_events(conn: Conn, host: str, text: str, via: str = 'scan', stats: dict | None = None) -> int:
+    """Event lines from a host: its report, a scan or a measurement carry the same file, so each counts once.
+
+    A host can lie and can send as many lines as it likes, so what it may store is bounded: EVENTS_PER_HOUR rows an hour for the host
+    (EVENTS_PER_KIND of any one kind, so a noisy kind cannot hide a real one), each with at most HOST_DETAIL characters of detail. What is
+    dropped is counted in stats['dropped'] and, once an hour, in one events_dropped event."""
+    now, new, dropped = int(time.time()), 0, 0
+    budget = _event_budget(conn, host, now)
     for line in (text or '').splitlines()[:2000]:
         ev = parse_event_line(line)
         if not ev:
             continue
+        if conn.scalar('SELECT 1 FROM security_events WHERE uuid = :u', {'u': ev['uuid']}):
+            continue
+        if budget['all'] <= 0 or budget.get(ev['kind'], EVENTS_PER_KIND) <= 0:
+            dropped += 1
+            continue
+        budget['all'] -= 1
+        budget[ev['kind']] = budget.get(ev['kind'], EVENTS_PER_KIND) - 1
         # a clock moved forward must not push the alarm it set off out of sight: nothing is dated ahead of us
-        if not record_event(conn, host, ev['kind'], ev['summary'], ev['detail'], via, min(ev['at'], now), ev['uuid']):
+        if not record_event(conn, host, ev['kind'], ev['summary'], ev['detail'][:HOST_DETAIL], via, min(ev['at'], now), ev['uuid']):
             continue
         new += 1
         if ev['kind'] == 'canary_tripped':
@@ -190,21 +206,55 @@ def ingest_events(conn: Conn, host: str, text: str, via: str = 'scan') -> int:
                                 WHERE lower(host) = lower(:h) AND path = :p AND status = 'armed'""", {'t': min(ev['at'], now), 'h': host, 'p': path})
         elif ev['kind'] == 'clock_jump':
             freeze_clock(conn, host, ev['summary'], via)
-        elif ev['kind'] == 'brake_ran':
-            _record_brake_output(conn, host, ev['detail'], 'sentinel', min(ev['at'], now))
+        # brake_ran is only an alarm here: its text came from the host, so it writes no hold and no quarantine (the signed run does)
+    if stats is not None:
+        stats['dropped'] = dropped
+    if dropped and not conn.scalar("SELECT 1 FROM security_events WHERE lower(host) = lower(:h) AND kind = 'events_dropped' AND received_at > :t", {'h': host, 't': now - 3600}):
+        record_event(conn, host, 'events_dropped', f'{host} sent more events than the controller keeps; the rest were dropped',
+                     f'At most {EVENTS_PER_HOUR} events an hour ({EVENTS_PER_KIND} of one kind) are kept for a host. {dropped} were dropped in the first report that went over.', via)
     return new
 
 
+def _event_budget(conn: Conn, host: str, now: int) -> dict:
+    """How many more events this host may store this hour: in all ('all') and per kind."""
+    rows = conn.all("""SELECT kind, count(*) FROM security_events WHERE lower(host) = lower(:h) AND received_at > :t GROUP BY kind""", {'h': host, 't': now - 3600})
+    budget = {'all': EVENTS_PER_HOUR - sum(n for _, n in rows)}
+    for kind, n in rows:
+        budget[kind] = EVENTS_PER_KIND - n
+    return budget
+
+
+def prune_events(conn: Conn, now: int):
+    """Old events go: info after 90 days, acknowledged warn and crit after a year, and beyond MAX_EVENTS_PER_HOST the oldest of any host."""
+    conn.execute("DELETE FROM security_events WHERE severity = 'info' AND occurred_at < :t", {'t': now - 90 * 86400})
+    conn.execute("DELETE FROM security_events WHERE acknowledged_at IS NOT NULL AND occurred_at < :t", {'t': now - 365 * 86400})
+    for (host,) in conn.all('SELECT host FROM security_events GROUP BY host HAVING count(*) > :n', {'n': MAX_EVENTS_PER_HOST}):
+        cutoff = conn.scalar('SELECT event_id FROM security_events WHERE host = :h ORDER BY event_id DESC LIMIT 1 OFFSET :n', {'h': host, 'n': MAX_EVENTS_PER_HOST})
+        if cutoff:
+            conn.execute('DELETE FROM security_events WHERE host = :h AND event_id <= :c', {'h': host, 'c': cutoff})
+
+
 def _record_brake_output(conn: Conn, host: str, output: str, actor: str, now: int):
-    """What the brake confirmed it did. Rows only for lines it printed after checking."""
-    for ip in re.findall(r'^QUARANTINED (\S+)$', output or '', re.M):
+    """What the brake confirmed it did, from the output of a signed run the controller made. Never from text a host sent on its own
+    (a report, a scan): see ingest_events. Even so, each value is checked before it becomes a row."""
+    for raw in re.findall(r'^QUARANTINED (\S+)$', output or '', re.M):
+        try:
+            ip = clean_target(conn, host, raw)
+        except ValueError:
+            continue
         conn.execute('DELETE FROM security_quarantine WHERE lower(host) = lower(:h) AND ip_address = :ip', {'h': host, 'ip': ip})
         conn.execute("""INSERT INTO security_quarantine (host, ip_address, reason, added_at, expires_at, actor)
                         VALUES (:h, :ip, 'emergency brake', :t, NULL, :a)""", {'h': host, 'ip': ip, 't': now, 'a': actor})
     for fs, snap, tag in re.findall(r'^HELD (zfs|btrfs) (\S+) (\S+)$', output or '', re.M):
         s, t = _b64text(snap), _b64text(tag)
-        if s and t:
-            _record_hold(conn, host, fs, s, t, None, True, actor, now)
+        if not s or not t or not TAG_RE.fullmatch(t):
+            continue
+        if not ZFS_SNAP_RE.fullmatch(s):
+            try:
+                s = clean_path(s, 'the snapshot')
+            except ValueError:
+                continue
+        _record_hold(conn, host, fs, s, t, None, True, actor, now)
 
 
 def list_events(conn: Conn, host: str | None = None, limit: int = 200, include_info: bool = True) -> list[dict]:
@@ -808,7 +858,7 @@ def tick(db) -> dict:
                     except Exception:
                         errlog.trace()
         conn.execute('DELETE FROM security_quarantine WHERE expires_at IS NOT NULL AND expires_at <= :t', {'t': now})    # the kernel already let them go
-        conn.execute("DELETE FROM security_events WHERE severity = 'info' AND occurred_at < :t", {'t': now - 90 * 86400})
+        prune_events(conn, now)
         want = {d['host'] for d in deploy.deployed(conn, kind='security')} | {r[0] for r in conn.all("SELECT DISTINCT host FROM security_retention_holds WHERE status <> 'released'")}
         # with this machine's clock in doubt, every host would look wrong against it, and be frozen for it
         for host in sorted(want) if clock_ok else ():

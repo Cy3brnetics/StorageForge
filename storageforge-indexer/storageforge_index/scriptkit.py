@@ -192,11 +192,14 @@ recv_receive() { # nonce name, the stream on stdin. It only ever makes something
   [[ $st == absent ]] || recv_refuse "$n is already there (${st%% *})" "$nonce"
   err=$(mktemp) || recv_refuse "no temporary file" "$nonce"
   before=$(recv_list)
-  # -C: btrfs receive runs chrooted into the folder, so a path in the stream cannot leave it. -x: a mountpoint in the stream cannot mount it over a folder at the next boot
+  # -C: btrfs receive runs chrooted into the folder, so a path in the stream cannot leave it. ZFS: -x leaves mountpoint, sharenfs and sharesmb
+  # to what the parent gives (a stream cannot mount itself over a folder or export itself), and -o sets setuid, devices and canmount here whatever
+  # the stream says (no setuid file or device node works, and nothing mounts at boot: mount it by hand to look). Not lab-tested (SF-72).
+  # btrfs: the files keep the owner, mode and setuid bits the stream carries; see docs/security.md for what that leaves.
   if [[ $TOOL == btrfs ]]; then
     mkdir -p -- "$ROOT" >"$err" 2>&1 && btrfs receive -C "$ROOT" >"$err" 2>&1; rc=$?
   else
-    zfs receive -u -x mountpoint -- "$ROOT" >"$err" 2>&1; rc=$?
+    zfs receive -u -x mountpoint -x sharenfs -x sharesmb -o setuid=off -o devices=off -o canmount=noauto -- "$ROOT" >"$err" 2>&1; rc=$?
   fi
   cat "$err" >&2          # never hidden: a corrupt stream says so here, and over ssh on the sender
   msg=$(tail -n 3 "$err" | tr '\n' ' '); rm -f "$err"

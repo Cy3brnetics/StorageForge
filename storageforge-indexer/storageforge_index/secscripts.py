@@ -655,7 +655,8 @@ command -v curl >/dev/null && ok "curl: events are reported at once" || info "no
 
 section "Decoys"
 if ((APPLY)); then mkdir -p "$CONF" "$STATE" "$MANAGED" "$SBIN" "$UNITS"; chmod 0755 "$STATE"; touch "$HASHES"; fi
-new_hashes=
+new_hashes=; work=
+if ((APPLY)); then work=$(mktemp -d "$STATE/.decoy.XXXXXX") && [[ -d $work ]] || { conflict "no private folder to build the decoys in"; finished; exit 1; }; fi
 for line in "${DECOYS[@]}"; do
   p=$(base64 -d <<<"$line"); dir=${p%/*}
   known=$(awk -v l="$line" '$1 == l {print $2}' "$HASHES" 2>/dev/null) || known=
@@ -666,7 +667,9 @@ for line in "${DECOYS[@]}"; do
     new_hashes+="$line $known"$'\n'; echo "CANARY $line $known $(stat -c %s -- "$p")"; continue
   fi
   if ((APPLY == 0)); then missing "write the decoy $p"; continue; fi
-  tmp=$(mktemp "$dir/.sf.XXXXXX")
+  # built in a folder only root can enter, so nothing here is reached through a name another account can swap; the one step in the
+  # share is a rename onto the final name, which replaces a link there and never follows it
+  tmp=$work/decoy; rm -f -- "$tmp"
   case ${p##*.} in
     docx|xlsx|pptx|zip) printf 'PK\003\004\024\000\006\000' >"$tmp" ;;
     pdf) printf '%%PDF-1.7\n%%\342\343\317\323\n' >"$tmp" ;;
@@ -677,11 +680,12 @@ for line in "${DECOYS[@]}"; do
   chown --reference="$dir" "$tmp" 2>/dev/null || :
   # as writable as the folder it is in: a decoy whoever can change the files here cannot change would never trip
   if (((8#$(stat -c %a -- "$dir")) & 2)); then chmod 0666 "$tmp"; else chmod 0664 "$tmp"; fi
-  mv -f -- "$tmp" "$p"
-  sha=$(sha256sum -- "$p" | cut -d' ' -f1)
+  sha=$(sha256sum -- "$tmp" | cut -d' ' -f1); size=$(stat -c %s -- "$tmp")
+  mv -T -f -- "$tmp" "$p"
   doing "wrote $p"
-  new_hashes+="$line $sha"$'\n'; echo "CANARY $line $sha $(stat -c %s -- "$p")"
+  new_hashes+="$line $sha"$'\n'; echo "CANARY $line $sha $size"
 done
+[[ -z $work ]] || rm -rf -- "$work"
 if ((APPLY == 0)); then
   section "Service"
   [[ -f $UNITS/sf-sentinel.service ]] && ok "the sentinel is installed" || missing "the sentinel: --apply installs it"

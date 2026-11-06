@@ -62,10 +62,11 @@ def register(web, ctx):
         lines = json_body().get('lines')
         if not isinstance(lines, list) or len(lines) > 100 or not all(isinstance(x, str) and len(x) < 32768 for x in lines):
             return jsonify(error='expected up to 100 event lines'), 400
-        new = security.ingest_events(conn(), host, '\n'.join(lines), f'report:{request.remote_addr}'[:60])
-        if new:
+        stats: dict = {}
+        new = security.ingest_events(conn(), host, '\n'.join(lines), f'report:{request.remote_addr}'[:60], stats)
+        if new or stats.get('dropped'):
             core.alerts_wake.set()
-        return jsonify(ok=True, new=new)
+        return jsonify(ok=True, new=new, dropped=stats.get('dropped', 0))
 
     # ── retention holds ─────────────────────────────────────────────────
     @web.get('/api/security/worm/holds')

@@ -106,6 +106,52 @@ class Signed(unittest.TestCase):
         with self.assertRaisesRegex(BadSignature, 'requires signed scans'):
             self.t(keys=[str(self.tmp / 'missing')], require=True).run('echo plain')
 
+    def test_a_host_that_signed_before_and_now_does_not_is_refused_even_when_unsigned_is_allowed(self):
+        """SF-74: scans.require_signed is off here. A pinned key means the host has signed, so an unsigned answer is a downgrade."""
+        for tail in (['SFSIG0 ssh-keygen could not sign here'], [], ['some other line']):
+            with self.assertRaisesRegex(BadSignature, 'has signed its scans before'):
+                Signing([], pinned=self.pub).check('n', 'd' * 64, tail)
+        with self.assertRaisesRegex(BadSignature, 'has signed its scans before'):
+            self.t(pinned=self.pub, keys=[str(self.tmp / 'missing')]).run('echo plain')
+        s = Signing([], pinned=None)                                             # never signed: unsigned is still used, as documented
+        self.assertEqual(s.check('n', 'd' * 64, ['SFSIG0 x']), 'unsigned')
+
+    def test_a_host_that_signs_with_its_ssh_host_key_is_pinned_to_it(self):
+        pinned = []
+        t = Here('box')
+        t.signing = Signing(lambda: [self.pub], pin=pinned.append, key_paths=[str(self.key)])
+        t.run('echo one')
+        t.run('echo two')
+        self.assertEqual(pinned, [self.pub])                                     # once, and a later scan reads it back as the pinned key
+        t.signing.key_paths = (str(self.other),)                                 # a signer of its own, in the same scan
+        with self.assertRaisesRegex(BadSignature, 'not pinned for this host'):
+            t.run('echo forged')
+        later = Here('box')                                                      # and in the next scan, with the pin read from the record
+        later.signing = Signing(lambda: [self.pub], pinned=pinned[0], key_paths=[str(self.other)])
+        with self.assertRaisesRegex(BadSignature, 'not pinned for this host'):
+            later.run('echo forged')
+        quiet = Here('box')
+        quiet.signing = Signing(lambda: [self.pub], pinned=pinned[0], key_paths=[str(self.tmp / 'missing')])
+        with self.assertRaisesRegex(BadSignature, 'has signed its scans before'):
+            quiet.run('echo plain')
+        fresh = Here('box')                                                      # in one scan, signed and then not: the same
+        fresh.signing = Signing(lambda: [self.pub], key_paths=[str(self.key)])
+        fresh.run('echo signed')
+        fresh.signing.key_paths = (str(self.tmp / 'missing'),)
+        with self.assertRaisesRegex(BadSignature, 'has signed its scans before'):
+            fresh.run('echo plain')
+
+    def test_a_truncated_signature_is_a_bad_signature_not_a_bare_error(self):
+        """SF-75"""
+        import base64
+        for body in (b'SSHSIG', b'SSHSIG\x00\x00\x00\x01\x00\x00', b'SSHSIG\x00\x00\x00\x01\x00\x00\x00\x05ab', b'SSHSIG\x00\x00\x00\x01\x00\x00\x00\x01a\x00\x00\x00\x09ab'):
+            arm = '-----BEGIN SSH SIGNATURE-----\n' + base64.b64encode(body).decode() + '\n-----END SSH SIGNATURE-----\n'
+            mark = 'SFSIG1 ' + 'd' * 64 + ' ' + base64.b64encode(arm.encode()).decode()
+            with self.assertRaisesRegex(BadSignature, 'cannot be read'):
+                Signing([], pinned=self.pub).check('n', 'd' * 64, [mark])
+            with self.assertRaises(ValueError):
+                scansign.signer_key(arm)
+
     def test_no_signature_at_all_is_not_taken_for_a_signed_one(self):
         s = Signing([], pinned=self.pub, require=True)
         with self.assertRaisesRegex(BadSignature, 'no signature came back'):
@@ -275,6 +321,16 @@ class Routes(unittest.TestCase):
             r = root.put('/api/scans/signing', json={'require': True})
         self.assertEqual(r.get_json(), {'require': True})
         self.assertTrue(scansign.required(self.conn))
+        for text, want in (('false', False), ('0', False), ('Off', False), ('true', True), ('on', True), (False, False)):         # SF-75: text is read, not taken as on
+            r = root.put('/api/scans/signing', json={'require': text})
+            self.assertEqual((r.status_code, r.get_json()), (200, {'require': want}), text)
+            self.assertEqual(scansign.required(self.conn), want)
+        scansign_before = scansign.required(self.conn)
+        for bad in ('maybe', '', 'tru', 2, None, [], {}):
+            self.assertEqual(root.put('/api/scans/signing', json={'require': bad}).status_code, 400, repr(bad))
+        self.assertEqual(root.put('/api/scans/signing', json={}).status_code, 400)
+        self.assertEqual(scansign.required(self.conn), scansign_before)
+        root.put('/api/scans/signing', json={'require': True})
         gone = root.delete('/api/scans/signing/nas')
         self.assertEqual(gone.status_code, 200)                                                       # the password was just confirmed
         self.assertEqual(gone.get_json(), {'forgotten': True})

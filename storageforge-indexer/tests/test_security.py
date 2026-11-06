@@ -681,6 +681,69 @@ class Events(Base):
         self.assertIn("echo '@@secevents'", Path(remote.__file__).read_text())
         self.assertEqual(security.ingest_events(self.conn, 'nas', event_line() + '\n' + event_line(), 'scan'), 2)
 
+    def test_a_report_cannot_write_holds_or_quarantines_or_clear_a_missing_hold(self):
+        """SF-70: a brake_ran line from a host is an event, never a row. Rows come from the signed run the controller made itself."""
+        enc = lambda s: base64.b64encode(s.encode()).decode()
+        now = int(time.time())
+        hid = security._record_hold(self.conn, 'nas', 'zfs', 'tank/data@sf-1', 'sf-worm-30d', now + 30 * DAY, False, 'alice', now)
+        self.conn.execute('UPDATE security_retention_holds SET missing_at = :t WHERE id = :i', {'t': now, 'i': hid})
+        detail = ('QUARANTINED not-an-ip-' + 'A' * 300 + '\nQUARANTINED 10.9.9.9\n'
+                  f'HELD zfs {enc("tank/data@sf-1")} {enc("sf-worm-30d")}\nHELD btrfs {enc("<img src=x onerror=alert(1)>")} {enc("--not a tag--")}\n'
+                  f'HELD zfs {enc("tank/never@made")} {enc("sf-legal")}\n')
+        tables = ('security_quarantine', 'security_retention_holds')
+        for via in ('report', 'scan'):
+            before = [self.conn.all(f'SELECT * FROM {t} ORDER BY 1') for t in tables]
+            if via == 'report':
+                self.assertEqual(self.report([event_line('brake_ran', 'brake', detail)]).get_json()['new'], 1)
+            else:
+                security.ingest_events(self.conn, 'nas', event_line('brake_ran', 'brake', detail), 'scan')
+            self.assertEqual([self.conn.all(f'SELECT * FROM {t} ORDER BY 1') for t in tables], before)
+        self.assertIsNotNone(self.conn.scalar('SELECT missing_at FROM security_retention_holds WHERE id = :i', {'i': hid}))
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM security_quarantine'), 0)
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM security_retention_holds'), 1)
+        self.conn.execute('DELETE FROM security_retention_holds')
+        self.report([event_line('brake_ran', 'brake', f'HELD zfs {enc("tank/never@made")} {enc("sf-legal")}\n')])
+        self.assertNotEqual(security._check(self.conn, 'nas', {}, 'worm', security.STANDARDS['pci-dss'])[0], 'pass')
+
+    def test_a_token_cannot_fill_the_table(self):
+        """SF-73: 10,000 distinct lines with a valid token leave a bounded table, the cap shows in the answer, and one summary event says so."""
+        big = 'x' * 3000      # 100 of these stay under the report body limit
+        first = None
+        for batch in range(100):
+            r = self.report([event_line('canary_tripped' if i % 2 else 'watcher_stopped', 's', big) for i in range(100)]).get_json()
+            first = first or r
+        self.assertLessEqual(self.conn.scalar("SELECT count(*) FROM security_events WHERE kind <> 'events_dropped'"), security.EVENTS_PER_HOUR)
+        self.assertEqual(self.conn.scalar("SELECT count(*) FROM security_events WHERE kind = 'events_dropped'"), 1)
+        self.assertEqual(r['new'], 0)
+        self.assertEqual(r['dropped'], 100)
+        self.assertLessEqual(self.conn.scalar('SELECT max(length(detail)) FROM security_events'), security.HOST_DETAIL)
+
+    def test_one_noisy_kind_does_not_use_up_another_kinds_room(self):
+        for _ in range(3):
+            self.report([event_line('watcher_stopped', 's') for _ in range(100)])
+        self.assertEqual(self.report([event_line('canary_tripped', 'real')]).get_json()['new'], 1)
+        self.assertEqual(self.conn.scalar("SELECT count(*) FROM security_events WHERE kind = 'watcher_stopped'"), security.EVENTS_PER_KIND)
+
+    def test_old_events_are_pruned_and_the_newest_kept(self):
+        now = int(time.time())
+        for kind, days, ack in (('watcher_stopped', 400, now), ('watcher_stopped', 400, None), ('watcher_stopped', 10, now)):
+            security.record_event(self.conn, 'nas', kind, 's')
+            self.conn.execute('UPDATE security_events SET occurred_at = :o, acknowledged_at = :a WHERE event_id = (SELECT max(event_id) FROM security_events)',
+                              {'o': now - days * DAY, 'a': ack})
+        security.prune_events(self.conn, now)
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM security_events'), 2)       # only the old acknowledged one is gone
+        with mock.patch.object(security, 'MAX_EVENTS_PER_HOST', 1):
+            security.prune_events(self.conn, now)
+        self.assertEqual(self.conn.all('SELECT occurred_at FROM security_events'), [(now - 10 * DAY,)])
+
+    def test_a_signed_runs_brake_output_is_recorded_but_only_valid_values(self):
+        enc = lambda s: base64.b64encode(s.encode()).decode()
+        out = ('QUARANTINED 10.0.0.9\nQUARANTINED not-an-ip\nQUARANTINED 0.0.0.0/0\n'
+               f'HELD zfs {enc("tank/shares@s1")} {enc("sf-brake-1")}\nHELD zfs {enc("<img src=x>")} {enc("sf-x")}\nHELD zfs {enc("tank/a@b")} {enc("not a tag")}\n')
+        security._record_brake_output(self.conn, 'nas', out, 'admin1', int(time.time()))
+        self.assertEqual([r[0] for r in self.conn.all('SELECT ip_address FROM security_quarantine')], ['10.0.0.9'])
+        self.assertEqual([(r[0], r[1]) for r in self.conn.all('SELECT snapshot, hold_tag FROM security_retention_holds')], [('tank/shares@s1', 'sf-brake-1')])
+
     def test_seeing_an_alarm_quiets_it(self):
         security.ingest_events(self.conn, 'nas', event_line('clock_jump', 'x'))
         security.clear_clock(self.conn, 'nas', 'admin1')
@@ -853,6 +916,39 @@ class DecoyBase(Base):
 
 
 class Decoys(DecoyBase):
+    def test_a_neighbour_swapping_the_temporary_file_for_a_link_changes_nothing(self):
+        """SF-71: whoever can write in the share swaps every name the installer makes there for a link to a root file, between each step.
+        Stand-ins for head, chown, chmod and mv do the swap and then run the real tool; the target must stay as it was."""
+        share = self.configure()
+        victim = self.tmp / 'victim'
+        victim.write_text('root-only content\n')
+        victim.chmod(0o600)
+        swap = ('#!/bin/bash\nfor f in "$SF_SHARE"/.sf.*; do if [[ -e $f || -L $f ]]; then rm -f -- "$f"; ln -s "$SF_VICTIM" "$f"; fi; done\n'
+                'dest=${@: -1}; if [[ $dest == "$SF_SHARE"/* ]]; then rm -f -- "$dest"; ln -s "$SF_VICTIM" "$dest"; fi\n')
+        for name in ('head', 'chown', 'chmod', 'mv'):
+            (self.bin / name).write_text(swap + f'exec {shutil.which(name)} "$@"\n')
+            (self.bin / name).chmod(0o755)
+        self.env.update(SF_SHARE=str(share), SF_VICTIM=str(victim))
+        self.deploy('apply')
+        self.assertEqual(victim.read_text(), 'root-only content\n')
+        self.assertEqual(oct(victim.stat().st_mode & 0o777), '0o600')
+        self.assertEqual([p.name for p in share.iterdir() if p.name.startswith('.sf.')], [])
+
+    def test_a_decoy_keeps_the_folders_owner_and_is_as_writable_as_it(self):
+        share = self.configure()
+        for mode, want in ((0o777, 0o666), (0o755, 0o664)):
+            share.chmod(mode)
+            for p in share.iterdir():
+                p.unlink()
+            self.conn.execute('DELETE FROM security_canaries')
+            self.deploy('apply')
+            files = list(share.iterdir())
+            self.assertTrue(files)
+            for p in files:
+                self.assertEqual(p.stat().st_mode & 0o777, want, p.name)
+                self.assertEqual(p.stat().st_uid, share.stat().st_uid)
+        self.assertEqual(list((self.root / 'var/lib/storageforge/security').glob('.decoy.*')), [])
+
     def test_nothing_is_written_without_apply(self):
         share = self.configure()
         self.deploy('report')

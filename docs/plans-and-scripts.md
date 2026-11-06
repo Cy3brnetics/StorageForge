@@ -64,7 +64,7 @@ Use the **btrfs** and **ZFS** send tasks for a one-off copy, and the **Send** bl
 | A receive that was cut off, so never finished | Reported, you delete it | Removed and sent again |
 | Old copies on the receiver | Left alone | Pruned to **Keep there** |
 
-ZFS sends use `zfs receive -u -x mountpoint`, so nothing is mounted over a folder on the receiver, now or at its next boot, and never `-F`, so an existing dataset is never overwritten. Raw sends keep an encrypted dataset encrypted, and the receiver does not need its key.
+ZFS sends use `zfs receive -u -x mountpoint -x sharenfs -x sharesmb -o setuid=off -o devices=off -o canmount=noauto`, so nothing is mounted over a folder on the receiver, now or at its next boot, nothing is exported by the stream's own settings, and the copy honours no setuid file or device node (mount it by hand to look at it), and never `-F`, so an existing dataset is never overwritten. Raw sends keep an encrypted dataset encrypted, and the receiver does not need its key.
 
 Keep the last snapshot you sent on the sender until the next send finishes, or the next one is a full copy.
 
