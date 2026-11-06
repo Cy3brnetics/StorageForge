@@ -60,6 +60,7 @@ Each is a claim that hasn't been proved or a known gap in something shipped.
 | **firewalld and ufw output from the network language** | Unit-tested. nft and iptables-restore took theirs for real, and these two should as well | Lab: apply the compiled output on a firewalld host and a ufw host, and read it back | open |
 | **Incus, LXC and Proxmox guests; Tailscale, proxies, identity providers** | Parsed and unit-tested, not lab-tested | Lab, where the lab has the platform (it has a Proxmox image). The rest ships labelled | open |
 | **Terraform and Puppet exports** | They render, and no tool has applied them | Run them through the tools' own validators where they can be installed (`terraform validate`, `puppet parser validate`). Applying them is out of reach, so they ship labelled | open |
+| **Signed scan payloads** (added by the owner on 2026-11-05) | Scans trusted whatever a host's output said, over an SSH connection that only pins the host key | Built: every payload is signed on the host and checked before use (`5916ce1`). Lab stage `scan-signed` is written and not run, and a host that cannot sign (OpenSSH before 8.0, or no readable key) shows as unsigned unless signing is required | built and unit-tested in `5916ce1`; lab stage not run |
 | **PagerDuty and FIDO2** | PagerDuty has not reached the real service. FIDO2 has only met Chromium's virtual authenticator | An outside service and a physical token, so both ship labelled | open |
 
 ### A2. Host logs
