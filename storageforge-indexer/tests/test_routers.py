@@ -1045,5 +1045,56 @@ class Devices(unittest.TestCase):
             d.close()
 
 
+class RollbackFolder(unittest.TestCase):
+    """SF-55: the folder a device's way back runs from is made fresh and private, and one that is already there, or a link, is never used. The device's scripts run
+    under /bin/sh here with its own tools (cp, nohup, start-stop-daemon) replaced by ones that do nothing, so what is tested is the folder and nothing else."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        shims = self.tmp / 'bin'
+        shims.mkdir()
+        for name in ('cp', 'nohup', 'start-stop-daemon'):
+            (shims / name).write_text('#!/bin/sh\nexit 0\n')
+            (shims / name).chmod(0o755)
+        self.env = {'PATH': f'{shims}:/usr/bin:/bin'}
+
+    def plant(self, cls, folder):
+        applier = cls(42)
+        applier.dir = str(folder)
+
+        def run(script, timeout=None):
+            done = subprocess.run(['/bin/sh', '-c', script], env=self.env, capture_output=True, text=True, timeout=30)
+            return done.stdout + done.stderr
+        return applier.plant(run, 60)
+
+    def test_it_is_made_here_private_and_holds_the_script(self):
+        for cls in (netdevice.OpenWrtApply, netdevice.PfApply):
+            folder = self.tmp / f'sf-{cls.__name__}'
+            self.plant(cls, folder)
+            self.assertEqual(oct(folder.stat().st_mode & 0o777), '0o700', cls.__name__)
+            self.assertIn('sleep 60', (folder / 'back.sh').read_text(), cls.__name__)
+
+    def test_a_folder_someone_made_first_is_refused_and_left_alone(self):
+        for cls in (netdevice.OpenWrtApply, netdevice.PfApply):
+            folder = self.tmp / f'sf-{cls.__name__}'
+            folder.mkdir()
+            (folder / 'back.sh').write_text('theirs')
+            with self.assertRaisesRegex(netdevice.DeviceError, 'could not plant'):
+                self.plant(cls, folder)
+            self.assertEqual([p.name for p in folder.iterdir()], ['back.sh'], cls.__name__)
+            self.assertEqual((folder / 'back.sh').read_text(), 'theirs', cls.__name__)
+
+    def test_a_link_in_its_place_is_refused_and_what_it_points_at_is_left_alone(self):
+        for cls in (netdevice.OpenWrtApply, netdevice.PfApply):
+            elsewhere = self.tmp / f'elsewhere-{cls.__name__}'
+            elsewhere.mkdir()
+            folder = self.tmp / f'sf-{cls.__name__}'
+            folder.symlink_to(elsewhere, target_is_directory=True)
+            with self.assertRaisesRegex(netdevice.DeviceError, 'could not plant'):
+                self.plant(cls, folder)
+            self.assertEqual(list(elsewhere.iterdir()), [], cls.__name__)
+
+
 if __name__ == '__main__':
     unittest.main()

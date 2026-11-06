@@ -409,10 +409,16 @@ class OpenWrtApply:
     """A copy of /etc/config and a background shell that puts it back and reloads when the time is up. Confirming kills it."""
 
     def __init__(self, cid: int):
+        # the name is the change's number, so a confirm finds it again without a stored name. It is made with mkdir and no -p, mode 700 (SF-55): anything already
+        # there, a folder or a link another account made first, makes the plant fail, so back.sh is never put in, or run from, a place someone else can write to
         self.dir = f'/tmp/sf-{cid}'
 
     def plant(self, run, secs: int):
-        script = f"""mkdir -p {self.dir}/config && cp -a /etc/config/. {self.dir}/config/ &&
+        # set -e: a step that fails ends the script. Without it the line that starts back.sh ran after a failed mkdir or cp as well, and said "planted" (SF-55)
+        script = f"""set -e
+mkdir -m 700 {self.dir}
+mkdir {self.dir}/config
+cp -a /etc/config/. {self.dir}/config/
 cat > {self.dir}/back.sh <<'SFEOF'
 #!/bin/sh
 sleep {int(secs)}
@@ -420,7 +426,9 @@ cp -a {self.dir}/config/. /etc/config/
 /etc/init.d/network reload; /etc/init.d/firewall restart; /etc/init.d/dropbear restart
 touch {self.dir}/rolled
 SFEOF
-chmod +x {self.dir}/back.sh; start-stop-daemon -S -b -m -p {self.dir}/pid -x {self.dir}/back.sh; echo planted"""
+chmod +x {self.dir}/back.sh
+start-stop-daemon -S -b -m -p {self.dir}/pid -x {self.dir}/back.sh
+echo planted"""
         got = run(script)
         if 'planted' not in got:
             raise DeviceError(f'could not plant the rollback: {got[:200]}')
@@ -444,17 +452,23 @@ class PfApply:
     """A copy of config.xml and a background shell that restores it and reloads the filter when the time is up. The fragments go into the XML here, not on the device, and go back whole."""
 
     def __init__(self, cid: int):
-        self.dir = f'/tmp/sf-{cid}'
+        self.dir = f'/tmp/sf-{cid}'      # made with mkdir and no -p, mode 700, for the reason given at OpenWrtApply (SF-55)
 
     def plant(self, run, secs: int):
-        script = f"""mkdir -p {self.dir} && cp /cf/conf/config.xml {self.dir}/config.xml && cat > {self.dir}/back.sh <<'SFEOF'
+        script = f"""set -e
+mkdir -m 700 {self.dir}
+cp /cf/conf/config.xml {self.dir}/config.xml
+cat > {self.dir}/back.sh <<'SFEOF'
 #!/bin/sh
 sleep {int(secs)}
 cp {self.dir}/config.xml /cf/conf/config.xml; rm -f /tmp/config.cache
 /etc/rc.filter_configure 2>/dev/null || pluginctl -c filter
 touch {self.dir}/rolled
 SFEOF
-chmod +x {self.dir}/back.sh; nohup {self.dir}/back.sh >/dev/null 2>&1 & echo $! > {self.dir}/pid; echo planted"""
+chmod +x {self.dir}/back.sh
+nohup {self.dir}/back.sh >/dev/null 2>&1 &
+echo $! > {self.dir}/pid
+echo planted"""
         got = run(script)
         if 'planted' not in got:
             raise DeviceError(f'could not plant the rollback: {got[:200]}')
