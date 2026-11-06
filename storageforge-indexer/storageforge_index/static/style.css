@@ -1129,3 +1129,23 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 .hl-hname { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
 #tab-hostlogs > * { flex-shrink: 0; }          /* the panel scrolls: a child that can clip (the range switch, the chart) must not be squeezed to nothing by a long list */
 #tab-hostlogs .seg { align-self: flex-start; }
+
+/* ── The map's what-if in words, zoom controls and legend (roadmap A4 phase 4). Colour is a mark here, never the message: every sentence starts with its severity word. ── */
+.mpsay { margin: 6px 0; border-radius: 4px; }
+.mpsay:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mpsay-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 12px; }
+.mpsay-list li { padding: 2px 0 2px 8px; border-left: 3px solid var(--line, #555); overflow-wrap: anywhere; }
+.mpsay-list li.mpsay-crit { border-left: 5px solid var(--broken); font-weight: 600; }
+.mpsay-list li.mpsay-warn { border-left: 4px double var(--local-only); }
+.mpsay-list li.mpsay-ok { border-left: 3px solid var(--protected); }
+.mpdetails { margin: 6px 0; } .mpdetails summary { cursor: pointer; font-size: 12px; }
+.mptag { font-size: 9px; font-weight: 700; letter-spacing: .04em; }
+.mptools { position: absolute; top: 8px; right: 8px; display: flex; gap: 2px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 2px; }
+.mptools button { min-width: 28px; }
+.mplegend { max-width: min(46ch, calc(100% - 16px)); max-height: 55%; overflow: auto; display: block; }
+.mplegend summary { cursor: pointer; font-weight: 600; }
+.mplegend p { margin: 4px 0; }
+.mplegend .mpchips { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+.mpstyles { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 3px; }
+.mpstyles li { display: flex; align-items: center; gap: 6px; }
+.mpsw { flex: none; } .mpsw .mpnode { cursor: default; } .mpsw .mpedge { opacity: 1; }
