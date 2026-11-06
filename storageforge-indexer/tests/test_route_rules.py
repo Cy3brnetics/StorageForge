@@ -193,6 +193,10 @@ NO_FRESH_PASSWORD = {
     ('PUT', '/api/planner/design'),
     ('PUT', '/api/planner/example'),
     ('PUT', '/api/planner/offsite'),
+    ('POST', '/api/planner/versions'),           # a copy of a design in the database, as PUT /api/planner/design is one of the saved design
+    ('POST', '/api/planner/versions/compare'),
+    ('POST', '/api/planner/versions/restore'),   # what a Save design does, and the design it replaces is kept first
+    ('DELETE', '/api/planner/versions/<int:vid>'),
     ('POST', '/api/reauth'),
     ('POST', '/api/scan'),
     ('POST', '/api/scan/all'),
@@ -236,6 +240,7 @@ NOT_AUDITED = {
     'api_tasks_check': 'compares with the index and saves nothing',
     'api_shares_validate': 'compares with the index and saves nothing',
     'api_planner_changes': 'compares with the index and saves nothing',
+    'api_planner_version_compare': 'compares two designs and saves nothing',
 }
 
 

@@ -94,6 +94,8 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/hostlogs(/.*)?', 'hostlogs.view'),
 
     (READ, r'/api/search(/hosts)?', 'search.files'),
+    (READ, r'/api/planner/versions(/\d+)?', 'plans.view'),            # saved versions of a design (design_versions.py)
+    (('POST',), r'/api/planner/versions/compare', 'plans.view'),      # a read: it saves nothing
     (READ, r'/api/(hosts|graph|canvas|capacity|planner/.*)', 'hosts.view'),
     (READ, r'/api/hosts/[^/]+/schedule', 'hosts.view'),
     (READ, r'/api/(browse|fs/browse|file-changes|dupes|filemap|files/ignore|folders/.*)', 'files.browse'),
