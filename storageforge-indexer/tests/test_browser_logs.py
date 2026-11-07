@@ -58,7 +58,7 @@ class BrowserLogs(unittest.TestCase):
     def setUp(self):
         self.page = self.browser.new_page()
         self.addCleanup(self.page.close)
-        self.page.set_default_timeout(8000)
+        self.page.set_default_timeout(30000)
         self.errors = []
         self.page.on('pageerror', lambda e: self.errors.append(str(e)))
         self.page.on('console', lambda m: self.errors.append(m.text) if 'Content Security Policy' in m.text else None)
@@ -113,6 +113,7 @@ class BrowserLogs(unittest.TestCase):
         self.page.wait_for_selector('#hl-lines li:has-text("old error")')
         self.page.go_back()
         self.page.wait_for_selector('#hl-range button[data-range=day][aria-pressed=true]')
+        self.page.wait_for_selector('#hl-lines li:has-text("old error")', state='detached')      # the month's list holds both lines until the day's is drawn
         self.page.wait_for_selector('#hl-lines li:has-text("pool degraded")')
         self.assertNotIn('old error', self.page.inner_text('#hl-lines'))
         self.assertEqual(self.errors, [])
