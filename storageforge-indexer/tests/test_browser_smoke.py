@@ -1340,6 +1340,7 @@ class BrowserSmoke(unittest.TestCase):
         self.page.wait_for_url('**host=nas**')                                        # the address follows the choice a moment later on a slow machine
         self.page.go_back()
         self.page.wait_for_url(lambda url: 'host=' not in url)
+        self.page.wait_for_selector('#host')
         self.assertEqual(self.page.input_value('#host'), '')
         self.assertEqual(self.errors, [])
 
@@ -1452,6 +1453,7 @@ class BrowserSmoke(unittest.TestCase):
         self.page.reload()
         self.page.wait_for_selector('.tabs button')
         self.open_tab('changes')
+        self.page.wait_for_selector('.layout.wide')                                       # applied a moment after the page is up
         self.assertTrue(self.wide())                                                      # after a reload
         self.open_tab('moves')
         self.assertFalse(self.wide())                                                     # another panel is its own choice

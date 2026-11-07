@@ -211,7 +211,7 @@ class Sends(Stubbed):
         r = self.run_task(self.zfs_block(), '--run')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('back/a@d-1', self.zstate.read_text())
-        self.assertIn('zfs receive -u -x mountpoint -- back/a', self.log.read_text())
+        self.assertIn('zfs receive -u -x mountpoint -x sharenfs -x sharesmb -o setuid=off -o devices=off -o canmount=noauto -- back/a', self.log.read_text())
         with self.zstate.open('a') as f:
             f.write('tank/a@d-2\n')
         r = self.run_task(self.zfs_block(keep=1), '--run')
