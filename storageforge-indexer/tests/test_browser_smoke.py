@@ -1451,8 +1451,7 @@ class BrowserSmoke(unittest.TestCase):
         self.assertTrue(self.wide())
         self.assertEqual(self.page.get_attribute('#pwide', 'aria-pressed'), 'true')
         self.page.reload()
-        self.page.wait_for_selector('.tabs button')
-        self.open_tab('changes')
+        self.page.wait_for_selector('.tabs button.on[data-tab="changes"]')               # the address brings the panel back; clicking its button now would hide it
         self.page.wait_for_selector('.layout.wide')                                       # applied a moment after the page is up
         self.assertTrue(self.wide())                                                      # after a reload
         self.open_tab('moves')
