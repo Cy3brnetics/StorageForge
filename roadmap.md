@@ -57,10 +57,10 @@ Each is a claim that hasn't been proved or a known gap in something shipped.
 | **SF-48: the receiving host of a send** | Signed scripts still run root commands on the receiving host with no signature there. It's named in the audit row, warned about in the check and listed in [security.md](docs/security.md) | Build it. Each side of a send becomes its own signed run on an enrolled host, with the stream between them carried by a forced-command job key, as `storageforge-job --serve` does for rsync. Add a lab tier: a send between two enrolled hosts with no root key between them. About a week | built and unit-tested in `4d8b083`; lab tier 16 written, not run |
 | **pfSense, OPNsense and Cisco on real devices** | Reading and rollback have only met published formats and a simulated shell | No image or device, so it ships labelled *not lab-tested*, unless one turns up | open |
 | **Old SSH ciphers on a device that needs them** | Built and unit-tested, with nothing old enough in the lab | Same | open |
-| **firewalld and ufw output from the network language** | Unit-tested. nft and iptables-restore took theirs for real, and these two should as well | Lab: apply the compiled output on a firewalld host and a ufw host, and read it back | lab tier 17 written in `0fb131d`, not run |
+| **firewalld and ufw output from the network language** | Unit-tested. nft and iptables-restore took theirs for real, and these two should as well | Lab: apply the compiled output on a firewalld host and a ufw host, and read it back | done: lab tier 17 passed on 2026-11-06 (firewalld on sf-fedora, ufw on sf-ubuntu) |
 | **Incus, LXC and Proxmox guests; Tailscale, proxies, identity providers** | Parsed and unit-tested, not lab-tested | Lab, where the lab has the platform (it has a Proxmox image). The rest ships labelled | open |
 | **Terraform and Puppet exports** | They render, and no tool has applied them | Run them through the tools' own validators where they can be installed (`terraform validate`, `puppet parser validate`). Applying them is out of reach, so they ship labelled | tests in `a1bf8f1` skip where the tools are missing (both, here); labelled *not lab-tested* |
-| **Signed scan payloads** (added by the owner on 2026-11-05) | Scans trusted whatever a host's output said, over an SSH connection that only pins the host key | Built: every payload is signed on the host and checked before use (`5916ce1`). Lab stage `scan-signed` is written and not run, and a host that cannot sign (OpenSSH before 8.0, or no readable key) shows as unsigned unless signing is required | built and unit-tested in `5916ce1`; lab stage not run |
+| **Signed scan payloads** (added by the owner on 2026-11-05) | Scans trusted whatever a host's output said, over an SSH connection that only pins the host key | Built: every payload is signed on the host and checked before use (`5916ce1`). Lab stage `scan-signed` is written and not run, and a host that cannot sign (OpenSSH before 8.0, or no readable key) shows as unsigned unless signing is required | done: the `scan-signed` stage passed on all seven hosts on 2026-11-06 (`22b7890` fixed its own key read) |
 | **PagerDuty and FIDO2** | PagerDuty has not reached the real service. FIDO2 has only met Chromium's virtual authenticator | An outside service and a physical token, so both ship labelled | open |
 
 ### A2. Host logs
@@ -70,7 +70,7 @@ Built and committed on 2026-11-04 as it stood in the working tree. Neither its u
 | Item | For 0.4.0 | Status |
 | :--- | :--- | :--- |
 | **Its tests** | Run them, and fix what fails. The consistency tests that list routes, permissions and CLI subcommands were already updated for it | done: they pass in the full runs of 2026-11-06 |
-| **A lab tier** | Real distros: the `systemd-journal` group, a host with no journald saying so, secret removal on real lines, the 30-day and row caps, and the scan-access script run again | tier 14 written in `4640b6b`, not run |
+| **A lab tier** | Real distros: the `systemd-journal` group, a host with no journald saying so, secret removal on real lines, the 30-day and row caps, and the scan-access script run again | done: lab tier 14 passed on 2026-11-06 on the six systemd hosts and the host with no journald |
 | **The Logs view** | UI phase 4 (UX-30): a time range, per-host freshness, entry points from a host, an alert, a mount and a device. Still no tail and no stream | open |
 
 ### A3. Findings still in progress
@@ -79,7 +79,7 @@ The notebook has 18 findings marked in progress. Twelve say *fixed in the workin
 
 | Finding | What's left | Who | Status |
 | :--- | :--- | :--- | :--- |
-| **SF-48** | See A1 | the release run | built and unit-tested in `4d8b083` (`bab3165` to `2d578f1`); stays in progress until lab tier 16, which is written and has not run, passes |
+| **SF-48** | See A1 | the release run | built in `4d8b083`; lab tier 16 ran on 2026-11-06 and passes but for two checks on sf-fedora (a signed send started from its systemd unit fails at `ssh` with Permission denied, SELinux enforcing, cause not found). Stays in progress |
 | **SF-46** operators can apply legal holds | A test that every route ending in `apply_hold` takes the same permission, walked as a list and not one route at a time | the release run | done: `ca2eacb`, merged in `4d8b083` |
 | **SF-38** container scan | CI fails on a new reachable critical. The job exists, and has never run | the owner | open |
 | **EQ-01** no CI | A runner, so every push runs the suite on SQLite and PostgreSQL | the owner | open |
