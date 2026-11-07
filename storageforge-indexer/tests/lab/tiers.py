@@ -1333,7 +1333,7 @@ def main():
         if tier == 14:
             import tiers_hostlogs
             tiers_hostlogs.tier14(r)
-        if tier == 17:
+        elif tier == 17:
             import tiers_netlang
             tiers_netlang.tier17(r)
         elif tier == 16:
