@@ -58,6 +58,13 @@ SNAPPER_LEVELS = ('HOURLY', 'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY')
 # can't start with '-', so '-c X' reads only one way
 _RUN = re.compile(r'rsnapshot(?:\s+(?:-c\s+(?P<conf>[^\s;"\'-][^\s;"\']*)|-[A-Za-z]+))*\s+(?P<level>[A-Za-z][\w-]*)')
 _SNAP = re.compile(r'[A-Za-z][\w-]*\.\d+')
+RUN_LINE_MAX = 4096     # a search starts again at each 'rsnapshot', so a line of thousands of them takes quadratic time
+
+
+def _find_run(text: str):
+    """The rsnapshot command in a cron line or ExecStart, read from the first RUN_LINE_MAX characters: no real one is
+    longer, and a host can't make the scan slow with a huge line."""
+    return _RUN.search(text[:RUN_LINE_MAX])
 _NOT_LEVELS = {'configtest', 'sync', 'du', 'diff', 'help', 'version', 'version-only', 'restore', 'upgrade-config-file', 'get-latest-snapshot'}
 
 
@@ -81,7 +88,7 @@ def _cron_entry(file: str, executable: str, line: str) -> dict | None:
     text = line[len(PAUSED):] if paused else line
     if text.lstrip().startswith('#'):
         return None
-    m = _RUN.search(text)
+    m = _find_run(text)
     if not m or m['level'] in _NOT_LEVELS:
         return None
     entry = {'kind': 'cron', 'file': file, 'line': text, 'level': m['level'], 'conf': m['conf'] or DEFAULT_CONF, 'enabled': not paused}
@@ -118,7 +125,7 @@ def parse(text: str) -> list[dict]:
             if e := _cron_entry(f[1], f[2], '\t'.join(f[3:])):
                 cron.append(e)
         elif tag == 'U' and len(f) >= 5:
-            m = _RUN.search(f[4])
+            m = _find_run(f[4])
             if m and m['level'] not in _NOT_LEVELS:
                 units.append({'kind': 'timer', 'unit': f[1], 'enabled': f[2] == 'enabled', 'calendar': f[3] or None, 'level': m['level'], 'conf': m['conf'] or DEFAULT_CONF})
         elif tag == 'N' and len(f) == 2:
