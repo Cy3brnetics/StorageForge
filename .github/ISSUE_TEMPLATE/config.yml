@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Cy3brnetics/StorageForge/security/advisories/new
+    about: Privately, never in a public issue. See SECURITY.md.
+  - name: Documentation
+    url: https://github.com/Cy3brnetics/StorageForge/wiki
+    about: Getting started, concepts, troubleshooting and every feature.

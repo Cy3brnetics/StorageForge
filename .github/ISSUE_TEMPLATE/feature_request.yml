@@ -1,0 +1,28 @@
+name: Feature request
+description: Something StorageForge could do, or do better.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you would like
+      description: How you picture it working. A rough sketch is fine.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do now instead
+      description: Workarounds, other tools, or scripts you use.
+  - type: textarea
+    id: hosts
+    attributes:
+      label: Where it would run
+      description: Distributions, filesystems, devices or services it should cover.
