@@ -65,6 +65,14 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Roadmap](../roadmap.md) | The final roadmap before release 0.4.0, and what comes after it. Finished and superseded roadmaps are in [the archive](../archive/roadmaps/) |
 | [UI and UX roadmap](../archive/roadmaps/ui-ux-roadmap.md) | The detail behind the roadmap's UI and UX items: how the screens should change, in order, and how the planner grows to match the platform |
 
-These pages are also published as the project wiki. Edit them here, then run `python3 docs/build-wiki.py --push`: each build replaces the wiki, and a link that leads nowhere stops it.
+These pages are also published as the project wiki, on Forgejo and on GitHub. Edit them here, then build and push each one: each build replaces that wiki, and a link that leads nowhere stops it. Links to files outside `docs/` take the address form of the host given in `--repo-url`.
+
+```bash
+python3 docs/build-wiki.py --push                                    # the Forgejo wiki
+python3 docs/build-wiki.py --push --remote git@github.com:Cy3brnetics/StorageForge.wiki.git \
+    --repo-url https://github.com/Cy3brnetics/StorageForge          # the GitHub wiki
+```
+
+GitHub makes a repository's wiki only when its first page is saved in the browser, so open the Wiki tab and save any page once before the first push.
 
 Screenshots were taken from a local instance with one scanned demo host (`nas-demo`, the container from `examples/demo`) and the `atlas` example design.

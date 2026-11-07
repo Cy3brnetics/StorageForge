@@ -1,0 +1,76 @@
+# The GitHub copy of .forgejo/workflows/ci.yml. Two things differ: GitHub runs the job on the runner itself, so PostgreSQL is reached on
+# localhost through a published port, and the image job runs on ubuntu-latest, which has Docker. Change both files together.
+name: CI
+on:
+  push:
+  pull_request:
+
+defaults:
+  run:
+    working-directory: storageforge-indexer
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sf
+          POSTGRES_PASSWORD: sftest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sf" --health-interval 5s --health-timeout 5s --health-retries 10
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres]
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: /tmp/pw-browsers  # tests/ci.sh runs as another user, who must find them
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Tools the tests call
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends openssh-client openssh-server util-linux rsync shellcheck
+      - name: Install
+        run: python -m pip install -e ".[postgres]" playwright && python -m playwright install --with-deps chromium
+      - name: Planner and capacity.py agree
+        run: node tests/vectors/check.mjs
+      - name: Tests on SQLite
+        if: matrix.database == 'sqlite'
+        run: bash tests/ci.sh
+      - name: Tests on PostgreSQL
+        if: matrix.database == 'postgres'
+        env:
+          STORAGEFORGE_TEST_PG: postgresql://sf:sftest@localhost:5432/postgres
+        run: bash tests/ci.sh
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Ruff
+        run: python -m pip install ruff && ruff check storageforge_index tests
+      - name: Shell scripts
+        run: sudo apt-get update && sudo apt-get install -y shellcheck && shellcheck --severity=error docker/*.sh examples/demo/*.sh
+
+  image:
+    # Fails on a critical that is not decided in .trivyignore. See notebook/Audit 2026-10-31/Container scan triage 2026-10-31.md
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - name: Image scan
+        run: |
+          docker build -t storageforge:ci --target runtime storageforge-indexer
+          docker save storageforge:ci -o /tmp/image.tar
+          docker run --rm -v /tmp/image.tar:/image.tar:ro -v "$PWD/.trivyignore:/.trivyignore:ro" aquasec/trivy:latest \
+            image --quiet --input /image.tar --severity CRITICAL --exit-code 1 --ignorefile /.trivyignore

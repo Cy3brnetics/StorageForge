@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a Forgejo wiki from docs/. A wiki is its own flat git repository, so pages are renamed from their titles and
+"""Build a Forgejo or GitHub wiki from docs/ (links to repository files take the form of the host in --repo-url). A wiki is its own flat git repository, so pages are renamed from their titles and
 links rewritten to match. Links to files outside docs/ go to the repository. Any link that leads nowhere stops the build,
 so a broken wiki never gets published. Edit docs/, never the wiki: each build replaces it."""
 import argparse
@@ -16,7 +16,15 @@ DOCS = ROOT / 'docs'
 DEFAULT_REMOTE = 'ssh://git@10.42.0.3:2222/Gabe/StorageForge.wiki.git'
 DEFAULT_REPO = 'http://10.42.0.3:3000/Gabe/StorageForge'
 LINK = re.compile(r'(!?\[[^\]]*\]\()([^)\s]+)(\))')
-PREFIX = {'features': 'Feature'}          # guide pages share short titles such as "Views"
+PREFIX = {'features': 'Feature'}
+
+
+def file_url(repo_url, kind, rel):
+    """A file in the repository, in the address form of whoever hosts it: GitHub has /blob/main and /raw/main, Forgejo /src/branch/main and
+    /raw/branch/main. kind is 'src' for a page about the file, 'raw' for the file itself (an image)."""
+    if 'github.com' in repo_url:
+        return f'{repo_url}/{"raw" if kind == "raw" else "blob"}/main/{rel}'
+    return f'{repo_url}/{kind}/branch/main/{rel}'          # guide pages share short titles such as "Views"
 
 
 def page_name(path):
@@ -55,7 +63,7 @@ def convert(path, names, repo_url, errors):
         if dest.is_relative_to(DOCS):
             return f'{before}{dest.relative_to(DOCS).as_posix()}{after}'
         kind = 'raw' if before.startswith('!') else 'src'
-        return f'{before}{repo_url}/{kind}/branch/main/{dest.relative_to(ROOT).as_posix()}{"#" + frag if frag else ""}{after}'
+        return f'{before}{file_url(repo_url, kind, dest.relative_to(ROOT).as_posix())}{"#" + frag if frag else ""}{after}'
 
     out, fenced = [], False
     for line in path.read_text().splitlines():
@@ -95,7 +103,7 @@ def build(out, repo_url):
         (out / f'{name}.md').write_text(text)
     shutil.copytree(DOCS / 'images', out / 'images')
     (out / '_Sidebar.md').write_text(sidebar(converted['Home'], names))
-    (out / '_Footer.md').write_text('Built from [`docs/`](' + repo_url + '/src/branch/main/docs). Edit there: each build replaces this wiki.\n')
+    (out / '_Footer.md').write_text('Built from [`docs/`](' + file_url(repo_url, 'src', 'docs') + '). Edit there: each build replaces this wiki.\n')
     return len(converted)
 
 
