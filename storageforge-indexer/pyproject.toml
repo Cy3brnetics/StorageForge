@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "storageforge-indexer"
-version = "0.3.2"
+version = "0.4.0"
 description = "Map, plan and change the storage on a fleet of Linux machines over SSH, with no agent"
 requires-python = ">=3.10"
 dependencies = ["cryptography>=44", "flask>=3.1", "flask-login>=0.6.3", "flask-limiter>=3.8", "pyyaml>=6", "waitress>=3.0"]

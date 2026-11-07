@@ -4,6 +4,10 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 
 ## Unreleased
 
+## 0.4.0 — 2026-11-06
+
+Upgrade notes: run each host's scan access script again for host logs (it adds the scan user to `systemd-journal`) and for signed scans (it makes a signing key); migrations 041 and 042 run on start. A host that signed before and answers unsigned is refused until its key is forgotten (`access signing --forget`). Lab status: 561 of 564 checks passed on 2026-11-06 before the SF-48 fix, which made tier 16 pass in full; `workload-libvirt` fails on a lab image without `qemu-img`; pfSense, OPNsense and Cisco on real devices, old SSH ciphers, Incus and LXC guests, Tailscale, proxies, identity providers, PagerDuty, FIDO2, Terraform and Puppet apply, and the btrfs side of SF-72 are **not lab-tested**. The security audit is partial (see `notebook/Audit 2026-11-05`).
+
 ### Added
 - **The storage planner keeps named versions of a design (migration 042).** Save one with a note, compare it with the design on screen in plain words, restore it (the design it replaces is kept as an automatic version first) or delete it. At most 50 versions and 40 MiB per host, included in essential backups.
 - **Logs is a view of its own.** A time range (hour, day, 7 or 30 days, or from and to), a chart of lines by level and hour with a pattern per level, when each host's journal was last collected (or that it never was), a unit filter fed by the stored units, and a link from a host's Details. The range and filters are in the URL.
@@ -39,6 +43,7 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 - Comparing a design no longer writes to the database. Audit rows name the second hosts a send logs in to, and the check warns about them plainly.
 
 ### Fixed
+- **A task or schedule started by its systemd timer can reach another host on SELinux hosts (SF-48).** Found by lab tier 16 on Fedora: a script under `/usr/local/lib` is `lib_t`, so its unit stayed in `init_t` and `ssh` was refused with Permission denied, while the same send started by hand passed. The task and schedule installers now give their scripts `bin_t`, with a persistent rule when `semanage` is there. Lab tier 16 passes in full, including the six ZFS sends on two ZFS hosts.
 - Rule sets, map views, designs and long sentinel events over 4 KiB were refused before their validators saw them.
 - Malware preview answered `GONE` for a quarantined file. It now says the file is in quarantine.
 - Removed `backup.send_file`, an unsigned sender nothing used, and a site-wide security key setting nothing could set.

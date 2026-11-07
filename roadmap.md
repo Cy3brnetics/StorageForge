@@ -79,7 +79,7 @@ The notebook has 18 findings marked in progress. Twelve say *fixed in the workin
 
 | Finding | What's left | Who | Status |
 | :--- | :--- | :--- | :--- |
-| **SF-48** | See A1 | the release run | built in `4d8b083`; lab tier 16 ran on 2026-11-06 and passes but for two checks on sf-fedora (a signed send started from its systemd unit fails at `ssh` with Permission denied, SELinux enforcing, cause not found). Stays in progress |
+| **SF-48** | See A1 | the release run | done: built in `4d8b083`, the SELinux timer-unit failure fixed on 2026-11-06, and lab tier 16 passes in full (btrfs on 7 hosts, ZFS on two) |
 | **SF-46** operators can apply legal holds | A test that every route ending in `apply_hold` takes the same permission, walked as a list and not one route at a time | the release run | done: `ca2eacb`, merged in `4d8b083` |
 | **SF-38** container scan | CI fails on a new reachable critical. The job exists, and has never run | the owner | open |
 | **EQ-01** no CI | A runner, so every push runs the suite on SQLite and PostgreSQL | the owner | open |
