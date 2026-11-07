@@ -36,7 +36,7 @@ def both(n, digits=2):
     return 'n/a' if n is None else f'{fmt_bin(n, digits)} ({fmt_dec(n, digits)})'
 
 
-_SIZE_RE = re.compile(r'^\s*([0-9]*\.?[0-9]+)\s*([kmgtpe]?)(i?)(b?)\s*$', re.IGNORECASE)
+_SIZE_RE = re.compile(r'^\s*([0-9]+(?:\.[0-9]+)?|\.[0-9]+)\s*([kmgtpe]?)(i?)(b?)\s*$', re.IGNORECASE)   # one way to split the digits: linear time
 
 
 def parse_size(text) -> int:

@@ -54,7 +54,9 @@ for u in snapper-timeline.timer snapper-cleanup.timer; do printf 'G\t%s\t%s\n' "
 PAUSED = '#sf-paused '      # how pausing marks a cron line, so resuming finds exactly the lines it stopped
 DEFAULT_CONF = '/etc/rsnapshot.conf'
 SNAPPER_LEVELS = ('HOURLY', 'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY')
-_RUN = re.compile(r'rsnapshot(?:\s+-[A-Za-z]+)*(?:\s+-c\s+(?P<conf>[^\s;"\']+))?(?:\s+-[A-Za-z]+)*\s+(?P<level>[A-Za-z][\w-]*)')
+# one loop over the flags (two loops side by side backtrack in quadratic time on a long line of them); the config path
+# can't start with '-', so '-c X' reads only one way
+_RUN = re.compile(r'rsnapshot(?:\s+(?:-c\s+(?P<conf>[^\s;"\'-][^\s;"\']*)|-[A-Za-z]+))*\s+(?P<level>[A-Za-z][\w-]*)')
 _SNAP = re.compile(r'[A-Za-z][\w-]*\.\d+')
 _NOT_LEVELS = {'configtest', 'sync', 'du', 'diff', 'help', 'version', 'version-only', 'restore', 'upgrade-config-file', 'get-latest-snapshot'}
 
