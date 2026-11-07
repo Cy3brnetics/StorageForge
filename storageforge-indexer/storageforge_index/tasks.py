@@ -1003,6 +1003,7 @@ case $MODE in
       echo "systemd does not understand the schedule \"$SCHEDULE\"" >&2; exit 1
     fi
     install -D -m 0750 "$0" "$LIB/$TASK.sh" && ok "$LIB/$TASK.sh"
+    label_exec "$LIB/$TASK.sh"
     mkdir -p "$STATE" && chmod 0755 "$STATE" 2>/dev/null || true
     {
       echo "[Unit]"

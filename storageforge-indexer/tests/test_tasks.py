@@ -663,5 +663,40 @@ class TaskRuns(Fleet):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('FROM-SYSTEMD', r.stdout)
 
+class UnitScriptLabel(unittest.TestCase):
+    """SF-48, found in the lab on Fedora: a script under /usr/local/lib that a systemd unit runs is lib_t, so with SELinux enforcing the unit stays in
+    init_t and cannot run ssh. label_exec gives it bin_t. Run here under bash with a stand-in chcon, with and without SELinux."""
+
+    def run_label(self, selinux):
+        tmp = Path(tempfile.mkdtemp(prefix='sflabel-'))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / 'bin').mkdir()
+        (tmp / 'bin' / 'chcon').write_text(f'#!/bin/sh\necho "$@" >> {tmp}/calls\n')
+        (tmp / 'bin' / 'chcon').chmod(0o755)
+        fs = tmp / 'selinux'
+        if selinux:
+            fs.mkdir()
+        start = scriptkit.HELPERS.index('label_exec()')
+        func = scriptkit.HELPERS[start:scriptkit.HELPERS.index('other_fs_dirs()')]
+        done = subprocess.run(['bash', '-c', func + '\nlabel_exec /usr/local/lib/storageforge/tasks/a.sh /x/b.sh; echo rc=$?'],
+                              env={'PATH': f'{tmp}/bin:/usr/bin:/bin', 'SF_SELINUX_FS': str(fs)}, capture_output=True, text=True, timeout=20)
+        calls = (tmp / 'calls').read_text() if (tmp / 'calls').exists() else ''
+        return done.stdout.strip(), calls
+
+    def test_a_host_with_selinux_gets_bin_t(self):
+        out, calls = self.run_label(True)
+        self.assertEqual(out, 'rc=0')
+        self.assertEqual(calls.strip(), '-t bin_t -- /usr/local/lib/storageforge/tasks/a.sh /x/b.sh')
+
+    def test_a_host_without_it_is_left_alone(self):
+        out, calls = self.run_label(False)
+        self.assertEqual((out, calls), ('rc=0', ''))
+
+    def test_both_installers_label_what_their_units_run(self):
+        root = Path(tasks.__file__).parent
+        self.assertIn('label_exec "$LIB/$TASK.sh"', (root / 'tasks.py').read_text())
+        self.assertIn('label_exec "$RUN_SH" "$TASK_SH"', (root / 'scheduler.py').read_text())
+
+
 if __name__ == '__main__':
     unittest.main()

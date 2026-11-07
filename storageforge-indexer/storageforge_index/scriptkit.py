@@ -45,7 +45,13 @@ def comments(lines, empty: str) -> str:
     return '\n'.join(one_line(l) for l in lines) or empty
 
 
-HELPERS = r"""other_fs_dirs() { # path -> the folders under it that are another filesystem: a held snapshot is read-only, and is not for relabelling
+HELPERS = r"""label_exec() { # label_exec <file>... for a script a systemd unit runs: under /usr/local/lib it is lib_t, which is not an entry point, so with SELinux enforcing the unit stays in init_t and cannot run ssh, btrfs or rsync (SF-48, found in the lab on Fedora). bin_t it is, and it is kept across a relabel when semanage is there
+  [[ -d ${SF_SELINUX_FS:-/sys/fs/selinux} ]] && command -v chcon >/dev/null 2>&1 || return 0
+  chcon -t bin_t -- "$@" 2>/dev/null || true
+  command -v semanage >/dev/null 2>&1 && semanage fcontext -a -t bin_t '/usr/local/lib/storageforge(/.*)?\.sh' 2>/dev/null || true
+  return 0
+}
+other_fs_dirs() { # path -> the folders under it that are another filesystem: a held snapshot is read-only, and is not for relabelling
   local dev; dev=$(stat -c %d -- "$1") || return 0
   find "$1" -xdev -type d -printf '%D\t%p\n' 2>/dev/null | awk -F'\t' -v d="$dev" '$1 != d {print $2}'
 }

@@ -1272,6 +1272,7 @@ chmod 0700 /etc/storageforge/scheduler
 {_heredoc('"$TASK_SH"', task_script)}{task_access}
 ok "$TASK_SH"
 {_heredoc('"$RUN_SH"', runner)}chmod 0700 "$RUN_SH"
+label_exec "$RUN_SH" "$TASK_SH"
 ok "$RUN_SH"
 {keep_token}{_heredoc(REPORT_CA, ca) + f'chmod 0644 {REPORT_CA}' if ca else ''}
 if ((PAUSED)); then
