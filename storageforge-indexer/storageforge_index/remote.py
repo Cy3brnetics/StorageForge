@@ -387,6 +387,7 @@ echo '@@pkglist'; (PATH="$PATH:/usr/sbin:/sbin"; . /etc/os-release 2>/dev/null; 
   command -v snap >/dev/null 2>&1 && bounded snap list 2>/dev/null | awk 'NR > 1 && $1 != "" {print "s\t" $1 "\t" $NF}'
   for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do [ -r "$f" ] && awk -v f="$f" '$1 ~ /^deb(-src)?$/ {for (i = 2; i <= NF; i++) if ($i ~ /:\/\//) {print "r\t" f "\t" $i; break}}' "$f"; done
   for f in /etc/apt/sources.list.d/*.sources; do [ -r "$f" ] && awk -v f="$f" 'tolower($1) == "uris:" {for (i = 2; i <= NF; i++) print "r\t" f "\t" $i}' "$f"; done
+  for f in /etc/apt/mirrors/*.list; do [ -r "$f" ] && awk -v f="$f" '$1 ~ /:\/\// {print "r\t" f "\t" $1}' "$f"; done
   for f in /etc/yum.repos.d/*.repo /etc/zypp/repos.d/*.repo; do [ -r "$f" ] && awk -F= -v f="$f" 'function out(i) {if (e) for (i = 1; i <= n; i++) print "r\t" f "\t" u[i]; n = 0; e = 1}
     /^\[/ {out()} tolower($1) ~ /^ *enabled *$/ && $2 ~ /^ *0/ {e = 0} tolower($1) ~ /^ *(baseurl|metalink|mirrorlist) *$/ {v = $0; sub(/^[^=]*= */, "", v); u[++n] = v} END {out()}' "$f"; done
   [ -r /etc/pacman.conf ] && awk '/^\[/ {s = $0; gsub(/[][]/, "", s)} s != "options" && /^ *(Server|Include) *=/ {v = $0; sub(/^[^=]*= */, "", v); print "r\t" s "\t" v}' /etc/pacman.conf

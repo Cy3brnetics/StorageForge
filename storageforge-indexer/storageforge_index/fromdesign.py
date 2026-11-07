@@ -14,6 +14,8 @@ can be saved or scripted, so text from the design reaches a script only through 
 """
 from __future__ import annotations
 
+import copy
+
 from . import blueprint
 from .changes import MKFS, MOUNT_FS, OS_MOUNTS, PROFILES, TYPES, CHECKS
 from .moves import find_host, hosts
@@ -47,9 +49,36 @@ def _spec(part: dict, scanned: bool, id_mode: str) -> str:
     return f'LABEL={part["label"]}' if part.get('label') else f'/dev/{_bare(part.get("id"))}'
 
 
-def plan(conn, design: dict) -> dict:
+def _blanked(have: dict, blank: set) -> tuple[dict, set, set]:
+    """have as if the disks in blank were empty: their partitions, and the pools on them, gone. Also the disks that held
+    something, and the mount points that were on them."""
+    have = copy.deepcopy(have)
+    on, held, gone = {}, set(), set()
+    for d in have['devices']:
+        dev = _bare(d['dev'])
+        for p in d['partitions']:
+            on[p['id']] = dev
+        if dev in blank:
+            if d['partitions'] or d.get('member'):
+                held.add(dev)
+            gone |= {p.get('mount') for p in d['partitions']} | {s.get('mount') for p in d['partitions'] for s in p.get('subvolumes') or []}
+            d['partitions'], d['member'] = [], None
+    keep = []
+    for pool in have['pools']:
+        if {on.get(_bare(m), _bare(m)) for m in pool.get('members') or []} & blank:
+            gone |= {pool.get('mount')} | {ds.get('mount') for ds in pool.get('datasets') or []}
+        else:
+            keep.append(pool)
+    have['pools'] = keep
+    return have, held, gone - {None, ''}
+
+
+def plan(conn, design: dict, blank=()) -> dict:
     """{host, name, tasks, manual, left}. tasks are change-plan tasks for that host; manual are design items Changes
-    can't do, with why; left are things on the host the design no longer has, which the plan does not touch."""
+    can't do, with why; left are things on the host the design no longer has, which the plan does not touch.
+
+    blank names disks of the host to plan as if they were empty (a copy of another host onto them, clone.py). Steps
+    on one that held something get wipe set, and still keep an empty confirm field."""
     host_name = str((design.get('metadata') or {}).get('host') or '').strip()
     h = find_host(hosts(conn), host_name)
     if not h:
@@ -57,8 +86,11 @@ def plan(conn, design: dict) -> dict:
                           'Scan it first, or use the fstab, systemd and blueprint exports')
     host = h['name']
     have = blueprint.from_index(conn, host)
+    held, gone = set(), set()
+    if blank:
+        have, held, gone = _blanked(have, {_bare(x) for x in blank})
     id_mode = (design.get('metadata') or {}).get('identifiers') or 'UUID'
-    mounted = {m['target'] for m in h['mounts']}
+    mounted = {m['target'] for m in h['mounts']} - gone
     tasks, manual, left = [], [], []
 
     def task(kind, **params):
@@ -345,7 +377,11 @@ def plan(conn, design: dict) -> dict:
     tasks.sort(key=lambda t: (ORDER.index(t['type']), t['params'].get('target', '').count('/')))
     first_rest = next((i for i, t in enumerate(tasks) if ORDER.index(t['type']) > ORDER.index('format')), len(tasks))
     tasks[first_rest:first_rest] = blocks
+    disk_of = {p['id']: _bare(d['dev']) for d in design.get('devices') or [] for p in d.get('partitions') or []}
     for i, t in enumerate(tasks, 1):
         t['id'] = f'd{i}'
+        devs = ' '.join(str(t['params'].get(k) or '') for k in ('device', 'disk', 'devices')).split()
+        if 'wipe' in t['params'] and any(disk_of.get(_bare(x), _bare(x)) in held for x in devs):
+            t['params']['wipe'] = True
     return {'host': host, 'name': f'Design for {host}', 'tasks': tasks, 'manual': manual, 'left': sorted(set(left)),
             'destructive': sum(1 for t in tasks if TYPES[t['type']].get('destructive'))}

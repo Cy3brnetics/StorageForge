@@ -335,13 +335,14 @@ if [[ -n $HOST ]]; then
   SSHO=(-o ControlMaster=auto -o ControlPath="$CTL/s" -o ControlPersist=60 -o ConnectTimeout=10)
   REST=(); skipnext=0
   for a in "${ARGS[@]}"; do if ((skipnext)); then skipnext=0; continue; fi; if [[ $a == --host ]]; then skipnext=1; continue; fi; REST+=("$a"); done
-  tmp=$(ssh "${SSHO[@]}" -- "$HOST" 'mktemp -d /tmp/sf-move.XXXXXX')
+  # Your SSH agent is forwarded only with --forward-agent: while it runs, root on that host can use it to log in
+  # wherever your keys work. A step that pulls from a third host needs it (or a key on that host). The first ssh opens
+  # the shared connection, and a session over it gets the agent only if that connection was opened with it
+  FWD=(); ((${FWD_AGENT:-0})) && FWD=(-A)
+  tmp=$(ssh "${SSHO[@]}" ${FWD[@]+"${FWD[@]}"} -- "$HOST" 'mktemp -d /tmp/sf-move.XXXXXX')
   scp -q -o ControlPath="$CTL/s" -- "$0" "$HOST:$tmp/move.sh"
   # ssh hands the remote side one command line, which its shell splits again: every argument goes quoted
   qtmp=$(printf %q "$tmp") qrest=; ((${#REST[@]})) && printf -v qrest ' %q' "${REST[@]}"
-  # Your SSH agent is forwarded only with --forward-agent: while it runs, root on that host can use it to log in
-  # wherever your keys work. A step that pulls from a third host needs it (or a key on that host).
-  FWD=(); ((${FWD_AGENT:-0})) && FWD=(-A)
   ssh "${SSHO[@]}" ${FWD[@]+"${FWD[@]}"} -t -- "$HOST" "cd $qtmp && if [ \$(id -u) = 0 ]; then bash ./move.sh$qrest; else sudo --preserve-env=SSH_AUTH_SOCK bash ./move.sh$qrest; fi; rc=\$?; rm -rf $qtmp; exit \$rc"
   exit $?
 fi

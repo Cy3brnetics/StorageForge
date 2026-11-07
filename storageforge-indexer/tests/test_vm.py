@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -358,6 +359,38 @@ class Clone(Db):
         self.assertEqual(client.delete('/api/vm/specs/db').status_code, 404)
         got = client.post('/api/changes/check', json=plan(task(spec='server'))).json
         self.assertNotIn('choose an image', json.dumps(got))
+
+
+class Portable(unittest.TestCase):
+    """What the lab found that a syntax check on a new bash cannot: scripts run on the bash of each host."""
+    # bash before 5.2 (Ubuntu 22.04, Debian 12, RHEL 9) cannot parse a case pattern without its opening ( inside $( )
+    CASE_IN_SUBST = re.compile(r'\$\((?:[^()]|\([^()]*\))*?\bcase\s+\S+\s+in\s+(?!\()(\S)')
+
+    def test_the_pattern_finds_what_bash_5_1_rejects(self):
+        self.assertTrue(self.CASE_IN_SUBST.search('x=$(case $a in b) echo ;; esac)'))
+        self.assertFalse(self.CASE_IN_SUBST.search('x=$(case $a in (b) echo ;; esac)'))
+        self.assertFalse(self.CASE_IN_SUBST.search('case $a in b) echo ;; esac'))
+
+    def test_no_script_has_a_bare_case_pattern_inside_a_command_substitution(self):
+        hits = [f'{f.name}:{n}' for f in sorted(Path(steps_vm.__file__).parent.glob('*.py'))
+                for n, line in enumerate(f.read_text().splitlines(), 1) if self.CASE_IN_SUBST.search(line)]
+        self.assertEqual(hits, [])
+
+    def test_the_agent_goes_with_the_first_connection(self):
+        # sessions over a shared connection get the agent only if the connection was opened with it: with -A on the
+        # later session alone, --forward-agent never reached the host (found copying a host's files in the lab)
+        from storageforge_index import scriptkit
+        first = next(line for line in scriptkit.REMOTE.splitlines() if 'mktemp -d /tmp/sf-move' in line)
+        self.assertIn('${FWD[@]+"${FWD[@]}"}', first)
+        self.assertLess(scriptkit.REMOTE.index('FWD=()'), scriptkit.REMOTE.index(first))
+
+    def test_a_failed_create_takes_away_only_what_it_made(self):
+        body = steps_vm.bash()
+        self.assertIn('vm_undo() {', body)
+        self.assertIn('virt-install --connect qemu:///system', body)
+        tail = body[body.index('try virt-install'):]
+        self.assertIn('{ vm_undo; return 0; }', tail[:tail.index('\n', tail.index('--noautoconsole'))])
+
 
 if __name__ == '__main__':
     unittest.main()

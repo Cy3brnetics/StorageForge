@@ -1566,7 +1566,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         files = b.get('files') or 'none'
         mapping = b.get('map') or 'auto'
         if mapping != 'auto' and (not isinstance(mapping, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items())):
-            raise ValueError('map is {"/source/mount": "/dev/device"} or "auto"')
+            raise ValueError('map is {"/dev/source-disk": "/dev/target-disk"}, {"/source/mount": "/dev/target-disk"} or "auto"')
         return dict(packages=b.get('packages', True) is not False, skip=str(b.get('skip') or ''), accounts=b.get('accounts', True) is not False,
                     shares=b.get('shares', True) is not False, storage=mapping, files=files if isinstance(files, (str, list)) else 'none',
                     mode=b.get('mode') or 'test', snapshots=b.get('snapshots', True) is not False)

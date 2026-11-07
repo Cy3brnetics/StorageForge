@@ -1,6 +1,6 @@
 # Cloning and migrating hosts
 
-**Status: design, partly built.** Copy a scanned machine to another one in any direction: physical to VM, VM to physical, VM to VM, or physical to physical. Use it to test a change on a copy, or to move a machine onto other hardware or off it. The same choices apply in every direction. Built so far: the package list and its fixes, VMs from cloud images with VM specs, and copying a host onto any scanned target: its packages, accounts, share files, data filesystems and user files, with snapshots before and after, and the data at risk accepted before anything is saved. See [Phases](#phases) for what is not built.
+**Status: design, partly built.** Copy a scanned machine to another one in any direction: physical to VM, VM to physical, VM to VM, or physical to physical. Use it to test a change on a copy, or to move a machine onto other hardware or off it. The same choices apply in every direction. Built so far: the package list and its fixes, VMs from cloud images with VM specs, and copying a host onto any scanned target: its packages, accounts, share files, the layout of its data disks (btrfs, ZFS and LVM included) and user files, with snapshots before and after, and the data at risk accepted before anything is saved. A copy of a ZFS host onto a new VM has run end to end in the lab ([Lab run](#lab-run)). See [Phases](#phases) for what is not built.
 
 ## What was decided
 
@@ -43,12 +43,19 @@ Your own go beside them: `storageforge-index vm spec db --set vcpus=8 --set ram_
 
 ## Copying a host onto another
 
-`storageforge-index clone web-01 --to web-01-copy [--files none|structure|all|/srv/a,/home/ana] [--map /srv/data=/dev/vdb] [--migrate]`, or **Copy this host to…** on a host's menu in the web UI. The target is any scanned host: a new VM, or a machine with a fresh install. It saves ordinary plans, run in this order:
+`storageforge-index clone web-01 --to web-01-copy [--files none|structure|all|/srv/a,/home/ana] [--map /dev/sdb=/dev/vdb] [--migrate]`, or **Copy this host to…** on a host's menu in the web UI. The target is any scanned host: a new VM, or a machine with a fresh install. It saves ordinary plans, run in this order:
 
 1. **A change plan on the target:**
    - **Snapshot before:** a libvirt snapshot of every disk when the target is a VM on a scanned libvirt host. Otherwise a btrfs, ZFS or LVM snapshot of its root, or a critical risk when its root can't be snapshotted.
    - **The source's packages, accounts and share files:** the `packages`, `accounts` and `config-files` steps.
-   - **Its data filesystems, made on the target's disks:** the existing `format` step, with its three locks, then `mount` by label with the source's options. A btrfs filesystem with subvolumes is mounted at `/mnt/<label>-top`, its subvolumes are made there, and each is mounted where it was.
+   - **Its data disks, laid out again on the target's:** the source's layout is moved onto the target's disks and handed to the planner's design-to-plan step, so the steps are the planner's own, in its order:
+     - partitions, and filesystems formatted and mounted by label with the source's options, plus `nofail`
+     - btrfs pools, rebuilt with `format`, `btrfs-add` and `btrfs-balance` to the source's profile
+     - a btrfs with subvolumes, mounted at `/mnt/<label>-top` while its subvolumes are made, then mounted where each was
+     - ZFS pools on whole disks with the source's layout, properties and datasets
+     - LVM volume groups and their volumes
+
+     Every step that writes to a disk keeps its three locks. The plan fills in the confirm field, and only after the risk is ticked.
 2. **A Moves plan for user files,** at the level chosen:
    - **structure:** folders with their owners and modes, and no files.
    - **all:** every data filesystem and `/home`, leaving out caches.
@@ -57,7 +64,13 @@ Your own go beside them: `storageforge-index vm spec db --set vcpus=8 --set ram_
    It copies and never deletes. A file it would overwrite is kept beside it as `<name>.sf-replaced-<date>`.
 3. **A change plan with the snapshot after.**
 
-Disks are mapped with `--map /mount=/dev/device`. Without it, a VM's `sf-data` disks are taken in order. ZFS, LVM, md and LUKS layouts, network mounts, bind mounts and packages from no package source aren't made: they're listed under **Not copied**.
+Disks are mapped with `--map /dev/sdb=/dev/vdb`, a source disk to a target disk, or `--map /srv/data=/dev/vdb` for the disk under a mount. Without it, a VM's empty `sf-data` disks are taken in order. The target's system disk is refused. Some things aren't made, and are listed under **Not copied** with the reason:
+- mdadm arrays
+- LUKS, whose key is yours to keep
+- encrypted ZFS pools, and pools with log or cache devices
+- a disk whose filesystems the scan couldn't read (Alpine's lsblk reports none)
+- network mounts and bind mounts
+- packages from no package source
 
 ### Data at risk
 
@@ -273,18 +286,40 @@ Phase 1 reads apt, dnf and yum, zypper, pacman and apk. The rest fall into three
 
 | Phase | What | State |
 | :--- | :--- | :--- |
-| 1 | **Package list**: collected by each scan, `hosts packages` to list and compare, a script that installs the same set with the same package manager | Built, unit-tested, **not lab-tested** |
+| 1 | **Package list**: collected by each scan, `hosts packages` to list and compare, a script that installs the same set with the same package manager. Across releases, versioned libraries are left out, and names the target's sources lack are listed, not tried | Built; collector lab-tested on 7 distros, install on apt |
 | 1b | **Fixes to phase 1:** image-based, transactional and read-only systems, apt on rpm, Debian's local debs, holds and backports, AUR versions | Built, unit-tested, **not lab-tested** |
-| 2 | **Targets:** new VMs from cloud images, with VM specs (`vm-create`, `vm create`, `vm clone`), and any scanned machine through `clone`, with a warning when it isn't freshly installed | Built, **not lab-tested** |
-| 2b | **The `packages` step:** another host's packages, as a plan step | Built, **not lab-tested** |
-| 3 | **Config and storage:** the `accounts` and `config-files` steps, and data filesystems (ext4, XFS, btrfs with subvolumes, vfat, exFAT) made with the existing format and mount steps. Not built: ZFS, LVM, md and LUKS layouts, enabled services, other `/etc` files | Built in part, **not lab-tested** |
+| 2 | **Targets:** new VMs from cloud images, with VM specs (`vm-create`, `vm create`, `vm clone`), and any scanned machine through `clone`, with a warning when it isn't freshly installed | Built; `vm-create` lab-tested |
+| 2b | **The `packages` step:** another host's packages, as a plan step | Built, lab-tested on apt |
+| 3 | **Config and storage:** the `accounts` and `config-files` steps, and the data disks' layout through the planner's design-to-plan step: partitions, filesystems, btrfs pools and subvolumes, ZFS pools and datasets, LVM. Not built: mdadm and LUKS, enabled services, other `/etc` files | Built in part; accounts and ZFS lab-tested, btrfs planned against real layouts but not applied, LVM not lab-tested |
 | 3b | **AUR and local builds:** cache, `bacman`, an AUR build at the matching commit; Arch Linux Archive pinning; derivative repositories and CPU levels | Planned |
 | 3c | **Hardware differences:** firmware, drivers, guest tools, interface renames and CPU level, each way | Planned |
-| 4 | **User files:** none, structure, chosen folders or everything, through Moves with `dirs_only` and `keep_replaced` | Built, **not lab-tested** |
+| 4 | **User files:** none, structure, chosen folders or everything, through Moves with `dirs_only` and `keep_replaced` | Built; `all` lab-tested and verified by checksum |
 | 4b | **Snapshots and risks:** before and after snapshots, the Data at risk list with its ticks and typed name, and `accept` in the API. Not built: holds on the clone snapshots, the before/after "what changed" report, `--accept` in the scripts | Built in part, **not lab-tested** |
 | 5 | **Test and migration modes**: the isolation above, and cutover | Planned |
 | 6 | **VM to VM copy as is**: disk images and the libvirt definition, between libvirt hosts | Planned |
 | 7 | **Disk image from a physical host**: a block copy from a snapshot into qcow2, then fixed up to boot. To bare metal, through a live environment | Later |
+
+## Lab run
+
+On 2026-11-07, against a lab build of `sf-ctl`, `sf-ubuntu`, `sf-jammy`, `sf-bookworm`, `sf-fedora`, `sf-suse` and `sf-alpine`, with the work uncommitted:
+
+- **The package list** was read on all seven: Debian 12 and 13, Ubuntu 22.04 and 24.04, Fedora 44, openSUSE Leap 16 and Alpine 3.24. The install script ran in report mode across releases, and `sf-jammy`'s list was applied to `sf-ubuntu`.
+- **The whole copy**, onto a VM made by the `vm-create` step on the lab network:
+  1. `vm-create` built it from the Ubuntu 22.04 cloud image, with two `sf-data` disks.
+  2. A scan of the new VM.
+  3. `clone sf-jammy --to sf-clonetest --files all`.
+  4. The change plan with `--apply --destructive`. It installed `zfsutils-linux`, added two accounts with their IDs, and made the `vault` mirror with `compression=lz4` and `atime=off` and its two datasets.
+  5. The Moves plan copied `/home` and `/vault` (1.1 GiB), and `--verify --checksum` matched every step. Running the change plan again found nothing to do.
+- **Planned but not applied:** btrfs raid10 (`sf-bookworm`) and nested subvolumes (`sf-suse`). The mdadm array on `sf-suse` was listed as not copied, as it should be.
+- **Not run:** LVM (no LVM host in that build), the snapshot steps (the VM's libvirt host wasn't scanned, and its root is ext4), the share files, migration mode and the web form.
+
+Bugs it found, all fixed:
+- bash before 5.2 couldn't parse the `vm-create` step. A test now looks for that pattern in every script.
+- `--forward-agent` never reached the host in Moves, change-plan, task and share scripts, because the shared SSH connection was opened without the agent.
+- A failed `vm-create` left its disks behind, and `virt-install` didn't name the system libvirt.
+- Copying across releases tried old versioned libraries such as `libssl3` and `gcc-12-base`.
+- ZFS datasets weren't copied at all, since fstab doesn't name them, and a whole-disk system disk wasn't recognised.
+- The scan missed the package sources of Debian cloud images (`mirror+file:`), and listed base snaps as apps.
 
 ## The package list (phase 1)
 

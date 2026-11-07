@@ -93,8 +93,26 @@ class OddSystems(unittest.TestCase):
         pk = pkglist.parse('pm apt-get\nm\tvim\nm\tzfsutils-linux\nm\tmydeb\nh\tvim\nb\tzfsutils-linux\no\tmydeb\nh\tnot-manual\ncomplete')
         self.assertEqual((pk['packages'], pk['holds'], pk['backports'], pk['foreign']), (['vim', 'zfsutils-linux'], ['vim'], ['zfsutils-linux'], ['mydeb']))
 
+    def test_base_snaps_come_with_the_apps_that_need_them(self):
+        # what snap list printed on the lab's Ubuntu 22.04: core22 (base) and snapd are not installed by name
+        pk = pkglist.parse('pm apt-get\ns\tcore22\tbase\ns\tsnapd\tsnapd\ns\tlxd\t-\ns\tcode\tclassic\ncomplete')
+        self.assertEqual(pk['snap'], [{'name': 'code', 'confinement': 'classic'}, {'name': 'lxd', 'confinement': None}])
+
+    def test_a_debian_cloud_image_names_its_mirrors(self):
+        # Debian 12 and 13 cloud images point apt at mirror+file:/etc/apt/mirrors/*.list: the scan reads those lists
+        self.assertIn('/etc/apt/mirrors/*.list', remote.INVENTORY_SCRIPT)
+        pk = pkglist.parse('pm apt-get\nr\t/etc/apt/mirrors/debian.list\thttps://deb.debian.org/debian\n'
+                           'r\t/etc/apt/sources.list.d/debian.sources\tmirror+file:///etc/apt/mirrors/debian.list\ncomplete')
+        self.assertEqual(pk['repos'], [{'where': '/etc/apt/mirrors/debian.list', 'url': 'https://deb.debian.org/debian'}])
+
     def test_aur_versions_are_kept(self):
         self.assertEqual(pkglist.parse('pm pacman\nm\tparu\no\tparu\t2.0.4-1\ncomplete')['foreign_versions'], {'paru': '2.0.4-1'})
+
+
+# apt-cache: every name asked about has a candidate but "nowhere", and policy alone lists a backports source
+APT_CACHE = ('if [ "$1" = policy ] && [ $# -gt 1 ]; then shift; for p; do case $p in nowhere) ;; '
+             '*) printf "%s:\\n  Installed: (none)\\n  Candidate: 1.0\\n" "$p" ;; esac; done; '
+             'else echo " 500 http://deb.debian.org/debian trixie-backports/main amd64 Packages"; fi')
 
 
 def stub(d: Path, name: str, body: str):
@@ -129,6 +147,7 @@ class Script(unittest.TestCase):
         self.d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.d)
         stub(self.d, 'apt-get', 'echo "apt-get $*" >>"$LOG"')
+        stub(self.d, 'apt-cache', APT_CACHE)
         stub(self.d, 'dpkg-query', 'printf "vim\\tinstalled\\nlibc6:i386\\tinstalled\\ngone\\tnot-installed\\n"')
 
     def run_script(self, pk, *args):
@@ -148,6 +167,23 @@ class Script(unittest.TestCase):
         self.assertFalse((self.d / 'log').exists())
         self.assertFalse(Path('/tmp/CANARY').exists())
         self.assertIn('2 of 3 already installed', self.run_script(pk, '--skip', 'zsh').stdout)
+
+    def test_a_name_the_sources_lack_is_said_and_not_tried(self):
+        out = self.run_script(pkglist.parse('distro\tdebian\t12\npm apt-get\nm\tzsh\nm\tnowhere\ncomplete'))
+        self.assertEqual(out.returncode, 1)
+        self.assertIn('1 not in the package sources here', out.stdout)
+        self.assertIn('1 to install with apt-get: zsh', out.stdout)
+
+    def test_versioned_libraries_stay_behind_across_releases(self):
+        # the libraries of 22.04 (libssl3, gcc-12-base) do not exist on 24.04: what needs them brings its own
+        pk = pkglist.parse('distro\tubuntu\t22.04\npm apt-get\nm\tzsh\nm\tlibssl3\nm\tgcc-12-base\nm\tlibtss2-esys-3.0.2-0\nm\tlibreoffice\ncomplete')
+        text = self.run_script(pk).stdout
+        self.assertIn('3 versioned librar(ies) of ubuntu 22.04 left out', text)
+        self.assertIn('2 to install with apt-get: libreoffice zsh', text)
+        path = self.d / 'same.sh'      # the same release keeps them: a library installed on purpose may be for something unpackaged
+        path.write_text(pkglist.script(pk, 'web-01', 'now').replace('. /etc/os-release 2>/dev/null || true', 'ID=ubuntu VERSION_ID=22.04'))
+        same = subprocess.run(['bash', str(path)], capture_output=True, text=True, timeout=60, env={**os.environ, 'PATH': f'{self.d}:{os.environ["PATH"]}'})
+        self.assertIn('5 to install with apt-get', same.stdout)
 
     def test_another_package_manager_is_refused(self):
         out = self.run_script(pkglist.parse('pm pacman\nm\tvim\ncomplete'))
@@ -172,7 +208,7 @@ class HoldsAndBackports(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d)
         stub(d, 'apt-get', 'true')
         stub(d, 'dpkg-query', 'true')
-        stub(d, 'apt-cache', 'echo " 500 http://deb.debian.org/debian trixie-backports/main amd64 Packages"')
+        stub(d, 'apt-cache', APT_CACHE)
         pk = pkglist.parse('pm apt-get\nm\tvim\nm\tzfsutils-linux\nh\tvim\nb\tzfsutils-linux\ncomplete')
         path = d / 'p.sh'
         path.write_text(pkglist.script(pk, 'src', 'now').replace('here_pm() {', 'here_pm() { echo apt-get; return; ')
@@ -203,7 +239,7 @@ class NoRemovals(unittest.TestCase):
                               env={**os.environ, 'PATH': f'{self.d}:{os.environ["PATH"]}', 'LOG': str(self.d / 'log')})
 
     def test_apt_is_told_not_to_remove(self):
-        out = self.apply('apt-get', {'apt-get': 'echo "$*" >>"$LOG"'}, here='apt-get')
+        out = self.apply('apt-get', {'apt-get': 'echo "$*" >>"$LOG"', 'apt-cache': APT_CACHE}, here='apt-get')
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertIn('install -y -qq --no-remove newpkg', (self.d / 'log').read_text())
 

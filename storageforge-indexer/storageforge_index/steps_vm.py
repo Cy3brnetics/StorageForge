@@ -114,6 +114,10 @@ sf_vm_image() { # catalog key -> image URL, checksums URL and osinfo, by tabs
   esac
 }
 
+vm_undo() { # the disks a failed t_vm_create made in this run (its made array), and nothing else
+  local f; for f in "${made[@]}"; do [[ -e $f ]] && rm -f -- "$f"; done
+  info "removed what this run had made: ${made[*]##*/}"
+}
 t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram=${7:-2048} disk=${8:-20} data=$9 pool=${10:-default} network=${11:-default} bridge=${12} firmware=${13:-bios} cpu=${14:-host-model} console=${15:-serial} user=${16:-admin} key=${17} sudo=${18:-nopasswd} autostart=${19}
   local V="virsh -c qemu:///system" c sums='' dir net root f i=0 d files=() need base want have fmt seed tool
   for c in virsh virt-install qemu-img curl sha256sum sha512sum; do
@@ -159,7 +163,7 @@ t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram
   act "create VM $name in $pool" || return 0
   install -d -m 0755 "$dir/.storageforge-images"
   if [[ -z $sum ]]; then
-    sum=$(curl -fsSL --retry 3 "$sums" | { case $sums in *.sha512|*.sha256|*.SHA256) cat ;; *) grep -F "$(basename "$url")" ;; esac; } \
+    sum=$(curl -fsSL --retry 3 "$sums" | { case $sums in (*.sha512|*.sha256|*.SHA256) cat ;; (*) grep -F "$(basename "$url")" ;; esac; } \
           | grep -oE '\b[0-9a-f]{64}([0-9a-f]{64})?\b' | head -n 1) || true
     [[ -n $sum ]] || { conflict "no published checksum for $(basename "$url") at $sums"; return 0; }
   fi
@@ -173,11 +177,13 @@ t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram
   fi
   fmt=$(qemu-img info "$base" 2>/dev/null | sed -n 's/^file format: //p' | head -n 1)
   # a copy, not an overlay: the VM keeps working if the downloaded image is replaced or removed
-  try qemu-img convert -q -f "${fmt:-qcow2}" -O qcow2 "$base" "$root" || return 0
-  try qemu-img resize -q "$root" "${disk}G" || return 0
+  # what this run makes, removed again if a later step fails, so running it again does not find them in the way
+  local made=("$root")
+  try qemu-img convert -q -f "${fmt:-qcow2}" -O qcow2 "$base" "$root" || { vm_undo; return 0; }
+  try qemu-img resize -q "$root" "${disk}G" || { vm_undo; return 0; }
   i=0; local diskargs=(--disk "path=$root,format=qcow2,bus=virtio")
   for d in ${data//,/ }; do
-    i=$((i + 1)); try qemu-img create -q -f qcow2 "$dir/$name-data$i.qcow2" "${d}G" || return 0
+    i=$((i + 1)); made+=("$dir/$name-data$i.qcow2"); try qemu-img create -q -f qcow2 "$dir/$name-data$i.qcow2" "${d}G" || { vm_undo; return 0; }
     diskargs+=(--disk "path=$dir/$name-data$i.qcow2,format=qcow2,bus=virtio,serial=sf-data$i")
   done
   # cloud-init: JSON is YAML too, and every value here passed the field checks of the plan, which allow no quote or backslash
@@ -186,19 +192,20 @@ t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram
   printf '#cloud-config\n{"hostname": "%s", "manage_etc_hosts": true, "ssh_pwauth": false, "disable_root": true, "users": [{"name": "%s", "lock_passwd": true, "ssh_authorized_keys": ["%s"]%s}]}\n' \
     "$name" "$user" "$key" "$sudoline" >"$cd/user-data"
   printf 'instance-id: sf-%s-%s\nlocal-hostname: %s\n' "$name" "$STAMP" "$name" >"$cd/meta-data"
+  made+=("$seed")
   for tool in xorriso genisoimage mkisofs; do command -v $tool >/dev/null && break; tool=; done
   case $tool in
-    xorriso) try xorriso -as mkisofs -quiet -volid cidata -joliet -rock -o "$seed" "$cd/user-data" "$cd/meta-data" 2>/dev/null || { rm -rf "$cd"; return 0; } ;;
-    genisoimage|mkisofs) try $tool -quiet -volid cidata -joliet -rock -o "$seed" "$cd/user-data" "$cd/meta-data" || { rm -rf "$cd"; return 0; } ;;
-    *) rm -rf "$cd"; conflict "no xorriso, genisoimage or mkisofs here, to write the cloud-init seed: install one (xorriso is in every distro)"; return 0 ;;
+    xorriso) try xorriso -as mkisofs -quiet -volid cidata -joliet -rock -o "$seed" "$cd/user-data" "$cd/meta-data" 2>/dev/null || { rm -rf "$cd"; vm_undo; return 0; } ;;
+    genisoimage|mkisofs) try $tool -quiet -volid cidata -joliet -rock -o "$seed" "$cd/user-data" "$cd/meta-data" || { rm -rf "$cd"; vm_undo; return 0; } ;;
+    *) rm -rf "$cd"; vm_undo; conflict "no xorriso, genisoimage or mkisofs here, to write the cloud-init seed: install one (xorriso is in every distro)"; return 0 ;;
   esac
   rm -rf "$cd"
   diskargs+=(--disk "path=$seed,device=cdrom,bus=sata,readonly=on")
   if [[ $network == @ISOLATED@ ]] && ! $V net-info "$network" >/dev/null 2>&1; then
     local nx; nx=$(mktemp)
     printf '<network><name>%s</name><bridge name="sfiso0"/><ip address="10.89.0.1" netmask="255.255.255.0"><dhcp><range start="10.89.0.100" end="10.89.0.200"/></dhcp></ip></network>\n' "$network" >"$nx"
-    try $V net-define "$nx" >/dev/null || { rm -f "$nx"; return 0; }
-    rm -f "$nx"; try $V net-autostart "$network" >/dev/null; try $V net-start "$network" >/dev/null || return 0
+    try $V net-define "$nx" >/dev/null || { rm -f "$nx"; vm_undo; return 0; }
+    rm -f "$nx"; try $V net-autostart "$network" >/dev/null; try $V net-start "$network" >/dev/null || { vm_undo; return 0; }
     ok "made the isolated network $network"
   fi
   local extra=()
@@ -207,8 +214,8 @@ t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram
     spice) extra+=(--graphics spice,listen=127.0.0.1 --video virtio) ;;
     *) extra+=(--graphics none --console pty,target_type=serial) ;;
   esac
-  try virt-install --import --name "$name" --osinfo "${osinfo:-detect=on,require=off}" --vcpus "$vcpus" --memory "$ram" --cpu "$cpu" \
-    --network "$net,model=virtio" "${diskargs[@]}" "${extra[@]}" --rng /dev/urandom --noautoconsole >/dev/null || return 0
+  try virt-install --connect qemu:///system --import --name "$name" --osinfo "${osinfo:-detect=on,require=off}" --vcpus "$vcpus" --memory "$ram" --cpu "$cpu" \
+    --network "$net,model=virtio" "${diskargs[@]}" "${extra[@]}" --rng /dev/urandom --noautoconsole >/dev/null || { vm_undo; return 0; }
   try $V metadata "$name" "$SF_VM_NS" --key storageforge --set "<sf image=\"$image\" made=\"$STAMP\"/>" --config >/dev/null
   [[ -n $autostart ]] && try $V autostart "$name" >/dev/null
   local where=''; [[ $console == spice ]] && where=', its console on 127.0.0.1 only'

@@ -138,7 +138,8 @@ def parse(text: str) -> dict:
                 flatpak[words[0]] = words[1] if len(words) > 1 and _APP.fullmatch(words[1]) else None
         elif kind == 's':
             name, _, note = rest.partition('\t')
-            if _APP.fullmatch(name):
+            # a base, the snapd snap, a kernel or a gadget comes with the snaps that need it, so it is not installed by name
+            if _APP.fullmatch(name) and note.strip() not in ('base', 'snapd', 'core', 'kernel', 'gadget'):
                 snap[name] = note.strip() if note.strip() in ('classic', 'devmode') else None
         elif kind == 'r':
             where, _, url = rest.partition('\t')
@@ -265,25 +266,38 @@ if [[ $(family "$M") != $(family "$SRC_PM") ]]; then
   conflict "this host uses $M and the list is from $SRC_PM: package names differ between them, so nothing is installed. Clone onto $SRC_DISTRO, or install by hand"
   exit 1
 fi
-[[ ${ID:-} == "$SRC_DISTRO" && ${VERSION_ID:-} == "$SRC_VERSION" ]] || info "this host is ${ID:-unknown} ${VERSION_ID:-} and the list is from $SRC_DISTRO $SRC_VERSION: some names may not exist here, and each is tried on its own"
+SAME=0; [[ ${ID:-} == "$SRC_DISTRO" && ${VERSION_ID:-} == "$SRC_VERSION" ]] && SAME=1
+((SAME)) || info "this host is ${ID:-unknown} ${VERSION_ID:-} and the list is from $SRC_DISTRO $SRC_VERSION: some names may not exist here, and each is tried on its own"
 declare -A HAVE=() SKIPPED=() BP=()
 for p in "${BACKPORTS[@]+"${BACKPORTS[@]}"}"; do BP[$p]=1; done
 BPW=()
 while IFS= read -r p; do [[ -n $p ]] && HAVE[$p]=1; done < <(installed "$M")
 for p in "${SKIP[@]+"${SKIP[@]}"}"; do SKIPPED[$p]=1; done
-WANT=() N=0
+WANT=() N=0 LIBS=()
+LIBNAME='^lib.+[0-9](t64)?$|^gcc-[0-9]+-base$'
 for p in "${PKGS[@]+"${PKGS[@]}"}"; do
   [[ -n ${SKIPPED[$p]:-} ]] && { skip "$p (--skip)"; continue; }
+  # a library named for its version, from another release: the packages that need it bring the version this release has
+  if ((!SAME)) && [[ $M == apt-get && $p =~ $LIBNAME && -z ${HAVE[$p]:-} ]]; then LIBS+=("$p"); continue; fi
   N=$((N + 1)); [[ -n ${HAVE[$p]:-} ]] && continue
   if [[ $M == apt-get && -n ${BP[$p]:-} ]]; then BPW+=("$p"); else WANT+=("$p"); fi
 done
 ok "$((N - ${#WANT[@]} - ${#BPW[@]})) of $N already installed"
+((${#LIBS[@]})) && skip "${#LIBS[@]} versioned librar(ies) of $SRC_DISTRO $SRC_VERSION left out, as what needs them brings its own: ${LIBS[*]}"
+if ((${#WANT[@]})) && [[ $M == apt-get ]]; then
+  ((APPLY)) && apt-get -o DPkg::Lock::Timeout=120 update -qq 2>&1 | tail -n 3
+  # names with no candidate in the sources here cannot be installed: they are said apart, and not tried
+  declare -A CAND=(); GONE=() KEEP=()
+  while IFS= read -r p; do [[ -n $p ]] && CAND[$p]=1; done < <(apt-cache policy "${WANT[@]}" 2>/dev/null | awk '/^[^ ]/ {n = $1; sub(/:$/, "", n)} $1 == "Candidate:" && $2 != "(none)" {print n}')
+  for p in "${WANT[@]}"; do if [[ -n ${CAND[$p]:-} ]]; then KEEP+=("$p"); else GONE+=("$p"); fi; done
+  ((${#GONE[@]})) && conflict "${#GONE[@]} not in the package sources here (renamed or dropped, or a source this host lacks): ${GONE[*]}"
+  WANT=("${KEEP[@]+"${KEEP[@]}"}")
+fi
 if ((${#WANT[@]})); then
   if ((!APPLY)); then
     missing "${#WANT[@]} to install with $M: ${WANT[*]}"
   else
     doing "install ${#WANT[@]} package(s) with $M"
-    [[ $M == apt-get ]] && apt-get -o DPkg::Lock::Timeout=120 update -qq 2>&1 | tail -n 3
     case $M in rpm-ostree|transactional) REBOOT=1 ;; esac
     if out=$(install_these "$M" "${WANT[@]}"); then ok "installed ${#WANT[@]}"
     else

@@ -38,9 +38,11 @@ def line(path, text):
 
 
 def blk(*disks):
-    return {'blockdevices': [{'name': n, 'path': f'/dev/{n}', 'type': 'disk', 'serial': serial, 'size': 10 * 2**30,
-                              **({'children': [{'name': n + '1', 'path': f'/dev/{n}1', 'type': 'part', 'fstype': fs}]} if fs else {})}
-                             for n, serial, fs in disks]}
+    """lsblk JSON: (disk, serial, fstype of its one partition or None, that partition's UUID)."""
+    return {'blockdevices': [{'name': n, 'path': f'/dev/{n}', 'type': 'disk', 'serial': serial, 'size': 10 * 2**30, 'pttype': 'gpt',
+                              **({'children': [{'name': n + '1', 'path': f'/dev/{n}1', 'type': 'part', 'fstype': fs, 'uuid': uuid,
+                                                'size': 10 * 2**30 - 2**20, 'start': 2048}]} if fs else {})}
+                             for n, serial, fs, uuid in disks]}
 
 
 class Db(unittest.TestCase):
@@ -54,19 +56,22 @@ class Db(unittest.TestCase):
         src = {'collected_at': '2026-11-07T00:00:00+00:00',
                'configs': hostconfig.parse_configs(line('/etc/fstab', FSTAB) + '\n' + line('/etc/exports', EXPORTS)),
                'accounts': 'u\tana\t1500\t1500\t/home/ana\t/bin/bash\nu\tbob\t1501\t1501\t/home/bob\t/bin/zsh\ng\tana\t1500\t\ng\tbob\t1501\t\ng\tmedia\t2000\tana,bob',
-               'lsblk': blk(('sda', 'S1', 'ext4'), ('sdb', 'S2', 'btrfs')),
+               'lsblk': blk(('sda', 'S1', 'ext4', 'rootid'), ('sdb', 'S2', 'ext4', 'aaaa-1111'), ('sdc', 'S3', 'btrfs', 'bbbb-2222')),
                'pkglist': pkglist.parse('distro\tdebian\t13\npm apt-get\nm\tvim\nm\tnfs-kernel-server\nm\tmydeb\no\tmydeb\ncomplete')}
-        self.add('web-01', src, [('/', 'ext4', 'UUID=rootid', 10), ('/srv/data', 'ext4', 'UUID=aaaa-1111', 8), ('/srv/media', 'btrfs', 'UUID=bbbb-2222', 3)])
-        tgt = {'lsblk': blk(('vda', 'V0', 'ext4'), ('vdb', 'sf-data1', None), ('vdc', 'sf-data2', None)),
+        self.add('web-01', src, [('/', 'ext4', '/dev/sda1', 10, 'rw,relatime'), ('/srv/data', 'ext4', '/dev/sdb1', 8, 'rw,noatime'),
+                                 ('/srv/media', 'btrfs', '/dev/sdc1[/@media]', 3, 'rw,compress=zstd:3,subvol=/@media'),
+                                 ('/srv/photos', 'btrfs', '/dev/sdc1[/@photos]', 1, 'rw,compress=zstd:3,subvol=/@photos'),
+                                 ('/mnt/backups', 'nfs4', 'nas:/backups', 0, 'rw')])
+        tgt = {'lsblk': blk(('vda', 'V0', 'ext4', 'vroot'), ('vdb', 'sf-data1', None, None), ('vdc', 'sf-data2', None, None), ('vdd', 'V3', 'xfs', 'old')),
                'accounts': 'u\tana\t1600\t1600\t/home/ana\t/bin/bash\ng\tana\t1600\t', 'configs': hostconfig.parse_configs(line('/etc/exports', '/old *(ro)\n'))}
-        self.add('web-copy', tgt, [('/', 'ext4', '/dev/vda1', 2)])
+        self.add('web-copy', tgt, [('/', 'ext4', '/dev/vda1', 2, 'rw')])
 
     def add(self, name, inv, mounts):
         self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json) VALUES (:n, :n, 'scan', :i)", {'n': name, 'i': json.dumps(inv)})
         hid = self.conn.scalar('SELECT host_id FROM hosts WHERE hostname = :n', {'n': name})
-        for target, fs, source, gib in mounts:
-            self.conn.execute("""INSERT INTO mounts (host_id, mount_point, source, filesystem_type, total_bytes, used_bytes, scan_state)
-                                 VALUES (:h, :m, :s, :f, :t, :u, 'indexed')""", {'h': hid, 'm': target, 's': source, 'f': fs, 't': 100 * 2**30, 'u': gib * 2**30})
+        for target, fs, source, gib, opts in mounts:
+            self.conn.execute("""INSERT INTO mounts (host_id, mount_point, source, filesystem_type, mount_options, total_bytes, used_bytes, scan_state)
+                                 VALUES (:h, :m, :s, :f, :o, :t, :u, 'indexed')""", {'h': hid, 'm': target, 's': source, 'f': fs, 'o': opts, 't': 100 * 2**30, 'u': gib * 2**30})
 
     def libvirt(self):
         from storageforge_index import security
@@ -80,14 +85,19 @@ class Build(Db):
         tasks = got['plans']['changes']['tasks']
         kinds = [t['type'] for t in tasks]
         self.assertEqual(kinds[:2], ['packages', 'accounts'])
-        self.assertEqual(kinds.count('format'), 2)
+        # sdb (ext4) goes to the first empty sf-data disk, sdc (btrfs with subvolumes) to the second
+        part = {t['params']['disk']: t['params'] for t in tasks if t['type'] == 'partition'}
+        self.assertEqual((part['/dev/vdb']['fstype'], part['/dev/vdb']['confirm'], part['/dev/vdb']['wipe']), ('ext4', '/dev/vdb', False))
+        self.assertEqual(part['/dev/vdc']['fstype'], '')      # the btrfs is made by format, as a pool of one
         fmt = {t['params']['device']: t['params'] for t in tasks if t['type'] == 'format'}
-        self.assertEqual((fmt['/dev/vdb']['fstype'], fmt['/dev/vdb']['confirm'], fmt['/dev/vdc']['fstype']), ('ext4', '/dev/vdb', 'btrfs'))
+        self.assertEqual((fmt['/dev/vdc1']['fstype'], fmt['/dev/vdc1']['confirm']), ('btrfs', '/dev/vdc1'))
         mounts = {t['params']['target']: t['params'] for t in tasks if t['type'] == 'mount'}
         self.assertEqual(mounts['/srv/data']['options'], 'noatime,nofail')
-        self.assertEqual((mounts['/srv/media']['subvol'], mounts['/srv/media']['options']), ('@media', 'compress=zstd,nofail'))
+        self.assertEqual((mounts['/srv/media']['subvol'], mounts['/srv/media']['options']), ('@media', 'compress=zstd:3,nofail'))
         top = next(t for t in mounts if t.endswith('-top'))
         self.assertEqual(sorted(t['params']['path'] for t in tasks if t['type'] == 'subvolume'), [f'{top}/@media', f'{top}/@photos'])
+        at = {t['params'].get('target'): i for i, t in enumerate(tasks) if t['type'] in ('mount', 'unmount')}
+        self.assertGreater(kinds.index('unmount'), max(at['/srv/media'], at['/srv/photos']))     # the top level is put away after
         self.assertEqual(kinds[-1], 'config-files')
         self.assertTrue(any('/mnt/backups' in n for n in got['not_carried']))
         self.assertTrue(any('mydeb' in n for n in got['not_carried']))
@@ -117,11 +127,43 @@ class Build(Db):
         self.assertNotIn('no-snapshot', [r['id'] for r in got['risks']])
 
     def test_a_disk_that_holds_something_is_a_critical_risk_and_a_map_wins(self):
-        got = clone.build(self.conn, 'web-01', 'web-copy', storage={'/srv/data': '/dev/vda'})
-        risk = next(r for r in got['risks'] if r['id'] == 'format-/dev/vda')
+        got = clone.build(self.conn, 'web-01', 'web-copy', storage={'/srv/data': '/dev/vdd'})
+        risk = next(r for r in got['risks'] if r['id'] == 'format-/dev/vdd')
         self.assertEqual(risk['level'], 'crit')
-        self.assertIn('holds partitions', risk['text'])
+        self.assertIn('what it holds now (xfs) is destroyed', risk['text'])
+        part = next(t['params'] for t in got['plans']['changes']['tasks'] if t['type'] == 'partition')
+        self.assertEqual((part['disk'], part['wipe']), ('/dev/vdd', True))
         self.assertTrue(any('/srv/media' in n and 'no target disk' in n for n in got['not_carried']))
+        # a disk is mapped by its name too, and never onto the target's system disk
+        self.assertIn('format-/dev/vdb', [r['id'] for r in clone.build(self.conn, 'web-01', 'web-copy', storage={'/dev/sdc': '/dev/vdb'})['risks']])
+        with self.assertRaisesRegex(ValueError, 'running system'):
+            clone.build(self.conn, 'web-01', 'web-copy', storage={'/dev/sdb': '/dev/vda'})
+        with self.assertRaisesRegex(ValueError, 'two disks'):
+            clone.build(self.conn, 'web-01', 'web-copy', storage={'/dev/sdb': '/dev/vdb', '/dev/sdc': '/dev/vdb'})
+
+    def test_a_zfs_mirror_comes_across_whole_disk_with_its_datasets_and_properties(self):
+        # the shape a real scan of the lab's ZFS host gave: zpool create on whole disks makes partitions 1 and 9
+        def member(n, serial):
+            return {'name': n, 'path': f'/dev/{n}', 'type': 'disk', 'serial': serial, 'size': 2 * 2**30, 'children': [
+                {'name': n + '1', 'path': f'/dev/{n}1', 'type': 'part', 'fstype': 'zfs_member', 'label': 'vault', 'uuid': '850901', 'size': 2136997888},
+                {'name': n + '9', 'path': f'/dev/{n}9', 'type': 'part', 'size': 8 << 20}]}
+        lsblk = blk(('sda', 'Z0', 'ext4', 'zroot'))
+        lsblk['blockdevices'] += [member('sdb', 'Z1'), member('sdc', 'Z2')]
+        zfs = {'collected_at': '2026-11-07T00:00:00+00:00', 'lsblk': lsblk, 'zfs_props': 'vault\tcompression\tlz4\nvault\tatime\toff',
+               'zpool_status': 'pool: vault\n state: ONLINE\nconfig:\n\n\tNAME           STATE     READ WRITE CKSUM\n\tvault          ONLINE       0     0     0\n'
+                               '\t  mirror-0     ONLINE       0     0     0\n\t    /dev/sdb1  ONLINE       0     0     0\n\t    /dev/sdc1  ONLINE       0     0     0\n\nerrors: No known data errors'}
+        self.add('zfs-01', zfs, [('/', 'ext4', '/dev/sda1', 3, 'rw'), ('/vault', 'zfs', 'vault', 0, 'rw,noatime,xattr'),
+                                 ('/vault/media', 'zfs', 'vault/media', 1, 'rw,noatime,xattr')])
+        got = clone.build(self.conn, 'zfs-01', 'web-copy', files='all', packages=False, accounts=False)
+        tasks = [t for t in got['plans']['changes']['tasks'] if t['type'].startswith('zfs')]
+        pool = tasks[0]['params']
+        self.assertEqual((tasks[0]['type'], pool['pool'], pool['level'], pool['devices'], pool['confirm']),
+                         ('zfs-pool', 'vault', 'mirror', '/dev/vdb /dev/vdc', '/dev/vdb /dev/vdc'))     # whole disks, not partitions 1 and 9
+        self.assertEqual((pool['mountpoint'], pool['fs_props']), ('/vault', 'atime=off,compression=lz4'))
+        self.assertEqual([(t['type'], t['params']['dataset'], t['params']['mountpoint']) for t in tasks[1:]], [('zfs-dataset', 'vault/media', '/vault/media')])
+        self.assertFalse([t for t in got['plans']['changes']['tasks'] if t['type'] in ('partition', 'partition-add', 'format')])
+        self.assertEqual({s['src']['path'] for s in got['plans']['files']['steps']} & {'/vault', '/vault/media'}, {'/vault', '/vault/media'})
+        changes.normalize(got['plans']['changes'])
 
     def test_bad_requests(self):
         with self.assertRaises(ValueError):
@@ -148,7 +190,7 @@ class Build(Db):
         sh = Path(self.tmp) / 'c.sh'
         sh.write_text(script)
         self.assertEqual(subprocess.run(['bash', '-n', str(sh)], capture_output=True, text=True).stderr, '')
-        for fn in ('t_packages', 't_accounts', 't_config_files', 't_format', 't_mount'):
+        for fn in ('t_packages', 't_accounts', 't_config_files', 't_partition', 't_format', 't_mount', 't_subvolume'):
             self.assertIn(fn, script)
         self.assertIn('t_accounts', changes.ansible(self.conn, got['plans']['changes']))
         mv = moves.script(self.conn, {**moves.normalize(got['plans']['files']), 'id': 1})
@@ -236,7 +278,7 @@ class Api(Db):
         self.assertEqual(rc, 0)
         text = out.getvalue()
         self.assertIn('Data at risk:', text)
-        self.assertIn('formats /dev/vdc', text)
+        self.assertIn('/dev/vdc on web-copy takes the layout of /dev/sdb', text)
         self.assertEqual(changes.list_plans(self.conn), [])
         with contextlib.redirect_stdout(io.StringIO()) as o2, contextlib.redirect_stderr(io.StringIO()):
             rc = cli.main(['--db', str(Path(self.tmp) / 'index.db'), 'clone', 'web-01', '--to', 'web-copy'])
