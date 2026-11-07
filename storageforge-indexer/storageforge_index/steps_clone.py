@@ -145,7 +145,9 @@ def _accounts_args(conn, t):
 
 
 def _share_files(rec: dict) -> dict:
-    return {p: text for p, text in sorted(((rec or {}).get('files') or {}).items()) if SHARE_FILE.fullmatch(p)}
+    """The share files that share something: one of only comments (a distribution's stock /etc/exports) is left alone."""
+    return {p: text for p, text in sorted(((rec or {}).get('files') or {}).items()) if SHARE_FILE.fullmatch(p)
+            and any(ln.strip() and not ln.lstrip().startswith(('#', ';')) for ln in (text or '').splitlines())}
 
 
 def _config_args(conn, t):

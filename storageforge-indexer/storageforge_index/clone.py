@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import json
 import re
 
-from . import changes, hostconfig, pkglist
+from . import changes, hostconfig, pkglist, steps_clone
 from .changes import OS_MOUNTS
 from .db import Conn
 from .moves import host_slug
@@ -57,6 +58,11 @@ def _root(h: dict) -> dict | None:
     return next((m for m in h['mounts'] if m['target'] == '/'), None)
 
 
+DISK_WRITES = ('partition', 'partition-add', 'format', 'zfs-pool', 'lvm-vg', 'lvm-vg-extend', 'btrfs-add')
+# where the plans write on the target, besides /: each is snapshotted too when it is its own subvolume or volume
+WRITTEN = ('/home', '/var', '/srv', '/opt', '/root', '/usr/local')
+
+
 def _snapshot_tasks(conn: Conn, h: dict, when: str, stamp: str, notes: list, risks: list) -> list[dict]:
     """A snapshot of what the plans write to on the target: its VM disks if it is a VM we can see, else its root."""
     name = f'sf-clone-{when}-{stamp}'
@@ -66,13 +72,24 @@ def _snapshot_tasks(conn: Conn, h: dict, when: str, stamp: str, notes: list, ris
                  'note': f'{when} the copy: every disk of the VM'}]
     root = _root(h) or {}
     fs, src = root.get('fstype') or '', root.get('source') or ''
+    # what else the plans write to on a system that splits it off: accounts and files go to /home, packages to /var
+    others = sorted((m for m in h['mounts'] if m['target'] in WRITTEN and m['state'] != 'gone'), key=lambda m: m['target'])
     if fs == 'btrfs':
-        return [{'type': 'snapshot', 'host': h['name'], 'params': {'source': '/', 'dest': f'/.snapshots/{name}', 'readonly': True}, 'note': f'{when} the copy'}]
+        dev = src.split('[')[0]
+        subs = [m for m in others if m.get('fstype') == 'btrfs' and (m.get('source') or '').split('[')[0] == dev]
+        return [{'type': 'snapshot', 'host': h['name'], 'params': {'source': m['target'], 'readonly': True,
+                 'dest': f'/.snapshots/{name}' + ('' if m['target'] == '/' else '-' + m['target'].strip('/').replace('/', '-'))},
+                 'note': f'{when} the copy'} for m in [root, *subs]]
     if fs == 'zfs' and re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}', src):
         return [{'type': 'zfs-snapshot', 'host': h['name'], 'params': {'dataset': src, 'name': name, 'recursive': True}, 'note': f'{when} the copy'}]
-    m = re.fullmatch(r'/dev/mapper/([A-Za-z0-9+_.]+?)-([A-Za-z0-9+_.]+)', src)
-    if m and '--' not in src:
-        return [{'type': 'lvm-snapshot', 'host': h['name'], 'params': {'vg': m[1], 'lv': m[2], 'name': name, 'size': '5G'}, 'note': f'{when} the copy'}]
+    lvs = []
+    for mt in [root, *others]:
+        m = re.fullmatch(r'/dev/mapper/([A-Za-z0-9+_.]+?)-([A-Za-z0-9+_.]+)', mt.get('source') or '')
+        if m and '--' not in m[0] and (m[1], m[2]) not in [x[:2] for x in lvs]:
+            lvs.append((m[1], m[2], mt['target']))
+    if lvs and lvs[0][2] == '/':
+        return [{'type': 'lvm-snapshot', 'host': h['name'], 'params': {'vg': vg, 'lv': lv, 'name': name, 'size': '5G'}, 'note': f'{when} the copy: {at}'}
+                for vg, lv, at in lvs]
     if when == 'before':
         risks.append({'level': 'crit', 'id': 'no-snapshot', 'text': f'{h["name"]}\'s root is {fs or "an unknown filesystem"} on {src or "an unknown device"}, which can\'t be snapshotted: '
                       'nothing the plans change on it can be undone. Back it up first, or copy to a VM instead'})
@@ -226,6 +243,15 @@ def _storage(conn: Conn, src: dict, tgt: dict, mapping: dict | str, notes: list,
                 p['label'] = label
                 design['pools'].append({'name': label, 'type': 'btrfs', 'level': 'single', 'metaLevel': 'dup', 'members': [p['id']],
                                         'label': label, 'mount': p.get('mount') if not p.get('subvolumes') else None, 'options': p.get('options')})
+    if dmap:
+        # the plan is checked against the target's last scan: a copy planned onto it since may have filled the disks
+        seen = conn.scalar('SELECT last_scanned_at FROM hosts WHERE lower(hostname) = lower(:n)', {'n': tgt['name']}) or 0
+        for (body,) in conn.all('SELECT body_json FROM change_plans WHERE created_at > :t', {'t': seen}):
+            b = body if isinstance(body, dict) else json.loads(body or '{}')
+            if any(t.get('host') == tgt['name'] and t.get('type') in DISK_WRITES for t in b.get('tasks') or []):
+                risks.append({'level': 'crit', 'id': 'scan-older-than-plan', 'text': f'{tgt["name"]} was last scanned before "{b.get("name")}", '
+                              'which writes to its disks: scan it again first, or this plan takes disks that may no longer be empty'})
+                break
     out = fromdesign.plan(conn, design, blank=set(dmap.values()))
     for m in out['manual']:
         not_carried.append(f'{m["what"]}: {m["why"]}')
@@ -239,7 +265,12 @@ def _storage(conn: Conn, src: dict, tgt: dict, mapping: dict | str, notes: list,
                       + (f': what it holds now ({what}) is destroyed' if td in held else ' (the last scan saw nothing on it)')
                       + '. The script does it only with --apply --destructive, and the device typed again'})
     tasks = []
+    tops = {t['params']['target'] for t in out['tasks'] if t['type'] == 'unmount'}
+    for top in sorted(tops):
+        notes.append(f'the top level of a btrfs is left mounted at {top}, where its subvolumes are made: unmounting it in the same plan would be undone by every rerun')
     for t in out['tasks']:
+        if t['type'] == 'unmount' and t['params']['target'] in tops:
+            continue
         spec = changes.TYPES[t['type']]
         if any(f['name'] == 'confirm' for f in spec['fields']):
             t['params']['confirm'] = t['params'].get('device') or t['params'].get('disk') or t['params'].get('devices') or ''
@@ -249,7 +280,7 @@ def _storage(conn: Conn, src: dict, tgt: dict, mapping: dict | str, notes: list,
         if pool.get('type') == 'zfs' and pool.get('mount') in made:
             made |= {ds.get('mount') for ds in pool.get('datasets') or []}
     # what holds data on the copy: every mount made, less the top levels of btrfs that are only mounted to make subvolumes
-    carried |= made - {t['params'].get('target') for t in tasks if t['type'] == 'unmount'} - set(OS_MOUNTS) - {None, ''}
+    carried |= made - tops - set(OS_MOUNTS) - {None, ''}
     for m in hostconfig.build(conn, src['name']).get('mounts') or []:
         if m['kind'] == 'network':
             not_carried.append(f'{m["target"]} ({m["fstype"]}): a network mount. Add it by hand once the copy can reach the server')
@@ -271,7 +302,7 @@ def build(conn: Conn, source: str, target: str, *, packages: bool = True, skip: 
     if src['name'].lower() == tgt['name'].lower():
         raise ValueError('the source and the target are the same host')
     rec = hostconfig.build(conn, src['name'])
-    stamp = dt.datetime.now().strftime('%Y%m%d')
+    stamp = dt.datetime.now().strftime('%Y%m%d-%H%M')     # a second copy the same day must not find this one's snapshot
     risks, notes, not_carried = [], [], []
     title = f'Copy {src["name"]} to {tgt["name"]}'
     before = _snapshot_tasks(conn, tgt, 'before', stamp, notes, risks) if snapshots else []
@@ -288,7 +319,7 @@ def build(conn: Conn, source: str, target: str, *, packages: bool = True, skip: 
         tasks.append({'type': 'accounts', 'host': tgt['name'], 'params': {'from_host': src['name'], 'homes': True}})
     carried = set()
     tasks += _storage(conn, src, tgt, storage, notes, risks, not_carried, carried)
-    if shares and any(hostconfig_share(p) for p in rec.get('files') or {}):
+    if shares and steps_clone._share_files(rec):
         tasks.append({'type': 'config-files', 'host': tgt['name'], 'params': {'from_host': src['name']}})
         if mode == 'test':
             notes.append('the copy serves the same shares: on the isolated network only the libvirt host can reach them')
@@ -334,13 +365,8 @@ def build(conn: Conn, source: str, target: str, *, packages: bool = True, skip: 
             'risks': sorted(risks, key=lambda r: order.get(r['level'], 3)), 'notes': notes, 'not_carried': not_carried}
 
 
-def hostconfig_share(path: str) -> bool:
-    from .steps_clone import SHARE_FILE
-    return bool(SHARE_FILE.fullmatch(path))
-
-
 def save(conn: Conn, built: dict, actor: str) -> dict:
-    """Save the plans. A name already taken gets the date on the end."""
+    """Save the plans. A name already taken gets the date and time on the end, then a number if that is taken too."""
     from . import moves
     stamp = dt.datetime.now().strftime('%Y-%m-%d %H%M')
     out = {}
@@ -348,9 +374,15 @@ def save(conn: Conn, built: dict, actor: str) -> dict:
         body = built['plans'].get(key)
         if not body:
             continue
-        taken = conn.scalar('SELECT 1 FROM change_plans WHERE lower(name) = lower(:n)' if key != 'files' else
-                            'SELECT 1 FROM move_plans WHERE lower(name) = lower(:n)', {'n': body['name']})
-        if taken:
-            body = {**body, 'name': f'{body["name"]} {stamp}'[:80]}
+
+        def taken(name):
+            return conn.scalar('SELECT 1 FROM change_plans WHERE lower(name) = lower(:n)' if key != 'files' else
+                               'SELECT 1 FROM move_plans WHERE lower(name) = lower(:n)', {'n': name})
+        name, n = body['name'], 1
+        while taken(name):
+            n += 1
+            tail = f' {stamp}' + (f' ({n - 1})' if n > 2 else '')
+            name = body['name'][:80 - len(tail)] + tail
+        body = {**body, 'name': name}
         out[key] = (moves.save_plan if key == 'files' else changes.save_plan)(conn, body, actor)
     return out

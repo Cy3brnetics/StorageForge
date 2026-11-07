@@ -96,8 +96,8 @@ class Build(Db):
         self.assertEqual((mounts['/srv/media']['subvol'], mounts['/srv/media']['options']), ('@media', 'compress=zstd:3,nofail'))
         top = next(t for t in mounts if t.endswith('-top'))
         self.assertEqual(sorted(t['params']['path'] for t in tasks if t['type'] == 'subvolume'), [f'{top}/@media', f'{top}/@photos'])
-        at = {t['params'].get('target'): i for i, t in enumerate(tasks) if t['type'] in ('mount', 'unmount')}
-        self.assertGreater(kinds.index('unmount'), max(at['/srv/media'], at['/srv/photos']))     # the top level is put away after
+        at = {t['params'].get('target'): i for i, t in enumerate(tasks) if t['type'] == 'mount'}
+        self.assertLess(at[top], min(at['/srv/media'], at['/srv/photos']))     # the top level first, where the subvolumes are made
         self.assertEqual(kinds[-1], 'config-files')
         self.assertTrue(any('/mnt/backups' in n for n in got['not_carried']))
         self.assertTrue(any('mydeb' in n for n in got['not_carried']))
@@ -165,6 +165,39 @@ class Build(Db):
         self.assertEqual({s['src']['path'] for s in got['plans']['files']['steps']} & {'/vault', '/vault/media'}, {'/vault', '/vault/media'})
         changes.normalize(got['plans']['changes'])
 
+    def test_a_btrfs_root_is_snapshotted_with_the_subvolumes_the_copy_writes_to(self):
+        # Fedora's cloud image: /, /home and /var are subvolumes of one btrfs, and accounts and files go to /home
+        hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'web-copy'")
+        self.conn.execute("UPDATE mounts SET filesystem_type = 'btrfs', source = '/dev/vda1[/root]' WHERE host_id = :h", {'h': hid})
+        for target, sub in (('/home', 'home'), ('/var', 'var'), ('/boot', 'boot')):
+            self.conn.execute("""INSERT INTO mounts (host_id, mount_point, source, filesystem_type, total_bytes, used_bytes, scan_state)
+                                 VALUES (:h, :m, :s, 'btrfs', 1, 0, 'indexed')""", {'h': hid, 'm': target, 's': f'/dev/vda1[/{sub}]'})
+        got = clone.build(self.conn, 'web-01', 'web-copy')
+        snaps = [t['params'] for t in got['plans']['changes']['tasks'] if t['type'] == 'snapshot']
+        self.assertEqual([p['source'] for p in snaps], ['/', '/home', '/var'])
+        self.assertTrue(snaps[1]['dest'].endswith('-home') and snaps[1]['dest'].startswith('/.snapshots/sf-clone-before-'))
+        self.assertRegex(snaps[0]['dest'], r'-\d{8}-\d{4}$')        # the time too: a second copy the same day is not this one
+        self.assertEqual([t['params']['source'] for t in got['plans']['after']['tasks']], ['/', '/home', '/var'])
+        self.assertNotIn('no-snapshot', [r['id'] for r in got['risks']])
+
+    def test_a_scan_older_than_a_plan_onto_the_same_disks_is_critical(self):
+        clone.save(self.conn, clone.build(self.conn, 'web-01', 'web-copy'), 'test')
+        self.conn.execute("UPDATE hosts SET last_scanned_at = 1 WHERE hostname = 'web-copy'")
+        self.assertIn('scan-older-than-plan', [r['id'] for r in clone.build(self.conn, 'web-01', 'web-copy')['risks']])
+        self.conn.execute("UPDATE hosts SET last_scanned_at = :t WHERE hostname = 'web-copy'", {'t': int(time.time()) + 60})
+        self.assertNotIn('scan-older-than-plan', [r['id'] for r in clone.build(self.conn, 'web-01', 'web-copy')['risks']])
+
+    def test_the_top_level_of_a_btrfs_stays_mounted(self):
+        # an unmount after its mount in the same plan is undone by every rerun: the planner's own check says so
+        tasks = clone.build(self.conn, 'web-01', 'web-copy')['plans']['changes']['tasks']
+        self.assertNotIn('unmount', [t['type'] for t in tasks])
+        self.assertTrue(any(t['type'] == 'mount' and t['params']['target'].endswith('-top') for t in tasks))
+
+    def test_saving_the_same_copy_twice_in_a_minute_gives_two_plans(self):
+        built = clone.build(self.conn, 'web-01', 'web-copy')
+        ids = {clone.save(self.conn, built, 'test')['changes'] for _ in range(3)}
+        self.assertEqual(len(ids), 3)
+
     def test_bad_requests(self):
         with self.assertRaises(ValueError):
             clone.build(self.conn, 'web-01', 'web-01')
@@ -219,6 +252,10 @@ class Steps(Db):
                           {'i': json.dumps({'accounts': f'u\tana\t1500\t1500\t/home/{CANARY}\t/bin/sh;id', 'configs': {'files': {}}})})
         body = steps_clone._accounts_args(self.conn, {'params': {'from_host': 'web-01'}})[0]
         self.assertEqual(base64.b64decode(body).decode().splitlines(), ['u\tana\t1500\t1500\t/home/ana\t/bin/bash'])
+
+    def test_a_share_file_of_only_comments_is_not_copied(self):
+        self.assertEqual(steps_clone._share_files({'files': {'/etc/exports': '# stock file\n\n#/srv *(ro)\n', '/etc/samba/smb.conf': '; x\n[data]\n'}}),
+                         {'/etc/samba/smb.conf': '; x\n[data]\n'})
 
     def test_share_files_are_only_share_files(self):
         body = steps_clone._config_args(self.conn, {'params': {'from_host': 'web-01'}})[0]

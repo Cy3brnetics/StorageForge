@@ -46,7 +46,7 @@ Your own go beside them: `storageforge-index vm spec db --set vcpus=8 --set ram_
 `storageforge-index clone web-01 --to web-01-copy [--files none|structure|all|/srv/a,/home/ana] [--map /dev/sdb=/dev/vdb] [--migrate]`, or **Copy this host to…** on a host's menu in the web UI. The target is any scanned host: a new VM, or a machine with a fresh install. It saves ordinary plans, run in this order:
 
 1. **A change plan on the target:**
-   - **Snapshot before:** a libvirt snapshot of every disk when the target is a VM on a scanned libvirt host. Otherwise a btrfs, ZFS or LVM snapshot of its root, or a critical risk when its root can't be snapshotted.
+   - **Snapshot before:** a libvirt snapshot of every disk when the target is a VM on a scanned libvirt host. Otherwise a btrfs, ZFS or LVM snapshot of its root, with `/home`, `/var`, `/srv`, `/opt`, `/root` and `/usr/local` when they are other subvolumes or volumes, or a critical risk when its root can't be snapshotted. Names carry the date and time.
    - **The source's packages, accounts and share files:** the `packages`, `accounts` and `config-files` steps.
    - **Its data disks, laid out again on the target's:** the source's layout is moved onto the target's disks and handed to the planner's design-to-plan step, so the steps are the planner's own, in its order:
      - partitions, and filesystems formatted and mounted by label with the source's options, plus `nofail`
@@ -290,7 +290,7 @@ Phase 1 reads apt, dnf and yum, zypper, pacman and apk. The rest fall into three
 | 1b | **Fixes to phase 1:** image-based, transactional and read-only systems, apt on rpm, Debian's local debs, holds and backports, AUR versions | Built, unit-tested, **not lab-tested** |
 | 2 | **Targets:** new VMs from cloud images, with VM specs (`vm-create`, `vm create`, `vm clone`), and any scanned machine through `clone`, with a warning when it isn't freshly installed | Built; `vm-create` lab-tested |
 | 2b | **The `packages` step:** another host's packages, as a plan step | Built, lab-tested on apt |
-| 3 | **Config and storage:** the `accounts` and `config-files` steps, and the data disks' layout through the planner's design-to-plan step: partitions, filesystems, btrfs pools and subvolumes, ZFS pools and datasets, LVM. Not built: mdadm and LUKS, enabled services, other `/etc` files | Built in part; accounts and ZFS lab-tested, btrfs planned against real layouts but not applied, LVM not lab-tested |
+| 3 | **Config and storage:** the `accounts` and `config-files` steps, and the data disks' layout through the planner's design-to-plan step: partitions, filesystems, btrfs pools and subvolumes, ZFS pools and datasets, LVM. Not built: mdadm and LUKS, enabled services, other `/etc` files | Built in part; accounts, ZFS and a btrfs raid1 pool with subvolumes lab-tested, LVM not lab-tested |
 | 3b | **AUR and local builds:** cache, `bacman`, an AUR build at the matching commit; Arch Linux Archive pinning; derivative repositories and CPU levels | Planned |
 | 3c | **Hardware differences:** firmware, drivers, guest tools, interface renames and CPU level, each way | Planned |
 | 4 | **User files:** none, structure, chosen folders or everything, through Moves with `dirs_only` and `keep_replaced` | Built; `all` lab-tested and verified by checksum |
@@ -310,8 +310,15 @@ On 2026-11-07, against a lab build of `sf-ctl`, `sf-ubuntu`, `sf-jammy`, `sf-boo
   3. `clone sf-jammy --to sf-clonetest --files all`.
   4. The change plan with `--apply --destructive`. It installed `zfsutils-linux`, added two accounts with their IDs, and made the `vault` mirror with `compression=lz4` and `atime=off` and its two datasets.
   5. The Moves plan copied `/home` and `/vault` (1.1 GiB), and `--verify --checksum` matched every step. Running the change plan again found nothing to do.
+- **A second whole copy, `sf-fedora` onto a new Fedora 44 VM** (btrfs root):
+  1. Snapshots before of `/`, `/home` and `/var`.
+  2. dnf packages and accounts.
+  3. The btrfs raid1 pool rebuilt: format, add, then a balance to raid1 data and metadata.
+  4. Its three subvolumes made and mounted.
+  5. The files copied and verified by checksum, then the snapshots after.
+- **The locks held:** a copy mapped onto a disk of the VM's now-mounted pool, run with `--apply --destructive` and the device typed again, stopped at "/dev/vdb is in use" and touched nothing.
 - **Planned but not applied:** btrfs raid10 (`sf-bookworm`) and nested subvolumes (`sf-suse`). The mdadm array on `sf-suse` was listed as not copied, as it should be.
-- **Not run:** LVM (no LVM host in that build), the snapshot steps (the VM's libvirt host wasn't scanned, and its root is ext4), the share files, migration mode and the web form.
+- **Not run:** LVM (no LVM host in that build), the libvirt snapshot (the VM's libvirt host wasn't scanned), copying share files that share something (both lab hosts have a stock `/etc/exports`), migration mode and the web form.
 
 Bugs it found, all fixed:
 - bash before 5.2 couldn't parse the `vm-create` step. A test now looks for that pattern in every script.
@@ -320,6 +327,12 @@ Bugs it found, all fixed:
 - Copying across releases tried old versioned libraries such as `libssl3` and `gcc-12-base`.
 - ZFS datasets weren't copied at all, since fstab doesn't name them, and a whole-disk system disk wasn't recognised.
 - The scan missed the package sources of Debian cloud images (`mirror+file:`), and listed base snaps as apps.
+- A btrfs root's snapshot left out `/home` and `/var`, its other subvolumes.
+- Snapshot names carried only the date, so a second copy the same day took the first one's snapshot for its own.
+- The btrfs top level was unmounted in the same plan that mounted it, so every re-run did both again.
+- Saving the same copy twice in a minute failed.
+- A stock `/etc/exports` of only comments was copied over the target's.
+- A plan was made against a target scan older than an earlier copy onto its disks. That is now a critical risk.
 
 ## The package list (phase 1)
 
