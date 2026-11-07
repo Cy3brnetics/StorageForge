@@ -65,7 +65,8 @@ def status(api, name):
 
 
 def entries(api, name, q, limit=50):
-    return api.get(f'/api/hostlogs?host={name}&q={q}&limit={limit}')['entries']
+    got = api.get(f'/api/hostlogs?host={name}&q={q}&limit={limit}')['entries']
+    return [e for e in got if e.get('ident') == TAG]      # sudo logs the command that wrote the line, marker and all, so its own line matches the search too
 
 
 def stored_rows(name):
@@ -197,7 +198,7 @@ def tier14(r):
     # ── the 30-day and row limits, on real journal text ─────────
     fetch = 'from storageforge_index import hostlogs; import sys; print(hostlogs.script(int(sys.argv[1])))'
     caps = '''
-import json, sys, tempfile, time
+import json, shutil, sys, tempfile, time
 from storageforge_index import hostlogs
 from storageforge_index.db import Database
 text, now = sys.stdin.read(), time.time()
@@ -208,7 +209,7 @@ def stored(shift):
     parsed = hostlogs.parse(text, at)
     hostlogs.store(conn, 'h', parsed, at)
     rows = [r[0] for r in conn.all('SELECT at_us FROM host_log_lines WHERE host = :h', {'h': 'h'})]
-    conn.close()
+    conn.close(); shutil.rmtree(d, True)      # the container's temp space is small, and three databases of 50 or 500,000 rows filled it
     return parsed, rows
 for shift in (0, 22, 31):
     parsed, rows = stored(shift)
