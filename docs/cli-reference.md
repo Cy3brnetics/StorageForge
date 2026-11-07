@@ -131,6 +131,7 @@ Both report commands also take `--title`, `--as-of YYYY-MM-DD`, `--kwh-price`, `
 | `vault resolve --host H [--action A]` | which key and user a host would use |
 | `vault policy [generate-only\|open]` | show or set whether imported keys are refused |
 | `vault rotate-secret` | rewrap everything under `$STORAGEFORGE_VAULT_NEW_SECRET` |
+| `rotate [--apply] [--key K]...` | change every key it holds, for when one may have leaked: see [If a key may have leaked](security.md#if-a-key-may-have-leaked). Without `--apply` it only says what it would do |
 | `audit tail [--limit N] [--format table\|json]` | newest entries |
 | `audit verify` | check the HMAC chain |
 

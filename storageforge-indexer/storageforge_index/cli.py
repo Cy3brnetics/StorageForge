@@ -569,6 +569,47 @@ def cmd_restore(args) -> int:
     return 0
 
 
+def cmd_rotate(args) -> int:
+    """Every key StorageForge holds, changed: see rotation.py. Without --apply it says what it would do and changes nothing."""
+    from . import rotation
+    from .vault import actor_name
+    db, conn = open_db(args)
+    if not args.apply:
+        p = rotation.plan(db, conn)
+        print('Would change, with --apply:')
+        for k in p['keys']:
+            where = ', '.join(f'{h["user"]}@{h["host"]}' for h in k['hosts']) or 'no binding uses it on a scanned host: left alone'
+            print(f'  SSH key {k["key"]} ({k["fingerprint"]}): {where}')
+            if k['elsewhere']:
+                print(f'    WARNING: it is also in authorized_keys of {", ".join(k["elsewhere"])}, where no binding uses it: '
+                      'a rotation leaves it there, so take it out by hand or bind it first')
+        print(f'  end {p["sessions"]} web session(s), revoke {p["invites"]} unused invite(s)')
+        if os.environ.get('STORAGEFORGE_VAULT_NEW_SECRET'):
+            print('  wrap every vault key under STORAGEFORGE_VAULT_NEW_SECRET')
+        print('Cannot change from here, so do these by hand:')
+        for m in p['manual']:
+            print(f'  {m["what"]}: {m["how"]}')
+        if p['device_credentials']:
+            print(f'  ({p["device_credentials"]} device credential(s) are stored)')
+        return 0
+    new = os.environ.get('STORAGEFORGE_VAULT_NEW_SECRET', '').encode() or None
+    r = rotation.apply(db, conn, actor_name(), new, set(args.key) if args.key else None)
+    bad = 0
+    for k in r['results']:
+        state = {True: 'changed', False: 'NOT changed', None: 'left alone'}[k['ok']]
+        print(f'SSH key {k["key"]}: {state}')
+        for step in k['steps']:
+            print(f'  {step}')
+        bad += k['ok'] is False
+    print(f'ended {r["sessions_ended"]} web session(s), revoked {r["invites_revoked"]} invite(s)')
+    if r['vault_rewrapped'] is not None:
+        print(f'rewrapped {r["vault_rewrapped"]} key(s): put the new secret in secrets/vault_secret and restart now')
+    print('Still to do by hand:')
+    for m in r['manual']:
+        print(f'  {m["what"]}: {m["how"]}')
+    return 1 if bad else 0
+
+
 def cmd_prune(args) -> int:
     db, conn = open_db(args)
     r = db.prune(conn, change_days=args.days, max_change_rows=args.max_rows)
@@ -1414,6 +1455,11 @@ def build_parser() -> argparse.ArgumentParser:
                                                  '(default $STORAGEFORGE_CHANGE_MAX_ROWS or 2000000)')
     pr.add_argument('--vacuum', action='store_true', help='then shrink the file (slow, locks the database)')
     pr.set_defaults(fn=cmd_prune)
+
+    ro = sub.add_parser('rotate', help='change every key it holds, for when one may have leaked (a dry run without --apply)')
+    ro.add_argument('--apply', action='store_true', help='do it: new SSH keys on every host that uses one, sessions ended, invites revoked')
+    ro.add_argument('--key', action='append', help='only this vault key (again for more)')
+    ro.set_defaults(fn=cmd_rotate)
 
     h = sub.add_parser('hosts', help='list indexed hosts')
     hs = h.add_subparsers(dest='hosts_cmd')

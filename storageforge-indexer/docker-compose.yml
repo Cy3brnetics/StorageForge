@@ -11,7 +11,7 @@ services:
     build: &runtime-build
       context: .
       target: runtime
-    image: storageforge:0.3.2
+    image: storageforge:0.4.0
     restart: "no"
     user: "0:0"                # owns the files for uid 10001 and uid 101
     read_only: true
@@ -34,7 +34,7 @@ services:
 
   storageforge:
     build: *runtime-build
-    image: storageforge:0.3.2
+    image: storageforge:0.4.0
     depends_on:
       init-secrets: { condition: service_completed_successfully }
     restart: unless-stopped
@@ -99,7 +99,7 @@ services:
   admin:
     profiles: [admin]
     build: *runtime-build
-    image: storageforge:0.3.2
+    image: storageforge:0.4.0
     depends_on:
       init-secrets: { condition: service_completed_successfully }
     restart: "no"
@@ -132,7 +132,7 @@ services:
     build:
       context: .
       target: proxy
-    image: storageforge-proxy:0.3.2
+    image: storageforge-proxy:0.4.0
     restart: unless-stopped
     depends_on:
       storageforge: { condition: service_healthy }

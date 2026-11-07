@@ -4,6 +4,12 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 
 ## Unreleased
 
+### Added
+- **`storageforge-index rotate` changes every key StorageForge holds, for when one may have leaked.** Without `--apply` it lists each vault SSH key with the hosts and accounts that use it, and what it cannot change. With `--apply`, each key gets a successor that is added to every account that uses it and tried there first; only when every host takes it do the bindings move, the old line come out of each `authorized_keys` and the old key go. One host that refuses leaves the old key in place everywhere. It also ends every web session, revokes unused invites, and with `STORAGEFORGE_VAULT_NEW_SECRET` wraps the vault under a new secret. A key that is in an `authorized_keys` where no binding uses it is named, since a rotation cannot reach it. What it cannot change (session secret, TLS certificate, report tokens, scan signing keys, device passwords, alert addresses) it lists with what to do. Tried in the lab on 2026-11-07: the scan key changed on all seven hosts, the old fingerprint gone from each, and every host scanned with the new key. See [If a key may have leaked](docs/security.md#if-a-key-may-have-leaked).
+
+### Fixed
+- **The compose files named the 0.3.2 images** for the 0.4.0 release. They name 0.4.0.
+
 ## 0.4.0 — 2026-11-06
 
 Upgrade notes: run each host's scan access script again for host logs (it adds the scan user to `systemd-journal`) and for signed scans (it makes a signing key); migrations 041 and 042 run on start. A host that signed before and answers unsigned is refused until its key is forgotten (`access signing --forget`). Lab status: 561 of 564 checks passed on 2026-11-06 before the SF-48 fix, which made tier 16 pass in full; `workload-libvirt` fails on a lab image without `qemu-img`; pfSense, OPNsense and Cisco on real devices, old SSH ciphers, Incus and LXC guests, Tailscale, proxies, identity providers, PagerDuty, FIDO2, Terraform and Puppet apply, and the btrfs side of SF-72 are **not lab-tested**. The security audit is partial (see `notebook/Audit 2026-11-05`).

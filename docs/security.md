@@ -167,3 +167,37 @@ It can't read the receiver: no verb sends anything back but names, ids and what 
 | Deploy access | `storageforge-deploy` user, a sudoers file allowing two commands, `storageforge-run`, `allowed_signers` | the setup script's `--remove` |
 | Deployed jobs | `storageforge-job`, per-job configs, keys and timers; forced-command keys on sources | deploy the plan empty (**Remove from hosts**) |
 | Sends between hosts | On the receiver: `storageforge-job`, `/etc/storageforge/receive/<id>.conf` and a forced-command key. On the sender: `/etc/storageforge/sends/<id>.key` and `.hostkey` | goes when a plan ends; **Uninstall** for a task or schedule. Records stay in `/var/lib/storageforge/receive/` |
+
+## If a key may have leaked
+
+`storageforge-index rotate` changes every key StorageForge holds. Run it without `--apply` first: it lists each SSH key in the vault with the hosts and accounts that use it now, and what it cannot change.
+
+```bash
+docker compose exec storageforge storageforge-index rotate            # what it would do; changes nothing
+docker compose exec storageforge storageforge-index rotate --apply    # do it
+```
+
+With `--apply`, for each SSH key that a scan, checksum or deploy uses on a host:
+
+1. A new key is made in the vault.
+2. Its public half is added to that account's `authorized_keys` over the old key, and a login with the new key is tried on every host.
+3. Only when every host takes it: the bindings move to the new key, the old key's line is taken out of each `authorized_keys` over the new key (with any options in front of it, and nothing else touched), and the old key is deleted. The new key takes the old one's name.
+
+If one host does not take the new key, nothing moves for that key: the new line is taken back off the hosts that had it, and the old key stays bound and working. The run says which host and why, and exits 1. A key no scanned host uses is left alone; delete it with `vault remove` if it is not needed. `--key K` limits the run to named keys.
+
+It also ends every web session (everyone signs in again) and revokes every invite not yet used. With `STORAGEFORGE_VAULT_NEW_SECRET` set (32 characters or more) it wraps every key under that new vault secret; put it in `secrets/vault_secret` and restart straight after. Each step is in the audit log.
+
+What it cannot change from here, and lists with what to do:
+
+| What | How |
+| :--- | :--- |
+| Session secret | delete `secrets/session_secret`, run `docker/init-secrets.sh`, restart |
+| TLS certificate | delete `secrets/tls_cert` and `secrets/tls_key`, run `docker/init-secrets.sh`, restart, and trust the new one |
+| Vault secret | the run above with `STORAGEFORGE_VAULT_NEW_SECRET`, or `vault rotate-secret` |
+| Report tokens of deployed jobs, schedules and remote nodes | deploy them again: each deploy issues a new token and the old one stops working |
+| A host's scan signing key | delete `/usr/local/lib/storageforge/scan-sign*` on the host, run the scan access script again, then `access signing --forget <address>` |
+| Router and switch passwords | change each on the device, then store the new one |
+| Alert addresses (ntfy topics, Gotify tokens, webhook URLs) | make new ones where they are hosted and set them under Settings, Alerts |
+
+Nothing secret is in the git repository: the folders that hold secrets (`secrets/`, `keys/`, `data/`) and `.env` are ignored, and a scan of every commit for private keys, tokens and passwords found only placeholders and test values (2026-11-07).
+
