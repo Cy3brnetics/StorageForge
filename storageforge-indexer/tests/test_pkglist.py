@@ -1,0 +1,223 @@
+"""Package lists: what a scan reads, what is kept of it, and the script that installs the same packages elsewhere."""
+import contextlib
+import io
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+try:
+    import dbfactory
+except ImportError:      # run as tests.test_x from the project folder
+    from tests import dbfactory
+from storageforge_index import pkglist, remote
+
+CANARY = '$(touch${IFS}/tmp/CANARY)`id`"q;x'
+
+
+def section():
+    s = remote.INVENTORY_SCRIPT
+    return s[s.index("echo '@@pkglist'"):s.index("echo '@@access'")]
+
+
+class Parse(unittest.TestCase):
+    def test_apt_names_sources_and_apps(self):
+        pk = pkglist.parse('distro\tubuntu\t24.04\tdebian\npm apt-get\nm\tvim\nm\tlibc6:i386\n'
+                           'f\tApplication\tOrigin\nf\torg.mozilla.firefox\tflathub\ns\tcode\tclassic\n'
+                           'r\t/etc/apt/sources.list\thttps://me:hunter2@repo.example.com/ubuntu?token=abc#x\ncomplete')
+        self.assertEqual((pk['pm'], pk['distro'], pk['version'], pk['like'], pk['basis']), ('apt-get', 'ubuntu', '24.04', ['debian'], 'manual'))
+        self.assertEqual(pk['packages'], ['libc6:i386', 'vim'])
+        self.assertEqual(pk['flatpak'], [{'id': 'org.mozilla.firefox', 'origin': 'flathub'}])
+        self.assertEqual(pk['snap'], [{'name': 'code', 'confinement': 'classic'}])
+        self.assertEqual(pk['repos'], [{'where': '/etc/apt/sources.list', 'url': 'https://repo.example.com/ubuntu'}])
+        self.assertNotIn('hunter2', json.dumps(pk))
+        self.assertNotIn('token', json.dumps(pk))
+        self.assertTrue(pk['complete'])
+
+    def test_what_is_not_a_package_name_is_dropped(self):
+        pk = pkglist.parse(f'pm apt-get\nm\t{CANARY}\nm\t-rf\nm\tok\nf\t{CANARY}\ts\t{CANARY}\nr\tx\tjavascript:alert(1)\nr\tx\thttps://a b/\n')
+        self.assertEqual((pk['packages'], pk['flatpak'], pk['snap'], pk['repos']), (['ok'], [], [], []))
+        self.assertFalse(pk['complete'])     # no end marker: the output stopped early
+
+    def test_zypper_is_every_package_less_the_automatic_ones(self):
+        pk = pkglist.parse('pm zypper\na\tvim\na\tlibfoo1\na\tgpg-pubkey\nx\tlibfoo1\ncomplete')
+        self.assertEqual((pk['packages'], pk['basis']), (['vim'], 'manual'))
+
+    def test_dnf_history_names_and_the_last_resort(self):
+        pk = pkglist.parse('pm dnf\nv\tbash-5.2.26-3.fc40.x86_64\nv\tpython3-libs-3.12.1-1.fc40.x86_64\ncomplete')
+        self.assertEqual((pk['packages'], pk['from_history']), (['bash', 'python3-libs'], True))
+        pk = pkglist.parse('pm dnf\na\tbash\na\tgpg-pubkey\ncomplete')
+        self.assertEqual((pk['packages'], pk['basis']), (['bash'], 'all'))
+
+    def test_aur_packages_are_kept_apart(self):
+        pk = pkglist.parse('pm pacman\nm\tvim\nm\tparu\no\tparu\no\tnot-explicit\ncomplete')
+        self.assertEqual((pk['packages'], pk['foreign']), (['vim'], ['paru']))
+
+    def test_compare_within_a_family_only(self):
+        a = pkglist.parse('distro\tdebian\t12\npm apt-get\nm\tvim\nm\tgit\nf\tx.y\tflathub\ncomplete')
+        b = pkglist.parse('distro\tdebian\t13\npm apt-get\nm\tgit\nm\tzsh\ncomplete')
+        c = pkglist.compare(a, b)
+        self.assertEqual((c['comparable'], c['same_distro'], c['only_a'], c['only_b'], c['both'], c['flatpak_only_a']),
+                         (True, False, ['vim'], ['zsh'], 1, ['x.y']))
+        self.assertFalse(pkglist.compare(a, pkglist.parse('pm dnf\nm\tvim\n'))['comparable'])
+        self.assertTrue(pkglist.compare(pkglist.parse('pm dnf\nm\tvim\n'), pkglist.parse('pm yum\nm\tvim\n'))['comparable'])
+
+
+def stub(d: Path, name: str, body: str):
+    p = d / name
+    p.write_text('#!/bin/sh\n' + body + '\n')
+    p.chmod(0o755)
+
+
+class Collect(unittest.TestCase):
+    """The section of the scan, run by sh with apt-mark stubbed: what it prints parses back."""
+    def test_the_scan_section_reads_apt(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        stub(d, 'apt-mark', 'printf "vim\\ngit\\n"')
+        pre = 'bounded() { "$@"; }\n'
+        out = subprocess.run(['sh', '-c', pre + section()], capture_output=True, text=True, timeout=60,
+                             env={**os.environ, 'PATH': f'{d}:{os.environ["PATH"]}'})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        body = out.stdout.split('\n', 1)[1]
+        pk = pkglist.parse(body)
+        self.assertEqual((pk['pm'], pk['packages'], pk['complete']), ('apt-get', ['git', 'vim'], True))
+
+    def test_the_section_is_one_the_parser_knows(self):
+        self.assertIn('pkglist', remote.SECTIONS)
+
+
+class Script(unittest.TestCase):
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.d)
+        stub(self.d, 'apt-get', 'echo "apt-get $*" >>"$LOG"')
+        stub(self.d, 'dpkg-query', 'printf "vim\\tinstalled\\nlibc6:i386\\tinstalled\\ngone\\tnot-installed\\n"')
+
+    def run_script(self, pk, *args):
+        path = self.d / 'p.sh'
+        path.write_text(pkglist.script(pk, 'web-01', '2026-11-07'))
+        return subprocess.run(['bash', str(path), *args], capture_output=True, text=True, timeout=60,
+                              env={**os.environ, 'PATH': f'{self.d}:{os.environ["PATH"]}', 'LOG': str(self.d / 'log')})
+
+    def test_it_reports_what_is_missing_and_installs_nothing(self):
+        pk = pkglist.parse(f'distro\tdebian\t12\npm apt-get\nm\tvim\nm\tlibc6:i386\nm\tgone\nm\tzsh\nm\t{CANARY}\n'
+                           f'r\tx\thttps://deb.example.com/debian\ncomplete')
+        out = self.run_script(pk)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn('2 of 4 already installed', out.stdout)
+        self.assertIn('2 to install with apt-get: gone zsh', out.stdout)
+        self.assertIn('https://deb.example.com/debian', out.stdout)
+        self.assertFalse((self.d / 'log').exists())
+        self.assertFalse(Path('/tmp/CANARY').exists())
+        self.assertIn('2 of 3 already installed', self.run_script(pk, '--skip', 'zsh').stdout)
+
+    def test_another_package_manager_is_refused(self):
+        out = self.run_script(pkglist.parse('pm pacman\nm\tvim\ncomplete'))
+        self.assertEqual(out.returncode, 1)
+        self.assertIn('nothing is installed', out.stdout)
+
+    @unittest.skipIf(os.geteuid() == 0, 'root may apply')
+    def test_apply_needs_root(self):
+        out = self.run_script(pkglist.parse('pm apt-get\nm\tzsh\ncomplete'), '--apply')
+        self.assertEqual(out.returncode, 1)
+        self.assertIn('--apply needs root', out.stderr)
+
+    def test_a_hostile_source_name_stays_a_word(self):
+        pk = pkglist.parse(f'pm apt-get\nm\tvim\nr\t{CANARY}\thttps://x.example/\ncomplete')
+        self.assertEqual(self.run_script(pk).returncode, 0)
+        self.assertFalse(Path('/tmp/CANARY').exists())
+
+
+class NoRemovals(unittest.TestCase):
+    """--apply never removes a package to make room: run as a stand-in root, with stand-in package managers."""
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.d)
+        stub(self.d, 'rpm', 'true')
+        stub(self.d, 'dpkg-query', 'true')
+
+    def apply(self, pm, stubs, here=None):
+        for name, body in stubs.items():
+            stub(self.d, name, body)
+        path = self.d / 'p.sh'
+        # the root check is the script's own: here EUID is made 0 so --apply runs against the stand-ins
+        path.write_text(pkglist.script(pkglist.parse(f'pm {pm}\nm\tnewpkg\ncomplete'), 'src', 'now').replace('[[ $EUID -ne 0 ]]', 'false')
+                        .replace('here_pm() {', f'here_pm() {{ echo {here}; return; ' if here else 'here_pm() {'))
+        return subprocess.run(['bash', str(path), '--apply', '--no-apps'], capture_output=True, text=True, timeout=60,
+                              env={**os.environ, 'PATH': f'{self.d}:{os.environ["PATH"]}', 'LOG': str(self.d / 'log')})
+
+    def test_apt_is_told_not_to_remove(self):
+        out = self.apply('apt-get', {'apt-get': 'echo "$*" >>"$LOG"'}, here='apt-get')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn('install -y -qq --no-remove newpkg', (self.d / 'log').read_text())
+
+    def test_zypper_refuses_a_removal_and_installs_nothing(self):
+        dry = ('case "$*" in *--dry-run*) printf "The following package is going to be REMOVED:\\n  oldpkg\\n\\n" ;; '
+               '*) echo "$*" >>"$LOG" ;; esac')
+        out = self.apply('zypper', {'zypper': dry}, here='zypper')
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertIn('refused: installing would remove oldpkg', out.stdout)
+        self.assertFalse((self.d / 'log').exists())
+
+    def test_apk_refuses_a_purge(self):
+        sim = 'case "$*" in info) ;; *--simulate*) echo "(1/1) Purging oldpkg (1.0-r0)" ;; *) echo "$*" >>"$LOG" ;; esac'
+        out = self.apply('apk', {'apk': sim}, here='apk')     # this machine's own manager would be found first
+        self.assertIn('refused: installing would remove oldpkg', out.stdout)
+        self.assertFalse((self.d / 'log').exists())
+
+
+class Routes(unittest.TestCase):
+    def setUp(self):
+        from storageforge_index import server, users
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.db = dbfactory.make(self, Path(self.tmp) / 'index.db')
+        self.conn = self.db.connect()
+        self.db.migrate(self.conn)
+        self.addCleanup(self.conn.close)
+        users.create(self.conn, 'alice', 'a long enough password')
+        self.client = server.create_app(server.App(self.db), 's' * 48).test_client()
+        a = {'collected_at': '2026-11-07T00:00:00+00:00', 'pkglist': pkglist.parse('distro\tdebian\t12\npm apt-get\nm\tvim\nm\tgit\ncomplete')}
+        b = {'pkglist': pkglist.parse('distro\tdebian\t12\npm apt-get\nm\tgit\ncomplete')}
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json) VALUES ('a', 'a', 'scan', :a), ('b', 'b', 'scan', :b), ('old', 'old', 'scan', '{}')",
+                          {'a': json.dumps(a), 'b': json.dumps(b)})
+
+    def test_routes(self):
+        self.assertEqual(self.client.get('/api/hostconfigs/packages?host=a').status_code, 401)
+        self.client.post('/api/login', json={'username': 'alice', 'password': 'a long enough password'})
+        self.assertEqual(self.client.get('/api/hostconfigs/packages?host=a').json['packages'], ['git', 'vim'])
+        diff = self.client.get('/api/hostconfigs/packages?host=a&against=b').json
+        self.assertEqual((diff['only_a'], diff['only_b'], diff['a'], diff['b']), (['vim'], [], 'a', 'b'))
+        r = self.client.get('/api/hostconfigs/packages/script?host=a')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b'PKGS=(git vim)', r.data)
+        for path in ('/api/hostconfigs/packages?host=old', '/api/hostconfigs/packages?host=nowhere', '/api/hostconfigs/packages/script?host=old'):
+            self.assertEqual(self.client.get(path).status_code, 404, path)
+
+    def test_cli(self):
+        from storageforge_index import cli
+        db = str(Path(self.tmp) / 'index.db')
+
+        def run(*args):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                rc = cli.main(['--db', db, 'hosts', 'packages', *args])
+            return rc, out.getvalue()
+        rc, out = run('a')
+        self.assertEqual(rc, 0)
+        self.assertIn('2 package(s) installed on purpose', out)
+        rc, out = run('a', '--against', 'b')
+        self.assertEqual((rc, 'only on a: vim' in out), (1, True))
+        self.assertEqual(run('b', '--against', 'b')[0], 0)
+        self.assertEqual(run('old')[0], 1)
+        script = Path(self.tmp) / 'p.sh'
+        self.assertEqual(run('a', '--script', '-o', str(script))[0], 0)
+        self.assertEqual(subprocess.run(['bash', '-n', str(script)]).returncode, 0)
+
+
+if __name__ == '__main__':
+    unittest.main()

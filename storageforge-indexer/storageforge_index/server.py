@@ -123,6 +123,8 @@ GET  /api/hostconfigs[?host=]         saved host configurations: the newest of e
 GET  /api/hostconfigs/<id>            one version: what it holds, and what changed since the version before
 GET  /api/hostconfigs/script?host=&id=   the reinstall script (mounts, accounts, shares, symlinks)
 GET  /api/hostconfigs/bundle?host=&id=   a .tar.gz of scripts, records and config files (every host without host=)
+GET  /api/hostconfigs/packages?host=[&against=]   packages a host was given on purpose, or how two hosts differ
+GET  /api/hostconfigs/packages/script?host=   a script that installs them on another machine (reports unless --apply)
 GET  /api/backups                    backups on disk;  POST {"kind": "essentials"|"full"} makes one now
 GET  /api/planner/hosts             scanned hosts and saved designs
 GET  /api/planner/design?host=&source=saved|scan   a design: the saved one, or built from the latest scan
@@ -164,7 +166,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
+               fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
 from . import routes_planner
 from .runtimes import docker
 from .capacity import parse_size, trends
@@ -2046,6 +2048,31 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         core.audit(conn(), actor(), 'hostconfig.script', 'ok', v['host'], {'version': v['config_id']})
         return Response(site.stamp(conn(), reinstall.script(v)).encode('utf-8', 'surrogateescape'), mimetype='text/x-shellscript',
                         headers={'Content-Disposition': f'attachment; filename="reinstall-{moves.host_slug(v["host"])}.sh"'})
+
+    @web.get('/api/hostconfigs/packages')
+    @login_required
+    def api_hostconfig_packages():
+        host, against = request.args.get('host', ''), request.args.get('against') or None
+        try:
+            pk = pkglist.for_host(conn(), host)
+            other = pkglist.for_host(conn(), against) if against else None
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        if not pk or (against and not other):
+            return jsonify(error=f'{against if pk else host} has no package list: scan it again'), 404
+        return jsonify(pkglist.compare(pk, other) | {'a': pk['host'], 'b': other['host']} if other else pk)
+
+    @web.get('/api/hostconfigs/packages/script')
+    @login_required
+    def api_hostconfig_packages_script():
+        host = request.args.get('host', '')
+        try:
+            text = pkglist.script_for(conn(), host)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        core.audit(conn(), actor(), 'hostconfig.packages', 'ok', host, {})
+        return Response(site.stamp(conn(), text).encode('utf-8', 'surrogateescape'), mimetype='text/x-shellscript',
+                        headers={'Content-Disposition': f'attachment; filename="packages-{moves.host_slug(host)}.sh"'})
 
     @web.get('/api/hostconfigs/bundle')
     @login_required

@@ -361,6 +361,27 @@ echo '@@packages'; (PATH="$PATH:/usr/sbin:/sbin"; for m in apt-get dnf yum zyppe
   v=$(ssh -V 2>&1 | sed -n 's/^OpenSSH_\([0-9]*\.[0-9]*\).*/\1/p'); [ -n "$v" ] && echo "openssh $v"
   @@PLATFORM@@; [ -n "$platform" ] && echo "platform $platform"
   @@PVE_ENTERPRISE@@ && echo 'pve_enterprise yes')
+echo '@@pkglist'; (PATH="$PATH:/usr/sbin:/sbin"; . /etc/os-release 2>/dev/null; printf 'distro\t%s\t%s\t%s\n' "${ID:-}" "${VERSION_ID:-}" "${ID_LIKE:-}"
+  if command -v apt-mark >/dev/null 2>&1; then echo 'pm apt-get'; bounded apt-mark showmanual 2>/dev/null | awk '{print "m\t" $0}'
+  elif command -v pacman >/dev/null 2>&1; then echo 'pm pacman'; bounded pacman -Qqe 2>/dev/null | awk '{print "m\t" $0}'; bounded pacman -Qqm 2>/dev/null | awk '{print "o\t" $0}'
+  elif command -v zypper >/dev/null 2>&1; then echo 'pm zypper'; bounded rpm -qa --qf '%{NAME}\n' 2>/dev/null | awk '{print "a\t" $0}'
+    [ -r /var/lib/zypp/AutoInstalled ] && grep -v '^#' /var/lib/zypp/AutoInstalled | awk '{print "x\t" $0}'
+  elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then m=dnf; command -v dnf >/dev/null 2>&1 || m=yum; echo "pm $m"
+    # -C: from the cache only, never the network. Then the history, then every package as a last resort
+    o=$(bounded "$m" -q -C repoquery --userinstalled --qf '%{name}\n' 2>/dev/null); [ -n "$o" ] && printf '%s\n' "$o" | awk '{print "m\t" $0}' \
+      || { o=$(bounded "$m" -q history userinstalled 2>/dev/null); [ -n "$o" ] && printf '%s\n' "$o" | awk '{print "v\t" $0}'; } \
+      || bounded rpm -qa --qf '%{NAME}\n' 2>/dev/null | awk '{print "a\t" $0}'
+  elif [ -r /etc/apk/world ]; then echo 'pm apk'; awk '{print "m\t" $0}' /etc/apk/world
+  fi
+  command -v flatpak >/dev/null 2>&1 && bounded flatpak list --app --columns=application,origin 2>/dev/null | awk '{print "f\t" $0}'
+  command -v snap >/dev/null 2>&1 && bounded snap list 2>/dev/null | awk 'NR > 1 && $1 != "" {print "s\t" $1 "\t" $NF}'
+  for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do [ -r "$f" ] && awk -v f="$f" '$1 ~ /^deb(-src)?$/ {for (i = 2; i <= NF; i++) if ($i ~ /:\/\//) {print "r\t" f "\t" $i; break}}' "$f"; done
+  for f in /etc/apt/sources.list.d/*.sources; do [ -r "$f" ] && awk -v f="$f" 'tolower($1) == "uris:" {for (i = 2; i <= NF; i++) print "r\t" f "\t" $i}' "$f"; done
+  for f in /etc/yum.repos.d/*.repo /etc/zypp/repos.d/*.repo; do [ -r "$f" ] && awk -F= -v f="$f" 'function out(i) {if (e) for (i = 1; i <= n; i++) print "r\t" f "\t" u[i]; n = 0; e = 1}
+    /^\[/ {out()} tolower($1) ~ /^ *enabled *$/ && $2 ~ /^ *0/ {e = 0} tolower($1) ~ /^ *(baseurl|metalink|mirrorlist) *$/ {v = $0; sub(/^[^=]*= */, "", v); u[++n] = v} END {out()}' "$f"; done
+  [ -r /etc/pacman.conf ] && awk '/^\[/ {s = $0; gsub(/[][]/, "", s)} s != "options" && /^ *(Server|Include) *=/ {v = $0; sub(/^[^=]*= */, "", v); print "r\t" s "\t" v}' /etc/pacman.conf
+  [ -r /etc/apk/repositories ] && grep -v '^ *#' /etc/apk/repositories | awk '{print "r\t/etc/apk/repositories\t" $0}'
+  echo 'complete') | head -n 30000
 echo '@@access'; if [ -x /usr/local/lib/storageforge/find ]; then echo capability; else echo user; fi; id -un 2>/dev/null
 echo '@@snapjobs'
 @@SNAPFIND@@
@@ -413,6 +434,7 @@ class HostInventory:
     authkeys: dict | None = None   # fingerprints in accounts' authorized_keys (authkeys.py); None from older scans
     snapjobs: list | None = None   # rsnapshot and snapper jobs on the host, whoever set them up (snapfind.py)
     zfs_props: str = ''            # ZFS properties set on purpose, not inherited: name, property, value per line
+    pkglist: dict | None = None    # distro, packages installed on purpose, Flatpak and Snap apps, package sources (pkglist.py)
 
     def to_json(self) -> str:
         return json.dumps({
@@ -420,7 +442,7 @@ class HostInventory:
             'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'zfs_props': self.zfs_props, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb, 'btrfs': self.btrfs,
             'jobs': self.jobs, 'tasks': self.tasks, 'schedules': self.schedules, 'runs': self.runs, 'managed': self.managed, 'ids': self.ids, 'packages': self.packages,
             'configs': self.configs, 'accounts': self.accounts, 'authkeys': self.authkeys, 'moves': self.moves, 'health': self.health, 'snapshots': self.snapshots, 'snapjobs': self.snapjobs,
-            'mounts': [asdict(m) for m in self.mounts],
+            'pkglist': self.pkglist, 'mounts': [asdict(m) for m in self.mounts],
         })
 
 
@@ -541,6 +563,7 @@ def collect_inventory(t: Transport) -> HostInventory:
     from .health import parse_report, parse_snapshots
     from .authkeys import parse as parse_authkeys
     from .hostconfig import parse_configs
+    from . import pkglist
     return HostInventory(hostname, ip, ' · '.join(lines('os')) or None, mounts, lsblk,   # optional fields by name: order-proof
                          sec.get('zpool', '').strip(), sec.get('df', '').strip(), lvs=sec.get('lvs', '').strip(), zfs_props=sec.get('zfsprops', '').strip(),
                          access=access, user=user, nfs=sec.get('nfs', '').strip(), smb=sec.get('smb', '').strip(),
@@ -554,4 +577,5 @@ def collect_inventory(t: Transport) -> HostInventory:
                          configs=parse_configs(sec['configs']) if 'configs' in sec else None,
                          accounts=sec.get('accounts', '').strip(),
                          authkeys=parse_authkeys(sec['authkeys']) if 'authkeys' in sec else None,
+                         pkglist=pkglist.parse(sec['pkglist']) if 'pkglist' in sec else None,
                          machine_id=next((m for m in lines('machineid') if re.fullmatch(r'[0-9a-f]{32}', m)), ''))

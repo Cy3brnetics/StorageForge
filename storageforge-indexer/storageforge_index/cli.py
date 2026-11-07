@@ -640,12 +640,66 @@ def _host_keys(args, db, conn) -> int:
     return 0
 
 
+def _host_packages(args, conn) -> int:
+    from . import pkglist
+    try:
+        if args.script:
+            out = pkglist.script_for(conn, args.host)
+            if args.output:
+                Path(args.output).write_text(out)
+                os.chmod(args.output, 0o755)
+                print(f'wrote {args.output}: run it on the other machine, then again with --apply', file=sys.stderr)
+            else:
+                sys.stdout.write(out)
+            return 0
+        pk = pkglist.for_host(conn, args.host)
+        other = pkglist.for_host(conn, args.against) if args.against else None
+    except LookupError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    if not pk or (args.against and not other):
+        print(f'{args.against if pk else args.host} has no package list: scan it again with this version', file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(pkglist.compare(pk, other) if other else pk, indent=2))
+        return 0
+    if not other:
+        print(f'{pk["host"]}: {pk.get("distro") or "unknown"} {pk.get("version") or ""}, {pk.get("pm") or "no package manager"}, '
+              f'{len(pk["packages"])} package(s) {"installed on purpose" if pk["basis"] == "manual" else "(every package)"}'
+              + ('' if pk.get('complete') else ', list cut short'))
+        for name in pk['packages']:
+            print(f'  {name}')
+        for f in pk.get('foreign') or []:
+            print(f'  {f}  (no package source)')
+        for f in pk['flatpak']:
+            print(f'  flatpak {f["id"]}  {f.get("origin") or ""}')
+        for x in pk['snap']:
+            print(f'  snap {x["name"]}  {x.get("confinement") or ""}')
+        for r in pk['repos']:
+            print(f'  source {r["where"]}: {r["url"]}')
+        return 0
+    c = pkglist.compare(pk, other)
+    if not c['comparable']:
+        print(f'{pk["host"]} uses {pk.get("pm")} and {other["host"]} {other.get("pm")}: package names can\'t be compared', file=sys.stderr)
+        return 1
+    print(f'{c["both"]} package(s) on both')
+    for label, key in ((f'only on {pk["host"]}', 'only_a'), (f'only on {other["host"]}', 'only_b'),
+                       (f'flatpak only on {pk["host"]}', 'flatpak_only_a'), (f'flatpak only on {other["host"]}', 'flatpak_only_b'),
+                       (f'snap only on {pk["host"]}', 'snap_only_a'), (f'snap only on {other["host"]}', 'snap_only_b'),
+                       (f'sources only on {pk["host"]}', 'repos_only_a'), (f'sources only on {other["host"]}', 'repos_only_b')):
+        if c[key]:
+            print(f'{label}: {" ".join(c[key])}')
+    return 1 if c['only_a'] or c['only_b'] else 0
+
+
 def cmd_hosts(args) -> int:
     if getattr(args, 'hosts_cmd', None) == 'rekey':
         return _rekey_host(args)
     db, conn = open_db(args)
     if getattr(args, 'hosts_cmd', None) in ('keys', 'allow-key', 'disallow-key'):
         return _host_keys(args, db, conn)
+    if getattr(args, 'hosts_cmd', None) == 'packages':
+        return _host_packages(args, conn)
     if getattr(args, 'hosts_cmd', None) == 'remove':
         from .retire import retire
         from .vault import Vault, VaultError
@@ -1469,6 +1523,12 @@ def build_parser() -> argparse.ArgumentParser:
     ak.add_argument('fingerprint')
     ak.add_argument('--note', help='whose it is')
     hs.add_parser('disallow-key', help='undo allow-key').add_argument('fingerprint')
+    pk = hs.add_parser('packages', help='packages a host was given on purpose, from its last scan: list, compare or a script to install them elsewhere')
+    pk.add_argument('host')
+    pk.add_argument('--against', metavar='HOST', help='compare with this host; exit 1 if they differ')
+    pk.add_argument('--script', action='store_true', help='write a script that installs them on the machine it runs on (reports unless --apply)')
+    pk.add_argument('-o', '--output', help='with --script: write it to this file')
+    pk.add_argument('--json', action='store_true')
     rk = hs.add_parser('rekey', help='a host was reinstalled or moved: forget its pinned SSH host keys (scan it right after)')
     rk.add_argument('name')
     rk.add_argument('--port', type=int, default=22, help='its SSH port, to drop that known_hosts line too')

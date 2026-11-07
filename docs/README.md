@@ -38,6 +38,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Security](security.md) | Key vault, audit log, accounts and sessions, host identity, container hardening |
 | [Operations](operations.md) | Configuration, backups, certificates, retention, logs, upgrades, dependency updates |
 | [Disaster recovery](disaster-recovery.md) | What to keep elsewhere, and rebuilding on a new machine |
+| [Cloning and migrating hosts](host-migration.md) | Copying a server or desktop between physical machines and VMs in any direction, for testing or migration. Design; the package list is built |
 | [Target hosts](target-hosts.md) | What a scanned or changed machine needs, and SSH for sending snapshots |
 | [Network devices](network-devices.md) | Routers, switches and firewalls, the one network language, changes with a rollback on the device, the opt-in scanner, the management planner |
 | [Infrastructure map](infrastructure-map.md) | Networks, firewalls, listeners, containers and VMs across hosts, who can reach what, and planning from it |

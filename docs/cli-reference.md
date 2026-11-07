@@ -66,6 +66,7 @@ storageforge-index search [PATTERN] [options]
 | `dupes [--host H] [--min-size SIZE] [--limit N]` | identical files found by `--checksum` scans |
 | `folders [--host H] [--min-files N] [--min-size SIZE] [--include-system]` | duplicate folders by names, sizes and layout |
 | `hosts` | indexed hosts |
+| `hosts packages HOST [--against HOST] [--script [-o FILE]] [--json]` | the packages a host was given on purpose, from its last scan: list them, compare two hosts (exit 1 if they differ), or write a script that installs them on another machine with the same package manager (reports unless `--apply`) |
 | `hosts rekey NAME [--port P]` | forget a host's pinned SSH host keys after a reinstall; scan it right after |
 | `access status [--host H]` | folders the latest scans could not read |
 | `access script [--host H \| --user U] [--remove]` | the read-only scan access setup script; pipe it to `ssh admin@host sudo sh` |

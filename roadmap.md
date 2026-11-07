@@ -149,6 +149,7 @@ Running a container, defining a VM from an existing disk, and start, stop and re
 - **Image updates,** with rollback on a failed healthcheck.
 - **VMs from templates:** cloud images and ISOs, checksums, cloud-init with the deploy key, so a new VM can be scanned from its first boot.
 - **Lifecycle:** snapshot, clone, resize and console over an SSH tunnel.
+- **Clone or migrate a scanned host in any direction** (physical or VM, to physical or VM), for testing or migration: packages, config, storage layout and a choice of user files, rebuilt on the target, and VM to VM copied as is. The package list is built; the rest is phased in the [design](docs/host-migration.md).
 - **Placement advice, which is the differentiator:** a pool on a dataset tuned for its use, databases off the bulk pool, warnings for bind mounts on network filesystems, and a warning when data sits where no hold or offsite copy reaches.
 - **MAC at deploy:** `:Z` labels, the `svirt_image_t` fix as a plan step, AppArmor pool paths.
 - **Read side:** Podman Quadlets, and adopting a workload by capturing it as compose, Quadlet, libvirt XML or Incus YAML, with drift against the capture.
