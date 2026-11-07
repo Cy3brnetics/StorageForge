@@ -265,7 +265,7 @@ def stage_scan_signed():
             mode = sh(vm, f'sudo -n stat -c "%a %U %G" {key}').strip()
             if mode != '640 root storageforge-scan':
                 return R.add('scan-signed', vm, False, f'the signing key is {mode or "missing"}, not 640 root storageforge-scan')
-            on_host = ' '.join(sh(vm, f'cat {key}.pub').split()[:2])
+            on_host = ' '.join(sh(vm, f'sudo -n cat {key}.pub').split()[:2])
             pinned = scansign.pinned_key(main_conn, ip, 22)
             if pinned != on_host:
                 return R.add('scan-signed', vm, False, f'pinned {pinned and scansign.fingerprint(pinned)}, the host has {scansign.fingerprint(on_host)}')
