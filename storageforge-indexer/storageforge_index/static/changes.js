@@ -57,6 +57,7 @@ function taskTitle(t) {
     format: () => `Format ${p.device} as ${p.fstype}`, label: () => `Label ${p.target} "${p.label}"`,
     'vm-create': () => `VM ${p.name} from ${p.image || 'an image'}${p.spec ? ' (' + p.spec + ')' : ''}`,
     packages: () => `Packages of ${p.from_host}${p.skip ? ', less ' + p.skip : ''}`,
+    accounts: () => `Accounts of ${p.from_host}`, 'config-files': () => `Share files of ${p.from_host}`,
   }[t.type] || (() => t.type))();
 }
 const tasksOn = (host) => (CH.plan.ran_at && !CH.dirty) ? [] : CH.plan.tasks.filter((t) => t.host === host);
@@ -424,4 +425,63 @@ async function chDelete() {
   if (!(await confirmDialog({ title: `Delete the plan “${CH.plan.name}”?`, body: 'Downloaded scripts keep working.', confirm: 'Delete plan', danger: true, typed: CH.plan.name }))) return;
   try { await api(`/api/changes/${CH.plan.id}`, { method: 'DELETE' }); CH.plan = { name: '', tasks: [] }; CH.dirty = false; chKeep(); renderStageBar(); loadChanges(); }
   catch (err) { chMsg(err.message); }
+}
+
+/* ── copy a host onto another (docs/host-migration.md) ──────────────
+   Preview builds the plans and lists what is at risk, worst first. Saving needs every risk ticked, and the target's name
+   typed when one destroys data: the server refuses (409) a risk that was not accepted, so nothing is saved unseen. */
+async function cloneForm(source) {
+  showTab('details');
+  const hosts = [...$('#host').options].map((o) => o.value).filter((h) => h && h !== source);
+  const target = el('select', {}, new Option('(choose)', ''), ...hosts.map((h) => new Option(h, h)));
+  const files = el('select', {}, new Option('No user files', 'none'), new Option('Folders only: owners and modes, no files', 'structure'), new Option('Everything', 'all'));
+  const folders = el('input', { type: 'text', class: 'mono', placeholder: '/srv/data,/home/ana (instead of the choice above)', autocomplete: 'off', spellcheck: 'false' });
+  const mode = el('select', {}, new Option('Test copy: its own name, nothing it can write to', 'test'), new Option('Migration: it takes over later', 'migrate'));
+  const tick = (label, on = true) => { const i = el('input', { type: 'checkbox' }); i.checked = on; return [i, el('label', { class: 'check' }, i, label)]; };
+  const [pk, pkL] = tick('Packages'), [ac, acL] = tick('Accounts'), [sh, shL] = tick('Share files'), [sn, snL] = tick('Snapshot before and after');
+  const out = el('div', { class: 'stack' });
+  const go = async (save, accept = []) => {
+    if (!target.value) { out.replaceChildren(text('p', 'Choose the host to copy onto.', 'st-failed')); return null; }
+    const list = folders.value.split(',').map((x) => x.trim()).filter(Boolean);
+    const body = { source, target: target.value, files: list.length ? list : files.value, mode: mode.value, packages: pk.checked, accounts: ac.checked, shares: sh.checked, snapshots: sn.checked, accept };
+    return (await postJSON(save ? '/api/clone' : '/api/clone/preview', body)).json();
+  };
+  const show = (b) => {
+    const risks = b.risks.filter((r) => r.level !== 'note');
+    const boxes = risks.map((r) => { const i = el('input', { type: 'checkbox' }); i.dataset.id = r.id; return [r, i]; });
+    const destroys = risks.some((r) => r.destroys);
+    const typed = el('input', { type: 'text', class: 'mono', autocomplete: 'off', spellcheck: 'false', placeholder: b.target, 'aria-label': `Type ${b.target} to confirm` });
+    const save = el('button', { type: 'button', class: 'btn pri sm', disabled: true }, 'Save the plans');
+    const ready = () => { save.disabled = !(boxes.every(([, i]) => i.checked) && (!destroys || typed.value.trim() === b.target)); };
+    boxes.forEach(([, i]) => i.addEventListener('change', ready)); typed.addEventListener('input', ready);
+    save.addEventListener('click', async () => {
+      try {
+        const r = await go(true, boxes.map(([, i]) => i.dataset.id));
+        const s = r.saved;
+        out.replaceChildren(text('p', `Saved: change plan #${s.changes}` + (s.files ? `, move plan #${s.files} for files` : '') + (s.after ? `, change plan #${s.after} for the snapshot after` : '')
+          + '. Run them in that order from Changes and Moves: each reports first, and formatting also needs --destructive.', 'st-ok'));
+      } catch (err) { out.prepend(text('p', err.body?.open ? `Not accepted yet: ${err.body.open.join(', ')}` : err.message, 'st-failed')); }
+    });
+    const tasks = (b.plans.changes?.tasks || []).map((t) => el('li', {}, taskTitle(t), t.host !== b.target ? text('span', ` (on ${t.host})`, 'muted') : ''));
+    out.replaceChildren(
+      el('h3', {}, 'Data at risk'),
+      risks.length ? el('ul', { class: 'stack' }, ...boxes.map(([r, i]) => el('li', {}, el('label', { class: 'check' }, i,
+        text('b', r.level === 'crit' ? 'Critical: ' : 'Warning: ', r.level === 'crit' ? 'st-failed' : 'st-running'), r.text)))) : text('p', 'Nothing in these plans deletes or overwrites data.', 'st-ok'),
+      destroys ? el('label', { class: 'field col' }, el('span', {}, `Something here destroys data. Type ${b.target} to confirm`), typed) : '',
+      el('h3', {}, `The copy, on ${b.target}`), el('ol', {}, ...tasks),
+      b.plans.files ? text('p', `Then a Moves plan copies ${b.paths.join(', ')}${b.files === 'structure' ? ' (folders only)' : ''}. It never deletes.`, 'muted small') : '',
+      ...(b.not_carried.length ? [el('h3', {}, 'Not copied'), el('ul', {}, ...b.not_carried.map((n) => el('li', {}, n)))] : []),
+      ...(b.notes.length ? [el('ul', { class: 'muted small' }, ...b.notes.map((n) => el('li', {}, n)))] : []),
+      el('div', { class: 'row end' }, save));
+    ready();
+  };
+  const preview = el('button', { type: 'button', class: 'btn sm' }, 'Preview');
+  preview.addEventListener('click', async () => { try { const b = await go(false); if (b) show(b); } catch (err) { out.replaceChildren(text('p', err.message, 'st-failed')); } });
+  $('#summary').replaceChildren(el('div', { class: 'stack card stageform' },
+    el('div', { class: 'row' }, el('b', {}, `Copy ${source} onto another host`)),
+    text('p', 'Builds ordinary plans: nothing runs until you run them, and each reports first. The target must be scanned: a new VM from "Create a VM here", or a freshly installed machine.', 'muted small'),
+    el('label', { class: 'field col' }, el('span', {}, 'Onto'), target), el('label', { class: 'field col' }, el('span', {}, 'User files'), files),
+    el('label', { class: 'field col' }, el('span', {}, 'Or these folders'), folders), el('label', { class: 'field col' }, el('span', {}, 'For'), mode),
+    el('div', { class: 'row wrap' }, pkL, acL, shL, snL), el('div', { class: 'row end' }, preview), out));
+  target.focus();
 }

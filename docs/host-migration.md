@@ -1,6 +1,6 @@
 # Cloning and migrating hosts
 
-**Status: design, partly built.** Copy a scanned machine to another one in any direction: physical to VM, VM to physical, VM to VM, or physical to physical. Use it to test a change on a copy, or to move a machine onto other hardware or off it. The same choices apply in every direction. Built so far: the package list and its fixes (phases 1 and 1b), VMs from cloud images with VM specs (the new-VM half of phase 2), and the `packages` step that puts a host's packages on another one. See [Phases](#phases) for what is not built.
+**Status: design, partly built.** Copy a scanned machine to another one in any direction: physical to VM, VM to physical, VM to VM, or physical to physical. Use it to test a change on a copy, or to move a machine onto other hardware or off it. The same choices apply in every direction. Built so far: the package list and its fixes, VMs from cloud images with VM specs, and copying a host onto any scanned target: its packages, accounts, share files, data filesystems and user files, with snapshots before and after, and the data at risk accepted before anything is saved. See [Phases](#phases) for what is not built.
 
 ## What was decided
 
@@ -39,12 +39,42 @@ Your own go beside them: `storageforge-index vm spec db --set vcpus=8 --set ram_
 
 ### Copying a host to a new VM
 
-`storageforge-index vm clone web-01 --host kvm-01 --key fleet [--test]` saves two plans:
+`storageforge-index vm clone web-01 --host kvm-01 --key fleet [--test]` saves the change plan for the VM: the catalog image for web-01's distro and version (Arch for its derivatives), named `web-01-copy`, from the `server` spec (or `test-copy` with `--test`), and one data disk for each of web-01's data filesystems, half again as large as what it holds. Run it, bind a key, scan the VM, then copy the host onto it as below.
 
-1. **The VM**, from the catalog image for web-01's distro and version (Arch for its derivatives), named `web-01-copy`, from the `server` spec, or `test-copy` with `--test`.
-2. **Its packages:** a `packages` step on `web-01-copy`, from web-01's last scan. Its check is critical until the copy has been scanned, so it waits for step 5 above.
+## Copying a host onto another
 
-Config, accounts, storage layout and user files come in later phases.
+`storageforge-index clone web-01 --to web-01-copy [--files none|structure|all|/srv/a,/home/ana] [--map /srv/data=/dev/vdb] [--migrate]`, or **Copy this host to…** on a host's menu in the web UI. The target is any scanned host: a new VM, or a machine with a fresh install. It saves ordinary plans, run in this order:
+
+1. **A change plan on the target:**
+   - **Snapshot before:** a libvirt snapshot of every disk when the target is a VM on a scanned libvirt host. Otherwise a btrfs, ZFS or LVM snapshot of its root, or a critical risk when its root can't be snapshotted.
+   - **The source's packages, accounts and share files:** the `packages`, `accounts` and `config-files` steps.
+   - **Its data filesystems, made on the target's disks:** the existing `format` step, with its three locks, then `mount` by label with the source's options. A btrfs filesystem with subvolumes is mounted at `/mnt/<label>-top`, its subvolumes are made there, and each is mounted where it was.
+2. **A Moves plan for user files,** at the level chosen:
+   - **structure:** folders with their owners and modes, and no files.
+   - **all:** every data filesystem and `/home`, leaving out caches.
+   - **chosen folders.**
+
+   It copies and never deletes. A file it would overwrite is kept beside it as `<name>.sf-replaced-<date>`.
+3. **A change plan with the snapshot after.**
+
+Disks are mapped with `--map /mount=/dev/device`. Without it, a VM's `sf-data` disks are taken in order. ZFS, LVM, md and LUKS layouts, network mounts, bind mounts and packages from no package source aren't made: they're listed under **Not copied**.
+
+### Data at risk
+
+Before anything is saved, the plans are listed with every way they could lose or hide data, worst first:
+- a disk to be formatted, with what the last scan saw on it
+- a root that can't be snapshotted
+- a share file that will be replaced (kept beside the new one)
+- files of the same name that will be replaced (kept beside them)
+- a target that isn't freshly installed
+
+The account check also names every user whose ID differs on the target; no ID is ever changed.
+
+**Web UI:** **Save the plans** stays disabled until each risk is ticked. When one destroys data, the target's name must be typed too.
+**API:** `POST /api/clone` refuses (409) until every risk is named in `accept`, and the audit log records what was accepted.
+**CLI:** prints the list.
+
+At run time, formatting still needs `--apply --destructive` and the device typed in the plan.
 
 ## Directions
 
@@ -245,13 +275,13 @@ Phase 1 reads apt, dnf and yum, zypper, pacman and apk. The rest fall into three
 | :--- | :--- | :--- |
 | 1 | **Package list**: collected by each scan, `hosts packages` to list and compare, a script that installs the same set with the same package manager | Built, unit-tested, **not lab-tested** |
 | 1b | **Fixes to phase 1:** image-based, transactional and read-only systems, apt on rpm, Debian's local debs, holds and backports, AUR versions | Built, unit-tested, **not lab-tested** |
-| 2 | **Targets:** new VMs from cloud images, with VM specs (`vm-create`, `vm create`, `vm clone`) | Built for new VMs, unit-tested against stand-in libvirt tools, **not lab-tested**. Existing scanned machines as targets, with the freshly-installed check and merge: planned |
+| 2 | **Targets:** new VMs from cloud images, with VM specs (`vm-create`, `vm create`, `vm clone`), and any scanned machine through `clone`, with a warning when it isn't freshly installed | Built, **not lab-tested** |
 | 2b | **The `packages` step:** another host's packages, as a plan step | Built, **not lab-tested** |
-| 3 | **Config and storage**: the reinstall script given a *create* mode for blank disks (it never formats today), disk mapping under the drive-task locks, and enabled services | Planned |
+| 3 | **Config and storage:** the `accounts` and `config-files` steps, and data filesystems (ext4, XFS, btrfs with subvolumes, vfat, exFAT) made with the existing format and mount steps. Not built: ZFS, LVM, md and LUKS layouts, enabled services, other `/etc` files | Built in part, **not lab-tested** |
 | 3b | **AUR and local builds:** cache, `bacman`, an AUR build at the matching commit; Arch Linux Archive pinning; derivative repositories and CPU levels | Planned |
 | 3c | **Hardware differences:** firmware, drivers, guest tools, interface renames and CPU level, each way | Planned |
-| 4 | **User files**: none, structure, chosen folders or everything, through the sync engine | Planned |
-| 4b | **Snapshots and risks:** before and after snapshots with holds, what changed, roll back, and the Data at risk list with its dialog and `--accept` | Planned. Its first piece, refusing package removals, is built |
+| 4 | **User files:** none, structure, chosen folders or everything, through Moves with `dirs_only` and `keep_replaced` | Built, **not lab-tested** |
+| 4b | **Snapshots and risks:** before and after snapshots, the Data at risk list with its ticks and typed name, and `accept` in the API. Not built: holds on the clone snapshots, the before/after "what changed" report, `--accept` in the scripts | Built in part, **not lab-tested** |
 | 5 | **Test and migration modes**: the isolation above, and cutover | Planned |
 | 6 | **VM to VM copy as is**: disk images and the libvirt definition, between libvirt hosts | Planned |
 | 7 | **Disk image from a physical host**: a block copy from a snapshot into qcow2, then fixed up to boot. To bare metal, through a live environment | Later |

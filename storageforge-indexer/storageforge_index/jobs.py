@@ -127,7 +127,7 @@ def specs(conn: Conn, plan: dict) -> list[dict]:
             'src': s['src']['path'], 'dst': s['dst']['path'],
             'dst_mount': (c.get('dst') or {}).get('planned_mount') or (c.get('dst') or {}).get('mount') or '/',
             'flags': ' '.join(f for f, on in (('checksum', o['checksum']), ('delete', o['delete']), ('onefs', o['one_fs']),
-                                               ('link', o['link_back'])) if on),
+                                               ('link', o['link_back']), ('dirsonly', o.get('dirs_only')), ('keepold', o.get('keep_replaced'))) if on),
             'excludes': s['excludes'], **({'only': s['only']} if s.get('only') else {}), 'schedule': o['schedule'] if s['method'] in SCHEDULED else None,
             'window': o['window'], 'bw_day': o['bwlimit'], 'bw_night': o['bwlimit_night'], 'night': o['night'],
             'pre': o['pre'], 'post': o['post'], 'snapshot': o['snapshot'], 'verify': o['verify'],

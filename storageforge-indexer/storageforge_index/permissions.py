@@ -160,7 +160,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/(moves|changes|tasks|vm)(/.*)?', 'plans.view'),
     (READ, r'/api/scheduler/(runs|schedules/\d+/runs)', 'logs.view'),   # what a run printed, as /api/log/output
     (READ, r'/api/scheduler(/.*)?', 'plans.view'),
-    (_WRITE, r'/api/(moves|changes|tasks|shares|planner|vm)(/.*)?', 'plans.edit'),
+    (_WRITE, r'/api/(moves|changes|tasks|shares|planner|vm|clone)(/.*)?', 'plans.edit'),
     (('POST',), r'/api/scheduler/schedules/\d+/(run|pause|token)', 'deploy.apply'),
     (('POST',), r'/api/scheduler/schedules/\d+/verify', 'deploy.report'),
     (_WRITE, r'/api/scheduler/schedules(/\d+)?', 'plans.edit'),

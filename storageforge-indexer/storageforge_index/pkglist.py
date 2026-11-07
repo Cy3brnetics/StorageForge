@@ -237,7 +237,7 @@ removes() { # manager name... -> what installing them would remove, from a simul
   esac
 }
 install_these() { # manager name... Never removes a package to make room: apt with --no-remove, dnf without --allowerasing,
-  local m=$1 gone; shift    # pacman's --noconfirm answers no to removing a conflict, and zypper and apk are simulated first
+  local m=$1 gone; shift    # pacman with --noconfirm answers no to removing a conflict, and zypper and apk are simulated first
   case $m in
     apt-get) DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y -qq --no-remove "$@" 2>&1 ;;
     dnf|yum) "$m" install -y -q "$@" 2>&1 ;;
@@ -253,10 +253,10 @@ install_these() { # manager name... Never removes a package to make room: apt wi
 
 section "Packages from $SRC_HOST"
 info "listed by its scan of $SRC_WHEN: $SRC_DISTRO $SRC_VERSION, $SRC_PM, ${#PKGS[@]} package(s) ($SRC_BASIS)"
-((SRC_COMPLETE)) || info "the list may be cut short: the scan's output stopped before its end"
+((SRC_COMPLETE)) || info "the list may be cut short: the output of the scan stopped before its end"
 case $SRC_MODE in
   image) info "$SRC_HOST is image-based (${SRC_IMAGE:-its image}): only the packages layered onto it are here, not the image itself" ;;
-  readonly) info "$SRC_HOST is a read-only system ($SRC_BASE packages of its vendor's image): only its apps come across" ;;
+  readonly) info "$SRC_HOST is a read-only system ($SRC_BASE packages of the vendor image): only its apps come across" ;;
 esac
 REBOOT=0
 M=$(here_pm)
@@ -295,7 +295,7 @@ if ((${#WANT[@]})); then
   fi
 fi
 if ((${#BPW[@]})); then
-  # those came from the release's backports on the source, so they are asked for from there and not from the release
+  # those came from the backports of the release on the source, so they are asked for from there and not from the release
   bp="${VERSION_CODENAME:-}-backports"
   if ! apt-cache policy 2>/dev/null | grep -q -- "$bp"; then missing "${#BPW[@]} came from backports, which this host has no source for ($bp): ${BPW[*]}"
   elif ((!APPLY)); then missing "would take ${BPW[*]} from $bp"
@@ -317,7 +317,7 @@ fi
 
 if ((APPS)) && ((${#FLATPAKS[@]})); then
   section "Flatpak apps"
-  if ! command -v flatpak >/dev/null; then missing "flatpak is not installed, so ${#FLATPAKS[@]} app(s) can't be: install it, then run this again"
+  if ! command -v flatpak >/dev/null; then missing "flatpak is not installed, so ${#FLATPAKS[@]} app(s) cannot be: install it, then run this again"
   else
     for i in "${!FLATPAKS[@]}"; do
       app=${FLATPAKS[$i]} origin=${FLATPAK_ORIGINS[$i]}
@@ -332,7 +332,7 @@ fi
 
 if ((APPS)) && ((${#SNAPS[@]})); then
   section "Snaps"
-  if ! command -v snap >/dev/null; then missing "snapd is not installed, so ${#SNAPS[@]} snap(s) can't be: install it, then run this again"
+  if ! command -v snap >/dev/null; then missing "snapd is not installed, so ${#SNAPS[@]} snap(s) cannot be: install it, then run this again"
   else
     for i in "${!SNAPS[@]}"; do
       s=${SNAPS[$i]} c=${SNAP_FLAGS[$i]}

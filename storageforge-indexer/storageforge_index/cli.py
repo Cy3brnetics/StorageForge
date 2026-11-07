@@ -773,22 +773,82 @@ def cmd_vm(args) -> int:
                 raise ValueError(f'no image in the catalog for {pk.get("distro")} {pk.get("version") or ""}: give one with --image (see vm images)')
             name = args.name or f'{moves_slug(pk["host"])}-copy'
             params = {'name': name, 'spec': args.spec or ('test-copy' if args.test else 'server'), 'image': image, **_kv(args.set)}
+            if 'data_disks' not in params:
+                params['data_disks'] = _data_disks(conn, pk['host'])
             if args.test:
                 params['network'] = steps_vm.ISOLATED
             _vm_key(conn, args, params)
             first = changes.save_plan(conn, {'name': args.plan or f'Copy {pk["host"]} to {name}: the VM',
                                              'tasks': [{'type': 'vm-create', 'host': args.host, 'params': params}]}, actor)
-            second = changes.save_plan(conn, {'name': f'Copy {pk["host"]} to {name}: its packages',
-                                              'tasks': [{'type': 'packages', 'host': name, 'params': {'from_host': pk['host'], 'skip': args.skip or ''}}]}, actor)
             print(f'saved change plan #{first} (the VM on {args.host}):')
             c = _print_check(conn, changes, first)
-            print(f'and #{second} (the packages of {pk["host"]} on {name}), to run once {name} has been scanned.')
-            print(f'next: run #{first} on {args.host}; bind a vault key to {name} and scan it; then check and run #{second} on {name}')
+            print(f'next: run #{first} on {args.host}; bind a vault key to {name} and scan it; then')
+            print(f'      storageforge-index clone {pk["host"]} --to {name}' + (' --test' if args.test else '') + (f' --skip {args.skip}' if args.skip else '')
+                  + '   (packages, accounts, data disks and files, as plans to check and run)')
             return 1 if c['crit'] else 0
     except (ValueError, LookupError) as exc:
         print(exc, file=sys.stderr)
         return 1
     return 2
+
+
+def _data_disks(conn, host: str) -> str:
+    """One data disk per data filesystem of the source, half again as large as what it holds (at least 5 GiB), in the
+    order clone maps them."""
+    from . import hostconfig
+    from .moves import hosts
+    rec = hostconfig.build(conn, host)
+    sizes, seen = [], set()
+    hs = hosts(conn)
+    used = {m['target']: m.get('used') or 0 for m in (hs.get(rec['host']) or {}).get('mounts') or []}
+    for m in sorted((m for m in rec.get('mounts') or [] if m['kind'] == 'device'), key=lambda m: len(m['target'])):
+        if m['spec'] in seen:
+            continue
+        seen.add(m['spec'])
+        sizes.append(str(max(5, -(-int(used.get(m['target'], 0) * 1.5) // 2**30))))
+    return ','.join(sizes)
+
+
+def cmd_clone(args) -> int:
+    from . import changes, clone
+    _, conn = open_db(args)
+    mapping = {}
+    for pair in args.map or []:
+        k, sep, v = pair.partition('=')
+        if not sep or not k.startswith('/') or not v.startswith('/dev/'):
+            print(f'--map takes /source/mount=/dev/device, not {pair!r}', file=sys.stderr)
+            return 2
+        mapping[k.rstrip('/') or '/'] = v
+    files = args.files if args.files in clone.LEVELS else [p.strip() for p in args.files.split(',') if p.strip()]
+    try:
+        built = clone.build(conn, args.source, args.to, packages=not args.no_packages, skip=args.skip or '', accounts=not args.no_accounts,
+                            shares=not args.no_shares, storage=mapping or 'auto', files=files, mode='migrate' if args.migrate else 'test',
+                            snapshots=not args.no_snapshots)
+    except (LookupError, ValueError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(f'{built["source"]} → {built["target"]} ({built["mode"]})')
+    if built['risks']:
+        print('Data at risk:')
+        for r in built['risks']:
+            print(f'  {r["level"]:<5} {r["text"]}')
+    for n in built['not_carried']:
+        print(f'  not copied: {n}')
+    for n in built['notes']:
+        print(f'  note: {n}')
+    if args.dry_run:
+        print(json.dumps(built['plans'], indent=2))
+        return 0
+    saved = clone.save(conn, built, f'cli:{os.environ.get("USER", "?")}')
+    crit = 0
+    for key, label in (('changes', 'the copy'), ('files', 'its files (a Moves plan)'), ('after', 'the snapshot after')):
+        if key in saved:
+            print(f'saved {"move" if key == "files" else "change"} plan #{saved[key]}: {label}')
+            if key != 'files':
+                crit += _print_check(conn, changes, saved[key])['crit']
+    order = ' → '.join(f'{"moves" if k == "files" else "plan"} script {saved[k]}' for k in ('changes', 'files', 'after') if k in saved)
+    print(f'run them in this order: {order}. Each reports unless --apply; formatting also needs --destructive')
+    return 1 if crit else 0
 
 
 def moves_slug(name: str) -> str:
@@ -1619,6 +1679,18 @@ def build_parser() -> argparse.ArgumentParser:
     ro.add_argument('--key', action='append', help='only this vault key (again for more)')
     ro.set_defaults(fn=cmd_rotate)
 
+    cl = sub.add_parser('clone', help='plans that copy a scanned host onto another one: packages, accounts, data disks, share files and user files')
+    cl.add_argument('source')
+    cl.add_argument('--to', required=True, help='the scanned host to copy onto: a new VM or a freshly installed machine')
+    cl.add_argument('--files', default='none', help='none, structure (folders only), all, or folders separated by commas')
+    cl.add_argument('--map', action='append', metavar='/MOUNT=/dev/DEVICE', help="which target disk takes a source filesystem; without it, a VM's sf-data disks in order")
+    cl.add_argument('--migrate', action='store_true', help='a migration, not a test copy (the notes say what to do at cutover)')
+    cl.add_argument('--skip', help='packages to leave out, by commas')
+    cl.add_argument('--no-packages', action='store_true'); cl.add_argument('--no-accounts', action='store_true')
+    cl.add_argument('--no-shares', action='store_true'); cl.add_argument('--no-snapshots', action='store_true')
+    cl.add_argument('--dry-run', action='store_true', help='show the plans and the risks, save nothing')
+    cl.set_defaults(fn=cmd_clone)
+
     vm = sub.add_parser('vm', help='VMs from cloud images: the image catalog, VM specs, and change plans that create or copy a VM')
     vms = vm.add_subparsers(dest='vm_cmd', required=True)
     vms.add_parser('images', help='the cloud images a VM can start from')
@@ -1630,7 +1702,7 @@ def build_parser() -> argparse.ArgumentParser:
     vsp.add_argument('--note')
     vms.add_parser('spec-remove', help='remove a saved spec').add_argument('name')
     for kind, text in (('create', 'save a change plan that creates a VM on a libvirt host'),
-                       ('clone', 'save change plans that copy a scanned host to a new VM: the VM, then its packages')):
+                       ('clone', 'save the change plan for a new VM to copy a scanned host onto, sized from it (then: clone)')):
         vc = vms.add_parser(kind, help=text)
         if kind == 'clone':
             vc.add_argument('source', help='the scanned host to copy')

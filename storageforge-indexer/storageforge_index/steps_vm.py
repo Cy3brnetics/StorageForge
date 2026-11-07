@@ -117,7 +117,7 @@ sf_vm_image() { # catalog key -> image URL, checksums URL and osinfo, by tabs
 t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram=${7:-2048} disk=${8:-20} data=$9 pool=${10:-default} network=${11:-default} bridge=${12} firmware=${13:-bios} cpu=${14:-host-model} console=${15:-serial} user=${16:-admin} key=${17} sudo=${18:-nopasswd} autostart=${19}
   local V="virsh -c qemu:///system" c sums='' dir net root f i=0 d files=() need base want have fmt seed tool
   for c in virsh virt-install qemu-img curl sha256sum sha512sum; do
-    command -v "$c" >/dev/null || { later "$c is not installed: the VM needs libvirt's client tools (virt-install, qemu-img) and curl"; return 0; }
+    command -v "$c" >/dev/null || { later "$c is not installed: the VM needs the libvirt client tools (virt-install, qemu-img) and curl"; return 0; }
   done
   if $V dominfo "$name" >/dev/null 2>&1; then
     if $V metadata "$name" "$SF_VM_NS" --config 2>/dev/null | grep -q '<sf'; then ok "$name exists, made by StorageForge"
@@ -180,7 +180,7 @@ t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram
     i=$((i + 1)); try qemu-img create -q -f qcow2 "$dir/$name-data$i.qcow2" "${d}G" || return 0
     diskargs+=(--disk "path=$dir/$name-data$i.qcow2,format=qcow2,bus=virtio,serial=sf-data$i")
   done
-  # cloud-init: JSON is YAML too, and every value here passed the plan's field checks, which allow no quote or backslash
+  # cloud-init: JSON is YAML too, and every value here passed the field checks of the plan, which allow no quote or backslash
   local cd; cd=$(mktemp -d); local sudoline=''
   [[ $sudo == nopasswd ]] && sudoline=', "sudo": "ALL=(ALL) NOPASSWD:ALL"'
   printf '#cloud-config\n{"hostname": "%s", "manage_etc_hosts": true, "ssh_pwauth": false, "disable_root": true, "users": [{"name": "%s", "lock_passwd": true, "ssh_authorized_keys": ["%s"]%s}]}\n' \

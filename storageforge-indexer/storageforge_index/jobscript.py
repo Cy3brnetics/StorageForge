@@ -503,6 +503,8 @@ rsync_cmd() { # source-path extra... -> RS
   ((${#ROUTES[@]})) && RS+=(--timeout=120)     # a path that went quiet ends the attempt, and the next one finds another
   local x; for x in "${EXCLUDES[@]}"; do RS+=(--exclude="$x"); done
   RS+=("${ONLY[@]}")
+  has dirsonly && RS+=('--include=*/' '--exclude=*')
+  has keepold && RS+=(--backup "--suffix=.sf-replaced-$(date +%Y%m%d)")
   # never --inplace: dedup can leave two names on one inode or shared extents, and only a write to a new file keeps them apart
   RS+=(--exclude=.storageforge-snap --exclude=.storage.lock --exclude='.sf-dedup-*' "$@" "$(src_spec "$src")" "${DST%/}/")
 }

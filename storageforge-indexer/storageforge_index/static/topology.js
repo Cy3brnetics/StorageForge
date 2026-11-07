@@ -915,7 +915,8 @@ function hostMenu(doc) {
     doc.bp && typeof tasksOn === 'function' && tasksOn(h).length ? { label: `Review ${tasksOn(h).length} staged change${tasksOn(h).length === 1 ? '' : 's'}`, run: () => showTab('changes') } : null,
     { label: 'Open in planner', run: () => { location.href = `/planner#topology@${encodeURIComponent(h)}`; } },
     ...(typeof openTask === 'function' && can('plans.edit') ? ['-', { heading: 'Plan a change' }, { label: 'Create a VM here…', run: () => openTask('vm-create', h, {}) },
-      { label: 'Install the packages of another host…', run: () => openTask('packages', h, { apps: true }) }] : []),
+      { label: 'Install the packages of another host…', run: () => openTask('packages', h, { apps: true }) },
+      { label: 'Copy this host to…', run: () => cloneForm(h) }] : []),
     '-', { label: 'Copy hostname', run: () => copyText(h) }, { label: 'Retire…', danger: true, run: () => retireHost(h) }];
 }
 async function showBox(host, key) {     // from the graph: the same thing as a box in the topology

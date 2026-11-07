@@ -164,6 +164,8 @@ NO_FRESH_PASSWORD = {
     ('PUT', '/api/changes/<int:plan_id>'),
     ('POST', '/api/changes/<int:plan_id>/ran'),
     ('POST', '/api/changes/check'),
+    ('POST', '/api/clone/preview'),                # reads the index only
+    ('POST', '/api/clone'),                        # saves plans, as /api/changes does: running them is what asks
     ('PUT', '/api/vm/specs/<name>'),               # a VM spec only fills a step's empty fields when a plan is saved: nothing runs
     ('DELETE', '/api/vm/specs/<name>'),
     ('POST', '/api/deploy/check'),
@@ -239,6 +241,7 @@ NOT_AUDITED = {
     'api_security_report': 'recorded as security events',
     'api_moves_check': 'compares with the index and saves nothing',
     'api_changes_check': 'compares with the index and saves nothing',
+    'api_clone_preview': 'builds plans from the index and saves nothing',
     'api_tasks_check': 'compares with the index and saves nothing',
     'api_shares_validate': 'compares with the index and saves nothing',
     'api_planner_changes': 'compares with the index and saves nothing',

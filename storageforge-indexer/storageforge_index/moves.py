@@ -207,7 +207,11 @@ def normalize(body: dict) -> dict:
                         'window': windows['window'], 'night': windows['night'] or ('22:00-07:00' if bwn else None),
                         'pre': hooks['pre'], 'post': hooks['post'], 'snapshot': bool(o.get('snapshot')),
                         'verify': o.get('verify') if o.get('verify') in ('weekly', 'monthly') else None,
-                        **_engine(o, i, method, excludes, bool(o.get('snapshot')))},
+                        **_engine(o, i, method, excludes, bool(o.get('snapshot'))),
+                        # only when on, so a plan saved before these existed keeps its hash. dirs_only: folders with their owners and
+                        # modes and nothing in them; keep_replaced: a file the copy would overwrite is kept as <name>.sf-replaced-<date>
+                        **({'dirs_only': True} if o.get('dirs_only') and method in ('copy', 'mirror') else {}),
+                        **({'keep_replaced': True} if o.get('keep_replaced') and method in ('copy', 'mirror', 'move') else {})},
         })
     return {'name': name, 'notes': str(body.get('notes') or '')[:2000], 'steps': steps,
             'net_mbps': max(1, min(int(body.get('net_mbps') or NET_MBPS), 100_000))}
@@ -587,7 +591,8 @@ def script(conn: Conn, plan: dict) -> str:
         o = s['options']
         dst_mount = (c.get('dst') or {}).get('planned_mount') or (c.get('dst') or {}).get('mount') or '/'
         flags = ' '.join(f for f, on in (('checksum', o['checksum']), ('delete', o['delete']), ('sudo', o['remote_sudo']),
-                                          ('onefs', o['one_fs']), ('link', o['link_back'])) if on)
+                                          ('onefs', o['one_fs']), ('link', o['link_back']), ('dirsonly', o.get('dirs_only')),
+                                          ('keepold', o.get('keep_replaced'))) if on)
         if o['bwlimit']:
             flags += f' bwlimit={o["bwlimit"]}'
         vals = {
@@ -702,6 +707,8 @@ rsync_args() { # step [extra...] -> RS array
   fi
   local x; while IFS= read -r x; do [[ -n $x ]] && RS+=(--exclude="$x"); done <<<"${S_EXCLUDES[$i]}"
   while IFS= read -r x; do [[ -n $x ]] && RS+=("$x"); done <<<"${S_ONLY[$i]}"
+  has "$i" dirsonly && RS+=('--include=*/' '--exclude=*')
+  has "$i" keepold && RS+=(--backup "--suffix=.sf-replaced-$(date +%Y%m%d)")
   RS+=("$@" "$(src_spec "$i")" "${S_DST[$i]%/}/")
 }
 avail() { local p=$1; while [[ ! -e $p && $p != / ]]; do p=$(dirname "$p"); done; df -B1 --output=avail "$p" | tail -1 | tr -d ' '; }

@@ -305,22 +305,24 @@ class Clone(Db):
         self.assertEqual(self.cli('create', '--host', 'kvm', '--name', 'x', '--set', 'vcpus')[0], 1)
         self.assertEqual(self.cli('spec-remove', 'server')[0], 1)
 
-    def test_clone_picks_the_image_and_stages_the_packages(self):
+    def test_clone_picks_the_image_and_points_at_the_clone_command(self):
         rc, out = self.cli('clone', 'web-01', '--host', 'kvm', '--key', 'fleet', '--test', '--skip', 'steam')
         self.assertEqual(rc, 0, out)
+        self.assertIn('storageforge-index clone web-01 --to web-01-copy --test --skip steam', out)
         plans = {p['name']: changes.get_plan(self.conn, p['id']) for p in changes.list_plans(self.conn)}
+        self.assertEqual(list(plans), ['Copy web-01 to web-01-copy: the VM'])
         vm = plans['Copy web-01 to web-01-copy: the VM']['tasks'][0]['params']
         self.assertEqual((vm['image'], vm['network'], vm['spec']), ('ubuntu2404', 'sf-isolated', 'test-copy'))
-        pk = plans['Copy web-01 to web-01-copy: its packages']
-        self.assertEqual((pk['tasks'][0]['host'], pk['tasks'][0]['params']['from_host'], pk['tasks'][0]['params']['skip']), ('web-01-copy', 'web-01', 'steam'))
-        got = changes.check(self.conn, pk)['tasks'][0]['items']
-        self.assertEqual(got[0]['level'], 'crit')       # the copy is not scanned yet: the plan waits for it
+
+    def test_the_packages_step_compares_both_lists(self):
+        from storageforge_index import pkglist
+        pk = {'name': 'pk', 'tasks': [{'type': 'packages', 'host': 'web-01-copy', 'params': {'from_host': 'web-01', 'skip': 'steam'}}]}
+        self.assertEqual(changes.check(self.conn, changes.normalize(pk))['tasks'][0]['items'][0]['level'], 'crit')    # the copy is not scanned yet
         self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json) VALUES ('web-01-copy', 'w', 'scan', :i)",
-                          {'i': json.dumps({'pkglist': __import__('storageforge_index').pkglist.parse('distro\tubuntu\t24.04\npm apt-get\nm\tvim\ncomplete')})})
-        texts = [it['text'] for it in changes.check(self.conn, pk)['tasks'][0]['items']]
+                          {'i': json.dumps({'pkglist': pkglist.parse('distro\tubuntu\t24.04\npm apt-get\nm\tvim\ncomplete')})})
+        texts = [it['text'] for it in changes.check(self.conn, changes.normalize(pk))['tasks'][0]['items']]
         self.assertIn('1 to install: nginx', texts)
         script = changes.script(self.conn, pk)
-        self.assertIn('t_packages', script)
         sh = Path(self.tmp) / 'pk.sh'
         sh.write_text(script)
         self.assertEqual(subprocess.run(['bash', '-n', str(sh)]).returncode, 0)

@@ -84,7 +84,8 @@ storageforge-index search [PATTERN] [options]
 | `vm images` | the cloud images a VM can start from, each checked against its publisher's checksum |
 | `vm specs`; `vm spec NAME --set FIELD=VALUE... [--key VAULTKEY] [--note TEXT]`; `vm spec-remove NAME` | VM specs: `small`, `server`, `desktop` and `test-copy` are built in, and yours sit beside them |
 | `vm create --host KVM --name N [--spec S] [--image I] [--key VAULTKEY] [--set FIELD=VALUE...] [--plan NAME]` | save a change plan that creates a VM on a scanned libvirt host, and show its check. Then `plan script` and run it, as for any plan |
-| `vm clone SOURCE --host KVM [--name N] [--test] [--skip PKGS] [--spec S] [--image I] [--key VAULTKEY]` | save two change plans that copy a scanned host to a new VM: the VM, from the image for the source's distro, and the source's packages on it, to run once the VM is scanned. `--test` puts it on the isolated network |
+| `vm clone SOURCE --host KVM [--name N] [--test] [--skip PKGS] [--spec S] [--image I] [--key VAULTKEY]` | save the change plan for a new VM to copy a host onto: the image for its distro, a data disk per data filesystem. `--test` puts it on the isolated network. Then `clone` |
+| `clone SOURCE --to TARGET [--files none\|structure\|all\|FOLDERS] [--map /MOUNT=/dev/DEV]... [--migrate] [--skip PKGS] [--no-packages] [--no-accounts] [--no-shares] [--no-snapshots] [--dry-run]` | save the plans that copy a scanned host onto another: packages, accounts, share files, data filesystems and user files, with snapshots before and after. Prints the data at risk; exit 1 if a check is critical |
 | `plan types` | change task types and their fields |
 | `plan check ID` | check a change plan against the index |
 | `plan script ID [-o FILE]`, `plan ansible ID [-o FILE]` | the Bash script or Ansible playbook |

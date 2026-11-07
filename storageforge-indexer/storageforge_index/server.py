@@ -123,6 +123,7 @@ GET  /api/hostconfigs[?host=]         saved host configurations: the newest of e
 GET  /api/hostconfigs/<id>            one version: what it holds, and what changed since the version before
 GET  /api/hostconfigs/script?host=&id=   the reinstall script (mounts, accounts, shares, symlinks)
 GET  /api/hostconfigs/bundle?host=&id=   a .tar.gz of scripts, records and config files (every host without host=)
+POST /api/clone/preview, POST /api/clone {source, target, files, map, mode, accept: [risk ids]}   plans that copy a host onto another
 GET  /api/vm/images                  the cloud images a vm-create step can start from
 GET  /api/vm/specs;  PUT|DELETE /api/vm/specs/<name>   VM specs: built in, and your own
 GET  /api/hostconfigs/packages?host=[&against=]   packages a host was given on purpose, or how two hosts differ
@@ -1560,6 +1561,42 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return jsonify(error=str(exc)), 404
         except ValueError as exc:
             return jsonify(error=str(exc)), 400
+
+    def _clone_args(b: dict) -> dict:
+        files = b.get('files') or 'none'
+        mapping = b.get('map') or 'auto'
+        if mapping != 'auto' and (not isinstance(mapping, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items())):
+            raise ValueError('map is {"/source/mount": "/dev/device"} or "auto"')
+        return dict(packages=b.get('packages', True) is not False, skip=str(b.get('skip') or ''), accounts=b.get('accounts', True) is not False,
+                    shares=b.get('shares', True) is not False, storage=mapping, files=files if isinstance(files, (str, list)) else 'none',
+                    mode=b.get('mode') or 'test', snapshots=b.get('snapshots', True) is not False)
+
+    @web.post('/api/clone/preview')
+    @login_required
+    def api_clone_preview():
+        from . import clone
+        b = json_body()
+        try:
+            return jsonify(clone.build(conn(), str(b.get('source') or ''), str(b.get('target') or ''), **_clone_args(b)))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/clone')
+    @login_required
+    def api_clone_save():
+        from . import clone
+        b = json_body()
+        try:
+            built = clone.build(conn(), str(b.get('source') or ''), str(b.get('target') or ''), **_clone_args(b))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        # the risks were shown in the preview, and each must be named here as accepted, so none is saved unseen
+        open_ids = sorted({r['id'] for r in built['risks'] if r['level'] in ('crit', 'warn')} - set(b.get('accept') or []))
+        if open_ids:
+            return jsonify(error='accept each risk first', open=open_ids, risks=built['risks']), 409
+        saved = clone.save(conn(), built, actor())
+        core.audit(conn(), actor(), 'clone.save', 'ok', built['target'], {'source': built['source'], 'plans': saved, 'accepted': sorted(b.get('accept') or [])})
+        return jsonify(saved=saved, **built), 201
 
     @web.post('/api/changes/check')
     @login_required

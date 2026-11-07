@@ -94,7 +94,7 @@ A move plan is a list of steps. Each takes one folder on a scanned host to a fol
 
 ![Moves panel](images/moves.jpg)
 
-Pick folders with a browser that shows indexed sizes, or start from **Move from here…**, **Copy to another disk**, the Cleanup panel's **Move…** or the Git panel's **Archive to…**. Step options include excludes, checksum comparison, bandwidth limit, schedule, retention, and whether to use `sudo rsync` on the source.
+Pick folders with a browser that shows indexed sizes, or start from **Move from here…**, **Copy to another disk**, the Cleanup panel's **Move…** or the Git panel's **Archive to…**. Step options include excludes, checksum comparison, bandwidth limit, schedule, retention, and whether to use `sudo rsync` on the source. Two more come from [copying a host](host-migration.md#copying-a-host-onto-another), and can be set in a plan's JSON: `dirs_only` copies folders with their owners and modes and no files, and `keep_replaced` keeps a file the copy would overwrite as `<name>.sf-replaced-<date>`.
 
 **Check** answers from the index: how much each step transfers and roughly how long it takes, free space on each destination mount summed across steps, planned mounts that aren't mounted yet, destinations that would land on the root filesystem, overlapping source and destination, folders the scan couldn't read, files already at the destination, and running containers using either side.
 
