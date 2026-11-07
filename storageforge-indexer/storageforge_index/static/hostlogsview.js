@@ -119,8 +119,8 @@ function hlShow() {
   if (![...host.options].some((o) => o.value === HL.host)) host.append(Object.assign(hlEl('option', {}, HL.host), { value: HL.host }));      // a link names a host the list has not met
   host.value = HL.host;
   document.getElementById('hl-level').value = HL.level;
-  document.getElementById('hl-unit').value = HL.unit;
-  document.getElementById('hl-q').value = HL.q;
+  // a field somebody is typing in is theirs: the address catches up to it after a pause, and writing the last applied text back would eat what they have typed
+  for (const [id, v] of [['hl-unit', HL.unit], ['hl-q', HL.q]]) { const f = document.getElementById(id); if (f !== document.activeElement) f.value = v; }
 }
 function hlReadFilters() {
   HL.host = document.getElementById('hl-host').value;
