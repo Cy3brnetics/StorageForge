@@ -534,11 +534,21 @@ function api(path, opts = {}) {
   const { busy: el, ...init } = opts;
   return el ? withBusy(el, () => sfFetch(path, init, false)) : sfFetch(path, init, false);
 }
+const sfNever = () => new Promise(() => {});
 async function sfFetch(path, init, confirmed) {
-  const res = await fetch(path, { credentials: 'same-origin', ...init });
+  // Once the page is signed out its body is empty until /login loads, and that navigation aborts what is still open: a request that
+  // settles then never settles for its caller, whose handler would only draw on (or fail to find) what is no longer there.
+  let res;
+  try {
+    res = await fetch(path, { credentials: 'same-origin', ...init });
+  } catch (err) {
+    if (sfSignedOut.gone) return sfNever();
+    throw err;
+  }
+  if (sfSignedOut.gone) return sfNever();
   if (res.status === 401) {          // the session is gone: session.js empties the page and goes to /login
     const msg = (await res.json().catch(() => ({}))).error || '';
-    sfSignedOut(/ended/.test(msg) ? 'ended' : ''); throw new Error('Sign in required');
+    sfSignedOut(/ended/.test(msg) ? 'ended' : ''); return sfNever();
   }
   if (res.status === 403 && !confirmed && (await res.clone().json().catch(() => ({}))).reauth) {
     await confirmPassword();                     // commands on hosts: type the password again, then retry once

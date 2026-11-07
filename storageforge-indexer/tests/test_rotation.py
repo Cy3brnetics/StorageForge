@@ -67,7 +67,7 @@ class Rotation(unittest.TestCase):
             v.bind('fleet', 'nas', 'scan', actions='scan,checksum')
             v.bind('fleet', 'pc', 'scan', actions='scan,checksum,deploy')
         for h in ('nas', 'pc'):
-            self.conn.execute('INSERT INTO hosts (hostname, ssh_host, ssh_user, last_scanned_at) VALUES (:h, :h, :u, :t)', {'h': h, 'u': 'scan', 't': int(time.time())})
+            self.conn.execute(f'INSERT INTO hosts (hostname, ssh_host, ssh_user, last_scanned_at) VALUES (:h, :h, :u, {self.db.ts(":t")})', {'h': h, 'u': 'scan', 't': int(time.time())})
             self.fleet.keys[(h, 'scan')] = ['from="10.0.0.0/8" ' + self.fleet.pub('fleet'), 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherKeyOfThePersonxxxxxxxxxxxxxxxxxxxx you@laptop']
         p = mock.patch.object(rotation, '_run', self.fleet.run)
         p.start()

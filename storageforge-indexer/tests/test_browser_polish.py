@@ -201,6 +201,23 @@ class BrowserPolish(unittest.TestCase):
         self.assertIsNone(page.evaluate("localStorage.getItem('sf.prefs.viewer')"))
         self.assertEqual(self.errors, [])
 
+    def test_a_request_still_open_at_sign_out_does_not_run_on_the_emptied_page(self):
+        # signing out empties the page before /login loads: a load that ends in that moment (the navigation aborts it) has nothing to draw on
+        page = self.open(self.full)
+        page.wait_for_selector('#sesslen')
+        held = []
+        page.route('**/api/dupes*', lambda route: held.append(route))
+        page.evaluate('void loadDupes()')
+        for _ in range(100):
+            if held:
+                break
+            page.wait_for_timeout(50)
+        self.assertTrue(held)
+        page.evaluate('sfSignedOut.gone = true; document.body.replaceChildren()')     # sfSignedOut's first half, held before it navigates
+        held[0].abort()
+        page.wait_for_timeout(300)
+        self.assertEqual(self.errors, [])
+
     def test_the_theme_really_changes_the_colours_both_ways(self):
         page = self.open(self.full)
         page.wait_for_selector('#sesslen')

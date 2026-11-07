@@ -83,6 +83,7 @@ while ((attempts <= RETRIES)); do
   child=$!
   wait "$child"; rc=$?
   while ((stop)) && kill -0 "$child" 2>/dev/null; do wait "$child"; rc=$?; done
+  ((stop && rc)) && rc=143    # stopped, not timed out: uutils' timeout (Ubuntu 25.10 on) exits 124 when it is sent TERM, GNU's 143
   child=
   { ((rc == 0)) || ((rc == 124)) || ((stop)); } && break
 done
