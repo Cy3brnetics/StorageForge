@@ -74,6 +74,8 @@ What hosts report, drawn as an infrastructure map: each host a frame holding its
 - A list longer than the page shows says how many it leaves out (*+3 more*), and the same button shows the rest.
 - From the keyboard, every node is a button in reading order, each host's header followed by what is in its frame: Enter shows a node's details, Enter on a host's header closes or opens it, and Space on a header shows its details.
 - Exports: JSON, Mermaid, DOT, SVG, draw.io, Obsidian canvas, PNG as drawn, and PDF through the browser's print.
+- **What if** answers in sentences, worst first, each starting with how much it matters (Danger, Careful, Note, Fine), and says when nothing else is affected. The technical lines are under **Details**.
+- Zoom with the − and + buttons, the percentage to go back to 100%, and **Fit to screen**; `-`, `+`, `0` and `F` do the same while the map has focus. The **Legend** says in words what each colour and line style means, and each port carries a word (LAN, ANY and so on) beside its colour.
 
 The map's layers, the paths through routers and the security mode are described in [Infrastructure map](infrastructure-map.md#on-the-map). Firewall rules and exposure need `security.view`; the map itself needs `map.view`.
 
@@ -168,6 +170,8 @@ The planner, `/manage` and `/search` show the same security chip as the main pag
 | `+` `=` `-` `0` `f` | On the topology canvas: zoom in, zoom out, back to 100%, fit. Enter or Space selects a focused row, Esc clears the selection |
 | Arrows, Home, End, Esc | In an open context menu |
 | Left and Right arrows | On the panel's resize grip |
+| Ctrl or Cmd+K | The command palette: type to filter, arrows to move, Enter to run, Esc to close. It lists the shortcuts and a *Go to* entry for every view and panel your account may open. Works from inside a field |
+| `?` | The list of shortcuts, from the same registry |
 
 ## Git Inspector
 
@@ -188,3 +192,16 @@ Compose's text, the steps staged on the map, change plans and the planner's desi
 ## Passwords for host commands
 
 Anything that runs a command on a host from the web UI (key install, scan access, deploy access, deploys, job runs and cutovers, restores) and changing your session length asks for your password again unless you typed it in the last 5 minutes. Read-only job actions (dry run, log, list snapshots) do not. The question is the same dialog on every page: on the planner and `/manage` it opens in place, and the change goes on once the password is right. A command to a host that has not been seen before first shows its SSH key to compare with the machine's own, and nothing is sent until you say they match.
+
+## Preferences
+
+**Preferences**, in the user menu, the header and the palette, sets the theme (system, light or dark), the density (comfortable or compact) and reduced motion. They are kept in this browser for your account only, and nothing is sent to the server. The planner's own theme button still overrides the theme on that page.
+
+## First run
+
+On an install with no hosts yet, the main page shows a checklist: enrol a host, run the first scan, set up a backup alert. Each item opens the panel that does it and says *Done* or *To do*. It goes away when you dismiss it (remembered for your account) or when every item is done.
+
+## Long lists and small screens
+
+A list that shows only its first rows says how many it leaves out and has a **Show N more** button that opens the rest in place and reads **Show fewer** after; it works from the keyboard and is announced to screen readers. Health dots and status words carry a shape or a sign (✓, !, ✕) as well as a colour. At 1000 pixels wide and below, Planner, Manage, Session and Preferences fold behind a **More** button in the header.
+

@@ -4,6 +4,8 @@ StorageForge maps, plans and changes the storage on a fleet of Linux machines fr
 
 ![Topology view](images/topology.jpg)
 
+> **No promises.** It will probably work, but it runs root commands on your machines and devices, comes with no warranty of any kind, and nobody who wrote it is liable if it breaks something. Keep tested backups and a way in that doesn't depend on it, and try it on something disposable first. The full version is at the top of the [project README](../README.md).
+
 The code lives in [`storageforge-indexer/`](../storageforge-indexer). Its [README](../storageforge-indexer/README.md) is the short version; these pages are the full one.
 
 ## Start here

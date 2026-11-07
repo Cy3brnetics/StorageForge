@@ -4,6 +4,24 @@ Map, plan and change the storage on a fleet of Linux machines from one place. St
 
 ![Topology view](docs/images/topology.jpg)
 
+## Read this first: no promises
+
+**It will probably work. Don't blame me if it doesn't.**
+
+StorageForge logs in to your machines as root, partitions disks, makes and destroys filesystems, snapshots, sends and prunes data, rewrites `/etc/fstab`, firewall rules and SSH settings, and pushes configuration to routers. Every one of those can lose data or lock you out if something goes wrong, and things go wrong. It is tested on unit tests and a lab of throwaway VMs, not on your hardware, your distro's quirks or your network. The security audits found real bugs and were partial. A good part of the code was written with AI assistance. Several features have never met a real device or service, and the [changelog](CHANGELOG.md) lists which.
+
+So:
+
+- **It comes with no warranty of any kind,** express or implied: not that it works, not that it is fit for any purpose, and not that it won't break something. You use it entirely at your own risk.
+- **Nobody who wrote or contributed to it is liable** for lost data, downtime, a machine you can't log in to, a firewall that shut you out, a broken router, a security incident, or anything else that follows from using it, however it happens.
+- **Have backups you have actually restored from,** and a way into every machine and device that does not depend on StorageForge (a console, IPMI, physical access), before you let it change anything.
+- **Try it on something disposable first.** Read every dry run and every script before you apply it; that is what they are for. Don't point it at production until you have watched it work on a copy.
+- **It is for a LAN behind its TLS proxy,** run by people who know what the commands it shows will do. Don't put it on the internet.
+
+If any of that is not acceptable, don't run it.
+
+It is released under the [WTFPL](LICENSE) (Do What the Fuck You Want to Public License, version 2), with the no-warranty notice above written into the licence file as well.
+
 ## Why it exists
 
 Storage on a few Linux machines tends to live in shell history, an old wiki page and one person's memory. The questions that matter are hard to answer from there: which data has only one copy, which containers use this folder, will this copy fit, and what happens if this disk is missing when the job runs?
@@ -55,9 +73,9 @@ Then open `https://<this machine>:8443` and sign in. To try it without touching 
 
 ## Where it stands
 
-- Version 0.3.2. Releases are tagged `vX.Y.Z`; see the [changelog](CHANGELOG.md).
+- Version 0.4.0. Releases are tagged `vX.Y.Z`; see the [changelog](CHANGELOG.md).
 - It is meant for a LAN behind its TLS proxy. Do not publish it on the internet. The one port that may face it is the optional [tunnel for remote nodes](docs/remote-nodes.md).
-- The [KVM lab](docs/kvm-lab.md) tests scans and deploys on real VMs across Debian, Ubuntu, Fedora, Arch, openSUSE, Rocky Linux and AlmaLinux. Alpine can be scanned, but deploys are refused because it has no bash or systemd. The lab tests through the API, not the web pages.
+- The [KVM lab](docs/kvm-lab.md) tests scans and deploys on real VMs across Debian, Ubuntu, Fedora, Arch, openSUSE, Rocky Linux and AlmaLinux. Alpine can be scanned, but deploys are refused because it has no bash or systemd. The lab tests through the API, not the web pages. The release run of 2026-11-06 passed 561 of 564 checks, and the remaining failure and what has not met a real device or service are listed in the [changelog](CHANGELOG.md) and [progress.md](progress.md).
 - The CI workflow is written and its commands pass by hand, but it has not run on a runner yet.
 
 ## Find your way around

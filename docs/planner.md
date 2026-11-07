@@ -73,6 +73,10 @@ The 3-2-1 grid per dataset: sync, snapshots, backup, encryption. Click a sync or
 
 The other tabs describe the design: systemd units, `/etc/fstab`, the blueprint as JSON or YAML, and an ASCII tree. The planner no longer writes Bash or Ansible itself; earlier versions did, outside the checks change plans get.
 
+## Versions of a design
+
+**Versions** (beside Save design) keeps named, timestamped copies of the design for a host, with a note and who saved it. A version can be compared with the design on screen, in sentences: what is only in the version, what is only in the current design, and what differs. **Restore** puts a version back, and first saves the design it replaces as an automatic version, so nothing is lost. Delete removes one. Each host keeps at most 50 versions and 40 MiB (2 MiB each); only automatic versions are dropped to make room, and when a host is full of hand-saved ones, delete one first. Listing and comparing need `plans.view`, and saving, restoring and deleting need `plans.edit`. Versions are in essential backups (migration 042). Restoring replaces the saved design only; it does not stage a change.
+
 ## Saving rules
 
 `PUT /api/planner/design` accepts a design up to 2 MiB. It is rejected if any text holds a control character or one of `< > " \``, or if a device, partition, pool, dataset or subvolume name holds characters its tool would not accept. The planner page applies the same rule when it loads a design or a local draft, so nothing typed can end up as a broken script line.
