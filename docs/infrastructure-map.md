@@ -59,6 +59,8 @@ Then **Stage in Changes**, where it is an ordinary step with a Report and an App
 | `wg-peer` | Add or revoke a WireGuard peer |
 | `container` | `docker run` or `podman run` with a fixed name. It will not replace an existing container |
 | `vm` | `virt-install --import` from a disk you already have, with its console on loopback |
+| `vm-create` | A new VM from a cloud image: the image checked against its publisher's checksum, copied to a new root disk, data disks, and a cloud-init login for your SSH key. Fields can come from a [VM spec](host-migration.md#creating-vms). Never writes over a disk or a VM that is there |
+| `packages` | The packages another host was given on purpose, installed with the same package manager. Reports first, never removes a package, never adds a source |
 | `workload-action`, `workload-remove` | Start, stop, restart, snapshot. Removing keeps volumes and disks, and takes `--destructive` |
 
 A step that could cut StorageForge off can carry a rollback timer. The script journals how to undo it and starts a systemd timer. Only a second signed run stops that timer, and that can only happen if the path still works.

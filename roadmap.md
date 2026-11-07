@@ -147,7 +147,7 @@ Running a container, defining a VM from an existing disk, and start, stop and re
 
 - **`stack` and `lxc` steps,** each carrying its firewall rule and labels.
 - **Image updates,** with rollback on a failed healthcheck.
-- **VMs from templates:** cloud images and ISOs, checksums, cloud-init with the deploy key, so a new VM can be scanned from its first boot.
+- **VMs from templates:** cloud images, checksums and cloud-init with your SSH key are built (`vm-create`, with VM specs). ISOs are not.
 - **Lifecycle:** snapshot, clone, resize and console over an SSH tunnel.
 - **Clone or migrate a scanned host in any direction** (physical or VM, to physical or VM), for testing or migration: packages, config, storage layout and a choice of user files, rebuilt on the target, and VM to VM copied as is. The package list is built; the rest is phased in the [design](docs/host-migration.md).
 - **Placement advice, which is the differentiator:** a pool on a dataset tuned for its use, databases off the bulk pool, warnings for bind mounts on network filesystems, and a warning when data sits where no hold or offsite copy reaches.

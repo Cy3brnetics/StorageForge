@@ -66,6 +66,37 @@ class Parse(unittest.TestCase):
         self.assertTrue(pkglist.compare(pkglist.parse('pm dnf\nm\tvim\n'), pkglist.parse('pm yum\nm\tvim\n'))['comparable'])
 
 
+class OddSystems(unittest.TestCase):
+    """Image-based, read-only and transactional systems, apt on rpm, Debian holds, backports and local debs."""
+    def test_an_image_based_system_is_its_layers(self):
+        import base64
+        status = {'deployments': [{'booted': True, 'requested-packages': ['vim', 'htop', CANARY], 'requested-local-packages': ['tool-1.0-1.x86_64'],
+                                   'container-image-reference': 'ostree-image-signed:docker://quay.io/fedora/fedora-silverblue:44'},
+                                  {'booted': False, 'requested-packages': ['old']}]}
+        pk = pkglist.parse('distro\tfedora\t44\nmode image\npm rpm-ostree\nO\t' + base64.b64encode(json.dumps(status).encode()).decode() + '\ncomplete')
+        self.assertEqual((pk['mode'], pk['pm'], pk['packages'], pk['foreign']), ('image', 'rpm-ostree', ['htop', 'vim'], ['tool']))
+        self.assertIn('fedora-silverblue:44', pk['image_ref'])
+        self.assertTrue(pkglist.compare(pk, pkglist.parse('pm dnf\nm\tvim\n'))['comparable'])
+        self.assertIsNone(pkglist.parse('mode image\npm rpm-ostree\nO\tnot base64!\n')['image_ref'])
+
+    def test_a_read_only_system_brings_only_its_apps(self):
+        pk = pkglist.parse('distro\tsteamos\t3.6\nmode readonly\npm pacman\nm\tlinux-neptune\nf\tcom.valvesoftware.Steam\tflathub\ncomplete')
+        self.assertEqual((pk['packages'], pk['base_packages'], [f['id'] for f in pk['flatpak']]), ([], 1, ['com.valvesoftware.Steam']))
+
+    def test_apt_on_rpm_is_its_own_family(self):
+        pk = pkglist.parse('distro\taltlinux\t11\npm apt-rpm\na\tvim-console\ncomplete')
+        self.assertEqual(pk['pm'], 'apt-rpm')
+        self.assertFalse(pkglist.compare(pk, pkglist.parse('pm apt-get\nm\tvim\n'))['comparable'])
+        self.assertFalse(pkglist.compare(pk, pkglist.parse('pm dnf\nm\tvim\n'))['comparable'])
+
+    def test_debian_holds_backports_and_local_debs(self):
+        pk = pkglist.parse('pm apt-get\nm\tvim\nm\tzfsutils-linux\nm\tmydeb\nh\tvim\nb\tzfsutils-linux\no\tmydeb\nh\tnot-manual\ncomplete')
+        self.assertEqual((pk['packages'], pk['holds'], pk['backports'], pk['foreign']), (['vim', 'zfsutils-linux'], ['vim'], ['zfsutils-linux'], ['mydeb']))
+
+    def test_aur_versions_are_kept(self):
+        self.assertEqual(pkglist.parse('pm pacman\nm\tparu\no\tparu\t2.0.4-1\ncomplete')['foreign_versions'], {'paru': '2.0.4-1'})
+
+
 def stub(d: Path, name: str, body: str):
     p = d / name
     p.write_text('#!/bin/sh\n' + body + '\n')
@@ -78,6 +109,8 @@ class Collect(unittest.TestCase):
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d)
         stub(d, 'apt-mark', 'printf "vim\\ngit\\n"')
+        stub(d, 'dpkg-query', 'printf "vim\\t2:9.1-1\\nzfsutils-linux\\t2.3.1-1~bpo12+1\\n"')
+        stub(d, 'apt', 'printf "Listing...\\nmydeb/now 1.0 amd64 [installed,local]\\n"')
         pre = 'bounded() { "$@"; }\n'
         out = subprocess.run(['sh', '-c', pre + section()], capture_output=True, text=True, timeout=60,
                              env={**os.environ, 'PATH': f'{d}:{os.environ["PATH"]}'})
@@ -85,6 +118,7 @@ class Collect(unittest.TestCase):
         body = out.stdout.split('\n', 1)[1]
         pk = pkglist.parse(body)
         self.assertEqual((pk['pm'], pk['packages'], pk['complete']), ('apt-get', ['git', 'vim'], True))
+        self.assertEqual(pk['mode'], 'normal')
 
     def test_the_section_is_one_the_parser_knows(self):
         self.assertIn('pkglist', remote.SECTIONS)
@@ -130,6 +164,24 @@ class Script(unittest.TestCase):
         pk = pkglist.parse(f'pm apt-get\nm\tvim\nr\t{CANARY}\thttps://x.example/\ncomplete')
         self.assertEqual(self.run_script(pk).returncode, 0)
         self.assertFalse(Path('/tmp/CANARY').exists())
+
+
+class HoldsAndBackports(unittest.TestCase):
+    def test_the_report_names_both(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        stub(d, 'apt-get', 'true')
+        stub(d, 'dpkg-query', 'true')
+        stub(d, 'apt-cache', 'echo " 500 http://deb.debian.org/debian trixie-backports/main amd64 Packages"')
+        pk = pkglist.parse('pm apt-get\nm\tvim\nm\tzfsutils-linux\nh\tvim\nb\tzfsutils-linux\ncomplete')
+        path = d / 'p.sh'
+        path.write_text(pkglist.script(pk, 'src', 'now').replace('here_pm() {', 'here_pm() { echo apt-get; return; ')
+                        .replace('. /etc/os-release 2>/dev/null || true', 'VERSION_CODENAME=trixie'))
+        out = subprocess.run(['bash', str(path)], capture_output=True, text=True, timeout=60, env={**os.environ, 'PATH': f'{d}:{os.environ["PATH"]}'})
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn('1 to install with apt-get: vim', out.stdout)
+        self.assertIn('would take zfsutils-linux from trixie-backports', out.stdout)
+        self.assertIn('would hold vim at the installed version', out.stdout)
 
 
 class NoRemovals(unittest.TestCase):

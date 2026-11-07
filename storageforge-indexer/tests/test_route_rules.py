@@ -164,6 +164,8 @@ NO_FRESH_PASSWORD = {
     ('PUT', '/api/changes/<int:plan_id>'),
     ('POST', '/api/changes/<int:plan_id>/ran'),
     ('POST', '/api/changes/check'),
+    ('PUT', '/api/vm/specs/<name>'),               # a VM spec only fills a step's empty fields when a plan is saved: nothing runs
+    ('DELETE', '/api/vm/specs/<name>'),
     ('POST', '/api/deploy/check'),
     ('POST', '/api/deploy/groups/<gid>/cancel'),
     ('POST', '/api/deploy/jobs/<jid>/browse'),

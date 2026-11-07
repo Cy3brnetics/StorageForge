@@ -55,6 +55,8 @@ function taskTitle(t) {
     'mount-options': () => `Mount options of ${p.target}: ${p.options}`, unmount: () => `Unmount ${p.target}`,
     partition: () => `Partition ${p.disk}${p.fstype ? ' and format it ' + p.fstype : ''}`,
     format: () => `Format ${p.device} as ${p.fstype}`, label: () => `Label ${p.target} "${p.label}"`,
+    'vm-create': () => `VM ${p.name} from ${p.image || 'an image'}${p.spec ? ' (' + p.spec + ')' : ''}`,
+    packages: () => `Packages of ${p.from_host}${p.skip ? ', less ' + p.skip : ''}`,
   }[t.type] || (() => t.type))();
 }
 const tasksOn = (host) => (CH.plan.ran_at && !CH.dirty) ? [] : CH.plan.tasks.filter((t) => t.host === host);
@@ -67,6 +69,8 @@ function mountFor(host, path) {      // the mount a path is on, from the topolog
 async function openTask(type, host, preset = {}, edit = null) {
   const types = await chTypes();
   const spec = types[type];
+  // a VM step's spec is picked from the saved ones: its empty fields are filled from it when the plan is saved
+  const vmSpecs = type === 'vm-create' ? ((await getJSON('/api/vm/specs').catch(() => ({ specs: [] }))).specs || []) : null;
   showTab('details');
   const inputs = {};
   const fields = spec.fields.map((f) => {
@@ -77,10 +81,12 @@ async function openTask(type, host, preset = {}, edit = null) {
       inputs[f.name] = () => input.checked;
       return el('label', { class: 'check' }, input, f.label);
     }
-    if (f.kind === 'choice') {
+    if (vmSpecs && f.name === 'spec') {
+      input = el('select', {}, new Option('(none)', ''), ...vmSpecs.map((x) => new Option(x.note ? `${x.name}: ${x.note}` : x.name, x.name))); input.value = v || '';
+    } else if (f.kind === 'choice') {
       input = el('select', {}, ...f.options.map((o) => new Option(o || '(none)', o))); input.value = v || f.options[0];
     } else {
-      input = el('input', { type: 'text', class: ['path', 'device', 'devices', 'dataset', 'name', 'size', 'host', 'spec', 'options', 'confirm'].includes(f.kind) ? 'mono' : '',
+      input = el('input', { type: 'text', class: ['path', 'device', 'devices', 'dataset', 'name', 'size', 'host', 'spec', 'options', 'confirm', 'vmname', 'url', 'sha', 'sizes', 'pubkey', 'names'].includes(f.kind) ? 'mono' : '',
                             placeholder: f.placeholder || (f.kind === 'confirm' ? 'e.g. /dev/sdc' : ''), autocomplete: 'off', spellcheck: 'false' });
       input.value = v;
     }

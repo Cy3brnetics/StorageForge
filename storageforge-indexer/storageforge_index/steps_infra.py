@@ -1158,7 +1158,7 @@ changes.register('container', {'group': 'Workloads', 'label': 'Run a container',
 changes.register('vm', {'group': 'Workloads', 'label': 'Define a VM from a disk', 'fields': [
     F('name', 'name', 'Name', required=True), F('disk', 'path', 'Disk image', required=True), F('vcpus', 'number', 'vCPUs', placeholder='2'), F('ram_mb', 'number', 'Memory, MiB', placeholder='2048'),
     F('network', 'name', 'libvirt network', placeholder='default'), F('os_variant', 'name', 'OS variant', placeholder='debian13'), F('bridge', 'iface', 'Or a bridge')],
-    'help': 'virt-install --import, with the console on loopback. Installing an OS from an ISO or cloud image is not built.'},
+    'help': 'virt-install --import, with the console on loopback. For a new VM from a cloud image, use Create a VM from a cloud image.'},
     ('name', 'disk', 'vcpus', 'ram_mb', 'network', 'os_variant', 'bridge'), lambda p: f'VM {p["name"]} from {p["disk"]}', _check_vm, _ansible_vm)
 
 changes.register('zfs-rollback', {'group': 'ZFS', 'label': 'Roll back to a snapshot', 'destructive': True, 'fields': [F('dataset', 'dataset', 'Dataset', required=True), F('snapshot', 'name', 'Snapshot', required=True)]},

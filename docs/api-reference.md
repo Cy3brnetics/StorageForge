@@ -320,6 +320,9 @@ See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure
 | GET | `/api/hostconfigs/<id>` | | one version, and what changed since the one before |
 | GET | `/api/hostconfigs/script?host=&id=` | | the reinstall script |
 | GET | `/api/hostconfigs/bundle?host=&id=` | | a `.tar.gz` of scripts, records and config files; every host without `host=` |
+| GET | `/api/vm/images` | | the cloud images a `vm-create` step can start from |
+| GET | `/api/vm/specs` | | VM specs, built in and your own, and the fields a spec may set |
+| PUT, DELETE | `/api/vm/specs/<name>` | `{field: value, "note"}` | save or remove one of your specs. The built-in ones can't be changed |
 | GET | `/api/hostconfigs/packages?host=[&against=]` | | the packages a host was given on purpose, its Flatpak and Snap apps and package sources; with `against=`, what each host has that the other lacks |
 | GET | `/api/hostconfigs/packages/script?host=` | | a script that installs them on the machine it runs on, with the same package manager; reports unless `--apply` |
 

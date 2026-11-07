@@ -1,6 +1,6 @@
 # Cloning and migrating hosts
 
-**Status: design, with phase 1 built.** Copy a scanned machine to another one in any direction: physical to VM, VM to physical, VM to VM, or physical to physical. Use it to test a change on a copy, or to move a machine onto other hardware or off it. The same choices apply in every direction. Only the package list (phase 1) exists. Everything below it is planned.
+**Status: design, partly built.** Copy a scanned machine to another one in any direction: physical to VM, VM to physical, VM to VM, or physical to physical. Use it to test a change on a copy, or to move a machine onto other hardware or off it. The same choices apply in every direction. Built so far: the package list and its fixes (phases 1 and 1b), VMs from cloud images with VM specs (the new-VM half of phase 2), and the `packages` step that puts a host's packages on another one. See [Phases](#phases) for what is not built.
 
 ## What was decided
 
@@ -11,6 +11,40 @@
 | What comes first | A rebuild from a recipe (distro, packages, config, accounts, storage layout, then user files), not a disk image |
 | What a copy is for | Chosen each time: **test** (isolated, new identity, jobs off) or **migration** (same identity, final sync, cutover) |
 | Which machines | Servers and desktops from the start. On desktops, home folders are the main user-files choice |
+
+## Creating VMs
+
+A VM is made by `vm-create`, a step of a change plan like any other: scan, plan, check, script, deploy. Nothing here creates a VM behind the plan's back.
+
+1. **Measure the libvirt host** so StorageForge knows its pools, networks and VMs (its infrastructure reading).
+2. **Stage the step:** **Create a VM here…** on the host in the web UI, or `storageforge-index vm create --host kvm-01 --name web-02 --spec server --image debian13 --key fleet`.
+3. **Check it.** The check says whether libvirt is there, whether the pool and network exist, how much room the pool has, whether the name is taken, and whether the login key is in the vault.
+4. **Run the script.** It reports unless `--apply`. With `--apply` it downloads the image once into `<pool>/.storageforge-images/`, checks it against the checksum its publisher lists (or the one you gave for your own image), copies it to `<name>-root.qcow2` and grows it, makes the data disks, writes a cloud-init seed with one login account for your SSH key, and runs `virt-install --import`. It prints the VM's address when it has one.
+5. **Bind a vault key and scan the VM.** From then on it is a host like any other.
+
+The script never writes over a disk or a seed file that is already there, and never touches a VM it didn't make: StorageForge marks the VMs it makes in their libvirt metadata.
+
+### VM specs
+
+A spec is a named set of field values: CPUs, memory, disk sizes, image, pool, network, firmware, CPU model, console, login account and key. A step that names a spec has its empty fields filled from it when the plan is saved. So a saved plan always says everything it will do, and changing a spec later changes no plan that was saved with it.
+
+| Built in | Fields |
+| :--- | :--- |
+| `small` | 1 vCPU, 1 GiB, 10 GiB |
+| `server` | 2 vCPUs, 4 GiB, 40 GiB |
+| `desktop` | 4 vCPUs, 8 GiB, 60 GiB, UEFI, SPICE console on loopback, CPU passed through |
+| `test-copy` | 2 vCPUs, 4 GiB, 40 GiB, on the isolated network `sf-isolated` |
+
+Your own go beside them: `storageforge-index vm spec db --set vcpus=8 --set ram_mb=32768 --set data_disks=200,200 --set image=rocky9 --key fleet`, or `PUT /api/vm/specs/db`. They are kept in the settings, so essential backups hold them.
+
+### Copying a host to a new VM
+
+`storageforge-index vm clone web-01 --host kvm-01 --key fleet [--test]` saves two plans:
+
+1. **The VM**, from the catalog image for web-01's distro and version (Arch for its derivatives), named `web-01-copy`, from the `server` spec, or `test-copy` with `--test`.
+2. **Its packages:** a `packages` step on `web-01-copy`, from web-01's last scan. Its check is critical until the copy has been scanned, so it waits for step 5 above.
+
+Config, accounts, storage layout and user files come in later phases.
 
 ## Directions
 
@@ -210,8 +244,9 @@ Phase 1 reads apt, dnf and yum, zypper, pacman and apk. The rest fall into three
 | Phase | What | State |
 | :--- | :--- | :--- |
 | 1 | **Package list**: collected by each scan, `hosts packages` to list and compare, a script that installs the same set with the same package manager | Built, unit-tested, **not lab-tested** |
-| 1b | **Fixes to phase 1:** recognise image-based, transactional and read-only systems, apt on rpm, and Debian's local debs, holds and backports; keep AUR versions | Planned |
-| 2 | **Targets:** new VMs from cloud images (base image per distro and version with checksums, cloud-init with the deploy key, disk sizing: the roadmap's B2 "VMs from templates"), and existing scanned machines with the freshly-installed check and merge | Planned |
+| 1b | **Fixes to phase 1:** image-based, transactional and read-only systems, apt on rpm, Debian's local debs, holds and backports, AUR versions | Built, unit-tested, **not lab-tested** |
+| 2 | **Targets:** new VMs from cloud images, with VM specs (`vm-create`, `vm create`, `vm clone`) | Built for new VMs, unit-tested against stand-in libvirt tools, **not lab-tested**. Existing scanned machines as targets, with the freshly-installed check and merge: planned |
+| 2b | **The `packages` step:** another host's packages, as a plan step | Built, **not lab-tested** |
 | 3 | **Config and storage**: the reinstall script given a *create* mode for blank disks (it never formats today), disk mapping under the drive-task locks, and enabled services | Planned |
 | 3b | **AUR and local builds:** cache, `bacman`, an AUR build at the matching commit; Arch Linux Archive pinning; derivative repositories and CPU levels | Planned |
 | 3c | **Hardware differences:** firmware, drivers, guest tools, interface renames and CPU level, each way | Planned |

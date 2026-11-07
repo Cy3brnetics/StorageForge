@@ -45,13 +45,22 @@ def F(name, kind, label, **kw):
 # Step types registered from other modules (steps_infra.py), so changes.py does not have to grow with every new kind of step.
 EXTRA: dict[str, dict] = {}
 EXTRA_BASH: list[str] = []
+PREPARE: list = []     # (conn, body) -> body, before a plan is checked or saved: steps_vm.py fills a VM step from its spec
 
 
-def register(kind: str, spec: dict, args: tuple, title_of, check_of, ansible_of):
-    """A new step type: its fields, what reaches its t_<kind> Bash function, its title, its check against the index, its Ansible."""
+def prepare(conn, body: dict) -> dict:
+    for fn in PREPARE:
+        body = fn(conn, body)
+    return body
+
+
+def register(kind: str, spec: dict, args: tuple, title_of, check_of, ansible_of, args_of=None):
+    """A new step type: its fields, what reaches its t_<kind> Bash function, its title, its check against the index, its Ansible.
+    args_of(conn, task) -> more words for the Bash function, worked out from the index when the script is written; a step
+    with it gets ansible_of(task, conn)."""
     TYPES[kind] = spec
     ARGS[kind] = args
-    EXTRA[kind] = {'title': title_of, 'check': check_of, 'ansible': ansible_of}
+    EXTRA[kind] = {'title': title_of, 'check': check_of, 'ansible': ansible_of, 'args_of': args_of}
 
 
 PATH, TARGET = F('path', 'path', 'Path', required=True), F('target', 'path', 'Mount point', required=True)
@@ -939,7 +948,7 @@ def get_plan(conn: Conn, plan_id: int) -> dict:
 
 
 def save_plan(conn: Conn, body: dict, actor: str, plan_id: int | None = None) -> int:
-    plan = normalize(body)
+    plan = normalize(prepare(conn, body))
     now = int(time.time())
     clash = conn.scalar('SELECT plan_id FROM change_plans WHERE lower(name) = lower(:n)', {'n': plan['name']})
     if clash and clash != plan_id:
@@ -1064,6 +1073,8 @@ def script(conn: Conn, plan: dict, owner: str | None = None) -> str:
         if t['type'] in ('btrfs-send', 'zfs-send'):        # the receiving side: which send, and where. This host has its own id for that
             sid, address, port = receiving.script_args(step_send(conn, hs, t, owner))
             args += [sid, address, str(port)]
+        if (EXTRA.get(t['type']) or {}).get('args_of'):
+            args += EXTRA[t['type']]['args_of'](conn, t)
         calls.append(f'run {i} {q(host_slug(h["name"] if h else t["host"]))} {t["type"]} {q(title(t))} ' + ' '.join(q(a) for a in args))
         summary.append(f'#   {i:>2}. [{t["host"]}] {title(t)}' + ('   (destructive)' if TYPES[t['type']].get('destructive') else ''))
     problems = [f'#   task {x["task"]}: {it["level"].upper()}: {it["text"]}' for x in chk['tasks'] for it in x['items']
@@ -1711,10 +1722,10 @@ finished
 
 
 # ── the Ansible playbook ────────────────────────────────────────────────
-def _ansible_task(t: dict, c: Host | None) -> dict:
+def _ansible_task(t: dict, c: Host | None, conn: Conn | None = None) -> dict:
     p, k = t['params'], t['type']
     if k in EXTRA:
-        return EXTRA[k]['ansible'](t)
+        return EXTRA[k]['ansible'](t, conn) if EXTRA[k].get('args_of') else EXTRA[k]['ansible'](t)
     name = title(t)
     q = shlex.quote
     if k == 'dir':
@@ -1949,7 +1960,7 @@ def ansible(conn: Conn, plan: dict) -> str:
         h = find_host(hs, t['host'])
         name = h['name'] if h else t['host']
         c = ctx.setdefault(name, Host(conn, h)) if h else None
-        made = _ansible_task(t, c)
+        made = _ansible_task(t, c, conn)
         made = made if isinstance(made, list) else [made]
         if plays and plays[-1]['hosts'] == name:
             plays[-1]['tasks'] += made
@@ -1968,3 +1979,5 @@ def ansible(conn: Conn, plan: dict) -> str:
 
 
 from . import steps_infra  # noqa: E402,F401  (registers its step types, and imports this module)
+from . import steps_vm  # noqa: E402,F401  (vm-create, after steps_infra, which sets EXTRA_BASH)
+from . import steps_clone  # noqa: E402,F401  (packages from another host)

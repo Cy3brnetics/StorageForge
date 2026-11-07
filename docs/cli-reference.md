@@ -81,6 +81,10 @@ storageforge-index search [PATTERN] [options]
 | Command | Does |
 | :--- | :--- |
 | `plan list` | change plans |
+| `vm images` | the cloud images a VM can start from, each checked against its publisher's checksum |
+| `vm specs`; `vm spec NAME --set FIELD=VALUE... [--key VAULTKEY] [--note TEXT]`; `vm spec-remove NAME` | VM specs: `small`, `server`, `desktop` and `test-copy` are built in, and yours sit beside them |
+| `vm create --host KVM --name N [--spec S] [--image I] [--key VAULTKEY] [--set FIELD=VALUE...] [--plan NAME]` | save a change plan that creates a VM on a scanned libvirt host, and show its check. Then `plan script` and run it, as for any plan |
+| `vm clone SOURCE --host KVM [--name N] [--test] [--skip PKGS] [--spec S] [--image I] [--key VAULTKEY]` | save two change plans that copy a scanned host to a new VM: the VM, from the image for the source's distro, and the source's packages on it, to run once the VM is scanned. `--test` puts it on the isolated network |
 | `plan types` | change task types and their fields |
 | `plan check ID` | check a change plan against the index |
 | `plan script ID [-o FILE]`, `plan ansible ID [-o FILE]` | the Bash script or Ansible playbook |

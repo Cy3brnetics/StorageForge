@@ -667,10 +667,18 @@ def _host_packages(args, conn) -> int:
         print(f'{pk["host"]}: {pk.get("distro") or "unknown"} {pk.get("version") or ""}, {pk.get("pm") or "no package manager"}, '
               f'{len(pk["packages"])} package(s) {"installed on purpose" if pk["basis"] == "manual" else "(every package)"}'
               + ('' if pk.get('complete') else ', list cut short'))
+        if pk.get('mode') == 'image':
+            print(f'  image-based: these are layered onto {pk.get("image_ref") or "its image"}, which is not copied')
+        elif pk.get('mode') == 'readonly':
+            print(f'  read-only system: its {pk.get("base_packages", 0)} packages are the vendor\'s image, so only its apps are listed')
+        elif pk.get('mode') == 'transactional':
+            print('  transactional: packages go on through transactional-update, then a reboot')
+        holds, back = set(pk.get('holds') or []), set(pk.get('backports') or [])
         for name in pk['packages']:
-            print(f'  {name}')
+            print(f'  {name}' + ('  (held)' if name in holds else '') + ('  (backports)' if name in back else ''))
         for f in pk.get('foreign') or []:
-            print(f'  {f}  (no package source)')
+            v = (pk.get('foreign_versions') or {}).get(f)
+            print(f'  {f}{" " + v if v else ""}  (no package source)')
         for f in pk['flatpak']:
             print(f'  flatpak {f["id"]}  {f.get("origin") or ""}')
         for x in pk['snap']:
@@ -690,6 +698,102 @@ def _host_packages(args, conn) -> int:
         if c[key]:
             print(f'{label}: {" ".join(c[key])}')
     return 1 if c['only_a'] or c['only_b'] else 0
+
+
+def _kv(pairs) -> dict:
+    out = {}
+    for pair in pairs or []:
+        k, sep, v = pair.partition('=')
+        if not sep:
+            raise ValueError(f'--set takes field=value, not {pair!r}')
+        out[k.strip()] = v.strip()
+    return out
+
+
+def _vm_key(conn, args, params: dict):
+    """--key NAME: a vault key's public half as the login key. Public keys are readable without unlocking the vault."""
+    if getattr(args, 'key', None):
+        pub = conn.scalar('SELECT public_key FROM ssh_keys WHERE name = :n', {'n': args.key})
+        if not pub:
+            raise ValueError(f'there is no vault key {args.key}')
+        params['ssh_key'] = ' '.join(pub.split()[:2])      # its comment may hold characters a login key field refuses
+
+
+def _print_check(conn, changes, pid):
+    c = changes.check(conn, changes.get_plan(conn, pid))
+    for t in c['tasks']:
+        print(f'  {t["task"]}. {t["title"]}' + (f'  [{t["host"]}]' if t.get('host') else ''))
+        for it in t['items']:
+            print(f'       {it["level"]:<5} {it["text"]}')
+    return c
+
+
+def cmd_vm(args) -> int:
+    from . import changes, pkglist, steps_vm
+    _, conn = open_db(args)
+    actor = f'cli:{os.environ.get("USER", "?")}'
+    try:
+        if args.vm_cmd == 'images':
+            for k, row in steps_vm.IMAGES.items():
+                print(f'{k:<12} {row[0]:<22} {row[1]}')
+            return 0
+        if args.vm_cmd == 'specs':
+            for sp in steps_vm.specs(conn):
+                vals = ' '.join(f'{k}={v}' for k, v in sp.items() if k not in ('name', 'builtin', 'note', 'ssh_key'))
+                print(f'{sp["name"]:<14} {"built in" if sp["builtin"] else "yours":<9} {vals}' + (f'  ({sp["note"]})' if sp.get('note') else ''))
+            return 0
+        if args.vm_cmd == 'spec':
+            body = _kv(args.set)
+            if args.note:
+                body['note'] = args.note
+            if args.key:
+                _vm_key(conn, args, body)
+            sp = steps_vm.save_spec(conn, args.name, body, actor)
+            print(f'saved spec {sp["name"]}')
+            return 0
+        if args.vm_cmd == 'spec-remove':
+            steps_vm.delete_spec(conn, args.name, actor)
+            print(f'removed spec {args.name}')
+            return 0
+        if args.vm_cmd == 'create':
+            params = {'name': args.name, 'spec': args.spec or '', 'image': args.image or '', **_kv(args.set)}
+            _vm_key(conn, args, params)
+            pid = changes.save_plan(conn, {'name': args.plan or f'VM {args.name} on {args.host}',
+                                           'tasks': [{'type': 'vm-create', 'host': args.host, 'params': params}]}, actor)
+            print(f'saved change plan #{pid}:')
+            c = _print_check(conn, changes, pid)
+            print(f'next: storageforge-index plan script {pid} -o vm.sh, read it, then run it on {args.host} (it reports unless --apply)')
+            return 1 if c['crit'] else 0
+        if args.vm_cmd == 'clone':
+            pk = pkglist.for_host(conn, args.source)
+            if not pk:
+                raise ValueError(f'{args.source} has no package list: scan it again with this version')
+            image = args.image or steps_vm.image_for(pk.get('distro'), pk.get('version'))
+            if not image:
+                raise ValueError(f'no image in the catalog for {pk.get("distro")} {pk.get("version") or ""}: give one with --image (see vm images)')
+            name = args.name or f'{moves_slug(pk["host"])}-copy'
+            params = {'name': name, 'spec': args.spec or ('test-copy' if args.test else 'server'), 'image': image, **_kv(args.set)}
+            if args.test:
+                params['network'] = steps_vm.ISOLATED
+            _vm_key(conn, args, params)
+            first = changes.save_plan(conn, {'name': args.plan or f'Copy {pk["host"]} to {name}: the VM',
+                                             'tasks': [{'type': 'vm-create', 'host': args.host, 'params': params}]}, actor)
+            second = changes.save_plan(conn, {'name': f'Copy {pk["host"]} to {name}: its packages',
+                                              'tasks': [{'type': 'packages', 'host': name, 'params': {'from_host': pk['host'], 'skip': args.skip or ''}}]}, actor)
+            print(f'saved change plan #{first} (the VM on {args.host}):')
+            c = _print_check(conn, changes, first)
+            print(f'and #{second} (the packages of {pk["host"]} on {name}), to run once {name} has been scanned.')
+            print(f'next: run #{first} on {args.host}; bind a vault key to {name} and scan it; then check and run #{second} on {name}')
+            return 1 if c['crit'] else 0
+    except (ValueError, LookupError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    return 2
+
+
+def moves_slug(name: str) -> str:
+    from .moves import host_slug
+    return host_slug(name)
 
 
 def cmd_hosts(args) -> int:
@@ -1514,6 +1618,34 @@ def build_parser() -> argparse.ArgumentParser:
     ro.add_argument('--apply', action='store_true', help='do it: new SSH keys on every host that uses one, sessions ended, invites revoked')
     ro.add_argument('--key', action='append', help='only this vault key (again for more)')
     ro.set_defaults(fn=cmd_rotate)
+
+    vm = sub.add_parser('vm', help='VMs from cloud images: the image catalog, VM specs, and change plans that create or copy a VM')
+    vms = vm.add_subparsers(dest='vm_cmd', required=True)
+    vms.add_parser('images', help='the cloud images a VM can start from')
+    vms.add_parser('specs', help='built-in and saved VM specs')
+    vsp = vms.add_parser('spec', help='save a spec: vm spec db --set vcpus=8 --set ram_mb=32768 --set data_disks=200')
+    vsp.add_argument('name')
+    vsp.add_argument('--set', action='append', metavar='FIELD=VALUE', help='a vm-create field (plan types lists them); again for more')
+    vsp.add_argument('--key', help="this vault key's public key as the login key")
+    vsp.add_argument('--note')
+    vms.add_parser('spec-remove', help='remove a saved spec').add_argument('name')
+    for kind, text in (('create', 'save a change plan that creates a VM on a libvirt host'),
+                       ('clone', 'save change plans that copy a scanned host to a new VM: the VM, then its packages')):
+        vc = vms.add_parser(kind, help=text)
+        if kind == 'clone':
+            vc.add_argument('source', help='the scanned host to copy')
+            vc.add_argument('--name', help='the VM name (default <source>-copy)')
+            vc.add_argument('--test', action='store_true', help='on the isolated network, from the test-copy spec')
+            vc.add_argument('--skip', help='packages to leave out, by commas')
+        else:
+            vc.add_argument('--name', required=True)
+        vc.add_argument('--host', required=True, help='the scanned libvirt host it runs on')
+        vc.add_argument('--spec', help='fill empty fields from this spec')
+        vc.add_argument('--image', help='a catalog image (vm images)')
+        vc.add_argument('--key', help='the vault key whose public key logs in')
+        vc.add_argument('--set', action='append', metavar='FIELD=VALUE')
+        vc.add_argument('--plan', help='the plan name')
+    vm.set_defaults(fn=cmd_vm)
 
     h = sub.add_parser('hosts', help='list indexed hosts')
     hs = h.add_subparsers(dest='hosts_cmd')

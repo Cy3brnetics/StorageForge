@@ -123,6 +123,8 @@ GET  /api/hostconfigs[?host=]         saved host configurations: the newest of e
 GET  /api/hostconfigs/<id>            one version: what it holds, and what changed since the version before
 GET  /api/hostconfigs/script?host=&id=   the reinstall script (mounts, accounts, shares, symlinks)
 GET  /api/hostconfigs/bundle?host=&id=   a .tar.gz of scripts, records and config files (every host without host=)
+GET  /api/vm/images                  the cloud images a vm-create step can start from
+GET  /api/vm/specs;  PUT|DELETE /api/vm/specs/<name>   VM specs: built in, and your own
 GET  /api/hostconfigs/packages?host=[&against=]   packages a host was given on purpose, or how two hosts differ
 GET  /api/hostconfigs/packages/script?host=   a script that installs them on another machine (reports unless --apply)
 GET  /api/backups                    backups on disk;  POST {"kind": "essentials"|"full"} makes one now
@@ -1529,10 +1531,40 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
 
+    @web.get('/api/vm/images')
+    @login_required
+    def api_vm_images():
+        from . import steps_vm
+        return jsonify(images=[{'key': k, 'label': r[0], 'url': r[1], 'checksums': r[2], 'osinfo': r[3], 'distro': r[4], 'version': r[5]}
+                               for k, r in steps_vm.IMAGES.items()])
+
+    @web.get('/api/vm/specs')
+    @login_required
+    def api_vm_specs():
+        from . import steps_vm
+        return jsonify(specs=steps_vm.specs(conn()), fields=list(steps_vm.SPEC_FIELDS))
+
+    @web.route('/api/vm/specs/<name>', methods=['PUT', 'DELETE'])
+    @login_required
+    def api_vm_spec(name):
+        from . import steps_vm
+        try:
+            if request.method == 'DELETE':
+                steps_vm.delete_spec(conn(), name, actor())
+                core.audit(conn(), actor(), 'vm.spec.delete', 'ok', None, {'spec': name})
+                return jsonify(deleted=name)
+            sp = steps_vm.save_spec(conn(), name, json_body(), actor())
+            core.audit(conn(), actor(), 'vm.spec.save', 'ok', None, {'spec': name})
+            return jsonify(sp)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+
     @web.post('/api/changes/check')
     @login_required
     def api_changes_check():
-        return jsonify(changes.check(conn(), changes.normalize(json_body())))
+        return jsonify(changes.check(conn(), changes.normalize(changes.prepare(conn(), json_body()))))
 
     @web.get('/api/changes/<int:plan_id>/<any("script", "ansible"):kind>')
     @login_required

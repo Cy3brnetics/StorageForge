@@ -362,8 +362,17 @@ echo '@@packages'; (PATH="$PATH:/usr/sbin:/sbin"; for m in apt-get dnf yum zyppe
   @@PLATFORM@@; [ -n "$platform" ] && echo "platform $platform"
   @@PVE_ENTERPRISE@@ && echo 'pve_enterprise yes')
 echo '@@pkglist'; (PATH="$PATH:/usr/sbin:/sbin"; . /etc/os-release 2>/dev/null; printf 'distro\t%s\t%s\t%s\n' "${ID:-}" "${VERSION_ID:-}" "${ID_LIKE:-}"
-  if command -v apt-mark >/dev/null 2>&1; then echo 'pm apt-get'; bounded apt-mark showmanual 2>/dev/null | awk '{print "m\t" $0}'
-  elif command -v pacman >/dev/null 2>&1; then echo 'pm pacman'; bounded pacman -Qqe 2>/dev/null | awk '{print "m\t" $0}'; bounded pacman -Qqm 2>/dev/null | awk '{print "o\t" $0}'
+  # how packages get on: an image with layers (rpm-ostree, bootc), transactional (a read-only root, changed by snapshot), read-only (the vendor's image)
+  mode=normal; [ -e /run/ostree-booted ] && mode=image
+  command -v transactional-update >/dev/null 2>&1 && findmnt -no OPTIONS / 2>/dev/null | grep -qE '(^|,)ro(,|$)' && mode=transactional
+  case "${ID:-}" in steamos|ubuntu-core) mode=readonly ;; esac
+  echo "mode $mode"
+  if [ "$mode" = image ]; then echo 'pm rpm-ostree'; command -v rpm-ostree >/dev/null 2>&1 && bounded rpm-ostree status --json 2>/dev/null | head -c 262144 | base64 | tr -d '\n' | awk '{print "O\t" $0}'
+  elif command -v apt-mark >/dev/null 2>&1 && command -v dpkg-query >/dev/null 2>&1; then echo 'pm apt-get'; bounded apt-mark showmanual 2>/dev/null | awk '{print "m\t" $0}'
+    bounded apt-mark showhold 2>/dev/null | awk '{print "h\t" $0}'
+    bounded dpkg-query -W -f='${binary:Package}\t${Version}\n' 2>/dev/null | awk -F'\t' '$2 ~ /~bpo/ {print "b\t" $1}'
+    bounded apt list --installed 2>/dev/null | awk -F/ '/,local\]/ {print "o\t" $1}'
+  elif command -v pacman >/dev/null 2>&1; then echo 'pm pacman'; bounded pacman -Qqe 2>/dev/null | awk '{print "m\t" $0}'; bounded pacman -Qm 2>/dev/null | awk '{print "o\t" $1 "\t" $2}'
   elif command -v zypper >/dev/null 2>&1; then echo 'pm zypper'; bounded rpm -qa --qf '%{NAME}\n' 2>/dev/null | awk '{print "a\t" $0}'
     [ -r /var/lib/zypp/AutoInstalled ] && grep -v '^#' /var/lib/zypp/AutoInstalled | awk '{print "x\t" $0}'
   elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then m=dnf; command -v dnf >/dev/null 2>&1 || m=yum; echo "pm $m"
@@ -371,6 +380,7 @@ echo '@@pkglist'; (PATH="$PATH:/usr/sbin:/sbin"; . /etc/os-release 2>/dev/null; 
     o=$(bounded "$m" -q -C repoquery --userinstalled --qf '%{name}\n' 2>/dev/null); [ -n "$o" ] && printf '%s\n' "$o" | awk '{print "m\t" $0}' \
       || { o=$(bounded "$m" -q history userinstalled 2>/dev/null); [ -n "$o" ] && printf '%s\n' "$o" | awk '{print "v\t" $0}'; } \
       || bounded rpm -qa --qf '%{NAME}\n' 2>/dev/null | awk '{print "a\t" $0}'
+  elif command -v apt-get >/dev/null 2>&1 && command -v rpm >/dev/null 2>&1; then echo 'pm apt-rpm'; bounded rpm -qa --qf '%{NAME}\n' 2>/dev/null | awk '{print "a\t" $0}'
   elif [ -r /etc/apk/world ]; then echo 'pm apk'; awk '{print "m\t" $0}' /etc/apk/world
   fi
   command -v flatpak >/dev/null 2>&1 && bounded flatpak list --app --columns=application,origin 2>/dev/null | awk '{print "f\t" $0}'

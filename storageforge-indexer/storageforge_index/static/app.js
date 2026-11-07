@@ -478,7 +478,11 @@ function renderSummary() {
   }
   $('#summary').replaceChildren(text('h3', 'Nodes'), dl, text('h3', 'Health'), hl,
     ...(broken.length ? [text('h3', 'Needs attention'), ul, ...(more ? [more] : [])] : []),
-    ...(S.host && can('hostlogs.view') && typeof hlLinkEl === 'function' ? [text('h3', 'Logs'), hlLinkEl(S.host, `${S.host}'s logs`)] : []));
+    ...(S.host && can('hostlogs.view') && typeof hlLinkEl === 'function' ? [text('h3', 'Logs'), hlLinkEl(S.host, `${S.host}'s logs`)] : []),
+    // whole-host steps: a VM on this libvirt host, or another host's packages here (docs/host-migration.md)
+    ...(S.host && can('plans.edit') && typeof openTask === 'function' ? [text('h3', 'Plan a change'), el('div', { class: 'row wrap' },
+      button('Create a VM here…', () => openTask('vm-create', S.host, {}), 'btn ghost sm'),
+      button('Install the packages of another host…', () => openTask('packages', S.host, { apps: true }), 'btn ghost sm'))] : []));
 }
 
 /* ── right-click menus: an element with _menu(ev) returning items gets one ──

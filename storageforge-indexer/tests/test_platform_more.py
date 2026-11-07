@@ -170,7 +170,7 @@ class ChangePlanSteps(unittest.TestCase):
     def test_every_step_has_all_of_what_a_step_needs(self):
         for kind in changes.EXTRA:
             self.assertIn(kind, changes.ARGS, kind)
-            self.assertIn(f't_{kind.replace("-", "_")}()', steps_infra.BASH, kind)
+            self.assertIn(f't_{kind.replace("-", "_")}()', ''.join(changes.EXTRA_BASH), kind)     # steps_infra, steps_vm, steps_clone
 
     def test_the_whole_script_parses(self):
         p = subprocess.run(['bash', '-n'], input=steps_infra.BASH, text=True, capture_output=True)
