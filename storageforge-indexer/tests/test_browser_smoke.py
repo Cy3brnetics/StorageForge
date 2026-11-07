@@ -67,6 +67,7 @@ class BrowserSmoke(unittest.TestCase):
         self.page.wait_for_url(self.base + '/**')
         self.page.wait_for_selector('.tabs button')
         self.page.wait_for_load_state('load')                    # the markup is there before the last script has run: a test that asks for a global waits for it
+        self.page.wait_for_selector('html[data-route-ready]', state='attached')      # the page has started following the address: a choice made before this is not a step in the history
 
     def test_every_tab_opens_without_a_script_error(self):
         found = self.page.eval_on_selector_all('.tabs button', 'bs => bs.map(b => b.dataset.tab)')

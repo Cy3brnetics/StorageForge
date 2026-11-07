@@ -53,6 +53,7 @@ function routeApply(r) {
 
 /* At start: the host and the view now, and the panel (returned) once the data is in. */
 function routeTake() {
+  ROUTE.seen = location.hash;                     // what start-up read: a change after this and before routeStart() is not lost
   const r = routeRead();
   if (!r.view && !r.panel && !r.host) return null;
   routeApply({ ...r, panel: null });
@@ -63,6 +64,8 @@ function routeTake() {
 
 function routeStart() {                           // once the page has what it needs: the URL is made canonical, and from here it is followed
   ROUTE.ready = true;
+  document.documentElement.dataset.routeReady = '1';          // from here a choice is a step in the history; a test, or anything that drives the page, can wait for this
+  if (ROUTE.seen !== undefined && location.hash !== ROUTE.seen) routeApply(routeRead());     // a link or typed address during start-up: hashchange was not followed yet
   routeSync(true);
 }
 

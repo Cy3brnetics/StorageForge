@@ -181,7 +181,7 @@ class BrowserPolish(unittest.TestCase):
         page.check('dialog.sf-prefs input[name="pref-theme"][value="dark"]')
         page.check('dialog.sf-prefs input[name="pref-density"][value="compact"]')
         page.check('dialog.sf-prefs input[name="pref-motion"][value="reduce"]')
-        root = lambda: page.evaluate('({...document.documentElement.dataset})')
+        root = lambda: {k: v for k, v in page.evaluate('({...document.documentElement.dataset})').items() if k != 'routeReady'}      # the router's marker is not a preference
         self.assertEqual(root(), {'theme': 'dark', 'density': 'compact', 'motion': 'reduce'})
         self.assertEqual(page.evaluate("getComputedStyle(document.body).fontSize"), '13px')
         self.assertLess(page.evaluate("parseFloat(getComputedStyle(document.querySelector('.brand b')).transitionDuration)"), 0.001)   # nothing animates a person who asked for none
