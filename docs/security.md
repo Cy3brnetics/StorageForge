@@ -28,6 +28,10 @@ Some steps need a secret on the host they run on: the `tailscale` step needs an 
 
 `vault send-secret NAME --host HOST` decrypts it and writes it to `/run/storageforge/secrets/NAME` on the host over SSH, on ssh's stdin. `/run` is in memory, the folder is mode 700 and the file mode 600, and both are gone at reboot. The login needs `sudo` without a password, as deploys do. The step reads the file there. The `tailscale` step hands it to Tailscale as `--auth-key=file:…`, so the key is on no command line, and removes it once the node has joined. Both commands write to the audit log, and neither prints the secret.
 
+### Console keys
+
+A key bound with `--actions console` opens a terminal from the web UI ([Console](console.md)), as the binding's login. It is kept apart from scan bindings, so the read-only scan login never becomes a shell. Sessions take only host keys a scan confirmed, forward nothing, and are audited when they open and close. With recording on, they are kept in full, input included.
+
 ## Bindings
 
 `key_bindings` maps a key to an exact host or IP, a glob (`*.tailnet.ts.net`) or a CIDR, with a user, port and allowed actions (`scan`, `checksum`, `deploy`). The most specific match wins: exact host, then glob, then longest prefix, then the lowest priority number. `vault resolve --host H` shows which key and user a host would get.

@@ -1878,7 +1878,7 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument('--host', required=True, help='nas-02, *.tail4c2e.ts.net or 10.0.20.0/24')
     x.add_argument('--user', required=True)
     x.add_argument('--port', type=int, default=22)
-    x.add_argument('--actions', default='scan', help='comma list: scan, checksum')
+    x.add_argument('--actions', default='scan', help='comma list: scan, checksum, deploy, console (a terminal from the web UI: the login is the one it opens)')
     x.add_argument('--priority', type=int, default=100, help='lower wins among equally specific bindings')
     x = vs.add_parser('unbind')
     x.add_argument('--id', type=int, required=True)

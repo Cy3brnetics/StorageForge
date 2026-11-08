@@ -23,8 +23,12 @@ def code(path):
     return re.sub(r'(?m)^\s*//.*$|(?<=[;{}\s])//[^\n\'"`]*$', '', text)
 
 
+# third-party code, vendored as released (static/xterm-LICENSE.txt): these rules are for StorageForge's own scripts
+VENDORED = {'xterm.js', 'addon-fit.js'}
+
+
 def scripts():
-    return sorted(STATIC.glob('*.js'))
+    return sorted(p for p in STATIC.glob('*.js') if p.name not in VENDORED)
 
 
 class Kernel(unittest.TestCase):

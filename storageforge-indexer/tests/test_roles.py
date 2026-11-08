@@ -29,7 +29,7 @@ def old_required_role(method, path):
 
 # Deliberately tighter than before: these handed runnable scripts, and a report token, to viewers.
 TIGHTENED = ('/install-script', '/cron', '/api/hostconfigs/bundle')
-NEW_ROUTES = ('/api/remote/nodes', '/api/jobs/state', '/dedupe', '/api/invites', '/api/roles', '/api/search/hosts', '/api/enroll', '/api/clamav', '/api/security', '/api/map/', '/api/devices', '/api/dsl/', '/api/fleet', '/api/netscan', '/api/traffic', '/api/hostlogs', '/api/scans/signing', '/api/planner/versions')
+NEW_ROUTES = ('/api/remote/nodes', '/api/jobs/state', '/dedupe', '/api/invites', '/api/roles', '/api/search/hosts', '/api/enroll', '/api/clamav', '/api/security', '/api/map/', '/api/devices', '/api/dsl/', '/api/fleet', '/api/netscan', '/api/traffic', '/api/hostlogs', '/api/scans/signing', '/api/planner/versions', '/api/console')
 
 
 class Base(unittest.TestCase):

@@ -559,6 +559,9 @@ async function sfFetch(path, init, confirmed) {
   return res;
 }
 const getJSON = async (path, opts) => (await api(path, opts)).json();
+/* A request as the page goes away (pagehide): keepalive lets it outlive the page, and nobody is left to read the answer or
+   be asked for a password, so it is only for letting the server know, such as closing a console (consoleview.js). */
+function sfOnLeave(path, method = 'POST') { fetch(path, { method, credentials: 'same-origin', keepalive: true }).catch(() => {}); }
 const postJSON = (path, body, opts = {}) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), ...opts });
 
 /* Who is signed in decides whose preferences apply: the account last seen here was applied at the top, this makes sure it was the right one. */

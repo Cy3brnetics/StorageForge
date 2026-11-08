@@ -50,6 +50,9 @@ CATALOG = (
         ('devices.apply', 'Change a device. Each change has a rollback timer on the device, and this is still root on your network', True),
         ('netscan.view', 'See what the nmap scanner found, and traffic statistics', False),
         ('netscan.run', 'Turn the nmap scanner and traffic monitoring on and off, name the ranges, run a scan', True),)),
+    ('Consoles', (
+        ('console.open', 'Open a terminal on a host or VM, or its serial console, from the web UI: whatever its login may do', True),
+        ('console.recordings', 'List and download console recordings, which hold everything typed, passwords too', True),)),
     ('Host access', (
         ('keys.view', 'See public keys, bindings and scan access', False),
         ('keys.manage', 'Generate, install, bind and remove SSH keys', True),
@@ -86,6 +89,9 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/roles', 'users.manage'),            # who can hand out roles needs to see them
     (_ANY, r'/api/roles(/.*)?', 'roles.manage'),
     (_ANY, r'/api/deploy/settings(/.*)?', 'settings.manage'),
+    (('PUT',), r'/api/console/settings', 'settings.manage'),
+    (READ, r'/api/console/recordings(/.*)?', 'console.recordings'),
+    (_ANY, r'/api/console(/.*)?', 'console.open'),
     (_WRITE, r'/api/planner/example', 'settings.manage'),
     (_WRITE, r'/api/planner/offsite', 'plans.edit'),
     (_ANY, r'/api/audit/verify', 'audit.verify'),

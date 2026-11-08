@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Console · StorageForge</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/tokens.css">
+<link rel="stylesheet" href="/components.css">
+<link rel="stylesheet" href="/xterm.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="sf-console-page">
+<header class="cons-bar">
+  <h1 id="cons-title">Console</h1>
+  <label>Connect by
+    <select id="cons-route" aria-describedby="cons-route-help"></select>
+  </label>
+  <button id="cons-connect" type="button" class="sf-btn">Connect</button>
+  <button id="cons-close" type="button" class="sf-btn ghost" hidden>Disconnect</button>
+  <span id="cons-status" role="status" aria-live="polite"></span>
+  <span id="cons-rec" class="cons-rec" hidden>Recorded: everything typed and shown here is kept</span>
+</header>
+<p id="cons-route-help" class="cons-help"></p>
+<div id="cons-viewer" class="cons-viewer" hidden></div>
+<details id="cons-admin" class="cons-admin" hidden>
+  <summary>Recording and recordings</summary>
+  <div id="cons-admin-body"></div>
+</details>
+<main id="cons-term" class="cons-term" aria-label="Terminal"></main>
+<script src="/session.js"></script>
+<script src="/kernel.js"></script>
+<script src="/xterm.js"></script>
+<script src="/addon-fit.js"></script>
+<script src="/consoleview.js"></script>
+</body>
+</html>

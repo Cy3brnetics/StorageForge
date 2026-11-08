@@ -342,7 +342,7 @@ On 2026-11-07, against a lab build of `sf-ctl`, `sf-ubuntu`, `sf-jammy`, `sf-boo
   1. Read-only scans of the Pis. `vm-create` made a VM for each, its login named after the Pi's first user (`rpi`, UID 1000) and its data disk sized from what the Pi holds.
   2. Docker's package source added on each VM by hand, as the report asked. NetBird was left out with `--skip netbird`: a test copy should not join the mesh VPN.
   3. The change plans installed 63 to 64 packages each, Docker 29.9.3 included, and left out 8 kernel and boot packages, the Raspberry Pi packages and the Pi firmware. They added `qemu-guest-agent` and `parted`, gave `rpi` its 17 groups, partitioned and formatted the data disks with the Pis' labels, mounted them, wrote the NFS exports and started Docker and the NFS server. NetBird stayed off.
-  4. The files plans copied `/home` and the data filesystems: 8.3 and 10.6 GiB, and 146 GiB with 4.35 million hard-linked files on `rpi01docker`.
+  4. The files plans copied `/home` and the data filesystems: 8.3 and 10.6 GiB, and 146 GiB with 4.35 million hard-linked files on `rpi01docker`, whose links came across (the copy takes 133 GiB). A checksum verify of the two smaller copies and a size-and-time verify of the large one found only what the running Pis changed after the copy (container logs, a container started since, a Git index), and the `authorized_keys` below.
 
 Bugs it found, all fixed:
 - bash before 5.2 couldn't parse the `vm-create` step. A test now looks for that pattern in every script.
@@ -362,6 +362,7 @@ Bugs it found, all fixed:
 - The Leap Minimal image's `kernel-default-base` has no md driver. The step now says so, and how to fix it, before touching a disk.
 - The copy tried to install the source's kernel, which needs the target's own removed. Kernels and bootloaders are now left to the base install.
 - A report on a target whose root isn't btrfs called its subvolume steps conflicts, because the btrfs they go on is only mounted by an earlier step.
+- A test copy took the source's `.ssh/authorized_keys` with the home folders, which shut out the key the copy was set up with, StorageForge's included. A test copy now keeps the target's own, and a migration says in **Data at risk** that it replaces them.
 - A Pi's boot partition, `/boot/firmware`, was taken for a data filesystem, and got a data disk of its own.
 - The VM's login took UID 1000, which the Pi's own user has, so its accounts could not come across. `vm clone` now names the login after the source's first person.
 - A fresh cloud image has no apt lists, so a report called 66 ordinary packages missing from the sources. A report now leaves that to `--apply`, which updates the lists first.

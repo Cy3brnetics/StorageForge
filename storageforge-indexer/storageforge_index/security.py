@@ -25,6 +25,7 @@ import re
 import secrets
 import socket
 import statistics
+import threading
 import time
 import uuid
 
@@ -1236,18 +1237,71 @@ def velocity(conn: Conn, host: str) -> dict:
     return out
 
 
+# A finished scan never changes, so what it shows is worked out once and kept: posture, the alert loop and the security tick
+# all ask, every minute, and before this each asked SQLite again. One computation per scan, however many ask at once.
+_SIGNS: dict = {}
+_SIGNS_LOCK = threading.Lock()
+_SIGNS_KEEP = 256
+
+
 def _scan_signs(conn: Conn, scan_id: int) -> dict:
+    # kept by the scan and what it holds: after a reset, or in another database, the same scan id is another scan
+    key = (scan_id, conn.scalar('SELECT finished_at FROM scans WHERE scan_id = :s', {'s': scan_id}),
+           conn.scalar('SELECT count(*) FROM file_changes WHERE scan_id = :s', {'s': scan_id}))
+    with _SIGNS_LOCK:
+        got = _SIGNS.get(key)
+        if got is None:
+            got = _SIGNS[key] = {'done': threading.Event(), 'value': None}
+            mine = True
+            while len(_SIGNS) > _SIGNS_KEEP:
+                _SIGNS.pop(next(iter(_SIGNS)))
+        else:
+            mine = False
+    if mine:
+        try:
+            got['value'] = _scan_signs_now(conn, scan_id)
+        except Exception:
+            with _SIGNS_LOCK:
+                _SIGNS.pop(key, None)          # the next asker tries again
+            raise
+        finally:
+            got['done'].set()
+    elif not got['done'].wait(600):
+        raise TimeoutError(f'the signs of scan {scan_id} are still being worked out')
+    if got['value'] is None:
+        return _scan_signs(conn, scan_id)
+    return dict(got['value'])
+
+
+def _appended(conn: Conn, scan_id: int) -> int:
+    """Files added beside one deleted in the same folder with an extension put after its name (report.docx gone,
+    report.docx.xyz there): how a rename-in-place encryptor looks, whatever its extension. A set of the deleted names
+    and one pass over the added ones, so it takes as long as the scan has changes: the self-join this replaces compared
+    every added file with every deleted one, 6 billion pairs for one scan that moved a big folder."""
+    gone = {(m, p, f) for m, p, f in conn.all("SELECT mount_id, parent_path, filename FROM file_changes WHERE scan_id = :s AND change_type = 'deleted'",
+                                              {'s': scan_id})}
+    if not gone:
+        return 0
+    n = 0
+    for m, p, f in conn.all("SELECT mount_id, parent_path, filename FROM file_changes WHERE scan_id = :s AND change_type = 'added' AND NOT is_directory",
+                            {'s': scan_id}):
+        dot = f.find('.', 1)
+        while dot != -1:
+            if (m, p, f[:dot]) in gone:
+                n += 1
+                break
+            dot = f.find('.', dot + 1)
+    return n
+
+
+def _scan_signs_now(conn: Conn, scan_id: int) -> dict:
     likes = {f's{i}': f'%{s}' for i, s in enumerate(RANSOM_SUFFIXES)} | {f'n{i}': n for i, n in enumerate(RANSOM_NOTES)}
     match = ' OR '.join(f'lower(filename) LIKE :{k}' for k in likes)
     where = f"scan_id = :s AND change_type IN ('added', 'modified') AND NOT is_directory AND ({match})"
     p = {'s': scan_id, **likes}
     n = conn.scalar(f'SELECT count(*) FROM file_changes WHERE {where}', p) or 0
     samples = [_full(a, b) for a, b in conn.all(f'SELECT parent_path, filename FROM file_changes WHERE {where} LIMIT 20', p)] if n else []
-    # report.docx gone and report.docx.xyz appeared beside it: how a rename-in-place encryptor looks, whatever its extension
-    appended = conn.scalar("""SELECT count(*) FROM file_changes a JOIN file_changes d ON d.scan_id = a.scan_id AND d.mount_id = a.mount_id AND d.parent_path = a.parent_path
-                              AND d.change_type = 'deleted' AND a.filename LIKE d.filename || '.%'
-                              WHERE a.scan_id = :s AND a.change_type = 'added' AND NOT a.is_directory""", {'s': scan_id}) or 0
-    return {'ransom_names': n, 'ransom_samples': samples, 'appended_extensions': appended}
+    return {'ransom_names': n, 'ransom_samples': samples, 'appended_extensions': _appended(conn, scan_id)}
 
 
 def changed_paths(conn: Conn, host: str, limit: int = SAMPLE_FILES, skip_compressed: bool = False) -> list[str]:

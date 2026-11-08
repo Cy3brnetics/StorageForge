@@ -917,6 +917,7 @@ function hostMenu(doc) {
     ...(typeof openTask === 'function' && can('plans.edit') ? ['-', { heading: 'Plan a change' }, { label: 'Create a VM here…', run: () => openTask('vm-create', h, {}) },
       { label: 'Install the packages of another host…', run: () => openTask('packages', h, { apps: true }) },
       { label: 'Copy this host to…', run: () => cloneForm(h) }] : []),
+    ...(can('console.open') ? ['-', { label: 'Open console…', run: () => openConsole(h) }] : []),
     '-', { label: 'Copy hostname', run: () => copyText(h) }, { label: 'Retire…', danger: true, run: () => retireHost(h) }];
 }
 async function showBox(host, key) {     // from the graph: the same thing as a box in the topology

@@ -111,6 +111,17 @@ class Build(Db):
         changes.normalize(got['plans']['changes'])
         moves.normalize(got['plans']['files'])
 
+    def test_a_test_copy_keeps_the_targets_logins_and_a_migration_says_it_replaces_them(self):
+        # the Pi run: /home came across with .ssh/authorized_keys, and the VM's own key, the one StorageForge used, was gone
+        test = clone.build(self.conn, 'web-01', 'web-copy', files='all')
+        home = next(s for s in test['plans']['files']['steps'] if s['src']['path'] == '/home')
+        self.assertIn('/*/.ssh/authorized_keys', home['excludes'])
+        self.assertNotIn('logins-replaced', [r['id'] for r in test['risks']])
+        mig = clone.build(self.conn, 'web-01', 'web-copy', files='all', mode='migrate')
+        home = next(s for s in mig['plans']['files']['steps'] if s['src']['path'] == '/home')
+        self.assertNotIn('/*/.ssh/authorized_keys', home['excludes'])
+        self.assertIn('logins-replaced', [r['id'] for r in mig['risks']])
+
     def test_risks_name_what_they_touch(self):
         got = clone.build(self.conn, 'web-01', 'web-copy', files='structure')
         ids = [r['id'] for r in got['risks']]

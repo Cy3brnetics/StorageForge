@@ -17,6 +17,8 @@ PW = 'a long enough password'
 
 # Changes something, runs on a host or touches accounts and keys: asks for a password typed in the last 5 minutes.
 FRESH_PASSWORD = {
+    ('POST', '/api/console/sessions'),          # a shell on a host: the password again for each session
+    ('PUT', '/api/console/settings'),           # whether every session is recorded in full
     ('PUT', '/api/scans/signing'),                # whether unsigned scans are refused
     ('DELETE', '/api/scans/signing/<path:addr>'),  # forgetting a pinned key lets the next signer take its place
     ('POST', '/api/devices'),
@@ -166,6 +168,9 @@ NO_FRESH_PASSWORD = {
     ('POST', '/api/changes/check'),
     ('POST', '/api/clone/preview'),                # reads the index only
     ('POST', '/api/clone'),                        # saves plans, as /api/changes does: running them is what asks
+    ('POST', '/api/console/sessions/<sid>/input'),    # typing into a session already opened with the password
+    ('POST', '/api/console/sessions/<sid>/resize'),
+    ('DELETE', '/api/console/sessions/<sid>'),        # closing a session of your own
     ('PUT', '/api/vm/specs/<name>'),               # a VM spec only fills a step's empty fields when a plan is saved: nothing runs
     ('DELETE', '/api/vm/specs/<name>'),
     ('POST', '/api/deploy/check'),
@@ -218,6 +223,9 @@ NO_FRESH_PASSWORD = {
 }
 # Writes no audit row in its own view, and why that is fine. Anything else must call audit() or git_call().
 AUDITED_ELSEWHERE = {
+    'api_console_input': 'the session is: console.open and console.close, and every keystroke in the recording when it is on',
+    'api_console_resize': 'part of the session, and of its recording',
+    'api_console_close': 'console.close, written as the session ends',
     'api_deploy_access': 'deploy.enroll writes deploy.setup',
     'api_deploy_adopt': 'deploy.adopt goes through deploy.run',
     'api_deploy_check': 'a signed probe: deploy.run writes the row',

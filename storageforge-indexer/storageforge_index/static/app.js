@@ -479,6 +479,7 @@ function renderSummary() {
   $('#summary').replaceChildren(text('h3', 'Nodes'), dl, text('h3', 'Health'), hl,
     ...(broken.length ? [text('h3', 'Needs attention'), ul, ...(more ? [more] : [])] : []),
     ...(S.host && can('hostlogs.view') && typeof hlLinkEl === 'function' ? [text('h3', 'Logs'), hlLinkEl(S.host, `${S.host}'s logs`)] : []),
+    ...(S.host && can('console.open') ? [text('h3', 'Console'), el('div', { class: 'row wrap' }, button('Open console…', () => openConsole(S.host), 'btn ghost sm'))] : []),
     // whole-host steps: a VM on this libvirt host, or another host's packages here (docs/host-migration.md)
     ...(S.host && can('plans.edit') && typeof openTask === 'function' ? [text('h3', 'Plan a change'), el('div', { class: 'row wrap' },
       button('Create a VM here…', () => openTask('vm-create', S.host, {}), 'btn ghost sm'),
@@ -874,6 +875,8 @@ $('#installform').addEventListener('submit', async (ev) => {
 /* ── what this account may do ────────────────────────────────────── */
 let ME = null;
 const can = (perm) => !!ME && ME.permissions.includes(perm);
+// a console opens in a tab of its own (console.html): the terminal takes the window, and several can be open at once
+function openConsole(host) { window.open(`/console#${encodeURIComponent(host)}`, '_blank', 'noopener'); }
 const TAB_NEEDS = { search: 'search.files', changes: 'plans.view', moves: 'plans.view', schedule: 'plans.view', deploy: 'deploy.view',
                     docker: 'services.view', infra: 'workloads.view', git: 'services.view', rebuild: 'configs.view', copies: 'files.browse', malware: 'files.browse', access: 'keys.view',
                     security: 'security.view', jobs: 'scans.view', keys: 'keys.view', hostlogs: 'hostlogs.view' };

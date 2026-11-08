@@ -26,6 +26,8 @@ from .db import Conn
 from .moves import host_slug
 
 LEVELS = ('none', 'structure', 'all')
+# on a test copy the target's own logins stay: the source's would lock out whoever set the copy up, and StorageForge
+KEEP_LOGINS = ['/*/.ssh/authorized_keys', '/*/.ssh/authorized_keys2']
 MODES = ('test', 'migrate')
 # folders a desktop fills with what it can make again
 CACHES = ['.cache/', '.var/app/*/cache/', '.local/share/Steam/', '.local/share/Trash/', '.mozilla/firefox/*/cache2/', '.thumbnails/']
@@ -373,7 +375,7 @@ def build(conn: Conn, source: str, target: str, *, packages: bool = True, skip: 
             if not p.startswith('/'):
                 raise ValueError(f'{p} is not a full path')
             steps.append({'method': 'copy', 'src': {'host': src['name'], 'path': p}, 'dst': {'host': tgt['name'], 'path': p},
-                          'excludes': CACHES if p == '/home' or p.startswith('/home/') else [],
+                          'excludes': (CACHES + (KEEP_LOGINS if mode == 'test' else [])) if p == '/home' or p.startswith('/home/') else [],
                           'options': {'keep_replaced': True, 'dirs_only': files == 'structure', 'one_fs': True}})
         if steps:
             plans['files'] = {'name': f'{title}: files', 'steps': steps}
@@ -383,6 +385,14 @@ def build(conn: Conn, source: str, target: str, *, packages: bool = True, skip: 
                           'beside it as <name>.sf-replaced-<date>. Nothing is deleted' + (f'. Already holding data: {", ".join(busy)}' if busy else '')})
             if files == 'structure':
                 notes.append('structure: folders with their owners and modes, and no files')
+            if any(p == '/home' or p.startswith('/home/') for p in paths):
+                if mode == 'test':
+                    notes.append(f'home folders: each .ssh/authorized_keys of {tgt["name"]} stays as it is, so whoever set the copy up '
+                                 'can still log in, StorageForge too. Private keys in .ssh are copied with the rest')
+                else:
+                    risks.append({'level': 'warn', 'id': 'logins-replaced', 'text': f'home folders: each .ssh/authorized_keys of {src["name"]} replaces the one on '
+                                  f'{tgt["name"]} (kept beside it as authorized_keys.sf-replaced-<date>). The key StorageForge uses for {tgt["name"]} '
+                                  'must be in the one from the source, or scans and the console lose it'})
     if snapshots and before:
         after = _snapshot_tasks(conn, tgt, 'after', stamp, notes, risks)
         if after:

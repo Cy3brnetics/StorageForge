@@ -131,6 +131,7 @@ Both report commands also take `--title`, `--as-of YYYY-MM-DD`, `--kwh-price`, `
 | `vault generate --name N [--type ed25519\|rsa] [--comment C]` | create a key and print its public half |
 | `vault add --name N --key-file F\|- [--passphrase-env VAR]` | import a private key |
 | `vault import-dir DIR` | import every key file in a folder (name = file stem) |
+| `vault bind ... --actions console` | a key for the web console, as that login ([Console](console.md)) |
 | `vault secret-add NAME` | store a secret a plan step reads on a host, such as a Tailscale auth key: one line on stdin |
 | `vault send-secret NAME --host HOST [--user U] [--key FILE] [--ssh-option OPT]...` | write it to `/run/storageforge/secrets/NAME` on the host over SSH (mode 600, in memory, gone at reboot). [Secrets for plan steps](security.md#secrets-for-plan-steps) |
 | `vault list`, `vault pubkey --name N`, `vault remove --name N` | |

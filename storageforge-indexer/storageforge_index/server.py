@@ -205,6 +205,9 @@ MAX_IGNORE = 256 << 10            # ignore lists: up to 2000 paths
 MAX_REPORT = 512 << 10            # a schedule's run report: the runner keeps its output under this
 MAX_JOB_REPORT = 16 << 10         # a job's run line: 2000 characters of message, which JSON escaping can take to 12 KiB
 MAX_LONG_TEXT = 512 << 10         # 200,000 characters saved, which JSON escaping can more than double
+MAX_CONSOLE_INPUT = 96 << 10      # what a console takes at once, a paste of 64 KiB, which base64 makes 86
+# the console page alone may have <style> elements: xterm.js sizes its character cells with one. Its scripts are still this site's only
+CONSOLE_CSP = SECURITY_HEADERS['Content-Security-Policy'].replace("style-src 'self';", "style-src 'self' 'unsafe-inline';")
 # Routes that take more than MAX_BODY, and how much. A validator that accepts more than this never gets to see it, so they go together.
 BODY_LIMITS = {('PUT', '/api/planner/design'): MAX_BLUEPRINT, ('POST', '/api/planner/changes'): MAX_BLUEPRINT,
                ('POST', '/api/planner/versions'): MAX_BLUEPRINT + MAX_BODY, ('POST', '/api/planner/versions/compare'): MAX_BLUEPRINT + MAX_BODY,
@@ -633,6 +636,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         limit = BODY_LIMITS.get((request.method, request.path))
         if request.method == 'POST' and re.fullmatch(r'/api/devices/[^/]+/report', request.path):     # a route with a name in it, as long as the others in the language
             limit = MAX_LONG_TEXT
+        if request.method == 'POST' and re.fullmatch(r'/api/console/sessions/[a-f0-9]{24}/input', request.path):
+            limit = MAX_CONSOLE_INPUT
         if limit:
             request.max_content_length = limit
 
@@ -672,6 +677,12 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if v != v or v in (float('inf'), float('-inf')):        # nan, inf
             raise ValueError(f'{name} must be a number')
         return max(lo, min(v, hi))
+
+    def arg_num_of(body: dict, name: str, default: int, lo: int, hi: int) -> int:
+        try:
+            return max(lo, min(int(body.get(name, default)), hi))
+        except (TypeError, ValueError):
+            return default
 
     def json_body() -> dict:
         # JSON only: a cross-site form cannot send application/json without a CORS preflight, which we never grant.
@@ -719,6 +730,16 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def search_page():
         return page('search.html') if current_user.is_authenticated else to_login()
 
+    @web.get('/console')
+    def console_page():
+        if not current_user.is_authenticated:
+            return to_login()
+        if 'console.open' not in current_user.permissions:
+            return redirect('/')
+        resp = page('console.html')
+        resp.headers['Content-Security-Policy'] = CONSOLE_CSP
+        return resp
+
     @web.get('/enroll')
     def enroll_page():
         return page('enroll.html')
@@ -735,7 +756,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js"):name>')
+    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
@@ -1598,6 +1619,144 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         saved = clone.save(conn(), built, actor())
         core.audit(conn(), actor(), 'clone.save', 'ok', built['target'], {'source': built['source'], 'plans': saved, 'accepted': sorted(b.get('accept') or [])})
         return jsonify(saved=saved, **built), 201
+
+    # ── consoles: a terminal on a host or VM (console.py). Each session is the opener's alone, in the audit log, and
+    # recorded in full when recording is on. The browser long-polls for output: no WebSocket, so a plain proxy works.
+    @web.get('/api/console/hosts/<host>')
+    @login_required
+    def api_console_host(host):
+        from . import console
+        try:
+            rs = console.routes(conn(), host)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        return jsonify(host=host, routes=rs, serial=console.serial_via(conn(), host), viewer=console.viewer(conn(), host),
+                       recording=console.settings(conn())['record'], open=console.mine(current_user.username))
+
+    @web.post('/api/console/sessions')
+    @login_required
+    @password_confirmed
+    def api_console_open():
+        from . import console
+        b = json_body()
+        host, kind, route = str(b.get('host') or ''), str(b.get('kind') or 'ssh'), str(b.get('route') or 'auto')
+        if route not in ('auto', 'lan', 'tailscale'):
+            return jsonify(error='route is auto, lan or tailscale'), 400
+        who = actor()
+
+        def audit(action, detail):       # also from the session's own thread, when it ends: a connection of its own
+            c = core.db.connect()
+            try:
+                core.audit(c, who, action, 'ok', host, detail)
+            finally:
+                c.close()
+        try:
+            s = console.open_session(core.db, conn(), owner=current_user.username, host=host, kind=kind, route=route,
+                                     cols=arg_num_of(b, 'cols', 80, 20, 500), rows=arg_num_of(b, 'rows', 24, 5, 200), audit=audit)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        except (console.ConsoleError, ValueError) as exc:
+            core.audit(conn(), who, 'console.open', 'failed', host, {'kind': kind, 'route': route, 'error': str(exc)[:300]})
+            return jsonify(error=str(exc)), 409
+        return jsonify(s.info()), 201
+
+    def _console(sid):
+        from . import console
+        return console.get(sid, current_user.username)
+
+    @web.get('/api/console/sessions/<sid>/output')
+    @login_required
+    def api_console_output(sid):
+        import base64
+        try:
+            s = _console(sid)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        got = s.read_after(arg_num('after', 0, 0, 2**62), wait=arg_num('wait', 20, 0, 25))
+        resp = jsonify(data=base64.b64encode(got['data']).decode(), next=got['next'], closed=got['closed'], gap=got['gap'])
+        resp.headers['Cache-Control'] = 'no-store'
+        return resp
+
+    @web.post('/api/console/sessions/<sid>/input')
+    @login_required
+    def api_console_input(sid):
+        import base64
+        from . import console
+        try:
+            s = _console(sid)
+            data = base64.b64decode(str(json_body().get('data') or ''), validate=True)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        except ValueError:
+            return jsonify(error='data is base64'), 400
+        if len(data) > 65536:
+            return jsonify(error='at most 64 KiB at a time'), 413
+        try:
+            s.write(data)
+        except console.ConsoleError as exc:
+            return jsonify(error=str(exc)), 409
+        return jsonify(ok=True)
+
+    @web.post('/api/console/sessions/<sid>/resize')
+    @login_required
+    def api_console_resize(sid):
+        try:
+            s = _console(sid)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        b = json_body()
+        s.resize(arg_num_of(b, 'cols', 80, 20, 500), arg_num_of(b, 'rows', 24, 5, 200))
+        return jsonify(ok=True)
+
+    @web.delete('/api/console/sessions/<sid>')
+    @login_required
+    def api_console_close(sid):
+        try:
+            s = _console(sid)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        s.close('closed in the browser')
+        return jsonify(ok=True)
+
+    @web.get('/api/console/settings')
+    @login_required
+    def api_console_settings():
+        from . import console
+        return jsonify(console.settings(conn()))
+
+    @web.put('/api/console/settings')
+    @login_required
+    @password_confirmed
+    def api_console_settings_save():
+        from . import console
+        try:
+            body = json_body()
+            if not isinstance(body.get('record', False), bool):
+                raise ValueError('record')
+            s = console.save_settings(conn(), body, actor())
+        except ValueError:
+            return jsonify(error='record is true or false, keep_days a number of days'), 400
+        core.audit(conn(), actor(), 'console.settings', 'ok', None, s)
+        return jsonify(s)
+
+    @web.get('/api/console/recordings')
+    @login_required
+    def api_console_recordings():
+        from . import console
+        return jsonify(recordings=console.recordings(conn()))
+
+    @web.get('/api/console/recordings/<name>')
+    @login_required
+    def api_console_recording(name):
+        from . import console
+        try:
+            p = console.recording_path(name)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        core.audit(conn(), actor(), 'console.recording_read', 'ok', None, {'name': name})
+        resp = send_from_directory(p.parent, p.name, as_attachment=True, download_name=p.name, mimetype='application/x-asciicast')
+        resp.headers['Cache-Control'] = 'no-store'
+        return resp
 
     @web.post('/api/changes/check')
     @login_required
@@ -2526,4 +2685,14 @@ def serve(db: Database, host: str, port: int, scan_interval: int | None, paralle
             web_core.scan_done.clear()
     threading.Thread(target=warm, name='filemap-warm', daemon=True).start()
     print(f'StorageForge {__version__} listening on http://{host}:{port}', file=sys.stderr, flush=True)
-    waitress_serve(web, host=host, port=port, threads=8, ident='StorageForge', _quiet=True)
+    def reap_consoles():
+        from . import console
+        while True:
+            time.sleep(30)
+            try:
+                console.reap()
+            except Exception:
+                errlog.trace()
+    threading.Thread(target=reap_consoles, name='console-reaper', daemon=True).start()
+    # 8 for the app, and room for the open consoles, each of which holds a thread while it waits for output
+    waitress_serve(web, host=host, port=port, threads=14, ident='StorageForge', _quiet=True)

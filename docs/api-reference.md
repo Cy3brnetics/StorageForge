@@ -328,6 +328,21 @@ See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure
 | GET | `/api/hostconfigs/packages?host=[&against=]` | | the packages a host was given on purpose, its Flatpak and Snap apps and package sources; with `against=`, what each host has that the other lacks |
 | GET | `/api/hostconfigs/packages/script?host=` | | a script that installs them on the machine it runs on, with the same package manager; reports unless `--apply` |
 
+## Console
+
+See [Console](console.md). Each needs `console.open`, except where it says.
+
+| Method | Path | Body | |
+| :--- | :--- | :--- | :--- |
+| GET | `/api/console/hosts/<host>` | | its routes (LAN, Tailscale), its serial console, the virt-viewer command, whether sessions are recorded, your open sessions |
+| POST 🔑 | `/api/console/sessions` | `{host, kind: ssh\|serial, route: auto\|lan\|tailscale, cols, rows}` | opens a session; 409 with why when it can't |
+| GET | `/api/console/sessions/<id>/output` | `?after=N&wait=S` | output after N, base64; waits up to S seconds (at most 25) for some. `closed` once it ended |
+| POST | `/api/console/sessions/<id>/input` | `{data}` | base64, at most 64 KiB at once |
+| POST | `/api/console/sessions/<id>/resize` | `{cols, rows}` | |
+| DELETE | `/api/console/sessions/<id>` | | closes it. Another account's session is 404, admins' included |
+| GET, PUT 🔑 | `/api/console/settings` | `{record, keep_days}` | changing it needs `settings.manage` |
+| GET | `/api/console/recordings`, `/api/console/recordings/<name>` | | `console.recordings`: the list, and one as an asciicast download |
+
 ## Backups
 
 | Method | Path | Body | |

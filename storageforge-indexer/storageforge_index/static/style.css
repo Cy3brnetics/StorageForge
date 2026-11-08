@@ -1195,3 +1195,21 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 .st-warn::before, .st-partial::before { content: "! "; }
 .st-ok::before { content: "✓ "; }
 .sec-pill.sec-critical::before { content: "✕ "; } .sec-pill.sec-warning::before { content: "! "; } .sec-pill.sec-secure::before { content: "✓ "; }
+
+/* the console page (console.html): the terminal takes the window below a one-line bar */
+body.sf-console-page { margin: 0; height: 100vh; display: flex; flex-direction: column; background: var(--sf-bg); }
+.cons-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sf-s3); padding: var(--sf-s2) var(--sf-s4); border-bottom: 1px solid var(--sf-line-2); }
+.cons-bar h1 { font: 600 var(--sf-t4)/1.2 var(--sf-sans); margin: 0 var(--sf-s3) 0 0; }
+.cons-bar select { margin-left: var(--sf-s2); }
+#cons-status[data-kind="err"] { color: var(--sf-bad, #c0392b); }
+#cons-status[data-kind="ok"] { color: var(--sf-good, #2e7d32); }
+.cons-rec { font-weight: 600; padding: 2px var(--sf-s2); border-radius: 4px; border: 1px solid currentColor; color: var(--sf-warn, #b26a00); }
+.cons-help { margin: var(--sf-s1) var(--sf-s4); color: var(--sf-muted); font-size: var(--sf-t5, 0.85rem); }
+.cons-viewer { margin: 0 var(--sf-s4) var(--sf-s2); }
+.cons-viewer code { user-select: all; }
+.cons-term { flex: 1; min-height: 0; padding: var(--sf-s2); background: #000; }
+.cons-admin { margin: 0 var(--sf-s4) var(--sf-s2); }
+.cons-admin summary { cursor: pointer; font-weight: 600; }
+.cons-num { width: 6em; }
+.cons-recs { border-collapse: collapse; margin-top: var(--sf-s2); }
+.cons-recs th, .cons-recs td { text-align: left; padding: 2px var(--sf-s3) 2px 0; }
