@@ -96,8 +96,19 @@ t_services() { local from=$1 timers=$2 init=$3 want=$4 left=$5 here u lvl st n=0
   [[ -n $init ]] || { conflict "$from has no list of services: scan it again with this version"; return 0; }
   [[ $here == "$init" ]] || { conflict "$from starts its services with $init and this host with $here: nothing is enabled"; return 0; }
   while IFS=$'\t' read -r u why || [[ -n ${u:-} ]]; do [[ -n $u ]] && skip "$u: $why"; done < <(printf %s "$left" | base64 -d)
+  local virt rpi=; virt=$(systemd-detect-virt 2>/dev/null || true); [[ $virt == none ]] && virt=
+  grep -qs "Raspberry Pi" /proc/device-tree/model && rpi=1
+  local nv=; for d in /sys/bus/pci/devices/*; do [[ $(cat "$d/vendor" 2>/dev/null) == 0x10de ]] && nv=1; done
   while IFS=$'\t' read -r u lvl || [[ -n ${u:-} ]]; do
     [[ -n $u ]] || continue
+    # what belongs to hardware this machine does not have
+    case ${u%.*} in
+      smartd|smartmontools|fwupd|fwupd-refresh|thermald|tlp|lm_sensors|lm-sensors|sensord|rasdaemon|mcelog|cpupower)
+        [[ -n $virt ]] && { skip "$u: a hardware service, and this is a $virt VM"; continue; } ;;
+      nvidia-*) [[ -n $nv ]] || { skip "$u: for an NVIDIA GPU, which this machine lacks"; continue; } ;;
+      rpi-*|raspi-*|pigpiod|hciuart|bthelper*|rpi-eeprom-update|sshswitch|regenerate_ssh_host_keys|resize2fs_once)
+        [[ -n $rpi ]] || { skip "$u: made for a Raspberry Pi, and this is not one"; continue; } ;;
+    esac
     n=$((n + 1))
     if [[ $init == systemd ]]; then
       st=$(systemctl is-enabled -- "$u" 2>/dev/null || true)

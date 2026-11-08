@@ -338,6 +338,7 @@ def image_for(distro: str | None, version: str | None) -> str | None:
     d, v = (distro or '').lower(), (version or '')
     if d in LIKE_ARCH:
         d = 'arch'
+    d = {'raspbian': 'debian'}.get(d, d)      # Raspberry Pi OS: 64-bit says debian, 32-bit raspbian
     for k, row in IMAGES.items():
         if row[4] == d and (row[5] == v or not row[5] or v.split('.')[0] == row[5]):
             return k

@@ -373,6 +373,11 @@ def build(conn: Conn, source: str, target: str, *, packages: bool = True, skip: 
         notes.append(f'migration: when the copy is checked, stop what writes on {src["name"]}, run the files plan again for what changed, then move the name and address over')
     else:
         notes.append(f'test: the copy has its own name and keys. Jobs, timers and network mounts of {src["name"]} are not copied, so it can\'t write to its backup targets')
+    there = pkglist.for_host(conn, tgt['name']) or {}
+    if pk and pk.get('arch') and there.get('arch') and pk['arch'] != there['arch']:
+        risks.append({'level': 'warn', 'id': 'arch-change', 'text': f'{src["name"]} is {pk["arch"]} and {tgt["name"]} {there["arch"]}: packages are '
+                      f'installed by name, built for {there["arch"]}, but programs not from a package (in /usr/local, /opt or a home folder) '
+                      f'and container images built for {pk["arch"]} are copied as they are and will not run there'})
     if pk and pk.get('foreign'):
         not_carried.append(f'{len(pk["foreign"])} package(s) from no package source (the AUR, a local file): {", ".join(pk["foreign"][:8])}')
     order = {'crit': 0, 'warn': 1, 'note': 2}

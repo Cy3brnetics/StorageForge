@@ -392,6 +392,11 @@ echo '@@pkglist'; (PATH="$PATH:/usr/sbin:/sbin"; . /etc/os-release 2>/dev/null; 
     /^\[/ {out()} tolower($1) ~ /^ *enabled *$/ && $2 ~ /^ *0/ {e = 0} tolower($1) ~ /^ *(baseurl|metalink|mirrorlist) *$/ {v = $0; sub(/^[^=]*= */, "", v); u[++n] = v} END {out()}' "$f"; done
   [ -r /etc/pacman.conf ] && awk '/^\[/ {s = $0; gsub(/[][]/, "", s)} s != "options" && /^ *(Server|Include) *=/ {v = $0; sub(/^[^=]*= */, "", v); print "r\t" s "\t" v}' /etc/pacman.conf
   [ -r /etc/apk/repositories ] && grep -v '^ *#' /etc/apk/repositories | awk '{print "r\t/etc/apk/repositories\t" $0}'
+  printf 'arch\t%s\n' "$(uname -m)"
+  # the x86-64 level this CPU runs (glibc 2.33 and later say), to check packages built for a newer one against
+  for l in /lib64/ld-linux-x86-64.so.2 /usr/lib/ld-linux-x86-64.so.2 /lib/ld-linux-x86-64.so.2; do
+    [ -x "$l" ] && { "$l" --help 2>/dev/null | sed -n 's/^ *x86-64-v\([0-9]\) (supported.*/cpu\t\1/p' | sort | tail -n 1; break; }
+  done
   echo 'complete') | head -n 30000
 echo '@@services'; if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then echo 'init systemd'
   systemctl list-unit-files --state=enabled --no-legend --no-pager --type=service,socket,timer,path 2>/dev/null | head -n 2000 | awk 'NF >= 2 {print "e\t" $1 "\t" $3}'

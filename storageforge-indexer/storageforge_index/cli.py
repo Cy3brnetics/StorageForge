@@ -775,6 +775,12 @@ def cmd_vm(args) -> int:
             params = {'name': name, 'spec': args.spec or ('test-copy' if args.test else 'server'), 'image': image, **_kv(args.set)}
             if 'data_disks' not in params:
                 params['data_disks'] = _data_disks(conn, pk['host'])
+            if pk.get('needs_level') and 'cpu' not in params:
+                # packages built for x86-64-v3 or v4 need those instructions in the VM, which a named CPU model may hide
+                params['cpu'] = 'host-passthrough'
+                print(f'the packages of {pk["host"]} are built for x86-64-v{pk["needs_level"]}: the VM gets the CPU of its host (host-passthrough)')
+            if pk.get('arch') and pk['arch'] != 'amd64':
+                print(f'{pk["host"]} is {pk["arch"]}: the VM is amd64, and its packages come by name, built for it')
             if args.test:
                 params['network'] = steps_vm.ISOLATED
             _vm_key(conn, args, params)

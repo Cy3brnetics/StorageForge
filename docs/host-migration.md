@@ -136,19 +136,22 @@ A disk image is the most faithful copy. It is also the riskiest to build, becaus
 
 ## Hardware differences
 
-These apply whenever one side is physical, and between two different physical machines:
+The package script decides on the target, when it runs, because only the target knows what it is. It reads whether it's a VM (`systemd-detect-virt`), its CPU vendor, its graphics (PCI vendor IDs), whether it's a Raspberry Pi, its architecture and its x86-64 level. It says what it found, and every package it leaves out is listed with the reason.
 
 | What | Going to a VM | Going to hardware |
 | :--- | :--- | :--- |
-| Firmware and microcode | Left out (`linux-firmware`, `intel-ucode`, `amd-ucode`, `*-microcode`) | Chosen from the target's CPU vendor and the devices its scan sees |
-| Graphics drivers | Left out (`nvidia*`, proprietary DKMS modules). The VM gets a virtio GPU and SPICE on loopback | Kept only if the target has that GPU, and otherwise listed |
-| Guest tools | Added (`qemu-guest-agent`, `spice-vdagent`) | Left out |
-| Network interfaces | Renamed: `enp3s0` becomes `enp1s0` | Renamed, matched by order or by MAC address, chosen in the check |
-| Hardware services | `fwupd`, `smartd`, `thermald`, `tlp` and sensor or RAID-controller tools left off | Kept |
-| CPU level | The VM's CPU model must offer what the source's packages need (`x86-64-v3`, Gentoo's `-march=native`) | The target CPU must, too. The check refuses rather than building something that won't boot |
-| Boot | Whatever the cloud image uses | Left to the base install. The copy never touches the bootloader |
+| Kernel and bootloader | Left to the base install (`linux-*` kernels, `kernel-*`, GRUB, shim, systemd-boot, Limine, a Pi's kernel, bootloader and EEPROM tools) | The same: the copy never changes how the target boots |
+| Firmware (`linux-firmware`, `*-firmware`, `firmware-*`) | Left out | Kept |
+| CPU microcode | Left out: the VM's host loads it | Kept for the target's CPU vendor, and left out for the other one |
+| Graphics drivers | NVIDIA, AMD and Intel drivers left out, as a VM has none of those GPUs | Kept only for a GPU the target has |
+| Guest tools | `qemu-guest-agent` added on KVM, and `spice-vdagent` too for a desktop; `open-vm-tools` on VMware | Left out |
+| Hardware tools and services | `smartmontools`, `fwupd`, `thermald`, `tlp`, sensors, `rasdaemon`, `mcelog` and `cpupower` left out, and their services off | Kept |
+| Raspberry Pi packages and services (`raspi-*`, `rpi-*`, `libraspberrypi*`, `pi-bluetooth`, GPIO and camera libraries) | Left out, unless the target is a Pi. `rpi-imager` writes SD cards from any computer, so it stays | The same |
+| CPU level | Packages from repositories built for x86-64-v3 or v4 (CachyOS) are refused on a CPU that lacks it, before anything is installed. The plan check says so too when the target's scan shows its level, and `vm clone` gives such a VM the host's CPU (`host-passthrough`) | The same |
+| Architecture | Across architectures (a Pi's arm64 or armhf onto amd64), packages come by name, built for the target; names tied to the source's architecture (`libc6:arm64`) lose the tag. Programs not from a package (`/usr/local`, `/opt`, home folders) and container images built for the source's architecture are copied as they are and won't run: that's a warning in **Data at risk** | The same |
+| Network interfaces | Not renamed: the copy keeps the target's own network setup, and never carries the source's | The same |
 
-The lists are a starting point, and the check shows each package it leaves out, so nothing is dropped without a word.
+Raspberry Pi OS reports itself as `debian` (64-bit) or `raspbian` (32-bit), and `vm clone` starts both from the Debian image of the same release.
 
 ## Test mode: a copy that must not act like the original
 
@@ -295,7 +298,7 @@ Phase 1 reads apt, dnf and yum, zypper, pacman and apk. The rest fall into three
 | 3a | **Services:** the scan records enabled systemd units and OpenRC services, and the `services` step starts them on the copy | Built, lab-tested on systemd (Leap 16) and OpenRC (Alpine 3.24) |
 | 3d | **Not built:** LUKS (its key is yours: by hand), other `/etc` files | Planned |
 | 3b | **AUR and local builds:** cache, `bacman`, an AUR build at the matching commit; Arch Linux Archive pinning; derivative repositories and CPU levels | Planned |
-| 3c | **Hardware differences:** firmware, drivers, guest tools, interface renames and CPU level, each way | Planned |
+| 3c | **Hardware differences:** kernels and bootloaders, firmware, microcode, GPU drivers, guest tools, hardware tools and services, Raspberry Pi packages, the CPU level and the architecture, decided on the target | Built. Lab-tested from real hardware (CachyOS, NVIDIA, x86-64-v3 packages) onto an Arch VM, with the CPU-level refusal on a v2 CPU. Going to hardware is unit-tested only |
 | 4 | **User files:** none, structure, chosen folders or everything, through Moves with `dirs_only` and `keep_replaced` | Built; `all` lab-tested and verified by checksum |
 | 4b | **Snapshots and risks:** before and after snapshots, the Data at risk list with its ticks and typed name, and `accept` in the API. Not built: holds on the clone snapshots, the before/after "what changed" report, `--accept` in the scripts | Built in part, **not lab-tested** |
 | 5 | **Test and migration modes**: the isolation above, and cutover | Planned |
@@ -330,6 +333,11 @@ On 2026-11-07, against a lab build of `sf-ctl`, `sf-ubuntu`, `sf-jammy`, `sf-boo
   4. With `chronyd` and `fstrim.timer` turned off on the VM, a test copy started `chronyd` and left the timer off. A migration also enabled the timer.
   5. On a new Alpine 3.24 VM, the OpenRC path added `chronyd` and `local` to the default runlevel and started them, installed the apk packages and added the accounts. A second run found nothing to do.
 
+- **A fourth round, for hardware differences:**
+  1. The package list of this workstation (CachyOS on a Ryzen with an NVIDIA GPU, 357 packages from `cachyos-v3`) was run in report mode on a new Arch VM.
+  2. It left out 13 kernel and boot packages, the NVIDIA and AMD drivers, the firmware, the microcode and the hardware tools. It added `spice-vdagent` for the desktop, and confirmed the CPU runs x86-64-v3.
+  3. With the VM's CPU model set to Nehalem (x86-64-v2), it refused before installing anything.
+
 Bugs it found, all fixed:
 - bash before 5.2 couldn't parse the `vm-create` step. A test now looks for that pattern in every script.
 - `--forward-agent` never reached the host in Moves, change-plan, task and share scripts, because the shared SSH connection was opened without the agent.
@@ -348,6 +356,8 @@ Bugs it found, all fixed:
 - The Leap Minimal image's `kernel-default-base` has no md driver. The step now says so, and how to fix it, before touching a disk.
 - The copy tried to install the source's kernel, which needs the target's own removed. Kernels and bootloaders are now left to the base install.
 - A report on a target whose root isn't btrfs called its subvolume steps conflicts, because the btrfs they go on is only mounted by an earlier step.
+- The package script stopped at the first firmware package on real hardware: a test that kept the package ended the classifying function with a failure, which `set -e` treats as fatal.
+- `rpi-imager` was taken for a Pi-only package.
 - `vm-create`: Leap 16 doesn't boot without a video device, so every serial-console VM now has one with no display. On Alpine, whose OpenSSH has no PAM, the locked account refused the SSH key and the image has no `sudo`. The account now has a password hash that matches no password, made for each VM, and cloud-init installs `sudo` on Alpine.
 
 ## The package list (phase 1)

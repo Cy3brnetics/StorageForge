@@ -76,6 +76,16 @@ def _check(conn, c, h, p, say):
     if not here:
         say('note', f'{h["name"]} has no package list yet: the script finds what it lacks when it runs')
         return
+    if src.get('arch') and here.get('arch') and src['arch'] != here['arch']:
+        say('warn', f'{src["host"]} is {src["arch"]} and {h["name"]} {here["arch"]}: packages come by name, built for {here["arch"]}. '
+                    'Programs not from a package (in /usr/local, /opt or a home folder) and container images built for '
+                    f'{src["arch"]} will not run there')
+    need, has = src.get('needs_level'), here.get('cpu_level')
+    if need and here.get('arch') in (None, 'amd64') and has and has < need:
+        say('crit', f'the packages of {src["host"]} are built for x86-64-v{need}, and {h["name"]} runs x86-64-v{has}: they would not start. '
+                    'Copy onto a newer CPU, or give the VM the CPU of its host (host-passthrough)')
+    elif need and not has:
+        say('note', f'the packages of {src["host"]} are built for x86-64-v{need}: the script checks the CPU of {h["name"]} when it runs')
     cmp = pkglist.compare(src, here)
     if not cmp['comparable']:
         say('crit', f'{src["host"]} uses {src.get("pm")} and {h["name"]} {here.get("pm")}: package names differ, so nothing would be installed')

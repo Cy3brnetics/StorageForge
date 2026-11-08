@@ -88,6 +88,20 @@ def _ostree(b64: str, manual: set, foreign: set) -> str | None:
     return ref if isinstance(ref, str) and len(ref) <= 300 and not _CONTROL.search(ref) else None
 
 
+# uname -m, as one name per architecture: a Raspberry Pi is arm64 (64-bit OS) or armhf (32-bit), whatever its board says
+ARCH = {'x86_64': 'amd64', 'amd64': 'amd64', 'aarch64': 'arm64', 'arm64': 'arm64', 'armv7l': 'armhf', 'armv6l': 'armhf',
+        'armv8l': 'armhf', 'i686': 'i386', 'i586': 'i386', 'riscv64': 'riscv64', 'ppc64le': 'ppc64el', 's390x': 's390x'}
+# package repositories built for a newer x86-64 level than the baseline: their packages do not run on an older CPU
+LEVEL_REPOS = [(re.compile(r'cachyos(-core|-extra)?-v4|cachyos-znver4|-x86-64-v4|x86_64_v4'), 4),
+               (re.compile(r'cachyos(-core|-extra)?-v3|-x86-64-v3|x86_64_v3'), 3)]
+
+
+def needs_level(repos) -> int | None:
+    """The x86-64 level a host's packages need, from the names and addresses of its package repositories."""
+    got = [lvl for r in repos for pat, lvl in LEVEL_REPOS if pat.search(f'{r.get("where", "")} {r.get("url", "")}')]
+    return max(got) if got else None
+
+
 def parse(text: str) -> dict:
     """The @@pkglist section -> what to install elsewhere. 'basis' says how sure the list is: 'manual' is what was
     installed on purpose, 'all' every package (dnf had no cache or history to tell them apart)."""
@@ -96,11 +110,17 @@ def parse(text: str) -> dict:
     manual, every, auto, foreign, holds, backports = set(), set(), set(), set(), set(), set()
     flatpak, snap, repos, versions = {}, {}, [], {}
     from_history = complete = False
-    mode, image_ref = 'normal', None
+    mode, image_ref, cpu, arch = 'normal', None, None, None
     for raw in text.splitlines():
         line = raw.rstrip('\r')
         if line == 'complete':
             complete = True
+            continue
+        if line.startswith('arch\t'):
+            arch = ARCH.get(line[5:].strip()) or arch
+            continue
+        if line.startswith('cpu\t'):
+            cpu = int(line[4:]) if line[4:].strip() in ('1', '2', '3', '4') else cpu
             continue
         if line.startswith('mode '):
             mode = line[5:].strip() if line[5:].strip() in MODES else mode
@@ -161,6 +181,7 @@ def parse(text: str) -> dict:
             'foreign_versions': {k: v for k, v in versions.items() if k in manual}, 'flatpak': [{'id': k, 'origin': v} for k, v in sorted(flatpak.items())],
             'snap': [{'name': k, 'confinement': v} for k, v in sorted(snap.items())],
             'repos': [dict(t) for t in dict.fromkeys(tuple(r.items()) for r in repos)],
+            'arch': arch, 'cpu_level': cpu, 'needs_level': needs_level(repos),
             'complete': complete and len(names) <= MAX_NAMES}
 
 
@@ -273,21 +294,81 @@ for p in "${BACKPORTS[@]+"${BACKPORTS[@]}"}"; do BP[$p]=1; done
 BPW=()
 while IFS= read -r p; do [[ -n $p ]] && HAVE[$p]=1; done < <(installed "$M")
 for p in "${SKIP[@]+"${SKIP[@]}"}"; do SKIPPED[$p]=1; done
-WANT=() N=0 LIBS=()
+# what this machine is, which decides what of the list belongs on it: a VM or real hardware, its CPU, its graphics
+VIRT=$(systemd-detect-virt 2>/dev/null || true); [[ $VIRT == none ]] && VIRT=
+if [[ -z $VIRT ]] && ! command -v systemd-detect-virt >/dev/null && grep -qw hypervisor /proc/cpuinfo 2>/dev/null; then VIRT=vm; fi
+VENDOR=$(awk -F": " "/^vendor_id/ {print \$2; exit}" /proc/cpuinfo 2>/dev/null || true)
+HERE_RPI=; grep -qs "Raspberry Pi" /proc/device-tree/model && HERE_RPI=1
+gpu_has() { local f; for f in /sys/bus/pci/devices/*; do [[ $(cat "$f/class" 2>/dev/null) == 0x03* && $(cat "$f/vendor" 2>/dev/null) == "$1" ]] && return 0; done; return 1; }
+GPUS=; gpu_has 0x10de && GPUS+=" nvidia"; gpu_has 0x1002 && GPUS+=" amd"; gpu_has 0x8086 && GPUS+=" intel"
+case $(uname -m) in x86_64) HERE_ARCH=amd64 ;; aarch64) HERE_ARCH=arm64 ;; armv6l|armv7l|armv8l) HERE_ARCH=armhf ;; i?86) HERE_ARCH=i386 ;; *) HERE_ARCH=$(uname -m) ;; esac
+info "this host: ${VIRT:+a $VIRT VM, }$HERE_ARCH${VENDOR:+, $VENDOR}${GPUS:+, graphics:$GPUS}${HERE_RPI:+, a Raspberry Pi}"
+ARCH_DIFF=0
+if [[ -n $SRC_ARCH && $SRC_ARCH != "$HERE_ARCH" ]]; then
+  ARCH_DIFF=1
+  info "$SRC_HOST is $SRC_ARCH and this host $HERE_ARCH: packages come by name, built for this machine. Programs not from a package (in /usr/local, /opt or a home folder) and container images built for $SRC_ARCH will not run here"
+fi
+here_level() { local l; for l in /lib64/ld-linux-x86-64.so.2 /usr/lib/ld-linux-x86-64.so.2 /lib/ld-linux-x86-64.so.2; do
+  [[ -x $l ]] && { "$l" --help 2>/dev/null | sed -n "s/^ *x86-64-v\([0-9]\) (supported.*/\1/p" | sort | tail -n 1; return; }; done; }
+if [[ -n $SRC_NEEDS_LEVEL && $HERE_ARCH == amd64 ]]; then
+  lvl=$(here_level)
+  if [[ -z $lvl ]]; then info "the packages of $SRC_HOST are built for x86-64-v$SRC_NEEDS_LEVEL, and this glibc does not say what this CPU runs"
+  elif ((lvl < SRC_NEEDS_LEVEL)); then
+    conflict "the packages of $SRC_HOST come from repositories built for x86-64-v$SRC_NEEDS_LEVEL, and this CPU runs x86-64-v$lvl: they would not start. Copy onto a newer CPU, or give the VM the CPU of its host (host-passthrough)"
+    exit 1
+  else ok "this CPU runs x86-64-v$lvl, as the packages of $SRC_HOST need (v$SRC_NEEDS_LEVEL)"; fi
+fi
+hw_why() { # package -> WHY it stays off this machine, or WHY empty
+  WHY=
+  case $1 in
+    rpi-imager) ;;     # writes SD cards from any computer
+    raspi-*|rpi-*|*raspberrypi*|pi-bluetooth|rpicam-apps*|libcamera-apps*|python3-rpi*|python3-picamera*|pigpio*|wiringpi)
+      [[ -n $HERE_RPI ]] || WHY="made for a Raspberry Pi, and this is not one" ;;
+    linux-firmware*|*-firmware|firmware-*|*-firmware-*) [[ -n $VIRT ]] && WHY="firmware for hardware a VM does not have" ;;
+    intel-ucode|amd-ucode|intel-microcode|amd64-microcode|microcode_ctl|ucode-intel|ucode-amd)
+      if [[ -n $VIRT ]]; then WHY="CPU microcode: the host of the VM loads it"
+      elif [[ $1 == *intel* && $VENDOR != GenuineIntel ]]; then WHY="microcode for Intel, and this CPU is ${VENDOR:-unknown}"
+      elif [[ $1 == *amd* && $VENDOR != AuthenticAMD ]]; then WHY="microcode for AMD, and this CPU is ${VENDOR:-unknown}"; fi ;;
+    qemu-guest-agent|spice-vdagent*|open-vm-tools*|virtualbox-guest*|hyperv-daemons|hyperv-tools|xe-guest-utilities)
+      [[ -z $VIRT ]] && WHY="a guest tool, and this is real hardware" ;;
+    smartmontools|fwupd|fwupd-*|thermald|tlp|tlp-*|lm_sensors|lm-sensors|rasdaemon|mcelog|cpupower|powertop)
+      [[ -n $VIRT ]] && WHY="a hardware tool, with no hardware to look after on a VM" ;;
+    *nvidia*|cuda|cuda-*) [[ $GPUS == *nvidia* ]] || WHY="for an NVIDIA GPU, which this machine lacks" ;;
+    *radeon*|*amdgpu*|rocm*|xf86-video-ati) [[ $GPUS == *amd* ]] || WHY="for an AMD GPU, which this machine lacks" ;;
+    vulkan-intel|intel-media-driver|xf86-video-intel|intel-gpu-tools|libva-intel*|intel-compute-runtime) [[ $GPUS == *intel* ]] || WHY="for an Intel GPU, which this machine lacks" ;;
+  esac
+  return 0     # under set -e: a test that keeps the package must not end the script
+}
+WANT=() N=0 LIBS=() BOOTS=() HWN=0
+declare -A HWBY=()
 LIBNAME='^lib.+[0-9](t64)?$|^gcc-[0-9]+-base$'
-# the kernel and the bootloader are the base install's: a copy never changes how the target boots
-BOOTNAME='^(kernel|kernel-[a-z0-9.-]+|linux|linux-(lts|zen|hardened|rt|virt|image|generic|virtual|kvm|headers|modules|signed|aws|azure|gcp|oem|raspi)[a-z0-9.+-]*|grub[a-z0-9.-]*|shim[a-z0-9-]*|systemd-boot[a-z-]*|syslinux|extlinux|limine|refind)$'
-BOOTS=()
+# the kernel and the bootloader are the base install's, and so are a Raspberry Pi's firmware and EEPROM: a copy never
+# changes how the target boots
+BOOTNAME='^(kernel|kernel-[a-z0-9.-]+|linux(-[a-z0-9.+]+)*|grub[a-z0-9.-]*|shim[a-z0-9-]*|systemd-boot[a-z-]*|syslinux|extlinux|limine|refind|raspberrypi-(kernel|bootloader|sys-mods)[a-z0-9-]*|raspi-firmware|rpi-eeprom|rpi-update|u-boot[a-z0-9.-]*|flash-kernel)$'
+NOTBOOT='^linux-(firmware.*|api-headers|tools.*|libc-dev|sound-base|base)$'
+DESKTOP=0
 for p in "${PKGS[@]+"${PKGS[@]}"}"; do
+  ((ARCH_DIFF)) && p=${p%:"$SRC_ARCH"}     # tied to the architecture of the source: here, the one of this host
   [[ -n ${SKIPPED[$p]:-} ]] && { skip "$p (--skip)"; continue; }
-  if [[ $p =~ $BOOTNAME && -z ${HAVE[$p]:-} ]]; then BOOTS+=("$p"); continue; fi
+  [[ $p =~ ^(xorg-server|xserver-xorg|xserver-xorg-core|gnome-shell|plasma-workspace|plasma-desktop|xfce4-session|sddm|gdm|gdm3|lightdm|labwc|wayfire|lxsession)$ ]] && DESKTOP=1
+  if [[ $p =~ $BOOTNAME && ! $p =~ $NOTBOOT && -z ${HAVE[$p]:-} ]]; then BOOTS+=("$p"); continue; fi
+  hw_why "$p"
+  if [[ -n $WHY && -z ${HAVE[$p]:-} ]]; then HWBY[$WHY]+=" $p"; HWN=$((HWN + 1)); continue; fi
   # a library named for its version, from another release: the packages that need it bring the version this release has
   if ((!SAME)) && [[ $M == apt-get && $p =~ $LIBNAME && -z ${HAVE[$p]:-} ]]; then LIBS+=("$p"); continue; fi
   N=$((N + 1)); [[ -n ${HAVE[$p]:-} ]] && continue
   if [[ $M == apt-get && -n ${BP[$p]:-} ]]; then BPW+=("$p"); else WANT+=("$p"); fi
 done
-ok "$((N - ${#WANT[@]} - ${#BPW[@]})) of $N already installed"
+# what a VM needs that the source did not: its guest agent, and on a desktop the clipboard and screen size agent
+ADDS=() ADDED=0
+case $VIRT in kvm|qemu) ADDS+=(qemu-guest-agent); ((DESKTOP)) && ADDS+=(spice-vdagent) ;; vmware) ADDS+=(open-vm-tools) ;; esac
+for p in "${ADDS[@]+"${ADDS[@]}"}"; do
+  [[ -n ${HAVE[$p]:-} || -n ${SKIPPED[$p]:-} ]] && continue
+  WANT+=("$p"); ADDED=$((ADDED + 1)); info "added for this $VIRT VM: $p"
+done
+ok "$((N - ${#WANT[@]} - ${#BPW[@]} + ADDED)) of $N already installed"
 ((${#BOOTS[@]})) && skip "${#BOOTS[@]} kernel or boot package(s) left to the base install here, which the copy never changes: ${BOOTS[*]}"
+for why in "${!HWBY[@]}"; do skip "left out, $why:${HWBY[$why]}"; done
 ((${#LIBS[@]})) && skip "${#LIBS[@]} versioned librar(ies) of $SRC_DISTRO $SRC_VERSION left out, as what needs them brings its own: ${LIBS[*]}"
 if ((${#WANT[@]})) && [[ $M == apt-get ]]; then
   ((APPLY)) && apt-get -o DPkg::Lock::Timeout=120 update -qq 2>&1 | tail -n 3
@@ -404,5 +485,6 @@ def script(pk: dict, host: str, when: str = '') -> str:
             + _array('HOLDS', [p for p in pk.get('holds') or [] if _NAME.fullmatch(p)])
             + _array('BACKPORTS', [p for p in pk.get('backports') or [] if _NAME.fullmatch(p)])
             + f'SRC_MODE={shlex.quote(pk.get("mode") or "normal")} SRC_IMAGE={shlex.quote(pk.get("image_ref") or "")} SRC_BASE={int(pk.get("base_packages") or 0)}\n'
+            + f'SRC_ARCH={shlex.quote(pk.get("arch") or "")} SRC_NEEDS_LEVEL={int(pk.get("needs_level") or 0) or ""}\n'
             + _array('REPOS', [f'{r["where"]}: {r["url"]}' for r in pk.get('repos') or []]))
     return head + BODY.replace('@@REMOTE@@', REMOTE).replace('@@HELPERS@@', HELPERS)
