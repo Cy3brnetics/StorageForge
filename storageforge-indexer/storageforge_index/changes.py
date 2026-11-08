@@ -33,7 +33,7 @@ MIN_DEVICES = {'single': 1, 'dup': 1, 'raid1': 2, 'raid1c3': 3, 'raid1c4': 4, 'r
 MKFS = ['ext4', 'xfs', 'btrfs', 'vfat', 'exfat']
 MOUNT_FS = ['btrfs', 'ext4', 'xfs', 'vfat', 'exfat', 'ntfs3', 'f2fs', 'nfs4', 'nfs', 'cifs', 'zfs', 'none']
 LABEL_MAX = {'ext2': 16, 'ext3': 16, 'ext4': 16, 'xfs': 12, 'btrfs': 255, 'vfat': 11, 'exfat': 15}
-OS_MOUNTS = ('/', '/boot', '/boot/efi', '/efi', '/usr', '/var')
+OS_MOUNTS = ('/', '/boot', '/boot/efi', '/boot/firmware', '/efi', '/usr', '/var')     # /boot/firmware: a Raspberry Pi's boot partition
 ZPOOL_LEVELS = ['stripe', 'mirror', 'raidz1', 'raidz2', 'raidz3']
 ZPOOL_MIN = {'stripe': 1, 'mirror': 2, 'raidz1': 3, 'raidz2': 4, 'raidz3': 5}
 
@@ -1153,7 +1153,10 @@ try() { "$@" || { conflict "failed: $*"; return 1; }; }
 # later MSG: something a task needs is not there yet. --apply: a conflict. The report can't know whether an earlier
 # task in this plan creates it, so it says so instead of failing
 later() { if ((APPLY)); then conflict "$*"; else missing "after the tasks before it: $*"; fi; }
-need() { command -v "$1" >/dev/null || { conflict "$1 is not installed (package ${2:-$1})"; return 1; }; }
+need() { command -v "$1" >/dev/null && return 0
+  # a report: an earlier step of the plan installs it (a copy installs the tools its storage steps run)
+  if ((!APPLY)) && [[ " ${PLANNED_TOOLS:-} " == *" ${2:-$1} "* ]]; then later "$1 is installed by an earlier step (package ${2:-$1})"; return 1; fi
+  conflict "$1 is not installed (package ${2:-$1})"; return 1; }
 esc() { local s=${1// /\\040}; printf '%s' "${s//$'\t'/\\011}"; }
 fstab_line() { awk -v t="$(esc "$1")" '!/^[[:space:]]*#/ && $2 == t' /etc/fstab; }
 fstab_backup() { FSTAB_BAK=/etc/fstab.storageforge-$STAMP; [[ -e $FSTAB_BAK ]] || cp -a /etc/fstab "$FSTAB_BAK"; }
@@ -1988,3 +1991,4 @@ from . import steps_vm  # noqa: E402,F401  (vm-create, after steps_infra, which 
 from . import steps_clone  # noqa: E402,F401  (packages from another host)
 from . import steps_md  # noqa: E402,F401  (mdadm arrays)
 from . import steps_services  # noqa: E402,F401  (services of another host)
+from . import steps_tailscale  # noqa: E402,F401  (joining a tailnet)

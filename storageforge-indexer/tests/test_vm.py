@@ -253,6 +253,7 @@ case "$*" in *SHA512SUMS*) echo "$SUM  debian-13-genericcloud-amd64.qcow2" ;; *)
         self.run_fn(True)       # openSUSE Leap 16 does not boot without one (found in the lab)
         install = next(l for l in self.log().splitlines() if l.startswith('virt-install'))
         self.assertIn('--graphics none --video vga --console pty,target_type=serial', install)
+        self.assertIn('--channel unix,target.type=virtio,target.name=org.qemu.guest_agent.0', install)     # or the agent never starts
 
     def test_no_sudo_leaves_it_out(self):
         self.run_fn(True, sudo='none')
@@ -340,7 +341,7 @@ class Clone(Db):
         self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json) VALUES ('web-01-copy', 'w', 'scan', :i)",
                           {'i': json.dumps({'pkglist': pkglist.parse('distro\tubuntu\t24.04\npm apt-get\nm\tvim\ncomplete')})})
         texts = [it['text'] for it in changes.check(self.conn, changes.normalize(pk))['tasks'][0]['items']]
-        self.assertIn('1 to install: nginx', texts)
+        self.assertTrue(any(t.startswith('1 not installed on purpose on web-01-copy') and t.endswith(': nginx') for t in texts), texts)
         script = changes.script(self.conn, pk)
         sh = Path(self.tmp) / 'pk.sh'
         sh.write_text(script)
@@ -353,13 +354,13 @@ class Clone(Db):
         from storageforge_index import pkglist, steps_clone
         body = base64.b64encode(pkglist.script(pkglist.parse('pm pacman\nm\tsf-surely-not-installed\ncomplete'), 'web-01', 'now').encode()).decode()
         here = 'here_pm() { echo pacman; }'
-        out = subprocess.run(['bash', '-c', HARNESS + 'APPLY=0\n' + steps_clone.BASH + f'\nt_packages web-01 "" 1 {shlex.quote(body)}\nexit $((PROBLEMS > 0))\n'],
+        out = subprocess.run(['bash', '-c', HARNESS + 'APPLY=0\n' + steps_clone.BASH + f'\nt_packages web-01 "" 1 "" {shlex.quote(body)}\nexit $((PROBLEMS > 0))\n'],
                              capture_output=True, text=True, timeout=60, env={**os.environ, 'PATH': f'{Path(self.tmp)}:{os.environ["PATH"]}'})
         if shutil.which('pacman'):
             self.assertIn('would install the packages of web-01', out.stdout, out.stdout + out.stderr)
         else:
             self.assertIn('package names differ', out.stdout)
-        out = subprocess.run(['bash', '-c', HARNESS + 'APPLY=0\n' + steps_clone.BASH + '\nt_packages web-01 "" 1 ""\nexit $((PROBLEMS > 0))\n'], capture_output=True, text=True)
+        out = subprocess.run(['bash', '-c', HARNESS + 'APPLY=0\n' + steps_clone.BASH + '\nt_packages web-01 "" 1 "" ""\nexit $((PROBLEMS > 0))\n'], capture_output=True, text=True)
         self.assertIn('has no package list', out.stdout)
 
     def test_the_routes(self):

@@ -20,11 +20,13 @@ FIELDS = [
     F('from_host', 'host', 'Install the packages of', required=True, placeholder='web-01'),
     F('skip', 'names', 'Leave out these packages', placeholder='steam,nvidia-dkms'),
     F('apps', 'bool', 'Flatpak and Snap apps too', default=True),
+    F('also', 'names', 'And these, which later steps need', placeholder='parted,mdadm', added=True),
 ]
-ARGS = ('from_host', 'skip', 'apps')
+ARGS = ('from_host', 'skip', 'apps', 'also')
 
 BASH = r"""
-t_packages() { local from=$1 skip=$2 apps=$3 body=$4 f rc=0 out s args=()
+t_packages() { local from=$1 skip=$2 apps=$3 also=$4 body=$5 f rc=0 out s args=()
+  ((APPLY)) || PLANNED_TOOLS+=" ${also//,/ }"     # a report: later steps that need these find them planned
   [[ -n $body ]] || { conflict "$from has no package list: scan it again with this version of StorageForge"; return 0; }
   f=$(mktemp) || { conflict "could not make a temporary file"; return 0; }
   if ! base64 -d <<<"$body" >"$f" 2>/dev/null; then rm -f "$f"; conflict "the package script inside this one is damaged"; return 0; fi
@@ -35,6 +37,7 @@ t_packages() { local from=$1 skip=$2 apps=$3 body=$4 f rc=0 out s args=()
   rm -f "$f"
   sed 's/^/    /' <<<"$out"
   if ((rc)); then conflict "the packages of $from: problems above"
+  elif ((APPLY)) && grep -q 'missing' <<<"$out"; then missing "the packages of $from are installed, less some this host cannot have (above)"
   elif ((APPLY)); then ok "the packages of $from are installed"
   elif grep -q 'missing' <<<"$out"; then missing "would install the packages of $from that this host lacks (above)"
   else ok "this host has the packages of $from"; fi
@@ -47,7 +50,8 @@ def _script_for(conn, t) -> str:
         pk = pkglist.for_host(conn, t['params']['from_host'])
     except LookupError:
         return ''
-    return pkglist.script(pk, pk['host'], pk.get('collected_at') or '') if pk else ''
+    also = [x for x in (t['params'].get('also') or '').split(',') if x]
+    return pkglist.script(pk, pk['host'], pk.get('collected_at') or '', also=also) if pk else ''
 
 
 def _args(conn, t) -> list[str]:
@@ -94,8 +98,11 @@ def _check(conn, c, h, p, say):
         say('warn', f'{src["host"]} is {src.get("distro")} {src.get("version") or ""} and {h["name"]} {here.get("distro")} {here.get("version") or ""}: '
                     'some names may not exist there, and each is reported')
     want = [n for n in cmp['only_a'] if n not in skip]
+    # the scans list what each host installed on purpose: a name the target has as a dependency counts as missing here,
+    # and the script, which reads every installed package, finds it there
     say('ok' if not want else 'note', f'{h["name"]} has all {cmp["both"]} of them' if not want else
-        f'{len(want)} to install: {", ".join(want[:12])}{" …" if len(want) > 12 else ""}')
+        f'{len(want)} not installed on purpose on {h["name"]} (the script checks every installed package when it runs): '
+        f'{", ".join(want[:12])}{" …" if len(want) > 12 else ""}')
     if src.get('foreign'):
         say('note', f'{len(src["foreign"])} came from no package source (the AUR, or a file) and are listed, not installed')
     if src.get('repos'):

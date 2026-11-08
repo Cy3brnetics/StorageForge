@@ -246,7 +246,14 @@ python3 -m unittest discover -s tests -v
 docker build --target test .
 ```
 
-`.forgejo/workflows/ci.yml` runs the suite on both databases, plus ruff and shellcheck, on every push. It needs Forgejo Actions and a runner.
+`.forgejo/workflows/ci.yml` runs the suite on both databases, plus ruff and shellcheck, a Trivy scan of the image and a [zizmor](https://docs.zizmor.sh) audit of the workflows themselves, on every push. It needs Forgejo Actions and a runner. `.github/workflows/ci.yml` is the same for GitHub.
+
+The workflows follow what zizmor checks for:
+- **Actions are pinned to commit SHAs**, with the version in a comment, so a moved or hijacked tag can't run in CI. Dependabot (`.github/dependabot.yml`) raises the bumps on GitHub. Copy them into the Forgejo file, which has no Dependabot.
+- **Checkout keeps no token** (`persist-credentials: false`).
+- **The token is read-only** (`permissions: {}` for the workflow, `contents: read` per job).
+
+zizmor itself is pinned (1.32.0), so a release with new audits can't fail an unchanged workflow: raise it on purpose. To run it locally: `pipx run zizmor==1.32.0 --offline .github/workflows .forgejo/workflows`.
 
 `tests/test_platform.py` covers the vault, bindings, the audit chain, a real ephemeral `ssh-agent`, the graph and canvas, and the HTTP API with auth and CSP. `tests/test_indexer.py` covers units, patterns, the stream parser, pool math, mount planning, payload parsers, reports and real local scans. `tests/test_tasks.py` covers storage tasks and their scripts.
 

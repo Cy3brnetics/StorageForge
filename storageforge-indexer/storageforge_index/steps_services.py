@@ -35,7 +35,8 @@ NEVER = [  # (pattern, why): the machine's own, not what it does
 # OpenRC runlevels the base system fills: only default and the operator's own come across
 BASE_RUNLEVELS = ('sysinit', 'boot', 'shutdown', 'nonetwork')
 OUTWARD = (r'(rsnapshot|borg|borgmatic|restic|rclone|syncoid|zrepl|znapzend|duplicati|duplicity|syncthing|unison|lsyncd|'
-           r'urbackup|bacula|bareos|amanda|kopia|duplicacy|postfix|exim|sendmail|msmtp|nullmailer|ssmtp|opensmtpd|fetchmail|offlineimap)')
+           r'urbackup|bacula|bareos|amanda|kopia|duplicacy|postfix|exim|sendmail|msmtp|nullmailer|ssmtp|opensmtpd|fetchmail|offlineimap|'
+           r'netbird|tailscaled|zerotier-one|nebula|headscale|wg-quick@|openvpn|cloudflared|ngrok|frpc)')     # VPNs and tunnels: they join networks of their own
 SKIP = [(re.compile(p), why) for p, why in NEVER]
 SENDS = re.compile(OUTWARD)
 

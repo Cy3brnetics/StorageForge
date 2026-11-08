@@ -256,7 +256,10 @@ def subtree(conn: Conn, mount: dict, path: str) -> dict:
     where, p = _subtree_sql(path, mount['target'])
     n, size, files = conn.all(f"""SELECT count(*), coalesce(sum(f.file_size_bytes), 0), coalesce(sum(CASE WHEN f.is_directory THEN 0 ELSE 1 END), 0)
                                   FROM file_records f WHERE {where}""", {'m': mount['id'], **p})[0]
-    return {'entries': n, 'bytes': size, 'files': files}
+    # the index has a row per name, so a file with hard links counts once per link (rsnapshot backups: 277 GiB of names
+    # on a Pi using 146 GiB). Nothing on one filesystem takes more room to copy than the filesystem uses
+    used = mount.get('used') or 0
+    return {'entries': n, 'bytes': min(size, used) if used else size, 'files': files}
 
 
 def browse(conn: Conn, host_name: str, path: str = '/') -> dict:

@@ -58,10 +58,30 @@ def _root(h: dict) -> dict | None:
     return next((m for m in h['mounts'] if m['target'] == '/'), None)
 
 
+# options the kernel reports from the geometry of one disk (ext4 stripe, XFS sunit and swidth): wrong on another
+GEOMETRY = ('stripe=', 'sunit=', 'swidth=')
 WHOLE_MEMBER_FS = ('linux_raid_member', 'LVM2_member')
 DISK_WRITES = ('md-array', 'partition', 'partition-add', 'format', 'zfs-pool', 'lvm-vg', 'lvm-vg-extend', 'btrfs-add')
 # where the plans write on the target, besides /: each is snapshotted too when it is its own subvolume or volume
 WRITTEN = ('/home', '/var', '/srv', '/opt', '/root', '/usr/local')
+
+
+def tools_for(tasks: list[dict], pm: str | None) -> list[str]:
+    """The packages that hold the commands of these steps, by the names of this package manager."""
+    fs = {t['params'].get('fstype') for t in tasks} | {'btrfs' for t in tasks if t['type'].startswith('btrfs') or t['type'] in ('subvolume', 'snapshot')}
+    out = []
+    if any(t['type'] in ('partition', 'partition-add') for t in tasks):
+        out.append('parted')
+    if any(t['type'] == 'md-array' for t in tasks):
+        out.append('mdadm')
+    if any(t['type'].startswith('lvm-') for t in tasks):
+        out.append('lvm2')
+    names = {'btrfs': 'btrfsprogs' if pm in ('zypper', 'transactional') else 'btrfs-progs', 'xfs': 'xfsprogs',
+             'vfat': 'dosfstools', 'exfat': 'exfatprogs', 'ext4': 'e2fsprogs'}
+    out += [names[f] for f in sorted(fs - {None, ''}) if f in names]
+    if any(t['type'].startswith('zfs-') for t in tasks) and pm == 'apt-get':
+        out.append('zfsutils-linux')         # elsewhere ZFS comes from a repository of its own, which is never added
+    return out
 
 
 def _snapshot_tasks(conn: Conn, h: dict, when: str, stamp: str, notes: list, risks: list) -> list[dict]:
@@ -215,7 +235,7 @@ def _storage(conn: Conn, src: dict, tgt: dict, mapping: dict | str, notes: list,
                 if p.get('fs') in changes.MKFS and not p.get('label') and p.get('mount'):
                     q['label'] = _label(p['mount'], p['fs'])
                 if p.get('mount') or p.get('subvolumes'):
-                    q['options'] = list(dict.fromkeys([*(p.get('options') or []), 'nofail']))
+                    q['options'] = list(dict.fromkeys([*(o for o in p.get('options') or [] if not o.startswith(GEOMETRY)), 'nofail']))
                 if i == len(parts) - 1:
                     q['sizeBytes'], q['rest'] = None, True        # the last one takes the rest of the target disk
                 dev['partitions'].append(q)
@@ -326,10 +346,13 @@ def build(conn: Conn, source: str, target: str, *, packages: bool = True, skip: 
         tasks.append({'type': 'accounts', 'host': tgt['name'], 'params': {'from_host': src['name'], 'homes': True}})
     carried = set()
     tasks += _storage(conn, src, tgt, storage, notes, risks, not_carried, carried)
+    pkt = next((t for t in tasks if t['type'] == 'packages'), None)
+    if pkt:      # the tools the storage steps run, which a minimal cloud image may lack: the packages step comes first
+        pkt['params']['also'] = ','.join(tools_for(tasks, (pkglist.for_host(conn, tgt['name']) or {}).get('pm')))
     if shares and steps_clone._share_files(rec):
         tasks.append({'type': 'config-files', 'host': tgt['name'], 'params': {'from_host': src['name']}})
         if mode == 'test':
-            notes.append('the copy serves the same shares: on the isolated network only the libvirt host can reach them')
+            notes.append('the copy serves the same shares (NFS, Samba): keep it where the clients of the source cannot reach it, as on an isolated or NAT network')
     if services:
         from . import steps_services
         if steps_services.for_host(conn, src['name']):
@@ -366,7 +389,7 @@ def build(conn: Conn, source: str, target: str, *, packages: bool = True, skip: 
             plans['after'] = {'name': f'{title}: snapshot after', 'tasks': after}
 
     fresh = [f'{m["target"]} ({(m.get("used") or 0) // 2**30} GiB)' for m in tgt['mounts']
-             if m['target'] not in ('/', '/boot', '/boot/efi', '/efi') and (m.get('fstype') or '') in ('ext4', 'xfs', 'btrfs', 'zfs', 'f2fs') and (m.get('used') or 0) > 2**30]
+             if m['target'] not in OS_MOUNTS and (m.get('fstype') or '') in ('ext4', 'xfs', 'btrfs', 'zfs', 'f2fs') and (m.get('used') or 0) > 2**30]
     if fresh:
         risks.append({'level': 'warn', 'id': 'not-fresh', 'text': f'{tgt["name"]} is not freshly installed: it holds data on {", ".join(fresh[:6])}. The copy adds to it'})
     if mode == 'migrate':

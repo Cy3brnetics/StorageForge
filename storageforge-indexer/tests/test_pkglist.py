@@ -152,9 +152,28 @@ class Script(unittest.TestCase):
 
     def run_script(self, pk, *args):
         path = self.d / 'p.sh'
-        path.write_text(pkglist.script(pk, 'web-01', '2026-11-07'))
+        lists = self.d / 'lists'      # apt has package lists here, as after an apt-get update
+        lists.mkdir(exist_ok=True)
+        (lists / 'deb.debian.org_debian_dists_trixie_main_binary-amd64_Packages').touch()
+        path.write_text(pkglist.script(pk, 'web-01', '2026-11-07').replace('/var/lib/apt/lists/', f'{lists}/'))
         return subprocess.run(['bash', str(path), *args], capture_output=True, text=True, timeout=60,
                               env={**os.environ, 'PATH': f'{self.d}:{os.environ["PATH"]}', 'LOG': str(self.d / 'log')})
+
+    def test_a_host_with_no_package_lists_yet_leaves_names_undecided_in_a_report(self):
+        path = self.d / 'fresh.sh'      # a fresh cloud image: no apt-get update yet, so no name has a candidate
+        path.write_text(pkglist.script(pkglist.parse('distro\tdebian\t12\npm apt-get\nm\tzsh\nm\tnowhere\ncomplete'), 'web-01', 'now')
+                        .replace('/var/lib/apt/lists/', f'{self.d}/none/'))
+        out = subprocess.run(['bash', str(path)], capture_output=True, text=True, timeout=60, env={**os.environ, 'PATH': f'{self.d}:{os.environ["PATH"]}'})
+        self.assertIn('no package lists yet', out.stdout)
+        self.assertNotIn('not in the package sources', out.stdout)
+        self.assertIn('2 to install with apt-get', out.stdout)
+
+    def test_tools_a_later_step_needs_are_added(self):
+        path = self.d / 'also.sh'
+        path.write_text(pkglist.script(pkglist.parse('distro\tdebian\t12\npm apt-get\nm\tvim\ncomplete'), 'web-01', 'now', also=['parted', '$(id)']))
+        out = subprocess.run(['bash', str(path)], capture_output=True, text=True, timeout=60, env={**os.environ, 'PATH': f'{self.d}:{os.environ["PATH"]}'})
+        self.assertIn('added, as a later step of the plan needs it: parted', out.stdout)
+        self.assertNotIn('$(id)', path.read_text().split('ALSO=', 1)[1].split('\n', 1)[0])
 
     def test_it_reports_what_is_missing_and_installs_nothing(self):
         pk = pkglist.parse(f'distro\tdebian\t12\npm apt-get\nm\tvim\nm\tlibc6:i386\nm\tgone\nm\tzsh\nm\t{CANARY}\n'
@@ -170,8 +189,8 @@ class Script(unittest.TestCase):
 
     def test_a_name_the_sources_lack_is_said_and_not_tried(self):
         out = self.run_script(pkglist.parse('distro\tdebian\t12\npm apt-get\nm\tzsh\nm\tnowhere\ncomplete'))
-        self.assertEqual(out.returncode, 1)
-        self.assertIn('1 not in the package sources here', out.stdout)
+        self.assertEqual(out.returncode, 0)       # listed, and not a problem: the rest of a copy goes on (the Pi run)
+        self.assertIn('missing   1 not in the package sources here', out.stdout)
         self.assertIn('1 to install with apt-get: zsh', out.stdout)
 
     def test_versioned_libraries_stay_behind_across_releases(self):

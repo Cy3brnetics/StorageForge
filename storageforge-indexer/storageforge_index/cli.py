@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -775,6 +776,13 @@ def cmd_vm(args) -> int:
             params = {'name': name, 'spec': args.spec or ('test-copy' if args.test else 'server'), 'image': image, **_kv(args.set)}
             if 'data_disks' not in params:
                 params['data_disks'] = _data_disks(conn, pk['host'])
+            if 'user' not in params:
+                # the login of the VM takes the first free UID, 1000 on most images: named after the first person on the
+                # source, it gets the same UID, so the accounts step and the owners of copied files agree with it
+                first = _first_user(conn, pk['host'])
+                if first:
+                    params['user'] = first
+                    print(f'the VM login is {first}, as on {pk["host"]}, so it gets the same UID')
             if pk.get('needs_level') and 'cpu' not in params:
                 # packages built for x86-64-v3 or v4 need those instructions in the VM, which a named CPU model may hide
                 params['cpu'] = 'host-passthrough'
@@ -796,6 +804,15 @@ def cmd_vm(args) -> int:
         print(exc, file=sys.stderr)
         return 1
     return 2
+
+
+def _first_user(conn, host: str) -> str | None:
+    """The account of the first person on a host: the lowest UID from 1000, as a VM login name allows."""
+    from . import hostconfig
+    users = (hostconfig.build(conn, host).get('accounts') or {}).get('users') or []
+    people = sorted((u for u in users if 1000 <= int(u.get('uid') or 0) < 60000), key=lambda u: int(u['uid']))
+    name = people[0]['name'] if people else None
+    return name if name and re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', name) else None
 
 
 def _data_disks(conn, host: str) -> str:
@@ -854,6 +871,8 @@ def cmd_clone(args) -> int:
                 crit += _print_check(conn, changes, saved[key])['crit']
     order = ' → '.join(f'{"moves" if k == "files" else "plan"} script {saved[k]}' for k in ('changes', 'files', 'after') if k in saved)
     print(f'run them in this order: {order}. Each reports unless --apply; formatting also needs --destructive')
+    if 'files' in saved:
+        print(f'scan {built["target"]} again after the first and before writing the moves script: its new mounts are where the files go')
     return 1 if crit else 0
 
 
@@ -1007,6 +1026,44 @@ def _vault(args, unlock=True):
     return db, conn, v
 
 
+SECRET_NAME = re.compile(r'[A-Za-z0-9_.-]{1,64}')
+SECRET_DIR = '/run/storageforge/secrets'
+
+
+def _send_secret(db, conn, v, args) -> int:
+    """The secret goes on ssh's stdin and into a file on the host's /run (memory): never on a command line, in a script
+    or in a log. sudo -n: the login needs sudo without a password, as deploys do."""
+    if not SECRET_NAME.fullmatch(args.name) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,253}', args.host) or args.host.startswith('-'):
+        print('a secret name, and a host name or address, please', file=sys.stderr)
+        return 2
+    user = args.user or conn.scalar('SELECT ssh_user FROM hosts WHERE lower(hostname) = lower(:h) OR ssh_host = :h', {'h': args.host})
+    if user and not re.fullmatch(r'[a-z_][a-z0-9_.-]{0,31}', user):
+        print(f'{user} is not a login name', file=sys.stderr)
+        return 2
+    try:
+        cred = v.credential(args.name)
+    except Exception as exc:          # VaultError: no such secret
+        print(exc, file=sys.stderr)
+        return 1
+    argv = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10']
+    for o in args.ssh_option:
+        argv += ['-o', o]
+    if args.key:
+        argv += ['-i', str(Path(args.key).expanduser()), '-o', 'IdentitiesOnly=yes']
+    target = f'{user}@{args.host}' if user else args.host
+    remote = (f'sudo -n sh -c \'umask 077; mkdir -p {SECRET_DIR} && chmod 700 {SECRET_DIR} && cat > {SECRET_DIR}/{args.name}.part '
+              f'&& mv -f {SECRET_DIR}/{args.name}.part {SECRET_DIR}/{args.name}\'')
+    p = subprocess.run(argv + ['--', target, remote], input=(cred['password'] + '\n').encode(), capture_output=True, timeout=60)
+    del cred
+    ok = p.returncode == 0
+    _audit(db, conn, v, 'vault.secret_send', 'ok' if ok else 'failed', host=args.host, name=args.name)
+    if not ok:
+        print(f'could not write it on {args.host}: {p.stderr.decode(errors="replace").strip()[-300:]}', file=sys.stderr)
+        return 1
+    print(f'{args.host}: {SECRET_DIR}/{args.name} written (mode 600, in memory: gone at reboot)')
+    return 0
+
+
 def _audit(db, conn, v, action, outcome='ok', host=None, fp=None, **detail):
     from .vault import AuditLog, actor_name
     AuditLog(db, conn, v.audit_key if v else None).append(actor_name(), action, outcome, host, fp, detail)
@@ -1036,6 +1093,23 @@ def cmd_vault(args) -> int:
         return 0
     db, conn, v = _vault(args)
     with v:
+        if a == 'secret-add':
+            # a secret for a plan step to read on a host, such as a Tailscale auth key: from stdin, so it is in no shell history
+            if not SECRET_NAME.fullmatch(args.name):
+                print('a secret name is letters, digits, . _ and -, up to 64', file=sys.stderr)
+                return 2
+            text = sys.stdin.read().strip()
+            if not text or '\n' in text or len(text) > 4096:
+                print('give the secret on stdin, as one line', file=sys.stderr)
+                return 2
+            v.remove_credential(args.name)
+            v.store_credential(args.name, 'secret', text)
+            del text
+            _audit(db, conn, v, 'vault.secret_add', name=args.name)
+            print(f'stored secret {args.name}: send it to a host with  storageforge-index vault send-secret {args.name} --host HOST')
+            return 0
+        if a == 'send-secret':
+            return _send_secret(db, conn, v, args)
         if a in ('add', 'generate'):
             if a == 'add':
                 data = sys.stdin.buffer.read() if args.key_file == '-' else Path(args.key_file).expanduser().read_bytes()
@@ -1817,6 +1891,14 @@ def build_parser() -> argparse.ArgumentParser:
     vs.add_parser('rotate-secret', help='rewrap all keys under STORAGEFORGE_VAULT_NEW_SECRET')
     x = vs.add_parser('import-dir', help='import every private key file in a directory (name = file stem)')
     x.add_argument('dir')
+    x = vs.add_parser('secret-add', help='store a secret a plan step reads on a host (one line on stdin), such as a Tailscale auth key')
+    x.add_argument('name')
+    x = vs.add_parser('send-secret', help='write a stored secret to /run/storageforge/secrets/NAME on a host over SSH (mode 600, gone at reboot)')
+    x.add_argument('name')
+    x.add_argument('--host', required=True)
+    x.add_argument('--user', help='the SSH login; the host\'s scan login if not given')
+    x.add_argument('--key', help='an SSH private key file; your SSH agent and keys if not given')
+    x.add_argument('--ssh-option', action='append', default=[], metavar='OPT', help='an ssh -o option, again for more')
     v.set_defaults(fn=cmd_vault)
 
     lg = sub.add_parser('log', help='what has been done: audit log, deploys, scans and task runs in one list')

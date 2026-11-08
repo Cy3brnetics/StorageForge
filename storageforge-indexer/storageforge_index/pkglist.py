@@ -322,7 +322,7 @@ hw_why() { # package -> WHY it stays off this machine, or WHY empty
   WHY=
   case $1 in
     rpi-imager) ;;     # writes SD cards from any computer
-    raspi-*|rpi-*|*raspberrypi*|pi-bluetooth|rpicam-apps*|libcamera-apps*|python3-rpi*|python3-picamera*|pigpio*|wiringpi)
+    raspi-*|rpi-*|rpifw*|*raspberrypi*|pi-bluetooth|userconf-pi|*-pi-mods|libpam-chksshpwd|kms++*|rpicam-apps*|libcamera-apps*|python3-rpi*|python3-picamera*|pigpio*|wiringpi)
       [[ -n $HERE_RPI ]] || WHY="made for a Raspberry Pi, and this is not one" ;;
     linux-firmware*|*-firmware|firmware-*|*-firmware-*) [[ -n $VIRT ]] && WHY="firmware for hardware a VM does not have" ;;
     intel-ucode|amd-ucode|intel-microcode|amd64-microcode|microcode_ctl|ucode-intel|ucode-amd)
@@ -359,6 +359,11 @@ for p in "${PKGS[@]+"${PKGS[@]}"}"; do
   N=$((N + 1)); [[ -n ${HAVE[$p]:-} ]] && continue
   if [[ $M == apt-get && -n ${BP[$p]:-} ]]; then BPW+=("$p"); else WANT+=("$p"); fi
 done
+# what later steps of the plan this runs in need, such as parted for a partition
+for p in "${ALSO[@]+"${ALSO[@]}"}"; do
+  [[ -n ${HAVE[$p]:-} || -n ${SKIPPED[$p]:-} ]] && continue
+  WANT+=("$p"); ADDED_TOOLS=$((${ADDED_TOOLS:-0} + 1)); info "added, as a later step of the plan needs it: $p"
+done
 # what a VM needs that the source did not: its guest agent, and on a desktop the clipboard and screen size agent
 ADDS=() ADDED=0
 case $VIRT in kvm|qemu) ADDS+=(qemu-guest-agent); ((DESKTOP)) && ADDS+=(spice-vdagent) ;; vmware) ADDS+=(open-vm-tools) ;; esac
@@ -366,17 +371,21 @@ for p in "${ADDS[@]+"${ADDS[@]}"}"; do
   [[ -n ${HAVE[$p]:-} || -n ${SKIPPED[$p]:-} ]] && continue
   WANT+=("$p"); ADDED=$((ADDED + 1)); info "added for this $VIRT VM: $p"
 done
-ok "$((N - ${#WANT[@]} - ${#BPW[@]} + ADDED)) of $N already installed"
+ok "$((N - ${#WANT[@]} - ${#BPW[@]} + ADDED + ${ADDED_TOOLS:-0})) of $N already installed"
 ((${#BOOTS[@]})) && skip "${#BOOTS[@]} kernel or boot package(s) left to the base install here, which the copy never changes: ${BOOTS[*]}"
 for why in "${!HWBY[@]}"; do skip "left out, $why:${HWBY[$why]}"; done
 ((${#LIBS[@]})) && skip "${#LIBS[@]} versioned librar(ies) of $SRC_DISTRO $SRC_VERSION left out, as what needs them brings its own: ${LIBS[*]}"
-if ((${#WANT[@]})) && [[ $M == apt-get ]]; then
+if ((${#WANT[@]})) && [[ $M == apt-get ]] && ((!APPLY)) && ! compgen -G "/var/lib/apt/lists/*_Packages*" >/dev/null; then
+  # a fresh cloud image: until apt-get update runs, no name has a candidate, and a report does not change the lists
+  info "this host has no package lists yet (apt-get update has not run): --apply updates them, then tells apart what exists here"
+elif ((${#WANT[@]})) && [[ $M == apt-get ]]; then
   ((APPLY)) && apt-get -o DPkg::Lock::Timeout=120 update -qq 2>&1 | tail -n 3
   # names with no candidate in the sources here cannot be installed: they are said apart, and not tried
   declare -A CAND=(); GONE=() KEEP=()
   while IFS= read -r p; do [[ -n $p ]] && CAND[$p]=1; done < <(apt-cache policy "${WANT[@]}" 2>/dev/null | awk '/^[^ ]/ {n = $1; sub(/:$/, "", n)} $1 == "Candidate:" && $2 != "(none)" {print n}')
   for p in "${WANT[@]}"; do if [[ -n ${CAND[$p]:-} ]]; then KEEP+=("$p"); else GONE+=("$p"); fi; done
-  ((${#GONE[@]})) && conflict "${#GONE[@]} not in the package sources here (renamed or dropped, or a source this host lacks): ${GONE[*]}"
+  # listed, and the rest still installed: across releases and architectures some names never exist on the target
+  ((${#GONE[@]})) && missing "${#GONE[@]} not in the package sources here (renamed or dropped, or a source this host lacks): ${GONE[*]}"
   WANT=("${KEEP[@]+"${KEEP[@]}"}")
 fi
 if ((${#WANT[@]})); then
@@ -460,7 +469,7 @@ def _array(name: str, values) -> str:
     return f'{name}=(' + ' '.join(shlex.quote(v) for v in values) + ')\n'
 
 
-def script(pk: dict, host: str, when: str = '') -> str:
+def script(pk: dict, host: str, when: str = '', also: list | None = None) -> str:
     """A bash script that installs the packages of pk on the host it runs on. Reports unless --apply."""
     flat = pk.get('flatpak') or []
     snaps = pk.get('snap') or []
@@ -486,5 +495,6 @@ def script(pk: dict, host: str, when: str = '') -> str:
             + _array('BACKPORTS', [p for p in pk.get('backports') or [] if _NAME.fullmatch(p)])
             + f'SRC_MODE={shlex.quote(pk.get("mode") or "normal")} SRC_IMAGE={shlex.quote(pk.get("image_ref") or "")} SRC_BASE={int(pk.get("base_packages") or 0)}\n'
             + f'SRC_ARCH={shlex.quote(pk.get("arch") or "")} SRC_NEEDS_LEVEL={int(pk.get("needs_level") or 0) or ""}\n'
+            + _array('ALSO', [p for p in also or [] if _NAME.fullmatch(p)])
             + _array('REPOS', [f'{r["where"]}: {r["url"]}' for r in pk.get('repos') or []]))
     return head + BODY.replace('@@REMOTE@@', REMOTE).replace('@@HELPERS@@', HELPERS)

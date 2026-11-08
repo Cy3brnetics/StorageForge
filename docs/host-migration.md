@@ -338,6 +338,12 @@ On 2026-11-07, against a lab build of `sf-ctl`, `sf-ubuntu`, `sf-jammy`, `sf-boo
   2. It left out 13 kernel and boot packages, the NVIDIA and AMD drivers, the firmware, the microcode and the hardware tools. It added `spice-vdagent` for the desktop, and confirmed the CPU runs x86-64-v3.
   3. With the VM's CPU model set to Nehalem (x86-64-v2), it refused before installing anything.
 
+- **The final test: three Raspberry Pis (`rpi01docker`, `rpi02-docker`, `rpi03-docker`, arm64, Debian 13, Docker and NFS) onto three amd64 Debian 13 VMs on this machine,** on the lab's NAT network, so the copies, which serve the same NFS shares, can reach the Pis while the LAN can't reach them:
+  1. Read-only scans of the Pis. `vm-create` made a VM for each, its login named after the Pi's first user (`rpi`, UID 1000) and its data disk sized from what the Pi holds.
+  2. Docker's package source added on each VM by hand, as the report asked. NetBird was left out with `--skip netbird`: a test copy should not join the mesh VPN.
+  3. The change plans installed 63 to 64 packages each, Docker 29.9.3 included, and left out 8 kernel and boot packages, the Raspberry Pi packages and the Pi firmware. They added `qemu-guest-agent` and `parted`, gave `rpi` its 17 groups, partitioned and formatted the data disks with the Pis' labels, mounted them, wrote the NFS exports and started Docker and the NFS server. NetBird stayed off.
+  4. The files plans copied `/home` and the data filesystems: 8.3 and 10.6 GiB, and 146 GiB with 4.35 million hard-linked files on `rpi01docker`.
+
 Bugs it found, all fixed:
 - bash before 5.2 couldn't parse the `vm-create` step. A test now looks for that pattern in every script.
 - `--forward-agent` never reached the host in Moves, change-plan, task and share scripts, because the shared SSH connection was opened without the agent.
@@ -356,6 +362,15 @@ Bugs it found, all fixed:
 - The Leap Minimal image's `kernel-default-base` has no md driver. The step now says so, and how to fix it, before touching a disk.
 - The copy tried to install the source's kernel, which needs the target's own removed. Kernels and bootloaders are now left to the base install.
 - A report on a target whose root isn't btrfs called its subvolume steps conflicts, because the btrfs they go on is only mounted by an earlier step.
+- A Pi's boot partition, `/boot/firmware`, was taken for a data filesystem, and got a data disk of its own.
+- The VM's login took UID 1000, which the Pi's own user has, so its accounts could not come across. `vm clone` now names the login after the source's first person.
+- A fresh cloud image has no apt lists, so a report called 66 ordinary packages missing from the sources. A report now leaves that to `--apply`, which updates the lists first.
+- The Debian cloud image has no `parted`. A copy now installs the tools its own steps run (`parted`, `mdadm`, `lvm2`, filesystem tools) with its packages, and a report knows an earlier step installs them.
+- Four Pi packages from Raspberry Pi's repository slipped through (`userconf-pi`, `rpifwcrypto`, `libpam-chksshpwd`, `kms++-utils`), and a name the target's sources lack stopped the whole copy. It is now listed, and the rest go on.
+- `stripe=8191`, from the geometry of the Pi's USB SSD, was copied into the new fstab. Disk geometry options are left out.
+- The space check counted each name of a hard-linked file, wanting 277 GiB for a filesystem using 146. A copy now needs no more than its filesystem uses.
+- `vm-create` gave the VM no channel for `qemu-guest-agent`, so the agent never started.
+- A test copy started NetBird, Tailscale and other mesh VPNs and tunnels. They now stay off a test copy, like backups and mail.
 - The package script stopped at the first firmware package on real hardware: a test that kept the package ended the classifying function with a failure, which `set -e` treats as fatal.
 - `rpi-imager` was taken for a Pi-only package.
 - `vm-create`: Leap 16 doesn't boot without a video device, so every serial-console VM now has one with no display. On Alpine, whose OpenSSH has no PAM, the locked account refused the SSH key and the image has no `sudo`. The account now has a password hash that matches no password, made for each VM, and cloud-init installs `sudo` on Alpine.

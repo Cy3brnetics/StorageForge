@@ -1,0 +1,12 @@
+# Keeps the actions in .github/workflows current. They are pinned to commit SHAs (zizmor's unpinned-uses audit), and
+# Dependabot raises a pull request that moves the SHA and its version comment together. Forgejo has no Dependabot:
+# copy each bump into .forgejo/workflows/ci.yml, which uses the same actions.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

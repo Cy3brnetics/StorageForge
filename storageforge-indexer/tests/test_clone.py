@@ -85,6 +85,7 @@ class Build(Db):
         tasks = got['plans']['changes']['tasks']
         kinds = [t['type'] for t in tasks]
         self.assertEqual(kinds[:2], ['packages', 'accounts'])
+        self.assertEqual(tasks[0]['params']['also'], 'parted,btrfs-progs,e2fsprogs')     # what the storage steps run
         # sdb (ext4) goes to the first empty sf-data disk, sdc (btrfs with subvolumes) to the second
         part = {t['params']['disk']: t['params'] for t in tasks if t['type'] == 'partition'}
         self.assertEqual((part['/dev/vdb']['fstype'], part['/dev/vdb']['confirm'], part['/dev/vdb']['wipe']), ('ext4', '/dev/vdb', False))

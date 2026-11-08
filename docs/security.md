@@ -22,6 +22,12 @@ Python cannot promise no other copy of a secret exists in memory: the environmen
 
 Backups never contain the vault secret, on purpose: a backup together with its secret would be the keys. Keep the vault secret safe somewhere else (`docker compose exec storageforge cat /run/sf-secrets/vault_secret`).
 
+### Secrets for plan steps
+
+Some steps need a secret on the host they run on: the `tailscale` step needs an auth key. Such a secret is stored in the vault like a device credential (`vault secret-add NAME`, one line on stdin, so it is in no shell history), and never goes into a plan, a script, the Ansible playbook or a log.
+
+`vault send-secret NAME --host HOST` decrypts it and writes it to `/run/storageforge/secrets/NAME` on the host over SSH, on ssh's stdin. `/run` is in memory, the folder is mode 700 and the file mode 600, and both are gone at reboot. The login needs `sudo` without a password, as deploys do. The step reads the file there. The `tailscale` step hands it to Tailscale as `--auth-key=file:…`, so the key is on no command line, and removes it once the node has joined. Both commands write to the audit log, and neither prints the secret.
+
 ## Bindings
 
 `key_bindings` maps a key to an exact host or IP, a glob (`*.tailnet.ts.net`) or a CIDR, with a user, port and allowed actions (`scan`, `checksum`, `deploy`). The most specific match wins: exact host, then glob, then longest prefix, then the lowest priority number. `vault resolve --host H` shows which key and user a host would get.

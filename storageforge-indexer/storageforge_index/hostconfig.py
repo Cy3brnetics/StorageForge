@@ -40,7 +40,7 @@ _SMB_SECRET = re.compile(r'^(\s*[^#;\s][^=\n]*(?:password|secret)[^=\n]*=).*$', 
 _CONTROL = re.compile(r'[\x00-\x08\x0a-\x1f\x7f\x85  ]')
 _NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_.-]{0,63}\$?')
 _POOL = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]*')
-SYSTEM_TARGETS = ('/', '/boot', '/boot/efi', '/efi')
+SYSTEM_TARGETS = ('/', '/boot', '/boot/efi', '/boot/firmware', '/efi')
 RUNTIME_ROOTS = ('/proc', '/sys', '/dev', '/run', '/tmp', '/var/lib/docker', '/var/lib/containers', '/var/lib/kubelet',
                  '/snap', '/var/snap')
 # a symlink into one of these (/var/lock -> ../run/lock) belongs to the OS, and the new install makes its own

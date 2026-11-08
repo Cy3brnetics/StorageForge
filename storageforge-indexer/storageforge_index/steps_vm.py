@@ -214,7 +214,8 @@ t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram
     rm -f "$nx"; try $V net-autostart "$network" >/dev/null; try $V net-start "$network" >/dev/null || { vm_undo; return 0; }
     ok "made the isolated network $network"
   fi
-  local extra=()
+  # the channel qemu-guest-agent talks over: without it the agent installed in the VM never starts
+  local extra=(--channel unix,target.type=virtio,target.name=org.qemu.guest_agent.0)
   [[ $firmware == uefi ]] && extra+=(--boot uefi)
   case $console in
     spice) extra+=(--graphics spice,listen=127.0.0.1 --video virtio) ;;

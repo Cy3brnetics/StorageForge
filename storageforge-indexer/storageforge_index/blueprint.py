@@ -18,7 +18,7 @@ REMOTE_PROTO = {'nfs': 'NFSv3', 'nfs4': 'NFSv4.2', 'cifs': 'SMB3', 'smb3': 'SMB3
                 'fuse.sshfs': 'SFTP', 'fuse.rclone': 'S3 (rclone)', 'rclone': 'S3 (rclone)', 'fuse.s3fs': 'S3 (s3fs)'}
 ZFS_LEVELS = ('stripe', 'mirror', 'raidz1', 'raidz2', 'raidz3')
 MD_LEVELS = ('raid0', 'raid1', 'raid5', 'raid6', 'raid10', 'linear')
-SKIP_PROTECT = ('/boot', '/boot/efi', '/efi')
+SKIP_PROTECT = ('/boot', '/boot/efi', '/boot/firmware', '/efi')
 EPHEMERAL = ('/tmp', '/var/tmp', '/var/cache')   # start excluded from 3-2-1; the operator can change it
 
 
