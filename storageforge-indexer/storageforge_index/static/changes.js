@@ -58,6 +58,7 @@ function taskTitle(t) {
     'vm-create': () => `VM ${p.name} from ${p.image || 'an image'}${p.spec ? ' (' + p.spec + ')' : ''}`,
     packages: () => `Packages of ${p.from_host}${p.skip ? ', less ' + p.skip : ''}`,
     accounts: () => `Accounts of ${p.from_host}`, 'config-files': () => `Share files of ${p.from_host}`,
+    services: () => `Services of ${p.from_host}`, 'md-array': () => `Create mdadm array ${p.name} (${p.level}) on ${p.devices}`,
   }[t.type] || (() => t.type))();
 }
 const tasksOn = (host) => (CH.plan.ran_at && !CH.dirty) ? [] : CH.plan.tasks.filter((t) => t.host === host);

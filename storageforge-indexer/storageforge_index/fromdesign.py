@@ -7,7 +7,7 @@ change plans get. Now the planner hands the design to this module, which compare
 staged in the Changes tab like any other, so they are checked, saved, deployed and audited the same way.
 
 Only additions and edits become tasks. Things the scan has and the design dropped are listed and left alone, and
-anything Changes has no task type for (mdadm, encrypted ZFS pools, ZFS log and cache devices, bind
+anything Changes has no task type for (an mdadm array on a level it does not make, encrypted ZFS pools, ZFS log and cache devices, bind
 mounts, hard links) is listed as "by hand" with the reason. Drive tasks keep an empty confirm field, so nobody can save
 them without typing the device again in the Changes tab. Every task still goes through changes.normalize before it
 can be saved or scripted, so text from the design reaches a script only through those field checks.
@@ -15,13 +15,14 @@ can be saved or scripted, so text from the design reaches a script only through 
 from __future__ import annotations
 
 import copy
+import re
 
 from . import blueprint
 from .changes import MKFS, MOUNT_FS, OS_MOUNTS, PROFILES, TYPES, CHECKS
 from .moves import find_host, hosts
 
 # The order tasks run in: drives first, then filesystems on them, then what mounts and links onto those.
-ORDER = ['drive-tune', 'partition', 'partition-add', 'format', 'zfs-pool', 'zfs-dataset', 'lvm-vg', 'lvm-vg-extend', 'lvm-lv', 'btrfs-add', 'label',
+ORDER = ['drive-tune', 'partition', 'partition-add', 'md-array', 'format', 'zfs-pool', 'zfs-dataset', 'lvm-vg', 'lvm-vg-extend', 'lvm-lv', 'btrfs-add', 'label',
          'btrfs-balance', 'subvolume', 'mount', 'mount-options', 'symlink']
 # ZFS properties the planner edits. A scan knows some of them, and only those can be compared with what the host has.
 DS_PROPS = ('recordsize', 'compression', 'sync', 'atime', 'xattr', 'acltype', 'dnodesize', 'logbias', 'primarycache', 'copies',
@@ -30,6 +31,11 @@ WHOLE_DISK_SLACK = 64 << 20        # a design's "rest of the disk" stops short o
 REMOTE_FS = {'NFSv3': 'nfs', 'NFSv4': 'nfs4', 'NFSv4.1': 'nfs4', 'NFSv4.2': 'nfs4', 'SMB3': 'cifs', 'SMB2': 'cifs'}
 IGNORED_OPTS = ('defaults', 'rw', 'relatime', 'seclabel')
 SESSION_OPTS = ('subvol=', 'subvolid=', 'clientaddr=', 'addr=')     # what the kernel reports about one live mount, not settings
+
+
+def md_levels():
+    from .steps_md import LEVELS
+    return LEVELS
 
 
 def _bare(dev) -> str:
@@ -282,6 +288,17 @@ def plan(conn, design: dict, blank=()) -> dict:
             new_btrfs_pool(pool, members)
             blocks.extend(tasks[at:])
             del tasks[at:]
+            continue
+        elif not hp and kind == 'mdadm' and members and pool.get('level') in md_levels():
+            array = re.sub(r'^md/', '', name or '') or 'data'
+            fs = pool.get('fs') if pool.get('fs') in MKFS else ''
+            label = pool.get('label') or ''
+            task('md-array', name=array, level=pool['level'], devices=' '.join(f'/dev/{m}' for m in members), metadata='',
+                 fstype=fs, label=label, wipe=False, confirm='')
+            if pool.get('mount') and fs:
+                mount(f'LABEL={label}' if label else f'/dev/md/{array}', pool['mount'], fs, _opts(pool.get('options')))
+            elif pool.get('fs') not in (None, '', 'none') and not fs:
+                by_hand(f'{pool["fs"]} on the array {array}', f'Changes formats as {", ".join(MKFS)} only')
             continue
         elif not hp:
             what = {'mdadm': 'mdadm array', 'lvm': 'LVM volume group', 'btrfs': 'btrfs pool'}.get(kind, 'pool')

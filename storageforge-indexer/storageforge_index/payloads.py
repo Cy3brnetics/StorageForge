@@ -350,6 +350,10 @@ def node_from_lsblk(data: dict, hostname: str, node: dict | None = None) -> dict
         children = d.get('children') or []
         if not children and d.get('fstype'):
             children = [dict(d, type='part', start=0)]
+        elif children and not any(c.get('type') == 'part' for c in children) and d.get('fstype') in WHOLE_DISK_MEMBERS:
+            # a whole disk in an md array, under LUKS or an LVM PV: lsblk puts the array, mapping or volume right under
+            # the disk, so the disk stands in as its own partition, as a whole-disk filesystem does
+            children = [dict(d, type='part', start=0, children=children)]
         if _lvm_legs(d['name'], children, disk, lvm):
             disk['member'] = next(iter(_lvm_owner(d['name'], lvm)), None)
         elif vg := _lvm_plain(d['name'], _i(d.get('size')), children, disk, vgs):
@@ -514,6 +518,7 @@ def _lvm_pool(name: str, e: dict) -> dict:
             'cap': pool_capacity('lvm', level, [s for _, s in legs], fs=e['fs'])}
 
 
+WHOLE_DISK_MEMBERS = ('linux_raid_member', 'crypto_LUKS', 'LVM2_member')
 BTRFS_PROFILES = {'single', 'dup', 'raid0', 'raid1', 'raid1c3', 'raid1c4', 'raid10', 'raid5', 'raid6'}
 
 

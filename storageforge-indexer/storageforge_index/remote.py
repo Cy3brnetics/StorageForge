@@ -393,6 +393,11 @@ echo '@@pkglist'; (PATH="$PATH:/usr/sbin:/sbin"; . /etc/os-release 2>/dev/null; 
   [ -r /etc/pacman.conf ] && awk '/^\[/ {s = $0; gsub(/[][]/, "", s)} s != "options" && /^ *(Server|Include) *=/ {v = $0; sub(/^[^=]*= */, "", v); print "r\t" s "\t" v}' /etc/pacman.conf
   [ -r /etc/apk/repositories ] && grep -v '^ *#' /etc/apk/repositories | awk '{print "r\t/etc/apk/repositories\t" $0}'
   echo 'complete') | head -n 30000
+echo '@@services'; if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then echo 'init systemd'
+  systemctl list-unit-files --state=enabled --no-legend --no-pager --type=service,socket,timer,path 2>/dev/null | head -n 2000 | awk 'NF >= 2 {print "e\t" $1 "\t" $3}'
+elif command -v rc-update >/dev/null 2>&1; then echo 'init openrc'
+  rc-update show 2>/dev/null | head -n 2000 | awk -F'|' '{gsub(/ /, "", $1); n = split($2, r, " "); for (i = 1; i <= n; i++) print "o\t" $1 "\t" r[i]}'
+fi
 echo '@@access'; if [ -x /usr/local/lib/storageforge/find ]; then echo capability; else echo user; fi; id -un 2>/dev/null
 echo '@@snapjobs'
 @@SNAPFIND@@
@@ -446,6 +451,7 @@ class HostInventory:
     snapjobs: list | None = None   # rsnapshot and snapper jobs on the host, whoever set them up (snapfind.py)
     zfs_props: str = ''            # ZFS properties set on purpose, not inherited: name, property, value per line
     pkglist: dict | None = None    # distro, packages installed on purpose, Flatpak and Snap apps, package sources (pkglist.py)
+    services: dict | None = None   # the init system and what it starts: enabled systemd units, OpenRC services by runlevel
 
     def to_json(self) -> str:
         return json.dumps({
@@ -453,7 +459,7 @@ class HostInventory:
             'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'zfs_props': self.zfs_props, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb, 'btrfs': self.btrfs,
             'jobs': self.jobs, 'tasks': self.tasks, 'schedules': self.schedules, 'runs': self.runs, 'managed': self.managed, 'ids': self.ids, 'packages': self.packages,
             'configs': self.configs, 'accounts': self.accounts, 'authkeys': self.authkeys, 'moves': self.moves, 'health': self.health, 'snapshots': self.snapshots, 'snapjobs': self.snapjobs,
-            'pkglist': self.pkglist, 'mounts': [asdict(m) for m in self.mounts],
+            'pkglist': self.pkglist, 'services': self.services, 'mounts': [asdict(m) for m in self.mounts],
         })
 
 
@@ -574,7 +580,7 @@ def collect_inventory(t: Transport) -> HostInventory:
     from .health import parse_report, parse_snapshots
     from .authkeys import parse as parse_authkeys
     from .hostconfig import parse_configs
-    from . import pkglist
+    from . import pkglist, steps_services
     return HostInventory(hostname, ip, ' · '.join(lines('os')) or None, mounts, lsblk,   # optional fields by name: order-proof
                          sec.get('zpool', '').strip(), sec.get('df', '').strip(), lvs=sec.get('lvs', '').strip(), zfs_props=sec.get('zfsprops', '').strip(),
                          access=access, user=user, nfs=sec.get('nfs', '').strip(), smb=sec.get('smb', '').strip(),
@@ -589,4 +595,5 @@ def collect_inventory(t: Transport) -> HostInventory:
                          accounts=sec.get('accounts', '').strip(),
                          authkeys=parse_authkeys(sec['authkeys']) if 'authkeys' in sec else None,
                          pkglist=pkglist.parse(sec['pkglist']) if 'pkglist' in sec else None,
+                         services=steps_services.parse(sec['services']) if 'services' in sec else None,
                          machine_id=next((m for m in lines('machineid') if re.fullmatch(r'[0-9a-f]{32}', m)), ''))

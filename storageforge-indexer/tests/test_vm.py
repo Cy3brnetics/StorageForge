@@ -227,7 +227,12 @@ case "$*" in *SHA512SUMS*) echo "$SUM  debian-13-genericcloud-amd64.qcow2" ;; *)
         ud = (self.d / 'fake' / 'user-data').read_text()
         self.assertTrue(ud.startswith('#cloud-config\n'))
         cfg = json.loads(ud.split('\n', 1)[1])
-        self.assertEqual(cfg['users'][0], {'name': 'admin', 'lock_passwd': True, 'ssh_authorized_keys': [KEY], 'sudo': 'ALL=(ALL) NOPASSWD:ALL'})
+        user = cfg['users'][0]
+        # not locked (OpenSSH without PAM refuses a key for a locked account), and its password hash matches no password
+        self.assertRegex(user.pop('hashed_passwd'), r'^\$6\$[A-Za-z0-9./]{16}\$[A-Za-z0-9./]{86}$')
+        self.assertEqual(user, {'name': 'admin', 'lock_passwd': False, 'ssh_authorized_keys': [KEY], 'sudo': 'ALL=(ALL) NOPASSWD:ALL'})
+        self.assertNotIn('packages', cfg)          # only Alpine lacks sudo
+        self.assertIn('--connect qemu:///system', install)
         self.assertEqual((cfg['hostname'], cfg['ssh_pwauth']), ('web-copy', False))
         self.assertIn('web-copy has 192.168.122.50', out.stdout)
         # run again: the image is not fetched twice, and the VM it made is recognised
@@ -235,6 +240,19 @@ case "$*" in *SHA512SUMS*) echo "$SUM  debian-13-genericcloud-amd64.qcow2" ;; *)
         (self.d / 'fake' / 'ours').touch()
         again = self.run_fn(True)
         self.assertIn('web-copy exists, made by StorageForge', again.stdout)
+
+    def test_two_vms_get_different_password_hashes(self):
+        self.run_fn(True)
+        first = json.loads((self.d / 'fake' / 'user-data').read_text().split('\n', 1)[1])['users'][0]['hashed_passwd']
+        for f in self.pool.glob('web-copy-*'):
+            f.unlink()
+        self.run_fn(True)
+        self.assertNotEqual(first, json.loads((self.d / 'fake' / 'user-data').read_text().split('\n', 1)[1])['users'][0]['hashed_passwd'])
+
+    def test_a_serial_console_vm_gets_a_vga_device_with_no_display(self):
+        self.run_fn(True)       # openSUSE Leap 16 does not boot without one (found in the lab)
+        install = next(l for l in self.log().splitlines() if l.startswith('virt-install'))
+        self.assertIn('--graphics none --video vga --console pty,target_type=serial', install)
 
     def test_no_sudo_leaves_it_out(self):
         self.run_fn(True, sudo='none')

@@ -275,14 +275,19 @@ while IFS= read -r p; do [[ -n $p ]] && HAVE[$p]=1; done < <(installed "$M")
 for p in "${SKIP[@]+"${SKIP[@]}"}"; do SKIPPED[$p]=1; done
 WANT=() N=0 LIBS=()
 LIBNAME='^lib.+[0-9](t64)?$|^gcc-[0-9]+-base$'
+# the kernel and the bootloader are the base install's: a copy never changes how the target boots
+BOOTNAME='^(kernel|kernel-[a-z0-9.-]+|linux|linux-(lts|zen|hardened|rt|virt|image|generic|virtual|kvm|headers|modules|signed|aws|azure|gcp|oem|raspi)[a-z0-9.+-]*|grub[a-z0-9.-]*|shim[a-z0-9-]*|systemd-boot[a-z-]*|syslinux|extlinux|limine|refind)$'
+BOOTS=()
 for p in "${PKGS[@]+"${PKGS[@]}"}"; do
   [[ -n ${SKIPPED[$p]:-} ]] && { skip "$p (--skip)"; continue; }
+  if [[ $p =~ $BOOTNAME && -z ${HAVE[$p]:-} ]]; then BOOTS+=("$p"); continue; fi
   # a library named for its version, from another release: the packages that need it bring the version this release has
   if ((!SAME)) && [[ $M == apt-get && $p =~ $LIBNAME && -z ${HAVE[$p]:-} ]]; then LIBS+=("$p"); continue; fi
   N=$((N + 1)); [[ -n ${HAVE[$p]:-} ]] && continue
   if [[ $M == apt-get && -n ${BP[$p]:-} ]]; then BPW+=("$p"); else WANT+=("$p"); fi
 done
 ok "$((N - ${#WANT[@]} - ${#BPW[@]})) of $N already installed"
+((${#BOOTS[@]})) && skip "${#BOOTS[@]} kernel or boot package(s) left to the base install here, which the copy never changes: ${BOOTS[*]}"
 ((${#LIBS[@]})) && skip "${#LIBS[@]} versioned librar(ies) of $SRC_DISTRO $SRC_VERSION left out, as what needs them brings its own: ${LIBS[*]}"
 if ((${#WANT[@]})) && [[ $M == apt-get ]]; then
   ((APPLY)) && apt-get -o DPkg::Lock::Timeout=120 update -qq 2>&1 | tail -n 3

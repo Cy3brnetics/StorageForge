@@ -1569,7 +1569,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             raise ValueError('map is {"/dev/source-disk": "/dev/target-disk"}, {"/source/mount": "/dev/target-disk"} or "auto"')
         return dict(packages=b.get('packages', True) is not False, skip=str(b.get('skip') or ''), accounts=b.get('accounts', True) is not False,
                     shares=b.get('shares', True) is not False, storage=mapping, files=files if isinstance(files, (str, list)) else 'none',
-                    mode=b.get('mode') or 'test', snapshots=b.get('snapshots', True) is not False)
+                    mode=b.get('mode') or 'test', snapshots=b.get('snapshots', True) is not False,
+                    services=b.get('services', True) is not False)
 
     @web.post('/api/clone/preview')
     @login_required

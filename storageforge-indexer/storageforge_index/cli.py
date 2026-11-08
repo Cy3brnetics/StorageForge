@@ -823,7 +823,7 @@ def cmd_clone(args) -> int:
     try:
         built = clone.build(conn, args.source, args.to, packages=not args.no_packages, skip=args.skip or '', accounts=not args.no_accounts,
                             shares=not args.no_shares, storage=mapping or 'auto', files=files, mode='migrate' if args.migrate else 'test',
-                            snapshots=not args.no_snapshots)
+                            snapshots=not args.no_snapshots, services=not args.no_services)
     except (LookupError, ValueError) as exc:
         print(exc, file=sys.stderr)
         return 1
@@ -1688,6 +1688,7 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument('--skip', help='packages to leave out, by commas')
     cl.add_argument('--no-packages', action='store_true'); cl.add_argument('--no-accounts', action='store_true')
     cl.add_argument('--no-shares', action='store_true'); cl.add_argument('--no-snapshots', action='store_true')
+    cl.add_argument('--no-services', action='store_true', help='leave the services as the target has them')
     cl.add_argument('--dry-run', action='store_true', help='show the plans and the risks, save nothing')
     cl.set_defaults(fn=cmd_clone)
 

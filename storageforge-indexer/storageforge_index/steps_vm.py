@@ -189,8 +189,14 @@ t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram
   # cloud-init: JSON is YAML too, and every value here passed the field checks of the plan, which allow no quote or backslash
   local cd; cd=$(mktemp -d); local sudoline=''
   [[ $sudo == nopasswd ]] && sudoline=', "sudo": "ALL=(ALL) NOPASSWD:ALL"'
-  printf '#cloud-config\n{"hostname": "%s", "manage_etc_hosts": true, "ssh_pwauth": false, "disable_root": true, "users": [{"name": "%s", "lock_passwd": true, "ssh_authorized_keys": ["%s"]%s}]}\n' \
-    "$name" "$user" "$key" "$sudoline" >"$cd/user-data"
+  # Alpine cloud images have no sudo: cloud-init installs it on first boot, or the sudo rule is for nothing
+  local pkgs=''; [[ $sudo == nopasswd && $image == alpine* ]] && pkgs=', "packages": ["sudo"]'
+  # not a locked account: OpenSSH without PAM (Alpine) refuses a key for one. Its password is a hash of nothing anyone
+  # knows, made here for this VM, so the key is the only way in
+  local rnd; rnd=$(LC_ALL=C tr -dc A-Za-z0-9./ < <(head -c 4000 /dev/urandom))
+  ((${#rnd} >= 102)) || { rm -rf "$cd"; vm_undo; conflict "could not read enough from /dev/urandom"; return 0; }
+  printf '#cloud-config\n{"hostname": "%s", "manage_etc_hosts": true, "ssh_pwauth": false, "disable_root": true, "users": [{"name": "%s", "lock_passwd": false, "hashed_passwd": "%s", "ssh_authorized_keys": ["%s"]%s}]%s}\n' \
+    "$name" "$user" "\$6\$${rnd:0:16}\$${rnd:16:86}" "$key" "$sudoline" "$pkgs" >"$cd/user-data"
   printf 'instance-id: sf-%s-%s\nlocal-hostname: %s\n' "$name" "$STAMP" "$name" >"$cd/meta-data"
   made+=("$seed")
   for tool in xorriso genisoimage mkisofs; do command -v $tool >/dev/null && break; tool=; done
@@ -212,7 +218,8 @@ t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram
   [[ $firmware == uefi ]] && extra+=(--boot uefi)
   case $console in
     spice) extra+=(--graphics spice,listen=127.0.0.1 --video virtio) ;;
-    *) extra+=(--graphics none --console pty,target_type=serial) ;;
+    # a VGA device with no display: openSUSE Leap 16 does not boot without one, and nothing can connect to it
+    *) extra+=(--graphics none --video vga --console pty,target_type=serial) ;;
   esac
   try virt-install --connect qemu:///system --import --name "$name" --osinfo "${osinfo:-detect=on,require=off}" --vcpus "$vcpus" --memory "$ram" --cpu "$cpu" \
     --network "$net,model=virtio" "${diskargs[@]}" "${extra[@]}" --rng /dev/urandom --noautoconsole >/dev/null || { vm_undo; return 0; }

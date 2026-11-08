@@ -1263,7 +1263,12 @@ t_subvolume() { local p=$1
   elif [[ -e $p ]]; then conflict "$p exists and is not a subvolume"; return 0
   else
     local par; par=$(dirname "$p"); while [[ ! -d $par ]]; do par=$(dirname "$par"); done
-    [[ $(stat -f -c %T "$par") == btrfs ]] || { conflict "$par is not on btrfs"; return 0; }
+    if [[ $(stat -f -c %T "$par") != btrfs ]]; then
+      local m; for m in ${PLANNED_MOUNTS:-}; do     # a report: the btrfs it goes on is mounted by an earlier task
+        [[ ${m##*:} == btrfs && $p == "${m%:*}"/* ]] && ((!APPLY)) && { later "${m%:*} is mounted by an earlier task"; return 0; }
+      done
+      conflict "$par is not on btrfs"; return 0
+    fi
     act "btrfs subvolume create $p" && { mkdir -p -- "$(dirname "$p")"; try btrfs subvolume create -- "$p" >/dev/null && ok "created"; } || return 0
   fi
   if [[ $2 == 1 && -d $p ]]; then
@@ -1401,7 +1406,7 @@ t_mount() { local src=$1 sv=$2 tgt=$3 fs=$4 opts=$5 pass=${6:-0} line have
     else conflict "fstab has another line for $tgt: $have"; return 0; fi
   elif act "add to /etc/fstab: $line"; then
     fstab_backup; mkdir -p -- "$tgt"; printf '%s\n' "$line" >>/etc/fstab; fstab_verify || return 0; ok "fstab line added"
-  else return 0; fi
+  else PLANNED_MOUNTS+=" $tgt:$fs"; return 0; fi     # a report: later tasks may make things on it
   if mountpoint -q -- "$tgt"; then ok "mounted"
   elif act "mount $tgt"; then try mount -- "$tgt" && ok "mounted"; fi
 }
@@ -1981,3 +1986,5 @@ def ansible(conn: Conn, plan: dict) -> str:
 from . import steps_infra  # noqa: E402,F401  (registers its step types, and imports this module)
 from . import steps_vm  # noqa: E402,F401  (vm-create, after steps_infra, which sets EXTRA_BASH)
 from . import steps_clone  # noqa: E402,F401  (packages from another host)
+from . import steps_md  # noqa: E402,F401  (mdadm arrays)
+from . import steps_services  # noqa: E402,F401  (services of another host)

@@ -47,13 +47,15 @@ Your own go beside them: `storageforge-index vm spec db --set vcpus=8 --set ram_
 
 1. **A change plan on the target:**
    - **Snapshot before:** a libvirt snapshot of every disk when the target is a VM on a scanned libvirt host. Otherwise a btrfs, ZFS or LVM snapshot of its root, with `/home`, `/var`, `/srv`, `/opt`, `/root` and `/usr/local` when they are other subvolumes or volumes, or a critical risk when its root can't be snapshotted. Names carry the date and time.
-   - **The source's packages, accounts and share files:** the `packages`, `accounts` and `config-files` steps.
+   - **The source's packages, accounts and share files:** the `packages`, `accounts` and `config-files` steps. Packages leave out the kernel and the bootloader, which belong to the target's base install.
+   - **The services it enables,** with the new `services` step: what the source enables and the target has is enabled and started there. It never disables, unmasks or installs a unit, and a unit the target lacks is listed. It always leaves out the base system's own units, first-boot setup, the network stack, guest tools, a firewall without its rules, boot and subscription units, and StorageForge's job timers. A test copy also leaves out timers and anything that sends data off the machine (backups, sync, mail); a migration takes them. OpenRC services come across by runlevel, less the base system's (`sysinit`, `boot`, `shutdown`).
    - **Its data disks, laid out again on the target's:** the source's layout is moved onto the target's disks and handed to the planner's design-to-plan step, so the steps are the planner's own, in its order:
      - partitions, and filesystems formatted and mounted by label with the source's options, plus `nofail`
      - btrfs pools, rebuilt with `format`, `btrfs-add` and `btrfs-balance` to the source's profile
      - a btrfs with subvolumes, mounted at `/mnt/<label>-top` while its subvolumes are made, then mounted where each was
      - ZFS pools on whole disks with the source's layout, properties and datasets
      - LVM volume groups and their volumes
+     - mdadm arrays, with the new `md-array` step: made from the mapped disks, written to `mdadm.conf` so they assemble at boot, and formatted. The step stops before touching a disk when the running kernel has no md driver, and says which kernel package to install
 
      Every step that writes to a disk keeps its three locks. The plan fills in the confirm field, and only after the risk is ticked.
 2. **A Moves plan for user files,** at the level chosen:
@@ -65,7 +67,6 @@ Your own go beside them: `storageforge-index vm spec db --set vcpus=8 --set ram_
 3. **A change plan with the snapshot after.**
 
 Disks are mapped with `--map /dev/sdb=/dev/vdb`, a source disk to a target disk, or `--map /srv/data=/dev/vdb` for the disk under a mount. Without it, a VM's empty `sf-data` disks are taken in order. The target's system disk is refused. Some things aren't made, and are listed under **Not copied** with the reason:
-- mdadm arrays
 - LUKS, whose key is yours to keep
 - encrypted ZFS pools, and pools with log or cache devices
 - a disk whose filesystems the scan couldn't read (Alpine's lsblk reports none)
@@ -290,7 +291,9 @@ Phase 1 reads apt, dnf and yum, zypper, pacman and apk. The rest fall into three
 | 1b | **Fixes to phase 1:** image-based, transactional and read-only systems, apt on rpm, Debian's local debs, holds and backports, AUR versions | Built, unit-tested, **not lab-tested** |
 | 2 | **Targets:** new VMs from cloud images, with VM specs (`vm-create`, `vm create`, `vm clone`), and any scanned machine through `clone`, with a warning when it isn't freshly installed | Built; `vm-create` lab-tested |
 | 2b | **The `packages` step:** another host's packages, as a plan step | Built, lab-tested on apt |
-| 3 | **Config and storage:** the `accounts` and `config-files` steps, and the data disks' layout through the planner's design-to-plan step: partitions, filesystems, btrfs pools and subvolumes, ZFS pools and datasets, LVM. Not built: mdadm and LUKS, enabled services, other `/etc` files | Built in part; accounts, ZFS and a btrfs raid1 pool with subvolumes lab-tested, LVM not lab-tested |
+| 3 | **Config and storage:** the `accounts` and `config-files` steps, and the data disks' layout through the planner's design-to-plan step: partitions, filesystems, btrfs pools and subvolumes, ZFS pools and datasets, LVM, mdadm arrays (`md-array`) | Built; accounts, ZFS, btrfs raid1 and nested subvolumes, and an mdadm raid1 lab-tested. LVM not lab-tested |
+| 3a | **Services:** the scan records enabled systemd units and OpenRC services, and the `services` step starts them on the copy | Built, lab-tested on systemd (Leap 16) and OpenRC (Alpine 3.24) |
+| 3d | **Not built:** LUKS (its key is yours: by hand), other `/etc` files | Planned |
 | 3b | **AUR and local builds:** cache, `bacman`, an AUR build at the matching commit; Arch Linux Archive pinning; derivative repositories and CPU levels | Planned |
 | 3c | **Hardware differences:** firmware, drivers, guest tools, interface renames and CPU level, each way | Planned |
 | 4 | **User files:** none, structure, chosen folders or everything, through Moves with `dirs_only` and `keep_replaced` | Built; `all` lab-tested and verified by checksum |
@@ -318,7 +321,14 @@ On 2026-11-07, against a lab build of `sf-ctl`, `sf-ubuntu`, `sf-jammy`, `sf-boo
   5. The files copied and verified by checksum, then the snapshots after.
 - **The locks held:** a copy mapped onto a disk of the VM's now-mounted pool, run with `--apply --destructive` and the device typed again, stopped at "/dev/vdb is in use" and touched nothing.
 - **Planned but not applied:** btrfs raid10 (`sf-bookworm`) and nested subvolumes (`sf-suse`). The mdadm array on `sf-suse` was listed as not copied, as it should be.
-- **Not run:** LVM (no LVM host in that build), the libvirt snapshot (the VM's libvirt host wasn't scanned), copying share files that share something (both lab hosts have a stock `/etc/exports`), migration mode and the web form.
+- **Not run:** LVM (no LVM host in that build), the libvirt snapshot (the VM's libvirt host wasn't scanned), copying share files that share something (every lab host has a stock `/etc/exports`), the migration mode's notes and cutover, and the web form.
+
+- **A third round, for mdadm and services:**
+  1. `sf-suse` was copied onto a new openSUSE Leap 16 VM: zypper packages, accounts, its whole-disk mdadm raid1 with ext4, and its nested btrfs.
+  2. After a reboot the array assembled from `mdadm.conf`, in sync, and every mount came back by label.
+  3. The files, including the array's, matched by checksum.
+  4. With `chronyd` and `fstrim.timer` turned off on the VM, a test copy started `chronyd` and left the timer off. A migration also enabled the timer.
+  5. On a new Alpine 3.24 VM, the OpenRC path added `chronyd` and `local` to the default runlevel and started them, installed the apk packages and added the accounts. A second run found nothing to do.
 
 Bugs it found, all fixed:
 - bash before 5.2 couldn't parse the `vm-create` step. A test now looks for that pattern in every script.
@@ -333,6 +343,12 @@ Bugs it found, all fixed:
 - Saving the same copy twice in a minute failed.
 - A stock `/etc/exports` of only comments was copied over the target's.
 - A plan was made against a target scan older than an earlier copy onto its disks. That is now a critical risk.
+- A whole disk in an md array wasn't seen as one, by the scan or by the planner, and nor would a whole-disk LUKS or LVM member be, so `sf-suse`'s array was missing from the topology too.
+- `mdadm` takes no `--` before its devices: with it, the array was never made, and an array already there was never found.
+- The Leap Minimal image's `kernel-default-base` has no md driver. The step now says so, and how to fix it, before touching a disk.
+- The copy tried to install the source's kernel, which needs the target's own removed. Kernels and bootloaders are now left to the base install.
+- A report on a target whose root isn't btrfs called its subvolume steps conflicts, because the btrfs they go on is only mounted by an earlier step.
+- `vm-create`: Leap 16 doesn't boot without a video device, so every serial-console VM now has one with no display. On Alpine, whose OpenSSH has no PAM, the locked account refused the SSH key and the image has no `sudo`. The account now has a password hash that matches no password, made for each VM, and cloud-init installs `sudo` on Alpine.
 
 ## The package list (phase 1)
 

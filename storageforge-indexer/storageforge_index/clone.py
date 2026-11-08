@@ -58,7 +58,8 @@ def _root(h: dict) -> dict | None:
     return next((m for m in h['mounts'] if m['target'] == '/'), None)
 
 
-DISK_WRITES = ('partition', 'partition-add', 'format', 'zfs-pool', 'lvm-vg', 'lvm-vg-extend', 'btrfs-add')
+WHOLE_MEMBER_FS = ('linux_raid_member', 'LVM2_member')
+DISK_WRITES = ('md-array', 'partition', 'partition-add', 'format', 'zfs-pool', 'lvm-vg', 'lvm-vg-extend', 'btrfs-add')
 # where the plans write on the target, besides /: each is snapshotted too when it is its own subvolume or volume
 WRITTEN = ('/home', '/var', '/srv', '/opt', '/root', '/usr/local')
 
@@ -199,7 +200,11 @@ def _storage(conn: Conn, src: dict, tgt: dict, mapping: dict | str, notes: list,
         whole_zfs = (parts and parts[0].get('fs') == 'zfs_member'
                      and all(p is parts[0] or ((p.get('fs') or 'none') == 'none' and (p.get('sizeBytes') or 0) <= 64 << 20) for p in parts))
         dev = {'dev': f'/dev/{td}', 'table': d.get('table') or 'gpt', 'member': d.get('member'), 'partitions': []}
-        if whole_zfs:
+        whole_member = len(parts) == 1 and parts[0]['id'] == sd and parts[0].get('member') and parts[0].get('fs') in WHOLE_MEMBER_FS
+        if whole_member:      # the whole disk is in an md array or an LVM volume group: no partition table to make
+            dev['member'] = parts[0]['member']
+            rename[parts[0]['id']] = td
+        elif whole_zfs:
             dev['member'] = parts[0].get('member')
             rename[parts[0]['id']] = td
         else:
@@ -232,6 +237,8 @@ def _storage(conn: Conn, src: dict, tgt: dict, mapping: dict | str, notes: list,
             continue
         pooled |= set(members)
         q = {**copy.deepcopy(pool), 'members': [rename[m] for m in members], 'uuid': None}
+        if q.get('type') == 'mdadm' and q.get('fs') in changes.MKFS and not q.get('label') and q.get('mount'):
+            q['label'] = _label(q['mount'], q['fs'])      # mounted by label: the array's device name is not kept
         if q.get('mount') or q.get('datasets'):
             q['options'] = list(dict.fromkeys([*(q.get('options') or []), 'nofail']))
         design['pools'].append(q)
@@ -293,7 +300,7 @@ def _storage(conn: Conn, src: dict, tgt: dict, mapping: dict | str, notes: list,
 
 
 def build(conn: Conn, source: str, target: str, *, packages: bool = True, skip: str = '', accounts: bool = True, shares: bool = True,
-          storage: dict | str = 'auto', files: str | list = 'none', mode: str = 'test', snapshots: bool = True) -> dict:
+          storage: dict | str = 'auto', files: str | list = 'none', mode: str = 'test', snapshots: bool = True, services: bool = True) -> dict:
     if mode not in MODES:
         raise ValueError(f'mode is test or migrate, not {mode}')
     if isinstance(files, str) and files not in LEVELS:
@@ -323,6 +330,14 @@ def build(conn: Conn, source: str, target: str, *, packages: bool = True, skip: 
         tasks.append({'type': 'config-files', 'host': tgt['name'], 'params': {'from_host': src['name']}})
         if mode == 'test':
             notes.append('the copy serves the same shares: on the isolated network only the libvirt host can reach them')
+    if services:
+        from . import steps_services
+        if steps_services.for_host(conn, src['name']):
+            tasks.append({'type': 'services', 'host': tgt['name'], 'params': {'from_host': src['name'], 'timers': mode == 'migrate'}})
+            if mode == 'test':
+                notes.append(f'services: what {src["name"]} enables is started, less timers and anything that sends data off the machine')
+        else:
+            not_carried.append(f'services: {src["name"]} has no list of services. Scan it again with this version')
     plans = {'changes': {'name': title, 'notes': f'{mode} copy, made by storageforge-index clone', 'tasks': tasks}}
 
     paths = []
