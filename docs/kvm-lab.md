@@ -63,6 +63,20 @@ To run a lab beside one already running, set `SFLAB_INSTANCE=1`, up to 9. It has
 
 The build above ran on 2026-11-01 with the work uncommitted, as instance 1 beside another lab: tiers 0, 2 and 8 passed, with tier 2 at 98 passed, 0 failed. Tier 2 ran NFS, SMB, jobs, tasks, change plans, drift and removal on `sf-pve` against `sf-bookworm`. It didn't run with `sf-ctl`, so tiers 1 and 3 to 7 haven't run against an appliance.
 
+## First runs on 2026-11-08
+
+Five parts of the lab had been written and never run. On 2026-11-08 they ran against a build of `sf-ctl`, `sf-ubuntu`, `sf-jammy`, `sf-bookworm`, `sf-fedora`, `sf-suse` and `sf-alpine`, with the work uncommitted:
+
+| What | Result |
+| :--- | :--- |
+| Tier 16: btrfs and ZFS sends between enrolled hosts, each side a signed run (SF-48) | 24 of 24 passed: full and incremental sends, retention on the receiver, a corrupt and a cut-off stream, a replayed nonce, the timer unit, no root key between the hosts, uninstall |
+| Tier 17: the network language on ufw (`sf-ubuntu`) and firewalld (`sf-fedora`) | 3 of 3 passed: the rules applied, read back and removed, and what each front end left out named |
+| Tier 14: host logs against real journald | 25 of 25 passed on six journald hosts and Alpine without one: the access script, secrets removed, the size and age limits |
+| Tier 2: `scan-signed`, with `scan`, `scan-access`, `deploy-access` and the storage task stage | 71 of 71 passed: signed scans on all seven hosts, and storage tasks reported, installed, run by systemd and run now on six |
+| Tier 13: features, with the LXC and Incus guests | 39 passed and `ui-pages` skipped (no `playwright` where the tier ran). `retire-host` failed first: the test retired a host while the scan its own deploy removal had queued was running, and the product refused, as it should. The test waits for that scan now |
+
+Running tier 13 twice without `lab.sh reset` between fails most of it: it leaves files, a mount and a changed host key behind, and one check removes the last admin. Reset between runs, as `lab.sh test --all` does.
+
 ## Test tiers
 
 | Tier | File | Checks |
@@ -120,12 +134,10 @@ The known failures from those builds were fixed and rechecked on 2026-11-01, on 
 - **Outside services and hardware (not lab-tested):** PagerDuty and a physical FIDO2 token.
 - **Real network devices (not lab-tested):** pfSense, OPNsense and Cisco IOS or IOS-XE on a real device. Only a parser and unit tests have seen them, and no free image exists for the lab. [What has been tested on what](network-devices.md#what-has-been-tested-on-what) has the table.
 - **Old SSH ciphers (not lab-tested):** the legacy key exchange, host key and cipher options for old routers and switches are checked against the option strings in unit tests, and no device in the lab is old enough to need them.
-- **Incus and LXC guests (not lab-tested):** they have parsers and unit tests. Tier 13's `lxc-guests` and `incus-guests` checks make one empty guest each, and this page records no run of them.
-- **Tailscale, proxy routes and identity providers (not lab-tested):** they have parsers and unit tests, and need an account on an outside service.
+- **Incus and LXC guests:** tier 13's `lxc-guests` and `incus-guests` checks make one empty guest each. Both passed on 2026-11-08: a real LXC container on `sf-bookworm` and a real Incus instance on `sf-ubuntu` were on the map. Only empty guests have been tried.
+- **Proxy routes and identity providers (not lab-tested):** they have parsers and unit tests, and need an account on an outside service.
+- **Tailscale, partly:** on 2026-11-08 the `tailscale` step joined three VMs to a real tailnet with a key from the vault, and the web console reached a VM over its Tailscale address. Reading Tailscale in scans has unit tests only.
 - **Terraform and Puppet apply (not lab-tested):** the exports are checked for structure, for values held as data, and by `terraform validate` and `puppet parser validate` where those tools are installed. Nothing has applied one.
-- **Signed scan payloads, tier 2's `scan-signed` stage (not lab-tested):** the stage is written and has not run. The signing itself has unit tests.
-- **The SF-48 receiving run, tier 16 (not lab-tested):** a send between two enrolled hosts with each side a signed run. The tier is written and has not run.
-- **The network language on firewalld and ufw, tier 17 (not lab-tested):** written and not run.
 - **The web UI, partly:** tier 13 opens every page and tab in Chromium on real data, when `playwright` is installed where the tier runs. Otherwise that check shows as skip. Actions in the UI are the browser tests' job, on local data.
 - **ClamAV's memory rule:** its script refuses under 2 GiB, and the lab's largest VMs report about 1.7 GiB. Tier 13 checks the refusal, then hides the real figure from that one check to test the rest.
 - **Enterprise Linux at 1 GB:** those configs have 2 GB, because `dnf` is killed for lack of memory at 1 GB once EPEL is enabled.

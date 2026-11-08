@@ -348,6 +348,33 @@ CONTAINER_PATHS = {'rsync': _copy_paths, 'rotate': _copy_paths,
                    'btrfs_snapshot': lambda p, host_of: (('subvolume', host_of(''), p['subvol']),)}
 
 
+def removes_root(cmd: str) -> bool:
+    """Whether a command line removes the root of the filesystem: rm, recursive, on / or everything in it. Every spelling
+    seen: -rf, -fr, -R, -r -f, --recursive, --no-preserve-root, /*, /., after sudo or env, in any part of a; or && list."""
+    for part in re.split(r'&&|\|\||[;|\n]', cmd):
+        try:
+            words = shlex.split(part, posix=True)
+        except ValueError:
+            words = part.split()
+        while words and (words[0] in ('sudo', 'env', 'nice', 'ionice', 'doas', 'command', 'exec') or words[0].startswith('-') or '=' in words[0]):
+            words = words[1:]                    # what runs rm: sudo -n, env X=1, nice -n 5
+        if not words or words[0].rsplit('/', 1)[-1] != 'rm':
+            continue
+        recursive, targets, opts = False, [], True
+        for w in words[1:]:
+            if opts and w == '--':
+                opts = False
+            elif opts and w.startswith('--'):
+                recursive |= w == '--recursive'
+            elif opts and w.startswith('-') and len(w) > 1:
+                recursive |= 'r' in w or 'R' in w
+            else:
+                targets.append(w)
+        if recursive and any(t.rstrip('/') in ('', '/*', '/.') or t in ('/', '/*', '/.') for t in targets):
+            return True
+    return False
+
+
 def check(conn: Conn, task: dict) -> dict:
     """Per block: [{level, text, fix?}] in run order. fix is a block the editor can insert before this one."""
     from .runtimes.docker import users_of
@@ -471,7 +498,7 @@ def check(conn: Conn, task: dict) -> dict:
                 if m and (m['fstype'] or '').lower() != 'btrfs':
                     add('crit', f'{p["path"]} is on {m["fstype"]}: {"scrub" if t == "scrub" else "balance"} is for btrfs')
             elif t == 'command' and p['cmd']:
-                if re.search(r'\brm\s+-[a-z]*r[a-z]*f?\s+/(\s|$)', p['cmd']):
+                if removes_root(p['cmd']):
                     add('crit', 'this removes the root of the filesystem')
                 add('note', 'runs as root with bash')
             elif t == 'if' and p['cond'] in ('mounted', 'exists', 'free below') and p['arg'] and not p['arg'].startswith('/'):
@@ -869,14 +896,22 @@ verify_copy() {   # verify_copy <fail on difference 0|1> <rsync args...>
   warnl "$n entries differ"
   ((strict && !DRY)) && return 1 || return 0
 }
+snapname() {   # snapname <prefix> <name>: one this prefix made, <prefix>-YYYY-MM-DD_HHMMSS. Not daily-db-... for daily, nor daily-notes
+  local rest=${2#"$1-"}
+  [[ $2 == "$1-"* && $rest =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$ ]]
+}
+ours() {   # ours <prefix>: the names on stdin that this prefix made, in their order
+  local n; while IFS= read -r n; do snapname "$1" "${n##*/}" && printf '%s\n' "$n"; done; return 0
+}
 prune_btrfs() {   # prune_btrfs <folder> <prefix> <keep>
-  local old; mapfile -t old < <(find "$1" -mindepth 1 -maxdepth 1 -name "$2-*" 2>/dev/null | sort | head -n "-$3")
+  local old; mapfile -t old < <(find "$1" -mindepth 1 -maxdepth 1 -name "$2-*" 2>/dev/null | ours "$2" | sort | head -n "-$3")
   ((${#old[@]})) || { ok "nothing to prune in $1"; return 0; }
   for o in "${old[@]}"; do x btrfs subvolume delete -- "$o" || return 1; done
 }
 prune_zfs() {   # prune_zfs <dataset> <prefix> <keep> <recursive>
   local old r=; (($4)) && r=-r
-  mapfile -t old < <(zfs list -H -t snapshot -o name -s creation -d 1 -- "$1" 2>/dev/null | grep -F "@$2-" | head -n "-$3")
+  # -d 1: this dataset's own snapshots, dataset@name, and a dataset name never holds an @
+  mapfile -t old < <(zfs list -H -t snapshot -o name -s creation -d 1 -- "$1" 2>/dev/null | cut -d@ -f2 | ours "$2" | sed "s|^|$1@|" | head -n "-$3")
   ((${#old[@]})) || { ok "nothing to prune on $1"; return 0; }
   for o in "${old[@]}"; do x zfs destroy $r -- "$o" || return 1; done
 }
@@ -901,7 +936,7 @@ send_prune() {   # retention on the other side: how many and which names are in 
 send_btrfs() {   # send_btrfs <folder> <prefix> <send id> <address> <port> <into> <keep>
   local into=$1 prefix=$2 dest=$6 keep=$7 newest parent= n done_=0 names=() listing st want
   send_to btrfs "$3" "$4" "$5" "$dest" "$prefix" "$keep"
-  newest=$(find "$into" -mindepth 1 -maxdepth 1 -name "$prefix-*" 2>/dev/null | sort | tail -n 1); newest=${newest##*/}
+  newest=$(find "$into" -mindepth 1 -maxdepth 1 -name "$prefix-*" 2>/dev/null | ours "$prefix" | sort | tail -n 1); newest=${newest##*/}
   if [[ -z $newest ]]; then
     if ((DRY)); then info "no $prefix-* in $into yet: a real run sends the snapshot taken before this block"; return 0; fi
     warnl "no $prefix-* in $into to send"; return 1
@@ -913,7 +948,7 @@ send_btrfs() {   # send_btrfs <folder> <prefix> <send id> <address> <port> <into
   if ! listing=$(there recv-list); then warnl "could not list $dest on $(there_name)"; ((DRY)) && return 0; return 1; fi
   mapfile -t names < <(printf '%s\n' "$listing" | sort -r)
   for n in ${names[@]+"${names[@]}"}; do   # newest first: an interrupted receive leaves a subvolume that was never finished
-    [[ $n == "$prefix-"* && $n != */* ]] || continue     # the name came from the other host, and is about to be a path here
+    [[ $n != */* ]] && snapname "$prefix" "$n" || continue     # the name came from the other host, and is about to be a path here
     if ((!done_)); then
       st=$(there recv-state "$n" 2>/dev/null)
       case $st in
@@ -947,7 +982,7 @@ send_zfs() {   # send_zfs <dataset> <prefix> <send id> <address> <port> <into> <
   send_to zfs "$3" "$4" "$5" "$dest" "$prefix" "$keep" "$8"
   ((${8})) && flags+=(-R)
   ((${9})) && flags+=(-w)
-  mapfile -t here < <(zfs list -H -t snapshot -o name -s creation -d 1 -- "$ds" 2>/dev/null | grep -F "@$prefix-" | cut -d@ -f2)
+  mapfile -t here < <(zfs list -H -t snapshot -o name -s creation -d 1 -- "$ds" 2>/dev/null | grep -F "$ds@" | cut -d@ -f2 | ours "$prefix")
   newest=; ((${#here[@]})) && newest=${here[${#here[@]}-1]}
   if [[ -z $newest ]]; then
     if ((DRY)); then info "no $ds@$prefix-* yet: a real run sends the snapshot taken before this block"; return 0; fi
@@ -960,7 +995,7 @@ send_zfs() {   # send_zfs <dataset> <prefix> <send id> <address> <port> <into> <
   if ! listing=$(there recv-list); then warnl "could not list $dest on $(there_name)"; ((DRY)) && return 0; return 1; fi
   mapfile -t names <<<"$listing"
   for ((n = ${#names[@]} - 1; n >= 0; n--)); do   # newest shared snapshot
-    [[ ${names[n]} == "$prefix-"* ]] || continue
+    snapname "$prefix" "${names[n]}" || continue
     if printf '%s\n' "${here[@]}" | grep -xF -- "${names[n]}" >/dev/null; then parent=${names[n]}; break; fi
   done
   want=$(send_id_zfs "$ds@$newest")

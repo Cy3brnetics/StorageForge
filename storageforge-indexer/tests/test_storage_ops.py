@@ -147,18 +147,18 @@ class Sends(Stubbed):
             (self.t / 'here' / n).mkdir(parents=True)
 
     def test_btrfs_full_then_changes_only_then_nothing(self):
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         r = self.run_task(self.btrfs_block(), '--run')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('no shared snapshot', r.stdout)
         self.assertNotIn(' -p ', self.log.read_text())
-        self.assertTrue((self.t / 'there/d-1').is_dir())
-        self.snap('d-2')
+        self.assertTrue((self.t / 'there/d-2026-01-01_000001').is_dir())
+        self.snap('d-2026-01-01_000002')
         r = self.run_task(self.btrfs_block(), '--run')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn(f'btrfs send -p {self.tmp}/here/d-1', self.log.read_text())
+        self.assertIn(f'btrfs send -p {self.tmp}/here/d-2026-01-01_000001', self.log.read_text())
         r = self.run_task(self.btrfs_block(), '--run')
-        self.assertIn('d-2 is already there', r.stdout)
+        self.assertIn('d-2026-01-01_000002 is already there', r.stdout)
         self.assertNotIn('btrfs send', self.log.read_text())
 
     def test_btrfs_balance_block(self):
@@ -167,31 +167,31 @@ class Sends(Stubbed):
         self.assertIn('balance start -dusage=40 -musage=20 -- /mnt/pool', self.log.read_text())
 
     def test_btrfs_report_changes_nothing(self):
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         r = self.run_task(self.btrfs_block())
         self.assertIn('would run: btrfs send', r.stdout)
         self.assertFalse((self.t / 'there').exists())
 
     def test_btrfs_removes_an_interrupted_receive_and_uses_the_last_finished_one(self):
-        self.snap('d-1', 'd-2')
-        (self.t / 'there/d-1').mkdir(parents=True)
-        (self.t / 'there/d-2').mkdir()
-        (self.t / 'there/d-2/.partial').write_text('')
+        self.snap('d-2026-01-01_000001', 'd-2026-01-01_000002')
+        (self.t / 'there/d-2026-01-01_000001').mkdir(parents=True)
+        (self.t / 'there/d-2026-01-01_000002').mkdir()
+        (self.t / 'there/d-2026-01-01_000002/.partial').write_text('')
         r = self.run_task(self.btrfs_block(), '--run')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('unfinished', r.stdout)
-        self.assertIn(f'-p {self.tmp}/here/d-1', self.log.read_text())
-        self.assertFalse((self.t / 'there/d-2/.partial').exists())
+        self.assertIn(f'-p {self.tmp}/here/d-2026-01-01_000001', self.log.read_text())
+        self.assertFalse((self.t / 'there/d-2026-01-01_000002/.partial').exists())
 
     def test_btrfs_prunes_the_other_side_and_keeps_the_newest(self):
-        self.snap('d-3')
-        for n in ('d-1', 'd-2', 'd-3'):
+        self.snap('d-2026-01-01_000003')
+        for n in ('d-2026-01-01_000001', 'd-2026-01-01_000002', 'd-2026-01-01_000003'):
             (self.t / 'there' / n).mkdir(parents=True)
         self.assertEqual(self.run_task(self.btrfs_block(keep=1), '--run').returncode, 0)
-        self.assertEqual(sorted(p.name for p in (self.t / 'there').iterdir()), ['d-3'])
+        self.assertEqual(sorted(p.name for p in (self.t / 'there').iterdir()), ['d-2026-01-01_000003'])
 
     def test_a_failed_receive_fails_the_task(self):
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         (self.bin / 'btrfs').write_text(BTRFS.replace('receive*) read -r n; mkdir -p "${@: -1}/$n" ;;', 'receive*) exit 1 ;;'))
         r = self.run_task(self.btrfs_block(), '--run')
         self.assertNotEqual(r.returncode, 0)
@@ -207,35 +207,35 @@ class Sends(Stubbed):
         self.assertIn('no tank/a@d-* yet', r.stdout)
 
     def test_zfs_full_then_changes_only_then_prunes(self):
-        self.zstate.write_text('tank/a@d-1\n')
+        self.zstate.write_text('tank/a@d-2026-01-01_000001\n')
         r = self.run_task(self.zfs_block(), '--run')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn('back/a@d-1', self.zstate.read_text())
+        self.assertIn('back/a@d-2026-01-01_000001', self.zstate.read_text())
         self.assertIn('zfs receive -u -x mountpoint -x sharenfs -x sharesmb -o setuid=off -o devices=off -o canmount=noauto -- back/a', self.log.read_text())
         with self.zstate.open('a') as f:
-            f.write('tank/a@d-2\n')
+            f.write('tank/a@d-2026-01-01_000002\n')
         r = self.run_task(self.zfs_block(keep=1), '--run')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn('zfs send -i @d-1 -- tank/a@d-2', self.log.read_text())
+        self.assertIn('zfs send -i @d-2026-01-01_000001 -- tank/a@d-2026-01-01_000002', self.log.read_text())
         state = self.zstate.read_text()
-        self.assertIn('back/a@d-2', state)
-        self.assertNotIn('back/a@d-1', state)
+        self.assertIn('back/a@d-2026-01-01_000002', state)
+        self.assertNotIn('back/a@d-2026-01-01_000001', state)
 
     def test_zfs_never_overwrites_a_dataset_it_shares_nothing_with(self):
-        self.zstate.write_text('tank/a@d-1\nback/a\n')
+        self.zstate.write_text('tank/a@d-2026-01-01_000001\nback/a\n')
         r = self.run_task(self.zfs_block(), '--run')
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('not overwriting', r.stdout)
         self.assertNotIn('zfs send', self.log.read_text())
 
     def test_new_blocks_in_a_host_local_send_use_no_ssh(self):
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         self.assertEqual(self.run_task(self.btrfs_block(), '--run').returncode, 0)
         self.assertNotIn('ssh', self.log.read_text())
 
     def test_change_plan_reports_send_and_refuses_a_writable_snapshot(self):
-        self.snap('d-1')
-        plan = {'name': 'p', 'tasks': [{'type': 'btrfs-send', 'host': 'nas', 'params': {'source': f'{self.tmp}/here/d-1', 'dest_host': '', 'dest': f'{self.tmp}/there'}}]}
+        self.snap('d-2026-01-01_000001')
+        plan = {'name': 'p', 'tasks': [{'type': 'btrfs-send', 'host': 'nas', 'params': {'source': f'{self.tmp}/here/d-2026-01-01_000001', 'dest_host': '', 'dest': f'{self.tmp}/there'}}]}
         text = changes.script(self.conn, plan)
         text = text.replace('ME=$(host_slug "$(uname -n)")', 'ME=nas')
         sh = self.t / 'c.sh'

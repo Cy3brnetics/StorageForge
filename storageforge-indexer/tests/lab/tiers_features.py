@@ -586,8 +586,18 @@ def retire_host(api, node):
         api('DELETE', f'/api/moves/{plan["id"]}')
         for row in t.sql(f"SELECT kind, ref FROM deployed WHERE lower(host) = lower('{node.name}')"):
             demo.fail(f'still deployed after removal: {row}')
-        gone = api('DELETE', f'/api/hosts/{node.name}')
-        want(gone['host'] == node.name, f'retire: {gone}')
+        # removing the deploy queues a scan of the host, and a host is not retired while a scan of it runs: wait for it
+        deadline = time.time() + 120
+        while True:
+            code, gone = api.raw('DELETE', f'/api/hosts/{node.name}')
+            if code == 403 and (gone or {}).get('reauth'):
+                api.raw('POST', '/api/reauth', {'password': api.password})
+                continue
+            if code == 409 and 'scan of it is queued or running' in gone.get('error', '') and time.time() < deadline:
+                time.sleep(3)
+                continue
+            break
+        want(code == 200 and gone.get('host') == node.name, f'retire: {code} {gone}')
         hosts = {h['hostname'] for h in api.get('/api/hosts')['indexed']}
         want(node.name not in hosts, 'still in the host list')
         want(not any(h['host'] == node.name for h in api.get(f'/api/search?q={probe}&limit=500')['results']), 'still in search')

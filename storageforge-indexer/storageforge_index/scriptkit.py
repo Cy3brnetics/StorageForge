@@ -243,7 +243,8 @@ recv_prune() { # [dry]: the newest KEEP stay. The conf says how many and which n
   [[ -z $dry || $dry == dry ]] || recv_refuse "prune takes only: dry"
   ((KEEP > 0)) && [[ -n $PREFIX ]] || recv_refuse "this send keeps everything: nothing may be pruned"
   [[ $dry == dry ]] || recv_lock -w 3600
-  mapfile -t old < <(recv_list | while IFS= read -r n; do if [[ $n == "$PREFIX-"* ]]; then printf '%s\n' "$n"; fi; done | head -n "-$KEEP")
+  # only <prefix>-YYYY-MM-DD_HHMMSS: another send's daily-db-... or a hand-made daily-notes is never this send's to prune
+  mapfile -t old < <(recv_list | while IFS= read -r n; do r=${n#"$PREFIX-"}; if [[ $n == "$PREFIX-"* && $r =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$ ]]; then printf '%s\n' "$n"; fi; done | head -n "-$KEEP")
   for n in ${old[@]+"${old[@]}"}; do
     if [[ $dry == dry ]]; then echo "would remove $n"; continue; fi
     if [[ $TOOL == btrfs ]]; then btrfs subvolume delete -- "$ROOT/$n" >/dev/null || { rc=$?; continue; }

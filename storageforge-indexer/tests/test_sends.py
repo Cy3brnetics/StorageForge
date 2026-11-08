@@ -195,31 +195,31 @@ class Verbs(TwoHosts):
     def test_btrfs_a_receive_then_what_it_says_of_it(self):
         self.assertEqual(self.serve('rt1-b', 'recv-probe').stdout.strip(), 'ok btrfs')
         self.assertEqual(self.serve('rt1-b', 'recv-root').stdout.strip(), 'absent')
-        self.assertEqual(self.serve('rt1-b', 'recv-state d-1').stdout.strip(), 'absent')
+        self.assertEqual(self.serve('rt1-b', 'recv-state d-2026-01-01_000001').stdout.strip(), 'absent')
         self.assertEqual(self.serve('rt1-b', 'recv-mkdir').returncode, 0)
         self.assertEqual(self.serve('rt1-b', 'recv-root').stdout.strip(), 'present')
-        r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-1', 'd-1\n')
-        self.assertEqual((r.returncode, r.stdout.strip()), (0, 'received d-1 1234abcd'), r.stderr)
-        self.assertEqual(self.serve('rt1-b', 'recv-state d-1').stdout.strip(), 'done 1234abcd')
-        self.assertEqual(self.serve('rt1-b', 'recv-list').stdout.split(), ['d-1'])
+        r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-2026-01-01_000001', 'd-2026-01-01_000001\n')
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, 'received d-2026-01-01_000001 1234abcd'), r.stderr)
+        self.assertEqual(self.serve('rt1-b', 'recv-state d-2026-01-01_000001').stdout.strip(), 'done 1234abcd')
+        self.assertEqual(self.serve('rt1-b', 'recv-list').stdout.split(), ['d-2026-01-01_000001'])
         self.assertIn(f'receive -C {self.there}', self.log.read_text())
 
     def test_zfs_a_receive_then_what_it_says_of_it(self):
         self.assertEqual(self.serve('rt1-z', 'recv-root').stdout.strip(), 'absent')
-        r = self.serve('rt1-z', f'recv-receive {self.nonce()} d-1', 'd-1\n')
+        r = self.serve('rt1-z', f'recv-receive {self.nonce()} d-2026-01-01_000001', 'd-2026-01-01_000001\n')
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertRegex(r.stdout, r'^received d-1 \d+\n$')
+        self.assertRegex(r.stdout, r'^received d-2026-01-01_000001 \d+\n$')
         # SF-72: a stream cannot carry its own mountpoint or exports, nor mount itself at boot, nor allow setuid or devices
         self.assertIn('zfs receive -u -x mountpoint -x sharenfs -x sharesmb -o setuid=off -o devices=off -o canmount=noauto -- back/a', self.log.read_text())
         self.assertNotIn(' -F', self.log.read_text())
         self.assertEqual(self.serve('rt1-z', 'recv-root').stdout.strip(), 'present')
-        self.assertEqual(self.serve('rt1-z', 'recv-list').stdout.split(), ['d-1'])
-        self.assertRegex(self.serve('rt1-z', 'recv-state d-1').stdout, r'^done \d+\n$')
+        self.assertEqual(self.serve('rt1-z', 'recv-list').stdout.split(), ['d-2026-01-01_000001'])
+        self.assertRegex(self.serve('rt1-z', 'recv-state d-2026-01-01_000001').stdout, r'^done \d+\n$')
 
     def test_each_receive_leaves_a_record_here_and_where_scans_read_task_runs(self):
-        self.assertEqual(self.serve('rt1-b', f'recv-receive {self.nonce()} d-1', 'd-1\n').returncode, 0)
+        self.assertEqual(self.serve('rt1-b', f'recv-receive {self.nonce()} d-2026-01-01_000001', 'd-2026-01-01_000001\n').returncode, 0)
         line = self.recorded()[-1]
-        self.assertEqual((line['verb'], line['name'], line['rc'], line['nonce'], line['task']), ('receive', 'd-1', 0, self.nonce(), 'receive-rt1-b'))
+        self.assertEqual((line['verb'], line['name'], line['rc'], line['nonce'], line['task']), ('receive', 'd-2026-01-01_000001', 0, self.nonce(), 'receive-rt1-b'))
         tasks_file = (self.t / 'pc/var/lib/storageforge/tasks/runs.jsonl').read_text().splitlines()
         self.assertEqual(json.loads(tasks_file[-1])['task'], 'receive-rt1-b')
         from storageforge_index import confirm
@@ -230,10 +230,10 @@ class Verbs(TwoHosts):
         for sid, says in (('rt1-b', 'checksum mismatch'), ('rt1-z', 'invalid stream')):
             with self.subTest(sid):
                 (self.flags / 'receive-fails').write_text('')
-                r = self.serve(sid, f'recv-receive {self.nonce(len(sid) + ord(sid[-1]))} d-9', 'd-9\n')
+                r = self.serve(sid, f'recv-receive {self.nonce(len(sid) + ord(sid[-1]))} d-2026-01-01_000009', 'd-2026-01-01_000009\n')
                 self.assertEqual(r.returncode, 1)
                 self.assertIn(says, r.stderr)
-                self.assertEqual(self.serve(sid, 'recv-state d-9').stdout.strip(), 'absent')
+                self.assertEqual(self.serve(sid, 'recv-state d-2026-01-01_000009').stdout.strip(), 'absent')
                 line = [x for x in self.recorded() if x['task'] == f'receive-{sid}'][-1]
                 self.assertEqual((line['rc'], line['verb']), (1, 'receive'))
                 self.assertIn(says, line['message'])
@@ -242,14 +242,14 @@ class Verbs(TwoHosts):
         def partial_ok(path):
             (self.bin / 'btrfs').write_text(BTRFS.replace('while read -r n; do mkdir -p "${@: -1}/$n"; done', 'read -r n; mkdir -p "${@: -1}/$n"; : >"${@: -1}/$n/.partial"'))
         partial_ok(self.bin)
-        r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-1', 'd-1\n')
+        r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-2026-01-01_000001', 'd-2026-01-01_000001\n')
         self.assertEqual(r.returncode, 6, r.stdout)
         self.assertIn('not a finished copy', r.stderr)
-        self.assertEqual(self.serve('rt1-b', 'recv-state d-1').stdout.strip(), 'absent')
+        self.assertEqual(self.serve('rt1-b', 'recv-state d-2026-01-01_000001').stdout.strip(), 'absent')
 
     def test_a_stream_that_makes_other_subvolumes_fails_and_says_which(self):
         self.there.mkdir()
-        r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-1', 'd-1\nd-999\n')
+        r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-2026-01-01_000001', 'd-2026-01-01_000001\nd-999\n')
         self.assertEqual(r.returncode, 6)
         self.assertIn('d-999', r.stderr)
         self.assertEqual(sorted(x.name for x in self.there.iterdir()), ['d-999'], 'the copy it was asked for is gone. Nothing else is deleted on the word of a list')
@@ -257,39 +257,39 @@ class Verbs(TwoHosts):
     def test_one_receive_at_a_time_in_a_folder_whichever_send_it_is_for(self):
         """Two sends can share a folder: one holds the lock, and the other waits, so neither takes the other's copy for its own or for an unfinished one."""
         self.conf('rt2-b', TOOL='btrfs', ROOT=str(self.there), PREFIX='e', KEEP=0)
-        (self.there / 'd-1').mkdir(parents=True)
-        (self.there / 'd-1/.partial').write_text('')
+        (self.there / 'd-2026-01-01_000001').mkdir(parents=True)
+        (self.there / 'd-2026-01-01_000001/.partial').write_text('')
         hashed = subprocess.run(['sha256sum'], input=str(self.there), capture_output=True, text=True).stdout[:16]
         lock = self.t / 'pc/var/lib/storageforge' / f'sf-recv-{hashed}.lock'
         lock.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(lock, os.O_CREAT | os.O_RDWR)
         fcntl.flock(fd, fcntl.LOCK_EX)
-        self.refused('rt2-b', 'recv-discard d-1', 'another send')
-        self.assertTrue((self.there / 'd-1').exists(), 'being received, as far as anyone can tell')
+        self.refused('rt2-b', 'recv-discard d-2026-01-01_000001', 'another send')
+        self.assertTrue((self.there / 'd-2026-01-01_000001').exists(), 'being received, as far as anyone can tell')
         os.close(fd)
-        self.assertEqual(self.serve('rt2-b', 'recv-discard d-1').returncode, 0)
+        self.assertEqual(self.serve('rt2-b', 'recv-discard d-2026-01-01_000001').returncode, 0)
 
     def test_a_plain_folder_someone_made_during_a_receive_is_no_failure_and_stays(self):
         (self.bin / 'btrfs').write_text(BTRFS.replace('while read -r n; do mkdir -p "${@: -1}/$n"; done', 'read -r n; mkdir -p "${@: -1}/$n" "${@: -1}/notes"; : >"$STUB_LOG.notes"'))
         real = self.bin / 'btrfs'
         real.write_text(real.read_text().replace('"subvolume show") p=${@: -1}; [ -d "$p" ] || exit 1', '"subvolume show") p=${@: -1}; [ -d "$p" ] || exit 1; [ "${p##*/}" = notes ] && exit 1'))
-        r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-1', 'd-1\n')
+        r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-2026-01-01_000001', 'd-2026-01-01_000001\n')
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue((self.there / 'notes').is_dir())
 
     def test_a_name_already_there_is_refused_and_not_received_over(self):
-        (self.there / 'd-1').mkdir(parents=True)
-        r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-1', 'd-1\n')
+        (self.there / 'd-2026-01-01_000001').mkdir(parents=True)
+        r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-2026-01-01_000001', 'd-2026-01-01_000001\n')
         self.assertEqual(r.returncode, 97)
         self.assertIn('already there', r.stderr)
         self.assertNotIn('receive -C', self.log.read_text())
 
     def test_a_replayed_nonce_is_refused(self):
-        self.assertEqual(self.serve('rt1-b', f'recv-receive {self.nonce()} d-1', 'd-1\n').returncode, 0)
-        r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-2', 'd-2\n')
+        self.assertEqual(self.serve('rt1-b', f'recv-receive {self.nonce()} d-2026-01-01_000001', 'd-2026-01-01_000001\n').returncode, 0)
+        r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-2026-01-01_000002', 'd-2026-01-01_000002\n')
         self.assertEqual(r.returncode, 97)
         self.assertIn('already used', r.stderr)
-        self.assertFalse((self.there / 'd-2').exists())
+        self.assertFalse((self.there / 'd-2026-01-01_000002').exists())
         self.assertEqual(self.recorded()[-1]['verb'], 'refused')
 
     def test_an_unknown_verb_and_anything_like_a_shell_are_refused(self):
@@ -346,52 +346,52 @@ class Verbs(TwoHosts):
         self.assertEqual(self.serve('rc1-b', 'recv-probe').returncode, 0)
 
     def test_discard_takes_only_what_never_finished(self):
-        (self.there / 'd-1/').mkdir(parents=True)
-        (self.there / 'd-2/').mkdir()
-        (self.there / 'd-2/.partial').write_text('')
-        self.refused('rt1-b', 'recv-discard d-1', 'not an unfinished copy')
-        self.assertTrue((self.there / 'd-1').exists())
-        self.assertEqual(self.serve('rt1-b', 'recv-discard d-2').returncode, 0)
-        self.assertFalse((self.there / 'd-2').exists())
+        (self.there / 'd-2026-01-01_000001/').mkdir(parents=True)
+        (self.there / 'd-2026-01-01_000002/').mkdir()
+        (self.there / 'd-2026-01-01_000002/.partial').write_text('')
+        self.refused('rt1-b', 'recv-discard d-2026-01-01_000001', 'not an unfinished copy')
+        self.assertTrue((self.there / 'd-2026-01-01_000001').exists())
+        self.assertEqual(self.serve('rt1-b', 'recv-discard d-2026-01-01_000002').returncode, 0)
+        self.assertFalse((self.there / 'd-2026-01-01_000002').exists())
         self.assertEqual(self.recorded()[-1]['verb'], 'discard')
-        self.refused('rt1-z', 'recv-discard d-1', 'leaves nothing')
+        self.refused('rt1-z', 'recv-discard d-2026-01-01_000001', 'leaves nothing')
 
     def test_prune_keeps_what_the_conf_says_whatever_is_asked(self):
-        for n in ('d-1', 'd-2', 'd-3', 'other-1'):
+        for n in ('d-2026-01-01_000001', 'd-2026-01-01_000002', 'd-2026-01-01_000003', 'other-1'):
             (self.there / n).mkdir(parents=True)
         self.refused('rt1-b', 'recv-prune 0')
-        self.refused('rt1-b', 'recv-prune d-3')
+        self.refused('rt1-b', 'recv-prune d-2026-01-01_000003')
         r = self.serve('rt1-b', 'recv-prune dry')
-        self.assertEqual(r.stdout, 'would remove d-1\n')
-        self.assertTrue((self.there / 'd-1').exists())
-        self.assertEqual(self.serve('rt1-b', 'recv-prune').stdout, 'removed d-1\n')
-        self.assertEqual(sorted(p.name for p in self.there.iterdir()), ['d-2', 'd-3', 'other-1'])
+        self.assertEqual(r.stdout, 'would remove d-2026-01-01_000001\n')
+        self.assertTrue((self.there / 'd-2026-01-01_000001').exists())
+        self.assertEqual(self.serve('rt1-b', 'recv-prune').stdout, 'removed d-2026-01-01_000001\n')
+        self.assertEqual(sorted(p.name for p in self.there.iterdir()), ['d-2026-01-01_000002', 'd-2026-01-01_000003', 'other-1'])
         self.assertEqual(self.recorded()[-1]['verb'], 'prune')
 
     def test_prune_with_no_retention_removes_nothing(self):
         self.conf('rt9-b', TOOL='btrfs', ROOT=str(self.there), PREFIX='d', KEEP=0)
-        (self.there / 'd-1').mkdir(parents=True)
+        (self.there / 'd-2026-01-01_000001').mkdir(parents=True)
         self.refused('rt9-b', 'recv-prune', 'keeps everything')
         self.conf('rt9-b', TOOL='btrfs', ROOT=str(self.there), KEEP=1)
         self.refused('rt9-b', 'recv-prune', 'keeps everything')
-        self.assertTrue((self.there / 'd-1').exists())
+        self.assertTrue((self.there / 'd-2026-01-01_000001').exists())
 
     def test_zfs_prune_only_touches_its_own_dataset_and_prefix(self):
-        self.zstate.write_text('back/a@d-1\nback/a@d-2\nback/a@d-3\nback/a@keep-1\nback/other@d-1\ntank/a@d-1\n')
-        self.assertEqual(self.serve('rt1-z', 'recv-prune').stdout, 'removed d-1\n')
-        self.assertEqual(self.zstate.read_text(), 'back/a@d-2\nback/a@d-3\nback/a@keep-1\nback/other@d-1\ntank/a@d-1\n')
-        self.assertIn('zfs destroy -- back/a@d-1', self.log.read_text())
+        self.zstate.write_text('back/a@d-2026-01-01_000001\nback/a@d-2026-01-01_000002\nback/a@d-2026-01-01_000003\nback/a@keep-1\nback/other@d-2026-01-01_000001\ntank/a@d-2026-01-01_000001\n')
+        self.assertEqual(self.serve('rt1-z', 'recv-prune').stdout, 'removed d-2026-01-01_000001\n')
+        self.assertEqual(self.zstate.read_text(), 'back/a@d-2026-01-01_000002\nback/a@d-2026-01-01_000003\nback/a@keep-1\nback/other@d-2026-01-01_000001\ntank/a@d-2026-01-01_000001\n')
+        self.assertIn('zfs destroy -- back/a@d-2026-01-01_000001', self.log.read_text())
 
     def test_zfs_recursive_is_the_confs_to_say(self):
         self.conf('rt9-z', TOOL='zfs', ROOT='back/a', PREFIX='d', KEEP=1, RECURSIVE=1)
-        self.zstate.write_text('back/a@d-1\nback/a@d-2\n')
+        self.zstate.write_text('back/a@d-2026-01-01_000001\nback/a@d-2026-01-01_000002\n')
         self.assertEqual(self.serve('rt9-z', 'recv-prune').returncode, 0)
-        self.assertIn('zfs destroy -r -- back/a@d-1', self.log.read_text())
+        self.assertIn('zfs destroy -r -- back/a@d-2026-01-01_000001', self.log.read_text())
 
     def test_a_record_stays_one_json_line_whatever_a_tool_prints(self):
         (self.flags / 'receive-fails').write_text('')
         (self.bin / 'btrfs').write_text(BTRFS.replace('echo "ERROR: send stream checksum mismatch" >&2', 'printf \'ERROR: "quoted" \\\\ back\\nnext\\tline\\033[0m\\n\' >&2'))
-        self.assertEqual(self.serve('rt1-b', f'recv-receive {self.nonce()} d-1', 'd-1\n').returncode, 1)
+        self.assertEqual(self.serve('rt1-b', f'recv-receive {self.nonce()} d-2026-01-01_000001', 'd-2026-01-01_000001\n').returncode, 1)
         self.assertIn('quoted', self.recorded()[-1]['message'])
 
     def test_the_record_is_capped(self):
@@ -412,10 +412,10 @@ class Generated(TwoHosts):
         return next(r for r in runs if r['kind'] == 'tasks')
 
     def test_a_task_goes_receiver_first_then_sender_then_the_run_then_the_key_goes(self):
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         runs = self.run_task(self.task(self.btrfs_block()))
         self.assertEqual(self.statuses(runs), [('pc', 'sends', 'ok'), ('nas', 'sends', 'ok'), ('nas', 'tasks', 'ok'), ('nas', 'sends', 'ok'), ('pc', 'sends', 'ok')], runs)
-        self.assertTrue((self.there / 'd-1').is_dir())
+        self.assertTrue((self.there / 'd-2026-01-01_000001').is_dir())
         self.assertIn('this key reaches pc', runs[1]['output'])
         self.assertIn('ssh storageforge-deploy@10.0.0.9 recv-receive', self.log.read_text())
         self.assertEqual(list((self.t / 'pc/etc/storageforge/receive').glob('*.conf')), [], 'a run of a task not installed takes its grant away again')
@@ -460,17 +460,17 @@ class Generated(TwoHosts):
     def test_a_timer_run_after_the_install_uses_the_key_it_was_given(self):
         task = self.task(self.btrfs_block(keep=1))
         self.install_task(task)
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         r = self.timer_run(task)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.snap('d-2')
+        self.snap('d-2026-01-01_000002')
         r = self.timer_run(task)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn(f'btrfs send -p {self.here}/d-1', self.log.read_text())
-        self.assertEqual(sorted(p.name for p in self.there.iterdir()), ['d-2'], 'retention, as the signed conf says')
+        self.assertIn(f'btrfs send -p {self.here}/d-2026-01-01_000001', self.log.read_text())
+        self.assertEqual(sorted(p.name for p in self.there.iterdir()), ['d-2026-01-01_000002'], 'retention, as the signed conf says')
         self.log.write_text('')
         r = self.timer_run(task)
-        self.assertIn('d-2 is already there', r.stdout)
+        self.assertIn('d-2026-01-01_000002 is already there', r.stdout)
         self.assertNotIn('btrfs send', self.log.read_text())
         self.assertEqual(self.deployed('pc'), [f'rt{task["id"]}-'])
 
@@ -481,24 +481,24 @@ class Generated(TwoHosts):
         task = self.task(self.zfs_block(keep=1))
         self.zstate.write_text('back\n')
         self.install_task(task)
-        self.zstate.write_text('back\ntank/a@d-1\n')
+        self.zstate.write_text('back\ntank/a@d-2026-01-01_000001\n')
         r = self.timer_run(task)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn('back/a@d-1', self.zstate.read_text())
+        self.assertIn('back/a@d-2026-01-01_000001', self.zstate.read_text())
         with self.zstate.open('a') as f:
-            f.write('tank/a@d-2\n')
+            f.write('tank/a@d-2026-01-01_000002\n')
         r = self.timer_run(task)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn('zfs send -i @d-1 -- tank/a@d-2', self.log.read_text())
+        self.assertIn('zfs send -i @d-2026-01-01_000001 -- tank/a@d-2026-01-01_000002', self.log.read_text())
         state = self.zstate.read_text()
-        self.assertIn('back/a@d-2', state)
-        self.assertNotIn('back/a@d-1', state)
+        self.assertIn('back/a@d-2026-01-01_000002', state)
+        self.assertNotIn('back/a@d-2026-01-01_000001', state)
 
     def test_a_zfs_send_never_overwrites_what_it_shares_nothing_with(self):
         task = self.task(self.zfs_block())
         self.zstate.write_text('back\n')
         self.install_task(task)
-        self.zstate.write_text('back\ntank/a@d-1\nback/a\n')
+        self.zstate.write_text('back\ntank/a@d-2026-01-01_000001\nback/a\n')
         r = self.timer_run(task)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('not overwriting', r.stdout)
@@ -510,15 +510,15 @@ class Generated(TwoHosts):
                 task = self.task(block, f'T{first}')
                 self.zstate.write_text('back\n')
                 self.install_task(task)
-                self.snap('d-1')
-                (self.there / 'd-0').mkdir(parents=True, exist_ok=True)
-                self.zstate.write_text('tank/a@d-0\ntank/a@d-1\nback/a@d-0\n')
+                self.snap('d-2026-01-01_000001')
+                (self.there / 'd-2026-01-01_000000').mkdir(parents=True, exist_ok=True)
+                self.zstate.write_text('tank/a@d-2026-01-01_000000\ntank/a@d-2026-01-01_000001\nback/a@d-2026-01-01_000000\n')
                 (self.flags / 'receive-fails').write_text('')
                 r = self.timer_run(task)
                 self.assertNotEqual(r.returncode, 0, 'the sender must not report success when the receiver failed')
                 self.assertIn(says, r.stdout + r.stderr, 'and the reason must reach whoever reads the sender')
                 self.assertIn('did not finish', r.stderr)
-                self.assertNotIn('sent d-1', r.stdout)
+                self.assertNotIn('sent d-2026-01-01_000001', r.stdout)
                 self.assertNotIn('recv-prune', self.log.read_text())
                 self.assertEqual(self.recorded()[-1]['rc'], 1)
                 (self.flags / 'receive-fails').unlink()
@@ -529,19 +529,19 @@ class Generated(TwoHosts):
                                                       'send*) [ -e "$STUB_SEND_FAILS" ] && { basename "${@: -1}"; echo "ERROR: send ioctl failed" >&2; exit 1; }'))
         task = self.task(self.btrfs_block(keep=1))
         self.install_task(task)
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         (self.flags / 'send-fails').write_text('')
         r = self.timer_run(task)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('send ioctl failed', r.stderr)
-        self.assertNotIn('sent d-1', r.stdout)
+        self.assertNotIn('sent d-2026-01-01_000001', r.stdout)
         self.assertNotIn('recv-prune', self.log.read_text())
 
     def test_a_copy_that_is_not_this_snapshot_fails_and_prunes_nothing(self):
         task = self.task(self.btrfs_block(keep=1))
         self.install_task(task)
-        self.snap('d-1')
-        (self.here / 'd-1/.id').write_text('feedface\n')
+        self.snap('d-2026-01-01_000001')
+        (self.here / 'd-2026-01-01_000001/.id').write_text('feedface\n')
         r = self.timer_run(task)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('it is not this snapshot', r.stderr)
@@ -550,27 +550,29 @@ class Generated(TwoHosts):
     def test_an_interrupted_receive_is_removed_and_the_last_finished_one_is_used(self):
         task = self.task(self.btrfs_block())
         self.install_task(task)
-        self.snap('d-1', 'd-2')
-        (self.there / 'd-1').mkdir(parents=True)
-        (self.there / 'd-2').mkdir()
-        (self.there / 'd-2/.partial').write_text('')
+        self.snap('d-2026-01-01_000001', 'd-2026-01-01_000002')
+        (self.there / 'd-2026-01-01_000001').mkdir(parents=True)
+        (self.there / 'd-2026-01-01_000002').mkdir()
+        (self.there / 'd-2026-01-01_000002/.partial').write_text('')
         r = self.timer_run(task)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('unfinished', r.stdout)
-        self.assertIn(f'-p {self.here}/d-1', self.log.read_text())
-        self.assertFalse((self.there / 'd-2/.partial').exists())
+        self.assertIn(f'-p {self.here}/d-2026-01-01_000001', self.log.read_text())
+        self.assertFalse((self.there / 'd-2026-01-01_000002/.partial').exists())
 
     def test_with_no_flags_a_task_only_reports(self):
         task = self.task(self.btrfs_block(keep=1))
         self.install_task(task)
-        self.snap('d-1', 'd-2')
-        (self.there / 'd-0').mkdir(parents=True)
-        (self.there / 'd-00').mkdir()
+        self.snap('d-2026-01-01_000001', 'd-2026-01-01_000002')
+        (self.there / 'd-2026-01-01_000000').mkdir(parents=True)
+        (self.there / 'd-2026-01-01_000001').mkdir()
+        (self.there / 'd-00').mkdir()          # made by hand: never this send's to prune
         before = sorted(p.name for p in self.there.iterdir())
         r = self.run_script('nas', tasks.script(self.conn, task))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('would run: btrfs send', r.stdout)
-        self.assertIn('would remove d-0', r.stdout)
+        self.assertIn('would remove d-2026-01-01_000000', r.stdout)
+        self.assertNotIn('would remove d-00', r.stdout)
         self.assertEqual(sorted(p.name for p in self.there.iterdir()), before)
         log = self.log.read_text()
         for word in ('recv-receive', 'recv-mkdir', 'btrfs send', 'subvolume delete'):
@@ -578,7 +580,7 @@ class Generated(TwoHosts):
 
     def test_with_no_flags_the_scripts_of_a_deploy_only_report(self):
         task = self.task(self.btrfs_block(keep=1))
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         items = tasks.deploy_items(self.db, self.conn, task, 'report', 'tester')
         self.assertEqual([(it['host'], it['kind'], it['args']) for it in items], [('pc', 'sends', []), ('nas', 'sends', []), ('nas', 'tasks', [])])
         for it in items:
@@ -625,10 +627,10 @@ class Generated(TwoHosts):
         """A receiver that was taken over answers a listing with what it likes: here it names a folder outside the snapshots."""
         task = self.task(self.btrfs_block())
         self.install_task(task)
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         outside = self.t / 'outside'
         outside.mkdir()
-        (self.t / 'pc/usr/storageforge-job').write_text('#!/bin/bash\ncase $3 in recv-list) echo "d-/../../outside" ;; recv-state*) echo "done 1234abcd" ;; recv-probe) echo ok ;; recv-mkdir) ;; recv-receive*) cat >/dev/null; echo "received d-1 1234abcd" ;; esac\n')
+        (self.t / 'pc/usr/storageforge-job').write_text('#!/bin/bash\ncase $3 in recv-list) echo "d-/../../outside" ;; recv-state*) echo "done 1234abcd" ;; recv-probe) echo ok ;; recv-mkdir) ;; recv-receive*) cat >/dev/null; echo "received d-2026-01-01_000001 1234abcd" ;; esac\n')
         r = self.timer_run(task)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn('outside', self.log.read_text())
@@ -715,7 +717,7 @@ class Generated(TwoHosts):
         with self.assertRaises(receiving.NotEnrolled) as caught:
             tasks.deploy_items(self.db, self.conn, task, 'apply', 'tester')
         self.assertIn('storageforge-index scan --host', str(caught.exception))
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         runs = self.run_items(tasks.deploy_items(self.db, self.conn, task, 'report', 'tester'))
         self.assertEqual(len(runs), 1)
         self.assertIn('192.0.2.77 is not enrolled', runs[0]['output'])
@@ -724,7 +726,7 @@ class Generated(TwoHosts):
     def test_the_script_of_a_host_not_enrolled_has_no_way_there_by_hand(self):
         deploy.set_access(self.conn, 'pc', 'failed', '', 'test')
         task = self.task(self.btrfs_block())
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         r = self.timer_run(task)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('pc is not enrolled', r.stdout)
@@ -732,7 +734,7 @@ class Generated(TwoHosts):
 
     def test_a_downloaded_script_with_no_key_reaches_nothing(self):
         task = self.task(self.btrfs_block())
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         r = self.timer_run(task)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('no job key', r.stdout)
@@ -747,20 +749,20 @@ class Generated(TwoHosts):
         self.install_task(task)
         keys = self.t / 'pc/var/lib/storageforge/deploy/.ssh/authorized_keys'
         keys.write_text('')
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         r = self.timer_run(task)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('Permission denied', r.stdout)
 
     def test_a_same_host_send_needs_no_key_no_ssh_and_no_deploy_item(self):
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         task = self.task(self.btrfs_block(there=''))
         items = tasks.deploy_items(self.db, self.conn, task, 'apply', 'tester', run_now=True)
         self.assertEqual([it['kind'] for it in items], ['tasks'])
         r = self.run_items(items)[0]
         self.assertEqual(r['rc'], 0, r['output'])
         self.assertNotIn('ssh ', self.log.read_text())
-        self.assertTrue((self.there / 'd-1').is_dir())
+        self.assertTrue((self.there / 'd-2026-01-01_000001').is_dir())
 
     def test_a_host_naming_itself_is_the_same_host(self):
         task = self.task(self.btrfs_block(there='nas'))
@@ -1066,20 +1068,20 @@ class RealSshd(TwoHosts):
     def test_a_task_sends_through_a_real_sshd_and_says_so_on_the_other_side(self):
         task = self.task(self.btrfs_block(keep=1))
         self.install_task(task)
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         r = self.timer_run(task)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertTrue((self.there / 'd-1').is_dir())
+        self.assertTrue((self.there / 'd-2026-01-01_000001').is_dir())
         self.assertEqual(self.recorded()[-1]['verb'], 'receive')
-        self.snap('d-2')
+        self.snap('d-2026-01-01_000002')
         r = self.timer_run(task)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(sorted(p.name for p in self.there.iterdir()), ['d-2'])
+        self.assertEqual(sorted(p.name for p in self.there.iterdir()), ['d-2026-01-01_000002'])
 
     def test_a_failed_receive_comes_back_through_ssh_as_a_failure_with_its_reason(self):
         task = self.task(self.btrfs_block())
         self.install_task(task)
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         (self.flags / 'receive-fails').write_text('')
         r = self.timer_run(task)
         self.assertNotEqual(r.returncode, 0)
@@ -1112,11 +1114,11 @@ class RealSshd(TwoHosts):
         subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(self.d / 'stranger')], check=True, env=child_env())
         known = next((self.t / 'nas/etc/storageforge/sends').glob('*.hostkey'))
         known.write_text('storageforge-source ' + ' '.join((self.d / 'stranger.pub').read_text().split()[:2]) + '\n')
-        self.snap('d-1')
+        self.snap('d-2026-01-01_000001')
         r = self.timer_run(task)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('Host key verification failed', r.stdout + r.stderr)
-        self.assertFalse((self.there / 'd-1').exists())
+        self.assertFalse((self.there / 'd-2026-01-01_000001').exists())
 
     def test_an_uninstall_ends_the_key_on_the_spot(self):
         task = self.task(self.btrfs_block())
