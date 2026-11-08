@@ -28,6 +28,8 @@ Storage on a few Linux machines tends to live in shell history, an old wiki page
 
 Monitoring tools show how full a disk is. Backup tools copy what you point them at. Configuration tools apply what you describe, but they don't know what is on the disk. StorageForge joins those up: it keeps a searchable record of what every host holds, and checks each plan against that record before anything runs.
 
+I built it because I wanted to use it, not because I wanted to maintain a storage tool. Please steal the idea, take whatever helps from the code and make a better one. Until someone does, I will keep developing this one.
+
 ## What it does
 
 - **Finds files on every host.** Search by name, size, age, host or folder from the web UI or the CLI, and see what changed between scans, duplicate folders and cold data.
