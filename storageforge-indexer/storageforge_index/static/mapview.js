@@ -121,6 +121,8 @@ function mapShell(box) {
   });
   bar.append(fmts, button('Clear pins', () => { MP.positions = {}; mapDraw(); }, 'btn small'));
   const canvas = el('div', { id: 'mpcanvas', class: 'mpcanvas' });
+  MP.cv = sfCanvas(canvas, { view: MP.view, min: 0.2, max: 3, step: 1.25, apply: mapPaint, ignore: '.mptools, .mplegend',      // canvas.js: pans and zooms as Topology does
+    pannable: (t) => !!t.closest('svg') && !t.closest('[data-id], [data-frame]') });
   const side = el('aside', { class: 'mpside' }, el('div', { id: 'mpdetail' }), el('div', { id: 'mpreach' }), el('div', { id: 'mpwhatif' }), el('div', { id: 'mpcover' }), el('div', { id: 'mpmanual' }), el('div', { id: 'mpdesigns' }), el('div', { id: 'mpviews' }), el('div', { id: 'mpchanges' }));
   box.append(bar, el('div', { class: 'mpbody' }, canvas, side));
   mapViews();
@@ -182,9 +184,9 @@ function mapLayout(g) {
     const fx = pin ? pin.x : x, fy = pin ? pin.y : y;
     const frame = { x: fx, y: fy, w: MP_W, h: shut ? 44 : 44 + items.length * MP_ROW + 8, host, node: hostNode, count: items.length, shut };
     // semantic zoom: far out, or shut by hand, a host is one box, and lines to what is inside it go to the box
-    if (!shut) items.forEach((n, i) => rects.set(n.id, { x: fx + 10, y: fy + 44 + i * MP_ROW, w: MP_W - 20, h: MP_ROW - 4, node: n }));
-    else items.forEach((n) => rects.set(n.id, { x: fx, y: fy, w: MP_W, h: 36, node: n, inside: true }));
-    if (hostNode) rects.set(hostNode.id, { x: fx, y: fy, w: MP_W, h: 36, node: hostNode, frame: true });
+    if (!shut) items.forEach((n, i) => rects.set(n.id, { x: fx + 10, y: fy + 44 + i * MP_ROW, w: MP_W - 20, h: MP_ROW - 4, node: n, fh: host }));
+    else items.forEach((n) => rects.set(n.id, { x: fx, y: fy, w: MP_W, h: 36, node: n, inside: true, fh: host }));
+    if (hostNode) rects.set(hostNode.id, { x: fx, y: fy, w: MP_W, h: 36, node: hostNode, frame: true, fh: host });
     out.push(frame);
     heights[col] = (pin ? y : y + frame.h + MP_GAP);
   }
@@ -222,24 +224,27 @@ function mapDraw() {
   const { frames, rects } = mapLayout(g);
   MP.rects = rects;
   const root = sv('g', { id: 'mproot' });
+  MP.frameEls = new Map(); MP.edgeEls = [];      // what a frame drag moves before it lets go (mapDragPaint)
   for (const f of frames) {
     const b = (f.node && f.node.props.security) || null;
     const t = [f.host];
     if (b) { if (b.holds) t.push(`🔒${b.holds}`); if (b.decoys) t.push(`🎯${b.decoys}`); if (b.quarantined) t.push(`⛔${b.quarantined}`); if (b.selinux) t.push(`SELinux ${b.selinux}`); }
     if (f.shut) t.push(`(${f.count} inside)`);
     const head = sv('text', { x: f.x + 12, y: f.y + 24, class: 'mphost' }); head.textContent = t.join('  ');
-    root.append(sv('rect', { x: f.x, y: f.y, width: f.w, height: f.h, rx: 8, class: 'mpframe' }), head);
+    const box = sv('g', {}, sv('rect', { x: f.x, y: f.y, width: f.w, height: f.h, rx: 8, class: 'mpframe' }), head);
+    MP.frameEls.set(f.host, [box]);
+    root.append(box);
   }
   const edgeLayer = sv('g', { id: 'mpedges' });
   for (const e of g.edges) {
     const a = rects.get(e.src), b = rects.get(e.dst);
     if (!a || !b) continue;
-    const ax = a.x + a.w / 2, ay = a.y + a.h / 2, bx = b.x + b.w / 2, by = b.y + b.h / 2;
-    const my = (ay + by) / 2;
     const conf = (e.props || {}).confidence;
     if (a.inside && b.inside && a.x === b.x && a.y === b.y) continue;
     const trace = MP.trace.has(e.src) && MP.trace.has(e.dst);
-    edgeLayer.append(sv('path', { d: `M${ax} ${ay} C${ax} ${my} ${bx} ${my} ${bx} ${by}`, class: `mpedge${conf === 'inferred' || conf === 'manual' ? ' inferred' : ''}${e.ghost ? ' ghost' : ''}${trace ? ' trace' : ''}`, 'data-src': e.src, 'data-dst': e.dst }));
+    const path = sv('path', { d: mapEdgeD(a, b), class: `mpedge${conf === 'inferred' || conf === 'manual' ? ' inferred' : ''}${e.ghost ? ' ghost' : ''}${trace ? ' trace' : ''}`, 'data-src': e.src, 'data-dst': e.dst });
+    if (a.fh || b.fh) MP.edgeEls.push({ path, a, b });
+    edgeLayer.append(path);
   }
   root.append(edgeLayer);
   /* Every node is a button a keyboard can reach (UX-17), in reading order: the shared band first, then each host's header followed by what is in its frame. */
@@ -265,6 +270,7 @@ function mapDraw() {
     grp.append(sv('rect', { x: f.x, y: f.y, width: f.w, height: 36, class: 'mphit', tabindex: '0', role: 'button', 'data-frame': f.host, ...(f.node ? { 'data-id': f.node.id } : {}),
       'aria-label': `${f.host}, ${f.shut ? 'closed' : 'open'}. Enter ${f.shut ? 'opens' : 'closes'} it, Space shows its details` }));
     for (const r of mine) grp.append(nodeEl(r));
+    MP.frameEls.get(f.host).push(grp);
     root.append(grp);
   }
   for (const x of MP.notes) {
@@ -274,7 +280,7 @@ function mapDraw() {
   const svg = sv('svg', { id: 'mpsvg', class: 'mpsvg', role: 'group', 'aria-label': `Infrastructure map, ${loose.length + frames.length} items` }, root);
   canvas.replaceChildren(svg, mapTools(), mapLegend());
   svg.addEventListener('dblclick', (ev) => { const f = ev.target.closest('[data-frame]'); if (f) { const h = f.dataset.frame; if (MP.collapsed.has(h)) MP.collapsed.delete(h); else MP.collapsed.add(h); mapDraw(); } });
-  svg.addEventListener('click', (ev) => { const t = ev.target.closest('[data-id]'); MP.sel = t ? t.dataset.id : null; mapDetail(); mapHighlight(MP.sel); });
+  svg.addEventListener('click', (ev) => { if (MP.cv.quiet() || Date.now() - (MP.quiet || 0) < 250) return; const t = ev.target.closest('[data-id]'); MP.sel = t ? t.dataset.id : null; mapDetail(); mapHighlight(MP.sel); });
   svg.addEventListener('keydown', (ev) => {      // the map's own keys, on the map: Enter on a node, Enter or Space on a host's header, as a click and a double click are
     if (!ev.ctrlKey && !ev.metaKey && !ev.altKey && MP_ZOOM_KEYS[ev.key]) { ev.preventDefault(); MP_ZOOM_KEYS[ev.key](); return; }      // + - 0 and F, as the buttons are
     if ((ev.key !== 'Enter' && ev.key !== ' ') || ev.ctrlKey || ev.metaKey || ev.altKey) return;
@@ -291,24 +297,35 @@ function mapDraw() {
   });
   svg.addEventListener('mouseover', (ev) => { const t = ev.target.closest('[data-id]'); if (t) mapHighlight(t.dataset.id); });
   svg.addEventListener('mouseout', () => mapHighlight(MP.sel));
-  svg.addEventListener('wheel', (ev) => { ev.preventDefault(); const f = ev.deltaY < 0 ? 1.15 : 0.87; MP.view.k = Math.min(3, Math.max(0.2, MP.view.k * f)); mapApply(); }, { passive: false });
+  /* a host's heading drags the host: it follows the pointer with its lines, and is pinned where it is let go. The background pans (canvas.js) */
   svg.addEventListener('pointerdown', (ev) => {
-    const f = ev.target.closest('[data-frame]');
-    if (f) { const fr = frames.find((x) => x.host === f.dataset.frame); MP.drag = { frame: fr.host, x: ev.clientX, y: ev.clientY, fx: fr.x, fy: fr.y, moved: false }; return; }
-    if (!ev.target.closest('[data-id]')) MP.drag = { x: ev.clientX, y: ev.clientY, vx: MP.view.x, vy: MP.view.y };
+    const f = ev.button === 0 && ev.target.closest('[data-frame]');
+    if (!f) return;
+    const fr = frames.find((x) => x.host === f.dataset.frame);
+    MP.drag = { frame: fr.host, x: ev.clientX, y: ev.clientY, fx: fr.x, fy: fr.y, dx: 0, dy: 0, moved: false, id: ev.pointerId, req: 0 };
   });
   svg.addEventListener('pointermove', (ev) => {
-    if (!MP.drag) return;
-    if (MP.drag.frame) {
-      const dx = (ev.clientX - MP.drag.x) / MP.view.k, dy = (ev.clientY - MP.drag.y) / MP.view.k;
-      if (Math.abs(dx) + Math.abs(dy) > 4) { MP.drag.moved = true; MP.positions[`frame:${MP.drag.frame}`] = { x: MP.drag.fx + dx, y: MP.drag.fy + dy }; }
-      return;
+    const d = MP.drag;
+    if (!d || ev.pointerId !== d.id) return;
+    if (!d.moved) {
+      if (Math.abs(ev.clientX - d.x) + Math.abs(ev.clientY - d.y) < 4) return;
+      d.moved = true; svg.setPointerCapture(d.id); svg.classList.add('moving');
     }
-    MP.view.x = MP.drag.vx + ev.clientX - MP.drag.x; MP.view.y = MP.drag.vy + ev.clientY - MP.drag.y; mapApply();
+    d.dx = (ev.clientX - d.x) / MP.view.k; d.dy = (ev.clientY - d.y) / MP.view.k;
+    if (!d.req) d.req = requestAnimationFrame(() => { d.req = 0; mapDragPaint(d); });
   });
-  svg.addEventListener('pointerup', () => { if (MP.drag?.moved) { MP.drag = null; mapDraw(); return; } MP.drag = null; });
-  svg.addEventListener('pointerleave', () => { MP.drag = null; });
-  if (MP.fitted) mapApply(); else { MP.fitted = true; mapFit(0.5); }
+  const drop = (ev) => {
+    const d = MP.drag;
+    if (!d || ev.pointerId !== d.id) return;
+    MP.drag = null; cancelAnimationFrame(d.req); svg.classList.remove('moving');
+    if (!d.moved) return;
+    MP.quiet = Date.now();
+    MP.positions[`frame:${d.frame}`] = { x: d.fx + d.dx, y: d.fy + d.dy };
+    mapDraw();
+  };
+  svg.addEventListener('pointerup', drop);
+  svg.addEventListener('pointercancel', drop);
+  if (MP.fitted) MP.cv.apply(true); else { MP.fitted = true; mapFit(0.5); }
 }
 
 // Everything in view, but no smaller than `least`: past that, labels are gone, so it starts at the top instead.
@@ -316,10 +333,24 @@ function mapFit(least) {
   const root = $('#mproot'), svg = $('#mpsvg');
   if (!root) return;
   root.removeAttribute('transform');
-  const b = root.getBBox(), w = svg.clientWidth || 800, h = svg.clientHeight || 600;
-  const k = Math.max(least, Math.min(1, (w - 20) / (b.width + 1), (h - 20) / (b.height + 1)));
-  MP.view = { k, x: 10 - b.x * k, y: 10 - b.y * k };
-  mapApply();
+  const b = root.getBBox();
+  if (!MP.cv.fit({ x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height }, { least, most: 1, left: 10, top: 10, right: 10, bottom: 10, centre: false })) MP.cv.apply(true);
+}
+
+function mapEdgeD(a, b, da = null, db = null) {       // da, db: how far a frame being dragged has moved that end
+  const ax = a.x + a.w / 2 + (da ? da.dx : 0), ay = a.y + a.h / 2 + (da ? da.dy : 0), bx = b.x + b.w / 2 + (db ? db.dx : 0), by = b.y + b.h / 2 + (db ? db.dy : 0);
+  const my = (ay + by) / 2;
+  return `M${ax} ${ay} C${ax} ${my} ${bx} ${my} ${bx} ${by}`;
+}
+
+function mapDragPaint(d) {
+  const t = `translate(${d.dx} ${d.dy})`;
+  for (const e of MP.frameEls.get(d.frame) || []) e.setAttribute('transform', t);
+  for (const x of MP.edgeEls) {
+    const ma = x.a.fh === d.frame, mb = x.b.fh === d.frame;
+    if (ma !== mb) x.path.setAttribute('d', mapEdgeD(x.a, x.b, ma ? d : null, mb ? d : null));
+    else if (ma) x.path.setAttribute('transform', t);
+  }
 }
 
 function mapText(n) {
@@ -331,10 +362,10 @@ function mapText(n) {
   return n.label.slice(0, 40);
 }
 
-function mapApply() {
+function mapPaint(v) {               // once a frame at most: sfCanvas (canvas.js) calls it
   const r = $('#mproot');
   if (r) {
-    r.setAttribute('transform', `translate(${MP.view.x} ${MP.view.y}) scale(${MP.view.k})`);
+    r.setAttribute('transform', `translate(${v.x} ${v.y}) scale(${v.k})`);
     $('#mpsvg').classList.toggle('far', MP.view.k < 0.5);
     const z = $('#mpzoom'); if (z) z.textContent = `${Math.round(MP.view.k * 100)}%`;
     mapSemantic();
@@ -350,12 +381,9 @@ function mapHighlight(id) {
 /* Zoom without a wheel: − and + about the middle of the canvas, the percentage resets to 100%, Fit puts everything on screen.
    The same four are the keys - + 0 and F while focus is on the map. */
 function mapZoomTo(k, say = true) {
-  const svg = $('#mpsvg');
-  if (!svg) return;
-  const next = Math.min(3, Math.max(0.2, k)), cx = (svg.clientWidth || 800) / 2, cy = (svg.clientHeight || 600) / 2, f = next / MP.view.k;
-  MP.view = { k: next, x: cx - (cx - MP.view.x) * f, y: cy - (cy - MP.view.y) * f };
-  mapApply();
-  if (say) announce(`Zoom ${Math.round(next * 100)} percent`);
+  if (!$('#mpsvg') || !MP.cv) return;
+  MP.cv.zoomTo(k);
+  if (say) announce(`Zoom ${Math.round(MP.view.k * 100)} percent`);
 }
 const MP_ZOOM_KEYS = { '+': () => mapZoomTo(MP.view.k * 1.25), '=': () => mapZoomTo(MP.view.k * 1.25), '-': () => mapZoomTo(MP.view.k / 1.25), 0: () => mapZoomTo(1), '0': () => mapZoomTo(1), f: () => { mapFit(0); announce('Fitted to the screen'); }, F: () => { mapFit(0); announce('Fitted to the screen'); } };
 

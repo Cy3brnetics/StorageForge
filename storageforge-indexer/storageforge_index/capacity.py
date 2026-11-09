@@ -36,12 +36,14 @@ def both(n, digits=2):
     return 'n/a' if n is None else f'{fmt_bin(n, digits)} ({fmt_dec(n, digits)})'
 
 
-_SIZE_RE = re.compile(r'^\s*([0-9]*\.?[0-9]+)\s*([kmgtpe]?)(i?)(b?)\s*$', re.IGNORECASE)
+# parse_size strips the text first, so spaces can only sit between the number and the unit, and digits split one
+# way: linear time (two runs of spaces or digits side by side are quadratic on a long one)
+_SIZE_RE = re.compile(r'([0-9]+(?:\.[0-9]+)?|\.[0-9]+)\s*([kmgtpe]?)(i?)(b?)', re.IGNORECASE)
 
 
 def parse_size(text) -> int:
     """'100MB' → 10**8 (decimal); '100MiB' and '100M' → 100·2**20 (binary, as df, du and find print)."""
-    m = _SIZE_RE.match(str(text))
+    m = _SIZE_RE.fullmatch(str(text).strip())
     if not m:
         raise ValueError(f'unrecognised size {text!r}; use e.g. 500K, 100MB, 1.5GiB or 2T')
     num, unit, binary, b = m.groups()

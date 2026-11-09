@@ -1314,6 +1314,18 @@ class Behaviour(Base):
         self.assertEqual(security.velocity(self.conn, 'nas')['appended_extensions'], 60)
         self.assertIn('security-renames:nas', alerts.problems(self.conn))
 
+    def test_appended_extensions_are_counted_as_the_join_did(self):
+        """By lookup now, not a LIKE join: the same pairs, whatever the case, and once per name a longer one starts with."""
+        ids, hid = self.scans([1, 1])
+        for name, kind in (('Report.DOCX', 'deleted'), ('report.docx.enc', 'added'),        # case does not matter, as LIKE ignored it
+                           ('a', 'deleted'), ('a.tar', 'deleted'), ('a.tar.gz', 'added'),     # two deleted names it extends: two pairs
+                           ('x', 'deleted'), ('x', 'added'), ('xy.z', 'added'),               # the same name, and a longer stem: neither
+                           ('.bashrc', 'deleted'), ('.bashrc.bak', 'added')):
+            self.change(ids[1], hid, name, kind)
+        self.change(ids[1], hid, 'b', 'deleted', parent='/srv/b')
+        self.change(ids[1], hid, 'b.x', 'added')                                             # another folder: no
+        self.assertEqual(security._appended(self.conn, ids[1]), 4)
+
     def sample_dir(self):
         d = self.tmp / 'files'
         d.mkdir()

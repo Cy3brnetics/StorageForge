@@ -465,44 +465,19 @@ function fmDraw() {
   fmMark();
   if (L.pending.length) Promise.all(L.pending.map(fmLoadKids)).then(fmDraw);
 }
-function fmApply() { if (FM.world) FM.world.style.transform = `translate(${FM.view.x}px, ${FM.view.y}px) scale(${FM.view.k})`; }
+function fmPaint(v) { if (FM.world) FM.world.style.transform = `translate(${v.x}px, ${v.y}px) scale(${v.k})`; }
+function fmApply() { if (FM.cv) FM.cv.apply(true); else fmPaint(FM.view); }
 function fmFit() {
-  const W = FM.tree.clientWidth, H = FM.tree.clientHeight, [w, h] = FM.size;
-  if (!W || !w) return;
-  const k = Math.max(0.35, Math.min(1, (W - 48) / w, (H - 48) / h));
-  FM.view = { k, x: Math.max(24, (W - w * k) / 2), y: Math.max(24, (H - h * k) / 2) };
-  fmApply();
+  const [w, h] = FM.size || [0, 0];
+  if (FM.cv && w) FM.cv.fit({ x1: 0, y1: 0, x2: w, y2: h }, { least: 0.35, most: 1 });
 }
-function fmZoom(f, mx = FM.tree.clientWidth / 2, my = FM.tree.clientHeight / 2) {
-  const v = FM.view, k = Math.max(0.2, Math.min(2, v.k * f));
-  v.x = mx - (mx - v.x) * (k / v.k); v.y = my - (my - v.y) * (k / v.k); v.k = k;
-  FM.moved = true;
-  fmApply();
-}
-function fmPanZoom() {
+function fmZoom(f) { FM.moved = true; FM.cv.zoomBy(f); }
+function fmPanZoom() {                     // pans and zooms as Topology and the Map do (canvas.js)
   const box = FM.tree;
-  box.addEventListener('wheel', (ev) => {
-    ev.preventDefault();
-    const r = box.getBoundingClientRect();
-    fmZoom(Math.exp(-ev.deltaY * (ev.deltaMode === 1 ? 40 : 1) * 0.0015), ev.clientX - r.left, ev.clientY - r.top);
-  }, { passive: false });
-  box.addEventListener('pointerdown', (ev) => {
-    if (ev.button !== 0 || ev.target.closest('.fmrow, .hit')) return;
-    const x0 = ev.clientX, y0 = ev.clientY, vx = FM.view.x, vy = FM.view.y;
-    let moved = false;
-    box.setPointerCapture(ev.pointerId); box.classList.add('panning');
-    const move = (e) => {
-      moved = moved || Math.hypot(e.clientX - x0, e.clientY - y0) > 3;
-      if (moved) FM.moved = true;
-      FM.view.x = vx + e.clientX - x0; FM.view.y = vy + e.clientY - y0;
-      fmApply();
-    };
-    const up = () => {
-      box.removeEventListener('pointermove', move); box.removeEventListener('pointerup', up); box.classList.remove('panning');
-      if (!moved && FM.sel) { FM.sel = null; fmMark(); fmPanel(); }
-    };
-    box.addEventListener('pointermove', move); box.addEventListener('pointerup', up);
-  });
+  FM.cv = sfCanvas(box, { view: FM.view, min: 0.2, max: 2, apply: fmPaint,
+    pannable: (t) => !t.closest('.fmrow, .hit'),
+    moved: () => { FM.moved = true; },
+    tap: () => { if (FM.sel) { FM.sel = null; fmMark(); fmPanel(); } } });
   new ResizeObserver(() => { if (fmActive() && !FM.moved && FM.size) fmFit(); }).observe(box);
 }
 function fmBar() {
@@ -544,6 +519,7 @@ function fmExpandAll() {                   // the folders on the way, not the co
 }
 function fmCollapseAll() { FM.open.clear(); fmWalk((n) => { if (!n.hostRoot || n.root === 'b') FM.closed.add(n.id); }); fmDraw(); }
 function fmKey(ev) {
+  if (FM.cv.key(ev, () => { FM.moved = false; fmFit(); })) return;       // − + 0 F, as on the other canvases
   const rows = [...FM.tree.querySelectorAll('.fmrow')], cur = ev.target.closest?.('.fmrow') || rows[0];
   if (!cur) return;
   const i = rows.indexOf(cur), n = cur._node, d = cur._depth;

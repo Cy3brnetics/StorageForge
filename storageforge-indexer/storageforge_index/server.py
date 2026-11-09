@@ -756,7 +756,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js"):name>')
+    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
@@ -2388,24 +2388,33 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 remember(folder_cache, key, result, latest)
         return result
 
-    dir_kept: list = [None]                   # (scan id, folder index): listings and comparisons share it. Replaced whole, never edited
+    dir_kept: list = [{}]                     # mount id → (its mark, its folders): replaced whole, never edited, so readers need no lock
     dir_build = threading.Lock()
 
     def kept_dir_index():
-        kept = dir_kept[0]
-        return kept[1] if kept and kept[0] == conn().scalar('SELECT max(scan_id) FROM scans') else None
+        """The folder index when every mount in it is current, else None (a listing then reads the tables)."""
+        kept, marks = dir_kept[0], folders.mount_marks(conn())
+        if any(kept.get(m, (None,))[0] != k for m, k in marks.items()):
+            return None
+        return {m: kept[m][1] for m in marks if kept[m][1] is not None}
 
     def build_dir_index(host):
-        """One build at a time. A scan changes rows as it goes, so nothing is kept while one runs, as in folder_result."""
+        """Rebuilds only the mounts a scan changed since they were kept, one build at a time. A mount whose host is being
+        scanned, or that changed while it was read, serves this request and is built again next time."""
         with dir_build:
-            if (index := kept_dir_index()) is not None:
-                return index
-            latest, running = conn().all("SELECT max(scan_id), count(CASE WHEN status = 'running' THEN 1 END) FROM scans")[0]
-            if running:
-                return folders.dir_index(conn(), host)
-            dir_kept[0] = None                # the old one goes first: two at once is a lot of memory
-            dir_kept[0] = (latest, folders.dir_index(conn()))
-            return dir_kept[0][1]
+            marks = folders.mount_marks(conn())
+            mine = folders.mount_marks(conn(), host) if host else marks
+            kept = {m: v for m, v in dir_kept[0].items() if marks.get(m) == v[0]}
+            dir_kept[0] = kept                # what went stale goes first: two copies of a big mount is a lot of memory
+            stale = [m for m in mine if m not in kept]
+            built = folders.dir_index(conn(), None, stale) if stale else {}
+            if stale:
+                after, busy = folders.mount_marks(conn()), folders.scanning_mounts(conn())
+                fresh = {m: (marks[m], built.get(m)) for m in stale if after.get(m) == marks[m] and m not in busy}
+                dir_kept[0] = {**kept, **fresh}
+            index = {m: v[1] for m, v in kept.items() if v[1] is not None}
+            index.update(built)
+            return index
 
     @web.get('/api/folders/cold')
     @login_required
@@ -2447,6 +2456,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         with web.app_context():
             if not conn().scalar("SELECT count(*) FROM scans WHERE status = 'running'"):   # the last one to finish wakes this again
                 filemap_result(None, parse_size('1MiB'), False, True)
+            else:                             # the mounts no scan is touching: a page opened meanwhile builds only the rest
+                build_dir_index(None)
     web.warm_filemap = warm_filemap
 
     @web.route('/api/files/ignore', methods=['GET', 'PUT'])

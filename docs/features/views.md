@@ -10,7 +10,7 @@ An editable schema-style canvas of each host's design. A host is a frame, each d
 
 ![Topology filtered to sf-ubuntu](../images/features/topology-host.jpg)
 
-- **Moving around:** scroll to pan, Ctrl+scroll to zoom, drag a table or frame by its heading. The toolbar has **Fit**, **Auto-layout**, **Collapse all** and a box finder.
+- **Moving around:** scroll or drag the background to pan, Ctrl+scroll or pinch to zoom, − + 0 F from the keyboard, drag a table or frame by its heading. The Map and the Files map move the same way. The toolbar has **Fit**, **Auto-layout**, **Collapse all** and a box finder.
 - **What you can edit:** tiers, encryption notes, 3-2-1 protection, links and exports. Hardware comes from the scan. Drag one mount point onto another to set a backup target. **Save design** stores it and rebuilds the graph.
 - **Staged work:** staged subvolumes and mounts show as dashed boxes, and a banner offers **Review**.
 

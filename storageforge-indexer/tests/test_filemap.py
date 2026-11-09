@@ -204,6 +204,61 @@ class FileMap(unittest.TestCase):
         both = folders.duplicate_folders(self.conn, None, 3, 1, include_system=True, index=everywhere)['groups']
         self.assertEqual({c['path'] for c in both[0]['copies']}, {'/data/one', '/data/two', '/other/three'})
 
+    def test_an_index_of_some_mounts_is_that_part_of_the_whole(self):
+        for path in ('/data/a/one', '/data/a/two', '/data/b/three'):
+            self.file('nas', path, None, size=9)
+        for path in ('/srv/x/one', '/srv/x/two'):
+            self.file('nas', path, None, size=3, mount='/srv')
+        self.file('pc', '/home/me/notes', None, size=4)
+        whole = folders.dir_index(self.conn)
+        nas = self.mounts[('nas', '/')]
+        part = folders.dir_index(self.conn, None, [nas])
+        self.assertEqual(set(part), {nas})
+        for attr in ('paths', 'prints'):
+            self.assertEqual(getattr(part[nas], attr), getattr(whole[nas], attr))
+        for attr in ('bytes', 'entries', 'fp', 'files', 'size'):
+            self.assertEqual(list(getattr(part[nas], attr)), list(getattr(whole[nas], attr)))
+        self.assertEqual(folders.dir_index(self.conn, None, []), {})
+        self.assertEqual(set(folders.mount_marks(self.conn, 'pc')), {self.mounts[('pc', '/')]})
+
+    def test_the_server_rebuilds_only_the_mounts_a_scan_changed(self):
+        from unittest import mock
+        from storageforge_index import server, users
+        for root in ('/data/one', '/data/two'):
+            for name in ('a', 'b', 'c'):
+                self.file('nas', f'{root}/{name}', None)
+        self.file('pc', '/home/me/a', None)
+        users.create(self.conn, 'admin', 'a long enough password', 'admin')
+        client = server.create_app(server.App(self.db), 's' * 48).test_client()
+        self.assertEqual(client.post('/api/login', json={'username': 'admin', 'password': 'a long enough password'}).status_code, 200)
+        built, real = [], folders.dir_index
+
+        def counting(conn, host=None, mounts=None):
+            built.append(sorted(mounts) if mounts is not None else None)
+            return real(conn, host, mounts)
+
+        nas, pc = self.mounts[('nas', '/')], self.mounts[('pc', '/')]
+        get = lambda: client.get('/api/filemap?folders=1&min_size=1')
+        scan = lambda host, status: self.conn.scalar(
+            "INSERT INTO scans (host_id, started_at, status) SELECT host_id, 1, :s FROM hosts WHERE hostname = :h RETURNING scan_id", {'s': status, 'h': host})
+        mark = lambda mount, sid: self.conn.execute('UPDATE mounts SET last_scan_id = :s WHERE mount_id = :m', {'s': sid, 'm': mount})
+        with mock.patch.object(folders, 'dir_index', counting):
+            first = get().get_json()
+            self.assertEqual(built, [sorted([nas, pc])])
+            self.assertEqual({c['path'] for c in first['folder_copies'][0]['copies']} if first['folder_copies'] else set(), {'/data/one', '/data/two'})
+            mark(pc, scan('pc', 'ok'))              # pc was scanned: only its mount is read again
+            built.clear(); get()
+            self.assertEqual(built, [[pc]])
+            mark(nas, scan('nas', 'running'))       # nas is being scanned: its mount serves the request and is not kept
+            built.clear(); get(); get()
+            self.assertEqual(built, [[nas], [nas]])
+            self.conn.execute("UPDATE scans SET status = 'ok' WHERE status = 'running'")
+            built.clear(); last = get().get_json()
+            self.assertEqual(built, [[nas]])
+            built.clear(); get()
+            self.assertEqual(built, [])
+        self.assertEqual(last['folder_copies'], first['folder_copies'])
+
 
 if __name__ == '__main__':
     unittest.main()

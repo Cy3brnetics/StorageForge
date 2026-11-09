@@ -128,6 +128,49 @@ class MapWhatIfBrowser(unittest.TestCase):
         self.assertEqual(shown(), fitted)
         self.assertEqual(self.errors, [])
 
+    def test_a_page_opened_on_the_map_draws_it(self):
+        """The view is chosen before mapview.js loads: the map used to stay empty until another view was picked and this one again."""
+        self.page.reload()
+        self.page.wait_for_selector('#mpsvg g.k-listener', state='attached', timeout=10000)
+        self.assertEqual(self.errors, [])
+
+    def until(self, expr, timeout=5):
+        """Polls an expression from here: the CSP blocks wait_for_function with a string."""
+        end = time.time() + timeout
+        while time.time() < end:
+            if self.page.evaluate(expr):
+                return
+            self.page.wait_for_timeout(50)
+        self.fail(f'never true: {expr}')
+
+    def test_the_wheel_pans_and_ctrl_wheel_zooms_as_in_the_topology(self):
+        view = lambda: self.page.evaluate('({ ...MP.view })')
+        box = self.page.locator('#mpsvg').bounding_box()
+        self.page.mouse.move(box['x'] + box['width'] * 0.75, box['y'] + box['height'] / 2)     # clear of the legend, which scrolls itself
+        before = view()
+        self.page.mouse.wheel(0, 120)
+        self.until(f"MP.view.y !== {before['y']}")
+        after = view()
+        self.assertEqual(after['k'], before['k'])
+        self.assertAlmostEqual(after['y'], before['y'] - 120, delta=1)
+        self.page.keyboard.down('Control')
+        self.page.mouse.wheel(0, -120)
+        self.page.keyboard.up('Control')
+        self.until(f"MP.view.k > {after['k']}")
+        self.assertEqual(self.errors, [])
+
+    def test_a_host_dragged_by_its_heading_moves_before_it_is_let_go(self):
+        head = self.page.locator('#mpsvg [data-frame]').first
+        b = head.bounding_box()
+        self.page.mouse.move(b['x'] + 20, b['y'] + 10)
+        self.page.mouse.down()
+        for i in range(1, 11):
+            self.page.mouse.move(b['x'] + 20 + i * 6, b['y'] + 10 + i * 4)
+        self.until("(document.querySelector('#mpsvg .mphostgroup')?.getAttribute('transform') || '').startsWith('translate(')")
+        self.page.mouse.up()
+        self.until("Object.keys(MP.positions).some((k) => k.startsWith('frame:'))")
+        self.assertEqual(self.errors, [])
+
     def test_the_legend_says_what_the_colours_and_lines_mean_and_a_port_says_who_reaches_it(self):
         legend = self.page.inner_text('#mapview .mplegend')
         for words in ('Any address', 'Private networks', 'Blocked', 'Dashed outline or line: inferred', 'Dotted outline: staged', 'Struck-through name: would be removed', 'Thick line: the path you asked about'):

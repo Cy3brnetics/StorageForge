@@ -1025,6 +1025,8 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 .mpbar input[type=search] { min-width: 200px; }
 .mpbody { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; }
 .mpcanvas { position: relative; min-height: 0; overflow: hidden; }
+.mpcanvas { touch-action: none; }
+.mpcanvas.panning .mpsvg, .mpsvg.moving { cursor: grabbing; }
 .mpside { overflow: auto; padding: 12px; border-left: 1px solid var(--line, #333); }
 .mpsvg { width: 100%; height: 100%; cursor: grab; display: block; }
 .mpframe { fill: var(--panel, #1a1a1a); stroke: var(--line, #444); }

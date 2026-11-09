@@ -802,8 +802,12 @@ MAX_HOPS = 40          # the kernel's ELOOP limit
 LOCK_TARGET = re.compile(r'[^/]*:\+\d+')   # Firefox/Thunderbird profile locks: always dangling by design
 
 
+_SYSTEM_LINK_UNDER = tuple(d.rstrip('/') + '/' for d in SYSTEM_LINK_DIRS)
+
+
 def is_system_link(path: str) -> bool:
-    return path in SYSTEM_LINK_FILES or any(is_under(path, d) for d in SYSTEM_LINK_DIRS)
+    """The same as is_under() against each of SYSTEM_LINK_DIRS, in one startswith: it runs once per symlink indexed."""
+    return path in SYSTEM_LINK_FILES or path in SYSTEM_LINK_DIRS or path.startswith(_SYSTEM_LINK_UNDER)
 
 
 def canonical(path: str, links: dict) -> tuple[str, bool]:
@@ -844,6 +848,14 @@ def _index_links(conn, node, host_id, mount_ids, limit):
     mounts = real_mounts(node)
     links = {join_path(p, n): (t, mp) for p, n, t, mp in rows}
     picked, system = [], 0
+    listed: dict[tuple, set] = {}           # (mount, folder) → its names: many links point into the same few folders
+
+    def present(mount_id, parent, name):
+        if (mount_id, parent) not in listed:
+            listed[(mount_id, parent)] = {r[0] for r in conn.all(
+                'SELECT f.filename FROM file_records f JOIN directories d ON d.dir_id = f.dir_id WHERE d.mount_id = :m AND d.path = :p',
+                {'m': mount_id, 'p': parent})}
+        return name in listed[(mount_id, parent)]
     for path, (target, mp) in links.items():
         if is_system_link(path) or LOCK_TARGET.fullmatch(target):
             system += 1
@@ -860,9 +872,7 @@ def _index_links(conn, node, host_id, mount_ids, limit):
             exists = True
         elif tm and mount_ids.get(tm['target'], (None, False))[1]:
             parent, name = split_path(resolved)
-            exists = bool(conn.scalar('SELECT count(*) FROM file_records f JOIN directories d ON d.dir_id = f.dir_id '
-                                      'WHERE d.mount_id = :m AND d.path = :p AND f.filename = :n',
-                                      {'m': mount_ids[tm['target']][0], 'p': parent, 'n': name}))
+            exists = present(mount_ids[tm['target']][0], parent, name)
         if exists is False and is_ignored(node['hostname'], path, ignore):
             system += 1                         # a dangling link nobody wants flagged; working ones still count for rebuilds
             continue

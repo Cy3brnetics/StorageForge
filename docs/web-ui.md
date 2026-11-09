@@ -14,7 +14,7 @@ Which view is for what: **Topology** is where you edit what you own, **Graph** i
 
 The topology is a schema-designer canvas built from each host's design. Each host is a frame. Each disk, pool and remote is a table whose rows are its partitions, subvolumes, datasets and mount points. Lines join rows across tables: a member partition to its pool, a mount point to the links and exports inside it, an export to the client mounting it.
 
-- Scroll to pan, Ctrl+scroll to zoom, drag a table or host frame by its heading.
+- Scroll or drag the background to pan, Ctrl+scroll or pinch to zoom about the pointer, Shift+scroll to pan sideways, and − + 0 F from the keyboard. Drag a table or host frame by its heading. The Map and the Files map move the same way.
 - **Fit**, **Auto-layout** (forgets saved positions) and **Collapse all** are in the toolbar, with a box finder.
 - Table positions are saved with the design.
 - Staged subvolumes and mounts appear as dashed boxes; other staged changes mark the box they touch. A banner offers **Review** when changes are staged.

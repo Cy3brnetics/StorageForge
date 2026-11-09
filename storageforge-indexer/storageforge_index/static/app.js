@@ -1196,6 +1196,9 @@ async function boot() {
     const me = await getJSON('/api/me');
     setUser(me.username, me); applyPermissions(me); showSite(me.site); await loadHosts();
     const tab = takeLink();
+    // the first setMode() ran before mapview.js and netscanview.js were loaded, so their views were shown empty (filemap.js
+    // fills its own when it loads); a link that named another view has shown that one since, so only the one start-up chose is left
+    if (T.mode === T.bootMode && ['map', 'scan'].includes(T.mode)) setMode(T.mode, false);
     await Promise.all([loadGraph(), loadDesigns()]);
     if (tab) showTab(tab);
     if (T.mode === 'tasks' && typeof loadTasks === 'function') loadTasks();

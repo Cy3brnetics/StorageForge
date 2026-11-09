@@ -567,6 +567,18 @@ function initCanvas() {
     onkeydown: (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); findNext(ev.shiftKey); } else if (ev.key === 'Escape') { T.find.value = ''; T.hits = null; T.findN.textContent = ''; } } });
   T.findN = el('span', { class: 'muted small tfindn' });
   T.note = el('p', { class: 'tnote', hidden: true });
+  T.view = T.view || { x: 40, y: 60, k: 1 };
+  T.cv = sfCanvas(topo, {
+    view: T.view, apply: paintView, ignore: '.ttools, .tlegend',
+    pannable: (t) => !t.closest('.tt, .tframe > .thead, input, select, textarea, a, button, .badge'),
+    panStart: () => { T.hover = null; trace(null); },
+    settled: (v) => store.set('sf.topo.view', v),
+    tap: () => {                                    // a click on the background puts the selection down
+      if (!T.sel) return;
+      T.sel = null; topo.querySelectorAll('.tr.sel').forEach((x) => { x.classList.remove('sel'); x.setAttribute('aria-pressed', 'false'); });
+      renderSummary();
+    },
+  });
   const tool = (label, fn, title, id) => { const b = button(label, fn, 'btn ghost sm'); b.title = title; if (id) b.id = id; return b; };
   topo.append(T.world, T.note,
     el('div', { class: 'ttools', role: 'toolbar', 'aria-label': 'Canvas' },
@@ -588,35 +600,22 @@ function initCanvas() {
         el('span', {}, el('b', { class: 'tk' }, 'FK'), 'partition in a pool: select to jump')),
       el('p', { class: 'muted small' }, 'Scroll to pan, Ctrl+scroll or pinch to zoom, drag the background to pan. Drag a table or host by its heading; positions save with the design. Drag a mount point onto another to back it up there. Right-click anything for its actions.')));
 }
-function applyView() {
-  const v = T.view || (T.view = { x: 40, y: 60, k: 1 });
+function paintView(v) {             // once a frame at most: sfCanvas (canvas.js) calls it
   T.world.style.transform = `translate(${v.x}px, ${v.y}px) scale(${v.k})`;
   const g = GRID * v.k * (v.k < 0.5 ? 4 : 1);      // a coarser dot grid when zoomed out
   topo.style.backgroundSize = `${g}px ${g}px`;
   topo.style.backgroundPosition = `${v.x}px ${v.y}px`;
   T.zoomLbl.textContent = `${Math.round(v.k * 100)}%`;
-  store.set('sf.topo.view', v);
 }
-function zoomAt(k, cx, cy) {
-  const v = T.view; k = Math.max(0.2, Math.min(2.5, k));
-  v.x = cx - (cx - v.x) * (k / v.k); v.y = cy - (cy - v.y) * (k / v.k); v.k = k;
-  applyView();
-}
-const zoomBy = (f) => zoomAt(T.view.k * f, topo.clientWidth / 2, topo.clientHeight / 2);
+const applyView = () => T.cv.apply();
+const zoomBy = (f) => T.cv.zoomBy(f);
 function fitView() {
-  const fs = [...T.frames.values()], W = topo.clientWidth, H = topo.clientHeight;
-  if (!fs.length || !W) { applyView(); return; }
-  const x1 = Math.min(...fs.map((f) => f.x1)), y1 = Math.min(...fs.map((f) => f.y1));
-  const w = Math.max(...fs.map((f) => f.x2)) - x1, h = Math.max(...fs.map((f) => f.y2)) - y1;
-  const k = Math.max(0.2, Math.min(1, (W - 48) / w, (H - 110) / h));
-  T.view = { k, x: Math.max(24, (W - w * k) / 2) - x1 * k, y: Math.max(60, (H - h * k) / 2) - y1 * k };
-  applyView();
+  const fs = [...T.frames.values()];
+  if (!fs.length) { applyView(); return; }
+  const b = { x1: Math.min(...fs.map((f) => f.x1)), y1: Math.min(...fs.map((f) => f.y1)), x2: Math.max(...fs.map((f) => f.x2)), y2: Math.max(...fs.map((f) => f.y2)) };
+  if (!T.cv.fit(b, { most: 1, top: 60, bottom: 50 })) applyView();
 }
-function centerOn(x, y) {
-  const v = T.view; if (v.k < 0.7) v.k = 0.9;
-  v.x = topo.clientWidth / 2 - x * v.k; v.y = topo.clientHeight / 2 - y * v.k;
-  applyView();
-}
+const centerOn = (x, y) => T.cv.centerOn(x, y, Math.max(T.view.k, T.view.k < 0.7 ? 0.9 : 0));
 function reveal(host, key) {          // un-collapse its table, select it and bring it into view
   const r = T.rows.get(`${host}|${key}`);
   if (!r) return;
@@ -628,9 +627,8 @@ function focusHost(host) {
   const f = T.frames.get(host);
   if (!f) return;
   const k = T.view.k, W = topo.clientWidth, H = topo.clientHeight;
-  T.view.x = (f.x2 - f.x1) * k < W ? W / 2 - (f.x1 + f.x2) / 2 * k : 24 - f.x1 * k;
-  T.view.y = (f.y2 - f.y1) * k < H - 80 ? H / 2 - (f.y1 + f.y2) / 2 * k : 60 - f.y1 * k;
-  applyView();
+  T.cv.set({ x: (f.x2 - f.x1) * k < W ? W / 2 - (f.x1 + f.x2) / 2 * k : 24 - f.x1 * k,
+             y: (f.y2 - f.y1) * k < H - 80 ? H / 2 - (f.y1 + f.y2) / 2 * k : 60 - f.y1 * k });
 }
 function findNext(back) {
   const q = T.find.value.trim().toLowerCase();
@@ -1016,7 +1014,7 @@ function backUpTo(src, dst) {
 const topo = $('#topo');
 const rowOf = (ev) => (ev.target.nodeType === 1 ? ev.target : ev.target.parentElement)?.closest('.tr[data-host]') || null;
 topo.addEventListener('click', (ev) => {
-  if (Date.now() - T.quiet < 250) return;                 // the click that ends a drag
+  if (Date.now() - T.quiet < 250 || T.cv?.quiet()) return;     // the click that ends a drag
   const row = rowOf(ev);
   if (!row) return;
   if (row.dataset.jump) { selectBox(row.dataset.host, row.dataset.jump); reveal(row.dataset.host, row.dataset.jump); }
@@ -1030,39 +1028,27 @@ topo.addEventListener('keydown', (ev) => {
   const row = rowOf(ev);
   if (row && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); row.click(); return; }
   if (ev.target.closest('input, select, textarea') || ev.ctrlKey || ev.metaKey || ev.altKey) return;
-  const act = { '+': () => zoomBy(1.2), '=': () => zoomBy(1.2), '-': () => zoomBy(1 / 1.2), 0: () => zoomBy(1 / T.view.k), f: fitView,
-    Escape: () => { T.sel = null; topo.querySelectorAll('.tr.sel').forEach((x) => x.classList.remove('sel')); renderSummary(); } }[ev.key];
-  if (act) { ev.preventDefault(); act(); }
+  if (T.cv && T.cv.key(ev, fitView)) return;               // − + 0 F, as on the other canvases
+  if (ev.key === 'Escape') { ev.preventDefault(); T.sel = null; topo.querySelectorAll('.tr.sel').forEach((x) => x.classList.remove('sel')); renderSummary(); }
 });
 topo.addEventListener('mouseover', (ev) => {
-  if (T.gesture && T.gesture.moved) return;
+  if ((T.gesture && T.gesture.moved) || T.cv?.panning) return;
   const row = rowOf(ev);
   if (row !== T.hover) { T.hover = row; trace(row); }
 });
 topo.addEventListener('mouseleave', () => { T.hover = null; trace(null); });
 topo.addEventListener('focusin', (ev) => trace(rowOf(ev)));
-topo.addEventListener('wheel', (ev) => {
-  if (ev.target.closest && ev.target.closest('.ttools, .tlegend')) return;
-  ev.preventDefault();
-  const px = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? topo.clientHeight : 1;
-  if (ev.ctrlKey || ev.metaKey) {
-    const r = topo.getBoundingClientRect();
-    zoomAt(T.view.k * Math.exp(-ev.deltaY * px * 0.0025), ev.clientX - r.left, ev.clientY - r.top);
-  } else { T.view.x -= ev.deltaX * px; T.view.y -= ev.deltaY * px; applyView(); }
-}, { passive: false });
 
-/* drag: the background pans, a table heading moves the table, a host heading moves the host with its tables */
+/* drag: a table heading moves the table, a host heading moves the host with its tables. The background pans (sfCanvas, canvas.js) */
 topo.addEventListener('pointerdown', (ev) => {
-  if (ev.button !== 0 && ev.button !== 1) return;
+  if (ev.button !== 0) return;
   const t = ev.target.nodeType === 1 ? ev.target : ev.target.parentElement;
   if (!t || t.closest('.ttools, .tlegend, input, select, textarea, a, button, .badge')) return;
   const tt = t.closest('.tth') && t.closest('.tt'), fh = t.closest('.tframe > .thead');
   let g = null;
-  if (ev.button === 1 || (!t.closest('.tt') && !fh)) g = { kind: 'pan', vx: T.view.x, vy: T.view.y };
-  else if (tt) { const tb = T.tables.get(tt.dataset.fid); if (tb) g = { kind: 'table', tb, rx: tb.x - tb.f.ox, ry: tb.y - tb.f.oy }; }
+  if (tt) { const tb = T.tables.get(tt.dataset.fid); if (tb) g = { kind: 'table', tb, rx: tb.x - tb.f.ox, ry: tb.y - tb.f.oy }; }
   else if (fh) { const f = T.frames.get(fh.parentElement.dataset.host); if (f && f.doc.bp) g = { kind: 'frame', f, ox: f.ox, oy: f.oy }; }
   if (!g) return;                                          // a row: click selects, a mount point drags natively
-  if (ev.button === 1) ev.preventDefault();
   T.gesture = Object.assign(g, { sx: ev.clientX, sy: ev.clientY, id: ev.pointerId, moved: false, button: ev.button });
 });
 topo.addEventListener('pointermove', (ev) => {
@@ -1071,11 +1057,10 @@ topo.addEventListener('pointermove', (ev) => {
   const dx = ev.clientX - g.sx, dy = ev.clientY - g.sy;
   if (!g.moved) {
     if (Math.abs(dx) + Math.abs(dy) < 4) return;
-    g.moved = true; topo.setPointerCapture(g.id); topo.classList.add(g.kind === 'pan' ? 'panning' : 'moving');
+    g.moved = true; topo.setPointerCapture(g.id); topo.classList.add('moving');
     T.hover = null; trace(null);
     if (g.tb) g.tb.el.classList.add('lifted');
   }
-  if (g.kind === 'pan') { T.view.x = g.vx + dx; T.view.y = g.vy + dy; applyView(); return; }
   const wx = dx / T.view.k, wy = dy / T.view.k;
   if (g.kind === 'table') { put(g.tb, g.tb.f.ox + snap(g.rx + wx), g.tb.f.oy + snap(g.ry + wy)); sizeFrame(g.tb.f); }
   else {
@@ -1084,23 +1069,18 @@ topo.addEventListener('pointermove', (ev) => {
     for (const tb of f.tbs) put(tb, tb.x + mx, tb.y + my);
     sizeFrame(f);
   }
-  drawLines();
+  if (!T.linesSoon) T.linesSoon = requestAnimationFrame(() => { T.linesSoon = 0; drawLines(); });     // one redraw a frame, however many moves came in it
 });
 function endGesture(ev) {
   const g = T.gesture;
   if (!g || ev.pointerId !== g.id) return;
   T.gesture = null;
-  topo.classList.remove('panning', 'moving');
+  topo.classList.remove('moving');
   if (g.tb) g.tb.el.classList.remove('lifted');
-  if (!g.moved) {
-    if (g.kind === 'pan' && g.button === 0 && ev.type === 'pointerup' && T.sel) {
-      T.sel = null; topo.querySelectorAll('.tr.sel').forEach((x) => { x.classList.remove('sel'); x.setAttribute('aria-pressed', 'false'); });
-      renderSummary();
-    }
-    return;
-  }
+  if (!g.moved) return;
   T.quiet = Date.now();
-  if (g.kind !== 'pan') commitLayout(g.tb ? g.tb.f : g.f);
+  if (T.linesSoon) { cancelAnimationFrame(T.linesSoon); T.linesSoon = 0; drawLines(); }
+  commitLayout(g.tb ? g.tb.f : g.f);
 }
 topo.addEventListener('pointerup', endGesture);
 topo.addEventListener('pointercancel', endGesture);
@@ -1175,5 +1155,6 @@ function setMode(mode, load = true) {
 document.querySelectorAll('#viewmode button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
 try { T.mode = ['graph', 'tasks', 'map', 'scan'].includes(localStorage.getItem('sf.view')) ? localStorage.getItem('sf.view') : 'topo'; } catch { /* default */ }
 
+T.bootMode = T.mode;
 setMode(T.mode, false);
 boot();

@@ -106,9 +106,29 @@ class MountDirs:
         return out
 
 
-def dir_index(conn: Conn, host: str | None = None) -> dict[int, MountDirs]:
-    """The one pass over every file that folder listings and folder comparison both need, by mount."""
+def mount_marks(conn: Conn, host: str | None = None) -> dict[int, int]:
+    """Each indexed mount's last scan: a scan rewrites a mount's rows and this mark in one transaction, so a mount whose
+    mark has not moved still has the rows it had."""
     hsql = 'AND (h.hostname = :host OR h.ip_address = :host)' if host else ''
+    return {mid: mark for mid, mark in conn.all(
+        f"""SELECT m.mount_id, coalesce(m.last_scan_id, 0) FROM mounts m JOIN hosts h ON h.host_id = m.host_id
+            WHERE m.scan_state = 'indexed' {hsql}""", {'host': host})}
+
+
+def scanning_mounts(conn: Conn) -> set[int]:
+    """The mounts of hosts with a scan running: one scan can apply a mount more than once under the same mark."""
+    return {r[0] for r in conn.all("""SELECT m.mount_id FROM mounts m WHERE m.host_id IN
+                                      (SELECT host_id FROM scans WHERE status = 'running')""")}
+
+
+def dir_index(conn: Conn, host: str | None = None, mounts: list[int] | None = None) -> dict[int, MountDirs]:
+    """The one pass over every file that folder listings and folder comparison both need, by mount. `mounts` limits it
+    to those mounts, so a cache can rebuild only what a scan changed."""
+    hsql = 'AND (h.hostname = :host OR h.ip_address = :host)' if host else ''
+    if mounts is not None:
+        if not mounts:
+            return {}
+        hsql += f" AND m.mount_id IN ({', '.join(str(int(m)) for m in mounts)})"
     dirs = {did: (mid, path) for did, mid, path in conn.all(
         f"""SELECT d.dir_id, d.mount_id, d.path FROM directories d JOIN mounts m ON m.mount_id = d.mount_id JOIN hosts h ON h.host_id = m.host_id
             WHERE m.scan_state = 'indexed' {hsql}""", {'host': host})}

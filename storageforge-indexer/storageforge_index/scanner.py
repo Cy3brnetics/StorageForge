@@ -333,13 +333,16 @@ def checksum_pass(db: Database, conn, t: Transport, host_id: int, min_size: int,
     if not cands:
         return 0
     by_path = {join_path(parent, name): fid for fid, parent, name in cands}
+    # What is fed, in order. xargs hands the names to sha256sum in this order, so its lines are an in-order subset of them; uutils'
+    # sha256sum (Ubuntu 25.10 on) writes a non-UTF-8 name back with U+FFFD for each bad byte, and the order is what still finds it.
+    fed = [(raw, fid) for path, fid in by_path.items() for raw in _raw_names(path)]
+    at = {raw: i for i, (raw, _) in enumerate(fed)}
     proc = t.stream(checksum_command(nice), stdin=True)
 
     def feed():
         try:
-            for path in by_path:
-                for name in _raw_names(path):
-                    proc.stdin.write(name + b'\0')
+            for raw, _ in fed:
+                proc.stdin.write(raw + b'\0')
         except BrokenPipeError:
             pass
         finally:
@@ -352,11 +355,15 @@ def checksum_pass(db: Database, conn, t: Transport, host_id: int, min_size: int,
     err = StderrTail(proc.stderr)
     reader = HashingReader(proc.stdout.raw)
     updates = []                                  # kept until the payload is checked: nothing is written on the word of a bad one
+    nxt = 0                                       # where the next line's name is among those fed
     for (rec,) in iter_fields(io.BufferedReader(reader, 1 << 20), nfields=1):
-        line = decode(rec)
-        fid = by_path.get(line[66:])
-        if fid is not None:
-            updates.append((line[:64], fid))
+        digest, name = decode(rec[:64]), rec[66:]
+        i = at.get(name)
+        if i is None and b'\xef\xbf\xbd' in name:
+            i = next((j for j in range(nxt, len(fed)) if fed[j][0].decode('utf-8', 'replace').encode() == name), None)
+        if i is not None:
+            updates.append((digest, fed[i][1]))
+            nxt = i + 1
     proc.wait()
     err.join(5)
     proc.stdout.close()

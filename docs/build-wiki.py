@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / 'docs'
@@ -22,7 +23,7 @@ PREFIX = {'features': 'Feature'}
 def file_url(repo_url, kind, rel):
     """A file in the repository, in the address form of whoever hosts it: GitHub has /blob/main and /raw/main, Forgejo /src/branch/main and
     /raw/branch/main. kind is 'src' for a page about the file, 'raw' for the file itself (an image)."""
-    if 'github.com' in repo_url:
+    if urlsplit(repo_url).hostname == 'github.com':
         return f'{repo_url}/{"raw" if kind == "raw" else "blob"}/main/{rel}'
     return f'{repo_url}/{kind}/branch/main/{rel}'          # guide pages share short titles such as "Views"
 

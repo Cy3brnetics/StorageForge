@@ -1274,22 +1274,21 @@ def _scan_signs(conn: Conn, scan_id: int) -> dict:
 
 
 def _appended(conn: Conn, scan_id: int) -> int:
-    """Files added beside one deleted in the same folder with an extension put after its name (report.docx gone,
-    report.docx.xyz there): how a rename-in-place encryptor looks, whatever its extension. A set of the deleted names
-    and one pass over the added ones, so it takes as long as the scan has changes: the self-join this replaces compared
-    every added file with every deleted one, 6 billion pairs for one scan that moved a big folder."""
-    gone = {(m, p, f) for m, p, f in conn.all("SELECT mount_id, parent_path, filename FROM file_changes WHERE scan_id = :s AND change_type = 'deleted'",
-                                              {'s': scan_id})}
+    """Pairs of a deleted name and an added one that is the same name with something after a dot, in the same folder
+    (report.docx gone, report.docx.xyz there): how a rename-in-place encryptor looks, whatever its extension. The same pairs
+    the self-join this replaces counted, case ignored as LIKE did, by a set of the deleted names and one pass over the added
+    ones: the join compared every added file with every deleted one, 6 billion pairs for one scan that moved a big folder."""
+    gone = {(m, p, f.lower()) for m, p, f in conn.all("SELECT mount_id, parent_path, filename FROM file_changes WHERE scan_id = :s AND change_type = 'deleted'",
+                                                      {'s': scan_id})}
     if not gone:
         return 0
     n = 0
     for m, p, f in conn.all("SELECT mount_id, parent_path, filename FROM file_changes WHERE scan_id = :s AND change_type = 'added' AND NOT is_directory",
                             {'s': scan_id}):
+        f = f.lower()
         dot = f.find('.', 1)
-        while dot != -1:
-            if (m, p, f[:dot]) in gone:
-                n += 1
-                break
+        while dot != -1:                     # every dot past the first character: a.tar.gz extends both a and a.tar
+            n += (m, p, f[:dot]) in gone
             dot = f.find('.', dot + 1)
     return n
 

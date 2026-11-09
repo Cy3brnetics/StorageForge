@@ -35,17 +35,17 @@ class Signs(unittest.TestCase):
         self.conn.execute("""INSERT INTO file_changes (scan_id, mount_id, change_type, parent_path, filename, is_directory)
                              VALUES (:s, :m, :k, :p, :f, :d)""", {'s': self.sid, 'm': mount or self.mid, 'k': kind, 'p': parent, 'f': name, 'd': is_dir})
 
-    def test_a_rename_in_place_is_counted_once_per_file(self):
+    def test_a_rename_in_place_is_counted_per_name_it_extends(self):
         self.change('deleted', '/srv/docs', 'report.docx')
         self.change('added', '/srv/docs', 'report.docx.xyz')          # the encryptor's rename
         self.change('deleted', '/srv/docs', 'report')
-        self.change('added', '/srv/docs', 'report.v2.final')            # matches report and nothing else: one file, counted once
+        self.change('added', '/srv/docs', 'report.v2.final')            # extends report: one pair (report.docx.xyz made two, one per name)
         self.change('added', '/srv/other', 'report.docx.xyz')         # another folder: not a rename of that file
         self.change('added', '/srv/docs', 'reportxdocx')               # no dot after the name
         self.change('added', '/srv/docs', 'report.docx.d', is_dir=1)    # a folder
         self.change('added', '/srv/docs', 'README.txt')
         self.change('added', '/srv/docs', 'README.txt.locky')          # its README.txt was not deleted
-        self.assertEqual(security._appended(self.conn, self.sid), 2)
+        self.assertEqual(security._appended(self.conn, self.sid), 3)
 
     def test_signs_are_worked_out_once_per_scan(self):
         self.change('deleted', '/srv', 'a.txt')
