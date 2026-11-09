@@ -272,7 +272,10 @@ function renderGroup() {
 
   const skipped = g.runs.some((r) => (r.output || '').includes('destructive, skipped'));
   foot.classList.toggle('dpactions', g.done && !g.error && g.mode === 'report');     // stays in view: the reports above it can be long
-  redraw(foot, JSON.stringify([g.done, Boolean(g.error), g.mode, failed.length, unfinished.length, skipped]), () => {
+  // A failed run with no conflict line never got to report: ssh, the key or the runner failed, not the plan
+  const broken = failed.filter((r) => !r.summary?.conflict);
+  const noReport = g.runs.length > 0 && broken.length === g.runs.length;     // Apply would fail the same way on every host
+  redraw(foot, JSON.stringify([g.done, Boolean(g.error), g.mode, failed.length, broken.map((r) => r.host), unfinished.length, skipped]), () => {
     const kids = [];
     if (g.done && !g.error && g.mode === 'apply') {
       if (skipped) {
@@ -286,7 +289,9 @@ function renderGroup() {
       // When applying from a dry run, pass the dry run's group ID as report_group so the backend checks for plan staleness
       const again = (extra = {}) => startDeploy(g.kind, g.ref, 'apply', g.title, { ...g.extra, ...extra, report_group: g.gid });
       const row = el('div', { class: 'row end wrap' });
-      if (g.kind === 'changes') {
+      if (noReport) {
+        // no Apply: nothing was checked, and it cannot reach these hosts either
+      } else if (g.kind === 'changes') {
         const destr = el('input', { type: 'checkbox' });
         row.append(el('label', { class: 'check' }, destr, 'include drive tasks (partition, format, add device)'));
         row.append(button(failed.length ? 'Apply anyway' : 'Apply', () => again({ destructive: destr.checked }), failed.length ? 'btn danger' : 'btn pri'));
@@ -296,8 +301,13 @@ function renderGroup() {
       } else {
         row.append(button(failed.length ? 'Apply anyway' : 'Apply', () => again(), failed.length ? 'btn danger' : 'btn pri'));
       }
-      kids.push(text('p', failed.length ? 'The report found problems (conflict lines). Fix them and run the dry run again, or apply anyway.'
-        : 'Nothing was changed. "missing" lines are what Apply would do.', failed.length ? 'st-failed small' : 'muted small'), row);
+      const conflicted = failed.length - broken.length;
+      const why = [
+        broken.length ? `${broken.map((r) => r.host).join(', ')} could not run the report, so nothing was checked there. Its output above says why; fix that, then Retry failed hosts.${noReport || conflicted ? '' : ' Apply anyway changes the other hosts and fails on these again.'}` : '',
+        conflicted ? `The report found problems (conflict lines). Fix them and run the dry run again${noReport ? '' : ', or apply anyway'}.` : '',
+      ].filter(Boolean).join(' ');
+      kids.push(text('p', failed.length ? why : 'Nothing was changed. "missing" lines are what Apply would do.', failed.length ? 'st-failed small' : 'muted small'));
+      if (row.childElementCount) kids.push(row);
     }
     return kids;
   });
