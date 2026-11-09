@@ -596,30 +596,43 @@ t_workload_action() { local runtime=$1 name=$2 action=$3 state
         start) [[ $state == running ]] && { ok "$name is running"; return 0; } ;;
         stop) [[ $state != running ]] && { ok "$name is stopped"; return 0; } ;;
         snapshot) conflict "containers have no snapshot here: snapshot the dataset their volumes are on"; return 0 ;;
+        force-off) [[ $state != running ]] && { ok "$name is stopped"; return 0; } ;;
       esac
-      act "$action $name" || return 0
-      try "$runtime" "$action" "$name" >/dev/null && ok "$action: $name" ;;
+      act "$action $name${action/#force-off/ (killed, with no time to stop cleanly)}" || return 0
+      try "$runtime" "${action/#force-off/kill}" "$name" >/dev/null && ok "$action: $name" ;;
     libvirt)
-      state=$(virsh domstate "$name" 2>/dev/null | head -n 1) || { conflict "no VM named $name"; return 0; }
+      if ! virsh -c qemu:///system version >/dev/null 2>&1; then
+        if ((APPLY)); then conflict "cannot reach libvirt (qemu:///system)"; else missing "cannot read libvirt as $(id -un): --apply, as root, looks"; fi; return 0
+      fi
+      # not through head: under pipefail, virsh writing its last line after head is gone would read as no VM
+      state=$(virsh -c qemu:///system domstate "$name" 2>/dev/null) || { conflict "no VM named $name"; return 0; }
+      state=${state%%$'\n'*}
       case $action in
-        start) [[ $state == running ]] && { ok "$name is running"; return 0; }; act "start $name" || return 0; try virsh start "$name" >/dev/null ;;
-        stop) [[ $state != running ]] && { ok "$name is stopped"; return 0; }; act "shut down $name" || return 0; try virsh shutdown "$name" >/dev/null ;;
-        restart) act "reboot $name" || return 0; try virsh reboot "$name" >/dev/null ;;
-        snapshot) act "snapshot $name" || return 0; try virsh snapshot-create-as "$name" "sf-$STAMP" --atomic >/dev/null ;;
+        start) [[ $state == running ]] && { ok "$name is running"; return 0; }; act "start $name" || return 0; try virsh -c qemu:///system start "$name" >/dev/null ;;
+        stop) [[ $state != running ]] && { ok "$name is stopped"; return 0; }; act "shut down $name" || return 0; try virsh -c qemu:///system shutdown "$name" >/dev/null ;;
+        restart) act "reboot $name" || return 0; try virsh -c qemu:///system reboot "$name" >/dev/null ;;
+        force-off) [[ $state != running && $state != paused ]] && { ok "$name is off"; return 0; }; act "force off $name: as pulling its power" || return 0; try virsh -c qemu:///system destroy "$name" >/dev/null ;;
+        snapshot) # disk-only, with the filesystems frozen when the guest agent answers: works on UEFI VMs, and Snapshots on the VM lists it
+          local q=; [[ $state == running ]] && virsh -c qemu:///system qemu-agent-command "$name" "{\"execute\":\"guest-ping\"}" --timeout 5 >/dev/null 2>&1 && q=--quiesce
+          act "snapshot $name, disk-only${q:+, its filesystems frozen by the guest agent}" || return 0
+          try virsh -c qemu:///system snapshot-create-as "$name" "sf-$STAMP" --disk-only --atomic $q >/dev/null ;;
       esac && ok "$action: $name" ;;
     incus)
-      state=$(incus list -f csv -c s "$name" 2>/dev/null | head -n 1) || { conflict "no instance named $name"; return 0; }
+      state=$(incus list -f csv -c s "$name" 2>/dev/null) || { conflict "no instance named $name"; return 0; }
+      state=${state%%$'\n'*}
       [[ -n $state ]] || { conflict "no instance named $name"; return 0; }
       case $action in
         start) [[ $state == RUNNING ]] && { ok "$name is running"; return 0; } ;;
-        stop) [[ $state != RUNNING ]] && { ok "$name is stopped"; return 0; } ;;
+        stop|force-off) [[ $state != RUNNING ]] && { ok "$name is stopped"; return 0; } ;;
       esac
       act "$action $name" || return 0
-      if [[ $action == snapshot ]]; then try incus snapshot create "$name" "sf-$STAMP"; else try incus "$action" "$name"; fi && ok "$action: $name" ;;
+      if [[ $action == snapshot ]]; then try incus snapshot create "$name" "sf-$STAMP"
+      elif [[ $action == force-off ]]; then try incus stop --force "$name"
+      else try incus "$action" "$name"; fi && ok "$action: $name" ;;
   esac
 }
 
-t_workload_remove() { local runtime=$1 name=$2
+t_workload_remove() { local runtime=$1 name=$2 snaps=
   command -v "${runtime/libvirt/virsh}" >/dev/null || { conflict "$runtime is not on this host"; return 0; }
   case $runtime in
     docker|podman)
@@ -627,11 +640,16 @@ t_workload_remove() { local runtime=$1 name=$2
       act "remove container $name, keeping its volumes" || return 0
       try "$runtime" rm -f "$name" >/dev/null && ok "removed: its volumes are still there" ;;
     libvirt)
-      virsh dominfo "$name" >/dev/null 2>&1 || { ok "no VM named $name"; return 0; }
-      act "stop and undefine $name, keeping its disks" || return 0
-      virsh destroy "$name" >/dev/null 2>&1 || true
-      try virsh undefine "$name" --nvram >/dev/null 2>&1 || try virsh undefine "$name" >/dev/null
-      ok "undefined: its disks are still there" ;;
+      if ! virsh -c qemu:///system version >/dev/null 2>&1; then
+        if ((APPLY)); then conflict "cannot reach libvirt (qemu:///system)"; else missing "cannot read libvirt as $(id -un): --apply, as root, looks"; fi; return 0
+      fi
+      virsh -c qemu:///system dominfo "$name" >/dev/null 2>&1 || { ok "no VM named $name"; return 0; }
+      snaps=$(virsh -c qemu:///system snapshot-list "$name" --name 2>/dev/null | grep -c . || true); [[ $snaps == 0 ]] && snaps=
+      act "stop and undefine $name, keeping its disks${snaps:+ and the files of its $snaps snapshot(s)}" || return 0
+      virsh -c qemu:///system destroy "$name" >/dev/null 2>&1 || true
+      # its snapshots go from libvirt with it: their overlay files and data stay, as the disks do
+      if virsh -c qemu:///system undefine "$name" --nvram --snapshots-metadata --checkpoints-metadata >/dev/null 2>&1 || virsh -c qemu:///system undefine "$name" --snapshots-metadata >/dev/null 2>&1 \
+         || try virsh -c qemu:///system undefine "$name" >/dev/null; then ok "undefined: its disks are still there"; fi ;;
     incus)
       incus info "$name" >/dev/null 2>&1 || { ok "no instance named $name"; return 0; }
       act "delete instance $name" || return 0
@@ -656,12 +674,12 @@ t_container() { local runtime=$1 name=$2 image=$3 publish=$4 binds=$5 restart=${
 
 t_vm() { local name=$1 disk=$2 vcpus=${3:-2} ram=${4:-2048} network=${5:-default} variant=${6:-generic} bridge=$7
   command -v virt-install >/dev/null || { later "virt-install is not installed"; return 0; }
-  if virsh dominfo "$name" >/dev/null 2>&1; then ok "$name is defined"; return 0; fi
+  if virsh -c qemu:///system dominfo "$name" >/dev/null 2>&1; then ok "$name is defined"; return 0; fi
   [[ -r $disk ]] || { later "$disk is not there"; return 0; }
   local net="network=$network"; [[ -n $bridge ]] && net="bridge=$bridge"
   info "virt-install --import --name $name --disk $disk --vcpus $vcpus --memory $ram --network $net --osinfo $variant --graphics spice,listen=127.0.0.1 --noautoconsole"
   act "define and start VM $name from $disk" || return 0
-  try virt-install --import --name "$name" --disk "$disk,bus=virtio" --vcpus "$vcpus" --memory "$ram" --network "$net,model=virtio" --osinfo "$variant" --graphics spice,listen=127.0.0.1 --noautoconsole >/dev/null \
+  try virt-install --connect qemu:///system --import --name "$name" --disk "$disk,bus=virtio" --vcpus "$vcpus" --memory "$ram" --network "$net,model=virtio" --osinfo "$variant" --graphics spice,listen=127.0.0.1 --noautoconsole >/dev/null \
     && ok "$name is running, and its console only listens on this machine"
 }
 
@@ -924,7 +942,7 @@ def _check_workload_action(conn, c, h, p, say):
     w = _workload(conn, h, p['runtime'], p['name'])
     if not w:
         say('note', f'{p["name"]} was not in the last reading: the script looks when it runs')
-    elif p['action'] == 'stop' and w.get('state') != 'running':
+    elif p['action'] in ('stop', 'force-off') and w.get('state') != 'running':
         say('ok', f'{p["name"]} is already stopped')
 
 
@@ -1141,7 +1159,7 @@ changes.register('wg-peer', {'group': 'Network', 'label': 'WireGuard peer', 'fie
     ('iface', 'pubkey', 'allowed', 'state'), lambda p: _when(p['state'], f'WireGuard peer on {p["iface"]}: {p["pubkey"][:8]}…'), _check_wg, _ansible_bash('t_wg_peer', ('iface', 'pubkey', 'allowed', 'state')))
 
 changes.register('workload-action', {'group': 'Workloads', 'label': 'Start, stop or snapshot', 'fields': [
-    F('runtime', 'choice', 'Runtime', options=RUNTIMES, required=True), F('name', 'name', 'Name', required=True), F('action', 'choice', 'Action', options=['start', 'stop', 'restart', 'snapshot'], required=True)]},
+    F('runtime', 'choice', 'Runtime', options=RUNTIMES, required=True), F('name', 'name', 'Name', required=True), F('action', 'choice', 'Action', options=['start', 'stop', 'restart', 'force-off', 'snapshot'], required=True)]},
     ('runtime', 'name', 'action'), lambda p: f'{p["action"].capitalize()} {p["runtime"]} {p["name"]}', _check_workload_action, _ansible_bash('t_workload_action', ('runtime', 'name', 'action')))
 
 changes.register('workload-remove', {'group': 'Workloads', 'label': 'Remove a workload', 'destructive': True, 'fields': [

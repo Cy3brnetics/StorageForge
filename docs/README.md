@@ -12,6 +12,7 @@ The code lives in [`storageforge-indexer/`](../storageforge-indexer). Its [READM
 
 | Page | What it covers |
 | :--- | :--- |
+| [Install and set up](install.md) | The full guide: what you need, settings, certificates, the first admin, a first host with read-only and deploy access, libvirt, the console, Tailscale, alerts, backups, remote nodes, without Docker, upgrading and removing |
 | [Getting started](getting-started.md) | Install with Docker or pip, create an account, add a key, scan your first host, run the demo |
 | [Concepts](concepts.md) | How the parts fit together, and the rules every feature follows |
 
@@ -39,6 +40,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Operations](operations.md) | Configuration, backups, certificates, retention, logs, upgrades, dependency updates |
 | [Disaster recovery](disaster-recovery.md) | What to keep elsewhere, and rebuilding on a new machine |
 | [Console](console.md) | A terminal on a host or VM in the browser: SSH over LAN or Tailscale, or a VM's serial console, with every session audited and optionally recorded in full |
+| [VMs on libvirt](vms.md) | The VM panel, disk-only snapshots with filesystems frozen by the guest agent, revert and delete, scheduled VM snapshots and backups, changing a VM, libvirt networks and pools, and copying a VM as it is to another libvirt host |
 | [Cloning and migrating hosts](host-migration.md) | Copying a server or desktop between physical machines and VMs in any direction, for testing or migration. Design; the package list is built |
 | [Target hosts](target-hosts.md) | What a scanned or changed machine needs, and SSH for sending snapshots |
 | [Network devices](network-devices.md) | Routers, switches and firewalls, the one network language, changes with a rollback on the device, the opt-in scanner, the management planner |

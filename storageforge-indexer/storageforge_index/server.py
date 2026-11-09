@@ -1583,6 +1583,34 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         except ValueError as exc:
             return jsonify(error=str(exc)), 400
 
+    def _vm_copy(b: dict) -> dict:
+        from . import steps_kvm
+        return steps_kvm.copy_plan(conn(), str(b.get('source') or ''), str(b.get('name') or ''), str(b.get('target') or ''),
+                                   name=str(b.get('as') or ''), pool=str(b.get('pool') or ''), live=b.get('live') is True, start=b.get('start') is True,
+                                   keep_macs=b.get('keep_macs') is True, network=str(b.get('network') or ''))
+
+    @web.post('/api/vm/copy/preview')
+    @login_required
+    def api_vm_copy_preview():
+        try:
+            plan = _vm_copy(json_body())
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        return jsonify(plan=plan, check=changes.check(conn(), {k: v for k, v in plan.items() if k != 'skipped'}))
+
+    @web.post('/api/vm/copy')
+    @login_required
+    def api_vm_copy():
+        b = json_body()
+        try:
+            plan = _vm_copy(b)
+            pid = changes.save_plan(conn(), {'name': plan['name'], 'tasks': plan['tasks'],
+                                             'notes': 'Made by Copy to another host. ' + (f'Not copied: {", ".join(plan["skipped"])} (not disks). ' if plan['skipped'] else '')}, actor())
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        core.audit(conn(), actor(), 'vm.copy.plan', 'ok', plan['tasks'][1]['host'], {'plan': pid, 'source': plan['tasks'][0]['host'], 'vm': plan['tasks'][0]['params']['name']})
+        return jsonify(id=pid, plan=plan, check=changes.check(conn(), changes.get_plan(conn(), pid))), 201
+
     def _clone_args(b: dict) -> dict:
         files = b.get('files') or 'none'
         mapping = b.get('map') or 'auto'

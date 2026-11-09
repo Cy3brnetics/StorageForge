@@ -319,6 +319,11 @@ def register(web, ctx):
     def api_workloads():
         return jsonify(workloads.listing(conn(), request.args.get('host') or None))
 
+    @web.get('/api/workloads/libvirt')
+    @login_required
+    def api_workloads_libvirt():
+        return jsonify(hosts=workloads.libvirt_of(conn(), request.args.get('host') or None))
+
     @web.get('/api/network')
     @login_required
     def api_network():

@@ -302,7 +302,7 @@ Phase 1 reads apt, dnf and yum, zypper, pacman and apk. The rest fall into three
 | 4 | **User files:** none, structure, chosen folders or everything, through Moves with `dirs_only` and `keep_replaced` | Built; `all` lab-tested and verified by checksum |
 | 4b | **Snapshots and risks:** before and after snapshots, the Data at risk list with its ticks and typed name, and `accept` in the API. Not built: holds on the clone snapshots, the before/after "what changed" report, `--accept` in the scripts | Built in part, **not lab-tested** |
 | 5 | **Test and migration modes**: the isolation above, and cutover | Planned |
-| 6 | **VM to VM copy as is**: disk images and the libvirt definition, between libvirt hosts | Planned |
+| 6 | **VM to VM copy as is**: each disk by a signed send, live from a disk-only snapshot or shut off, and the VM defined on the target from the source's reading (`vm-send`, `vm-define`, `vm copy`). See [VMs on libvirt](vms.md#copying-a-vm-to-another-libvirt-host) | Built; lab-tested live from libvirt 10.0 to 9.0 (tier 18) |
 | 7 | **Disk image from a physical host**: a block copy from a snapshot into qcow2, then fixed up to boot. To bare metal, through a live environment | Later |
 
 ## Lab run

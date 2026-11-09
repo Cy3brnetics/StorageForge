@@ -2096,7 +2096,8 @@ class ScriptHeaderTests(DBCase):
                        'devices': '/dev/sdb', 'btrfs-device': '/dev/sdb', 'name': 'snap', 'dataset': 'tank/data', 'size': '10G', 'mkfs': '', 'number': '4096',
                        'port': '8080', 'ports': '445,139', 'cidr': '10.0.0.0/24', 'cidrs': '10.0.0.0/24,10.0.1.0/24', 'iface': 'eth0', 'sysctl': 'fs.protected_hardlinks', 'word': 'yes',
                        'wgkey': 'a' * 43 + '=', 'image': 'nginx:1', 'publish': '127.0.0.1:8080:80/tcp', 'binds': '/srv/a:/data', 'lines': text, 'vmname': 'vm1', 'url': 'https://x.example/a.qcow2', 'sha': 'a' * 64, 'sizes': '10',
-                       'pubkey': 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl', 'names': 'vim'}[f['kind']]
+                       'pubkey': 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl', 'names': 'vim',
+                       'dhcprange': '10.0.0.100-10.0.0.200', 'vmdisks': 'vda:virtio:qcow2:vm1-vda.qcow2', 'vmnics': 'network=default:virtio:new', 'osinfo': 'debian12'}[f['kind']]
                       for f in spec['fields']}
             out[f'changes {kind}'] = changes.script(self.conn, {'name': 'p', 'tasks': [{'type': kind, 'host': 'nas', 'params': params, 'note': text}]})
         for kind, spec in tasks.TYPES.items():
@@ -2104,7 +2105,7 @@ class ScriptHeaderTests(DBCase):
                 continue
             params = {p['name']: p['choices'][0] if p['kind'] == 'select' else
                       {'path': path, 'lines': [text], 'host': 'nas', 'int': 1, 'bool': True, 'prefix': 'snap',
-                       'dataset': 'tank/data', 'unit': 'nginx.service'}.get(p['kind'], text) for p in spec['params']}
+                       'dataset': 'tank/data', 'unit': 'nginx.service', 'vms': 'web, db'}.get(p['kind'], text) for p in spec['params']}
             if kind == 'rsync':
                 params.update(src_host='', dst_host='pc')
             out[f'tasks {kind}'] = tasks.script(self.conn, tasks.normalize({'name': 't', 'host': 'nas', 'blocks': [{'type': kind, 'params': params}]}))

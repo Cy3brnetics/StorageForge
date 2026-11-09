@@ -186,7 +186,7 @@ case "$*" in
   *domiflist*) printf 'Interface Type Source Model MAC\\n---\\nvnet0 network default virtio 52:54:00:aa:bb:cc\\n' ;;
   *domifaddr*) printf 'Name MAC proto Address\\n---\\nvnet0 52:54:00:aa:bb:cc ipv4 192.168.122.50/24\\n' ;;
 esac''')
-        stub(self.bin, 'virt-install', 'echo "virt-install $*" >>"$LOG"')
+        stub(self.bin, 'virt-install', '[[ $1 == --osinfo && $2 == list ]] && { echo debian13; echo ubuntu24.04; exit 0; }; echo "virt-install $*" >>"$LOG"')
         stub(self.bin, 'qemu-img', 'echo "qemu-img $*" >>"$LOG"; case $1 in info) echo "file format: qcow2" ;; convert) touch "${@: -1}" ;; create) touch "${@: -2:1}" ;; esac')
         stub(self.bin, 'curl', f'''echo "curl $*" >>"$LOG"
 case "$*" in *SHA512SUMS*) echo "$SUM  debian-13-genericcloud-amd64.qcow2" ;; *) out=; while (($#)); do [[ $1 == -o ]] && out=$2; shift; done; cp "{self.d}/image" "$out" ;; esac''')
@@ -212,6 +212,13 @@ case "$*" in *SHA512SUMS*) echo "$SUM  debian-13-genericcloud-amd64.qcow2" ;; *)
         self.assertNotIn('virt-install', self.log())
         self.assertNotIn('curl', self.log())
         self.assertEqual(list(self.pool.iterdir()), [])
+
+    def test_an_os_this_host_does_not_know_gets_generic_defaults(self):
+        out = self.run_fn(True, osinfo='alpinelinux3.24')            # newer than the osinfo database of the host (Ubuntu 24.04 in the lab)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn('does not know the OS alpinelinux3.24', out.stdout)
+        install = next(l for l in self.log().splitlines() if l.startswith('virt-install'))
+        self.assertIn('--osinfo detect=on,require=off', install)
 
     def test_apply_checks_the_image_then_builds_the_vm(self):
         out = self.run_fn(True, data_disks='10', firmware='uefi', console='spice', autostart=True)

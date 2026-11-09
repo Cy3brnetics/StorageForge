@@ -81,7 +81,10 @@ def from_infra(host: str, m: dict, mounts: list) -> list[dict]:
     for d in m.get('libvirt') or []:
         out.append({'host': host, 'runtime': 'libvirt', 'kind': 'vm', 'name': d.get('name'), 'state': d.get('state'), 'autostart': d.get('autostart'), 'vcpus': d.get('vcpus'), 'memory_mib': d.get('memory_mib'), 'firmware': d.get('firmware'), 'tpm': d.get('tpm'),
                     'mounts': [{'kind': 'disk', 'source': x.get('source'), 'dest': x.get('target'), 'format': x.get('format'), 'rw': not x.get('readonly'), 'on': sits_on(mounts, x.get('source'))} for x in d.get('disks') or [] if x.get('device') != 'cdrom'],
-                    'networks': d.get('nics') or [], 'graphics': d.get('graphics') or [], 'ports': [], 'detail': not d.get('unreadable'), 'security': {'seclabel': d.get('seclabel')}, 'findings': _vm_findings(d)})
+                    'networks': d.get('nics') or [], 'graphics': d.get('graphics') or [], 'ports': [], 'detail': not d.get('unreadable'), 'security': {'seclabel': d.get('seclabel')}, 'findings': _vm_findings(d),
+                    'disks': [{k: x.get(k) for k in ('target', 'device', 'bus', 'format', 'source', 'backing', 'readonly')} for x in d.get('disks') or []],
+                    'snapshots': [{k: x.get(k) for k in ('name', 'state', 'parent', 'created', 'current', 'location', 'disk_only', 'description')} for x in d.get('snapshots') or []],
+                    'agent': d.get('agent'), 'machine': d.get('machine'), 'cpu_mode': d.get('cpu_mode'), 'serial': d.get('serial'), 'osinfo': d.get('osinfo')})
     for i in m.get('incus') or []:
         priv = (i.get('security') or {}).get('security.privileged') == 'true'
         devs = i.get('devices') or {}
@@ -134,3 +137,17 @@ def containers_of(conn: Conn, host: str) -> list[dict]:
     return out
 
 
+def libvirt_of(conn: Conn, host: str | None = None) -> list[dict]:
+    """Each libvirt host with its networks and pools, from its last infrastructure reading."""
+    names = [r[0] for r in conn.all('SELECT hostname FROM hosts ORDER BY hostname')]
+    if host:
+        names = [n for n in names if n.lower() == host.lower() or n.split('.')[0].lower() == host.lower()]
+    out = []
+    for name in names:
+        r = inframeasure.reading(conn, name)
+        if not r or 'virsh' not in (r.get('tools') or []):
+            continue
+        out.append({'host': name, 'measured_at': r.get('measured_at'), 'stale': bool(r.get('stale')),
+                    'networks': r.get('libvirt_networks') or [], 'pools': r.get('libvirt_pools') or [],
+                    'vms': [d.get('name') for d in r.get('libvirt') or []]})
+    return out

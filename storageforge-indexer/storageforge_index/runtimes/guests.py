@@ -60,9 +60,22 @@ def parse_domain(text: str | None) -> dict | None:
         graphics.append({'type': g.get('type'), 'listen': listen, 'port': g.get('port')})
     sec = root.find('seclabel')
     os_el = root.find('os')
+    typ = None if os_el is None else os_el.find('type')
+    cpu = root.find('cpu')
+    agent = None
+    for ch in root.findall('./devices/channel'):
+        tgt = ch.find('target')
+        if tgt is not None and tgt.get('name') == 'org.qemu.guest_agent.0':
+            agent = tgt.get('state') or 'defined'      # connected or disconnected on a running VM; defined on one that is off
+    osinfo = next((e.get('id') for e in root.iter() if e.tag.endswith('}os') and e.get('id', '').startswith('http')), None)
+    loader = None if os_el is None else os_el.find('loader')
     return {'name': root.findtext('name'), 'uuid': root.findtext('uuid'), 'vcpus': root.findtext('vcpu'), 'memory_mib': int(mib) if mib is not None else None,
             'disks': disks, 'nics': nics, 'graphics': graphics, 'tpm': root.find('./devices/tpm') is not None,
-            'firmware': None if os_el is None else os_el.get('firmware') or ('uefi' if os_el.find('loader') is not None else 'bios'),
+            'firmware': None if os_el is None else ('uefi' if os_el.get('firmware') == 'efi' else os_el.get('firmware')) or ('uefi' if loader is not None else 'bios'),
+            'secure_boot': loader is not None and loader.get('secure') == 'yes',
+            'machine': None if typ is None else typ.get('machine'), 'arch': None if typ is None else typ.get('arch'),
+            'cpu_mode': None if cpu is None else cpu.get('mode'), 'agent': agent, 'osinfo': osinfo,
+            'serial': root.find('./devices/serial') is not None or root.find('./devices/console') is not None,
             'seclabel': None if sec is None else {'type': sec.get('type'), 'model': sec.get('model'), 'label': sec.findtext('label')}}
 
 
@@ -78,6 +91,49 @@ def parse_libvirt(lines: list[str]) -> list[dict]:
     return out
 
 
+def _info(text: str | None) -> dict:
+    """virsh net-info or pool-info: Key: value lines."""
+    out = {}
+    for line in (text or '').splitlines():
+        k, sep, v = line.partition(':')
+        if sep:
+            out[k.strip().lower()] = v.strip()
+    return out
+
+
+def parse_libvirt_snapshots(lines: list[str]) -> dict:
+    """Lines of domain, snapshot, current (0 or 1) and base64 of the snapshot XML up to the domain it holds. -> {domain: [snapshot]}"""
+    out: dict = {}
+    for line in lines:
+        f = line.split('\t')
+        if len(f) < 4:
+            continue
+        root = _xml(_b64(f[3]))
+        if root is None or root.tag != 'domainsnapshot':
+            root = _xml((_b64(f[3]) or '') + '</domainsnapshot>')       # cut before its domain: the closing tag went with it
+        if root is None or root.tag != 'domainsnapshot':
+            continue
+        mem = root.find('memory')
+        disks = [{'name': d.get('name'), 'snapshot': d.get('snapshot'), 'file': None if d.find('source') is None else d.find('source').get('file')}
+                 for d in root.findall('./disks/disk')]
+        external = any(d['snapshot'] == 'external' for d in disks)
+        created = root.findtext('creationTime') or ''
+        out.setdefault(f[0], []).append({
+            'name': root.findtext('name') or f[1], 'state': root.findtext('state'), 'parent': root.findtext('parent/name'),
+            'created': int(created) if created.isdigit() else None, 'current': f[2] == '1', 'description': (root.findtext('description') or '')[:200],
+            'memory': None if mem is None else mem.get('snapshot'), 'location': 'external' if external else 'internal',
+            'disk_only': (root.findtext('state') == 'disk-snapshot'), 'disks': disks})
+    for snaps in out.values():
+        snaps.sort(key=lambda x: x['created'] or 0)
+    return out
+
+
+def with_snapshots(domains: list[dict], snaps: dict) -> list[dict]:
+    for d in domains:
+        d['snapshots'] = snaps.get(d.get('name'), [])
+    return domains
+
+
 def parse_libvirt_networks(lines: list[str]) -> list[dict]:
     out = []
     for line in lines:
@@ -85,9 +141,14 @@ def parse_libvirt_networks(lines: list[str]) -> list[dict]:
         root = _xml(_b64(f[1])) if len(f) > 1 else None
         if root is None:
             continue
+        info = _info(_b64(f[2])) if len(f) > 2 else {}
         fwd, br, ip = root.find('forward'), root.find('bridge'), root.find('ip')
+        rng = None if ip is None else ip.find('dhcp/range')
         out.append({'name': root.findtext('name'), 'mode': 'isolated' if fwd is None else fwd.get('mode') or 'nat', 'bridge': None if br is None else br.get('name'),
-                    'address': None if ip is None else ip.get('address'), 'netmask': None if ip is None else ip.get('netmask') or ip.get('prefix')})
+                    'address': None if ip is None else ip.get('address'), 'netmask': None if ip is None else ip.get('netmask') or ip.get('prefix'),
+                    'dhcp': None if rng is None else f"{rng.get('start')}-{rng.get('end')}",
+                    'active': info.get('active') == 'yes' if info else None, 'autostart': info.get('autostart') == 'yes' if info else None,
+                    'persistent': info.get('persistent') == 'yes' if info else None})
     return out
 
 
@@ -96,8 +157,18 @@ def parse_libvirt_pools(lines: list[str]) -> list[dict]:
     for line in lines:
         f = line.split('\t')
         root = _xml(_b64(f[1])) if len(f) > 1 else None
-        if root is not None:
-            out.append({'name': root.findtext('name'), 'type': root.get('type'), 'path': root.findtext('target/path')})
+        if root is None:
+            continue
+        info = _info(_b64(f[2])) if len(f) > 2 else {}
+
+        def num(k):
+            v = (info.get(k) or '').split()[0] if info.get(k) else ''
+            return int(v) if v.isdigit() else None
+        src = root.find('source')
+        out.append({'name': root.findtext('name'), 'type': root.get('type'), 'path': root.findtext('target/path'),
+                    'source': None if src is None else (src.findtext('name') or (src.find('device').get('path') if src.find('device') is not None else None)),
+                    'active': info.get('state') == 'running' if info else None, 'autostart': info.get('autostart') == 'yes' if info else None,
+                    'capacity': num('capacity'), 'allocation': num('allocation'), 'available': num('available')})
     return out
 
 

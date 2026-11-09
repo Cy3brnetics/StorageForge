@@ -158,7 +158,7 @@ def _apply_task(t: dict, facts: dict, ghost: dict, conflicts: list, host: str, f
         return None
     if k == 'workload-action':
         ghost['changed'].append({'id': f'wl:{host}:{p["runtime"]}::{p["name"]}', 'what': p['action']})
-        if p['action'] == 'stop':
+        if p['action'] in ('stop', 'force-off'):
             ghost['stops'].append(_stop(facts, host, p, 'stopped'))
             for c in facts['containers']:
                 if c.get('name') == p['name']:

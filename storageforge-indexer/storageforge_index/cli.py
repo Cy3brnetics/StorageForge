@@ -765,6 +765,18 @@ def cmd_vm(args) -> int:
             c = _print_check(conn, changes, pid)
             print(f'next: storageforge-index plan script {pid} -o vm.sh, read it, then run it on {args.host} (it reports unless --apply)')
             return 1 if c['crit'] else 0
+        if args.vm_cmd == 'copy':
+            from . import steps_kvm
+            plan = steps_kvm.copy_plan(conn, args.source, args.name, args.to, name=args.as_name or '', pool=args.pool or '', live=args.live,
+                                       start=args.start, keep_macs=args.keep_macs, network=args.network or '')
+            pid = changes.save_plan(conn, {'name': args.plan or plan['name'], 'tasks': plan['tasks']}, actor)
+            print(f'saved change plan #{pid}: {plan["name"]}')
+            if plan['skipped']:
+                print(f'not copied (not disks): {", ".join(plan["skipped"])}')
+            c = _print_check(conn, changes, pid)
+            print(f'next: deploy #{pid} from StorageForge (Changes tab, or deploy plan {pid}): the disks go by a send of their own, '
+                  f'which a script run by hand cannot make')
+            return 1 if c['crit'] else 0
         if args.vm_cmd == 'clone':
             pk = pkglist.for_host(conn, args.source)
             if not pk:
@@ -1798,6 +1810,17 @@ def build_parser() -> argparse.ArgumentParser:
         vc.add_argument('--key', help='the vault key whose public key logs in')
         vc.add_argument('--set', action='append', metavar='FIELD=VALUE')
         vc.add_argument('--plan', help='the plan name')
+    vcp = vms.add_parser('copy', help='save the change plan that copies a VM as it is from one libvirt host to another (or beside itself)')
+    vcp.add_argument('name', help='the VM')
+    vcp.add_argument('--from', dest='source', required=True, help='the libvirt host it is on')
+    vcp.add_argument('--to', required=True, help='the libvirt host to copy it to')
+    vcp.add_argument('--as', dest='as_name', help='the name of the copy (default: the same)')
+    vcp.add_argument('--pool', help='the folder pool there (default: default)')
+    vcp.add_argument('--network', help='the libvirt network there, for a NIC whose network is not there')
+    vcp.add_argument('--live', action='store_true', help='copy it while it runs, from a disk-only snapshot merged back after')
+    vcp.add_argument('--start', action='store_true', help='start the copy')
+    vcp.add_argument('--keep-macs', action='store_true', help='keep the MAC addresses (run only one of the two)')
+    vcp.add_argument('--plan', help='the plan name')
     vm.set_defaults(fn=cmd_vm)
 
     h = sub.add_parser('hosts', help='list indexed hosts')

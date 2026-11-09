@@ -18,7 +18,7 @@ from .runtimes import docker, guests
 
 MEASURE_EVERY = 6 * 3600
 OFF_KEY = 'infra.read.off'
-SECTIONS = ('tools', 'fw_state', 'nft', 'iptables', 'ip6tables', 'ufw', 'firewalld', 'listeners', 'storage_clients', 'libvirt', 'libvirt_net', 'libvirt_pool',
+SECTIONS = ('tools', 'fw_state', 'nft', 'iptables', 'ip6tables', 'ufw', 'firewalld', 'listeners', 'storage_clients', 'libvirt', 'libvirt_snap', 'libvirt_net', 'libvirt_pool',
             'incus', 'lxc', 'proxmox', 'podman', 'wireguard', 'tailscale', 'netbird', 'headscale', 'caddy', 'nginx', 'units', 'end')
 PVE_KEYS = '^(cores|memory|onboot|unprivileged|net[0-9]+|(scsi|virtio|sata|ide|efidisk|tpmstate|mp)[0-9]+|rootfs): '
 BODY = r"""
@@ -47,17 +47,29 @@ sec listeners; has ss && try ss -H -tulnp | capped 40000
 sec storage_clients; has ss && try ss -H -tn state established '( sport = :445 or sport = :139 or sport = :2049 )' | capped 20000
 sec libvirt
 if has virsh && try virsh -c qemu:///system version >/dev/null; then
-  try virsh -c qemu:///system list --all --name | head -n 200 | while IFS= read -r d; do
+  try virsh -c qemu:///system list --all --name | head -n 200 | while read -r d; do
     [ -n "$d" ] || continue
     st=$(try virsh -c qemu:///system domstate "$d" | head -n1)
     au=$(try virsh -c qemu:///system dominfo "$d" | sed -n 's/^Autostart: *//p')
     printf '%s\t%s\t%s\t%s\n' "$d" "$st" "$au" "$(try virsh -c qemu:///system dumpxml "$d" | one)"
   done
 fi
+# each VM's snapshots: what a snapshot's XML says before the copy of the domain it carries, and which is current
+sec libvirt_snap
+if has virsh && try virsh -c qemu:///system version >/dev/null; then
+  try virsh -c qemu:///system list --all --name | head -n 200 | while read -r d; do
+    [ -n "$d" ] || continue
+    cur=$(try virsh -c qemu:///system snapshot-current --name "$d" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    try virsh -c qemu:///system snapshot-list "$d" --name | head -n 100 | while read -r n; do
+      [ -n "$n" ] || continue
+      printf '%s\t%s\t%s\t%s\n' "$d" "$n" "$([ "$n" = "$cur" ] && echo 1 || echo 0)" "$(try virsh -c qemu:///system snapshot-dumpxml "$d" "$n" | sed '/<domain[ >]/,$d' | capped 20000 | one)"
+    done
+  done
+fi
 sec libvirt_net
-if has virsh; then try virsh -c qemu:///system net-list --all --name | head -n 50 | while IFS= read -r n; do [ -n "$n" ] && printf '%s\t%s\n' "$n" "$(try virsh -c qemu:///system net-dumpxml "$n" | one)"; done; fi
+if has virsh; then try virsh -c qemu:///system net-list --all --name | head -n 50 | while read -r n; do [ -n "$n" ] && printf '%s\t%s\t%s\n' "$n" "$(try virsh -c qemu:///system net-dumpxml --inactive "$n" | one)" "$(try virsh -c qemu:///system net-info "$n" | one)"; done; fi
 sec libvirt_pool
-if has virsh; then try virsh -c qemu:///system pool-list --all --name | head -n 50 | while IFS= read -r n; do [ -n "$n" ] && printf '%s\t%s\n' "$n" "$(try virsh -c qemu:///system pool-dumpxml "$n" | one)"; done; fi
+if has virsh; then try virsh -c qemu:///system pool-list --all --name | head -n 50 | while read -r n; do [ -n "$n" ] && printf '%s\t%s\t%s\n' "$n" "$(try virsh -c qemu:///system pool-dumpxml --inactive "$n" | one)" "$(try virsh -c qemu:///system pool-info --bytes "$n" | one)"; done; fi
 sec incus
 if has incus; then
   try incus list -f csv -c nstP4S | head -n 200 | while IFS= read -r l; do
@@ -238,7 +250,7 @@ def parse(text: str) -> dict | None:
     fw = firewall.model({'tools': tools, 'nft': joined.get('nft'), 'iptables': joined.get('iptables'), 'ip6tables': joined.get('ip6tables'),
                          'ufw': joined.get('ufw'), 'firewalld': joined.get('firewalld'), 'firewalld_state': joined.get('fw_state')})
     return {'tools': tools, 'firewall': fw, 'listeners': parse_listeners(s.get('listeners', [])), 'storage_clients': parse_storage_clients(s.get('storage_clients', [])),
-            'libvirt': guests.parse_libvirt(s.get('libvirt', [])), 'libvirt_networks': guests.parse_libvirt_networks(s.get('libvirt_net', [])),
+            'libvirt': guests.with_snapshots(guests.parse_libvirt(s.get('libvirt', [])), guests.parse_libvirt_snapshots(s.get('libvirt_snap', []))), 'libvirt_networks': guests.parse_libvirt_networks(s.get('libvirt_net', [])),
             'libvirt_pools': guests.parse_libvirt_pools(s.get('libvirt_pool', [])), 'incus': guests.parse_incus(s.get('incus', [])), 'lxc': guests.parse_lxc(s.get('lxc', [])),
             'proxmox': guests.parse_proxmox(s.get('proxmox', [])), 'podman_rootless': _podman(s.get('podman', [])), 'access': parse_access(s, tools)}
 

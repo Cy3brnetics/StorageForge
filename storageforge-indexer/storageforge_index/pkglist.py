@@ -31,7 +31,7 @@ _NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9+._@:~-]{0,199}')
 _APP = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,199}')
 _DISTRO = re.compile(r'[A-Za-z0-9._-]{1,64}')
 _SKIP = frozenset({'gpg-pubkey'})      # rpm lists each imported signing key as a package, which no repository holds
-_CONTROL = re.compile(r'[\x00-\x20\x7f-\x9f  ]')
+_CONTROL = re.compile(r'[\x00-\x20\x7f-\x9f\u2028\u2029]')
 
 
 def _url(text: str) -> str | None:

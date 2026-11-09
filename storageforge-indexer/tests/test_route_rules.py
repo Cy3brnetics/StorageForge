@@ -168,6 +168,8 @@ NO_FRESH_PASSWORD = {
     ('POST', '/api/changes/check'),
     ('POST', '/api/clone/preview'),                # reads the index only
     ('POST', '/api/clone'),                        # saves plans, as /api/changes does: running them is what asks
+    ('POST', '/api/vm/copy/preview'),              # reads the index only
+    ('POST', '/api/vm/copy'),                      # saves a plan, as /api/changes does: deploying it is what asks
     ('POST', '/api/console/sessions/<sid>/input'),    # typing into a session already opened with the password
     ('POST', '/api/console/sessions/<sid>/resize'),
     ('DELETE', '/api/console/sessions/<sid>'),        # closing a session of your own
@@ -250,6 +252,7 @@ NOT_AUDITED = {
     'api_moves_check': 'compares with the index and saves nothing',
     'api_changes_check': 'compares with the index and saves nothing',
     'api_clone_preview': 'builds plans from the index and saves nothing',
+    'api_vm_copy_preview': 'builds a plan from the index and saves nothing',
     'api_tasks_check': 'compares with the index and saves nothing',
     'api_shares_validate': 'compares with the index and saves nothing',
     'api_planner_changes': 'compares with the index and saves nothing',

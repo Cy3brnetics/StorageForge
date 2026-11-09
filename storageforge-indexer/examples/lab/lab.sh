@@ -9,7 +9,7 @@
 #   lab.sh reset          return every VM to the golden snapshot
 #   lab.sh snapshot       retake the golden snapshot from the current state
 #   lab.sh test           check the running lab against what it should hold
-#   lab.sh test --all     tiers 0-14 and 16, resetting around them, and write the report into reports/. Takes a while.
+#   lab.sh test --all     tiers 0-14, 16, 17 and 18, resetting around them, and write the report into reports/. Takes a while.
 #   lab.sh gauntlet       tier 2 alone: every deploy path on every VM, from golden and back
 #   lab.sh appliances     tier 8 alone: Proxmox, TrueNAS and XCP-ng, when the build has them
 #   lab.sh controller     rebuild StorageForge from this tree and restart it on sf-ctl, keeping its data
@@ -589,7 +589,7 @@ cmd_test_all() {
   export SFLAB_STATE="$STATE"
   rm -rf "$STATE/results" "$STATE/gauntlet.json"
   cmd_reset
-  for t in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 16 17; do
+  for t in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 16 17 18; do
     say "== tier $t =="
     [ "$t" = 0 ] || [ "$t" = 2 ] || cmd_reset
     case $t in    # the report decides, knowing what is known

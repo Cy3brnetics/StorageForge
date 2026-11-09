@@ -291,6 +291,7 @@ See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure
 | GET | `/api/map/designs/<id>/compare`, `/export` | `?target=bash\|ansible\|terraform\|puppet` | |
 | POST | `/api/map/designs/<id>/stage` | | what is missing, as a plan |
 | GET | `/api/workloads`, `/api/network`, `/api/firewall`, `/api/exposure` | `?host=` | |
+| GET | `/api/workloads/libvirt` | `?host=` | each libvirt host's networks and storage pools, from its last reading. A libvirt VM in `/api/workloads` carries its disks, snapshots and guest agent state |
 | POST 🔑 | `/api/infra/measure` | `{"host"}` | `security.manage` |
 
 ## Scheduler
@@ -323,6 +324,7 @@ See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure
 | POST | `/api/clone/preview` | `{source, target, files, map, mode, packages, accounts, shares, snapshots, services}` | the plans that would copy one host onto another, the data at risk, and what isn't copied. Saves nothing |
 | POST | `/api/clone` | as above, and `accept: [risk ids]` | saves them. 409 with `open` until every critical and warning risk is in `accept`, and the audit log records the accepted ones |
 | GET | `/api/vm/images` | | the cloud images a `vm-create` step can start from |
+| POST | `/api/vm/copy/preview`, `/api/vm/copy` | `{source, name, target, as?, pool?, network?, live?, start?, keep_macs?}` | the plan that copies a VM as it is to another libvirt host ([VMs on libvirt](vms.md#copying-a-vm-to-another-libvirt-host)): its two steps and their check, or saved as a change plan (201, `id`) |
 | GET | `/api/vm/specs` | | VM specs, built in and your own, and the fields a spec may set |
 | PUT, DELETE | `/api/vm/specs/<name>` | `{field: value, "note"}` | save or remove one of your specs. The built-in ones can't be changed |
 | GET | `/api/hostconfigs/packages?host=[&against=]` | | the packages a host was given on purpose, its Flatpak and Snap apps and package sources; with `against=`, what each host has that the other lacks |

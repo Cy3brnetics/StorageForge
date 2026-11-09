@@ -59,6 +59,12 @@ function taskTitle(t) {
     packages: () => `Packages of ${p.from_host}${p.skip ? ', less ' + p.skip : ''}`,
     accounts: () => `Accounts of ${p.from_host}`, 'config-files': () => `Share files of ${p.from_host}`,
     services: () => `Services of ${p.from_host}`, 'md-array': () => `Create mdadm array ${p.name} (${p.level}) on ${p.devices}`,
+    'vm-snapshot': () => (p.action === 'delete' ? `Delete snapshot ${p.snapshot} of ${p.name}` : `Snapshot ${p.name}${p.snapshot ? ' as ' + p.snapshot : ''}${p.disk_only === false ? ' (with memory)' : ''}`),
+    'vm-revert': () => `Revert ${p.name} to ${p.snapshot}`, 'vm-edit': () => `Change VM ${p.name}`,
+    'libvirt-network': () => (p.state === 'absent' ? `Remove network ${p.name}` : `Network ${p.name} (${p.mode || 'nat'}${p.address ? ' ' + p.address : ''})`),
+    'libvirt-pool': () => (p.state === 'absent' ? `Remove pool ${p.name}` : `Pool ${p.name} (${p.type || 'dir'} ${p.path || p.source || ''})`),
+    'vm-send': () => `Send VM ${p.name} to ${p.dest_host}:${p.dest}${p.live ? ' (live)' : ''}`, 'vm-define': () => `Define VM ${p.name} on ${p.folder}`,
+    'workload-action': () => `${(p.action || '').replace('-', ' ').replace(/^./, (c) => c.toUpperCase())} ${p.runtime} ${p.name}`, 'workload-remove': () => `Remove ${p.runtime} ${p.name}`,
   }[t.type] || (() => t.type))();
 }
 const tasksOn = (host) => (CH.plan.ran_at && !CH.dirty) ? [] : CH.plan.tasks.filter((t) => t.host === host);

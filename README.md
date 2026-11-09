@@ -54,28 +54,48 @@ I built it because I wanted to use it, not because I wanted to maintain a storag
 
 The rules every feature follows are in [Concepts](docs/concepts.md#the-rules), and the protections are in [Security](docs/security.md). In short: SSH keys are encrypted at rest and held in memory only for the length of a task, trash and cutovers rename instead of deleting, drive tasks have three separate locks, and the audit log is hash-chained.
 
-## Quick start
+## Install
 
-From `storageforge-indexer/`, with Docker and Compose v2:
+**You need** a Linux machine with Docker and Compose v2 that can reach your hosts over SSH, and hosts with an SSH server. Nothing is installed on a host to scan it. [Install and set up](docs/install.md) is the full guide: settings, certificates, first admin, read-only and deploy access, the optional parts, upgrading and removing.
+
+**1. Start it.**
 
 ```bash
+git clone https://github.com/Cy3brnetics/StorageForge.git
+cd StorageForge/storageforge-indexer
+git checkout v0.5.0
 docker compose up -d --build
-docker compose exec storageforge storageforge-index user add admin
-docker compose exec storageforge storageforge-index vault generate --name fleet
 ```
 
-Add the printed public key to `~scan/.ssh/authorized_keys` on a host, then bind and scan it:
+**2. Keep the vault secret somewhere else.** Without it, the vault's SSH keys cannot be read, and backups never hold it.
 
 ```bash
+docker compose exec storageforge cat /run/sf-secrets/vault_secret
+```
+
+**3. Make the first admin, then sign in.**
+
+```bash
+docker compose exec storageforge storageforge-index user add admin
+```
+
+Open `https://<this machine>:8443`. The certificate is self-signed: before you accept it, compare its fingerprint with `docker compose logs init-secrets`.
+
+**4. Scan a host.** On the host, make an account `scan` with no password. Then generate a key in the vault and put its public half in `~scan/.ssh/authorized_keys` there, or use **Keys → Install on a host**. Then:
+
+```bash
+docker compose exec storageforge storageforge-index vault generate --name fleet
 docker compose exec storageforge storageforge-index vault bind --key fleet --host 10.0.20.0/24 --user scan
 docker compose exec storageforge storageforge-index scan --host 10.0.20.5
 ```
 
-Then open `https://<this machine>:8443` and sign in. To try it without touching a real host, `examples/demo/demo.sh` runs the whole flow against a disposable SSH target. [Getting started](docs/getting-started.md) has the details, including running it without Docker.
+**5. When you want it to change things,** give the host read-only scan access (**Access**) and deploy access (**Deploy → Set up…**). Each asks for a sudo password once, for that session only.
+
+To try it without touching a real host, `examples/demo/demo.sh` runs the whole flow against a disposable SSH target. Without Docker, see [Install and set up → Without Docker](docs/install.md#5-without-docker).
 
 ## Where it stands
 
-- Version 0.4.0. Releases are tagged `vX.Y.Z`; see the [changelog](CHANGELOG.md).
+- Version 0.5.0. Releases are tagged `vX.Y.Z`; see the [changelog](CHANGELOG.md).
 - It is meant for a LAN behind its TLS proxy. Do not publish it on the internet. The one port that may face it is the optional [tunnel for remote nodes](docs/remote-nodes.md).
 - The [KVM lab](docs/kvm-lab.md) tests scans and deploys on real VMs across Debian, Ubuntu, Fedora, Arch, openSUSE, Rocky Linux and AlmaLinux. Alpine can be scanned, but deploys are refused because it has no bash or systemd. The lab tests through the API, not the web pages. The release run of 2026-11-06 passed 561 of 564 checks, and the remaining failure and what has not met a real device or service are listed in the [changelog](CHANGELOG.md) and [progress.md](progress.md).
 - The CI workflow is written and its commands pass by hand, but it has not run on a runner yet.
@@ -84,7 +104,7 @@ Then open `https://<this machine>:8443` and sign in. To try it without touching 
 
 | Where | What |
 | :--- | :--- |
-| [docs/](docs/README.md) | All documentation, starting with [getting started](docs/getting-started.md) and [concepts](docs/concepts.md) |
+| [docs/](docs/README.md) | All documentation, starting with [install and set up](docs/install.md), [getting started](docs/getting-started.md) and [concepts](docs/concepts.md) |
 | [storageforge-indexer/](storageforge-indexer/README.md) | The code |
 | [StorageForge-Website/](StorageForge-Website/index.html) | The one-page project website, as static files |
 | [CHANGELOG.md](CHANGELOG.md) | What changed |

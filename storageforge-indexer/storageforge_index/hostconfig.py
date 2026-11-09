@@ -37,7 +37,7 @@ REBUILT_MARK = '# Rebuilt by StorageForge from '      # such a file says the sam
 # fstab options (cifs password=, sshfs password_stdin stays), and smb.conf lines naming a password or secret
 _OPT_SECRET = re.compile(r'(?<![\w-])(pass|passwd|password|password2|sec_key|secret)=[^\s,]*', re.I)
 _SMB_SECRET = re.compile(r'^(\s*[^#;\s][^=\n]*(?:password|secret)[^=\n]*=).*$', re.I | re.M)
-_CONTROL = re.compile(r'[\x00-\x08\x0a-\x1f\x7f\x85  ]')
+_CONTROL = re.compile(r'[\x00-\x08\x0a-\x1f\x7f\x85\u2028\u2029]')
 _NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_.-]{0,63}\$?')
 _POOL = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]*')
 SYSTEM_TARGETS = ('/', '/boot', '/boot/efi', '/boot/firmware', '/efi')

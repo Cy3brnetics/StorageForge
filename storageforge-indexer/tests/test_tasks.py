@@ -559,7 +559,7 @@ class Tasks(Fleet):
 
     def test_templates_compile(self):
         fill = {'path': '/mnt/pool', 'src': '/mnt/pool/photos', 'dst': '/mnt/backup/p', 'subvol': '/mnt/pool', 'into': '/mnt/pool/.s',
-                'dataset': 'tank/x', 'project': 'immich', 'host': 'pc', 'arg': '/mnt/pool'}
+                'dataset': 'tank/x', 'project': 'immich', 'host': 'pc', 'arg': '/mnt/pool', 'vms': 'web, db'}
 
         def filled(blocks):
             return [{**b, 'params': {k: v or fill.get(k, v) for k, v in b['params'].items()},

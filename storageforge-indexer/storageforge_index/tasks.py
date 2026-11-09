@@ -32,6 +32,7 @@ HOST_RE = re.compile(r'(?!-)([A-Za-z0-9._-]{1,32}@)?(?!-)[A-Za-z0-9.:_\[\]-]{1,2
 PREFIX_RE = re.compile(r'[A-Za-z0-9_.-]{1,40}')
 DATASET_RE = re.compile(r'(?!-)[A-Za-z0-9_.:/-]{1,200}')
 UNIT_RE = re.compile(r'[A-Za-z0-9@_.:\\-]{1,120}')
+VMS_RE = re.compile(r'\*|[A-Za-z0-9_][A-Za-z0-9_.+-]{0,63}( *, *[A-Za-z0-9_][A-Za-z0-9_.+-]{0,63}){0,49}')
 SCHEDULE_RE = re.compile(r'[A-Za-z0-9 *:,./~-]{1,80}')
 MAX_BLOCKS, MAX_DEPTH = 200, 6
 STOP_OK = 100
@@ -112,6 +113,18 @@ TYPES: dict[str, dict] = {
                             P('dst_host', 'host', 'To host', '', optional=True), P('dst', 'dataset', 'Into dataset', placeholder='backup/media'),
                             P('keep', 'int', 'Keep there (0 = all)', 0, min=0, max=9999), P('recursive', 'bool', 'with child datasets', False),
                             P('raw', 'bool', 'raw (stays encrypted, without its key)', False)]},
+    'vm_snapshot': {'cat': 'snapshot', 'label': 'VM snapshots', 'text': 'snapshot VMs {vms}, keep {keep}',
+                    'help': 'A disk-only libvirt snapshot of each VM, named <prefix>-<date>, its filesystems frozen by the guest agent first when it '
+                            'answers. Keep: how many of these this block keeps per VM (0 = all); it never deletes a snapshot another prefix or a person made.',
+                    'params': [P('vms', 'vms', 'VMs', '*', placeholder='web, db  or  * for every VM'), P('prefix', 'prefix', 'Name prefix', 'auto'),
+                               P('keep', 'int', 'Keep', 7, min=0, max=9999),
+                               P('quiesce', 'select', 'Freeze filesystems first', 'auto', choices=['auto', 'require', 'off'])]},
+    'vm_backup': {'cat': 'copy', 'label': 'Back up VMs', 'text': 'back up VMs {vms} → {into}, keep {keep}',
+                  'help': 'A whole copy of each disk and the definition of each VM in <into>/<vm>/<date>/. A running VM is copied from a disk-only '
+                          'snapshot (its filesystems frozen first when the guest agent answers), which is merged back after: it keeps running.',
+                  'params': [P('vms', 'vms', 'VMs', '*', placeholder='web, db  or  * for every VM'), P('into', 'path', 'Into (on this host)'),
+                             P('keep', 'int', 'Keep', 7, min=1, max=9999),
+                             P('quiesce', 'select', 'Freeze filesystems first', 'auto', choices=['auto', 'require', 'off'])]},
     'compose': {'cat': 'service', 'label': 'Docker compose', 'text': '{action} the {project} stack',
                 'params': [P('project', 'unit', 'Compose project', placeholder='immich'),
                            P('action', 'select', 'Action', 'stop', choices=['stop', 'start', 'restart'])]},
@@ -163,6 +176,11 @@ TEMPLATES = [
      'blocks': [_b('try', {'do': [_b('compose', project='', action='stop'), _b('btrfs_snapshot', subvol='', prefix='app')],
                            'fallback': [_b('log', message='snapshot failed: starting the stack again')]}),
                 _b('compose', project='', action='start'), _b('btrfs_prune', into='', prefix='app', keep=7)]},
+    {'name': 'VM snapshots', 'help': 'A disk-only snapshot of every VM each night, filesystems frozen first, the newest 7 kept.',
+     'schedule': '*-*-* 02:30:00', 'blocks': [_b('vm_snapshot', vms='', prefix='nightly', keep=7)]},
+    {'name': 'VM backups', 'help': 'A whole copy of every VM onto a backup disk each Sunday, while they run, the newest 4 kept.',
+     'schedule': 'Sun *-*-* 03:00:00',
+     'blocks': [_b('require_mounted', path=''), _b('vm_backup', vms='', into='', keep=4)]},
     {'name': 'Monthly btrfs tidy', 'help': 'Reclaim space stuck in half-empty chunks on the first Sunday of the month, only when the disk is there.',
      'schedule': 'Sun *-*-01..07 04:00:00',
      'blocks': [_b('if', {'then': [_b('btrfs_balance', path='')], 'else': [_b('log', message='not mounted: no balance')]},
@@ -216,7 +234,7 @@ def _param(spec: dict, v, where: str):
         if len(v) > 4000:
             raise ValueError(f'{label} is too long')
         return v
-    rx = {'prefix': PREFIX_RE, 'dataset': DATASET_RE, 'unit': UNIT_RE}.get(kind)
+    rx = {'prefix': PREFIX_RE, 'dataset': DATASET_RE, 'unit': UNIT_RE, 'vms': VMS_RE}.get(kind)
     v = str(v).strip()
     if rx and not rx.fullmatch(v):
         raise ValueError(f'{label}: {v!r} has characters it cannot have')
@@ -493,6 +511,9 @@ def check(conn: Conn, task: dict) -> dict:
                         add('crit', f'{p["dst"]} is on {dm["fstype"]} on {dh["name"]}, not btrfs')
                 if t == 'zfs_send' and p['dst'] and '/' not in p['dst']:
                     add('crit', f'{p["dst"]} is a whole pool, and receiving onto one means overwriting it: give pool/name')
+            elif t in ('vm_snapshot', 'vm_backup') and home:
+                for level, text in _vm_check(conn, home, t, p, guards | mounted_ifs):
+                    add(level, text)
             elif t in ('scrub', 'btrfs_balance') and p['path'] and home:
                 m = mount_of(home, p['path'])
                 if m and (m['fstype'] or '').lower() != 'btrfs':
@@ -524,6 +545,53 @@ def check(conn: Conn, task: dict) -> dict:
     items = [x for blk in out for x in blk['items']] + general
     return {'task': task['name'], 'general': general, 'blocks': out + fails,
             'crit': sum(1 for x in items if x['level'] == 'crit'), 'warn': sum(1 for x in items if x['level'] == 'warn')}
+
+
+def _vm_check(conn: Conn, home: dict, t: str, p: dict, guarded: set) -> list[tuple[str, str]]:
+    """What a VM block meets on its host, from the last infrastructure reading."""
+    from . import inframeasure
+    r = inframeasure.reading(conn, home['name'])
+    if not r:
+        return [('warn', f'{home["name"]} has no infrastructure reading: its VMs are not known')]
+    if 'virsh' not in (r.get('tools') or []):
+        return [('crit', f'{home["name"]} has no virsh: install libvirt there')]
+    vms = {d['name']: d for d in r.get('libvirt') or [] if d.get('name')}
+    names = sorted(vms) if p['vms'] == '*' else [n.strip() for n in p['vms'].split(',') if n.strip()]
+    out = []
+    gone = [n for n in names if n not in vms]
+    if gone:
+        out.append(('warn', f'not on {home["name"]} at the last reading: {", ".join(gone)}'))
+    have = [vms[n] for n in names if n in vms]
+    if not have:
+        out.append(('warn', 'no VM to snapshot or back up at the last reading' if p['vms'] != '*' else f'{home["name"]} had no VM at the last reading'))
+        return out
+    running = [d for d in have if d.get('state') == 'running']
+    no_agent = [d['name'] for d in running if d.get('agent') != 'connected']
+    if p['quiesce'] == 'off':
+        out.append(('note', 'crash-consistent: what was in flight in each guest is as after a power cut'))
+    elif no_agent:
+        out.append(('warn' if p['quiesce'] == 'require' else 'note',
+                    f'no guest agent answered in {", ".join(no_agent)}: ' + ('this block refuses them' if p['quiesce'] == 'require'
+                                                                               else 'they are crash-consistent (install qemu-guest-agent in the guest)')))
+    elif running:
+        out.append(('ok', 'the guest agent answers in each running VM: filesystems are frozen for the moment of the snapshot'))
+    if t == 'vm_snapshot':
+        mixed = [d['name'] for d in have if any(s.get('location') == 'internal' for s in d.get('snapshots') or [])]
+        if mixed:
+            out.append(('warn', f'{", ".join(mixed)} have internal snapshots: libvirt cannot delete those once disk-only ones are over them'))
+        out.append(('note', f'each snapshot adds an overlay file per disk, merged back as the oldest go' + (f': the newest {p["keep"]} stay' if p['keep'] else ': keep is 0, so they pile up')))
+    else:
+        m = p['into'] and mount_of(home, p['into'])
+        if m:
+            if m['target'] != '/' and m['target'] not in guarded:
+                out.append(('warn', f'{p["into"]} is on {m["target"]}: if that disk is not mounted, the backups land on the system disk. Add "Require mounted {m["target"]}" first'))
+            disk_mounts = {(x.get('on') or {}).get('mount') for d in have for x in d.get('disks') or []}
+            if m['target'] in disk_mounts and m['target'] != '/':
+                out.append(('warn', f'{m["target"]} holds the VM disks too: a backup there goes with them if the disk fails'))
+        out.append(('note', f'{len(have)} VM(s), each copied whole every run: room for {p["keep"]} copies of each is needed'))
+        if any(x.get('device') == 'disk' and x.get('backing') for d in have for x in d.get('disks') or []):
+            out.append(('note', 'a disk on a base image is copied whole, with the base, so the copy stands alone'))
+    return out
 
 
 # ── the Bash script ─────────────────────────────────────────────────────────
@@ -654,6 +722,10 @@ class _Emit:
             else:
                 self.w(d, f'send_zfs {q(p["dataset"])} {q(p["prefix"])} {q(sid)} {q(addr)} {int(port)} {q(p["dst"])} {int(p["keep"])} '
                           f'{1 if p["recursive"] else 0} {1 if p["raw"] else 0} || fail "send failed"')
+        elif t == 'vm_snapshot':
+            self.w(d, f'vm_snapshot {q(p["vms"])} {q(p["prefix"])} {q(p["quiesce"])} {int(p["keep"])} || fail "a VM snapshot failed"')
+        elif t == 'vm_backup':
+            self.w(d, f'vm_backup {q(p["vms"])} {q(p["into"].rstrip("/") or "/")} {int(p["keep"])} {q(p["quiesce"])} || fail "a VM backup failed"')
         elif t == 'compose':
             self.w(d, f'x docker compose -p {q(p["project"])} {p["action"]} || fail "docker compose {p["action"]} failed"')
         elif t == 'service':
@@ -914,6 +986,79 @@ prune_zfs() {   # prune_zfs <dataset> <prefix> <keep> <recursive>
   mapfile -t old < <(zfs list -H -t snapshot -o name -s creation -d 1 -- "$1" 2>/dev/null | cut -d@ -f2 | ours "$2" | sed "s|^|$1@|" | head -n "-$3")
   ((${#old[@]})) || { ok "nothing to prune on $1"; return 0; }
   for o in "${old[@]}"; do x zfs destroy $r -- "$o" || return 1; done
+}
+vmt() { virsh -c qemu:///system "$@"; }
+vm_pick() {   # vm_pick <names, or *>: the VMs, one per line. A name that is not here is said, and left out
+  local n=
+  # trimmed: libvirt 9.0 pads the names of --name lists with spaces
+  if [[ $1 == '*' ]]; then vmt list --all --name 2>/dev/null | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep . || true; return 0; fi
+  tr ',' '\n' <<<"$1" | while IFS= read -r n; do
+    n=${n// /}; [[ -n $n ]] || continue
+    if vmt dominfo "$n" >/dev/null 2>&1; then printf '%s\n' "$n"; else warnl "there is no VM $n here" >&2; fi
+  done
+}
+vm_q() {   # vm_q <vm> <auto|require|off>: prints --quiesce when the guest agent answers. 1: require, and it does not
+  [[ $2 == off ]] && return 0
+  [[ $(vmt domstate "$1" 2>/dev/null | head -n 1) == running ]] || return 0
+  if vmt qemu-agent-command "$1" '{"execute":"guest-ping"}' --timeout 5 >/dev/null 2>&1; then echo --quiesce; return 0; fi
+  [[ $2 != require ]]
+}
+vm_how() { if [[ -n $1 ]]; then echo "its filesystems frozen by the guest agent"; elif [[ $(vmt domstate "$2" 2>/dev/null | head -n 1) == running ]]; then echo "crash-consistent: no guest agent answered"; else echo "while it is off"; fi; }
+vm_snapshot() {   # vm_snapshot <vms> <prefix> <quiesce> <keep>
+  command -v virsh >/dev/null || { warnl "virsh is not installed"; return 1; }
+  local vm= q= bad=0 old= o=
+  while IFS= read -r vm; do
+    if ! q=$(vm_q "$vm" "$3"); then warnl "$vm: the guest agent does not answer, and this block must freeze its filesystems first: no snapshot"; bad=1; continue; fi
+    info "$vm: disk-only, $(vm_how "$q" "$vm")"
+    x vmt snapshot-create-as "$vm" "$2-$STAMP" --disk-only --atomic $q || { warnl "$vm: the snapshot failed"; bad=1; continue; }
+    (($4 > 0)) || continue
+    # oldest first: a disk-only snapshot is merged into the next, and each is this prefix own
+    mapfile -t old < <(vmt snapshot-list "$vm" --name 2>/dev/null | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | ours "$2" | sort | head -n "-$4")
+    for o in ${old[@]+"${old[@]}"}; do x vmt snapshot-delete "$vm" "$o" || { warnl "$vm: could not delete $o"; bad=1; }; done
+  done < <(vm_pick "$1")
+  return $bad
+}
+vm_backup() {   # vm_backup <vms> <into> <keep> <quiesce>: <into>/<vm>/<date>/ with a whole qcow2 per disk and the definition
+  command -v virsh >/dev/null && command -v qemu-img >/dev/null || { warnl "virsh or qemu-img is not installed"; return 1; }
+  local vm= q= bad=0 live= dir= t= f= d= disks= old= o= snap=sfbackup-$STAMP vbad= um=
+  um=$(umask); umask 077          # a backup holds all a VM holds: root alone reads it
+  while IFS= read -r vm; do
+    dir=$2/$vm/$STAMP; vbad=0
+    mapfile -t disks < <(vmt domblklist "$vm" --details 2>/dev/null | awk '$2 == "disk" && ($1 == "file" || $1 == "block") {print $3 "\t" $4}')
+    ((${#disks[@]})) || { warnl "$vm has no disk"; continue; }
+    if printf '%s\n' "${disks[@]}" | grep -c '\.sfbackup-' >/dev/null; then warnl "$vm runs on an overlay an earlier backup left: merge it first (virsh blockcommit $vm <disk> --active --pivot --shallow)"; bad=1; continue; fi
+    live=0; [[ $(vmt domstate "$vm" 2>/dev/null | head -n 1) == "shut off" ]] || live=1
+    if ((live)); then
+      if ! q=$(vm_q "$vm" "$4"); then warnl "$vm: the guest agent does not answer, and this block must freeze its filesystems first: no backup"; bad=1; continue; fi
+      if vmt domblklist "$vm" --details | awk '$2 == "disk" && $1 == "block"' | grep -c . >/dev/null; then warnl "$vm has a disk on a block device: back it up while it is off"; bad=1; continue; fi
+      info "$vm: from a disk-only snapshot, $(vm_how "$q" "$vm"), merged back after"
+      x vmt snapshot-create-as "$vm" "$snap" --disk-only --atomic --no-metadata $q || { warnl "$vm: the snapshot failed: no backup"; bad=1; continue; }
+    else info "$vm is off: its disks as they are"; fi
+    x mkdir -p -- "$dir.partial" || { bad=1; vbad=1; }
+    for d in "${disks[@]}"; do
+      ((vbad)) && break
+      t=${d%%$'\t'*}; f=${d#*$'\t'}
+      x qemu-img convert -U -O qcow2 -- "$f" "$dir.partial/$t.qcow2" || { warnl "$vm: copying $t failed"; vbad=1; }
+    done
+    if ((DRY)); then doing "would write the definition of $vm to $dir/domain.xml"
+    elif ((!vbad)); then vmt dumpxml --inactive "$vm" >"$dir.partial/domain.xml" || vbad=1; fi
+    if ((live && !DRY)); then
+      while IFS=$'\t' read -r t f; do
+        [[ $f == *.$snap ]] || continue
+        if vmt blockcommit "$vm" "$t" --active --pivot --shallow --wait >/dev/null 2>&1; then rm -f -- "$f"
+        else warnl "$t of $vm still runs on $f: merge it with virsh blockcommit $vm $t --active --pivot --shallow"; vbad=1; fi
+      done < <(vmt domblklist "$vm" --details | awk '$2 == "disk" {print $3 "\t" $4}')
+    elif ((live)); then doing "would merge the snapshot back into the disks of $vm"; fi
+    if ((vbad)); then bad=1; ((DRY)) || rm -rf --one-file-system -- "$dir.partial"; continue; fi
+    x mv -- "$dir.partial" "$dir" || { bad=1; continue; }
+    ((DRY)) || ok "$vm: ${#disks[@]} disk(s) in $dir ($(du -sh -- "$dir" 2>/dev/null | cut -f1))"
+    mapfile -t old < <(find "$2/$vm" -mindepth 1 -maxdepth 1 -type d -name '20??-??-??_??????' 2>/dev/null | sort | head -n "-$3")
+    for o in ${old[@]+"${old[@]}"}; do x rm -rf --one-file-system -- "$o"; done
+    mapfile -t old < <(find "$2/$vm" -mindepth 1 -maxdepth 1 -type d -name '20??-??-??_??????.partial' 2>/dev/null)
+    for o in ${old[@]+"${old[@]}"}; do x rm -rf --one-file-system -- "$o"; done
+  done < <(vm_pick "$1")
+  umask "$um"
+  return $bad
 }
 send_reach() {   # the other side of this send, as far as it can be seen from here. 1: a real run cannot go on, and this says why
   local out

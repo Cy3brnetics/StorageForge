@@ -124,7 +124,7 @@ recv_load() { # id: read line by line and never run, so nothing in the conf can 
   done <"$conf"
   RID=$1
   case $TOOL in
-    btrfs) [[ $ROOT == /?* && /$ROOT/ != */../* && /$ROOT/ != */./* ]] || recv_refuse "send $1: not a folder to receive into" ;;
+    btrfs|vm) [[ $ROOT == /?* && /$ROOT/ != */../* && /$ROOT/ != */./* ]] || recv_refuse "send $1: not a folder to receive into" ;;
     zfs) [[ $ROOT =~ ^[A-Za-z0-9_][A-Za-z0-9_.:-]*(/[A-Za-z0-9_][A-Za-z0-9_.:-]*)+$ && $ROOT != *..* ]] || recv_refuse "send $1: not a dataset to receive into" ;;
     *) recv_refuse "send $1: no tool I know" ;;
   esac
@@ -137,18 +137,25 @@ recv_lock() { # -n or -w seconds, and what to say: one change at a time in a fol
   flock "$@" 7 || recv_refuse "another send is receiving into $ROOT"
 }
 recv_probe() {
+  if [[ $TOOL == vm ]]; then command -v sha256sum >/dev/null && command -v dd >/dev/null || { echo "dd or sha256sum is missing on $(uname -n)" >&2; exit 3; }; echo "ok vm"; return 0; fi
   command -v "$TOOL" >/dev/null || { echo "$TOOL is not installed on $(uname -n)" >&2; exit 3; }
   if [[ $TOOL == btrfs ]]; then btrfs --version >/dev/null 2>&1; else zfs version >/dev/null 2>&1; fi || { echo "$TOOL does not run on $(uname -n)" >&2; exit 3; }
   echo "ok $TOOL"
 }
 recv_root() { # is the folder or dataset there yet?
-  if [[ $TOOL == btrfs ]]; then [[ -d $ROOT ]] && echo present || echo absent
+  if [[ $TOOL == btrfs || $TOOL == vm ]]; then [[ -d $ROOT ]] && echo present || echo absent
   elif zfs list -H -o name -- "$ROOT" >/dev/null 2>&1; then echo present; else echo absent; fi
   return 0
 }
-recv_list() { # what is there: by name for btrfs, oldest first for ZFS
+recv_list() { # what is there: by name for btrfs, oldest first for ZFS. VM disks: the files a receive finished, by name
   local d n
-  if [[ $TOOL == btrfs ]]; then
+  if [[ $TOOL == vm ]]; then
+    shopt -s nullglob
+    for d in "$ROOT"/.*.sf-sha256; do
+      n=${d##*/}; n=${n#.}; n=${n%.sf-sha256}
+      if recv_name_ok "$n" && [[ -f $ROOT/$n && ! -L $ROOT/$n ]]; then printf '%s\n' "$n"; fi
+    done | sort
+  elif [[ $TOOL == btrfs ]]; then
     shopt -s dotglob nullglob
     for d in "$ROOT"/*; do
       [[ -d $d && ! -L $d ]] || continue
@@ -165,7 +172,13 @@ recv_list() { # what is there: by name for btrfs, oldest first for ZFS
 }
 recv_state() { # name -> done <what it came from> | partial | other | absent
   local n=$1 show id
-  if [[ $TOOL == btrfs ]]; then
+  if [[ $TOOL == vm ]]; then     # a disk: finished once its checksum is beside it, as the receive writes it last
+    if [[ -e $ROOT/.$n.sf-part ]]; then echo partial
+    elif [[ -e $ROOT/$n || -L $ROOT/$n ]]; then
+      id=$(cut -c1-64 "$ROOT/.$n.sf-sha256" 2>/dev/null) || id=
+      if [[ -f $ROOT/$n && ! -L $ROOT/$n && $id =~ ^[0-9a-f]{64}$ ]]; then echo "done $id"; else echo other; fi
+    else echo absent; fi
+  elif [[ $TOOL == btrfs ]]; then
     [[ -e $ROOT/$n || -L $ROOT/$n ]] || { echo absent; return 0; }
     [[ -d $ROOT/$n && ! -L $ROOT/$n ]] && show=$(btrfs subvolume show -- "$ROOT/$n" 2>/dev/null) || { echo other; return 0; }
     id=$(awk '$1 == "Received" && $2 == "UUID:" { print $3; exit }' <<<"$show")
@@ -177,7 +190,8 @@ recv_state() { # name -> done <what it came from> | partial | other | absent
   return 0
 }
 recv_drop() { # what a failed receive left: it never verified, and the next send must not build on it
-  if [[ $TOOL == btrfs ]]; then
+  if [[ $TOOL == vm ]]; then rm -f -- "$ROOT/.$1.sf-part"
+  elif [[ $TOOL == btrfs ]]; then
     if [[ -d $ROOT/$1 && ! -L $ROOT/$1 ]]; then btrfs subvolume delete -- "$ROOT/$1" >/dev/null 2>&1; fi
   elif zfs list -H -o name -t snapshot -- "$ROOT@$1" >/dev/null 2>&1; then zfs destroy -- "$ROOT@$1" >/dev/null 2>&1; fi
   return 0
@@ -202,7 +216,17 @@ recv_receive() { # nonce name, the stream on stdin. It only ever makes something
   # to what the parent gives (a stream cannot mount itself over a folder or export itself), and -o sets setuid, devices and canmount here whatever
   # the stream says (no setuid file or device node works, and nothing mounts at boot: mount it by hand to look). Not lab-tested (SF-72).
   # btrfs: the files keep the owner, mode and setuid bits the stream carries; see docs/security.md for what that leaves.
-  if [[ $TOOL == btrfs ]]; then
+  if [[ $TOOL == vm ]]; then
+    # a disk image, written as a new file of its own and readable by root alone: it holds all a VM holds. dd conv=sparse keeps
+    # runs of zeros as holes, and the checksum is of what arrived, for the sender to hold against what it sent
+    if mkdir -p -- "$ROOT" >"$err" 2>&1 && ( umask 077; set -o noclobber; : >"$ROOT/.$n.sf-part" ) 2>>"$err"; then
+      dd of="$ROOT/.$n.sf-part" bs=1M conv=sparse,notrunc status=none 2>>"$err"; rc=$?
+      if ((rc == 0)); then
+        x=$(sha256sum <"$ROOT/.$n.sf-part" | cut -c1-64) && [[ ! -e $ROOT/$n && ! -L $ROOT/$n ]] && mv -n -- "$ROOT/.$n.sf-part" "$ROOT/$n" \
+          && ( umask 077; printf '%s\n' "$x" >"$ROOT/.$n.sf-sha256" ) || rc=5
+      fi
+    else rc=5; fi
+  elif [[ $TOOL == btrfs ]]; then
     mkdir -p -- "$ROOT" >"$err" 2>&1 && btrfs receive -C "$ROOT" >"$err" 2>&1; rc=$?
   else
     zfs receive -u -x mountpoint -x sharenfs -x sharesmb -o setuid=off -o devices=off -o canmount=noauto -- "$ROOT" >"$err" 2>&1; rc=$?
@@ -229,11 +253,11 @@ recv_discard() { # name: an unfinished copy an interrupted receive left. A finis
   local n=$1 st started rc=0
   started=$(date +%s)
   recv_name_ok "$n" || recv_refuse "not a snapshot name"
-  [[ $TOOL == btrfs ]] || recv_refuse "a ZFS receive that was cut off leaves nothing to discard"
+  [[ $TOOL == btrfs || $TOOL == vm ]] || recv_refuse "a ZFS receive that was cut off leaves nothing to discard"
   recv_lock -n          # one being received right now also looks unfinished
   st=$(recv_state "$n")
   [[ $st == partial ]] || recv_refuse "$n is not an unfinished copy (${st%% *})"
-  btrfs subvolume delete -- "$ROOT/$n" >/dev/null || rc=$?
+  if [[ $TOOL == vm ]]; then rm -f -- "$ROOT/.$n.sf-part" || rc=$?; else btrfs subvolume delete -- "$ROOT/$n" >/dev/null || rc=$?; fi
   recv_record discard '' "$n" "$rc" "$started" "unfinished copy removed"
   exit "$rc"
 }
@@ -247,7 +271,8 @@ recv_prune() { # [dry]: the newest KEEP stay. The conf says how many and which n
   mapfile -t old < <(recv_list | while IFS= read -r n; do r=${n#"$PREFIX-"}; if [[ $n == "$PREFIX-"* && $r =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$ ]]; then printf '%s\n' "$n"; fi; done | head -n "-$KEEP")
   for n in ${old[@]+"${old[@]}"}; do
     if [[ $dry == dry ]]; then echo "would remove $n"; continue; fi
-    if [[ $TOOL == btrfs ]]; then btrfs subvolume delete -- "$ROOT/$n" >/dev/null || { rc=$?; continue; }
+    if [[ $TOOL == vm ]]; then rm -f -- "$ROOT/$n" "$ROOT/.$n.sf-sha256" || { rc=$?; continue; }
+    elif [[ $TOOL == btrfs ]]; then btrfs subvolume delete -- "$ROOT/$n" >/dev/null || { rc=$?; continue; }
     elif ((RECURSIVE)); then zfs destroy -r -- "$ROOT@$n" || { rc=$?; continue; }
     else zfs destroy -- "$ROOT@$n" || { rc=$?; continue; }; fi
     echo "removed $n"; gone+="$n "
@@ -269,7 +294,7 @@ recv_verb() { # verb [word] [word]: only these, each with only what it takes
     recv-root) recv_root ;;
     recv-list) recv_list ;;
     recv-state) recv_name_ok "$a" || recv_refuse "not a snapshot name"; recv_state "$a" ;;
-    recv-mkdir) if [[ $TOOL == btrfs ]]; then mkdir -p -- "$ROOT"; fi ;;
+    recv-mkdir) if [[ $TOOL == btrfs || $TOOL == vm ]]; then mkdir -p -- "$ROOT"; fi ;;
     recv-receive) recv_receive "$a" "$b" ;;
     recv-discard) recv_discard "$a" ;;
     recv-prune) recv_prune "$a" ;;

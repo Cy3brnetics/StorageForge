@@ -1004,6 +1004,10 @@ ARGS = {'dir': ('path', 'owner', 'group', 'mode'), 'rename': ('path', 'dest'), '
         'lvm-lv': ('vg', 'lv', 'size', 'fstype', 'label'), 'lvm-extend': ('vg', 'lv', 'size'), 'lvm-snapshot': ('vg', 'lv', 'name', 'size')}
 
 
+# step types that send to another host through receiving.py: the tool is the part of the type before -send (vm-send adds itself)
+SEND_TYPES = ['btrfs-send', 'zfs-send']
+
+
 def step_send(conn: Conn, hs: dict, t: dict, owner: str) -> dict:
     """What a send step is to receiving.py."""
     return receiving.send(conn, hs, find_host(hs, t['host']), t['host'], t['params']['dest_host'], t['type'].split('-')[0], t['params']['dest'], owner,
@@ -1013,7 +1017,7 @@ def step_send(conn: Conn, hs: dict, t: dict, owner: str) -> dict:
 def sends(conn: Conn, plan: dict, owner: str) -> list[dict]:
     """This plan's sends to other hosts."""
     hs = hosts(conn)
-    return receiving.only_between_hosts([step_send(conn, hs, t, owner) for t in plan['tasks'] if t['type'] in ('btrfs-send', 'zfs-send')])
+    return receiving.only_between_hosts([step_send(conn, hs, t, owner) for t in plan['tasks'] if t['type'] in SEND_TYPES])
 
 
 def receivers(conn: Conn, plan: dict) -> list[str]:
@@ -1053,7 +1057,7 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, actor: str, destructive:
             finally:
                 c.close()
         return hook
-    long_run = {'timeout': receiving.LONG_RUN} if any(t['type'] in ('btrfs-send', 'zfs-send') for t in plan['tasks']) else {}    # stopped halfway, a send starts again from nothing
+    long_run = {'timeout': receiving.LONG_RUN} if any(t['type'] in SEND_TYPES for t in plan['tasks']) else {}    # stopped halfway, a send starts again from nothing
     return [*before, *({'host': h, 'script': text, 'args': args, 'kind': 'changes', 'ref': plan['name'], 'mode': mode, **long_run,
                         **({'on_ok': mark(h)} if mode == 'apply' and plan_id else {})} for h in order), *after]
 
@@ -1070,7 +1074,7 @@ def script(conn: Conn, plan: dict, owner: str | None = None) -> str:
         h = find_host(hs, t['host'])
         args = [('1' if t['params'][a] else '') if isinstance(t['params'][a], bool) else
                 mkfs_args(t['params']['fstype'], t['params'][a]) if a == 'mkfs' else t['params'][a] for a in ARGS[t['type']]]
-        if t['type'] in ('btrfs-send', 'zfs-send'):        # the receiving side: which send, and where. This host has its own id for that
+        if t['type'] in SEND_TYPES:        # the receiving side: which send, and where. This host has its own id for that
             sid, address, port = receiving.script_args(step_send(conn, hs, t, owner))
             args += [sid, address, str(port)]
         if (EXTRA.get(t['type']) or {}).get('args_of'):
@@ -1149,7 +1153,8 @@ act() {
   if ((CUR_DESTRUCTIVE && !DESTRUCTIVE)); then missing "destructive, skipped: $* (rerun with --apply --destructive)"; return 1; fi
   doing "$*"
 }
-try() { "$@" || { conflict "failed: $*"; return 1; }; }
+# to stderr: a step that sends the output of a command it tries to /dev/null must still show why it failed
+try() { "$@" || { conflict "failed: $*" >&2; return 1; }; }
 # later MSG: something a task needs is not there yet. --apply: a conflict. The report can't know whether an earlier
 # task in this plan creates it, so it says so instead of failing
 later() { if ((APPLY)); then conflict "$*"; else missing "after the tasks before it: $*"; fi; }
@@ -1992,3 +1997,4 @@ from . import steps_clone  # noqa: E402,F401  (packages from another host)
 from . import steps_md  # noqa: E402,F401  (mdadm arrays)
 from . import steps_services  # noqa: E402,F401  (services of another host)
 from . import steps_tailscale  # noqa: E402,F401  (joining a tailnet)
+from . import steps_kvm  # noqa: E402,F401  (libvirt: snapshots, VM changes, networks, pools, copies)

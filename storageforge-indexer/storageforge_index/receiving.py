@@ -248,7 +248,7 @@ def receive_script(prefix: str, title: str, host: str, sends: list[dict], secret
     keylines = []
     for s in sends:
         parts.append(f'section {q("receives for " + s["sender"] + " into " + s["root"] + " (" + s["id"] + ")")}\n')
-        if s['tool'] == 'btrfs':
+        if s['tool'] in ('btrfs', 'vm'):
             parts.append(f'if [[ -d {q(s["root"])} ]]; then ok {q("folder " + s["root"])}; else info {q("the first send makes " + s["root"])}; fi\n')
         else:
             parent = s['root'].rsplit('/', 1)[0]

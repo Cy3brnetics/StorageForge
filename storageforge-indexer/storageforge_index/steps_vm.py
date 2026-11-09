@@ -89,9 +89,11 @@ FIELDS = [
     F('ssh_key', 'pubkey', 'Its SSH public key', placeholder='ssh-ed25519 AAAA… you@laptop'),
     F('sudo', 'choice', 'sudo for that account', options=['', 'nopasswd', 'none'], default=''),
     F('autostart', 'bool', 'Start with the libvirt host'),
+    # added: plans saved before keep their hash. With it, snapshots and backups can freeze the filesystems of the guest first
+    F('guest_agent', 'bool', 'Install the guest agent (snapshots then freeze its filesystems first)', added=True),
 ]
 ARGS = ('name', 'image', 'image_url', 'image_sha', 'osinfo', 'vcpus', 'ram_mb', 'disk_gb', 'data_disks', 'pool', 'network', 'bridge',
-        'firmware', 'cpu', 'console', 'user', 'ssh_key', 'sudo', 'autostart')
+        'firmware', 'cpu', 'console', 'user', 'ssh_key', 'sudo', 'autostart', 'guest_agent')
 SPEC_FIELDS = tuple(f['name'] for f in FIELDS if f['name'] not in ('name', 'spec'))
 DEFAULTS = {'vcpus': '2', 'ram_mb': '2048', 'disk_gb': '20', 'pool': 'default', 'network': 'default', 'firmware': 'bios',
             'cpu': 'host-model', 'console': 'serial', 'user': 'admin', 'sudo': 'nopasswd'}
@@ -118,13 +120,13 @@ vm_undo() { # the disks a failed t_vm_create made in this run (its made array), 
   local f; for f in "${made[@]}"; do [[ -e $f ]] && rm -f -- "$f"; done
   info "removed what this run had made: ${made[*]##*/}"
 }
-t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram=${7:-2048} disk=${8:-20} data=$9 pool=${10:-default} network=${11:-default} bridge=${12} firmware=${13:-bios} cpu=${14:-host-model} console=${15:-serial} user=${16:-admin} key=${17} sudo=${18:-nopasswd} autostart=${19}
+t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram=${7:-2048} disk=${8:-20} data=$9 pool=${10:-default} network=${11:-default} bridge=${12} firmware=${13:-bios} cpu=${14:-host-model} console=${15:-serial} user=${16:-admin} key=${17} sudo=${18:-nopasswd} autostart=${19} agent=${20}
   local V="virsh -c qemu:///system" c sums='' dir net root f i=0 d files=() need base want have fmt seed tool
   for c in virsh virt-install qemu-img curl sha256sum sha512sum; do
     command -v "$c" >/dev/null || { later "$c is not installed: the VM needs the libvirt client tools (virt-install, qemu-img) and curl"; return 0; }
   done
   if $V dominfo "$name" >/dev/null 2>&1; then
-    if $V metadata "$name" "$SF_VM_NS" --config 2>/dev/null | grep -q '<sf'; then ok "$name exists, made by StorageForge"
+    if $V metadata "$name" "$SF_VM_NS" --config 2>/dev/null | grep -c '<sf' >/dev/null; then ok "$name exists, made by StorageForge"
     else conflict "a VM named $name exists, and StorageForge did not make it: choose another name"; fi
     return 0
   fi
@@ -190,7 +192,12 @@ t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram
   local cd; cd=$(mktemp -d); local sudoline=''
   [[ $sudo == nopasswd ]] && sudoline=', "sudo": "ALL=(ALL) NOPASSWD:ALL"'
   # Alpine cloud images have no sudo: cloud-init installs it on first boot, or the sudo rule is for nothing
-  local pkgs=''; [[ $sudo == nopasswd && $image == alpine* ]] && pkgs=', "packages": ["sudo"]'
+  local pkgs='' want=()
+  [[ $sudo == nopasswd && $image == alpine* ]] && want+=('"sudo"')
+  # the guest agent: systemd starts it when its channel is there, OpenRC once it is added to a runlevel
+  [[ -n $agent ]] && want+=('"qemu-guest-agent"')
+  ((${#want[@]})) && pkgs=", \"packages\": [$(IFS=,; echo "${want[*]}")]"
+  [[ -n $agent ]] && pkgs+=', "runcmd": [["sh", "-c", "systemctl start qemu-guest-agent 2>/dev/null || { rc-update add qemu-guest-agent default; rc-service qemu-guest-agent start; }"]]'
   # not a locked account: OpenSSH without PAM (Alpine) refuses a key for one. Its password is a hash of nothing anyone
   # knows, made here for this VM, so the key is the only way in
   local rnd; rnd=$(LC_ALL=C tr -dc A-Za-z0-9./ < <(head -c 4000 /dev/urandom))
@@ -222,6 +229,11 @@ t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram
     # a VGA device with no display: openSUSE Leap 16 does not boot without one, and nothing can connect to it
     *) extra+=(--graphics none --video vga --console pty,target_type=serial) ;;
   esac
+  # an OS newer than the osinfo database of this host (Alpine 3.24 on Ubuntu 24.04): virt-install refuses the name, so the VM
+  # gets generic defaults instead, and says so
+  if [[ -n $osinfo ]] && ! virt-install --osinfo list 2>/dev/null | grep -wFc -- "$osinfo" >/dev/null; then
+    info "this host does not know the OS $osinfo yet (its osinfo database is older): generic defaults"; osinfo=
+  fi
   try virt-install --connect qemu:///system --import --name "$name" --osinfo "${osinfo:-detect=on,require=off}" --vcpus "$vcpus" --memory "$ram" --cpu "$cpu" \
     --network "$net,model=virtio" "${diskargs[@]}" "${extra[@]}" --rng /dev/urandom --noautoconsole >/dev/null || { vm_undo; return 0; }
   try $V metadata "$name" "$SF_VM_NS" --key storageforge --set "<sf image=\"$image\" made=\"$STAMP\"/>" --config >/dev/null

@@ -1,6 +1,6 @@
 # Getting started
 
-StorageForge runs as one container (the app) behind an nginx container (TLS). It can also run straight from Python for development.
+StorageForge runs as one container (the app) behind an nginx container (TLS). It can also run straight from Python for development. This page is the short path; [Install and set up](install.md) is the full guide, step by step, with how to check each one worked.
 
 ## Requirements
 
@@ -100,5 +100,6 @@ storageforge-index scan --local                      # this machine, no SSH
 
 ## Next
 
+- [Install and set up](install.md) goes on from here: read-only and deploy access, libvirt, the console, alerts, backups, upgrading.
 - [Concepts](concepts.md) explains how scans, designs, plans and deploys fit together.
 - [Web UI](web-ui.md) walks through the views.
