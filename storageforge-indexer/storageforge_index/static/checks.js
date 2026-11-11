@@ -189,40 +189,75 @@ async function loadMalware() {
   } catch (err) { box.replaceChildren(text('p', err.message, 'st-failed')); }
 }
 async function loadDupes() {
+  const box = $('#dupesbox');
   try {
-    const { groups } = await getJSON(`/api/dupes${S.host ? `?host=${encodeURIComponent(S.host)}` : ''}`);
-    $('#dupesection').hidden = !groups.length;
-    $('#dupesbox').replaceChildren(...groups.map((g) => el('details', {}, el('summary', {}, `${g.copies} copies of ${fmtBytes(g.size)}, ${fmtBytes(g.reclaimable)} to reclaim`),
-      el('ul', { class: 'copies small mono' }, ...g.files.map((f) => el('li', {}, f))))));
-  } catch { $('#dupesection').hidden = true; }
+    const { groups, checksummed } = await getJSON(`/api/dupes${S.host ? `?host=${encodeURIComponent(S.host)}` : ''}`);
+    if (!groups.length) {
+      box.replaceChildren(text('p', checksummed ? 'No identical files at this size.'
+        : 'No file checksums in the index yet. Turn Checksums on for a host in Keys → Bindings: its next scan hashes the files whose size another file has, here or on another host, and the hosts holding the other copies catch up.', 'muted'));
+      return;
+    }
+    box.replaceChildren(...groups.map((g) => {
+      const hosts = new Set(g.files.map((f) => f.split(':')[0]));
+      return el('details', {}, el('summary', {}, `${g.copies} copies of ${fmtBytes(g.size)}${hosts.size > 1 ? ` on ${hosts.size} hosts` : `, ${fmtBytes(g.reclaimable)} to reclaim`}`),
+        el('ul', { class: 'copies small mono' }, ...g.files.map((f) => el('li', {}, f))));
+    }));
+  } catch (err) { box.replaceChildren(text('p', err.message, 'muted')); }
 }
-async function loadCopies() {
-  loadTrends(); loadChanged(); loadDupes();
+/* Cleanup was five tools down one long panel (bug report 2026-11-10): three sub-panels, each loaded when first shown,
+   the last one chosen kept. */
+const COPIES = { sub: localStorage.getItem('sf.copies.sub') || 'dupes', loaded: new Set() };
+function copiesOpen(sub, reload = false) {
+  COPIES.sub = ['dupes', 'cold', 'trends'].includes(sub) ? sub : 'dupes';
+  localStorage.setItem('sf.copies.sub', COPIES.sub);
+  for (const b of document.querySelectorAll('#copies-subnav button')) b.setAttribute('aria-pressed', String(b.dataset.sub === COPIES.sub));
+  for (const id of ['dupes', 'cold', 'trends']) $(`#copies-${id}`).hidden = id !== COPIES.sub;
+  if (!reload && COPIES.loaded.has(`${COPIES.sub}|${S.host}`)) return;
+  COPIES.loaded.add(`${COPIES.sub}|${S.host}`);
+  if (COPIES.sub === 'dupes') { loadFolderCopies(); loadDupes(); }
+  else if (COPIES.sub === 'cold') loadCold();
+  else { loadTrends(); loadChanged(); }
+}
+document.querySelectorAll('#copies-subnav button').forEach((b) => b.addEventListener('click', () => copiesOpen(b.dataset.sub)));
+function loadCopies() { COPIES.loaded.clear(); copiesOpen(COPIES.sub, true); }
+let COPY_RESULT = null;
+async function loadFolderCopies() {
   const box = $('#copiesbox');
   box.replaceChildren(text('p', 'Comparing folders…', 'muted'));
   const qs = new URLSearchParams({ min_files: $('#copyfiles').value, min_size: $('#copysize').value });
   if (S.host) qs.set('host', S.host);
   try {
-    const r = await getJSON(`/api/folders/duplicates?${qs}`);
-    const head = text('p', `${r.total_groups} folder${r.total_groups === 1 ? '' : 's'} with copies among ${r.folders_checked.toLocaleString()} checked` +
-      (r.reclaimable_same_host ? ` · ${fmtBytes(r.reclaimable_same_host)} could be freed within hosts` : ''), 'muted');
-    if (!r.groups.length) { box.replaceChildren(head); return; }
-    box.replaceChildren(head, ...r.groups.map((g) => el('section', { class: 'card' },
-      el('div', { class: 'row' }, el('b', {}, `${g.count}× · ${g.files.toLocaleString()} files · ${fmtBytes(g.bytes)}`),
-        text('span', g.scope === 'same host' ? `same host · ${fmtBytes(g.reclaimable)} reclaimable` : 'across hosts (a backup?)',
-             g.scope === 'same host' ? 'pill local-only' : 'pill unknown'),
-        g.same_name ? null : text('span', 'renamed', 'pill unknown')),
-      el('ol', { class: 'copies' }, ...g.copies.map((c) => el('li', {},
-        button('', () => runSearch({ under: c.path, host: c.host }), 'copy')))),
-    )));
-    box.querySelectorAll('.copy').forEach((b, i) => {
-      const c = r.groups.flatMap((g) => g.copies)[i];
-      b.append(text('span', c.host, 'm'), text('span', c.path, 'p'));
-      b.title = 'List the files in this folder';
-    });
+    COPY_RESULT = await getJSON(`/api/folders/duplicates?${qs}`);
+    renderFolderCopies();
   } catch (err) { box.replaceChildren(text('p', err.message, 'st-failed')); }
 }
-$('#copyform').addEventListener('submit', (ev) => { ev.preventDefault(); loadCopies(); });
+function renderFolderCopies() {
+  const r = COPY_RESULT, box = $('#copiesbox');
+  if (!r) return;
+  const scope = $('#copyscope').value;
+  const groups = r.groups.filter((g) => !scope || g.scope === scope);
+  const same = r.same_host_groups ?? r.groups.filter((g) => g.scope === 'same host').length;
+  const across = r.across_hosts_groups ?? r.groups.length - same;
+  const head = text('p', `${same.toLocaleString()} within a host, ${across.toLocaleString()} across hosts, among ${r.folders_checked.toLocaleString()} folders checked` +
+    (r.reclaimable_same_host ? ` · ${fmtBytes(r.reclaimable_same_host)} could be freed within hosts` : ''), 'muted');
+  const shown = groups.length < (scope === 'same host' ? same : scope === 'across hosts' ? across : same + across)
+    ? text('p', `Showing the largest ${groups.length.toLocaleString()}. Raise the size or file count to narrow it.`, 'muted small') : null;
+  if (!groups.length) { box.replaceChildren(head, text('p', scope ? `No folder copies ${scope === 'same host' ? 'within a host' : 'across hosts'} at this size.` : 'No folder copies at this size.', 'muted')); return; }
+  box.replaceChildren(head, ...[shown].filter(Boolean), ...groups.map((g) => el('section', { class: 'card' },
+    el('div', { class: 'row' }, el('b', {}, `${g.count}× · ${g.files.toLocaleString()} files · ${fmtBytes(g.bytes)}`),
+      text('span', g.scope === 'same host' ? `same host · ${fmtBytes(g.reclaimable)} reclaimable` : 'across hosts (a backup?)',
+           g.scope === 'same host' ? 'pill local-only' : 'pill unknown'),
+      g.same_name ? null : text('span', 'renamed', 'pill unknown')),
+    el('ol', { class: 'copies' }, ...g.copies.map((c) => el('li', {},
+      Object.assign(button('', () => runSearch({ under: c.path, host: c.host }), 'copy'), { title: 'List the files in this folder' }))))
+  )));
+  box.querySelectorAll('.copy').forEach((b, i) => {
+    const c = groups.flatMap((g) => g.copies)[i];
+    b.append(text('span', c.host, 'm'), text('span', c.path, 'p'));
+  });
+}
+$('#copyscope').addEventListener('change', renderFolderCopies);
+$('#copyform').addEventListener('submit', (ev) => { ev.preventDefault(); loadFolderCopies(); });
 
 /* ── cold data ───────────────────────────────────────────────────── */
 async function loadCold() {

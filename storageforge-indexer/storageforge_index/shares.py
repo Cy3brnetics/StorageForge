@@ -176,8 +176,14 @@ def design_exports(conn: Conn, host: str) -> list[dict]:
                     'clients': ' '.join(r['clients'] for r in rules) or str(e.get('clients') or '').strip(),
                     'options': str(e.get('options') or '').strip(), 'rules': rules,
                     'mounts': [_client_mount(m) for m in e.get('mounts') or [] if m.get('host') and m.get('path')],
-                    **_settings(e)})
+                    **_settings(e), **({'takeover': _takeover(e['takeover'])} if e.get('takeover') else {})})
     return out
+
+
+def _takeover(t: dict) -> dict:
+    """The share in the host's own config (/etc/exports, smb.conf) a designed share replaces: deploying comments it out."""
+    p = proto(t)
+    return {'proto': p, 'path': str(t.get('path') or '').rstrip('/') or '/', 'name': str(t.get('name') or '').strip()}
 
 
 def _client_mount(m: dict) -> dict:
@@ -496,7 +502,7 @@ def _designed_index(exports: list[dict], was: dict, host: str) -> int:
     raise LookupError(f'{host} has no designed share {was.get("name") or was.get("path")}: it may have changed, reload and try again')
 
 
-def validate(conn: Conn, host: str, body: dict, index: int | None = None, was: dict | None = None) -> dict:
+def validate(conn: Conn, host: str, body: dict, index: int | None = None, was: dict | None = None, takeover: bool = False) -> dict:
     """Check one share before it is saved: the draft takes the place of the share was, or export #index, in the
     design (or is added)."""
     hs = hosts(conn)
@@ -510,7 +516,7 @@ def validate(conn: Conn, host: str, body: dict, index: int | None = None, was: d
         exports = []
     from .graph import stored_blueprint
     raw = (stored_blueprint(conn, srv['name']) or {}).get('exports') or []
-    target = was or (raw[index] if index is not None and 0 <= index < len(raw) else None)
+    target = None if takeover else was or (raw[index] if index is not None and 0 <= index < len(raw) else None)
     # design_exports skips scanned/other shares: find the slot by what the share is
     pos = next((k for k, x in enumerate(exports) if target and share_key(x) == share_key(target)), None)
     if pos is None:
@@ -519,13 +525,24 @@ def validate(conn: Conn, host: str, body: dict, index: int | None = None, was: d
     else:
         exports[pos] = _as_checked(e)
     items = check_exports(conn, hs, srv, exports, only=pos)
+    if takeover and was:
+        items.append({'export': pos, 'level': 'note', 'text': f'deploying moves this share out of the host\'s own '
+                      f'{"smb.conf" if proto(was) == "SMB" else "exports"} (its lines are commented out, after a backup) into StorageForge\'s file'})
+    else:
+        took = {share_key(x['takeover']) for x in exports if x.get('takeover')}
+        for x in raw:
+            if not is_designed(x) and x.get('fromScan') and share_key(x) == share_key(e) and share_key(x) not in took:
+                items.append({'export': pos, 'level': 'crit', 'text': f'{srv["name"]} already shares this in its own config: '
+                              'open that share with Edit to take it over, so it is not shared twice'})
     return {'host': srv['name'], 'export': e, 'items': [{'level': x['level'], 'text': x['text']} for x in items],
             'crit': sum(1 for x in items if x['level'] == 'crit'), 'warn': sum(1 for x in items if x['level'] == 'warn')}
 
 
-def save_export(db, conn: Conn, host: str, body: dict, index: int | None, actor: str, was: dict | None = None) -> dict:
+def save_export(db, conn: Conn, host: str, body: dict, index: int | None, actor: str, was: dict | None = None,
+                takeover: bool = False) -> dict:
     """Add the share to the host's saved design (starting one from the scan if there is none), or replace the share
-    was (or #index)."""
+    was (or #index). takeover: was is a share the scan found in the host's own config; the design takes its place, and
+    deploying comments it out there (bug report 2026-11-10: Edit on it showed only text)."""
     from . import blueprint, graph
     hs = hosts(conn)
     srv = find_host(hs, host)
@@ -535,11 +552,30 @@ def save_export(db, conn: Conn, host: str, body: dict, index: int | None, actor:
     e['designed'] = True
     bp = graph.stored_blueprint(conn, srv['name']) or blueprint.from_index(conn, srv['name'])
     exports = bp.setdefault('exports', [])
-    if was:
+    if takeover:
+        if not was or proto(was) not in ('NFS', 'SMB'):
+            raise ValueError('taking over a share needs the NFS or SMB share the scan found')
+        key = share_key(was)
+        if any(is_designed(x) and share_key(x.get('takeover') or x) == key for x in exports):
+            raise ValueError(f'{srv["name"]} already has this share in its design: edit that one instead')
+        index = next((i for i, x in enumerate(exports) if not is_designed(x) and share_key(x) == key), None)
+        e['takeover'] = _takeover(was)
+        if index is not None and share_key(e) == key:     # on the host already, as the scan found it; a new path or name is not yet
+            e['fromScan'] = True
+        if index is None:                       # a design saved before the scan found it: the share joins the list
+            exports.append(e)
+            index = len(exports) - 1
+        else:
+            exports[index] = e
+        if any(i != index and is_designed(x) and share_key(x) == share_key(e) for i, x in enumerate(exports)):
+            raise ValueError(f'{srv["name"]} already has this share in its design: edit that one instead')
+    elif was:
         index = _designed_index(exports, was, srv['name'])
-    if any(i != index and is_designed(x) and share_key(x) == share_key(e) for i, x in enumerate(exports)):
+    if not takeover and any(i != index and is_designed(x) and share_key(x) == share_key(e) for i, x in enumerate(exports)):
         raise ValueError(f'{srv["name"]} already has this share in its design: edit that one instead')    # merging would drop one
-    if index is not None:
+    if takeover:
+        pass
+    elif index is not None:
         if not 0 <= index < len(exports):
             raise LookupError(f'{srv["name"]} has no share #{index}')
         old = exports[index]
@@ -578,16 +614,18 @@ def script(conn: Conn, host: str, prev_clients: list[str] | None = None) -> str:
     c = check(conn, host)
     hs = hosts(conn)
     q = shlex.quote
-    e_arrays = {k: [] for k in ('E_PROTO', 'E_NAME', 'E_PATH', 'E_CLIENTS', 'E_OPTS', 'E_RULES', 'E_SMB')}
+    e_arrays = {k: [] for k in ('E_PROTO', 'E_NAME', 'E_PATH', 'E_CLIENTS', 'E_OPTS', 'E_RULES', 'E_SMB', 'E_TAKE')}
     c_arrays = {k: [] for k in ('C_HOST', 'C_TARGET', 'C_PROTO', 'C_SOURCE', 'C_NAME', 'C_FS', 'C_OPTS', 'C_AUTO', 'C_SET')}
     lines = []
     for e in c['exports']:
         for k, v in (('E_PROTO', e['proto']), ('E_NAME', e['name'] or e['path']), ('E_PATH', e['path']),
                      ('E_CLIENTS', e['clients']), ('E_OPTS', e['options'] or (NFS_DEFAULT if e['proto'] == 'NFS' else 'rw')),
                      ('E_RULES', nfs_rules(e) if e['proto'] == 'NFS' and e['clients'] else ''),
-                     ('E_SMB', '\n'.join('   ' + x for x in smb_lines(e)) if e['proto'] == 'SMB' else '')):
+                     ('E_SMB', '\n'.join('   ' + x for x in smb_lines(e)) if e['proto'] == 'SMB' else ''),
+                     ('E_TAKE', _take_ref(e.get('takeover')))):
             e_arrays[k].append(v)
-        lines.append(f'#   {e["proto"]} {e["name"] if e["proto"] == "SMB" else e["path"]}  ({e["path"]} → {e["clients"] or "anyone"})')
+        lines.append(f'#   {e["proto"]} {e["name"] if e["proto"] == "SMB" else e["path"]}  ({e["path"]} → {e["clients"] or "anyone"})'
+                     + (f'  taken over from the host\'s {"smb.conf" if e["takeover"]["proto"] == "SMB" else "exports"}' if e.get('takeover') else ''))
         for mt in e['mounts']:
             ch = find_host(hs, mt['host'])
             src = f'{c["address"]}:{e["path"]}' if e['proto'] == 'NFS' else f'//{c["address"]}/{e["name"]}'
@@ -608,6 +646,16 @@ def script(conn: Conn, host: str, prev_clients: list[str] | None = None) -> str:
             + f'SERVER={q(host_slug(c["host"]))}\nSERVER_ADDR={q(c["address"])}\n{decl}\n'
             + f'PREV_CLIENTS=({" ".join(q(host_slug(h)) for h in prev_clients or [])})\n'
             + SHARES_BODY_1 + HELPERS + SHARES_BODY_2 + REMOTE + SHARES_BODY_3.replace('@@PACKAGES@@\n', PACKAGES + CIFS_KERNEL))
+
+
+def _take_ref(t: dict | None) -> str:
+    """NFS|/path or SMB|name: what take_over looks for in the host's own config."""
+    if not t:
+        return ''
+    ref = t['name'] if t['proto'] == 'SMB' else t['path']
+    if '\n' in ref or not ref:
+        raise ValueError(f'cannot take over a share called {ref!r}')
+    return f'{t["proto"]}|{ref}'
 
 
 def deploy_items(db, conn: Conn, host: str, mode: str, actor: str) -> list[dict]:
@@ -712,7 +760,7 @@ if ((APPLY)) && [[ $EUID -ne 0 ]]; then echo "--apply needs root: sudo $0 ${ARGS
 STAMP=$(date +%Y%m%d-%H%M%S)
 
 @@PACKAGES@@
-backup() { [[ -e $1 ]] && cp -a -- "$1" "$1.storageforge-$STAMP"; }
+backup() { [[ ! -e $1 || -e $1.storageforge-$STAMP ]] || cp -a -- "$1" "$1.storageforge-$STAMP"; }   # the first of a run is the file as it was
 own_file() { # path content -> StorageForge's own file: written whole (after a backup) when it differs
   if [[ -e $1 && $(cat "$1") == "$2" ]]; then ok "$1"; return 1; fi
   if ((APPLY)); then     # scans check its checksum. Swapped in whole, so a crash leaves the old file or the new one
@@ -764,6 +812,69 @@ open_fw() { # label tcp-ports clients firewalld-services...
   else info "no active firewalld or ufw: nothing to open for $label"; fi
 }
 
+# Taking over a share the host's own config holds (Edit on a share the scan found): its line in /etc/exports or
+# /etc/exports.d, or its [section] in smb.conf, is commented out after a backup, and StorageForge's own file serves it from
+# now on, so it is never exported twice. Nothing is deleted; a rerun finds nothing left and says so.
+TOOK_NFS=0 TOOK_SMB=0
+take_file() { # file awk-program: comment out what the program marks, or say what it would
+  local f=$1 new shown; new=$(mktemp)
+  awk -v mark="# taken over by StorageForge $STAMP: " "$2" "$f" >"$new" || true
+  if cmp -s "$f" "$new"; then rm -f "$new"; return 1; fi
+  shown=$(diff "$f" "$new" | sed -n 's/^< /            /p' | head -n 20 || true)
+  if ((APPLY)); then
+    backup "$f"; cat "$new" >"$f"; durable "$f"
+    doing "commented out in $f (the backup is $f.storageforge-$STAMP):"
+  else
+    missing "would comment out in $f:"
+  fi
+  rm -f "$new"
+  printf '%s\n' "$shown"
+  return 0
+}
+take_nfs() { # path
+  local f files=() found=0
+  [[ -f /etc/exports ]] && files+=(/etc/exports)
+  while IFS= read -r -d '' f; do [[ $f == /etc/exports.d/storageforge.exports ]] || files+=("$f"); done \
+    < <(find /etc/exports.d -maxdepth 1 -type f -name '*.exports' -print0 2>/dev/null | sort -z)
+  for f in "${files[@]}"; do
+    # the export's path is its first field, quoted or with \040 for a space; a line ending in \ goes on, so that goes too
+    P=$1 take_file "$f" '
+      cont { print mark $0; cont = ($0 ~ /\\$/); next }
+      { l = $0; sub(/^[ \t]+/, "", l)
+        if (l != "" && l !~ /^#/) {
+          if (substr(l, 1, 1) == "\"") { p = substr(l, 2); p = substr(p, 1, index(p, "\"") - 1) } else { p = l; sub(/[ \t].*/, "", p) }
+          gsub(/\\040/, " ", p); sub(/\/+$/, "", p); if (p == "") p = "/"
+          if (p == ENVIRON["P"]) { print mark $0; cont = ($0 ~ /\\$/); next }
+        }
+        print }' && { found=1; TOOK_NFS=1; }
+  done
+  ((found)) || ok "$1 is not in the host's own exports any more"
+  return 0
+}
+take_smb() { # share name
+  local f prog
+  prog='/^[ \t]*\[/ { h = $0; sub(/^[ \t]*\[[ \t]*/, "", h); sub(/[ \t]*\][ \t]*$/, "", h); insec = (tolower(h) == tolower(ENVIRON["N"])) }
+        insec { print mark $0; next } { print }'
+  if [[ -f /etc/samba/smb.conf ]] && N=$1 take_file /etc/samba/smb.conf "$prog"; then TOOK_SMB=1
+  else ok "[$1] is not in smb.conf any more"; fi
+  while IFS= read -r -d '' f; do   # a file smb.conf includes is the operator's: say so, never edit it
+    [[ $f == /etc/samba/smb.conf || $f == /etc/samba/storageforge.conf ]] && continue
+    if N=$1 awk '/^[ \t]*\[/ { h = $0; sub(/^[ \t]*\[[ \t]*/, "", h); sub(/[ \t]*\][ \t]*$/, "", h); if (tolower(h) == tolower(ENVIRON["N"])) f = 1 } END { exit !f }' "$f"; then
+      conflict "[$1] is also in $f, which StorageForge does not edit: take it out there, or it is shared twice"
+    fi
+  done < <(find /etc/samba -maxdepth 1 -type f -name '*.conf' -print0 2>/dev/null)
+  return 0
+}
+take_over() {
+  local i k any=0
+  for i in "${!E_TAKE[@]}"; do [[ -n ${E_TAKE[$i]} ]] && any=1; done
+  ((any)) || return 0
+  section "shares taken over from the host's own config"
+  for i in "${!E_TAKE[@]}"; do k=${E_TAKE[$i]}
+    case $k in NFS\|*) take_nfs "${k#NFS|}" ;; SMB\|*) take_smb "${k#SMB|}" ;; esac
+  done
+}
+
 server_nfs() {
   local i body="# StorageForge NFS exports for $(uname -n). Written by shares-$SERVER.sh; edit the design, not this file."
   if [[ " ${E_PROTO[*]} " != *" NFS "* ]]; then      # no NFS shares left: empty StorageForge's exports, if there are any
@@ -787,7 +898,7 @@ server_nfs() {
     body+=$'\n'"$line"
   done
   need_cmd exportfs "NFS server" nfs-kernel-server nfs-utils nfs-utils nfs-kernel-server || return 0
-  own_file /etc/exports.d/storageforge.exports "$body" && ((APPLY)) && reexport
+  if own_file /etc/exports.d/storageforge.exports "$body" || ((TOOK_NFS)); then ((APPLY)) && reexport; fi
   service_on nfs-server nfs-kernel-server
   open_fw NFS "2049 111" "$(printf '%s ' "${E_CLIENTS[@]}")" nfs mountd rpc-bind
   if command -v exportfs >/dev/null; then
@@ -818,7 +929,7 @@ server_smb() {
     elif ((APPLY)); then doing "mkdir -p ${E_PATH[$i]}"; mkdir -p "${E_PATH[$i]}"; else missing "${E_PATH[$i]}"; fi
   done
   need_cmd smbd "Samba" samba samba samba samba || return 0
-  local changed=0; own_file /etc/samba/storageforge.conf "$body" && changed=1
+  local changed=$TOOK_SMB; own_file /etc/samba/storageforge.conf "$body" && changed=1
   local inc='include = /etc/samba/storageforge.conf'
   if [[ ! -e /etc/samba/smb.conf ]]; then
     if ((APPLY)); then printf '[global]\n   workgroup = WORKGROUP\n   server role = standalone server\n   map to guest = never\n\n%s\n' "$inc" >/etc/samba/smb.conf; doing "wrote a minimal /etc/samba/smb.conf"; changed=1
@@ -872,6 +983,31 @@ mount_share() { # a mount left from before its server was rebuilt answers "stale
   doing "let go of the stale mount at $1"
   umount -l "$1" && timeout -k 2 60 mount "$1"
 }
+# findmnt --verify judges the whole fstab, and a line someone else wrote (a USB disk that is unplugged, say) makes it fail
+# before this script adds anything. So only errors the edit brought are its fault: the ones there before are reported, the
+# file is put back on new ones, and either way the reason findmnt gave is printed.
+fstab_errors() {
+  command -v findmnt >/dev/null || return 0
+  { findmnt --verify --tab-file /etc/fstab 2>&1 || true; } | awk '/^[0-9]+ parse errors?,/ { next } /parse error/ { print; next } /^[^ \t]/ { t = $0; next } /\[E\]/ { sub(/^[ \t]+/, ""); print t ": " $0 }' | sort -u
+}
+fstab_before() { FSTAB_PREV=$(mktemp); cp -a /etc/fstab "$FSTAB_PREV"; FSTAB_ERRS=$(fstab_errors); }
+fstab_after() { # what was added, for the message
+  local now new old
+  now=$(fstab_errors)
+  new=$(comm -13 <(printf '%s\n' "$FSTAB_ERRS") <(printf '%s\n' "$now") | sed '/^$/d')
+  if [[ -n $new ]]; then
+    cat "$FSTAB_PREV" >/etc/fstab; durable /etc/fstab; rm -f "$FSTAB_PREV"
+    conflict "findmnt --verify rejects $1, so /etc/fstab was put back as it was:"
+    while IFS= read -r old; do info "$old"; done <<<"$new"
+    return 1
+  fi
+  rm -f "$FSTAB_PREV"
+  if [[ -n $FSTAB_ERRS ]]; then
+    info "findmnt --verify already complained about other lines of /etc/fstab (left alone):"
+    while IFS= read -r old; do info "  $old"; done <<<"$FSTAB_ERRS"
+  fi
+  return 0
+}
 client_mount() { # index into C_*
   local i=$1 t=${C_TARGET[$1]} line auto= extra=${C_OPTS[$1]:+,${C_OPTS[$1]}}
   [[ ${C_AUTO[$i]} == 1 ]] && auto=,x-systemd.automount
@@ -900,19 +1036,18 @@ client_mount() { # index into C_*
     # a line this script wrote, for a share whose design sets options: the design decides. Otherwise it is left alone.
     if [[ ${C_SET[$i]} == 1 ]] && grep -qxF "# storageforge share $SERVER:$t" /etc/fstab; then
       if ((APPLY)); then
-        backup /etc/fstab
+        backup /etc/fstab; fstab_before
         MARK="# storageforge share $SERVER:$t" LINE=$line awk 'next_one { print ENVIRON["LINE"]; next_one = 0; next } $0 == ENVIRON["MARK"] { next_one = 1 } { print }' /etc/fstab >/etc/fstab.storageforge-new \
           && cat /etc/fstab.storageforge-new >/etc/fstab && rm -f /etc/fstab.storageforge-new && durable /etc/fstab
-        if ! findmnt --verify --tab-file /etc/fstab >/dev/null 2>&1; then
-          cp -a "/etc/fstab.storageforge-$STAMP" /etc/fstab; conflict "findmnt --verify rejected the new options: fstab was put back"; return 1
-        fi
+        fstab_after "the new options for $t" || return 1
         reload_systemd; doing "new options in /etc/fstab: they apply the next time $t is mounted"
       else missing "fstab options differ: $line"; fi
     else ok "fstab line (its own options kept)"; rec=$have; fi
   elif [[ -n $have ]]; then conflict "fstab already has a different line for $t: $have"; rec=
   elif ((APPLY)); then
-    backup /etc/fstab; mkdir -p "$t"; printf '# storageforge share %s:%s\n%s\n' "$SERVER" "$t" "$line" >>/etc/fstab; durable /etc/fstab; doing "appended to /etc/fstab"
-    if ! findmnt --verify --tab-file /etc/fstab >/dev/null 2>&1; then conflict "findmnt --verify complains about /etc/fstab; the backup is /etc/fstab.storageforge-$STAMP"; return 1; fi
+    backup /etc/fstab; fstab_before; mkdir -p "$t"; printf '# storageforge share %s:%s\n%s\n' "$SERVER" "$t" "$line" >>/etc/fstab; durable /etc/fstab
+    fstab_after "the line for $t" || return 1
+    doing "appended to /etc/fstab"
     reload_systemd
   else missing "fstab: $line"; fi
   if timeout -k 2 10 mountpoint -q "$t"; then ok "mounted"; elif ((APPLY)); then doing "mount $t"; mount_share "$t" && ok "mounted" || conflict "mount $t failed"
@@ -959,7 +1094,7 @@ WANT_LINES=()
 
 echo "${H}shares for $SERVER${N0} · $MODE on $(uname -n)"
 if [[ $ONLY != clients ]]; then
-  if [[ $ME == "$SERVER" ]]; then server_nfs; server_smb
+  if [[ $ME == "$SERVER" ]]; then take_over; server_nfs; server_smb
   else section "server"; skip "the shares are served by $SERVER: ./$(basename "$0") --host <user>@$SERVER_ADDR ${ARGS[*]}"; fi
 fi
 if [[ $ONLY != server ]]; then

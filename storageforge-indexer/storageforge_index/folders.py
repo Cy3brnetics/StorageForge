@@ -182,12 +182,17 @@ def dir_index(conn: Conn, host: str | None = None, mounts: list[int] | None = No
 
 def duplicate_folders(conn: Conn, host: str | None = None, min_files: int = 3, min_bytes: int = 1 << 20,
                       limit: int = 100, include_system: bool = False, index: dict[int, MountDirs] | None = None) -> dict:
-    hsql = 'AND (h.hostname = :host OR h.ip_address = :host)' if host else ''
+    """Folders with the same files (names and sizes) and subfolders, on any host. With a host, the groups with a copy on it,
+    and every copy of those: a folder on one host matches its copy on another only when both are compared. `limit` is per
+    scope, so a fleet with many same-host copies still shows the ones across hosts (bug report 2026-11-10)."""
     mounts = {mid: (hn, mp) for mid, hn, mp in conn.all(
-        f'SELECT m.mount_id, h.hostname, m.mount_point FROM mounts m JOIN hosts h ON h.host_id = m.host_id '
-        f"WHERE m.scan_state = 'indexed' {hsql}", {'host': host})}
+        "SELECT m.mount_id, h.hostname, m.mount_point FROM mounts m JOIN hosts h ON h.host_id = m.host_id WHERE m.scan_state = 'indexed'")}
+    mine = None
+    if host:
+        mine = {r[0] for r in conn.all("""SELECT m.mount_id FROM mounts m JOIN hosts h ON h.host_id = m.host_id
+                                          WHERE m.scan_state = 'indexed' AND (h.hostname = :host OR h.ip_address = :host)""", {'host': host})}
     if index is None:
-        index = dir_index(conn, host)
+        index = dir_index(conn)
     groups: dict[int, list] = {}
     checked = 0
     for mid, md in index.items():
@@ -209,7 +214,7 @@ def duplicate_folders(conn: Conn, host: str | None = None, min_files: int = 3, m
     out = []
     for keys in groups.values():
         keys = [k for k in keys if not nested(k)]
-        if len(keys) < 2:
+        if len(keys) < 2 or (mine is not None and not any(k[0] in mine for k in keys)):
             continue
         files, size = keys[0][2:]
         copies = [{'host': mounts[k[0]][0], 'mount': mounts[k[0]][1], 'path': k[1]} for k in sorted(keys, key=lambda k: (mounts[k[0]], k[1]))]
@@ -218,8 +223,11 @@ def duplicate_folders(conn: Conn, host: str | None = None, min_files: int = 3, m
                     'reclaimable': size * (len(copies) - 1), 'same_name': len({posixpath.basename(c['path']) for c in copies}) == 1,
                     'scope': 'same host' if len(hosts) == 1 else 'across hosts'})
     out.sort(key=lambda g: (g['scope'] != 'same host', -g['reclaimable']))
-    return {'groups': out[:limit], 'total_groups': len(out), 'folders_checked': checked,
-            'reclaimable_same_host': sum(g['reclaimable'] for g in out if g['scope'] == 'same host')}
+    same = [g for g in out if g['scope'] == 'same host']
+    across = [g for g in out if g['scope'] != 'same host']
+    return {'groups': same[:limit] + across[:limit], 'total_groups': len(out), 'folders_checked': checked,
+            'same_host_groups': len(same), 'across_hosts_groups': len(across),
+            'reclaimable_same_host': sum(g['reclaimable'] for g in same)}
 
 
 def cold_folders(conn: Conn, host: str | None = None, years: float = 2.0, min_bytes: int = 1 << 30,

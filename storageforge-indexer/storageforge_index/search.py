@@ -194,22 +194,23 @@ def run_search(db: Database, conn: Conn, q: SearchQuery) -> list[dict]:
 
 
 def run_dupes(conn: Conn, host: str | None, min_size: int, limit: int) -> list[dict]:
+    """Identical files across the fleet; with a host, the groups with a copy on it, listing every copy wherever it is."""
     p = {'min': min_size, 'limit': limit}
-    host_sql = ''
+    mine = ''
     if host:
-        host_sql = 'AND (h.hostname = :host OR h.ip_address = :host OR h.ssh_host = :host)'
+        mine = 'AND sum(CASE WHEN h.hostname = :host OR h.ip_address = :host OR h.ssh_host = :host THEN 1 ELSE 0 END) > 0'
         p['host'] = host
     groups = conn.all(f"""
         SELECT f.checksum_hash, count(*), max(f.file_size_bytes), (count(*) - 1) * max(f.file_size_bytes) AS reclaimable
         FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
-        WHERE f.checksum_hash IS NOT NULL AND f.file_size_bytes >= :min {host_sql}
-        GROUP BY f.checksum_hash HAVING count(*) > 1
+        WHERE f.checksum_hash IS NOT NULL AND f.file_size_bytes >= :min
+        GROUP BY f.checksum_hash HAVING count(*) > 1 {mine}
         ORDER BY reclaimable DESC LIMIT :limit""", p)
     out = []
     for h, n, size, reclaim in groups:
-        members = conn.all(f"""SELECT h.hostname, d.path, f.filename FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
+        members = conn.all("""SELECT h.hostname, d.path, f.filename FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
                               JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
-                              WHERE f.checksum_hash = :c {host_sql} ORDER BY h.hostname, d.path, f.filename""", {'c': h, 'host': host})
+                              WHERE f.checksum_hash = :c ORDER BY h.hostname, d.path, f.filename""", {'c': h})
         out.append({'sha256': h, 'copies': n, 'size': size, 'reclaimable': reclaim,
                     'files': [f'{hn}:{join_path(pp, fn)}' for hn, pp, fn in members]})
     return out

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "storageforge-indexer"
-version = "0.5.0"
+version = "0.5.1"
 license = { text = "WTFPL" }
 description = "Map, plan and change the storage on a fleet of Linux machines over SSH, with no agent"
 requires-python = ">=3.10"

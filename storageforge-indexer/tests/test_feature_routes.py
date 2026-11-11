@@ -236,6 +236,24 @@ class Administration(Scanned):
         self.assertEqual(self.client.delete('/api/keys/lab').status_code, 200)
         self.assertEqual(self.client.get('/api/keys').get_json()['keys'], [])
 
+    def test_bindings_are_made_and_changed_in_the_ui(self):
+        """The console said to run vault bind, with no way in the UI (bug report 2026-11-10)."""
+        self.client.post('/api/keys', json={'name': 'cons'})
+        made = self.client.post('/api/bindings', json={'key': 'cons', 'host': '10.42.0.100', 'user': 'archie', 'actions': ['console']})
+        self.assertEqual(made.status_code, 200, made.get_data(as_text=True))
+        bid = made.get_json()['binding_id']
+        self.assertEqual(self.client.post('/api/bindings', json={'key': 'cons', 'host': '10.42.0.100', 'user': 'archie', 'actions': ['scan']}).status_code, 409)
+        for bad in ([], ['deploy'], ['checksum'], 'console'):
+            self.assertEqual(self.client.put(f'/api/bindings/{bid}', json={'actions': bad}).status_code, 400, bad)
+        self.assertEqual(self.client.put(f'/api/bindings/{bid}', json={'actions': ['console', 'scan', 'checksum']}).get_json()['actions'], 'scan,checksum,console')
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            self.assertEqual(v.resolve('10.42.0.100', 'console').user, 'archie')
+            self.assertEqual(v.resolve('10.42.0.100', 'checksum').binding_id, bid)
+        self.assertEqual(self.client.post('/api/bindings', json={'key': 'cons', 'host': 'nas-*', 'user': 'scan', 'actions': ['scan']}).status_code, 200)
+        self.assertEqual(self.client.post('/api/bindings', json={'key': 'cons', 'host': 'a b', 'user': 'scan', 'actions': ['scan']}).status_code, 400)
+        actions = [r[0] for r in self.conn.all("SELECT action FROM audit_log WHERE action LIKE 'vault.bind%' ORDER BY audit_id")]
+        self.assertEqual(actions, ['vault.bind', 'vault.bind.actions', 'vault.bind'])
+
     def test_backups_are_made_listed_and_keep_a_copy_target(self):
         made = self.client.post('/api/backups', json={}).get_json()
         self.assertTrue(Path(made['path']).exists())

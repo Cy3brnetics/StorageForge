@@ -16,11 +16,15 @@ def register(web, ctx):
     def account_rows():
         return jsonify(users=[dict(zip(('username', 'created_at', 'last_login_at', 'disabled_at', 'role'), r)) for r in users.listing(conn())])
 
+    # Reading the account and invite lists needs no fresh password: opening Audit asked for one, and Cancel still showed
+    # the panel, so the prompt guarded nothing. Every change to an account or invite still asks.
     @web.route('/api/users', methods=['GET', 'POST'])
     @login_required
-    @password_confirmed
     def api_users():
         if request.method == 'POST':
+            stale = password_stale()
+            if stale:
+                return stale
             body = json_body()
             name, role = str(body.get('username') or ''), str(body.get('role') or 'viewer')
             may_hand_out(role)
@@ -61,10 +65,12 @@ def register(web, ctx):
 
     @web.route('/api/invites', methods=['GET', 'POST'])
     @login_required
-    @password_confirmed
     def api_invites():
         if request.method == 'GET':
             return jsonify(invites=users.list_invites(conn()), now=int(time.time()))
+        stale = password_stale()
+        if stale:
+            return stale
         body = json_body()
         role = str(body.get('role') or '')
         may_hand_out(role)

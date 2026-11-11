@@ -629,14 +629,23 @@ def parse_nfs_exports(text: str) -> list[dict]:
             path, _, rest = line.partition(' ') if ' ' in line else line.partition('\t')
         path = _unoctal(path.strip())
         clients = [c for c in rest.split() if c]
-        e = out.setdefault(path, {'protocol': 'NFS', 'name': path, 'path': path, 'clients': [], 'options': ''})
+        e = out.setdefault(path, {'protocol': 'NFS', 'name': path, 'path': path, 'clients': [], 'options': '', 'rules': {}})
         for c in clients:
             host, _, opts = c.partition('(')
             e['clients'].append(host or '*')
             e['options'] = e['options'] or opts.rstrip(')')
+            # each client's own options, for taking the share over: one options string for all lost a read-only client
+            own = ','.join(dict.fromkeys(o for o in opts.rstrip(')').split(',') if o and o not in ETAB_DEFAULTS and not o.startswith('uuid=')))
+            e['rules'].setdefault(own, []).append(host or '*')
     for e in out.values():
         e['clients'] = ' '.join(dict.fromkeys(e['clients']))
+        e['rules'] = [{'clients': ' '.join(dict.fromkeys(cs)), 'options': o} for o, cs in e['rules'].items()]
     return list(out.values())
+
+
+# what /var/lib/nfs/etab spells out that exportfs does anyway: left out of a client's rule, so taking it over keeps what was meant
+ETAB_DEFAULTS = {'wdelay', 'hide', 'nocrossmnt', 'secure', 'root_squash', 'no_all_squash', 'secure_locks', 'acl', 'no_pnfs',
+                 'anonuid=65534', 'anongid=65534', 'sec=sys'}
 
 
 SMB_SKIP = {'global', 'printers', 'print$', 'homes'}
@@ -657,15 +666,39 @@ def parse_smb_conf(text: str) -> list[dict]:
             continue
         if cur and '=' in line:
             k, _, v = (x.strip() for x in line.partition('='))
-            k = k.lower()
+            k = ' '.join(k.lower().split())
+            yes = v.lower() in ('yes', 'true', '1')
             if k == 'path':
                 cur['path'] = v.rstrip('/') or '/'
             elif k in ('valid users', 'hosts allow'):
                 cur['clients'] = (cur['clients'] + ' ' + v).strip()
-            elif k in ('read only', 'writable', 'writeable') and v.lower() in ('yes', 'no', 'true', 'false'):
-                ro = (v.lower() in ('yes', 'true')) == (k == 'read only')
+            elif k in ('read only', 'writable', 'writeable', 'write ok') and v.lower() in ('yes', 'no', 'true', 'false'):
+                ro = yes == (k == 'read only')
                 cur['options'] = 'ro' if ro else 'rw'
+            elif k in SMB_CARRIED:        # what the design can write again, for taking the share over (shares.smb_lines)
+                key, kind = SMB_CARRIED[k]
+                if kind == 'bool':
+                    if yes != (key == 'browseable'):
+                        cur.setdefault('smb', {})[key] = key != 'browseable'
+                elif key == 'encrypt':      # the design says desired or required; the rest is Samba's default
+                    if (enc := {'desired': 'desired', 'required': 'required', 'mandatory': 'required'}.get(v.lower())):
+                        cur.setdefault('smb', {})[key] = enc
+                else:
+                    cur.setdefault('smb', {})[key] = v
+            elif k not in SMB_IGNORED:
+                cur.setdefault('unmanaged', []).append(k)
     return [s for s in out if s['path']]
+
+
+# smb.conf settings a design holds (shares.smb_lines), by the name testparm prints: key in the design, and its kind
+SMB_CARRIED = {'comment': ('comment', 'text'), 'browseable': ('browseable', 'bool'), 'browsable': ('browseable', 'bool'),
+               'guest ok': ('guest', 'bool'), 'public': ('guest', 'bool'), 'write list': ('write_list', 'text'),
+               'read list': ('read_list', 'text'), 'create mask': ('create_mask', 'text'), 'create mode': ('create_mask', 'text'),
+               'directory mask': ('dir_mask', 'text'), 'directory mode': ('dir_mask', 'text'), 'force user': ('force_user', 'text'),
+               'force group': ('force_group', 'text'), 'inherit permissions': ('inherit_perms', 'bool'),
+               'inherit acls': ('inherit_acls', 'bool'), 'hosts deny': ('hosts_deny', 'text'), 'smb encrypt': ('encrypt', 'text'),
+               'max connections': ('max_connections', 'text')}
+SMB_IGNORED = {'available', 'printable', 'print ok'}
 
 
 def share_key(e: dict) -> tuple:

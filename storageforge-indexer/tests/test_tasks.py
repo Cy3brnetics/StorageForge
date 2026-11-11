@@ -218,6 +218,40 @@ class ShareChecks(Fleet):
         self.assertEqual(shares.design_exports(self.conn, 'nas'), [])
 
 
+    def test_a_scanned_share_is_taken_over_by_editing_it(self):
+        """Edit on a share the scan found showed only text (bug report 2026-11-10): it now opens the wizard, and saving takes
+        it over. Deploying comments out the host's own line; until it is taken over, a new share of it is refused."""
+        from storageforge_index import graph
+        shares.save_export(self.db, self.conn, 'nas', {'protocol': 'NFS', 'path': '/mnt/backup', 'clients': '10.0.0.0/24'}, None, 'test')
+        bp = graph.stored_blueprint(self.conn, 'nas')
+        bp['exports'].append({'protocol': 'NFS', 'name': '/mnt/pool/photos', 'path': '/mnt/pool/photos', 'clients': '10.0.0.0/24', 'options': 'rw', 'fromScan': True})
+        graph.store_blueprint(self.conn, bp)
+        e = {'protocol': 'NFSv4.2', 'path': '/mnt/pool/photos', 'rules': [{'clients': '10.0.0.0/24', 'options': 'ro'}]}
+        was = {'protocol': 'NFS', 'name': '/mnt/pool/photos', 'path': '/mnt/pool/photos'}
+        self.assertTrue(self.has(self.levels(e)[1], 'crit', 'already shares this in its own config'))
+        checked = shares.validate(self.conn, 'nas', e, None, was, takeover=True)
+        self.assertEqual(checked['crit'], 0, checked['items'])
+        self.assertTrue(self.has([(x['level'], x['text']) for x in checked['items']], 'note', 'commented out'))
+        res = shares.save_export(self.db, self.conn, 'nas', e, None, 'test', was, takeover=True)
+        self.assertEqual(res['export']['takeover'], {'proto': 'NFS', 'path': '/mnt/pool/photos', 'name': '/mnt/pool/photos'})
+        self.assertTrue(res['export']['fromScan'])
+        saved = shares.design_exports(self.conn, 'nas')
+        self.assertEqual([(x['path'], 'takeover' in x) for x in saved], [('/mnt/backup', False), ('/mnt/pool/photos', True)])
+        self.assertEqual(saved[1]['rules'], [{'clients': '10.0.0.0/24', 'options': 'ro'}])
+        with self.assertRaises(ValueError):                                   # once is enough
+            shares.save_export(self.db, self.conn, 'nas', e, None, 'test', was, takeover=True)
+        again = shares.save_export(self.db, self.conn, 'nas', {**e, 'rules': [{'clients': '*', 'options': 'rw'}]}, None, 'test', was)
+        self.assertEqual(again['export']['takeover']['path'], '/mnt/pool/photos')      # an edit afterwards keeps it
+        text = shares.script(self.conn, 'nas')
+        self.assertIn("E_TAKE=('' 'NFS|/mnt/pool/photos')", text)
+        self.assertIn('taken over from the host\'s exports', text)
+        check = subprocess.run(['bash', '-n'], input=text, text=True, capture_output=True)
+        self.assertEqual(check.returncode, 0, check.stderr)
+        smb = shares.save_export(self.db, self.conn, 'nas', {'protocol': 'SMB3', 'name': 'Pics', 'path': '/mnt/pool/photos', 'clients': 'gabe'},
+                                 None, 'test', {'protocol': 'SMB', 'name': 'pics', 'path': '/mnt/pool/photos'}, takeover=True)
+        self.assertNotIn('fromScan', smb['export'])                           # nothing the scan found under that name: not deployed
+        self.assertIn("'SMB|pics'", shares.script(self.conn, 'nas'))
+
 class MoveExtras(Fleet):
     def plan(self):
         return moves.save_plan(self.conn, {'name': 'Media', 'steps': [
@@ -474,6 +508,10 @@ class GeneratedScripts(Fleet):
                    'schedule-runner': schedscript.runner_script(sched, ['--run'], scheduler.parse_cron('0 3 * * 1-5'), None, {'A': 'b'}, '/t.sh'),
                    'schedule-orphan': scheduler.orphan_script(1),
                    'change': changes.script(self.conn, changes.normalize({'name': 'c', 'tasks': [{'type': 'dir', 'host': 'nas', 'params': {'path': '/x'}}]}))}
+        shares.save_export(self.db, self.conn, 'nas', {'protocol': 'NFS', 'path': '/mnt/pool', 'rules': [{'clients': '*', 'options': 'ro'}],
+                                                       'mounts': [{'host': 'pc', 'path': '/mnt/pool'}]}, None, 'test',
+                           {'protocol': 'NFS', 'path': '/mnt/pool'}, takeover=True)
+        scripts['shares'] = shares.script(self.conn, 'nas')
         for name, text in scripts.items():
             with self.subTest(name):
                 shell = 'bash' if text.startswith(('#!/usr/bin/env bash', '#!/bin/bash')) else 'sh'

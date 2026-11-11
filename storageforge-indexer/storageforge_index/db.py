@@ -142,7 +142,13 @@ class Database:
         else:
             self.dialect, self.max_writers = 'sqlite', 1
             self.path = os.path.expanduser(url.removeprefix('sqlite:///').removeprefix('sqlite://'))
-            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+            try:
+                Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+            except PermissionError:
+                # A root shell in the container (docker exec -u 0, or a web console's default) has every capability dropped and
+                # cannot even look inside /app, which is the app user's alone: say so, not a traceback
+                raise SystemExit(f'Cannot reach the database at {self.path} as uid {os.getuid()}: permission denied. In Docker, run '
+                                 'it as the app user: docker compose exec storageforge storageforge-index ...') from None
             if sqlite3.sqlite_version_info < (3, 35, 0):
                 raise SystemExit(f'SQLite {sqlite3.sqlite_version} is too old; 3.35 or newer is required')
 
@@ -497,16 +503,32 @@ class Database:
         return stats
 
     # checksums
-    def checksum_candidates(self, conn: Conn, host_id: int, min_size: int) -> list[tuple]:
-        return conn.all("""
+    def checksum_candidates(self, conn: Conn, host_id: int, min_size: int, like_host: int | None = None) -> list[tuple]:
+        """Files of the host not hashed yet whose size another file has. With like_host, only sizes that host has hashed:
+        the catch-up after its checksum pass, for copies here it could not see when this host was hashed."""
+        sizes = ("""SELECT x.file_size_bytes FROM file_records x JOIN mounts xm ON xm.mount_id = x.mount_id
+                    WHERE xm.host_id = :like AND x.checksum_hash IS NOT NULL AND x.file_size_bytes >= :min""" if like_host is not None else
+                 """SELECT file_size_bytes FROM file_records
+                    WHERE NOT is_directory AND NOT is_symlink AND file_size_bytes >= :min
+                    GROUP BY file_size_bytes HAVING count(*) > 1""")
+        return conn.all(f"""
             SELECT f.file_id, d.path, f.filename FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id
             JOIN directories d ON d.dir_id = f.dir_id
             WHERE m.host_id = :h AND f.checksum_hash IS NULL AND NOT f.is_directory AND NOT f.is_symlink
               AND f.file_size_bytes >= :min
-              AND f.file_size_bytes IN (SELECT file_size_bytes FROM file_records
-                                        WHERE NOT is_directory AND NOT is_symlink AND file_size_bytes >= :min
-                                        GROUP BY file_size_bytes HAVING count(*) > 1)""",
-            {'h': host_id, 'min': min_size})
+              AND f.file_size_bytes IN ({sizes})""",
+            {'h': host_id, 'min': min_size, 'like': like_host})
+
+    def checksum_catchup_hosts(self, conn: Conn, host_id: int, min_size: int) -> list[tuple[int, str]]:
+        """Other hosts with files not hashed yet of a size this host has hashed: where its files may have copies."""
+        return conn.all("""
+            SELECT DISTINCT h.host_id, h.hostname FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id
+            JOIN hosts h ON h.host_id = m.host_id
+            WHERE m.host_id <> :h AND m.scan_state = 'indexed' AND f.checksum_hash IS NULL AND NOT f.is_directory AND NOT f.is_symlink
+              AND f.file_size_bytes >= :min
+              AND f.file_size_bytes IN (SELECT x.file_size_bytes FROM file_records x JOIN mounts xm ON xm.mount_id = x.mount_id
+                                        WHERE xm.host_id = :h AND x.checksum_hash IS NOT NULL AND x.file_size_bytes >= :min)
+            ORDER BY h.hostname""", {'h': host_id, 'min': min_size})
 
     def set_checksums(self, conn: Conn, updates: list[tuple[str, int]]) -> int:
         with conn.tx():

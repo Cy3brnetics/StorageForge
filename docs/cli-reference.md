@@ -136,7 +136,7 @@ Both report commands also take `--title`, `--as-of YYYY-MM-DD`, `--kwh-price`, `
 | `vault secret-add NAME` | store a secret a plan step reads on a host, such as a Tailscale auth key: one line on stdin |
 | `vault send-secret NAME --host HOST [--user U] [--key FILE] [--ssh-option OPT]...` | write it to `/run/storageforge/secrets/NAME` on the host over SSH (mode 600, in memory, gone at reboot). [Secrets for plan steps](security.md#secrets-for-plan-steps) |
 | `vault list`, `vault pubkey --name N`, `vault remove --name N` | |
-| `vault bind --key K --host H --user U [--port P] [--actions scan,checksum] [--priority N]` | allow a key to reach a host, glob or CIDR |
+| `vault bind --key K --host H --user U [--port P] [--actions scan,checksum,console] [--priority N]` | allow a key to reach a host, glob or CIDR. Also in the web UI: **Keys → Bindings** |
 | `vault unbind --id ID`, `vault bindings` | |
 | `vault resolve --host H [--action A]` | which key and user a host would use |
 | `vault policy [generate-only\|open]` | show or set whether imported keys are refused |

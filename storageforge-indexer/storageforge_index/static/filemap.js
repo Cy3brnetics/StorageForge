@@ -441,7 +441,7 @@ function fmDraw() {
     const why = FM.error ? FM.error
       : FM.comparing ? 'Comparing folders…'
       : d.hidden.groups && !FM.system ? 'Every duplicate found is a system file, a backup rotation or ignored. Tick System files to see them.'
-      : !d.checksummed ? 'No file checksums in the index yet, so only whole-folder copies can show here. Run a scan with checksums on to find identical files.'
+      : !d.checksummed ? 'No file checksums in the index yet, so only whole-folder copies can show here. Turn Checksums on for a host in Keys → Bindings: its next scan hashes them, and other hosts holding copies catch up.'
       : 'No duplicates at this size.';
     FM.tree.append(el('div', { class: 'fmempty' }, text('h2', FM.error ? 'Could not load the file map' : 'Nothing to show'), text('p', why, 'muted')));
   } else (L.cards.find((r) => r.dataset.id === FM.focusId) || L.cards[0]).tabIndex = 0;

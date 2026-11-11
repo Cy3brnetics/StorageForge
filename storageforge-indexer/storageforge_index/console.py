@@ -384,7 +384,10 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
         except NoBinding as exc:
             s._audit = None
             s.close('no console key')
-            raise ConsoleError(f'{exc}'.replace('vault bind', 'vault bind --actions console')) from None
+            # the web UI does it now: the command alone sent people into the container as root, where it cannot reach the database
+            why = str(exc).split('. Add one with')[0]
+            raise ConsoleError(f'{why}. Allow it in Keys → Bindings (Console: on), or bind a key there with Web console ticked; or run '
+                               'storageforge-index vault bind --actions console --key <name> --host <host> --user <user>') from None
         except VaultError as exc:
             s._audit = None
             s.close('vault locked')

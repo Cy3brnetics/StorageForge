@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 from . import errlog
@@ -109,6 +110,59 @@ def connect_address(conn, host: str) -> str:
     return row[0][0] if row else host
 
 
+def checksum_catchup(db: Database, host_id: int, hostname: str, opts: ScanOptions, actor: str, log) -> dict:
+    """A checksum pass hashes files whose size another file has at that moment. A file copied to this host after the other
+    host's pass got hashed here, and its twin there never was, so the copy across hosts never showed (bug report
+    2026-11-10). After this host's pass: on every other host with files of a size hashed here, hash just those files,
+    through a binding that allows checksums. A host with no such binding, or being scanned, waits for its own next pass."""
+    from .scanner import checksum_pass
+    from .scansign import for_scan
+    conn = db.connect()
+    done: dict[str, int | str] = {}
+    try:
+        busy = {r[0] for r in conn.all("SELECT host_id FROM scans WHERE status = 'running'")}
+        for other_id, other in db.checksum_catchup_hosts(conn, host_id, opts.checksum_min_size):
+            if other_id in busy:
+                done[other] = 'being scanned'
+                continue
+            address = connect_address(conn, other)
+            with Vault(db, conn).unlock() as vault:
+                try:
+                    b = vault.resolve(address, 'checksum')
+                except NoBinding:
+                    done[other] = 'no binding allows checksums'
+                    log(f'  {other} may hold copies of files hashed on {hostname}, but no binding there allows checksums '
+                        '(Keys → Bindings: Checksums on)')
+                    continue
+                audit = AuditLog(db, conn, vault.audit_key)
+                t = None
+                try:
+                    with ephemeral_agent(vault.decrypt_key(b.key_id)) as sock:
+                        t = Transport(host=address, user=b.user, port=b.port, agent_sock=sock,
+                                      known_hosts=str(known_hosts_path()), isolated=True)
+                        t.signing = for_scan(conn, address, b.port, str(known_hosts_path()))
+                        n = checksum_pass(db, conn, t, other_id, opts.checksum_min_size, opts.nice, like_host=host_id)
+                except Exception as exc:
+                    done[other] = f'failed: {str(exc)[:200]}'
+                    audit.append(actor, 'ssh.checksum.catchup', 'failed', address, b.fingerprint, {'after': hostname, 'error': str(exc)[:500]})
+                    log(f'  checksum catch-up on {other} failed: {exc}')
+                    continue
+                finally:
+                    if t:
+                        t.close()
+                done[other] = n
+                audit.append(actor, 'ssh.checksum.catchup', 'ok', address, b.fingerprint, {'after': hostname, 'hashed': n})
+                log(f'  hashed {n:,} file(s) on {other} the size of files hashed here: copies across hosts show now')
+        if any(isinstance(v, int) and v for v in done.values()):
+            from .graph import rebuild_host
+            for other, v in done.items():
+                if isinstance(v, int) and v:
+                    rebuild_host(db, conn, other)
+        return done
+    finally:
+        conn.close()
+
+
 def scan_via_vault(db: Database, host: str, opts: ScanOptions, actor: str | None = None, log=None,
                    rebuild_graph: bool = True) -> dict | None:
     """Resolve the host's key binding, scan through an ephemeral agent and audit every step."""
@@ -120,6 +174,12 @@ def scan_via_vault(db: Database, host: str, opts: ScanOptions, actor: str | None
         host = connect_address(conn, host)
         with Vault(db, conn).unlock() as vault:
             audit = AuditLog(db, conn, vault.audit_key)
+            if opts.checksum is None:                    # checksums when the binding allows them (Keys → Bindings), else a plain scan
+                try:
+                    vault.resolve(host, 'checksum')
+                    opts = replace(opts, checksum=True)
+                except NoBinding:
+                    opts = replace(opts, checksum=False)
             action = 'checksum' if opts.checksum else 'scan'
             try:
                 b = vault.resolve(host, action)
@@ -152,6 +212,11 @@ def scan_via_vault(db: Database, host: str, opts: ScanOptions, actor: str | None
                 if rebuild_graph:
                     from .graph import rebuild_host
                     rebuild_host(db, conn, result['host'])
-            return result
+        if result is not None and result.get('checksummed') and result['status'] != 'failed':
+            try:
+                checksum_catchup(db, result['host_id'], result['host'], opts, actor, log or errlog.say)
+            except Exception as exc:                    # never fail a finished scan over the catch-up
+                (log or errlog.say)(f'  checksum catch-up: {exc}')
+        return result
     finally:
         conn.close()

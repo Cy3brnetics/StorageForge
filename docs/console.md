@@ -10,7 +10,7 @@ For a VM with a desktop, the page also gives the command that opens its graphica
 
 ## Setting it up
 
-1. Bind a key for consoles: `storageforge-index vault bind --key KEY --host HOST --user LOGIN --actions console`. The login is the account the terminal opens, and the binding is apart from the scan one, so a scan login never becomes a shell. One binding per LAN address covers the Tailscale route too.
+1. Bind a key for consoles, in **Keys**: tick **Allow the web console too** when you install a key, use **Bind a key that is already on a host** with **Web console** ticked, or turn **Console** on for a binding in the list. Your account needs `console.open` to allow it, and the password again. From the command line: `docker compose exec storageforge storageforge-index vault bind --key KEY --host HOST --user LOGIN --actions console` (as the app user: a root shell in the container cannot reach the database). The login is the account the terminal opens, so give consoles a login apart from the scan one where you can, and a scan login never becomes a shell. One binding per LAN address covers the Tailscale route too.
 2. Scan the host through the vault once, so its host key is in StorageForge's `known_hosts`. Only a host key a scan confirmed is accepted. Over Tailscale the key of the LAN address is checked (`HostKeyAlias`).
 3. For the serial console, the libvirt host's binding needs `console` too, and its login needs access to libvirt (the `libvirt` group).
 

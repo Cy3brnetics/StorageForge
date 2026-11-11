@@ -119,7 +119,7 @@ The rail on the right opens panels in the inspector: 18 of them in five groups. 
 | **Git** | [Repositories](scanning-and-search.md#git-repositories) the scans found, matched across hosts by history, with **Archive to…**, bulk archiving of selected repositories, and a per-host hide list |
 | **Rebuild** | Each host's saved configuration: mounts, subvolumes, shares, accounts, symlinks and config files, with what changed in each version. Downloads the reinstall script or a bundle. See [rebuilding a host](disaster-recovery.md#rebuild-a-host-after-reinstalling-it). |
 | **Infra** | Workloads, exposure, network and firewall of each host, as they were last read: containers, VMs and instances; what listens and who can reach it; interfaces and routes; firewall rules. **Measure now**, for accounts that may manage security, reads a host again. Needs `security.view` for exposure and firewall, `map.view` for network. See [Infrastructure map](infrastructure-map.md) |
-| **Cleanup** | Duplicate folders (same names, sizes and layout) and cold data (newest file older than a cutoff), each with **Move…** |
+| **Cleanup** | Three sub-panels: **Duplicates** (folders with the same names, sizes and layout, within a host or across hosts, and identical files from checksums), **Cold data** (newest file older than a cutoff, with **Move…**), and **Trends & changes** (capacity over time and what the last scan changed). The last one chosen is kept |
 | **Malware** | [ClamAV](scanning-and-search.md#clamav) on the hosts you deployed it to: what it detected, and **Quarantine** |
 | **Access** | Folders the last scan could not read, and [read-only scan access](scanning-and-search.md#unreadable-folders-and-read-only-access) to fix it |
 

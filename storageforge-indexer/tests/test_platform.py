@@ -1785,8 +1785,10 @@ class HostIdentityTests(DBCase):
                                                          'storageforge-essentials-20261030-020000c.db'])
         self.assertEqual([Path(b['path']).name for b in backup.listing(dest)][0], Path(paths[-1]).name)   # newest first
 
-    def test_duplicate_files_of_one_host_list_only_its_copies(self):
-        """GM-23: with a host filter the counts were that host's, but the file list held every host's copies."""
+    def test_duplicate_files_of_one_host_count_what_they_list(self):
+        """GM-23: with a host filter the counts were that host's, but the file list held every host's copies. Since the bug
+        report of 2026-11-10 a host filter picks the groups with a copy on it and both say every copy, wherever it is: a
+        copy on another host is the point."""
         from storageforge_index.db import dir_id
         from storageforge_index.search import run_dupes
         for host in ('nas', 'pc'):
@@ -1796,7 +1798,7 @@ class HostIdentityTests(DBCase):
                 self.conn.execute("INSERT INTO file_records (mount_id, dir_id, filename, file_size_bytes, modified_at, checksum_hash) "
                                   f"VALUES (:m, :d, :n, 4096, {self.db.ts('0')}, 'h1')", {'m': mid, 'd': dir_id(self.conn, mid, '/srv'), 'n': name})
         g = run_dupes(self.conn, 'nas', 1, 10)[0]
-        self.assertEqual((g['copies'], g['files']), (2, ['nas:/srv/a.iso', 'nas:/srv/b.iso']))
+        self.assertEqual((g['copies'], g['files']), (4, ['nas:/srv/a.iso', 'nas:/srv/b.iso', 'pc:/srv/a.iso', 'pc:/srv/b.iso']))
         self.assertEqual(run_dupes(self.conn, None, 1, 10)[0]['copies'], 4)
 
     def test_rows_from_before_pinning_and_rekey(self):

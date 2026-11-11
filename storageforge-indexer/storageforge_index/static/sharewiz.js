@@ -9,14 +9,14 @@ const SM = { dlg: null, req: 0, checks: new Map(), pending: new Set(), error: ''
 // the share itself, not its place in a list: the topology's list is the scan merged with the design
 const swWas = (e) => (e ? { protocol: e.protocol || e.proto, name: e.name, path: e.path } : null);
 
-async function openShareWizard({ host = '', path = '', index = null, share = null } = {}) {
+async function openShareWizard({ host = '', path = '', index = null, share = null, takeover = false } = {}) {
   let hostsList = [];
   try { hostsList = (await getJSON('/api/hosts')).indexed; } catch (err) { notify(err.message, 'error'); return false; }
   if (host && !hostsList.some((h) => h.hostname === host)) return false;      // a planned host: nothing to browse
   const e = share || {};
   const isSmb = /^(SMB|CIFS)/i.test(e.protocol || e.proto || '');
   Object.assign(SW, {
-    step: share ? 1 : 0, hosts: hostsList, index, share, saved: null, check: null, here: null, anyway: false, checking: false, busy: false, touched: false,
+    step: share ? 1 : 0, hosts: hostsList, index: takeover ? null : index, share, takeover: !!(takeover && share), saved: null, check: null, here: null, anyway: false, checking: false, busy: false, touched: false,
     s: { host: host || (hostsList[0] || {}).hostname || '', path: e.path || path || '', proto: isSmb ? 'SMB' : 'NFS',
          version: isSmb ? 'SMB3' : (/^NFS/i.test(e.protocol || '') ? e.protocol : 'NFSv4.2'), name: e.name || '',
          rules: (e.rules && e.rules.length ? e.rules : e.clients && !isSmb ? [{ clients: e.clients, options: e.options || NFS_PRESETS['read-write'] }] : [])
@@ -63,7 +63,7 @@ async function swValidate() {
   const n = ++SW.req;
   SW.checking = true;
   try {
-    const r = await (await postJSON('/api/shares/validate', { host: s.host, export: swExport(), index: SW.index, was: swWas(SW.share) })).json();
+    const r = await (await postJSON('/api/shares/validate', { host: s.host, export: swExport(), index: SW.index, was: swWas(SW.share), takeover: SW.takeover })).json();
     if (n === SW.req) SW.check = r;
   } catch (err) { if (n === SW.req) SW.check = { error: err.message, items: [], crit: 1, warn: 0 }; }
   if (n !== SW.req) return;                       // a newer check is on its way and will draw
@@ -89,9 +89,12 @@ function swRender() {
   const nav = el('ol', { class: 'swsteps' }, ...SW_STEPS.map((t, i) => el('li', { class: i === SW.step ? 'cur' : i < SW.step ? 'done' : '' },
     el('button', { type: 'button', disabled: i > 0 && !s.path, onclick: () => { SW.step = i; swRender(); } }, text('b', String(i + 1)), t))));
   SW.dlg.replaceChildren(
-    el('header', { class: 'row swhead' }, el('h2', {}, SW.index != null ? 'Edit share' : 'New share'),
+    el('header', { class: 'row swhead' }, el('h2', {}, SW.takeover ? 'Take over share' : SW.index != null ? 'Edit share' : 'New share'),
       s.host ? Object.assign(text('span', s.path ? `${s.host}:${s.path}` : s.host, 'fsk mono'), { title: s.path ? `${s.host}:${s.path}` : s.host }) : null, nav, el('span', { class: 'grow' }),
       button('Close', closeShareWizard, 'btn ghost sm')),
+    SW.takeover ? el('p', { class: 'swnote small' }, `${s.host} serves this share from its own ${/^(SMB|CIFS)/i.test(SW.share.protocol || '') ? 'smb.conf' : '/etc/exports'}. `
+      + 'Saving puts it in the design; deploying then comments out its lines there (after a backup) and serves it from StorageForge\'s own file, so it is never shared twice.'
+      + (SW.share.unmanaged && SW.share.unmanaged.length ? ` These settings of it are not carried over, so add them back by hand after: ${SW.share.unmanaged.join(', ')}.` : '')) : null,
     el('div', { class: 'swbody' }, el('section', { id: 'swmain', class: 'stack' }), el('aside', { id: 'swchecks', class: 'stack' })),
     !SW.step && !s.path ? null : el('footer', { class: 'row swfoot' },
       SW.step ? button('← Back', () => { SW.step--; swRender(); }, 'btn ghost') : null, el('span', { class: 'grow' }),
@@ -277,8 +280,8 @@ async function swSave(thenDeploy = false) {
   try {
     if (SW.checking) await swValidate();          // the last edit's check decides, not the one before it
     if (SW.check && SW.check.crit && !SW.anyway) return;
-    const r = await (await postJSON('/api/shares', { host: s.host, export: swExport(), index: SW.index, was: swWas(SW.share) })).json();
-    SW.saved = r; SW.index = r.index; SW.share = r.export;
+    const r = await (await postJSON('/api/shares', { host: s.host, export: swExport(), index: SW.index, was: swWas(SW.share), takeover: SW.takeover })).json();
+    SW.saved = r; SW.index = r.index; SW.share = r.export; SW.takeover = false;     // in the design now: later saves edit it
     smReload(r.host);
     if (typeof loadGraph === 'function') loadGraph();
     if (curTab() === 'deploy' && !thenDeploy) loadDeploy();
@@ -348,6 +351,7 @@ async function smLoad() {          // the checks and what is not deployed yet; t
 }
 function smState(doc, e) {
   if (!e.designed && e.fromScan) return ['on the host only', 'unknown', 'Found by the scan in the host\'s own config. StorageForge did not deploy it and does not change it.'];
+  if (e.takeover && SM.pending.has(doc.host)) return ['taking over', 'local-only', 'In the design: deploy to move it out of the host\'s own config into StorageForge\'s file.'];
   if (e.fromScan) return ['deployed', 'protected', 'In the design and found on the host by the last scan.'];
   if (doc.sharesDeployed) return ['deployed', 'protected', 'Deployed from this design. The next scan of the host confirms it.'];
   return ['planned', 'local-only', 'In the design, not found on the host yet: deploy it, or scan again if it is already there.'];
@@ -363,9 +367,9 @@ function smAccess(e) {
   return [e.clients, e.options].filter(Boolean).join(' · ') || (/^(SMB|CIFS)/i.test(e.protocol || e.proto || '') ? 'any Samba account' : 'no clients');
 }
 function smShow(host, key) { closeSharesManager(); showTab('details'); selectBox(host, key); reveal(host, key); }
-async function smEdit(doc, i, e) {
+async function smEdit(doc, i, e, takeover = false) {
   const managed = /^(NFS|SMB|CIFS)/i.test(e.protocol || e.proto || '');
-  if (managed && await openShareWizard({ host: doc.host, index: i, share: e })) return;
+  if (managed && await openShareWizard({ host: doc.host, index: i, share: e, takeover })) return;
   smShow(doc.host, `exp:${i}`);                   // a planned host, or SFTP/S3: the topology's own form
 }
 async function smRemove(doc, i, e) {
@@ -394,11 +398,11 @@ function smRow(doc, i, e, chk) {
   return el('li', { class: 'card smrow' },
     el('div', { class: 'row' }, text('span', e.protocol || e.proto || '?', 'fsk'), text('b', e.name || e.path, 'mono'), pill, el('span', { class: 'grow' }),
       button('Show', () => smShow(doc.host, `exp:${i}`), 'btn ghost sm'),
-      scanOnly ? null : act('Edit', () => smEdit(doc, i, e), 'btn sm'),
+      act(scanOnly ? 'Edit (take over)' : 'Edit', () => smEdit(doc, i, e, scanOnly), 'btn sm'),
       scanOnly ? null : act('Remove', () => smRemove(doc, i, e), 'btn ghost sm danger')),
     el('dl', { class: 'smfacts' }, text('dt', 'Folder'), text('dd', e.path || '?', 'mono'), text('dt', 'Access'), text('dd', smAccess(e), 'mono'),
       text('dt', 'Mounted on'), text('dd', by.length ? by.join(', ') : 'no client', by.length ? 'mono' : 'muted')),
-    scanOnly ? text('p', 'Change it in the host\'s own config; the next scan picks it up.', 'muted small') : null,
+    scanOnly ? text('p', 'In the host\'s own config. Edit takes it over: deploying moves it into StorageForge\'s file.', 'muted small') : null,
     items.length ? el('ul', { class: 'mvcheck' }, ...items.map((x) => text('li', x.text, `lv-${x.level}`))) : null);
 }
 function smRender() {

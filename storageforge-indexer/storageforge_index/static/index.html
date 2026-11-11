@@ -99,14 +99,33 @@ storageforge-index graph import --blueprint atlas.json</pre>
         <label class="field col"><span>That user's SSH password (used once, not stored)</span><input id="instpw" type="password" autocomplete="off" required
                data-1p-ignore data-lpignore="true" data-bwignore="true"></label>
         <label class="check"><input id="instbind" type="checkbox" checked> Bind the key to this host for scans</label>
-        <label class="check"><input id="instsum" type="checkbox"> Allow checksum scans too</label>
+        <label class="check"><input id="instsum" type="checkbox"> Allow checksum scans too (finds identical files, across hosts as well)</label>
+        <label class="check"><input id="instconsole" type="checkbox"> Allow the web console too: a terminal as this user</label>
         <div class="row end"><button class="btn pri" type="submit">Install key</button></div>
       </form>
       <p id="instmsg" class="muted" hidden></p>
       <h3>Keys</h3>
       <ol id="keys" class="list"></ol>
       <h3>Bindings</h3>
+      <p class="muted">What each key may do on a host: scan it, checksum its files, or open a terminal on it from the web console. A console login can do whatever that account can, so give it a login of its own where you can.</p>
       <ol id="bindings" class="list"></ol>
+      <details id="bindadd">
+        <summary>Bind a key that is already on a host</summary>
+        <form id="bindform" class="stack">
+          <label class="field col"><span>Key</span><select id="bindkey" required></select></label>
+          <div class="row">
+            <label class="field col grow"><span>Host, glob or CIDR</span><input id="bindhost" type="text" placeholder="nas-02, nas-* or 10.0.20.0/24" autocomplete="off" spellcheck="false" required></label>
+            <label class="field col port"><span>Port</span><input id="bindport" type="number" min="1" max="65535" value="22" required></label>
+          </div>
+          <label class="field col"><span>User</span><input id="binduser" type="text" placeholder="scan" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+          <fieldset class="row wrap"><legend>Allow</legend>
+            <label class="check"><input id="bindscan" type="checkbox" checked> Scans</label>
+            <label class="check"><input id="bindsum" type="checkbox"> Checksum scans</label>
+            <label class="check"><input id="bindconsole" type="checkbox"> Web console</label>
+          </fieldset>
+          <div class="row end"><button class="btn pri" type="submit">Bind</button></div>
+        </form>
+      </details>
     </div>
     <div id="tab-access" class="tab" role="tabpanel" aria-labelledby="tabbtn-access" hidden>
       <p class="muted">Folders the latest scan of each host could not open, and read-only scan access to fix it without running scans as root.</p>
@@ -119,26 +138,38 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <div id="malwarebox" class="stack"></div>
     </div>
     <div id="tab-copies" class="tab" role="tabpanel" aria-labelledby="tabbtn-copies" hidden>
-      <p class="muted">Folders that hold the same file names and sizes in the same layout, so they are likely copies. Checksums are not needed; a <code>--checksum</code> scan confirms them.</p>
-      <form id="copyform" class="row">
-        <label class="field"><span>At least</span><input id="copyfiles" type="number" min="1" value="3" style="width:64px" aria-label="Minimum files"></label><span class="muted">files and</span>
-        <select id="copysize" aria-label="Minimum size"><option value="0">any size</option><option value="1MiB" selected>1 MiB</option><option value="100MiB">100 MiB</option><option value="1GiB">1 GiB</option></select>
-        <button class="btn sm" type="submit">Check</button>
-      </form>
-      <div id="copiesbox" class="stack"></div>
-      <h3>Capacity trend</h3>
-      <div id="trendbox" class="stack"></div>
-      <h3>What changed in the last scan</h3>
-      <div id="changedbox" class="stack"></div>
-      <div id="dupesection" hidden><h3>Identical files</h3><p class="muted">From scans run with checksums.</p><div id="dupesbox" class="stack"></div></div>
-      <h3>Cold data</h3>
-      <p class="muted">Folders whose newest file is older than the cutoff: candidates for cold storage. Move… starts a step in Moves.</p>
-      <form id="coldform" class="row">
-        <label class="field"><span>Untouched for</span><select id="coldyears" aria-label="Years untouched"><option value="1">1 year</option><option value="2" selected>2 years</option><option value="5">5 years</option></select></label>
-        <select id="coldsize" aria-label="Minimum size"><option value="100MiB">100 MiB+</option><option value="1GiB" selected>1 GiB+</option><option value="10GiB">10 GiB+</option></select>
-        <button class="btn sm" type="submit">Find</button>
-      </form>
-      <div id="coldbox" class="stack"></div>
+      <div id="copies-subnav" class="seg sm" role="group" aria-label="Cleanup panels">
+        <button type="button" data-sub="dupes" aria-pressed="true">Duplicates</button>
+        <button type="button" data-sub="cold" aria-pressed="false">Cold data</button>
+        <button type="button" data-sub="trends" aria-pressed="false">Trends &amp; changes</button>
+      </div>
+      <section id="copies-dupes" class="stack" aria-label="Duplicates">
+        <p class="muted">Folders that hold the same file names and sizes in the same layout, so they are likely copies, on one host or across hosts. Checksums are not needed for these; they confirm the identical files below.</p>
+        <form id="copyform" class="row wrap">
+          <label class="field"><span>At least</span><input id="copyfiles" type="number" min="1" value="3" style="width:64px" aria-label="Minimum files"></label><span class="muted">files and</span>
+          <select id="copysize" aria-label="Minimum size"><option value="0">any size</option><option value="1MiB" selected>1 MiB</option><option value="100MiB">100 MiB</option><option value="1GiB">1 GiB</option></select>
+          <select id="copyscope" aria-label="Where the copies are"><option value="">on one host or across hosts</option><option value="same host">within a host</option><option value="across hosts">across hosts</option></select>
+          <button class="btn sm" type="submit">Check</button>
+        </form>
+        <div id="copiesbox" class="stack"></div>
+        <h3>Identical files</h3>
+        <div id="dupesbox" class="stack"></div>
+      </section>
+      <section id="copies-cold" class="stack" aria-label="Cold data" hidden>
+        <p class="muted">Folders whose newest file is older than the cutoff: candidates for cold storage. Move… starts a step in Moves.</p>
+        <form id="coldform" class="row">
+          <label class="field"><span>Untouched for</span><select id="coldyears" aria-label="Years untouched"><option value="1">1 year</option><option value="2" selected>2 years</option><option value="5">5 years</option></select></label>
+          <select id="coldsize" aria-label="Minimum size"><option value="100MiB">100 MiB+</option><option value="1GiB" selected>1 GiB+</option><option value="10GiB">10 GiB+</option></select>
+          <button class="btn sm" type="submit">Find</button>
+        </form>
+        <div id="coldbox" class="stack"></div>
+      </section>
+      <section id="copies-trends" class="stack" aria-label="Trends and changes" hidden>
+        <h3>Capacity trend</h3>
+        <div id="trendbox" class="stack"></div>
+        <h3>What changed in the last scan</h3>
+        <div id="changedbox" class="stack"></div>
+      </section>
     </div>
     <div id="tab-changes" class="tab" role="tabpanel" aria-labelledby="tabbtn-changes" hidden>
       <p class="muted">Staged changes to folders, btrfs, mounts and drives, in order, like an Ansible playbook. Stage them from the topology, check them against the index, then download the Bash script or the Ansible playbook.</p>

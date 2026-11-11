@@ -511,8 +511,13 @@ class Shares(unittest.TestCase):
         self.assertEqual([(x['path'], x['clients'], x['options']) for x in e],
                          [('/srv/media', '10.42.0.0/24 100.64.0.0/10', 'rw,sync'), ('/srv/with space', '*', 'ro'),
                           ('/srv/long', 'host1', 'rw')])
-        etab = parse_nfs_exports('/mnt/ssd/shared\t10.42.0.11(rw,sync,wdelay)\n/mnt/ssd/shared\t10.42.0.12(rw,sync)\n')
-        self.assertEqual([(x['path'], x['clients']) for x in etab], [('/mnt/ssd/shared', '10.42.0.11 10.42.0.12')])
+        self.assertEqual(e[0]['rules'], [{'clients': '10.42.0.0/24', 'options': 'rw,sync'}, {'clients': '100.64.0.0/10', 'options': 'ro'}])
+        etab = parse_nfs_exports('/mnt/ssd/shared\t10.42.0.11(rw,sync,wdelay)\n/mnt/ssd/shared\t10.42.0.12(rw,sync)\n'
+                                 '/mnt/x\t*(ro,sync,wdelay,hide,nocrossmnt,secure,root_squash,no_all_squash,no_subtree_check,secure_locks,acl,'
+                                 'no_pnfs,anonuid=65534,anongid=65534,sec=sys,ro,secure,root_squash,no_all_squash,uuid=1a2b:3c4d)\n')
+        self.assertEqual([(x['path'], x['clients']) for x in etab], [('/mnt/ssd/shared', '10.42.0.11 10.42.0.12'), ('/mnt/x', '*')])
+        self.assertEqual(etab[0]['rules'], [{'clients': '10.42.0.11 10.42.0.12', 'options': 'rw,sync'}])     # etab's defaults left out
+        self.assertEqual(etab[1]['rules'], [{'clients': '*', 'options': 'ro,sync,no_subtree_check'}])
 
     def test_smb_conf(self):
         from storageforge_index.payloads import parse_smb_conf
@@ -520,6 +525,17 @@ class Shares(unittest.TestCase):
                            '[Photos]\n  path = /mnt/photos/\n  read only = yes\n  valid users = @family\n'
                            '; [old]\n[printers]\n  path = /var/spool\n[nopath]\n  comment = x\n')
         self.assertEqual(s, [{'protocol': 'SMB', 'name': 'Photos', 'path': '/mnt/photos', 'clients': '@family', 'options': 'ro'}])
+
+    def test_smb_settings_a_takeover_keeps_and_names(self):
+        """Taking a share over comments out its whole section: what the design can write comes with it, the rest is named."""
+        from storageforge_index import shares
+        from storageforge_index.payloads import parse_smb_conf
+        [s] = parse_smb_conf('[Media]\n  path = /m\n  force user = media\n  create mask = 0664\n  browseable = No\n  guest ok = yes\n'
+                             '  smb encrypt = mandatory\n  vfs objects = fruit\n  Comment = Films\n')
+        self.assertEqual(s['smb'], {'force_user': 'media', 'create_mask': '0664', 'browseable': False, 'guest': True,
+                                    'encrypt': 'required', 'comment': 'Films'})
+        self.assertEqual(s['unmanaged'], ['vfs objects'])
+        self.assertIn('force user = media', shares.smb_lines(s))
 
 
 class Cli(unittest.TestCase):

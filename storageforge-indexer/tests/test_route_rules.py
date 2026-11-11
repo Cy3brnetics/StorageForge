@@ -36,6 +36,8 @@ FRESH_PASSWORD = {
     ('POST', '/api/access/grant'),
     ('PUT', '/api/backups/target'),
     ('DELETE', '/api/bindings/<int:binding_id>'),
+    ('POST', '/api/bindings'),                  # a binding can allow the console: a shell
+    ('PUT', '/api/bindings/<int:binding_id>'),
     ('POST', '/api/deploy/access'),
     ('POST', '/api/deploy/adopt'),
     ('POST', '/api/deploy/groups/<gid>/retry'),
@@ -299,6 +301,16 @@ class RouteRules(unittest.TestCase):
             r = c.open(path, method=method, json={})
             asked = (r.get_json(silent=True) or {}).get('reauth') is True
             self.assertEqual((method, rule.rule, asked), (method, rule.rule, (method, rule.rule) in FRESH_PASSWORD))
+
+    def test_reading_accounts_asks_no_fresh_password(self):
+        """Opening Audit read these lists and asked for the password, and Cancel still showed the panel: reads now pass."""
+        c = self.web.test_client()
+        self.assertEqual(c.post('/api/login', json={'username': 'root', 'password': PW}).status_code, 200)
+        with c.session_transaction() as s:
+            s['auth_at'] = 0
+        for path in ('/api/users', '/api/invites', '/api/roles'):
+            self.assertEqual(c.get(path).status_code, 200, path)
+        self.assertTrue(c.post('/api/invites', json={'role': 'viewer'}).get_json().get('reauth'))
 
     def test_every_write_is_audited_or_says_why_not(self):
         for method, rule in self.writes():

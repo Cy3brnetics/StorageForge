@@ -75,6 +75,51 @@ class FileMap(unittest.TestCase):
         self.assertEqual(m['links'][0]['scope'], 'same host')
         self.assertEqual(len(filemap.build(self.conn, None, 1 << 20, system=True)['groups']), 3)
 
+    def test_a_host_filter_still_finds_the_copy_on_another_host(self):
+        """Bug report 2026-11-10: with a host picked, the count ran on that host alone, so a file whose only copy was elsewhere
+        was no duplicate at all."""
+        from storageforge_index.search import run_dupes
+        self.file('nas', '/data/x.iso', 'aa')
+        self.file('pc', '/backup/x.iso', 'aa')
+        self.file('pc', '/other/y.iso', 'bb')
+        self.file('tv', '/other/y.iso', 'bb')
+        for host in (None, 'nas', 'pc'):
+            groups, _ = filemap.file_groups(self.conn, host, 1 << 20, {}, False)
+            self.assertIn('aa', [g['sha256'] for g in groups], host)
+        groups, _ = filemap.file_groups(self.conn, 'nas', 1 << 20, {}, False)
+        self.assertEqual([(g['sha256'], g['scope'], sorted(c['host'] for c in g['copies'])) for g in groups], [('aa', 'across hosts', ['nas', 'pc'])])
+        self.assertEqual([(g['sha256'], g['files']) for g in run_dupes(self.conn, 'nas', 1 << 20, 10)], [('aa', ['nas:/data/x.iso', 'pc:/backup/x.iso'])])
+        self.assertEqual(sorted(g['sha256'] for g in run_dupes(self.conn, 'pc', 1 << 20, 10)), ['aa', 'bb'])
+
+    def folder_of(self, host, root, n=3, sha=None):
+        for i in range(n):
+            self.file(host, f'{root}/f{i}.bin', sha, size=(i + 1) << 20)
+
+    def test_folder_copies_across_hosts_are_not_crowded_out(self):
+        """The live fleet had 313 same-host folder copies and 46 across hosts, sorted same-host first and cut at 100 (200 in the
+        graph): not one across hosts showed."""
+        for i in range(5):
+            self.folder_of('nas', f'/a/set{i}', n=3 + i)
+            self.folder_of('nas', f'/b/set{i}', n=3 + i)
+        self.folder_of('nas', '/music/band', n=9)
+        self.folder_of('pc', '/media/band', n=9)
+        r = folders.duplicate_folders(self.conn, None, limit=2)
+        self.assertEqual((r['same_host_groups'], r['across_hosts_groups']), (5, 1))
+        self.assertEqual([g['scope'] for g in r['groups']], ['same host', 'same host', 'across hosts'])
+        mine = folders.duplicate_folders(self.conn, 'pc', limit=2)          # the host's copy, with the one it matches elsewhere
+        self.assertEqual([sorted((c['host'], c['path']) for c in g['copies']) for g in mine['groups']],
+                         [[('nas', '/music/band'), ('pc', '/media/band')]])
+
+    def test_checksum_catch_up_picks_the_copies_the_first_pass_could_not_see(self):
+        """nas was hashed before the file was copied to pc: then it had no twin, so nas's copy was never hashed."""
+        self.file('nas', '/data/x.iso', None, size=7 << 20)
+        self.file('nas', '/data/lonely.iso', None, size=9 << 20)
+        self.file('pc', '/in/x.iso', 'aa', size=7 << 20)
+        hid = lambda h: self.conn.scalar('SELECT host_id FROM hosts WHERE hostname = :h', {'h': h})  # noqa: E731
+        self.assertEqual([h for _, h in self.db.checksum_catchup_hosts(self.conn, hid('pc'), 1 << 20)], ['nas'])
+        self.assertEqual([r[2] for r in self.db.checksum_candidates(self.conn, hid('nas'), 1 << 20, like_host=hid('pc'))], ['x.iso'])
+        self.assertEqual(self.db.checksum_catchup_hosts(self.conn, hid('nas'), 1 << 20), [])      # nothing hashed on nas yet
+
     def test_copy_on_another_host_counts_as_backup_not_waste(self):
         self.file('nas', '/data/x.iso', 'aa')
         self.file('pc', '/data/x.iso', 'aa')
@@ -200,7 +245,8 @@ class FileMap(unittest.TestCase):
         for host in (None, 'nas', 'pc'):
             built, kept = (folders.duplicate_folders(self.conn, host, 3, 1, include_system=True, index=i) for i in (None, everywhere))
             self.assertEqual(built['groups'], kept['groups'], host)
-        self.assertEqual({c['path'] for c in kept['groups'][0]['copies']} if kept['groups'] else set(), set())   # pc alone has one copy
+        # pc has one copy, and it matches the two on nas: the group, with every copy (it used to be compared on pc alone)
+        self.assertEqual({c['path'] for c in kept['groups'][0]['copies']}, {'/data/one', '/data/two', '/other/three'})
         both = folders.duplicate_folders(self.conn, None, 3, 1, include_system=True, index=everywhere)['groups']
         self.assertEqual({c['path'] for c in both[0]['copies']}, {'/data/one', '/data/two', '/other/three'})
 

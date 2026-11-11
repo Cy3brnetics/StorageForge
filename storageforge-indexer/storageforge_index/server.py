@@ -51,9 +51,11 @@ GET  /api/keys                      vault keys (public halves) and host bindings
 POST /api/keys  {"name", "type"}     generate a key inside the vault
 DELETE /api/keys/<name>              remove a key with no bindings (password confirmed)
 DELETE /api/bindings/<id>            remove a binding (password confirmed)
+POST /api/bindings  {"key", "host", "user", "port", "actions": [...]}   bind a key: scan, checksum, console (password confirmed)
+PUT  /api/bindings/<id>  {"actions": [...]}   change what a binding allows (password confirmed)
 POST /api/hostkey/confirm  {"host", "port", "fingerprint"}   a person compared the host key: pin it, passwords may go there
-POST /api/keys/install  {"key", "host", "user", "port", "password", "bind"}
-                                    ssh-copy-id the public key, then optionally bind it for scans
+POST /api/keys/install  {"key", "host", "user", "port", "password", "bind", "checksum", "console"}
+                                    ssh-copy-id the public key, then optionally bind it for scans (and checksums, the console)
 GET  /api/access?host=               per host: how scans read the disks, and folders they could not open
 GET  /api/access/script?host=&remove=1   the read-only scan access setup (or removal) script, to run as root
 POST /api/access/grant  {"host", "password", "admin_user", "remove"}   run that script once over SSH with sudo
@@ -73,7 +75,7 @@ GET  /api/git?host=                  git repositories found by scans, with their
 GET|PUT /api/git/ignore              path fragments hidden from the Git tab, for every host ("*") or one; "!x" shows x
 GET  /api/shares/check?host=         the NFS/SMB shares in a host's design, checked against the index
 GET  /api/shares/script?host=        the script that deploys them on the server and mounts them on clients
-POST /api/shares/validate  {"host", "export", "index"|"was"}   check one share before saving it (folder, access, mount points)
+POST /api/shares/validate  {"host", "export", "index"|"was", "takeover"}   check one share before saving it (folder, access, mount points)
 POST /api/shares  {"host", "export", "index"|"was"}   add the share to the host's design, or replace share #index or the share "was" {protocol, name, path}
 DELETE /api/shares?host=&index= or &protocol=&name=&path=      remove a designed share from the host's design
 GET  /api/fs/browse?host=&path=&brief=  folders and files at a path from the index, with mounts, shares and planned mounts; brief=1 only folders and files
@@ -354,7 +356,7 @@ class App:
                 conn.execute("UPDATE scan_jobs SET status = 'running', started_at = :t WHERE job_id = :j",
                              {'t': int(time.time()), 'j': jid})
                 try:
-                    opts = ScanOptions(parallel=self.parallel, include_fstypes=[
+                    opts = ScanOptions(parallel=self.parallel, checksum=None, include_fstypes=[
                         x for x in os.environ.get('STORAGEFORGE_INCLUDE_FSTYPES', '').split(',') if x])
                     res = scan_via_vault(self.scan_db, host, opts, actor=actor,
                                          log=lambda m: errlog.say(f'[job {jid}] {m}'))
@@ -1128,6 +1130,58 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         core.audit(conn(), actor(), 'vault.key.remove', 'ok', None, {'name': name, 'fingerprint': key['fingerprint']})
         return jsonify(removed=name)
 
+    UI_ACTIONS = ('scan', 'checksum', 'console')        # deploy bindings belong to Deploy → access, which makes and removes them
+
+    def binding_actions(body) -> str:
+        wanted = body.get('actions')
+        if not isinstance(wanted, list) or not wanted or not all(isinstance(a, str) for a in wanted):
+            raise ValueError('actions must be a list: scan, checksum, console')
+        bad = set(wanted) - set(UI_ACTIONS)
+        if bad:
+            raise ValueError(f'actions here are scan, checksum and console, not {", ".join(sorted(bad))}')
+        if 'console' in wanted and 'console.open' not in current_user.permissions:
+            abort(403, description='a binding for the console opens a shell: your account cannot open consoles, so it cannot allow one')
+        if 'checksum' in wanted and 'scan' not in wanted:
+            raise ValueError('checksum scans are scans: allow scan too')
+        return ','.join(a for a in UI_ACTIONS if a in wanted)
+
+    @web.post('/api/bindings')
+    @login_required
+    @password_confirmed
+    def api_binding_add():
+        body = json_body()
+        name, host, user = (str(body.get(k, '')).strip() for k in ('key', 'host', 'user'))
+        port = int(body.get('port') or 22)
+        actions = binding_actions(body)
+        v = Vault(db, conn())
+        if v.pattern_kind(host) == 'host':
+            keyinstall.validate(host, user, port)
+        elif not re.fullmatch(r'[A-Za-z0-9.*?\[\]:/-]{1,253}', host):
+            raise ValueError('host must be a hostname, an IP address, a glob such as nas-* or a CIDR such as 10.0.0.0/24')
+        else:
+            keyinstall.validate('x', user, port)
+        if next((b for b in v.bindings() if b['key'] == name and b['pattern'] == host and b['user'] == user), None):
+            return jsonify(error=f'{name} is already bound to {user}@{host}: change what that binding allows instead'), 409
+        bid = v.bind(name, host, user, port, actions)
+        core.audit(conn(), actor(), 'vault.bind', 'ok', host, {'key': name, 'user': user, 'port': port, 'binding_id': bid, 'actions': actions})
+        return jsonify(binding_id=bid, actions=actions)
+
+    @web.put('/api/bindings/<int:binding_id>')
+    @login_required
+    @password_confirmed
+    def api_binding_actions(binding_id):
+        v = Vault(db, conn())
+        b = next((x for x in v.bindings() if x['binding_id'] == binding_id), None)
+        if not b:
+            return jsonify(error=f'no binding #{binding_id}'), 404
+        if b['key'] == deploy.DEPLOY_KEY or 'deploy' in b['actions'].split(','):
+            return jsonify(error='a deploy binding is changed from Deploy → access, not here'), 409
+        actions = binding_actions(json_body())
+        v.set_actions(binding_id, actions)
+        core.audit(conn(), actor(), 'vault.bind.actions', 'ok', b['pattern'], {'key': b['key'], 'user': b['user'], 'binding_id': binding_id,
+                                                                            'was': b['actions'], 'actions': actions})
+        return jsonify(binding_id=binding_id, actions=actions)
+
     @web.delete('/api/bindings/<int:binding_id>')
     @login_required
     @password_confirmed
@@ -1191,12 +1245,19 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if body.get('bind'):
             v = Vault(db, conn())
             existing = next((b for b in v.bindings() if b['key'] == name and b['pattern'] == host and b['user'] == user), None)
-            if existing:
+            wanted = binding_actions({'actions': ['scan'] + (['checksum'] if body.get('checksum') else []) + (['console'] if body.get('console') else [])})
+            if existing:                                 # installed again with more ticked: the binding gains it, never loses any
                 res['binding_id'] = existing['binding_id']
+                have = existing['actions'].split(',')
+                more = ','.join(have + [a for a in wanted.split(',') if a not in have])
+                if more != existing['actions'] and 'deploy' not in have:
+                    v.set_actions(existing['binding_id'], more)
+                    core.audit(conn(), actor(), 'vault.bind.actions', 'ok', host, detail | {'binding_id': existing['binding_id'], 'was': existing['actions'], 'actions': more})
+                res['actions'] = more
             else:
-                actions = 'scan,checksum' if body.get('checksum') else 'scan'
-                res['binding_id'] = v.bind(name, host, user, port, actions)
-                core.audit(conn(), actor(), 'vault.bind', 'ok', host, detail | {'binding_id': res['binding_id'], 'actions': actions})
+                res['binding_id'] = v.bind(name, host, user, port, wanted)
+                res['actions'] = wanted
+                core.audit(conn(), actor(), 'vault.bind', 'ok', host, detail | {'binding_id': res['binding_id'], 'actions': wanted})
         return jsonify(res)
 
     @web.post('/api/hostkey/confirm')
@@ -1348,7 +1409,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @web.get('/api/dupes')
     @login_required
     def api_dupes():
-        return jsonify(groups=run_dupes(conn(), request.args.get('host') or None, parse_size(request.args.get('min_size') or '1MiB'), arg_num('limit', 50, 1, 500, int)))
+        groups = run_dupes(conn(), request.args.get('host') or None, parse_size(request.args.get('min_size') or '1MiB'), arg_num('limit', 50, 1, 500, int))
+        checksummed = bool(groups) or bool(conn().scalar('SELECT 1 FROM file_records WHERE checksum_hash IS NOT NULL LIMIT 1'))
+        return jsonify(groups=groups, checksummed=checksummed)
 
     @web.get('/api/git')
     @login_required
@@ -1426,7 +1489,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         idx = body.get('index')
         try:
             return jsonify(shares.validate(conn(), str(body.get('host', '')), body.get('export') or {},
-                                           None if idx is None else int(idx), body.get('was') or None))
+                                           None if idx is None else int(idx), body.get('was') or None, bool(body.get('takeover'))))
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
 
@@ -1443,9 +1506,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             body = json_body()
             idx = body.get('index')
             res = shares.save_export(db, conn(), str(body.get('host', '')), body.get('export') or {},
-                                     None if idx is None else int(idx), actor(), body.get('was') or None)
+                                     None if idx is None else int(idx), actor(), body.get('was') or None, bool(body.get('takeover')))
             core.audit(conn(), actor(), 'shares.save', 'ok', res['host'],
-                       {'index': res['index'], 'path': res['export']['path'], 'proto': res['export']['protocol']})
+                       {'index': res['index'], 'path': res['export']['path'], 'proto': res['export']['protocol'],
+                        **({'takeover': res['export']['takeover']} if body.get('takeover') else {})})
             return jsonify(res)
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
@@ -2460,14 +2524,14 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         min_files = arg_num('min_files', 3, 1, 1_000_000)
         min_size = parse_size(request.args.get('min_size') or '1MiB')
         return jsonify(folder_result(('dupes', host, min_files, min_size),
-                                     lambda: folders.duplicate_folders(conn(), host, min_files, min_size, limit=200, index=build_dir_index(host))))
+                                     lambda: folders.duplicate_folders(conn(), host, min_files, min_size, limit=200, index=build_dir_index(None))))
 
     def filemap_result(host, min_size, system, with_folders):
         def compute():
             twins = None
             if with_folders:
                 key = ('dupes', host, 3, min_size) if not system else ('dupes-system', host, 3, min_size)
-                twins = folder_result(key, lambda: folders.duplicate_folders(conn(), host, 3, min_size, limit=200, include_system=system, index=build_dir_index(host)))
+                twins = folder_result(key, lambda: folders.duplicate_folders(conn(), host, 3, min_size, limit=200, include_system=system, index=build_dir_index(None)))
             return filemap.build(conn(), host, min_size, system, twins)
         # its job lines change without a scan: importing or removing a job has to show now
         job_mark = tuple(conn().all('SELECT count(*), max(deployed_at), max(removed_at) FROM jobs')[0])

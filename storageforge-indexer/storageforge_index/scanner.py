@@ -48,7 +48,7 @@ class ScanOptions:
     include_fstypes: list[str] = field(default_factory=list)   # e.g. ['overlay'] to walk container root filesystems
     parallel: int = 4
     batch_size: int = 20_000
-    checksum: bool = False
+    checksum: bool | None = False    # None: when the host's binding allows checksums (the web UI's scans)
     git: bool = True                 # read every repository the walk found through the host's git
     docker: bool = True              # containers, volumes and compose stacks, and which folders they use
     network: bool = True             # interfaces, routes, neighbours and listeners, read from the host: no probes
@@ -327,9 +327,9 @@ def _raw_names(path: str) -> list[bytes]:
     return [raw, undone] if undone != raw and decode(undone) == path else [raw]
 
 
-def checksum_pass(db: Database, conn, t: Transport, host_id: int, min_size: int, nice: bool = True) -> int:
+def checksum_pass(db: Database, conn, t: Transport, host_id: int, min_size: int, nice: bool = True, like_host: int | None = None) -> int:
     """Hash only files whose size collides with another file: the only possible duplicates."""
-    cands = db.checksum_candidates(conn, host_id, min_size)
+    cands = db.checksum_candidates(conn, host_id, min_size, like_host)
     if not cands:
         return 0
     by_path = {join_path(parent, name): fid for fid, parent, name in cands}
@@ -534,6 +534,7 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
             signed = t.signing.summary()
             log(f'  payloads: {signed["state"]} ({signed["signed"]} signed, {signed["unsigned"]} not)'
                 + (f'; {"; ".join(signed["reasons"])}' if signed['reasons'] else ''))
-        return {'scan_id': scan_id, 'host': inv.hostname, 'status': status, **tot, 'signed': signed}
+        return {'scan_id': scan_id, 'host': inv.hostname, 'host_id': host_id, 'status': status, **tot, 'signed': signed,
+                'checksummed': bool(opts.checksum)}
     finally:
         conn.close()

@@ -795,8 +795,10 @@ function renderEditor() {
     const clients = [...T.docs.values()].flatMap((d) => (d.bp && d.bp.remotes || [])
       .filter((r) => { const f = shareSource(d, r); return f && f.host === doc.host && f.key === n.key; })
       .map((r) => `${d.host}:${r.mount}`));
-    form.append(el('p', { class: 'muted' }, `Found by the scan in this host's ${n.ref.protocol === 'SMB' ? 'Samba config' : 'NFS exports'}. Change it on the host; the next scan picks it up.`),
-      el('p', {}, el('b', {}, 'Mounted by: '), clients.length ? clients.join(', ') : 'no scanned host'));
+    form.append(el('p', { class: 'muted' }, `Found by the scan in this host's ${n.ref.protocol === 'SMB' ? 'Samba config' : 'NFS exports'}. Edit takes it over: `
+        + 'the share wizard opens with it filled in, and deploying moves it into StorageForge\'s own file.'),
+      el('p', {}, el('b', {}, 'Mounted by: '), clients.length ? clients.join(', ') : 'no scanned host'),
+      el('div', { class: 'row' }, button('Edit in the share wizard…', () => takeOverShare(doc, n), 'btn sm')));
   } else if (n.kind === 'export') {
     const e = n.ref;
     form.append(el('div', { class: 'row' },
@@ -837,10 +839,19 @@ const mountActions = (doc, n) => {
 };
 
 /* ── right-click menus: what the editor offers, staged changes, copy ── */
+/* Edit on a share the scan found: the wizard, taking it over (bug report 2026-11-10: it showed only text). A host with edits
+   open, or a protocol the wizard does not do, gets the details panel. */
+async function takeOverShare(doc, n) {
+  if (doc.dirty) { toast(`Save or discard the edits on ${doc.host} first`); selectBox(doc.host, n.key); return; }
+  const managed = /^(NFS|SMB|CIFS)/i.test(n.ref.protocol || n.ref.proto || '');
+  if (managed && typeof openShareWizard === 'function' && await openShareWizard({ host: doc.host, index: n.i, share: n.ref, takeover: true })) return;
+  selectBox(doc.host, n.key);
+}
 function boxMenu(doc, n) {
   const h = doc.host, r = n.ref || {};
   const gid = n.kind === 'mount' ? `mnt:${h}:${n.target}` : n.kind === 'pool' ? `pool:${h}:${r.name}` : null;
-  const items = [{ heading: `${n.kind} · ${n.title}` }, { label: n.planned ? 'Details' : 'Edit…', run: () => selectBox(h, n.key) },
+  const scanShare = n.kind === 'export' && r.fromScan && !r.designed;
+  const items = [{ heading: `${n.kind} · ${n.title}` }, { label: n.planned ? 'Details' : 'Edit…', run: () => (scanShare ? takeOverShare(doc, n) : selectBox(h, n.key)) },
     gid && S.byId.get(gid) ? { label: 'Show in graph', run: () => { setMode('graph'); select(gid, true); } } : null];
   const drop = (list, prefix) => () => {         // keys are list indexes: a removal shifts the ones after it
     doc.bp[list].splice(n.i, 1);

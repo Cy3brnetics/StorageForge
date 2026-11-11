@@ -475,6 +475,13 @@ class Vault:
                                 {'k': kid, 'p': pattern, 'pk': self.pattern_kind(pattern), 'u': user, 'port': port,
                                  'a': actions, 'pr': priority, 'now': int(time.time())})
 
+    def set_actions(self, binding_id: int, actions: str) -> int:
+        bad = set(actions.split(',')) - {'scan', 'checksum', 'deploy', 'console'}
+        if bad or not actions:
+            raise VaultError(f'unknown action(s): {", ".join(sorted(bad)) or "none given"}; allowed: scan, checksum, deploy, console')
+        return self.conn.execute('UPDATE key_bindings SET allowed_actions = :a WHERE binding_id = :b',
+                                 {'a': actions, 'b': binding_id}).rowcount
+
     def unbind(self, binding_id: int) -> int:
         return self.conn.execute('DELETE FROM key_bindings WHERE binding_id = :b', {'b': binding_id}).rowcount
 

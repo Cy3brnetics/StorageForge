@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -351,3 +352,94 @@ class Mergerfs(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class FstabVerify(Scripted):
+    """A share's first deploy on cachyos-x8664 (2026-11-10) failed: findmnt --verify already failed there over an unplugged USB
+    disk's line, before the share's line went in, and the second run passed because a line already there skipped the check."""
+    BAD = '0 parse errors, 1 error, 0 warnings\n/mnt/UsbSSD\n   [E] unreachable on boot required source: UUID=4419\n'
+
+    def run_it(self, added_error=False):
+        fstab = self.dir / 'fstab'
+        fstab.write_text('UUID=4419 /mnt/UsbSSD ext4 defaults 0 0\n')
+        # the old line always fails; the new one too when asked, for as long as it is in the file
+        extra = f'grep -q sfnew "{fstab}" && printf "/mnt/new\\\\n   [E] unreachable on boot required target\\\\n"\n' if added_error else ''
+        self.stub('findmnt', f"printf '%s' {shlex.quote(self.BAD)}\n" + extra + 'exit 1')
+        code = functions(shares.SHARES_BODY_3, 'fstab_errors', 'fstab_before', 'fstab_after').replace('/etc/fstab', str(fstab))
+        r = self.run_bash(code + f'durable() {{ :; }}; info() {{ echo "  $*"; }}\nfstab_before; echo "srv:/x /mnt/new nfs nofail 0 0 # sfnew" >>{fstab}\n'
+                                 'if fstab_after "the line for /mnt/new"; then echo KEPT; else echo PUT-BACK; fi\n')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout, fstab.read_text()
+
+    def test_an_error_that_was_there_before_does_not_block_the_share(self):
+        out, fstab = self.run_it()
+        self.assertIn('KEPT', out)
+        self.assertIn('already complained about other lines', out)
+        self.assertIn('/mnt/UsbSSD: [E] unreachable on boot required source', out)
+        self.assertIn('sfnew', fstab)
+
+    def test_a_new_error_puts_fstab_back_and_says_why(self):
+        out, fstab = self.run_it(added_error=True)
+        self.assertIn('PUT-BACK', out)
+        self.assertIn('/mnt/new: [E] unreachable on boot required target', out)
+        self.assertNotIn('/mnt/UsbSSD: [E]', out.split('put back')[1])      # only what the edit brought
+        self.assertNotIn('sfnew', fstab)
+
+    def test_both_fstab_edits_use_it(self):
+        self.assertEqual(shares.SHARES_BODY_3.count('fstab_after "'), 2)
+        self.assertNotIn('findmnt --verify --tab-file /etc/fstab >/dev/null', shares.SHARES_BODY_3)
+
+
+class TakeOver(Scripted):
+    """Edit on a share the scan found takes it over (bug report 2026-11-10): its line in the host's own exports, or its
+    [section] in smb.conf, is commented out, and StorageForge's file serves it."""
+
+    def setUp(self):
+        super().setUp()
+        self.etc = self.dir / 'etc'
+        (self.etc / 'exports.d').mkdir(parents=True)
+        (self.etc / 'samba').mkdir()
+        (self.etc / 'exports').write_text('# comment /mnt/storage\n/mnt/storage 10.42.0.0/24(rw,sync) \\\n   10.0.0.5(ro)\n'
+                                          '"/srv/my share" *(ro)\n/mnt/storage/sub *(rw)\n')
+        (self.etc / 'exports.d' / 'other.exports').write_text('/mnt/storage/ host(rw)\n')
+        (self.etc / 'exports.d' / 'storageforge.exports').write_text('"/mnt/storage" x(rw)\n')
+        (self.etc / 'samba' / 'smb.conf').write_text('[global]\n workgroup = W\n[Media]\n path = /m\n\n[keep]\n path = /k\n')
+
+    def run_it(self, calls, apply='1'):
+        code = functions(shares.SHARES_BODY_3, 'backup', 'take_file', 'take_nfs', 'take_smb').replace('/etc/', f'{self.etc}/')
+        r = self.run_bash('set -f; STAMP=1; TOOK_NFS=0 TOOK_SMB=0; durable() { :; }\n' + code + calls + '\necho "took $TOOK_NFS$TOOK_SMB"\n', APPLY=apply)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def test_report_changes_nothing(self):
+        before = (self.etc / 'exports').read_text()
+        out = self.run_it('take_nfs /mnt/storage', apply='0')
+        self.assertIn('missing would comment out in', out)
+        self.assertEqual((self.etc / 'exports').read_text(), before)
+
+    def test_nfs_lines_go_with_their_continuation_and_quoted_paths(self):
+        out = self.run_it('take_nfs /mnt/storage; take_nfs "/srv/my share"')
+        self.assertIn('took 10', out)
+        self.assertEqual((self.etc / 'exports').read_text(),
+                         '# comment /mnt/storage\n# taken over by StorageForge 1: /mnt/storage 10.42.0.0/24(rw,sync) \\\n'
+                         '# taken over by StorageForge 1:    10.0.0.5(ro)\n# taken over by StorageForge 1: "/srv/my share" *(ro)\n/mnt/storage/sub *(rw)\n')
+        self.assertEqual((self.etc / 'exports.d' / 'other.exports').read_text(), '# taken over by StorageForge 1: /mnt/storage/ host(rw)\n')
+        self.assertEqual((self.etc / 'exports.d' / 'storageforge.exports').read_text(), '"/mnt/storage" x(rw)\n')    # its own file: never
+        self.assertIn('/mnt/storage 10.42.0.0/24', (self.etc / 'exports.storageforge-1').read_text())    # the first backup of the run stays
+        self.assertIn('"/srv/my share" *(ro)\n', (self.etc / 'exports.storageforge-1').read_text())
+        self.assertIn('not in the host\'s own exports any more', self.run_it('take_nfs /mnt/storage'))     # a rerun: nothing left
+
+    def test_an_smb_section_and_a_copy_in_a_file_it_does_not_edit(self):
+        (self.etc / 'samba' / 'extra.conf').write_text('[media]\n path = /x\n')
+        out = self.run_it('take_smb media')
+        self.assertIn('took 01', out)
+        self.assertEqual((self.etc / 'samba' / 'smb.conf').read_text(), '[global]\n workgroup = W\n# taken over by StorageForge 1: [Media]\n'
+                         '# taken over by StorageForge 1:  path = /m\n# taken over by StorageForge 1: \n[keep]\n path = /k\n')
+        self.assertIn('conflict [media] is also in', out)
+        self.assertEqual((self.etc / 'samba' / 'extra.conf').read_text(), '[media]\n path = /x\n')
+
+    def test_the_server_runs_it_first_and_reloads_after(self):
+        body = shares.SHARES_BODY_3
+        self.assertIn('then take_over; server_nfs; server_smb', body)
+        self.assertIn('|| ((TOOK_NFS)); then ((APPLY)) && reexport; fi', body)
+        self.assertIn('local changed=$TOOK_SMB;', body)

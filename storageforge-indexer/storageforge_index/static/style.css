@@ -455,6 +455,7 @@ dialog.swdlg[open] { display: flex; }
 .swdiscard { padding: 10px 16px; background: color-mix(in srgb, var(--broken) 12%, var(--panel)); border-bottom: 1px solid color-mix(in srgb, var(--broken) 40%, var(--line)); flex-wrap: nowrap; }
 .swhead h2 { margin: 0; white-space: nowrap; }
 .swhead .fsk { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.swnote { margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel-2); color: var(--fg); }
 .swsteps { display: flex; flex: none; list-style: none; margin: 0 0 0 8px; padding: 0; gap: 4px; }
 .swsteps button { all: unset; cursor: pointer; display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 99px; font-size: 13px; color: var(--muted); }
 .swsteps button:disabled { cursor: default; opacity: .5; }
@@ -978,6 +979,7 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 
 /* ── Security ─────────────────────────────────────────────────────── */
 #tab-security > * + * { margin-top: 12px; }
+#copies-subnav { margin-bottom: 10px; }
 #sec-subnav { display: flex; flex-direction: column; gap: 8px; overflow: visible; }
 .sec-navgroup { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 4px; align-items: stretch; }
 .sec-navlabel { grid-column: 1 / -1; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }

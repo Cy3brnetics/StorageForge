@@ -829,16 +829,54 @@ async function loadKeys(select) {
       return li;
     }));
     if (!keys.length) $('#keys').replaceChildren(text('li', 'No keys yet. Generate one above.', 'muted'));
+    const bk = $('#bindkey'), bkeep = bk.value;
+    bk.replaceChildren(...keys.map((k) => new Option(`${k.name} · ${k.type}`, k.name)));
+    if (bkeep) bk.value = bkeep;
+    $('#bindconsole').disabled = !can('console.open');
+    $('#bindconsole').title = can('console.open') ? '' : 'Your account cannot open consoles, so it cannot allow one';
+    $('#instconsole').disabled = $('#bindconsole').disabled;
+    $('#instconsole').title = $('#bindconsole').title;
     $('#bindings').replaceChildren(...bindings.map((b) => {
       const li = document.createElement('li');
+      const acts = b.actions.split(',');
       li.append(text('span', `${b.user}@${b.pattern}:${b.port} → ${b.key}`), text('span', `${b.kind} · ${b.actions}`, 'm'));
       if (b.kind === 'host') li.append(button('Scan now', () => queueScan(b.pattern), 'btn ghost sm'));
+      if (!acts.includes('deploy')) {                // a deploy binding is Deploy → access's to change
+        const toggle = (act, label) => {
+          const on = acts.includes(act);
+          const next = on ? acts.filter((a) => a !== act && !(act === 'scan' && a === 'checksum')) : [...acts, act, ...(act === 'checksum' && !acts.includes('scan') ? ['scan'] : [])];
+          const btn = button(`${label}: ${on ? 'on' : 'off'}`, () => setBindingActions(b, next), 'btn ghost sm');
+          btn.setAttribute('aria-pressed', String(on));
+          if (!next.length) { btn.disabled = true; btn.title = 'A binding allows something: Unbind it instead'; }
+          if (act === 'console' && !can('console.open')) { btn.disabled = true; btn.title = 'Your account cannot open consoles'; }
+          return btn;
+        };
+        li.append(toggle('checksum', 'Checksums'), toggle('console', 'Console'));
+      }
       li.append(button('Unbind', () => removeVaultItem(`/api/bindings/${b.binding_id}`, `Stop using ${b.key} for ${b.user}@${b.pattern}?`), 'btn ghost sm danger'));
       return li;
     }));
     if (!bindings.length) $('#bindings').replaceChildren(text('li', 'No bindings yet.', 'muted'));
   } catch (err) { $('#keys').replaceChildren(text('li', err.message, 'muted')); }
 }
+async function setBindingActions(b, actions) {
+  if (actions.includes('console') && !b.actions.split(',').includes('console')
+      && !(await confirmDialog({ title: `Allow the web console as ${b.user}@${b.pattern}?`, confirm: 'Allow the console',
+        body: `Anyone who may open consoles gets a terminal as ${b.user} there, able to do whatever ${b.user} can. Every session is in the audit log.` }))) return;
+  try { await api(`/api/bindings/${b.binding_id}`, jsonOpts('PUT', { actions })); loadKeys(); }
+  catch (err) { keyMsg(err.message, false); }
+}
+$('#bindform').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const actions = [['scan', '#bindscan'], ['checksum', '#bindsum'], ['console', '#bindconsole']].filter(([, id]) => $(id).checked).map(([a]) => a);
+  const body = { key: $('#bindkey').value, host: $('#bindhost').value.trim(), port: Number($('#bindport').value), user: $('#binduser').value.trim(), actions };
+  try {
+    const r = await (await postJSON('/api/bindings', body)).json();
+    keyMsg(`Bound ${body.key} to ${body.user}@${body.host} for ${r.actions.replaceAll(',', ', ')} (binding #${r.binding_id}).`, true);
+    $('#bindhost').value = '';
+    loadKeys();
+  } catch (err) { keyMsg(err.message, false); }
+});
 async function removeVaultItem(path, question) {
   if (!(await confirmDialog({ title: question, confirm: 'Remove', danger: true }))) return;
   try { await api(path, { method: 'DELETE' }); loadKeys(); }
@@ -858,7 +896,7 @@ $('#installform').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const body = { key: $('#instkey').value, host: $('#insthost').value.trim(), port: Number($('#instport').value),
                  user: $('#instuser').value.trim(), password: $('#instpw').value,
-                 bind: $('#instbind').checked, checksum: $('#instsum').checked };
+                 bind: $('#instbind').checked, checksum: $('#instsum').checked, console: $('#instconsole').checked };
   $('#instpw').value = '';
   const btn = ev.submitter; btn.disabled = true;
   keyMsg(`Running ssh-copy-id for ${body.user}@${body.host}…`, true);
@@ -866,7 +904,7 @@ $('#installform').addEventListener('submit', async (ev) => {
     const r = await (await postJSON('/api/keys/install', body)).json();
     keyMsg(`Installed "${body.key}" on ${body.user}@${body.host}` +
            (r.keys_added === 0 ? ' (it was already there)' : ', and key login works') +
-           (r.binding_id ? ` and bound it for scans (binding #${r.binding_id}).` : '.'), true);
+           (r.binding_id ? ` and bound it for ${(r.actions || 'scan').replaceAll(',', ', ')} (binding #${r.binding_id}).` : '.'), true);
     loadKeys();
   } catch (err) { keyMsg(err.message, false); }
   finally { btn.disabled = false; }

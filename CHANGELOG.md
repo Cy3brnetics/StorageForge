@@ -4,6 +4,27 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 
 ## Unreleased
 
+## 0.5.1 — 2026-11-11
+
+Fixes for the bug reports of 2026-11-10 ([the reports](docs/bug-reports-2026-11-10.md)). Upgrade notes: no migrations; build the images again (`docker compose build`), as they are tagged 0.5.1. Scans from the web UI now checksum files on hosts whose binding allows `checksum`, which reads more of those hosts' disks. Turn **Checksums** off on a binding in **Keys** to stop it. Nothing here is lab-tested yet: it is unit-tested, and the fstab check was run against a real fstab on this workstation.
+
+### Added
+- **Keys → Bindings in the web UI.** Bind a key that is already on a host, for scans, checksum scans or the web console, and turn **Checksums** and **Console** on or off for a binding. Key install has **Allow the web console too**. Allowing the console takes `console.open` and the password again. Deploy bindings stay Deploy → access's. `POST /api/bindings`, `PUT /api/bindings/<id>`.
+- **Taking over a share the host already had.** **Edit…** on a share the scan found in `/etc/exports` or `smb.conf` opened only text. It now opens the share wizard filled in, and deploying comments out the host's own lines (after a backup) and serves the share from StorageForge's file. See [Taking over a share](docs/plans-and-scripts.md#nfs-and-smb-shares). Scans now keep each NFS client's own options, and the Samba settings a design holds, so taking a share over keeps them. A new share of a folder the host already shares is refused until that share is taken over.
+
+### Changed
+- **Cleanup is three sub-panels:** Duplicates, Cold data, and Trends & changes, instead of five tools down one panel. Duplicates can show folder copies within a host or across hosts.
+- **Reading accounts and invites needs no fresh password.** Opening Audit asked for it, and Cancel still showed the panel. Every change to an account, invite or role still asks.
+
+### Fixed
+- **Copies across hosts did not show.** Three causes:
+  - Same-host folder copies were sorted first and the list cut at 100 (200 in the graph), so on a fleet with many of them no copy across hosts was shown: on the reporter's fleet, 46 were found and none listed. Each scope now gets its own limit.
+  - With a host picked, files and folders were compared on that host alone, so a copy whose twin was on another host was no duplicate. Now the whole fleet is compared and the groups with a copy on the host are shown, with every copy.
+  - A checksum pass hashes files whose size another file has at that moment. A file copied to a host after the other host's pass was hashed there, and its twin never was. After a host's checksum pass, every other host with files of a size hashed there now hashes just those files, through a binding that allows checksums, and says so in the scan log. A host without one is named.
+- **Web UI scans never checksummed,** so **Allow checksum scans too** on key install did nothing. They now checksum when the host's binding allows it.
+- **A share's first mount failed on a client whose fstab `findmnt --verify` already rejected** (an unplugged USB disk's line), and passed on the second run because a line already there skipped the check. Only errors the new line brings fail it now, fstab is put back on those, and `findmnt`'s reason is printed either way. Under `pipefail` a fix that ran `findmnt` would have ended the run: it is tested that way. A run's first backup of a file is no longer written over by a later step of the same run.
+- **The console's "add a binding" hint sent people to a root shell in the container,** where `storageforge-index` crashed with `PermissionError` on `/app/data`. The hint names the web UI first, and the CLI says to run as the app user (`docker compose exec storageforge storageforge-index …`) instead of a traceback.
+
 ## 0.5.0 — 2026-11-09
 
 Upgrade notes: no migrations. The images are tagged 0.5.0, so build them again (`docker compose build`). Scans and infrastructure readings pick up the new package, service, CPU and libvirt fields on their next run, with no script to run again on the hosts. Two permissions are new and high risk: `console.open` and `console.recordings`. Admins have them, and no custom role gets them until it is given them. A key for the web console is bound with `--actions console`, apart from scan keys. Console recording is off until an admin turns it on. Lab status: tier 18 (libvirt) passed 17 of 17 on 2026-11-09; tiers 13, 14, 16 and 17 and tier 2's signed-scan stage had their first runs on 2026-11-08 and passed. What is still **not lab-tested** is listed in [What the lab can't test](docs/kvm-lab.md#what-the-lab-cant-test) and in each entry below.
