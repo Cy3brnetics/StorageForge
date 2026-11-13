@@ -143,9 +143,10 @@ class Services(unittest.TestCase):
 class Plans(Db):
     def set_pk(self, host, **kw):
         hid = self.conn.scalar('SELECT host_id FROM hosts WHERE hostname = :n', {'n': host})
-        inv = json.loads(self.conn.scalar('SELECT inventory_json FROM hosts WHERE host_id = :h', {'h': hid}))
+        inv = self.conn.scalar('SELECT inventory_json FROM hosts WHERE host_id = :h', {'h': hid})
+        inv = json.loads(inv) if isinstance(inv, str) else inv           # PostgreSQL hands back jsonb as a dict
         inv['pkglist'] = {**(inv.get('pkglist') or pkglist.parse('pm apt-get\ncomplete')), **kw}
-        self.conn.execute('UPDATE hosts SET inventory_json = :i WHERE host_id = :h', {'i': json.dumps(inv), 'h': hid})
+        self.conn.execute(f"UPDATE hosts SET inventory_json = {self.db.jsonp(':i')} WHERE host_id = :h", {'i': json.dumps(inv), 'h': hid})
 
     def check(self):
         pid = clone.save(self.conn, clone.build(self.conn, 'web-01', 'web-copy'), 'test')['changes']

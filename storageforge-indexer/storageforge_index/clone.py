@@ -22,7 +22,7 @@ import re
 
 from . import changes, hostconfig, pkglist, steps_clone
 from .changes import OS_MOUNTS
-from .db import Conn
+from .db import Conn, epoch
 from .moves import host_slug
 
 LEVELS = ('none', 'structure', 'all')
@@ -274,7 +274,8 @@ def _storage(conn: Conn, src: dict, tgt: dict, mapping: dict | str, notes: list,
                                         'label': label, 'mount': p.get('mount') if not p.get('subvolumes') else None, 'options': p.get('options')})
     if dmap:
         # the plan is checked against the target's last scan: a copy planned onto it since may have filled the disks
-        seen = conn.scalar('SELECT last_scanned_at FROM hosts WHERE lower(hostname) = lower(:n)', {'n': tgt['name']}) or 0
+        # epoch seconds, as change_plans.created_at is: PostgreSQL gives the scan time as a timestamp and refused the comparison
+        seen = epoch(conn.scalar('SELECT last_scanned_at FROM hosts WHERE lower(hostname) = lower(:n)', {'n': tgt['name']})) or 0
         for (body,) in conn.all('SELECT body_json FROM change_plans WHERE created_at > :t', {'t': seen}):
             b = body if isinstance(body, dict) else json.loads(body or '{}')
             if any(t.get('host') == tgt['name'] and t.get('type') in DISK_WRITES for t in b.get('tasks') or []):

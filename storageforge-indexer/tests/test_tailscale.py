@@ -89,7 +89,7 @@ class Vault(Db):
         secret.write_text('s' * 48)
         os.environ['STORAGEFORGE_VAULT_SECRET_FILE'] = str(secret)
         self.addCleanup(os.environ.pop, 'STORAGEFORGE_VAULT_SECRET_FILE', None)
-        db = str(Path(self.tmp) / 'index.db')
+        db = self.db.url                   # the test's database, PostgreSQL too
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(cli.main(['--db', db, 'vault', 'init']), 0)
         out = io.StringIO()
@@ -138,8 +138,8 @@ class PiCopyFixes(Db):
         mid = self.conn.scalar("SELECT mount_id FROM mounts WHERE host_id = :h AND mount_point = '/srv/data'", {'h': hid})
         did = self.conn.scalar("INSERT INTO directories (mount_id, path) VALUES (:m, '/srv/data') RETURNING dir_id", {'m': mid})
         for i in range(3):    # one 4 GiB file under three names, as rsnapshot keeps it: the filesystem uses 8 GiB in all
-            self.conn.execute("""INSERT INTO file_records (mount_id, dir_id, filename, file_size_bytes, is_directory, is_symlink, modified_at)
-                                 VALUES (:m, :d, :f, :s, 0, 0, 0)""", {'m': mid, 'd': did, 'f': f'big{i}', 's': 4 * 2**30})
+            self.conn.execute(f"""INSERT INTO file_records (mount_id, dir_id, filename, file_size_bytes, is_directory, is_symlink, modified_at)
+                                 VALUES (:m, :d, :f, :s, false, false, {self.db.ts('0')})""", {'m': mid, 'd': did, 'f': f'big{i}', 's': 4 * 2**30})
         mount = {'id': mid, 'target': '/srv/data', 'used': 8 * 2**30}
         self.assertEqual(moves.subtree(self.conn, mount, '/srv/data')['bytes'], 8 * 2**30)
         self.assertEqual(moves.subtree(self.conn, {**mount, 'used': None}, '/srv/data')['bytes'], 12 * 2**30)

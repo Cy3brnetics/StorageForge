@@ -307,7 +307,7 @@ class Routes(unittest.TestCase):
 
     def test_cli(self):
         from storageforge_index import cli
-        db = str(Path(self.tmp) / 'index.db')
+        db = self.db.url                   # the test's database, PostgreSQL too
 
         def run(*args):
             out = io.StringIO()

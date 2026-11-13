@@ -4,6 +4,11 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 
 ## Unreleased
 
+### Fixed
+- **A VM disk sent to a host with uutils coreutils (Ubuntu 25.10 and later) came up short and was refused.** Its `dd conv=sparse` leaves the zeros at the end of a stream out, instead of a hole the length of them, so a disk that ends in empty space was smaller than sent and failed its checksum. The receive now sets the file's length from the byte count `dd` reports. Nothing was ever kept wrong: the checksum refused it.
+- **`clone` with a disk map failed on PostgreSQL** before it could warn that the target's last scan is older than a plan writing to its disks: it compared a scan time with plan times in seconds.
+- **CI on GitHub passes again.** Thirteen tests wrote SQLite's types (whole-number times, 0 and 1 for booleans, JSON as text) into PostgreSQL or ran the CLI against the SQLite file. One read whether the machine running it is a VM, which GitHub's runners are.
+
 ## 0.5.1 — 2026-11-11
 
 Fixes for the bug reports of 2026-11-10 ([the reports](docs/bug-reports-2026-11-10.md)). Upgrade notes: no migrations; build the images again (`docker compose build`), as they are tagged 0.5.1. Scans from the web UI now checksum files on hosts whose binding allows `checksum`, which reads more of those hosts' disks. Turn **Checksums** off on a binding in **Keys** to stop it. Nothing here is lab-tested yet: it is unit-tested, and the fstab check was run against a real fstab on this workstation.

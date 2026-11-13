@@ -137,7 +137,7 @@ recv_lock() { # -n or -w seconds, and what to say: one change at a time in a fol
   flock "$@" 7 || recv_refuse "another send is receiving into $ROOT"
 }
 recv_probe() {
-  if [[ $TOOL == vm ]]; then command -v sha256sum >/dev/null && command -v dd >/dev/null || { echo "dd or sha256sum is missing on $(uname -n)" >&2; exit 3; }; echo "ok vm"; return 0; fi
+  if [[ $TOOL == vm ]]; then command -v sha256sum >/dev/null && command -v dd >/dev/null && command -v truncate >/dev/null || { echo "dd, truncate or sha256sum is missing on $(uname -n)" >&2; exit 3; }; echo "ok vm"; return 0; fi
   command -v "$TOOL" >/dev/null || { echo "$TOOL is not installed on $(uname -n)" >&2; exit 3; }
   if [[ $TOOL == btrfs ]]; then btrfs --version >/dev/null 2>&1; else zfs version >/dev/null 2>&1; fi || { echo "$TOOL does not run on $(uname -n)" >&2; exit 3; }
   echo "ok $TOOL"
@@ -197,7 +197,7 @@ recv_drop() { # what a failed receive left: it never verified, and the next send
   return 0
 }
 recv_receive() { # nonce name, the stream on stdin. It only ever makes something new under the folder or dataset of the conf
-  local nonce=$1 n=$2 started st err before extra x rc=0 msg=
+  local nonce=$1 n=$2 started st err before extra x rc=0 msg= sz=
   started=$(date +%s)
   recv_name_ok "$n" || recv_refuse "not a snapshot name" "$nonce"
   if ((!RECV_LOCAL)); then
@@ -220,7 +220,12 @@ recv_receive() { # nonce name, the stream on stdin. It only ever makes something
     # a disk image, written as a new file of its own and readable by root alone: it holds all a VM holds. dd conv=sparse keeps
     # runs of zeros as holes, and the checksum is of what arrived, for the sender to hold against what it sent
     if mkdir -p -- "$ROOT" >"$err" 2>&1 && ( umask 077; set -o noclobber; : >"$ROOT/.$n.sf-part" ) 2>>"$err"; then
-      dd of="$ROOT/.$n.sf-part" bs=1M conv=sparse,notrunc status=none 2>>"$err"; rc=$?
+      # uutils dd (Ubuntu 25.10 on) leaves a stream's last run of zeros out instead of making it a hole at the end, and the disk
+      # comes up short: the byte count dd prints (GNU and uutils alike) sets the length
+      dd of="$ROOT/.$n.sf-part" bs=1M conv=sparse,notrunc 2>"$err.dd"; rc=$?
+      sz=$(sed -n 's/^\([0-9][0-9]*\) bytes.*/\1/p' "$err.dd" | tail -n 1)
+      grep -v -e '^[0-9][0-9]*+[0-9]* records' -e '^[0-9][0-9]* bytes' "$err.dd" >>"$err" || true; rm -f -- "$err.dd"
+      if ((rc == 0)) && [[ -n $sz ]]; then truncate -s "$sz" -- "$ROOT/.$n.sf-part" 2>>"$err" || rc=5; fi
       if ((rc == 0)); then
         x=$(sha256sum <"$ROOT/.$n.sf-part" | cut -c1-64) && [[ ! -e $ROOT/$n && ! -L $ROOT/$n ]] && mv -n -- "$ROOT/.$n.sf-part" "$ROOT/$n" \
           && ( umask 077; printf '%s\n' "$x" >"$ROOT/.$n.sf-sha256" ) || rc=5

@@ -316,7 +316,7 @@ class Clone(Db):
         from storageforge_index import cli
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = cli.main(['--db', str(Path(self.tmp) / 'index.db'), 'vm', *args])
+            rc = cli.main(['--db', self.db.url, 'vm', *args])
         return rc, out.getvalue() + err.getvalue()
 
     def test_specs_and_create_from_the_cli(self):

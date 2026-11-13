@@ -286,7 +286,7 @@ class FileMap(unittest.TestCase):
         nas, pc = self.mounts[('nas', '/')], self.mounts[('pc', '/')]
         get = lambda: client.get('/api/filemap?folders=1&min_size=1')
         scan = lambda host, status: self.conn.scalar(
-            "INSERT INTO scans (host_id, started_at, status) SELECT host_id, 1, :s FROM hosts WHERE hostname = :h RETURNING scan_id", {'s': status, 'h': host})
+            f"INSERT INTO scans (host_id, started_at, status) SELECT host_id, {self.db.ts('1')}, :s FROM hosts WHERE hostname = :h RETURNING scan_id", {'s': status, 'h': host})
         mark = lambda mount, sid: self.conn.execute('UPDATE mounts SET last_scan_id = :s WHERE mount_id = :m', {'s': sid, 'm': mount})
         with mock.patch.object(folders, 'dir_index', counting):
             first = get().get_json()

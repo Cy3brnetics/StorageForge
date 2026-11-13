@@ -186,7 +186,8 @@ class Packages(unittest.TestCase):
     def test_the_kernel_and_bootloader_are_left_to_the_base_install(self):
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d)
-        for name, body in (('zypper', 'true'), ('rpm', 'true')):
+        # bare metal, whatever runs the test: GitHub's runners are Azure VMs, where the script rightly leaves the firmware out
+        for name, body in (('zypper', 'true'), ('rpm', 'true'), ('systemd-detect-virt', 'echo none')):
             stub(d, name, body)
         pk = pkglist.parse('distro\topensuse-leap\t16.0\npm zypper\na\tkernel-default\na\tgrub2\na\tshim\na\tvim\na\tlinux-firmware\ncomplete')
         path = d / 'p.sh'
@@ -212,9 +213,10 @@ class Copy(Db):
 
     def test_services_join_the_copy_with_timers_only_for_a_migration(self):
         hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'web-01'")
-        inv = json.loads(self.conn.scalar('SELECT inventory_json FROM hosts WHERE host_id = :h', {'h': hid}))
+        inv = self.conn.scalar('SELECT inventory_json FROM hosts WHERE host_id = :h', {'h': hid})
+        inv = json.loads(inv) if isinstance(inv, str) else inv           # PostgreSQL hands back jsonb as a dict
         inv['services'] = {'init': 'systemd', 'enabled': [{'unit': 'chronyd.service'}, {'unit': 'fstrim.timer'}]}
-        self.conn.execute('UPDATE hosts SET inventory_json = :i WHERE host_id = :h', {'i': json.dumps(inv), 'h': hid})
+        self.conn.execute(f"UPDATE hosts SET inventory_json = {self.db.jsonp(':i')} WHERE host_id = :h", {'i': json.dumps(inv), 'h': hid})
         test = next(t for t in clone.build(self.conn, 'web-01', 'web-copy')['plans']['changes']['tasks'] if t['type'] == 'services')
         mig = next(t for t in clone.build(self.conn, 'web-01', 'web-copy', mode='migrate')['plans']['changes']['tasks'] if t['type'] == 'services')
         self.assertEqual((test['params']['timers'], mig['params']['timers']), (False, True))

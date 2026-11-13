@@ -282,7 +282,8 @@ class ReceiveVm(unittest.TestCase):
         self.assertIn(f'done {want}', r.stdout)
         self.assertEqual((self.root / 'web-vda.raw').read_bytes(), disk.read_bytes())
         self.assertEqual((self.root / 'web-vda.raw').stat().st_mode & 0o777, 0o600)
-        self.assertLess((self.root / 'web-vda.raw').stat().st_blocks * 512, 1 << 20)       # the zeros stay holes
+        self.assertLessEqual((self.root / 'web-vda.raw').stat().st_blocks * 512, 1 << 20)  # the zeros stay holes: one dd block of 1 MiB holds the data
+        self.assertEqual((self.root / 'web-vda.raw').stat().st_size, disk.stat().st_size)  # uutils dd left the last zeros out (Ubuntu 25.10 on)
         self.assertEqual(r.stdout.splitlines()[-1], 'web-vda.raw')
         again = self.kit(f'send_stream web-vda.raw {want} cat -- {disk}; echo rc=$?')
         self.assertIn('already there', again.stderr)

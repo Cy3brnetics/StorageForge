@@ -194,9 +194,9 @@ class Build(Db):
 
     def test_a_scan_older_than_a_plan_onto_the_same_disks_is_critical(self):
         clone.save(self.conn, clone.build(self.conn, 'web-01', 'web-copy'), 'test')
-        self.conn.execute("UPDATE hosts SET last_scanned_at = 1 WHERE hostname = 'web-copy'")
+        self.conn.execute(f"UPDATE hosts SET last_scanned_at = {self.db.ts('1')} WHERE hostname = 'web-copy'")
         self.assertIn('scan-older-than-plan', [r['id'] for r in clone.build(self.conn, 'web-01', 'web-copy')['risks']])
-        self.conn.execute("UPDATE hosts SET last_scanned_at = :t WHERE hostname = 'web-copy'", {'t': int(time.time()) + 60})
+        self.conn.execute(f"UPDATE hosts SET last_scanned_at = {self.db.ts(':t')} WHERE hostname = 'web-copy'", {'t': int(time.time()) + 60})
         self.assertNotIn('scan-older-than-plan', [r['id'] for r in clone.build(self.conn, 'web-01', 'web-copy')['risks']])
 
     def test_the_top_level_of_a_btrfs_stays_mounted(self):
@@ -323,14 +323,14 @@ class Api(Db):
         from storageforge_index import cli
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            rc = cli.main(['--db', str(Path(self.tmp) / 'index.db'), 'clone', 'web-01', '--to', 'web-copy', '--files', 'structure', '--map', '/srv/data=/dev/vdc', '--dry-run'])
+            rc = cli.main(['--db', self.db.url, 'clone', 'web-01', '--to', 'web-copy', '--files', 'structure', '--map', '/srv/data=/dev/vdc', '--dry-run'])
         self.assertEqual(rc, 0)
         text = out.getvalue()
         self.assertIn('Data at risk:', text)
         self.assertIn('/dev/vdc on web-copy takes the layout of /dev/sdb', text)
         self.assertEqual(changes.list_plans(self.conn), [])
         with contextlib.redirect_stdout(io.StringIO()) as o2, contextlib.redirect_stderr(io.StringIO()):
-            rc = cli.main(['--db', str(Path(self.tmp) / 'index.db'), 'clone', 'web-01', '--to', 'web-copy'])
+            rc = cli.main(['--db', self.db.url, 'clone', 'web-01', '--to', 'web-copy'])
         self.assertIn('run them in this order: plan script', o2.getvalue())
         self.assertEqual(len(changes.list_plans(self.conn)), 1)
 

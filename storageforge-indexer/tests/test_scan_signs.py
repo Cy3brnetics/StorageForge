@@ -28,12 +28,12 @@ class Signs(unittest.TestCase):
         hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'h'")
         self.conn.execute("INSERT INTO mounts (host_id, mount_point, source, filesystem_type, scan_state) VALUES (:h, '/srv', 'x', 'ext4', 'indexed')", {'h': hid})
         self.mid = self.conn.scalar('SELECT mount_id FROM mounts')
-        self.sid = self.conn.scalar("INSERT INTO scans (host_id, status, started_at) VALUES (:h, 'ok', 0) RETURNING scan_id", {'h': hid})
+        self.sid = self.conn.scalar(f"INSERT INTO scans (host_id, status, started_at) VALUES (:h, 'ok', {self.db.ts('0')}) RETURNING scan_id", {'h': hid})
         security._SIGNS.clear()
 
     def change(self, kind, parent, name, mount=None, is_dir=0):
         self.conn.execute("""INSERT INTO file_changes (scan_id, mount_id, change_type, parent_path, filename, is_directory)
-                             VALUES (:s, :m, :k, :p, :f, :d)""", {'s': self.sid, 'm': mount or self.mid, 'k': kind, 'p': parent, 'f': name, 'd': is_dir})
+                             VALUES (:s, :m, :k, :p, :f, :d)""", {'s': self.sid, 'm': mount or self.mid, 'k': kind, 'p': parent, 'f': name, 'd': bool(is_dir)})
 
     def test_a_rename_in_place_is_counted_per_name_it_extends(self):
         self.change('deleted', '/srv/docs', 'report.docx')
