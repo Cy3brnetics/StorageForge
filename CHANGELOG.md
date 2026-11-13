@@ -2,7 +2,9 @@
 
 Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
-## Unreleased
+## 0.5.2 — 2026-11-13
+
+Two bugs that GitHub's CI showed, and CI passing again. Upgrade notes: no migrations; build the images again (`docker compose build`), as they are tagged 0.5.2.
 
 ### Fixed
 - **A VM disk sent to a host with uutils coreutils (Ubuntu 25.10 and later) came up short and was refused.** Its `dd conv=sparse` leaves the zeros at the end of a stream out, instead of a hole the length of them, so a disk that ends in empty space was smaller than sent and failed its checksum. The receive now sets the file's length from the byte count `dd` reports. Nothing was ever kept wrong: the checksum refused it.

@@ -63,7 +63,7 @@ The rules every feature follows are in [Concepts](docs/concepts.md#the-rules), a
 ```bash
 git clone https://github.com/Cy3brnetics/StorageForge.git
 cd StorageForge/storageforge-indexer
-git checkout v0.5.1
+git checkout v0.5.2
 docker compose up -d --build
 ```
 
