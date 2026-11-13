@@ -2,6 +2,11 @@
 
 Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
+## Unreleased
+
+### Fixed
+- **Tests failed at random on CI.** Every server a test made started the scheduler, the nightly backup, alerts and security timers, which outlived the test. Two minutes on, the nightly backup made the backup folder of whichever test ran then. The timers now start only under `serve`.
+
 ## 0.5.2 — 2026-11-13
 
 Two bugs that GitHub's CI showed, and CI passing again. Upgrade notes: no migrations; build the images again (`docker compose build`), as they are tagged 0.5.2.

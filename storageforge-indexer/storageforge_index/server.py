@@ -256,7 +256,9 @@ def in_quiet_hours(quiet: str | None, hour: int) -> bool:
 
 
 class App:
-    def __init__(self, db: Database, scan_interval: int | None = None, parallel: int = 4):
+    def __init__(self, db: Database, scan_interval: int | None = None, parallel: int = 4, timers: bool = False):
+        """timers: the scheduler, the nightly backup, alerts and security ticks. serve() turns them on. A test's App has them off:
+        they outlive the test, and the nightly backup read STORAGEFORGE_BACKUP_DIR two minutes later, from whichever test ran then."""
         self.db, self.parallel, self.scan_db = db, parallel, db.patient()
         self.audit_key = None
         conn = db.connect()
@@ -286,11 +288,12 @@ class App:
                          {'t': int(time.time()), 'r': json.dumps({'error': 'interrupted by restart'})})
         finally:
             conn.close()
-        threading.Thread(target=self._schedule, args=(scan_interval,), name='scheduler', daemon=True).start()
-        threading.Thread(target=self._nightly, name='nightly', daemon=True).start()
         self.alerts_wake = threading.Event()
-        threading.Thread(target=self._alerts, name='alerts', daemon=True).start()
-        threading.Thread(target=self._security, name='security', daemon=True).start()
+        if timers:
+            threading.Thread(target=self._schedule, args=(scan_interval,), name='scheduler', daemon=True).start()
+            threading.Thread(target=self._nightly, name='nightly', daemon=True).start()
+            threading.Thread(target=self._alerts, name='alerts', daemon=True).start()
+            threading.Thread(target=self._security, name='security', daemon=True).start()
 
     def _alerts(self):
         time.sleep(30)
@@ -2774,7 +2777,7 @@ def serve(db: Database, host: str, port: int, scan_interval: int | None, paralle
         conn.close()
     secure = os.environ.get('STORAGEFORGE_COOKIE_SECURE', '0').lower() in ('1', 'true', 'yes')
     hops = int(os.environ.get('STORAGEFORGE_PROXY_HOPS', '0'))
-    web_core = App(db, scan_interval, parallel)
+    web_core = App(db, scan_interval, parallel, timers=True)
     web = create_app(web_core, session_secret_from_env(), secure, hops,
                      os.environ.get('STORAGEFORGE_PROXY_HOST', ''))
 
