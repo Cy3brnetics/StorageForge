@@ -226,13 +226,17 @@ Migrations run on start (`storageforge-index migrate`). Most are quick. Schema 1
 The base images are pinned by digest and Python packages by hash. To move them forward, skipping releases younger than two weeks:
 
 ```bash
-docker buildx imagetools inspect python:3.13-slim-trixie | sed -n 's/^Digest: *//p'     # new digest for PYTHON_IMAGE in the Dockerfile
+docker buildx imagetools inspect cgr.dev/chainguard/wolfi-base:latest | sed -n 's/^Digest: *//p'     # new digest for BASE_IMAGE in the Dockerfile
 docker buildx imagetools inspect nginxinc/nginx-unprivileged:stable-alpine | sed -n 's/^Digest: *//p'     # new digest for the proxy stage's FROM
-uv pip compile pyproject.toml docker/build-requirements.in --universal --python-version 3.13 --generate-hashes --no-header --exclude-newer "$(date -d '14 days ago' +%F)" -o docker/requirements.lock
-uv pip compile pyproject.toml docker/build-requirements.in --extra postgres --universal --python-version 3.13 --generate-hashes --no-header --exclude-newer "$(date -d '14 days ago' +%F)" -o docker/requirements-postgres.lock
+uv pip compile pyproject.toml docker/build-requirements.in --universal --python-version 3.14 --generate-hashes --no-header --exclude-newer "$(date -d '14 days ago' +%F)" -o docker/requirements.lock
+uv pip compile pyproject.toml docker/build-requirements.in --extra postgres --universal --python-version 3.14 --generate-hashes --no-header --exclude-newer "$(date -d '14 days ago' +%F)" -o docker/requirements-postgres.lock
 ```
 
 The ssh client is built from source in the Dockerfile's `openssh` stage, so vulnerability scanners cannot see its version. Check the [OpenSSH release notes](https://www.openssh.com/releasenotes.html) when you update. To move to a new release, verify the tarball's signature against the OpenSSH release key, then change `OPENSSH_VERSION` and the `--checksum` hash together.
+
+nmap is built from source the same way, in the `nmap` stage, because Wolfi's free repository stops at 7.94. Check the [nmap changelog](https://nmap.org/changelog.html) when you update. To move to a new release, verify `nmap-<version>.tar.bz2.asc` from [nmap.org/dist/sigs](https://nmap.org/dist/sigs/) against the Nmap Project Signing Key (`436D 66AB 9A79 8425 FDA0 E3F8 01AF 9F03 6B93 55D0`), then change `NMAP_VERSION` and the `--checksum` hash together.
+
+The runtime is Wolfi, whose security feed Trivy and Grype both read. A finding with no fix anywhere is decided in the triage note and listed in `.trivyignore` or `.grype.yaml` at the repository root, with the condition for taking it out. Scan with both: `grype --config .grype.yaml storageforge:<version>`.
 
 ## PostgreSQL
 

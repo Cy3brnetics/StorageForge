@@ -49,3 +49,25 @@ CI scans each build and fails on a critical not in `.trivyignore`, once a runner
 | CVE-2026-54369 | libacl1 | Unchanged: accept for now, no fix available |
 | CVE-2026-119586 | libsqlite3-0 | **Not reachable as described**: the scanner names the `.recover` command, part of the `sqlite3` tool, which the image does not hold |
 | CVE-2026-119373 | libsqlite3-0 | **Accept for now, and watch it**: FTS5 denial of service with no fix available. StorageForge does use FTS5 (`file_fts`, search on SQLite), so this cannot be ruled out. Whether a search or an indexed name can trigger it was not analysed. PostgreSQL installs do not use FTS5. Take the fix when Debian ships it |
+
+## Rescan, 2026-11-15: the runtime moves to Wolfi
+The 0.5.2 report (Grype 134, Trivy 132: 19 and 7 highs, no criticals) was entirely Debian 13 packages, almost all with no fix available: glibc, SQLite, the GCC runtime, OpenSSL, systemd, dbus, nmap and libpcap. Accepting them one at a time would not have ended, so every stage now builds on `cgr.dev/chainguard/wolfi-base`, pinned by digest. Wolfi ships upstream fixes quickly and publishes a security feed both scanners read.
+
+| What | Before | After |
+| :-- | :-- | :-- |
+| Base | `python:3.13-slim-trixie` | `wolfi-base`, no `apk` in the runtime (the database stays for scanners) |
+| Python | 3.13.18 (Debian image) | Wolfi `python-3.14`: on 3.13, Grype still listed CVE-2025-15367 and CVE-2026-116566 as unfixed |
+| nmap | Debian 7.95 | 7.991 built from source, no NSE scripts, ncat, nping, OpenSSL or zenmap. Wolfi's free repository stops at 7.94, which has CVE-2026-58058 |
+| OpenSSH | 10.6p1 from source | Unchanged, now linked against Wolfi's OpenSSL 4 |
+
+Result, Trivy 0.75.0 and Grype 0.119.0 over the runtime image: **Trivy 0. Grype 0 with `.grype.yaml`**, 1 Low without it.
+
+| CVE | Package | Decision |
+| :-- | :-- | :-- |
+| CVE-2026-103995 | python-3.14 | **Accept, in `.grype.yaml`**. `http.client` takes chunk sizes like `-1` or `0x10`. No released Python fixes it (3.16.0 will) and Wolfi has no backport; read in the image's `http/client.py`. StorageForge's only HTTP client use is POSTing alerts to webhooks an admin configured. Remove the entry when Wolfi marks it fixed. Trivy does not report it |
+| CVE-2026-58058 | nmap | **Fixed** by the source build (7.991). It was not reachable anyway: the bug is in raw IPv6 scans, and netscan.py only runs connect scans (`-sT`) |
+| CVE-2026-54369, CVE-2026-119373 | libacl1, libsqlite3-0 | **Gone**. Wolfi's versions are not affected. Python's `sqlite3` now uses SQLite 3.54.1 |
+
+Scanners cannot see the source-built nmap and OpenSSH. Their release notes are the check when bumping: README "Updating dependencies".
+
+Found on the way: Wolfi has no `/usr/share/zoneinfo` unless `tzdata` is installed. Without it the scheduler cannot load any zone, not even UTC. The runtime installs it, and a run of `scheduler.next_run` in a zone was checked in the image.

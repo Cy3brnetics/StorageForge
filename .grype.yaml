@@ -1,0 +1,10 @@
+# Grype findings decided in notebook/Audit 2026-10-31/Container scan triage 2026-10-31.md (Rescan, 2026-11-15).
+# Grype reads this file from the directory it runs in, or with --config .grype.yaml. Each entry says when it comes out.
+ignore:
+  # http.client accepts chunk sizes such as "-1" or "0x10". No released Python fixes it (3.16.0 will), and Wolfi has no
+  # backport. StorageForge's only HTTP client use is POSTing alerts to webhooks an admin configured. Remove this entry
+  # when Wolfi's python-3.14 is marked fixed, or when the image moves to a Python that has the fix.
+  - vulnerability: CVE-2026-103995
+    package:
+      name: python-3.14
+      type: apk
