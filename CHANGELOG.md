@@ -5,6 +5,10 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 ## Unreleased
 
 ### Fixed
+- **A controller with a wrong clock got every host frozen, and was never blamed.** Seen on a real fleet: the controller had no NTP running and was 536 s behind, so all four hosts it measured showed "the clock guard is tripped" for two weeks. The check that points at the controller when hosts are off by the same amount only counted readings from the last day, and the hosts that froze were the ones nobody measured again. It now counts each host's last reading, however old, until someone clears the controller's clock.
+- **Clearing the controller's clock frees hosts frozen before 0.5.0.** A freeze written then had no cause, so it stayed frozen even though its reason was "off the controller".
+- **The controller says when its own clock is not synchronized.** It asks the kernel, which also works in Docker, and shows a warning, because every host's clock is checked against this one.
+- **A Raspberry Pi's first time sync after boot no longer trips the clock guard.** A host with no hardware clock boots with a stale time, and the sentinel took NTP setting it as a jump. A jump before the host's first sync since the sentinel started is now a warning (`clock_set`). After that first sync, any jump still freezes releases, and the controller still compares the host's clock with its own on every measurement. The sentinel also starts after `time-sync.target`.
 - **Tests failed at random on CI.** Every server a test made started the scheduler, the nightly backup, alerts and security timers, which outlived the test. Two minutes on, the nightly backup made the backup folder of whichever test ran then. The timers now start only under `serve`.
 
 ## 0.5.2 — 2026-11-13

@@ -527,6 +527,39 @@ class ClockGuard(Base):
         self.assertFalse(security.clock_frozen(self.conn, 'pi1'))
         self.assertTrue(security.clock_frozen(self.conn, 'nas'))
 
+    def test_hosts_nobody_measured_since_they_froze_still_point_at_this_machine(self):
+        """The fleet on 2026-11-15: four hosts frozen 515 s off, three of them last read 13 days earlier, and only one reading
+        fresh. A day's cut-off left one reading, so every host was blamed and this machine never was."""
+        for h in ('pi1', 'pi2', 'pi3'):
+            self.add_host(h)
+            self.off_by(h, 515)
+        self.conn.execute("UPDATE security_measurements SET measured_at = measured_at - :d", {'d': 13 * DAY})
+        self.off_by('nas', 536)                                              # it kept drifting
+        s = security.controller_clock_suspect(self.conn)
+        self.assertEqual((s['direction'], s['agree'], s['measured']), ('behind', 3, 4))
+        self.assertEqual(self.post('/api/security/worm/clock/clear', controller=True).status_code, 200)
+        self.assertIsNone(security.controller_clock_suspect(self.conn))      # read against the wrong clock: they say nothing now
+
+    def test_clearing_this_machine_frees_a_freeze_written_before_freezes_had_a_cause(self):
+        self.add_host('pi1')
+        alerts.set_setting(self.conn, security.clock_key('pi1'), {'frozen': True, 'reason': 'the clock on pi1 is 515 s off the controller', 'at': 1}, 'measure')
+        alerts.set_setting(self.conn, security.clock_key('nas'), {'frozen': True, 'reason': 'the clock moved 900 s against uptime', 'at': 1}, 'scan')
+        r = self.post('/api/security/worm/clock/clear', controller=True).get_json()
+        self.assertEqual(r['hosts_cleared'], ['pi1'])
+        self.assertTrue(security.clock_frozen(self.conn, 'nas'))
+
+    def test_this_machine_unsynchronized_is_said(self):
+        with mock.patch.object(security, 'controller_time_synced', return_value=False):
+            p = self.client.get('/api/security/posture').get_json()
+            self.assertIn('not synchronized', p['banner'])
+            self.assertIs(p['controller_synced'], False)
+            self.assertEqual(security.problems(self.conn)['security-controller-unsynced'][4], 'warn')
+        with mock.patch.object(security, 'controller_time_synced', return_value=True):
+            self.assertNotIn('security-controller-unsynced', security.problems(self.conn))
+
+    def test_the_kernel_can_be_asked_whether_this_clock_is_synchronized(self):
+        self.assertIn(security.controller_time_synced(), (True, False, None))
+
     def test_a_stock_nfs_boolean_is_not_called_too_open(self):
         m = security.parse_measure('@@now\n1\n@@sebool\nnfs_export_all_rw --> on\nsamba_export_all_rw --> on\n@@end\n')
         self.assertEqual({b['name']: b['ok'] for b in m['booleans']}, {'nfs_export_all_rw': True, 'samba_export_all_rw': False})
@@ -1158,12 +1191,18 @@ class RealSentinel(DecoyBase):
         self.wait_for('sentinel_test')
         self.assertEqual([e for e in map(security.parse_event_line, self.events.read_text().splitlines()) if e and e['kind'] == 'canary_tripped'], [])
 
-    def test_a_clock_moved_against_uptime_is_caught(self):
+    def fake_clock(self, synced):
         real = shutil.which('date')
         offset = self.tmp / 'offset'
         offset.write_text('0')
         (self.bin / 'date').write_text(f'#!/bin/bash\nif [[ $1 == +%s ]]; then echo $(( $({real} +%s) + $(cat {offset}) )); else exec {real} "$@"; fi\n')
         (self.bin / 'date').chmod(0o755)
+        (self.bin / 'timedatectl').write_text(f'#!/bin/bash\necho {synced}\n')
+        (self.bin / 'timedatectl').chmod(0o755)
+        return offset
+
+    def test_a_clock_moved_against_uptime_is_caught(self):
+        offset = self.fake_clock('yes')
         self.start()
         time.sleep(1.5)
         offset.write_text(str(30 * DAY))
@@ -1171,6 +1210,21 @@ class RealSentinel(DecoyBase):
         self.assertIn(str(30 * DAY)[:3], ev['summary'])
         security.ingest_events(self.conn, 'nas', self.events.read_text(), 'test')
         self.assertTrue(security.clock_frozen(self.conn, 'nas'))
+
+    def test_the_first_time_sync_after_boot_is_not_an_alarm(self):
+        """A Raspberry Pi boots with the time it shut down at, and NTP moves it minutes or days. That froze every Pi it rebooted."""
+        offset = self.fake_clock('no')
+        self.start()
+        time.sleep(1.5)
+        offset.write_text('600')
+        (self.bin / 'timedatectl').write_text('#!/bin/bash\necho yes\n')
+        self.assertIn('600', self.wait_for('clock_set')[0]['summary'])
+        time.sleep(1.5)
+        offset.write_text(str(600 + 30 * DAY))                             # after the sync, a jump is one again
+        self.wait_for('clock_jump')
+        security.ingest_events(self.conn, 'nas', '\n'.join(l for l in self.events.read_text().splitlines() if '\tclock_set\t' in l), 'test')
+        self.assertFalse(security.clock_frozen(self.conn, 'nas'))
+        self.assertIn('clock_set', [e['kind'] for e in security.list_events(self.conn, 'nas')])
 
 
 class Brake(Base):

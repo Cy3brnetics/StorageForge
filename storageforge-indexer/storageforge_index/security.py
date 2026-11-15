@@ -50,10 +50,10 @@ STALE_AFTER = 24 * 3600             # a measurement older than this says nothing
 DEFAULT_COOL_OFF = 24
 COOL_OFF_HOURS = (12, 24, 48, 72)
 MIN_CIDR = {4: 16, 6: 48}           # a network wider than this is a mistake, not a quarantine
-EVENT_SEVERITY = {'canary_tripped': 'crit', 'clock_jump': 'crit', 'brake_ran': 'crit', 'watcher_stopped': 'warn', 'canary_source': 'warn',
+EVENT_SEVERITY = {'canary_tripped': 'crit', 'clock_jump': 'crit', 'clock_set': 'warn', 'brake_ran': 'crit', 'watcher_stopped': 'warn', 'canary_source': 'warn',
                   'sentinel_started': 'info', 'sentinel_test': 'info', 'hold_missing': 'crit', 'events_dropped': 'warn', 'break_glass_used': 'crit',
                   'falco_crit': 'crit', 'falco_warn': 'warn', 'identity_enumeration': 'crit', 'identity_multi_subnet': 'warn', 'identity_off_hours': 'warn', 'entropy_flagged': 'warn', 'velocity': 'warn'}
-HOST_EVENTS = frozenset({'canary_tripped', 'canary_source', 'clock_jump', 'brake_ran', 'watcher_stopped', 'sentinel_started', 'sentinel_test',
+HOST_EVENTS = frozenset({'canary_tripped', 'canary_source', 'clock_jump', 'clock_set', 'brake_ran', 'watcher_stopped', 'sentinel_started', 'sentinel_test',
                          'identity_enumeration', 'identity_multi_subnet', 'identity_off_hours'})
 EVENTS_PER_HOUR = 300               # what one host may store in an hour, whatever its token sends
 EVENTS_PER_KIND = 100               # ... and of any one kind, so a flood of one cannot hide another
@@ -811,9 +811,11 @@ def _controller_clock_ok(conn: Conn) -> bool:
 
 def controller_clock_suspect(conn: Conn) -> dict | None:
     """Each host is compared only with this machine, so a wrong clock here looks like every host being wrong. Several hosts
-    off by the same amount, and the most of them at that, points back here: unrelated clocks do not drift in step."""
-    now = int(time.time())
-    offsets = [(loads(d) or {}).get('clock_offset') or 0 for d, at in conn.all("SELECT data_json, measured_at FROM security_measurements WHERE kind = 'host'") if now - at <= STALE_AFTER]
+    off by the same amount, and the most of them at that, points back here: unrelated clocks do not drift in step.
+    Each host's last reading counts however old it is: the hosts that froze for it are the ones nobody measures again.
+    Only a reading from before someone said this machine's clock is right again stops counting."""
+    since = (alerts.get_setting(conn, CONTROLLER_CLOCK) or {}).get('cleared_at') or 0
+    offsets = [(loads(d) or {}).get('clock_offset') or 0 for d, at in conn.all("SELECT data_json, measured_at FROM security_measurements WHERE kind = 'host'") if at > since]
     off = [o for o in offsets if o]
     if len(off) < 2:
         return None
@@ -832,10 +834,34 @@ def clear_controller_clock(conn: Conn, actor: str) -> dict:
     cleared = []
     for key, value in conn.all("SELECT key, value_json FROM settings WHERE key LIKE 'security.clock:%'"):
         state = loads(value) or {}
-        if state.get('frozen') and state.get('cause') == 'offset':
+        if state.get('frozen') and _offset_freeze(state):
             alerts.set_setting(conn, key, {'frozen': False, 'cleared_by': actor, 'cleared_at': int(time.time())}, actor)
             cleared.append(key.split(':', 1)[1])
     return {'ok': True, 'hosts_cleared': cleared}
+
+
+def _offset_freeze(state: dict) -> bool:
+    """Frozen only for differing from this machine. A freeze written before 0.5.0 has no cause, only its reason."""
+    if 'cause' in state:
+        return state['cause'] == 'offset'
+    reason = str(state.get('reason') or '')
+    return ' off the controller' in reason or ' and the controller differ by ' in reason
+
+
+_libc = None
+
+
+def controller_time_synced() -> bool | None:
+    """Has NTP (chrony, timesyncd, ntpd) set this machine's clock? Asks the kernel, read only, so it answers the same in a
+    container. None when it cannot be asked. Every host is judged against this clock, so unsynced here is worth a line."""
+    global _libc
+    try:
+        import ctypes
+        _libc = _libc or ctypes.CDLL(None, use_errno=True)
+        state = _libc.adjtimex(ctypes.create_string_buffer(512))      # modes = 0: read, never set. struct timex is under 512 bytes
+    except (OSError, AttributeError):
+        return None
+    return None if state < 0 else state != 5                            # TIME_ERROR: the kernel says the clock is not synchronized
 
 
 def tick(db) -> dict:
@@ -1723,8 +1749,13 @@ def posture(conn: Conn, host: str | None = None) -> dict:
         banner = f'Not everything can be vouched for: {measured} of {len(hosts)} host(s) measured in the last day. See what is missing below.'
     else:
         banner = f'All {len(hosts)} host(s) measured in the last day, with decoys armed and holds verified, and nothing wrong found.'
+    synced = controller_time_synced()
+    if synced is False:
+        if state in ('secure', 'unknown'):
+            state = 'warning'
+        banner = 'This machine\'s clock is not synchronized (start chrony or timesyncd), and every host is judged against it. ' + banner
     pending = _timelocks(conn, host)
-    return {'state': state, 'banner': banner, 'hosts': hosts, 'measured_hosts': measured, 'total_hosts': len(hosts), 'quorum': quorum_state(conn), 'pending_timelocks': pending,
+    return {'state': state, 'banner': banner, 'controller_synced': synced, 'hosts': hosts, 'measured_hosts': measured, 'total_hosts': len(hosts), 'quorum': quorum_state(conn), 'pending_timelocks': pending,
             'controller_clock': controller if controller.get('frozen') else None, 'clock_suspect': suspect, 'events': list_events(conn, host, 50, False)}
 
 
@@ -1739,6 +1770,9 @@ def problems(conn: Conn) -> dict:
         target = t['target_ref'] if t['action'] == 'worm_release' else 'the offline key'
         when = 'waiting for a second admin' if t['mode'] == 'dual_admin' else f'runs {time.strftime("%Y-%m-%d %H:%M", time.localtime(t["executes_at"]))}'
         out[f'security-timelock:{t["id"]}'] = ('security-timelock', str(t['id']), f'{t["actor"]} asked to release {target}', f'{when}. If that was not them, abort it in the WORM panel.', 'crit')
+    if controller_time_synced() is False:
+        out['security-controller-unsynced'] = ('security-clock', 'controller', 'This machine\'s clock is not synchronized',
+                                               'No NTP service has set it. Every host\'s clock is checked against this one, so start chrony or timesyncd here.', 'warn')
     controller = alerts.get_setting(conn, CONTROLLER_CLOCK) or {}
     if controller.get('frozen'):
         out['security-controller-clock'] = ('security-clock', 'controller', 'This machine\'s clock moved: timelocks have stopped', str(controller.get('reason') or ''), 'crit')

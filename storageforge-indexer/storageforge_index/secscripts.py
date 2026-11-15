@@ -520,15 +520,30 @@ trip() { # event path. In its own process with stdin closed: finding out who did
   out=$("$SBIN/storageforge-brake" --apply "--path=$(b64 "$2")" "--client=$client" "--pid=$pid" "--reason=$(b64 "decoy $2 changed")" "--actions=$ACTIONS" "--minutes=$MINUTES" 2>&1); rc=$?
   emit brake_ran "the brake ran on $2 (exit $rc)" "$(tail -c 8000 <<<"$out")"
 }
+ntp_synced() { # has NTP set this clock? When nothing can say, yes: then every jump is an alarm
+  local v
+  v=$(timeout 5 timedatectl show -p NTPSynchronized --value 2>/dev/null)
+  [[ $v == yes ]] && return 0
+  [[ $v == no ]] && return 1
+  if command -v chronyc >/dev/null; then ! timeout 5 chronyc -n tracking 2>/dev/null | grep -q 'Not synchronised'; return; fi
+  return 0
+}
 clock_loop() { # wall clock against uptime: this catches date -s and a forged NTP answer, which NTP's own status would not
-  local now up boot last
+  local now up boot last synced=0
   last=$(($(date +%s) - $(cut -d. -f1 /proc/uptime)))    # from the start: a jump in the first half minute must not become the baseline
+  ntp_synced && synced=1
   while sleep "$CLOCK_EVERY"; do
     now=$(date +%s); up=$(cut -d. -f1 /proc/uptime); boot=$((now - up))
     if ((boot - last > 60 || last - boot > 60)); then
-      emit clock_jump "the clock moved $((boot - last)) s against uptime" "from=$last;to=$boot"
+      if ((synced)); then
+        emit clock_jump "the clock moved $((boot - last)) s against uptime" "from=$last;to=$boot"
+      else # a host with no clock of its own (a Raspberry Pi) boots with a stale time until NTP first sets it. The controller
+        # still compares this clock with its own on every reading, so a forged first answer is caught there
+        emit clock_set "the clock was set $((boot - last)) s by its first time sync" "from=$last;to=$boot"
+      fi
     fi
     last=$boot
+    ((synced)) || ! ntp_synced || synced=1               # once synced, it stays so: losing NTP later must not quiet an alarm
   done
 }
 paths=$STATE/watch.paths test=$STATE/sentinel-test
@@ -577,7 +592,7 @@ done <"$CONF/quarantine.list"
 
 SENTINEL_UNIT = f"""[Unit]
 Description=StorageForge sentinel (watches decoy files and the clock)
-After=network-online.target
+After=network-online.target time-sync.target
 
 [Service]
 Type=simple
