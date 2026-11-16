@@ -1,219 +1,511 @@
-# Roadmap
+# Roadmap: 0.6.0
 
-The final roadmap before release 0.4.0: what's left, in one place. It brings together what used to be separate lists: this page, the UI and UX roadmap, the notebook's roadmap, the findings still marked in progress, and the screen findings of the UI audit. [progress.md](progress.md) says what has been built and lab-tested. The finished and superseded roadmaps, which now include the [UI and UX roadmap](archive/roadmaps/ui-ux-roadmap.md), are in [archive/roadmaps](archive/roadmaps/), and they hold the detail behind each item here: formats, field lists and reasoning. **This page decides what's next, and they don't.**
+Everything not built on `main` as of 2026-11-16 (`01ece8f`, after 0.5.2), in one place. On that day the owner put all of it under 0.6.0: every test that can be written, every Toolbox entry, every way of connecting hosts (Tailscale, NetBird or whatever is needed), log monitoring, an optional agent, and everything else still open. [progress.md](progress.md) says what has been built and lab-tested. The 0.4.0 release roadmap is in the archive as [release-0.4.0-roadmap.md](archive/roadmaps/release-0.4.0-roadmap.md), with the other finished and superseded roadmaps in [archive/roadmaps](archive/roadmaps/). They hold the detail behind many items here: formats, field lists and reasoning. **This page decides what's next, and they don't.**
 
-Checked against the code on 2026-11-04.
+Checked against the code on 2026-11-16.
 
 ## How to read this
 
-**Done** means through the KVM lab, as [progress.md](progress.md) defines it. Days are rough guesses carried over from the old roadmaps, and none has been measured. A finding is `SF`, `PF`, `EQ` or `UX` and a number, as in the notebook's [audit rules](notebook/Audit%20rules/Audit%20rules.md). Everything under **0.4.0** is in the release. Everything under **After 0.4.0** is not, and each section there can stop at any item without harming the others. The **Status** columns are the ledger: whoever finishes an item writes the commit that finished it.
+**Done** means through the KVM lab, as [progress.md](progress.md) defines it. A finding is `SF`, `PF`, `EQ` or `UX` and a number, as in the notebook's [audit rules](notebook/Audit%20rules/Audit%20rules.md). Each section can stop at any item without harming the others. The **Status** columns are the ledger: whoever finishes an item writes the commit that finished it. There are no time estimates on this page, by the owner's choice.
 
-## The release: 0.4.0
-
-The steps, in order. Each one ends with the branch in a state that could be merged.
-
-| Step | State |
-| :--- | :--- |
-| **1. Bring the open branches together** | Done 2026-11-04. Every branch, local and remote, is in `dev-expanded-networking`. That is the same line as `origin/dev`, plus the commits made that day (host logs, the UI audit, this roadmap). It is ahead of `main` and not behind it, so it merges as a fast-forward. The old local `dev` is behind the line and sits in a worktree holding an earlier draft of the audit fixes that the line has since replaced. It was left alone |
-| **2. Finish the release scope** | Open: section A |
-| **3. One full security audit, then a bugfix round** | Open. After step 2, because the audit has to read the new code |
-| **4. Tests, then the KVM lab** | Open: the unit suites on SQLite and PostgreSQL, the browser test, lab tiers 0 to 13 and the new ones section A adds |
-| **5. Merge to `main` as 0.4.0** | Open: the version, the changelog heading, the merge and a local tag. Pushing to either remote is a separate step and needs the owner's say |
-
-**The rules for the release**
+## Rules for the release
 
 1. Nothing is called *done* or *lab-tested* without a lab pass. What can't be tested (no image, no hardware, an outside service) ships labelled *not lab-tested*, in the docs, in the UI where it shows, and in the release notes.
-2. The audit follows the [audit rules](notebook/Audit%20rules/Audit%20rules.md): the severity ladder, effort, *proven* or *read*, and numbers carried on from `SF-52`, `PF-34`, `EQ-10` and `UX-42`.
-3. Before the lab run, every High and Medium finding is fixed or carries a written decision. A Low is fixed when it takes under a day.
-4. The version, the changelog heading, the merge and the tag come last.
-5. An owner item that is still open at release goes in the release notes.
+2. Every new feature brings its lab tier, or says in this ledger why it has none.
+3. A secret a plan step needs comes from the vault and is never on a command line, in a plan, a script or a log, as the `tailscale` step does. A tool that can only take its key on a command line gets no join step until that is solved.
+4. An audit to the [audit rules](notebook/Audit%20rules/Audit%20rules.md) reads the new surface before the lab run. Every High and Medium is fixed or carries a written decision. A Low is fixed when it is small.
+5. The version, the changelog heading, the merge and the tag come last. Pushing to either remote is the owner's call.
 
-**Decisions taken for 0.4.0.** These are the defaults the release run takes. Change one before phase 2 of the UI starts, or not at all.
-
-- One app shell with routed workspaces, reached in steps: shared chrome first, then the router and the Plan workspace. `/planner` and `/manage` stay as entry routes.
-- Native ES modules under the current CSP, one file at a time, no bundler.
-- Names: **Plan** for the workspace, **Design** for the storage tool, **Network and devices** for the other. "Manage" goes.
-- WCAG 2.2 AA is the target, stated in [concepts](docs/concepts.md) and held by checks in `test_browser_smoke.py`.
-- **Not in 0.4.0:** one design document in place of the storage blueprint and the map's design (UI step 3i), because it changes a stored format and needs a migration and a lab run. Retiring Graph, Structure, which waits until the map's Storage layer has time travel and a focus view.
-- **EQ-03 stays parked,** for the reason recorded on 2026-11-01: splitting `server.py` right before a lab run is churn and merge risk with nothing gained. It is picked up only if the audit finds it blocks a fix.
-
-**What only the owner can do**
+## What only the owner can do
 
 | Item | Needed for |
 | :--- | :--- |
-| Set up a Forgejo runner | EQ-01 and SF-38: the CI file has never run on one |
-| Run the disk-health collector on this machine's real disks (it needs sudo here) | PF-04 |
-| An image or a device for pfSense, OPNsense or Cisco | Lab-testing them. Without one they ship labelled |
-| Say when to push `main`, the tag, `dev` and the GitHub mirror, which is twelve commits behind `origin/main` | Step 5 stops short of pushing |
+| Set up a Forgejo runner (it can run as a container, but registering it needs a token from your Forgejo) | EQ-01 and SF-38 on Forgejo |
+| Run the disk-health collector on this machine's real disks (it needs sudo here) | PF-04 on real worn disks |
+| Download pfSense CE once (Netgate's installer and store want an account), so its checksum can be pinned and `lab.sh` can take it from the image cache | pfSense in the lab |
+| A Cisco account for Cisco Modeling Labs Free | Cisco in the lab |
+| A PagerDuty account, if a free plan still exists | PagerDuty reaching the real service |
+| A physical FIDO2 token | FIDO2 at step-up and at sign-in |
+| A Cloudflare account, and an ngrok account | Cloudflare Tunnel and ngrok against the real services |
+| A Windows evaluation VM | Samba attribution with a real Windows client, and the shadow-copy tripwire (section 11) |
+| Say when to push `main`, the tag, `dev` and the GitHub mirror | The release |
 
-## A. Before 0.4.0
+## Decisions taken
 
-### A1. Close out what's built
-
-Each is a claim that hasn't been proved or a known gap in something shipped.
-
-| Item | Why it matters | For 0.4.0 | Status |
-| :--- | :--- | :--- | :--- |
-| **SF-48: the receiving host of a send** | Signed scripts still run root commands on the receiving host with no signature there. It's named in the audit row, warned about in the check and listed in [security.md](docs/security.md) | Build it. Each side of a send becomes its own signed run on an enrolled host, with the stream between them carried by a forced-command job key, as `storageforge-job --serve` does for rsync. Add a lab tier: a send between two enrolled hosts with no root key between them. About a week | built and unit-tested in `4d8b083`; lab tier 16 written, not run |
-| **pfSense, OPNsense and Cisco on real devices** | Reading and rollback have only met published formats and a simulated shell | No image or device, so it ships labelled *not lab-tested*, unless one turns up | open |
-| **Old SSH ciphers on a device that needs them** | Built and unit-tested, with nothing old enough in the lab | Same | open |
-| **firewalld and ufw output from the network language** | Unit-tested. nft and iptables-restore took theirs for real, and these two should as well | Lab: apply the compiled output on a firewalld host and a ufw host, and read it back | done: lab tier 17 passed on 2026-11-06 (firewalld on sf-fedora, ufw on sf-ubuntu) |
-| **Incus, LXC and Proxmox guests; Tailscale, proxies, identity providers** | Parsed and unit-tested, not lab-tested | Lab, where the lab has the platform (it has a Proxmox image). The rest ships labelled | open |
-| **Terraform and Puppet exports** | They render, and no tool has applied them | Run them through the tools' own validators where they can be installed (`terraform validate`, `puppet parser validate`). Applying them is out of reach, so they ship labelled | tests in `a1bf8f1` skip where the tools are missing (both, here); labelled *not lab-tested* |
-| **Signed scan payloads** (added by the owner on 2026-11-05) | Scans trusted whatever a host's output said, over an SSH connection that only pins the host key | Built: every payload is signed on the host and checked before use (`5916ce1`). Lab stage `scan-signed` is written and not run, and a host that cannot sign (OpenSSH before 8.0, or no readable key) shows as unsigned unless signing is required | done: the `scan-signed` stage passed on all seven hosts on 2026-11-06 (`22b7890` fixed its own key read) |
-| **PagerDuty and FIDO2** | PagerDuty has not reached the real service. FIDO2 has only met Chromium's virtual authenticator | An outside service and a physical token, so both ship labelled | open |
-
-### A2. Host logs
-
-Built and committed on 2026-11-04 as it stood in the working tree. Neither its unit tests nor the lab have run since.
-
-| Item | For 0.4.0 | Status |
-| :--- | :--- | :--- |
-| **Its tests** | Run them, and fix what fails. The consistency tests that list routes, permissions and CLI subcommands were already updated for it | done: they pass in the full runs of 2026-11-06 |
-| **A lab tier** | Real distros: the `systemd-journal` group, a host with no journald saying so, secret removal on real lines, the 30-day and row caps, and the scan-access script run again | done: lab tier 14 passed on 2026-11-06 on the six systemd hosts and the host with no journald |
-| **The Logs view** | UI phase 4 (UX-30): a time range, per-host freshness, entry points from a host, an alert, a mount and a device. Still no tail and no stream | open |
-
-### A3. Findings still in progress
-
-The notebook has 18 findings marked in progress. Twelve say *fixed in the working tree on 2026-11-03, not committed*: that work was committed in `a267227`. Each was marked done in the notebook on 2026-11-04 (`418856d`), with its test seen to pass and the commit written in its note. They are `SF-44`, `SF-45`, `SF-47`, `SF-49`, `SF-50`, `SF-51`, `PF-31`, `PF-32`, `PF-33`, `EQ-07`, `EQ-08` and `EQ-09`. The other six:
-
-| Finding | What's left | Who | Status |
-| :--- | :--- | :--- | :--- |
-| **SF-48** | See A1 | the release run | done: built in `4d8b083`, the SELinux timer-unit failure fixed on 2026-11-06, and lab tier 16 passes in full (btrfs on 7 hosts, ZFS on two) |
-| **SF-46** operators can apply legal holds | A test that every route ending in `apply_hold` takes the same permission, walked as a list and not one route at a time | the release run | done: `ca2eacb`, merged in `4d8b083` |
-| **SF-38** container scan | CI fails on a new reachable critical. The job exists, and has never run | the owner | open |
-| **EQ-01** no CI | A runner, so every push runs the suite on SQLite and PostgreSQL | the owner | open |
-| **PF-04** disk health | The collector run against real disks: a disk with reallocated sectors shows warn and raises an alert, and each pool shows its last scrub. It ships labelled *not run against real disks* until then | the owner | open |
-| **EQ-03** large modules | Parked, as above | | parked |
-
-### A4. UI and UX
-
-All six phases of the [UI and UX roadmap](archive/roadmaps/ui-ux-roadmap.md), about 110 to 145 days from the [UI audit of 2026-11-04](docs/audit-2026-11-04-ui.md) (41 findings), in order, except the two items under *Decisions taken*. The detail of each item is in that document. This is the ledger.
-
-| Phase | Days | What it holds | Status |
-| :--- | :--- | :--- | :--- |
-| **0. Small and sure** | 6 to 8 | The `/` shortcut that eats typing, and the other keyboard handlers (UX-40, 41), the rail that hides Security and Logs (UX-01), the header (UX-02), planner focus (UX-18), "offsite" from data (UX-32), "+N more" (UX-13), copy that fits the screen (UX-14, 09), Scan by what was scanned (UX-29), contrast tokens (UX-19), a latest-wins guard (UX-12), the Scanner stub (UX-28), the Web UI page (UX-39) | done on 2026-11-05: `7f749d1`, `eb6b9f6`, `0e3e7d6`, `84a7775`, `5d194bc`, `607fd65`, `ac79c0f`. Three parts moved on: collapsible rail groups (UX-01) to phase 2, the security chip on `/planner` and `/manage` (UX-09) to phase 1, and the other lists that cut their rows without saying (UX-13) to phase 1's list component |
-| **1. One kernel** | 15 to 19 | One `api()`, one dialog in place of 39 native calls, announce and busy, one vocabulary of tokens and components, one time policy, shared chrome with the security banner on every page, one place for shortcuts, native modules, safer work in progress | done on 2026-11-05: `a80bfa7` (kernel, dialogs, tokens and components), `8260a13` (chrome and the chip on every page), `e3b4b09` (shortcuts), `2e91cf5` (times, sizes, busy), `7b04018` (work in progress). Held back: native modules (B6), and the card, table and pill components, which move page by page in phases 2 to 5 as each page is rebuilt |
-| **2. Routes and workspaces** | 22 to 28 | A router, a rail that matches what is in it, Security and Settings as workspaces, the planners under one Plan roof, the map by keyboard, a host picker where it is needed | built in a lighter form on 2026-11-05: `c04b2a0` (router: Back, copied URLs, the planner and `/manage` too), `88e0681` (the rail as a real tab list, a skip link, Estate, panels that take the whole page, Security's sixteen panels grouped), `6497efc` (the map by keyboard, a host picker in the panels that need one, what each view is for, the planner and `/manage` leading into Changes, Moves and Schedule). **Not built:** Security and Settings as separate workspaces with their own section navigation (they are the wide panels above), Security leading with blast radius, quarantine and the brake when the posture is Incident, the rail keeping only a summary and a link for them, and one Plan workspace holding Design, Network and devices, Changes, Moves, Schedule and History (the planner and `/manage` link to Changes, Moves and Schedule instead) |
-| **3. The planner grows** | 35 to 45 | Steps 3a to 3h: design what isn't there yet, Shares, the network lens, the workloads lens with placement guardrails, the security lens, the health lens, compare and adopt, one Change review | open, except saved versions of a design (3g, in part: save, compare, restore, delete in `ff15fce`, `e983600`; "adopt one object from the scan" is not built) |
-| **4. Map, Compose, Scan, Logs** | 26 to 32 | A map with room, what-if in plain words, Design mode from what was read, Compose as an editor, Scan as a table and a diff, Logs as a view | partly built on 2026-11-06: the Logs view (`0a29fb1`), what-if in plain words with map zoom and a legend (`eb6c4ac`, `fc4455c`). **Not built:** Design mode from what was read, Compose as an editor, Scan as a table and a diff, "host or disk goes away" what-if steps, Logs entry points from an alert, a mount and a device |
-| **5. Polish and scale** | 8 to 12 | Preferences, `Ctrl+K`, a first-run checklist, colour never alone, long lists, a tablet header | built on 2026-11-06 in `ff632f3` and `sfMoreList`; the planner's own status dots and theme toggle are not covered |
-
-Some of it waits, and is not in 0.4.0:
-
-- 3a: ZFS and mdadm pools as plan steps wait for `pooldef` (B1). Until then a planned pool of those kinds stays under *By hand*.
-- 3d: only the placement guardrails that can be worked out from what `/api/workloads` already reads ship. Dataset-tuning advice waits for the workloads stage (B2).
-- 4: a rule at a position in Compose waits for `place-before`, and scan results as map placeholders and scanner findings through alerts wait too (B5).
-- Native modules wait too (B6), and the phase 1 list component ("+N more") is built as `sfMoreList` (`0945d83`, `4fcd358`) for the lists that were cut in silence.
-- Four items need a small API: saved versions of a design (3g), "start from what was read" for Design mode, paths that must stay open or blocked in Compose, and counts by level and hour for Logs.
-
-### A5. The security audit and the bugfix round (step 3)
-
-**Status, 2026-11-06:** partial, in two rounds ([Audit 2026-11-05](notebook/Audit%202026-11-05/Audit%202026-11-05.md)). 17 findings, none High or Critical; all fixed but SF-72, which needs a lab run. Done before UI phases 3 to 5, because the working windows kept running out. Not reached is listed in the audit page.
-
-One full audit of the whole application, with the new surface first, written up as the notebook's other audits are. Read first: everything added since the audit of 2026-11-03, which is the network devices and their SSH and Telnet transports, device credentials, the one network language and its compilers, the scanner, traffic, the management planner, host logs, the signed receiving run, and the UI kernel, router and workspaces (the router parses the URL, and the shortcut registry takes keystrokes). Then the rest of the application against the [security checklist](notebook/Audit%20rules/Security%20checklist.md) and the [project invariants](notebook/Audit%20rules/Project%20invariants.md), a sample of the findings marked done, a fresh container scan, a dependency review, and the generated scripts under `shellcheck`. Then the bugfix round: every High and Medium, each with a regression test, then the Lows that take under a day.
-
-### A6. Tests and the lab (step 4)
-
-- The unit suites on SQLite and PostgreSQL. The last full figures are in [progress.md](progress.md).
-- The browser test, extended with the checks the UI audit asks for: every rail item reachable at 1366×768, focus kept after Tab in the planner, tab stops to the content, a slash typed into a field and into **Confirm your password**, every map node reachable by keyboard, and no console error on any page.
-- `ruff`, `shellcheck` over the generated scripts, and the wiki build (`python3 docs/build-wiki.py --out DIR`).
-- The KVM lab, tiers 0 to 13 on the 7 of 14 configs as before, with the new tiers A1 and A2 add. Results go in [progress.md](progress.md).
-
-### A7. The release (step 5)
-
-`pyproject.toml` and `__version__` go from 0.3.2 to 0.4.0. The changelog's *Unreleased* heading becomes `0.4.0` with the date, with a new *Unreleased* above it, and its upgrade notes say what a host needs (the scan-access script run again) and what a role needs (`hostlogs.view` and `security.sentinel` are not granted to custom roles). Then [progress.md](progress.md), a fast-forward of `dev-expanded-networking` into `main`, and a local tag `v0.4.0`. Pushing is the owner's call.
-
-## After 0.4.0
-
-Everything below is open and not in the release.
-
-### B1. Change engine: what's left (Stage 3)
-
-The firewall writer, share fences and security findings as steps are done.
-
-| Item | Detail |
+| Decision | Taken |
 | :--- | :--- |
-| **Secret store** | Generic secrets in the vault, generated, shown once, delivered through the runner's stdin, with a rotation path. Device passwords are sealed this way already. [Detail](archive/roadmaps/infrastructure-platform-roadmap.md#stage-3-change-engine-18-to-22-days) |
-| **`runtime-install`** | The four runtimes across distros, rootless setup, and a preflight that says present, installable or blocked. [Detail](archive/roadmaps/infrastructure-platform-roadmap.md#71-runtime-install) |
-| **`pooldef` and `netdef`** | Storage pools and networks as plan steps, with bridge changes under the rollback timer |
-| **Catalog engine** | Schema, signature, override layer, install methods, risk labels, and uninstall that keeps data. [Detail](archive/roadmaps/infrastructure-platform-roadmap.md#8-the-catalog) |
+| **StorageForge gets an optional agent** (section 11). Agentless over SSH stays the default and keeps every feature, per scan. Network devices and appliances stay agentless. This replaces the old *Will not be built* line "stays agentless and builds no live log viewer" | 2026-11-16, the owner |
+| **SSH sets a host up, and manages the agent's container after.** The agent has no Docker socket or API | 2026-11-16, the owner |
+| **One base image, with signed plugins per host,** not one build per machine. Anything unexpected in an agent's container wipes its access and stops it | 2026-11-16, the owner |
+| **The shadow-copy tripwire is an agent feature** on Windows clients (section 11). The trap on the Samba server stays impossible | 2026-11-16, the owner |
+| **Scans on an agent host are scripts carried in the scan plugin,** not signed requests: no code crosses the wire per scan, and only the release key, not the controller, decides what code runs. An operator's own plugin key is never stored on the controller | 2026-11-16, the owner |
+| **The agent gets zero trust for what it says, and as little as works for what it can do** (section 11.2) | 2026-11-16, the owner |
+| **Hosts may connect to the controller,** as many as the user enables, one host at a time: the agent and log push are switched on per host | 2026-11-16, the owner |
+| **One central notification center** (section 12), most critical at the top, in place of a yes or no on log rules notifying: every source feeds it, some notifications can be ignored by the user and some cannot, and some carry a one-click fix | 2026-11-16, the owner |
+| **Tailscale and NetBird both stay, and StorageForge's own encrypted network is the default** (section 2.1): data between hosts and the controller is encrypted even on the LAN, with no outside service needed | 2026-11-16, the owner |
+| **A console on a monitoring-only host is SSH turned on for that session** through `storageforge-agentctl`, and off again after. (The owner was fine with a reverse shell too; SSH for the session keeps the agent from ever carrying a shell, as 11.2 wants) | 2026-11-16, the owner |
+| **The agent is an extra layer on top of SSH, isolated from it** (section 11.2): SSH stays the base on every agent host; the agent holds nothing of SSH's, SSH depends on nothing of the agent's, and taking one gives nothing of the other | 2026-11-16, the owner |
+| **A host with no container runtime gets Podman, after the user is told.** The SSH scan already reads whether Docker or Podman is there; installing the agent on a host with neither says Podman will be installed, then goes ahead | 2026-11-16, the owner |
+| **The file index comes from SSH, the agent, or both.** With both on, each checks the other, and the agent offers deeper options and live monitoring. Monitoring-only hosts get it through the agent | 2026-11-16, the owner |
+| **Every fix is shown prepared, then deployed, with a rollback.** No fix applies unseen: the prepared plan and its report come first, deploying takes the password, and a fix is offered only with a way back | 2026-11-16, the owner |
+| **Critical notifications, configuration drift and security findings cannot be ignored:** they leave only when resolved, by an update or another step. Everything else can be snoozed or muted | 2026-11-16, the owner |
+| **The StorageForge network carries only StorageForge-managed connections** (scans, the agent, deploys, `storageforge-agentctl`, the console). File transfers get encrypted tunnels of their own; the hosts' shares are not carried | 2026-11-16, the owner |
+| **All of the change engine, Workloads and the Toolbox belong in StorageForge.** The [merged plan's other decisions](archive/roadmaps/infrastructure-platform-roadmap.md#12-decisions-to-confirm) stand, except that routers and switches are now read directly | 2026-11-16, the owner |
+| **Control is done over SSH; automation and monitoring by the agent,** which runs under its own uid:gid. Change plans stay on SSH. The user that deploys and manages the agent is never in the `docker` group and uses `sudo` where it must, limited to the agent's verifier | 2026-11-16, the owner |
+
+## Decisions still open
+
+| Decision | Blocks |
+| :--- | :--- |
+| **One design document** in place of the storage blueprint and the map's design: the owner took the recommended answers in section 10.1 on 2026-11-16, to be checked again when 3i is reached | Section 10's step 3i, confirmed at 0.5.14 |
+
+## Versions and checkpoints
+
+0.6.0 is reached through versions from 0.5.3 up, each one a theme, in an order where each builds on the ones before. Every version ends releasable.
+
+**Minor checkpoint: a commit.** One item of a version is done: its code, its unit tests passing on SQLite and PostgreSQL, its docs and its changelog line under *Unreleased*. It is committed on the working branch in the repo's style (`feat(area): …`, `fix(area): …`, a plain sentence saying what changed for the user) and the ledger's **Status** cell names the commit. Nothing is pushed.
+
+**Major checkpoint: stop and tell the owner.** Work stops and the owner is told what was done, what was tested, what failed and what is needed, at:
+
+1. the end of every version: the changelog heading, the version bump, a local tag; pushing is the owner's call
+2. every KVM lab run, with its results
+3. a decision from *Decisions still open*, or an item from *What only the owner can do*, that the next item needs
+4. a finished security boundary: the agent's receiver, `storageforge-agentctl`, the trust model, the plugin signatures, a new join step's secret handling
+5. a test that fails and is not understood, or a finding of High or Critical
+6. before anything that cannot be undone: a migration that changes a stored format, a removal of a feature
+
+| Version | Theme | Minor checkpoints, a commit each | Major checkpoints |
+| :--- | :--- | :--- | :--- |
+| **0.5.3** | What is on `main` and not released, and the lab's own gaps | The unreleased clock fixes and the Wolfi image · 1.2: appliances in the build, Playwright where tiers run, `qemu-img` on `sf-ubuntu`, one default build with every host the skipped checks need, SF-72's properties read back, `progress.md` brought up to date, `shellcheck` kept installed · 1.1: OPNsense in `images.conf`, `nodes.conf` and a tier | The lab run of every tier, with nothing skipped that a host could run · ask for the pfSense image, the Cisco account and the Windows VM · release |
+| **0.5.4** | Logs: the holes, rules, and the notification center | Section 12: the notification center, ranking, what cannot be ignored, prepared fixes with rollback · Section 3, phase 0: prune by arrival, the per-host rate, journald's own fields, `__SEQNUM`, the 5-minute counts (from here on they build the baselines 0.5.7 needs) · phase 1: the rule engine, the built-in rules, matching without regex over host text, one alert per rule and host · 1.4: disk failures made in the lab to prove the rules | The log tier's lab run · release |
+| **0.5.5** | Connections | 2.1: StorageForge's own WireGuard network, the default · the console names the network it found (fixes NetBird shown as Tailscale) · read and draw: Tailscale (`--json`), Headscale, NetBird, ZeroTier, Nebula, Netmaker, OpenVPN, strongSwan · join steps, each with its key from the vault: NetBird, ZeroTier, Nebula, Netmaker, OpenZiti · exposure through tunnels: Pangolin with its API token, Cloudflare Tunnel, frp, ngrok · Teleport, Boundary and Pomerium read · SSH CA · 1.3: Headscale, NetBird, ZeroTier and Pangolin servers on lab hosts | The StorageForge network's keys and peers, a security boundary · each join step's secret handling · the connections lab run · release |
+| **0.5.6** | The agent: base, trust and the first plugins | 11.1: the `agent` stage of the `Dockerfile`, `sfagent`, `storageforge-agentctl` with its one sudoers line and the `docker` group refusal, Docker and Podman, rootless for the basic plugins, enrollment over pinned SSH · plugin format, release-key signatures, the signed manifest with its counter · 11.2: the receiver as its own process and database role, identity from the key, counters, quotas, provenance labels · 11.3: wipe and stop, from outside and inside · plugins: heartbeat, logs (section 3, phase 2: push), health, network · 11.6: the tamper and trust checks | Each boundary in 11.1 to 11.3 as it is finished · the agent's lab run · release |
+| **0.5.7** | The agent's other plugins, and monitoring | Plugins: disks (PF-04's path), files (an index that updates itself, process attribution, hand edits, off-hours reads), scan (scripts carried in the plugin), sentinel reports, Toolbox status · monitoring-only hosts with `storageforge-agentctl` alone · Section 3, phase 3: anomalies on the counts since 0.5.4 · phase 4: the monitoring view · phase 5: netconsole and `pstore` | The console turned on for a session · the files plugin's privileges, which are root in effect · the lab run · release |
+| **0.5.8** | Change engine | 5: the secret store with generated secrets and rotation · `runtime-install` with its preflight · pools: ZFS vdevs, disk replace and attach, md add, replace and grow, LUKS · networks: bonds, addresses, routes, DHCP, reading netplan, NetworkManager and networkd files | The secret store's boundary · 5's exit test in the lab · release |
+| **0.5.9** | Workloads | 6: `stack` and `lxc` steps, Incus instances, image updates with rollback, VMs from ISOs, placement advice, MAC at deploy, Quadlets and adopting a workload, quiesced stacks, externally managed workloads, workload exports with round trips · 1.3: proxies and identity providers on lab hosts | The workloads lab run · release |
+| **0.5.10** | Toolbox: the engine | 4.1: the catalog engine, signatures and overrides, install methods, risk labels, uninstall that keeps data · adapters and the GUI levels · the Toolbox view and deep links · the API and tables · custom entries | The catalog's signature boundary · the engine's lab run · release |
+| **0.5.11** | Toolbox: the entries | 4.2, one commit per group: panels, VPN and overlay servers, zero trust and access, identity, reverse proxy and DNS, detection and scanning, monitoring, backup with restore tests, secrets, provisioning, storage-facing apps, offline mirrors · 4.1: bundles, role profiles, custom dashboards, feeds · 4.3: the built-in bundles | The gauntlet for each group as it lands · release |
+| **0.5.12** | Windows, network and map, migration | 11: the Windows agent and the shadow-copy tripwire · 8: `place-before`, scan placeholders, scanner findings through alerts, deeper reads, actions from the map, `bridge`-family rules, map extras, NetBox, Grafana, SNMP and LLDP · 7: phases 3b, 3d, 4b, 5 and 7 · 1.1: pfSense and Cisco once the owner's items are in, the old-cipher device | The Windows VM run · the network devices' lab run · release |
+| **0.5.13** | Security depth | 9: incidents with workloads, compliance readings, credential and identity anomalies, the Falco simulator, the builders, FIDO2 at sign-in, SMS, mirror discovery, the smaller items · SF-38 · EQ-03 if it no longer sits before a lab run · 1.3: playbooks acting for real, a bridged VM under quarantine, OpenTofu and Puppet applies, migration 1b and 4b | The physical FIDO2 token and PagerDuty, if the owner has them · the lab run · release |
+| **0.5.14** | UI and UX | 10: phase 2's workspaces and one Plan workspace, phase 3's steps 3a to 3h one commit each, phase 4, phase 5's gaps, the components, retiring Graph and Structure, native modules · 3i only if decided | The 3i answers in 10.1 confirmed again, and its migration, before it runs · the browser and lab runs · release |
+| **0.6.0** | The release | The audit of everything since 0.5.2, to the audit rules, and its bugfix round, a commit per finding · the full unit suites on both databases · the full lab | The audit's findings · the lab results · the release, with every *not lab-tested* label listed in the notes |
+
+## 1. Tests and the lab
+
+Everything that can be tested without the owner's items above.
+
+### 1.1 Network devices
+
+| Item | How | Status |
+| :--- | :--- | :--- |
+| **OPNsense** | The free `nano` image boots already installed on a serial console. Into `images.conf` and `nodes.conf` like the CHR and OpenWrt images, and a tier like RouterOS's: read, the network language, rollback | open |
+| **pfSense CE** | Runs in KVM. The image is the owner's download (above), then the same tier as OPNsense | open |
+| **Cisco** | CML-Free (free, a Cisco account): IOL, IOL-L2 and ASAv, up to five nodes at once. Its licence forbids the images outside CML, so CML runs as a lab VM and StorageForge connects to the devices inside it. IOS-XE (Cat8000v) and IOSv are not in the free tier. First check whether `cisco.py` is written for classic IOS, which IOL runs, or IOS-XE | open |
+| **Old SSH ciphers** | A RouterOS 6.x CHR image, an OpenWrt release with an old dropbear, or an old distro cloud image | open |
+| **Drop the "no free image" label** from `progress.md` and `tiers_network.py` for whatever of the above passes | | open |
+
+### 1.2 Checks the lab skips today
+
+| Item | Why it is skipped | Fix | Status |
+| :--- | :--- | :--- | :--- |
+| **Appliances:** Proxmox, TrueNAS, XCP-ng (`sf-pve`, `sf-truenas`, `sf-xcp`) | Defined in `nodes.conf` and `images.conf`, never in the default build ("use `up --pick`") | Run them. This also lab-tests **Proxmox guests**, still marked not lab-tested | open |
+| **`ui-pages`** | Playwright is not installed where the tier runs | Install it there | open |
+| **`workload-libvirt`** | No `qemu-img` on the `sf-ubuntu` image | Add it to that node's provisioning | open |
+| **SF-72** | The ZFS receive's mountpoint was read back; the export and setuid properties were not. The btrfs side is undecided | Read both back in tier 16, and decide the btrfs side | open |
+| **Builds without the right host** | `smb`, `snapjobs-snapper`, `btrfs-disk-pulled`, `compile-iptables`, `lxc-guests` and `incus-guests` skip when the build lacks a host that can run them | One default build that has an SMB client, a snapper host, a btrfs raid host, `iptables-restore`, a Debian-family host without Docker and a second one | open |
+| **`progress.md` is behind** | It says tier 14, LXC and Incus are not lab-tested; the 0.5.0 changelog says they ran on 2026-11-08 | Bring it up to date | open |
+| **The full unit suites** | Not re-run on SQLite and PostgreSQL after the last fixes of the 0.4.0 run | Re-run both, and keep `shellcheck` installed for the generated scripts | open |
+
+### 1.3 Not lab-tested, and only free software is needed
+
+| Item | How | Status |
+| :--- | :--- | :--- |
+| **Reverse proxies** | Caddy, nginx, Traefik and HAProxy installed on lab hosts, their routes read and drawn | open |
+| **Identity providers** | Keycloak, Authentik, Authelia and LLDAP in containers | open |
+| **Tailscale** | Headscale as the control server, real Tailscale clients, the `tailscale` step joining and leaving | open |
+| **Terraform and Puppet exports** | OpenTofu and Puppet installed; validate, then apply: `puppet apply` on a lab host, OpenTofu with the libvirt provider | open |
+| **Host migration phase 1b** | Image-based and transactional systems (Fedora CoreOS or bootc, MicroOS) as lab images | open |
+| **Host migration phase 4b** | Snapshots before and after, and the data-at-risk list, in a lab copy | open |
+| **Playbooks acting by themselves** | The live path on a real trip in the lab, not only the dry run | open |
+| **A quarantine and a bridged VM** | Measure whether it reaches one. The map says it doesn't | open |
+| **Every 0.6.0 feature** | Each section below brings its own tier | open |
+
+### 1.4 Partly testable
+
+| Item | What the lab can show | What only the owner can show |
+| :--- | :--- | :--- |
+| **Disk health (PF-04)** | QEMU's emulated NVMe reports SMART data, and `scsi_debug` and `dm-error` make real disk errors on demand, so the warn and alert path. The same failures, with `mdadm --fail` and `zpool offline`, make the kernel lines section 3's rules must catch | Real worn disks |
+| **PagerDuty** | A local stand-in for its API | The real service |
+| **FIDO2** | Chromium's virtual authenticator, as today | A physical token |
+
+## 2. Connections
+
+Every way of joining hosts to a private network or publishing them through a tunnel, so a site can use whichever it likes. Every entry gets the same five parts where they apply:
+
+1. **Read:** a scan reads the tool's own status (JSON where the tool has it), and the map draws its peers and routes, confirmed or inferred.
+2. **Join and leave:** a plan step, with the key from the vault under rule 3.
+3. **Console:** SSH over that network, named for it. Today any address in 100.64.0.0/10 is called Tailscale (`console.py:72`), so a NetBird host is offered as "SSH over Tailscale". Moves already take any interface.
+4. **Exposure:** a tunnel that publishes a service makes it public, even with no port open on the host or router, and the security view says so.
+5. **Lab:** a self-hosted control server where one exists. A tool that needs an outside service ships labelled.
+
+| Tool | What it is | What exists | What's needed | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **Tailscale** | Mesh VPN, outside control server | `tailscale` step, peers read from `tailscale status`, console route | Read `tailscale status --json` instead of the text; the console route named; lab through Headscale | built, not lab-tested |
+| **Headscale** | Self-hosted Tailscale control server | Detected as a tool and a service | Read nodes, routes and pre-auth keys from its CLI or API; pre-auth keys made into the vault for the `tailscale` step | open |
+| **NetBird** | Mesh VPN, self-hosted control server | Detected as a tool, `wt0` counted as a VPN interface, its service known | Read peers from its status; a `netbird` step with the setup key from the vault (first check that `netbird up` can read the key from a file); console route; lab with a self-hosted management server | open |
+| **Netmaker** | Mesh VPN, self-hosted | Nothing | Read nodes and gateways; join with an enrollment key | open |
+| **ZeroTier** | Mesh VPN, outside or self-hosted controller | Known as a service | Read `zerotier-cli -j` networks and peers; join and leave; lab with a self-hosted controller | open |
+| **Nebula** | Mesh VPN with its own certificate authority | Its interface counted as a VPN | Read its config and peers; host certificates issued from a CA kept in the vault; a lighthouse as a role | open |
+| **WireGuard** | Plain tunnels | `wg-peer` step, peers read and confirmed by key | Peer manager: add, revoke, QR code, handshake age (Toolbox entry, section 4) | built |
+| **OpenVPN** | VPN with a PKI | Known as a service | Read status and clients; certificates and the CRL; client profiles | open |
+| **strongSwan (IPsec)** | Site-to-site tunnels | Nothing | Read `swanctl` tunnels; site-to-site templates | open |
+| **Pangolin** | Self-hosted tunnel and reverse proxy with login (Newt runs at the site) | Nothing | Detect Newt; read what the Pangolin server publishes through its API with a token in the vault, a new kind of connection since everything else goes over SSH; exposure "public through Pangolin at `<domain>`"; join with a site secret; lab with the server on a lab host | open |
+| **Cloudflare Tunnel** | Tunnel to Cloudflare | `cloudflared` known as a service | Read its config and routes; exposure; the tunnel token in the vault. Needs a Cloudflare account, so labelled | open |
+| **frp, ngrok** | Tunnels | Known as services | Read their configs; exposure. ngrok needs an account, so labelled | open |
+| **OpenZiti** | Zero-trust overlay, self-hosted | Nothing | Read services and identities; join an identity from an enrollment token | open |
+| **Teleport, HashiCorp Boundary** | Access proxies | Nothing | Read targets; targets made from the host inventory; Teleport's session recordings on a protected dataset | open |
+| **Pomerium** | Identity-aware proxy | Its service known | Read routes and policies | open |
+| **SSH CA** | Short-lived SSH certificates | Nothing | CA key in the vault, `TrustedUserCAKeys`, principals; issue and revoke | open |
+
+### 2.1 StorageForge's own encrypted network (the default)
+
+Decided 2026-11-16: data is encrypted even on the LAN, and the default needs no outside service. StorageForge builds a WireGuard network of its own between the controller and the hosts it is turned on for, from the `wg-peer` step that exists: a key pair per host made on the host (the private key never leaves it), public keys and addresses held by the controller, peers written by change plans, every peer confirmed by key on the next scan, a key rotated through a plan, a host removed by revoking its peer everywhere. Its own address range, chosen so it never meets Tailscale's or NetBird's 100.64.0.0/10. The console, Moves and the map name it as the StorageForge network. Tailscale and NetBird stay as choices for sites that already run them.
+
+| Item | Status |
+| :--- | :--- |
+| The network as a setting per host, its address plan, and the peers as plan steps | open |
+| Key pairs made on the hosts, rotation and revocation through plans | open |
+| The controller as a peer (in Docker, a WireGuard interface for the container or the host's) | open |
+| Scans, deploys, `storageforge-agentctl`, the console and the agent's tunnel over the StorageForge network where the host is on it. Sends, Moves and sync keep a tunnel of their own per transfer (the forced-command job keys and rsync over SSH, encrypted end to end); NFS and SMB shares are not carried | open |
+| Lab: a host on the LAN reached only through it, a capture showing no clear text between two hosts, a key rotated and a peer revoked | open |
+
+Deploying the servers (Headscale, NetBird's management, Pangolin, a ZeroTier controller, OpenZiti's controller) is a Toolbox entry each (section 4). This section is the hosts' side.
+
+## 3. Log monitoring
+
+Notifications from host logs, counts and anomalies, and logs that leave a host as they are written, so a host that locks up or is taken over has already sent what it logged.
+
+What exists and is reused: `alerts.evaluate()` opens, refreshes and resolves alerts and notifies on each change, through ntfy, Gotify, a webhook or PagerDuty with routes by host and level, and `alerts_wake` can trigger it at once. Host logs are stored, scrubbed of secrets and searchable, with counts by level and hour. A log rule becomes one more source in `alerts.problems()`: open while its count over a window is over the threshold, resolved when it falls.
+
+| Phase | What it holds | Status |
+| :--- | :--- | :--- |
+| **0. Holes in what is stored today** | Prune by arrival time (`collected_at`), not the host's timestamp: today a host can log 500,000 lines stamped up to a day ahead and push real lines out of `KEEP_ROWS`, and a line stamped older than `KEEP_DAYS` is deleted as it is stored. A per-host ingest rate, with going over it recorded, not paid for in old rows. Store the fields journald sets (`_UID`, `_COMM`, `_EXE`), since `SYSLOG_IDENTIFIER` is whatever the writer says. Keep `__SEQNUM` and its ID, to see lines deleted on the host. Counts per host, unit and level per 5 minutes, kept longer than the raw lines, starting at once because baselines need weeks of them | open |
+| **1. Log rules** | Notifications go to the central notification center (section 12). A rule matches host, unit, program, lowest level and text, with a threshold over a window. Built-in rules for storage hosts: OOM kills, disk and controller I/O errors, filesystem errors (ext4, XFS, btrfs), ZFS or mdadm degraded, NFS or SMB not responding, failed units, segfaults, disk full; bursts of failed SSH and sudo logins off by default. Matched as lines arrive. No arbitrary regex over host text (SF-52): plain text and wildcards, or `google-re2`. One open alert per rule and host, so a flood is one alert | open |
+| **2. Push ingest** | Hosts send journal lines as they are written, through the agent's logs plugin (section 11), to a receiver on the controller that resumes from the last line it has after a reboot. Per-host identity, size and rate limits, off the web threads. Each host's delay, gaps and signed or not shown. Hosts without the agent are polled over the SSH master connection every few seconds, which misses lockups | open, needs section 11's base |
+| **3. Anomalies** | Volume against the same hour of the week over two to four weeks (median and spread, with a floor for quiet units). New kinds of line: a message with numbers, hex, addresses and paths blanked, hashed, flagged the first time a host logs it. Silence: a host or unit that normally logs and stops, which is how a lockup shows | open |
+| **4. The monitoring view** | Per host: rate against baseline, open log alerts, new kinds of line, silent hosts, and ingest health (last line, delay, gaps, signed or not). To the patterns in [ACCESSIBILITY.md](ACCESSIBILITY.md). Logs entry points from an alert, a mount and a device | open |
+| **5. netconsole** | Kernel messages over UDP straight from the kernel, which works when user space is dead, so panics and hard hangs reach the controller. `pstore` to read the last panic after a reboot | open |
+
+**What it does not do:** prove a line is true. Signing proves a payload came from the host unchanged; root on the host can write, edit or delete anything not yet sent, and sign it. Sending lines as they are written shrinks that window to almost nothing, and gaps in `__SEQNUM` and silence show deletion afterwards. Forward Secure Sealing (`journalctl --setup-keys`, with the verify key on the controller) shows files altered on the host. It cannot stop deletion.
+
+## 4. Toolbox
+
+None of it exists. It needs the catalog engine and the secret store (section 5). The [Toolbox roadmap](archive/roadmaps/toolbox-catalog-roadmap.md) holds the entry format, the GUI levels, the API, the tables, the safety rules and the lab gauntlet; [the merged plan](archive/roadmaps/infrastructure-platform-roadmap.md#8-the-catalog) wins where they differ. A tool without a passing lab run is labelled *not lab-tested* in the catalog.
+
+### 4.1 The engine
+
+| Item | What | Status |
+| :--- | :--- | :--- |
+| **Catalog engine** | Entry schema, signatures (the project's for the official catalog, the operator's for their own), validation, the override layer that survives catalog updates, install methods in order of safety (rootless container, distro package, verified binary; Quadlet and compose), risk labels in the report, uninstall that keeps data | open |
+| **Adapters** | `detect`, `status`, `actions`, `links`, `metrics`, read-only by default, over the existing SSH scan; an action is a staged plan step; credentials by vault reference only; a failed adapter says "status unavailable" and never blocks a scan | open |
+| **GUI levels** | Link, SSO link, status tiles, panel with actions | open |
+| **Toolbox view** | The rail item, host cards, deep links (`/#host=gw-01&tab=toolbox&tool=wireguard`) | open |
+| **API and tables** | `/api/toolbox/...` (catalog, validate, sign, installed, status, stage, bundles, actions, updates, exposure); `toolbox_catalog`, `toolbox_installs`, `toolbox_status`, `toolbox_bundles`, `toolbox_overrides` | open |
+| **Custom entries** | An editor with validation, a dry run and signing with the operator's key | open |
+| **Bundles** | Ordering, shared secrets, one firewall change set, one report, rollback of the whole bundle | open |
+| **Role profiles and per-host exclusions** | Default tools per host role (`edge`, `nas`, `hypervisor`) | open |
+| **Custom dashboards** | Tool tiles in the dashboard grid | open |
+| **Feeds** | Trivy findings and CrowdSec decisions into alerts and the quarantine view, with bans reconciled so quarantine doesn't fight the bouncer | open |
+
+### 4.2 The entries
+
+| Group | Entries | Status |
+| :--- | :--- | :--- |
+| **Panels** | Cockpit, Dockge, Portainer, Komodo, Dockhand, Dokploy, Incus UI | open |
+| **VPN and overlay servers** | WireGuard with the peer manager, Headscale (with headscale-ui or headplane), NetBird's management, signal, relay and dashboard, Netmaker, a ZeroTier controller, Nebula's CA and lighthouse, OpenVPN with its PKI, strongSwan, Pangolin with Gerbil and Traefik | open |
+| **Zero trust and access** | OpenZiti, Pomerium (policies from each entry's exposure), Cloudflare Tunnel, Teleport, HashiCorp Boundary, SSH CA | open |
+| **Identity and SSO** | Authentik, Keycloak, Authelia, Kanidm, LLDAP, Samba AD DC, FreeIPA; OIDC clients registered for catalog panels | open |
+| **Reverse proxy, TLS and DNS** | Caddy with generated routes, Traefik, nginx Proxy Manager, step-ca, Pi-hole, AdGuard Home, Unbound, CoreDNS, dnsmasq, Chrony with NTS | open |
+| **Detection and scanning** | CrowdSec with the nftables bouncer, fail2ban, Suricata, Zeek, Trivy, Grype, OpenSCAP, Falco, Wazuh | open |
+| **Monitoring and alerting** | Prometheus with node_exporter, Grafana with a StorageForge dashboard, Loki with Promtail or Alloy, Uptime Kuma, Beszel, Netdata, smartd and smartctl_exporter, ntfy, Gotify, Apprise | open |
+| **Backup and recovery** | restic, Borg, Kopia, Proxmox Backup Server, automated restore tests to a scratch dataset with hashes compared | open |
+| **Secrets** | OpenBao or Vault with quorum-style unseal, sops with age, Vaultwarden | open |
+| **Provisioning and platform** | Packer, PXE, iPXE and netboot.xyz, Forgejo or Gitea, a registry mirror (Zot or Harbor) for airgapped installs, Renovate or an image-update watcher, DNS and DHCP panels, Ansible, Puppet and Terraform runners | open |
+| **Storage-facing apps** | Samba, NFS, MinIO, Garage, Nextcloud, Syncthing, Jellyfin, each placed on a dataset with its snapshot and WORM policy, share fencing and canaries wired in | open |
+| **Offline** | Package bundles and local mirrors, with the registry mirror | open |
+
+### 4.3 Built-in bundles
+
+Private access (WireGuard, Headscale or NetBird, Caddy, Authelia) · Hardened homelab (private access, CrowdSec, Chrony with NTS, Uptime Kuma, restic) · Container host (rootless Podman, Caddy, Komodo or Dockge, Trivy, node_exporter) · Hypervisor (libvirt, Cockpit, WireGuard, backup, smartd) · Observability (Prometheus, Grafana, Loki, ntfy, smartctl_exporter) · Zero-trust gateway (Authentik, Pomerium or OpenZiti, step-ca) · Backup and recovery (restic or Kopia, restore tests, a WORM dataset).
+
+## 5. Change engine
+
+Built since the last roadmap: storage pools of every kind as steps (`zfs-pool`, `md-array`, `lvm-vg`, `btrfs-add`, partitions and formats), bridges, VLANs and MTU (`net-bridge`, `net-vlan`, `net-mtu`), libvirt networks and pools, and secrets for plan steps (`vault secret-add`, `vault send-secret`).
+
+| Item | What's left | Status |
+| :--- | :--- | :--- |
+| **Secret store** | Generic secrets generated, shown once, delivered through the runner's stdin, with a rotation path like `rotate` has for SSH keys | open |
+| **`runtime-install`** | The four runtimes across distros, rootless setup, and a preflight that says present, installable or blocked. [Detail](archive/roadmaps/infrastructure-platform-roadmap.md#71-runtime-install) | open |
+| **Pools: what's left** | Add a vdev to a ZFS pool, replace or attach a disk; add, replace and grow an md array; LUKS | open |
+| **Networks: what's left** | Bonds, addresses, routes, DHCP; read netplan, NetworkManager and networkd files as well as what the kernel has | open |
 
 **Exit:** install a runtime on a bare VM from a plan. The report changes nothing, a changed plan gets 409, and a bridge change that cuts SSH rolls itself back.
 
-### B2. Workloads (Stage 4, about 13 to 15 days)
+## 6. Workloads
 
-Running a container, defining a VM from an existing disk, and start, stop and remove are done.
+Built: running a container, VMs from cloud images (`vm-create`), defining a VM, start, stop and remove, snapshots and revert, changing a VM (`vm-edit`), copying a VM to another host, VM backups on a schedule, the console.
 
-- **`stack` and `lxc` steps,** each carrying its firewall rule and labels.
-- **Image updates,** with rollback on a failed healthcheck.
-- **VMs from templates:** cloud images, checksums and cloud-init with your SSH key are built (`vm-create`, with VM specs). ISOs are not.
-- **Lifecycle:** snapshot, clone, resize and console over an SSH tunnel.
-- **Clone or migrate a scanned host in any direction** (physical or VM, to physical or VM), for testing or migration: packages, config, storage layout and a choice of user files, rebuilt on the target, and VM to VM copied as is. The package list is built; the rest is phased in the [design](docs/host-migration.md).
-- **Placement advice, which is the differentiator:** a pool on a dataset tuned for its use, databases off the bulk pool, warnings for bind mounts on network filesystems, and a warning when data sits where no hold or offsite copy reaches.
-- **MAC at deploy:** `:Z` labels, the `svirt_image_t` fix as a plan step, AppArmor pool paths.
-- **Read side:** Podman Quadlets, and adopting a workload by capturing it as compose, Quadlet, libvirt XML or Incus YAML, with drift against the capture.
+| Item | What | Status |
+| :--- | :--- | :--- |
+| **`stack` and `lxc` steps** | Each carrying its firewall rule and labels; Incus instances too | open |
+| **Image updates** | With rollback on a failed healthcheck | open |
+| **VMs from ISOs** | Cloud images are built | open |
+| **Placement advice** | A pool on a dataset tuned for its use, databases off the bulk pool, warnings for bind mounts on network filesystems, and a warning when data sits where no hold or offsite copy reaches | open |
+| **MAC at deploy** | `:Z` labels, the `svirt_image_t` fix as a plan step, AppArmor pool paths | open |
+| **Read side** | Podman Quadlets; adopting a workload by capturing it as compose, Quadlet, libvirt XML or Incus YAML, with drift against the capture | open |
+| **Quiesced stacks** | Stop, snapshot, start for stateful stacks, with the method recorded (VMs already freeze through the guest agent) | open |
+| **Externally managed** | Detect a workload something else manages, and warn before changing it | open |
+| **Exports** | Terraform, OpenTofu and Puppet for workloads, with round-trip tests | open |
 
 [Workload roadmap](archive/roadmaps/workload-platform-roadmap.md) for field lists, and the [merged plan](archive/roadmaps/infrastructure-platform-roadmap.md#7-workloads-in-detail) where they differ.
 
-### B3. Toolbox (Stage 5, about 32 to 40 days)
+## 7. Clone and migrate hosts
 
-The largest piece, and nothing of it exists. Needs the catalog engine and secret store from B1. It can be cut at any entry.
+From the phases in [host migration](docs/host-migration.md#phases).
 
-- **Adapters and GUI levels:** `detect`, `status`, `actions`, `links`, `metrics` over a measurement.
-- **Wave 1 entries,** panels first, since they prove the catalog cheaply: Cockpit, Dockge, then Portainer, Komodo, Dockhand, Dokploy, Incus UI. Then WireGuard and Caddy with full panels, CrowdSec, Trivy, restic with restore tests.
-- **Bundles** with one report, shared secrets, one firewall change set, and rollback of the whole bundle.
-- **Feeds:** Trivy findings and CrowdSec decisions into the existing alerts and quarantine view, with bans reconciled so quarantine doesn't fight the bouncer.
+| Phase | What's left | Status |
+| :--- | :--- | :--- |
+| **3b** | AUR and local builds: the cache, `bacman`, an AUR build at the matching commit; Arch Linux Archive pinning; derivative repositories and CPU levels | open |
+| **3d** | LUKS (the key is the owner's, so by hand unless the vault holds it), other `/etc` files | open |
+| **4b** | Holds on the clone's snapshots, the before-and-after "what changed" report, `--accept` in the scripts | open |
+| **5** | Test and migration modes: isolation, and cutover | open |
+| **7** | A disk image from a physical host: a block copy from a snapshot into qcow2, fixed up to boot; to bare metal through a live environment | open |
 
-A tool without a passing lab run is labelled *not lab-tested* in the catalog. [Toolbox roadmap](archive/roadmaps/toolbox-catalog-roadmap.md) and [the merged plan](archive/roadmaps/infrastructure-platform-roadmap.md#8-the-catalog).
+## 8. Network and map
 
-### B4. Depth (Stage 7: what's left)
+| Item | What | Status |
+| :--- | :--- | :--- |
+| **`place-before`** | A rule at a position. RouterOS appends, so a rule below a final drop does nothing, and the what-if says so | open |
+| **Scan results as map placeholders** | The Scan tab links to the map, but they are separate drawings | open |
+| **Scanner findings through alerts** | What's new since the last scan | open |
+| **Traffic on Linux hosts** | Monitoring covers devices only. Activity from byte counters between scans | open |
+| **Deeper reads** | Cisco zone-based firewall and VRFs, OSPF and BGP state, wireless clients, rich firewalld rules beyond source, port and verdict, DHCP scopes as nodes | open |
+| **From the map** | Deploy a stack, an LXC instance, a catalog tool or a VM; move, clone or resize a VM; restrict a service's bind address; put a listener behind a proxy; rotate a peer's key | open |
+| **`bridge`-family firewall rules** | For bridged VMs, which bypass a quarantine's hooks | open |
+| **Map extras** | Force-directed and rack layouts, custom icons and colour rules, per-role default views, map tiles on dashboards, rendering for very large fleets | open |
+| **Integrations** | NetBox and Grafana exports, read-only SNMP, LLDP | open |
+| **REST adapters** | Only if a device needs one. SSH reads everything on all four platforms, and a second way in is a second thing to secure | when needed |
 
-Compliance depth, retention depth, YARA, incident evidence and clean room are done.
+## 9. Security and ransomware depth
 
-- Quiesced snapshots: `qemu-guest-agent`, stop-snapshot-start for stateful stacks, with the method recorded.
-- Incidents that include workloads touching affected paths, and a clean room that boots a VM or container from a pre-incident snapshot.
-- Externally-managed detection, and a warning before changing such a workload.
-- Compliance readings for CIS Docker, Podman and libvirt-style checks, and auditd rules for runtime sockets and config.
-- Terraform, OpenTofu and Puppet export for workloads, with round-trip tests. Designs have this already.
+| Item | What | Status |
+| :--- | :--- | :--- |
+| **Incidents with workloads** | Incidents that include workloads touching affected paths, and a clean room that boots a VM or container from a pre-incident snapshot | open |
+| **Compliance readings** | CIS Docker, Podman and libvirt-style checks, and auditd rules for runtime sockets and config | open |
+| **Credential and identity anomalies** | Needs a new collector and a design first | open |
+| **Watchers** | fanotify watchers; off-hours read volume by user. Both through the agent's files plugin (section 11); without the agent, off-hours reads need `vfs_full_audit` | open |
+| **Falco rule simulator** | Rules against recorded sessions | open |
+| **Builders** | A visual drag-and-drop subnet matrix (fences are typed today); a visual playbook builder beyond the form | open |
+| **FIDO2 at sign-in** | Only guarded actions use it today | open |
+| **SMS** | Its own channel, not only through a webhook | open |
+| **Local mirror discovery** | A host uses the mirrors it is already set up for | open |
+| **Smaller items** | Expiry heatmap, decoy personas and distribution, AppArmor profile editor, role-based hardening profiles, custom AIDE watchlist | open |
+| **EQ-03** large modules | Split `server.py` and the other large modules, when it no longer sits right before a lab run | parked |
+| **SF-38** container scan in CI | CI fails on a new reachable critical. On GitHub it runs; Forgejo waits for a runner | open |
 
-### B5. Network and map: what's left
+## 10. UI and UX
 
-- **The language:** a rule at a position (`place-before`). RouterOS appends, so a rule below a final drop does nothing, and the what-if says so.
-- **Scan results as map placeholders.** The Scan tab links to the map, but they're separate drawings.
-- **Scanner findings through alerts:** what's new since the last scan.
-- **Traffic on Linux hosts.** Monitoring covers devices only.
-- **Deeper reads:** Cisco zone-based firewall and VRFs, OSPF and BGP state, wireless clients.
-- **From the map:** moving, cloning or resizing a VM, restricting a service's bind address, putting a listener behind a proxy, rotating a peer's key.
-- **`bridge`-family firewall rules** for bridged VMs, which bypass a quarantine's hooks. The map says so.
-- **REST adapters: only if a device needs one.** SSH reads everything on all four platforms, and a second way in is a second thing to secure.
+From the [UI and UX roadmap](archive/roadmaps/ui-ux-roadmap.md) and the [UI audit of 2026-11-04](docs/audit-2026-11-04-ui.md). What phases 0 to 5 built is in the [0.4.0 ledger](archive/roadmaps/release-0.4.0-roadmap.md#a4-ui-and-ux).
 
-### B6. The UI items held back
+| Phase | What's left | Status |
+| :--- | :--- | :--- |
+| **2** | Security and Settings as workspaces with their own section navigation; Security leading with blast radius, quarantine and the brake when the posture is Incident; the rail keeping only a summary and a link for them; one Plan workspace holding Design, Network and devices, Changes, Moves, Schedule and History; collapsible rail groups (UX-01) | open |
+| **3** | The planner grows, steps 3a to 3h: design what isn't there yet (disks, pools, remotes, exports), Shares, the network lens, the workloads lens with placement guardrails, the security lens, the health lens, compare and adopt (adopting one object from the scan is the part of 3g not built), one Change review | open |
+| **3i** | One design document in place of the storage blueprint and the map's design, with the planner as its editor and the map showing it as ghosts; a migration and a lab run. Answers in 10.1 | provisional answers, confirmed at 0.5.14 |
+| **4** | Design mode from what was read, Compose as an editor (with paths that must stay open or blocked), Scan as a table and a diff, "host or disk goes away" what-if steps | open |
+| **5** | The planner's own status dots and theme toggle | open |
+| **Components** | The card, table and pill components, page by page | open |
+| **Retire Graph, Structure** | Once the map's Storage layer has time travel and a focus view | open |
+| **Native ES modules** | One pass, leaf first, with a test of the load order; `kernel.js` and `chrome.js` first | open |
 
-One design document in place of the storage blueprint and the map's design, with the planner as its editor and the map showing it as ghosts (step 3i, which needs a migration), and retiring Graph, Structure once the map's Storage layer can do what it does.
+### 10.1 Step 3i: the answers taken for now
 
-Native ES modules for the scripts (an item of UI phase 1, held back on purpose). A module runs after every classic script has run, so converting the files one at a time changes the order at which they load, and the `typeof f === 'function'` guards, which are what make that order not matter today, would hide what breaks. It has no effect a person can see. It wants one pass that goes leaf first with a test of the load order, and `kernel.js` and `chrome.js` are written so they can be the first two.
+Today the storage blueprint is one per host (the planner, saved versions, laid over each scan), and the map's design is named, owned and covers many hosts (networks, workloads, firewall) with no versions. The owner took these recommended answers on 2026-11-16, and they are checked again with the owner when 3i is reached, before its migration runs.
 
-## Later, when something asks for it
+| Question | Answer for now |
+| :--- | :--- |
+| Per host, or a named fleet design? | Per host with sections; fleet designs become versions or branches of a group of hosts, so alternatives are not lost |
+| A host with a blueprint and several map designs: which wins? | The blueprint and the newest map design become the current document; the other map designs become saved versions of it |
+| May a document describe a host not yet scanned? | Yes, as step 3a needs |
+| Does the map keep editing, or only show? | Only show, as ghosts, and open the planner at the right section: one editor |
+| Do versions cover the whole document? | Yes, with restoring one section as an option |
+| Who may edit which section? | One edit permission for the whole document at first; per section only if someone needs it |
+| Old formats and API? | `storageforge/v2`; v1 still imported; the old endpoints kept for one release; the old tables kept read-only for one release, so the migration can be rolled back |
+| Which exports? | All of them from the one document, each saying which sections it leaves out |
+| Connections, Toolbox entries and log rules as sections too? | Yes, decided now so the format does not change again |
+| Retiring a host removes what? | Its document, and the host from any group design; saved versions kept until someone deletes them |
 
-Each needs its own decision, not a slot on a calendar.
+## 11. The agent
 
-| Item |
-| :--- |
-| Zero trust and secrets: Pomerium, OpenZiti, Cloudflare Tunnel, Teleport, SSH CA, OpenBao |
-| Provisioning: Packer, PXE, Forgejo, registry mirror, image-update watcher, DNS and DHCP panels |
-| Live migration, fleet placement, k3s or Talos, Helm export |
-| NetBox and Grafana exports, read-only SNMP. Windows guests |
-| Credential and identity anomalies, which need a new collector and a design first |
-| Offline package bundles and local mirrors, with the registry mirror |
-| Expiry heatmap, decoy personas and distribution, fanotify watchers, AppArmor profile editor, role-based hardening profiles, custom AIDE watchlist |
-| Map extras: force-directed and rack layouts, custom icons and colour rules, per-role default views, map tiles on dashboards |
-| Role profiles (default tools per host role) and per-host exclusions |
+Optional, per host, by the owner's decision of 2026-11-16. A host without it keeps every feature, per scan. Routers, firewalls, switches and appliances stay agentless.
+
+### 11.1 How it is put together
+
+```text
+controller ──SSH, signed deploys──► host: the agent's container made, changed, stopped (no Docker socket in the agent)
+controller ──its own tunnel───────► agent: signed plugins, the host's signed manifest
+agent      ──its own tunnel───────► controller: logs, health, file changes, heartbeats, scan output, all signed
+```
+
+| Part | What | Status |
+| :--- | :--- | :--- |
+| **Base image** | One image on every machine: a stage of the same `Dockerfile`, on the same pinned Wolfi base, scanned by Trivy and Grype in CI and signed. Read-only root filesystem, no package manager, no shell, no Docker socket, no plugins built in. x86-64 and arm64 | open |
+| **Plugins** | Each feature is a plugin, and a host gets only the plugins its settings turn on. A plugin is signed: the project's release key for official ones, built and scanned in CI; the operator's own key for their own, trusted only when the operator says so, as Toolbox entries are. Each declares the mounts, capabilities and devices it needs | open |
+| **The host's manifest** | Which plugins, at which hashes, with which privileges, for this host, signed by the controller with a fresh time and a counter, so an old manifest cannot be played back. The agent loads a plugin only when its signature and the manifest both match | open |
+| **Delivery** | The controller sends plugins and the manifest straight to the agent over an encrypted tunnel of its own: through the tunnel container, with an agent key that is not the node's SSH tunnel key and reaches only the agent's receiver, or on the LAN a direct connection with both keys pinned, over the StorageForge network (2.1) where the host is on it. Never through the Docker API, and never inside an SSH session | open |
+| **Lifecycle over SSH** | Installing, changing privileges when plugins change, updating, restarting and stopping the container are signed requests over SSH to `storageforge-agentctl`, on every host, which accepts agent operations and nothing else. A host with SSH control keeps `storageforge-run` for change plans beside it; a monitoring-only host gets only `storageforge-agentctl` | open |
+| **Accounts** | The agent runs as its own account (`sfagent`, its own uid and gid), never root and never in the `docker` group or sudoers. The container's process runs as that uid. The user that deploys and manages the agent over SSH is never in the `docker` group either, since that group is root on the host: setup refuses to go on while it is, and says why. That user reaches the runtime only through `sudo -n /usr/local/sbin/storageforge-agentctl`, the one line sudoers allows it, and the verifier runs `docker` or `podman` itself after checking the request's signature | open |
+| **Runtime** | Docker or Podman, whichever the host has. The basic plugins (heartbeat, logs, health, network) run rootless under Podman as `sfagent`, with no root runtime involved; reading the journal takes `sfagent` in `systemd-journal`, carried into the container (`--group-add keep-groups`). The disks and files plugins need host capabilities that a rootless runtime cannot grant, so they take a rootful runtime, and the process inside still runs as `sfagent` with only the declared capabilities Whether a host has one comes from the SSH scan, which reads both today. On a host with neither, installing the agent tells the user Podman will be installed, then installs it through the same signed request | open |
+| **What the agent automates** | Its own schedules (scans, readings, SMART), buffering and resending, and the protective reactions in 11.2. All of it reads; none of it changes the host. Automation that changes data stays what it is today: deployed jobs on systemd timers run by `storageforge-job`, set up by a change plan over SSH | open |
+| **Privileges follow plugins** | The container is made with the union of what its plugins declare, and nothing more. Removing a plugin takes its privileges away | open |
+| **Enrollment** | During setup over the already pinned SSH connection, the agent makes its key pair and the controller reads the public half back over that connection and pins it | open |
+| **Windows** | A native service, not a container, with the same plugin format, signatures and manifest. Monitoring only. Managed over OpenSSH for Windows | open |
+
+### 11.2 Trust
+
+The agent runs on a machine and a network that may be hostile, so it gets **no trust for what it says** and **as little as works for what it can do**. Those are two directions, and each has its own limits.
+
+**The rule:** an agent reads its own host, speaks only about its own host, and causes action only against its own host, and only protective action. Anything that reaches further needs a second, independent witness or a person.
+
+**From the agent to the controller: nothing it says is believed or obeyed**
+
+| Limit | How | Status |
+| :--- | :--- | :--- |
+| **Its identity comes from its key, never from what it sends** | The controller works out the host from the pinned key the batch is signed with. A hostname, address or machine ID inside the payload is a claim and is ignored for routing. (The audit of 2026-11-01 found this kind of bug once: retire matched a host's *self-reported* address, M6) | open |
+| **It can only write about itself** | Its batches add rows to its own host's data and nothing else: no other host's records, no plans, holds, alerts on other hosts, settings or accounts | open |
+| **Its words never become code or markup** | As for scan output today: text from a host reaches a script only through the field checks, a query only as a parameter, a page only through `textContent` or `esc()` | open |
+| **The receiver is a hostile-input boundary** | Its own process and account, separate from the web app, with a database role that can write only the ingest tables. Schema checked, sizes and rates limited per agent, parsing linear in the input (SF-52), malformed batches dropped and counted. One agent cannot starve the others or the web threads | open |
+| **Storage cannot be pushed out** | Per-host quotas, pruning by arrival time (section 3, phase 0), so a flood from one agent costs only its own old rows and is recorded | open |
+| **Batches are counted** | Each batch carries a counter and is signed. A gap means batches were deleted, a repeat means a replay; both are shown, and repeats are dropped | open |
+| **Its actions affect only itself** | What an agent's report can trigger by itself is protective and aimed at the reporter: the shadow-copy tripwire drops *the address pinned for that client at enrollment*, never an address named in the message. An agent can accuse only itself | open |
+| **Anything wider needs a second witness** | Freezing a share, or any action that touches other clients or hosts, needs an independent source to agree: the share host's own sentinel, a decoy hit, a scan over SSH. Otherwise it is an alert for a person | open |
+| **Where data came from is shown** | Every reading is labelled *reported by agent* or *measured by scan*, and where both exist they are compared; a disagreement is an alert | open |
+| **Lying is expected** | A taken-over agent can hide its host's problems or invent them. Inventing them is contained by the rows above. Hiding them is not preventable, and is why decoys on shares, scans over SSH, silence and counter gaps stay independent of it | open |
+
+**From the controller to the agent: only what its plugins need, nothing that reaches elsewhere**
+
+| Limit | How | Status |
+| :--- | :--- | :--- |
+| **No secrets but its own key** | No vault access, no other host's keys, no job keys, no tokens for outside services. Plugins and the manifest are not secret. Stealing everything an agent holds gives its own key, which is revoked, and its own host's data, which whoever holds the host already has | open |
+| **Read-only on its host** | Every mount read-only. A taken-over agent can read its host and nothing more, so it cannot make that host worse than whoever took it already did | open |
+| **A hardened container** | All capabilities dropped but the plugins' declared ones, `no-new-privileges`, the default seccomp profile or tighter, user namespace remapping where the plugins allow, no Docker socket | open |
+| **Its network reaches the controller only** | Egress limited to the tunnel endpoint by a host firewall rule matched on the agent's cgroup, so it holds even with host networking for the network plugin | open |
+| **Code comes only from the release key** | Scans are scripts carried in the scan plugin (decided 2026-11-16), so no executable crosses the wire per scan, and a taken-over controller can choose among signed plugins but not write one. An operator's plugin key is never stored on the controller: offline or on a hardware token | open |
+| **Privilege needs a person** | A manifest that adds the disks or files plugin, or any privilege, takes an admin with re-authentication, and the audit log records it | open |
+| **Short-lived sessions** | The pinned key only opens a session; session tokens expire and rotate, and revoking the key ends every session at once | open |
+| **Mutual pinning, no trust on first use after setup** | The agent pins the controller's key at enrollment, as the controller pins the agent's. A key that changes is refused until a person accepts it | open |
+
+**Isolated from SSH: an extra layer, not a way in to it**
+
+SSH stays the base on every agent host, for control. The agent sits beside it and shares nothing with it, so whoever takes one has gained nothing towards the other.
+
+| Limit | How | Status |
+| :--- | :--- | :--- |
+| **Its own key, used for nothing else** | Made by the agent at enrollment. Never the scan signing key, the host's SSH host key, the deploy key, a job key or a tunnel key of SSH's. Revoking it touches no SSH access, and revoking SSH access touches no agent key | open |
+| **No SSH secrets in reach** | `sfagent` is in none of `storageforge-scan`, `storageforge-deploy` or the job accounts' groups. Every plugin's mounts mask `/etc/ssh`'s private keys, every `.ssh` folder, `/usr/local/lib/storageforge` (the scan signing key), `/run/storageforge/secrets` (secrets sent from the vault), the verifiers' nonce stores and the sudoers files, even for plugins that mount the host's root read-only | open |
+| **It cannot reach SSH** | Its network rule allows the controller's endpoint only, so it cannot connect to the host's own `sshd` or any other host's; it runs no `ssh` client and has no `ssh` binary in its image | open |
+| **SSH cannot be driven through it** | It carries no shell, no command and no SSH session. The controller's SSH work (scans without the agent, change plans, deploys, `storageforge-agentctl`, the console) never passes through the agent or waits on it | open |
+| **Its own tunnel** | Through the tunnel container with a key of its own that reaches only its receiver, separate from the node's SSH tunnel key; or the StorageForge network (2.1) | open |
+| **Its own receiver** | The ingest process on the controller has no vault access and cannot start an SSH connection. What an agent reports reaches SSH only through a person, or through the one narrow bridge in the rows above: a protective action against the reporter, carried out by the controller's own SSH, never by the agent | open |
+| **Either one fails alone** | `sshd` stopped: the agent still reports, and says SSH is down. The agent stopped or wiped: scans, deploys and the console still work over SSH, and the notification center says the agent is gone | open |
+
+**What stays trusted:** the controller is still the root of trust for the fleet, as it is today with SSH and signed deploys. The agent adds no authority to it, and takes the release key out of its hands for code.
+
+**The file index from both.** SSH scans index files as they do today, and the agent's files plugin can too. With both on, each checks the other: a file the agent says changed that the next scan does not see, or a scan finding changes the agent never reported, is a disagreement in the notification center. A monitoring-only host gets its index from the agent alone.
+
+### 11.3 Wipe and stop
+
+Anything in a container that the manifest does not account for ends its access.
+
+| Check | How |
+| :--- | :--- |
+| **From outside, over SSH** (the check that counts, since a container that has been taken over can lie about itself) | The running image's digest is the signed base's; `docker diff` shows nothing outside the plugin and buffer folders; the plugin files' hashes match the manifest; the container's mounts, capabilities and devices match it. On every scan and on a timer |
+| **From inside** | At start and on a timer, the agent checks its loaded code and plugin files against the manifest, and refuses an unsigned plugin, one not in the manifest, or a stale manifest |
+| **What happens** | The controller revokes the agent's key on its own side first, which an attacker cannot undo; the agent deletes its key and exits; the container is stopped over SSH and left stopped, whatever its restart policy; an alert opens. Only an admin re-enrolls it, with re-authentication, and the audit log records it |
+
+### 11.4 Plugins
+
+| Plugin | Gets | Privileges it declares | Status |
+| :--- | :--- | :--- | :--- |
+| **Heartbeat** | Silence noticed within seconds; buffering while the link is down | none | open |
+| **Logs** | Journal lines as they are written (section 3, phase 2); OpenRC hosts' log files | the journal folders and `/etc/machine-id`, read-only | open |
+| **Health** | CPU, memory, I/O latency, capacity, scrub and resilver progress | `/proc`, `/sys`, read-only, host PID | open |
+| **Network** | Traffic and activity on Linux hosts (section 8); connections to shares, all the time, not sampled once a minute | host network | open |
+| **Disks** | SMART on a schedule (PF-04), disk errors as they happen | the disk devices read-only, `CAP_SYS_RAWIO` | open |
+| **Files** | A file index that updates itself (fanotify), deeper than a scan's (live changes, which process made them, per-folder watches), ransomware signs on every path, which process wrote what, hand edits to managed files at once, off-hours reads by user (section 9) | `CAP_SYS_ADMIN` and the host's mounts read-only: effectively root on the host, and the UI says so | open |
+| **Scan** | The read-only scans, as scripts carried in the plugin and signed with it, for hosts that are monitoring only | the host's root read-only, to run the host's own tools such as `zfs`, with SSH's and StorageForge's secret paths masked (11.2) | open |
+| **Sentinel reports** | The sentinel's events through the agent. The sentinel itself stays on the host, because its local actions need the host's root | none | open |
+| **Toolbox status** | Status tiles that stay current (section 4) | per tool | open |
+| **Shadow-copy tripwire (Windows)** | On a Windows client: process starts (Windows' process auditing with command lines, or Sysmon) for `vssadmin delete shadows`, `wmic shadowcopy delete`, PowerShell removing `Win32_ShadowCopy`, `wbadmin delete catalog` and `bcdedit … recoveryenabled no`, and shadow copies that vanish. The controller then drops that client from every share, snapshots, and freezes if armed, usually before encryption starts. Deleting shadow copies needs administrator rights, which can stop the agent first: its silence is the signal then, and the share's decoys stay the backstop. It detects and reports; it does not block the process, and StorageForge does not claim to be an EDR | Windows process events | open |
+
+### 11.5 Hosts by mode
+
+| Mode | SSH after setup | Agent |
+| :--- | :--- | :--- |
+| **SSH only** (today) | Scans, changes, console | none |
+| **SSH and agent** | Control: change plans, deploys, console, the agent's lifecycle | Automation and monitoring: everything read, live, under `sfagent` |
+| **Monitoring only** | The agent's lifecycle, through `storageforge-agentctl`, and nothing else | Everything read, live. No change plans, deploys, Moves, sends, console, clone, holds or quarantine: the UI shows them disabled with the reason, and adding SSH access later is an upgrade |
+
+Host-to-host data (sends, Moves, sync) keeps its forced-command job keys, which are not the controller's SSH access.
+
+### 11.6 Lab
+
+| Check | Status |
+| :--- | :--- |
+| Each plugin on the distros of the lab, and on Alpine with OpenRC | open |
+| A file written into a running agent's container: access wiped, container stopped and left stopped, alert opened | open |
+| An unsigned plugin, a plugin not in the manifest, a plugin whose hash changed, and an old manifest played back: each refused | open |
+| A stolen agent key used after revocation: refused | open |
+| No Docker socket or API reachable from inside the container | open |
+| A monitoring-only host: `storageforge-agentctl` refuses anything that is not an agent operation | open |
+| The tunnel: an agent key reaches its own receiver and nothing else | open |
+| A batch that names another host, or another host's address or machine ID: stored under the sender's own host, or refused | open |
+| A tripwire report naming another client's address: only the reporter's pinned address is dropped | open |
+| A share freeze asked for by one agent with no second witness: an alert, not a freeze | open |
+| A flood from one agent: its own quota and old rows only; other agents and the web UI unaffected | open |
+| The receiver's database role writing anything but the ingest tables: refused | open |
+| The agent's container reaching anything but the tunnel endpoint, with host networking on: refused | open |
+| Batches deleted or replayed in transit: the gap and the repeat shown, the repeat dropped | open |
+| Agent and scan disagreeing about the same reading: an alert | open |
+| The file index from both: a change made while the agent's plugin is held back, found by the scan and shown as a disagreement; and the other way round | open |
+| Installing the agent on a host with no runtime: the user told, Podman installed, the agent running rootless | open |
+| The agent reading the scan signing key, an SSH host key, a `.ssh` folder, `/run/storageforge/secrets` or the sudoers files, from every plugin including scan and files: refused | open |
+| The agent connecting to the host's own `sshd`, or another host's: refused | open |
+| The agent's key revoked: SSH scans and deploys unaffected. SSH access revoked: the agent unaffected | open |
+| `sshd` stopped: the agent keeps reporting and says SSH is down. The agent wiped: scans, deploys and the console keep working | open |
+| The agent's tunnel key: reaches the receiver only, never a node's forwarded `sshd` | open |
+| Setup with the managing user in the `docker` group: refused, with the reason | open |
+| The managing user running `docker` or `podman` directly, or anything through `sudo` but `storageforge-agentctl`: refused | open |
+| The agent's process: runs as `sfagent`, not root, with no sudo and no `docker` group; the basic plugins rootless under Podman | open |
+| Windows evaluation VM: the shadow-copy tripwire fires on each command above, and the share host drops the client | open, needs the owner's VM |
+
+## 12. The notification center
+
+Decided 2026-11-16: one place for everything that wants a person's attention, most critical at the top. It grows out of what exists: `alerts.py` opens, refreshes and resolves alerts, keeps their history, and pushes to ntfy, Gotify, a webhook or PagerDuty with routes by host and level.
+
+| Item | What | Status |
+| :--- | :--- | :--- |
+| **Every source feeds it** | What `alerts.problems()` gathers today (jobs, schedules, tasks, drift, scans, backups, certificates, security, devices, the map), log rules (section 3), anomalies and silence, the agent's integrity and wipes (section 11), connections that went down (section 2), Toolbox feeds (section 4) | open |
+| **Ranked** | Critical, then warning, then information; within a level, the newest first. Grouped by host and kind, with a count, so a flood is one row | open |
+| **On every page** | A count of open critical notifications in the shared chrome, which opens the center; the center as a page of its own with filters by host, kind, level and state | open |
+| **Ignorable or not** | Critical notifications, configuration drift and security findings cannot be muted, snoozed, dismissed or acknowledged away: they leave the list only when resolved, by an update or another step, and an acknowledgement (a name and a note) only says someone is on it. Everything else can be snoozed for a time or muted per host or rule. Muting and acknowledging go in the audit log | open |
+| **Fixes** | A kind may carry a prepared fix that becomes a plan step: run a stale job now, restart a failed unit, re-converge drift, renew a certificate, apply an update, restart a stopped agent through `storageforge-agentctl`, re-run a scan. Every fix goes the same way: shown prepared, with its plan and report; deployed behind the password; with a rollback offered after. A fix is only offered when it has a way back: an undo step, or a snapshot taken before it. A fix never deletes data by itself (a full disk shows what is largest, it does not clear it) | open |
+| **Channels** | Each route pushes from a level up (critical only to PagerDuty, say), and resolving is pushed when it is on, as today | open |
+| **History** | Resolved, acknowledged and fixed notifications kept and searchable, with who did what | open |
+| **Lab** | A failed unit fixed on a lab host: prepared, deployed, rolled back; a fix with no way back not offered; a critical notification, a drift and a security finding that cannot be muted or acknowledged away and leave only when resolved; a flood of one kind shown as one row | open |
 
 ## Will not be built
 
-The Samba VSS trap, cryptographic shred, compliance certificates and a WebSocket event stream, because they can't work or would claim too much: see [ransomware defense](docs/ransomware-defense.md). StorageForge stays agentless and builds no live log viewer: scans collect host journals for searching later ([Host logs](docs/api-reference.md)), and nothing tails or streams them. It isn't a replacement for NetBox, LibreNMS or Zabbix. The UI adds no framework, build step, CDN or third-party script, no telemetry about how it is used, no mobile-first redesign and no dashboard builder.
+A shadow-copy trap on the Samba server (the deletion runs on the Windows client and never crosses SMB; the client-side tripwire is in section 11), cryptographic shred, compliance certificates, a *SECURE* banner and a WebSocket event stream, because they can't work or would claim too much: see [ransomware defense](docs/ransomware-defense.md). It isn't a replacement for NetBox, LibreNMS or Zabbix. The UI adds no framework, build step, CDN or third-party script, no telemetry about how it is used, no mobile-first redesign and no dashboard builder.
 
-## Decision still open
-
-**How much of B1 to B3 belongs in StorageForge?** The merged plan recommended releasing after the map, then deciding on the change engine onwards from how it's used. They'd make it a deploy platform as well as a map. The other [decisions it assumed](archive/roadmaps/infrastructure-platform-roadmap.md#12-decisions-to-confirm) stand, except that routers and switches are now read directly. Releasing 0.4.0 first is that recommendation, taken.
+This list used to say StorageForge stays agentless and builds no live log viewer, and that the VSS trap cannot work. The first was changed by the decision to build an optional agent, and the second holds only for the server: see *Decisions taken*.

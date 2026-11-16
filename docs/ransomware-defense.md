@@ -111,7 +111,7 @@ The roadmap goes further than this. None of the following exists, and none of it
 
 Fanotify watchers · a simulator for Falco rules against recorded sessions · off-hours read volume by user (it needs `vfs_full_audit`) · a visual drag-and-drop subnet matrix (fences are typed) · a visual builder for playbooks beyond the form · SMS as such (it goes through a webhook) · FIDO2 at sign-in (only for guarded actions) · local mirror discovery (a host uses the mirrors it is already set up for).
 
-These will not be built, because they cannot work or would claim too much: the Samba VSS trap, cryptographic shred, compliance certificates, a *SECURE* banner, and the WebSocket stream. See the [roadmap's corrections](../archive/roadmaps/ransomware-defense-roadmap.md).
+These will not be built, because they cannot work or would claim too much: a shadow-copy (VSS) trap on the Samba server (the deletion runs on the Windows client and never crosses SMB; a tripwire on the client, through the optional agent, is on the [roadmap](../roadmap.md)), cryptographic shred, compliance certificates, a *SECURE* banner, and the WebSocket stream. See the [roadmap's corrections](../archive/roadmaps/ransomware-defense-roadmap.md).
 
 ## What has been tested, and how
 
