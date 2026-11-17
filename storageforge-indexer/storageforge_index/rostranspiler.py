@@ -68,6 +68,20 @@ def _cidr(v):
         _net(v)
 
 
+def _prefix(v):
+    """A destination, a routing rule's match or a DHCP network: one network, never negated and never a range, which no target's route takes."""
+    if v.startswith('!') or '-' in v:
+        raise ValueError('a network, not negated and not a range')
+    _net(v)
+
+
+def _entry(v):
+    """An address-list entry: a network or a range. A list is what a rule negates, not its entries."""
+    if v.startswith('!'):
+        raise ValueError('an entry is not negated: negate the rule that uses the list')
+    _cidr(v)
+
+
 def _iface_addr(v):
     host, slash, prefix = v.partition('/')
     if not slash:
@@ -180,7 +194,7 @@ NAT_ATTRS = {'chain': _oneof('dstnat', 'srcnat'), 'action': _oneof(*sorted(NAT_A
 SCHEMA = {
     ('ip', 'firewall', 'filter'): ('add', FILTER_ATTRS, ('chain', 'action')),
     ('ip', 'firewall', 'nat'): ('add', NAT_ATTRS, ('chain', 'action')),
-    ('ip', 'firewall', 'address-list'): ('add', {'list': _name, 'address': _cidr, 'comment': _comment}, ('list', 'address')),
+    ('ip', 'firewall', 'address-list'): ('add', {'list': _name, 'address': _entry, 'comment': _comment}, ('list', 'address')),
     ('interface', 'bridge'): ('add', {'name': _name, 'vlan-filtering': _yesno, 'comment': _comment, 'mtu': _int}, ('name',)),
     ('interface', 'bridge', 'port'): ('add', {'bridge': _name, 'interface': _name, 'pvid': _int}, ('bridge', 'interface')),
     ('interface', 'bridge', 'vlan'): ('add', {'bridge': _name, 'vlan-ids': _vlans, 'tagged': _names, 'untagged': _names}, ('bridge', 'vlan-ids')),
@@ -189,13 +203,13 @@ SCHEMA = {
     ('ip', 'address'): ('add', {'address': _iface_addr, 'interface': _name, 'comment': _comment}, ('address', 'interface')),
     ('ipv6', 'address'): ('add', {'address': _iface_addr, 'interface': _name, 'comment': _comment}, ('address', 'interface')),
     ('ip', 'pool'): ('add', {'name': _name, 'ranges': _range}, ('name', 'ranges')),
-    ('ip', 'route'): ('add', {'dst-address': _cidr, 'gateway': _ip_ok, 'distance': _int, 'routing-table': _name, 'comment': _comment}, ('dst-address', 'gateway')),
-    ('ipv6', 'route'): ('add', {'dst-address': _cidr, 'gateway': _ip_ok, 'distance': _int, 'comment': _comment}, ('dst-address', 'gateway')),
+    ('ip', 'route'): ('add', {'dst-address': _prefix, 'gateway': _ip_ok, 'distance': _int, 'routing-table': _name, 'comment': _comment}, ('dst-address', 'gateway')),
+    ('ipv6', 'route'): ('add', {'dst-address': _prefix, 'gateway': _ip_ok, 'distance': _int, 'comment': _comment}, ('dst-address', 'gateway')),
     ('routing', 'table'): ('add', {'name': _name, 'fib': _yesno}, ('name',)),
-    ('routing', 'rule'): ('add', {'src-address': _cidr, 'dst-address': _cidr, 'table': _name, 'action': _oneof('lookup', 'drop')}, ('table',)),
+    ('routing', 'rule'): ('add', {'src-address': _prefix, 'dst-address': _prefix, 'table': _name, 'action': _oneof('lookup', 'drop')}, ('table',)),
     ('ip', 'dns'): ('set', {'servers': _ips, 'allow-remote-requests': _yesno, 'domain': _name}, ()),
     ('ip', 'dhcp-server'): ('add', {'name': _name, 'interface': _name, 'address-pool': _name, 'lease-time': _name, 'disabled': _yesno}, ('name', 'interface')),
-    ('ip', 'dhcp-server', 'network'): ('add', {'address': _cidr, 'gateway': _ip_ok, 'dns-server': _ips}, ('address',)),
+    ('ip', 'dhcp-server', 'network'): ('add', {'address': _prefix, 'gateway': _ip_ok, 'dns-server': _ips}, ('address',)),
     ('ip', 'dhcp-server', 'lease'): ('add', {'address': _ip_ok, 'mac-address': _mac, 'server': _name, 'comment': _comment}, ('address', 'mac-address')),
     ('ip', 'dhcp-client'): ('add', {'interface': _name, 'add-default-route': _yesno, 'use-peer-dns': _yesno, 'disabled': _yesno}, ('interface',)),
     ('interface', 'wireguard'): ('add', {'name': _name, 'listen-port': _ports, 'private-key': _wgkey, 'mtu': _int}, ('name',)),
@@ -250,19 +264,20 @@ def parse(text: str) -> list[Stmt]:
             continue
         out_path, verb, rest = None, None, whole
         if whole.startswith('/'):
-            words = whole[1:].split()
+            # the rest is cut from the line as written, not split and joined again: that turned two spaces in a quoted comment into one,
+            # and a no-break space into a space, so what was emitted was not what was written
+            body = whole[1:]
             segs = []
-            consumed = 0
-            for w in words:
-                if '=' in w or w in ('add', 'set'):
+            rest = ''
+            for w in re.finditer(r'\S+', body):
+                if '=' in w[0] or w[0] in ('add', 'set'):
+                    rest = body[w.start():].strip()
                     break
-                segs += [s for s in w.split('/') if s]
-                consumed += 1
+                segs += [s for s in w[0].split('/') if s]
             # /ip/firewall/filter/add: the verb may be the last part of the path
             if segs and segs[-1] in ('add', 'set'):
                 verb = segs.pop()
             out_path = tuple(segs)
-            rest = ' '.join(words[consumed:])
             if tuple(out_path) not in SCHEMA:
                 raise DslError(f'line {start}: no path /{" ".join(out_path)} in this language')
             path = out_path
@@ -1085,7 +1100,9 @@ def from_model(net: dict | None, fw: dict | None) -> str:
         for r in sorted(fw.get('rules') or [], key=lambda x: x.get('order') or 0):
             out.append(_rule_to_dsl(r))
         for n in fw.get('nat') or []:
-            words = [f'chain={"dstnat" if n.get("action") == "dnat" else "srcnat"}', f'action={"dst-nat" if n.get("action") == "dnat" else "masquerade"}']
+            # a dnat with no address is a redirect to this host: dst-nat needs to-addresses, and the line has to read back
+            dnat = n.get('action') == 'dnat'
+            words = [f'chain={"dstnat" if dnat else "srcnat"}', f'action={("dst-nat" if n.get("to_addr") else "redirect") if dnat else "masquerade"}']
             for key, name in (('proto', 'protocol'), ('iif', 'in-interface'), ('oif', 'out-interface'), ('saddr', 'src-address'), ('daddr', 'dst-address')):
                 if n.get(key):
                     words.append(f'{name}={n[key]}')
