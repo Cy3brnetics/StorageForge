@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Disposable KVM lab for StorageForge. Everything it makes is named here and removed by `down`.
 #   lab.sh up             the default build: the seven configs every check needs, the appliances and the routers (roles.py says
-#                         which and why). Created, started and provisioned, ending at golden. About 23 GB of free memory
+#                         which and why). Created, started and provisioned, ending at golden. About 24 GB of free memory
 #   lab.sh up --core      the default build's seven alone: about 12 GB. Appliances and routers can --join later
 #   lab.sh up --random    7 of the 14 configs at random, for the configs the default build leaves out
 #   lab.sh up --seed N    the random build that seed picks, to repeat one
@@ -80,7 +80,7 @@ lab_pipe() {   # as lab_ssh, with stdin passed through
 
 preflight() {
   local need=1536 n ram free_kb
-  for c in virsh virt-install qemu-img xorriso openssl curl flock ssh ssh-keygen python3 git docker; do command -v "$c" >/dev/null || die "missing $c"; done
+  for c in virsh virt-install qemu-img xorriso openssl curl flock ssh ssh-keygen python3 git docker bunzip2; do command -v "$c" >/dev/null || die "missing $c"; done
   [ -w /dev/kvm ] || die 'no write access to /dev/kvm'
   virsh uri >/dev/null 2>&1 || die 'cannot reach libvirt (qemu:///system)'
   for n in "$@"; do
@@ -120,7 +120,9 @@ fetch_image() {
   [ -n "$url" ] || die "$key is not in images.conf"
   file=$(image_path "$key")
   [ -f "$file.ok" ] && [ -f "$file" ] && return 0
-  want=$(curl -fsSL --retry 3 "$sums" | { [[ $sums == *.sha512 || $sums == *.sha256 || $sums == *.SHA256 ]] && cat || grep -F "$(basename "$file")"; } \
+  # the line naming the file, in a list of sums or in a file of one; a file holding only the hash has no such line, and is taken whole
+  want=$(curl -fsSL --retry 3 "$sums") || true
+  want=$({ grep -F -- "$(basename "$file")" <<<"$want" || { [[ $sums == *.sha512 || $sums == *.sha256 || $sums == *.SHA256 ]] && printf '%s\n' "$want"; }; } \
          | grep -oE '\b[0-9a-f]{64}([0-9a-f]{64})?\b' | head -1) || true
   [ -n "$want" ] || die "$key: no published checksum at $sums"
   say "downloading $(basename "$file")"
@@ -135,6 +137,7 @@ base_of() {     # a router image comes compressed. The checked download stays, b
   local key=$1 file; file=$(image_path "$key")
   case $file in
     *.img.zip) local out=${file%.zip}; [ -f "$out" ] || { python3 -c 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); open(sys.argv[2]+".part","wb").write(z.read(z.namelist()[0]))' "$file" "$out" && mv "$out.part" "$out"; }; echo "$out" ;;
+    *.img.bz2) local out=${file%.bz2}; [ -f "$out" ] || { bunzip2 -c "$file" >"$out.part" && mv "$out.part" "$out"; }; echo "$out" ;;
     *.img.gz) local out=${file%.gz}; [ -f "$out" ] || { gunzip -c "$file" >"$out.part" 2>/dev/null || [ -s "$out.part" ]; mv "$out.part" "$out"; }; echo "$out" ;;
     *) echo "$file" ;;
   esac
@@ -197,7 +200,7 @@ remove_segments() {
   done
 }
 segment_mac() { printf '52:54:00:77:%02x:%02x' "$2" "${1##*.}"; }
-is_router() { case $(field "$1" 2) in chr|openwrt) return 0 ;; *) return 1 ;; esac; }
+is_router() { case $(field "$1" 2) in chr|openwrt|opnsense) return 0 ;; *) return 1 ;; esac; }
 mac_of() { printf '52:54:00:77:00:%02x' "${1##*.}"; }
 
 ensure_pool() {
@@ -228,9 +231,11 @@ create_node() {
   fmt=$(qemu-img info "$base" | sed -n 's/^file format: //p' | head -1)
   qemu-img create -q -f qcow2 -F "$fmt" -b "$base" "$rootdisk" "${root}G"
   case $image in
-    chr|openwrt)    # no cloud-init: provision/router.py sets each up over its first boot
+    chr|openwrt|opnsense)    # no cloud-init: provision/router.py sets each up over its first boot
+      # OPNsense boots with a DHCP server on its first interface, which is the lab's own network: its link stays down until router.py has stopped that
+      local link=''; [ "$image" != opnsense ] || link=',link.state=down'
       virt-install --print-xml --import --name "$n" --osinfo "$osinfo" --vcpus "$vcpu" --memory "$ram" --cpu host-passthrough \
-        --network "network=$NET,mac=$(mac_of "$ip"),model=virtio" "${extra[@]}" --graphics none --video none \
+        --network "network=$NET,mac=$(mac_of "$ip"),model=virtio$link" "${extra[@]}" --graphics none --video none \
         --serial "tcp,host=127.0.0.1:$(console_port "$ip"),mode=bind,protocol.type=raw" --rng /dev/urandom --noautoconsole \
         --disk "path=$rootdisk,format=qcow2,bus=virtio" >"$STATE/$n.xml" 2>"$STATE/$n.err" \
         || { cat "$STATE/$n.err" >&2; die "$n: virt-install failed"; }
@@ -532,7 +537,7 @@ cmd_down() {
 probe_node() {   # ssh|root filesystem|swap in use on one line
   if is_router "$1"; then
     if [ "$(field "$1" 2)" = chr ]; then SSH_TIMEOUT=2 lab_ssh "$1" ':put ok' >/dev/null 2>&1 && echo 'yes|routeros|' || echo 'no||'
-    else SSH_TIMEOUT=2 lab_ssh "$1" 'true' >/dev/null 2>&1 && echo 'yes|openwrt|' || echo 'no||'; fi
+    else SSH_TIMEOUT=2 lab_ssh "$1" 'true' >/dev/null 2>&1 && echo "yes|$(field "$1" 2)|" || echo 'no||'; fi
     return
   fi
   SSH_TIMEOUT=2 lab_ssh "$1" 'printf "yes|%s|%s\n" "$(awk "\$2==\"/\" {f=\$3} END {print f}" /proc/mounts)" "$(awk "NR>1 {print \$1}" /proc/swaps | tr "\n" " ")"' 2>/dev/null || echo 'no||'

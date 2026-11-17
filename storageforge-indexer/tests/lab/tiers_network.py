@@ -70,9 +70,15 @@ def tier12(r):
     mikrotik, openwrt = lab.get('sf-mikrotik'), lab.get('sf-openwrt')
     client, server, outside = lab.get('sf-lan-client'), lab.get('sf-dmz-server'), lab.get('sf-wan-host')
     if not mikrotik:
-        r.add('network-lab', '-', None, 'this build has no routers: lab.sh up --join sf-mikrotik,sf-openwrt,sf-wan-host,sf-lan-client,sf-dmz-server')
+        r.add('network-lab', '-', None, 'this build has no routers: lab.sh up --join sf-mikrotik,sf-openwrt,sf-opnsense,sf-wan-host,sf-lan-client,sf-dmz-server')
         return
     ros_ip, wrt_ip = mikrotik.ip, openwrt.ip if openwrt else None
+    opnsense = lab.get('sf-opnsense')
+    opn_ip = opnsense.ip if opnsense else None
+
+    def opn_ssh(command, user='root', timeout=30):
+        """sh on OPNsense. The command goes in quoted whole, since an account's login shell there may be csh."""
+        return router_ssh(opn_ip, f'sh -c {shlex.quote(command)}', user=user, timeout=timeout)
 
     def check(name, host, fn):
         if ONLY and not any(name.startswith(x) for x in ONLY):
@@ -106,6 +112,13 @@ def tier12(r):
             bind('lab-net-read', wrt_ip, 'root', 'scan')
             bind('lab-net-admin', wrt_ip, 'root', 'deploy')
             api.post('/api/devices', {'name': 'sf-openwrt', 'platform': 'openwrt', 'address': wrt_ip})
+        if opnsense:
+            # config.xml and pf want root there too. What an account that is not root gets is measured below
+            opn_ssh(f'echo {shlex.quote(keys["lab-net-read"])} >> /root/.ssh/authorized_keys; echo {shlex.quote(keys["lab-net-admin"])} >> /root/.ssh/authorized_keys')
+            bind('lab-net-read', opn_ip, 'root', 'scan')
+            bind('lab-net-admin', opn_ip, 'root', 'deploy')
+            got = api.post('/api/devices', {'name': 'sf-opnsense', 'platform': 'opnsense', 'address': opn_ip})
+            want(got['platform'] == 'opnsense', got)
     check('enrol-devices', '-', enrol)
 
     # ── 12.0: the transports, against the real thing ──
@@ -118,6 +131,20 @@ def tier12(r):
     check('transport-ssh', 'sf-mikrotik', read('sf-mikrotik'))
     if openwrt:
         check('transport-ssh', 'sf-openwrt', read('sf-openwrt'))
+    if opnsense:
+        check('transport-ssh', 'sf-opnsense', read('sf-opnsense'))
+
+        def opn_read_account():
+            """An account in `admins` that is not root, as OPNsense's own pages make one: what it can read, and that it can change nothing."""
+            want(opn_ssh('head -c 14 /conf/config.xml', user='scan').startswith('<?xml'), 'it cannot read config.xml')
+            for what, command in (('read pf', 'pfctl -sr'), ('write config.xml', 'echo x >> /conf/config.xml'), ('reload the filter', '/usr/local/etc/rc.filter_configure')):
+                try:
+                    opn_ssh(command, user='scan')
+                except RuntimeError:
+                    continue
+                demo.fail(f'the account that is not root could {what}')
+            return 'it reads config.xml, which holds every rule, and not pf; it can write nothing and reload nothing'
+        check('transport-read-account', 'sf-opnsense', opn_read_account)
 
     def read_only():
         p = subprocess.run(['ssh', '-i', f'{demo.STATE}/id_ed25519', '-o', f'UserKnownHostsFile={demo.STATE}/known_hosts', '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes', f'scan@{ros_ip}', '/system/identity/set name=hacked'], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=20)
@@ -177,7 +204,8 @@ def tier12(r):
             t.close()
         return 'an interactive RouterOS terminal: found its prompt, ran commands, no prompt left in the output'
     check('transport-terminal', 'sf-mikrotik', terminal)
-    r.add('transport-cisco-pfsense', '-', None, 'no free Cisco or pfSense image for this lab: those adapters have only met published formats')
+    r.add('transport-cisco-pfsense', '-', None, "no Cisco image without an account, and pfSense's is the owner's download: Cisco has only met published formats, and pfSense shares its adapter with OPNsense, which is here"
+          if opnsense else 'no free Cisco or pfSense image for this lab: those adapters have only met published formats')
 
     # ── 12.1: what it read, against what the router says ──
     def facts():
@@ -208,6 +236,30 @@ def tier12(r):
             want(got['firewall']['backends'] == ['nftables'], got['firewall']['backends'])
             return f'{len(got["network"]["interfaces"])} interfaces, {len(got["firewall"]["rules"])} fw4 rules'
         check('facts-openwrt', 'sf-openwrt', wrt_facts)
+
+    if opnsense:
+        def opn_facts():
+            got = api.get('/api/devices/sf-opnsense')
+            real = {m[1]: m[2] for m in re.finditer(r'^(\w+): .*?\n(?:\t.*\n)*?\tinet (\S+) ', opn_ssh('ifconfig -a'), re.M)}
+            names = {i['name']: [a['ip'] for a in i['addresses']] for i in got['network']['interfaces']}
+            for dev in ('vtnet0', 'vtnet1', 'vtnet2', 'vtnet3'):
+                want(real[dev] in names.get(dev, []), f'{dev} has {real[dev]}, and the reading says {names.get(dev)}')
+            want(got['facts']['wan'] == ['vtnet1'], got['facts']['wan'])
+            want(got['firewall']['backends'] == ['pf'], got['firewall']['backends'])
+            rules = got['firewall']['rules']
+            # the rules OPNsense 26's own pages write, the one in the older place, and the forward: each against what pf has loaded
+            loaded = opn_ssh('pfctl -sr; pfctl -sn')
+            for comment, needle in (('management-ssh', 'from <lab_admins> to (self) port = ssh'), ('lan-to-dmz-web', 'on vtnet2 inet proto tcp from any to 10.77.20.80 port = http'),
+                                    ('wan-to-dmz-https', 'on vtnet1 inet proto tcp from any to 10.77.20.80 port = https'), ('dmz-to-mgmt', 'block drop in quick on vtnet3')):
+                want(any(x['comment'] == comment for x in rules), f'{comment} was not read: {sorted({x["comment"] for x in rules})}')
+                want(needle in loaded, f'pf has no rule like {needle!r}: the lab config did not load')
+            ssh = next(x for x in rules if x['comment'] == 'management-ssh')
+            want((ssh['chain'], ssh['saddr'], ssh['dports']) == ('input', f'{opn_ip.rsplit(".", 1)[0]}.0/24', [22]), f'the rule to the firewall itself: {ssh}')
+            want(any(x['to_addr'] == '10.77.20.80' and x['dports'] == [443] for x in got['firewall']['nat']), got['firewall']['nat'])
+            want('rdr on vtnet1 inet proto tcp from any to (vtnet1) port = https -> 10.77.20.80' in loaded, 'pf has no such forward')
+            want(not got['network']['unreadable'] and any(x['port'] == 22 for x in got['network']['listeners']), 'its listeners')
+            return f'{len(names)} interfaces, {len({x["comment"] for x in rules})} rules from both places config.xml keeps them, 1 forward, as pf has them loaded'
+        check('facts-opnsense', 'sf-opnsense', opn_facts)
 
     def map_nodes():
         g = api.get('/api/map?layers=network,services,firewall')
@@ -367,6 +419,21 @@ def tier12(r):
             return 'in UCI and in the kernel, and the timer gone: ' + str(router_ssh(wrt_ip, 'ls /tmp | grep -c "^sf-" || true').strip())
         check('apply-and-keep', 'sf-openwrt', keep('sf-openwrt', wrt_ip, '/ip firewall filter add chain=forward in-interface=lan1 out-interface=dmz protocol=tcp dst-port=8081 action=accept comment="sf-kept-rule"', wrt_verify))
 
+    if opnsense:
+        def opn_verify():
+            loaded = opn_ssh('pfctl -sr')
+            want('from <sf_kept> to any port = 8081' in loaded, f'the rule did not reach pf: {[x for x in loaded.splitlines() if "808" in x]}')
+            until = time.time() + 30             # OPNsense fills a new alias's table a moment after the reload
+            while '10.98.0.0/16' not in opn_ssh('pfctl -t sf_kept -T show 2>&1; true') and time.time() < until:
+                time.sleep(2)
+            want('10.98.0.0/16' in opn_ssh('pfctl -t sf_kept -T show 2>&1; true'), 'the alias has no table in pf')
+            got = api.post('/api/devices/sf-opnsense/read', {})
+            want(got['ok'], got.get('error'))
+            rule = next((x for x in api.get('/api/devices/sf-opnsense')['firewall']['rules'] if x['comment'] == 'sf-kept-rule'), None)
+            want(rule and rule['saddr'] == '10.98.0.0/16' and rule['dports'] == [8081], f'read back as {rule}')
+            return 'in config.xml and in pf, its alias a table, read back as written, and the timer gone: ' + opn_ssh('ls -d /tmp/sf-* 2>/dev/null | wc -l').strip()
+        check('apply-and-keep', 'sf-opnsense', keep('sf-opnsense', opn_ip, '/ip firewall address-list add list=sf-kept address=10.98.0.0/16\n/ip firewall filter add chain=forward in-interface=opt1 protocol=tcp dst-port=8081 src-address-list=sf-kept action=accept comment="sf-kept-rule"', opn_verify))
+
     def cut(name, ip, dsl, probe, marker):
         def fn():
             before = api.get(f'/api/devices/{name}')['firewall']['rules']
@@ -390,6 +457,7 @@ def tier12(r):
         return fn
     check('rollback-routeros', 'sf-mikrotik', _cut_first(api, router_ssh, ros_ip))
     if openwrt:
+        check('rollback-opnsense', 'sf-opnsense', _cut_opnsense(api, opn_ssh)) if opnsense else None
         check('rollback-openwrt', 'sf-openwrt', cut('sf-openwrt', wrt_ip, '/ip firewall filter add chain=input in-interface=mgmt protocol=tcp dst-port=22 action=drop comment="sf-cut"', 'echo ok', 'sf-cut'))
 
     # ── the scanner, off and then on ──
@@ -480,6 +548,45 @@ def tier12(r):
 
 def quiet_has(vm, tool):
     return subprocess.run([demo.LAB, 'ssh', vm, f'sudo -n sh -c "command -v {tool}"'], capture_output=True, stdin=subprocess.DEVNULL).returncode == 0
+
+
+def _cut_opnsense(api, opn_ssh):
+    """OPNsense loads the rules its pages make before the older place the language writes to, and its anti-lockout rule before both, so no rule the
+    language can add cuts SSH on the management interface. The cut is the mistake made on the device while a change is held: the loaded rules
+    replaced by one that blocks everything. The timer of the held change is what puts the firewall back."""
+    def fn():
+        before = sorted(x['comment'] or '' for x in api.get('/api/devices/sf-opnsense')['firewall']['rules'])
+        rep = api.post('/api/devices/sf-opnsense/report', {'dsl': '/ip firewall filter add chain=forward in-interface=opt1 protocol=tcp dst-port=8082 action=drop comment="sf-cut"'})
+        want(rep['can_apply'], rep)
+        res = api.post(f'/api/devices/changes/{rep["id"]}/apply', {'rollback': 120, 'hold': True})
+        want(res['ok'], res)
+        want('sf-cut' in opn_ssh('cat /conf/config.xml'), 'the change is not in config.xml')
+        opn_ssh("(sleep 1; echo 'block drop quick all' | pfctl -f -; pfctl -F states) >/dev/null 2>&1 &")
+        time.sleep(10)
+        dead = False
+        try:
+            opn_ssh('echo ok', timeout=8)
+        except (RuntimeError, subprocess.TimeoutExpired):
+            dead = True
+        want(dead, 'SSH still answers: this proves nothing')
+        until, back = time.time() + 400, False
+        while time.time() < until:
+            try:
+                opn_ssh('echo ok', timeout=8)
+                back = True
+                break
+            except (RuntimeError, subprocess.TimeoutExpired):
+                time.sleep(5)
+        want(back, 'the firewall never came back')
+        want('sf-cut' not in opn_ssh('cat /conf/config.xml'), 'the rule is still in config.xml')
+        want('port = 8082' not in opn_ssh('pfctl -sr'), 'the rule is still in pf')
+        got = api.post('/api/devices/sf-opnsense/read', {})
+        want(got['ok'], got.get('error'))
+        after = sorted(x['comment'] or '' for x in api.get('/api/devices/sf-opnsense')['firewall']['rules'])
+        want(after == before, f'the rules are not what they were: {after}')
+        status = api.get(f'/api/devices/changes/{rep["id"]}')['status']
+        return f'SSH really went dead, the timer put config.xml back and reloaded the filter, and StorageForge is back in (the change ended as {status})'
+    return fn
 
 
 def _cut_first(api, router_ssh, ip):

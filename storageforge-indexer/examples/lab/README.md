@@ -28,7 +28,7 @@ Also: `lab.sh status`, `lab.sh ssh <vm> [command]`, and `lab.sh snapshot` to ret
 
 | Command | Build | Free memory |
 | :--- | :--- | :--- |
-| `lab.sh up` | The default: `sf-ctl`, `sf-alpine`, `sf-ubuntu`, `sf-jammy`, `sf-bookworm`, `sf-fedora` and `sf-rocky`, which between them have every host a check asks for, so none skips for want of one (`roles.py` says which check needs which); `sf-pve`, `sf-truenas` and `sf-xcp`; the routers and the machines behind them | about 23 GB |
+| `lab.sh up` | The default: `sf-ctl`, `sf-alpine`, `sf-ubuntu`, `sf-jammy`, `sf-bookworm`, `sf-fedora` and `sf-rocky`, which between them have every host a check asks for, so none skips for want of one (`roles.py` says which check needs which); `sf-pve`, `sf-truenas` and `sf-xcp`; the routers and the machines behind them | about 24 GB |
 | `lab.sh up --core` | Those seven alone. `lab.sh up --join sf-pve,…` adds the rest later | about 12 GB |
 | `lab.sh up --random` | `sf-ctl`, `sf-alpine` and five of the other twelve at random, for the configs the default leaves out. `--seed N` repeats one | about 12 GB |
 | `lab.sh up --pick a,b,c` | Exactly those configs | |
@@ -37,7 +37,7 @@ Also: `lab.sh status`, `lab.sh ssh <vm> [command]`, and `lab.sh snapshot` to ret
 
 ## What it needs
 
-libvirt with `qemu:///system`, `virt-install`, `qemu-img`, `xorriso`, Docker to build the images, write access to `/dev/kvm`, about 23 GB of free RAM for the default build (12 GB for `--core` or `--random`) and 30 GB of free disk. `up` checks all of these first.
+libvirt with `qemu:///system`, `virt-install`, `qemu-img`, `xorriso`, Docker to build the images, write access to `/dev/kvm`, about 24 GB of free RAM for the default build (12 GB for `--core` or `--random`) and 30 GB of free disk. `up` checks all of these first.
 
 | Item | Where | After Destroy |
 | :--- | :--- | :--- |

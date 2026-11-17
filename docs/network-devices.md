@@ -27,7 +27,7 @@ A real device of an untested kind may well behave differently. Start with one yo
    /user/add name=scan group=sf-read
    ```
 
-2. **Bind keys** in **Keys**, as for a host: one to its address with the `scan` action, and one with `deploy` for an account that can change it. OpenWrt's firewall and `ubus` need root, so both are root there.
+2. **Bind keys** in **Keys**, as for a host: one to its address with the `scan` action, and one with `deploy` for an account that can change it. OpenWrt's firewall and `ubus` need root, so both are root there. pfSense and OPNsense need root as well, for `pf`, the listeners and any change. An OPNsense account in `admins` that isn't root can read `config.xml`, which holds every rule and every password hash, but not `pf` or other accounts' listeners, and can change nothing: a reading through one says its listeners could not be read.
 3. **Add it** under **Devices**, with its name, address and system.
 4. **Read now.** After that it's read every hour, or every 5 minutes with traffic monitoring on.
 
@@ -89,6 +89,8 @@ Under **Compose**, on a device: **Report**, then **Apply**.
    | Cisco | `configure terminal revert timer` |
 
 3. StorageForge connects again from scratch. If the device answers, the change is kept and the timer is removed. If not, it waits and watches the device come back.
+
+**On OPNsense 26 and later, a rule added this way comes last.** OPNsense loads its anti-lockout rule first, then the rules its own pages make, then the older `<filter>` section, which is where the language writes. Every one of them is `quick`, so a rule added here can't override a rule made in OPNsense's pages that matches the same traffic. Aliases go into OPNsense's own alias list, and work from either place.
 
 Tick **I will confirm it myself** to look around first. The timer is 60 seconds to an hour, and defaults to 3 minutes. A RouterOS rollback reboots the router, so allow for that.
 

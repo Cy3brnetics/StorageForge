@@ -149,7 +149,7 @@ class LabPool(unittest.TestCase):
                 self.assertTrue(any(n.can(ability) for n in core), ability)
             self.assertTrue(any(n.pm == 'dnf' for n in hosts), 'firewalld for the network language')
             self.assertLessEqual({'sf-ubuntu', 'sf-bookworm'}, {n.name for n in core}, 'the pair tier 18 names')
-            for ability in ('proxmox', 'truenas', 'xen', 'routeros', 'openwrt', 'segment'):
+            for ability in ('proxmox', 'truenas', 'xen', 'routeros', 'openwrt', 'opnsense', 'segment'):
                 self.assertTrue(any(n.can(ability) for n in full), ability)
                 self.assertFalse(any(n.can(ability) for n in core), ability)
         finally:
