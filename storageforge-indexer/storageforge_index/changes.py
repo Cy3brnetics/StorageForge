@@ -200,7 +200,7 @@ CHECKS = {
     'options': re.compile(r'[A-Za-z0-9_=,.:/@+-]{0,400}'), 'label': re.compile(r'[A-Za-z0-9_.-]{0,64}'),
     'text': re.compile(r'[^\0\n]{0,200}'), 'host': HOST_RE,
     'devices': re.compile(r'/dev/[A-Za-z0-9/_.:+-]+( +/dev/[A-Za-z0-9/_.:+-]+){0,63}'),
-    'name': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}'), 'dataset': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}'),
+    'name': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}'), 'unit': re.compile(r'[A-Za-z0-9:_.@-]{1,200}\.service'), 'dataset': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}'),
     'btrfs-device': re.compile(r'/dev/[A-Za-z0-9/_.:+-]+|\d{1,5}|missing'), 'size': re.compile(r'\d{1,12}(\.\d{1,3})?[KMGTP]'), 'number': re.compile(r'\d{1,7}'),
     'mkfs': re.compile(r'[a-z_]+=[A-Za-z0-9_.+:-]+(,[a-z_]+=[A-Za-z0-9_.+:-]+)*'),
     'spec': re.compile(r'(UUID|LABEL|PARTUUID|PARTLABEL)=[A-Za-z0-9_.-]+|/dev/[A-Za-z0-9/_.:+-]+|[A-Za-z0-9_.-]+:/[^\0\n ]*|//[^\0\n /]+/[^\0\n ]+'),

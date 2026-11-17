@@ -2101,7 +2101,7 @@ class ScriptHeaderTests(DBCase):
                        'port': '8080', 'ports': '445,139', 'cidr': '10.0.0.0/24', 'cidrs': '10.0.0.0/24,10.0.1.0/24', 'iface': 'eth0', 'sysctl': 'fs.protected_hardlinks', 'word': 'yes',
                        'wgkey': 'a' * 43 + '=', 'image': 'nginx:1', 'publish': '127.0.0.1:8080:80/tcp', 'binds': '/srv/a:/data', 'lines': text, 'vmname': 'vm1', 'url': 'https://x.example/a.qcow2', 'sha': 'a' * 64, 'sizes': '10',
                        'pubkey': 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl', 'names': 'vim',
-                       'dhcprange': '10.0.0.100-10.0.0.200', 'vmdisks': 'vda:virtio:qcow2:vm1-vda.qcow2', 'vmnics': 'network=default:virtio:new', 'osinfo': 'debian12'}[f['kind']]
+                       'dhcprange': '10.0.0.100-10.0.0.200', 'vmdisks': 'vda:virtio:qcow2:vm1-vda.qcow2', 'vmnics': 'network=default:virtio:new', 'osinfo': 'debian12', 'unit': 'nginx.service'}[f['kind']]
                       for f in spec['fields']}
             out[f'changes {kind}'] = changes.script(self.conn, {'name': 'p', 'tasks': [{'type': kind, 'host': 'nas', 'params': params, 'note': text}]})
         for kind, spec in tasks.TYPES.items():

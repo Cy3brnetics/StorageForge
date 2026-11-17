@@ -176,3 +176,68 @@ changes.register('services', {'group': 'Software', 'label': 'Start the services 
             'that is not installed here. The base system, network setup, guest tools and StorageForge jobs are always left out.'},
     ('from_host', 'timers'), lambda p: f'Services of {p["from_host"]}', _check, _ansible, args_of=_args)
 changes.EXTRA_BASH.append(BASH)
+
+
+# ── one unit, started, restarted or stopped ─────────────────────────
+# The step a prepared fix in the notification center is made of (notifications.py): restart a service that failed, with stopping it again
+# as the way back. It never enables or disables a unit, so what starts at boot is as it was.
+# Units a restart or a stop could cut StorageForge off through, or take the machine down with: done by hand, on the host.
+OWN_WAY_IN = r'(ssh|sshd|sshd@.*|systemd-.*|dbus.*|NetworkManager|networking|wicked.*|dhcpcd|netplan.*|network.*|firewalld|ufw|nftables|iptables|ip6tables|netfilter-persistent|polkit|getty@.*|serial-getty@.*)\.service'
+UNIT_STATES = ('started', 'restarted', 'stopped')
+UNIT_BASH = r"""
+t_unit_state() { local unit=$1 want=$2 now sub
+  [[ -d /run/systemd/system ]] || { conflict "this host has no systemd: $unit is not a unit here"; return 0; }
+  if [[ $unit =~ ^__OWN_WAY_IN__$ ]]; then conflict "$unit is how this host is reached or what it stands on: do this one by hand, on the host"; return 0; fi
+  now=$(systemctl show -p LoadState --value -- "$unit" 2>/dev/null || true)
+  [[ $now == loaded ]] || { conflict "$unit is not a unit on this host (${now:-unknown})"; return 0; }
+  now=$(systemctl is-active -- "$unit" 2>/dev/null || true)
+  case $want in
+    started) [[ $now == active ]] && { ok "$unit is running"; return 0; }
+      act "systemctl start $unit (it is $now)" || return 0
+      systemctl reset-failed -- "$unit" 2>/dev/null || true
+      systemctl start -- "$unit" 2>/dev/null || true ;;
+    restarted) act "systemctl restart $unit (it is $now)" || return 0
+      systemctl reset-failed -- "$unit" 2>/dev/null || true
+      systemctl restart -- "$unit" 2>/dev/null || true ;;
+    stopped) [[ $now == inactive || $now == failed ]] && { ok "$unit is not running ($now)"; return 0; }
+      act "systemctl stop $unit (it is $now)" || return 0
+      systemctl stop -- "$unit" 2>/dev/null || true ;;
+    *) conflict "unknown state $want"; return 0 ;;
+  esac
+  sleep 2
+  now=$(systemctl is-active -- "$unit" 2>/dev/null || true)
+  if [[ $want == stopped ]]; then
+    if [[ $now == inactive || $now == failed ]]; then ok "$unit is stopped"; else conflict "$unit is still $now"; fi
+  elif [[ $now == active ]]; then ok "$unit is running"
+  else conflict "$unit did not stay up, it is $now: $(journalctl -u "$unit" -n 1 --no-pager -o cat 2>/dev/null | tail -n 1)"; fi
+  return 0
+}
+""".replace('__OWN_WAY_IN__', OWN_WAY_IN)
+
+
+def _unit_check(conn, c, h, p, say):
+    if re.fullmatch(OWN_WAY_IN, p['unit']):
+        say('crit', f'{p["unit"]} is how the host is reached or what it stands on: it is not restarted or stopped from here')
+    sv = for_host(conn, h['name'])
+    if sv and sv['init'] != 'systemd':
+        say('crit', f'{h["name"]} starts its services with {sv["init"]}: there are no units there')
+    say('note', {'started': 'starts it if it is not running', 'restarted': 'restarts it, running or not', 'stopped': 'stops it if it is running'}[p['state']]
+        + '. What starts at boot is left as it is: nothing is enabled or disabled')
+
+
+def _unit_ansible(t, conn=None):
+    q = shlex.quote
+    p = t['params']
+    head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; }; info() { :; }; skip() { :; }\n'
+            'act() { echo "changed: $*"; }\n')
+    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + UNIT_BASH + f'\nt_unit_state {q(p["unit"])} {q(p["state"])}\n', 'executable': '/bin/bash'},
+            'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+
+
+changes.register('unit-state', {'group': 'Software', 'label': 'Start, restart or stop a service', 'fields': [
+    F('unit', 'unit', 'Unit', required=True, placeholder='nginx.service'),
+    F('state', 'choice', 'Make it', options=list(UNIT_STATES), required=True)],
+    'help': 'One systemd service, started, restarted or stopped now. Nothing is enabled or disabled, so what starts at boot stays as it was. '
+            'SSH, the network and the firewall are refused: those are done by hand, on the host.'},
+    ('unit', 'state'), lambda p: f'{p["unit"]}: {p["state"]}', _unit_check, _unit_ansible)
+changes.EXTRA_BASH.append(UNIT_BASH)
