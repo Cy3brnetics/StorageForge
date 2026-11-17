@@ -99,27 +99,38 @@ def _ubus_interfaces(text: str) -> dict:
         data = json.loads(text or '{}')
     except ValueError:
         return {}
+    if not isinstance(data, dict):
+        return {}
     return {i.get('interface'): i for i in data.get('interface') or [] if isinstance(i, dict)}
+
+
+def _objects(v) -> list[dict]:
+    """The objects in a list from ubus, skipping anything else: a damaged dump loses that entry, not the device's reading (found by test_props_parsers)."""
+    return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
 
 
 def _from_ubus(net: dict, ubus: dict) -> None:
     """Fills in what busybox's ip could not give."""
+    import ipaddress
     if not net['interfaces']:
         for name, i in ubus.items():
             dev = i.get('l3_device') or i.get('device')
             if dev:
                 net['interfaces'].append({'name': dev, 'kind': 'ethernet', 'state': 'up' if i.get('up') else 'down', 'mtu': None, 'mac': None, 'master': None, 'parent': None, 'vlan_id': None, 'bridge_vlans': [],
-                                          'addresses': [{'ip': a.get('address'), 'prefix': a.get('mask'), 'scope': 'global'} for a in i.get('ipv4-address') or []]})
+                                          'addresses': [{'ip': a.get('address'), 'prefix': a.get('mask'), 'scope': 'global'} for a in _objects(i.get('ipv4-address'))]})
         net['unreadable'] = [u for u in net['unreadable'] if u not in ('interfaces', 'addresses')]
     if not net['routes']:
         for i in ubus.values():
             dev = i.get('l3_device') or i.get('device')
-            for r in i.get('route') or []:
+            for r in _objects(i.get('route')):
                 dst = 'default' if r.get('target') == '0.0.0.0' and not r.get('mask') else f'{r.get("target")}/{r.get("mask")}'
                 net['routes'].append({'dst': dst, 'via': None if r.get('nexthop') in (None, '0.0.0.0') else r['nexthop'], 'dev': dev, 'metric': r.get('metric'), 'family': 4})
-            for a in i.get('ipv4-address') or []:
-                import ipaddress
-                net['routes'].append({'dst': str(ipaddress.ip_interface(f'{a.get("address")}/{a.get("mask")}').network), 'via': None, 'dev': dev, 'metric': 0, 'family': 4})
+            for a in _objects(i.get('ipv4-address')):
+                try:
+                    dst = str(ipaddress.ip_interface(f'{a.get("address")}/{a.get("mask")}').network)
+                except ValueError:
+                    continue
+                net['routes'].append({'dst': dst, 'via': None, 'dev': dev, 'metric': 0, 'family': 4})
         net['unreadable'] = [u for u in net['unreadable'] if u != 'routes']
         net['gateways'] = sorted({r['via'] for r in net['routes'] if r['dst'] == 'default' and r['via']})
 
@@ -196,7 +207,9 @@ def parse(text: str) -> dict:
         board = json.loads(s.get('board') or '{}')
     except ValueError:
         board = {}
-    version = (board.get('release') or {}).get('version')
+    board = board if isinstance(board, dict) else {}
+    release = board.get('release') if isinstance(board.get('release'), dict) else {}
+    version = release.get('version')
     from .routeros import counters
     rows = []
     for line in (s.get('dev') or '').splitlines()[2:]:

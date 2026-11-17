@@ -266,9 +266,18 @@ def facts(t: dict, extra: dict) -> dict:
             'counters': extra.get('counters') or [], 'connections': extra.get('connections')}
 
 
+def _count(v) -> int:
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def counters(rows: list[dict] | None) -> list[dict]:
-    return [{'iface': r.get('name'), 'rx_bytes': int(r.get('rx-byte') or 0), 'tx_bytes': int(r.get('tx-byte') or 0), 'rx_drop': int(r.get('rx-drop') or 0), 'tx_drop': int(r.get('tx-drop') or 0),
-             'rx_error': int(r.get('rx-error') or 0), 'tx_error': int(r.get('tx-error') or 0)} for r in rows or [] if r.get('name')]
+    """A count that isn't a number reads as 0, as a missing one does: it used to throw, and the device's whole reading was lost (found by test_props_parsers)."""
+    return [{'iface': r.get('name'), **{k: _count(r.get(f)) for k, f in (('rx_bytes', 'rx-byte'), ('tx_bytes', 'tx-byte'), ('rx_drop', 'rx-drop'), ('tx_drop', 'tx-drop'),
+                                                                          ('rx_error', 'rx-error'), ('tx_error', 'tx-error'))}}
+            for r in rows or [] if isinstance(r, dict) and r.get('name')]
 
 
 def collect(run) -> dict:

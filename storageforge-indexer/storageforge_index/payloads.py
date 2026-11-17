@@ -192,9 +192,15 @@ def apply_fstab(node: dict, entries: list[dict]):
 # df
 
 def _df_size(tok):
+    """A size df printed, or None: one it can't read is unknown, and no longer stops every other row (found by test_props_parsers)."""
     if tok in ('-', ''):
         return None
-    return int(tok) if tok.isdigit() else parse_size(tok)
+    if tok.isascii() and tok.isdigit():
+        return int(tok)
+    try:
+        return parse_size(tok)
+    except ValueError:
+        return None
 
 
 def parse_df(text: str) -> list[dict]:

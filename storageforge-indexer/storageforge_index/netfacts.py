@@ -44,14 +44,15 @@ def _sections(text: str) -> dict:
 
 
 def _json(text: str):
-    """A list, or None when the command gave nothing we can read. '[]' stays an honest empty."""
+    """A list of objects, or None when the command gave nothing we can read. '[]' stays an honest empty. A list holding anything but objects
+    is unreadable too: it used to throw, and one odd section lost the whole reading (found by test_props_parsers)."""
     if not text:
         return None
     try:
         v = json.loads(text)
     except ValueError:
         return None
-    return v if isinstance(v, list) else None
+    return v if isinstance(v, list) and all(isinstance(x, dict) for x in v) else None
 
 
 def _split_addr(local: str) -> tuple[str, int] | None:

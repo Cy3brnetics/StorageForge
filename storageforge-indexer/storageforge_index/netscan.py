@@ -81,7 +81,10 @@ def parse_xml(text: str) -> list[dict]:
         raise ValueError('more than a scan should ever say')
     if '<!ENTITY' in (text or ''):
         raise ValueError('it declares an entity: refused')
-    root = ElementTree.fromstring(text)
+    try:
+        root = ElementTree.fromstring(text)
+    except ElementTree.ParseError as exc:
+        raise ValueError(f'nmap gave XML that does not parse: {exc}') from None
     out = []
     for h in root.findall('host'):
         if (h.find('status') is not None and h.find('status').get('state') != 'up'):
