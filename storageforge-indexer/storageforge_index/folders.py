@@ -245,13 +245,20 @@ def duplicate_folders(conn: Conn, host: str | None = None, min_files: int = 3, m
     groups, checked = _fleet_groups(index, mounts, min_files, min_bytes, include_system)
     dup_keys = {(k[0], k[1]) for ks in groups.values() for k in ks}
 
-    def nested(key):                       # its parent is itself part of a reported copy
+    def nested(key, among):
+        """Its parent is itself part of a reported copy, which already says it. Unless another copy of it sits in that same parent: two
+        folders alike inside one folder are copies of each other there, whatever the folder above is a copy of. Found in the KVM lab, where
+        every host holds the same seed: album-2024 and album-2024-copy, side by side on each host, were hidden because the folder above
+        them has a copy on the next host, and no same-host copy was reported at all."""
         mid, path = key[:2]
-        return path != '/' and (mid, posixpath.dirname(path)) in dup_keys
+        above = posixpath.dirname(path)
+        if path == '/' or (mid, above) not in dup_keys:
+            return False
+        return sum(1 for k in among if k[0] == mid and posixpath.dirname(k[1]) == above) < 2
 
     out = []
     for keys in groups.values():
-        keys = [k for k in keys if not nested(k)]
+        keys = [k for k in keys if not nested(k, keys)]
         if len(keys) < 2 or (mine is not None and not any(k[0] in mine for k in keys)):
             continue
         files, size = keys[0][2:]

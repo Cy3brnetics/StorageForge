@@ -95,6 +95,23 @@ class FileMap(unittest.TestCase):
         for i in range(n):
             self.file(host, f'{root}/f{i}.bin', sha, size=(i + 1) << 20)
 
+    def test_two_copies_side_by_side_show_even_when_the_folder_above_has_a_copy_elsewhere(self):
+        """The KVM lab's seed is the same on every host, with album and album-copy side by side in it. The folder above them is a copy
+        across hosts, so both albums were dropped as already said, and the host showed no copy of its own at all."""
+        for host, top in (('nas', '/srv/seed'), ('pc', '/data/seed')):
+            self.folder_of(host, top, n=6)
+            self.folder_of(host, f'{top}/album', n=4)
+            self.folder_of(host, f'{top}/album-copy', n=4)
+            self.folder_of(host, f'{top}/album/raw', n=3)
+            self.folder_of(host, f'{top}/album-copy/raw', n=3)
+            self.folder_of(host, f'{top}/other', n=5)
+        r = folders.duplicate_folders(self.conn, 'nas', 3, 1, include_system=True)
+        paths = [sorted((c['host'], c['path']) for c in g['copies']) for g in r['groups']]
+        self.assertIn([('nas', '/srv/seed/album'), ('nas', '/srv/seed/album-copy'), ('pc', '/data/seed/album'), ('pc', '/data/seed/album-copy')], paths)
+        self.assertIn([('nas', '/srv/seed'), ('pc', '/data/seed')], paths, 'the folder above is still said once')
+        said = {c['path'] for g in r['groups'] for c in g['copies']}
+        self.assertFalse({p for p in said if p.endswith('/raw') or p.endswith('/other')}, 'what lies inside a copy, once per copy, is not said again')
+
     def test_folder_copies_across_hosts_are_not_crowded_out(self):
         """The live fleet had 313 same-host folder copies and 46 across hosts, sorted same-host first and cut at 100 (200 in the
         graph): not one across hosts showed."""
