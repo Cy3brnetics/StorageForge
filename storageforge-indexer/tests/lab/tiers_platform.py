@@ -627,7 +627,10 @@ def tier10(r):
     def libvirt():
         node = vms[0]
         disk = f'{node.room}/sf-lab.qcow2'
-        sudo(node.name, 'command -v virsh >/dev/null || { DEBIAN_FRONTEND=noninteractive apt-get -qq install -y libvirt-daemon-system qemu-utils virtinst || dnf -q -y install libvirt qemu-img qemu-kvm || zypper -nq install libvirt qemu-tools; systemctl enable --now libvirtd >/dev/null 2>&1 || true; }')
+        # a golden snapshot's package lists go stale, and an install from them fails quietly: refresh first, and say when a tool is still missing
+        sudo(node.name, 'command -v virsh >/dev/null && command -v qemu-img >/dev/null || { if command -v apt-get >/dev/null; then export DEBIAN_FRONTEND=noninteractive; apt-get -qq update; apt-get -qq install -y libvirt-daemon-system qemu-utils virtinst; '
+                        'elif command -v dnf >/dev/null; then dnf -q -y install libvirt qemu-img qemu-kvm; else zypper -nq install libvirt qemu-tools; fi; systemctl enable --now libvirtd >/dev/null 2>&1 || true; }; '
+                        'command -v virsh >/dev/null && command -v qemu-img >/dev/null || { echo "virsh or qemu-img could not be installed" >&2; exit 1; }')
         sudo(node.name, f'qemu-img create -f qcow2 {disk} 64M >/dev/null')
         xml = f"""<domain type='qemu'><name>sf-lab-guest</name><memory unit='MiB'>64</memory><vcpu>1</vcpu><os><type>hvm</type></os>
 <devices><disk type='file' device='disk'><driver name='qemu' type='qcow2'/><source file='{disk}'/><target dev='vda' bus='virtio'/></disk></devices></domain>"""

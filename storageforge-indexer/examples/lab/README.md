@@ -1,12 +1,12 @@
 # KVM lab
 
-Seven disposable VMs, picked at random from 14 configs, for testing StorageForge across distros and filesystems. It runs on the libvirt host, separate from StorageForge itself.
+Disposable VMs for testing StorageForge across distros and filesystems: by default the seven configs every check needs, with Proxmox, TrueNAS, XCP-ng, two routers and the machines behind them, or seven picked at random from 14. It runs on the libvirt host, separate from StorageForge itself.
 
 It builds the VMs, their storage layouts and seed data, the network, the snapshots and the control panel, runs StorageForge from this working tree on `sf-ctl`, and can fill it with a working demo.
 
 See [KVM lab](../../../docs/kvm-lab.md) for the test tiers and results.
 
-Proxmox, TrueNAS and XCP-ng join a build only through `--pick`, and install from ISOs: see [Appliances](../../../docs/kvm-lab.md#appliances).
+Proxmox, TrueNAS and XCP-ng install from ISOs: see [Appliances](../../../docs/kvm-lab.md#appliances). They are in the default build, and never in a random one.
 
 ## Use it
 
@@ -17,18 +17,27 @@ python3 examples/lab/panel.py --open   # or start the panel directly
 
 | Button | Command | What it does |
 | :--- | :--- | :--- |
-| **Up** | `lab.sh up` | Picks 7 of the 14 configs, then creates and starts the VMs, lays out their storage, adds seed data, starts StorageForge on `sf-ctl`, then takes a `golden` snapshot. Safe to run again: it resumes VMs that aren't finished, except one whose storage layout failed partway, which needs Destroy. |
+| **Up** | `lab.sh up` | Builds the default build (below), or the build already picked: creates and starts the VMs, lays out their storage, adds seed data, starts StorageForge on `sf-ctl`, then takes a `golden` snapshot. Safe to run again: it resumes VMs that aren't finished, except one whose storage layout failed partway, which needs Destroy. |
 | **Reset** | `lab.sh reset` | Returns every VM to `golden`. |
 | **Demo** | `lab.sh demo` | Resets the lab, then fills StorageForge through its own API. Takes about 3 minutes. |
 | **Test** | `lab.sh test` | Checks the running lab against what it should hold. Reads only. |
-| **Full test** | `lab.sh test --all` | Runs tiers 0-11, resetting around them, and writes `reports/lab-<date>.md`. Takes about an hour, and changes the VMs while it runs. |
+| **Full test** | `lab.sh test --all` | Runs tiers 0-14 and 16-18, resetting around them, and writes `reports/lab-<date>.md`, which lists every skipped check with its reason. Takes hours on the default build, and changes the VMs while it runs. |
 | **Destroy** | `lab.sh down` | Removes the lab straight away with no confirmation, stopping any running command first. |
 
-Also: `lab.sh status`, `lab.sh ssh <vm> [command]`, and `lab.sh snapshot` to retake `golden`, and `lab.sh controller` to rebuild StorageForge from this tree and restart it on `sf-ctl`, keeping its data. `lab.sh up --seed N` repeats a build and `lab.sh up --pick a,b,c` builds exactly those configs. `lab.sh up <vm>...` creates only the named VMs of the current build and takes no snapshot.
+Also: `lab.sh status`, `lab.sh ssh <vm> [command]`, and `lab.sh snapshot` to retake `golden`, and `lab.sh controller` to rebuild StorageForge from this tree and restart it on `sf-ctl`, keeping its data. Which build `up` makes:
+
+| Command | Build | Free memory |
+| :--- | :--- | :--- |
+| `lab.sh up` | The default: `sf-ctl`, `sf-alpine`, `sf-ubuntu`, `sf-jammy`, `sf-bookworm`, `sf-fedora` and `sf-rocky`, which between them have every host a check asks for, so none skips for want of one (`roles.py` says which check needs which); `sf-pve`, `sf-truenas` and `sf-xcp`; the routers and the machines behind them | about 23 GB |
+| `lab.sh up --core` | Those seven alone. `lab.sh up --join sf-pve,…` adds the rest later | about 12 GB |
+| `lab.sh up --random` | `sf-ctl`, `sf-alpine` and five of the other twelve at random, for the configs the default leaves out. `--seed N` repeats one | about 12 GB |
+| `lab.sh up --pick a,b,c` | Exactly those configs | |
+
+ `lab.sh up <vm>...` creates only the named VMs of the current build and takes no snapshot.
 
 ## What it needs
 
-libvirt with `qemu:///system`, `virt-install`, `qemu-img`, `xorriso`, Docker to build the images, write access to `/dev/kvm`, about 12 GB of free RAM and 30 GB of free disk. `up` checks all of these first.
+libvirt with `qemu:///system`, `virt-install`, `qemu-img`, `xorriso`, Docker to build the images, write access to `/dev/kvm`, about 23 GB of free RAM for the default build (12 GB for `--core` or `--random`) and 30 GB of free disk. `up` checks all of these first.
 
 | Item | Where | After Destroy |
 | :--- | :--- | :--- |

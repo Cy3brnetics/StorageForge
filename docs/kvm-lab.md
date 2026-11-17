@@ -1,19 +1,25 @@
 # KVM lab
 
-`examples/lab` builds seven disposable VMs, picked at random from 14 configs across distros and filesystems, runs StorageForge on one of them, and tests the rest for real. It runs on a libvirt host, and a normal test run doesn't touch it. The [lab README](../storageforge-indexer/examples/lab/README.md) covers what each VM holds, what the lab needs and what Destroy removes.
+`examples/lab` builds disposable VMs across distros and filesystems, runs StorageForge on one of them, and tests the rest for real. The default build is the seven configs every check needs, the three appliances and the routers; a random build is seven of the 14 configs. It runs on a libvirt host, and a normal test run doesn't touch it. The [lab README](../storageforge-indexer/examples/lab/README.md) covers what each VM holds, what the lab needs and what Destroy removes.
 
 ```bash
 examples/lab/lab.sh install-launcher   # adds "StorageForge Lab" to the desktop menu
-examples/lab/lab.sh up                 # pick and build 7: about 5 minutes with base images cached
-examples/lab/lab.sh up --seed 500277455   # the same 7 as an earlier build
+examples/lab/lab.sh up                 # the default build: 7 configs, 3 appliances, 2 routers and 3 machines behind them
+examples/lab/lab.sh up --core          # its 7 configs alone: about 5 minutes with base images cached
+examples/lab/lab.sh up --random        # 7 of the 14 configs at random
+examples/lab/lab.sh up --seed 500277455   # the same 7 as an earlier random build
 examples/lab/lab.sh up --pick sf-ctl,sf-fedora,sf-arch   # exactly these configs
-examples/lab/lab.sh test --all         # tiers 0-11 and 13 and a report: over an hour
+examples/lab/lab.sh test --all         # tiers 0-14 and 16-18 and a report, with every skip and its reason
 examples/lab/lab.sh down               # remove it all
 ```
 
 ## The 14 configs
 
-Every build has `sf-ctl` and `sf-alpine`, the only config without systemd, plus 5 at random, with at least two btrfs hosts and one each of ZFS, LVM and SELinux. The seed is printed, saved and written in the report, and Destroy forgets it, so the next Up picks again. `examples/lab/roles.conf` says what each config can do, and tests choose hosts from that. A check with no suitable host in a build shows as skip.
+Every build has `sf-ctl` and `sf-alpine`, the only config without systemd. `examples/lab/roles.conf` says what each config can do, and tests choose hosts from that. A check with no suitable host in a build shows as skip, and the report lists every skip with its reason.
+
+**The default build** (`lab.sh up`) is fixed: `sf-ubuntu`, `sf-jammy`, `sf-bookworm`, `sf-fedora` and `sf-rocky` beside those two. Between them they have every host a check asks for: two ZFS hosts for a send between hosts, two btrfs raid hosts with a subvolume to send, snapshot and pull a disk from, two Debian-family hosts without Docker for the LXC and Incus guests, Docker with its `iptables-restore`, Podman, LVM, SELinux, firewalld and ufw, and the pair tier 18 names. `roles.py` holds the list with its reasons, and a unit test (`test_appliances.LabPool`) fails when it stops covering them. The appliances and the routers below are part of it, so it wants about 23 GB of free memory; `--core` builds the seven alone.
+
+**A random build** (`lab.sh up --random`) adds 5 of the other 12 at random, with at least two btrfs hosts and one each of ZFS, LVM and SELinux, and never an appliance. It is how the seven configs outside the default build get their runs. The seed is printed, saved and written in the report, and Destroy forgets it.
 
 | Config | Distro | Storage |
 | :--- | :--- | :--- |
@@ -34,7 +40,7 @@ Every build has `sf-ctl` and `sf-alpine`, the only config without systemd, plus 
 
 ## Appliances
 
-Three server hypervisor/storage configs install from their vendors' ISOs, with nobody at the console. They need more memory and a larger download, so only `--pick` builds them:
+Three server hypervisor/storage configs install from their vendors' ISOs, with nobody at the console. They need more memory and a larger download, so they are in the default build and `--pick` builds, and never in a random one:
 
 | Config | System | Storage | RAM |
 | :--- | :--- | :--- | :--- |
@@ -42,7 +48,7 @@ Three server hypervisor/storage configs install from their vendors' ISOs, with n
 | `sf-truenas` | TrueNAS 25.10 | ZFS mirror `tank` | 4 GB |
 | `sf-xcp` | XCP-ng 8.3, nested Xen | Local ext storage repository | 3 GB |
 
-Routers and the machines behind them join a running build with `lab.sh up --join sf-mikrotik,sf-openwrt,sf-wan-host,sf-lan-client,sf-dmz-server`, on isolated WAN, LAN and DMZ networks with no route out. Only tier 12 uses them. There's no free pfSense or Cisco image the lab can install unattended, so neither is here: see [what has been tested on what](network-devices.md#what-has-been-tested-on-what).
+Routers and the machines behind them are in the default build, and join any other running build with `lab.sh up --join sf-mikrotik,sf-openwrt,sf-wan-host,sf-lan-client,sf-dmz-server`, on isolated WAN, LAN and DMZ networks with no route out. Only tier 12 uses them. There's no free pfSense or Cisco image the lab can install unattended, so neither is here: see [what has been tested on what](network-devices.md#what-has-been-tested-on-what).
 
 | Config | System | Interfaces / Network | RAM |
 | :--- | :--- | :--- | :--- |
@@ -100,7 +106,7 @@ Running tier 13 twice without `lab.sh reset` between fails most of it: it leaves
 | 18: libvirt | `tests/lab/tiers_kvm.py` | libvirt installed in `sf-ubuntu` (libvirt 10) and `sf-bookworm` (libvirt 9.0), each a KVM host for a nested Alpine guest made by `vm-create` with its guest agent. Pools and networks defined, changed and removed; a disk-only snapshot with the filesystems frozen, reverted (a file written after it is gone) and deleted; `vm-edit` seen from inside the guest; the VM snapshot and backup task blocks; a live copy to the other host by a signed send of each disk, booted there; a revert refused on libvirt 9.0; force off and start. Needs nested virtualisation on the workstation and internet for the guest's packages. Passed 17 of 17 on 2026-11-09 |
 | 13: Features | `tests/lab/tiers_features.py` | Every feature no other tier reached: file changes, capacity, duplicates, cold data, containers, Git, host configs and the reinstall script applied, canvas, reports, file map, planner, keys added by hand, the vault and accounts through real sign-ins, the activity log, backups copied and restored, audit tampering, snapshot jobs, ClamAV on the EICAR file, LXC and Incus, the map's views, stale dry runs, scan schedules and quiet hours, every read-only command and route, every page in a browser, retiring a host, and site reset |
 
-`lab.sh test --all`, or **Full test** in the panel, runs tiers 0 to 11, 13, 14, 16 and 17, resets the lab around the tiers that change VMs, and writes `reports/lab-<date>.md` with a table per distro. Reports aren't committed. Tiers 1, 3, 4, 5, 9, 10, 11, 13, 14, 16 and 17 run against the real Docker stack on `sf-ctl` through its API. Tiers 2 and 8 run on the libvirt host, on a throwaway database. `lab.sh gauntlet` runs tier 2 alone and `lab.sh appliances` runs tier 8 alone.
+`lab.sh test --all`, or **Full test** in the panel, runs tiers 0 to 14 and 16 to 18, resets the lab around the tiers that change VMs, and writes `reports/lab-<date>.md` with a table per distro. Reports aren't committed. Tiers 1, 3, 4, 5, 9, 10, 11, 13, 14, 16 and 17 run against the real Docker stack on `sf-ctl` through its API. Tiers 2 and 8 run on the libvirt host, on a throwaway database. `lab.sh gauntlet` runs tier 2 alone and `lab.sh appliances` runs tier 8 alone.
 
 Tiers 9 to 11 last ran on 2026-11-03, with the work uncommitted, on `--pick sf-ctl,sf-ubuntu,sf-fedora,sf-rocky,sf-suse,sf-alpine,sf-bookworm`: all tiers gave 441 passed, 0 failed and 3 skipped. The skips were ZFS send and the sync engine's ZFS stream, which need two ZFS hosts, and appliances, which need `--pick`. The other configs have not run tiers 9 to 11.
 
@@ -128,7 +134,7 @@ The known failures from those builds were fixed and rechecked on 2026-11-01, on 
 
 ## What the lab can't test
 
-- **ZFS send between hosts in every build:** it needs both ZFS configs, and most builds pick one, so it usually shows as skip.
+- **ZFS send between hosts in a random build:** it needs both ZFS configs, and most random builds pick one, so it shows as skip there. The default build has both.
 - **`yum`-only systems:** those distros are end-of-life.
 - **PostgreSQL:** the lab runs StorageForge on SQLite. CI runs the unit tests on PostgreSQL instead, apart from those about SQLite files and the command line tests that drive one.
 - **Real updates:** what a mirror holds changes daily, so no tier can state the result. Update scripts run against stand-ins.
@@ -139,6 +145,6 @@ The known failures from those builds were fixed and rechecked on 2026-11-01, on 
 - **Proxy routes and identity providers (not lab-tested):** they have parsers and unit tests, and need an account on an outside service.
 - **Tailscale, partly:** on 2026-11-08 the `tailscale` step joined three VMs to a real tailnet with a key from the vault, and the web console reached a VM over its Tailscale address. Reading Tailscale in scans has unit tests only.
 - **Terraform and Puppet apply (not lab-tested):** the exports are checked for structure, for values held as data, and by `terraform validate` and `puppet parser validate` where those tools are installed. Nothing has applied one.
-- **The web UI, partly:** tier 13 opens every page and tab in Chromium on real data, when `playwright` is installed where the tier runs. Otherwise that check shows as skip. Actions in the UI are the browser tests' job, on local data.
+- **The web UI, partly:** tier 13 opens every page and tab in Chromium on real data. `lab.sh test --all` runs it in the lab's own venv, where it installs Playwright; run by hand with a Python that lacks it, that check shows as skip. Actions in the UI are the browser tests' job, on local data.
 - **ClamAV's memory rule:** its script refuses under 2 GiB, and the lab's largest VMs report about 1.7 GiB. Tier 13 checks the refusal, then hides the real figure from that one check to test the rest.
 - **Enterprise Linux at 1 GB:** those configs have 2 GB, because `dnf` is killed for lack of memory at 1 GB once EPEL is enabled.

@@ -1297,7 +1297,7 @@ def report():
     commit = subprocess.run(['git', '-C', str(ROOT), 'log', '-1', '--format=%h'], capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(['git', '-C', str(ROOT), 'status', '--short'], capture_output=True, text=True).stdout.strip()
     count = {s: sum(x['status'] == s for x in rows) for s in CELL}
-    lines = [f'# KVM lab results {stamp}', '', f'Build `{roles.seed()}`: {", ".join(VMS)}. Rebuild it with `lab.sh up ' + (f'--pick {",".join(VMS)}' if roles.seed() == 'pick' else f'--seed {roles.seed()}') + '`.', '', f'Commit `{commit}`{" with uncommitted changes" if dirty else ""}. '
+    lines = [f'# KVM lab results {stamp}', '', f'Build `{roles.seed()}`: {", ".join(VMS)}. Rebuild it with `lab.sh up' + {'pick': f' --pick {",".join(VMS)}', 'full': '', 'core': ' --core'}.get(roles.seed(), f' --seed {roles.seed()}') + '`.', '', f'Commit `{commit}`{" with uncommitted changes" if dirty else ""}. '
              f'{count["pass"]} passed, {count["FAIL"]} failed, {count["known"]} known failures, {count["skip"]} skipped.', '']
     for tier, name in TIERS.items():
         here = [x for x in rows if x['tier'] == tier]
@@ -1317,6 +1317,11 @@ def report():
     if problems:
         lines += ['## Failures', '']
         lines += [f'- **{x["status"]}, tier {x["tier"]}, {x["check"]} on {x["host"]}:** {x["note"]}' for x in problems]
+        lines.append('')
+    skipped = [x for x in rows if x['status'] == 'skip']
+    if skipped:         # a skip is a check that did not happen: each one says why, so none hides
+        lines += ['## Skipped', '']
+        lines += [f'- **tier {x["tier"]}, {x["check"]} on {x["host"]}:** {x["note"]}' for x in skipped]
         lines.append('')
     out = REPORTS / f'lab-{stamp}.md'
     out.write_text('\n'.join(lines))

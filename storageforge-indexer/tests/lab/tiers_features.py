@@ -1031,7 +1031,7 @@ def tier13(r):
         import playwright  # noqa: F401
         check('ui-pages', '-', lambda: pages(api))
     except ImportError:
-        r.add('ui-pages', '-', None, 'playwright is not installed where the tier runs')
+        r.add('ui-pages', '-', None, 'playwright is not installed where the tier runs: lab.sh test --all runs it in the lab venv, which has it')
     check('retire-host', away.name, retire_host(api, away))
     check('restore-backup', '-', restore_backup(api))
     check('site-and-reset', '-', site_and_reset(api, node.name))

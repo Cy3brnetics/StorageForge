@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Disposable KVM lab for StorageForge. Everything it makes is named here and removed by `down`.
-#   lab.sh up             pick 7 of the 14 configs at random, then create, start and provision them, ending at golden
-#   lab.sh up --seed N    the build that seed picks, to repeat one
+#   lab.sh up             the default build: the seven configs every check needs, the appliances and the routers (roles.py says
+#                         which and why). Created, started and provisioned, ending at golden. About 23 GB of free memory
+#   lab.sh up --core      the default build's seven alone: about 12 GB. Appliances and routers can --join later
+#   lab.sh up --random    7 of the 14 configs at random, for the configs the default build leaves out
+#   lab.sh up --seed N    the random build that seed picks, to repeat one
 #   lab.sh up --pick a,b  exactly these configs
 #   lab.sh up vm...       only these VMs of the current build, with no snapshot
 #   lab.sh up --join a,b  add configs to the running build: routers and their client VMs join this way
@@ -9,7 +12,8 @@
 #   lab.sh reset          return every VM to the golden snapshot
 #   lab.sh snapshot       retake the golden snapshot from the current state
 #   lab.sh test           check the running lab against what it should hold
-#   lab.sh test --all     tiers 0-14, 16, 17 and 18, resetting around them, and write the report into reports/. Takes a while.
+#   lab.sh test --all     tiers 0-14, 16, 17 and 18, resetting around them, and write the report into reports/, with every skip
+#                         and its reason. Takes hours on the default build.
 #   lab.sh gauntlet       tier 2 alone: every deploy path on every VM, from golden and back
 #   lab.sh appliances     tier 8 alone: Proxmox, TrueNAS and XCP-ng, when the build has them
 #   lab.sh controller     rebuild StorageForge from this tree and restart it on sf-ctl, keeping its data
@@ -87,7 +91,7 @@ preflight() {
     fi
   done
   free_kb=$(awk '/^MemAvailable/ {print $2}' /proc/meminfo)
-  [ $((free_kb / 1024)) -ge "$need" ] || die "needs $need MB free, have $((free_kb / 1024)) MB"
+  [ $((free_kb / 1024)) -ge "$need" ] || die "needs $need MB free, have $((free_kb / 1024)) MB. up --core builds the seven without appliances and routers, and --join adds them"
   local parent; parent=$(dirname "$LAB_DIR"); [ -d "$parent" ] || die "$parent does not exist"
   [ "$(df -BG --output=avail "$parent" | tail -1 | tr -dc 0-9)" -ge "$DISK_NEEDED_GB" ] || die "needs ${DISK_NEEDED_GB} GB free in $parent"
   if ! virsh net-info "$NET" >/dev/null 2>&1 && ip route | grep -q "^$PREFIX\."; then die "$PREFIX.0/24 is already routed on this machine"; fi
@@ -421,23 +425,28 @@ cmd_snapshot() {
 }
 
 cmd_up() {
-  local want=() all=0 n seed='' pick='' join=''
+  local want=() all=0 n seed='' pick='' join='' kind=''
   while [ $# -gt 0 ]; do
     case $1 in
       --join) join=${2:?--join needs config names}; shift 2 ;;
       --seed) seed=${2:?--seed needs a number}; shift 2 ;;
       --pick) pick=${2:?--pick needs config names}; shift 2 ;;
+      --core|--random) kind=${1#--}; shift ;;
       *) want+=("$1"); shift ;;
     esac
   done
   mkdir -p "$STATE"; chmod 700 "$STATE"
-  if [ ! -f "$STATE/selection" ] || [ -n "$seed$pick" ]; then
+  if [ ! -f "$STATE/selection" ] || [ -n "$seed$pick$kind" ]; then
     [ -z "$(lab_domains)" ] || die 'a lab is running: use down before picking another build'
     if [ -n "$pick" ]; then
       echo "pick ${pick//,/ }" >"$STATE/selection"
-    else
+    elif [ -n "$seed" ] || [ "$kind" = random ]; then
       seed=${seed:-$(( (RANDOM << 15) | RANDOM ))}
       echo "$seed $(python3 "$HERE/roles.py" pick "$seed")" >"$STATE/selection"
+    elif [ "$kind" = core ]; then
+      echo "core $(python3 "$HERE/roles.py" default core)" >"$STATE/selection"
+    else
+      echo "full $(python3 "$HERE/roles.py" default)" >"$STATE/selection"
     fi
   fi
   if [ -n "$join" ]; then     # more configs in the running build, which keeps its seed and its golden on the rest
@@ -565,6 +574,8 @@ cmd_ssh() {
 ensure_venv() {
   # installed, not from source: password logins need its storageforge-askpass program
   [ -x "$STATE/venv/bin/storageforge-askpass" ] || { python3 -m venv "$STATE/venv" && "$STATE/venv/bin/pip" install -q -e "$HERE/../.." ; } || die 'could not install StorageForge for the tests'
+  # tier 13 opens every page in Chromium. The browser is kept in Playwright's own cache, so only the first lab downloads it
+  "$STATE/venv/bin/python" -c 'import playwright' 2>/dev/null || { "$STATE/venv/bin/pip" install -q playwright && "$STATE/venv/bin/python" -m playwright install chromium >/dev/null; } || die 'could not install Playwright for tier 13'
 }
 
 cmd_appliances() {    # tier 8, on a throwaway database. It needs no sf-ctl, so it also runs in a lab of appliances alone.
@@ -595,7 +606,7 @@ cmd_test_all() {
     case $t in    # the report decides, knowing what is known
       2) cmd_gauntlet || true ;;
       8) cmd_appliances || true ;;
-      12) ensure_venv; PYTHONPATH="$HERE/../.." "$STATE/venv/bin/python" "$tiers" run "$t" || true ;;    # it reads with the product's own parsers
+      12|13) ensure_venv; PYTHONPATH="$HERE/../.." "$STATE/venv/bin/python" "$tiers" run "$t" || true ;;    # 12 reads with the product's own parsers, 13 needs Playwright
       *) python3 "$tiers" run "$t" || true ;;
     esac
   done

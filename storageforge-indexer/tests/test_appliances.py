@@ -130,6 +130,31 @@ class LabPool(unittest.TestCase):
         finally:
             sys.path.remove(str(LAB))
 
+    def test_the_default_build_has_every_host_a_check_asks_for(self):
+        """A check with no suitable host shows as skip, so the default build must leave none without one (roadmap 1.2)."""
+        sys.path.insert(0, str(LAB))
+        try:
+            import roles
+            everything = roles.pool()
+            core = [everything[n] for n in roles.default(core=True)]
+            full = [everything[n] for n in roles.default()]
+            self.assertEqual(len(core), roles.BUILD_SIZE)
+            self.assertTrue(all(sum(n.can(a) for n in core) >= count for a, count in roles.NEEDS.items()), 'what every random build has')
+            hosts = [n for n in core if n.can('deploy') and not n.can('controller')]
+            self.assertGreaterEqual(sum(n.can('zfs') for n in hosts), 2, 'a ZFS send between hosts')
+            self.assertGreaterEqual(sum(n.can('btrfs-raid') and bool(n.subvol) for n in hosts), 2, 'a btrfs send, a pulled disk, snapper')
+            debian = [n for n in hosts if n.pm == 'apt-get' and not n.can('docker')]
+            self.assertGreaterEqual(len(debian), 2, 'an LXC guest on one Debian-family host without Docker, an Incus guest on a second')
+            for ability in ('docker', 'podman', 'lvm', 'selinux', 'nosystemd'):
+                self.assertTrue(any(n.can(ability) for n in core), ability)
+            self.assertTrue(any(n.pm == 'dnf' for n in hosts), 'firewalld for the network language')
+            self.assertLessEqual({'sf-ubuntu', 'sf-bookworm'}, {n.name for n in core}, 'the pair tier 18 names')
+            for ability in ('proxmox', 'truenas', 'xen', 'routeros', 'openwrt', 'segment'):
+                self.assertTrue(any(n.can(ability) for n in full), ability)
+                self.assertFalse(any(n.can(ability) for n in core), ability)
+        finally:
+            sys.path.remove(str(LAB))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """The configs of the KVM lab, which of them this build runs, and what each can do, so tests never name a host for its
-abilities. Run directly, it picks a build: sf-ctl, sf-alpine (the only host without systemd) and 5 more at random, with
-at least two btrfs hosts and one each of ZFS, LVM and SELinux, and never an appliance. The same seed always gives the same build.
+abilities. Run directly, it names a build.
 
-    roles.py pick <seed>
+    roles.py default        the default build: DEFAULT below, every appliance, and the routers with the machines behind them
+    roles.py default core   DEFAULT alone
+    roles.py pick <seed>    sf-ctl, sf-alpine (the only host without systemd) and 5 more at random, with at least two btrfs hosts
+                            and one each of ZFS, LVM and SELinux, and never an appliance. The same seed always gives the same build
 """
 import os
 import random
@@ -15,6 +17,12 @@ HERE = Path(__file__).resolve().parent
 ALWAYS = ('sf-ctl', 'sf-alpine')
 BUILD_SIZE = 7
 NEEDS = {'btrfs': 2, 'zfs': 1, 'lvm': 1, 'selinux': 1}
+# The default build's seven: between them, every host a check asks for, so no check skips for want of one. Two ZFS hosts for sends
+# between hosts (sf-ubuntu, sf-jammy), the pair tier 18 names (sf-ubuntu, sf-bookworm), two btrfs raid hosts with a subvolume to
+# send and to snapshot (sf-fedora, sf-bookworm), Debian-family hosts without Docker for the LXC and Incus guests (sf-bookworm,
+# sf-jammy), Docker with its iptables-restore (sf-ubuntu), Podman and LVM (sf-rocky), SELinux and firewalld (sf-fedora, sf-rocky),
+# ufw (the Ubuntus). tests/test_appliances.py holds it to that. The other seven configs run in random builds.
+DEFAULT = ('sf-ctl', 'sf-alpine', 'sf-ubuntu', 'sf-jammy', 'sf-bookworm', 'sf-fedora', 'sf-rocky')
 
 
 def rows(name):
@@ -122,5 +130,10 @@ def pick(number):
             return [n for n in everything if n in names]
 
 
+def default(core=False):
+    """The default build, in nodes.conf order: DEFAULT, and unless core, the appliances, the routers and the machines behind them."""
+    return [name for name, node in pool().items() if name in DEFAULT or (not core and node.can('appliance'))]
+
+
 if __name__ == '__main__':
-    print(*pick(sys.argv[2]))
+    print(*(default(sys.argv[2:3] == ['core']) if sys.argv[1] == 'default' else pick(sys.argv[2])))
