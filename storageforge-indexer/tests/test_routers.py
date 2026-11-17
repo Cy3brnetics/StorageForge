@@ -5,6 +5,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -12,6 +13,7 @@ from unittest import mock
 from storageforge_index import changes, cisco, deploy, exposure, netdevice, netscan, openwrt, permissions, pfsense, reach, routeros, rostranspiler as ros, security, traffic, users, vault
 from storageforge_index.db import Database
 from storageforge_index.nettransport import DirectTransport
+from storageforge_index.remote import RemoteError
 from test_security import PW, Base
 
 FIX = Path(__file__).parent / 'fixtures'
@@ -1144,6 +1146,82 @@ class Devices(unittest.TestCase):
         netdevice.RouterOsApply(9).plant(run, 180)
         self.assertEqual([c.split()[0] for c in calls], ['/system/backup/save', '/system/scheduler/remove', '/system/scheduler/add', '/system/scheduler/print'])
         self.assertIn('name=sf-9', calls[-1])
+
+    def settle(self, answers, tries=3, sleep=lambda s: None):
+        """_settle after an apply, with the device answering (True), not answering (False) or not reachable ('down') at each try."""
+        self.stored()
+        rep = netdevice.report(self.db, self.conn, 'gw', '/ip firewall filter add chain=forward action=drop', 'a')
+        now = int(time.time())
+        self.conn.execute("UPDATE network_changes SET status = 'unconfirmed', applied_at = :t, rollback_at = :t WHERE change_id = :i", {'t': now, 'i': rep['id']})
+        seen, confirmed = list(answers), []
+
+        class Applier:
+            def __init__(self, cid):
+                pass
+
+            def alive(self, run):
+                return seen.pop(0) if seen else False
+
+            def confirm(self, run):
+                confirmed.append(1)
+
+        class Session:
+            def __enter__(self):
+                if seen and seen[0] == 'down':
+                    seen.pop(0)
+                    raise RemoteError('ssh: connect to host 10.77.0.30 port 22: Connection timed out')
+                return lambda c, timeout=None: ''
+
+            def __exit__(self, *a):
+                return False
+        with mock.patch.object(netdevice, 'session', lambda *a, **k: Session()), mock.patch.dict(netdevice.APPLIERS, {'routeros': Applier}), \
+                mock.patch.object(netdevice, 'read', lambda *a, **k: {'ok': True}), mock.patch.object(netdevice, 'CONFIRM_TRIES', tries), \
+                mock.patch.object(netdevice.time, 'sleep', sleep), mock.patch('storageforge_index.errlog.trace', lambda: None):
+            netdevice._settle(self.db, rep['id'], 120)
+        return netdevice.change(self.conn, rep['id']), confirmed
+
+    def test_after_an_apply_a_device_that_answers_from_a_new_connection_is_confirmed(self):
+        c, confirmed = self.settle(['down', True])
+        self.assertEqual((c['status'], confirmed), ('confirmed', [1]))
+
+    def test_a_device_that_stops_answering_is_left_to_its_timer_and_seen_back(self):
+        c, confirmed = self.settle(['down', 'down', False, True], tries=3)
+        self.assertEqual(c['status'], 'rolled-back')
+        self.assertIn('went back to what it had', c['output'])
+        self.assertEqual(confirmed, [], 'never confirmed: the timer took it back')
+
+    def test_a_device_that_never_answers_again_is_lost(self):
+        clock = [time.time()]                    # time moves on as _settle sleeps, so it reaches the end of its wait
+
+        def sleep(s):
+            clock[0] += s + 1
+        with mock.patch.object(netdevice.time, 'time', lambda: clock[0]):
+            c, _ = self.settle(['down'] * 3, tries=2, sleep=sleep)
+        self.assertEqual(c['status'], 'lost')
+        self.assertIn('has not answered since its timer ran out', c['output'])
+
+    def test_a_session_that_dies_after_the_timer_is_planted_leaves_the_change_to_it(self):
+        """The change may have cut the session off, which is what the timer is for: unconfirmed, not reported as if nothing happened."""
+        self.stored()
+        rep = netdevice.report(self.db, self.conn, 'gw', '/ip firewall filter add chain=forward action=drop', 'a')
+
+        class Dying:
+            def __enter__(self):
+                return lambda c, timeout=None: '1' if 'count-only' in c else 'ok'
+
+            def __exit__(self, *a):
+                raise RemoteError('Connection to 10.77.0.30 closed by remote host.')
+        with mock.patch.object(netdevice, 'session', lambda *a, **k: Dying()):
+            got = netdevice.apply(self.db, self.conn, rep['id'], 'a', rollback=120, hold=True)
+        self.assertEqual(got['status'], 'unconfirmed')
+        self.assertIn('closed by remote host', netdevice.change(self.conn, rep['id'])['output'])
+        self.assertIsNone(self.conn.scalar('SELECT source FROM network_changes WHERE change_id = :i', {'i': rep['id']}), 'the change text is not kept')
+
+    def test_only_an_unconfirmed_change_can_be_confirmed(self):
+        self.stored()
+        rep = netdevice.report(self.db, self.conn, 'gw', '/ip firewall filter add chain=forward action=drop', 'a')
+        with self.assertRaisesRegex(netdevice.DeviceError, 'reported'):
+            netdevice.confirm(self.db, self.conn, rep['id'])
 
     def test_the_timer_has_limits(self):
         self.stored()
