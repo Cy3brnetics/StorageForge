@@ -27,6 +27,30 @@ function sfSecurityChip(chip, open, allowed = () => true, delay = 0) {
   return draw;
 }
 
+/* The count of open notifications, on every page (roadmap section 12): critical ones first and in words, so the number never stands alone.
+   A click opens the center. Nothing is shown to someone who may not see alerts, or when nothing is open. */
+function sfNotificationChip(chip, open, allowed = () => true, delay = 0) {
+  const draw = async () => {
+    if (!allowed()) { chip.hidden = true; return; }
+    try {
+      const { counts, total } = await getJSON('/api/notifications/summary');
+      chip.hidden = !total;
+      const level = counts.crit ? 'crit' : counts.warn ? 'warn' : 'info';
+      chip.className = `threat nt-${level}`;
+      const head = counts.crit ? `${counts.crit} critical notification${counts.crit === 1 ? '' : 's'}` : `${total} notification${total === 1 ? '' : 's'}`;
+      const rest = [counts.crit && counts.warn ? `${counts.warn} warning${counts.warn === 1 ? '' : 's'}` : '', counts.crit && counts.info ? `${counts.info} for information` : '',
+                    !counts.crit && counts.warn ? `${counts.warn} warning${counts.warn === 1 ? '' : 's'}, none critical` : '', !counts.crit && !counts.warn ? 'for information' : ''].filter(Boolean).join(', ');
+      chip.replaceChildren(sfNode('b', {}, head), sfNode('span', { class: 'threat-detail' }, rest));
+      chip.title = `${head}${rest ? `: ${rest}` : ''}. Open the notification center`;
+      const cnt = document.getElementById('ncrit'); if (cnt) cnt.textContent = counts.crit ? String(counts.crit) : '';
+    } catch { chip.hidden = true; }
+  };
+  chip.addEventListener('click', open);
+  setInterval(draw, 60000);
+  setTimeout(draw, delay);
+  return draw;
+}
+
 // [key, href, label, the permission it needs]
 const SF_PAGES = [['main', '/', 'Topology and map', 'hosts.view'], ['planner', '/planner', 'Storage planner', 'hosts.view'],
                   ['manage', '/manage', 'Network management', 'devices.view']];
@@ -45,16 +69,19 @@ async function sfMountChrome(slot) {
   const links = [...SF_PAGES, ...SF_PLAN].filter(([, , , need]) => perms.has(need));          // the pages, then the way into the plan's steps on the main page
   if (!perms.has('hosts.view')) links.push(['search', '/search', 'File search', null]);      // the one page an account with no hosts can use
   const chip = sfNode('button', { type: 'button', class: 'threat sec-unknown', hidden: true });
+  const bell = sfNode('button', { type: 'button', class: 'threat nt-none', hidden: true });
   const parts = [
     want.has('site') && me.site ? sfNode('span', { class: 'sf-site' }, me.site) : null,
     want.has('pages') ? sfNode('nav', { 'aria-label': 'Pages' }, links.map(([key, href, label]) => sfNode('a', { class: 'sf-btn ghost', href, 'aria-current': key === here ? 'page' : null }, label))) : null,
     want.has('chip') ? chip : null,
+    want.has('chip') ? bell : null,
     want.has('user') ? sfNode('div', { class: 'sf-user' }, sfNode('span', {}, me.username),
       sfNode('button', { type: 'button', class: 'sf-btn ghost', onclick: sfPreferences }, 'Preferences'), sfNode('button', { type: 'button', class: 'sf-btn ghost', onclick: sfSignOut }, 'Sign out')) : null,
   ].filter(Boolean);                                         // replaceChildren(null) would write the word "null"
   slot.className = 'sf-chrome';
   slot.replaceChildren(...parts);
   if (want.has('chip')) sfSecurityChip(chip, () => { location.href = '/#tab=security'; }, () => perms.has('security.view'));
+  if (want.has('chip')) sfNotificationChip(bell, () => { location.href = '/#/topo/notifications'; }, () => perms.has('deploy.view'));
 }
 document.querySelectorAll('[data-sf-chrome]').forEach(sfMountChrome);
 

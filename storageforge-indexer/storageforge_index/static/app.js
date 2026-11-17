@@ -621,6 +621,7 @@ function showTab(name) {
   if (name === 'jobs') { loadJobs(); jobTimer = setInterval(loadJobs, 3000); }
   if (name === 'audit') loadAudit();
   if (name === 'hostlogs') loadHostLogs();
+  if (name === 'notifications') loadNotifications();
   if (name === 'keys') loadKeys();
   if (name === 'access') loadAccess();
   if (name === 'copies') loadCopies();
@@ -919,7 +920,7 @@ let ME = null;
 const can = (perm) => !!ME && ME.permissions.includes(perm);
 // a console opens in a tab of its own (console.html): the terminal takes the window, and several can be open at once
 function openConsole(host) { window.open(`/console#${encodeURIComponent(host)}`, '_blank', 'noopener'); }
-const TAB_NEEDS = { search: 'search.files', changes: 'plans.view', moves: 'plans.view', schedule: 'plans.view', deploy: 'deploy.view',
+const TAB_NEEDS = { notifications: 'deploy.view', search: 'search.files', changes: 'plans.view', moves: 'plans.view', schedule: 'plans.view', deploy: 'deploy.view',
                     docker: 'services.view', infra: 'workloads.view', git: 'services.view', rebuild: 'configs.view', copies: 'files.browse', malware: 'files.browse', access: 'keys.view',
                     security: 'security.view', jobs: 'scans.view', keys: 'keys.view', hostlogs: 'hostlogs.view' };
 function applyPermissions(me) {          // only hides what would answer 403: the server decides

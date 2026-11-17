@@ -1411,7 +1411,7 @@ class BrowserSmoke(unittest.TestCase):
         got = self.page.evaluate("""() => [...document.querySelectorAll('.tabs button[role=tab]')].map((b) => {
           const p = document.getElementById(b.getAttribute('aria-controls'));
           return [b.dataset.tab, !!p, p && p.getAttribute('role'), p && p.getAttribute('aria-labelledby') === b.id]; })""")
-        self.assertEqual(len(got), 18)
+        self.assertEqual(len(got), 19)
         for tab, found, role, back in got:
             self.assertEqual((found, role, back), (True, 'tabpanel', True), tab)
 
@@ -1422,6 +1422,8 @@ class BrowserSmoke(unittest.TestCase):
         focused = lambda: self.page.evaluate('document.activeElement.dataset.tab')
         self.page.keyboard.press('ArrowDown')
         self.assertEqual(focused(), 'search')
+        self.page.keyboard.press('ArrowDown')
+        self.assertEqual(focused(), 'notifications')
         self.page.keyboard.press('ArrowDown')
         self.assertEqual(focused(), 'changes')
         self.assertEqual(stops(), ['details'])                                            # moving does not open: Enter or Space does

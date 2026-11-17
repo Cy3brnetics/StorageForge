@@ -103,6 +103,11 @@ select, input[type=search], input[type=text], input[type=password] { background:
 .railmore svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 .railmore:hover { color: var(--fg); }
 .cnt { font-family: var(--mono); font-size: 11px; }
+/* the notification center (notifyview.js): a group per host and kind, its level said in words and marked on its left edge */
+.nt-group { margin: 10px 0; border-left: 3px solid var(--line-2); padding-left: 8px; }
+.nt-group.nt-l-crit { border-left: 5px solid var(--broken); } .nt-group.nt-l-warn { border-left: 4px double var(--local-only); }
+.nt-group h3 { margin: 0 0 2px; font-size: 13px; }
+#nt-hq { width: 100%; margin: 6px 0; }
 .tab { padding: 14px 16px; overflow: auto; flex: 1; display: flex; flex-direction: column; gap: 12px; }
 .tab p { margin: 0; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

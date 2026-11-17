@@ -60,6 +60,8 @@ button[aria-busy="true"]::after { content: ""; display: inline-block; width: .8e
 .threat.sec-critical { background: #7a1f1f; color: #fff; border-color: #a33; }
 .threat.sec-warning { background: #7a5a1f; color: #fff; border-color: #a83; }
 .threat.sec-secure { color: var(--sf-ok); }
+.threat.nt-crit { background: #7a1f1f; color: #fff; border-color: #a33; }
+.threat.nt-warn { background: #7a5a1f; color: #fff; border-color: #a83; }
 .threat:focus-visible { outline: 2px solid var(--sf-accent); outline-offset: 2px; }
 
 /* The chrome a page without a header of its own mounts (chrome.js): the site, the other pages, the chip, and who is signed in. */

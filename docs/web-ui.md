@@ -2,7 +2,7 @@
 
 For a guided tour of every feature, see the [feature guide](features/README.md).
 
-The main page (`/`) has five views in the header (**Topology**, **Graph**, **Tasks**, **Map** and **Scan**) and a rail of 18 panels on the right. Every page except `/login` needs a session; an open page clears itself and returns to the sign-in page when the session ends.
+The main page (`/`) has five views in the header (**Topology**, **Graph**, **Tasks**, **Map** and **Scan**) and a rail of 19 panels on the right. Every page except `/login` needs a session; an open page clears itself and returns to the sign-in page when the session ends.
 
 The header also holds the host filter, file search, the security chip, links to the [Planner](planner.md) and to [Manage](#other-pages), **Export .canvas** (in Topology and Graph, the two views it exports), the session length menu and **Sign out**. The chip says in a line where the [security posture](ransomware-defense.md) stands (*Security: nothing wrong found*, *needs a look*, *incident* or *not known*), with the reason under it, and a click opens the **Security** panel. Accounts that may not view security do not see it.
 
@@ -85,7 +85,7 @@ What the opt-in network scanner found. It is off until someone turns it on and n
 
 ## Panels
 
-The rail on the right opens panels in the inspector: 18 of them in five groups. It is one tab stop: Up and Down move between the panels, Home and End go to the first and the last, and Enter or Space opens the one that has focus. A panel that is about one host (the Security panels that need one, the Infra views, what a scan changed) has its own host picker when none is chosen, starting on the host with the most to look at, and choosing sets the page's host. A skip link at the top of the page, the first thing Tab reaches, goes to the view or to the panel. **Security** and the settings panels (**Audit**, which holds accounts, roles, invites, backups and your password, **Keys**, **Scans**, **Access** and **Logs**) open with the whole page, and the button in any panel's header (⤢) gives that panel the whole page too, which the browser remembers for that panel. Hiding the panel gives the view its room back. The first panel, **Details**, describes the selection or summarises health across every host. It belongs to Topology and Graph: in Tasks, Map and Scan it says where to go instead.
+The rail on the right opens panels in the inspector: 19 of them in five groups. It is one tab stop: Up and Down move between the panels, Home and End go to the first and the last, and Enter or Space opens the one that has focus. A panel that is about one host (the Security panels that need one, the Infra views, what a scan changed) has its own host picker when none is chosen, starting on the host with the most to look at, and choosing sets the page's host. A skip link at the top of the page, the first thing Tab reaches, goes to the view or to the panel. **Security** and the settings panels (**Audit**, which holds accounts, roles, invites, backups and your password, **Keys**, **Scans**, **Access** and **Logs**) open with the whole page, and the button in any panel's header (⤢) gives that panel the whole page too, which the browser remembers for that panel. Hiding the panel gives the view its room back. The first panel, **Details**, describes the selection or summarises health across every host. It belongs to Topology and Graph: in Tasks, Map and Scan it says where to go instead.
 
 ### Inspect
 
@@ -93,6 +93,7 @@ The rail on the right opens panels in the inspector: 18 of them in five groups. 
 | :--- | :--- |
 | **Details** | The selected box or node, or node counts, health totals and everything that needs attention |
 | **Search** | Results of the header search (`/` focuses it). Selecting one focuses its mount. See [search patterns](scanning-and-search.md#search). |
+| **Notify** | The notification center: every open alert in one list, critical first, then warning, then information, one row per host and kind with a count. **Acknowledge** says who is on it and removes nothing. What can be ignored can be snoozed or muted by host and kind, and is then listed under **Snoozed and muted**; a critical notification, drift and a security finding say they cannot be, and leave when resolved. **History** keeps every opening, resolving and who did what, with a search. The header of every page counts the open ones, critical first, and opens this panel. See [alerts](deployments.md#reporting-alerts-and-drift) |
 
 ![Search results](images/search.jpg)
 

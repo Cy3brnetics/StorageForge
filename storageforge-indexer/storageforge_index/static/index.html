@@ -17,6 +17,7 @@
   <label class="field"><span>Host</span><select id="host"><option value="">All hosts</option></select></label>
   <form id="searchform" class="search" role="search"><input id="q" type="search" placeholder="Search files: *.cr2, IMG_2019*, report.pdf  ( / )" aria-label="Search files across hosts" autocomplete="off"></form>
   <button id="threatbanner" type="button" class="threat sec-unknown" hidden></button>
+  <button id="notifchip" type="button" class="threat nt-none" hidden></button>
   <div class="actions">
     <div id="graphsub" class="seg" role="group" aria-label="Graph view" hidden><button type="button" data-sub="files">Files</button><button type="button" data-sub="structure">Structure</button></div>
     <label id="hopsfield" class="field"><span>Focus</span><select id="hops"><option value="1">1 hop</option><option value="2" selected>2 hops</option><option value="3">3 hops</option></select></label>
@@ -212,6 +213,22 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <div id="sec-subnav" class="seg sm" role="group" aria-label="Security panels"></div>
       <div id="sec-content" class="stack"></div>
     </div>
+    <div id="tab-notifications" class="tab" role="tabpanel" aria-labelledby="tabbtn-notifications" hidden>
+      <p class="muted">Everything that wants attention, most critical first. A critical notification, drift and a security finding cannot be snoozed or muted: they leave when they are resolved.</p>
+      <div class="row wrap">
+        <label class="field"><span>Host</span><select id="nt-host"><option value="">All hosts</option></select></label>
+        <label class="field"><span>Kind</span><select id="nt-kind"><option value="">Every kind</option></select></label>
+        <label class="field"><span>Level</span><select id="nt-level"><option value="">Every level</option><option value="crit">Critical</option><option value="warn">Warning</option><option value="info">Information</option></select></label>
+      </div>
+      <p id="nt-count" class="small" role="status"></p>
+      <div id="nt-groups"></div>
+      <details id="nt-quiet-box" hidden><summary id="nt-quiet-sum">Snoozed and muted</summary><div id="nt-quiet"></div><div id="nt-mutes"></div></details>
+      <details id="nt-history-box"><summary>History</summary>
+        <input id="nt-hq" type="search" placeholder="Find in the history" aria-label="Find in the history" autocomplete="off">
+        <ul id="nt-history" class="list"></ul>
+        <button type="button" id="nt-older" class="btn ghost sm" hidden>Older</button>
+      </details>
+    </div>
     <div id="tab-hostlogs" class="tab" role="tabpanel" aria-labelledby="tabbtn-hostlogs" hidden>
       <p class="muted">What hosts' journals said, as of each host's last scan. Nothing here streams: scan a host to get newer lines.</p>
       <div id="hl-range" class="seg sm" role="group" aria-label="Time range">
@@ -334,6 +351,7 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <span class="rgroup" aria-hidden="true">Inspect</span>
       <button type="button" role="tab" data-tab="details" id="tabbtn-details" aria-controls="tab-details" title="Details of the selection" aria-label="Details of the selection"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg><span class="lbl">Details</span></button>
       <button type="button" role="tab" data-tab="search" id="tabbtn-search" aria-controls="tab-search" title="File search results" aria-label="File search results"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg><span class="lbl">Search</span><span id="nres" class="cnt"></span></button>
+      <button type="button" role="tab" data-tab="notifications" id="tabbtn-notifications" aria-controls="tab-notifications" title="Notifications: everything that wants attention, most critical first" aria-label="Notifications: everything that wants attention, most critical first"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 17V11a6 6 0 0 1 12 0v6l2 2H4z"/><path d="M10 21h4"/></svg><span class="lbl">Notify</span><span id="ncrit" class="cnt"></span></button>
       <span class="rgroup" aria-hidden="true">Plan</span>
       <button type="button" role="tab" data-tab="changes" id="tabbtn-changes" aria-controls="tab-changes" title="Staged changes: folders, btrfs, mounts, drives" aria-label="Staged changes: folders, btrfs, mounts, drives"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6h10M10 12h10M10 18h10M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg><span class="lbl">Changes</span></button>
       <button type="button" role="tab" data-tab="moves" id="tabbtn-moves" aria-controls="tab-moves" title="Data moves with rsync" aria-label="Data moves with rsync"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h14l-3-3M20 16H6l3 3"/></svg><span class="lbl">Moves</span></button>
@@ -366,6 +384,7 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/canvas.js"></script>
 <script src="/app.js"></script>
 <script src="/hostlogsview.js"></script>
+<script src="/notifyview.js"></script>
 <script src="/topology.js"></script>
 <script src="/fsbrowse.js"></script>
 <script src="/checks.js"></script>
