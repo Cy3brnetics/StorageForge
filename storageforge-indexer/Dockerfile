@@ -77,11 +77,28 @@ RUN apk add --no-cache build-base linux-headers \
  && install -m 0644 nmap-services nmap-protocols nmap-rpc nmap-mac-prefixes /out/usr/share/nmap/
 
 # ── proxy: nginx with its config inside, so a deploy does not need the repo's files on the Docker host ─
-FROM nginxinc/nginx-unprivileged:1.30-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03 AS proxy
-USER 0
-RUN apk upgrade --no-cache && apk del --no-cache curl      # nginx does not use it
-USER 101
+# On the same Wolfi base as the rest. nginx-mainline, because Wolfi's free repository stops updating nginx-stable (1.30.2,
+# with fixes it never got); mainline is the one that follows upstream.
+FROM ${BASE_IMAGE} AS proxy
+# uid 101 is the one docker-compose.yml and init-volumes.sh already give the TLS files and the /tmp tmpfs to.
+RUN apk add --no-cache nginx-mainline \
+ && echo 'nginx:x:101:' >> /etc/group \
+ && echo 'nginx:x:101:101::/nonexistent:/sbin/nologin' >> /etc/passwd \
+ && echo 'nginx:!::0:::::' >> /etc/shadow \
+ && rm -rf /var/cache/apk /etc/apk/cache \
+ && cp /bin/busybox /tmp/busybox \
+ && apk del --no-cache wolfi-base apk-tools busybox \
+ && for l in /usr/bin/*; do if [ "$(/tmp/busybox readlink "$l")" = /bin/busybox ]; then /tmp/busybox rm "$l"; fi; done \
+ && /tmp/busybox rm /tmp/busybox \
+ && /usr/bin/nginx -v
+# No shell and no package manager from here on: apk del leaves busybox's links behind, so the loop takes them out.
+# The apk database stays as the record scanners read.
 COPY docker/nginx.conf /etc/nginx/nginx.conf
+EXPOSE 8443
+STOPSIGNAL SIGQUIT
+USER 101:101
+# -e: the compiled-in error log is under /var/lib/nginx, which is read-only; nginx opens it before it reads the config.
+ENTRYPOINT ["/usr/bin/nginx", "-e", "/dev/stderr", "-g", "daemon off;"]
 
 # ── tunnel: sshd for remote nodes that dial in (docker-compose.remote.yml), and nothing that could serve a shell ─
 FROM ${BASE_IMAGE} AS tunnel

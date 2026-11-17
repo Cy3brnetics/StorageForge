@@ -495,7 +495,6 @@ The base images are pinned by digest and Python packages by hash. To move them f
 
 ```bash
 docker buildx imagetools inspect cgr.dev/chainguard/wolfi-base:latest | sed -n 's/^Digest: *//p'     # new digest for the Dockerfile's BASE_IMAGE
-docker buildx imagetools inspect nginxinc/nginx-unprivileged:stable-alpine | sed -n 's/^Digest: *//p'     # new digest for the proxy stage's FROM
 uv pip compile pyproject.toml docker/build-requirements.in --universal --python-version 3.14 --generate-hashes --no-header --exclude-newer "$(date -d '14 days ago' +%F)" -o docker/requirements.lock
 uv pip compile pyproject.toml docker/build-requirements.in --extra postgres --universal --python-version 3.14 --generate-hashes --no-header --exclude-newer "$(date -d '14 days ago' +%F)" -o docker/requirements-postgres.lock
 ```
