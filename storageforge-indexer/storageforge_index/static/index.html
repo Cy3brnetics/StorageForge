@@ -260,6 +260,11 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <div class="row"><button id="hl-more" type="button" class="btn" hidden>Older</button></div>
       <h3>Hosts: when each was last collected</h3>
       <div id="hl-status"></div>
+      <details id="hl-rules-box"><summary>Rules: what raises a notification</summary>
+        <p class="muted small">A rule counts the lines it means as scans bring them in, and is one notification per host when it reaches its threshold. A pattern is text with * for anything and | between alternatives.</p>
+        <div class="row"><button id="hl-rule-new" type="button" class="btn sm" hidden>New rule</button></div>
+        <ul id="hl-rules" class="list"></ul>
+      </details>
     </div>
     <div id="tab-audit" class="tab" role="tabpanel" aria-labelledby="tabbtn-audit" hidden>
       <div class="row"><button id="verify" type="button" class="btn">Verify chain</button><span id="verified" class="muted"></span></div>

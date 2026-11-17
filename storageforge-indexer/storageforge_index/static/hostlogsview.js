@@ -438,3 +438,51 @@ for (const id of ['hl-q', 'hl-unit']) {
 document.querySelectorAll('#hl-range button').forEach((b) => b.addEventListener('click', () => hlSetRange(b.dataset.range)));
 document.getElementById('hl-custom').addEventListener('submit', (ev) => { ev.preventDefault(); hlApplyCustom(); });
 document.getElementById('hl-more').addEventListener('click', () => hlSearch(true));
+
+/* ── log rules (logrules.py): what raises a notification ─────────── */
+const HL_SPAN = (secs) => (secs % 3600 === 0 ? `${secs / 3600} h` : `${Math.round(secs / 60)} min`);
+const hlNum = (least, most, what) => (v) => (/^\d+$/.test(v) && Number(v) >= least && Number(v) <= most ? '' : `${what} is a whole number from ${least} to ${most}`);
+
+async function hlRules() {
+  const list = document.getElementById('hl-rules'), may = can('hostlogs.rules');
+  document.getElementById('hl-rule-new').hidden = !may;
+  let d;
+  try { d = await getJSON('/api/hostlogs/rules'); } catch (e) { list.replaceChildren(hlEl('li', { class: 'st-failed' }, e.message)); return; }
+  const again = async (work) => { try { await work(); } catch (e) { notify(e.message, 'error'); } hlRules(); };
+  list.replaceChildren(...d.rules.map((r) => {
+    const on = hlEl('input', { type: 'checkbox', 'aria-label': `${r.name}: on`, disabled: !may });
+    on.checked = r.enabled;
+    on.addEventListener('change', () => again(() => api(`/api/hostlogs/rules/${r.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...r, enabled: on.checked }) })));
+    const means = [r.host !== '*' ? `host ${r.host}` : '', r.unit !== '*' ? `unit ${r.unit}` : '', r.program !== '*' ? `program ${r.program}` : '', r.min_level !== 'debug' ? `${r.min_level} or worse` : '',
+                   r.text !== '*' ? `text ${r.text}` : ''].filter(Boolean).join(' · ');
+    const edit = hlEl('button', { type: 'button', class: 'btn ghost sm' }, 'Change');
+    edit.addEventListener('click', async () => {
+      const f = await formDialog({ title: r.name, body: r.builtin ? 'A built-in rule: what it matches is StorageForge\'s, and follows the release. How many lines, in how long, and how loud are yours.' : means,
+        fields: [{ name: 'threshold', label: 'Lines', value: r.threshold, inputmode: 'numeric', validate: hlNum(1, 1000000, 'Lines') },
+                 { name: 'minutes', label: 'Within how many minutes', value: Math.round(r.window_secs / 60), inputmode: 'numeric', validate: hlNum(5, 10080, 'The window') },
+                 { name: 'level', label: 'Raises: crit, warn or info', value: r.level, validate: (v) => (['crit', 'warn', 'info'].includes(v) ? '' : 'One of crit, warn, info') }] });
+      if (f) again(() => api(`/api/hostlogs/rules/${r.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...r, threshold: Number(f.threshold), window_secs: Number(f.minutes) * 60, level: f.level }) }));
+    });
+    const del = hlEl('button', { type: 'button', class: 'btn ghost sm' }, 'Delete');
+    del.addEventListener('click', async () => { if (await confirmDialog({ title: `Delete the rule "${r.name}"?`, confirm: 'Delete', danger: true })) again(() => api(`/api/hostlogs/rules/${r.id}`, { method: 'DELETE' })); });
+    return hlEl('li', {}, hlEl('label', { class: 'row' }, on, hlEl('span', {}, r.name), r.builtin ? hlEl('span', { class: 'm' }, 'built in') : null),
+      hlEl('span', { class: 'm' }, `${r.threshold} line${r.threshold === 1 ? '' : 's'} in ${HL_SPAN(r.window_secs)} raises ${{ crit: 'a critical notification', warn: 'a warning', info: 'information' }[r.level]}${r.enabled ? '' : ' · off'}`),
+      hlEl('span', { class: 'm' }, means),
+      may ? hlEl('span', { class: 'row' }, edit, r.builtin ? null : del) : null);
+  }));
+}
+
+document.getElementById('hl-rules-box').addEventListener('toggle', (ev) => { if (ev.target.open) hlRules(); });
+document.getElementById('hl-rule-new').addEventListener('click', async () => {
+  const f = await formDialog({ title: 'New log rule', body: 'A pattern is text with * for anything and | between alternatives. Leave a field empty for any.',
+    fields: [{ name: 'name', label: 'Name', required: true, maxlength: 100 }, { name: 'text', label: 'Text in the line', placeholder: '*PANIC*|*assertion failed*', maxlength: 300 },
+             { name: 'unit', label: 'Unit', placeholder: 'smbd', maxlength: 300 }, { name: 'program', label: 'Program, as journald saw it', placeholder: 'smbd', maxlength: 300 },
+             { name: 'min_level', label: 'Lowest level', value: 'warning', validate: (v) => (['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug'].includes(v) ? '' : 'One of emerg, alert, crit, err, warning, notice, info, debug') },
+             { name: 'threshold', label: 'Lines', value: 1, inputmode: 'numeric', validate: hlNum(1, 1000000, 'Lines') },
+             { name: 'minutes', label: 'Within how many minutes', value: 60, inputmode: 'numeric', validate: hlNum(5, 10080, 'The window') },
+             { name: 'level', label: 'Raises: crit, warn or info', value: 'warn', validate: (v) => (['crit', 'warn', 'info'].includes(v) ? '' : 'One of crit, warn, info') }], confirm: 'Add the rule' });
+  if (!f) return;
+  try { await postJSON('/api/hostlogs/rules', { name: f.name, text: f.text || '*', unit: f.unit || '*', program: f.program || '*', min_level: f.min_level, threshold: Number(f.threshold), window_secs: Number(f.minutes) * 60, level: f.level }); }
+  catch (e) { notify(e.message, 'error'); }
+  hlRules();
+});

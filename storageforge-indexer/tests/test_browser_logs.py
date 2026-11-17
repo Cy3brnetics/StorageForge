@@ -230,6 +230,29 @@ class BrowserLogs(unittest.TestCase):
         self.assertNotIn('written by', self.page.inner_text('#hl-lines li:has-text("pool degraded") .m'), 'nothing is said where journald has no other account')
         self.assertEqual(self.errors, [])
 
+    def test_the_rules_are_listed_and_one_can_be_made_turned_off_and_deleted(self):
+        self.open_logs()
+        self.page.click('#hl-rules-box summary')
+        self.page.wait_for_selector('#hl-rules li:has-text("Out of memory")')
+        self.assertIn('1 line in 1 h raises a critical notification', self.page.inner_text('#hl-rules li:has-text("Out of memory")'))
+        self.assertIn('off', self.page.inner_text('#hl-rules li:has-text("failed SSH logins")'))
+        self.assertEqual(self.page.locator('#hl-rules li:has-text("Out of memory") button:has-text("Delete")').count(), 0, 'a built-in rule is turned off, not deleted')
+        self.page.click('#hl-rule-new')
+        fields = self.page.locator('dialog[open] input')
+        fields.nth(0).fill('smbd panics')
+        fields.nth(1).fill('*PANIC*')
+        fields.nth(2).fill('smbd')
+        self.page.click('dialog[open] button[type=submit]')
+        mine = '#hl-rules li:has-text("smbd panics")'
+        self.page.wait_for_selector(mine)
+        self.assertIn('unit smbd · warning or worse · text *PANIC*', self.page.inner_text(mine))
+        self.page.click(f'{mine} input[type=checkbox]')
+        self.page.wait_for_selector(f'{mine} :text("· off")')
+        self.page.click(f'{mine} button:has-text("Delete")')
+        self.page.click('dialog[open] button:has-text("Delete")')
+        self.page.wait_for_selector(mine, state='detached')
+        self.assertEqual(self.errors, [])
+
     def test_what_a_host_logged_is_shown_as_text_and_never_run(self):
         self.open_logs('?lhost=nas')
         self.page.wait_for_selector('#hl-lines li:has-text("disk")')
