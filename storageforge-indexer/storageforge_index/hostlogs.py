@@ -217,6 +217,7 @@ def store(conn: Conn, host: str, parsed: dict, now: float | None = None) -> int:
     lines, state, cut = parsed['lines'], parsed['state'], parsed['cut']
     new = over = 0
     counted: dict = {}
+    arrived = []          # the lines that are new this pickup, stored or over the rate: what the log rules are held against
     with conn.tx():
         left = _allowance(conn, host, now)
         # warning and worse first, so the rate takes routine lines before it takes those
@@ -232,6 +233,7 @@ def store(conn: Conn, host: str, parsed: dict, now: float | None = None) -> int:
                 fresh = 0 if conn.scalar('SELECT 1 FROM host_log_lines WHERE host = :h AND line_key = :k', {'h': host, 'k': x['key']}) else 1
                 over += fresh
             if fresh:
+                arrived.append(x)
                 # by the host's clock, since that is when it happened, but never after now: a clock ahead does not write the future's counts
                 bucket = int(min(x['at_us'] / 1e6, now) // COUNT_SECS)
                 key = (x['unit'] or '', x['priority'], bucket)
@@ -251,6 +253,9 @@ def store(conn: Conn, host: str, parsed: dict, now: float | None = None) -> int:
         _set_status(conn, host, int(now), state, new, cut, max(seen) if seen else None, note)
         conn.execute('UPDATE host_log_status SET rate_tokens = :l, rate_at = :t, over_rate = :o, over_total = over_total + :o WHERE host = :h',
                      {'h': host, 'l': left, 't': int(now), 'o': over})
+        if arrived:
+            from . import logrules          # it takes its levels and its 5 minutes from here
+            logrules.match_new(conn, host, arrived, now)
         prune(conn, host, now)
     return new
 

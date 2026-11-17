@@ -39,7 +39,7 @@ ESSENTIAL = ('vault_meta', 'ssh_keys', 'device_credentials', 'key_bindings', 'us
 # Left out of essentials: a rescan or the next deploy rebuilds these, they are history, or they are sessions.
 # Every table is in exactly one of the two lists (tests/test_consistency.py).
 REBUILDABLE = ('network_scans', 'network_scan_hosts', 'traffic_samples', 'mounts', 'scans', 'directories', 'file_records', 'file_fts', 'file_changes', 'scan_denied', 'scan_jobs',
-               'graph_nodes', 'graph_edges', 'git_repos', 'docker_hosts', 'host_network', 'deploy_runs', 'deploy_groups', 'host_checks', 'job_runs', 'alerts', 'notification_mutes', 'notification_events',
+               'graph_nodes', 'graph_edges', 'git_repos', 'docker_hosts', 'host_network', 'deploy_runs', 'deploy_groups', 'host_checks', 'job_runs', 'alerts', 'notification_mutes', 'notification_events', 'log_rules', 'log_rule_hits',
                'web_sessions', 'schema_version', 'task_runs', 'host_logs', 'host_log_lines', 'host_log_status', 'host_log_counts', 'mount_usage', 'schedule_runs', 'job_state', 'clamav_runs',
                'security_measurements', 'graph_snapshots', 'security_playbook_runs', 'security_readings', 'security_ban_history', 'scan_signatures')
 ENC_MAGIC, ENC_SUFFIX, ENC_CHUNK = b'STORAGEFORGE-BACKUP-1\n', '.enc', 1 << 20

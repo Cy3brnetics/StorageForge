@@ -253,6 +253,20 @@ Besides failed, late and differing jobs and drift, alerts cover what scans and t
 - the nightly backup failed, or the newest is over 3 days old;
 - the HTTPS certificate ends within 30 days.
 
+**Log rules** raise an alert from what a host logs. A rule names the lines it means (host, unit, program, lowest level, text) and how many of them in how long; lines are matched as each scan brings them in, and a rule over its threshold is one alert per rule and host, however many lines there were, which resolves when the count falls back under. A pattern is text with `*` for anything and `|` between alternatives, and is never a regular expression. **Program** is who journald saw write the line where the line has that, so a rule about `sshd` is not set off by `logger -t sshd`. The count goes by when a line arrived, so a host's clock cannot hold a rule open or shut, and a line over the host's rate is counted though it is not stored.
+
+| Built-in rule | Raises | Wants |
+| :--- | :--- | :--- |
+| Out of memory: a process was killed | critical | 1 line in an hour |
+| Disk or controller I/O errors | critical | 1 in an hour |
+| Filesystem errors (ext4, XFS, btrfs) | critical | 1 in an hour |
+| A ZFS pool or an md array is degraded | critical | 1 in an hour |
+| An NFS or SMB server is not responding | warning | 1 in 30 minutes |
+| Services failing, programs crashing, no space left on a device | warning | 3 in an hour |
+| A burst of failed SSH logins, a burst of failed sudo logins | warning | 20 and 5 in 10 minutes; **off** until turned on |
+
+Whether a built-in rule is on, its threshold, window and level are yours and are kept across upgrades; its text is StorageForge's. Your own rules are made through `/api/hostlogs/rules` and take `hostlogs.rules`, which operators have. Rules see what scans collect, so a line is matched when the next scan reads it, not when it is written.
+
 **The notification center** ranks every open alert in one list: critical, then warning, then information, the newest first within a level, one row per host and kind with a count, so a flood is one row. Each can be **acknowledged** with a note, which says who is on it and removes nothing. **A critical notification, drift and a security finding cannot be snoozed or muted:** they leave the list when they are resolved. Anything else can be snoozed for up to 30 days, or muted by host and kind; a snoozed or muted notification is listed apart and is not pushed, and a snooze ends if the notification becomes critical. Acknowledging, snoozing and muting take `notifications.manage`, which operators have, and go in the audit log. The history keeps every opening, resolving and who did what, after the alert itself has opened again. It is the **Notify** panel, the count in every page's header, and `/api/notifications`.
 
 Open alerts show in the Deploy panel. Each opening and resolving can also go to ntfy (URL, topic, optional token), Gotify (URL, token) or a webhook. Alert URLs may not point at loopback, link-local or multicast addresses, redirects are not followed, a stored token is dropped when its server changes, and the test button reports only HTTP status codes. Private LAN addresses are allowed, since a self-hosted ntfy is the usual setup.

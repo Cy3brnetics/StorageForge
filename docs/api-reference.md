@@ -103,6 +103,9 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/hostlogs/status?host=` | how the last pickup from each host went, and what to do if it couldn't read the journal; `over_rate` and `over_total` are lines not stored for being over the host's `rate_per_day` |
 | GET | `/api/hostlogs/counts?host=&since=&until=` | stored lines by level and by UTC hour (ISO strings) for the Logs view; `since` after `until` is refused; at most 792 hours, newest kept (`truncated` says so); takes `hostlogs.view` |
 | GET | `/api/hostlogs/units?host=` | the unit names stored with a line count each, most lines first, at most 200; takes `hostlogs.view` |
+| GET | `/api/hostlogs/rules` | the log rules, built-in ones first; takes `hostlogs.view` |
+| POST | `/api/hostlogs/rules` | `{"name", "host"?, "unit"?, "program"?, "min_level"?, "text"?, "threshold"?, "window_secs"?, "level"?, "enabled"?, "note"?}`: a new rule. Patterns are text with `*` for anything and `\|` between alternatives, never a regular expression. Refused when it would match every line; takes `hostlogs.rules`; audited |
+| PUT, DELETE | `/api/hostlogs/rules/<id>` | change or delete a rule. On a built-in rule only `enabled`, `threshold`, `window_secs`, `level` and `note` change, and it is turned off, not deleted |
 | GET | `/api/hostlogs/export?format=csv\|json\|text` | the same lines as a file, up to 20,000; audited |
 
 ## Keys, access and audit

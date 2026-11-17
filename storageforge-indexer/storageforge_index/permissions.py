@@ -16,6 +16,7 @@ CATALOG = (
     ('Logs', (
         ('logs.view', 'Read the activity log and command output', False),
         ('hostlogs.view', "Read hosts' journals as scans collected them: sign-ins, sudo commands, service output", False),
+        ('hostlogs.rules', 'Create, change and turn off log rules, which decide what a host logging raises a notification for', False),
         ('audit.view', 'Read the audit log', False),
         ('audit.verify', 'Verify the audit chain and sign evidence (unlocks the vault)', False),)),
     ('Scans', (
@@ -75,7 +76,7 @@ _VIEWER = frozenset({'search.files', 'hosts.view', 'files.browse', 'services.vie
 BUILTIN = {
     'search': ('Searches files across hosts, and nothing else', frozenset({'search.files'})),
     'viewer': ('Browses and searches', _VIEWER),
-    'operator': ('Also plans, scans and deploys', _VIEWER | {'hostlogs.view', 'notifications.manage', 'scans.run','plans.edit', 'plans.scripts', 'deploy.report', 'deploy.apply',
+    'operator': ('Also plans, scans and deploys', _VIEWER | {'hostlogs.view', 'hostlogs.rules', 'notifications.manage', 'scans.run','plans.edit', 'plans.scripts', 'deploy.report', 'deploy.apply',
                                                             'deploy.destructive', 'deploy.setup', 'git.live', 'git.sync', 'security.manage', 'map.edit', 'devices.manage', 'devices.apply', 'netscan.run'}),
     'admin': ('Everything, including keys, accounts and settings', ALL),
 }
@@ -99,6 +100,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/audit', 'audit.view'),
     (READ, r'/api/log(/.*)?', 'logs.view'),
     (READ, r'/api/hostlogs(/.*)?', 'hostlogs.view'),
+    (_WRITE, r'/api/hostlogs/rules(/\d+)?', 'hostlogs.rules'),
 
     (READ, r'/api/search(/hosts)?', 'search.files'),
     (READ, r'/api/planner/versions(/\d+)?', 'plans.view'),            # saved versions of a design (design_versions.py)
