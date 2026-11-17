@@ -116,6 +116,16 @@ class Types(Fleet):
         self.assertIn('/dev/sdx was not seen', ' '.join(crit(self.levels('lvm-vg', vg='v', devices='/dev/sdx', confirm='/dev/sdx'))))
         self.assertIn('stops working', ' '.join(t for _, t in self.levels('lvm-snapshot', vg='v', lv='a', name='s', size='1G')))
 
+    def test_each_raidz_level_takes_as_few_devices_as_zpool_does(self):
+        """Parity plus one, as zpool create takes: a raidz2 of three disks is allowed, which the step and the planner refused below four."""
+        crit = lambda items: [t for l, t in items if l == 'crit' and 'at least' in t]   # noqa: E731
+        for level, fewest in (('raidz1', 2), ('raidz2', 3), ('raidz3', 4)):
+            with self.subTest(level):
+                ok = ' '.join(f'/dev/sd{c}' for c in 'xyzw'[:fewest])
+                short = ' '.join(f'/dev/sd{c}' for c in 'xyzw'[:fewest - 1])
+                self.assertEqual(crit(self.levels('zfs-pool', pool='t', level=level, devices=ok, confirm=ok)), [])
+                self.assertEqual(crit(self.levels('zfs-pool', pool='t', level=level, devices=short, confirm=short)), [f'{level} needs at least {fewest} devices'])
+
     def test_loopback_with_its_own_port_is_ssh_not_this_machine(self):
         a = lambda **k: Namespace(**{'local': False, 'user': None, 'key': None, 'port': 22, **k})   # noqa: E731
         self.assertTrue(scans_here(a(), '127.0.0.1'))

@@ -17,7 +17,7 @@ from storageforge_index.payloads import (apply_df, apply_fstab, apply_lvs, apply
 from storageforge_index.remote import MountInfo, Transport, find_command
 from storageforge_index.report import render_report
 from storageforge_index.scanner import ScanOptions, build_jobs, plan_mounts, scan_host
-from storageforge_index.search import SearchQuery, classify, glob_to_like, glob_to_regex, run_search
+from storageforge_index.search import SearchQuery, classify, glob_to_like, glob_to_regex, glob_to_sqlite, run_search
 from storageforge_index.stream import TruncatedStream, extension, iter_rows, split_path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +80,17 @@ class Patterns(unittest.TestCase):
     def test_translations(self):
         self.assertEqual(glob_to_like('IMG_?[0-9]*.cr2'), 'IMG___%.cr2')
         self.assertEqual(glob_to_regex('a?[!x]*.c'), '^a.[^x].*\\.c$')
+
+    def test_a_class_means_what_it_means_to_a_shell_on_both_databases(self):
+        """Found by test_props_search. SQLite's GLOB negates with ^, so [!x] found "!" and "x" there; the regex for PostgreSQL took [^x] as a
+        negation, where a shell reads "^ or x"; and a backwards range like [b-a] was an invalid regex to PostgreSQL, an error in place of no match."""
+        self.assertEqual(glob_to_regex('a[^x]b'), '^a[\\^x]b$')
+        self.assertEqual(glob_to_regex('[b-a]'), '^(?!)$')
+        self.assertEqual(glob_to_regex('[!b-a]'), '^.$')
+        self.assertEqual(glob_to_regex('a[b'), '^a\\[b$')
+        self.assertEqual(glob_to_sqlite('a[!x]b'), 'a?b')
+        self.assertEqual(glob_to_sqlite('a[b'), 'a[[]b')
+        self.assertEqual(glob_to_like('[]x]?'), '__')
 
 
 class Capacity(unittest.TestCase):

@@ -280,7 +280,7 @@ function calcEngine(c){
   if(fam==='zfs'){
     const P={stripe:0,mirror:0,raidz1:1,raidz2:2,raidz3:3}[lvl];
     let w=lvl==='stripe'?1:lvl==='mirror'?Math.max(2,Math.min(c.width||2,n)):Math.max(P+1,Math.min(c.width||n,n));
-    const minW={stripe:1,mirror:2,raidz1:3,raidz2:4,raidz3:5}[lvl];
+    const minW={stripe:1,mirror:2,raidz1:2,raidz2:3,raidz3:4}[lvl];   // parity + 1, as zpool create takes
     if(n<minW){r.notes.push(['crit',`${lvl} needs at least ${minW} drives; you have ${n}.`]);return r}
     if(w<minW) w=minW;
     const g=Math.floor(n/w);let pad=0;
@@ -302,6 +302,7 @@ function calcEngine(c){
     if(c.ashift<12) r.notes.push(['warn','ashift=9 on 4K-sector drives forces read-modify-write inside the drive. Use ashift=12 (or 13 for some SSDs). It cannot be changed after vdev creation.']);
     if(lvl==='raidz1'&&maxD>=8e12) r.notes.push(['warn',`RAIDZ1 with ${fmtDec(maxD,0)} drives leaves no parity during a ${Math.round(maxD*c.fill/(c.speed*1e6)/3600)} h resilver. RAIDZ2 is the usual floor at this size.`]);
     if(r.padPct>4) r.notes.push(['info',`RAIDZ padding costs ${r.padPct.toFixed(1)}% of raw at recordsize ${fmtBin(c.recordsize,0)}. Larger records or a different width reduce it.`]);
+    if(P&&w===P+1) r.notes.push(['info',`A ${w}-wide RAIDZ${P} holds one drive of data, as a ${w}-way mirror does. The mirror reads faster and resilvers quicker; RAIDZ can be widened later with raidz expansion (OpenZFS 2.3 or later), a mirror cannot.`]);
     if(g*w<n) r.notes.push(['info',`${n-g*w} drive(s) do not fill a ${w}-wide vdev and stay unused (use as hot spares).`]);
   } else if(fam==='md'){
     const m=mn(sizes);r.waste=raw-m*n;

@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 try:
     from test_clone import Db, blk
 except ImportError:      # run as tests.test_x from the project folder
@@ -226,6 +228,72 @@ class Copy(Db):
 
     def test_a_source_scanned_before_services_were_read_says_so(self):
         self.assertTrue(any(n.startswith('services:') for n in clone.build(self.conn, 'web-01', 'web-copy')['not_carried']))
+
+
+class Checks(Db):
+    """What a plan check says about an md-array step, before any script exists."""
+
+    def setUp(self):
+        super().setUp()
+        self.add('suse', {'collected_at': '2026-11-07T00:00:00+00:00', 'lsblk': md_lsblk()},
+                 [('/', 'xfs', '/dev/vda1', 3, 'rw'), ('/mnt/raid', 'ext4', '/dev/md0', 1, 'rw,relatime')])
+
+    def said(self, **params):
+        p = {'name': 'data', 'level': 'raid1', 'devices': '/dev/vdd /dev/vde', 'metadata': '', 'fstype': '', 'label': '', 'wipe': False, **params}
+        p.setdefault('confirm', p['devices'])
+        r = changes.check(self.conn, changes.normalize({'name': 'p', 'tasks': [{'type': 'md-array', 'host': 'suse', 'params': p}]}))
+        return [(i['level'], i['text']) for i in r['tasks'][0]['items']]
+
+    def test_an_array_that_is_there_already_is_nothing_to_do(self):
+        self.assertIn(('ok', 'array md0 already exists: nothing to do'), self.said(name='md0', devices='/dev/vdb /dev/vdc'))
+
+    def test_each_level_needs_its_number_of_devices(self):
+        self.assertIn(('crit', 'raid6 needs at least 4 devices'), self.said(level='raid6'))
+        self.assertIn(('crit', 'raid5 needs at least 3 devices'), self.said(level='raid5'))
+        self.assertFalse([t for lv, t in self.said(level='raid1') if 'needs at least' in t])
+
+    def test_a_name_or_label_that_is_not_plain_is_refused_before_the_check(self):
+        for params in ({'name': 'b@d'}, {'label': 'a:b', 'fstype': 'ext4'}):
+            with self.subTest(params), self.assertRaisesRegex(ValueError, 'is not valid'):
+                self.said(**params)
+        self.assertEqual(self.said(name='x' * 33)[0], ('crit', f'{"x" * 33} is not an array name: letters, digits, - and _, up to 32'), 'the step holds names to 32')
+
+    def test_a_label_too_long_for_its_filesystem_or_used_twice_is_refused(self):
+        self.assertIn(('crit', 'ext4 labels are at most 16 characters'), self.said(fstype='ext4', label='x' * 17))
+        task = {'type': 'md-array', 'host': 'suse', 'params': {'name': 'a', 'level': 'raid1', 'devices': '/dev/vdd /dev/vde', 'confirm': '/dev/vdd /dev/vde',
+                                                               'metadata': '', 'fstype': 'ext4', 'label': 'DATA', 'wipe': False}}
+        other = {**task, 'params': {**task['params'], 'name': 'b', 'devices': '/dev/vdf /dev/vdg', 'confirm': '/dev/vdf /dev/vdg', 'label': 'data'}}
+        r = changes.check(self.conn, changes.normalize({'name': 'p', 'tasks': [task, other]}))
+        self.assertIn(('crit', 'the label data is already on suse: a mount by label would find two'), [(i['level'], i['text']) for i in r['tasks'][1]['items']])
+
+
+class AnsibleExport(Db):
+    """The playbook's md-array task, run in bash against a stand-in mdadm that reads its arguments as mdadm 4.3 to 4.6 do: a -- is counted with
+    the devices, and the create fails with "not enough devices"; and a blkid that, like the real one, exits 2 on a blank disk. The export put a --
+    there, and took blkid's 2 under set -e as the end of the playbook: every md-array playbook failed on a real host, the second time silently."""
+
+    MDADM = r"""
+case "$1" in
+  --detail) [[ -e $FAKE/made ]] || exit 1; [[ $2 == --export ]] && echo MD_UUID=1234abcd; [[ $2 == --brief ]] && echo "ARRAY /dev/md/data metadata=1.2 UUID=1234abcd"; exit 0 ;;
+  --create) shift; for a in "$@"; do [[ $a == -- ]] && { echo "mdadm: You haven't given enough devices (real or missing) to create this array" >&2; exit 2; }; done
+            printf '%s
+' "$@" > "$FAKE/create-args"; touch "$FAKE/made" ;;
+esac"""
+
+    def test_the_create_runs_as_mdadm_reads_it(self):
+        plan = {'name': 'p', 'tasks': [{'type': 'md-array', 'host': 'web-01', 'params': {'name': 'data', 'level': 'raid1', 'devices': '/dev/vdd /dev/vde',
+                                                                                        'confirm': '/dev/vdd /dev/vde', 'fstype': '', 'label': '', 'wipe': False}}]}
+        doc = yaml.safe_load(changes.ansible(self.conn, plan))
+        cmd = doc[0]['tasks'][0]['ansible.builtin.shell']['cmd']
+        with tempfile.TemporaryDirectory() as d:
+            fake = Path(d)
+            for name, body in (('mdadm', self.MDADM), ('blkid', 'exit 2')):
+                stub(fake, name, body)
+            cmd = cmd.replace('c=/etc/mdadm.conf', f'c={fake}/mdadm.conf').replace('[ -d /etc/mdadm ]', '[ -d /nonexistent ]')
+            r = subprocess.run(['bash', '-c', cmd], capture_output=True, text=True, timeout=30, env={**os.environ, 'PATH': f'{fake}:{os.environ["PATH"]}', 'FAKE': d})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual((fake / 'create-args').read_text().split('\n')[-3:-1], ['/dev/vdd', '/dev/vde'])
+            self.assertIn('UUID=1234abcd', (fake / 'mdadm.conf').read_text())
 
 
 class Design(unittest.TestCase):

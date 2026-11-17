@@ -1,6 +1,7 @@
 """Routers, switches and firewalls: real output of RouterOS 7.25 and OpenWrt 25.12, captured from the lab's VMs in tests/fixtures, and written-to-format samples for pfSense and IOS, which the lab has no free image of."""
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -556,10 +557,35 @@ class Language(unittest.TestCase):
                         (openwrt.parse((FIX / 'openwrt' / 'reading.txt').read_text())['net'], None)):
             text = ros.from_model(net, fw)
             self.assertIn('/ip address add', text)
-            kept = [line.split('  # also:')[0] for line in text.splitlines() if 'interface vlan add' not in line and 'chain=dstnat' not in line or 'to-addresses' in line]
+            kept = [line.split('  # also:')[0] for line in text.splitlines() if 'interface vlan add' not in line]
             ros.parse('\n'.join(kept))
         self.assertIn('chain=forward action=accept protocol=tcp dst-address=10.77.20.80 in-interface=ether3 out-interface=ether4 dst-port=80', ros.from_model(None, ros_host()['infra']['firewall']))
         self.assertIn('/ip firewall nat add chain=dstnat action=dst-nat protocol=tcp in-interface=ether2 dst-port=443 to-addresses=10.77.20.80 to-ports=443', ros.from_model(None, ros_host()['infra']['firewall']))
+
+    def test_a_redirect_read_from_a_firewall_reads_back_as_a_redirect(self):
+        """Found by test_props_netlang: a dnat with no address came back as a dst-nat with no to-addresses, which the language refuses."""
+        text = ros.from_model(None, {'rules': [], 'nat': [{'action': 'dnat', 'proto': 'tcp', 'dports': [80], 'to_port': 8080}]})
+        self.assertIn('action=redirect', text)
+        self.assertEqual(ros.parse(text)[0]['action'], 'redirect')
+
+    def test_a_route_a_routing_rule_and_a_dhcp_network_take_one_plain_network(self):
+        """Found by test_props_netlang: a negated or ranged destination was accepted, then OpenWrt and Cisco threw and the others wrote it as it was."""
+        for line in ('/ip route add dst-address=!0.0.0.0/0 gateway=10.0.0.1', '/ip route add dst-address=10.0.0.1-10.0.0.9 gateway=10.0.0.1',
+                     '/ipv6 route add dst-address=!::/0 gateway=::1', '/routing rule add table=main src-address=!10.0.0.0/8',
+                     '/ip dhcp-server network add address=10.0.0.1-10.0.0.4', '/ip firewall address-list add list=x address=!10.0.0.0/8'):
+            with self.subTest(line), self.assertRaises(ros.DslError):
+                ros.parse(line)
+        self.assertEqual(ros.parse('/ip firewall address-list add list=x address=10.0.0.1-10.0.0.9')[0]['address'], '10.0.0.1-10.0.0.9')
+        for target in ros.TARGETS:
+            ros.emit(ros.parse('/ip route add dst-address=0.0.0.0/0 gateway=10.0.0.1'), target)
+
+    def test_a_comment_keeps_its_spaces(self):
+        """Found by test_props_netlang: the line was split on spaces and joined again, so two spaces became one and a no-break space a space."""
+        for comment in ('two  spaces', 'no\u00a0break', ' leading', 'trailing '):
+            with self.subTest(comment):
+                s = ros.parse(f'/ip firewall filter add chain=input action=accept comment="{comment}"')[0]
+                self.assertEqual(s['comment'], comment)
+                self.assertIn(shlex.quote(comment), ros.emit([s], 'ufw')['text'])
 
     def test_a_what_if_uses_the_rules_as_they_would_be(self):
         added = ros.to_model_rules(ros.parse('/ip firewall filter add chain=forward protocol=tcp dst-port=80 action=drop'))

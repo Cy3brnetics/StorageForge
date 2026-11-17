@@ -505,12 +505,16 @@ def parse_findmnt(text: str) -> list[MountInfo]:
     out = []
 
     def walk(items):
-        for fs in items or []:
+        for fs in items if isinstance(items, list) else []:
+            if not isinstance(fs, dict):
+                continue
             out.append(MountInfo(target=fs.get('target') or '', source=fs.get('source') or '',
                                  fstype=fs.get('fstype') or '', options=fs.get('options') or '',
                                  majmin=fs.get('maj:min') or '', fsroot=fs.get('fsroot') or '/',
                                  total=_int(fs.get('size')), used=_int(fs.get('used'))))
             walk(fs.get('children'))
+    if not isinstance(data, dict):          # null or a list: no reading, and /proc/self/mountinfo is read instead (found by test_props_parsers)
+        return []
     walk(data.get('filesystems'))
     return [m for m in out if m.target]
 

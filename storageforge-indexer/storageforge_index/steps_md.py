@@ -93,13 +93,14 @@ def _ansible(t):
     dev = f'/dev/md/{p["name"]}'
     devs = ' '.join(q(d) for d in p['devices'].split())
     guard = ('' if p.get('wipe') else
-             f'for d in {devs}; do t=$(blkid -p -o value -s TYPE -- "$d" 2>/dev/null); [ -z "$t" ] || {{ echo "$d holds $t" >&2; exit 1; }}; done; ')
+             # || true: blkid -p exits 2 on a blank device, and under set -e that ended the playbook on exactly the disk it was meant for
+             f'for d in {devs}; do t=$(blkid -p -o value -s TYPE -- "$d" 2>/dev/null || true); [ -z "$t" ] || {{ echo "$d holds $t" >&2; exit 1; }}; done; ')
     wipe = f'for d in {devs}; do wipefs -aq -- "$d"; done; ' if p.get('wipe') else ''
     mk = (f'[ -n "$(blkid -p -o value -s TYPE -- {q(dev)})" ] || {{ mkfs.{p["fstype"]} {"-L " + q(p["label"]) + " " if p["label"] else ""}{q(dev)} && echo changed; }}; '
           if p.get('fstype') else '')
     cmd = (f'set -e; if ! mdadm --detail {q(dev)} >/dev/null 2>&1; then {guard}{wipe}'
            f'mdadm --create {q(dev)} --run --level={q(p["level"])} --raid-devices={len(p["devices"].split())} --metadata={q(p["metadata"] or "1.2")} '
-           f'--name={q(p["name"])} -- {devs}; echo changed; fi; '
+           f'--name={q(p["name"])} {devs}; echo changed; fi; '      # no --: mdadm counts it among the devices (4.3 to 4.6 say "not enough devices")
            'c=/etc/mdadm.conf; [ -d /etc/mdadm ] && c=/etc/mdadm/mdadm.conf; '
            f'u=$(mdadm --detail --export {q(dev)} | sed -n "s/^MD_UUID=//p"); grep -qs -- "$u" "$c" || {{ mdadm --detail --brief {q(dev)} >>"$c"; echo changed; }}; '
            + mk)

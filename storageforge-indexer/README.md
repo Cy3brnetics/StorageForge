@@ -616,14 +616,19 @@ YAML front matter carries the headline numbers so other tools can parse the repo
 ## Tests
 
 ```bash
+python3 tests/run.py                # light, the minute after any change
+python3 tests/run.py all -j 8       # light, medium and heavy
+python3 tests/run.py deep -j 8      # the random tests (tests/test_props_*.py) with many examples
 python3 -m unittest discover -s tests -v
 ```
+
+[tests/README.md](tests/README.md) says what is in each block and how the random tests work.
 
 `tests/test_platform.py` covers vault round trips, wrong-secret refusal, tampered and swapped ciphertexts, rotation, binding specificity, the audit chain under tampering, loading a key into a real ephemeral `ssh-agent`, graph building, `.canvas` validity (including no overlapping cards), and the HTTP API with auth and CSP. `tests/test_tasks.py` covers storage tasks: normalising, checks and generated scripts. `tests/test_consistency.py` keeps hand-kept lists in step: the container entrypoint against the CLI's subcommands, and the backup table lists against the schema. `tests/test_indexer.py` covers units and patterns, the stream parser (newlines in names, truncation, tiny reads), pool math against the dashboard, mount planning (bind aliases, pruning), payload parsers, report generation, and real local scans: incremental diff, subtree safety and the mass-delete guard.
 
 The same suite runs against PostgreSQL when `STORAGEFORGE_TEST_PG` names a server it may create databases on (each test gets a fresh one, dropped afterwards). The backup tests are skipped there, since backups are of SQLite databases:
 
 ```bash
-docker run -d --rm --name sf-test-pg -e POSTGRES_USER=sf -e POSTGRES_PASSWORD=sftest -p 127.0.0.1:55432:5432 postgres:16-alpine
+docker run -d --rm --name sf-test-pg --shm-size=256m -e POSTGRES_USER=sf -e POSTGRES_PASSWORD=sftest -p 127.0.0.1:55432:5432 postgres:16-alpine
 STORAGEFORGE_TEST_PG=postgresql://sf:sftest@127.0.0.1:55432/postgres python3 -m unittest discover -s tests
 ```

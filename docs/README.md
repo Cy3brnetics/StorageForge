@@ -57,6 +57,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | :--- | :--- |
 | [UI audit, 2026-11-04](audit-2026-11-04-ui.md) | How the screens are organised and behave, the planner against what the platform has learned since it was written, and 41 findings with evidence |
 | [Test audit, 2026-11-03](test-audit-2026-11-03.md) | What the test suites covered, the lab tier and feature map added, and the bugs they found |
+| [Test report, 2026-11-16](test-report-2026-11-16.md) | The test blocks, random tests, coverage, stress runs on SQLite and PostgreSQL, the bugs they found, and the crash |
 | [Ransomware defense audit, 2026-11-02](audit-2026-11-02-ransomware-defense.md) | The first implementation of the roadmap, what was wrong with it, and what was found while replacing it |
 | [Feature audit, 2026-11-01](audit-2026-11-01-features.md) | Code compared with the docs and exercised in the lab, and what disagreed |
 | [Code audit, 2026-11-01](audit-2026-11-01-code.md) | Bugs found by reading the code, and what was checked and found fine |
@@ -66,7 +67,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Security audit, 2026-10-28](../security-audit-2026-10-28.md) | Findings and fixes |
 | [Security parameters](../security-parm.md) | The threat model and hardening checklist, from 2026-10-26 |
 | [Roadmap](../notebook/Roadmap.md) | The order the findings were worked in, up to 2026-11-01. The release plan is the roadmap below |
-| [Roadmap](../roadmap.md) | The final roadmap before release 0.4.0, and what comes after it. Finished and superseded roadmaps are in [the archive](../archive/roadmaps/) |
+| [Roadmap](../roadmap.md) | Everything still open, under 0.6.0. The 0.4.0 release roadmap and the other finished and superseded roadmaps are in [the archive](../archive/roadmaps/) |
 | [UI and UX roadmap](../archive/roadmaps/ui-ux-roadmap.md) | The detail behind the roadmap's UI and UX items: how the screens should change, in order, and how the planner grows to match the platform |
 
 These pages are also published as the project wiki, on Forgejo and on GitHub. Edit them here, then build and push each one: each build replaces that wiki, and a link that leads nowhere stops it. Links to files outside `docs/` take the address form of the host given in `--repo-url`.

@@ -132,7 +132,7 @@ USAGE_DETAIL_DAYS = 90        # after that, one mount_usage row per day per moun
 
 class Database:
     def __init__(self, url: str):
-        self.url, self.busy_ms = url, 60000
+        self.url, self.busy_ms, self.cache_kib = url, 60000, 262144
         if url.startswith(('postgres://', 'postgresql://')):
             self.dialect, self.max_writers = 'postgres', 8
             try:
@@ -173,12 +173,22 @@ class Database:
         db.busy_ms = busy_ms
         return db
 
+    def lean(self, cache_kib: int = 16384) -> 'Database':
+        """The same database, for a web request's connection: a small page cache. 256 MiB suits a scan that rewrites millions of rows; a request
+        only reads, the file is in the system's cache and mapped already, and fourteen connections at once each filling 256 MiB took the server
+        to 4.6 GiB under load (found by tests/stress/hammer.py)."""
+        db = copy.copy(self)
+        db.cache_kib = cache_kib
+        return db
+
     def connect(self) -> Conn:
         if self.dialect == 'sqlite':
             raw = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False, timeout=self.busy_ms / 1000)
-            for pragma in ('journal_mode=WAL', 'synchronous=NORMAL', 'foreign_keys=ON', 'cache_size=-262144',
+            for pragma in ('journal_mode=WAL', 'synchronous=NORMAL', 'foreign_keys=ON', f'cache_size=-{self.cache_kib}',
                            'mmap_size=1073741824', f'busy_timeout={self.busy_ms}'):
                 raw.execute('PRAGMA ' + pragma)
+            from .search import sf_glob          # here, not at the top: search.py imports this module
+            raw.create_function('sf_glob', 2, sf_glob, deterministic=True)
             return Conn(raw, 'sqlite')
         import psycopg
         from psycopg.adapt import Loader

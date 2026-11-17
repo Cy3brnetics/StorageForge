@@ -45,7 +45,10 @@ def load_xml(text: str):
         raise ValueError('config.xml is missing or too large')
     if re.search(r'<!(?:DOCTYPE|ENTITY)', text):
         raise ValueError('config.xml declares an entity: refused')
-    return ElementTree.fromstring(text)
+    try:
+        return ElementTree.fromstring(text)
+    except ElementTree.ParseError as exc:
+        raise ValueError(f'config.xml does not parse: {exc}') from None
 
 
 def _t(node, path, default=None):
@@ -58,7 +61,7 @@ def _has(node, path) -> bool:
 
 
 def _prefix(mask) -> int | None:
-    return int(mask) if str(mask or '').isdigit() else None
+    return int(mask) if str(mask or '').isascii() and str(mask or '').isdigit() else None
 
 
 def interfaces(root) -> dict:

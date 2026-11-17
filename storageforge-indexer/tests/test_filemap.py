@@ -295,9 +295,11 @@ class FileMap(unittest.TestCase):
             mark(pc, scan('pc', 'ok'))              # pc was scanned: only its mount is read again
             built.clear(); get()
             self.assertEqual(built, [[pc]])
-            mark(nas, scan('nas', 'running'))       # nas is being scanned: its mount serves the request and is not kept
-            built.clear(); get(); get()
-            self.assertEqual(built, [[nas], [nas]])
+            mark(nas, scan('nas', 'running'))       # nas is being scanned: the last file map stands, marked stale, and nothing is built until it is done
+            built.clear()
+            during = [get().get_json(), get().get_json()]
+            self.assertEqual(built, [])
+            self.assertTrue(all(d['stale'] for d in during))
             self.conn.execute("UPDATE scans SET status = 'ok' WHERE status = 'running'")
             built.clear(); last = get().get_json()
             self.assertEqual(built, [[nas]])

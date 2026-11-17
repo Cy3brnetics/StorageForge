@@ -245,12 +245,14 @@ Build with `--build-arg EXTRAS=postgres` and set `STORAGEFORGE_DB=postgresql://u
 ## Tests
 
 ```bash
-pip install -e .                                  # without Flask, the server tests error instead of running
-python3 -m unittest discover -s tests -v
+pip install -e ".[test]"                          # without Flask, the server tests error instead of running; without test, the random tests skip
+python3 tests/run.py all -j 8                     # light, medium and heavy (tests/README.md)
+python3 tests/run.py deep -j 8                    # the random tests with many examples
+python3 -m unittest discover -s tests -v          # or everything in one process
 docker build --target test .
 ```
 
-`.forgejo/workflows/ci.yml` runs the suite on both databases, plus ruff and shellcheck, a Trivy scan of the image and a [zizmor](https://docs.zizmor.sh) audit of the workflows themselves, on every push. It needs Forgejo Actions and a runner. `.github/workflows/ci.yml` is the same for GitHub.
+`.forgejo/workflows/ci.yml` runs each block of the suite (light, medium, heavy, then the random tests deep) on both databases, plus ruff and shellcheck, a Trivy scan of the image and a [zizmor](https://docs.zizmor.sh) audit of the workflows themselves, on every push. It needs Forgejo Actions and a runner. `.github/workflows/ci.yml` is the same for GitHub.
 
 The workflows follow what zizmor checks for:
 - **Actions are pinned to commit SHAs**, with the version in a comment, so a moved or hijacked tag can't run in CI. Dependabot (`.github/dependabot.yml`) raises the bumps on GitHub. Copy them into the Forgejo file, which has no Dependabot.
@@ -264,6 +266,6 @@ zizmor itself is pinned (1.32.0), so a release with new audits can't fail an unc
 The same suite runs against PostgreSQL when `STORAGEFORGE_TEST_PG` names a server it may create databases on (each test gets a fresh one, dropped afterwards). The backup tests are skipped there, since backups are of SQLite databases:
 
 ```bash
-docker run -d --rm --name sf-test-pg -e POSTGRES_USER=sf -e POSTGRES_PASSWORD=sftest -p 127.0.0.1:55432:5432 postgres:16-alpine
+docker run -d --rm --name sf-test-pg --shm-size=256m -e POSTGRES_USER=sf -e POSTGRES_PASSWORD=sftest -p 127.0.0.1:55432:5432 postgres:16-alpine
 STORAGEFORGE_TEST_PG=postgresql://sf:sftest@127.0.0.1:55432/postgres python3 -m unittest discover -s tests
 ```
