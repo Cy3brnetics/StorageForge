@@ -2,7 +2,7 @@
 
 Where the build stands. [roadmap.md](roadmap.md) says what's left, and the plans these rows come from are in [the archive](archive/roadmaps/). **Done** means the roadmap's definition of done (§2), including the KVM lab. Code that passes unit tests but has not been in the lab is **Built, not lab-tested**.
 
-Last updated: 2026-11-05.
+Last updated: 2026-11-17.
 
 ## Now
 
@@ -12,11 +12,11 @@ Built and through the KVM lab, apart from what each row says.
 
 | Phase | State |
 | :--- | :--- |
-| M1 Network, M2 Services and Firewall, M3 Containers and VMs | Done: tier 10. Incus, LXC and Proxmox guests are parsed and unit-tested, not lab-tested |
+| M1 Network, M2 Services and Firewall, M3 Containers and VMs | Done: tier 10. LXC and Incus guests: tier 13, on 2026-11-08, one empty guest each (a real LXC container on `sf-bookworm`, a real Incus instance on `sf-ubuntu`). Proxmox guests are parsed and unit-tested, not lab-tested until a build with `sf-pve` runs the tiers, which the default build now is |
 | M4 Map UI foundations | Done, except the [listed](docs/infrastructure-map.md#not-built) layouts and colour rules |
 | M5 Placeholders, manual nodes, change tracking | Done: tiers 10, 11 |
 | M6 Path query, what-if, plan actions | Done for firewall, network, WireGuard and container steps: tier 11. Stacks, LXC and catalog tools aren't built: see the [roadmap](roadmap.md) |
-| M7 Access and Security layers | WireGuard done: tier 11. Tailscale, proxies and identity providers are parsed and unit-tested, not lab-tested |
+| M7 Access and Security layers | WireGuard done: tier 11. The `tailscale` step joined three VMs to a real tailnet on 2026-11-08, by hand and in no tier. Reading Tailscale in scans, proxies and identity providers are parsed and unit-tested, not lab-tested |
 | M8 Design mode | Done: tier 11. Terraform and Puppet exports render and hold values as data, and have not been applied by those tools |
 | M9 Scale and integrations | Later, as the roadmap says. A synthetic 200 hosts and 2,000 workloads draws within limits in the browser test |
 
@@ -44,7 +44,7 @@ Corrections stand: no VSS trap, no cryptographic shred, no certificates, no WebS
 
 | Work | State |
 | :--- | :--- |
-| Scans collect host journals; the Logs tab, `hostlogs` on the CLI, `/api/hostlogs` and the `hostlogs.view` permission | Built, committed on 2026-11-04. Its unit tests have run since and pass (see the log, 2026-11-06). Lab tier 14 is written and has not run, so it is not lab-tested |
+| Scans collect host journals; the Logs tab, `hostlogs` on the CLI, `/api/hostlogs` and the `hostlogs.view` permission | Built, committed on 2026-11-04. Its unit tests have run since and pass (see the log, 2026-11-06). Done: tier 14, first run on 2026-11-08, 25 of 25 on six journald hosts and Alpine without one |
 | `/api/hostlogs/counts` and `/api/hostlogs/units` | Built and unit-tested on 2026-11-06. The Logs view that uses them is UI phase 4, not started |
 
 ## Log
@@ -62,6 +62,12 @@ Corrections stand: no VSS trap, no cryptographic shred, no certificates, no WebS
 - 2026-11-05: phase 2 of the UI roadmap is built in a lighter form (see the roadmap's row for what is not): a router with Back and copied URLs, the rail as a tab list, Security and the settings panels with the whole page, the map by keyboard, a host picker where a panel needs one. The browser file is 91 tests and passes; `test_ui_kernel.py` (12), `test_ui_contrast.py` (6) and `test_docs_web_ui.py` (4) pass.
 - 2026-11-05: scan payloads are signed on the host and checked before use (`5916ce1`), at the owner's request: 17 tests in `test_scansign.py` pass on SQLite and PostgreSQL, the lab stage `scan-signed` is written and has not run. The full SQLite suite at that point was 1473 tests with 6 failures, all of them consistency checks and one race in a browser test that the commit fixed; it has not been run again whole.
 - 2026-11-05: SF-48 is built: each side of a send is a signed run with a key of its own and no root key between the hosts, merged in `4d8b083` from a child branch. `test_sends.py` (93 tests, 1 skipped), `test_audit_2026_11_03.py` (48), `test_feature_map.py` (9), `test_storage_ops.py` (24) and `test_route_rules.py` (5) pass on SQLite. KVM lab tier 16 is written and has not run, and tiers 3 and 5 and `demo.py` were changed to send with no root key and have not run either. SF-46's walk test is in.
+- 2026-11-08: the parts of the lab that were written and had never run had their first runs, on `sf-ctl`, `sf-ubuntu`, `sf-jammy`, `sf-bookworm`, `sf-fedora`, `sf-suse` and `sf-alpine`: tier 16 (sends between enrolled hosts, btrfs and ZFS) 24 of 24, tier 17 (the network language on ufw and firewalld) 3 of 3, tier 14 (host logs) 25 of 25, tier 2's `scan-signed` stage 71 of 71, tier 13 39 passed with the LXC and Incus guests and `ui-pages` skipped. The table is in [KVM lab](docs/kvm-lab.md#first-runs-on-2026-11-08).
+- 2026-11-09: tier 18 (libvirt on `sf-ubuntu` and `sf-bookworm`, a nested guest) passed 17 of 17. **0.5.0** released.
+- 2026-11-11: **0.5.1**, fixes for the bug reports of 2026-11-10. Unit-tested, not lab-tested.
+- 2026-11-13: **0.5.2**, two bugs GitHub's CI showed. Unit-tested, not lab-tested.
+- 2026-11-16: the roadmap for 0.6.0 ([roadmap.md](roadmap.md)), in versions 0.5.3 to 0.6.0. The unit suite in three blocks with random tests, and the stress runs: [the report](docs/test-report-2026-11-16.md). No lab run since 2026-11-09.
+- 2026-11-17: 0.5.3's lab gaps, before its lab run: a default build with every host a check asks for and the appliances and routers in it, Playwright for tier 13, `qemu-img` on `sf-ubuntu`, SF-72's ZFS properties read back and the btrfs side measured in tier 16, `shellcheck` with the `test` extra. None of it has been through the lab yet.
 
 What the lab found that unit tests had not:
 
