@@ -29,6 +29,8 @@ jobs:
         database: [sqlite, postgres]
     env:
       PLAYWRIGHT_BROWSERS_PATH: /tmp/pw-browsers  # tests/ci.sh runs as another user, who must find them
+      # empty is SQLite (tests/dbfactory.py); each block runs on both
+      STORAGEFORGE_TEST_PG: ${{ matrix.database == 'postgres' && 'postgresql://sf:sftest@postgres:5432/postgres' || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
@@ -39,17 +41,22 @@ jobs:
       - name: Tools the tests call
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends openssh-client openssh-server util-linux rsync shellcheck
       - name: Install
-        run: python -m pip install -e ".[postgres]" playwright && python -m playwright install --with-deps chromium
+        run: python -m pip install -e ".[postgres,test]" playwright && python -m playwright install --with-deps chromium
       - name: Planner and capacity.py agree
         run: node tests/vectors/check.mjs
-      - name: Tests on SQLite
-        if: matrix.database == 'sqlite'
-        run: bash tests/ci.sh
-      - name: Tests on PostgreSQL
-        if: matrix.database == 'postgres'
-        env:
-          STORAGEFORGE_TEST_PG: postgresql://sf:sftest@postgres:5432/postgres
-        run: bash tests/ci.sh
+      # the blocks of tests/blocks.py, so a red step says which: light is quick and pure, medium runs bash and local tools,
+      # heavy runs Chromium, sshd, Docker and real waits, and deep runs the random tests again with many examples and a fresh seed
+      - name: Light
+        run: bash tests/ci.sh light
+      - name: Medium
+        if: ${{ !cancelled() }}      # every block reports, even after one fails
+        run: bash tests/ci.sh medium
+      - name: Heavy
+        if: ${{ !cancelled() }}      # every block reports, even after one fails
+        run: bash tests/ci.sh heavy
+      - name: Random, deep
+        if: ${{ !cancelled() }}      # every block reports, even after one fails
+        run: bash tests/ci.sh deep
 
   lint:
     name: Lint

@@ -616,8 +616,13 @@ YAML front matter carries the headline numbers so other tools can parse the repo
 ## Tests
 
 ```bash
+python3 tests/run.py                # light, the minute after any change
+python3 tests/run.py all -j 8       # light, medium and heavy
+python3 tests/run.py deep -j 8      # the random tests (tests/test_props_*.py) with many examples
 python3 -m unittest discover -s tests -v
 ```
+
+[tests/README.md](tests/README.md) says what is in each block and how the random tests work.
 
 `tests/test_platform.py` covers vault round trips, wrong-secret refusal, tampered and swapped ciphertexts, rotation, binding specificity, the audit chain under tampering, loading a key into a real ephemeral `ssh-agent`, graph building, `.canvas` validity (including no overlapping cards), and the HTTP API with auth and CSP. `tests/test_tasks.py` covers storage tasks: normalising, checks and generated scripts. `tests/test_consistency.py` keeps hand-kept lists in step: the container entrypoint against the CLI's subcommands, and the backup table lists against the schema. `tests/test_indexer.py` covers units and patterns, the stream parser (newlines in names, truncation, tiny reads), pool math against the dashboard, mount planning (bind aliases, pruning), payload parsers, report generation, and real local scans: incremental diff, subtree safety and the mass-delete guard.
 

@@ -4,11 +4,12 @@
 
 ```bash
 cd storageforge-indexer
-python3 -m venv .venv && .venv/bin/pip install -e ".[postgres]"
-.venv/bin/python -m unittest discover -s tests
+python3 -m venv .venv && .venv/bin/pip install -e ".[postgres,test]"
+.venv/bin/python tests/run.py                 # light: a minute, after any change
+.venv/bin/python tests/run.py all -j 8        # the whole suite, before a merge
 ```
 
-Without the install, every test that needs Flask errors with `ModuleNotFoundError`, so a bare `python3 -m unittest` says little. To run the suite on PostgreSQL as well, see [Operations](docs/operations.md#tests). CI runs both databases, plus ruff and shellcheck, from `.forgejo/workflows/ci.yml`.
+The suite is in three blocks, light, medium and heavy, of controlled tests, plus random tests that run in light with a few fixed examples and again in `deep` with many: see [tests/README.md](storageforge-indexer/tests/README.md). Without the install, every test that needs Flask errors with `ModuleNotFoundError`, so a bare `python3 -m unittest` says little. To run the suite on PostgreSQL as well, see [Operations](docs/operations.md#tests). CI runs each block on both databases, plus ruff and shellcheck, from `.forgejo/workflows/ci.yml`.
 
 ## Rules every change follows
 

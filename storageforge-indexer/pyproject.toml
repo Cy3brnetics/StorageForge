@@ -12,6 +12,7 @@ dependencies = ["cryptography>=44", "flask>=3.1", "flask-login>=0.6.3", "flask-l
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.1"]
+test = ["hypothesis>=6.100"]       # the random tests (tests/test_props_*.py); without it they skip
 
 [project.scripts]
 storageforge-index = "storageforge_index.cli:main"

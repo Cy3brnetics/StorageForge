@@ -8,7 +8,7 @@
 
 ## Checklist
 
-- [ ] Tests pass: `cd storageforge-indexer && python -m unittest discover -s tests` (and on PostgreSQL if it touches the database)
+- [ ] Tests pass: `cd storageforge-indexer && python tests/run.py all -j 8` (and on PostgreSQL if it touches the database)
 - [ ] `ruff check storageforge_index tests` is clean
 - [ ] A generated script only reports with no flags, and anything that destroys data needs `--destructive`
 - [ ] Values reach Bash as data (`shlex.quote`), never as code
