@@ -289,9 +289,31 @@ def tier16(r):
         return 'sent, the key went with the plan, and a rerun changed nothing'
     r.check('send-plan-btrfs', to.name, plan)
 
+    def btrfs_setuid():
+        """SF-72, the btrfs side: `btrfs receive` has no way to drop what a stream carries, and docs/security.md says so. Measured here, so the
+        page states what a real receive does: the file arrives root-owned and setuid, and whether another account can run it is the folder's doing."""
+        name = 'lab-plan-setuid'
+        snap = f'{frm.snaps}/{name}'
+        sudo(frm.name, f'cp /bin/true {frm.subvol}/lab-setuid && chown root:root {frm.subvol}/lab-setuid && chmod 4755 {frm.subvol}/lab-setuid')
+        try:
+            made = api.post('/api/changes', {'name': 'Lab signed plan send, setuid', 'tasks': [
+                {'type': 'snapshot', 'host': frm.name, 'params': {'source': frm.subvol, 'dest': snap, 'readonly': True}},
+                {'type': 'btrfs-send', 'host': frm.name, 'params': {'source': snap, 'dest_host': to.name, 'dest': to.recv}}]})
+            demo.deploy(api, 'changes', made['id'], 'signed plan send, setuid')
+        finally:
+            sudo(frm.name, f'rm -f {frm.subvol}/lab-setuid')
+        got = sudo(to.name, f'stat -c "%a %U" {to.recv}/{name}/lab-setuid').strip()
+        want(got == '4755 root', f'the copy holds it as {got}: docs/security.md says a btrfs copy keeps the owner, mode and setuid bits')
+        # nothing left the folder: the chroot holds, and the stream made one subvolume
+        want(sudo(to.name, f'ls {to.recv}').split().count(name) == 1, 'the copy is not where it was sent')
+        nosuid = 'nosuid' in sudo(to.name, f'findmnt -no OPTIONS --target {to.recv}/{name}')
+        reach = run(to.name, f'sudo -n -u scan test -x {to.recv}/{name}/lab-setuid').returncode == 0
+        return f'arrived {got}, as the docs say; the mount is {"nosuid" if nosuid else "not nosuid"} and another account can{"" if reach else "not"} reach it'
+    r.check('send-btrfs-setuid', to.name, btrfs_setuid)
+
     # ── ZFS ─────────────────────────────────────────────────────
     pools = roles.having('zfs')
-    zfs_checks = ('send-zfs-full', 'send-zfs-incremental', 'send-zfs-retention', 'send-zfs-corrupt-stream', 'send-zfs-mountpoint', 'send-zfs-no-root-key')
+    zfs_checks = ('send-zfs-full', 'send-zfs-incremental', 'send-zfs-retention', 'send-zfs-corrupt-stream', 'send-zfs-mountpoint', 'send-zfs-properties', 'send-zfs-no-root-key')
     if len(pools) < 2:
         for check in zfs_checks:
             r.add(check, pools[0].name if pools else '-', None, 'needs two ZFS hosts in this build')
@@ -363,7 +385,11 @@ def tier16(r):
     def zfs_mountpoint():
         """With child datasets a stream carries properties. A sender that was taken over could name /etc: the copy must not take it."""
         source, target = f'{a.tag("zfs-pool")}/labmount', f'{b.tag("zfs-pool")}/labmount-copy'
-        sudo(a.name, f'zfs create -o mountpoint=/mnt/lab-send-mountpoint {source}')
+        # the properties SF-72 is about, each set on the sender so the stream carries it. sharenfs is set after: with no NFS server
+        # the share itself fails, and the property stays
+        sudo(a.name, f'zfs create -o mountpoint=/mnt/lab-send-mountpoint -o setuid=on -o devices=on -o canmount=on {source}')
+        sudo(a.name, f'zfs set sharenfs=on {source}; zfs set sharesmb=on {source}; true')
+        zstate['props_sent'] = dict(line.split('\t')[:2] for line in sudo(a.name, f'zfs get -H -s local -o property,value all {source}').splitlines() if line)
         made = api.post('/api/tasks', {'name': 'Lab signed ZFS mountpoint', 'host': a.name, 'blocks': [
             {'type': 'zfs_snapshot', 'params': {'dataset': source, 'prefix': 'signed', 'recursive': True}},
             {'type': 'zfs_send', 'params': {'dataset': source, 'prefix': 'signed', 'dst_host': b.name, 'dst': target, 'keep': 0, 'recursive': True}}]})
@@ -373,3 +399,20 @@ def tier16(r):
         want(sudo(b.name, f'zfs get -H -o value mounted {target}').strip() == 'no', 'it was mounted')
         return f'its mountpoint is {got}, from its parent, and not what the stream said'
     r.check('send-zfs-mountpoint', b.name, zfs_mountpoint)
+
+    def zfs_properties():
+        """SF-72: the stream said setuid, devices, canmount and the exports on. The copy has them as the receive set them, whatever it said."""
+        target = f'{b.tag("zfs-pool")}/labmount-copy'
+        sent = zstate.get('props_sent') or {}
+        missing = [p for p in ('setuid', 'devices', 'canmount') if sent.get(p) != 'on']
+        want(not missing, f'the sender never had {missing} set, so this would prove nothing: {sent}')
+        exports = [p for p in ('sharenfs', 'sharesmb') if sent.get(p) == 'on']
+        want(exports, f'no export property could be set on the sender, so this would prove nothing: {sent}')
+        got = {line.split('\t')[0]: line.split('\t')[1:3] for line in sudo(b.name, f'zfs get -H -o property,value,source setuid,devices,canmount,sharenfs,sharesmb {target}').splitlines() if line}
+        for prop, value in (('setuid', 'off'), ('devices', 'off'), ('canmount', 'noauto'), ('sharenfs', 'off'), ('sharesmb', 'off')):
+            want(got[prop][0] == value, f'{prop} is {got[prop][0]} ({got[prop][1]}) on the copy, and should be {value}')
+        for prop in exports:
+            want('received' not in got[prop][1], f'{prop} came from the stream: {got[prop]}')
+        want(not sudo(b.name, f'showmount -e localhost 2>/dev/null | grep -F labmount-copy; exportfs 2>/dev/null | grep -F labmount-copy; true').strip(), 'the copy is exported')
+        return f'the stream said {", ".join(f"{p}=on" for p in ("setuid", "devices", "canmount", *exports))}; the copy has setuid=off, devices=off, canmount=noauto and no export'
+    r.check('send-zfs-properties', b.name, zfs_properties)
