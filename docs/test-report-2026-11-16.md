@@ -75,6 +75,10 @@ A branch-coverage run of the whole suite gave **85 %** (29,795 statements, 3,710
 | Installing a key with a password | A stand-in `ssh-copy-id` asks the real askpass helper, as ssh does. The password reaches ssh only through askpass, never argv or a file; the scratch folder is gone after success, refusal or a hang | Nothing wrong | `dce9e98` |
 | The md-array step | Its plan checks, and its Ansible export run against a stand-in `mdadm` and `blkid` that answer as the real ones do | **The export failed on every real host, twice over.** It put `--` before the devices, which mdadm 4.3 and 4.6 count as a device (checked in Alpine 3 and Alpine edge containers). And under `set -e` it ended silently on a blank disk, where `blkid -p` exits 2. The test fails on the old code | `ab6a4b2` |
 | The check before a deploy | Each fact and its finding, the probe read line by line, scan facts, SSH login methods against a stand-in `ssh`, blockers by kind of deploy, both report paths | **A probe printing `clock=x` crashed the host check**, and every deploy's check of its blockers with it. `'١٢٣'` was read as 123 | `9b08780` |
+| Alert channels | Saving keeps a token only while the server's scheme, host and port stay the same; loopback, link-local and the IPv6 forms that carry them are refused; what each channel is sent; routing; failures said without saying too much; no redirect followed; drift from a host's managed files | Nothing wrong | `9e9fafc` |
+| Setting up deploy access | `deploy.enroll` with `sudo_run` and the probe replaced, the vault real: a network device or a host with no systemd is refused before the password goes anywhere; the key is bound once; failures audited | Nothing wrong | `9e9fafc` |
+| After a device change | `netdevice._settle`: confirmed when it answers, rolled back by its timer when it stops, lost when it never answers again; a session that dies after the timer is planted | Nothing wrong | `f832eeb` |
+| Opening a web console | `console.open_session` with a stand-in `ssh` and `virsh`: the bound key and port, nothing forwarded, the host key checked by its LAN name over Tailscale, the refusals, the limit of four, serial consoles | Nothing wrong in the product. The stand-in `virsh` answered `domstate` with success under `run.py`, where its input is empty, so one refusal passed alone and failed in the suite: the stand-in now answers as `virsh` does | `dbd7a97`, the stand-in after |
 
 ## 5. The 3-disk raidz
 
@@ -159,6 +163,8 @@ Two side findings along the way:
 - **A guard `__main__.py` lacked.** A spawned worker imports the main module again. The console script is guarded; `__main__.py` was not, so under `python -m storageforge_index serve` the worker would have run the CLI a second time. It is guarded now.
 - **GM-25 came back, briefly.** The first version of round 12's fix served a result made mid-scan as current once the scan ended. `test_platform`'s test for GM-25 caught it in the full run. A result made mid-scan is now only ever answered as stale.
 
+The page now says when a folder view is from an earlier scan, and refreshes it by itself until it isn't (`ca7205a`, with a browser test).
+
 ### Where SQLite stands
 
 | Clients | Light p99 | Queued p99 | Analyses p99 | Answers a second | Errors | Web memory |
@@ -232,13 +238,13 @@ docker exec sf-stress-pg psql -U sf -c "CREATE DATABASE sfstress"
 .venv/bin/python tests/stress/hammer.py postgresql://sf:sftest@127.0.0.1:55433/sfstress --stages 8,32,64,128,256 --seconds 30
 ```
 
-The last full run: **1,955 tests, 0 failed, 9 skipped, in 179 s** at `-j 6` on SQLite. The new tests ran on PostgreSQL as well.
+The last full run: **1,989 tests, 0 failed, 9 skipped, in 179 s** at `-j 6` on SQLite. The new tests ran on PostgreSQL as well.
 
 ## 10. Still open
 
 - **The foreign keys** that make PostgreSQL scans about 7 times slower than SQLite's: a migration, the owner's call.
 - **More than one web process**, to go past about 40 answers a second: the in-memory caches, sessions and rate limits would have to move out first.
 - **The browser flake's cause** is likely, not proven.
-- **Coverage still low in** `deploy`, `console`, `alerts` and `netdevice`.
+- **What no test reaches yet:** `deploy.raw` and `run`'s timeout and cancel paths, `console`'s recording upkeep, and `netdevice.session`'s transports (Telnet, password, the CLI devices), which want a real or stand-in SSH server.
 - **`shellcheck` is not on this machine**, so 3 tests skip here; CI has it.
 - **No KVM lab run** for any of this. The roadmap's section 1 lab items (OPNsense, the appliances, the skipped checks) are not started.
