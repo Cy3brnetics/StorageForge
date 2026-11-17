@@ -10,8 +10,10 @@ Matching structure is strong evidence of a copy, not proof; a --checksum scan co
 """
 from __future__ import annotations
 
+import functools
 import posixpath
 import re
+import threading
 from array import array
 from bisect import bisect_left, bisect_right
 
@@ -28,7 +30,24 @@ NOISE_NAMES = frozenset({'node_modules', '__pycache__', '.cache', 'site-packages
 BACKUP_ROTATION = re.compile(r'(hourly|daily|weekly|monthly|yearly)\.\d+')
 
 
+@functools.lru_cache(maxsize=4)
+def _noise_re(dirs: tuple, names: frozenset):
+    """The three rules of _noise_by_parts as one search: a system folder or anything under it, a folder name anywhere, or a backup rotation
+    anywhere. Made from the lists as they are when asked, and kept for those lists: a test that changes NOISE_DIRS gets its own."""
+    return re.compile('^(?:' + '|'.join(map(re.escape, dirs)) + ')(?:/|$)'
+                      + '|(?:^|/)(?:' + '|'.join(map(re.escape, sorted(names))) + ')(?:/|$)'
+                      + '|(?:^|/)' + BACKUP_ROTATION.pattern + '(?:/|$)')
+
+
 def _noise(path: str) -> bool:
+    """System and tool folders, which the file map and folder views leave out. One search per path: the file map asks this of every copy
+    of every file, and the rules one by one cost 3 s of a host's 7 s at two million files (found by tests/stress/hammer.py).
+    test_props_folders.NoisePaths holds it to _noise_by_parts."""
+    return _noise_re(NOISE_DIRS, NOISE_NAMES).search(path) is not None
+
+
+def _noise_by_parts(path: str) -> bool:
+    """The rules as they read: what _noise must agree with."""
     parts = path.split('/')
     return (any(path == d or path.startswith(d + '/') for d in NOISE_DIRS) or bool(NOISE_NAMES & set(parts))
             or any(BACKUP_ROTATION.fullmatch(p) for p in parts))
@@ -180,6 +199,36 @@ def dir_index(conn: Conn, host: str | None = None, mounts: list[int] | None = No
     return {mid: MountDirs(by_mount.get(mid, {}), prints.get(mid, {})) for mid in {*by_mount, *prints}}
 
 
+_FLEET: list = []                 # [(key, the mount indexes it was made from, result)]: the last few fleet-wide comparisons
+_FLEET_LOCK = threading.Lock()
+
+
+def _fleet_groups(index: dict, mounts: dict, min_files: int, min_bytes: int, include_system: bool) -> tuple[dict, int]:
+    """Every folder that has a copy, across the fleet: what each host's view of duplicate folders filters. It was made again for each host,
+    the same fleet-wide work each time (3.5 s per host at two million files, found by tests/stress/hammer.py). Kept for the same mount indexes,
+    held by reference and compared by identity, so an index rebuilt after a scan is never mistaken for the old one."""
+    key = (tuple(sorted(mounts.items())), min_files, min_bytes, include_system)
+    used = tuple(sorted(((mid, md) for mid, md in index.items() if mid in mounts), key=lambda x: x[0])) if index else ()
+    with _FLEET_LOCK:
+        for k, held, result in _FLEET:
+            if k == key and len(held) == len(used) and all(a[0] == b[0] and a[1] is b[1] for a, b in zip(held, used)):
+                return result
+    groups: dict[int, list] = {}
+    checked = 0
+    for mid, md in used:
+        checked += len(md.prints)
+        files, size, fps = md.files, md.size, md.fp
+        for i, path in enumerate(md.prints):
+            if (files[i] >= min_files and size[i] >= min_bytes and is_under(path, mounts[mid][1])
+                    and (include_system or not _noise(path))):
+                groups.setdefault(fps[i], []).append((mid, path, files[i], size[i]))
+    result = ({fp: ks for fp, ks in groups.items() if len(ks) > 1}, checked)
+    with _FLEET_LOCK:
+        _FLEET.append((key, used, result))
+        del _FLEET[:-3]
+    return result
+
+
 def duplicate_folders(conn: Conn, host: str | None = None, min_files: int = 3, min_bytes: int = 1 << 20,
                       limit: int = 100, include_system: bool = False, index: dict[int, MountDirs] | None = None) -> dict:
     """Folders with the same files (names and sizes) and subfolders, on any host. With a host, the groups with a copy on it,
@@ -193,18 +242,7 @@ def duplicate_folders(conn: Conn, host: str | None = None, min_files: int = 3, m
                                           WHERE m.scan_state = 'indexed' AND (h.hostname = :host OR h.ip_address = :host)""", {'host': host})}
     if index is None:
         index = dir_index(conn)
-    groups: dict[int, list] = {}
-    checked = 0
-    for mid, md in index.items():
-        if mid not in mounts:
-            continue
-        checked += len(md.prints)
-        files, size, fps = md.files, md.size, md.fp
-        for i, path in enumerate(md.prints):
-            if (files[i] >= min_files and size[i] >= min_bytes and is_under(path, mounts[mid][1])
-                    and (include_system or not _noise(path))):
-                groups.setdefault(fps[i], []).append((mid, path, files[i], size[i]))
-    groups = {fp: ks for fp, ks in groups.items() if len(ks) > 1}
+    groups, checked = _fleet_groups(index, mounts, min_files, min_bytes, include_system)
     dup_keys = {(k[0], k[1]) for ks in groups.values() for k in ks}
 
     def nested(key):                       # its parent is itself part of a reported copy

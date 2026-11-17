@@ -535,7 +535,7 @@ function api(path, opts = {}) {
   return el ? withBusy(el, () => sfFetch(path, init, false)) : sfFetch(path, init, false);
 }
 const sfNever = () => new Promise(() => {});
-async function sfFetch(path, init, confirmed) {
+async function sfFetch(path, init, confirmed, busyTries = 0) {
   // Once the page is signed out its body is empty until /login loads, and that navigation aborts what is still open: a request that
   // settles then never settles for its caller, whose handler would only draw on (or fail to find) what is no longer there.
   let res;
@@ -553,6 +553,11 @@ async function sfFetch(path, init, confirmed) {
   if (res.status === 403 && !confirmed && (await res.clone().json().catch(() => ({}))).reauth) {
     await confirmPassword();                     // commands on hosts: type the password again, then retry once
     return sfFetch(path, init, true);
+  }
+  // the server is doing as much of this work as it takes at once (a folder analysis on a big index): a GET waits as long as it says, and asks again
+  if (res.status === 503 && res.headers.get('Retry-After') && (init.method || 'GET').toUpperCase() === 'GET' && busyTries < 20) {
+    await new Promise((ok) => setTimeout(ok, Math.min(30, Number(res.headers.get('Retry-After')) || 5) * 1000));
+    return sfFetch(path, init, confirmed, busyTries + 1);
   }
   if (res.status === 409) {                      // a password would go to a host key nobody checked: show it first
     const hk = (await res.clone().json().catch(() => ({}))).hostkey;

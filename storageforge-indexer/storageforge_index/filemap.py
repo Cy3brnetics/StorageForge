@@ -80,13 +80,27 @@ def build(conn: Conn, host: str | None, min_size: int, system: bool = False, twi
 
     whole = {(c['host'], c['path']) for t in folder_copies for c in t['copies']}
 
-    def in_folder_copy(c):
-        path = c['path']
+    seen: dict[tuple, bool] = {}
+
+    def in_folder_copy(c):                 # each folder's answer is kept: every copy of every file asks it, mostly of the same folders
+        if not whole:
+            return False
+        host, path = c['host'], posixpath.dirname(c['path'])
+        walked = []
+        found = False
         while path not in ('/', ''):
+            known = seen.get((host, path))
+            if known is not None:
+                found = known
+                break
+            walked.append((host, path))
+            if (host, path) in whole:
+                found = True
+                break
             path = posixpath.dirname(path)
-            if (c['host'], path) in whole:
-                return True
-        return False
+        for k in walked:
+            seen[k] = found
+        return found
 
     groups = [g for g in groups if not all(in_folder_copy(c) for c in g['copies'])]
     for g in groups:                       # the folder copy already counts what is inside it
