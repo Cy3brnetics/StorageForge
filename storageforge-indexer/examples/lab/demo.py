@@ -87,6 +87,12 @@ class Api:
         if status == 403 and isinstance(out, dict) and out.get('reauth'):    # commands on hosts want a recent password
             self.raw('POST', '/api/reauth', {'password': self.password})
             status, out = self.raw(method, path, body)
+        # As the page does (kernel.js): a busy server says 503 and is asked again, and a folder analysis from an earlier scan is shown while
+        # the new one is built, marked stale. A check wants the answer for the scan it just made, so it waits for that one.
+        until = time.time() + 180
+        while expect is None and time.time() < until and isinstance(out, dict) and (status == 503 and out.get('busy') or method == 'GET' and status == 200 and out.get('stale')):
+            time.sleep(2)
+            status, out = self.raw(method, path, body)
         if expect is None and status >= 400 or expect is not None and status != expect:
             fail(f'{method} {path}: HTTP {status}: {json.dumps(out)[:1500]}')
         return out

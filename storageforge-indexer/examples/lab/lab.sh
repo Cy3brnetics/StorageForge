@@ -589,7 +589,10 @@ cmd_ssh() {
 ensure_venv() {
   # installed, not from source: password logins need its storageforge-askpass program
   [ -x "$STATE/venv/bin/storageforge-askpass" ] || { python3 -m venv "$STATE/venv" && "$STATE/venv/bin/pip" install -q -e "$HERE/../.." ; } || die 'could not install StorageForge for the tests'
-  # tier 13 opens every page in Chromium. The browser is kept in Playwright's own cache, so only the first lab downloads it
+}
+
+ensure_browser() {   # tier 13 opens every page in Chromium. The browser is kept in Playwright's own cache, so only the first lab downloads it
+  ensure_venv
   "$STATE/venv/bin/python" -c 'import playwright' 2>/dev/null || { "$STATE/venv/bin/pip" install -q playwright && "$STATE/venv/bin/python" -m playwright install chromium >/dev/null; } || die 'could not install Playwright for tier 13'
 }
 
@@ -621,7 +624,8 @@ cmd_test_all() {
     case $t in    # the report decides, knowing what is known
       2) cmd_gauntlet || true ;;
       8) cmd_appliances || true ;;
-      12|13) ensure_venv; PYTHONPATH="$HERE/../.." "$STATE/venv/bin/python" "$tiers" run "$t" || true ;;    # 12 reads with the product's own parsers, 13 needs Playwright
+      12) ensure_venv; PYTHONPATH="$HERE/../.." "$STATE/venv/bin/python" "$tiers" run "$t" || true ;;    # it reads with the product's own parsers
+      13) ensure_browser; PYTHONPATH="$HERE/../.." "$STATE/venv/bin/python" "$tiers" run "$t" || true ;;    # its last check opens every page in Chromium
       *) python3 "$tiers" run "$t" || true ;;
     esac
   done
