@@ -63,6 +63,7 @@ MEDIUM = {
     # bash, telnet and console sessions run for real
     'test_console.Api',
     'test_console.Session',
+    'test_console_open.Open',
     'test_errlog.ExitWhileWriting',
     'test_nettransport.Telnet',
     'test_pkglist.Collect',
