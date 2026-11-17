@@ -984,7 +984,7 @@ class HostileValues(TwoHosts):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue(mark.exists(), 'the whole script ran: nothing ended early')
 
-    @unittest.skipUnless(shutil.which('shellcheck'), 'needs shellcheck (CI has it)')
+    @unittest.skipUnless(shutil.which('shellcheck'), 'needs shellcheck: pip install -e ".[test]"')
     def test_shellcheck_finds_no_errors(self):
         s = self.grants('/srv/x') + self.grants('back/a', 'zfs')
         keys = jobs.new_secrets(s)

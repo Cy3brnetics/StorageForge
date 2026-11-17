@@ -1,6 +1,6 @@
 # The unit suite
 
-Run from `storageforge-indexer`, after `pip install -e ".[postgres,test]"`. Without `test` (Hypothesis) the random tests skip and everything else runs.
+Run from `storageforge-indexer`, after `pip install -e ".[postgres,test]"`. Without `test` (Hypothesis and `shellcheck`) the random tests and the three `shellcheck` tests over the generated scripts skip, and everything else runs. `run.py` finds the venv's `shellcheck` whether or not the venv is activated.
 
 ```bash
 python tests/run.py                  # light: the minute after any change

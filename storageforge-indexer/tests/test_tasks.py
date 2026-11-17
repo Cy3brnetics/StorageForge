@@ -492,7 +492,7 @@ Error summary:    no errors found
 
 
 class GeneratedScripts(Fleet):
-    @unittest.skipUnless(shutil.which('shellcheck'), 'needs shellcheck (CI has it)')
+    @unittest.skipUnless(shutil.which('shellcheck'), 'needs shellcheck: pip install -e ".[test]"')
     def test_shellcheck_finds_no_errors(self):
         from storageforge_index import access, changes, health, schedscript, scheduler
         sched = {'schedule_id': 1, 'name': 'n', 'host': 'nas', 'cron_expr': '0 3 * * 1-5', 'task_type': 'command', 'task_ref': 'true', 'paused': False,

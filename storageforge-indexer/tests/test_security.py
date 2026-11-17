@@ -1484,7 +1484,7 @@ class Scripts(Base):
             r = subprocess.run(['bash', '-n'], input=text.encode(), capture_output=True)
             self.assertEqual(r.returncode, 0, f'{name}: {r.stderr.decode()}')
 
-    @unittest.skipUnless(shutil.which('shellcheck'), 'needs shellcheck (CI has it)')
+    @unittest.skipUnless(shutil.which('shellcheck'), 'needs shellcheck: pip install -e ".[test]"')
     def test_shellcheck_finds_no_errors(self):
         for name, text in self.everything():
             r = subprocess.run(['shellcheck', '--severity=error', '-s', 'bash', '-'], input=text, capture_output=True, text=True)

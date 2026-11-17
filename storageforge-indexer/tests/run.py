@@ -30,6 +30,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+# tools the `test` extra installs (shellcheck) sit beside this interpreter, and a venv that was not activated is not on PATH
+os.environ['PATH'] = os.path.dirname(os.path.abspath(sys.executable)) + os.pathsep + os.environ.get('PATH', '')
 import blocks  # noqa: E402
 
 LIGHT_BUDGET, MEDIUM_BUDGET = 1.5, 6.0
