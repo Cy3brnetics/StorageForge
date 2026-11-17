@@ -20,7 +20,7 @@ import time
 from .db import Conn
 from .hostlogs import COUNT_SECS, LEVELS
 
-PATTERN_CHARS, MAX_ALTERNATIVES, MAX_STARS = 300, 20, 20
+PATTERN_CHARS, MAX_ALTERNATIVES, MAX_STARS = 600, 20, 20
 MIN_WINDOW, MAX_WINDOW = 300, 7 * 86400
 MAX_RULES = 200
 HIT_KEEP_SECS = MAX_WINDOW + 86400
@@ -35,7 +35,7 @@ BUILTIN = (
     ('fs-error', 'Filesystem errors (ext4, XFS, btrfs)', 'kernel', 'warning',
      '*EXT4-fs error*|*EXT4-fs (*): Remounting filesystem read-only*|*XFS (*): *corruption*|*XFS (*): Metadata*|*XFS (*): Filesystem has been shut down*|*BTRFS error*|*BTRFS critical*|*BTRFS: error*', 1, 3600, 'crit', True),
     ('pool-degraded', 'A ZFS pool or an md array is degraded', '*', 'warning',
-     '*pool * is DEGRADED*|*state of pool*DEGRADED*|*statechange*FAULTED*|*vdev state changed*state=*FAULTED*|*md/raid*: Disk failure on *|*md*: Operation continuing on * devices*|*md*: * active with * out of * devices*', 1, 3600, 'crit', True),
+     '*pool * is DEGRADED*|*state of pool*DEGRADED*|*statechange*vdev_state=FAULTED*|*statechange*vdev_state=DEGRADED*|*statechange*vdev_state=OFFLINE*|*statechange*vdev_state=REMOVED*|*statechange*vdev_state=UNAVAIL*|*vdev state changed*state=*FAULTED*|*md/raid*: Disk failure on *|*md*: Operation continuing on * devices*|*md*: * active with * out of * devices*', 1, 3600, 'crit', True),
     ('share-down', 'An NFS or SMB server is not responding', 'kernel', 'warning', '*nfs: server * not responding*|*CIFS: VFS: *has not responded in*|*CIFS*server * not responding*', 1, 1800, 'warn', True),
     ('unit-failed', 'Services failing', 'systemd', 'warning', '*Failed with result *|Failed to start *', 3, 3600, 'warn', True),
     ('segfault', 'Programs crashing', 'kernel', 'info', '*segfault at *|*general protection fault*', 3, 3600, 'warn', True),

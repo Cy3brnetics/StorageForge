@@ -475,8 +475,8 @@ async function hlRules() {
 document.getElementById('hl-rules-box').addEventListener('toggle', (ev) => { if (ev.target.open) hlRules(); });
 document.getElementById('hl-rule-new').addEventListener('click', async () => {
   const f = await formDialog({ title: 'New log rule', body: 'A pattern is text with * for anything and | between alternatives. Leave a field empty for any.',
-    fields: [{ name: 'name', label: 'Name', required: true, maxlength: 100 }, { name: 'text', label: 'Text in the line', placeholder: '*PANIC*|*assertion failed*', maxlength: 300 },
-             { name: 'unit', label: 'Unit', placeholder: 'smbd', maxlength: 300 }, { name: 'program', label: 'Program, as journald saw it', placeholder: 'smbd', maxlength: 300 },
+    fields: [{ name: 'name', label: 'Name', required: true, maxlength: 100 }, { name: 'text', label: 'Text in the line', placeholder: '*PANIC*|*assertion failed*', maxlength: 600 },
+             { name: 'unit', label: 'Unit', placeholder: 'smbd', maxlength: 600 }, { name: 'program', label: 'Program, as journald saw it', placeholder: 'smbd', maxlength: 600 },
              { name: 'min_level', label: 'Lowest level', value: 'warning', validate: (v) => (['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug'].includes(v) ? '' : 'One of emerg, alert, crit, err, warning, notice, info, debug') },
              { name: 'threshold', label: 'Lines', value: 1, inputmode: 'numeric', validate: hlNum(1, 1000000, 'Lines') },
              { name: 'minutes', label: 'Within how many minutes', value: 60, inputmode: 'numeric', validate: hlNum(5, 10080, 'The window') },

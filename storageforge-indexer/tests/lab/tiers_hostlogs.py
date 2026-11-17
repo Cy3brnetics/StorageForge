@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Tier 14 of the KVM lab: host logs (hostlogs.py) against real journald on real distros.
 
-NOT RUN. This file was written without a lab: the KVM lab cannot run where it was written, so nothing here has been executed, not
-even once against a VM, and it may need fixes on its first run. The unit tests in tests/test_hostlogs.py run the same code against
-a stand-in journalctl and stay the proof until this tier passes. Remove this paragraph when it has.
+First run on 2026-11-08. The checks named `caps` and `logrule-*` were rewritten or added for 0.5.4 (what is kept goes by arrival; a rate
+per host; log rules), and have not run until a lab run after that says so.
 
 What a stand-in journalctl cannot say, and this tier is for:
 
@@ -14,9 +13,14 @@ What a stand-in journalctl cannot say, and this tier is for:
     no journal a host without journald says so (sf-alpine, the one config with no systemd) and stores nothing
     secrets    a line holding password=hunter2, written with logger on the VM, is stored with the secret removed, in the table and not
                only in the API's answer
-    caps       the 30-day and per-host row limits, applied by the product's own store() to real journal text read from the VM. That
-               runs in a throwaway database inside the sf-ctl container, with the clock moved on 22 and 31 days and the row limit set
-               to 50, because the real limits (30 days, 500000 rows) can't be waited for or filled in a lab run
+    caps       what is kept of real journal text read from the VM, by the product's own store(): every line on arrival however old its
+               stamp, gone 31 days after it arrived and not before, 50 at a row limit of 50, and at a rate of 20 a day the warnings
+               first with the rest recorded as over and still counted. In a throwaway database inside the sf-ctl container, with the
+               clock moved on, because the real limits can't be waited for or filled in a lab run
+    logrule    the built-in log rules against what a real kernel logs when storage really fails: an md array with a member failed, a
+               device that returns I/O errors (dm-error), a ZFS pool with a disk taken offline. Each is one critical notification for
+               that host that cannot be snoozed. A flood of one line is one notification that says how many, and `logger -t sshd`
+               does not set off the rule about sshd
 
 A check reads the answer from the VM it is about, never from StorageForge's report of its work. tiers.py runs it.
 """
@@ -195,47 +199,164 @@ def tier14(r):
     for node in journald:
         r.check('hostlogs-secrets-removed', node.name, secret_removed(node))
 
-    # ── the 30-day and row limits, on real journal text ─────────
+    # ── what is kept, on real journal text: by arrival, a row limit, and a rate ─────────
     fetch = 'from storageforge_index import hostlogs; import sys; print(hostlogs.script(int(sys.argv[1])))'
     caps = '''
-import json, shutil, sys, tempfile, time
+import json, os, shutil, sys, tempfile, time
 from storageforge_index import hostlogs
 from storageforge_index.db import Database
 text, now = sys.stdin.read(), time.time()
+hostlogs.RATE_PER_DAY = float(os.environ.get('LAB_RATE', '1000000'))
 out = {'keep_days': hostlogs.KEEP_DAYS, 'keep_rows': hostlogs.KEEP_ROWS, 'first_days': hostlogs.FIRST_DAYS}
-def stored(shift):
-    d = tempfile.mkdtemp(); db = Database(d + '/t.db'); conn = db.connect(); db.migrate(conn)
-    at = now + shift * 86400
-    parsed = hostlogs.parse(text, at)
-    hostlogs.store(conn, 'h', parsed, at)
-    rows = [r[0] for r in conn.all('SELECT at_us FROM host_log_lines WHERE host = :h', {'h': 'h'})]
-    conn.close(); shutil.rmtree(d, True)      # the container's temp space is small, and three databases of 50 or 500,000 rows filled it
-    return parsed, rows
-for shift in (0, 22, 31):
-    parsed, rows = stored(shift)
-    newest = sorted((x['at_us'] for x in parsed['lines']), reverse=True)
-    out[str(shift)] = {'read': len(parsed['lines']), 'kept': len(rows), 'state': parsed['state'],
-                       'newest_kept': bool(rows) and min(rows) >= newest[max(0, len(rows) - 1)]}
+d = tempfile.mkdtemp(); db = Database(d + '/t.db'); conn = db.connect(); db.migrate(conn)
+count = lambda where='': conn.scalar('SELECT count(*) FROM host_log_lines WHERE host = :h' + where, {'h': 'h'})
+parsed = hostlogs.parse(text, now)
+hostlogs.store(conn, 'h', parsed, now)
+st = hostlogs.status(conn, 'h')[0]
+stamps = [x['at_us'] / 1e6 for x in parsed['lines']]
+out['first'] = {'read': len(parsed['lines']), 'kept': count(), 'state': parsed['state'], 'over': st['over_rate'], 'oldest_days': (now - min(stamps)) / 86400 if stamps else 0,
+                'worst_kept': conn.scalar('SELECT max(priority) FROM host_log_lines'), 'warnings_read': sum(x['priority'] <= 4 for x in parsed['lines']),
+                'warnings_kept': count(' AND priority <= 4'), 'counted': conn.scalar('SELECT sum(lines) FROM host_log_counts'),
+                'journald_fields': count(' AND comm IS NOT NULL AND uid IS NOT NULL'), 'seqnums': count(' AND seqnum IS NOT NULL')}
+def later(days, word):
+    at = now + days * 86400
+    line = {'key': word, 'at_us': int((at - 5) * 1e6), 'priority': 6, 'unit': None, 'ident': 'lab', 'pid': None, 'message': word}
+    hostlogs.store(conn, 'h', {'lines': [line], 'state': 'ok', 'cut': False}, at)
+    return {'kept_of_first': count(" AND message <> 'later-a' AND message <> 'later-b'"), 'kept': count()}
+out['day29'] = later(hostlogs.KEEP_DAYS - 1, 'later-a')
+out['day31'] = later(hostlogs.KEEP_DAYS + 1, 'later-b')
+conn.close(); shutil.rmtree(d, True)      # the container's temp space is small
 print(json.dumps(out))
 '''
 
     def limits(node):
         def check():
-            sudo(node.name, f'for i in $(seq 1 150); do logger -t {TAG}-fill -p user.notice "fill line $i"; done')
+            sudo(node.name, f'for i in $(seq 1 150); do logger -t {TAG}-fill -p user.notice "fill line $i"; done; for i in 1 2 3; do logger -t {TAG}-fill -p user.warning "fill warning $i"; done')
             since = int(time.time()) - 7 * 86400
             text = ssh(node.name, 'sudo -n -u scan sh -s', stdin=in_product(fetch, str(since)))
             want('@@who' in text and '@@end' in text, f'the collection script did not run to its end on {node.name}: {text[-300:]}')
+            all_kept = json.loads(in_product(caps, stdin=text, env=['STORAGEFORGE_LOG_KEEP_ROWS=500000', 'STORAGEFORGE_LOG_KEEP_DAYS=30']))
+            want(all_kept['keep_days'] == 30 and all_kept['first_days'] == 7, f'the limits: {all_kept}')
+            first = all_kept['first']
+            want(first['state'] == 'ok' and first['read'] > 150, f'the VM gave {first["read"]} lines: not enough to test with')
+            want(first['kept'] == first['read'] and first['over'] == 0, f'lines were dropped as they were stored, though the oldest is {first["oldest_days"]:.1f} days old: {first}')
+            want(first['counted'] == first['read'], f'the 5-minute counts hold {first["counted"]} of {first["read"]} lines')
+            want(first['journald_fields'] > 0, 'no line has journald\'s own _COMM and _UID: the script asked for them and this journalctl gave none')
+            want(all_kept['day29']['kept_of_first'] == first['read'], f'lines were dropped {30 - 1} days after they arrived: {all_kept["day29"]}')
+            want(all_kept['day31'] == {'kept_of_first': 0, 'kept': 1}, f'31 days after they arrived the first lines should be gone and the new one kept: {all_kept["day31"]}')
             row_cap = json.loads(in_product(caps, stdin=text, env=['STORAGEFORGE_LOG_KEEP_ROWS=50', 'STORAGEFORGE_LOG_KEEP_DAYS=30']))
-            want(row_cap['keep_rows'] == 50, f'the row limit did not take: {row_cap}')
-            now = row_cap['0']
-            want(now['state'] == 'ok' and now['read'] > 50, f'the VM gave {now["read"]} lines: not enough to reach the limit')
-            want(0 < now['kept'] <= 50 and now['newest_kept'], f'kept {now["kept"]} of {now["read"]} with the limit at 50, newest first: {now}')
-            day_cap = json.loads(in_product(caps, stdin=text, env=['STORAGEFORGE_LOG_KEEP_ROWS=500000', 'STORAGEFORGE_LOG_KEEP_DAYS=30']))
-            want(day_cap['keep_days'] == 30 and day_cap['first_days'] == 7, f'the limits: {day_cap}')
-            young, old = day_cap['22'], day_cap['31']
-            want(young['kept'] == young['read'] > 0, f'lines at most 29 days old were dropped: {young}')
-            want(old['kept'] == 0 and old['read'] > 0, f'lines more than 30 days old were kept: {old}')
-            return f'{now["read"]} real lines: 50 newest kept at a limit of 50, all kept at 29 days, none at 31'
+            want(row_cap['keep_rows'] == 50 and row_cap['first']['kept'] == 50, f'the row limit of 50 kept {row_cap["first"]["kept"]}')
+            rate = json.loads(in_product(caps, stdin=text, env=['STORAGEFORGE_LOG_KEEP_ROWS=500000', 'STORAGEFORGE_LOG_KEEP_DAYS=30', 'LAB_RATE=20']))['first']
+            want(rate['kept'] == 20 and rate['over'] == rate['read'] - 20, f'a rate of 20 a day kept {rate["kept"]} and recorded {rate["over"]} over, of {rate["read"]}')
+            want(rate['warnings_kept'] == min(20, rate['warnings_read']) and rate['warnings_read'] >= 3, f'the rate took warnings before routine lines: {rate}')
+            want(rate['counted'] == rate['read'], f'a line over the rate was not counted: {rate}')
+            return (f'{first["read"]} real lines, the oldest {first["oldest_days"]:.1f} days old: all kept on arrival, still there after 29 days, gone after 31; 50 kept at a row limit of 50; '
+                    f'at a rate of 20, {rate["warnings_kept"]} warnings kept first and {rate["over"]} recorded as over and counted; journald\'s own fields on {first["journald_fields"]} lines, a sequence number on {first["seqnums"]}')
         return check
     for node in journald:
         r.check('hostlogs-caps', node.name, limits(node))
+
+    # ── log rules, against storage that really fails (roadmap 1.4 and section 3, phase 1) ─────────
+    def raised(node, builtin=None, name=None):
+        """The open log-rule notifications for this host after one scan and one evaluation, as the center lists them."""
+        scan(api, node)
+        t.alerts_now()
+        got = api.get(f'/api/notifications?host={node.name}&kind=log-rule')
+        items = [x for g in got['groups'] + got['quiet'] for x in g['items']]
+        rules = {x['id']: x for x in api.get('/api/hostlogs/rules')['rules']}
+        out = []
+        for x in items:
+            rule = rules.get(int(x['key'].split(':')[1]), {})
+            if (builtin is None or rule.get('builtin') == builtin) and (name is None or rule.get('name') == name):
+                out.append({**x, 'rule': rule})
+        return out
+
+    def cannot_be_snoozed(item):
+        code, out = api.raw('POST', f'/api/notifications/snooze/{item["key"]}', {'hours': 1})
+        want(code == 400 and 'cannot be snoozed' in out.get('error', ''), f'a critical notification was snoozed: {code} {out}')
+
+    def md_degraded(node):
+        def check():
+            sudo(node.name, 'command -v mdadm >/dev/null || { if command -v apt-get >/dev/null; then DEBIAN_FRONTEND=noninteractive apt-get -qq update; DEBIAN_FRONTEND=noninteractive apt-get -qq install -y mdadm; '
+                            'elif command -v dnf >/dev/null; then dnf -q -y install mdadm; else zypper -nq install mdadm; fi; }; command -v mdadm >/dev/null')
+            sudo(node.name, 'set -e; cd /var/tmp; for i in 1 2; do truncate -s 64M sflab-md$i.img; done; a=$(losetup --find --show sflab-md1.img); b=$(losetup --find --show sflab-md2.img); '
+                            'mdadm --create /dev/md/sflab --run --level=1 --raid-devices=2 --metadata=1.2 "$a" "$b" >/dev/null 2>&1; sleep 2; mdadm /dev/md/sflab --fail "$b" >/dev/null 2>&1; sleep 2; echo "$a $b" > sflab-md.loops')
+            try:
+                said = sudo(node.name, 'journalctl -k -b --no-pager -o cat | grep -i "md/raid1\\|Operation continuing" | tail -3').strip()
+                want(said, 'the kernel logged nothing about the failed member: this would prove nothing')
+                got = raised(node, 'pool-degraded')
+                want(len(got) == 1, f'the kernel said {said!r}, and the rule raised {len(got)} notification(s)')
+                want(got[0]['level'] == 'crit' and not got[0]['ignorable'], f'it should be critical and not ignorable: {got[0]}')
+                cannot_be_snoozed(got[0])
+                return f'{said.splitlines()[-1][:90]!r}: one critical notification, which cannot be snoozed'
+            finally:
+                sudo(node.name, 'cd /var/tmp; mdadm --stop /dev/md/sflab >/dev/null 2>&1; for l in $(cat sflab-md.loops 2>/dev/null); do losetup -d $l 2>/dev/null; done; rm -f sflab-md*.img sflab-md.loops; true', check=False)
+        return check
+
+    def io_error(node):
+        def check():
+            sudo(node.name, 'set -e; cd /var/tmp; truncate -s 16M sflab-err.img; l=$(losetup --find --show sflab-err.img); echo $l > sflab-err.loop; '
+                            'echo "0 $(blockdev --getsz $l) error" | dmsetup create sflab-err; dd if=/dev/mapper/sflab-err of=/dev/null bs=4k count=4 iflag=direct 2>/dev/null || true; sleep 1')
+            try:
+                said = sudo(node.name, 'journalctl -k -b --no-pager -o cat | grep -i "I/O error" | tail -2').strip()
+                want(said, 'the kernel logged no I/O error for a device that returns only errors: this would prove nothing')
+                got = raised(node, 'io-error')
+                want(len(got) == 1 and got[0]['level'] == 'crit', f'the kernel said {said!r}, and the rule raised {got}')
+                return f'{said.splitlines()[-1][:90]!r}: one critical notification'
+            finally:
+                sudo(node.name, 'cd /var/tmp; dmsetup remove sflab-err 2>/dev/null; losetup -d $(cat sflab-err.loop 2>/dev/null) 2>/dev/null; rm -f sflab-err.img sflab-err.loop; true', check=False)
+        return check
+
+    def zfs_offline(node):
+        def check():
+            pool = node.tag('zfs-pool')
+            disk = sudo(node.name, f"zpool status -P {pool} | awk '$1 ~ /^\\/dev\\// {{print $1}}' | tail -1").strip()
+            want(disk, f'no disk found in {pool}')
+            sudo(node.name, f'zpool offline {pool} {disk}; sleep 4')
+            try:
+                want('DEGRADED' in sudo(node.name, f'zpool status {pool}'), f'{pool} is not degraded with {disk} offline: this would prove nothing')
+                said = sudo(node.name, 'journalctl -b --no-pager -o cat --since "-2 min" | grep -i "statechange\\|degraded\\|offline" | tail -3', check=False).strip()
+                got = raised(node, 'pool-degraded')
+                want(got, f'{pool} is degraded and the rule raised nothing. What the host logged about it: {said or "nothing: a pool taken offline by hand may log only through zed"}')
+                return f'{pool} degraded, {said.splitlines()[-1][:80]!r}: {got[0]["level"]}'
+            finally:
+                sudo(node.name, f'zpool online {pool} {disk}; zpool clear {pool}; true', check=False)
+        return check
+
+    def flood_is_one(node):
+        def check():
+            sudo(node.name, 'for i in $(seq 1 60); do logger -t rsync -p daemon.err "rsync: write failed on /srv/x$i: No space left on device (28)"; done')
+            got = raised(node, 'disk-full')
+            want(len(got) == 1, f'60 lines raised {len(got)} notification(s)')
+            want('60 line(s)' in got[0]['message'] and got[0]['level'] == 'warn', f'it should say how many and be a warning: {got[0]["message"]!r}')
+            return 'sixty lines, one warning that says sixty'
+        return check
+
+    def program_is_journalds(node):
+        def check():
+            rule = next(x for x in api.get('/api/hostlogs/rules')['rules'] if x['builtin'] == 'ssh-failed')
+            api('PUT', f'/api/hostlogs/rules/{rule["id"]}', {**rule, 'enabled': True})
+            try:
+                sudo(node.name, 'for i in $(seq 1 30); do logger -t sshd -p auth.info "Failed password for root from 203.0.113.9 port $i ssh2"; done')
+                got = raised(node, 'ssh-failed')
+                found = entries(api, node.name, '203.0.113.9', limit=5)
+                want(found and found[0]['comm'] == 'logger' and found[0]['ident'] == 'sshd', f'the lines should be stored as written by logger under the name sshd: {found[:1]}')
+                want(not got, f'thirty lines that logger wrote under the name sshd set off the rule about sshd: {got}')
+                return 'thirty lines under the name sshd, written by logger as journald saw: stored as such, and the rule about sshd did not fire'
+            finally:
+                api('PUT', f'/api/hostlogs/rules/{rule["id"]}', {**rule, 'enabled': False})
+        return check
+
+    able = [n for n in journald if n.can('deploy') and not n.can('controller')]
+    if able:
+        r.check('logrule-md-degraded', able[0].name, md_degraded(able[0]))
+        r.check('logrule-io-error', able[-1].name, io_error(able[-1]))
+        r.check('logrule-flood-is-one', able[0].name, flood_is_one(able[0]))
+        r.check('logrule-program', able[-1].name, program_is_journalds(able[-1]))
+    else:
+        r.add('logrule-md-degraded', '-', None, 'no host with systemd that deploys in this build')
+    pools = [n for n in journald if n.can('zfs')]
+    if pools:
+        r.check('logrule-zfs-offline', pools[0].name, zfs_offline(pools[0]))
+    else:
+        r.add('logrule-zfs-offline', '-', None, 'no ZFS host in this build')

@@ -52,7 +52,7 @@ class Patterns(unittest.TestCase):
         self.assertLess(time.time() - started, 0.5)
 
     def test_what_a_pattern_may_not_be(self):
-        for bad, why in (('a||b', 'empty alternative'), ('|a', 'empty alternative'), ('x' * 301, 'at most 300'), ('|'.join('ab' for _ in range(21)), 'alternatives'), ('*a' * 21, 'stars')):
+        for bad, why in (('a||b', 'empty alternative'), ('|a', 'empty alternative'), ('x' * 601, 'at most 600'), ('|'.join('ab' for _ in range(21)), 'alternatives'), ('*a' * 21, 'stars')):
             with self.assertRaisesRegex(ValueError, why, msg=bad):
                 logrules.compile_pattern(bad)
 
@@ -90,11 +90,12 @@ class BuiltIn(Db):
         'fs-error': ['EXT4-fs error (device sda1): ext4_lookup:1700: inode #2: comm ls: deleted inode referenced', 'XFS (sdb1): Metadata corruption detected at xfs_agf_verify',
                      'BTRFS error (device sdc): parent transid verify failed on 30408704', 'BTRFS critical (device sdc): corrupt leaf'],
         'pool-degraded': ['md/raid1:md0: Disk failure on sdb1, disabling device.', 'md/raid1:md0: Operation continuing on 1 devices.',
-                          'The state of pool tank is DEGRADED', 'vdev state changed, pool_guid=1 vdev_guid=2 state=FAULTED'],
+                          'The state of pool tank is DEGRADED', 'vdev state changed, pool_guid=1 vdev_guid=2 state=FAULTED',
+                          "eid=45 class=statechange pool='tank' vdev=vdb1 vdev_state=OFFLINE", "eid=46 class=statechange pool='tank' vdev=vdc1 vdev_state=FAULTED"],
         'share-down': ['nfs: server nas-02 not responding, still trying', 'CIFS: VFS: \\\\nas\\share has not responded in 180 seconds. Reconnecting...'],
     }
     LOOKALIKE = ['I/O scheduler mq-deadline registered', 'EXT4-fs (sda1): mounted filesystem with ordered data mode', 'md0: detected capacity change from 0 to 100',
-                 'BTRFS info (device sdc): using crc32c', 'nfs: server nas-02 OK', 'Memory cgroup stats for /system.slice', 'pool tank is ONLINE']
+                 'BTRFS info (device sdc): using crc32c', 'nfs: server nas-02 OK', 'Memory cgroup stats for /system.slice', 'pool tank is ONLINE', "eid=47 class=statechange pool='tank' vdev=vdb1 vdev_state=ONLINE"]
 
     def test_each_storage_rule_takes_the_lines_it_is_for(self):
         for key, lines in self.REAL.items():
@@ -106,6 +107,13 @@ class BuiltIn(Db):
                     names = {r['id']: r['builtin'] for r in logrules.rules(self.conn)}
                     self.assertEqual([names[int(k.split(':')[1])] for k in got], [key], f'{line!r} raised {list(got.values())}')
                     self.assertEqual(next(iter(got.values()))[4], 'crit' if key != 'share-down' else 'warn')
+
+    def test_every_built_in_rule_is_one_the_matcher_takes(self):
+        """A rule that does not compile matches nothing, quietly. One built-in rule grew past the pattern limit and stopped firing."""
+        for key, _name, program, _lowest, text, *_ in logrules.BUILTIN:
+            with self.subTest(rule=key):
+                self.assertIsNotNone(logrules.compile_pattern(text))
+                logrules.compile_pattern(program)
 
     def test_lines_that_only_look_alike_raise_nothing(self):
         self.logged(*[row(line) for line in self.LOOKALIKE])
