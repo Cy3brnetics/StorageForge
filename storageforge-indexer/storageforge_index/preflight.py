@@ -61,6 +61,13 @@ def _version(text: str | None) -> tuple[int, ...]:
     return tuple(int(x) for x in re.findall(r'\d+', text or '')[:2])
 
 
+def _number(v) -> int | None:
+    """A whole number a host printed, in plain digits, or None. The probe's output is the host's to write: int() took '١٢٣' as 123 and threw on
+    anything else, which took the host check, and every deploy's check of its blockers, down with it."""
+    s = str(v if v is not None else '').strip()
+    return int(s) if re.fullmatch(r'-?[0-9]+', s) else None
+
+
 def parse_probe(output: str) -> dict:
     facts = {k: v.strip() for k, v in PROBE_LINE.findall(output or '')}
     facts['have'] = (facts.get('have') or '').split()
@@ -113,8 +120,10 @@ def findings(facts: dict, now: float | None = None) -> list[dict]:
                     'packages. Turn it off and turn on the no-subscription repository under Node > Updates > Repositories')
     if facts.get('pm') == 'none':
         say('warn', 'no package manager StorageForge knows (apt, dnf, yum, zypper, pacman): install what a deploy needs by hand')
-    if facts.get('clock'):
-        skew = int(facts['clock']) - int(now or time.time())
+    if facts.get('clock') and _number(facts['clock']) is None:
+        say('warn', f'its clock could not be read (the probe said {str(facts["clock"])[:40]!r}): signed requests are refused when it is 300 s off')
+    elif facts.get('clock'):
+        skew = _number(facts['clock']) - int(now or time.time())
         if abs(skew) >= CLOCK_REFUSED:
             say('crit', f'its clock is {abs(skew)} s off: signed requests get refused. Fix the time on the host')
         elif abs(skew) >= CLOCK_WARN:
@@ -129,7 +138,7 @@ def findings(facts: dict, now: float | None = None) -> list[dict]:
     if facts.get('reboot') == 'yes':
         say('note', 'the host is waiting for a reboot')
     for key, where in (('free_var', '/var'), ('free_tmp', '/run')):
-        if facts.get(key, '').isdigit() and int(facts[key]) < LOW_DISK_MIB:
+        if (free := _number(facts.get(key))) is not None and free < LOW_DISK_MIB:
             say('warn', f'only {facts[key]} MiB free in {where}: package installs and deploy scripts need room')
     if facts.get('selinux') == 'enforcing':
         say('note', 'SELinux is enforcing: deploys set the labels they need')
