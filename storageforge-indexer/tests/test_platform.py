@@ -1611,14 +1611,16 @@ class ServerTests(DBCase):
         with mock.patch.object(folders, 'cold_folders', cold), mock.patch.object(folders, 'duplicate_folders', dupes):
             sid = self.conn.scalar(f"INSERT INTO scans (host_id, started_at, status) VALUES (:h, {self.db.ts('1')}, 'running') "
                                    "RETURNING scan_id", {'h': hid})
-            for _ in range(2):
-                self.client.get('/api/folders/cold')
-            self.assertEqual(calls, ['cold', 'cold'])                       # mid-scan: computed, never kept
+            first = self.client.get('/api/folders/cold').get_json()
+            again = self.client.get('/api/folders/cold').get_json()
+            self.assertEqual(calls, ['cold'])                               # mid-scan: made once, then that one stands while the scan runs,
+            self.assertTrue(again['stale'] and not first.get('stale'))      # marked stale (hammer.py --writer: recomputing each time never settled)
             self.conn.execute("UPDATE scans SET status = 'ok' WHERE scan_id = :s", {'s': sid})
             for _ in range(2):
-                self.client.get('/api/folders/cold')
+                after = self.client.get('/api/folders/cold').get_json()
                 self.client.get('/api/folders/duplicates')
-            self.assertEqual(calls, ['cold', 'cold', 'cold', 'dupes'])      # both kept, side by side
+            self.assertEqual(calls, ['cold', 'cold', 'dupes'])              # what was made mid-scan is not served after it: made again, then
+            self.assertFalse(after.get('stale'))                           # both kept, side by side
 
     def test_restore_runs_in_the_background(self):
         """GM-12: a restore held one of the 8 web threads for up to 6 hours; now it answers with a group to poll."""

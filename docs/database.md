@@ -63,3 +63,9 @@ SELECT full_path, file_size_bytes FROM v_files WHERE hostname = 'nas-02' ORDER B
 | `alerts`, `settings` | open problems; key/value settings (report URL, alert channels, planner options) |
 
 The PostgreSQL DDL mirrors SQLite's; the test suite runs against both (`STORAGEFORGE_TEST_PG`, see operations).
+
+**PostgreSQL in a container needs more shared memory.** Docker gives a container 64 MiB of `/dev/shm`, and PostgreSQL's parallel queries
+pass their data through it. Searches across a large index (two million files in the stress runs) ran out of it when several ran at once:
+`could not resize shared memory segment ... No space left on device`. Give the container more: `--shm-size=256m` with `docker run`, or
+`shm_size: 256m` under the service in Compose. StorageForge answers such a moment with `503` and `Retry-After`, which the page waits out, so
+nothing is lost, but every search is slower for it.

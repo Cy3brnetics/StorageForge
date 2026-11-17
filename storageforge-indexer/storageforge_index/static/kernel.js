@@ -555,7 +555,7 @@ async function sfFetch(path, init, confirmed, busyTries = 0) {
     return sfFetch(path, init, true);
   }
   // the server is doing as much of this work as it takes at once (a folder analysis on a big index): a GET waits as long as it says, and asks again
-  if (res.status === 503 && res.headers.get('Retry-After') && (init.method || 'GET').toUpperCase() === 'GET' && busyTries < 20) {
+  if (res.status === 503 && res.headers.get('Retry-After') && (init.method || 'GET').toUpperCase() === 'GET' && busyTries < 40) {   // about 90 s: an analysis made for the first time on a busy server takes that long
     await new Promise((ok) => setTimeout(ok, Math.min(30, Number(res.headers.get('Retry-After')) || 5) * 1000));
     return sfFetch(path, init, confirmed, busyTries + 1);
   }

@@ -2,6 +2,7 @@
 break under load before: eight people opening the file map built it eight times over; requests waiting for an analysis held every thread, so
 a list of hosts took seconds; and each request's connection held 256 MiB of SQLite cache."""
 import shutil
+import sqlite3
 import tempfile
 import threading
 import time
@@ -15,7 +16,9 @@ from storageforge_index import folders, server, users
 PW = 'under-load-password-0123456789'
 
 
-class Server(unittest.TestCase):
+class Base(unittest.TestCase):
+    """A server on a fresh database with one account: no tests of its own."""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -32,6 +35,8 @@ class Server(unittest.TestCase):
         self.assertEqual(c.post('/api/login', json={'username': 'admin', 'password': PW}).status_code, 200)
         return c
 
+
+class Server(Base):
     def test_many_asking_for_one_analysis_build_it_once(self):
         calls, gate = [], threading.Event()
 
@@ -89,6 +94,37 @@ class Server(unittest.TestCase):
             self.assertIn('many folder analyses are waiting', r.get_json()['error'])
             gate.set()
 
+    def test_when_a_scan_lands_the_last_result_is_answered_while_the_new_one_is_built(self):
+        """hammer.py --writer: a scan every 10 s emptied the cache each time, and at 64 clients the analyses never settled."""
+        version, gate = [1], threading.Event()
+
+        def made(*_a, **_k):
+            if version[0] > 1:
+                gate.wait(5)
+            return {'folders': [], 'total': version[0], 'bytes': 0, 'cutoff': 0}
+        c = self.client()
+        url = '/api/folders/cold?host=nas&years=1&min_size=1'
+        with mock.patch.object(folders, 'cold_folders', made), mock.patch.object(server, 'FOLDER_WAIT_HERE', 0.2):
+            self.assertEqual(c.get(url).get_json()['total'], 1)
+            conn = self.db.connect()
+            conn.scalar(f"INSERT INTO scans (host_id, started_at, status) SELECT host_id, {self.db.ts('1')}, 'ok' FROM hosts RETURNING scan_id")
+            version[0] = 2
+            r = c.get(url).get_json()
+            self.assertEqual((r.get('total'), r.get('stale')), (1, True), f'the last one, at once, marked: {r}')
+            gate.set()
+            for _ in range(50):
+                r = c.get(url).get_json()
+                if not r.get('stale'):
+                    break
+                time.sleep(0.1)
+            self.assertEqual((r['total'], r.get('stale')), (2, None), 'and the new one when it is made')
+            conn.execute(f"INSERT INTO scans (host_id, started_at, status) SELECT host_id, {self.db.ts('2')}, 'running' FROM hosts")   # a scan starts: a new id
+            version[0] = 3
+            r = c.get(url).get_json()
+            self.assertTrue(r['stale'])
+            self.assertEqual(r['total'], 2, 'while a scan runs the last one stands and nothing is built')
+            conn.close()
+
     def test_a_build_that_fails_says_so_to_everyone_waiting_for_it(self):
         def broken(*_a, **_k):
             time.sleep(0.3)
@@ -145,6 +181,23 @@ class Server(unittest.TestCase):
         finally:
             lean.close()
             full.close()
+
+
+class DatabaseShort(Base):
+    def test_a_database_out_of_resources_for_a_moment_is_asked_again_not_a_500(self):
+        """PostgreSQL in Docker ran out of its 64 MiB /dev/shm under parallel searches: each such search was a 500."""
+        class DiskFull(Exception):
+            sqlstate = '53100'
+        c = self.client()
+        for exc in (DiskFull('could not resize shared memory segment'), sqlite3.OperationalError('database is locked')):
+            with self.subTest(type(exc).__name__), mock.patch.object(server, 'run_search', side_effect=exc):
+                r = c.get('/api/search?q=*.jpg')
+                self.assertEqual((r.status_code, r.headers.get('Retry-After')), (503, '2'))
+                self.assertTrue(r.get_json()['busy'])
+        class Syntax(Exception):
+            sqlstate = '42601'
+        with mock.patch.object(server, 'run_search', side_effect=Syntax('a real fault')):
+            self.assertEqual(c.get('/api/search?q=*.jpg').status_code, 500, 'a fault is still a fault')
 
 
 class FleetComparison(unittest.TestCase):

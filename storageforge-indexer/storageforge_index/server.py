@@ -146,6 +146,7 @@ DELETE /api/planner/versions/<id>   delete a version
 """
 from __future__ import annotations
 
+import collections
 import functools
 import ipaddress
 import json
@@ -154,6 +155,7 @@ import queue
 import re
 import secrets
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -546,6 +548,15 @@ FOLDER_PENDING = 32       # builds waiting their turn: each holds a thread, so p
 FOLDER_WAIT_HERE = 30.0   # with no worker (a test's App), the analysis is made in this process and there is no page to ask again
 
 
+def database_short(exc: BaseException) -> bool:
+    """The database out of something for a moment, not a fault in the request: PostgreSQL's class 53 (out of memory, shared memory, disk or
+    connections) and SQLite's busy lock. Found by tests/stress/hammer.py on PostgreSQL in Docker, whose 64 MiB /dev/shm ran out under parallel
+    searches and each such search answered 500. Answered 503 with Retry-After instead, which the page waits out."""
+    if str(getattr(exc, 'sqlstate', '') or '').startswith('53'):
+        return True
+    return isinstance(exc, sqlite3.OperationalError) and 'locked' in str(exc)
+
+
 def remember(cache: dict, key: tuple, result, latest, keep: int = 8):
     """Into a cache keyed by (..., scan id): what an older scan left goes, then the oldest entries beyond keep. The Cleanup
     tab asks for cold and duplicate folders at once: both stay."""
@@ -711,6 +722,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return jsonify(error=str(exc)), 400
         if isinstance(exc, Busy):
             return jsonify(error=str(exc), busy=True), 503, {'Retry-After': str(exc.retry_after)}
+        if database_short(exc):
+            errlog.trace()                    # kept, so a database that is short again and again can be seen and given more
+            return jsonify(error='the database is short of resources for a moment: this is asked for again shortly', busy=True), 503, {'Retry-After': '2'}
         if isinstance(exc, LookupError) and not isinstance(exc, (KeyError, IndexError)):     # "no such deploy", from a route with no handler of its own
             return jsonify(error=str(exc)), 404
         errlog.trace()
@@ -2515,10 +2529,21 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     folder_cache: dict = {}
     folder_lock = threading.Lock()
 
+    folder_last: collections.OrderedDict = collections.OrderedDict()   # key without its scan id → (scan id, the last result, made during a scan?)
     folder_building: dict = {}                # key → the one build of it under way: others wait for it instead of building it again
     folder_slots = threading.BoundedSemaphore(FOLDER_PARALLEL)
     in_build = threading.local()              # set on a build's thread: an analysis it needs (the file map's twin folders) is made right there,
                                               # on the slot it holds; a thread of its own would wait for a slot the builds holding them never give up
+
+    def keep_last(base: tuple, latest, result, mid_scan: bool):         # under folder_lock
+        folder_last[base] = (latest, result, mid_scan)
+        folder_last.move_to_end(base)
+        while len(folder_last) > 64:
+            folder_last.popitem(last=False)
+
+    def stale(last: tuple) -> dict:
+        """The last result made, while a newer one is built: marked, and with the scan it is of."""
+        return {**last[1], 'stale': True, 'as_of_scan': last[0]}
 
     def folder_result(key: tuple, compute):
         """Folder analysis is slow on big indexes: kept until the index changes. A scan adds its scan id when it starts
@@ -2527,18 +2552,29 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         Under load (found by tests/stress/hammer.py): eight people opening the file map at once built it eight times over, each with its own
         copy in memory, and twenty hosts' maps all at once; at two million files the server reached 6 GiB and every request ran past 30 s.
         Now one build per key at a time, off the request, at most FOLDER_PARALLEL of them; whoever asks waits up to FOLDER_WAIT seconds for its
-        result, and is otherwise told to come back (503, Retry-After), which the page does by itself, and by then it is in the cache."""
+        result, and is otherwise told to come back (503, Retry-After), which the page does by itself, and by then it is in the cache.
+
+        Scans landing under load (hammer.py --writer): each moved the scan id and emptied this cache, and while one ran nothing was kept, so with a
+        scan every 10 s the analyses never settled and gave up at 64 clients. Now the last result made is answered at once, marked stale with
+        the scan it is of, while one build of the new one runs; and while a scan runs, the last result stands and nothing is built, until the
+        scan is done. Only an analysis never made before waits."""
         latest, running = conn().all("SELECT max(scan_id), count(CASE WHEN status = 'running' THEN 1 END) FROM scans")[0]
-        key = (*key, latest)
+        base, key = key, (*key, latest)
         with folder_lock:
             hit = folder_cache.get(key)
+            last = folder_last.get(base)
         if hit is not None:
             return hit
+        if last is not None and last[0] == latest and not running and not last[2]:
+            return last[1]                    # made for this index with no scan running (GM-25: one made mid-scan is never served as current)
+        if last is not None and running:
+            return stale(last)
         if getattr(in_build, 'on', False):
             result = compute()
-            if not running:
-                with folder_lock:
+            with folder_lock:
+                if not running:
                     remember(folder_cache, key, result, latest)
+                keep_last(base, latest, result, bool(running))
             return result
         with folder_lock:
             hit = folder_cache.get(key)
@@ -2547,6 +2583,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             build = folder_building.get(key)
             mine = build is None
             if mine and len(folder_building) >= FOLDER_PENDING:
+                if last is not None:
+                    return stale(last)
                 raise Busy('many folder analyses are waiting to be built: this one is asked for again in a moment', FOLDER_RETRY)
             if mine:
                 build = folder_building[key] = SimpleNamespace(done=threading.Event(), result=None, error=None)
@@ -2557,9 +2595,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                     try:
                         with folder_slots:
                             build.result = compute()
-                        if not running:
-                            with folder_lock:
+                        with folder_lock:
+                            if not running:
                                 remember(folder_cache, key, build.result, latest)
+                            keep_last(base, latest, build.result, bool(running))
                     except BaseException as exc:      # handed to whoever waits for it, and logged if nobody does
                         build.error = exc
                         if not isinstance(exc, (ValueError, LookupError)):
@@ -2570,6 +2609,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                         build.done.set()
             threading.Thread(target=run, name='folder-build', daemon=True).start()
         if not build.done.wait(FOLDER_WAIT if core.folder_worker is not None else FOLDER_WAIT_HERE):
+            if last is not None:
+                return stale(last)
             raise Busy('the folder analysis is still being built for this index: it is asked for again in a moment', FOLDER_RETRY)
         if build.error is not None:
             raise build.error
