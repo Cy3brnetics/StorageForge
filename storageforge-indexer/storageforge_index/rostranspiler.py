@@ -755,7 +755,7 @@ def _pf_end(tag, addr, port, lst, ifaces) -> str:
         v, neg = _neg(addr)
         inner += ('<not/>' if neg else '') + _x('address', v)
     elif lst:
-        inner += _x('address', lst)
+        inner += _x('address', _setname(lst))        # under the name the alias is written with: pf takes no hyphen in one
     else:
         inner += '<any/>'
     if port:

@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from xml.etree import ElementTree
 from pathlib import Path
 from unittest import mock
 
@@ -399,6 +400,63 @@ class OpnSense26Reading(unittest.TestCase):
 
     def test_no_secret_from_config_xml_gets_out(self):
         self.assertNotIn('removed', json.dumps(self.d))
+
+
+class OpnSense26Change(unittest.TestCase):
+    """What applying to that OPNsense 26.7 showed: no change could be planted (pfSense's paths), a rule named its alias by another name than the
+    alias had, and an alias went where OPNsense does not read. Each was then applied, read back and rolled back on the device."""
+    DSL = ('/ip firewall address-list add list=sf-kept address=10.98.0.0/16\n'
+           '/ip firewall filter add chain=forward in-interface=opt1 protocol=tcp dst-port=8081 src-address-list=sf-kept action=accept comment="sf-kept-rule"')
+
+    def setUp(self):
+        text = (FIX / 'opnsense' / 'reading-26.7-root.txt').read_text()
+        self.xml = pfsense.sections(text)['config']
+        self.files = ros.emit(ros.parse(self.DSL), 'pfsense')['files']
+
+    def test_a_rule_names_its_alias_as_the_alias_is_named(self):
+        alias = ElementTree.fromstring(self.files['aliases']).findtext('name')
+        self.assertEqual(alias, 'sf_kept', 'pf takes no hyphen in a table name')
+        self.assertEqual(ElementTree.fromstring(self.files['filter']).findtext('source/address'), alias)
+
+    def test_an_alias_goes_where_opnsense_reads_aliases(self):
+        root = pfsense.load_xml(netdevice.merge_config(self.xml, self.files))
+        self.assertIsNone(root.find('aliases/alias'), 'OPNsense ignores this section')
+        made = [a for a in root.findall('OPNsense/Firewall/Alias/aliases/alias') if a.findtext('name') == 'sf_kept']
+        self.assertEqual(len(made), 1)
+        self.assertEqual((made[0].findtext('enabled'), made[0].findtext('type'), made[0].findtext('content')), ('1', 'network', '10.98.0.0/16'))
+        self.assertRegex(made[0].get('uuid'), r'^[0-9a-f-]{36}$')
+
+    def test_the_change_reads_back_through_the_alias(self):
+        merged = netdevice.merge_config(self.xml, self.files)
+        got = pfsense.parse(f'@@config\n{merged}\n@@uid\n0\n@@end\n')
+        rule = next(r for r in got['firewall']['rules'] if r['comment'] == 'sf-kept-rule')
+        self.assertEqual((rule['saddr'], rule['dports'], rule['iif'], rule['unmodelled']), ('10.98.0.0/16', [8081], 'vtnet2', []))
+
+    def test_on_pfsense_an_alias_stays_in_its_own_section(self):
+        root = pfsense.load_xml(netdevice.merge_config((FIX / 'pfsense' / 'config.xml').read_text(), self.files))
+        self.assertIn('sf_kept', [a.findtext('name') for a in root.findall('aliases/alias')])
+        self.assertIsNone(root.find('OPNsense/Firewall/Alias/aliases/alias'))
+
+    def test_the_scripts_find_config_xml_and_the_reload_on_either_system(self):
+        said = []
+
+        def run(script, timeout=None):
+            said.append(script)
+            return 'planted' if 'back.sh' in script else self.xml if script.rstrip().endswith('cat "$c"') else 'applied'
+        a = netdevice.PfApply(7)
+        a.plant(run, 60)
+        a.apply(run, {'files': self.files})
+        for script in said:
+            self.assertIn('/cf/conf/config.xml', script)
+            self.assertIn('|| c=/conf/config.xml', script)
+        back = said[0].split("<<'SFEOF'")[1]
+        self.assertIn('/usr/local/etc/rc.filter_configure', back, 'OPNsense has no /etc/rc.filter_configure')
+        self.assertIn('c=/conf/config.xml', back, 'the timer finds the file by itself: it runs after this shell is gone')
+        self.assertRegex(said[-1], r'&& echo applied$', 'applied is said only when the copy and the reload worked')
+
+    def test_a_reload_that_fails_is_not_called_applied(self):
+        with self.assertRaisesRegex(netdevice.DeviceError, 'refused'):
+            netdevice.PfApply(7).apply(lambda script, timeout=None: self.xml if script.rstrip().endswith('cat "$c"') else 'pfctl: syntax error', {'files': self.files})
 
 
 class CiscoReading(unittest.TestCase):

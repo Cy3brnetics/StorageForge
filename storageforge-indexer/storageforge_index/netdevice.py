@@ -15,6 +15,7 @@ import re
 import shlex
 import threading
 import time
+import uuid
 from xml.etree import ElementTree
 
 from . import cisco, exposure, openwrt, pfsense, rostranspiler, routeros, security, traffic
@@ -480,18 +481,26 @@ echo planted"""
 class PfApply:
     """A copy of config.xml and a background shell that restores it and reloads the filter when the time is up. The fragments go into the XML here, not on the device, and go back whole."""
 
+    # pfSense keeps config.xml under /cf/conf and its reload in /etc; OPNsense has neither, and keeps them in /conf and /usr/local/etc.
+    # Found on a real OPNsense 26.7 in the lab, where the pfSense paths alone meant no change could be planted
+    CONF = 'c=/cf/conf/config.xml; [ -f "$c" ] || c=/conf/config.xml'
+    RELOAD = ('if [ -x /etc/rc.filter_configure ]; then /etc/rc.filter_configure; elif [ -x /usr/local/etc/rc.filter_configure ]; then /usr/local/etc/rc.filter_configure; '
+              'else configctl filter reload; fi')
+
     def __init__(self, cid: int):
         self.dir = f'/tmp/sf-{cid}'      # made with mkdir and no -p, mode 700, for the reason given at OpenWrtApply (SF-55)
 
     def plant(self, run, secs: int):
         script = f"""set -e
 mkdir -m 700 {self.dir}
-cp /cf/conf/config.xml {self.dir}/config.xml
+{self.CONF}
+cp "$c" {self.dir}/config.xml
 cat > {self.dir}/back.sh <<'SFEOF'
 #!/bin/sh
 sleep {int(secs)}
-cp {self.dir}/config.xml /cf/conf/config.xml; rm -f /tmp/config.cache
-/etc/rc.filter_configure 2>/dev/null || pluginctl -c filter
+{self.CONF}
+cp {self.dir}/config.xml "$c"; rm -f /tmp/config.cache
+{self.RELOAD}
 touch {self.dir}/rolled
 SFEOF
 chmod +x {self.dir}/back.sh
@@ -505,9 +514,11 @@ echo planted"""
 
     def apply(self, run, compiled: dict) -> list[str]:
         import base64
-        merged = merge_config(run('cat /cf/conf/config.xml'), compiled['files'])
+        merged = merge_config(run(f'{self.CONF}; cat "$c"'), compiled['files'])
         blob = base64.b64encode(merged.encode()).decode()
-        got = run(f"printf %s {shlex.quote(blob)} | b64decode -r > {self.dir}/new.xml 2>/dev/null || printf %s {shlex.quote(blob)} | openssl base64 -d -A > {self.dir}/new.xml; cp {self.dir}/new.xml /cf/conf/config.xml; rm -f /tmp/config.cache; /etc/rc.filter_configure 2>/dev/null || pluginctl -c filter; echo applied")
+        # `applied` only when the file is in place and the reload ran: it used to be said whatever happened
+        got = run(f"{self.CONF}; {{ printf %s {shlex.quote(blob)} | b64decode -r > {self.dir}/new.xml 2>/dev/null || printf %s {shlex.quote(blob)} | openssl base64 -d -A > {self.dir}/new.xml; }} "
+                  f"&& [ -s {self.dir}/new.xml ] && cp {self.dir}/new.xml \"$c\" && rm -f /tmp/config.cache && {{ {self.RELOAD}; }} && echo applied")
         if 'applied' not in got:
             raise DeviceError(f'the firewall refused it: {got[-300:]}')
         return [got]
@@ -523,6 +534,17 @@ def merge_config(xml: str, fragments: dict) -> str:
     """Puts the new rules at the end of their sections. Anything else in config.xml goes back as it came."""
     root = pfsense.load_xml(xml)
     for section, text in (fragments or {}).items():
+        if section == 'aliases' and root.tag == 'opnsense':
+            # OPNsense reads aliases only from its own model, where each has a uuid, `content` for its addresses, and is off unless enabled
+            parent = root
+            for tag in ('OPNsense', 'Firewall', 'Alias', 'aliases'):
+                parent = parent.find(tag) if parent.find(tag) is not None else ElementTree.SubElement(parent, tag)
+            for node in ElementTree.fromstring(f'<x>{text}</x>'):
+                alias = ElementTree.SubElement(parent, 'alias', {'uuid': str(uuid.uuid4())})
+                for tag, value in (('enabled', '1'), ('name', node.findtext('name')), ('type', node.findtext('type')), ('content', '\n'.join((node.findtext('address') or '').split())),
+                                   ('description', node.findtext('descr') or '')):
+                    ElementTree.SubElement(alias, tag).text = value
+            continue
         if section == 'dnsserver':
             parent = root.find('system')
             for node in ElementTree.fromstring(f'<x>{text}</x>'):
