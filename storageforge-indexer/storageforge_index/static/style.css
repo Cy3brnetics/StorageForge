@@ -1027,22 +1027,31 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 .mpbar input[type=search] { min-width: 200px; }
 .mpbody { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; }
 .mpcanvas { position: relative; min-height: 0; overflow: hidden; }
+/* the map in Topology's canvas language: the same dot grid, dashed host frames with a ruled heading, mono rows with a kind tag, the same lines */
+.mpcanvas { background-color: var(--bg); background-image: radial-gradient(circle, color-mix(in srgb, var(--muted) 35%, transparent) 1px, transparent 1.2px); }
 .mpcanvas { touch-action: none; }
 .mpcanvas.panning .mpsvg, .mpsvg.moving { cursor: grabbing; }
 .mpside { overflow: auto; padding: 12px; border-left: 1px solid var(--line, #333); }
 .mpsvg { width: 100%; height: 100%; cursor: grab; display: block; }
-.mpframe { fill: var(--panel, #1a1a1a); stroke: var(--line, #444); }
+.mpframe { fill: color-mix(in srgb, var(--panel) 45%, transparent); stroke: var(--line-2); stroke-dasharray: 4 3; }
+.mprule { stroke: var(--line-2); stroke-dasharray: 4 3; fill: none; pointer-events: none; }
 .mphit { fill: transparent; cursor: pointer; }
-.mphost { font-weight: 600; font-size: 13px; fill: currentColor; pointer-events: none; }
-.mpedge { fill: none; stroke: var(--muted, #777); stroke-width: 1; opacity: .35; pointer-events: none; }
+.mphost { font: 600 14px var(--mono); fill: currentColor; pointer-events: none; }
+.mpedge { fill: none; stroke: var(--muted, #777); stroke-width: 1.5; opacity: .5; pointer-events: none; }
 .mpedge.inferred { stroke-dasharray: 4 4; }
-.mpedge.on { stroke-width: 2; opacity: 1; }
+.mpedge.on { stroke: var(--accent); stroke-width: 2.4; opacity: 1; }
 .mpnode { cursor: pointer; }
-.mpnode rect { fill: var(--bg, #222); stroke: var(--line, #555); }
+.mpnode rect { fill: var(--panel); stroke: var(--line-2); }
+.mpnode:hover rect { fill: var(--panel-2); }
+.mpnode.f-net { --tc: var(--remote); } .mpnode.f-sto { --tc: var(--mass); } .mpnode.f-wl { --tc: var(--fast); } .mpnode.f-svc { --tc: var(--accent); }
+.mptk { fill: var(--bg); stroke: color-mix(in srgb, var(--tc, var(--line-2)) 55%, var(--line-2)); pointer-events: none; }
+.mptkt { font: 600 8.5px var(--sans); letter-spacing: .06em; fill: var(--tc, var(--muted)); pointer-events: none; }
+.mpnode[class*=" x-"] .mptk { fill: rgb(0 0 0 / .25); stroke: rgb(255 255 255 / .45); } .mpnode[class*=" x-"] .mptkt { fill: #fff; }
+.mpsvg.far .mptk, .mpsvg.far .mptkt { display: none; }
 .mpnode.inferred rect, .mpnode.placeholder rect { stroke-dasharray: 4 3; }
 .mpnode.flagged rect { stroke: #d9a441; }
 .mpnode.dim { opacity: .2; }
-.mplabel { font-size: 11px; fill: currentColor; font-family: var(--mono, monospace); pointer-events: none; }
+.mplabel { font-size: 11.5px; fill: currentColor; font-family: var(--mono, monospace); pointer-events: none; }
 .mpsvg.far .mplabel { display: none; }
 .mpnode.x-any rect, .mpchip.x-any { fill: #7a1f1f; background: #7a1f1f; color: #fff; }
 .mpnode.x-lan rect, .mpchip.x-lan { fill: #7a5a1f; background: #7a5a1f; color: #fff; }
@@ -1144,9 +1153,11 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 .mpsay-list li.mpsay-ok { border-left: 3px solid var(--protected); }
 .mpdetails { margin: 6px 0; } .mpdetails summary { cursor: pointer; font-size: 12px; }
 .mptag { font-size: 9px; font-weight: 700; letter-spacing: .04em; }
-.mptools { position: absolute; top: 8px; right: 8px; display: flex; gap: 2px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 2px; }
+.mptools { position: absolute; z-index: 4; top: 12px; left: 12px; display: flex; gap: 4px; align-items: center; background: var(--panel); border: 1px solid var(--line-2); border-radius: 8px; padding: 4px; box-shadow: 0 4px 16px rgb(0 0 0 / .25); }
+.mptools #mpzoom { min-width: 52px; text-align: center; font-variant-numeric: tabular-nums; }
 .mptools button { min-width: 28px; }
-.mplegend { max-width: min(46ch, calc(100% - 16px)); max-height: 55%; overflow: auto; display: block; }
+.mplegend { z-index: 4; left: 12px; bottom: 12px; max-width: min(46ch, calc(100% - 24px)); max-height: 55%; overflow: auto; display: block; border-color: var(--line-2); border-radius: 8px; padding: 6px 10px; font-size: 11.5px; box-shadow: 0 4px 16px rgb(0 0 0 / .25); }
+.mplegend[open] summary { margin-bottom: 6px; }
 .mplegend summary { cursor: pointer; font-weight: 600; }
 .mplegend p { margin: 4px 0; }
 .mplegend .mpchips { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }

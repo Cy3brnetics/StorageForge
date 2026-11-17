@@ -12,7 +12,14 @@ const MP_MODES = { network: { label: 'Network', layers: ['network', 'manual'] },
 const MP_LEVEL = { any: 'Any address', lan: 'Private networks', vpn: 'VPN only', blocked: 'Blocked', loopback: 'This machine only', unknown: 'Unknown' };
 const SVGNS = 'http://www.w3.org/2000/svg';
 const MP_TAG = { any: 'ANY', lan: 'LAN', vpn: 'VPN', blocked: 'BLOCKED', loopback: 'LOCAL', unknown: 'UNKNOWN' };
-const MP_ROW = 24, MP_W = 300, MP_GAP = 44;
+const MP_ROW = 24, MP_W = 330, MP_GAP = 44;
+/* The look is Topology's (UX: one canvas language): a dot grid, a host as a dashed frame with a ruled heading, each thing in it a row with a kind
+   tag at its left end, as a table row has there. The tag says the kind in letters; its colour only repeats the family. */
+const MP_GRID = 20, MP_TAGW = 30;
+const MP_KIND = { NIC: 'NIC', Bond: 'BOND', Bridge: 'BR', VLAN: 'VLAN', VPNInterface: 'VPN', VPNNetwork: 'VPN', Subnet: 'NET', Gateway: 'GW', Neighbour: 'DEV', Peer: 'PEER', Listener: 'PORT',
+  FirewallPolicy: 'FW', ProxyRoute: 'RTE', IdentityProvider: 'IDP', Container: 'CTR', VM: 'VM', Instance: 'INST', MountPoint: 'MNT', Filesystem: 'FS', StoragePool: 'POOL', Host: 'HOST' };
+const MP_FAMILY = { NIC: 'net', Bond: 'net', Bridge: 'net', VLAN: 'net', VPNInterface: 'net', VPNNetwork: 'net', Subnet: 'net', Gateway: 'net', Neighbour: 'net', Peer: 'net',
+  Listener: 'svc', FirewallPolicy: 'svc', ProxyRoute: 'svc', IdentityProvider: 'svc', Container: 'wl', VM: 'wl', Instance: 'wl', MountPoint: 'sto', Filesystem: 'sto', StoragePool: 'sto' };
 const MP_SHOWN = { changes: 20, cover: 20, warn: 10, compare: 30 };      // rows a list shows before it says "+N more"
 
 /* A list that shows its first rows says how many it leaves out, and the same button shows the rest and hides them again (UX-13).
@@ -199,6 +206,7 @@ function mapLayout(g) {
 
 function mapClass(n) {
   const cls = ['mpnode', `k-${n.kind.toLowerCase()}`];
+  if (MP_FAMILY[n.kind]) cls.push(`f-${MP_FAMILY[n.kind]}`);
   if (n.confidence === 'inferred') cls.push('inferred');
   if (n.confidence === 'manual') cls.push('confidence-manual');
   if (n.ghost) cls.push('ghost');
@@ -231,7 +239,8 @@ function mapDraw() {
     if (b) { if (b.holds) t.push(`🔒${b.holds}`); if (b.decoys) t.push(`🎯${b.decoys}`); if (b.quarantined) t.push(`⛔${b.quarantined}`); if (b.selinux) t.push(`SELinux ${b.selinux}`); }
     if (f.shut) t.push(`(${f.count} inside)`);
     const head = sv('text', { x: f.x + 12, y: f.y + 24, class: 'mphost' }); head.textContent = t.join('  ');
-    const box = sv('g', {}, sv('rect', { x: f.x, y: f.y, width: f.w, height: f.h, rx: 8, class: 'mpframe' }), head);
+    const box = sv('g', {}, sv('rect', { x: f.x, y: f.y, width: f.w, height: f.h, rx: 12, class: 'mpframe' }), head);
+    if (!f.shut && f.h > 40) box.append(sv('path', { d: `M${f.x} ${f.y + 36} H${f.x + f.w}`, class: 'mprule' }));
     MP.frameEls.set(f.host, [box]);
     root.append(box);
   }
@@ -250,14 +259,19 @@ function mapDraw() {
   /* Every node is a button a keyboard can reach (UX-17), in reading order: the shared band first, then each host's header followed by what is in its frame. */
   const nodeEl = (r) => {
     const n = r.node;
-    const label = sv('text', { x: r.x + 8, y: r.y + r.h / 2 + 4, class: 'mplabel' });
+    const kind = (MP_KIND[n.kind] || n.kind.slice(0, 4)).toUpperCase(), ty = r.y + (r.h - 13) / 2;
+    // a path and not a rect: the outlines that say inferred, staged or changed are the row's, and stay off the tag
+    const tagBox = sv('path', { d: `M${r.x + 8} ${ty} h${MP_TAGW - 4} a2 2 0 0 1 2 2 v9 a2 2 0 0 1 -2 2 h-${MP_TAGW - 4} a2 2 0 0 1 -2 -2 v-9 a2 2 0 0 1 2 -2 z`, class: 'mptk', 'aria-hidden': 'true' });
+    const tagWord = sv('text', { x: r.x + 6 + MP_TAGW / 2, y: ty + 9.5, class: 'mptkt', 'text-anchor': 'middle', 'aria-hidden': 'true' });
+    tagWord.textContent = kind;
+    const label = sv('text', { x: r.x + MP_TAGW + 14, y: r.y + r.h / 2 + 4, class: 'mplabel' });
     label.textContent = mapText(n);
     const dim = !mapMatches(n);
     const tag = MP_TAG[n.props.exposure];          // the second cue beside the colour: who can reach it, in a word at the right end
     const word = tag ? sv('text', { x: r.x + r.w - 6, y: r.y + r.h / 2 + 4, class: 'mplabel mptag', 'text-anchor': 'end' }) : null;
     if (word) word.textContent = tag;
     const said = n.props.exposure ? `, ${MP_LEVEL[n.props.exposure]}` : '';
-    return sv('g', { class: mapClass(n) + (dim ? ' dim' : ''), 'data-id': n.id, tabindex: '0', role: 'button', 'aria-label': `${n.kind}: ${n.label}${said}` }, sv('rect', { x: r.x, y: r.y, width: r.w, height: r.h, rx: 4 }), label, ...(word ? [word] : []));
+    return sv('g', { class: mapClass(n) + (dim ? ' dim' : ''), 'data-id': n.id, tabindex: '0', role: 'button', 'aria-label': `${n.kind}: ${n.label}${said}` }, sv('rect', { x: r.x, y: r.y, width: r.w, height: r.h, rx: 4 }), tagBox, tagWord, label, ...(word ? [word] : []));
   };
   const loose = [...rects.values()].filter((r) => !r.frame && !r.inside);
   const inFrame = (r, f) => r.x >= f.x && r.y >= f.y && r.x + r.w <= f.x + f.w + 1 && r.y + r.h <= f.y + f.h + 1;
@@ -334,7 +348,7 @@ function mapFit(least) {
   if (!root) return;
   root.removeAttribute('transform');
   const b = root.getBBox();
-  if (!MP.cv.fit({ x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height }, { least, most: 1, left: 10, top: 10, right: 10, bottom: 10, centre: false })) MP.cv.apply(true);
+  if (!MP.cv.fit({ x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height }, { least, most: 1, left: 12, top: 60, right: 12, bottom: 12, centre: false })) MP.cv.apply(true);
 }
 
 function mapEdgeD(a, b, da = null, db = null) {       // da, db: how far a frame being dragged has moved that end
@@ -366,6 +380,8 @@ function mapPaint(v) {               // once a frame at most: sfCanvas (canvas.j
   const r = $('#mproot');
   if (r) {
     r.setAttribute('transform', `translate(${v.x} ${v.y}) scale(${v.k})`);
+    const c = $('#mpcanvas'), grid = MP_GRID * v.k * (v.k < 0.5 ? 4 : 1);      // the dot grid moves and scales with the map, coarser far out, as Topology's does
+    c.style.backgroundSize = `${grid}px ${grid}px`; c.style.backgroundPosition = `${v.x}px ${v.y}px`;
     $('#mpsvg').classList.toggle('far', MP.view.k < 0.5);
     const z = $('#mpzoom'); if (z) z.textContent = `${Math.round(MP.view.k * 100)}%`;
     mapSemantic();
@@ -391,7 +407,7 @@ function mapTools() {
   const tool = (label, name, fn, id) => { const b = button(label, fn, 'btn ghost small'); b.setAttribute('aria-label', name); b.title = name; if (id) b.id = id; return b; };
   const pct = tool(`${Math.round(MP.view.k * 100)}%`, 'Reset the zoom to 100 percent (0)', () => mapZoomTo(1), 'mpzoom');
   return el('div', { class: 'mptools', role: 'toolbar', 'aria-label': 'Zoom the map' }, tool('−', 'Zoom out (−)', () => mapZoomTo(MP.view.k / 1.25)), pct, tool('+', 'Zoom in (+)', () => mapZoomTo(MP.view.k * 1.25)),
-    tool('Fit to screen', 'Fit the whole map on screen (F)', () => { mapFit(0); announce('Fitted to the screen'); }, 'mpfit'));
+    tool('Fit', 'Fit the whole map on screen (F)', () => { mapFit(0); announce('Fitted to the screen'); }, 'mpfit'));
 }
 
 /* What the colours and the line styles mean, in words. Each style has a shape of its own as well as a colour, and the word at the
@@ -413,12 +429,12 @@ function mapLegend() {
     const shape = kind === 'node' ? sv('g', { class: `mpnode ${cls}` }, sv('rect', { x: 1, y: 1, width: 26, height: 12, rx: 3 })) : sv('path', { d: 'M1 7 H27', class: `mpedge ${cls}` });
     return sv('svg', { class: 'mpsw', width: 28, height: 14, 'aria-hidden': 'true', focusable: 'false' }, shape);
   };
-  const l = el('details', { class: 'mplegend small', open: !MP.legendShut }, el('summary', {}, 'Legend'),
+  const l = el('details', { class: 'mplegend small', ...(MP.legendOpen ? { open: '' } : {}) }, el('summary', {}, 'Legend'),      // shut until asked for, as Topology's is: open, it covers a third of the map
     el('p', { class: 'muted' }, 'Who can reach a port, per configuration. The same word is at the right end of the port.'),
     el('div', { class: 'mpchips' }, ...Object.entries(MP_LEVEL).map(([k, v]) => el('span', { class: `mpchip x-${k}` }, v))),
     el('ul', { class: 'mpstyles' }, ...MP_STYLES.map((x) => el('li', {}, swatch(x), ' ' + x[2]))),
     el('p', { class: 'muted' }, 'Per configuration: nothing here was probed.'));
-  l.addEventListener('toggle', () => { MP.legendShut = !l.open; });
+  l.addEventListener('toggle', () => { MP.legendOpen = l.open; });
   return l;
 }
 
@@ -550,7 +566,7 @@ function mapSavePng() {
   copy.setAttribute('width', box.width + 20); copy.setAttribute('height', box.height + 20);
   copy.querySelector('#mproot').removeAttribute('transform');
   const style = document.createElementNS(SVGNS, 'style');
-  style.textContent = '.mpframe{fill:#f4f5f7;stroke:#99a}.mpnode rect{fill:#fff;stroke:#556}.mpedge{fill:none;stroke:#889}.mplabel,.mphost{font:11px sans-serif;fill:#123}.mpnode.x-any rect{fill:#f3c6c6}.mpnode.x-lan rect{fill:#f3e2c6}.mpnode.inferred rect{stroke-dasharray:4 3}.mphit{fill:transparent}';
+  style.textContent = '.mpframe{fill:#f4f5f7;stroke:#99a}.mpnode rect{fill:#fff;stroke:#556}.mpedge{fill:none;stroke:#889}.mplabel,.mphost{font:11px sans-serif;fill:#123}.mprule{stroke:#99a;stroke-dasharray:4 3}.mptk{fill:#fff;stroke:#99a}.mptkt{font:600 8px sans-serif;fill:#556}.mpnode.x-any rect{fill:#f3c6c6}.mpnode.x-lan rect{fill:#f3e2c6}.mpnode.inferred rect{stroke-dasharray:4 3}.mphit{fill:transparent}';
   copy.prepend(style);
   const img = new Image();
   img.onload = () => {

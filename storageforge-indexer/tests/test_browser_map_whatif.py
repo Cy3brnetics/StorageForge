@@ -172,6 +172,9 @@ class MapWhatIfBrowser(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
     def test_the_legend_says_what_the_colours_and_lines_mean_and_a_port_says_who_reaches_it(self):
+        self.assertFalse(self.page.is_visible('#mapview .mplegend ul'), 'the legend starts shut, as Topology\'s does, so it does not cover the map')
+        self.page.click('#mapview .mplegend summary')
+        self.page.wait_for_selector('#mapview .mplegend ul', state='visible')
         legend = self.page.inner_text('#mapview .mplegend')
         for words in ('Any address', 'Private networks', 'Blocked', 'Dashed outline or line: inferred', 'Dotted outline: staged', 'Struck-through name: would be removed', 'Thick line: the path you asked about'):
             self.assertIn(words, legend)
