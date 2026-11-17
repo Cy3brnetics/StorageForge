@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import tempfile
 import time
@@ -192,12 +193,22 @@ class Verbs(TwoHosts):
         self.assertIn(says, r.stderr)
         return r
 
+    def test_a_folder_that_was_there_keeps_the_mode_its_owner_gave_it(self):
+        """Someone who shares the copies, or browses them as another account, set that folder up: a receive does not shut it on them."""
+        os.makedirs(self.there)
+        os.chmod(self.there, 0o755)
+        self.assertEqual(self.serve('rt1-b', 'recv-mkdir').returncode, 0)
+        r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-2026-01-01_000001', 'd-2026-01-01_000001\n')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(stat.S_IMODE(os.stat(self.there).st_mode), 0o755)
+
     def test_btrfs_a_receive_then_what_it_says_of_it(self):
         self.assertEqual(self.serve('rt1-b', 'recv-probe').stdout.strip(), 'ok btrfs')
         self.assertEqual(self.serve('rt1-b', 'recv-root').stdout.strip(), 'absent')
         self.assertEqual(self.serve('rt1-b', 'recv-state d-2026-01-01_000001').stdout.strip(), 'absent')
         self.assertEqual(self.serve('rt1-b', 'recv-mkdir').returncode, 0)
         self.assertEqual(self.serve('rt1-b', 'recv-root').stdout.strip(), 'present')
+        self.assertEqual(stat.S_IMODE(os.stat(self.there).st_mode), 0o700, 'a folder made for btrfs copies is root\'s alone: a copy keeps the setuid bits its stream carries (SF-72)')
         r = self.serve('rt1-b', f'recv-receive {self.nonce()} d-2026-01-01_000001', 'd-2026-01-01_000001\n')
         self.assertEqual((r.returncode, r.stdout.strip()), (0, 'received d-2026-01-01_000001 1234abcd'), r.stderr)
         self.assertEqual(self.serve('rt1-b', 'recv-state d-2026-01-01_000001').stdout.strip(), 'done 1234abcd')

@@ -290,25 +290,29 @@ def tier16(r):
     r.check('send-plan-btrfs', to.name, plan)
 
     def btrfs_setuid():
-        """SF-72, the btrfs side: `btrfs receive` has no way to drop what a stream carries, and docs/security.md says so. Measured here, so the
-        page states what a real receive does: the file arrives root-owned and setuid, and whether another account can run it is the folder's doing."""
-        name = 'lab-plan-setuid'
+        """SF-72, the btrfs side: `btrfs receive` has no way to drop what a stream carries, so the copy holds the root setuid file as sent.
+        A folder the receive makes for the copies is root's alone, so no other account reaches it; one that was there keeps its mode."""
+        name, fresh = 'lab-plan-setuid', f'{to.recv}/lab-sf72-made-by-the-receive'
         snap = f'{frm.snaps}/{name}'
         sudo(frm.name, f'cp /bin/true {frm.subvol}/lab-setuid && chown root:root {frm.subvol}/lab-setuid && chmod 4755 {frm.subvol}/lab-setuid')
+        before = sudo(to.name, f'stat -c %a {to.recv}').strip()
         try:
             made = api.post('/api/changes', {'name': 'Lab signed plan send, setuid', 'tasks': [
                 {'type': 'snapshot', 'host': frm.name, 'params': {'source': frm.subvol, 'dest': snap, 'readonly': True}},
+                {'type': 'btrfs-send', 'host': frm.name, 'params': {'source': snap, 'dest_host': to.name, 'dest': fresh}},
                 {'type': 'btrfs-send', 'host': frm.name, 'params': {'source': snap, 'dest_host': to.name, 'dest': to.recv}}]})
             demo.deploy(api, 'changes', made['id'], 'signed plan send, setuid')
         finally:
             sudo(frm.name, f'rm -f {frm.subvol}/lab-setuid')
-        got = sudo(to.name, f'stat -c "%a %U" {to.recv}/{name}/lab-setuid').strip()
-        want(got == '4755 root', f'the copy holds it as {got}: docs/security.md says a btrfs copy keeps the owner, mode and setuid bits')
-        # nothing left the folder: the chroot holds, and the stream made one subvolume
-        want(sudo(to.name, f'ls {to.recv}').split().count(name) == 1, 'the copy is not where it was sent')
-        nosuid = 'nosuid' in sudo(to.name, f'findmnt -no OPTIONS --target {to.recv}/{name}')
+        got = sudo(to.name, f'stat -c "%a %U" {fresh}/{name}/lab-setuid').strip()
+        want(got == '4755 root', f'the copy holds it as {got}: a btrfs copy keeps the owner, mode and setuid bits')
+        folder = sudo(to.name, f'stat -c "%a %U" {fresh}').strip()
+        want(folder == '700 root', f'the folder the receive made is {folder}, and should be root\'s alone')
+        want(run(to.name, f'sudo -n -u scan test -e {fresh}/{name}/lab-setuid').returncode != 0, 'another account reaches the setuid file in a folder the receive made')
+        want(sudo(to.name, f'stat -c %a {to.recv}').strip() == before, f'a folder that was there had its mode changed from {before}')
         reach = run(to.name, f'sudo -n -u scan test -x {to.recv}/{name}/lab-setuid').returncode == 0
-        return f'arrived {got}, as the docs say; the mount is {"nosuid" if nosuid else "not nosuid"} and another account can{"" if reach else "not"} reach it'
+        return (f'the copy keeps {got}; the folder the receive made is {folder} and another account cannot reach it; the folder that was there keeps its mode {before}'
+                f'{", where another account can reach the copy, as the docs warn" if reach else ""}')
     r.check('send-btrfs-setuid', to.name, btrfs_setuid)
 
     # ── ZFS ─────────────────────────────────────────────────────

@@ -142,6 +142,13 @@ recv_probe() {
   if [[ $TOOL == btrfs ]]; then btrfs --version >/dev/null 2>&1; else zfs version >/dev/null 2>&1; fi || { echo "$TOOL does not run on $(uname -n)" >&2; exit 3; }
   echo "ok $TOOL"
 }
+recv_make_root() {
+  # The folder btrfs copies go into. One made here is root's alone (0700): `btrfs receive` keeps the owner, mode and setuid bits a stream
+  # carries and has no way to drop them, so a sender that was taken over can leave a root setuid file in a copy, and the lab showed another
+  # account on the receiver reaching it (SF-72, send-btrfs-setuid). A folder that was there already is left as whoever made it set it.
+  [[ -d $ROOT ]] && return 0
+  mkdir -p -- "$ROOT" && chmod 0700 -- "$ROOT"
+}
 recv_root() { # is the folder or dataset there yet?
   if [[ $TOOL == btrfs || $TOOL == vm ]]; then [[ -d $ROOT ]] && echo present || echo absent
   elif zfs list -H -o name -- "$ROOT" >/dev/null 2>&1; then echo present; else echo absent; fi
@@ -215,7 +222,7 @@ recv_receive() { # nonce name, the stream on stdin. It only ever makes something
   # -C: btrfs receive runs chrooted into the folder, so a path in the stream cannot leave it. ZFS: -x leaves mountpoint, sharenfs and sharesmb
   # to what the parent gives (a stream cannot mount itself over a folder or export itself), and -o sets setuid, devices and canmount here whatever
   # the stream says (no setuid file or device node works, and nothing mounts at boot: mount it by hand to look). Lab tier 16 reads all of them back (send-zfs-properties, 2026-11-17).
-  # btrfs: the files keep the owner, mode and setuid bits the stream carries; see docs/security.md for what that leaves.
+  # btrfs: the files keep the owner, mode and setuid bits the stream carries, so a folder made for them is root's alone (recv_make_root).
   if [[ $TOOL == vm ]]; then
     # a disk image, written as a new file of its own and readable by root alone: it holds all a VM holds. dd conv=sparse keeps
     # runs of zeros as holes, and the checksum is of what arrived, for the sender to hold against what it sent
@@ -232,7 +239,7 @@ recv_receive() { # nonce name, the stream on stdin. It only ever makes something
       fi
     else rc=5; fi
   elif [[ $TOOL == btrfs ]]; then
-    mkdir -p -- "$ROOT" >"$err" 2>&1 && btrfs receive -C "$ROOT" >"$err" 2>&1; rc=$?
+    recv_make_root >"$err" 2>&1 && btrfs receive -C "$ROOT" >"$err" 2>&1; rc=$?
   else
     zfs receive -u -x mountpoint -x sharenfs -x sharesmb -o setuid=off -o devices=off -o canmount=noauto -- "$ROOT" >"$err" 2>&1; rc=$?
   fi
@@ -299,7 +306,7 @@ recv_verb() { # verb [word] [word]: only these, each with only what it takes
     recv-root) recv_root ;;
     recv-list) recv_list ;;
     recv-state) recv_name_ok "$a" || recv_refuse "not a snapshot name"; recv_state "$a" ;;
-    recv-mkdir) if [[ $TOOL == btrfs || $TOOL == vm ]]; then mkdir -p -- "$ROOT"; fi ;;
+    recv-mkdir) if [[ $TOOL == btrfs ]]; then recv_make_root; elif [[ $TOOL == vm ]]; then mkdir -p -- "$ROOT"; fi ;;
     recv-receive) recv_receive "$a" "$b" ;;
     recv-discard) recv_discard "$a" ;;
     recv-prune) recv_prune "$a" ;;
