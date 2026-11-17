@@ -4,6 +4,10 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 
 ## Unreleased
 
+## 0.5.3 — 2026-11-17
+
+What was on `main` and not released, and the KVM lab's own gaps closed. Upgrade notes: no migrations; build the images again (`docker compose build`), as they are tagged 0.5.3 and now build on Wolfi. A PostgreSQL container wants `--shm-size=256m`. Lab status: every tier ran on 2026-11-17 with nothing skipped that a host could run, in two builds: 589 passed, 0 failed, 2 skipped on the seven configs with RouterOS, OpenWrt and OPNsense, and tiers 0, 2 and 8 on Proxmox, TrueNAS and XCP-ng ([the table](docs/kvm-lab.md#the-run-of-2026-11-17)). Unit suites at the release commit's parent: 2,006 tests with 0 failed on SQLite (6 skipped) and on PostgreSQL (86 skipped, nearly all about SQLite files). Still **not lab-tested**: pfSense and Cisco (their images need accounts), the appliances through tiers 1 and 3 to 7, and what [the lab can't test](docs/kvm-lab.md#what-the-lab-cant-test).
+
 ### Added
 - **The unit suite runs in three blocks, and in parallel.** `python tests/run.py` runs light (1,223 tests, 13 s on 12 cores), the check to make after any change; `medium` runs bash and local tools; `heavy` runs Chromium, sshd, Docker and real waits. `all -j 8` runs the whole suite in about two minutes, where one process took sixteen. CI runs each block as its own step on both databases, so a red step says which. See [tests/README.md](storageforge-indexer/tests/README.md).
 - **Random tests.** Five `test_props_*.py` modules (Hypothesis, the new `test` extra) say what must hold for any input: the network language, file search on both databases, every parser of host and device output, pool capacity and permissions, and hostile values in the generated scripts. They run a few fixed examples in light and many in `run.py deep`. They found the bugs below.

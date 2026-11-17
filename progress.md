@@ -70,6 +70,7 @@ Corrections stand: no VSS trap, no cryptographic shred, no certificates, no WebS
 - 2026-11-16: the roadmap for 0.6.0 ([roadmap.md](roadmap.md)), in versions 0.5.3 to 0.6.0. The unit suite in three blocks with random tests, and the stress runs: [the report](docs/test-report-2026-11-16.md). No lab run since 2026-11-09.
 - 2026-11-17: 0.5.3's lab gaps, before its lab run: a default build with every host a check asks for and the appliances and routers in it, Playwright for tier 13, `qemu-img` on `sf-ubuntu`, SF-72's ZFS properties read back and the btrfs side measured in tier 16, `shellcheck` with the `test` extra. None of it has been through the lab yet.
 - 2026-11-17: **the 0.5.3 lab run**, at `9fee87e`, in two builds because the default build wants 24 GB: 589 passed, 0 failed, 2 skipped on the seven configs with the routers; tier 0, tier 2 (101 passed) and tier 8 (17 passed) on the appliances. Every check the roadmap listed as skipped ran. [The table and what went wrong on the way](docs/kvm-lab.md#the-run-of-2026-11-17).
+- 2026-11-17: **0.5.3**. Full unit suites at `48faa31`: SQLite 2,006 tests, 0 failed, 6 skipped, in 177 s at `-j 6`; PostgreSQL 2,006 tests, 0 failed, 86 skipped, in 1,066 s. Tagged locally, not pushed.
 
 What the lab found that unit tests had not:
 
