@@ -57,6 +57,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | :--- | :--- |
 | [UI audit, 2026-11-04](audit-2026-11-04-ui.md) | How the screens are organised and behave, the planner against what the platform has learned since it was written, and 41 findings with evidence |
 | [Test audit, 2026-11-03](test-audit-2026-11-03.md) | What the test suites covered, the lab tier and feature map added, and the bugs they found |
+| [Test report, 2026-11-16](test-report-2026-11-16.md) | The test blocks, random tests, coverage, stress runs on SQLite and PostgreSQL, the bugs they found, and the crash |
 | [Ransomware defense audit, 2026-11-02](audit-2026-11-02-ransomware-defense.md) | The first implementation of the roadmap, what was wrong with it, and what was found while replacing it |
 | [Feature audit, 2026-11-01](audit-2026-11-01-features.md) | Code compared with the docs and exercised in the lab, and what disagreed |
 | [Code audit, 2026-11-01](audit-2026-11-01-code.md) | Bugs found by reading the code, and what was checked and found fine |
