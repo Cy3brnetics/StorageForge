@@ -73,6 +73,7 @@ MEDIUM = {
     'test_scheduler.RunnerTests',
     'test_sends.Generated',
     'test_props_scripts.HostileValuesAnywhere',
+    'test_folderwork.Worker',
     'test_storage_ops.Types',
     'test_updates.Script',
     # longer API walks

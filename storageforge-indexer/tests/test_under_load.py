@@ -61,10 +61,10 @@ class Server(unittest.TestCase):
             gate.wait(5)
             return {'folders': [], 'total': 0, 'bytes': 0, 'cutoff': 0}
         c = self.client()
-        with mock.patch.object(folders, 'cold_folders', slow), mock.patch.object(server, 'FOLDER_WAIT', 0.2):
+        with mock.patch.object(folders, 'cold_folders', slow), mock.patch.object(server, 'FOLDER_WAIT_HERE', 0.2):
             r = c.get('/api/folders/cold?host=nas&years=1&min_size=1')
             self.assertEqual(r.status_code, 503)
-            self.assertEqual(r.headers['Retry-After'], str(server.Busy.retry_after))
+            self.assertEqual(r.headers['Retry-After'], str(server.FOLDER_RETRY))
             self.assertTrue(r.get_json()['busy'])
             gate.set()
             for _ in range(50):                       # the build went on without the request that started it
@@ -73,6 +73,21 @@ class Server(unittest.TestCase):
                     break
                 time.sleep(0.1)
         self.assertEqual(r.status_code, 200)
+
+    def test_past_so_many_builds_waiting_a_new_kind_of_request_is_asked_back(self):
+        gate = threading.Event()
+
+        def slow(*_a, **_k):
+            gate.wait(5)
+            return {'folders': [], 'total': 0, 'bytes': 0, 'cutoff': 0}
+        c = self.client()
+        with mock.patch.object(folders, 'cold_folders', slow), mock.patch.object(server, 'FOLDER_PENDING', 2), mock.patch.object(server, 'FOLDER_WAIT_HERE', 0.1):
+            for years in (1, 2):
+                self.assertEqual(c.get(f'/api/folders/cold?host=nas&years={years}&min_size=1').status_code, 503)
+            r = c.get('/api/folders/cold?host=nas&years=3&min_size=1')
+            self.assertEqual(r.status_code, 503)
+            self.assertIn('many folder analyses are waiting', r.get_json()['error'])
+            gate.set()
 
     def test_a_build_that_fails_says_so_to_everyone_waiting_for_it(self):
         def broken(*_a, **_k):

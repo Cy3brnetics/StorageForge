@@ -171,7 +171,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
-               fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
+               folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
 from . import routes_planner
 from .runtimes import docker
 from .capacity import parse_size, trends
@@ -289,6 +289,8 @@ class App:
         finally:
             conn.close()
         self.alerts_wake = threading.Event()
+        # serve() makes the folder analyses in a process of their own (folderwork.py); a test's App makes them here, where its mocks reach
+        self.folder_worker = folderwork.Worker() if timers else None
         if timers:
             threading.Thread(target=self._schedule, args=(scan_interval,), name='scheduler', daemon=True).start()
             threading.Thread(target=self._nightly, name='nightly', daemon=True).start()
@@ -538,7 +540,10 @@ FOLDER_PARALLEL = 1       # folder analyses built at once
 EXPENSIVE_ROUTES = frozenset({'/api/search', '/api/dupes', '/api/hostlogs/export', '/api/log/export'})
 EXPENSIVE_PARALLEL = 4
 EXPENSIVE_WAIT = 0.25
-FOLDER_WAIT = 2.0         # seconds a request waits for one before it is told to come back
+FOLDER_WAIT = 0.25        # seconds a request waits for one before it is told to come back: at 64 clients, waits of 2 s held most threads again
+FOLDER_RETRY = 2          # and when to come back
+FOLDER_PENDING = 32       # builds waiting their turn: each holds a thread, so past this a new kind of request is asked back instead
+FOLDER_WAIT_HERE = 30.0   # with no worker (a test's App), the analysis is made in this process and there is no page to ask again
 
 
 def remember(cache: dict, key: tuple, result, latest, keep: int = 8):
@@ -2541,6 +2546,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 return hit
             build = folder_building.get(key)
             mine = build is None
+            if mine and len(folder_building) >= FOLDER_PENDING:
+                raise Busy('many folder analyses are waiting to be built: this one is asked for again in a moment', FOLDER_RETRY)
             if mine:
                 build = folder_building[key] = SimpleNamespace(done=threading.Event(), result=None, error=None)
         if mine:                              # built off the request, so a request never waits longer than FOLDER_WAIT for it
@@ -2562,39 +2569,27 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                             folder_building.pop(key, None)
                         build.done.set()
             threading.Thread(target=run, name='folder-build', daemon=True).start()
-        if not build.done.wait(FOLDER_WAIT):
-            raise Busy('the folder analysis is still being built for this index: it is asked for again in a moment')
+        if not build.done.wait(FOLDER_WAIT if core.folder_worker is not None else FOLDER_WAIT_HERE):
+            raise Busy('the folder analysis is still being built for this index: it is asked for again in a moment', FOLDER_RETRY)
         if build.error is not None:
             raise build.error
         return build.result
 
-    dir_kept: list = [{}]                     # mount id → (its mark, its folders): replaced whole, never edited, so readers need no lock
-    dir_build = threading.Lock()
+    def analysis(kind: str, args: tuple):
+        """A folder analysis, by serve()'s worker process when there is one, else here."""
+        if core.folder_worker is not None:
+            return core.folder_worker.run(db.url, kind, args)
+        return folderwork.compute(db.url, kind, args)
 
     def kept_dir_index():
-        """The folder index when every mount in it is current, else None (a listing then reads the tables)."""
-        kept, marks = dir_kept[0], folders.mount_marks(conn())
+        """The folder index when this process holds one and every mount in it is current, else None (a listing then reads the tables).
+        Under serve() the index is the worker's, so a listing always reads the tables."""
+        if core.folder_worker is not None:
+            return None
+        kept, marks = folderwork._kept.get(db.url, {}), folders.mount_marks(conn())
         if any(kept.get(m, (None,))[0] != k for m, k in marks.items()):
             return None
         return {m: kept[m][1] for m in marks if kept[m][1] is not None}
-
-    def build_dir_index(host):
-        """Rebuilds only the mounts a scan changed since they were kept, one build at a time. A mount whose host is being
-        scanned, or that changed while it was read, serves this request and is built again next time."""
-        with dir_build:
-            marks = folders.mount_marks(conn())
-            mine = folders.mount_marks(conn(), host) if host else marks
-            kept = {m: v for m, v in dir_kept[0].items() if marks.get(m) == v[0]}
-            dir_kept[0] = kept                # what went stale goes first: two copies of a big mount is a lot of memory
-            stale = [m for m in mine if m not in kept]
-            built = folders.dir_index(conn(), None, stale) if stale else {}
-            if stale:
-                after, busy = folders.mount_marks(conn()), folders.scanning_mounts(conn())
-                fresh = {m: (marks[m], built.get(m)) for m in stale if after.get(m) == marks[m] and m not in busy}
-                dir_kept[0] = {**kept, **fresh}
-            index = {m: v[1] for m, v in kept.items() if v[1] is not None}
-            index.update(built)
-            return index
 
     @web.get('/api/folders/cold')
     @login_required
@@ -2603,7 +2598,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         years = arg_num('years', 2.0, 0.1, 100.0, float)
         min_size = parse_size(request.args.get('min_size') or '1GiB')
         return jsonify(folder_result(('cold', host, years, min_size),
-                                     lambda: folders.cold_folders(conn(), host, years, min_size, limit=200)))
+                                     lambda: analysis('cold', (host, years, min_size))))
 
     @web.get('/api/folders/duplicates')
     @login_required
@@ -2612,15 +2607,11 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         min_files = arg_num('min_files', 3, 1, 1_000_000)
         min_size = parse_size(request.args.get('min_size') or '1MiB')
         return jsonify(folder_result(('dupes', host, min_files, min_size),
-                                     lambda: folders.duplicate_folders(conn(), host, min_files, min_size, limit=200, index=build_dir_index(None))))
+                                     lambda: analysis('dupes', (host, min_files, min_size, False))))
 
     def filemap_result(host, min_size, system, with_folders):
-        def compute():
-            twins = None
-            if with_folders:
-                key = ('dupes', host, 3, min_size) if not system else ('dupes-system', host, 3, min_size)
-                twins = folder_result(key, lambda: folders.duplicate_folders(conn(), host, 3, min_size, limit=200, include_system=system, index=build_dir_index(None)))
-            return filemap.build(conn(), host, min_size, system, twins)
+        def compute():                        # its twin folders are made with it, by the same worker, from the same folder index
+            return analysis('filemap', (host, min_size, system, with_folders))
         # its job lines change without a scan: importing or removing a job has to show now
         job_mark = tuple(conn().all('SELECT count(*), max(deployed_at), max(removed_at) FROM jobs')[0])
         return folder_result(('filemap', host, min_size, system, with_folders, json.dumps(folders.ignore_lists(conn()), sort_keys=True), job_mark), compute)
@@ -2640,7 +2631,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 except Busy:                  # still building, off this thread: it lands in the cache when done
                     pass
             else:                             # the mounts no scan is touching: a page opened meanwhile builds only the rest
-                build_dir_index(None)
+                analysis('index', ())
     web.warm_filemap = warm_filemap
 
     @web.route('/api/files/ignore', methods=['GET', 'PUT'])
