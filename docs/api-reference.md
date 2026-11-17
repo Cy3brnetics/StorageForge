@@ -175,6 +175,8 @@ Each plan type has the same shape: list, create, one, check, script.
 | POST, DELETE | `/api/notifications/snooze/<key>` | `{"hours", "note"?}` | snooze for a minute to 30 days, or end it. Refused (400) for a critical notification, drift or a security finding; audited |
 | POST | `/api/notifications/mutes` | `{"host"?, "kind"?, "note"?, "days"?}` | mute a kind on a host (shell patterns, `*` for any) until removed or for `days`. Refused for drift and security kinds, and never covers a critical notification; audited |
 | DELETE | `/api/notifications/mutes/<id>` | | remove a mute; audited |
+| POST | `/api/notifications/fix/<key>` | | save the notification's prepared fix as a change plan and say which (`plan`). 400 when it carries none. Nothing runs: the plan is deployed like any other. Takes `plans.edit`; audited |
+| POST | `/api/notifications/undo/<plan>` | | save the way back of a fix that was prepared as that plan, as a plan of its own |
 | POST | `/api/deploy/setup-script` | `{"remove"?}` | download; makes the deploy keys on first use |
 | POST 🔑 | `/api/deploy/access` | `{"host", "password", "admin_user"?, "remove"?}` | set deploy access up (or remove it) with sudo once; 10/min |
 | POST 🔑 | `/api/deploy/adopt` | `{"host"}` | after running the setup by hand: bind and test |

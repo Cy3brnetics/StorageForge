@@ -12,6 +12,7 @@ is not pushed.
 from __future__ import annotations
 
 import fnmatch
+import re
 import time
 
 from .db import Conn
@@ -20,7 +21,7 @@ LEVELS = ('crit', 'warn', 'info')
 SECURITY_KINDS = ('clamav', 'shared-key', 'map-listener', 'device-telnet')      # beside every kind that starts with security-
 MAX_SNOOZE = 30 * 86400
 NOTE_CHARS = 500
-EVENTS = ('opened', 'escalated', 'resolved', 'acknowledged', 'unacknowledged', 'snoozed', 'unsnoozed')
+EVENTS = ('opened', 'escalated', 'resolved', 'acknowledged', 'unacknowledged', 'snoozed', 'unsnoozed', 'fix-prepared', 'undo-prepared')
 WHY_NOT = 'critical notifications, configuration drift and security findings cannot be snoozed or muted: they leave when they are resolved'
 
 
@@ -126,6 +127,9 @@ def center(conn: Conn, host: str | None = None, kind: str | None = None, level: 
     now = time.time() if now is None else now
     rules = mutes(conn, now)
     items = [_item(r, rules, now) for r in conn.all(f"SELECT {_COLS} FROM alerts WHERE state = 'open'")]
+    for x in items:
+        fix = fix_for(conn, x)
+        x['fix'] = {'label': fix['label'], 'undo': fix['undo'], 'plan': _last_plan(conn, x['key'], x['first_at'])} if fix else None
     if host:
         items = [x for x in items if (x['host'] or '').lower() == host.lower()]
     if kind:
@@ -146,6 +150,80 @@ def center(conn: Conn, host: str | None = None, kind: str | None = None, level: 
     loud = [x for x in items if not x['quiet']]
     return {'groups': grouped(loud), 'quiet': grouped([x for x in items if x['quiet']]), 'counts': {lv: sum(x['level'] == lv for x in loud) for lv in LEVELS},
             'total': len(loud), 'mutes': rules, 'kinds': sorted({x['kind'] for x in items}), 'hosts': sorted({x['host'] for x in items if x['host']})}
+
+
+# ── prepared fixes ──────────────────────────────────────────────────
+# A fix is a change plan made ready, never applied from here: it is opened in Changes, where its report is read and its deploy takes the
+# password, as any plan's does. One is offered only where there is a way back, which is a second plan made the same way. So far one kind
+# has both: a service that keeps failing is restarted, and the way back stops it again, which is how it was found. A stale job run now,
+# a scan run again or a full disk have no fix here: the first two cannot be taken back, and nothing here deletes data.
+_UNIT_IN_LINE = re.compile(r'(?<![A-Za-z0-9:_.@-])([A-Za-z0-9:_@-][A-Za-z0-9:_.@-]{0,190}\.service)\b')
+_INVERSE = {'restarted': 'stopped', 'started': 'stopped'}
+
+
+def fix_for(conn: Conn, x: dict) -> dict | None:
+    """The fix this notification carries: {label, undo, tasks}, or None. Worked out from the index and the alert, never from a client."""
+    from . import steps_services
+    if x['kind'] != 'log-rule' or not x.get('host'):
+        return None
+    parts = x['key'].split(':', 2)
+    if len(parts) != 3 or not parts[1].isdigit():
+        return None
+    rule = conn.all('SELECT builtin FROM log_rules WHERE rule_id = :r', {'r': int(parts[1])})
+    if not rule or rule[0][0] != 'unit-failed':
+        return None
+    sample = conn.scalar('SELECT sample FROM log_rule_hits WHERE rule_id = :r AND host = :h ORDER BY bucket DESC LIMIT 1', {'r': int(parts[1]), 'h': x['host']}) or ''
+    m = _UNIT_IN_LINE.search(sample)
+    if not m or re.fullmatch(steps_services.OWN_WAY_IN, m[1]):
+        return None                 # no unit named, or one that is done by hand on the host: nothing is offered
+    unit = m[1]
+    return {'label': f'Restart {unit} on {x["host"]}', 'undo': f'Stop {unit} again, as it was found',
+            'tasks': [{'type': 'unit-state', 'host': x['host'], 'params': {'unit': unit, 'state': 'restarted'}}]}
+
+
+def _last_plan(conn: Conn, key: str, since: int) -> int | None:
+    note = conn.scalar("SELECT note FROM notification_events WHERE alert_key = :k AND event = 'fix-prepared' AND at >= :t ORDER BY event_id DESC LIMIT 1", {'k': key, 't': since})
+    m = re.match(r'plan (\d+)\b', note or '')
+    return int(m[1]) if m else None
+
+
+def prepare_fix(conn: Conn, key: str, actor: str) -> dict:
+    """Saves the fix as a change plan and says which. Nothing runs: the plan is reported and deployed in Changes, behind the password."""
+    from . import changes
+    x = _open(conn, key)
+    fix = fix_for(conn, x)
+    if not fix:
+        raise ValueError('this notification has no prepared fix: one is offered only where it can be taken back')
+    with conn.tx():
+        plan = changes.save_plan(conn, {'name': f'Fix: {fix["label"]}'[:120], 'tasks': fix['tasks']}, actor)
+        record(conn, key, x['kind'], x['host'], x['level'], x['title'], 'fix-prepared', actor, f'plan {plan}: {fix["label"]}')
+    return {'plan': plan, 'label': fix['label'], 'undo': fix['undo'], 'host': x['host'], 'kind': x['kind'], 'level': x['level']}
+
+
+def prepare_undo(conn: Conn, plan_id: int, actor: str) -> dict:
+    """The way back of a fix that was prepared here, as a plan of its own. Its notification may be resolved by now: the history says what
+    the fix was. A plan that was not prepared as a fix has no way back made for it."""
+    from . import changes
+    row = conn.all("""SELECT alert_key, kind, host, level, title FROM notification_events
+                      WHERE event = 'fix-prepared' AND (note = :n OR note LIKE :p) ORDER BY event_id DESC LIMIT 1""", {'n': f'plan {plan_id}', 'p': f'plan {plan_id}:%'})
+    if not row:
+        raise LookupError('no fix was prepared as that plan')
+    key, kind, host, level, title = row[0]
+    try:
+        plan = changes.get_plan(conn, plan_id)
+    except (KeyError, LookupError, ValueError):
+        raise LookupError('that plan is gone: there is nothing to work the way back out from') from None
+    tasks = []
+    for t in plan['tasks']:
+        back = _INVERSE.get((t.get('params') or {}).get('state')) if t.get('type') == 'unit-state' else None
+        if not back:
+            raise ValueError('that plan was changed since it was prepared, and holds a step with no way back')
+        tasks.append({'type': 'unit-state', 'host': t['host'], 'params': {'unit': t['params']['unit'], 'state': back}})
+    label = '; '.join(f'stop {t["params"]["unit"]} on {t["host"]}' for t in tasks)
+    with conn.tx():
+        undo = changes.save_plan(conn, {'name': f'Undo: {label}'[:120], 'tasks': tasks}, actor)
+        record(conn, key, kind, host, level, title, 'undo-prepared', actor, f'plan {undo}: the way back of plan {plan_id}')
+    return {'plan': undo, 'of': plan_id, 'label': label, 'host': host, 'kind': kind, 'level': level}
 
 
 def summary(conn: Conn) -> dict:

@@ -84,6 +84,7 @@ def scan(api, node):
 def tier14(r):
     api = demo.sign_in()
     demo.scan_everything(api)
+    demo.set_up_deploy_access(api)          # the prepared fix is deployed as a change plan
     nodes = list(roles.build().values())
     journald = [n for n in nodes if not n.can('nosystemd')]
     bare = [n for n in nodes if n.can('nosystemd')]
@@ -347,12 +348,42 @@ print(json.dumps(out))
                 api('PUT', f'/api/hostlogs/rules/{rule["id"]}', {**rule, 'enabled': False})
         return check
 
+    def fix_and_back(node):
+        """Section 12's lab line: a failed unit fixed on a lab host, prepared, deployed, rolled back; and no fix where there is no way back."""
+        def check():
+            unit = 'sflab-fails.service'
+            sudo(node.name, f"printf '%s\\n' '[Service]' 'ExecStart=/bin/sh -c \"test -e /run/sflab-cured && exec sleep infinity\"' > /etc/systemd/system/{unit}; systemctl daemon-reload; "
+                            f'for i in 1 2 3; do systemctl start {unit} 2>/dev/null; sleep 1; done; true')
+            try:
+                want(sudo(node.name, f'systemctl is-active {unit}; true').strip() == 'failed', 'the unit did not fail: this would prove nothing')
+                got = raised(node, 'unit-failed')
+                want(len(got) == 1, f'three failures raised {len(got)} notification(s)')
+                item = got[0]
+                want(item['fix'] and item['fix']['label'] == f'Restart {unit} on {node.name}', f'the fix it offers: {item["fix"]}')
+                others = [x for g in api.get('/api/notifications')['groups'] for x in g['items'] if x['kind'] in ('scan-failed', 'job-stale', 'disk-crit', 'disk-warn', 'drift')]
+                want(all(x['fix'] is None for x in others), f'a fix was offered where there is no way back: {[x["title"] for x in others if x["fix"]]}')
+                sudo(node.name, 'touch /run/sflab-cured')            # what made it fail is put right: a restart can work now
+                plan = api.post(f'/api/notifications/fix/{item["key"]}')['plan']
+                want(sudo(node.name, f'systemctl is-active {unit}; true').strip() == 'failed', 'preparing the fix changed the host')
+                demo.deploy(api, 'changes', plan, 'the prepared fix')
+                want(sudo(node.name, f'systemctl is-active {unit}; true').strip() == 'active', 'the deployed fix did not start the unit')
+                undo = api.post(f'/api/notifications/undo/{plan}')['plan']
+                demo.deploy(api, 'changes', undo, 'the way back')
+                state = sudo(node.name, f'systemctl is-active {unit}; true').strip()
+                want(state == 'inactive', f'the way back left the unit {state}')
+                want(sudo(node.name, f'systemctl is-enabled {unit} 2>/dev/null; true').strip() in ('static', 'disabled', ''), 'the fix enabled the unit')
+                return f'{unit} failed three times: one notification with a fix; prepared (nothing changed), deployed (running), its way back deployed (stopped); no fix offered on {len(others)} other notification(s)'
+            finally:
+                sudo(node.name, f'systemctl stop {unit} 2>/dev/null; rm -f /etc/systemd/system/{unit} /run/sflab-cured; systemctl daemon-reload; systemctl reset-failed {unit} 2>/dev/null; true', check=False)
+        return check
+
     able = [n for n in journald if n.can('deploy') and not n.can('controller')]
     if able:
         r.check('logrule-md-degraded', able[0].name, md_degraded(able[0]))
         r.check('logrule-io-error', able[-1].name, io_error(able[-1]))
         r.check('logrule-flood-is-one', able[0].name, flood_is_one(able[0]))
         r.check('logrule-program', able[-1].name, program_is_journalds(able[-1]))
+        r.check('notify-fix-and-back', able[0].name, fix_and_back(able[0]))
     else:
         r.add('logrule-md-degraded', '-', None, 'no host with systemd that deploys in this build')
     pools = [n for n in journald if n.can('zfs')]

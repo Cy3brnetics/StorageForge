@@ -36,6 +36,22 @@ function ntItem(x) {
     }
     if (x.snoozed_until) acts.push(ntAct('End snooze', 'Show it again now', () => api(`/api/notifications/snooze/${key}`, { method: 'DELETE' })));
   }
+  // A fix is a change plan made ready: it opens in Changes, where its report is read and its deploy takes the password. Its way back is another.
+  const open = (plan) => { showTab('changes'); loadChanges(plan); };
+  const fix = [];
+  if (x.fix && can('plans.edit')) {
+    if (x.fix.plan) {
+      const see = sfNode('button', { type: 'button', class: 'btn ghost sm', title: 'Open the plan in Changes: report it, then deploy it with your password' }, `Open the prepared fix (plan ${x.fix.plan})`);
+      see.addEventListener('click', () => open(x.fix.plan));
+      const back = sfNode('button', { type: 'button', class: 'btn ghost sm', title: x.fix.undo }, 'Prepare the way back');
+      sfOnClick(back, async () => { try { const r = await (await postJSON(`/api/notifications/undo/${x.fix.plan}`, {})).json(); open(r.plan); } catch (e) { notify(e.message, 'error'); } });
+      fix.push(see, back);
+    } else {
+      const make = sfNode('button', { type: 'button', class: 'btn sm', title: 'Saves a change plan and opens it in Changes. Nothing runs until you deploy it there, with your password' }, `Prepare a fix: ${x.fix.label}`);
+      sfOnClick(make, async () => { try { const r = await (await postJSON(`/api/notifications/fix/${key}`, {})).json(); open(r.plan); } catch (e) { notify(e.message, 'error'); } });
+      fix.push(make);
+    }
+  }
   const cls = x.level === 'crit' ? 'st-failed' : x.level === 'warn' ? 'st-warn' : '';
   return sfNode('li', { 'data-key': x.key },
     sfNode('span', cls ? { class: cls } : {}, x.title),
@@ -43,6 +59,8 @@ function ntItem(x) {
     sfNode('span', { class: 'm' }, `${NT_LEVEL[x.level]} · open since `, timeEl(x.first_at), x.acked ? ` · ${x.acked.by} is on it${x.acked.note ? `: ${x.acked.note}` : ''}` : '',
       x.snoozed_until ? ' · snoozed until ' : '', x.snoozed_until ? timeEl(x.snoozed_until) : null, x.muted ? ' · muted' : ''),
     !x.ignorable ? sfNode('span', { class: 'm' }, NT_WHY) : null,
+    x.fix ? sfNode('span', { class: 'm' }, `A fix can be prepared: ${x.fix.label}. Its way back: ${x.fix.undo}.`) : null,
+    fix.length ? sfNode('span', { class: 'row wrap' }, fix) : null,
     acts.length ? sfNode('span', { class: 'row wrap' }, acts) : null);
 }
 

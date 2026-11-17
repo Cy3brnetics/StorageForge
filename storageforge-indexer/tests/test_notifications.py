@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 import dbfactory
-from storageforge_index import alerts, notifications, scheduler, server, users
+from storageforge_index import alerts, changes, logrules, notifications, scheduler, server, users
 from storageforge_index.db import Database
 
 PW = 'correct horse battery staple'
@@ -194,6 +194,72 @@ class History(Center):
         self.assertEqual((len(page['events']), page['more']), (1, True))
 
 
+class Fixes(Center):
+    """A fix is a change plan made ready, offered only where there is a way back, and never applied from the center."""
+
+    def failing(self, line="nginx.service: Failed with result 'exit-code'.", builtin='unit-failed', host='nas'):
+        rid = next(r['id'] for r in logrules.rules(self.conn) if r['builtin'] == builtin)
+        self.conn.execute('INSERT INTO log_rule_hits (rule_id, host, bucket, hits, sample) VALUES (:r, :h, :b, 3, :s)', {'r': rid, 'h': host, 'b': int(time.time() // 300), 's': line})
+        key = f'log-rule:{rid}:{host}'
+        self.wrong(**{key: problem('log-rule', f'{host}:{rid}', 'warn', f'Services failing on {host}')})
+        return key
+
+    def test_a_failing_service_carries_a_restart_and_says_its_way_back(self):
+        key = self.failing()
+        fix = notifications.get(self.conn, key) and notifications.center(self.conn)['groups'][0]['items'][0]['fix']
+        self.assertEqual(fix, {'label': 'Restart nginx.service on nas', 'undo': 'Stop nginx.service again, as it was found', 'plan': None})
+
+    def test_preparing_it_saves_a_plan_and_runs_nothing(self):
+        key = self.failing()
+        got = notifications.prepare_fix(self.conn, key, 'gabe')
+        plan = changes.get_plan(self.conn, got['plan'])
+        self.assertEqual([(t['type'], t['host'], t['params']) for t in plan['tasks']], [('unit-state', 'nas', {'unit': 'nginx.service', 'state': 'restarted'})])
+        self.assertTrue(plan['name'].startswith('Fix: Restart nginx.service on nas'))
+        self.assertIsNone(plan['ran_at'], 'nothing was deployed: that takes the password, in Changes')
+        self.assertEqual(notifications.center(self.conn)['groups'][0]['items'][0]['fix']['plan'], got['plan'])
+        self.assertEqual(notifications.history(self.conn, event='fix-prepared')['events'][0]['actor'], 'gabe')
+
+    def test_the_way_back_is_a_plan_too_and_can_be_made_after_the_notification_resolved(self):
+        key = self.failing()
+        got = notifications.prepare_fix(self.conn, key, 'gabe')
+        self.wrong()                                         # the restart worked, and the alert resolved
+        undo = notifications.prepare_undo(self.conn, got['plan'], 'gabe')
+        plan = changes.get_plan(self.conn, undo['plan'])
+        self.assertEqual([(t['type'], t['host'], t['params']) for t in plan['tasks']], [('unit-state', 'nas', {'unit': 'nginx.service', 'state': 'stopped'})])
+        self.assertEqual(undo['of'], got['plan'])
+        self.assertEqual(notifications.history(self.conn, event='undo-prepared')['events'][0]['key'], key)
+
+    def test_a_plan_that_was_not_a_fix_or_was_changed_since_has_no_way_back_made(self):
+        other = changes.save_plan(self.conn, {'name': 'mine', 'tasks': [{'type': 'unit-state', 'host': 'nas', 'params': {'unit': 'nginx.service', 'state': 'restarted'}}]}, 'gabe')
+        with self.assertRaisesRegex(LookupError, 'no fix was prepared as that plan'):
+            notifications.prepare_undo(self.conn, other, 'gabe')
+        got = notifications.prepare_fix(self.conn, self.failing(), 'gabe')
+        changes.save_plan(self.conn, {'name': 'edited', 'tasks': [{'type': 'dir', 'host': 'nas', 'params': {'path': '/srv/x'}}]}, 'gabe', got['plan'])
+        with self.assertRaisesRegex(ValueError, 'no way back'):
+            notifications.prepare_undo(self.conn, got['plan'], 'gabe')
+
+    def test_nothing_is_offered_where_there_is_no_way_back(self):
+        """A job run now and a scan run again cannot be taken back, a full disk is never cleared from here, and SSH is done by hand."""
+        got = self.wrong(a=problem('job-stale', 'j1'), b=problem('scan-failed', 'pc'), c=problem('disk-crit', 'nas:/srv', 'crit'), d=problem('drift', 'nas:fstab'))
+        self.assertEqual([x['fix'] for g in got['groups'] for x in g['items']], [None] * 4)
+        for line, builtin in (("sshd.service: Failed with result 'exit-code'.", 'unit-failed'), ('Failed to start a thing with no unit named', 'unit-failed'),
+                              ('write failed: No space left on device', 'disk-full')):
+            with self.subTest(line):
+                self.conn.execute('DELETE FROM log_rule_hits')
+                key = self.failing(line, builtin)
+                self.assertIsNone(notifications.center(self.conn)['groups'][0]['items'][0]['fix'])
+                with self.assertRaisesRegex(ValueError, 'only where it can be taken back'):
+                    notifications.prepare_fix(self.conn, key, 'gabe')
+
+    def test_a_unit_name_a_host_wrote_reaches_the_plan_only_as_a_unit_name(self):
+        key = self.failing("evil$(reboot).service; rm -rf / app.service: Failed with result 'x'")
+        fix = notifications.center(self.conn)['groups'][0]['items'][0]['fix']
+        self.assertEqual(fix['label'], 'Restart app.service on nas' if fix else None)
+        key2 = self.failing("`x`.service: Failed with result 'x'", host='pc')
+        self.assertIsNone(notifications.get(self.conn, key2) and next(x for g in notifications.center(self.conn, host='pc')['groups'] for x in g['items'])['fix'])
+        self.assertTrue(key)
+
+
 class OverTheWeb(Center):
     def make(self, tmp):          # the web app opens the database by its path, and the CLI tests do the same
         return Database(str(tmp / 'index.db'))
@@ -239,6 +305,24 @@ class OverTheWeb(Center):
         self.assertEqual(self.audited(), [('notification.acknowledge', 'ok'), ('notification.snooze', 'denied'), ('notification.snooze', 'denied'), ('notification.snooze', 'ok'),
                                           ('notification.unsnooze', 'ok'), ('notification.unacknowledge', 'ok'), ('notification.acknowledge', 'denied'), ('notification.mute', 'ok'),
                                           ('notification.mute', 'denied'), ('notification.mute', 'denied'), ('notification.unmute', 'ok'), ('notification.unmute', 'denied')])
+
+    def test_a_fix_is_prepared_by_someone_who_may_edit_plans_and_is_audited(self):
+        rid = next(r['id'] for r in logrules.rules(self.conn) if r['builtin'] == 'unit-failed')
+        self.conn.execute('INSERT INTO log_rule_hits (rule_id, host, bucket, hits, sample) VALUES (:r, :h, :b, 3, :s)', {'r': rid, 'h': 'nas', 'b': int(time.time() // 300), 's': 'smbd.service: Failed with result x'})
+        key = f'log-rule:{rid}:nas'
+        self.wrong(**{key: problem('log-rule', f'nas:{rid}'), 'scan-failed:pc': problem('scan-failed', 'pc')})
+        viewer = self.client('viewer')
+        self.assertEqual(viewer.post(f'/api/notifications/fix/{key}').status_code, 403)
+        c = self.client('operator')
+        got = c.post(f'/api/notifications/fix/{key}')
+        self.assertEqual((got.status_code, got.get_json()['label']), (200, 'Restart smbd.service on nas'))
+        self.assertEqual(c.get(f'/api/changes/{got.get_json()["plan"]}').get_json()['tasks'][0]['params']['state'], 'restarted')
+        self.assertEqual(c.post('/api/notifications/fix/scan-failed:pc').status_code, 400)
+        undo = c.post(f'/api/notifications/undo/{got.get_json()["plan"]}')
+        self.assertEqual((undo.status_code, undo.get_json()['of']), (200, got.get_json()['plan']))
+        self.assertEqual(c.post('/api/notifications/undo/99999').status_code, 404)
+        self.assertEqual([r for r in self.audited() if r[0] in ('notification.fix', 'notification.undo')],
+                         [('notification.fix', 'ok'), ('notification.fix', 'denied'), ('notification.undo', 'ok'), ('notification.undo', 'denied')])
 
     def test_nobody_reads_it_without_signing_in(self):
         c = server.create_app(server.App(self.db), 's' * 48).test_client()

@@ -67,6 +67,16 @@ def register(web, ctx):
     def api_notification_unsnooze(key):
         return act(key, 'unsnooze', lambda: notifications.unsnooze(conn(), key, actor()))
 
+    @web.post('/api/notifications/fix/<path:key>')
+    @login_required
+    def api_notification_fix(key):
+        return act(key, 'fix', lambda: notifications.prepare_fix(conn(), key, actor()))
+
+    @web.post('/api/notifications/undo/<int:plan_id>')
+    @login_required
+    def api_notification_undo(plan_id):
+        return act(f'plan {plan_id}', 'undo', lambda: notifications.prepare_undo(conn(), plan_id, actor()))
+
     @web.post('/api/notifications/mutes')
     @login_required
     def api_notification_mute():

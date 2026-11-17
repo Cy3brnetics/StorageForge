@@ -9,7 +9,9 @@ try:
     from playwright.sync_api import sync_playwright
 except ImportError:
     sync_playwright = None
-from storageforge_index import alerts, server, users
+import time
+
+from storageforge_index import alerts, logrules, server, users
 from storageforge_index.db import Database
 
 PW = 'correct horse battery staple'
@@ -34,6 +36,10 @@ class BrowserNotifications(unittest.TestCase):
             conn.execute(f"""INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json, last_scanned_at)
                              VALUES ('{name}', '{name}', 'scan', '{{}}', {cls.db.ts(':t')})""", {'t': 1600000000})
         conn.execute("INSERT INTO graph_nodes (node_id, kind, label, host, updated_at) VALUES ('host:nas', 'Host', 'nas', 'nas', 1)")
+        rid = next(r['id'] for r in logrules.rules(conn) if r['builtin'] == 'unit-failed')
+        conn.execute('INSERT INTO log_rule_hits (rule_id, host, bucket, hits, sample) VALUES (:r, :h, :b, 3, :s)',
+                     {'r': rid, 'h': 'nas', 'b': int(time.time() // 300), 's': "smbd.service: Failed with result 'exit-code'."})
+        WRONG[f'log-rule:{rid}:nas'] = ('log-rule', f'nas:{rid}', 'Services failing on nas', '3 line(s) in the last 1 h', 'info')
         conn.close()
         with mock.patch.object(alerts, 'problems', lambda conn: dict(WRONG)), mock.patch.object(alerts, 'send', lambda *a, **k: ['recorded']):
             alerts.evaluate(cls.db)
@@ -82,10 +88,28 @@ class BrowserNotifications(unittest.TestCase):
         self.open_center()
         heads = [h.lower() for h in self.page.locator('#nt-groups .nt-group h3').all_inner_texts()]      # the panel's headings are set in capitals by the stylesheet
         self.assertTrue(heads[0].startswith('critical: disk-crit on nas'), heads)
-        self.assertEqual(len(heads), 4, heads)
+        self.assertEqual(len(heads), 5, heads)
         flood = next(h for h in heads if 'mount-gone' in h)
         self.assertIn('× 5', flood)
-        self.assertIn('8 open: 1 critical, 7 warnings', self.page.inner_text('#nt-count'))
+        self.assertIn('9 open: 1 critical, 7 warnings, 1 for information', self.page.inner_text('#nt-count'))
+        self.assertEqual(self.errors, [])
+
+    def test_a_failing_service_has_a_fix_that_opens_as_a_plan_in_changes_and_then_its_way_back(self):
+        self.open_center()
+        mine = '#nt-groups .nt-group:has(h3:has-text("log-rule"))'
+        self.assertIn('Its way back: Stop smbd.service again, as it was found', self.page.inner_text(mine))
+        self.assertEqual(self.page.locator('#nt-groups .nt-group:has(h3:has-text("scan-failed")) button:has-text("Prepare a fix")').count(), 0, 'no way back, no fix')
+        self.page.click(f'{mine} button:has-text("Prepare a fix: Restart smbd.service on nas")')
+        self.page.wait_for_selector('.tabs button[data-tab="changes"][aria-selected="true"]')
+        self.page.wait_for_selector('#tab-changes :text("unit-state")')      # the plan's step, not only its name in the list
+        self.assertEqual(self.page.evaluate('CH.plan.tasks[0].params'), {'unit': 'smbd.service', 'state': 'restarted'})
+        self.page.click('#tabbtn-notifications')
+        self.page.wait_for_selector(f'{mine} button:has-text("Open the prepared fix")')
+        self.page.click(f'{mine} button:has-text("Prepare the way back")')
+        self.page.wait_for_selector('.tabs button[data-tab="changes"][aria-selected="true"]')
+        self.page.wait_for_selector('#tab-changes option:text-matches("Undo: stop smbd.service on nas")', state='attached')
+        self.page.wait_for_selector('#tab-changes :text("unit-state")')
+        self.assertEqual(self.page.evaluate('CH.plan.tasks[0].params'), {'unit': 'smbd.service', 'state': 'stopped'})
         self.assertEqual(self.errors, [])
 
     def test_what_a_host_said_is_text_and_never_markup(self):

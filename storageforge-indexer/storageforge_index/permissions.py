@@ -178,6 +178,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
 
     (READ, r'/api/deploy(/.*)?', 'deploy.view'),
     (READ, r'/api/notifications(/.*)?', 'deploy.view'),                # the same alerts /api/deploy has always listed, ranked
+    (('POST',), r'/api/notifications/(fix|undo)/.+', 'plans.edit'),     # it saves a change plan, which is what plans.edit is for. Deploying it asks again
     (_WRITE, r'/api/notifications/.+', 'notifications.manage'),
     (READ, r'/api/remote/nodes', 'deploy.view'),
     (('POST',), r'/api/remote/nodes(/\d+/adopt)?', 'deploy.setup'),
