@@ -87,6 +87,7 @@ def _pick(h, q):
         ('twin folders', f'/api/folders/duplicates?host={h}&min_files=3&min_size=1'),
         ('capacity', f'/api/capacity?host={h}'),
         ('browse', f'/api/browse?host={h}&path=/{random.choice(WORDS)}{random.randint(0, 40)}'),
+        ('folder listing', f'/api/fs/browse?host={h}&path=/{random.choice(WORDS)}{random.randint(0, 40)}&brief=1'),
         ('filemap', f'/api/filemap?host={h}&min_size=1&folders=1'),
         ('filemap all', '/api/filemap?folders=1&min_size=1'),
         ('hostlogs', f'/api/hostlogs?host={h}'),

@@ -85,10 +85,13 @@ What it found on 2026-11-16, at two million files, and what changed (each pinned
 | 8 | 32 | Fourteen connections, each with a 256 MiB SQLite cache: 4.6 GiB | 16 MiB for a request's connection |
 | 8 | 32 | Searches and exports filled every thread; a list of hosts took 2 s | Four at a time, the rest asked back in a second |
 | 9 | 128 | Waitress took 100 connections and kept idle ones 120 s | 500, and idle ones closed after 30 s |
+| 10 | 64 | The analyses were Python in the web's process, sharing its interpreter with every request | A worker process of their own (`folderwork.py`), replaced if it dies; the folder index is its memory |
+| 11 | 64 | A request waited 2 s for an analysis, holding a thread | 0.25 s under `serve()`, then asked back in 2 s; at most 32 builds waiting |
 
-Where it stands: with every kind of route at once, 32 clients pass every limit and 64 break the light routes at about 3 s, because the folder
-analyses are Python in the web's own process and share its one interpreter with every request; without them, light routes hold to 128
-clients. Moving the analyses to a worker process is the next step.
+Where it stands: with every kind of route at once, 128 clients asking with no pause pass every limit (light routes 1.6 s at p99, queued ones
+14 s, analyses 30 s, no errors, the web process under 2.5 GiB). 256 break the light routes at about 4 s: that is one Python process answering
+about 40 requests a second, and the next step past it would be more than one web process, which the in-memory caches and sessions don't
+allow yet.
 
 ## Where else tests live
 
