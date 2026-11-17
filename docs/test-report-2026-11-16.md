@@ -242,4 +242,3 @@ The last full run: **1,955 tests, 0 failed, 9 skipped, in 179 s** at `-j 6` on S
 - **Coverage still low in** `deploy`, `console`, `alerts` and `netdevice`.
 - **`shellcheck` is not on this machine**, so 3 tests skip here; CI has it.
 - **No KVM lab run** for any of this. The roadmap's section 1 lab items (OPNsense, the appliances, the skipped checks) are not started.
-- **The planner doesn't show `stale` yet.** The page shows a stale file map or folder view like a current one; the answer carries `stale` and `as_of_scan` for when it does.

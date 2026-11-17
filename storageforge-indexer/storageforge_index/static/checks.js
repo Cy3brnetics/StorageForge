@@ -229,6 +229,7 @@ async function loadFolderCopies() {
   try {
     COPY_RESULT = await getJSON(`/api/folders/duplicates?${qs}`);
     renderFolderCopies();
+    if (COPY_RESULT.stale) setTimeout(() => { if (box.isConnected && COPY_RESULT?.stale) loadFolderCopies(); }, STALE_AGAIN_MS);
   } catch (err) { box.replaceChildren(text('p', err.message, 'st-failed')); }
 }
 function renderFolderCopies() {
@@ -242,8 +243,8 @@ function renderFolderCopies() {
     (r.reclaimable_same_host ? ` · ${fmtBytes(r.reclaimable_same_host)} could be freed within hosts` : ''), 'muted');
   const shown = groups.length < (scope === 'same host' ? same : scope === 'across hosts' ? across : same + across)
     ? text('p', `Showing the largest ${groups.length.toLocaleString()}. Raise the size or file count to narrow it.`, 'muted small') : null;
-  if (!groups.length) { box.replaceChildren(head, text('p', scope ? `No folder copies ${scope === 'same host' ? 'within a host' : 'across hosts'} at this size.` : 'No folder copies at this size.', 'muted')); return; }
-  box.replaceChildren(head, ...[shown].filter(Boolean), ...groups.map((g) => el('section', { class: 'card' },
+  if (!groups.length) { box.replaceChildren(head, ...[staleNote(r)].filter(Boolean), text('p', scope ? `No folder copies ${scope === 'same host' ? 'within a host' : 'across hosts'} at this size.` : 'No folder copies at this size.', 'muted')); return; }
+  box.replaceChildren(head, ...[staleNote(r), shown].filter(Boolean), ...groups.map((g) => el('section', { class: 'card' },
     el('div', { class: 'row' }, el('b', {}, `${g.count}× · ${g.files.toLocaleString()} files · ${fmtBytes(g.bytes)}`),
       text('span', g.scope === 'same host' ? `same host · ${fmtBytes(g.reclaimable)} reclaimable` : 'across hosts (a backup?)',
            g.scope === 'same host' ? 'pill local-only' : 'pill unknown'),
@@ -267,7 +268,9 @@ async function loadCold() {
   if (S.host) qs.set('host', S.host);
   try {
     const r = await getJSON(`/api/folders/cold?${qs}`);
+    if (r.stale) setTimeout(() => { if (box.isConnected && box.querySelector('.stale')) loadCold(); }, STALE_AGAIN_MS);
     box.replaceChildren(text('p', `${r.total} folder${r.total === 1 ? '' : 's'}, ${fmtBytes(r.bytes)} untouched since ${fmtDate(r.cutoff)}`, 'muted'),
+      ...[staleNote(r)].filter(Boolean),
       el('ol', { class: 'copies' }, ...r.folders.map((f) => el('li', { class: 'coldrow' },
         el('span', { class: 'p' }, f.path),
         el('span', { class: 'm' }, `${f.host} · ${fmtBytes(f.bytes)} · ${f.files.toLocaleString()} files · newest ${fmtDate(f.newest)}`),

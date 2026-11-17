@@ -389,6 +389,10 @@ function tooltip(n, ev) {
 
 /* ── panel rendering (DOM APIs only, never innerHTML with data) ──── */
 function text(tag, t, cls) { const el = document.createElement(tag); el.textContent = t; if (cls) el.className = cls; return el; }
+// A folder analysis the server answered from an earlier scan while it works out the new one (server.py folder_result): said so, and asked again
+const STALE_TEXT = 'From an earlier scan: the newest is being worked out, and this refreshes by itself.';
+const STALE_AGAIN_MS = window.SF_STALE_AGAIN_MS || 10000;          // a test may make it shorter
+function staleNote(r) { return r && r.stale ? Object.assign(text('p', STALE_TEXT, 'muted small stale'), { role: 'status' }) : null; }
 function button(label, fn, cls = '') { const b = text('button', label, cls); b.type = 'button'; return sfOnClick(b, fn); }      // busy while an async handler runs
 function pill(h) { return text('span', HEALTH_TEXT[h] || h, `pill ${h}`); }
 function fmtValue(k, v) {

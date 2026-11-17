@@ -63,6 +63,7 @@ async function fmLoad() {
     if (seq !== FM.seq) return;
     FM.comparing = false;
     fmTake(full);
+    if (full.stale) setTimeout(() => { if (seq === FM.seq && fmActive()) fmLoad(); }, STALE_AGAIN_MS);   // from an earlier scan: look again
   } catch (err) {
     if (seq !== FM.seq) return;
     FM.comparing = false;
@@ -451,6 +452,7 @@ function fmDraw() {
     d.folders_total > d.folders.length ? text('span', `largest ${d.folders.length} of ${d.folders_total} folders shown`) : '',
     d.hidden.groups ? text('span', `${d.hidden.groups.toLocaleString()} sets hidden as system, backups or ignored`) : '',
     FM.comparing ? text('span', 'Comparing folders…') : '',
+    d.stale ? text('span', STALE_TEXT, 'stale') : '',
     el('span', {}, el('i', { class: 'k' }), 'copies'), el('span', {}, el('i', { class: 'k across' }), 'copies across hosts'),
     el('span', {}, el('i', { class: 'k symlink' }), 'symlink, bind'), el('span', {}, el('i', { class: 'k share' }), 'share'),
     el('span', {}, el('i', { class: 'k job' }), 'job, backup'), el('span', {}, el('i', { class: 'k plan' }), 'planned'));

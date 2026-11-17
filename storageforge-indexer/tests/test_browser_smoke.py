@@ -1,5 +1,6 @@
 """Every page and tab in a real browser, with no script errors (EQ-01). Needs Playwright and its Chromium, which CI installs;
 without them this skips and says so."""
+import json
 import tempfile
 import threading
 import time
@@ -420,6 +421,32 @@ class BrowserSmoke(unittest.TestCase):
         """The rail button of the tab that is already open hides the panel, so click it only when it is another one."""
         if self.page.evaluate("document.querySelector('.tabs button.on')?.dataset.tab") != tab or self.page.evaluate("document.querySelector('#panel').classList.contains('collapsed')"):
             self.page.click(f'.tabs button[data-tab="{tab}"]')
+
+    def test_a_folder_view_from_an_earlier_scan_says_so_and_refreshes_by_itself(self):
+        """The server answers a folder analysis from the last scan while it makes the new one (hammer.py --writer): the page says so, and
+        asks again until the answer is current."""
+        self.page.add_init_script('window.SF_STALE_AGAIN_MS = 300;')
+        self.page.reload()
+        self.page.wait_for_selector('html[data-route-ready]', state='attached')
+        asked = []
+
+        def answer(route):
+            asked.append(route.request.url)
+            body = {'folders': [], 'total': len(asked), 'bytes': 0, 'cutoff': 1700000000}
+            if len(asked) < 3:
+                body.update(stale=True, as_of_scan=1)
+            route.fulfill(status=200, content_type='application/json', body=json.dumps(body))
+        self.page.route('**/api/folders/cold*', answer)
+        self.open_tab('copies')
+        self.page.click('#copies-subnav button[data-sub="cold"]')
+        self.page.click('#coldform button[type=submit], #coldform [type=submit]')
+        self.page.wait_for_selector('#coldbox .stale')
+        self.assertIn('From an earlier scan', self.page.inner_text('#coldbox .stale'))
+        self.page.wait_for_function("() => !document.querySelector('#coldbox .stale') && /3 folders/.test(document.querySelector('#coldbox').innerText)", timeout=10000)
+        self.assertEqual(len(asked), 3, 'asked again until the answer was current, then no more')
+        self.page.wait_for_timeout(800)
+        self.assertEqual(len(asked), 3)
+        self.assertEqual(self.errors, [])
 
     # ── the keyboard: UX-40 and UX-41 of the UI audit of 2026-11-04 ─────────────────────────────────────────────────────
     def test_a_slash_types_into_every_kind_of_field_and_the_shortcut_still_works(self):       # UX-40
