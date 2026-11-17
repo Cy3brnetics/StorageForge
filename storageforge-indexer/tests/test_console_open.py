@@ -13,7 +13,9 @@ from test_console import Base, until
 
 SECRET = b'correct horse battery staple, but longer than 32'
 # the console gives ssh only PATH, TERM and LANG, so where to write is in the script itself
-STAND_IN = '#!/bin/sh\nprintf "%s\\n" "$0" "$@" > "@LOG@.$(basename "$0")"\necho "stand-in ready"\nexec cat\n'
+# virsh domstate answers as it does for a domain this machine doesn't run; anything else stays open like a terminal
+STAND_IN = ('#!/bin/sh\ncase " $* " in *" domstate "*) echo "error: failed to get domain" >&2; exit 1 ;; esac\n'
+            'printf "%s\\n" "$0" "$@" > "@LOG@.$(basename "$0")"\necho "stand-in ready"\nexec cat\n')
 
 
 class Open(Base):
