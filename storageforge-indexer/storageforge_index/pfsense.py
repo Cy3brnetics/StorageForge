@@ -1,5 +1,8 @@
 """pfSense and OPNsense: /conf/config.xml is the source of truth, read once, with `pfctl` for what the kernel has loaded. Only reads.
 
+Rules are in two places. pfSense, and OPNsense's older pages, write <filter><rule>. OPNsense from 26 writes the rules its pages make, and the two it
+ships with, under <OPNsense><Firewall><Filter>, in a layout of its own, and loads those first. Both are read, in the order pf gets them.
+
 config.xml holds password hashes, private keys and API secrets, so this names what it takes and copies nothing else out: the file itself is never stored.
 Parsed with the standard library's expat under a limit, and any document declaring an entity is refused: a device isn't trusted not to send a billion laughs.
 """
@@ -17,6 +20,7 @@ export LC_ALL=C PATH=$PATH:/sbin:/usr/sbin:/usr/local/sbin
 echo '@@config'; cat /cf/conf/config.xml 2>/dev/null || cat /conf/config.xml 2>/dev/null
 echo; echo '@@version'; cat /etc/version 2>/dev/null; opnsense-version 2>/dev/null
 echo; echo '@@hostname'; hostname
+echo; echo '@@uid'; id -u
 echo; echo '@@ifconfig'; ifconfig -a 2>/dev/null
 echo; echo '@@netstat'; netstat -rn 2>/dev/null
 echo; echo '@@arp'; arp -an 2>/dev/null
@@ -26,7 +30,7 @@ echo; echo '@@pfnat'; pfctl -sn 2>/dev/null
 echo; echo '@@pfstates'; pfctl -si 2>/dev/null
 echo; echo '@@end'
 """
-SECTIONS = ('config', 'version', 'hostname', 'ifconfig', 'netstat', 'arp', 'sockstat', 'pfrules', 'pfnat', 'pfstates', 'end')
+SECTIONS = ('config', 'version', 'hostname', 'uid', 'ifconfig', 'netstat', 'arp', 'sockstat', 'pfrules', 'pfnat', 'pfstates', 'end')
 
 
 def sections(text: str) -> dict:
@@ -112,6 +116,88 @@ def _endpoint(node, ifaces, table) -> tuple:
     return None, negated
 
 
+def _named(value, ifaces, table) -> tuple:
+    """(address, where it points) for a source or destination of an OPNsense 26 rule: `any`, an alias, an interface's network (`lan`) or address
+    (`lanip`), `(self)`, addresses, or several of these. where is 'self' for the firewall's own addresses. An IPv6 rule naming an interface comes
+    back unknown: only an interface's IPv4 network is in config.xml."""
+    value = (value or '').strip()
+    if value in ('', 'any'):
+        return None, None
+    if value == '(self)':
+        return None, 'self'
+    out = []
+    for part in value.split(','):
+        part = part.strip()
+        base = part[:-2] if part.endswith('ip') and part[:-2] in ifaces else part
+        i = ifaces.get(base)
+        if part in table:
+            out.append(table[part])
+        elif i is not None:
+            if not i.get('ip') or i['ip'] in ('dhcp', 'dhcp6') or i.get('prefix') is None:
+                return f'@{value}', None
+            out.append(i['ip'] if base != part else str(ipaddress.ip_interface(f'{i["ip"]}/{i["prefix"]}').network))
+        else:
+            try:
+                ipaddress.ip_network(part, strict=False)
+            except ValueError:
+                return f'@{value}', None
+            out.append(part)
+    return ','.join(out), None
+
+
+def _mvc_rules(root, ifaces: dict, table: dict, own: set) -> list:
+    """The rules under <OPNsense><Firewall><Filter>, by their sequence. Each field is a plain element here: `source_net`, `destination_port`."""
+    out = []
+    nodes = root.findall('OPNsense/Firewall/Filter/rules/rule')
+    for i, r in enumerate(sorted(nodes, key=lambda r: int(_t(r, 'sequence') or 0) if str(_t(r, 'sequence') or '0').isdigit() else 0), 1):
+        if _t(r, 'enabled') == '0':
+            continue
+        action = {'pass': 'accept', 'block': 'drop', 'reject': 'reject'}.get(_t(r, 'action') or 'pass')
+        names = [n for n in (_t(r, 'interface') or '').split(',') if n]
+        devices = [ifaces[n]['if'] for n in names if n in ifaces and ifaces[n].get('if')]
+        unmodelled = []
+        if len(devices) != len(names):
+            unmodelled.append(f'interface {",".join(names)}')
+        if _t(r, 'interfacenot') == '1':
+            unmodelled.append(f'every interface but {",".join(names)}')
+        if (_t(r, 'direction') or 'in') != 'in':
+            unmodelled.append(f'direction {_t(r, "direction")}')
+        family = {'inet': 'ip', 'inet6': 'ip6'}.get(_t(r, 'ipprotocol') or 'inet')
+        v6 = family == 'ip6'
+        ends = {}
+        for side in ('source', 'destination'):
+            raw = _t(r, f'{side}_net') or ''
+            addr, where = _named(raw, ifaces, table)
+            if v6 and any(part.strip() in ifaces or part.strip()[:-2] in ifaces for part in raw.split(',')):
+                addr = f'@{raw}'                # an interface's IPv6 network is not in config.xml
+            if str(addr or '').startswith('@'):
+                unmodelled.append(f'{side} {addr[1:]}' + (' (IPv6)' if v6 else ''))
+                addr = None
+            ends[side] = (addr, where, _t(r, f'{side}_not') == '1')
+        (src, src_self, src_not), (dst, dst_self, dst_not) = ends['source'], ends['destination']
+        if src_self:
+            unmodelled.append('source (self)')
+        if dst_not:
+            unmodelled.append(f'destination not {dst or "(self)"}')
+            dst, dst_self = None, None
+        if _t(r, 'source_port'):
+            unmodelled.append(f'source port {_t(r, "source_port")}')
+        port, dports = _t(r, 'destination_port'), []
+        if port:
+            dports = _ports(table.get(port, port).replace(' ', ','))
+            if dports is None:
+                unmodelled.append(f'port {port}')
+                dports = []
+        proto = (_t(r, 'protocol') or 'any').lower()
+        proto = None if proto == 'any' else 'tcp,udp' if proto == 'tcp/udp' else proto
+        extra = {'not_saddr': src, 'saddr': None} if src_not else {'saddr': src}
+        chains = ['input'] if dst_self or (dst and dst in own) else ['forward'] if dst else ['input', 'forward']
+        for chain in chains:
+            out.append(_rule('pf', 'filter', chain, i, hook=chain, action=action, proto=proto, comment=_t(r, 'description'), iif=','.join(devices) or None,
+                             dports=dports, daddr=dst, unmodelled=list(unmodelled), **({'family': family} if family else {}), **extra))
+    return out
+
+
 def firewall(root, ifaces: dict) -> dict:
     """pf reads top to bottom with the last match winning unless `quick`, and the GUI writes every rule quick. Interface tabs hold rules for what comes in on that
     interface. What no rule passes is blocked by pfSense's default deny."""
@@ -120,7 +206,9 @@ def firewall(root, ifaces: dict) -> dict:
            'chains': [{'backend': 'pf', 'table': 'filter', 'name': h, 'hook': h, 'prio': 0, 'policy': p, 'family': 'ip'} for h, p in (('input', 'drop'), ('forward', 'drop'), ('output', 'accept'))],
            'rules': [], 'nat': [], 'zones': [], 'notes': []}
     own = {i['ip'] for i in ifaces.values() if i.get('ip') and i['ip'] != 'dhcp'}
-    for i, r in enumerate(root.findall('filter/rule'), 1):
+    out['rules'] += _mvc_rules(root, ifaces, table, own)        # pf gets these first
+    first = len(out['rules']) + 1
+    for i, r in enumerate(root.findall('filter/rule'), first):
         if _has(r, 'disabled'):
             continue
         kind = (_t(r, 'type') or 'pass')
@@ -154,7 +242,7 @@ def firewall(root, ifaces: dict) -> dict:
         extra = {'not_saddr': src, 'saddr': None} if src_not else {'saddr': src}
         # one rule written for "this firewall" is input, for anything else is forward; an unnamed destination goes on both
         for chain in (['input'] if dst and dst in own else ['forward'] if dst else ['input', 'forward']):
-            out['rules'].append(_rule('pf', 'filter', chain, i * 10, hook=chain, dports=dports, daddr=dst, unmodelled=list(unmodelled), **rule_common, **extra))
+            out['rules'].append(_rule('pf', 'filter', chain, i * 10 if first == 1 else i, hook=chain, dports=dports, daddr=dst, unmodelled=list(unmodelled), **rule_common, **extra))
     for i, r in enumerate(root.findall('nat/rule'), 1):
         if _has(r, 'disabled'):
             continue
@@ -195,7 +283,8 @@ def network(root, ifaces: dict, s: dict) -> dict:
     listeners = parse_sockstat(s.get('sockstat') or '')
     return {'interfaces': rows, 'routes': routes, 'gateways': sorted({r['via'] for r in routes if r['dst'] == 'default' and r['via']}), 'neighbours': parse_arp(s.get('arp') or ''), 'listeners': listeners,
             'dns': {'nameservers': [x.text.strip() for x in root.findall('system/dnsserver') if x.text], 'search': [_t(root, 'system/domain')] if _t(root, 'system/domain') else []},
-            'unreadable': [] if s.get('sockstat') else ['listeners'], 'complete': True}
+            # sockstat shows an account that is not root its own sockets only: few listeners there is not few listeners
+            'unreadable': [] if s.get('sockstat') and (s.get('uid') or '0').strip() == '0' else ['listeners'], 'complete': True}
 
 
 def _gateway(root, name):

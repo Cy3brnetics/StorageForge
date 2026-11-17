@@ -1,5 +1,6 @@
 """Routers, switches and firewalls: real output of RouterOS 7.25 and OpenWrt 25.12, captured from the lab's VMs in tests/fixtures, and written-to-format samples for pfSense and IOS, which the lab has no free image of."""
 import json
+import re
 import os
 import shlex
 import shutil
@@ -334,6 +335,70 @@ class PfSenseReading(unittest.TestCase):
         root = pfsense.load_xml(merged)
         self.assertEqual(len(root.findall('filter/rule')), 5)
         self.assertEqual(root.find('system/password').text, '$2y$secret-hash')
+
+
+class OpnSense26Reading(unittest.TestCase):
+    """A real OPNsense 26.7 in the KVM lab, read by root and by an account that is not root (fixtures/opnsense, secrets removed). 26 keeps the rules
+    its pages make under <OPNsense><Firewall><Filter>, and the reader took only <filter><rule>: one rule of six, on a firewall with six."""
+
+    def setUp(self):
+        self.d = pfsense.parse((FIX / 'opnsense' / 'reading-26.7-root.txt').read_text())
+        self.fw = self.d['firewall']
+
+    def rule(self, comment, chain=None):
+        return next(r for r in self.fw['rules'] if r['comment'] == comment and chain in (None, r['chain']))
+
+    def test_it_is_known_as_opnsense_with_its_interfaces(self):
+        self.assertEqual((self.d['facts']['platform'], self.d['facts']['wan']), ('opnsense', ['vtnet1']))
+        self.assertTrue(self.d['os'].startswith('OPNsense OPNsense 26.7'))
+        got = {i['logical']: (i['name'], [a['ip'] for a in i['addresses'] if ':' not in a['ip']]) for i in self.d['net']['interfaces']}
+        self.assertEqual(got['lan'], ('vtnet0', ['10.77.0.32']))
+        self.assertEqual(got['opt2'], ('vtnet3', ['10.77.20.3']))
+
+    def test_the_rules_its_pages_make_are_read(self):
+        web = self.rule('lan-to-dmz-web')
+        self.assertEqual((web['chain'], web['action'], web['iif'], web['daddr'], web['dports'], web['proto'], web['unmodelled']), ('forward', 'accept', 'vtnet2', '10.77.20.80', [80], 'tcp', []))
+        self.assertEqual({r['comment'] for r in self.fw['rules']},
+                         {'Default allow LAN to any rule', 'Default allow LAN IPv6 to any rule', 'management-ssh', 'lan-to-dmz-web', 'wan-to-dmz-https', 'dmz-to-mgmt'})
+
+    def test_a_rule_to_the_firewall_itself_is_input_and_its_alias_is_resolved(self):
+        ssh = self.rule('management-ssh')
+        self.assertEqual((ssh['chain'], ssh['saddr'], ssh['dports']), ('input', '10.77.0.0/24', [22]))
+        self.assertEqual([r['chain'] for r in self.fw['rules'] if r['comment'] == 'management-ssh'], ['input'])
+
+    def test_an_interface_as_a_source_is_its_network_and_not_for_ipv6(self):
+        self.assertEqual(self.rule('Default allow LAN to any rule')['saddr'], '10.77.0.0/24')
+        v6 = self.rule('Default allow LAN IPv6 to any rule')
+        self.assertEqual((v6['family'], v6['saddr'], v6['unmodelled']), ('ip6', None, ['source lan (IPv6)']))
+
+    def test_the_older_rules_come_after_as_pf_loads_them(self):
+        order = [r['comment'] for r in sorted(self.fw['rules'], key=lambda r: r['order'])]
+        self.assertGreater(order.index('dmz-to-mgmt'), order.index('wan-to-dmz-https'))
+
+    def test_the_verdicts_are_the_firewalls(self):
+        flow = {'proto': 'tcp', 'saddr': '10.77.10.50', 'daddr': '10.77.20.80', 'iif': 'vtnet2', 'family': 'ip'}
+        self.assertEqual(exposure.kernel_path(self.fw, 'forward', {**flow, 'port': 80})['verdict'], 'accept')
+        self.assertEqual(exposure.kernel_path(self.fw, 'forward', {**flow, 'port': 8080})['verdict'], 'drop')
+        self.assertEqual(exposure.kernel_path(self.fw, 'forward', {**flow, 'iif': 'vtnet3', 'daddr': '10.77.0.10', 'port': 22})['verdict'], 'drop')
+        self.assertEqual(self.fw['nat'][0]['to_addr'], '10.77.20.80')
+
+    def test_a_disabled_rule_and_one_it_cannot_place_are_not_guessed(self):
+        text = (FIX / 'opnsense' / 'reading-26.7-root.txt').read_text()
+        off = pfsense.parse(re.sub(r'<enabled>1</enabled>(\s*<statetype>keep</statetype>\s*<state-policy ?/>\s*<sequence>120</sequence>)', r'<enabled>0</enabled>\1', text))
+        self.assertNotIn('lan-to-dmz-web', {r['comment'] for r in off['firewall']['rules']})
+        odd = pfsense.parse(text.replace('<destination_net>10.77.20.80</destination_net>', '<destination_net>an_alias_from_a_url</destination_net>', 1))
+        rule = next(r for r in odd['firewall']['rules'] if r['comment'] == 'lan-to-dmz-web')
+        self.assertEqual((rule['daddr'], rule['unmodelled']), (None, ['destination an_alias_from_a_url']))
+
+    def test_an_account_that_is_not_root_reads_the_rules_and_says_the_listeners_are_not_readable(self):
+        got = pfsense.parse((FIX / 'opnsense' / 'reading-26.7-scan.txt').read_text())
+        self.assertEqual(len(got['firewall']['rules']), len(self.fw['rules']))
+        self.assertEqual((got['net']['listeners'], got['net']['unreadable']), ([], ['listeners']), 'sockstat shows it only its own sockets')
+        self.assertEqual(self.d['net']['unreadable'], [])
+        self.assertTrue(self.d['net']['listeners'])
+
+    def test_no_secret_from_config_xml_gets_out(self):
+        self.assertNotIn('removed', json.dumps(self.d))
 
 
 class CiscoReading(unittest.TestCase):

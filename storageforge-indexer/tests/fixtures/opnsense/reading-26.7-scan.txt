@@ -1,0 +1,1251 @@
+@@config
+<?xml version="1.0"?>
+<opnsense>
+  <theme>opnsense</theme>
+  <system>
+    <use_mfs_tmp/>
+    <use_mfs_var/>
+    <serialspeed>115200</serialspeed>
+    <primaryconsole>serial</primaryconsole>
+    <secondaryconsole>video</secondaryconsole>
+    <optimization>normal</optimization>
+    <hostname>sf-opnsense</hostname>
+    <domain>lab</domain>
+    <dnsallowoverride>1</dnsallowoverride>
+    <dnsallowoverride_exclude/>
+    <group uuid="8824c2e6-76cc-4f04-8f25-535a223c1b61">
+      <gid>1999</gid>
+      <name>admins</name>
+      <scope>system</scope>
+      <description>System Administrators</description>
+      <priv>page-all</priv>
+      <member>0,2000,2001</member>
+      <source_networks/>
+    </group>
+    <user uuid="c1d7c924-d166-40ea-8bc2-1cf025263c1c">
+      <uid>0</uid>
+      <name>root</name>
+      <disabled>0</disabled>
+      <scope>system</scope>
+      <expires/>
+      <authorizedkeys>removed</authorizedkeys>
+      <otp_seed/>
+      <shell>/bin/sh</shell>
+      <password>removed</password>
+      <pwd_changed_at/>
+      <landing_page/>
+      <comment/>
+      <email/>
+      <apikeys/>
+      <priv/>
+      <language/>
+      <descr>System Administrator</descr>
+      <dashboard/>
+    </user>
+    <user uuid="7f6549b4-1b8b-491c-9c4e-33e97762de02">
+      <uid>2001</uid>
+      <name>scan</name>
+      <disabled>0</disabled>
+      <scope>user</scope>
+      <expires/>
+      <authorizedkeys>removed</authorizedkeys>
+      <otp_seed/>
+      <shell>/bin/sh</shell>
+      <password>removed</password>
+      <pwd_changed_at/>
+      <landing_page/>
+      <comment/>
+      <email/>
+      <apikeys/>
+      <priv/>
+      <language/>
+      <descr>lab scan</descr>
+      <dashboard/>
+    </user>
+    <user uuid="a249160f-c5c9-4076-b36f-c1a80cfec9fc">
+      <uid>2000</uid>
+      <name>lab</name>
+      <disabled>0</disabled>
+      <scope>user</scope>
+      <expires/>
+      <authorizedkeys>removed</authorizedkeys>
+      <otp_seed/>
+      <shell>/bin/sh</shell>
+      <password>removed</password>
+      <pwd_changed_at/>
+      <landing_page/>
+      <comment/>
+      <email/>
+      <apikeys/>
+      <priv/>
+      <language/>
+      <descr>lab lab</descr>
+      <dashboard/>
+    </user>
+    <timezone>Etc/UTC</timezone>
+    <timeservers>0.opnsense.pool.ntp.org 1.opnsense.pool.ntp.org 2.opnsense.pool.ntp.org 3.opnsense.pool.ntp.org</timeservers>
+    <webgui>
+      <protocol>https</protocol>
+      <ssl-certref>6afc201da1e7c</ssl-certref>
+    </webgui>
+    <disablenatreflection>yes</disablenatreflection>
+    <usevirtualterminal>1</usevirtualterminal>
+    <disableconsolemenu/>
+    <powerd_ac_mode>hadp</powerd_ac_mode>
+    <powerd_battery_mode>hadp</powerd_battery_mode>
+    <powerd_normal_mode>hadp</powerd_normal_mode>
+    <bogons>
+      <interval>monthly</interval>
+    </bogons>
+    <pf_share_forward>1</pf_share_forward>
+    <lb_use_sticky>1</lb_use_sticky>
+    <ssh>
+      <group>admins</group>
+      <enabled>enabled</enabled>
+      <permitrootlogin>1</permitrootlogin>
+    </ssh>
+    <firmware version="1.0.1" persisted_at="1794907689.80" description="Firmware settings">
+      <mirror/>
+      <flavour/>
+      <plugins/>
+      <type/>
+      <subscription/>
+      <reboot>0</reboot>
+      <aux>0</aux>
+    </firmware>
+    <nextuid>2002</nextuid>
+  </system>
+  <interfaces>
+    <wan>
+      <enable>1</enable>
+      <if>vtnet1</if>
+      <descr>WAN</descr>
+      <ipaddr>198.51.100.3</ipaddr>
+      <subnet>24</subnet>
+    </wan>
+    <lan>
+      <enable>1</enable>
+      <if>vtnet0</if>
+      <descr>MGMT</descr>
+      <ipaddr>10.77.0.32</ipaddr>
+      <subnet>24</subnet>
+    </lan>
+    <opt1>
+      <enable>1</enable>
+      <if>vtnet2</if>
+      <descr>LAN1</descr>
+      <ipaddr>10.77.10.3</ipaddr>
+      <subnet>24</subnet>
+    </opt1>
+    <opt2>
+      <enable>1</enable>
+      <if>vtnet3</if>
+      <descr>DMZ</descr>
+      <ipaddr>10.77.20.3</ipaddr>
+      <subnet>24</subnet>
+    </opt2>
+    <lo0>
+      <internal_dynamic>1</internal_dynamic>
+      <descr>Loopback</descr>
+      <enable>1</enable>
+      <if>lo0</if>
+      <ipaddr>127.0.0.1</ipaddr>
+      <ipaddrv6>::1</ipaddrv6>
+      <subnet>8</subnet>
+      <subnetv6>128</subnetv6>
+      <type>none</type>
+      <virtual>1</virtual>
+    </lo0>
+  </interfaces>
+  <dnsmasq version="1.0.9" persisted_at="1794907690.23" description="Dnsmasq DNS and DHCP">
+    <enable>0</enable>
+    <regdhcp>0</regdhcp>
+    <regdhcpstatic>0</regdhcpstatic>
+    <dhcpfirst>0</dhcpfirst>
+    <strict_order>0</strict_order>
+    <domain_needed>0</domain_needed>
+    <no_private_reverse>0</no_private_reverse>
+    <no_resolv>0</no_resolv>
+    <log_queries>0</log_queries>
+    <no_hosts>0</no_hosts>
+    <strictbind>0</strictbind>
+    <dnssec>0</dnssec>
+    <regdhcpdomain/>
+    <interface>lan</interface>
+    <port>53053</port>
+    <dns_forward_max/>
+    <cache_size/>
+    <local_ttl/>
+    <add_mac/>
+    <add_subnet>0</add_subnet>
+    <strip_subnet>0</strip_subnet>
+    <dhcp>
+      <no_interface/>
+      <fqdn>1</fqdn>
+      <domain/>
+      <local>1</local>
+      <lease_max/>
+      <authoritative>0</authoritative>
+      <default_fw_rules>1</default_fw_rules>
+      <reply_delay/>
+      <enable_ra>1</enable_ra>
+      <host_ping>1</host_ping>
+      <nosync>0</nosync>
+      <log_dhcp>0</log_dhcp>
+      <log_quiet>0</log_quiet>
+    </dhcp>
+    <no_ident>1</no_ident>
+  </dnsmasq>
+  <nat>
+    <outbound>
+      <mode>automatic</mode>
+    </outbound>
+    <rule uuid="dc28a476-8af9-4760-bf15-924757986917">
+      <interface>wan</interface>
+      <ipprotocol>inet</ipprotocol>
+      <protocol>tcp</protocol>
+      <target>10.77.20.80</target>
+      <local-port>443</local-port>
+      <descr>dmz-https</descr>
+      <source>
+        <any/>
+      </source>
+      <destination>
+        <network>wanip</network>
+        <port>443</port>
+      </destination>
+    </rule>
+  </nat>
+  <filter>
+    <rule uuid="ea8e73bd-7e8f-41f8-8bf7-032c8a260710">
+      <type>block</type>
+      <interface>opt2</interface>
+      <ipprotocol>inet</ipprotocol>
+      <descr>dmz-to-mgmt</descr>
+      <source>
+        <any/>
+      </source>
+      <destination>
+        <network>lan</network>
+      </destination>
+    </rule>
+  </filter>
+  <ntpd>
+    <prefer>0.opnsense.pool.ntp.org</prefer>
+    <ispool>0.opnsense.pool.ntp.org 1.opnsense.pool.ntp.org 2.opnsense.pool.ntp.org 3.opnsense.pool.ntp.org</ispool>
+  </ntpd>
+  <OPNsense>
+    <Firewall>
+      <Filter version="1.0.5" persisted_at="1794907690.32" description="Firewall rules (new)">
+        <general/>
+        <rules>
+          <rule uuid="d5abe21b-58ca-4cca-858f-a4546197dc4c">
+            <enabled>1</enabled>
+            <statetype>keep</statetype>
+            <state-policy/>
+            <sequence>1</sequence>
+            <action>pass</action>
+            <quick>1</quick>
+            <interfacenot>0</interfacenot>
+            <interface>lan</interface>
+            <direction>in</direction>
+            <ipprotocol>inet</ipprotocol>
+            <protocol>any</protocol>
+            <icmptype/>
+            <icmp6type/>
+            <source_net>lan</source_net>
+            <source_not>0</source_not>
+            <source_port/>
+            <destination_net>any</destination_net>
+            <destination_not>0</destination_not>
+            <destination_port/>
+            <divert-to/>
+            <gateway/>
+            <replyto/>
+            <disablereplyto>0</disablereplyto>
+            <log>0</log>
+            <allowopts>0</allowopts>
+            <nosync>0</nosync>
+            <nopfsync>0</nopfsync>
+            <statetimeout/>
+            <udp-first/>
+            <udp-multiple/>
+            <udp-single/>
+            <max-src-nodes/>
+            <max-src-states/>
+            <max-src-conn/>
+            <max/>
+            <max-src-conn-rate/>
+            <max-src-conn-rates/>
+            <overload/>
+            <adaptivestart/>
+            <adaptiveend/>
+            <prio/>
+            <set-prio/>
+            <set-prio-low/>
+            <tag/>
+            <tagged/>
+            <tcpflags1/>
+            <tcpflags2/>
+            <tcpflags_any>0</tcpflags_any>
+            <categories/>
+            <sched/>
+            <tos/>
+            <shaper1/>
+            <shaper2/>
+            <description>Default allow LAN to any rule</description>
+          </rule>
+          <rule uuid="7d868c83-97d9-48c4-81b7-fba1df0c0579">
+            <enabled>1</enabled>
+            <statetype>keep</statetype>
+            <state-policy/>
+            <sequence>11</sequence>
+            <action>pass</action>
+            <quick>1</quick>
+            <interfacenot>0</interfacenot>
+            <interface>lan</interface>
+            <direction>in</direction>
+            <ipprotocol>inet6</ipprotocol>
+            <protocol>any</protocol>
+            <icmptype/>
+            <icmp6type/>
+            <source_net>lan</source_net>
+            <source_not>0</source_not>
+            <source_port/>
+            <destination_net>any</destination_net>
+            <destination_not>0</destination_not>
+            <destination_port/>
+            <divert-to/>
+            <gateway/>
+            <replyto/>
+            <disablereplyto>0</disablereplyto>
+            <log>0</log>
+            <allowopts>0</allowopts>
+            <nosync>0</nosync>
+            <nopfsync>0</nopfsync>
+            <statetimeout/>
+            <udp-first/>
+            <udp-multiple/>
+            <udp-single/>
+            <max-src-nodes/>
+            <max-src-states/>
+            <max-src-conn/>
+            <max/>
+            <max-src-conn-rate/>
+            <max-src-conn-rates/>
+            <overload/>
+            <adaptivestart/>
+            <adaptiveend/>
+            <prio/>
+            <set-prio/>
+            <set-prio-low/>
+            <tag/>
+            <tagged/>
+            <tcpflags1/>
+            <tcpflags2/>
+            <tcpflags_any>0</tcpflags_any>
+            <categories/>
+            <sched/>
+            <tos/>
+            <shaper1/>
+            <shaper2/>
+            <description>Default allow LAN IPv6 to any rule</description>
+          </rule>
+          <rule uuid="1d174bf3-9167-4225-9906-70b8c4178b4f">
+            <enabled>1</enabled>
+            <statetype>keep</statetype>
+            <state-policy/>
+            <sequence>110</sequence>
+            <action>pass</action>
+            <quick>1</quick>
+            <interfacenot>0</interfacenot>
+            <interface>lan</interface>
+            <direction>in</direction>
+            <ipprotocol>inet</ipprotocol>
+            <protocol>TCP</protocol>
+            <icmptype/>
+            <icmp6type/>
+            <source_net>lab_admins</source_net>
+            <source_not>0</source_not>
+            <source_port/>
+            <destination_net>(self)</destination_net>
+            <destination_not>0</destination_not>
+            <destination_port>22</destination_port>
+            <divert-to/>
+            <gateway/>
+            <replyto/>
+            <disablereplyto>0</disablereplyto>
+            <log>0</log>
+            <allowopts>0</allowopts>
+            <nosync>0</nosync>
+            <nopfsync>0</nopfsync>
+            <statetimeout/>
+            <udp-first/>
+            <udp-multiple/>
+            <udp-single/>
+            <max-src-nodes/>
+            <max-src-states/>
+            <max-src-conn/>
+            <max/>
+            <max-src-conn-rate/>
+            <max-src-conn-rates/>
+            <overload/>
+            <adaptivestart/>
+            <adaptiveend/>
+            <prio/>
+            <set-prio/>
+            <set-prio-low/>
+            <tag/>
+            <tagged/>
+            <tcpflags1/>
+            <tcpflags2/>
+            <tcpflags_any>0</tcpflags_any>
+            <categories/>
+            <sched/>
+            <tos/>
+            <shaper1/>
+            <shaper2/>
+            <description>management-ssh</description>
+          </rule>
+          <rule uuid="dca19974-5aaa-464a-aa98-dbb347f2f771">
+            <enabled>1</enabled>
+            <statetype>keep</statetype>
+            <state-policy/>
+            <sequence>120</sequence>
+            <action>pass</action>
+            <quick>1</quick>
+            <interfacenot>0</interfacenot>
+            <interface>opt1</interface>
+            <direction>in</direction>
+            <ipprotocol>inet</ipprotocol>
+            <protocol>TCP</protocol>
+            <icmptype/>
+            <icmp6type/>
+            <source_net>any</source_net>
+            <source_not>0</source_not>
+            <source_port/>
+            <destination_net>10.77.20.80</destination_net>
+            <destination_not>0</destination_not>
+            <destination_port>80</destination_port>
+            <divert-to/>
+            <gateway/>
+            <replyto/>
+            <disablereplyto>0</disablereplyto>
+            <log>0</log>
+            <allowopts>0</allowopts>
+            <nosync>0</nosync>
+            <nopfsync>0</nopfsync>
+            <statetimeout/>
+            <udp-first/>
+            <udp-multiple/>
+            <udp-single/>
+            <max-src-nodes/>
+            <max-src-states/>
+            <max-src-conn/>
+            <max/>
+            <max-src-conn-rate/>
+            <max-src-conn-rates/>
+            <overload/>
+            <adaptivestart/>
+            <adaptiveend/>
+            <prio/>
+            <set-prio/>
+            <set-prio-low/>
+            <tag/>
+            <tagged/>
+            <tcpflags1/>
+            <tcpflags2/>
+            <tcpflags_any>0</tcpflags_any>
+            <categories/>
+            <sched/>
+            <tos/>
+            <shaper1/>
+            <shaper2/>
+            <description>lan-to-dmz-web</description>
+          </rule>
+          <rule uuid="bfda4193-5102-400a-bc58-01ecdb9c59a5">
+            <enabled>1</enabled>
+            <statetype>keep</statetype>
+            <state-policy/>
+            <sequence>130</sequence>
+            <action>pass</action>
+            <quick>1</quick>
+            <interfacenot>0</interfacenot>
+            <interface>wan</interface>
+            <direction>in</direction>
+            <ipprotocol>inet</ipprotocol>
+            <protocol>TCP</protocol>
+            <icmptype/>
+            <icmp6type/>
+            <source_net>any</source_net>
+            <source_not>0</source_not>
+            <source_port/>
+            <destination_net>10.77.20.80</destination_net>
+            <destination_not>0</destination_not>
+            <destination_port>443</destination_port>
+            <divert-to/>
+            <gateway/>
+            <replyto/>
+            <disablereplyto>0</disablereplyto>
+            <log>0</log>
+            <allowopts>0</allowopts>
+            <nosync>0</nosync>
+            <nopfsync>0</nopfsync>
+            <statetimeout/>
+            <udp-first/>
+            <udp-multiple/>
+            <udp-single/>
+            <max-src-nodes/>
+            <max-src-states/>
+            <max-src-conn/>
+            <max/>
+            <max-src-conn-rate/>
+            <max-src-conn-rates/>
+            <overload/>
+            <adaptivestart/>
+            <adaptiveend/>
+            <prio/>
+            <set-prio/>
+            <set-prio-low/>
+            <tag/>
+            <tagged/>
+            <tcpflags1/>
+            <tcpflags2/>
+            <tcpflags_any>0</tcpflags_any>
+            <categories/>
+            <sched/>
+            <tos/>
+            <shaper1/>
+            <shaper2/>
+            <description>wan-to-dmz-https</description>
+          </rule>
+        </rules>
+        <snatrules/>
+        <npt/>
+        <onetoone/>
+      </Filter>
+      <Lvtemplate version="0.0.1" persisted_at="1794907690.11" description="Firewall Live View filter templates">
+        <templates/>
+      </Lvtemplate>
+      <Alias version="1.0.1" persisted_at="1794907690.23" description="Firewall aliases">
+        <geoip>
+          <url/>
+        </geoip>
+        <aliases>
+          <alias uuid="e45ad440-61b6-4884-a870-e66c3f356dde">
+            <enabled>1</enabled>
+            <name>lab_admins</name>
+            <type>network</type>
+            <content>10.77.0.0/24</content>
+            <description>mgmt</description>
+          </alias>
+        </aliases>
+      </Alias>
+      <Category version="1.0.0" persisted_at="1794907690.23" description="Firewall categories">
+        <categories/>
+      </Category>
+    </Firewall>
+    <captiveportal version="1.0.5" persisted_at="1794907689.80" description="Captive portal application model">
+      <zones/>
+      <templates/>
+    </captiveportal>
+    <cron version="1.0.4" persisted_at="1794907690.11" description="Cron settings">
+      <jobs/>
+    </cron>
+    <DHCRelay version="1.0.1" persisted_at="1794907690.11" description="DHCRelay configuration"/>
+    <Netflow version="1.0.1" persisted_at="1794907690.11" description="NetFlow configuration">
+      <capture>
+        <interfaces/>
+        <egress_only/>
+        <version>v9</version>
+        <targets/>
+      </capture>
+      <collect>
+        <enable>0</enable>
+      </collect>
+      <activeTimeout>1800</activeTimeout>
+      <inactiveTimeout>15</inactiveTimeout>
+    </Netflow>
+    <SystemHealth version="1.0.0" persisted_at="1794907690.14" description="RRD graphing backend configuration">
+      <enabled>0</enabled>
+    </SystemHealth>
+    <Hostwatch version="1.0.0" persisted_at="1794907690.32" description="Host discovery">
+      <general>
+        <enabled>1</enabled>
+        <promisc>0</promisc>
+        <verbose>0</verbose>
+        <skip_nets/>
+        <expire4_interval/>
+        <expire6_interval/>
+        <interface/>
+      </general>
+    </Hostwatch>
+    <IDS version="1.1.2" persisted_at="1794907690.36" description="Intrusion detection">
+      <rules/>
+      <policies/>
+      <userDefinedRules/>
+      <files/>
+      <fileTags/>
+      <general>
+        <enabled>0</enabled>
+        <mode>pcap</mode>
+        <divert_listeners>1</divert_listeners>
+        <promisc>0</promisc>
+        <interfaces>wan</interfaces>
+        <homenet>192.168.0.0/16,10.0.0.0/8,172.16.0.0/12</homenet>
+        <defaultPacketSize/>
+        <UpdateCron/>
+        <AlertLogrotate>W0D23</AlertLogrotate>
+        <AlertSaveLogs>4</AlertSaveLogs>
+        <MPMAlgo/>
+        <detect>
+          <Profile/>
+          <toclient_groups/>
+          <toserver_groups/>
+        </detect>
+        <syslog>0</syslog>
+        <syslog_eve>0</syslog_eve>
+        <LogPayload>0</LogPayload>
+        <verbosity/>
+        <eveLog>
+          <http>
+            <enable>0</enable>
+            <extended>0</extended>
+            <dumpAllHeaders/>
+          </http>
+          <tls>
+            <enable>0</enable>
+            <extended>0</extended>
+            <sessionResumption>0</sessionResumption>
+            <custom/>
+          </tls>
+        </eveLog>
+      </general>
+    </IDS>
+    <IPsec version="1.0.5" persisted_at="1794907690.37" description="IPsec settings">
+      <general>
+        <enabled/>
+        <preferred_oldsa>0</preferred_oldsa>
+        <disablevpnrules>0</disablevpnrules>
+        <passthrough_networks/>
+        <user_source/>
+        <local_group/>
+      </general>
+      <charon>
+        <max_ikev1_exchanges/>
+        <threads>16</threads>
+        <ikesa_table_size>32</ikesa_table_size>
+        <ikesa_table_segments>4</ikesa_table_segments>
+        <init_limit_half_open>1000</init_limit_half_open>
+        <ignore_acquire_ts>1</ignore_acquire_ts>
+        <install_routes>0</install_routes>
+        <cisco_unity>0</cisco_unity>
+        <make_before_break>0</make_before_break>
+        <retransmit_tries/>
+        <retransmit_timeout/>
+        <retransmit_base/>
+        <retransmit_jitter/>
+        <retransmit_limit/>
+        <reqid_base/>
+        <syslog>
+          <daemon>
+            <ike_name>1</ike_name>
+            <log_level>0</log_level>
+            <app>1</app>
+            <asn>1</asn>
+            <cfg>1</cfg>
+            <chd>1</chd>
+            <dmn>1</dmn>
+            <enc>1</enc>
+            <esp>1</esp>
+            <ike>1</ike>
+            <imc>1</imc>
+            <imv>1</imv>
+            <job>1</job>
+            <knl>1</knl>
+            <lib>1</lib>
+            <mgr>1</mgr>
+            <net>1</net>
+            <pts>1</pts>
+            <tls>1</tls>
+            <tnc>1</tnc>
+          </daemon>
+        </syslog>
+        <plugins>
+          <attr>
+            <subnet/>
+            <split-include/>
+            <x_28674/>
+            <x_28675/>
+            <x_28672/>
+            <x_28673>0</x_28673>
+            <x_28679/>
+            <dns/>
+            <nbns/>
+          </attr>
+          <eap-radius>
+            <servers/>
+            <accounting>0</accounting>
+            <class_group>0</class_group>
+          </eap-radius>
+          <xauth-pam>
+            <pam_service>ipsec</pam_service>
+            <session>0</session>
+            <trim_email>1</trim_email>
+          </xauth-pam>
+        </plugins>
+      </charon>
+      <keyPairs/>
+      <preSharedKeys/>
+    </IPsec>
+    <Swanctl version="1.0.0" persisted_at="1794907690.39" description="IPsec connections">
+      <Connections/>
+      <locals/>
+      <remotes/>
+      <children/>
+      <Pools/>
+      <VTIs/>
+      <SPDs/>
+    </Swanctl>
+    <Interfaces>
+      <loopbacks version="1.0.0" persisted_at="1794907690.42" description="Loopback configuration"/>
+      <neighbors version="1.0.0" persisted_at="1794907690.42" description="Neighbor configuration"/>
+      <settings version="1.0.0" persisted_at="1794907690.49" description="Global interface settings">
+        <disablechecksumoffloading>1</disablechecksumoffloading>
+        <disablesegmentationoffloading>1</disablesegmentationoffloading>
+        <disablelargereceiveoffloading>1</disablelargereceiveoffloading>
+        <disablevlanhwfilter>2</disablevlanhwfilter>
+        <disableipv6>0</disableipv6>
+        <dhcp6_norelease>0</dhcp6_norelease>
+        <dhcp6_debug>0</dhcp6_debug>
+        <dhcp6_duid/>
+        <dhcp6_ratimeout>10</dhcp6_ratimeout>
+      </settings>
+      <vxlans version="1.0.2" persisted_at="1794907690.52" description="VXLAN configuration"/>
+    </Interfaces>
+    <Kea>
+      <ctrl_agent version="0.0.1" persisted_at="1794907690.52" description="Kea Control Agent configuration">
+        <general>
+          <enabled>0</enabled>
+          <http_host>127.0.0.1</http_host>
+          <http_port>8000</http_port>
+        </general>
+      </ctrl_agent>
+      <ddns version="1.0.0" persisted_at="1794907690.52" description="Kea Dynamic DNS configuration">
+        <general>
+          <enabled>0</enabled>
+          <manual_config>0</manual_config>
+          <server_ip>127.0.0.1</server_ip>
+          <server_port>53001</server_port>
+        </general>
+      </ddns>
+      <dhcp4 version="1.0.5" persisted_at="1794907690.54" description="Kea DHCPv4 configuration">
+        <general>
+          <enabled>0</enabled>
+          <manual_config>0</manual_config>
+          <interfaces/>
+          <service_sockets_max_retries/>
+          <service_sockets_retry_wait_time/>
+          <valid_lifetime>4000</valid_lifetime>
+          <decline_probation_period/>
+          <fwrules>1</fwrules>
+          <dhcp_socket_type>raw</dhcp_socket_type>
+          <compatibility/>
+        </general>
+        <lexpire>
+          <hold_reclaimed_time/>
+          <reclaim_timer_wait_time/>
+          <flush_reclaimed_timer_wait_time/>
+          <max_reclaim_time/>
+          <max_reclaim_leases/>
+          <unwarned_reclaim_cycles/>
+        </lexpire>
+        <ha>
+          <enabled>0</enabled>
+          <this_server_name/>
+          <max_unacked_clients>2</max_unacked_clients>
+        </ha>
+        <subnets/>
+        <reservations/>
+        <options/>
+        <ha_peers/>
+      </dhcp4>
+      <dhcp6 version="1.0.2" persisted_at="1794907690.58" description="Kea DHCPv6 configuration">
+        <general>
+          <enabled>0</enabled>
+          <manual_config>0</manual_config>
+          <interfaces/>
+          <service_sockets_max_retries/>
+          <service_sockets_retry_wait_time/>
+          <valid_lifetime>4000</valid_lifetime>
+          <decline_probation_period/>
+          <mac_sources>ipv6-link-local</mac_sources>
+          <fwrules>1</fwrules>
+        </general>
+        <lexpire>
+          <hold_reclaimed_time/>
+          <reclaim_timer_wait_time/>
+          <flush_reclaimed_timer_wait_time/>
+          <max_reclaim_time/>
+          <max_reclaim_leases/>
+          <unwarned_reclaim_cycles/>
+        </lexpire>
+        <ha>
+          <enabled>0</enabled>
+          <this_server_name/>
+          <max_unacked_clients>2</max_unacked_clients>
+        </ha>
+        <subnets/>
+        <reservations/>
+        <options/>
+        <pd_pools/>
+        <ha_peers/>
+      </dhcp6>
+    </Kea>
+    <monit version="1.0.14" persisted_at="1794907690.59" description="Monit settings">
+      <general>
+        <enabled>0</enabled>
+        <interval>120</interval>
+        <startdelay>120</startdelay>
+        <mailserver>127.0.0.1</mailserver>
+        <port>25</port>
+        <username/>
+        <password/>
+        <ssl>0</ssl>
+        <sslversion>auto</sslversion>
+        <sslverify>1</sslverify>
+        <logfile/>
+        <statefile/>
+        <eventqueuePath/>
+        <eventqueueSlots/>
+        <httpdEnabled>0</httpdEnabled>
+        <httpdUsername>root</httpdUsername>
+        <httpdPassword/>
+        <httpdPort>2812</httpdPort>
+        <httpdAllow/>
+        <mmonitUrl/>
+        <mmonitTimeout>5</mmonitTimeout>
+        <mmonitRegisterCredentials>1</mmonitRegisterCredentials>
+      </general>
+      <alert uuid="7b6777c7-ed1d-4e91-977e-cb1a0414caa2">
+        <enabled>0</enabled>
+        <recipient>root@localhost.local</recipient>
+        <noton>0</noton>
+        <events/>
+        <format/>
+        <reminder/>
+        <description/>
+      </alert>
+      <service uuid="318263c9-fc43-46f5-9b3d-dbe0e0a7535c">
+        <enabled>1</enabled>
+        <name>$HOST</name>
+        <description/>
+        <type>system</type>
+        <pidfile/>
+        <match/>
+        <path/>
+        <timeout>300</timeout>
+        <starttimeout>30</starttimeout>
+        <address/>
+        <interface/>
+        <start/>
+        <stop/>
+        <tests>34343d4e-9deb-40e6-a2f0-e993102d6497,5fc35ee3-f532-4089-b777-dd20adb9711c,7aa0c339-6d19-4796-9931-614bf4b7a4aa,989d43ac-91f1-42c2-b0c8-8cfbbb66521c</tests>
+        <depends/>
+        <polltime/>
+      </service>
+      <service uuid="86fe9323-48f6-4a82-8df7-e2ec2272d19c">
+        <enabled>1</enabled>
+        <name>RootFs</name>
+        <description/>
+        <type>filesystem</type>
+        <pidfile/>
+        <match/>
+        <path>/</path>
+        <timeout>300</timeout>
+        <starttimeout>30</starttimeout>
+        <address/>
+        <interface/>
+        <start/>
+        <stop/>
+        <tests>3be10267-9825-4b90-afac-f2c4ed526cb0</tests>
+        <depends/>
+        <polltime/>
+      </service>
+      <service uuid="da93aa7c-d1f3-4649-b5c4-db92b41d546a">
+        <enabled>0</enabled>
+        <name>carp_status_change</name>
+        <description/>
+        <type>custom</type>
+        <pidfile/>
+        <match/>
+        <path>/usr/local/opnsense/scripts/monit/carp_status.php</path>
+        <timeout>300</timeout>
+        <starttimeout>30</starttimeout>
+        <address/>
+        <interface/>
+        <start/>
+        <stop/>
+        <tests>7dcca957-1c81-4933-8729-ea2e02187388</tests>
+        <depends/>
+        <polltime/>
+      </service>
+      <service uuid="8e61b921-c380-46cf-ac80-0b8e55dd36ca">
+        <enabled>0</enabled>
+        <name>gateway_alert</name>
+        <description/>
+        <type>custom</type>
+        <pidfile/>
+        <match/>
+        <path>/usr/local/opnsense/scripts/monit/gateway_alert.php</path>
+        <timeout>300</timeout>
+        <starttimeout>30</starttimeout>
+        <address/>
+        <interface/>
+        <start/>
+        <stop/>
+        <tests>756effe9-e246-4fed-aa08-c279b4f2af66</tests>
+        <depends/>
+        <polltime/>
+      </service>
+      <test uuid="d3c590ba-fd12-4515-af12-fef5b3eb43ad">
+        <name>Ping</name>
+        <type>NetworkPing</type>
+        <condition>failed ping</condition>
+        <action>alert</action>
+        <path/>
+      </test>
+      <test uuid="9b1eaa5b-93fc-47f8-9750-d8282871964a">
+        <name>NetworkLink</name>
+        <type>NetworkInterface</type>
+        <condition>failed link</condition>
+        <action>alert</action>
+        <path/>
+      </test>
+      <test uuid="9dccfe30-92df-4df7-9c35-7ecca3c6a16b">
+        <name>NetworkSaturation</name>
+        <type>NetworkInterface</type>
+        <condition>saturation is greater than 75%</condition>
+        <action>alert</action>
+        <path/>
+      </test>
+      <test uuid="34343d4e-9deb-40e6-a2f0-e993102d6497">
+        <name>MemoryUsage</name>
+        <type>SystemResource</type>
+        <condition>memory usage is greater than 75%</condition>
+        <action>alert</action>
+        <path/>
+      </test>
+      <test uuid="5fc35ee3-f532-4089-b777-dd20adb9711c">
+        <name>CPUUsage</name>
+        <type>SystemResource</type>
+        <condition>cpu usage is greater than 75%</condition>
+        <action>alert</action>
+        <path/>
+      </test>
+      <test uuid="7aa0c339-6d19-4796-9931-614bf4b7a4aa">
+        <name>LoadAvg1</name>
+        <type>SystemResource</type>
+        <condition>loadavg (1min) is greater than 2</condition>
+        <action>alert</action>
+        <path/>
+      </test>
+      <test uuid="989d43ac-91f1-42c2-b0c8-8cfbbb66521c">
+        <name>LoadAvg5</name>
+        <type>SystemResource</type>
+        <condition>loadavg (5min) is greater than 1.5</condition>
+        <action>alert</action>
+        <path/>
+      </test>
+      <test uuid="a114b523-cb2f-4e92-a93c-414765620ec3">
+        <name>LoadAvg15</name>
+        <type>SystemResource</type>
+        <condition>loadavg (15min) is greater than 1</condition>
+        <action>alert</action>
+        <path/>
+      </test>
+      <test uuid="3be10267-9825-4b90-afac-f2c4ed526cb0">
+        <name>SpaceUsage</name>
+        <type>SpaceUsage</type>
+        <condition>space usage is greater than 75%</condition>
+        <action>alert</action>
+        <path/>
+      </test>
+      <test uuid="7dcca957-1c81-4933-8729-ea2e02187388">
+        <name>ChangedStatus</name>
+        <type>ProgramStatus</type>
+        <condition>changed status</condition>
+        <action>alert</action>
+        <path/>
+      </test>
+      <test uuid="756effe9-e246-4fed-aa08-c279b4f2af66">
+        <name>NonZeroStatus</name>
+        <type>ProgramStatus</type>
+        <condition>status != 0</condition>
+        <action>alert</action>
+        <path/>
+      </test>
+    </monit>
+    <OpenVPNExport version="0.0.1" persisted_at="1794907690.59" description="OpenVPN export presets">
+      <servers/>
+    </OpenVPNExport>
+    <OpenVPN version="1.0.1" persisted_at="1794907690.59" description="OpenVPN">
+      <Overwrites/>
+      <Instances/>
+      <StaticKeys/>
+    </OpenVPN>
+    <radvd version="1.0.1" persisted_at="1794907690.59" description="Radvd configuration"/>
+    <Gateways version="1.0.0" persisted_at="1794907690.59" description="Gateways configuration"/>
+    <Syslog version="1.0.2" persisted_at="1794907690.61" description="System logging settings">
+      <general>
+        <enabled>1</enabled>
+        <loglocal>1</loglocal>
+        <maxpreserve>31</maxpreserve>
+        <maxfilesize/>
+      </general>
+      <destinations/>
+    </Syslog>
+    <TrafficShaper version="1.0.3" persisted_at="1794907690.62" description="Traffic shaper">
+      <pipes/>
+      <queues/>
+      <rules/>
+    </TrafficShaper>
+    <trust>
+      <general version="1.0.1" persisted_at="1794907690.74" description="Trust general settings">
+        <store_intermediate_certs>0</store_intermediate_certs>
+        <install_crls>0</install_crls>
+        <fetch_crls>0</fetch_crls>
+        <enable_legacy_sect>1</enable_legacy_sect>
+        <enable_config_constraints>0</enable_config_constraints>
+        <CipherString/>
+        <Ciphersuites/>
+        <SignatureAlgorithms/>
+        <groups/>
+        <MinProtocol/>
+        <MinProtocol_DTLS/>
+      </general>
+    </trust>
+    <unboundplus version="1.0.15" persisted_at="1794907690.83" description="Unbound configuration">
+      <general>
+        <enabled>1</enabled>
+        <port>53</port>
+        <stats>0</stats>
+        <active_interface/>
+        <dnssec>0</dnssec>
+        <dns64>0</dns64>
+        <dns64prefix/>
+        <noarecords>0</noarecords>
+        <regdhcp>0</regdhcp>
+        <regdhcpdomain/>
+        <regdhcpstatic>0</regdhcpstatic>
+        <noreglladdr6>0</noreglladdr6>
+        <noregrecords>0</noregrecords>
+        <txtsupport>0</txtsupport>
+        <cacheflush>0</cacheflush>
+        <safesearch>0</safesearch>
+        <local_zone_type>transparent</local_zone_type>
+        <outgoing_interface/>
+        <enable_wpad>0</enable_wpad>
+      </general>
+      <advanced>
+        <hideidentity>0</hideidentity>
+        <hideversion>0</hideversion>
+        <prefetch>0</prefetch>
+        <prefetchkey>0</prefetchkey>
+        <dnssecstripped>0</dnssecstripped>
+        <belownxdomain>1</belownxdomain>
+        <aggressivensec>1</aggressivensec>
+        <serveexpired>0</serveexpired>
+        <serveexpiredreplyttl/>
+        <serveexpiredttl/>
+        <serveexpiredttlreset>0</serveexpiredttlreset>
+        <serveexpiredclienttimeout/>
+        <qnameminstrict>0</qnameminstrict>
+        <extendedstatistics>0</extendedstatistics>
+        <logqueries>0</logqueries>
+        <logreplies>0</logreplies>
+        <logtagqueryreply>0</logtagqueryreply>
+        <logservfail>0</logservfail>
+        <loglocalactions>0</loglocalactions>
+        <logverbosity>1</logverbosity>
+        <valloglevel>0</valloglevel>
+        <privatedomain/>
+        <privateaddress>0.0.0.0/8,10.0.0.0/8,100.64.0.0/10,169.254.0.0/16,172.16.0.0/12,192.0.2.0/24,192.168.0.0/16,198.18.0.0/15,198.51.100.0/24,203.0.113.0/24,233.252.0.0/24,::1/128,2001:db8::/32,fc00::/8,fd00::/8,fe80::/10</privateaddress>
+        <insecuredomain/>
+        <msgcachesize/>
+        <rrsetcachesize/>
+        <outgoingnumtcp/>
+        <incomingnumtcp/>
+        <numqueriesperthread/>
+        <outgoingrange/>
+        <jostletimeout/>
+        <discardtimeout/>
+        <cachemaxttl/>
+        <cachemaxnegativettl/>
+        <cacheminttl/>
+        <infrahostttl/>
+        <infrakeepprobing>0</infrakeepprobing>
+        <infracachenumhosts/>
+        <unwantedreplythreshold/>
+      </advanced>
+      <acls>
+        <default_action>allow</default_action>
+      </acls>
+      <dnsbl/>
+      <forwarding>
+        <enabled>0</enabled>
+      </forwarding>
+      <dots/>
+      <hosts/>
+      <aliases/>
+    </unboundplus>
+    <wireguard>
+      <client version="1.0.0" persisted_at="1794907690.83" description="WireGuard peer configuration">
+        <clients/>
+      </client>
+      <general version="0.0.1" persisted_at="1794907690.83" description="WireGuard configuration">
+        <enabled>0</enabled>
+      </general>
+      <server version="1.0.1" persisted_at="1794907690.83" description="WireGuard instance configuration">
+        <servers/>
+      </server>
+    </wireguard>
+  </OPNsense>
+  <revision>
+    <username>(root)</username>
+    <description>/usr/local/opnsense/mvc/script/run_migrations.php made changes</description>
+    <time>1794908423.89</time>
+  </revision>
+  <hasync version="1.0.2" persisted_at="1794907689.84" description="HA sync">
+    <disablepreempt>0</disablepreempt>
+    <disconnectppps>0</disconnectppps>
+    <pfsyncinterface/>
+    <pfsyncpeerip/>
+    <pfsyncversion>1400</pfsyncversion>
+    <pfsyncdefer>0</pfsyncdefer>
+    <synchronizetoip/>
+    <verifypeer>0</verifypeer>
+    <username/>
+    <password/>
+    <syncitems/>
+  </hasync>
+  <sysctl version="1.0.2" persisted_at="1794907690.10" description="System Tunables"/>
+  <ifgroups version="1.0.0" persisted_at="1794907690.32" description="Firewall interface groups"/>
+  <bridges version="1.0.0" persisted_at="1794907690.39" description="Bridge devices"/>
+  <gifs version="1.0.0" persisted_at="1794907690.39" description="GIF devices"/>
+  <gres version="1.0.0" persisted_at="1794907690.39" description="GRE devices"/>
+  <laggs version="1.0.0" persisted_at="1794907690.42" description="LAGG devices"/>
+  <virtualip version="1.0.1" persisted_at="1794907690.49" description="Virtual IP configuration"/>
+  <vlans version="1.0.0" persisted_at="1794907690.52" description="VLAN configuration"/>
+  <openvpn/>
+  <staticroutes version="1.0.1" persisted_at="1794907690.59" description="Static routes"/>
+  <cert uuid="0ed3b567-faeb-4a47-999e-b8d45d89ad65">
+    <refid>6afc201da1e7c</refid>
+    <descr>Web GUI TLS certificate</descr>
+    <caref/>
+    <crt>removed</crt>
+    <csr/>
+    <prv>removed</prv>
+  </cert>
+</opnsense>
+
+@@version
+OPNsense 26.7 (amd64)
+
+@@hostname
+sf-opnsense.lab
+
+@@uid
+2001
+
+@@ifconfig
+vtnet0: flags=1008843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST,LOWER_UP> metric 0 mtu 1500
+	description: MGMT (lan)
+	options=880028<VLAN_MTU,JUMBO_MTU,LINKSTATE,HWSTATS>
+	ether 52:54:00:77:00:20
+	inet 10.77.0.32 netmask 0xffffff00 broadcast 10.77.0.255
+	media: Ethernet autoselect (10Gbase-T <full-duplex>)
+	status: active
+	nd6 options=29<PERFORMNUD,IFDISABLED,AUTO_LINKLOCAL>
+vtnet1: flags=1008843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST,LOWER_UP> metric 0 mtu 1500
+	description: WAN (wan)
+	options=880028<VLAN_MTU,JUMBO_MTU,LINKSTATE,HWSTATS>
+	ether 52:54:00:77:01:20
+	inet 198.51.100.3 netmask 0xffffff00 broadcast 198.51.100.255
+	media: Ethernet autoselect (10Gbase-T <full-duplex>)
+	status: active
+	nd6 options=29<PERFORMNUD,IFDISABLED,AUTO_LINKLOCAL>
+vtnet2: flags=1008843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST,LOWER_UP> metric 0 mtu 1500
+	description: LAN1 (opt1)
+	options=880028<VLAN_MTU,JUMBO_MTU,LINKSTATE,HWSTATS>
+	ether 52:54:00:77:02:20
+	inet 10.77.10.3 netmask 0xffffff00 broadcast 10.77.10.255
+	media: Ethernet autoselect (10Gbase-T <full-duplex>)
+	status: active
+	nd6 options=29<PERFORMNUD,IFDISABLED,AUTO_LINKLOCAL>
+vtnet3: flags=1008843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST,LOWER_UP> metric 0 mtu 1500
+	description: DMZ (opt2)
+	options=880028<VLAN_MTU,JUMBO_MTU,LINKSTATE,HWSTATS>
+	ether 52:54:00:77:03:20
+	inet 10.77.20.3 netmask 0xffffff00 broadcast 10.77.20.255
+	media: Ethernet autoselect (10Gbase-T <full-duplex>)
+	status: active
+	nd6 options=29<PERFORMNUD,IFDISABLED,AUTO_LINKLOCAL>
+lo0: flags=1008049<UP,LOOPBACK,RUNNING,MULTICAST,LOWER_UP> metric 0 mtu 16384
+	options=680003<RXCSUM,TXCSUM,LINKSTATE,RXCSUM_IPV6,TXCSUM_IPV6>
+	inet 127.0.0.1 netmask 0xff000000
+	inet6 ::1 prefixlen 128
+	inet6 fe80::1%lo0 prefixlen 64 scopeid 0x5
+	groups: lo
+	nd6 options=21<PERFORMNUD,AUTO_LINKLOCAL>
+enc0: flags=0 metric 0 mtu 1536
+	options=0
+	groups: enc
+	nd6 options=29<PERFORMNUD,IFDISABLED,AUTO_LINKLOCAL>
+pflog0: flags=0 metric 0 mtu 33152
+	options=0
+	groups: pflog
+pfsync0: flags=0 metric 0 mtu 1500
+	options=0
+	maxupd: 128 defer: off version: 1500
+	syncok: 1
+	groups: pfsync
+
+@@netstat
+Routing tables
+
+Internet:
+Destination        Gateway            Flags         Netif Expire
+10.77.10.0/24      link#3             U            vtnet2
+10.77.10.3         link#5             UHS             lo0
+10.77.20.0/24      link#4             U            vtnet3
+10.77.20.3         link#5             UHS             lo0
+10.77.0.0/24       link#1             U            vtnet0
+10.77.0.32         link#5             UHS             lo0
+127.0.0.1          link#5             UH              lo0
+198.51.100.0/24    link#2             U            vtnet1
+198.51.100.3       link#5             UHS             lo0
+
+Internet6:
+Destination                       Gateway                       Flags         Netif Expire
+::1                               link#5                        UHS             lo0
+fe80::%lo0/64                     link#5                        U               lo0
+fe80::1%lo0                       link#5                        UHS             lo0
+
+@@arp
+? (10.77.0.32) at 52:54:00:77:00:20 on vtnet0 permanent [ethernet]
+? (10.77.0.1) at 52:54:00:55:6c:89 on vtnet0 expires in 716 seconds [ethernet]
+? (198.51.100.3) at 52:54:00:77:01:20 on vtnet1 permanent [ethernet]
+? (10.77.10.3) at 52:54:00:77:02:20 on vtnet2 permanent [ethernet]
+? (10.77.20.3) at 52:54:00:77:03:20 on vtnet3 permanent [ethernet]
+
+@@sockstat
+USER COMMAND    PID FD PROTO LOCAL ADDRESS         FOREIGN ADDRESS      
+
+@@pfrules
+
+@@pfnat
+
+@@pfstates
+
+@@end
