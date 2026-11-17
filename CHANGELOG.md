@@ -7,6 +7,7 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 ### Added
 - **The unit suite runs in three blocks, and in parallel.** `python tests/run.py` runs light (1,223 tests, 13 s on 12 cores), the check to make after any change; `medium` runs bash and local tools; `heavy` runs Chromium, sshd, Docker and real waits. `all -j 8` runs the whole suite in about two minutes, where one process took sixteen. CI runs each block as its own step on both databases, so a red step says which. See [tests/README.md](storageforge-indexer/tests/README.md).
 - **Random tests.** Five `test_props_*.py` modules (Hypothesis, the new `test` extra) say what must hold for any input: the network language, file search on both databases, every parser of host and device output, pool capacity and permissions, and hostile values in the generated scripts. They run a few fixed examples in light and many in `run.py deep`. They found the bugs below.
+- **A raidz of parity plus one disks: a raidz2 of three, a raidz1 of two, a raidz3 of four.** `zpool create` takes them, and the planner and the zfs-pool step refused them below parity plus two. The planner notes that the narrowest raidz holds one drive of data, as a mirror of the same width does, and can be widened later where a mirror can't.
 - **Tests for installing a key with a password**, which nothing ran before: the password reaches ssh only through the askpass helper, never argv or a file, and the scratch folder is gone after, whether the install worked or not.
 
 ### Fixed

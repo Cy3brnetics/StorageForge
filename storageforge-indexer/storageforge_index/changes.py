@@ -35,7 +35,7 @@ MOUNT_FS = ['btrfs', 'ext4', 'xfs', 'vfat', 'exfat', 'ntfs3', 'f2fs', 'nfs4', 'n
 LABEL_MAX = {'ext2': 16, 'ext3': 16, 'ext4': 16, 'xfs': 12, 'btrfs': 255, 'vfat': 11, 'exfat': 15}
 OS_MOUNTS = ('/', '/boot', '/boot/efi', '/boot/firmware', '/efi', '/usr', '/var')     # /boot/firmware: a Raspberry Pi's boot partition
 ZPOOL_LEVELS = ['stripe', 'mirror', 'raidz1', 'raidz2', 'raidz3']
-ZPOOL_MIN = {'stripe': 1, 'mirror': 2, 'raidz1': 3, 'raidz2': 4, 'raidz3': 5}
+ZPOOL_MIN = {'stripe': 1, 'mirror': 2, 'raidz1': 2, 'raidz2': 3, 'raidz3': 4}      # parity + 1, as zpool create takes: a raidz2 of 3 is allowed
 
 
 def F(name, kind, label, **kw):
