@@ -246,5 +246,4 @@ The last full run: **1,989 tests, 0 failed, 9 skipped, in 179 s** at `-j 6` on S
 - **More than one web process**, to go past about 40 answers a second: the in-memory caches, sessions and rate limits would have to move out first.
 - **The browser flake's cause** is likely, not proven.
 - **What no test reaches yet:** `deploy.raw` and `run`'s timeout and cancel paths, `console`'s recording upkeep, and `netdevice.session`'s transports (Telnet, password, the CLI devices), which want a real or stand-in SSH server.
-- **`shellcheck` is not on this machine**, so 3 tests skip here; CI has it.
-- **No KVM lab run** for any of this. The roadmap's section 1 lab items (OPNsense, the appliances, the skipped checks) are not started.
+- **No KVM lab run** for any of this. The roadmap's section 1 lab items are built as far as the appliances and the skipped checks go (`56d1396`, `553bcc6`) and have not run; OPNsense is not in the lab yet. `shellcheck` comes with the `test` extra since `9887236`, so its 3 tests no longer skip here.
