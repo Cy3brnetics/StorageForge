@@ -28,6 +28,7 @@ CATALOG = (
         ('hosts.command', 'Write and deploy raw commands, which run as root: command schedules, task command blocks, move hooks', True),)),
     ('Deploy', (
         ('deploy.view', 'See deploys, runs and jobs', False),
+        ('notifications.manage', 'Acknowledge, snooze and mute notifications. Critical ones, drift and security findings can only be acknowledged', False),
         ('deploy.report', 'Dry runs, job logs and snapshot browsing', False),
         ('deploy.apply', 'Apply deploys, run and pause jobs and schedules', True),
         ('deploy.destructive', 'Destructive applies, cutover and restore', True),
@@ -74,7 +75,7 @@ _VIEWER = frozenset({'search.files', 'hosts.view', 'files.browse', 'services.vie
 BUILTIN = {
     'search': ('Searches files across hosts, and nothing else', frozenset({'search.files'})),
     'viewer': ('Browses and searches', _VIEWER),
-    'operator': ('Also plans, scans and deploys', _VIEWER | {'hostlogs.view', 'scans.run','plans.edit', 'plans.scripts', 'deploy.report', 'deploy.apply',
+    'operator': ('Also plans, scans and deploys', _VIEWER | {'hostlogs.view', 'notifications.manage', 'scans.run','plans.edit', 'plans.scripts', 'deploy.report', 'deploy.apply',
                                                             'deploy.destructive', 'deploy.setup', 'git.live', 'git.sync', 'security.manage', 'map.edit', 'devices.manage', 'devices.apply', 'netscan.run'}),
     'admin': ('Everything, including keys, accounts and settings', ALL),
 }
@@ -174,6 +175,8 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (('POST',), r'/api/jobs/state', 'deploy.apply'),                  # likewise
 
     (READ, r'/api/deploy(/.*)?', 'deploy.view'),
+    (READ, r'/api/notifications(/.*)?', 'deploy.view'),                # the same alerts /api/deploy has always listed, ranked
+    (_WRITE, r'/api/notifications/.+', 'notifications.manage'),
     (READ, r'/api/remote/nodes', 'deploy.view'),
     (('POST',), r'/api/remote/nodes(/\d+/adopt)?', 'deploy.setup'),
     (('DELETE',), r'/api/remote/nodes/\d+', 'deploy.setup'),

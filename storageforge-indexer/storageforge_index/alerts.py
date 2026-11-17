@@ -552,33 +552,52 @@ def problems(conn: Conn) -> dict:
 
 
 def evaluate(db) -> dict:
-    """Open new alerts, refresh open ones, resolve the ones that are gone; notify on each change."""
+    """Open new alerts, refresh open ones, resolve the ones that are gone; notify on each change. Each alert keeps its level and the host it
+    is about, and every opening, worsening and resolving goes into the notification center's history (notifications.py). One that is muted
+    or snoozed there is not pushed; what cannot be ignored always is."""
+    from . import notifications
     with _lock:
         conn = db.connect()
         try:
             cfg = get_setting(conn, 'alerts')
             now_t = int(time.time())
             current = problems(conn)
-            open_ = {r[0]: r for r in conn.all("SELECT alert_key, title, message FROM alerts WHERE state = 'open'")}
+            open_ = {r[0]: r for r in conn.all("SELECT alert_key, title, message, level, kind, host, snoozed_until FROM alerts WHERE state = 'open'")}
+            hosts, rules = notifications.known_hosts(conn), notifications.mutes(conn, now_t)
             sent = []
+
+            def quiet(kind, host, level, snoozed=None):
+                if not notifications.ignorable(kind, level):
+                    return False
+                return bool(snoozed and snoozed > now_t) or notifications.muted_by(rules, kind, host, level) is not None
             for key, (kind, ref, title, message, level) in current.items():
+                host = notifications.host_of(conn, kind, ref, hosts)
                 if key in open_:
-                    conn.execute('UPDATE alerts SET last_at = :t, message = :m WHERE alert_key = :k',
-                                 {'t': now_t, 'm': message[:2000], 'k': key})
+                    was = open_[key][3]
+                    conn.execute('UPDATE alerts SET last_at = :t, message = :m, level = :l, host = :h WHERE alert_key = :k',
+                                 {'t': now_t, 'm': message[:2000], 'l': level, 'h': host, 'k': key})
+                    if level == 'crit' and was != 'crit':        # it got worse: said again, and a snooze it had no longer holds
+                        notifications.record(conn, key, kind, host, notifications.level_of(level), title, 'escalated', at=now_t)
+                        send(cfg, title, message or title, level, {'state': 'open', 'kind': kind, 'ref': ref})
                     continue
                 conn.execute('DELETE FROM alerts WHERE alert_key = :k', {'k': key})
-                conn.execute("""INSERT INTO alerts (alert_key, kind, ref, title, message, state, first_at, last_at)
-                                VALUES (:k, :kind, :r, :ti, :m, 'open', :t, :t)""",
-                             {'k': key, 'kind': kind, 'r': ref, 'ti': title, 'm': message[:2000], 't': now_t})
+                conn.execute("""INSERT INTO alerts (alert_key, kind, ref, title, message, state, first_at, last_at, level, host)
+                                VALUES (:k, :kind, :r, :ti, :m, 'open', :t, :t, :l, :h)""",
+                             {'k': key, 'kind': kind, 'r': ref, 'ti': title, 'm': message[:2000], 't': now_t, 'l': level, 'h': host})
+                notifications.record(conn, key, kind, host, notifications.level_of(level), title, 'opened', at=now_t)
+                if quiet(kind, host, notifications.level_of(level)):
+                    sent.append((key, ['muted']))
+                    continue
                 res = send(cfg, title, message or title, level, {'state': 'open', 'kind': kind, 'ref': ref})
                 if not res[0].startswith('no channel'):
                     conn.execute('UPDATE alerts SET notified_at = :t WHERE alert_key = :k', {'t': now_t, 'k': key})
                 sent.append((key, res))
-            for key, (_k, title, _m) in open_.items():
+            for key, (_k, title, _m, level, kind, host, snoozed) in open_.items():
                 if key not in current:
                     conn.execute("UPDATE alerts SET state = 'resolved', resolved_at = :t WHERE alert_key = :k",
                                  {'t': now_t, 'k': key})
-                    if cfg.get('notify_resolved', True):
+                    notifications.record(conn, key, kind, host, notifications.level_of(level), title, 'resolved', at=now_t)
+                    if cfg.get('notify_resolved', True) and not quiet(kind, host, notifications.level_of(level), snoozed):
                         send(cfg, f'Resolved: {title}', f'Resolved: {title}', 'ok', {'state': 'resolved', 'key': key})
             return {'open': len(current), 'new': len(sent)}
         finally:

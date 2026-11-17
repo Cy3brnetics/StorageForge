@@ -165,6 +165,13 @@ Each plan type has the same shape: list, create, one, check, script.
 | Method | Path | Body | |
 | :--- | :--- | :--- | :--- |
 | GET | `/api/deploy` | | access per host, jobs, deployed, alerts, drift, settings, recent runs, `share_hosts` (scanned hosts with designed shares) |
+| GET | `/api/notifications?host=&kind=&level=` | | the notification center: open alerts in `groups` by host and kind with a `count`, critical first, then warning, then information, the newest group first within a level; snoozed and muted ones apart in `quiet`; `counts` by level; the `mutes` in force. Takes `deploy.view` |
+| GET | `/api/notifications/summary` | | `counts` by level and `total`, without the snoozed and muted |
+| GET | `/api/notifications/history?q=&host=&kind=&event=&limit=&offset=` | | everything that happened to a notification, newest first: opened, escalated, resolved, and who acknowledged or snoozed it |
+| POST, DELETE | `/api/notifications/ack/<key>` | `{"note"?}` | say you are on it, or take that back. It removes nothing; takes `notifications.manage`; audited |
+| POST, DELETE | `/api/notifications/snooze/<key>` | `{"hours", "note"?}` | snooze for a minute to 30 days, or end it. Refused (400) for a critical notification, drift or a security finding; audited |
+| POST | `/api/notifications/mutes` | `{"host"?, "kind"?, "note"?, "days"?}` | mute a kind on a host (shell patterns, `*` for any) until removed or for `days`. Refused for drift and security kinds, and never covers a critical notification; audited |
+| DELETE | `/api/notifications/mutes/<id>` | | remove a mute; audited |
 | POST | `/api/deploy/setup-script` | `{"remove"?}` | download; makes the deploy keys on first use |
 | POST 🔑 | `/api/deploy/access` | `{"host", "password", "admin_user"?, "remove"?}` | set deploy access up (or remove it) with sudo once; 10/min |
 | POST 🔑 | `/api/deploy/adopt` | `{"host"}` | after running the setup by hand: bind and test |

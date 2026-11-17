@@ -253,6 +253,8 @@ Besides failed, late and differing jobs and drift, alerts cover what scans and t
 - the nightly backup failed, or the newest is over 3 days old;
 - the HTTPS certificate ends within 30 days.
 
+**The notification center** ranks every open alert in one list: critical, then warning, then information, the newest first within a level, one row per host and kind with a count, so a flood is one row. Each can be **acknowledged** with a note, which says who is on it and removes nothing. **A critical notification, drift and a security finding cannot be snoozed or muted:** they leave the list when they are resolved. Anything else can be snoozed for up to 30 days, or muted by host and kind; a snoozed or muted notification is listed apart and is not pushed, and a snooze ends if the notification becomes critical. Acknowledging, snoozing and muting take `notifications.manage`, which operators have, and go in the audit log. The history keeps every opening, resolving and who did what, after the alert itself has opened again. Until the center has its own page it is `/api/notifications`.
+
 Open alerts show in the Deploy panel. Each opening and resolving can also go to ntfy (URL, topic, optional token), Gotify (URL, token) or a webhook. Alert URLs may not point at loopback, link-local or multicast addresses, redirects are not followed, a stored token is dropped when its server changes, and the test button reports only HTTP status codes. Private LAN addresses are allowed, since a self-hosted ntfy is the usual setup.
 
 **Drift** has two kinds:
