@@ -49,6 +49,47 @@ They run in two ways ([`props.py`](props.py)):
 
 When one fails, Hypothesis prints the smallest input it found. **Add that input as a controlled test** (or an `@example` on the random test), so it stays pinned when the seed moves on. Each bug the random tests found on 2026-11-16 is pinned this way: see `test_routers.Language`, `test_indexer.Patterns`, `test_props_parsers.FoundByTheseTests`, `test_md_services` and `tests/vectors/capacity.json`.
 
+## Stress runs
+
+[`stress/`](stress/) puts a real server under load until it breaks, so it can be made to cope and pushed again. It is not part of the suite: it
+loads the machine on purpose.
+
+```bash
+python tests/stress/seed.py /tmp/sf/big.db 20 100000        # 20 hosts of 100,000 files, written as a scan writes them (about 50 s)
+python tests/stress/hammer.py /tmp/sf/big.db --stages 8,32,64,128,256,512 --seconds 30 --out /tmp/sf/run.json
+python tests/stress/hammer.py /tmp/sf/big.db --stages 64 --only light            # one kind of route, to tell which slows the other
+python tests/stress/hammer.py /tmp/sf/big.db --stages 32 --profile /tmp/sf/spy.txt   # where the server's time went (py-spy)
+```
+
+`hammer.py` starts `storageforge-index serve` in a temporary folder of its own (database, data folder, home: a real install is never touched),
+times the cold start (the folder index and the file map, built once), then runs each stage with that many clients asking with no pause, across
+the routes that read the most. A client waits out a `503` with `Retry-After` as the page does. A stage breaks when:
+
+| Limit | |
+| :--- | :--- |
+| light routes, p99 | 2 s: a list of hosts, the map, a host's logs must stay quick whatever else runs |
+| queued routes, p99 | 30 s: searches, duplicate files and exports, admitted four at a time |
+| folder analyses, p99 | 90 s: the file map, twin and cold folders, built one at a time |
+| errors | 5 %, counting anything but an answer under 500 |
+| memory | 6 GiB for the server, and 4 GiB left on the machine: past that the server is killed, and that is the finding |
+
+What it found on 2026-11-16, at two million files, and what changed (each pinned in `test_under_load.py` or `test_props_folders.py`):
+
+| Round | Broke at | Why | Now |
+| :--- | :--- | :--- | :--- |
+| 1 | 8 clients | Each request for the file map built it again: 5.7 GiB, past 30 s | One build per analysis; the others wait for it |
+| 2-3 | 8 | The request that started a build held its thread for all of it | Built off the request; a request waits 2 s, then is asked back |
+| 3 | 8 | The file map's twin folders waited for the slot the file map held | An analysis inside a build is made on its slot |
+| 4 | 8 | Every host's twin folders repeated the fleet-wide comparison | Made once per folder index, filtered per host |
+| 6 | 32 | `_noise()`, the system-folder test, was 3 s of a host's file map | One regular expression, held to the old rules by a random test |
+| 8 | 32 | Fourteen connections, each with a 256 MiB SQLite cache: 4.6 GiB | 16 MiB for a request's connection |
+| 8 | 32 | Searches and exports filled every thread; a list of hosts took 2 s | Four at a time, the rest asked back in a second |
+| 9 | 128 | Waitress took 100 connections and kept idle ones 120 s | 500, and idle ones closed after 30 s |
+
+Where it stands: with every kind of route at once, 32 clients pass every limit and 64 break the light routes at about 3 s, because the folder
+analyses are Python in the web's own process and share its one interpreter with every request; without them, light routes hold to 128
+clients. Moving the analyses to a worker process is the next step.
+
 ## Where else tests live
 
 - [`vectors/`](vectors/): capacity figures that `capacity.py` and the planner's JavaScript must both reach (`node tests/vectors/check.mjs`).
