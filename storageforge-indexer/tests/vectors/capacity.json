@@ -20,5 +20,7 @@
   {"name": "btrfs raid1 equal", "kind": "btrfs", "level": "raid1", "sizes": [4000000000000, 4000000000000], "usable": 3959463129087.918, "tolerance": 1},
   {"name": "btrfs raid1 mixed", "kind": "btrfs", "level": "raid1", "sizes": [2000000000000, 4000000000000, 8000000000000], "usable": 5934183129087.957, "tolerance": 1},
   {"name": "btrfs raid1c3", "kind": "btrfs", "level": "raid1c3", "sizes": [4000000000000, 4000000000000, 4000000000000], "usable": 3959463129087.918, "tolerance": 2},
-  {"name": "btrfs raid10", "kind": "btrfs", "level": "raid10", "sizes": [4000000000000, 4000000000000, 4000000000000, 4000000000000], "usable": 7919463129087.836, "tolerance": 1}
+  {"name": "btrfs raid10", "kind": "btrfs", "level": "raid10", "sizes": [4000000000000, 4000000000000, 4000000000000, 4000000000000], "usable": 7919463129087.836, "tolerance": 1},
+  {"name": "zfs mirror of one disk holds nothing and survives nothing", "kind": "zfs", "level": "mirror", "sizes": [4000000000000], "usable": 0.0, "tolerance": 0},
+  {"name": "md raid6 of two disks holds nothing and survives nothing", "kind": "md", "level": "raid6", "sizes": [4000000000000, 4000000000000], "fs": "ext4", "usable": 0.0, "tolerance": 0}
 ]

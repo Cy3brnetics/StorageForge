@@ -136,7 +136,7 @@ def pool_capacity(kind, level, sizes, *, width=None, recordsize=128 * KiB, ashif
         lv = level.replace('raid', '')
         data, parity, tol = {'0': (n * m, 0, 0), '1': (m, (n - 1) * m, n - 1), '5': ((n - 1) * m, m, 1),
                              '6': ((n - 2) * m, 2 * m, 2), '10': (n * m / 2, n * m / 2, 1)}.get(lv, (n * m, 0, 0))
-        reserve = data * FS_RESERVE.get(fs or '', lambda _: 0.0)(ext4_reserve)
+        reserve = max(0.0, data) * FS_RESERVE.get(fs or '', lambda _: 0.0)(ext4_reserve)      # too few members leave data below 0: no reserve of less than nothing
         r.update(parity=float(parity), tolerance=tol, fs_reserve=reserve, usable=data - reserve,
                  layout=f'{"LVM" if kind == "lvm" else "mdadm"} {level} · {n} {"legs" if kind == "lvm" else "members"}')
     elif kind == 'btrfs' and level in ('raid5', 'raid6'):
@@ -156,6 +156,9 @@ def pool_capacity(kind, level, sizes, *, width=None, recordsize=128 * KiB, ashif
         reserve = raw * FS_RESERVE.get(fs or '', lambda _: 0.0)(ext4_reserve)
         r.update(usable=raw - reserve, fs_reserve=reserve, layout=f'{kind or "linear"} {level}'.strip())
     r['usable'] = max(0.0, r['usable'])      # too few devices for the level: nothing usable, never less
+    # and nothing survived: a layout that holds no data tolerates no failure, and no pool outlives all its disks (the planner says the same;
+    # found by test_props_capacity: a one-disk mirror said it survived one failure)
+    r['tolerance'] = 0 if r['usable'] <= 0 else min(r['tolerance'], n - 1)
     return r
 
 
