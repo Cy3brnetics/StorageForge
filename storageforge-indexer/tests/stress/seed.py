@@ -41,7 +41,7 @@ def seed(url: str, hosts: int, files: int, seed_value: int = 1):
     for h in range(hosts):
         name = f'host{h:03d}'
         inv = {'os': 'Debian GNU/Linux 13', 'df': '', 'collected_at': '2026-11-16T00:00:00+00:00'}
-        hid = conn.scalar("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json, last_scanned_at) VALUES (:n, :n, 'scan', :i, :t) RETURNING host_id",
+        hid = conn.scalar(f"INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json, last_scanned_at) VALUES (:n, :n, 'scan', :i, {db.ts(':t')}) RETURNING host_id",
                           {'n': name, 'i': json.dumps(inv), 't': int(time.time())})
         mid = conn.scalar("INSERT INTO mounts (host_id, mount_point, filesystem_type, scan_state, total_bytes, used_bytes) "
                           "VALUES (:h, '/', 'ext4', 'indexed', :tot, :used) RETURNING mount_id", {'h': hid, 'tot': 8 << 40, 'used': 3 << 40})

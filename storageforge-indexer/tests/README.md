@@ -59,6 +59,8 @@ python tests/stress/seed.py /tmp/sf/big.db 20 100000        # 20 hosts of 100,00
 python tests/stress/hammer.py /tmp/sf/big.db --stages 8,32,64,128,256,512 --seconds 30 --out /tmp/sf/run.json
 python tests/stress/hammer.py /tmp/sf/big.db --stages 64 --only light            # one kind of route, to tell which slows the other
 python tests/stress/hammer.py /tmp/sf/big.db --stages 32 --profile /tmp/sf/spy.txt   # where the server's time went (py-spy)
+python tests/stress/hammer.py /tmp/sf/big.db --stages 64,128 --writer 10           # and a scan of a new host lands every 10 s
+python tests/stress/seed.py postgresql://sf:sftest@127.0.0.1:55433/sfstress 20 100000   # the same on PostgreSQL (about 6 min)
 ```
 
 `hammer.py` starts `storageforge-index serve` in a temporary folder of its own (database, data folder, home: a real install is never touched),
@@ -87,8 +89,27 @@ What it found on 2026-11-16, at two million files, and what changed (each pinned
 | 9 | 128 | Waitress took 100 connections and kept idle ones 120 s | 500, and idle ones closed after 30 s |
 | 10 | 64 | The analyses were Python in the web's process, sharing its interpreter with every request | A worker process of their own (`folderwork.py`), replaced if it dies; the folder index is its memory |
 | 11 | 64 | A request waited 2 s for an analysis, holding a thread | 0.25 s under `serve()`, then asked back in 2 s; at most 32 builds waiting |
+| 12, `--writer 10` | 64 | Each scan moved the scan id and emptied the analysis cache; mid-scan nothing was kept, so analyses never settled | The last result is answered at once, marked `stale`, while one build of the new one runs; during a scan it stands and nothing is built. One made mid-scan is never served as current (GM-25) |
+| PostgreSQL 1 | 32 | Docker's 64 MiB `/dev/shm` ran out under parallel searches: a 500 | Class 53 errors (and SQLite's busy lock) are a `503` the page waits out; `docs/database.md` says to give the container `--shm-size=256m` |
+| PostgreSQL 2, `--writer 10` | 64 | An analysis made for the first time took longer than the page's 20 retries | 40 retries, about 90 s |
 
-Where it stands: with every kind of route at once, 128 clients asking with no pause pass every limit (light routes 1.6 s at p99, queued ones
+SQLite and PostgreSQL side by side, two million files, 30 to 40 s stages:
+
+| | SQLite | PostgreSQL 16 (Docker, default settings) |
+| :--- | :--- | :--- |
+| writing the fleet (`apply_diff`, 100,000 files a host) | 47 s, 0.9 s a host | 349 s, 10.7 s a host: 3.9 s of it is foreign-key checks, row by row, on `file_records` and `directories`; the rest is twelve indexes |
+| database size | 0.74 GiB | 1.44 GiB |
+| a scan of 20,000 files landing at 64-128 clients | 1.1 s | 4 to 8 s |
+| 128 clients, every kind of route, light p99 | 1.6 s | 1.75 s |
+| 128 clients, searches and exports p99 | 14 s | 7.7 s |
+| 256 clients, answers a second | 39 | 51 |
+| the web process's memory | about 2.5 GiB (SQLite's cache and mapped pages are in it) | 0.2 to 0.3 GiB |
+| with a scan every 10 s, up to 128 clients | passes, no errors | passes, no errors |
+
+The foreign-key checks are where PostgreSQL's scans lose most: the rows are joined to their parents in the same transaction, so the checks can't
+fail. Dropping or reshaping those keys is a migration, and the owner's to decide.
+
+Where it stands: on either database, with scans landing or not, 128 clients asking with no pause pass every limit (light routes 1.6 s at p99, queued ones
 14 s, analyses 30 s, no errors, the web process under 2.5 GiB). 256 break the light routes at about 4 s: that is one Python process answering
 about 40 requests a second, and the next step past it would be more than one web process, which the in-memory caches and sessions don't
 allow yet.

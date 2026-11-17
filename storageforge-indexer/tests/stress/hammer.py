@@ -153,6 +153,39 @@ class Server:
         self.log.close()
 
 
+def writer(url: str, every: float, files: int, stop: threading.Event, log: list):
+    """Scans landing while people use the server: a new host of `files` files every `every` seconds, through the scanner's own path. Each one
+    moves the latest scan id, which is what empties the folder analysis cache."""
+    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(Path(__file__).parent))
+    import seed as seeder
+    from storageforge_index.db import Database
+    db = Database(url)
+    n = 0
+    while not stop.wait(every):
+        n += 1
+        started = time.time()
+        try:
+            conn = db.patient().connect()
+            try:
+                name = f'w{os.getpid()}-{n}'
+                hid = conn.scalar(f"INSERT INTO hosts (hostname, ssh_host, inventory_json, last_scanned_at) VALUES (:n, :n, '{{}}', {db.ts(':t')}) RETURNING host_id",
+                                  {'n': name, 't': int(time.time())})
+                mid = conn.scalar("INSERT INTO mounts (host_id, mount_point, filesystem_type, scan_state) VALUES (:h, '/', 'ext4', 'indexed') RETURNING mount_id", {'h': hid})
+                scan = db.begin_scan(conn, hid)
+                job = 90_000 + n
+                db.stage_create(conn, job)
+                db.stage_insert(conn, job, list(seeder.rows_for(n, files, random.Random(n))))
+                db.apply_diff(conn, scan, job, mid, '/', True)
+                db.stage_drop(conn, job)
+                db.finish_scan(conn, scan, hid, {'entries': files, 'bytes': 0, 'added': files, 'modified': 0, 'deleted': 0, 'read_errors': 0}, 'ok', 1.0)
+                log.append(('ok', round(time.time() - started, 1)))
+            finally:
+                conn.close()
+        except Exception as exc:                  # a scan that can't land is a finding too
+            log.append((f'{type(exc).__name__}: {str(exc)[:120]}', round(time.time() - started, 1)))
+
+
 def stage(server: Server, cookie: str, hosts: list[str], clients: int, seconds: float) -> dict:
     stop_at = time.time() + seconds
     results = collections.defaultdict(list)          # label -> [(status, seconds)]
@@ -166,7 +199,7 @@ def stage(server: Server, cookie: str, hosts: list[str], clients: int, seconds: 
             label, path = routes(hosts)
             started = time.perf_counter()
             try:
-                for attempt in range(21):            # as the page does (kernel.js): a 503 with Retry-After is waited out and asked again, 20 times
+                for attempt in range(41):            # as the page does (kernel.js): a 503 with Retry-After is waited out and asked again, 40 times
                     if conn is None:
                         conn = http.client.HTTPConnection(server.base, timeout=30)
                     conn.request('GET', path, headers={'Cookie': cookie})
@@ -176,7 +209,7 @@ def stage(server: Server, cookie: str, hosts: list[str], clients: int, seconds: 
                     if r.getheader('Connection', '').lower() == 'close':
                         conn.close()
                         conn = None
-                    if status == 503 and r.getheader('Retry-After') and attempt < 20:
+                    if status == 503 and r.getheader('Retry-After') and attempt < 40:
                         if time.time() >= stop_at:
                             status = 'cut off'           # still being waited out when the stage ended: not the server's failure
                             break
@@ -234,6 +267,8 @@ def main(argv=None) -> int:
     ap.add_argument('--seconds', type=float, default=20)
     ap.add_argument('--out', default='')
     ap.add_argument('--only', choices=['light', 'heavy'], help='one kind of route only')
+    ap.add_argument('--writer', type=float, default=0, help='land a scan of a new host every this many seconds during the stages')
+    ap.add_argument('--writer-files', type=int, default=20000)
     ap.add_argument('--profile', default='', help='where py-spy writes the server\'s profile (raw, for flame graphs)')
     a = ap.parse_args(argv)
     url = a.db if '://' in a.db else a.db
@@ -259,16 +294,26 @@ def main(argv=None) -> int:
             time.sleep(1)
         report['cold_start_s'] = round(time.time() - started, 1)
         print(f'cold start (folder index and file map built): {report["cold_start_s"]} s, server {proc_stats(server.p.pid)["rss_gib"]:.2f} GiB', flush=True)
+        scans, stop_writer = [], threading.Event()
+        if a.writer:
+            threading.Thread(target=writer, args=(url, a.writer, a.writer_files, stop_writer, scans), daemon=True).start()
         for clients in map(int, a.stages.split(',')):
+            landed = len(scans)
             r = stage(server, cookie, hosts, clients, a.seconds)
+            r['scans'] = scans[landed:]
             report['stages'].append(r)
             print(f'{clients:4} clients: {r["requests"]:6} requests ({r["per_s"]:.0f}/s), errors {r["error_rate"]:.1%}, p50 {r["p50"]:.2f}s, light p99 {r["light_p99"]:.2f}s, queued p99 {r["queued_p99"]:.1f}s, analyses p99 {r["heavy_p99"]:.1f}s, '
                   f'server {r["peak"]["rss_gib"]:.2f} GiB {r["peak"]["threads"]} threads {r["peak"]["fds"]} fds, machine low {r["machine_low_gib"]:.1f} GiB free', flush=True)
             for k, n in r['errors_by'].items():
                 print(f'       {n:5}  {k}')
+            if a.writer:
+                ok = [t for what, t in r['scans'] if what == 'ok']
+                bad = [what for what, _ in r['scans'] if what != 'ok']
+                print(f'       scans landed during it: {len(ok)} ({", ".join(f"{t}s" for t in ok)})' + (f'; FAILED: {bad}' if bad else ''))
             if r['shed']:
                 print(f'       pushed back (503, waited out): ' + ', '.join(f'{k} {n}' for k, n in sorted(r['shed'].items(), key=lambda x: -x[1])))
-            why = ('the server died' if r['server_died'] else 'the machine ran short of memory' if r['machine_low_gib'] < LIMITS['machine_free_gib']
+            failed_scans = [w for w, _ in r.get('scans', []) if w != 'ok']
+            why = ('a scan could not land: ' + failed_scans[0] if failed_scans else 'the server died' if r['server_died'] else 'the machine ran short of memory' if r['machine_low_gib'] < LIMITS['machine_free_gib']
                    else 'the server passed its memory limit' if r['peak']['rss_gib'] > LIMITS['rss_gib'] else f'errors {r["error_rate"]:.1%}' if r['error_rate'] > LIMITS['errors']
                    else f'light routes p99 {r["light_p99"]:.1f} s' if r['light_p99'] > LIMITS['light_p99']
                    else f'queued routes p99 {r["queued_p99"]:.0f} s' if r['queued_p99'] > LIMITS['queued_p99']
@@ -278,6 +323,8 @@ def main(argv=None) -> int:
                 print(f'BROKE at {clients} clients: {why}', flush=True)
                 break
     finally:
+        if a.writer:
+            stop_writer.set()
         server.stop()
         log = (server.tmp / 'server.log').read_text(errors='replace')
         report['server_log_tail'] = log[-4000:]
