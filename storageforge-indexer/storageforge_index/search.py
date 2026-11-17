@@ -10,6 +10,7 @@ Pattern strategy (cheapest first):
 """
 from __future__ import annotations
 
+import functools
 import re
 import time
 from dataclasses import dataclass, field
@@ -52,44 +53,101 @@ def classify(pattern: str | None):
     return 'glob', pattern
 
 
+def _class_body(s: str) -> str:
+    """A class's characters (after any !) as a regex class body, read as fnmatch reads them: a - between two characters is a range, a backwards
+    range holds nothing and is dropped (PostgreSQL refuses one outright), and anything else is that character. Every character but a range's
+    hyphen is escaped, which Python's re and PostgreSQL's regular expressions both take inside brackets."""
+    def esc(chunk):
+        return ''.join('\\' + c if c in '\\-^[]&~|' else c for c in chunk)
+    if '-' not in s:
+        return esc(s)
+    chunks, i, k = [], 0, 1
+    while (k := s.find('-', k)) >= 0:
+        chunks.append(s[i:k])
+        i, k = k + 1, k + 3
+    if s[i:]:
+        chunks.append(s[i:])
+    else:
+        chunks[-1] += '-'
+    for k in range(len(chunks) - 1, 0, -1):
+        if chunks[k - 1][-1] > chunks[k][0]:
+            chunks[k - 1] = chunks[k - 1][:-1] + chunks[k][1:]
+            del chunks[k]
+    return '-'.join(esc(c) for c in chunks)
+
+
+def _glob_tokens(pattern: str) -> list[tuple[str, str]]:
+    """The pattern read as a shell and fnmatch read it: ('*' | '?' | 'lit' | 'class', text). A class's text is its regex. A [ with no ] to close
+    it is a plain [, a ] right after [ or [! is in the class, and [!...] is everything but. Every road of a search reads a pattern through this,
+    so they agree on what it means (SQLite's GLOB negates with ^, and took [!x] as "! or x")."""
+    out, i, n = [], 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        i += 1
+        if c == '*':
+            if not out or out[-1][0] != '*':
+                out.append(('*', '.*'))
+        elif c == '?':
+            out.append(('?', '.'))
+        elif c == '[':
+            j = i
+            if j < n and pattern[j] == '!':
+                j += 1
+            if j < n and pattern[j] == ']':
+                j += 1
+            while j < n and pattern[j] != ']':
+                j += 1
+            if j >= n:
+                out.append(('lit', '['))
+                continue
+            body, i = pattern[i:j], j + 1
+            negated = body.startswith('!')
+            inner = _class_body(body[1:] if negated else body)
+            out.append(('class', ('.' if negated else '(?!)') if not inner else f'[{"^" if negated else ""}{inner}]'))
+        else:
+            out.append(('lit', c))
+    return out
+
+
+def has_class(pattern: str) -> bool:
+    return any(kind == 'class' for kind, _ in _glob_tokens(pattern))
+
+
 def glob_to_like(pattern: str) -> str:
     """A LIKE pattern matching a superset of the glob (used for index candidates only)."""
-    out, i = [], 0
-    while i < len(pattern):
-        c = pattern[i]
-        if c == '*':
-            out.append('%')
-        elif c == '?':
-            out.append('_')
-        elif c == '[' and (j := pattern.find(']', i + 2)) != -1:
-            out.append('_')
-            i = j
-        else:
-            out.append(c)
-        i += 1
-    return ''.join(out)
+    return ''.join({'*': '%', '?': '_', 'class': '_'}.get(kind, text) for kind, text in _glob_tokens(pattern))
+
+
+def glob_to_sqlite(pattern: str) -> str:
+    """For SQLite's GLOB, which reads classes its own way: each class is loosened to ?, and the match is made exact by sf_glob() after."""
+    return ''.join('?' if kind == 'class' else '[[]' if text == '[' else text if kind == 'lit' else kind for kind, text in _glob_tokens(pattern))
 
 
 def glob_to_regex(pattern: str) -> str:
-    out, i = ['^'], 0
-    while i < len(pattern):
-        c = pattern[i]
-        if c == '*':
-            out.append('.*')
-        elif c == '?':
-            out.append('.')
-        elif c == '[' and (j := pattern.find(']', i + 2)) != -1:
-            body = pattern[i + 1:j]
-            out.append('[' + ('^' + body[1:] if body.startswith('!') else body).replace('\\', '\\\\') + ']')
-            i = j
-        else:
-            out.append(re.escape(c))
-        i += 1
-    return ''.join(out) + '$'
+    """The exact match, anchored, for PostgreSQL's ~* and Python's re (with re.S, as PostgreSQL's . takes a newline too)."""
+    return '^' + ''.join(re.escape(text) if kind == 'lit' else text for kind, text in _glob_tokens(pattern)) + '$'
+
+
+@functools.lru_cache(maxsize=256)
+def _compiled(regex: str):
+    return re.compile(regex, re.S)
+
+
+def sf_glob(regex: str, name: str | None) -> int:
+    """SQLite's side of an exact class match, registered on every connection (db.py)."""
+    return 1 if name is not None and _compiled(regex).search(name) else 0
 
 
 def longest_literal(pattern: str) -> int:
     return max((len(s) for s in re.split(r'\[[^\]]*\]|[*?]', pattern)), default=0)
+
+
+_ASCII_LOWER = str.maketrans('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')
+
+
+def ascii_lower(s: str) -> str:
+    """What SQLite's lower() does, so a range like [B-a] means the same on both databases."""
+    return s.translate(_ASCII_LOWER)
 
 
 def like_escape(s: str) -> str:
@@ -112,15 +170,18 @@ def build_search(db: Database, q: SearchQuery) -> tuple[str, dict]:
         p['name'] = val
     elif kind in ('prefix', 'glob'):
         if sqlite:
-            p['glob'], p['like'] = q.pattern, glob_to_like(q.pattern)
+            p['glob'], p['like'] = glob_to_sqlite(q.pattern), glob_to_like(q.pattern)
             if kind == 'prefix':
                 where.append('f.filename LIKE :like')
             elif longest_literal(q.pattern) >= 3:
                 where.append('f.file_id IN (SELECT rowid FROM file_fts WHERE file_fts.filename LIKE :like)')
             where.append('lower(f.filename) GLOB lower(:glob)')
+            if has_class(q.pattern):            # GLOB took each class as ?: only the names it kept are checked exactly
+                where.append('sf_glob(:re, lower(f.filename))')
+                p['re'] = glob_to_regex(ascii_lower(q.pattern))
         else:
             where.append('f.filename ~* :re')
-            p['re'] = glob_to_regex(q.pattern)
+            p['re'] = glob_to_regex(ascii_lower(q.pattern))
     if q.exts:
         names = []
         for i, e in enumerate(q.exts):

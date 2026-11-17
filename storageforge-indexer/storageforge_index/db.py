@@ -179,6 +179,8 @@ class Database:
             for pragma in ('journal_mode=WAL', 'synchronous=NORMAL', 'foreign_keys=ON', 'cache_size=-262144',
                            'mmap_size=1073741824', f'busy_timeout={self.busy_ms}'):
                 raw.execute('PRAGMA ' + pragma)
+            from .search import sf_glob          # here, not at the top: search.py imports this module
+            raw.create_function('sf_glob', 2, sf_glob, deterministic=True)
             return Conn(raw, 'sqlite')
         import psycopg
         from psycopg.adapt import Loader
