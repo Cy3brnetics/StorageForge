@@ -213,10 +213,20 @@ ensure_pool() {
   [ "$(virsh pool-info "$POOL" | awk '/^State:/ {print $2}')" = running ] || virsh -q pool-start "$POOL" >/dev/null
 }
 
+osinfo_for() {   # the name nodes.conf gives, or on a host whose osinfo database is older, the newest release of the same system it does know
+  local want=$1 known stem best
+  known=$(virt-install --osinfo list | tr ', ' '\n\n' | grep .)
+  if grep -qx -- "$want" <<<"$known"; then echo "$want"; return; fi
+  stem=${want%%[0-9]*}
+  best=$(grep -E "^$stem[0-9.]+$" <<<"$known" | sort -V | tail -1)
+  echo "${best:-linux2022}"
+}
+
 create_node() {
   local n=$1 image osinfo vcpu ram root ip disks nets base seed i=0 d extra=() seg
   IFS='|' read -r _ image osinfo vcpu ram root ip disks nets < <(pool_rows | awk -F'|' -v k="$n" '$1==k')
   base=$(base_of "$image")
+  [ "$osinfo" = - ] || osinfo=$(osinfo_for "$osinfo")
   for seg in ${nets//,/ }; do
     i=$((i + 1))
     extra+=(--network "network=$(segment_net "$seg"),mac=$(segment_mac "$ip" "$i"),model=virtio")
