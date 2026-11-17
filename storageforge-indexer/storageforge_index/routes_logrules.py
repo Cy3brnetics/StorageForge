@@ -16,7 +16,7 @@ def register(web, ctx):
     def api_logrules():
         return jsonify(rules=logrules.rules(conn()), levels=list(logrules.LEVELS), rule_levels=list(logrules.RULE_LEVELS))
 
-    def saved(rule_id=None):
+    def save_with_audit(rule_id=None):
         try:
             got = logrules.save(conn(), json_body(), actor(), rule_id)
         except LookupError as exc:
@@ -30,12 +30,12 @@ def register(web, ctx):
     @web.post('/api/hostlogs/rules')
     @login_required
     def api_logrule_new():
-        return saved()
+        return save_with_audit()
 
     @web.put('/api/hostlogs/rules/<int:rule_id>')
     @login_required
     def api_logrule_save(rule_id):
-        return saved(rule_id)
+        return save_with_audit(rule_id)
 
     @web.delete('/api/hostlogs/rules/<int:rule_id>')
     @login_required

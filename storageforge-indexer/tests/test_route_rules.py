@@ -138,6 +138,17 @@ FRESH_PASSWORD = {
 NO_FRESH_PASSWORD = {
     ('POST', '/api/devices/<name>/read'),        # reads, as a scan does, through the account bound for reading
     ('POST', '/api/devices/<name>/report'),      # saves what an apply would do. The apply asks
+    ('POST', '/api/hostlogs/rules'),             # a log rule decides what raises a notification: it changes nothing on a host
+    ('PUT', '/api/hostlogs/rules/<int:rule_id>'),
+    ('DELETE', '/api/hostlogs/rules/<int:rule_id>'),     # not a built-in one: those are turned off
+    ('POST', '/api/notifications/ack/<path:key>'),       # a name and a note on a notification
+    ('POST', '/api/notifications/snooze/<path:key>'),    # refused for what cannot be ignored, whoever asks
+    ('DELETE', '/api/notifications/ack/<path:key>'),
+    ('DELETE', '/api/notifications/snooze/<path:key>'),
+    ('POST', '/api/notifications/mutes'),
+    ('DELETE', '/api/notifications/mutes/<int:mute_id>'),
+    ('POST', '/api/notifications/fix/<path:key>'),       # saves a change plan, as /api/changes does. Deploying it asks
+    ('POST', '/api/notifications/undo/<int:plan_id>'),
     ('POST', '/api/dsl/compile'),
     ('POST', '/api/dsl/whatif'),
     ('POST', '/api/dsl/stage'),                  # a plan in the database, as /api/map/stage is

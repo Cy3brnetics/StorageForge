@@ -115,6 +115,13 @@ class BuiltIn(Db):
                 self.assertIsNotNone(logrules.compile_pattern(text))
                 logrules.compile_pattern(program)
 
+    def test_zed_says_a_state_change_at_notice_and_the_rule_hears_it(self):
+        """The KVM lab: a disk taken offline was logged by zed at notice, the rule asked for warning or worse, and nothing was raised."""
+        self.logged(row("eid=6 class=statechange pool='vault' vdev=vdc1 vdev_state=OFFLINE", priority='5', ident='zed'))
+        got = self.raised()
+        self.assertEqual([v[4] for v in got.values()], ['crit'])
+        self.assertIn('A ZFS pool or an md array is degraded on nas', [v[2] for v in got.values()])
+
     def test_lines_that_only_look_alike_raise_nothing(self):
         self.logged(*[row(line) for line in self.LOOKALIKE])
         self.assertEqual(self.raised(), {})

@@ -62,7 +62,10 @@ def script(since: int) -> str:
 command -v journalctl >/dev/null 2>&1 || {{ echo '@@nojournal'; exit 0; }}
 echo "@@who $(id -u) $(id -nG 2>/dev/null)"
 fields=; journalctl --output-fields=MESSAGE -o json -n 0 --no-pager >/dev/null 2>&1 && fields=--output-fields={FIELDS}
-pull() {{ LC_ALL=C journalctl $fields -o json --no-pager --since "@{int(since)}" "$@" 2>/dev/null | head -c {STREAM_BYTES}; echo; }}
+# -r: newest first. With --since, journalctl before 254 takes -n as the first lines since then and from 254 as the last, so without -r a
+# host on an older systemd (Ubuntu 22.04, Enterprise Linux 9) that logged more than one pickup keeps sent its oldest lines and lost its
+# newest, for good: the next pickup starts after them. Found in the KVM lab. Newest first, both take the newest, and head cuts the oldest.
+pull() {{ LC_ALL=C journalctl $fields -o json --no-pager --since "@{int(since)}" -r "$@" 2>/dev/null | head -c {STREAM_BYTES}; echo; }}
 echo '@@important'; pull -p warning -n {LINES_IMPORTANT}
 echo '@@routine'; pull -p info -n {LINES_ROUTINE}
 echo '@@end'
@@ -220,24 +223,30 @@ def store(conn: Conn, host: str, parsed: dict, now: float | None = None) -> int:
     arrived = []          # the lines that are new this pickup, stored or over the rate: what the log rules are held against
     with conn.tx():
         left = _allowance(conn, host, now)
-        # warning and worse first, so the rate takes routine lines before it takes those
-        for x in sorted(lines, key=lambda x: x['priority'] > 4):
-            if left >= 1:
-                fresh = conn.execute("""INSERT INTO host_log_lines (host, line_key, at_us, priority, unit, ident, pid, message, collected_at, uid, comm, exe, seqnum, seqnum_id)
-                                        VALUES (:h, :k, :a, :p, :u, :i, :d, :m, :t, :uid, :comm, :exe, :seq, :sid) ON CONFLICT (host, line_key) DO NOTHING""",
-                                     {'h': host, 'k': x['key'], 'a': x['at_us'], 'p': x['priority'], 'u': x['unit'], 'i': x['ident'], 'd': x['pid'], 'm': x['message'],
-                                      't': int(now), 'uid': x.get('uid'), 'comm': x.get('comm'), 'exe': x.get('exe'), 'seq': x.get('seqnum'), 'sid': x.get('seqnum_id')}).rowcount
-                new += fresh
-                left -= fresh
-            else:           # over the rate: not stored, but counted, unless it is a line already here
-                fresh = 0 if conn.scalar('SELECT 1 FROM host_log_lines WHERE host = :h AND line_key = :k', {'h': host, 'k': x['key']}) else 1
-                over += fresh
-            if fresh:
-                arrived.append(x)
-                # by the host's clock, since that is when it happened, but never after now: a clock ahead does not write the future's counts
-                bucket = int(min(x['at_us'] / 1e6, now) // COUNT_SECS)
-                key = (x['unit'] or '', x['priority'], bucket)
-                counted[key] = counted.get(key, 0) + 1
+        # which of them are new: a pickup reads the last five minutes again, and a line already here costs nothing and counts for nothing
+        keys, here = [x['key'] for x in lines], set()
+        for i in range(0, len(keys), 500):
+            part = keys[i:i + 500]
+            here.update(r[0] for r in conn.all(f"SELECT line_key FROM host_log_lines WHERE host = :h AND line_key IN ({', '.join(f':k{j}' for j in range(len(part)))})",
+                                               {'h': host, **{f'k{j}': k for j, k in enumerate(part)}}))
+        fresh = [x for x in lines if x['key'] not in here]
+        # the rate takes routine lines before warnings, and within each the older before the newer
+        fresh.sort(key=lambda x: (x['priority'] > 4, -x['at_us']))
+        keep, lost = fresh[:int(left)], fresh[int(left):]
+        over = len(lost)
+        # stored oldest first, so that under the row limit, which goes by arrival and then by row, a pickup's newest lines are the last to go
+        for x in sorted(keep, key=lambda x: x['at_us']):
+            new += conn.execute("""INSERT INTO host_log_lines (host, line_key, at_us, priority, unit, ident, pid, message, collected_at, uid, comm, exe, seqnum, seqnum_id)
+                                   VALUES (:h, :k, :a, :p, :u, :i, :d, :m, :t, :uid, :comm, :exe, :seq, :sid) ON CONFLICT (host, line_key) DO NOTHING""",
+                                {'h': host, 'k': x['key'], 'a': x['at_us'], 'p': x['priority'], 'u': x['unit'], 'i': x['ident'], 'd': x['pid'], 'm': x['message'],
+                                 't': int(now), 'uid': x.get('uid'), 'comm': x.get('comm'), 'exe': x.get('exe'), 'seq': x.get('seqnum'), 'sid': x.get('seqnum_id')}).rowcount
+        left -= new
+        for x in fresh:
+            arrived.append(x)
+            # by the host's clock, since that is when it happened, but never after now: a clock ahead does not write the future's counts
+            bucket = int(min(x['at_us'] / 1e6, now) // COUNT_SECS)
+            key = (x['unit'] or '', x['priority'], bucket)
+            counted[key] = counted.get(key, 0) + 1
         for (unit, priority, bucket), n in counted.items():
             conn.execute("""INSERT INTO host_log_counts (host, unit, priority, bucket, lines) VALUES (:h, :u, :p, :b, :n)
                             ON CONFLICT (host, unit, priority, bucket) DO UPDATE SET lines = host_log_counts.lines + :n""",

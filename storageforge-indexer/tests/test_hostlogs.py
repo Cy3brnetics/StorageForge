@@ -333,6 +333,18 @@ class Ingest(Base):
         self.store(row('c', at=much - 10), now=much)
         self.assertEqual(sum(self.counts().values()), 1)
 
+    def test_the_newest_lines_of_a_pickup_are_the_ones_kept(self):
+        """The journal is read newest first (the KVM lab: before systemd 254, --since with -n gave the oldest lines, and a busy host lost its
+        newest for good). Whatever order they come in, the row limit and the rate both give up the older ones."""
+        self.assertIn(' -r ', hostlogs.script(0))
+        self.limits(KEEP_ROWS=2, RATE_PER_DAY=100)
+        self.store(row('newest', at=NOW - 10), row('middle', at=NOW - 20), row('oldest', at=NOW - 30))
+        self.assertEqual(self.messages(), ['middle', 'newest'])
+        self.limits(KEEP_ROWS=100, RATE_PER_DAY=3)
+        self.store(row('r new', at=NOW - 1), row('w old', at=NOW - 50, priority='3'), row('r old', at=NOW - 40), row('w new', at=NOW - 2, priority='4'), row('r mid', at=NOW - 20), host='pc')
+        self.assertEqual(self.messages('pc'), ['r new', 'w new', 'w old'], 'the warnings, then the newest routine line')
+        self.assertEqual(hostlogs.status(self.conn, 'pc')[0]['over_rate'], 2)
+
     def test_the_script_asks_for_journalds_own_fields_and_never_the_command_line(self):
         text = hostlogs.script(0)
         for field in ('_UID', '_COMM', '_EXE'):

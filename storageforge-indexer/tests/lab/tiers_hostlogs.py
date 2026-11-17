@@ -244,7 +244,8 @@ print(json.dumps(out))
             want(first['counted'] == first['read'], f'the 5-minute counts hold {first["counted"]} of {first["read"]} lines')
             want(first['journald_fields'] > 0, 'no line has journald\'s own _COMM and _UID: the script asked for them and this journalctl gave none')
             want(all_kept['day29']['kept_of_first'] == first['read'], f'lines were dropped {30 - 1} days after they arrived: {all_kept["day29"]}')
-            want(all_kept['day31'] == {'kept_of_first': 0, 'kept': 1}, f'31 days after they arrived the first lines should be gone and the new one kept: {all_kept["day31"]}')
+            # two: the line that arrived on day 29 is two days old by day 31, and the one that arrived then
+            want(all_kept['day31'] == {'kept_of_first': 0, 'kept': 2}, f'31 days after they arrived the first lines should be gone and the two that arrived since kept: {all_kept["day31"]}')
             row_cap = json.loads(in_product(caps, stdin=text, env=['STORAGEFORGE_LOG_KEEP_ROWS=50', 'STORAGEFORGE_LOG_KEEP_DAYS=30']))
             want(row_cap['keep_rows'] == 50 and row_cap['first']['kept'] == 50, f'the row limit of 50 kept {row_cap["first"]["kept"]}')
             rate = json.loads(in_product(caps, stdin=text, env=['STORAGEFORGE_LOG_KEEP_ROWS=500000', 'STORAGEFORGE_LOG_KEEP_DAYS=30', 'LAB_RATE=20']))['first']
@@ -316,10 +317,12 @@ print(json.dumps(out))
             sudo(node.name, f'zpool offline {pool} {disk}; sleep 4')
             try:
                 want('DEGRADED' in sudo(node.name, f'zpool status {pool}'), f'{pool} is not degraded with {disk} offline: this would prove nothing')
-                said = sudo(node.name, 'journalctl -b --no-pager -o cat --since "-2 min" | grep -i "statechange\\|degraded\\|offline" | tail -3', check=False).strip()
+                said = sudo(node.name, 'journalctl -b --no-pager -o cat --since "-2 min" -t zed -t kernel | grep -i "statechange\\|degraded\\|offline" | tail -3', check=False).strip()
                 got = raised(node, 'pool-degraded')
                 want(got, f'{pool} is degraded and the rule raised nothing. What the host logged about it: {said or "nothing: a pool taken offline by hand may log only through zed"}')
-                return f'{pool} degraded, {said.splitlines()[-1][:80]!r}: {got[0]["level"]}'
+                # the md check may have raised this rule on this host already: it has to be the pool's own line that the rule last saw
+                want(pool in got[0]['message'] or 'statechange' in got[0]['message'] or 'vdev' in got[0]['message'], f'the rule is open, but not for {pool}: {got[0]["message"]!r}. What the host logged: {said!r}')
+                return f'{pool} degraded: {got[0]["message"][-110:]!r}: {got[0]["level"]}'
             finally:
                 sudo(node.name, f'zpool online {pool} {disk}; zpool clear {pool}; true', check=False)
         return check
@@ -386,7 +389,7 @@ print(json.dumps(out))
         r.check('notify-fix-and-back', able[0].name, fix_and_back(able[0]))
     else:
         r.add('logrule-md-degraded', '-', None, 'no host with systemd that deploys in this build')
-    pools = [n for n in journald if n.can('zfs')]
+    pools = [n for n in journald if n.can('zfs') and able and n.name != able[0].name] or [n for n in journald if n.can('zfs')]      # not the host the md check degraded, where there is another
     if pools:
         r.check('logrule-zfs-offline', pools[0].name, zfs_offline(pools[0]))
     else:

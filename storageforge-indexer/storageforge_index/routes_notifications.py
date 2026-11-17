@@ -37,7 +37,7 @@ def register(web, ctx):
         except ValueError as exc:
             return refused(exc)
 
-    def act(key, action, fn):
+    def with_audit(key, action, fn):          # every write here goes through this: done or refused, it is in the audit log
         try:
             got = fn()
         except (ValueError, LookupError) as exc:
@@ -49,33 +49,33 @@ def register(web, ctx):
     @web.post('/api/notifications/ack/<path:key>')
     @login_required
     def api_notification_ack(key):
-        return act(key, 'acknowledge', lambda: notifications.acknowledge(conn(), key, actor(), str(json_body().get('note') or '')))
+        return with_audit(key, 'acknowledge', lambda: notifications.acknowledge(conn(), key, actor(), str(json_body().get('note') or '')))
 
     @web.delete('/api/notifications/ack/<path:key>')
     @login_required
     def api_notification_unack(key):
-        return act(key, 'unacknowledge', lambda: notifications.unacknowledge(conn(), key, actor()))
+        return with_audit(key, 'unacknowledge', lambda: notifications.unacknowledge(conn(), key, actor()))
 
     @web.post('/api/notifications/snooze/<path:key>')
     @login_required
     def api_notification_snooze(key):
         body = json_body()
-        return act(key, 'snooze', lambda: notifications.snooze(conn(), key, float(body.get('hours') or 0) * 3600, actor(), str(body.get('note') or '')))
+        return with_audit(key, 'snooze', lambda: notifications.snooze(conn(), key, float(body.get('hours') or 0) * 3600, actor(), str(body.get('note') or '')))
 
     @web.delete('/api/notifications/snooze/<path:key>')
     @login_required
     def api_notification_unsnooze(key):
-        return act(key, 'unsnooze', lambda: notifications.unsnooze(conn(), key, actor()))
+        return with_audit(key, 'unsnooze', lambda: notifications.unsnooze(conn(), key, actor()))
 
     @web.post('/api/notifications/fix/<path:key>')
     @login_required
     def api_notification_fix(key):
-        return act(key, 'fix', lambda: notifications.prepare_fix(conn(), key, actor()))
+        return with_audit(key, 'fix', lambda: notifications.prepare_fix(conn(), key, actor()))
 
     @web.post('/api/notifications/undo/<int:plan_id>')
     @login_required
     def api_notification_undo(plan_id):
-        return act(f'plan {plan_id}', 'undo', lambda: notifications.prepare_undo(conn(), plan_id, actor()))
+        return with_audit(f'plan {plan_id}', 'undo', lambda: notifications.prepare_undo(conn(), plan_id, actor()))
 
     @web.post('/api/notifications/mutes')
     @login_required
