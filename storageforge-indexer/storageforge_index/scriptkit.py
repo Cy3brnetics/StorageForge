@@ -214,7 +214,7 @@ recv_receive() { # nonce name, the stream on stdin. It only ever makes something
   before=$(recv_list)
   # -C: btrfs receive runs chrooted into the folder, so a path in the stream cannot leave it. ZFS: -x leaves mountpoint, sharenfs and sharesmb
   # to what the parent gives (a stream cannot mount itself over a folder or export itself), and -o sets setuid, devices and canmount here whatever
-  # the stream says (no setuid file or device node works, and nothing mounts at boot: mount it by hand to look). Not lab-tested (SF-72).
+  # the stream says (no setuid file or device node works, and nothing mounts at boot: mount it by hand to look). Lab tier 16 reads all of them back (send-zfs-properties, 2026-11-17).
   # btrfs: the files keep the owner, mode and setuid bits the stream carries; see docs/security.md for what that leaves.
   if [[ $TOOL == vm ]]; then
     # a disk image, written as a new file of its own and readable by root alone: it holds all a VM holds. dd conv=sparse keeps

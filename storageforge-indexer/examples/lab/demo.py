@@ -177,6 +177,12 @@ def scan_everything(api):
     scan(api, list(IPS.values()))
 
 
+def known_as(api, vm):
+    """The name StorageForge has for a VM: what the host calls itself. An appliance says its full name (sf-pve.lab), and the container
+    resolves no short one, so a host is asked for by the name the scan gave it."""
+    return next((h['hostname'] for h in api.get('/api/hosts')['indexed'] if h['ip'] == IPS[vm] or h['hostname'] == vm), vm)
+
+
 def set_up_deploy_access(api):
     say('setting up deploy access with the sfadmin sudo password')
     admin_password = (STATE / 'admin-password').read_text().strip()
@@ -184,7 +190,7 @@ def set_up_deploy_access(api):
     for vm in hosts:
         confirm_host_key(api, vm)
     for vm in hosts:
-        out = api.post('/api/deploy/access', {'host': vm, 'admin_user': 'sfadmin', 'admin_key': 'lab-admin', 'password': admin_password})
+        out = api.post('/api/deploy/access', {'host': known_as(api, vm), 'admin_user': 'sfadmin', 'admin_key': 'lab-admin', 'password': admin_password})
         if out['state'] != 'ready':
             fail(f'{vm}: deploy access is {out["state"]}:\n{out["output"][-1500:]}')
         say(f'  {vm}: ready')

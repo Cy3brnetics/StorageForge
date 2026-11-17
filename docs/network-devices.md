@@ -9,7 +9,8 @@ StorageForge reads routers, switches and firewalls and can change them, with a t
 | MikroTik RouterOS 7 | SSH, one command at a time | **KVM lab**, a real CHR 7.25 |
 | MikroTik RouterOS 6, or 7 before 7.13 | The same, in the older `print terse` | Unit tests only, against its format |
 | OpenWrt | SSH and a POSIX shell: `ubus`, `uci`, `nft` | **KVM lab**, a real 25.12 |
-| pfSense, OPNsense | SSH and a POSIX shell: `config.xml`, `pfctl` | Unit tests only. There's no free image the lab can install unattended |
+| OPNsense | SSH and a POSIX shell: `config.xml`, `pfctl` | **KVM lab**, a real 26.7: read, a change kept, and the firewall putting itself back after being cut off |
+| pfSense | The same adapter as OPNsense | Unit tests only, against its format. Its image needs an account to download, so it is not in the lab. **It has not met a real pfSense: check what it reports before you rely on it** |
 | Cisco IOS, IOS-XE | SSH terminal or Telnet, `show` commands | Unit tests only. There's no free image. **It has never met a real device: check what it reports before you rely on it** |
 
 A real device of an untested kind may well behave differently. Start with one you can reach by another route.

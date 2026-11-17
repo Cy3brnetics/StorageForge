@@ -32,6 +32,32 @@ def sudo(vm, command, check=True, stdin=None):
     return ssh(vm, f'sudo -n sh -c {shlex.quote(command)}', stdin=stdin, check=check)
 
 
+def proxmox_guest(api, node):
+    """A Proxmox guest: a VM made with qm, never started. A scan as the scan user has to find it, with its id, and the map has to draw it."""
+    def run():
+        name = 'sf-lab-pve-vm'
+        sudo(node.name, f'qm create 9001 --name {name} --memory 64 --net0 virtio,bridge=vmbr0 >/dev/null 2>&1 || qm create 9001 --name {name} --memory 64')
+        try:
+            if name not in sudo(node.name, 'qm list'):
+                demo.fail('qm made no guest: this would prove nothing')
+            demo.scan(api, [node.ip])
+            mine = demo.known_as(api, node.name)
+            api.post('/api/infra/measure', {'host': mine})
+            items = api.get(f'/api/workloads?host={mine}')['workloads']
+            hit = [w for w in items if w['runtime'] == 'proxmox' and w['name'] == name]
+            if not hit:
+                demo.fail(f'the guest was not found among {[(w["runtime"], w["name"]) for w in items]}')
+            if str(hit[0].get('vmid')) != '9001' or hit[0]['kind'] != 'vm':
+                demo.fail(f'it should be VM 9001: {hit[0]}')
+            drawn = [n for n in api.get('/api/map?layers=workloads')['nodes'] if n['label'] == name]
+            if not drawn:
+                demo.fail('the map does not draw it')
+            return f'VM 9001 found by a scan, {hit[0]["state"]}, and drawn on the map as {drawn[0]["kind"]}'
+        finally:
+            sudo(node.name, 'qm destroy 9001 --purge >/dev/null 2>&1; true', check=False)
+    return run
+
+
 def quiet(vm, command):
     """Exit status of a command on a VM. The command's output is not wanted, only whether it worked."""
     p = subprocess.run([demo.LAB, 'ssh', vm, f'sudo -n sh -c {shlex.quote(command)}'], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
@@ -646,6 +672,8 @@ def tier10(r):
             demo.fail(f'its disk should sit on {expected}, says {on}')
         return f'guest found, disk on {on}'
     r.check('workload-libvirt', vms[0].name, libvirt)
+    for pve in roles.having('proxmox'):
+        r.check('workload-proxmox', pve.name, proxmox_guest(api, pve))
 
     # change tracking: add a listener, stop a container, edit a rule. The diff is exactly those
     def change_tracking():

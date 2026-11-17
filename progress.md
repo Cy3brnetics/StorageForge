@@ -12,7 +12,7 @@ Built and through the KVM lab, apart from what each row says.
 
 | Phase | State |
 | :--- | :--- |
-| M1 Network, M2 Services and Firewall, M3 Containers and VMs | Done: tier 10. LXC and Incus guests: tier 13, on 2026-11-08, one empty guest each (a real LXC container on `sf-bookworm`, a real Incus instance on `sf-ubuntu`). Proxmox guests are parsed and unit-tested, not lab-tested until a build with `sf-pve` runs the tiers, which the default build now is |
+| M1 Network, M2 Services and Firewall, M3 Containers and VMs | Done: tier 10. LXC and Incus guests: tier 13, on 2026-11-08, one empty guest each (a real LXC container on `sf-bookworm`, a real Incus instance on `sf-ubuntu`). Proxmox guests: `workload-proxmox` on 2026-11-17, a VM made with `qm` on Proxmox VE 9.2, found by a scan and drawn. Only a VM that was never started has been tried, and no container (`pct`) |
 | M4 Map UI foundations | Done, except the [listed](docs/infrastructure-map.md#not-built) layouts and colour rules |
 | M5 Placeholders, manual nodes, change tracking | Done: tiers 10, 11 |
 | M6 Path query, what-if, plan actions | Done for firewall, network, WireGuard and container steps: tier 11. Stacks, LXC and catalog tools aren't built: see the [roadmap](roadmap.md) |
@@ -25,7 +25,8 @@ Built and through the KVM lab, apart from what each row says.
 | Phase | State |
 | :--- | :--- |
 | 1 Transports, 2 RouterOS, 3 OpenWrt, 6 Language, 7 Multi-hop, 8 Lab and tier 12, 9 Scanner and traffic, Management planner | Done: tier 12, on real RouterOS 7.25 and OpenWrt 25.12. Old SSH ciphers have not met a device that needs them. Language output for firewalld and ufw is unit-tested only |
-| 4 pfSense and OPNsense, 5 Cisco | Built, not lab-tested: no free image. Written against published formats and a simulated shell |
+| 4 OPNsense | Done: tier 12, on a real OPNsense 26.7, on 2026-11-17. Reading and changing it both needed fixes the lab found |
+| 4 pfSense, 5 Cisco | Built, not lab-tested: their images need accounts. Written against published formats and a simulated shell |
 
 ## Ransomware defense
 
@@ -68,9 +69,13 @@ Corrections stand: no VSS trap, no cryptographic shred, no certificates, no WebS
 - 2026-11-13: **0.5.2**, two bugs GitHub's CI showed. Unit-tested, not lab-tested.
 - 2026-11-16: the roadmap for 0.6.0 ([roadmap.md](roadmap.md)), in versions 0.5.3 to 0.6.0. The unit suite in three blocks with random tests, and the stress runs: [the report](docs/test-report-2026-11-16.md). No lab run since 2026-11-09.
 - 2026-11-17: 0.5.3's lab gaps, before its lab run: a default build with every host a check asks for and the appliances and routers in it, Playwright for tier 13, `qemu-img` on `sf-ubuntu`, SF-72's ZFS properties read back and the btrfs side measured in tier 16, `shellcheck` with the `test` extra. None of it has been through the lab yet.
+- 2026-11-17: **the 0.5.3 lab run**, at `9fee87e`, in two builds because the default build wants 24 GB: 589 passed, 0 failed, 2 skipped on the seven configs with the routers; tier 0, tier 2 (101 passed) and tier 8 (17 passed) on the appliances. Every check the roadmap listed as skipped ran. [The table and what went wrong on the way](docs/kvm-lab.md#the-run-of-2026-11-17).
 
 What the lab found that unit tests had not:
 
+- OPNsense 26 keeps the rules its pages make in a new place in `config.xml`: one rule of six was read.
+- No change could be applied to OPNsense: the way back was planted from pfSense's paths. A rule named its alias by another name than the alias had, on pfSense too.
+- Two copies of a folder side by side were not reported when the folder above had a copy on another host.
 - `print as-value` prints nothing over RouterOS's SSH, which the roadmap had as the way to read it.
 - RouterOS serializes a port as `80.000000`.
 - RouterOS redraws its prompt with bare carriage returns, which read as no prompt at all, so its terminal and Telnet both timed out. The simulated shell never did this.

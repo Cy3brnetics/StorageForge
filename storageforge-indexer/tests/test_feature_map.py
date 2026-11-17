@@ -124,7 +124,7 @@ class TheDocs(unittest.TestCase):
         """Each of these is a line of kvm-lab.md that carries the label, so a reader does not have to infer it from a missing row."""
         lines = (DOCS / 'kvm-lab.md').read_text().splitlines()
         # Incus and LXC, Tailscale joins, signed scan payloads, tier 16 and tier 17 have run since (2026-11-08) and left this list
-        wanted = {'pfSense': 'pfSense, OPNsense and Cisco', 'old SSH ciphers': 'Old SSH ciphers', 'proxy routes': 'Proxy routes and identity providers',
+        wanted = {'pfSense': 'pfSense and Cisco IOS', 'old SSH ciphers': 'Old SSH ciphers', 'proxy routes': 'Proxy routes and identity providers',
                   'Terraform and Puppet': 'Terraform and Puppet apply', 'PagerDuty': 'PagerDuty', 'FIDO2': 'FIDO2'}
         for what, phrase in wanted.items():
             self.assertTrue(any(phrase in x and 'not lab-tested' in x for x in lines), f'{what} does not say "not lab-tested" in docs/kvm-lab.md')

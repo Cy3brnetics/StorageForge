@@ -858,6 +858,10 @@ def api_sweep(api):
                 return e.code, e.read()[:160]
         for route in sorted(routes):
             code, body = status(route)
+            until = time.time() + 180
+            while code == 503 and b'"busy"' in body and time.time() < until:      # the server saying come back in a moment, as it tells the page: not an error
+                time.sleep(2)
+                code, body = status(route)
             counted += 1
             if code >= 500:
                 bad.append(f'{route}: {code} {body}')

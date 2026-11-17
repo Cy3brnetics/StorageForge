@@ -86,6 +86,21 @@ Five parts of the lab had been written and never run. On 2026-11-08 they ran aga
 
 Running tier 13 twice without `lab.sh reset` between fails most of it: it leaves files, a mount and a changed host key behind, and one check removes the last admin. Reset between runs, as `lab.sh test --all` does.
 
+## The run of 2026-11-17
+
+The first run of every tier with nothing skipped that a host could run, at commit `9fee87e`, for 0.5.3. The default build needs about 24 GB of free memory and the workstation had 22, so it ran as two builds: the seven configs with the routers and the machines behind them on the workstation, and the appliances with `sf-bookworm` on a second libvirt host.
+
+| Build | Tiers | Result |
+| :--- | :--- | :--- |
+| `sf-ctl`, `sf-alpine`, `sf-ubuntu`, `sf-jammy`, `sf-bookworm`, `sf-fedora`, `sf-rocky`, with `sf-mikrotik`, `sf-openwrt`, `sf-opnsense`, `sf-wan-host`, `sf-lan-client`, `sf-dmz-server` | 0 to 7, 9 to 14, 16, 17, 18 | **589 passed, 0 failed, 2 skipped.** The skips: tier 8 (the appliances are in the other build) and `transport-cisco-pfsense` (no image without an account) |
+| `sf-bookworm`, `sf-pve`, `sf-truenas`, `sf-xcp` | 0, 2, 8 | Tier 0: 18 passed, 3 skipped (they need `sf-ctl`). Tier 2: 101 passed, 0 failed. Tier 8: 17 passed |
+
+Every check the roadmap listed as skipped ran and passed: `smb`, `snapjobs-snapper`, `btrfs-disk-pulled`, `compile-iptables`, `lxc-guests`, `incus-guests`, `workload-libvirt`, `ui-pages` (22 pages and tabs in Chromium), the ZFS sends between hosts, and SF-72's `send-zfs-properties`. `send-btrfs-setuid` measured what the docs say: a btrfs copy keeps a root setuid file, the mount was not `nosuid`, and another account could reach it.
+
+OPNsense 26.7 had its first run, and all five of its tier 12 checks passed after two fixes it led to: its rules are read from where 26 keeps them, and a change can be applied to it at all. Tier 13 found that two copies of a folder side by side went unreported when the folder above had a copy on another host, on every host of a lab whose seed is the same everywhere; fixed, and tier 13 ran again on the fixed build.
+
+The first pass was not clean, and why: one tier 2 check failed because `lab.sh` was edited while the run was using it (tier 2 ran again: 213 passed); the run was cut off in tier 13 when the session that started it ended, so tiers 13 to 18 ran from a systemd unit; and three tier 13 checks took the server's "ask again in a moment" (503 with `Retry-After`, new in this release) for a failure, which the lab's client now waits out as the page does. **The appliances have not run tiers 1 and 3 to 7 with a controller**, as before. One check did run with one: `sf-pve` was joined to the main build afterwards and `workload-proxmox` passed, a VM made with `qm` found by a scan and drawn on the map. A host is asked for there by the name its scan gave it (`sf-pve.lab`): the lab had asked by its short name, which nothing resolves.
+
 ## Test tiers
 
 | Tier | File | Checks |
@@ -142,7 +157,7 @@ The known failures from those builds were fixed and rechecked on 2026-11-01, on 
 - **PostgreSQL:** the lab runs StorageForge on SQLite. CI runs the unit tests on PostgreSQL instead, apart from those about SQLite files and the command line tests that drive one.
 - **Real updates:** what a mirror holds changes daily, so no tier can state the result. Update scripts run against stand-ins.
 - **Outside services and hardware (not lab-tested):** PagerDuty and a physical FIDO2 token.
-- **Real network devices (not lab-tested):** pfSense, OPNsense and Cisco IOS or IOS-XE on a real device. Only a parser and unit tests have seen them, and no free image exists for the lab. [What has been tested on what](network-devices.md#what-has-been-tested-on-what) has the table.
+- **Real network devices (not lab-tested):** pfSense and Cisco IOS or IOS-XE on a real device. Only a parser and unit tests have seen them: pfSense's image needs an account to download and Cisco's a Cisco account. OPNsense, which shares pfSense's adapter, is in the lab since 2026-11-17. [What has been tested on what](network-devices.md#what-has-been-tested-on-what) has the table.
 - **Old SSH ciphers (not lab-tested):** the legacy key exchange, host key and cipher options for old routers and switches are checked against the option strings in unit tests, and no device in the lab is old enough to need them.
 - **Incus and LXC guests:** tier 13's `lxc-guests` and `incus-guests` checks make one empty guest each. Both passed on 2026-11-08: a real LXC container on `sf-bookworm` and a real Incus instance on `sf-ubuntu` were on the map. Only empty guests have been tried.
 - **Proxy routes and identity providers (not lab-tested):** they have parsers and unit tests, and need an account on an outside service.
