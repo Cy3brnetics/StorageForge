@@ -4,6 +4,14 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 
 ## Unreleased
 
+### Added
+- **Counts of log lines per host, unit, level and 5 minutes** are kept for 400 days, long after the lines are gone, and include lines over a host's rate. Nothing reads them yet: the anomaly baselines of a later release need weeks of them, so they start now.
+- **A log line says who journald saw write it.** A line's program name is whatever the writer calls itself, so `logger -t sshd` could pass for sshd. Scans now also keep journald's own `_UID`, `_COMM` and `_EXE`, and the Logs panel says **written by** when they differ from the name on the line. The journal's sequence number is kept with each line, for seeing lines deleted on a host once lines are pushed.
+
+### Fixed
+- **A flood from one host costs the flood, not its older lines.** Each host has a rate, by default its row limit spread over its days (16,666 lines a day, with one day saved up). Lines over it are not stored, routine ones before warnings, and the Logs panel and `/api/hostlogs/status` say how many. `STORAGEFORGE_LOG_RATE_PER_DAY` changes it.
+- **A host's clock no longer decides which of its log lines are kept.** Lines were kept or dropped by the time the host stamped on them: one stamped older than 30 days was deleted as it was stored, so a host with a wrong clock kept nothing, and a host could log lines stamped a day ahead and have them push its real lines out of the row limit. Lines are now kept by when they arrived. Migration 043 runs on start.
+
 ## 0.5.3 — 2026-11-17
 
 What was on `main` and not released, and the KVM lab's own gaps closed. Upgrade notes: no migrations; build the images again (`docker compose build`), as they are tagged 0.5.3 and now build on Wolfi. A PostgreSQL container wants `--shm-size=256m`. Lab status: every tier ran on 2026-11-17 with nothing skipped that a host could run, in two builds: 589 passed, 0 failed, 2 skipped on the seven configs with RouterOS, OpenWrt and OPNsense, and tiers 0, 2 and 8 on Proxmox, TrueNAS and XCP-ng ([the table](docs/kvm-lab.md#the-run-of-2026-11-17)). Unit suites at the release commit's parent: 2,006 tests with 0 failed on SQLite (6 skipped) and on PostgreSQL (86 skipped, nearly all about SQLite files). Still **not lab-tested**: pfSense and Cisco (their images need accounts), the appliances through tiers 1 and 3 to 7, and what [the lab can't test](docs/kvm-lab.md#what-the-lab-cant-test).

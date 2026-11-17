@@ -38,7 +38,7 @@ class BrowserLogs(unittest.TestCase):
         conn.execute("INSERT INTO graph_nodes (node_id, kind, label, host, updated_at) VALUES ('host:nas', 'Host', 'nas', 'nas', 1)")
         now = time.time()
         lines = [line(1, now - 600, 3, 'sshd.service', HOSTILE), line(2, now - 900, 4, 'zed.service', 'pool degraded'),
-                 line(3, now - 1200, 5, 'sshd.service', 'session opened'), line(4, now - 7200, 6, 'cron.service', 'job ran'),
+                 {**line(3, now - 1200, 5, 'sshd.service', 'session opened'), 'ident': 'sshd', 'comm': 'logger', 'exe': '/usr/bin/logger', 'uid': 1000}, line(4, now - 7200, 6, 'cron.service', 'job ran'),
                  line(5, now - 3 * 86400, 7, 'cron.service', 'old debug'), line(6, now - 3 * 86400 - 60, 3, 'zed.service', 'old error')]
         hostlogs.store(conn, 'nas', {'lines': lines, 'state': 'ok', 'cut': False}, now)
         conn.close()
@@ -220,6 +220,16 @@ class BrowserLogs(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
     # ── what a host says is only text ────────────────────────────────────────────────────────────────────────────
+    def test_a_line_says_when_journald_saw_another_program_write_it(self):
+        """A line calls itself sshd, and journald saw logger write it as uid 1000. The name on a line is the writer's own word."""
+        self.open_logs()
+        self.page.wait_for_selector('#hl-lines li:has-text("session opened")')
+        meta = self.page.inner_text('#hl-lines li:has-text("session opened") .m')
+        self.assertIn('written by logger (uid 1000)', meta)
+        self.assertIn('journald: /usr/bin/logger, uid 1000', self.page.get_attribute('#hl-lines li:has-text("session opened") .m', 'title'))
+        self.assertNotIn('written by', self.page.inner_text('#hl-lines li:has-text("pool degraded") .m'), 'nothing is said where journald has no other account')
+        self.assertEqual(self.errors, [])
+
     def test_what_a_host_logged_is_shown_as_text_and_never_run(self):
         self.open_logs('?lhost=nas')
         self.page.wait_for_selector('#hl-lines li:has-text("disk")')

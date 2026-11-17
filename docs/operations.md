@@ -16,6 +16,10 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_LISTEN`, `STORAGEFORGE_PORT` | `127.0.0.1`, `8080` (`0.0.0.0` in the image) | Where `serve` listens |
 | `STORAGEFORGE_COOKIE_SECURE` | `0` (`1` in compose) | `Secure` `__Host-` cookie; needs HTTPS |
 | `STORAGEFORGE_PROXY_HOPS` | `0` (`1` in compose) | Trust `X-Forwarded-For` from this many proxies (`2` with another proxy in front of the stack's) |
+| `STORAGEFORGE_HOST_LOGS` | `1` | `0` stops scans collecting host journals |
+| `STORAGEFORGE_LOG_KEEP_DAYS`, `STORAGEFORGE_LOG_KEEP_ROWS` | `30`, `500000` | How long a host's log lines are kept, counted from when they arrived, and how many per host |
+| `STORAGEFORGE_LOG_RATE_PER_DAY` | rows ÷ days: 16,666 | Lines one host may store a day, with one day saved up. Lines over it are counted and not stored, routine ones first, so a flood never costs older lines. At the default a host at its rate fills its rows in exactly its days |
+| `STORAGEFORGE_LOG_COUNT_KEEP_DAYS` | `400` | How long the counts per unit, level and 5 minutes are kept: they outlive the lines |
 | `STORAGEFORGE_PROXY_HOST` | none (`proxy` in compose) | Believe those headers only on requests from this host (name or address), not from anything else that can reach the app |
 | `STORAGEFORGE_SCAN_INTERVAL` | off (`6h` in compose) | Rescan bound hosts this often (`90m`, `6h`, `1d`) |
 | `STORAGEFORGE_SCAN_WORKERS` | `4` | Hosts scanned at once; further scan jobs wait for a free worker |

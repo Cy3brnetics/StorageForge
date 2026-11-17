@@ -188,9 +188,13 @@ class Storing(Base):
         self.assertEqual(s['state'], 'limited')
         self.assertIn('access script', s['note'])
 
-    def test_old_lines_go(self):
-        self.store(row('old', at=NOW - (hostlogs.KEEP_DAYS + 1) * 86400), row('new'))
-        self.assertEqual([r[0] for r in self.conn.all('SELECT message FROM host_log_lines')], ['new'])
+    def test_lines_go_by_when_they_arrived_not_by_the_time_stamped_on_them(self):
+        """A line stamped older than the retention was deleted as it was stored (roadmap 3, phase 0): a host with a wrong clock kept nothing."""
+        self.store(row('stamped long ago', at=NOW - (hostlogs.KEEP_DAYS + 1) * 86400), row('new'))
+        self.assertEqual(sorted(r[0] for r in self.conn.all('SELECT message FROM host_log_lines')), ['new', 'stamped long ago'])
+        later = NOW + (hostlogs.KEEP_DAYS + 1) * 86400
+        hostlogs.store(self.conn, 'nas', hostlogs.parse(output(row('arrived later', at=NOW - 5)), later), later)
+        self.assertEqual([r[0] for r in self.conn.all('SELECT message FROM host_log_lines')], ['arrived later'], 'what arrived more than KEEP_DAYS ago is gone, whatever its stamp')
 
     def test_a_host_is_held_to_its_row_limit(self):
         keep = hostlogs.KEEP_ROWS
@@ -213,6 +217,127 @@ class Storing(Base):
         os.environ['STORAGEFORGE_HOST_LOGS'] = '0'
         self.addCleanup(os.environ.pop, 'STORAGEFORGE_HOST_LOGS')
         self.assertIsNone(hostlogs.collect(self.conn, None, 'nas'))
+
+
+class Ingest(Base):
+    """Roadmap 3, phase 0: the holes in what was stored. Arrival decides what is kept, a host has a rate, journald's own account of the
+    writer is stored beside the writer's, and counts outlive the lines."""
+
+    def store(self, *rows, now=NOW, host='nas'):
+        return hostlogs.store(self.conn, host, hostlogs.parse(output(*rows), now), now)
+
+    def limits(self, **values):
+        for name, value in values.items():
+            self.addCleanup(setattr, hostlogs, name, getattr(hostlogs, name))
+            setattr(hostlogs, name, value)
+
+    def messages(self, host='nas'):
+        return sorted(r[0] for r in self.conn.all('SELECT message FROM host_log_lines WHERE host = :h', {'h': host}))
+
+    def test_lines_stamped_ahead_cannot_push_real_lines_out(self):
+        """A host could log 500,000 lines stamped a day ahead, and the row limit kept those as the newest and dropped the real ones."""
+        self.limits(KEEP_ROWS=3, RATE_PER_DAY=100)
+        self.store(row('real 1', at=NOW - 30), row('real 2', at=NOW - 20), now=NOW)
+        self.store(row('real 3', at=NOW + 3600 - 10), now=NOW + 3600)
+        ahead = [row(f'ahead {i}', at=NOW + 80000 + i) for i in range(2)]
+        self.store(*ahead, now=NOW + 7200)
+        self.assertEqual(self.messages(), ['ahead 0', 'ahead 1', 'real 3'], 'the three that arrived last, not the three stamped latest')
+
+    def test_a_host_over_its_rate_keeps_its_older_lines_and_the_overflow_is_recorded(self):
+        self.limits(RATE_PER_DAY=5)
+        self.store(*[row(f'early {i}', at=NOW - 100 + i) for i in range(3)])
+        new = self.store(*[row(f'flood {i}', at=NOW + i) for i in range(10)], now=NOW + 60)
+        self.assertEqual(new, 2, 'three of a day\'s five were used, and a minute gives back almost nothing')
+        self.assertEqual(sum(m.startswith('early') for m in self.messages()), 3, 'the flood did not cost the older lines')
+        s = hostlogs.status(self.conn, 'nas')[0]
+        self.assertEqual((s['over_rate'], s['over_total'], s['rate_per_day']), (8, 8, 5))
+        self.assertIn('8 line(s) were over this host\'s rate of 5 a day', s['note'])
+
+    def test_the_rate_takes_routine_lines_before_warnings(self):
+        self.limits(RATE_PER_DAY=2)
+        self.store(row('chatter 1'), row('chatter 2'), row('disk failing', priority='3'), row('chatter 3'), row('pool degraded', priority='4'))
+        self.assertEqual(self.messages(), ['disk failing', 'pool degraded'])
+
+    def test_the_allowance_comes_back_with_time_up_to_a_days_worth(self):
+        self.limits(RATE_PER_DAY=4)
+        self.assertEqual(self.store(*[row(f'a{i}') for i in range(6)]), 4)
+        self.assertEqual(self.store(*[row(f'b{i}', at=NOW + 43100 + i) for i in range(6)], now=NOW + 43200), 2, 'half a day gives half the rate back')
+        self.assertEqual(self.store(*[row(f'c{i}', at=NOW + 900000 + i) for i in range(9)], now=NOW + 900000), 4, 'and ten days give one day\'s worth, not ten')
+
+    def test_a_line_read_twice_is_not_counted_as_over_the_rate(self):
+        self.limits(RATE_PER_DAY=2)
+        rows = [row('one'), row('two')]
+        self.store(*rows)
+        self.store(*rows, now=NOW + 10)          # the overlap: a scan reads the last five minutes again
+        s = hostlogs.status(self.conn, 'nas')[0]
+        self.assertEqual((s['over_rate'], s['over_total'], s['lines']), (0, 0, 2))
+
+    def test_one_hosts_flood_is_its_own(self):
+        self.limits(RATE_PER_DAY=2)
+        self.store(*[row(f'flood {i}') for i in range(9)], host='loud')
+        self.assertEqual(self.store(row('quiet'), host='nas'), 1)
+        self.assertEqual(hostlogs.status(self.conn, 'nas')[0]['over_total'], 0)
+
+    def test_what_journald_says_of_the_writer_is_kept_beside_what_the_writer_says(self):
+        """SYSLOG_IDENTIFIER is the writer's own word: `logger -t sshd` is anyone. _UID, _COMM and _EXE are journald's."""
+        r = {**row('Accepted password for root', ident='sshd'), '_UID': '1000', '_COMM': 'logger', '_EXE': '/usr/bin/logger', '__SEQNUM': '4711', '__SEQNUM_ID': 'ab' * 16}
+        x = hostlogs.parse(output(r), NOW)['lines'][0]
+        self.assertEqual((x['ident'], x['uid'], x['comm'], x['exe'], x['seqnum'], x['seqnum_id']), ('sshd', 1000, 'logger', '/usr/bin/logger', 4711, 'ab' * 16))
+        self.store(r)
+        got = hostlogs.page(self.conn, hostlogs.clean_filter())['entries'][0]
+        self.assertEqual((got['ident'], got['uid'], got['comm'], got['exe'], got['arrived']), ('sshd', 1000, 'logger', '/usr/bin/logger', int(NOW)))
+        self.assertEqual(self.conn.all('SELECT seqnum, seqnum_id FROM host_log_lines')[0][:2], (4711, 'ab' * 16))
+
+    def test_a_host_sends_anything_in_those_fields(self):
+        for bad in ('-1', '1e9', '٣', 'root', '', None, [1, 2], '99999999999999999999999999', {'a': 1}):
+            r = {**row(f'odd {bad!r}'), '_UID': bad, '__SEQNUM': bad, '__SEQNUM_ID': bad, '_COMM': bad, '_EXE': bad}
+            x = hostlogs.parse(output(r), NOW)['lines'][0]
+            self.assertEqual((x['uid'], x['seqnum'], x['seqnum_id']), (None, None, None), bad)
+            self.assertIn(type(x['comm']), (str, type(None)))
+        x = hostlogs.parse(output({**row('esc'), '_COMM': 'a\x1b[31mb\nc', '_EXE': '/x' * 500, '__SEQNUM_ID': 'AB' * 16}), NOW)['lines'][0]
+        self.assertEqual(x['comm'], 'a [31mb c')
+        self.assertLessEqual(len(x['exe']), hostlogs.NAME_CHARS)
+        self.assertIsNone(x['seqnum_id'], 'an ID is 32 lower-case hex digits, or it is not one')
+        self.assertEqual(self.store({**row('a line from before these fields')}), 1)
+        self.assertEqual(self.conn.all("SELECT uid, comm, seqnum FROM host_log_lines")[0][:3], (None, None, None))
+
+    def counts(self, host='nas'):
+        return {(r[0], r[1], r[2]): r[3] for r in self.conn.all('SELECT unit, priority, bucket, lines FROM host_log_counts WHERE host = :h', {'h': host})}
+
+    def test_new_lines_are_counted_per_unit_level_and_five_minutes(self):
+        b = int(NOW // 300)
+        self.store(row('a', at=NOW - 10), row('b', at=NOW - 20), row('c', at=NOW - 10, priority='3'), row('d', at=NOW - 400), row('e', at=NOW - 5, unit='', ident='kernel'))
+        at = lambda secs: int((NOW - secs) // 300)
+        self.assertEqual(self.counts(), {('sshd.service', 6, at(10)): 2, ('sshd.service', 3, at(10)): 1, ('sshd.service', 6, at(400)): 1, ('', 6, at(5)): 1})
+        self.assertEqual(at(10), b - 1 if NOW % 300 < 10 else b)
+        self.store(row('a', at=NOW - 10), row('f', at=NOW - 12), now=NOW + 30)
+        self.assertEqual(self.counts()[('sshd.service', 6, at(10))], 3, 'a line read again is counted once')
+
+    def test_a_line_over_the_rate_is_counted_though_not_stored(self):
+        self.limits(RATE_PER_DAY=1)
+        self.store(*[row(f'flood {i}', at=NOW - 5) for i in range(6)])
+        self.assertEqual(len(self.messages()), 1)
+        self.assertEqual(sum(self.counts().values()), 6, 'how loud the host was is known, even where the lines are not kept')
+
+    def test_a_clock_ahead_does_not_write_the_futures_counts(self):
+        self.store(row('ahead', at=NOW + 50000))
+        self.assertEqual(list(self.counts()), [('sshd.service', 6, int(NOW // 300))])
+
+    def test_counts_outlive_the_lines_and_then_go_too(self):
+        self.store(row('a', at=NOW - 10))
+        later = NOW + (hostlogs.KEEP_DAYS + 5) * 86400
+        self.store(row('b', at=later - 10), now=later)
+        self.assertEqual(self.messages(), ['b'])
+        self.assertEqual(sum(self.counts().values()), 2, 'the count of the line that is gone is still there')
+        much = later + (hostlogs.COUNT_KEEP_DAYS + 5) * 86400
+        self.store(row('c', at=much - 10), now=much)
+        self.assertEqual(sum(self.counts().values()), 1)
+
+    def test_the_script_asks_for_journalds_own_fields_and_never_the_command_line(self):
+        text = hostlogs.script(0)
+        for field in ('_UID', '_COMM', '_EXE'):
+            self.assertIn(field, text)
+        self.assertNotIn('_CMDLINE', text)
 
 
 class Searching(Base):

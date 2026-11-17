@@ -6,7 +6,15 @@ worse, so a chatty service can't push errors out. Lines are one row each: time, 
 
 The journal holds what programs chose to print, which can include passwords, so known secret shapes are removed before a
 line is stored. That catches common forms, not every form. It is also the host's own word: anyone on the host can write
-to it, so a line says what was logged, not that it happened. Only `unit` comes from journald rather than the program.
+to it, so a line says what was logged, not that it happened. `ident` is whatever the writer called itself; `unit`, `uid`,
+`comm` and `exe` are journald's own account of who wrote the line, which a writer that is not root cannot choose.
+
+What is kept is decided by when a line arrived, never by the time the host stamped on it: a host with a wrong or lying clock
+cannot have its lines deleted as they are stored, or push other lines out with ones stamped ahead. Each host has a rate
+(RATE_PER_DAY, with one day of it saved up), sized so that a host at its rate for KEEP_DAYS fills KEEP_ROWS and no more.
+Lines over it are not stored, routine ones first, and how many is recorded: a flood costs the flood, not the older lines.
+Every new line is also counted per unit, level and 5 minutes in host_log_counts, stored or not, and those counts are kept
+for COUNT_KEEP_DAYS, because a baseline needs weeks of them.
 
 Reading the whole journal takes membership of systemd-journal, which `access script` adds. Without it journalctl shows the
 scan user only its own lines, so nothing is stored and the status says why, and the first scan with access reads back
@@ -33,9 +41,13 @@ OVERLAP_SECS = 300              # read a little of what the last scan saw: lines
 FUTURE_SECS = 86400
 KEEP_DAYS = int(os.environ.get('STORAGEFORGE_LOG_KEEP_DAYS', '30'))
 KEEP_ROWS = int(os.environ.get('STORAGEFORGE_LOG_KEEP_ROWS', '500000'))     # per host
+# a host at this rate for KEEP_DAYS fills KEEP_ROWS exactly, so the row limit never has to take an older line to make room for a newer one
+RATE_PER_DAY = float(os.environ.get('STORAGEFORGE_LOG_RATE_PER_DAY', '0')) or KEEP_ROWS / max(KEEP_DAYS, 1)
+COUNT_SECS = 300
+COUNT_KEEP_DAYS = int(os.environ.get('STORAGEFORGE_LOG_COUNT_KEEP_DAYS', '400'))
 MAX_EXPORT = 20000
 JOURNAL_GROUPS = {'systemd-journal', 'adm', 'wheel', 'root'}                # the groups journald's files are readable by
-FIELDS = 'MESSAGE,PRIORITY,_SYSTEMD_UNIT,SYSLOG_IDENTIFIER,_PID'            # never _CMDLINE: that is where passwords sit
+FIELDS = 'MESSAGE,PRIORITY,_SYSTEMD_UNIT,SYSLOG_IDENTIFIER,_PID,_UID,_COMM,_EXE'    # never _CMDLINE: that is where passwords sit. __SEQNUM and its ID always come
 HINTS = {'limited': "the scan user can't read the whole journal: run `access script --host <host>` on it as root, then scan again",
          'no_journal': 'this host has no journalctl, so there is nothing to collect'}
 
@@ -165,7 +177,15 @@ def _line(row: dict, now: float) -> dict | None:
     identity = _text(row.get('__CURSOR'), 500) or f'{at_us}|{message}'
     return {'key': hashlib.sha256(identity.encode()).hexdigest()[:32], 'at_us': at_us, 'priority': priority,
             'unit': _text(row.get('_SYSTEMD_UNIT'), NAME_CHARS) or None, 'ident': _text(row.get('SYSLOG_IDENTIFIER'), NAME_CHARS) or None,
-            'pid': pid, 'message': message}
+            'pid': pid, 'message': message, 'uid': _number(row.get('_UID'), 0xffffffff), 'comm': _text(row.get('_COMM'), NAME_CHARS) or None,
+            'exe': _text(row.get('_EXE'), NAME_CHARS) or None, 'seqnum': _number(row.get('__SEQNUM'), (1 << 63) - 1),
+            'seqnum_id': (_text(row.get('__SEQNUM_ID'), 64) if re.fullmatch(r'[0-9a-f]{32}', _text(row.get('__SEQNUM_ID'), 64)) else None)}
+
+
+def _number(value, most: int) -> int | None:
+    """A journal field that should be a whole number from 0 to most, or None: a host may send anything."""
+    text = _text(value, 24)
+    return int(text) if text.isascii() and text.isdigit() and int(text) <= most else None
 
 
 # ── storing it ──────────────────────────────────────────────────────
@@ -183,32 +203,65 @@ def _set_status(conn: Conn, host: str, now: int, state: str, new: int, cut: bool
                  {'h': host, 't': now, 's': state, 'n': new, 'c': 1 if cut else 0, 'u': newest_us, 'o': note[:500]})
 
 
+def _allowance(conn: Conn, host: str, now: float) -> float:
+    """How many lines this host may store now: what it had left, plus the rate for the time since, up to a day's worth."""
+    row = next(iter(conn.all('SELECT rate_tokens, rate_at FROM host_log_status WHERE host = :h', {'h': host})), None)
+    if not row or row[0] is None or row[1] is None:
+        return RATE_PER_DAY
+    return min(RATE_PER_DAY, max(0.0, float(row[0])) + max(0.0, now - row[1]) * RATE_PER_DAY / 86400)
+
+
 def store(conn: Conn, host: str, parsed: dict, now: float | None = None) -> int:
     """Saves one scan's lines. Returns how many were new."""
     now = time.time() if now is None else now
     lines, state, cut = parsed['lines'], parsed['state'], parsed['cut']
-    new = 0
+    new = over = 0
+    counted: dict = {}
     with conn.tx():
-        for x in lines:
-            new += conn.execute("""INSERT INTO host_log_lines (host, line_key, at_us, priority, unit, ident, pid, message, collected_at)
-                                   VALUES (:h, :k, :a, :p, :u, :i, :d, :m, :t) ON CONFLICT (host, line_key) DO NOTHING""",
-                                {'h': host, 'k': x['key'], 'a': x['at_us'], 'p': x['priority'], 'u': x['unit'], 'i': x['ident'],
-                                 'd': x['pid'], 'm': x['message'], 't': int(now)}).rowcount
+        left = _allowance(conn, host, now)
+        # warning and worse first, so the rate takes routine lines before it takes those
+        for x in sorted(lines, key=lambda x: x['priority'] > 4):
+            if left >= 1:
+                fresh = conn.execute("""INSERT INTO host_log_lines (host, line_key, at_us, priority, unit, ident, pid, message, collected_at, uid, comm, exe, seqnum, seqnum_id)
+                                        VALUES (:h, :k, :a, :p, :u, :i, :d, :m, :t, :uid, :comm, :exe, :seq, :sid) ON CONFLICT (host, line_key) DO NOTHING""",
+                                     {'h': host, 'k': x['key'], 'a': x['at_us'], 'p': x['priority'], 'u': x['unit'], 'i': x['ident'], 'd': x['pid'], 'm': x['message'],
+                                      't': int(now), 'uid': x.get('uid'), 'comm': x.get('comm'), 'exe': x.get('exe'), 'seq': x.get('seqnum'), 'sid': x.get('seqnum_id')}).rowcount
+                new += fresh
+                left -= fresh
+            else:           # over the rate: not stored, but counted, unless it is a line already here
+                fresh = 0 if conn.scalar('SELECT 1 FROM host_log_lines WHERE host = :h AND line_key = :k', {'h': host, 'k': x['key']}) else 1
+                over += fresh
+            if fresh:
+                # by the host's clock, since that is when it happened, but never after now: a clock ahead does not write the future's counts
+                bucket = int(min(x['at_us'] / 1e6, now) // COUNT_SECS)
+                key = (x['unit'] or '', x['priority'], bucket)
+                counted[key] = counted.get(key, 0) + 1
+        for (unit, priority, bucket), n in counted.items():
+            conn.execute("""INSERT INTO host_log_counts (host, unit, priority, bucket, lines) VALUES (:h, :u, :p, :b, :n)
+                            ON CONFLICT (host, unit, priority, bucket) DO UPDATE SET lines = host_log_counts.lines + :n""",
+                         {'h': host, 'u': unit, 'p': priority, 'b': bucket, 'n': n})
         # not advanced by a line stamped in the future, or the next scan would ask from then and find nothing
         seen = [x['at_us'] for x in lines if x['at_us'] <= now * 1e6]
         note = HINTS.get(state, '')
         if cut:
             note = 'more lines were logged than one scan keeps: the oldest of them were not collected. Scan more often to get them all.'
+        if over:
+            note = (f'{over} line(s) were over this host\'s rate of {int(RATE_PER_DAY)} a day and were not stored, routine ones first. They are counted. '
+                    'Raise STORAGEFORGE_LOG_KEEP_ROWS or STORAGEFORGE_LOG_RATE_PER_DAY to keep more.')
         _set_status(conn, host, int(now), state, new, cut, max(seen) if seen else None, note)
+        conn.execute('UPDATE host_log_status SET rate_tokens = :l, rate_at = :t, over_rate = :o, over_total = over_total + :o WHERE host = :h',
+                     {'h': host, 'l': left, 't': int(now), 'o': over})
         prune(conn, host, now)
     return new
 
 
 def prune(conn: Conn, host: str, now: float):
-    conn.execute('DELETE FROM host_log_lines WHERE host = :h AND at_us < :t', {'h': host, 't': int((now - KEEP_DAYS * 86400) * 1e6)})
-    edge = conn.scalar('SELECT at_us FROM host_log_lines WHERE host = :h ORDER BY at_us DESC LIMIT 1 OFFSET :n', {'h': host, 'n': KEEP_ROWS})
+    """By arrival. The time a host stamps on a line decides where it is shown, never whether it is kept."""
+    conn.execute('DELETE FROM host_log_lines WHERE host = :h AND collected_at < :t', {'h': host, 't': int(now - KEEP_DAYS * 86400)})
+    edge = next(iter(conn.all('SELECT collected_at, line_id FROM host_log_lines WHERE host = :h ORDER BY collected_at DESC, line_id DESC LIMIT 1 OFFSET :n', {'h': host, 'n': KEEP_ROWS})), None)
     if edge is not None:
-        conn.execute('DELETE FROM host_log_lines WHERE host = :h AND at_us <= :t', {'h': host, 't': edge})
+        conn.execute('DELETE FROM host_log_lines WHERE host = :h AND (collected_at < :t OR (collected_at = :t AND line_id <= :i))', {'h': host, 't': edge[0], 'i': edge[1]})
+    conn.execute('DELETE FROM host_log_counts WHERE host = :h AND bucket < :b', {'h': host, 'b': int((now - COUNT_KEEP_DAYS * 86400) // COUNT_SECS)})
 
 
 def collect(conn: Conn, t, host: str, log=lambda _: None) -> dict | None:
@@ -254,9 +307,10 @@ def _rows(conn: Conn, f: dict, limit: int, offset: int = 0) -> list[dict]:
         p['unit'], p['unit_s'] = f['unit'], f'{f["unit"]}.service'
     if extra:
         where += (' AND ' if where else ' WHERE ') + ' AND '.join(extra)
-    rows = conn.all(f"""SELECT at_us, host, priority, unit, ident, pid, message FROM host_log_lines{where}
+    rows = conn.all(f"""SELECT at_us, host, priority, unit, ident, pid, message, uid, comm, exe, collected_at FROM host_log_lines{where}
                         ORDER BY at_us DESC, line_id DESC LIMIT :n OFFSET :o""", p)
-    return [{'ts': r[0] / 1e6, 'host': r[1], 'level': LEVELS[r[2]], 'priority': r[2], 'unit': r[3], 'ident': r[4], 'pid': r[5], 'message': r[6]} for r in rows]
+    return [{'ts': r[0] / 1e6, 'host': r[1], 'level': LEVELS[r[2]], 'priority': r[2], 'unit': r[3], 'ident': r[4], 'pid': r[5], 'message': r[6],
+             'uid': r[7], 'comm': r[8], 'exe': r[9], 'arrived': r[10]} for r in rows]
 
 
 def page(conn: Conn, f: dict, limit: int = 100, offset: int = 0) -> dict:
@@ -269,10 +323,10 @@ def status(conn: Conn, host: str | None = None) -> list[dict]:
     rows = conn.all(f"""SELECT s.host, s.collected_at, s.state, s.new_lines, s.cut, s.note,
                                (SELECT count(*) FROM host_log_lines l WHERE l.host = s.host),
                                (SELECT min(at_us) FROM host_log_lines l WHERE l.host = s.host),
-                               (SELECT max(at_us) FROM host_log_lines l WHERE l.host = s.host)
+                               (SELECT max(at_us) FROM host_log_lines l WHERE l.host = s.host), s.over_rate, s.over_total
                         FROM host_log_status s {'WHERE s.host = :h' if host else ''} ORDER BY s.host""", {'h': host})
     return [{'host': r[0], 'collected_at': r[1], 'state': r[2], 'new_lines': r[3], 'cut': bool(r[4]), 'note': r[5], 'lines': r[6],
-             'oldest': r[7] / 1e6 if r[7] else None, 'newest': r[8] / 1e6 if r[8] else None} for r in rows]
+             'oldest': r[7] / 1e6 if r[7] else None, 'newest': r[8] / 1e6 if r[8] else None, 'over_rate': r[9], 'over_total': r[10], 'rate_per_day': int(RATE_PER_DAY)} for r in rows]
 
 
 # ── counts and units, for the Logs view ─────────────────────────────

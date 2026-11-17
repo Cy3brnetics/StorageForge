@@ -160,6 +160,19 @@ function hlEmpty() {
   }
   return li('No lines match. Newer lines arrive when a host is scanned.');
 }
+/* A line names its own program (ident), and anyone on a host can name any. journald's own account of the writer (comm, exe, uid) is said
+   beside it when the two differ, and in full on hover. */
+function hlBy(e) {
+  const said = (e.ident || '').toLowerCase(), was = (e.comm || '').toLowerCase();
+  return was && said && was !== said && !said.startsWith(was) && !was.startsWith(said) ? ` · written by ${e.comm}${e.uid != null ? ` (uid ${e.uid})` : ''}` : '';
+}
+function hlWriter(e) {
+  const parts = [fmtUtc(e.ts)];
+  if (e.exe || e.comm) parts.push(`journald: ${e.exe || e.comm}${e.uid != null ? `, uid ${e.uid}` : ''}`);
+  if (e.arrived) parts.push(`arrived ${fmtUtc(e.arrived)}`);
+  return parts.join(' · ');
+}
+
 async function hlSearch(more) {
   const fresh = latest('hostlogs');
   HL.offset = more ? HL.offset + HL_PAGE : 0;
@@ -172,7 +185,7 @@ async function hlSearch(more) {
     const rows = entries.map((e) => {
       const cls = e.priority <= 3 ? 'st-failed' : e.priority === 4 ? 'st-warn' : '';
       return hlEl('li', {}, hlEl('span', cls ? { class: cls } : {}, e.message),
-        hlEl('span', { class: 'm', title: fmtUtc(e.ts) }, `${hlWhen(e.ts)} · ${e.host} · ${e.level} · ${e.unit || e.ident || '-'}${e.pid ? ` [${e.pid}]` : ''}`));
+        hlEl('span', { class: 'm', title: hlWriter(e) }, `${hlWhen(e.ts)} · ${e.host} · ${e.level} · ${e.unit || e.ident || '-'}${e.pid ? ` [${e.pid}]` : ''}${hlBy(e)}`));
     });
     let empty = null;
     if (!rows.length && !more) {                  // nothing collected, nothing in the range and nothing under these filters are three different answers
