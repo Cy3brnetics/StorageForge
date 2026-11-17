@@ -71,10 +71,15 @@ class BrowserLogs(unittest.TestCase):
         self.page.wait_for_url(self.base + '/**')
         self.page.wait_for_selector('.tabs button')
         self.page.wait_for_load_state('load')
+        # the page follows its address only once it has started (router.js), as test_browser_smoke waits for. Without this, open_logs
+        # moved and reloaded the page while its first start-up was still running, and now and then, on a loaded machine, it came up on Details
+        self.page.wait_for_selector('html[data-route-ready]', state='attached')
 
     def open_logs(self, query=''):
         self.page.goto(f'{self.base}/#/topo/hostlogs{query}')
         self.page.reload()                                           # a typed address is a fresh page, as a pasted link is
+        self.page.wait_for_selector('html[data-route-ready]', state='attached')
+        self.assertTrue(self.hash().startswith('#/topo/hostlogs'), f'the link was not followed: the page is at {self.hash()}')
         self.page.wait_for_selector('#hl-lines li')
 
     def hash(self):

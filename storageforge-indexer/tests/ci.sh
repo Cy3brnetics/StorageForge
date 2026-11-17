@@ -11,6 +11,8 @@ if ((EUID == 0)); then
   exec runuser -u sfci -- env HOME=/home/sfci bash "$0" "$@"
 fi
 if (($#)); then
-  exec python tests/run.py "$@" -j "${SF_TEST_JOBS:-$(nproc)}"
+  # a class per core, at most 6: on a workstation with many cores, one per core runs a dozen browsers at once (SF_TEST_JOBS overrides)
+  jobs=$(nproc); ((jobs > 6)) && jobs=6
+  exec python tests/run.py "$@" -j "${SF_TEST_JOBS:-$jobs}"
 fi
 exec python -m unittest discover -s tests
