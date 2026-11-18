@@ -647,5 +647,120 @@ class EnclaveImage(Enclave):
                                'CONFIG_USB_SUPPORT', 'CONFIG_SWAP', 'CONFIG_COREDUMP', 'CONFIG_VIRTIO_NET', 'CONFIG_VIRTIO_BLK', 'CONFIG_PCI'})
 
 
+@unittest.skipIf(image_reason(), image_reason() or '')
+class Supervised(unittest.TestCase):
+    """The VM started and watched as the server will (enclave_vm.py). What must hold: only the image that was built and pinned is
+    started; a VM that stops is noticed, nothing answers in between, and what comes back holds no key."""
+
+    def setUp(self):
+        from storageforge_index import enclave_vm
+        self.vm = enclave_vm
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.events = []
+        self.sup = None
+
+    def start(self, image=IMAGE, **kw):
+        self.sup = self.vm.Supervisor(image, on_event=lambda kind, detail: self.events.append((kind, detail)), runtime_dir=self.tmp, **kw)
+        self.addCleanup(self.sup.stop)
+        return self.sup.start()
+
+    def wait_for(self, kind, count=1, seconds=30):
+        until = time.time() + seconds
+        while time.time() < until:
+            if sum(1 for k, _ in self.events if k == kind) >= count:
+                return
+            time.sleep(0.05)
+        self.fail(f'no {count} {kind!r} in {self.events}')
+
+    def test_it_starts_the_pinned_image_and_what_answers_is_the_enclave(self):
+        address = self.start(expect=self.vm.image_digest(IMAGE))
+        with enclave.Enclave(address) as e:
+            st = e.status()
+        self.assertEqual((st['pid1'], st['memory_locked'], st['state']), (True, True, 'locked'))
+        self.assertEqual(self.events[0][0], 'up')
+        self.assertEqual(self.events[0][1]['image'], self.vm.image_digest(IMAGE))
+        argv = ' '.join(self.sup._argv(5))
+        for never in ('-netdev', '-nic', '-drive', '-virtfs', '-fsdev', 'virtio-net', 'virtio-blk', 'balloon', '-qmp', '-chardev'):
+            self.assertNotIn(never, argv)
+        self.assertIn('-sandbox on', argv)
+        self.assertEqual((self.tmp / 'enclave-console.log').read_text(), '')
+
+    def test_an_image_that_was_changed_or_is_not_the_one_pinned_is_not_started(self):
+        copy = self.tmp / 'image'
+        shutil.copytree(IMAGE, copy)
+        with self.assertRaises(self.vm.EnclaveVMError) as got:
+            self.start(copy, expect='0' * 64)
+        self.assertIn('not the one pinned', str(got.exception))
+        with open(copy / 'initramfs.cpio.gz', 'ab') as f:
+            f.write(b'x')
+        with self.assertRaises(self.vm.EnclaveVMError) as got:
+            self.start(copy)
+        self.assertIn('changed after it was built', str(got.exception))
+        (copy / 'SHA256SUMS').unlink()
+        with self.assertRaises(self.vm.EnclaveVMError):
+            self.start(copy)
+        self.assertEqual(self.events, [], 'nothing was started')
+
+    def test_a_vm_that_stops_is_noticed_and_comes_back_at_the_same_address_holding_nothing(self):
+        db_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, db_dir, True)
+        db = dbfactory.make(self, db_dir / 'index.db')
+        conn = db.connect()
+        self.addCleanup(conn.close)
+        db.migrate(conn)
+        with vault.Vault(db, conn, SECRET) as made:
+            made.init()
+        address = self.start()
+        env = mock.patch.dict(os.environ, {'STORAGEFORGE_ENCLAVE': address, 'STORAGEFORGE_VAULT_SECRET': SECRET.decode()})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop('STORAGEFORGE_VAULT_SECRET_FILE', None)
+        with vault.Vault(db, conn).unlock() as v:
+            v.generate_key('k')
+        with enclave.Enclave(address) as e:
+            self.assertEqual(e.status()['state'], 'unlocked')
+        self.sup.proc.kill()                                                       # the VM dies
+        self.wait_for('down')
+        self.wait_for('up', 2)
+        self.assertEqual((self.sup.address, self.sup.restarts), (address, 1))
+        with enclave.Enclave(address) as e:
+            self.assertEqual(e.status()['state'], 'locked', 'it came back with no key')
+        with vault.Vault(db, conn).unlock() as v:                                  # the next use hands it the secret again
+            self.assertIsInstance(v.decrypt_key(conn.scalar('SELECT key_id FROM ssh_keys')), vault.EnclaveKey)
+        self.sup.stop()
+        with self.assertRaises(vault.VaultLocked):                                 # stopped for good: the vault is locked, not opened here
+            vault.Vault(db, conn).unlock()
+        self.assertFalse(self.sup.running())
+
+    def test_the_server_starts_it_when_asked_and_only_then(self):
+        with mock.patch.dict(os.environ, {'XDG_RUNTIME_DIR': str(self.tmp)}):
+            os.environ.pop('STORAGEFORGE_ENCLAVE', None)
+            self.assertIsNone(self.vm.from_env())
+            os.environ['STORAGEFORGE_ENCLAVE'] = 'unix:/somewhere'
+            self.assertIsNone(self.vm.from_env(), 'an address is somebody else\'s enclave to run')
+            os.environ['STORAGEFORGE_ENCLAVE'] = 'vm'
+            with self.assertRaises(self.vm.EnclaveVMError):
+                self.vm.from_env()                                      # no image folder named
+            os.environ.update({'STORAGEFORGE_ENCLAVE': 'vm', 'STORAGEFORGE_ENCLAVE_IMAGE_DIR': str(IMAGE), 'STORAGEFORGE_ENCLAVE_IMAGE': '0' * 64})
+            with self.assertRaises(self.vm.EnclaveVMError):
+                self.vm.from_env()
+            self.assertNotEqual(os.environ['STORAGEFORGE_ENCLAVE'], 'vm', 'a failed start does not leave the vault free to open here')
+            with self.assertRaises(enclave.EnclaveError):
+                enclave.Enclave(os.environ['STORAGEFORGE_ENCLAVE']).status()
+            os.environ.update({'STORAGEFORGE_ENCLAVE': 'vm', 'STORAGEFORGE_ENCLAVE_IMAGE': self.vm.image_digest(IMAGE)})
+            sup = self.vm.from_env(lambda kind, detail: self.events.append((kind, detail)))
+            self.addCleanup(sup.stop)
+            self.assertEqual(os.environ['STORAGEFORGE_ENCLAVE'], sup.address)
+            with enclave.Enclave(sup.address) as e:
+                self.assertTrue(e.status()['pid1'])
+
+    def test_where_no_vm_can_run_it_says_why(self):
+        with mock.patch.object(self.vm.shutil, 'which', lambda name: None):
+            self.assertIn('not installed', self.vm.missing())
+            with self.assertRaises(self.vm.EnclaveVMError):
+                self.vm.Supervisor(IMAGE).start()
+
+
 if __name__ == '__main__':
     unittest.main()

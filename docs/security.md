@@ -24,7 +24,7 @@ Backups never contain the vault secret, on purpose: a backup together with its s
 
 ### Key enclave
 
-*Being built for 0.5.5. Nothing starts it yet; it is off unless `STORAGEFORGE_ENCLAVE` is set.*
+*Being built for 0.5.5, and not lab-tested. It is off unless `STORAGEFORGE_ENCLAVE` is set.*
 
 A second layer on the vault's keys: a micro VM whose only program holds the KEK, and whose only device is a vsock socket. It has no network card, no disk and no shell. The web app hands it the vault's own ciphertexts with each request, so nothing stored changes format and the vault opens as before without it.
 
@@ -33,7 +33,9 @@ web app ──vsock──► enclave: unlock · lock · status · sign with key 
                             seal and release a secret · rotate the vault secret
 ```
 
-With `STORAGEFORGE_ENCLAVE=vsock:CID:PORT` (or `unix:PATH` for a test):
+**Running it.** With `STORAGEFORGE_ENCLAVE=vm` the server starts the micro VM itself from the image in `STORAGEFORGE_ENCLAVE_IMAGE_DIR`, and refuses to start if it cannot: the image's files must match its `SHA256SUMS` and, where `STORAGEFORGE_ENCLAVE_IMAGE` pins a digest, that digest; what answers must say it is the VM's only program with its memory locked. It needs `/dev/kvm`, `/dev/vhost-vsock` and `qemu-system-x86_64`. The VM gets one device, the vsock socket, and QEMU runs under its seccomp sandbox with none of the server's environment. If the VM stops, the server says so in its log and the audit log (`enclave.down`), starts it again at the same address, and until it is unlocked again every operation that needs a key fails. `STORAGEFORGE_ENCLAVE=vsock:CID:PORT` uses an enclave something else runs.
+
+With it set:
 
 - **SSH keys are not decrypted in the web app.** Each task's agent socket is served by the web app, lists the one public key, and asks the enclave for each signature. Deploy requests and evidence bundles are signed the same way. A new ed25519 key is made inside and its private half is never outside.
 - **The audit chain's MAC key stays inside.** Each entry's MAC is computed there; the chain is the same chain, and either side verifies what the other wrote.

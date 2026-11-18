@@ -2918,7 +2918,27 @@ def serve(db: Database, host: str, port: int, scan_interval: int | None, paralle
         conn.close()
     secure = os.environ.get('STORAGEFORGE_COOKIE_SECURE', '0').lower() in ('1', 'true', 'yes')
     hops = int(os.environ.get('STORAGEFORGE_PROXY_HOPS', '0'))
+    # The key enclave, where the server is asked to run it (STORAGEFORGE_ENCLAVE=vm): before anything opens the vault. A server
+    # asked for the enclave does not start without it.
+    from . import enclave_vm
+    holder: list = []
+
+    def enclave_event(kind, detail):
+        errlog.say(f'key enclave {kind}: {json.dumps(detail, default=str)}')
+        if holder:                      # in the audit log too, once there is an App to write it
+            c = db.connect()
+            try:
+                holder[0].audit(c, 'system', f'enclave.{kind}', 'ok' if kind == 'up' else 'failed', None, detail)
+            except Exception:
+                errlog.trace()
+            finally:
+                c.close()
+    try:
+        enclave_supervisor = enclave_vm.from_env(enclave_event)     # noqa: F841  kept for the life of the process
+    except enclave_vm.EnclaveVMError as exc:
+        raise SystemExit(f'The key enclave could not be started, and STORAGEFORGE_ENCLAVE=vm asks for it: {exc}') from None
     web_core = App(db, scan_interval, parallel, timers=True)
+    holder.append(web_core)
     web = create_app(web_core, session_secret_from_env(), secure, hops,
                      os.environ.get('STORAGEFORGE_PROXY_HOST', ''))
 
