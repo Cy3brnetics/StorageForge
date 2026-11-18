@@ -56,7 +56,7 @@ Then **Stage in Changes**, where it is an ordinary step with a Report and an App
 | `fw-rule` | A rule in whichever firewall the host runs, so that firewall still lists it. `forward` is for published ports: it goes in `DOCKER-USER` |
 | `fw-fence` | Only these clients may reach these ports, in a table ahead of any other firewall |
 | `net-bridge`, `net-vlan`, `net-mtu` | With NetworkManager or systemd-networkd |
-| `wg-peer` | Add or revoke a WireGuard peer |
+| `wg-peer` | Add or revoke a WireGuard peer, with where to call it and a keepalive where it cannot call back |
 | `container` | `docker run` or `podman run` with a fixed name. It will not replace an existing container |
 | `vm` | `virt-install --import` from a disk you already have, with its console on loopback |
 | `vm-create` | A new VM from a cloud image: the image checked against its publisher's checksum, copied to a new root disk, data disks, and a cloud-init login for your SSH key. Fields can come from a [VM spec](host-migration.md#creating-vms). Never writes over a disk or a VM that is there |

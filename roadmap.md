@@ -182,7 +182,7 @@ Decided 2026-11-16: data is encrypted even on the LAN, and the default needs no 
 | Item | Status |
 | :--- | :--- |
 | The network as a setting per host, its address plan, and the peers as plan steps | begun 2026-11-18: `sfnet.py` picks the range (never 100.64.0.0/10, nothing the site uses), gives each host one address for good, and works out each host's peers and the `wg-peer` steps from what a scan saw. Not stored or offered anywhere yet |
-| Key pairs made on the hosts, rotation and revocation through plans | begun 2026-11-18: the arithmetic of a rotation in two halves and of a revocation, and what a scan confirms by key (`sfnet.confirm`). Open: the step that makes the pair on the host, `wg-peer` taking an endpoint and a keepalive |
+| Key pairs made on the hosts, rotation and revocation through plans | begun 2026-11-18: the arithmetic of a rotation in two halves and of a revocation, and what a scan confirms by key (`sfnet.confirm`). Since 2026-11-18 `wg-peer` takes an endpoint, a keepalive and no addresses (a key known and carrying nothing, the first half of a rotation), and its script runs every step `sfnet.steps` asks for. Open: the step that makes the interface and the pair on the host |
 | The controller as a peer (in Docker, a WireGuard interface for the container or the host's) | open |
 | Scans, deploys, `storageforge-agentctl`, the console and the agent's tunnel over the StorageForge network where the host is on it. Sends, Moves and sync keep a tunnel of their own per transfer (the forced-command job keys and rsync over SSH, encrypted end to end); NFS and SMB shares are not carried | open |
 | Lab: a host on the LAN reached only through it, a capture showing no clear text between two hosts, a key rotated and a peer revoked | open |

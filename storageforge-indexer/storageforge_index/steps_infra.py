@@ -30,6 +30,8 @@ changes.CHECKS.update({
     'cidr': re.compile(r'[0-9a-fA-F:.]{2,45}(/\d{1,3})?'),
     'cidrs': re.compile(r'[0-9a-fA-F:.]{2,45}(/\d{1,3})?(,[0-9a-fA-F:.]{2,45}(/\d{1,3})?){0,63}'),
     'iface': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.@:-]{0,14}'),
+    # where a WireGuard peer is called: a name or an IPv4 address and a port, or an IPv6 address in brackets and a port
+    'endpoint': re.compile(r'([A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9a-fA-F:]{2,39}\]):\d{1,5}'),
     'sysctl': re.compile(r'[a-z0-9_]+(\.[A-Za-z0-9_-]+){1,8}'),
     'word': re.compile(r'[A-Za-z0-9_.:+,/@=-]{1,200}'),
     'wgkey': re.compile(r'[A-Za-z0-9+/]{42,43}='),
@@ -569,19 +571,25 @@ t_chrony_nts() { local servers=$1 dir file line all
   if systemctl restart chronyd 2>/dev/null || systemctl restart chrony 2>/dev/null; then ok "chrony restarted with NTS sources"; else conflict "chrony did not restart"; fi
 }
 
-t_wg_peer() { local iface=$1 key=$2 allowed=$3 state=${4:-present}
+t_wg_peer() { local iface=$1 key=$2 allowed=$3 state=${4:-present} endpoint=${5:-} keepalive=${6:-}
   command -v wg >/dev/null || { conflict "this host has no wg command"; return 0; }
   wg show "$iface" public-key >/dev/null 2>&1 || { conflict "no WireGuard interface named $iface"; return 0; }
   local have now; have=$(wg show "$iface" peers | grep -cxF "$key" || true)
   now=$(wg show "$iface" allowed-ips | awk -v k="$key" '$1 == k {$1 = ""; sub(/^ /, ""); print}' | tr ' ' ',')
+  [[ $now == "(none)" ]] && now=
   if [[ $state == absent ]]; then
     if ((have == 0)); then ok "that peer is not on $iface"; return 0; fi
     act "revoke the peer on $iface" || return 0
     try wg set "$iface" peer "$key" remove
   else
-    if ((have)) && [[ $now == "$allowed" ]]; then ok "that peer is on $iface with $allowed"; return 0; fi
-    act "peer on $iface allowed $allowed" || return 0
-    try wg set "$iface" peer "$key" allowed-ips "$allowed"
+    # A peer that is there with the right addresses is left as it is: its endpoint moves as it roams, and is not put back
+    if ((have)) && [[ $now == "$allowed" ]]; then ok "that peer is on $iface with ${allowed:-no addresses}"; return 0; fi
+    act "peer on $iface allowed ${allowed:-no addresses}${endpoint:+, called at $endpoint}" || return 0
+    # with no addresses it is known and carries nothing: the first half of a key rotation
+    local -a more=(allowed-ips "$allowed")
+    [[ -n $endpoint ]] && more+=(endpoint "$endpoint")
+    [[ -n $keepalive && $keepalive != 0 ]] && more+=(persistent-keepalive "$keepalive")
+    try wg set "$iface" peer "$key" "${more[@]}"
   fi
   if command -v wg-quick >/dev/null && [[ -e /etc/wireguard/$iface.conf ]]; then wg-quick save "$iface" >/dev/null 2>&1 || info "could not save /etc/wireguard/$iface.conf: this lasts until the interface next restarts"; fi
   ok "done: $iface"
@@ -928,6 +936,10 @@ def _check_wg(conn, c, h, p, say):
         say('crit', f'not a network: {bad[0]}')
     if any(n.prefixlen == 0 for n in nets):
         say('warn', 'this peer may route everything through this host')
+    if p.get('keepalive') and not 1 <= int(p['keepalive']) <= 65535:
+        say('crit', 'a keepalive is between 1 and 65535 seconds')
+    if p.get('state') != 'absent' and not p.get('allowed'):
+        say('note', 'with no allowed addresses this peer is known and carries no traffic')
     m = _infra(conn, h)
     if m and p['iface'] not in {w['name'] for w in (m.get('access') or {}).get('wireguard') or []} and (m.get('access') or {}).get('wireguard') is not None:
         say('warn', f'{p["iface"]} was not seen at the last reading')
@@ -1154,9 +1166,12 @@ changes.register('chrony-nts', {'group': 'Hardening', 'label': 'NTS time sources
     ('servers',), lambda p: f'NTS time from {p["servers"]}', _check_nothing, _ansible_bash('t_chrony_nts', ('servers',)))
 
 changes.register('wg-peer', {'group': 'Network', 'label': 'WireGuard peer', 'fields': [
-    F('iface', 'iface', 'Interface', required=True, placeholder='wg0'), F('pubkey', 'wgkey', 'Public key', required=True), F('allowed', 'cidrs', 'Allowed addresses', required=True, placeholder='10.8.0.2/32'),
-    F('state', 'choice', 'Add or revoke', options=['present', 'absent'], default='present')]},
-    ('iface', 'pubkey', 'allowed', 'state'), lambda p: _when(p['state'], f'WireGuard peer on {p["iface"]}: {p["pubkey"][:8]}…'), _check_wg, _ansible_bash('t_wg_peer', ('iface', 'pubkey', 'allowed', 'state')))
+    F('iface', 'iface', 'Interface', required=True, placeholder='wg0'), F('pubkey', 'wgkey', 'Public key', required=True), F('allowed', 'cidrs', 'Allowed addresses', placeholder='10.8.0.2/32'),
+    F('state', 'choice', 'Add or revoke', options=['present', 'absent'], default='present'),
+    F('endpoint', 'endpoint', 'Where to call it (if it can be called)', placeholder='10.0.0.5:51820'), F('keepalive', 'number', 'Keepalive, seconds (if it cannot call back)', placeholder='25')],
+    'help': 'With no allowed addresses the peer is known and carries nothing. A peer already there with the right addresses is left alone, so an endpoint that has moved is not put back.'},
+    ('iface', 'pubkey', 'allowed', 'state', 'endpoint', 'keepalive'), lambda p: _when(p['state'], f'WireGuard peer on {p["iface"]}: {p["pubkey"][:8]}…'), _check_wg,
+    _ansible_bash('t_wg_peer', ('iface', 'pubkey', 'allowed', 'state', 'endpoint', 'keepalive')))
 
 changes.register('workload-action', {'group': 'Workloads', 'label': 'Start, stop or snapshot', 'fields': [
     F('runtime', 'choice', 'Runtime', options=RUNTIMES, required=True), F('name', 'name', 'Name', required=True), F('action', 'choice', 'Action', options=['start', 'stop', 'restart', 'force-off', 'snapshot'], required=True)]},

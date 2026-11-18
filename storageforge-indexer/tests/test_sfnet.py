@@ -152,5 +152,78 @@ class Confirm(unittest.TestCase):
         self.assertEqual((got['nas']['confirmed'], got['nas']['missing']), (['pi'], ['ctl']))
 
 
+class TheStep(unittest.TestCase):
+    """What sfnet.steps asks for is a plan the change engine takes, and the step's own script does it: run for real against a
+    stand-in `wg` that keeps what it is told."""
+
+    def setUp(self):
+        import os
+        import shutil
+        import tempfile
+        from pathlib import Path
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        (self.tmp / 'peers').write_text('')
+        (self.tmp / 'wg').write_text(f"""#!/bin/bash
+case "$1 $3" in
+  "show public-key") echo own;;
+  "show peers") cut -f1 {self.tmp}/peers;;
+  "show allowed-ips") cat {self.tmp}/peers;;
+  *) [ "$1" = set ] && printf '%s\\n' "$*" >> {self.tmp}/said;;
+esac
+""")
+        (self.tmp / 'wg').chmod(0o755)
+        self.env = {'PATH': f'{self.tmp}:{os.environ["PATH"]}'}
+
+    def run_step(self, params):
+        import re
+        import shlex
+        import subprocess
+        from storageforge_index import changes, steps_infra
+        plan = changes.normalize({'name': 'p', 'tasks': [{'type': 'wg-peer', 'host': 'nas', 'params': params}]})
+        p = plan['tasks'][0]['params']
+        body = re.search(r'^t_wg_peer\(\) \{.*?^\}$', steps_infra.BASH, re.M | re.S)[0]
+        call = ' '.join(shlex.quote(str(p.get(a) or '')) for a in changes.ARGS['wg-peer'])
+        prelude = 'ok() { echo "ok: $*"; }; conflict() { echo "conflict: $*"; }; info() { :; }; act() { echo "changed: $*"; }; try() { "$@"; }\n'
+        ran = subprocess.run(['bash', '-c', prelude + body + f'\nt_wg_peer {call}\n'], capture_output=True, text=True, env=self.env)
+        self.assertEqual(ran.stderr, '')
+        said = self.tmp / 'said'
+        told = said.read_text().splitlines() if said.exists() else []
+        said.unlink(missing_ok=True)
+        return ran.stdout, told
+
+    def test_every_step_sfnet_asks_for_is_one_the_engine_takes_and_the_script_runs(self):
+        n = Members.net(self)
+        sfnet.rotate(n, 'ctl', key(11))
+        (self.tmp / 'peers').write_text(f'{key(3)}\t10.203.0.3/32 10.42.0.0/24\n{key(77)}\t0.0.0.0/0\n')
+        told = []
+        for step in sfnet.steps(n, 'nas', iface(2, {3: ['10.203.0.3/32', '10.42.0.0/24'], 77: ['0.0.0.0/0']})):
+            self.assertEqual(step['kind'], 'wg-peer')
+            told += self.run_step(step['params'])[1]
+        self.assertEqual(told, [f'set sf0 peer {key(1)} allowed-ips 10.203.0.1/32 endpoint 10.42.0.2:51903',
+                                f'set sf0 peer {key(11)} allowed-ips  endpoint 10.42.0.2:51903',
+                                f'set sf0 peer {key(3)} allowed-ips 10.203.0.3/32',
+                                f'set sf0 peer {key(77)} remove'])
+
+    def test_a_host_nobody_can_call_keeps_its_path_open_and_a_settled_peer_is_left_alone(self):
+        n = Members.net(self)
+        step = next(s for s in sfnet.steps(n, 'pi', None) if s['params']['pubkey'] == key(1))
+        self.assertEqual(self.run_step(step['params'])[1], [f'set sf0 peer {key(1)} allowed-ips 10.203.0.1/32 endpoint 10.42.0.2:51903 persistent-keepalive 25'])
+        (self.tmp / 'peers').write_text(f'{key(1)}\t10.203.0.1/32\n')
+        out, told = self.run_step(step['params'])
+        self.assertEqual(told, [], 'an endpoint that has moved is not put back')
+        self.assertIn('ok: that peer is on sf0', out)
+        (self.tmp / 'peers').write_text(f'{key(1)}\t(none)\n')
+        self.assertEqual(self.run_step({'iface': 'sf0', 'pubkey': key(1), 'allowed': ''})[1], [], 'known and carrying nothing is also settled')
+
+    def test_an_endpoint_that_is_not_one_is_refused_before_any_script(self):
+        from storageforge_index import changes
+        for bad in ('10.0.0.5', '10.0.0.5:51820; id', '$(id):1', 'a b:1', '[::1]', 'host:port'):
+            with self.subTest(bad), self.assertRaises(ValueError):
+                changes.normalize({'name': 'p', 'tasks': [{'type': 'wg-peer', 'host': 'nas', 'params': {'iface': 'sf0', 'pubkey': key(1), 'allowed': '10.203.0.1/32', 'endpoint': bad}}]})
+        for good in ('10.0.0.5:51820', 'nas.lab:51903', '[fd00::5]:51903'):
+            changes.normalize({'name': 'p', 'tasks': [{'type': 'wg-peer', 'host': 'nas', 'params': {'iface': 'sf0', 'pubkey': key(1), 'allowed': '10.203.0.1/32', 'endpoint': good}}]})
+
+
 if __name__ == '__main__':
     unittest.main()
