@@ -76,28 +76,62 @@ RUN apk add --no-cache build-base linux-headers \
  && install -d /out/usr/share/nmap \
  && install -m 0644 nmap-services nmap-protocols nmap-rpc nmap-mac-prefixes /out/usr/share/nmap/
 
+# ── nginx: built from source, with the modules docker/nginx.conf uses and no others. Wolfi's nginx-mainline was at 1.31.8
+# on the day 1.31.9 fixed CVE-2026-123007 and CVE-2026-123633 (memory corruption in HTTP/2, reachable before any login),
+# and its package carries forty modules this proxy never loads (mail, stream, perl, xslt, image filter, HTTP/3 …).
+# Position-independent with full RELRO, so the address space is randomized: what those two bugs need is to know it.
+# Scanners cannot see a binary built here: when bumping, read nginx.org/en/security_advisories.html and verify the
+# tarball's signature. README "Updating dependencies".
+FROM ${BASE_IMAGE} AS nginx
+ARG NGINX_VERSION=1.31.9
+ADD --checksum=sha256:a11c5eeee2e257f4478f0e649f84b0040787d277d2d3e5233952aa6b6dcb80ad \
+    https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz /src/nginx.tar.gz
+RUN apk add --no-cache build-base openssl-dev pcre2-dev \
+ && tar -xzf /src/nginx.tar.gz -C /src --strip-components=1 \
+ && cd /src \
+ && ./configure --prefix=/var/lib/nginx --sbin-path=/usr/bin/nginx --conf-path=/etc/nginx/nginx.conf \
+                --pid-path=/tmp/nginx.pid --lock-path=/tmp/nginx.lock --error-log-path=stderr --http-log-path=/dev/null \
+                --http-client-body-temp-path=/tmp/client_temp --http-proxy-temp-path=/tmp/proxy_temp \
+                --user=nginx --group=nginx --with-http_ssl_module --with-http_v2_module \
+                --without-http_gzip_module --without-http_ssi_module --without-http_userid_module --without-http_access_module \
+                --without-http_auth_basic_module --without-http_mirror_module --without-http_autoindex_module \
+                --without-http_geo_module --without-http_map_module --without-http_split_clients_module \
+                --without-http_referer_module --without-http_fastcgi_module --without-http_uwsgi_module \
+                --without-http_scgi_module --without-http_grpc_module --without-http_memcached_module \
+                --without-http_limit_conn_module --without-http_limit_req_module --without-http_empty_gif_module \
+                --without-http_browser_module --without-http_charset_module --without-http_upstream_hash_module \
+                --without-http_upstream_ip_hash_module --without-http_upstream_least_conn_module \
+                --without-http_upstream_random_module --without-http_upstream_keepalive_module \
+                --without-http_upstream_zone_module --without-http-cache \
+                --with-cc-opt='-O2 -fPIE -fstack-protector-strong -fstack-clash-protection -fcf-protection -D_FORTIFY_SOURCE=3' \
+                --with-ld-opt='-pie -Wl,-z,relro,-z,now,-z,noexecstack' \
+ && make -j"$(nproc)" \
+ && strip objs/nginx \
+ && install -D -m 0755 objs/nginx /out/usr/bin/nginx
+
 # ── proxy: nginx with its config inside, so a deploy does not need the repo's files on the Docker host ─
-# On the same Wolfi base as the rest. nginx-mainline, because Wolfi's free repository stops updating nginx-stable (1.30.2,
-# with fixes it never got); mainline is the one that follows upstream.
 FROM ${BASE_IMAGE} AS proxy
 # uid 101 is the one docker-compose.yml and init-volumes.sh already give the TLS files and the /tmp tmpfs to.
-RUN apk add --no-cache nginx-mainline \
+# The so: names are the libraries the nginx stage linked against; the -V below fails the build if a soname moves.
+RUN apk add --no-cache so:libssl.so.4 so:libcrypto.so.4 so:libpcre2-8.so.0 \
  && echo 'nginx:x:101:' >> /etc/group \
  && echo 'nginx:x:101:101::/nonexistent:/sbin/nologin' >> /etc/passwd \
  && echo 'nginx:!::0:::::' >> /etc/shadow \
+ && install -d -m 0755 /etc/nginx /var/lib/nginx \
  && rm -rf /var/cache/apk /etc/apk/cache \
  && cp /bin/busybox /tmp/busybox \
  && apk del --no-cache wolfi-base apk-tools busybox \
  && for l in /usr/bin/*; do if [ "$(/tmp/busybox readlink "$l")" = /bin/busybox ]; then /tmp/busybox rm "$l"; fi; done \
- && /tmp/busybox rm /tmp/busybox \
- && /usr/bin/nginx -v
+ && /tmp/busybox rm /tmp/busybox
 # No shell and no package manager from here on: apk del leaves busybox's links behind, so the loop takes them out.
 # The apk database stays as the record scanners read.
+COPY --from=nginx /out/ /
+RUN ["/usr/bin/nginx", "-V"]
 COPY docker/nginx.conf /etc/nginx/nginx.conf
 EXPOSE 8443
 STOPSIGNAL SIGQUIT
 USER 101:101
-# -e: the compiled-in error log is under /var/lib/nginx, which is read-only; nginx opens it before it reads the config.
+# -e: nginx opens its error log before it reads the config, and the only place this container may write is /tmp.
 ENTRYPOINT ["/usr/bin/nginx", "-e", "/dev/stderr", "-g", "daemon off;"]
 
 # ── tunnel: sshd for remote nodes that dial in (docker-compose.remote.yml), and nothing that could serve a shell ─
