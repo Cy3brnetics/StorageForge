@@ -1,0 +1,593 @@
+//! StorageForge's key enclave (roadmap section 14).
+//!
+//! The one program of a micro VM whose only devices are vsock and a read-only initramfs. It holds the vault's KEK, derived here from
+//! the vault secret, and nothing else that lasts: every ciphertext stays in the controller's database and comes with the request that
+//! needs it. So the stored format does not change, a restarted enclave knows nothing until it is unlocked, and what the web app holds
+//! is ciphertexts and a socket that answers a few narrow questions.
+//!
+//! The wire: a 4-byte big-endian length, then that many bytes of JSON, one request and one answer at a time, one connection at a time.
+//! Bytes inside JSON are base64. A frame over MAX_FRAME, JSON that does not parse, or an unknown operation ends the connection and
+//! counts as a bad request; BAD_LIMIT of them lock the enclave down, which wipes the KEK and refuses everything but `status` and
+//! `unlock` until someone unlocks again. No operation returns a private key or the KEK.
+//!
+//! What a plaintext key does here: it is decrypted, used for one signature, and zeroed. Its envelope is the vault's own
+//! (vault.py): KEK wraps a DEK with AES-256-GCM under `storageforge:dek:<uuid>`, the DEK encrypts the OpenSSH private key under
+//! `storageforge:key:<uuid>`, so a ciphertext moved to another row does not authenticate here either.
+
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::time::Instant;
+
+use aes_gcm::aead::{Aead, KeyInit, Payload};
+use aes_gcm::{Aes256Gcm, Nonce};
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
+use hmac::{Hmac, Mac};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use sha2::Sha256;
+use ssh_key::private::PrivateKey;
+use ssh_key::{Algorithm, EcdsaCurve, LineEnding};
+use subtle::ConstantTimeEq;
+use zeroize::{Zeroize, Zeroizing};
+
+const PROTOCOL: u32 = 1;
+const MAX_FRAME: usize = 1 << 20;
+const MAX_SIGN_DATA: usize = 256 << 10;
+const BAD_LIMIT: u32 = 5;
+const VERIFIER: &[u8] = b"storageforge-vault-v1";
+// Argon2id costs the enclave may be asked for: enough to be worth something, and never so much that one request stalls it for good.
+const KDF_MEMORY_KIB: std::ops::RangeInclusive<u32> = 8 * 1024..=1024 * 1024;
+const KDF_TIME: std::ops::RangeInclusive<u32> = 1..=10;
+const KDF_LANES: std::ops::RangeInclusive<u32> = 1..=16;
+// Signatures per key per minute, and unlock attempts per minute. The limits live here, where the web app cannot change them.
+const SIGN_PER_MINUTE: f64 = 600.0;
+const UNLOCK_PER_MINUTE: f64 = 6.0;
+
+/// A token bucket: `per_minute` a minute, with one minute saved up.
+struct Bucket {
+    tokens: f64,
+    at: Instant,
+    per_minute: f64,
+}
+
+impl Bucket {
+    fn new(per_minute: f64) -> Self {
+        Bucket { tokens: per_minute, at: Instant::now(), per_minute }
+    }
+    fn take(&mut self) -> bool {
+        let now = Instant::now();
+        self.tokens = (self.tokens + now.duration_since(self.at).as_secs_f64() * self.per_minute / 60.0).min(self.per_minute);
+        self.at = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+struct State {
+    kek: Option<Zeroizing<[u8; 32]>>,
+    audit: Option<Zeroizing<Vec<u8>>>,
+    bad: u32,
+    lockdown: bool,
+    unlocks: Bucket,
+    signs: HashMap<String, Bucket>,
+    signed: u64,
+    refused: u64,
+}
+
+/// Why a request was refused. `Bad` is a request no honest client sends: it counts towards the lock-down and ends the connection.
+enum Refusal {
+    Bad(String),
+    No(&'static str, String),
+}
+
+type Answer = Result<Value, Refusal>;
+
+fn bad<T>(why: impl Into<String>) -> Result<T, Refusal> {
+    Err(Refusal::Bad(why.into()))
+}
+
+fn no<T>(code: &'static str, why: impl Into<String>) -> Result<T, Refusal> {
+    Err(Refusal::No(code, why.into()))
+}
+
+fn bytes(v: &Value, name: &str, most: usize) -> Result<Vec<u8>, Refusal> {
+    let text = match v.get(name).and_then(Value::as_str) {
+        Some(t) => t,
+        None => return bad(format!("{name} is missing")),
+    };
+    if text.len() > most * 4 / 3 + 4 {
+        return bad(format!("{name} is too long"));
+    }
+    match B64.decode(text) {
+        Ok(b) if b.len() <= most => Ok(b),
+        _ => bad(format!("{name} is not base64 of at most {most} bytes")),
+    }
+}
+
+fn nonce(v: &Value, name: &str) -> Result<[u8; 12], Refusal> {
+    let b = bytes(v, name, 12)?;
+    <[u8; 12]>::try_from(b.as_slice()).or_else(|_| bad(format!("{name} is not 12 bytes")))
+}
+
+/// A row's uuid as the vault makes it: 32 hex digits. It goes into the associated data, so nothing else may.
+fn uuid(v: &Value) -> Result<String, Refusal> {
+    match v.get("uuid").and_then(Value::as_str) {
+        Some(u) if u.len() == 32 && u.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) => Ok(u.to_string()),
+        _ => bad("uuid is not 32 lower-case hex digits"),
+    }
+}
+
+/// A private key as the enclave holds it for the length of one signature.
+enum Secret {
+    Ed25519(Zeroizing<[u8; 32]>),
+    P256(Zeroizing<Vec<u8>>),
+    P384(Zeroizing<Vec<u8>>),
+    Rsa { n: Vec<u8>, e: Vec<u8>, d: Zeroizing<Vec<u8>>, p: Zeroizing<Vec<u8>>, q: Zeroizing<Vec<u8>> },
+}
+
+/// The fields of an SSH wire blob, read in order. Every read is bounded by what is left, so a length that lies ends the parse.
+struct Wire<'a>(&'a [u8]);
+
+impl<'a> Wire<'a> {
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        if n > self.0.len() {
+            return None;
+        }
+        let (head, rest) = self.0.split_at(n);
+        self.0 = rest;
+        Some(head)
+    }
+    fn u32(&mut self) -> Option<u32> {
+        self.take(4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    fn string(&mut self) -> Option<&'a [u8]> {
+        let n = self.u32()? as usize;
+        self.take(n)
+    }
+    /// A number, without the zero byte SSH puts before one whose top bit is set.
+    fn mpint(&mut self) -> Option<&'a [u8]> {
+        let mut b = self.string()?;
+        while b.len() > 1 && b[0] == 0 {
+            b = &b[1..];
+        }
+        Some(b)
+    }
+}
+
+fn ssh_string(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// A number as SSH writes it: no leading zeros, and one zero byte before a top bit that is set.
+fn ssh_mpint(out: &mut Vec<u8>, mut bytes: &[u8]) {
+    while bytes.len() > 1 && bytes[0] == 0 {
+        bytes = &bytes[1..];
+    }
+    if bytes.first().is_some_and(|b| b & 0x80 != 0) {
+        out.extend_from_slice(&(bytes.len() as u32 + 1).to_be_bytes());
+        out.push(0);
+    } else {
+        out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    }
+    out.extend_from_slice(bytes);
+}
+
+/// A number left-padded with zeros to `size` bytes, or None when it is longer: the fixed width a curve's scalar is given in.
+fn padded(bytes: &[u8], size: usize) -> Option<Zeroizing<Vec<u8>>> {
+    if bytes.len() > size {
+        return None;
+    }
+    let mut out = Zeroizing::new(vec![0u8; size]);
+    out[size - bytes.len()..].copy_from_slice(bytes);
+    Some(out)
+}
+
+/// An unencrypted OpenSSH private key (the `openssh-key-v1` container, PROTOCOL.key), read here and not by a library: the vault stores
+/// what Python's `cryptography` wrote, whose line width and number widths two parsers took three different ways. Returns the key and
+/// its public half in SSH wire form. Anything it does not expect is None: one key, no passphrase, ed25519, ECDSA P-256 or P-384, or RSA.
+fn parse_openssh(pem: &[u8]) -> Option<(Secret, Vec<u8>)> {
+    let text = std::str::from_utf8(pem).ok()?;
+    let mut body = Zeroizing::new(String::with_capacity(text.len()));
+    let (mut began, mut ended) = (false, false);
+    for line in text.lines().map(str::trim) {
+        match line {
+            "-----BEGIN OPENSSH PRIVATE KEY-----" => began = true,
+            "-----END OPENSSH PRIVATE KEY-----" => ended = true,
+            _ if began && !ended => body.push_str(line),
+            _ => {}
+        }
+    }
+    if !began || !ended {
+        return None;
+    }
+    let blob = Zeroizing::new(B64.decode(body.as_bytes()).ok()?);
+    let mut w = Wire(&blob);
+    if w.take(15)? != b"openssh-key-v1\0" || w.string()? != b"none" || w.string()? != b"none" || !w.string()?.is_empty() || w.u32()? != 1 {
+        return None;
+    }
+    let public = w.string()?.to_vec();
+    let mut w = Wire(w.string()?);
+    if w.u32()? != w.u32()? {
+        return None; // the two check numbers differ: not decrypted, or not a key
+    }
+    let kind = w.string()?;
+    let secret = match kind {
+        b"ssh-ed25519" => {
+            let (pk, sk) = (w.string()?, w.string()?);
+            if pk.len() != 32 || sk.len() != 64 || &sk[32..] != pk {
+                return None;
+            }
+            let mut seed = Zeroizing::new([0u8; 32]);
+            seed.copy_from_slice(&sk[..32]);
+            Secret::Ed25519(seed)
+        }
+        b"ecdsa-sha2-nistp256" | b"ecdsa-sha2-nistp384" => {
+            let (curve, _point, d) = (w.string()?, w.string()?, w.mpint()?);
+            match (kind, curve) {
+                (b"ecdsa-sha2-nistp256", b"nistp256") => Secret::P256(padded(d, 32)?),
+                (b"ecdsa-sha2-nistp384", b"nistp384") => Secret::P384(padded(d, 48)?),
+                _ => return None,
+            }
+        }
+        b"ssh-rsa" => {
+            let (n, e, d, _iqmp, p, q) = (w.mpint()?, w.mpint()?, w.mpint()?, w.mpint()?, w.mpint()?, w.mpint()?);
+            Secret::Rsa { n: n.to_vec(), e: e.to_vec(), d: Zeroizing::new(d.to_vec()), p: Zeroizing::new(p.to_vec()), q: Zeroizing::new(q.to_vec()) }
+        }
+        _ => return None,
+    };
+    // the public half stored beside it must be this key's: its type, at the least
+    if Wire(&public).string()? != kind {
+        return None;
+    }
+    Some((secret, public))
+}
+
+/// One signature in SSH wire form: a string naming the algorithm, then a string holding the signature.
+fn sign_with(secret: &Secret, data: &[u8], flags: u64) -> Option<Vec<u8>> {
+    use signature::{SignatureEncoding, Signer};
+    let (name, sig): (&[u8], Vec<u8>) = match secret {
+        Secret::Ed25519(seed) => (b"ssh-ed25519", ed25519_dalek::SigningKey::from_bytes(seed).try_sign(data).ok()?.to_bytes().to_vec()),
+        Secret::P256(d) => {
+            let sig: p256::ecdsa::Signature = p256::ecdsa::SigningKey::from_slice(d).ok()?.try_sign(data).ok()?;
+            let (r, s) = sig.split_bytes();
+            let mut both = Vec::new();
+            ssh_mpint(&mut both, &r);
+            ssh_mpint(&mut both, &s);
+            (b"ecdsa-sha2-nistp256", both)
+        }
+        Secret::P384(d) => {
+            let sig: p384::ecdsa::Signature = p384::ecdsa::SigningKey::from_slice(d).ok()?.try_sign(data).ok()?;
+            let (r, s) = sig.split_bytes();
+            let mut both = Vec::new();
+            ssh_mpint(&mut both, &r);
+            ssh_mpint(&mut both, &s);
+            (b"ecdsa-sha2-nistp384", both)
+        }
+        // an RSA key signs with the hash the agent protocol's flags ask for, SHA-512 when they ask for neither or both: never SHA-1
+        Secret::Rsa { n, e, d, p, q } => {
+            let big = |b: &[u8]| rsa::BigUint::from_bytes_be(b);
+            let private = rsa::RsaPrivateKey::from_components(big(n), big(e), big(d), vec![big(p), big(q)]).ok()?;
+            if flags & 2 != 0 && flags & 4 == 0 {
+                (b"rsa-sha2-256", rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(private).try_sign(data).ok()?.to_vec())
+            } else {
+                (b"rsa-sha2-512", rsa::pkcs1v15::SigningKey::<sha2::Sha512>::new(private).try_sign(data).ok()?.to_vec())
+            }
+        }
+    };
+    let mut wire = Vec::with_capacity(sig.len() + name.len() + 8);
+    ssh_string(&mut wire, name);
+    ssh_string(&mut wire, &sig);
+    Some(wire)
+}
+
+fn open(key: &[u8], nonce: &[u8; 12], blob: &[u8], aad: &[u8]) -> Result<Zeroizing<Vec<u8>>, Refusal> {
+    let cipher = Aes256Gcm::new_from_slice(key).or_else(|_| no("crypto", "the key is not 32 bytes"))?;
+    match cipher.decrypt(Nonce::from_slice(nonce), Payload { msg: blob, aad }) {
+        Ok(plain) => Ok(Zeroizing::new(plain)),
+        Err(_) => no("auth", "authentication failed: wrong secret, or a ciphertext that was changed or moved"),
+    }
+}
+
+fn seal(key: &[u8], plain: &[u8], aad: &[u8]) -> Result<([u8; 12], Vec<u8>), Refusal> {
+    use rand_core::RngCore;
+    let mut n = [0u8; 12];
+    rand_core::OsRng.fill_bytes(&mut n);
+    let cipher = Aes256Gcm::new_from_slice(key).or_else(|_| no("crypto", "the key is not 32 bytes"))?;
+    match cipher.encrypt(Nonce::from_slice(&n), Payload { msg: plain, aad }) {
+        Ok(ct) => Ok((n, ct)),
+        Err(_) => no("crypto", "encryption failed"),
+    }
+}
+
+impl State {
+    fn new() -> Self {
+        State { kek: None, audit: None, bad: 0, lockdown: false, unlocks: Bucket::new(UNLOCK_PER_MINUTE), signs: HashMap::new(), signed: 0, refused: 0 }
+    }
+
+    fn wipe(&mut self) {
+        self.kek = None; // Zeroizing clears it as it goes
+        self.audit = None;
+        self.signs.clear();
+    }
+
+    fn kek(&self) -> Result<&[u8; 32], Refusal> {
+        match &self.kek {
+            Some(k) => Ok(k),
+            None => no("locked", "the enclave is locked"),
+        }
+    }
+
+    fn status(&self) -> Value {
+        json!({"ok": true, "protocol": PROTOCOL, "version": env!("CARGO_PKG_VERSION"), "state": if self.lockdown { "lockdown" } else if self.kek.is_some() { "unlocked" } else { "locked" },
+               "bad_requests": self.bad, "bad_limit": BAD_LIMIT, "signed": self.signed, "refused": self.refused,
+               "limits": {"sign_per_key_per_minute": SIGN_PER_MINUTE, "unlock_per_minute": UNLOCK_PER_MINUTE, "max_frame": MAX_FRAME, "max_sign_data": MAX_SIGN_DATA}})
+    }
+
+    /// The vault secret arrives once, here. The KEK is derived as vault.py derives it, proved against the stored verifier, and kept;
+    /// the audit MAC key is unwrapped and kept. The secret is zeroed before this returns, whatever happened.
+    fn unlock(&mut self, v: &Value) -> Answer {
+        if !self.unlocks.take() {
+            return no("rate", "too many unlock attempts: wait a minute");
+        }
+        let secret = Zeroizing::new(bytes(v, "secret", 4096)?);
+        let salt = bytes(v, "salt", 64)?;
+        let num = |name: &str| v.get(name).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
+        let (Some(t), Some(m), Some(p)) = (num("time_cost"), num("memory_kib"), num("lanes")) else {
+            return bad("time_cost, memory_kib and lanes are whole numbers");
+        };
+        if secret.len() < 32 || salt.len() < 8 || !KDF_TIME.contains(&t) || !KDF_MEMORY_KIB.contains(&m) || !KDF_LANES.contains(&p) {
+            return bad("the secret, the salt or the Argon2id costs are outside what the enclave takes");
+        }
+        let (vn, vct, an, act) = (nonce(v, "verifier_nonce")?, bytes(v, "verifier", 256)?, nonce(v, "audit_key_nonce")?, bytes(v, "audit_key_wrapped", 256)?);
+        let params = argon2::Params::new(m, t, p, Some(32)).or_else(|_| bad("Argon2id refuses those costs"))?;
+        let mut kek = Zeroizing::new([0u8; 32]);
+        // the memory Argon2id works in is asked for here, so that not having it is an answer and not the end of the process
+        let mut blocks: Vec<argon2::Block> = Vec::new();
+        if blocks.try_reserve_exact(params.block_count()).is_err() {
+            return no("crypto", "not enough memory in the enclave for those Argon2id costs");
+        }
+        blocks.resize(params.block_count(), argon2::Block::default());
+        let derived = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params).hash_password_into_with_memory(&secret, &salt, kek.as_mut(), &mut blocks);
+        for b in blocks.iter_mut() {
+            *b = argon2::Block::default();
+        }
+        derived.or_else(|_| no("crypto", "Argon2id failed with those costs"))?;
+        let check = open(kek.as_ref(), &vn, &vct, b"storageforge:verifier").or_else(|_| no("auth", "wrong vault secret: the stored verifier did not authenticate"))?;
+        if check.ct_eq(VERIFIER).unwrap_u8() != 1 {
+            return no("auth", "wrong vault secret: the stored verifier did not authenticate");
+        }
+        let audit = open(kek.as_ref(), &an, &act, b"storageforge:audit-key")?;
+        self.kek = Some(kek);
+        self.audit = Some(audit);
+        self.lockdown = false; // only a person with the secret lifts a lock-down
+        self.bad = 0;
+        Ok(json!({"ok": true, "state": "unlocked"}))
+    }
+
+    /// The private key of one row, decrypted for the length of one call, with its public half.
+    fn private(&self, v: &Value) -> Result<(String, Secret, Vec<u8>), Refusal> {
+        let id = uuid(v)?;
+        let dek = open(self.kek()?, &nonce(v, "dek_nonce")?, &bytes(v, "wrapped_dek", 128)?, format!("storageforge:dek:{id}").as_bytes())?;
+        let pem = open(&dek, &nonce(v, "key_nonce")?, &bytes(v, "ciphertext", 32 << 10)?, format!("storageforge:key:{id}").as_bytes())?;
+        match parse_openssh(&pem) {
+            Some((secret, public)) => Ok((id, secret, public)),
+            None => no("key", "what decrypted is not an OpenSSH private key the enclave signs with"),
+        }
+    }
+
+    /// One signature, as an SSH agent gives it: the wire form of the signature (a string naming the algorithm, then the signature),
+    /// and of the public key that made it. `flags` are the agent protocol's: 2 asks an RSA key for rsa-sha2-256, 4 for rsa-sha2-512.
+    fn sign(&mut self, v: &Value) -> Answer {
+        self.kek()?;
+        let data = bytes(v, "data", MAX_SIGN_DATA)?;
+        let flags = v.get("flags").and_then(Value::as_u64).unwrap_or(0);
+        let (id, secret, public) = self.private(v)?;
+        if !self.signs.entry(id).or_insert_with(|| Bucket::new(SIGN_PER_MINUTE)).take() {
+            self.refused += 1;
+            return no("rate", "this key has signed as often as the enclave allows in a minute");
+        }
+        let Some(wire) = sign_with(&secret, &data, flags) else { return no("key", "that key cannot sign") };
+        self.signed += 1;
+        Ok(json!({"ok": true, "signature": B64.encode(wire), "public": B64.encode(public)}))
+    }
+
+    /// A new key, made here. What leaves is its public half and the same two ciphertexts the vault stores: the private half never does.
+    fn generate(&mut self, v: &Value) -> Answer {
+        let kek = *self.kek()?;
+        let id = uuid(v)?;
+        let algorithm = match v.get("kind").and_then(Value::as_str) {
+            Some("ed25519") => Algorithm::Ed25519,
+            Some("ecdsa") => Algorithm::Ecdsa { curve: EcdsaCurve::NistP256 },
+            _ => return bad("kind is ed25519 or ecdsa"),
+        };
+        let comment = v.get("comment").and_then(Value::as_str).unwrap_or("");
+        if comment.len() > 200 || comment.bytes().any(|c| c < 0x20 || c == 0x7f) {
+            return bad("the comment is at most 200 printable characters");
+        }
+        let mut key = PrivateKey::random(&mut rand_core::OsRng, algorithm).or_else(|_| no("crypto", "the key could not be made"))?;
+        key.set_comment(comment);
+        let pem = key.to_openssh(LineEnding::LF).or_else(|_| no("crypto", "the key could not be written"))?;
+        let public = key.public_key().to_openssh().or_else(|_| no("crypto", "the public key could not be written"))?;
+        use rand_core::RngCore;
+        let mut dek = Zeroizing::new([0u8; 32]);
+        rand_core::OsRng.fill_bytes(dek.as_mut());
+        let (dn, wd) = seal(&kek, dek.as_ref(), format!("storageforge:dek:{id}").as_bytes())?;
+        let (kn, ct) = seal(dek.as_ref(), pem.as_bytes(), format!("storageforge:key:{id}").as_bytes())?;
+        Ok(json!({"ok": true, "public_key": public, "dek_nonce": B64.encode(dn), "wrapped_dek": B64.encode(wd), "key_nonce": B64.encode(kn), "ciphertext": B64.encode(ct)}))
+    }
+
+    /// The audit chain's MAC, as vault.py's AuditLog computes it: HMAC-SHA256 over the previous entry's hash and the entry's payload.
+    fn mac(&self, v: &Value) -> Answer {
+        self.kek()?;
+        let Some(key) = &self.audit else { return no("locked", "the enclave is locked") };
+        let (Some(prev), Some(payload)) = (v.get("prev").and_then(Value::as_str), v.get("payload").and_then(Value::as_str)) else {
+            return bad("prev and payload are text");
+        };
+        if prev.len() != 64 || !prev.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return bad("prev is 64 hex digits");
+        }
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).or_else(|_| no("crypto", "the MAC key is unusable"))?;
+        mac.update(prev.as_bytes());
+        mac.update(payload.as_bytes());
+        let mut out = String::with_capacity(64);
+        for b in mac.finalize().into_bytes() {
+            out.push_str(&format!("{b:02x}"));
+        }
+        if let Some(want) = v.get("expect").and_then(Value::as_str) {
+            return Ok(json!({"ok": true, "matches": out.as_bytes().ct_eq(want.as_bytes()).unwrap_u8() == 1}));
+        }
+        Ok(json!({"ok": true, "mac": out}))
+    }
+
+    fn answer(&mut self, v: &Value) -> Answer {
+        #[derive(Deserialize)]
+        struct Op {
+            op: String,
+        }
+        let Ok(Op { op }) = Op::deserialize(v) else { return bad("a request is an object with an op") };
+        if self.lockdown && op != "status" && op != "unlock" {
+            return no("lockdown", "the enclave is locked down after repeated bad requests: unlock it again");
+        }
+        match op.as_str() {
+            "status" => Ok(self.status()),
+            "unlock" => self.unlock(v),
+            "lock" => {
+                self.wipe();
+                Ok(json!({"ok": true, "state": "locked"}))
+            }
+            "sign" => self.sign(v),
+            "generate" => self.generate(v),
+            "mac" => self.mac(v),
+            _ => bad("unknown op"),
+        }
+    }
+
+    fn count_bad(&mut self) {
+        self.bad += 1;
+        if self.bad >= BAD_LIMIT {
+            self.wipe();
+            self.lockdown = true;
+        }
+    }
+
+    /// One connection: requests answered in order until it closes, sends something no honest client sends, or goes quiet.
+    fn serve(&mut self, mut conn: impl Read + Write) {
+        loop {
+            let mut head = [0u8; 4];
+            if conn.read_exact(&mut head).is_err() {
+                return;
+            }
+            let len = u32::from_be_bytes(head) as usize;
+            if len == 0 || len > MAX_FRAME {
+                self.count_bad();
+                return;
+            }
+            let mut body = Zeroizing::new(vec![0u8; len]);
+            if conn.read_exact(&mut body).is_err() {
+                return;
+            }
+            let (reply, hang_up) = match serde_json::from_slice::<Value>(&body) {
+                Ok(mut v) => {
+                    let got = self.answer(&v);
+                    if let Some(s) = v.get_mut("secret").and_then(|s| if let Value::String(s) = s { Some(s) } else { None }) {
+                        s.zeroize();
+                    }
+                    match got {
+                        Ok(r) => (r, false),
+                        Err(Refusal::No(code, why)) => (json!({"ok": false, "error": code, "why": why}), false),
+                        Err(Refusal::Bad(why)) => {
+                            self.count_bad();
+                            (json!({"ok": false, "error": "bad-request", "why": why}), true)
+                        }
+                    }
+                }
+                Err(_) => {
+                    self.count_bad();
+                    (json!({"ok": false, "error": "bad-request", "why": "not JSON"}), true)
+                }
+            };
+            let text = reply.to_string();
+            if conn.write_all(&(text.len() as u32).to_be_bytes()).is_err() || conn.write_all(text.as_bytes()).is_err() || hang_up {
+                return;
+            }
+        }
+    }
+}
+
+/// A listening AF_VSOCK socket on `port`, for any peer. The micro VM has no other way in or out.
+fn vsock_listen(port: u32) -> std::io::Result<i32> {
+    unsafe {
+        let fd = libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut addr: libc::sockaddr_vm = std::mem::zeroed();
+        addr.svm_family = libc::AF_VSOCK as libc::sa_family_t;
+        addr.svm_cid = libc::VMADDR_CID_ANY;
+        addr.svm_port = port;
+        if libc::bind(fd, &addr as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_vm>() as libc::socklen_t) < 0 || libc::listen(fd, 1) < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(fd)
+    }
+}
+
+/// Nothing this process holds may reach a disk or another process: its memory is locked, it leaves no core, and it cannot be traced.
+fn harden() {
+    unsafe {
+        libc::setrlimit(libc::RLIMIT_CORE, &libc::rlimit { rlim_cur: 0, rlim_max: 0 });
+        libc::prctl(libc::PR_SET_DUMPABLE, 0);
+        // In the micro VM this is PID 1 and may lock everything it will ever hold. A process on a developer's machine has a small
+        // lock limit, and locking what it cannot would fail every later allocation: it says so and goes on unlocked, as a test double.
+        let mut limit: libc::rlimit = std::mem::zeroed();
+        let unlimited = libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut limit) == 0 && limit.rlim_cur == libc::RLIM_INFINITY;
+        if !unlimited || libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) != 0 {
+            eprintln!("enclave: memory is not locked here (no leave to lock it): fine for a test, wrong for the enclave's own VM");
+        }
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    harden();
+    let mut state = State::new();
+    match (args.get(1).map(String::as_str), args.get(2)) {
+        // in the micro VM: PID 1, with nothing to return to. A listener that cannot be made is a halt, which the supervisor sees
+        (Some("--vsock"), Some(port)) => {
+            let port: u32 = port.parse().unwrap_or(0);
+            let fd = vsock_listen(port).unwrap_or_else(|e| {
+                eprintln!("enclave: no vsock listener on port {port}: {e}");
+                std::process::exit(1)
+            });
+            loop {
+                let conn = unsafe { libc::accept4(fd, std::ptr::null_mut(), std::ptr::null_mut(), libc::SOCK_CLOEXEC) };
+                if conn < 0 {
+                    continue;
+                }
+                use std::os::fd::FromRawFd;
+                state.serve(unsafe { std::fs::File::from_raw_fd(conn) });
+            }
+        }
+        // on a developer's machine and in the unit tests: the same program and the same wire, over a socket file
+        (Some("--unix"), Some(path)) => {
+            let _ = std::fs::remove_file(path);
+            let listener = std::os::unix::net::UnixListener::bind(path).unwrap_or_else(|e| {
+                eprintln!("enclave: cannot listen on {path}: {e}");
+                std::process::exit(1)
+            });
+            for conn in listener.incoming().flatten() {
+                state.serve(conn);
+            }
+        }
+        _ => {
+            eprintln!("usage: storageforge-enclave --vsock PORT | --unix PATH");
+            std::process::exit(2);
+        }
+    }
+}

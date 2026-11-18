@@ -1,0 +1,32 @@
+[package]
+name = "storageforge-enclave"
+version = "0.5.5"
+edition = "2021"
+license = "WTFPL"
+description = "StorageForge's key enclave: the one program of a micro VM with no network device. It holds the vault's KEK and answers a few narrow questions over vsock."
+
+[dependencies]
+aes-gcm = "0.10"
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+base64 = "0.22"
+ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
+hmac = "0.12"
+libc = "0.2"
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "sha256"] }
+p384 = { version = "0.13", default-features = false, features = ["ecdsa", "sha384"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+rsa = { version = "0.9", default-features = false, features = ["sha2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+signature = "2"
+ssh-key = { version = "0.6", default-features = false, features = ["alloc", "std", "ed25519", "rsa", "p256", "p384", "rand_core"] }
+subtle = "2"
+zeroize = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
