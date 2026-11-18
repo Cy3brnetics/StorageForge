@@ -71,9 +71,12 @@ Corrections stand: no VSS trap, no cryptographic shred, no certificates, no WebS
 - 2026-11-17: 0.5.3's lab gaps, before its lab run: a default build with every host a check asks for and the appliances and routers in it, Playwright for tier 13, `qemu-img` on `sf-ubuntu`, SF-72's ZFS properties read back and the btrfs side measured in tier 16, `shellcheck` with the `test` extra. None of it has been through the lab yet.
 - 2026-11-17: **the 0.5.3 lab run**, at `9fee87e`, in two builds because the default build wants 24 GB: 589 passed, 0 failed, 2 skipped on the seven configs with the routers; tier 0, tier 2 (101 passed) and tier 8 (17 passed) on the appliances. Every check the roadmap listed as skipped ran. [The table and what went wrong on the way](docs/kvm-lab.md#the-run-of-2026-11-17).
 - 2026-11-17: **0.5.3**. Full unit suites at `48faa31`: SQLite 2,006 tests, 0 failed, 6 skipped, in 177 s at `-j 6`; PostgreSQL 2,006 tests, 0 failed, 86 skipped, in 1,066 s. Tagged locally, not pushed.
+- 2026-11-17: **0.5.4** built: log lines kept by arrival with a rate per host, the notification center, log rules, a prepared fix with its way back, and the btrfs receive folder (SF-72). Lab tiers 13 (41 passed), 14 (30 passed, and `logrule-program` by hand after a fix to the check) and 16 (26 passed) on a controller built from it: [the run](docs/kvm-lab.md#the-run-of-2026-11-17-for-054).
 
 What the lab found that unit tests had not:
 
+- Before systemd 254, `journalctl --since … -n` gives the oldest lines: a busy host on Ubuntu 22.04 or Enterprise Linux 9 lost its newest log lines for good.
+- zed says a pool's state change at `notice`: a rule asking for `warning` never heard a disk go offline.
 - OPNsense 26 keeps the rules its pages make in a new place in `config.xml`: one rule of six was read.
 - No change could be applied to OPNsense: the way back was planted from pfSense's paths. A rule named its alias by another name than the alias had, on pfSense too.
 - Two copies of a folder side by side were not reported when the folder above had a copy on another host.

@@ -101,6 +101,22 @@ OPNsense 26.7 had its first run, and all five of its tier 12 checks passed after
 
 The first pass was not clean, and why: one tier 2 check failed because `lab.sh` was edited while the run was using it (tier 2 ran again: 213 passed); the run was cut off in tier 13 when the session that started it ended, so tiers 13 to 18 ran from a systemd unit; and three tier 13 checks took the server's "ask again in a moment" (503 with `Retry-After`, new in this release) for a failure, which the lab's client now waits out as the page does. **The appliances have not run tiers 1 and 3 to 7 with a controller**, as before. One check did run with one: `sf-pve` was joined to the main build afterwards and `workload-proxmox` passed, a VM made with `qm` found by a scan and drawn on the map. A host is asked for there by the name its scan gave it (`sf-pve.lab`): the lab had asked by its short name, which nothing resolves.
 
+## The run of 2026-11-17 for 0.5.4
+
+Tiers 13, 14 and 16 on the seven configs with the routers, against a controller built from the 0.5.4 tree, since those are the tiers the release touches: tier 14 has the new log rule and notification checks, tier 16 the btrfs receive folder, tier 13 the new panel and routes.
+
+| Tier | Result |
+| :--- | :--- |
+| 13: Features | 41 passed, 0 failed. `ui-pages` opened 23 pages and tabs, the Notify panel among them, and `api-sweep` 114 routes |
+| 14: Host logs | 30 passed. `logrule-program` failed for a mistake in the check (it looked its lines up under the tier's own tag) and passed when run again by hand after the fix. It has not passed inside a whole tier run |
+| 16: Sends | 26 passed, 0 failed. `send-btrfs-setuid`: the folder the receive made is 0700 and another account cannot reach the setuid file in it; the folder that was there kept its 755 |
+
+What the new tier 14 checks did on real hosts: an md mirror with a member failed (`md/raid1:md127: Operation continuing on 1 devices.`), a device that returns only I/O errors, and a ZFS disk taken offline each raised one critical notification that cannot be snoozed; sixty lines of one kind raised one warning that says sixty; thirty lines written by `logger -t sshd` were stored as written by `logger` and did not set off the rule about sshd; and a service that failed three times carried a fix that was prepared (nothing changed on the host), deployed (the service ran) and taken back (it was stopped), with nothing enabled.
+
+What that run found in the product, both fixed and run again: **before systemd 254, `journalctl --since` with `-n` gives the oldest lines, not the newest**, so a busy host on Ubuntu 22.04 or Enterprise Linux 9 lost its newest lines for good (seen on systemd 249 and 252, and checked on 255 and 259); and zed says a pool's state change at `notice`, where the degraded-pool rule asked for `warning`.
+
+Not run: the other tiers, which ran for 0.5.3 earlier the same day and which this release does not touch, and the appliances. `sf-pve` was in the build for the first pass and failed every check that asks for a host by its lab name, since StorageForge knows it as `sf-pve.lab`; it was taken out and tiers 13 and 14 run again.
+
 ## Test tiers
 
 | Tier | File | Checks |
