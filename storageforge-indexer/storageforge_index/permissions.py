@@ -150,6 +150,10 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (('POST',), r'/api/map/designs/\d+/stage', 'plans.edit'),
     (READ, r'/api/(firewall|exposure)', 'security.view'),
     (('POST',), r'/api/infra/measure', 'security.manage'),
+    (READ, r'/api/sfnet', 'hosts.view'),
+    (('POST',), r'/api/sfnet', 'security.manage'),
+    (('POST',), r'/api/sfnet/members(/remove)?', 'security.manage'),
+    (('POST',), r'/api/sfnet/plan', 'plans.edit'),
     (READ, r'/api/infra/settings', 'hosts.view'),
     (('POST',), r'/api/infra/settings', 'security.manage'),
 

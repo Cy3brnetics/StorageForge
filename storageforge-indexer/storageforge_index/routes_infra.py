@@ -7,7 +7,7 @@ import time
 from flask import Response, jsonify, request
 from flask_login import current_user, login_required
 
-from . import changes, exposure, graph, infragraph, inframeasure, mapdesign, mapexport, netdevice, netfacts, reach, security, whatif, workloads
+from . import changes, exposure, graph, infragraph, inframeasure, mapdesign, mapexport, netdevice, netfacts, reach, security, sfnetwork, whatif, workloads
 
 
 def register(web, ctx):
@@ -357,6 +357,45 @@ def register(web, ctx):
         res = inframeasure.measure(db, conn(), wanted, actor())
         core.audit(conn(), actor(), 'infra.measure', 'ok' if res.get('ok') else 'failed', res.get('host'), {'run_id': res.get('run_id')})
         return jsonify(res), 200 if res.get('ok') else 409
+
+    # StorageForge's own WireGuard network (sfnetwork.py). Nothing here reaches a host: what changes one is the plan, run like any other
+    @web.get('/api/sfnet')
+    @login_required
+    def api_sfnet():
+        return jsonify(sfnetwork.status(conn()))
+
+    @web.post('/api/sfnet')
+    @login_required
+    @password_confirmed
+    def api_sfnet_create():
+        body = json_body()
+        network = sfnetwork.create(conn(), actor(), str(body.get('range') or '').strip() or None, str(body.get('topology') or 'mesh'))
+        core.audit(conn(), actor(), 'sfnet.create', 'ok', network['range'], {'topology': network['topology'], 'port': network['port']})
+        return jsonify(sfnetwork.status(conn()))
+
+    @web.post('/api/sfnet/members')
+    @login_required
+    @password_confirmed
+    def api_sfnet_join():
+        body = json_body()
+        member = sfnetwork.join(conn(), body.get('host'), actor(), body.get('endpoint') or None, body.get('hub') is True, body.get('reachable') is not False)
+        core.audit(conn(), actor(), 'sfnet.join', 'ok', member['host'], {'address': member['address'], 'endpoint': member['endpoint'], 'hub': member['hub']})
+        return jsonify(member)
+
+    @web.post('/api/sfnet/members/remove')
+    @login_required
+    @password_confirmed
+    def api_sfnet_leave():
+        member = sfnetwork.leave(conn(), json_body().get('host'), actor())
+        core.audit(conn(), actor(), 'sfnet.leave', 'ok', member['host'], {'address': member['address']})
+        return jsonify(member)
+
+    @web.post('/api/sfnet/plan')
+    @login_required
+    def api_sfnet_plan():
+        made = sfnetwork.plan(conn(), actor())
+        core.audit(conn(), actor(), 'sfnet.plan', 'ok', str(made['plan_id'] or ''), {'tasks': made['tasks']})
+        return jsonify(made)
 
     @web.get('/api/infra/settings')
     @login_required

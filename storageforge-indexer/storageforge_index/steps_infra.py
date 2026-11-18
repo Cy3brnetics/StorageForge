@@ -595,6 +595,40 @@ t_wg_peer() { local iface=$1 key=$2 allowed=$3 state=${4:-present} endpoint=${5:
   ok "done: $iface"
 }
 
+# The interface and its key pair. The key is made here, by this host, and is never printed, copied or sent: the next reading
+# takes the public half. An interface StorageForge did not make is never changed or removed, whatever it is called.
+t_wg_interface() { local iface=$1 address=$2 port=$3 state=${4:-present} dir=${SF_WG_DIR:-/etc/wireguard}
+  local conf=$dir/$iface.conf key=$dir/$iface.key mark=$dir/$iface.storageforge up=0
+  command -v wg >/dev/null || { conflict "this host has no wg command (package wireguard-tools)"; return 0; }
+  wg show "$iface" public-key >/dev/null 2>&1 && up=1
+  if [[ ! -e $mark ]] && { ((up)) || [[ -e $conf ]]; }; then conflict "$iface is on this host and StorageForge did not make it: it is left as it is"; return 0; fi
+  if [[ $state == absent ]]; then
+    if ((!up)) && [[ ! -e $mark ]]; then ok "there is no $iface"; return 0; fi
+    act "take $iface down and remove its key" || return 0
+    systemctl disable --now "wg-quick@$iface" >/dev/null 2>&1 || wg-quick down "$iface" >/dev/null 2>&1 || :
+    rm -f "$conf" "$key" "$mark"
+    if wg show "$iface" public-key >/dev/null 2>&1; then conflict "$iface is still up"; else ok "$iface is gone, and its key with it"; fi
+    return 0
+  fi
+  command -v wg-quick >/dev/null || { conflict "this host has no wg-quick, which brings $iface back after a restart (package wireguard-tools)"; return 0; }
+  if ((up)); then
+    local now_addr now_port; now_addr=$(ip -o -4 addr show dev "$iface" | awk '{print $4; exit}'); now_port=$(wg show "$iface" listen-port)
+    if [[ $now_addr == "$address" && $now_port == "$port" ]]; then ok "$iface is up at $address on port $port, public key $(wg show "$iface" public-key)"; return 0; fi
+    act "move $iface from ${now_addr:-no address} port $now_port to $address port $port" || return 0
+    systemctl stop "wg-quick@$iface" >/dev/null 2>&1 || wg-quick down "$iface" >/dev/null 2>&1 || :
+  else
+    act "make $iface at $address on port $port, with a key pair made on this host" || return 0
+  fi
+  install -d -m 0700 "$dir"
+  if [[ ! -s $key ]]; then (umask 077; wg genkey >"$key") || { conflict "could not make a key"; rm -f "$key"; return 0; }; fi
+  # the peers a rewritten file would lose are put back by the plan's peer steps, from what the index holds
+  (umask 077; printf '[Interface]\nAddress = %s\nListenPort = %s\nPostUp = wg set %%i private-key %s\n' "$address" "$port" "$key" >"$conf"; : >"$mark")
+  durable "$conf" "$key" "$mark"
+  if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null; then try systemctl enable --now "wg-quick@$iface" >/dev/null || return 0
+  else try wg-quick up "$iface" >/dev/null || return 0; info "no systemd here: start $iface at boot with wg-quick up $iface"; fi
+  if wg show "$iface" public-key >/dev/null 2>&1; then ok "$iface is up at $address on port $port, public key $(wg show "$iface" public-key)"; else conflict "$iface did not come up"; fi
+}
+
 t_workload_action() { local runtime=$1 name=$2 action=$3 state
   command -v "${runtime/libvirt/virsh}" >/dev/null || { conflict "$runtime is not on this host"; return 0; }
   case $runtime in
@@ -945,6 +979,37 @@ def _check_wg(conn, c, h, p, say):
         say('warn', f'{p["iface"]} was not seen at the last reading')
 
 
+def _check_wg_interface(conn, c, h, p, say):
+    try:
+        mine = ipaddress.ip_interface(p['address'])
+    except ValueError:
+        say('crit', f'not an address: {p["address"]}')
+        return
+    if mine.version != 4 or '/' not in p['address'] or mine.network.prefixlen >= 31 or mine.ip in (mine.network.network_address, mine.network.broadcast_address):
+        say('crit', 'give the host\'s own IPv4 address with its range, as in 10.203.0.2/20')
+    elif not mine.is_private or mine.network.overlaps(ipaddress.ip_network('100.64.0.0/10')):
+        say('crit', 'the range must be a private one, and never 100.64.0.0/10 (Tailscale\'s and NetBird\'s)')
+    if not p['port'].isdigit() or not 1 <= int(p['port']) <= 65535:
+        say('crit', 'one port between 1 and 65535')
+    if p.get('state') == 'absent':
+        say('warn', f'{p["iface"]} and its key are removed: this host leaves the network until it is made again, with a new key')
+        return
+    net = _net(conn, h)
+    for i in (net or {}).get('interfaces') or []:
+        for a in i.get('addresses') or []:
+            try:
+                other = ipaddress.ip_interface(f'{a.get("ip")}/{a.get("prefix", a.get("prefixlen", 32))}')
+            except ValueError:
+                continue
+            if i.get('name') != p['iface'] and other.version == 4 and other.network.prefixlen > 0 and other.network.overlaps(mine.network):
+                say('crit', f'{i.get("name")} already has {other}: the range would take its traffic')
+    m = _infra(conn, h)
+    seen = {w['name'] for w in (m.get('access') or {}).get('wireguard') or []} if m else set()
+    say('note', f'{p["iface"]} was seen at the last reading: the script changes it only if StorageForge made it' if p['iface'] in seen
+        else 'the key pair is made on the host and the private key stays there; the next reading takes the public key')
+    say('note', f'UDP port {p["port"]} must be open on this host\'s firewall for peers that call it')
+
+
 def _workload(conn, h, runtime, name):
     from . import workloads
     return next((w for w in workloads.listing(conn, h['name'])['workloads'] if w['runtime'] == runtime and w['name'] == name), None)
@@ -1172,6 +1237,13 @@ changes.register('wg-peer', {'group': 'Network', 'label': 'WireGuard peer', 'fie
     'help': 'With no allowed addresses the peer is known and carries nothing. A peer already there with the right addresses is left alone, so an endpoint that has moved is not put back.'},
     ('iface', 'pubkey', 'allowed', 'state', 'endpoint', 'keepalive'), lambda p: _when(p['state'], f'WireGuard peer on {p["iface"]}: {p["pubkey"][:8]}…'), _check_wg,
     _ansible_bash('t_wg_peer', ('iface', 'pubkey', 'allowed', 'state', 'endpoint', 'keepalive')))
+
+changes.register('wg-interface', {'group': 'Network', 'label': 'WireGuard interface', 'fields': [
+    F('iface', 'iface', 'Interface', required=True, placeholder='sf0'), F('address', 'cidr', 'This host\'s address and range', required=True, placeholder='10.203.0.2/20'),
+    F('port', 'port', 'UDP port', required=True, placeholder='51903'), F('state', 'choice', 'Make or remove', options=['present', 'absent'], default='present')],
+    'help': 'Makes the interface and its key pair on the host. The private key never leaves the host. An interface StorageForge did not make is left alone.'},
+    ('iface', 'address', 'port', 'state'), lambda p: _when(p['state'], f'WireGuard interface {p["iface"]} at {p["address"]}'), _check_wg_interface,
+    _ansible_bash('t_wg_interface', ('iface', 'address', 'port', 'state')))
 
 changes.register('workload-action', {'group': 'Workloads', 'label': 'Start, stop or snapshot', 'fields': [
     F('runtime', 'choice', 'Runtime', options=RUNTIMES, required=True), F('name', 'name', 'Name', required=True), F('action', 'choice', 'Action', options=['start', 'stop', 'restart', 'force-off', 'snapshot'], required=True)]},

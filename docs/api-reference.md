@@ -306,6 +306,11 @@ See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure
 | GET | `/api/workloads`, `/api/network`, `/api/firewall`, `/api/exposure` | `?host=` | |
 | GET | `/api/workloads/libvirt` | `?host=` | each libvirt host's networks and storage pools, from its last reading. A libvirt VM in `/api/workloads` carries its disks, snapshots and guest agent state |
 | POST 🔑 | `/api/infra/measure` | `{"host"}` | `security.manage` |
+| GET | `/api/sfnet` | | `hosts.view`. StorageForge's own WireGuard network: range, port, topology, and per member its address, state and which peers the readings confirm |
+| POST 🔑 | `/api/sfnet` | `{"range"?, "topology"?}` | `security.manage`. Make the network (`mesh` or `hub`); the range is picked when not given |
+| POST 🔑 | `/api/sfnet/members` | `{"host", "endpoint"?, "hub"?, "reachable"?}` | `security.manage`. Add a scanned host |
+| POST 🔑 | `/api/sfnet/members/remove` | `{"host"}` | `security.manage`. Revoke a member |
+| POST | `/api/sfnet/plan` | | `plans.edit`. Save the change plan that brings every member to what it should be; `plan_id` is null when there is nothing to do |
 
 ## Scheduler
 

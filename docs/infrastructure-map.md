@@ -57,6 +57,7 @@ Then **Stage in Changes**, where it is an ordinary step with a Report and an App
 | `fw-fence` | Only these clients may reach these ports, in a table ahead of any other firewall |
 | `net-bridge`, `net-vlan`, `net-mtu` | With NetworkManager or systemd-networkd |
 | `wg-peer` | Add or revoke a WireGuard peer, with where to call it and a keepalive where it cannot call back |
+| `wg-interface` | Make a WireGuard interface and its key pair on the host, or remove them. The private key is made on the host and never leaves it. An interface StorageForge did not make is left alone |
 | `container` | `docker run` or `podman run` with a fixed name. It will not replace an existing container |
 | `vm` | `virt-install --import` from a disk you already have, with its console on loopback |
 | `vm-create` | A new VM from a cloud image: the image checked against its publisher's checksum, copied to a new root disk, data disks, and a cloud-init login for your SSH key. Fields can come from a [VM spec](host-migration.md#creating-vms). Never writes over a disk or a VM that is there |
@@ -64,6 +65,25 @@ Then **Stage in Changes**, where it is an ordinary step with a Report and an App
 | `workload-action`, `workload-remove` | Start, stop, restart, snapshot. Removing keeps volumes and disks, and takes `--destructive` |
 
 A step that could cut StorageForge off can carry a rollback timer. The script journals how to undo it and starts a systemd timer. Only a second signed run stops that timer, and that can only happen if the path still works.
+
+## StorageForge's own network
+
+StorageForge can build a WireGuard network of its own between the hosts you choose, on the interface `sf0` and UDP port 51903. It needs no outside service. It is used through the API today; the page for it is not built.
+
+1. `POST /api/sfnet` makes the network. It picks a range that no scanned host has an address or a route in, and never `100.64.0.0/10`, which Tailscale and NetBird use. Give `range` to choose one yourself, and `topology: "hub"` where hosts should meet only at a hub.
+2. `POST /api/sfnet/members` with a `host` adds a scanned host. It gets one address for good. The other members call it at the address scans reach it at; give `endpoint` for another, or `reachable: false` for a host behind a NAT of its own, which then calls the others and keeps the path open.
+3. `POST /api/sfnet/plan` saves a change plan. The first plan makes `sf0` and a key pair on each new member (`wg-interface`). Run it, and take a new infrastructure reading: the reading brings back each host's public key, and the host becomes active.
+4. `POST /api/sfnet/plan` again writes the peers (`wg-peer`). Each host trusts a peer for that peer's one address and nothing more, so a host that is taken over cannot answer for another's address. After the next reading `GET /api/sfnet` shows, per host, which peers are confirmed by key.
+
+What it holds to:
+
+- **Private keys stay on their hosts.** The controller stores ranges, addresses and public keys. The step never prints the key, and its file is readable by root only.
+- **A key is taken from a reading once.** If an active member later shows a different key, nobody is told to trust it. It is a critical notification, because either the interface was made again by hand or it is another machine.
+- **A peer nobody asked for is a notification,** and the next plan revokes it.
+- **A host that leaves** (`POST /api/sfnet/members/remove`) comes off every other member at the next plan and loses its interface and key. Its address is never given to another host.
+- **Open the port.** Peers call UDP 51903; add a `fw-rule` step where a firewall is in the way.
+
+Not built yet: the controller as a member (it runs in a container), key rotation through a plan, and the page.
 
 ## Designs
 
