@@ -1,7 +1,7 @@
 """The controller's side of the key enclave (roadmap section 14; the program is enclave/src/main.rs).
 
 The enclave is a micro VM with no network device that holds the vault's KEK. This speaks to it: a 4-byte length and JSON, one
-request at a time, over vsock (`vsock:CID:PORT`) or, on a developer's machine and in the tests, a socket file (`unix:PATH`).
+request at a time, over vsock (`vsock:CID:PORT`, or `fc:PATH:PORT` where Firecracker runs the VM) or, on a developer's machine and in the tests, a socket file (`unix:PATH`).
 Nothing here ever holds a private key or the KEK. The vault secret passes through once, on its way in at unlock.
 
 Every ciphertext stays in the database in the vault's own format (vault.py) and goes with the request that needs it, so turning
@@ -28,7 +28,17 @@ class EnclaveError(RuntimeError):
 
 
 def configured() -> str | None:
-    return os.environ.get(ADDRESS_ENV) or None
+    """Where the enclave is, or None where this installation has none. `vm` means this process runs it: the server starts it
+    as it starts (enclave_vm.from_env), and a command that turns out to need a key starts one of its own here, for as long as
+    the command runs. A command that needs no key (the health check, a search) never starts one."""
+    value = os.environ.get(ADDRESS_ENV) or None
+    if value == 'vm':
+        from . import enclave_vm
+        try:
+            return enclave_vm.on_demand()
+        except enclave_vm.EnclaveVMError as exc:
+            raise EnclaveError('down', f'the key enclave could not be started: {exc}') from None
+    return value
 
 
 def _b64(value) -> str:
@@ -52,8 +62,24 @@ class Enclave:
                 s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
                 s.settimeout(self.timeout)
                 s.connect((int(cid), int(port)))
+            elif kind == 'fc':
+                # Firecracker gives the guest's vsock to the host as a socket file: name the guest's port, and from its `OK` on
+                # the connection is the enclave's
+                path, _, port = rest.rpartition(':')
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.settimeout(self.timeout)
+                s.connect(path)
+                s.sendall(f'CONNECT {int(port)}\n'.encode())
+                said = b''
+                while not said.endswith(b'\n') and len(said) < 64:
+                    got = s.recv(1)
+                    if not got:
+                        break
+                    said += got
+                if not said.startswith(b'OK '):
+                    raise OSError('the VM is up and nothing listens in it yet' if not said else f'the VM answered {said[:40]!r}')
             else:
-                raise EnclaveError('down', f'{ADDRESS_ENV} is unix:PATH or vsock:CID:PORT, not {self.address!r}')
+                raise EnclaveError('down', f'{ADDRESS_ENV} is unix:PATH, vsock:CID:PORT or fc:PATH:PORT, not {self.address!r}')
         except (OSError, ValueError) as exc:
             if s is not None:
                 s.close()
@@ -177,8 +203,8 @@ class Enclave:
 def problems() -> dict:
     """For the notification center (alerts.problems): an enclave that was asked for and is not answering, has locked itself down,
     or is locked. The kind starts with security-, so none of them can be muted or snoozed: they leave when they are resolved."""
-    address = configured()
-    if not address:
+    address = os.environ.get(ADDRESS_ENV) or None          # not configured(): looking for problems never starts a VM
+    if not address or address == 'vm':
         return {}
     client = Enclave(address, timeout=3)
     try:

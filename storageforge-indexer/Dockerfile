@@ -7,6 +7,8 @@
 # Wolfi, not Debian: it ships fixes as upstream releases them and publishes a security feed Trivy and Grype both read, so
 # the scanners report what is actually unfixed. Debian slim carried 130-odd findings with no fix available.
 ARG BASE_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:833c48f1faf32c90e6f9501a2410a9aa28ceb2c594102edd4470053c30efa089
+# rust 1.100.0 on Alpine 3.24, the image enclave/image/build.sh builds in: the two must make the same bytes
+ARG ENCLAVE_BUILD_IMAGE=rust@sha256:8d0e82abfdf9a38071e07cabc5afba4ddbe077631a80e4e742a760c38beadc33
 
 # ── build: resolve wheels into an isolated virtualenv ──────────────────────────
 FROM ${BASE_IMAGE} AS build
@@ -109,6 +111,29 @@ RUN apk add --no-cache build-base openssl-dev pcre2-dev \
  && strip objs/nginx \
  && install -D -m 0755 objs/nginx /out/usr/bin/nginx
 
+# ── enclave: the key enclave's micro VM image, a kernel and an initramfs holding one static program (docs/security.md, "Key
+# enclave"). The steps are enclave/image/inside.sh, the ones enclave/image/build.sh runs: the versions and the time below are
+# that script's, and SHA256SUMS from either is the same, which is how a build of one's own is compared with a release's.
+FROM ${ENCLAVE_BUILD_IMAGE} AS enclave
+ARG ENCLAVE_EPOCH=1794960000
+ARG ENCLAVE_KERNEL=6.18.64
+ARG ENCLAVE_KERNEL_SHA256=020d45510c539972e6f14c5c71566878d3b7ef56fb082b3e09134f2ebaade562
+ENV SRC=/src OUT=/out EPOCH=${ENCLAVE_EPOCH} KERNEL=${ENCLAVE_KERNEL} KERNEL_SHA256=${ENCLAVE_KERNEL_SHA256}
+# the kernel first, from its two files alone: a change to the program does not build it again
+COPY enclave/image/inside.sh enclave/image/kernel.config /src/image/
+RUN mkdir /out && JOBS="$(nproc)" sh /src/image/inside.sh kernel
+COPY enclave /src
+RUN sh /src/image/inside.sh program && sh /src/image/inside.sh initramfs && sh /src/image/inside.sh sums
+
+# ── firecracker: what runs that VM in the container. A static program, pinned by the checksum its release publishes; the
+# project does not sign releases. When bumping, read its release notes and security advisories. README "Updating dependencies".
+FROM ${BASE_IMAGE} AS firecracker
+ARG FIRECRACKER_VERSION=v1.18.0
+ADD --checksum=sha256:1ac8eec866dd5eea14efecf6323e22b23eea24054545338a5b34bc5bca6623cd \
+    https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-x86_64.tgz /src/firecracker.tgz
+RUN tar -xzf /src/firecracker.tgz -C /src --strip-components=1 \
+ && install -D -m 0755 /src/firecracker-${FIRECRACKER_VERSION}-x86_64 /out/usr/bin/firecracker
+
 # ── proxy: nginx with its config inside, so a deploy does not need the repo's files on the Docker host ─
 FROM ${BASE_IMAGE} AS proxy
 # uid 101 is the one docker-compose.yml and init-volumes.sh already give the TLS files and the /tmp tmpfs to.
@@ -170,6 +195,9 @@ RUN apk add --no-cache python-3.14 tini ca-certificates-bundle tzdata openssl so
 COPY --from=build /opt/venv /opt/venv
 COPY --from=openssh /out/ /usr/bin/
 COPY --from=nmap /out/ /
+COPY --from=firecracker /out/ /
+COPY --from=enclave /out/vmlinux /out/bzImage /out/initramfs.cpio.gz /out/SHA256SUMS /usr/share/storageforge/enclave/
+RUN ["/usr/bin/firecracker", "--version"]
 RUN ["/usr/bin/ssh", "-V"]
 RUN ["/usr/bin/nmap", "--version"]
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/storageforge-entrypoint
@@ -182,6 +210,7 @@ ENV PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin \
     SQLITE_TMPDIR=/app/data/tmp \
     STORAGEFORGE_BACKUP_DIR=/app/backups \
     STORAGEFORGE_RUNTIME_DIR=/run/storageforge \
+    STORAGEFORGE_ENCLAVE_IMAGE_DIR=/usr/share/storageforge/enclave \
     STORAGEFORGE_LISTEN=0.0.0.0 \
     STORAGEFORGE_PORT=8080
 WORKDIR /app

@@ -91,7 +91,8 @@ class Network(unittest.TestCase):
     def test_bridge_vlan_and_listener_in_a_namespace(self):
         out = in_ns('''ip link set lo up; ip link add br0 type bridge; ip link add d0 type dummy; ip link set d0 master br0
                        ip link add link d0 name d0.20 type vlan id 20; ip addr add 10.5.0.1/24 dev br0; ip link set br0 up; ip route add 10.6.0.0/24 via 10.5.0.2 2>/dev/null
-                       python3 -I -m http.server 18765 --bind 127.0.0.1 >/dev/null 2>&1 & p=$!; sleep 1
+                       python3 -I -m http.server 18765 --bind 127.0.0.1 >/dev/null 2>&1 & p=$!
+                       for _ in $(seq 100); do ss -ltnH 2>/dev/null | grep -q ':18765 ' && break; sleep 0.1; done
                        sh -c "$SCRIPT"; kill $p'''.replace('"$SCRIPT"', _quoted(netfacts.SCRIPT)))
         data = netfacts.parse(out)
         by = {i['name']: i for i in data['interfaces']}

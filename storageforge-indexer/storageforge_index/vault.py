@@ -361,7 +361,10 @@ class Vault:
         return self
 
     def unlock(self) -> 'Vault':
-        address = _enclave.configured()
+        try:
+            address = _enclave.configured()
+        except _enclave.EnclaveError as exc:
+            raise VaultLocked(str(exc)) from None
         if address and self._secret is None:
             return self._unlock_enclave(address)
         return self._unlock_here()

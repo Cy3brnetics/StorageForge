@@ -1,0 +1,20 @@
+# The key enclave: the vault's keys held in a micro VM beside the server, not in the server (docs/security.md, "Key enclave").
+#   docker compose -f docker-compose.yml -f docker-compose.enclave.yml up -d
+# Needs KVM on the Docker host. The container gets /dev/kvm and the group that may open it, and nothing else: it stays
+# unprivileged, with no capability and a read-only root. Set in .env:
+#   STORAGEFORGE_KVM_GID      the group of /dev/kvm on the Docker host:  stat -c %g /dev/kvm
+#   STORAGEFORGE_ENCLAVE_IMAGE  optional: the image digest to insist on (docs/operations.md, "Key enclave")
+# With this file the server does not start where the enclave cannot: there is no quiet return to keys in the server.
+services:
+  storageforge:
+    environment: &enclave
+      STORAGEFORGE_ENCLAVE: vm
+      STORAGEFORGE_ENCLAVE_IMAGE: ${STORAGEFORGE_ENCLAVE_IMAGE:-}
+    devices: ["/dev/kvm"]
+    group_add: ["${STORAGEFORGE_KVM_GID:?set STORAGEFORGE_KVM_GID to the group of /dev/kvm (stat -c %g /dev/kvm)}"]
+
+  # commands that need a key start an enclave of their own for as long as they run
+  admin:
+    environment: *enclave
+    devices: ["/dev/kvm"]
+    group_add: ["${STORAGEFORGE_KVM_GID:?set STORAGEFORGE_KVM_GID to the group of /dev/kvm (stat -c %g /dev/kvm)}"]

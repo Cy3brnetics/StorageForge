@@ -8,6 +8,7 @@ import hmac
 import json
 import os
 import shutil
+import stat
 import socket
 import struct
 import subprocess
@@ -671,9 +672,14 @@ class Supervised(unittest.TestCase):
     """The VM started and watched as the server will (enclave_vm.py). What must hold: only the image that was built and pinned is
     started; a VM that stops is noticed, nothing answers in between, and what comes back holds no key."""
 
+    VMM = 'qemu'
+
     def setUp(self):
         from storageforge_index import enclave_vm
         self.vm = enclave_vm
+        env = mock.patch.dict(os.environ, {enclave_vm.VMM_ENV: self.VMM})
+        env.start()
+        self.addCleanup(env.stop)
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.events = []
@@ -699,6 +705,9 @@ class Supervised(unittest.TestCase):
         self.assertEqual((st['pid1'], st['memory_locked'], st['state']), (True, True, 'locked'))
         self.assertEqual(self.events[0][0], 'up')
         self.assertEqual(self.events[0][1]['image'], self.vm.image_digest(IMAGE))
+        self.given_nothing_but_vsock()
+
+    def given_nothing_but_vsock(self):
         argv = ' '.join(self.sup._argv(5))
         for never in ('-netdev', '-nic', '-drive', '-virtfs', '-fsdev', 'virtio-net', 'virtio-blk', 'balloon', '-qmp', '-chardev'):
             self.assertNotIn(never, argv)
@@ -779,6 +788,59 @@ class Supervised(unittest.TestCase):
             self.assertIn('not installed', self.vm.missing())
             with self.assertRaises(self.vm.EnclaveVMError):
                 self.vm.Supervisor(IMAGE).start()
+
+
+    def test_a_command_that_needs_a_key_starts_its_own_and_one_that_does_not_starts_none(self):
+        db_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, db_dir, True)
+        db = dbfactory.make(self, db_dir / 'index.db')
+        conn = db.connect()
+        self.addCleanup(conn.close)
+        db.migrate(conn)
+        env = {'STORAGEFORGE_ENCLAVE': 'vm', 'STORAGEFORGE_ENCLAVE_IMAGE_DIR': str(IMAGE), 'STORAGEFORGE_ENCLAVE_IMAGE': self.vm.image_digest(IMAGE),
+               'STORAGEFORGE_VAULT_SECRET': SECRET.decode(), 'XDG_RUNTIME_DIR': str(self.tmp)}
+        with mock.patch.dict(os.environ, env), mock.patch.object(self.vm, '_own', None):
+            os.environ.pop('STORAGEFORGE_VAULT_SECRET_FILE', None)
+            self.assertEqual(enclave.problems(), {}, 'looking for problems starts nothing')
+            self.assertEqual(os.environ['STORAGEFORGE_ENCLAVE'], 'vm')
+            with vault.Vault(db, conn, SECRET) as made:
+                made.init()
+            with vault.Vault(db, conn).unlock() as v:
+                v.generate_key('k')
+            own = self.vm._own
+            self.addCleanup(own.stop)
+            self.assertEqual(os.environ['STORAGEFORGE_ENCLAVE'], own.address)
+            self.assertNotEqual(own.runtime, self.tmp, 'a folder of its own: it cannot take a running server\'s socket')
+            self.assertEqual(self.vm.on_demand(), own.address, 'one for the process, not one per use')
+            own.stop()
+            self.assertFalse(own.runtime.exists())
+        with mock.patch.dict(os.environ, env | {'STORAGEFORGE_ENCLAVE_IMAGE': '0' * 64}), mock.patch.object(self.vm, '_own', None):
+            with self.assertRaises(vault.VaultLocked):
+                vault.Vault(db, conn).unlock()
+            self.assertEqual(os.environ['STORAGEFORGE_ENCLAVE'], 'vm:starting', 'and it stays closed')
+
+
+@unittest.skipIf(image_reason(), image_reason() or '')
+@unittest.skipUnless(shutil.which('firecracker'), 'needs firecracker (the shipped image has it)')
+class SupervisedByFirecracker(Supervised):
+    """The same, with the program the shipped image runs the VM by. It needs no /dev/vhost-vsock: the guest's vsock is a socket
+    file in the runtime folder, and whoever can open that file can talk to the enclave."""
+    VMM = 'firecracker'
+
+    def given_nothing_but_vsock(self):
+        self.assertTrue(self.sup.address.startswith(f'fc:{self.tmp}/enclave-vsock.sock:'))
+        conf = json.loads((self.tmp / 'enclave-vm.json').read_text())
+        self.assertEqual((conf['drives'], conf['network-interfaces'], sorted(conf)), ([], [], ['boot-source', 'drives', 'machine-config', 'network-interfaces', 'vsock']))
+        argv = self.sup.proc.args
+        self.assertIn('--no-api', argv, 'nothing can configure it after it has started')
+        self.assertNotIn('--no-seccomp', argv)
+        self.assertEqual(stat.S_IMODE(self.tmp.stat().st_mode), 0o700, 'the folder the socket is in')
+
+    def test_it_is_the_one_chosen_where_it_is_installed(self):
+        with mock.patch.dict(os.environ, {self.vm.VMM_ENV: ''}):
+            self.assertEqual(self.vm.vmm(), 'firecracker')
+        with mock.patch.dict(os.environ, {self.vm.VMM_ENV: 'bhyve'}), self.assertRaises(self.vm.EnclaveVMError):
+            self.vm.vmm()
 
 
 if __name__ == '__main__':
