@@ -10,6 +10,7 @@ POST /api/login  {"username", "password"}   start a session (cookie)
 POST /api/logout                    end it
 POST /api/reauth  {"password"}      confirm the password before commands run on hosts (good for REAUTH_WINDOW)
 GET|PUT /api/me                     the signed-in user; PUT {"session_minutes"} sets how long sessions last (30-480)
+GET  /api/version                  this version, and the newest release in STORAGEFORGE_UPDATE_URL's repository (selfupdate.py)
 POST /api/me/password  {"password", "new_password"}   change your own password; every session of yours ends
 GET|POST /api/users                  accounts (password confirmed); POST {"username", "password", "role"}
 PUT|DELETE /api/users/<name>         {"role"}, {"disabled"}; the last admin stays. Nobody hands out or touches more than they hold
@@ -172,7 +173,7 @@ from flask_login import LoginManager, current_user, login_required, login_user, 
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import (__version__, access, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
+from . import (__version__, access, selfupdate, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
                folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
 from . import routes_planner
 from .runtimes import docker
@@ -298,6 +299,7 @@ class App:
             threading.Thread(target=self._nightly, name='nightly', daemon=True).start()
             threading.Thread(target=self._alerts, name='alerts', daemon=True).start()
             threading.Thread(target=self._security, name='security', daemon=True).start()
+            threading.Thread(target=selfupdate.run, kwargs={'wake': self.alerts_wake.set}, name='release-check', daemon=True).start()
 
     def _alerts(self):
         time.sleep(30)
@@ -957,6 +959,11 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @login_required
     def api_me():
         return jsonify(me())
+
+    @web.get('/api/version')
+    @login_required
+    def api_version():
+        return jsonify(selfupdate.status())
 
     @web.put('/api/me')
     @login_required

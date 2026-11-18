@@ -63,6 +63,8 @@ HEAVY = {
 MEDIUM = {
     # bash, telnet and console sessions run for real
     'test_console.Api',
+    'test_selfupdate.Installer',
+    'test_selfupdate.Repository',
     'test_console.Session',
     'test_console_open.Open',
     'test_errlog.ExitWhileWriting',

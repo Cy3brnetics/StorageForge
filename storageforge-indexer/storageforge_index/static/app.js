@@ -1216,6 +1216,20 @@ function showSite(name) {   // on every page, so nobody acts on the wrong client
   const b = $('#sitename'); b.textContent = name; b.hidden = false;
 }
 
+/* Beside the name: the version this is, and the newer release when the repository it is released from has one (selfupdate.py) */
+async function showVersion() {
+  const v = await getJSON('/api/version').catch(() => null);
+  if (!v) return;
+  const el = $('#sfversion');
+  el.textContent = v.update_available ? `${v.version} · ${v.latest} is released` : v.version;
+  el.classList.toggle('behind', !!v.update_available);
+  el.title = !v.checking ? 'Releases are not checked: STORAGEFORGE_UPDATE_URL is not set'
+    : v.error ? `Releases could not be checked at ${v.source}: ${v.error}`
+    : v.update_available ? `Released at ${v.source}. How it is installed: docs/operations.md, "Updates"`
+    : v.checked_at ? `The newest release at ${v.source}, checked ${fmtTime(v.checked_at)}` : `Releases at ${v.source} have not been checked yet`;
+  el.hidden = false;
+}
+
 /* An empty install: three steps, each a link into the panel where it is done, ticked when they can be seen to be done. Gone once dismissed. */
 async function firstRun(who) {
   const card = $('#firstrun');
@@ -1237,6 +1251,7 @@ async function firstRun(who) {
 async function boot() {
   try {
     const me = await getJSON('/api/me');
+    showVersion();
     setUser(me.username, me); applyPermissions(me); showSite(me.site); await loadHosts();
     const tab = takeLink();
     // the first setMode() ran before mapview.js and netscanview.js were loaded, so their views were shown empty (filemap.js

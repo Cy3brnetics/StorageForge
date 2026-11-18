@@ -1,0 +1,14 @@
+# Installs the newest StorageForge release (docker/update/storageforge-update). docs/operations.md "Updates".
+# Copy this and the timer to /etc/systemd/system, set the two paths, then: systemctl enable --now storageforge-update.timer
+[Unit]
+Description=Install the newest StorageForge release
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+# The account that runs docker compose for the installation
+User=storageforge
+Environment=STORAGEFORGE_DIR=/opt/StorageForge/storageforge-indexer
+# Environment=STORAGEFORGE_UPDATE_SIGNERS=/etc/storageforge/release-signers
+ExecStart=/opt/StorageForge/storageforge-indexer/docker/update/storageforge-update apply

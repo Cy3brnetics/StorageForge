@@ -11,7 +11,7 @@ services:
     build: &runtime-build
       context: .
       target: runtime
-    image: storageforge:0.5.4
+    image: storageforge:0.5.4.1
     restart: "no"
     user: "0:0"                # owns the files for uid 10001 and uid 101
     read_only: true
@@ -34,7 +34,7 @@ services:
 
   storageforge:
     build: *runtime-build
-    image: storageforge:0.5.4
+    image: storageforge:0.5.4.1
     depends_on:
       init-secrets: { condition: service_completed_successfully }
     restart: unless-stopped
@@ -51,6 +51,7 @@ services:
       STORAGEFORGE_PROXY_HOPS: ${STORAGEFORGE_PROXY_HOPS:-1}         # the proxy below sets X-Forwarded-For (real client IP)
       STORAGEFORGE_PROXY_HOST: proxy                                  # ...believed only from it, not from other containers
       STORAGEFORGE_SCAN_INTERVAL: ${STORAGEFORGE_SCAN_INTERVAL:-6h}
+      STORAGEFORGE_UPDATE_URL: ${STORAGEFORGE_UPDATE_URL:-}              # the git repository releases are tagged in; unset: releases are not checked
       STORAGEFORGE_SCAN_WORKERS: ${STORAGEFORGE_SCAN_WORKERS:-4}          # hosts scanned at once
       STORAGEFORGE_BACKUP_HOUR: ${STORAGEFORGE_BACKUP_HOUR:-3}            # nightly essentials backup + prune (local hour)
       STORAGEFORGE_BACKUP_KEEP: ${STORAGEFORGE_BACKUP_KEEP:-14}
@@ -99,7 +100,7 @@ services:
   admin:
     profiles: [admin]
     build: *runtime-build
-    image: storageforge:0.5.4
+    image: storageforge:0.5.4.1
     depends_on:
       init-secrets: { condition: service_completed_successfully }
     restart: "no"
@@ -132,7 +133,7 @@ services:
     build:
       context: .
       target: proxy
-    image: storageforge-proxy:0.5.4
+    image: storageforge-proxy:0.5.4.1
     restart: unless-stopped
     depends_on:
       storageforge: { condition: service_healthy }

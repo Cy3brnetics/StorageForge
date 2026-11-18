@@ -482,8 +482,8 @@ def _device_problems(conn: Conn) -> dict:
 
 
 def problems(conn: Conn) -> dict:
-    from . import authkeys, clamav, jobs, logrules, scheduler, security, site
-    now = {**logrules.problems(conn), **scan_problems(conn), **backup_problems(conn), **cert_problems(), **site.shared_problems(conn),
+    from . import authkeys, clamav, jobs, logrules, scheduler, security, selfupdate, site
+    now = {**logrules.problems(conn), **scan_problems(conn), **backup_problems(conn), **cert_problems(), **selfupdate.problems(), **site.shared_problems(conn),
            **authkeys.problems(conn), **clamav.problems(conn), **security.problems(conn), **_map_problems(conn), **_device_problems(conn)}
     for j in jobs.overview(conn):
         if j['state'] == 'failed':

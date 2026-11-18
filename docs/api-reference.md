@@ -51,6 +51,7 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | POST | `/api/login` | `{"username", "password"}` | start a session; rate limited (see [Security](security.md#sign-in-limits)) |
 | POST | `/api/logout` | | end it, server-side too |
 | POST | `/api/reauth` | `{"password"}` | confirm the password for 5 minutes; returns `until` |
+| GET | `/api/version` | | this version, the newest release in `STORAGEFORGE_UPDATE_URL`'s repository, `update_available`, when it was checked, and why a check failed |
 | GET | `/api/me` | | user, session length, when it ends |
 | PUT 🔑 | `/api/me` | `{"session_minutes"}` | 30–480 |
 

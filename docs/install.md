@@ -42,7 +42,7 @@ Each host needs:
 ```bash
 git clone ssh://git@10.42.0.3:2222/Gabe/StorageForge.git     # or https://github.com/Cy3brnetics/StorageForge.git
 cd StorageForge/storageforge-indexer
-git checkout v0.5.4                                           # a release; main is the latest
+git checkout v0.5.4.1                                           # a release; main is the latest
 ```
 
 ### Choose settings before the first start
@@ -286,12 +286,13 @@ storageforge-index serve --listen 127.0.0.1 --port 8080
 
 ```bash
 cd StorageForge/storageforge-indexer
-git fetch --tags && git checkout v0.5.4          # the release you want
+git fetch --tags && git checkout v0.5.4.1          # the release you want
 docker compose up -d --build
 ```
 
 - **Before an upgrade,** read its *Upgrade notes* in the [changelog](../CHANGELOG.md). Some ask you to run a host's access script again.
 - **Migrations** run on start, and the web UI is unavailable while they run.
+- **To be told about releases, or have them installed,** see [Updates](operations.md#updates).
 - **Images** are tagged by version, so `--build` makes the new ones.
 
 ## 7. Remove

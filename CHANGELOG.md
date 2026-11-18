@@ -1,12 +1,23 @@
 # Changelog
 
-Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 and was never tagged.
+Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
 ## Unreleased
+
+## 0.5.4.1 — 2026-11-18
 
 ### Security
 
 - **The proxy runs nginx 1.31.9, which fixes two memory-corruption bugs in HTTP/2 that anyone who can reach port 8443 could trigger before logging in** (CVE-2026-123007 and CVE-2026-123633, published 2026-11-18). Every proxy image up to 0.5.4 has nginx 1.31.8 with HTTP/2 on, and is affected. nginx is now built from its signed source in the image, because Wolfi had not packaged the fix on the day it came out. It is built with only the modules the proxy uses, as a position-independent program with full RELRO. If you cannot rebuild yet, change `http2 on;` to `http2 off;` in `docker/nginx.conf` and rebuild the proxy, or keep port 8443 off any network you do not trust; turning HTTP/2 off closes these two bugs but not the request-body loop over TLS (CVE-2026-118899) that the same release fixes.
+
+### Added
+
+- **StorageForge says when a newer release is out, and the Docker host can install it.** With `STORAGEFORGE_UPDATE_URL` set to the git repository releases are tagged in, the server reads its tags every six hours: the version is beside the name at the top of the page, a newer release is shown there and is a notification until it is installed, and `GET /api/version` returns the same. Unset, it asks nothing. The server installs nothing itself. `docker/update/storageforge-update` on the Docker host does, by hand or from the timer beside it: only a release tag newer than the running version, only when its signature checks out where `STORAGEFORGE_UPDATE_SIGNERS` is set, and back to the release before when the new one does not become healthy. See "Updates" in `docs/operations.md`.
+
+### Upgrade notes
+
+- Rebuild both images: `docker compose up -d --build`. The proxy image is the one the security fix is in.
+- Versions can now have a fourth number (`0.5.4.1`) for a fix to a release.
 
 ## 0.5.4 — 2026-11-17
 
