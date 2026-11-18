@@ -388,16 +388,7 @@ class Vault:
 
     def _need_kek(self) -> memoryview:
         if self._kek is None and self.enclave:
-            # Not yet asked of the enclave: importing a key, device passwords, and rotating the secret. Until they are, they open
-            # the KEK here from the secret in the environment, as before the enclave. Listed as open in roadmap section 14.
-            address, mac = self.enclave, self.audit_key
-            try:
-                self._unlock_here()
-            finally:
-                self._secret = None
-            if isinstance(self.audit_key, SecretBuffer):
-                self.audit_key.wipe()
-            self.enclave, self.audit_key = address, mac
+            raise VaultError('the KEK is in the key enclave and is not used here')          # every path that needs it asks the enclave instead
         if self._kek is None:
             raise VaultLocked('vault is locked')
         return self._kek.view()
@@ -420,7 +411,7 @@ class Vault:
         return self._store_key(name, private_bytes, passphrase, comment, 'imported')
 
     def _store_key(self, name: str, private_bytes: bytes, passphrase: bytes | None, comment: str | None, origin: str) -> dict:
-        kek = self._need_kek()
+        kek = None if self.enclave else self._need_kek()
         try:
             key = serialization.load_ssh_private_key(private_bytes, passphrase)
         except ValueError:
@@ -443,11 +434,17 @@ class Vault:
                 raise VaultError('Another site on this machine already uses this key, and one key should not serve two '
                                  'clients. Generate a new one.')
         uuid = secrets.token_hex(16)
-        with SecretBuffer(32) as dek:
-            dek.buf[:] = os.urandom(32)
-            dek.length = 32
-            dn, wdek = seal(kek, dek.view(), self._aad(uuid, 'dek'))
-            kn, ct = seal(dek.view(), pem, self._aad(uuid, 'key'))
+        if self.enclave:
+            # it came through here to be imported, and is sealed inside: nothing here keeps it, and nothing here can open it again
+            with _enclave.Enclave(self.enclave) as e:
+                made = _asked(e.import_key, uuid, pem)
+            dn, wdek, kn, ct = made['dek_nonce'], made['wrapped_dek'], made['key_nonce'], made['ciphertext']
+        else:
+            with SecretBuffer(32) as dek:
+                dek.buf[:] = os.urandom(32)
+                dek.length = 32
+                dn, wdek = seal(kek, dek.view(), self._aad(uuid, 'dek'))
+                kn, ct = seal(dek.view(), pem, self._aad(uuid, 'key'))
         del pem
         self.conn.execute("""INSERT INTO ssh_keys (key_uuid, name, key_type, public_key, fingerprint, comment,
                                  dek_nonce, wrapped_dek, key_nonce, ciphertext, created_at, origin)
@@ -458,7 +455,7 @@ class Vault:
 
     def generate_key(self, name: str, kind: str = 'ed25519', comment: str | None = None) -> dict:
         if self.enclave and kind == 'ed25519':
-            # made inside: the private half is never in this process, not even once. (An RSA key is still made here.)
+            # made inside: the private half is never in this process, not even once. (An RSA key is made here and imported.)
             uuid, comment = secrets.token_hex(16), comment or f'storageforge:{name}'
             with _enclave.Enclave(self.enclave) as e:
                 made = _asked(e.generate, uuid, 'ed25519', comment)
@@ -506,18 +503,23 @@ class Vault:
 
     # device passwords: for gear that takes no SSH key. Each has its own key, wrapped as an SSH key's is
     def store_credential(self, name: str, username: str | None, password: str, enable_password: str | None = None) -> dict:
-        kek = self._need_kek()
+        kek = None if self.enclave else self._need_kek()
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', name or ''):
             raise VaultError('a credential name is letters, digits, dot, dash and underscore')
         if not password:
             raise VaultError('a credential needs a password')
         uuid = secrets.token_hex(16)
         body = json.dumps({'password': password, 'enable': enable_password}).encode()
-        with SecretBuffer(32) as dek:
-            dek.buf[:] = os.urandom(32)
-            dek.length = 32
-            dn, wdek = seal(kek, dek.view(), self._aad(uuid, 'dek'))
-            n, ct = seal(dek.view(), body, self._aad(uuid, 'credential'))
+        if self.enclave:
+            with _enclave.Enclave(self.enclave) as e:
+                made = _asked(e.seal, uuid, body)
+            dn, wdek, n, ct = made['dek_nonce'], made['wrapped_dek'], made['nonce'], made['ciphertext']
+        else:
+            with SecretBuffer(32) as dek:
+                dek.buf[:] = os.urandom(32)
+                dek.length = 32
+                dn, wdek = seal(kek, dek.view(), self._aad(uuid, 'dek'))
+                n, ct = seal(dek.view(), body, self._aad(uuid, 'credential'))
         with self.conn.tx():
             self.conn.execute('DELETE FROM device_credentials WHERE name = :n', {'n': name})
             self.conn.execute("""INSERT INTO device_credentials (cred_uuid, name, username, dek_nonce, wrapped_dek, nonce, ciphertext, created_at)
@@ -526,12 +528,17 @@ class Vault:
         return {'name': name, 'username': username}
 
     def credential(self, name: str) -> dict:
-        """{'username', 'password', 'enable'}. For the moment of connecting: a transport needs them as plain strings."""
-        kek = self._need_kek()
+        """{'username', 'password', 'enable'}. For the moment of connecting: a transport needs them as plain strings. With the
+        enclave this is a release: the enclave counts it and limits how often one secret leaves."""
         rows = self.conn.all('SELECT cred_uuid, username, dek_nonce, wrapped_dek, nonce, ciphertext FROM device_credentials WHERE name = :n', {'n': name})
         if not rows:
             raise VaultError(f'no credential named {name!r}')
         uuid, username, dn, wd, n, ct = rows[0]
+        if self.enclave:
+            with _enclave.Enclave(self.enclave) as e:
+                body = _asked(e.release, uuid, {'dek_nonce': self._blob(dn), 'wrapped_dek': self._blob(wd), 'nonce': self._blob(n), 'ciphertext': self._blob(ct)})
+            return {'username': username, **json.loads(body)}
+        kek = self._need_kek()
         with open_into(kek, self._blob(dn), self._blob(wd), self._aad(uuid, 'dek')) as dek:
             with open_into(dek.view(), self._blob(n), self._blob(ct), self._aad(uuid, 'credential')) as body:
                 return {'username': username, **json.loads(bytes(body.view()))}
@@ -545,6 +552,8 @@ class Vault:
 
     def rotate_secret(self, new_secret: bytes) -> int:
         """Rewrap every DEK, the audit key and the verifier under a KEK derived from new_secret."""
+        if self.enclave:
+            return self._rotate_in_enclave(new_secret)
         kek = self._need_kek()
         p = dict(KDF_DEFAULTS)
         salt = os.urandom(16)
@@ -574,6 +583,38 @@ class Vault:
             raise
         self._kek.wipe()
         self._kek, self._secret = new, new_secret
+        return len(rows)
+
+    def _rotate_in_enclave(self, new_secret: bytes) -> int:
+        """The same rotation with the KEKs inside: the enclave derives the new one, rewraps each DEK without letting it out, and
+        switches only when every row is written. If the transaction fails it is told to forget the new KEK, and nothing changed."""
+        p = dict(KDF_DEFAULTS)
+        salt = os.urandom(16)
+        now = int(time.time())
+        with _enclave.Enclave(self.enclave) as e:
+            meta = _asked(e.rotate_begin, new_secret, salt, p['time_cost'], p['memory_kib'], p['lanes'])
+            try:
+                rows = self.conn.all('SELECT key_id, key_uuid, dek_nonce, wrapped_dek FROM ssh_keys')
+                with self.conn.tx():
+                    for kid, uuid, dn, wd in rows:
+                        n2, w2 = _asked(e.rewrap, uuid, self._blob(dn), self._blob(wd))
+                        self.conn.execute('UPDATE ssh_keys SET dek_nonce = :n, wrapped_dek = :w, rotated_at = :t WHERE key_id = :k', {'n': n2, 'w': w2, 't': now, 'k': kid})
+                    for cid, uuid, dn, wd in self.conn.all('SELECT credential_id, cred_uuid, dek_nonce, wrapped_dek FROM device_credentials'):
+                        n2, w2 = _asked(e.rewrap, uuid, self._blob(dn), self._blob(wd))
+                        self.conn.execute('UPDATE device_credentials SET dek_nonce = :n, wrapped_dek = :w, rotated_at = :t WHERE credential_id = :c', {'n': n2, 'w': w2, 't': now, 'c': cid})
+                    self.conn.execute("""UPDATE vault_meta SET kdf_salt = :s, kdf_time_cost = :t, kdf_memory_kib = :m, kdf_lanes = :l, verifier_nonce = :vn, verifier = :v,
+                                             audit_key_nonce = :an, audit_key_wrapped = :ak, rotated_at = :now WHERE id = 1""",
+                                      {'s': salt, 't': p['time_cost'], 'm': p['memory_kib'], 'l': p['lanes'], 'vn': meta['verifier_nonce'], 'v': meta['verifier'],
+                                       'an': meta['audit_key_nonce'], 'ak': meta['audit_key_wrapped'], 'now': now})
+            except BaseException:
+                try:
+                    e.close()
+                    e.rotate_abort()
+                except _enclave.EnclaveError:
+                    pass                    # it is gone or locked: it holds no new KEK either way
+                raise
+            # The rows are written. An enclave that stops before this line comes back locked, and unlocks with the new secret.
+            _asked(e.rotate_commit)
         return len(rows)
 
     # host bindings

@@ -220,6 +220,85 @@ class Enclave(Harness):
         self.assertEqual(self.verified(made['public_key'], self.e.sign(row, b'x')[0], b'x'), 'ssh-ed25519')
         self.refused('bad-request', self.e.generate, 'not-a-uuid', 'ed25519')
 
+    # ── keys brought in, secrets given back, the secret rotated ──
+    def test_an_imported_key_signs_and_a_weak_or_unreadable_one_is_refused(self):
+        self.unlock()
+        key = ec.generate_private_key(ec.SECP384R1())
+        pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
+        made = self.e.import_key('cd' * 16, pem)
+        line = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH).decode()
+        self.assertEqual(made['public'], base64.b64decode(line.split()[1]))
+        row = {'key_uuid': 'cd' * 16, **made}
+        self.assertEqual(self.verified(line, self.e.sign(row, b'x')[0], b'x'), 'ecdsa-sha2-nistp384')
+        weak = rsa.generate_private_key(65537, 2048).private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
+        self.assertIn('too weak', self.refused('key', self.e.import_key, 'ce' * 16, weak))
+        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', 'a passphrase', '-f', str(self.tmp / 'locked')], check=True)
+        locked = (self.tmp / 'locked').read_bytes()          # with a passphrase: the enclave is given keys already opened, and takes no other
+        for junk in (b'not a key', locked, pem[:200]):
+            self.refused('key', self.e.import_key, 'cf' * 16, junk)
+
+    def test_a_secret_sealed_inside_is_released_counted_and_limited(self):
+        self.unlock()
+        row = self.e.seal('aa' * 16, b'{"password": "pw-123456"}')
+        self.assertEqual(self.e.release('aa' * 16, row), b'{"password": "pw-123456"}')
+        self.assertEqual(self.e.status()['released'], 1)
+        self.refused('auth', self.e.release, 'bb' * 16, row)                       # another row's uuid
+        self.refused('auth', self.e.release, 'aa' * 16, {**row, 'ciphertext': bytes(b ^ 1 for b in row['ciphertext'])})
+        self.e.close()
+        self.refused('bad-request', self.e.seal, 'aa' * 16, b'x', purpose='key')
+        self.e.close()
+        self.refused('bad-request', self.e.seal, 'aa' * 16, b'')
+        self.e.close()
+        self.unlock()
+        codes = []
+        for _ in range(70):
+            try:
+                self.e.release('aa' * 16, row)
+                codes.append('ok')
+            except enclave.EnclaveError as exc:
+                codes.append(exc.code)
+        self.assertEqual(codes[:55], ['ok'] * 55)
+        self.assertEqual(codes[-1], 'rate', 'sixty a minute for one secret, and the web app cannot raise it')
+        self.assertEqual(self.e.release('ab' * 16, self.e.seal('ab' * 16, b'other')), b'other', 'another secret has its own count')
+
+    def test_a_private_key_cannot_be_asked_for_as_a_secret(self):
+        """release gives plaintext back, so it must never open what was sealed as a key."""
+        self.unlock()
+        self.vault.generate_key('k')
+        row = self.row('k')
+        as_secret = {'dek_nonce': row['dek_nonce'], 'wrapped_dek': row['wrapped_dek'], 'nonce': row['key_nonce'], 'ciphertext': row['ciphertext']}
+        self.refused('auth', self.e.release, row['key_uuid'], as_secret)
+        self.e.close()
+        self.refused('bad-request', self.e.release, row['key_uuid'], as_secret, purpose='key')
+        self.e.close()
+        self.unlock()
+        self.assertEqual(self.e.status()['released'], 0)
+
+    def test_the_secret_is_rotated_inside_and_nothing_moves_until_it_is_committed(self):
+        self.unlock()
+        self.vault.generate_key('k')
+        row = self.row('k')
+        self.refused('state', self.e.rewrap, row['key_uuid'], row['dek_nonce'], row['wrapped_dek'])
+        self.refused('state', self.e.rotate_commit)
+        new, salt = b'n' * 48, b's' * 16
+        meta = self.e.rotate_begin(new, salt, 1, 8192, 1)
+        self.assertTrue(self.e.status()['rotating'])
+        dn, wd = self.e.rewrap(row['key_uuid'], row['dek_nonce'], row['wrapped_dek'])
+        self.assertTrue(self.e.sign(row, b'x')[0], 'until the commit the old rows are the ones that open')
+        self.refused('auth', self.e.sign, {**row, 'dek_nonce': dn, 'wrapped_dek': wd}, b'x')
+        self.assertEqual(self.e.rotate_abort()['rotated'], False)
+        self.assertTrue(self.e.sign(row, b'x')[0])
+        meta = self.e.rotate_begin(new, salt, 1, 8192, 1)
+        dn, wd = self.e.rewrap(row['key_uuid'], row['dek_nonce'], row['wrapped_dek'])
+        self.assertEqual(self.e.rotate_commit()['rotated'], True)
+        self.assertTrue(self.e.sign({**row, 'dek_nonce': dn, 'wrapped_dek': wd}, b'x')[0])
+        self.refused('auth', self.e.sign, row, b'x')
+        self.e.lock()
+        stored = {'kdf_salt': salt, 'kdf_time_cost': 1, 'kdf_memory_kib': 8192, 'kdf_lanes': 1, **meta}
+        self.assertEqual(self.e.unlock(new, stored)['state'], 'unlocked', 'what it handed back is what unlocks it with the new secret')
+        self.e.lock()
+        self.refused('auth', self.e.unlock, SECRET, stored)
+
     # ── the audit chain's MAC ──
     def test_the_audit_mac_is_the_one_the_vault_computes(self):
         self.unlock()
@@ -237,7 +316,7 @@ class Enclave(Harness):
         with self.vault.decrypt_key(row['key_id']) as buf:
             private = bytes(buf.view())
         body = private.split(b'\n')[1]
-        for op in ('status', 'sign', 'generate', 'mac'):
+        for op in ('status', 'sign', 'generate', 'mac', 'import', 'seal', 'rewrap', 'rotate-begin'):
             self.e.close()
             got = self.e.raw(json.dumps({'op': op, 'data': base64.b64encode(b'x').decode(), 'kind': 'ed25519', 'prev': '0' * 64, 'payload': 'p', **{k: (v if k == 'uuid' else base64.b64encode(v).decode())
                                          for k, v in {'uuid': row['key_uuid'], 'dek_nonce': row['dek_nonce'], 'wrapped_dek': row['wrapped_dek'], 'key_nonce': row['key_nonce'], 'ciphertext': row['ciphertext']}.items()}}).encode())
@@ -453,19 +532,73 @@ class VaultThroughEnclave(Harness):
         with vault.Vault(self.db, self.conn, SECRET).unlock() as old:
             self.assertEqual(vault.AuditLog(self.db, self.conn, old.audit_key).verify()[:2], (True, 2), 'and the vault what the enclave wrote')
 
-    def test_what_is_not_inside_yet_still_works_with_the_secret_and_is_refused_without_it(self):
+    def test_importing_a_key_device_passwords_and_an_rsa_key_need_no_secret_here(self):
         pem = ed25519.Ed25519PrivateKey.generate().private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
-        with vault.Vault(self.db, self.conn).unlock() as v:
-            v.add_key('imported', pem)
-            v.store_credential('switch', 'admin', 'pw-123456')
-            self.assertEqual(v.credential('switch')['password'], 'pw-123456')
-            self.assertIsInstance(v.audit_key, vault.EnclaveMacKey, 'the fallback does not swap the audit key back in')
-            self.assertIsInstance(v.decrypt_key(self.row('imported')['key_id']), vault.EnclaveKey)
+        with vault.Vault(self.db, self.conn).unlock():
+            pass
         self.forget_the_secret()
         with vault.Vault(self.db, self.conn).unlock() as v:
-            with self.assertRaises(vault.VaultLocked):
-                v.add_key('another', pem)
-            self.assertTrue(self.e.sign(self.row('imported'), b'x')[0], 'an imported key signs inside like any other')
+            v.add_key('imported', pem)
+            v.store_credential('switch', 'admin', 'pw-123456', 'enable-9')
+            self.assertEqual(v.credential('switch'), {'username': 'admin', 'password': 'pw-123456', 'enable': 'enable-9'})
+            made = v.generate_key('rsa', kind='rsa')
+            self.assertTrue(made['public_key'].startswith('ssh-rsa '))
+            self.assertIsNone(v._kek, 'none of it opened the KEK here')
+            with self.assertRaises(vault.VaultError):
+                v._need_kek()
+            for name in ('imported', 'rsa'):
+                self.assertTrue(self.e.sign(self.row(name), b'x')[0], f'{name} signs inside like any other')
+        self.assertEqual(self.e.status()['released'], 1)
+        with vault.Vault(self.db, self.conn, SECRET).unlock() as old:          # and whoever holds the secret reads all of it without the enclave
+            self.assertEqual(old.credential('switch')['password'], 'pw-123456')
+            with old.decrypt_key(self.row('imported')['key_id']) as buf:
+                opened = serialization.load_ssh_private_key(bytes(buf.view()), None)
+            raw = (serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
+            self.assertEqual(opened.private_bytes(*raw), serialization.load_ssh_private_key(pem, None).private_bytes(*raw))
+
+    def test_rotating_the_secret_happens_inside_and_the_old_secret_stops_working(self):
+        new = b'n' * 48
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            v.generate_key('k')
+            v.store_credential('switch', 'admin', 'pw-123456')
+            before = self.row('k')
+            vault.AuditLog(self.db, self.conn, v.audit_key).append('gabe', 'before', 'ok')
+            self.assertEqual(v.rotate_secret(new), 1)
+            after = self.row('k')
+            self.assertNotEqual(before['wrapped_dek'], after['wrapped_dek'])
+            self.assertEqual(before['ciphertext'], after['ciphertext'], 'the key itself is not re-encrypted: only its DEK is rewrapped')
+            self.assertTrue(self.e.sign(after, b'x')[0], 'the enclave switched with the rows')
+            self.refused('auth', self.e.sign, before, b'x')
+            self.assertEqual(v.credential('switch')['password'], 'pw-123456')
+            log = vault.AuditLog(self.db, self.conn, v.audit_key)
+            log.append('gabe', 'after', 'ok')
+            self.assertEqual(log.verify()[:2], (True, 2), 'the audit key is the same key under the new KEK')
+        self.assertFalse(self.e.status()['rotating'])
+        with self.assertRaises(vault.VaultLocked):
+            vault.Vault(self.db, self.conn, SECRET).unlock()
+        with vault.Vault(self.db, self.conn, new).unlock() as fresh:
+            self.assertEqual(fresh.credential('switch')['password'], 'pw-123456')
+        self.e.lock()                                                           # a restart: only the new secret opens it
+        self.refused('auth', self.e.unlock, SECRET, self.meta())
+        self.assertEqual(self.e.unlock(new, self.meta())['state'], 'unlocked')
+
+    def test_a_rotation_that_fails_part_way_changes_nothing(self):
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            v.generate_key('a')
+            v.generate_key('b')
+            before = (self.row('a'), self.row('b'), self.meta())
+            real, calls = enclave.Enclave.rewrap, []
+
+            def fails_on_the_second(e, *a):
+                calls.append(a)
+                if len(calls) == 2:
+                    raise enclave.EnclaveError('down', 'the enclave went away')
+                return real(e, *a)
+            with mock.patch.object(enclave.Enclave, 'rewrap', fails_on_the_second), self.assertRaises(vault.VaultLocked):
+                v.rotate_secret(b'n' * 48)
+            self.assertEqual((self.row('a'), self.row('b'), self.meta()), before, 'no row was left rewrapped')
+            self.assertFalse(self.e.status()['rotating'], 'and the enclave forgot the new KEK')
+            self.assertTrue(self.e.sign(self.row('a'), b'x')[0])
 
 
 IMAGE = ROOT / 'enclave' / 'image' / 'out'

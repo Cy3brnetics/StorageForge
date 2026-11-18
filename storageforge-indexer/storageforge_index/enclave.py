@@ -137,6 +137,36 @@ class Enclave:
         got = self.request('generate', uuid=uuid, kind=kind, comment=comment)
         return {'public_key': got['public_key'], **{k: base64.b64decode(got[k]) for k in ('dek_nonce', 'wrapped_dek', 'key_nonce', 'ciphertext')}}
 
+    def import_key(self, uuid: str, private: bytes) -> dict:
+        """An unencrypted OpenSSH private key, sealed inside. Back come the ciphertexts for an ssh_keys row and the public blob."""
+        got = self.request('import', uuid=uuid, private=_b64(private))
+        return {'public': base64.b64decode(got['public']), **{k: base64.b64decode(got[k]) for k in ('dek_nonce', 'wrapped_dek', 'key_nonce', 'ciphertext')}}
+
+    def seal(self, uuid: str, plaintext: bytes, purpose: str = 'credential') -> dict:
+        """A secret that will have to be given back (a device password, a step's secret), sealed inside."""
+        got = self.request('seal', uuid=uuid, purpose=purpose, plaintext=_b64(plaintext))
+        return {k: base64.b64decode(got[k]) for k in ('dek_nonce', 'wrapped_dek', 'nonce', 'ciphertext')}
+
+    def release(self, uuid: str, row: dict, purpose: str = 'credential') -> bytes:
+        """That secret, released: the enclave counts it and limits how often. row has dek_nonce, wrapped_dek, nonce and ciphertext."""
+        got = self.request('release', uuid=uuid, purpose=purpose, **{k: _b64(row[k]) for k in ('dek_nonce', 'wrapped_dek', 'nonce', 'ciphertext')})
+        return base64.b64decode(got['plaintext'])
+
+    def rotate_begin(self, new_secret: bytes, salt: bytes, time_cost: int, memory_kib: int, lanes: int) -> dict:
+        """The KEK of a new vault secret, held beside the current one. Back come the verifier and audit key wrapped under it."""
+        got = self.request('rotate-begin', secret=_b64(new_secret), salt=_b64(salt), time_cost=time_cost, memory_kib=memory_kib, lanes=lanes)
+        return {k: base64.b64decode(got[k]) for k in ('verifier_nonce', 'verifier', 'audit_key_nonce', 'audit_key_wrapped')}
+
+    def rewrap(self, uuid: str, dek_nonce: bytes, wrapped_dek: bytes) -> tuple[bytes, bytes]:
+        got = self.request('rewrap', uuid=uuid, dek_nonce=_b64(dek_nonce), wrapped_dek=_b64(wrapped_dek))
+        return base64.b64decode(got['dek_nonce']), base64.b64decode(got['wrapped_dek'])
+
+    def rotate_commit(self) -> dict:
+        return self.request('rotate-commit')
+
+    def rotate_abort(self) -> dict:
+        return self.request('rotate-abort')
+
     def mac(self, prev: str, payload: str) -> str:
         return self.request('mac', prev=prev, payload=payload)['mac']
 

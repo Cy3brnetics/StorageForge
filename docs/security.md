@@ -29,7 +29,8 @@ Backups never contain the vault secret, on purpose: a backup together with its s
 A second layer on the vault's keys: a micro VM whose only program holds the KEK, and whose only device is a vsock socket. It has no network card, no disk and no shell. The web app hands it the vault's own ciphertexts with each request, so nothing stored changes format and the vault opens as before without it.
 
 ```text
-web app ──vsock──► enclave: unlock · lock · status · sign with key K · make a key · MAC for the audit chain
+web app ──vsock──► enclave: unlock · lock · status · sign with key K · make or take in a key · MAC for the audit chain
+                            seal and release a secret · rotate the vault secret
 ```
 
 With `STORAGEFORGE_ENCLAVE=vsock:CID:PORT` (or `unix:PATH` for a test):
@@ -40,7 +41,11 @@ With `STORAGEFORGE_ENCLAVE=vsock:CID:PORT` (or `unix:PATH` for a test):
 - **It fails closed.** An enclave that does not answer, is locked, or has locked itself down after five malformed requests is a locked vault. The web app does not fall back to opening the vault itself.
 - **Its limits are its own:** six unlock attempts a minute, 600 signatures a minute per key, one request at a time, a 1 MiB frame. The web app cannot raise them.
 
-Not inside yet, and so still opened in the web app from `STORAGEFORGE_VAULT_SECRET` when it is there: importing a key, device passwords and step secrets, making an RSA key, and rotating the vault secret.
+- **A secret that has to leave is released, not read.** A device password or a step's secret is sealed inside and given back one request at a time: the enclave counts each release and gives any one secret at most 60 times a minute. What was sealed as a private key cannot be asked for this way.
+- **An imported key is sealed inside** after the enclave has checked it can sign with it (RSA below 3072 bits is refused there too). It passed through the web app to get there, which is the reason for the `generate-only` key policy.
+- **The vault secret is rotated inside.** The enclave derives the new KEK and rewraps each DEK without letting one out, and switches only when every row is written; a rotation that fails part way changes nothing.
+
+The web app never opens the KEK when the enclave is configured. What still passes through it: a key being imported, an RSA key (made in the web app and imported, since the enclave makes ed25519 and ECDSA), a secret on its way in or out, and the vault secret itself at the first unlock and at a rotation.
 
 The image is `storageforge-indexer/enclave/image/build.sh`: a kernel without modules, an IP stack or block devices and with lockdown forced on, and an initramfs of one static file. The compiler image is pinned by digest and the kernel by checksum, and the build is reproducible: build it again and compare `SHA256SUMS`.
 

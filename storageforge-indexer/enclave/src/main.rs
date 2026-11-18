@@ -47,6 +47,10 @@ const KDF_LANES: std::ops::RangeInclusive<u32> = 1..=16;
 // Signatures per key per minute, and unlock attempts per minute. The limits live here, where the web app cannot change them.
 const SIGN_PER_MINUTE: f64 = 600.0;
 const UNLOCK_PER_MINUTE: f64 = 6.0;
+/// A secret that has to leave (a device password, a step's secret) leaves at most this often per secret.
+const RELEASE_PER_MINUTE: f64 = 60.0;
+const MAX_SECRET: usize = 64 << 10;
+const MAX_KEY: usize = 32 << 10;
 
 /// A token bucket: `per_minute` a minute, with one minute saved up.
 struct Bucket {
@@ -79,6 +83,10 @@ struct State {
     lockdown: bool,
     unlocks: Bucket,
     signs: HashMap<String, Bucket>,
+    /// The KEK the vault is being moved to, while a rotation of the vault secret is under way.
+    next: Option<Zeroizing<[u8; 32]>>,
+    releases: HashMap<String, Bucket>,
+    released: u64,
     /// Whether this process's memory is locked, and whether it is the micro VM's only program: status says both, so the web app can
     /// tell the enclave from a test double of it.
     memory_locked: bool,
@@ -315,13 +323,15 @@ fn seal(key: &[u8], plain: &[u8], aad: &[u8]) -> Result<([u8; 12], Vec<u8>), Ref
 
 impl State {
     fn new(memory_locked: bool) -> Self {
-        State { memory_locked, pid1: std::process::id() == 1, kek: None, audit: None, bad: 0, lockdown: false, unlocks: Bucket::new(UNLOCK_PER_MINUTE), signs: HashMap::new(), signed: 0, refused: 0 }
+        State { memory_locked, pid1: std::process::id() == 1, kek: None, audit: None, bad: 0, lockdown: false, unlocks: Bucket::new(UNLOCK_PER_MINUTE), signs: HashMap::new(), next: None, releases: HashMap::new(), released: 0, signed: 0, refused: 0 }
     }
 
     fn wipe(&mut self) {
         self.kek = None; // Zeroizing clears it as it goes
         self.audit = None;
+        self.next = None;
         self.signs.clear();
+        self.releases.clear();
     }
 
     fn kek(&self) -> Result<&[u8; 32], Refusal> {
@@ -333,14 +343,14 @@ impl State {
 
     fn status(&self) -> Value {
         json!({"ok": true, "protocol": PROTOCOL, "version": env!("CARGO_PKG_VERSION"), "state": if self.lockdown { "lockdown" } else if self.kek.is_some() { "unlocked" } else { "locked" },
-               "bad_requests": self.bad, "bad_limit": BAD_LIMIT, "signed": self.signed, "refused": self.refused,
+               "bad_requests": self.bad, "bad_limit": BAD_LIMIT, "signed": self.signed, "refused": self.refused, "released": self.released, "rotating": self.next.is_some(),
                "memory_locked": self.memory_locked, "pid1": self.pid1,
-               "limits": {"sign_per_key_per_minute": SIGN_PER_MINUTE, "unlock_per_minute": UNLOCK_PER_MINUTE, "max_frame": MAX_FRAME, "max_sign_data": MAX_SIGN_DATA}})
+               "limits": {"sign_per_key_per_minute": SIGN_PER_MINUTE, "unlock_per_minute": UNLOCK_PER_MINUTE, "release_per_secret_per_minute": RELEASE_PER_MINUTE, "max_frame": MAX_FRAME, "max_sign_data": MAX_SIGN_DATA}})
     }
 
-    /// The vault secret arrives once, here. The KEK is derived as vault.py derives it, proved against the stored verifier, and kept;
-    /// the audit MAC key is unwrapped and kept. The secret is zeroed before this returns, whatever happened.
-    fn unlock(&mut self, v: &Value) -> Answer {
+    /// A KEK from a secret, a salt and Argon2id costs, as vault.py derives it. Counted against the unlock limit: it is the costly
+    /// thing to ask for, and the only place a guess at the secret can be tried.
+    fn derive(&mut self, v: &Value) -> Result<Zeroizing<[u8; 32]>, Refusal> {
         if !self.unlocks.take() {
             return no("rate", "too many unlock attempts: wait a minute");
         }
@@ -353,7 +363,6 @@ impl State {
         if secret.len() < 32 || salt.len() < 8 || !KDF_TIME.contains(&t) || !KDF_MEMORY_KIB.contains(&m) || !KDF_LANES.contains(&p) {
             return bad("the secret, the salt or the Argon2id costs are outside what the enclave takes");
         }
-        let (vn, vct, an, act) = (nonce(v, "verifier_nonce")?, bytes(v, "verifier", 256)?, nonce(v, "audit_key_nonce")?, bytes(v, "audit_key_wrapped", 256)?);
         let params = argon2::Params::new(m, t, p, Some(32)).or_else(|_| bad("Argon2id refuses those costs"))?;
         let mut kek = Zeroizing::new([0u8; 32]);
         // the memory Argon2id works in is asked for here, so that not having it is an answer and not the end of the process
@@ -367,6 +376,14 @@ impl State {
             *b = argon2::Block::default();
         }
         derived.or_else(|_| no("crypto", "Argon2id failed with those costs"))?;
+        Ok(kek)
+    }
+
+    /// The vault secret arrives once, here. The KEK is derived as vault.py derives it, proved against the stored verifier, and kept;
+    /// the audit MAC key is unwrapped and kept. The secret is zeroed before this returns, whatever happened.
+    fn unlock(&mut self, v: &Value) -> Answer {
+        let kek = self.derive(v)?;
+        let (vn, vct, an, act) = (nonce(v, "verifier_nonce")?, bytes(v, "verifier", 256)?, nonce(v, "audit_key_nonce")?, bytes(v, "audit_key_wrapped", 256)?);
         let check = open(kek.as_ref(), &vn, &vct, b"storageforge:verifier").or_else(|_| no("auth", "wrong vault secret: the stored verifier did not authenticate"))?;
         if check.ct_eq(VERIFIER).unwrap_u8() != 1 {
             return no("auth", "wrong vault secret: the stored verifier did not authenticate");
@@ -431,6 +448,103 @@ impl State {
         Ok(json!({"ok": true, "public_key": public, "dek_nonce": B64.encode(dn), "wrapped_dek": B64.encode(wd), "key_nonce": B64.encode(kn), "ciphertext": B64.encode(ct)}))
     }
 
+    /// A key that was made elsewhere, taken in: checked to be one the enclave can sign with, then sealed as the vault seals one.
+    /// It came through the web app to get here, which is why a site can be set to take only keys made inside (`generate`).
+    fn import(&mut self, v: &Value) -> Answer {
+        let kek = *self.kek()?;
+        let id = uuid(v)?;
+        let pem = Zeroizing::new(bytes(v, "private", MAX_KEY)?);
+        let Some((secret, public)) = parse_openssh(&pem) else {
+            return no("key", "not an unencrypted OpenSSH private key of a kind the enclave signs with");
+        };
+        if let Secret::Rsa { n, .. } = &secret {
+            if n.len() < 384 {
+                return no("key", "an RSA key shorter than 3072 bits is too weak");
+            }
+        }
+        if sign_with(&secret, b"storageforge import check", 0).is_none() {
+            return no("key", "that key cannot sign");
+        }
+        use rand_core::RngCore;
+        let mut dek = Zeroizing::new([0u8; 32]);
+        rand_core::OsRng.fill_bytes(dek.as_mut());
+        let (dn, wd) = seal(&kek, dek.as_ref(), format!("storageforge:dek:{id}").as_bytes())?;
+        let (kn, ct) = seal(dek.as_ref(), &pem, format!("storageforge:key:{id}").as_bytes())?;
+        Ok(json!({"ok": true, "public": B64.encode(public), "dek_nonce": B64.encode(dn), "wrapped_dek": B64.encode(wd), "key_nonce": B64.encode(kn), "ciphertext": B64.encode(ct)}))
+    }
+
+    /// The one kind of thing that is sealed to be given back: a secret something outside has to use (a device password, a step's
+    /// secret). Its associated data names the purpose, so nothing sealed as a key can be asked for as one of these.
+    fn purpose(v: &Value) -> Result<&'static str, Refusal> {
+        match v.get("purpose").and_then(Value::as_str) {
+            Some("credential") => Ok("credential"),
+            _ => bad("purpose is credential"),
+        }
+    }
+
+    fn seal_secret(&mut self, v: &Value) -> Answer {
+        let kek = *self.kek()?;
+        let (id, purpose) = (uuid(v)?, Self::purpose(v)?);
+        let plain = Zeroizing::new(bytes(v, "plaintext", MAX_SECRET)?);
+        if plain.is_empty() {
+            return bad("plaintext is empty");
+        }
+        use rand_core::RngCore;
+        let mut dek = Zeroizing::new([0u8; 32]);
+        rand_core::OsRng.fill_bytes(dek.as_mut());
+        let (dn, wd) = seal(&kek, dek.as_ref(), format!("storageforge:dek:{id}").as_bytes())?;
+        let (n, ct) = seal(dek.as_ref(), &plain, format!("storageforge:{purpose}:{id}").as_bytes())?;
+        Ok(json!({"ok": true, "dek_nonce": B64.encode(dn), "wrapped_dek": B64.encode(wd), "nonce": B64.encode(n), "ciphertext": B64.encode(ct)}))
+    }
+
+    /// A secret that has to leave, released: counted, and at most RELEASE_PER_MINUTE times a minute for any one secret, so a web
+    /// app that has been taken over cannot read the whole vault in one pass without it showing.
+    fn release(&mut self, v: &Value) -> Answer {
+        let kek = *self.kek()?;
+        let (id, purpose) = (uuid(v)?, Self::purpose(v)?);
+        let (dn, wd, n, ct) = (nonce(v, "dek_nonce")?, bytes(v, "wrapped_dek", 128)?, nonce(v, "nonce")?, bytes(v, "ciphertext", MAX_SECRET + 16)?);
+        if !self.releases.entry(id.clone()).or_insert_with(|| Bucket::new(RELEASE_PER_MINUTE)).take() {
+            self.refused += 1;
+            return no("rate", "this secret has been released as often as the enclave allows in a minute");
+        }
+        let dek = open(&kek, &dn, &wd, format!("storageforge:dek:{id}").as_bytes())?;
+        let plain = open(&dek, &n, &ct, format!("storageforge:{purpose}:{id}").as_bytes())?;
+        self.released += 1;
+        Ok(json!({"ok": true, "plaintext": B64.encode(&*plain)}))
+    }
+
+    /// Rotating the vault secret, first step: the KEK of the new secret is derived and held beside the current one, and the
+    /// verifier and the audit key come back wrapped under it for the vault to store. Nothing changes until `rotate-commit`.
+    fn rotate_begin(&mut self, v: &Value) -> Answer {
+        self.kek()?;
+        let Some(audit) = self.audit.clone() else { return no("locked", "the enclave is locked") };
+        let next = self.derive(v)?;
+        let (vn, vct) = seal(next.as_ref(), VERIFIER, b"storageforge:verifier")?;
+        let (an, act) = seal(next.as_ref(), &audit, b"storageforge:audit-key")?;
+        self.next = Some(next);
+        Ok(json!({"ok": true, "verifier_nonce": B64.encode(vn), "verifier": B64.encode(vct), "audit_key_nonce": B64.encode(an), "audit_key_wrapped": B64.encode(act)}))
+    }
+
+    /// One row's DEK, opened under the current KEK and sealed under the next. The DEK itself is never outside.
+    fn rewrap(&mut self, v: &Value) -> Answer {
+        let kek = *self.kek()?;
+        let Some(next) = self.next.clone() else { return no("state", "no rotation is under way") };
+        let id = uuid(v)?;
+        let aad = format!("storageforge:dek:{id}");
+        let dek = open(&kek, &nonce(v, "dek_nonce")?, &bytes(v, "wrapped_dek", 128)?, aad.as_bytes())?;
+        let (dn, wd) = seal(next.as_ref(), &dek, aad.as_bytes())?;
+        Ok(json!({"ok": true, "dek_nonce": B64.encode(dn), "wrapped_dek": B64.encode(wd)}))
+    }
+
+    fn rotate_end(&mut self, commit: bool) -> Answer {
+        self.kek()?;
+        let Some(next) = self.next.take() else { return no("state", "no rotation is under way") };
+        if commit {
+            self.kek = Some(next);
+        }
+        Ok(json!({"ok": true, "state": "unlocked", "rotated": commit}))
+    }
+
     /// The audit chain's MAC, as vault.py's AuditLog computes it: HMAC-SHA256 over the previous entry's hash and the entry's payload.
     fn mac(&self, v: &Value) -> Answer {
         self.kek()?;
@@ -472,6 +586,13 @@ impl State {
             }
             "sign" => self.sign(v),
             "generate" => self.generate(v),
+            "import" => self.import(v),
+            "seal" => self.seal_secret(v),
+            "release" => self.release(v),
+            "rotate-begin" => self.rotate_begin(v),
+            "rewrap" => self.rewrap(v),
+            "rotate-commit" => self.rotate_end(true),
+            "rotate-abort" => self.rotate_end(false),
             "mac" => self.mac(v),
             _ => bad("unknown op"),
         }
@@ -504,8 +625,10 @@ impl State {
             let (reply, hang_up) = match serde_json::from_slice::<Value>(&body) {
                 Ok(mut v) => {
                     let got = self.answer(&v);
-                    if let Some(s) = v.get_mut("secret").and_then(|s| if let Value::String(s) = s { Some(s) } else { None }) {
-                        s.zeroize();
+                    for name in ["secret", "private", "plaintext"] {
+                        if let Some(s) = v.get_mut(name).and_then(|s| if let Value::String(s) = s { Some(s) } else { None }) {
+                            s.zeroize();
+                        }
                     }
                     match got {
                         Ok(r) => (r, false),
@@ -521,7 +644,7 @@ impl State {
                     (json!({"ok": false, "error": "bad-request", "why": "not JSON"}), true)
                 }
             };
-            let text = reply.to_string();
+            let text = Zeroizing::new(reply.to_string()); // a released secret is in it
             if conn.write_all(&(text.len() as u32).to_be_bytes()).is_err() || conn.write_all(text.as_bytes()).is_err() || hang_up {
                 return;
             }
