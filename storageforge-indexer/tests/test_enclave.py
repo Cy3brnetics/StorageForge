@@ -64,19 +64,40 @@ class Enclave(unittest.TestCase):
         self.vault.init()
         self.vault.unlock()
         self.addCleanup(self.vault.close)
-        self.path = self.tmp / 'enclave.sock'
-        self.proc = subprocess.Popen([str(build()), '--unix', str(self.path)], stderr=subprocess.PIPE)
+        self.start()
         self.addCleanup(self.stop)
-        until = time.time() + 10
-        while not self.path.exists() and time.time() < until:
-            time.sleep(0.02)
-        self.e = enclave.Enclave(f'unix:{self.path}')
+        self.e = enclave.Enclave(self.address)
         self.addCleanup(self.e.close)
+        self.answering()
+
+    def start(self):
+        """The program on a socket file. EnclaveImage starts the micro VM here instead."""
+        self.path = self.tmp / 'enclave.sock'
+        self.address = f'unix:{self.path}'
+        self.proc = subprocess.Popen([str(build()), '--unix', str(self.path)], stderr=subprocess.PIPE)
 
     def stop(self):
         self.proc.kill()
         self.proc.wait()
         self.proc.stderr.close()
+
+    def answering(self):
+        until = time.time() + 15
+        while True:
+            try:
+                self.e.close()
+                self.e.address = self.address          # a restarted VM is at a new address
+                return self.e.status()
+            except enclave.EnclaveError:
+                if time.time() > until:
+                    raise
+                time.sleep(0.05)
+
+    def wire(self):
+        """A bare socket to it, for what the client would never send."""
+        probe = enclave.Enclave(self.address, timeout=5)
+        probe._connect()
+        return probe.sock
 
     def meta(self):
         cols = ('kdf_salt', 'kdf_time_cost', 'kdf_memory_kib', 'kdf_lanes', 'verifier_nonce', 'verifier', 'audit_key_nonce', 'audit_key_wrapped')
@@ -243,9 +264,7 @@ class Enclave(unittest.TestCase):
         self.assertTrue(self.e.sign(self.row('k'), b'x')[0])
 
     def test_a_frame_larger_than_it_takes_is_not_read(self):
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect(str(self.path))
+        s = self.wire()
         s.sendall(struct.pack('>I', (1 << 20) + 1) + b'x' * 64)
         try:
             self.assertEqual(s.recv(16), b'', 'it hangs up without an answer')
@@ -256,8 +275,7 @@ class Enclave(unittest.TestCase):
 
     def test_a_connection_that_goes_quiet_does_not_hold_the_others_out(self):
         """One connection is served at a time. A client that opens one and says nothing is dropped after a few seconds."""
-        idle = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        idle.connect(str(self.path))
+        idle = self.wire()
         self.addCleanup(idle.close)
         started = time.time()
         self.assertEqual(self.e.status()['state'], 'locked')
@@ -265,27 +283,22 @@ class Enclave(unittest.TestCase):
         self.assertEqual(self.e.status()['bad_requests'], 0, 'being slow is not being hostile')
 
     def test_unlock_attempts_are_limited_inside(self):
-        codes = []
-        for _ in range(8):
+        codes, started = [], time.time()
+        for _ in range(9):
             try:
                 self.e.unlock(b'w' * 48, self.meta())
             except enclave.EnclaveError as exc:
                 codes.append(exc.code)
-        self.assertEqual(codes, ['auth'] * 6 + ['rate'] * 2, 'six a minute, then it says wait: the web app cannot raise that')
+        earned = int((time.time() - started) / 10) + 1       # one more every ten seconds, and a slow machine takes that long
+        self.assertEqual(codes[:6], ['auth'] * 6)
+        self.assertLessEqual(codes.count('auth'), 6 + earned, 'six a minute, then it says wait: the web app cannot raise that')
+        self.assertEqual(codes[-1], 'rate')
 
     def test_it_holds_nothing_after_a_restart(self):
         self.unlock()
         self.stop()
-        self.proc = subprocess.Popen([str(build()), '--unix', str(self.path)], stderr=subprocess.PIPE)
-        until = time.time() + 10
-        while time.time() < until:
-            try:
-                self.e.close()
-                st = self.e.status()
-                break
-            except enclave.EnclaveError:
-                time.sleep(0.05)
-        self.assertEqual(st['state'], 'locked')
+        self.start()
+        self.assertEqual(self.answering()['state'], 'locked')
 
     # ── ssh, with the key inside ──
     def test_ssh_signs_through_an_agent_that_has_no_key_to_load(self):
@@ -294,7 +307,7 @@ class Enclave(unittest.TestCase):
         self.unlock()
         self.vault.generate_key('k')
         row = self.row('k')
-        with enclave.agent(f'unix:{self.path}', row, ttl=60, base=str(self.tmp)) as sock:
+        with enclave.agent(self.address, row, ttl=60, base=str(self.tmp)) as sock:
             env = {'PATH': os.environ['PATH'], 'SSH_AUTH_SOCK': sock}
             listed = subprocess.run(['ssh-add', '-L'], env=env, capture_output=True, text=True)
             self.assertEqual(listed.stdout.split()[:2], row['public_key'].split()[:2], listed.stderr)
@@ -306,7 +319,7 @@ class Enclave(unittest.TestCase):
             self.assertEqual(made.returncode, 0, made.stderr)
             (self.tmp / 'allowed').write_text(f'gabe {row["public_key"]}\n')
             checked = subprocess.run(['ssh-keygen', '-Y', 'verify', '-f', str(self.tmp / 'allowed'), '-I', 'gabe', '-n', 'file', '-s', str(self.tmp / 'msg.sig')],
-                                     stdin=open(self.tmp / 'msg'), capture_output=True, text=True)
+                                     input=(self.tmp / 'msg').read_text(), capture_output=True, text=True)
             self.assertEqual(checked.returncode, 0, checked.stderr + checked.stdout)
             for flag in ('-D', '-x'):                                    # remove every key, lock the agent: not this agent's to do
                 self.assertNotEqual(subprocess.run(['ssh-add', flag], env=env, input='pw\npw\n', capture_output=True, text=True).returncode, 0, flag)
@@ -335,6 +348,52 @@ class Enclave(unittest.TestCase):
         gone = enclave.Enclave(f'unix:{self.tmp}/nobody-home.sock')
         self.assertIn('does not answer', self.refused('down', gone.status))
         self.refused('down', enclave.Enclave('tcp:10.0.0.1:1').status)
+
+
+IMAGE = ROOT / 'enclave' / 'image' / 'out'
+CIDS = iter(range(20000 + os.getpid() % 20000 * 100, 1 << 31))
+
+
+def image_reason():
+    """Why the image cannot be booted here, or None."""
+    if not all((IMAGE / f).exists() for f in ('bzImage', 'initramfs.cpio.gz')):
+        return 'needs the enclave image (enclave/image/build.sh)'
+    if not shutil.which('qemu-system-x86_64'):
+        return 'needs qemu-system-x86_64'
+    if not all(os.access(d, os.R_OK | os.W_OK) for d in ('/dev/kvm', '/dev/vhost-vsock')):
+        return 'needs /dev/kvm and /dev/vhost-vsock'
+    return None
+
+
+@unittest.skipIf(image_reason(), image_reason() or '')
+class EnclaveImage(Enclave):
+    """Every test above again, against the image as it ships: the kernel and the initramfs in a micro VM whose one device is the
+    vsock socket. Then what only the VM can show."""
+
+    def start(self):
+        self.serial = self.tmp / 'serial.log'
+        cid = next(CIDS)
+        self.address = f'vsock:{cid}:7000'
+        self.proc = subprocess.Popen(
+            ['qemu-system-x86_64', '-M', 'microvm,rtc=off,pit=off,pic=off,acpi=off', '-enable-kvm', '-cpu', 'host', '-m', '128', '-smp', '1', '-nodefaults',
+             '-no-user-config', '-display', 'none', '-no-reboot', '-kernel', str(IMAGE / 'bzImage'), '-initrd', str(IMAGE / 'initramfs.cpio.gz'),
+             '-append', 'console=ttyS0 panic=-1 quiet', '-serial', f'file:{self.serial}', '-device', f'vhost-vsock-device,guest-cid={cid}'],
+            stdin=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    def test_in_its_vm_it_is_the_only_program_and_its_memory_is_locked(self):
+        st = self.e.status()
+        self.assertEqual((st['pid1'], st['memory_locked'], st['state']), (True, True, 'locked'))
+        self.unlock()
+        self.assertEqual(self.serial.read_text(), '', 'it has nothing to say on the console, and never the secret')
+
+    def test_the_vm_has_no_device_but_the_socket(self):
+        """The kernel is built without an IP stack, block devices or modules, and QEMU is given no device but vsock: asked for a
+        network card or a disk, this kernel would have no driver. What is checked here is the configuration the build recorded."""
+        config = (IMAGE / 'kernel.config.full').read_text().splitlines()
+        on = {line.split('=')[0] for line in config if line.startswith('CONFIG_') and line.endswith('=y')}
+        self.assertTrue({'CONFIG_VIRTIO_VSOCKETS', 'CONFIG_SECURITY_LOCKDOWN_LSM', 'CONFIG_LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY'} <= on)
+        self.assertFalse(on & {'CONFIG_INET', 'CONFIG_BLOCK', 'CONFIG_MODULES', 'CONFIG_PROC_FS', 'CONFIG_DEVMEM', 'CONFIG_BPF_SYSCALL', 'CONFIG_IO_URING',
+                               'CONFIG_USB_SUPPORT', 'CONFIG_SWAP', 'CONFIG_COREDUMP', 'CONFIG_VIRTIO_NET', 'CONFIG_VIRTIO_BLK', 'CONFIG_PCI'})
 
 
 if __name__ == '__main__':

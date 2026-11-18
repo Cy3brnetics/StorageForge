@@ -32,6 +32,8 @@ use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
 const PROTOCOL: u32 = 1;
+/// The vsock port the enclave listens on inside its VM.
+const VSOCK_PORT: u32 = 7000;
 const MAX_FRAME: usize = 1 << 20;
 const MAX_SIGN_DATA: usize = 256 << 10;
 const BAD_LIMIT: u32 = 5;
@@ -77,6 +79,10 @@ struct State {
     lockdown: bool,
     unlocks: Bucket,
     signs: HashMap<String, Bucket>,
+    /// Whether this process's memory is locked, and whether it is the micro VM's only program: status says both, so the web app can
+    /// tell the enclave from a test double of it.
+    memory_locked: bool,
+    pid1: bool,
     signed: u64,
     refused: u64,
 }
@@ -308,8 +314,8 @@ fn seal(key: &[u8], plain: &[u8], aad: &[u8]) -> Result<([u8; 12], Vec<u8>), Ref
 }
 
 impl State {
-    fn new() -> Self {
-        State { kek: None, audit: None, bad: 0, lockdown: false, unlocks: Bucket::new(UNLOCK_PER_MINUTE), signs: HashMap::new(), signed: 0, refused: 0 }
+    fn new(memory_locked: bool) -> Self {
+        State { memory_locked, pid1: std::process::id() == 1, kek: None, audit: None, bad: 0, lockdown: false, unlocks: Bucket::new(UNLOCK_PER_MINUTE), signs: HashMap::new(), signed: 0, refused: 0 }
     }
 
     fn wipe(&mut self) {
@@ -328,6 +334,7 @@ impl State {
     fn status(&self) -> Value {
         json!({"ok": true, "protocol": PROTOCOL, "version": env!("CARGO_PKG_VERSION"), "state": if self.lockdown { "lockdown" } else if self.kek.is_some() { "unlocked" } else { "locked" },
                "bad_requests": self.bad, "bad_limit": BAD_LIMIT, "signed": self.signed, "refused": self.refused,
+               "memory_locked": self.memory_locked, "pid1": self.pid1,
                "limits": {"sign_per_key_per_minute": SIGN_PER_MINUTE, "unlock_per_minute": UNLOCK_PER_MINUTE, "max_frame": MAX_FRAME, "max_sign_data": MAX_SIGN_DATA}})
     }
 
@@ -550,24 +557,38 @@ fn vsock_listen(port: u32) -> std::io::Result<i32> {
 }
 
 /// Nothing this process holds may reach a disk or another process: its memory is locked, it leaves no core, and it cannot be traced.
-fn harden() {
+fn harden() -> bool {
     unsafe {
         libc::setrlimit(libc::RLIMIT_CORE, &libc::rlimit { rlim_cur: 0, rlim_max: 0 });
         libc::prctl(libc::PR_SET_DUMPABLE, 0);
         // In the micro VM this is PID 1 and may lock everything it will ever hold. A process on a developer's machine has a small
         // lock limit, and locking what it cannot would fail every later allocation: it says so and goes on unlocked, as a test double.
+        let pid1 = std::process::id() == 1;
+        if pid1 {
+            // the kernel starts PID 1 with the small default; it is root, and takes the limit away from itself
+            libc::setrlimit(libc::RLIMIT_MEMLOCK, &libc::rlimit { rlim_cur: libc::RLIM_INFINITY, rlim_max: libc::RLIM_INFINITY });
+        }
         let mut limit: libc::rlimit = std::mem::zeroed();
         let unlimited = libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut limit) == 0 && limit.rlim_cur == libc::RLIM_INFINITY;
-        if !unlimited || libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) != 0 {
+        let locked = unlimited && libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) == 0;
+        if !locked && pid1 {
+            // in its own VM there is no excuse: it stops, the kernel halts with it, and the supervisor sees a VM that did not come up
+            eprintln!("enclave: cannot lock memory: {}", std::io::Error::last_os_error());
+            std::process::exit(1);
+        }
+        if !locked {
             eprintln!("enclave: memory is not locked here (no leave to lock it): fine for a test, wrong for the enclave's own VM");
         }
+        locked
     }
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    harden();
-    let mut state = State::new();
+    let mut state = State::new(harden());
+    // As PID 1 of the micro VM there is no command line to speak of: the kernel starts /init with none, and the port is this one.
+    let pid1 = [String::new(), "--vsock".to_string(), VSOCK_PORT.to_string()];
+    let args = if std::process::id() == 1 && args.len() < 3 { pid1.to_vec() } else { args };
     match (args.get(1).map(String::as_str), args.get(2)) {
         // in the micro VM: PID 1, with nothing to return to. A listener that cannot be made is a halt, which the supervisor sees
         (Some("--vsock"), Some(port)) => {

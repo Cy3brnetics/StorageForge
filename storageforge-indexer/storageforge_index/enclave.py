@@ -41,6 +41,7 @@ class Enclave:
 
     def _connect(self):
         kind, _, rest = self.address.partition(':')
+        s = None
         try:
             if kind == 'unix':
                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -54,6 +55,8 @@ class Enclave:
             else:
                 raise EnclaveError('down', f'{ADDRESS_ENV} is unix:PATH or vsock:CID:PORT, not {self.address!r}')
         except (OSError, ValueError) as exc:
+            if s is not None:
+                s.close()
             raise EnclaveError('down', f'the key enclave does not answer at {self.address}: {exc}') from None
         self.sock = s
 
