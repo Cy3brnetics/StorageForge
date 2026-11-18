@@ -174,6 +174,29 @@ class Enclave:
         return bool(self.request('mac', prev=prev, payload=payload, expect=expect)['matches'])
 
 
+def problems() -> dict:
+    """For the notification center (alerts.problems): an enclave that was asked for and is not answering, has locked itself down,
+    or is locked. The kind starts with security-, so none of them can be muted or snoozed: they leave when they are resolved."""
+    address = configured()
+    if not address:
+        return {}
+    client = Enclave(address, timeout=3)
+    try:
+        status = client.status()
+    except EnclaveError as exc:
+        return {'security-enclave': ('security-enclave', 'enclave', 'The key enclave does not answer',
+                                     f'{exc}. Nothing that needs a key works until it is back: scans, deploys, sends, the console. The vault is not opened without it.', 'crit')}
+    finally:
+        client.close()
+    if status.get('state') == 'lockdown':
+        return {'security-enclave': ('security-enclave', 'enclave', 'The key enclave has locked itself down',
+                                     f'It was sent {status.get("bad_requests")} requests no honest client sends, and wiped its keys. Find what sent them before unlocking it again with the vault secret.', 'crit')}
+    if status.get('state') != 'unlocked':
+        return {'security-enclave': ('security-enclave', 'enclave', 'The key enclave is locked',
+                                     'It holds no key, as after a restart. It is unlocked the next time the vault is used where the vault secret is available, and by a person otherwise.', 'warn')}
+    return {}
+
+
 # ── an ssh-agent whose key is in the enclave ────────────────────────
 # What `ssh` needs from an agent is two answers: which keys it has, and a signature. This serves both on a socket file for the length
 # of one task, as the per-task ssh-agent does today (runner.ephemeral_agent), with one difference: there is no key here to load. The

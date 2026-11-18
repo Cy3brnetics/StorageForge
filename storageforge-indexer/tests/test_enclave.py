@@ -481,6 +481,25 @@ class VaultThroughEnclave(Harness):
             vault.Vault(self.db, self.conn).unlock()
         self.assertIn('does not answer', str(got.exception))
 
+    def test_the_notification_center_says_when_it_is_locked_locked_down_or_gone(self):
+        from storageforge_index import alerts, notifications
+        self.assertEqual(enclave.problems()['security-enclave'][4], 'warn')
+        with vault.Vault(self.db, self.conn).unlock():
+            pass
+        self.assertEqual(enclave.problems(), {})
+        for _ in range(5):
+            self.e.raw(b'not json')
+            self.e.close()
+        kind, ref, title, detail, level = enclave.problems()['security-enclave']
+        self.assertEqual((kind, level, title), ('security-enclave', 'crit', 'The key enclave has locked itself down'))
+        self.assertFalse(notifications.ignorable(kind, 'warn'), 'it cannot be muted or snoozed at any level')
+        self.stop()
+        gone = alerts.problems(self.conn)['security-enclave']
+        self.assertEqual((gone[2], gone[4]), ('The key enclave does not answer', 'crit'))
+        with mock.patch.dict(os.environ):
+            del os.environ['STORAGEFORGE_ENCLAVE']
+            self.assertEqual(enclave.problems(), {}, 'a site that does not use it is told nothing')
+
     def test_the_wrong_secret_in_the_environment_does_not_unlock_it(self):
         os.environ['STORAGEFORGE_VAULT_SECRET'] = 'w' * 48
         with self.assertRaises(vault.VaultLocked):
