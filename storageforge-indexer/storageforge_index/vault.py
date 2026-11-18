@@ -41,6 +41,8 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 
+from . import enclave as _enclave
+
 MIN_SECRET_LEN = 32
 KDF_DEFAULTS = {'time_cost': 3, 'memory_kib': 64 * 1024, 'lanes': 4}
 VERIFIER = b'storageforge-vault-v1'
@@ -225,12 +227,82 @@ class Binding:
     actions: list[str]
 
 
+# ── the key enclave (roadmap section 14) ────────────────────────────
+# With STORAGEFORGE_ENCLAVE set, a vault unlocked without a secret of its own does not derive the KEK here: the enclave holds it. What
+# the rest of the program gets back are these three stand-ins, which go where a SecretBuffer went and hold no secret: a key that can
+# only be used through an agent socket, a signer, and the audit chain's MAC.
+def _asked(fn, *a, **kw):
+    """One request of the enclave, with its refusals as the vault's own errors, so every caller that handles a locked vault handles this."""
+    try:
+        return fn(*a, **kw)
+    except _enclave.EnclaveError as exc:
+        if exc.code in ('locked', 'lockdown', 'down', 'auth', 'rate'):
+            raise VaultLocked(f'key enclave: {exc}') from None
+        raise VaultError(f'key enclave: {exc}') from None
+
+
+class EnclaveKey:
+    """An SSH key that stays in the enclave: the row's ciphertexts and where to ask. runner.ephemeral_agent serves an agent socket
+    from it; nothing can read it."""
+
+    def __init__(self, address: str, row: dict):
+        self.address, self.row = address, row
+
+    def view(self):
+        raise VaultError('this key is held by the key enclave and does not leave it')
+
+    def wipe(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+    # what deploy.sshsig asks of an ed25519 private key
+    def public_key(self):
+        return serialization.load_ssh_public_key(' '.join(self.row['public_key'].split()[:2]).encode())
+
+    def sign(self, data: bytes) -> bytes:
+        """The bare signature, as Ed25519PrivateKey.sign gives it. Only an ed25519 key has one."""
+        with _enclave.Enclave(self.address) as e:
+            blob, _ = _asked(e.sign, self.row, data)
+        algo_len = int.from_bytes(blob[:4], 'big')
+        if blob[4:4 + algo_len] != b'ssh-ed25519':
+            raise VaultError('only an ed25519 key signs requests')
+        return blob[4 + algo_len + 4:]
+
+
+class EnclaveMacKey:
+    """The audit chain's MAC key, in the enclave: AuditLog asks for each MAC."""
+
+    def __init__(self, address: str):
+        self.address = address
+
+    def mac(self, prev: str, payload: str) -> str:
+        with _enclave.Enclave(self.address) as e:
+            return _asked(e.mac, prev, payload)
+
+    def view(self):
+        raise VaultError('the audit key is held by the key enclave and does not leave it')
+
+    def wipe(self):
+        pass
+
+
+META = ('kdf_salt', 'kdf_time_cost', 'kdf_memory_kib', 'kdf_lanes', 'verifier_nonce', 'verifier', 'audit_key_nonce', 'audit_key_wrapped')
+
+
 class Vault:
     def __init__(self, db, conn, secret: bytes | None = None):
         self.db, self.conn = db, conn
         self._secret = secret
         self._kek: SecretBuffer | None = None
-        self.audit_key: SecretBuffer | None = None
+        self.audit_key: SecretBuffer | EnclaveMacKey | None = None
+        # where the enclave is, once unlock() has found it holding this vault's KEK. A vault given its secret (init, reset, rotation,
+        # the tests) is whoever holds the secret speaking, and works here as before
+        self.enclave: str | None = None
 
     def __enter__(self):
         return self
@@ -242,7 +314,7 @@ class Vault:
         for b in (self._kek, self.audit_key):
             if b:
                 b.wipe()
-        self._kek = self.audit_key = None
+        self._kek = self.audit_key = self.enclave = None
 
     def _blob(self, v) -> bytes:
         return bytes(v) if v is not None else b''
@@ -272,7 +344,29 @@ class Vault:
                            'an': an, 'ak': act, 'now': int(time.time())})
         return True
 
+    def _unlock_enclave(self, address: str) -> 'Vault':
+        """The enclave holds the KEK. It is unlocked once, with the vault's stored parameters and the secret; after that nothing here
+        needs the secret, and a web app that was never given it works."""
+        row = self.conn.all(f'SELECT {", ".join(META)} FROM vault_meta WHERE id = 1')
+        if not row:
+            raise VaultLocked('The vault is not initialised. Run: storageforge-index vault init')
+        with _enclave.Enclave(address) as e:
+            if _asked(e.status)['state'] != 'unlocked':
+                try:
+                    secret = secret_from_env()
+                except VaultLocked:
+                    raise VaultLocked('The key enclave is locked, and there is no vault secret here to unlock it with') from None
+                _asked(e.unlock, secret, {c: (self._blob(v) if isinstance(v, (bytes, memoryview)) else v) for c, v in zip(META, row[0])})
+        self.enclave, self.audit_key = address, EnclaveMacKey(address)
+        return self
+
     def unlock(self) -> 'Vault':
+        address = _enclave.configured()
+        if address and self._secret is None:
+            return self._unlock_enclave(address)
+        return self._unlock_here()
+
+    def _unlock_here(self) -> 'Vault':
         if self._secret is None:
             self._secret = secret_from_env()
         row = self.conn.all("""SELECT kdf_salt, kdf_time_cost, kdf_memory_kib, kdf_lanes, verifier_nonce, verifier,
@@ -293,6 +387,17 @@ class Vault:
         return self
 
     def _need_kek(self) -> memoryview:
+        if self._kek is None and self.enclave:
+            # Not yet asked of the enclave: importing a key, device passwords, and rotating the secret. Until they are, they open
+            # the KEK here from the secret in the environment, as before the enclave. Listed as open in roadmap section 14.
+            address, mac = self.enclave, self.audit_key
+            try:
+                self._unlock_here()
+            finally:
+                self._secret = None
+            if isinstance(self.audit_key, SecretBuffer):
+                self.audit_key.wipe()
+            self.enclave, self.audit_key = address, mac
         if self._kek is None:
             raise VaultLocked('vault is locked')
         return self._kek.view()
@@ -352,6 +457,19 @@ class Vault:
         return {'name': name, 'type': public.split()[0], 'fingerprint': fp, 'public_key': public_line}
 
     def generate_key(self, name: str, kind: str = 'ed25519', comment: str | None = None) -> dict:
+        if self.enclave and kind == 'ed25519':
+            # made inside: the private half is never in this process, not even once. (An RSA key is still made here.)
+            uuid, comment = secrets.token_hex(16), comment or f'storageforge:{name}'
+            with _enclave.Enclave(self.enclave) as e:
+                made = _asked(e.generate, uuid, 'ed25519', comment)
+            public_line = made['public_key']
+            fp = fingerprint(public_line)
+            self.conn.execute("""INSERT INTO ssh_keys (key_uuid, name, key_type, public_key, fingerprint, comment,
+                                     dek_nonce, wrapped_dek, key_nonce, ciphertext, created_at, origin)
+                                 VALUES (:u, :n, :t, :p, :f, :c, :dn, :wd, :kn, :ct, :now, 'generated')""",
+                              {'u': uuid, 'n': name, 't': public_line.split()[0], 'p': public_line, 'f': fp, 'c': comment, 'dn': made['dek_nonce'],
+                               'wd': made['wrapped_dek'], 'kn': made['key_nonce'], 'ct': made['ciphertext'], 'now': int(time.time())})
+            return {'name': name, 'type': public_line.split()[0], 'fingerprint': fp, 'public_key': public_line}
         key = ed25519.Ed25519PrivateKey.generate() if kind == 'ed25519' else rsa.generate_private_key(65537, 4096)
         pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
         return self._store_key(name, pem, None, comment, 'generated')
@@ -371,13 +489,18 @@ class Vault:
     def remove_key(self, name: str) -> int:
         return self.conn.execute('DELETE FROM ssh_keys WHERE name = :n', {'n': name}).rowcount
 
-    def decrypt_key(self, key_id: int) -> SecretBuffer:
-        kek = self._need_kek()
-        rows = self.conn.all("""SELECT key_uuid, dek_nonce, wrapped_dek, key_nonce, ciphertext FROM ssh_keys
+    def decrypt_key(self, key_id: int) -> SecretBuffer | EnclaveKey:
+        """The key, to hand to runner.ephemeral_agent. With the enclave it is not decrypted at all: what comes back is the row and
+        the enclave's address, and the agent socket asks the enclave for each signature."""
+        rows = self.conn.all("""SELECT key_uuid, dek_nonce, wrapped_dek, key_nonce, ciphertext, public_key FROM ssh_keys
                                 WHERE key_id = :k AND disabled_at IS NULL""", {'k': key_id})
         if not rows:
             raise VaultError(f'key {key_id} is missing or disabled')
-        uuid, dn, wd, kn, ct = rows[0]
+        uuid, dn, wd, kn, ct, public = rows[0]
+        if self.enclave:
+            return EnclaveKey(self.enclave, {'key_uuid': uuid, 'dek_nonce': self._blob(dn), 'wrapped_dek': self._blob(wd), 'key_nonce': self._blob(kn),
+                                             'ciphertext': self._blob(ct), 'public_key': public})
+        kek = self._need_kek()
         with open_into(kek, self._blob(dn), self._blob(wd), self._aad(uuid, 'dek')) as dek:
             return open_into(dek.view(), self._blob(kn), self._blob(ct), self._aad(uuid, 'key'))
 
@@ -534,6 +657,8 @@ class AuditLog:
         if alg == 'hmac-sha256':
             if self.key is None:
                 raise VaultLocked('unlock the vault to verify HMAC audit entries')
+            if isinstance(self.key, EnclaveMacKey):
+                return self.key.mac(prev, payload)
             return hmac.new(bytes(self.key.view()), msg, hashlib.sha256).hexdigest()
         return hashlib.sha256(msg).hexdigest()
 

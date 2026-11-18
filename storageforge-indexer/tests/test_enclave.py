@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
@@ -52,7 +53,9 @@ def strings(blob):
 
 
 @unittest.skipUnless(shutil.which('cargo'), 'needs cargo to build the enclave (CI builds it)')
-class Enclave(unittest.TestCase):
+class Harness(unittest.TestCase):
+    """A vault the Python code made, and the enclave program beside it."""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -118,6 +121,9 @@ class Enclave(unittest.TestCase):
         self.assertEqual(got.exception.code, code, str(got.exception))
         return str(got.exception)
 
+
+
+class Enclave(Harness):
     # ── unlock ──
     def test_it_starts_locked_and_the_vaults_own_secret_unlocks_it(self):
         st = self.e.status()
@@ -348,6 +354,118 @@ class Enclave(unittest.TestCase):
         gone = enclave.Enclave(f'unix:{self.tmp}/nobody-home.sock')
         self.assertIn('does not answer', self.refused('down', gone.status))
         self.refused('down', enclave.Enclave('tcp:10.0.0.1:1').status)
+
+
+class VaultThroughEnclave(Harness):
+    """The vault with STORAGEFORGE_ENCLAVE set (roadmap section 14): what the rest of the program calls is unchanged, and the KEK,
+    the private keys and the audit key are not in this process."""
+
+    def setUp(self):
+        super().setUp()
+        self.vault.close()                                   # the vault that held the secret did its part: it made the vault
+        env = mock.patch.dict(os.environ, {'STORAGEFORGE_ENCLAVE': self.address, 'STORAGEFORGE_VAULT_SECRET': SECRET.decode(), 'XDG_RUNTIME_DIR': str(self.tmp)})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop('STORAGEFORGE_VAULT_SECRET_FILE', None)
+
+    def forget_the_secret(self):
+        os.environ.pop('STORAGEFORGE_VAULT_SECRET')
+
+    def test_the_first_unlock_hands_the_secret_over_and_after_that_none_is_needed_here(self):
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            self.assertEqual(v.enclave, self.address)
+            self.assertIsNone(v._kek, 'the KEK was not derived here')
+        self.assertEqual(self.e.status()['state'], 'unlocked')
+        self.forget_the_secret()
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            made = v.generate_key('inside')
+            key = v.decrypt_key(self.row('inside')['key_id'])
+            self.assertIsInstance(key, vault.EnclaveKey)
+            with self.assertRaises(vault.VaultError):
+                key.view()
+            self.assertIsNone(v._kek)
+        self.assertTrue(made['public_key'].startswith('ssh-ed25519 '))
+        with vault.Vault(self.db, self.conn, SECRET).unlock() as old:      # whoever holds the secret still opens what was made inside
+            with old.decrypt_key(self.row('inside')['key_id']) as buf:
+                private = serialization.load_ssh_private_key(bytes(buf.view()), None)
+        line = private.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH).decode()
+        self.assertEqual(line, ' '.join(made['public_key'].split()[:2]))
+
+    def test_a_locked_enclave_and_no_secret_is_a_locked_vault_and_so_is_one_that_is_gone(self):
+        self.forget_the_secret()
+        with self.assertRaises(vault.VaultLocked) as got:
+            vault.Vault(self.db, self.conn).unlock()
+        self.assertIn('enclave is locked', str(got.exception))
+        os.environ['STORAGEFORGE_VAULT_SECRET'] = SECRET.decode()
+        self.stop()
+        with self.assertRaises(vault.VaultLocked) as got:                  # fails closed: it does not quietly open the vault here
+            vault.Vault(self.db, self.conn).unlock()
+        self.assertIn('does not answer', str(got.exception))
+
+    def test_the_wrong_secret_in_the_environment_does_not_unlock_it(self):
+        os.environ['STORAGEFORGE_VAULT_SECRET'] = 'w' * 48
+        with self.assertRaises(vault.VaultLocked):
+            vault.Vault(self.db, self.conn).unlock()
+        self.assertEqual(self.e.status()['state'], 'locked')
+
+    def test_ssh_uses_a_vault_key_through_the_agent_helper_every_task_calls(self):
+        from storageforge_index import runner
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            v.generate_key('k')
+            row = self.row('k')
+            with runner.ephemeral_agent(v.decrypt_key(row['key_id']), ttl=30) as sock:
+                env = {'PATH': os.environ['PATH'], 'SSH_AUTH_SOCK': sock}
+                listed = subprocess.run(['ssh-add', '-L'], env=env, capture_output=True, text=True)
+                self.assertEqual(listed.stdout.split()[:2], row['public_key'].split()[:2], listed.stderr)
+                pub = self.tmp / 'k.pub'
+                pub.write_text(row['public_key'] + '\n')
+                (self.tmp / 'msg').write_text('a task\n')
+                made = subprocess.run(['ssh-keygen', '-Y', 'sign', '-f', str(pub), '-n', 'file', str(self.tmp / 'msg')], env=env, capture_output=True, text=True)
+                self.assertEqual(made.returncode, 0, made.stderr)
+            self.assertFalse(Path(sock).exists(), 'the socket goes with the task')
+        self.assertEqual(self.e.status()['signed'], 1)
+
+    def test_a_deploy_request_is_signed_inside_and_verifies_as_before(self):
+        from storageforge_index import deploy
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            deploy.ensure_keys(v)
+            signer = deploy._signer(v)
+            self.assertIsInstance(signer, vault.EnclaveKey)
+            armored = deploy.sshsig(signer, b'run this', namespace='storageforge-test')
+            public = v.public_key(deploy.SIGNING_KEY)
+        (self.tmp / 'signers').write_text(f'storageforge namespaces="storageforge-test" {public}\n')
+        (self.tmp / 'sig').write_text(armored)
+        checked = subprocess.run(['ssh-keygen', '-Y', 'verify', '-f', str(self.tmp / 'signers'), '-I', 'storageforge', '-n', 'storageforge-test', '-s', str(self.tmp / 'sig')],
+                                 input='run this', capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr + checked.stdout)
+        tampered = subprocess.run(['ssh-keygen', '-Y', 'verify', '-f', str(self.tmp / 'signers'), '-I', 'storageforge', '-n', 'storageforge-test', '-s', str(self.tmp / 'sig')],
+                                  input='run that', capture_output=True, text=True)
+        self.assertNotEqual(tampered.returncode, 0)
+
+    def test_the_audit_chain_is_one_chain_whoever_computes_the_mac(self):
+        with vault.Vault(self.db, self.conn, SECRET).unlock() as old:
+            vault.AuditLog(self.db, self.conn, old.audit_key).append('gabe', 'before.enclave', 'ok')
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            self.assertIsInstance(v.audit_key, vault.EnclaveMacKey)
+            log = vault.AuditLog(self.db, self.conn, v.audit_key)
+            log.append('gabe', 'through.enclave', 'ok', 'host1', None, {'n': 1})
+            self.assertEqual(log.verify()[:2], (True, 2), 'the enclave verifies what the vault wrote')
+        with vault.Vault(self.db, self.conn, SECRET).unlock() as old:
+            self.assertEqual(vault.AuditLog(self.db, self.conn, old.audit_key).verify()[:2], (True, 2), 'and the vault what the enclave wrote')
+
+    def test_what_is_not_inside_yet_still_works_with_the_secret_and_is_refused_without_it(self):
+        pem = ed25519.Ed25519PrivateKey.generate().private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            v.add_key('imported', pem)
+            v.store_credential('switch', 'admin', 'pw-123456')
+            self.assertEqual(v.credential('switch')['password'], 'pw-123456')
+            self.assertIsInstance(v.audit_key, vault.EnclaveMacKey, 'the fallback does not swap the audit key back in')
+            self.assertIsInstance(v.decrypt_key(self.row('imported')['key_id']), vault.EnclaveKey)
+        self.forget_the_secret()
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            with self.assertRaises(vault.VaultLocked):
+                v.add_key('another', pem)
+            self.assertTrue(self.e.sign(self.row('imported'), b'x')[0], 'an imported key signs inside like any other')
 
 
 IMAGE = ROOT / 'enclave' / 'image' / 'out'

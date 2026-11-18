@@ -22,6 +22,28 @@ Python cannot promise no other copy of a secret exists in memory: the environmen
 
 Backups never contain the vault secret, on purpose: a backup together with its secret would be the keys. Keep the vault secret safe somewhere else (`docker compose exec storageforge cat /run/sf-secrets/vault_secret`).
 
+### Key enclave
+
+*Being built for 0.5.5. Nothing starts it yet; it is off unless `STORAGEFORGE_ENCLAVE` is set.*
+
+A second layer on the vault's keys: a micro VM whose only program holds the KEK, and whose only device is a vsock socket. It has no network card, no disk and no shell. The web app hands it the vault's own ciphertexts with each request, so nothing stored changes format and the vault opens as before without it.
+
+```text
+web app ──vsock──► enclave: unlock · lock · status · sign with key K · make a key · MAC for the audit chain
+```
+
+With `STORAGEFORGE_ENCLAVE=vsock:CID:PORT` (or `unix:PATH` for a test):
+
+- **SSH keys are not decrypted in the web app.** Each task's agent socket is served by the web app, lists the one public key, and asks the enclave for each signature. Deploy requests and evidence bundles are signed the same way. A new ed25519 key is made inside and its private half is never outside.
+- **The audit chain's MAC key stays inside.** Each entry's MAC is computed there; the chain is the same chain, and either side verifies what the other wrote.
+- **The secret is needed once.** The first unlock hands it to the enclave; after that the web app works without it.
+- **It fails closed.** An enclave that does not answer, is locked, or has locked itself down after five malformed requests is a locked vault. The web app does not fall back to opening the vault itself.
+- **Its limits are its own:** six unlock attempts a minute, 600 signatures a minute per key, one request at a time, a 1 MiB frame. The web app cannot raise them.
+
+Not inside yet, and so still opened in the web app from `STORAGEFORGE_VAULT_SECRET` when it is there: importing a key, device passwords and step secrets, making an RSA key, and rotating the vault secret.
+
+The image is `storageforge-indexer/enclave/image/build.sh`: a kernel without modules, an IP stack or block devices and with lockdown forced on, and an initramfs of one static file. The compiler image is pinned by digest and the kernel by checksum, and the build is reproducible: build it again and compare `SHA256SUMS`.
+
 ### Secrets for plan steps
 
 Some steps need a secret on the host they run on: the `tailscale` step needs an auth key. Such a secret is stored in the vault like a device credential (`vault secret-add NAME`, one line on stdin, so it is in no shell history), and never goes into a plan, a script, the Ansible playbook or a log.

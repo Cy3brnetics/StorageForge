@@ -18,11 +18,11 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
-from . import errlog
+from . import enclave, errlog
 from .db import Database
 from .remote import Transport, child_env
 from .scanner import ScanOptions, scan_host
-from .vault import AuditLog, NoBinding, SecretBuffer, Vault, VaultError, actor_name
+from .vault import AuditLog, EnclaveKey, NoBinding, SecretBuffer, Vault, VaultError, actor_name
 
 AGENT_TTL = 3600
 
@@ -59,8 +59,13 @@ def is_memory_backed(path: Path) -> bool:
 
 @contextmanager
 def ephemeral_agent(key: SecretBuffer, ttl: int = AGENT_TTL):
-    """Start a private ssh-agent, load the key from memory, yield its socket, then tear it all down."""
+    """Start a private ssh-agent, load the key from memory, yield its socket, then tear it all down. A key held by the key enclave
+    is not loaded anywhere: the socket is served here and each signature is made inside the enclave."""
     base = runtime_dir()
+    if isinstance(key, EnclaveKey):
+        with enclave.agent(key.address, key.row, ttl, base=str(base)) as sock:
+            yield sock
+        return
     if not is_memory_backed(base):
         errlog.say(f'warning: {base} is not tmpfs; the agent socket (never the key) is on disk')
     d = Path(tempfile.mkdtemp(prefix='agent-', dir=base))

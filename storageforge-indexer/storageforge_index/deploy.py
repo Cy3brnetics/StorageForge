@@ -35,7 +35,7 @@ from .db import Database
 from .moves import host_slug
 from .remote import REFUSE_APPLIANCE, RemoteError, Transport, child_env
 from .runner import connect_address, ephemeral_agent, known_hosts_path
-from .vault import AuditLog, NoBinding, Vault, VaultError, actor_name
+from .vault import AuditLog, EnclaveKey, NoBinding, Vault, VaultError, actor_name
 
 SIGNING_KEY = 'storageforge-signing'
 DEPLOY_KEY = 'storageforge-deploy'
@@ -269,6 +269,8 @@ def _signer(vault: Vault) -> ed25519.Ed25519PrivateKey:
     if kid is None:
         raise DeployError('no signing key yet: set up deploy access on a host first')
     buf = vault.decrypt_key(kid)
+    if isinstance(buf, EnclaveKey):
+        return buf                       # it signs inside the enclave: sshsig needs only public_key() and sign()
     try:
         return serialization.load_ssh_private_key(bytes(buf.view()), None)
     finally:

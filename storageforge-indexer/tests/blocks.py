@@ -62,6 +62,7 @@ HEAVY = {
 
 MEDIUM = {
     'test_enclave.Enclave',          # the real enclave program, built with cargo, and the real ssh-add and ssh-keygen
+    'test_enclave.VaultThroughEnclave',   # the vault, the agent helper, deploy's signer and the audit log with the enclave configured
     'test_enclave.EnclaveImage',     # the same again in the micro VM, where the image has been built and KVM is here
     # bash, telnet and console sessions run for real
     'test_console.Api',

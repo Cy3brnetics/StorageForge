@@ -183,7 +183,7 @@ from .remote import RemoteError
 from .runner import connect_address, scan_via_vault
 from .scanner import ScanOptions
 from .search import SearchQuery, run_changes, run_dupes, run_search
-from .vault import AuditLog, SecretBuffer, Vault, VaultError, fingerprint
+from .vault import AuditLog, EnclaveMacKey, SecretBuffer, Vault, VaultError, fingerprint
 
 STATIC = Path(__file__).with_name('static')
 SECURITY_HEADERS = {
@@ -266,9 +266,12 @@ class App:
         conn = db.connect()
         try:   # keep only the audit MAC key in memory; the KEK is wiped right after unlock
             with Vault(db, conn).unlock() as v:
-                self.audit_key = SecretBuffer(32)
-                self.audit_key.buf[:32] = v.audit_key.view()
-                self.audit_key.length = 32
+                if isinstance(v.audit_key, EnclaveMacKey):
+                    self.audit_key = v.audit_key          # in the key enclave: there is nothing to keep here but where to ask
+                else:
+                    self.audit_key = SecretBuffer(32)
+                    self.audit_key.buf[:32] = v.audit_key.view()
+                    self.audit_key.length = 32
         except VaultError as exc:
             print(f'warning: vault locked ({exc}); API audit entries use plain SHA-256 chaining', file=sys.stderr)
         finally:
