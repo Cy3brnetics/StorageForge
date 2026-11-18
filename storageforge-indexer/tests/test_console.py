@@ -135,6 +135,15 @@ class Routes(Base):
                          [('lan', '10.77.0.121'), ('tailscale', '100.120.104.24')])
         self.add('vm2', '10.0.0.2', [{'name': 'eth0', 'addresses': [{'ip': '10.0.0.2'}]}])
         self.assertEqual([r['route'] for r in console.routes(self.conn, 'vm2')], ['lan'])
+
+    def test_a_private_network_is_named_for_whose_it_is(self):
+        """Any address in 100.64.0.0/10 used to be called Tailscale, so a NetBird host was offered as "SSH over Tailscale"."""
+        self.add('nb', '10.0.0.3', [{'name': 'eth0', 'addresses': [{'ip': '10.0.0.3'}]}, {'name': 'wt0', 'addresses': [{'ip': '100.92.0.7'}]},
+                                    {'name': 'sf0', 'addresses': [{'ip': '10.203.0.4'}, {'ip': '10.203.0.5'}]}, {'name': 'ztabcdef12', 'addresses': [{'ip': '10.147.17.5'}]},
+                                    {'name': 'docker0', 'addresses': [{'ip': '172.17.0.1'}]}, {'name': 'eth1', 'addresses': [{'ip': '100.70.0.9'}]}])
+        self.assertEqual([(r['route'], r['label'], r['address']) for r in console.routes(self.conn, 'nb')],
+                         [('lan', 'LAN', '10.0.0.3'), ('netbird', 'NetBird', '100.92.0.7'), ('storageforge', 'the StorageForge network', '10.203.0.4'),
+                          ('zerotier', 'ZeroTier', '10.147.17.5'), ('overlay', 'a private network', '100.70.0.9')])
         with self.assertRaises(LookupError):
             console.routes(self.conn, 'nowhere')
 

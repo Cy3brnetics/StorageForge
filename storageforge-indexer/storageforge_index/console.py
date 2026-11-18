@@ -40,7 +40,6 @@ MAX_LIFE = 8 * 3600
 BUFFER = 1 << 20              # output kept for a reader that fell behind
 WAIT = 20                     # how long one output request waits for something to send
 AGENT_HOLD = 60               # the private agent lives this long after ssh starts: enough to log in, then gone
-TAILNET = ipaddress.ip_network('100.64.0.0/10')
 SETTINGS_KEY = 'console'
 DEFAULTS = {'record': False, 'keep_days': 90}
 VM = re.compile(r'[A-Za-z0-9_.+-]{1,64}')
@@ -54,14 +53,16 @@ class ConsoleError(RuntimeError):
 
 # ── where a host can be reached ──────────────────────────────────────
 def routes(conn, host: str) -> list[dict]:
-    """The addresses a console can use: the LAN address the host is scanned at, and its Tailscale address if a scan
-    saw one on tailscale0 (or any address in 100.64.0.0/10)."""
+    """The addresses a console can use: the LAN address the host is scanned at, and its address on each private network a scan
+    saw it on, named for that network (overlays.network_of): Tailscale on tailscale0, NetBird on wt0, the StorageForge network on
+    sf0. An address in 100.64.0.0/10 on an interface that says nothing is 'overlay', a private network, and no longer Tailscale."""
+    from . import overlays
     from .db import loads
     row = conn.all('SELECT host_id, ssh_host, ssh_port FROM hosts WHERE lower(hostname) = lower(:h)', {'h': host})
     if not row:
         raise LookupError(f'{host} has not been scanned')
     hid, lan, port = row[0]
-    out = [{'route': 'lan', 'address': lan, 'port': port or 22}] if lan else []
+    out = [{'route': 'lan', 'label': 'LAN', 'address': lan, 'port': port or 22}] if lan else []
     net = loads(conn.scalar('SELECT data_json FROM host_network WHERE host_id = :h', {'h': hid}) or '{}') or {}
     for iface in net.get('interfaces') or []:
         for a in iface.get('addresses') or []:
@@ -69,8 +70,10 @@ def routes(conn, host: str) -> list[dict]:
                 ip = ipaddress.ip_address(a.get('ip') or '')
             except ValueError:
                 continue
-            if ip.version == 4 and (iface.get('name') == 'tailscale0' or ip in TAILNET) and not any(r['address'] == str(ip) for r in out):
-                out.append({'route': 'tailscale', 'address': str(ip), 'port': port or 22})
+            network = overlays.network_of(iface.get('name'), str(ip))
+            # one route per network: a host's second address on the same one reaches the same sshd
+            if ip.version == 4 and network and not any(r['address'] == str(ip) or r['route'] == network for r in out):
+                out.append({'route': network, 'label': overlays.label(network), 'address': str(ip), 'port': port or 22})
     return out
 
 

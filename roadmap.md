@@ -151,28 +151,28 @@ Every way of joining hosts to a private network or publishing them through a tun
 
 1. **Read:** a scan reads the tool's own status (JSON where the tool has it), and the map draws its peers and routes, confirmed or inferred.
 2. **Join and leave:** a plan step, with the key from the vault under rule 3.
-3. **Console:** SSH over that network, named for it. Today any address in 100.64.0.0/10 is called Tailscale (`console.py:72`), so a NetBird host is offered as "SSH over Tailscale". Moves already take any interface.
+3. **Console:** SSH over that network, named for it. Until 2026-11-18 any address in 100.64.0.0/10 was called Tailscale, so a NetBird host was offered as "SSH over Tailscale"; a route is now named by `overlays.network_of`. Moves already take any interface.
 4. **Exposure:** a tunnel that publishes a service makes it public, even with no port open on the host or router, and the security view says so.
 5. **Lab:** a self-hosted control server where one exists. A tool that needs an outside service ships labelled.
 
 | Tool | What it is | What exists | What's needed | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **Tailscale** | Mesh VPN, outside control server | `tailscale` step, peers read from `tailscale status`, console route | Read `tailscale status --json` instead of the text; the console route named; lab through Headscale | built, not lab-tested |
-| **Headscale** | Self-hosted Tailscale control server | Detected as a tool and a service | Read nodes, routes and pre-auth keys from its CLI or API; pre-auth keys made into the vault for the `tailscale` step | open |
-| **NetBird** | Mesh VPN, self-hosted control server | Detected as a tool, `wt0` counted as a VPN interface, its service known | Read peers from its status; a `netbird` step with the setup key from the vault (first check that `netbird up` can read the key from a file); console route; lab with a self-hosted management server | open |
+| **Tailscale** | Mesh VPN, outside control server | `tailscale` step, peers read from `tailscale status`, console route | Read `tailscale status --json` instead of the text; the console route named; lab through Headscale | built, not lab-tested. Since 2026-11-18 read from `tailscale status --json` (`overlays.tailscale`), with the text kept for a tailscale too old for it; relayed and direct peers told apart; the console route named. Open: the lab through Headscale |
+| **Headscale** | Self-hosted Tailscale control server | Detected as a tool and a service | Read nodes, routes and pre-auth keys from its CLI or API; pre-auth keys made into the vault for the `tailscale` step | begun 2026-11-18: `headscale nodes list -o json` read on the server (`overlays.headscale`), every node drawn, a scanned host confirmed by address. Open: routes and pre-auth keys, keys made into the vault, the lab |
+| **NetBird** | Mesh VPN, self-hosted control server | Detected as a tool, `wt0` counted as a VPN interface, its service known | Read peers from its status; a `netbird` step with the setup key from the vault (first check that `netbird up` can read the key from a file); console route; lab with a self-hosted management server | begun 2026-11-18: peers read from `netbird status --json` and drawn; the console offers "SSH over NetBird" (it was called Tailscale). Open: the `netbird` step, the lab |
 | **Netmaker** | Mesh VPN, self-hosted | Nothing | Read nodes and gateways; join with an enrollment key | open |
-| **ZeroTier** | Mesh VPN, outside or self-hosted controller | Known as a service | Read `zerotier-cli -j` networks and peers; join and leave; lab with a self-hosted controller | open |
+| **ZeroTier** | Mesh VPN, outside or self-hosted controller | Known as a service | Read `zerotier-cli -j` networks and peers; join and leave; lab with a self-hosted controller | begun 2026-11-18: `zerotier-cli -j` info, networks and peers read (`overlays.zerotier`); its interface named in the console. Its peers have no address to match a host by, so none is drawn yet. Open: join and leave, the lab |
 | **Nebula** | Mesh VPN with its own certificate authority | Its interface counted as a VPN | Read its config and peers; host certificates issued from a CA kept in the vault; a lighthouse as a role | open |
 | **WireGuard** | Plain tunnels | `wg-peer` step, peers read and confirmed by key | Peer manager: add, revoke, QR code, handshake age (Toolbox entry, section 4) | built |
-| **OpenVPN** | VPN with a PKI | Known as a service | Read status and clients; certificates and the CRL; client profiles | open |
+| **OpenVPN** | VPN with a PKI | Known as a service | Read status and clients; certificates and the CRL; client profiles | begun 2026-11-18: a server's status file read, each client with its address and the network behind it, drawn as peers. Open: certificates and the CRL, client profiles |
 | **strongSwan (IPsec)** | Site-to-site tunnels | Nothing | Read `swanctl` tunnels; site-to-site templates | open |
-| **Pangolin** | Self-hosted tunnel and reverse proxy with login (Newt runs at the site) | Nothing | Detect Newt; read what the Pangolin server publishes through its API, on the API connection kind of section 13; exposure "public through Pangolin at `<domain>`"; join with a site secret; lab with the server on a lab host | open |
-| **Cloudflare Tunnel** | Tunnel to Cloudflare | `cloudflared` known as a service | Read its config and routes; exposure; the tunnel token in the vault. Needs a Cloudflare account, so labelled | open |
-| **frp, ngrok** | Tunnels | Known as services | Read their configs; exposure. ngrok needs an account, so labelled | open |
+| **Pangolin** | Self-hosted tunnel and reverse proxy with login (Newt runs at the site) | Nothing | Detect Newt; read what the Pangolin server publishes through its API, on the API connection kind of section 13; exposure "public through Pangolin at `<domain>`"; join with a site secret; lab with the server on a lab host | begun 2026-11-18: a running Newt is detected and drawn as a tunnel whose routes are kept at its server. Open: everything else |
+| **Cloudflare Tunnel** | Tunnel to Cloudflare | `cloudflared` known as a service | Read its config and routes; exposure; the tunnel token in the vault. Needs a Cloudflare account, so labelled | begun 2026-11-18: `config.yml` read without its credential lines (`tunnels.cloudflared`), each hostname drawn as public on the map; a tunnel run from a token alone says its routes are at Cloudflare. Open: the security view's finding, the token in the vault |
+| **frp, ngrok** | Tunnels | Known as services | Read their configs; exposure. ngrok needs an account, so labelled | begun 2026-11-18: `frpc.toml` and `frpc.ini`, and `ngrok.yml`, read without their credential lines and drawn as public. Open: the security view's finding |
 | **OpenZiti** | Zero-trust overlay, self-hosted | Nothing | Read services and identities; join an identity from an enrollment token | open |
 | **Teleport, HashiCorp Boundary** | Access proxies | Nothing | Read targets; targets made from the host inventory; Teleport's session recordings on a protected dataset | open |
 | **Pomerium** | Identity-aware proxy | Its service known | Read routes and policies | open |
-| **SSH CA** | Short-lived SSH certificates | Nothing | CA key in the vault, `TrustedUserCAKeys`, principals; issue and revoke | open |
+| **SSH CA** | Short-lived SSH certificates | Nothing | CA key in the vault, `TrustedUserCAKeys`, principals; issue and revoke | begun 2026-11-18: `sshca.py` builds user and host certificates (principals required, an end required, no extensions unless asked) and is handed a signer, so the CA key signs inside the key enclave; a real `sshd` accepts them and refuses a wrong principal, an expired one and another CA. Open: the CA as a vault key, `TrustedUserCAKeys` as a plan step, issuing from the console and for scans, revocation |
 
 ### 2.1 StorageForge's own encrypted network (the default)
 
@@ -180,8 +180,8 @@ Decided 2026-11-16: data is encrypted even on the LAN, and the default needs no 
 
 | Item | Status |
 | :--- | :--- |
-| The network as a setting per host, its address plan, and the peers as plan steps | open |
-| Key pairs made on the hosts, rotation and revocation through plans | open |
+| The network as a setting per host, its address plan, and the peers as plan steps | begun 2026-11-18: `sfnet.py` picks the range (never 100.64.0.0/10, nothing the site uses), gives each host one address for good, and works out each host's peers and the `wg-peer` steps from what a scan saw. Not stored or offered anywhere yet |
+| Key pairs made on the hosts, rotation and revocation through plans | begun 2026-11-18: the arithmetic of a rotation in two halves and of a revocation, and what a scan confirms by key (`sfnet.confirm`). Open: the step that makes the pair on the host, `wg-peer` taking an endpoint and a keepalive |
 | The controller as a peer (in Docker, a WireGuard interface for the container or the host's) | open |
 | Scans, deploys, `storageforge-agentctl`, the console and the agent's tunnel over the StorageForge network where the host is on it. Sends, Moves and sync keep a tunnel of their own per transfer (the forced-command job keys and rsync over SSH, encrypted end to end); NFS and SMB shares are not carried | open |
 | Lab: a host on the LAN reached only through it, a capture showing no clear text between two hosts, a key rotated and a peer revoked | open |

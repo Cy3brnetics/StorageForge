@@ -1816,8 +1816,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         from . import console
         b = json_body()
         host, kind, route = str(b.get('host') or ''), str(b.get('kind') or 'ssh'), str(b.get('route') or 'auto')
-        if route not in ('auto', 'lan', 'tailscale'):
-            return jsonify(error='route is auto, lan or tailscale'), 400
+        from . import overlays
+        if route not in ('auto', 'lan', *overlays.LABELS):
+            return jsonify(error='route is auto, lan or a private network: ' + ', '.join(overlays.LABELS)), 400
         who = actor()
 
         def audit(action, detail):       # also from the session's own thread, when it ends: a connection of its own

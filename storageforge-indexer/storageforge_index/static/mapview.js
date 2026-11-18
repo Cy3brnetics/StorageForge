@@ -17,9 +17,9 @@ const MP_ROW = 24, MP_W = 330, MP_GAP = 44;
    tag at its left end, as a table row has there. The tag says the kind in letters; its colour only repeats the family. */
 const MP_GRID = 20, MP_TAGW = 30;
 const MP_KIND = { NIC: 'NIC', Bond: 'BOND', Bridge: 'BR', VLAN: 'VLAN', VPNInterface: 'VPN', VPNNetwork: 'VPN', Subnet: 'NET', Gateway: 'GW', Neighbour: 'DEV', Peer: 'PEER', Listener: 'PORT',
-  FirewallPolicy: 'FW', ProxyRoute: 'RTE', IdentityProvider: 'IDP', Container: 'CTR', VM: 'VM', Instance: 'INST', MountPoint: 'MNT', Filesystem: 'FS', StoragePool: 'POOL', Host: 'HOST' };
+  FirewallPolicy: 'FW', ProxyRoute: 'RTE', Tunnel: 'TUN', IdentityProvider: 'IDP', Container: 'CTR', VM: 'VM', Instance: 'INST', MountPoint: 'MNT', Filesystem: 'FS', StoragePool: 'POOL', Host: 'HOST' };
 const MP_FAMILY = { NIC: 'net', Bond: 'net', Bridge: 'net', VLAN: 'net', VPNInterface: 'net', VPNNetwork: 'net', Subnet: 'net', Gateway: 'net', Neighbour: 'net', Peer: 'net',
-  Listener: 'svc', FirewallPolicy: 'svc', ProxyRoute: 'svc', IdentityProvider: 'svc', Container: 'wl', VM: 'wl', Instance: 'wl', MountPoint: 'sto', Filesystem: 'sto', StoragePool: 'sto' };
+  Listener: 'svc', FirewallPolicy: 'svc', ProxyRoute: 'svc', Tunnel: 'svc', IdentityProvider: 'svc', Container: 'wl', VM: 'wl', Instance: 'wl', MountPoint: 'sto', Filesystem: 'sto', StoragePool: 'sto' };
 const MP_SHOWN = { changes: 20, cover: 20, warn: 10, compare: 30 };      // rows a list shows before it says "+N more"
 
 /* A list that shows its first rows says how many it leaves out, and the same button shows the rest and hides them again (UX-13).

@@ -14,12 +14,14 @@ import time
 
 from . import alerts, deploy, firewall, netfacts, security
 from .db import Conn
+from . import overlays, tunnels
 from .runtimes import docker, guests
 
 MEASURE_EVERY = 6 * 3600
 OFF_KEY = 'infra.read.off'
 SECTIONS = ('tools', 'fw_state', 'nft', 'iptables', 'ip6tables', 'ufw', 'firewalld', 'listeners', 'storage_clients', 'libvirt', 'libvirt_snap', 'libvirt_net', 'libvirt_pool',
-            'incus', 'lxc', 'proxmox', 'podman', 'wireguard', 'tailscale', 'netbird', 'headscale', 'caddy', 'nginx', 'units', 'end')
+            'incus', 'lxc', 'proxmox', 'podman', 'wireguard', 'tailscale', 'netbird', 'headscale', 'tailscale_json', 'netbird_json', 'zt_info', 'zt_networks', 'zt_peers', 'headscale_json',
+            'openvpn_status', 'cloudflared', 'frp', 'ngrok', 'tunnel_procs', 'caddy', 'nginx', 'units', 'end')
 PVE_KEYS = '^(cores|memory|onboot|unprivileged|net[0-9]+|(scsi|virtio|sata|ide|efidisk|tpmstate|mp)[0-9]+|rootfs): '
 BODY = r"""
 sec() { printf '\n@@%s\n' "$1"; }
@@ -27,7 +29,7 @@ try() { timeout 30 "$@" 2>/dev/null || :; }
 has() { command -v "$1" >/dev/null; }
 capped() { head -c "$1"; }                 # a section cut short fails to parse and reads as unreadable, not as smaller
 one() { base64 | tr -d '\n'; }
-sec tools; for c in nft iptables iptables-save ip6tables-save ufw firewall-cmd ss virsh incus lxc-ls qm pct podman wg tailscale netbird headscale caddy nginx; do has "$c" && echo "$c"; done
+sec tools; for c in nft iptables iptables-save ip6tables-save ufw firewall-cmd ss virsh incus lxc-ls qm pct podman wg tailscale netbird headscale zerotier-cli cloudflared frpc ngrok newt caddy nginx; do has "$c" && echo "$c"; done
 sec fw_state; has firewall-cmd && try firewall-cmd --state
 sec nft
 # table by table, and without iptables-nft's tables when iptables-save reads them better: with Docker and ufw those run to hundreds of KB as JSON
@@ -114,6 +116,20 @@ fi
 sec tailscale; has tailscale && try tailscale status | head -n 200 | capped 12000
 sec netbird; has netbird && try netbird status | head -n 40 | capped 4000
 sec headscale; has headscale && try headscale nodes list | head -n 200 | capped 12000
+# each private network's own account of itself, as JSON (overlays.py reads them)
+sec tailscale_json; has tailscale && try tailscale status --json | capped 400000
+sec netbird_json; has netbird && try netbird status --json | capped 400000
+sec zt_info; has zerotier-cli && try zerotier-cli -j info | capped 4000
+sec zt_networks; has zerotier-cli && try zerotier-cli -j listnetworks | capped 100000
+sec zt_peers; has zerotier-cli && try zerotier-cli -j peers | capped 400000
+sec headscale_json; has headscale && try headscale nodes list -o json | capped 400000
+sec openvpn_status; for f in /run/openvpn-server/status-*.log /var/log/openvpn/openvpn-status.log /var/log/openvpn/status.log /etc/openvpn/openvpn-status.log; do [ -r "$f" ] && { capped 200000 < "$f"; break; }; done
+# what a tunnel publishes (tunnels.py), without the lines that hold its credentials: a token never leaves the host
+tunnel() { for f in "$@"; do [ -r "$f" ] && { grep -aviE '@SECRET_LINE@' "$f" | capped 60000; return 0; }; done; return 0; }
+sec cloudflared; tunnel /etc/cloudflared/config.yml /etc/cloudflared/config.yaml /root/.cloudflared/config.yml
+sec frp; tunnel /etc/frp/frpc.toml /etc/frp/frpc.ini /etc/frpc.toml /etc/frpc.ini
+sec ngrok; tunnel /etc/ngrok.yml /root/.config/ngrok/ngrok.yml /root/.ngrok2/ngrok.yml
+sec tunnel_procs; for p in cloudflared frpc ngrok newt; do pgrep -x "$p" >/dev/null 2>&1 && echo "$p"; done
 # site names and upstreams, no other line: these files can hold passwords and keys
 sec caddy; for f in /etc/caddy/Caddyfile /etc/caddy/conf.d/*; do [ -r "$f" ] && grep -aE '^[^#[:space:]][^{]*\{[[:space:]]*$|^[[:space:]]*reverse_proxy[[:space:]]' "$f" | capped 12000; done
 sec nginx; for f in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf; do [ -r "$f" ] && grep -aE '^[[:space:]]*(server_name|proxy_pass)[[:space:]]' "$f" | capped 12000; done
@@ -126,6 +142,9 @@ def script() -> str:
     fmt = docker.FMT_C[:-1] + ',' + docker.FMT_D_PODMAN[docker.FMT_D_PODMAN.index('"image_id"'):]
     return ('#!/usr/bin/env bash\n# Written by StorageForge. Only reads.\nset -u\nexport LC_ALL=C\nPATH=$PATH:/usr/sbin:/sbin\n'
             f'PVE_KEYS={shlex.quote(PVE_KEYS)}\nFMT={shlex.quote(fmt)}\n' + BODY)
+
+
+BODY = BODY.replace('@SECRET_LINE@', tunnels.SECRET_LINE)
 
 
 def _sections(text: str) -> dict:
@@ -234,8 +253,42 @@ def parse_proxy_routes(caddy: list[str], nginx: list[str]) -> list[dict]:
     return routes[:200]
 
 
+def parse_overlays(s: dict) -> list[dict]:
+    """Every private network the host could describe (overlays.py), one reading each. A tool that printed nothing is left out."""
+    def text(name):
+        return '\n'.join(s.get(name, [])).strip()
+    out = []
+    for section, read in (('tailscale_json', overlays.tailscale), ('netbird_json', overlays.netbird), ('headscale_json', overlays.headscale), ('openvpn_status', overlays.openvpn)):
+        if text(section):
+            out.append(read(text(section)))
+    if text('zt_info'):
+        out.append(overlays.zerotier(text('zt_info'), text('zt_networks'), text('zt_peers')))
+    return out
+
+
+def parse_tunnels(s: dict) -> list[dict]:
+    """What each tunnel on the host publishes (tunnels.py). A tunnel that runs with nothing to read here is still listed: it
+    publishes something, and where is kept at its server."""
+    running = {{'frpc': 'frp'}.get(p.strip(), p.strip()) for p in s.get('tunnel_procs', []) if p.strip()}
+    out = []
+    for tool, read in tunnels.READERS.items():
+        text = '\n'.join(s.get(tool, [])).strip()
+        if text:
+            out.append(read(text) | {'running': tool in running})
+        elif tool in running:
+            out.append({'tool': tool, 'server': None, 'published': [], 'remote': True, 'running': True})
+    if 'newt' in running:
+        out.append({'tool': 'newt', 'server': 'its Pangolin server', 'published': [], 'remote': True, 'running': True})
+    return out
+
+
 def parse_access(s: dict, tools: list[str]) -> dict:
-    return {'wireguard': parse_wireguard(s.get('wireguard', [])) if 'wg' in tools else None, 'tailscale': parse_tailscale(s.get('tailscale', [])) if 'tailscale' in tools else None,
+    read = parse_overlays(s)
+    # the JSON says more than the text and is not cut at 200 lines; the text is what an older tailscale still gives
+    ts = next((o for o in read if o['network'] == 'tailscale' and o.get('self') and not o.get('error')), None)
+    tailscale = ([{'ip': p['addresses'][0], 'name': p['name'] or p['addresses'][0], 'os': p['os'], 'active': bool(p['online'])} for p in ts['peers'] if p['addresses']]
+                 if ts else parse_tailscale(s.get('tailscale', [])) if 'tailscale' in tools else None)
+    return {'wireguard': parse_wireguard(s.get('wireguard', [])) if 'wg' in tools else None, 'tailscale': tailscale, 'overlays': read, 'tunnels': parse_tunnels(s),
             'netbird': 'netbird' in tools, 'headscale': 'headscale' in tools, 'proxy_routes': parse_proxy_routes(s.get('caddy', []), s.get('nginx', [])),
             'units': [u.strip() for u in s.get('units', []) if u.strip()]}
 

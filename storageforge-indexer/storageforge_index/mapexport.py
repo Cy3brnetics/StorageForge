@@ -80,7 +80,7 @@ def dot(graph: dict) -> str:
 
 
 # ── drawn, for documents and diagrams ───────────────────────────────
-ORDER = ('Host', 'Subnet', 'Gateway', 'Neighbour', 'NIC', 'Bond', 'Bridge', 'VLAN', 'VPNInterface', 'VPNNetwork', 'Peer', 'ProxyRoute', 'IdentityProvider', 'FirewallPolicy', 'Listener', 'Container', 'VM', 'Instance', 'StoragePool', 'Filesystem', 'MountPoint', 'Symlink')
+ORDER = ('Host', 'Subnet', 'Gateway', 'Neighbour', 'NIC', 'Bond', 'Bridge', 'VLAN', 'VPNInterface', 'VPNNetwork', 'Peer', 'Tunnel', 'ProxyRoute', 'IdentityProvider', 'FirewallPolicy', 'Listener', 'Container', 'VM', 'Instance', 'StoragePool', 'Filesystem', 'MountPoint', 'Symlink')
 
 
 def layout(graph: dict) -> dict:

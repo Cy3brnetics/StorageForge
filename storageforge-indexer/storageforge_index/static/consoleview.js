@@ -26,7 +26,7 @@ async function load() {
     CON.info = await getJSON(`/api/console/hosts/${encodeURIComponent(CON.host)}`);
   } catch (e) { status(e.message, 'err'); $c('cons-connect').disabled = true; return; }
   const sel = $c('cons-route');
-  const opts = CON.info.routes.map((r) => ({ value: `ssh:${r.route}`, label: `SSH over ${r.route === 'lan' ? 'LAN' : 'Tailscale'} (${r.address})` }));
+  const opts = CON.info.routes.map((r) => ({ value: `ssh:${r.route}`, label: `SSH over ${r.label || r.route} (${r.address})` }));
   if (CON.info.serial) opts.push({ value: 'serial:', label: `Serial console${CON.info.serial.via === 'local' ? ' (on this machine)' : ` (through ${CON.info.serial.host})`}` });
   sel.replaceChildren(...opts.map((o) => sfNode('option', { value: o.value }, o.label)));
   if (!opts.length) { status(`${CON.host} has no address from its scans, and is no VM StorageForge knows.`, 'err'); $c('cons-connect').disabled = true; }
@@ -107,7 +107,7 @@ async function connect() {
     const res = await postJSON('/api/console/sessions', { host: CON.host, kind, route: route || 'auto', cols: CON.term.cols, rows: CON.term.rows });
     const s = await res.json();
     CON.sid = s.id; CON.next = 0; CON.stop = false;
-    status(`Connected${s.kind === 'ssh' ? ` over ${s.route === 'lan' ? 'LAN' : 'Tailscale'} to ${s.address}` : ': serial console'}.${s.recording ? ' Recording.' : ''}`, 'ok');
+    status(`Connected${s.kind === 'ssh' ? ` over ${((CON.info.routes || []).find((r) => r.route === s.route) || {}).label || s.route} to ${s.address}` : ': serial console'}.${s.recording ? ' Recording.' : ''}`, 'ok');
     $c('cons-connect').hidden = true; $c('cons-close').hidden = false; $c('cons-route').disabled = true;
     CON.term.focus();
     poll();

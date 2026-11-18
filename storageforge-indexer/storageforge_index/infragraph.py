@@ -17,7 +17,7 @@ import json
 import re
 import time
 
-from . import exposure, inframeasure, netfacts, workloads
+from . import exposure, inframeasure, netfacts, overlays, tunnels, workloads
 from .db import Conn, loads
 
 LAYERS = ('storage', 'network', 'services', 'firewall', 'workloads', 'access', 'manual')
@@ -163,6 +163,24 @@ def build(host: str, net: dict | None, infra: dict | None, containers: list[dict
         tid = f'host:{peers[ts["ip"]]}' if ts['ip'] in peers else add(f'tsnode:{ts["ip"]}', 'Peer', ts['name'], 'access', owner=None, confidence='inferred', placeholder=True, ip=ts['ip'], os=ts.get('os'))
         if tid != host_id:
             edge(host_id, tid, 'PEERS_WITH', 'tailscale status', 'confirmed' if ts['ip'] in peers else 'inferred', active=ts.get('active'))
+    # the other private networks, each by its own account: a peer whose address a scanned host has is that host
+    for net in acc.get('overlays') or []:
+        name = net.get('network')
+        if net.get('error') or (name == 'tailscale' and net.get('self')):          # a Tailscale client's peers are drawn above
+            continue
+        said = f'{overlays.label(name)} status' if net.get('self') else f'{overlays.label(name)}: the server\'s list'
+        for p in net.get('peers') or []:
+            ip = next((a for a in p.get('addresses') or [] if a in peers), None) or next(iter(p.get('addresses') or []), None)
+            if not ip or ip in me:
+                continue
+            tid = f'host:{peers[ip]}' if ip in peers else add(f'ovnode:{name}:{ip}', 'Peer', p.get('name') or ip, 'access', owner=None, confidence='inferred', placeholder=True, ip=ip, network=name)
+            if tid != host_id:
+                edge(host_id, tid, 'PEERS_WITH', said, 'confirmed' if ip in peers else 'inferred', network=name, active=p.get('online'), direct=p.get('direct'))
+    # a tunnel publishes a service with no port open here or on the router: it is drawn so that nothing public goes unseen
+    for t in acc.get('tunnels') or []:
+        tid = add(f'tunnel:{host}:{t.get("tool")}', 'Tunnel', tunnels.LABELS.get(t.get('tool'), 'Tunnel'), 'access', exposure='public', server=t.get('server'),
+                  published=[p.get('public') for p in t.get('published') or []][:50], says=tunnels.sentence(t), unread=bool(t.get('error') or t.get('remote')))
+        edge(tid, host_id, 'RUNS_ON', f'{t.get("tool")} configuration' if t.get('published') else f'{t.get("tool")} is running')
     for r in acc.get('proxy_routes') or []:
         rid = add(f'route:{host}:{r["proxy"]}:{r["site"]}:{r["upstream"]}', 'ProxyRoute', str(r['site'])[:60], 'access', proxy=r['proxy'], upstream=r['upstream'])
         edge(rid, host_id, 'RUNS_ON', f'{r["proxy"]} config')
