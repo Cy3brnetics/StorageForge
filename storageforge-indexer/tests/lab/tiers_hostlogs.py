@@ -343,7 +343,7 @@ print(json.dumps(out))
             try:
                 sudo(node.name, 'for i in $(seq 1 30); do logger -t sshd -p auth.info "Failed password for root from 203.0.113.9 port $i ssh2"; done')
                 got = raised(node, 'ssh-failed')
-                found = entries(api, node.name, '203.0.113.9', limit=5)
+                found = [e for e in api.get(f'/api/hostlogs?host={node.name}&q=203.0.113.9&limit=40')['entries'] if e['message'].startswith('Failed password')]      # not sudo's own line about the command
                 want(found and found[0]['comm'] == 'logger' and found[0]['ident'] == 'sshd', f'the lines should be stored as written by logger under the name sshd: {found[:1]}')
                 want(not got, f'thirty lines that logger wrote under the name sshd set off the rule about sshd: {got}')
                 return 'thirty lines under the name sshd, written by logger as journald saw: stored as such, and the rule about sshd did not fire'
