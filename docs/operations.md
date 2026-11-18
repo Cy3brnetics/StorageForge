@@ -41,6 +41,7 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_LARGE_DELETE` | `10000` | Alert when one scan finds this many files gone |
 | `STORAGEFORGE_DISK_WARN_PCT`, `STORAGEFORGE_DISK_CRIT_PCT` | `90`, `95` | How full a filesystem is before it raises an alert |
 | `STORAGEFORGE_ACCESS_LOG` | `changes` | `all`, `changes` (writes, 429s and 5xx) or `off` |
+| `STORAGEFORGE_UPDATE_URL` | unset | The http(s) address of the git repository releases are tagged in. Set: the server reads its tags every six hours and says when a newer release is there. Unset: it asks nothing. See [Updates](#updates) |
 | `STORAGEFORGE_REPORT_CA_FILE` | `/run/sf-secrets/tls_cert` in compose | Certificate deployed jobs trust for an `https` report URL |
 
 ### Container and scripts
@@ -227,6 +228,33 @@ docker compose up -d --build
 ```
 
 Migrations run on start (`storageforge-index migrate`). Most are quick. Schema 12 rewrites `file_records` once: on an 11.9-million-entry index it took about 8 minutes and needed about as much free space as that table; run `prune --vacuum` afterwards to give the space back. The server is unavailable while a migration runs.
+
+## Updates
+
+A release is a tag `vX.Y.Z` (or `vX.Y.Z.N` for a fix to a release) in the git repository StorageForge is published in. Two separate things watch for one.
+
+**The server says when there is one.** Set `STORAGEFORGE_UPDATE_URL` to the repository's http(s) address, for example `https://github.com/Cy3brnetics/StorageForge.git` or a Forgejo on your LAN. The server then asks the repository for its tags a couple of minutes after it starts and every six hours, which is the request `git ls-remote` makes; it sends nothing about your installation. The version is shown beside the name at the top of the page, with the newer release when there is one, and a newer release is a notification until it is installed. `GET /api/version` returns the same. With the variable unset the server asks nothing and the header shows only the version. The address cannot hold a user name or password, so the repository must be readable without one.
+
+The server never installs anything. Its container has a read-only root and no access to Docker, and an update that the web application could start would be a way to run code on the Docker host from a browser session.
+
+**The Docker host installs it.** `docker/update/storageforge-update` runs in the git clone the installation was started from:
+
+```bash
+docker/update/storageforge-update check     # says which release this is and which is newest; exits 10 when a newer one is there
+docker/update/storageforge-update apply     # installs the newest one
+```
+
+`apply` fetches the newest release tag from the clone's remote, checks it out, builds it and starts it. If the new release is not healthy within five minutes (`STORAGEFORGE_UPDATE_WAIT`, in seconds) it checks out the release before and starts that again; the old images are still on the host under their own version. It installs only release tags newer than the running version: never a branch, a tag with another name, or an older release. It stops without changing anything when files of the clone were edited by hand.
+
+To run it every hour, copy `docker/update/storageforge-update.service` and `.timer` to `/etc/systemd/system`, set the folder and the account in the service, and `systemctl enable --now storageforge-update.timer`. Use `check` in place of `apply` in the service to be told and install by hand.
+
+Whoever can push a tag to that remote runs their code on your Docker host, so decide who that is:
+
+- **Sign releases.** Set `STORAGEFORGE_UPDATE_SIGNERS` to an allowed-signers file (the format of `ssh-keygen -Y verify`, one line per key: `name namespaces="git" ssh-ed25519 AAAA…`). A release is then installed only if its tag is signed by one of those keys. Without it the script trusts the remote alone, and says so on every run.
+- **Read the upgrade notes.** An automatic install does not read the changelog. A release that asks for a step by hand says so under *Upgrade notes*; if you want to read first, run `check` on the timer.
+- **A migration cannot be taken back by this script.** Going back restarts the old release on the data as the new one left it. Releases that change the database's layout say so, and the nightly backup is what a real return starts from.
+
+**An installation a stack manager runs** (Dockhand, Portainer, Komodo) is updated by that manager, not by this script: two things managing one compose project undo each other. Point the stack at the repository's `main` branch, which moves only when a release is made, and turn on the manager's own sync or webhook. The server's notification works the same either way.
 
 ## Updating dependencies
 

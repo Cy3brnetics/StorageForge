@@ -1,12 +1,8 @@
 # Changelog
 
-Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 and was never tagged.
+Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
 ## Unreleased
-
-### Security
-
-- **The proxy runs nginx 1.31.9, which fixes two memory-corruption bugs in HTTP/2 that anyone who can reach port 8443 could trigger before logging in** (CVE-2026-123007 and CVE-2026-123633, published 2026-11-18). Every proxy image up to 0.5.4 has nginx 1.31.8 with HTTP/2 on, and is affected. nginx is now built from its signed source in the image, because Wolfi had not packaged the fix on the day it came out. It is built with only the modules the proxy uses, as a position-independent program with full RELRO. If you cannot rebuild yet, change `http2 on;` to `http2 off;` in `docker/nginx.conf` and rebuild the proxy, or keep port 8443 off any network you do not trust; turning HTTP/2 off closes these two bugs but not the request-body loop over TLS (CVE-2026-118899) that the same release fixes.
 
 ### Added
 - **The key enclave, begun** (not in use yet: nothing calls it). `storageforge-indexer/enclave` is the one program of the micro VM to come: it takes the vault secret once, derives the KEK as the vault does, and signs with a key it is handed as the vault's own ciphertext, so nothing stored changes format. It makes keys whose private half never leaves, computes the audit chain's MAC, limits unlocks and signatures itself, hangs up on anything malformed and locks down after five. No request returns a private key. It reads OpenSSH keys with a small parser of its own, after a library read half of ECDSA keys wrongly. `storageforge_index/enclave.py` is the controller's side, with an agent socket `ssh` can use for a key that stays inside: the real `ssh-add` and `ssh-keygen` list it and sign through it, and nothing else an agent can be asked is answered. Unit-tested against the real program where `cargo` is installed; not lab-tested, and there is no VM image yet.
@@ -21,6 +17,21 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 
 ### Fixed
 - **The console called every private network Tailscale.** Any address in 100.64.0.0/10 was offered as "SSH over Tailscale", so a NetBird host was too. A route is now named for the interface it is on: Tailscale, NetBird, ZeroTier, WireGuard, the StorageForge network, or "a private network" where the interface says nothing.
+
+## 0.5.4.1 — 2026-11-18
+
+### Security
+
+- **The proxy runs nginx 1.31.9, which fixes two memory-corruption bugs in HTTP/2 that anyone who can reach port 8443 could trigger before logging in** (CVE-2026-123007 and CVE-2026-123633, published 2026-11-18). Every proxy image up to 0.5.4 has nginx 1.31.8 with HTTP/2 on, and is affected. nginx is now built from its signed source in the image, because Wolfi had not packaged the fix on the day it came out. It is built with only the modules the proxy uses, as a position-independent program with full RELRO. If you cannot rebuild yet, change `http2 on;` to `http2 off;` in `docker/nginx.conf` and rebuild the proxy, or keep port 8443 off any network you do not trust; turning HTTP/2 off closes these two bugs but not the request-body loop over TLS (CVE-2026-118899) that the same release fixes.
+
+### Added
+
+- **StorageForge says when a newer release is out, and the Docker host can install it.** With `STORAGEFORGE_UPDATE_URL` set to the git repository releases are tagged in, the server reads its tags every six hours: the version is beside the name at the top of the page, a newer release is shown there and is a notification until it is installed, and `GET /api/version` returns the same. Unset, it asks nothing. The server installs nothing itself. `docker/update/storageforge-update` on the Docker host does, by hand or from the timer beside it: only a release tag newer than the running version, only when its signature checks out where `STORAGEFORGE_UPDATE_SIGNERS` is set, and back to the release before when the new one does not become healthy. See "Updates" in `docs/operations.md`.
+
+### Upgrade notes
+
+- Rebuild both images: `docker compose up -d --build`. The proxy image is the one the security fix is in.
+- Versions can now have a fourth number (`0.5.4.1`) for a fix to a release.
 
 ## 0.5.4 — 2026-11-17
 

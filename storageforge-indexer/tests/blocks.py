@@ -70,6 +70,8 @@ MEDIUM = {
     'test_enclave.EnclaveImage',     # the same again in the micro VM, where the image has been built and KVM is here
     # bash, telnet and console sessions run for real
     'test_console.Api',
+    'test_selfupdate.Installer',
+    'test_selfupdate.Repository',
     'test_console.Session',
     'test_console_open.Open',
     'test_errlog.ExitWhileWriting',

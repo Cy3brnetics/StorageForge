@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Install the newest StorageForge release on this Docker host, or say that there is one.
+#
+#   storageforge-update check     print the release this is and the newest one; exit 10 when a newer one is there
+#   storageforge-update apply     install the newest one, and go back to this one if the new one does not become healthy
+#
+# It runs in the git clone the installation was started from (the folder with docker-compose.yml, or STORAGEFORGE_DIR). A
+# release is a tag vX.Y.Z or vX.Y.Z.N on the clone's remote. Nothing else is ever installed: not a branch, not a tag with
+# another name, not a release older than this one.
+#
+# Whoever can push a tag to that remote runs their code on this host. STORAGEFORGE_UPDATE_SIGNERS names an allowed-signers
+# file (ssh-keygen's format); when it is set a release is installed only if its tag is signed by a key in it. Without it this
+# script says, every time, that it trusts the remote alone.
+#
+# The web application has no part in this and cannot start it. docs/operations.md "Updates".
+set -euo pipefail
+
+mode=${1:-check}
+dir=${STORAGEFORGE_DIR:-$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)}
+remote=${STORAGEFORGE_UPDATE_REMOTE:-origin}
+wait_seconds=${STORAGEFORGE_UPDATE_WAIT:-300}
+compose=${STORAGEFORGE_COMPOSE:-docker compose}
+tag_re='^v[0-9]{1,5}(\.[0-9]{1,5}){2,3}$'
+
+say() { printf '%s\n' "storageforge-update: $*"; }
+die() { say "$*" >&2; exit 1; }
+
+case $mode in check|apply) ;; *) die "usage: storageforge-update check|apply" ;; esac
+cd "$dir" || die "no folder $dir"
+[ -f docker-compose.yml ] || die "$dir has no docker-compose.yml: set STORAGEFORGE_DIR to the installation's folder"
+git rev-parse --git-dir >/dev/null 2>&1 || die "$dir is not a git clone: this installation was not started from one, so there is nothing to compare releases with"
+
+# One at a time: a timer and a person, or two timers
+exec 9>"${TMPDIR:-/tmp}/storageforge-update.$(id -u).lock"
+flock -n 9 || die "another update is running"
+
+# A version as one string that compares in order: 0.5.4 is 0.5.4.0, and 0.5.10 comes after 0.5.4.1
+key() { local v=${1#v}; local IFS=.; set -- $v; printf '%05d%05d%05d%05d' "$1" "$2" "$3" "${4:-0}"; }
+
+this=$(sed -n "s/^__version__ = '\(.*\)'$/v\1/p" storageforge_index/__init__.py)
+[[ $this =~ $tag_re ]] || die "cannot read this installation's version from storageforge_index/__init__.py"
+
+tags=$(git ls-remote --tags --refs "$remote") || die "the remote $remote could not be asked for its tags"
+newest=$this
+while read -r _ ref; do
+  tag=${ref#refs/tags/}
+  [[ $tag =~ $tag_re ]] || continue
+  if [ "$(key "$tag")" \> "$(key "$newest")" ]; then newest=$tag; fi
+done <<<"$tags"
+
+if [ "$newest" = "$this" ]; then
+  say "this is ${this#v}, the newest release on $remote"
+  exit 0
+fi
+say "this is ${this#v}; ${newest#v} is released on $remote"
+[ "$mode" = apply ] || exit 10
+
+[ -z "$(git status --porcelain --untracked-files=no)" ] || die "files of this clone were changed by hand (git status): not installing over them"
+before=$(git rev-parse HEAD)
+git fetch --quiet --force "$remote" "refs/tags/$newest:refs/tags/$newest" || die "could not fetch $newest"
+
+if [ -n "${STORAGEFORGE_UPDATE_SIGNERS:-}" ]; then
+  [ -r "$STORAGEFORGE_UPDATE_SIGNERS" ] || die "STORAGEFORGE_UPDATE_SIGNERS names $STORAGEFORGE_UPDATE_SIGNERS, which cannot be read"
+  git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$STORAGEFORGE_UPDATE_SIGNERS" verify-tag "$newest" >/dev/null 2>&1 \
+    || die "$newest is not signed by a key in $STORAGEFORGE_UPDATE_SIGNERS: not installed"
+  say "$newest is signed by a key in $STORAGEFORGE_UPDATE_SIGNERS"
+else
+  say "the tag's signature is not checked (STORAGEFORGE_UPDATE_SIGNERS is not set): $remote alone is trusted"
+fi
+
+healthy() {     # every container of the installation is running, and those with a health check pass it
+  local id state n=0
+  for id in $($compose ps -q); do
+    n=$((n + 1))
+    state=$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}healthy{{end}}' "$id")
+    [ "$state" = 'running healthy' ] || return 1
+  done
+  [ "$n" -gt 0 ]
+}
+
+start() {       # build what is checked out and start it; true once it is healthy
+  $compose build --quiet || return 1
+  $compose up -d --remove-orphans --quiet-pull || return 1
+  local until=$(( $(date +%s) + wait_seconds ))
+  while [ "$(date +%s)" -lt "$until" ]; do
+    healthy && return 0
+    sleep 5
+  done
+  return 1
+}
+
+git checkout --quiet --detach "$newest" || die "could not check out $newest"
+say "building and starting ${newest#v}"
+if start; then
+  say "installed ${newest#v}"
+  exit 0
+fi
+
+# The images of the release before are still on this host under their own version, so going back is a restart. The data is
+# not touched either way; a release that changes the database's layout says so in its changelog, and backs it up first.
+say "${newest#v} did not become healthy within $wait_seconds seconds: going back to ${this#v}" >&2
+git checkout --quiet --detach "$before"
+if start; then
+  die "${this#v} is running again. ${newest#v} was not installed: see '$compose logs'"
+fi
+die "${this#v} did not come back either: the installation is down. See '$compose logs' in $dir"
