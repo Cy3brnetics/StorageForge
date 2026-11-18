@@ -100,10 +100,11 @@ class Enclave:
         frame = json.dumps({'op': op, **fields}, separators=(',', ':')).encode()
         if len(frame) > MAX_FRAME:
             raise EnclaveError('bad-request', 'that request is larger than the enclave takes')
-        got = self.raw(frame)
+        try:
+            got = self.raw(frame)
+        finally:
+            self.close()                # the enclave serves one connection at a time: none is held between requests
         if not got.get('ok'):
-            if got.get('error') == 'bad-request':
-                self.close()            # the enclave has hung up on it
             raise EnclaveError(str(got.get('error') or 'refused'), str(got.get('why') or 'the key enclave refused'))
         return got
 
@@ -138,3 +139,118 @@ class Enclave:
 
     def mac_matches(self, prev: str, payload: str, expect: str) -> bool:
         return bool(self.request('mac', prev=prev, payload=payload, expect=expect)['matches'])
+
+
+# ── an ssh-agent whose key is in the enclave ────────────────────────
+# What `ssh` needs from an agent is two answers: which keys it has, and a signature. This serves both on a socket file for the length
+# of one task, as the per-task ssh-agent does today (runner.ephemeral_agent), with one difference: there is no key here to load. The
+# list is the row's public key, and each signature is asked of the enclave. Nothing else an agent can be asked is answered: no adding,
+# no removing, no locking, no extensions.
+import contextlib          # noqa: E402
+import shutil              # noqa: E402
+import tempfile            # noqa: E402
+import threading           # noqa: E402
+import time                # noqa: E402
+
+AGENT_FAILURE, AGENTC_REQUEST_IDENTITIES, AGENT_IDENTITIES_ANSWER, AGENTC_SIGN_REQUEST, AGENT_SIGN_RESPONSE = 5, 11, 12, 13, 14
+AGENT_MAX_MESSAGE = 256 * 1024 + 4096
+
+
+def _string(b: bytes) -> bytes:
+    return struct.pack('>I', len(b)) + b
+
+
+def _take_string(buf: bytes, at: int) -> tuple[bytes, int]:
+    if at + 4 > len(buf):
+        raise ValueError('short')
+    n = struct.unpack('>I', buf[at:at + 4])[0]
+    if at + 4 + n > len(buf):
+        raise ValueError('short')
+    return buf[at + 4:at + 4 + n], at + 4 + n
+
+
+def agent_reply(message: bytes, public_blob: bytes, comment: bytes, sign) -> bytes:
+    """The answer to one agent message. sign(data, flags) -> the signature in SSH wire form, from the enclave."""
+    if not message:
+        return bytes([AGENT_FAILURE])
+    kind = message[0]
+    if kind == AGENTC_REQUEST_IDENTITIES and len(message) == 1:
+        return bytes([AGENT_IDENTITIES_ANSWER]) + struct.pack('>I', 1) + _string(public_blob) + _string(comment)
+    if kind == AGENTC_SIGN_REQUEST:
+        try:
+            blob, at = _take_string(message, 1)
+            data, at = _take_string(message, at)
+            flags = struct.unpack('>I', message[at:at + 4])[0] if at + 4 == len(message) else None
+        except (ValueError, struct.error):
+            return bytes([AGENT_FAILURE])
+        if flags is None or blob != public_blob:          # a key this agent does not have, or a message with more in it than a request
+            return bytes([AGENT_FAILURE])
+        try:
+            return bytes([AGENT_SIGN_RESPONSE]) + _string(sign(data, flags))
+        except EnclaveError:
+            return bytes([AGENT_FAILURE])
+    return bytes([AGENT_FAILURE])
+
+
+@contextlib.contextmanager
+def agent(address: str, row: dict, ttl: int, base: str | None = None):
+    """A socket file `ssh` can use as SSH_AUTH_SOCK for the key of this ssh_keys row, for at most ttl seconds. row needs key_uuid,
+    dek_nonce, wrapped_dek, key_nonce, ciphertext and public_key (the line). Each client gets its own connection to the enclave."""
+    public_blob = base64.b64decode(row['public_key'].split()[1])
+    comment = ' '.join(row['public_key'].split()[2:]).encode()
+    folder = tempfile.mkdtemp(prefix='agent-', dir=base)
+    os.chmod(folder, 0o700)
+    path = os.path.join(folder, 'agent.sock')
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(path)
+    os.chmod(path, 0o600)
+    listener.listen(8)
+    listener.settimeout(0.2)
+    until, stop = time.time() + ttl, threading.Event()
+
+    def serve(client):
+        try:
+            client.settimeout(30)
+            with Enclave(address) as enclave:
+                while not stop.is_set() and time.time() < until:
+                    head = b''
+                    while len(head) < 4:
+                        chunk = client.recv(4 - len(head))
+                        if not chunk:
+                            return
+                        head += chunk
+                    size = struct.unpack('>I', head)[0]
+                    if not 1 <= size <= AGENT_MAX_MESSAGE:
+                        return
+                    body = b''
+                    while len(body) < size:
+                        chunk = client.recv(size - len(body))
+                        if not chunk:
+                            return
+                        body += chunk
+                    reply = agent_reply(body, public_blob, comment, lambda data, flags: enclave.sign(row, data, flags)[0])
+                    client.sendall(struct.pack('>I', len(reply)) + reply)
+        except OSError:
+            pass
+        finally:
+            client.close()
+
+    def accept():
+        while not stop.is_set() and time.time() < until:
+            try:
+                client, _ = listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            threading.Thread(target=serve, args=(client,), daemon=True).start()
+
+    thread = threading.Thread(target=accept, daemon=True)
+    thread.start()
+    try:
+        yield path
+    finally:
+        stop.set()
+        listener.close()
+        thread.join(2)
+        shutil.rmtree(folder, ignore_errors=True)

@@ -61,6 +61,7 @@ HEAVY = {
 }
 
 MEDIUM = {
+    'test_enclave.Enclave',          # the real enclave program, built with cargo, and the real ssh-add and ssh-keygen
     # bash, telnet and console sessions run for real
     'test_console.Api',
     'test_console.Session',

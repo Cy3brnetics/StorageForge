@@ -35,6 +35,8 @@ const PROTOCOL: u32 = 1;
 const MAX_FRAME: usize = 1 << 20;
 const MAX_SIGN_DATA: usize = 256 << 10;
 const BAD_LIMIT: u32 = 5;
+// One connection is served at a time, so one that goes quiet is dropped: a client that holds its connection open cannot hold the others out.
+const IDLE_SECS: i64 = 5;
 const VERIFIER: &[u8] = b"storageforge-vault-v1";
 // Argon2id costs the enclave may be asked for: enough to be worth something, and never so much that one request stalls it for good.
 const KDF_MEMORY_KIB: std::ops::RangeInclusive<u32> = 8 * 1024..=1024 * 1024;
@@ -520,6 +522,15 @@ impl State {
     }
 }
 
+/// A connection that says nothing for IDLE_SECS is given up on.
+fn impatient(fd: i32) {
+    let tv = libc::timeval { tv_sec: IDLE_SECS, tv_usec: 0 };
+    unsafe {
+        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVTIMEO, &tv as *const _ as *const libc::c_void, std::mem::size_of::<libc::timeval>() as libc::socklen_t);
+        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDTIMEO, &tv as *const _ as *const libc::c_void, std::mem::size_of::<libc::timeval>() as libc::socklen_t);
+    }
+}
+
 /// A listening AF_VSOCK socket on `port`, for any peer. The micro VM has no other way in or out.
 fn vsock_listen(port: u32) -> std::io::Result<i32> {
     unsafe {
@@ -570,6 +581,7 @@ fn main() {
                 if conn < 0 {
                     continue;
                 }
+                impatient(conn);
                 use std::os::fd::FromRawFd;
                 state.serve(unsafe { std::fs::File::from_raw_fd(conn) });
             }
@@ -582,6 +594,8 @@ fn main() {
                 std::process::exit(1)
             });
             for conn in listener.incoming().flatten() {
+                use std::os::fd::AsRawFd;
+                impatient(conn.as_raw_fd());
                 state.serve(conn);
             }
         }

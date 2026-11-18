@@ -254,6 +254,16 @@ class Enclave(unittest.TestCase):
         s.close()
         self.assertEqual(self.e.status()['bad_requests'], 1)
 
+    def test_a_connection_that_goes_quiet_does_not_hold_the_others_out(self):
+        """One connection is served at a time. A client that opens one and says nothing is dropped after a few seconds."""
+        idle = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        idle.connect(str(self.path))
+        self.addCleanup(idle.close)
+        started = time.time()
+        self.assertEqual(self.e.status()['state'], 'locked')
+        self.assertLess(time.time() - started, 9)
+        self.assertEqual(self.e.status()['bad_requests'], 0, 'being slow is not being hostile')
+
     def test_unlock_attempts_are_limited_inside(self):
         codes = []
         for _ in range(8):
@@ -276,6 +286,50 @@ class Enclave(unittest.TestCase):
             except enclave.EnclaveError:
                 time.sleep(0.05)
         self.assertEqual(st['state'], 'locked')
+
+    # ── ssh, with the key inside ──
+    def test_ssh_signs_through_an_agent_that_has_no_key_to_load(self):
+        """The real ssh-add and ssh-keygen talk to the socket: the key is listed, a signature made through it verifies, and what an
+        agent can be asked besides those two is refused. The private key was never on this side."""
+        self.unlock()
+        self.vault.generate_key('k')
+        row = self.row('k')
+        with enclave.agent(f'unix:{self.path}', row, ttl=60, base=str(self.tmp)) as sock:
+            env = {'PATH': os.environ['PATH'], 'SSH_AUTH_SOCK': sock}
+            listed = subprocess.run(['ssh-add', '-L'], env=env, capture_output=True, text=True)
+            self.assertEqual(listed.stdout.split()[:2], row['public_key'].split()[:2], listed.stderr)
+            pub = self.tmp / 'k.pub'
+            pub.write_text(row['public_key'] + '\n')
+            self.assertEqual(subprocess.run(['ssh-add', '-T', str(pub)], env=env, capture_output=True, text=True).returncode, 0, 'ssh-add -T signs with it and checks the signature')
+            (self.tmp / 'msg').write_text('a message')
+            made = subprocess.run(['ssh-keygen', '-Y', 'sign', '-f', str(pub), '-n', 'file', str(self.tmp / 'msg')], env=env, capture_output=True, text=True)
+            self.assertEqual(made.returncode, 0, made.stderr)
+            (self.tmp / 'allowed').write_text(f'gabe {row["public_key"]}\n')
+            checked = subprocess.run(['ssh-keygen', '-Y', 'verify', '-f', str(self.tmp / 'allowed'), '-I', 'gabe', '-n', 'file', '-s', str(self.tmp / 'msg.sig')],
+                                     stdin=open(self.tmp / 'msg'), capture_output=True, text=True)
+            self.assertEqual(checked.returncode, 0, checked.stderr + checked.stdout)
+            for flag in ('-D', '-x'):                                    # remove every key, lock the agent: not this agent's to do
+                self.assertNotEqual(subprocess.run(['ssh-add', flag], env=env, input='pw\npw\n', capture_output=True, text=True).returncode, 0, flag)
+            self.assertEqual(subprocess.run(['ssh-add', '-L'], env=env, capture_output=True, text=True).stdout.split()[:2], row['public_key'].split()[:2], 'and the key is still there')
+            self.assertEqual(os.stat(sock).st_mode & 0o777, 0o600)
+        self.assertFalse(os.path.exists(sock), 'the socket is gone with the task')
+
+    def test_the_agent_answers_for_its_one_key_and_nothing_else(self):
+        blob, other = b'\x00\x00\x00\x0bssh-ed25519' + b'\x00\x00\x00\x20' + b'k' * 32, b'\x00\x00\x00\x0bssh-ed25519' + b'\x00\x00\x00\x20' + b'o' * 32
+        asked = []
+        sign = lambda data, flags: asked.append((data, flags)) or b'SIG'
+        s = lambda b: struct.pack('>I', len(b)) + b
+        self.assertEqual(enclave.agent_reply(bytes([11]), blob, b'c', sign), bytes([12]) + struct.pack('>I', 1) + s(blob) + s(b'c'))
+        self.assertEqual(enclave.agent_reply(bytes([13]) + s(blob) + s(b'data') + struct.pack('>I', 2), blob, b'c', sign), bytes([14]) + s(b'SIG'))
+        self.assertEqual(asked, [(b'data', 2)])
+        for bad in (b'', bytes([13]) + s(other) + s(b'data') + struct.pack('>I', 0), bytes([13]) + s(blob) + s(b'data'), bytes([13]) + s(blob) + s(b'data') + struct.pack('>I', 0) + b'x',
+                    bytes([13]) + struct.pack('>I', 1 << 30) + b'x', bytes([11]) + b'x', bytes([17]) + s(blob), bytes([18]), bytes([19]), bytes([22]) + s(b'pw'), bytes([27]) + s(b'ext')):
+            self.assertEqual(enclave.agent_reply(bad, blob, b'c', sign), bytes([5]), bad[:12])
+        self.assertEqual(len(asked), 1, 'none of those reached the enclave')
+
+        def down(data, flags):
+            raise enclave.EnclaveError('locked', 'the enclave is locked')
+        self.assertEqual(enclave.agent_reply(bytes([13]) + s(blob) + s(b'data') + struct.pack('>I', 0), blob, b'c', down), bytes([5]), 'a locked enclave is a failure to ssh, not a hang')
 
     def test_an_enclave_that_is_not_there_fails_closed(self):
         gone = enclave.Enclave(f'unix:{self.tmp}/nobody-home.sock')
