@@ -4,6 +4,10 @@ Newest first. Releases are tagged `vX.Y.Z`. Everything before 0.3.0 was 0.2.0 an
 
 ## Unreleased
 
+### Security
+
+- **The proxy runs nginx 1.31.9, which fixes two memory-corruption bugs in HTTP/2 that anyone who can reach port 8443 could trigger before logging in** (CVE-2026-123007 and CVE-2026-123633, published 2026-11-18). Every proxy image up to 0.5.4 has nginx 1.31.8 with HTTP/2 on, and is affected. nginx is now built from its signed source in the image, because Wolfi had not packaged the fix on the day it came out. It is built with only the modules the proxy uses, as a position-independent program with full RELRO. If you cannot rebuild yet, change `http2 on;` to `http2 off;` in `docker/nginx.conf` and rebuild the proxy, or keep port 8443 off any network you do not trust; turning HTTP/2 off closes these two bugs but not the request-body loop over TLS (CVE-2026-118899) that the same release fixes.
+
 ## 0.5.4 — 2026-11-17
 
 Logs: the holes in what was stored, rules, and the notification center. Upgrade notes: migrations 043, 044 and 045 run on start; build the images again (`docker compose build`), as they are tagged 0.5.4. Two permissions are new, `notifications.manage` and `hostlogs.rules`: operators and admins have them, and a custom role gets neither until it is given them. A host's log lines are now kept for 30 days from when they arrived, and a host over its rate (16,666 lines a day by default) has the rest counted and not stored: raise `STORAGEFORGE_LOG_KEEP_ROWS` or `STORAGEFORGE_LOG_RATE_PER_DAY` for a host that logs more. Eight built-in log rules are on from the first scan after the upgrade and raise notifications, four of them critical, which go to your alert channels. A folder a btrfs receive makes is mode 0700 from now on; folders that exist keep their mode. Lab status: tiers 13, 14 and 16 ran against this release on 2026-11-17 ([the table](docs/kvm-lab.md#the-run-of-2026-11-17-for-054)); one tier 14 check passed only when run by hand after a fix to the check itself. The other tiers last ran for 0.5.3. Unit suites: 2,085 tests, 0 failed on SQLite (6 skipped) and on PostgreSQL (86 skipped, nearly all about SQLite files).

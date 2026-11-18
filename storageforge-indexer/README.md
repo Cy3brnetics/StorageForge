@@ -479,7 +479,7 @@ Run `storageforge-index prune --vacuum` once to shrink the database file. It rew
 
 | File | Purpose |
 | :--- | :--- |
-| `Dockerfile` | `build` stage (venv), `test` stage (runs the suite: `docker build --target test .`), `openssh` and `nmap` stages (built from source), minimal Wolfi `runtime` with `tini` and only the packages it uses, no package manager, uid 10001, `HEALTHCHECK` |
+| `Dockerfile` | `build` stage (venv), `test` stage (runs the suite: `docker build --target test .`), `openssh`, `nmap` and `nginx` stages (built from source), minimal Wolfi `runtime` with `tini` and only the packages it uses, no package manager, uid 10001, `HEALTHCHECK` |
 | `docker-compose.yml` | Hardened service, secrets, `sf-data` volume, tmpfs mounts, resource limits; an unprivileged, read-only nginx serves it over TLS on port 8443 |
 | `docker/nginx.conf` | TLS 1.2/1.3, HSTS, http→https redirect, `X-Forwarded-For` replaced (not appended) |
 | `docker/entrypoint.sh` | Refuses root, checks secret lengths, checks volume ownership and that the runtime dir is tmpfs, tightens permissions, migrates, creates or verifies the vault, imports keys from a read-only mount, then `exec`s |
@@ -502,6 +502,8 @@ uv pip compile pyproject.toml docker/build-requirements.in --extra postgres --un
 The ssh client is built from source in the Dockerfile's `openssh` stage, so vulnerability scanners cannot see its version. Check the [OpenSSH release notes](https://www.openssh.com/releasenotes.html) when you update. To move to a new release, verify the tarball's signature against the OpenSSH release key, then change `OPENSSH_VERSION` and the `--checksum` hash together.
 
 nmap is built from source the same way, in the `nmap` stage, because Wolfi's free repository stops at 7.94. Check the [nmap changelog](https://nmap.org/changelog.html) when you update. To move to a new release, verify `nmap-<version>.tar.bz2.asc` from [nmap.org/dist/sigs](https://nmap.org/dist/sigs/) against the Nmap Project Signing Key (`436D 66AB 9A79 8425 FDA0 E3F8 01AF 9F03 6B93 55D0`), then change `NMAP_VERSION` and the `--checksum` hash together.
+
+nginx in the proxy image is built from source too, in the `nginx` stage, with only the modules `docker/nginx.conf` uses. Read the [nginx security advisories](https://nginx.org/en/security_advisories.html) when you update, and after any nginx release that names a CVE. To move to a new release, verify `nginx-<version>.tar.gz.asc` from [nginx.org/download](https://nginx.org/download/) against one of the [nginx signing keys](https://nginx.org/en/pgp_keys.html) (1.31.9 is signed by `D678 6CE3 03D9 A902 2998 DC6C C846 4D54 9AF7 5C0A`), then change `NGINX_VERSION` and the `--checksum` hash together. A directive from a module that was left out makes `nginx -t` fail: remove that module's `--without-…` flag from the configure list before using it.
 
 The runtime is Wolfi, whose security feed Trivy and Grype both read. A finding with no fix anywhere is decided in the triage note and listed in `.trivyignore` or `.grype.yaml` at the repository root, with the condition for taking it out. Scan with both: `grype --config .grype.yaml storageforge:<version>`.
 
