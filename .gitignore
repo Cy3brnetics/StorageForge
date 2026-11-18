@@ -50,3 +50,6 @@ venv/
 
 # Raw image scans: the triage in the notebook is what is kept
 vuln-report-*
+
+# this machine's release signing helper
+/release-sign.sh
