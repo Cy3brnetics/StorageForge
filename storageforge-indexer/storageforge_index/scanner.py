@@ -56,6 +56,34 @@ class ScanOptions:
     nice: bool = True
     dry_run: bool = False
     max_delete_ratio: float = 0.5
+    progress: Progress | None = None  # where a watched scan says how far it is (the web UI's Scans list); it changes nothing else
+
+
+class Progress:
+    """How far a running scan is, for whoever is watching. The scan names its stage and hands over each filesystem's live counters;
+    nothing is added up until someone asks, so a scan nobody watches pays nothing for it."""
+    STAGES = ('connecting', 'inventory', 'preparing', 'files', 'writing', 'surveys', 'checksums', 'finishing')
+
+    def __init__(self, expected: int | None = None):
+        self.expected = expected          # the entries the last scan of this host saw: what "nearly there" is measured against
+        self.name, self.started = 'connecting', time.time()
+        self.jobs, self.live, self.finished = 0, [], []
+
+    def stage(self, name: str, jobs: int | None = None):
+        self.name = name
+        if jobs is not None:
+            self.jobs = jobs
+
+    def snapshot(self) -> dict:
+        live, finished = list(self.live), set(self.finished)
+        return {'stage': self.name, 'seconds': int(time.time() - self.started), 'filesystems': self.jobs, 'filesystems_done': len(finished),
+                'entries': sum(r.entries for r in live), 'bytes': sum(r.bytes for r in live), 'expected': self.expected,
+                'reading': [r.job.root for r in live if r.job.id not in finished][:4]}
+
+
+def at_stage(opts: ScanOptions, name: str, jobs: int | None = None):
+    if opts.progress is not None:
+        opts.progress.stage(name, jobs)
 
 
 @dataclass
@@ -273,6 +301,8 @@ class StallGuard(io.RawIOBase):
 def stream_job(t: Transport, job: ScanJob, pool: WriterPool, opts: ScanOptions) -> JobResult:
     mid = job.plan.mount_id
     res = JobResult(job)
+    if opts.progress is not None:
+        opts.progress.live.append(res)          # its counters are read from there while the rows arrive
     started = time.time()
     pool.send(mid, ('begin', job.id))
     proc = t.stream(find_command(job.root, job.prune, opts.exclude_names, nice=opts.nice, btrfs=job.plan.info.fstype == 'btrfs'))
@@ -378,6 +408,7 @@ def checksum_pass(db: Database, conn, t: Transport, host_id: int, min_size: int,
 def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dict | None:
     conn = db.connect()
     try:
+        at_stage(opts, 'inventory')
         inv = collect_inventory(t)
         plans = plan_mounts(inv.mounts, opts)
         jobs = build_jobs(plans, opts)
@@ -396,6 +427,7 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
             return None
 
         host_id = db.upsert_host(conn, inv, t, t.host_keys())   # refuses a machine claiming another host's name
+        at_stage(opts, 'preparing')
         try:
             from .hostlogs import collect as collect_logs
             collect_logs(conn, t, inv.hostname, log=log)
@@ -443,8 +475,17 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
         log(f'scan #{scan_id}: {len(jobs)} job(s), {opts.parallel} parallel stream(s), {writers} writer(s)')
         pool = WriterPool(db, scan_id, writers, opts.max_delete_ratio)
         started = time.time()
+        at_stage(opts, 'files', len(jobs))
+
+        def one(j):
+            try:
+                return stream_job(t, j, pool, opts)
+            finally:
+                if opts.progress is not None:
+                    opts.progress.finished.append(j.id)
         with ThreadPoolExecutor(max_workers=max(1, opts.parallel)) as ex:
-            results = list(ex.map(lambda j: stream_job(t, j, pool, opts), jobs))
+            results = list(ex.map(one, jobs))
+        at_stage(opts, 'writing')
         diffs = pool.close()
 
         tot = {'entries': 0, 'bytes': 0, 'added': 0, 'modified': 0, 'deleted': 0, 'read_errors': 0, 'failed': 0}
@@ -474,6 +515,7 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
             db.save_denied(conn, scan_id, denied)
             log(f'  {sum(len(r.denied) for r in results):,} folder(s) unreadable as {inv.user or "the scan user"}; '
                 'see Access in the web UI, or: storageforge-index access script')
+        at_stage(opts, 'surveys')
         if opts.git:
             from .gitrepos import survey
             try:
@@ -507,8 +549,10 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
             except Exception as exc:                      # never fail a finished scan over the network pass
                 log(f'  network survey failed: {exc}')
         if opts.checksum:
+            at_stage(opts, 'checksums')
             hashed = checksum_pass(db, conn, t, host_id, opts.checksum_min_size, opts.nice)
             log(f'  checksummed {hashed:,} size-collision candidates')
+        at_stage(opts, 'finishing')
         status = 'ok' if not tot['failed'] else ('failed' if tot['failed'] == len(results) else 'partial')
         db.finish_scan(conn, scan_id, host_id, tot, status, time.time() - started)
         if status != 'failed':

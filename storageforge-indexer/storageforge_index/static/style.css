@@ -187,6 +187,13 @@ dialog h2 { margin: 0; font-size: 17px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
 .list li .pub { font-family: var(--mono); font-size: 11px; word-break: break-all; color: var(--muted); user-select: all; }
 .list li .btn.sm { justify-self: start; padding: 3px 8px; font-size: 12px; }
+.scanprog { display: grid; gap: 3px; }
+.scanprog progress { width: 100%; height: 6px; appearance: none; border: 0; border-radius: 3px; background: var(--line); overflow: hidden; accent-color: var(--accent); }
+.scanprog progress::-webkit-progress-bar { background: var(--line); }
+.scanprog progress::-webkit-progress-value { background: var(--accent); transition: width .6s ease; }
+.scanprog progress::-moz-progress-bar { background: var(--accent); }
+@media (prefers-reduced-motion: reduce) { .scanprog progress::-webkit-progress-value { transition: none; } }
+#scanmsg .scanprog { margin: 6px 0; }
 #instmsg { margin: 8px 0 0; }
 a.btn { text-decoration: none; color: inherit; display: inline-block; }
 /* view switch and column topology (topology.js) */

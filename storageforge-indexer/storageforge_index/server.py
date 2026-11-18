@@ -181,7 +181,7 @@ from .db import Database, epoch
 from .hostkeys import HostKeyNeeded
 from .remote import RemoteError
 from .runner import connect_address, scan_via_vault
-from .scanner import ScanOptions
+from .scanner import Progress, ScanOptions
 from .search import SearchQuery, run_changes, run_dupes, run_search
 from .vault import AuditLog, EnclaveMacKey, SecretBuffer, Vault, VaultError, fingerprint
 
@@ -263,6 +263,7 @@ class App:
         they outlive the test, and the nightly backup read STORAGEFORGE_BACKUP_DIR two minutes later, from whichever test ran then."""
         self.db, self.parallel, self.scan_db = db, parallel, db.patient()
         self.audit_key = None
+        self.progress: dict = {}          # job id → scanner.Progress, for the scans that are running now
         conn = db.connect()
         try:   # keep only the audit MAC key in memory; the KEK is wiped right after unlock
             with Vault(db, conn).unlock() as v:
@@ -366,7 +367,12 @@ class App:
                 conn.execute("UPDATE scan_jobs SET status = 'running', started_at = :t WHERE job_id = :j",
                              {'t': int(time.time()), 'j': jid})
                 try:
-                    opts = ScanOptions(parallel=self.parallel, checksum=None, include_fstypes=[
+                    # what the last scan of this host saw is the best guess at how much this one has to read
+                    expected = conn.scalar("""SELECT s.entries_seen FROM scans s JOIN hosts h ON h.host_id = s.host_id
+                                              WHERE (h.hostname = :h OR h.ssh_host = :h) AND s.status IN ('ok', 'partial')
+                                              ORDER BY s.scan_id DESC LIMIT 1""", {'h': host})
+                    self.progress[jid] = Progress(expected or None)
+                    opts = ScanOptions(parallel=self.parallel, checksum=None, progress=self.progress[jid], include_fstypes=[
                         x for x in os.environ.get('STORAGEFORGE_INCLUDE_FSTYPES', '').split(',') if x])
                     res = scan_via_vault(self.scan_db, host, opts, actor=actor,
                                          log=lambda m: errlog.say(f'[job {jid}] {m}'))
@@ -379,6 +385,7 @@ class App:
             except Exception:
                 errlog.trace()
             finally:
+                self.progress.pop(jid, None)
                 conn.close()
                 self.scan_done.set()
 
@@ -1074,8 +1081,16 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def api_jobs():
         rows = conn().all("""SELECT job_id, host, requested_by, status, queued_at, started_at, finished_at, result_json
                              FROM scan_jobs ORDER BY job_id DESC LIMIT 50""")
-        return jsonify(jobs=[dict(zip(('job_id', 'host', 'requested_by', 'status', 'queued_at', 'started_at',
-                                       'finished_at'), r[:7])) | {'result': json.loads(r[7] or 'null')} for r in rows])
+        jobs = [dict(zip(('job_id', 'host', 'requested_by', 'status', 'queued_at', 'started_at',
+                          'finished_at'), r[:7])) | {'result': json.loads(r[7] or 'null')} for r in rows]
+        waiting = sorted(j['job_id'] for j in jobs if j['status'] == 'queued')
+        for j in jobs:
+            live = core.progress.get(j['job_id'])
+            if j['status'] == 'running' and live is not None:
+                j['progress'] = live.snapshot()
+            elif j['status'] == 'queued':
+                j['ahead'] = waiting.index(j['job_id'])          # scans that will start before this one
+        return jsonify(jobs=jobs)
 
     @web.get('/api/audit')
     @login_required

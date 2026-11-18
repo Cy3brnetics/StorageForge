@@ -769,15 +769,54 @@ $('#q').addEventListener('input', () => {
 });
 $('#searchform').addEventListener('submit', (ev) => { ev.preventDefault(); const q = $('#q').value.trim(); if (q) runSearch({ q, host: S.host }); });
 
+// How far a running scan is, as a fraction and a sentence. The files are most of a scan, and how many there are is not known until
+// they are read, so the last scan's count stands in for it; a first scan goes by filesystems finished instead.
+const SCAN_STAGES = { connecting: ['Connecting', 0.01], inventory: ['Reading the host', 0.03], preparing: ['Collecting logs and results', 0.05], files: ['Reading files', 0.06],
+  writing: ['Writing the index', 0.88], surveys: ['Reading git, containers and the network', 0.92], checksums: ['Checksumming', 0.95], finishing: ['Finishing', 0.98] };
+function scanProgress(p) {
+  const [label, base] = SCAN_STAGES[p.stage] || [p.stage, 0];
+  let fraction = base;
+  const parts = [label];
+  if (p.stage === 'files') {
+    const read = p.expected ? Math.min(p.entries / p.expected, 0.99) : p.filesystems ? p.filesystems_done / p.filesystems : 0;
+    fraction = base + read * (0.88 - base);
+  }
+  if (p.entries) parts.push(p.expected && p.stage === 'files' && p.entries <= p.expected ? `${p.entries.toLocaleString()} of about ${p.expected.toLocaleString()} entries` : `${p.entries.toLocaleString()} entries`);
+  if (p.filesystems && p.stage === 'files') parts.push(`${p.filesystems_done} of ${p.filesystems} filesystems`);
+  if (p.reading && p.reading.length && p.stage === 'files') parts.push(p.reading.join(', '));
+  parts.push(p.seconds < 90 ? `${p.seconds} s` : `${Math.round(p.seconds / 60)} min`);
+  return { fraction, words: parts.join(' · ') };
+}
+function progressBar(fraction, words) {
+  const wrap = document.createElement('span'); wrap.className = 'scanprog';
+  const bar = document.createElement('progress'); bar.max = 100;
+  if (fraction != null) bar.value = Math.round(fraction * 100);          // with no value the browser draws it as busy, with no end known
+  bar.setAttribute('aria-label', words);
+  wrap.append(bar, text('span', fraction != null ? `${Math.round(fraction * 100)}% · ${words}` : words, 'm'));
+  return wrap;
+}
 async function loadJobs() {
   try {
     const { jobs } = await getJSON('/api/jobs');
+    const active = jobs.filter((j) => j.status === 'queued' || j.status === 'running');
+    const msg = $('#scanmsg');
+    if (active.length) {
+      // one round: what is still going, and what was asked for since the oldest of those and has finished
+      const since = Math.min(...active.map((j) => j.queued_at));
+      const round = jobs.filter((j) => j.queued_at >= since);
+      const done = round.length - active.length, running = active.filter((j) => j.status === 'running');
+      const part = running.reduce((sum, j) => sum + (j.progress ? scanProgress(j.progress).fraction : 0), 0);
+      const words = `${done} of ${round.length} scan${round.length === 1 ? '' : 's'} done · ${running.length} running · ${active.length - running.length} waiting`;
+      msg.className = ''; msg.hidden = false; msg.replaceChildren(progressBar((done + part) / round.length, words));
+    } else if (msg.querySelector('.scanprog')) { msg.hidden = true; msg.replaceChildren(); }
     $('#jobs').replaceChildren(...jobs.map((j) => {
       const li = document.createElement('li');
       const r = j.result || {};
       const summary = r.error ? r.error : r.entries != null ? `${r.entries.toLocaleString()} entries · +${r.added} ~${r.modified} -${r.deleted}` : '';
       li.append(text('span', `#${j.job_id} ${j.host} · ${j.status}`, `st-${j.status}`),
         text('span', `${j.requested_by} · ${fmtTime(j.queued_at)}${summary ? ' · ' + summary : ''}`, 'm'));
+      if (j.status === 'running') { const p = j.progress ? scanProgress(j.progress) : { fraction: null, words: 'Running' }; li.append(progressBar(p.fraction, p.words)); }
+      else if (j.status === 'queued') li.append(text('span', j.ahead ? `Waiting: ${j.ahead} scan${j.ahead === 1 ? '' : 's'} before it` : 'Next to start', 'm'));
       return li;
     }));
     if (!jobs.some((j) => j.status === 'queued' || j.status === 'running')) {
@@ -788,7 +827,7 @@ async function loadJobs() {
 }
 function followJobs() {
   followingScans = true;
-  loadJobs(); clearInterval(jobTimer); jobTimer = setInterval(async () => { await loadJobs(); }, 3000);
+  loadJobs(); clearInterval(jobTimer); jobTimer = setInterval(async () => { await loadJobs(); }, 2000);
   setTimeout(() => { loadGraph(); loadDesigns(); }, 15000);
 }
 async function queueScan(host) {

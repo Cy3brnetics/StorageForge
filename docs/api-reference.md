@@ -74,7 +74,7 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET, PUT | `/api/git/ignore` | path fragments hidden from the Git tab: PUT `{"host", "paths"}`, no host means every host, `!x` shows `x` |
 | GET | `/api/docker?host=` | containers, stacks, volumes |
 | GET | `/api/docker/usage?host=&path=` | containers using a folder (or all usage for a host) |
-| GET | `/api/jobs` | the last 50 scan jobs |
+| GET | `/api/jobs` | the last 50 scan jobs. A running one has `progress` (`stage`, `seconds`, `entries`, `bytes`, `expected`, `filesystems`, `filesystems_done`, `reading`); a waiting one has `ahead` |
 | GET | `/api/scans/signing` | signed scan payloads: whether they are required, each host's last scan (signed, partly signed or unsigned, by which keys, and why not), and the pinned scan signing keys |
 | PUT | `/api/scans/signing` | `{"require": true}` refuses payloads a host did not sign; `keys.manage`, audited |
 | DELETE | `/api/scans/signing/<address>` | forget the scan signing key pinned for an address, after a rebuild; `keys.manage`, audited |
