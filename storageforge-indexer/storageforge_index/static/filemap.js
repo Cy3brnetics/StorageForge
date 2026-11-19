@@ -458,6 +458,7 @@ function fmDraw() {
   } else (L.cards.find((r) => r.dataset.id === FM.focusId) || L.cards[0]).tabIndex = 0;
   FM.stat.replaceChildren(
     el('span', {}, el('b', {}, fmtBytes(d.reclaimable)), ' reclaimable within hosts'),
+    d.across_hosts?.sets ? el('span', { class: 'fmaway', title: COPY_ELSEWHERE_WHY }, el('b', {}, fmtBytes(d.across_hosts.bytes)), ' also on another host: possible backups, not counted') : '',
     el('span', {}, `${(d.groups_total + d.folder_copies.length).toLocaleString()} duplicate sets`),
     d.folders_total > d.folders.length ? text('span', `largest ${d.folders.length} of ${d.folders_total} folders shown`) : '',
     d.hidden.groups ? text('span', `${d.hidden.groups.toLocaleString()} sets hidden as system, backups or ignored`) : '',
@@ -651,7 +652,7 @@ function fmLinesPanel(sel) {
       el('span', { class: 'p' }, `${where(l.src)} → ${where(l.dst)}`),
       button('Follow', () => { fmOpenTo(l.src.host, l.src.path); fmOpenTo(l.dst.host, l.dst.path); FM.moved = true; fmDraw(); fmReveal(fmId('f', l.src.host, l.src.path)); }, 'btn ghost sm'),
       text('span', [l.label, l.bytes ? `${fmtBytes(l.bytes)} in both` : '', l.broken ? 'broken' : ''].filter(Boolean).join(' · '), 'm')), { limit: 100, label: 'links', tag: 'ul', className: 'fmlist' }),
-    sel.kind === 'copies' && sel.items.length === 1 ? button('Compare and trash the extras', () => fmSelect({ type: 'link', a: sel.items[0].link.a, b: sel.items[0].link.b }), 'btn sm') : ''];
+    sel.kind === 'copies' && sel.items.length === 1 ? button(sel.items[0].across ? 'Compare the two' : 'Compare and trash the extras', () => fmSelect({ type: 'link', a: sel.items[0].link.a, b: sel.items[0].link.b }), 'btn sm') : ''];
 }
 function fmSelect(sel) {
   FM.sel = sel;
@@ -767,6 +768,8 @@ function fmMenu(n) {
     '-', { label: 'Copy to another disk (Moves)…', run: () => moveFrom(n.host, n.path) },
     { label: n.links ? `Ignore this folder (${n.links} broken links)` : 'Ignore this folder', run: () => fmIgnore(n.host, n.path) }];
 }
+// a whole-folder copy with another copy on its own host: only then is the trash suggested for it
+const fmCopyOnItsHost = (f) => FM.data.folder_copies.some((t) => t.copies.some((c) => c.host === f.host && c.path === f.path) && t.copies.some((c) => c.host === f.host && c.path !== f.path));
 function fmFolderMenu(f) {
   const stage = (type, preset) => () => openTask(type, f.host, preset);
   return [{ heading: f.path },
@@ -776,7 +779,7 @@ function fmFolderMenu(f) {
     { label: 'Largest files here', run: () => runSearch({ under: f.path, host: f.host, size_gt: '1MiB' }) },
     { label: 'Copy path', run: () => copyText(f.path) },
     '-', { heading: 'Plan a change' },
-    f.whole ? { label: 'Move this folder to trash', run: () => fmTrash([{ host: f.host, path: f.path }]) } : null,
+    f.whole && fmCopyOnItsHost(f) ? { label: 'Move this folder to trash', run: () => fmTrash([{ host: f.host, path: f.path }]) } : null,
     { label: 'Rename or move…', run: stage('rename', { path: f.path, dest: f.path }) },
     { label: 'Copy to another disk (Moves)…', run: () => moveFrom(f.host, f.path) },
     '-', { label: 'Ignore this folder', run: () => fmIgnore(f.host, f.path) }];
@@ -807,14 +810,18 @@ function fmPanel() {           // true when the file map owns the panel
 function fmNote() {
   return text('p', 'Trash moves a file to .storageforge-trash on its own filesystem and stages it in Changes. The space comes back when you empty that folder. Hard links look like copies here, and trashing one frees nothing.', 'muted small');
 }
+/* A copy whose other copies are all on other hosts is a possible backup: it gets no Trash button and cannot be ticked. A copy with
+   another on its own host is a duplicate there, and is offered as before. */
+const fmOnlyOnItsHost = (g, c) => !g.copies.some((x) => x !== c && x.host === c.host);
+function fmBackupPill() { return Object.assign(text('span', 'possible backup', 'pill unknown'), { title: COPY_ELSEWHERE_WHY }); }
 function fmFileRow(g, c, checks) {        // one file, its size and where its other copies are
   const others = g.copies.filter((x) => x !== c).map((x) => `${x.host === c.host ? '' : x.host + ':'}${x.path}`);
-  const staged = fmStaged(c.host, c.path);
+  const staged = fmStaged(c.host, c.path), away = fmOnlyOnItsHost(g, c);
   const box = el('input', { type: 'checkbox', 'aria-label': `Select ${c.path}` });
-  box.disabled = Boolean(staged);
-  if (checks) checks.push({ box, host: c.host, path: c.path });
-  const li = el('li', {}, box, el('span', { class: 'p' }, c.path),
-    staged ? button('Undo', () => { unstage(staged); fmPanel(); }, 'btn ghost sm') : button('Trash', () => fmTrash([{ host: c.host, path: c.path }]), 'btn ghost sm'),
+  box.disabled = Boolean(staged) || away;
+  if (checks && !away) checks.push({ box, host: c.host, path: c.path });
+  const li = el('li', { class: away ? 'away' : '' }, box, el('span', { class: 'p' }, c.path),
+    staged ? button('Undo', () => { unstage(staged); fmPanel(); }, 'btn ghost sm') : away ? fmBackupPill() : button('Trash', () => fmTrash([{ host: c.host, path: c.path }]), 'btn ghost sm'),
     text('span', `${fmtBytes(g.size)} · also ${others.slice(0, 3).join(', ')}${others.length > 3 ? ` and ${others.length - 3} more` : ''}`, 'm'));
   li._menu = () => resultMenu({ host: c.host, mount: c.mount, path: c.path, type: 'file' });
   return li;
@@ -831,7 +838,10 @@ function fmFolderPanel(f) {
   const d = FM.data, checks = [];
   const groups = d.groups.filter((g) => g.copies.some((c) => fmInFolder(f, c)));
   const twins = d.folder_copies.filter((t) => t.copies.some((c) => c.host === f.host && c.path === f.path));
-  const here = groups.flatMap((g) => g.copies.filter((c) => fmInFolder(f, c)).map((c) => ({ host: c.host, path: c.path })));
+  // offered for the trash in one go: only what has another copy on this host outside this folder. The rest have their other copy on another host
+  const elsewhereHere = (g) => g.copies.some((x) => x.host === f.host && !fmInFolder(f, x));
+  const here = groups.filter(elsewhereHere).flatMap((g) => g.copies.filter((c) => fmInFolder(f, c)).map((c) => ({ host: c.host, path: c.path })));
+  const backups = groups.filter((g) => !elsewhereHere(g) && g.hosts > 1).length;
   const peers = d.links.filter((l) => l.a === f.key || l.b === f.key);
   const out = [el('div', { class: 'node-head' }, text('span', `${f.host} · ${fmtBytes(f.bytes)}`, 'muted'), text('h2', f.path)),
     el('div', { class: 'fmacts' }, ...fmOpButtons([{ id: fmId('f', f.host, f.path), host: f.host, path: f.path, name: f.path.split('/').pop(), bytes: f.bytes, file: false }], true)),
@@ -849,19 +859,24 @@ function fmFolderPanel(f) {
   for (const t of twins) {
     const others = t.copies.filter((c) => !(c.host === f.host && c.path === f.path));
     const staged = fmStaged(f.host, f.path);
+    const local = others.some((c) => c.host === f.host), away = others.some((c) => c.host !== f.host);
     out.push(text('h3', `Whole folder copy · ${t.files.toLocaleString()} files · ${fmtBytes(t.bytes)}`),
       text('p', 'Same names and sizes in the same layout. A checksum scan confirms the content is identical.', 'muted small'),
       el('ul', { class: 'fmlist' }, ...others.map((c) => {
-        const li = el('li', {}, text('span', ''), el('span', { class: 'p' }, `${c.host === f.host ? '' : c.host + ':'}${c.path}`),
-          button('Trash that one', () => fmTrash([{ host: c.host, path: c.path }]), 'btn ghost sm'));
+        // a copy on another host is not offered for the trash from here, and neither is one on this host that has no second copy there
+        const dup = c.host === f.host || others.some((x) => x !== c && x.host === c.host);
+        const li = el('li', { class: dup ? '' : 'away' }, text('span', ''), el('span', { class: 'p' }, `${c.host === f.host ? '' : c.host + ':'}${c.path}`),
+          dup ? button('Trash that one', () => fmTrash([{ host: c.host, path: c.path }]), 'btn ghost sm') : fmBackupPill());
         return li;
       })),
+      away ? text('p', COPY_ELSEWHERE_WHY, 'st-running small fmwhy') : '',
       el('div', { class: 'fmacts' }, staged ? button('Undo trash of this folder', () => { unstage(staged); fmPanel(); }, 'btn ghost sm')
-        : button('Trash this folder, keep the other', () => fmTrash([{ host: f.host, path: f.path }]), 'btn sm')));
+        : local ? button('Trash this folder, keep the other', () => fmTrash([{ host: f.host, path: f.path }]), 'btn sm') : ''));
   }
   if (groups.length) {
     out.push(text('h3', `Duplicated files (${groups.length})`),
-      el('div', { class: 'fmacts' }, button(`Trash the ${here.length} here, keep the others`, () => fmTrash(here), 'btn sm'), fmChecked(checks)),
+      el('div', { class: 'fmacts' }, here.length ? button(`Trash the ${here.length} here, keep the others`, () => fmTrash(here), 'btn sm') : '', fmChecked(checks)),
+      backups ? text('p', `${backups} of these ${backups === 1 ? 'has its' : 'have their'} other copy on another host only. ${COPY_ELSEWHERE_WHY}`, 'st-running small fmwhy') : '',
       el('ul', { class: 'fmlist' }, ...groups.flatMap((g) => g.copies.filter((c) => fmInFolder(f, c)).map((c) => fmFileRow(g, c, checks)))));
   }
   out.push(fmNote());
@@ -871,14 +886,16 @@ function fmLinkPanel(aKey, bKey) {
   const a = fmFolder(aKey), b = fmFolder(bKey), d = FM.data, l = d.links.find((x) => x.a === aKey && x.b === bKey);
   if (!a || !b || !l) return [text('p', 'That line is gone from the map.', 'muted')];
   const pairs = d.groups.map((g) => ({ g, ca: g.copies.filter((c) => fmInFolder(a, c)), cb: g.copies.filter((c) => fmInFolder(b, c)) })).filter((p) => p.ca.length && p.cb.length);
-  const twin = l.kind === 'folder';
+  const twin = l.kind === 'folder', across = l.scope === 'across hosts';
   const keep = (f, other, list) => button(`Keep ${f.path}`, () => fmTrash(twin ? [{ host: other.host, path: other.path }] : list.map((c) => ({ host: c.host, path: c.path }))), 'btn sm');
   const checks = [];
-  return [el('div', { class: 'node-head' }, text('span', `${l.scope} · ${l.files.toLocaleString()} file${l.files === 1 ? '' : 's'} · ${fmtBytes(l.bytes)}`, 'muted'), text('h2', twin ? 'Whole folder copy' : 'Files in both')),
+  return [el('div', { class: 'node-head' }, text('span', `${l.scope} · ${l.files.toLocaleString()} file${l.files === 1 ? '' : 's'} · ${fmtBytes(l.bytes)}`, 'muted'),
+      text('h2', twin ? (across ? 'Whole folder copy on another host' : 'Whole folder copy') : 'Files in both')),
     el('ul', { class: 'fmlist' }, ...[a, b].map((f) => el('li', {}, text('span', ''), el('span', { class: 'p' }, `${f.host}:${f.path}`), button('Show', () => fmSelect({ type: 'folder', key: f.key }), 'btn ghost sm')))),
-    l.scope === 'across hosts' ? text('p', 'On different hosts this may be a backup. Check before you trash either side.', 'st-running small') : '',
-    text('h3', 'Keep one side, trash the other'),
-    el('div', { class: 'fmacts' }, keep(a, b, pairs.flatMap((p) => p.cb)), keep(b, a, pairs.flatMap((p) => p.ca))),
+    // across hosts neither side is offered for the trash: one may be the backup of the other
+    across ? el('p', { class: 'st-running small fmwhy' }, copyElsewherePill(), ` ${COPY_ELSEWHERE_WHY}`) : '',
+    ...(across ? [] : [text('h3', 'Keep one side, trash the other'),
+      el('div', { class: 'fmacts' }, keep(a, b, pairs.flatMap((p) => p.cb)), keep(b, a, pairs.flatMap((p) => p.ca)))]),
     ...(pairs.length ? [text('h3', `Files (${pairs.length})`), el('div', { class: 'fmacts' }, fmChecked(checks)),
       el('ul', { class: 'fmlist' }, ...pairs.flatMap((p) => [...p.ca, ...p.cb].map((c) => fmFileRow(p.g, c, checks))))] : []),
     fmNote()];
@@ -918,6 +935,7 @@ function fmOverview() {
   }, { limit: 12, label: 'duplicate sets', tag: 'ul', className: 'nbrs' });
   return [text('p', 'Open a card with + to look inside it. Tick cards to pick them, then copy them to any folder on any host, or drag a card onto a folder. Changes go in a plan you check and run.', 'muted'),
     text('h3', 'Duplicates'), el('dl', { class: 'kv' }, text('dt', 'Reclaimable within hosts'), text('dd', fmtBytes(d.reclaimable)),
+      text('dt', 'Also on another host'), Object.assign(text('dd', `${fmtBytes(d.across_hosts?.bytes || 0)} in ${(d.across_hosts?.sets || 0).toLocaleString()} sets: possible backups, not counted`), { title: COPY_ELSEWHERE_WHY }),
       text('dt', 'Identical files'), text('dd', d.groups_total.toLocaleString()), text('dt', 'Whole folder copies'), text('dd', FM.comparing ? '…' : d.folder_copies.length.toLocaleString()),
       text('dt', 'Hidden, system or ignored'), text('dd', `${d.hidden.groups.toLocaleString()} sets, ${fmtBytes(d.hidden.bytes)}`)),
     ...(top.length ? [text('h3', 'Largest'), ul] : [])];

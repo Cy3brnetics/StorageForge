@@ -183,7 +183,7 @@ from .hostkeys import HostKeyNeeded
 from .remote import RemoteError
 from .runner import connect_address, scan_via_vault
 from .scanner import Progress, ScanOptions
-from .search import SearchQuery, run_changes, run_dupes, run_search
+from .search import SearchQuery, dupes_totals, run_changes, run_dupes, run_search
 from .vault import AuditLog, EnclaveMacKey, SecretBuffer, Vault, VaultError, fingerprint
 
 STATIC = Path(__file__).with_name('static')
@@ -1498,9 +1498,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @web.get('/api/dupes')
     @login_required
     def api_dupes():
-        groups = run_dupes(conn(), request.args.get('host') or None, parse_size(request.args.get('min_size') or '1MiB'), arg_num('limit', 50, 1, 500, int))
+        host, min_size = request.args.get('host') or None, parse_size(request.args.get('min_size') or '1MiB')
+        groups = run_dupes(conn(), host, min_size, arg_num('limit', 50, 1, 500, int))
         checksummed = bool(groups) or bool(conn().scalar('SELECT 1 FROM file_records WHERE checksum_hash IS NOT NULL LIMIT 1'))
-        return jsonify(groups=groups, checksummed=checksummed)
+        return jsonify(groups=groups, checksummed=checksummed, **dupes_totals(conn(), host, min_size))
 
     @web.get('/api/git')
     @login_required

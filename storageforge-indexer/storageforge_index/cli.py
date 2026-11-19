@@ -16,7 +16,7 @@ from .capacity import fmt_bin, parse_size
 from .db import Database, epoch
 from .remote import DEFAULT_EXCLUDE_NAMES, DEFAULT_EXCLUDE_PATHS, RemoteError, Transport
 from .scanner import ScanOptions, scan_host
-from .search import SearchQuery, run_changes, run_dupes, run_search
+from .search import SearchQuery, dupes_totals, run_changes, run_dupes, run_search
 
 DEFAULT_DB = os.environ.get('STORAGEFORGE_DB', '~/.local/share/storageforge/index.db')
 
@@ -196,10 +196,16 @@ def cmd_dupes(args) -> int:
     if not groups:
         print('No duplicate groups. Scan with --checksum to hash size-collision candidates first.', file=sys.stderr)
         return 1
-    for g in groups:
-        print(f'{g["copies"]}× {fmt_bin(g["size"])}  reclaim {fmt_bin(g["reclaimable"])}  sha256 {g["sha256"][:16]}…')
+    for g in groups:      # a copy on another host is a possible backup: said, and never counted as space to reclaim
+        what = [f'reclaim {fmt_bin(g["reclaimable"])}'] if g['reclaimable'] else []
+        if g['hosts'] > 1:
+            what.append(f'on {g["hosts"]} hosts: a copy on another host, a possible backup')
+        print(f'{g["copies"]}× {fmt_bin(g["size"])}  {"  ".join(what)}  sha256 {g["sha256"][:16]}…')
         for f in g['files']:
             print(f'    {f}')
+    t = dupes_totals(conn, args.host, args.min_size)
+    print(f'{t["total_groups"]} group(s); {fmt_bin(t["reclaimable"])} reclaimable within hosts; {t["across_hosts"]["groups"]} group(s) with a copy on '
+          f'another host ({fmt_bin(t["across_hosts"]["bytes"])}), possible backups, not counted', file=sys.stderr)
     return 0
 
 
@@ -215,10 +221,12 @@ def cmd_folders(args) -> int:
         return 1
     for g in r['groups']:
         print(f'{g["count"]}× {g["files"]:,} files {fmt_bin(g["bytes"])}  {g["scope"]}'
-              + (f'  reclaim {fmt_bin(g["reclaimable"])}' if g['scope'] == 'same host' else ''))
+              + (f'  reclaim {fmt_bin(g["reclaimable"])}' if g['reclaimable'] else '')
+              + ('  a copy on another host: a possible backup' if g['scope'] != 'same host' else ''))
         for c in g['copies']:
             print(f'    {c["host"]}:{c["path"]}')
-    print(f'{r["total_groups"]} group(s); {fmt_bin(r["reclaimable_same_host"])} reclaimable within hosts', file=sys.stderr)
+    print(f'{r["total_groups"]} group(s); {fmt_bin(r["reclaimable_same_host"])} reclaimable within hosts; {r["across_hosts_groups"]} group(s) with a copy on '
+          f'another host ({fmt_bin(r["elsewhere_across_hosts"])}), possible backups, not counted', file=sys.stderr)
     return 0
 
 

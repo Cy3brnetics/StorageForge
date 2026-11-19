@@ -264,15 +264,17 @@ def duplicate_folders(conn: Conn, host: str | None = None, min_files: int = 3, m
         files, size = keys[0][2:]
         copies = [{'host': mounts[k[0]][0], 'mount': mounts[k[0]][1], 'path': k[1]} for k in sorted(keys, key=lambda k: (mounts[k[0]], k[1]))]
         hosts = {c['host'] for c in copies}
-        out.append({'files': files, 'bytes': size, 'copies': copies, 'count': len(copies),
-                    'reclaimable': size * (len(copies) - 1), 'same_name': len({posixpath.basename(c['path']) for c in copies}) == 1,
+        # one copy is kept on each host: a copy on another host is a possible backup, never space to free (`elsewhere` counts those)
+        out.append({'files': files, 'bytes': size, 'copies': copies, 'count': len(copies), 'hosts': len(hosts),
+                    'reclaimable': size * (len(copies) - len(hosts)), 'elsewhere': size * (len(hosts) - 1),
+                    'same_name': len({posixpath.basename(c['path']) for c in copies}) == 1,
                     'scope': 'same host' if len(hosts) == 1 else 'across hosts'})
-    out.sort(key=lambda g: (g['scope'] != 'same host', -g['reclaimable']))
+    out.sort(key=lambda g: (g['scope'] != 'same host', -g['reclaimable'], -g['elsewhere'], -g['bytes']))
     same = [g for g in out if g['scope'] == 'same host']
     across = [g for g in out if g['scope'] != 'same host']
     return {'groups': same[:limit] + across[:limit], 'total_groups': len(out), 'folders_checked': checked,
             'same_host_groups': len(same), 'across_hosts_groups': len(across),
-            'reclaimable_same_host': sum(g['reclaimable'] for g in same)}
+            'reclaimable_same_host': sum(g['reclaimable'] for g in out), 'elsewhere_across_hosts': sum(g['elsewhere'] for g in across)}
 
 
 def cold_folders(conn: Conn, host: str | None = None, years: float = 2.0, min_bytes: int = 1 << 30,

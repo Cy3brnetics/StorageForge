@@ -65,7 +65,7 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/search?q=&host=&size_gt=&type=f\|d\|l&under=&limit=` | needs `q`, `size_gt` or `under`; `limit` ≤ 500 |
 | GET | `/api/browse?host=&path=` | subfolders with indexed sizes (move pickers) |
 | GET | `/api/fs/browse?host=&path=` | folders and files with mounts, shares and planned mounts |
-| GET | `/api/folders/duplicates?host=&min_files=&min_size=` | duplicate folders |
+| GET | `/api/folders/duplicates?host=&min_files=&min_size=` | duplicate folders. Each group has `scope`, `hosts`, `reclaimable` (second copies on one host) and `elsewhere` (bytes held on other hosts: possible backups); the answer has `reclaimable_same_host` and `elsewhere_across_hosts` |
 | GET | `/api/folders/cold?host=&years=&min_size=` | folders whose newest file is older than the cutoff |
 | GET | `/api/git?host=` | repositories, copies and archive state |
 | POST | `/api/git/status` | `{"host", "path"}`: live status of a repository a scan found |
@@ -84,7 +84,7 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | PUT | `/api/backups/target` | `{"host", "path"}`: copy each backup to that host; empty stops copying |
 | GET | `/api/capacity?host=` | each mount's usage over 30 days and when it fills up at that rate |
 | GET | `/api/file-changes?host=&scan=&limit=` | what a scan found changed, grouped by folder |
-| GET | `/api/dupes?host=&min_size=&limit=` | identical files from checksum scans |
+| GET | `/api/dupes?host=&min_size=&limit=` | identical files from checksum scans, with the same fields per group, and over all groups `total_groups`, `reclaimable` and `across_hosts` (`groups`, `bytes`). The limit is shared between the two classes |
 | GET, PUT | `/api/hosts/<name>/schedule` | the host's own scan interval and quiet hours: `{"interval": "1d", "quiet_hours": "22-6"}`; empty uses the global interval, no quiet hours |
 | POST | `/api/scan` | `{"host"}`: queue a vault-backed scan (202, `{"job_id"}`); duplicates collapse |
 | POST | `/api/scan/all` | `{}`: queue a scan of every host bound by name for scanning (202, `{"jobs": {host: job_id}}`); duplicates collapse |

@@ -68,6 +68,19 @@ Added entries are logged only after a mount's first scan, so a first index doesn
 
 `scan --checksum` hashes only files whose size collides with another file (at least `--checksum-min-size`, 1 MiB). `dupes` then lists identical files. The **Cleanup** panel and `folders` find likely duplicate *folders* from the index alone, by matching file names, sizes and subfolder layout; renamed copies still match.
 
+#### Copies on the same host, and copies on another host
+
+They are two classes, everywhere duplicates are listed or counted (the web UI, the API, `dupes`, `folders` and the report):
+
+| Where the copies are | What it is | Counted as reclaimable | Offered for the trash |
+| :--- | :--- | :--- | :--- |
+| Two or more on one host | a duplicate on that host | yes: every copy but one on that host | yes, as before |
+| One on each of several hosts | *a copy on another host: a possible backup* | no | no: the duplicates views give it no **Trash** button and say why |
+
+A set with two copies on one host and a third on another is both: the second copy on the first host counts as reclaimable, and the copy on the other host does not. The figure "also on another host" says how much is held that way, apart from what could be freed. In the API a group has `scope` (`same host` or `across hosts`), `hosts`, `reclaimable` (within hosts only) and `elsewhere` (the bytes held on other hosts).
+
+A copy on another host can still be put in the trash on purpose, from the folder's own menu or the picked-cards bar. The [plan check](plans-and-scripts.md#what-the-trash-tasks-of-a-plan-leave-behind) then warns that the copy on the other host would be the only one left.
+
 ## ClamAV
 
 Scans install nothing on a host. ClamAV is the exception, and only on hosts you deploy it to from the **Malware** tab: **Dry run** shows what it would do, **Deploy** installs it.

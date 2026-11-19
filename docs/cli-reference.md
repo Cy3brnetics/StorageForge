@@ -63,8 +63,8 @@ storageforge-index search [PATTERN] [options]
 | Command | Does |
 | :--- | :--- |
 | `changes --host H [--scan ID] [--limit N] [--format table\|json]` | files added, modified or deleted in a scan (default the latest) |
-| `dupes [--host H] [--min-size SIZE] [--limit N]` | identical files found by `--checksum` scans |
-| `folders [--host H] [--min-files N] [--min-size SIZE] [--include-system]` | duplicate folders by names, sizes and layout |
+| `dupes [--host H] [--min-size SIZE] [--limit N]` | identical files found by `--checksum` scans. `reclaim` counts second copies on the same host only; a group on several hosts says "a copy on another host, a possible backup" |
+| `folders [--host H] [--min-files N] [--min-size SIZE] [--include-system]` | duplicate folders by names, sizes and layout, with the same two classes |
 | `hosts` | indexed hosts |
 | `hosts packages HOST [--against HOST] [--script [-o FILE]] [--json]` | the packages a host was given on purpose, from its last scan: list them, compare two hosts (exit 1 if they differ), or write a script that installs them on another machine with the same package manager (reports unless `--apply`) |
 | `hosts rekey NAME [--port P]` | forget a host's pinned SSH host keys after a reinstall; scan it right after |

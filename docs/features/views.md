@@ -36,7 +36,7 @@ A map of the folders on a host, built from the index, with lines between folders
 
 ![File map of sf-fedora](../images/features/graph-files.jpg)
 
-Tick cards to compare them, and the side panel lists the files and stages **move to trash** into a [change plan](planning.md#change-plans). Space is counted per host, because a copy on another host is more likely a backup than waste. The index has no inode numbers, so hard links count as copies.
+Tick cards to compare them, and the side panel lists the files and stages **move to trash** into a [change plan](planning.md#change-plans). Space is counted per host, because a copy on another host is more likely a backup than waste: such a copy is marked **possible backup**, is counted apart as "also on another host", and gets no **Trash** button here (see [the two classes](../scanning-and-search.md#copies-on-the-same-host-and-copies-on-another-host)). A trash is checked against what is already staged, and one that would take the last copy of something is not staged. The index has no inode numbers, so hard links count as copies.
 
 ### Structure
 

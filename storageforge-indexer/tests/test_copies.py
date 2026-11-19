@@ -17,19 +17,13 @@ from storageforge_index import changes, copies, folders, moves
 MIB = 1 << 20
 
 
-class Index(unittest.TestCase):
-    """An index as scans leave it: a row for every file and for every folder on the way to it."""
+class Builder:
+    """Writes an index as scans leave it: a row for every file and for every folder on the way to it. test_browser_copies.py uses it too."""
 
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.db = dbfactory.make(self, Path(self.tmp) / 'index.db')
-        self.conn = self.db.connect()
-        self.db.migrate(self.conn)
+    def start(self, db, conn):
+        self.db, self.conn = db, conn
         self.mounts, self.dirs, self.made = {}, {}, set()
-
-    def tearDown(self):
-        self.conn.close()
-        shutil.rmtree(self.tmp)
+        return self
 
     def mount(self, host, mount='/', state='indexed'):
         c = self.conn
@@ -75,6 +69,18 @@ class Index(unittest.TestCase):
         names = {f'f{i}.bin': (i + 1) * MIB for i in range(files)} if isinstance(files, int) else files
         for rel, size in names.items():
             self.file(host, f'{root}/{rel}', f'{sha}-{rel}' if sha else None, size, mount, mtime)
+
+
+class Index(Builder, unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db = dbfactory.make(self, Path(self.tmp) / 'index.db')
+        self.start(self.db, self.db.connect())
+        self.db.migrate(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+        shutil.rmtree(self.tmp)
 
     def trash(self, *where):
         return changes.normalize({'name': 'cleanup', 'tasks': [{'type': 'trash', 'host': h, 'params': {'path': p}} for h, p in where]})
@@ -244,6 +250,134 @@ class TrashCheck(Index):
         r = client.post('/api/changes/check', json={'name': 'check', 'tasks': [{'type': 'trash', 'host': 'nas', 'params': {'path': '/data/x.iso'}}]}).get_json()
         self.assertEqual([(it['level'], it['code']) for it in r['tasks'][0]['items'] if it.get('code')], [('warn', 'only-copy-left')])
         self.assertEqual(r['warn'], 1)
+
+
+class AcrossHosts(Index):
+    """A copy on another host is a class of its own: a possible backup, never counted as space to free."""
+
+    def seed(self):
+        self.file('nas', '/data/a/same.iso', 'ss', size=8 * MIB)          # twice on one host: a duplicate there
+        self.file('nas', '/data/b/same.iso', 'ss', size=8 * MIB)
+        self.file('nas', '/data/x.iso', 'xx', size=20 * MIB)              # once on each of two hosts: a possible backup
+        self.file('pc', '/backup/x.iso', 'xx', size=20 * MIB)
+        self.file('nas', '/data/a/mix.iso', 'mm', size=3 * MIB)           # twice here and once there: both
+        self.file('nas', '/data/b/mix.iso', 'mm', size=3 * MIB)
+        self.file('pc', '/backup/mix.iso', 'mm', size=3 * MIB)
+
+    def test_identical_files_are_two_classes(self):
+        from storageforge_index.search import dupes_totals, run_dupes
+        self.seed()
+        got = {g['sha256']: g for g in run_dupes(self.conn, None, MIB, 50)}
+        self.assertEqual({k: (g['scope'], g['hosts'], g['copies'], g['reclaimable'], g['elsewhere']) for k, g in got.items()},
+                         {'ss': ('same host', 1, 2, 8 * MIB, 0), 'xx': ('across hosts', 2, 2, 0, 20 * MIB), 'mm': ('across hosts', 2, 3, 3 * MIB, 3 * MIB)})
+        self.assertEqual(dupes_totals(self.conn, None, MIB),
+                         {'total_groups': 3, 'reclaimable': 11 * MIB, 'across_hosts': {'groups': 2, 'bytes': 23 * MIB}})
+        self.assertEqual(dupes_totals(self.conn, 'pc', MIB)['total_groups'], 2, 'with a host: the groups with a copy on it')
+        self.assertEqual(dupes_totals(self.conn, None, 1 << 40), {'total_groups': 0, 'reclaimable': 0, 'across_hosts': {'groups': 0, 'bytes': 0}})
+
+    def test_neither_class_crowds_the_other_out_of_a_short_list(self):
+        from storageforge_index.search import run_dupes
+        for i in range(6):
+            self.file('nas', f'/data/a/s{i}', f's{i}', size=(50 + i) * MIB)
+            self.file('nas', f'/data/b/s{i}', f's{i}', size=(50 + i) * MIB)
+            self.file('nas', f'/data/x{i}', f'x{i}', size=(i + 1) * MIB)
+            self.file('pc', f'/backup/x{i}', f'x{i}', size=(i + 1) * MIB)
+        got = run_dupes(self.conn, None, MIB, 4)
+        self.assertEqual([g['sha256'] for g in got], ['s5', 's4', 'x5', 'x4'], 'the largest of each')
+        self.assertEqual(len(run_dupes(self.conn, None, MIB, 100)), 12)
+        self.assertEqual([g['scope'] for g in run_dupes(self.conn, None, MIB, 8)], ['same host'] * 4 + ['across hosts'] * 4)
+        self.file('tv', '/only/one', 'q1', size=MIB)
+        self.file('pc', '/only/one', 'q1', size=MIB)
+        short = run_dupes(self.conn, 'tv', MIB, 4)
+        self.assertEqual([g['sha256'] for g in short], ['q1'], 'one class alone gets the whole list')
+
+    def test_folder_copies_across_hosts_free_nothing(self):
+        self.tree('nas', '/photos/2019', 4)
+        self.tree('pc', '/backup/2019-copy', 4)            # across hosts only (another name, or the folders above them would be the pair)
+        self.tree('nas', '/music/a', 5)
+        self.tree('nas', '/music/b', 5)                    # on one host
+        self.tree('nas', '/docs/a', 3)
+        self.tree('nas', '/docs/b', 3)
+        self.tree('pc', '/docs', 3)                        # both
+        r = folders.duplicate_folders(self.conn, None, 3, MIB)
+        got = {g['copies'][0]['path']: (g['scope'], g['hosts'], g['reclaimable'], g['elsewhere']) for g in r['groups']}
+        self.assertEqual(got, {'/music/a': ('same host', 1, 15 * MIB, 0), '/photos/2019': ('across hosts', 2, 0, 10 * MIB), '/docs/a': ('across hosts', 2, 6 * MIB, 6 * MIB)})
+        self.assertEqual((r['reclaimable_same_host'], r['elsewhere_across_hosts'], r['same_host_groups'], r['across_hosts_groups']), (21 * MIB, 16 * MIB, 1, 2))
+        self.assertEqual([g['copies'][0]['path'] for g in r['groups']], ['/music/a', '/docs/a', '/photos/2019'], 'what can be freed first, then the largest')
+
+    def test_the_file_map_counts_them_apart(self):
+        from storageforge_index import filemap
+        self.seed()
+        self.tree('nas', '/photos/2019', 4)
+        self.tree('pc', '/backup/2019', 4)
+        twins = folders.duplicate_folders(self.conn, None, 3, MIB)
+        m = filemap.build(self.conn, None, MIB, twins=twins)
+        self.assertEqual(m['reclaimable'], 11 * MIB)
+        self.assertEqual(m['across_hosts'], {'sets': 3, 'bytes': 33 * MIB})
+        self.assertEqual({g['sha256']: (g['hosts'], g['elsewhere']) for g in m['groups']}, {'ss': (1, 0), 'xx': (2, 20 * MIB), 'mm': (2, 3 * MIB)})
+        self.assertEqual([(t['scope'], t['hosts'], t['reclaimable'], t['elsewhere']) for t in m['folder_copies']], [('across hosts', 2, 0, 10 * MIB)])
+
+    def test_the_routes_say_both_figures(self):
+        from storageforge_index import server, users
+        self.seed()
+        self.tree('nas', '/photos/2019', 4)
+        self.tree('pc', '/backup/2019', 4)
+        users.create(self.conn, 'admin', 'a long enough password', 'admin')
+        client = server.create_app(server.App(self.db), 's' * 48).test_client()
+        self.assertEqual(client.post('/api/login', json={'username': 'admin', 'password': 'a long enough password'}).status_code, 200)
+        r = client.get('/api/dupes').get_json()
+        self.assertEqual((r['reclaimable'], r['across_hosts'], r['total_groups']), (11 * MIB, {'groups': 2, 'bytes': 23 * MIB}, 3))
+        self.assertEqual({g['sha256']: g['scope'] for g in r['groups']}, {'ss': 'same host', 'xx': 'across hosts', 'mm': 'across hosts'})
+        f = client.get('/api/folders/duplicates').get_json()
+        self.assertEqual([(g['scope'], g['reclaimable'], g['elsewhere']) for g in f['groups']], [('across hosts', 0, 10 * MIB)])
+        self.assertEqual((f['reclaimable_same_host'], f['elsewhere_across_hosts']), (0, 10 * MIB))
+        fm = client.get('/api/filemap?folders=1').get_json()
+        self.assertEqual((fm['reclaimable'], fm['across_hosts']), (11 * MIB, {'sets': 3, 'bytes': 33 * MIB}))
+
+    def cli(self, *args):
+        import contextlib
+        import io
+        from storageforge_index import cli
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(['--db', self.db.url, *args])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_the_command_line_says_which_is_which(self):
+        self.seed()
+        self.tree('nas', '/photos/2019', 4)
+        self.tree('pc', '/backup/2019', 4)
+        self.tree('nas', '/music/a', 5)
+        self.tree('nas', '/music/b', 5)
+        self.conn.raw.commit()
+        code, out, err = self.cli('dupes')
+        self.assertEqual(code, 0, err)
+        lines = [l for l in out.splitlines() if not l.startswith('    ')]
+        self.assertEqual(lines, ['2× 8.00 MiB  reclaim 8.00 MiB  sha256 ss…',
+                                 '3× 3.00 MiB  reclaim 3.00 MiB  on 2 hosts: a copy on another host, a possible backup  sha256 mm…',
+                                 '2× 20.00 MiB  on 2 hosts: a copy on another host, a possible backup  sha256 xx…'])
+        self.assertIn('3 group(s); 11.00 MiB reclaimable within hosts; 2 group(s) with a copy on another host (23.00 MiB), possible backups, not counted', err)
+        code, out, err = self.cli('folders')
+        self.assertEqual(code, 0, err)
+        heads = [l for l in out.splitlines() if not l.startswith('    ')]
+        self.assertEqual(heads, ['2× 5 files 15.00 MiB  same host  reclaim 15.00 MiB', '2× 4 files 10.00 MiB  across hosts  a copy on another host: a possible backup'])
+        self.assertIn('15.00 MiB reclaimable within hosts; 1 group(s) with a copy on another host (10.00 MiB), possible backups, not counted', err)
+        code, out, _ = self.cli('dupes', '--format', 'json')
+        import json
+        self.assertEqual({json.loads(l)['sha256']: json.loads(l)['scope'] for l in out.splitlines()}, {'ss': 'same host', 'mm': 'across hosts', 'xx': 'across hosts'})
+
+    def test_a_report_counts_what_another_host_holds_apart(self):
+        from storageforge_index import payloads, report
+        self.seed()
+        hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'nas'")
+        ix = payloads._index_stats(self.conn, hid)
+        self.assertEqual((ix['dup_groups'], ix['dup_reclaimable'], ix['dup_elsewhere'], ix['dup_elsewhere_bytes']), (2, 11 * MIB, 2, 23 * MIB))
+        pc = payloads._index_stats(self.conn, self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'pc'"))
+        self.assertEqual((pc['dup_groups'], pc['dup_reclaimable'], pc['dup_elsewhere']), (0, 0, 2))
+        text = report.render_report([payloads.node_from_index(self.conn, 'nas')])
+        self.assertIn('Duplicates on this host: 2 groups of identical files', text)
+        self.assertIn('Copies on other hosts: 2 files here', text)
+        self.assertIn('are also on another host. Those are possible backups: they are not counted as reclaimable.', text)
 
 
 class FolderCopiesFound(Index):

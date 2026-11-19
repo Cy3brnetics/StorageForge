@@ -13,6 +13,7 @@ Timings that put a class here, on one core of the owner's machine on 2026-11-16,
 
 HEAVY = {
     # Chromium through Playwright
+    'test_browser_copies.BrowserCopies',
     'test_browser_drafts.BrowserDrafts',
     'test_browser_logs.BrowserLogs',
     'test_browser_notifications.BrowserNotifications',

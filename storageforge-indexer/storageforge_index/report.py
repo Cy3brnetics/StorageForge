@@ -401,8 +401,12 @@ def render_report(nodes: list[dict], title: str | None = None, as_of: dt.date | 
                            [[code(r['path']), cap2(r['bytes']), dt.datetime.fromtimestamp(r['mtime'], dt.timezone.utc).strftime('%Y-%m-%d')]
                             for r in ix['largest']], 'lrl')
             if ix['dup_groups']:
-                L += ['', f'Duplicates: {ix["dup_groups"]:,} groups of identical files, {cap2(ix["dup_reclaimable"])} reclaimable '
+                L += ['', f'Duplicates on this host: {ix["dup_groups"]:,} groups of identical files, {cap2(ix["dup_reclaimable"])} reclaimable '
                       '(`storageforge-index dupes`).']
+            if ix.get('dup_elsewhere'):
+                one = ix['dup_elsewhere'] == 1
+                L += ['', f'Copies on other hosts: {ix["dup_elsewhere"]:,} file{"" if one else "s"} here ({cap2(ix["dup_elsewhere_bytes"])}) '
+                      f'{"is" if one else "are"} also on another host. Those are possible backups: they are not counted as reclaimable.']
             L.append('')
 
     L += ['## Appendix B. Method', '',

@@ -145,7 +145,7 @@ storageforge-index graph import --blueprint atlas.json</pre>
         <button type="button" data-sub="trends" aria-pressed="false">Trends &amp; changes</button>
       </div>
       <section id="copies-dupes" class="stack" aria-label="Duplicates">
-        <p class="muted">Folders that hold the same file names and sizes in the same layout, so they are likely copies, on one host or across hosts. Checksums are not needed for these; they confirm the identical files below.</p>
+        <p class="muted">Folders that hold the same file names and sizes in the same layout, so they are likely copies, on one host or across hosts. Checksums are not needed for these; they confirm the identical files below. A copy on another host is a possible backup: it is listed apart and never counted as space to free.</p>
         <form id="copyform" class="row wrap">
           <label class="field"><span>At least</span><input id="copyfiles" type="number" min="1" value="3" style="width:64px" aria-label="Minimum files"></label><span class="muted">files and</span>
           <select id="copysize" aria-label="Minimum size"><option value="0">any size</option><option value="1MiB" selected>1 MiB</option><option value="100MiB">100 MiB</option><option value="1GiB">1 GiB</option></select>
