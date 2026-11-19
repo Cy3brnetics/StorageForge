@@ -256,6 +256,7 @@ Built since the last roadmap: storage pools of every kind as steps (`zfs-pool`, 
 | **`runtime-install`** | The four runtimes across distros, rootless setup, and a preflight that says present, installable or blocked. [Detail](archive/roadmaps/infrastructure-platform-roadmap.md#71-runtime-install) | open |
 | **Pools: what's left** | Add a vdev to a ZFS pool, replace or attach a disk; add, replace and grow an md array; LUKS | open |
 | **Networks: what's left** | Bonds, addresses, routes, DHCP; read netplan, NetworkManager and networkd files as well as what the kernel has | open |
+| **Copies on other hosts** (the owner's request of 2026-11-19) | Duplicates across hosts are possible backups: a class of their own, never reclaimable or offered for the trash. The plan check names *the last copy* and *the copy on HOST would be the only one left*. Keep in sync prepares a Moves mirror plan; a deployed pair is kept in sync and no longer a duplicate. Pairs left are suggested, with one notification, and can be set aside | built, not lab-tested: `3aa6ee8`, `40b8cd2`, `9d48e09`, `587e360`; the lab check `copies-across-hosts` (tier 13) is written in `90815ae` and has not run. Open: a sync action for single files, a CLI command, `keep_replaced` in the dialog, a folder with another filesystem mounted inside it |
 
 **Exit:** install a runtime on a bare VM from a plan. The report changes nothing, a changed plan gets 409, and a bridge change that cuts SSH rolls itself back.
 
