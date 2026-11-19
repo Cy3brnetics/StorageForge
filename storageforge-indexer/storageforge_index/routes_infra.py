@@ -390,6 +390,34 @@ def register(web, ctx):
         core.audit(conn(), actor(), 'sfnet.leave', 'ok', member['host'], {'address': member['address']})
         return jsonify(member)
 
+    @web.post('/api/sfnet/members/rotate')
+    @login_required
+    @password_confirmed
+    def api_sfnet_rotate():
+        body = json_body()
+        cancel = body.get('cancel') is True
+        member = sfnetwork.rotate(conn(), body.get('host'), actor(), cancel)
+        core.audit(conn(), actor(), 'sfnet.rotate.cancel' if cancel else 'sfnet.rotate', 'ok', member['host'], {'address': member['address'], 'key': (member['public_key'] or '')[:12]})
+        return jsonify(member)
+
+    @web.post('/api/sfnet/controller')
+    @login_required
+    @password_confirmed
+    def api_sfnet_controller():
+        # the controller as a member: nothing is made yet, the link is asked by the apply below
+        body = json_body()
+        member = sfnetwork.join_controller(conn(), actor(), body.get('endpoint') or None, body.get('hub') is True)
+        core.audit(conn(), actor(), 'sfnet.join', 'ok', member['host'], {'address': member['address'], 'endpoint': member['endpoint'], 'hub': member['hub'], 'controller': True})
+        return jsonify(member)
+
+    @web.post('/api/sfnet/controller/apply')
+    @login_required
+    @password_confirmed
+    def api_sfnet_controller_apply():
+        done = sfnetwork.apply_controller(conn(), actor())
+        core.audit(conn(), actor(), 'sfnet.controller.apply', 'ok', sfnetwork.sfcontroller.NAME, done)
+        return jsonify(done)
+
     @web.post('/api/sfnet/plan')
     @login_required
     def api_sfnet_plan():

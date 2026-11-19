@@ -310,6 +310,7 @@ See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure
 | POST 🔑 | `/api/sfnet` | `{"range"?, "topology"?}` | `security.manage`. Make the network (`mesh` or `hub`); the range is picked when not given |
 | POST 🔑 | `/api/sfnet/members` | `{"host", "endpoint"?, "hub"?, "reachable"?}` | `security.manage`. Add a scanned host |
 | POST 🔑 | `/api/sfnet/members/remove` | `{"host"}` | `security.manage`. Revoke a member |
+| POST 🔑 | `/api/sfnet/members/rotate` | `{"host", "cancel"?}` | `security.manage`. Ask for a member's key to be rotated; the plans that follow do it in two halves. `cancel` takes it back before the host has switched |
 | POST | `/api/sfnet/plan` | | `plans.edit`. Save the change plan that brings every member to what it should be; `plan_id` is null when there is nothing to do |
 | GET | `/api/desktop/profiles` | | `plans.view`. The desktop profiles kept here, and the compositors they can be rendered for |
 | PUT | `/api/desktop/profiles/<name>` | a profile: `{"mod", "binds", "rules", "displays", "hosts"}` | `plans.edit`. Save one; every value is checked |

@@ -31,6 +31,7 @@ HEAVY = {
     'test_platform_more.WriterOnRealNftables',
     'test_security.RealNftables',
     'test_security.RealSentinel',
+    'test_sfnet_rotation.RealWireGuard',
     'test_sends.RealSshd',
     # real time: waits, stalls and timers that have to run out
     'test_recovery.StalledWalk',

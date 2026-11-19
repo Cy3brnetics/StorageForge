@@ -58,6 +58,7 @@ Then **Stage in Changes**, where it is an ordinary step with a Report and an App
 | `net-bridge`, `net-vlan`, `net-mtu` | With NetworkManager or systemd-networkd |
 | `wg-peer` | Add or revoke a WireGuard peer, with where to call it and a keepalive where it cannot call back |
 | `wg-interface` | Make a WireGuard interface and its key pair on the host, or remove them. The private key is made on the host and never leaves it. An interface StorageForge did not make is left alone |
+| `wg-rotate` | One half of a key rotation on an interface StorageForge made. `prepare` makes a second key pair on the host, beside the one in use. `switch` starts using it, and only if it is the key the peers were given. `cancel` removes a second key that was never used |
 | `container` | `docker run` or `podman run` with a fixed name. It will not replace an existing container |
 | `vm` | `virt-install --import` from a disk you already have, with its console on loopback |
 | `os-install`, `os-boot`, `os-remove` | A second operating system on the host itself, beside the running one, and which of them starts. See [host migration](host-migration.md#a-second-system-beside-the-first) |
@@ -82,10 +83,13 @@ What it holds to:
 - **Private keys stay on their hosts.** The controller stores ranges, addresses and public keys. The step never prints the key, and its file is readable by root only.
 - **A key is taken from a reading once.** If an active member later shows a different key, nobody is told to trust it. It is a critical notification, because either the interface was made again by hand or it is another machine.
 - **A peer nobody asked for is a notification,** and the next plan revokes it.
+- **A key changes only when you ask.** `POST /api/sfnet/members/rotate` marks a member, and the plans that follow do the rest in three runs, each after a new reading: the host makes a second key pair (`wg-rotate`, `prepare`) and the reading brings back its public half; every peer learns the new key, with no address on it yet; and when the readings show that every peer knows it, the host switches (`wg-rotate`, `switch`) and its peers move its address to the new key and drop the old one in the same plan. Until the switch nothing is interrupted. The old private key is deleted from the host at the switch. `{"cancel": true}` takes a rotation back before the switch. A second key that appears on a host without being asked for is not taken: it is a notification, and the next plan removes it.
 - **A host that leaves** (`POST /api/sfnet/members/remove`) comes off every other member at the next plan and loses its interface and key. Its address is never given to another host.
 - **Open the port.** Peers call UDP 51903; add a `fw-rule` step where a firewall is in the way.
 
-Not built yet: the controller as a member (it runs in a container), key rotation through a plan, and the page.
+A machine that already has an interface called `sf0` that is not WireGuard is left alone. The machine that runs the StorageForge containers is one: their bridge has that name by default. Give the bridge another name with `STORAGEFORGE_BRIDGE` (and move any firewall rule that names it) before that machine joins.
+
+Not built yet: the controller as a member (it runs in a container), and the page. Built, not lab-tested.
 
 ## Designs
 
