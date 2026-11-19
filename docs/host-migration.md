@@ -315,6 +315,38 @@ After the first start, scan the new system and use the `packages`, `accounts` an
 
 **Tested on 2026-11-18** in a UEFI VM (Debian 13, a blank second disk), through plan scripts the change engine wrote: Fedora 44 (btrfs, `/var` a subvolume) and Rocky 10 (xfs, a separate `/boot`) installed, started once at the same address with the same host key under strict checking, and a plain restart returned to Debian. A Fedora that could not start its SSH server (a bug since fixed) was followed by Debian at the next reset. Ubuntu 24.04 was installed by the first hand-written trial of the same method. **Not tested:** free space on the disk the running system is on, a static address on the old system, `always` and `never`, Secure Boot, real hardware.
 
+## A desktop on it
+
+Two more plan steps put a desktop on a system, and a **desktop profile** kept on the server gives a fleet the same keys whichever compositor a machine runs.
+
+| Step | Does |
+| :--- | :--- |
+| `dux-install` | Installs [Dux](https://duxlabs.dev/) for a user through its unattended installer, with the compositor (niri, Hyprland or mango) and the terminal (Ghostty, Kitty or Alacritty) you choose |
+| `desktop-profile` | Writes a profile from the server into that user's compositor configuration: niri, Hyprland or Sway |
+
+**The Dux installer is pinned by release and hash.** The script on Dux's site is a short bootstrap that downloads the installer of whatever release is newest, so a hash of that script would pin nothing. The step names a release (`v2.1.2`) and the SHA-256 of that release's installer, fetches that one file from the project's releases, and runs nothing else. A step with no release or hash runs nothing: its report says which release is newest and the hash the project publishes for it, so you can read the release notes and fill the step in. The installer runs as the desktop's user, who needs sudo without a password. What it then installs comes from the distribution's and the project's package repositories as they are that day; that part cannot be pinned from here.
+
+**A profile** is keybindings, window rules and the display layout in one form:
+
+```json
+{"name": "fleet", "mod": "super",
+ "binds": [{"keys": "mod+Return", "action": "spawn", "arg": "ghostty"}, {"keys": "mod+shift+2", "action": "move-to-workspace", "arg": "2"}],
+ "rules": [{"app": "firefox", "workspace": "2"}, {"title": "Picture-in-Picture", "floating": true}],
+ "displays": [{"output": "DP-1", "mode": "2560x1440@144", "position": "0,0", "scale": "1"}],
+ "hosts": {"desk-07": [{"output": "eDP-1", "scale": "1.5"}]}}
+```
+
+- **Actions:** `spawn`, `close`, `fullscreen`, `toggle-floating`, `exit`, `focus-` and `move-` with `left`, `right`, `up`, `down`, `workspace` and `move-to-workspace` (1 to 20).
+- **Displays per machine:** `hosts` gives a machine its own layout, used in place of the profile's.
+- **Kept on the server:** `PUT /api/desktop/profiles/<name>` saves one, `GET /api/desktop/profiles` lists them, and `GET /api/desktop/profiles/<name>/render?compositor=niri&host=desk-07` shows the text a host would get.
+- **Checked like a plan:** a profile becomes a configuration file and its `spawn` commands are run by the compositor, so every value is matched against what it can be. A command is letters, digits and a few signs, with no quote, backslash, dollar sign, semicolon or line break.
+
+`desktop-profile` writes one file of its own (`storageforge.kdl`, `storageforge.lua` or `storageforge.conf`) beside the user's configuration and adds one line to the main configuration that includes it. The main file is backed up first (`.before-storageforge`). The step writes only into the user's own folder and not through a link. On niri, a configuration that `niri validate` refuses is taken out again. The file is the profile as it was when the plan's script was written: after changing a profile, make the plan's script again.
+
+Hyprland is written in its Lua configuration, which is what Hyprland 0.55 and later read; an older Hyprland is not served.
+
+**Tested on 2026-11-18.** In the tests, niri 26.04 and Hyprland 0.57 each check what is rendered for them with their own validators. In a VM: Fedora 44 installed by `os-install`, then `dux-install` (Dux v2.1.2, niri, Ghostty) and `desktop-profile` through one plan script; Dux installed in under two minutes and `niri validate` accepted the configuration with the profile in it. **Not tested:** a graphical session actually started with the profile (the VM has no display), Sway's output by Sway itself (it is not installed here), Hyprland and mango through the Dux installer, any distribution but Fedora.
+
 ## Phases
 
 | Phase | What | State |
@@ -333,6 +365,7 @@ After the first start, scan the new system and use the `packages`, `accounts` an
 | 5 | **Test and migration modes**: the isolation above, and cutover | Planned |
 | 6 | **VM to VM copy as is**: each disk by a signed send, live from a disk-only snapshot or shut off, and the VM defined on the target from the source's reading (`vm-send`, `vm-define`, `vm copy`). See [VMs on libvirt](vms.md#copying-a-vm-to-another-libvirt-host) | Built; lab-tested live from libvirt 10.0 to 9.0 (tier 18) |
 | 8 | **A second system beside the first**, over SSH: `os-install`, `os-boot`, `os-remove` (see above) | Built; tested in one UEFI VM on Fedora 44 and Rocky 10, **not in a lab tier** |
+| 9 | **A desktop on it:** `dux-install`, `desktop-profile`, and desktop profiles kept on the server (see above) | Built; one VM run on Fedora 44 with niri, **not in a lab tier** |
 | 7 | **Disk image from a physical host**: a block copy from a snapshot into qcow2, then fixed up to boot. To bare metal, through a live environment | Later |
 
 ## Lab run

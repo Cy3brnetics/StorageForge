@@ -8,21 +8,24 @@ each machine has.
      'displays': [{'output': 'DP-1', 'mode': '2560x1440@144', 'position': '0,0', 'scale': '1', 'transform': 'normal', 'enabled': True}]}
 
     normalize(profile)        the profile with every value checked, or ValueError saying which one
-    render(profile, 'niri')   the text of a configuration fragment: 'niri' or 'sway'
+    render(profile, 'niri')   the text of a configuration fragment: 'niri', 'hyprland' or 'sway'
 
 Everything in a profile ends up in a configuration file that a compositor reads as the user, and a `spawn` is a command that
 compositor runs. So a profile is checked like a plan: keys, names and modes are matched against what they can be, and a
 command is letters, digits and a few signs, with no quote, backslash, dollar, semicolon or line break in it. Nothing is passed
 through that could close a string or a block in either format and start a line of its own.
 
-Hyprland is not rendered yet. Its configuration language changed more than once in the last year and the current one has to
-be read from its own documentation before anything is written for it; a renderer written from memory would be a guess.
+Hyprland is rendered in its Lua configuration, which is what Hyprland 0.55 and later read (`hyprland.lua`). The function and
+field names here were taken from the example and the stubs Hyprland 0.57 installs, and what is rendered is checked in the tests
+by `Hyprland --verify-config`, which refuses a field or a direction it does not know. An older Hyprland, with the `.conf`
+language before it, is not served.
 """
 from __future__ import annotations
 
 import re
 
-COMPOSITORS = ('niri', 'sway')
+COMPOSITORS = ('niri', 'hyprland', 'sway')
+FILES = {'niri': 'storageforge.kdl', 'hyprland': 'storageforge.lua', 'sway': 'storageforge.conf'}          # the fragment's name in the compositor's folder
 MODS = ('super', 'alt')
 # action -> takes an argument
 ACTIONS = {'spawn': True, 'close': False, 'fullscreen': False, 'toggle-floating': False, 'exit': False,
@@ -43,6 +46,9 @@ OUTPUT = re.compile(r'[A-Za-z][A-Za-z0-9_-]{0,30}')
 MODE = re.compile(r'([1-9]\d{2,4})x([1-9]\d{2,4})(?:@(\d{1,3}(?:\.\d{1,3})?))?')
 POSITION = re.compile(r'(-?\d{1,5}),(-?\d{1,5})')
 SCALE = re.compile(r'[1-9](?:\.\d{1,3})?|0\.[2-9]\d{0,2}')
+HOST = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,252}')
+KEY_SETTING = 'desktop.profiles'
+MAX_PROFILES = 200
 
 
 def _text(value, what: str, pattern: re.Pattern, empty: bool = False) -> str:
@@ -68,10 +74,30 @@ def _keys(value, what: str) -> str:
     return '+'.join([m for m in ('mod', 'ctrl', 'alt', 'shift') if m in mods] + [key])
 
 
+def _displays(listed: list, label: str) -> list[dict]:
+    names, out = set(), []
+    for i, d in enumerate(listed, 1):
+        what = f'{label} {i}'
+        if not isinstance(d, dict):
+            raise ValueError(f'{what} is not an object')
+        display = {'output': _text(d.get('output'), f'{what}: the output', OUTPUT), 'mode': _text(d.get('mode'), f'{what}: the mode', MODE, empty=True),
+                   'position': _text(d.get('position'), f'{what}: the position', POSITION, empty=True), 'scale': _text(d.get('scale'), f'{what}: the scale', SCALE, empty=True),
+                   'transform': d.get('transform') or 'normal', 'enabled': d.get('enabled', True)}
+        if display['transform'] not in TRANSFORMS:
+            raise ValueError(f'{what}: the transform is one of {", ".join(TRANSFORMS)}')
+        if not isinstance(display['enabled'], bool):
+            raise ValueError(f'{what}: enabled is true or false')
+        if display['output'] in names:
+            raise ValueError(f'{what}: {display["output"]} is there twice')
+        names.add(display['output'])
+        out.append(display)
+    return out
+
+
 def normalize(profile) -> dict:
     if not isinstance(profile, dict):
         raise ValueError('a profile is an object')
-    out = {'name': _text(profile.get('name'), 'the name', NAME), 'mod': profile.get('mod') or 'super', 'binds': [], 'rules': [], 'displays': []}
+    out = {'name': _text(profile.get('name'), 'the name', NAME), 'mod': profile.get('mod') or 'super', 'binds': [], 'rules': [], 'displays': [], 'hosts': {}}
     if out['mod'] not in MODS:
         raise ValueError('mod is super or alt')
     for part in ('binds', 'rules', 'displays'):
@@ -109,22 +135,17 @@ def normalize(profile) -> dict:
         if not (rule['workspace'] or rule['floating'] or rule['fullscreen']):
             raise ValueError(f'{what} does nothing')
         out['rules'].append(rule)
-    names = set()
-    for i, d in enumerate(profile.get('displays') or [], 1):
-        what = f'display {i}'
-        if not isinstance(d, dict):
-            raise ValueError(f'{what} is not an object')
-        display = {'output': _text(d.get('output'), f'{what}: the output', OUTPUT), 'mode': _text(d.get('mode'), f'{what}: the mode', MODE, empty=True),
-                   'position': _text(d.get('position'), f'{what}: the position', POSITION, empty=True), 'scale': _text(d.get('scale'), f'{what}: the scale', SCALE, empty=True),
-                   'transform': d.get('transform') or 'normal', 'enabled': d.get('enabled', True)}
-        if display['transform'] not in TRANSFORMS:
-            raise ValueError(f'{what}: the transform is one of {", ".join(TRANSFORMS)}')
-        if not isinstance(display['enabled'], bool):
-            raise ValueError(f'{what}: enabled is true or false')
-        if display['output'] in names:
-            raise ValueError(f'{what}: {display["output"]} is there twice')
-        names.add(display['output'])
-        out['displays'].append(display)
+    out['displays'] = _displays(profile.get('displays') or [], 'display')
+    # a machine has the screens it has: its own layout, where it has one, is used in place of the profile's
+    hosts = profile.get('hosts') or {}
+    if not isinstance(hosts, dict) or len(hosts) > 2000:
+        raise ValueError('hosts is an object of host name to displays')
+    for host, displays in hosts.items():
+        if not isinstance(host, str) or not HOST.fullmatch(host):
+            raise ValueError(f'{str(host)[:60]!r} is not a host name')
+        if not isinstance(displays, list) or len(displays) > MAX['displays']:
+            raise ValueError(f'the displays of {host} are a list of at most {MAX["displays"]}')
+        out['hosts'][host] = _displays(displays, f'{host}, display')
     return out
 
 
@@ -190,6 +211,58 @@ def _niri(p: dict) -> str:
     return '\n'.join(lines).rstrip('\n') + '\n'
 
 
+# ── Hyprland (Lua, 0.55 and later) ───────────────────────────────────
+_HYPR = {'close': 'hl.dsp.window.close()', 'fullscreen': 'hl.dsp.window.fullscreen()', 'toggle-floating': 'hl.dsp.window.float({ action = "toggle" })', 'exit': 'hl.dsp.exit()'}
+_HYPR_TRANSFORM = {name: i for i, name in enumerate(TRANSFORMS)}          # 0 to 7, in the order Wayland numbers them
+
+
+def _hyprland(p: dict) -> str:
+    main = 'SUPER' if p['mod'] == 'super' else 'ALT'
+    mods = {'mod': main, 'ctrl': 'CTRL', 'alt': 'ALT', 'shift': 'SHIFT'}
+    lines = [f'-- {p["name"]}: written by StorageForge from the desktop profile. Change the profile, not this file.', '']
+    for b in p['binds']:
+        *m, key = b['keys'].split('+')
+        combo = ' + '.join(list(dict.fromkeys(mods[x] for x in m)) + [key])
+        action, arg = b['action'], b['arg']
+        if action == 'spawn':
+            act = f'hl.dsp.exec_cmd("{arg}")'
+        elif action == 'workspace':
+            act = f'hl.dsp.focus({{ workspace = {arg} }})'
+        elif action == 'move-to-workspace':
+            act = f'hl.dsp.window.move({{ workspace = {arg} }})'
+        elif action.startswith('focus-'):
+            act = f'hl.dsp.focus({{ direction = "{action[6:]}" }})'
+        elif action.startswith('move-'):
+            act = f'hl.dsp.window.move({{ direction = "{action[5:]}" }})'
+        else:
+            act = _HYPR[action]
+        lines.append(f'hl.bind("{combo}", {act})')
+    if p['binds']:
+        lines.append('')
+    for i, r in enumerate(p['rules'], 1):
+        match = ', '.join(f'{k} = "{_match(v)}"' for k, v in (('class', r['app']), ('title', r['title'])) if v)
+        does = ([f'workspace = "{r["workspace"]}"'] if r['workspace'] else []) + (['float = true'] if r['floating'] else []) + (['fullscreen = true'] if r['fullscreen'] else [])
+        lines.append(f'hl.window_rule({{ name = "storageforge-{i}", match = {{ {match} }}, {", ".join(does)} }})')
+    if p['rules']:
+        lines.append('')
+    for d in p['displays']:
+        fields = [f'output = "{d["output"]}"']
+        if not d['enabled']:
+            fields.append('disabled = true')
+        else:
+            if d['mode']:
+                fields.append(f'mode = "{d["mode"]}"')
+            if d['position']:
+                x, y = POSITION.fullmatch(d['position']).groups()
+                fields.append(f'position = "{int(x)}x{int(y)}"')
+            if d['scale']:
+                fields.append(f'scale = {float(d["scale"]):g}')
+            if d['transform'] != 'normal':
+                fields.append(f'transform = {_HYPR_TRANSFORM[d["transform"]]}')
+        lines.append(f'hl.monitor({{ {", ".join(fields)} }})')
+    return '\n'.join(lines).rstrip('\n') + '\n'
+
+
 # ── sway ────────────────────────────────────────────────────────────
 _SWAY = {'close': 'kill', 'fullscreen': 'fullscreen toggle', 'toggle-floating': 'floating toggle', 'exit': 'exit',
          'focus-left': 'focus left', 'focus-right': 'focus right', 'focus-up': 'focus up', 'focus-down': 'focus down',
@@ -240,8 +313,47 @@ def _sway(p: dict) -> str:
     return '\n'.join(lines).rstrip('\n') + '\n'
 
 
-def render(profile, compositor: str) -> str:
-    """The profile as that compositor's configuration. The profile is checked again here: nothing is rendered unchecked."""
+def render(profile, compositor: str, host: str | None = None) -> str:
+    """The profile as that compositor's configuration, with the display layout of `host` where the profile has one for it.
+    The profile is checked again here: nothing is rendered unchecked."""
     if compositor not in COMPOSITORS:
-        raise ValueError(f'the compositor is one of {", ".join(COMPOSITORS)}' + (': Hyprland is not rendered yet' if compositor == 'hyprland' else ''))
-    return {'niri': _niri, 'sway': _sway}[compositor](normalize(profile))
+        raise ValueError(f'the compositor is one of {", ".join(COMPOSITORS)}')
+    p = normalize(profile)
+    own = next((d for h, d in p['hosts'].items() if host and h.lower() == host.lower()), None)
+    if own is not None:
+        p = p | {'displays': own}
+    return {'niri': _niri, 'hyprland': _hyprland, 'sway': _sway}[compositor](p)
+
+
+# ── kept on the server ───────────────────────────────────────────────
+def profiles(conn) -> dict:
+    from . import alerts
+    return alerts.get_setting(conn, KEY_SETTING) or {}
+
+
+def get(conn, name: str) -> dict:
+    found = next((p for n, p in profiles(conn).items() if n.lower() == str(name).lower()), None)
+    if found is None:
+        raise LookupError(f'no desktop profile named {str(name)[:60]}')
+    return found
+
+
+def save(conn, profile, actor: str) -> dict:
+    from . import alerts
+    p = normalize(profile)
+    with conn.tx():
+        kept = {n: v for n, v in profiles(conn).items() if n.lower() != p['name'].lower()}
+        if len(kept) >= MAX_PROFILES:
+            raise ValueError(f'there are {MAX_PROFILES} profiles already')
+        kept[p['name']] = p
+        alerts.set_setting(conn, KEY_SETTING, kept, actor[:60])
+    return p
+
+
+def delete(conn, name: str, actor: str) -> None:
+    from . import alerts
+    with conn.tx():
+        kept = profiles(conn)
+        found = get(conn, name)['name']
+        del kept[found]
+        alerts.set_setting(conn, KEY_SETTING, kept, actor[:60])

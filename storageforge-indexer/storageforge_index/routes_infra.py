@@ -7,7 +7,7 @@ import time
 from flask import Response, jsonify, request
 from flask_login import current_user, login_required
 
-from . import changes, exposure, graph, infragraph, inframeasure, mapdesign, mapexport, netdevice, netfacts, reach, security, sfnetwork, whatif, workloads
+from . import changes, desktop, exposure, graph, infragraph, inframeasure, mapdesign, mapexport, netdevice, netfacts, reach, security, sfnetwork, whatif, workloads
 
 
 def register(web, ctx):
@@ -396,6 +396,35 @@ def register(web, ctx):
         made = sfnetwork.plan(conn(), actor())
         core.audit(conn(), actor(), 'sfnet.plan', 'ok', str(made['plan_id'] or ''), {'tasks': made['tasks']})
         return jsonify(made)
+
+    # Desktop profiles (desktop.py): kept here, written to hosts by the desktop-profile plan step and by nothing else
+    @web.get('/api/desktop/profiles')
+    @login_required
+    def api_desktop_profiles():
+        return jsonify(profiles=sorted(desktop.profiles(conn()).values(), key=lambda p: p['name'].lower()), compositors=list(desktop.COMPOSITORS))
+
+    @web.put('/api/desktop/profiles/<name>')
+    @login_required
+    def api_desktop_profile_save(name):
+        body = json_body()
+        if str(body.get('name') or name) != name:
+            raise ValueError('the name in the profile is not the one in the address')
+        saved = desktop.save(conn(), body | {'name': name}, actor())
+        core.audit(conn(), actor(), 'desktop.profile.save', 'ok', saved['name'], {'binds': len(saved['binds']), 'rules': len(saved['rules']), 'displays': len(saved['displays']), 'hosts': sorted(saved['hosts'])})
+        return jsonify(saved)
+
+    @web.delete('/api/desktop/profiles/<name>')
+    @login_required
+    def api_desktop_profile_delete(name):
+        desktop.delete(conn(), name, actor())
+        core.audit(conn(), actor(), 'desktop.profile.delete', 'ok', name, {})
+        return jsonify(ok=True)
+
+    @web.get('/api/desktop/profiles/<name>/render')
+    @login_required
+    def api_desktop_profile_render(name):
+        text = desktop.render(desktop.get(conn(), name), request.args.get('compositor', ''), request.args.get('host') or None)
+        return Response(text, mimetype='text/plain')
 
     @web.get('/api/infra/settings')
     @login_required

@@ -72,9 +72,8 @@ class Checked(unittest.TestCase):
     def test_nothing_is_rendered_unchecked_and_only_for_a_compositor_it_knows(self):
         with self.assertRaises(ValueError):
             desktop.render(changed(binds=[{'keys': 'mod+a', 'action': 'spawn', 'arg': 'a"b'}]), 'niri')
-        with self.assertRaises(ValueError) as got:
-            desktop.render(PROFILE, 'hyprland')
-        self.assertIn('not rendered yet', str(got.exception))
+        with self.assertRaises(ValueError):
+            desktop.render(PROFILE, 'kwin')
 
 
 class Rendered(unittest.TestCase):
@@ -110,6 +109,27 @@ class Rendered(unittest.TestCase):
                 ran = subprocess.run(['niri', 'validate', '-c', str(path)], capture_output=True, text=True)
                 with self.subTest(name):
                     self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+
+    def test_hyprland_says_the_same_in_its_lua(self):
+        lua = desktop.render(PROFILE, 'hyprland')
+        for want in ('hl.bind("SUPER + Return", hl.dsp.exec_cmd("ghostty"))', 'hl.bind("SUPER + SHIFT + 2", hl.dsp.window.move({ workspace = 2 }))', 'hl.bind("SUPER + Left", hl.dsp.focus({ direction = "left" }))',
+                     'hl.bind("SUPER + SHIFT + Down", hl.dsp.window.move({ direction = "down" }))', 'hl.bind("SUPER + CTRL + ALT + SHIFT + e", hl.dsp.exit())',
+                     'hl.window_rule({ name = "storageforge-2", match = { class = "^org[.]gnome[.]Calculator$", title = "^Calc [(]1[)]$" }, float = true })',
+                     'hl.monitor({ output = "HDMI-A-1", mode = "1920x1080", position = "2560x-200", scale = 1.5, transform = 1 })', 'hl.monitor({ output = "eDP-1", disabled = true })'):
+            with self.subTest(want):
+                self.assertIn(want, lua)
+        self.assertIn('hl.bind("ALT + Return"', desktop.render(changed(mod='alt'), 'hyprland'))
+
+    @unittest.skipUnless(shutil.which('Hyprland'), 'needs Hyprland to check its configuration')
+    def test_hyprland_itself_accepts_what_is_rendered_for_it(self):
+        """--verify-config refuses a field, a match property, a key or a direction it does not know (tried by hand on 0.57)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, profile in (('full', PROFILE), ('alt', changed(mod='alt')), ('empty', {'name': 'empty'})):
+                path = Path(tmp) / f'{name}.lua'
+                path.write_text(desktop.render(profile, 'hyprland'))
+                ran = subprocess.run(['Hyprland', '--verify-config', '-c', str(path)], capture_output=True, text=True, timeout=60)
+                with self.subTest(name):
+                    self.assertIn('config ok', ran.stdout + ran.stderr, (ran.stdout + ran.stderr)[-600:])
 
 
 if __name__ == '__main__':

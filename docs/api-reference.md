@@ -311,6 +311,10 @@ See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure
 | POST 🔑 | `/api/sfnet/members` | `{"host", "endpoint"?, "hub"?, "reachable"?}` | `security.manage`. Add a scanned host |
 | POST 🔑 | `/api/sfnet/members/remove` | `{"host"}` | `security.manage`. Revoke a member |
 | POST | `/api/sfnet/plan` | | `plans.edit`. Save the change plan that brings every member to what it should be; `plan_id` is null when there is nothing to do |
+| GET | `/api/desktop/profiles` | | `plans.view`. The desktop profiles kept here, and the compositors they can be rendered for |
+| PUT | `/api/desktop/profiles/<name>` | a profile: `{"mod", "binds", "rules", "displays", "hosts"}` | `plans.edit`. Save one; every value is checked |
+| DELETE | `/api/desktop/profiles/<name>` | | `plans.edit` |
+| GET | `/api/desktop/profiles/<name>/render` | `?compositor=niri\|hyprland\|sway&host=` | `plans.view`. The configuration text a host would get |
 
 ## Scheduler
 

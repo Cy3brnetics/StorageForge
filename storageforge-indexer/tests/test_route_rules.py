@@ -139,6 +139,8 @@ FRESH_PASSWORD = {
 }
 # No fresh password: plans that only sit in the database, reads over SSH or signed read-only probes, or the sign-in routes themselves.
 NO_FRESH_PASSWORD = {
+    ('PUT', '/api/desktop/profiles/<name>'),         # a profile sits in the database; the plan step that writes it to a host is run like any other
+    ('DELETE', '/api/desktop/profiles/<name>'),
     ('POST', '/api/sfnet/plan'),                  # saves a plan and runs nothing
     ('POST', '/api/devices/<name>/read'),        # reads, as a scan does, through the account bound for reading
     ('POST', '/api/devices/<name>/report'),      # saves what an apply would do. The apply asks
