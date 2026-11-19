@@ -11,7 +11,7 @@ python tests/run.py --list heavy     # what is in a block
 python -m unittest discover -s tests # everything in one process, as before
 ```
 
-Every block also runs on PostgreSQL when `STORAGEFORGE_TEST_PG` names a server it may create databases on (see [Operations](../../docs/operations.md#tests)). CI runs light, medium, heavy and deep as four steps on each database (`tests/ci.sh <block>`), and each step runs even when one before it failed.
+Every block also runs on PostgreSQL when `STORAGEFORGE_TEST_PG` names a server it may create databases on (see [Operations](../../docs/operations.md#tests)). There, each test's database is a copy of a template that already holds every migration ([`dbfactory.py`](dbfactory.py)); the template is rebuilt when a migration file changes. That took the full run on the owner's machine from 29 minutes to under 9 on 2026-11-18 (2,254 tests, `-j 6`). A test of the migrations themselves asks for an empty database with `dbfactory.make(..., empty=True)`, and `STORAGEFORGE_TEST_PG_TEMPLATE=0` migrates every database from nothing, as before. CI runs light, medium, heavy and deep as four steps on each database (`tests/ci.sh <block>`), and each step runs even when one before it failed.
 
 ## Three blocks
 

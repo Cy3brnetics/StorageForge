@@ -298,7 +298,7 @@ zizmor itself is pinned (1.32.0), so a release with new audits can't fail an unc
 
 `tests/test_platform.py` covers the vault, bindings, the audit chain, a real ephemeral `ssh-agent`, the graph and canvas, and the HTTP API with auth and CSP. `tests/test_indexer.py` covers units, patterns, the stream parser, pool math, mount planning, payload parsers, reports and real local scans. `tests/test_tasks.py` covers storage tasks and their scripts.
 
-The same suite runs against PostgreSQL when `STORAGEFORGE_TEST_PG` names a server it may create databases on (each test gets a fresh one, dropped afterwards). The backup tests are skipped there, since backups are of SQLite databases:
+The same suite runs against PostgreSQL when `STORAGEFORGE_TEST_PG` names a server it may create databases on (each test gets a fresh one, copied from a template that already holds the migrations, and dropped afterwards). The backup tests are skipped there, since backups are of SQLite databases:
 
 ```bash
 docker run -d --rm --name sf-test-pg --shm-size=256m -e POSTGRES_USER=sf -e POSTGRES_PASSWORD=sftest -p 127.0.0.1:55432:5432 postgres:16-alpine
