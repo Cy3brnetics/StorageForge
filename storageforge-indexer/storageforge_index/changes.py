@@ -477,6 +477,9 @@ def check(conn: Conn, plan: dict) -> dict:
                 if e['type'] == undo[0] and e['host'] == t['host'] and e['params'].get(undo[1]) == p.get(undo[1]):
                     say('warn', f'undoes task {j}: every rerun of the script does both again. Drop one of them')
         out.append({'task': i, 'title': title(t), 'host': h['name'], 'items': items})
+    from .copies import trash_findings      # the trash tasks taken together: the last copy of something, or the only one left
+    for i, level, code, text in trash_findings(conn, hs, plan['tasks']):
+        out[i - 1]['items'].append({'level': level, 'text': text, 'code': code})
     levels = [x['level'] for t in out for x in t['items']]
     crit_count = levels.count('crit')
     warn_count = levels.count('warn')

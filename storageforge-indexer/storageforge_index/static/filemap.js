@@ -118,12 +118,22 @@ async function fmTrash(items) {
   const last = fmWouldEmpty(items);
   if (last.length) { toast(`Stopped: that would trash every copy of ${last.length === 1 ? 'a file' : `${last.length} files`}. Keep one.`); return; }
   const tasks = items.map((i) => ({ type: 'trash', host: i.host, params: { path: i.path } }));
-  try { await postJSON('/api/changes/check', { name: 'check', tasks }); }
-  catch (err) { notify(err.message, 'error'); return; }
+  // checked with the trash already staged: the map shows the largest sets only, and the server knows every copy in the index
+  const staged = CH.plan.tasks.filter((t) => t.type === 'trash');
+  let found;
+  try {
+    const r = await (await postJSON('/api/changes/check', { name: 'check', tasks: [...staged, ...tasks] })).json();
+    found = r.tasks.slice(staged.length).flatMap((t) => t.items).filter((x) => x.code);
+  } catch (err) { notify(err.message, 'error'); return; }
+  const lastCopy = found.find((x) => x.code === 'last-copy');
+  if (lastCopy) { notify(`Not staged, ${lastCopy.text}`, 'error'); return; }
   const stamp = Date.now().toString(36);
   tasks.forEach((t, n) => CH.plan.tasks.push({ id: `t${stamp}${n}`, ...t }));
   chTouch();
-  toast(`Staged ${items.length} for the trash. Nothing moves until you run the plan in Changes.`);
+  const onlyLeft = found.find((x) => x.code === 'only-copy-left');
+  // as an error toast it stays until it is dismissed: this one has to be read
+  if (onlyLeft) notify(`Staged ${items.length} for the trash, with a warning: ${onlyLeft.text}. Nothing moves until you run the plan in Changes.`, 'error');
+  else toast(`Staged ${items.length} for the trash. Nothing moves until you run the plan in Changes.`);
   fmPanel();
 }
 function fmDrawStaged() {

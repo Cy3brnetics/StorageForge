@@ -37,7 +37,21 @@ Change plans work like an Ansible playbook for storage: an ordered list of tasks
 - profiles that need more devices than the pool has;
 - mounts over folders that already hold files;
 - running containers using the path;
-- tasks that undo each other.
+- tasks that undo each other;
+- trash tasks that between them leave no copy, or the only copy on another host (below).
+
+### What the trash tasks of a plan leave behind
+
+A plan made from the duplicates views trashes copies and counts on one being kept. **Check** looks at all the `trash` tasks of a plan together, against every copy the index knows: files with the same checksum, and folders with the same file names and sizes in the same layout, also when they are inside a folder the plan trashes.
+
+| Finding | Level | When |
+| :--- | :--- | :--- |
+| **the last copy** | critical | two or more tasks between them move every copy of a file or folder to the trash. The line is on the task that takes the last one, and names the copies and the other tasks |
+| **the copy on HOST would be the only one left** | warning | the content is on more than one host now and would be on one host afterwards. A copy on another host may be its backup |
+
+One task that trashes a folder holding both copies of something says nothing: that is a folder being trashed, not a cleanup. Trashing one of two copies on the same host says nothing either. A copy already in `.storageforge-trash`, or on a mount that is gone, is not counted as a copy. Folders are compared from 3 files and 1 MiB up, as the duplicates views do by default, and a plan's 2,000 largest folders are looked up: when there are more, the task says so.
+
+Both findings are in the header of the generated script, under "What StorageForge flagged". The check answers from the last scans, so scan again first when files have moved since.
 
 ```bash
 ./changes-plan.sh                               # report
