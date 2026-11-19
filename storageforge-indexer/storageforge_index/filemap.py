@@ -12,6 +12,7 @@ import posixpath
 
 from . import moves
 from .analysis import resolve
+from .copies import split_kept, syncs
 from .db import Conn, epoch
 from .folders import ignore_lists, is_ignored
 from .graph import load as graph_load
@@ -26,9 +27,10 @@ def _same_host_reclaim(copies: list[dict], size: int) -> int:
     return size * (len(copies) - len(hosts))
 
 
-def file_groups(conn: Conn, host: str | None, min_size: int, ignore: dict, system: bool) -> tuple[list[dict], dict]:
+def file_groups(conn: Conn, host: str | None, min_size: int, ignore: dict, system: bool, links: list[dict] | None = None) -> tuple[list[dict], dict]:
     """Files with the same checksum anywhere in the fleet. With a host, the groups with a copy there, with every copy: the
-    host filter used to sit inside the count too, so a file whose only copy was on another host was never a duplicate."""
+    host filter used to sit inside the count too, so a file whose only copy was on another host was never a duplicate.
+    links (copies.syncs): a file a deployed sync holds at its destination is that sync's copy of its source, not a duplicate of it."""
     mine = 'AND sum(CASE WHEN h.hostname = :host OR h.ip_address = :host THEN 1 ELSE 0 END) > 0' if host else ''
     found: dict[str, dict] = {}
     cur = conn.execute(f"""SELECT f.checksum_hash, h.hostname, m.mount_point, d.path, f.filename, f.file_size_bytes, f.modified_at
@@ -53,6 +55,10 @@ def file_groups(conn: Conn, host: str | None, min_size: int, ignore: dict, syste
     for g in found.values():
         if len(g['copies']) + g['hidden'] < 2:
             continue
+        if links:
+            g['copies'], synced = split_kept(g['copies'], links)
+            if synced and len(g['copies']) + g['hidden'] < 2:
+                continue                      # all that is left of it is one file and the copies a sync keeps of it
         if len(g['copies']) < 2:              # the other copies are system files or ignored
             hidden['groups'] += 1
             hidden['bytes'] += g['size'] * (len(g['copies']) + g['hidden'] - 1)
@@ -69,11 +75,13 @@ def file_groups(conn: Conn, host: str | None, min_size: int, ignore: dict, syste
 
 def build(conn: Conn, host: str | None, min_size: int, system: bool = False, twins: dict | None = None) -> dict:
     ignore = ignore_lists(conn)
-    groups, hidden = file_groups(conn, host, min_size, ignore, system)
+    links = syncs(conn)
+    groups, hidden = file_groups(conn, host, min_size, ignore, system, links)
 
     folder_copies = []
     for t in (twins or {}).get('groups', []):
         copies = [c for c in t['copies'] if not is_ignored(c['host'], c['path'], ignore, system=not system, extra=() if system else APP_DIRS)]
+        copies = split_kept(copies, links)[0]
         if len(copies) < 2:
             continue
         hosts = {c['host'] for c in copies}

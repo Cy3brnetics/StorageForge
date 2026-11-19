@@ -62,6 +62,9 @@ GET  /api/access/script?host=&remove=1   the read-only scan access setup (or rem
 POST /api/access/grant  {"host", "password", "admin_user", "remove"}   run that script once over SSH with sudo
 GET  /api/folders/duplicates?host=&min_files=&min_size=   folders that are copies by name and structure
 GET  /api/filemap?host=&min_size=&folders=&system=   the Graph view: folders holding copies and the lines between them
+GET  /api/copies                     folder copies on other hosts: suggested to keep in sync, kept in sync, and set aside
+GET  /api/copies/sides?host=&path=&host=&path=   each folder's files, size and newest change, and which changed last
+POST /api/copies/sync                {"src": {host, path}, "dst": {host, path}, "delete", "schedule"}: saves a Moves plan with one mirror step
 GET/PUT /api/files/ignore           paths and fragments left out of the file map and of broken-link flags
 GET  /api/browse?host=&path=         subfolders of a path with their indexed sizes (for picking move sources)
 DELETE /api/hosts/<name>[?keep_design=1]   retire a host (password confirmed; refused while anything is deployed there)
@@ -174,7 +177,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, selfupdate, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
-               folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
+               folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_copies, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
 from . import routes_planner
 from .runtimes import docker
 from .capacity import parse_size, trends
@@ -834,7 +837,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js", "notifyview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js"):name>')
+    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "copiesview.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js", "notifyview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
@@ -2676,15 +2679,24 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         host = request.args.get('host') or None
         min_files = arg_num('min_files', 3, 1, 1_000_000)
         min_size = parse_size(request.args.get('min_size') or '1MiB')
-        return jsonify(folder_result(('dupes', host, min_files, min_size),
+        return jsonify(folder_result(('dupes', host, min_files, min_size, jobs_mark()),
                                      lambda: analysis('dupes', (host, min_files, min_size, False))))
+
+    def jobs_mark():
+        """Jobs change without a scan: deploying or removing one has to show now, in the file map's lines and in what a sync keeps."""
+        return tuple(conn().all('SELECT count(*), max(deployed_at), max(removed_at) FROM jobs')[0])
+
+    def fleet_twins():
+        """The fleet's duplicate folders at the defaults: what the pairs across hosts and their suggestions are made from (copies.py)."""
+        size = parse_size('1MiB')
+        return folder_result(('dupes', None, 3, size, jobs_mark()), lambda: analysis('dupes', (None, 3, size, False)))
+    ctx.fleet_twins = fleet_twins
+    routes_copies.register(web, ctx)
 
     def filemap_result(host, min_size, system, with_folders):
         def compute():                        # its twin folders are made with it, by the same worker, from the same folder index
             return analysis('filemap', (host, min_size, system, with_folders))
-        # its job lines change without a scan: importing or removing a job has to show now
-        job_mark = tuple(conn().all('SELECT count(*), max(deployed_at), max(removed_at) FROM jobs')[0])
-        return folder_result(('filemap', host, min_size, system, with_folders, json.dumps(folders.ignore_lists(conn()), sort_keys=True), job_mark), compute)
+        return folder_result(('filemap', host, min_size, system, with_folders, json.dumps(folders.ignore_lists(conn()), sort_keys=True), jobs_mark()), compute)
 
     @web.get('/api/filemap')
     @login_required

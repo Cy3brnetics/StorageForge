@@ -33,6 +33,9 @@ def seed(ix):
     ix.file('pc', '/dl/x.iso', 'xx', size=20 * MIB)
     ix.tree('nas', f'{HOSTILE}/one', 3)                     # a name a host could report: shown as text
     ix.tree('pc', f'{HOSTILE}/two', 3)
+    tax = {'a.pdf': 2 * MIB, 'b.pdf': 3 * MIB, 'c.pdf': 7 * MIB}
+    ix.tree('nas', '/docs/tax', tax, mtime=1_700_000_900)   # the pair the sync test keeps in sync: nas changed last
+    ix.tree('pc', '/archive/tax-copy', tax, mtime=1_700_000_100)
 
 
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
@@ -153,6 +156,78 @@ class BrowserCopies(unittest.TestCase):
         self.assertIn('Not staged', self.page.inner_text('.sf-toast.error'))
         self.assertEqual(self.page.evaluate('CH.plan.tasks.length'), 1)
         self.page.evaluate("() => { CH.plan.tasks.length = 0; chTouch(); }")
+        self.assertEqual(self.errors, [])
+
+    # ── keep in sync ────────────────────────────────────────────────
+    def test_keeping_a_pair_in_sync_is_a_plan_read_in_moves_and_then_a_kept_pair(self):
+        import time
+        import uuid
+        from storageforge_index import jobs, moves
+        self.open_tab('copies')
+        mine = '#pairsbox section.suggested:has-text("/docs/tax")'
+        self.page.wait_for_selector(mine)
+        self.assertIn('a copy on another host: a possible backup', self.page.inner_text(mine))
+        self.page.click(f'{mine} button:has-text("Keep these two in sync…")')
+        self.page.wait_for_selector('dialog[open] form.cp-sync')
+        said = self.page.inner_text('dialog[open]')
+        self.assertIn('One way, from the source to the destination', said)
+        self.assertIn('Nothing is copied until you check it there and deploy it, with your password', said)
+        self.assertIn('nas:/docs/tax', self.page.eval_on_selector('dialog[open] select.cp-src', 's => s.selectedOptions[0].textContent'), 'the side that changed last')
+        self.assertEqual(self.page.eval_on_selector('dialog[open] select.cp-dst', 's => s.selectedOptions[0].textContent'), 'pc:/archive/tax-copy')
+        self.assertFalse(self.page.is_checked('dialog[open] input.cp-delete'), 'nothing is deleted at the destination unless asked')
+        self.page.select_option('dialog[open] select.cp-src', label=self.page.eval_on_selector('dialog[open] select.cp-src', 's => s.options[1].textContent'))
+        self.assertEqual(self.page.eval_on_selector('dialog[open] select.cp-dst', 's => s.selectedOptions[0].textContent'), 'nas:/docs/tax', 'the other side becomes the destination')
+        self.page.select_option('dialog[open] select.cp-src', index=0)
+        self.page.click('dialog[open] button[type=submit]')
+        self.page.wait_for_selector('.tabs button[data-tab="moves"][aria-selected="true"]')
+        self.page.wait_for_function("() => MV.plan && MV.plan.id && MV.plan.steps.length === 1")
+        step = self.page.evaluate('MV.plan.steps[0]')
+        self.assertEqual((step['method'], step['src'], step['dst'], step['options']['delete']),
+                         ('mirror', {'host': 'nas', 'path': '/docs/tax'}, {'host': 'pc', 'path': '/archive/tax-copy'}, False))
+        self.assertEqual(self.page.evaluate('MV.plan.name'), 'Keep in sync: nas:/docs/tax to pc')
+        self.assertEqual(self.page.locator('#movesbox button:has-text("Deploy…")').count(), 1, 'deployed from Moves, which asks for the password')
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM jobs'), 0, 'nothing syncs until then')
+        pid = self.page.evaluate('MV.plan.id')
+        self.open_tab('copies')
+        self.page.wait_for_selector(f'{mine} :text("not deployed yet")')
+        self.assertEqual(self.page.locator(f'{mine} button:has-text("in sync…")').count(), 0)
+        self.assertEqual(self.page.locator(f'{mine} button:has-text("Open the plan")').count(), 1)
+        # what a deploy of that plan does, and its first run reporting back
+        jobs.deploy_items(self.db, self.conn, moves.get_plan(self.conn, pid), 'apply', None, 'test')
+        job = self.conn.scalar('SELECT job_id FROM jobs WHERE plan_id = :p', {'p': pid})
+        now = int(time.time())
+        jobs.ingest(self.conn, {'run': str(uuid.uuid4()), 'job': job, 'kind': 'run', 'start': now - 90, 'end': now - 60, 'rc': 0, 'bytes': 1, 'files': 3, 'message': ''}, 'report')
+        self.page.reload()
+        self.page.wait_for_selector('html[data-route-ready]', state='attached')
+        self.open_tab('copies')
+        kept = '#pairsbox section.kept:has-text("/docs/tax")'
+        self.page.wait_for_selector(kept)
+        text = self.page.inner_text(kept)
+        self.assertIn('nas:/docs/tax → pc:/archive/tax-copy', text)
+        self.assertIn('kept in sync · in sync at its last run', text)
+        self.assertIn('last run ', text)
+        self.assertIn('one way, nothing deleted at the destination', text)
+        self.assertEqual(self.page.locator(mine).count(), 0, 'no longer suggested')
+        self.page.wait_for_selector('#copiesbox section.card')
+        self.assertEqual(self.page.locator('#copiesbox section.card', has_text='/docs/tax').count(), 0, 'and no longer listed as a duplicate')
+        self.assertIn('1 kept in sync, listed above and not here', self.page.inner_text('#copiesbox'))
+        self.file_map()
+        self.assertEqual(self.page.evaluate("FM.data.folder_copies.filter((t) => t.copies.some((c) => c.path === '/docs/tax')).length"), 0)
+        self.assertTrue(self.page.evaluate("FM.data.relations.some((r) => r.kind === 'job' && r.src.path === '/docs/tax' && r.dst.path === '/archive/tax-copy')"), 'drawn as a job line')
+        self.assertEqual(self.errors, [])
+
+    def test_the_file_map_offers_keep_in_sync_for_a_folder_whose_copy_is_on_another_host(self):
+        self.file_map()
+        self.select_folder('nas', '/photos/2019')
+        panel = self.page.locator('#summary')
+        panel.locator('button:has-text("Keep these two in sync…")').click()
+        self.page.wait_for_selector('dialog[open] form.cp-sync')
+        self.assertIn('nas:/photos/2019', self.page.inner_text('dialog[open] select.cp-src'))
+        self.page.click('dialog[open] button:has-text("Cancel")')
+        self.page.wait_for_selector('dialog[open]', state='detached')
+        self.assertEqual(self.conn.scalar("SELECT count(*) FROM move_plans WHERE name LIKE '%photos%'"), 0, 'cancelled: no plan saved')
+        self.select_folder('nas', '/music/a')
+        self.assertEqual(panel.locator('button:has-text("Keep these two in sync…")').count(), 0, 'two copies on one host: a cleanup, as before')
         self.assertEqual(self.errors, [])
 
 

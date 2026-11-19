@@ -212,12 +212,14 @@ def cmd_dupes(args) -> int:
 def cmd_folders(args) -> int:
     from .folders import duplicate_folders
     _, conn = open_db(args)
-    r = duplicate_folders(conn, args.host, args.min_files, args.min_size, args.limit, args.include_system)
+    from .copies import syncs
+    r = duplicate_folders(conn, args.host, args.min_files, args.min_size, args.limit, args.include_system, syncs=syncs(conn))
     if args.format == 'json':
         print(json.dumps(r))
         return 0
     if not r['groups']:
-        print(f'No duplicate folders among {r["folders_checked"]:,} folders.', file=sys.stderr)
+        print(f'No duplicate folders among {r["folders_checked"]:,} folders.'
+              + (f' {r["kept_in_sync"]} pair(s) kept in sync are not listed.' if r['kept_in_sync'] else ''), file=sys.stderr)
         return 1
     for g in r['groups']:
         print(f'{g["count"]}× {g["files"]:,} files {fmt_bin(g["bytes"])}  {g["scope"]}'
@@ -226,7 +228,8 @@ def cmd_folders(args) -> int:
         for c in g['copies']:
             print(f'    {c["host"]}:{c["path"]}')
     print(f'{r["total_groups"]} group(s); {fmt_bin(r["reclaimable_same_host"])} reclaimable within hosts; {r["across_hosts_groups"]} group(s) with a copy on '
-          f'another host ({fmt_bin(r["elsewhere_across_hosts"])}), possible backups, not counted', file=sys.stderr)
+          f'another host ({fmt_bin(r["elsewhere_across_hosts"])}), possible backups, not counted'
+          + (f'; {r["kept_in_sync"]} pair(s) kept in sync, not listed' if r['kept_in_sync'] else ''), file=sys.stderr)
     return 0
 
 

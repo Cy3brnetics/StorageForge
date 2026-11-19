@@ -81,6 +81,25 @@ A set with two copies on one host and a third on another is both: the second cop
 
 A copy on another host can still be put in the trash on purpose, from the folder's own menu or the picked-cards bar. The [plan check](plans-and-scripts.md#what-the-trash-tasks-of-a-plan-leave-behind) then warns that the copy on the other host would be the only one left.
 
+#### Keeping a pair in sync
+
+A folder and its copy on another host can be kept the same from then on. **Keep these two in sync…** is on each pair under **Cleanup → Duplicates → Copies on other hosts**, and on a whole-folder copy across hosts in the file map. It asks three things:
+
+- which side is the **source**. The side whose newest file changed last is offered;
+- how often it runs: every hour, day or week;
+- whether to also delete at the destination what is gone from the source. This is off unless you tick it.
+
+It then saves a [Moves plan](plans-and-scripts.md#data-moves) with one `mirror` step and opens it in **Moves**. This is the same sync engine as any mirror step: a job on the destination host that pulls from the source on a timer. Nothing is copied until you check that plan and deploy it there, with your password. The sync is one way: a file that differs at the destination is replaced by the one from the source, and nothing else there is removed.
+
+Once the plan is deployed:
+
+- the pair is listed under **Kept in sync**, with the state of its job (in sync at its last run, waiting for its first run, the last run failed, behind, paused) and when it last ran;
+- it is no longer listed as a duplicate, in the Cleanup panel, the file map, `/api/folders/duplicates` or `folders`. The same holds for a folder inside a synced one, for the identical files inside it, and for a mirror between two disks of one host. A file the sync left at the destination after it was removed at the source is still a duplicate of whatever else holds it;
+- it fills the sync and backup cells of the [protection matrix](planner.md) for the dataset holding the source, as every deployed mirror job does;
+- a run that fails is a critical notification, and a sync with no good run for two periods is a warning (`job-failed`, `job-stale`).
+
+The [plan check](plans-and-scripts.md#what-the-trash-tasks-of-a-plan-leave-behind) still counts the destination as a copy, so trashing the source of a sync warns that the copy on the other host would be the only one left. Any deployed mirror job makes its two folders a kept pair, also one whose plan was written by hand in Moves.
+
 ## ClamAV
 
 Scans install nothing on a host. ClamAV is the exception, and only on hosts you deploy it to from the **Malware** tab: **Dry run** shows what it would do, **Deploy** installs it.

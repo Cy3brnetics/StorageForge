@@ -12,14 +12,20 @@ Content is what the duplicates views show: files with the same checksum, and fol
 same layout (folders.py). Nothing here reads the whole index: the files and folders under each trashed path are read, and other copies
 of them are looked up by checksum, or by the size and name of a folder's largest file and then compared in full. A copy already in
 .storageforge-trash is nobody's copy: that folder is there to be emptied.
+
+Keeping a pair in sync (prepare_sync) saves a Moves plan with one mirror step, which the user deploys as any plan. Once its job is
+deployed the pair is "kept in sync" (syncs), and its destination is no longer a duplicate of its source (split_kept), in the
+duplicates views and in the file map.
 """
 from __future__ import annotations
 
 import heapq
+import json
 import posixpath
 
-from .db import Conn
-from .moves import _fmt, _subtree_sql, find_host, mount_of
+from .db import Conn, epoch
+from .moves import _fmt, _path, _subtree_sql, find_host, get_plan, host_slug, hosts, mount_of, normalize, save_plan
+from .moves import check as moves_check
 from .remote import is_under
 
 M64 = (1 << 64) - 1
@@ -32,6 +38,169 @@ MAX_SAID = 6                            # findings named one by one on a task; t
 
 def in_trash(path: str) -> bool:
     return f'/{TRASH}/' in path + '/'
+
+
+# ── kept in sync ────────────────────────────────────────────────────
+# Two folders are kept in sync by what already syncs folders here: a `mirror` step of a Moves plan (moves.py), deployed as a job
+# that runs on the destination host on a timer and pulls from the source (jobs.py, jobscript.py). Nothing else is made: the action
+# below saves such a plan and the user reads and deploys it in Moves, with the password, as any plan. A deployed mirror job is what
+# makes a pair "kept in sync", whoever wrote its plan.
+SCHEDULES = ('hourly', 'daily', 'weekly')
+STATE_TEXT = {'ok': 'in sync at its last run', 'failed': 'the last run failed', 'stale': 'behind: no good run on schedule', 'never-ran': 'deployed, waiting for its first run',
+              'paused': 'paused', 'missing': 'its job is gone from the host'}
+
+
+def syncs(conn: Conn, now: float | None = None) -> list[dict]:
+    """Every deployed mirror job, with its state and last runs as the Deploy tab has them (jobs.overview)."""
+    from .jobs import overview
+    flags = {r[0]: (json.loads(r[1] or '{}').get('flags') or '').split() for r in conn.all(
+        "SELECT job_id, spec_json FROM jobs WHERE removed_at IS NULL AND method = 'mirror'")}
+    out = []
+    for j in overview(conn, now):
+        if j['method'] != 'mirror' or not j.get('src') or not j.get('dst'):
+            continue
+        src_host = j['source'] or j['runner']
+        out.append({'job': j['id'], 'plan': j['plan_id'], 'name': j['name'], 'src': {'host': src_host, 'path': j['src']},
+                    'dst': {'host': j['runner'], 'path': j['dst']}, 'across': host_slug(src_host) != host_slug(j['runner']),
+                    'state': j['state'], 'state_text': STATE_TEXT.get(j['state'], j['state']), 'schedule': j['schedule'], 'paused': j['paused'],
+                    'deployed_at': j['deployed_at'], 'last': j['last'], 'last_ok': j['last_ok'], 'delete': 'delete' in flags.get(j['id'], ())})
+    return out
+
+
+def kept_by(copy: dict, copies: list[dict], links: list[dict]) -> dict | None:
+    """The sync this copy is the destination of, when the same set holds what it is synced from: then it is that sync's copy, not a
+    duplicate. A file the sync left behind at the destination, with no source any more, is still a duplicate of whatever else holds it."""
+    for s in links:
+        if s['dst']['host'] != copy['host'] or not is_under(copy['path'], s['dst']['path']):
+            continue
+        src = (s['src']['path'].rstrip('/') + _rel(s['dst']['path'], copy['path'])) or '/'
+        if any(c['host'] == s['src']['host'] and c['path'] == src for c in copies):
+            return s
+    return None
+
+
+def split_kept(copies: list[dict], links: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(the copies that are still duplicates of each other, the ones a sync keeps: each with its 'job')."""
+    if not links:
+        return copies, []
+    rest, kept = [], []
+    for c in copies:
+        s = kept_by(c, copies, links)
+        if s:
+            kept.append({**c, 'job': s['job']})
+        else:
+            rest.append(c)
+    return rest, kept
+
+
+def prepared(conn: Conn) -> list[dict]:
+    """Mirror steps of saved Moves plans that are not deployed as jobs: a sync someone prepared and has not deployed yet."""
+    from .jobs import job_id
+    live = {r[0] for r in conn.all('SELECT job_id FROM jobs WHERE removed_at IS NULL')}
+    out = []
+    for pid, name, body in conn.all('SELECT plan_id, name, body_json FROM move_plans ORDER BY plan_id'):
+        for s in json.loads(body).get('steps') or []:
+            if s.get('method') == 'mirror' and job_id(pid, s.get('id')) not in live:
+                out.append({'plan': pid, 'name': name, 'src': s['src'], 'dst': s['dst'], 'delete': bool((s.get('options') or {}).get('delete'))})
+    return out
+
+
+def _place(conn: Conn, hs: dict, p, what: str) -> dict:
+    if not isinstance(p, dict) or not p.get('host') or not p.get('path'):
+        raise ValueError(f'{what}: give a host and a folder')
+    h = find_host(hs, str(p['host']))
+    if not h:
+        raise ValueError(f'{what}: {p["host"]} has not been scanned')
+    return {'host': h['name'], 'path': _path(p['path'], what)}
+
+
+def sides(conn: Conn, places: list) -> dict:
+    """For choosing which side is the source: each folder's files, size and newest change from the index, and which changed last."""
+    hs = hosts(conn)
+    out = []
+    for n, p in enumerate(places[:16], 1):
+        p = _place(conn, hs, p, f'folder {n}')
+        m = mount_of(hs[p['host']], p['path'])
+        if m and m['state'] == 'indexed':
+            where, q = _subtree_sql(p['path'], m['target'])
+            files, size, newest = conn.all(f"""SELECT count(*), coalesce(sum(f.file_size_bytes), 0), max(f.modified_at) FROM file_records f
+                                               WHERE {where} AND NOT f.is_directory AND NOT f.is_symlink""", {'m': m['id'], **q})[0]
+            out.append({**p, 'indexed': True, 'files': files, 'bytes': size, 'changed_at': epoch(newest)})
+        else:
+            out.append({**p, 'indexed': False, 'files': 0, 'bytes': 0, 'changed_at': None})
+    if len(out) < 2:
+        raise ValueError('give the two folders to keep in sync')
+    newest = max(range(len(out)), key=lambda i: (out[i]['changed_at'] or 0, -i))
+    return {'sides': out, 'source': newest}
+
+
+def prepare_sync(conn: Conn, src, dst, actor: str, delete: bool = False, schedule: str = 'daily', keep_replaced: bool = False) -> dict:
+    """Saves a Moves plan with one mirror step from src to dst and says which. One way, and nothing at the destination is deleted
+    unless `delete` is asked for. Nothing runs: the plan is checked, reported and deployed in Moves, behind the password. A pair
+    already kept in sync is refused, and a plan already prepared for it is given back instead of a second one."""
+    hs = hosts(conn)
+    src, dst = _place(conn, hs, src, 'the source'), _place(conn, hs, dst, 'the destination')
+    if schedule not in SCHEDULES:
+        raise ValueError(f'the sync runs {", ".join(SCHEDULES[:-1])} or {SCHEDULES[-1]}: other times are set on the plan in Moves')
+    if src['host'] == dst['host'] and (is_under(src['path'], dst['path']) or is_under(dst['path'], src['path'])):
+        raise ValueError('the two folders are the same, or one is inside the other')
+    pair = {(src['host'], src['path']), (dst['host'], dst['path'])}
+    for s in syncs(conn):
+        if {(s['src']['host'], s['src']['path']), (s['dst']['host'], s['dst']['path'])} == pair:
+            raise ValueError(f'these two are already kept in sync, from {s["src"]["host"]}:{s["src"]["path"]} to {s["dst"]["host"]}:{s["dst"]["path"]} (job {s["job"]})')
+    for p in prepared(conn):
+        if (p['src'], p['dst']) == (src, dst):
+            plan = get_plan(conn, p['plan'])
+            return {'plan': p['plan'], 'name': p['name'], 'existing': True, 'src': src, 'dst': dst, 'check': _levels(conn, plan)}
+    base = f'Keep in sync: {src["host"]}:{src["path"]} to {dst["host"]}'
+    base = base if len(base) <= 74 else base[:73] + '…'
+    taken = {r[0].lower() for r in conn.all('SELECT name FROM move_plans')}
+    name = next(n for n in (base if i == 1 else f'{base} ({i})' for i in range(1, 100_000)) if n.lower() not in taken)
+    body = {'name': name, 'notes': 'Prepared from a pair of folder copies. One way, from the source to the destination: a file that differs there is '
+                                   'replaced by the one from the source, and nothing else there is removed unless delete is ticked.',
+            'steps': [{'method': 'mirror', 'src': src, 'dst': dst,
+                       'options': {'delete': bool(delete), 'schedule': schedule, **({'keep_replaced': True} if keep_replaced else {})}}]}
+    with conn.tx():
+        pid = save_plan(conn, body, actor)
+    return {'plan': pid, 'name': name, 'existing': False, 'src': src, 'dst': dst, 'check': _levels(conn, get_plan(conn, pid))}
+
+
+# ── the pairs: suggested, kept, set aside ───────────────────────────
+NOT_BACKUPS = 'copies.not_backups'      # the setting: sets of folders someone said are not a backup of each other, each a sorted list of host:path
+
+
+def key_of(places: list[dict]) -> list[str]:
+    return sorted(f'{c["host"]}:{c["path"]}' for c in places)
+
+
+def not_backups(conn: Conn) -> list[list[str]]:
+    from .alerts import get_setting
+    return get_setting(conn, NOT_BACKUPS) or []
+
+
+def overview(conn: Conn, twins: dict, now: float | None = None) -> dict:
+    """What the Cleanup panel lists under "Copies on other hosts", from the fleet's duplicate folders (folders.duplicate_folders at its
+    defaults, with the syncs taken out): the sets across hosts that nothing keeps in sync, largest first, each with the plan
+    prepared for it when there is one; the pairs kept in sync, with their state and last runs; and the sets someone set aside."""
+    ready, said = prepared(conn), not_backups(conn)
+    suggested, aside = [], []
+    for g in twins.get('groups') or []:
+        if g['scope'] == 'same host':
+            continue
+        where = {(c['host'], c['path']) for c in g['copies']}
+        plan = next((p for p in ready if (p['src']['host'], p['src']['path']) in where and (p['dst']['host'], p['dst']['path']) in where), None)
+        item = {'key': key_of(g['copies']), 'files': g['files'], 'bytes': g['bytes'], 'copies': g['copies'], 'same_name': g['same_name'],
+                'hosts': g['hosts'], 'prepared': plan}
+        (aside if item['key'] in said else suggested).append(item)
+    suggested.sort(key=lambda s: (-s['bytes'], s['key']))
+    return {'suggested': suggested, 'kept': syncs(conn, now), 'dismissed': aside, 'stale': bool(twins.get('stale')),
+            'across_hosts_groups': twins.get('across_hosts_groups', 0), 'listed': len(suggested) + len(aside)}
+
+
+def _levels(conn: Conn, plan: dict) -> dict:
+    """What Moves' own check says of the plan, so the page can say at once that it has something to read."""
+    r = moves_check(conn, normalize(plan))
+    return {'crit': r['crit'], 'warn': r['warn'], 'items': [it for st in r['steps'] for it in st['items'] if it['level'] in ('crit', 'warn')][:8]}
 
 
 def _rel(root: str, path: str) -> str:

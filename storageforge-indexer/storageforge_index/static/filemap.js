@@ -814,6 +814,10 @@ function fmNote() {
    another on its own host is a duplicate there, and is offered as before. */
 const fmOnlyOnItsHost = (g, c) => !g.copies.some((x) => x !== c && x.host === c.host);
 function fmBackupPill() { return Object.assign(text('span', 'possible backup', 'pill unknown'), { title: COPY_ELSEWHERE_WHY }); }
+function fmSyncButton(places) {            // from a whole-folder copy across hosts: the dialog of copiesview.js, which saves a Moves plan
+  return Object.assign(button(cpSyncLabel(places.length), async () => { if (await copiesKeepInSync(places.map(({ host, path }) => ({ host, path })))) fmDraw(); }, 'btn sm pri'),
+    { title: 'Prepares a plan in Moves that copies one side to the other on a timer. Nothing syncs until you deploy it there' });
+}
 function fmFileRow(g, c, checks) {        // one file, its size and where its other copies are
   const others = g.copies.filter((x) => x !== c).map((x) => `${x.host === c.host ? '' : x.host + ':'}${x.path}`);
   const staged = fmStaged(c.host, c.path), away = fmOnlyOnItsHost(g, c);
@@ -871,7 +875,8 @@ function fmFolderPanel(f) {
       })),
       away ? text('p', COPY_ELSEWHERE_WHY, 'st-running small fmwhy') : '',
       el('div', { class: 'fmacts' }, staged ? button('Undo trash of this folder', () => { unstage(staged); fmPanel(); }, 'btn ghost sm')
-        : local ? button('Trash this folder, keep the other', () => fmTrash([{ host: f.host, path: f.path }]), 'btn sm') : ''));
+        : local ? button('Trash this folder, keep the other', () => fmTrash([{ host: f.host, path: f.path }]), 'btn sm') : '',
+        away && can('plans.edit') ? fmSyncButton([f, ...others]) : ''));
   }
   if (groups.length) {
     out.push(text('h3', `Duplicated files (${groups.length})`),
@@ -894,6 +899,7 @@ function fmLinkPanel(aKey, bKey) {
     el('ul', { class: 'fmlist' }, ...[a, b].map((f) => el('li', {}, text('span', ''), el('span', { class: 'p' }, `${f.host}:${f.path}`), button('Show', () => fmSelect({ type: 'folder', key: f.key }), 'btn ghost sm')))),
     // across hosts neither side is offered for the trash: one may be the backup of the other
     across ? el('p', { class: 'st-running small fmwhy' }, copyElsewherePill(), ` ${COPY_ELSEWHERE_WHY}`) : '',
+    across && twin && can('plans.edit') ? el('div', { class: 'fmacts' }, fmSyncButton([a, b])) : '',
     ...(across ? [] : [text('h3', 'Keep one side, trash the other'),
       el('div', { class: 'fmacts' }, keep(a, b, pairs.flatMap((p) => p.cb)), keep(b, a, pairs.flatMap((p) => p.ca)))]),
     ...(pairs.length ? [text('h3', `Files (${pairs.length})`), el('div', { class: 'fmacts' }, fmChecked(checks)),

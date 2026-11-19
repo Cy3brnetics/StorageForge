@@ -222,7 +222,7 @@ function copiesOpen(sub, reload = false) {
   for (const id of ['dupes', 'cold', 'trends']) $(`#copies-${id}`).hidden = id !== COPIES.sub;
   if (!reload && COPIES.loaded.has(`${COPIES.sub}|${S.host}`)) return;
   COPIES.loaded.add(`${COPIES.sub}|${S.host}`);
-  if (COPIES.sub === 'dupes') { loadFolderCopies(); loadDupes(); }
+  if (COPIES.sub === 'dupes') { loadPairs(); loadFolderCopies(); loadDupes(); }      // loadPairs: copiesview.js
   else if (COPIES.sub === 'cold') loadCold();
   else { loadTrends(); loadChanged(); }
 }
@@ -249,7 +249,8 @@ function renderFolderCopies() {
   const across = r.across_hosts_groups ?? r.groups.length - same;
   const head = text('p', `${same.toLocaleString()} within a host, ${across.toLocaleString()} across hosts, among ${r.folders_checked.toLocaleString()} folders checked` +
     (r.reclaimable_same_host ? ` · ${fmtBytes(r.reclaimable_same_host)} could be freed within hosts` : '') +
-    (across ? ` · ${fmtBytes(r.elsewhere_across_hosts || 0)} also on another host: possible backups, not counted` : ''), 'muted');
+    (across ? ` · ${fmtBytes(r.elsewhere_across_hosts || 0)} also on another host: possible backups, not counted` : '') +
+    (r.kept_in_sync ? ` · ${r.kept_in_sync.toLocaleString()} kept in sync, listed above and not here` : ''), 'muted');
   const shown = groups.length < (scope === 'same host' ? same : scope === 'across hosts' ? across : same + across)
     ? text('p', `Showing the largest ${groups.length.toLocaleString()}. Raise the size or file count to narrow it.`, 'muted small') : null;
   if (!groups.length) { box.replaceChildren(head, ...[staleNote(r)].filter(Boolean), text('p', scope ? `No folder copies ${scope === 'same host' ? 'within a host' : 'across hosts'} at this size.` : 'No folder copies at this size.', 'muted')); return; }

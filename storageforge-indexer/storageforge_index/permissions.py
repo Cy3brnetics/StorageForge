@@ -108,6 +108,8 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/(hosts|graph|canvas|capacity|planner/.*)', 'hosts.view'),
     (READ, r'/api/hosts/[^/]+/schedule', 'hosts.view'),
     (READ, r'/api/(browse|fs/browse|file-changes|dupes|filemap|files/ignore|folders/.*)', 'files.browse'),
+    (READ, r'/api/copies(/sides)?', 'files.browse'),                   # copies on other hosts (copies.py): what the duplicates views show, as pairs
+    (('POST',), r'/api/copies/(sync|dismiss)', 'plans.edit'),          # a sync is saved as a Moves plan; deploying it asks again
     (READ, r'/api/clamav', 'files.browse'),
     (('POST',), r'/api/clamav/hosts/[^/]+/config', 'deploy.apply'),
     (('POST',), r'/api/clamav/hosts/[^/]+/collect', 'deploy.report'),

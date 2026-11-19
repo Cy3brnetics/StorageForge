@@ -380,6 +380,194 @@ class AcrossHosts(Index):
         self.assertIn('are also on another host. Those are possible backups: they are not counted as reclaimable.', text)
 
 
+class KeepInSync(Index):
+    """A pair across hosts is kept in sync by a mirror step of a Moves plan, deployed as a job: what already syncs folders here."""
+    A, B = {'host': 'nas', 'path': '/photos/2019'}, {'host': 'pc', 'path': '/backup/2019-copy'}
+
+    def pair(self, sha=None):
+        self.tree('nas', '/photos/2019', 4, sha=sha, mtime=1_700_000_500)
+        self.tree('pc', '/backup/2019-copy', 4, sha=sha, mtime=1_700_000_100)
+
+    def deploy(self, plan_id):
+        """What an apply does before any host is reached: the plan's jobs are written down (jobs.deploy_items)."""
+        from storageforge_index import jobs
+        jobs.deploy_items(self.db, self.conn, moves.get_plan(self.conn, plan_id), 'apply', None, 'test')
+        return [r[0] for r in self.conn.all('SELECT job_id FROM jobs WHERE plan_id = :p AND removed_at IS NULL', {'p': plan_id})]
+
+    def ran(self, job, rc=0, ago=60, message=''):
+        import uuid
+        from storageforge_index import jobs
+        t = int(time.time()) - ago
+        self.assertTrue(jobs.ingest(self.conn, {'run': str(uuid.uuid4()), 'job': job, 'kind': 'run', 'start': t - 5, 'end': t, 'rc': rc, 'bytes': 10, 'files': 4, 'message': message}, 'report'))
+
+    def twins(self, **kw):
+        return folders.duplicate_folders(self.conn, None, 3, MIB, syncs=copies.syncs(self.conn), **kw)
+
+    def test_the_side_that_changed_last_is_offered_as_the_source(self):
+        self.pair()
+        got = copies.sides(self.conn, [self.B, self.A])
+        self.assertEqual([(s['host'], s['files'], s['bytes'], s['changed_at']) for s in got['sides']],
+                         [('pc', 4, 10 * MIB, 1_700_000_100), ('nas', 4, 10 * MIB, 1_700_000_500)])
+        self.assertEqual(got['source'], 1)
+        self.file('pc', '/backup/2019-copy/new.jpg', size=MIB, mtime=1_700_009_000)
+        self.assertEqual(copies.sides(self.conn, [self.B, self.A])['source'], 0)
+        for bad in ([self.A], [self.A, {'host': 'ghost', 'path': '/x'}], [self.A, {'host': 'pc', 'path': 'relative'}]):
+            with self.assertRaises(ValueError):
+                copies.sides(self.conn, bad)
+
+    def test_preparing_saves_a_moves_plan_and_syncs_nothing(self):
+        self.pair()
+        got = copies.prepare_sync(self.conn, self.A, self.B, 'web:ana')
+        plan = moves.get_plan(self.conn, got['plan'])
+        self.assertEqual(plan['name'], 'Keep in sync: nas:/photos/2019 to pc')
+        [step] = plan['steps']
+        self.assertEqual((step['method'], step['src'], step['dst']), ('mirror', self.A, self.B))
+        self.assertEqual((step['options']['delete'], step['options']['schedule']), (False, 'daily'), 'one way, and nothing deleted at the destination')
+        self.assertIsNone(plan['deployed_at'])
+        self.assertEqual(self.conn.scalar('SELECT count(*) FROM jobs'), 0)
+        self.assertEqual(copies.syncs(self.conn), [])
+        self.assertEqual([(p['plan'], p['src'], p['dst']) for p in copies.prepared(self.conn)], [(got['plan'], self.A, self.B)])
+        self.assertEqual(self.twins()['across_hosts_groups'], 1, 'prepared is not deployed: still a pair of copies')
+        again = copies.prepare_sync(self.conn, self.A, self.B, 'web:ana')
+        self.assertEqual((again['plan'], again['existing']), (got['plan'], True))
+        other = copies.prepare_sync(self.conn, self.B, self.A, 'web:ana', delete=True, schedule='weekly')      # the other way is another plan
+        step = moves.get_plan(self.conn, other['plan'])['steps'][0]
+        self.assertEqual((step['src'], step['options']['delete'], step['options']['schedule']), (self.B, True, 'weekly'))
+        self.assertIn('rsync', moves.script(self.conn, plan))
+
+    def test_what_cannot_be_kept_in_sync_is_refused_with_a_reason(self):
+        self.pair()
+        for src, dst, why in ((self.A, self.A, 'the same'), (self.A, {'host': 'nas', 'path': '/photos/2019/raw'}, 'inside the other'),
+                              (self.A, {'host': 'ghost', 'path': '/x'}, 'has not been scanned'), (self.A, {'host': 'pc'}, 'give a host and a folder')):
+            with self.assertRaisesRegex(ValueError, why):
+                copies.prepare_sync(self.conn, src, dst, 'test')
+        with self.assertRaisesRegex(ValueError, 'hourly, daily or weekly'):
+            copies.prepare_sync(self.conn, self.A, self.B, 'test', schedule='*-*-* 03:00')
+        self.deploy(copies.prepare_sync(self.conn, self.A, self.B, 'test')['plan'])
+        for src, dst in ((self.A, self.B), (self.B, self.A)):
+            with self.assertRaisesRegex(ValueError, 'already kept in sync, from nas:/photos/2019 to pc:/backup/2019-copy'):
+                copies.prepare_sync(self.conn, src, dst, 'test')
+
+    def test_once_deployed_the_pair_is_kept_in_sync_and_no_longer_a_duplicate(self):
+        from storageforge_index import filemap
+        self.pair(sha='p')
+        self.tree('nas', '/music/a', 5)
+        self.tree('nas', '/music/b', 5)
+        before = filemap.build(self.conn, None, MIB, twins=self.twins())
+        self.assertEqual((len(before['folder_copies']), before['across_hosts']['sets']), (2, 1))
+        [job] = self.deploy(copies.prepare_sync(self.conn, self.A, self.B, 'test')['plan'])
+        [s] = copies.syncs(self.conn)
+        self.assertEqual((s['job'], s['src'], s['dst'], s['across'], s['state'], s['delete'], s['last']), (job, self.A, self.B, True, 'never-ran', False, None))
+        r = self.twins()
+        self.assertEqual((r['kept_in_sync'], r['across_hosts_groups'], [g['copies'][0]['path'] for g in r['groups']]), (1, 0, ['/music/a']))
+        m = filemap.build(self.conn, None, MIB, twins=r)
+        self.assertEqual([t['copies'][0]['path'] for t in m['folder_copies']], ['/music/a'])
+        self.assertEqual((m['groups'], m['across_hosts']), ([], {'sets': 0, 'bytes': 0}), 'the hashed files inside the pair are the copies of the sync too')
+        self.assertTrue(any(x['kind'] == 'job' and x['src'] == self.A and x['dst'] == self.B for x in m['relations']), 'the map draws the sync as a job line')
+        self.ran(job)
+        [s] = copies.syncs(self.conn)
+        self.assertEqual((s['state'], s['state_text'], s['last']['rc'], s['last_ok']['files']), ('ok', 'in sync at its last run', 0, 4))
+        v = copies.overview(self.conn, self.twins())
+        self.assertEqual((v['suggested'], [k['job'] for k in v['kept']]), ([], [job]))
+        # the destination is still a copy the index knows: trashing the source leaves it as the only one
+        self.assertEqual([code for *_, code, _ in self.found(('nas', '/photos/2019'))], ['only-copy-left'])
+
+    def test_what_a_sync_left_behind_is_still_a_duplicate(self):
+        """Without delete, a file removed at the source stays at the destination. With a second copy on that host it is a duplicate there."""
+        from storageforge_index import filemap
+        self.pair(sha='p')
+        self.file('pc', '/backup/2019-copy/old.raw', 'oo', size=9 * MIB)
+        self.file('pc', '/dl/old.raw', 'oo', size=9 * MIB)
+        self.deploy(copies.prepare_sync(self.conn, self.A, self.B, 'test')['plan'])
+        groups, _ = filemap.file_groups(self.conn, None, MIB, {}, False, copies.syncs(self.conn))
+        self.assertEqual([(g['sha256'], g['scope'], g['reclaimable']) for g in groups], [('oo', 'same host', 9 * MIB)])
+
+    def test_a_folder_inside_a_synced_one_and_a_sync_on_one_host(self):
+        self.tree('nas', '/data/photos/2019', 4)
+        self.tree('nas', '/data/notes', {'n.txt': 10})
+        self.tree('pc', '/mirror/photos/2019', 4)
+        self.tree('pc', '/mirror/keep', {'k.txt': 20})
+        self.tree('nas', '/music/a', 5)
+        self.tree('nas', '/music/b', 5)
+        self.assertEqual(self.twins()['total_groups'], 2)
+        self.deploy(copies.prepare_sync(self.conn, {'host': 'nas', 'path': '/data'}, {'host': 'pc', 'path': '/mirror'}, 'test')['plan'])
+        self.deploy(copies.prepare_sync(self.conn, {'host': 'nas', 'path': '/music/a'}, {'host': 'nas', 'path': '/music/b'}, 'test')['plan'])
+        r = self.twins()
+        self.assertEqual((r['total_groups'], r['kept_in_sync'], r['reclaimable_same_host']), (0, 2, 0), 'a mirror on the same host is a copy kept on purpose, not space to free')
+        self.assertEqual([s['across'] for s in copies.syncs(self.conn)], [True, False])
+
+    def test_a_sync_that_fails_or_falls_behind_is_a_notification(self):
+        from unittest import mock
+        from storageforge_index import alerts, notifications
+        self.pair()
+        [job] = self.deploy(copies.prepare_sync(self.conn, self.A, self.B, 'test')['plan'])
+        self.assertEqual([k for k in alerts.problems(self.conn) if k.startswith('job-')], [])
+        self.ran(job, rc=23, message='rsync: some files could not be transferred')
+        self.assertEqual(copies.syncs(self.conn)[0]['state'], 'failed')
+        kind, ref, title, message, level = alerts.problems(self.conn)[f'job-failed:{job}']
+        self.assertEqual((kind, level, title), ('job-failed', 'crit', 'Job failed: mirror nas:/photos/2019 -> pc:/backup/2019-copy'))
+        self.assertIn('could not be transferred', message)
+        with mock.patch.object(alerts, 'send', lambda *a, **k: ['recorded']):
+            alerts.evaluate(self.db)
+        [g] = [g for g in notifications.center(self.conn)['groups'] if g['kind'] == 'job-failed']
+        self.assertEqual((g['host'], g['level'], g['ignorable']), ('pc', 'crit', False))
+        self.ran(job, rc=0, ago=30)                         # a good run after it: in sync again
+        self.assertEqual(copies.syncs(self.conn)[0]['state'], 'ok')
+        self.conn.execute('UPDATE job_runs SET started_at = started_at - 864000, finished_at = finished_at - 864000')
+        self.conn.execute('UPDATE jobs SET deployed_at = deployed_at - 864000')
+        s = copies.syncs(self.conn)[0]                      # ten days with no run of a daily sync
+        self.assertEqual((s['state'], s['state_text']), ('stale', 'behind: no good run on schedule'))
+        kind, _, title, _, level = alerts.problems(self.conn)[f'job-stale:{job}']
+        self.assertEqual((kind, level, title), ('job-stale', 'warn', 'No good run: mirror nas:/photos/2019 -> pc:/backup/2019-copy'))
+
+    def test_a_kept_pair_counts_as_a_copy_in_the_protection_matrix(self):
+        from storageforge_index import protection
+        self.pair()
+        rows = [{'node': 'ds:photos', 'path': '/photos', 'sync': {'state': 'None'}, 'snapshots': {'enabled': False}, 'backup': {'target': ''}}]
+        self.assertNotIn('deployed', protection.overlay(self.conn, 'nas', rows)[0])
+        [job] = self.deploy(copies.prepare_sync(self.conn, self.A, self.B, 'test')['plan'])
+        self.ran(job)
+        [row] = protection.overlay(self.conn, 'nas', rows)
+        self.assertEqual(row['sync'], {'state': 'Rsync Scheduled', 'target': 'pc:/backup/2019-copy', 'lag': ''})
+        self.assertEqual(row['backup']['target'], 'pc:/backup/2019-copy')
+        self.assertTrue(row['backup']['last'])
+        self.assertEqual(row['deployed'], ['job mirror nas:/photos/2019 -> pc:/backup/2019-copy'])
+        self.ran(job, rc=12, ago=5)
+        self.assertEqual(protection.overlay(self.conn, 'nas', rows)[0]['sync']['state'], 'Lagging')
+
+    def test_the_routes(self):
+        from storageforge_index import server, users
+        self.pair()
+        users.create(self.conn, 'admin', 'a long enough password', 'admin')
+        users.create(self.conn, 'reader', 'a long enough password', 'viewer')
+        web = server.create_app(server.App(self.db), 's' * 48)
+        client, reader = web.test_client(), web.test_client()
+        self.assertEqual(client.get('/api/copies').status_code, 401)
+        for c, name in ((client, 'admin'), (reader, 'reader')):
+            self.assertEqual(c.post('/api/login', json={'username': name, 'password': 'a long enough password'}).status_code, 200)
+        v = client.get('/api/copies').get_json()
+        self.assertEqual([(s['key'], s['files'], s['bytes'], s['prepared']) for s in v['suggested']], [(['nas:/photos/2019', 'pc:/backup/2019-copy'], 4, 10 * MIB, None)])
+        self.assertEqual((v['kept'], v['dismissed']), ([], []))
+        q = 'host=nas&path=/photos/2019&host=pc&path=/backup/2019-copy'
+        self.assertEqual(client.get(f'/api/copies/sides?{q}').get_json()['source'], 0)
+        self.assertEqual(client.get('/api/copies/sides?host=nas&path=/photos/2019').status_code, 400)
+        self.assertEqual(reader.get('/api/copies').status_code, 200)
+        self.assertEqual(reader.post('/api/copies/sync', json={'src': self.A, 'dst': self.B}).status_code, 403)
+        r = client.post('/api/copies/sync', json={'src': self.A, 'dst': self.B})
+        self.assertEqual((r.status_code, r.get_json()['existing'], r.get_json()['name']), (201, False, 'Keep in sync: nas:/photos/2019 to pc'))
+        plan = r.get_json()['plan']
+        self.assertEqual(client.post('/api/copies/sync', json={'src': self.A, 'dst': self.B}).status_code, 200, 'the plan already prepared, not a second one')
+        bad = client.post('/api/copies/sync', json={'src': self.A, 'dst': self.A})
+        self.assertEqual((bad.status_code, 'the same' in bad.get_json()['error']), (400, True))
+        self.assertEqual(client.get('/api/copies').get_json()['suggested'][0]['prepared']['plan'], plan)
+        rows = self.conn.all("SELECT outcome, target_host FROM audit_log WHERE action = 'copies.sync-prepare' ORDER BY audit_id")
+        self.assertEqual([tuple(r) for r in rows], [('ok', 'pc'), ('ok', 'pc'), ('denied', None)])
+        [job] = self.deploy(plan)
+        v = client.get('/api/copies').get_json()
+        self.assertEqual((v['suggested'], [(k['job'], k['state']) for k in v['kept']]), ([], [(job, 'never-ran')]))
+        self.assertEqual(client.get('/api/folders/duplicates').get_json()['kept_in_sync'], 1)
+
+
 class FolderCopiesFound(Index):
     """The check looks one folder up in the rest of the index. It must find what comparing every folder with every other finds."""
 
