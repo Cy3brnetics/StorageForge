@@ -1240,12 +1240,18 @@ t_rename() { local s=$1 d=$2
     { conflict "$d is on another filesystem or btrfs subvolume: mv would copy every byte; use a Moves step"; return 0; }
   act "mv $s -> $d" && try mv -T -- "$s" "$d" && ok "renamed"
 }
-t_trash() { local p=$1 top rel dest
+t_trash() { local p=$1 top rel dest up=$1 rest= d
   if [[ ! -e $p && ! -L $p ]]; then
-    if [[ -n $(find "$(fs_top "$p" 2>/dev/null)/.storageforge-trash" -maxdepth 8 -name "${p##*/}" -print -quit 2>/dev/null) ]]; then
-      ok "$p is already in the trash"
-    else later "$p must exist"; fi
-    return 0
+    # Already trashed means: this very path, under some date of the trash of its filesystem. Looked for by name alone, a file of
+    # the same name trashed from another folder passed for it. The folder it was in may be gone too, so go up to one that is there.
+    while [[ ! -d $up && $up == /?* ]]; do rest=/${up##*/}$rest; up=${up%/*}; up=${up:-/}; done
+    if [[ -d $up ]]; then
+      top=$(fs_top "$up/."); rel=$(cd "$up" && pwd -P)$rest; rel=${rel#"$top"/}
+      for d in "$top"/.storageforge-trash/*/; do
+        if [[ -e $d$rel || -L $d$rel ]]; then ok "$p is already in the trash: $d$rel"; return 0; fi
+      done
+    fi
+    later "$p must exist"; return 0
   fi
   mountpoint -q -- "$p" && { conflict "$p is a mount point"; return 0; }
   top=$(fs_top "$p"); rel=$(cd "$(dirname "$p")" && pwd -P)/${p##*/}; rel=${rel#"$top"/}
