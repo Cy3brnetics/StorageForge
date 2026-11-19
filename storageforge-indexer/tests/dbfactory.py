@@ -5,7 +5,8 @@ dropped afterwards. The same tests then cover both dialects.
 On PostgreSQL a test's database is a copy of a template that already has every migration in it, so `db.migrate(conn)` in a
 test finds nothing left to do. Running the 45 migrations into a new database for each of two thousand tests was most of what
 made the PostgreSQL run take half an hour. The template is made once per set of migration files (its name holds their hash),
-by whichever worker gets there first; the others wait on a lock and find it made. A test of the migrations themselves asks
+by whichever worker gets there first; the others wait on a lock and find it made. Templates of older migration sets stay on
+the server until someone drops them (`sf_tmpl_*`): two worktrees may be testing at once. A test of the migrations themselves asks
 for an empty database with `empty=True`.
 
 Set STORAGEFORGE_TEST_PG_TEMPLATE=0 to migrate every database from nothing, as before.
@@ -41,10 +42,9 @@ def template() -> str:
         c.execute('SELECT pg_advisory_lock(%s)', (LOCK,))
         try:
             if not c.execute('SELECT 1 FROM pg_database WHERE datname = %s AND datistemplate', (name,)).fetchone():
-                # one that was left half made by a run that was stopped, and the templates of migrations that have since changed
-                for (old,) in c.execute("SELECT datname FROM pg_database WHERE datname LIKE 'sf\\_tmpl\\_%'").fetchall():
-                    c.execute(f'ALTER DATABASE {old} IS_TEMPLATE false')
-                    c.execute(f'DROP DATABASE IF EXISTS {old} WITH (FORCE)')
+                # one of this name that a stopped run left half made. Templates of other migration sets are left alone: another
+                # worktree with other migrations may be running its tests on this server at this moment
+                c.execute(f'DROP DATABASE IF EXISTS {name} WITH (FORCE)')
                 c.execute(f'CREATE DATABASE {name}')
                 db = Database(PG.rsplit('/', 1)[0] + '/' + name)
                 conn = db.connect()
