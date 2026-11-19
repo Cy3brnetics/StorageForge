@@ -621,7 +621,7 @@ t_wg_interface() { local iface=$1 address=$2 port=$3 state=${4:-present} dir=${S
   fi
   install -d -m 0700 "$dir"
   if [[ ! -s $key ]]; then (umask 077; wg genkey >"$key") || { conflict "could not make a key"; rm -f "$key"; return 0; }; fi
-  # the peers a rewritten file would lose are put back by the plan's peer steps, from what the index holds
+  # the peers a rewritten file would lose are put back by the peer steps of the plan, from what the index holds
   (umask 077; printf '[Interface]\nAddress = %s\nListenPort = %s\nPostUp = wg set %%i private-key %s\n' "$address" "$port" "$key" >"$conf"; : >"$mark")
   durable "$conf" "$key" "$mark"
   if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null; then try systemctl enable --now "wg-quick@$iface" >/dev/null || return 0

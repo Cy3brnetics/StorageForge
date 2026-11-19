@@ -286,6 +286,35 @@ Phase 1 reads apt, dnf and yum, zypper, pacman and apk. The rest fall into three
 - container images (the workloads inventory already finds the containers)
 - firmware and DKMS modules
 
+## A second system beside the first
+
+Three plan steps install another distribution on a machine you only reach over SSH, and choose which one starts. They are steps of a change plan like any other: reported first, then run by a person.
+
+| Step | Does |
+| :--- | :--- |
+| `os-install` | Puts a distribution's cloud image on a disk of the host: in the largest stretch of unpartitioned space of a GPT disk, or on a blank disk. The host downloads the image and checks it against the checksum its publisher lists |
+| `os-boot` | Starts it `once` (the next restart only), `always` (first in the boot order) or `never`; and, if asked, restarts the machine a minute later |
+| `os-remove` | Deletes its partitions and its boot entry. Never the system that is running |
+
+What `os-install` holds to:
+
+- **The running system is not written to.** The new system gets partitions of its own, copied one for one from the image, an EFI partition among them. The running system's bootloader, boot partition and filesystems are untouched. The one change outside the new partitions is a new boot entry in the firmware, and it is not put in the boot order.
+- **Only empty space is used.** Nothing is shrunk. A disk with something on it that is not a GPT, and free space under 3 GiB, are refused.
+- **A failed start costs one restart.** `os-boot` with `once` sets the firmware's one-time boot. If the new system does not come up, the restart after that is the old system, with nothing to repair. Make it the default (`always`) only after you have reached it.
+- **It is the same machine.** By default the new system gets the machine's SSH host keys, read and written on the host itself, so an SSH client sees one host whichever system is running. `host_keys: new` makes it keys of its own, and then clients warn at each switch.
+- **First boot is set up from a folder inside the new root** (cloud-init's NoCloud seed): the login account with your SSH key, the host name, the network, and this system's data filesystems at the same mount points. The new system is told to read that folder and nothing else, so a cloud's or a hypervisor's setup disc on the same machine does not override it.
+- **A name clash is refused.** Images are found at boot by a filesystem's UUID or label, or a partition's UUID. If the host already has one of those names (a second system from the same image, or a host that was itself installed from that image), the wrong filesystem could be mounted as root, so the step stops before writing.
+
+Network: `same` keeps what the running system has, a static address as static and a DHCP address as DHCP. A DHCP server may give the new system another address than the old one, because the two identify themselves differently; `fixed` writes the address the machine has now as a fixed one. `dhcp` asks on the first card.
+
+Data filesystems: what `/etc/fstab` mounts by UUID, label or `/dev/disk/by-…`, with `nofail` added. Not the old root, `/boot` or swap, not a device letter, and not LVM, LUKS or ZFS, which the new system would need packages for first.
+
+Limits: UEFI only (a BIOS machine has one boot sector per disk, and it is the running system's). The host needs `qemu-img`, `sgdisk`, `efibootmgr` and `curl`, and about 6 GiB free in the download folder. The image must have cloud-init and an EFI partition, which leaves out Alpine's.
+
+After the first start, scan the new system and use the `packages`, `accounts` and `config-files` steps above to bring over what the old one had.
+
+**Tested on 2026-11-18** in a UEFI VM (Debian 13, a blank second disk), through plan scripts the change engine wrote: Fedora 44 (btrfs, `/var` a subvolume) and Rocky 10 (xfs, a separate `/boot`) installed, started once at the same address with the same host key under strict checking, and a plain restart returned to Debian. A Fedora that could not start its SSH server (a bug since fixed) was followed by Debian at the next reset. Ubuntu 24.04 was installed by the first hand-written trial of the same method. **Not tested:** free space on the disk the running system is on, a static address on the old system, `always` and `never`, Secure Boot, real hardware.
+
 ## Phases
 
 | Phase | What | State |
@@ -303,6 +332,7 @@ Phase 1 reads apt, dnf and yum, zypper, pacman and apk. The rest fall into three
 | 4b | **Snapshots and risks:** before and after snapshots, the Data at risk list with its ticks and typed name, and `accept` in the API. Not built: holds on the clone snapshots, the before/after "what changed" report, `--accept` in the scripts | Built in part, **not lab-tested** |
 | 5 | **Test and migration modes**: the isolation above, and cutover | Planned |
 | 6 | **VM to VM copy as is**: each disk by a signed send, live from a disk-only snapshot or shut off, and the VM defined on the target from the source's reading (`vm-send`, `vm-define`, `vm copy`). See [VMs on libvirt](vms.md#copying-a-vm-to-another-libvirt-host) | Built; lab-tested live from libvirt 10.0 to 9.0 (tier 18) |
+| 8 | **A second system beside the first**, over SSH: `os-install`, `os-boot`, `os-remove` (see above) | Built; tested in one UEFI VM on Fedora 44 and Rocky 10, **not in a lab tier** |
 | 7 | **Disk image from a physical host**: a block copy from a snapshot into qcow2, then fixed up to boot. To bare metal, through a live environment | Later |
 
 ## Lab run

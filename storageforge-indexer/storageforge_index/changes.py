@@ -1993,6 +1993,7 @@ def ansible(conn: Conn, plan: dict) -> str:
 
 from . import steps_infra  # noqa: E402,F401  (registers its step types, and imports this module)
 from . import steps_vm  # noqa: E402,F401  (vm-create, after steps_infra, which sets EXTRA_BASH)
+from . import steps_osinstall  # noqa: E402,F401  (os-install, after steps_vm, whose image catalog it reads)
 from . import steps_clone  # noqa: E402,F401  (packages from another host)
 from . import steps_md  # noqa: E402,F401  (mdadm arrays)
 from . import steps_services  # noqa: E402,F401  (services of another host)
