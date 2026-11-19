@@ -239,9 +239,12 @@ def remember(conn: Conn, twins: dict, now: float | None = None) -> None:
 def _open_suggestions(conn: Conn) -> list[dict]:
     """The remembered sets that are still to be answered: not set aside since, and not kept in sync since."""
     from .alerts import get_setting
+    pairs = (get_setting(conn, REMEMBERED) or {}).get('pairs') or []
+    if not pairs:
+        return []
     said, links = not_backups(conn), syncs(conn)
     out = []
-    for p in (get_setting(conn, REMEMBERED) or {}).get('pairs') or []:
+    for p in pairs:
         places = [dict(zip(('host', 'path'), k.split(':', 1))) for k in p['key']]
         if p['key'] not in said and len(split_kept(places, links)[0]) > 1:
             out.append(p)
