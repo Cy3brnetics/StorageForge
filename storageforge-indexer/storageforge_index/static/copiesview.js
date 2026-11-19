@@ -75,6 +75,15 @@ function copiesOpenPlan(got) {             // the plan is read and deployed in M
   loadPairs();
 }
 
+/* "These are not a backup of each other": the set is set aside and no longer suggested or counted in the notification, until Suggest again. */
+async function copiesDismiss(places, on) {
+  try { await postJSON('/api/copies/dismiss', { copies: places.map(({ host, path }) => ({ host, path })), dismissed: on }); }
+  catch (err) { notify(err.message, 'error'); return false; }
+  toast(on ? 'Set aside. It is not suggested again, and stays listed under "Not a backup of each other".' : 'It is suggested again.');
+  await loadPairs();
+  return true;
+}
+
 /* ── the list in Cleanup ─────────────────────────────────────────── */
 async function loadPairs() {
   const box = $('#pairsbox');
@@ -112,21 +121,38 @@ function cpSuggested(s) {
     acts.push(Object.assign(button(cpSyncLabel(s.copies.length), () => copiesKeepInSync(s.copies.map(({ host, path }) => ({ host, path }))), 'btn sm pri'),
       { title: 'Prepares a plan in Moves that copies one side to the other on a timer. Nothing syncs until you deploy it there' }));
   }
+  if (can('plans.edit')) {
+    acts.push(Object.assign(button('Not a backup of each other', () => copiesDismiss(s.copies, true), 'btn ghost sm'),
+      { title: 'Stops suggesting this set and counting it in the notification. The folders stay listed as copies on other hosts' }));
+  }
   return el('section', { class: 'card suggested' },
     el('div', { class: 'row wrap' }, el('b', {}, `${s.files.toLocaleString()} files · ${fmtBytes(s.bytes)}`), copyElsewherePill(),
       s.same_name ? null : text('span', 'renamed', 'pill unknown')),
     cpPlaces(s.copies), el('div', { class: 'row wrap cpacts' }, ...acts));
 }
+function cpAside(s) {
+  return el('section', { class: 'card aside' },
+    el('div', { class: 'row wrap' }, el('b', {}, `${s.files.toLocaleString()} files · ${fmtBytes(s.bytes)}`)),
+    cpPlaces(s.copies),
+    can('plans.edit') ? el('div', { class: 'row' }, button('Suggest again', () => copiesDismiss(s.copies, false), 'btn ghost sm')) : null);
+}
 function renderPairs() {
   const d = CP.data, box = $('#pairsbox');
   if (!d || !box) return;
   const here = (places) => !S.host || places.some((p) => p.host === S.host);
-  const kept = d.kept.filter((k) => here([k.src, k.dst])), suggested = d.suggested.filter((s) => here(s.copies));
+  const kept = d.kept.filter((k) => here([k.src, k.dst])), suggested = d.suggested.filter((s) => here(s.copies)), aside = d.dismissed.filter((s) => here(s.copies));
   const out = [staleNote(d)].filter(Boolean);
   if (kept.length) out.push(text('h4', `Kept in sync (${kept.length})`), ...kept.map(cpKept));
   out.push(text('h4', `Not kept in sync (${suggested.length})`));
-  if (suggested.length) out.push(sfMoreList(suggested, cpSuggested, { limit: 8, label: 'pairs', className: 'stack' }));
-  else out.push(text('p', kept.length ? 'Every folder with a copy on another host is kept in sync.' : 'No folder has a copy on another host at this size.', 'muted'));
+  if (suggested.length) out.push(text('p', 'Largest first. Keep a pair in sync, or say that it is not a backup of each other and it is not suggested again.', 'muted small'),
+    sfMoreList(suggested, cpSuggested, { limit: 8, label: 'pairs', className: 'stack' }));
+  else out.push(text('p', kept.length || aside.length ? 'Nothing is left to answer: every folder with a copy on another host is kept in sync or set aside.' : 'No folder has a copy on another host at this size.', 'muted'));
+  if (aside.length) {
+    out.push(el('details', { class: 'cpaside', open: CP.asideOpen || null, ontoggle: (ev) => { CP.asideOpen = ev.target.open; } },
+      el('summary', {}, `Not a backup of each other (${aside.length})`),
+      text('p', 'You said these are not a backup of each other. They are not suggested and not counted in the notification.', 'muted small'),
+      ...aside.map(cpAside)));
+  }
   box.replaceChildren(...out);
 }
 $('#host').addEventListener('change', renderPairs);

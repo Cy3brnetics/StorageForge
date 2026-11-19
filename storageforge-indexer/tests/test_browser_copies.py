@@ -36,6 +36,9 @@ def seed(ix):
     tax = {'a.pdf': 2 * MIB, 'b.pdf': 3 * MIB, 'c.pdf': 7 * MIB}
     ix.tree('nas', '/docs/tax', tax, mtime=1_700_000_900)   # the pair the sync test keeps in sync: nas changed last
     ix.tree('pc', '/archive/tax-copy', tax, mtime=1_700_000_100)
+    saves = {'s1.sav': MIB, 's2.sav': MIB, 's3.sav': 2 * MIB}
+    ix.tree('nas', '/games/saves', saves)                   # the pair the test says is not a backup
+    ix.tree('pc', '/old/saves-copy', saves)
 
 
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
@@ -214,6 +217,44 @@ class BrowserCopies(unittest.TestCase):
         self.file_map()
         self.assertEqual(self.page.evaluate("FM.data.folder_copies.filter((t) => t.copies.some((c) => c.path === '/docs/tax')).length"), 0)
         self.assertTrue(self.page.evaluate("FM.data.relations.some((r) => r.kind === 'job' && r.src.path === '/docs/tax' && r.dst.path === '/archive/tax-copy')"), 'drawn as a job line')
+        self.assertEqual(self.errors, [])
+
+    # ── suggestions ─────────────────────────────────────────────────
+    def test_a_pair_that_is_not_a_backup_is_set_aside_and_can_be_suggested_again(self):
+        self.open_tab('copies')
+        mine = '#pairsbox section.suggested:has-text("/games/saves")'
+        self.page.wait_for_selector(mine)
+        sizes = [float(t.split('·')[1].split()[0]) for t in self.page.locator('#pairsbox section.suggested b').all_inner_texts()]
+        self.assertEqual(sizes, sorted(sizes, reverse=True), 'largest first')
+        self.page.click(f'{mine} button:has-text("Not a backup of each other")')
+        self.page.wait_for_selector(mine, state='detached')
+        self.page.click('#pairsbox details.cpaside summary')
+        aside = '#pairsbox details.cpaside section.aside:has-text("/games/saves")'
+        self.page.wait_for_selector(aside)
+        self.assertIn('They are not suggested and not counted in the notification', self.page.inner_text('#pairsbox details.cpaside'))
+        self.page.wait_for_selector('#copiesbox section.card')
+        self.assertEqual(self.page.locator('#copiesbox section.card.across', has_text='/games/saves').count(), 1, 'still listed as a copy on another host')
+        self.page.click(f'{aside} button:has-text("Suggest again")')
+        self.page.wait_for_selector(mine)
+        self.assertEqual(self.page.locator('#pairsbox details.cpaside').count(), 0)
+        self.assertEqual(self.page.locator('#pairsbox img').count(), 0, 'a folder name is text')
+        self.assertEqual(self.errors, [])
+
+    def test_the_pairs_left_to_answer_are_one_notification_that_can_be_snoozed(self):
+        from unittest import mock
+        from storageforge_index import alerts
+        self.open_tab('copies')
+        self.page.wait_for_selector('#pairsbox section.suggested')          # the comparison is made, and remembered for the notification
+        with mock.patch.object(alerts, 'send', lambda *a, **k: ['recorded']):
+            alerts.evaluate(self.db)
+        self.page.click('#tabbtn-notifications')
+        group = '#nt-groups .nt-group:has(h3:has-text("copies-not-synced"))'
+        self.page.wait_for_selector(group)
+        said = self.page.inner_text(group)
+        self.assertIn('Folders with a copy on another host are not kept in sync', said)
+        self.assertIn('keep a pair in sync there, or say it is not a backup', said)
+        self.assertTrue(self.page.inner_text(f'{group} h3').lower().startswith('information'), said)
+        self.assertEqual(self.page.locator(f'{group} button:has-text("Snooze")').count(), 1, 'it can be ignored')
         self.assertEqual(self.errors, [])
 
     def test_the_file_map_offers_keep_in_sync_for_a_folder_whose_copy_is_on_another_host(self):

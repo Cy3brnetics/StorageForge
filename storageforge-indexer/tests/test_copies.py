@@ -568,6 +568,115 @@ class KeepInSync(Index):
         self.assertEqual(client.get('/api/folders/duplicates').get_json()['kept_in_sync'], 1)
 
 
+class Suggestions(Index):
+    """The pairs across hosts that nothing keeps in sync: a list, largest first, one notification for information, and a way to say no."""
+    BIG = [{'host': 'nas', 'path': '/photos/2019'}, {'host': 'pc', 'path': '/backup/2019-copy'}]
+    SMALL = [{'host': 'nas', 'path': '/docs/tax'}, {'host': 'tv', 'path': '/archive/tax-copy'}]
+
+    def seed(self):
+        self.tree('nas', '/photos/2019', 6)                 # 21 MiB
+        self.tree('pc', '/backup/2019-copy', 6)
+        self.tree('nas', '/docs/tax', 3)                    # 6 MiB
+        self.tree('tv', '/archive/tax-copy', 3)
+        self.tree('nas', '/music/a', 5)                     # on one host: never a suggestion
+        self.tree('nas', '/music/b', 5)
+
+    def twins(self):
+        return folders.duplicate_folders(self.conn, None, 3, MIB, syncs=copies.syncs(self.conn))
+
+    def test_the_list_is_the_pairs_across_hosts_largest_first(self):
+        self.seed()
+        v = copies.overview(self.conn, self.twins())
+        self.assertEqual([(s['key'], s['bytes'], s['files'], s['hosts'], s['prepared']) for s in v['suggested']],
+                         [(['nas:/photos/2019', 'pc:/backup/2019-copy'], 21 * MIB, 6, 2, None), (['nas:/docs/tax', 'tv:/archive/tax-copy'], 6 * MIB, 3, 2, None)])
+        self.assertEqual((v['kept'], v['dismissed'], v['across_hosts_groups']), ([], [], 2))
+
+    def test_not_a_backup_of_each_other_is_not_suggested_again(self):
+        self.seed()
+        got = copies.dismiss(self.conn, list(reversed(self.SMALL)), 'web:ana')
+        self.assertEqual(got, {'key': ['nas:/docs/tax', 'tv:/archive/tax-copy'], 'dismissed': True})
+        v = copies.overview(self.conn, self.twins())
+        self.assertEqual(([s['key'][0] for s in v['suggested']], [s['key'][0] for s in v['dismissed']]), (['nas:/photos/2019'], ['nas:/docs/tax']))
+        self.assertEqual(self.twins()['across_hosts_groups'], 2, 'still listed as copies on other hosts: only the suggestion goes')
+        copies.dismiss(self.conn, self.SMALL, 'web:ana')            # said twice: kept once
+        self.assertEqual(copies.not_backups(self.conn), [['nas:/docs/tax', 'tv:/archive/tax-copy']])
+        self.tree('pc', '/another/tax-three', 3)                    # a third copy turns up: another set, and a new question
+        v = copies.overview(self.conn, self.twins())
+        self.assertEqual([len(s['key']) for s in v['suggested']], [2, 3])
+        self.assertEqual(v['dismissed'], [])
+        copies.dismiss(self.conn, self.SMALL, 'web:ana', on=False)
+        self.assertEqual(copies.not_backups(self.conn), [])
+        for bad in (None, [self.BIG[0]], [self.BIG[0], {'host': '', 'path': '/x'}], [self.BIG[0], {'host': 'pc', 'path': 'relative'}]):
+            with self.assertRaises(ValueError):
+                copies.dismiss(self.conn, bad, 'web:ana')
+
+    def test_one_notification_for_information_while_any_is_left_to_answer(self):
+        from unittest import mock
+        from storageforge_index import alerts, notifications
+        self.seed()
+        self.assertEqual(copies.problems(self.conn), {}, 'nothing compared yet: nothing said')
+        copies.remember(self.conn, self.twins())
+        kind, ref, title, message, level = copies.problems(self.conn)['copies-not-synced']
+        self.assertEqual((kind, ref, level, title), ('copies-not-synced', 'copies', 'info', 'Folders with a copy on another host are not kept in sync'))
+        self.assertTrue(message.startswith('2 sets, the largest nas:/photos/2019 and pc:/backup/2019-copy (21.0 MiB).'), message)
+        self.assertIn('copies-not-synced', alerts.problems(self.conn))
+        with mock.patch.object(alerts, 'send', lambda *a, **k: ['recorded']):
+            alerts.evaluate(self.db)
+        [g] = [g for g in notifications.center(self.conn)['groups'] if g['kind'] == 'copies-not-synced']
+        self.assertEqual((g['level'], g['ignorable'], g['host']), ('info', True, None))
+        notifications.snooze(self.conn, 'copies-not-synced', 3600, 'web:ana')            # it can be ignored: snoozed here, or muted by kind
+        self.assertEqual([g['kind'] for g in notifications.center(self.conn)['quiet']], ['copies-not-synced'])
+        copies.dismiss(self.conn, self.BIG, 'web:ana')
+        self.assertTrue(copies.problems(self.conn)['copies-not-synced'][3].startswith('1 set, the largest nas:/docs/tax and tv:/archive/tax-copy (6.0 MiB).'))
+        from storageforge_index import jobs
+        plan = copies.prepare_sync(self.conn, self.SMALL[0], self.SMALL[1], 'web:ana')['plan']
+        self.assertIn('copies-not-synced', copies.problems(self.conn), 'prepared is not deployed')
+        jobs.deploy_items(self.db, self.conn, moves.get_plan(self.conn, plan), 'apply', None, 'test')
+        self.assertEqual(copies.problems(self.conn), {}, 'one set aside, the other kept in sync: nothing left, before any new comparison')
+        with mock.patch.object(alerts, 'send', lambda *a, **k: ['recorded']):
+            alerts.evaluate(self.db)
+        self.assertEqual([g for g in notifications.center(self.conn)['groups'] + notifications.center(self.conn)['quiet'] if g['kind'] == 'copies-not-synced'], [])
+
+    def test_a_comparison_is_remembered_once_and_a_stale_one_is_not(self):
+        from storageforge_index import alerts
+        self.seed()
+        copies.remember(self.conn, {**self.twins(), 'stale': True})
+        self.assertIsNone(alerts.get_setting(self.conn, copies.REMEMBERED))
+        copies.remember(self.conn, self.twins(), now=1000)
+        copies.remember(self.conn, self.twins(), now=2000)
+        kept = alerts.get_setting(self.conn, copies.REMEMBERED)
+        self.assertEqual((kept['at'], [p['bytes'] for p in kept['pairs']]), (1000, [21 * MIB, 6 * MIB]), 'written when it changed, not each time')
+
+    def test_the_routes_remember_and_set_aside(self):
+        from storageforge_index import alerts, server, users
+        self.seed()
+        users.create(self.conn, 'admin', 'a long enough password', 'admin')
+        users.create(self.conn, 'reader', 'a long enough password', 'viewer')
+        web = server.create_app(server.App(self.db), 's' * 48)
+        client, reader = web.test_client(), web.test_client()
+        for c, name in ((client, 'admin'), (reader, 'reader')):
+            self.assertEqual(c.post('/api/login', json={'username': name, 'password': 'a long enough password'}).status_code, 200)
+        self.assertEqual(len(client.get('/api/folders/duplicates').get_json()['groups']), 3)
+        self.assertEqual(len(alerts.get_setting(self.conn, copies.REMEMBERED)['pairs']), 2, 'the comparison the Cleanup panel asks for is the one remembered')
+        self.assertEqual(reader.post('/api/copies/dismiss', json={'copies': self.BIG}).status_code, 403)
+        r = client.post('/api/copies/dismiss', json={'copies': self.BIG})
+        self.assertEqual((r.status_code, r.get_json()), (200, {'key': ['nas:/photos/2019', 'pc:/backup/2019-copy'], 'dismissed': True}))
+        v = client.get('/api/copies').get_json()
+        self.assertEqual(([s['key'][0] for s in v['suggested']], [s['key'][0] for s in v['dismissed']]), (['nas:/docs/tax'], ['nas:/photos/2019']))
+        self.assertEqual(client.post('/api/copies/dismiss', json={'copies': self.BIG, 'dismissed': False}).get_json()['dismissed'], False)
+        self.assertEqual(len(client.get('/api/copies').get_json()['suggested']), 2)
+        self.assertEqual(client.post('/api/copies/dismiss', json={'copies': 'x'}).status_code, 400)
+        rows = [tuple(r) for r in self.conn.all("SELECT outcome FROM audit_log WHERE action = 'copies.dismiss' ORDER BY audit_id")]
+        self.assertEqual(rows, [('ok',), ('ok',), ('denied',)])
+
+    def test_the_file_map_warm_up_after_a_scan_remembers_them_too(self):
+        from storageforge_index import alerts, server
+        self.seed()
+        web = server.create_app(server.App(self.db), 's' * 48)
+        web.warm_filemap()
+        self.assertEqual([p['key'][0] for p in alerts.get_setting(self.conn, copies.REMEMBERED)['pairs']], ['nas:/photos/2019', 'nas:/docs/tax'])
+
+
 class FolderCopiesFound(Index):
     """The check looks one folder up in the rest of the index. It must find what comparing every folder with every other finds."""
 

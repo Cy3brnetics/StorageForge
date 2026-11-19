@@ -16,6 +16,9 @@ of them are looked up by checksum, or by the size and name of a folder's largest
 Keeping a pair in sync (prepare_sync) saves a Moves plan with one mirror step, which the user deploys as any plan. Once its job is
 deployed the pair is "kept in sync" (syncs), and its destination is no longer a duplicate of its source (split_kept), in the
 duplicates views and in the file map.
+
+The pairs across hosts that nothing keeps in sync are suggestions (overview): listed largest first, and one notification for
+information while there are any (problems). A set someone says is not a backup is set aside and not suggested again (dismiss).
 """
 from __future__ import annotations
 
@@ -195,6 +198,67 @@ def overview(conn: Conn, twins: dict, now: float | None = None) -> dict:
     suggested.sort(key=lambda s: (-s['bytes'], s['key']))
     return {'suggested': suggested, 'kept': syncs(conn, now), 'dismissed': aside, 'stale': bool(twins.get('stale')),
             'across_hosts_groups': twins.get('across_hosts_groups', 0), 'listed': len(suggested) + len(aside)}
+
+
+def dismiss(conn: Conn, places, actor: str, on: bool = True) -> dict:
+    """Says that these folders are not a backup of each other: the set is listed apart and no longer suggested, until it is asked for
+    again. It is the set as it is now that is set aside: with one more copy somewhere it is another set, and is suggested as one."""
+    from .alerts import set_setting
+    if not isinstance(places, list) or len(places) < 2 or len(places) > 64:
+        raise ValueError('give the folders of one set of copies')
+    clean = []
+    for p in places:
+        if not isinstance(p, dict) or not isinstance(p.get('host'), str) or not p['host'].strip() or len(p['host']) > 255 or '\n' in p['host']:
+            raise ValueError('each folder needs its host')
+        clean.append({'host': p['host'].strip(), 'path': _path(p.get('path'), 'a folder')})
+    key = key_of(clean)
+    said = [k for k in not_backups(conn) if k != key]
+    if on:
+        said.append(key)
+    set_setting(conn, NOT_BACKUPS, said[-2000:], actor)
+    return {'key': key, 'dismissed': on}
+
+
+REMEMBERED = 'copies.across_hosts'      # the setting: the pairs across hosts of the last comparison, for the notification
+REMEMBER_MOST = 200
+
+
+def remember(conn: Conn, twins: dict, now: float | None = None) -> None:
+    """Keeps the sets across hosts of a finished comparison of the whole fleet, so that problems() below can answer from the database:
+    it runs on every alert tick, and the comparison itself reads every folder and belongs to the analysis worker."""
+    import time
+    from .alerts import get_setting, set_setting
+    if twins.get('stale'):
+        return
+    pairs = [{'key': key_of(g['copies']), 'bytes': g['bytes'], 'files': g['files']} for g in twins.get('groups') or [] if g['scope'] != 'same host']
+    pairs.sort(key=lambda p: (-p['bytes'], p['key']))
+    if (get_setting(conn, REMEMBERED) or {}).get('pairs') != pairs[:REMEMBER_MOST]:
+        set_setting(conn, REMEMBERED, {'at': int(now or time.time()), 'pairs': pairs[:REMEMBER_MOST]}, 'system')
+
+
+def _open_suggestions(conn: Conn) -> list[dict]:
+    """The remembered sets that are still to be answered: not set aside since, and not kept in sync since."""
+    from .alerts import get_setting
+    said, links = not_backups(conn), syncs(conn)
+    out = []
+    for p in (get_setting(conn, REMEMBERED) or {}).get('pairs') or []:
+        places = [dict(zip(('host', 'path'), k.split(':', 1))) for k in p['key']]
+        if p['key'] not in said and len(split_kept(places, links)[0]) > 1:
+            out.append(p)
+    return out
+
+
+def problems(conn: Conn) -> dict:
+    """One notification, for information, while folders have a copy on another host that nothing keeps in sync. It can be snoozed
+    or muted like any other that is not critical, and it goes when each pair is kept in sync or set aside (alerts.problems)."""
+    left = _open_suggestions(conn)
+    if not left:
+        return {}
+    first = left[0]
+    return {'copies-not-synced': ('copies-not-synced', 'copies', 'Folders with a copy on another host are not kept in sync',
+                                  f'{len(left)} set{"" if len(left) == 1 else "s"}, the largest {" and ".join(first["key"][:3])} ({_fmt(first["bytes"])}). '
+                                  'Each may be the backup of the other. Cleanup, Duplicates lists them: keep a pair in sync there, or say it is not a backup',
+                                  'info')}
 
 
 def _levels(conn: Conn, plan: dict) -> dict:

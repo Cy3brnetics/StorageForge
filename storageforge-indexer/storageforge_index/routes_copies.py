@@ -38,3 +38,16 @@ def register(web, ctx):
             return jsonify(error=str(exc)), 400
         core.audit(conn(), actor(), 'copies.sync-prepare', 'ok', got['dst']['host'], {**detail, 'plan': got['plan'], 'existing': got['existing']})
         return jsonify(got), 200 if got['existing'] else 201
+
+    @web.post('/api/copies/dismiss')
+    @login_required
+    def api_copies_dismiss():
+        body = json_body()
+        try:
+            got = copies.dismiss(conn(), body.get('copies'), actor(), body.get('dismissed', True) is not False)
+        except ValueError as exc:
+            core.audit(conn(), actor(), 'copies.dismiss', 'denied', None, {'why': str(exc)[:300]})
+            return jsonify(error=str(exc)), 400
+        core.audit(conn(), actor(), 'copies.dismiss', 'ok', None, got)
+        core.alerts_wake.set()               # the notification counts what is left to answer
+        return jsonify(got)

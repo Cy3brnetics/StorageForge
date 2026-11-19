@@ -100,6 +100,15 @@ Once the plan is deployed:
 
 The [plan check](plans-and-scripts.md#what-the-trash-tasks-of-a-plan-leave-behind) still counts the destination as a copy, so trashing the source of a sync warns that the copy on the other host would be the only one left. Any deployed mirror job makes its two folders a kept pair, also one whose plan was written by hand in Moves.
 
+#### Suggestions
+
+**Cleanup → Duplicates → Copies on other hosts** lists the folders that have a copy on another host and that nothing keeps in sync, largest first. Each has two answers:
+
+- **Keep these two in sync…**, as above. Until its plan is deployed the pair stays in the list, marked as prepared, with **Open the plan**;
+- **Not a backup of each other**. The set is moved to a list of that name below and is not suggested again. **Suggest again** there takes it back. The folders stay listed as copies on other hosts in the duplicates views. It is the set as it is that is set aside: when a third copy turns up, it is a new set and a new question.
+
+While any is left to answer there is one notification for information, `copies-not-synced`, with how many and the largest. It is low priority: it can be snoozed, or muted by kind, like any notification that is not critical, and it goes by itself when every pair is kept in sync or set aside. The list is made from the comparison of folders across the whole fleet at its defaults (3 files and 1 MiB), which the server makes again after each scan.
+
 ## ClamAV
 
 Scans install nothing on a host. ClamAV is the exception, and only on hosts you deploy it to from the **Malware** tab: **Dry run** shows what it would do, **Deploy** installs it.

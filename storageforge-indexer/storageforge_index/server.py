@@ -65,6 +65,7 @@ GET  /api/filemap?host=&min_size=&folders=&system=   the Graph view: folders hol
 GET  /api/copies                     folder copies on other hosts: suggested to keep in sync, kept in sync, and set aside
 GET  /api/copies/sides?host=&path=&host=&path=   each folder's files, size and newest change, and which changed last
 POST /api/copies/sync                {"src": {host, path}, "dst": {host, path}, "delete", "schedule"}: saves a Moves plan with one mirror step
+POST /api/copies/dismiss             {"copies": [{host, path}, …], "dismissed": true}: these are not a backup of each other, do not suggest them
 GET/PUT /api/files/ignore           paths and fragments left out of the file map and of broken-link flags
 GET  /api/browse?host=&path=         subfolders of a path with their indexed sizes (for picking move sources)
 DELETE /api/hosts/<name>[?keep_design=1]   retire a host (password confirmed; refused while anything is deployed there)
@@ -178,7 +179,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, selfupdate, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
                folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_copies, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
-from . import routes_planner
+from . import copies, routes_planner
 from .runtimes import docker
 from .capacity import parse_size, trends
 from .db import Database, epoch
@@ -2679,6 +2680,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         host = request.args.get('host') or None
         min_files = arg_num('min_files', 3, 1, 1_000_000)
         min_size = parse_size(request.args.get('min_size') or '1MiB')
+        if host is None and (min_files, min_size) == (3, parse_size('1MiB')):
+            return jsonify(fleet_twins())     # the same comparison, kept under the same key: made once, and remembered for the suggestions
         return jsonify(folder_result(('dupes', host, min_files, min_size, jobs_mark()),
                                      lambda: analysis('dupes', (host, min_files, min_size, False))))
 
@@ -2689,7 +2692,13 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def fleet_twins():
         """The fleet's duplicate folders at the defaults: what the pairs across hosts and their suggestions are made from (copies.py)."""
         size = parse_size('1MiB')
-        return folder_result(('dupes', None, 3, size, jobs_mark()), lambda: analysis('dupes', (None, 3, size, False)))
+
+        def compute():                        # each new comparison is kept, small, for the notification: alerts answer from the database
+            result = analysis('dupes', (None, 3, size, False))
+            copies.remember(conn(), result)
+            core.alerts_wake.set()
+            return result
+        return folder_result(('dupes', None, 3, size, jobs_mark()), compute)
     ctx.fleet_twins = fleet_twins
     routes_copies.register(web, ctx)
 
@@ -2710,6 +2719,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             if not conn().scalar("SELECT count(*) FROM scans WHERE status = 'running'"):   # the last one to finish wakes this again
                 try:
                     filemap_result(None, parse_size('1MiB'), False, True)
+                    fleet_twins()             # and the pairs across hosts, from the same folder index: what the suggestions are made from
                 except Busy:                  # still building, off this thread: it lands in the cache when done
                     pass
             else:                             # the mounts no scan is touching: a page opened meanwhile builds only the rest

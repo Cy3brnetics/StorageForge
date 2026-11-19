@@ -69,6 +69,7 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/copies` | folder copies on other hosts: `suggested` (not kept in sync, largest first, each with the plan `prepared` for it if there is one), `kept` (deployed mirror jobs with `state`, `last` and `last_ok`), `dismissed` |
 | GET | `/api/copies/sides?host=&path=&host=&path=` | for choosing the source: each folder's files, bytes and newest change, and `source`, the index of the side that changed last |
 | POST | `/api/copies/sync` | `{"src": {"host", "path"}, "dst": {"host", "path"}, "delete": false, "schedule": "daily"}`: saves a Moves plan with one mirror step and answers `{"plan", "name", "existing", "check"}` (201, or 200 when that plan was already prepared). Nothing syncs until the plan is deployed |
+| POST | `/api/copies/dismiss` | `{"copies": [{"host", "path"}, …], "dismissed": true}`: these folders are not a backup of each other, do not suggest them; `false` suggests them again |
 | GET | `/api/folders/cold?host=&years=&min_size=` | folders whose newest file is older than the cutoff |
 | GET | `/api/git?host=` | repositories, copies and archive state |
 | POST | `/api/git/status` | `{"host", "path"}`: live status of a repository a scan found |

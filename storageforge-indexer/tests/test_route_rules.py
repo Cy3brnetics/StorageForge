@@ -215,6 +215,7 @@ NO_FRESH_PASSWORD = {
     ('POST', '/api/logout'),
     ('POST', '/api/me/password'),
     ('POST', '/api/copies/sync'),                # saves a Moves plan with one mirror step, as /api/moves does. Deploying it asks
+    ('POST', '/api/copies/dismiss'),             # what is suggested, as PUT /api/files/ignore is what is shown: nothing on a host
     ('POST', '/api/moves'),
     ('DELETE', '/api/moves/<int:plan_id>'),
     ('PUT', '/api/moves/<int:plan_id>'),
