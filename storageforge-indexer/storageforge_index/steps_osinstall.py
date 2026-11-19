@@ -60,12 +60,15 @@ sf_os_part() { [[ $1 =~ [0-9]$ ]] && printf '%sp%s\n' "$1" "$2" || printf '%s%s\
 sf_os_entry() { efibootmgr 2>/dev/null | sed -n "s/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} @LABEL@$1\([[:space:]].*\)\{0,1\}$/\1/p" | head -n 1 || :; }
 sf_os_parts() { lsblk -rno PATH,PARTLABEL 2>/dev/null | awk -v p="@LABEL@$1-" 'index($2, p) == 1 {print $1}' || :; }
 sf_os_json() { awk 'BEGIN {printf "\""} {gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); printf "%s\\n", $0} END {printf "\""}' "$@"; }
-sf_os_rescan() { partx -u "$1" >/dev/null 2>&1 || partprobe "$1" >/dev/null 2>&1 || :; udevadm settle 2>/dev/null || sleep 1; }
+# Tell the kernel about a changed table. On a disk with a mounted partition the whole table cannot be read again, and
+# `partx -u` alone adds nothing new there (found in the lab on 2026-11-18): -a adds what is new and complains about the rest.
+sf_os_rescan() { partx -a "$1" >/dev/null 2>&1 || :; partx -u "$1" >/dev/null 2>&1 || partprobe "$1" >/dev/null 2>&1 || :; udevadm settle 2>/dev/null || sleep 1; }
+sf_os_forget() { partx -d --nr "$2" "$1" >/dev/null 2>&1 || :; }          # a partition taken out of the table, out of the kernel too
 
 sf_os_undo() { # the partitions and the boot entry this run made, and nothing else
   local disk=$1 name=$2 n e; shift 2
   e=$(sf_os_entry "$name"); [[ -z $e ]] || efibootmgr -q -b "$e" -B 2>/dev/null || :
-  for n in "$@"; do wipefs -q -a "$(sf_os_part "$disk" "$n")" 2>/dev/null || :; sgdisk -d "$n" "$disk" >/dev/null 2>&1 || :; done
+  for n in "$@"; do wipefs -q -a "$(sf_os_part "$disk" "$n")" 2>/dev/null || :; sgdisk -d "$n" "$disk" >/dev/null 2>&1 || :; sf_os_forget "$disk" "$n"; done
   sf_os_rescan "$disk"
   info "removed what this run had made on $disk"
 }
@@ -125,6 +128,11 @@ t_os_install() { local name=$1 image=$2 url=$3 sum=$4 disk=$5 size=$6 user=$7 ke
     s=$(sgdisk -F "$disk" 2>/dev/null | tail -n 1 || :); z=$(sgdisk -E "$disk" 2>/dev/null | tail -n 1 || :)
     [[ $s =~ ^[0-9]+$ && $z =~ ^[0-9]+$ ]] || { conflict "the partition table of $disk could not be read"; return 0; }
     free=$(( (z - s) / 2048 ))
+    # a disk that was made larger still has its table ending where the disk used to end, and the new space is not in it
+    c=$(sgdisk -p "$disk" 2>/dev/null | sed -n 's/.*last usable sector is \([0-9]*\).*/\1/p' | head -n 1 || :)
+    if [[ $c =~ ^[0-9]+$ ]] && (( $(blockdev --getsz "$disk") - c > 1048576 )); then
+      conflict "$disk is larger than its partition table knows: it was grown, and $(( ($(blockdev --getsz "$disk") - c) / 2097152 )) GiB at its end are not in the table. Move the end of the table there first (sgdisk -e $disk), then run this again"; return 0
+    fi
   else
     conflict "$disk has a $table partition table: this needs GPT"; return 0
   fi
@@ -297,7 +305,7 @@ t_os_remove() { local name=$1 e='' parts='' p='' disk='' n='' root=''
   [[ -n $e ]] && { try efibootmgr -q -b "$e" -B || return 0; }
   for p in $parts; do
     disk=/dev/$(lsblk -rno PKNAME "$p" | head -n 1); n=$(cat "/sys/class/block/${p##*/}/partition")
-    wipefs -q -a "$p" 2>/dev/null || :; try sgdisk -d "$n" "$disk" >/dev/null || return 0; sf_os_rescan "$disk"
+    wipefs -q -a "$p" 2>/dev/null || :; try sgdisk -d "$n" "$disk" >/dev/null || return 0; sf_os_forget "$disk" "$n"; sf_os_rescan "$disk"
   done
   ok "$name is gone; the space it had is unpartitioned again"
 }
