@@ -41,7 +41,7 @@ With it set:
 
 - **SSH keys are not decrypted in the web app.** Each task's agent socket is served by the web app, lists the one public key, and asks the enclave for each signature. Deploy requests and evidence bundles are signed the same way. A new ed25519 key is made inside and its private half is never outside.
 - **The audit chain's MAC key stays inside.** Each entry's MAC is computed there; the chain is the same chain, and either side verifies what the other wrote.
-- **The secret is needed once.** The first unlock hands it to the enclave; after that the web app works without it.
+- **The secret is needed once, and not by the web app.** Whoever unlocks the enclave hands it over; after that the web app works without it (see *Unlocking it* below).
 - **It fails closed.** An enclave that does not answer, is locked, or has locked itself down after five malformed requests is a locked vault. The web app does not fall back to opening the vault itself.
 - **Its limits are its own:** six unlock attempts a minute, 600 signatures a minute per key, one request at a time, a 1 MiB frame. The web app cannot raise them.
 
@@ -50,6 +50,18 @@ With it set:
 - **The vault secret is rotated inside.** The enclave derives the new KEK and rewraps each DEK without letting one out, and switches only when every row is written; a rotation that fails part way changes nothing.
 
 The web app never opens the KEK when the enclave is configured. What still passes through it: a key being imported, an RSA key (made in the web app and imported, since the enclave makes ed25519 and ECDSA), a secret on its way in or out, and the vault secret itself at the first unlock and at a rotation.
+
+**Unlocking it.** A restarted enclave holds nothing until it is given the vault secret again. Three ways hand it over, and none leaves it in the web app:
+
+- **The starter, apart.** `storageforge-index vault starter` is a process of its own: it reads `STORAGEFORGE_VAULT_SECRET_FILE` once, hands the secret to the enclave the server runs (the server writes where that is to `enclave.addr` in its runtime folder), overwrites its copy and ends. With `--watch` it stays, holding nothing, and reads the file again only when the enclave has come back locked after a restart. `docker-compose.enclave.yml` runs it as the `starter` service and moves the vault secret to a volume of its own (`sf-vault-secret`) that the server's container does not mount, so the server has neither the secret nor the file. The server then starts with `STORAGEFORGE_VAULT_SECRET_APART=1` and refuses to start if it is given a secret all the same.
+- **The starter, in place.** A server that does find the secret in its own environment hands it over once as it starts, overwrites the variable where `/proc/PID/environ` shows it and takes both variables out of its environment. A secret file the server's account can read is still a file it can read, and Python cannot promise no copy of the bytes is left in its memory: the starter apart is the one that closes that.
+- **A person.** **Keys → Key enclave** shows a locked enclave with a field for the vault secret (`POST /api/enclave/unlock`, which takes `keys.manage` and a fresh password). The secret crosses the web app once, on its way in, and is checked only inside the enclave. Every attempt is in the audit log, without the secret.
+
+An enclave that locked itself down is never unlocked by a starter: a person looks at what sent the malformed requests first, and then unlocks it on the Keys page. **Lock the enclave** there (`POST /api/enclave/lock`) makes it forget every key at once.
+
+To read the vault secret for safekeeping with this compose file: `docker compose -f docker-compose.yml -f docker-compose.enclave.yml run --rm --entrypoint cat admin /run/sf-vault/vault_secret`. To go back to a stack without the enclave, put that secret in `./secrets/vault_secret` before deploying without the file.
+
+What does not work with the secret apart: the nightly copy of a backup to another host, which the server encrypts with a key derived from the vault secret, has no secret to derive it from and is not made. The backup itself still is. Until that key is derived inside the enclave, copy backups off with a command that holds the secret (`docker compose … run --rm admin backup …`), or use the starter in place.
 
 The image is `storageforge-indexer/enclave/image/build.sh`: a kernel without modules, an IP stack or block devices and with lockdown forced on, and an initramfs of one static file. The compiler image is pinned by digest and the kernel by checksum, and the build is reproducible: build it again and compare `SHA256SUMS`.
 

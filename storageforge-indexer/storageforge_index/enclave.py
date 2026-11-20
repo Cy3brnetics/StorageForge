@@ -14,9 +14,18 @@ import json
 import os
 import socket
 import struct
+from pathlib import Path
 
 MAX_FRAME = 1 << 20
 ADDRESS_ENV = 'STORAGEFORGE_ENCLAVE'
+RUN_DIR_ENV = 'STORAGEFORGE_ENCLAVE_RUN_DIR'
+
+
+def run_dir() -> Path:
+    """Where the server's enclave has its socket, its address and its pinned key: the runtime folder, or a folder of its own that a
+    starter in another container shares (docker-compose.enclave.yml)."""
+    from .runner import runtime_dir
+    return Path(os.environ.get(RUN_DIR_ENV) or runtime_dir())
 
 
 class EnclaveError(RuntimeError):
@@ -198,6 +207,42 @@ class Enclave:
 
     def mac_matches(self, prev: str, payload: str, expect: str) -> bool:
         return bool(self.request('mac', prev=prev, payload=payload, expect=expect)['matches'])
+
+
+def describe() -> dict:
+    """For the Keys page and the security view: whether the extra layer is there, and where it is not, that it is not and why
+    (roadmap section 14, "Where it runs"). Looking never starts a VM."""
+    from . import enclave_vm
+    address = os.environ.get(ADDRESS_ENV) or None
+    try:
+        why = enclave_vm.missing()
+    except enclave_vm.EnclaveVMError as exc:
+        why = str(exc)
+    out = {'on': bool(address), 'state': 'off', 'kvm': os.access('/dev/kvm', os.R_OK | os.W_OK), 'vm_possible': why is None, 'why_no_vm': why}
+    if not address:
+        out['label'] = 'Key enclave: off'
+        out['detail'] = ('The vault opens its keys in the web app, as before. This machine can run the enclave: set STORAGEFORGE_ENCLAVE=vm.' if why is None else
+                         f'The vault opens its keys in the web app, as before: the extra layer is not there. This machine cannot run the enclave: {why}.')
+        return out
+    out['runs'] = 'this server' if address.startswith(('fc:', 'vm')) or os.environ.get('STORAGEFORGE_ENCLAVE_IMAGE_DIR') else 'something else'
+    if address.startswith('vm'):          # asked for, and not started (yet): nothing may take that for no enclave at all
+        return {**out, 'state': 'down', 'label': 'Key enclave: not started', 'detail': 'It was asked for and is not running. Nothing that needs a key works until it is.'}
+    client = Enclave(address, timeout=3)
+    try:
+        status = client.status()
+    except EnclaveError as exc:
+        return {**out, 'state': 'down', 'label': 'Key enclave: not answering', 'detail': f'{exc}. Nothing that needs a key works until it is back.'}
+    finally:
+        client.close()
+    state = str(status.get('state'))
+    out.update(state=state, version=status.get('version'), protocol=status.get('protocol'), in_vm=bool(status.get('pid1') and status.get('memory_locked')),
+               counts={k: status.get(k) for k in ('signed', 'released', 'refused', 'bad_requests', 'bad_limit')}, limits=status.get('limits') or {})
+    where = 'a micro VM with no network device' if out['in_vm'] else 'a program on this machine, not a micro VM: for development and tests only'
+    out['label'] = {'unlocked': 'Key enclave: on', 'locked': 'Key enclave: locked', 'lockdown': 'Key enclave: locked down'}.get(state, f'Key enclave: {state}')
+    out['detail'] = {'unlocked': f'The vault\'s keys are held in {where}. Root on this machine can still read a VM\'s memory.',
+                     'locked': f'It runs in {where} and holds no key, as after a restart. The starter unlocks it, or a person here with the vault secret.',
+                     'lockdown': f'It was sent {status.get("bad_requests")} requests no honest client sends, and wiped its keys. Find what sent them, then unlock it here with the vault secret.'}.get(state, '')
+    return out
 
 
 def problems() -> dict:

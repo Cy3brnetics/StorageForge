@@ -344,21 +344,33 @@ class Vault:
                            'an': an, 'ak': act, 'now': int(time.time())})
         return True
 
-    def _unlock_enclave(self, address: str) -> 'Vault':
+    def _unlock_enclave(self, address: str, secret: bytes | None = None) -> 'Vault':
         """The enclave holds the KEK. It is unlocked once, with the vault's stored parameters and the secret; after that nothing here
-        needs the secret, and a web app that was never given it works."""
+        needs the secret, and a web app that was never given it works. secret: handed in by the starter or typed by a person
+        (enclave_start.py); without one, the secret of this process's environment is used where there is one."""
         row = self.conn.all(f'SELECT {", ".join(META)} FROM vault_meta WHERE id = 1')
         if not row:
             raise VaultLocked('The vault is not initialised. Run: storageforge-index vault init')
         with _enclave.Enclave(address) as e:
             if _asked(e.status)['state'] != 'unlocked':
-                try:
-                    secret = secret_from_env()
-                except VaultLocked:
-                    raise VaultLocked('The key enclave is locked, and there is no vault secret here to unlock it with') from None
+                if secret is None:
+                    try:
+                        secret = secret_from_env()
+                    except VaultLocked:
+                        raise VaultLocked('The key enclave is locked, and there is no vault secret here to unlock it with: the starter or a person unlocks it') from None
                 _asked(e.unlock, secret, {c: (self._blob(v) if isinstance(v, (bytes, memoryview)) else v) for c, v in zip(META, row[0])})
         self.enclave, self.audit_key = address, EnclaveMacKey(address)
         return self
+
+    def unlock_enclave(self, secret, address: str | None = None) -> 'Vault':
+        """The secret handed to the enclave by whoever holds it for that one moment: the starter, or a person who typed it."""
+        try:
+            address = address or _enclave.configured()
+        except _enclave.EnclaveError as exc:
+            raise VaultLocked(str(exc)) from None
+        if not address:
+            raise VaultError('this installation has no key enclave: the vault is unlocked from STORAGEFORGE_VAULT_SECRET')
+        return self._unlock_enclave(address, bytes(secret))
 
     def unlock(self) -> 'Vault':
         try:
@@ -716,7 +728,14 @@ class AuditLog:
                 self.conn.execute('SELECT pg_advisory_xact_lock(727274)')
             prev = self.conn.scalar('SELECT entry_hash FROM audit_log ORDER BY audit_id DESC LIMIT 1') or GENESIS
             payload = json.dumps([ts, actor, action, host, key_fp, outcome, detail_json], separators=(',', ':'))
-            h = self._digest(prev, payload, alg)
+            try:
+                h = self._digest(prev, payload, alg)
+            except VaultLocked:
+                if not isinstance(self.key, EnclaveMacKey):
+                    raise
+                # a locked enclave is a locked vault: the entry is still written, chained without the key, and counted by unkeyed()
+                alg = 'sha256'
+                h = self._digest(prev, payload, alg)
             self.conn.execute("""INSERT INTO audit_log (ts_us, actor, action, target_host, key_fingerprint, outcome,
                                      detail_json, hash_alg, prev_hash, entry_hash)
                                  VALUES (:ts, :a, :ac, :h, :fp, :o, :d, :alg, :p, :e)""",

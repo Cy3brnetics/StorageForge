@@ -13,6 +13,8 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_VAULT_SECRET` / `_FILE` | required | Unlocks the vault; at least 32 characters |
 | `STORAGEFORGE_ENCLAVE` | off | `vm`: the server runs the [key enclave](security.md#key-enclave) itself and does not start without it. `vsock:CID:PORT` or `fc:PATH:PORT`: an enclave something else runs. In Docker, `docker-compose.enclave.yml` sets `vm` and passes `/dev/kvm`; it needs `STORAGEFORGE_KVM_GID`, the group of `/dev/kvm` on the Docker host. Off: the vault's keys are opened in the web app, as before |
 | `STORAGEFORGE_ENCLAVE_IMAGE_DIR` | `/usr/share/storageforge/enclave` in the image | With `vm`: the folder `enclave/image/build.sh` wrote (`vmlinux`, `bzImage`, `initramfs.cpio.gz`, `SHA256SUMS`) |
+| `STORAGEFORGE_VAULT_SECRET_APART` | off | `1`: this server is not given the vault secret, and refuses to start if it is. The [starter](security.md#key-enclave) (`vault starter --watch`) or a person on the Keys page unlocks the key enclave. `docker-compose.enclave.yml` sets it |
+| `STORAGEFORGE_ENCLAVE_RUN_DIR` | the runtime folder | Where the server's enclave has its socket and its address file (`enclave.addr`). A starter in another container shares this folder |
 | `STORAGEFORGE_ENCLAVE_VMM` | Firecracker where installed, else QEMU | With `vm`: `firecracker` or `qemu`, to insist on one |
 | `STORAGEFORGE_ENCLAVE_IMAGE` | | With `vm`: the image digest to insist on; a different image is not started |
 | `STORAGEFORGE_VAULT_NEW_SECRET` | | The new secret for `vault rotate-secret` |

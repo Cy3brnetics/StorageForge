@@ -104,8 +104,7 @@ def from_env(on_event=None, shared: bool = True) -> 'Supervisor | None':
     folder = os.environ.get('STORAGEFORGE_ENCLAVE_IMAGE_DIR')
     if not folder:
         raise EnclaveVMError('STORAGEFORGE_ENCLAVE=vm needs STORAGEFORGE_ENCLAVE_IMAGE_DIR: the folder enclave/image/build.sh wrote')
-    from .runner import runtime_dir
-    supervisor = Supervisor(folder, expect=os.environ.get('STORAGEFORGE_ENCLAVE_IMAGE') or None, on_event=on_event, runtime_dir=runtime_dir() if shared else None)
+    supervisor = Supervisor(folder, expect=os.environ.get('STORAGEFORGE_ENCLAVE_IMAGE') or None, on_event=on_event, runtime_dir=enclave.run_dir() if shared else None)
     os.environ[enclave.ADDRESS_ENV] = 'vm:starting'          # until it is up, nothing may take `vm` for no enclave at all
     try:
         os.environ[enclave.ADDRESS_ENV] = supervisor.start()

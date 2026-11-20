@@ -18,6 +18,8 @@ PW = 'a long enough password'
 # Changes something, runs on a host or touches accounts and keys: asks for a password typed in the last 5 minutes.
 FRESH_PASSWORD = {
     ('POST', '/api/console/sessions'),          # a shell on a host: the password again for each session
+    ('POST', '/api/enclave/unlock'),            # the vault secret, typed by a person
+    ('POST', '/api/enclave/lock'),
     ('PUT', '/api/console/settings'),           # whether every session is recorded in full
     ('PUT', '/api/scans/signing'),                # whether unsigned scans are refused
     ('DELETE', '/api/scans/signing/<path:addr>'),  # forgetting a pinned key lets the next signer take its place

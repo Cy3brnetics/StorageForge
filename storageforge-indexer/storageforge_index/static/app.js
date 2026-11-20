@@ -855,6 +855,7 @@ $('#scanform').addEventListener('submit', (ev) => { ev.preventDefault(); const h
 /* ── keys: generate in the vault, install with ssh-copy-id ────────── */
 function keyMsg(msg, ok) { const m = $('#instmsg'); m.hidden = false; m.textContent = msg; m.className = ok ? 'st-ok' : 'st-failed'; }
 async function loadKeys(select) {
+  loadEnclave();          // enclaveview.js: whether the extra layer on these keys is there
   try {
     const { keys, bindings } = await getJSON('/api/keys');
     const sel = $('#instkey'); const keep = select || sel.value;

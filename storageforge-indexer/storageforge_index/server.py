@@ -175,7 +175,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, selfupdate, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
                folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
-from . import routes_planner
+from . import routes_enclave, routes_planner
 from .runtimes import docker
 from .capacity import parse_size, trends
 from .db import Database, epoch
@@ -276,6 +276,9 @@ class App:
                     self.audit_key.length = 32
         except VaultError as exc:
             print(f'warning: vault locked ({exc}); API audit entries use plain SHA-256 chaining', file=sys.stderr)
+            address = os.environ.get('STORAGEFORGE_ENCLAVE') or ''
+            if address and not address.startswith('vm'):
+                self.audit_key = EnclaveMacKey(address)          # the key enclave has the MAC key from the moment it is unlocked, by the starter or a person
         finally:
             conn.close()
         self.queue: queue.Queue[int] = queue.Queue()
@@ -834,7 +837,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js", "notifyview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js"):name>')
+    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js", "notifyview.js", "enclaveview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
@@ -1546,6 +1549,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     routes_git.register(web, ctx)
     routes_clamav.register(web, ctx)
     routes_notifications.register(web, ctx)
+    routes_enclave.register(web, ctx)
     routes_logrules.register(web, ctx)
     routes_secplus.register(web, ctx)      # first: it gives the others ctx.step_up
     routes_security.register(web, ctx)
@@ -2927,11 +2931,13 @@ def serve(db: Database, host: str, port: int, scan_interval: int | None, paralle
     hops = int(os.environ.get('STORAGEFORGE_PROXY_HOPS', '0'))
     # The key enclave, where the server is asked to run it (STORAGEFORGE_ENCLAVE=vm): before anything opens the vault. A server
     # asked for the enclave does not start without it.
-    from . import enclave_vm
+    from . import enclave_start, enclave_vm
     holder: list = []
 
     def enclave_event(kind, detail):
         errlog.say(f'key enclave {kind}: {json.dumps(detail, default=str)}')
+        if kind == 'up' and detail.get('restarts'):
+            enclave_start.after_restart(db, detail['address'])
         if holder:                      # in the audit log too, once there is an App to write it
             c = db.connect()
             try:
@@ -2944,6 +2950,11 @@ def serve(db: Database, host: str, port: int, scan_interval: int | None, paralle
         enclave_supervisor = enclave_vm.from_env(enclave_event)     # noqa: F841  kept for the life of the process
     except enclave_vm.EnclaveVMError as exc:
         raise SystemExit(f'The key enclave could not be started, and STORAGEFORGE_ENCLAVE=vm asks for it: {exc}') from None
+    try:        # the starter, in place: the secret goes to the enclave and leaves this process's environment (enclave_start.py)
+        if enclave_start.at_server_start(db) == 'locked':
+            errlog.say('key enclave: locked, and this server was given no vault secret: the starter or a person unlocks it')
+    except VaultError as exc:
+        errlog.say(f'key enclave: not unlocked at start: {exc}')
     web_core = App(db, scan_interval, parallel, timers=True)
     holder.append(web_core)
     web = create_app(web_core, session_secret_from_env(), secure, hops,

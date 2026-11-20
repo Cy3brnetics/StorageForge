@@ -1093,6 +1093,11 @@ def cmd_vault(args) -> int:
             _audit(db, conn, v, 'vault.init')
         print('vault initialised' if created else 'vault already initialised; secret verified')
         return 0
+    if a == 'starter':
+        from . import enclave_start
+        db, conn = open_db(args)
+        conn.close()
+        return enclave_start.starter(db, args.address, args.wait, args.watch, say=lambda line: print(line, file=sys.stderr, flush=True))
     if a == 'status':
         db, conn = open_db(args)
         v = Vault(db, conn)
@@ -1912,6 +1917,10 @@ def build_parser() -> argparse.ArgumentParser:
     vs.add_parser('policy', help="show or set where this site's keys may come from").add_argument(
         'policy', nargs='?', choices=('generate-only', 'open'), help='generate-only: refuse imported keys')
     vs.add_parser('rotate-secret', help='rewrap all keys under STORAGEFORGE_VAULT_NEW_SECRET')
+    x = vs.add_parser('starter', help='hand the vault secret to the key enclave the server runs, then forget it (docs/security.md, "Key enclave")')
+    x.add_argument('--address', help='where the enclave is; the address the server published in its runtime folder if not given')
+    x.add_argument('--wait', type=float, default=60.0, help='seconds to wait for the enclave to answer (default 60)')
+    x.add_argument('--watch', action='store_true', help='stay, and unlock it again whenever it comes back locked after a restart; the secret file is read again each time')
     x = vs.add_parser('import-dir', help='import every private key file in a directory (name = file stem)')
     x.add_argument('dir')
     x = vs.add_parser('secret-add', help='store a secret a plan step reads on a host (one line on stdin), such as a Tailscale auth key')
