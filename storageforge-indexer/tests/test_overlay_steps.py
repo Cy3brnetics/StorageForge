@@ -209,11 +209,19 @@ esac''')
 
     def test_a_netbird_that_cannot_read_the_key_from_a_file_is_refused(self):
         (self.fake / 'old').touch()
-        self.secret('nb-key', SETUP_KEY)
-        rc, out = self.step(True, 't_netbird', 'nb-key', '', '', 'present')
-        self.assertEqual(rc, 1)
-        self.assertIn('cannot read its setup key from a file (--setup-key-file): with it the key would be on a command line, so nothing is done', out)
+        for sent in (False, True):          # refused before the key is asked for, so nobody sends a key it cannot use
+            if sent:
+                self.secret('nb-key', SETUP_KEY)
+            rc, out = self.step(True, 't_netbird', 'nb-key', '', '', 'present')
+            self.assertEqual(rc, 1)
+            self.assertIn('cannot read its setup key from a file (--setup-key-file): with it the key would be on a command line, so nothing is done', out)
         self.assertEqual(self.read('netbird.cmdline'), '')
+        # one that somebody joined by hand is on its network all the same, and is said to be
+        (self.fake / 'registered').touch()
+        (self.fake / 'up').touch()
+        rc, out = self.step(True, 't_netbird', 'nb-key', '', '', 'present')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('ok: on a NetBird network already', out)
 
     def test_a_key_the_server_refuses_and_an_up_that_does_not_connect(self):
         key = self.secret('nb-key', 'WRONGKEY-0000-0000-0000-000000000000')
@@ -332,6 +340,11 @@ esac""")
         rc, out = self.step(True, 't_zerotier', NET, 'present')
         self.assertEqual(rc, 0)
         self.assertIn('the controller has not answered yet (REQUESTING_CONFIGURATION)', out)
+        for status, rc_want, text in (('PORT_ERROR', 1, 'ZeroTier on this host cannot use it (PORT_ERROR)'), ('AUTHENTICATION_REQUIRED', 0, 'wants a person to sign in before node 1a2b3c4d5e is let in')):
+            (self.fake / 'nets' / NET).write_text(status + '\n')
+            rc, out = self.step(True, 't_zerotier', NET, 'present')
+            self.assertEqual(rc, rc_want, out)
+            self.assertIn(text, out)
 
     def test_absent_leaves_that_network_only_and_once(self):
         other = '8056c2e21c000002'
@@ -665,7 +678,7 @@ reach blocked
 
 
 @NEEDS_NEBULA
-@unittest.skipUnless(_namespaces(), 'needs network namespaces of its own (unshare -Urnm), ip, ping and /dev/net/tun')
+@unittest.skipUnless(REAL_NEBULA and REAL_NEBULA_CERT and _namespaces(), 'needs network namespaces of its own (unshare -Urnm), ip, ping and /dev/net/tun')
 class NebulaNetwork(unittest.TestCase):
     """Two real Nebula nodes, a lighthouse and a host, each in a network namespace of its own with one cable between them, started
     with certificates and configurations made here. No root is needed: the namespaces belong to this account."""

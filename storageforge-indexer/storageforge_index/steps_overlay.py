@@ -84,10 +84,6 @@ t_netbird() { local secret=$1 url=$2 name=$3 state=${4:-present} f out ip at arg
     return 0
   fi
   command -v netbird >/dev/null || { conflict "netbird is not installed: install it from the package source NetBird gives (pkgs.netbird.io), which this step does not add"; return 0; }
-  if ! ov_says "--setup-key-file" netbird up --help; then
-    conflict "this netbird ($(netbird version 2>/dev/null || true)) cannot read its setup key from a file (--setup-key-file): with it the key would be on a command line, so nothing is done. Update netbird"
-    return 0
-  fi
   if ! netbird status >/dev/null 2>&1; then
     ov_service netbird || return 0
     if ((APPLY)) && ! netbird status >/dev/null 2>&1; then conflict "the NetBird service does not answer: netbird service install, then netbird service start"; return 0; fi
@@ -99,6 +95,10 @@ t_netbird() { local secret=$1 url=$2 name=$3 state=${4:-present} f out ip at arg
     fi
     ok "on a NetBird network already, as $(nb_ip), managed at ${at:-a server it does not name}"
     [[ -e $f ]] && rm -f -- "$f" && info "removed the setup key file it no longer needs"
+    return 0
+  fi
+  if ! ov_says "--setup-key-file" netbird up --help; then
+    conflict "this netbird ($(netbird version 2>/dev/null || true)) cannot read its setup key from a file (--setup-key-file): with it the key would be on a command line, so nothing is done. Update netbird"
     return 0
   fi
   if [[ ! -r $f ]]; then
@@ -129,6 +129,9 @@ zt_say() { local net=$1 st=$2 node; node=$(zt_node)
     ACCESS_DENIED) info "joined ZeroTier network $net, and its controller has not authorised node $node: that is done at the controller, not by this step"
                    ok "asked to join $net as node $node" ;;
     NOT_FOUND) conflict "ZeroTier network $net is not found: no controller answers for that id" ;;
+    PORT_ERROR|CLIENT_TOO_OLD) conflict "joined ZeroTier network $net, and ZeroTier on this host cannot use it ($st): zerotier-cli listnetworks and its log say why" ;;
+    AUTHENTICATION_REQUIRED) info "joined ZeroTier network $net, which wants a person to sign in before node $node is let in: this step cannot do that"
+                             ok "asked to join $net as node $node" ;;
     *) info "joined ZeroTier network $net as node $node, and the controller has not answered yet (${st:-no status}): a private network waits for the node to be authorised there"
        ok "asked to join $net as node $node" ;;
   esac
