@@ -135,6 +135,18 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/audit[?limit=]` | | newest entries (≤ 1000) |
 | GET | `/api/audit/verify` | | `{"valid", "entries_checked", "first_bad_id", "head"}`. With the [key enclave](security.md#key-enclave), `head` says whether the log still ends where the enclave last signed it (`{"enclave", "ok", "why"}`), and `valid` is false when it does not |
 
+### The agent
+
+The [optional agent](agent.md), per host. Built, not lab-tested. Reading takes `keys.view`; everything else takes `keys.manage` and a fresh password, and is in the audit log.
+
+| Method | Path | Body | |
+| :--- | :--- | :--- | :--- |
+| GET | `/api/agents` | | every host with `enabled`, `state` (`off`, `on`, `needs-podman`, `running`, `stopped`, `removed`, `failed`), the pinned key's `fingerprint`, `runtime`, `image`, the manifest `counter`, `detail` and `deploy_ready`; and the configured `image` |
+| PUT 🔑 | `/api/agents/<host>` | `{"enabled": bool}` | the per-host switch. Does nothing on the host. Off is refused (409) while an agent is enrolled there; a network device is refused. Returns a `hint` of what the last scan knows of a runtime |
+| POST 🔑 | `/api/agents/<host>/install` | `{"install_podman": bool, "accept_new_key": bool}` | set the agent up and enroll it, in the background: 202 with a `group_id` to poll as a deploy. 409 when the agent is off for the host, the host has no deploy access, or the image, its signature or `storageforge-agentctl` is not configured. A host with no runtime ends in `needs-podman` until `install_podman` is true. `accept_new_key` replaces another controller's key pinned on the host |
+| POST 🔑 | `/api/agents/<host>/<start\|stop\|restart\|status>` | `{}` | ask the host's `storageforge-agentctl`. `status` returns `running`, `runtime`, `counter`, the `pinned` fingerprint and whether the host's `key_matches` it |
+| DELETE 🔑 | `/api/agents/<host>` | | forget the pinned key, then remove the container, the agent's key, both accounts, the sudoers line and the program from the host. `problems` lists what could not be done there |
+
 ### Key enclave
 
 Off unless `STORAGEFORGE_ENCLAVE` is set ([security](security.md#key-enclave)). Reading takes `keys.view`, the rest `keys.manage`.

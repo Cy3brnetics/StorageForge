@@ -282,6 +282,19 @@ Every connection, scan result, denial, sign-in, plan save, script download, depl
 
 The tunnel in `docker-compose.remote.yml` is the one port meant to be open beyond the LAN. See [Remote nodes](remote-nodes.md) for what a stolen key can and can't do.
 
+## The agent
+
+The optional [agent](agent.md) is an extra layer beside SSH and shares nothing with it. Built, not lab-tested, and at this stage it has no tunnel, so it reports nothing. What holds for it:
+
+- **Off unless switched on,** per host, by someone with `keys.manage` and a fresh password.
+- **Its own accounts.** The agent runs as `sfagent`, never root. The controller manages it as `storageforge-agentctl`, whose key can start one program and whose sudoers file has one line. Neither is ever in `docker`, `lxd` or `incus-admin`: the setup and every request are refused while one is.
+- **Its own keys.** The agent makes its key on the host; the public half is read back over the pinned SSH connection at enrollment and pinned. The controller's two agent keys are vault keys of their own, not the scan, deploy or job keys.
+- **Code comes from the release key.** Plugins and the agent's image run only when a release key signed them (or a key the operator put on that host by hand). The controller carries those signatures and holds no key that makes one, so a controller that was taken over chooses among signed plugins and cannot write one, widen one, or swap the image.
+- **A manifest cannot be played back.** It names one agent's key and one machine, and its counter only goes up.
+- **A container with what was declared and nothing more:** read-only, every capability dropped, no network, no runtime's socket, SSH's and StorageForge's secrets masked inside every mount.
+
+[The agent page](agent.md#what-it-does-not-do-or-check-yet) lists what is not checked yet.
+
 ## The StorageForge network
 
 StorageForge's own WireGuard network ([how to set it up](infrastructure-map.md#storageforges-own-network)) is a security boundary, and these are its rules. Built, not lab-tested.
@@ -308,6 +321,8 @@ Everything sent to a host to run as root is signed, with these named exceptions.
 | Timers on a host: jobs, tasks, schedules, the sentinel, ClamAV | **At install** | A signed deploy puts them there, root-owned. They are not checked again on each run |
 | `storageforge-job --serve` on a job source, and on the receiving host of a send | **At install** | A job key's forced command with a fixed list of actions, from a config a signed deploy wrote |
 | Each side of a ZFS or btrfs send to another host | **Yes, on each deploy** | A signed run on the receiver says what it may receive and writes the key's forced command. A signed run on the sender writes the key. See [Sends between hosts](#sends-between-hosts) |
+| The [agent](agent.md): requests to `storageforge-agentctl`, and each host's manifest | **Yes, each one** | By the controller's agent signing key, each in its own namespace, for one machine, once. `storageforge-agentctl` itself reaches a host on the stdin of the signed setup, which installs it only when its size and sha256 are the ones in the signed script |
+| The agent's plugins and image | **Yes, by the release key** | Not by the controller, which only carries the signatures. Or by a key the operator put on that host by hand |
 | Scans: inventory, file walk, checksums, network, containers, Git | No | Read-only, as the scan user |
 | First-time scan and deploy access | No | No signer is on the host yet. It takes a fresh password and a host key a person confirmed |
 | **`rsync` to or from another host in a task block** | **No** | The signed script on the first host logs in with that host's own root key. Nothing is signed there and no run is recorded, so the check says so and the `deploy.start` audit row names the host (`second_hops`). Use a Moves step instead: a [deployed job](deployments.md#deployed-jobs) has a forced-command key of its own |

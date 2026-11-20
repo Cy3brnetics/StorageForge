@@ -152,6 +152,27 @@ jobs:
             sh enclave/image/sign.sh --verify /tmp/enclave-arm64 enclave/image/allowed_signers
           fi
 
+  agent:
+    # The optional agent's two programs (docs/agent.md): the Rust unit tests, in the container the programs are built in, then both
+    # programs built twice, static, for x86_64 and arm64, and the two builds compared. Their dependencies are the workspace's one
+    # Cargo.lock, which the enclave job scans. The agent's image is the `agent` stage of the Dockerfile.
+    name: Agent programs
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Rust unit tests
+        run: sh agent/build.sh --test
+      - name: Build, twice
+        run: |
+          sh agent/build.sh /tmp/agent-a
+          sh agent/build.sh /tmp/agent-b
+      - name: Two builds give the same bytes
+        run: cmp /tmp/agent-a/SHA256SUMS /tmp/agent-b/SHA256SUMS
+
   zizmor:
     # Audits these workflows for template injection, persisted credentials, unpinned actions and broad permissions.
     # zizmor is pinned so a new release with new audits can't fail an unchanged workflow: raise it on purpose.
