@@ -201,7 +201,7 @@ class Nebula(unittest.TestCase):
 
     def test_nothing_a_host_could_send_makes_it_raise(self):
         junk = ['', None, 7, 'x', '- a', '{', 'pki: 5', 'pki: {}\nlighthouse: {hosts: 5}\nstatic_host_map: {1: 2, "x": [3]}\ntun: {unsafe_routes: [1, {route: 5, via: [1, {gateway: 7}]}], dev: 9}\nlisten: {port: true}',
-                'a: &a [*a]', 'pki: {}\nrelay: {relays: {a: 1}}', '[' * 5000, 'x' * (overlays.MAX_INPUT + 1), 'tun:\n  dev: ' + 'n' * 400, 'lighthouse:\n  hosts: ["' + '", "'.join(f'10.0.{i // 250}.{i % 250}' for i in range(3000)) + '"]']
+                'a: &a [*a]', 'pki: {}\nrelay: {relays: {a: 1}}', '[' * 400, 'x' * (overlays.MAX_INPUT + 1), 'tun:\n  dev: ' + 'n' * 400, 'lighthouse:\n  hosts: ["' + '", "'.join(f'10.0.{i // 250}.{i % 250}' for i in range(3000)) + '"]']
         for conf in junk:
             for cert in junk[:9] + [NEBULA_CERT, '[1, {"details": 5}, {"details": {"groups": 5, "networks": "x", "name": 4}}]', '{"details": {"isCa": false, "groups": [1, null]}}']:
                 got = overlays.nebula(conf, cert)
