@@ -52,6 +52,7 @@ def register(web, ctx):
             if not deploy.ready(conn(), name):
                 raise sfagent.AgentError(f'{name} has no deploy access yet, and the agent is set up through it: set up deploy access first')
             sfagent.agent_image()
+            sfagent.image_signature()
             sfagent.agentctl_program(sfagent.host_arch(conn(), name))
         except sfagent.AgentError as exc:
             return refused(exc)

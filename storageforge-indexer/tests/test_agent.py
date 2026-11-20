@@ -46,7 +46,7 @@ def build():
         if not key.exists():
             subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'test-release', '-f', str(key)], check=True)
         signers = TARGET / 'release_signers'
-        signers.write_text('testrelease namespaces="storageforge-plugin" ' + ' '.join(key.with_suffix('.pub').read_text().split()[:2]) + '\n')
+        signers.write_text('testrelease namespaces="storageforge-plugin,storageforge-agent-image" ' + ' '.join(key.with_suffix('.pub').read_text().split()[:2]) + '\n')
         p = subprocess.run(['cargo', 'build', '--quiet', '--locked', '-j', '4', '-p', 'storageforge-agent', '--bins', '--examples'], cwd=ROOT, capture_output=True, text=True,
                            env={**os.environ, 'STORAGEFORGE_RELEASE_SIGNERS': str(signers), 'CARGO_TARGET_DIR': str(TARGET)})
         out = TARGET / 'debug'
@@ -185,6 +185,7 @@ class Base(unittest.TestCase):
         (self.tmp / 'agentdir/x86_64').mkdir(parents=True)
         shutil.copy(self.out / 'storageforge-agentctl', self.tmp / 'agentdir/x86_64/storageforge-agentctl')
         self.program = (self.out / 'storageforge-agentctl').read_bytes()
+        self.sign_image(IMAGE)
         self.db = dbfactory.make(self, self.tmp / 'index.db')
         self.conn = self.db.connect()
         self.addCleanup(self.conn.close)
@@ -208,6 +209,12 @@ class Base(unittest.TestCase):
             p = mock.patch.object(target, name, fn)
             p.start()
             self.addCleanup(p.stop)
+
+    def sign_image(self, image, key=None):
+        """The signature a release carries beside its image: of the digest, by the release key this build trusts."""
+        sig = ssh_sign(key or TARGET / 'release-key', 'storageforge-agent-image', image.split('@')[1].encode() + b'\n')
+        (self.tmp / 'agentdir/image.sig').write_text(sig)
+        return sig
 
     def keys(self):
         with vault.Vault(self.db, self.conn, SECRET).unlock() as v:
@@ -413,8 +420,9 @@ class Requests(Base):
             p = self.host.send(f'STORAGEFORGE-AGENTCTL 1\n{len(payload)}\n{len(sig)}\n'.encode() + payload + sig)
             return p.returncode, json.loads(p.stdout)
         for body in ({'op': 'exec', 'argv': ['id']}, {'op': 'run'}, {'op': 'shell'}, {'op': 'status', 'command': 'id'}, {'op': 'status', 'script': 'id'},
-                     {'op': 'enroll', 'image': 'storageforge-agent:latest'}, {'op': 'enroll', 'image': IMAGE, 'privileged': True},
-                     {'op': 'enroll', 'image': '--privileged@sha256:' + 'a' * 64}, {'op': 'stop', 'image': IMAGE}, {'op': 'apply'}):
+                     {'op': 'enroll', 'image': 'storageforge-agent:latest', 'image_signature': 's'}, {'op': 'enroll', 'image': IMAGE, 'image_signature': 's', 'privileged': True},
+                     {'op': 'enroll', 'image': '--privileged@sha256:' + 'a' * 64, 'image_signature': 's'}, {'op': 'enroll', 'image': IMAGE},
+                     {'op': 'stop', 'image': IMAGE}, {'op': 'apply'}):
             rc, got = signed(body)
             self.assertEqual((rc, got['ok'], got['error']), (97, False, 'request'), body)
         self.assertEqual(self.host.calls('docker'), [])
@@ -486,7 +494,7 @@ class Lifecycle(Base):
         with self.assertRaisesRegex(sfagent.AgentError, 'remove it before switching'):
             sfagent.switch(self.conn, 'nas', False, 'test')
         # asked directly, the program says the same
-        rc, got = self.ask('enroll', image=IMAGE)
+        rc, got = self.ask('enroll', image=IMAGE, image_signature=self.sign_image(IMAGE))
         self.assertEqual((rc, got['error']), (97, 'enrolled'))
 
     def test_stopped_stays_stopped_started_is_made_again_and_removed_forgets_the_key(self):
@@ -542,7 +550,7 @@ class Lifecycle(Base):
 
         def apply(entries, sent, counter=5):
             text, sig = sfagent.manifest(signer, row['fingerprint'], MACHINE, counter, IMAGE, entries)
-            return self.ask('apply', manifest=text, manifest_signature=sig, plugins=sent)
+            return self.ask('apply', manifest=text, manifest_signature=sig, image_signature=self.sign_image(IMAGE), plugins=sent)
         descriptor, signature, _ = self.plugin(needs='{"mounts":["/srv"]}')
         entry = sfagent.plugin_entry(descriptor, 'release')
         sent = [{'descriptor': descriptor.decode(), 'signature': signature}]
@@ -587,17 +595,18 @@ class Lifecycle(Base):
         self.install()
         row = sfagent.get(self.conn, 'nas')
         signer = self.signer()
+        image_sig = self.sign_image(IMAGE)
 
         def apply(counter, fp=row['fingerprint'], machine=MACHINE, now=None):
             text, sig = sfagent.manifest(signer, fp, machine, counter, IMAGE, [], now=now)
-            return self.ask('apply', manifest=text, manifest_signature=sig), (text, sig)
+            return self.ask('apply', manifest=text, manifest_signature=sig, image_signature=image_sig), (text, sig)
         (rc, got), third = apply(3)
         self.assertEqual((rc, got['counter']), (0, 3))
         fourth = time.time()
         (rc, got), _ = apply(4, now=fourth)
         self.assertEqual(rc, 0)
         # the third again, with its good signature, in a new request
-        rc, got = self.ask('apply', manifest=third[0], manifest_signature=third[1])
+        rc, got = self.ask('apply', manifest=third[0], manifest_signature=third[1], image_signature=image_sig)
         self.assertEqual((rc, got['error']), (97, 'manifest'))
         self.assertIn('old one played back', got['why'])
         (rc, got), _ = apply(4, now=fourth)
@@ -610,7 +619,7 @@ class Lifecycle(Base):
         self.assertIn('another agent\'s key', got['why'])
         other = '1' * 32
         text, sig = sfagent.manifest(signer, row['fingerprint'], other, 9, IMAGE, [])
-        rc, got = self.ask('apply', manifest=text, manifest_signature=sig)
+        rc, got = self.ask('apply', manifest=text, manifest_signature=sig, image_signature=image_sig)
         self.assertIn('another machine', got['why'])
         self.assertEqual(self.ask('status')[1]['counter'], 4)
         # the agent keeps a count of its own: a file put back by hand in its manifest folder is refused there too
@@ -630,6 +639,46 @@ class Lifecycle(Base):
         # and storageforge-agentctl does not start a container for it
         rc, got = self.ask('start')
         self.assertEqual((rc, got['error']), (97, 'manifest'))
+
+    def test_only_an_image_the_release_key_signed_is_run_whatever_the_controller_says(self):
+        """The controller names the image, and a controller that was taken over would name its own. storageforge-agentctl runs none
+        whose digest a release key did not sign, or a key the operator put on that host."""
+        sfagent.switch(self.conn, 'nas', True, 'test')
+        other = 'registry.example/storageforge-agent@sha256:' + 'b' * 64
+        signer = self.signer()
+        self.setup_host()
+        good = self.sign_image(IMAGE)
+        mine = self.tmp / 'not-the-release-key'
+        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(mine)], check=True)
+        for image, signature in ((other, good),                                                  # another image under the good image's signature
+                                 (IMAGE, deploy.sshsig(signer, IMAGE.split('@')[1].encode() + b'\n', 'storageforge-agent-image')),     # signed by the controller itself
+                                 (IMAGE, ssh_sign(mine, 'storageforge-agent-image', IMAGE.split('@')[1].encode() + b'\n')),           # by a key nobody trusts
+                                 (IMAGE, ssh_sign(TARGET / 'release-key', 'storageforge-plugin', IMAGE.split('@')[1].encode() + b'\n')),   # by the release key, for another use
+                                 (IMAGE, 'not a signature')):
+            rc, got = self.ask('enroll', image=image, image_signature=signature)
+            self.assertEqual((rc, got['error']), (97, 'image'), (image, signature[:40]))
+            self.assertIn('not signed by a release key or by an operator key of this host', got['why'])
+        self.assertEqual(self.host.calls('docker'), [], 'nothing was fetched')
+        # the same through sfagent.py, with the controller set to an image its signature file is not for
+        (self.tmp / 'agentdir/image.sig').write_text(good)
+        with mock.patch.dict(os.environ, {'STORAGEFORGE_AGENT_IMAGE': other}), self.assertRaisesRegex(sfagent.AgentError, 'not signed by a release key'):
+            sfagent.install(self.db, 'nas', 'test')
+        (self.tmp / 'agentdir/image.sig').unlink()
+        with self.assertRaisesRegex(sfagent.AgentError, 'no signature of the agent image'):
+            sfagent.install(self.db, 'nas', 'test')
+        self.sign_image(IMAGE)
+        self.conn.execute("UPDATE agents SET state = 'on' WHERE host = 'nas'")
+        self.assertEqual(sfagent.install(self.db, 'nas', 'test')['state'], 'running')
+        # an enrolled agent is not moved to another image by a manifest either
+        with mock.patch.dict(os.environ, {'STORAGEFORGE_AGENT_IMAGE': other}), self.assertRaisesRegex(sfagent.AgentError, 'not signed by a release key'):
+            sfagent.apply(self.db, 'nas', [], actor='test')
+        self.assertNotIn(other, ' '.join(self.host.calls('docker')))
+        # but to one that is signed it is: that is an update
+        self.sign_image(other)
+        with mock.patch.dict(os.environ, {'STORAGEFORGE_AGENT_IMAGE': other}):
+            sfagent.apply(self.db, 'nas', [], actor='test')
+        self.assertIn(f'{other} run', self.host.calls('docker run')[-1])
+        self.assertEqual(sfagent.get(self.conn, 'nas')['image'], other)
 
     def test_what_a_host_answers_is_checked_before_it_is_believed(self):
         sfagent.switch(self.conn, 'nas', True, 'test')
@@ -664,7 +713,7 @@ class NoRuntime(Base):
         self.assertEqual(sfagent.get(self.conn, 'nas')['state'], 'needs-podman')
         self.assertIsNone(sfagent.get(self.conn, 'nas')['fingerprint'])
         # asked directly without the word, the program refuses too
-        rc, answer = self.ask('enroll', image=IMAGE)
+        rc, answer = self.ask('enroll', image=IMAGE, image_signature=self.sign_image(IMAGE))
         self.assertEqual((rc, answer['error']), (97, 'no-runtime'))
         got = sfagent.install(self.db, 'nas', 'test', install_podman=True)
         self.assertEqual((got['state'], got['runtime']), ('running', 'podman-rootless'))
@@ -825,6 +874,8 @@ class Store(unittest.TestCase):
         deploy.set_access(self.conn, 'nas', 'ready', '', 'test')
         r = c.post('/api/agents/nas/install', json={})
         self.assertIn('STORAGEFORGE_AGENT_IMAGE is not set', r.get_json()['error'])
+        with mock.patch.dict(os.environ, {'STORAGEFORGE_AGENT_IMAGE': IMAGE, 'STORAGEFORGE_AGENT_DIR': str(self.tmp)}):
+            self.assertIn('no signature of the agent image', c.post('/api/agents/nas/install', json={}).get_json()['error'])
         r = c.post('/api/agents/nas/status', json={})
         self.assertEqual(r.status_code, 409)
         self.assertIn('no agent enrolled', r.get_json()['error'])
@@ -894,6 +945,7 @@ class RealDocker(Base):
         self.assertRegex(self.image, sfagent.IMAGE_RE.pattern)
         self.addCleanup(lambda: subprocess.run(['docker', 'image', 'rm', '-f', self.image], capture_output=True))
         os.environ['STORAGEFORGE_AGENT_IMAGE'] = self.image
+        self.sign_image(self.image)
         # the real docker, and nothing else that could be taken for a runtime
         (self.host.bin / 'docker').symlink_to(shutil.which('docker'))
         # the image carries a program built with the repository's signers, which trust no key yet; the checks from outside go on

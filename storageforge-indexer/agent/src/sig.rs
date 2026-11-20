@@ -15,6 +15,8 @@ use sha2::{Digest, Sha256, Sha512};
 
 /// A plugin's descriptor, signed by the release key or by an operator's own.
 pub const NS_PLUGIN: &str = "storageforge-plugin";
+/// The agent image's digest, signed by the release key or by an operator's own: which image may be run at all.
+pub const NS_IMAGE: &str = "storageforge-agent-image";
 /// A host's manifest, signed by the controller.
 pub const NS_MANIFEST: &str = "storageforge-agent-manifest";
 /// A request to storageforge-agentctl, signed by the controller.

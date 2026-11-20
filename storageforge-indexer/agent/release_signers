@@ -1,7 +1,9 @@
-# The keys whose signature makes a plugin an official one, compiled into storageforge-agent and storageforge-agentctl (build.rs).
-# The format is ssh-keygen's allowed-signers file, one key a line, ed25519 only, and the namespace has to be named:
+# The keys whose signature makes a plugin an official one and an agent image one that may run, compiled into storageforge-agent
+# and storageforge-agentctl (build.rs). The format is ssh-keygen's allowed-signers file, one key a line, ed25519 only, and the
+# namespaces have to be named:
 #
-#   storageforge namespaces="storageforge-plugin" ssh-ed25519 AAAA...
+#   storageforge namespaces="storageforge-plugin,storageforge-agent-image" ssh-ed25519 AAAA...
 #
 # There is no key here yet: the owner holds the release key and adds its public half. A program built from this file as it is
-# trusts no release key and so runs no official plugin, and says so (`storageforge-agent anchors`).
+# trusts no release key, so it runs no official plugin and no image but one signed by a key the operator put on the host
+# (/etc/storageforge-agent/operator_signers), and says so (`storageforge-agent anchors`).

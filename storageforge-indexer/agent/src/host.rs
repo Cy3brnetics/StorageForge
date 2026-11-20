@@ -169,6 +169,15 @@ impl Host {
         let mut dirs: Vec<String> = needs::MASKED_DIRS.iter().map(|d| d.to_string()).collect();
         let mut homes: Vec<String> = self.users().into_iter().map(|u| u.home).collect();
         homes.push("/root".into());
+        // accounts from a directory service have no line in /etc/passwd and still have a home: every folder directly under
+        // /home, and directly under each mount, is taken for one
+        for parent in mounts.iter().map(String::as_str).chain(["/home"]) {
+            if let Ok(entries) = std::fs::read_dir(self.at(parent)) {
+                for entry in entries.flatten().take(4096) {
+                    homes.push(format!("{}/{}", parent.trim_end_matches('/'), entry.file_name().to_string_lossy()));
+                }
+            }
+        }
         for home in homes {
             let ssh = format!("{}/.ssh", home.trim_end_matches('/'));
             if !home.starts_with('/') || !shown(&ssh) || !self.at(&ssh).is_dir() {
@@ -222,7 +231,7 @@ pub(crate) mod tests {
     pub fn fake(name: &str) -> Host {
         let root = std::env::temp_dir().join(format!("sfagentctl-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for dir in ["etc/ssh", "etc/sudoers.d", "root/.ssh", "home/ana/.ssh", "home/ben", "sys/block/sda", "sys/block/nvme0n1", "sys/block/loop0", "sys/block/dm-0", "usr/local/lib/storageforge"] {
+        for dir in ["etc/ssh", "etc/sudoers.d", "root/.ssh", "home/ana/.ssh", "home/ben", "home/from-ldap/.ssh", "srv/data/.ssh", "srv/deep/users/bob/.ssh", "sys/block/sda", "sys/block/nvme0n1", "sys/block/loop0", "sys/block/dm-0", "usr/local/lib/storageforge"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
         std::fs::write(root.join("etc/machine-id"), "0123456789abcdef0123456789abcdef\n").unwrap();
@@ -258,12 +267,15 @@ pub(crate) mod tests {
     fn what_a_mount_would_show_of_ssh_and_storageforge_is_masked() {
         let host = fake("masks");
         let (dirs, files) = host.masks(&["/".to_string()]).unwrap();
-        assert_eq!(dirs, ["/etc/sudoers.d", "/home/ana/.ssh", "/root/.ssh", "/usr/local/lib/storageforge"]);
+        assert_eq!(dirs, ["/etc/sudoers.d", "/home/ana/.ssh", "/home/from-ldap/.ssh", "/root/.ssh", "/usr/local/lib/storageforge"], "and the home no passwd line names");
         assert_eq!(files, ["/etc/shadow", "/etc/ssh/ssh_host_ed25519_key"]);
         let (dirs, files) = host.masks(&["/etc".to_string()]).unwrap();
         assert_eq!(dirs, ["/etc/sudoers.d"]);
         assert_eq!(files, ["/etc/shadow", "/etc/ssh/ssh_host_ed25519_key"]);
-        assert_eq!(host.masks(&["/srv".to_string()]).unwrap(), (vec![], vec![]));
+        // a folder directly under a mount is taken for a home; two folders down is not looked at (docs/agent.md says so)
+        assert_eq!(host.masks(&["/srv".to_string()]).unwrap(), (vec!["/srv/data/.ssh".to_string()], vec![]));
+        assert_eq!(host.masks(&["/srv/deep".to_string()]).unwrap(), (vec![], vec![]));
+        assert_eq!(host.masks(&["/var".to_string()]).unwrap(), (vec![], vec![]));
         assert_eq!(host.masks(&[]).unwrap(), (vec![], vec![]));
         // an account whose home cannot be named to a runtime: nothing that would show its .ssh is mounted at all
         std::fs::create_dir_all(host.root.join("home/a b/.ssh")).unwrap();

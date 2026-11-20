@@ -56,6 +56,9 @@ pub struct Request {
     /// `enroll`: the image to start the agent from, by digest. Later the manifest names it.
     #[serde(default)]
     pub image: Option<String>,
+    /// `enroll` and `apply`: the signature of the image's digest, made by a release key or an operator's (`plugin::verify_image`).
+    #[serde(default)]
+    pub image_signature: Option<String>,
     /// `enroll`: install Podman when the host has no runtime. Set only after the user was told.
     #[serde(default)]
     pub install_podman: bool,
@@ -131,10 +134,11 @@ pub fn verify(payload: &[u8], signature: &str, controller: &Signers, machine: &s
     }
     // each operation takes its own fields and no others: a field that would be ignored is a request nobody meant to send
     let (image, manifest) = (r.image.is_some(), r.manifest.is_some() || r.manifest_signature.is_some() || !r.plugins.is_empty());
+    let signed_image = r.image_signature.as_deref().is_some_and(|s| !s.is_empty() && s.len() <= sig::MAX_SIGNATURE);
     let fits = match r.op.as_str() {
-        "enroll" => image && !manifest,
-        "apply" => !image && !r.install_podman && r.manifest.is_some() && r.manifest_signature.is_some(),
-        _ => !image && !manifest && !r.install_podman,
+        "enroll" => image && signed_image && !manifest,
+        "apply" => !image && signed_image && !r.install_podman && r.manifest.is_some() && r.manifest_signature.is_some(),
+        _ => !image && !manifest && !r.install_podman && r.image_signature.is_none(),
     };
     if !fits {
         return Err(format!("the request does not carry what {} takes, or carries more", r.op));
@@ -212,7 +216,7 @@ pub(crate) mod tests {
         let now = 1_000_000;
         let check = |text: &str, key: &SigningKey, namespace: &str| verify(text.as_bytes(), &sig::sign(key, namespace, text.as_bytes()), &signers, MACHINE, now);
         assert_eq!(check(&body("status", now, ""), &key, sig::NS_AGENTCTL).unwrap().op, "status");
-        assert!(check(&body("enroll", now, &format!(r#","image":"{IMAGE}","install_podman":true"#)), &key, sig::NS_AGENTCTL).unwrap().install_podman);
+        assert!(check(&body("enroll", now, &format!(r#","image":"{IMAGE}","image_signature":"s","install_podman":true"#)), &key, sig::NS_AGENTCTL).unwrap().install_podman);
         // another key, or the controller's signature made for a manifest or a deploy
         assert!(check(&body("status", now, ""), &SigningKey::from_bytes(&[8; 32]), sig::NS_AGENTCTL).is_err());
         assert!(check(&body("status", now, ""), &key, sig::NS_MANIFEST).is_err());
@@ -239,8 +243,11 @@ pub(crate) mod tests {
         assert!(check(&body("enroll", now, r#","image":"storageforge-agent:latest""#)).unwrap_err().contains("digest"));
         assert!(check(&body("stop", now, &format!(r#","image":"{IMAGE}""#))).is_err(), "stop takes nothing");
         assert!(check(&body("apply", now, r#","manifest":"{}""#)).is_err(), "apply without the manifest's signature");
-        assert!(check(&body("apply", now, r#","manifest":"{}","manifest_signature":"x","install_podman":true"#)).is_err());
-        assert!(check(&body("apply", now, r#","manifest":"{}","manifest_signature":"x""#)).is_ok());
+        assert!(check(&body("apply", now, r#","manifest":"{}","manifest_signature":"x","image_signature":"s","install_podman":true"#)).is_err());
+        assert!(check(&body("apply", now, r#","manifest":"{}","manifest_signature":"x""#)).is_err(), "apply without the image's signature");
+        assert!(check(&body("enroll", now, &format!(r#","image":"{IMAGE}""#))).is_err(), "enroll without the image's signature");
+        assert!(check(&body("status", now, r#","image_signature":"s""#)).is_err());
+        assert!(check(&body("apply", now, r#","manifest":"{}","manifest_signature":"x","image_signature":"s""#)).is_ok());
     }
 
     #[test]

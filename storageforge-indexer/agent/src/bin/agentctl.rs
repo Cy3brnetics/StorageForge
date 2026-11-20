@@ -254,11 +254,17 @@ impl Ctl {
         }
     }
 
-    fn enroll(&mut self, r: &Request) -> Result<Value, Stop> {
+    /// Refuses an image nobody who may vouched for. Before anything is fetched.
+    fn image_allowed(&self, image: &str, signature: Option<&str>, anchors: &Anchors) -> Result<(), Stop> {
+        plugin::verify_image(image, signature.unwrap_or_default(), anchors).map(|_| ()).map_err(|why| Stop { exit: REFUSED, code: "image", why })
+    }
+
+    fn enroll(&mut self, r: &Request, controller: Signers) -> Result<Value, Stop> {
         if self.file("agent.pub").exists() {
             return refuse("enrolled", "an agent is enrolled on this host already: remove it before enrolling another");
         }
         let image = r.image.as_deref().unwrap_or_default();
+        self.image_allowed(image, r.image_signature.as_deref(), &self.anchors(controller)?)?;
         if !self.tools().any() {
             if !r.install_podman {
                 return refuse("no-runtime", "this host has no container runtime: Podman will be installed when the request says so");
@@ -354,6 +360,7 @@ impl Ctl {
         if !unused.is_empty() {
             return refuse("plugin", "a descriptor came with the request that the manifest does not name");
         }
+        self.image_allowed(&m.image, r.image_signature.as_deref(), &anchors)?;
         let needs = m.needs();
         needs.check().map_err(|why| Stop { exit: REFUSED, code: "manifest", why })?;
         let (kind, spec) = self.plan(&m.image, &needs)?;
@@ -380,6 +387,10 @@ impl Ctl {
                 let (m, _, admitted) = self.admit(&bytes, &signature, controller, machine)?;
                 if admitted != Admitted::Same {
                     return refuse("manifest", "the manifest on this host is not the one that was accepted last");
+                }
+                // the image whose signature was checked when this manifest was applied, and no other
+                if self.text("image").as_deref() != Some(m.image.as_str()) {
+                    return refuse("image", "the manifest names another image than the one that was checked and run here");
                 }
                 Ok((m.image.clone(), m.needs()))
             }
@@ -479,7 +490,7 @@ fn run() -> Result<Value, Stop> {
             let would = runtime::choose(&tools, &Needs::default()).map(|k| k.name()).ok();
             json!({"runtimes": tools.names(), "would_use": would, "enrolled": ctl.file("agent.pub").exists(), "version": VERSION, "release_keys": plugin::release_signers().0.len()})
         }
-        "enroll" => ctl.enroll(&r)?,
+        "enroll" => ctl.enroll(&r, controller)?,
         "apply" => ctl.apply(&r, controller, &machine)?,
         "start" | "restart" => {
             let (image, needs) = ctl.current(&controller, &machine)?;

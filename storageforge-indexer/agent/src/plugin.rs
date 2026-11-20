@@ -126,6 +126,28 @@ pub fn verify(bytes: &[u8], signature: &str, by: SignedBy, anchors: &Anchors) ->
     read(bytes)
 }
 
+/// Whether the image named by digest in `image` (`name@sha256:...`) is one a release key signed, or a key the operator put on
+/// this host. What is signed is the digest and a newline, `sha256:<64 hex>\n`, in the namespace "storageforge-agent-image":
+///
+/// ```text
+/// echo sha256:... > digest && ssh-keygen -Y sign -n storageforge-agent-image -f KEY digest
+/// ```
+///
+/// The controller names the image and carries this signature, and cannot make one: so the program in the container is one the
+/// release key vouched for, as its plugins are, and a controller that was taken over cannot have another image run with the
+/// privileges a signed plugin declares.
+pub fn verify_image(image: &str, signature: &str, anchors: &Anchors) -> Result<SignedBy, String> {
+    let Some((_, digest)) = image.split_once('@') else { return Err("the image is not named by its digest".into()) };
+    let message = format!("{digest}\n");
+    if sig::verify(&anchors.release, sig::NS_IMAGE, message.as_bytes(), signature).is_ok() {
+        return Ok(SignedBy::Release);
+    }
+    match sig::verify(&anchors.operator, sig::NS_IMAGE, message.as_bytes(), signature) {
+        Ok(_) => Ok(SignedBy::Operator),
+        Err(e) => Err(format!("the image is not signed by a release key or by an operator key of this host: {e}")),
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -143,7 +165,34 @@ pub(crate) mod tests {
 
     pub fn anchors(release: &SigningKey, operator: &SigningKey, controller: &SigningKey) -> Anchors {
         let line = |k: &SigningKey, ns: &str| Signers::parse(&format!("k namespaces=\"{ns}\" {}", sig::public_line(&k.verifying_key().to_bytes()))).unwrap();
-        Anchors { release: line(release, sig::NS_PLUGIN), operator: line(operator, sig::NS_PLUGIN), controller: line(controller, "storageforge-agent-manifest,storageforge-agentctl") }
+        let code = "storageforge-plugin,storageforge-agent-image";
+        Anchors { release: line(release, code), operator: line(operator, code), controller: line(controller, "storageforge-agent-manifest,storageforge-agentctl") }
+    }
+
+    #[test]
+    fn an_image_runs_only_when_its_digest_was_signed_for_that() {
+        let (release, operator, controller) = (SigningKey::from_bytes(&[1; 32]), SigningKey::from_bytes(&[2; 32]), SigningKey::from_bytes(&[3; 32]));
+        let a = anchors(&release, &operator, &controller);
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let image = format!("registry.example/storageforge-agent@{digest}");
+        let signed = |key: &SigningKey, namespace: &str, text: &str| sig::sign(key, namespace, text.as_bytes());
+        let line = format!("{digest}\n");
+        assert_eq!(verify_image(&image, &signed(&release, sig::NS_IMAGE, &line), &a), Ok(SignedBy::Release));
+        assert_eq!(verify_image(&image, &signed(&operator, sig::NS_IMAGE, &line), &a), Ok(SignedBy::Operator));
+        // the same image under another name is the same bytes, and the signature is of the bytes
+        assert!(verify_image(&format!("mirror.example/x@{digest}"), &signed(&release, sig::NS_IMAGE, &line), &a).is_ok());
+        // the controller cannot vouch for an image, and a signature made for a plugin is not one for an image
+        assert!(verify_image(&image, &signed(&controller, sig::NS_IMAGE, &line), &a).is_err());
+        assert!(verify_image(&image, &signed(&release, sig::NS_PLUGIN, &line), &a).is_err());
+        // another digest, the digest without its newline, no signature, a tag
+        assert!(verify_image(&format!("registry.example/storageforge-agent@sha256:{}", "b".repeat(64)), &signed(&release, sig::NS_IMAGE, &line), &a).is_err());
+        assert!(verify_image(&image, &signed(&release, sig::NS_IMAGE, &digest), &a).is_err());
+        assert!(verify_image(&image, "", &a).is_err());
+        assert!(verify_image("storageforge-agent:latest", &signed(&release, sig::NS_IMAGE, &line), &a).is_err());
+        // a build that trusts no release key runs no image but an operator's own
+        let none = Anchors { release: Signers::default(), ..a };
+        assert!(verify_image(&image, &signed(&release, sig::NS_IMAGE, &line), &none).is_err());
+        assert!(verify_image(&image, &signed(&operator, sig::NS_IMAGE, &line), &none).is_ok());
     }
 
     #[test]

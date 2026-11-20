@@ -6,6 +6,8 @@
         a signed request on stdin: preflight, enroll, apply, start, stop, restart, status, remove. One line of JSON comes back.
     vault: storageforge-agentctl       (ed25519) logs in as storageforge-agentctl, which can start nothing but that program
     vault: storageforge-agent-signing  (ed25519) signs each request and each host's manifest, in two namespaces
+    no key here signs code: plugins and the agent's image are signed by the release key (or an operator's own, kept off the
+    controller), and the controller only carries those signatures
 
 SSH stays the base. The agent is switched on per host and is off unless someone switched it on; a host without it keeps every
 feature. Setting it up goes through the deploy access the host already has, which is the pinned SSH connection, and the agent's
@@ -276,6 +278,21 @@ def agent_image() -> str:
     return image
 
 
+def image_signature() -> str:
+    """The signature of the agent image's digest, from the file STORAGEFORGE_AGENT_IMAGE_SIG names (image.sig in
+    STORAGEFORGE_AGENT_DIR if it names none). It is made with the release key, or with a key the operator put on their hosts
+    (docs/agent.md), and is not secret. The controller carries it and cannot make it: storageforge-agentctl runs no image without
+    one, so a controller that was taken over cannot have another image run on a host."""
+    path = os.environ.get('STORAGEFORGE_AGENT_IMAGE_SIG', '').strip() or str(Path(os.environ.get('STORAGEFORGE_AGENT_DIR', '').strip() or '.') / 'image.sig')
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        raise AgentError(f'no signature of the agent image at {path}: the release has one beside the image, and STORAGEFORGE_AGENT_IMAGE_SIG names it') from None
+    if len(text) > 4096 or 'BEGIN SSH SIGNATURE' not in text:
+        raise AgentError(f'{path} is not an SSH signature')
+    return text
+
+
 def agentctl_program(arch: str) -> bytes:
     """storageforge-agentctl for a kind of machine, from STORAGEFORGE_AGENT_DIR (the image has it; agent/build.sh makes it)."""
     arch = {'amd64': 'x86_64', 'arm64': 'aarch64'}.get(arch, arch)
@@ -456,7 +473,7 @@ def install(db: Database, host: str, actor: str | None = None, install_podman: b
             raise AgentError(f'{name} has an agent enrolled already: remove it before enrolling another')
         if not deploy.ready(conn, name):
             raise AgentError(f'{name} has no deploy access yet, and the agent is set up through it: set up deploy access first')
-        image, program = agent_image(), agentctl_program(host_arch(conn, name))
+        image, image_sig, program = agent_image(), image_signature(), agentctl_program(host_arch(conn, name))
         with Vault(db, conn).unlock() as v:
             signing_pub, login_pub = ensure_keys(v)
         try:
@@ -469,7 +486,8 @@ def install(db: Database, host: str, actor: str | None = None, install_podman: b
             if not runtimes and not install_podman:
                 _save(conn, name, actor, state='needs-podman', detail=PODMAN_NOTICE)
                 return {'host': name, 'state': 'needs-podman', 'message': PODMAN_NOTICE}
-            got = call(db, name, 'enroll', group_id=group_id, actor=actor, image=image, install_podman=bool(install_podman and not runtimes))
+            got = call(db, name, 'enroll', group_id=group_id, actor=actor, image=image, image_signature=image_sig,
+                       install_podman=bool(install_podman and not runtimes))
             public = str(got.get('public_key') or '')
             if not PUBLIC_RE.fullmatch(public):
                 raise AgentError(f'{name}: what came back from the enrollment is not an agent key')
@@ -501,19 +519,20 @@ def apply(db: Database, host: str, plugins: list[tuple[bytes, str, str]], actor:
         if not row or not row['enabled'] or not row['fingerprint']:
             raise AgentError(f'{name} has no agent enrolled')
         machine = deploy._machine(conn, name)
+        image, image_sig = agent_image(), image_signature()      # the image this controller is set to now: applying is also how an agent is updated
         entries = [plugin_entry(descriptor, signer) for descriptor, _sig, signer in plugins]
         conn.execute('UPDATE agents SET counter = counter + 1 WHERE host = :h', {'h': name})
         counter = conn.scalar('SELECT counter FROM agents WHERE host = :h', {'h': name})
         with Vault(db, conn).unlock() as v:
-            text, sig = manifest(_signer(v), row['fingerprint'], machine, counter, row['image'] or agent_image(), entries)
+            text, sig = manifest(_signer(v), row['fingerprint'], machine, counter, image, entries)
         sent = [{'descriptor': descriptor.decode(), 'signature': s} for descriptor, s, _signer_kind in plugins]
         try:
-            got = call(db, name, 'apply', group_id=group_id, actor=actor, manifest=text, manifest_signature=sig, plugins=sent)
+            got = call(db, name, 'apply', group_id=group_id, actor=actor, manifest=text, manifest_signature=sig, image_signature=image_sig, plugins=sent)
         except AgentError as exc:
             _audit(db, conn, actor, 'agent.apply', 'failed', name, row['fingerprint'], {'counter': counter, 'error': str(exc)[:500]})
             raise
         sha = hashlib.sha256(text.encode()).hexdigest()
-        _save(conn, name, actor, state='running', runtime=_runtime(got), manifest_sha=sha, detail='')
+        _save(conn, name, actor, state='running', runtime=_runtime(got), manifest_sha=sha, image=image, detail='')
         _audit(db, conn, actor, 'agent.apply', 'ok', name, row['fingerprint'],
                {'counter': counter, 'manifest': sha, 'plugins': [e['name'] for e in entries], 'needs': got.get('needs') if isinstance(got.get('needs'), dict) else {}})
         return {'host': name, 'state': 'running', 'counter': counter, 'manifest': sha, 'runtime': _runtime(got)}
