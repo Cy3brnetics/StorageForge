@@ -7,17 +7,63 @@ real program would and write down their own command line. Each script runs under
 stand-ins and the plain tools only. Nebula is different: its certificates are checked against the real nebula-cert and nebula
 where they are found (in PATH, or in the folder STORAGEFORGE_TEST_NEBULA names), and against certificates the real nebula-cert
 1.12.0 made, kept below, everywhere."""
+import base64
+import contextlib
+import datetime as dt
+import io
+import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import dbfactory
-from storageforge_index import changes, steps_overlay, steps_tunnels
+from storageforge_index import changes, nebulaca, overlaykeys, steps_overlay, steps_tunnels
 
 SETUP_KEY = 'A1B2C3D4-TEST-4NOT-AREAL-SETUPKEY0000'
+
+
+def _real(name):
+    folder = os.environ.get('STORAGEFORGE_TEST_NEBULA')
+    found = shutil.which(name, path=folder) if folder else shutil.which(name)
+    return str(Path(found).resolve()) if found else None
+
+
+REAL_NEBULA, REAL_NEBULA_CERT = _real('nebula'), _real('nebula-cert')
+NEEDS_NEBULA = unittest.skipUnless(REAL_NEBULA and REAL_NEBULA_CERT, 'needs the real nebula and nebula-cert (in PATH, or in the folder STORAGEFORGE_TEST_NEBULA names)')
+
+# Made by the real nebula-cert 1.12.0 on 2026-11-20 (`nebula-cert ca -version 1 -name vector-ca -networks 10.9.0.0/24
+# -unsafe-networks 192.168.7.0/24 -groups servers,web -duration 87600h`, then `sign -version 1 -name web-1 -networks 10.9.0.5/24
+# -groups servers -unsafe-networks 192.168.7.0/24 -duration 8760h`), with what `nebula-cert print -json` said of each. The private
+# keys were deleted: certificates are public.
+VECTOR_CA = """-----BEGIN NEBULA CERTIFICATE-----
+CmAKCXZlY3Rvci1jYRIJgICkUID+//8PGgqAjqCFDID+//8PIgdzZXJ2ZXJzIgN3
+ZWIo2biA2AYw2b6w7gc6IJ97leuP+Dk9bBkHgy1StXXy1cavoCl7I48EVJh7Jpdc
+QAESQIt/GSYWc0bfsXSU2+ccZX7f1EET7szYtn/YuS3KYHMP6CMmR2nl9Zdte7UZ
+/n4F3SS6FG53800sRcmQA3aE5AM=
+-----END NEBULA CERTIFICATE-----
+"""
+VECTOR_HOST = """-----BEGIN NEBULA CERTIFICATE-----
+CncKBXdlYi0xEgmFgKRQgP7//w8aCoCOoIUMgP7//w8iB3NlcnZlcnMo2biA2AYw
+2Z+F5wY6IAqVoNjG32qjPTyZc7Epg83sjP0lRubIAZn5O42AjTR/SiAr86QTZgN9
+p/Oij4KnCuVwKwfdOYSTv+Lz+38M9r6XSBJAIJnfeeSlACCopwM67mdukYzFB/1D
+Tnr9ctHM5DuKBPD3pn+UZTr832f9n6mef0NiLSpLAUjpvfsrJFlZuq8BDQ==
+-----END NEBULA CERTIFICATE-----
+"""
+VECTOR_CA_SAID = {"details": {"curve": "CURVE25519", "groups": ["servers", "web"], "isCa": True, "issuer": "", "name": "vector-ca", "networks": ["10.9.0.0/24"],
+                              "notAfter": "2036-11-17T02:09:29-08:00", "notBefore": "2026-11-20T02:09:29-08:00",
+                              "publicKey": "9f7b95eb8ff8393d6c1907832d52b575f2d5c6afa0297b238f0454987b26975c", "unsafeNetworks": ["192.168.7.0/24"]},
+                  "fingerprint": "2bf3a41366037da7f3a28f82a70ae5702b07dd398493bfe2f3fb7f0cf6be9748",
+                  "signature": "8b7f1926167346dfb17494dbe71c657edfd44113eeccd8b67fd8b92dca60730fe823264769e5f5976d7bb519fe7e05dd24ba146e77f34d2c45c990037684e403", "version": 1}
+VECTOR_HOST_SAID = {"details": {"curve": "CURVE25519", "groups": ["servers"], "isCa": False, "issuer": "2bf3a41366037da7f3a28f82a70ae5702b07dd398493bfe2f3fb7f0cf6be9748", "name": "web-1",
+                                "networks": ["10.9.0.5/24"], "notAfter": "2027-11-20T02:09:29-08:00", "notBefore": "2026-11-20T02:09:29-08:00",
+                                "publicKey": "0a95a0d8c6df6aa33d3c9973b12983cdec8cfd2546e6c80199f93b8d808d347f", "unsafeNetworks": ["192.168.7.0/24"]},
+                    "fingerprint": "ebea5c5dc6c9767cee6991603a6b6ca6336dbbe39b1150b6c75cd3a11a8a24c4",
+                    "signature": "2099df79e4a50020a8a7033aee676e918cc507fd434e7afd72d1cce43b8a04f0f7a67f94653afcdf67fd9fa99e7f43622d2a4b0148e9bdfb2b245959baaf010d", "version": 1}
 PRELUDE = r'''set -euo pipefail
 ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*"; PROBLEMS=$((PROBLEMS + 1)); }
 info() { echo "info: $*"; }; act() { if ((APPLY)); then echo "doing: $*"; return 0; else echo "would: $*"; return 1; fi; }
@@ -317,6 +363,458 @@ esac""")
         rc, out = self.step(True, 't_zerotier', NET, 'present')
         self.assertIn('conflict: zerotier-cli is not installed', out)
         self.assertEqual(self.step(True, 't_zerotier', NET, 'absent'), (0, 'ok: ZeroTier is not installed\n'))
+
+
+def _epoch(text):
+    return int(dt.datetime.fromisoformat(text).timestamp())
+
+
+def _as_nebula_cert_says(cert: dict) -> dict:
+    """What nebulaca.read found, in the words of `nebula-cert print -json`, without the two times (compared as numbers)."""
+    return {'details': {'curve': 'CURVE25519', 'groups': cert['groups'], 'isCa': cert['is_ca'], 'issuer': cert['issuer'], 'name': cert['name'], 'networks': cert['networks'],
+                        'publicKey': cert['public_key'].hex(), 'unsafeNetworks': cert['unsafe_networks']},
+            'fingerprint': cert['fingerprint'], 'signature': cert['signature'].hex(), 'version': 1}
+
+
+def _without_times(said: dict) -> dict:
+    return said | {'details': {k: v for k, v in said['details'].items() if k not in ('notBefore', 'notAfter')}}
+
+
+def _key():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    key = Ed25519PrivateKey.generate()
+    return key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw), key.sign
+
+
+class NebulaFormat(unittest.TestCase):
+    """nebulaca.py against certificates the real nebula-cert made. No program is needed for these."""
+
+    def test_it_reads_what_nebula_cert_wrote_as_nebula_cert_prints_it(self):
+        for pem, said in ((VECTOR_CA, VECTOR_CA_SAID), (VECTOR_HOST, VECTOR_HOST_SAID)):
+            cert = nebulaca.read(pem)
+            self.assertEqual(_as_nebula_cert_says(cert), _without_times(said))
+            self.assertEqual((cert['not_before'], cert['not_after']), (_epoch(said['details']['notBefore']), _epoch(said['details']['notAfter'])))
+
+    def test_it_writes_the_same_bytes_nebula_cert_signed(self):
+        """Nebula checks a signature over the details as it encodes them itself: a byte of difference and no host accepts the certificate."""
+        import ipaddress
+        for pem in (VECTOR_CA, VECTOR_HOST):
+            c = nebulaca.read(pem)
+            again = nebulaca._details(c['name'], [ipaddress.ip_interface(n) for n in c['networks']], [ipaddress.ip_interface(n) for n in c['unsafe_networks']], c['groups'],
+                                      c['not_before'], c['not_after'], c['public_key'], c['is_ca'], bytes.fromhex(c['issuer']))
+            self.assertEqual(again, c['signed'])
+            self.assertEqual(nebulaca._pem(nebulaca.BANNER, nebulaca._field(1, 2, again) + nebulaca._field(2, 2, c['signature'])), pem)
+
+    def test_the_signature_nebula_cert_made_verifies_and_a_changed_certificate_does_not(self):
+        inside = _epoch('2027-01-01T00:00:00+00:00')
+        self.assertEqual(nebulaca.verify(VECTOR_HOST, VECTOR_CA, inside)['name'], 'web-1')
+        raw = bytearray(base64.b64decode(''.join(VECTOR_HOST.split('\n')[1:-2])))
+        raw[4] ^= 1                                    # one letter of the name
+        with self.assertRaisesRegex(nebulaca.CertificateError, 'signature'):
+            nebulaca.verify(nebulaca._pem(nebulaca.BANNER, bytes(raw)), VECTOR_CA, inside)
+        for when, why in ((_epoch('2026-01-01T00:00:00+00:00'), 'not valid yet'), (_epoch('2028-01-01T00:00:00+00:00'), 'the certificate has ended'), (_epoch('2037-01-01T00:00:00+00:00'), 'the CA certificate has ended')):
+            with self.assertRaisesRegex(nebulaca.CertificateError, why):
+                nebulaca.verify(VECTOR_HOST, VECTOR_CA, when)
+        public, sign = _key()
+        other = nebulaca.ca_certificate('other', public, sign, seconds=86400, now=inside)
+        with self.assertRaisesRegex(nebulaca.CertificateError, 'did not issue'):
+            nebulaca.verify(VECTOR_HOST, other, inside)
+        with self.assertRaisesRegex(nebulaca.CertificateError, 'not a CA'):
+            nebulaca.verify(VECTOR_HOST, VECTOR_HOST, inside)
+
+    def test_what_a_ca_made_here_will_and_will_not_issue(self):
+        public, sign = _key()
+        host_public = bytes(range(32))
+        ca = nebulaca.ca_certificate('home', public, sign, seconds=30 * 86400, networks=['10.9.0.0/24'], groups=['servers'], now=1_800_000_000)
+        cert = nebulaca.host_certificate(ca, sign, name='web', address='10.9.0.5/24', public=host_public, groups=['servers'], now=1_800_000_000)
+        said = nebulaca.verify(cert, ca, 1_800_000_100)
+        self.assertEqual((said['networks'], said['groups'], said['is_ca'], said['issuer']), (['10.9.0.5/24'], ['servers'], False, nebulaca.fingerprint(ca)))
+        self.assertEqual(said['not_after'], nebulaca.read(ca)['not_after'] - 1, 'with no length given it ends a second before its CA, as nebula-cert does')
+        for kw, why in (({'address': '10.8.0.5/24'}, 'outside the networks this CA may issue for'), ({'address': '10.9.0.0/24'}, 'not a host address'), ({'address': '10.9.0.255/24'}, 'not a host address'),
+                        ({'address': 'fd00::5/64'}, 'IPv4 only'), ({'address': '10.9.0.5'}, 'not a host address'), ({'groups': ['admins']}, 'issues only for the groups servers'),
+                        ({'seconds': 31 * 86400}, 'cannot outlast its CA'), ({'seconds': 5}, 'at least a minute'), ({'name': 'web;id'}, 'needs a name'), ({'name': ''}, 'needs a name'),
+                        ({'public': b'short'}, 'not an X25519 key'), ({'groups': ['a b']}, 'groups are names'), ({'now': 1_800_000_000 + 31 * 86400}, 'the CA certificate has ended')):
+            with self.subTest(kw), self.assertRaisesRegex(nebulaca.CertificateError, why):
+                nebulaca.host_certificate(ca, sign, **({'name': 'web', 'address': '10.9.0.5/24', 'public': host_public, 'now': 1_800_000_000} | kw))
+        with self.assertRaisesRegex(nebulaca.CertificateError, 'not a CA'):
+            nebulaca.host_certificate(cert, sign, name='x', address='10.9.0.6/24', public=host_public, now=1_800_000_000)
+        with self.assertRaisesRegex(nebulaca.CertificateError, 'no Ed25519 signature'):
+            nebulaca.host_certificate(ca, lambda data: b'', name='x', address='10.9.0.6/24', public=host_public, now=1_800_000_000)
+        for kw, why in (({'seconds': 60}, 'between an hour and ten years'), ({'seconds': 11 * 366 * 86400}, 'between an hour and ten years'), ({'name': 'a b'}, 'needs a name'), ({'networks': ['10.9.0.0/33']}, 'not an address')):
+            with self.subTest(kw), self.assertRaisesRegex(nebulaca.CertificateError, why):
+                nebulaca.ca_certificate(**({'name': 'home', 'public': public, 'sign': sign, 'seconds': 86400} | kw))
+
+    def test_nothing_that_is_not_a_certificate_makes_the_reader_do_anything_but_refuse(self):
+        body = base64.b64decode(''.join(VECTOR_HOST.split('\n')[1:-2]))
+        junk = ['', None, 7, 'x', VECTOR_HOST.replace('NEBULA CERTIFICATE', 'NEBULA CERTIFICATE V2'), '-----BEGIN NEBULA CERTIFICATE-----\n!!!\n-----END NEBULA CERTIFICATE-----\n',
+                nebulaca._pem(nebulaca.BANNER, b''), nebulaca._pem(nebulaca.BANNER, b'\xff' * 40), nebulaca._pem(nebulaca.BANNER, body[:30]), nebulaca._pem(nebulaca.BANNER, b'\x0a\xff\xff\xff\xff\x0f'),
+                nebulaca._pem(nebulaca.BANNER, nebulaca._field(1, 2, nebulaca._field(2, 2, b'\x01')) + nebulaca._field(2, 2, b'\0' * 64))]
+        junk += [nebulaca._pem(nebulaca.BANNER, body[:i] + bytes([body[i] ^ 0x80]) + body[i + 1:]) for i in range(0, len(body), 7)]
+        for text in junk:
+            try:
+                json.dumps({k: v.hex() if isinstance(v, bytes) else v for k, v in nebulaca.read(text).items()})
+            except nebulaca.CertificateError:
+                pass
+
+    def test_the_configuration_takes_only_what_it_can_check(self):
+        text = nebulaca.config(lighthouse=False, lighthouses_text='10.9.0.1=lh.example.org:4242, 10.9.0.2=198.51.100.7:4243', inbound_text='icmp, tcp/22, tcp/8000-8100@admins, any@web', blocklist=['ab' * 32])
+        for line in ('pki:', '  ca: /etc/nebula/ca.crt', '  key: /etc/nebula/host.key', '    - ' + 'ab' * 32, '  "10.9.0.1": ["lh.example.org:4242"]', '  am_lighthouse: false', '    - "10.9.0.2"', '  port: 0',
+                     '  dev: nebula1', '    - port: 8000-8100', '      group: "admins"', '    - port: 22'):
+            self.assertIn(line + '\n', text)
+        self.assertTrue(text.startswith('# Written by StorageForge'), 'the step knows its own file by this line')
+        light = nebulaca.config(lighthouse=True, lighthouses_text='')
+        self.assertIn('  am_lighthouse: true\n', light)
+        self.assertIn('  hosts: []\n', light)
+        self.assertIn('  port: 4242\n', light)
+        for kw, why in (({'lighthouse': False, 'lighthouses_text': ''}, 'needs at least one lighthouse'), ({'lighthouses_text': 'lh.example.org:4242'}, 'a lighthouse is its Nebula address'),
+                        ({'lighthouses_text': '10.9.0.1=lh.example.org'}, 'a name or address and a port'), ({'lighthouses_text': '10.9.0.1=lh.example.org:0'}, 'a name or address and a port'),
+                        ({'lighthouses_text': '10.9.0.1=x:1"\n  evil: true'}, 'a name or address and a port'), ({'inbound_text': 'tcp'}, 'name the port'), ({'inbound_text': 'icmp/8'}, 'icmp has no port'),
+                        ({'inbound_text': 'tcp/70000'}, 'ports are 1 to 65535'), ({'inbound_text': 'tcp/22@a b'}, 'an inbound rule is'), ({'inbound_text': 'tcp/22\n  - port: any'}, 'an inbound rule is'),
+                        ({'lighthouse': True, 'port': 0}, 'a lighthouse listens on a port'), ({'port': 70000}, 'a lighthouse listens on a port'), ({'blocklist': ['zz']}, 'certificate fingerprints')):
+            with self.subTest(kw), self.assertRaisesRegex(nebulaca.CertificateError, why):
+                nebulaca.config(**({'lighthouse': False, 'lighthouses_text': '10.9.0.1=lh.example.org:4242'} | kw))
+
+
+@NEEDS_NEBULA
+class NebulaReal(unittest.TestCase):
+    """The same module against the real programs: what is made here is accepted by nebula-cert and by nebula itself."""
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.public, self.sign = _key()
+        self.ca = nebulaca.ca_certificate('home', self.public, self.sign, seconds=365 * 86400, networks=['10.9.0.0/24'])
+        (self.d / 'ca.crt').write_text(self.ca)
+        subprocess.run([REAL_NEBULA_CERT, 'keygen', '-out-key', str(self.d / 'host.key'), '-out-pub', str(self.d / 'host.pub')], check=True)
+
+    def cert(self, **kw):
+        return nebulaca.host_certificate(self.ca, self.sign, **({'name': 'web', 'address': '10.9.0.5/24', 'public': nebulaca.public_key((self.d / 'host.pub').read_text())} | kw))
+
+    def nebula_cert(self, *args):
+        return subprocess.run([REAL_NEBULA_CERT, *args], capture_output=True, text=True, timeout=30)
+
+    def test_nebula_cert_accepts_and_prints_what_was_made_here(self):
+        (self.d / 'host.crt').write_text(self.cert(groups=['servers', 'web'], unsafe_networks=['192.168.7.0/24']))
+        got = self.nebula_cert('verify', '-ca', str(self.d / 'ca.crt'), '-crt', str(self.d / 'host.crt'))
+        self.assertEqual((got.returncode, got.stdout + got.stderr), (0, ''))
+        for name in ('ca.crt', 'host.crt'):
+            said = json.loads(self.nebula_cert('print', '-json', '-path', str(self.d / name)).stdout)[0]
+            mine = nebulaca.read((self.d / name).read_text())
+            self.assertEqual(_as_nebula_cert_says(mine), _without_times(said))
+            self.assertEqual((mine['not_before'], mine['not_after']), (_epoch(said['details']['notBefore']), _epoch(said['details']['notAfter'])))
+
+    def test_nebula_cert_refuses_another_ca_a_changed_certificate_and_one_that_ended(self):
+        public, sign = _key()
+        (self.d / 'other.crt').write_text(nebulaca.ca_certificate('other', public, sign, seconds=86400))
+        (self.d / 'host.crt').write_text(self.cert())
+        self.assertNotEqual(self.nebula_cert('verify', '-ca', str(self.d / 'other.crt'), '-crt', str(self.d / 'host.crt')).returncode, 0)
+        forged = nebulaca._signed(nebulaca.read(self.cert())['signed'], sign)          # the same words, signed by a key that is not the CA
+        (self.d / 'forged.crt').write_text(forged)
+        self.assertNotEqual(self.nebula_cert('verify', '-ca', str(self.d / 'ca.crt'), '-crt', str(self.d / 'forged.crt')).returncode, 0)
+        old = nebulaca.ca_certificate('home', self.public, self.sign, seconds=3600, now=1_700_000_000)
+        (self.d / 'old-ca.crt').write_text(old)
+        (self.d / 'old.crt').write_text(nebulaca.host_certificate(old, self.sign, name='web', address='10.9.0.5/24', public=bytes(32), now=1_700_000_000))
+        self.assertNotEqual(self.nebula_cert('verify', '-ca', str(self.d / 'old-ca.crt'), '-crt', str(self.d / 'old.crt')).returncode, 0)
+
+    def test_nebula_reads_the_configuration_with_the_certificate_and_the_hosts_own_key(self):
+        (self.d / 'host.crt').write_text(self.cert(groups=['servers']))
+        for kw in ({'lighthouse': False, 'lighthouses_text': '10.9.0.1=lh.example.org:4242, 10.9.0.2=198.51.100.7:4243', 'inbound_text': 'icmp, tcp/22, udp/53@servers, tcp/8000-8100, any@web'},
+                   {'lighthouse': True, 'lighthouses_text': '10.9.0.2=198.51.100.7:4243', 'port': 4300, 'blocklist': ['ab' * 32, 'cd' * 32]}, {'lighthouse': True, 'lighthouses_text': '', 'inbound_text': ''}):
+            (self.d / 'config.yml').write_text(nebulaca.config(directory=str(self.d), **kw))
+            got = subprocess.run([REAL_NEBULA, '-test', '-config', str(self.d / 'config.yml')], capture_output=True, text=True, timeout=30)
+            self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+        # a certificate for a key the host does not hold: nebula refuses to start with it
+        (self.d / 'host.crt').write_text(self.cert(public=bytes(range(32))))
+        got = subprocess.run([REAL_NEBULA, '-test', '-config', str(self.d / 'config.yml')], capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(got.returncode, 0)
+
+
+def _namespaces():
+    """Can this account make network namespaces of its own? Then two real Nebula nodes can run here without root."""
+    if not all(shutil.which(x) for x in ('unshare', 'ip', 'ping')) or not os.path.exists('/dev/net/tun'):
+        return False
+    try:
+        return subprocess.run(['unshare', '-Urnm', 'sh', '-c', 'mount -t tmpfs tmpfs /run && mkdir /run/netns && ip netns add probe && ip netns exec probe ip tuntap add dev t0 mode tun'],
+                              capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+TWO_NODES = r"""set -eu
+mount -t tmpfs tmpfs /run; mkdir /run/netns
+ip netns add a; ip netns add b
+ip link add va type veth peer name vb
+ip link set va netns a; ip link set vb netns b
+ip -n a addr add 192.0.2.1/24 dev va; ip -n a link set va up; ip -n a link set lo up
+ip -n b addr add 192.0.2.2/24 dev vb; ip -n b link set vb up; ip -n b link set lo up
+pids=
+trap 'kill $pids 2>/dev/null || true' EXIT
+start() { ip netns exec "$1" "$NEBULA" -config "$D/$1/$2" >>"$D/$1/log" 2>&1 & eval "pid_$1=$!"; pids="$pids $!"
+  i=0; while ! ip -n "$1" -4 addr show nebula1 2>/dev/null | grep -q "inet 10.9.0."; do i=$((i + 1)); [ $i -lt 50 ] || { echo "nebula did not come up in $1"; cat "$D/$1/log"; exit 3; }; sleep 0.2; done; }
+reach() { if ip netns exec b ping -c 1 -W 2 10.9.0.1 >/dev/null 2>&1 || ip netns exec b ping -c 1 -W 3 10.9.0.1 >/dev/null 2>&1; then echo "$1 reached"; else echo "$1 refused"; fi; }
+start a config.yml; start b config.yml
+reach first
+kill $pid_a; wait $pid_a 2>/dev/null || true; start a config.yml
+reach restarted
+kill $pid_a; wait $pid_a 2>/dev/null || true; start a blocked.yml
+reach blocked
+"""
+
+
+@NEEDS_NEBULA
+@unittest.skipUnless(_namespaces(), 'needs network namespaces of its own (unshare -Urnm), ip, ping and /dev/net/tun')
+class NebulaNetwork(unittest.TestCase):
+    """Two real Nebula nodes, a lighthouse and a host, each in a network namespace of its own with one cable between them, started
+    with certificates and configurations made here. No root is needed: the namespaces belong to this account."""
+
+    def test_two_real_nodes_reach_each_other_until_one_certificate_is_on_the_blocklist(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        public, sign = _key()
+        ca = nebulaca.ca_certificate('home', public, sign, seconds=86400, networks=['10.9.0.0/24'])
+        certs = {}
+        for name, address in (('a', '10.9.0.1/24'), ('b', '10.9.0.5/24')):
+            (d / name).mkdir()
+            subprocess.run([REAL_NEBULA_CERT, 'keygen', '-out-key', str(d / name / 'host.key'), '-out-pub', str(d / name / 'host.pub')], check=True)
+            certs[name] = nebulaca.host_certificate(ca, sign, name=name, address=address, public=nebulaca.public_key((d / name / 'host.pub').read_text()))
+            (d / name / 'host.crt').write_text(certs[name])
+            (d / name / 'ca.crt').write_text(ca)
+        (d / 'a' / 'config.yml').write_text(nebulaca.config(lighthouse=True, lighthouses_text='', directory=str(d / 'a')))
+        (d / 'a' / 'blocked.yml').write_text(nebulaca.config(lighthouse=True, lighthouses_text='', directory=str(d / 'a'), blocklist=[nebulaca.fingerprint(certs['b'])]))
+        (d / 'b' / 'config.yml').write_text(nebulaca.config(lighthouse=False, lighthouses_text='10.9.0.1=192.0.2.1:4242', directory=str(d / 'b')))
+        got = subprocess.run(['unshare', '-Urnm', 'sh', '-c', TWO_NODES], capture_output=True, text=True, timeout=90, env={**os.environ, 'D': str(d), 'NEBULA': REAL_NEBULA})
+        self.assertEqual(got.stdout.split('\n')[:3], ['first reached', 'restarted reached', 'blocked refused'], got.stdout + got.stderr + (d / 'a' / 'log').read_text()[-3000:])
+        self.assertIn('block', (d / 'a' / 'log').read_text().lower(), 'the lighthouse says why it refused')
+
+
+class Vaulted(Stage):
+    """A stage with a database and a vault, and ssh replaced by running what it was given here: what `vault nebula-issue` and
+    `vault headscale-key` send to a host runs under the stage's PATH, with /etc/nebula moved to a folder per host."""
+
+    def setUp(self):
+        super().setUp()
+        self.db, self.conn = plan_db(self)
+        secret = self.d / 'vault-secret'
+        secret.write_text('s' * 48)
+        os.environ['STORAGEFORGE_VAULT_SECRET_FILE'] = str(secret)
+        self.addCleanup(os.environ.pop, 'STORAGEFORGE_VAULT_SECRET_FILE', None)
+        self.ssh = []
+        self.assertEqual(self.vault('init')[0], 0)
+
+    def host_dir(self, host):
+        return self.d / 'hosts' / host / 'nebula'
+
+    def vault(self, *args, stdin=''):
+        from storageforge_index import cli
+        real = subprocess.run
+
+        def over_ssh(argv, input=None, **kw):
+            if argv[0] != 'ssh':
+                return real(argv, input=input, **kw)
+            target, remote = argv[-2].split('@')[-1], shlex.split(argv[-1])
+            self.ssh.append((argv, input))
+            if remote[:2] != ['sudo', '-n']:
+                raise AssertionError(f'not run as root without a password: {argv[-1]}')
+            words = ['sh', '-c', remote[4].replace('/etc/nebula', str(self.host_dir(target)))] if remote[2:4] == ['sh', '-c'] else remote[2:]
+            return real(words, input=input, capture_output=True, timeout=60, env={'PATH': self.env['PATH'], 'FAKE': str(self.fake)})
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), unittest.mock.patch('subprocess.run', over_ssh), unittest.mock.patch('sys.stdin', io.StringIO(stdin)):
+            rc = cli.main(['--db', self.db.url, 'vault', *args])
+        return rc, out.getvalue(), err.getvalue()
+
+    def audited(self, like):
+        return [(r[0], r[1]) for r in self.conn.all('SELECT action, outcome FROM audit_log WHERE action LIKE :l ORDER BY audit_id', {'l': like})]
+
+
+@NEEDS_NEBULA
+class NebulaJoin(Vaulted):
+    """The whole way with the real nebula-cert and nebula: a CA whose key is a vault key, a host that makes its own key, a
+    certificate issued and written back, and the step that writes the configuration. Starting Nebula needs root and a tunnel
+    device, so the unit's ExecStart is a stand-in that has the real nebula read (-test) what it was started with."""
+
+    def setUp(self):
+        super().setUp()
+        (self.d / 'bin' / 'nebula-cert').symlink_to(REAL_NEBULA_CERT)
+        self.stub('nebula', f'if [ "$1" = -test ]; then exec {REAL_NEBULA} "$@"; fi\necho "nebula $*" >>{self.fake}/nebula.started\nexec {REAL_NEBULA} -test "$@" >/dev/null 2>&1')
+        self.dir = self.host_dir('nas')
+        self.env['SF_NEBULA_DIR'] = str(self.dir)
+        rc, self.ca_pem, err = self.vault('nebula-ca', 'home', '--networks', '10.9.0.0/24')
+        self.assertEqual(rc, 0, err)
+
+    def task(self, **params):
+        return changes.normalize({'name': 'n', 'tasks': [{'type': 'nebula', 'host': 'nas', 'params': {'ca': 'home', 'lighthouses': '10.9.0.1=lh.example.org:4242', **params}}]})['tasks'][0]
+
+    def words(self, **params):
+        """What the plan script gives t_nebula, with /etc/nebula in the configuration moved to this host's folder."""
+        t = self.task(**params)
+        p = t['params']
+        ca, conf = steps_overlay._nebula_args(self.conn, t)
+        conf = base64.b64encode(base64.b64decode(conf).decode().replace('/etc/nebula', str(self.dir)).encode()).decode() if conf else ''
+        return [p['ca'], '1' if p['lighthouse'] else '', p['lighthouses'], p['port'], p['inbound'], p['state'], ca, conf]
+
+    def issue(self, host='nas', address='10.9.0.5/24', *more):
+        return self.vault('nebula-issue', 'home', '--host', host, '--address', address, *more)
+
+    def test_the_ca_key_is_a_vault_key_and_its_certificate_is_one_nebula_cert_reads(self):
+        self.assertIn('nebula-ca-home', self.vault('list')[1])
+        (self.d / 'ca.crt').write_text(self.ca_pem)
+        said = json.loads(subprocess.run([REAL_NEBULA_CERT, 'print', '-json', '-path', str(self.d / 'ca.crt')], capture_output=True, text=True).stdout)[0]
+        self.assertEqual((said['details']['name'], said['details']['isCa'], said['details']['networks']), ('home', True, ['10.9.0.0/24']))
+        kept = json.dumps(overlaykeys.cas(self.conn))
+        self.assertNotIn('PRIVATE', kept)
+        self.assertEqual(overlaykeys.cas(self.conn)['home']['fingerprint'], said['fingerprint'])
+        rc, _, err = self.vault('nebula-ca', 'home')
+        self.assertEqual((rc, 'there is a Nebula CA named home already' in err), (1, True))
+        self.assertEqual(self.audited('vault.nebula%'), [('vault.nebula_ca', 'ok')])
+
+    def test_a_host_makes_its_own_key_gets_a_certificate_and_joins(self):
+        rc, out = self.step(True, 't_nebula', *self.words())
+        self.assertEqual(rc, 1)
+        self.assertIn(f'conflict: no host certificate in {self.dir}: storageforge-index vault nebula-issue home --host ', out)
+        rc, out, err = self.issue('nas', '10.9.0.5/24', '--groups', 'servers')
+        self.assertEqual(rc, 0, err)
+        self.assertIn('Its key was made on the host and stays there', out)
+        key = (self.dir / 'host.key').read_text()
+        self.assertEqual((self.dir / 'host.key').stat().st_mode & 0o777, 0o600)
+        sent = ' '.join(' '.join(argv) + (data or b'').decode() for argv, data in self.ssh)
+        self.assertIn('scan@nas', sent)
+        self.assertNotIn(key.split('\n')[1], sent, 'the host key is in nothing that crossed')
+        self.assertNotIn('PRIVATE', sent)
+        got = subprocess.run([REAL_NEBULA_CERT, 'verify', '-ca', str(self.dir / 'ca.crt'), '-crt', str(self.dir / 'host.crt')], capture_output=True, text=True)
+        self.assertEqual((got.returncode, got.stdout + got.stderr), (0, ''))
+        said = nebulaca.verify((self.dir / 'host.crt').read_text(), self.ca_pem)
+        self.assertEqual((said['name'], said['networks'], said['groups']), ('nas', ['10.9.0.5/24'], ['servers']))
+        # the plan: it knows the certificate, carries nothing secret, and the step writes what nebula itself accepts
+        plan = {'name': 'n', 'tasks': [self.task()]}
+        checked = changes.check(self.conn, plan)['tasks'][0]['items']
+        self.assertFalse([i for i in checked if i['level'] in ('crit', 'warn')], checked)
+        self.assertTrue(any('nas has a certificate from CA home as nas at 10.9.0.5/24' in i['text'] for i in checked))
+        text = changes.script(self.conn, plan)
+        self.assertIn("nebula 'Join the Nebula network of CA home' home '' 10.9.0.1=lh.example.org:4242 '' '' present ", text)
+        self.assertNotIn(key.split('\n')[1], text)
+        for apply, want in ((False, 'would: write'), (True, 'doing: write')):
+            rc, out = self.step(apply, 't_nebula', *self.words())
+            self.assertEqual(rc, 0, out)
+            self.assertIn(want, out)
+        self.assertIn(f'ok: Nebula runs as storageforge-nebula.service from {self.dir}/config.yml', out)
+        conf = (self.dir / 'config.yml').read_text()
+        self.assertIn('"10.9.0.1": ["lh.example.org:4242"]', conf)
+        unit = (self.d / 'units' / 'storageforge-nebula.service').read_text()
+        self.assertIn(f'ExecStart={self.d}/bin/nebula -config {self.dir}/config.yml\n', unit)
+        self.assertEqual(self.read('nebula.started'), f'nebula -config {self.dir}/config.yml\n')
+        for apply in (False, True):
+            rc, out = self.step(apply, 't_nebula', *self.words())
+            self.assertEqual((rc, out), (0, f'ok: Nebula runs as storageforge-nebula.service from {self.dir}/config.yml, with a certificate CA home issued\n'))
+        self.assertEqual(self.read('nebula.started').count('\n'), 1, 'a second run starts nothing again')
+        # the same key is kept when a certificate is issued again, and an address belongs to one name
+        self.assertEqual(self.issue('nas', '10.9.0.5/24')[0], 0)
+        self.assertEqual((self.dir / 'host.key').read_text(), key)
+        rc, _, err = self.issue('laptop', '10.9.0.5/24')
+        self.assertEqual((rc, "10.9.0.5 is nas's on this network" in err), (1, True))
+        rc, _, err = self.issue('laptop', '10.8.0.5/24')
+        self.assertEqual((rc, 'outside the networks this CA may issue for' in err), (1, True))
+        self.assertEqual(self.audited('vault.nebula_issue'), [('vault.nebula_issue', 'ok'), ('vault.nebula_issue', 'ok'), ('vault.nebula_issue', 'failed'), ('vault.nebula_issue', 'failed')])
+
+    def test_a_lighthouse_does_not_name_itself_and_listens_on_its_port(self):
+        self.assertEqual(self.issue('nas', '10.9.0.1/24')[0], 0)
+        t = self.task(lighthouse=True, lighthouses='10.9.0.1=lh.example.org:4242, 10.9.0.2=lh2.example.org:4242')
+        conf = base64.b64decode(steps_overlay._nebula_args(self.conn, t)[1]).decode()
+        self.assertIn('  am_lighthouse: true\n', conf)
+        self.assertIn('  port: 4242\n', conf)
+        self.assertNotIn('"10.9.0.1"', conf, 'its own address is not in its own map')
+        self.assertIn('"10.9.0.2": ["lh2.example.org:4242"]', conf)
+        said = [i['text'] for i in changes.check(self.conn, {'name': 'n', 'tasks': [t]})['tasks'][0]['items']]
+        self.assertTrue(any('a lighthouse listens on UDP port 4242' in x and 'opens no firewall' in x for x in said), said)
+        rc, out = self.step(True, 't_nebula', *self.words(lighthouse=True, lighthouses='10.9.0.1=lh.example.org:4242'))
+        self.assertEqual(rc, 0, out)
+        self.assertIn('as a lighthouse: others must reach its UDP port', out)
+        self.assertIn('static_host_map: {}', (self.dir / 'config.yml').read_text())
+
+    def test_a_revoked_certificate_reaches_the_other_hosts_through_the_step(self):
+        self.assertEqual(self.issue('nas', '10.9.0.5/24')[0], 0)
+        self.assertEqual(self.issue('laptop', '10.9.0.9/24')[0], 0)
+        self.assertEqual(self.step(True, 't_nebula', *self.words())[0], 0)
+        gone = nebulaca.fingerprint((self.host_dir('laptop') / 'host.crt').read_text())
+        rc, out, err = self.vault('nebula-revoke', 'home', 'laptop')
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(overlaykeys.blocklist(self.conn, 'home'), [gone])
+        said = ' '.join(i['text'] for i in changes.check(self.conn, {'name': 'n', 'tasks': [self.task()]})['tasks'][0]['items'])
+        self.assertIn('with the 1 revoked certificate(s) this host must refuse', said)
+        rc, out = self.step(True, 't_nebula', *self.words())
+        self.assertEqual(rc, 0, out)
+        self.assertIn('doing: write', out)
+        self.assertIn(f'  blocklist:\n    - {gone}\n', (self.dir / 'config.yml').read_text())
+        self.assertNotIn('blocklist', (self.dir / 'config.yml.sf-before').read_text(), 'what was there is kept beside it')
+        self.assertEqual(self.read('nebula.started').count('\n'), 2, 'Nebula was restarted to read it')
+        self.assertEqual(self.vault('nebula-revoke', 'home', 'laptop')[0], 1, 'nothing left to revoke')
+        self.assertIn('laptop', self.vault('nebula-list')[1])
+        self.assertIn('revoked', self.vault('nebula-list')[1])
+        # the address is free again
+        self.assertEqual(self.issue('tablet', '10.9.0.9/24')[0], 0)
+
+    def test_what_is_not_storageforges_is_left_alone_and_a_bad_configuration_changes_nothing(self):
+        self.assertEqual(self.issue()[0], 0)
+        words = self.words()
+        (self.dir / 'config.yml').write_text('pki:\n  ca: /etc/nebula/ca.crt\n')
+        for state in ('present', 'absent'):
+            rc, out = self.step(True, 't_nebula', *words[:5], state, *words[6:])
+            self.assertEqual(rc, 1)
+            self.assertIn('was not written by StorageForge: a Nebula somebody set up by hand is left alone', out)
+        (self.dir / 'config.yml').unlink()
+        (self.fake / 'active-nebula').touch()
+        rc, out = self.step(True, 't_nebula', *words)
+        self.assertIn('nebula.service runs a Nebula here that StorageForge did not start', out)
+        (self.fake / 'active-nebula').unlink()
+        self.assertEqual(self.step(True, 't_nebula', *words)[0], 0)
+        before = (self.dir / 'config.yml').read_text()
+        broken = base64.b64encode(b'# Written by StorageForge\npki: [\n').decode()
+        rc, out = self.step(True, 't_nebula', *words[:7], broken)
+        self.assertEqual(rc, 1)
+        self.assertIn('conflict: nebula -test refuses the new configuration', out)
+        self.assertEqual((self.dir / 'config.yml').read_text(), before)
+        self.assertFalse((self.dir / '.sf-new-config.yml').exists())
+        rc, out = self.step(True, 't_nebula', *words[:6], '', '')
+        self.assertIn('there was no Nebula CA named home, or its configuration could not be made', out)
+        # a certificate of another CA in the host's folder
+        public, sign = _key()
+        other = nebulaca.ca_certificate('other', public, sign, seconds=86400)
+        (self.dir / 'host.crt').write_text(nebulaca.host_certificate(other, sign, name='nas', address='10.9.0.5/24', public=nebulaca.public_key((self.dir / 'host.pub').read_text())))
+        rc, out = self.step(True, 't_nebula', *words)
+        self.assertEqual(rc, 1)
+        self.assertIn(f'conflict: the certificate in {self.dir}/host.crt is not a running one of CA home', out)
+
+    def test_absent_stops_it_and_removes_the_key(self):
+        self.assertEqual(self.issue()[0], 0)
+        self.assertEqual(self.step(True, 't_nebula', *self.words())[0], 0)
+        words = self.words(state='absent')
+        self.assertEqual(words[6:], ['', ''], 'leaving needs nothing from the CA')
+        rc, out = self.step(False, 't_nebula', *words)
+        self.assertIn('would: stop storageforge-nebula.service and remove it', out)
+        self.assertTrue((self.dir / 'host.key').exists())
+        rc, out = self.step(True, 't_nebula', *words)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('storageforge-index vault nebula-revoke home NAME', out)
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), [])
+        self.assertFalse((self.d / 'units' / 'storageforge-nebula.service').exists())
+        self.assertFalse((self.fake / 'active-storageforge-nebula').exists())
+        self.assertEqual(self.step(True, 't_nebula', *words), (0, 'ok: no Nebula started by StorageForge is here\n'))
+
+    def test_the_check_says_what_is_missing(self):
+        def said(**params):
+            return [(i['level'], i['text']) for i in changes.check(self.conn, {'name': 'n', 'tasks': [self.task(**params)]})['tasks'][0]['items']]
+        got = said()
+        self.assertTrue(any(lvl == 'warn' and 'no running certificate from CA home is on record for nas: storageforge-index vault nebula-issue home --host nas' in t for lvl, t in got), got)
+        self.assertTrue(any('no secret travels' in t and 'nebula -test' in t for _, t in got))
+        self.assertTrue(any('Not lab-tested' in t for _, t in got))
+        self.assertEqual([lvl for lvl, _ in said(ca='nowhere')], ['crit'])
+        self.assertTrue(any(lvl == 'crit' and 'needs at least one lighthouse' in t for lvl, t in said(lighthouses='')))
+        self.assertTrue(any(lvl == 'crit' and 'an inbound rule is' in t for lvl, t in said(inbound='tcp/22; id')))
+        self.assertTrue(any(lvl == 'crit' and 'a lighthouse listens on a port' in t for lvl, t in said(port='70000')))
+        self.assertEqual(steps_overlay._nebula_args(self.conn, self.task(inbound='tcp/22; id')), ['', ''])
+        cmd = changes.EXTRA['nebula']['ansible'](self.task(), self.conn)['ansible.builtin.shell']['cmd']
+        self.assertIn('t_nebula home', cmd)
+        self.assertIn(base64.b64encode(self.ca_pem.encode()).decode(), cmd)
 
 
 def plan_db(case):

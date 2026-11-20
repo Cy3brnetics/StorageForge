@@ -1321,6 +1321,9 @@ def cmd_vault(args) -> int:
             return 0
         if a == 'send-secret':
             return _send_secret(db, conn, v, args)
+        if a in ('nebula-ca', 'nebula-issue', 'nebula-revoke', 'nebula-list', 'headscale-key'):
+            from . import overlaykeys
+            return overlaykeys.command(db, conn, v, args, lambda action, outcome, host, **detail: _audit(db, conn, v, action, outcome, host=host, **detail))
         if a in ('add', 'generate'):
             if a == 'add':
                 data = sys.stdin.buffer.read() if args.key_file == '-' else Path(args.key_file).expanduser().read_bytes()
@@ -2155,6 +2158,37 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument('--user', help='the SSH login; the host\'s scan login if not given')
     x.add_argument('--key', help='an SSH private key file; your SSH agent and keys if not given')
     x.add_argument('--ssh-option', action='append', default=[], metavar='OPT', help='an ssh -o option, again for more')
+    reach = (('--user', dict(help='the SSH login; the host\'s scan login if not given')), ('--key', dict(help='an SSH private key file; your SSH agent and keys if not given')),
+             ('--ssh-option', dict(action='append', default=[], metavar='OPT', help='an ssh -o option, again for more')))
+    x = vs.add_parser('nebula-ca', help='make a Nebula certificate authority: its key is made in the vault and stays there, and its certificate is printed')
+    x.add_argument('name')
+    x.add_argument('--days', type=int, default=730, help='how long the CA lasts (default 730). Every host certificate ends with it')
+    x.add_argument('--networks', help='the only ranges its host certificates may take an address from, separated by commas, such as 10.9.0.0/24')
+    x = vs.add_parser('nebula-issue', help='a Nebula host certificate: the host makes its own key in /etc/nebula, the CA signs in the vault, and the certificate is written back over SSH')
+    x.add_argument('ca')
+    x.add_argument('--host', required=True)
+    x.add_argument('--address', required=True, help='the host\'s address on the Nebula network with the prefix, such as 10.9.0.5/24')
+    x.add_argument('--name', help='the name in the certificate (the host name if not given)')
+    x.add_argument('--groups', help='Nebula groups for its firewall rules, separated by commas')
+    x.add_argument('--behind', help='networks behind this host that it routes for, separated by commas')
+    x.add_argument('--days', type=int, help='how long it lasts (until the CA ends if not given)')
+    for flag, kw in reach:
+        x.add_argument(flag, **kw)
+    x = vs.add_parser('nebula-revoke', help='revoke every running certificate a Nebula CA issued for a name. Hosts refuse it once the nebula plan step has run on them again')
+    x.add_argument('ca')
+    x.add_argument('name')
+    vs.add_parser('nebula-list', help='the Nebula CAs and what each has issued')
+    x = vs.add_parser('headscale-key', help='make a pre-auth key on a Headscale server over SSH and store it as a secret for the tailscale step. It is never printed')
+    x.add_argument('name', help='the secret to store it as')
+    x.add_argument('--host', required=True, help='the host that runs Headscale')
+    x.add_argument('--hs-user', help='the Headscale user the key is for: its number, or its name')
+    x.add_argument('--tags', help='tags the node gets, such as tag:server (a tagged key needs no user)')
+    x.add_argument('--expiration', default='1h', help='how long the key can be used: a number and m, h or d (default 1h)')
+    x.add_argument('--reusable', action='store_true', help='for more than one machine')
+    x.add_argument('--ephemeral', action='store_true', help='nodes that join with it are removed when they go offline')
+    x.add_argument('--container', help='Headscale runs in this container: the command is run with docker exec')
+    for flag, kw in reach:
+        x.add_argument(flag, **kw)
     v.set_defaults(fn=cmd_vault)
 
     lg = sub.add_parser('log', help='what has been done: audit log, deploys, scans and task runs in one list')

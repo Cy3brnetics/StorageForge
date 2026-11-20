@@ -23,10 +23,12 @@ changes what the network's controller knows beyond what the program itself does 
 """
 from __future__ import annotations
 
+import base64
 import re
 import shlex
+import time
 
-from . import changes, steps_tunnels
+from . import changes, nebulaca, overlaykeys, steps_tunnels
 from .changes import F
 
 NAME = re.compile(r'[A-Za-z0-9_.-]{1,64}')
@@ -36,6 +38,7 @@ ZT_NETWORK = re.compile(r'[0-9a-f]{16}')
 SECRET_DIR = '/run/storageforge/secrets'
 NETBIRD_ARGS = ('secret', 'management_url', 'hostname', 'state')
 ZEROTIER_ARGS = ('network', 'state')
+NEBULA_ARGS = ('ca', 'lighthouse', 'lighthouses', 'port', 'inbound', 'state')
 
 # No apostrophes: the script text is checked for values that could end a quoted word.
 # tun_systemd, tun_secret_missing, tun_unit_start and tun_unit_stop are in steps_tunnels.BASH, which every plan script carries.
@@ -149,6 +152,70 @@ t_zerotier() { local net=$1 state=${2:-present} st out i
   for i in 1 2 3 4 5 6; do st=$(zt_status "$net"); [[ $st == OK || $st == ACCESS_DENIED || $st == NOT_FOUND ]] && break; sleep "${SF_OVERLAY_WAIT:-1}"; done
   zt_say "$net" "$st"
 }
+
+# Nebula. The certificate authority is in the vault, and what reaches this host is public: the CA certificate and the configuration,
+# both made when the script was written. The host key was made here by vault nebula-issue and is never read
+nebula_ours() { local first=; [[ -e $1 ]] || return 0; IFS= read -r first <"$1" || true; [[ $first == "# Written by StorageForge"* ]]; }
+nebula_same() { [[ -e $2 ]] && [[ $(printf %s "$1" | base64 -d 2>/dev/null) == "$(cat "$2")" ]]; }        # $1 base64, $2 a file
+t_nebula() { local ca=$1 lh=$2 state=${6:-present} cab64=${7:-} confb64=${8:-} d unit=storageforge-nebula.service bin out new swapped=
+  # words 3 to 5 (the lighthouses, the port, the inbound rules) are in the configuration already, which is word 8
+  d=${SF_NEBULA_DIR:-/etc/nebula}
+  local conf=$d/config.yml
+  if [[ $state == absent ]]; then
+    if [[ ! -e ${SF_UNIT_DIR:-/etc/systemd/system}/$unit && ! -e $conf && ! -e $d/host.crt ]]; then ok "no Nebula started by StorageForge is here"; return 0; fi
+    nebula_ours "$conf" || { conflict "$conf was not written by StorageForge: a Nebula somebody set up by hand is left alone"; return 0; }
+    act "stop $unit and remove it, $conf, the certificates and the host key in $d (nebula stays installed). The certificate stays good elsewhere until it ends: storageforge-index vault nebula-revoke $ca NAME revokes it" || return 0
+    tun_unit_stop "$unit"
+    rm -f "$conf" "$conf.sf-before" "$d/host.crt" "$d/host.crt.sf-before" "$d/host.key" "$d/host.pub" "$d/ca.crt" "$d/ca.crt.sf-before"
+    ok "Nebula no longer runs from here, and its key is gone: a certificate issued for it opens nothing now. Revoke it at the CA all the same"
+    return 0
+  fi
+  bin=$(command -v nebula) || { conflict "nebula is not installed: install it from the distribution or from its releases (github.com/slackhq/nebula), which this step does not do"; return 0; }
+  command -v nebula-cert >/dev/null || { conflict "nebula-cert is not installed: it comes with nebula, and checks the certificate here"; return 0; }
+  tun_systemd || { conflict "this step runs Nebula as a systemd unit, and systemd does not run this host"; return 0; }
+  [[ -n $cab64 && -n $confb64 ]] || { conflict "when this script was written there was no Nebula CA named $ca, or its configuration could not be made: the check of the plan says which"; return 0; }
+  nebula_ours "$conf" || { conflict "$conf was not written by StorageForge: a Nebula somebody set up by hand is left alone"; return 0; }
+  if systemctl is-active --quiet nebula.service; then conflict "nebula.service runs a Nebula here that StorageForge did not start: it is left alone, and two would fight over the interface"; return 0; fi
+  if [[ ! -s $d/host.key || ! -s $d/host.crt ]]; then
+    if ((APPLY)); then conflict "no host certificate in $d: storageforge-index vault nebula-issue $ca --host $(uname -n) --address ADDRESS/PREFIX, then run this again"
+    else missing "it needs a host certificate in $d: storageforge-index vault nebula-issue $ca --host $(uname -n) --address ADDRESS/PREFIX"; fi
+    return 0
+  fi
+  if ! out=$(nebula-cert verify -ca <(printf %s "$cab64" | base64 -d) -crt "$d/host.crt" 2>&1); then
+    conflict "the certificate in $d/host.crt is not a running one of CA $ca ($(tail -n 1 <<<"$out")): storageforge-index vault nebula-issue $ca --host $(uname -n) --address ADDRESS/PREFIX issues another"; return 0
+  fi
+  if nebula_same "$cab64" "$d/ca.crt" && nebula_same "$confb64" "$conf" && systemctl is-active --quiet "$unit"; then
+    ok "Nebula runs as $unit from $conf${lh:+, as a lighthouse}, with a certificate CA $ca issued"; return 0
+  fi
+  act "write $conf and the certificate of CA $ca, have nebula -test read them, and run Nebula as $unit${lh:+, as a lighthouse}" || return 0
+  new=$d/.sf-new-config.yml
+  if ! nebula_same "$cab64" "$d/ca.crt"; then
+    [[ -e $d/ca.crt ]] && cp -p "$d/ca.crt" "$d/ca.crt.sf-before" && swapped=1
+    printf %s "$cab64" | base64 -d >"$d/ca.crt.new" && chmod 0644 "$d/ca.crt.new" && mv -f "$d/ca.crt.new" "$d/ca.crt" || { conflict "could not write $d/ca.crt"; return 0; }
+  fi
+  ( umask 077; printf %s "$confb64" | base64 -d >"$new" ) || { rm -f "$new"; conflict "could not write beside $conf"; return 0; }
+  if ! out=$("$bin" -test -config "$new" 2>&1); then
+    rm -f "$new"; [[ -n $swapped ]] && mv -f "$d/ca.crt.sf-before" "$d/ca.crt"
+    conflict "nebula -test refuses the new configuration ($(tail -n 1 <<<"$out")): what was in place is left as it was"; return 0
+  fi
+  [[ -e $conf ]] && cp -p "$conf" "$conf.sf-before"
+  mv -f "$new" "$conf"; durable "$conf" "$d/ca.crt"
+  if ! tun_unit_start "$unit" "[Unit]
+Description=Nebula, started by StorageForge with a certificate its CA issued
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=$bin -config $conf
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target" 1; then
+    conflict "Nebula did not stay running: journalctl -u $unit says why"; return 0
+  fi
+  ok "Nebula runs as $unit from $conf${lh:+, as a lighthouse: others must reach its UDP port, which this step does not open in a firewall}"
+}
 """
 
 
@@ -192,6 +259,76 @@ def _check_zerotier(conn, c, h, p, say):
     say('note', 'needs ZeroTier installed already. Not lab-tested')
 
 
+# ── Nebula ──
+def _nebula_issued(record: dict, host: str, now: float | None = None) -> dict | None:
+    """The newest running certificate this CA issued for the host, by the name vault nebula-issue was given or the certificate's own."""
+    at = now if now is not None else time.time()
+    short = host.split('.')[0].lower()
+    mine = [i for i in record.get('issued', []) if not i.get('revoked') and i['not_after'] > at
+            and ((i.get('host') or '').lower() in (host.lower(), short) or i['name'].lower() in (host.lower(), short))]
+    return max(mine, key=lambda i: i['at']) if mine else None
+
+
+def _nebula_config(conn, host: str, p: dict) -> str:
+    """config.yml for this host from the step's fields. A lighthouse that is in the list every host is given does not name itself."""
+    record = overlaykeys.cas(conn).get(p['ca']) or {}
+    own = _nebula_issued(record, host)
+    known = nebulaca.lighthouses(p['lighthouses'])
+    if own:
+        known.pop(own['address'].split('/')[0], None)
+    return nebulaca.config(lighthouse=bool(p['lighthouse']), lighthouses_text=', '.join(f'{k}={v}' for k, v in known.items()), port=int(p['port']) if p['port'] else None,
+                           inbound_text=p['inbound'] or 'icmp', blocklist=overlaykeys.blocklist(conn, p['ca']))
+
+
+def _nebula_args(conn, t) -> list[str]:
+    """The CA certificate and the configuration, in base64: both public, both made now. Empty when they cannot be made, and the
+    step then stops and says so."""
+    p = t['params']
+    record = overlaykeys.cas(conn).get(p['ca']) if overlaykeys.CA_NAME.fullmatch(p['ca']) else None
+    if p['state'] == 'absent' or not record:
+        return ['', '']
+    try:
+        text = _nebula_config(conn, t['host'], p)
+    except (nebulaca.CertificateError, ValueError):
+        return ['', '']
+    return [base64.b64encode(record['certificate'].encode()).decode(), base64.b64encode(text.encode()).decode()]
+
+
+def _check_nebula(conn, c, h, p, say):
+    if not overlaykeys.CA_NAME.fullmatch(p['ca']):
+        say('crit', 'a CA name is letters, digits, _ and -, up to 32')
+        return
+    if p['state'] == 'absent':
+        say('note', f'stops the Nebula StorageForge started here and removes its configuration, certificates and host key. Nebula stays installed. '
+                    f'The certificate is not revoked by this: storageforge-index vault nebula-revoke {p["ca"]} NAME')
+        return
+    record = overlaykeys.cas(conn).get(p['ca'])
+    if not record:
+        say('crit', f'there is no Nebula CA named {p["ca"]}: storageforge-index vault nebula-ca {p["ca"]} makes it, with its key in the vault')
+        return
+    now = time.time()
+    if record['not_after'] <= now:
+        say('crit', f'the certificate of CA {p["ca"]} ended {time.strftime("%Y-%m-%d", time.gmtime(record["not_after"]))}: no host accepts what it issued')
+    elif record['not_after'] - now < 30 * 86400:
+        say('warn', f'the certificate of CA {p["ca"]} ends {time.strftime("%Y-%m-%d", time.gmtime(record["not_after"]))}, and every host certificate with it')
+    try:
+        _nebula_config(conn, h['name'], p)
+    except (nebulaca.CertificateError, ValueError) as exc:
+        say('crit', str(exc))
+    issued = _nebula_issued(record, h['name'], now)
+    if issued:
+        say('note', f'{h["name"]} has a certificate from CA {p["ca"]} as {issued["name"]} at {issued["address"]}, until {time.strftime("%Y-%m-%d", time.gmtime(issued["not_after"]))}')
+    else:
+        say('warn', f'no running certificate from CA {p["ca"]} is on record for {h["name"]}: storageforge-index vault nebula-issue {p["ca"]} --host {h["name"]} --address ADDRESS/PREFIX. '
+                    'The host makes its own key for it, which never leaves the host. Without a certificate the step stops and says so')
+    blocked = overlaykeys.blocklist(conn, p['ca'], now)
+    say('note', 'no secret travels: the CA certificate and the configuration are public, and are written into the script when it is made'
+                + (f', with the {len(blocked)} revoked certificate(s) this host must refuse' if blocked else '') + '. nebula -test reads the result before Nebula is restarted')
+    if p['lighthouse']:
+        say('note', f'a lighthouse listens on UDP port {p["port"] or nebulaca.PORT}, which the other hosts must reach: this step opens no firewall')
+    say('note', 'needs nebula and nebula-cert installed already. A Nebula that was set up by hand here is left alone. Not lab-tested')
+
+
 HEAD = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { echo "info: $*"; }\n'
         'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; durable() { sync; }\n')
 
@@ -222,4 +359,14 @@ changes.register('zerotier', {'group': 'Network', 'label': 'Join a ZeroTier netw
             'authorised it: this step says which node id to authorise, and does not do it. ZeroTier has to be installed already.'},
     ZEROTIER_ARGS, lambda p: f'{"Leave" if p["state"] == "absent" else "Join"} ZeroTier network {p.get("network") or ""}'.rstrip(),
     _check_zerotier, _ansible('t_zerotier', ZEROTIER_ARGS))
+changes.register('nebula', {'group': 'Network', 'label': 'Join a Nebula network (not lab-tested)', 'fields': [
+    F('ca', 'name', 'Certificate authority (made with vault nebula-ca)', required=True, placeholder='home'),
+    F('lighthouse', 'bool', 'This host is a lighthouse'),
+    F('lighthouses', 'text', 'Lighthouses: Nebula address = where it is reached', placeholder='10.9.0.1=lh.example.org:4242'),
+    F('port', 'number', 'UDP port (4242 for a lighthouse, any free one otherwise)'),
+    F('inbound', 'text', 'Allowed in over Nebula (icmp if empty)', placeholder='icmp, tcp/22, tcp/443@web'), STATE],
+    'help': 'Writes the Nebula configuration and the CA certificate, checks them with nebula -test and runs Nebula as a unit of its own. The host certificate comes first, '
+            'from vault nebula-issue: the host makes its own key, and the CA key signs in the vault. No secret travels. Nebula has to be installed already.'},
+    NEBULA_ARGS, lambda p: 'Leave the Nebula network' if p['state'] == 'absent' else f'Join the Nebula network of CA {p.get("ca") or ""}'.rstrip() + (' as a lighthouse' if p.get('lighthouse') else ''),
+    _check_nebula, _ansible('t_nebula', NEBULA_ARGS, _nebula_args), args_of=_nebula_args)
 changes.EXTRA_BASH.append(BASH)
