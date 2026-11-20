@@ -232,7 +232,7 @@ def zerotier(info: str, networks: str, peers: str = '') -> dict:
     for p in (listed or [])[:MAX_PEERS]:
         if not isinstance(p, dict) or p.get('role') != 'LEAF':          # PLANET and MOON are ZeroTier's root servers, not this site's hosts
             continue
-        paths = [x for x in p.get('paths') or [] if isinstance(x, dict) and x.get('active')]
+        paths = [x for x in (p.get('paths') if isinstance(p.get('paths'), list) else []) if isinstance(x, dict) and x.get('active')]
         ends = list(dict.fromkeys(_addresses([x['address'].rsplit('/', 1)[0] for x in paths if isinstance(x.get('address'), str)])))[:4]
         seen.append(_peer(p.get('address'), [], p.get('address'), bool(paths), bool(paths)) | {'latency_ms': p.get('latency') if isinstance(p.get('latency'), int) and not isinstance(p['latency'], bool) and p['latency'] >= 0 else None,
                                                                                          'endpoints': ends})
@@ -492,7 +492,9 @@ def certificate_counts(pki: dict | None, now: float, soon: int = 30 * 86400) -> 
             return None
     out = {'valid': 0, 'revoked': 0, 'expired': 0, 'ending': [], 'crl_ended': False, 'crl_next': None}
     pki = pki if isinstance(pki, dict) else {}
-    for c in [c for c in pki.get('certificates') or [] if isinstance(c, dict)] + [dict(f, state='valid') for f in pki.get('files') or [] if isinstance(f, dict)]:
+    def listed(name):
+        return [x for x in (pki.get(name) if isinstance(pki.get(name), list) else []) if isinstance(x, dict)]
+    for c in listed('certificates') + [dict(f, state='valid') for f in listed('files')]:
         ends = at(c.get('expires'))
         if c.get('state') == 'revoked':
             out['revoked'] += 1

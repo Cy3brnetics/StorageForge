@@ -218,5 +218,288 @@ class Nebula(unittest.TestCase):
         self.assertEqual(inframeasure.parse_overlays({'nebula_conf': [], 'nebula_cert': [NEBULA_CERT]}), [], 'a certificate with no configuration is not a Nebula host')
 
 
+# `netclient list -l` of netclient 1.x (github.com/gravitl/netclient, functions/list.go): `json.MarshalIndent` of one `output` for
+# each network the host is a node of, with the fields network, node_id, connected, ipv4_addr, ipv6_addr and, with -l, peers, each
+# a public_key, an endpoint and allowed_ips. The log line before it is what netclient writes when its server is slow to answer.
+NETMAKER = '[netclient] 2026-11-20 10:00:00 retrying the server\n' + json.dumps([
+    {'network': 'lab', 'node_id': '0b6f5a3c-5d0b-4a5e-9a51-2f3f6d0c1a11', 'connected': True, 'ipv4_addr': '10.20.0.3/24', 'ipv6_addr': 'fd00:20::3/64', 'peers': [
+        {'public_key': 'pk-gateway=', 'endpoint': '203.0.113.9:51821', 'allowed_ips': ['10.20.0.1/32', 'fd00:20::1/128', '192.168.40.0/24', '10.77.0.0/16']},
+        {'public_key': 'pk-pi=', 'endpoint': '10.42.0.9:51821', 'allowed_ips': ['10.20.0.2/32']}]},
+    {'network': 'backup', 'node_id': '7a0e4c1d-1111-4222-8333-944455556666', 'connected': False, 'ipv4_addr': '10.30.0.3/24', 'ipv6_addr': '', 'peers': [
+        {'public_key': 'pk-gateway=', 'endpoint': '203.0.113.9:51821', 'allowed_ips': ['10.30.0.1/32']}]}], indent=' ')
+
+# `swanctl --list-sas`: the first tunnel is the example of docs.strongswan.org/docs/latest/swanctl/swanctlListSas.html, word for
+# word. The others follow the same format strings (strongSwan's src/swanctl/commands/list_sas.c): a site-to-site tunnel with two
+# networks behind the other end, one of them with a protocol and port, a client that was handed a virtual address and signed in
+# with EAP, and a tunnel still being set up.
+SWAN_SAS = """home: #1, ESTABLISHED, IKEv2, 6fd55d95f66b4a67_i* cea64d4a303e0ca2_r
+  local  'carol@strongswan.org' @ 192.168.0.100[4500]
+  remote 'moon.strongswan.org' @ 192.168.0.1[4500]
+  AES_CBC-128/HMAC_SHA2_256_128/PRF_HMAC_SHA2_256/CURVE_25519
+  established 1s ago, rekeying in 14043s
+  net: #1, reqid 1, INSTALLED, TUNNEL, ESP:AES_GCM_16-128
+    installed 1s ago, rekeying in 3397s, expires in 3959s
+    in  c8931e89,     84 bytes,     1 packets,     0s ago
+    out cee78125,     84 bytes,     1 packets,     0s ago
+    local  192.168.0.100/32
+    remote 10.1.0.0/16
+gw-gw: #2, ESTABLISHED, IKEv2, 1a2b3c4d5e6f7a8b_i* 9a8b7c6d5e4f3a2b_r
+  local  'moon.strongswan.org' @ 192.168.0.100[500]
+  remote 'C=CH, O=strongSwan Project, CN=sun.strongswan.org' @ 192.168.0.2[500]
+  AES_CBC-128/HMAC_SHA2_256_128/PRF_HMAC_SHA2_256/CURVE_25519
+  established 120s ago, rekeying in 13000s, reauth in 20000s
+  net-net: #3, reqid 2, INSTALLED, TUNNEL, ESP:AES_GCM_16-128
+    installed 120s ago, rekeying in 3200s, expires in 3840s
+    in  c1a2b3c4,   1680 bytes,    20 packets,     5s ago
+    out c5d6e7f8,   1680 bytes,    20 packets,     5s ago
+    local  10.1.0.0/16
+    remote 10.2.0.0/16 10.3.0.0/24[tcp/http]
+rw: #5, ESTABLISHED, IKEv2, 0011223344556677_i 8899aabbccddeeff_r*
+  local  'moon.strongswan.org' @ 192.168.0.100[4500]
+  remote '192.168.7.44' @ 203.0.113.77[4500] EAP: 'carol o'brien' [10.9.0.1 fd09::1]
+  AES_GCM_16-256/PRF_HMAC_SHA2_384/ECP_384
+  established 60s ago, rekeying in 14000s
+  rw: #9, reqid 3, cpu 2, INSTALLED, TUNNEL-in-UDP, ESP:AES_GCM_16-256
+    installed 60s ago, rekeying in 3300s, expires in 3900s
+    in  aa11bb22,      0 bytes,     0 packets
+    out cc33dd44,      0 bytes,     0 packets
+    local  10.1.0.0/16
+    remote 10.9.0.1/32 fd09::1/128
+branch: #6, CONNECTING, IKEv1, 1111111111111111_i* 0000000000000000_r
+  local  '%any' @ 192.168.0.100[500]
+  remote '%any' @ 198.51.100.4[500]
+"""
+
+# `swanctl --list-conns`: the first connection is the example of docs.strongswan.org/docs/latest/swanctl/swanctlListConns.html, word
+# for word; the others follow list_conns.c, which prints one `remote:` line for each address a connection may be reached at.
+SWAN_CONNS = """home: IKEv2, no reauthentication, rekeying every 14400s
+  local:  192.168.0.100
+  remote: 192.168.0.1
+  local public key authentication:
+    id: carol@strongswan.org
+    certs: C=CH, O=strongSwan Project, OU=Research, CN=carol@strongswan.org
+  remote public key authentication:
+    id: moon.strongswan.org
+  net: TUNNEL, rekeying every 3600s
+    local:  dynamic
+    remote: 10.1.0.0/16
+dc: IKEv1/2, reauthentication every 10800s, dpd delay 30s
+  local:  192.168.0.100[500]
+  remote: 198.51.100.20[500]
+  remote: dc.example.net[500]
+  ppk: carol@strongswan.org, required
+  local pre-shared key authentication:
+    id: moon.strongswan.org
+  remote pre-shared key authentication:
+    id: dc.example.net
+  dc-net: TUNNEL, rekeying every 3600s, dpd action is restart
+    local:  10.1.0.0/16
+    remote: 10.50.0.0/16
+  dc-dmz: TUNNEL, rekeying every 3600s
+    local:  10.1.0.0/16
+    remote: 10.51.0.0/24
+rw: IKEv2, no reauthentication, rekeying every 14400s
+  local:  %any[500]
+  remote: %any[500]
+  local public key authentication:
+    id: moon.strongswan.org
+  remote EAP_MSCHAPV2 authentication:
+    eap_id: %any
+    groups: Research, Sales
+  rw: TUNNEL, rekeying every 3600s
+    local:  10.1.0.0/16
+    remote: dynamic
+"""
+
+# What the collector prints of an OpenVPN server's PKI (inframeasure.py, `sec openvpn_pki`), from a CA that the real `openssl ca`
+# of OpenSSL 4.1.0 made on 2026-11-20: its index.txt (the format of `openssl ca`, which is what easy-rsa keeps in pki/index.txt:
+# flag, expiry, revocation, serial, file, subject, separated by tabs) through the collector's awk, and the dates as `openssl crl
+# -lastupdate -nextupdate` and `openssl x509 -enddate` print them. tests/test_connections.py makes such a CA for real.
+OPENVPN_PKI = ('i\tV\t290222173810Z\t\t01\tserver\n'
+               'i\tV\t290222173810Z\t\t02\tlaptop\n'
+               'i\tR\t290222173810Z\t261120173810Z\t03\tbranch\n'
+               'i\tV\t210101000000Z\t\t04\told\n'
+               'i\tV\t261205000000Z\t\t05\tphone\n'
+               'i\tR\t290222173810Z\t261120173810Z,keyCompromise\t06\ttablet\n'
+               'r\tNov 20 17:38:10 2026 GMT\tMay 19 17:38:10 2027 GMT\t2\n'
+               'c\tserver.crt\tFeb 22 17:38:10 2029 GMT\tserver\n'
+               'c\tca.crt\tNov 17 17:38:10 2036 GMT\tEasy-RSA CA\n')
+NOV_21_2026 = 1795219200.0        # 2026-11-21T00:00:00Z
+
+
+class Netmaker(unittest.TestCase):
+    def test_each_network_its_address_and_the_gateways_among_its_peers(self):
+        got = overlays.netmaker(NETMAKER)
+        self.assertEqual((got['network'], got['state'], got['self']['addresses']), ('netmaker', 'connected', ['10.20.0.3', 'fd00:20::3', '10.30.0.3']))
+        self.assertEqual([(n['name'], n['connected'], n['addresses']) for n in got['networks']], [('lab', True, ['10.20.0.3', 'fd00:20::3']), ('backup', False, ['10.30.0.3'])])
+        gateway, pi = got['peers']
+        self.assertEqual((gateway['key'], gateway['addresses'], gateway['routes'], gateway['gateway']), ('pk-gateway=', ['10.20.0.1', 'fd00:20::1', '10.30.0.1'], ['192.168.40.0/24', '10.77.0.0/16'], True),
+                         'one peer in two networks is one peer, and what it is allowed beyond itself is what it is the gateway to')
+        self.assertEqual((pi['addresses'], pi['routes'], pi['gateway'], pi['online']), (['10.20.0.2'], [], False, None), 'netclient does not say whether a peer is up')
+        self.assertNotIn('203.0.113.9', json.dumps(got), 'where a peer connects from is not kept')
+        self.assertIn('1 of them a gateway to other networks', overlays.sentence(got))
+        self.assertEqual(overlays.network_of('netmaker', '10.20.0.3', overlays.interfaces_of([got])), 'netmaker')
+
+    def test_a_node_with_no_peers_and_a_host_that_joined_nothing(self):
+        got = overlays.netmaker(json.dumps([{'network': 'lab', 'node_id': 'x', 'connected': False, 'ipv4_addr': '10.20.0.3/24', 'ipv6_addr': ''}]))
+        self.assertEqual((got['state'], got['peers']), ('not connected', []))
+        self.assertEqual(overlays.netmaker('[]')['networks'], [])
+        self.assertEqual(overlays.netmaker('\nno such network\n')['error'], 'not the JSON this tool prints')
+
+    def test_nothing_a_host_could_print_makes_it_raise(self):
+        for text in ('', None, 4, '{}', '[1, "x", null]', '[{"peers": 5}]', '[{"peers": [1, {"public_key": 5}, {"public_key": "k", "allowed_ips": [1, "x", "10.0.0.0/8", null]}], "ipv4_addr": 7}]',
+                     '[' * 9000, '[x] [y] [z] [{"network": "lab"}]', json.dumps([{'network': 'n' * 900, 'peers': [{'public_key': f'k{i}', 'allowed_ips': ['10.0.0.1/32'] * 300} for i in range(2500)]}])):
+            got = overlays.netmaker(text)
+            self.assertEqual(got['network'], 'netmaker')
+            json.dumps(got)
+            self.assertIsInstance(overlays.sentence(got), str)
+            self.assertLessEqual(len(got.get('peers') or []), overlays.MAX_PEERS)
+
+    def test_through_the_scan(self):
+        got = inframeasure.parse_overlays({'netmaker_json': NETMAKER.splitlines()})
+        self.assertEqual([(o['network'], len(o['peers'])) for o in got], [('netmaker', 2)])
+
+
+def as_collected(sas: str) -> str:
+    """`swanctl --list-sas` as the collector sends it: its sed, run for real."""
+    line = next(x for x in inframeasure.BODY.splitlines() if x.startswith('sec swan_sas;'))
+    return subprocess.run(['bash', '-c', 'q=$(printf "\\047")\n' + line[line.index('sed -E'):line.index(' | capped')]], input=sas, capture_output=True, text=True, check=True).stdout
+
+
+def conns_as_collected(conns: str) -> str:
+    line = next(x for x in inframeasure.BODY.splitlines() if x.startswith('sec swan_conns;'))
+    return subprocess.run(['bash', '-c', line[line.index('grep -avE'):line.index(' | capped')]], input=conns, capture_output=True, text=True).stdout
+
+
+class StrongSwan(unittest.TestCase):
+    def check(self, got):
+        self.assertEqual((got['network'], got['state'], got['self']['addresses'], got['configured']), ('ipsec', 'connected', ['192.168.0.100'], 3))
+        by = {p['name']: p for p in got['peers']}
+        self.assertEqual(sorted(by), ['branch', 'dc', 'gw-gw', 'home', 'rw'])
+        self.assertEqual((by['home']['addresses'], by['home']['online'], by['home']['routes'], by['home']['local_routes'], by['home']['ike'], by['home']['client']),
+                         (['192.168.0.1'], True, ['10.1.0.0/16'], ['192.168.0.100/32'], 'IKEv2', False))
+        self.assertEqual((by['gw-gw']['addresses'], by['gw-gw']['routes'], by['gw-gw']['local_routes']), (['192.168.0.2'], ['10.2.0.0/16', '10.3.0.0/24'], ['10.1.0.0/16']),
+                         'a selector is read without its protocol and port')
+        self.assertEqual((by['rw']['addresses'], by['rw']['client'], by['rw']['online'], by['rw']['routes']), (['10.9.0.1'], True, True, ['10.9.0.1/32', 'fd09::1/128']),
+                         'a client is known by the address it was handed')
+        self.assertEqual((by['branch']['online'], by['branch']['addresses'], by['branch']['ike']), (False, ['198.51.100.4'], 'IKEv1'), 'not yet established is not up')
+        self.assertEqual((by['dc']['online'], by['dc']['addresses'], by['dc']['routes'], by['dc']['ike'], by['dc']['client']), (False, ['198.51.100.20'], ['10.50.0.0/16', '10.51.0.0/24'], 'IKEv1/2', False),
+                         'configured and down: drawn from the list of connections')
+        self.assertEqual(got['routes'], ['192.168.0.100/32', '10.1.0.0/16'], 'the networks at this end')
+        said = json.dumps(got)
+        for person in ('carol', 'brien', 'strongswan.org', 'Research', '203.0.113.77', 'sun.'):
+            self.assertNotIn(person, said, 'no identity, and not where a client connects from')
+        self.assertEqual(overlays.sentence(got), 'IPsec: 2 of 4 site-to-site tunnel(s) up, and 1 client connection(s)')
+
+    def test_as_swanctl_prints_it(self):
+        self.check(overlays.strongswan(SWAN_SAS, SWAN_CONNS))
+
+    def test_as_the_collector_sends_it_without_any_identity(self):
+        sas, conns = as_collected(SWAN_SAS), conns_as_collected(SWAN_CONNS)
+        for person in ('carol', 'brien', 'moon', 'Research', 'sun.strongswan', 'dc.example.net\n'):
+            self.assertNotIn(person, sas + conns.replace('remote: dc.example.net', ''), 'an identity does not leave the host')
+        self.assertIn("  remote '-' @ 203.0.113.77[4500] EAP: '-' [10.9.0.1 fd09::1]", sas)
+        self.assertIn('    remote 10.2.0.0/16 10.3.0.0/24[tcp/http]', sas, 'everything else is as it was')
+        self.check(overlays.strongswan(sas, conns))
+
+    def test_connections_alone_and_tunnels_alone(self):
+        down = overlays.strongswan('', SWAN_CONNS)
+        self.assertEqual((down['state'], [(p['name'], p['online']) for p in down['peers']]), ('not connected', [('home', False), ('dc', False), ('rw', False)]))
+        self.assertTrue(down['peers'][2]['client'], 'a connection anyone may open from anywhere is for clients')
+        self.assertEqual(overlays.sentence(down), 'IPsec: 0 of 2 site-to-site tunnel(s) up, and 1 client connection(s)')
+        self.assertEqual(len(overlays.strongswan(SWAN_SAS)['peers']), 4)
+        self.assertEqual(overlays.strongswan('', '')['error'], 'nothing read')
+        self.assertEqual(overlays.strongswan('no files found matching \'/etc/swanctl/conf.d/*.conf\'\n', '')['peers'], [], 'swanctl with nothing loaded is an answer')
+        self.assertEqual(overlays.strongswan('connecting to \'unix:///var/run/charon.vici\' failed: Connection refused', '')['error'], 'not what swanctl prints')
+
+    def test_nothing_a_host_could_print_makes_it_raise(self):
+        junk = ['', None, 3, 'x', 'a: #1, ESTABLISHED, IKEv2', "a: #1, X, IKEv9, y\n  remote '' @ [1]\n  remote 'x' @ nowhere[x] [\n  a: #1, reqid 1, A, B\n    remote \n    local  x y z\n    remote 999.0.0.0/8 /",
+                SWAN_SAS * 3000, SWAN_SAS.replace('\n', '\r\n'), '\x00' * 50, 'a: IKEv2,\n  remote: [\n  b: TUNNEL\n    remote: ', SWAN_SAS[:700], SWAN_CONNS[:333]]
+        for sas in junk:
+            for conns in junk:
+                got = overlays.strongswan(sas, conns)
+                self.assertEqual(got['network'], 'ipsec')
+                json.dumps(got)
+                self.assertIsInstance(overlays.sentence(got), str)
+                self.assertLessEqual(len(got.get('peers') or []), overlays.MAX_PEERS)
+
+    def test_through_the_scan_a_host_with_connections_and_no_tunnel_up_is_still_read(self):
+        got = inframeasure.parse_overlays({'swan_sas': [], 'swan_conns': SWAN_CONNS.splitlines()})
+        self.assertEqual([(o['network'], o['state'], len(o['peers'])) for o in got], [('ipsec', 'not connected', 3)])
+        known = overlays.interfaces_of(got + [overlays.strongswan(SWAN_SAS)])
+        self.assertIsNone(overlays.network_of('eth0', '192.168.0.100', known), 'the local end of an IPsec tunnel is the address the host already has: its LAN is not renamed')
+
+
+class OpenVpnCertificates(unittest.TestCase):
+    def test_each_certificate_its_state_and_dates_and_the_crl(self):
+        got = overlays.openvpn_certificates(OPENVPN_PKI)
+        by = {c['name']: c for c in got['certificates']}
+        self.assertEqual((by['laptop']['state'], by['laptop']['expires'], by['laptop']['revoked'], by['laptop']['serial']), ('valid', '2029-02-22T17:38:10Z', None, '02'))
+        self.assertEqual((by['branch']['state'], by['branch']['revoked']), ('revoked', '2026-11-20T17:38:10Z'))
+        self.assertEqual(by['tablet']['revoked'], '2026-11-20T17:38:10Z', 'the reason after the date is not part of the date')
+        self.assertEqual(by['old']['expires'], '2021-01-01T00:00:00Z')
+        self.assertEqual(got['crl'], {'updated': '2026-11-20T17:38:10Z', 'next': '2027-05-19T17:38:10Z', 'revoked': 2})
+        self.assertEqual(got['files'], [{'file': 'server.crt', 'name': 'server', 'expires': '2029-02-22T17:38:10Z'}, {'file': 'ca.crt', 'name': 'Easy-RSA CA', 'expires': '2036-11-17T17:38:10Z'}])
+
+    def test_how_it_stands_today_is_counted_when_it_is_drawn(self):
+        pki = overlays.openvpn_certificates(OPENVPN_PKI)
+        now = overlays.certificate_counts(pki, NOV_21_2026)
+        self.assertEqual((now['valid'], now['revoked'], now['expired'], now['ending'], now['crl_ended'], now['crl_next']), (5, 2, 1, ['phone'], False, '2027-05-19T17:38:10Z'),
+                         'still marked valid in the index, and past its date: ended. The CA and the server certificate are counted with the rest')
+        later = overlays.certificate_counts(pki, NOV_21_2026 + 200 * 86400)
+        self.assertEqual((later['valid'], later['expired'], later['ending'], later['crl_ended']), (4, 2, [], True))
+        server = {'network': 'openvpn', 'state': 'server', 'self': None, 'peers': [], 'pki': pki}
+        self.assertEqual(overlays.sentence(server, NOV_21_2026),
+                         'OpenVPN server: 0 client(s) connected. Certificates: 5 valid, 2 revoked, 1 ended; ending within 30 days: phone. The CRL is good until 2027-05-19T17:38:10Z')
+        self.assertIn('OpenVPN refuses every client until it is made again', overlays.sentence(server, NOV_21_2026 + 200 * 86400))
+        self.assertEqual(overlays.sentence(server), 'OpenVPN server: 0 client(s) connected', 'with no time given nothing is said of dates')
+
+    def test_the_index_alone_and_a_server_with_no_status_file(self):
+        got = inframeasure.parse_overlays({'openvpn_pki': OPENVPN_PKI.splitlines()[:3]})
+        self.assertEqual([(o['network'], o['state'], o['status_read'], len(o['pki']['certificates']), o['pki']['crl']) for o in got], [('openvpn', 'server', False, 3, None)])
+        from test_overlays import OPENVPN
+        both = inframeasure.parse_overlays({'openvpn_status': OPENVPN.splitlines(), 'openvpn_pki': OPENVPN_PKI.splitlines()})
+        self.assertEqual([(o['network'], len(o['peers']), len(o['pki']['certificates'])) for o in both], [('openvpn', 2, 6)], 'the certificates belong to the server the status file is of')
+
+    def test_nothing_a_host_could_print_makes_it_raise(self):
+        for text in ('', None, 5, 'x', 'i\t', 'i\tV', 'i\tQ\t1\t2\t3\t4', 'i\tV\tnot a date\t\t\t', 'r\t\t\t', 'r\tx\ty\tz', 'c\t\t\t', 'c\ta/b/../c.crt\tJan  1 00:00:00 2030 GMT\t' + 'n' * 900,
+                     'i\tR\t999999999999Z\t,,,\t' + 'f' * 900 + '\tx', OPENVPN_PKI * 900, 'r\tNov 20 17:38:10 2026 GMT\tMay 19 17:38:10 2027 GMT\t' + '9' * 40, '\t\t\t\t\t\t'):
+            got = overlays.openvpn_certificates(text)
+            self.assertEqual(got['network'], 'openvpn')
+            json.dumps(got)
+            json.dumps(overlays.certificate_counts(got, NOV_21_2026))
+            self.assertLessEqual(len(got.get('certificates') or []), overlays.MAX_PEERS)
+        got = overlays.openvpn_certificates('c\ta/b/../c.crt\tJan  1 00:00:00 2030 GMT\t' + 'n' * 900)
+        self.assertEqual((got['files'][0]['file'], len(got['files'][0]['name']), got['files'][0]['expires']), ('c.crt', overlays.MAX_TEXT, '2030-01-01T00:00:00Z'))
+        for odd in (None, 5, {}, {'certificates': 5, 'crl': 7, 'files': [3]}, {'certificates': [{'expires': 9}], 'crl': {'next': []}}):
+            json.dumps(overlays.certificate_counts(odd, NOV_21_2026))
+
+
+class ZeroTierPeers(unittest.TestCase):
+    """`zerotier-cli -j peers` of ZeroTier 1.14 (github.com/zerotier/ZeroTierOne, one.cpp: the JSON of /peer): each peer has its
+    ten-digit address, a role, a latency and its paths, each an `address` written ip/port with `active` and `preferred`."""
+    PEERS = json.dumps([
+        {'address': 'ffeeddccbb', 'isBonded': False, 'latency': 4, 'role': 'LEAF', 'version': '1.14.2', 'tunneled': False,
+         'paths': [{'active': True, 'address': '10.42.0.9/9993', 'expired': False, 'lastReceive': 1795219000000, 'lastSend': 1795219000000, 'preferred': True, 'trustedPathId': 0},
+                   {'active': True, 'address': '2001:db8::9/9993', 'expired': False, 'preferred': False}, {'active': False, 'address': '198.51.100.9/21001', 'expired': True, 'preferred': False}]},
+        {'address': '1122334455', 'latency': -1, 'role': 'LEAF', 'paths': []},
+        {'address': '778cde7190', 'latency': 30, 'role': 'PLANET', 'paths': [{'active': True, 'address': '103.195.103.66/9993', 'preferred': True}]}])
+
+    def test_where_a_peer_is_reached_is_kept_without_its_port_and_only_for_a_path_in_use(self):
+        from test_overlays import ZT_INFO, ZT_NETWORKS
+        got = overlays.zerotier(ZT_INFO, ZT_NETWORKS, self.PEERS)
+        self.assertEqual([(p['key'], p['online'], p['endpoints']) for p in got['peers']], [('ffeeddccbb', True, ['10.42.0.9', '2001:db8::9']), ('1122334455', False, [])])
+        self.assertEqual(got['self']['key'], 'a1b2c3d4e5', 'its own node id, which is what another host sees it as')
+        self.assertEqual(overlays.network_of('eth7', '10.147.17.5', overlays.interfaces_of([got])), 'zerotier')
+        self.assertEqual(overlays.network_of('ztabcdef12'), 'zerotier')
+
+    def test_odd_paths_do_not_make_it_raise(self):
+        from test_overlays import ZT_INFO
+        for paths in (5, [5, None, {'active': True}, {'active': True, 'address': 7}, {'active': True, 'address': 'nowhere/1'}, {'active': True, 'address': '/'}], [{'active': True, 'address': f'10.0.0.{i}/9993'} for i in range(200)]):
+            got = overlays.zerotier(ZT_INFO, '[]', json.dumps([{'address': 'ffeeddccbb', 'role': 'LEAF', 'latency': True, 'paths': paths}]))
+            self.assertLessEqual(len(got['peers'][0]['endpoints']), 4)
+            self.assertIsNone(got['peers'][0]['latency_ms'])
+
+
 if __name__ == '__main__':
     unittest.main()
