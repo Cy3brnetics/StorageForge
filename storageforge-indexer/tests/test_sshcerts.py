@@ -180,13 +180,10 @@ class Authority(Kept):
         sshcerts.revoke(self.conn, two['serial'], 'gabe')
         self.assertEqual((sshcerts.krl_version(self.conn), sshcerts.revoked_serials(self.conn)), (2, sorted([one['serial'], two['serial']])))
         self.assertNotEqual(asked('two')[0], 0)
-        # a certificate of another CA with the same serial is not named by this list
-        other = vault.Vault(self.db, self.conn, SECRET)
         self.assertIsNone(sshca.krl_version(b'not a list'))
         for bad in ({'version': -1}, {'serials': [0]}, {'serials': ['7']}, {'comment': 'two\nlines'}):
             with self.subTest(bad), self.assertRaises(sshca.CertificateError):
                 sshca.krl(ca, **({'serials': [7], 'version': 1} | bad))
-        del other
 
     def test_a_host_certificate_is_for_the_key_a_scan_pinned(self):
         sshcerts.ensure_ca(self.vault)
@@ -563,6 +560,57 @@ class TrustStep(Kept):
         code, out = self.step(True, host_cert=True)
         self.assertIn('is for a host key this sshd does not use', out)
         self.assertEqual((self.etc / 'ssh_host_ed25519_key-cert.pub').read_text().strip(), made['certificate'])
+
+
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    sync_playwright = None
+
+
+@unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
+class BrowserSshCa(Kept):
+    """Keys, SSH certificates, in a real browser: the CA is made, a host is opted in, trust is staged as a plan, a certificate is revoked."""
+
+    def test_the_section_under_keys(self):
+        import threading
+        from werkzeug.serving import make_server
+        users.create(self.conn, 'admin', PW, 'admin')
+        http = make_server('127.0.0.1', 0, server.create_app(server.App(self.db), 's' * 48), threaded=True)
+        threading.Thread(target=http.serve_forever, daemon=True).start()
+        self.addCleanup(http.shutdown)
+        pw = sync_playwright().start()
+        self.addCleanup(pw.stop)
+        browser = pw.chromium.launch()
+        self.addCleanup(browser.close)
+        page, errors = browser.new_page(), []
+        page.on('pageerror', lambda e: errors.append(str(e)))
+        base = f'http://127.0.0.1:{http.server_port}'
+        page.goto(base + '/login')
+        page.fill('input[type=text], input[name=username], #username', 'admin')
+        page.fill('input[type=password]', PW)
+        page.press('input[type=password]', 'Enter')
+        page.wait_for_url(base + '/**')
+        page.wait_for_selector('html[data-route-ready]', state='attached')
+        page.evaluate("showTab('keys')")
+        page.click('#sshcabox button:has-text("Make the SSH CA")')
+        page.wait_for_selector('#sshcabox code.pub')
+        self.assertEqual(page.inner_text('#sshcabox code.pub'), sshcerts.ca_public(self.conn))
+        row = '#sshcabox li:has-text("nas")'
+        page.click(f'{row} button:has-text("Scans: off")')
+        page.wait_for_selector(f'{row} button:has-text("Scans: on")')
+        self.assertEqual(sshcerts.host_setting(self.conn, 'nas')['scan'], True)
+        page.click(f'{row} button:has-text("Stage trust")')
+        page.wait_for_selector('#sshcamsg:has-text("1 step staged in plan")')
+        self.assertEqual(self.conn.scalar("SELECT count(*) FROM change_plans WHERE name LIKE 'Trust the SSH CA%'"), 1)
+        made = sshcerts.issue_user(self.vault, host='nas', user=ME, key_name='scan-key', purpose='scan', actor='scheduler')
+        page.evaluate('loadSshCa()')
+        cert = f'#sshcabox li:has-text("serial {made["serial"]}")'
+        page.click(f'{cert} button:has-text("Revoke")')
+        page.click('dialog[open] button[type=submit]')
+        page.wait_for_selector(f'{cert}:has-text("revoked by web:admin")')
+        self.assertIn('Revocation list version 1, naming 1 certificate.', page.inner_text('#sshcabox'))
+        self.assertEqual(errors, [])
 
 
 if __name__ == '__main__':

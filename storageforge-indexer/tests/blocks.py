@@ -20,6 +20,7 @@ HEAVY = {
     'test_browser_planner_versions.PlannerVersions',
     'test_browser_polish.BrowserPolish',
     'test_browser_smoke.BrowserSmoke',
+    'test_sshcerts.BrowserSshCa',
     'test_browser_smoke.MapAtScale',
     'test_browser_vms.BrowserVms',
     # a real sshd, Docker, or the kernel's firewall

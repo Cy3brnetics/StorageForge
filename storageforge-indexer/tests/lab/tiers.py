@@ -1277,6 +1277,7 @@ def tier0(r):
 
 # ── report ──────────────────────────────────────────────────────────
 TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs', 6: 'Sync engine', 7: 'Remote nodes', 8: 'Appliances', 9: 'Security', 10: 'Infrastructure', 11: 'Changes', 12: 'Network appliances', 13: 'Features', 14: 'Host logs', 16: 'Sends', 17: 'Network language on firewalld and ufw', 18: 'libvirt: snapshots, VM changes, networks, pools and copies'}
+TIERS[21] = 'The SSH CA: trust, certificates and revocation'
 CELL = {'pass': 'pass', 'FAIL': '**FAIL**', 'skip': 'skip', 'known': 'known', 'fixed?': 'fixed?'}
 
 
@@ -1344,6 +1345,9 @@ def main():
         elif tier == 18:
             import tiers_kvm
             tiers_kvm.tier18(r)
+        elif tier == 21:
+            import tiers_sshca
+            tiers_sshca.tier21(r)
         elif tier == 16:
             import tiers_sends
             tiers_sends.tier16(r)

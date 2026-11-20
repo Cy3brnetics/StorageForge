@@ -116,6 +116,12 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/keys` | | keys (public halves) and bindings |
 | POST | `/api/keys` | `{"name", "type": "ed25519"\|"rsa"}` | generate a key in the vault |
 | POST 🔑 | `/api/keys/install` | `{"key", "host", "port", "user", "password", "bind", "checksum"}` | `ssh-copy-id`, verify key login, optionally bind; 10/min |
+| GET | `/api/keys/ssh-ca` | | the SSH CA: its public key and `known_hosts` line, each host with `console`, `scan` and its host certificate, the last 200 certificates (serials as text), the revocation list's version; `keys.view` |
+| POST 🔑 | `/api/keys/ssh-ca` | `{}` | make the CA in the vault (201), or return the one there (200); `keys.manage` |
+| PUT 🔑 | `/api/keys/ssh-ca/hosts/<host>` | `{"console": bool, "scan": bool}` | whether console sessions and scans log in to this host with a certificate; `keys.manage` |
+| POST 🔑 | `/api/keys/ssh-ca/hosts/<host>/certificate` | `{}` | issue a host certificate for the host key a scan pinned; 400 before the first scan; `keys.manage` |
+| POST 🔑 | `/api/keys/ssh-ca/certificates/<serial>/revoke` | `{"reason"}` | revoke one certificate; returns the new `krl_version`; `keys.manage` |
+| POST | `/api/keys/ssh-ca/plan` | `{"kind": "trust", "hosts": [...], "users", "host_cert", "rollback"}` or `{"kind": "krl", "hosts": [...]}` | save a change plan of `ssh-ca-trust` or `ssh-ca-krl` steps and run nothing; `plans.edit` |
 | POST | `/api/hostkey/confirm` | `{"host", "port", "fingerprint"}` | confirm a host key before a password goes there *(in progress)* |
 | GET | `/api/access?host=` | | how scans read each host, and unreadable folders |
 | GET | `/api/access/script?host=\|user=&remove=1` | | the read-only access setup or removal script |

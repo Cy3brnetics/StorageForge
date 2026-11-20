@@ -127,6 +127,10 @@ storageforge-index graph import --blueprint atlas.json</pre>
           <div class="row end"><button class="btn pri" type="submit">Bind</button></div>
         </form>
       </details>
+      <h3>SSH certificates</h3>
+      <p class="muted">A certificate authority kept in the vault. A host that trusts it lets StorageForge in with a certificate that lasts minutes and names one user on that host, and a certificate can be revoked. Keys in authorized_keys go on working: trusting the CA takes nothing away.</p>
+      <p id="sshcamsg" class="muted" role="status" hidden></p>
+      <div id="sshcabox" class="stack"></div>
     </div>
     <div id="tab-access" class="tab" role="tabpanel" aria-labelledby="tabbtn-access" hidden>
       <p class="muted">Folders the latest scan of each host could not open, and read-only scan access to fix it without running scans as root.</p>
@@ -408,5 +412,6 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/scheduler.js"></script>
 <script src="/securityview.js"></script>
 <script src="/securitymore.js"></script>
+<script src="/sshcaview.js"></script>
 </body>
 </html>

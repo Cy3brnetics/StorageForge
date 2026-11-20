@@ -902,6 +902,7 @@ async function loadKeys(select) {
     }));
     if (!bindings.length) $('#bindings').replaceChildren(text('li', 'No bindings yet.', 'muted'));
   } catch (err) { $('#keys').replaceChildren(text('li', err.message, 'muted')); }
+  loadSshCa();          // the SSH CA and its certificates, below the bindings (sshcaview.js)
 }
 async function setBindingActions(b, actions) {
   if (actions.includes('console') && !b.actions.split(',').includes('console')
