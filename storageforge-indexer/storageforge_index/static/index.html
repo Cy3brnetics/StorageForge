@@ -216,6 +216,18 @@ storageforge-index graph import --blueprint atlas.json</pre>
     <div id="tab-rebuild" class="tab" role="tabpanel" aria-labelledby="tabbtn-rebuild" hidden>
       <p class="muted">What it takes to rebuild each host: its fstab, mounts, subvolumes, accounts, shares and symlinks. Each scan saves a version when any of it changed, and these versions are in every essentials backup. The reinstall script mounts everything again on a fresh install. It never formats a drive.</p>
       <div id="rebuildbox" class="stack"></div>
+      <section id="os2" class="stack" aria-labelledby="os2head" hidden>
+        <h3 id="os2head">A second system beside the first</h3>
+        <p class="muted">Another distribution on a host you reach over SSH, in unpartitioned space or on a blank disk, with a boot entry of its own. The host fetches the distribution's cloud image and checks it against the checksum its publisher lists. The form makes a change plan: nothing runs until you have read it and run it in Changes.</p>
+        <p id="os2msg" class="muted" role="status" hidden></p>
+        <div id="os2box" class="stack"></div>
+      </section>
+      <section id="desk" class="stack" aria-labelledby="deskhead" hidden>
+        <h3 id="deskhead">Desktop profiles</h3>
+        <p class="muted">Keys, window rules and displays written once and kept here, and written out as niri, Hyprland or Sway configuration by the desktop-profile step of a plan.</p>
+        <p id="deskmsg" class="muted" role="status" hidden></p>
+        <div id="deskbox" class="stack"></div>
+      </section>
     </div>
     <div id="tab-security" class="tab" role="tabpanel" aria-labelledby="tabbtn-security" hidden>
       <div id="sec-banner" class="sec-banner sec-unknown"></div>
@@ -409,6 +421,8 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/filemap.js"></script>
 <script src="/gitview.js"></script>
 <script src="/rebuildview.js"></script>
+<script src="/osinstallview.js"></script>
+<script src="/desktopview.js"></script>
 <script src="/dockerview.js"></script>
 <script src="/infraview.js"></script>
 <script src="/sfnetview.js"></script>

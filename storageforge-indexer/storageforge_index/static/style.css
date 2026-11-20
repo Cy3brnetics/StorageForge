@@ -1244,3 +1244,9 @@ body.sf-console-page { margin: 0; height: 100vh; display: flex; flex-direction: 
 .cons-num { width: 6em; }
 .cons-recs { border-collapse: collapse; margin-top: var(--sf-s2); }
 .cons-recs th, .cons-recs td { text-align: left; padding: 2px var(--sf-s3) 2px 0; }
+/* Rebuild: a second system beside the first, and desktop profiles (osinstallview.js, desktopview.js) */
+.list li.deskrow { display: flex; }
+.deskrow input[type=text] { min-width: 90px; }
+#os2-imageinfo { white-space: pre-line; margin: 0; }
+#desk-editor > .row { justify-content: flex-start; }
+#desk-editor select { font-size: 12px; }

@@ -630,7 +630,7 @@ function showTab(name) {
   if (name === 'changes') loadChanges();
   if (name === 'schedule' && typeof loadScheduler === 'function') loadScheduler();
   if (name === 'git') loadGit();
-  if (name === 'rebuild') loadRebuild();
+  if (name === 'rebuild') { loadRebuild(); loadOsInstall(); }          // and a second system and the desktop profiles below it (osinstallview.js, desktopview.js)
   if (name === 'docker') loadDocker();
   if (name === 'infra') loadInfra();
   if (name === 'deploy') loadDeploy();
