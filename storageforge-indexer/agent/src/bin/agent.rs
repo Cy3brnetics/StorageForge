@@ -6,15 +6,17 @@
 //!   storageforge-agent anchors    the release keys this program was built with
 //!   storageforge-agent version
 //!
-//! It runs as `sfagent`, reads the host through read-only mounts, changes nothing on it, and at this stage opens no connection.
+//! It runs as `sfagent`, reads the host through read-only mounts, changes nothing on it, and opens one connection: its tunnel to the
+//! controller, to the one address storageforge-agentctl wrote in /etc/storageforge-agent/tunnel.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use storageforge_agent::supervise::{self, Ended, Outbox, Paths};
-use storageforge_agent::{identity, plugin, sig, VERSION};
+use storageforge_agent::{identity, plugin, sig, tunnel, VERSION};
 
 static STOP: AtomicBool = AtomicBool::new(false);
+static RELOAD: AtomicBool = AtomicBool::new(false);
 
 fn log(line: String) {
     eprintln!("storageforge-agent: {line}");
@@ -73,6 +75,16 @@ fn run(paths: &Paths) -> i32 {
         // SEAM (11.3): a file nothing accounts for. Today it is said and not run; wipe and stop decides what else follows.
         log(format!("refused: {name} is in the plugin folder and no plugin of the manifest accounts for it"));
     }
+    let tunnel = match tunnel::load_config(&paths.etc) {
+        Ok(t) => t,
+        Err(why) => {
+            log(format!("no tunnel: {why}"));
+            None
+        }
+    };
+    if tunnel.is_none() {
+        log("no tunnel to the controller is set up for this agent: what the plugins report is counted and let go".into());
+    }
     let outbox = Outbox::new(supervise::OUTBOX_RECORDS);
     let running = report.manifest.clone();
     std::thread::scope(|scope| {
@@ -96,26 +108,51 @@ fn run(paths: &Paths) -> i32 {
                 }
             });
         }
+        // The tunnel: batches of what the plugins report go out, the manifest and the plugin files come in. Plugin files of the
+        // manifest in force that arrive are loaded by starting the agent again, in place.
+        let delivered = tunnel.map(|(address, pinned)| {
+            let (outbox, key) = (&outbox, &key);
+            scope.spawn(move || {
+                let names = tunnel::run(paths, key, address, &pinned, outbox, &STOP, &log);
+                if !names.is_empty() {
+                    log(format!("plugins delivered through the tunnel: {}; starting again to load them", names.join(", ")));
+                    RELOAD.store(true, Ordering::Relaxed);
+                }
+            })
+        });
+        let _ = delivered;
         // The manifest and the plugin files are checked again on a timer. A manifest that changed means another set of plugins
-        // or privileges: the agent leaves, and the runtime starts it again with what is there now.
-        // SEAM (11.2): Docker and Podman start it again; an LXC container whose one program left stays down. Today every change
-        // comes through storageforge-agentctl, which makes the container anew, so nothing depends on that. Plugin files that
-        // arrive through the tunnel will: load them in place here, or have storageforge-agentctl asked to restart.
+        // or privileges: the agent starts again with what is there now. It starts itself again in place, so that this holds under
+        // every runtime, LXC included, whose container stays down when its one program leaves.
         loop {
-            std::thread::sleep(Duration::from_secs(30));
+            for _ in 0..60 {
+                std::thread::sleep(Duration::from_millis(500));
+                if RELOAD.load(Ordering::Relaxed) {
+                    restart();
+                }
+            }
             let (again, _) = supervise::inspect(paths, &key, supervise::now(), false);
             if again.manifest != running || again.problems != report.problems || again.stray != report.stray {
-                log("the manifest or the plugin files changed: leaving, to be started again with what is there now".into());
-                STOP.store(true, Ordering::Relaxed);
-                std::process::exit(0);
+                log("the manifest or the plugin files changed: starting again with what is there now".into());
+                restart();
             }
-            // SEAM (11.2): the tunnel drains the outbox here. With no tunnel yet, what the plugins report is counted and let go.
-            let waiting = outbox.drain(supervise::OUTBOX_RECORDS).len();
-            if waiting > 0 {
-                log(format!("{waiting} records from plugins, and no tunnel to send them through yet"));
+            if tunnel.is_none() {
+                let waiting = outbox.drain(supervise::OUTBOX_RECORDS).len();
+                if waiting > 0 {
+                    log(format!("{waiting} records from plugins, and no tunnel to send them through"));
+                }
             }
         }
     })
+}
+
+/// Starts this program again in place, with the same arguments: the plugins die with the old image (their parent-death signal),
+/// and everything is checked again from the start.
+fn restart() -> ! {
+    use std::os::unix::process::CommandExt;
+    let err = std::process::Command::new("/proc/self/exe").args(std::env::args_os().skip(1)).exec();
+    log(format!("cannot start again in place ({err}): leaving, for the runtime to start the agent again"));
+    std::process::exit(0);
 }
 
 fn main() {

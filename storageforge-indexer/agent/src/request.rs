@@ -71,6 +71,20 @@ pub struct Request {
     /// signer's own words. The programs themselves do not come this way.
     #[serde(default)]
     pub plugins: Vec<SignedDescriptor>,
+    /// `apply`: the controller's receiver, which the agent's tunnel dials and pins (`tunnel::Config`). Without it the tunnel this
+    /// host has stays as it is.
+    #[serde(default)]
+    pub tunnel: Option<TunnelRequest>,
+    /// `apply`: a receiver key other than the one pinned here is taken, because a person accepted it.
+    #[serde(default)]
+    pub accept_new_tunnel_key: bool,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TunnelRequest {
+    pub endpoint: String,
+    pub key: String,
 }
 
 fn line(from: &mut impl Read, most: usize) -> Result<String, String> {
@@ -137,8 +151,8 @@ pub fn verify(payload: &[u8], signature: &str, controller: &Signers, machine: &s
     let signed_image = r.image_signature.as_deref().is_some_and(|s| !s.is_empty() && s.len() <= sig::MAX_SIGNATURE);
     let fits = match r.op.as_str() {
         "enroll" => image && signed_image && !manifest,
-        "apply" => !image && signed_image && !r.install_podman && r.manifest.is_some() && r.manifest_signature.is_some(),
-        _ => !image && !manifest && !r.install_podman && r.image_signature.is_none(),
+        "apply" => !image && signed_image && !r.install_podman && r.manifest.is_some() && r.manifest_signature.is_some() && (r.tunnel.is_some() || !r.accept_new_tunnel_key),
+        _ => !image && !manifest && !r.install_podman && r.image_signature.is_none() && r.tunnel.is_none() && !r.accept_new_tunnel_key,
     };
     if !fits {
         return Err(format!("the request does not carry what {} takes, or carries more", r.op));

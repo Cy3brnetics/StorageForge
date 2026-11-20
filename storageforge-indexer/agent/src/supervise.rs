@@ -236,6 +236,23 @@ impl Outbox {
         q.records.drain(..n).collect()
     }
 
+    /// Puts records that were drained and not sent back at the front, in their order. What no longer fits is dropped and counted.
+    pub fn requeue(&self, records: Vec<Record>) {
+        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        for r in records.into_iter().rev() {
+            if q.records.len() >= self.most {
+                q.dropped += 1;
+                continue;
+            }
+            q.records.push_front(r);
+        }
+    }
+
+    /// Counts records that were let go without being sent.
+    pub fn count_dropped(&self, n: u64) {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).dropped += n;
+    }
+
     pub fn len(&self) -> usize {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).records.len()
     }

@@ -11,8 +11,11 @@
 //! - every host path is mounted read-only, one filesystem at a time, at `/host` + its path, with SSH's and StorageForge's secrets
 //!   masked inside it, or the mount is refused where the runtime cannot mask
 //! - no runtime's socket is mounted, nesting is off, and an LXC container is unprivileged
-//! - there is no network at all unless a plugin declares the host's (SEAM, 11.2: the tunnel needs a way out to the controller's
-//!   endpoint and nothing else; that rule is made there, on the agent's cgroup)
+//! - there is no network at all unless a plugin declares the host's or the agent has a tunnel to the controller. With a tunnel, the
+//!   container is on a bridge of its own (`sfagent0`, Docker and Podman as root) or behind Podman's user-mode network (Podman without
+//!   root), and the host's firewall lets it reach the controller's one address and port and nothing else: not the host itself, so
+//!   not its `sshd`, and not any other host (`egress_rules`). The rule is matched on the bridge for a bridged container and on
+//!   `sfagent`'s uid for everything else, which holds with the host's network too.
 //!
 //! Docker and Podman are run here against stand-in programs and, in the unit tests of the controller, against the real Docker.
 //! The LXC, Incus and Proxmox steps are written from those tools' documentation and have not run against them: lab tier 24.
@@ -151,6 +154,75 @@ pub struct Spec {
     pub seccomp: Option<String>,
     /// Docker's major version, where it could be read: how a mount of one filesystem is spelled changed at 25.
     pub docker_major: Option<u32>,
+    /// The controller's receiver, when the agent has a tunnel: the one address the container may reach.
+    pub tunnel: Option<std::net::SocketAddr>,
+}
+
+/// The bridge, and the network the runtime knows it by, of an agent's container that has a tunnel.
+pub const BRIDGE: &str = "sfagent0";
+pub const NETWORK: &str = "sfagent";
+/// The nftables table the egress rule is in, and the unit that loads it again at boot, before the runtimes start.
+pub const EGRESS_TABLE: &str = "storageforge_agent";
+pub const EGRESS_UNIT: &str = "storageforge-agent-egress.service";
+
+fn host_net(n: &Needs) -> bool {
+    n.namespaces.iter().any(|x| x == "net")
+}
+
+/// The host's firewall rule for an agent with a tunnel: `sfagent`'s own sockets (Podman without root, the host's network) and
+/// anything that comes off the agent's bridge reach the receiver's address and port, and nothing else. The whole table is made
+/// anew each time, so that a rule from an earlier endpoint does not stay behind.
+pub fn egress_rules(uid: u32, to: std::net::SocketAddr) -> String {
+    let family = if to.is_ipv4() { "ip" } else { "ip6" };
+    let (ip, port) = (to.ip(), to.port());
+    let mut out = String::from("# Written by storageforge-agentctl. The agent reaches its controller and nothing else.\n");
+    out += &format!("table inet {EGRESS_TABLE}\ndelete table inet {EGRESS_TABLE}\ntable inet {EGRESS_TABLE} {{\n");
+    out += &format!("\tchain agent_out {{\n\t\ttype filter hook output priority filter - 10; policy accept;\n");
+    out += &format!("\t\tmeta skuid {uid} {family} daddr {ip} tcp dport {port} accept\n\t\tmeta skuid {uid} counter drop\n\t}}\n");
+    for (chain, hook) in [("agent_fwd", "forward"), ("agent_in", "input")] {
+        out += &format!("\tchain {chain} {{\n\t\ttype filter hook {hook} priority filter - 10; policy accept;\n");
+        out += &format!("\t\tiifname \"{BRIDGE}\" {family} daddr {ip} tcp dport {port} accept\n\t\tiifname \"{BRIDGE}\" counter drop\n\t}}\n");
+    }
+    out += "}\n";
+    out
+}
+
+/// The steps that put the egress rule in place and keep it there across a reboot. A failure to load it stops everything: the
+/// container is never made with a network the rule does not hold.
+pub fn egress(spec: &Spec, to: std::net::SocketAddr) -> Vec<Step> {
+    let file = format!("{}/egress.nft", spec.ctl);
+    let mut unit = String::from("[Unit]\nDescription=StorageForge agent: its container reaches the controller and nothing else\nDefaultDependencies=no\n");
+    unit += "Before=network-pre.target docker.service podman.service podman-restart.service lxc.service\nWants=network-pre.target\n\n";
+    unit += &format!("[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/sbin/nft -f {file}\n\n[Install]\nWantedBy=multi-user.target\n");
+    vec![
+        Step::Write { path: file.clone(), content: egress_rules(spec.uid, to) },
+        run(&["nft", "-f", &file]),
+        Step::Write { path: format!("{}/etc/systemd/system/{EGRESS_UNIT}", spec.root), content: unit },
+        Step::Run { argv: words(&["systemctl", "enable", EGRESS_UNIT]), as_agent: false, note: Some("the egress rule could not be set to load at boot: until it is, a reboot leaves the agent's container without it") },
+    ]
+}
+
+/// The steps that take the egress rule and the agent's bridge away, when the agent is removed.
+pub fn egress_remove(kind: Option<Kind>, root: &str) -> Vec<Step> {
+    let quiet = |argv: &[&str]| Step::Run { argv: words(argv), as_agent: false, note: Some("") };
+    let mut steps = vec![quiet(&["systemctl", "disable", EGRESS_UNIT]), quiet(&["rm", "-f", &format!("{root}/etc/systemd/system/{EGRESS_UNIT}")])];
+    match kind {
+        Some(Kind::Docker) => steps.push(quiet(&["docker", "network", "rm", NETWORK])),
+        Some(Kind::Podman) => steps.push(quiet(&["podman", "network", "rm", NETWORK])),
+        _ => {}
+    }
+    steps.push(quiet(&["nft", "delete", "table", "inet", EGRESS_TABLE]));
+    steps
+}
+
+/// The steps that make the agent's bridge, for Docker and Podman as root. One that is there already stays.
+pub fn network(kind: Kind) -> Vec<Step> {
+    let quiet = |argv: &[&str]| Step::Run { argv: words(argv), as_agent: false, note: Some("") };
+    match kind {
+        Kind::Docker => vec![quiet(&["docker", "network", "create", "--driver", "bridge", "--opt", &format!("com.docker.network.bridge.name={BRIDGE}"), "--opt", "com.docker.network.bridge.enable_icc=false", NETWORK])],
+        Kind::Podman => vec![quiet(&["podman", "network", "create", "--interface-name", BRIDGE, "--opt", "isolate=true", NETWORK])],
+        _ => Vec::new(),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,6 +250,9 @@ fn words(argv: &[&str]) -> Vec<String> {
 pub fn unserved(kind: Kind, spec: &Spec) -> Option<Unserved> {
     let no = |why: String| Some(Unserved { code: "runtime-cannot", why });
     let n = &spec.needs;
+    if spec.tunnel.is_some() && !host_net(n) && matches!(kind, Kind::Lxc | Kind::Incus | Kind::Pct) {
+        return no(format!("the tunnel to the controller is not built for {} yet: its container would need a network of its own, with the host's firewall rule on it", kind.name()));
+    }
     match kind {
         Kind::Docker | Kind::Podman => None,
         Kind::PodmanRootless if n.rootful() => no("Podman without root cannot give a capability or a device".into()),
@@ -225,7 +300,14 @@ pub fn container_args(kind: Kind, spec: &Spec) -> Vec<String> {
         // limits a rootless runtime can only set where the host delegates the controllers to users, which not every host does
         a.extend(words(&["--pids-limit", "256", "--memory", "256m"]));
     }
-    a.extend(words(&["--network", if n.namespaces.iter().any(|x| x == "net") { "host" } else { "none" }]));
+    // the host's network when a plugin declares it; with a tunnel the agent's bridge, or Podman's user-mode network without root,
+    // where every connection is made by a process of sfagent's and the egress rule holds; else none at all
+    match (host_net(n), spec.tunnel.is_some(), rootless) {
+        (true, ..) => a.extend(words(&["--network", "host"])),
+        (false, true, true) => a.extend(words(&["--network", "pasta"])),
+        (false, true, false) => a.extend(words(&["--network", NETWORK])),
+        (false, false, _) => a.extend(words(&["--network", "none"])),
+    }
     if n.namespaces.iter().any(|x| x == "pid") {
         a.extend(words(&["--pid", "host"]));
     }
@@ -531,6 +613,38 @@ mod tests {
             Step::Append { path, line } => format!("APPEND {path} {line}"),
             Step::Mkdir { path } => format!("MKDIR {path}"),
         }).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn a_tunnel_gives_the_container_the_way_to_the_controller_and_no_other() {
+        let to: std::net::SocketAddr = "192.0.2.10:7843".parse().unwrap();
+        let mut s = spec("{}");
+        s.tunnel = Some(to);
+        assert!(has(&container_args(Kind::Docker, &s), "--network", NETWORK), "its own bridge");
+        assert!(has(&container_args(Kind::Podman, &s), "--network", NETWORK));
+        assert!(has(&container_args(Kind::PodmanRootless, &s), "--network", "pasta"), "a user-mode network, every connection made as sfagent");
+        assert!(has(&container_args(Kind::Docker, &spec("{}")), "--network", "none"), "no tunnel, no network");
+        let rules = egress_rules(987, to);
+        for line in [
+            "meta skuid 987 ip daddr 192.0.2.10 tcp dport 7843 accept",
+            "meta skuid 987 counter drop",
+            "iifname \"sfagent0\" ip daddr 192.0.2.10 tcp dport 7843 accept",
+            "iifname \"sfagent0\" counter drop",
+            "type filter hook input",
+            "delete table inet storageforge_agent",
+        ] {
+            assert!(rules.contains(line), "{line}\n{rules}");
+        }
+        assert!(egress_rules(987, "[2001:db8::1]:7843".parse().unwrap()).contains("ip6 daddr 2001:db8::1 tcp dport 7843 accept"));
+        // the rule is loaded before anything else, and a failure to load it stops the steps
+        let steps = egress(&s, to);
+        assert!(matches!(&steps[1], Step::Run { argv, note: None, .. } if argv[0] == "nft"), "{steps:?}");
+        assert!(all_argv(&steps).contains("ExecStart=/usr/sbin/nft -f /var/lib/storageforge-agent/ctl/egress.nft"));
+        // LXC has no network of its own for the agent yet: the tunnel is refused there, with the reason
+        for kind in [Kind::Lxc, Kind::Incus, Kind::Pct] {
+            assert_eq!(unserved(kind, &s).map(|u| u.code), Some("runtime-cannot"), "{kind:?}");
+        }
+        assert_eq!(unserved(Kind::Docker, &s), None);
     }
 
     #[test]

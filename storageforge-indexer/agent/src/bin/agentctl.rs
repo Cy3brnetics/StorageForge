@@ -18,6 +18,7 @@
 //! operation here, reading what `status` reads today and more; wiping is `stop` followed by `remove`.
 
 use std::io::Read;
+use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -33,7 +34,7 @@ use storageforge_agent::request::{self, Request, REFUSED};
 use storageforge_agent::runtime::{self, Kind, Spec, Step, Tools};
 use storageforge_agent::sig::{self, Signers};
 use storageforge_agent::supervise::{now, CONTROLLER_SIGNERS, MANIFEST_FILE, MANIFEST_SIGNATURE, OPERATOR_SIGNERS, SEEN_FILE};
-use storageforge_agent::{identity, runner, VERSION};
+use storageforge_agent::{identity, runner, tunnel, VERSION};
 
 /// Why nothing, or not everything, was done.
 struct Stop {
@@ -55,6 +56,8 @@ struct Ctl {
     host: Host,
     agent: User,
     notes: Vec<String>,
+    /// The receiver the agent's tunnel dials, when it has one: the one address its container may reach.
+    tunnel: Option<SocketAddr>,
 }
 
 impl Ctl {
@@ -189,6 +192,7 @@ impl Ctl {
             vmid: if kind == Kind::Pct { self.vmid() } else { None },
             seccomp,
             docker_major: if kind == Kind::Docker { self.output(&["docker".to_string(), "--version".to_string()], false, &[]).ok().and_then(|(_, out, _)| runtime::docker_major(out.trim())) } else { None },
+            tunnel: self.tunnel,
         })
     }
 
@@ -243,8 +247,36 @@ impl Ctl {
         self.keep("runtime", kind.name())?;
         self.keep("image", &image)?;
         self.act(&runtime::pull(kind, spec))?;
+        if let Some(to) = spec.tunnel {
+            // the firewall rule first, and the network after it: the container never has a way out the rule does not hold
+            self.act(&runtime::egress(spec, to))?;
+            self.act(&runtime::network(kind))?;
+        }
         self.act(&runtime::create(kind, spec))?;
         Ok(kind)
+    }
+
+    /// The tunnel pinned on this host: the receiver's address and key, as the last apply that carried one left them.
+    fn pinned_tunnel(&self) -> Result<Option<(SocketAddr, [u8; 32])>, Stop> {
+        tunnel::load_config(&self.host.etc()).map_err(|why| Stop { exit: REFUSED, code: "tunnel", why })
+    }
+
+    /// The tunnel a request carries, checked against the one pinned here: a receiver key that changes is taken only when a person
+    /// accepted it, since anyone holding the new key could read what the agent says and hand it plugins to check. Returns the file
+    /// to write and the address, or nothing when the request carries none.
+    fn requested_tunnel(&self, r: &Request) -> Result<Option<(String, SocketAddr)>, Stop> {
+        let Some(t) = &r.tunnel else { return Ok(None) };
+        let text = json!({"format": 1, "endpoint": t.endpoint, "key": t.key}).to_string();
+        let (_, address, key) = tunnel::Config::parse(text.as_bytes()).map_err(|why| Stop { exit: REFUSED, code: "tunnel", why })?;
+        if let Some((_, pinned)) = self.pinned_tunnel()? {
+            if pinned != key && !r.accept_new_tunnel_key {
+                return refuse("tunnel-key", "this host has another receiver key pinned for its agent's tunnel. A key that changes is taken only when a person accepts it");
+            }
+        }
+        if self.host.find("nft").is_none() {
+            return refuse("no-firewall", "this host has no nft, and the agent's tunnel is set up only with the firewall rule that keeps its container from reaching anything but the controller: install nftables");
+        }
+        Ok(Some((text, address)))
     }
 
     fn pinned_agent(&self) -> Result<[u8; 32], Stop> {
@@ -363,6 +395,10 @@ impl Ctl {
         self.image_allowed(&m.image, r.image_signature.as_deref(), &anchors)?;
         let needs = m.needs();
         needs.check().map_err(|why| Stop { exit: REFUSED, code: "manifest", why })?;
+        let tunnel = self.requested_tunnel(r)?;
+        if let Some((_, address)) = &tunnel {
+            self.tunnel = Some(*address);
+        }
         let (kind, spec) = self.plan(&m.image, &needs)?;
         // everything is checked, and this host can give what is asked; the counter is written down first, so that this manifest
         // or a later one is all that is accepted from here on, whatever becomes of the steps below
@@ -372,8 +408,11 @@ impl Ctl {
         }
         let dir = self.host.manifest_dir();
         write_whole(&dir.join(MANIFEST_SIGNATURE), signature.as_bytes(), 0o644).and_then(|_| write_whole(&dir.join(MANIFEST_FILE), bytes, 0o644)).map_err(|e| failed(format!("cannot write the manifest: {e}")))?;
+        if let Some((text, _)) = &tunnel {
+            write_whole(&self.host.etc().join(tunnel::TUNNEL_FILE), format!("{text}\n").as_bytes(), 0o644).map_err(|e| failed(format!("cannot write the tunnel file: {e}")))?;
+        }
         self.make(kind, &spec, &needs)?;
-        Ok(json!({"counter": m.counter, "manifest": digest, "runtime": kind.name(), "plugins": m.plugins.iter().map(|e| e.name.clone()).collect::<Vec<_>>(), "needs": needs}))
+        Ok(json!({"counter": m.counter, "manifest": digest, "runtime": kind.name(), "plugins": m.plugins.iter().map(|e| e.name.clone()).collect::<Vec<_>>(), "needs": needs, "tunnel": self.tunnel.map(|a| a.to_string())}))
     }
 
     /// The image and the needs of the manifest in use, read again from the file and checked again; or of an agent that is
@@ -426,9 +465,15 @@ impl Ctl {
     }
 
     fn remove(&mut self) -> Result<Value, Stop> {
-        if let Some((kind, spec)) = self.recorded() {
-            self.act(&runtime::remove(kind, &spec))?;
+        let recorded = self.recorded();
+        if let Some((kind, spec)) = &recorded {
+            self.act(&runtime::remove(*kind, spec))?;
         }
+        if self.tunnel.is_some() {
+            let root = self.host.root.to_string_lossy().into_owned();
+            self.act(&runtime::egress_remove(recorded.as_ref().map(|(k, _)| *k), &root))?;
+        }
+        let _ = std::fs::remove_file(self.host.etc().join(tunnel::TUNNEL_FILE));
         if self.host.user(AGENT_USER).is_some() {
             let member_of = self.host.groups_of(AGENT_USER);
             for group in GROUPS.iter().filter(|g| member_of.iter().any(|m| m == *g)) {
@@ -483,7 +528,9 @@ fn run() -> Result<Value, Stop> {
     if let Some(group) = host.in_any(AGENT_USER, &AGENT_FORBIDDEN_GROUPS) {
         return refuse("account", format!("sfagent is in the {group} group on this host: the agent's account is in no group that gives root"));
     }
-    let mut ctl = Ctl { host, agent, notes: Vec::new() };
+    let mut ctl = Ctl { host, agent, notes: Vec::new(), tunnel: None };
+    // a tunnel file that cannot be read gives no tunnel: the container is then made with no network, never with one unruled
+    ctl.tunnel = ctl.pinned_tunnel().ok().flatten().map(|(address, _)| address);
     let mut out = match r.op.as_str() {
         "preflight" => {
             let tools = ctl.tools();

@@ -807,6 +807,15 @@ dependencies = [
 [[package]]
 name = "storageforge-wire"
 version = "0.5.7"
+dependencies = [
+ "aes-gcm",
+ "curve25519-dalek",
+ "hmac",
+ "rand_core",
+ "sha2",
+ "subtle",
+ "zeroize",
+]
 
 [[package]]
 name = "subtle"

@@ -5,4 +5,16 @@ edition.workspace = true
 license.workspace = true
 description = "The framing StorageForge's Rust programs share: a 4-byte length, then that many bytes, never more than a set ceiling."
 
+[features]
+# The agent's tunnel (roadmap section 11.1, "Delivery"): Noise IK over this framing. Off for the key enclave, which keeps its own
+# copy of the same primitives in its one program, so that its reproducible build does not change.
+noise = ["dep:aes-gcm", "dep:curve25519-dalek", "dep:hmac", "dep:rand_core", "dep:sha2", "dep:subtle", "dep:zeroize"]
+
 [dependencies]
+aes-gcm = { version = "0.10", optional = true }
+curve25519-dalek = { version = "4", default-features = false, features = ["zeroize"], optional = true }
+hmac = { version = "0.12", optional = true }
+rand_core = { version = "0.6", features = ["getrandom"], optional = true }
+sha2 = { version = "0.10", optional = true }
+subtle = { version = "2", optional = true }
+zeroize = { version = "1", optional = true }

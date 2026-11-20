@@ -13,8 +13,10 @@ SSH stays the base. The agent is switched on per host and is off unless someone 
 feature. Setting it up goes through the deploy access the host already has, which is the pinned SSH connection, and the agent's
 public key is read back over that same connection and pinned here. From then on only that key is the agent of that host.
 
-What is built here is the lifecycle and enrollment. There is no tunnel and no receiver yet (roadmap section 11.2), so an
-enrolled agent reports nothing: `apply` exists for the plugins of section 11.4 and takes their signed descriptors.
+What is built here is the lifecycle, enrollment, and what the tunnel needs from the web app's side: `apply` names the receiver the
+agent dials (its address and its key, which the host pins) in the signed request, and leaves the signed manifest and the signed
+plugin descriptors in agent_deliveries, where the receiver (agentreceiver.py, a process of its own) hands them to the agent at the
+start of every session. The web app never speaks to an agent: it signs, and the agent checks.
 
 Everything a host answers is a claim. It is read as one line of JSON of limited size, every field is checked for its shape before
 it is stored, the fingerprint of the agent's key is worked out here and never taken from the answer, and text from a host
@@ -35,7 +37,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
 
-from . import deploy
+from . import agenttunnel, deploy
 from .db import Database
 from .remote import REFUSE_APPLIANCE, Transport, child_env
 from .runner import connect_address, ephemeral_agent, known_hosts_path
@@ -266,6 +268,71 @@ def manifest(signer, agent_fingerprint: str, machine: str, counter: int, image: 
     return text, deploy.sshsig(signer, text.encode(), NS_MANIFEST)
 
 
+# ── the tunnel ──────────────────────────────────────────────────────
+def _address(host: str, port: int) -> str:
+    """host:port with host as an address: a name is looked up here, on the controller, so that the agent looks nothing up and the
+    host's firewall rule can name the one address it may reach."""
+    import ipaddress
+    import socket
+    try:
+        ip = ipaddress.ip_address(host.strip('[]'))
+    except ValueError:
+        try:
+            ip = ipaddress.ip_address(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0][4][0])
+        except (OSError, IndexError, ValueError):
+            raise AgentError(f'the agent endpoint {host} does not resolve to an address') from None
+    if ip.is_unspecified or ip.is_multicast:
+        raise AgentError(f'{ip} is not an address an agent can dial')
+    return f'[{ip}]:{port}' if ip.version == 6 else f'{ip}:{port}'
+
+
+def endpoint_for(conn, name: str) -> str | None:
+    """Where this host's agent dials the receiver. Over the StorageForge network when the host and the controller are peers on it
+    (the controller's address there, STORAGEFORGE_AGENT_PORT), else STORAGEFORGE_AGENT_ENDPOINT (host:port: the controller's LAN
+    address, or the public address where remote nodes reach the tunnel container's machine). None when neither: then the agent gets
+    no tunnel and reports nothing."""
+    from . import sfnet, sfnetwork
+    port = int(os.environ.get('STORAGEFORGE_AGENT_PORT', '').strip() or agenttunnel.DEFAULT_PORT)
+    try:
+        if sfnetwork.route(conn, name) is not None:
+            network = sfnetwork.load(conn)
+            me = sfnet.member(network, network['controller'])
+            return _address(str(me['address']).split('/')[0], port)
+    except AgentError:
+        raise
+    except Exception:
+        pass                            # the network is one way of several: nothing about it may stop an apply
+    configured = os.environ.get('STORAGEFORGE_AGENT_ENDPOINT', '').strip()
+    if not configured:
+        return None
+    host, sep, p = configured.rpartition(':')
+    if not sep or not p.isdigit() or not 0 < int(p) < 65536:
+        raise AgentError('STORAGEFORGE_AGENT_ENDPOINT is host:port, where agents reach the receiver')
+    return _address(host, int(p))
+
+
+def tunnel_for(conn, name: str) -> dict | None:
+    """The receiver an agent's tunnel dials and pins, as the signed request carries it, or None when there is no receiver yet."""
+    key = agenttunnel.receiver_public()
+    endpoint = endpoint_for(conn, name) if key else None
+    return {'endpoint': endpoint, 'key': key} if key and endpoint else None
+
+
+def save_delivery(conn, name: str, fp: str, counter: int, text: str, sig: str, plugins: list[tuple[bytes, str, str]], tunnel: bool = True):
+    """What the receiver hands this host's agent from its next session on. With a tunnel, each plugin's program has to be in the
+    release's folder as its descriptor names it, or the apply stops here, before the host is asked to make a container for it."""
+    sent = [{'descriptor': d.decode(), 'signature': s} for d, s, _kind in plugins]
+    for p in sent if tunnel else []:
+        try:
+            agenttunnel.program_of(p['descriptor'])
+        except (OSError, ValueError, agenttunnel.TunnelError) as exc:
+            raise AgentError(str(exc)) from None
+    conn.execute('DELETE FROM agent_deliveries WHERE host = :h', {'h': name})
+    conn.execute("""INSERT INTO agent_deliveries (host, fingerprint, counter, manifest, signature, plugins_json, updated_at)
+                    VALUES (:h, :f, :c, :m, :s, :p, :t)""",
+                 {'h': name, 'f': fp, 'c': counter, 'm': text, 's': sig, 'p': json.dumps(sent), 't': int(time.time())})
+
+
 # ── what the controller is configured with ──────────────────────────
 def agent_image() -> str:
     """The agent's image, by digest, from STORAGEFORGE_AGENT_IMAGE. There is no default: a tag can be moved to other bytes, and the
@@ -330,7 +397,7 @@ def runtime_hint(conn, name: str) -> dict:
 
 # ── the table ───────────────────────────────────────────────────────
 COLUMNS = ('host', 'enabled', 'state', 'public_key', 'fingerprint', 'runtime', 'image', 'counter', 'manifest_sha', 'detail',
-           'enrolled_at', 'updated_at', 'updated_by')
+           'enrolled_at', 'updated_at', 'updated_by', 'receiver_key', 'endpoint')
 
 
 def get(conn, name: str) -> dict | None:
@@ -504,10 +571,14 @@ def install(db: Database, host: str, actor: str | None = None, install_podman: b
         conn.close()
 
 
-def apply(db: Database, host: str, plugins: list[tuple[bytes, str, str]], actor: str | None = None, group_id: str | None = None) -> dict:
+def apply(db: Database, host: str, plugins: list[tuple[bytes, str, str]], actor: str | None = None, group_id: str | None = None,
+          accept_new_key: bool = False) -> dict:
     """Sign a new manifest for a host and have its container made again for it. plugins: (descriptor bytes, its signature, 'release'
     or 'operator') for each plugin the host is to run; with none the agent runs and has nothing to do. The counter goes up by one
     for every manifest signed, whether the host took it or not, and never comes down.
+
+    With a receiver running, the request also names it (tunnel_for), and the manifest and plugins are left for it to deliver. A
+    receiver key other than the one the host pinned is sent only with accept_new_key, which a person gives.
 
     SEAM (roadmap 11.2, "Privilege needs a person"): whoever calls this with a plugin that declares a need has to have asked an
     admin with a fresh password first. Nothing calls it with plugins yet."""
@@ -521,21 +592,30 @@ def apply(db: Database, host: str, plugins: list[tuple[bytes, str, str]], actor:
         machine = deploy._machine(conn, name)
         image, image_sig = agent_image(), image_signature()      # the image this controller is set to now: applying is also how an agent is updated
         entries = [plugin_entry(descriptor, signer) for descriptor, _sig, signer in plugins]
+        tunnel = tunnel_for(conn, name)
+        new_key = bool(tunnel and row.get('receiver_key') and row['receiver_key'] != tunnel['key'])
+        if new_key and not accept_new_key:
+            raise AgentError(f'{name} pinned another receiver key for its tunnel than this receiver has: the receiver was set up again, '
+                             'or something else holds its folder. Accept the new key for this host if you made it', 'tunnel-key')
         conn.execute('UPDATE agents SET counter = counter + 1 WHERE host = :h', {'h': name})
         counter = conn.scalar('SELECT counter FROM agents WHERE host = :h', {'h': name})
         with Vault(db, conn).unlock() as v:
             text, sig = manifest(_signer(v), row['fingerprint'], machine, counter, image, entries)
         sent = [{'descriptor': descriptor.decode(), 'signature': s} for descriptor, s, _signer_kind in plugins]
+        save_delivery(conn, name, row['fingerprint'], counter, text, sig, plugins, tunnel=tunnel is not None)
         try:
-            got = call(db, name, 'apply', group_id=group_id, actor=actor, manifest=text, manifest_signature=sig, image_signature=image_sig, plugins=sent)
+            got = call(db, name, 'apply', group_id=group_id, actor=actor, manifest=text, manifest_signature=sig, image_signature=image_sig, plugins=sent,
+                       tunnel=tunnel, accept_new_tunnel_key=new_key)
         except AgentError as exc:
             _audit(db, conn, actor, 'agent.apply', 'failed', name, row['fingerprint'], {'counter': counter, 'error': str(exc)[:500]})
             raise
         sha = hashlib.sha256(text.encode()).hexdigest()
-        _save(conn, name, actor, state='running', runtime=_runtime(got), manifest_sha=sha, image=image, detail='')
+        _save(conn, name, actor, state='running', runtime=_runtime(got), manifest_sha=sha, image=image, detail='',
+              **({'receiver_key': tunnel['key'], 'endpoint': tunnel['endpoint']} if tunnel else {}))
         _audit(db, conn, actor, 'agent.apply', 'ok', name, row['fingerprint'],
-               {'counter': counter, 'manifest': sha, 'plugins': [e['name'] for e in entries], 'needs': got.get('needs') if isinstance(got.get('needs'), dict) else {}})
-        return {'host': name, 'state': 'running', 'counter': counter, 'manifest': sha, 'runtime': _runtime(got)}
+               {'counter': counter, 'manifest': sha, 'plugins': [e['name'] for e in entries], 'needs': got.get('needs') if isinstance(got.get('needs'), dict) else {},
+                'tunnel': tunnel['endpoint'] if tunnel else None, 'new_receiver_key': new_key})
+        return {'host': name, 'state': 'running', 'counter': counter, 'manifest': sha, 'runtime': _runtime(got), 'tunnel': tunnel['endpoint'] if tunnel else None}
     finally:
         conn.close()
 
@@ -579,7 +659,8 @@ def remove(db: Database, host: str, actor: str | None = None, group_id: str | No
         if not row:
             raise AgentError(f'{name} has no agent')
         fp = row['fingerprint']
-        _save(conn, name, actor, state='removed', public_key=None, fingerprint=None, manifest_sha=None, runtime=None, detail='')
+        _save(conn, name, actor, state='removed', public_key=None, fingerprint=None, manifest_sha=None, runtime=None, detail='', receiver_key=None, endpoint=None)
+        conn.execute('DELETE FROM agent_deliveries WHERE host = :h', {'h': name})
         _audit(db, conn, actor, 'agent.remove', 'ok', name, fp, {})
         problems = []
         try:

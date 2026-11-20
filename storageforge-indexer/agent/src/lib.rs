@@ -16,6 +16,7 @@
 //! - `identity`   the agent's own key
 //! - `runner`     loading a plugin from the bytes that were checked, and the protocol on its pipes
 //! - `supervise`  the agent's pass over its manifest and plugins, and the outbox of what they report
+//! - `tunnel`     the encrypted tunnel to the controller: batches out, the manifest and plugins in
 //! - `request`    a signed request to storageforge-agentctl
 //! - `host`       what storageforge-agentctl reads from the host: accounts, groups, the machine id
 //! - `runtime`    the container, as Docker, Podman or LXC is asked to make it
@@ -33,5 +34,6 @@ pub mod runner;
 pub mod runtime;
 pub mod sig;
 pub mod supervise;
+pub mod tunnel;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

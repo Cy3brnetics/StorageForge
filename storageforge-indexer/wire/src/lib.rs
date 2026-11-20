@@ -5,9 +5,13 @@
 //! error the reader ends the conversation on: no honest peer sends one. The key enclave speaks it over vsock, and the agent
 //! speaks it to its plugins over pipes.
 //!
-//! No dependencies, no `unsafe`, and nothing here parses what is inside a frame.
+//! No dependencies, no `unsafe`, and nothing here parses what is inside a frame. The `noise` feature adds the agent's tunnel
+//! (`noise`), with the dependencies it needs; the key enclave builds without it.
 
 use std::io::{self, Read, Write};
+
+#[cfg(feature = "noise")]
+pub mod noise;
 
 /// The most a frame holds unless a reader asks for less: 1 MiB.
 pub const MAX_FRAME: usize = 1 << 20;
