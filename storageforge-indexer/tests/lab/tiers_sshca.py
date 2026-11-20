@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Tier 21 of the KVM lab: the SSH certificate authority on real hosts, through the API and the change engine.
+"""Tier 21 of the KVM lab: the SSH certificate authority on real hosts, through the API and the change engine. The tunnel checks of
+the same tier are in tiers_tunnels.py, and run at the end of this one.
 
 NOT RUN. This file was written where the KVM lab cannot run, so no check below has ever passed or failed on a real VM: it is not lab-tested.
 What was run is tests/test_sshcerts.py on this machine: the same two steps against a real sshd started by the test, with the real ssh and
@@ -150,3 +151,7 @@ def tier21(r):
         demo.scan(api, [node.ip])
         return 'refused, and the host kept the CA it had'
     r.check('sshca-foreign-ca-left-alone', node.name, foreign)
+
+    # the other half of this tier: exposure through tunnels, and the steps that start one (tiers_tunnels.py)
+    import tiers_tunnels
+    tiers_tunnels.checks(r, api, node)

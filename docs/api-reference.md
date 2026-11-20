@@ -219,7 +219,7 @@ See [Ransomware defense](ransomware-defense.md). Reads need `security.view`. �
 
 | Method | Path | Body or query | Needs |
 | :--- | :--- | :--- | :--- |
-| GET | `/api/security/posture` | `?host=` | what is known about each host, and every reason it is not fine |
+| GET | `/api/security/posture` | `?host=` | what is known about each host, and every reason it is not fine. `public` on a host is what tunnels there publish, a sentence each |
 | GET | `/api/security/events` | `?host=&all=1` | alarms; `all` includes routine events |
 | POST 🔑 | `/api/security/events/<id>/ack` | | `security.emergency` |
 | POST 🔑 | `/api/security/measure` | `{"host"}` | `security.manage` |
@@ -309,7 +309,7 @@ See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure
 | GET, POST, DELETE | `/api/map/designs` | `{"name", "doc"}` | `plans.edit` |
 | GET | `/api/map/designs/<id>/compare`, `/export` | `?target=bash\|ansible\|terraform\|puppet` | |
 | POST | `/api/map/designs/<id>/stage` | | what is missing, as a plan |
-| GET | `/api/workloads`, `/api/network`, `/api/firewall`, `/api/exposure` | `?host=` | |
+| GET | `/api/workloads`, `/api/network`, `/api/firewall`, `/api/exposure` | `?host=` | `/api/exposure` gives each host's `items` (listeners and published ports, with `level` and the `rule` that decides; `tunnel` where a tunnel publishes it) and `tunnels` (what each tunnel on the host publishes: `public`, `local`, `label`, `level`, `running`) |
 | GET | `/api/workloads/libvirt` | `?host=` | each libvirt host's networks and storage pools, from its last reading. A libvirt VM in `/api/workloads` carries its disks, snapshots and guest agent state |
 | POST 🔑 | `/api/infra/measure` | `{"host"}` | `security.manage` |
 | GET | `/api/sfnet` | | `hosts.view`. StorageForge's own WireGuard network: range, port, topology, and per member its address, state and which peers the readings confirm |

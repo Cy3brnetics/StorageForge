@@ -59,6 +59,17 @@ Some steps need a secret on the host they run on: the `tailscale` step needs an 
 
 `vault send-secret NAME --host HOST` decrypts it and writes it to `/run/storageforge/secrets/NAME` on the host over SSH, on ssh's stdin. `/run` is in memory, the folder is mode 700 and the file mode 600, and both are gone at reboot. The login needs `sudo` without a password, as deploys do. The step reads the file there. The `tailscale` step hands it to Tailscale as `--auth-key=file:…`, so the key is on no command line, and removes it once the node has joined. Both commands write to the audit log, and neither prints the secret.
 
+Two more steps take a secret the same way. Neither is lab-tested against the real service: Cloudflare needs an account, and the lab has no Pangolin server yet. The unit tests run them against stand-ins. One thing was checked against the real program: `cloudflared` 2026.10.4 lists `--token-file` and reads the file the unit names. No tunnel was started with it, and Newt has not been run at all.
+
+| Step | The secret | How the program gets it |
+| :--- | :--- | :--- |
+| `cloudflare-tunnel` | a Cloudflare Tunnel token | moved to `/etc/cloudflared/storageforge-token` (root, mode 600) and read by `cloudflared tunnel run --token-file`, as the unit `storageforge-cloudflared` |
+| `pangolin-site` | a Pangolin site secret | written with the site id and the server's address to `/etc/newt/storageforge.json` (root, mode 600), which Newt reads because the unit `storageforge-newt` sets `CONFIG_FILE` |
+
+A tunnel's token is needed at every start, so unlike a Tailscale auth key it stays on the host, in that one file. The copy under `/run` is removed once the program runs. Both programs' own instructions put the secret on a command line (`cloudflared service install <token>`, `newt --secret <secret>`), where every account on the host can read it; these steps never do. A `cloudflared` too old to have `--token-file` (before April 2025) is refused. A unit the program's own installer made is left alone, and the step says so when that unit has the secret on its command line. Neither step installs the program. `state: absent` stops the unit and removes the file.
+
+A tunnel makes what it publishes public with no port open: see [Tunnels](infrastructure-map.md#tunnels-public-with-no-port-open).
+
 ### Console keys
 
 A key bound with `--actions console` opens a terminal from the web UI ([Console](console.md)), as the binding's login. It is kept apart from scan bindings, so the read-only scan login never becomes a shell. Sessions take only host keys a scan confirmed, forward nothing, and are audited when they open and close. With recording on, they are kept in full, input included.

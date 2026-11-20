@@ -132,6 +132,8 @@ class Exposure(unittest.TestCase):
         self.assertEqual(got, {'cloudflared': True, 'newt': False})
 
 
+REAL_CLOUDFLARED = os.environ.get('STORAGEFORGE_TEST_CLOUDFLARED') or shutil.which('cloudflared')
+
 HARNESS = r'''
 set -euo pipefail
 ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*"; PROBLEMS=$((PROBLEMS + 1)); }
@@ -332,6 +334,17 @@ esac''')
         (self.d / 'run').rmdir()
         self.assertIn('systemd does not run this host', self.step(True, 't_cloudflare_tunnel', 'cf-token', 'present')[1])
         self.assertIn('systemd does not run this host', self.step(True, 't_pangolin_site', 'pg-site', 'abcd', 'https://p.example.com', 'present')[1])
+
+    @unittest.skipUnless(REAL_CLOUDFLARED, 'needs a real cloudflared (in PATH, or named by STORAGEFORGE_TEST_CLOUDFLARED)')
+    def test_the_real_cloudflared_reads_its_token_from_the_file_the_unit_names(self):
+        """No tunnel is started: the file holds no token, and cloudflared says so before it connects anywhere."""
+        helped = subprocess.run([REAL_CLOUDFLARED, 'tunnel', 'run', '--help'], capture_output=True, text=True, timeout=30)
+        self.assertEqual(subprocess.run(['grep', '-q', '--', '--token-file'], input=helped.stdout + helped.stderr, text=True).returncode, 0, 'the check the step makes')
+        (self.d / 'tok').write_text('notAToken0000')
+        got = subprocess.run([REAL_CLOUDFLARED, '--no-autoupdate', 'tunnel', 'run', '--token-file', str(self.d / 'tok')], capture_output=True, text=True, timeout=30)
+        self.assertIn('Provided Tunnel token is not valid', got.stdout + got.stderr, 'it read the file, in the place the unit puts the flag')
+        gone = subprocess.run([REAL_CLOUDFLARED, '--no-autoupdate', 'tunnel', 'run', '--token-file', str(self.d / 'none')], capture_output=True, text=True, timeout=30)
+        self.assertIn('Failed to read token file', gone.stdout + gone.stderr)
 
     # ── the plan ──
     def test_the_plan_holds_a_name_and_never_a_secret(self):
