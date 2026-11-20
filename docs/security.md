@@ -150,6 +150,22 @@ A tunnel's token is needed at every start, so unlike a Tailscale auth key it sta
 
 A tunnel makes what it publishes public with no port open: see [Tunnels](infrastructure-map.md#tunnels-public-with-no-port-open).
 
+The steps that join a private network were each built only after reading how the program takes its secret (its own documentation and source, on 2026-11-20). None is lab-tested: the unit tests run `netbird`, `zerotier-cli` and `ziti-edge-tunnel` as stand-ins, and Nebula as the real program.
+
+| Step | The secret | How the program gets it | What stays on the host |
+| :--- | :--- | :--- | :--- |
+| `netbird` | a NetBird setup key | `netbird up --setup-key-file /run/storageforge/secrets/NAME`: the client reads the file and hands the key to its daemon over a local socket | Nothing of the key: the file is removed once the peer has joined, and the peer keeps a key of its own |
+| `tailscale` with Headscale | a pre-auth key `vault headscale-key` made on the Headscale server | It comes back inside the SSH connection, goes straight into the vault and is never printed. From there it travels like any auth key, and `tailscale up` reads it as `--auth-key=file:` | Nothing: the file is removed once the node has joined |
+| `openziti` | a one-time enrollment token (a JWT) | `ziti-edge-tunnel enroll --jwt /run/storageforge/secrets/NAME` | The identity file the enrollment writes, which holds a private key made on the host: mode 640 for root and the group `ziti` where the packaged service is there, 600 otherwise. The token file is removed, and a token works once |
+| `zerotier` | none | A network is joined by its id, which is in the plan. Whether the node is let in is decided at the controller | |
+| `nebula` | none that travels | The host makes its own key pair (`nebula-cert keygen`, in `/etc/nebula`, mode 600, root). Only the public half is read. The CA key is a vault key and signs in the vault, in the key enclave where there is one. The certificate, the CA certificate and the configuration are public, and the last two are written into the plan's script | The host's private key, where Nebula needs it at every start. `state: absent` removes it |
+
+If a program repeats its secret when it fails, the step takes it out of what it reports. A NetBird too old to have `--setup-key-file` is refused, because it could only take the key as an argument.
+
+**Netmaker has no step.** `netclient join -t TOKEN` is the only way netclient takes its enrollment token, and its own container script builds the same command line. The token registers a machine on the network, and a command line is readable by every account on the host, so StorageForge does not run it.
+
+**The Nebula CA.** The CA's certificate and the list of what it issued are kept as a setting, with no key in it. A certificate from here always has one address inside the CA's networks, an end no later than the CA's own, and the CA's fingerprint as its issuer. An address is given to a second name only after the first one's certificate is revoked. Revoking does not reach a host by itself: a host refuses a revoked certificate once the `nebula` step has run on it again, and a tunnel that is already up stays up until its next handshake. Making a CA, issuing and revoking are in the audit log (`vault.nebula_ca`, `vault.nebula_issue`, `vault.nebula_revoke`). They are commands of `storageforge-index vault`, run by someone who can unlock the vault: there is no page or API route for them yet.
+
 ### Console keys
 
 A key bound with `--actions console` opens a terminal from the web UI ([Console](console.md)), as the binding's login. It is kept apart from scan bindings, so the read-only scan login never becomes a shell. Sessions take only host keys a scan confirmed, forward nothing, and are audited when they open and close. With recording on, they are kept in full, input included.

@@ -73,6 +73,11 @@ Then **Stage in Changes**, where it is an ordinary step with a Report and an App
 | `wg-peer` | Add or revoke a WireGuard peer, with where to call it and a keepalive where it cannot call back |
 | `wg-interface` | Make a WireGuard interface and its key pair on the host, or remove them. The private key is made on the host and never leaves it. An interface StorageForge did not make is left alone |
 | `wg-rotate` | One half of a key rotation on an interface StorageForge made. `prepare` makes a second key pair on the host, beside the one in use. `switch` starts using it, and only if it is the key the peers were given. `cancel` removes a second key that was never used |
+| `tailscale` | Join a tailnet with an auth key from the vault, or leave it. With a control server named it joins through Headscale, with a pre-auth key `vault headscale-key` made there |
+| `netbird` | Join a NetBird network with a setup key from the vault, read by `netbird up --setup-key-file`, or leave it: `netbird deregister` also removes the peer at the management server. See [joining a private network](#joining-a-private-network) |
+| `zerotier` | Join or leave a ZeroTier network by its id. No secret is involved. The step does not authorise the node at the controller, and says which node id to authorise there |
+| `nebula` | Write a host's Nebula configuration and its CA certificate, have `nebula -test` read them, and run Nebula as a unit of its own, as a lighthouse if asked. The host certificate comes first, from `vault nebula-issue` |
+| `openziti` | Enroll the host as an OpenZiti identity from a one-time token in the vault, read by `ziti-edge-tunnel enroll --jwt FILE`, or remove the identity and its key |
 | `container` | `docker run` or `podman run` with a fixed name. It will not replace an existing container |
 | `vm` | `virt-install --import` from a disk you already have, with its console on loopback |
 | `os-install`, `os-boot`, `os-remove` | A second operating system on the host itself, beside the running one, and which of them starts. See [host migration](host-migration.md#a-second-system-beside-the-first) |
@@ -82,6 +87,35 @@ Then **Stage in Changes**, where it is an ordinary step with a Report and an App
 | `workload-action`, `workload-remove` | Start, stop, restart, snapshot. Removing keeps volumes and disks, and takes `--destructive` |
 
 A step that could cut StorageForge off can carry a rollback timer. The script journals how to undo it and starts a systemd timer. Only a second signed run stops that timer, and that can only happen if the path still works.
+
+### Joining a private network
+
+Five steps join a host to a private network that something else runs, and take it out again: `tailscale`, `netbird`, `zerotier`, `nebula` and `openziti`. All are built and none is lab-tested: lab tier 22 is written and has not run. What they have in common:
+
+- **The program is installed already**, except Tailscale, which the `tailscale` step installs with its own script. Each of the others has a package source of its own to add, and that is your choice to make.
+- **A secret is never on a command line.** It is in the vault, reaches the host with `vault send-secret`, and the program is given the name of a file. How each program takes it is in [Secrets for plan steps](security.md#secrets-for-plan-steps).
+- **A second run changes nothing**, and a host that is already on another network of the same kind is left there and said so.
+- **Leaving is the same step with state `absent`.** What stays behind at the network's controller is said in the step's output, because the step does not always remove it there.
+
+| Step | What it does not do |
+| :--- | :--- |
+| `netbird` | A NetBird older than `--setup-key-file` is refused. One too old for `netbird deregister` is disconnected, and its peer stays listed at the management server |
+| `zerotier` | Authorise the node: a private network lets it in only once its controller has. Remove the node from the controller's member list when it leaves |
+| `nebula` | Issue or revoke a certificate (`vault nebula-issue`, `vault nebula-revoke`), open the lighthouse's UDP port in a firewall, or touch a Nebula that was set up by hand: a `config.yml` it did not write and a running `nebula.service` are left alone |
+| `openziti` | Make the identity or its token at the controller, or delete the identity there when the host leaves. Its service hands out names in 100.64.0.0/10 by default, the range Tailscale and NetBird use |
+
+**There is no step for Netmaker.** `netclient join -t TOKEN` is the only way it takes its enrollment token: no file, no standard input, no environment variable. A token on a command line is readable by every account on the host, so the step is not built until netclient can read the token from a file.
+
+**Nebula** has no control server. Its certificate authority is kept by StorageForge:
+
+1. `storageforge-index vault nebula-ca NAME --networks 10.9.0.0/24` makes the CA. Its key is a vault key (in the key enclave where there is one, and it signs there), and its certificate is public.
+2. `storageforge-index vault nebula-issue NAME --host HOST --address 10.9.0.5/24` has the host make its own key pair in `/etc/nebula` (the private key never leaves the host), signs a certificate for the public half, and writes the certificate back. An address belongs to one name until that name's certificate is revoked.
+3. The `nebula` step writes the configuration: the lighthouses (`10.9.0.1=lh.example.org:4242`), what is allowed in (`icmp, tcp/22, tcp/443@web`), and whether this host is a lighthouse. A lighthouse listens on UDP 4242 unless told another port.
+4. `storageforge-index vault nebula-revoke NAME HOSTNAME` revokes a certificate. Every other host refuses it once the `nebula` step has run on it again, which writes the list of revoked certificates into its configuration.
+
+The certificates are Nebula's version 1 format (one IPv4 address per host), which every Nebula reads. Version 2 certificates, with IPv6, are not written.
+
+**Headscale** is Tailscale's control server run by the site. `storageforge-index vault headscale-key NAME --host SERVER --hs-user 1` makes a pre-auth key on the server over SSH and stores it as the secret `NAME`: it is never printed. The `tailscale` step then joins with it when its control server field names the Headscale server. A scan of the server reads each node's routes: approved, advertised and still waiting for approval, and served.
 
 ## StorageForge's own network
 
@@ -174,6 +208,7 @@ The roadmap goes further than this.
 | `tests/test_platform_more.py` | The firewall writer against the real kernel, reach, what-if and designs |
 | `tests/test_browser_smoke.py` | The panels and the map's modes in Chromium under the real CSP |
 | `tests/test_tunnels.py`, `tests/test_tunnel_exposure.py` | What each tunnel's configuration publishes, with no credential in what comes back; a loopback or firewalled listener a tunnel publishes shown as public; the two tunnel steps against stand-ins for `cloudflared` and `newt`, since neither is installed where the tests run |
+| `tests/test_overlay_steps.py` | The `netbird`, `zerotier` and `openziti` steps against stand-ins on a PATH of their own, since none of the three is installed where the tests run. Nebula against the real thing: certificates made here are accepted by the real `nebula-cert` 1.12.0 and read back the same, `nebula -test` accepts the configurations, and two real Nebula nodes in network namespaces reach each other with them until one certificate is revoked. `vault headscale-key` against a stand-in for `headscale` |
 | [KVM lab](kvm-lab.md) tier 10 | What scans read against each VM. A capture on the VM during a scan: the only connection is SSH |
 | KVM lab tier 11 | Rules on ufw, nftables and firewalld judged by real connections between VMs, a published port's fix, a fence across a reboot, the timer undoing a firewall rule and a bridge that each cut SSH, VLANs on networkd and NetworkManager across a reboot, the reach table against real connections, the overlay against the next reading, a half-deployed design, WireGuard confirmed by key, and a placeholder promoted to a host |
 

@@ -135,6 +135,10 @@ Both report commands also take `--title`, `--as-of YYYY-MM-DD`, `--kwh-price`, `
 | `vault bind ... --actions console` | a key for the web console, as that login ([Console](console.md)) |
 | `vault secret-add NAME` | store a secret a plan step reads on a host, such as a Tailscale auth key: one line on stdin |
 | `vault send-secret NAME --host HOST [--user U] [--key FILE] [--ssh-option OPT]...` | write it to `/run/storageforge/secrets/NAME` on the host over SSH (mode 600, in memory, gone at reboot). [Secrets for plan steps](security.md#secrets-for-plan-steps) |
+| `vault headscale-key NAME --host SERVER (--hs-user ID \| --tags tag:x) [--expiration 1h] [--reusable] [--ephemeral] [--container C]` | make a pre-auth key on a Headscale server over SSH and store it as the secret `NAME` for the `tailscale` step. It is never printed. `--container` when Headscale runs in Docker. Takes `--user`, `--key` and `--ssh-option` as `send-secret` does |
+| `vault nebula-ca NAME [--days 730] [--networks 10.9.0.0/24,...]` | make a Nebula certificate authority. Its key is made in the vault and stays there; its certificate is printed |
+| `vault nebula-issue CA --host HOST --address 10.9.0.5/24 [--name N] [--groups a,b] [--behind NET,...] [--days N]` | a Nebula host certificate: the host makes its own key in `/etc/nebula`, the CA signs in the vault, and the certificate is written back over SSH. Takes `--user`, `--key` and `--ssh-option` |
+| `vault nebula-revoke CA NAME`, `vault nebula-list` | revoke every running certificate of a name; list the CAs and what each issued. [Joining a private network](infrastructure-map.md#joining-a-private-network) |
 | `vault list`, `vault pubkey --name N`, `vault remove --name N` | |
 | `vault bind --key K --host H --user U [--port P] [--actions scan,checksum,console] [--priority N]` | allow a key to reach a host, glob or CIDR. Also in the web UI: **Keys → Bindings** |
 | `vault unbind --id ID`, `vault bindings` | |
