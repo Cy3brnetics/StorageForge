@@ -1,0 +1,60 @@
+# The controller on StorageForge's own encrypted network (docs/infrastructure-map.md, "The controller as a member").
+#   docker compose -f docker-compose.yml -f docker-compose.sfnet.yml up -d
+# Adds the link: a small container that shares the server's network, makes the WireGuard interface sf0 there and keeps its
+# private key. The server stays as it was: not root, no capability, and it never sees that key. The two share two folders
+# and nothing else: what the server wants (it writes, the link reads) and what the link reports (the other way round).
+# Needs WireGuard in the kernel of the Docker host (any kernel since 5.6).
+services:
+  init-secrets:
+    volumes:
+      - sf-sfnet-want:/secrets/sfnet-want
+      - sf-sfnet-state:/secrets/sfnet-state
+      - sf-sfnet-keys:/secrets/sfnet-keys
+
+  storageforge:
+    environment:
+      STORAGEFORGE_SFNET_WANT: /run/sf-sfnet-want
+      STORAGEFORGE_SFNET_STATE: /run/sf-sfnet-state
+    volumes:
+      - sf-sfnet-want:/run/sf-sfnet-want
+      - sf-sfnet-state:/run/sf-sfnet-state:ro
+    # Without a published port the controller calls the hosts and keeps the paths open, which is enough when it can reach
+    # them. Publish the port only where hosts must call the controller, and give the controller this machine's address as
+    # the place to call when it joins. Published here because the link shares this container's network.
+    # ports:
+    #   - "${STORAGEFORGE_SFNET_BIND:-0.0.0.0}:51903:51903/udp"
+
+  sfnet:
+    build:
+      context: .
+      target: sfnet
+    image: storageforge-sfnet:0.5.4.1
+    restart: unless-stopped        # the link stops when the server's network is gone from under it, and is started again in the new one
+    depends_on:
+      storageforge: { condition: service_started, restart: true }
+    network_mode: "service:storageforge"
+    user: "0:0"                    # root, with the one capability that lets it set up a network interface, and no other
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - sf-sfnet-keys:/etc/wireguard                       # the private key: this container only
+      - sf-sfnet-want:/run/storageforge-sfnet/want:ro
+      - sf-sfnet-state:/run/storageforge-sfnet/state
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=4m
+    healthcheck:
+      disable: true
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 32m, pids: 32 }
+    logging:
+      driver: json-file
+      options: { max-size: 5m, max-file: "3" }
+
+volumes:
+  sf-sfnet-want:
+  sf-sfnet-state:
+  sf-sfnet-keys:

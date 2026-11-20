@@ -74,6 +74,17 @@ def routes(conn, host: str) -> list[dict]:
             # one route per network: a host's second address on the same one reaches the same sshd
             if ip.version == 4 and network and not any(r['address'] == str(ip) or r['route'] == network for r in out):
                 out.append({'route': network, 'label': overlays.label(network), 'address': str(ip), 'port': port or 22})
+    # The StorageForge network is offered by what the index holds, not by an interface's name: only where this controller and the
+    # host are members that confirm each other by key, and then first, so it is what a console uses unless another is chosen.
+    # (The bridge of the StorageForge containers is also called sf0 on the machine that runs them.)
+    from . import sfnetwork
+    out = [r for r in out if r['route'] != 'storageforge']
+    try:
+        ours = sfnetwork.route(conn, host)
+    except Exception:
+        ours = None
+    if ours:
+        out.insert(0, {'route': 'storageforge', 'label': overlays.label('storageforge'), 'address': ours, 'port': port or 22})
     return out
 
 
@@ -351,12 +362,20 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
 
     if kind == 'ssh':
         rs = routes(conn, host)
-        pick = next((r for r in rs if r['route'] == route), None) if route != 'auto' else (rs[0] if rs else None)
+        if route == 'auto':
+            # the StorageForge network when it answers, and the address scans use when it does not
+            from . import sfnetwork
+            usable = [r for r in rs if r['route'] != 'storageforge' or sfnetwork.via(conn, host)]
+            pick = usable[0] if usable else None
+        else:
+            pick = next((r for r in rs if r['route'] == route), None)
         if not pick:
             raise ConsoleError(f'{host} has no {route} address in its last scan' if route != 'auto' else f'{host} has no address to reach')
         lan = next((r['address'] for r in rs if r['route'] == 'lan'), pick['address'])
         s = Session(owner, host, 'ssh', pick['route'], pick['address'], cols, rows)
-        target, alias, port, remote_cmd = pick['address'], lan, pick['port'], None
+        from .remote import known_hosts_name
+        # the name the key was pinned under: with another port than 22 that is [address]:port, and ssh looks an alias up as it is written
+        target, alias, port, remote_cmd = pick['address'], known_hosts_name(lan, pick['port']), pick['port'], None
         bind_for = lan
     else:
         via = serial_via(conn, host)
@@ -369,7 +388,9 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
             r = routes(conn, via['host'])
             if not r:
                 raise ConsoleError(f'{via["host"]} has no address to reach')
-            target, alias, port, bind_for = r[0]['address'], r[0]['address'], r[0]['port'], r[0]['address']
+            from .remote import known_hosts_name
+            lan = next((x['address'] for x in r if x['route'] == 'lan'), r[0]['address'])
+            target, alias, port, bind_for = r[0]['address'], known_hosts_name(lan, r[0]['port']), r[0]['port'], lan
             remote_cmd = ['virsh', '-c', 'qemu:///system', 'console', '--force', host]
 
     def audited(action, detail):

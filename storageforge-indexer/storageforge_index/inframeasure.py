@@ -111,6 +111,9 @@ if has wg; then
     try wg show "$i" endpoints | sed "s/^/e\t$i\t/"
     try wg show "$i" allowed-ips | tr ' ' ',' | sed "s/\t/ /; s/ /\t/" | sed "s/^/a\t$i\t/"
     try wg show "$i" latest-handshakes | sed "s/^/h\t$i\t/"
+    # a key rotation under way on an interface StorageForge made: the public half of the key that waits. The file itself is never printed
+    wgdir=${SF_WG_DIR:-/etc/wireguard}
+    if [ -e "$wgdir/$i.storageforge" ] && [ -s "$wgdir/$i.key.next" ]; then printf 'n\t%s\t%s\n' "$i" "$(try wg pubkey <"$wgdir/$i.key.next")"; fi
   done
 fi
 sec tailscale; has tailscale && try tailscale status | head -n 200 | capped 12000
@@ -212,6 +215,8 @@ def parse_wireguard(lines: list[str]) -> list[dict]:
         f = line.split('\t')
         if f[0] == 'i' and len(f) >= 4 and WGKEY.fullmatch(f[2]):
             ifaces[f[1]] = {'name': f[1], 'public_key': f[2], 'listen_port': int(f[3]) if f[3].isdigit() else None, 'peers': {}}
+        elif f[0] == 'n' and len(f) >= 3 and f[1] in ifaces and WGKEY.fullmatch(f[2]):
+            ifaces[f[1]]['next_public_key'] = f[2]          # the key a rotation will switch to
         elif f[0] in ('e', 'a', 'h') and len(f) >= 4 and f[1] in ifaces and WGKEY.fullmatch(f[2]):
             peer = ifaces[f[1]]['peers'].setdefault(f[2], {'public_key': f[2], 'endpoint': None, 'allowed_ips': [], 'handshake': None})
             if f[0] == 'e':

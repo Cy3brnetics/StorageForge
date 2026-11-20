@@ -53,7 +53,8 @@ class Kept(unittest.TestCase):
         return [(t['host'], t['type'], t['params'].get('state'), t['params'].get('pubkey', t['params'].get('address'))) for t in sfnetwork.tasks(self.conn)]
 
     def test_there_is_one_network_and_it_holds_no_secret(self):
-        self.assertEqual(sfnetwork.status(self.conn), {'network': None, 'members': []})
+        none = sfnetwork.status(self.conn)
+        self.assertEqual((none['network'], none['members'], none['controller']['member']), (None, [], None))
         with self.assertRaises(sfnet.NetworkError):
             sfnetwork.join(self.conn, 'nas', 'gabe')
         made = sfnetwork.create(self.conn, 'gabe')
@@ -63,7 +64,7 @@ class Kept(unittest.TestCase):
         self.up()
         stored = json.dumps(alerts.get_setting(self.conn, sfnetwork.KEY))
         self.assertNotIn('private', stored.lower())
-        self.assertEqual(sorted(set(re.findall(r'"([a-z_]+)":', stored))), ['address', 'endpoint', 'host', 'hub', 'members', 'next_public_key', 'port', 'public_key', 'range', 'state', 'topology'])
+        self.assertEqual(sorted(set(re.findall(r'"([a-z_]+)":', stored))), ['address', 'controller', 'endpoint', 'host', 'hub', 'members', 'next_public_key', 'port', 'public_key', 'range', 'rotation', 'state', 'topology'])
 
     def test_only_a_scanned_host_joins_and_is_called_where_scans_reach_it(self):
         sfnetwork.create(self.conn, 'gabe')
@@ -154,7 +155,8 @@ class Kept(unittest.TestCase):
         viewer, admin = app.test_client(), app.test_client()
         for client, name in ((viewer, 'viewer'), (admin, 'admin')):
             self.assertEqual(client.post('/api/login', json={'username': name, 'password': PW}).status_code, 200)
-        self.assertEqual(viewer.get('/api/sfnet').get_json(), {'network': None, 'members': []})
+        none = viewer.get('/api/sfnet').get_json()
+        self.assertEqual((none['network'], none['members']), (None, []))
         for path, body in (('/api/sfnet', {}), ('/api/sfnet/members', {'host': 'nas'}), ('/api/sfnet/members/remove', {'host': 'nas'}), ('/api/sfnet/plan', {})):
             self.assertEqual(viewer.post(path, json=body).status_code, 403, path)
         self.assertEqual(admin.post('/api/reauth', json={'password': PW}).status_code, 200)

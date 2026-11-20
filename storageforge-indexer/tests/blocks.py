@@ -21,6 +21,7 @@ HEAVY = {
     'test_browser_map_whatif.MapWhatIfBrowser',
     'test_browser_planner_versions.PlannerVersions',
     'test_browser_polish.BrowserPolish',
+    'test_browser_sfnet.BrowserSfnet',
     'test_browser_smoke.BrowserSmoke',
     'test_browser_smoke.MapAtScale',
     'test_browser_vms.BrowserVms',
@@ -33,6 +34,8 @@ HEAVY = {
     'test_platform_more.WriterOnRealNftables',
     'test_security.RealNftables',
     'test_security.RealSentinel',
+    'test_sfnet_rotation.RealWireGuard',
+    'test_sfcontroller.RealLink',
     'test_sends.RealSshd',
     # real time: waits, stalls and timers that have to run out
     'test_recovery.StalledWalk',
@@ -86,6 +89,7 @@ MEDIUM = {
     'test_osinstall.TheScript',
     'test_selfupdate.Installer',
     'test_sfnetwork.InterfaceStep',
+    'test_sfnet_paths.RealSsh',     # a real sshd on a loopback address, and real ssh to it
     'test_selfupdate.Repository',
     'test_console.Session',
     'test_console_open.Open',

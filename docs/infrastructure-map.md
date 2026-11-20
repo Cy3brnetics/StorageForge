@@ -58,6 +58,7 @@ Then **Stage in Changes**, where it is an ordinary step with a Report and an App
 | `net-bridge`, `net-vlan`, `net-mtu` | With NetworkManager or systemd-networkd |
 | `wg-peer` | Add or revoke a WireGuard peer, with where to call it and a keepalive where it cannot call back |
 | `wg-interface` | Make a WireGuard interface and its key pair on the host, or remove them. The private key is made on the host and never leaves it. An interface StorageForge did not make is left alone |
+| `wg-rotate` | One half of a key rotation on an interface StorageForge made. `prepare` makes a second key pair on the host, beside the one in use. `switch` starts using it, and only if it is the key the peers were given. `cancel` removes a second key that was never used |
 | `container` | `docker run` or `podman run` with a fixed name. It will not replace an existing container |
 | `vm` | `virt-install --import` from a disk you already have, with its console on loopback |
 | `os-install`, `os-boot`, `os-remove` | A second operating system on the host itself, beside the running one, and which of them starts. See [host migration](host-migration.md#a-second-system-beside-the-first) |
@@ -70,7 +71,7 @@ A step that could cut StorageForge off can carry a rollback timer. The script jo
 
 ## StorageForge's own network
 
-StorageForge can build a WireGuard network of its own between the hosts you choose, on the interface `sf0` and UDP port 51903. It needs no outside service. It is used through the API today; the page for it is not built.
+StorageForge can build a WireGuard network of its own between the hosts you choose, on the interface `sf0` and UDP port 51903. It needs no outside service. Its page is **Infrastructure → StorageForge network**: make the network, add and remove members, see per member what the readings confirm, rotate a key, set up the controller's own end, read the findings, and save the plan, which then opens in Changes. Changing anything there asks for your password again; an account that may only look sees the members and no buttons. The same steps through the API:
 
 1. `POST /api/sfnet` makes the network. It picks a range that no scanned host has an address or a route in, and never `100.64.0.0/10`, which Tailscale and NetBird use. Give `range` to choose one yourself, and `topology: "hub"` where hosts should meet only at a hub.
 2. `POST /api/sfnet/members` with a `host` adds a scanned host. It gets one address for good. The other members call it at the address scans reach it at; give `endpoint` for another, or `reachable: false` for a host behind a NAT of its own, which then calls the others and keeps the path open.
@@ -82,10 +83,43 @@ What it holds to:
 - **Private keys stay on their hosts.** The controller stores ranges, addresses and public keys. The step never prints the key, and its file is readable by root only.
 - **A key is taken from a reading once.** If an active member later shows a different key, nobody is told to trust it. It is a critical notification, because either the interface was made again by hand or it is another machine.
 - **A peer nobody asked for is a notification,** and the next plan revokes it.
+- **A key changes only when you ask.** `POST /api/sfnet/members/rotate` marks a member, and the plans that follow do the rest in three runs, each after a new reading: the host makes a second key pair (`wg-rotate`, `prepare`) and the reading brings back its public half; every peer learns the new key, with no address on it yet; and when the readings show that every peer knows it, the host switches (`wg-rotate`, `switch`) and its peers move its address to the new key and drop the old one in the same plan. Until the switch nothing is interrupted. The old private key is deleted from the host at the switch. `{"cancel": true}` takes a rotation back before the switch. A second key that appears on a host without being asked for is not taken: it is a notification, and the next plan removes it.
 - **A host that leaves** (`POST /api/sfnet/members/remove`) comes off every other member at the next plan and loses its interface and key. Its address is never given to another host.
 - **Open the port.** Peers call UDP 51903; add a `fw-rule` step where a firewall is in the way.
 
-Not built yet: the controller as a member (it runs in a container), key rotation through a plan, and the page.
+A machine that already has an interface called `sf0` that is not WireGuard is left alone. The machine that runs the StorageForge containers is one: their bridge has that name by default. Give the bridge another name with `STORAGEFORGE_BRIDGE` (and move any firewall rule that names it) before that machine joins.
+
+### The controller as a member
+
+The controller can be a member too, so that its own connections to the hosts can go over the network. There are two ways.
+
+**In Docker: the link.** Start the stack with `docker-compose.sfnet.yml` as well:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.sfnet.yml up -d
+```
+
+That adds the `sfnet` service, a small container that shares the server's network, runs as root with the one capability `NET_ADMIN`, makes `sf0` there and keeps its private key in a volume only it mounts. The server stays unprivileged and never sees the key. It writes what it wants (an address, a port, peers by public key) to one folder and reads what the link reports from another; the link checks every line before it acts and never repeats one. The Docker host needs WireGuard in its kernel. Then:
+
+1. `POST /api/sfnet/controller` makes the controller a member. It gets an address like any host.
+2. `POST /api/sfnet/controller/apply` hands the link what the interface should be. This is the controller's half of every plan: do it whenever `GET /api/sfnet` shows `controller.pending`, as after a host joined, left or rotated its key. The link acts within five seconds, and its report brings back the controller's public key.
+3. Save and run the plan for the hosts as before, so they learn the controller's key.
+
+By default the controller calls the hosts and keeps each path open, so no port needs to be published. Where hosts must call it, uncomment the `ports` lines in `docker-compose.sfnet.yml` and give `{"endpoint": "<the Docker host's address>"}` when it joins. The controller's key is rotated like a host's (`/api/sfnet/members/rotate` with the host `StorageForge controller`, then apply), and `/api/sfnet/members/remove` followed by an apply removes its interface and key. If the server container is restarted on its own, the link notices that its network is gone, stops, and Docker starts it again in the new one.
+
+**On a host, with no container: the host is the member.** Where StorageForge runs directly on a machine that it also scans, add that host like any other and say that the controller runs on it: `POST /api/sfnet/controller` with `{"on": "<host>"}`. Nothing else is needed, since the controller then uses that host's `sf0`. For a controller on a machine it does not scan, `storageforge-index sfnet link` prints the link program: run it as root as a service (`storageforge-sfnet-link run`) with `SF_WG_WANT` and `SF_WG_STATE` set to two folders, the first writable by the StorageForge user and the second by root only, and start the server with `STORAGEFORGE_SFNET_WANT` and `STORAGEFORGE_SFNET_STATE` naming the same two.
+
+`storageforge-index sfnet` prints the members and what the readings confirm.
+
+### What goes over it
+
+Once the controller is a member, its own SSH connections to a host go over the network: scans, readings, deploys, key installs and rotations, plan runs and the console. This happens per connection, and only where the controller and the host are both active members and the readings confirm each as the other's peer by the key on record, with the right address. Then the host's SSH port is tried at its network address for two seconds; if nothing answers, the connection goes to the normal address as before, and the network is not tried again for that host for a minute. A host that is no member, is pending or revoked, or shows a key that is not the one on record is always reached at its normal address.
+
+The SSH host key that is checked is still the one pinned for the host's normal address, whichever address carries the connection, and a host whose key was never pinned is not met for the first time over the network. In the console the route is listed first as **SSH over the StorageForge network**, and on the map the interface carries that name. An interface that happens to be called `sf0` is not offered as a route by its name alone.
+
+Not carried: Sends, Moves and sync run between two hosts and keep a tunnel of their own per transfer (SSH with a job key), and NFS and SMB shares are not put on the network. In the hub topology a controller that is not a hub reaches only the hubs this way, because no step turns on forwarding at a hub.
+
+Built, not lab-tested.
 
 ## Designs
 

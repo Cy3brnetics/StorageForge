@@ -4,7 +4,7 @@
    dockerview.js; uses the shared helpers. */
 
 const INF = { view: 'workloads' };
-const INF_VIEWS = [['workloads', 'Workloads'], ['exposure', 'Exposure'], ['network', 'Network'], ['firewall', 'Firewall']];
+const INF_VIEWS = [['workloads', 'Workloads'], ['exposure', 'Exposure'], ['network', 'Network'], ['firewall', 'Firewall'], ['sfnet', 'StorageForge network']];
 const INF_LEVEL = { any: 'Any address', lan: 'Private networks', vpn: 'VPN only', blocked: 'Blocked', loopback: 'This machine only', unknown: 'Unknown' };
 const INF_CLASS = { any: 'st-failed', lan: 'st-warn', vpn: 'muted', blocked: 'muted', loopback: 'muted', unknown: 'st-warn' };
 
@@ -38,7 +38,7 @@ async function loadInfra() {
   content.append(text('p', 'Loading…', 'muted small'));
   box.replaceChildren(nav, content);
   try {
-    await ({ workloads: infWorkloads, exposure: infExposure, network: infNetwork, firewall: infFirewall })[INF.view](content);
+    await ({ workloads: infWorkloads, exposure: infExposure, network: infNetwork, firewall: infFirewall, sfnet: sfnView })[INF.view](content);      // sfnView: sfnetview.js
   } catch (err) { content.replaceChildren(text('p', err.message, 'st-failed')); }
 }
 

@@ -223,6 +223,22 @@ Every connection, scan result, denial, sign-in, plan save, script download, depl
 
 The tunnel in `docker-compose.remote.yml` is the one port meant to be open beyond the LAN. See [Remote nodes](remote-nodes.md) for what a stolen key can and can't do.
 
+## The StorageForge network
+
+StorageForge's own WireGuard network ([how to set it up](infrastructure-map.md#storageforges-own-network)) is a security boundary, and these are its rules. Built, not lab-tested.
+
+- **A private key never leaves the machine that made it.** Each host makes its key pair in `/etc/wireguard/sf0.key`, readable by root only. No step prints it, and no plan, script, reading, log or database row holds it. The reading runs `wg show` for public keys only, and never `wg showconf` or `wg show dump`, which print private keys. The index stores ranges, addresses and public keys.
+- **A key is taken from a reading twice at most, and each time because a person asked:** once when a host joins, and once per rotation that was asked for. A key that fits neither is never trusted. A different key on an active member is a critical notification, its peers keep the key on record, and so the machine that shows it is not let in.
+- **A rotation never leaves a host with a key its peers do not know.** The host switches only to the key the peers were given, checked on the host by its public half, and only after the readings show every peer holds it. The old private key is deleted at the switch, with any copy `wg-quick save` had written into the configuration file.
+- **A peer is trusted for its own address and nothing more** (`/32`), so a host that is taken over cannot answer for another member's address. In the hub topology a hub is trusted for the whole range, since traffic between two spokes passes through it.
+- **A revoked member** comes off every other member at the next plan. Its address and its key are never given out or accepted again.
+- **An interface StorageForge did not make is never changed,** whatever it is called.
+- **The controller's key is not in the controller.** Where the controller is a member, a separate program (the link, the `sfnet` container) makes the interface and holds the private key in a volume the server does not mount. The server has no capability and cannot read it. What the server asks of the link is checked line by line there: only an address, a port and WireGuard public keys are acted on, only on `sf0`, and no line is ever run or repeated in a message, so a server that is taken over cannot use the link to run a command, read the key or touch another interface. The link's one capability, `NET_ADMIN`, reaches the server container's own network and nothing on the Docker host.
+
+- **The network is a path, not an identity.** A connection StorageForge makes over it still checks the SSH host key pinned for that host, strictly, and logs in with the same vault key. The network address is used only when the controller's own interface holds the host's key on record for that address, so what answers there holds that host's private key.
+
+What it does not do: it is not a firewall. A member can open any port of another member over the network that the other's firewall allows. Add `fw-fence` steps where a service should be reached only by some.
+
 ## What is signed
 
 Everything sent to a host to run as root is signed, with these named exceptions. A signature covers the host, machine id, issue time, nonce, args and script, and not what a run reads on stdin, which is only ever data.
