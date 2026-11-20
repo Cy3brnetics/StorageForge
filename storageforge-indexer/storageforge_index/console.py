@@ -64,16 +64,31 @@ def routes(conn, host: str) -> list[dict]:
     hid, lan, port = row[0]
     out = [{'route': 'lan', 'label': 'LAN', 'address': lan, 'port': port or 22}] if lan else []
     net = loads(conn.scalar('SELECT data_json FROM host_network WHERE host_id = :h', {'h': hid}) or '{}') or {}
+    # what each tool on the host said is its own interface and address: Nebula's interface can have any name, and Netmaker's too
+    infra = loads(conn.scalar("SELECT data_json FROM security_measurements WHERE kind = 'infra' AND lower(host) = lower(:h)", {'h': host}) or '{}') or {}
+    access = infra.get('access') if isinstance(infra, dict) else None
+    known = overlays.interfaces_of(access.get('overlays') if isinstance(access, dict) else None)
     for iface in net.get('interfaces') or []:
         for a in iface.get('addresses') or []:
             try:
                 ip = ipaddress.ip_address(a.get('ip') or '')
             except ValueError:
                 continue
-            network = overlays.network_of(iface.get('name'), str(ip))
+            network = overlays.network_of(iface.get('name'), str(ip), known)
             # one route per network: a host's second address on the same one reaches the same sshd
             if ip.version == 4 and network and not any(r['address'] == str(ip) or r['route'] == network for r in out):
                 out.append({'route': network, 'label': overlays.label(network), 'address': str(ip), 'port': port or 22})
+    # The StorageForge network is offered by what the index holds, not by an interface's name: only where this controller and the
+    # host are members that confirm each other by key, and then first, so it is what a console uses unless another is chosen.
+    # (The bridge of the StorageForge containers is also called sf0 on the machine that runs them.)
+    from . import sfnetwork
+    out = [r for r in out if r['route'] != 'storageforge']
+    try:
+        ours = sfnetwork.route(conn, host)
+    except Exception:
+        ours = None
+    if ours:
+        out.insert(0, {'route': 'storageforge', 'label': overlays.label('storageforge'), 'address': ours, 'port': port or 22})
     return out
 
 
@@ -321,7 +336,7 @@ class Session:
                 'started': int(self.started), 'recording': self.rec_name, 'closed': self.closed}
 
 
-def _ssh_argv(sock: str, user: str, address: str, port: int, alias: str, remote: list[str] | None = None) -> list[str]:
+def _ssh_argv(sock: str, user: str, address: str, port: int, alias: str, remote: list[str] | None = None, options: list[str] | None = None) -> list[str]:
     from .runner import known_hosts_path
     argv = ['ssh', '-F', '/dev/null', '-tt', '-p', str(port),
             '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=4',
@@ -331,6 +346,7 @@ def _ssh_argv(sock: str, user: str, address: str, port: int, alias: str, remote:
             '-o', f'IdentityAgent={sock}', '-o', 'IdentitiesOnly=no', '-o', 'PasswordAuthentication=no', '-o', 'KbdInteractiveAuthentication=no',
             # nothing of this machine goes along: no agent, no X11, no ports
             '-o', 'ForwardAgent=no', '-o', 'ForwardX11=no', '-o', 'ClearAllForwardings=yes',
+            *(x for o in options or [] for x in ('-o', o)),          # CertificateFile, where the host is given certificates (sshcerts.py)
             '-o', 'SetEnv=TERM=xterm-256color', '--', f'{user}@{address}']
     return argv + (remote or [])
 
@@ -351,12 +367,20 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
 
     if kind == 'ssh':
         rs = routes(conn, host)
-        pick = next((r for r in rs if r['route'] == route), None) if route != 'auto' else (rs[0] if rs else None)
+        if route == 'auto':
+            # the StorageForge network when it answers, and the address scans use when it does not
+            from . import sfnetwork
+            usable = [r for r in rs if r['route'] != 'storageforge' or sfnetwork.via(conn, host)]
+            pick = usable[0] if usable else None
+        else:
+            pick = next((r for r in rs if r['route'] == route), None)
         if not pick:
             raise ConsoleError(f'{host} has no {route} address in its last scan' if route != 'auto' else f'{host} has no address to reach')
         lan = next((r['address'] for r in rs if r['route'] == 'lan'), pick['address'])
         s = Session(owner, host, 'ssh', pick['route'], pick['address'], cols, rows)
-        target, alias, port, remote_cmd = pick['address'], lan, pick['port'], None
+        from .remote import known_hosts_name
+        # the name the key was pinned under: with another port than 22 that is [address]:port, and ssh looks an alias up as it is written
+        target, alias, port, remote_cmd = pick['address'], known_hosts_name(lan, pick['port']), pick['port'], None
         bind_for = lan
     else:
         via = serial_via(conn, host)
@@ -369,7 +393,9 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
             r = routes(conn, via['host'])
             if not r:
                 raise ConsoleError(f'{via["host"]} has no address to reach')
-            target, alias, port, bind_for = r[0]['address'], r[0]['address'], r[0]['port'], r[0]['address']
+            from .remote import known_hosts_name
+            lan = next((x['address'] for x in r if x['route'] == 'lan'), r[0]['address'])
+            target, alias, port, bind_for = r[0]['address'], known_hosts_name(lan, r[0]['port']), r[0]['port'], lan
             remote_cmd = ['virsh', '-c', 'qemu:///system', 'console', '--force', host]
 
     def audited(action, detail):
@@ -381,9 +407,14 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
         s.spawn(['virsh', '-c', 'qemu:///system', 'console', '--force', host], {**child_env(), **env})
     else:
         try:
+            from . import sshcerts
+            from .vault import AuditLog
             with Vault(db, conn).unlock() as vault:
                 b = vault.resolve(bind_for, 'console')
-                key = vault.decrypt_key(b.key_id)
+                # five minutes long and for this user on this host: only the login has to fall inside it
+                cert = sshcerts.login_line(vault, conn, address=bind_for, user=b.user, key_name=b.key_name, purpose='console', actor=f'web:{owner}',
+                                           audit=lambda outcome, detail: AuditLog(db, conn, vault.audit_key).append(f'web:{owner}', 'ssh.certificate', outcome, bind_for, b.fingerprint, detail))
+                key = vault.decrypt_key(b.key_id, 'console')
         except NoBinding as exc:
             s._audit = None
             s.close('no console key')
@@ -400,8 +431,8 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
 
         def hold_agent():
             try:
-                with ephemeral_agent(key, ttl=AGENT_HOLD) as sock:
-                    s.spawn(_ssh_argv(str(sock), b.user, target, b.port or port, alias, remote_cmd), env)
+                with sshcerts.certificate_file(cert) as option, ephemeral_agent(key, ttl=AGENT_HOLD) as sock:
+                    s.spawn(_ssh_argv(str(sock), b.user, target, b.port or port, alias, remote_cmd, [option] if option else None), env)
                     started.set()
                     deadline = time.time() + AGENT_HOLD
                     while time.time() < deadline and not s.closed:

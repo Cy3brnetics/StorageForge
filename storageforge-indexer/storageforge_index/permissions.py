@@ -81,7 +81,7 @@ BUILTIN = {
     'admin': ('Everything, including keys, accounts and settings', ALL),
 }
 
-ANYONE = ('/api/login', '/api/logout', '/api/reauth', '/api/me', '/api/version', '/api/me/password', '/api/enroll', '/api/enroll/check')
+ANYONE = ('/api/login', '/api/logout', '/api/reauth', '/api/routecode', '/api/me', '/api/version', '/api/me/password', '/api/enroll', '/api/enroll/check')
 READ = ('GET', 'HEAD')
 _ANY = ('GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH')
 _WRITE = ('POST', 'PUT', 'DELETE', 'PATCH')
@@ -108,6 +108,8 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/(hosts|graph|canvas|capacity|planner/.*)', 'hosts.view'),
     (READ, r'/api/hosts/[^/]+/schedule', 'hosts.view'),
     (READ, r'/api/(browse|fs/browse|file-changes|dupes|filemap|files/ignore|folders/.*)', 'files.browse'),
+    (READ, r'/api/copies(/sides)?', 'files.browse'),                   # copies on other hosts (copies.py): what the duplicates views show, as pairs
+    (('POST',), r'/api/copies/(sync|dismiss)', 'plans.edit'),          # a sync is saved as a Moves plan; deploying it asks again
     (READ, r'/api/clamav', 'files.browse'),
     (('POST',), r'/api/clamav/hosts/[^/]+/config', 'deploy.apply'),
     (('POST',), r'/api/clamav/hosts/[^/]+/collect', 'deploy.report'),
@@ -154,7 +156,8 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (('PUT', 'DELETE'), r'/api/desktop/profiles/[^/]+', 'plans.edit'),
     (READ, r'/api/sfnet', 'hosts.view'),
     (('POST',), r'/api/sfnet', 'security.manage'),
-    (('POST',), r'/api/sfnet/members(/remove)?', 'security.manage'),
+    (('POST',), r'/api/sfnet/members(/remove|/rotate)?', 'security.manage'),
+    (('POST',), r'/api/sfnet/controller(/apply)?', 'security.manage'),
     (('POST',), r'/api/sfnet/plan', 'plans.edit'),
     (READ, r'/api/infra/settings', 'hosts.view'),
     (('POST',), r'/api/infra/settings', 'security.manage'),
@@ -207,6 +210,10 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (_WRITE, r'/api/git/sync', 'git.sync'),
 
     (READ, r'/api/(keys|access)', 'keys.view'),
+    (READ, r'/api/enclave', 'keys.view'),                              # whether the key enclave is there, and its counts
+    (_WRITE, r'/api/enclave(/.*)?', 'keys.manage'),                    # unlocking and locking it
+    (READ, r'/api/keys/ssh-ca', 'keys.view'),                          # the SSH CA: its public key, who is given certificates, what was issued
+    (('POST',), r'/api/keys/ssh-ca/plan', 'plans.edit'),               # saves a change plan and runs nothing. The rest of the CA is keys.manage, below
     (_WRITE, r'/api/(keys|bindings)(/.*)?', 'keys.manage'),
     (_WRITE, r'/api/(hostkey|access/grant)(/.*)?', 'access.manage'),
     (('DELETE',), r'/api/hosts/[^/]+', 'hosts.retire'),

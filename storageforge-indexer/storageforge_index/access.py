@@ -206,7 +206,7 @@ def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | 
                 'sudo -S -p "" sh -c ' + shlex.quote('exec </dev/null\n' + script))
         if b and (not admin_user or admin_user == b.user):
             # the scan user's own sudo rights, connecting with its vault key
-            with ephemeral_agent(v.decrypt_key(b.key_id), ttl=120) as sock:
+            with ephemeral_agent(v.decrypt_key(b.key_id, 'access'), ttl=120) as sock:
                 t = Transport(host=host, user=b.user, port=b.port, agent_sock=sock, known_hosts=str(known_hosts_path()),
                               isolated=True, strict=True)
                 try:
@@ -222,7 +222,7 @@ def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | 
             kid = conn.scalar('SELECT key_id FROM ssh_keys WHERE name = :n', {'n': admin_key})
             if kid is None:
                 raise ValueError(f'the vault has no key named {admin_key}')
-            with ephemeral_agent(v.decrypt_key(kid), ttl=TIMEOUT + 30) as sock:
+            with ephemeral_agent(v.decrypt_key(kid, 'access'), ttl=TIMEOUT + 30) as sock:
                 t = Transport(host=host, user=admin_user, port=port, agent_sock=sock, known_hosts=str(known_hosts_path()),
                               isolated=True, strict=True)
                 try:

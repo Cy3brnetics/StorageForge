@@ -24,13 +24,13 @@ Backups never contain the vault secret, on purpose: a backup together with its s
 
 ### Key enclave
 
-*Being built for 0.5.5, and not lab-tested. It is off unless `STORAGEFORGE_ENCLAVE` is set.*
+*New in 0.5.5. Built, not lab-tested: its lab tier (19) is written and has not run. It is off unless `STORAGEFORGE_ENCLAVE` is set.*
 
 A second layer on the vault's keys: a micro VM whose only program holds the KEK, and whose only device is a vsock socket. It has no network card, no disk and no shell. The web app hands it the vault's own ciphertexts with each request, so nothing stored changes format and the vault opens as before without it.
 
 ```text
-web app ──vsock──► enclave: unlock · lock · status · sign with key K · make or take in a key · MAC for the audit chain
-                            seal and release a secret · rotate the vault secret
+web app ──vsock, encrypted──► enclave: unlock · lock · status · sign with key K · make or take in a key · MAC for the audit chain
+                            seal and release a secret · rotate the vault secret · step-up · the audit chain's head
 ```
 
 **Running it.** With `STORAGEFORGE_ENCLAVE=vm` the server starts the micro VM itself from the image in `STORAGEFORGE_ENCLAVE_IMAGE_DIR`, and refuses to start if it cannot: the image's files must match its `SHA256SUMS` and, where `STORAGEFORGE_ENCLAVE_IMAGE` pins a digest, that digest; what answers must say it is the VM's only program with its memory locked. The VM gets one device, the vsock socket: no network card, no disk, no shared folder. Two programs can run it from the same image. Firecracker is the one in the shipped image and is used where it is installed; it needs `/dev/kvm` and nothing else, runs under its own seccomp filter, and cannot be reconfigured once started. QEMU's `microvm` is for a developer's machine and the lab; it needs `/dev/vhost-vsock` too and runs under QEMU's seccomp sandbox. Either gets none of the server's environment. Firecracker's jailer is not used: it needs root, and the server's container has neither root nor any capability, so the container itself (read-only root, no capabilities, no new privileges) is what surrounds Firecracker.
@@ -41,27 +41,166 @@ With it set:
 
 - **SSH keys are not decrypted in the web app.** Each task's agent socket is served by the web app, lists the one public key, and asks the enclave for each signature. Deploy requests and evidence bundles are signed the same way. A new ed25519 key is made inside and its private half is never outside.
 - **The audit chain's MAC key stays inside.** Each entry's MAC is computed there; the chain is the same chain, and either side verifies what the other wrote.
-- **The secret is needed once.** The first unlock hands it to the enclave; after that the web app works without it.
+- **The secret is needed once, and not by the web app.** Whoever unlocks the enclave hands it over; after that the web app works without it (see *Unlocking it* below).
 - **It fails closed.** An enclave that does not answer, is locked, or has locked itself down after five malformed requests is a locked vault. The web app does not fall back to opening the vault itself.
-- **Its limits are its own:** six unlock attempts a minute, 600 signatures a minute per key, one request at a time, a 1 MiB frame. The web app cannot raise them.
+- **Its limits are its own:** six unlock attempts a minute, 600 signatures a minute per key, 60 releases a minute per secret and 600 an hour altogether, five step-ups a minute a person, one request at a time, a 1 MiB frame. The web app cannot raise them.
+- **Each kind of task has an allowance of its own** on top of the one per key: every signature says what it is for (scan 1200 a minute, deploy 600, device 300, git 300, signing requests 300, console 120, rotation 120, access set-up 60, anything else 120), and secrets leave at most 120 times a minute for one kind of step or platform. The kind is the web app's word, so it cannot get more out of a key than the key's own limit gives; what it does is keep one kind of work from using up what the others need, and show in the counts which kind asked for what. **Keys → Key enclave** shows the counts by kind.
+- **Its counts open notifications.** The enclave counts what it refused, inside, where the web app cannot change the numbers, and the notification center reads them: requests refused at a limit, ciphertexts or secrets that did not authenticate (three in an hour is a warning, twenty critical), step-ups that failed, requests that came without the step-up they needed, secrets asked for what their policy does not name, many releases in an hour, audit entries that were signed and not written, a released secret missing from the log, a log that was cut, and malformed requests on the way to a lock-down. Each says how many in the last hour and leaves an hour after the count last moved. They are security findings: none can be muted or snoozed.
 
-- **A secret that has to leave is released, not read.** A device password or a step's secret is sealed inside and given back one request at a time: the enclave counts each release and gives any one secret at most 60 times a minute. What was sealed as a private key cannot be asked for this way.
+- **A secret that has to leave is released, not read, and for something named.** A device password or a step's secret is sealed inside and given back one request at a time, for a named step, host or platform. The enclave counts each release and gives any one secret at most 60 times a minute. What was sealed as a private key cannot be asked for this way.
+- **A secret can carry a policy:** the steps, hosts and platforms it may be released for, and whether it is sensitive (`vault secret-add NAME --step tailscale --for-host nas1 --sensitive`, `vault secret-policy NAME` to show or change it, `--none` to take it off). The policy is in the secret's associated data, so the copy stored beside it cannot be changed or left out: the secret then does not open. A release for anything the policy does not name is refused inside, and a sensitive one takes a step-up token.
+- **Every release is written into the audit log by the enclave.** It makes the entry itself (`enclave.release`: which secret, for what, the how-manieth release, who stepped up), signs it into the chain after the log's last entry, and only then hands the secret over. The web app stores the entry. One it keeps to itself leaves a log that no longer ends where the enclave says, and the enclave counts it. A release the enclave refused is written up by the web app as `denied`.
+- **The enclave keeps the head of the audit chain.** It remembers the entry it signed last. A log that was cut short in the database still verifies entry by entry, since what is left is a chain; it no longer ends where the enclave signed it. `audit verify` and **Audit → Verify chain** say so, a notification opens, and no secret is released until a person has looked and taken the log as it is (**Keys → Key enclave**, written to the log with their name). Entries others wrote after the head, by a command with an enclave of its own or without the key while it was locked, are shown to the enclave one by one and it checks each follows the one before. Cutting exactly the last entry looks like a write that failed: it is counted, and shown as a warning. The head is in the enclave's memory, so a restart forgets it and the enclave takes the log as it finds it at the next entry; restarts are in the audit log and the notification center.
 - **An imported key is sealed inside** after the enclave has checked it can sign with it (RSA below 3072 bits is refused there too). It passed through the web app to get there, which is the reason for the `generate-only` key policy.
 - **The vault secret is rotated inside.** The enclave derives the new KEK and rewraps each DEK without letting one out, and switches only when every row is written; a rotation that fails part way changes nothing.
 
 The web app never opens the KEK when the enclave is configured. What still passes through it: a key being imported, an RSA key (made in the web app and imported, since the enclave makes ed25519 and ECDSA), a secret on its way in or out, and the vault secret itself at the first unlock and at a rotation.
 
-The image is `storageforge-indexer/enclave/image/build.sh`: a kernel without modules, an IP stack or block devices and with lockdown forced on, and an initramfs of one static file. The compiler image is pinned by digest and the kernel by checksum, and the build is reproducible: build it again and compare `SHA256SUMS`.
+**Where it is not there.** On a machine with no KVM (a VPS without nested virtualization, say) the enclave cannot run, and without `STORAGEFORGE_ENCLAVE` it is off: the vault then opens its keys in the web app, as before 0.5.5. **Keys → Key enclave** and the **Security** overview (*This server's keys*) say so in words, with the reason this machine cannot run it where that is the case: *Key enclave: off. The extra layer is not there.* Where it runs as a plain program on a socket file, which is for development and tests, the same line says it is not a micro VM.
+
+**Unlocking it.** A restarted enclave holds nothing until it is given the vault secret again. Three ways hand it over, and none leaves it in the web app:
+
+- **The starter, apart.** `storageforge-index vault starter` is a process of its own: it reads `STORAGEFORGE_VAULT_SECRET_FILE` once, hands the secret to the enclave the server runs (the server writes where that is to `enclave.addr` in its runtime folder), overwrites its copy and ends. With `--watch` it stays, holding nothing, and reads the file again only when the enclave has come back locked after a restart. `docker-compose.enclave.yml` runs it as the `starter` service and moves the vault secret to a volume of its own (`sf-vault-secret`) that the server's container does not mount, so the server has neither the secret nor the file. The server then starts with `STORAGEFORGE_VAULT_SECRET_APART=1` and refuses to start if it is given a secret all the same.
+- **The starter, in place.** A server that does find the secret in its own environment hands it over once as it starts, overwrites the variable where `/proc/PID/environ` shows it and takes both variables out of its environment. A secret file the server's account can read is still a file it can read, and Python cannot promise no copy of the bytes is left in its memory: the starter apart is the one that closes that.
+- **A person.** **Keys → Key enclave** shows a locked enclave with a field for the vault secret (`POST /api/enclave/unlock`, which takes `keys.manage` and a fresh password). The secret crosses the web app once, on its way in, and is checked only inside the enclave. Every attempt is in the audit log, without the secret.
+
+An enclave that locked itself down is never unlocked by a starter: a person looks at what sent the malformed requests first, and then unlocks it on the Keys page. **Lock the enclave** there (`POST /api/enclave/lock`) makes it forget every key at once.
+
+**Step-up, checked inside.** The web app's own rule, the password typed within the last five minutes, is the web app's word, and a web app that has been taken over can give it for anyone. For what matters most the enclave checks the person itself:
+
+- **What takes it:** making or importing a key, rotating the vault secret, enrolling another person, and lifting a lock-down. Signing with a key that is already there takes none, so scans and deploys still run unattended.
+- **What it checks:** a password against a hash it holds (Argon2id), or a FIDO2 assertion against a public key it holds and a challenge it made itself, which counts once. The record of each person is sealed under the KEK and kept in the database (`enclave_stepup`) like every other ciphertext; only the enclave reads it.
+- **What comes back** is a token good for five minutes, kept in the server for that session and never in the cookie. Tokens rotate by themselves: none lives longer, and none survives a lock or a restart. Five tries a minute a person, counted inside.
+- **Enrolling:** **Keys → Key enclave → Enroll your password with the enclave** takes your account password and the security keys the account already has. The first person needs nothing more: until then there is no step-up to pass. After that a new record takes a step-up of your own or the vault secret. `storageforge-index vault stepup-enroll USER` does it from the server's shell, the password on stdin, and `vault stepup-forget USER` removes a record. Changing your account password gives the enclave the new one. A security key added later is not in the record until you enroll again.
+- **Whoever holds the vault secret needs no person:** a command run with the secret gets its own token from it.
+
+What it does not do. A password is typed into the web app on its way to the enclave, so a web app that is taken over and waits sees the next one typed; a security key's answer cannot be kept and used again. The enclave knows step-up is on because it is shown a record when it is unlocked, so whoever can write the database can remove every record before a restart: set `STORAGEFORGE_ENCLAVE_STEPUP=required` where the enclave is unlocked from (the starter's environment) to insist on it whatever is shown. A record of an earlier password, kept by someone who could read the database then, still opens: the enclave has no disk to remember that it was replaced. Step-up with a physical FIDO2 token is not lab-tested; the tests make the assertions in software.
+
+To read the vault secret for safekeeping with this compose file: `docker compose -f docker-compose.yml -f docker-compose.enclave.yml run --rm --entrypoint cat admin /run/sf-vault/vault_secret`. To go back to a stack without the enclave, put that secret in `./secrets/vault_secret` before deploying without the file.
+
+What does not work with the secret apart: the nightly copy of a backup to another host, which the server encrypts with a key derived from the vault secret, has no secret to derive it from and is not made. The backup itself still is. Until that key is derived inside the enclave, copy backups off with a command that holds the secret (`docker compose … run --rm admin backup …`), or use the starter in place.
+
+#### Layers
+
+*The owner's direction of 2026-11-18: a flaw in one layer must not give up the keys. Built, not lab-tested.*
+
+**A second lock on the KEK.** Without it the KEK comes from the vault secret alone, so the secret beside a stolen database, or a backup with its secret, is the keys. `storageforge-index vault second-lock on` (run by whoever holds the vault secret) makes a second share, 32 random bytes in a file only its owner can read, and mixes it into the KEK:
+
+```text
+KEK = HMAC-SHA256(key = host share, "storageforge:second-lock:v1" ‖ 0 ‖ Argon2id(vault secret))
+```
+
+- The secret alone then derives a key that opens nothing, on this machine or any other. This holds with the enclave, which mixes the share inside, and without it.
+- Nothing stored changes format. Turning the lock on or off is a rotation: each DEK is rewrapped and no key's ciphertext is touched. `vault_meta.second_lock` says which way the KEK is derived. `vault second-lock off` is the way back, and `vault second-lock status` says which it is.
+- The share is in `STORAGEFORGE_HOST_SHARE_FILE` (`/etc/storageforge/host_share` if not set), outside the database, its backups and the secret volume. A file others can read is refused. Whoever unlocks the vault reads it: the starter, or a command that holds the secret. `docker-compose.enclave.yml` mounts a folder of the Docker host for it (`STORAGEFORGE_HOST_SHARE_DIR`), read-only for the starter. Restart the server after turning the lock on or off, so that its enclave is unlocked again with what the vault now needs.
+- **The recovery share** is printed once when the lock is turned on. With it and the database, `vault second-lock recover` (the share on stdin) writes the host share again on a machine that lost it, or on a new one. The database holds the host share sealed under a key made from the recovery share, and nothing else of it. Kept beside the vault secret, the recovery share undoes what the lock is for: keep them apart. Without the host share and without the recovery share the vault cannot be opened by anyone.
+- **TPM:** sealing the share to the host's TPM is not built. It needs `tpm2-tools` and a TPM to test against, and neither was there. The share is a file.
+- Backups of the database are encrypted from the vault secret alone, as before, so a backup can be read without the share; the keys inside it cannot be opened without it.
+
+**The app speaks to the enclave over a channel of its own.** vsock is local to the host, but something else on the host should neither read it nor stand in for the enclave. Every connection begins with a Noise handshake (`Noise_NX_25519_AESGCM_SHA256`) and everything after it is encrypted, both ways, under keys of that one connection.
+
+- The enclave makes a static key as it starts and proves in the handshake that it holds it. **The key is pinned at first start:** the server, which has just started the VM over a socket it made for it, pins the key the VM shows first (`enclave.pins` beside the enclave's socket, readable by the server's account only), and pins the new one when it restarts the VM. Every later client, in the server or beside it, refuses to speak to anything that shows another key at that address. So the vault secret is never sent to something that only sits where the enclave should be.
+- For an enclave that something else runs, the key is pinned the first time it is spoken to. It makes a new key each time it starts: `storageforge-index vault enclave-pin` shows the pinned key, `--renew` pins the one it shows now, and `STORAGEFORGE_ENCLAVE_KEY` names the key to insist on instead.
+- A frame changed on the way does not decrypt: the connection ends and the enclave counts it as a malformed request. What does not begin with the handshake gets no answer.
+- What it is not: the handshake proves the enclave to the client, not the client to the enclave. Whoever can open the socket can still ask, under the same limits and with the same step-up. A client's first contact with an enclave nobody pinned for it trusts what answers.
+
+**Keys that rotate by themselves.** What can rotate cheaply does, on a schedule, so that a key someone took is of use for a short time only:
+
+- **The session-signing key** changes every `STORAGEFORGE_SESSION_ROTATE_HOURS` (24; `0` turns it off, and the session secret signs as before). It is made from two things kept in two places: the session secret in the server's secret file, and a random value made at each rotation and kept in the database. Either alone signs nothing. The keys of the last periods still check cookies for as long as a session can last (8 hours) and sign nothing, so nobody is signed out by a rotation, and a signing key read out of the server's memory is dead a day later.
+- **The vault key** is derived again under a new salt every `STORAGEFORGE_KEK_ROTATE_DAYS` (30; `0` turns it off), and every DEK is rewrapped under it. No key's ciphertext is touched, and the vault opens with the same secret afterwards. With the enclave this happens inside, from the secret the enclave has held since it was unlocked: nobody hands it over again, and since it gives nobody anything it takes no step-up. Rotating to a *new* vault secret still does. Without the enclave the server derives it from the secret in its environment, as it does at start.
+- **The enclave's tokens** last five minutes, and none survives a lock or a restart.
+- **SSH keys** are rotated by the [`rotate`](#if-a-key-may-have-leaked) plan when the operator runs it: that changes what hosts trust, and is not done unasked. Job keys per run are made per send, as before. The agent's tunnel keys come with the agent (0.5.7).
+- A rotation that fails is in the audit log (`vault.rekey`, `session.key.rotate`) and in the notification center, tried again every few minutes, and the notification leaves when one succeeds. The key in use stays in use meanwhile.
+
+**Sensitive routes that move.** A request that changes keys, bindings, the key enclave, deploys, consoles, host access or security keys carries a code that changes every 30 seconds. It rides in the path, as a 2FA code does: `POST /api/keys` is sent as `POST /api/~1a2b3c4d/keys`.
+
+```text
+code = first 8 hex digits of HMAC-SHA256(route key, "METHOD /api/route|" + floor(time / 30))
+```
+
+- The route key is a secret of the one session. A browser is given it once, in the answer to its sign-in, and keeps it. The server takes the code out of the path before anything routes, so permissions, the fresh-password rule and the audit log see the route as before, and checks the code for this half minute and the one on either side. The server's clock is the one that counts: sign-in and every refusal say what time it is.
+- A session that asked for the key at sign-in, which the sign-in page does, must send the code from then on. The mark is in the signed session cookie and cannot be taken off. A browser that lost its key gets it again from `POST /api/routecode`, which takes the password.
+- **What it is worth:** a recorded or guessed URL is dead half a minute later, a code for one route is no code for another, and a session cookie alone, copied to another machine, changes nothing on a sensitive route: it has no route key, and getting one takes the password. That is on top of the cookie, the same-origin check and the fresh-password rule.
+- **What it is not:** a defence against someone who already runs code in the page or in the web app, who can read the key or skip the check. A moving path is not a secret. A client that signs in without asking for the key (a script using the API) is not asked for codes.
+- The code is checked by the server. Checking it inside the enclave as well, for the operations that take a step-up, is not built: the enclave has no clock to share with a browser, and those operations already need a token the enclave gave for a proof it checked itself.
+
+For the vault key to be derived again on a schedule the enclave holds the vault secret, and the host's share where the second lock is on, from unlock to lock, in its locked memory. Before this it held the secret only for the moment of unlock.
+
+**The image** is built by `storageforge-indexer/enclave/image/build.sh`: a kernel without modules, an IP stack or block devices and with lockdown forced on, and an initramfs of one static file. The compiler image is pinned by digest and the kernel by checksum.
+
+- **Reproducible, and recorded.** Two builds give the same bytes, file for file. `enclave/image/SHA256SUMS` in the repository records them for the sources as they are committed, so anyone can build the image and compare, and a change to the program or the kernel list shows as a change to that file. CI builds the image twice, compares the two, and compares both with the recorded lines.
+- **Scanned.** CI scans the program's dependencies (`Cargo.lock`) and fails on a high or critical finding. The program is the only file in the image, and it is Rust with no C library beside it.
+- **Signed.** `enclave/image/sign.sh OUT KEY` signs `SHA256SUMS` with an SSH key, as release tags are signed, in a namespace of its own (`storageforge-enclave`). CI signs with the release key where the run is given it (the secret `STORAGEFORGE_RELEASE_KEY`); a fork or a pull request is given none, and there the image is built and compared and not signed. With `STORAGEFORGE_ENCLAVE_SIGNERS` naming an allowed-signers file (`storageforge namespaces="storageforge-enclave" ssh-ed25519 AAAA…`), the server starts only an image whose `SHA256SUMS.sig` checks out against it, at start and at every restart. `sign.sh --verify OUT SIGNERS` checks the same by hand. The release key itself is the owner's: until its public half is in the repository and its private half in CI's secrets, images are compared by hash and not signed.
+- **arm64.** `ARCH=arm64 enclave/image/build.sh` cross-compiles the same image for arm64 (`Image`, `initramfs.cpio.gz`), recorded in `enclave/image/SHA256SUMS.arm64` and built in CI. Here it was booted under QEMU's emulation, where it unlocked, made a key, signed, released a secret and verified an audit chain. It has not run under KVM or Firecracker on an arm64 machine, and the server's own supervisor starts only the x86-64 image so far.
 
 ### Secrets for plan steps
 
 Some steps need a secret on the host they run on: the `tailscale` step needs an auth key. Such a secret is stored in the vault like a device credential (`vault secret-add NAME`, one line on stdin, so it is in no shell history), and never goes into a plan, a script, the Ansible playbook or a log.
 
-`vault send-secret NAME --host HOST` decrypts it and writes it to `/run/storageforge/secrets/NAME` on the host over SSH, on ssh's stdin. `/run` is in memory, the folder is mode 700 and the file mode 600, and both are gone at reboot. The login needs `sudo` without a password, as deploys do. The step reads the file there. The `tailscale` step hands it to Tailscale as `--auth-key=file:…`, so the key is on no command line, and removes it once the node has joined. Both commands write to the audit log, and neither prints the secret.
+`vault send-secret NAME --host HOST [--step STEP]` decrypts it (with the key enclave: has it released for that host and step, which a policy on the secret may name) and writes it to `/run/storageforge/secrets/NAME` on the host over SSH, on ssh's stdin. `/run` is in memory, the folder is mode 700 and the file mode 600, and both are gone at reboot. The login needs `sudo` without a password, as deploys do. The step reads the file there. The `tailscale` step hands it to Tailscale as `--auth-key=file:…`, so the key is on no command line, and removes it once the node has joined. Both commands write to the audit log, and neither prints the secret.
+
+Two more steps take a secret the same way. Neither is lab-tested against the real service: Cloudflare needs an account, and the lab has no Pangolin server yet. The unit tests run them against stand-ins. One thing was checked against the real program: `cloudflared` 2026.10.4 lists `--token-file` and reads the file the unit names. No tunnel was started with it, and Newt has not been run at all.
+
+| Step | The secret | How the program gets it |
+| :--- | :--- | :--- |
+| `cloudflare-tunnel` | a Cloudflare Tunnel token | moved to `/etc/cloudflared/storageforge-token` (root, mode 600) and read by `cloudflared tunnel run --token-file`, as the unit `storageforge-cloudflared` |
+| `pangolin-site` | a Pangolin site secret | written with the site id and the server's address to `/etc/newt/storageforge.json` (root, mode 600), which Newt reads because the unit `storageforge-newt` sets `CONFIG_FILE` |
+
+A tunnel's token is needed at every start, so unlike a Tailscale auth key it stays on the host, in that one file. The copy under `/run` is removed once the program runs. Both programs' own instructions put the secret on a command line (`cloudflared service install <token>`, `newt --secret <secret>`), where every account on the host can read it; these steps never do. A `cloudflared` too old to have `--token-file` (before April 2025) is refused. A unit the program's own installer made is left alone, and the step says so when that unit has the secret on its command line. Neither step installs the program. `state: absent` stops the unit and removes the file.
+
+A tunnel makes what it publishes public with no port open: see [Tunnels](infrastructure-map.md#tunnels-public-with-no-port-open).
+
+The steps that join a private network were each built only after reading how the program takes its secret (its own documentation and source, on 2026-11-20). None is lab-tested: the unit tests run `netbird`, `zerotier-cli` and `ziti-edge-tunnel` as stand-ins, and Nebula as the real program.
+
+| Step | The secret | How the program gets it | What stays on the host |
+| :--- | :--- | :--- | :--- |
+| `netbird` | a NetBird setup key | `netbird up --setup-key-file /run/storageforge/secrets/NAME`: the client reads the file and hands the key to its daemon over a local socket | Nothing of the key: the file is removed once the peer has joined, and the peer keeps a key of its own |
+| `tailscale` with Headscale | a pre-auth key `vault headscale-key` made on the Headscale server | It comes back inside the SSH connection, goes straight into the vault and is never printed. From there it travels like any auth key, and `tailscale up` reads it as `--auth-key=file:` | Nothing: the file is removed once the node has joined |
+| `openziti` | a one-time enrollment token (a JWT) | `ziti-edge-tunnel enroll --jwt /run/storageforge/secrets/NAME` | The identity file the enrollment writes, which holds a private key made on the host: mode 640 for root and the group `ziti` where the packaged service is there, 600 otherwise. The token file is removed, and a token works once |
+| `zerotier` | none | A network is joined by its id, which is in the plan. Whether the node is let in is decided at the controller | |
+| `nebula` | none that travels | The host makes its own key pair (`nebula-cert keygen`, in `/etc/nebula`, mode 600, root). Only the public half is read. The CA key is a vault key and signs in the vault, in the key enclave where there is one. The certificate, the CA certificate and the configuration are public, and the last two are written into the plan's script | The host's private key, where Nebula needs it at every start. `state: absent` removes it |
+
+If a program repeats its secret when it fails, the step takes it out of what it reports. A NetBird too old to have `--setup-key-file` is refused, because it could only take the key as an argument.
+
+**Netmaker has no step.** `netclient join -t TOKEN` is the only way netclient takes its enrollment token, and its own container script builds the same command line. The token registers a machine on the network, and a command line is readable by every account on the host, so StorageForge does not run it.
+
+**The Nebula CA.** The CA's certificate and the list of what it issued are kept as a setting, with no key in it. A certificate from here always has one address inside the CA's networks, an end no later than the CA's own, and the CA's fingerprint as its issuer. An address is given to a second name only after the first one's certificate is revoked. Revoking does not reach a host by itself: a host refuses a revoked certificate once the `nebula` step has run on it again, and a tunnel that is already up stays up until its next handshake. Making a CA, issuing and revoking are in the audit log (`vault.nebula_ca`, `vault.nebula_issue`, `vault.nebula_revoke`). They are commands of `storageforge-index vault`, run by someone who can unlock the vault: there is no page or API route for them yet.
 
 ### Console keys
 
 A key bound with `--actions console` opens a terminal from the web UI ([Console](console.md)), as the binding's login. It is kept apart from scan bindings, so the read-only scan login never becomes a shell. Sessions take only host keys a scan confirmed, forward nothing, and are audited when they open and close. With recording on, they are kept in full, input included.
+
+### SSH certificates
+
+Built, not lab-tested: the unit tests run both steps against a real `sshd` on the build machine, and lab tier 21 is written and has not run.
+
+StorageForge can be a certificate authority for SSH. The CA is one more key in the vault, named `storageforge-ssh-ca`, made there (**Keys → SSH certificates → Make the SSH CA**) and never imported. With the key enclave it is made inside the enclave and signs there. It can be bound to no host: it signs certificates and logs in nowhere.
+
+**What a host is given.** The `ssh-ca-trust` plan step (Changes, group Hardening, or **Stage trust** on the Keys page) writes four things and nothing else:
+
+| File | What it holds |
+| :--- | :--- |
+| `/etc/ssh/storageforge_user_ca.pub` | the CA's public key |
+| `/etc/ssh/storageforge_principals/<user>` | who may log in as `<user>` with a certificate: `<user>@<host name>`, and any principals you added |
+| `/etc/ssh/storageforge_revoked_keys` | the list of revoked certificates, with its version beside it |
+| `/etc/ssh/sshd_config.d/50-storageforge-ca.conf` | `TrustedUserCAKeys`, `AuthorizedPrincipalsFile`, `RevokedKeys`, and `HostCertificate` if you asked for it |
+
+It does not set `AuthorizedKeysFile` or `PubkeyAuthentication`, so every key that logged in before still does. A user with no principals file cannot log in with a certificate and can with a key. Before `sshd` is reloaded the step runs `sshd -t`, then asks `sshd -T` whether the three settings took effect and whether keys are still read from the same place. If any of that fails, or `sshd` does not reload, the files are put back from a copy taken first. With a rollback timer set (10 minutes from the Keys page), the host puts them back by itself unless StorageForge reaches it again. A host that already has a `TrustedUserCAKeys`, an `AuthorizedPrincipalsFile` or a `RevokedKeys` of its own is left alone: `sshd` takes one of each, and StorageForge does not replace yours. `state: absent` removes the four files and leaves `authorized_keys` as it is.
+
+**Logins.** Certificates are opt-in per host, for the web console, for scans, or both (**Console** and **Scans** on the Keys page). For a host that is opted in, each console session and each scan gets a certificate for the key its binding already names:
+
+- one principal, `<user>@<host>`, so it logs in as that user on that host and nowhere else;
+- 5 minutes for a console (only the login has to fall inside it; an open session is not cut), 60 minutes for a scan;
+- a terminal for the console and nothing for a scan. No port, agent or X11 forwarding in either;
+- a serial number, and a key id that says what it is for and who asked, which `sshd` writes to its log.
+
+The private key stays where it was, in the agent or the enclave. The certificate is not secret; it is written to a file for `ssh` and removed after. `ssh` offers the certificate first and the plain key after it, so opting a host in before it trusts the CA breaks nothing. Once certificates work on a host you can remove the key from `authorized_keys` there yourself; StorageForge does not do that for you. Each certificate is a row under Keys and an `ssh.certificate` row in the vault's audit log. If one cannot be made, that is logged and the login goes on with the key.
+
+**Revoking.** **Revoke** marks the certificate and raises the version of the revocation list. The host learns of it when the `ssh-ca-krl` step has run there (**Stage the list for the hosts**): until then the certificate still works, for the minutes it has left. `sshd` reads the list at every login, so no reload is needed. Because `sshd` refuses every key when it cannot read the file `RevokedKeys` names, the step checks a new list with `ssh-keygen` on the host and moves it into place in one rename, and an older list never replaces a newer one. A list holds at most 8000 certificates that have not ended.
+
+**Host certificates** are optional. **Issue host certificate** signs the host key a scan pinned, for the host's name and the address it is scanned at, for 90 days; the trust step installs it when *Install this host's certificate too* is set. A client with the `@cert-authority` line for the CA then accepts the host without having seen its key. A certificate that ends within 14 days raises a notification.
+
+What this does not do: it does not issue certificates to people. Only StorageForge's own console and scan logins get them.
 
 ## Bindings
 
@@ -142,6 +281,22 @@ Every connection, scan result, denial, sign-in, plan save, script download, depl
 ## Remote nodes
 
 The tunnel in `docker-compose.remote.yml` is the one port meant to be open beyond the LAN. See [Remote nodes](remote-nodes.md) for what a stolen key can and can't do.
+
+## The StorageForge network
+
+StorageForge's own WireGuard network ([how to set it up](infrastructure-map.md#storageforges-own-network)) is a security boundary, and these are its rules. Built, not lab-tested.
+
+- **A private key never leaves the machine that made it.** Each host makes its key pair in `/etc/wireguard/sf0.key`, readable by root only. No step prints it, and no plan, script, reading, log or database row holds it. The reading runs `wg show` for public keys only, and never `wg showconf` or `wg show dump`, which print private keys. The index stores ranges, addresses and public keys.
+- **A key is taken from a reading twice at most, and each time because a person asked:** once when a host joins, and once per rotation that was asked for. A key that fits neither is never trusted. A different key on an active member is a critical notification, its peers keep the key on record, and so the machine that shows it is not let in.
+- **A rotation never leaves a host with a key its peers do not know.** The host switches only to the key the peers were given, checked on the host by its public half, and only after the readings show every peer holds it. The old private key is deleted at the switch, with any copy `wg-quick save` had written into the configuration file.
+- **A peer is trusted for its own address and nothing more** (`/32`), so a host that is taken over cannot answer for another member's address. In the hub topology a hub is trusted for the whole range, since traffic between two spokes passes through it.
+- **A revoked member** comes off every other member at the next plan. Its address and its key are never given out or accepted again.
+- **An interface StorageForge did not make is never changed,** whatever it is called.
+- **The controller's key is not in the controller.** Where the controller is a member, a separate program (the link, the `sfnet` container) makes the interface and holds the private key in a volume the server does not mount. The server has no capability and cannot read it. What the server asks of the link is checked line by line there: only an address, a port and WireGuard public keys are acted on, only on `sf0`, and no line is ever run or repeated in a message, so a server that is taken over cannot use the link to run a command, read the key or touch another interface. The link's one capability, `NET_ADMIN`, reaches the server container's own network and nothing on the Docker host.
+
+- **The network is a path, not an identity.** A connection StorageForge makes over it still checks the SSH host key pinned for that host, strictly, and logs in with the same vault key. The network address is used only when the controller's own interface holds the host's key on record for that address, so what answers there holds that host's private key.
+
+What it does not do: it is not a firewall. A member can open any port of another member over the network that the other's firewall allows. Add `fw-fence` steps where a service should be reached only by some.
 
 ## What is signed
 

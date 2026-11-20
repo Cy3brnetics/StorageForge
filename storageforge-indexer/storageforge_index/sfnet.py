@@ -12,8 +12,13 @@ four things and does nothing else:
 
 A network is a plain dict, as it will be stored:
 
-    {'range': '10.203.0.0/20', 'port': 51903, 'topology': 'mesh' | 'hub',
-     'members': [{'host', 'address', 'public_key', 'next_public_key', 'endpoint', 'hub', 'state': 'pending' | 'active' | 'revoked'}]}
+    {'range': '10.203.0.0/20', 'port': 51903, 'topology': 'mesh' | 'hub', 'controller': None | the member that is the controller,
+     'members': [{'host', 'address', 'public_key', 'next_public_key', 'endpoint', 'hub', 'state': 'pending' | 'active' | 'revoked',
+                  'rotation': None | 'asked'}]}
+
+A key changes in one way only: a person asks for a rotation (ask_rotation), the host makes a second pair, a reading shows its public
+half (rotate), every peer is told to know both, the host switches (rotated), and the old key comes off every peer. A new key that
+nobody asked for is never taken: confirm() reports it.
 
 A peer is trusted for its own address and nothing more (`/32`), so one host that is taken over cannot answer for another's address.
 In the hub topology a hub is trusted for the whole range, because traffic between two spokes goes through it.
@@ -64,7 +69,7 @@ def new(in_use=(), range_: str | None = None, topology: str = 'mesh') -> dict:
             raise NetworkError(f'{range_!r} is not a network') from None
         if net.version != 4 or not net.is_private or net.overlaps(SHARED) or not 16 <= net.prefixlen <= 28:
             raise NetworkError('the range is a private IPv4 network between /16 and /28, outside 100.64.0.0/10')
-    return {'range': range_ or pick_range(in_use), 'port': PORT, 'topology': topology, 'members': []}
+    return {'range': range_ or pick_range(in_use), 'port': PORT, 'topology': topology, 'controller': None, 'members': []}
 
 
 def member(network: dict, host: str) -> dict | None:
@@ -85,7 +90,7 @@ def join(network: dict, host: str, endpoint: str | None = None, hub: bool = Fals
     if m:
         network['members'].remove(m)
         network['members'].append({**m, 'host': f'{host} (revoked {m["address"]})', 'endpoint': None})          # kept, so its key and address stay refused
-    m = {'host': host, 'address': address, 'public_key': None, 'next_public_key': None, 'endpoint': endpoint, 'hub': bool(hub), 'state': 'pending'}
+    m = {'host': host, 'address': address, 'public_key': None, 'next_public_key': None, 'endpoint': endpoint, 'hub': bool(hub), 'state': 'pending', 'rotation': None}
     network['members'].append(m)
     return m
 
@@ -112,11 +117,34 @@ def set_key(network: dict, host: str, public_key: str) -> dict:
     return m
 
 
+def ask_rotation(network: dict, host: str) -> dict:
+    """A person wants this member's key changed. Nothing is trusted yet: the host is to make a second pair, and rotate() takes its
+    public half from a reading. Without this mark a new key is a finding, never a rotation."""
+    m = member(network, host)
+    if m is None or m['state'] != 'active':
+        raise NetworkError(f'{host} is not an active member')
+    if m.get('rotation') or m.get('next_public_key'):
+        raise NetworkError(f'{host} has a rotation under way')
+    m['rotation'] = 'asked'
+    return m
+
+
+def cancel_rotation(network: dict, host: str) -> dict:
+    """Before the host has switched: the next key is forgotten, and steps() takes it off every peer."""
+    m = member(network, host)
+    if m is None or not (m.get('rotation') or m.get('next_public_key')):
+        raise NetworkError(f'{host} has no rotation under way')
+    m['rotation'], m['next_public_key'] = None, None
+    return m
+
+
 def rotate(network: dict, host: str, new_public_key: str) -> dict:
     """First half of a rotation: the host has made a new pair, and every peer is to accept both keys until it switches."""
     m = member(network, host)
     if m is None or m['state'] != 'active':
         raise NetworkError(f'{host} is not an active member')
+    if m.get('next_public_key'):
+        raise NetworkError(f'{host} has a rotation under way')
     key = _key(new_public_key)
     if any(key in (x['public_key'], x['next_public_key']) for x in network['members']):
         raise NetworkError('that key is already known here')
@@ -129,8 +157,37 @@ def rotated(network: dict, host: str) -> dict:
     m = member(network, host)
     if m is None or not m.get('next_public_key'):
         raise NetworkError(f'{host} has no rotation under way')
-    m['public_key'], m['next_public_key'] = m['next_public_key'], None
+    m['public_key'], m['next_public_key'], m['rotation'] = m['next_public_key'], None, None
     return m
+
+
+def waiting_for(network: dict, host: str, seen: dict) -> list[str]:
+    """The members that do not hold this host's next key yet, as the readings show. While there is one, the host must not switch:
+    that member would lose it. seen is {host: that host's WireGuard interfaces}."""
+    m = member(network, host)
+    key = (m or {}).get('next_public_key')
+    if not key:
+        return []
+    out = []
+    for other in network['members']:
+        if other is m or other['state'] != 'active' or not any(p['public_key'] == key for p in desired_peers(network, other['host'])):
+            continue
+        iface = _seen(seen.get(other['host']))
+        if iface is None or not any(isinstance(p, dict) and p.get('public_key') == key for p in iface.get('peers', [])):
+            out.append(other['host'])
+    return out
+
+
+def after_switch(network: dict, seen: dict) -> tuple[dict, list[str]]:
+    """The network as it will be once every member whose peers all hold its next key has switched, and who those members are.
+    The peers of a plan are worked out against this, so the address moves to the new key in the same plan as the switch."""
+    import copy
+    then, ready = copy.deepcopy(network), []
+    for m in network['members']:
+        if m['state'] == 'active' and m.get('next_public_key') and not waiting_for(network, m['host'], seen):
+            rotated(then, m['host'])
+            ready.append(m['host'])
+    return then, ready
 
 
 def revoke(network: dict, host: str) -> dict:
@@ -138,7 +195,7 @@ def revoke(network: dict, host: str) -> dict:
     m = member(network, host)
     if m is None:
         raise NetworkError(f'{host} is not on the network')
-    m['state'], m['next_public_key'] = 'revoked', None
+    m['state'], m['next_public_key'], m['rotation'] = 'revoked', None, None
     return m
 
 

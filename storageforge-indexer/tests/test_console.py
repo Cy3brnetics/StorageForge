@@ -142,10 +142,22 @@ class Routes(Base):
                                     {'name': 'sf0', 'addresses': [{'ip': '10.203.0.4'}, {'ip': '10.203.0.5'}]}, {'name': 'ztabcdef12', 'addresses': [{'ip': '10.147.17.5'}]},
                                     {'name': 'docker0', 'addresses': [{'ip': '172.17.0.1'}]}, {'name': 'eth1', 'addresses': [{'ip': '100.70.0.9'}]}])
         self.assertEqual([(r['route'], r['label'], r['address']) for r in console.routes(self.conn, 'nb')],
-                         [('lan', 'LAN', '10.0.0.3'), ('netbird', 'NetBird', '100.92.0.7'), ('storageforge', 'the StorageForge network', '10.203.0.4'),
+                         [('lan', 'LAN', '10.0.0.3'), ('netbird', 'NetBird', '100.92.0.7'),          # sf0 is not offered by its name: test_sfnet_paths
                           ('zerotier', 'ZeroTier', '10.147.17.5'), ('overlay', 'a private network', '100.70.0.9')])
         with self.assertRaises(LookupError):
             console.routes(self.conn, 'nowhere')
+
+    def test_an_interface_with_any_name_is_named_by_what_its_tool_said(self):
+        """Nebula's interface is called whatever its configuration says, and Netmaker's too: the tool's own reading names it."""
+        self.add('neb', '10.0.0.4', [{'name': 'eth0', 'addresses': [{'ip': '10.0.0.4'}]}, {'name': 'mesh0', 'addresses': [{'ip': '10.99.0.1'}]}, {'name': 'priv1', 'addresses': [{'ip': '10.20.0.3'}]}])
+        self.assertEqual([r['route'] for r in console.routes(self.conn, 'neb')], ['lan'], 'before the tools were read there is nothing to name them by')
+        readings = [{'network': 'nebula', 'interface': 'mesh0', 'self': {'addresses': ['10.99.0.1']}, 'peers': []}, {'network': 'netmaker', 'self': {'addresses': ['10.20.0.3']}, 'peers': []},
+                    {'network': 'ipsec', 'self': {'addresses': ['10.0.0.4']}, 'peers': []}, {'network': 'zerotier', 'error': 'nothing read'}]
+        self.conn.execute("INSERT INTO security_measurements (host, kind, measured_at, via, data_json) VALUES ('neb', 'infra', 1, 'controller', :d)", {'d': json.dumps({'access': {'overlays': readings}})})
+        self.assertEqual([(r['route'], r['label'], r['address']) for r in console.routes(self.conn, 'neb')],
+                         [('lan', 'LAN', '10.0.0.4'), ('nebula', 'Nebula', '10.99.0.1'), ('netmaker', 'Netmaker', '10.20.0.3')], 'and the LAN address an IPsec tunnel ends at stays the LAN')
+        self.conn.execute("UPDATE security_measurements SET data_json = :d WHERE host = 'neb'", {'d': json.dumps({'access': 'odd', 'x': [1]})})
+        self.assertEqual([r['route'] for r in console.routes(self.conn, 'neb')], ['lan'], 'a reading that is not what it should be names nothing and breaks nothing')
 
     def test_ssh_takes_only_a_confirmed_host_key_and_carries_nothing_along(self):
         argv = console._ssh_argv('/run/agent.sock', 'rpi', '100.120.104.24', 22, '10.77.0.121')

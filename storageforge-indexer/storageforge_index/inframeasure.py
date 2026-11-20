@@ -14,14 +14,15 @@ import time
 
 from . import alerts, deploy, firewall, netfacts, security
 from .db import Conn
-from . import overlays, tunnels
+from . import accessproxies, confread, overlays, tunnels
 from .runtimes import docker, guests
 
 MEASURE_EVERY = 6 * 3600
 OFF_KEY = 'infra.read.off'
 SECTIONS = ('tools', 'fw_state', 'nft', 'iptables', 'ip6tables', 'ufw', 'firewalld', 'listeners', 'storage_clients', 'libvirt', 'libvirt_snap', 'libvirt_net', 'libvirt_pool',
             'incus', 'lxc', 'proxmox', 'podman', 'wireguard', 'tailscale', 'netbird', 'headscale', 'tailscale_json', 'netbird_json', 'zt_info', 'zt_networks', 'zt_peers', 'headscale_json',
-            'openvpn_status', 'cloudflared', 'frp', 'ngrok', 'tunnel_procs', 'caddy', 'nginx', 'units', 'end')
+            'openvpn_status', 'openvpn_pki', 'nebula_conf', 'nebula_cert', 'netmaker_json', 'swan_sas', 'swan_conns', 'ziti_status', 'tp_status', 'tp_nodes', 'tp_conf',
+            'tp_login', 'boundary_targets', 'boundary_conf', 'pomerium_conf', 'cloudflared', 'frp', 'ngrok', 'tunnel_procs', 'tunnel_cmdline', 'caddy', 'nginx', 'units', 'end')
 PVE_KEYS = '^(cores|memory|onboot|unprivileged|net[0-9]+|(scsi|virtio|sata|ide|efidisk|tpmstate|mp)[0-9]+|rootfs): '
 BODY = r"""
 sec() { printf '\n@@%s\n' "$1"; }
@@ -29,7 +30,7 @@ try() { timeout 30 "$@" 2>/dev/null || :; }
 has() { command -v "$1" >/dev/null; }
 capped() { head -c "$1"; }                 # a section cut short fails to parse and reads as unreadable, not as smaller
 one() { base64 | tr -d '\n'; }
-sec tools; for c in nft iptables iptables-save ip6tables-save ufw firewall-cmd ss virsh incus lxc-ls qm pct podman wg tailscale netbird headscale zerotier-cli cloudflared frpc ngrok newt caddy nginx; do has "$c" && echo "$c"; done
+sec tools; for c in nft iptables iptables-save ip6tables-save ufw firewall-cmd ss virsh incus lxc-ls qm pct podman wg tailscale netbird headscale zerotier-cli nebula netclient swanctl ziti-edge-tunnel tctl tsh boundary pomerium cloudflared frpc ngrok newt caddy nginx; do has "$c" && echo "$c"; done
 sec fw_state; has firewall-cmd && try firewall-cmd --state
 sec nft
 # table by table, and without iptables-nft's tables when iptables-save reads them better: with Docker and ufw those run to hundreds of KB as JSON
@@ -111,6 +112,9 @@ if has wg; then
     try wg show "$i" endpoints | sed "s/^/e\t$i\t/"
     try wg show "$i" allowed-ips | tr ' ' ',' | sed "s/\t/ /; s/ /\t/" | sed "s/^/a\t$i\t/"
     try wg show "$i" latest-handshakes | sed "s/^/h\t$i\t/"
+    # a key rotation under way on an interface StorageForge made: the public half of the key that waits. The file itself is never printed
+    wgdir=${SF_WG_DIR:-/etc/wireguard}
+    if [ -e "$wgdir/$i.storageforge" ] && [ -s "$wgdir/$i.key.next" ]; then printf 'n\t%s\t%s\n' "$i" "$(try wg pubkey <"$wgdir/$i.key.next")"; fi
   done
 fi
 sec tailscale; has tailscale && try tailscale status | head -n 200 | capped 12000
@@ -124,12 +128,62 @@ sec zt_networks; has zerotier-cli && try zerotier-cli -j listnetworks | capped 1
 sec zt_peers; has zerotier-cli && try zerotier-cli -j peers | capped 400000
 sec headscale_json; has headscale && try headscale nodes list -o json | capped 400000
 sec openvpn_status; for f in /run/openvpn-server/status-*.log /var/log/openvpn/openvpn-status.log /var/log/openvpn/status.log /etc/openvpn/openvpn-status.log; do [ -r "$f" ] && { capped 200000 < "$f"; break; }; done
+# The certificates of an OpenVPN server, where its CA is kept beside it (easy-rsa): the index with the common name alone of each
+# subject, when the CRL is next due, and when the certificates of the CA and of the server end. No key file is opened
+sec openvpn_pki
+for d in /etc/openvpn/easy-rsa/pki /etc/openvpn/server/easy-rsa/pki /etc/openvpn/pki /etc/easy-rsa/pki /usr/share/easy-rsa/pki /etc/openvpn/server /etc/openvpn; do
+  [ -r "$d/index.txt" ] && { awk -F"\t" -v OFS="\t" "$PKI_AWK" "$d/index.txt" 2>/dev/null | head -n 2000 | capped 200000; break; }
+done
+if has openssl; then
+  for f in /etc/openvpn/crl.pem /etc/openvpn/server/crl.pem /etc/openvpn/easy-rsa/pki/crl.pem /etc/openvpn/server/easy-rsa/pki/crl.pem /etc/openvpn/pki/crl.pem /etc/easy-rsa/pki/crl.pem; do
+    [ -r "$f" ] || continue
+    printf 'r\t%s\t%s\t%s\n' "$(try openssl crl -in "$f" -noout -lastupdate | cut -d= -f2-)" "$(try openssl crl -in "$f" -noout -nextupdate | cut -d= -f2-)" "$(try openssl crl -in "$f" -noout -text | grep -c 'Serial Number:')"
+    break
+  done
+  for f in /etc/openvpn/server/*.crt /etc/openvpn/*.crt /etc/openvpn/easy-rsa/pki/ca.crt /etc/openvpn/server/easy-rsa/pki/ca.crt /etc/openvpn/pki/ca.crt /etc/easy-rsa/pki/ca.crt; do
+    [ -r "$f" ] || continue
+    printf 'c\t%s\t%s\t%s\n' "${f##*/}" "$(try openssl x509 -in "$f" -noout -enddate | cut -d= -f2-)" "$(try openssl x509 -in "$f" -noout -subject -nameopt multiline | sed -n 's/^ *commonName *= *//p' | head -n 1)"
+  done | head -n 16
+fi
+# A configuration file that keeps credentials beside what is read (confread.py): a line that names one goes, with the block under
+# it and any PEM block, before anything is printed. conf prints the first file that is there, confs each one
+conf() { for f in "$@"; do [ -r "$f" ] && { awk -v re="$SCRUB_RE" "$SCRUB_AWK" "$f" 2>/dev/null | capped 60000; return 0; }; done; return 0; }
+confs() { for f in "$@"; do [ -r "$f" ] && awk -v re="$SCRUB_RE" "$SCRUB_AWK" "$f" 2>/dev/null; done | capped 60000; return 0; }
+# Nebula has no status command: its configuration, and the host certificate, which is public, as nebula-cert prints it
+sec nebula_conf; conf /etc/nebula/config.yml /etc/nebula/config.yaml
+sec nebula_cert
+if has nebula-cert; then
+  for f in /etc/nebula/config.yml /etc/nebula/config.yaml; do
+    [ -r "$f" ] || continue
+    c=$(awk '$1 == "cert:" { print $2; exit }' "$f" 2>/dev/null | tr -d '"')
+    [ -r "${c:-/etc/nebula/host.crt}" ] && try nebula-cert print -json -path "${c:-/etc/nebula/host.crt}" | capped 20000
+    break
+  done
+fi
+sec netmaker_json; has netclient && try netclient list -l | capped 400000
+# strongSwan: the tunnels and the connections, without the identity of either end, which can be a person
+q=$(printf '\047')
+sec swan_sas; has swanctl && try swanctl --list-sas | sed -E "s/^(  (local|remote) +)$q.*$q @ /\\1$q-$q @ /; s/ (EAP|XAuth): $q.*$q/ \\1: $q-$q/" | capped 400000
+sec swan_conns; has swanctl && try swanctl --list-conns | grep -avE '^ +(id|ca_id|eap_id|xauth_id|aaa_id|groups|cert policy|certs|cacerts|ppk):' | capped 400000
+# the access proxies (accessproxies.py). From Teleport only the fields that are read are printed: a label, a command or a user stays there
+sec ziti_status; has ziti-edge-tunnel && try ziti-edge-tunnel tunnel_status | capped 400000
+sec tp_status; has tctl && { try tctl status --format=json | grep -aoE '"(name|version)": *"[^"]*"' | head -n 2; try tctl status | grep -aE '^(Cluster|Version)' | head -n 2; }
+sec tp_nodes; has tctl && try tctl get nodes --format=json | grep -aoE '"(kind|hostname|addr|use_tunnel)": *("[^"]*"|true|false)' | capped 400000
+sec tp_conf; conf /etc/teleport.yaml /etc/teleport/teleport.yaml
+sec tp_login; has tsh && try tsh status --format=json | grep -aoE '"(profile_url|cluster|valid_until)": *"[^"]*"' | head -n 3
+# a target's description is free text and can name a person, and which credentials it is given is nobody else's business: both are emptied
+sec boundary_targets; has boundary && try boundary targets list -recursive -scope-id global -format json </dev/null | sed -E 's/("description": *)"([^"\\]|\\.)*"/\1""/g; s/("[a-z_]*credential_source_ids": *)\[[^]]*\]/\1[]/g' | capped 400000
+sec boundary_conf; confs /etc/boundary.d/controller.hcl /etc/boundary.d/worker.hcl /etc/boundary.d/boundary.hcl /etc/boundary/controller.hcl /etc/boundary/worker.hcl /etc/boundary/boundary.hcl
+# a Pomerium policy names people: an address is replaced before the file is printed
+sec pomerium_conf; conf /etc/pomerium/config.yaml /etc/pomerium/config.yml | sed -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/someone/g'
 # what a tunnel publishes (tunnels.py), without the lines that hold its credentials: a token never leaves the host
 tunnel() { for f in "$@"; do [ -r "$f" ] && { grep -aviE '@SECRET_LINE@' "$f" | capped 60000; return 0; }; done; return 0; }
 sec cloudflared; tunnel /etc/cloudflared/config.yml /etc/cloudflared/config.yaml /root/.cloudflared/config.yml
 sec frp; tunnel /etc/frp/frpc.toml /etc/frp/frpc.ini /etc/frpc.toml /etc/frpc.ini
 sec ngrok; tunnel /etc/ngrok.yml /root/.config/ngrok/ngrok.yml /root/.ngrok2/ngrok.yml
 sec tunnel_procs; for p in cloudflared frpc ngrok newt; do pgrep -x "$p" >/dev/null 2>&1 && echo "$p"; done
+# a tunnel started with its token or secret as an argument: any account on the host can read that. Only the name is printed, never the line
+sec tunnel_cmdline; for p in cloudflared newt; do pgrep -x "$p" -a 2>/dev/null | grep -qE -- '--(token|secret)[ =]' && echo "$p"; done
 # site names and upstreams, no other line: these files can hold passwords and keys
 sec caddy; for f in /etc/caddy/Caddyfile /etc/caddy/conf.d/*; do [ -r "$f" ] && grep -aE '^[^#[:space:]][^{]*\{[[:space:]]*$|^[[:space:]]*reverse_proxy[[:space:]]' "$f" | capped 12000; done
 sec nginx; for f in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf; do [ -r "$f" ] && grep -aE '^[[:space:]]*(server_name|proxy_pass)[[:space:]]' "$f" | capped 12000; done
@@ -141,10 +195,13 @@ sec end
 def script() -> str:
     fmt = docker.FMT_C[:-1] + ',' + docker.FMT_D_PODMAN[docker.FMT_D_PODMAN.index('"image_id"'):]
     return ('#!/usr/bin/env bash\n# Written by StorageForge. Only reads.\nset -u\nexport LC_ALL=C\nPATH=$PATH:/usr/sbin:/sbin\n'
-            f'PVE_KEYS={shlex.quote(PVE_KEYS)}\nFMT={shlex.quote(fmt)}\n' + BODY)
+            f'PVE_KEYS={shlex.quote(PVE_KEYS)}\nFMT={shlex.quote(fmt)}\n{SCRUB_VARS}' + BODY)
 
 
 BODY = BODY.replace('@SECRET_LINE@', tunnels.SECRET_LINE)
+# The index of an OpenSSL CA, one certificate to a line: of the subject only the common name is printed, never an email address
+PKI_AWK = '{ cn = $6; if (!sub(/.*\\/CN=/, "", cn)) cn = ""; sub(/\\/.*/, "", cn); print "i", $1, $2, $3, $4, cn }'
+SCRUB_VARS = f'SCRUB_RE={shlex.quote(confread.SECRET_LINE)}\nSCRUB_AWK={shlex.quote(confread.SCRUB_AWK)}\nPKI_AWK={shlex.quote(PKI_AWK)}\n'
 
 
 def _sections(text: str) -> dict:
@@ -212,6 +269,8 @@ def parse_wireguard(lines: list[str]) -> list[dict]:
         f = line.split('\t')
         if f[0] == 'i' and len(f) >= 4 and WGKEY.fullmatch(f[2]):
             ifaces[f[1]] = {'name': f[1], 'public_key': f[2], 'listen_port': int(f[3]) if f[3].isdigit() else None, 'peers': {}}
+        elif f[0] == 'n' and len(f) >= 3 and f[1] in ifaces and WGKEY.fullmatch(f[2]):
+            ifaces[f[1]]['next_public_key'] = f[2]          # the key a rotation will switch to
         elif f[0] in ('e', 'a', 'h') and len(f) >= 4 and f[1] in ifaces and WGKEY.fullmatch(f[2]):
             peer = ifaces[f[1]]['peers'].setdefault(f[2], {'public_key': f[2], 'endpoint': None, 'allowed_ips': [], 'handshake': None})
             if f[0] == 'e':
@@ -254,15 +313,51 @@ def parse_proxy_routes(caddy: list[str], nginx: list[str]) -> list[dict]:
 
 
 def parse_overlays(s: dict) -> list[dict]:
-    """Every private network the host could describe (overlays.py), one reading each. A tool that printed nothing is left out."""
+    """Every private network the host could describe (overlays.py), one reading each. A tool that printed nothing is left out,
+    and a reader that fails on what it was given leaves an error in its place: one tool never costs the scan the others."""
     def text(name):
         return '\n'.join(s.get(name, [])).strip()
     out = []
-    for section, read in (('tailscale_json', overlays.tailscale), ('netbird_json', overlays.netbird), ('headscale_json', overlays.headscale), ('openvpn_status', overlays.openvpn)):
-        if text(section):
-            out.append(read(text(section)))
-    if text('zt_info'):
-        out.append(overlays.zerotier(text('zt_info'), text('zt_networks'), text('zt_peers')))
+
+    def read(network, reader, *sections):
+        if not text(sections[0]) and not (network == 'ipsec' and text(sections[-1])):
+            return
+        try:
+            out.append(reader(*(text(x) for x in sections)))
+        except Exception:                                  # noqa: BLE001  the readers are written not to raise; this is for the day one does
+            out.append({'network': network, 'error': 'could not be read'})
+    for section, network, reader in (('tailscale_json', 'tailscale', overlays.tailscale), ('netbird_json', 'netbird', overlays.netbird), ('headscale_json', 'tailscale', overlays.headscale),
+                                     ('openvpn_status', 'openvpn', overlays.openvpn), ('netmaker_json', 'netmaker', overlays.netmaker)):
+        read(network, reader, section)
+    read('zerotier', overlays.zerotier, 'zt_info', 'zt_networks', 'zt_peers')
+    read('nebula', overlays.nebula, 'nebula_conf', 'nebula_cert')
+    read('ipsec', overlays.strongswan, 'swan_sas', 'swan_conns')
+    if text('openvpn_pki'):
+        # the certificates belong to the server the status file is of; a server with no status file is still a server
+        server = next((o for o in out if o.get('network') == 'openvpn' and not o.get('error')), None)
+        if server is None:
+            server = {'network': 'openvpn', 'state': 'server', 'self': None, 'peers': [], 'routes': [], 'control': None, 'status_read': False}
+            out.append(server)
+        try:
+            server['pki'] = overlays.openvpn_certificates(text('openvpn_pki'))
+        except Exception:                                  # noqa: BLE001
+            server['pki'] = {'network': 'openvpn', 'error': 'could not be read'}
+    return out
+
+
+def parse_proxies(s: dict) -> list[dict]:
+    """What each access proxy on the host gives access to (accessproxies.py), one reading each."""
+    def text(name):
+        return '\n'.join(s.get(name, [])).strip()
+    out = []
+    for tool, sections in (('openziti', ('ziti_status',)), ('teleport', ('tp_status', 'tp_nodes', 'tp_conf', 'tp_login')), ('boundary', ('boundary_targets', 'boundary_conf')),
+                           ('pomerium', ('pomerium_conf',))):
+        if not any(text(x) for x in sections):
+            continue
+        try:
+            out.append(accessproxies.READERS[tool](*(text(x) for x in sections)))
+        except Exception:                                  # noqa: BLE001
+            out.append({'tool': tool, 'error': 'could not be read'})
     return out
 
 
@@ -279,7 +374,8 @@ def parse_tunnels(s: dict) -> list[dict]:
             out.append({'tool': tool, 'server': None, 'published': [], 'remote': True, 'running': True})
     if 'newt' in running:
         out.append({'tool': 'newt', 'server': 'its Pangolin server', 'published': [], 'remote': True, 'running': True})
-    return out
+    exposed = {p.strip() for p in s.get('tunnel_cmdline', [])}
+    return [t | {'token_on_command_line': True} if t.get('tool') in exposed else t for t in out]
 
 
 def parse_access(s: dict, tools: list[str]) -> dict:
@@ -288,7 +384,7 @@ def parse_access(s: dict, tools: list[str]) -> dict:
     ts = next((o for o in read if o['network'] == 'tailscale' and o.get('self') and not o.get('error')), None)
     tailscale = ([{'ip': p['addresses'][0], 'name': p['name'] or p['addresses'][0], 'os': p['os'], 'active': bool(p['online'])} for p in ts['peers'] if p['addresses']]
                  if ts else parse_tailscale(s.get('tailscale', [])) if 'tailscale' in tools else None)
-    return {'wireguard': parse_wireguard(s.get('wireguard', [])) if 'wg' in tools else None, 'tailscale': tailscale, 'overlays': read, 'tunnels': parse_tunnels(s),
+    return {'wireguard': parse_wireguard(s.get('wireguard', [])) if 'wg' in tools else None, 'tailscale': tailscale, 'overlays': read, 'proxies': parse_proxies(s), 'tunnels': parse_tunnels(s),
             'netbird': 'netbird' in tools, 'headscale': 'headscale' in tools, 'proxy_routes': parse_proxy_routes(s.get('caddy', []), s.get('nginx', [])),
             'units': [u.strip() for u in s.get('units', []) if u.strip()]}
 

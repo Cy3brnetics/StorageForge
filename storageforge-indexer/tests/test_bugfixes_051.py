@@ -81,6 +81,7 @@ class ChecksumCatchUp(unittest.TestCase):
         logged = []
         with mock.patch.object(runner, 'Vault', lambda db, conn: vault), \
              mock.patch.object(runner, 'ephemeral_agent', lambda key: contextlib.nullcontext('sock')), \
+             mock.patch.object(runner.sshcerts, 'login_options', lambda *a, **kw: contextlib.nullcontext([])), \
              mock.patch.object(runner, 'Transport', lambda **kw: Transport('localhost', local=True)), \
              mock.patch('storageforge_index.scansign.for_scan', lambda *a: None):
             done = runner.checksum_catchup(self.db, pc, 'pc', ScanOptions(checksum=True), 'test', logged.append)

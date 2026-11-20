@@ -20,12 +20,13 @@ NAME = re.compile(r'[A-Za-z0-9_.-]{1,64}')
 TAGS = re.compile(r'tag:[a-z0-9][a-z0-9-]{0,62}(,tag:[a-z0-9][a-z0-9-]{0,62}){0,9}')
 HOSTNAME = re.compile(r'[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?')
 SECRET_DIR = '/run/storageforge/secrets'
-ARGS = ('secret', 'tags', 'hostname', 'accept_routes', 'ssh', 'state')
+SERVER = re.compile(r'https?://[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(:[0-9]{1,5})?')
+ARGS = ('secret', 'tags', 'hostname', 'accept_routes', 'ssh', 'state', 'login_server')
 
 # No apostrophes: the script text is checked for values that could end a quoted word.
 BASH = r"""
 ts_state() { tailscale status --json 2>/dev/null | sed -n "s/.*\"BackendState\": *\"\([A-Za-z]*\)\".*/\1/p" | head -n 1; }
-t_tailscale() { local secret=$1 tags=$2 name=$3 routes=$4 tsssh=$5 state=${6:-present} f st inst ip args=()
+t_tailscale() { local secret=$1 tags=$2 name=$3 routes=$4 tsssh=$5 state=${6:-present} server=${7:-} f st inst ip args=()
   f=/run/storageforge/secrets/$secret
   if [[ $state == absent ]]; then
     command -v tailscale >/dev/null || { ok "Tailscale is not installed"; return 0; }
@@ -66,6 +67,7 @@ t_tailscale() { local secret=$1 tags=$2 name=$3 routes=$4 tsssh=$5 state=${6:-pr
   [[ -n $tags ]] && args+=("--advertise-tags=$tags")
   [[ -n $routes ]] && args+=(--accept-routes)
   [[ -n $tsssh ]] && args+=(--ssh)
+  [[ -n $server ]] && args+=("--login-server=$server")          # a control server of the site: Headscale
   act "tailscale up ${args[*]}" || return 0
   if ! out=$(tailscale up "${args[@]}" --timeout=90s 2>&1); then conflict "tailscale up failed: $(tail -n 2 <<<"$out" | tr "\n" " ")"; return 0; fi
   rm -f -- "$f"
@@ -83,12 +85,17 @@ def _check(conn, c, h, p, say):
         say('crit', 'tags are tag:name, separated by commas, up to 10')
     if p['hostname'] and not HOSTNAME.fullmatch(p['hostname']):
         say('crit', f'{p["hostname"]} is not a Tailscale machine name: lower-case letters, digits and -')
+    if p.get('login_server') and not SERVER.fullmatch(p['login_server']):
+        say('crit', 'the control server is its address, such as https://headscale.example.com')
     if p['state'] == 'absent':
         say('note', 'logs out of the tailnet; Tailscale stays installed')
         return
     say('note', f'the auth key is read on {h["name"]} from {SECRET_DIR}/{p["secret"]}: before running, '
                 f'storageforge-index vault send-secret {p["secret"]} --host {h["name"]}. It is removed once the node has joined')
     say('note', 'installs Tailscale with its own script when it is missing, which adds its package source and signing key')
+    if p.get('login_server'):
+        say('note', f'joins through the control server {p["login_server"]} (Headscale) and not Tailscale\'s own: the key is a pre-auth key made there, '
+                    'which storageforge-index vault headscale-key makes and stores')
     if p['tags']:
         say('note', f'the auth key must be allowed to give {p["tags"]}, or tailscale up is refused')
 
@@ -98,7 +105,7 @@ def _ansible(t):
     p = t['params']
     head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
             'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }\n')
-    call = ' '.join(q(str(p.get(a) if not isinstance(p.get(a), bool) else ('1' if p[a] else ''))) for a in ARGS)
+    call = ' '.join(q(str((p.get(a) or '') if not isinstance(p.get(a), bool) else ('1' if p[a] else ''))) for a in ARGS)
     return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + BASH + f'\nt_tailscale {call}\n', 'executable': '/bin/bash'},
             'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
 
@@ -107,7 +114,8 @@ changes.register('tailscale', {'group': 'Network', 'label': 'Join a tailnet (Tai
     F('secret', 'name', 'Auth key (a vault secret)', required=True, placeholder='tailscale-key'),
     F('tags', 'text', 'Tags', placeholder='tag:vm-test'), F('hostname', 'text', 'Machine name on the tailnet'),
     F('accept_routes', 'bool', 'Accept routes others advertise'), F('ssh', 'bool', 'Tailscale SSH'),
-    F('state', 'choice', 'Join or leave', options=['present', 'absent'], default='present')],
+    F('state', 'choice', 'Join or leave', options=['present', 'absent'], default='present'),
+    F('login_server', 'text', 'Control server, for Headscale (Tailscale\'s own if empty)', added=True, placeholder='https://headscale.example.com')],
     'help': 'Installs Tailscale if it is missing, with its own script, and joins with an auth key the vault holds. The key reaches the '
             'host with vault send-secret, is read from a file in memory, and is removed once the node has joined.'},
     ARGS, lambda p: f'{"Leave the tailnet" if p["state"] == "absent" else "Join the tailnet"}' + (f' ({p["tags"]})' if p.get('tags') and p['state'] != 'absent' else ''),

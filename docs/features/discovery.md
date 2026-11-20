@@ -49,8 +49,9 @@ The **Cleanup** panel finds space to win back. Its tab is titled "Likely copies 
 
 ![Cleanup panel](../images/features/panel-cleanup.jpg)
 
-- **Duplicate folders:** the same names, sizes and layout, within and across hosts. No checksums are needed; a `--checksum` scan confirms them. Copies are marked `across hosts (a backup?)` when that is the likely reason.
-- **Identical files:** from scans run with checksums.
+- **Copies on other hosts:** folders with a copy on another host. They are possible backups of each other, so they are a class of their own: never counted as space to free and never offered for the trash. Each pair can be [kept in sync](../scanning-and-search.md#keeping-a-pair-in-sync) from a plan you deploy in Moves, or set aside as not a backup. Pairs kept in sync are listed with the state and last run of their job. Built, not lab-tested: the lab check `copies-across-hosts` of tier 13 is written and has not run.
+- **Duplicate folders:** the same names, sizes and layout, within and across hosts. No checksums are needed; a `--checksum` scan confirms them. Copies across hosts are marked `a copy on another host: a possible backup`.
+- **Identical files:** from scans run with checksums, in the same two classes.
 - **Cold data:** folders whose newest file is older than a cutoff (1, 2 or 5 years) above a size. **Move…** starts a step in [Moves](planning.md#move-plans).
 
 The [file map](views.md#files) shows the same duplicates visually. CLI: `dupes` and `folders`.

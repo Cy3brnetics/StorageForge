@@ -20,11 +20,17 @@ try {
 document.getElementById('loginform').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const pw = document.getElementById('password');
-  const body = JSON.stringify({ username: document.getElementById('username').value.trim(), password: pw.value });
+  // route_code: this browser will send the code of the moment on sensitive requests (routecode.py), and is given its route key for that
+  const body = JSON.stringify({ username: document.getElementById('username').value.trim(), password: pw.value, route_code: true });
   pw.value = '';
   try {
     const res = await fetch('/api/login', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body });
     if (!res.ok) { say((await res.json().catch(() => ({}))).error || res.statusText); pw.focus(); return; }
+    const got = await res.json().catch(() => ({}));
+    try {
+      if (got.route_key) localStorage.setItem('sf.route', JSON.stringify({ key: got.route_key, skew: got.now - Date.now() / 1000 }));
+      else localStorage.removeItem('sf.route');
+    } catch { /* storage blocked: the app asks for the key again, behind the password */ }
     location.replace(next + (next.includes('#') ? '' : location.hash));
   } catch (err) { say(err.message); }
 });

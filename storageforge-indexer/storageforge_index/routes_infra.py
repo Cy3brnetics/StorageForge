@@ -359,6 +359,7 @@ def register(web, ctx):
         return jsonify(res), 200 if res.get('ok') else 409
 
     # StorageForge's own WireGuard network (sfnetwork.py). Nothing here reaches a host: what changes one is the plan, run like any other
+    sfnetwork.carry(db)          # and from here on this server's own SSH connections go over it where the readings confirm they can
     @web.get('/api/sfnet')
     @login_required
     def api_sfnet():
@@ -389,6 +390,39 @@ def register(web, ctx):
         member = sfnetwork.leave(conn(), json_body().get('host'), actor())
         core.audit(conn(), actor(), 'sfnet.leave', 'ok', member['host'], {'address': member['address']})
         return jsonify(member)
+
+    @web.post('/api/sfnet/members/rotate')
+    @login_required
+    @password_confirmed
+    def api_sfnet_rotate():
+        body = json_body()
+        cancel = body.get('cancel') is True
+        member = sfnetwork.rotate(conn(), body.get('host'), actor(), cancel)
+        core.audit(conn(), actor(), 'sfnet.rotate.cancel' if cancel else 'sfnet.rotate', 'ok', member['host'], {'address': member['address'], 'key': (member['public_key'] or '')[:12]})
+        return jsonify(member)
+
+    @web.post('/api/sfnet/controller')
+    @login_required
+    @password_confirmed
+    def api_sfnet_controller():
+        body = json_body()
+        if 'on' in body:
+            # the controller runs on a member and uses that host's interface; "on": null takes that back
+            member = sfnetwork.controller_on(conn(), body['on'] or None, actor())
+            core.audit(conn(), actor(), 'sfnet.controller.on', 'ok', member['host'] or '', {})
+            return jsonify(member)
+        # the controller as a member of its own: nothing is made yet, the link is asked by the apply below
+        member = sfnetwork.join_controller(conn(), actor(), body.get('endpoint') or None, body.get('hub') is True)
+        core.audit(conn(), actor(), 'sfnet.join', 'ok', member['host'], {'address': member['address'], 'endpoint': member['endpoint'], 'hub': member['hub'], 'controller': True})
+        return jsonify(member)
+
+    @web.post('/api/sfnet/controller/apply')
+    @login_required
+    @password_confirmed
+    def api_sfnet_controller_apply():
+        done = sfnetwork.apply_controller(conn(), actor())
+        core.audit(conn(), actor(), 'sfnet.controller.apply', 'ok', sfnetwork.sfcontroller.NAME, done)
+        return jsonify(done)
 
     @web.post('/api/sfnet/plan')
     @login_required

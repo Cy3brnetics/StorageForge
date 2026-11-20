@@ -1,0 +1,46 @@
+# The enclave's kernel for arm64, as a list on top of `make tinyconfig`: kernel.config without what only x86 has, and with the two
+# serial ports arm64 VMMs give a guest (a PL011 under QEMU's `virt`, an 8250 from the device tree under Firecracker). Devices come from
+# the device tree, so none are named on the command line. arm64 has no kernel without SMP, so that line is not here. build.sh
+# applies these and fails if one did not take.
+CONFIG_64BIT=y
+CONFIG_BINFMT_ELF=y
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+CONFIG_MULTIUSER=y
+CONFIG_FUTEX=y
+CONFIG_PRINTK=y
+CONFIG_TTY=y
+CONFIG_SERIAL_AMBA_PL011=y
+CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_OF_PLATFORM=y
+CONFIG_VIRTIO_MENU=y
+CONFIG_VIRTIO_MMIO=y
+CONFIG_NET=y
+CONFIG_VSOCKETS=y
+CONFIG_VIRTIO_VSOCKETS=y
+# the lockdown needs CONFIG_SECURITY, which needs sysfs built in; nothing in the image mounts it
+CONFIG_SYSFS=y
+CONFIG_SECURITY=y
+CONFIG_SECURITY_LOCKDOWN_LSM=y
+CONFIG_SECURITY_LOCKDOWN_LSM_EARLY=y
+CONFIG_LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY=y
+CONFIG_PANIC_ON_OOPS=y
+CONFIG_PANIC_TIMEOUT=-1
+CONFIG_MODULES=n
+CONFIG_INET=n
+CONFIG_BLOCK=n
+CONFIG_SWAP=n
+CONFIG_USB_SUPPORT=n
+CONFIG_INPUT=n
+CONFIG_VT=n
+CONFIG_PROC_FS=n
+CONFIG_COREDUMP=n
+CONFIG_KEXEC=n
+CONFIG_DEVMEM=n
+CONFIG_MAGIC_SYSRQ=n
+CONFIG_DEBUG_FS=n
+CONFIG_BPF_SYSCALL=n
+CONFIG_IO_URING=n
+CONFIG_USER_NS=n

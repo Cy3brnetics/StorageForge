@@ -13,7 +13,7 @@ from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from multiprocessing import get_context
 
-from . import filemap, folders
+from . import copies, filemap, folders
 from .db import Database
 
 _kept: dict[str, dict] = {}        # database url → {mount id → (its mark, its folders)}, in whichever process makes the analyses
@@ -53,12 +53,14 @@ def compute(url: str, kind: str, args: tuple):
         if kind == 'cold':
             host, years, min_size = args
             return folders.cold_folders(conn, host, years, min_size, limit=200)
-        if kind == 'dupes':
+        if kind == 'dupes':           # a folder a deployed sync keeps is that sync's copy, not a duplicate (copies.py)
             host, min_files, min_size, include_system = args
-            return folders.duplicate_folders(conn, host, min_files, min_size, limit=200, include_system=include_system, index=dir_index(url, conn))
+            return folders.duplicate_folders(conn, host, min_files, min_size, limit=200, include_system=include_system, index=dir_index(url, conn),
+                                             syncs=copies.syncs(conn))
         if kind == 'filemap':
             host, min_size, system, with_folders = args
-            twins = (folders.duplicate_folders(conn, host, 3, min_size, limit=200, include_system=system, index=dir_index(url, conn))
+            twins = (folders.duplicate_folders(conn, host, 3, min_size, limit=200, include_system=system, index=dir_index(url, conn),
+                                               syncs=copies.syncs(conn))
                      if with_folders else None)
             return filemap.build(conn, host, min_size, system, twins)
         if kind == 'index':

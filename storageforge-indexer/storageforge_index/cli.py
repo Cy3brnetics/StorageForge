@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import json
 import os
@@ -16,7 +17,7 @@ from .capacity import fmt_bin, parse_size
 from .db import Database, epoch
 from .remote import DEFAULT_EXCLUDE_NAMES, DEFAULT_EXCLUDE_PATHS, RemoteError, Transport
 from .scanner import ScanOptions, scan_host
-from .search import SearchQuery, run_changes, run_dupes, run_search
+from .search import SearchQuery, dupes_totals, run_changes, run_dupes, run_search
 
 DEFAULT_DB = os.environ.get('STORAGEFORGE_DB', '~/.local/share/storageforge/index.db')
 
@@ -196,29 +197,40 @@ def cmd_dupes(args) -> int:
     if not groups:
         print('No duplicate groups. Scan with --checksum to hash size-collision candidates first.', file=sys.stderr)
         return 1
-    for g in groups:
-        print(f'{g["copies"]}× {fmt_bin(g["size"])}  reclaim {fmt_bin(g["reclaimable"])}  sha256 {g["sha256"][:16]}…')
+    for g in groups:      # a copy on another host is a possible backup: said, and never counted as space to reclaim
+        what = [f'reclaim {fmt_bin(g["reclaimable"])}'] if g['reclaimable'] else []
+        if g['hosts'] > 1:
+            what.append(f'on {g["hosts"]} hosts: a copy on another host, a possible backup')
+        print(f'{g["copies"]}× {fmt_bin(g["size"])}  {"  ".join(what)}  sha256 {g["sha256"][:16]}…')
         for f in g['files']:
             print(f'    {f}')
+    t = dupes_totals(conn, args.host, args.min_size)
+    print(f'{t["total_groups"]} group(s); {fmt_bin(t["reclaimable"])} reclaimable within hosts; {t["across_hosts"]["groups"]} group(s) with a copy on '
+          f'another host ({fmt_bin(t["across_hosts"]["bytes"])}), possible backups, not counted', file=sys.stderr)
     return 0
 
 
 def cmd_folders(args) -> int:
     from .folders import duplicate_folders
     _, conn = open_db(args)
-    r = duplicate_folders(conn, args.host, args.min_files, args.min_size, args.limit, args.include_system)
+    from .copies import syncs
+    r = duplicate_folders(conn, args.host, args.min_files, args.min_size, args.limit, args.include_system, syncs=syncs(conn))
     if args.format == 'json':
         print(json.dumps(r))
         return 0
     if not r['groups']:
-        print(f'No duplicate folders among {r["folders_checked"]:,} folders.', file=sys.stderr)
+        print(f'No duplicate folders among {r["folders_checked"]:,} folders.'
+              + (f' {r["kept_in_sync"]} pair(s) kept in sync are not listed.' if r['kept_in_sync'] else ''), file=sys.stderr)
         return 1
     for g in r['groups']:
         print(f'{g["count"]}× {g["files"]:,} files {fmt_bin(g["bytes"])}  {g["scope"]}'
-              + (f'  reclaim {fmt_bin(g["reclaimable"])}' if g['scope'] == 'same host' else ''))
+              + (f'  reclaim {fmt_bin(g["reclaimable"])}' if g['reclaimable'] else '')
+              + ('  a copy on another host: a possible backup' if g['scope'] != 'same host' else ''))
         for c in g['copies']:
             print(f'    {c["host"]}:{c["path"]}')
-    print(f'{r["total_groups"]} group(s); {fmt_bin(r["reclaimable_same_host"])} reclaimable within hosts', file=sys.stderr)
+    print(f'{r["total_groups"]} group(s); {fmt_bin(r["reclaimable_same_host"])} reclaimable within hosts; {r["across_hosts_groups"]} group(s) with a copy on '
+          f'another host ({fmt_bin(r["elsewhere_across_hosts"])}), possible backups, not counted'
+          + (f'; {r["kept_in_sync"]} pair(s) kept in sync, not listed' if r['kept_in_sync'] else ''), file=sys.stderr)
     return 0
 
 
@@ -487,6 +499,31 @@ def cmd_config(args) -> int:
         else:
             sys.stdout.write(text)
         return 0
+    finally:
+        conn.close()
+
+
+def cmd_sfnet(args) -> int:
+    """StorageForge's own network: what the readings confirm, and the link program for a controller that is to be a member."""
+    from . import sfcontroller, sfnetwork
+    if args.sfnet_cmd == 'link':
+        sys.stdout.write(sfcontroller.LINK)          # no secret in it: the key is made where it runs
+        return 0
+    db, conn = open_db(args)
+    try:
+        st = sfnetwork.status(conn)
+        if st['network'] is None:
+            print('there is no StorageForge network yet')
+            return 0
+        print(f'{st["network"]["range"]}  UDP {st["network"]["port"]}  {st["network"]["topology"]}')
+        for m in st['members']:
+            if '(revoked' in m['host']:
+                continue
+            notes = [f'missing {", ".join(m["missing"])}'] if m.get('missing') else []
+            notes += ['a different key than the one on record'] if m.get('key_changed') else []
+            notes += [f'rotation: {m["rotation"]["step"]}'] if m.get('rotation') else []
+            print('\t'.join((m['host'], m['address'], m['state'], (m.get('public_key') or '-')[:12], '; '.join(notes))))
+        return 1 if any(m.get('key_changed') for m in st['members']) else 0
     finally:
         conn.close()
 
@@ -1053,7 +1090,7 @@ def _send_secret(db, conn, v, args) -> int:
         print(f'{user} is not a login name', file=sys.stderr)
         return 2
     try:
-        cred = v.credential(args.name)
+        cred = v.credential(args.name, host=args.host, step=args.step or 'send-secret')          # a release for this host and step: a policy that names others refuses
     except Exception as exc:          # VaultError: no such secret
         print(exc, file=sys.stderr)
         return 1
@@ -1081,6 +1118,87 @@ def _audit(db, conn, v, action, outcome='ok', host=None, fp=None, **detail):
     AuditLog(db, conn, v.audit_key if v else None).append(actor_name(), action, outcome, host, fp, detail)
 
 
+def _secret_policy(args) -> dict | None:
+    """The policy the --step, --for-host, --platform and --sensitive options name, or None when none was given."""
+    if not (args.step or args.for_host or args.platform or args.sensitive):
+        return None
+    return {'steps': args.step or [], 'hosts': args.for_host or [], 'platforms': args.platform or [], 'sensitive': bool(args.sensitive)}
+
+
+def _second_lock(args) -> int:
+    """`vault second-lock status|on|off|recover` (lock2.py). on and off are rotations by whoever holds the vault secret; recover
+    writes the host share again from the recovery share, on a machine that does not have it."""
+    from . import lock2
+    from .vault import Vault, VaultError, secret_from_env
+    db, conn = open_db(args)
+    v = Vault(db, conn)
+    try:
+        if not v.initialized:
+            print('vault: not initialised (run: storageforge-index vault init)', file=sys.stderr)
+            return 1
+        lock, path = v.second_lock(), lock2.share_path()
+        if args.what == 'status':
+            if not lock:
+                print('second lock: off. The KEK comes from the vault secret alone: the secret beside this database, or a backup with it, is the keys')
+            else:
+                try:
+                    lock2.read_share(lock)
+                    here = 'is here'
+                except VaultError as exc:
+                    here = f'is NOT usable here: {exc}'
+                print(f'second lock: on. The KEK needs the host share {path} as well as the vault secret, and that share {here}')
+            print(f'TPM: {lock2.tpm()}')
+            return 0
+        if args.what == 'recover':
+            if not lock:
+                print('this vault has no second lock: there is nothing to recover', file=sys.stderr)
+                return 1
+            try:
+                share = lock2.recover(lock, sys.stdin.readline())
+                lock2.write_share(share, path)
+                with Vault(db, conn).unlock() as opened:          # proves it: the vault opens here now
+                    _audit(db, conn, opened, 'vault.second_lock.recover', path=str(path))
+            except VaultError as exc:
+                print(f'not recovered: {exc}', file=sys.stderr)
+                return 1
+            print(f'host share written to {path}: this vault opens on this machine again')
+            return 0
+        try:
+            secret = secret_from_env()
+            with v.unlock():
+                if args.what == 'on':
+                    if lock:
+                        print('the second lock is on already', file=sys.stderr)
+                        return 1
+                    share = os.urandom(32)
+                    code, held = lock2.recovery(share)
+                    lock2.write_share(share, path)
+                    try:
+                        n = v.rotate_secret(secret, second_lock=(share, lock2.marker(share, held)))
+                    except BaseException:
+                        path.unlink(missing_ok=True)          # nothing was rewrapped: the share would open nothing
+                        raise
+                    _audit(db, conn, v, 'vault.second_lock', state='on', rewrapped=n, path=str(path))
+                    print(f'second lock on: {n} key(s) rewrapped. The KEK now needs {path} as well as the vault secret.')
+                    print('Keep that file out of backups of the database and of the secret: together they would be the keys again.')
+                    print('The recovery share, shown this once. With it and the database, `vault second-lock recover` writes the host share again:')
+                    print(f'\n    {code}\n')
+                    print('Write it down and keep it away from the vault secret. Restart the server, so that its enclave is unlocked with the share.')
+                    return 0
+                if not lock:
+                    print('the second lock is off already', file=sys.stderr)
+                    return 1
+                n = v.rotate_secret(secret, second_lock=None)
+                _audit(db, conn, v, 'vault.second_lock', state='off', rewrapped=n)
+                print(f'second lock off: {n} key(s) rewrapped. The KEK comes from the vault secret alone again. {path} is left where it is: remove it yourself. Restart the server.')
+                return 0
+        except VaultError as exc:
+            print(f'not changed: {exc}', file=sys.stderr)
+            return 1
+    finally:
+        conn.close()
+
+
 def cmd_vault(args) -> int:
     from .vault import Vault, importable_keys, secret_from_env
     a = args.vault_cmd
@@ -1093,6 +1211,11 @@ def cmd_vault(args) -> int:
             _audit(db, conn, v, 'vault.init')
         print('vault initialised' if created else 'vault already initialised; secret verified')
         return 0
+    if a == 'starter':
+        from . import enclave_start
+        db, conn = open_db(args)
+        conn.close()
+        return enclave_start.starter(db, args.address, args.wait, args.watch, say=lambda line: print(line, file=sys.stderr, flush=True))
     if a == 'status':
         db, conn = open_db(args)
         v = Vault(db, conn)
@@ -1103,8 +1226,59 @@ def cmd_vault(args) -> int:
         keys = v.list_keys()
         print(f'vault: unlocked · {len(keys)} key(s) · {len(v.bindings())} binding(s)')
         return 0
+    if a == 'second-lock':
+        return _second_lock(args)
+    if a == 'enclave-pin':
+        # The key the enclave shows for its channel, which every client pins. An enclave this program starts is pinned as it starts.
+        # One that something else runs makes a new key when it restarts, and is pinned again here by a person who knows it did.
+        from . import enclave
+        address = enclave.address()
+        if not address:
+            print('no key enclave is configured here (STORAGEFORGE_ENCLAVE names one that something else runs)', file=sys.stderr)
+            return 2
+        if args.renew:
+            enclave.forget_pin(address)
+        try:
+            with enclave.Enclave(address, timeout=5) as e:
+                e.status()
+                key = e.key
+        except enclave.EnclaveError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        print(f'{address}\n{base64.b64encode(key).decode()}')
+        return 0
     db, conn, v = _vault(args)
     with v:
+        if a in ('stepup-enroll', 'stepup-forget'):
+            from . import enclave, enclave_stepup
+            from .vault import VaultError
+            if not v.enclave:
+                print('this installation has no key enclave, and step-up is checked there', file=sys.stderr)
+                return 2
+            if not conn.scalar('SELECT 1 FROM users WHERE username = :u', {'u': args.user}):
+                print(f'no account named {args.user}', file=sys.stderr)
+                return 2
+            if a == 'stepup-forget':
+                n = enclave_stepup.remove(conn, args.user)
+                _audit(db, conn, v, 'enclave.stepup.forget', user=args.user, removed=n)
+                print(f'{args.user} has no step-up record now' if n else f'{args.user} had none')
+                return 0
+            password = sys.stdin.readline().rstrip('\n')
+            try:
+                secret = secret_from_env()          # what vouches for a new record once someone is enrolled
+            except VaultError:
+                secret = None
+            try:
+                got = enclave_stepup.enroll(conn, v.enclave, args.user, password, secret=secret, meta=v._meta() if secret else None)
+            except enclave.EnclaveError as exc:
+                _audit(db, conn, v, 'enclave.stepup.enroll', 'failed', user=args.user, why=exc.code)
+                print(f'not enrolled: {exc}', file=sys.stderr)
+                return 1
+            finally:
+                del password
+            _audit(db, conn, v, 'enclave.stepup.enroll', user=args.user, replaced=got['replaced'])
+            print(f'{args.user} is enrolled with the key enclave: it checks that password itself before it makes or changes a key')
+            return 0
         if a == 'secret-add':
             # a secret for a plan step to read on a host, such as a Tailscale auth key: from stdin, so it is in no shell history
             if not SECRET_NAME.fullmatch(args.name):
@@ -1114,14 +1288,42 @@ def cmd_vault(args) -> int:
             if not text or '\n' in text or len(text) > 4096:
                 print('give the secret on stdin, as one line', file=sys.stderr)
                 return 2
+            policy = _secret_policy(args)
             v.remove_credential(args.name)
-            v.store_credential(args.name, 'secret', text)
+            v.store_credential(args.name, 'secret', text, policy=policy)
             del text
-            _audit(db, conn, v, 'vault.secret_add', name=args.name)
+            _audit(db, conn, v, 'vault.secret_add', name=args.name, policy=policy)
             print(f'stored secret {args.name}: send it to a host with  storageforge-index vault send-secret {args.name} --host HOST')
+            return 0
+        if a == 'secret-policy':
+            # What a stored secret may be released for. It is in the secret's associated data, so changing it means sealing the secret
+            # again: it is released once here, by whoever runs this, and stored under the new policy. --none is the way back to a
+            # secret as 0.5.4 stored it.
+            from .vault import VaultError
+            row = next((c for c in v.list_credentials() if c['name'] == args.name), None)
+            if row is None:
+                print(f'no secret named {args.name}', file=sys.stderr)
+                return 1
+            policy = None if args.none else _secret_policy(args)
+            if not args.none and policy is None:
+                print(json.dumps(row['policy']) if row['policy'] else 'no policy: released for any named request')
+                return 0
+            said = row['policy'] or {}
+            try:
+                got = v.credential(args.name, host=(said.get('hosts') or [None])[0], step=(said.get('steps') or ['secret-policy'])[0], platform=(said.get('platforms') or [None])[0])
+                v.store_credential(args.name, got['username'], got['password'], got.get('enable'), policy=policy)
+            except VaultError as exc:
+                print(f'not changed: {exc}', file=sys.stderr)
+                return 1
+            del got
+            _audit(db, conn, v, 'vault.secret_policy', name=args.name, policy=policy)
+            print(f'{args.name}: ' + ('no policy now' if policy is None else json.dumps(policy)))
             return 0
         if a == 'send-secret':
             return _send_secret(db, conn, v, args)
+        if a in ('nebula-ca', 'nebula-issue', 'nebula-revoke', 'nebula-list', 'headscale-key'):
+            from . import overlaykeys
+            return overlaykeys.command(db, conn, v, args, lambda action, outcome, host, **detail: _audit(db, conn, v, action, outcome, host=host, **detail))
         if a in ('add', 'generate'):
             if a == 'add':
                 data = sys.stdin.buffer.read() if args.key_file == '-' else Path(args.key_file).expanduser().read_bytes()
@@ -1245,9 +1447,13 @@ def cmd_audit(args) -> int:
                 log = AuditLog(db, conn, v.audit_key)
                 ok, n, bad = log.verify()
                 weak = log.unkeyed()
+                head = log.head_check()
         except VaultError as exc:
             raise SystemExit(f'cannot verify HMAC entries: {exc}')
         print(f'audit chain {"intact" if ok else "BROKEN at entry #" + str(bad)} · {n} entries verified')
+        if head.get('enclave'):
+            print(f'key enclave: {head["why"]}' + ('' if head['ok'] is not False else ' · THE LOG WAS CUT OR CHANGED'))
+            ok = ok and head['ok'] is not False
         if weak['unkeyed_after_keyed']:
             print(f'note: {weak["unkeyed_after_keyed"]} entries from #{weak["first_unkeyed_after_keyed"]} on were written while the '
                   f'vault was locked (plain SHA-256): whoever can write the database could have rewritten them')
@@ -1741,6 +1947,12 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument('--yes', action='store_true', help='really replace it')
     rs.set_defaults(fn=cmd_restore)
 
+    sn = sub.add_parser('sfnet', help="StorageForge's own encrypted network: its members, and the link program of the controller")
+    sns = sn.add_subparsers(dest='sfnet_cmd')
+    sns.add_parser('status', help='the members and what the readings confirm (the default); exit 1 if a member shows a key that is not on record')
+    sns.add_parser('link', help='print the link program, which makes the interface of a controller that is not in Docker (docs/infrastructure-map.md)')
+    sn.set_defaults(fn=cmd_sfnet, sfnet_cmd='status')
+
     st = sub.add_parser('site', help='which client this database belongs to')
     sts = st.add_subparsers(dest='site_cmd')
     sts.add_parser('show', help='its name and id (the default)')
@@ -1912,16 +2124,71 @@ def build_parser() -> argparse.ArgumentParser:
     vs.add_parser('policy', help="show or set where this site's keys may come from").add_argument(
         'policy', nargs='?', choices=('generate-only', 'open'), help='generate-only: refuse imported keys')
     vs.add_parser('rotate-secret', help='rewrap all keys under STORAGEFORGE_VAULT_NEW_SECRET')
+    x = vs.add_parser('starter', help='hand the vault secret to the key enclave the server runs, then forget it (docs/security.md, "Key enclave")')
+    x.add_argument('--address', help='where the enclave is; the address the server published in its runtime folder if not given')
+    x.add_argument('--wait', type=float, default=60.0, help='seconds to wait for the enclave to answer (default 60)')
+    x.add_argument('--watch', action='store_true', help='stay, and unlock it again whenever it comes back locked after a restart; the secret file is read again each time')
+    x = vs.add_parser('enclave-pin', help="show the key the configured key enclave is pinned to; --renew pins the key it shows now, after something else restarted it")
+    x.add_argument('--renew', action='store_true')
+    x = vs.add_parser('second-lock', help='a second share, held in a file on this machine, mixed into the vault key: the secret alone then opens nothing (docs/security.md, "Key enclave")')
+    x.add_argument('what', choices=('status', 'on', 'off', 'recover'), help='recover: the recovery share on stdin, to write the host share again on a machine without it')
+    x = vs.add_parser('stepup-enroll', help="give the key enclave an account's step-up password (one line on stdin): it then checks that person itself before it makes or changes a key. Security keys are enrolled on the Keys page")
+    x.add_argument('user')
+    x = vs.add_parser('stepup-forget', help="remove an account's step-up record, for someone who left")
+    x.add_argument('user')
     x = vs.add_parser('import-dir', help='import every private key file in a directory (name = file stem)')
     x.add_argument('dir')
     x = vs.add_parser('secret-add', help='store a secret a plan step reads on a host (one line on stdin), such as a Tailscale auth key')
     x.add_argument('name')
+    policy_options = (('--step', dict(action='append', help='a step kind this secret may be released for (repeat for more); none named: any')),
+                      ('--for-host', dict(action='append', help='a host it may be released for (repeat for more); none named: any')),
+                      ('--platform', dict(action='append', help='a platform it may be released for (repeat for more); none named: any')),
+                      ('--sensitive', dict(action='store_true', help='with the key enclave: a release takes a step-up the enclave checks itself')))
+    for flag, kw in policy_options:
+        x.add_argument(flag, **kw)
+    x = vs.add_parser('secret-policy', help='show or change what a stored secret may be released for; --none takes the policy off')
+    x.add_argument('name')
+    x.add_argument('--none', action='store_true', help='no policy: the secret is stored as before 0.5.5')
+    for flag, kw in policy_options:
+        x.add_argument(flag, **kw)
     x = vs.add_parser('send-secret', help='write a stored secret to /run/storageforge/secrets/NAME on a host over SSH (mode 600, gone at reboot)')
     x.add_argument('name')
     x.add_argument('--host', required=True)
+    x.add_argument('--step', help='the step that will read it there, which a policy on the secret may name (default: send-secret)')
     x.add_argument('--user', help='the SSH login; the host\'s scan login if not given')
     x.add_argument('--key', help='an SSH private key file; your SSH agent and keys if not given')
     x.add_argument('--ssh-option', action='append', default=[], metavar='OPT', help='an ssh -o option, again for more')
+    reach = (('--user', dict(help='the SSH login; the host\'s scan login if not given')), ('--key', dict(help='an SSH private key file; your SSH agent and keys if not given')),
+             ('--ssh-option', dict(action='append', default=[], metavar='OPT', help='an ssh -o option, again for more')))
+    x = vs.add_parser('nebula-ca', help='make a Nebula certificate authority: its key is made in the vault and stays there, and its certificate is printed')
+    x.add_argument('name')
+    x.add_argument('--days', type=int, default=730, help='how long the CA lasts (default 730). Every host certificate ends with it')
+    x.add_argument('--networks', help='the only ranges its host certificates may take an address from, separated by commas, such as 10.9.0.0/24')
+    x = vs.add_parser('nebula-issue', help='a Nebula host certificate: the host makes its own key in /etc/nebula, the CA signs in the vault, and the certificate is written back over SSH')
+    x.add_argument('ca')
+    x.add_argument('--host', required=True)
+    x.add_argument('--address', required=True, help='the host\'s address on the Nebula network with the prefix, such as 10.9.0.5/24')
+    x.add_argument('--name', help='the name in the certificate (the host name if not given)')
+    x.add_argument('--groups', help='Nebula groups for its firewall rules, separated by commas')
+    x.add_argument('--behind', help='networks behind this host that it routes for, separated by commas')
+    x.add_argument('--days', type=int, help='how long it lasts (until the CA ends if not given)')
+    for flag, kw in reach:
+        x.add_argument(flag, **kw)
+    x = vs.add_parser('nebula-revoke', help='revoke every running certificate a Nebula CA issued for a name. Hosts refuse it once the nebula plan step has run on them again')
+    x.add_argument('ca')
+    x.add_argument('name')
+    vs.add_parser('nebula-list', help='the Nebula CAs and what each has issued')
+    x = vs.add_parser('headscale-key', help='make a pre-auth key on a Headscale server over SSH and store it as a secret for the tailscale step. It is never printed')
+    x.add_argument('name', help='the secret to store it as')
+    x.add_argument('--host', required=True, help='the host that runs Headscale')
+    x.add_argument('--hs-user', help='the Headscale user the key is for: its number, from headscale users list. Headscale up to 0.29 takes the number only; later ones take a name too')
+    x.add_argument('--tags', help='tags the node gets, such as tag:server (a tagged key needs no user)')
+    x.add_argument('--expiration', default='1h', help='how long the key can be used: a number and m, h or d (default 1h)')
+    x.add_argument('--reusable', action='store_true', help='for more than one machine')
+    x.add_argument('--ephemeral', action='store_true', help='nodes that join with it are removed when they go offline')
+    x.add_argument('--container', help='Headscale runs in this container: the command is run with docker exec')
+    for flag, kw in reach:
+        x.add_argument(flag, **kw)
     v.set_defaults(fn=cmd_vault)
 
     lg = sub.add_parser('log', help='what has been done: audit log, deploys, scans and task runs in one list')
@@ -2082,6 +2349,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if getattr(args, 'db', None) and getattr(args, 'cmd', None) not in ('serve', 'restore', 'reset', 'migrate', 'healthcheck'):
+            from . import sfnetwork
+            sfnetwork.carry(Database(args.db))      # a scan or a deploy from the command line takes the StorageForge network as the server does
         return args.fn(args)
     except KeyboardInterrupt:
         return 130

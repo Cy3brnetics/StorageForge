@@ -37,7 +37,21 @@ Change plans work like an Ansible playbook for storage: an ordered list of tasks
 - profiles that need more devices than the pool has;
 - mounts over folders that already hold files;
 - running containers using the path;
-- tasks that undo each other.
+- tasks that undo each other;
+- trash tasks that between them leave no copy, or the only copy on another host (below).
+
+### What the trash tasks of a plan leave behind
+
+A plan made from the duplicates views trashes copies and counts on one being kept. **Check** looks at all the `trash` tasks of a plan together, against every copy the index knows: files with the same checksum, and folders with the same file names and sizes in the same layout, also when they are inside a folder the plan trashes.
+
+| Finding | Level | When |
+| :--- | :--- | :--- |
+| **the last copy** | critical | two or more tasks between them move every copy of a file or folder to the trash. The line is on the task that takes the last one, and names the copies and the other tasks |
+| **the copy on HOST would be the only one left** | warning | the content is on more than one host now and would be on one host afterwards. A copy on another host may be its backup |
+
+One task that trashes a folder holding both copies of something says nothing: that is a folder being trashed, not a cleanup. Trashing one of two copies on the same host says nothing either. A copy already in `.storageforge-trash`, or on a mount that is gone, is not counted as a copy. Folders are compared from 3 files and 1 MiB up, as the duplicates views do by default, and a plan's 2,000 largest folders are looked up: when there are more, the task says so.
+
+Both findings are in the header of the generated script, under "What StorageForge flagged". The check answers from the last scans, so scan again first when files have moved since.
 
 ```bash
 ./changes-plan.sh                               # report
@@ -94,7 +108,7 @@ A move plan is a list of steps. Each takes one folder on a scanned host to a fol
 
 ![Moves panel](images/moves.jpg)
 
-Pick folders with a browser that shows indexed sizes, or start from **Move from here…**, **Copy to another disk**, the Cleanup panel's **Move…** or the Git panel's **Archive to…**. Step options include excludes, checksum comparison, bandwidth limit, schedule, retention, and whether to use `sudo rsync` on the source. Two more come from [copying a host](host-migration.md#copying-a-host-onto-another), and can be set in a plan's JSON: `dirs_only` copies folders with their owners and modes and no files, and `keep_replaced` keeps a file the copy would overwrite as `<name>.sf-replaced-<date>`.
+Pick folders with a browser that shows indexed sizes, or start from **Move from here…**, **Copy to another disk**, the Cleanup panel's **Move…** or the Git panel's **Archive to…**. **Keep these two in sync…** on a pair of folder copies across hosts saves a plan with one mirror step between them ([keeping a pair in sync](scanning-and-search.md#keeping-a-pair-in-sync)). Step options include excludes, checksum comparison, bandwidth limit, schedule, retention, and whether to use `sudo rsync` on the source. Two more come from [copying a host](host-migration.md#copying-a-host-onto-another), and can be set in a plan's JSON: `dirs_only` copies folders with their owners and modes and no files, and `keep_replaced` keeps a file the copy would overwrite as `<name>.sf-replaced-<date>`.
 
 **Check** answers from the index: how much each step transfers and roughly how long it takes, free space on each destination mount summed across steps, planned mounts that aren't mounted yet, destinations that would land on the root filesystem, overlapping source and destination, folders the scan couldn't read, files already at the destination, and running containers using either side.
 

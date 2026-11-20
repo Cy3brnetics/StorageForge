@@ -68,6 +68,47 @@ Added entries are logged only after a mount's first scan, so a first index doesn
 
 `scan --checksum` hashes only files whose size collides with another file (at least `--checksum-min-size`, 1 MiB). `dupes` then lists identical files. The **Cleanup** panel and `folders` find likely duplicate *folders* from the index alone, by matching file names, sizes and subfolder layout; renamed copies still match.
 
+#### Copies on the same host, and copies on another host
+
+They are two classes, everywhere duplicates are listed or counted (the web UI, the API, `dupes`, `folders` and the report):
+
+| Where the copies are | What it is | Counted as reclaimable | Offered for the trash |
+| :--- | :--- | :--- | :--- |
+| Two or more on one host | a duplicate on that host | yes: every copy but one on that host | yes, as before |
+| One on each of several hosts | *a copy on another host: a possible backup* | no | no: the duplicates views give it no **Trash** button and say why |
+
+A set with two copies on one host and a third on another is both: the second copy on the first host counts as reclaimable, and the copy on the other host does not. The figure "also on another host" says how much is held that way, apart from what could be freed. In the API a group has `scope` (`same host` or `across hosts`), `hosts`, `reclaimable` (within hosts only) and `elsewhere` (the bytes held on other hosts).
+
+A copy on another host can still be put in the trash on purpose, from the folder's own menu or the picked-cards bar. The [plan check](plans-and-scripts.md#what-the-trash-tasks-of-a-plan-leave-behind) then warns that the copy on the other host would be the only one left.
+
+#### Keeping a pair in sync
+
+A folder and its copy on another host can be kept the same from then on. **Keep these two in sync…** is on each pair under **Cleanup → Duplicates → Copies on other hosts**, and on a whole-folder copy across hosts in the file map. It asks three things:
+
+- which side is the **source**. The side whose newest file changed last is offered;
+- how often it runs: every hour, day or week;
+- whether to also delete at the destination what is gone from the source. This is off unless you tick it.
+
+It then saves a [Moves plan](plans-and-scripts.md#data-moves) with one `mirror` step and opens it in **Moves**. This is the same sync engine as any mirror step: a job on the destination host that pulls from the source on a timer. Nothing is copied until you check that plan and deploy it there, with your password. The sync is one way: a file that differs at the destination is replaced by the one from the source, and nothing else there is removed.
+
+Once the plan is deployed:
+
+- the pair is listed under **Kept in sync**, with the state of its job (in sync at its last run, waiting for its first run, the last run failed, behind, paused) and when it last ran;
+- it is no longer listed as a duplicate, in the Cleanup panel, the file map, `/api/folders/duplicates` or `folders`. The same holds for a folder inside a synced one, for the identical files inside it, and for a mirror between two disks of one host. A file the sync left at the destination after it was removed at the source is still a duplicate of whatever else holds it;
+- it fills the sync and backup cells of the [protection matrix](planner.md) for the dataset holding the source, as every deployed mirror job does;
+- a run that fails is a critical notification, and a sync with no good run for two periods is a warning (`job-failed`, `job-stale`).
+
+The [plan check](plans-and-scripts.md#what-the-trash-tasks-of-a-plan-leave-behind) still counts the destination as a copy, so trashing the source of a sync warns that the copy on the other host would be the only one left. Any deployed mirror job makes its two folders a kept pair, also one whose plan was written by hand in Moves.
+
+#### Suggestions
+
+**Cleanup → Duplicates → Copies on other hosts** lists the folders that have a copy on another host and that nothing keeps in sync, largest first. Each has two answers:
+
+- **Keep these two in sync…**, as above. Until its plan is deployed the pair stays in the list, marked as prepared, with **Open the plan**;
+- **Not a backup of each other**. The set is moved to a list of that name below and is not suggested again. **Suggest again** there takes it back. The folders stay listed as copies on other hosts in the duplicates views. It is the set as it is that is set aside: when a third copy turns up, it is a new set and a new question.
+
+While any is left to answer there is one notification for information, `copies-not-synced`, with how many and the largest. It is low priority: it can be snoozed, or muted by kind, like any notification that is not critical, and it goes by itself when every pair is kept in sync or set aside. The list is made from the comparison of folders across the whole fleet at its defaults (3 files and 1 MiB), which the server makes again after each scan.
+
 ## ClamAV
 
 Scans install nothing on a host. ClamAV is the exception, and only on hosts you deploy it to from the **Malware** tab: **Dry run** shows what it would do, **Deploy** installs it.

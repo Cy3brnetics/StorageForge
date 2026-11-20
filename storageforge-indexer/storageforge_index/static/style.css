@@ -200,6 +200,8 @@ dialog h2 { margin: 0; font-size: 17px; }
 a.btn { text-decoration: none; color: inherit; display: inline-block; }
 /* view switch and column topology (topology.js) */
 .seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
+/* a .tab is a column that shrinks whatever may be clipped, and .seg clips: with a panel below taller than the window its buttons were squeezed to a line six pixels high */
+.tab > .seg { flex: none; }
 .seg button { all: unset; cursor: pointer; padding: 5px 12px; font-size: 13px; color: var(--muted); }
 .seg button[aria-pressed="true"] { background: var(--raise); color: var(--fg); }
 .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }

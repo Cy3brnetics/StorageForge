@@ -29,6 +29,10 @@ RUN lock="docker/requirements${EXTRAS:+-$EXTRAS}.lock" \
  && find /opt/venv -name '*.dist-info' -path '*pip*' -prune -exec rm -rf {} + \
  && rm -rf /opt/venv/bin/pip* /opt/venv/lib/python*/site-packages/pip
 
+# the link of the StorageForge network (the sfnet stage below), written out of the package so that there is one copy of it
+RUN install -d /out \
+ && /opt/venv/bin/python -c "import sys; from storageforge_index import sfcontroller; sys.stdout.write(sfcontroller.LINK)" > /out/storageforge-sfnet-link
+
 # ── test: run the suite against the built package (docker build --target test .) ─
 FROM build AS test
 COPY tests ./tests
@@ -176,6 +180,18 @@ COPY docker/tunnel/sshd_config /etc/ssh/sshd_config
 COPY docker/tunnel/entrypoint.sh /usr/local/bin/storageforge-tunnel
 USER 10002:10002
 ENTRYPOINT ["/usr/local/bin/storageforge-tunnel"]
+
+# ── sfnet: the controller's end of StorageForge's own network (docker-compose.sfnet.yml). It runs as root with NET_ADMIN and
+# nothing else, in the server's network namespace: it makes the WireGuard interface and keeps the private key, which the
+# server never sees. bash, wg and ip are all it runs.
+FROM ${BASE_IMAGE} AS sfnet
+RUN apk add --no-cache bash coreutils grep iproute2 wireguard-tools \
+ && install -d -m 0700 /etc/wireguard \
+ && install -d -m 0755 /run/storageforge-sfnet/want /run/storageforge-sfnet/state \
+ && rm -rf /var/cache/apk /etc/apk/cache
+COPY --from=build --chmod=0755 /out/storageforge-sfnet-link /usr/local/bin/storageforge-sfnet-link
+RUN ["/usr/bin/wg", "--version"]
+ENTRYPOINT ["/usr/local/bin/storageforge-sfnet-link", "run"]
 
 # ── runtime (last, so a plain docker build makes this one) ─────────────────────
 FROM ${BASE_IMAGE} AS runtime

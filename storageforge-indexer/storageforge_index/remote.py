@@ -111,6 +111,12 @@ def glob_escape(path: str) -> str:
     return re.sub(r'([\[\]*?\\])', r'\\\1', path)
 
 
+# Set once by whatever opens the index (sfnetwork.carry): (address, port) -> the host's address on StorageForge's own network when
+# a connection from here can go over it, or None. Every Transport asks it, so scans, deploys, key work and plan runs all take the
+# encrypted path without each naming it. Nothing here trusts the answer: the host key checked is still the one pinned for the host.
+PATH_OF = None
+
+
 @dataclass
 class Transport:
     host: str
@@ -125,9 +131,17 @@ class Transport:
     isolated: bool = False             # ignore ~/.ssh/config so only vault settings apply
     strict: bool = False               # only a host key already in known_hosts (password flows); else trust on first use
     signing: object = None             # scansign.Signing: every payload signed on the host and checked before it is used
+    via: str | None = None             # the address the connection is made to instead (a private network carries it); host is still what is checked
 
     def __post_init__(self):
         self._ctl_dir = None if self.local else tempfile.mkdtemp(prefix='sfidx-ssh-')
+        if PATH_OF is not None and not self.local and self.via is None and self.known_hosts:
+            try:
+                via = PATH_OF(self.host, self.port)
+                # only for a host whose key is pinned: over another path nothing is trusted on first use
+                self.via = via if via and known_host_keys(self.host, self.port, self.known_hosts) else None
+            except Exception:
+                self.via = None        # the other path is an extra: nothing about it may stop a connection
 
     @property
     def target(self) -> str:
@@ -154,6 +168,9 @@ class Transport:
                      '-o', 'PasswordAuthentication=no', '-o', 'KbdInteractiveAuthentication=no']
         elif self.key:
             argv += ['-i', os.path.expanduser(self.key), '-o', 'IdentitiesOnly=yes']
+        if self.via:
+            # made to the other address, and the key must be the one known_hosts holds for the host itself
+            argv += ['-o', f'HostName={self.via}', '-o', f'HostKeyAlias={known_hosts_name(self.host, self.port)}', '-o', 'StrictHostKeyChecking=yes']
         for opt in self.extra_opts:
             argv += ['-o', opt]
         # The login shell might be fish or csh; always hand the script to POSIX sh.

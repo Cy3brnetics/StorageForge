@@ -855,6 +855,7 @@ $('#scanform').addEventListener('submit', (ev) => { ev.preventDefault(); const h
 /* ── keys: generate in the vault, install with ssh-copy-id ────────── */
 function keyMsg(msg, ok) { const m = $('#instmsg'); m.hidden = false; m.textContent = msg; m.className = ok ? 'st-ok' : 'st-failed'; }
 async function loadKeys(select) {
+  loadEnclave();          // enclaveview.js: whether the extra layer on these keys is there
   try {
     const { keys, bindings } = await getJSON('/api/keys');
     const sel = $('#instkey'); const keep = select || sel.value;
@@ -902,6 +903,7 @@ async function loadKeys(select) {
     }));
     if (!bindings.length) $('#bindings').replaceChildren(text('li', 'No bindings yet.', 'muted'));
   } catch (err) { $('#keys').replaceChildren(text('li', err.message, 'muted')); }
+  loadSshCa();          // the SSH CA and its certificates, below the bindings (sshcaview.js)
 }
 async function setBindingActions(b, actions) {
   if (actions.includes('console') && !b.actions.split(',').includes('console')
@@ -1165,7 +1167,8 @@ $('#verify').addEventListener('click', async () => {
     const v = await getJSON('/api/audit/verify');
     const weak = v.unkeyed_after_keyed ? ` · ${v.unkeyed_after_keyed} later entries were written with the vault locked (no key): `
       + `whoever can write the database could have rewritten them, from #${v.first_unkeyed_after_keyed}` : '';
-    $('#verified').textContent = (v.valid ? `Chain intact · ${v.entries_checked} entries` : `Chain broken at entry #${v.first_bad_id}`) + weak;
+    const head = v.head && v.head.enclave ? ` · Key enclave: ${v.head.why}` : '';          // whether the log still ends where the enclave last signed it
+    $('#verified').textContent = (v.valid ? `Chain intact · ${v.entries_checked} entries` : v.first_bad_id ? `Chain broken at entry #${v.first_bad_id}` : 'Every entry there is checks out, and the log was cut or changed') + weak + head;
     $('#verified').className = !v.valid ? 'st-failed' : weak ? 'st-warn' : 'st-ok';
   } catch (err) { $('#verified').textContent = err.message; }
 });
