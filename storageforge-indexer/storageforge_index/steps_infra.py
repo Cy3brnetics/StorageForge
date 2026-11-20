@@ -483,7 +483,7 @@ t_sysctl_set() { local key=$1 value=$2 file=/etc/sysctl.d/90-storageforge-plan.c
 
 t_sshd_option() { local key=$1 value=$2 roll=$3 dir=/etc/ssh/sshd_config.d file conf=/etc/ssh/sshd_config have err
   file=$dir/90-storageforge.conf
-  have=$(sshd -T 2>/dev/null | awk -v k="$(tr 'A-Z' 'a-z' <<<"$key")" '$1 == k {print $2; exit}')
+  have=$(sshd -T 2>/dev/null | awk -v k="$(tr 'A-Z' 'a-z' <<<"$key")" 'tolower($1) == k {print $2; exit}')
   if [[ ${have,,} == "${value,,}" ]]; then ok "$key is $value"; return 0; fi
   grep -qiE '^[[:space:]]*Include[[:space:]].*sshd_config\.d' "$conf" 2>/dev/null || { conflict "$conf does not include sshd_config.d: change $key there by hand"; return 0; }
   act "set $key to $value (it is ${have:-unset})" || return 0
@@ -591,7 +591,13 @@ t_wg_peer() { local iface=$1 key=$2 allowed=$3 state=${4:-present} endpoint=${5:
     [[ -n $keepalive && $keepalive != 0 ]] && more+=(persistent-keepalive "$keepalive")
     try wg set "$iface" peer "$key" "${more[@]}"
   fi
-  if command -v wg-quick >/dev/null && [[ -e /etc/wireguard/$iface.conf ]]; then wg-quick save "$iface" >/dev/null 2>&1 || info "could not save /etc/wireguard/$iface.conf: this lasts until the interface next restarts"; fi
+  local dir=${SF_WG_DIR:-/etc/wireguard}
+  if command -v wg-quick >/dev/null && [[ -e $dir/$iface.conf ]]; then
+    wg-quick save "$iface" >/dev/null 2>&1 || info "could not save $dir/$iface.conf: this lasts until the interface next restarts"
+    # wg-quick save writes the private key into the file. An interface StorageForge made keeps its key in a file of its own,
+    # which a rotation replaces, so no second copy is left here to outlive it
+    if [[ -e $dir/$iface.storageforge ]]; then sed -i "/^PrivateKey[[:space:]]*=/d" "$dir/$iface.conf"; fi
+  fi
   ok "done: $iface"
 }
 
@@ -602,6 +608,8 @@ t_wg_interface() { local iface=$1 address=$2 port=$3 state=${4:-present} dir=${S
   command -v wg >/dev/null || { conflict "this host has no wg command (package wireguard-tools)"; return 0; }
   wg show "$iface" public-key >/dev/null 2>&1 && up=1
   if [[ ! -e $mark ]] && { ((up)) || [[ -e $conf ]]; }; then conflict "$iface is on this host and StorageForge did not make it: it is left as it is"; return 0; fi
+  # the bridge of the StorageForge containers has this name on the machine that runs them, unless STORAGEFORGE_BRIDGE gives it another
+  if ((!up)) && ip link show dev "$iface" >/dev/null 2>&1; then conflict "$iface is on this host and is not a WireGuard interface: it is left as it is"; return 0; fi
   if [[ $state == absent ]]; then
     if ((!up)) && [[ ! -e $mark ]]; then ok "there is no $iface"; return 0; fi
     act "take $iface down and remove its key" || return 0
@@ -627,6 +635,39 @@ t_wg_interface() { local iface=$1 address=$2 port=$3 state=${4:-present} dir=${S
   if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null; then try systemctl enable --now "wg-quick@$iface" >/dev/null || return 0
   else try wg-quick up "$iface" >/dev/null || return 0; info "no systemd here: start $iface at boot with wg-quick up $iface"; fi
   if wg show "$iface" public-key >/dev/null 2>&1; then ok "$iface is up at $address on port $port, public key $(wg show "$iface" public-key)"; else conflict "$iface did not come up"; fi
+}
+
+# A key rotation in two halves. prepare: a second key pair is made beside the first, and the next reading takes its public half.
+# switch: the interface starts using it, and only when it is the key its peers were given. No half prints, copies or sends a private key.
+t_wg_rotate() { local iface=$1 phase=$2 pubkey=${3:-} dir=${SF_WG_DIR:-/etc/wireguard}
+  local key=$dir/$iface.key next=$dir/$iface.key.next mark=$dir/$iface.storageforge now waiting
+  command -v wg >/dev/null || { conflict "this host has no wg command (package wireguard-tools)"; return 0; }
+  [[ -e $mark ]] || { conflict "$iface is not an interface StorageForge made: its key is left as it is"; return 0; }
+  now=$(wg show "$iface" public-key 2>/dev/null) || { conflict "$iface is not up"; return 0; }
+  case $phase in
+    prepare)
+      if [[ -s $next ]]; then ok "a next key is waiting on $iface, public key $(wg pubkey <"$next")"; return 0; fi
+      act "make the next key pair of $iface on this host" || return 0
+      (umask 077; wg genkey >"$next") || { conflict "could not make a key"; rm -f "$next"; return 0; }
+      durable "$next"
+      ok "the next key of $iface is made, public key $(wg pubkey <"$next"): the next reading takes it" ;;
+    switch)
+      if [[ $now == "$pubkey" ]]; then ok "$iface uses that key"; return 0; fi
+      [[ -s $next ]] || { conflict "no next key is waiting on $iface: nothing is switched"; return 0; }
+      waiting=$(wg pubkey <"$next") || { conflict "the next key of $iface cannot be read"; return 0; }
+      [[ $waiting == "$pubkey" ]] || { conflict "the next key on this host is not the one its peers were given: nothing is switched"; return 0; }
+      act "switch $iface to its next key" || return 0
+      try wg set "$iface" private-key "$next" || return 0
+      mv -f "$next" "$key"; durable "$key"
+      # a copy of the old key that wg-quick save once wrote into the configuration goes too: the file names the key file
+      if [[ -e $dir/$iface.conf ]]; then sed -i "/^PrivateKey[[:space:]]*=/d" "$dir/$iface.conf"; fi
+      if [[ $(wg show "$iface" public-key) == "$pubkey" ]]; then ok "$iface uses its new key, and the old one is gone from this host"; else conflict "$iface did not take the new key"; fi ;;
+    cancel)
+      if [[ ! -e $next ]]; then ok "no next key is waiting on $iface"; return 0; fi
+      act "remove the next key of $iface, which was never used" || return 0
+      rm -f "$next"; ok "the next key of $iface is removed" ;;
+    *) conflict "a rotation is prepare, switch or cancel" ;;
+  esac
 }
 
 t_workload_action() { local runtime=$1 name=$2 action=$3 state
@@ -979,6 +1020,18 @@ def _check_wg(conn, c, h, p, say):
         say('warn', f'{p["iface"]} was not seen at the last reading')
 
 
+def _check_wg_rotate(conn, c, h, p, say):
+    if p['phase'] == 'switch':
+        if not p.get('pubkey'):
+            say('crit', 'to switch, give the public key its peers were given: the host switches only to that one')
+        say('warn', f'connections over {p["iface"]} stop until each peer has moved this host\'s address to the new key, which the same plan does')
+    elif p['phase'] == 'prepare':
+        say('note', 'the new key pair is made on the host and its private half stays there: the next reading takes the public half')
+    m = _infra(conn, h)
+    if m and p['iface'] not in {w['name'] for w in (m.get('access') or {}).get('wireguard') or []} and (m.get('access') or {}).get('wireguard') is not None:
+        say('warn', f'{p["iface"]} was not seen at the last reading')
+
+
 def _check_wg_interface(conn, c, h, p, say):
     try:
         mine = ipaddress.ip_interface(p['address'])
@@ -1005,6 +1058,9 @@ def _check_wg_interface(conn, c, h, p, say):
                 say('crit', f'{i.get("name")} already has {other}: the range would take its traffic')
     m = _infra(conn, h)
     seen = {w['name'] for w in (m.get('access') or {}).get('wireguard') or []} if m else set()
+    if m and (m.get('access') or {}).get('wireguard') is not None and p['iface'] not in seen and any(i.get('name') == p['iface'] for i in (net or {}).get('interfaces') or []):
+        say('crit', f'{p["iface"]} is on this host and is not a WireGuard interface. On the machine that runs the StorageForge containers their bridge has this name: '
+                    'give the bridge another with STORAGEFORGE_BRIDGE before this host joins')
     say('note', f'{p["iface"]} was seen at the last reading: the script changes it only if StorageForge made it' if p['iface'] in seen
         else 'the key pair is made on the host and the private key stays there; the next reading takes the public key')
     say('note', f'UDP port {p["port"]} must be open on this host\'s firewall for peers that call it')
@@ -1244,6 +1300,13 @@ changes.register('wg-interface', {'group': 'Network', 'label': 'WireGuard interf
     'help': 'Makes the interface and its key pair on the host. The private key never leaves the host. An interface StorageForge did not make is left alone.'},
     ('iface', 'address', 'port', 'state'), lambda p: _when(p['state'], f'WireGuard interface {p["iface"]} at {p["address"]}'), _check_wg_interface,
     _ansible_bash('t_wg_interface', ('iface', 'address', 'port', 'state')))
+
+changes.register('wg-rotate', {'group': 'Network', 'label': 'WireGuard key rotation', 'fields': [
+    F('iface', 'iface', 'Interface', required=True, placeholder='sf0'), F('phase', 'choice', 'Half', options=['prepare', 'switch', 'cancel'], required=True),
+    F('pubkey', 'wgkey', 'The new public key (to switch)')],
+    'help': 'Prepare makes a second key pair on the host, beside the one in use. Switch starts using it, once every peer knows it. The private keys never leave the host.'},
+    ('iface', 'phase', 'pubkey'), lambda p: {'prepare': f'Make the next key of {p["iface"]}', 'switch': f'Switch {p["iface"]} to its next key', 'cancel': f'Remove the next key of {p["iface"]}'}.get(p['phase'], f'Rotate the key of {p["iface"]}'),
+    _check_wg_rotate, _ansible_bash('t_wg_rotate', ('iface', 'phase', 'pubkey')))
 
 changes.register('workload-action', {'group': 'Workloads', 'label': 'Start, stop or snapshot', 'fields': [
     F('runtime', 'choice', 'Runtime', options=RUNTIMES, required=True), F('name', 'name', 'Name', required=True), F('action', 'choice', 'Action', options=['start', 'stop', 'restart', 'force-off', 'snapshot'], required=True)]},

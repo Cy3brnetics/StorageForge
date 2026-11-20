@@ -12,6 +12,7 @@ import posixpath
 
 from . import moves
 from .analysis import resolve
+from .copies import split_kept, syncs
 from .db import Conn, epoch
 from .folders import ignore_lists, is_ignored
 from .graph import load as graph_load
@@ -26,9 +27,10 @@ def _same_host_reclaim(copies: list[dict], size: int) -> int:
     return size * (len(copies) - len(hosts))
 
 
-def file_groups(conn: Conn, host: str | None, min_size: int, ignore: dict, system: bool) -> tuple[list[dict], dict]:
+def file_groups(conn: Conn, host: str | None, min_size: int, ignore: dict, system: bool, links: list[dict] | None = None) -> tuple[list[dict], dict]:
     """Files with the same checksum anywhere in the fleet. With a host, the groups with a copy there, with every copy: the
-    host filter used to sit inside the count too, so a file whose only copy was on another host was never a duplicate."""
+    host filter used to sit inside the count too, so a file whose only copy was on another host was never a duplicate.
+    links (copies.syncs): a file a deployed sync holds at its destination is that sync's copy of its source, not a duplicate of it."""
     mine = 'AND sum(CASE WHEN h.hostname = :host OR h.ip_address = :host THEN 1 ELSE 0 END) > 0' if host else ''
     found: dict[str, dict] = {}
     cur = conn.execute(f"""SELECT f.checksum_hash, h.hostname, m.mount_point, d.path, f.filename, f.file_size_bytes, f.modified_at
@@ -53,13 +55,19 @@ def file_groups(conn: Conn, host: str | None, min_size: int, ignore: dict, syste
     for g in found.values():
         if len(g['copies']) + g['hidden'] < 2:
             continue
+        if links:
+            g['copies'], synced = split_kept(g['copies'], links)
+            if synced and len(g['copies']) + g['hidden'] < 2:
+                continue                      # all that is left of it is one file and the copies a sync keeps of it
         if len(g['copies']) < 2:              # the other copies are system files or ignored
             hidden['groups'] += 1
             hidden['bytes'] += g['size'] * (len(g['copies']) + g['hidden'] - 1)
             continue
         g['copies'].sort(key=lambda c: (c['host'], c['path']))
-        g['scope'] = 'same host' if len({c['host'] for c in g['copies']}) == 1 else 'across hosts'
+        g['hosts'] = len({c['host'] for c in g['copies']})
+        g['scope'] = 'same host' if g['hosts'] == 1 else 'across hosts'
         g['reclaimable'] = _same_host_reclaim(g['copies'], g['size'])
+        g['elsewhere'] = g['size'] * (g['hosts'] - 1)      # held on another host too: a possible backup, never counted as reclaimable
         groups.append(g)
     groups.sort(key=lambda g: (-g['reclaimable'], -g['size'] * len(g['copies'])))
     return groups, hidden
@@ -67,16 +75,18 @@ def file_groups(conn: Conn, host: str | None, min_size: int, ignore: dict, syste
 
 def build(conn: Conn, host: str | None, min_size: int, system: bool = False, twins: dict | None = None) -> dict:
     ignore = ignore_lists(conn)
-    groups, hidden = file_groups(conn, host, min_size, ignore, system)
+    links = syncs(conn)
+    groups, hidden = file_groups(conn, host, min_size, ignore, system, links)
 
     folder_copies = []
     for t in (twins or {}).get('groups', []):
         copies = [c for c in t['copies'] if not is_ignored(c['host'], c['path'], ignore, system=not system, extra=() if system else APP_DIRS)]
+        copies = split_kept(copies, links)[0]
         if len(copies) < 2:
             continue
         hosts = {c['host'] for c in copies}
-        folder_copies.append({**t, 'copies': copies, 'count': len(copies), 'reclaimable': t['bytes'] * (len(copies) - len(hosts)),
-                              'scope': 'same host' if len(hosts) == 1 else 'across hosts'})
+        folder_copies.append({**t, 'copies': copies, 'count': len(copies), 'hosts': len(hosts), 'reclaimable': t['bytes'] * (len(copies) - len(hosts)),
+                              'elsewhere': t['bytes'] * (len(hosts) - 1), 'scope': 'same host' if len(hosts) == 1 else 'across hosts'})
 
     whole = {(c['host'], c['path']) for t in folder_copies for c in t['copies']}
 
@@ -108,6 +118,8 @@ def build(conn: Conn, host: str | None, min_size: int, system: bool = False, twi
         for i, c in enumerate(g['copies']):
             per_host.setdefault(c['host'], set()).add('folder' if in_folder_copy(c) else i)
         g['reclaimable'] = g['size'] * sum(len(v) - 1 for v in per_host.values())
+        in_folders = sum(1 for v in per_host.values() if 'folder' in v)       # hosts whose copy the folder copies already count
+        g['elsewhere'] = g['size'] * (len(per_host) - 1 - max(0, in_folders - 1))
     groups.sort(key=lambda g: (-g['reclaimable'], -g['size'] * len(g['copies'])))
     total_groups = len(groups)
     shown = groups[:MAX_GROUPS]
@@ -157,6 +169,8 @@ def build(conn: Conn, host: str | None, min_size: int, system: bool = False, twi
     return {'folders': top, 'folders_total': len(folders), 'links': [e for e in links.values() if e['a'] in keep and e['b'] in keep],
             'groups': shown, 'groups_total': total_groups, 'folder_copies': folder_copies, 'folders_compared': twins is not None,
             'reclaimable': sum(g['reclaimable'] for g in groups) + sum(t['reclaimable'] for t in folder_copies),
+            'across_hosts': {'sets': sum(g['scope'] != 'same host' for g in groups) + sum(t['scope'] != 'same host' for t in folder_copies),
+                             'bytes': sum(g['elsewhere'] for g in groups) + sum(t['elsewhere'] for t in folder_copies)},
             'hidden': hidden, 'checksummed': checksummed or 0, 'broken_links': broken_links(conn, host, ignore),
             'relations': relations(conn, host, ignore, system), 'ignore': ignore}
 

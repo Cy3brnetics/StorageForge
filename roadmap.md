@@ -24,6 +24,7 @@ Checked against the code on 2026-11-16.
 | Run the disk-health collector on this machine's real disks (it needs sudo here) | PF-04 on real worn disks |
 | Download pfSense CE once (Netgate's installer and store want an account), so its checksum can be pinned and `lab.sh` can take it from the image cache | pfSense in the lab |
 | A Cisco account for Cisco Modeling Labs Free | Cisco in the lab |
+| Give CI the release key (`STORAGEFORGE_RELEASE_KEY`) and an `enclave/image/allowed_signers` file | The enclave image signed in CI |
 | A PagerDuty account, if a free plan still exists | PagerDuty reaching the real service |
 | A physical FIDO2 token | FIDO2 at step-up and at sign-in |
 | A Cloudflare account, and an ngrok account | Cloudflare Tunnel and ngrok against the real services |
@@ -62,6 +63,7 @@ Checked against the code on 2026-11-16.
 
 | Decision | Blocks |
 | :--- | :--- |
+| **The compose bridge and the StorageForge network's interface are both called `sf0`** on the Docker host: rename the bridge default, or the interface | The controller's Docker host joining the StorageForge network |
 | **One design document** in place of the storage blueprint and the map's design: the owner took the recommended answers in section 10.1 on 2026-11-16, to be checked again when 3i is reached | Section 10's step 3i, confirmed at 0.5.16 |
 
 ## Versions and checkpoints
@@ -187,6 +189,12 @@ Decided 2026-11-16: data is encrypted even on the LAN, and the default needs no 
 | Scans, deploys, `storageforge-agentctl`, the console and the agent's tunnel over the StorageForge network where the host is on it. Sends, Moves and sync keep a tunnel of their own per transfer (the forced-command job keys and rsync over SSH, encrypted end to end); NFS and SMB shares are not carried | open |
 | Lab: a host on the LAN reached only through it, a capture showing no clear text between two hosts, a key rotated and a peer revoked | open |
 
+**State of 2.1 on 2026-11-20 (built, not lab-tested; `fed5650` to `85848e2`):** rotation through plans, the controller as a member (a link container, or a controller that runs on a member), StorageForge's own SSH connections over the network, and the page under Infrastructure. Lab tier 20 is written and has not run. **Open:** `storageforge-agentctl` and the agent's tunnel (0.5.7); a hub has no step that turns on forwarding, so two spokes cannot reach each other; the `sfnet` image target has not been built; the compose bridge is also called `sf0` on the Docker host, so that host cannot join until `STORAGEFORGE_BRIDGE` is changed (the owner's decision: rename the bridge default or the interface).
+
+**SSH CA, and exposure through tunnels, on 2026-11-20 (built, not lab-tested; `125d6b4` to `d2e742c`):** the CA as a vault key, `ssh-ca-trust` and `ssh-ca-krl`, certificates for the console and scans per host, revocation, Keys → SSH certificates; tunnel findings in Exposure and Security, and the `cloudflare-tunnel` and `pangolin-site` steps. Lab tier 21 is written and has not run; its tunnel checks use stand-ins. **Open:** certificates for people, taking the key out of `authorized_keys` once certificates work, join steps for frp and ngrok (not asked for), Pangolin's API read (0.5.10).
+
+**Join steps on 2026-11-20 (built, not lab-tested; `c10fc9c` to `0cbc4b2`):** `netbird`, `zerotier`, `nebula` (with its CA in the vault and a lighthouse role) and `openziti`; Headscale pre-auth keys into the vault and its routes read. Lab tier 22 is written and has not run; its server set-ups come from documentation alone. **No Netmaker step,** by rule 3. **Open:** a page or API for the Nebula CA and Headscale keys (CLI only), the CA signing inside a real enclave (not exercised), an OpenZiti controller in the lab. ZeroTier 1.16 and later builds its controller only under a non-commercial licence (`ZT_NONFREE=1`): whether the lab may use that build is the owner's decision, and tier 22 skips those checks without it.
+
 Deploying the servers (Headscale, NetBird's management, Pangolin, a ZeroTier controller, OpenZiti's controller) is a Toolbox entry each (section 4). This section is the hosts' side.
 
 ## 3. Log monitoring
@@ -256,6 +264,7 @@ Built since the last roadmap: storage pools of every kind as steps (`zfs-pool`, 
 | **`runtime-install`** | The four runtimes across distros, rootless setup, and a preflight that says present, installable or blocked. [Detail](archive/roadmaps/infrastructure-platform-roadmap.md#71-runtime-install) | open |
 | **Pools: what's left** | Add a vdev to a ZFS pool, replace or attach a disk; add, replace and grow an md array; LUKS | open |
 | **Networks: what's left** | Bonds, addresses, routes, DHCP; read netplan, NetworkManager and networkd files as well as what the kernel has | open |
+| **Copies on other hosts** (the owner's request of 2026-11-19) | Duplicates across hosts are possible backups: a class of their own, never reclaimable or offered for the trash. The plan check names *the last copy* and *the copy on HOST would be the only one left*. Keep in sync prepares a Moves mirror plan; a deployed pair is kept in sync and no longer a duplicate. Pairs left are suggested, with one notification, and can be set aside | built, not lab-tested: `3aa6ee8`, `40b8cd2`, `9d48e09`, `587e360`; the lab check `copies-across-hosts` (tier 13) is written in `90815ae` and has not run. Open: a sync action for single files, a CLI command, `keep_replaced` in the dialog, a folder with another filesystem mounted inside it |
 
 **Exit:** install a runtime on a bare VM from a plan. The report changes nothing, a changed plan gets 409, and a bridge change that cuts SSH rolls itself back.
 
@@ -575,6 +584,8 @@ web app ◄──signatures, unwrapped secrets on approved requests only──�
 | **Stateless and restartable** | Ciphertexts stay in the database as today. A restarted enclave holds nothing until unlocked again. The VM is started and watched by the controller's supervisor; if it stops, operations that need keys fail closed and the notification center says so | begun 2026-11-18: `STORAGEFORGE_ENCLAVE=vm` has the server start and watch the VM, and the server does not start without it. A VM that stops is logged and audited (`enclave.down`), started again at the same address with a growing delay, and holds nothing until unlocked; in between every key operation fails closed. Only an image whose files match `SHA256SUMS` and the pinned digest is started, and not a different one after a crash. A stopped, locked or locked-down enclave is a `security-enclave` notification, which cannot be muted. Open: the lab |
 | **Where it runs** | Beside the controller, through `/dev/kvm` passed to the container, with Firecracker's jailer (its own uid, chroot, seccomp, cgroups). On a host with no KVM (a VPS without nested virtualization), the vault works as today and the UI and the security view say the extra layer is not there | begun 2026-11-18: the runtime image holds Firecracker and the enclave image (built by the same script as `build.sh`, same `SHA256SUMS`), and `docker-compose.enclave.yml` passes `/dev/kvm` and its group to a container that stays unprivileged; run that way here, it unlocked, signed, and came back locked after a kill. A command that needs a key starts an enclave of its own. Open: the label in the UI and the security view where it is off, the jailer (needs root), the lab |
 | **The migration** | Moving the vault's KEK and keys under the enclave changes nothing in the stored ciphertexts' format if it can be avoided; where it cannot, it is a migration with a way back, and a major checkpoint before it runs | none is needed for what is built: the enclave holds only the KEK and is handed the vault's own ciphertexts with each request, so nothing stored changes. A unit test has a key made inside read by today's vault, and keys the vault made signed with inside |
+
+**State on 2026-11-20 (built, not lab-tested; merged from `999c54e` to `3658292`):** the starter and typed unlock, step-up checked inside, releases bound to a step, host or platform and written to the audit log from inside, the chain head kept, limits per kind of task with notifications, the label where the enclave is off, the CI build with comparison, signature and arm64, and of the layers below the second lock (file share; no TPM), the Noise channel, scheduled rotation and the 30-second route codes. Migration 046 changes no stored ciphertext; a secret given a policy and `vault second-lock on` write what 0.5.4 cannot open, and each has a command that undoes it. Lab tier 19 is written and has not run. **Open:** TPM sealing, the jailer and host-side memory locking (need root), arm64 under KVM, a real FIDO2 token, step-up for background threads, a page for secret policies, a schedule for SSH key rotation, the Dockerfile stage checking the recorded hashes, CI signing (waits for the owner's release key as the secret `STORAGEFORGE_RELEASE_KEY`), the image's own findings, and the off-machine backup copy, which fails when the vault secret is kept apart from the server.
 
 ### Layers (the owner's direction of 2026-11-18)
 

@@ -39,6 +39,20 @@ The exposure engine works from the bind address, then the firewall, then Docker'
 
 A wrong "not reachable" is worse than no answer, so unreadable rules and rules it could not understand give **Unknown**, and never **Blocked**. A published Docker port goes through the forward chains, which is why ufw does not stop it, and the map shows that with the rule that decides.
 
+### Tunnels: public with no port open
+
+A tunnel (Cloudflare Tunnel, frp, ngrok, Pangolin's Newt) dials out from the host and carries requests back in. What it publishes is public with no port open on the host or the router, and no firewall rule on the way stops it. Nothing in a firewall reading shows that, so it is read from the tunnel's own configuration, without the lines that hold its credentials, and from which tunnel programs run.
+
+- A listener that a running tunnel on the same host sends requests to is **Any address**, whatever its bind address and the firewall say. The row names the tunnel and the public address, and keeps what the level was without the tunnel.
+- The Exposure panel lists each thing a tunnel publishes, where it sends it, and through what. A tunnel that sends requests to another machine is listed here and does not change this host's listeners.
+- A tunnel whose routes are kept at its server (a `cloudflared` run from a token alone, or Newt) is **Unknown**: StorageForge cannot read what it publishes from the host. So is a tunnel that is configured and was not running at the last reading: it is public whenever it runs.
+- The Security overview says the same in a sentence for each host. It does not change the host's state: publishing a service is a choice, and the view cannot tell a tunnel you want from one you do not.
+- A `cloudflared` or `newt` that was started with its token or secret as an argument is named: every account on the host can read a command line. Only the program's name leaves the host, never the line.
+
+frp's `stcp`, `xtcp` and `sudp` proxies are not listed: only a visitor that holds the same key reaches them.
+
+Read from configuration and tested with unit tests only. The lab has no check against a real Cloudflare, ngrok or Pangolin service: **not lab-tested**.
+
 **Can A reach B?** walks a packet's path: out of A, across anything between, into B, naming the first rule that decides it. It is worked out from the configuration and tested against nothing: anything between hosts that was not scanned is listed as a blind spot.
 
 ## Planning from it
@@ -58,6 +72,12 @@ Then **Stage in Changes**, where it is an ordinary step with a Report and an App
 | `net-bridge`, `net-vlan`, `net-mtu` | With NetworkManager or systemd-networkd |
 | `wg-peer` | Add or revoke a WireGuard peer, with where to call it and a keepalive where it cannot call back |
 | `wg-interface` | Make a WireGuard interface and its key pair on the host, or remove them. The private key is made on the host and never leaves it. An interface StorageForge did not make is left alone |
+| `wg-rotate` | One half of a key rotation on an interface StorageForge made. `prepare` makes a second key pair on the host, beside the one in use. `switch` starts using it, and only if it is the key the peers were given. `cancel` removes a second key that was never used |
+| `tailscale` | Join a tailnet with an auth key from the vault, or leave it. With a control server named it joins through Headscale, with a pre-auth key `vault headscale-key` made there |
+| `netbird` | Join a NetBird network with a setup key from the vault, read by `netbird up --setup-key-file`, or leave it: `netbird deregister` also removes the peer at the management server. See [joining a private network](#joining-a-private-network) |
+| `zerotier` | Join or leave a ZeroTier network by its id. No secret is involved. The step does not authorise the node at the controller, and says which node id to authorise there |
+| `nebula` | Write a host's Nebula configuration and its CA certificate, have `nebula -test` read them, and run Nebula as a unit of its own, as a lighthouse if asked. The host certificate comes first, from `vault nebula-issue` |
+| `openziti` | Enroll the host as an OpenZiti identity from a one-time token in the vault, read by `ziti-edge-tunnel enroll --jwt FILE`, or remove the identity and its key |
 | `container` | `docker run` or `podman run` with a fixed name. It will not replace an existing container |
 | `vm` | `virt-install --import` from a disk you already have, with its console on loopback |
 | `os-install`, `os-boot`, `os-remove` | A second operating system on the host itself, beside the running one, and which of them starts. See [host migration](host-migration.md#a-second-system-beside-the-first) |
@@ -68,9 +88,38 @@ Then **Stage in Changes**, where it is an ordinary step with a Report and an App
 
 A step that could cut StorageForge off can carry a rollback timer. The script journals how to undo it and starts a systemd timer. Only a second signed run stops that timer, and that can only happen if the path still works.
 
+### Joining a private network
+
+Five steps join a host to a private network that something else runs, and take it out again: `tailscale`, `netbird`, `zerotier`, `nebula` and `openziti`. All are built and none is lab-tested: lab tier 22 is written and has not run. What they have in common:
+
+- **The program is installed already**, except Tailscale, which the `tailscale` step installs with its own script. Each of the others has a package source of its own to add, and that is your choice to make.
+- **A secret is never on a command line.** It is in the vault, reaches the host with `vault send-secret`, and the program is given the name of a file. How each program takes it is in [Secrets for plan steps](security.md#secrets-for-plan-steps).
+- **A second run changes nothing**, and a host that is already on another network of the same kind is left there and said so.
+- **Leaving is the same step with state `absent`.** What stays behind at the network's controller is said in the step's output, because the step does not always remove it there.
+
+| Step | What it does not do |
+| :--- | :--- |
+| `netbird` | A NetBird older than `--setup-key-file` is refused. One too old for `netbird deregister` is disconnected, and its peer stays listed at the management server |
+| `zerotier` | Authorise the node: a private network lets it in only once its controller has. Remove the node from the controller's member list when it leaves |
+| `nebula` | Issue or revoke a certificate (`vault nebula-issue`, `vault nebula-revoke`), open the lighthouse's UDP port in a firewall, or touch a Nebula that was set up by hand: a `config.yml` it did not write and a running `nebula.service` are left alone |
+| `openziti` | Make the identity or its token at the controller, or delete the identity there when the host leaves. Its service hands out names in 100.64.0.0/10 by default, the range Tailscale and NetBird use |
+
+**There is no step for Netmaker.** `netclient join -t TOKEN` is the only way it takes its enrollment token: no file, no standard input, no environment variable. A token on a command line is readable by every account on the host, so the step is not built until netclient can read the token from a file.
+
+**Nebula** has no control server. Its certificate authority is kept by StorageForge:
+
+1. `storageforge-index vault nebula-ca NAME --networks 10.9.0.0/24` makes the CA. Its key is a vault key (in the key enclave where there is one, and it signs there), and its certificate is public.
+2. `storageforge-index vault nebula-issue NAME --host HOST --address 10.9.0.5/24` has the host make its own key pair in `/etc/nebula` (the private key never leaves the host), signs a certificate for the public half, and writes the certificate back. An address belongs to one name until that name's certificate is revoked.
+3. The `nebula` step writes the configuration: the lighthouses (`10.9.0.1=lh.example.org:4242`), what is allowed in (`icmp, tcp/22, tcp/443@web`), and whether this host is a lighthouse. A lighthouse listens on UDP 4242 unless told another port.
+4. `storageforge-index vault nebula-revoke NAME HOSTNAME` revokes a certificate. Every other host refuses it once the `nebula` step has run on it again, which writes the list of revoked certificates into its configuration.
+
+The certificates are Nebula's version 1 format (one IPv4 address per host), which every Nebula reads. Version 2 certificates, with IPv6, are not written.
+
+**Headscale** is Tailscale's control server run by the site. `storageforge-index vault headscale-key NAME --host SERVER --hs-user 1` makes a pre-auth key on the server over SSH and stores it as the secret `NAME`: it is never printed. The `tailscale` step then joins with it when its control server field names the Headscale server. A scan of the server reads each node's routes: approved, advertised and still waiting for approval, and served.
+
 ## StorageForge's own network
 
-StorageForge can build a WireGuard network of its own between the hosts you choose, on the interface `sf0` and UDP port 51903. It needs no outside service. It is used through the API today; the page for it is not built.
+StorageForge can build a WireGuard network of its own between the hosts you choose, on the interface `sf0` and UDP port 51903. It needs no outside service. Its page is **Infrastructure → StorageForge network**: make the network, add and remove members, see per member what the readings confirm, rotate a key, set up the controller's own end, read the findings, and save the plan, which then opens in Changes. Changing anything there asks for your password again; an account that may only look sees the members and no buttons. The same steps through the API:
 
 1. `POST /api/sfnet` makes the network. It picks a range that no scanned host has an address or a route in, and never `100.64.0.0/10`, which Tailscale and NetBird use. Give `range` to choose one yourself, and `topology: "hub"` where hosts should meet only at a hub.
 2. `POST /api/sfnet/members` with a `host` adds a scanned host. It gets one address for good. The other members call it at the address scans reach it at; give `endpoint` for another, or `reachable: false` for a host behind a NAT of its own, which then calls the others and keeps the path open.
@@ -82,10 +131,43 @@ What it holds to:
 - **Private keys stay on their hosts.** The controller stores ranges, addresses and public keys. The step never prints the key, and its file is readable by root only.
 - **A key is taken from a reading once.** If an active member later shows a different key, nobody is told to trust it. It is a critical notification, because either the interface was made again by hand or it is another machine.
 - **A peer nobody asked for is a notification,** and the next plan revokes it.
+- **A key changes only when you ask.** `POST /api/sfnet/members/rotate` marks a member, and the plans that follow do the rest in three runs, each after a new reading: the host makes a second key pair (`wg-rotate`, `prepare`) and the reading brings back its public half; every peer learns the new key, with no address on it yet; and when the readings show that every peer knows it, the host switches (`wg-rotate`, `switch`) and its peers move its address to the new key and drop the old one in the same plan. Until the switch nothing is interrupted. The old private key is deleted from the host at the switch. `{"cancel": true}` takes a rotation back before the switch. A second key that appears on a host without being asked for is not taken: it is a notification, and the next plan removes it.
 - **A host that leaves** (`POST /api/sfnet/members/remove`) comes off every other member at the next plan and loses its interface and key. Its address is never given to another host.
 - **Open the port.** Peers call UDP 51903; add a `fw-rule` step where a firewall is in the way.
 
-Not built yet: the controller as a member (it runs in a container), key rotation through a plan, and the page.
+A machine that already has an interface called `sf0` that is not WireGuard is left alone. The machine that runs the StorageForge containers is one: their bridge has that name by default. Give the bridge another name with `STORAGEFORGE_BRIDGE` (and move any firewall rule that names it) before that machine joins.
+
+### The controller as a member
+
+The controller can be a member too, so that its own connections to the hosts can go over the network. There are two ways.
+
+**In Docker: the link.** Start the stack with `docker-compose.sfnet.yml` as well:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.sfnet.yml up -d
+```
+
+That adds the `sfnet` service, a small container that shares the server's network, runs as root with the one capability `NET_ADMIN`, makes `sf0` there and keeps its private key in a volume only it mounts. The server stays unprivileged and never sees the key. It writes what it wants (an address, a port, peers by public key) to one folder and reads what the link reports from another; the link checks every line before it acts and never repeats one. The Docker host needs WireGuard in its kernel. Then:
+
+1. `POST /api/sfnet/controller` makes the controller a member. It gets an address like any host.
+2. `POST /api/sfnet/controller/apply` hands the link what the interface should be. This is the controller's half of every plan: do it whenever `GET /api/sfnet` shows `controller.pending`, as after a host joined, left or rotated its key. The link acts within five seconds, and its report brings back the controller's public key.
+3. Save and run the plan for the hosts as before, so they learn the controller's key.
+
+By default the controller calls the hosts and keeps each path open, so no port needs to be published. Where hosts must call it, uncomment the `ports` lines in `docker-compose.sfnet.yml` and give `{"endpoint": "<the Docker host's address>"}` when it joins. The controller's key is rotated like a host's (`/api/sfnet/members/rotate` with the host `StorageForge controller`, then apply), and `/api/sfnet/members/remove` followed by an apply removes its interface and key. If the server container is restarted on its own, the link notices that its network is gone, stops, and Docker starts it again in the new one.
+
+**On a host, with no container: the host is the member.** Where StorageForge runs directly on a machine that it also scans, add that host like any other and say that the controller runs on it: `POST /api/sfnet/controller` with `{"on": "<host>"}`. Nothing else is needed, since the controller then uses that host's `sf0`. For a controller on a machine it does not scan, `storageforge-index sfnet link` prints the link program: run it as root as a service (`storageforge-sfnet-link run`) with `SF_WG_WANT` and `SF_WG_STATE` set to two folders, the first writable by the StorageForge user and the second by root only, and start the server with `STORAGEFORGE_SFNET_WANT` and `STORAGEFORGE_SFNET_STATE` naming the same two.
+
+`storageforge-index sfnet` prints the members and what the readings confirm.
+
+### What goes over it
+
+Once the controller is a member, its own SSH connections to a host go over the network: scans, readings, deploys, key installs and rotations, plan runs and the console. This happens per connection, and only where the controller and the host are both active members and the readings confirm each as the other's peer by the key on record, with the right address. Then the host's SSH port is tried at its network address for two seconds; if nothing answers, the connection goes to the normal address as before, and the network is not tried again for that host for a minute. A host that is no member, is pending or revoked, or shows a key that is not the one on record is always reached at its normal address.
+
+The SSH host key that is checked is still the one pinned for the host's normal address, whichever address carries the connection, and a host whose key was never pinned is not met for the first time over the network. In the console the route is listed first as **SSH over the StorageForge network**, and on the map the interface carries that name. An interface that happens to be called `sf0` is not offered as a route by its name alone.
+
+Not carried: Sends, Moves and sync run between two hosts and keep a tunnel of their own per transfer (SSH with a job key), and NFS and SMB shares are not put on the network. In the hub topology a controller that is not a hub reaches only the hubs this way, because no step turns on forwarding at a hub.
+
+Built, not lab-tested.
 
 ## Designs
 
@@ -125,6 +207,8 @@ The roadmap goes further than this.
 | `tests/test_infra.py` | Real `ip` and `ss`, real `nft` and `iptables` in a throwaway network namespace, real Docker |
 | `tests/test_platform_more.py` | The firewall writer against the real kernel, reach, what-if and designs |
 | `tests/test_browser_smoke.py` | The panels and the map's modes in Chromium under the real CSP |
+| `tests/test_tunnels.py`, `tests/test_tunnel_exposure.py` | What each tunnel's configuration publishes, with no credential in what comes back; a loopback or firewalled listener a tunnel publishes shown as public; the two tunnel steps against stand-ins for `cloudflared` and `newt`, since neither is installed where the tests run |
+| `tests/test_overlay_steps.py` | The `netbird`, `zerotier` and `openziti` steps against stand-ins on a PATH of their own, since none of the three is installed where the tests run. Nebula against the real thing: certificates made here are accepted by the real `nebula-cert` 1.12.0 and read back the same, `nebula -test` accepts the configurations, and two real Nebula nodes in network namespaces reach each other with them until one certificate is revoked. `vault headscale-key` against a stand-in for `headscale` |
 | [KVM lab](kvm-lab.md) tier 10 | What scans read against each VM. A capture on the VM during a scan: the only connection is SSH |
 | KVM lab tier 11 | Rules on ufw, nftables and firewalld judged by real connections between VMs, a published port's fix, a fence across a reboot, the timer undoing a firewall rule and a bridge that each cut SSH, VLANs on networkd and NetworkManager across a reboot, the reach table against real connections, the overlay against the next reading, a half-deployed design, WireGuard confirmed by key, and a placeholder promoted to a host |
 

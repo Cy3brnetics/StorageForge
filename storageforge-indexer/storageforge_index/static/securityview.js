@@ -156,6 +156,7 @@ async function secOverview() {
     const why = el('div', { class: 'small' });
     h.critical.forEach((c) => why.append(text('div', c, 'st-failed')));
     h.warnings.forEach((c) => why.append(text('div', c, 'st-warn')));
+    (h.public || []).forEach((c) => why.append(text('div', c, 'st-warn')));          // what a tunnel publishes: public with no port open
     h.gaps.forEach((c) => why.append(text('div', c, 'muted')));
     if (!why.childElementCount) why.append(text('div', 'nothing found', 'muted'));
     return [text('b', h.host), secPill(h.state, h.state), h.measured_at ? secAgo(h.measured_at) : NOT_MEASURED,
@@ -164,6 +165,8 @@ async function secOverview() {
             secCan('security.manage') && h.deploy_ready ? secMeasureButton(h.host, out) : text('span', h.deploy_ready ? '' : 'set up deploy access first', 'muted small')];
   });
   const kids = [secCard('Hosts', p.hosts.length ? secTable(['Host', 'State', 'Measured', 'Sentinel', 'Decoys', 'Holds', 'Access control', 'What is known', ''], rows) : text('p', 'No hosts have been scanned yet.', 'muted'), out)];
+  const enclave = await enclaveSecurityCard();          // enclaveview.js: whether this server's own keys have the extra layer
+  if (enclave) kids.push(secCard('This server\'s keys', enclave));
   if (p.clock_suspect) {
     const c = p.clock_suspect;
     kids.unshift(secCard('This machine\'s clock looks wrong',

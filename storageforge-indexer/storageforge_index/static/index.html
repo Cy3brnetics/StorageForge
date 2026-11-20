@@ -82,6 +82,7 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <ol id="jobs" class="list"></ol>
     </div>
     <div id="tab-keys" class="tab" role="tabpanel" aria-labelledby="tabbtn-keys" hidden>
+      <section id="enclavebox" class="card" aria-live="polite" hidden></section>
       <h3>1 · Generate a key</h3>
       <form id="genform" class="row">
         <input id="genname" type="text" placeholder="key name, e.g. fleet" aria-label="Key name" autocomplete="off" spellcheck="false" required>
@@ -127,6 +128,10 @@ storageforge-index graph import --blueprint atlas.json</pre>
           <div class="row end"><button class="btn pri" type="submit">Bind</button></div>
         </form>
       </details>
+      <h3>SSH certificates</h3>
+      <p class="muted">A certificate authority kept in the vault. A host that trusts it lets StorageForge in with a certificate that lasts minutes and names one user on that host, and a certificate can be revoked. Keys in authorized_keys go on working: trusting the CA takes nothing away.</p>
+      <p id="sshcamsg" class="muted" role="status" hidden></p>
+      <div id="sshcabox" class="stack"></div>
     </div>
     <div id="tab-access" class="tab" role="tabpanel" aria-labelledby="tabbtn-access" hidden>
       <p class="muted">Folders the latest scan of each host could not open, and read-only scan access to fix it without running scans as root.</p>
@@ -145,7 +150,11 @@ storageforge-index graph import --blueprint atlas.json</pre>
         <button type="button" data-sub="trends" aria-pressed="false">Trends &amp; changes</button>
       </div>
       <section id="copies-dupes" class="stack" aria-label="Duplicates">
-        <p class="muted">Folders that hold the same file names and sizes in the same layout, so they are likely copies, on one host or across hosts. Checksums are not needed for these; they confirm the identical files below.</p>
+        <h3>Copies on other hosts</h3>
+        <p class="muted">A folder with a copy on another host: each may be the backup of the other. Keep in sync prepares a plan in Moves that copies one side to the other on a timer. Nothing syncs until you deploy that plan there.</p>
+        <div id="pairsbox" class="stack"></div>
+        <h3>Duplicate folders</h3>
+        <p class="muted">Folders that hold the same file names and sizes in the same layout, so they are likely copies, on one host or across hosts. Checksums are not needed for these; they confirm the identical files below. A copy on another host is a possible backup: it is listed apart and never counted as space to free.</p>
         <form id="copyform" class="row wrap">
           <label class="field"><span>At least</span><input id="copyfiles" type="number" min="1" value="3" style="width:64px" aria-label="Minimum files"></label><span class="muted">files and</span>
           <select id="copysize" aria-label="Minimum size"><option value="0">any size</option><option value="1MiB" selected>1 MiB</option><option value="100MiB">100 MiB</option><option value="1GiB">1 GiB</option></select>
@@ -390,9 +399,11 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/app.js"></script>
 <script src="/hostlogsview.js"></script>
 <script src="/notifyview.js"></script>
+<script src="/enclaveview.js"></script>
 <script src="/topology.js"></script>
 <script src="/fsbrowse.js"></script>
 <script src="/checks.js"></script>
+<script src="/copiesview.js"></script>
 <script src="/moves.js"></script>
 <script src="/changes.js"></script>
 <script src="/filemap.js"></script>
@@ -400,6 +411,7 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/rebuildview.js"></script>
 <script src="/dockerview.js"></script>
 <script src="/infraview.js"></script>
+<script src="/sfnetview.js"></script>
 <script src="/mapview.js"></script>
 <script src="/netscanview.js"></script>
 <script src="/deployview.js"></script>
@@ -408,5 +420,6 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/scheduler.js"></script>
 <script src="/securityview.js"></script>
 <script src="/securitymore.js"></script>
+<script src="/sshcaview.js"></script>
 </body>
 </html>

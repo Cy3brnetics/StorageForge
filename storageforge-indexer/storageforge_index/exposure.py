@@ -414,10 +414,71 @@ def _forwarded(item: dict, forwards: list[dict], own: set, target_port: int) -> 
     return item
 
 
+# ── tunnels: public with no port open ───────────────────────────────
+# A tunnel (Cloudflare Tunnel, frp, ngrok, Pangolin's Newt) dials out and carries requests back in, so what it publishes is public
+# whatever the firewall says and with no port open on the host or the router. Nothing above sees it: it is read from the tunnel's
+# own configuration (tunnels.py) and added here.
+TUNNEL_PORTS = {'http': 80, 'ws': 80, 'https': 443, 'wss': 443, 'ssh': 22, 'rdp': 3389, 'smb': 445}
+LOCAL_NAMES = ('localhost', 'ip6-localhost', '127.0.0.1', '::1', '0.0.0.0')
+
+
+def tunnel_target(local, protocol=None) -> tuple[str | None, int | None]:
+    """('localhost', 8080) from 'localhost:8080', and the port a protocol implies where none is written. (None, None) for what is
+    not an address: cloudflared's `http_status:404`, a socket file."""
+    text = str(local or '').strip()
+    if not text or text.startswith(('http_status:', 'hello_world', 'hello-world', 'unix:', 'unix+tls:', 'bastion', 'socks-proxy')):
+        return None, None
+    if text.isdigit():
+        return 'localhost', int(text)
+    host, _, port = text.rpartition(':') if text.count(':') == 1 or text.startswith('[') else (text, '', '')
+    host = (host or text).strip('[]')
+    if port.isdigit() and 0 < int(port) < 65536:
+        return host, int(port)
+    return (host, TUNNEL_PORTS[protocol]) if protocol in TUNNEL_PORTS else (host, None)
+
+
+def tunnel_items(infra: dict | None) -> list[dict]:
+    """One item for each thing a tunnel on this host publishes, and one for a tunnel whose routes could not be read."""
+    from . import tunnels
+    out = []
+    for t in ((infra or {}).get('access') or {}).get('tunnels') or []:
+        label = tunnels.LABELS.get(t.get('tool'), 'a tunnel')
+        base = {'kind': 'tunnel', 'tool': t.get('tool'), 'label': label, 'server': t.get('server'), 'running': bool(t.get('running')), 'why': []}
+        published = t.get('published') or []
+        if t.get('error') or not published:
+            if t.get('error') or t.get('remote'):
+                out.append({**base, 'level': 'unknown', 'public': None, 'local': None, 'protocol': None, 'rule': tunnels.sentence(t),
+                            'why': ['a tunnel publishes services with no port open, so the firewall reading says nothing about this']})
+            continue
+        for p in published[:200]:
+            host, port = tunnel_target(p.get('local'), p.get('protocol'))
+            item = {**base, 'public': p.get('public'), 'local': p.get('local'), 'protocol': p.get('protocol'), 'name': p.get('name'), 'target_host': host, 'target_port': port}
+            if t.get('running'):
+                out.append({**item, 'level': 'any', 'rule': f'public through {label}: no open port and no firewall rule is involved'})
+            else:
+                out.append({**item, 'level': 'unknown', 'rule': f'{label} is configured to publish this', 'why': ['the tunnel was not running at the last reading: it is public whenever it runs']})
+    return out
+
+
+def _tunnelled(item: dict, tunnel_list: list[dict], own: set) -> dict:
+    """A listener a running tunnel on this host carries requests to is public, whatever its bind address and the firewall say."""
+    if item.get('stopped') or item['level'] == 'any':
+        return item
+    for t in tunnel_list:
+        if t['level'] != 'any' or t.get('target_port') != item['port'] or item['proto'] != ('udp' if t.get('protocol') == 'udp' else 'tcp'):
+            continue
+        if t.get('target_host') not in LOCAL_NAMES and t.get('target_host') not in own:
+            continue                                     # the tunnel sends this to another machine: that machine's listener, not this one
+        before = f'without the tunnel: {item["level"]}' + (f' ({item["rule"]})' if item.get('rule') else '')
+        return {**item, 'level': 'any', 'rule': f'{t["label"]} publishes it at {t["public"]}: no open port is needed for that', 'tunnel': t['public'], 'why': [before, *(item.get('why') or [])]}
+    return item
+
+
 def host_report(net: dict | None, infra: dict | None, containers: list[dict], host: str, forwards: list[dict] | None = None) -> dict:
     """Everything this host listens on, widest first. Without a network reading there is nothing to say. forwards: every router's, from netdevice.forwards."""
+    tunnel_list = tunnel_items(infra)
     if not net:
-        return {'host': host, 'read': False, 'items': [], 'caveat': CAVEAT, 'why': 'not scanned since this was added'}
+        return {'host': host, 'read': False, 'items': [], 'tunnels': tunnel_list, 'caveat': CAVEAT, 'why': 'not scanned since this was added'}
     fw = (infra or {}).get('firewall')
     published = {(p['proto'], p['host_port']) for c in containers for p in c.get('ports') or []}
     listeners = (infra or {}).get('listeners') or net.get('listeners') or []
@@ -426,8 +487,11 @@ def host_report(net: dict | None, infra: dict | None, containers: list[dict], ho
     if forwards:
         own = {a['ip'] for i in net.get('interfaces') or [] for a in i.get('addresses') or []}
         items = [_forwarded(i, forwards, own, i['port']) for i in items]
+    if tunnel_list:
+        own = {a['ip'] for i in net.get('interfaces') or [] for a in i.get('addresses') or []}
+        items = [_tunnelled(i, tunnel_list, own) for i in items]
     items.sort(key=lambda i: (-ORDER[i['level']], i['port']))
-    return {'host': host, 'read': True, 'firewall_read': bool(fw and fw.get('readable')), 'backends': (fw or {}).get('backends') or [], 'items': items,
+    return {'host': host, 'read': True, 'firewall_read': bool(fw and fw.get('readable')), 'backends': (fw or {}).get('backends') or [], 'items': items, 'tunnels': tunnel_list,
             'measured_at': (infra or {}).get('measured_at'), 'network_read_at': net.get('read_at'), 'caveat': CAVEAT}
 
 

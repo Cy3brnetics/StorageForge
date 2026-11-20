@@ -96,6 +96,53 @@ jobs:
           docker run --rm -v /tmp/image.tar:/image.tar:ro -v "$PWD/.trivyignore:/.trivyignore:ro" aquasec/trivy:latest \
             image --quiet --input /image.tar --severity CRITICAL --exit-code 1 --ignorefile /.trivyignore
 
+  enclave:
+    # The key enclave's micro VM image (docs/security.md, "Key enclave"): built twice from pinned sources and the two compared, compared with
+    # the hashes the repository records (enclave/image/SHA256SUMS), its dependencies scanned, cross-compiled for arm64, and signed with the
+    # release key where this run is given it (the secret STORAGEFORGE_RELEASE_KEY, an SSH private key). A fork or a pull request is given
+    # no key: there the image is built and compared, and not signed.
+    # The runner's docker label must be docker:host, as for the image job: build.sh mounts folders of the machine running Docker.
+    name: Enclave image
+    permissions:
+      contents: read
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Build, twice
+        run: |
+          sh enclave/image/build.sh /tmp/enclave-a
+          sh enclave/image/build.sh /tmp/enclave-b
+      - name: Two builds give the same bytes
+        run: cmp /tmp/enclave-a/SHA256SUMS /tmp/enclave-b/SHA256SUMS
+      - name: And they are the bytes the repository records
+        run: diff enclave/image/SHA256SUMS /tmp/enclave-a/SHA256SUMS
+      - name: Dependencies scanned
+        run: |
+          docker run --rm -v "$PWD/enclave/Cargo.lock:/src/Cargo.lock:ro" aquasec/trivy:latest \
+            fs --quiet --scanners vuln --severity HIGH,CRITICAL --exit-code 1 /src
+      - name: arm64, cross-compiled
+        run: |
+          ARCH=arm64 sh enclave/image/build.sh /tmp/enclave-arm64
+          diff enclave/image/SHA256SUMS.arm64 /tmp/enclave-arm64/SHA256SUMS
+      - name: Signed with the release key
+        env:
+          RELEASE_KEY: ${{ secrets.STORAGEFORGE_RELEASE_KEY }}
+        run: |
+          if [ -z "$RELEASE_KEY" ]; then echo "this run was given no release key: the image is built and compared, not signed"; exit 0; fi
+          umask 077
+          trap 'rm -f /tmp/release-key' EXIT
+          printf '%s\n' "$RELEASE_KEY" > /tmp/release-key
+          for out in /tmp/enclave-a /tmp/enclave-arm64; do
+            sh enclave/image/sign.sh "$out" /tmp/release-key
+            cat "$out/SHA256SUMS" "$out/SHA256SUMS.sig"
+          done
+          if [ -f enclave/image/allowed_signers ]; then
+            sh enclave/image/sign.sh --verify /tmp/enclave-a enclave/image/allowed_signers
+            sh enclave/image/sign.sh --verify /tmp/enclave-arm64 enclave/image/allowed_signers
+          fi
+
   zizmor:
     # Audits these workflows for template injection, persisted credentials, unpinned actions and broad permissions.
     # zizmor is pinned so a new release with new audits can't fail an unchanged workflow: raise it on purpose.

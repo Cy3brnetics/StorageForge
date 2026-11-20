@@ -3,7 +3,7 @@
 A terminal on a host or VM, in a browser tab of its own: **Open console…** on a host's menu, or in its details. It connects one of three ways:
 
 - **SSH over the LAN**, to the address the host is scanned at.
-- **SSH over a private network**, to the host's address on each one a scan saw it on, named for it: Tailscale (`tailscale0`), NetBird (`wt0`), ZeroTier (`zt…`), WireGuard (`wg…`), the StorageForge network (`sf0`). An address in 100.64.0.0/10 on an interface that says nothing is offered as "a private network". StorageForge must be on the same network.
+- **SSH over a private network**, to the host's address on each one a scan saw it on, named for it: Tailscale (`tailscale0`), NetBird (`wt0`), ZeroTier (`zt…`), WireGuard (`wg…`). The StorageForge network is offered first, and used unless you pick another, where the controller and the host are members that confirm each other by key; see [the infrastructure map](infrastructure-map.md#what-goes-over-it). An address in 100.64.0.0/10 on an interface that says nothing is offered as "a private network". StorageForge must be on the same network.
 - **The serial console** of a VM, through `virsh console` on its scanned libvirt host, or on the machine StorageForge runs on. It works when the VM's network or SSH doesn't.
 
 For a VM with a desktop, the page also gives the command that opens its graphical console in virt-viewer or Remote Viewer, over SSH to its libvirt host. That is native SPICE or VNC: faster than anything in a browser, with the clipboard and resizing. StorageForge doesn't stream screens itself.

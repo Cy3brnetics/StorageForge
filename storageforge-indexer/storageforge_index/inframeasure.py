@@ -21,7 +21,7 @@ MEASURE_EVERY = 6 * 3600
 OFF_KEY = 'infra.read.off'
 SECTIONS = ('tools', 'fw_state', 'nft', 'iptables', 'ip6tables', 'ufw', 'firewalld', 'listeners', 'storage_clients', 'libvirt', 'libvirt_snap', 'libvirt_net', 'libvirt_pool',
             'incus', 'lxc', 'proxmox', 'podman', 'wireguard', 'tailscale', 'netbird', 'headscale', 'tailscale_json', 'netbird_json', 'zt_info', 'zt_networks', 'zt_peers', 'headscale_json',
-            'openvpn_status', 'cloudflared', 'frp', 'ngrok', 'tunnel_procs', 'caddy', 'nginx', 'units', 'end')
+            'openvpn_status', 'cloudflared', 'frp', 'ngrok', 'tunnel_procs', 'tunnel_cmdline', 'caddy', 'nginx', 'units', 'end')
 PVE_KEYS = '^(cores|memory|onboot|unprivileged|net[0-9]+|(scsi|virtio|sata|ide|efidisk|tpmstate|mp)[0-9]+|rootfs): '
 BODY = r"""
 sec() { printf '\n@@%s\n' "$1"; }
@@ -111,6 +111,9 @@ if has wg; then
     try wg show "$i" endpoints | sed "s/^/e\t$i\t/"
     try wg show "$i" allowed-ips | tr ' ' ',' | sed "s/\t/ /; s/ /\t/" | sed "s/^/a\t$i\t/"
     try wg show "$i" latest-handshakes | sed "s/^/h\t$i\t/"
+    # a key rotation under way on an interface StorageForge made: the public half of the key that waits. The file itself is never printed
+    wgdir=${SF_WG_DIR:-/etc/wireguard}
+    if [ -e "$wgdir/$i.storageforge" ] && [ -s "$wgdir/$i.key.next" ]; then printf 'n\t%s\t%s\n' "$i" "$(try wg pubkey <"$wgdir/$i.key.next")"; fi
   done
 fi
 sec tailscale; has tailscale && try tailscale status | head -n 200 | capped 12000
@@ -130,6 +133,8 @@ sec cloudflared; tunnel /etc/cloudflared/config.yml /etc/cloudflared/config.yaml
 sec frp; tunnel /etc/frp/frpc.toml /etc/frp/frpc.ini /etc/frpc.toml /etc/frpc.ini
 sec ngrok; tunnel /etc/ngrok.yml /root/.config/ngrok/ngrok.yml /root/.ngrok2/ngrok.yml
 sec tunnel_procs; for p in cloudflared frpc ngrok newt; do pgrep -x "$p" >/dev/null 2>&1 && echo "$p"; done
+# a tunnel started with its token or secret as an argument: any account on the host can read that. Only the name is printed, never the line
+sec tunnel_cmdline; for p in cloudflared newt; do pgrep -x "$p" -a 2>/dev/null | grep -qE -- '--(token|secret)[ =]' && echo "$p"; done
 # site names and upstreams, no other line: these files can hold passwords and keys
 sec caddy; for f in /etc/caddy/Caddyfile /etc/caddy/conf.d/*; do [ -r "$f" ] && grep -aE '^[^#[:space:]][^{]*\{[[:space:]]*$|^[[:space:]]*reverse_proxy[[:space:]]' "$f" | capped 12000; done
 sec nginx; for f in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf; do [ -r "$f" ] && grep -aE '^[[:space:]]*(server_name|proxy_pass)[[:space:]]' "$f" | capped 12000; done
@@ -212,6 +217,8 @@ def parse_wireguard(lines: list[str]) -> list[dict]:
         f = line.split('\t')
         if f[0] == 'i' and len(f) >= 4 and WGKEY.fullmatch(f[2]):
             ifaces[f[1]] = {'name': f[1], 'public_key': f[2], 'listen_port': int(f[3]) if f[3].isdigit() else None, 'peers': {}}
+        elif f[0] == 'n' and len(f) >= 3 and f[1] in ifaces and WGKEY.fullmatch(f[2]):
+            ifaces[f[1]]['next_public_key'] = f[2]          # the key a rotation will switch to
         elif f[0] in ('e', 'a', 'h') and len(f) >= 4 and f[1] in ifaces and WGKEY.fullmatch(f[2]):
             peer = ifaces[f[1]]['peers'].setdefault(f[2], {'public_key': f[2], 'endpoint': None, 'allowed_ips': [], 'handshake': None})
             if f[0] == 'e':
@@ -279,7 +286,8 @@ def parse_tunnels(s: dict) -> list[dict]:
             out.append({'tool': tool, 'server': None, 'published': [], 'remote': True, 'running': True})
     if 'newt' in running:
         out.append({'tool': 'newt', 'server': 'its Pangolin server', 'published': [], 'remote': True, 'running': True})
-    return out
+    exposed = {p.strip() for p in s.get('tunnel_cmdline', [])}
+    return [t | {'token_on_command_line': True} if t.get('tool') in exposed else t for t in out]
 
 
 def parse_access(s: dict, tools: list[str]) -> dict:

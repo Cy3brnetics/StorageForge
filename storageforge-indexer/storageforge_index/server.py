@@ -62,6 +62,10 @@ GET  /api/access/script?host=&remove=1   the read-only scan access setup (or rem
 POST /api/access/grant  {"host", "password", "admin_user", "remove"}   run that script once over SSH with sudo
 GET  /api/folders/duplicates?host=&min_files=&min_size=   folders that are copies by name and structure
 GET  /api/filemap?host=&min_size=&folders=&system=   the Graph view: folders holding copies and the lines between them
+GET  /api/copies                     folder copies on other hosts: suggested to keep in sync, kept in sync, and set aside
+GET  /api/copies/sides?host=&path=&host=&path=   each folder's files, size and newest change, and which changed last
+POST /api/copies/sync                {"src": {host, path}, "dst": {host, path}, "delete", "schedule"}: saves a Moves plan with one mirror step
+POST /api/copies/dismiss             {"copies": [{host, path}, …], "dismissed": true}: these are not a backup of each other, do not suggest them
 GET/PUT /api/files/ignore           paths and fragments left out of the file map and of broken-link flags
 GET  /api/browse?host=&path=         subfolders of a path with their indexed sizes (for picking move sources)
 DELETE /api/hosts/<name>[?keep_design=1]   retire a host (password confirmed; refused while anything is deployed there)
@@ -174,8 +178,8 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, selfupdate, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
-               folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
-from . import routes_planner
+               folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_copies, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, routes_sshca, scheduler, security, shares, site, snapjobs, tasks, updates, users)
+from . import copies, rotate_keys, routecode, routes_enclave, routes_planner
 from .runtimes import docker
 from .capacity import parse_size, trends
 from .db import Database, epoch
@@ -183,7 +187,7 @@ from .hostkeys import HostKeyNeeded
 from .remote import RemoteError
 from .runner import connect_address, scan_via_vault
 from .scanner import Progress, ScanOptions
-from .search import SearchQuery, run_changes, run_dupes, run_search
+from .search import SearchQuery, dupes_totals, run_changes, run_dupes, run_search
 from .vault import AuditLog, EnclaveMacKey, SecretBuffer, Vault, VaultError, fingerprint
 
 STATIC = Path(__file__).with_name('static')
@@ -276,6 +280,9 @@ class App:
                     self.audit_key.length = 32
         except VaultError as exc:
             print(f'warning: vault locked ({exc}); API audit entries use plain SHA-256 chaining', file=sys.stderr)
+            address = os.environ.get('STORAGEFORGE_ENCLAVE') or ''
+            if address and not address.startswith('vm'):
+                self.audit_key = EnclaveMacKey(address)          # the key enclave has the MAC key from the moment it is unlocked, by the starter or a person
         finally:
             conn.close()
         self.queue: queue.Queue[int] = queue.Queue()
@@ -834,7 +841,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js", "notifyview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js"):name>')
+    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "copiesview.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "sfnetview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "sshcaview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js", "notifyview.js", "enclaveview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
@@ -938,6 +945,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             signed_in_from.clear()
         signed_in_from.add((user.username.lower(), client_net()))
         login_user(user)
+        if body.get('route_code') is True:          # a browser that will send the code of the moment on sensitive requests (routecode.py)
+            session['rc'] = 1
+            return jsonify(username=user.username, **routecode.issued(session_secret, session))
         return jsonify(username=user.username)
 
     @web.post('/api/logout')
@@ -997,6 +1007,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if not ok:
             return jsonify(error='that is not your current password'), 403
         users.set_password(conn(), current_user.username, str(body.get('new_password') or ''))
+        routes_enclave.follow_password(conn(), core, actor(), current_user.username, str(body.get('password') or ''), str(body.get('new_password') or ''))
         users.end_all_sessions(conn(), current_user.username)
         return jsonify(signed_out=True)
 
@@ -1004,6 +1015,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                           arg_num=arg_num, password_stale=password_stale, password_confirmed=password_confirmed,
                           need_for_commands=lambda c, kind, ref: need_for_commands(c, kind, ref))
     routes_accounts.register(web, ctx)
+    routecode.register(web, ctx, session_secret)
 
     # data
     @web.get('/api/hosts')
@@ -1113,7 +1125,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             log = AuditLog(db, conn(), v.audit_key)
             ok, n, bad = log.verify()
             weak = log.unkeyed()                 # keyless entries after keyed ones: rewritable by a database writer
-        return jsonify(valid=ok, entries_checked=n, first_bad_id=bad, **weak)
+            head = log.head_check()              # with the key enclave: whether the log still ends where the enclave last signed it
+        return jsonify(valid=ok and head.get('ok') is not False, entries_checked=n, first_bad_id=bad, head=head, **weak)
 
     def log_filter():
         a = request.args
@@ -1498,9 +1511,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @web.get('/api/dupes')
     @login_required
     def api_dupes():
-        groups = run_dupes(conn(), request.args.get('host') or None, parse_size(request.args.get('min_size') or '1MiB'), arg_num('limit', 50, 1, 500, int))
+        host, min_size = request.args.get('host') or None, parse_size(request.args.get('min_size') or '1MiB')
+        groups = run_dupes(conn(), host, min_size, arg_num('limit', 50, 1, 500, int))
         checksummed = bool(groups) or bool(conn().scalar('SELECT 1 FROM file_records WHERE checksum_hash IS NOT NULL LIMIT 1'))
-        return jsonify(groups=groups, checksummed=checksummed)
+        return jsonify(groups=groups, checksummed=checksummed, **dupes_totals(conn(), host, min_size))
 
     @web.get('/api/git')
     @login_required
@@ -1546,11 +1560,13 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     routes_git.register(web, ctx)
     routes_clamav.register(web, ctx)
     routes_notifications.register(web, ctx)
+    routes_enclave.register(web, ctx)
     routes_logrules.register(web, ctx)
     routes_secplus.register(web, ctx)      # first: it gives the others ctx.step_up
     routes_security.register(web, ctx)
     routes_infra.register(web, ctx)
     routes_network.register(web, ctx)
+    routes_sshca.register(web, ctx)
     routes_planner.register(web, ctx)
 
     @web.get('/api/shares/check')
@@ -2675,15 +2691,32 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         host = request.args.get('host') or None
         min_files = arg_num('min_files', 3, 1, 1_000_000)
         min_size = parse_size(request.args.get('min_size') or '1MiB')
-        return jsonify(folder_result(('dupes', host, min_files, min_size),
+        if host is None and (min_files, min_size) == (3, parse_size('1MiB')):
+            return jsonify(fleet_twins())     # the same comparison, kept under the same key: made once, and remembered for the suggestions
+        return jsonify(folder_result(('dupes', host, min_files, min_size, jobs_mark()),
                                      lambda: analysis('dupes', (host, min_files, min_size, False))))
+
+    def jobs_mark():
+        """Jobs change without a scan: deploying or removing one has to show now, in the file map's lines and in what a sync keeps."""
+        return tuple(conn().all('SELECT count(*), max(deployed_at), max(removed_at) FROM jobs')[0])
+
+    def fleet_twins():
+        """The fleet's duplicate folders at the defaults: what the pairs across hosts and their suggestions are made from (copies.py)."""
+        size = parse_size('1MiB')
+
+        def compute():                        # each new comparison is kept, small, for the notification: alerts answer from the database
+            result = analysis('dupes', (None, 3, size, False))
+            copies.remember(conn(), result)
+            core.alerts_wake.set()
+            return result
+        return folder_result(('dupes', None, 3, size, jobs_mark()), compute)
+    ctx.fleet_twins = fleet_twins
+    routes_copies.register(web, ctx)
 
     def filemap_result(host, min_size, system, with_folders):
         def compute():                        # its twin folders are made with it, by the same worker, from the same folder index
             return analysis('filemap', (host, min_size, system, with_folders))
-        # its job lines change without a scan: importing or removing a job has to show now
-        job_mark = tuple(conn().all('SELECT count(*), max(deployed_at), max(removed_at) FROM jobs')[0])
-        return folder_result(('filemap', host, min_size, system, with_folders, json.dumps(folders.ignore_lists(conn()), sort_keys=True), job_mark), compute)
+        return folder_result(('filemap', host, min_size, system, with_folders, json.dumps(folders.ignore_lists(conn()), sort_keys=True), jobs_mark()), compute)
 
     @web.get('/api/filemap')
     @login_required
@@ -2697,6 +2730,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             if not conn().scalar("SELECT count(*) FROM scans WHERE status = 'running'"):   # the last one to finish wakes this again
                 try:
                     filemap_result(None, parse_size('1MiB'), False, True)
+                    fleet_twins()             # and the pairs across hosts, from the same folder index: what the suggestions are made from
                 except Busy:                  # still building, off this thread: it lands in the cache when done
                     pass
             else:                             # the mounts no scan is touching: a page opened meanwhile builds only the rest
@@ -2927,11 +2961,13 @@ def serve(db: Database, host: str, port: int, scan_interval: int | None, paralle
     hops = int(os.environ.get('STORAGEFORGE_PROXY_HOPS', '0'))
     # The key enclave, where the server is asked to run it (STORAGEFORGE_ENCLAVE=vm): before anything opens the vault. A server
     # asked for the enclave does not start without it.
-    from . import enclave_vm
+    from . import enclave_start, enclave_vm
     holder: list = []
 
     def enclave_event(kind, detail):
         errlog.say(f'key enclave {kind}: {json.dumps(detail, default=str)}')
+        if kind == 'up' and detail.get('restarts'):
+            enclave_start.after_restart(db, detail['address'])
         if holder:                      # in the audit log too, once there is an App to write it
             c = db.connect()
             try:
@@ -2944,10 +2980,23 @@ def serve(db: Database, host: str, port: int, scan_interval: int | None, paralle
         enclave_supervisor = enclave_vm.from_env(enclave_event)     # noqa: F841  kept for the life of the process
     except enclave_vm.EnclaveVMError as exc:
         raise SystemExit(f'The key enclave could not be started, and STORAGEFORGE_ENCLAVE=vm asks for it: {exc}') from None
+    try:        # the starter, in place: the secret goes to the enclave and leaves this process's environment (enclave_start.py)
+        if enclave_start.at_server_start(db) == 'locked':
+            errlog.say('key enclave: locked, and this server was given no vault secret: the starter or a person unlocks it')
+    except VaultError as exc:
+        errlog.say(f'key enclave: not unlocked at start: {exc}')
     web_core = App(db, scan_interval, parallel, timers=True)
     holder.append(web_core)
-    web = create_app(web_core, session_secret_from_env(), secure, hops,
+    session_master = session_secret_from_env()
+    web = create_app(web_core, session_master, secure, hops,
                      os.environ.get('STORAGEFORGE_PROXY_HOST', ''))
+    # keys that rotate by themselves (rotate_keys.py): the session-signing key, and the vault key by rewrapping
+    rotate_audit = lambda c, action, outcome, detail: web_core.audit(c, 'system', action, outcome, None, detail)          # noqa: E731
+    try:
+        rotate_keys.tick(db, web, session_master, rotate_audit)
+    except Exception:
+        errlog.trace()
+    threading.Thread(target=rotate_keys.run, args=(db, web, session_master, rotate_audit), name='key-rotation', daemon=True).start()
 
     def warm():
         while True:

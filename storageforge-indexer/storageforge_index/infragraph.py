@@ -149,7 +149,8 @@ def build(host: str, net: dict | None, infra: dict | None, containers: list[dict
     # the access layer: VPNs, by public key, and what proxies front
     acc = (infra or {}).get('access') or {}
     for wg in acc.get('wireguard') or []:
-        vid = add(f'vpn:{host}:{wg["name"]}', 'VPNNetwork', wg['name'], 'access', public_key=wg['public_key'], listen_port=wg.get('listen_port'), peers=len(wg['peers']))
+        vid = add(f'vpn:{host}:{wg["name"]}', 'VPNNetwork', wg['name'], 'access', public_key=wg['public_key'], listen_port=wg.get('listen_port'), peers=len(wg['peers']),
+                  network=overlays.label(overlays.network_of(wg['name']) or 'wireguard'))
         edge(vid, host_id, 'RUNS_ON', f'wg show {wg["name"]}')
         for peer in wg['peers']:
             allowed = peer.get('allowed_ips') or []

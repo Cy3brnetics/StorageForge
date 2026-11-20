@@ -4,7 +4,7 @@
    dockerview.js; uses the shared helpers. */
 
 const INF = { view: 'workloads' };
-const INF_VIEWS = [['workloads', 'Workloads'], ['exposure', 'Exposure'], ['network', 'Network'], ['firewall', 'Firewall']];
+const INF_VIEWS = [['workloads', 'Workloads'], ['exposure', 'Exposure'], ['network', 'Network'], ['firewall', 'Firewall'], ['sfnet', 'StorageForge network']];
 const INF_LEVEL = { any: 'Any address', lan: 'Private networks', vpn: 'VPN only', blocked: 'Blocked', loopback: 'This machine only', unknown: 'Unknown' };
 const INF_CLASS = { any: 'st-failed', lan: 'st-warn', vpn: 'muted', blocked: 'muted', loopback: 'muted', unknown: 'st-warn' };
 
@@ -38,7 +38,7 @@ async function loadInfra() {
   content.append(text('p', 'Loading…', 'muted small'));
   box.replaceChildren(nav, content);
   try {
-    await ({ workloads: infWorkloads, exposure: infExposure, network: infNetwork, firewall: infFirewall })[INF.view](content);
+    await ({ workloads: infWorkloads, exposure: infExposure, network: infNetwork, firewall: infFirewall, sfnet: sfnView })[INF.view](content);      // sfnView: sfnetview.js
   } catch (err) { content.replaceChildren(text('p', err.message, 'st-failed')); }
 }
 
@@ -194,6 +194,11 @@ async function infExposure(content) {
     const head = document.createElement('div'); head.className = 'row';
     head.append(el('b', { class: 'mono' }, h.host), text('span', h.firewall_read ? `${(h.backends || []).join(', ') || 'no firewall'} · read ${infWhen(h.measured_at)}` : 'firewall rules not read', 'muted small'), infMeasure(h.host, out));
     kids.push(head);
+    if ((h.tunnels || []).length) {          // public with no port open: no firewall reading shows these
+      kids.push(text('p', 'Tunnels on this host. A tunnel dials out, so what it publishes is public with no port open here or on the router, and the firewall does not stop it.', 'muted small'));
+      kids.push(infTable(['Who can reach it', 'Public at', 'Sent to', 'Through', 'Because'], h.tunnels.map((t) => [
+        text('span', INF_LEVEL[t.level] || t.level, INF_CLASS[t.level] || ''), t.public || 'not known', t.local || '', t.label, [t.rule, ...(t.why || [])].filter(Boolean).join('; ')])));
+    }
     if (!h.read) { kids.push(text('p', 'No network reading yet: it comes with the next scan.', 'muted small')); continue; }
     kids.push(text('p', h.caveat, 'muted small'));
     kids.push(infTable(['Who can reach it', 'Port', 'Bound to', 'What', 'Because'], h.items.map((i) => [

@@ -7,6 +7,7 @@ The web UI is built on this API; anything it does can be scripted.
 - **Session.** Every `/api/*` route except `/api/login`, `/api/jobs/report` and `/api/jobs/state` needs a signed-in session cookie. Sign in with `POST /api/login`.
 - **Bodies** are JSON objects sent with `Content-Type: application/json`; anything else is refused with 400. Bodies are capped at 4 KiB, except a design (2 MiB).
 - **Re-authentication.** Routes marked 🔑 need the account password typed within the last 5 minutes. Without it they answer `403 {"error", "reauth": true}`; call `POST /api/reauth` and retry.
+- **Route codes.** A session that signed in with `"route_code": true`, as the sign-in page does, gets `route_key` and `now` in the answer and must send a code with every `POST`, `PUT` and `DELETE` under `/api/keys`, `/api/bindings`, `/api/enclave`, `/api/deploy`, `/api/console`, `/api/access` and `/api/security/webauthn`: the first 8 hex digits of `HMAC-SHA256(route_key as bytes, "METHOD /api/path|" + floor(server time / 30))`, in the path (`POST /api/~1a2b3c4d/keys`) or in an `X-SF-Code` header. Without it they answer `403 {"error", "routecode": true, "now"}`. A client that signs in without asking is not asked for codes. See [security](security.md#layers).
 - **Errors** are `{"error": "…"}` with a status:
 
   | Status | Meaning |
@@ -51,6 +52,7 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | POST | `/api/login` | `{"username", "password"}` | start a session; rate limited (see [Security](security.md#sign-in-limits)) |
 | POST | `/api/logout` | | end it, server-side too |
 | POST | `/api/reauth` | `{"password"}` | confirm the password for 5 minutes; returns `until` |
+| POST 🔑 | `/api/routecode` | `{}` | this session's route key again and the server's time, `{"route_key", "now"}`, and from then on the session sends route codes (below) |
 | GET | `/api/version` | | this version, the newest release in `STORAGEFORGE_UPDATE_URL`'s repository, `update_available`, when it was checked, and why a check failed |
 | GET | `/api/me` | | user, session length, when it ends |
 | PUT 🔑 | `/api/me` | `{"session_minutes"}` | 30–480 |
@@ -65,7 +67,11 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/search?q=&host=&size_gt=&type=f\|d\|l&under=&limit=` | needs `q`, `size_gt` or `under`; `limit` ≤ 500 |
 | GET | `/api/browse?host=&path=` | subfolders with indexed sizes (move pickers) |
 | GET | `/api/fs/browse?host=&path=` | folders and files with mounts, shares and planned mounts |
-| GET | `/api/folders/duplicates?host=&min_files=&min_size=` | duplicate folders |
+| GET | `/api/folders/duplicates?host=&min_files=&min_size=` | duplicate folders. Each group has `scope`, `hosts`, `reclaimable` (second copies on one host) and `elsewhere` (bytes held on other hosts: possible backups); the answer has `reclaimable_same_host` and `elsewhere_across_hosts` |
+| GET | `/api/copies` | folder copies on other hosts: `suggested` (not kept in sync, largest first, each with the plan `prepared` for it if there is one), `kept` (deployed mirror jobs with `state`, `last` and `last_ok`), `dismissed` |
+| GET | `/api/copies/sides?host=&path=&host=&path=` | for choosing the source: each folder's files, bytes and newest change, and `source`, the index of the side that changed last |
+| POST | `/api/copies/sync` | `{"src": {"host", "path"}, "dst": {"host", "path"}, "delete": false, "schedule": "daily"}`: saves a Moves plan with one mirror step and answers `{"plan", "name", "existing", "check"}` (201, or 200 when that plan was already prepared). Nothing syncs until the plan is deployed |
+| POST | `/api/copies/dismiss` | `{"copies": [{"host", "path"}, …], "dismissed": true}`: these folders are not a backup of each other, do not suggest them; `false` suggests them again |
 | GET | `/api/folders/cold?host=&years=&min_size=` | folders whose newest file is older than the cutoff |
 | GET | `/api/git?host=` | repositories, copies and archive state |
 | POST | `/api/git/status` | `{"host", "path"}`: live status of a repository a scan found |
@@ -84,7 +90,7 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | PUT | `/api/backups/target` | `{"host", "path"}`: copy each backup to that host; empty stops copying |
 | GET | `/api/capacity?host=` | each mount's usage over 30 days and when it fills up at that rate |
 | GET | `/api/file-changes?host=&scan=&limit=` | what a scan found changed, grouped by folder |
-| GET | `/api/dupes?host=&min_size=&limit=` | identical files from checksum scans |
+| GET | `/api/dupes?host=&min_size=&limit=` | identical files from checksum scans, with the same fields per group, and over all groups `total_groups`, `reclaimable` and `across_hosts` (`groups`, `bytes`). The limit is shared between the two classes |
 | GET, PUT | `/api/hosts/<name>/schedule` | the host's own scan interval and quiet hours: `{"interval": "1d", "quiet_hours": "22-6"}`; empty uses the global interval, no quiet hours |
 | POST | `/api/scan` | `{"host"}`: queue a vault-backed scan (202, `{"job_id"}`); duplicates collapse |
 | POST | `/api/scan/all` | `{}`: queue a scan of every host bound by name for scanning (202, `{"jobs": {host: job_id}}`); duplicates collapse |
@@ -116,12 +122,34 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/keys` | | keys (public halves) and bindings |
 | POST | `/api/keys` | `{"name", "type": "ed25519"\|"rsa"}` | generate a key in the vault |
 | POST 🔑 | `/api/keys/install` | `{"key", "host", "port", "user", "password", "bind", "checksum"}` | `ssh-copy-id`, verify key login, optionally bind; 10/min |
+| GET | `/api/keys/ssh-ca` | | the SSH CA: its public key and `known_hosts` line, each host with `console`, `scan` and its host certificate, the last 200 certificates (serials as text), the revocation list's version; `keys.view` |
+| POST 🔑 | `/api/keys/ssh-ca` | `{}` | make the CA in the vault (201), or return the one there (200); `keys.manage` |
+| PUT 🔑 | `/api/keys/ssh-ca/hosts/<host>` | `{"console": bool, "scan": bool}` | whether console sessions and scans log in to this host with a certificate; `keys.manage` |
+| POST 🔑 | `/api/keys/ssh-ca/hosts/<host>/certificate` | `{}` | issue a host certificate for the host key a scan pinned; 400 before the first scan; `keys.manage` |
+| POST 🔑 | `/api/keys/ssh-ca/certificates/<serial>/revoke` | `{"reason"}` | revoke one certificate; returns the new `krl_version`; `keys.manage` |
+| POST | `/api/keys/ssh-ca/plan` | `{"kind": "trust", "hosts": [...], "users", "host_cert", "rollback"}` or `{"kind": "krl", "hosts": [...]}` | save a change plan of `ssh-ca-trust` or `ssh-ca-krl` steps and run nothing; `plans.edit` |
 | POST | `/api/hostkey/confirm` | `{"host", "port", "fingerprint"}` | confirm a host key before a password goes there *(in progress)* |
 | GET | `/api/access?host=` | | how scans read each host, and unreadable folders |
 | GET | `/api/access/script?host=\|user=&remove=1` | | the read-only access setup or removal script |
 | POST 🔑 | `/api/access/grant` | `{"host", "password", "admin_user"?, "remove"?}` | run that script once with sudo; 10/min |
 | GET | `/api/audit[?limit=]` | | newest entries (≤ 1000) |
-| GET | `/api/audit/verify` | | `{"valid", "entries_checked", "first_bad_id"}` |
+| GET | `/api/audit/verify` | | `{"valid", "entries_checked", "first_bad_id", "head"}`. With the [key enclave](security.md#key-enclave), `head` says whether the log still ends where the enclave last signed it (`{"enclave", "ok", "why"}`), and `valid` is false when it does not |
+
+### Key enclave
+
+Off unless `STORAGEFORGE_ENCLAVE` is set ([security](security.md#key-enclave)). Reading takes `keys.view`, the rest `keys.manage`.
+
+| Method | Path | Body | Returns |
+| :--- | :--- | :--- | :--- |
+| GET | `/api/enclave` | | `{"on", "state", "label", "detail", "vm_possible", "why_no_vm"}`, and with it on: `counts`, `tasks`, `limits`, `chain`, `stepup`, `channel`, `second_lock`. `state` is `off`, `unlocked`, `locked`, `lockdown` or `down` |
+| POST 🔑 | `/api/enclave/unlock` | `{"secret", "password"?}` | hands the typed vault secret to a locked enclave; 6/min. `password`: the account's own, which lifting a lock-down takes once step-up is on |
+| POST 🔑 | `/api/enclave/lock` | `{}` | the enclave forgets every key |
+| POST | `/api/enclave/stepup` | `{"password"}` or `{"fido": {"id", "authenticatorData", "clientDataJSON", "signature"}}` | the enclave checks the proof itself and gives this session a token for 5 minutes; 5/min. `403` with `enroll: true` when the account has no record |
+| POST | `/api/enclave/stepup/begin` | `{}` | a challenge the enclave made, as WebAuthn request options, for a security key enrolled with it |
+| POST 🔑 | `/api/enclave/stepup/enroll` | `{"password", "secret"?}` | gives the enclave this account's password hash and security keys. After the first person: `403 {"stepup": true}` without a token, unless `secret` is the vault secret |
+| POST 🔑 | `/api/enclave/chain/accept` | `{}` | takes a cut audit log as it is now; written to the log first |
+
+A route that needs a step-up the enclave checks (making or importing a key, a sensitive secret) answers `403 {"error", "stepup": true}`: call `POST /api/enclave/stepup` and retry.
 
 ## Designs and planner
 
@@ -213,7 +241,7 @@ See [Ransomware defense](ransomware-defense.md). Reads need `security.view`. �
 
 | Method | Path | Body or query | Needs |
 | :--- | :--- | :--- | :--- |
-| GET | `/api/security/posture` | `?host=` | what is known about each host, and every reason it is not fine |
+| GET | `/api/security/posture` | `?host=` | what is known about each host, and every reason it is not fine. `public` on a host is what tunnels there publish, a sentence each |
 | GET | `/api/security/events` | `?host=&all=1` | alarms; `all` includes routine events |
 | POST 🔑 | `/api/security/events/<id>/ack` | | `security.emergency` |
 | POST 🔑 | `/api/security/measure` | `{"host"}` | `security.manage` |
@@ -303,13 +331,16 @@ See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure
 | GET, POST, DELETE | `/api/map/designs` | `{"name", "doc"}` | `plans.edit` |
 | GET | `/api/map/designs/<id>/compare`, `/export` | `?target=bash\|ansible\|terraform\|puppet` | |
 | POST | `/api/map/designs/<id>/stage` | | what is missing, as a plan |
-| GET | `/api/workloads`, `/api/network`, `/api/firewall`, `/api/exposure` | `?host=` | |
+| GET | `/api/workloads`, `/api/network`, `/api/firewall`, `/api/exposure` | `?host=` | `/api/exposure` gives each host's `items` (listeners and published ports, with `level` and the `rule` that decides; `tunnel` where a tunnel publishes it) and `tunnels` (what each tunnel on the host publishes: `public`, `local`, `label`, `level`, `running`) |
 | GET | `/api/workloads/libvirt` | `?host=` | each libvirt host's networks and storage pools, from its last reading. A libvirt VM in `/api/workloads` carries its disks, snapshots and guest agent state |
 | POST 🔑 | `/api/infra/measure` | `{"host"}` | `security.manage` |
 | GET | `/api/sfnet` | | `hosts.view`. StorageForge's own WireGuard network: range, port, topology, and per member its address, state and which peers the readings confirm |
 | POST 🔑 | `/api/sfnet` | `{"range"?, "topology"?}` | `security.manage`. Make the network (`mesh` or `hub`); the range is picked when not given |
 | POST 🔑 | `/api/sfnet/members` | `{"host", "endpoint"?, "hub"?, "reachable"?}` | `security.manage`. Add a scanned host |
 | POST 🔑 | `/api/sfnet/members/remove` | `{"host"}` | `security.manage`. Revoke a member |
+| POST 🔑 | `/api/sfnet/members/rotate` | `{"host", "cancel"?}` | `security.manage`. Ask for a member's key to be rotated; the plans that follow do it in two halves. `cancel` takes it back before the host has switched |
+| POST 🔑 | `/api/sfnet/controller` | `{"endpoint"?, "hub"?}` or `{"on": host}` | `security.manage`. The controller as a member through its link (`docker-compose.sfnet.yml`), or: the controller runs on that member. `{"on": null}` takes the second back |
+| POST 🔑 | `/api/sfnet/controller/apply` | | `security.manage`. Hand the link what the controller's interface should be; `changed` says whether anything new was asked |
 | POST | `/api/sfnet/plan` | | `plans.edit`. Save the change plan that brings every member to what it should be; `plan_id` is null when there is nothing to do |
 | GET | `/api/desktop/profiles` | | `plans.view`. The desktop profiles kept here, and the compositors they can be rendered for |
 | PUT | `/api/desktop/profiles/<name>` | a profile: `{"mod", "binds", "rules", "displays", "hosts"}` | `plans.edit`. Save one; every value is checked |
