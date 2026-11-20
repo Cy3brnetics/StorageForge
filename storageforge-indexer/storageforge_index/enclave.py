@@ -164,7 +164,9 @@ class Enclave:
 
     @staticmethod
     def _kdf(secret: bytes, meta: dict) -> dict:
-        return {'secret': _b64(secret), 'salt': _b64(meta['kdf_salt']), 'time_cost': meta['kdf_time_cost'], 'memory_kib': meta['kdf_memory_kib'], 'lanes': meta['kdf_lanes']}
+        """meta['share']: the host's share, where the vault has a second lock (lock2.py)."""
+        return {'secret': _b64(secret), 'salt': _b64(meta['kdf_salt']), 'time_cost': meta['kdf_time_cost'], 'memory_kib': meta['kdf_memory_kib'], 'lanes': meta['kdf_lanes'],
+                **({'share': _b64(meta['share'])} if meta.get('share') else {})}
 
     @staticmethod
     def _sealed(row: dict) -> dict:
@@ -256,9 +258,12 @@ class Enclave:
                            **{'for': {k: v for k, v in named.items() if v}}, **more)
         return base64.b64decode(got['plaintext']), got['audit']
 
-    def rotate_begin(self, new_secret: bytes, salt: bytes, time_cost: int, memory_kib: int, lanes: int, token: str | None = None) -> dict:
-        """The KEK of a new vault secret, held beside the current one. Back come the verifier and audit key wrapped under it."""
-        got = self.request('rotate-begin', secret=_b64(new_secret), salt=_b64(salt), time_cost=time_cost, memory_kib=memory_kib, lanes=lanes, **({'token': token} if token else {}))
+    def rotate_begin(self, new_secret: bytes | None, salt: bytes, time_cost: int, memory_kib: int, lanes: int, token: str | None = None, share: bytes | None = None) -> dict:
+        """The KEK of a new vault secret, held beside the current one. Back come the verifier and audit key wrapped under it.
+        share: the host's share to mix in, for a vault with a second lock. new_secret None: the same secret and share under this
+        new salt, from what the enclave holds, which takes no step-up (a scheduled rewrap)."""
+        how = {'rekey': True} if new_secret is None else {'secret': _b64(new_secret), **({'share': _b64(share)} if share else {})}
+        got = self.request('rotate-begin', salt=_b64(salt), time_cost=time_cost, memory_kib=memory_kib, lanes=lanes, **how, **({'token': token} if token else {}))
         return {k: base64.b64decode(got[k]) for k in ('verifier_nonce', 'verifier', 'audit_key_nonce', 'audit_key_wrapped')}
 
     def rewrap(self, uuid: str, dek_nonce: bytes, wrapped_dek: bytes) -> tuple[bytes, bytes]:

@@ -1088,6 +1088,80 @@ def _secret_policy(args) -> dict | None:
     return {'steps': args.step or [], 'hosts': args.for_host or [], 'platforms': args.platform or [], 'sensitive': bool(args.sensitive)}
 
 
+def _second_lock(args) -> int:
+    """`vault second-lock status|on|off|recover` (lock2.py). on and off are rotations by whoever holds the vault secret; recover
+    writes the host share again from the recovery share, on a machine that does not have it."""
+    from . import lock2
+    from .vault import Vault, VaultError, secret_from_env
+    db, conn = open_db(args)
+    v = Vault(db, conn)
+    try:
+        if not v.initialized:
+            print('vault: not initialised (run: storageforge-index vault init)', file=sys.stderr)
+            return 1
+        lock, path = v.second_lock(), lock2.share_path()
+        if args.what == 'status':
+            if not lock:
+                print('second lock: off. The KEK comes from the vault secret alone: the secret beside this database, or a backup with it, is the keys')
+            else:
+                try:
+                    lock2.read_share(lock)
+                    here = 'is here'
+                except VaultError as exc:
+                    here = f'is NOT usable here: {exc}'
+                print(f'second lock: on. The KEK needs the host share {path} as well as the vault secret, and that share {here}')
+            print(f'TPM: {lock2.tpm()}')
+            return 0
+        if args.what == 'recover':
+            if not lock:
+                print('this vault has no second lock: there is nothing to recover', file=sys.stderr)
+                return 1
+            try:
+                share = lock2.recover(lock, sys.stdin.readline())
+                lock2.write_share(share, path)
+                with Vault(db, conn).unlock() as opened:          # proves it: the vault opens here now
+                    _audit(db, conn, opened, 'vault.second_lock.recover', path=str(path))
+            except VaultError as exc:
+                print(f'not recovered: {exc}', file=sys.stderr)
+                return 1
+            print(f'host share written to {path}: this vault opens on this machine again')
+            return 0
+        try:
+            secret = secret_from_env()
+            with v.unlock():
+                if args.what == 'on':
+                    if lock:
+                        print('the second lock is on already', file=sys.stderr)
+                        return 1
+                    share = os.urandom(32)
+                    code, held = lock2.recovery(share)
+                    lock2.write_share(share, path)
+                    try:
+                        n = v.rotate_secret(secret, second_lock=(share, lock2.marker(share, held)))
+                    except BaseException:
+                        path.unlink(missing_ok=True)          # nothing was rewrapped: the share would open nothing
+                        raise
+                    _audit(db, conn, v, 'vault.second_lock', state='on', rewrapped=n, path=str(path))
+                    print(f'second lock on: {n} key(s) rewrapped. The KEK now needs {path} as well as the vault secret.')
+                    print('Keep that file out of backups of the database and of the secret: together they would be the keys again.')
+                    print('The recovery share, shown this once. With it and the database, `vault second-lock recover` writes the host share again:')
+                    print(f'\n    {code}\n')
+                    print('Write it down and keep it away from the vault secret. Restart the server, so that its enclave is unlocked with the share.')
+                    return 0
+                if not lock:
+                    print('the second lock is off already', file=sys.stderr)
+                    return 1
+                n = v.rotate_secret(secret, second_lock=None)
+                _audit(db, conn, v, 'vault.second_lock', state='off', rewrapped=n)
+                print(f'second lock off: {n} key(s) rewrapped. The KEK comes from the vault secret alone again. {path} is left where it is: remove it yourself. Restart the server.')
+                return 0
+        except VaultError as exc:
+            print(f'not changed: {exc}', file=sys.stderr)
+            return 1
+    finally:
+        conn.close()
+
+
 def cmd_vault(args) -> int:
     from .vault import Vault, importable_keys, secret_from_env
     a = args.vault_cmd
@@ -1115,6 +1189,8 @@ def cmd_vault(args) -> int:
         keys = v.list_keys()
         print(f'vault: unlocked · {len(keys)} key(s) · {len(v.bindings())} binding(s)')
         return 0
+    if a == 'second-lock':
+        return _second_lock(args)
     db, conn, v = _vault(args)
     with v:
         if a in ('stepup-enroll', 'stepup-forget'):
@@ -1987,6 +2063,8 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument('--address', help='where the enclave is; the address the server published in its runtime folder if not given')
     x.add_argument('--wait', type=float, default=60.0, help='seconds to wait for the enclave to answer (default 60)')
     x.add_argument('--watch', action='store_true', help='stay, and unlock it again whenever it comes back locked after a restart; the secret file is read again each time')
+    x = vs.add_parser('second-lock', help='a second share, held in a file on this machine, mixed into the vault key: the secret alone then opens nothing (docs/security.md, "Key enclave")')
+    x.add_argument('what', choices=('status', 'on', 'off', 'recover'), help='recover: the recovery share on stdin, to write the host share again on a machine without it')
     x = vs.add_parser('stepup-enroll', help="give the key enclave an account's step-up password (one line on stdin): it then checks that person itself before it makes or changes a key. Security keys are enrolled on the Keys page")
     x.add_argument('user')
     x = vs.add_parser('stepup-forget', help="remove an account's step-up record, for someone who left")

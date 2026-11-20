@@ -48,10 +48,15 @@ services:
     environment:
       STORAGEFORGE_ENCLAVE_RUN_DIR: /run/sf-enclave
       STORAGEFORGE_VAULT_SECRET_FILE: /run/sf-vault/vault_secret
+      STORAGEFORGE_HOST_SHARE_FILE: /run/sf-host/host_share        # the second lock, where it is on (vault second-lock)
+      STORAGEFORGE_ENCLAVE_STEPUP: ${STORAGEFORGE_ENCLAVE_STEPUP:-}
     volumes:
       - sf-vault-secret:/run/sf-vault:ro
       - sf-enclave-run:/run/sf-enclave
       - sf-data:/app/data
+      # A folder of the Docker host, not a volume: the host share must not travel with the database, its backups or the secret.
+      #   sudo install -d -o 10001 -g 10001 -m 0700 /etc/storageforge   and set STORAGEFORGE_HOST_SHARE_DIR=/etc/storageforge
+      - ${STORAGEFORGE_HOST_SHARE_DIR:-./host-share}:/run/sf-host:ro
     tmpfs:
       - /run/storageforge:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10001,gid=10001
       - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
@@ -72,10 +77,12 @@ services:
       STORAGEFORGE_ENCLAVE: vm
       STORAGEFORGE_ENCLAVE_IMAGE: ${STORAGEFORGE_ENCLAVE_IMAGE:-}
       STORAGEFORGE_VAULT_SECRET_FILE: /run/sf-vault/vault_secret
+      STORAGEFORGE_HOST_SHARE_FILE: /run/sf-host/host_share
     devices: ["/dev/kvm"]
     group_add: ["${STORAGEFORGE_KVM_GID:?set STORAGEFORGE_KVM_GID to the group of /dev/kvm (stat -c %g /dev/kvm)}"]
     volumes:
       - sf-vault-secret:/run/sf-vault
+      - ${STORAGEFORGE_HOST_SHARE_DIR:-./host-share}:/run/sf-host          # writable here: `vault second-lock on` makes the share
 
 volumes:
   sf-vault-secret:

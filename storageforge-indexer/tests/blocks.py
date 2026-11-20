@@ -75,6 +75,7 @@ MEDIUM = {
     'test_enclave_stepup.ShortTokens',
     'test_enclave_release.Release',  # releases bound to a step, host or platform, written into the audit log from inside, and the chain's head
     'test_enclave_counts.Counts',     # limits per kind of task, and notifications from the enclave's own counts
+    'test_enclave_lock2.SecondLock',  # the second lock on the KEK, with the enclave and without
     # bash, telnet and console sessions run for real
     'test_console.Api',
     'test_desktop_steps.Dux',

@@ -141,6 +141,15 @@ struct State {
     stepup_missing: u64,
     policy_refused: u64,
     started: Instant,
+    /// The vault secret and, where the vault has a second lock, the host's share: held from unlock to lock, here and nowhere
+    /// else, so that the KEK can be derived again under a new salt on a schedule without anyone handing the secret over again.
+    held: Option<Held>,
+    next_held: Option<Held>,
+}
+
+struct Held {
+    secret: Zeroizing<Vec<u8>>,
+    share: Option<Zeroizing<Vec<u8>>>,
 }
 
 /// The head of the audit chain, as the enclave last signed it (roadmap section 14, "The audit log's key"). It is kept here, in
@@ -638,6 +647,8 @@ impl State {
             stepup_missing: 0,
             policy_refused: 0,
             started: Instant::now(),
+            held: None,
+            next_held: None,
         }
     }
 
@@ -645,6 +656,8 @@ impl State {
         self.kek = None; // Zeroizing clears it as it goes
         self.audit = None;
         self.next = None;
+        self.held = None;
+        self.next_held = None;
         self.signs.clear();
         self.releases.clear();
         self.tokens.clear(); // a token does not outlive the keys it was good for
@@ -664,6 +677,7 @@ impl State {
                "memory_locked": self.memory_locked, "pid1": self.pid1,
                "chain": self.chain.status(),
                "auth_failed": self.auth_failed, "stepup_missing": self.stepup_missing, "policy_refused": self.policy_refused, "uptime": self.started.elapsed().as_secs(),
+               "second_lock": self.held.as_ref().is_some_and(|h| h.share.is_some()),
                "tasks": self.tasks.iter().map(|(name, (_, signed, refused))| (name.to_string(), json!({"signed": signed, "refused": refused}))).collect::<serde_json::Map<String, Value>>(),
                "stepup": {"required": self.stepup_required, "ok": self.stepup_ok, "failed": self.stepup_failed, "tokens": self.tokens.len(), "token_seconds": self.token_secs},
                "limits": {"sign_per_key_per_minute": SIGN_PER_MINUTE, "unlock_per_minute": UNLOCK_PER_MINUTE, "release_per_secret_per_minute": RELEASE_PER_MINUTE, "stepup_per_person_per_minute": STEPUP_PER_MINUTE,
@@ -673,19 +687,29 @@ impl State {
     }
 
     /// A KEK from a secret, a salt and Argon2id costs, as vault.py derives it. Counted against the unlock limit: it is the costly
-    /// thing to ask for, and the only place a guess at the secret can be tried.
-    fn derive(&mut self, v: &Value) -> Result<Zeroizing<[u8; 32]>, Refusal> {
+    /// thing to ask for, and the only place a guess at the secret can be tried. With `share` it is the KEK of a vault with a
+    /// second lock: the host's share is mixed in, so the secret alone derives a key that opens nothing.
+    fn derive(&mut self, v: &Value) -> Result<(Zeroizing<[u8; 32]>, Held), Refusal> {
         if !self.unlocks.take() {
             return no("rate", "too many unlock attempts: wait a minute");
         }
         let secret = Zeroizing::new(bytes(v, "secret", 4096)?);
+        let share = match v.get("share") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(Zeroizing::new(bytes(v, "share", 64)?)),
+        };
+        let kek = Self::kdf(&secret, share.as_ref().map(|s| s.as_slice()), v)?;
+        Ok((kek, Held { secret, share }))
+    }
+
+    fn kdf(secret: &[u8], share: Option<&[u8]>, v: &Value) -> Result<Zeroizing<[u8; 32]>, Refusal> {
         let salt = bytes(v, "salt", 64)?;
         let num = |name: &str| v.get(name).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
         let (Some(t), Some(m), Some(p)) = (num("time_cost"), num("memory_kib"), num("lanes")) else {
             return bad("time_cost, memory_kib and lanes are whole numbers");
         };
-        if secret.len() < 32 || salt.len() < 8 || !KDF_TIME.contains(&t) || !KDF_MEMORY_KIB.contains(&m) || !KDF_LANES.contains(&p) {
-            return bad("the secret, the salt or the Argon2id costs are outside what the enclave takes");
+        if secret.len() < 32 || salt.len() < 8 || !KDF_TIME.contains(&t) || !KDF_MEMORY_KIB.contains(&m) || !KDF_LANES.contains(&p) || share.is_some_and(|s| s.len() != 32) {
+            return bad("the secret, the salt, the share or the Argon2id costs are outside what the enclave takes");
         }
         let params = argon2::Params::new(m, t, p, Some(32)).or_else(|_| bad("Argon2id refuses those costs"))?;
         let mut kek = Zeroizing::new([0u8; 32]);
@@ -695,20 +719,28 @@ impl State {
             return no("crypto", "not enough memory in the enclave for those Argon2id costs");
         }
         blocks.resize(params.block_count(), argon2::Block::default());
-        let derived = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params).hash_password_into_with_memory(&secret, &salt, kek.as_mut(), &mut blocks);
+        let derived = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params).hash_password_into_with_memory(secret, &salt, kek.as_mut(), &mut blocks);
         for b in blocks.iter_mut() {
             *b = argon2::Block::default();
         }
         derived.or_else(|_| no("crypto", "Argon2id failed with those costs"))?;
+        if let Some(share) = share {
+            // the second lock: HMAC-SHA256 keyed with the host's share over a label and the secret's key. vault.py's second_lock_mix
+            let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(share).or_else(|_| no("crypto", "the share is unusable"))?;
+            mac.update(b"storageforge:second-lock:v1\0");
+            mac.update(kek.as_ref());
+            kek.copy_from_slice(&mac.finalize().into_bytes());
+        }
         Ok(kek)
     }
 
     /// The vault secret arrives once, here. The KEK is derived as vault.py derives it, proved against the stored verifier, and kept;
     /// the audit MAC key is unwrapped and kept. The secret is zeroed before this returns, whatever happened.
     fn unlock(&mut self, v: &Value) -> Answer {
-        let kek = self.derive(v)?;
+        let (kek, held) = self.derive(v)?;
         let (vn, vct, an, act) = (nonce(v, "verifier_nonce")?, bytes(v, "verifier", 256)?, nonce(v, "audit_key_nonce")?, bytes(v, "audit_key_wrapped", 256)?);
-        let check = open(kek.as_ref(), &vn, &vct, b"storageforge:verifier").or_else(|_| no("auth", "wrong vault secret: the stored verifier did not authenticate"))?;
+        let wrong = if held.share.is_some() { "wrong vault secret, or not the share of the machine this vault is locked to: the stored verifier did not authenticate" } else { "wrong vault secret: the stored verifier did not authenticate" };
+        let check = open(kek.as_ref(), &vn, &vct, b"storageforge:verifier").or_else(|_| no("auth", wrong))?;
         if check.ct_eq(VERIFIER).unwrap_u8() != 1 {
             return no("auth", "wrong vault secret: the stored verifier did not authenticate");
         }
@@ -738,6 +770,7 @@ impl State {
         }
         self.kek = Some(kek);
         self.audit = Some(audit);
+        self.held = Some(held);
         self.lockdown = false; // only a person with the secret lifts a lock-down
         self.bad = 0;
         Ok(json!({"ok": true, "state": "unlocked", "stepup": self.stepup_required}))
@@ -812,7 +845,7 @@ impl State {
     /// in use. A command run by whoever holds the secret needs no person beside it.
     fn holds_secret(&mut self, v: &Value) -> Result<bool, Refusal> {
         let kek = *self.kek()?;
-        let derived = self.derive(v)?;
+        let (derived, _) = self.derive(v)?;
         Ok(derived.ct_eq(&kek).unwrap_u8() == 1)
     }
 
@@ -1127,8 +1160,21 @@ impl State {
     fn rotate_begin(&mut self, v: &Value) -> Answer {
         self.kek()?;
         let Some(audit) = self.audit.clone() else { return no("locked", "the enclave is locked") };
-        self.need_stepup(v)?;
-        let next = self.derive(v)?;
+        // `rekey`: the same secret and share under a new salt, from what is held here. It gives nobody anything they did not have:
+        // the vault opens with the same secret afterwards. So it takes no step-up and can run on a schedule. Anything else is a
+        // rotation to a new secret or a change of the second lock, and takes one.
+        let (next, held) = if v.get("rekey").and_then(Value::as_bool) == Some(true) {
+            let Some(h) = &self.held else { return no("locked", "the enclave is locked") };
+            if !self.unlocks.take() {
+                return no("rate", "too many derivations: wait a minute");
+            }
+            let again = Held { secret: h.secret.clone(), share: h.share.clone() };
+            (Self::kdf(&again.secret, again.share.as_ref().map(|s| s.as_slice()), v)?, again)
+        } else {
+            self.need_stepup(v)?;
+            self.derive(v)?
+        };
+        self.next_held = Some(held);
         let (vn, vct) = seal(next.as_ref(), VERIFIER, b"storageforge:verifier")?;
         let (an, act) = seal(next.as_ref(), &audit, b"storageforge:audit-key")?;
         self.next = Some(next);
@@ -1149,8 +1195,10 @@ impl State {
     fn rotate_end(&mut self, commit: bool) -> Answer {
         self.kek()?;
         let Some(next) = self.next.take() else { return no("state", "no rotation is under way") };
+        let held = self.next_held.take();
         if commit {
             self.kek = Some(next);
+            self.held = held;
         }
         Ok(json!({"ok": true, "state": "unlocked", "rotated": commit}))
     }
@@ -1311,7 +1359,7 @@ impl State {
             let (reply, hang_up) = match serde_json::from_slice::<Value>(&body) {
                 Ok(mut v) => {
                     let got = self.answer(&v);
-                    for name in ["secret", "private", "plaintext", "password", "token"] {
+                    for name in ["secret", "share", "private", "plaintext", "password", "token"] {
                         if let Some(s) = v.get_mut(name).and_then(|s| if let Value::String(s) = s { Some(s) } else { None }) {
                             s.zeroize();
                         }

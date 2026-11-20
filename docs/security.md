@@ -80,6 +80,23 @@ To read the vault secret for safekeeping with this compose file: `docker compose
 
 What does not work with the secret apart: the nightly copy of a backup to another host, which the server encrypts with a key derived from the vault secret, has no secret to derive it from and is not made. The backup itself still is. Until that key is derived inside the enclave, copy backups off with a command that holds the secret (`docker compose … run --rm admin backup …`), or use the starter in place.
 
+#### Layers
+
+*The owner's direction of 2026-11-18: a flaw in one layer must not give up the keys. Built, not lab-tested.*
+
+**A second lock on the KEK.** Without it the KEK comes from the vault secret alone, so the secret beside a stolen database, or a backup with its secret, is the keys. `storageforge-index vault second-lock on` (run by whoever holds the vault secret) makes a second share, 32 random bytes in a file only its owner can read, and mixes it into the KEK:
+
+```text
+KEK = HMAC-SHA256(key = host share, "storageforge:second-lock:v1" ‖ 0 ‖ Argon2id(vault secret))
+```
+
+- The secret alone then derives a key that opens nothing, on this machine or any other. This holds with the enclave, which mixes the share inside, and without it.
+- Nothing stored changes format. Turning the lock on or off is a rotation: each DEK is rewrapped and no key's ciphertext is touched. `vault_meta.second_lock` says which way the KEK is derived. `vault second-lock off` is the way back, and `vault second-lock status` says which it is.
+- The share is in `STORAGEFORGE_HOST_SHARE_FILE` (`/etc/storageforge/host_share` if not set), outside the database, its backups and the secret volume. A file others can read is refused. Whoever unlocks the vault reads it: the starter, or a command that holds the secret. `docker-compose.enclave.yml` mounts a folder of the Docker host for it (`STORAGEFORGE_HOST_SHARE_DIR`), read-only for the starter. Restart the server after turning the lock on or off, so that its enclave is unlocked again with what the vault now needs.
+- **The recovery share** is printed once when the lock is turned on. With it and the database, `vault second-lock recover` (the share on stdin) writes the host share again on a machine that lost it, or on a new one. The database holds the host share sealed under a key made from the recovery share, and nothing else of it. Kept beside the vault secret, the recovery share undoes what the lock is for: keep them apart. Without the host share and without the recovery share the vault cannot be opened by anyone.
+- **TPM:** sealing the share to the host's TPM is not built. It needs `tpm2-tools` and a TPM to test against, and neither was there. The share is a file.
+- Backups of the database are encrypted from the vault secret alone, as before, so a backup can be read without the share; the keys inside it cannot be opened without it.
+
 The image is `storageforge-indexer/enclave/image/build.sh`: a kernel without modules, an IP stack or block devices and with lockdown forced on, and an initramfs of one static file. The compiler image is pinned by digest and the kernel by checksum, and the build is reproducible: build it again and compare `SHA256SUMS`.
 
 ### Secrets for plan steps
