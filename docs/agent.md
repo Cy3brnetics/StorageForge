@@ -191,6 +191,7 @@ Stated here so that nobody takes more from the above than is there.
 - **A plugin with `SYS_ADMIN` can undo a mask** by unmounting it, and is root on the host in effect. The roadmap says so of the files plugin, and the UI will have to.
 - **Groups from a directory service are not seen.** The check that the managing user is in none of `docker`, `lxd`, `incus-admin` reads `/etc/group` and the account's own group (the setup script asks `id`, which does see them).
 - **A capability given by Docker to a process that is not root is not effective** without more work (ambient capabilities). No plugin needs one yet; the disks and files plugins will.
+- **The agent leaves when its manifest or its plugin files change,** and counts on the runtime to start it again with what is there now. Docker and Podman do. An LXC container is not started again when its one program leaves, which is of no matter while every change comes through `storageforge-agentctl` (it makes the container again), and will matter when plugin files arrive through the tunnel.
 - **The agent's state folder has no size limit.**
 - **Under Podman without root there is no memory or process limit** on the container, since not every host lets a user set one.
 - **`cargo audit` and `cargo deny` do not run in CI.** The workspace's `Cargo.lock` is scanned by Trivy in the enclave job.
@@ -203,5 +204,7 @@ cd storageforge-indexer
 cargo test -p storageforge-wire -p storageforge-agent      # the Rust tests: formats, signatures, the counter, a real plugin process
 python tests/run.py all -k test_agent                      # the setup script, the real programs against a stand-in host, the real Docker
 ```
+
+Lab tier 24 (`tests/lab/tiers_agent.py`) is written and has not run. The lab's build does not publish an agent image yet, so until it does every check of that tier shows as skip, with that reason.
 
 `tests/test_agent.py` builds both programs with a release key it made, runs the setup script in bash against a folder that stands for a host's `/`, sends the controller's signed requests to the real `storageforge-agentctl`, and starts the real agent where a runtime would. `RealDocker` runs the same road against the real Docker with the image from the `agent` stage, where Docker and a `registry` image are at hand.

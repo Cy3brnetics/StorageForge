@@ -98,6 +98,9 @@ fn run(paths: &Paths) -> i32 {
         }
         // The manifest and the plugin files are checked again on a timer. A manifest that changed means another set of plugins
         // or privileges: the agent leaves, and the runtime starts it again with what is there now.
+        // SEAM (11.2): Docker and Podman start it again; an LXC container whose one program left stays down. Today every change
+        // comes through storageforge-agentctl, which makes the container anew, so nothing depends on that. Plugin files that
+        // arrive through the tunnel will: load them in place here, or have storageforge-agentctl asked to restart.
         loop {
             std::thread::sleep(Duration::from_secs(30));
             let (again, _) = supervise::inspect(paths, &key, supervise::now(), false);

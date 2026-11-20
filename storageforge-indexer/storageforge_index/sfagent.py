@@ -605,6 +605,9 @@ def start_install(db: Database, host: str, actor: str, install_podman: bool = Fa
     conn = db.connect()
     try:
         name = deploy.canonical(conn, host)
+        row = get(conn, name)
+        if row and row['enabled'] and row['state'] in ('needs-podman', 'failed', 'removed'):
+            _save(conn, name, actor, state='on', detail='')      # so that whoever polls sees this install's end, not the last one's
     finally:
         conn.close()
     return deploy.start_task(db, name, 'agent', 'install', actor,
