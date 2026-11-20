@@ -365,6 +365,108 @@ esac""")
         self.assertEqual(self.step(True, 't_zerotier', NET, 'absent'), (0, 'ok: ZeroTier is not installed\n'))
 
 
+JWT = 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL3ppdGkuZXhhbXBsZS5jb206MTI4MCIsImVtIjoib3R0IiwianRpIjoibm90LWEtcmVhbC10b2tlbiJ9.Tm90QVJlYWxTaWduYXR1cmVfLTAwMDAwMDAwMDAwMA'
+
+
+class OpenZiti(Stage):
+    """ziti-edge-tunnel as it enrolls: the token is a file it is named, it works once, the identity file must not be there yet,
+    and what it writes holds a private key. When it fails it repeats the token it was given, which a real one may do in a log line."""
+
+    def setUp(self):
+        super().setUp()
+        f = self.fake
+        self.ids = self.d / 'identities'
+        self.env['SF_ZITI_DIR'] = str(self.ids)
+        (f / 'accepts').write_text(JWT)
+        (f / 'packaged-ziti-edge-tunnel').touch()
+        self.stub('ziti-edge-tunnel', f"""[ "$1" = enroll ] || exit 2
+tr "\\0" " " </proc/$$/cmdline >>{f}/ziti.cmdline; echo >>{f}/ziti.cmdline
+shift; while [ $# -gt 0 ]; do case $1 in --jwt) jwt=$2; shift ;; --identity) out=$2; shift ;; esac; shift; done
+[ ! -e "$out" ] || {{ echo "ERROR failed to open file $out: File exists(17)" >&2; exit 1; }}
+tok=$(tr -d "\\n" <"$jwt") || exit 1
+if [ "$tok" != "$(cat {f}/accepts)" ] || [ -e {f}/used ]; then echo "ERROR enrollment failed: JWT validation failed for $tok" >&2; echo "ERROR controller said: ENROLLMENT_TOKEN_INVALID" >&2; exit 1; fi
+touch {f}/used
+echo "{{\\"ztAPI\\":\\"https://ziti.example.com:1280\\",\\"id\\":{{\\"cert\\":\\"pem:-----BEGIN CERTIFICATE-----\\",\\"key\\":\\"pem:-----BEGIN EC PRIVATE KEY-----STANDIN\\"}}}}" >"$out" """)
+
+    def test_it_enrolls_from_the_token_file_and_the_token_is_on_no_command_line(self):
+        rc, out = self.step(True, 't_openziti', 'ziti-web', 'web-1', 'present')
+        self.assertEqual(rc, 1)
+        self.assertIn(f'conflict: no enrollment token at {self.d}/secrets/ziti-web: storageforge-index vault send-secret ziti-web --host ', out)
+        tok = self.secret('ziti-web', JWT)
+        rc, out = self.step(False, 't_openziti', 'ziti-web', 'web-1', 'present')
+        self.assertIn(f'would: ziti-edge-tunnel enroll --jwt {tok} --identity {self.ids}/web-1.json (the token works once)', out)
+        self.assertEqual((self.read('ziti.cmdline'), self.ids.exists()), ('', False), 'a report runs and writes nothing')
+        rc, out = self.step(True, 't_openziti', 'ziti-web', 'web-1', 'present')
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f'ok: enrolled as web-1, and ziti-edge-tunnel.service loads {self.ids}/web-1.json. The token file is removed: it works once', out)
+        self.assertEqual(self.read('ziti.cmdline').strip(), f'/bin/bash {self.d}/bin/ziti-edge-tunnel enroll --jwt {tok} --identity {self.ids}/web-1.json')
+        identity = self.ids / 'web-1.json'
+        self.assertEqual(identity.stat().st_mode & 0o777, 0o600, 'it holds a private key')
+        self.assertFalse(tok.exists())
+        self.assertIn('systemctl restart ziti-edge-tunnel.service', self.read('systemctl.calls'))
+        self.assertNotIn(JWT, out + self.everything_written('fake/accepts'))
+        self.assertNotIn('PRIVATE KEY', out + self.everything_written('identities/web-1.json'))
+
+    def test_a_second_run_changes_nothing_and_a_token_sent_again_is_removed(self):
+        self.secret('ziti-web', JWT)
+        self.step(True, 't_openziti', 'ziti-web', 'web-1', 'present')
+        tok = self.secret('ziti-web', JWT)
+        for apply in (False, True):
+            rc, out = self.step(apply, 't_openziti', 'ziti-web', 'web-1', 'present')
+            self.assertEqual(rc, 0)
+            self.assertIn(f'ok: enrolled already as web-1: {self.ids}/web-1.json', out)
+            self.assertNotIn('doing:', out)
+        self.assertFalse(tok.exists())
+        self.assertEqual(self.read('ziti.cmdline').count('\n'), 1)
+
+    def test_the_group_of_the_packaged_service_reads_the_identity(self):
+        self.stub('getent', '[ "$1 $2" = "group ziti" ] && echo "ziti:x:985:"')
+        self.stub('chgrp', f'echo "chgrp $*" >>{self.fake}/chgrp.calls')
+        self.secret('ziti-web', JWT)
+        self.assertEqual(self.step(True, 't_openziti', 'ziti-web', 'web-1', 'present')[0], 0)
+        self.assertEqual(self.read('chgrp.calls'), f'chgrp ziti {self.ids}/web-1.json\n')
+        self.assertEqual((self.ids / 'web-1.json').stat().st_mode & 0o777, 0o640)
+
+    def test_a_token_that_was_used_and_a_file_that_is_no_token(self):
+        self.secret('ziti-web', JWT)
+        (self.fake / 'used').touch()
+        rc, out = self.step(True, 't_openziti', 'ziti-web', 'web-1', 'present')
+        self.assertEqual(rc, 1)
+        self.assertIn('conflict: the enrollment failed: ERROR enrollment failed: JWT validation failed for (the secret) ERROR controller said: ENROLLMENT_TOKEN_INVALID', out)
+        self.assertIn('A token works once and for a limited time', out)
+        self.assertNotIn(JWT, out, 'a program that repeats the token is not repeated')
+        self.assertFalse((self.ids / 'web-1.json').exists())
+        for text in ('not a token', JWT + '\n' + JWT, 'a.b', JWT + ' --identity /etc/passwd'):
+            self.secret('ziti-web', text)
+            rc, out = self.step(True, 't_openziti', 'ziti-web', 'web-1', 'present')
+            self.assertIn('does not hold an enrollment token', out)
+        self.assertEqual(self.read('ziti.cmdline').count('\n'), 1, 'what is not a token was never handed over')
+
+    def test_without_the_service_it_says_how_the_identity_is_loaded_and_without_the_program_nothing_is_done(self):
+        (self.fake / 'packaged-ziti-edge-tunnel').unlink()
+        self.secret('ziti-web', JWT)
+        rc, out = self.step(True, 't_openziti', 'ziti-web', 'web-1', 'present')
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f'No ziti-edge-tunnel.service is here to load it: ziti-edge-tunnel run --identity-dir {self.ids} does', out)
+        (self.d / 'bin' / 'ziti-edge-tunnel').unlink()
+        rc, out = self.step(True, 't_openziti', 'ziti-web', 'web-2', 'present')
+        self.assertIn('conflict: ziti-edge-tunnel is not installed', out)
+
+    def test_absent_removes_the_identity_and_its_key(self):
+        self.secret('ziti-web', JWT)
+        self.step(True, 't_openziti', 'ziti-web', 'web-1', 'present')
+        (self.ids / 'other.json').write_text('{}')
+        rc, out = self.step(False, 't_openziti', 'ziti-web', 'web-1', 'absent')
+        self.assertIn(f'would: remove {self.ids}/web-1.json', out)
+        self.assertTrue((self.ids / 'web-1.json').exists())
+        rc, out = self.step(True, 't_openziti', 'ziti-web', 'web-1', 'absent')
+        self.assertEqual(rc, 0)
+        self.assertIn('Delete it at the controller too', out)
+        self.assertEqual([p.name for p in self.ids.iterdir()], ['other.json'])
+        self.assertEqual(self.read('systemctl.calls').count('restart ziti-edge-tunnel.service'), 2)
+        self.assertEqual(self.step(True, 't_openziti', 'ziti-web', 'web-1', 'absent'), (0, 'ok: no OpenZiti identity named web-1 is here\n'))
+
+
 def _epoch(text):
     return int(dt.datetime.fromisoformat(text).timestamp())
 
@@ -871,6 +973,35 @@ class Plans(unittest.TestCase):
         for bad in ('8056C2E21C000001', '8056c2e21c00000', '8056c2e21c000001; id', 'all'):
             _, got = self.checked(conn, ('zerotier', {'network': bad}))
             self.assertEqual(len(self.crits(got)), 1, bad)
+
+    def test_openziti_in_a_plan_and_no_step_for_netmaker(self):
+        db, conn = plan_db(self)
+        plan, checked = self.checked(conn, ('openziti', {'secret': 'ziti-web', 'identity': 'web-1'}), ('openziti', {'secret': 'ziti-web', 'identity': 'web-1', 'state': 'absent'}))
+        self.assertEqual(self.crits(checked), [])
+        said = ' '.join(i['text'] for i in checked[0]['items'])
+        self.assertIn('storageforge-index vault send-secret ziti-web --host nas', said)
+        self.assertIn('It works once', said)
+        self.assertIn('100.64.0.0/10', said)
+        text = changes.script(conn, plan)
+        self.assertIn("openziti 'Enroll the OpenZiti identity web-1' ziti-web web-1 present", text)
+        self.assertIn("openziti 'Remove the OpenZiti identity web-1' ziti-web web-1 absent", text)
+        _, bad = self.checked(conn, ('openziti', {'secret': 'ziti-web', 'identity': 'web:1'}))
+        self.assertEqual(len(self.crits(bad)), 1)
+        # netclient takes its enrollment token as an argument only, so there is no step that would put one on a command line
+        self.assertNotIn('netmaker', changes.TYPES)
+        self.assertNotIn('netclient join', ''.join(changes.EXTRA_BASH))
+        self.assertIn('NO STEP', steps_overlay.__doc__)
+
+    def test_no_step_here_puts_a_secret_in_its_words(self):
+        """The words a plan gives a step are in the script, the playbook and the logs: for these steps they are names, addresses and
+        public certificates. A step whose field could hold the secret itself would show here."""
+        for kind in ('netbird', 'zerotier', 'nebula', 'openziti'):
+            fields = {f['name']: f for f in changes.TYPES[kind]['fields']}
+            self.assertEqual(tuple(fields), changes.ARGS[kind])
+            for name, f in fields.items():
+                self.assertNotIn(name, ('key', 'token', 'jwt', 'password', 'setup_key'), kind)
+                if 'vault secret' in f['label']:
+                    self.assertEqual((f['kind'], name), ('name', 'secret'), 'a secret is named, and the name is checked as one')
 
 
 if __name__ == '__main__':

@@ -73,6 +73,7 @@ MEDIUM = {
     'test_tunnel_exposure.Steps',    # bash running the two tunnel steps against stand-ins
     'test_overlay_steps.NetBird',    # bash running the join and leave steps against stand-ins, on a PATH of their own
     'test_overlay_steps.ZeroTier',
+    'test_overlay_steps.OpenZiti',
     'test_overlay_steps.NebulaReal',     # the real nebula-cert and nebula, where they are found
     'test_overlay_steps.NebulaJoin',     # the vault's CA, the real nebula-cert, and the step
     'test_overlay_steps.NebulaNetwork',  # two real Nebula nodes in network namespaces of this account

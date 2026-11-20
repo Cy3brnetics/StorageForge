@@ -39,11 +39,17 @@ SECRET_DIR = '/run/storageforge/secrets'
 NETBIRD_ARGS = ('secret', 'management_url', 'hostname', 'state')
 ZEROTIER_ARGS = ('network', 'state')
 NEBULA_ARGS = ('ca', 'lighthouse', 'lighthouses', 'port', 'inbound', 'state')
+ZITI_ARGS = ('secret', 'identity', 'state')
+IDENTITY = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}')
 
 # No apostrophes: the script text is checked for values that could end a quoted word.
 # tun_systemd, tun_secret_missing, tun_unit_start and tun_unit_stop are in steps_tunnels.BASH, which every plan script carries.
 BASH = r"""
 # ── private networks: join and leave ────────────────────────────────
+ov_scrubbed() { # $1 a secret file, $2 what a program said: the same with the secret taken out, should the program have repeated it. No process is started
+  local s=; [[ -r $1 ]] && s=$(<"$1"); s=${s//[[:space:]]/}
+  if [[ -n $s ]]; then printf "%s" "${2//"$s"/(the secret)}"; else printf "%s" "$2"; fi
+}
 ov_service() { # $1 the unit: start it when systemd runs this host and it is not running. Says what it would do in a report
   tun_systemd || return 0
   systemctl is-active --quiet "$1" && return 0
@@ -105,7 +111,7 @@ t_netbird() { local secret=$1 url=$2 name=$3 state=${4:-present} f out ip at arg
     [[ -n $name ]] && args+=("--hostname=$name")
     act "netbird up ${args[*]}" || return 0
   fi
-  if ! out=$(netbird up "${args[@]}" 2>&1); then conflict "netbird up failed: $(tail -n 2 <<<"$out" | tr "\n" " ")"; return 0; fi
+  if ! out=$(netbird up "${args[@]}" 2>&1); then conflict "netbird up failed: $(ov_scrubbed "$f" "$out" | tail -n 2 | tr "\n" " ")"; return 0; fi
   nb_connected || { conflict "netbird up returned, and the management server is not connected: netbird status says why. The setup key file is kept at $f"; return 0; }
   rm -f -- "$f"
   ip=$(nb_ip)
@@ -216,6 +222,48 @@ WantedBy=multi-user.target" 1; then
   fi
   ok "Nebula runs as $unit from $conf${lh:+, as a lighthouse: others must reach its UDP port, which this step does not open in a firewall}"
 }
+
+# OpenZiti. An identity is enrolled once, from a token that works once (a JWT): ziti-edge-tunnel reads the token from a file and
+# writes the identity, with the private key it made, to a file the tunneller loads
+t_openziti() { local secret=$1 name=$2 state=${3:-present} f d id unit=ziti-edge-tunnel.service bin out
+  f=${SF_SECRET_DIR:-/run/storageforge/secrets}/$secret; d=${SF_ZITI_DIR:-/opt/openziti/etc/identities}; id=$d/$name.json
+  if [[ $state == absent ]]; then
+    [[ -e $id ]] || { ok "no OpenZiti identity named $name is here"; return 0; }
+    act "remove $id, which holds the identity and its key, and restart $unit (the tunneller stays installed, and the identity stays defined at the controller until it is deleted there)" || return 0
+    rm -f -- "$id"
+    if tun_systemd && systemctl is-active --quiet "$unit"; then systemctl restart "$unit" >/dev/null 2>&1 || info "$unit did not restart: journalctl -u $unit says why"; fi
+    ok "the identity $name and its key are gone from this host. Delete it at the controller too: until then the controller still knows it"
+    return 0
+  fi
+  bin=$(command -v ziti-edge-tunnel) || { conflict "ziti-edge-tunnel is not installed: install it from the package source OpenZiti gives (get.openziti.io), which this step does not add"; return 0; }
+  if [[ -s $id ]]; then
+    ok "enrolled already as $name: $id"
+    [[ -e $f ]] && rm -f -- "$f" && info "removed the enrollment token file: a token works once"
+    if systemctl cat "$unit" >/dev/null 2>&1; then ov_service "$unit" || true; fi
+    return 0
+  fi
+  [[ -r $f ]] || { tun_secret_missing "$f" "$secret" "enrollment token"; return 0; }
+  if (($(grep -c "" "$f") != 1)) || ! grep -qxE "[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+" "$f"; then
+    conflict "the file at $f does not hold an enrollment token: one line of three parts with dots between (a JWT)"; return 0
+  fi
+  act "ziti-edge-tunnel enroll --jwt $f --identity $id (the token works once), and have $unit load the identity" || return 0
+  mkdir -p "$d" || { conflict "could not make $d"; return 0; }
+  if ! out=$( umask 077; "$bin" enroll --jwt "$f" --identity "$id" 2>&1 ); then
+    rm -f -- "$id"
+    conflict "the enrollment failed: $(ov_scrubbed "$f" "$out" | tail -n 2 | tr "\n" " "). A token works once and for a limited time: make another at the controller, and send it again"; return 0
+  fi
+  [[ -s $id ]] || { rm -f -- "$id"; conflict "ziti-edge-tunnel enroll returned and wrote no identity"; return 0; }
+  # the packaged service runs as the user ziti: its group reads the identity, and nobody else does
+  if getent group ziti >/dev/null 2>&1 && chgrp ziti "$id" 2>/dev/null; then chmod 0640 "$id"; else chmod 0600 "$id"; fi
+  rm -f -- "$f"
+  if tun_systemd && systemctl cat "$unit" >/dev/null 2>&1; then
+    systemctl enable "$unit" >/dev/null 2>&1 || true
+    systemctl restart "$unit" >/dev/null 2>&1 || { conflict "enrolled as $name, and $unit did not restart to load it: journalctl -u $unit says why"; return 0; }
+    ok "enrolled as $name, and $unit loads $id. The token file is removed: it works once"
+  else
+    ok "enrolled as $name: $id. No $unit is here to load it: ziti-edge-tunnel run --identity-dir $d does. The token file is removed: it works once"
+  fi
+}
 """
 
 
@@ -257,6 +305,21 @@ def _check_zerotier(conn, c, h, p, say):
     say('note', f'zerotier-cli join {p["network"]}. No secret is involved: the id names the network, and a private network lets the node in only once its '
                 'controller has authorised it. This step does not authorise it and says which node id to authorise')
     say('note', 'needs ZeroTier installed already. Not lab-tested')
+
+
+def _check_openziti(conn, c, h, p, say):
+    if not _secret_ok(p, say):
+        return
+    if not IDENTITY.fullmatch(p['identity']):
+        say('crit', 'an identity name is letters, digits, . _ and -: it names the file the identity is kept in')
+        return
+    if p['state'] == 'absent':
+        say('note', f'removes the identity file {p["identity"]}.json, with its key, and restarts the tunneller. The identity stays defined at the controller until it is deleted there')
+        return
+    _secret_note(h, p, say, 'enrollment token (the JWT the controller gave for this identity)', 'It works once, and is removed once the identity is enrolled')
+    say('note', 'the identity file the enrollment writes holds a private key made on this host: it is readable by root and the group ziti only, and it never leaves the host')
+    say('note', 'needs ziti-edge-tunnel installed already. Its service gives names in 100.64.0.0/10 by default, the range Tailscale and NetBird use: '
+                'on a host that is on one of them, set ZITI_DNS_IP_RANGE for the service first. Not lab-tested')
 
 
 # ── Nebula ──
@@ -369,4 +432,11 @@ changes.register('nebula', {'group': 'Network', 'label': 'Join a Nebula network 
             'from vault nebula-issue: the host makes its own key, and the CA key signs in the vault. No secret travels. Nebula has to be installed already.'},
     NEBULA_ARGS, lambda p: 'Leave the Nebula network' if p['state'] == 'absent' else f'Join the Nebula network of CA {p.get("ca") or ""}'.rstrip() + (' as a lighthouse' if p.get('lighthouse') else ''),
     _check_nebula, _ansible('t_nebula', NEBULA_ARGS, _nebula_args), args_of=_nebula_args)
+changes.register('openziti', {'group': 'Network', 'label': 'Enroll an OpenZiti identity (not lab-tested)', 'fields': [
+    F('secret', 'name', 'Enrollment token (a vault secret holding the JWT)', required=True, placeholder='ziti-web-1'),
+    F('identity', 'name', 'Identity name', required=True, placeholder='web-1'), STATE],
+    'help': 'Enrolls this host as an OpenZiti identity from a one-time token the vault holds. The token reaches the host with vault send-secret and '
+            'ziti-edge-tunnel reads it from a file (enroll --jwt FILE), so it is on no command line. The tunneller has to be installed already.'},
+    ZITI_ARGS, lambda p: f'{"Remove" if p["state"] == "absent" else "Enroll"} the OpenZiti identity {p.get("identity") or ""}'.rstrip(),
+    _check_openziti, _ansible('t_openziti', ZITI_ARGS))
 changes.EXTRA_BASH.append(BASH)
