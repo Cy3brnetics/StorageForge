@@ -89,7 +89,29 @@ What it holds to:
 
 A machine that already has an interface called `sf0` that is not WireGuard is left alone. The machine that runs the StorageForge containers is one: their bridge has that name by default. Give the bridge another name with `STORAGEFORGE_BRIDGE` (and move any firewall rule that names it) before that machine joins.
 
-Not built yet: the controller as a member (it runs in a container), and the page. Built, not lab-tested.
+### The controller as a member
+
+The controller can be a member too, so that its own connections to the hosts can go over the network. There are two ways.
+
+**In Docker: the link.** Start the stack with `docker-compose.sfnet.yml` as well:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.sfnet.yml up -d
+```
+
+That adds the `sfnet` service, a small container that shares the server's network, runs as root with the one capability `NET_ADMIN`, makes `sf0` there and keeps its private key in a volume only it mounts. The server stays unprivileged and never sees the key. It writes what it wants (an address, a port, peers by public key) to one folder and reads what the link reports from another; the link checks every line before it acts and never repeats one. The Docker host needs WireGuard in its kernel. Then:
+
+1. `POST /api/sfnet/controller` makes the controller a member. It gets an address like any host.
+2. `POST /api/sfnet/controller/apply` hands the link what the interface should be. This is the controller's half of every plan: do it whenever `GET /api/sfnet` shows `controller.pending`, as after a host joined, left or rotated its key. The link acts within five seconds, and its report brings back the controller's public key.
+3. Save and run the plan for the hosts as before, so they learn the controller's key.
+
+By default the controller calls the hosts and keeps each path open, so no port needs to be published. Where hosts must call it, uncomment the `ports` lines in `docker-compose.sfnet.yml` and give `{"endpoint": "<the Docker host's address>"}` when it joins. The controller's key is rotated like a host's (`/api/sfnet/members/rotate` with the host `StorageForge controller`, then apply), and `/api/sfnet/members/remove` followed by an apply removes its interface and key. If the server container is restarted on its own, the link notices that its network is gone, stops, and Docker starts it again in the new one.
+
+**On a host, with no container: the host is the member.** Where StorageForge runs directly on a machine that it also scans, add that host like any other and say that the controller runs on it: `POST /api/sfnet/controller` with `{"on": "<host>"}`. Nothing else is needed, since the controller then uses that host's `sf0`. For a controller on a machine it does not scan, `storageforge-index sfnet link` prints the link program: run it as root as a service (`storageforge-sfnet-link run`) with `SF_WG_WANT` and `SF_WG_STATE` set to two folders, the first writable by the StorageForge user and the second by root only, and start the server with `STORAGEFORGE_SFNET_WANT` and `STORAGEFORGE_SFNET_STATE` naming the same two.
+
+`storageforge-index sfnet` prints the members and what the readings confirm.
+
+Not built yet: the page. Built, not lab-tested.
 
 ## Designs
 

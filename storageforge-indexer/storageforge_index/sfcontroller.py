@@ -13,8 +13,9 @@ They share two folders and nothing else. The controller writes the `want` folder
 acts on it, because the program that writes it is the one a break-in would start from: a line that is not an address, a port or a
 WireGuard public key stops the pass, and nothing in the file can name a file, a command or an interface other than `sf0`.
 
-In Docker the link is the `sfnet` service of docker-compose.sfnet.yml, which shares the controller's network namespace. On a host
-it is a systemd unit (docs/infrastructure-map.md). The private key is made where the link runs and is never in the database, in a
+In Docker the link is the `sfnet` service of docker-compose.sfnet.yml, which shares the controller's network namespace. A
+controller that runs on a host needs no link when that host is scanned: the host joins like any other and the controller is said
+to run on it (sfnetwork.controller_on). Otherwise the link runs there as a systemd unit (docs/infrastructure-map.md). The private key is made where the link runs and is never in the database, in a
 want or state file, in a log or on a command line.
 
     configured()        whether this controller was started with the two folders
@@ -192,6 +193,7 @@ once() { local kind a b c d n=0 address="" port="" remove=0 phase="" newkey="" h
   fi
   [[ -n $address ]] || { state; return 0; }
   if [[ ! -e $MARK ]] && { up || [[ -e $KEYS/$IFACE.conf ]]; }; then stop "$IFACE is here and StorageForge did not make it: it is left as it is"; return 1; fi
+  if ! up && ip link show dev "$IFACE" >/dev/null 2>&1; then stop "$IFACE is here and is not a WireGuard interface: it is left as it is"; return 1; fi
   install -d -m 0700 "$KEYS" || { stop "the key folder cannot be made"; return 1; }
   if [[ ! -s $KEY ]]; then wg genkey >"$KEY" || { rm -f "$KEY"; stop "could not make a key"; return 1; }; fi
   : >"$MARK"
@@ -226,10 +228,17 @@ once() { local kind a b c d n=0 address="" port="" remove=0 phase="" newkey="" h
   state
 }
 
+# In Docker this shares the network of the server container. When that container restarts alone, its network is made again and
+# this is left in the old one, where only lo and the interface made here remain: stop, so that Docker starts this again in the new one.
+alone() { local n; n=$(ip -o link show 2>/dev/null | grep -cvE "^[0-9]+: (lo|$IFACE)[:@]" || true); ((n == 0)); }
+
 case ${1:-run} in
   once) once ;;
   run) trap "exit 0" TERM INT
-       while :; do once; sleep "$EVERY" & wait $!; done ;;
+       while :; do
+         if alone; then echo "storageforge-sfnet-link: the network this was started in is gone: stopping, to be started again in the one the server has now" >&2; exit 1; fi
+         once; sleep "$EVERY" & wait $!
+       done ;;
   *) echo "usage: storageforge-sfnet-link run|once" >&2; exit 2 ;;
 esac
 '''

@@ -9,6 +9,7 @@ private key is made on that host by the `wg-interface` step and stays there. Wha
     observe(conn)                  pending members whose interface a reading has seen become active, with that key
     rotate(conn, host, actor)      a person asks for the member's key to change: the plans that follow do it in two halves
     join_controller, apply_controller   the controller itself as a member, through its link (sfcontroller.py)
+    controller_on(conn, host, actor)    or: the controller runs on a member, and uses that host's interface
     status(conn)                   the network, and per member what the readings confirm
     plan(conn, actor)              a change plan that takes every member from what was read to what should be
     via(conn, host, port)          the host's address on the network, for a connection from here that can go over it
@@ -112,7 +113,7 @@ def seen(conn: Conn, network: dict) -> dict:
     for m in network['members']:
         if '(revoked' in m['host']:
             continue
-        if m['host'] == network.get('controller'):
+        if m['host'] == sfcontroller.NAME:
             mine = sfcontroller.reading()
             if mine is not None:
                 out[m['host']] = mine
@@ -166,9 +167,9 @@ def _stage(network: dict, m: dict, readings: dict) -> dict | None:
 
 
 def _controller_want(network: dict, readings: dict) -> str | None:
-    """What the controller's link should be asked for now, or None when the controller is not a member."""
-    name = network.get('controller')
-    me = sfnet.member(network, name) if name else None
+    """What the controller's link should be asked for now, or None when the controller is not a member through a link."""
+    name = sfcontroller.NAME
+    me = sfnet.member(network, name) if network.get('controller') == name else None
     if me is None:
         return None
     then, ready = sfnet.after_switch(network, readings)
@@ -186,20 +187,41 @@ def _controller_want(network: dict, readings: dict) -> str | None:
 
 
 def controller(conn: Conn) -> dict:
-    """The controller's own end: whether a link is there and running, and whether what it was asked for is what it should be."""
+    """The controller's own end. member: the member it is, the link's (sfcontroller.NAME) or the scanned host it runs on. For the
+    link: whether one is there and running, what it last could not do, and whether what it was asked for is what it should be."""
     network = load(conn)
     said = sfcontroller.report()
-    out = {'configured': said['configured'], 'running': said['running'], 'error': said['error'], 'member': None, 'pending': False}
+    out = {'configured': said['configured'], 'running': said['running'], 'error': said['error'], 'member': None, 'link': False, 'pending': False}
     if network is None or not network.get('controller'):
         return out
-    out['member'] = network['controller']
-    out['pending'] = out['configured'] and _controller_want(network, seen(conn, network)) != sfcontroller.wanted()
+    out['member'], out['link'] = network['controller'], network['controller'] == sfcontroller.NAME
+    out['pending'] = out['link'] and out['configured'] and _controller_want(network, seen(conn, network)) != sfcontroller.wanted()
     return out
 
 
+def controller_on(conn: Conn, host, actor: str) -> dict:
+    """The controller runs on this member, a scanned host, and uses that host's interface: there is no link, and the host is
+    planned like any other. host None: the controller is on no member. Refused while the controller is a member through its link."""
+    with conn.tx():
+        network = _network(conn)
+        mine = sfnet.member(network, sfcontroller.NAME)
+        if network.get('controller') == sfcontroller.NAME and mine and mine['state'] != 'revoked':
+            raise sfnet.NetworkError('the controller is on the network through its link: remove that member first')
+        if host is None:
+            network['controller'] = None
+            _save(conn, network, actor)
+            return {'host': None}
+        m = next((x for x in network['members'] if x['host'].lower() == str(host).strip().lower() and x['state'] != 'revoked' and x['host'] != sfcontroller.NAME), None)
+        if m is None:
+            raise sfnet.NetworkError(f'{host} is not a member')
+        network['controller'] = m['host']
+        _save(conn, network, actor)
+    return dict(m)
+
+
 def join_controller(conn: Conn, actor: str, endpoint: str | None = None, hub: bool = False) -> dict:
-    """The controller as a member. endpoint: where hosts call it (in Docker, the Docker host's address, with the UDP port
-    published); without one the controller calls the hosts and keeps the paths open."""
+    """The controller as a member of its own, through its link. endpoint: where hosts call it (in Docker, the Docker host's
+    address, with the UDP port published); without one the controller calls the hosts and keeps the paths open."""
     if not sfcontroller.configured():
         raise sfnet.NetworkError('this controller was not started with a link for the StorageForge network: see docs/infrastructure-map.md')
     where = str(endpoint or '').strip() or None
@@ -220,7 +242,7 @@ def apply_controller(conn: Conn, actor: str) -> dict:
     network = _network(conn)
     text = _controller_want(network, seen(conn, network))
     if text is None:
-        raise sfnet.NetworkError('the controller is not on the network')
+        raise sfnet.NetworkError('the controller is not on the network through a link')
     changed = text != sfcontroller.wanted()
     if changed:
         sfcontroller.write(text)
@@ -249,7 +271,7 @@ def status(conn: Conn) -> dict:
     for m in network['members']:
         iface = sfnet._seen(readings.get(m['host']))
         row = {**m, **(confirmed.get(m['host']) or {'state': m['state'], 'confirmed': [], 'missing': [], 'unknown': [], 'key_changed': False})}
-        row['rotation'], row['is_controller'] = _stage(network, m, readings), m['host'] == network.get('controller')
+        row['rotation'], row['is_controller'], row['link'] = _stage(network, m, readings), m['host'] == network.get('controller'), m['host'] == sfcontroller.NAME
         if m['state'] == 'pending' and iface and iface.get('public_key'):
             row['state'] = 'key refused'           # observe() would have taken it: another member holds the same key
         if m['state'] == 'revoked':
@@ -264,7 +286,7 @@ def status(conn: Conn) -> dict:
 def tasks(conn: Conn) -> list[dict]:
     """The steps of the plan, host by host: the interface where a host has none yet, the half of a rotation that is due, then its
     peers. A host that is ready to switch to its next key does so first, and its peers move its address to that key in the same
-    plan. The controller is not in a plan: its link is asked instead (apply_controller)."""
+    plan. The controller's own member is not in a plan: its link is asked instead (apply_controller)."""
     observe(conn)
     network = _network(conn)
     readings = seen(conn, network)
@@ -273,7 +295,7 @@ def tasks(conn: Conn) -> list[dict]:
     first, out = [], []
     for m in network['members']:
         host = m['host']
-        if '(revoked' in host or host == network.get('controller'):
+        if '(revoked' in host or host == sfcontroller.NAME:
             continue
         iface = sfnet._seen(readings.get(host))
         interface = {'iface': sfnet.INTERFACE, 'address': f'{m["address"]}/{prefix}', 'port': str(network['port'])}

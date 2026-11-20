@@ -17,6 +17,12 @@ if [ -d /secrets/tunnel-keys ]; then
   chown 10001:10001 /secrets/tunnel-keys; chmod 0755 /secrets/tunnel-keys
   chown -R 10002:10002 /secrets/tunnel-host; chmod 0755 /secrets/tunnel-host
 fi
+# only with docker-compose.sfnet.yml: what the app writes and the link reads, what the link writes and the app reads, and the
+# folder of the link's private key, which the app never mounts
+if [ -d /secrets/sfnet-want ]; then
+  chown 10001:10001 /secrets/sfnet-want; chmod 0755 /secrets/sfnet-want
+  chown 0:0 /secrets/sfnet-state /secrets/sfnet-keys; chmod 0755 /secrets/sfnet-state; chmod 0700 /secrets/sfnet-keys
+fi
 new_secret() { openssl rand -base64 48 | tr -d '\n'; }
 
 if [ ! -s "$APP/vault_secret" ]; then

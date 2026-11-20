@@ -491,6 +491,31 @@ def cmd_config(args) -> int:
         conn.close()
 
 
+def cmd_sfnet(args) -> int:
+    """StorageForge's own network: what the readings confirm, and the link program for a controller that is to be a member."""
+    from . import sfcontroller, sfnetwork
+    if args.sfnet_cmd == 'link':
+        sys.stdout.write(sfcontroller.LINK)          # no secret in it: the key is made where it runs
+        return 0
+    db, conn = open_db(args)
+    try:
+        st = sfnetwork.status(conn)
+        if st['network'] is None:
+            print('there is no StorageForge network yet')
+            return 0
+        print(f'{st["network"]["range"]}  UDP {st["network"]["port"]}  {st["network"]["topology"]}')
+        for m in st['members']:
+            if '(revoked' in m['host']:
+                continue
+            notes = [f'missing {", ".join(m["missing"])}'] if m.get('missing') else []
+            notes += ['a different key than the one on record'] if m.get('key_changed') else []
+            notes += [f'rotation: {m["rotation"]["step"]}'] if m.get('rotation') else []
+            print('\t'.join((m['host'], m['address'], m['state'], (m.get('public_key') or '-')[:12], '; '.join(notes))))
+        return 1 if any(m.get('key_changed') for m in st['members']) else 0
+    finally:
+        conn.close()
+
+
 def cmd_site(args) -> int:
     from . import reset, site, users
     from .alerts import set_setting
@@ -1740,6 +1765,12 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument('file')
     rs.add_argument('--yes', action='store_true', help='really replace it')
     rs.set_defaults(fn=cmd_restore)
+
+    sn = sub.add_parser('sfnet', help="StorageForge's own encrypted network: its members, and the link program of the controller")
+    sns = sn.add_subparsers(dest='sfnet_cmd')
+    sns.add_parser('status', help='the members and what the readings confirm (the default); exit 1 if a member shows a key that is not on record')
+    sns.add_parser('link', help='print the link program, which makes the interface of a controller that is not in Docker (docs/infrastructure-map.md)')
+    sn.set_defaults(fn=cmd_sfnet, sfnet_cmd='status')
 
     st = sub.add_parser('site', help='which client this database belongs to')
     sts = st.add_subparsers(dest='site_cmd')

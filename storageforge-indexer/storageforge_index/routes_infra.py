@@ -404,8 +404,13 @@ def register(web, ctx):
     @login_required
     @password_confirmed
     def api_sfnet_controller():
-        # the controller as a member: nothing is made yet, the link is asked by the apply below
         body = json_body()
+        if 'on' in body:
+            # the controller runs on a member and uses that host's interface; "on": null takes that back
+            member = sfnetwork.controller_on(conn(), body['on'] or None, actor())
+            core.audit(conn(), actor(), 'sfnet.controller.on', 'ok', member['host'] or '', {})
+            return jsonify(member)
+        # the controller as a member of its own: nothing is made yet, the link is asked by the apply below
         member = sfnetwork.join_controller(conn(), actor(), body.get('endpoint') or None, body.get('hub') is True)
         core.audit(conn(), actor(), 'sfnet.join', 'ok', member['host'], {'address': member['address'], 'endpoint': member['endpoint'], 'hub': member['hub'], 'controller': True})
         return jsonify(member)

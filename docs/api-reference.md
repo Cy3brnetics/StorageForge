@@ -311,6 +311,8 @@ See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure
 | POST 🔑 | `/api/sfnet/members` | `{"host", "endpoint"?, "hub"?, "reachable"?}` | `security.manage`. Add a scanned host |
 | POST 🔑 | `/api/sfnet/members/remove` | `{"host"}` | `security.manage`. Revoke a member |
 | POST 🔑 | `/api/sfnet/members/rotate` | `{"host", "cancel"?}` | `security.manage`. Ask for a member's key to be rotated; the plans that follow do it in two halves. `cancel` takes it back before the host has switched |
+| POST 🔑 | `/api/sfnet/controller` | `{"endpoint"?, "hub"?}` or `{"on": host}` | `security.manage`. The controller as a member through its link (`docker-compose.sfnet.yml`), or: the controller runs on that member. `{"on": null}` takes the second back |
+| POST 🔑 | `/api/sfnet/controller/apply` | | `security.manage`. Hand the link what the controller's interface should be; `changed` says whether anything new was asked |
 | POST | `/api/sfnet/plan` | | `plans.edit`. Save the change plan that brings every member to what it should be; `plan_id` is null when there is nothing to do |
 | GET | `/api/desktop/profiles` | | `plans.view`. The desktop profiles kept here, and the compositors they can be rendered for |
 | PUT | `/api/desktop/profiles/<name>` | a profile: `{"mod", "binds", "rules", "displays", "hosts"}` | `plans.edit`. Save one; every value is checked |
