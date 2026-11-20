@@ -71,7 +71,7 @@ class TheScript(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.bin = self.tmp / 'bin'
         self.bin.mkdir()
-        self.env = {'PATH': f'{self.bin}:{os.environ["PATH"]}', 'SF_FSTAB': str(self.tmp / 'fstab'), 'T': str(self.tmp)}
+        self.env = {'PATH': f'{self.bin}:{os.environ["PATH"]}', 'SF_FSTAB': str(self.tmp / 'fstab'), 'T': str(self.tmp), 'SF_FIRMWARE': str(self.tmp)}      # a folder that is there: started by UEFI
 
     def tool(self, name, body):
         (self.bin / name).write_text('#!/bin/bash\n' + body + '\n')

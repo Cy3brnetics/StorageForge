@@ -24,7 +24,18 @@ What os-install holds to:
       other system would teach its owner to ignore the warning.
 
 os-boot's `once` sets the firmware's BootNext. If the new system does not come up, the restart after that is the old system
-again, with nothing to repair. UEFI only: a BIOS machine has one boot sector per disk, and it is the running system's.
+again, with nothing to repair. UEFI only: a BIOS machine has one boot sector per disk, and it is the running system's. Every
+step says so on a BIOS machine and changes nothing.
+
+Secure Boot. The boot entry points at the image's own loader, which for the distributions in the catalog is their shim, signed
+by Microsoft. The script reads whether Secure Boot is on (the firmware's variable, then mokutil). If it is, it reads the
+loader's signature table and the firmware's list of trusted keys (db): a loader with no signature, or one signed only with a
+Microsoft key the firmware does not list, is taken off again and refused. What it does not read: the revocation lists (dbx,
+SBAT) and the kernel behind the shim. And what a firmware does with a loader it refuses is the firmware's business: most go
+on to the boot order, some wait for a key at the machine. None of this has been run on a machine with Secure Boot on.
+
+Network `same`: an address DHCP gave is asked for again; addresses set by hand are written as they are (every IPv4 address of
+the interface, the IPv6 ones set by hand, the gateway, name servers and search domains).
 """
 from __future__ import annotations
 
@@ -65,6 +76,62 @@ sf_os_json() { awk 'BEGIN {printf "\""} {gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); 
 sf_os_rescan() { partx -a "$1" >/dev/null 2>&1 || :; partx -u "$1" >/dev/null 2>&1 || partprobe "$1" >/dev/null 2>&1 || :; udevadm settle 2>/dev/null || sleep 1; }
 sf_os_forget() { partx -d --nr "$2" "$1" >/dev/null 2>&1 || :; }          # a partition taken out of the table, out of the kernel too
 
+# ── how this machine starts ──
+sf_os_uefi() { [[ -d ${SF_FIRMWARE:-/sys/firmware/efi} ]]; }
+sf_os_bios() { # what a BIOS machine is told, by every step
+  conflict "this machine was started by BIOS, not UEFI (there is no /sys/firmware/efi): $1. A BIOS disk has one boot sector, it belongs to the running system, and these steps do not write to it. A machine with UEFI firmware that was started in its legacy (CSM) mode is told the same, until the running system is started by UEFI. Nothing was changed"
+}
+sf_os_secureboot() { # on, off or unknown: the variable of the firmware itself, then mokutil where that cannot be read
+  local f="${SF_FIRMWARE:-/sys/firmware/efi}/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c" v=''
+  if [[ -r $f ]]; then v=$(od -An -tu1 -j4 -N1 "$f" 2>/dev/null | tr -d ' \n' || :); fi      # four bytes of attributes, then the value
+  case $v in 1) echo on; return 0 ;; 0) echo off; return 0 ;; esac
+  if command -v mokutil >/dev/null; then
+    case $(mokutil --sb-state 2>/dev/null | head -n 1 || :) in *enabled*) echo on; return 0 ;; *disabled*) echo off; return 0 ;; esac
+  fi
+  echo unknown
+}
+sf_os_sig() { # a loader (a PE file) -> where its signatures are and how many bytes (its certificate table), or 1 where it has none
+  local f=$1 pe='' at='' off='' size=''
+  [[ $(od -An -tx1 -N2 "$f" 2>/dev/null | tr -d ' \n') == 4d5a ]] || return 1
+  pe=$(od -An -tu4 -j60 -N4 "$f" 2>/dev/null | tr -d ' \n'); [[ $pe =~ ^[0-9]{1,8}$ ]] || return 1
+  [[ $(od -An -tx1 -j"$pe" -N4 "$f" 2>/dev/null | tr -d ' \n') == 50450000 ]] || return 1
+  case $(od -An -tx1 -j$((pe + 24)) -N2 "$f" 2>/dev/null | tr -d ' \n') in      # the optional header: 64-bit or 32-bit, and where its fifth directory is
+    0b02) at=$((pe + 24 + 112 + 32)) ;; 0b01) at=$((pe + 24 + 96 + 32)) ;; *) return 1 ;;
+  esac
+  off=$(od -An -tu4 -j"$at" -N4 "$f" 2>/dev/null | tr -d ' \n'); size=$(od -An -tu4 -j$((at + 4)) -N4 "$f" 2>/dev/null | tr -d ' \n')
+  [[ $off =~ ^[0-9]+$ && $size =~ ^[0-9]+$ ]] && ((off > 0 && size > 0)) || return 1
+  echo "$off $size"
+}
+sf_os_signed() { sf_os_sig "$1" >/dev/null; }      # it carries a signature. Whose, and whether it counts, the firmware decides
+# The two keys Microsoft signs the shims of distributions with. A certificate holds its name as plain text, in the signature
+# of a loader and in the list of the firmware (db) alike, so which of them each one names can be read without a tool.
+sf_os_cas() { grep -a -o -F -e "Microsoft Corporation UEFI CA 2011" -e "Microsoft UEFI CA 2023" | sort -u || :; }      # reads what it is given
+sf_os_trusted() { # LOADER -> yes NAME, no NAMES, or unknown: is a key that signed it in the list of this firmware
+  local db="${SF_FIRMWARE:-/sys/firmware/efi}/efivars/db-d719b2cb-3d3a-4596-a3bc-dad00e67656f" at='' signed='' have='' n=''
+  at=$(sf_os_sig "$1") || { echo unknown; return 0; }
+  signed=$(tail -c "+$((${at% *} + 1))" "$1" | head -c "${at#* }" | sf_os_cas)
+  [[ -n $signed && -r $db ]] || { echo unknown; return 0; }
+  have=$(sf_os_cas <"$db")
+  while read -r n; do if grep -q -x -F "$n" <<<"$have"; then echo "yes $n"; return 0; fi; done <<<"$signed"
+  echo "no $(paste -sd, - <<<"$signed" | sed 's/,/ or /g')"
+}
+
+# Secure Boot, for a loader that is here: one line, "no WHY" where it is known not to start, and then it is not installed, or
+# "yes WHAT IS KNOWN". A firmware that refuses a loader may go on to the boot order, or may stop at a message until a key is
+# pressed at the machine, which nobody on SSH can do: so what is known not to start is refused here, before it is tried
+sf_os_boots() { local sb=$1 file=$2 loader=$3 trust='' after='If it is refused, the next restart is this system again on most firmware; some stop at a message until a key is pressed at the machine'
+  [[ $sb == on ]] || return 0
+  if ! sf_os_signed "$file"; then
+    echo "no Secure Boot is on and the loader of this image ($loader) carries no signature: this firmware would refuse it. Not installed. Use an image of a distribution that ships a signed shim, or turn Secure Boot off in the firmware setup"; return 0
+  fi
+  trust=$(sf_os_trusted "$file")
+  case $trust in
+    no\ *) echo "no Secure Boot is on, the loader of this image ($loader) is signed with ${trust#no }, and the list of keys this firmware trusts (db) names none of them: it would be refused. Not installed. The firmware setup can turn that key on (often called the third-party CA), or Secure Boot off" ;;
+    yes\ *) echo "yes Secure Boot is on: $loader is signed with ${trust#yes }, and this firmware lists that key. Not checked: the revocation list of the firmware (dbx) and of the shim (SBAT), which can still refuse an old shim, and the kernel the shim then starts. $after" ;;
+    *) echo "yes Secure Boot is on: $loader carries a signature, and whether this firmware trusts it could not be read (its key is not one of the two Microsoft signs shims with, or the list of the firmware cannot be read). $after" ;;
+  esac
+}
+
 sf_os_undo() { # the partitions and the boot entry this run made, and nothing else
   local disk=$1 name=$2 n e; shift 2
   e=$(sf_os_entry "$name"); [[ -z $e ]] || efibootmgr -q -b "$e" -B 2>/dev/null || :
@@ -73,10 +140,16 @@ sf_os_undo() { # the partitions and the boot entry this run made, and nothing el
   info "removed what this run had made on $disk"
 }
 
+sf_os_ip4() { local a b c d; IFS=. read -r a b c d <<<"$1"; echo $(( (10#$a << 24) | (10#$b << 16) | (10#$c << 8) | 10#$d )); }      # 10.0.0.5 -> a number
+sf_os_in_net() { local bits=${2#*/}; ((bits <= 32)) || return 1; ((bits == 0)) || (( ($(sf_os_ip4 "$1") >> (32 - bits)) == ($(sf_os_ip4 "${2%/*}") >> (32 - bits)) )); }      # 10.0.0.1 10.0.0.5/24
+
 sf_os_network() { # network-config for first boot, from what this system has now: the interface the default route leaves by.
-  # $1 = fixed: the address it has now is written as a fixed one even where DHCP gave it
-  local dev='' mac='' addr='' gw='' dns='' line='' how=${1:-same}
-  dev=$(ip -4 route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}')
+  # An address DHCP gave is asked for again, and an address set by hand is written as it is, with its gateway, its name
+  # servers and its search domains: every one the interface has, and the IPv6 ones that were set by hand beside them.
+  # $1 = fixed: the IPv4 addresses it has now are written as fixed ones even where DHCP gave them
+  local dev='' mac='' a='' gw='' gw6='' dns='' search='' line='' how=${1:-same} route='' fixed='' fixed6='' dyn=0 onlink=1 routes='' out='' V4='([0-9]{1,3}\.){3}[0-9]{1,3}'
+  route=$(ip -4 route show default 2>/dev/null | head -n 1 || :)
+  dev=$(awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}' <<<"$route")
   [[ -n $dev ]] || return 1
   # a bridge or a bond holds the address for a port of its: the new system has it on that port
   if [[ -d /sys/class/net/$dev/bridge || -d /sys/class/net/$dev/bonding ]]; then
@@ -84,16 +157,41 @@ sf_os_network() { # network-config for first boot, from what this system has now
   elif [[ -e /sys/class/net/$dev/device ]]; then mac=$(cat "/sys/class/net/$dev/address")
   fi
   [[ $mac =~ ^[0-9a-f:]{17}$ ]] || return 1
-  line=$(ip -o -4 addr show dev "$dev" scope global 2>/dev/null | head -n 1)
-  addr=$(awk '{for (i = 1; i < NF; i++) if ($i == "inet") {print $(i + 1); exit}}' <<<"$line")
-  [[ $addr =~ ^[0-9.]+/[0-9]+$ ]] || return 1
-  if [[ " $line " == *" dynamic "* && $how != fixed ]]; then
-    printf '{"version": 2, "ethernets": {"lan": {"match": {"macaddress": "%s"}, "dhcp4": true}}}\n' "$mac"; return 0
+  while read -r line; do
+    a=$(awk '{for (i = 1; i < NF; i++) if ($i == "inet") {print $(i + 1); exit}}' <<<"$line")
+    [[ $a =~ ^$V4/[0-9]{1,2}$ ]] || continue
+    if [[ " $line " == *" dynamic "* && $how != fixed ]]; then dyn=1; else fixed+="${fixed:+ }$a"; fi
+  done < <(ip -o -4 addr show dev "$dev" scope global 2>/dev/null || :)
+  [[ -n $fixed ]] || ((dyn)) || return 1
+  out=$(printf '{"version": 2, "ethernets": {"lan": {"match": {"macaddress": "%s"}' "$mac")
+  if [[ -z $fixed ]]; then printf '%s, "dhcp4": true}}}\n' "$out"; return 0; fi
+  if ((dyn)); then   # one address from DHCP and one set by hand beside it: the route and the name servers are the ones DHCP gives
+    printf '%s, "dhcp4": true, "addresses": ["%s"]}}}\n' "$out" "${fixed// /\", \"}"; return 0
   fi
-  gw=$(ip -4 route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "via") {print $(i + 1); exit}}')
-  [[ $gw =~ ^[0-9.]+$ ]] || return 1
-  dns=$(for line in /run/systemd/resolve/resolv.conf /etc/resolv.conf; do [[ -r $line ]] && awk '$1 == "nameserver" && $2 ~ /^[0-9.]+$/ && $2 !~ /^127\./ {printf "%s\"%s\"", (n++ ? ", " : ""), $2}' "$line" && break; done)
-  printf '{"version": 2, "ethernets": {"lan": {"match": {"macaddress": "%s"}, "addresses": ["%s"], "routes": [{"to": "0.0.0.0/0", "via": "%s"}], "nameservers": {"addresses": [%s]}}}}\n' "$mac" "$addr" "$gw" "$dns"
+  gw=$(awk '{for (i = 1; i < NF; i++) if ($i == "via") {print $(i + 1); exit}}' <<<"$route")
+  [[ $gw =~ ^$V4$ ]] || return 1
+  # a gateway outside every network the interface is in (a /32 at a hoster) is reached on the link itself
+  for a in $fixed; do if sf_os_in_net "$gw" "$a"; then onlink=0; fi; done
+  routes=$(printf '{"to": "0.0.0.0/0", "via": "%s"' "$gw"); if ((onlink)); then routes+=', "on-link": true'; fi; routes+='}'
+  while read -r line; do
+    [[ " $line " == *" dynamic "* || " $line " == *" temporary "* ]] && continue
+    a=$(awk '{for (i = 1; i < NF; i++) if ($i == "inet6") {print $(i + 1); exit}}' <<<"$line")
+    if [[ $a =~ ^[0-9a-f:]{2,39}/[0-9]{1,3}$ ]]; then fixed6+=" $a"; fi
+  done < <(ip -o -6 addr show dev "$dev" scope global 2>/dev/null || :)
+  if [[ -n $fixed6 ]]; then
+    gw6=$(ip -6 route show default dev "$dev" 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "via") {print $(i + 1); exit}}' || :)
+    if [[ $gw6 =~ ^[0-9a-f:]{2,39}$ ]]; then routes+=$(printf ', {"to": "::/0", "via": "%s"}' "$gw6"); fi
+  fi
+  fixed+=$fixed6
+  for line in /run/systemd/resolve/resolv.conf /etc/resolv.conf; do
+    line=${SF_RESOLV:-$line}; [[ -r $line ]] || continue
+    dns=$(awk '$1 == "nameserver" && ($2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ || $2 ~ /^[0-9a-f:]+$/) && $2 !~ /^127\./ && $2 != "::1" {printf "%s\"%s\"", (n++ ? ", " : ""), $2}' "$line")
+    search=$(awk '$1 == "search" || $1 == "domain" {for (i = 2; i <= NF; i++) if ($i ~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ && !seen[$i]++) printf "%s\"%s\"", (n++ ? ", " : ""), $i}' "$line")
+    break
+  done
+  printf '%s, "addresses": ["%s"], "routes": [%s]' "$out" "${fixed// /\", \"}" "$routes"
+  if [[ -n $dns || -n $search ]]; then printf ', "nameservers": {"addresses": [%s]%s}' "$dns" "${search:+, \"search\": [$search]}"; fi
+  printf '}}}\n'
 }
 
 sf_os_mounts() { # the data filesystems of this system as cloud-init mounts: what fstab mounts by a name that holds on any system
@@ -104,7 +202,8 @@ sf_os_mounts() { # the data filesystems of this system as cloud-init mounts: wha
 t_os_install() { local name=$1 image=$2 url=$3 sum=$4 disk=$5 size=$6 user=$7 key=$8 sudo=${9:-nopasswd} hostkeys=${10:-same} network=${11:-same} carry=${12:-mount} scratch=${13:-/var/tmp}
   local c='' sums='' base='' raw='' have='' dump='' root='' big=0 p='' n='' s='' z='' t='' u='' esp='' num='' made=() m='' free=0 need=0 loader='' order='' new='' seed='' fs='' var='' line=''
   local BIOS=21686148-6449-6E6F-744E-656564454649 ESP=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
-  [[ -d /sys/firmware/efi ]] || { conflict "this machine starts by BIOS, not UEFI: a second system beside the first needs the boot entries of UEFI"; return 0; }
+  local sb='' trust=''
+  sf_os_uefi || { sf_os_bios "a second system beside the first needs the boot entries of UEFI, and is not installed here"; return 0; }
   for c in qemu-img sgdisk sfdisk efibootmgr curl blkid wipefs sha256sum sha512sum; do
     command -v "$c" >/dev/null || { later "$c is not installed (packages qemu-utils or qemu-img, gdisk, efibootmgr, curl)"; return 0; }
   done
@@ -146,6 +245,12 @@ t_os_install() { local name=$1 image=$2 url=$3 sum=$4 disk=$5 size=$6 user=$7 ke
   info "on $disk, in $((free / 1024)) GiB of $where: its own EFI partition, and a root of ${size:-all that is left}${size:+ GiB}"
   info "login $user with the SSH key; SSH host keys: $hostkeys; network: $network; data filesystems of this system: $carry"
   info "the partitions and the bootloader of the running system are not written to, and the new boot entry is not put in the boot order"
+  sb=$(sf_os_secureboot)
+  case $sb in
+    on) info "Secure Boot is on. The boot entry will point at the loader of the image itself: it must carry a signature, and one this firmware does not trust is not installed. That is looked at once the image is here" ;;
+    off) info "Secure Boot is off: the firmware starts the loader of the image whoever signed it" ;;
+    *) info "whether Secure Boot is on could not be read here: if it is, the new system starts only where the firmware trusts the key its loader is signed with" ;;
+  esac
   act "install $name on $disk" || return 0
 
   install -d -m 0700 "$scratch/.storageforge-images"; base="$scratch/.storageforge-images/$(basename "$url")"; raw="$base.raw"
@@ -245,6 +350,8 @@ t_os_install() { local name=$1 image=$2 url=$3 sum=$4 disk=$5 size=$6 user=$7 ke
       printf '%s\n' "$line" >"$seed/network-config"; info "network: $(sed 's/.*"lan": //; s/}}$//' <<<"$line")"
       # a DHCP server knows a machine by what its client says it is, and two systems say it differently
       [[ $line == *dhcp4* ]] && info "its address comes from DHCP, and the DHCP server may give the new system another one than this system has: 'fixed' keeps this one"
+      [[ $line == *dhcp4* || $line == *nameservers* ]] || info "no name server could be read here (this system asks a resolver of its own): the new system has none until one is set in it"
+      [[ $line == *on-link* ]] && info "the gateway is outside the network of the address and is reached on the link itself: not every image writes such a route the same way, so look at the address after the first start"
     else info "the network here is not one address on one card: the new system asks DHCP on its first card"; fi
   fi
   if [[ $carry == mount ]]; then line=$(sf_os_mounts | grep -o '"/[^"]*"' | tr -d '"' | tr '\n' ' ' || :); info "mounted in the new system as here: ${line:-nothing (fstab mounts no data filesystem by UUID or label)}"; fi
@@ -258,8 +365,11 @@ t_os_install() { local name=$1 image=$2 url=$3 sum=$4 disk=$5 size=$6 user=$7 ke
     case ${c^^} in */EFI/BOOT/SHIMX64.EFI|*/EFI/BOOT/GRUBX64.EFI) continue ;; esac
     loader=${c#"$m"}; break
   done
+  if [[ -n $loader ]]; then trust=$(sf_os_boots "$sb" "$m$loader" "$loader"); fi
   umount "$m" || :; rmdir "$m" || :
   [[ -n $loader ]] || { conflict "the EFI partition of the image has no loader this knows"; sf_os_undo "$disk" "$name" "${made[@]}"; return 0; }
+  if [[ $trust == no\ * ]]; then conflict "${trust#no }"; sf_os_undo "$disk" "$name" "${made[@]}"; return 0; fi
+  [[ -z $trust ]] || info "${trust#yes }"
   order=$(efibootmgr | sed -n 's/^BootOrder: //p' || :)
   efibootmgr -q -c -d "$disk" -p "$esp_num" -L "@LABEL@$name" -l "${loader//\//\\}" || { conflict "the firmware did not take a new boot entry"; sf_os_undo "$disk" "$name" "${made[@]}"; return 0; }
   new=$(sf_os_entry "$name")
@@ -270,8 +380,10 @@ t_os_install() { local name=$1 image=$2 url=$3 sum=$4 disk=$5 size=$6 user=$7 ke
 }
 
 t_os_boot() { local name=$1 when=${2:-once} restart=${3:-no} e='' order='' next='' rest=''
+  sf_os_uefi || { sf_os_bios "it has no boot entries to choose between"; return 0; }
   command -v efibootmgr >/dev/null || { conflict "efibootmgr is not installed"; return 0; }
   e=$(sf_os_entry "$name"); [[ -n $e ]] || { later "there is no boot entry @LABEL@$name: os-install makes it"; return 0; }
+  if [[ $when != never && $(sf_os_secureboot) == on ]]; then info "Secure Boot is on: os-install said whether the loader of $name is signed with a key this firmware lists. If the firmware refuses it, the next restart is this system again on most firmware; some stop at a message until a key is pressed at the machine"; fi
   order=$(efibootmgr | sed -n 's/^BootOrder: //p' || :); next=$(efibootmgr | sed -n 's/^BootNext: //p' || :)
   rest=$(tr ',' '\n' <<<"$order" | grep -vix "$e" | paste -sd, - || :)
   case $when in
@@ -329,7 +441,9 @@ def _check_install(conn, c, h, p, say):
     else:
         say('warn', 'the new system makes host keys of its own: SSH clients will warn that the host changed, each time the machine is restarted into the other system')
     say('note', 'only unpartitioned space or a blank disk is used, nothing is shrunk, and the running system\'s bootloader is not written to; the script looks when it runs')
-    say('note', 'needs UEFI, and on the host: qemu-img, sgdisk, efibootmgr, curl')
+    say('note', 'needs UEFI, and on the host: qemu-img, sgdisk, efibootmgr, curl. A machine started by BIOS is refused, and nothing on it is changed')
+    say('note', 'Secure Boot: the script reads whether it is on. If it is, an image whose loader carries no signature, or one signed with a key '
+                'the firmware does not list, is not installed. What it cannot read (a revoked shim) is found by starting the system once')
 
 
 def _check_boot(conn, c, h, p, say):
