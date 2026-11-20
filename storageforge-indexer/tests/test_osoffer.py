@@ -145,8 +145,12 @@ class ThePlans(unittest.TestCase):
         self.assertEqual(after['tasks'][0]['params'], {'name': 'nas-fedora'})
         self.assertEqual(after['tasks'][1]['params'], {'user': 'gabe', 'compositor': 'niri', 'terminal': 'ghostty', 'version': 'v2.1.2', 'installer_sha': 'a' * 64})
         self.assertEqual(after['tasks'][2]['params'], {'profile': 'fleet', 'user': 'gabe', 'compositor': 'niri'})
-        self.assertIn('after the machine has been started into it', after['notes'])
+        self.assertIn('after the machine has been started into nas-fedora', after['notes'])
+        self.assertEqual({t['host'] for t in after['tasks']}, {'nas-fedora'}, 'a script does the steps of the machine it is on, by its host name: the new system has the name it was given')
         self.assertNotIn('dux-install', [t['type'] for t in self.plans()['nas: install nas-fedora']['tasks']], 'not in the plan that runs in the old system')
+        self.assertRegex(changes.script(self.conn, after), r'\nrun 1 nas-fedora os-running ', 'a script is written for a host no scan has seen yet')
+        checked = changes.check(self.conn, after)
+        self.assertEqual(len(checked['tasks']), 3, 'and the plan can be checked before the new system has been scanned')
         osoffer.stage(self.conn, form(name='nas-alma', image='alma10', desktop={'profile': 'fleet', 'profile_compositor': 'sway'}), 'gabe')
         self.assertEqual([(t['type'], t['params'].get('compositor')) for t in self.plans()['nas: desktop on nas-alma']['tasks']], [('os-running', None), ('desktop-profile', 'sway')])
 

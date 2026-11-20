@@ -7,8 +7,10 @@
 Everything here is read from the index: no host is asked anything. So the room on a disk is what the last scan saw, and the
 step looks again when it runs, on the host, and refuses a disk that is not as the plan thought.
 
-A desktop for the new system is a plan of its own. Its steps are for the new system, and a plan's script runs in whichever
-system is up when a person runs it: so that plan starts with `os-running`, which stops it anywhere else.
+A desktop for the new system is a plan of its own, for a host of its own. A plan's script does the steps of the machine it
+runs on, which it knows by its host name, and the new system's host name is the name it was given: so the steps of that plan
+name the new system as their host, and it is run once the machine has been started into it. It starts with `os-running`,
+which stops it in any other system: that is what holds where the new system was given the name the old one has.
 """
 from __future__ import annotations
 
@@ -142,14 +144,14 @@ def _plans(body: dict) -> list[dict]:
         raise ValueError('desktop is an object')
     after = []
     if want.get('dux'):
-        after.append({'type': 'dux-install', 'host': host, 'params': {'user': want.get('user') or body.get('user'), 'compositor': want.get('compositor'), 'terminal': want.get('terminal') or 'ghostty',
+        after.append({'type': 'dux-install', 'host': name, 'params': {'user': want.get('user') or body.get('user'), 'compositor': want.get('compositor'), 'terminal': want.get('terminal') or 'ghostty',
                                                                       'version': want.get('version') or '', 'installer_sha': want.get('installer_sha') or ''}})
     if want.get('profile'):
-        after.append({'type': 'desktop-profile', 'host': host, 'params': {'profile': want['profile'], 'user': want.get('user') or body.get('user'),
+        after.append({'type': 'desktop-profile', 'host': name, 'params': {'profile': want['profile'], 'user': want.get('user') or body.get('user'),
                                                                           'compositor': want.get('profile_compositor') or want.get('compositor')}})
     if after:
-        note = f'For {name}: run this after the machine has been started into it.'
-        guard = {'type': 'os-running', 'host': host, 'params': {'name': name}, 'note': note}
+        note = f'For {name}, the second system on {host}: run it after the machine has been started into {name} and scanned. Its steps name {name} as their host, which is what the new system calls itself.'
+        guard = {'type': 'os-running', 'host': name, 'params': {'name': name}, 'note': note[:300]}
         plans.append({'name': f'{host}: desktop on {name}', 'notes': note, 'tasks': [guard] + after})
     return plans
 

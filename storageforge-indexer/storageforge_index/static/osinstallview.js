@@ -163,7 +163,7 @@ function os2Render() {
     os2Field('Data filesystems of this system', choice('os2-carry', 'carry')),
     os2Field('After it is installed', os2Select('os2-start', [['no', 'Leave it installed: start it from here later'], ['once', 'Start it once, at the next restart'], ['restart', 'Start it once, and restart the machine a minute after']])),
     sfNode('h4', {}, 'A desktop on it'),
-    sfNode('p', { class: 'muted small' }, 'These become a second plan, to run after the machine has been started into the new system. Its first step stops it in any other system.'),
+    sfNode('p', { class: 'muted small' }, 'These become a second plan, for the new system under its own host name. Run it after the machine has been started into the new system and scanned: its first step stops it in any other.'),
     sfNode('label', { class: 'field' }, dux, sfNode('span', {}, 'Install Dux')), duxPart,
     os2Field('Desktop profile', os2Select('os2-profile', [])),
     os2Field('Written for', os2Select('os2-profcomp', d.desktop.profile_compositors.map((c) => [c, c])), 'The compositor the profile is written out for. Dux installs niri, Hyprland or mango; Sway is set up by hand.'),
