@@ -448,6 +448,8 @@ SSH stays the base on every agent host, for control. The agent sits beside it an
 
 **The file index from both.** SSH scans index files as they do today, and the agent's files plugin can too. With both on, each checks the other: a file the agent says changed that the next scan does not see, or a scan finding changes the agent never reported, is a disagreement in the notification center. A monitoring-only host gets its index from the agent alone.
 
+**State of 11.2 on 2026-11-20 (built, not lab-tested; `360b3b3` to `271e0b4`):** the tunnel, both keys pinned; the receiver as its own process and role, identity from the key, counters, quotas, provenance labels, notifications on silence and gaps; an agent's network limited to the receiver; privilege only with an admin. Tier 24's tunnel and receiver checks are written and have not run. **Open:** *its actions affect only itself* and *anything wider needs a second witness* hold only because no agent report triggers any action yet, and must be built before one does; *either one fails alone* needs a plugin to say sshd is down (11.4); the tunnel under LXC, Incus and `pct`, and on hosts without systemd or nft; a page for agent records; the lab build publishing the agent image and starting the receiver.
+
 ### 11.3 Wipe and stop
 
 Anything in a container that the manifest does not account for ends its access.
