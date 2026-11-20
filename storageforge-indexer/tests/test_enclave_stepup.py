@@ -31,6 +31,7 @@ class Base(Harness):
     def start(self):
         self.path = self.tmp / 'enclave.sock'
         self.address = f'unix:{self.path}'
+        enclave.forget_pin(self.address)
         self.proc = subprocess.Popen([str(build()), '--unix', str(self.path), *self.ARGS], stderr=subprocess.PIPE)
 
     def setUp(self):

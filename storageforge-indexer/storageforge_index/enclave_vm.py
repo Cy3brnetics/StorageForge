@@ -7,6 +7,8 @@ What starting means here, in order, and each step that fails is the end of it:
     1. the image is the image: every file matches SHA256SUMS beside it, and SHA256SUMS matches the digest the caller pinned
     2. the VM boots with one device, the vsock socket: no network card, no disk, no shared folder, nothing typed into its console
     3. it answers, and says it is the VM's only program (pid1) with its memory locked. A test double of it says neither
+    4. the key it shows for its channel is pinned (enclave.py): the VM was started a moment ago over a socket this made for it,
+       so what answers first is the enclave. A restart pins the new key the same way
 
 After that a thread watches the VM. If it stops, every operation that needs a key fails closed, because the address still names
 the enclave and nothing answers there (vault.py never falls back); `on_event('down', …)` is called, and the VM is started again. It
@@ -190,6 +192,9 @@ class Supervisor:
         until, last = time.time() + BOOT_SECONDS, None
         self.cid, was = cid, self.cid
         client = enclave.Enclave(self.address, timeout=3)
+        # A VM this starts makes a new key for its channel. The first answer from it, over the socket this just made for it, is the
+        # key that is pinned: every later client, in this process or beside it, refuses anything else at this address
+        enclave.forget_pin(self.address)
         self.cid = was
         while time.time() < until:
             if proc.poll() is not None:
@@ -292,6 +297,11 @@ class Supervisor:
         with self._lock:
             if self.proc is not None and self.proc.poll() is None:
                 self._kill(self.proc)
+        if self.address:
+            try:
+                enclave.forget_pin(self.address)
+            except OSError:
+                pass
         if self._watcher is not None:
             self._watcher.join(5)
         if self._made:

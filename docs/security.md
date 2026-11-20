@@ -29,8 +29,8 @@ Backups never contain the vault secret, on purpose: a backup together with its s
 A second layer on the vault's keys: a micro VM whose only program holds the KEK, and whose only device is a vsock socket. It has no network card, no disk and no shell. The web app hands it the vault's own ciphertexts with each request, so nothing stored changes format and the vault opens as before without it.
 
 ```text
-web app ──vsock──► enclave: unlock · lock · status · sign with key K · make or take in a key · MAC for the audit chain
-                            seal and release a secret · rotate the vault secret
+web app ──vsock, encrypted──► enclave: unlock · lock · status · sign with key K · make or take in a key · MAC for the audit chain
+                            seal and release a secret · rotate the vault secret · step-up · the audit chain's head
 ```
 
 **Running it.** With `STORAGEFORGE_ENCLAVE=vm` the server starts the micro VM itself from the image in `STORAGEFORGE_ENCLAVE_IMAGE_DIR`, and refuses to start if it cannot: the image's files must match its `SHA256SUMS` and, where `STORAGEFORGE_ENCLAVE_IMAGE` pins a digest, that digest; what answers must say it is the VM's only program with its memory locked. The VM gets one device, the vsock socket: no network card, no disk, no shared folder. Two programs can run it from the same image. Firecracker is the one in the shipped image and is used where it is installed; it needs `/dev/kvm` and nothing else, runs under its own seccomp filter, and cannot be reconfigured once started. QEMU's `microvm` is for a developer's machine and the lab; it needs `/dev/vhost-vsock` too and runs under QEMU's seccomp sandbox. Either gets none of the server's environment. Firecracker's jailer is not used: it needs root, and the server's container has neither root nor any capability, so the container itself (read-only root, no capabilities, no new privileges) is what surrounds Firecracker.
@@ -96,6 +96,13 @@ KEK = HMAC-SHA256(key = host share, "storageforge:second-lock:v1" ‖ 0 ‖ Argo
 - **The recovery share** is printed once when the lock is turned on. With it and the database, `vault second-lock recover` (the share on stdin) writes the host share again on a machine that lost it, or on a new one. The database holds the host share sealed under a key made from the recovery share, and nothing else of it. Kept beside the vault secret, the recovery share undoes what the lock is for: keep them apart. Without the host share and without the recovery share the vault cannot be opened by anyone.
 - **TPM:** sealing the share to the host's TPM is not built. It needs `tpm2-tools` and a TPM to test against, and neither was there. The share is a file.
 - Backups of the database are encrypted from the vault secret alone, as before, so a backup can be read without the share; the keys inside it cannot be opened without it.
+
+**The app speaks to the enclave over a channel of its own.** vsock is local to the host, but something else on the host should neither read it nor stand in for the enclave. Every connection begins with a Noise handshake (`Noise_NX_25519_AESGCM_SHA256`) and everything after it is encrypted, both ways, under keys of that one connection.
+
+- The enclave makes a static key as it starts and proves in the handshake that it holds it. **The key is pinned at first start:** the server, which has just started the VM over a socket it made for it, pins the key the VM shows first (`enclave.pins` beside the enclave's socket, readable by the server's account only), and pins the new one when it restarts the VM. Every later client, in the server or beside it, refuses to speak to anything that shows another key at that address. So the vault secret is never sent to something that only sits where the enclave should be.
+- For an enclave that something else runs, the key is pinned the first time it is spoken to. It makes a new key each time it starts: `storageforge-index vault enclave-pin` shows the pinned key, `--renew` pins the one it shows now, and `STORAGEFORGE_ENCLAVE_KEY` names the key to insist on instead.
+- A frame changed on the way does not decrypt: the connection ends and the enclave counts it as a malformed request. What does not begin with the handshake gets no answer.
+- What it is not: the handshake proves the enclave to the client, not the client to the enclave. Whoever can open the socket can still ask, under the same limits and with the same step-up. A client's first contact with an enclave nobody pinned for it trusts what answers.
 
 The image is `storageforge-indexer/enclave/image/build.sh`: a kernel without modules, an IP stack or block devices and with lockdown forced on, and an initramfs of one static file. The compiler image is pinned by digest and the kernel by checksum, and the build is reproducible: build it again and compare `SHA256SUMS`.
 

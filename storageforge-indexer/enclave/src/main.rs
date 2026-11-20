@@ -10,6 +10,13 @@
 //! counts as a bad request; BAD_LIMIT of them lock the enclave down, which wipes the KEK and refuses everything but `status` and
 //! `unlock` until someone unlocks again. No operation returns a private key or the KEK.
 //!
+//! The channel: every connection begins with a Noise handshake (Noise_NX_25519_AESGCM_SHA256) against the enclave's static key,
+//! and everything after it is encrypted under the keys the handshake made. The static key is made as the program starts and is
+//! gone when it stops. Whoever started the enclave pins the key it shows at first contact, and every later client refuses an
+//! enclave that shows another: so what crosses the socket cannot be read by something else on the host, and the vault secret is
+//! never sent to something that only sits where the enclave should be. The handshake proves the enclave to the client, not the
+//! client to the enclave: anyone who can open the socket can still ask, under the same limits.
+//!
 //! What a plaintext key does here: it is decrypted, used for one signature, and zeroed. Its envelope is the vault's own
 //! (vault.py): KEK wraps a DEK with AES-256-GCM under `storageforge:dek:<uuid>`, the DEK encrypts the OpenSSH private key under
 //! `storageforge:key:<uuid>`, so a ciphertext moved to another row does not authenticate here either.
@@ -31,7 +38,9 @@ use ssh_key::{Algorithm, EcdsaCurve, LineEnding};
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
-const PROTOCOL: u32 = 2;
+const PROTOCOL: u32 = 3;
+const NOISE_NAME: &[u8; 28] = b"Noise_NX_25519_AESGCM_SHA256";
+const NOISE_PROLOGUE: &[u8] = b"storageforge-enclave-v3";
 /// The vsock port the enclave listens on inside its VM.
 const VSOCK_PORT: u32 = 7000;
 const MAX_FRAME: usize = 1 << 20;
@@ -77,6 +86,110 @@ const MAX_RELEASE_KINDS: usize = 64;
 const MAX_POLICY_NAMES: usize = 32;
 /// Entries of the audit log taken in at once when the enclave catches up with what others wrote.
 const MAX_ADVANCE: usize = 512;
+
+fn hmac256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC takes a key of any length");
+    for part in parts {
+        mac.update(part);
+    }
+    mac.finalize().into_bytes().into()
+}
+
+/// X25519: a scalar times a point, and the point of a scalar. A result of all zeros is a point of small order: refused.
+fn x25519(scalar: &[u8; 32], point: &[u8; 32]) -> Option<Zeroizing<[u8; 32]>> {
+    let out = Zeroizing::new(curve25519_dalek::montgomery::MontgomeryPoint(*point).mul_clamped(*scalar).to_bytes());
+    if out.ct_eq(&[0u8; 32]).unwrap_u8() == 1 {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn x25519_public(scalar: &[u8; 32]) -> [u8; 32] {
+    curve25519_dalek::montgomery::MontgomeryPoint::mul_base_clamped(*scalar).to_bytes()
+}
+
+/// The Noise handshake's state, as the specification names it: the hash of everything said so far, the chaining key, and the
+/// key the next part of the handshake is encrypted under.
+struct Noise {
+    h: [u8; 32],
+    ck: Zeroizing<[u8; 32]>,
+    k: Option<Zeroizing<[u8; 32]>>,
+    n: u64,
+}
+
+impl Noise {
+    fn new() -> Self {
+        let mut h = [0u8; 32];
+        h[..NOISE_NAME.len()].copy_from_slice(NOISE_NAME);
+        let mut noise = Noise { h, ck: Zeroizing::new(h), k: None, n: 0 };
+        noise.mix_hash(NOISE_PROLOGUE);
+        noise
+    }
+
+    fn mix_hash(&mut self, data: &[u8]) {
+        use sha2::Digest;
+        self.h = Sha256::new().chain_update(self.h).chain_update(data).finalize().into();
+    }
+
+    /// HKDF as Noise uses it, for two outputs.
+    fn hkdf(ck: &[u8; 32], ikm: &[u8]) -> (Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>) {
+        let temp = Zeroizing::new(hmac256(ck, &[ikm]));
+        let one = Zeroizing::new(hmac256(temp.as_ref(), &[&[1u8]]));
+        let two = Zeroizing::new(hmac256(temp.as_ref(), &[one.as_ref(), &[2u8]]));
+        (one, two)
+    }
+
+    fn mix_key(&mut self, ikm: &[u8]) {
+        let (ck, k) = Self::hkdf(&self.ck, ikm);
+        self.ck = ck;
+        self.k = Some(k);
+        self.n = 0;
+    }
+
+    fn encrypt_and_hash(&mut self, plain: &[u8]) -> Option<Vec<u8>> {
+        let out = match &self.k {
+            Some(k) => {
+                let out = Channel::seal_with(k, self.n, &self.h, plain)?;
+                self.n += 1;
+                out
+            }
+            None => plain.to_vec(),
+        };
+        self.mix_hash(&out);
+        Some(out)
+    }
+}
+
+/// One direction of a connection after the handshake: a key and a count of the messages it has encrypted.
+struct Channel {
+    key: Zeroizing<[u8; 32]>,
+    n: u64,
+}
+
+impl Channel {
+    fn nonce(n: u64) -> [u8; 12] {
+        let mut nonce = [0u8; 12];
+        nonce[4..].copy_from_slice(&n.to_be_bytes());
+        nonce
+    }
+
+    fn seal_with(key: &[u8; 32], n: u64, aad: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
+        Aes256Gcm::new_from_slice(key).ok()?.encrypt(Nonce::from_slice(&Self::nonce(n)), Payload { msg: plain, aad }).ok()
+    }
+
+    fn seal(&mut self, plain: &[u8]) -> Option<Vec<u8>> {
+        let out = Self::seal_with(&self.key, self.n, &[], plain)?;
+        self.n += 1;
+        Some(out)
+    }
+
+    fn open(&mut self, sealed: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+        let plain = Aes256Gcm::new_from_slice(self.key.as_ref()).ok()?.decrypt(Nonce::from_slice(&Self::nonce(self.n)), Payload { msg: sealed, aad: &[] }).ok()?;
+        self.n += 1;
+        Some(Zeroizing::new(plain))
+    }
+}
 
 /// A token bucket: `per_minute` a minute, with one minute saved up.
 struct Bucket {
@@ -145,6 +258,10 @@ struct State {
     /// else, so that the KEK can be derived again under a new salt on a schedule without anyone handing the secret over again.
     held: Option<Held>,
     next_held: Option<Held>,
+    /// The enclave's own key for the channel, made as it starts: its public half is what a client pins.
+    static_secret: Zeroizing<[u8; 32]>,
+    static_public: [u8; 32],
+    handshakes: u64,
 }
 
 struct Held {
@@ -617,7 +734,14 @@ fn seal(key: &[u8], plain: &[u8], aad: &[u8]) -> Result<([u8; 12], Vec<u8>), Ref
 
 impl State {
     fn new(memory_locked: bool) -> Self {
+        use rand_core::RngCore;
+        let mut static_secret = Zeroizing::new([0u8; 32]);
+        rand_core::OsRng.fill_bytes(static_secret.as_mut());
+        let static_public = x25519_public(&static_secret);
         State {
+            static_secret,
+            static_public,
+            handshakes: 0,
             memory_locked,
             pid1: std::process::id() == 1,
             kek: None,
@@ -678,6 +802,7 @@ impl State {
                "chain": self.chain.status(),
                "auth_failed": self.auth_failed, "stepup_missing": self.stepup_missing, "policy_refused": self.policy_refused, "uptime": self.started.elapsed().as_secs(),
                "second_lock": self.held.as_ref().is_some_and(|h| h.share.is_some()),
+               "channel": {"noise": "Noise_NX_25519_AESGCM_SHA256", "key": B64.encode(self.static_public), "handshakes": self.handshakes},
                "tasks": self.tasks.iter().map(|(name, (_, signed, refused))| (name.to_string(), json!({"signed": signed, "refused": refused}))).collect::<serde_json::Map<String, Value>>(),
                "stepup": {"required": self.stepup_required, "ok": self.stepup_ok, "failed": self.stepup_failed, "tokens": self.tokens.len(), "token_seconds": self.token_secs},
                "limits": {"sign_per_key_per_minute": SIGN_PER_MINUTE, "unlock_per_minute": UNLOCK_PER_MINUTE, "release_per_secret_per_minute": RELEASE_PER_MINUTE, "stepup_per_person_per_minute": STEPUP_PER_MINUTE,
@@ -1340,20 +1465,69 @@ impl State {
         }
     }
 
-    /// One connection: requests answered in order until it closes, sends something no honest client sends, or goes quiet.
+    /// The responder's side of Noise NX: the client's ephemeral key comes in, and back go the enclave's ephemeral key, its static
+    /// key (encrypted) and the proof that it holds the static secret. Returns the two directions of the channel, or None for a
+    /// first frame no honest client sends.
+    fn handshake(&mut self, conn: &mut (impl Read + Write)) -> Option<(Channel, Channel)> {
+        let mut head = [0u8; 4];
+        conn.read_exact(&mut head).ok()?;
+        if u32::from_be_bytes(head) != 32 {
+            self.count_bad(); // not a handshake: a client from before the channel, or something that is no client at all
+            return None;
+        }
+        let mut theirs = [0u8; 32];
+        conn.read_exact(&mut theirs).ok()?;
+        use rand_core::RngCore;
+        let mut ephemeral = Zeroizing::new([0u8; 32]);
+        rand_core::OsRng.fill_bytes(ephemeral.as_mut());
+        let mut noise = Noise::new();
+        noise.mix_hash(&theirs); // -> e
+        noise.mix_hash(&[]); //    and its empty payload
+        let ours = x25519_public(&ephemeral);
+        noise.mix_hash(&ours); // <- e
+        let (Some(ee), Some(es)) = (x25519(&ephemeral, &theirs), x25519(&self.static_secret, &theirs)) else {
+            self.count_bad();
+            return None;
+        };
+        noise.mix_key(ee.as_ref()); //  ee
+        let sealed_static = noise.encrypt_and_hash(&self.static_public)?; //  s
+        noise.mix_key(es.as_ref()); //  es
+        let sealed_payload = noise.encrypt_and_hash(&[])?;
+        let mut reply = Vec::with_capacity(96);
+        reply.extend_from_slice(&ours);
+        reply.extend_from_slice(&sealed_static);
+        reply.extend_from_slice(&sealed_payload);
+        conn.write_all(&(reply.len() as u32).to_be_bytes()).ok()?;
+        conn.write_all(&reply).ok()?;
+        let (to_us, to_them) = Noise::hkdf(&noise.ck, &[]);
+        self.handshakes += 1;
+        Some((Channel { key: to_us, n: 0 }, Channel { key: to_them, n: 0 }))
+    }
+
+    /// One connection: the handshake, then requests answered in order until it closes, sends something no honest client sends,
+    /// or goes quiet. Every frame after the handshake is encrypted, both ways.
     fn serve(&mut self, mut conn: impl Read + Write) {
+        let Some((mut rx, mut tx)) = self.handshake(&mut conn) else { return };
         loop {
             let mut head = [0u8; 4];
             if conn.read_exact(&mut head).is_err() {
                 return;
             }
             let len = u32::from_be_bytes(head) as usize;
-            if len == 0 || len > MAX_FRAME {
+            if len < 16 || len > MAX_FRAME + 16 {
                 self.count_bad();
                 return;
             }
-            let mut body = Zeroizing::new(vec![0u8; len]);
-            if conn.read_exact(&mut body).is_err() {
+            let mut sealed = vec![0u8; len];
+            if conn.read_exact(&mut sealed).is_err() {
+                return;
+            }
+            let Some(body) = rx.open(&sealed) else {
+                self.count_bad(); // changed on the way, or not encrypted for this connection
+                return;
+            };
+            if body.is_empty() {
+                self.count_bad();
                 return;
             }
             let (reply, hang_up) = match serde_json::from_slice::<Value>(&body) {
@@ -1389,7 +1563,8 @@ impl State {
                 }
             };
             let text = Zeroizing::new(reply.to_string()); // a released secret is in it
-            if conn.write_all(&(text.len() as u32).to_be_bytes()).is_err() || conn.write_all(text.as_bytes()).is_err() || hang_up {
+            let Some(out) = tx.seal(text.as_bytes()) else { return };
+            if conn.write_all(&(out.len() as u32).to_be_bytes()).is_err() || conn.write_all(&out).is_err() || hang_up {
                 return;
             }
         }

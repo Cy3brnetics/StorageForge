@@ -4,12 +4,22 @@ The enclave is a micro VM with no network device that holds the vault's KEK. Thi
 request at a time, over vsock (`vsock:CID:PORT`, or `fc:PATH:PORT` where Firecracker runs the VM) or, on a developer's machine and in the tests, a socket file (`unix:PATH`).
 Nothing here ever holds a private key or the KEK. The vault secret passes through once, on its way in at unlock.
 
+The channel (roadmap section 14, "Layers"): every connection begins with a Noise handshake, Noise_NX_25519_AESGCM_SHA256, and
+everything after it is encrypted. The enclave shows its static key in the handshake and proves it holds the secret half. That key is
+pinned the first time an address is spoken to, which for an enclave this program starts is the moment it has started it; an enclave
+that later shows another key at that address is not spoken to at all. So nothing else on the host reads what crosses the socket, and
+the vault secret is never sent to something that only sits where the enclave should be. An enclave makes a new key each time it
+starts: whoever restarts it pins the new one (enclave_vm.py does), and `vault enclave-pin --renew` does it by hand for one that
+something else runs. STORAGEFORGE_ENCLAVE_KEY names the key to insist on instead.
+
 Every ciphertext stays in the database in the vault's own format (vault.py) and goes with the request that needs it, so turning
 the enclave on or off changes nothing that is stored.
 """
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import socket
@@ -17,9 +27,17 @@ import struct
 import time
 from pathlib import Path
 
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 MAX_FRAME = 1 << 20
 ADDRESS_ENV = 'STORAGEFORGE_ENCLAVE'
 RUN_DIR_ENV = 'STORAGEFORGE_ENCLAVE_RUN_DIR'
+KEY_ENV = 'STORAGEFORGE_ENCLAVE_KEY'
+NOISE_NAME = b'Noise_NX_25519_AESGCM_SHA256'
+NOISE_PROLOGUE = b'storageforge-enclave-v3'
 
 
 def run_dir() -> Path:
@@ -35,6 +53,85 @@ class EnclaveError(RuntimeError):
     def __init__(self, code: str, why: str):
         super().__init__(why)
         self.code = code
+
+
+# ── the enclave's key, pinned ───────────────────────────────────────
+def pin_file() -> Path:
+    return run_dir() / 'enclave.pins'
+
+
+def _pins() -> dict:
+    try:
+        got = json.loads(pin_file().read_text())
+        return got if isinstance(got, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_pins(pins: dict) -> None:
+    path = pin_file()
+    part = path.with_name(f'{path.name}.{os.getpid()}.part')
+    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        json.dump(pins, f)
+    os.replace(part, path)
+
+
+def pinned(address: str) -> bytes | None:
+    """The key an enclave at this address has to show: the one named in STORAGEFORGE_ENCLAVE_KEY for the configured enclave, else
+    the one pinned when the address was first spoken to. None: not spoken to yet."""
+    named = os.environ.get(KEY_ENV)
+    if named and address == os.environ.get(ADDRESS_ENV):
+        try:
+            key = base64.b64decode(named, validate=True)
+        except ValueError:
+            key = b''
+        if len(key) != 32:
+            raise EnclaveError('down', f'{KEY_ENV} is not a key: it is the base64 of 32 bytes, as `vault enclave-pin` prints it')
+        return key
+    got = _pins().get(address)
+    return base64.b64decode(got) if got else None
+
+
+def pin(address: str, key: bytes) -> None:
+    pins = _pins()
+    pins[address] = _b64(key)
+    _write_pins(pins)
+
+
+def forget_pin(address: str) -> None:
+    """For whoever has just started or restarted the enclave at this address: the next contact pins the key it shows now."""
+    pins = _pins()
+    if pins.pop(address, None) is not None:
+        _write_pins(pins)
+
+
+class _Noise:
+    """The initiator's side of Noise NX, as the specification names its parts. The enclave's side is in main.rs."""
+
+    def __init__(self):
+        self.h = NOISE_NAME.ljust(32, b'\0')
+        self.ck, self.k, self.n = self.h, None, 0
+        self.mix_hash(NOISE_PROLOGUE)
+
+    def mix_hash(self, data: bytes):
+        self.h = hashlib.sha256(self.h + data).digest()
+
+    @staticmethod
+    def hkdf(ck: bytes, ikm: bytes) -> tuple[bytes, bytes]:
+        temp = hmac.new(ck, ikm, hashlib.sha256).digest()
+        one = hmac.new(temp, b'\x01', hashlib.sha256).digest()
+        return one, hmac.new(temp, one + b'\x02', hashlib.sha256).digest()
+
+    def mix_key(self, ikm: bytes):
+        self.ck, self.k = self.hkdf(self.ck, ikm)
+        self.n = 0
+
+    def decrypt_and_hash(self, sealed: bytes) -> bytes:
+        plain = AESGCM(self.k).decrypt(b'\0\0\0\0' + self.n.to_bytes(8, 'big'), sealed, self.h) if self.k else sealed
+        self.n += 1 if self.k else 0
+        self.mix_hash(sealed)
+        return plain
 
 
 def configured() -> str | None:
@@ -69,8 +166,49 @@ def b64_of_url(text: str) -> str:
 class Enclave:
     def __init__(self, address: str, timeout: float = 30.0):
         self.address, self.timeout, self.sock = address, timeout, None
+        self.key: bytes | None = None          # the static key the enclave showed on this connection
+        self._send = self._recv = None          # [AESGCM, messages so far] for each direction
 
     def _connect(self):
+        self._open()
+        try:
+            self._handshake()
+        except EnclaveError:
+            self.close()
+            raise
+        except (OSError, ValueError, InvalidTag, struct.error) as exc:
+            self.close()
+            raise EnclaveError('down', f'what answers at {self.address} does not speak as the key enclave does: {exc or type(exc).__name__}') from None
+
+    def _handshake(self):
+        """Noise NX against the enclave's static key. After it the connection is encrypted both ways, and the key the enclave showed
+        is the one pinned for this address, or this is the first contact and it is pinned now."""
+        mine = X25519PrivateKey.generate()
+        e = mine.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        noise = _Noise()
+        noise.mix_hash(e)                    # -> e
+        noise.mix_hash(b'')                  #    and its empty payload
+        self.sock.sendall(struct.pack('>I', 32) + e)
+        size = struct.unpack('>I', self._read(4))[0]
+        if size != 96:
+            raise ValueError('its handshake is not the one expected')
+        reply = self._read(96)
+        theirs = reply[:32]
+        noise.mix_hash(theirs)               # <- e
+        noise.mix_key(mine.exchange(X25519PublicKey.from_public_bytes(theirs)))               # ee
+        static = noise.decrypt_and_hash(reply[32:80])                                          # s
+        noise.mix_key(mine.exchange(X25519PublicKey.from_public_bytes(static)))               # es: only the holder of the static secret gets past here
+        noise.decrypt_and_hash(reply[80:])
+        send, recv = _Noise.hkdf(noise.ck, b'')
+        want = pinned(self.address)
+        if want is None:
+            pin(self.address, static)
+        elif not hmac.compare_digest(want, static):
+            raise EnclaveError('down', f'what answers at {self.address} is not the key enclave that was pinned there: it shows the key {_b64(static)}, and {_b64(want)} is pinned. '
+                               'Nothing was sent to it. If the enclave was restarted by something other than this program: storageforge-index vault enclave-pin --renew')
+        self.key, self._send, self._recv = static, [AESGCM(send), 0], [AESGCM(recv), 0]
+
+    def _open(self):
         kind, _, rest = self.address.partition(':')
         s = None
         try:
@@ -113,6 +251,7 @@ class Enclave:
                 self.sock.close()
             finally:
                 self.sock = None
+        self._send = self._recv = None
 
     def __enter__(self):
         return self
@@ -129,19 +268,33 @@ class Enclave:
             out += chunk
         return bytes(out)
 
+    @staticmethod
+    def _encrypted(way: list, plain: bytes) -> bytes:
+        out = way[0].encrypt(b'\0\0\0\0' + way[1].to_bytes(8, 'big'), plain, None)
+        way[1] += 1
+        return out
+
+    @staticmethod
+    def _opened(way: list, sealed: bytes) -> bytes:
+        out = way[0].decrypt(b'\0\0\0\0' + way[1].to_bytes(8, 'big'), sealed, None)
+        way[1] += 1
+        return out
+
     def raw(self, frame: bytes) -> dict:
-        """One frame out, one answer back. A refusal comes back as a dict with ok false: `request` is what raises."""
+        """One frame out, one answer back, both encrypted for this connection. A refusal comes back as a dict with ok false:
+        `request` is what raises."""
         if self.sock is None:
             self._connect()
         try:
-            self.sock.sendall(struct.pack('>I', len(frame)) + frame)
+            sealed = self._encrypted(self._send, frame)
+            self.sock.sendall(struct.pack('>I', len(sealed)) + sealed)
             size = struct.unpack('>I', self._read(4))[0]
-            if size > MAX_FRAME:
+            if size > MAX_FRAME + 16:
                 raise EnclaveError('down', 'the key enclave sent more than it may')
-            return json.loads(self._read(size))
-        except (OSError, ValueError) as exc:
+            return json.loads(self._opened(self._recv, self._read(size)))
+        except (OSError, ValueError, InvalidTag) as exc:
             self.close()
-            raise EnclaveError('down', f'the key enclave stopped answering: {exc}') from None
+            raise EnclaveError('down', f'the key enclave stopped answering: {exc or "what it sent was not encrypted for this connection"}') from None
         except EnclaveError:
             self.close()
             raise
@@ -326,6 +479,7 @@ def describe() -> dict:
     out.update(state=state, version=status.get('version'), protocol=status.get('protocol'), in_vm=bool(status.get('pid1') and status.get('memory_locked')),
                counts={k: status.get(k) for k in ('signed', 'released', 'refused', 'bad_requests', 'bad_limit', 'auth_failed', 'policy_refused', 'stepup_missing')},
                tasks=status.get('tasks') or {}, limits=status.get('limits') or {}, stepup=status.get('stepup') or {},
+               channel={'key': (status.get('channel') or {}).get('key'), 'named': bool(os.environ.get(KEY_ENV))}, second_lock=bool(status.get('second_lock')),
                chain={k: v for k, v in (status.get('chain') or {}).items() if k not in ('head', 'prior')})
     where = 'a micro VM with no network device' if out['in_vm'] else 'a program on this machine, not a micro VM: for development and tests only'
     out['label'] = {'unlocked': 'Key enclave: on', 'locked': 'Key enclave: locked', 'lockdown': 'Key enclave: locked down'}.get(state, f'Key enclave: {state}')

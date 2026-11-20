@@ -60,6 +60,9 @@ class Harness(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
+        run_dir = mock.patch.dict(os.environ, {'STORAGEFORGE_ENCLAVE_RUN_DIR': str(self.tmp)})          # where the key each enclave shows is pinned
+        run_dir.start()
+        self.addCleanup(run_dir.stop)
         self.db = dbfactory.make(self, self.tmp / 'index.db')
         self.conn = self.db.connect()
         self.addCleanup(self.conn.close)
@@ -78,6 +81,7 @@ class Harness(unittest.TestCase):
         """The program on a socket file. EnclaveImage starts the micro VM here instead."""
         self.path = self.tmp / 'enclave.sock'
         self.address = f'unix:{self.path}'
+        enclave.forget_pin(self.address)          # as whoever starts an enclave does: it makes a new key for its channel each time
         self.proc = subprocess.Popen([str(build()), '--unix', str(self.path)], stderr=subprocess.PIPE)
 
     def stop(self):
@@ -133,7 +137,7 @@ class Enclave(Harness):
     # ── unlock ──
     def test_it_starts_locked_and_the_vaults_own_secret_unlocks_it(self):
         st = self.e.status()
-        self.assertEqual((st['state'], st['protocol']), ('locked', 2))
+        self.assertEqual((st['state'], st['protocol']), ('locked', 3))
         self.vault.generate_key('k')
         self.refused('locked', self.e.sign, self.row('k'), b'x')
         self.assertEqual(self.unlock()['state'], 'unlocked')
@@ -356,7 +360,7 @@ class Enclave(Harness):
 
     def test_a_frame_larger_than_it_takes_is_not_read(self):
         s = self.wire()
-        s.sendall(struct.pack('>I', (1 << 20) + 1) + b'x' * 64)
+        s.sendall(struct.pack('>I', (1 << 20) + 17) + b'x' * 64)          # a megabyte of request and the 16 bytes its encryption adds is the most
         try:
             self.assertEqual(s.recv(16), b'', 'it hangs up without an answer')
         except ConnectionResetError:
@@ -682,11 +686,11 @@ class Supervised(unittest.TestCase):
     def setUp(self):
         from storageforge_index import enclave_vm
         self.vm = enclave_vm
-        env = mock.patch.dict(os.environ, {enclave_vm.VMM_ENV: self.VMM})
-        env.start()
-        self.addCleanup(env.stop)
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
+        env = mock.patch.dict(os.environ, {enclave_vm.VMM_ENV: self.VMM, 'STORAGEFORGE_ENCLAVE_RUN_DIR': str(self.tmp)})
+        env.start()
+        self.addCleanup(env.stop)
         self.events = []
         self.sup = None
 
@@ -710,6 +714,7 @@ class Supervised(unittest.TestCase):
         self.assertEqual((st['pid1'], st['memory_locked'], st['state']), (True, True, 'locked'))
         self.assertEqual(self.events[0][0], 'up')
         self.assertEqual(self.events[0][1]['image'], self.vm.image_digest(IMAGE))
+        self.assertEqual(base64.b64encode(enclave.pinned(address)).decode(), st['channel']['key'], 'the key the VM showed as it started is the one pinned')
         self.given_nothing_but_vsock()
 
     def given_nothing_but_vsock(self):
@@ -752,13 +757,18 @@ class Supervised(unittest.TestCase):
         with vault.Vault(db, conn).unlock() as v:
             v.generate_key('k')
         with enclave.Enclave(address) as e:
-            self.assertEqual(e.status()['state'], 'unlocked')
+            st = e.status()
+            self.assertEqual(st['state'], 'unlocked')
+        first_key = st['channel']['key']
         self.sup.proc.kill()                                                       # the VM dies
         self.wait_for('down')
         self.wait_for('up', 2)
         self.assertEqual((self.sup.address, self.sup.restarts), (address, 1))
         with enclave.Enclave(address) as e:
-            self.assertEqual(e.status()['state'], 'locked', 'it came back with no key')
+            st = e.status()
+            self.assertEqual(st['state'], 'locked', 'it came back with no key')
+        self.assertNotEqual(st['channel']['key'], first_key, 'and with a new key for its channel, which the supervisor pinned as it restarted it')
+        self.assertEqual(base64.b64encode(enclave.pinned(address)).decode(), st['channel']['key'])
         with vault.Vault(db, conn).unlock() as v:                                  # the next use hands it the secret again
             self.assertIsInstance(v.decrypt_key(conn.scalar('SELECT key_id FROM ssh_keys')), vault.EnclaveKey)
         self.sup.stop()

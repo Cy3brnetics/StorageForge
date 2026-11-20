@@ -17,6 +17,7 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_ENCLAVE_RUN_DIR` | the runtime folder | Where the server's enclave has its socket and its address file (`enclave.addr`). A starter in another container shares this folder |
 | `STORAGEFORGE_ENCLAVE_STEPUP` | | `required`: whoever unlocks the key enclave from here tells it to ask for a [step-up](security.md#key-enclave) before it makes or changes a key, even when the database shows it no enrolled person. Set it where the starter runs |
 | `STORAGEFORGE_HOST_SHARE_FILE` | `/etc/storageforge/host_share` | The host's share of the vault key, where the [second lock](security.md#layers) is on (`vault second-lock on`). Readable only by its owner, and kept out of backups of the database and the secret |
+| `STORAGEFORGE_ENCLAVE_KEY` | pinned at first contact | The key the configured key enclave has to show for its [channel](security.md#layers), as `vault enclave-pin` prints it. Only for an enclave that something else runs: one the server starts is pinned by the server |
 | `STORAGEFORGE_ENCLAVE_VMM` | Firecracker where installed, else QEMU | With `vm`: `firecracker` or `qemu`, to insist on one |
 | `STORAGEFORGE_ENCLAVE_IMAGE` | | With `vm`: the image digest to insist on; a different image is not started |
 | `STORAGEFORGE_VAULT_NEW_SECRET` | | The new secret for `vault rotate-secret` |

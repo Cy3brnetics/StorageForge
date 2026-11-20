@@ -25,15 +25,18 @@ class Counts(Base):
     def test_each_kind_of_task_has_an_allowance_and_a_count_of_its_own(self):
         self.v.generate_key('k')
         row = self.row('k')
-        codes = []
-        for _ in range(126):
+        codes, started = [], time.time()
+        for _ in range(400):
             try:
                 self.e.sign(row, b'x', 0, 'console')
                 codes.append('ok')
             except enclave.EnclaveError as exc:
                 codes.append(exc.code)
                 self.assertIn('console tasks have signed as often', str(exc))
-        self.assertEqual((codes[:118], codes[-1]), (['ok'] * 118, 'rate'), '120 a minute for consoles, and the web app cannot raise it')
+                break
+        earned = int((time.time() - started) * 2) + 1          # two more a second, and a slow machine takes a few seconds over this
+        self.assertEqual(codes[-1], 'rate', '120 a minute for consoles, and the web app cannot raise it')
+        self.assertTrue(118 <= codes.count('ok') <= 120 + earned, codes.count('ok'))
         self.assertTrue(self.e.sign(row, b'x', 0, 'scan')[0], 'what consoles used up is not taken from scans, with the same key')
         self.assertTrue(self.e.sign(row, b'x', 0, 'a kind nobody listed')[0])
         self.assertTrue(self.e.sign(row, b'x')[0])
@@ -58,17 +61,20 @@ class Counts(Base):
         self.assertTrue(all(t['signed'] >= 1 for t in got.values()))
 
     def test_secrets_leave_only_so_often_for_one_kind_of_task(self):
-        for name in ('a', 'b', 'c'):
+        for name in ('a', 'b', 'c', 'd'):          # four, so that no one of them reaches its own sixty a minute first
             self.v.store_credential(name, 'secret', f'secret-{name}-123456')
-        codes = []
-        for i in range(126):
+        codes, started = [], time.time()
+        for i in range(400):
             try:
-                self.v.credential('abc'[i % 3], host=f'nas{i}', step='tailscale')
+                self.v.credential('abcd'[i % 4], host=f'nas{i}', step='tailscale')
                 codes.append('ok')
             except vault.VaultLocked as exc:
                 codes.append('rate')
                 self.assertIn('that kind of task', str(exc))
-        self.assertEqual((codes[:118], codes[-1]), (['ok'] * 118, 'rate'), '120 a minute for one kind of step, however many secrets it is spread over')
+                break
+        earned = int((time.time() - started) * 2) + 1
+        self.assertEqual(codes[-1], 'rate', '120 a minute for one kind of step, however many secrets it is spread over')
+        self.assertTrue(118 <= codes.count('ok') <= 120 + earned, codes.count('ok'))
         self.assertEqual(self.v.credential('a', host='nas1', step='netbird')['password'], 'secret-a-123456', 'another kind of step has its own')
         self.assertGreaterEqual(self.e.status()['refused'], 1)
 

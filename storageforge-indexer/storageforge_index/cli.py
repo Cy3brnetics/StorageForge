@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import json
 import os
@@ -1191,6 +1192,25 @@ def cmd_vault(args) -> int:
         return 0
     if a == 'second-lock':
         return _second_lock(args)
+    if a == 'enclave-pin':
+        # The key the enclave shows for its channel, which every client pins. An enclave this program starts is pinned as it starts.
+        # One that something else runs makes a new key when it restarts, and is pinned again here by a person who knows it did.
+        from . import enclave
+        address = enclave.address()
+        if not address:
+            print('no key enclave is configured here (STORAGEFORGE_ENCLAVE names one that something else runs)', file=sys.stderr)
+            return 2
+        if args.renew:
+            enclave.forget_pin(address)
+        try:
+            with enclave.Enclave(address, timeout=5) as e:
+                e.status()
+                key = e.key
+        except enclave.EnclaveError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        print(f'{address}\n{base64.b64encode(key).decode()}')
+        return 0
     db, conn, v = _vault(args)
     with v:
         if a in ('stepup-enroll', 'stepup-forget'):
@@ -2063,6 +2083,8 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument('--address', help='where the enclave is; the address the server published in its runtime folder if not given')
     x.add_argument('--wait', type=float, default=60.0, help='seconds to wait for the enclave to answer (default 60)')
     x.add_argument('--watch', action='store_true', help='stay, and unlock it again whenever it comes back locked after a restart; the secret file is read again each time')
+    x = vs.add_parser('enclave-pin', help="show the key the configured key enclave is pinned to; --renew pins the key it shows now, after something else restarted it")
+    x.add_argument('--renew', action='store_true')
     x = vs.add_parser('second-lock', help='a second share, held in a file on this machine, mixed into the vault key: the secret alone then opens nothing (docs/security.md, "Key enclave")')
     x.add_argument('what', choices=('status', 'on', 'off', 'recover'), help='recover: the recovery share on stdin, to write the host share again on a machine without it')
     x = vs.add_parser('stepup-enroll', help="give the key enclave an account's step-up password (one line on stdin): it then checks that person itself before it makes or changes a key. Security keys are enrolled on the Keys page")
