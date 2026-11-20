@@ -17,7 +17,7 @@ IMPORT_DIR=${STORAGEFORGE_IMPORT_DIR:-/run/secrets/ssh-import}
 # every storageforge-index subcommand (tests/test_consistency.py fails when one is missing)
 case "${1:-serve}" in
   remote|scan|search|changes|dupes|clamav|folders|access|moves|tasks|git|shares|plan|deploy|schedule|docker|backup|restore|reset|site|prune|rotate|hosts|config|vm|clone|\
-  export-markdown|report|vault|audit|log|hostlogs|graph|canvas|blueprint|migrate|serve|healthcheck|user|-*) ;;
+  export-markdown|report|vault|audit|log|hostlogs|graph|canvas|blueprint|migrate|serve|healthcheck|user|sfnet|-*) ;;
   *) exec "$@" ;;
 esac
 # the subcommand, past the global options (--db takes a value); none for --version or --help
@@ -37,8 +37,18 @@ length_of() {  # $1 = variable name; prints the secret length without exposing i
   elif [ -n "$f" ]; then [ -r "$f" ] || die "$1_FILE=$f is not readable by uid $(id -u): see the init-secrets service's log (docker compose logs init-secrets)"; tr -d '\r\n' < "$f" | wc -c
   else echo 0; fi
 }
-[ "$(length_of STORAGEFORGE_VAULT_SECRET)" -ge 32 ] \
-  || die "set STORAGEFORGE_VAULT_SECRET or STORAGEFORGE_VAULT_SECRET_FILE (≥ 32 characters; openssl rand -base64 48)"
+# With the key enclave and its starter apart (docker-compose.enclave.yml) this container is given no vault secret: the starter
+# hands it to the enclave, and the vault is made and checked there (docs/security.md, "Key enclave").
+apart=0
+if [ "${STORAGEFORGE_VAULT_SECRET_APART:-0}" = 1 ]; then
+  [ -n "${STORAGEFORGE_ENCLAVE:-}" ] || die "STORAGEFORGE_VAULT_SECRET_APART=1 needs the key enclave: set STORAGEFORGE_ENCLAVE"
+  [ "$(length_of STORAGEFORGE_VAULT_SECRET)" = 0 ] \
+    || die "STORAGEFORGE_VAULT_SECRET_APART=1 says this container is not given the vault secret, and it is: take the secret out, or unset STORAGEFORGE_VAULT_SECRET_APART"
+  apart=1
+else
+  [ "$(length_of STORAGEFORGE_VAULT_SECRET)" -ge 32 ] \
+    || die "set STORAGEFORGE_VAULT_SECRET or STORAGEFORGE_VAULT_SECRET_FILE (≥ 32 characters; openssl rand -base64 48)"
+fi
 if [ "$cmd" = serve ]; then
   [ "$(length_of STORAGEFORGE_SESSION_SECRET)" -ge 32 ] \
     || die "set STORAGEFORGE_SESSION_SECRET or STORAGEFORGE_SESSION_SECRET_FILE (≥ 32 characters; openssl rand -base64 48)"
@@ -74,9 +84,20 @@ if [ "$cmd" = restore ] || [ "$cmd" = reset ]; then
   exec storageforge-index "$@"
 fi
 
+# The starter hands the vault secret to the enclave a running server started, and makes the vault where the database has none.
+# The server migrates the schema and the starter waits for its enclave, so it neither migrates nor opens the vault here.
+if [ "$cmd" = vault ]; then
+  case " $* " in *" vault starter "*) log "starter: data=$DATA"; exec storageforge-index "$@" ;; esac
+fi
+
 # 5. schema, then the vault (creates it on first start, verifies the secret afterwards)
 storageforge-index ${db:+--db "$db"} migrate >&2
-storageforge-index ${db:+--db "$db"} vault init >&2 || die "the vault secret does not unlock the existing vault"
+if [ "$apart" = 1 ]; then
+  log "no vault secret here: the starter hands it to the key enclave, or a person types it on the Keys page"
+  IMPORT_DIR=    # keys are imported by a command that holds the secret: docker compose run --rm admin vault import-dir
+else
+  storageforge-index ${db:+--db "$db"} vault init >&2 || die "the vault secret does not unlock the existing vault"
+fi
 
 # 6. optional one-shot key import from a read-only mount (file name = key name)
 if [ -d "$IMPORT_DIR" ] && ! { [ -r "$IMPORT_DIR" ] && [ -x "$IMPORT_DIR" ]; }; then

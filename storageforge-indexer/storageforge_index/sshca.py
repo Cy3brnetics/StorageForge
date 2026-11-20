@@ -124,3 +124,34 @@ def known_hosts_line(ca: str, pattern: str) -> str:
     if not isinstance(pattern, str) or not re.fullmatch(r'[A-Za-z0-9*?.,_\[\]:-]{1,255}', pattern):
         raise CertificateError('the host pattern is names, addresses and wildcards')
     return f'@cert-authority {pattern} {trusted_user_ca_line(ca)}'
+
+
+KRL_MAGIC, KRL_FORMAT = 0x5353484B524C0A00, 1          # "SSHKRL\n\0", OpenSSH's PROTOCOL.krl
+KRL_CERTIFICATES, KRL_SERIAL_LIST = 1, 0x20
+MAX_REVOKED = 100_000
+
+
+def krl(ca: str, serials, version: int, *, now: float | None = None, comment: str = 'storageforge') -> bytes:
+    """A key revocation list for sshd's RevokedKeys: the certificates of this CA with these serial numbers, and nothing else.
+    With no serials it is a list that revokes nothing, which sshd reads as one. version only ever goes up: a host keeps the
+    newest list it was given."""
+    _, ca_blob = _public(ca, 'the CA')
+    if not isinstance(version, int) or isinstance(version, bool) or not 0 <= version < 1 << 63:
+        raise CertificateError('a revocation list has a version number')
+    serials = sorted(set(serials))
+    if len(serials) > MAX_REVOKED or not all(isinstance(n, int) and not isinstance(n, bool) and 1 <= n < 1 << 63 for n in serials):
+        raise CertificateError('a revocation list names certificates by serial number')
+    if not KEY_ID.fullmatch(comment):
+        raise CertificateError('the comment is one line of plain characters')
+    out = struct.pack('>QIQQQ', KRL_MAGIC, KRL_FORMAT, version, int(now if now is not None else time.time()), 0) + _s(b'') + _s(comment.encode())
+    if serials:
+        listed = bytes([KRL_SERIAL_LIST]) + _s(b''.join(struct.pack('>Q', n) for n in serials))
+        out += bytes([KRL_CERTIFICATES]) + _s(_s(ca_blob) + _s(b'') + listed)
+    return out
+
+
+def krl_version(blob: bytes) -> int | None:
+    """The version of a revocation list made here, None for anything else."""
+    if not isinstance(blob, (bytes, bytearray)) or len(blob) < 44 or struct.unpack('>QI', blob[:12]) != (KRL_MAGIC, KRL_FORMAT):
+        return None
+    return struct.unpack('>Q', blob[12:20])[0]

@@ -230,10 +230,15 @@ def _fleet_groups(index: dict, mounts: dict, min_files: int, min_bytes: int, inc
 
 
 def duplicate_folders(conn: Conn, host: str | None = None, min_files: int = 3, min_bytes: int = 1 << 20,
-                      limit: int = 100, include_system: bool = False, index: dict[int, MountDirs] | None = None) -> dict:
+                      limit: int = 100, include_system: bool = False, index: dict[int, MountDirs] | None = None,
+                      syncs: list[dict] | None = None) -> dict:
     """Folders with the same files (names and sizes) and subfolders, on any host. With a host, the groups with a copy on it,
     and every copy of those: a folder on one host matches its copy on another only when both are compared. `limit` is per
-    scope, so a fleet with many same-host copies still shows the ones across hosts (bug report 2026-11-10)."""
+    scope, so a fleet with many same-host copies still shows the ones across hosts (bug report 2026-11-10).
+
+    `syncs` (copies.syncs): the deployed mirror jobs. The destination of one is that sync's copy of its source and not a duplicate
+    of it, so it is taken out of its group, and a group left with one folder is not listed. `kept_in_sync` counts those groups."""
+    from .copies import split_kept
     mounts = {mid: (hn, mp) for mid, hn, mp in conn.all(
         "SELECT m.mount_id, h.hostname, m.mount_point FROM mounts m JOIN hosts h ON h.host_id = m.host_id WHERE m.scan_state = 'indexed'")}
     mine = None
@@ -256,23 +261,29 @@ def duplicate_folders(conn: Conn, host: str | None = None, min_files: int = 3, m
             return False
         return sum(1 for k in among if k[0] == mid and posixpath.dirname(k[1]) == above) < 2
 
-    out = []
+    out, kept_in_sync = [], 0
     for keys in groups.values():
         keys = [k for k in keys if not nested(k, keys)]
         if len(keys) < 2 or (mine is not None and not any(k[0] in mine for k in keys)):
             continue
         files, size = keys[0][2:]
         copies = [{'host': mounts[k[0]][0], 'mount': mounts[k[0]][1], 'path': k[1]} for k in sorted(keys, key=lambda k: (mounts[k[0]], k[1]))]
+        copies, synced = split_kept(copies, syncs or [])
+        if len(copies) < 2:
+            kept_in_sync += 1
+            continue
         hosts = {c['host'] for c in copies}
-        out.append({'files': files, 'bytes': size, 'copies': copies, 'count': len(copies),
-                    'reclaimable': size * (len(copies) - 1), 'same_name': len({posixpath.basename(c['path']) for c in copies}) == 1,
-                    'scope': 'same host' if len(hosts) == 1 else 'across hosts'})
-    out.sort(key=lambda g: (g['scope'] != 'same host', -g['reclaimable']))
+        # one copy is kept on each host: a copy on another host is a possible backup, never space to free (`elsewhere` counts those)
+        out.append({'files': files, 'bytes': size, 'copies': copies, 'count': len(copies), 'hosts': len(hosts),
+                    'reclaimable': size * (len(copies) - len(hosts)), 'elsewhere': size * (len(hosts) - 1),
+                    'same_name': len({posixpath.basename(c['path']) for c in copies}) == 1,
+                    'scope': 'same host' if len(hosts) == 1 else 'across hosts', **({'synced': synced} if synced else {})})
+    out.sort(key=lambda g: (g['scope'] != 'same host', -g['reclaimable'], -g['elsewhere'], -g['bytes']))
     same = [g for g in out if g['scope'] == 'same host']
     across = [g for g in out if g['scope'] != 'same host']
     return {'groups': same[:limit] + across[:limit], 'total_groups': len(out), 'folders_checked': checked,
-            'same_host_groups': len(same), 'across_hosts_groups': len(across),
-            'reclaimable_same_host': sum(g['reclaimable'] for g in same)}
+            'same_host_groups': len(same), 'across_hosts_groups': len(across), 'kept_in_sync': kept_in_sync,
+            'reclaimable_same_host': sum(g['reclaimable'] for g in out), 'elsewhere_across_hosts': sum(g['elsewhere'] for g in across)}
 
 
 def cold_folders(conn: Conn, host: str | None = None, years: float = 2.0, min_bytes: int = 1 << 30,

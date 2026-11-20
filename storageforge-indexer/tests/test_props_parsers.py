@@ -89,7 +89,7 @@ READS = {
     'inframeasure.parse_listeners': lambda t: inframeasure.parse_listeners(t.splitlines()), 'inframeasure.parse_storage_clients': lambda t: inframeasure.parse_storage_clients(t.splitlines()),
     'inframeasure.parse_wireguard': lambda t: inframeasure.parse_wireguard(t.splitlines()), 'inframeasure.parse_tailscale': lambda t: inframeasure.parse_tailscale(t.splitlines()),
     'inframeasure.parse_overlays': lambda t: inframeasure.parse_overlays({k: t.splitlines() for k in ('tailscale_json', 'netbird_json', 'headscale_json', 'openvpn_status', 'zt_info', 'zt_networks', 'zt_peers')}),
-    'inframeasure.parse_tunnels': lambda t: inframeasure.parse_tunnels({k: t.splitlines() for k in ('cloudflared', 'frp', 'ngrok', 'tunnel_procs')}),
+    'inframeasure.parse_tunnels': lambda t: inframeasure.parse_tunnels({k: t.splitlines() for k in ('cloudflared', 'frp', 'ngrok', 'tunnel_procs', 'tunnel_cmdline')}),
     'inframeasure.parse_proxy_routes': lambda t: inframeasure.parse_proxy_routes(t.splitlines(), t.splitlines()[::-1]),
 }
 SECTIONED_READS = {'netfacts.parse': (netfacts.parse, netfacts.SECTIONS), 'inframeasure.parse': (inframeasure.parse, inframeasure.SECTIONS),

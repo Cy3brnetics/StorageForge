@@ -178,7 +178,7 @@ fi
 command -v systemctl >/dev/null && ok "systemd" || conflict "systemd runs the tunnel, and this machine has none"
 command -v ssh >/dev/null && ok "ssh client: $(command -v ssh)" || conflict "the OpenSSH client is not installed"
 command -v sshd >/dev/null && ok "sshd" || conflict "the OpenSSH server is not installed: StorageForge reaches this machine through it"
-LOCAL=$(sshd -T 2>/dev/null | awk '$1 == "port" { print $2; exit }'); LOCAL=${LOCAL:-22}
+LOCAL=$(sshd -T 2>/dev/null | awk 'tolower($1) == "port" { print $2; exit }'); LOCAL=${LOCAL:-22}
 timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$LOCAL" 2>/dev/null && ok "sshd answers on 127.0.0.1:$LOCAL" \
   || conflict "sshd does not answer on 127.0.0.1:$LOCAL: the tunnel ends there"
 timeout 5 bash -c "exec 3<>/dev/tcp/$HOST/$PORT" 2>/dev/null && ok "reached the tunnel at $HOST:$PORT" \

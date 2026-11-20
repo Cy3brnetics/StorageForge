@@ -5,16 +5,87 @@
 #   STORAGEFORGE_KVM_GID      the group of /dev/kvm on the Docker host:  stat -c %g /dev/kvm
 #   STORAGEFORGE_ENCLAVE_IMAGE  optional: the image digest to insist on (docs/operations.md, "Key enclave")
 # With this file the server does not start where the enclave cannot: there is no quiet return to keys in the server.
+#
+# The vault secret is not given to the server. It moves to a volume of its own (sf-vault-secret), which only the starter and
+# the admin commands mount. The starter reads it once, hands it to the enclave and keeps nothing; after a restart of the enclave
+# it reads it again. To go back to a stack without this file, copy the secret out first and put it in ./secrets/vault_secret:
+#   docker compose -f docker-compose.yml -f docker-compose.enclave.yml run --rm --entrypoint cat admin /run/sf-vault/vault_secret
 services:
+  init-secrets:
+    volumes:
+      - sf-vault-secret:/secrets/vault
+
   storageforge:
     environment: &enclave
       STORAGEFORGE_ENCLAVE: vm
       STORAGEFORGE_ENCLAVE_IMAGE: ${STORAGEFORGE_ENCLAVE_IMAGE:-}
+      STORAGEFORGE_ENCLAVE_RUN_DIR: /run/sf-enclave     # its socket, its address and its pinned key: the starter shares this folder
+      STORAGEFORGE_VAULT_SECRET_FILE: ""                # not here: see above
+      STORAGEFORGE_VAULT_SECRET_APART: "1"
     devices: ["/dev/kvm"]
     group_add: ["${STORAGEFORGE_KVM_GID:?set STORAGEFORGE_KVM_GID to the group of /dev/kvm (stat -c %g /dev/kvm)}"]
+    volumes:
+      - sf-enclave-run:/run/sf-enclave
 
-  # commands that need a key start an enclave of their own for as long as they run
+  # Reads the secret file once, hands the secret to the enclave the server runs, and keeps nothing. It stays, and does the same
+  # again when the enclave has come back locked after a restart. An enclave that locked itself down is left for a person.
+  starter:
+    build:
+      context: .
+      target: runtime
+    image: storageforge:0.5.4.1
+    depends_on:
+      init-secrets: { condition: service_completed_successfully }
+      storageforge: { condition: service_started }
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    command: ["vault", "starter", "--watch"]
+    environment:
+      STORAGEFORGE_ENCLAVE_RUN_DIR: /run/sf-enclave
+      STORAGEFORGE_VAULT_SECRET_FILE: /run/sf-vault/vault_secret
+      STORAGEFORGE_HOST_SHARE_FILE: /run/sf-host/host_share        # the second lock, where it is on (vault second-lock)
+      STORAGEFORGE_ENCLAVE_STEPUP: ${STORAGEFORGE_ENCLAVE_STEPUP:-}
+    volumes:
+      - sf-vault-secret:/run/sf-vault:ro
+      - sf-enclave-run:/run/sf-enclave
+      - sf-data:/app/data
+      # A folder of the Docker host, not a volume: the host share must not travel with the database, its backups or the secret.
+      #   sudo install -d -o 10001 -g 10001 -m 0700 /etc/storageforge   and set STORAGEFORGE_HOST_SHARE_DIR=/etc/storageforge
+      - ${STORAGEFORGE_HOST_SHARE_DIR:-./host-share}:/run/sf-host:ro
+    tmpfs:
+      - /run/storageforge:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10001,gid=10001
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    ulimits:
+      memlock: { soft: 16777216, hard: 16777216 }
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 256m, pids: 32 }
+    healthcheck:
+      disable: true
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+
+  # commands that need a key start an enclave of their own for as long as they run, and hold the secret to unlock it
   admin:
-    environment: *enclave
+    environment:
+      STORAGEFORGE_ENCLAVE: vm
+      STORAGEFORGE_ENCLAVE_IMAGE: ${STORAGEFORGE_ENCLAVE_IMAGE:-}
+      STORAGEFORGE_VAULT_SECRET_FILE: /run/sf-vault/vault_secret
+      STORAGEFORGE_HOST_SHARE_FILE: /run/sf-host/host_share
     devices: ["/dev/kvm"]
     group_add: ["${STORAGEFORGE_KVM_GID:?set STORAGEFORGE_KVM_GID to the group of /dev/kvm (stat -c %g /dev/kvm)}"]
+    volumes:
+      - sf-vault-secret:/run/sf-vault
+      - ${STORAGEFORGE_HOST_SHARE_DIR:-./host-share}:/run/sf-host          # writable here: `vault second-lock on` makes the share
+
+volumes:
+  sf-vault-secret:
+  # in memory, and only these two containers see it
+  sf-enclave-run:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "size=1m,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev" }

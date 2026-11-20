@@ -254,27 +254,51 @@ def run_search(db: Database, conn: Conn, q: SearchQuery) -> list[dict]:
     return out
 
 
-def run_dupes(conn: Conn, host: str | None, min_size: int, limit: int) -> list[dict]:
-    """Identical files across the fleet; with a host, the groups with a copy on it, listing every copy wherever it is."""
-    p = {'min': min_size, 'limit': limit}
+def _dupes_sql(host: str | None, min_size: int) -> tuple[str, dict]:
+    """One row per checksum with more than one file: its files, its size, and how many hosts hold it."""
+    p = {'min': min_size}
     mine = ''
     if host:
         mine = 'AND sum(CASE WHEN h.hostname = :host OR h.ip_address = :host OR h.ssh_host = :host THEN 1 ELSE 0 END) > 0'
         p['host'] = host
-    groups = conn.all(f"""
-        SELECT f.checksum_hash, count(*), max(f.file_size_bytes), (count(*) - 1) * max(f.file_size_bytes) AS reclaimable
-        FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
-        WHERE f.checksum_hash IS NOT NULL AND f.file_size_bytes >= :min
-        GROUP BY f.checksum_hash HAVING count(*) > 1 {mine}
-        ORDER BY reclaimable DESC LIMIT :limit""", p)
+    return f"""SELECT f.checksum_hash AS sha, count(*) AS n, max(f.file_size_bytes) AS size, count(DISTINCT m.host_id) AS hosts
+               FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
+               WHERE f.checksum_hash IS NOT NULL AND f.file_size_bytes >= :min
+               GROUP BY f.checksum_hash HAVING count(*) > 1 {mine}""", p
+
+
+def run_dupes(conn: Conn, host: str | None, min_size: int, limit: int) -> list[dict]:
+    """Identical files across the fleet; with a host, the groups with a copy on it, listing every copy wherever it is.
+
+    Two classes (the owner's request of 2026-11-19). A second copy on the same host is space that could be freed: `reclaimable`
+    counts those, one copy kept per host. A copy on another host is a possible backup: it is never counted as reclaimable, and a
+    group with one copy per host has `scope` 'across hosts' and `reclaimable` 0. The limit is shared, so that neither class
+    crowds the other out: up to half goes to the groups across hosts when both have more than fit."""
+    sql, p = _dupes_sql(host, min_size)
+    p['limit'] = limit
+    same = conn.all(f"""{sql} AND count(*) > count(DISTINCT m.host_id)
+                        ORDER BY (count(*) - count(DISTINCT m.host_id)) * max(f.file_size_bytes) DESC, f.checksum_hash LIMIT :limit""", p)
+    across = conn.all(f"""{sql} AND count(*) = count(DISTINCT m.host_id)
+                          ORDER BY max(f.file_size_bytes) DESC, f.checksum_hash LIMIT :limit""", p)
+    take = min(len(across), max(limit // 2, limit - len(same)))
     out = []
-    for h, n, size, reclaim in groups:
+    for sha, n, size, hosts in [*same[:limit - take], *across[:take]]:
         members = conn.all("""SELECT h.hostname, d.path, f.filename FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
                               JOIN mounts m ON m.mount_id = f.mount_id JOIN hosts h ON h.host_id = m.host_id
-                              WHERE f.checksum_hash = :c ORDER BY h.hostname, d.path, f.filename""", {'c': h})
-        out.append({'sha256': h, 'copies': n, 'size': size, 'reclaimable': reclaim,
+                              WHERE f.checksum_hash = :c ORDER BY h.hostname, d.path, f.filename""", {'c': sha})
+        out.append({'sha256': sha, 'copies': n, 'size': size, 'reclaimable': (n - hosts) * size, 'hosts': hosts,
+                    'scope': 'same host' if hosts == 1 else 'across hosts', 'elsewhere': (hosts - 1) * size,
                     'files': [f'{hn}:{join_path(pp, fn)}' for hn, pp, fn in members]})
     return out
+
+
+def dupes_totals(conn: Conn, host: str | None, min_size: int) -> dict:
+    """Over every group, not only the ones listed: what could be freed within hosts, and what is also held on another host."""
+    sql, p = _dupes_sql(host, min_size)
+    n, reclaim, across, elsewhere = conn.all(f"""SELECT count(*), coalesce(sum((g.n - g.hosts) * g.size), 0),
+                                                        coalesce(sum(CASE WHEN g.hosts > 1 THEN 1 ELSE 0 END), 0),
+                                                        coalesce(sum((g.hosts - 1) * g.size), 0) FROM ({sql}) g""", p)[0]
+    return {'total_groups': n, 'reclaimable': reclaim, 'across_hosts': {'groups': across, 'bytes': elsewhere}}
 
 
 def run_changes(conn: Conn, host: str, scan_id: int | None, limit: int) -> tuple[dict | None, list[dict]]:

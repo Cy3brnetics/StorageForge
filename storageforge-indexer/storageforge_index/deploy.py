@@ -464,7 +464,7 @@ def run(db: Database, host: str, script: str, args=(), *, kind: str, ref: str | 
                 data = [bytes(data)]
             t = None
             try:
-                with ephemeral_agent(v.decrypt_key(b.key_id), ttl=timeout + 60) as sock:
+                with ephemeral_agent(v.decrypt_key(b.key_id, 'deploy'), ttl=timeout + 60) as sock:
                     t = Transport(host=addr, user=b.user, port=b.port, agent_sock=sock, known_hosts=str(known_hosts_path()),
                                   isolated=True)
                     p = subprocess.Popen(t.argv('storageforge-run'), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -550,7 +550,7 @@ def raw(db: Database, host: str, script: str, *, kind: str, ref: str | None = No
         with _track(nonce), _lock(name), Vault(db, conn).unlock() as v:     # one run per host at a time, like run()
             b = v.resolve(addr, 'deploy')
             req = request(_signer(v), name, RUNNER_UPDATE + script, machine=_machine(conn, name), nonce=nonce)
-            with ephemeral_agent(v.decrypt_key(b.key_id)) as sock:
+            with ephemeral_agent(v.decrypt_key(b.key_id, 'deploy')) as sock:
                 t = Transport(host=addr, user=b.user, port=b.port, agent_sock=sock, known_hosts=str(known_hosts_path()),
                               isolated=True)
                 p = subprocess.Popen(t.argv('storageforge-run'), stdin=subprocess.PIPE, stdout=subprocess.PIPE,

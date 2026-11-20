@@ -946,6 +946,13 @@ def _index_stats(conn, host_id) -> dict:
                           JOIN mounts m ON m.mount_id = f.mount_id
                           WHERE m.host_id = :h AND f.checksum_hash IS NOT NULL
                           GROUP BY f.checksum_hash HAVING count(*) > 1) g""", p)
+    # files here that another host holds too: possible backups, a class of their own and never part of what could be freed
+    away = conn.all("""SELECT count(*), coalesce(sum(size), 0) FROM (
+                           SELECT max(f.file_size_bytes) AS size FROM file_records f JOIN mounts m ON m.mount_id = f.mount_id
+                           WHERE m.host_id = :h AND f.checksum_hash IS NOT NULL
+                             AND EXISTS (SELECT 1 FROM file_records x JOIN mounts xm ON xm.mount_id = x.mount_id
+                                         WHERE x.checksum_hash = f.checksum_hash AND x.checksum_hash IS NOT NULL AND xm.host_id <> :h)
+                           GROUP BY f.checksum_hash) g""", p)
     scan = conn.all("""SELECT scan_id, status, entries_seen, added, modified, deleted, read_errors, duration_ms, started_at
                        FROM scans WHERE host_id = :h AND status <> 'running' ORDER BY scan_id DESC LIMIT 1""", p)
     return {
@@ -954,6 +961,7 @@ def _index_stats(conn, host_id) -> dict:
         'top_ext': [{'ext': r[0], 'files': r[1], 'bytes': r[2]} for r in top_ext],
         'largest': [{'path': join_path(r[0], r[1]), 'bytes': r[2], 'mtime': epoch(r[3])} for r in largest],
         'dup_groups': dup[0][0] if dup else 0, 'dup_reclaimable': dup[0][1] if dup else 0,
+        'dup_elsewhere': away[0][0] if away else 0, 'dup_elsewhere_bytes': away[0][1] if away else 0,
         'last_scan': dict(zip(('scan_id', 'status', 'entries', 'added', 'modified', 'deleted', 'read_errors',
                                'duration_ms', 'started_at'), scan[0])) if scan else None,
     }

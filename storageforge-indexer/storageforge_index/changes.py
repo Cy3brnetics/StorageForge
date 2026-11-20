@@ -477,6 +477,9 @@ def check(conn: Conn, plan: dict) -> dict:
                 if e['type'] == undo[0] and e['host'] == t['host'] and e['params'].get(undo[1]) == p.get(undo[1]):
                     say('warn', f'undoes task {j}: every rerun of the script does both again. Drop one of them')
         out.append({'task': i, 'title': title(t), 'host': h['name'], 'items': items})
+    from .copies import trash_findings      # the trash tasks taken together: the last copy of something, or the only one left
+    for i, level, code, text in trash_findings(conn, hs, plan['tasks']):
+        out[i - 1]['items'].append({'level': level, 'text': text, 'code': code})
     levels = [x['level'] for t in out for x in t['items']]
     crit_count = levels.count('crit')
     warn_count = levels.count('warn')
@@ -1240,12 +1243,18 @@ t_rename() { local s=$1 d=$2
     { conflict "$d is on another filesystem or btrfs subvolume: mv would copy every byte; use a Moves step"; return 0; }
   act "mv $s -> $d" && try mv -T -- "$s" "$d" && ok "renamed"
 }
-t_trash() { local p=$1 top rel dest
+t_trash() { local p=$1 top rel dest up=$1 rest= d
   if [[ ! -e $p && ! -L $p ]]; then
-    if [[ -n $(find "$(fs_top "$p" 2>/dev/null)/.storageforge-trash" -maxdepth 8 -name "${p##*/}" -print -quit 2>/dev/null) ]]; then
-      ok "$p is already in the trash"
-    else later "$p must exist"; fi
-    return 0
+    # Already trashed means: this very path, under some date of the trash of its filesystem. Looked for by name alone, a file of
+    # the same name trashed from another folder passed for it. The folder it was in may be gone too, so go up to one that is there.
+    while [[ ! -d $up && $up == /?* ]]; do rest=/${up##*/}$rest; up=${up%/*}; up=${up:-/}; done
+    if [[ -d $up ]]; then
+      top=$(fs_top "$up/."); rel=$(cd "$up" && pwd -P)$rest; rel=${rel#"$top"/}
+      for d in "$top"/.storageforge-trash/*/; do
+        if [[ -e $d$rel || -L $d$rel ]]; then ok "$p is already in the trash: $d$rel"; return 0; fi
+      done
+    fi
+    later "$p must exist"; return 0
   fi
   mountpoint -q -- "$p" && { conflict "$p is a mount point"; return 0; }
   top=$(fs_top "$p"); rel=$(cd "$(dirname "$p")" && pwd -P)/${p##*/}; rel=${rel#"$top"/}
@@ -1999,4 +2008,6 @@ from . import steps_clone  # noqa: E402,F401  (packages from another host)
 from . import steps_md  # noqa: E402,F401  (mdadm arrays)
 from . import steps_services  # noqa: E402,F401  (services of another host)
 from . import steps_tailscale  # noqa: E402,F401  (joining a tailnet)
+from . import steps_sshca  # noqa: E402,F401  (trusting the SSH CA, and its revocation list)
+from . import steps_tunnels  # noqa: E402,F401  (a Cloudflare Tunnel and a Pangolin site, from a token in the vault)
 from . import steps_kvm  # noqa: E402,F401  (libvirt: snapshots, VM changes, networks, pools, copies)

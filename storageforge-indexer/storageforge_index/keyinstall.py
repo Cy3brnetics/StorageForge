@@ -50,7 +50,7 @@ def key_login_works(db, conn, key_name: str, host: str, user: str, port: int = 2
         key_id = conn.scalar('SELECT key_id FROM ssh_keys WHERE name = :n', {'n': key_name})
         if key_id is None:
             raise VaultError(f'No key named {key_name}')
-        with ephemeral_agent(v.decrypt_key(key_id), ttl=60) as sock:
+        with ephemeral_agent(v.decrypt_key(key_id, 'access'), ttl=60) as sock:
             t = Transport(host=host, user=user, port=port, agent_sock=sock, known_hosts=str(known_hosts_path()),
                           isolated=True, connect_timeout=10, strict=True)   # a probe never pins a host key
             try:

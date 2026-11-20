@@ -161,6 +161,112 @@ def capacity_trend(api, node):
     return run
 
 
+def copies_across_hosts(api, a, b):
+    """A folder with its copy on another host (the owner's request of 2026-11-19), on two real hosts. It is a class of its own and frees
+    nothing; the plan check names the only copy left and the last copy; a set can be set aside; Keep in sync saves a Moves plan that copies
+    nothing until it is deployed, then really copies, deletes nothing at the destination and is listed as kept in sync and no longer as
+    a duplicate; a run that fails is a notification. What the hosts hold is read on the hosts, by checksum."""
+    def run():
+        src, dst = f'{a.room}/sf-t13-pair', f'{b.room}/sf-t13-pair-copy'
+        sizes = {'one.bin': 300_000, 'two.bin': 400_000, 'three.bin': 500_000, 'sub/four.bin': 600_000}
+        make = lambda top: 'set -e; ' + '; '.join(     # noqa: E731
+            f'mkdir -p {shlex.quote(os.path.dirname(f"{top}/{n}"))}; head -c {s} /dev/urandom > {shlex.quote(f"{top}/{n}")}' for n, s in sizes.items())
+        sha = lambda vm, path: sudo(vm, f'sha256sum {shlex.quote(path)}').split()[0]     # noqa: E731
+        here, there = {'host': a.name, 'path': src}, {'host': b.name, 'path': dst}
+        key = sorted([f'{a.name}:{src}', f'{b.name}:{dst}'])
+        plan = None
+        try:
+            sudo(a.name, make(src))
+            time.sleep(2)                     # so that the copy on b is the side that changed last
+            sudo(b.name, make(dst))
+            want(sha(a.name, f'{src}/one.bin') != sha(b.name, f'{dst}/one.bin'), 'the two folders hold the same bytes before any sync: this would prove nothing')
+            demo.scan(api, [a.ip, b.ip])
+
+            # a class of its own: across hosts, nothing to reclaim, all of it "elsewhere"
+            twins = api.get('/api/folders/duplicates?min_files=3&min_size=1MiB')
+            mine = [g for g in twins['groups'] if sorted(f'{c["host"]}:{c["path"]}' for c in g['copies']) == key]
+            want(len(mine) == 1, f'the pair is not a group of folder copies: {json.dumps(twins)[:400]}')
+            g = mine[0]
+            want((g['scope'], g['reclaimable'], g['elsewhere'], g['hosts']) == ('across hosts', 0, sum(sizes.values()), 2), f'the pair across hosts reads: {g}')
+            out = demo.cli('folders', '--min-files', '3', '--min-size', '1MiB', '--limit', '100000')
+            lines = out.splitlines()
+            at = lines.index(f'    {a.name}:{src}') if f'    {a.name}:{src}' in lines else 0
+            want(at and lines[at - 1].startswith('2× 4 files') and 'a copy on another host: a possible backup' in lines[at - 1] and 'reclaim' not in lines[at - 1],
+                 f'the command line does not say it is a possible backup: {out[-600:]}')
+
+            # the plan check: one side leaves the only copy on the other host, both sides are the last copy
+            trash = lambda *where: api.post('/api/changes/check', {'name': 'check', 'tasks': [     # noqa: E731
+                {'type': 'trash', 'host': h, 'params': {'path': p}} for h, p in where]})
+            one = [(it['level'], it['code'], it['text']) for it in trash((a.name, src))['tasks'][0]['items'] if it.get('code')]
+            want(len(one) == 1 and one[0][:2] == ('warn', 'only-copy-left') and f'the copy on {b.name} would be the only one left' in one[0][2], f'trashing one side: {one}')
+            both = trash((a.name, src), (b.name, dst))
+            last = [(it['level'], it['code']) for it in both['tasks'][1]['items'] if it.get('code')]
+            want(last == [('crit', 'last-copy')] and both['crit'] >= 1, f'trashing both sides: {both}')
+
+            # suggested, set aside, suggested again
+            listed = lambda name: [s['key'] for s in api.get('/api/copies')[name]]     # noqa: E731
+            want(key in listed('suggested'), f'the pair is not suggested: {listed("suggested")}')
+            api.post('/api/copies/dismiss', {'copies': [here, there]})
+            want(key in listed('dismissed') and key not in listed('suggested'), 'set aside, it is still suggested')
+            api.post('/api/copies/dismiss', {'copies': [here, there], 'dismissed': False})
+            want(key in listed('suggested'), 'asked for again, it is not suggested')
+            want(any(kind == 'copies-not-synced' for kind, _, _ in t.alerts_now()), 'no notification while a pair is left to answer')
+
+            # which side changed last, and a plan that copies nothing until it is deployed
+            sides = api.get('/api/copies/sides?' + urllib.parse.urlencode([('host', a.name), ('path', src), ('host', b.name), ('path', dst)]))
+            want(sides['source'] == 1, f'the copy on {b.name} was written last, and is not offered as the source: {sides}')
+            before = sha(b.name, f'{dst}/one.bin')
+            made = api.post('/api/copies/sync', {'src': here, 'dst': there})
+            plan = made['plan']
+            step = api.get(f'/api/moves/{plan}')['steps'][0]
+            want((step['method'], step['options']['delete']) == ('mirror', False), f'the prepared step: {step}')
+            want(sha(b.name, f'{dst}/one.bin') == before, 'preparing the plan changed the destination')
+            want(not [j for j in api.get('/api/deploy')['jobs'] if j['plan_id'] == plan], 'preparing the plan deployed a job')
+            want(key in listed('suggested'), 'prepared and not deployed, the pair left the list')
+
+            # deployed: the destination gets the bytes of the source, and what only it holds stays
+            sudo(b.name, f'echo kept > {shlex.quote(dst + "/only-here.txt")}')
+            demo.deploy(api, 'jobs', plan, 'keep in sync')
+            jid = f'p{plan}-{step["id"]}'
+            t.job_run(api, jid, 'run', 'run', int(ssh(b.name, 'date +%s')))
+            for name in sizes:
+                want(sha(b.name, f'{dst}/{name}') == sha(a.name, f'{src}/{name}'), f'{name} at the destination is not the file of the source after the sync')
+            want(sudo(b.name, f'cat {shlex.quote(dst + "/only-here.txt")}').strip() == 'kept', 'the sync deleted a file that only the destination held')
+            sudo(b.name, f'rm -f {shlex.quote(dst + "/only-here.txt")}')
+            demo.scan(api, [a.ip, b.ip])
+            kept = [k for k in api.get('/api/copies')['kept'] if k['job'] == jid]
+            want(len(kept) == 1 and kept[0]['state'] == 'ok' and kept[0]['last'] and not kept[0]['delete'], f'the kept pair reads: {kept}')
+            want(key not in listed('suggested'), 'kept in sync, the pair is still suggested')
+            twins = api.get('/api/folders/duplicates?min_files=3&min_size=1MiB')
+            want(twins['kept_in_sync'] >= 1 and not [g for g in twins['groups'] if sorted(f'{c["host"]}:{c["path"]}' for c in g['copies']) == key],
+                 'kept in sync, the pair is still listed as a duplicate')
+            only = [(it['level'], it['code']) for it in trash((a.name, src))['tasks'][0]['items'] if it.get('code')]
+            want(only == [('warn', 'only-copy-left')], f'the destination of the sync is no longer counted as a copy by the plan check: {only}')
+
+            # a run that fails is a notification, and a good one after it takes it back
+            sudo(a.name, f'mv {shlex.quote(src)} {shlex.quote(src + ".away")}')
+            since = int(ssh(b.name, 'date +%s'))
+            api.post(f'/api/deploy/jobs/{jid}/run')
+            t.wait_for('the failed run', lambda: [r for r in api.get(f'/api/deploy/jobs/{jid}')['runs'] if r['kind'] == 'run' and r['start'] >= since - 5 and r['rc'] != 0], 600)
+            want(any(kind == 'job-failed' and ref == jid for kind, ref, _ in t.alerts_now()), 'a sync that failed raised no notification')
+            want([k['state'] for k in api.get('/api/copies')['kept'] if k['job'] == jid] == ['failed'], 'the kept pair does not say its last run failed')
+            sudo(a.name, f'mv {shlex.quote(src + ".away")} {shlex.quote(src)}')
+            t.job_run(api, jid, 'run', 'run', int(ssh(b.name, 'date +%s')))
+            want(not any(kind == 'job-failed' and ref == jid for kind, ref, _ in t.alerts_now()), 'the notification stayed after a good run')
+            return 'not reclaimable, the plan check names the last copy, set aside and back, prepared without copying, synced by checksum, nothing deleted, a failed run notified'
+        finally:
+            sudo(a.name, f'[ -e {shlex.quote(src + ".away")} ] && mv {shlex.quote(src + ".away")} {shlex.quote(src)}; true', check=False)
+            if plan:
+                try:
+                    demo.deploy(api, 'jobs', plan, 'keep in sync, removing', remove=True)
+                    api('DELETE', f'/api/moves/{plan}')
+                except Exception as exc:      # the check's own result is what matters: say that the lab is left with a job
+                    print(f'copies-across-hosts: could not remove its job: {exc}')
+            sudo(a.name, f'rm -rf {shlex.quote(src)}', check=False)
+            sudo(b.name, f'rm -rf {shlex.quote(dst)}', check=False)
+    return run
+
+
 def duplicates(api, node, root):
     """Checksum scans find identical files. Folder comparison needs no checksums. Both against files whose bytes the seed fixed."""
     def run():
@@ -994,6 +1100,10 @@ def tier13(r):
         check('duplicates', host.name, duplicates(api, host, top))
         check('cold-data', host.name, cold_data(api, host, top))
         check('browse', host.name, browse(api, host, top))
+    if other.name != node.name:
+        check('copies-across-hosts', other.name, copies_across_hosts(api, node, other))
+    else:
+        r.add('copies-across-hosts', '-', None, 'needs two hosts that deploys reach')
     for n in vms[:3]:
         if not n.can('controller'):
             check('capacity-trend', n.name, capacity_trend(api, n))

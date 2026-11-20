@@ -143,7 +143,7 @@ def session(db, conn: Conn, d: dict, action: str = 'scan', timeout: int = 120):
     spec = PLATFORMS[d['platform']]
     known = str(known_hosts_path())
     with Vault(db, conn).unlock() as v:
-        secret = v.credential(d['credential']) if d['credential'] else None
+        secret = v.credential(d['credential'], host=d.get('name') or d['address'], platform=d['platform']) if d['credential'] else None          # released for this device, and written up as such
         user = d['username'] or (secret or {}).get('username')
         host, port = d['address'], d['port']
         if d['transport'] == 'telnet':
@@ -178,7 +178,7 @@ def session(db, conn: Conn, d: dict, action: str = 'scan', timeout: int = 120):
             b = v.resolve(host, action)
         except NoBinding as exc:
             raise DeviceError(f'{d["name"]}: {exc}') from None
-        with ephemeral_agent(v.decrypt_key(b.key_id), ttl=max(600, timeout + 60)) as sock:
+        with ephemeral_agent(v.decrypt_key(b.key_id, 'device'), ttl=max(600, timeout + 60)) as sock:
             who = d['username'] if action == 'scan' and d['username'] else b.user
             if spec['transport'] == 'cli' or d['transport'] == 'cli':
                 t = NetworkTransport(host, who, profile=spec['profile'], port=b.port or port, agent_sock=sock, known_hosts=known, legacy=d['legacy'], command_timeout=timeout)

@@ -18,6 +18,11 @@ PW = 'a long enough password'
 # Changes something, runs on a host or touches accounts and keys: asks for a password typed in the last 5 minutes.
 FRESH_PASSWORD = {
     ('POST', '/api/console/sessions'),          # a shell on a host: the password again for each session
+    ('POST', '/api/enclave/unlock'),            # the vault secret, typed by a person
+    ('POST', '/api/enclave/lock'),
+    ('POST', '/api/routecode'),                 # this session's route key again, for a browser that lost it
+    ('POST', '/api/enclave/chain/accept'),      # taking a cut audit log as it is
+    ('POST', '/api/enclave/stepup/enroll'),     # what the enclave will check a person by
     ('PUT', '/api/console/settings'),           # whether every session is recorded in full
     ('PUT', '/api/scans/signing'),                # whether unsigned scans are refused
     ('DELETE', '/api/scans/signing/<path:addr>'),  # forgetting a pinned key lets the next signer take its place
@@ -61,6 +66,10 @@ FRESH_PASSWORD = {
     ('DELETE', '/api/invites/<int:invite_id>'),
     ('DELETE', '/api/keys/<name>'),
     ('POST', '/api/keys/install'),
+    ('POST', '/api/keys/ssh-ca'),                 # makes the SSH CA
+    ('PUT', '/api/keys/ssh-ca/hosts/<host>'),     # whether StorageForge logs in to a host with certificates
+    ('POST', '/api/keys/ssh-ca/hosts/<host>/certificate'),
+    ('POST', '/api/keys/ssh-ca/certificates/<int:serial>/revoke'),
     ('PUT', '/api/me'),
     ('POST', '/api/roles'),
     ('DELETE', '/api/roles/<name>'),
@@ -112,6 +121,9 @@ FRESH_PASSWORD = {
     ('POST', '/api/sfnet'),
     ('POST', '/api/sfnet/members'),
     ('POST', '/api/sfnet/members/remove'),
+    ('POST', '/api/sfnet/members/rotate'),
+    ('POST', '/api/sfnet/controller'),
+    ('POST', '/api/sfnet/controller/apply'),
     ('POST', '/api/map/placeholders/<path:node_id>/promote'),
     ('POST', '/api/map/manual'),
     ('DELETE', '/api/map/manual/<int:manual_id>'),
@@ -142,6 +154,9 @@ NO_FRESH_PASSWORD = {
     ('PUT', '/api/desktop/profiles/<name>'),         # a profile sits in the database; the plan step that writes it to a host is run like any other
     ('DELETE', '/api/desktop/profiles/<name>'),
     ('POST', '/api/sfnet/plan'),                  # saves a plan and runs nothing
+    ('POST', '/api/enclave/stepup'),              # the password itself, checked inside the key enclave: it is the step-up
+    ('POST', '/api/enclave/stepup/begin'),        # a challenge for a security key
+    ('POST', '/api/keys/ssh-ca/plan'),            # likewise
     ('POST', '/api/devices/<name>/read'),        # reads, as a scan does, through the account bound for reading
     ('POST', '/api/devices/<name>/report'),      # saves what an apply would do. The apply asks
     ('POST', '/api/hostlogs/rules'),             # a log rule decides what raises a notification: it changes nothing on a host
@@ -214,6 +229,8 @@ NO_FRESH_PASSWORD = {
     ('POST', '/api/login'),
     ('POST', '/api/logout'),
     ('POST', '/api/me/password'),
+    ('POST', '/api/copies/sync'),                # saves a Moves plan with one mirror step, as /api/moves does. Deploying it asks
+    ('POST', '/api/copies/dismiss'),             # what is suggested, as PUT /api/files/ignore is what is shown: nothing on a host
     ('POST', '/api/moves'),
     ('DELETE', '/api/moves/<int:plan_id>'),
     ('PUT', '/api/moves/<int:plan_id>'),

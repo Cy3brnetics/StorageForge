@@ -482,9 +482,9 @@ def _device_problems(conn: Conn) -> dict:
 
 
 def problems(conn: Conn) -> dict:
-    from . import authkeys, clamav, enclave, jobs, logrules, scheduler, security, selfupdate, sfnetwork, site
-    now = {**enclave.problems(), **logrules.problems(conn), **scan_problems(conn), **backup_problems(conn), **cert_problems(), **selfupdate.problems(), **sfnetwork.problems(conn), **site.shared_problems(conn),
-           **authkeys.problems(conn), **clamav.problems(conn), **security.problems(conn), **_map_problems(conn), **_device_problems(conn)}
+    from . import authkeys, clamav, copies, enclave, jobs, logrules, rotate_keys, scheduler, security, selfupdate, sfnetwork, site, sshcerts
+    now = {**enclave.problems(), **rotate_keys.problems(conn), **logrules.problems(conn), **scan_problems(conn), **backup_problems(conn), **cert_problems(), **selfupdate.problems(), **sfnetwork.problems(conn), **site.shared_problems(conn), **copies.problems(conn),
+           **authkeys.problems(conn), **clamav.problems(conn), **security.problems(conn), **_map_problems(conn), **_device_problems(conn), **sshcerts.problems(conn)}
     for j in jobs.overview(conn):
         if j['state'] == 'failed':
             now[f'job-failed:{j["id"]}'] = ('job-failed', j['id'], f'Job failed: {j["name"]}',

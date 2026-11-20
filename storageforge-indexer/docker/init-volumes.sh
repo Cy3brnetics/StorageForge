@@ -4,6 +4,7 @@
 # be in the image's layers, and the same in every container made from it.
 #   /secrets/app    uid 10001: vault_secret, session_secret, tls_cert
 #   /secrets/proxy  uid 101:   tls_cert, tls_key
+#   /secrets/vault  uid 10001: vault_secret, only with docker-compose.enclave.yml (then it is not in /secrets/app)
 # Existing files are never overwritten. A missing one comes from /seed (./secrets, made by docker/init-secrets.sh) when
 # it is there, and is generated otherwise.
 set -eu
@@ -17,20 +18,36 @@ if [ -d /secrets/tunnel-keys ]; then
   chown 10001:10001 /secrets/tunnel-keys; chmod 0755 /secrets/tunnel-keys
   chown -R 10002:10002 /secrets/tunnel-host; chmod 0755 /secrets/tunnel-host
 fi
+# only with docker-compose.sfnet.yml: what the app writes and the link reads, what the link writes and the app reads, and the
+# folder of the link's private key, which the app never mounts
+if [ -d /secrets/sfnet-want ]; then
+  chown 10001:10001 /secrets/sfnet-want; chmod 0755 /secrets/sfnet-want
+  chown 0:0 /secrets/sfnet-state /secrets/sfnet-keys; chmod 0755 /secrets/sfnet-state; chmod 0700 /secrets/sfnet-keys
+fi
 new_secret() { openssl rand -base64 48 | tr -d '\n'; }
 
-if [ ! -s "$APP/vault_secret" ]; then
+# only with docker-compose.enclave.yml: the vault secret has a volume of its own, which the server's container does not mount.
+# The starter hands it to the key enclave from there. One that is still beside the other secrets moves, and is removed there.
+VAULT=$APP
+if [ -d /secrets/vault ]; then
+  VAULT=/secrets/vault
+  if [ -s "$APP/vault_secret" ] && [ ! -s "$VAULT/vault_secret" ]; then
+    cp "$APP/vault_secret" "$VAULT/vault_secret"; log "vault_secret moved to its own volume: the server no longer holds it"
+  fi
+  rm -f "$APP/vault_secret"
+fi
+if [ ! -s "$VAULT/vault_secret" ]; then
   if [ -s "$SEED/vault_secret" ]; then
-    cp "$SEED/vault_secret" "$APP/vault_secret"; log "vault_secret copied from ./secrets"
+    cp "$SEED/vault_secret" "$VAULT/vault_secret"; log "vault_secret copied from ./secrets"
   elif [ -e /app/data/index.db ]; then
     # a new secret could not unlock this vault, and would hide that the real one is what is missing
-    log "error: sf-data has a database but no vault secret was found. Put the original in ./secrets/vault_secret"; exit 64
+    log "error: sf-data has a database but no vault secret was found. Put the original in ./secrets/vault_secret (a stack that ran with docker-compose.enclave.yml has it in the sf-vault-secret volume)"; exit 64
   else
-    new_secret > "$APP/vault_secret"; log "vault_secret created. Back it up: without it the vault cannot be decrypted"
+    new_secret > "$VAULT/vault_secret"; log "vault_secret created. Back it up: without it the vault cannot be decrypted"
   fi
 fi
 # After a reset, ./secrets/vault_secret is the old client's: their keys, for anyone with their archive
-if [ -e "$APP/reset_at" ] && [ -s "$SEED/vault_secret" ] && [ "$(cat "$SEED/vault_secret")" != "$(cat "$APP/vault_secret")" ]; then
+if { [ -e "$APP/reset_at" ] || [ -e "$VAULT/reset_at" ]; } && [ -s "$SEED/vault_secret" ] && [ "$(cat "$SEED/vault_secret")" != "$(cat "$VAULT/vault_secret")" ]; then
   log "error: ./secrets/vault_secret is the secret from before the reset. Delete it (the archive has a copy), then start again"; exit 64
 fi
 if [ ! -s "$APP/session_secret" ]; then
@@ -64,7 +81,7 @@ if [ ! -s "$PROXY/tls_cert" ] || [ ! -s "$PROXY/tls_key" ]; then
 fi
 cp "$PROXY/tls_cert" "$APP/tls_cert"                      # the public half only; the key stays with the proxy
 
-chown -R 10001:10001 "$APP"
+chown -R 10001:10001 "$APP" "$VAULT"
 chown -R 101:101 "$PROXY"
-chmod 0500 "$APP" "$PROXY"
-chmod 0400 "$APP"/* "$PROXY"/*
+chmod 0500 "$APP" "$PROXY" "$VAULT"
+chmod 0400 "$APP"/* "$PROXY"/* "$VAULT"/*
