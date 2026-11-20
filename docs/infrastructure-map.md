@@ -12,6 +12,7 @@ Nothing sends a packet to find out what exists. There is no scanner in here, by 
 | Firewall rules, which process owns a listener, clients on storage ports | A signed read-only **measurement**, every 6 hours or when you ask | Yes |
 | libvirt, Incus, LXC, Proxmox guests, other users' rootless Podman | The same measurement | Yes |
 | WireGuard public keys and peers, Tailscale, proxy sites and upstreams | The same measurement. Never a private key, a preshared key or a password | Yes |
+| Other private networks and access proxies: see [what each tool says](#private-networks-and-access-proxies-what-each-tool-says) | The same measurement, from each tool's own status or configuration, without its credentials | Yes |
 | Docker and Podman containers | The scan | Depends on the host |
 
 A host with no deploy access gets the unprivileged layers, and says what it could not read. A command that fails makes that part **not readable**, which never reads as empty. Alpine, TrueNAS and XCP-ng say which layers they are missing. Turn the measurement off for one host through `POST /api/infra/settings`.
@@ -52,6 +53,48 @@ A tunnel (Cloudflare Tunnel, frp, ngrok, Pangolin's Newt) dials out from the hos
 frp's `stcp`, `xtcp` and `sudp` proxies are not listed: only a visitor that holds the same key reaches them.
 
 Read from configuration and tested with unit tests only. The lab has no check against a real Cloudflare, ngrok or Pangolin service: **not lab-tested**.
+
+## Private networks and access proxies: what each tool says
+
+The measurement asks each tool on a host for its own account of itself, and the map draws it. A tool that is not installed adds nothing. A tool that fails, or prints something that cannot be read, shows as **here, and its status could not be read**: it never fails the scan and never hides the others.
+
+| Tool | Read from | What is read |
+| :--- | :--- | :--- |
+| Tailscale | `tailscale status --json` | Peers, online or not, direct or relayed, routes, exit nodes |
+| Headscale | `headscale nodes list -o json`, on the server | Every node, with routes approved, waiting and served |
+| NetBird | `netbird status --json` | Peers, direct or relayed, the networks behind them, the management server |
+| ZeroTier | `zerotier-cli -j info`, `listnetworks`, `peers` | The networks joined, this host's address on each, and its peers by node id |
+| Nebula | `/etc/nebula/config.yml` and `nebula-cert print -json` of the host certificate | Whether it is a lighthouse or a relay, the lighthouses and hosts it names, networks reached through another host (`unsafe_routes`), and from the certificate its name, address, groups, the networks it may route and when it ends |
+| Netmaker | `netclient list -l` | Each network and this host's address on it, and its peers by WireGuard key. A peer allowed more than its own address is a gateway to those networks |
+| strongSwan | `swanctl --list-sas` and `--list-conns` | Each tunnel that is up with the networks at both ends, and each connection that is configured and down. A remote end that was handed a virtual address is a client |
+| OpenVPN | The server's status file, and its CA where it is kept beside it (easy-rsa's `index.txt`, the CRL, the CA and server certificates) | Clients connected with their addresses and the networks behind them. Certificates valid, revoked, ended and ending within 30 days, and until when the CRL is good |
+| OpenZiti | `ziti-edge-tunnel tunnel_status` | The identities the tunneler has loaded, and the services each may dial or is the exit of |
+| Teleport | `tctl status`, `tctl get nodes`, `/etc/teleport.yaml`, `tsh status` | The cluster and version, the nodes it knows with where each answers, which services this host runs, and until when a sign-in is valid |
+| Boundary | `boundary targets list` where a token is at hand, and the controller or worker configuration | Targets with address and port, and what this host is to Boundary |
+| Pomerium | `/etc/pomerium/config.yaml` | Each route, where it sends requests, and who it lets in |
+
+**What does not leave the host.** These files and outputs hold keys, tokens and people's names, so they are cut on the host before anything is sent, and cut again by the same rule on the server:
+
+- From a configuration file, every line that names a credential goes with everything that belongs to it: the block under it, the list under it, a quoted value that runs over several lines, and any PEM block. That covers keys, tokens, cookies, request headers, database addresses and a password written into a URL. A route or setting whose own line contains such a word (a site called `keycloak.example.com`, say) is dropped with it, and so is not shown.
+- From strongSwan, every identity is replaced before it is sent: a certificate subject, an EAP or XAuth name. Where a client connects from is not kept.
+- From Teleport, only the fields that are read are sent: a label, a command, a login or a user name stays on the host.
+- From Boundary, a target's description and the credentials it is given are emptied.
+- From Pomerium, an email address in a policy is replaced on the host. A policy is told by what it asks for and how many (`by policy: domain, email`, `2 domain(s)`), never by who.
+- From an OpenVPN CA, the common name of each certificate is read and nothing else of its subject. No key file is opened.
+
+**On the map.** Each network on a host is a **VPN** row that says what was read in a sentence. Its peers are lines:
+
+- A peer whose address a scanned host has is that host, **confirmed**. So is a Netmaker peer whose WireGuard key a scanned host holds, and a ZeroTier peer whose node id a scanned host said is its own.
+- A ZeroTier peer that was not scanned as a ZeroTier node, and is reached at an address a scanned host has, is drawn as that host and marked **inferred**: behind one address there can be more than one machine.
+- Any other peer with an address is a placeholder, **inferred**. A peer known by a key alone that no scanned host holds is not drawn.
+- A network behind a peer (a NetBird or Tailscale route, a Netmaker gateway, the far end of an IPsec tunnel, a Nebula `unsafe_route`) is a second line that names the networks.
+- Nebula has no status command. Its lines say what the host is configured to reach, and never that a peer is up.
+
+Each access proxy is an **ACC** row with its targets. A target at an address a scanned host has is drawn to that host, confirmed; one known by a name that a scanned host also has is inferred. A Pomerium route that lets anyone in without a sign-in (`allow_public_unauthenticated_access`, or a policy that accepts everyone) is marked **public** and listed on the row. It is not yet counted by the exposure engine: the Exposure panel and **Can A reach B?** do not know about it.
+
+**In the console.** A host's address on a private network is offered by that network's name. The name comes from what the tool said its interface and address are, so a Nebula interface called anything, or a Netmaker one, is named correctly once the measurement has run; before that only the interface's name is used.
+
+Built, not lab-tested. Nebula is read against the real `nebula-cert` 1.12.0 and the OpenVPN CA against one made by the real `openssl`. Every other tool is read against samples taken from its documentation or source, since none is installed where the tests run. Lab tier 22 has checks for ZeroTier, Nebula, strongSwan, an OpenVPN CA and a Pomerium configuration; they are written and have not run. Netmaker, OpenZiti, Teleport and Boundary have no lab check: the lab runs none of their servers.
 
 **Can A reach B?** walks a packet's path: out of A, across anything between, into B, naming the first rule that decides it. It is worked out from the configuration and tested against nothing: anything between hosts that was not scanned is listed as a blind spot.
 
@@ -192,6 +235,7 @@ Firewall rules and exposure say how to get in, so they need `security.view`. The
 
 The roadmap goes further than this.
 
+- For private networks and access proxies: an alert when an OpenVPN certificate or CRL is about to end (the map says it, nothing notifies), OpenVPN client profiles, a public Pomerium route in the exposure engine, Teleport's applications, databases and session recordings, and making Teleport or Boundary targets from the host inventory.
 - Deploying a stack, an LXC instance or a catalog tool from the map, or a VM from an ISO or cloud image. Those are in the [roadmap](../roadmap.md).
 - From the map: moving, cloning or resizing a VM, restricting a service's bind address, putting a listener behind a proxy, rotating a peer's key.
 - `bridge`-family firewall rules for bridged VMs. A quarantine has `input` and `forward` hooks, and bridged VMs bypass both: the map says a bridged VM is outside host rules.
@@ -208,6 +252,7 @@ The roadmap goes further than this.
 | `tests/test_platform_more.py` | The firewall writer against the real kernel, reach, what-if and designs |
 | `tests/test_browser_smoke.py` | The panels and the map's modes in Chromium under the real CSP |
 | `tests/test_tunnels.py`, `tests/test_tunnel_exposure.py` | What each tunnel's configuration publishes, with no credential in what comes back; a loopback or firewalled listener a tunnel publishes shown as public; the two tunnel steps against stand-ins for `cloudflared` and `newt`, since neither is installed where the tests run |
+| `tests/test_overlay_readers.py`, `tests/test_accessproxies.py`, `tests/test_connections.py` | Each reader on a sample of the tool's own output, saying where the sample comes from; Nebula against the real `nebula-cert`, the OpenVPN CA against one the real `openssl` made; the collector's own lines run in bash against stand-in tools, with no credential and no person's name in what they print; the rule that cuts a configuration file gives the same text in awk on the host and in Python on the server; no reader raises on anything; the map built from the readings |
 | `tests/test_overlay_steps.py` | The `netbird`, `zerotier` and `openziti` steps against stand-ins on a PATH of their own, since none of the three is installed where the tests run. Nebula against the real thing: certificates made here are accepted by the real `nebula-cert` 1.12.0 and read back the same, `nebula -test` accepts the configurations, and two real Nebula nodes in network namespaces reach each other with them until one certificate is revoked. `vault headscale-key` against a stand-in for `headscale` |
 | [KVM lab](kvm-lab.md) tier 10 | What scans read against each VM. A capture on the VM during a scan: the only connection is SSH |
 | KVM lab tier 11 | Rules on ufw, nftables and firewalld judged by real connections between VMs, a published port's fix, a fence across a reboot, the timer undoing a firewall rule and a bridge that each cut SSH, VLANs on networkd and NetworkManager across a reboot, the reach table against real connections, the overlay against the next reading, a half-deployed design, WireGuard confirmed by key, and a placeholder promoted to a host |

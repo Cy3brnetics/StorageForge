@@ -64,13 +64,17 @@ def routes(conn, host: str) -> list[dict]:
     hid, lan, port = row[0]
     out = [{'route': 'lan', 'label': 'LAN', 'address': lan, 'port': port or 22}] if lan else []
     net = loads(conn.scalar('SELECT data_json FROM host_network WHERE host_id = :h', {'h': hid}) or '{}') or {}
+    # what each tool on the host said is its own interface and address: Nebula's interface can have any name, and Netmaker's too
+    infra = loads(conn.scalar("SELECT data_json FROM security_measurements WHERE kind = 'infra' AND lower(host) = lower(:h)", {'h': host}) or '{}') or {}
+    access = infra.get('access') if isinstance(infra, dict) else None
+    known = overlays.interfaces_of(access.get('overlays') if isinstance(access, dict) else None)
     for iface in net.get('interfaces') or []:
         for a in iface.get('addresses') or []:
             try:
                 ip = ipaddress.ip_address(a.get('ip') or '')
             except ValueError:
                 continue
-            network = overlays.network_of(iface.get('name'), str(ip))
+            network = overlays.network_of(iface.get('name'), str(ip), known)
             # one route per network: a host's second address on the same one reaches the same sshd
             if ip.version == 4 and network and not any(r['address'] == str(ip) or r['route'] == network for r in out):
                 out.append({'route': network, 'label': overlays.label(network), 'address': str(ip), 'port': port or 22})

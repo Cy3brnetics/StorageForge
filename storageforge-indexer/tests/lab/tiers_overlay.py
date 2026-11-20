@@ -33,8 +33,24 @@ cannot be set up shows as a failed `*-server` check and the checks that need it 
     nebula-revoke       the member's certificate revoked, the lighthouse's step run again: the member no longer gets through
     nebula-leave        state absent on both: no unit, no key
 
-Not here: OpenZiti (the lab has no Ziti controller to make an enrollment token) and Netmaker (it has no step, steps_overlay.py
-says why). Needs two deployable hosts with systemd, one of them an apt-get host that runs Docker, and the internet for the packages.
+And what a scan reads of them afterwards (the readers of overlays.py and accessproxies.py, written the same day and not run here
+either; what was run is tests/test_overlay_readers.py, test_accessproxies.py and test_connections.py):
+
+    zerotier-read       while both are on the network: the member's reading has the controller host among its peers, and the map
+                        draws the two as peers
+    nebula-read         while both run: the lighthouse reads as one, the member's reading names it, each has its certificate's
+                        name and end, no key is in what the index keeps, and the map draws the member to the lighthouse
+    ipsec-read          a strongSwan tunnel between the two hosts with a pre-shared key, between two networks nothing uses: each
+                        reading has the other end, up, with the networks behind it; the key and the identities are in nothing the
+                        index keeps; the map draws the tunnel. Then both configurations are removed
+    openvpn-pki-read    a CA as easy-rsa keeps one, made with openssl on the host, with one certificate revoked and a CRL: the
+                        reading counts them. No OpenVPN runs for this
+    pomerium-read       a Pomerium configuration with secrets, one public route and one behind a policy: the reading has both
+                        routes, marks the public one, and holds no secret and no address of a person. No Pomerium runs for this
+
+Not here: OpenZiti (the lab has no Ziti controller to make an enrollment token), Netmaker (it has no step, steps_overlay.py
+says why, and the lab has no Netmaker server), Teleport and Boundary (the lab runs neither, so their readers have only met the
+samples in tests/test_accessproxies.py). Needs two deployable hosts with systemd, one of them an apt-get host that runs Docker, and the internet for the packages.
 The lab logs in as `lab` with sudo; `vault headscale-key`, `vault nebula-issue` and `vault send-secret` use an operator's own SSH
 login, so the lab makes a key in the controller's container and lets it in as `lab` on the hosts it uses.
 """
@@ -103,6 +119,72 @@ def overlays_of(host):
             f"r = c.execute(\"SELECT data_json FROM security_measurements WHERE kind = 'infra' AND lower(host) = lower(?)\", ({host!r},)).fetchone(); "
             "print(json.dumps(((json.loads(r[0]) if r else {}).get('access') or {}).get('overlays') or []))")
     return json.loads(in_container(f'python -c {shlex.quote(code)}'))
+
+
+def access_of(host):
+    """The whole access part of the last infrastructure reading of a host, and the text of it as the index keeps it."""
+    code = ("import json, sqlite3; c = sqlite3.connect('/app/data/index.db'); "
+            f"r = c.execute(\"SELECT data_json FROM security_measurements WHERE kind = 'infra' AND lower(host) = lower(?)\", ({host!r},)).fetchone(); "
+            "print(json.dumps((json.loads(r[0]) if r else {}).get('access') or {}))")
+    text = in_container(f'python -c {shlex.quote(code)}')
+    return json.loads(text), text
+
+
+def drawn(api, network, a, b):
+    """The PEERS_WITH lines of this network on the map that leave host a, and whether one of them ends at host b."""
+    lines = [e for e in api.get('/api/map')['edges'] if e['rel'] == 'PEERS_WITH' and (e.get('props') or {}).get('network') == network and e['src'].lower() == f'host:{a}'.lower()]
+    return lines, any(e['dst'].lower() == f'host:{b}'.lower() for e in lines)
+
+
+SWAN_PSK = 'sflab-psk-1f0c9d2e7a4b4c6e8d1f'
+SWAN_CONF = """connections {{
+  sflab {{
+    version = 2
+    local_addrs = {here}
+    remote_addrs = {there}
+    local {{
+      auth = psk
+      id = sflab-{me}@lab.example
+    }}
+    remote {{
+      auth = psk
+      id = sflab-{other}@lab.example
+    }}
+    children {{
+      sflab-net {{
+        local_ts = {mine}
+        remote_ts = {theirs}
+      }}
+    }}
+  }}
+}}
+secrets {{
+  ike-sflab {{
+    id-a = sflab-a@lab.example
+    id-b = sflab-b@lab.example
+    secret = "{psk}"
+  }}
+}}
+"""
+POMERIUM_SECRET = 'c2ZsYWItcG9tZXJpdW0tc2VjcmV0LW5vdC1yZWFs'
+POMERIUM_CONF = f"""authenticate_service_url: https://authenticate.sflab.example
+shared_secret: {POMERIUM_SECRET}
+cookie_secret: {POMERIUM_SECRET}
+idp_client_secret: {POMERIUM_SECRET}
+routes:
+  - from: https://status.sflab.example
+    to: http://localhost:8080
+    allow_public_unauthenticated_access: true
+  - from: https://files.sflab.example
+    to: http://10.97.9.9:8080
+    set_request_headers:
+      Authorization: Basic {POMERIUM_SECRET}
+    policy:
+      - allow:
+          or:
+            - email:
+                is: someone-real@sflab.example
+"""
 
 
 def tier22(r):
@@ -275,6 +357,20 @@ def tier22(r):
         return 'the step joined and said which node waits; the controller listed it unauthorised; once authorised there, a second run found it on the network with an address'
     needs('ZeroTier', 'zerotier-join', member, zerotier_join)
 
+    def zerotier_read():
+        for n in (server, member):
+            api.post('/api/infra/measure', {'host': name[n.name]})
+        ids = {n.name: sudo(n.name, 'zerotier-cli info').split()[2] for n in (server, member)}
+        read = next((o for o in overlays_of(name[member.name]) if o.get('network') == 'zerotier'), None)
+        want(read and not read.get('error'), f'the reading of the member has no ZeroTier: {read}')
+        want(read['state'] == 'connected' and read['self']['key'] == ids[member.name], f'the reading does not say it is connected as {ids[member.name]}: {read["state"]}, {read["self"]}')
+        want(any(a.startswith('10.98.0.') for a in read['self']['addresses']), f'the reading has no address on the network: {read["self"]}')
+        want(any(p.get('key') == ids[server.name] for p in read['peers']), f'the controller host {ids[server.name]} is not among the peers read: {[p.get("key") for p in read["peers"]]}')
+        lines, joined = drawn(api, 'zerotier', name[member.name], name[server.name])
+        want(joined, f'the map does not draw the two hosts as ZeroTier peers: {[(e["dst"], e["props"].get("confidence")) for e in lines]}')
+        return 'the reading has the node, its address and the controller host as a peer, and the map draws the two as peers by node id'
+    needs('ZeroTier', 'zerotier-read', member, zerotier_read)
+
     def zerotier_leave():
         net = up['ZeroTier']
         _, runs = plan(api, f'lab: {member.name} leaves ZeroTier', ('zerotier', name[member.name], {'network': net, 'state': 'absent'}))
@@ -316,6 +412,27 @@ def tier22(r):
         return 'a CA in the vault issued certificates for keys the two hosts made; the step wrote both configurations; the member reached the lighthouse over Nebula; no private key left a host'
     r.check('nebula-join', member.name, nebula_join)
 
+    def nebula_read():
+        for n in (server, member):
+            api.post('/api/infra/measure', {'host': name[n.name]})
+        got = {}
+        for n in (server, member):
+            access, text = access_of(name[n.name])
+            read = next((o for o in access.get('overlays') or [] if o.get('network') == 'nebula'), None)
+            want(read and not read.get('error'), f'the reading of {n.name} has no Nebula: {read}')
+            want('PRIVATE KEY' not in text and sudo(n.name, 'sed -n 2p /etc/nebula/host.key').strip() not in text, f'the Nebula key of {n.name} is in what the index keeps')
+            want((read.get('certificate') or {}).get('expires') and read['self']['name'] == short[n.name], f'the reading of {n.name} does not have its certificate: {read.get("self")}, {read.get("certificate")}')
+            got[n.name] = read
+        want(got[server.name]['role'] == 'lighthouse' and got[server.name]['port'] == 4242, f'the lighthouse does not read as one: {got[server.name]["role"]}, port {got[server.name]["port"]}')
+        want(got[member.name]['role'] == 'host', f'the member reads as {got[member.name]["role"]}')
+        want(any(p['addresses'] == [light] and p.get('lighthouse') for p in got[member.name]['peers']), f'the member does not name its lighthouse: {got[member.name]["peers"]}')
+        lines, _ = drawn(api, 'nebula', name[member.name], name[server.name])
+        want(any(e['props'].get('lighthouse') for e in lines), f'the map draws no line from the member to its lighthouse: {[e["dst"] for e in lines]}')
+        to_host = any(e['dst'].lower() == f'host:{name[server.name]}'.lower() for e in lines)
+        return ('the lighthouse reads as one, the member names it, each has its certificate and no key is kept; the map draws the member to '
+                + ('the lighthouse host itself' if to_host else 'a placeholder at the lighthouse address: no network scan since the join has seen that address on the host'))
+    needs('Nebula', 'nebula-read', member, nebula_read)
+
     def nebula_revoke():
         vault('nebula-revoke', 'sflab', short[member.name])
         _, runs = plan(api, 'lab: the lighthouse learns of a revoked certificate', ('nebula', name[server.name], {'ca': 'sflab', 'lighthouse': True, 'lighthouses': lighthouses, 'inbound': 'icmp'}))
@@ -334,3 +451,89 @@ def tier22(r):
             want(quiet(n.name, 'ip link show nebula1') != 0, f'{n.name} still has the Nebula interface')
         return 'the unit, the configuration and the host key are gone from both'
     needs('Nebula', 'nebula-leave', member, nebula_leave)
+
+    # ── what a scan reads where nothing was joined through a step: strongSwan, an OpenVPN CA, a Pomerium configuration ──
+    def ipsec_read():
+        ends = {server.name: ('a', 'b', '10.97.1.0/24', '10.97.2.0/24', member), member.name: ('b', 'a', '10.97.2.0/24', '10.97.1.0/24', server)}
+        for n in (server, member):
+            me, other, mine, theirs, far = ends[n.name]
+            sudo(n.name, 'command -v swanctl >/dev/null || { if command -v apt-get >/dev/null; then export DEBIAN_FRONTEND=noninteractive; apt-get -o DPkg::Lock::Timeout=180 -qq install -y strongswan-swanctl charon-systemd; '
+                         'else dnf -q -y install epel-release && dnf -q -y install strongswan; fi; }')
+            sudo(n.name, 'umask 077; mkdir -p /etc/swanctl/conf.d; cat > /etc/swanctl/conf.d/sflab.conf',
+                 stdin=SWAN_CONF.format(here=n.ip, there=far.ip, me=me, other=other, mine=mine, theirs=theirs, psk=SWAN_PSK))
+            sudo(n.name, '(systemctl enable --now strongswan 2>/dev/null || systemctl enable --now strongswan-swanctl 2>/dev/null || systemctl enable --now strongswan-starter); sleep 2; swanctl --load-all')
+        try:
+            sudo(member.name, 'swanctl --initiate --child sflab-net --timeout 30')
+            for n in (server, member):
+                api.post('/api/infra/measure', {'host': name[n.name]})
+            for n in (server, member):
+                me, other, mine, theirs, far = ends[n.name]
+                access, text = access_of(name[n.name])
+                read = next((o for o in access.get('overlays') or [] if o.get('network') == 'ipsec'), None)
+                want(read and not read.get('error'), f'the reading of {n.name} has no IPsec: {read}')
+                tunnel = next((p for p in read['peers'] if p['name'] == 'sflab'), None)
+                want(tunnel and tunnel['online'] and tunnel['addresses'] == [far.ip], f'the reading of {n.name} does not have the tunnel up to {far.ip}: {tunnel}')
+                want(tunnel['routes'] == [theirs] and tunnel['local_routes'] == [mine] and not tunnel['client'], f'the networks at the two ends are not read: {tunnel}')
+                want(SWAN_PSK not in text and 'lab.example' not in text, f'the pre-shared key or an identity is in what the index keeps of {n.name}')
+            lines, joined = drawn(api, 'ipsec', name[member.name], name[server.name])
+            want(joined, f'the map does not draw the tunnel between the two hosts: {[e["dst"] for e in lines]}')
+            routed = [e for e in api.get('/api/map')['edges'] if e['rel'] == 'ROUTES_VIA' and (e.get('props') or {}).get('network') == 'ipsec' and e['src'].lower() == f'host:{name[member.name]}'.lower()]
+            want(any('10.97.1.0/24' in (e['props'].get('networks') or []) for e in routed), 'the map does not say which network is behind the other end')
+        finally:
+            for n in (server, member):
+                sudo(n.name, 'swanctl --terminate --ike sflab --timeout 10 >/dev/null 2>&1; rm -f /etc/swanctl/conf.d/sflab.conf; swanctl --load-all >/dev/null 2>&1; true', check=False)
+        return 'a strongSwan tunnel between the two hosts was read on both with the networks behind each end, drawn on the map, and neither its key nor an identity was kept'
+    r.check('ipsec-read', member.name, ipsec_read)
+
+    def openvpn_pki_read():
+        pki = '/etc/openvpn/easy-rsa/pki'
+        want(quiet(server.name, f'[ ! -e {pki} ]') == 0, f'{server.name} already has {pki}: the lab does not write into a CA it did not make')
+        install(server, 'openssl')
+        make = f"""set -e; umask 077; mkdir -p {pki}/issued; cd {pki}; : > index.txt; echo 01 > serial; echo 01 > crlnumber
+printf '%s\n' '[ca]' 'default_ca = CA_default' '[CA_default]' 'dir = .' 'database = $dir/index.txt' 'new_certs_dir = $dir/issued' 'serial = $dir/serial' 'crlnumber = $dir/crlnumber' \
+  'default_md = sha256' 'policy = policy_any' 'default_days = 825' 'default_crl_days = 180' 'unique_subject = no' '[policy_any]' 'commonName = supplied' > ca.cnf
+K="-newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes"
+openssl req -x509 $K -keyout ca.key -out ca.crt -subj "/CN=sflab CA" -days 3650 2>/dev/null
+for n in server laptop branch; do
+  openssl req $K -keyout $n.key -out $n.csr -subj "/CN=$n" 2>/dev/null
+  openssl ca -batch -config ca.cnf -cert ca.crt -keyfile ca.key -in $n.csr -out $n.crt -notext 2>/dev/null
+done
+openssl ca -config ca.cnf -cert ca.crt -keyfile ca.key -revoke branch.crt 2>/dev/null
+openssl ca -config ca.cnf -cert ca.crt -keyfile ca.key -gencrl -out crl.pem 2>/dev/null
+chmod 755 /etc/openvpn /etc/openvpn/easy-rsa {pki}; chmod 644 index.txt ca.crt crl.pem"""
+        try:
+            ssh(server.name, 'sudo -n bash -s', stdin=make)
+            api.post('/api/infra/measure', {'host': name[server.name]})
+            access, text = access_of(name[server.name])
+            read = next((o for o in access.get('overlays') or [] if o.get('network') == 'openvpn'), None)
+            want(read and isinstance(read.get('pki'), dict) and not read['pki'].get('error'), f'the reading has no OpenVPN certificates: {read}')
+            states = sorted((c['name'], c['state']) for c in read['pki']['certificates'])
+            want(states == [('branch', 'revoked'), ('laptop', 'valid'), ('server', 'valid')], f'the certificates are not read as they are: {states}')
+            want((read['pki'].get('crl') or {}).get('revoked') == 1 and read['pki']['crl'].get('next'), f'the CRL is not read: {read["pki"].get("crl")}')
+            want('PRIVATE KEY' not in text, 'a private key is in what the index keeps')
+            node = next((n for n in api.get('/api/map')['nodes'] if n['kind'] == 'VPNNetwork' and n['label'] == 'OpenVPN' and (n.get('host') or '').lower() == name[server.name].lower()), None)
+            want(node and (node['props'].get('certificates') or {}).get('revoked') == 1, f'the map does not show the certificates: {node and node["props"]}')
+        finally:
+            sudo(server.name, f'rm -rf {pki}; rmdir /etc/openvpn/easy-rsa 2>/dev/null; true', check=False)
+        return 'a CA made with openssl was read: two certificates valid, one revoked, and a CRL with the date it is good until; the map says so'
+    r.check('openvpn-pki-read', server.name, openvpn_pki_read)
+
+    def pomerium_read():
+        want(quiet(server.name, '[ ! -e /etc/pomerium ]') == 0, f'{server.name} already has /etc/pomerium: the lab does not write into a configuration it did not make')
+        try:
+            sudo(server.name, 'mkdir -p /etc/pomerium && cat > /etc/pomerium/config.yaml && chmod 644 /etc/pomerium/config.yaml', stdin=POMERIUM_CONF)
+            api.post('/api/infra/measure', {'host': name[server.name]})
+            access, text = access_of(name[server.name])
+            read = next((p for p in access.get('proxies') or [] if p.get('tool') == 'pomerium'), None)
+            want(read and not read.get('error'), f'the reading has no Pomerium: {read}')
+            by = {t['name']: t for t in read['targets']}
+            want(sorted(by) == ['https://files.sflab.example', 'https://status.sflab.example'], f'the routes are not read: {sorted(by)}')
+            want(by['https://status.sflab.example']['public'] and not by['https://files.sflab.example']['public'], 'the public route is not told from the one behind a policy')
+            want(by['https://files.sflab.example']['access'] == 'by policy: email', f'the policy is not told by what it asks for: {by["https://files.sflab.example"]["access"]}')
+            want(POMERIUM_SECRET not in text and 'someone-real' not in text, 'a secret or the address of a person is in what the index keeps')
+            node = next((n for n in api.get('/api/map')['nodes'] if n['kind'] == 'AccessProxy' and n['label'] == 'Pomerium'), None)
+            want(node and node['props'].get('public_routes') == ['https://status.sflab.example'], f'the map does not show the public route: {node and node["props"]}')
+        finally:
+            sudo(server.name, 'rm -rf /etc/pomerium', check=False)
+        return 'two routes were read, the one open to anyone marked public and the other told by what its policy asks for; no secret and no address of a person was kept'
+    r.check('pomerium-read', server.name, pomerium_read)

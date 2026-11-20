@@ -71,6 +71,7 @@ MEDIUM = {
     'test_sshcerts.TrustStep',       # the trust and revocation steps against a real sshd, reloaded
     'test_sshcerts.CaInTheEnclave',  # the real enclave program signing a certificate
     'test_tunnel_exposure.Steps',    # bash running the two tunnel steps against stand-ins
+    'test_connections.MoreCollected',    # the collector's lines in bash against stand-ins, and a CA made by the real openssl
     'test_overlay_steps.NetBird',    # bash running the join and leave steps against stand-ins, on a PATH of their own
     'test_overlay_steps.ZeroTier',
     'test_overlay_steps.OpenZiti',

@@ -17,7 +17,7 @@ import json
 import re
 import time
 
-from . import exposure, inframeasure, netfacts, overlays, tunnels, workloads
+from . import accessproxies, exposure, inframeasure, netfacts, overlays, tunnels, workloads
 from .db import Conn, loads
 
 LAYERS = ('storage', 'network', 'services', 'firewall', 'workloads', 'access', 'manual')
@@ -36,7 +36,8 @@ def _bridge_name(iface: dict) -> bool:
     return iface['kind'] == 'bridge' and (iface['name'] or '').startswith(('docker', 'br-', 'podman', 'cni', 'virbr', 'lxdbr', 'incusbr'))
 
 
-def build(host: str, net: dict | None, infra: dict | None, containers: list[dict], loads_workloads: list[dict], peers: dict, mount_nodes: set, wg_keys: dict | None = None, forwards: list | None = None) -> tuple[dict, list]:
+def build(host: str, net: dict | None, infra: dict | None, containers: list[dict], loads_workloads: list[dict], peers: dict, mount_nodes: set, wg_keys: dict | None = None, forwards: list | None = None,
+          overlay_keys: dict | None = None, now: float | None = None) -> tuple[dict, list]:
     """peers: every other scanned host's addresses, address → name. wg_keys: every scanned host's WireGuard public keys. Pure, so
     it can be tested with no database."""
     wg_keys = wg_keys or {}
@@ -164,19 +165,82 @@ def build(host: str, net: dict | None, infra: dict | None, containers: list[dict
         tid = f'host:{peers[ts["ip"]]}' if ts['ip'] in peers else add(f'tsnode:{ts["ip"]}', 'Peer', ts['name'], 'access', owner=None, confidence='inferred', placeholder=True, ip=ts['ip'], os=ts.get('os'))
         if tid != host_id:
             edge(host_id, tid, 'PEERS_WITH', 'tailscale status', 'confirmed' if ts['ip'] in peers else 'inferred', active=ts.get('active'))
-    # the other private networks, each by its own account: a peer whose address a scanned host has is that host
+    # the other private networks, each by its own account: a peer whose address a scanned host has is that host, and so is one
+    # whose key (a ZeroTier node id, a WireGuard public key under Netmaker) is the key another scanned host said is its own
+    overlay_keys = overlay_keys or {}
     for net in acc.get('overlays') or []:
         name = net.get('network')
+        kind = 'server' if net.get('self') is None and not net.get('error') else 'client'
+        oid = add(f'ovnet:{host}:{name}:{kind}', 'VPNNetwork', overlays.label(name), 'access', network=overlays.label(name), state=net.get('state'), role=net.get('role'),
+                  peers=len(net.get('peers') or []), routes=net.get('routes'), interface=net.get('interface'), listen_port=net.get('port'),
+                  certificate_ends=(net.get('certificate') or {}).get('expires'), says=overlays.sentence(net, now), unread=bool(net.get('error')),
+                  certificates=overlays.certificate_counts(net['pki'], now) if isinstance(net.get('pki'), dict) and not net['pki'].get('error') and now is not None else None)
+        edge(oid, host_id, 'RUNS_ON', overlays.SOURCES.get(name, f'{overlays.label(name)} status'))
         if net.get('error') or (name == 'tailscale' and net.get('self')):          # a Tailscale client's peers are drawn above
             continue
-        said = f'{overlays.label(name)} status' if net.get('self') else f'{overlays.label(name)}: the server\'s list'
+        said = overlays.SOURCES.get(name) or (f'{overlays.label(name)} status' if net.get('self') else f'{overlays.label(name)}: the server\'s list')
+        targets = {}
         for p in net.get('peers') or []:
             ip = next((a for a in p.get('addresses') or [] if a in peers), None) or next(iter(p.get('addresses') or []), None)
-            if not ip or ip in me:
+            if ip and ip in me:
                 continue
-            tid = f'host:{peers[ip]}' if ip in peers else add(f'ovnode:{name}:{ip}', 'Peer', p.get('name') or ip, 'access', owner=None, confidence='inferred', placeholder=True, ip=ip, network=name)
+            key = p.get('key')
+            by_key = overlay_keys.get((name, key)) or ((wg_keys.get(key) or (None,))[0] if name == 'netmaker' else None)
+            at = next((a for a in p.get('endpoints') or [] if a in peers), None) if name == 'zerotier' else None
+            if ip in peers:
+                tid, sure, how = f'host:{peers[ip]}', 'confirmed', said
+            elif by_key:
+                tid, sure, how = f'host:{by_key}', 'confirmed', f'{said}: its {"node id" if name == "zerotier" else "key"} is the one {by_key} said is its own'
+            elif at:
+                # where ZeroTier reaches the peer is an address a scanned host has. Inferred: behind one address there can be more than one machine
+                tid, sure, how = f'host:{peers[at]}', 'inferred', f'{said}: node {p.get("key")} is reached at {at}, an address of {peers[at]}'
+            elif ip:
+                tid, sure, how = add(f'ovnode:{name}:{ip}', 'Peer', p.get('name') or ip, 'access', owner=None, confidence='inferred', placeholder=True, ip=ip, network=name), 'inferred', said
+            else:
+                continue                                # known by a key no scanned host holds, and by no address: nothing to draw it at
+            for a in p.get('addresses') or []:
+                targets[a] = (tid, sure)
             if tid != host_id:
-                edge(host_id, tid, 'PEERS_WITH', said, 'confirmed' if ip in peers else 'inferred', network=name, active=p.get('online'), direct=p.get('direct'))
+                edge(host_id, tid, 'PEERS_WITH', how, sure, network=name, active=p.get('online'), direct=p.get('direct'), lighthouse=p.get('lighthouse') or None,
+                     relay=p.get('relay') or None, gateway=p.get('gateway') or None, client=p.get('client') or None, ike=p.get('ike'))
+                # a network behind that peer: what this host reaches through it
+                if p.get('routes'):
+                    edge(host_id, tid, 'ROUTES_VIA', f'{said}: {", ".join(p["routes"][:8])} is behind this peer', sure, network=name, networks=p['routes'], local_networks=p.get('local_routes') or None)
+        # Nebula: a network reached through another Nebula host (tun.unsafe_routes)
+        for u in net.get('uses_routes') or []:
+            via = u.get('via')
+            tid, sure = targets.get(via) or ((f'host:{peers[via]}', 'confirmed') if via in peers else (None, None))
+            if tid is None and via and via not in me:
+                tid, sure = add(f'ovnode:{name}:{via}', 'Peer', via, 'access', owner=None, confidence='inferred', placeholder=True, ip=via, network=name), 'inferred'
+            if tid and tid != host_id:
+                edge(host_id, tid, 'ROUTES_VIA', f'{said}: {u.get("route")} goes through {via}', sure, network=name, networks=[u.get('route')], via=via)
+    # the access proxies: what each gives access to. A target at an address a scanned host has is that host; one known by a
+    # name alone that a scanned host also has is taken to be it, and said to be inferred
+    by_name = {str(n).lower(): n for n in peers.values()}
+    for px in acc.get('proxies') or []:
+        tool, targets = px.get('tool'), [t for t in px.get('targets') or [] if isinstance(t, dict)]
+        public = [t.get('name') for t in targets if t.get('public')]
+        pid = add(f'proxy:{host}:{tool}', 'AccessProxy', accessproxies.LABELS.get(tool, 'Access proxy'), 'access', roles=px.get('roles'), cluster=px.get('cluster'), server=px.get('server'),
+                  public_address=px.get('public'), targets=[f'{t.get("name") or t.get("address")}' + (f' ({t["access"]})' if t.get('access') else '') for t in targets][:50], target_count=len(targets),
+                  identities=[i.get('name') for i in px.get('identities') or [] if isinstance(i, dict)][:20], exposure='public' if public else None, public_routes=public[:50],
+                  says=accessproxies.sentence(px), unread=bool(px.get('error')))
+        edge(pid, host_id, 'RUNS_ON', f'{accessproxies.LABELS.get(tool, tool)} on {host}')
+        drawn = set()
+        for t in targets:
+            where, called = t.get('address'), str(t.get('name') or '').lower()
+            if where in ('localhost', '127.0.0.1', '::1') or where in me or t.get('hosted_here'):
+                tid, sure = host_id, 'confirmed'
+            elif where in peers:
+                tid, sure = f'host:{peers[where]}', 'confirmed'
+            elif str(where or '').lower() in by_name or called in by_name or called.split('.')[0] in by_name:
+                tid, sure = f'host:{by_name.get(str(where or "").lower()) or by_name.get(called) or by_name[called.split(".")[0]]}', 'inferred'
+            else:
+                continue
+            if tid in drawn or (tid == host_id and tool == 'teleport'):       # a Teleport node that is this host is the host itself, not a target of it
+                continue
+            drawn.add(tid)
+            edge(pid, tid, 'FRONTS', f'{accessproxies.LABELS.get(tool, tool)}: {t.get("name") or where}' + (f' at {where}' + (f':{t["port"]}' if t.get('port') else '') if where else ''), sure,
+                 access=t.get('access'), public=t.get('public') or None)
     # a tunnel publishes a service with no port open here or on the router: it is drawn so that nothing public goes unseen
     for t in acc.get('tunnels') or []:
         tid = add(f'tunnel:{host}:{t.get("tool")}', 'Tunnel', tunnels.LABELS.get(t.get('tool'), 'Tunnel'), 'access', exposure='public', server=t.get('server'),
@@ -211,6 +275,18 @@ def _wg_keys(conn: Conn) -> dict:
     for host, raw in conn.all("SELECT host, data_json FROM security_measurements WHERE kind = 'infra'"):
         for wg in ((loads(raw) or {}).get('access') or {}).get('wireguard') or []:
             out[wg['public_key']] = (host, wg['name'])
+    return out
+
+
+def _overlay_keys(conn: Conn) -> dict:
+    """{(network, key): host} for each private network a scanned host said its own key on. ZeroTier knows a peer by its node id
+    and by no address, so this is what matches one host's peer to another host."""
+    out = {}
+    for host, raw in conn.all("SELECT host, data_json FROM security_measurements WHERE kind = 'infra'"):
+        for net in ((loads(raw) or {}).get('access') or {}).get('overlays') or []:
+            me = net.get('self') if isinstance(net, dict) and isinstance(net.get('self'), dict) else {}
+            if me.get('key') and not net.get('error'):
+                out[(net.get('network'), me['key'])] = host
     return out
 
 
@@ -270,7 +346,7 @@ def rebuild(conn: Conn, host: str) -> tuple[int, int]:
     listed = workloads.listing(conn, host)['workloads']
     mount_nodes = {r[0] for r in conn.all("SELECT node_id FROM graph_nodes WHERE host = :h AND kind = 'MountPoint'", {'h': host})}
     from .netdevice import forwards
-    nodes, edges = build(host, net, infra, workloads.containers_of(conn, host), listed, _peers(conn), mount_nodes, _wg_keys(conn), forwards(conn))
+    nodes, edges = build(host, net, infra, workloads.containers_of(conn, host), listed, _peers(conn), mount_nodes, _wg_keys(conn), forwards(conn), _overlay_keys(conn), now)
     built_by = f'infra:{host}'
     with conn.tx():
         conn.execute('DELETE FROM graph_edges WHERE built_by = :b', {'b': built_by})
