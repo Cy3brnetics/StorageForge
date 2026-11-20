@@ -193,6 +193,8 @@ Decided 2026-11-16: data is encrypted even on the LAN, and the default needs no 
 
 **SSH CA, and exposure through tunnels, on 2026-11-20 (built, not lab-tested; `125d6b4` to `d2e742c`):** the CA as a vault key, `ssh-ca-trust` and `ssh-ca-krl`, certificates for the console and scans per host, revocation, Keys → SSH certificates; tunnel findings in Exposure and Security, and the `cloudflare-tunnel` and `pangolin-site` steps. Lab tier 21 is written and has not run; its tunnel checks use stand-ins. **Open:** certificates for people, taking the key out of `authorized_keys` once certificates work, join steps for frp and ngrok (not asked for), Pangolin's API read (0.5.10).
 
+**Join steps on 2026-11-20 (built, not lab-tested; `c10fc9c` to `0cbc4b2`):** `netbird`, `zerotier`, `nebula` (with its CA in the vault and a lighthouse role) and `openziti`; Headscale pre-auth keys into the vault and its routes read. Lab tier 22 is written and has not run; its server set-ups come from documentation alone. **No Netmaker step,** by rule 3. **Open:** a page or API for the Nebula CA and Headscale keys (CLI only), the CA signing inside a real enclave (not exercised), an OpenZiti controller in the lab. ZeroTier 1.16 and later builds its controller only under a non-commercial licence (`ZT_NONFREE=1`): whether the lab may use that build is the owner's decision, and tier 22 skips those checks without it.
+
 Deploying the servers (Headscale, NetBird's management, Pangolin, a ZeroTier controller, OpenZiti's controller) is a Toolbox entry each (section 4). This section is the hosts' side.
 
 ## 3. Log monitoring

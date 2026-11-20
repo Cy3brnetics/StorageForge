@@ -5,7 +5,10 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 ## Unreleased
 
 ### Added
--- **A key on the StorageForge network is rotated when you ask** (0.5.6; built, not lab-tested): `POST /api/sfnet/members/rotate` and the `wg-rotate` step. It takes three plans, and the host switches only once every peer holds the new key.
+-- **Plan steps `netbird`, `zerotier`, `nebula` and `openziti`** join a host to a private network and take it out again (0.5.6; built, not lab-tested, and the first, second and fourth ran only against stand-ins). NetBird's setup key and OpenZiti's token are read from a file, never a command line. `zerotier` joins and leaves; authorising the host at the controller is not its job. There is no Netmaker step: `netclient join -t TOKEN` is the only way it takes its token, and a secret on a command line is not allowed here.
+- **A Nebula certificate authority whose key is a vault key:** `vault nebula-ca`, `nebula-issue`, `nebula-revoke`, `nebula-list`. A host makes its own key, and revoked certificates reach hosts through the `nebula` step. Version 1 certificates, IPv4 only; checked against the real Nebula 1.12.0 programs.
+- **`vault headscale-key`** makes a pre-auth key on a Headscale server and stores it without printing it; the `tailscale` step takes a control server. A scan of a Headscale server reads each node's routes as approved, waiting and served.
+- **A key on the StorageForge network is rotated when you ask** (0.5.6; built, not lab-tested): `POST /api/sfnet/members/rotate` and the `wg-rotate` step. It takes three plans, and the host switches only once every peer holds the new key.
 - **The controller can be a member of the StorageForge network.** In Docker, `docker-compose.sfnet.yml` adds a link container (root, `NET_ADMIN` only) that makes `sf0` and keeps the private key away from the server; a controller that runs on a scanned host uses that host. `/api/sfnet/controller`, `storageforge-index sfnet [link]`.
 - **StorageForge's own SSH connections go over its network** where both ends confirm each other by key, and to the normal address otherwise: scans, readings, deploys, key work, plan runs and the console. Sends, Moves and sync are not carried.
 - **Infrastructure → StorageForge network,** the page for all of it.
@@ -32,7 +35,8 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - **The enclave's image**. `storageforge-indexer/enclave/image/build.sh` builds the micro VM: a kernel with no modules, no IP stack, no block devices and the lockdown forced on, and an initramfs whose one file is the enclave program, static. Sources are pinned (the compiler image by digest, the kernel by checksum) and the build is reproducible: two builds gave the same kernel bytes. Booted with vsock as its only device it answers in under a second, and `status` now says whether it is the VM's only program and whether its memory is locked; in the VM it stops rather than run unlocked. Every enclave test runs again against the booted image where KVM is available.
 
 ### Fixed
--- **The console could not find the pinned host key of a host on an SSH port other than 22.**
+-- **The SSH CA's tables are in the essentials backup.** Before, a restore lost the list of revoked certificates. (Found before any release held them.)
+- **The console could not find the pinned host key of a host on an SSH port other than 22.**
 - **`sshd -T` is read whatever case it prints its keywords in.** OpenSSH 10.6 prints `Port`, not `port`: the `sshd-option` step and the tunnel port check fell back to their defaults.
  **Cleanup's three panel buttons were squeezed to a line when the panel below them was taller than the window.** Duplicates, Cold data and Trends could then not be clicked. Any panel with such a button row at its top is covered by the same rule.
 - **A copy on another host was counted as space to get back.** `/api/dupes`, `dupes` and the duplicate folders' JSON gave such a copy a reclaimable size. The file map checked a new trash by itself, not with what was already staged, and the destination of a mirror job was listed as a duplicate to clean up.
