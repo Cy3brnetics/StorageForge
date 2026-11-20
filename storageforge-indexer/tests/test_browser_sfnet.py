@@ -94,8 +94,10 @@ class BrowserSfnet(unittest.TestCase):
         return self.page.locator(f'#infrabox table tbody tr:has([data-member="{host}"])')
 
     def reload(self):
+        # what is on the page now is marked, so that the wait is for what the reload draws and not for what was there
+        self.page.evaluate("() => document.querySelectorAll('#sfn-summary, #sfn-none').forEach((e) => e.setAttribute('data-old', '1'))")
         self.page.click('#infrabox .seg button:has-text("StorageForge network")')
-        self.page.wait_for_selector('#sfn-summary, #sfn-none')
+        self.page.wait_for_selector('#sfn-summary:not([data-old]), #sfn-none:not([data-old])')
 
     def test_from_nothing_the_network_is_made_members_are_added_and_the_plan_is_saved(self):
         self.sign_in()
