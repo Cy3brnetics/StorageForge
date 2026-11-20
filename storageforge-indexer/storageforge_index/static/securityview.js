@@ -164,6 +164,8 @@ async function secOverview() {
             secCan('security.manage') && h.deploy_ready ? secMeasureButton(h.host, out) : text('span', h.deploy_ready ? '' : 'set up deploy access first', 'muted small')];
   });
   const kids = [secCard('Hosts', p.hosts.length ? secTable(['Host', 'State', 'Measured', 'Sentinel', 'Decoys', 'Holds', 'Access control', 'What is known', ''], rows) : text('p', 'No hosts have been scanned yet.', 'muted'), out)];
+  const enclave = await enclaveSecurityCard();          // enclaveview.js: whether this server's own keys have the extra layer
+  if (enclave) kids.push(secCard('This server\'s keys', enclave));
   if (p.clock_suspect) {
     const c = p.clock_suspect;
     kids.unshift(secCard('This machine\'s clock looks wrong',

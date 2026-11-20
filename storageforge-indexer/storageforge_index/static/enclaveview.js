@@ -104,6 +104,15 @@ function enclaveLockButton(d) {
   return b;
 }
 
+/* For the security view's overview (securityview.js): the same label, so that where the enclave is off or cannot run here the page
+   that sums up what protects this installation says the extra layer is not there. Null for an account that may not see keys. */
+async function enclaveSecurityCard() {
+  let d;
+  try { d = await getJSON('/api/enclave'); } catch { return null; }
+  return sfNode('div', { class: 'stack', id: 'sec-enclave' }, enclaveLine(d),
+    d.on ? null : sfNode('p', { class: 'muted small' }, 'With the enclave the vault\'s keys are held in a micro VM with no network device, and the web app only asks it for signatures. See Keys → Key enclave.'));
+}
+
 async function loadEnclave() {
   const box = document.getElementById('enclavebox');
   if (!box) return;
