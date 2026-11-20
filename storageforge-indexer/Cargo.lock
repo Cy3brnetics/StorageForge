@@ -765,6 +765,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "storageforge-agent"
+version = "0.5.7"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "libc",
+ "rand_core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "storageforge-wire",
+ "zeroize",
+]
+
+[[package]]
 name = "storageforge-enclave"
 version = "0.5.5"
 dependencies = [
@@ -784,9 +799,14 @@ dependencies = [
  "sha2",
  "signature",
  "ssh-key",
+ "storageforge-wire",
  "subtle",
  "zeroize",
 ]
+
+[[package]]
+name = "storageforge-wire"
+version = "0.5.7"
 
 [[package]]
 name = "subtle"

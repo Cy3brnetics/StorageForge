@@ -1,0 +1,37 @@
+//! StorageForge's optional agent (roadmap section 11), and storageforge-agentctl, the root helper that makes its container.
+//!
+//! Two static programs from one library, with no interpreter and no OpenSSL in either:
+//!
+//! ```text
+//! storageforge-agent      in the container, as `sfagent`: reads its manifest, runs the signed plugins it names
+//! storageforge-agentctl   on the host, as root, behind one sudoers line: takes signed requests and drives the runtime
+//! ```
+//!
+//! What is here, by module:
+//!
+//! - `sig`        SSH signatures made and checked in Rust: the one signature format everything uses
+//! - `needs`      the whole vocabulary of what a plugin may ask of a host
+//! - `plugin`     the plugin format, and who may sign one
+//! - `manifest`   the host's manifest, its counter, and the rule that it gives a plugin exactly what its signer declared
+//! - `identity`   the agent's own key
+//! - `runner`     loading a plugin from the bytes that were checked, and the protocol on its pipes
+//! - `supervise`  the agent's pass over its manifest and plugins, and the outbox of what they report
+//! - `request`    a signed request to storageforge-agentctl
+//! - `host`       what storageforge-agentctl reads from the host: accounts, groups, the machine id
+//! - `runtime`    the container, as Docker, Podman or LXC is asked to make it
+//!
+//! The habits are the key enclave's: every input has a size limit that is checked before it is read, every structure refuses
+//! fields it does not know, parsing is linear, and what no honest peer sends ends the conversation.
+
+pub mod host;
+pub mod identity;
+pub mod manifest;
+pub mod needs;
+pub mod plugin;
+pub mod request;
+pub mod runner;
+pub mod runtime;
+pub mod sig;
+pub mod supervise;
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

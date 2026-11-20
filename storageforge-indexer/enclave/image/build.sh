@@ -22,8 +22,12 @@ EPOCH=1794960000                 # 2026-11-17: every file in the image carries t
 JOBS=${JOBS:-4}
 mkdir -p "$OUT"
 
-run() { docker run --rm -v "$HERE":/src:ro -v "$OUT":/out -e EPOCH=$EPOCH -e KERNEL=$KERNEL -e KERNEL_SHA256=$KERNEL_SHA256 -e JOBS="$JOBS" -e IMAGE_ARCH="$ARCH" "$RUST_IMAGE" \
-        sh -euc 'sh /src/image/inside.sh "$1"; chown -R "$2" /out' sh "$1" "$(id -u):$(id -g)"; }
+# The enclave is one member of the Cargo workspace in the folder above: the build sees that workspace's manifest, its lock file
+# and its members, and nothing else of the repository.
+WS=$(cd "$HERE/.." && pwd)
+run() { docker run --rm -v "$WS/Cargo.toml":/ws/Cargo.toml:ro -v "$WS/Cargo.lock":/ws/Cargo.lock:ro -v "$WS/wire":/ws/wire:ro -v "$WS/agent":/ws/agent:ro \
+        -v "$HERE":/ws/enclave:ro -e SRC=/ws/enclave -e WORKSPACE=/ws -v "$OUT":/out -e EPOCH=$EPOCH -e KERNEL=$KERNEL -e KERNEL_SHA256=$KERNEL_SHA256 -e JOBS="$JOBS" -e IMAGE_ARCH="$ARCH" "$RUST_IMAGE" \
+        sh -euc 'sh /ws/enclave/image/inside.sh "$1"; chown -R "$2" /out' sh "$1" "$(id -u):$(id -g)"; }
 
 # The steps themselves are in image/inside.sh, which the Dockerfile's `enclave` stage runs too. The versions and the time above
 # are repeated there as build arguments: change them in both.

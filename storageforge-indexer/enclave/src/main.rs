@@ -35,6 +35,7 @@ use serde_json::{json, Value};
 use sha2::Sha256;
 use ssh_key::private::PrivateKey;
 use ssh_key::{Algorithm, EcdsaCurve, LineEnding};
+use storageforge_wire::{read_frame, write_frame, FrameError, MAX_FRAME};
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -43,7 +44,6 @@ const NOISE_NAME: &[u8; 28] = b"Noise_NX_25519_AESGCM_SHA256";
 const NOISE_PROLOGUE: &[u8] = b"storageforge-enclave-v3";
 /// The vsock port the enclave listens on inside its VM.
 const VSOCK_PORT: u32 = 7000;
-const MAX_FRAME: usize = 1 << 20;
 const MAX_SIGN_DATA: usize = 256 << 10;
 const BAD_LIMIT: u32 = 5;
 // One connection is served at a time, so one that goes quiet is dropped: a client that holds its connection open cannot hold the others out.
@@ -1469,14 +1469,14 @@ impl State {
     /// key (encrypted) and the proof that it holds the static secret. Returns the two directions of the channel, or None for a
     /// first frame no honest client sends.
     fn handshake(&mut self, conn: &mut (impl Read + Write)) -> Option<(Channel, Channel)> {
-        let mut head = [0u8; 4];
-        conn.read_exact(&mut head).ok()?;
-        if u32::from_be_bytes(head) != 32 {
-            self.count_bad(); // not a handshake: a client from before the channel, or something that is no client at all
-            return None;
-        }
-        let mut theirs = [0u8; 32];
-        conn.read_exact(&mut theirs).ok()?;
+        let theirs: [u8; 32] = match read_frame(conn, 32, 32) {
+            Ok(frame) => frame.try_into().ok()?,
+            Err(FrameError::Size(_)) => {
+                self.count_bad(); // not a handshake: a client from before the channel, or something that is no client at all
+                return None;
+            }
+            Err(FrameError::Io(_)) => return None,
+        };
         use rand_core::RngCore;
         let mut ephemeral = Zeroizing::new([0u8; 32]);
         rand_core::OsRng.fill_bytes(ephemeral.as_mut());
@@ -1497,8 +1497,7 @@ impl State {
         reply.extend_from_slice(&ours);
         reply.extend_from_slice(&sealed_static);
         reply.extend_from_slice(&sealed_payload);
-        conn.write_all(&(reply.len() as u32).to_be_bytes()).ok()?;
-        conn.write_all(&reply).ok()?;
+        write_frame(conn, &reply).ok()?;
         let (to_us, to_them) = Noise::hkdf(&noise.ck, &[]);
         self.handshakes += 1;
         Some((Channel { key: to_us, n: 0 }, Channel { key: to_them, n: 0 }))
@@ -1509,19 +1508,14 @@ impl State {
     fn serve(&mut self, mut conn: impl Read + Write) {
         let Some((mut rx, mut tx)) = self.handshake(&mut conn) else { return };
         loop {
-            let mut head = [0u8; 4];
-            if conn.read_exact(&mut head).is_err() {
-                return;
-            }
-            let len = u32::from_be_bytes(head) as usize;
-            if len < 16 || len > MAX_FRAME + 16 {
-                self.count_bad();
-                return;
-            }
-            let mut sealed = vec![0u8; len];
-            if conn.read_exact(&mut sealed).is_err() {
-                return;
-            }
+            let sealed = match read_frame(&mut conn, 16, MAX_FRAME + 16) {
+                Ok(frame) => frame,
+                Err(FrameError::Size(_)) => {
+                    self.count_bad();
+                    return;
+                }
+                Err(FrameError::Io(_)) => return,
+            };
             let Some(body) = rx.open(&sealed) else {
                 self.count_bad(); // changed on the way, or not encrypted for this connection
                 return;
@@ -1564,7 +1558,7 @@ impl State {
             };
             let text = Zeroizing::new(reply.to_string()); // a released secret is in it
             let Some(out) = tx.seal(text.as_bytes()) else { return };
-            if conn.write_all(&(out.len() as u32).to_be_bytes()).is_err() || conn.write_all(&out).is_err() || hang_up {
+            if write_frame(&mut conn, &out).is_err() || hang_up {
                 return;
             }
         }

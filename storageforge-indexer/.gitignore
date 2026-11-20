@@ -17,3 +17,5 @@ known_hosts
 .env
 .env.*
 reports/lab-*.md
+/target/
+agent/out/

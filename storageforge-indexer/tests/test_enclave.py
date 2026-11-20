@@ -35,8 +35,8 @@ def build():
     """The enclave, built once for the run. None where it cannot be."""
     global BINARY
     if BINARY is None and shutil.which('cargo'):
-        p = subprocess.run(['cargo', 'build', '--quiet', '--locked'], cwd=ROOT / 'enclave', capture_output=True, text=True)
-        out = ROOT / 'enclave' / 'target' / 'debug' / 'storageforge-enclave'
+        p = subprocess.run(['cargo', 'build', '--quiet', '--locked', '-j', '4'], cwd=ROOT / 'enclave', capture_output=True, text=True)
+        out = ROOT / 'target' / 'debug' / 'storageforge-enclave'       # the workspace's folder: the enclave is one member of it
         BINARY = out if p.returncode == 0 and out.exists() else False
         if not BINARY:
             raise AssertionError(f'cargo is here and the enclave does not build:\n{p.stderr[-2000:]}')

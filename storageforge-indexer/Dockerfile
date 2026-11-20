@@ -122,12 +122,16 @@ FROM ${ENCLAVE_BUILD_IMAGE} AS enclave
 ARG ENCLAVE_EPOCH=1794960000
 ARG ENCLAVE_KERNEL=6.18.64
 ARG ENCLAVE_KERNEL_SHA256=020d45510c539972e6f14c5c71566878d3b7ef56fb082b3e09134f2ebaade562
-ENV SRC=/src OUT=/out EPOCH=${ENCLAVE_EPOCH} KERNEL=${ENCLAVE_KERNEL} KERNEL_SHA256=${ENCLAVE_KERNEL_SHA256}
+ENV SRC=/ws/enclave WORKSPACE=/ws OUT=/out EPOCH=${ENCLAVE_EPOCH} KERNEL=${ENCLAVE_KERNEL} KERNEL_SHA256=${ENCLAVE_KERNEL_SHA256}
 # the kernel first, from its two files alone: a change to the program does not build it again
-COPY enclave/image/inside.sh enclave/image/kernel.config /src/image/
-RUN mkdir /out && JOBS="$(nproc)" sh /src/image/inside.sh kernel
-COPY enclave /src
-RUN sh /src/image/inside.sh program && sh /src/image/inside.sh initramfs && sh /src/image/inside.sh sums
+COPY enclave/image/inside.sh enclave/image/kernel.config /ws/enclave/image/
+RUN mkdir /out && JOBS="$(nproc)" sh /ws/enclave/image/inside.sh kernel
+# the program is one member of the Cargo workspace (Cargo.toml): cargo wants every member there, and builds only this one
+COPY Cargo.toml Cargo.lock /ws/
+COPY wire /ws/wire
+COPY agent /ws/agent
+COPY enclave /ws/enclave
+RUN sh /ws/enclave/image/inside.sh program && sh /ws/enclave/image/inside.sh initramfs && sh /ws/enclave/image/inside.sh sums
 
 # ── firecracker: what runs that VM in the container. A static program, pinned by the checksum its release publishes; the
 # project does not sign releases. When bumping, read its release notes and security advisories. README "Updating dependencies".

@@ -4,12 +4,16 @@
 #
 #   inside.sh program|initramfs|kernel|sums      SRC (the enclave folder, read-only), OUT, EPOCH, KERNEL, KERNEL_SHA256, JOBS, IMAGE_ARCH
 #
+# The program is one member of the Cargo workspace above the enclave folder (Cargo.toml, Cargo.lock, wire, agent), so SRC has to
+# sit in a copy of that workspace: WORKSPACE, which is SRC/.. unless it is given. Only the enclave and what it depends on is built.
+#
 # IMAGE_ARCH is x86_64 (the default) or arm64. The arm64 image is cross-compiled in the same container: the program with the Rust
 # target for it and Rust's own linker, the kernel with a bare-metal aarch64 gcc. Its kernel is `Image`, which is what an arm64 VMM
 # boots. It is not called ARCH: the kernel's own build reads a variable of that name from the environment, and an x86_64 kernel
 # built with it set is other bytes than one built without.
 set -eu
 : "${OUT:=/out}" "${SRC:=/src}" "${IMAGE_ARCH:=x86_64}"
+: "${WORKSPACE:=$SRC/..}"
 case $IMAGE_ARCH in
   x86_64) TARGET=x86_64-unknown-linux-musl; KARCH=x86;   CROSS=;                  KCONFIG=kernel.config;       KFILES="bzImage vmlinux" ;;
   arm64)  TARGET=aarch64-unknown-linux-musl; KARCH=arm64; CROSS=aarch64-none-elf-; KCONFIG=kernel.config.arm64; KFILES="Image" ;;
@@ -17,14 +21,16 @@ case $IMAGE_ARCH in
 esac
 case $1 in
 program)
-  rm -rf /build && cp -r "$SRC" /build && cd /build && rm -rf target image/out
+  rm -rf /build && mkdir /build && cp "$WORKSPACE/Cargo.toml" "$WORKSPACE/Cargo.lock" /build/
+  for member in wire agent; do cp -r "$WORKSPACE/$member" "/build/$member"; done
+  cp -r "$SRC" /build/enclave && cd /build && rm -rf target enclave/target enclave/image/out*
   flags="-C target-feature=+crt-static --remap-path-prefix=/build=. --remap-path-prefix=/usr/local/cargo=cargo"
   if [ "$IMAGE_ARCH" = arm64 ]; then
     # no C compiler for arm64 is needed: every crate is Rust, the target brings its own C runtime, and rust-lld links it
     rustup target add "$TARGET" >/dev/null 2>&1
     flags="$flags -C linker-flavor=ld.lld -C linker=rust-lld"
   fi
-  SOURCE_DATE_EPOCH=$EPOCH RUSTFLAGS="$flags" cargo build --release --locked --quiet --target "$TARGET"
+  SOURCE_DATE_EPOCH=$EPOCH RUSTFLAGS="$flags" cargo build --release --locked --quiet --target "$TARGET" -p storageforge-enclave
   file=target/$TARGET/release/storageforge-enclave
   ! ( readelf -d "$file" 2>/dev/null | grep -q NEEDED ) || { echo "the program is not static" >&2; exit 1; }
   cp "$file" "$OUT/init"

@@ -120,7 +120,7 @@ jobs:
         run: diff enclave/image/SHA256SUMS /tmp/enclave-a/SHA256SUMS
       - name: Dependencies scanned
         run: |
-          docker run --rm -v "$PWD/enclave/Cargo.lock:/src/Cargo.lock:ro" aquasec/trivy:latest \
+          docker run --rm -v "$PWD/Cargo.lock:/src/Cargo.lock:ro" aquasec/trivy:latest \
             fs --quiet --scanners vuln --severity HIGH,CRITICAL --exit-code 1 /src
       - name: arm64, cross-compiled
         run: |

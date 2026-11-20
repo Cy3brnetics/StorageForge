@@ -1,0 +1,30 @@
+[package]
+name = "storageforge-agent"
+version = "0.5.7"
+edition.workspace = true
+license.workspace = true
+description = "StorageForge's optional agent and storageforge-agentctl, the root helper that makes its container: two static programs, no interpreter, no OpenSSL."
+build = "build.rs"
+
+[lib]
+name = "storageforge_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "storageforge-agent"
+path = "src/bin/agent.rs"
+
+[[bin]]
+name = "storageforge-agentctl"
+path = "src/bin/agentctl.rs"
+
+[dependencies]
+base64 = "0.22"
+ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
+libc = "0.2"
+rand_core = { version = "0.6", features = ["getrandom"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+storageforge-wire = { path = "../wire" }
+zeroize = "1"

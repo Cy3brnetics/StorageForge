@@ -1,0 +1,21 @@
+# The Rust programs of StorageForge, in one workspace with one Cargo.lock (roadmap section 11.1, "Language"):
+#
+#   wire     the framing they share: a length, then that many bytes, with a ceiling, and a peer that sends anything else is hung up on
+#   enclave  the key enclave, the one program of a micro VM (roadmap section 14)
+#   agent    the optional agent and storageforge-agentctl, the root helper behind its one sudoers line (roadmap section 11)
+#
+# Each is a static program when built for a musl target (enclave/image/inside.sh, agent/build.sh, and the Dockerfile's stages).
+[workspace]
+resolver = "2"
+members = ["wire", "enclave", "agent"]
+
+[workspace.package]
+edition = "2021"
+license = "WTFPL"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

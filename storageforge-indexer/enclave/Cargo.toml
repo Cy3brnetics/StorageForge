@@ -1,8 +1,8 @@
 [package]
 name = "storageforge-enclave"
 version = "0.5.5"
-edition = "2021"
-license = "WTFPL"
+edition.workspace = true
+license.workspace = true
 description = "StorageForge's key enclave: the one program of a micro VM with no network device. It holds the vault's KEK and answers a few narrow questions over vsock."
 
 [dependencies]
@@ -21,13 +21,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 signature = "2"
+storageforge-wire = { path = "../wire" }
 ssh-key = { version = "0.6", default-features = false, features = ["alloc", "std", "ed25519", "rsa", "p256", "p384", "rand_core"] }
 subtle = "2"
 zeroize = "1"
-
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true

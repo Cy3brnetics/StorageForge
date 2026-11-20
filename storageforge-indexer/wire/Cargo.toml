@@ -1,0 +1,8 @@
+[package]
+name = "storageforge-wire"
+version = "0.5.7"
+edition.workspace = true
+license.workspace = true
+description = "The framing StorageForge's Rust programs share: a 4-byte length, then that many bytes, never more than a set ceiling."
+
+[dependencies]

@@ -14,5 +14,7 @@ reports/
 .ruff_cache/
 .venv/
 data/
+target/
 enclave/target/
+agent/out/
 enclave/image/out/
