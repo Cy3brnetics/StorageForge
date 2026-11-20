@@ -1,6 +1,8 @@
 """The desktop profile (desktop.py): one description of keys, window rules and displays, rendered for the compositor a machine
 runs. What must hold: nothing in a profile can close a string or a block in a configuration file and start a line of its own;
 a profile says the same thing in each format; and what is rendered for niri is a configuration niri itself accepts."""
+import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -109,6 +111,27 @@ class Rendered(unittest.TestCase):
                 ran = subprocess.run(['niri', 'validate', '-c', str(path)], capture_output=True, text=True)
                 with self.subTest(name):
                     self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+
+    @unittest.skipUnless(shutil.which('sway'), 'needs sway to check its configuration')
+    def test_sway_itself_accepts_what_is_rendered_for_it(self):
+        """`sway --validate` reads the file and starts nothing. It says what it refuses on its error output, a line for each, and
+        some versions leave with 0 all the same, so both are looked at. It needs a folder for its socket and no display.
+        What it proves: every line is a command Sway knows, with a key, criteria and an output it can read. What it does not:
+        the command a bindsym or a for_window holds is kept as text and read when the key is pressed or the window opens
+        (Sway 1.12 accepted `bindsym Mod4+q no-such-command`). Run on Sway 1.12-rc3 in a container on 2026-11-20."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {k: v for k, v in os.environ.items() if k not in ('WAYLAND_DISPLAY', 'DISPLAY', 'SWAYSOCK')} | {'XDG_RUNTIME_DIR': tmp, 'WLR_BACKENDS': 'headless', 'WLR_RENDERER': 'pixman', 'WLR_LIBINPUT_NO_DEVICES': '1'}
+            for name, profile in (('full', PROFILE), ('alt', changed(mod='alt')), ('empty', {'name': 'empty'})):
+                path = Path(tmp) / f'{name}.conf'
+                path.write_text(desktop.render(profile, 'sway'))
+                ran = subprocess.run(['sway', '--validate', '-c', str(path)], capture_output=True, text=True, timeout=60, env=env)
+                with self.subTest(name):
+                    self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+                    self.assertNotRegex(ran.stdout + ran.stderr, r'(?i)error on line|unknown/invalid command|invalid .* command|unable to parse', (ran.stdout + ran.stderr)[-800:])
+            bad = Path(tmp) / 'bad.conf'
+            bad.write_text('bindsym $mod+q no-such-command-of-sway\nnot_a_command at all\n')
+            ran = subprocess.run(['sway', '--validate', '-c', str(bad)], capture_output=True, text=True, timeout=60, env=env)
+            self.assertTrue(ran.returncode != 0 or re.search(r'(?i)error on line|unknown/invalid command', ran.stdout + ran.stderr), 'a check that accepts anything checks nothing: ' + (ran.stdout + ran.stderr)[-400:])
 
     def test_hyprland_says_the_same_in_its_lua(self):
         lua = desktop.render(PROFILE, 'hyprland')
