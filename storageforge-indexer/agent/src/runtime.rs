@@ -149,6 +149,8 @@ pub struct Spec {
     pub vmid: Option<u32>,
     /// Whether LXC's stock seccomp profile is installed on this host.
     pub seccomp: Option<String>,
+    /// Docker's major version, where it could be read: how a mount of one filesystem is spelled changed at 25.
+    pub docker_major: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -229,7 +231,14 @@ pub fn container_args(kind: Kind, spec: &Spec) -> Vec<String> {
     }
     a.extend(words(&["--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m"]));
     let ro = if podman { "ro" } else { "readonly" };
-    let one_filesystem = if podman { "bind-nonrecursive" } else { "bind-nonrecursive=true" };
+    // One filesystem, and not what is mounted below it. Docker 25 named the option anew and Docker 29 refuses the old name; a
+    // Docker whose version could not be read is taken for a current one, and an old one then refuses the mount: nothing is
+    // ever mounted wider than was asked.
+    let one_filesystem = match (podman, spec.docker_major) {
+        (true, _) => "bind-nonrecursive",
+        (false, Some(major)) if major < 25 => "bind-nonrecursive=true",
+        (false, _) => "bind-recursive=disabled",
+    };
     a.extend(["--mount".to_string(), format!("type=bind,src={},dst=/etc/storageforge-agent,{ro}", spec.etc)]);
     a.extend(["--mount".to_string(), format!("type=bind,src={},dst=/var/lib/storageforge-agent/manifest,{ro}", spec.manifest)]);
     a.extend(["--mount".to_string(), format!("type=bind,src={},dst=/var/lib/storageforge-agent/state", spec.state)]);
@@ -464,6 +473,12 @@ pub fn read_state(kind: Kind, ok: bool, output: &str) -> (bool, Option<String>) 
     }
 }
 
+/// Docker's major version, from what `docker --version` prints ("Docker version 29.1.0, build ...").
+pub fn docker_major(output: &str) -> Option<u32> {
+    let version = output.strip_prefix("Docker version ")?;
+    version.split('.').next()?.parse().ok().filter(|major| (1..1000).contains(major))
+}
+
 /// The command that installs Podman with the host's own package manager, for a host that has no runtime. `have` says which
 /// package managers are there.
 pub fn install_podman(have: &dyn Fn(&str) -> bool) -> Option<(Vec<String>, Vec<(&'static str, &'static str)>)> {
@@ -566,8 +581,8 @@ mod tests {
         let a = container_args(Kind::Docker, &s);
         for (flag, value) in [
             ("--cap-add", "SYS_ADMIN"), ("--network", "host"), ("--pid", "host"), ("--group-add", "980"), ("--device", "/dev/sda:/dev/sda:r"),
-            ("--mount", "type=bind,src=/,dst=/host,readonly,bind-nonrecursive=true"),
-            ("--mount", "type=bind,src=/proc,dst=/host/proc,readonly,bind-nonrecursive=true"),
+            ("--mount", "type=bind,src=/,dst=/host,readonly,bind-recursive=disabled"),
+            ("--mount", "type=bind,src=/proc,dst=/host/proc,readonly,bind-recursive=disabled"),
             ("--tmpfs", "/host/root/.ssh:ro,size=4k,mode=000"),
             ("--mount", "type=bind,src=/dev/null,dst=/host/etc/shadow,readonly"),
             ("--cap-drop", "ALL"), ("--user", "987:985"),
@@ -576,6 +591,12 @@ mod tests {
         }
         assert_eq!(a.iter().filter(|x| *x == "--cap-add").count(), 1);
         assert!(a.contains(&"--read-only".to_string()));
+        // a Docker from before 25 knows the option by its old name only
+        s.docker_major = docker_major("Docker version 24.0.7, build afdd53b");
+        assert!(has(&container_args(Kind::Docker, &s), "--mount", "type=bind,src=/,dst=/host,readonly,bind-nonrecursive=true"));
+        assert_eq!(docker_major("Docker version 29.10.0, build 1a2b3c"), Some(29));
+        assert_eq!(docker_major("podman version 5.0.0"), None);
+        assert_eq!(docker_major("Docker version x"), None);
     }
 
     #[test]

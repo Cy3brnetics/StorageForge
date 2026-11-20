@@ -29,6 +29,7 @@ HEAVY = {
     'test_browser_vms.BrowserVms',
     # a real sshd, Docker, or the kernel's firewall
     'test_feature_routes.RealSshServer',
+    'test_agent.RealDocker',         # the agent's real image, built, pushed to a registry started for the test, and run by the real Docker
     'test_infra.RealDocker',
     'test_infra.RealIptables',
     'test_infra.RealNft',
@@ -68,6 +69,11 @@ HEAVY = {
 }
 
 MEDIUM = {
+    'test_agent.Setup',              # bash running the agent's setup script against a stand-in host
+    'test_agent.Requests',           # the real storageforge-agentctl, built with cargo, asked directly
+    'test_agent.Lifecycle',          # the same, with the real agent started where a runtime would start it
+    'test_agent.NoRuntime',
+    'test_agent.LxcOnly',
     'test_sshca.Certificates',       # a real sshd, started for one test
     'test_sshcerts.TrustStep',       # the trust and revocation steps against a real sshd, reloaded
     'test_sshcerts.CaInTheEnclave',  # the real enclave program signing a certificate

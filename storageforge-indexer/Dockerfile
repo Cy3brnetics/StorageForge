@@ -133,6 +133,46 @@ COPY agent /ws/agent
 COPY enclave /ws/enclave
 RUN sh /ws/enclave/image/inside.sh program && sh /ws/enclave/image/inside.sh initramfs && sh /ws/enclave/image/inside.sh sums
 
+# ── agent-build: storageforge-agent and storageforge-agentctl, static, for x86_64 and arm64 (docs/agent.md). The steps are
+# agent/inside.sh, the ones agent/build.sh runs, in the enclave's build container: SHA256SUMS from either is the same.
+# AGENT_RELEASE_SIGNERS names the signers file compiled into both: the keys whose signature makes a plugin an official one.
+FROM ${ENCLAVE_BUILD_IMAGE} AS agent-build
+ARG AGENT_EPOCH=1794960000
+ARG AGENT_RELEASE_SIGNERS=agent/release_signers
+ENV WORKSPACE=/ws OUT=/out EPOCH=${AGENT_EPOCH} STORAGEFORGE_RELEASE_SIGNERS=/release_signers
+COPY Cargo.toml Cargo.lock /ws/
+COPY wire /ws/wire
+COPY enclave /ws/enclave
+COPY agent /ws/agent
+COPY ${AGENT_RELEASE_SIGNERS} /release_signers
+RUN mkdir /out && sh /ws/agent/inside.sh x86_64 && sh /ws/agent/inside.sh aarch64 && sh /ws/agent/inside.sh sums
+
+# ── agent-root: the agent image's files, laid out here because the image itself has nothing that could lay them out.
+# Wolfi's base layout and nothing else of Wolfi: no libc, no shell, no package manager. The package database stays as the
+# record scanners read. sfagent is 10003:10003, an id of its own beside the server's 10001 and the tunnel's 10002.
+FROM ${BASE_IMAGE} AS agent-root
+RUN apk add --no-cache --initdb --root /rootfs --keys-dir /etc/apk/keys --repositories-file /etc/apk/repositories wolfi-baselayout \
+ && echo 'sfagent:x:10003:' >> /rootfs/etc/group \
+ && echo 'sfagent:x:10003:10003::/nonexistent:/sbin/nologin' >> /rootfs/etc/passwd \
+ && install -d -m 0755 /rootfs/etc/storageforge-agent /rootfs/var/lib/storageforge-agent /rootfs/var/lib/storageforge-agent/manifest /rootfs/host /rootfs/usr/bin \
+ && install -d -m 0700 -o 10003 -g 10003 /rootfs/var/lib/storageforge-agent/state \
+ && install -d -m 1777 /rootfs/tmp \
+ && rm -rf /rootfs/var/cache/apk /rootfs/etc/apk/cache \
+ && ! ls /rootfs/bin/sh /rootfs/bin/busybox /rootfs/usr/bin/apk /rootfs/sbin/apk 2>/dev/null
+
+# ── agent: the one image the optional agent runs from on every host (docker build --target agent .). One static program, run
+# as sfagent: no shell, no interpreter, no OpenSSL, no libc, no package manager, no plugin built in. The runtime gives it a
+# read-only root filesystem, no capabilities and no network (storageforge-agentctl makes the container).
+FROM scratch AS agent
+ARG TARGETARCH=amd64
+LABEL org.opencontainers.image.title="StorageForge agent" \
+      org.opencontainers.image.description="The optional StorageForge agent: one static program that runs signed plugins and reads its host"
+COPY --from=agent-root /rootfs/ /
+COPY --from=agent-build /out/${TARGETARCH}/storageforge-agent /usr/bin/storageforge-agent
+USER 10003:10003
+ENTRYPOINT ["/usr/bin/storageforge-agent"]
+CMD ["run"]
+
 # ── firecracker: what runs that VM in the container. A static program, pinned by the checksum its release publishes; the
 # project does not sign releases. When bumping, read its release notes and security advisories. README "Updating dependencies".
 FROM ${BASE_IMAGE} AS firecracker
@@ -217,6 +257,10 @@ COPY --from=openssh /out/ /usr/bin/
 COPY --from=nmap /out/ /
 COPY --from=firecracker /out/ /
 COPY --from=enclave /out/vmlinux /out/bzImage /out/initramfs.cpio.gz /out/SHA256SUMS /usr/share/storageforge/enclave/
+# storageforge-agentctl for both kinds of machine: the server sends it to a host when the agent is set up there (docs/agent.md)
+COPY --from=agent-build /out/x86_64/storageforge-agentctl /usr/share/storageforge/agent/x86_64/storageforge-agentctl
+COPY --from=agent-build /out/aarch64/storageforge-agentctl /usr/share/storageforge/agent/aarch64/storageforge-agentctl
+COPY --from=agent-build /out/SHA256SUMS /usr/share/storageforge/agent/SHA256SUMS
 RUN ["/usr/bin/firecracker", "--version"]
 RUN ["/usr/bin/ssh", "-V"]
 RUN ["/usr/bin/nmap", "--version"]
@@ -231,6 +275,7 @@ ENV PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin \
     STORAGEFORGE_BACKUP_DIR=/app/backups \
     STORAGEFORGE_RUNTIME_DIR=/run/storageforge \
     STORAGEFORGE_ENCLAVE_IMAGE_DIR=/usr/share/storageforge/enclave \
+    STORAGEFORGE_AGENT_DIR=/usr/share/storageforge/agent \
     STORAGEFORGE_LISTEN=0.0.0.0 \
     STORAGEFORGE_PORT=8080
 WORKDIR /app

@@ -66,6 +66,10 @@ FRESH_PASSWORD = {
     ('DELETE', '/api/invites/<int:invite_id>'),
     ('DELETE', '/api/keys/<name>'),
     ('POST', '/api/keys/install'),
+    ('PUT', '/api/agents/<host>'),                # the per-host switch of the optional agent
+    ('POST', '/api/agents/<host>/install'),       # sets it up on the host and pins its key
+    ('POST', '/api/agents/<host>/<any("start", "stop", "restart", "status"):verb>'),
+    ('DELETE', '/api/agents/<host>'),
     ('POST', '/api/keys/ssh-ca'),                 # makes the SSH CA
     ('PUT', '/api/keys/ssh-ca/hosts/<host>'),     # whether StorageForge logs in to a host with certificates
     ('POST', '/api/keys/ssh-ca/hosts/<host>/certificate'),
@@ -267,6 +271,8 @@ AUDITED_ELSEWHERE = {
     'api_console_resize': 'part of the session, and of its recording',
     'api_console_close': 'console.close, written as the session ends',
     'api_deploy_access': 'deploy.enroll writes deploy.setup',
+    'api_agent_install': 'sfagent.install writes agent.enroll and agent.apply, or agent.install when it failed',
+    'api_agent_remove': 'sfagent.remove writes agent.remove',
     'api_deploy_adopt': 'deploy.adopt goes through deploy.run',
     'api_deploy_check': 'a signed probe: deploy.run writes the row',
     'api_deploy_job_action': 'jobs.action goes through deploy.run',

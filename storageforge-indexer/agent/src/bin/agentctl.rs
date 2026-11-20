@@ -188,6 +188,7 @@ impl Ctl {
             subgid: self.host.root_subids("/etc/subgid"),
             vmid: if kind == Kind::Pct { self.vmid() } else { None },
             seccomp,
+            docker_major: if kind == Kind::Docker { self.output(&["docker".to_string(), "--version".to_string()], false, &[]).ok().and_then(|(_, out, _)| runtime::docker_major(out.trim())) } else { None },
         })
     }
 
@@ -216,27 +217,33 @@ impl Ctl {
         self.act(&steps)
     }
 
-    /// Removes whatever container there is, and makes the one these needs describe.
-    fn make(&mut self, image: &str, needs: &Needs) -> Result<Kind, Stop> {
+    /// The runtime these needs take on this host and what it will be told, or why this host cannot give them. Nothing on the
+    /// host is changed here: a request that cannot be met is refused whole, before its manifest is accepted.
+    fn plan(&self, image: &str, needs: &Needs) -> Result<(Kind, Spec), Stop> {
         let kind = runtime::choose(&self.tools(), needs).map_err(|u| Stop { exit: REFUSED, code: u.code, why: u.why })?;
         let spec = self.spec(kind, image, needs)?;
-        if let Some(u) = runtime::unserved(kind, &spec) {
-            return Err(Stop { exit: REFUSED, code: u.code, why: u.why });
+        match runtime::unserved(kind, &spec) {
+            Some(u) => Err(Stop { exit: REFUSED, code: u.code, why: u.why }),
+            None => Ok((kind, spec)),
         }
-        // from here on the host is changed
+    }
+
+    /// Removes whatever container there is, and makes the one that was planned.
+    fn make(&mut self, kind: Kind, spec: &Spec, needs: &Needs) -> Result<Kind, Stop> {
+        let image = spec.image.clone();
         self.folders()?;
         if let Some(old) = self.text("runtime").and_then(|t| Kind::parse(&t)) {
             let old_spec = Spec { vmid: self.text("vmid").and_then(|t| t.parse().ok()), root: spec.root.clone(), ..Spec::default() };
             self.act(&runtime::remove(old, &old_spec))?;
         }
-        self.act(&runtime::remove(kind, &spec))?;
+        self.act(&runtime::remove(kind, spec))?;
         if kind == Kind::PodmanRootless {
             self.prepare_rootless(needs)?;
         }
         self.keep("runtime", kind.name())?;
-        self.keep("image", image)?;
-        self.act(&runtime::pull(kind, &spec))?;
-        self.act(&runtime::create(kind, &spec))?;
+        self.keep("image", &image)?;
+        self.act(&runtime::pull(kind, spec))?;
+        self.act(&runtime::create(kind, spec))?;
         Ok(kind)
     }
 
@@ -277,7 +284,8 @@ impl Ctl {
             let _ = std::fs::remove_file(self.host.manifest_dir().join(name));
         }
         let _ = std::fs::remove_file(self.file(SEEN_FILE));
-        let kind = self.make(image, &Needs::default())?;
+        let (kind, spec) = self.plan(image, &Needs::default())?;
+        self.make(kind, &spec, &Needs::default())?;
         // The agent makes its key as it starts. The public half is read from the host's side of its state folder: one small
         // plain file, which is all that is ever taken from what the container wrote.
         let public = state.join(identity::PUBLIC_FILE);
@@ -290,7 +298,6 @@ impl Ctl {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
         let Some(key) = key else {
-            let spec = self.spec(kind, image, &Needs::default())?;
             let _ = self.act(&runtime::remove(kind, &spec));
             return Err(failed("the agent's container was made and wrote no key in 30 seconds: it was removed again"));
         };
@@ -349,15 +356,16 @@ impl Ctl {
         }
         let needs = m.needs();
         needs.check().map_err(|why| Stop { exit: REFUSED, code: "manifest", why })?;
-        // everything is checked; the counter is written down first, so that this manifest or a later one is all that is accepted
-        // from here on, whatever becomes of the steps below
+        let (kind, spec) = self.plan(&m.image, &needs)?;
+        // everything is checked, and this host can give what is asked; the counter is written down first, so that this manifest
+        // or a later one is all that is accepted from here on, whatever becomes of the steps below
         self.folders()?;
         if admitted == Admitted::New {
             self.keep(SEEN_FILE, Seen { counter: m.counter, sha256: digest.clone() }.line().trim_end())?;
         }
         let dir = self.host.manifest_dir();
         write_whole(&dir.join(MANIFEST_SIGNATURE), signature.as_bytes(), 0o644).and_then(|_| write_whole(&dir.join(MANIFEST_FILE), bytes, 0o644)).map_err(|e| failed(format!("cannot write the manifest: {e}")))?;
-        let kind = self.make(&m.image, &needs)?;
+        self.make(kind, &spec, &needs)?;
         Ok(json!({"counter": m.counter, "manifest": digest, "runtime": kind.name(), "plugins": m.plugins.iter().map(|e| e.name.clone()).collect::<Vec<_>>(), "needs": needs}))
     }
 
@@ -475,7 +483,8 @@ fn run() -> Result<Value, Stop> {
         "apply" => ctl.apply(&r, controller, &machine)?,
         "start" | "restart" => {
             let (image, needs) = ctl.current(&controller, &machine)?;
-            let kind = ctl.make(&image, &needs)?;
+            let (kind, spec) = ctl.plan(&image, &needs)?;
+            ctl.make(kind, &spec, &needs)?;
             json!({"runtime": kind.name()})
         }
         "stop" => {
