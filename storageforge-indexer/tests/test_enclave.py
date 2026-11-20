@@ -740,6 +740,30 @@ class Supervised(unittest.TestCase):
             self.start(copy)
         self.assertEqual(self.events, [], 'nothing was started')
 
+    def test_told_whose_signature_to_expect_it_starts_the_signed_image_and_no_other(self):
+        """enclave/image/sign.sh with a key made here, as CI signs with the release key."""
+        copy = self.tmp / 'signed'
+        shutil.copytree(IMAGE, copy)
+        (copy / 'SHA256SUMS.sig').unlink(missing_ok=True)
+        for who in ('release', 'other'):
+            subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(self.tmp / who)], check=True)
+        signers = self.tmp / 'allowed_signers'
+        signers.write_text(f'storageforge namespaces="storageforge-enclave" {(self.tmp / "release.pub").read_text()}')
+        with self.assertRaises(self.vm.EnclaveVMError) as got:
+            self.start(copy, signers=str(signers))
+        self.assertIn('is not signed', str(got.exception))
+        sign = ROOT / 'enclave' / 'image' / 'sign.sh'
+        subprocess.run(['sh', str(sign), str(copy), str(self.tmp / 'other')], check=True, capture_output=True)
+        with self.assertRaises(self.vm.EnclaveVMError) as got:
+            self.start(copy, signers=str(signers))
+        self.assertIn('is not signed by storageforge', str(got.exception))
+        self.assertEqual(self.events, [], 'nothing was started')
+        subprocess.run(['sh', str(sign), str(copy), str(self.tmp / 'release')], check=True, capture_output=True)
+        address = self.start(copy, signers=str(signers))
+        with enclave.Enclave(address) as e:
+            self.assertTrue(e.status()['pid1'])
+        self.assertEqual(subprocess.run(['sh', str(sign), '--verify', str(copy), str(signers)], capture_output=True).returncode, 0)
+
     def test_a_vm_that_stops_is_noticed_and_comes_back_at_the_same_address_holding_nothing(self):
         db_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, db_dir, True)

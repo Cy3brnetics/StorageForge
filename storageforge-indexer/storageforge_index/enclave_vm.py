@@ -4,7 +4,8 @@
 
 What starting means here, in order, and each step that fails is the end of it:
 
-    1. the image is the image: every file matches SHA256SUMS beside it, and SHA256SUMS matches the digest the caller pinned
+    1. the image is the image: every file matches SHA256SUMS beside it, and SHA256SUMS matches the digest the caller pinned.
+       With STORAGEFORGE_ENCLAVE_SIGNERS set, SHA256SUMS must also be signed by a key in that allowed-signers file (image/sign.sh)
     2. the VM boots with one device, the vsock socket: no network card, no disk, no shared folder, nothing typed into its console
     3. it answers, and says it is the VM's only program (pid1) with its memory locked. A test double of it says neither
     4. the key it shows for its channel is pinned (enclave.py): the VM was started a moment ago over a socket this made for it,
@@ -47,6 +48,8 @@ BOOT_SECONDS = 20
 QEMU = 'qemu-system-x86_64'
 FIRECRACKER = 'firecracker'
 VMM_ENV = 'STORAGEFORGE_ENCLAVE_VMM'
+SIGNERS_ENV = 'STORAGEFORGE_ENCLAVE_SIGNERS'
+SIGN_NAMESPACE = 'storageforge-enclave'
 
 
 class EnclaveVMError(RuntimeError):
@@ -72,6 +75,24 @@ def image_digest(folder) -> str:
             raise EnclaveVMError(f'{name} is not the file SHA256SUMS lists: the enclave image was changed after it was built')
         lines.append(f'{actual}  {name}\n')
     return hashlib.sha256(''.join(lines).encode()).hexdigest()
+
+
+def image_signed(folder, signers, name: str = 'storageforge') -> None:
+    """The image's SHA256SUMS is signed by `name` of the allowed-signers file `signers`, in the enclave's own namespace: the
+    signature enclave/image/sign.sh makes with the release key. Raises EnclaveVMError where it is not, or cannot be checked."""
+    folder = Path(folder)
+    sig, sums = folder / 'SHA256SUMS.sig', folder / 'SHA256SUMS'
+    if not shutil.which('ssh-keygen'):
+        raise EnclaveVMError('the enclave image\'s signature cannot be checked: ssh-keygen is not installed')
+    if not sig.is_file() or not Path(signers).is_file():
+        raise EnclaveVMError(f'the enclave image is not signed ({sig} is missing)' if not sig.is_file() else f'{SIGNERS_ENV} names {signers}, which is not there')
+    try:
+        with open(sums, 'rb') as f:
+            done = subprocess.run(['ssh-keygen', '-Y', 'verify', '-f', str(signers), '-I', name, '-n', SIGN_NAMESPACE, '-s', str(sig)], stdin=f, capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise EnclaveVMError(f'the enclave image\'s signature could not be checked: {exc}') from None
+    if done.returncode != 0:
+        raise EnclaveVMError(f'the enclave image is not signed by {name} of {signers}: it is not started')
 
 
 def vmm() -> str:
@@ -106,7 +127,8 @@ def from_env(on_event=None, shared: bool = True) -> 'Supervisor | None':
     folder = os.environ.get('STORAGEFORGE_ENCLAVE_IMAGE_DIR')
     if not folder:
         raise EnclaveVMError('STORAGEFORGE_ENCLAVE=vm needs STORAGEFORGE_ENCLAVE_IMAGE_DIR: the folder enclave/image/build.sh wrote')
-    supervisor = Supervisor(folder, expect=os.environ.get('STORAGEFORGE_ENCLAVE_IMAGE') or None, on_event=on_event, runtime_dir=enclave.run_dir() if shared else None)
+    supervisor = Supervisor(folder, expect=os.environ.get('STORAGEFORGE_ENCLAVE_IMAGE') or None, on_event=on_event, runtime_dir=enclave.run_dir() if shared else None,
+                            signers=os.environ.get(SIGNERS_ENV) or None)
     os.environ[enclave.ADDRESS_ENV] = 'vm:starting'          # until it is up, nothing may take `vm` for no enclave at all
     try:
         os.environ[enclave.ADDRESS_ENV] = supervisor.start()
@@ -133,9 +155,11 @@ def on_demand() -> str:
 
 
 class Supervisor:
-    def __init__(self, image_dir, expect: str | None = None, on_event=None, runtime_dir=None, memory_mib: int = MEMORY_MIB, vmm_name: str | None = None):
-        """expect: the image digest to insist on (image_digest). on_event(kind, detail): 'up', 'down', 'failed'. vmm_name: 'firecracker' or 'qemu'."""
+    def __init__(self, image_dir, expect: str | None = None, on_event=None, runtime_dir=None, memory_mib: int = MEMORY_MIB, vmm_name: str | None = None, signers: str | None = None):
+        """expect: the image digest to insist on (image_digest). on_event(kind, detail): 'up', 'down', 'failed'. vmm_name: 'firecracker' or 'qemu'.
+        signers: an allowed-signers file; the image is started only if its SHA256SUMS is signed by a key in it."""
         self.vmm = vmm_name or vmm()
+        self.signers = signers
         self._made = None
         self.image, self.expect, self.memory = Path(image_dir), expect, memory_mib
         self.on_event = on_event or (lambda kind, detail: None)
@@ -236,6 +260,8 @@ class Supervisor:
         self.digest = image_digest(self.image)
         if self.expect and not secrets.compare_digest(self.digest, self.expect.strip().lower()):
             raise EnclaveVMError(f'the enclave image is not the one pinned: it is {self.digest}')
+        if self.signers:
+            image_signed(self.image, self.signers)
         with self._lock:
             status = self._start_vm()
         self.on_event('up', {'address': self.address, 'image': self.digest, 'version': status.get('version')})
@@ -277,6 +303,8 @@ class Supervisor:
                 try:
                     if image_digest(self.image) != self.digest:
                         raise EnclaveVMError('the enclave image changed while it ran: it is not started from a different image')
+                    if self.signers:
+                        image_signed(self.image, self.signers)
                     with self._lock:
                         if self._stop.is_set():
                             return

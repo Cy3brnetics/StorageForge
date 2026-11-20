@@ -7,6 +7,7 @@ The web UI is built on this API; anything it does can be scripted.
 - **Session.** Every `/api/*` route except `/api/login`, `/api/jobs/report` and `/api/jobs/state` needs a signed-in session cookie. Sign in with `POST /api/login`.
 - **Bodies** are JSON objects sent with `Content-Type: application/json`; anything else is refused with 400. Bodies are capped at 4 KiB, except a design (2 MiB).
 - **Re-authentication.** Routes marked 🔑 need the account password typed within the last 5 minutes. Without it they answer `403 {"error", "reauth": true}`; call `POST /api/reauth` and retry.
+- **Route codes.** A session that signed in with `"route_code": true`, as the sign-in page does, gets `route_key` and `now` in the answer and must send a code with every `POST`, `PUT` and `DELETE` under `/api/keys`, `/api/bindings`, `/api/enclave`, `/api/deploy`, `/api/console`, `/api/access` and `/api/security/webauthn`: the first 8 hex digits of `HMAC-SHA256(route_key as bytes, "METHOD /api/path|" + floor(server time / 30))`, in the path (`POST /api/~1a2b3c4d/keys`) or in an `X-SF-Code` header. Without it they answer `403 {"error", "routecode": true, "now"}`. A client that signs in without asking is not asked for codes. See [security](security.md#layers).
 - **Errors** are `{"error": "…"}` with a status:
 
   | Status | Meaning |
@@ -51,6 +52,7 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | POST | `/api/login` | `{"username", "password"}` | start a session; rate limited (see [Security](security.md#sign-in-limits)) |
 | POST | `/api/logout` | | end it, server-side too |
 | POST | `/api/reauth` | `{"password"}` | confirm the password for 5 minutes; returns `until` |
+| POST 🔑 | `/api/routecode` | `{}` | this session's route key again and the server's time, `{"route_key", "now"}`, and from then on the session sends route codes (below) |
 | GET | `/api/version` | | this version, the newest release in `STORAGEFORGE_UPDATE_URL`'s repository, `update_available`, when it was checked, and why a check failed |
 | GET | `/api/me` | | user, session length, when it ends |
 | PUT 🔑 | `/api/me` | `{"session_minutes"}` | 30–480 |
@@ -121,7 +123,23 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/access/script?host=\|user=&remove=1` | | the read-only access setup or removal script |
 | POST 🔑 | `/api/access/grant` | `{"host", "password", "admin_user"?, "remove"?}` | run that script once with sudo; 10/min |
 | GET | `/api/audit[?limit=]` | | newest entries (≤ 1000) |
-| GET | `/api/audit/verify` | | `{"valid", "entries_checked", "first_bad_id"}` |
+| GET | `/api/audit/verify` | | `{"valid", "entries_checked", "first_bad_id", "head"}`. With the [key enclave](security.md#key-enclave), `head` says whether the log still ends where the enclave last signed it (`{"enclave", "ok", "why"}`), and `valid` is false when it does not |
+
+### Key enclave
+
+Off unless `STORAGEFORGE_ENCLAVE` is set ([security](security.md#key-enclave)). Reading takes `keys.view`, the rest `keys.manage`.
+
+| Method | Path | Body | Returns |
+| :--- | :--- | :--- | :--- |
+| GET | `/api/enclave` | | `{"on", "state", "label", "detail", "vm_possible", "why_no_vm"}`, and with it on: `counts`, `tasks`, `limits`, `chain`, `stepup`, `channel`, `second_lock`. `state` is `off`, `unlocked`, `locked`, `lockdown` or `down` |
+| POST 🔑 | `/api/enclave/unlock` | `{"secret", "password"?}` | hands the typed vault secret to a locked enclave; 6/min. `password`: the account's own, which lifting a lock-down takes once step-up is on |
+| POST 🔑 | `/api/enclave/lock` | `{}` | the enclave forgets every key |
+| POST | `/api/enclave/stepup` | `{"password"}` or `{"fido": {"id", "authenticatorData", "clientDataJSON", "signature"}}` | the enclave checks the proof itself and gives this session a token for 5 minutes; 5/min. `403` with `enroll: true` when the account has no record |
+| POST | `/api/enclave/stepup/begin` | `{}` | a challenge the enclave made, as WebAuthn request options, for a security key enrolled with it |
+| POST 🔑 | `/api/enclave/stepup/enroll` | `{"password", "secret"?}` | gives the enclave this account's password hash and security keys. After the first person: `403 {"stepup": true}` without a token, unless `secret` is the vault secret |
+| POST 🔑 | `/api/enclave/chain/accept` | `{}` | takes a cut audit log as it is now; written to the log first |
+
+A route that needs a step-up the enclave checks (making or importing a key, a sensitive secret) answers `403 {"error", "stepup": true}`: call `POST /api/enclave/stepup` and retry.
 
 ## Designs and planner
 

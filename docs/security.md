@@ -24,7 +24,7 @@ Backups never contain the vault secret, on purpose: a backup together with its s
 
 ### Key enclave
 
-*Being built for 0.5.5, and not lab-tested. It is off unless `STORAGEFORGE_ENCLAVE` is set.*
+*New in 0.5.5. Built, not lab-tested: its lab tier (19) is written and has not run. It is off unless `STORAGEFORGE_ENCLAVE` is set.*
 
 A second layer on the vault's keys: a micro VM whose only program holds the KEK, and whose only device is a vsock socket. It has no network card, no disk and no shell. The web app hands it the vault's own ciphertexts with each request, so nothing stored changes format and the vault opens as before without it.
 
@@ -126,7 +126,12 @@ code = first 8 hex digits of HMAC-SHA256(route key, "METHOD /api/route|" + floor
 
 For the vault key to be derived again on a schedule the enclave holds the vault secret, and the host's share where the second lock is on, from unlock to lock, in its locked memory. Before this it held the secret only for the moment of unlock.
 
-The image is `storageforge-indexer/enclave/image/build.sh`: a kernel without modules, an IP stack or block devices and with lockdown forced on, and an initramfs of one static file. The compiler image is pinned by digest and the kernel by checksum, and the build is reproducible: build it again and compare `SHA256SUMS`.
+**The image** is built by `storageforge-indexer/enclave/image/build.sh`: a kernel without modules, an IP stack or block devices and with lockdown forced on, and an initramfs of one static file. The compiler image is pinned by digest and the kernel by checksum.
+
+- **Reproducible, and recorded.** Two builds give the same bytes, file for file. `enclave/image/SHA256SUMS` in the repository records them for the sources as they are committed, so anyone can build the image and compare, and a change to the program or the kernel list shows as a change to that file. CI builds the image twice, compares the two, and compares both with the recorded lines.
+- **Scanned.** CI scans the program's dependencies (`Cargo.lock`) and fails on a high or critical finding. The program is the only file in the image, and it is Rust with no C library beside it.
+- **Signed.** `enclave/image/sign.sh OUT KEY` signs `SHA256SUMS` with an SSH key, as release tags are signed, in a namespace of its own (`storageforge-enclave`). CI signs with the release key where the run is given it (the secret `STORAGEFORGE_RELEASE_KEY`); a fork or a pull request is given none, and there the image is built and compared and not signed. With `STORAGEFORGE_ENCLAVE_SIGNERS` naming an allowed-signers file (`storageforge namespaces="storageforge-enclave" ssh-ed25519 AAAA…`), the server starts only an image whose `SHA256SUMS.sig` checks out against it, at start and at every restart. `sign.sh --verify OUT SIGNERS` checks the same by hand. The release key itself is the owner's: until its public half is in the repository and its private half in CI's secrets, images are compared by hash and not signed.
+- **arm64.** `ARCH=arm64 enclave/image/build.sh` cross-compiles the same image for arm64 (`Image`, `initramfs.cpio.gz`), recorded in `enclave/image/SHA256SUMS.arm64` and built in CI. Here it was booted under QEMU's emulation, where it unlocked, made a key, signed, released a secret and verified an audit chain. It has not run under KVM or Firecracker on an arm64 machine, and the server's own supervisor starts only the x86-64 image so far.
 
 ### Secrets for plan steps
 

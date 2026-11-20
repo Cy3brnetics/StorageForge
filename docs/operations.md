@@ -20,6 +20,7 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_ENCLAVE_KEY` | pinned at first contact | The key the configured key enclave has to show for its [channel](security.md#layers), as `vault enclave-pin` prints it. Only for an enclave that something else runs: one the server starts is pinned by the server |
 | `STORAGEFORGE_ENCLAVE_VMM` | Firecracker where installed, else QEMU | With `vm`: `firecracker` or `qemu`, to insist on one |
 | `STORAGEFORGE_ENCLAVE_IMAGE` | | With `vm`: the image digest to insist on; a different image is not started |
+| `STORAGEFORGE_ENCLAVE_SIGNERS` | | With `vm`: an allowed-signers file. The image is started only if its `SHA256SUMS.sig` is signed by a key in it, in the namespace `storageforge-enclave` (`enclave/image/sign.sh`) |
 | `STORAGEFORGE_VAULT_NEW_SECRET` | | The new secret for `vault rotate-secret` |
 | `STORAGEFORGE_SESSION_SECRET` / `_FILE` | random per start | Signs session cookies; at least 32 characters |
 | `STORAGEFORGE_SESSION_ROTATE_HOURS` | `24` | How often the session-signing key [changes by itself](security.md#layers). Nobody is signed out by it. `0`: the session secret signs directly, as before 0.5.5 |
@@ -63,6 +64,26 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_TLS_NAMES` | | Extra names and addresses for the self-signed certificate; used when it is created |
 | `STORAGEFORGE_ALLOW_DISK_RUNTIME` | `0` | Let the entrypoint start when the runtime dir is not tmpfs (not recommended) |
 | `STORAGEFORGE_EGRESS_PORTS`, `STORAGEFORGE_BRIDGE` | `22 443`, `sf0` | For `docker/egress-firewall.sh`; the bridge name is also used by compose |
+
+## Key enclave
+
+What running with the [key enclave](security.md#key-enclave) changes for whoever operates the stack. Built, not lab-tested.
+
+| To | Do |
+| :--- | :--- |
+| Turn it on | Add `-f docker-compose.enclave.yml` to every compose command and set `STORAGEFORGE_KVM_GID` to the group of `/dev/kvm` on the Docker host (`stat -c %g /dev/kvm`). The first `up` moves the vault secret to the `sf-vault-secret` volume, which the server's container does not mount, and starts the `starter` service |
+| See its state | **Keys → Key enclave**, the **Security** overview, or `GET /api/enclave`. The notification center opens when it is locked, locked down, not answering, or counting things it refused |
+| Unlock it after a restart | Nothing: the `starter` service does. After a lock-down, or with no starter, a person types the vault secret on the Keys page |
+| Read the vault secret, for safekeeping | `docker compose -f docker-compose.yml -f docker-compose.enclave.yml run --rm --entrypoint cat admin /run/sf-vault/vault_secret` |
+| Run a command that needs a key | `docker compose … exec storageforge storageforge-index …` asks the server's enclave and needs no secret. `docker compose … run --rm admin …` holds the secret and starts an enclave of its own for as long as it runs |
+| Have the enclave check people itself | **Keys → Key enclave → Enroll your password with the enclave**, or `storageforge-index vault stepup-enroll USER` with the password on stdin. Set `STORAGEFORGE_ENCLAVE_STEPUP=required` in `.env` to insist on it whatever the database shows |
+| Limit what a stored secret is released for | `vault secret-add NAME --step STEP --for-host HOST [--sensitive]`, `vault secret-policy NAME` to show or change it, `--none` to take the policy off |
+| Add the second lock | `sudo install -d -o 10001 -g 10001 -m 0700 /etc/storageforge`, set `STORAGEFORGE_HOST_SHARE_DIR=/etc/storageforge`, then `docker compose … run --rm admin vault second-lock on`. Write down the recovery share it prints, away from the vault secret, and restart the stack. `vault second-lock off` is the way back |
+| Move to another machine with the second lock on | Restore the database, put the vault secret in place, then `vault second-lock recover` with the recovery share on stdin |
+| Pin an enclave that something else runs | `storageforge-index vault enclave-pin` shows the pinned key; `--renew` after it restarted |
+| Go back to a stack without it | Take the second lock off if it is on. Copy the vault secret out (above) into `./secrets/vault_secret`, then deploy without the file. Nothing stored has changed format, except secrets that were given a policy: take those off first with `vault secret-policy NAME --none` |
+
+What to keep safe now: the vault secret, as before; the host share file, where the second lock is on, which must not travel with the database or its backups; and the recovery share, on paper, away from both.
 
 ## Health
 
@@ -294,7 +315,7 @@ python3 -m unittest discover -s tests -v          # or everything in one process
 docker build --target test .
 ```
 
-`.forgejo/workflows/ci.yml` runs each block of the suite (light, medium, heavy, then the random tests deep) on both databases, plus ruff and shellcheck, a Trivy scan of the image and a [zizmor](https://docs.zizmor.sh) audit of the workflows themselves, on every push. It needs Forgejo Actions and a runner. `.github/workflows/ci.yml` is the same for GitHub.
+`.forgejo/workflows/ci.yml` runs each block of the suite (light, medium, heavy, then the random tests deep) on both databases, plus ruff and shellcheck, a Trivy scan of the image, the [key enclave's image](security.md#key-enclave) (built twice and compared, compared with the hashes the repository records, its dependencies scanned, cross-compiled for arm64, and signed where the run is given the release key) and a [zizmor](https://docs.zizmor.sh) audit of the workflows themselves, on every push. It needs Forgejo Actions and a runner. `.github/workflows/ci.yml` is the same for GitHub.
 
 The workflows follow what zizmor checks for:
 - **Actions are pinned to commit SHAs**, with the version in a comment, so a moved or hijacked tag can't run in CI. Dependabot (`.github/dependabot.yml`) raises the bumps on GitHub. Copy them into the Forgejo file, which has no Dependabot.
