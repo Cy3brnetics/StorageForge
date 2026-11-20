@@ -69,7 +69,7 @@ def _run(v: Vault, conn, key_name: str, place: dict, command: str) -> str:
     key_id = conn.scalar('SELECT key_id FROM ssh_keys WHERE name = :n', {'n': key_name})
     if key_id is None:
         raise RotationError(f'no key named {key_name}')
-    with ephemeral_agent(v.decrypt_key(key_id), ttl=120) as sock:
+    with ephemeral_agent(v.decrypt_key(key_id, 'rotate'), ttl=120) as sock:
         t = Transport(host=place['address'], user=place['user'], port=place['port'], agent_sock=sock, known_hosts=str(known_hosts_path()),
                       isolated=True, connect_timeout=10, strict=True)
         try:

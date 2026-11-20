@@ -14,6 +14,7 @@ import json
 import os
 import socket
 import struct
+import time
 from pathlib import Path
 
 MAX_FRAME = 1 << 20
@@ -222,9 +223,10 @@ class Enclave:
     def _key(row: dict) -> dict:
         return {'uuid': row['key_uuid'], 'dek_nonce': _b64(row['dek_nonce']), 'wrapped_dek': _b64(row['wrapped_dek']), 'key_nonce': _b64(row['key_nonce']), 'ciphertext': _b64(row['ciphertext'])}
 
-    def sign(self, row: dict, data: bytes, flags: int = 0) -> tuple[bytes, bytes]:
-        """(signature, public key), both in SSH wire form, made inside the enclave with the key of this ssh_keys row."""
-        got = self.request('sign', data=_b64(data), flags=flags, **self._key(row))
+    def sign(self, row: dict, data: bytes, flags: int = 0, task: str = 'other') -> tuple[bytes, bytes]:
+        """(signature, public key), both in SSH wire form, made inside the enclave with the key of this ssh_keys row. task: the
+        kind of work it is for (scan, deploy, console, device, access, rotate, git, sign), which has its own limit and count inside."""
+        got = self.request('sign', data=_b64(data), flags=flags, task=task, **self._key(row))
         return base64.b64decode(got['signature']), base64.b64decode(got['public'])
 
     def generate(self, uuid: str, kind: str = 'ed25519', comment: str = '', token: str | None = None) -> dict:
@@ -317,7 +319,8 @@ def describe() -> dict:
         client.close()
     state = str(status.get('state'))
     out.update(state=state, version=status.get('version'), protocol=status.get('protocol'), in_vm=bool(status.get('pid1') and status.get('memory_locked')),
-               counts={k: status.get(k) for k in ('signed', 'released', 'refused', 'bad_requests', 'bad_limit')}, limits=status.get('limits') or {}, stepup=status.get('stepup') or {},
+               counts={k: status.get(k) for k in ('signed', 'released', 'refused', 'bad_requests', 'bad_limit', 'auth_failed', 'policy_refused', 'stepup_missing')},
+               tasks=status.get('tasks') or {}, limits=status.get('limits') or {}, stepup=status.get('stepup') or {},
                chain={k: v for k, v in (status.get('chain') or {}).items() if k not in ('head', 'prior')})
     where = 'a micro VM with no network device' if out['in_vm'] else 'a program on this machine, not a micro VM: for development and tests only'
     out['label'] = {'unlocked': 'Key enclave: on', 'locked': 'Key enclave: locked', 'lockdown': 'Key enclave: locked down'}.get(state, f'Key enclave: {state}')
@@ -327,9 +330,53 @@ def describe() -> dict:
     return out
 
 
+# The enclave's own counts, as the notification center reads them (roadmap section 14, "Its own limits"). The counts are kept
+# inside, where the web app cannot change them, and only ever go up; what matters is how far they went in the last hour. So each
+# look is remembered here, and a count is compared with what it was an hour ago: a notification opens when it has grown and leaves
+# an hour after it last did. Nothing is remembered across a restart of the server, and an enclave that restarted starts from nothing.
+WINDOW = 3600
+COUNTS = ('refused', 'auth_failed', 'stepup_failed', 'stepup_missing', 'policy_refused', 'released', 'unwritten', 'releases_unwritten')
+# count → (kind, title, what it means, warn from, critical from)
+RISES = {
+    'refused': ('security-enclave-limits', 'The key enclave refused requests at its limits', 'were more than its limits allow: more signatures or releases were asked for than any honest run of tasks needs, or a job is running away', 1, 50),
+    'auth_failed': ('security-enclave-probed', 'The key enclave was sent ciphertexts or secrets that did not check out', 'did not authenticate: a wrong vault secret, or a ciphertext that was changed or moved to another row', 3, 20),
+    'stepup_failed': ('security-enclave-stepup', 'Step-ups failed in the key enclave', 'were wrong passwords or security keys it does not hold', 5, 20),
+    'stepup_missing': ('security-enclave-stepup-missing', 'The key enclave was asked for what needs a step-up, without one', 'asked it to make or change a key, or release a sensitive secret, with no token of a step-up', 10, 50),
+    'policy_refused': ('security-enclave-policy', 'Secrets were asked for what their policy does not name', 'named a step, host or platform the secret is not released for', 1, 20),
+    'released': ('security-enclave-releases', 'The key enclave released many secrets', 'were releases of stored secrets: half of what it allows in an hour', 300, 550),
+    'unwritten': ('security-enclave-audit-unwritten', 'Audit entries the key enclave signed were not written', 'were signed and then not found in the log: a write that failed, or the log\'s last entry removed', 1, 5),
+    'releases_unwritten': ('security-enclave-audit-release', 'A released secret is missing from the audit log', 'were secrets it released whose audit entry, which it made itself, is not in the log', 1, 1),
+}
+_looks: dict = {}          # address → [(when, counts)]
+
+
+def _counts(status: dict) -> dict:
+    chain, stepup = status.get('chain') or {}, status.get('stepup') or {}
+    return {'refused': status.get('refused', 0), 'auth_failed': status.get('auth_failed', 0), 'stepup_failed': stepup.get('failed', 0), 'stepup_missing': status.get('stepup_missing', 0),
+            'policy_refused': status.get('policy_refused', 0), 'released': status.get('released', 0), 'unwritten': chain.get('unwritten', 0), 'releases_unwritten': chain.get('releases_unwritten', 0)}
+
+
+def risen(address: str, status: dict, now: float | None = None) -> dict:
+    """How far each count went in the last hour, from the looks remembered here. At the first look an enclave that has run for
+    less than an hour is counted from zero, since all it shows happened in that hour; an older one from what it shows now."""
+    now = time.time() if now is None else now
+    counts = _counts(status)
+    looks = _looks.setdefault(address, [])
+    if looks and any(counts[k] < looks[-1][1][k] for k in COUNTS):          # it restarted: its counts began again
+        looks.clear()
+    if not looks:
+        looks.append((now - WINDOW, {k: 0 for k in COUNTS} if int(status.get('uptime') or 0) <= WINDOW else dict(counts)))
+    looks.append((now, counts))
+    while len(looks) > 2 and looks[1][0] <= now - WINDOW:          # keep one look from before the window, to count from
+        looks.pop(0)
+    base = looks[0][1]
+    return {k: counts[k] - base[k] for k in COUNTS}
+
+
 def problems() -> dict:
     """For the notification center (alerts.problems): an enclave that was asked for and is not answering, has locked itself down,
-    or is locked. The kind starts with security-, so none of them can be muted or snoozed: they leave when they are resolved."""
+    or is locked, and what its own counts say. Every kind starts with security-, so none can be muted or snoozed: they leave when
+    they are resolved."""
     address = os.environ.get(ADDRESS_ENV) or None          # not configured(): looking for problems never starts a VM
     if not address or address == 'vm':
         return {}
@@ -344,10 +391,21 @@ def problems() -> dict:
     if status.get('state') == 'lockdown':
         return {'security-enclave': ('security-enclave', 'enclave', 'The key enclave has locked itself down',
                                      f'It was sent {status.get("bad_requests")} requests no honest client sends, and wiped its keys. Find what sent them before unlocking it again with the vault secret.', 'crit')}
+    out = {}
     if status.get('state') != 'unlocked':
-        return {'security-enclave': ('security-enclave', 'enclave', 'The key enclave is locked',
-                                     'It holds no key, as after a restart. It is unlocked the next time the vault is used where the vault secret is available, and by a person otherwise.', 'warn')}
-    return {}
+        out['security-enclave'] = ('security-enclave', 'enclave', 'The key enclave is locked',
+                                   'It holds no key, as after a restart. The starter unlocks it, or a person on the Keys page with the vault secret.', 'warn')
+    if status.get('bad_requests'):
+        out['security-enclave-malformed'] = ('security-enclave-malformed', 'enclave', 'The key enclave was sent malformed requests',
+                                             f'{status["bad_requests"]} of the {status.get("bad_limit", 5)} after which it wipes its keys and locks itself down. No honest client sends one: find what did.', 'warn')
+    if (status.get('chain') or {}).get('behind'):
+        out['security-enclave-audit'] = ('security-enclave-audit', 'enclave', 'The audit log no longer ends where the key enclave signed it',
+                                         'Entries were removed or changed in the database. Audit → Verify chain shows what is there. No secret is released until someone has looked and taken the log as it is, on the Keys page.', 'crit')
+    for count, grew in risen(address, status).items():
+        kind, title, means, warn, crit = RISES[count]
+        if grew >= warn:
+            out[kind] = (kind, 'enclave', title, f'{grew} in the last hour {means}. The count is the enclave\'s own, kept where the web app cannot change it.', 'crit' if grew >= crit else 'warn')
+    return out
 
 
 # ── an ssh-agent whose key is in the enclave ────────────────────────
@@ -359,7 +417,6 @@ import contextlib          # noqa: E402
 import shutil              # noqa: E402
 import tempfile            # noqa: E402
 import threading           # noqa: E402
-import time                # noqa: E402
 
 AGENT_FAILURE, AGENTC_REQUEST_IDENTITIES, AGENT_IDENTITIES_ANSWER, AGENTC_SIGN_REQUEST, AGENT_SIGN_RESPONSE = 5, 11, 12, 13, 14
 AGENT_MAX_MESSAGE = 256 * 1024 + 4096
@@ -402,9 +459,10 @@ def agent_reply(message: bytes, public_blob: bytes, comment: bytes, sign) -> byt
 
 
 @contextlib.contextmanager
-def agent(address: str, row: dict, ttl: int, base: str | None = None):
+def agent(address: str, row: dict, ttl: int, base: str | None = None, task: str = 'other'):
     """A socket file `ssh` can use as SSH_AUTH_SOCK for the key of this ssh_keys row, for at most ttl seconds. row needs key_uuid,
-    dek_nonce, wrapped_dek, key_nonce, ciphertext and public_key (the line). Each client gets its own connection to the enclave."""
+    dek_nonce, wrapped_dek, key_nonce, ciphertext and public_key (the line). Each client gets its own connection to the enclave.
+    task: the kind of work the signatures are for."""
     public_blob = base64.b64decode(row['public_key'].split()[1])
     comment = ' '.join(row['public_key'].split()[2:]).encode()
     folder = tempfile.mkdtemp(prefix='agent-', dir=base)
@@ -437,7 +495,7 @@ def agent(address: str, row: dict, ttl: int, base: str | None = None):
                         if not chunk:
                             return
                         body += chunk
-                    reply = agent_reply(body, public_blob, comment, lambda data, flags: enclave.sign(row, data, flags)[0])
+                    reply = agent_reply(body, public_blob, comment, lambda data, flags: enclave.sign(row, data, flags, task)[0])
                     client.sendall(struct.pack('>I', len(reply)) + reply)
         except OSError:
             pass

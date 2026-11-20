@@ -383,7 +383,7 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
         try:
             with Vault(db, conn).unlock() as vault:
                 b = vault.resolve(bind_for, 'console')
-                key = vault.decrypt_key(b.key_id)
+                key = vault.decrypt_key(b.key_id, 'console')
         except NoBinding as exc:
             s._audit = None
             s.close('no console key')

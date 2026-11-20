@@ -13,7 +13,13 @@ function enclaveCounts(d) {
   const c = d.counts, l = d.limits || {};
   return sfNode('p', { class: 'muted small' }, `Since it started: ${c.signed || 0} signatures, ${c.released || 0} secrets released, ${c.refused || 0} requests refused by its limits, `
     + `${c.bad_requests || 0} of ${c.bad_limit || 5} malformed requests before it locks down. Its limits are its own: ${l.sign_per_key_per_minute || 600} signatures a minute per key, `
-    + `${l.release_per_secret_per_minute || 60} releases a minute per secret, ${l.unlock_per_minute || 6} unlock attempts a minute.`);
+    + `${l.release_per_secret_per_minute || 60} releases a minute per secret, ${l.unlock_per_minute || 6} unlock attempts a minute, and one allowance for each kind of task.`
+    + enclaveTasks(d.tasks));
+}
+
+function enclaveTasks(tasks) {          // what each kind of task signed, and what it was refused
+  const kinds = Object.keys(tasks || {}).sort();
+  return kinds.length ? ` By kind of task: ${kinds.map((k) => `${k} ${tasks[k].signed}${tasks[k].refused ? ` (${tasks[k].refused} refused)` : ''}`).join(', ')}.` : '';
 }
 
 /* Step-up: whether the enclave checks people itself, and this account's own record with it. */

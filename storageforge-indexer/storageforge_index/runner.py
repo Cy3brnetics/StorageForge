@@ -57,13 +57,20 @@ def is_memory_backed(path: Path) -> bool:
         return False
 
 
+def _for_scans(key):
+    """A key the enclave holds, marked as being for scans: the enclave limits and counts each kind of task apart."""
+    if isinstance(key, EnclaveKey):
+        key.task = 'scan'
+    return key
+
+
 @contextmanager
 def ephemeral_agent(key: SecretBuffer, ttl: int = AGENT_TTL):
     """Start a private ssh-agent, load the key from memory, yield its socket, then tear it all down. A key held by the key enclave
     is not loaded anywhere: the socket is served here and each signature is made inside the enclave."""
     base = runtime_dir()
     if isinstance(key, EnclaveKey):
-        with enclave.agent(key.address, key.row, ttl, base=str(base)) as sock:
+        with enclave.agent(key.address, key.row, ttl, base=str(base), task=key.task) as sock:
             yield sock
         return
     if not is_memory_backed(base):
@@ -142,7 +149,7 @@ def checksum_catchup(db: Database, host_id: int, hostname: str, opts: ScanOption
                 audit = AuditLog(db, conn, vault.audit_key)
                 t = None
                 try:
-                    with ephemeral_agent(vault.decrypt_key(b.key_id)) as sock:
+                    with ephemeral_agent(_for_scans(vault.decrypt_key(b.key_id))) as sock:
                         t = Transport(host=address, user=b.user, port=b.port, agent_sock=sock,
                                       known_hosts=str(known_hosts_path()), isolated=True)
                         t.signing = for_scan(conn, address, b.port, str(known_hosts_path()))
@@ -196,7 +203,7 @@ def scan_via_vault(db: Database, host: str, opts: ScanOptions, actor: str | None
             started = time.time()
             t = None
             try:
-                with ephemeral_agent(vault.decrypt_key(b.key_id)) as sock:
+                with ephemeral_agent(_for_scans(vault.decrypt_key(b.key_id))) as sock:
                     t = Transport(host=host, user=b.user, port=b.port, agent_sock=sock,
                                   known_hosts=str(known_hosts_path()), isolated=True)
                     from .scansign import for_scan

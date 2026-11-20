@@ -259,7 +259,7 @@ def open_host_transport(db, conn: Conn, host_name: str, action: str = 'scan'):
     addr = connect_address(conn, host_name)
     with Vault(db, conn).unlock() as vault:
         b = vault.resolve(addr, action)
-        with ephemeral_agent(vault.decrypt_key(b.key_id)) as sock:
+        with ephemeral_agent(vault.decrypt_key(b.key_id, 'git')) as sock:
             t = Transport(host=addr, user=b.user, port=b.port, agent_sock=sock,
                           known_hosts=str(known_hosts_path()), isolated=True)
             try:

@@ -64,6 +64,15 @@ const MAX_FIDO_KEYS: usize = 8;
 const PW_MEMORY_KIB: u32 = 19 * 1024;
 const PW_TIME: u32 = 2;
 const PW_MIN: usize = 12;
+/// Limits per kind of task, a minute: every signature says what kind of task it is for, and each kind has its own allowance on top
+/// of the one per key. The kind is the web app's word, so it cannot be used to get more out of a key than the key's own limit
+/// gives; what it does is keep one kind of work (a console, a runaway job) from using up what the others need, and show in the
+/// counts which kind asked for what. A kind that is not listed counts as `other`.
+const TASKS: [(&str, f64); 9] = [("scan", 1200.0), ("deploy", 600.0), ("console", 120.0), ("device", 300.0), ("access", 60.0), ("rotate", 120.0), ("git", 300.0), ("sign", 300.0), ("other", 120.0)];
+/// Secrets released a minute for one kind of step or platform, and an hour altogether.
+const RELEASE_PER_KIND_PER_MINUTE: f64 = 120.0;
+const RELEASES_PER_HOUR: f64 = 600.0;
+const MAX_RELEASE_KINDS: usize = 64;
 /// How many names a secret's policy may hold in each of its lists.
 const MAX_POLICY_NAMES: usize = 32;
 /// Entries of the audit log taken in at once when the enclave catches up with what others wrote.
@@ -74,15 +83,17 @@ struct Bucket {
     tokens: f64,
     at: Instant,
     per_minute: f64,
+    /// The most that is ever saved up.
+    most: f64,
 }
 
 impl Bucket {
     fn new(per_minute: f64) -> Self {
-        Bucket { tokens: per_minute, at: Instant::now(), per_minute }
+        Bucket { tokens: per_minute, at: Instant::now(), per_minute, most: per_minute }
     }
     fn take(&mut self) -> bool {
         let now = Instant::now();
-        self.tokens = (self.tokens + now.duration_since(self.at).as_secs_f64() * self.per_minute / 60.0).min(self.per_minute);
+        self.tokens = (self.tokens + now.duration_since(self.at).as_secs_f64() * self.per_minute / 60.0).min(self.most);
         self.at = now;
         if self.tokens >= 1.0 {
             self.tokens -= 1.0;
@@ -120,6 +131,16 @@ struct State {
     stepup_failed: u64,
     token_secs: u64,
     chain: Chain,
+    /// Per kind of task: its allowance, what it signed and what it was refused.
+    tasks: HashMap<&'static str, (Bucket, u64, u64)>,
+    release_kinds: HashMap<String, Bucket>,
+    release_hour: Bucket,
+    /// Requests whose ciphertext or secret did not authenticate, and requests that came without the step-up they needed: what
+    /// someone trying things looks like from inside.
+    auth_failed: u64,
+    stepup_missing: u64,
+    policy_refused: u64,
+    started: Instant,
 }
 
 /// The head of the audit chain, as the enclave last signed it (roadmap section 14, "The audit log's key"). It is kept here, in
@@ -609,6 +630,14 @@ impl State {
             stepup_failed: 0,
             token_secs: STEPUP_SECS,
             chain: Chain::default(),
+            tasks: HashMap::new(),
+            release_kinds: HashMap::new(),
+            // an hour's allowance, refilled evenly: Bucket counts by the minute
+            release_hour: Bucket { tokens: RELEASES_PER_HOUR, at: Instant::now(), per_minute: RELEASES_PER_HOUR / 60.0, most: RELEASES_PER_HOUR },
+            auth_failed: 0,
+            stepup_missing: 0,
+            policy_refused: 0,
+            started: Instant::now(),
         }
     }
 
@@ -634,8 +663,12 @@ impl State {
                "bad_requests": self.bad, "bad_limit": BAD_LIMIT, "signed": self.signed, "refused": self.refused, "released": self.released, "rotating": self.next.is_some(),
                "memory_locked": self.memory_locked, "pid1": self.pid1,
                "chain": self.chain.status(),
+               "auth_failed": self.auth_failed, "stepup_missing": self.stepup_missing, "policy_refused": self.policy_refused, "uptime": self.started.elapsed().as_secs(),
+               "tasks": self.tasks.iter().map(|(name, (_, signed, refused))| (name.to_string(), json!({"signed": signed, "refused": refused}))).collect::<serde_json::Map<String, Value>>(),
                "stepup": {"required": self.stepup_required, "ok": self.stepup_ok, "failed": self.stepup_failed, "tokens": self.tokens.len(), "token_seconds": self.token_secs},
                "limits": {"sign_per_key_per_minute": SIGN_PER_MINUTE, "unlock_per_minute": UNLOCK_PER_MINUTE, "release_per_secret_per_minute": RELEASE_PER_MINUTE, "stepup_per_person_per_minute": STEPUP_PER_MINUTE,
+                          "release_per_kind_per_minute": RELEASE_PER_KIND_PER_MINUTE, "releases_per_hour": RELEASES_PER_HOUR,
+                          "sign_per_task_per_minute": TASKS.iter().map(|(name, limit)| (name.to_string(), json!(limit))).collect::<serde_json::Map<String, Value>>(),
                           "max_frame": MAX_FRAME, "max_sign_data": MAX_SIGN_DATA}})
     }
 
@@ -907,11 +940,21 @@ impl State {
         let data = bytes(v, "data", MAX_SIGN_DATA)?;
         let flags = v.get("flags").and_then(Value::as_u64).unwrap_or(0);
         let (id, secret, public) = self.private(v)?;
+        let asked = v.get("task").and_then(Value::as_str).unwrap_or("other");
+        let (task, limit) = TASKS.iter().find(|(name, _)| *name == asked).copied().unwrap_or(("other", 120.0));
+        let kind = self.tasks.entry(task).or_insert_with(|| (Bucket::new(limit), 0, 0));
+        if !kind.0.take() {
+            kind.2 += 1;
+            self.refused += 1;
+            return no("rate", format!("{task} tasks have signed as often as the enclave allows that kind in a minute"));
+        }
         if !self.signs.entry(id).or_insert_with(|| Bucket::new(SIGN_PER_MINUTE)).take() {
+            kind.2 += 1;
             self.refused += 1;
             return no("rate", "this key has signed as often as the enclave allows in a minute");
         }
         let Some(wire) = sign_with(&secret, &data, flags) else { return no("key", "that key cannot sign") };
+        kind.1 += 1;
         self.signed += 1;
         Ok(json!({"ok": true, "signature": B64.encode(wire), "public": B64.encode(public)}))
     }
@@ -1040,7 +1083,7 @@ impl State {
         let plain = open(&dek, &n, &ct, aad.as_bytes())?;
         if let Some((_, policy)) = &stored {
             if let Err(refusal) = policy.allows(&step, &host, &platform) {
-                self.refused += 1;
+                self.policy_refused += 1;
                 return Err(refusal);
             }
         }
@@ -1052,6 +1095,17 @@ impl State {
         if !self.releases.entry(id.clone()).or_insert_with(|| Bucket::new(RELEASE_PER_MINUTE)).take() {
             self.refused += 1;
             return no("rate", "this secret has been released as often as the enclave allows in a minute");
+        }
+        // per kind of task: the step it is for, else the platform, else that it is for a host
+        let kind = if !step.is_empty() { format!("step:{step}") } else if !platform.is_empty() { format!("platform:{platform}") } else { "host".to_string() };
+        let kind = if self.release_kinds.contains_key(&kind) || self.release_kinds.len() < MAX_RELEASE_KINDS { kind } else { "other".to_string() };
+        if !self.release_kinds.entry(kind).or_insert_with(|| Bucket::new(RELEASE_PER_KIND_PER_MINUTE)).take() {
+            self.refused += 1;
+            return no("rate", "secrets for that kind of task have been released as often as the enclave allows in a minute");
+        }
+        if !self.release_hour.take() {
+            self.refused += 1;
+            return no("rate", "as many secrets have been released as the enclave allows in an hour");
         }
         // The entry, as vault.py's AuditLog would write and later check it: the same fields in the same order, and the detail as
         // the text that is stored. Every name in it needs no escaping, so serde's text is Python's.
@@ -1267,7 +1321,14 @@ impl State {
                     }
                     match got {
                         Ok(r) => (r, false),
-                        Err(Refusal::No(code, why)) => (json!({"ok": false, "error": code, "why": why}), false),
+                        Err(Refusal::No(code, why)) => {
+                            match code {
+                                "auth" => self.auth_failed += 1,
+                                "stepup" => self.stepup_missing += 1,
+                                _ => {}
+                            }
+                            (json!({"ok": false, "error": code, "why": why}), false)
+                        }
                         Err(Refusal::Bad(why)) => {
                             self.count_bad();
                             (json!({"ok": false, "error": "bad-request", "why": why}), true)

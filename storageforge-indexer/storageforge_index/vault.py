@@ -277,8 +277,8 @@ class EnclaveKey:
     """An SSH key that stays in the enclave: the row's ciphertexts and where to ask. runner.ephemeral_agent serves an agent socket
     from it; nothing can read it."""
 
-    def __init__(self, address: str, row: dict):
-        self.address, self.row = address, row
+    def __init__(self, address: str, row: dict, task: str = 'other'):
+        self.address, self.row, self.task = address, row, task
 
     def view(self):
         raise VaultError('this key is held by the key enclave and does not leave it')
@@ -299,7 +299,7 @@ class EnclaveKey:
     def sign(self, data: bytes) -> bytes:
         """The bare signature, as Ed25519PrivateKey.sign gives it. Only an ed25519 key has one."""
         with _enclave.Enclave(self.address) as e:
-            blob, _ = _asked(e.sign, self.row, data)
+            blob, _ = _asked(e.sign, self.row, data, 0, 'sign')
         algo_len = int.from_bytes(blob[:4], 'big')
         if blob[4:4 + algo_len] != b'ssh-ed25519':
             raise VaultError('only an ed25519 key signs requests')
@@ -582,9 +582,10 @@ class Vault:
     def remove_key(self, name: str) -> int:
         return self.conn.execute('DELETE FROM ssh_keys WHERE name = :n', {'n': name}).rowcount
 
-    def decrypt_key(self, key_id: int) -> SecretBuffer | EnclaveKey:
+    def decrypt_key(self, key_id: int, task: str = 'other') -> SecretBuffer | EnclaveKey:
         """The key, to hand to runner.ephemeral_agent. With the enclave it is not decrypted at all: what comes back is the row and
-        the enclave's address, and the agent socket asks the enclave for each signature."""
+        the enclave's address, and the agent socket asks the enclave for each signature. task: the kind of work it is for, which
+        the enclave limits and counts apart (scan, deploy, console, device, access, rotate, git)."""
         rows = self.conn.all("""SELECT key_uuid, dek_nonce, wrapped_dek, key_nonce, ciphertext, public_key FROM ssh_keys
                                 WHERE key_id = :k AND disabled_at IS NULL""", {'k': key_id})
         if not rows:
@@ -592,7 +593,7 @@ class Vault:
         uuid, dn, wd, kn, ct, public = rows[0]
         if self.enclave:
             return EnclaveKey(self.enclave, {'key_uuid': uuid, 'dek_nonce': self._blob(dn), 'wrapped_dek': self._blob(wd), 'key_nonce': self._blob(kn),
-                                             'ciphertext': self._blob(ct), 'public_key': public})
+                                             'ciphertext': self._blob(ct), 'public_key': public}, task)
         kek = self._need_kek()
         with open_into(kek, self._blob(dn), self._blob(wd), self._aad(uuid, 'dek')) as dek:
             return open_into(dek.view(), self._blob(kn), self._blob(ct), self._aad(uuid, 'key'))
