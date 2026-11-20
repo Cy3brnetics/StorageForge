@@ -154,6 +154,9 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (('POST',), r'/api/infra/measure', 'security.manage'),
     (READ, r'/api/desktop/profiles(/[^/]+/render)?', 'plans.view'),
     (('PUT', 'DELETE'), r'/api/desktop/profiles/[^/]+', 'plans.edit'),
+    (('POST',), r'/api/desktop/render', 'plans.edit'),          # a profile being edited, as text: nothing is saved. A saved one is read with GET
+    (READ, r'/api/os-install/offer', 'plans.view'),
+    (('POST',), r'/api/os-install/plan', 'plans.edit'),
     (READ, r'/api/sfnet', 'hosts.view'),
     (('POST',), r'/api/sfnet', 'security.manage'),
     (('POST',), r'/api/sfnet/members(/remove|/rotate)?', 'security.manage'),

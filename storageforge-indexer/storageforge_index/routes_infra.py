@@ -7,7 +7,7 @@ import time
 from flask import Response, jsonify, request
 from flask_login import current_user, login_required
 
-from . import changes, desktop, exposure, graph, infragraph, inframeasure, mapdesign, mapexport, netdevice, netfacts, reach, security, sfnetwork, whatif, workloads
+from . import changes, desktop, exposure, graph, infragraph, inframeasure, mapdesign, mapexport, netdevice, netfacts, osoffer, reach, security, sfnetwork, whatif, workloads
 
 
 def register(web, ctx):
@@ -459,6 +459,27 @@ def register(web, ctx):
     def api_desktop_profile_render(name):
         text = desktop.render(desktop.get(conn(), name), request.args.get('compositor', ''), request.args.get('host') or None)
         return Response(text, mimetype='text/plain')
+
+    @web.post('/api/desktop/render')
+    @login_required
+    def api_desktop_render():
+        """A profile as it is in the form, not yet saved, as the text a compositor would get."""
+        body = json_body()
+        return Response(desktop.render(body.get('profile'), str(body.get('compositor') or ''), body.get('host') or None), mimetype='text/plain')
+
+    # A second system beside the first (osoffer.py): what a host has room for, read from the index, and plans that are saved and not run
+    @web.get('/api/os-install/offer')
+    @login_required
+    def api_os_install_offer():
+        return jsonify(osoffer.offer(conn()))
+
+    @web.post('/api/os-install/plan')
+    @login_required
+    def api_os_install_plan():
+        body = json_body()
+        made = osoffer.stage(conn(), body, actor())
+        core.audit(conn(), actor(), 'osinstall.plan', 'ok', str(body.get('host') or ''), {'kind': body.get('kind') or 'install', 'system': str(body.get('name') or '')[:64], 'plans': [p['plan_id'] for p in made['plans']]})
+        return jsonify(made), 201
 
     @web.get('/api/infra/settings')
     @login_required

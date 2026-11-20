@@ -405,6 +405,15 @@ t_os_boot() { local name=$1 when=${2:-once} restart=${3:-no} e='' order='' next=
   fi
 }
 
+t_os_running() { local name=$1 root='' p='' # the steps after this one are for that system, and are not run in any other
+  root=$(findmnt -no SOURCE / 2>/dev/null || :); root=${root%%[*}
+  for p in $(sf_os_parts "$name"); do
+    if [[ $p == "$root" ]]; then ok "$name is the system that is running"; return 0; fi
+  done
+  if [[ -z $(sf_os_parts "$name") ]]; then conflict "there is no system named $name on this machine: os-install makes it"; return 0; fi
+  conflict "$name is installed and is not the system that is running: start it first (os-boot, then a restart), and run this plan then. Nothing was changed"
+}
+
 t_os_remove() { local name=$1 e='' parts='' p='' disk='' n='' root=''
   parts=$(sf_os_parts "$name"); e=$(command -v efibootmgr >/dev/null && sf_os_entry "$name" || :)
   [[ -n $parts || -n $e ]] || { ok "there is no system named $name here"; return 0; }
@@ -457,6 +466,10 @@ def _check_remove(conn, c, h, p, say):
     say('warn', f'the partitions of {p["name"]} are deleted with everything on them')
 
 
+def _check_running(conn, c, h, p, say):
+    say('note', f'the steps after this one run only where {p["name"]} is the system that was started: in any other, the plan stops here and changes nothing')
+
+
 def _ansible(fn: str, args: tuple):
     def render(t):
         q = shlex.quote
@@ -488,5 +501,10 @@ changes.register('os-boot', {'group': 'Systems', 'label': 'Choose which system s
 changes.register('os-remove', {'group': 'Systems', 'label': 'Remove a second system', 'destructive': True, 'fields': [F('name', 'vmname', 'System', required=True)],
     'help': 'Deletes the partitions os-install made for it and its boot entry. Not the system that is running.'},
     ('name',), lambda p: f'Remove the system {p["name"]}', _check_remove, _ansible('t_os_remove', ('name',)))
+
+changes.register('os-running', {'group': 'Systems', 'label': 'Go on only in a second system', 'fields': [F('name', 'vmname', 'System', required=True)],
+    'help': 'Stops the plan unless the system that is running is the one named: its root is a partition os-install made for it. '
+            'Put it before steps that are meant for the new system, such as a desktop, so that they are never run in the old one.'},
+    ('name',), lambda p: f'Go on only if {p["name"]} is the system that is running', _check_running, _ansible('t_os_running', ('name',)))
 
 changes.EXTRA_BASH.append(bash())

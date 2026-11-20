@@ -153,6 +153,8 @@ FRESH_PASSWORD = {
 NO_FRESH_PASSWORD = {
     ('PUT', '/api/desktop/profiles/<name>'),         # a profile sits in the database; the plan step that writes it to a host is run like any other
     ('DELETE', '/api/desktop/profiles/<name>'),
+    ('POST', '/api/desktop/render'),              # a profile in, the text of a configuration out
+    ('POST', '/api/os-install/plan'),             # saves plans and runs nothing
     ('POST', '/api/sfnet/plan'),                  # saves a plan and runs nothing
     ('POST', '/api/enclave/stepup'),              # the password itself, checked inside the key enclave: it is the step-up
     ('POST', '/api/enclave/stepup/begin'),        # a challenge for a security key
@@ -277,6 +279,7 @@ AUDITED_ELSEWHERE = {
 }
 NOT_AUDITED = {
     'api_dsl_compile': 'reads only: text in, text out',
+    'api_desktop_render': 'reads only: a profile in, the text of a configuration out',
     'api_dsl_whatif': 'reads only: rules against a copy of the facts',
     'api_map_whatif': 'reads only: a draft plan against a copy of the facts',
     'api_logout': 'the session simply ends',
