@@ -496,6 +496,53 @@ function confirmPassword() {      // one dialog however many calls are waiting o
   return sfReauth;
 }
 
+/* ── a step-up the key enclave checks itself (routes_enclave.py) ──── */
+/* Making or rotating a key and releasing a sensitive secret answer 403 with `stepup` once someone has enrolled: the enclave wants this
+   person's own proof, and the web app's word for it is not enough. The password, or a security key's answer to a challenge the enclave
+   made, goes to /api/enclave/stepup; it counts for five minutes. */
+const sfB64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const sfUnB64u = (t) => Uint8Array.from(atob(t.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+let sfStepUp = null;
+function confirmEnclave() {
+  if (sfStepUp) return sfStepUp;
+  sfStepUp = sfKnowUser().then(() => new Promise((resolve, reject) => {
+    const pw = sfNode('input', { type: 'password', autocomplete: 'current-password', required: true });
+    const msg = sfNode('p', { class: 'sf-err', role: 'alert', hidden: true });
+    const cancel = sfNode('button', { type: 'button', class: 'sf-btn ghost' }, 'Cancel');
+    const key = sfNode('button', { type: 'button', class: 'sf-btn ghost', title: 'Touch a security key you enrolled: the key enclave checks its answer' }, 'Use a security key');
+    key.hidden = !window.PublicKeyCredential;
+    const form = sfNode('form', { method: 'dialog' },
+      sfNode('h2', { id: 'stepuptitle' }, 'The key enclave asks who you are'),
+      sfNode('p', { class: 'muted' }, 'Making or changing a key, and releasing a secret marked sensitive, need your password checked by the key enclave itself. It stays checked for 5 minutes.'),
+      sfUserName ? sfNode('input', { type: 'text', autocomplete: 'username', value: sfUserName, hidden: true }) : null,
+      sfNode('label', { class: 'sf-field' }, sfNode('span', {}, 'Password'), pw), msg,
+      sfNode('div', { class: 'sf-actions' }, cancel, key, sfNode('button', { type: 'submit', class: 'sf-btn pri' }, 'Confirm')));
+    const dlg = sfModal(form, 'stepuptitle');
+    let settled = false;
+    const finish = (fn, arg) => { if (settled) return; settled = true; fn(arg); };
+    const send = async (body) => {
+      const res = await fetch('/api/enclave/stepup', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (res.status === 401) { dlg.close(); finish(reject, new Error('Sign in required')); sfSignedOut(); return; }
+      if (!res.ok) { msg.textContent = (await res.json().catch(() => ({}))).error || res.statusText; msg.hidden = false; pw.focus(); return; }
+      finish(resolve); dlg.close();
+    };
+    form.addEventListener('submit', (ev) => { ev.preventDefault(); const password = pw.value; pw.value = ''; send({ password }); });
+    key.addEventListener('click', async () => {
+      try {
+        const begin = await fetch('/api/enclave/stepup/begin', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const o = await begin.json();
+        if (!begin.ok) throw new Error(o.error || begin.statusText);
+        const got = await navigator.credentials.get({ publicKey: { ...o, challenge: sfUnB64u(o.challenge), allowCredentials: o.allowCredentials.map((c) => ({ ...c, id: sfUnB64u(c.id) })) } });
+        await send({ fido: { id: sfB64u(got.rawId), clientDataJSON: sfB64u(got.response.clientDataJSON), authenticatorData: sfB64u(got.response.authenticatorData), signature: sfB64u(got.response.signature) } });
+      } catch (err) { msg.textContent = err.message; msg.hidden = false; }
+    });
+    cancel.addEventListener('click', () => dlg.close());
+    dlg.addEventListener('close', () => finish(reject, new Error('Not confirmed with the key enclave: nothing was done')));
+    pw.focus();
+  })).finally(() => { sfStepUp = null; });
+  return sfStepUp;
+}
+
 /* ── a person checks a host's SSH key before a password goes to it ── */
 function confirmHostKey(hk) {
   return new Promise((resolve, reject) => {
@@ -535,7 +582,7 @@ function api(path, opts = {}) {
   return el ? withBusy(el, () => sfFetch(path, init, false)) : sfFetch(path, init, false);
 }
 const sfNever = () => new Promise(() => {});
-async function sfFetch(path, init, confirmed, busyTries = 0) {
+async function sfFetch(path, init, confirmed, busyTries = 0, steppedUp = false) {
   // Once the page is signed out its body is empty until /login loads, and that navigation aborts what is still open: a request that
   // settles then never settles for its caller, whose handler would only draw on (or fail to find) what is no longer there.
   let res;
@@ -552,7 +599,11 @@ async function sfFetch(path, init, confirmed, busyTries = 0) {
   }
   if (res.status === 403 && !confirmed && (await res.clone().json().catch(() => ({}))).reauth) {
     await confirmPassword();                     // commands on hosts: type the password again, then retry once
-    return sfFetch(path, init, true);
+    return sfFetch(path, init, true, busyTries, steppedUp);
+  }
+  if (res.status === 403 && !steppedUp && (await res.clone().json().catch(() => ({}))).stepup) {
+    await confirmEnclave();                      // the key enclave checks this person itself, then retry once
+    return sfFetch(path, init, confirmed, busyTries, true);
   }
   // the server is doing as much of this work as it takes at once (a folder analysis on a big index): a GET waits as long as it says, and asks again
   if (res.status === 503 && res.headers.get('Retry-After') && (init.method || 'GET').toUpperCase() === 'GET' && busyTries < 40) {   // about 90 s: an analysis made for the first time on a busy server takes that long

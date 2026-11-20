@@ -1110,6 +1110,36 @@ def cmd_vault(args) -> int:
         return 0
     db, conn, v = _vault(args)
     with v:
+        if a in ('stepup-enroll', 'stepup-forget'):
+            from . import enclave, enclave_stepup
+            from .vault import VaultError
+            if not v.enclave:
+                print('this installation has no key enclave, and step-up is checked there', file=sys.stderr)
+                return 2
+            if not conn.scalar('SELECT 1 FROM users WHERE username = :u', {'u': args.user}):
+                print(f'no account named {args.user}', file=sys.stderr)
+                return 2
+            if a == 'stepup-forget':
+                n = enclave_stepup.remove(conn, args.user)
+                _audit(db, conn, v, 'enclave.stepup.forget', user=args.user, removed=n)
+                print(f'{args.user} has no step-up record now' if n else f'{args.user} had none')
+                return 0
+            password = sys.stdin.readline().rstrip('\n')
+            try:
+                secret = secret_from_env()          # what vouches for a new record once someone is enrolled
+            except VaultError:
+                secret = None
+            try:
+                got = enclave_stepup.enroll(conn, v.enclave, args.user, password, secret=secret, meta=v._meta() if secret else None)
+            except enclave.EnclaveError as exc:
+                _audit(db, conn, v, 'enclave.stepup.enroll', 'failed', user=args.user, why=exc.code)
+                print(f'not enrolled: {exc}', file=sys.stderr)
+                return 1
+            finally:
+                del password
+            _audit(db, conn, v, 'enclave.stepup.enroll', user=args.user, replaced=got['replaced'])
+            print(f'{args.user} is enrolled with the key enclave: it checks that password itself before it makes or changes a key')
+            return 0
         if a == 'secret-add':
             # a secret for a plan step to read on a host, such as a Tailscale auth key: from stdin, so it is in no shell history
             if not SECRET_NAME.fullmatch(args.name):
@@ -1921,6 +1951,10 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument('--address', help='where the enclave is; the address the server published in its runtime folder if not given')
     x.add_argument('--wait', type=float, default=60.0, help='seconds to wait for the enclave to answer (default 60)')
     x.add_argument('--watch', action='store_true', help='stay, and unlock it again whenever it comes back locked after a restart; the secret file is read again each time')
+    x = vs.add_parser('stepup-enroll', help="give the key enclave an account's step-up password (one line on stdin): it then checks that person itself before it makes or changes a key. Security keys are enrolled on the Keys page")
+    x.add_argument('user')
+    x = vs.add_parser('stepup-forget', help="remove an account's step-up record, for someone who left")
+    x.add_argument('user')
     x = vs.add_parser('import-dir', help='import every private key file in a directory (name = file stem)')
     x.add_argument('dir')
     x = vs.add_parser('secret-add', help='store a secret a plan step reads on a host (one line on stdin), such as a Tailscale auth key')

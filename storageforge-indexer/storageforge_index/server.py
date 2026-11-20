@@ -1000,6 +1000,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if not ok:
             return jsonify(error='that is not your current password'), 403
         users.set_password(conn(), current_user.username, str(body.get('new_password') or ''))
+        routes_enclave.follow_password(conn(), core, actor(), current_user.username, str(body.get('password') or ''), str(body.get('new_password') or ''))
         users.end_all_sessions(conn(), current_user.username)
         return jsonify(signed_out=True)
 

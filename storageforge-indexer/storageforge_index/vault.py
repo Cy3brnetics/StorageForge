@@ -64,6 +64,10 @@ class NoBinding(VaultError):
     pass
 
 
+class StepUpNeeded(VaultError):
+    """The key enclave wants a step-up it checks itself before it does this: a password or a security key (enclave_stepup.py)."""
+
+
 # memory hygiene
 
 _libc = None
@@ -236,9 +240,24 @@ def _asked(fn, *a, **kw):
     try:
         return fn(*a, **kw)
     except _enclave.EnclaveError as exc:
+        if exc.code == 'stepup':
+            raise StepUpNeeded(f'key enclave: {exc}') from None
         if exc.code in ('locked', 'lockdown', 'down', 'auth', 'rate'):
             raise VaultLocked(f'key enclave: {exc}') from None
         raise VaultError(f'key enclave: {exc}') from None
+
+
+_shown = threading.local()
+
+
+def present_token(token: str | None) -> None:
+    """The step-up token of whoever this thread is working for, from the enclave (enclave_stepup.check). A web request presents
+    the one of its session; what the vault then asks the enclave for in this thread goes with it."""
+    _shown.token = token
+
+
+def presented_token() -> str | None:
+    return getattr(_shown, 'token', None)
 
 
 class EnclaveKey:
@@ -303,6 +322,7 @@ class Vault:
         # where the enclave is, once unlock() has found it holding this vault's KEK. A vault given its secret (init, reset, rotation,
         # the tests) is whoever holds the secret speaking, and works here as before
         self.enclave: str | None = None
+        self._token: str | None = None          # a step-up token this vault got for itself, as the holder of the vault secret
 
     def __enter__(self):
         return self
@@ -344,7 +364,26 @@ class Vault:
                            'an': an, 'ak': act, 'now': int(time.time())})
         return True
 
-    def _unlock_enclave(self, address: str, secret: bytes | None = None) -> 'Vault':
+    def _meta(self) -> dict:
+        row = self.conn.all(f'SELECT {", ".join(META)} FROM vault_meta WHERE id = 1')[0]
+        return {c: (self._blob(v) if isinstance(v, (bytes, memoryview)) else v) for c, v in zip(META, row)}
+
+    def _guarded(self, e, fn, *a):
+        """A request the enclave takes a step-up for once step-up is on: making, importing or rotating a key. It goes with the token
+        a person's step-up got (present_token). A command that holds the vault secret needs no person: the secret gets it a token."""
+        try:
+            return _asked(fn, *a, token=self._token or presented_token())
+        except StepUpNeeded:
+            try:
+                secret = secret_from_env()
+            except VaultError:
+                secret = None
+            if secret is None:
+                raise
+            self._token = _asked(e.stepup_secret, secret, self._meta())['token']
+            return _asked(fn, *a, token=self._token)
+
+    def _unlock_enclave(self, address: str, secret: bytes | None = None, proof: dict | None = None) -> 'Vault':
         """The enclave holds the KEK. It is unlocked once, with the vault's stored parameters and the secret; after that nothing here
         needs the secret, and a web app that was never given it works. secret: handed in by the starter or typed by a person
         (enclave_start.py); without one, the secret of this process's environment is used where there is one."""
@@ -358,19 +397,23 @@ class Vault:
                         secret = secret_from_env()
                     except VaultLocked:
                         raise VaultLocked('The key enclave is locked, and there is no vault secret here to unlock it with: the starter or a person unlocks it') from None
-                _asked(e.unlock, secret, {c: (self._blob(v) if isinstance(v, (bytes, memoryview)) else v) for c, v in zip(META, row[0])})
+                from . import enclave_stepup
+                # the step-up records there are go with it, so the enclave knows step-up is on: it is not told so, it sees one open
+                _asked(e.unlock, secret, {c: (self._blob(v) if isinstance(v, (bytes, memoryview)) else v) for c, v in zip(META, row[0])},
+                       records=enclave_stepup.records(self.conn), stepup=enclave_stepup.wanted(), proof=proof)
         self.enclave, self.audit_key = address, EnclaveMacKey(address)
         return self
 
-    def unlock_enclave(self, secret, address: str | None = None) -> 'Vault':
-        """The secret handed to the enclave by whoever holds it for that one moment: the starter, or a person who typed it."""
+    def unlock_enclave(self, secret, address: str | None = None, proof: dict | None = None) -> 'Vault':
+        """The secret handed to the enclave by whoever holds it for that one moment: the starter, or a person who typed it.
+        proof: {user, record, password or fido}, the person's own step-up, which lifting a lock-down takes once step-up is on."""
         try:
             address = address or _enclave.configured()
         except _enclave.EnclaveError as exc:
             raise VaultLocked(str(exc)) from None
         if not address:
             raise VaultError('this installation has no key enclave: the vault is unlocked from STORAGEFORGE_VAULT_SECRET')
-        return self._unlock_enclave(address, bytes(secret))
+        return self._unlock_enclave(address, bytes(secret), proof)
 
     def unlock(self) -> 'Vault':
         try:
@@ -452,7 +495,7 @@ class Vault:
         if self.enclave:
             # it came through here to be imported, and is sealed inside: nothing here keeps it, and nothing here can open it again
             with _enclave.Enclave(self.enclave) as e:
-                made = _asked(e.import_key, uuid, pem)
+                made = self._guarded(e, e.import_key, uuid, pem)
             dn, wdek, kn, ct = made['dek_nonce'], made['wrapped_dek'], made['key_nonce'], made['ciphertext']
         else:
             with SecretBuffer(32) as dek:
@@ -473,7 +516,7 @@ class Vault:
             # made inside: the private half is never in this process, not even once. (An RSA key is made here and imported.)
             uuid, comment = secrets.token_hex(16), comment or f'storageforge:{name}'
             with _enclave.Enclave(self.enclave) as e:
-                made = _asked(e.generate, uuid, 'ed25519', comment)
+                made = self._guarded(e, e.generate, uuid, 'ed25519', comment)
             public_line = made['public_key']
             fp = fingerprint(public_line)
             self.conn.execute("""INSERT INTO ssh_keys (key_uuid, name, key_type, public_key, fingerprint, comment,
@@ -586,6 +629,10 @@ class Vault:
                         n2, w2 = seal(new.view(), dek.view(), self._aad(uuid, 'dek'))
                     self.conn.execute('UPDATE device_credentials SET dek_nonce = :n, wrapped_dek = :w, rotated_at = :t WHERE credential_id = :c',
                                       {'n': n2, 'w': w2, 't': int(time.time()), 'c': cid})
+                for user, uuid, dn, wd in self.conn.all('SELECT username, rec_uuid, dek_nonce, wrapped_dek FROM enclave_stepup'):
+                    with open_into(kek, self._blob(dn), self._blob(wd), self._aad(uuid, 'dek')) as dek:
+                        n2, w2 = seal(new.view(), dek.view(), self._aad(uuid, 'dek'))
+                    self.conn.execute('UPDATE enclave_stepup SET dek_nonce = :n, wrapped_dek = :w WHERE username = :u', {'n': n2, 'w': w2, 'u': user})
                 vn, vct = seal(new.view(), VERIFIER, b'storageforge:verifier')
                 an, act = seal(new.view(), self.audit_key.view(), b'storageforge:audit-key')
                 self.conn.execute("""UPDATE vault_meta SET kdf_salt = :s, kdf_time_cost = :t, kdf_memory_kib = :m,
@@ -607,7 +654,7 @@ class Vault:
         salt = os.urandom(16)
         now = int(time.time())
         with _enclave.Enclave(self.enclave) as e:
-            meta = _asked(e.rotate_begin, new_secret, salt, p['time_cost'], p['memory_kib'], p['lanes'])
+            meta = self._guarded(e, e.rotate_begin, new_secret, salt, p['time_cost'], p['memory_kib'], p['lanes'])
             try:
                 rows = self.conn.all('SELECT key_id, key_uuid, dek_nonce, wrapped_dek FROM ssh_keys')
                 with self.conn.tx():
@@ -617,6 +664,9 @@ class Vault:
                     for cid, uuid, dn, wd in self.conn.all('SELECT credential_id, cred_uuid, dek_nonce, wrapped_dek FROM device_credentials'):
                         n2, w2 = _asked(e.rewrap, uuid, self._blob(dn), self._blob(wd))
                         self.conn.execute('UPDATE device_credentials SET dek_nonce = :n, wrapped_dek = :w, rotated_at = :t WHERE credential_id = :c', {'n': n2, 'w': w2, 't': now, 'c': cid})
+                    for user, uuid, dn, wd in self.conn.all('SELECT username, rec_uuid, dek_nonce, wrapped_dek FROM enclave_stepup'):
+                        n2, w2 = _asked(e.rewrap, uuid, self._blob(dn), self._blob(wd))
+                        self.conn.execute('UPDATE enclave_stepup SET dek_nonce = :n, wrapped_dek = :w WHERE username = :u', {'n': n2, 'w': w2, 'u': user})
                     self.conn.execute("""UPDATE vault_meta SET kdf_salt = :s, kdf_time_cost = :t, kdf_memory_kib = :m, kdf_lanes = :l, verifier_nonce = :vn, verifier = :v,
                                              audit_key_nonce = :an, audit_key_wrapped = :ak, rotated_at = :now WHERE id = 1""",
                                       {'s': salt, 't': p['time_cost'], 'm': p['memory_kib'], 'l': p['lanes'], 'vn': meta['verifier_nonce'], 'v': meta['verifier'],

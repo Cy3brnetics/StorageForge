@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -31,7 +31,7 @@ use ssh_key::{Algorithm, EcdsaCurve, LineEnding};
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
-const PROTOCOL: u32 = 1;
+const PROTOCOL: u32 = 2;
 /// The vsock port the enclave listens on inside its VM.
 const VSOCK_PORT: u32 = 7000;
 const MAX_FRAME: usize = 1 << 20;
@@ -51,6 +51,19 @@ const UNLOCK_PER_MINUTE: f64 = 6.0;
 const RELEASE_PER_MINUTE: f64 = 60.0;
 const MAX_SECRET: usize = 64 << 10;
 const MAX_KEY: usize = 32 << 10;
+// Step-up (roadmap section 14, "Step-up checked inside"). A person proves who they are to the enclave itself, with a password whose
+// hash it holds or a FIDO2 assertion against a public key it holds, and gets a session token that is good for this long. The
+// tokens rotate by themselves: none lives longer, none survives a lock or a restart, and the web app cannot make one.
+const STEPUP_SECS: u64 = 300;
+const STEPUP_PER_MINUTE: f64 = 5.0;
+const CHALLENGE_SECS: u64 = 120;
+const MAX_TOKENS: usize = 64;
+const MAX_CHALLENGES: usize = 16;
+const MAX_FIDO_KEYS: usize = 8;
+// The password hash the enclave holds: Argon2id at 19 MiB and two passes, checked at most STEPUP_PER_MINUTE times a minute a person.
+const PW_MEMORY_KIB: u32 = 19 * 1024;
+const PW_TIME: u32 = 2;
+const PW_MIN: usize = 12;
 
 /// A token bucket: `per_minute` a minute, with one minute saved up.
 struct Bucket {
@@ -93,6 +106,119 @@ struct State {
     pid1: bool,
     signed: u64,
     refused: u64,
+    /// Whether making or rotating a key needs a step-up token. It turns on when a step-up record is enrolled or shown, or when
+    /// whoever unlocks asks for it, and stays on until the VM restarts: a lock or a lock-down does not turn it off.
+    stepup_required: bool,
+    tokens: HashMap<String, Token>,
+    challenges: HashMap<String, Instant>,
+    stepups: HashMap<String, Bucket>,
+    stepup_ok: u64,
+    stepup_failed: u64,
+    token_secs: u64,
+}
+
+/// A session token: who proved themselves, and until when it counts.
+struct Token {
+    user: String,
+    until: Instant,
+}
+
+/// What the enclave holds about one person, sealed under the KEK and kept in the controller's database like every other ciphertext.
+#[derive(Deserialize)]
+struct Record {
+    user: String,
+    salt: String,
+    hash: String,
+    #[serde(default)]
+    fido: Vec<FidoKey>,
+    #[serde(default)]
+    rp: String,
+    #[serde(default)]
+    origin: String,
+}
+
+#[derive(Deserialize)]
+struct FidoKey {
+    id: String,
+    key: String,
+}
+
+/// An account name as users.py takes one.
+fn user_name(v: &Value, name: &str) -> Result<String, Refusal> {
+    match v.get(name).and_then(Value::as_str) {
+        Some(u) if !u.is_empty() && u.len() <= 64 && u.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'_' || c == b'-') => Ok(u.to_string()),
+        _ => bad(format!("{name} is not an account name")),
+    }
+}
+
+fn text(v: &Value, name: &str, most: usize) -> Result<String, Refusal> {
+    match v.get(name).and_then(Value::as_str) {
+        Some(t) if t.len() <= most && t.bytes().all(|c| (0x20..0x7f).contains(&c)) => Ok(t.to_string()),
+        None => Ok(String::new()),
+        _ => bad(format!("{name} is at most {most} printable characters")),
+    }
+}
+
+fn random_hex(n: usize) -> String {
+    use rand_core::RngCore;
+    let mut raw = Zeroizing::new(vec![0u8; n]);
+    rand_core::OsRng.fill_bytes(&mut raw);
+    raw.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The hash of a step-up password, as the enclave keeps it.
+fn password_hash(password: &[u8], salt: &[u8]) -> Result<Zeroizing<[u8; 32]>, Refusal> {
+    let params = argon2::Params::new(PW_MEMORY_KIB, PW_TIME, 1, Some(32)).or_else(|_| no("crypto", "Argon2id refuses the password costs"))?;
+    let mut out = Zeroizing::new([0u8; 32]);
+    let mut blocks: Vec<argon2::Block> = Vec::new();
+    if blocks.try_reserve_exact(params.block_count()).is_err() {
+        return no("crypto", "not enough memory in the enclave to check a password");
+    }
+    blocks.resize(params.block_count(), argon2::Block::default());
+    let done = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params).hash_password_into_with_memory(password, salt, out.as_mut(), &mut blocks);
+    for b in blocks.iter_mut() {
+        *b = argon2::Block::default();
+    }
+    done.or_else(|_| no("crypto", "Argon2id failed on the password"))?;
+    Ok(out)
+}
+
+/// An ECDSA signature as a FIDO2 token sends it (DER: a sequence of two integers), as the two 32-byte numbers. Read here, in one
+/// pass and bounded by what is there, so that no DER library is in the enclave.
+fn der_signature(der: &[u8]) -> Option<([u8; 32], [u8; 32])> {
+    fn int(b: &[u8]) -> Option<([u8; 32], &[u8])> {
+        if b.len() < 2 || b[0] != 0x02 {
+            return None;
+        }
+        let n = b[1] as usize;
+        if n == 0 || n > 33 || b.len() < 2 + n {
+            return None;
+        }
+        let mut digits = &b[2..2 + n];
+        if digits.len() == 33 {
+            if digits[0] != 0 {
+                return None;
+            }
+            digits = &digits[1..];
+        }
+        let mut out = [0u8; 32];
+        out[32 - digits.len()..].copy_from_slice(digits);
+        Some((out, &b[2 + n..]))
+    }
+    if der.len() < 8 || der.len() > 72 || der[0] != 0x30 || der[1] as usize != der.len() - 2 {
+        return None;
+    }
+    let (r, rest) = int(&der[2..])?;
+    let (s, rest) = int(rest)?;
+    if rest.is_empty() {
+        Some((r, s))
+    } else {
+        None
+    }
+}
+
+fn b64url(text: &str) -> Option<Vec<u8>> {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(text.trim_end_matches('=')).ok()
 }
 
 /// Why a request was refused. `Bad` is a request no honest client sends: it counts towards the lock-down and ends the connection.
@@ -323,7 +449,28 @@ fn seal(key: &[u8], plain: &[u8], aad: &[u8]) -> Result<([u8; 12], Vec<u8>), Ref
 
 impl State {
     fn new(memory_locked: bool) -> Self {
-        State { memory_locked, pid1: std::process::id() == 1, kek: None, audit: None, bad: 0, lockdown: false, unlocks: Bucket::new(UNLOCK_PER_MINUTE), signs: HashMap::new(), next: None, releases: HashMap::new(), released: 0, signed: 0, refused: 0 }
+        State {
+            memory_locked,
+            pid1: std::process::id() == 1,
+            kek: None,
+            audit: None,
+            bad: 0,
+            lockdown: false,
+            unlocks: Bucket::new(UNLOCK_PER_MINUTE),
+            signs: HashMap::new(),
+            next: None,
+            releases: HashMap::new(),
+            released: 0,
+            signed: 0,
+            refused: 0,
+            stepup_required: false,
+            tokens: HashMap::new(),
+            challenges: HashMap::new(),
+            stepups: HashMap::new(),
+            stepup_ok: 0,
+            stepup_failed: 0,
+            token_secs: STEPUP_SECS,
+        }
     }
 
     fn wipe(&mut self) {
@@ -332,6 +479,8 @@ impl State {
         self.next = None;
         self.signs.clear();
         self.releases.clear();
+        self.tokens.clear(); // a token does not outlive the keys it was good for
+        self.challenges.clear();
     }
 
     fn kek(&self) -> Result<&[u8; 32], Refusal> {
@@ -345,7 +494,9 @@ impl State {
         json!({"ok": true, "protocol": PROTOCOL, "version": env!("CARGO_PKG_VERSION"), "state": if self.lockdown { "lockdown" } else if self.kek.is_some() { "unlocked" } else { "locked" },
                "bad_requests": self.bad, "bad_limit": BAD_LIMIT, "signed": self.signed, "refused": self.refused, "released": self.released, "rotating": self.next.is_some(),
                "memory_locked": self.memory_locked, "pid1": self.pid1,
-               "limits": {"sign_per_key_per_minute": SIGN_PER_MINUTE, "unlock_per_minute": UNLOCK_PER_MINUTE, "release_per_secret_per_minute": RELEASE_PER_MINUTE, "max_frame": MAX_FRAME, "max_sign_data": MAX_SIGN_DATA}})
+               "stepup": {"required": self.stepup_required, "ok": self.stepup_ok, "failed": self.stepup_failed, "tokens": self.tokens.len(), "token_seconds": self.token_secs},
+               "limits": {"sign_per_key_per_minute": SIGN_PER_MINUTE, "unlock_per_minute": UNLOCK_PER_MINUTE, "release_per_secret_per_minute": RELEASE_PER_MINUTE, "stepup_per_person_per_minute": STEPUP_PER_MINUTE,
+                          "max_frame": MAX_FRAME, "max_sign_data": MAX_SIGN_DATA}})
     }
 
     /// A KEK from a secret, a salt and Argon2id costs, as vault.py derives it. Counted against the unlock limit: it is the costly
@@ -389,11 +540,213 @@ impl State {
             return no("auth", "wrong vault secret: the stored verifier did not authenticate");
         }
         let audit = open(kek.as_ref(), &an, &act, b"storageforge:audit-key")?;
+        // Whoever unlocks may ask for step-up, and showing one enrolled record turns it on: the records are sealed under this KEK,
+        // so one that opens was made by this enclave's vault. Leaving them out cannot turn it off again before a restart.
+        if v.get("stepup").and_then(Value::as_str) == Some("required") {
+            self.stepup_required = true;
+        }
+        if let Some(records) = v.get("records").and_then(Value::as_array) {
+            if records.len() > 64 {
+                return bad("at most 64 step-up records are shown at unlock");
+            }
+            if records.iter().any(|r| Self::open_record(kek.as_ref(), r).is_ok()) {
+                self.stepup_required = true;
+            }
+        }
+        // A lock-down is lifted by a person. Where step-up is on, the enclave checks that person itself: the secret alone, which
+        // a starter also holds, does not lift it.
+        if self.lockdown && self.stepup_required {
+            match v.get("proof") {
+                Some(proof) => {
+                    self.check_proof(proof, kek.as_ref())?;
+                }
+                None => return no("stepup", "the enclave is locked down: unlocking it takes the vault secret and a step-up it checks itself, a password or a security key"),
+            }
+        }
         self.kek = Some(kek);
         self.audit = Some(audit);
         self.lockdown = false; // only a person with the secret lifts a lock-down
         self.bad = 0;
-        Ok(json!({"ok": true, "state": "unlocked"}))
+        Ok(json!({"ok": true, "state": "unlocked", "stepup": self.stepup_required}))
+    }
+
+    /// One person's step-up record, opened under `kek`. The envelope is the vault's: a DEK wrapped under the KEK, and the record
+    /// under the DEK with associated data that names its purpose and row.
+    fn open_record(kek: &[u8], r: &Value) -> Result<Record, Refusal> {
+        let id = uuid(r)?;
+        let dek = open(kek, &nonce(r, "dek_nonce")?, &bytes(r, "wrapped_dek", 128)?, format!("storageforge:dek:{id}").as_bytes())?;
+        let plain = open(&dek, &nonce(r, "nonce")?, &bytes(r, "ciphertext", 16 << 10)?, format!("storageforge:stepup:{id}").as_bytes())?;
+        serde_json::from_slice::<Record>(&plain).or_else(|_| no("auth", "that is not a step-up record"))
+    }
+
+    /// The proof of one person, checked here: `user`, their `record`, and a `password` or a `fido` assertion. Limited per person,
+    /// and every failure is counted. Returns the account name.
+    fn check_proof(&mut self, v: &Value, kek: &[u8]) -> Result<String, Refusal> {
+        let user = user_name(v, "user")?;
+        let Some(sealed) = v.get("record") else { return bad("record is missing") };
+        if !self.stepups.entry(user.clone()).or_insert_with(|| Bucket::new(STEPUP_PER_MINUTE)).take() {
+            self.refused += 1;
+            return no("rate", "too many step-up attempts for this account: wait a minute");
+        }
+        let record = Self::open_record(kek, sealed)?;
+        self.stepup_required = true;
+        let ok = if record.user != user {
+            false
+        } else if v.get("password").is_some() {
+            let password = Zeroizing::new(bytes(v, "password", 1024)?);
+            let (Ok(salt), Ok(want)) = (B64.decode(&record.salt), B64.decode(&record.hash)) else { return no("auth", "that is not a step-up record") };
+            password_hash(&password, &salt)?.ct_eq(want.as_slice()).unwrap_u8() == 1
+        } else if let Some(f) = v.get("fido") {
+            self.fido_ok(&record, f)?
+        } else {
+            return bad("a proof is a password or a fido assertion");
+        };
+        if !ok {
+            self.stepup_failed += 1;
+            return no("auth", "the step-up did not check out: wrong password, or a security key the enclave does not hold");
+        }
+        self.stepup_ok += 1;
+        Ok(user)
+    }
+
+    /// A FIDO2 assertion, checked as webauthn.py checks one, against a public key the record holds and a challenge the enclave
+    /// itself gave out and has not seen answered. The web app can neither make the challenge nor use an answer twice.
+    fn fido_ok(&mut self, record: &Record, f: &Value) -> Result<bool, Refusal> {
+        use signature::Verifier;
+        let (Some(id), auth, client, sig) = (f.get("id").and_then(Value::as_str), bytes(f, "authenticator_data", 1024)?, bytes(f, "client_data", 4096)?, bytes(f, "signature", 80)?) else {
+            return bad("a fido assertion has id, authenticator_data, client_data and signature");
+        };
+        let Ok(data) = serde_json::from_slice::<Value>(&client) else { return Ok(false) };
+        let Some(challenge) = data.get("challenge").and_then(Value::as_str) else { return Ok(false) };
+        // used up whatever follows: an assertion is tried once
+        let fresh = matches!(self.challenges.remove(challenge), Some(until) if Instant::now() < until);
+        if !fresh || data.get("type").and_then(Value::as_str) != Some("webauthn.get") || data.get("origin").and_then(Value::as_str) != Some(record.origin.as_str()) {
+            return Ok(false);
+        }
+        use sha2::Digest;
+        if auth.len() < 37 || auth[..32] != Sha256::digest(record.rp.as_bytes())[..] || auth[32] & 1 == 0 {
+            return Ok(false);
+        }
+        let Some(key) = record.fido.iter().find(|k| k.id == id).and_then(|k| b64url(&k.key)) else { return Ok(false) };
+        let (Ok(key), Some((r, s))) = (p256::ecdsa::VerifyingKey::from_sec1_bytes(&key), der_signature(&sig)) else { return Ok(false) };
+        let Ok(sig) = p256::ecdsa::Signature::from_scalars(r, s) else { return Ok(false) };
+        let mut signed = auth.clone();
+        signed.extend_from_slice(&Sha256::digest(&client));
+        Ok(key.verify(&signed, &sig).is_ok())
+    }
+
+    /// Whether this request carries what the vault secret's holder would: the secret itself, derived and compared with the KEK
+    /// in use. A command run by whoever holds the secret needs no person beside it.
+    fn holds_secret(&mut self, v: &Value) -> Result<bool, Refusal> {
+        let kek = *self.kek()?;
+        let derived = self.derive(v)?;
+        Ok(derived.ct_eq(&kek).unwrap_u8() == 1)
+    }
+
+    fn issue(&mut self, user: String) -> Value {
+        let now = Instant::now();
+        self.tokens.retain(|_, t| t.until > now);
+        if self.tokens.len() >= MAX_TOKENS {
+            // the oldest goes: a flood of step-ups cannot grow this without bound
+            if let Some(oldest) = self.tokens.iter().min_by_key(|(_, t)| t.until).map(|(k, _)| k.clone()) {
+                self.tokens.remove(&oldest);
+            }
+        }
+        let token = random_hex(32);
+        self.tokens.insert(token.clone(), Token { user: user.clone(), until: now + Duration::from_secs(self.token_secs) });
+        json!({"ok": true, "token": token, "seconds": self.token_secs, "user": user})
+    }
+
+    /// A step-up: a person's proof, or the vault secret from whoever holds it, exchanged for a session token.
+    fn stepup(&mut self, v: &Value) -> Answer {
+        let kek = *self.kek()?;
+        if v.get("secret").is_some() {
+            if !self.holds_secret(v)? {
+                self.stepup_failed += 1;
+                return no("auth", "that is not the vault secret");
+            }
+            self.stepup_ok += 1;
+            return Ok(self.issue("vault-secret".to_string()));
+        }
+        let user = self.check_proof(v, &kek)?;
+        Ok(self.issue(user))
+    }
+
+    /// A challenge for a FIDO2 assertion: random, good once and for CHALLENGE_SECS.
+    fn challenge(&mut self) -> Answer {
+        self.kek()?;
+        let now = Instant::now();
+        self.challenges.retain(|_, until| *until > now);
+        if self.challenges.len() >= MAX_CHALLENGES {
+            self.refused += 1;
+            return no("rate", "too many step-up challenges are waiting for an answer");
+        }
+        use rand_core::RngCore;
+        let mut raw = [0u8; 32];
+        rand_core::OsRng.fill_bytes(&mut raw);
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
+        self.challenges.insert(challenge.clone(), now + Duration::from_secs(CHALLENGE_SECS));
+        Ok(json!({"ok": true, "challenge": challenge, "seconds": CHALLENGE_SECS}))
+    }
+
+    /// The token of a step-up, where one is needed: for making or rotating a key once step-up is on, and always for what is
+    /// marked sensitive. Returns who it was.
+    fn token_user(&mut self, v: &Value) -> Result<String, Refusal> {
+        let now = Instant::now();
+        self.tokens.retain(|_, t| t.until > now);
+        match v.get("token").and_then(Value::as_str).and_then(|t| self.tokens.get(t)) {
+            Some(t) => Ok(t.user.clone()),
+            None => no("stepup", "this needs a step-up the enclave checks itself: a password or a security key, typed within the last few minutes"),
+        }
+    }
+
+    fn need_stepup(&mut self, v: &Value) -> Result<(), Refusal> {
+        if self.stepup_required {
+            self.token_user(v)?;
+        }
+        Ok(())
+    }
+
+    /// A person's step-up record, made here: the hash of their password, and the public keys of their FIDO2 tokens. The first
+    /// one needs nothing, since until then there is no step-up to pass. After that it takes a token, or the vault secret.
+    fn stepup_enroll(&mut self, v: &Value) -> Answer {
+        let kek = *self.kek()?;
+        let (id, user) = (uuid(v)?, user_name(v, "user")?);
+        if self.stepup_required {
+            let by_secret = v.get("secret").is_some() && self.holds_secret(v)?;
+            if !by_secret {
+                self.token_user(v)?;
+            }
+        }
+        let password = Zeroizing::new(bytes(v, "password", 1024)?);
+        if password.len() < PW_MIN {
+            return no("auth", "a step-up password is at least 12 characters");
+        }
+        let (rp, origin) = (text(v, "rp", 253)?, text(v, "origin", 300)?);
+        let mut keys = Vec::new();
+        if let Some(list) = v.get("fido").and_then(Value::as_array) {
+            if list.len() > MAX_FIDO_KEYS {
+                return bad("at most 8 security keys a person");
+            }
+            for k in list {
+                let (Some(kid), Some(key)) = (k.get("id").and_then(Value::as_str), k.get("key").and_then(Value::as_str)) else { return bad("a security key has an id and a key") };
+                if kid.len() > 1400 || !b64url(key).is_some_and(|b| p256::ecdsa::VerifyingKey::from_sec1_bytes(&b).is_ok()) {
+                    return no("key", "a security key is a P-256 public key");
+                }
+                keys.push(json!({"id": kid, "key": key}));
+            }
+        }
+        use rand_core::RngCore;
+        let mut salt = [0u8; 16];
+        rand_core::OsRng.fill_bytes(&mut salt);
+        let hash = password_hash(&password, &salt)?;
+        let record = Zeroizing::new(json!({"user": user, "salt": B64.encode(salt), "hash": B64.encode(*hash), "fido": keys, "rp": rp, "origin": origin}).to_string());
+        let mut dek = Zeroizing::new([0u8; 32]);
+        rand_core::OsRng.fill_bytes(dek.as_mut());
+        let (dn, wd) = seal(&kek, dek.as_ref(), format!("storageforge:dek:{id}").as_bytes())?;
+        let (n, ct) = seal(dek.as_ref(), record.as_bytes(), format!("storageforge:stepup:{id}").as_bytes())?;
+        self.stepup_required = true;
+        Ok(json!({"ok": true, "dek_nonce": B64.encode(dn), "wrapped_dek": B64.encode(wd), "nonce": B64.encode(n), "ciphertext": B64.encode(ct), "keys": keys.len()}))
     }
 
     /// The private key of one row, decrypted for the length of one call, with its public half.
@@ -426,6 +779,7 @@ impl State {
     /// A new key, made here. What leaves is its public half and the same two ciphertexts the vault stores: the private half never does.
     fn generate(&mut self, v: &Value) -> Answer {
         let kek = *self.kek()?;
+        self.need_stepup(v)?;
         let id = uuid(v)?;
         let algorithm = match v.get("kind").and_then(Value::as_str) {
             Some("ed25519") => Algorithm::Ed25519,
@@ -452,6 +806,7 @@ impl State {
     /// It came through the web app to get here, which is why a site can be set to take only keys made inside (`generate`).
     fn import(&mut self, v: &Value) -> Answer {
         let kek = *self.kek()?;
+        self.need_stepup(v)?;
         let id = uuid(v)?;
         let pem = Zeroizing::new(bytes(v, "private", MAX_KEY)?);
         let Some((secret, public)) = parse_openssh(&pem) else {
@@ -518,6 +873,7 @@ impl State {
     fn rotate_begin(&mut self, v: &Value) -> Answer {
         self.kek()?;
         let Some(audit) = self.audit.clone() else { return no("locked", "the enclave is locked") };
+        self.need_stepup(v)?;
         let next = self.derive(v)?;
         let (vn, vct) = seal(next.as_ref(), VERIFIER, b"storageforge:verifier")?;
         let (an, act) = seal(next.as_ref(), &audit, b"storageforge:audit-key")?;
@@ -584,6 +940,9 @@ impl State {
                 self.wipe();
                 Ok(json!({"ok": true, "state": "locked"}))
             }
+            "stepup" => self.stepup(v),
+            "stepup-enroll" => self.stepup_enroll(v),
+            "challenge" => self.challenge(),
             "sign" => self.sign(v),
             "generate" => self.generate(v),
             "import" => self.import(v),
@@ -625,10 +984,13 @@ impl State {
             let (reply, hang_up) = match serde_json::from_slice::<Value>(&body) {
                 Ok(mut v) => {
                     let got = self.answer(&v);
-                    for name in ["secret", "private", "plaintext"] {
+                    for name in ["secret", "private", "plaintext", "password", "token"] {
                         if let Some(s) = v.get_mut(name).and_then(|s| if let Value::String(s) = s { Some(s) } else { None }) {
                             s.zeroize();
                         }
+                    }
+                    if let Some(Value::String(s)) = v.get_mut("proof").and_then(|p| p.get_mut("password")) {
+                        s.zeroize();
                     }
                     match got {
                         Ok(r) => (r, false),
@@ -732,6 +1094,10 @@ fn main() {
         }
         // on a developer's machine and in the unit tests: the same program and the same wire, over a socket file
         (Some("--unix"), Some(path)) => {
+            // only here, for the tests of what happens when a token runs out: in its VM the program takes no arguments at all
+            if let (Some("--token-seconds"), Some(n)) = (args.get(3).map(String::as_str), args.get(4).and_then(|n| n.parse::<u64>().ok())) {
+                state.token_secs = n.clamp(1, STEPUP_SECS);
+            }
             let _ = std::fs::remove_file(path);
             let listener = std::os::unix::net::UnixListener::bind(path).unwrap_or_else(|e| {
                 eprintln!("enclave: cannot listen on {path}: {e}");
@@ -744,7 +1110,7 @@ fn main() {
             }
         }
         _ => {
-            eprintln!("usage: storageforge-enclave --vsock PORT | --unix PATH");
+            eprintln!("usage: storageforge-enclave --vsock PORT | --unix PATH [--token-seconds N]");
             std::process::exit(2);
         }
     }

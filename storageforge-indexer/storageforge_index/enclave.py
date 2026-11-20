@@ -29,7 +29,7 @@ def run_dir() -> Path:
 
 
 class EnclaveError(RuntimeError):
-    """The enclave refused, or could not be reached. `code` is its own word for why: locked, lockdown, auth, rate, key, bad-request, down."""
+    """The enclave refused, or could not be reached. `code` is its own word for why: locked, lockdown, auth, rate, key, stepup, bad-request, down."""
 
     def __init__(self, code: str, why: str):
         super().__init__(why)
@@ -50,8 +50,19 @@ def configured() -> str | None:
     return value
 
 
+def address() -> str | None:
+    """Where the enclave is when one is running, or None: without starting one, and without taking `vm` (not started yet) for an address."""
+    value = os.environ.get(ADDRESS_ENV) or None
+    return None if not value or value.startswith('vm') else value
+
+
 def _b64(value) -> str:
     return base64.b64encode(bytes(value)).decode()
+
+
+def b64_of_url(text: str) -> str:
+    """base64url, as a browser sends WebAuthn bytes, as the base64 the enclave takes."""
+    return _b64(base64.urlsafe_b64decode(text + '=' * (-len(text) % 4)))
 
 
 class Enclave:
@@ -150,10 +161,59 @@ class Enclave:
     def status(self) -> dict:
         return self.request('status')
 
-    def unlock(self, secret: bytes, meta: dict) -> dict:
-        """meta: the vault_meta row (kdf_salt, kdf_time_cost, kdf_memory_kib, kdf_lanes, verifier_nonce, verifier, audit_key_nonce, audit_key_wrapped)."""
-        return self.request('unlock', secret=_b64(secret), salt=_b64(meta['kdf_salt']), time_cost=meta['kdf_time_cost'], memory_kib=meta['kdf_memory_kib'], lanes=meta['kdf_lanes'],
-                            verifier_nonce=_b64(meta['verifier_nonce']), verifier=_b64(meta['verifier']), audit_key_nonce=_b64(meta['audit_key_nonce']), audit_key_wrapped=_b64(meta['audit_key_wrapped']))
+    @staticmethod
+    def _kdf(secret: bytes, meta: dict) -> dict:
+        return {'secret': _b64(secret), 'salt': _b64(meta['kdf_salt']), 'time_cost': meta['kdf_time_cost'], 'memory_kib': meta['kdf_memory_kib'], 'lanes': meta['kdf_lanes']}
+
+    @staticmethod
+    def _sealed(row: dict) -> dict:
+        """A sealed row as the enclave takes one: a step-up record or a secret."""
+        return {'uuid': row['uuid'], **{k: _b64(row[k]) for k in ('dek_nonce', 'wrapped_dek', 'nonce', 'ciphertext')}}
+
+    def _proof(self, user: str, record: dict, password: str | None = None, fido: dict | None = None) -> dict:
+        out = {'user': user, 'record': self._sealed(record)}
+        if password is not None:
+            out['password'] = _b64(password.encode())
+        if fido is not None:
+            out['fido'] = fido
+        return out
+
+    def unlock(self, secret: bytes, meta: dict, records: list | None = None, stepup: str | None = None, proof: dict | None = None) -> dict:
+        """meta: the vault_meta row (kdf_salt, kdf_time_cost, kdf_memory_kib, kdf_lanes, verifier_nonce, verifier, audit_key_nonce, audit_key_wrapped).
+        records: the step-up records there are, so that the enclave knows step-up is on. stepup: 'required' to insist on it whatever
+        is shown. proof: {user, record, password or fido}, which lifting a lock-down takes once step-up is on."""
+        more = {}
+        if records:
+            more['records'] = [self._sealed(r) for r in records[:64]]
+        if stepup:
+            more['stepup'] = stepup
+        if proof:
+            more['proof'] = self._proof(**proof)
+        return self.request('unlock', **self._kdf(secret, meta), verifier_nonce=_b64(meta['verifier_nonce']), verifier=_b64(meta['verifier']),
+                            audit_key_nonce=_b64(meta['audit_key_nonce']), audit_key_wrapped=_b64(meta['audit_key_wrapped']), **more)
+
+    # ── step-up, checked inside (roadmap section 14) ──
+    def stepup_enroll(self, uuid: str, user: str, password: str, fido: list | None = None, rp: str = '', origin: str = '', token: str | None = None,
+                      secret: bytes | None = None, meta: dict | None = None) -> dict:
+        """A person's step-up record, made inside: back come the ciphertexts to store. The first needs nothing. After that: a token
+        of a step-up, or the vault secret with the vault_meta row it is derived by."""
+        more = {'token': token} if token else {}
+        if secret is not None:
+            more.update(self._kdf(secret, meta))
+        got = self.request('stepup-enroll', uuid=uuid, user=user, password=_b64(password.encode()), fido=fido or [], rp=rp, origin=origin, **more)
+        return {'uuid': uuid, **{k: base64.b64decode(got[k]) for k in ('dek_nonce', 'wrapped_dek', 'nonce', 'ciphertext')}}
+
+    def stepup(self, user: str, record: dict, password: str | None = None, fido: dict | None = None) -> dict:
+        """The proof of one person, checked inside. Back comes {'token', 'seconds', 'user'}: the token goes with what needs one."""
+        return self.request('stepup', **self._proof(user, record, password, fido))
+
+    def stepup_secret(self, secret: bytes, meta: dict) -> dict:
+        """The same token for whoever holds the vault secret: a command run with it needs no person beside it."""
+        return self.request('stepup', **self._kdf(secret, meta))
+
+    def challenge(self) -> str:
+        """A challenge for a FIDO2 assertion, made inside and good once."""
+        return self.request('challenge')['challenge']
 
     def lock(self) -> dict:
         return self.request('lock')
@@ -167,14 +227,14 @@ class Enclave:
         got = self.request('sign', data=_b64(data), flags=flags, **self._key(row))
         return base64.b64decode(got['signature']), base64.b64decode(got['public'])
 
-    def generate(self, uuid: str, kind: str = 'ed25519', comment: str = '') -> dict:
+    def generate(self, uuid: str, kind: str = 'ed25519', comment: str = '', token: str | None = None) -> dict:
         """A key made inside. Back come its public line and the ciphertexts for an ssh_keys row, as bytes."""
-        got = self.request('generate', uuid=uuid, kind=kind, comment=comment)
+        got = self.request('generate', uuid=uuid, kind=kind, comment=comment, **({'token': token} if token else {}))
         return {'public_key': got['public_key'], **{k: base64.b64decode(got[k]) for k in ('dek_nonce', 'wrapped_dek', 'key_nonce', 'ciphertext')}}
 
-    def import_key(self, uuid: str, private: bytes) -> dict:
+    def import_key(self, uuid: str, private: bytes, token: str | None = None) -> dict:
         """An unencrypted OpenSSH private key, sealed inside. Back come the ciphertexts for an ssh_keys row and the public blob."""
-        got = self.request('import', uuid=uuid, private=_b64(private))
+        got = self.request('import', uuid=uuid, private=_b64(private), **({'token': token} if token else {}))
         return {'public': base64.b64decode(got['public']), **{k: base64.b64decode(got[k]) for k in ('dek_nonce', 'wrapped_dek', 'key_nonce', 'ciphertext')}}
 
     def seal(self, uuid: str, plaintext: bytes, purpose: str = 'credential') -> dict:
@@ -187,9 +247,9 @@ class Enclave:
         got = self.request('release', uuid=uuid, purpose=purpose, **{k: _b64(row[k]) for k in ('dek_nonce', 'wrapped_dek', 'nonce', 'ciphertext')})
         return base64.b64decode(got['plaintext'])
 
-    def rotate_begin(self, new_secret: bytes, salt: bytes, time_cost: int, memory_kib: int, lanes: int) -> dict:
+    def rotate_begin(self, new_secret: bytes, salt: bytes, time_cost: int, memory_kib: int, lanes: int, token: str | None = None) -> dict:
         """The KEK of a new vault secret, held beside the current one. Back come the verifier and audit key wrapped under it."""
-        got = self.request('rotate-begin', secret=_b64(new_secret), salt=_b64(salt), time_cost=time_cost, memory_kib=memory_kib, lanes=lanes)
+        got = self.request('rotate-begin', secret=_b64(new_secret), salt=_b64(salt), time_cost=time_cost, memory_kib=memory_kib, lanes=lanes, **({'token': token} if token else {}))
         return {k: base64.b64decode(got[k]) for k in ('verifier_nonce', 'verifier', 'audit_key_nonce', 'audit_key_wrapped')}
 
     def rewrap(self, uuid: str, dek_nonce: bytes, wrapped_dek: bytes) -> tuple[bytes, bytes]:
@@ -236,7 +296,7 @@ def describe() -> dict:
         client.close()
     state = str(status.get('state'))
     out.update(state=state, version=status.get('version'), protocol=status.get('protocol'), in_vm=bool(status.get('pid1') and status.get('memory_locked')),
-               counts={k: status.get(k) for k in ('signed', 'released', 'refused', 'bad_requests', 'bad_limit')}, limits=status.get('limits') or {})
+               counts={k: status.get(k) for k in ('signed', 'released', 'refused', 'bad_requests', 'bad_limit')}, limits=status.get('limits') or {}, stepup=status.get('stepup') or {})
     where = 'a micro VM with no network device' if out['in_vm'] else 'a program on this machine, not a micro VM: for development and tests only'
     out['label'] = {'unlocked': 'Key enclave: on', 'locked': 'Key enclave: locked', 'lockdown': 'Key enclave: locked down'}.get(state, f'Key enclave: {state}')
     out['detail'] = {'unlocked': f'The vault\'s keys are held in {where}. Root on this machine can still read a VM\'s memory.',

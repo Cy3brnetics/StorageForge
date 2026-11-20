@@ -172,8 +172,9 @@ def at_server_start(db) -> str | None:
         conn.close()
 
 
-def typed(db, conn, text: str) -> str:
-    """A person typed the secret. It is checked nowhere but inside the enclave. This is also the one way out of a lock-down."""
+def typed(db, conn, text: str, proof: dict | None = None) -> str:
+    """A person typed the secret. It is checked nowhere but inside the enclave. This is also the one way out of a lock-down, and
+    once step-up is on the enclave lifts one only with that person's own proof: {user, record, password or fido}."""
     try:
         address = enclave.configured()
     except enclave.EnclaveError as exc:
@@ -187,7 +188,7 @@ def typed(db, conn, text: str) -> str:
             raise vault.VaultError(f'the vault secret is at least {vault.MIN_SECRET_LEN} characters')
         if state_of(address) == 'unlocked':
             return 'unlocked'
-        vault.Vault(db, conn).unlock_enclave(secret, address).close()
+        vault.Vault(db, conn).unlock_enclave(secret, address, proof).close()
         return state_of(address)
     finally:
         vault.wipe(secret)

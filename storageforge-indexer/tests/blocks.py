@@ -70,6 +70,8 @@ MEDIUM = {
     'test_enclave.SupervisedByFirecracker',
     'test_enclave.EnclaveImage',     # the same again in the micro VM, where the image has been built and KVM is here
     'test_enclave_unlock.Unlock',    # the starter, a server that forgets the secret, and a person typing it: the real enclave program
+    'test_enclave_stepup.StepUp',    # step-up checked inside: passwords, FIDO2 assertions made in software, tokens, lock-downs
+    'test_enclave_stepup.ShortTokens',
     # bash, telnet and console sessions run for real
     'test_console.Api',
     'test_desktop_steps.Dux',

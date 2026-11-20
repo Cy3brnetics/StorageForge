@@ -128,7 +128,7 @@ class Enclave(Harness):
     # ── unlock ──
     def test_it_starts_locked_and_the_vaults_own_secret_unlocks_it(self):
         st = self.e.status()
-        self.assertEqual((st['state'], st['protocol']), ('locked', 1))
+        self.assertEqual((st['state'], st['protocol']), ('locked', 2))
         self.vault.generate_key('k')
         self.refused('locked', self.e.sign, self.row('k'), b'x')
         self.assertEqual(self.unlock()['state'], 'unlocked')
