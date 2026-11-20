@@ -6,6 +6,7 @@ function sfSignedOut(how = '') {   // how: '' | 'ended' | 'out'
   if (sfSignedOut.gone) return;
   sfSignedOut.gone = true;
   if (typeof sfLostWork === 'function') sfLostWork();      // the kernel notes what was kept and what could not be, for the sign-in page
+  try { localStorage.removeItem('sf.route'); } catch { /* storage blocked */ }      // the route key of the session that is gone
   document.body.replaceChildren();
   const q = new URLSearchParams({ next: location.pathname + location.search + location.hash });
   if (how) q.set(how, '1');

@@ -73,7 +73,8 @@ class BrowserEnclave(unittest.TestCase):
         self.page = self.browser.new_page()
         self.addCleanup(self.page.close)
         self.page.set_default_timeout(30000)
-        self.errors = []
+        self.errors, self.sent = [], []
+        self.page.on('request', lambda r: self.sent.append((r.method, r.url.split('/', 3)[3])) if r.method != 'GET' else None)
         self.page.on('pageerror', lambda e: self.errors.append(str(e)))
         self.page.on('console', lambda m: self.errors.append(m.text) if 'Content Security Policy' in m.text else None)
         self.page.goto(self.base + '/login')
@@ -127,6 +128,11 @@ class BrowserEnclave(unittest.TestCase):
         self.page.click('dialog[open] button[type=submit]')
         self.page.wait_for_function('() => [...document.querySelectorAll("#keys li")].some((li) => li.textContent.includes("after"))')
         self.assertEqual(self.errors, [])
+        # every one of those requests carried the code of the moment in its path, made in the page and checked by the server (routecode.py)
+        paths = [p for m, p in self.sent if m == 'POST' and 'login' not in p and 'reauth' not in p]
+        self.assertTrue(paths)
+        for path in paths:
+            self.assertRegex(path, r'^api/~[0-9a-f]{8}/(keys|enclave/unlock|enclave/stepup(/enroll)?)$')
         # the security view says the same thing in its own words
         self.page.click('#tabbtn-security')
         self.page.wait_for_selector('#sec-enclave b')

@@ -175,7 +175,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, selfupdate, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
                folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
-from . import rotate_keys, routes_enclave, routes_planner
+from . import rotate_keys, routecode, routes_enclave, routes_planner
 from .runtimes import docker
 from .capacity import parse_size, trends
 from .db import Database, epoch
@@ -941,6 +941,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             signed_in_from.clear()
         signed_in_from.add((user.username.lower(), client_net()))
         login_user(user)
+        if body.get('route_code') is True:          # a browser that will send the code of the moment on sensitive requests (routecode.py)
+            session['rc'] = 1
+            return jsonify(username=user.username, **routecode.issued(session_secret, session))
         return jsonify(username=user.username)
 
     @web.post('/api/logout')
@@ -1008,6 +1011,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                           arg_num=arg_num, password_stale=password_stale, password_confirmed=password_confirmed,
                           need_for_commands=lambda c, kind, ref: need_for_commands(c, kind, ref))
     routes_accounts.register(web, ctx)
+    routecode.register(web, ctx, session_secret)
 
     # data
     @web.get('/api/hosts')

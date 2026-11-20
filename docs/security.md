@@ -112,6 +112,18 @@ KEK = HMAC-SHA256(key = host share, "storageforge:second-lock:v1" ‖ 0 ‖ Argo
 - **SSH keys** are rotated by the [`rotate`](#if-a-key-may-have-leaked) plan when the operator runs it: that changes what hosts trust, and is not done unasked. Job keys per run are made per send, as before. The agent's tunnel keys come with the agent (0.5.7).
 - A rotation that fails is in the audit log (`vault.rekey`, `session.key.rotate`) and in the notification center, tried again every few minutes, and the notification leaves when one succeeds. The key in use stays in use meanwhile.
 
+**Sensitive routes that move.** A request that changes keys, bindings, the key enclave, deploys, consoles, host access or security keys carries a code that changes every 30 seconds. It rides in the path, as a 2FA code does: `POST /api/keys` is sent as `POST /api/~1a2b3c4d/keys`.
+
+```text
+code = first 8 hex digits of HMAC-SHA256(route key, "METHOD /api/route|" + floor(time / 30))
+```
+
+- The route key is a secret of the one session. A browser is given it once, in the answer to its sign-in, and keeps it. The server takes the code out of the path before anything routes, so permissions, the fresh-password rule and the audit log see the route as before, and checks the code for this half minute and the one on either side. The server's clock is the one that counts: sign-in and every refusal say what time it is.
+- A session that asked for the key at sign-in, which the sign-in page does, must send the code from then on. The mark is in the signed session cookie and cannot be taken off. A browser that lost its key gets it again from `POST /api/routecode`, which takes the password.
+- **What it is worth:** a recorded or guessed URL is dead half a minute later, a code for one route is no code for another, and a session cookie alone, copied to another machine, changes nothing on a sensitive route: it has no route key, and getting one takes the password. That is on top of the cookie, the same-origin check and the fresh-password rule.
+- **What it is not:** a defence against someone who already runs code in the page or in the web app, who can read the key or skip the check. A moving path is not a secret. A client that signs in without asking for the key (a script using the API) is not asked for codes.
+- The code is checked by the server. Checking it inside the enclave as well, for the operations that take a step-up, is not built: the enclave has no clock to share with a browser, and those operations already need a token the enclave gave for a proof it checked itself.
+
 For the vault key to be derived again on a schedule the enclave holds the vault secret, and the host's share where the second lock is on, from unlock to lock, in its locked memory. Before this it held the secret only for the moment of unlock.
 
 The image is `storageforge-indexer/enclave/image/build.sh`: a kernel without modules, an IP stack or block devices and with lockdown forced on, and an initramfs of one static file. The compiler image is pinned by digest and the kernel by checksum, and the build is reproducible: build it again and compare `SHA256SUMS`.

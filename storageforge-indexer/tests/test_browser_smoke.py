@@ -300,7 +300,7 @@ class BrowserSmoke(unittest.TestCase):
             posts.append(route.request.post_data_json)
             self.page.wait_for_timeout(50)
             route.fulfill(status=409, json={'error': 'not this time'})
-        self.page.route('**/api/deploy/start', answer)
+        self.page.route('**/deploy/start', answer)          # a sensitive route carries the code of the moment in its path: /api/~1a2b3c4d/deploy/start (routecode.py)
         self.page.evaluate("startDeploy('shares', 'nas', 'report', 'shares of nas'); startDeploy('shares', 'nas', 'report', 'shares of nas');")
         self.page.wait_for_selector('#dpgroup .st-failed')
         self.assertEqual(len(posts), 1)
@@ -939,7 +939,7 @@ class BrowserSmoke(unittest.TestCase):
     def test_a_confirm_names_what_will_happen_and_cancel_does_nothing(self):       # UX-10
         import re
         seen = []
-        self.json_route(re.compile(r'/api/keys/x$'), seen=seen)
+        self.json_route(re.compile(r'/api/(~[0-9a-f]{8}/)?keys/x$'), seen=seen)          # with the code of the moment in its path (routecode.py)
         self.page.evaluate("() => { removeVaultItem('/api/keys/x', 'Remove key x? It cannot be recovered.'); }")
         self.page.wait_for_selector('dialog.sf-dialog[open]')
         self.assertEqual(self.page.inner_text('dialog.sf-dialog h2'), 'Remove key x? It cannot be recovered.')
@@ -1021,7 +1021,7 @@ class BrowserSmoke(unittest.TestCase):
         import json
         import re
         seen = []
-        self.json_route(re.compile(r'/api/deploy/jobs/7/retention$'), body={'output': 'ok'}, seen=seen)
+        self.json_route(re.compile(r'/api/(~[0-9a-f]{8}/)?deploy/jobs/7/retention$'), body={'output': 'ok'}, seen=seen)
         self.open_tab('deploy')
         self.page.evaluate("() => { editRetention({ id: 7, name: 'snaps', method: 'snapper', levels: { daily: 7 } }); }")
         self.page.wait_for_selector('dialog.sf-dialog input')

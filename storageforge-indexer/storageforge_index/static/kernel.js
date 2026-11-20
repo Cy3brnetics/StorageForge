@@ -521,7 +521,7 @@ function confirmEnclave() {
     let settled = false;
     const finish = (fn, arg) => { if (settled) return; settled = true; fn(arg); };
     const send = async (body) => {
-      const res = await fetch('/api/enclave/stepup', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await sfCodedFetch('/api/enclave/stepup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (res.status === 401) { dlg.close(); finish(reject, new Error('Sign in required')); sfSignedOut(); return; }
       if (!res.ok) { msg.textContent = (await res.json().catch(() => ({}))).error || res.statusText; msg.hidden = false; pw.focus(); return; }
       finish(resolve); dlg.close();
@@ -529,7 +529,7 @@ function confirmEnclave() {
     form.addEventListener('submit', (ev) => { ev.preventDefault(); const password = pw.value; pw.value = ''; send({ password }); });
     key.addEventListener('click', async () => {
       try {
-        const begin = await fetch('/api/enclave/stepup/begin', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const begin = await sfCodedFetch('/api/enclave/stepup/begin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
         const o = await begin.json();
         if (!begin.ok) throw new Error(o.error || begin.statusText);
         const got = await navigator.credentials.get({ publicKey: { ...o, challenge: sfUnB64u(o.challenge), allowCredentials: o.allowCredentials.map((c) => ({ ...c, id: sfUnB64u(c.id) })) } });
@@ -572,6 +572,62 @@ function confirmHostKey(hk) {
   });
 }
 
+/* ── the code of the moment on sensitive requests (routecode.py) ──── */
+/* A request that changes keys, the enclave, deploys, consoles or host access carries a code that changes every 30 seconds, in its path:
+   POST /api/keys goes out as POST /api/~1a2b3c4d/keys. The code is HMAC-SHA256 of the method, the route and the half minute under this
+   session's route key, which the sign-in gave this browser. SHA-256 is written out here because crypto.subtle is only there over https. */
+const SF_SENSITIVE = /^\/api\/(keys|bindings|enclave|deploy|console|access|security\/webauthn)(\/.*)?$/;
+const sfPrimes = (n) => { const out = []; for (let c = 2; out.length < n; c++) if (out.every((p) => c % p)) out.push(c); return out; };
+const SF_K = Uint32Array.from(sfPrimes(64), (p) => Math.floor((Math.cbrt(p) % 1) * 4294967296));
+function sfSha256(msg) {            // Uint8Array → Uint8Array(32)
+  const h = Uint32Array.from(sfPrimes(8), (p) => Math.floor((Math.sqrt(p) % 1) * 4294967296));
+  const len = msg.length, total = ((len + 72) >> 6) << 6, m = new Uint8Array(total), v = new DataView(m.buffer), w = new Uint32Array(64);
+  m.set(msg); m[len] = 0x80; v.setUint32(total - 8, Math.floor(len / 0x20000000)); v.setUint32(total - 4, (len << 3) >>> 0);
+  const rot = (x, n) => (x >>> n) | (x << (32 - n));
+  for (let o = 0; o < total; o += 64) {
+    for (let i = 0; i < 16; i++) w[i] = v.getUint32(o + i * 4);
+    for (let i = 16; i < 64; i++) w[i] = w[i - 16] + (rot(w[i - 15], 7) ^ rot(w[i - 15], 18) ^ (w[i - 15] >>> 3)) + w[i - 7] + (rot(w[i - 2], 17) ^ rot(w[i - 2], 19) ^ (w[i - 2] >>> 10));
+    let [a, b, c, d, e, f, g, k] = h;
+    for (let i = 0; i < 64; i++) {
+      const t1 = (k + (rot(e, 6) ^ rot(e, 11) ^ rot(e, 25)) + ((e & f) ^ (~e & g)) + SF_K[i] + w[i]) >>> 0;
+      const t2 = ((rot(a, 2) ^ rot(a, 13) ^ rot(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) >>> 0;
+      k = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    [a, b, c, d, e, f, g, k].forEach((x, i) => { h[i] += x; });
+  }
+  const out = new Uint8Array(32), ov = new DataView(out.buffer);
+  h.forEach((x, i) => ov.setUint32(i * 4, x));
+  return out;
+}
+function sfHmacHex(keyHex, text) {
+  const key = new Uint8Array(64), msg = new TextEncoder().encode(text);
+  key.set(Uint8Array.from(keyHex.match(/../g) || [], (b) => parseInt(b, 16)));
+  const pad = (x) => { const p = new Uint8Array(64); for (let i = 0; i < 64; i++) p[i] = key[i] ^ x; return p; };
+  const join = (a, b) => { const o = new Uint8Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; };
+  return Array.from(sfSha256(join(pad(0x5c), sfSha256(join(pad(0x36), msg)))), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+function sfRouteKey() { try { return JSON.parse(localStorage.getItem('sf.route') || 'null'); } catch { return null; } }
+function sfRouteKeep(state) { try { localStorage.setItem('sf.route', JSON.stringify(state)); } catch { /* storage blocked: asked for again next time */ } }
+function sfRoute(method, path) {    // the path as it is sent: with the code of the moment in it, where the route is a sensitive one
+  const m = String(method || 'GET').toUpperCase(), bare = String(path).split('?')[0], st = sfRouteKey();
+  if (!st || !st.key || m === 'GET' || m === 'HEAD' || !SF_SENSITIVE.test(bare)) return path;
+  const half = Math.floor((Date.now() / 1000 + (st.skew || 0)) / 30);
+  return `/api/~${sfHmacHex(st.key, `${m} ${bare}|${half}`).slice(0, 8)}${String(path).slice(4)}`;
+}
+async function sfCodedFetch(path, init, again = false) {
+  const res = await fetch(sfRoute(init.method, path), { credentials: 'same-origin', ...init });
+  if (res.status !== 403 || again) return res;
+  const body = await res.clone().json().catch(() => ({}));
+  if (!body.routecode) return res;
+  const st = sfRouteKey(), skew = body.now - Date.now() / 1000;
+  if (st && st.key && Math.abs(skew - (st.skew || 0)) > 5) sfRouteKeep({ key: st.key, skew });          // this machine's clock is off: the server's counts
+  else {                              // this browser has no key for the session, or not this one: it is given again, behind the password
+    const got = await (await sfFetch('/api/routecode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, false)).json();
+    sfRouteKeep({ key: got.route_key, skew: got.now - Date.now() / 1000 });
+  }
+  return sfCodedFetch(path, init, true);
+}
+
 /* ── the one api() ───────────────────────────────────────────────── */
 /* Returns the Response of a request that worked, and throws an Error (with .status and .body) for one that did not. It handles, in one
    place, what every page used to do for itself: a 401 empties the page and goes to /login; a 403 that asks for the password again opens
@@ -587,7 +643,7 @@ async function sfFetch(path, init, confirmed, busyTries = 0, steppedUp = false) 
   // settles then never settles for its caller, whose handler would only draw on (or fail to find) what is no longer there.
   let res;
   try {
-    res = await fetch(path, { credentials: 'same-origin', ...init });
+    res = await sfCodedFetch(path, init);
   } catch (err) {
     if (sfSignedOut.gone) return sfNever();
     throw err;
@@ -627,7 +683,7 @@ async function sfFetch(path, init, confirmed, busyTries = 0, steppedUp = false) 
 const getJSON = async (path, opts) => (await api(path, opts)).json();
 /* A request as the page goes away (pagehide): keepalive lets it outlive the page, and nobody is left to read the answer or
    be asked for a password, so it is only for letting the server know, such as closing a console (consoleview.js). */
-function sfOnLeave(path, method = 'POST') { fetch(path, { method, credentials: 'same-origin', keepalive: true }).catch(() => {}); }
+function sfOnLeave(path, method = 'POST') { fetch(sfRoute(method, path), { method, credentials: 'same-origin', keepalive: true }).catch(() => {}); }
 const postJSON = (path, body, opts = {}) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), ...opts });
 
 /* Who is signed in decides whose preferences apply: the account last seen here was applied at the top, this makes sure it was the right one. */
