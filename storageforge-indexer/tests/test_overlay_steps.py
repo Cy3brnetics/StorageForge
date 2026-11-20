@@ -22,7 +22,7 @@ import unittest.mock
 from pathlib import Path
 
 import dbfactory
-from storageforge_index import changes, nebulaca, overlaykeys, steps_overlay, steps_tunnels
+from storageforge_index import changes, nebulaca, overlaykeys, overlays, steps_overlay, steps_tailscale, steps_tunnels
 
 SETUP_KEY = 'A1B2C3D4-TEST-4NOT-AREAL-SETUPKEY0000'
 
@@ -105,9 +105,9 @@ esac''')
         p.write_text('#!/bin/bash\n' + body + '\n')
         p.chmod(0o755)
 
-    def step(self, apply, fn, *args, **env):
+    def step(self, apply, fn, *args, body=None, **env):
         call = fn + ' ' + ' '.join(f"'{a}'" for a in args)
-        got = subprocess.run(['bash', '-c', PRELUDE + f'APPLY={int(apply)}\n' + steps_tunnels.BASH + steps_overlay.BASH + '\n' + call + '\nexit $((PROBLEMS > 0))\n'],
+        got = subprocess.run(['bash', '-c', PRELUDE + f'APPLY={int(apply)}\n' + (body or steps_tunnels.BASH + steps_overlay.BASH) + '\n' + call + '\nexit $((PROBLEMS > 0))\n'],
                              capture_output=True, text=True, timeout=60, env=self.env | env)
         self.assertEqual(got.stderr, '', 'nothing a step runs fails unseen, and nothing it needs is missing from the plain tools')
         return got.returncode, got.stdout
@@ -718,7 +718,8 @@ class Vaulted(Stage):
             self.ssh.append((argv, input))
             if remote[:2] != ['sudo', '-n']:
                 raise AssertionError(f'not run as root without a password: {argv[-1]}')
-            words = ['sh', '-c', remote[4].replace('/etc/nebula', str(self.host_dir(target)))] if remote[2:4] == ['sh', '-c'] else remote[2:]
+            script = remote[4].replace('/etc/nebula', str(self.host_dir(target))).replace('/run/storageforge/secrets', str(self.d / 'secrets')) if remote[2:4] == ['sh', '-c'] else None
+            words = ['sh', '-c', script] if script else remote[2:]
             return real(words, input=input, capture_output=True, timeout=60, env={'PATH': self.env['PATH'], 'FAKE': str(self.fake)})
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), unittest.mock.patch('subprocess.run', over_ssh), unittest.mock.patch('sys.stdin', io.StringIO(stdin)):
@@ -727,6 +728,137 @@ class Vaulted(Stage):
 
     def audited(self, like):
         return [(r[0], r[1]) for r in self.conn.all('SELECT action, outcome FROM audit_log WHERE action LIKE :l ORDER BY audit_id', {'l': like})]
+
+
+HS_KEY = 'hskey-auth-TESTtestTEST-notARealPreAuthKey0000000000000000000000000000'
+HS_NODES = [{'id': 1, 'given_name': 'router', 'name': 'router', 'ip_addresses': ['100.64.0.1', 'fd7a:115c:a1e0::1'], 'node_key': 'nodekey:aa', 'online': True, 'user': {'id': 1, 'name': 'gabe'},
+             'approved_routes': ['10.42.0.0/24'], 'available_routes': ['10.42.0.0/24', '192.168.9.0/24'], 'subnet_routes': ['10.42.0.0/24']},
+            {'id': 2, 'given_name': 'exit', 'ip_addresses': ['100.64.0.2'], 'online': False, 'approved_routes': ['0.0.0.0/0', '::/0'], 'available_routes': ['0.0.0.0/0', '::/0'], 'subnet_routes': []},
+            {'id': 3, 'given_name': 'laptop', 'ip_addresses': ['100.64.0.3'], 'online': True}]
+
+
+class HeadscaleRoutes(unittest.TestCase):
+    def test_what_is_approved_what_waits_and_what_is_served(self):
+        got = overlays.headscale('WRN a warning before the JSON\n' + json.dumps(HS_NODES))
+        by = {p['name']: p for p in got['peers']}
+        self.assertEqual((by['router']['routes'], by['router']['routes_waiting']), (['10.42.0.0/24'], ['192.168.9.0/24']), 'advertised and not approved carries nothing yet')
+        self.assertEqual((by['exit']['routes'], by['exit']['routes_waiting']), (['0.0.0.0/0', '::/0'], []))
+        self.assertEqual((by['laptop']['routes'], by['laptop']['routes_waiting']), ([], []))
+        self.assertEqual(got['routes'], ['10.42.0.0/24'], 'what the tailnet serves now: the exit node is offline and serves nothing')
+        self.assertNotIn('gabe', json.dumps(got))
+
+    def test_the_next_release_spells_its_fields_differently_and_reads_the_same(self):
+        """Headscale 0.29 prints ip_addresses and approved_routes; its main branch (2026-11-20) prints ipAddresses and approvedRoutes."""
+        def camel(k):
+            head, *rest = k.split('_')
+            return head + ''.join(w.capitalize() for w in rest)
+        newer = [{camel(k): v for k, v in n.items()} for n in HS_NODES]
+        self.assertIn('ipAddresses', newer[0])
+        self.assertEqual(overlays.headscale(json.dumps(newer)), overlays.headscale(json.dumps(HS_NODES)))
+
+    def test_junk_in_the_route_lists_is_dropped(self):
+        got = overlays.headscale(json.dumps([{'given_name': 'x', 'ip_addresses': ['100.64.0.9'], 'approved_routes': 'all', 'available_routes': [5, None, 'not a network', '10.1.0.0/16', {'a': 1}], 'subnet_routes': {'x': 1}}]))
+        self.assertEqual((got['peers'][0]['routes'], got['peers'][0]['routes_waiting'], got['routes']), ([], ['10.1.0.0/16'], []))
+
+
+class Headscale(Vaulted):
+    """`vault headscale-key`: the key is made on the Headscale server, crosses inside ssh, and goes into the vault. headscale is a
+    stand-in that answers as 0.29 does and writes down the words it was given."""
+
+    def setUp(self):
+        super().setUp()
+        f = self.fake
+        (f / 'answer').write_text(json.dumps({'user': {'id': 1, 'name': 'gabe'}, 'id': 7, 'key': HS_KEY, 'reusable': True, 'expiration': {'seconds': 1795200000, 'nanos': 0}, 'acl_tags': []}, indent='\t'))
+        self.stub('headscale', f'echo "headscale $*" >>{f}/headscale.calls\n[ ! -e {f}/headscale-fails ] || {{ echo "Error: user not found" >&2; exit 1; }}\necho "WRN An updated version of Headscale has been found" >&2\ncat {f}/answer')
+        self.stub('docker', f'echo "docker $*" >>{f}/docker.calls\n[ "$1" = exec ] && shift 2 && exec "$@"')
+
+    def test_the_key_goes_from_the_server_into_the_vault_and_is_never_printed(self):
+        rc, out, err = self.vault('headscale-key', 'hs-key', '--host', 'nas', '--hs-user', '1', '--reusable', '--expiration', '2h')
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.read('headscale.calls'), 'headscale preauthkeys create --expiration 2h -o json --user 1 --reusable\n')
+        self.assertIn('stored secret hs-key: a Headscale pre-auth key from nas, good until 2026-11-', out)
+        self.assertIn('reusable', out)
+        argv, sent = self.ssh[-1]
+        self.assertEqual((argv[-2], sent), ('scan@nas', b''), 'nothing is sent to the server but the command')
+        self.assertNotIn(HS_KEY, out + err + ' '.join(argv))
+        rows = self.conn.all("SELECT action, outcome, detail_json FROM audit_log WHERE action = 'vault.secret_add'")
+        self.assertEqual([(r[0], r[1]) for r in rows], [('vault.secret_add', 'ok')])
+        self.assertNotIn(HS_KEY, str(rows))
+        self.assertIn('headscale', str(rows))
+        # and from the vault to a host, for the tailscale step, as any secret goes: on stdin
+        rc, out, err = self.vault('send-secret', 'hs-key', '--host', 'nas')
+        self.assertEqual(rc, 0, err)
+        argv, sent = self.ssh[-1]
+        self.assertEqual(sent, (HS_KEY + '\n').encode())
+        self.assertNotIn(HS_KEY, ' '.join(argv) + out + err)
+        self.assertEqual((self.d / 'secrets' / 'hs-key').read_text(), HS_KEY + '\n')
+
+    def test_the_tailscale_step_joins_through_the_headscale_server_with_it(self):
+        self.assertEqual(self.vault('headscale-key', 'hs-key', '--host', 'nas', '--tags', 'tag:server')[0], 0)
+        self.assertEqual(self.read('headscale.calls'), 'headscale preauthkeys create --expiration 1h -o json --tags tag:server\n', 'a tagged key needs no user')
+        self.assertEqual(self.vault('send-secret', 'hs-key', '--host', 'nas')[0], 0)
+        f = self.fake
+        self.stub('tailscale', f"""case $1 in
+  status) if [ -e {f}/ts-up ]; then echo "  \\"BackendState\\": \\"Running\\","; else echo "  \\"BackendState\\": \\"NeedsLogin\\","; fi ;;
+  up) tr "\\0" " " </proc/$$/cmdline >{f}/tailscale.cmdline
+      for a in "$@"; do case $a in --auth-key=file:*) cat "${{a#--auth-key=file:}}" >{f}/tailscale.read || exit 1 ;; esac; done; touch {f}/ts-up ;;
+  ip) echo 100.64.0.7 ;;
+esac""")
+        (f / 'active-tailscaled').touch()
+        plan = changes.normalize({'name': 't', 'tasks': [{'type': 'tailscale', 'host': 'nas', 'params': {'secret': 'hs-key', 'login_server': 'https://hs.example.com'}}]})
+        said = ' '.join(i['text'] for i in changes.check(self.conn, plan)['tasks'][0]['items'])
+        self.assertIn('joins through the control server https://hs.example.com (Headscale)', said)
+        self.assertIn('storageforge-index vault headscale-key', said)
+        self.assertIn("hs-key '' '' '' '' present https://hs.example.com", changes.script(self.conn, plan))
+        body = steps_tailscale.BASH.replace('/run/storageforge/secrets', str(self.d / 'secrets'))
+        rc, out = self.step(True, 't_tailscale', 'hs-key', '', '', '', '', 'present', 'https://hs.example.com', body=body)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('joined the tailnet as 100.64.0.7', out)
+        self.assertEqual(self.read('tailscale.cmdline').strip(), f'/bin/bash {self.d}/bin/tailscale up --reset --auth-key=file:{self.d}/secrets/hs-key --login-server=https://hs.example.com --timeout=90s')
+        self.assertEqual(self.read('tailscale.read'), HS_KEY + '\n')
+        self.assertNotIn(HS_KEY, out + self.everything_written('fake/tailscale.read', 'fake/answer'))
+        bad = changes.normalize({'name': 't', 'tasks': [{'type': 'tailscale', 'host': 'nas', 'params': {'secret': 'hs-key', 'login_server': 'hs.example.com --ssh'}}]})
+        self.assertEqual([i['level'] for i in changes.check(self.conn, bad)['tasks'][0]['items']].count('crit'), 1)
+        # a plan saved before the field was there is the same plan, and its playbook does not hand the step the word None
+        old = changes.normalize({'name': 't', 'tasks': [{'type': 'tailscale', 'host': 'nas', 'params': {'secret': 'hs-key'}}]})
+        before = {'tasks': [{**old['tasks'][0], 'params': {k: v for k, v in old['tasks'][0]['params'].items() if k != 'login_server'}}]}
+        self.assertEqual(changes.plan_hash(old), changes.plan_hash(before))
+        cmd = changes.EXTRA['tailscale']['ansible'](before['tasks'][0])['ansible.builtin.shell']['cmd']
+        self.assertTrue(cmd.rstrip().endswith("t_tailscale hs-key '' '' '' '' present ''"), cmd[-80:])
+
+    def test_headscale_in_a_container_and_the_words_it_is_given_are_checked(self):
+        rc, out, err = self.vault('headscale-key', 'hs-key', '--host', 'nas', '--hs-user', 'gabe@example.com', '--container', 'headscale', '--ephemeral')
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.read('docker.calls'), 'docker exec headscale headscale preauthkeys create --expiration 1h -o json --user gabe@example.com --ephemeral\n')
+        before = len(self.ssh)
+        for words, why in ((['--hs-user', '1; id'], 'the Headscale user is its number or its name'), (['--tags', 'server'], 'tags are tag:name'), ([], 'for a Headscale user (--hs-user) or for tags (--tags)'),
+                           (['--hs-user', '1', '--expiration', '1 hour'], 'an expiration is a number and m, h or d'), (['--hs-user', '1', '--container', 'a b'], 'a container name'),
+                           (['--hs-user', '1', '--user', 'Root; id'], 'is not a login name')):
+            rc, out, err = self.vault('headscale-key', 'hs-key2', '--host', 'nas', *words)
+            self.assertEqual((rc, why in err), (1, True), err)
+        self.assertEqual(self.vault('headscale-key', 'bad name', '--host', 'nas', '--hs-user', '1')[0], 1)
+        self.assertEqual(self.vault('headscale-key', 'hs-key2', '--host=-oProxyCommand=x', '--hs-user', '1')[0], 1)
+        self.assertEqual(len(self.ssh), before, 'none of them reached ssh')
+
+    def test_a_server_that_makes_no_key_stores_nothing_and_keeps_the_old_one(self):
+        self.assertEqual(self.vault('headscale-key', 'hs-key', '--host', 'nas', '--hs-user', '1')[0], 0)
+        (self.fake / 'headscale-fails').touch()
+        rc, out, err = self.vault('headscale-key', 'hs-key', '--host', 'nas', '--hs-user', '9')
+        self.assertEqual(rc, 1)
+        self.assertIn('nas: headscale made no key: Error: user not found', err)
+        (self.fake / 'headscale-fails').unlink()
+        for answer in ('{}', 'not json', json.dumps({'key': 'short'}), json.dumps({'key': HS_KEY + ' and more'}), json.dumps([HS_KEY])):
+            (self.fake / 'answer').write_text(answer)
+            rc, out, err = self.vault('headscale-key', 'hs-key', '--host', 'nas', '--hs-user', '1')
+            self.assertEqual((rc, err.strip()), (1, 'Headscale did not answer with a pre-auth key'))
+        self.assertEqual(self.vault('send-secret', 'hs-key', '--host', 'nas')[0], 0)
+        self.assertEqual(self.ssh[-1][1], (HS_KEY + '\n').encode(), 'the key that was there is still the one stored')
+        outcomes = [r[0] for r in self.conn.all("SELECT outcome FROM audit_log WHERE action = 'vault.secret_add' ORDER BY audit_id")]
+        self.assertEqual(outcomes, ['ok'] + ['failed'] * 6)
+
+    def test_the_answer_of_the_next_release(self):
+        key, said = overlaykeys.headscale_answer(json.dumps({'aclTags': ['tag:server'], 'createdAt': '2026-11-20T10:00:00Z', 'ephemeral': False, 'expiration': '2026-11-20T11:00:00Z', 'id': '12', 'key': HS_KEY, 'reusable': False, 'used': False}))
+        self.assertEqual((key, said), (HS_KEY, {'id': '12', 'reusable': False, 'ephemeral': False, 'expiration': '2026-11-20T11:00:00Z'}))
 
 
 @NEEDS_NEBULA

@@ -2181,7 +2181,7 @@ def build_parser() -> argparse.ArgumentParser:
     x = vs.add_parser('headscale-key', help='make a pre-auth key on a Headscale server over SSH and store it as a secret for the tailscale step. It is never printed')
     x.add_argument('name', help='the secret to store it as')
     x.add_argument('--host', required=True, help='the host that runs Headscale')
-    x.add_argument('--hs-user', help='the Headscale user the key is for: its number, or its name')
+    x.add_argument('--hs-user', help='the Headscale user the key is for: its number, from headscale users list. Headscale up to 0.29 takes the number only; later ones take a name too')
     x.add_argument('--tags', help='tags the node gets, such as tag:server (a tagged key needs no user)')
     x.add_argument('--expiration', default='1h', help='how long the key can be used: a number and m, h or d (default 1h)')
     x.add_argument('--reusable', action='store_true', help='for more than one machine')

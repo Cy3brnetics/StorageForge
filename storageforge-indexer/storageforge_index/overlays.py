@@ -130,16 +130,25 @@ def tailscale(text: str) -> dict:
 
 
 def headscale(text: str) -> dict:
-    """`headscale nodes list -o json`, on the host that runs the control server: every node it knows, online or not."""
+    """`headscale nodes list -o json`, on the host that runs the control server: every node it knows, online or not, with its
+    routes. Headscale keeps three lists per node: what the node advertises (available), what an administrator approved, and what
+    it serves now. A peer's `routes` are the approved ones; `routes_waiting` are advertised and not approved, so they carry
+    nothing yet; the reading's own `routes` are what the tailnet serves. Releases up to 0.29 print the fields with underscores
+    (ip_addresses), and the next one prints them as givenName and ipAddresses: both are read."""
     doc, error = _loaded('tailscale', text, list)
     if error:
         return error
-    peers = []
+    peers, served = [], []
     for n in doc[:MAX_PEERS]:
-        if isinstance(n, dict):
-            peers.append(_peer(n.get('given_name') or n.get('name'), _addresses(n.get('ip_addresses') or []), n.get('node_key'), n.get('online'), None, None,
-                               _routes(n.get('approved_routes') or [])))
-    return {'network': 'tailscale', 'state': 'control server', 'self': None, 'peers': peers, 'routes': [], 'control': 'headscale'}
+        if not isinstance(n, dict):
+            continue
+        get = lambda snake, camel: n.get(snake) if n.get(snake) is not None else n.get(camel)      # noqa: E731
+        approved, available = _routes(get('approved_routes', 'approvedRoutes') or []), _routes(get('available_routes', 'availableRoutes') or [])
+        peer = _peer(get('given_name', 'givenName') or n.get('name'), _addresses(get('ip_addresses', 'ipAddresses') or []), get('node_key', 'nodeKey'), n.get('online'), None, None, approved)
+        peer['routes_waiting'] = [r for r in available if r not in approved]
+        served += [r for r in _routes(get('subnet_routes', 'subnetRoutes') or []) if r not in served]
+        peers.append(peer)
+    return {'network': 'tailscale', 'state': 'control server', 'self': None, 'peers': peers, 'routes': served[:MAX_LIST], 'control': 'headscale'}
 
 
 # ── NetBird ──
