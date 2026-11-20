@@ -186,10 +186,14 @@ def build(host: str, net: dict | None, infra: dict | None, containers: list[dict
                 continue
             key = p.get('key')
             by_key = overlay_keys.get((name, key)) or ((wg_keys.get(key) or (None,))[0] if name == 'netmaker' else None)
+            at = next((a for a in p.get('endpoints') or [] if a in peers), None) if name == 'zerotier' else None
             if ip in peers:
                 tid, sure, how = f'host:{peers[ip]}', 'confirmed', said
             elif by_key:
                 tid, sure, how = f'host:{by_key}', 'confirmed', f'{said}: its {"node id" if name == "zerotier" else "key"} is the one {by_key} said is its own'
+            elif at:
+                # where ZeroTier reaches the peer is an address a scanned host has. Inferred: behind one address there can be more than one machine
+                tid, sure, how = f'host:{peers[at]}', 'inferred', f'{said}: node {p.get("key")} is reached at {at}, an address of {peers[at]}'
             elif ip:
                 tid, sure, how = add(f'ovnode:{name}:{ip}', 'Peer', p.get('name') or ip, 'access', owner=None, confidence='inferred', placeholder=True, ip=ip, network=name), 'inferred', said
             else:

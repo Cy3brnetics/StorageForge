@@ -208,8 +208,10 @@ def netbird(text: str) -> dict:
 
 # ── ZeroTier ──
 def zerotier(info: str, networks: str, peers: str = '') -> dict:
-    """`zerotier-cli -j info`, `-j listnetworks` and `-j peers`. A ZeroTier peer is known by its ten-digit address, not by an IP:
-    the addresses here are this host's own, one per network it has joined."""
+    """`zerotier-cli -j info`, `-j listnetworks` and `-j peers`. A ZeroTier peer is known by its ten-digit address, not by an IP
+    on the network: the addresses here are this host's own, one per network it has joined. What is known of a peer is where its
+    active paths go (`endpoints`, the address ZeroTier reaches it at, without the port), and that is what the map can match to a
+    scanned host when the peer was not scanned as a ZeroTier node itself."""
     me, error = _loaded('zerotier', info, dict)
     if error:
         return error
@@ -231,7 +233,9 @@ def zerotier(info: str, networks: str, peers: str = '') -> dict:
         if not isinstance(p, dict) or p.get('role') != 'LEAF':          # PLANET and MOON are ZeroTier's root servers, not this site's hosts
             continue
         paths = [x for x in p.get('paths') or [] if isinstance(x, dict) and x.get('active')]
-        seen.append(_peer(p.get('address'), [], p.get('address'), bool(paths), bool(paths)) | {'latency_ms': p.get('latency') if isinstance(p.get('latency'), int) and p['latency'] >= 0 else None})
+        ends = list(dict.fromkeys(_addresses([x['address'].rsplit('/', 1)[0] for x in paths if isinstance(x.get('address'), str)])))[:4]
+        seen.append(_peer(p.get('address'), [], p.get('address'), bool(paths), bool(paths)) | {'latency_ms': p.get('latency') if isinstance(p.get('latency'), int) and not isinstance(p['latency'], bool) and p['latency'] >= 0 else None,
+                                                                                         'endpoints': ends})
     return {'network': 'zerotier', 'state': 'connected' if me.get('online') is True else 'not connected', 'self': {'name': _text(me.get('address'), 16), 'addresses': addresses[:MAX_LIST], 'key': _text(me.get('address'), 16)},
             'peers': seen, 'routes': routes[:MAX_LIST], 'control': None, 'networks': joined}
 

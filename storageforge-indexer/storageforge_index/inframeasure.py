@@ -163,8 +163,8 @@ fi
 sec netmaker_json; has netclient && try netclient list -l | capped 400000
 # strongSwan: the tunnels and the connections, without the identity of either end, which can be a person
 q=$(printf '\047')
-sec swan_sas; has swanctl && try swanctl --list-sas | sed -E "s/$q[^$q]*$q/$q-$q/g" | capped 400000
-sec swan_conns; has swanctl && try swanctl --list-conns | grep -avE '^ +(id|ca_id|eap_id|xauth_id|aaa_id|groups|cert policy|certs|cacerts):' | capped 400000
+sec swan_sas; has swanctl && try swanctl --list-sas | sed -E "s/^(  (local|remote) +)$q.*$q @ /\\1$q-$q @ /; s/ (EAP|XAuth): $q.*$q/ \\1: $q-$q/" | capped 400000
+sec swan_conns; has swanctl && try swanctl --list-conns | grep -avE '^ +(id|ca_id|eap_id|xauth_id|aaa_id|groups|cert policy|certs|cacerts|ppk):' | capped 400000
 # the access proxies (accessproxies.py). From Teleport only the fields that are read are printed: a label, a command or a user stays there
 sec ziti_status; has ziti-edge-tunnel && try ziti-edge-tunnel tunnel_status | capped 400000
 sec tp_status; has tctl && { try tctl status --format=json | grep -aoE '"(name|version)": *"[^"]*"' | head -n 2; try tctl status | grep -aE '^(Cluster|Version)' | head -n 2; }
