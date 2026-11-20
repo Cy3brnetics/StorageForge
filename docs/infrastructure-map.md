@@ -71,7 +71,7 @@ A step that could cut StorageForge off can carry a rollback timer. The script jo
 
 ## StorageForge's own network
 
-StorageForge can build a WireGuard network of its own between the hosts you choose, on the interface `sf0` and UDP port 51903. It needs no outside service. It is used through the API today; the page for it is not built.
+StorageForge can build a WireGuard network of its own between the hosts you choose, on the interface `sf0` and UDP port 51903. It needs no outside service. Its page is **Infrastructure → StorageForge network**: make the network, add and remove members, see per member what the readings confirm, rotate a key, set up the controller's own end, read the findings, and save the plan, which then opens in Changes. Changing anything there asks for your password again; an account that may only look sees the members and no buttons. The same steps through the API:
 
 1. `POST /api/sfnet` makes the network. It picks a range that no scanned host has an address or a route in, and never `100.64.0.0/10`, which Tailscale and NetBird use. Give `range` to choose one yourself, and `topology: "hub"` where hosts should meet only at a hub.
 2. `POST /api/sfnet/members` with a `host` adds a scanned host. It gets one address for good. The other members call it at the address scans reach it at; give `endpoint` for another, or `reachable: false` for a host behind a NAT of its own, which then calls the others and keeps the path open.
@@ -119,7 +119,7 @@ The SSH host key that is checked is still the one pinned for the host's normal a
 
 Not carried: Sends, Moves and sync run between two hosts and keep a tunnel of their own per transfer (SSH with a job key), and NFS and SMB shares are not put on the network. In the hub topology a controller that is not a hub reaches only the hubs this way, because no step turns on forwarding at a hub.
 
-Not built yet: the page. Built, not lab-tested.
+Built, not lab-tested.
 
 ## Designs
 
