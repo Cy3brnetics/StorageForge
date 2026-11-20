@@ -13,6 +13,7 @@ peer is not what the map draws.
 """
 from __future__ import annotations
 
+import datetime
 import ipaddress
 import json
 import re
@@ -37,11 +38,13 @@ INTERFACES = (('storageforge', re.compile(r'sf\d+')), ('tailscale', re.compile(r
 
 def network_of(interface: str | None, address: str | None = None, known: dict | None = None) -> str | None:
     """Which private network this interface is on, or None for an ordinary one. What a tool said of its own interface comes first
-    (`known`, from `interfaces_of`): Nebula's can be given any name in its configuration. Then the interface's name decides. An
-    address in 100.64.0.0/10 on an interface that says nothing is 'overlay': a private network, without a guess at whose."""
+    (`known`, from `interfaces_of`): Nebula's can be given any name in its configuration, and a tool that names no interface
+    still says which address is its own. Then the interface's name decides. An address in 100.64.0.0/10 on an interface that
+    says nothing is 'overlay': a private network, without a guess at whose."""
     name = (interface or '').lower()
-    if known and known.get(name) in LABELS:
-        return known[name]
+    for said in (name, (address or '').split('/')[0].lower()):
+        if known and said and known.get(said) in LABELS:
+            return known[said]
     for network, pattern in INTERFACES:
         if pattern.fullmatch(name):
             return network
@@ -59,7 +62,8 @@ def label(network: str | None) -> str:
 
 
 def interfaces_of(readings) -> dict:
-    """{interface: network} from what each tool said its own interface is called, for `network_of`."""
+    """{interface or address: network} from what each tool said its own interface is called and which addresses it was given,
+    for `network_of`. An IPsec tunnel has no address of its own: its local end is the address the host already has."""
     out = {}
     for r in readings if isinstance(readings, list) else []:
         if not isinstance(r, dict) or r.get('error') or r.get('network') not in LABELS:
@@ -67,6 +71,10 @@ def interfaces_of(readings) -> dict:
         for name in [r.get('interface')] + [n.get('interface') for n in r.get('networks') or [] if isinstance(n, dict)]:
             if isinstance(name, str) and name:
                 out[name.lower()] = r['network']
+        me = r.get('self') if isinstance(r.get('self'), dict) else {}
+        for address in (me.get('addresses') or []) if r['network'] != 'ipsec' else []:
+            if isinstance(address, str) and address:
+                out.setdefault(address.lower(), r['network'])
     return out
 
 
@@ -106,17 +114,24 @@ def _routes(values) -> list[str]:
 
 
 def _loaded(network: str, text, want: type):
-    """The tool's JSON, or the error to return. Tools print warnings before their JSON: it starts at the first bracket."""
+    """The tool's JSON, or the error to return. Tools print warnings before their JSON: it starts at the first bracket, or at a
+    later one when the warning has a bracket of its own (`[netclient] ...`). Eight are tried and no more."""
     if not isinstance(text, str) or not text.strip():
         return None, {'network': network, 'error': 'nothing read'}
     if len(text) > MAX_INPUT:
         return None, {'network': network, 'error': 'more than it should ever print'}
     opener = '{' if want is dict else '['
-    at = text.find(opener)
-    try:
-        doc = json.loads(text[at:]) if at >= 0 else None
-    except (ValueError, RecursionError):
-        doc = None
+    doc, at = None, text.find(opener)
+    for _ in range(8):
+        if at < 0:
+            break
+        try:
+            doc = json.loads(text[at:])
+        except (ValueError, RecursionError):
+            doc = None
+        if isinstance(doc, want):
+            break
+        at = text.find(opener, at + 1)
     if not isinstance(doc, want):
         return None, {'network': network, 'error': 'not the JSON this tool prints'}
     return doc, None
@@ -262,6 +277,20 @@ def _nebula_certificate(text) -> dict | None:
     return None
 
 
+def _nebula_uses(listed) -> list[dict]:
+    """`tun.unsafe_routes`: a network this host reaches through another Nebula host. `via` is one address, or since 1.10 a list
+    of gateways, each with a weight."""
+    out = []
+    for u in (listed if isinstance(listed, list) else [])[:MAX_LIST]:
+        if not isinstance(u, dict):
+            continue
+        via = u.get('via')
+        for route in _routes([u.get('route')]):
+            for gateway in _addresses([g.get('gateway') if isinstance(g, dict) else g for g in via] if isinstance(via, list) else via)[:8]:
+                out.append({'route': route, 'via': gateway})
+    return out[:MAX_LIST]
+
+
 def nebula(config: str, certificate: str = '') -> dict:
     """`/etc/nebula/config.yml`, which arrives without its key, and the host certificate as `nebula-cert print -json` shows it.
     Nebula has no status command: what is read is what the host is configured to be (a lighthouse, a relay or neither), the
@@ -289,11 +318,10 @@ def nebula(config: str, certificate: str = '') -> dict:
         peers.append(_peer(None, [ip]) | {'lighthouse': ip in lighthouses, 'relay': ip in relays, 'endpoints': endpoints.get(ip, [])})
     cert = _nebula_certificate(certificate)
     am_lighthouse, am_relay = part('lighthouse').get('am_lighthouse') is True, part('relay').get('am_relay') is True
-    uses = part('tun').get('unsafe_routes')
     port = part('listen').get('port')
     return {'network': 'nebula', 'state': 'configured', 'role': 'lighthouse' if am_lighthouse else 'relay' if am_relay else 'host', 'relay': am_relay,
             'self': {'name': cert['name'] if cert else None, 'addresses': cert['addresses'] if cert else [], 'key': cert['fingerprint'] if cert else None},
-            'peers': peers, 'routes': cert['routes'] if cert else [], 'uses_routes': _routes([r.get('route') for r in uses if isinstance(r, dict)] if isinstance(uses, list) else []),
+            'peers': peers, 'routes': cert['routes'] if cert else [], 'uses_routes': _nebula_uses(part('tun').get('unsafe_routes')),
             'control': None, 'interface': _text(part('tun').get('dev'), 15), 'port': port if isinstance(port, int) and not isinstance(port, bool) and 0 <= port < 65536 else None,
             'certificate': {'name': cert['name'], 'groups': cert['groups'], 'expires': cert['expires']} if cert else None}
 
@@ -336,7 +364,7 @@ def netmaker(text: str) -> dict:
 # ── strongSwan (IPsec) ──
 _SWAN_IKE = re.compile(r'(\S[^:]*): #\d+, (\w+), IKEv(\d)')
 _SWAN_END = re.compile(r"\s+(local|remote)\s+'.*' @ ([^\[\s]+)\[\d+\](.*)")
-_SWAN_CHILD = re.compile(r'  (\S[^:]*): #\d+, reqid \d+, (\w+), (\w+)')
+_SWAN_CHILD = re.compile(r'  (\S[^:]*): #\d+, reqid \d+,(?: cpu \S+,)? (\w+), (\w+)')
 _SWAN_CONN = re.compile(r'(\S[^:]*): IKEv([12/]+),')
 _SWAN_CONN_CHILD = re.compile(r'  (\S[^:]*): (TUNNEL|TRANSPORT|BEET|PASS|DROP)\b')
 _SWAN_VIRTUAL = re.compile(r'\[([^\]]*)\]\s*$')
@@ -409,4 +437,108 @@ def strongswan(sas: str, conns: str = '') -> dict:
             'peers': peers, 'routes': list(dict.fromkeys(r for t in tunnels for r in t['local_routes']))[:MAX_LIST], 'control': None, 'configured': len(configured)}
 
 
+# ── OpenVPN's certificates, where its CA is kept on the server ──
+def _when(text, formats) -> str | None:
+    """A date as OpenSSL writes it, as ISO 8601 in UTC, or None."""
+    text = ' '.join(text.split()) if isinstance(text, str) else ''
+    for fmt in formats:
+        try:
+            return datetime.datetime.strptime(text, fmt).replace(tzinfo=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        except ValueError:
+            continue
+    return None
+
+
+_INDEX_DATE, _PRINTED_DATE = ('%y%m%d%H%M%SZ', '%Y%m%d%H%M%SZ'), ('%b %d %H:%M:%S %Y GMT', '%b %d %H:%M:%S %Y')
+
+
+def openvpn_certificates(text: str) -> dict:
+    """What the collector prints of an OpenVPN server's PKI, one tab-separated line each:
+
+        i  flag  expiry  revoked  serial  name     a line of easy-rsa's `pki/index.txt`, with the common name alone of its subject
+        r  lastUpdate  nextUpdate  count           `openssl crl -noout -lastupdate -nextupdate` and how many serials the CRL revokes
+        c  file  notAfter  name                    `openssl x509 -noout -enddate -subject` of the CA's and the server's certificate
+
+    The index is OpenSSL's own (`openssl ca`): flag V is valid, R revoked and E expired, and a date is YYMMDDHHMMSSZ. A certificate
+    still marked V after its date has passed is told apart by `certificate_counts`, which is given the time. No key is read."""
+    if not isinstance(text, str) or not text.strip():
+        return {'network': 'openvpn', 'error': 'nothing read'}
+    certificates, files, crl = [], [], None
+    for line in text[:MAX_INPUT].splitlines():
+        f = line.split('\t')
+        if f[0] == 'i' and len(f) >= 6 and f[1] in ('V', 'R', 'E') and len(certificates) < MAX_PEERS:
+            certificates.append({'name': _text(f[5]), 'state': {'V': 'valid', 'R': 'revoked', 'E': 'expired'}[f[1]], 'expires': _when(f[2], _INDEX_DATE),
+                                 'revoked': _when(f[3].split(',')[0], _INDEX_DATE), 'serial': _text(f[4], 64)})
+        elif f[0] == 'r' and len(f) >= 4 and crl is None and (_when(f[1], _PRINTED_DATE) or _when(f[2], _PRINTED_DATE)):
+            crl = {'updated': _when(f[1], _PRINTED_DATE), 'next': _when(f[2], _PRINTED_DATE), 'revoked': int(f[3]) if f[3].isdigit() and len(f[3]) < 8 else None}
+        elif f[0] == 'c' and len(f) >= 4 and len(files) < MAX_LIST and _when(f[2], _PRINTED_DATE):
+            files.append({'file': _text(f[1].rsplit('/', 1)[-1], 64), 'name': _text(f[3]), 'expires': _when(f[2], _PRINTED_DATE)})
+    if not certificates and not files and crl is None:
+        return {'network': 'openvpn', 'error': 'not what the collector prints of a PKI'}
+    return {'network': 'openvpn', 'certificates': certificates, 'crl': crl, 'files': files}
+
+
+def certificate_counts(pki: dict | None, now: float, soon: int = 30 * 86400) -> dict:
+    """How an OpenVPN PKI stands at `now`: certificates valid, revoked, ended, and ending within `soon` seconds, and whether the CRL
+    is past its next update. OpenVPN refuses every client once the CRL it checks has passed that date."""
+    def at(iso):
+        try:
+            return datetime.datetime.strptime(iso, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()
+        except (ValueError, TypeError):
+            return None
+    out = {'valid': 0, 'revoked': 0, 'expired': 0, 'ending': [], 'crl_ended': False, 'crl_next': None}
+    pki = pki if isinstance(pki, dict) else {}
+    for c in [c for c in pki.get('certificates') or [] if isinstance(c, dict)] + [dict(f, state='valid') for f in pki.get('files') or [] if isinstance(f, dict)]:
+        ends = at(c.get('expires'))
+        if c.get('state') == 'revoked':
+            out['revoked'] += 1
+        elif c.get('state') == 'expired' or (ends is not None and ends <= now):
+            out['expired'] += 1
+        else:
+            out['valid'] += 1
+            if ends is not None and ends - now <= soon and len(out['ending']) < MAX_LIST:
+                out['ending'].append(c.get('name') or c.get('file') or c.get('serial'))
+    crl = pki.get('crl') if isinstance(pki.get('crl'), dict) else None
+    if crl:
+        out['crl_next'], nxt = crl.get('next'), at(crl.get('next'))
+        out['crl_ended'] = nxt is not None and nxt <= now
+    return out
+
+
 READERS = {'tailscale': tailscale, 'headscale': headscale, 'netbird': netbird, 'openvpn': openvpn, 'nebula': nebula, 'netmaker': netmaker, 'strongswan': strongswan}
+
+# where each reading comes from, as the evidence of an edge on the map says it
+SOURCES = {'nebula': 'Nebula configuration', 'netmaker': 'netclient list', 'ipsec': 'swanctl', 'openvpn': 'OpenVPN status file', 'zerotier': 'zerotier-cli peers'}
+
+
+def sentence(reading: dict, now: float | None = None) -> str:
+    """What the map says about one private network on a host."""
+    name = label(reading.get('network'))
+    if reading.get('error'):
+        return f'{name} is here, and its status could not be read'
+    peers = [p for p in reading.get('peers') or [] if isinstance(p, dict)]
+    up = sum(1 for p in peers if p.get('online'))
+    network = reading.get('network')
+    if network == 'nebula':
+        text = f'{name}: a {reading.get("role") or "host"}' + (' that also relays' if reading.get('relay') and reading.get('role') != 'relay' else '')
+        text += f', and its configuration names {sum(1 for p in peers if p.get("lighthouse"))} lighthouse(s). Nebula has no status command: which peers are up is not known'
+        cert = reading.get('certificate')
+        if isinstance(cert, dict) and cert.get('expires'):
+            text += f'. Its certificate ends {cert["expires"]}'
+    elif network == 'ipsec':
+        sites = [p for p in peers if not p.get('client')]
+        text = f'{name}: {sum(1 for p in sites if p.get("online"))} of {len(sites)} site-to-site tunnel(s) up' + (f', and {len(peers) - len(sites)} client connection(s)' if len(peers) > len(sites) else '')
+    elif reading.get('self') is None:
+        text = f'{name} server: {up} client(s) connected' if network == 'openvpn' else f'{name} control server: {len(peers)} node(s), {up} online'
+    else:
+        text = f'{name}: {reading.get("state") or "state not known"}, {up} of {len(peers)} peer(s) reachable'
+        gateways = sum(1 for p in peers if p.get('routes'))
+        text += f', {gateways} of them a gateway to other networks' if gateways else ''
+    pki = reading.get('pki')
+    if isinstance(pki, dict) and not pki.get('error') and now is not None:
+        c = certificate_counts(pki, now)
+        text += f'. Certificates: {c["valid"]} valid, {c["revoked"]} revoked, {c["expired"]} ended'
+        text += f'; ending within 30 days: {", ".join(str(n) for n in c["ending"][:8])}' if c['ending'] else ''
+        text += ('. The CRL passed its next update: OpenVPN refuses every client until it is made again' if c['crl_ended']
+                 else f'. The CRL is good until {c["crl_next"]}' if c['crl_next'] else '')
+    return text

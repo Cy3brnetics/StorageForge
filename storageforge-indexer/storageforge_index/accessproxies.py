@@ -127,25 +127,32 @@ def _on(section) -> bool:
 
 
 def teleport(status: str = '', nodes: str = '', config: str = '', login: str = '') -> dict:
-    """`tctl status --format=json` and the nodes of `tctl get nodes --format=json` on an auth server, `/etc/teleport.yaml` without
-    its token on any Teleport host, and `tsh status --format=json` where root is logged in. Each node the cluster knows is a
-    target: its name and where its SSH service answers, or that it is reached through the proxy alone."""
+    """`tctl status --format=json` (or its text, from a Teleport that has no such flag) and the nodes of `tctl get nodes
+    --format=json` on an auth server, `/etc/teleport.yaml` without its token on any Teleport host, and `tsh status --format=json`
+    where root is logged in. Each node the cluster knows is a target: its name and where its SSH service answers, or that it is
+    reached through the proxy alone. In a node, `kind` is printed first and `spec` after `metadata`, so the last `hostname` and
+    `addr` before the next node are the node's own and not a label that happens to be called the same."""
     if not any(isinstance(t, str) and t.strip() for t in (status, nodes, config, login)):
         return {'tool': 'teleport', 'error': 'nothing read'}
-    said, _ = _json('teleport', status, dict)
-    cluster = _part(said or {}, 'cluster')
+    cluster = {}
+    for key, value in _pairs(status):            # the cluster comes first in what tctl prints, before its authorities
+        if key in ('name', 'version') and isinstance(value, str) and key not in cluster:
+            cluster[key] = value
+    for key, pattern in (('name', r'^Cluster:?\s+(\S+)'), ('version', r'^Version:?\s+(\S+)')):
+        if key not in cluster and isinstance(status, str) and (m := re.search(pattern, status[:MAX_INPUT], re.M)):
+            cluster[key] = m[1]
     targets, cur = [], None
     for key, value in _pairs(nodes):
-        if key == 'kind':
-            cur = None
-            if value == 'node' and len(targets) < MAX_TARGETS:
-                cur = _target(None, None, None, 'ssh', None)
-                targets.append(cur)
+        if key == 'kind' and value == 'node':
+            if len(targets) >= MAX_TARGETS:
+                break
+            cur = _target(None, None, None, 'ssh', None)
+            targets.append(cur)
         elif cur is None:
             continue
-        elif key == 'hostname' and isinstance(value, str) and not cur['name']:
+        elif key == 'hostname' and isinstance(value, str):
             cur['name'] = _text(value)
-        elif key == 'addr' and isinstance(value, str) and not cur['address']:
+        elif key == 'addr' and isinstance(value, str):
             cur['address'], cur['port'] = _host_port(value)
         elif key == 'use_tunnel' and value is True:
             cur['access'] = 'reached through the proxy'
