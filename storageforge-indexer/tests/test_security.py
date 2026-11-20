@@ -1218,7 +1218,8 @@ class RealSentinel(DecoyBase):
         time.sleep(1.5)
         offset.write_text('600')
         (self.bin / 'timedatectl').write_text('#!/bin/bash\necho yes\n')
-        self.assertIn('600', self.wait_for('clock_set')[0]['summary'])
+        # the clock and uptime are read a moment apart, so the step it measures is 600 give or take a second
+        self.assertRegex(self.wait_for('clock_set')[0]['summary'], r'\b(599|600|601) s\b')
         time.sleep(1.5)
         offset.write_text(str(600 + 30 * DAY))                             # after the sync, a jump is one again
         self.wait_for('clock_jump')
