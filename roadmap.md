@@ -195,6 +195,8 @@ Decided 2026-11-16: data is encrypted even on the LAN, and the default needs no 
 
 **Join steps on 2026-11-20 (built, not lab-tested; `c10fc9c` to `0cbc4b2`):** `netbird`, `zerotier`, `nebula` (with its CA in the vault and a lighthouse role) and `openziti`; Headscale pre-auth keys into the vault and its routes read. Lab tier 22 is written and has not run; its server set-ups come from documentation alone. **No Netmaker step,** by rule 3. **Open:** a page or API for the Nebula CA and Headscale keys (CLI only), the CA signing inside a real enclave (not exercised), an OpenZiti controller in the lab. ZeroTier 1.16 and later builds its controller only under a non-commercial licence (`ZT_NONFREE=1`): whether the lab may use that build is the owner's decision, and tier 22 skips those checks without it.
 
+**Readers on 2026-11-20 (built, not lab-tested; `7198d46` to `9b7bd3a`):** Nebula, Netmaker, strongSwan, OpenVPN's certificates and CRL, ZeroTier peers by node id or address, OpenZiti, Teleport, Boundary and Pomerium, drawn on the map, and the console names a network by what its tool said. Read checks are added to tier 22 and have not run; there is none for Netmaker, OpenZiti, Teleport or Boundary, whose servers the lab does not run. **Open:** OpenVPN client profiles and an alert when a certificate or the CRL ends, strongSwan templates, targets made from the inventory and Teleport's recordings, a public Pomerium route counted by the exposure engine.
+
 Deploying the servers (Headscale, NetBird's management, Pangolin, a ZeroTier controller, OpenZiti's controller) is a Toolbox entry each (section 4). This section is the hosts' side.
 
 ## 3. Log monitoring
