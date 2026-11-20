@@ -5,7 +5,13 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 ## Unreleased
 
 ### Added
-- **A copy on another host is a possible backup, not waste** (asked for by the owner on 2026-11-19; built, not lab-tested). Duplicates that sit on different hosts are a class of their own in the API, the UI, the report, `dupes` and `folders`: counted apart, not reclaimable, and with no Trash button. Duplicates on one host are as before.
+-- **The key enclave needs no vault secret in the web app** (0.5.5; built, not lab-tested). A starter (`vault starter --watch`) hands the secret to the enclave, or a person types it on the Keys page. `docker-compose.enclave.yml` keeps the secret on a volume the server does not mount.
+- **The enclave checks the person itself.** Before it makes, imports or rotates a key, or lifts a lock-down, it checks a password or a FIDO2 assertion it holds the public half of (`vault stepup-enroll`). Until someone enrolls, a taken-over web app can still rotate the vault to a secret of its choosing: enroll.
+- **A secret is released for what it was named for.** `vault secret-add --step/--for-host/--platform/--sensitive` and `vault secret-policy`; every release is an audit entry the enclave writes, and the enclave keeps the audit chain's head, so `audit verify` catches a log cut short.
+- **Limits per kind of task, and notifications from the enclave's own counts.** Keys and Security say where the enclave is off or cannot run.
+- **A second lock on the vault key:** `vault second-lock on|off|status|recover`, a share held in a root-only file on the machine with a recovery share printed once. Sealing it to a TPM is not built.
+- **An arm64 enclave image,** and in CI the image is built twice and compared, its hashes recorded, and signed once the release key is given to CI (`STORAGEFORGE_ENCLAVE_SIGNERS`, `vault enclave-pin`).
+ **A copy on another host is a possible backup, not waste** (asked for by the owner on 2026-11-19; built, not lab-tested). Duplicates that sit on different hosts are a class of their own in the API, the UI, the report, `dupes` and `folders`: counted apart, not reclaimable, and with no Trash button. Duplicates on one host are as before.
 - **The plan check reads a plan's trash tasks together.** Tasks that between them remove every copy the index knows of a file or folder are critical (*the last copy*), and content that would be left on one host only is a warning (*the copy on HOST would be the only one left*). Both are in the script's header. The check compares folders of at least 3 files and 1 MiB, looks up at most 2,000 folders per plan and says so when it stops, and cannot match single files that were never hashed.
 - **Keep these two in sync.** On a folder pair across hosts, in Cleanup and the file map, one action saves a Moves plan with one mirror step. The source offered is the side that changed last, and nothing is deleted at the destination unless that is ticked. Nothing syncs until the plan is deployed with the password. A deployed pair is listed as kept in sync, with its job's state and last run, and is no longer a duplicate. For folders only: identical single files across hosts have no sync action yet.
 - **Copies on other hosts, suggested.** Cleanup → Duplicates lists the pairs nothing keeps in sync, largest first, each with *Not a backup of each other* and *Suggest again*, and one information notification (`copies-not-synced`) that can be ignored.
@@ -28,6 +34,10 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 ## 0.5.4.1 — 2026-11-18
 
 ### Security
+- **The channel to the key enclave is encrypted** (Noise NX), with the enclave's key pinned at first start.
+- **Sensitive requests carry a code that changes every 30 seconds, in their path** (`/api/~<code>/…`). A reverse proxy rule that matches those URLs exactly must allow the segment. It is checked by the server, not inside the enclave, which has no clock to share with a browser.
+- **The session-signing key rotates daily and the vault key is rewrapped every 30 days.** To allow that, the enclave holds the vault secret from unlock to lock.
+- **Known gap:** with the vault secret kept apart from the server, the nightly off-machine backup copy fails (`backup-copy-failed`), because its key is derived from that secret. Not fixed yet.
 
 - **The proxy runs nginx 1.31.9, which fixes two memory-corruption bugs in HTTP/2 that anyone who can reach port 8443 could trigger before logging in** (CVE-2026-123007 and CVE-2026-123633, published 2026-11-18). Every proxy image up to 0.5.4 has nginx 1.31.8 with HTTP/2 on, and is affected. nginx is now built from its signed source in the image, because Wolfi had not packaged the fix on the day it came out. It is built with only the modules the proxy uses, as a position-independent program with full RELRO. If you cannot rebuild yet, change `http2 on;` to `http2 off;` in `docker/nginx.conf` and rebuild the proxy, or keep port 8443 off any network you do not trust; turning HTTP/2 off closes these two bugs but not the request-body loop over TLS (CVE-2026-118899) that the same release fixes.
 

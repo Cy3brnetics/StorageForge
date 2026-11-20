@@ -81,7 +81,7 @@ BUILTIN = {
     'admin': ('Everything, including keys, accounts and settings', ALL),
 }
 
-ANYONE = ('/api/login', '/api/logout', '/api/reauth', '/api/me', '/api/version', '/api/me/password', '/api/enroll', '/api/enroll/check')
+ANYONE = ('/api/login', '/api/logout', '/api/reauth', '/api/routecode', '/api/me', '/api/version', '/api/me/password', '/api/enroll', '/api/enroll/check')
 READ = ('GET', 'HEAD')
 _ANY = ('GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH')
 _WRITE = ('POST', 'PUT', 'DELETE', 'PATCH')
@@ -209,6 +209,8 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (_WRITE, r'/api/git/sync', 'git.sync'),
 
     (READ, r'/api/(keys|access)', 'keys.view'),
+    (READ, r'/api/enclave', 'keys.view'),                              # whether the key enclave is there, and its counts
+    (_WRITE, r'/api/enclave(/.*)?', 'keys.manage'),                    # unlocking and locking it
     (_WRITE, r'/api/(keys|bindings)(/.*)?', 'keys.manage'),
     (_WRITE, r'/api/(hostkey|access/grant)(/.*)?', 'access.manage'),
     (('DELETE',), r'/api/hosts/[^/]+', 'hosts.retire'),

@@ -15,6 +15,7 @@ HEAVY = {
     # Chromium through Playwright
     'test_browser_copies.BrowserCopies',
     'test_browser_drafts.BrowserDrafts',
+    'test_browser_enclave.BrowserEnclave',
     'test_browser_logs.BrowserLogs',
     'test_browser_notifications.BrowserNotifications',
     'test_browser_map_whatif.MapWhatIfBrowser',
@@ -70,6 +71,14 @@ MEDIUM = {
     'test_enclave.Supervised',       # the VM started and watched, killed once, and started again
     'test_enclave.SupervisedByFirecracker',
     'test_enclave.EnclaveImage',     # the same again in the micro VM, where the image has been built and KVM is here
+    'test_enclave_unlock.Unlock',    # the starter, a server that forgets the secret, and a person typing it: the real enclave program
+    'test_enclave_stepup.StepUp',    # step-up checked inside: passwords, FIDO2 assertions made in software, tokens, lock-downs
+    'test_enclave_stepup.ShortTokens',
+    'test_enclave_release.Release',  # releases bound to a step, host or platform, written into the audit log from inside, and the chain's head
+    'test_enclave_counts.Counts',     # limits per kind of task, and notifications from the enclave's own counts
+    'test_enclave_lock2.SecondLock',  # the second lock on the KEK, with the enclave and without
+    'test_enclave_channel.Channel',   # the Noise channel and the pinned key, with a relay that reads and changes what crosses
+    'test_rotate_keys.Rewrap',        # the vault key rewrapped on schedule inside the enclave
     # bash, telnet and console sessions run for real
     'test_console.Api',
     'test_desktop_steps.Dux',

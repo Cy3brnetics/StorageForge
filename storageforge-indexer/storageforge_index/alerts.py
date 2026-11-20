@@ -482,8 +482,13 @@ def _device_problems(conn: Conn) -> dict:
 
 
 def problems(conn: Conn) -> dict:
+<<<<<<< HEAD
     from . import authkeys, clamav, copies, enclave, jobs, logrules, scheduler, security, selfupdate, sfnetwork, site
     now = {**enclave.problems(), **logrules.problems(conn), **scan_problems(conn), **backup_problems(conn), **cert_problems(), **selfupdate.problems(), **sfnetwork.problems(conn), **site.shared_problems(conn), **copies.problems(conn),
+=======
+    from . import authkeys, clamav, enclave, jobs, logrules, rotate_keys, scheduler, security, selfupdate, sfnetwork, site
+    now = {**enclave.problems(), **rotate_keys.problems(conn), **logrules.problems(conn), **scan_problems(conn), **backup_problems(conn), **cert_problems(), **selfupdate.problems(), **sfnetwork.problems(conn), **site.shared_problems(conn),
+>>>>>>> worktree-agent-ad2920ce4851aa3d4
            **authkeys.problems(conn), **clamav.problems(conn), **security.problems(conn), **_map_problems(conn), **_device_problems(conn)}
     for j in jobs.overview(conn):
         if j['state'] == 'failed':

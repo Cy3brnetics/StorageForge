@@ -771,6 +771,7 @@ dependencies = [
  "aes-gcm",
  "argon2",
  "base64",
+ "curve25519-dalek",
  "ed25519-dalek",
  "hmac",
  "libc",
