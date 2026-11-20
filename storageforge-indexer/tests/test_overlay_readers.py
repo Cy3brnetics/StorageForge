@@ -212,6 +212,16 @@ class Nebula(unittest.TestCase):
         self.assertLessEqual(len(overlays.nebula(junk[-1])['peers']), overlays.MAX_LIST, 'a list is cut')
         self.assertEqual(len(overlays.nebula(junk[-2])['interface']), 15)
 
+    def test_a_reader_that_fails_leaves_an_error_and_the_others_are_still_read(self):
+        from unittest import mock
+        s = {'nebula_conf': NEBULA_CONF.splitlines(), 'netmaker_json': NETMAKER.splitlines(), 'swan_conns': SWAN_CONNS.splitlines(), 'openvpn_pki': OPENVPN_PKI.splitlines()}
+        with mock.patch.object(overlays, 'nebula', side_effect=RuntimeError('a bug')), mock.patch.object(overlays, 'openvpn_certificates', side_effect=RuntimeError('another')):
+            got = inframeasure.parse_overlays(s)
+        self.assertEqual([(o['network'], o.get('error')) for o in got], [('netmaker', None), ('nebula', 'could not be read'), ('ipsec', None), ('openvpn', None)])
+        self.assertEqual(got[-1]['pki'], {'network': 'openvpn', 'error': 'could not be read'})
+        self.assertEqual(overlays.sentence(got[1]), 'Nebula is here, and its status could not be read')
+        self.assertEqual(overlays.sentence(got[-1], NOV_21_2026), 'OpenVPN server: 0 client(s) connected', 'certificates that could not be read are not counted as none')
+
     def test_through_the_scan(self):
         got = inframeasure.parse_overlays({'nebula_conf': confread.scrub(NEBULA_CONF).splitlines(), 'nebula_cert': [NEBULA_CERT]})
         self.assertEqual([(o['network'], o['self']['name']) for o in got], [('nebula', 'lighthouse1')])
