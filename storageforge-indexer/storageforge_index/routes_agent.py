@@ -1,14 +1,18 @@
 """Web routes: the optional agent (sfagent.py, docs/agent.md). Reading takes keys.view. Everything else takes keys.manage and a fresh
 password, because enrolling an agent pins a key and gives a host a new way to speak to the controller: switching the agent on for
-a host, setting it up there, starting and stopping it, and removing it. Each is in the audit log.
+a host, setting it up there, starting and stopping it, choosing its plugins, and removing it. A plugin that declares privileges on
+the host, and a receiver key that changed, need agent.privilege as well. Each is in the audit log. What an agent reported is read
+with hosts.view, every row labelled as the agent's claim.
 
 Nothing here is a GET that reaches a host: asking a host for its agent's status is a POST."""
 from __future__ import annotations
 
-from flask import jsonify
-from flask_login import login_required
+import json
 
-from . import deploy, sfagent
+from flask import jsonify, request
+from flask_login import current_user, login_required
+
+from . import agentwatch, deploy, sfagent
 
 
 def register(web, ctx):
@@ -71,6 +75,44 @@ def register(web, ctx):
             return refused(exc)
         if verb == 'status':
             core.audit(conn(), actor(), 'agent.status', 'ok', got['host'], {'running': got['running'], 'key_matches': got['key_matches']})
+        return jsonify(got)
+
+    @web.get('/api/agents/<host>/records')
+    @login_required
+    def api_agent_records(host):
+        """What the host's agent reported, each row labelled as its claim, and the receiver's own count of what came."""
+        name = deploy.canonical(conn(), host)
+        plugin = request.args.get('plugin') or None
+        return jsonify(host=name, label=agentwatch.LABEL, peer=agentwatch.peer(conn(), name),
+                       records=agentwatch.records(conn(), name, plugin=plugin, limit=request.args.get('limit', 100, type=int)))
+
+    @web.post('/api/agents/<host>/plugins')
+    @login_required
+    @password_confirmed
+    def api_agent_plugins(host):
+        """Which signed plugins of the release the host's agent runs. A plugin that declares any privilege (a mount, a capability, a
+        device, the host's network or process table, a host group), and taking a receiver key that changed, need agent.privilege
+        as well, which only admins hold: privilege needs a person (roadmap 11.2)."""
+        b = json_body()
+        names = b.get('plugins') if isinstance(b.get('plugins'), list) else []
+        accept = b.get('accept_new_key') is True
+        name = deploy.canonical(conn(), host)
+        try:
+            chosen = [sfagent.release_plugin(sfagent.host_arch(conn(), name), str(n)) for n in names[:32]]
+        except (LookupError, sfagent.AgentError) as exc:
+            return refused(exc)
+        privileged = sorted(json.loads(d)['name'] for d, _s, _k in chosen if json.loads(d).get('needs'))
+        if (privileged or accept) and 'agent.privilege' not in current_user.permissions:
+            core.audit(conn(), actor(), 'agent.plugins', 'denied', name, {'privileged': privileged, 'accept_new_key': accept})
+            why = (f'{", ".join(privileged)} declares privileges on the host' if privileged else 'taking a new receiver key') + ': that takes agent.privilege, which admins hold'
+            return jsonify(error=why, code='privilege'), 403
+        try:
+            got = sfagent.apply(db, name, chosen, actor=actor(), accept_new_key=accept)
+        except (LookupError, sfagent.AgentError) as exc:
+            core.audit(conn(), actor(), 'agent.plugins', 'failed', name, {'plugins': names[:32], 'error': str(exc)[:300]})
+            return refused(exc)
+        core.audit(conn(), actor(), 'agent.plugins', 'ok', name, {'plugins': [json.loads(d)['name'] for d, _s, _k in chosen], 'privileged': privileged,
+                                                                   'accept_new_key': accept})
         return jsonify(got)
 
     @web.delete('/api/agents/<host>')

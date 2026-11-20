@@ -70,6 +70,7 @@ FRESH_PASSWORD = {
     ('POST', '/api/agents/<host>/install'),       # sets it up on the host and pins its key
     ('POST', '/api/agents/<host>/<any("start", "stop", "restart", "status"):verb>'),
     ('DELETE', '/api/agents/<host>'),
+    ('POST', '/api/agents/<host>/plugins'),       # which signed plugins a host's agent runs; privileges need agent.privilege too
     ('POST', '/api/keys/ssh-ca'),                 # makes the SSH CA
     ('PUT', '/api/keys/ssh-ca/hosts/<host>'),     # whether StorageForge logs in to a host with certificates
     ('POST', '/api/keys/ssh-ca/hosts/<host>/certificate'),

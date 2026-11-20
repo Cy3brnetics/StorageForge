@@ -333,6 +333,23 @@ def save_delivery(conn, name: str, fp: str, counter: int, text: str, sig: str, p
                  {'h': name, 'f': fp, 'c': counter, 'm': text, 's': sig, 'p': json.dumps(sent), 't': int(time.time())})
 
 
+def release_plugin(arch: str, name: str) -> tuple[bytes, str, str]:
+    """A plugin of the release, for a kind of machine: its signed descriptor, the signature, and who signed it ('release', or
+    'operator' for one in the folder's operator/ part, which an operator signed with a key the controller never holds). The
+    controller only carries them; the host checks the signature against keys the controller cannot change."""
+    arch = {'amd64': 'x86_64', 'arm64': 'aarch64'}.get(arch, arch)
+    if not re.fullmatch(r'[a-z][a-z0-9-]{0,31}', name or '') or arch not in ('x86_64', 'aarch64'):
+        raise AgentError(f'no plugin {str(name)[:40]} for {arch or "this kind of machine"}')
+    folder = agenttunnel.plugins_dir()
+    for sub, signer in ((folder / arch if folder else None, 'release'), (folder / 'operator' / arch if folder else None, 'operator')):
+        if sub and (sub / f'{name}.plugin.json').is_file() and (sub / f'{name}.plugin.sig').is_file():
+            descriptor = (sub / f'{name}.plugin.json').read_bytes()
+            if len(descriptor) > 16 << 10:
+                break
+            return descriptor, (sub / f'{name}.plugin.sig').read_text()[:4096], signer
+    raise AgentError(f'the release has no plugin {name} for {arch}')
+
+
 # ── what the controller is configured with ──────────────────────────
 def agent_image() -> str:
     """The agent's image, by digest, from STORAGEFORGE_AGENT_IMAGE. There is no default: a tag can be moved to other bytes, and the
@@ -580,8 +597,8 @@ def apply(db: Database, host: str, plugins: list[tuple[bytes, str, str]], actor:
     With a receiver running, the request also names it (tunnel_for), and the manifest and plugins are left for it to deliver. A
     receiver key other than the one the host pinned is sent only with accept_new_key, which a person gives.
 
-    SEAM (roadmap 11.2, "Privilege needs a person"): whoever calls this with a plugin that declares a need has to have asked an
-    admin with a fresh password first. Nothing calls it with plugins yet."""
+    Privilege needs a person (roadmap 11.2): the one route that calls this with plugins (POST /api/agents/<host>/plugins) asks for a
+    fresh password, and for agent.privilege when a plugin declares any need or a new receiver key is accepted."""
     actor = actor or actor_name()
     conn = db.connect()
     try:
