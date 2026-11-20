@@ -72,6 +72,7 @@ MEDIUM = {
     'test_enclave_unlock.Unlock',    # the starter, a server that forgets the secret, and a person typing it: the real enclave program
     'test_enclave_stepup.StepUp',    # step-up checked inside: passwords, FIDO2 assertions made in software, tokens, lock-downs
     'test_enclave_stepup.ShortTokens',
+    'test_enclave_release.Release',  # releases bound to a step, host or platform, written into the audit log from inside, and the chain's head
     # bash, telnet and console sessions run for real
     'test_console.Api',
     'test_desktop_steps.Dux',

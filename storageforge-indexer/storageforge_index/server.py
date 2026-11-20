@@ -1117,7 +1117,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             log = AuditLog(db, conn(), v.audit_key)
             ok, n, bad = log.verify()
             weak = log.unkeyed()                 # keyless entries after keyed ones: rewritable by a database writer
-        return jsonify(valid=ok, entries_checked=n, first_bad_id=bad, **weak)
+            head = log.head_check()              # with the key enclave: whether the log still ends where the enclave last signed it
+        return jsonify(valid=ok and head.get('ok') is not False, entries_checked=n, first_bad_id=bad, head=head, **weak)
 
     def log_filter():
         a = request.args

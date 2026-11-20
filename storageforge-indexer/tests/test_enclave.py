@@ -116,6 +116,11 @@ class Harness(unittest.TestCase):
     def unlock(self):
         return self.e.unlock(SECRET, self.meta())
 
+    def release(self, uuid, row, purpose='credential', named=None, **kw):
+        """A release as the vault asks for one: named, and to be written after the entry the enclave signed last."""
+        prev = self.e.chain().get('head') or '0' * 64
+        return self.e.release(uuid, row, named or {'step': 'test'}, 1700000000000000, prev, purpose, **kw)[0]
+
     def refused(self, code, fn, *a, **kw):
         with self.assertRaises(enclave.EnclaveError) as got:
             fn(*a, **kw)
@@ -241,10 +246,10 @@ class Enclave(Harness):
     def test_a_secret_sealed_inside_is_released_counted_and_limited(self):
         self.unlock()
         row = self.e.seal('aa' * 16, b'{"password": "pw-123456"}')
-        self.assertEqual(self.e.release('aa' * 16, row), b'{"password": "pw-123456"}')
+        self.assertEqual(self.release('aa' * 16, row), b'{"password": "pw-123456"}')
         self.assertEqual(self.e.status()['released'], 1)
-        self.refused('auth', self.e.release, 'bb' * 16, row)                       # another row's uuid
-        self.refused('auth', self.e.release, 'aa' * 16, {**row, 'ciphertext': bytes(b ^ 1 for b in row['ciphertext'])})
+        self.refused('auth', self.release, 'bb' * 16, row)                       # another row's uuid
+        self.refused('auth', self.release, 'aa' * 16, {**row, 'ciphertext': bytes(b ^ 1 for b in row['ciphertext'])})
         self.e.close()
         self.refused('bad-request', self.e.seal, 'aa' * 16, b'x', purpose='key')
         self.e.close()
@@ -254,13 +259,13 @@ class Enclave(Harness):
         codes = []
         for _ in range(70):
             try:
-                self.e.release('aa' * 16, row)
+                self.release('aa' * 16, row)
                 codes.append('ok')
             except enclave.EnclaveError as exc:
                 codes.append(exc.code)
         self.assertEqual(codes[:55], ['ok'] * 55)
         self.assertEqual(codes[-1], 'rate', 'sixty a minute for one secret, and the web app cannot raise it')
-        self.assertEqual(self.e.release('ab' * 16, self.e.seal('ab' * 16, b'other')), b'other', 'another secret has its own count')
+        self.assertEqual(self.release('ab' * 16, self.e.seal('ab' * 16, b'other')), b'other', 'another secret has its own count')
 
     def test_a_private_key_cannot_be_asked_for_as_a_secret(self):
         """release gives plaintext back, so it must never open what was sealed as a key."""
@@ -268,9 +273,9 @@ class Enclave(Harness):
         self.vault.generate_key('k')
         row = self.row('k')
         as_secret = {'dek_nonce': row['dek_nonce'], 'wrapped_dek': row['wrapped_dek'], 'nonce': row['key_nonce'], 'ciphertext': row['ciphertext']}
-        self.refused('auth', self.e.release, row['key_uuid'], as_secret)
+        self.refused('auth', self.release, row['key_uuid'], as_secret)
         self.e.close()
-        self.refused('bad-request', self.e.release, row['key_uuid'], as_secret, purpose='key')
+        self.refused('bad-request', self.release, row['key_uuid'], as_secret, purpose='key')
         self.e.close()
         self.unlock()
         self.assertEqual(self.e.status()['released'], 0)
@@ -592,7 +597,7 @@ class VaultThroughEnclave(Harness):
             self.assertEqual(v.credential('switch')['password'], 'pw-123456')
             log = vault.AuditLog(self.db, self.conn, v.audit_key)
             log.append('gabe', 'after', 'ok')
-            self.assertEqual(log.verify()[:2], (True, 2), 'the audit key is the same key under the new KEK')
+            self.assertEqual(log.verify()[:2], (True, 3), 'the audit key is the same key under the new KEK: before, the release the enclave wrote up, after')
         self.assertFalse(self.e.status()['rotating'])
         with self.assertRaises(vault.VaultLocked):
             vault.Vault(self.db, self.conn, SECRET).unlock()

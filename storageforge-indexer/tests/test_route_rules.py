@@ -20,6 +20,7 @@ FRESH_PASSWORD = {
     ('POST', '/api/console/sessions'),          # a shell on a host: the password again for each session
     ('POST', '/api/enclave/unlock'),            # the vault secret, typed by a person
     ('POST', '/api/enclave/lock'),
+    ('POST', '/api/enclave/chain/accept'),      # taking a cut audit log as it is
     ('POST', '/api/enclave/stepup/enroll'),     # what the enclave will check a person by
     ('PUT', '/api/console/settings'),           # whether every session is recorded in full
     ('PUT', '/api/scans/signing'),                # whether unsigned scans are refused

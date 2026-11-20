@@ -1053,7 +1053,7 @@ def _send_secret(db, conn, v, args) -> int:
         print(f'{user} is not a login name', file=sys.stderr)
         return 2
     try:
-        cred = v.credential(args.name)
+        cred = v.credential(args.name, host=args.host, step=args.step or 'send-secret')          # a release for this host and step: a policy that names others refuses
     except Exception as exc:          # VaultError: no such secret
         print(exc, file=sys.stderr)
         return 1
@@ -1079,6 +1079,13 @@ def _send_secret(db, conn, v, args) -> int:
 def _audit(db, conn, v, action, outcome='ok', host=None, fp=None, **detail):
     from .vault import AuditLog, actor_name
     AuditLog(db, conn, v.audit_key if v else None).append(actor_name(), action, outcome, host, fp, detail)
+
+
+def _secret_policy(args) -> dict | None:
+    """The policy the --step, --for-host, --platform and --sensitive options name, or None when none was given."""
+    if not (args.step or args.for_host or args.platform or args.sensitive):
+        return None
+    return {'steps': args.step or [], 'hosts': args.for_host or [], 'platforms': args.platform or [], 'sensitive': bool(args.sensitive)}
 
 
 def cmd_vault(args) -> int:
@@ -1149,11 +1156,36 @@ def cmd_vault(args) -> int:
             if not text or '\n' in text or len(text) > 4096:
                 print('give the secret on stdin, as one line', file=sys.stderr)
                 return 2
+            policy = _secret_policy(args)
             v.remove_credential(args.name)
-            v.store_credential(args.name, 'secret', text)
+            v.store_credential(args.name, 'secret', text, policy=policy)
             del text
-            _audit(db, conn, v, 'vault.secret_add', name=args.name)
+            _audit(db, conn, v, 'vault.secret_add', name=args.name, policy=policy)
             print(f'stored secret {args.name}: send it to a host with  storageforge-index vault send-secret {args.name} --host HOST')
+            return 0
+        if a == 'secret-policy':
+            # What a stored secret may be released for. It is in the secret's associated data, so changing it means sealing the secret
+            # again: it is released once here, by whoever runs this, and stored under the new policy. --none is the way back to a
+            # secret as 0.5.4 stored it.
+            from .vault import VaultError
+            row = next((c for c in v.list_credentials() if c['name'] == args.name), None)
+            if row is None:
+                print(f'no secret named {args.name}', file=sys.stderr)
+                return 1
+            policy = None if args.none else _secret_policy(args)
+            if not args.none and policy is None:
+                print(json.dumps(row['policy']) if row['policy'] else 'no policy: released for any named request')
+                return 0
+            said = row['policy'] or {}
+            try:
+                got = v.credential(args.name, host=(said.get('hosts') or [None])[0], step=(said.get('steps') or ['secret-policy'])[0], platform=(said.get('platforms') or [None])[0])
+                v.store_credential(args.name, got['username'], got['password'], got.get('enable'), policy=policy)
+            except VaultError as exc:
+                print(f'not changed: {exc}', file=sys.stderr)
+                return 1
+            del got
+            _audit(db, conn, v, 'vault.secret_policy', name=args.name, policy=policy)
+            print(f'{args.name}: ' + ('no policy now' if policy is None else json.dumps(policy)))
             return 0
         if a == 'send-secret':
             return _send_secret(db, conn, v, args)
@@ -1280,9 +1312,13 @@ def cmd_audit(args) -> int:
                 log = AuditLog(db, conn, v.audit_key)
                 ok, n, bad = log.verify()
                 weak = log.unkeyed()
+                head = log.head_check()
         except VaultError as exc:
             raise SystemExit(f'cannot verify HMAC entries: {exc}')
         print(f'audit chain {"intact" if ok else "BROKEN at entry #" + str(bad)} · {n} entries verified')
+        if head.get('enclave'):
+            print(f'key enclave: {head["why"]}' + ('' if head['ok'] is not False else ' · THE LOG WAS CUT OR CHANGED'))
+            ok = ok and head['ok'] is not False
         if weak['unkeyed_after_keyed']:
             print(f'note: {weak["unkeyed_after_keyed"]} entries from #{weak["first_unkeyed_after_keyed"]} on were written while the '
                   f'vault was locked (plain SHA-256): whoever can write the database could have rewritten them')
@@ -1959,9 +1995,21 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument('dir')
     x = vs.add_parser('secret-add', help='store a secret a plan step reads on a host (one line on stdin), such as a Tailscale auth key')
     x.add_argument('name')
+    policy_options = (('--step', dict(action='append', help='a step kind this secret may be released for (repeat for more); none named: any')),
+                      ('--for-host', dict(action='append', help='a host it may be released for (repeat for more); none named: any')),
+                      ('--platform', dict(action='append', help='a platform it may be released for (repeat for more); none named: any')),
+                      ('--sensitive', dict(action='store_true', help='with the key enclave: a release takes a step-up the enclave checks itself')))
+    for flag, kw in policy_options:
+        x.add_argument(flag, **kw)
+    x = vs.add_parser('secret-policy', help='show or change what a stored secret may be released for; --none takes the policy off')
+    x.add_argument('name')
+    x.add_argument('--none', action='store_true', help='no policy: the secret is stored as before 0.5.5')
+    for flag, kw in policy_options:
+        x.add_argument(flag, **kw)
     x = vs.add_parser('send-secret', help='write a stored secret to /run/storageforge/secrets/NAME on a host over SSH (mode 600, gone at reboot)')
     x.add_argument('name')
     x.add_argument('--host', required=True)
+    x.add_argument('--step', help='the step that will read it there, which a policy on the secret may name (default: send-secret)')
     x.add_argument('--user', help='the SSH login; the host\'s scan login if not given')
     x.add_argument('--key', help='an SSH private key file; your SSH agent and keys if not given')
     x.add_argument('--ssh-option', action='append', default=[], metavar='OPT', help='an ssh -o option, again for more')

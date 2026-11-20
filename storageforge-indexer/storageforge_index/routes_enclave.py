@@ -175,6 +175,28 @@ def register(web, ctx):
         core.alerts_wake.set()
         return jsonify(enclave.describe())
 
+    @web.post('/api/enclave/chain/accept')
+    @login_required
+    @password_confirmed
+    def api_enclave_chain_accept():
+        """The audit log no longer ends where the enclave last signed it, and a person who has looked at why takes it as it is now.
+        Said in the log first, so the entry that says who accepted it is the one the enclave is then set to."""
+        json_body()
+        address = enclave.address()
+        if not address:
+            return jsonify(error='this installation has no key enclave'), 400
+        log = vault.AuditLog(db, conn(), vault.EnclaveMacKey(address))
+        before = log.head_check()
+        core.audit(conn(), actor(), 'audit.head.accept', 'ok', None, {'was': before.get('why')})
+        try:
+            log.accept_head(session_token())
+        except StepUpNeeded:
+            raise
+        except VaultError as exc:
+            return jsonify(error=str(exc)), 409
+        core.alerts_wake.set()
+        return jsonify(head=log.head_check())
+
     @web.post('/api/enclave/lock')
     @login_required
     @password_confirmed

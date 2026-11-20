@@ -143,7 +143,7 @@ def session(db, conn: Conn, d: dict, action: str = 'scan', timeout: int = 120):
     spec = PLATFORMS[d['platform']]
     known = str(known_hosts_path())
     with Vault(db, conn).unlock() as v:
-        secret = v.credential(d['credential']) if d['credential'] else None
+        secret = v.credential(d['credential'], host=d.get('name') or d['address'], platform=d['platform']) if d['credential'] else None          # released for this device, and written up as such
         user = d['username'] or (secret or {}).get('username')
         host, port = d['address'], d['port']
         if d['transport'] == 'telnet':

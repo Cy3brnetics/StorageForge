@@ -1166,7 +1166,8 @@ $('#verify').addEventListener('click', async () => {
     const v = await getJSON('/api/audit/verify');
     const weak = v.unkeyed_after_keyed ? ` · ${v.unkeyed_after_keyed} later entries were written with the vault locked (no key): `
       + `whoever can write the database could have rewritten them, from #${v.first_unkeyed_after_keyed}` : '';
-    $('#verified').textContent = (v.valid ? `Chain intact · ${v.entries_checked} entries` : `Chain broken at entry #${v.first_bad_id}`) + weak;
+    const head = v.head && v.head.enclave ? ` · Key enclave: ${v.head.why}` : '';          // whether the log still ends where the enclave last signed it
+    $('#verified').textContent = (v.valid ? `Chain intact · ${v.entries_checked} entries` : v.first_bad_id ? `Chain broken at entry #${v.first_bad_id}` : 'Every entry there is checks out, and the log was cut or changed') + weak + head;
     $('#verified').className = !v.valid ? 'st-failed' : weak ? 'st-warn' : 'st-ok';
   } catch (err) { $('#verified').textContent = err.message; }
 });

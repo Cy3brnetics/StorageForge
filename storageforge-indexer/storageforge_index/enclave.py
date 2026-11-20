@@ -237,15 +237,22 @@ class Enclave:
         got = self.request('import', uuid=uuid, private=_b64(private), **({'token': token} if token else {}))
         return {'public': base64.b64decode(got['public']), **{k: base64.b64decode(got[k]) for k in ('dek_nonce', 'wrapped_dek', 'key_nonce', 'ciphertext')}}
 
-    def seal(self, uuid: str, plaintext: bytes, purpose: str = 'credential') -> dict:
-        """A secret that will have to be given back (a device password, a step's secret), sealed inside."""
-        got = self.request('seal', uuid=uuid, purpose=purpose, plaintext=_b64(plaintext))
-        return {k: base64.b64decode(got[k]) for k in ('dek_nonce', 'wrapped_dek', 'nonce', 'ciphertext')}
+    def seal(self, uuid: str, plaintext: bytes, purpose: str = 'credential', policy: dict | None = None) -> dict:
+        """A secret that will have to be given back (a device password, a step's secret), sealed inside. policy: {'steps', 'hosts',
+        'platforms', 'sensitive'}, what it may be released for; it comes back as the text to store beside the secret ('policy'),
+        which is in the ciphertext's associated data."""
+        got = self.request('seal', uuid=uuid, purpose=purpose, plaintext=_b64(plaintext), **({'policy': policy} if policy is not None else {}))
+        return {**{k: base64.b64decode(got[k]) for k in ('dek_nonce', 'wrapped_dek', 'nonce', 'ciphertext')}, 'policy': got.get('policy')}
 
-    def release(self, uuid: str, row: dict, purpose: str = 'credential') -> bytes:
-        """That secret, released: the enclave counts it and limits how often. row has dek_nonce, wrapped_dek, nonce and ciphertext."""
-        got = self.request('release', uuid=uuid, purpose=purpose, **{k: _b64(row[k]) for k in ('dek_nonce', 'wrapped_dek', 'nonce', 'ciphertext')})
-        return base64.b64decode(got['plaintext'])
+    def release(self, uuid: str, row: dict, named: dict, ts: int, prev: str, purpose: str = 'credential', policy: str | None = None, token: str | None = None) -> tuple[bytes, dict]:
+        """That secret, released for a named request. named: {'step', 'host', 'platform'}, at least one. ts and prev: the time and
+        the last entry of the audit log, which the entry the enclave makes for this release is written after. policy: the text
+        stored beside the secret. Back come the secret and that entry: {'ts', 'actor', 'action', 'host', 'outcome', 'detail_json',
+        'prev', 'hash'}, to be stored as it is."""
+        more = {k: v for k, v in (('policy', policy), ('token', token)) if v}
+        got = self.request('release', uuid=uuid, purpose=purpose, audit={'ts': ts, 'prev': prev}, **{k: _b64(row[k]) for k in ('dek_nonce', 'wrapped_dek', 'nonce', 'ciphertext')},
+                           **{'for': {k: v for k, v in named.items() if v}}, **more)
+        return base64.b64decode(got['plaintext']), got['audit']
 
     def rotate_begin(self, new_secret: bytes, salt: bytes, time_cost: int, memory_kib: int, lanes: int, token: str | None = None) -> dict:
         """The KEK of a new vault secret, held beside the current one. Back come the verifier and audit key wrapped under it."""
@@ -262,8 +269,22 @@ class Enclave:
     def rotate_abort(self) -> dict:
         return self.request('rotate-abort')
 
-    def mac(self, prev: str, payload: str) -> str:
-        return self.request('mac', prev=prev, payload=payload)['mac']
+    def mac(self, prev: str, payload: str, append: bool = False) -> str:
+        """append: this entry is about to be written. The enclave remembers it as the head of the chain, and refuses (`chain`) one
+        that does not follow the head it has."""
+        return self.request('mac', prev=prev, payload=payload, **({'append': True} if append else {}))['mac']
+
+    def advance(self, start: str, entries: list) -> dict:
+        """Entries others wrote after the enclave's head, as (algorithm, payload, hash) in order from `start`: it checks each follows
+        the one before and moves its head along. Back comes its chain state."""
+        return self.request('advance', **{'from': start}, entries=[list(e) for e in entries])['chain']
+
+    def chain(self) -> dict:
+        """{'head', 'prior', 'head_release', 'appended', 'taken_in', 'unwritten', 'releases_unwritten', 'behind'}."""
+        return self.status().get('chain') or {}
+
+    def chain_accept(self, head: str, token: str | None = None) -> dict:
+        return self.request('chain-accept', head=head, **({'token': token} if token else {}))['chain']
 
     def mac_matches(self, prev: str, payload: str, expect: str) -> bool:
         return bool(self.request('mac', prev=prev, payload=payload, expect=expect)['matches'])
@@ -296,7 +317,8 @@ def describe() -> dict:
         client.close()
     state = str(status.get('state'))
     out.update(state=state, version=status.get('version'), protocol=status.get('protocol'), in_vm=bool(status.get('pid1') and status.get('memory_locked')),
-               counts={k: status.get(k) for k in ('signed', 'released', 'refused', 'bad_requests', 'bad_limit')}, limits=status.get('limits') or {}, stepup=status.get('stepup') or {})
+               counts={k: status.get(k) for k in ('signed', 'released', 'refused', 'bad_requests', 'bad_limit')}, limits=status.get('limits') or {}, stepup=status.get('stepup') or {},
+               chain={k: v for k, v in (status.get('chain') or {}).items() if k not in ('head', 'prior')})
     where = 'a micro VM with no network device' if out['in_vm'] else 'a program on this machine, not a micro VM: for development and tests only'
     out['label'] = {'unlocked': 'Key enclave: on', 'locked': 'Key enclave: locked', 'lockdown': 'Key enclave: locked down'}.get(state, f'Key enclave: {state}')
     out['detail'] = {'unlocked': f'The vault\'s keys are held in {where}. Root on this machine can still read a VM\'s memory.',

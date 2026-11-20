@@ -64,6 +64,10 @@ const MAX_FIDO_KEYS: usize = 8;
 const PW_MEMORY_KIB: u32 = 19 * 1024;
 const PW_TIME: u32 = 2;
 const PW_MIN: usize = 12;
+/// How many names a secret's policy may hold in each of its lists.
+const MAX_POLICY_NAMES: usize = 32;
+/// Entries of the audit log taken in at once when the enclave catches up with what others wrote.
+const MAX_ADVANCE: usize = 512;
 
 /// A token bucket: `per_minute` a minute, with one minute saved up.
 struct Bucket {
@@ -115,6 +119,140 @@ struct State {
     stepup_ok: u64,
     stepup_failed: u64,
     token_secs: u64,
+    chain: Chain,
+}
+
+/// The head of the audit chain, as the enclave last signed it (roadmap section 14, "The audit log's key"). It is kept here, in
+/// memory the database's owner cannot reach, so a log that was cut short in the database no longer ends where the enclave says.
+#[derive(Default)]
+struct Chain {
+    /// The hash of the entry signed last, and of the one before it.
+    head: Option<String>,
+    prior: Option<String>,
+    /// Whether the entry signed last was one the enclave made itself, for a release.
+    head_release: bool,
+    appended: u64,
+    taken_in: u64,
+    /// Entries that were signed and then not written: the next entry followed the one before them.
+    unwritten: u64,
+    releases_unwritten: u64,
+    /// An entry was offered that follows neither the head nor the one before it, and the log has not been shown to lead there.
+    behind: bool,
+}
+
+impl Chain {
+    /// A new entry `hash` that says it follows `prev`. Refused when the enclave has signed past `prev`: the caller shows how
+    /// the log got from the head to `prev` (`advance`), or the log was cut.
+    fn append(&mut self, prev: &str, hash: &str, release: bool) -> Result<(), Refusal> {
+        if self.head.as_deref().is_some_and(|h| h != prev) {
+            if self.prior.as_deref() != Some(prev) {
+                self.behind = true;
+                return no("chain", "the audit log does not end where the enclave last signed it");
+            }
+            // what was signed last never reached the log: a write that failed, or an entry that was held back
+            self.unwritten += 1;
+            if self.head_release {
+                self.releases_unwritten += 1;
+            }
+        }
+        self.prior = Some(prev.to_string());
+        self.head = Some(hash.to_string());
+        self.head_release = release;
+        self.appended += 1;
+        self.behind = false;
+        Ok(())
+    }
+
+    fn status(&self) -> Value {
+        json!({"head": self.head, "prior": self.prior, "head_release": self.head_release, "appended": self.appended, "taken_in": self.taken_in,
+               "unwritten": self.unwritten, "releases_unwritten": self.releases_unwritten, "behind": self.behind})
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn is_hash(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+}
+
+/// A name in a secret's policy or in what a release is for: a step kind, a host, a platform. Only what needs no escaping in
+/// JSON, so the audit entry made here is byte for byte the one the controller would write.
+fn policy_name(text: &str) -> bool {
+    !text.is_empty() && text.len() <= 253 && text.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b':' | b'-'))
+}
+
+/// A policy as it is sealed with its secret and stored beside it: sorted, with nothing in it but names. Returns the text and
+/// what it says.
+struct Policy {
+    steps: Vec<String>,
+    hosts: Vec<String>,
+    platforms: Vec<String>,
+    sensitive: bool,
+}
+
+impl Policy {
+    fn names(v: &Value, name: &str) -> Result<Vec<String>, Refusal> {
+        let mut out = Vec::new();
+        match v.get(name) {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(list)) if list.len() <= MAX_POLICY_NAMES => {
+                for item in list {
+                    match item.as_str() {
+                        Some(t) if policy_name(t) => out.push(t.to_string()),
+                        _ => return bad(format!("{name} holds names of letters, digits, dot, dash, colon and underscore")),
+                    }
+                }
+            }
+            _ => return bad(format!("{name} is a list of at most {MAX_POLICY_NAMES} names")),
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
+    fn read(v: &Value) -> Result<Policy, Refusal> {
+        if !v.is_object() {
+            return bad("a policy is an object");
+        }
+        let sensitive = match v.get("sensitive") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            _ => return bad("sensitive is true or false"),
+        };
+        Ok(Policy { steps: Self::names(v, "steps")?, hosts: Self::names(v, "hosts")?, platforms: Self::names(v, "platforms")?, sensitive })
+    }
+
+    fn text(&self) -> String {
+        json!({"hosts": self.hosts, "platforms": self.platforms, "sensitive": self.sensitive, "steps": self.steps}).to_string()
+    }
+
+    /// The policy stored beside a secret, as text. It has to be the text it was sealed with, to the byte: it is in the
+    /// ciphertext's associated data.
+    fn stored(v: &Value) -> Result<Option<(String, Policy)>, Refusal> {
+        match v.get("policy") {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(text)) if text.len() <= 64 << 10 => {
+                let Ok(parsed) = serde_json::from_str::<Value>(text) else { return bad("policy is not JSON") };
+                let policy = Self::read(&parsed)?;
+                if policy.text() != *text {
+                    return no("auth", "that is not the policy this secret was sealed with");
+                }
+                Ok(Some((text.clone(), policy)))
+            }
+            _ => bad("policy is the text stored beside the secret"),
+        }
+    }
+
+    fn allows(&self, step: &str, host: &str, platform: &str) -> Result<(), Refusal> {
+        for (list, named, what) in [(&self.steps, step, "step"), (&self.hosts, host, "host"), (&self.platforms, platform, "platform")] {
+            if !list.is_empty() && !list.iter().any(|n| n == named) {
+                return no("policy", format!("this secret is not released for that {what}: its policy names {}", list.join(", ")));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A session token: who proved themselves, and until when it counts.
@@ -470,6 +608,7 @@ impl State {
             stepup_ok: 0,
             stepup_failed: 0,
             token_secs: STEPUP_SECS,
+            chain: Chain::default(),
         }
     }
 
@@ -494,6 +633,7 @@ impl State {
         json!({"ok": true, "protocol": PROTOCOL, "version": env!("CARGO_PKG_VERSION"), "state": if self.lockdown { "lockdown" } else if self.kek.is_some() { "unlocked" } else { "locked" },
                "bad_requests": self.bad, "bad_limit": BAD_LIMIT, "signed": self.signed, "refused": self.refused, "released": self.released, "rotating": self.next.is_some(),
                "memory_locked": self.memory_locked, "pid1": self.pid1,
+               "chain": self.chain.status(),
                "stepup": {"required": self.stepup_required, "ok": self.stepup_ok, "failed": self.stepup_failed, "tokens": self.tokens.len(), "token_seconds": self.token_secs},
                "limits": {"sign_per_key_per_minute": SIGN_PER_MINUTE, "unlock_per_minute": UNLOCK_PER_MINUTE, "release_per_secret_per_minute": RELEASE_PER_MINUTE, "stepup_per_person_per_minute": STEPUP_PER_MINUTE,
                           "max_frame": MAX_FRAME, "max_sign_data": MAX_SIGN_DATA}})
@@ -844,28 +984,88 @@ impl State {
         if plain.is_empty() {
             return bad("plaintext is empty");
         }
+        // A policy says what the secret may be released for, and whether releasing it takes a step-up. It is written into the
+        // associated data, so the policy stored beside the secret cannot be changed or left out without the secret failing to open.
+        let policy = match v.get("policy") {
+            None | Some(Value::Null) => None,
+            Some(p) => Some(Policy::read(p)?.text()),
+        };
+        let aad = match &policy {
+            Some(text) => format!("storageforge:{purpose}:{id}:{text}"),
+            None => format!("storageforge:{purpose}:{id}"),
+        };
         use rand_core::RngCore;
         let mut dek = Zeroizing::new([0u8; 32]);
         rand_core::OsRng.fill_bytes(dek.as_mut());
         let (dn, wd) = seal(&kek, dek.as_ref(), format!("storageforge:dek:{id}").as_bytes())?;
-        let (n, ct) = seal(dek.as_ref(), &plain, format!("storageforge:{purpose}:{id}").as_bytes())?;
-        Ok(json!({"ok": true, "dek_nonce": B64.encode(dn), "wrapped_dek": B64.encode(wd), "nonce": B64.encode(n), "ciphertext": B64.encode(ct)}))
+        let (n, ct) = seal(dek.as_ref(), &plain, aad.as_bytes())?;
+        Ok(json!({"ok": true, "dek_nonce": B64.encode(dn), "wrapped_dek": B64.encode(wd), "nonce": B64.encode(n), "ciphertext": B64.encode(ct), "policy": policy}))
     }
 
-    /// A secret that has to leave, released: counted, and at most RELEASE_PER_MINUTE times a minute for any one secret, so a web
-    /// app that has been taken over cannot read the whole vault in one pass without it showing.
+    /// A secret that has to leave, released for a named request: this secret, for this step, this host or this platform. What
+    /// its policy does not name is refused; what is marked sensitive takes a step-up token; any one secret leaves at most
+    /// RELEASE_PER_MINUTE times a minute. Each release is written up here, as an entry of the audit log signed into the chain
+    /// before the secret is handed over: the controller stores the entry, and a log without it no longer ends where the enclave
+    /// says it does.
     fn release(&mut self, v: &Value) -> Answer {
         let kek = *self.kek()?;
+        let Some(key) = self.audit.clone() else { return no("locked", "the enclave is locked") };
         let (id, purpose) = (uuid(v)?, Self::purpose(v)?);
         let (dn, wd, n, ct) = (nonce(v, "dek_nonce")?, bytes(v, "wrapped_dek", 128)?, nonce(v, "nonce")?, bytes(v, "ciphertext", MAX_SECRET + 16)?);
+        let named = v.get("for").filter(|f| f.is_object());
+        let name = |field: &str| -> Result<String, Refusal> {
+            match named.and_then(|f| f.get(field)) {
+                None | Some(Value::Null) => Ok(String::new()),
+                Some(Value::String(t)) if t.is_empty() || policy_name(t) => Ok(t.clone()),
+                _ => bad(format!("for.{field} is a name of letters, digits, dot, dash, colon and underscore")),
+            }
+        };
+        let (step, host, platform) = (name("step")?, name("host")?, name("platform")?);
+        if step.is_empty() && host.is_empty() && platform.is_empty() {
+            return bad("a release names what it is for: a step, a host or a platform");
+        }
+        let (Some(ts), Some(prev)) = (v.get("audit").and_then(|a| a.get("ts")).and_then(Value::as_u64), v.get("audit").and_then(|a| a.get("prev")).and_then(Value::as_str)) else {
+            return bad("a release comes with the time and the last entry of the audit log it will be written after");
+        };
+        if !is_hash(prev) {
+            return bad("audit.prev is 64 hex digits");
+        }
+        let stored = Policy::stored(v)?;
+        let (aad, sensitive) = match &stored {
+            Some((text, policy)) => (format!("storageforge:{purpose}:{id}:{text}"), policy.sensitive),
+            None => (format!("storageforge:{purpose}:{id}"), false),
+        };
+        // opened before anything is decided: only a policy that authenticates with its secret is a policy
+        let dek = open(&kek, &dn, &wd, format!("storageforge:dek:{id}").as_bytes())?;
+        let plain = open(&dek, &n, &ct, aad.as_bytes())?;
+        if let Some((_, policy)) = &stored {
+            if let Err(refusal) = policy.allows(&step, &host, &platform) {
+                self.refused += 1;
+                return Err(refusal);
+            }
+        }
+        let who = if sensitive { self.token_user(v)? } else { String::new() };
+        if self.chain.head.as_deref().is_some_and(|h| h != prev) && self.chain.prior.as_deref() != Some(prev) {
+            self.chain.behind = true;
+            return no("chain", "the audit log does not end where the enclave last signed it");
+        }
         if !self.releases.entry(id.clone()).or_insert_with(|| Bucket::new(RELEASE_PER_MINUTE)).take() {
             self.refused += 1;
             return no("rate", "this secret has been released as often as the enclave allows in a minute");
         }
-        let dek = open(&kek, &dn, &wd, format!("storageforge:dek:{id}").as_bytes())?;
-        let plain = open(&dek, &n, &ct, format!("storageforge:{purpose}:{id}").as_bytes())?;
+        // The entry, as vault.py's AuditLog would write and later check it: the same fields in the same order, and the detail as
+        // the text that is stored. Every name in it needs no escaping, so serde's text is Python's.
+        let detail = json!({"for": {"host": host, "platform": platform, "step": step}, "n": self.released + 1, "secret": id, "sensitive": sensitive, "who": who}).to_string();
+        let target = if host.is_empty() { Value::Null } else { Value::String(host.clone()) };
+        let payload = json!([ts, "enclave", "enclave.release", target, Value::Null, "ok", detail]).to_string();
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&key).or_else(|_| no("crypto", "the MAC key is unusable"))?;
+        mac.update(prev.as_bytes());
+        mac.update(payload.as_bytes());
+        let hash = hex(&mac.finalize().into_bytes());
+        self.chain.append(prev, &hash, true)?;
         self.released += 1;
-        Ok(json!({"ok": true, "plaintext": B64.encode(&*plain)}))
+        Ok(json!({"ok": true, "plaintext": B64.encode(&*plain),
+                  "audit": {"ts": ts, "actor": "enclave", "action": "enclave.release", "host": target, "outcome": "ok", "detail_json": detail, "prev": prev, "hash": hash}}))
     }
 
     /// Rotating the vault secret, first step: the KEK of the new secret is derived and held beside the current one, and the
@@ -901,27 +1101,98 @@ impl State {
         Ok(json!({"ok": true, "state": "unlocked", "rotated": commit}))
     }
 
+    fn chain_mac(key: &[u8], prev: &str, payload: &str) -> Result<String, Refusal> {
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).or_else(|_| no("crypto", "the MAC key is unusable"))?;
+        mac.update(prev.as_bytes());
+        mac.update(payload.as_bytes());
+        Ok(hex(&mac.finalize().into_bytes()))
+    }
+
     /// The audit chain's MAC, as vault.py's AuditLog computes it: HMAC-SHA256 over the previous entry's hash and the entry's payload.
-    fn mac(&self, v: &Value) -> Answer {
+    /// With `append` the entry is about to be written: it becomes the head the enclave remembers, and it has to follow the head
+    /// there is. Without it nothing is remembered: that is how a chain is verified.
+    fn mac(&mut self, v: &Value) -> Answer {
         self.kek()?;
-        let Some(key) = &self.audit else { return no("locked", "the enclave is locked") };
+        let Some(key) = self.audit.clone() else { return no("locked", "the enclave is locked") };
         let (Some(prev), Some(payload)) = (v.get("prev").and_then(Value::as_str), v.get("payload").and_then(Value::as_str)) else {
             return bad("prev and payload are text");
         };
         if prev.len() != 64 || !prev.bytes().all(|c| c.is_ascii_hexdigit()) {
             return bad("prev is 64 hex digits");
         }
-        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).or_else(|_| no("crypto", "the MAC key is unusable"))?;
-        mac.update(prev.as_bytes());
-        mac.update(payload.as_bytes());
-        let mut out = String::with_capacity(64);
-        for b in mac.finalize().into_bytes() {
-            out.push_str(&format!("{b:02x}"));
-        }
+        let out = Self::chain_mac(&key, prev, payload)?;
         if let Some(want) = v.get("expect").and_then(Value::as_str) {
             return Ok(json!({"ok": true, "matches": out.as_bytes().ct_eq(want.as_bytes()).unwrap_u8() == 1}));
         }
+        if v.get("append").and_then(Value::as_bool) == Some(true) {
+            self.chain.append(prev, &out, false)?;
+        }
         Ok(json!({"ok": true, "mac": out}))
+    }
+
+    /// The enclave catches up with entries others wrote after its head: a command beside the server with an enclave of its own,
+    /// or entries chained without the key while this one was locked. Each has to follow the one before it, from the head on,
+    /// with the MAC or the plain hash the log says it has. A log that was cut short cannot be led from the head to its new end.
+    fn advance(&mut self, v: &Value) -> Answer {
+        self.kek()?;
+        let Some(key) = self.audit.clone() else { return no("locked", "the enclave is locked") };
+        let (Some(from), Some(entries)) = (v.get("from").and_then(Value::as_str), v.get("entries").and_then(Value::as_array)) else {
+            return bad("from is a hash and entries is a list");
+        };
+        if !is_hash(from) || entries.len() > MAX_ADVANCE {
+            return bad("from is 64 hex digits, and at most 512 entries come at once");
+        }
+        let from_prior = self.chain.head.as_deref() != Some(from) && self.chain.prior.as_deref() == Some(from);
+        if self.chain.head.is_some() && self.chain.head.as_deref() != Some(from) && !from_prior {
+            self.chain.behind = true;
+            return no("chain", "those entries do not start where the enclave last signed the audit log");
+        }
+        let mut at = from.to_string();
+        for entry in entries {
+            let (Some(alg), Some(payload), Some(hash)) = (entry.get(0).and_then(Value::as_str), entry.get(1).and_then(Value::as_str), entry.get(2).and_then(Value::as_str)) else {
+                return bad("an entry is its algorithm, its payload and its hash");
+            };
+            use sha2::Digest;
+            let want = match alg {
+                "hmac-sha256" => Self::chain_mac(&key, &at, payload)?,
+                "sha256" => hex(&Sha256::digest([at.as_bytes(), payload.as_bytes()].concat())),
+                _ => return bad("an entry is chained with hmac-sha256 or sha256"),
+            };
+            if want.as_bytes().ct_eq(hash.as_bytes()).unwrap_u8() != 1 {
+                self.chain.behind = true;
+                return no("chain", "an entry does not follow the one before it: the audit log was changed");
+            }
+            at = hash.to_string();
+        }
+        if !entries.is_empty() || self.chain.head.is_none() {
+            if from_prior {
+                // what was signed last is not in the log, and the log went on from the entry before it
+                self.chain.unwritten += 1;
+                if self.chain.head_release {
+                    self.chain.releases_unwritten += 1;
+                }
+            }
+            self.chain.prior = Some(from.to_string());
+            self.chain.head = Some(at);
+            self.chain.head_release = false;
+            self.chain.taken_in += entries.len() as u64;
+        }
+        self.chain.behind = false;
+        Ok(json!({"ok": true, "chain": self.chain.status()}))
+    }
+
+    /// A person accepts the log as it is now, after looking at why it no longer ends where the enclave signed it: the head is
+    /// set to `head`. Once step-up is on this takes a token, so the web app cannot do it for them.
+    fn chain_accept(&mut self, v: &Value) -> Answer {
+        self.kek()?;
+        self.need_stepup(v)?;
+        match v.get("head").and_then(Value::as_str) {
+            Some(head) if is_hash(head) => {
+                self.chain = Chain { head: Some(head.to_string()), ..Chain::default() };
+                Ok(json!({"ok": true, "chain": self.chain.status()}))
+            }
+            _ => bad("head is 64 hex digits"),
+        }
     }
 
     fn answer(&mut self, v: &Value) -> Answer {
@@ -953,6 +1224,8 @@ impl State {
             "rotate-commit" => self.rotate_end(true),
             "rotate-abort" => self.rotate_end(false),
             "mac" => self.mac(v),
+            "advance" => self.advance(v),
+            "chain-accept" => self.chain_accept(v),
             _ => bad("unknown op"),
         }
     }

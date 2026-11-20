@@ -68,6 +68,15 @@ class StepUpNeeded(VaultError):
     """The key enclave wants a step-up it checks itself before it does this: a password or a security key (enclave_stepup.py)."""
 
 
+class ChainBroken(VaultError):
+    """The audit log in the database no longer ends where the key enclave last signed it, and cannot be led there: entries were
+    removed or changed."""
+
+
+class NotReleased(VaultError):
+    """The key enclave would not release a secret for this request: its policy does not name the step, host or platform."""
+
+
 # memory hygiene
 
 _libc = None
@@ -242,6 +251,10 @@ def _asked(fn, *a, **kw):
     except _enclave.EnclaveError as exc:
         if exc.code == 'stepup':
             raise StepUpNeeded(f'key enclave: {exc}') from None
+        if exc.code == 'chain':
+            raise ChainBroken(f'key enclave: {exc}') from None
+        if exc.code == 'policy':
+            raise NotReleased(f'key enclave: {exc}') from None
         if exc.code in ('locked', 'lockdown', 'down', 'auth', 'rate'):
             raise VaultLocked(f'key enclave: {exc}') from None
         raise VaultError(f'key enclave: {exc}') from None
@@ -299,15 +312,40 @@ class EnclaveMacKey:
     def __init__(self, address: str):
         self.address = address
 
-    def mac(self, prev: str, payload: str) -> str:
+    def mac(self, prev: str, payload: str, append: bool = False) -> str:
         with _enclave.Enclave(self.address) as e:
-            return _asked(e.mac, prev, payload)
+            return _asked(e.mac, prev, payload, append)
 
     def view(self):
         raise VaultError('the audit key is held by the key enclave and does not leave it')
 
     def wipe(self):
         pass
+
+
+POLICY_NAME = re.compile(r'[A-Za-z0-9._:-]{1,253}')
+
+
+def policy_text(policy: dict | None) -> str | None:
+    """A secret's policy as it is sealed with the secret and stored beside it: {'steps', 'hosts', 'platforms'} name what it may be
+    released for (an empty list names no limit), and 'sensitive' says a release takes a step-up the enclave checks. The text is
+    the enclave's own, to the byte: it goes into the ciphertext's associated data."""
+    if policy is None:
+        return None
+    names = {}
+    for kind in ('steps', 'hosts', 'platforms'):
+        got = policy.get(kind) or []
+        if not isinstance(got, (list, tuple)) or len(got) > 32 or not all(isinstance(x, str) and POLICY_NAME.fullmatch(x) for x in got):
+            raise VaultError(f'a policy\'s {kind} are at most 32 names of letters, digits, dot, dash, colon and underscore')
+        names[kind] = sorted(set(got))
+    if set(policy) - {'steps', 'hosts', 'platforms', 'sensitive'} or not isinstance(policy.get('sensitive', False), bool):
+        raise VaultError('a policy has steps, hosts, platforms and sensitive (true or false)')
+    return json.dumps({'hosts': names['hosts'], 'platforms': names['platforms'], 'sensitive': bool(policy.get('sensitive')), 'steps': names['steps']}, separators=(',', ':'), sort_keys=True)
+
+
+def release_name(text: str | None) -> str:
+    """A step, host or platform as a release names it: what the enclave writes into the audit log needs no escaping."""
+    return re.sub(r'[^A-Za-z0-9._:-]', '_', text or '')[:253]
 
 
 META = ('kdf_salt', 'kdf_time_cost', 'kdf_memory_kib', 'kdf_lanes', 'verifier_nonce', 'verifier', 'audit_key_nonce', 'audit_key_wrapped')
@@ -560,7 +598,9 @@ class Vault:
             return open_into(dek.view(), self._blob(kn), self._blob(ct), self._aad(uuid, 'key'))
 
     # device passwords: for gear that takes no SSH key. Each has its own key, wrapped as an SSH key's is
-    def store_credential(self, name: str, username: str | None, password: str, enable_password: str | None = None) -> dict:
+    def store_credential(self, name: str, username: str | None, password: str, enable_password: str | None = None, policy: dict | None = None) -> dict:
+        """policy: what this secret may be released for and whether a release takes a step-up (policy_text). None: no policy, as
+        every secret stored before 0.5.5 has none."""
         kek = None if self.enclave else self._need_kek()
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', name or ''):
             raise VaultError('a credential name is letters, digits, dot, dash and underscore')
@@ -568,42 +608,65 @@ class Vault:
             raise VaultError('a credential needs a password')
         uuid = secrets.token_hex(16)
         body = json.dumps({'password': password, 'enable': enable_password}).encode()
+        text = policy_text(policy)
         if self.enclave:
             with _enclave.Enclave(self.enclave) as e:
-                made = _asked(e.seal, uuid, body)
+                made = _asked(e.seal, uuid, body, 'credential', json.loads(text) if text else None)
             dn, wdek, n, ct = made['dek_nonce'], made['wrapped_dek'], made['nonce'], made['ciphertext']
+            if made['policy'] != text:
+                raise VaultError('the key enclave wrote the policy another way than this program does: nothing was stored')
         else:
             with SecretBuffer(32) as dek:
                 dek.buf[:] = os.urandom(32)
                 dek.length = 32
                 dn, wdek = seal(kek, dek.view(), self._aad(uuid, 'dek'))
-                n, ct = seal(dek.view(), body, self._aad(uuid, 'credential'))
+                n, ct = seal(dek.view(), body, self._aad(uuid, 'credential') + (b':' + text.encode() if text else b''))
         with self.conn.tx():
             self.conn.execute('DELETE FROM device_credentials WHERE name = :n', {'n': name})
-            self.conn.execute("""INSERT INTO device_credentials (cred_uuid, name, username, dek_nonce, wrapped_dek, nonce, ciphertext, created_at)
-                                 VALUES (:u, :n, :un, :dn, :wd, :non, :ct, :t)""",
-                              {'u': uuid, 'n': name, 'un': username, 'dn': dn, 'wd': wdek, 'non': n, 'ct': ct, 't': int(time.time())})
-        return {'name': name, 'username': username}
+            self.conn.execute("""INSERT INTO device_credentials (cred_uuid, name, username, dek_nonce, wrapped_dek, nonce, ciphertext, created_at, policy_json)
+                                 VALUES (:u, :n, :un, :dn, :wd, :non, :ct, :t, :p)""",
+                              {'u': uuid, 'n': name, 'un': username, 'dn': dn, 'wd': wdek, 'non': n, 'ct': ct, 't': int(time.time()), 'p': text})
+        return {'name': name, 'username': username, 'policy': json.loads(text) if text else None}
 
-    def credential(self, name: str) -> dict:
-        """{'username', 'password', 'enable'}. For the moment of connecting: a transport needs them as plain strings. With the
-        enclave this is a release: the enclave counts it and limits how often one secret leaves."""
-        rows = self.conn.all('SELECT cred_uuid, username, dek_nonce, wrapped_dek, nonce, ciphertext FROM device_credentials WHERE name = :n', {'n': name})
+    def credential(self, name: str, host: str | None = None, step: str | None = None, platform: str | None = None) -> dict:
+        """{'username', 'password', 'enable'}. For the moment of connecting: a transport needs them as plain strings. host, step,
+        platform: what it is wanted for. A secret with a policy is given only for what the policy names. With the enclave this
+        is a release: the enclave checks the policy, takes a step-up for a secret marked sensitive, limits how often one secret
+        leaves, and writes the release into the audit log itself."""
+        rows = self.conn.all('SELECT cred_uuid, username, dek_nonce, wrapped_dek, nonce, ciphertext, policy_json FROM device_credentials WHERE name = :n', {'n': name})
         if not rows:
             raise VaultError(f'no credential named {name!r}')
-        uuid, username, dn, wd, n, ct = rows[0]
+        uuid, username, dn, wd, n, ct, policy = rows[0]
+        named = {'step': release_name(step), 'host': release_name(host), 'platform': release_name(platform)}
+        if not any(named.values()):
+            named['step'] = 'unnamed'
         if self.enclave:
-            with _enclave.Enclave(self.enclave) as e:
-                body = _asked(e.release, uuid, {'dek_nonce': self._blob(dn), 'wrapped_dek': self._blob(wd), 'nonce': self._blob(n), 'ciphertext': self._blob(ct)})
+            log = AuditLog(self.db, self.conn, self.audit_key)
+            try:
+                body = log.release(uuid, {'dek_nonce': self._blob(dn), 'wrapped_dek': self._blob(wd), 'nonce': self._blob(n), 'ciphertext': self._blob(ct)},
+                                   named, policy, self._token or presented_token())
+            except (NotReleased, StepUpNeeded, ChainBroken, VaultLocked) as exc:
+                # a release the enclave refused is written up here: one it made is written up by the enclave itself
+                why = 'step-up' if isinstance(exc, StepUpNeeded) else 'policy' if isinstance(exc, NotReleased) else 'audit log' if isinstance(exc, ChainBroken) else str(exc)[:120]
+                try:
+                    log.append('vault', 'enclave.release', 'denied', named['host'] or None, None, {'secret': name, 'for': named, 'why': why})
+                except VaultError:
+                    pass
+                raise
             return {'username': username, **json.loads(body)}
         kek = self._need_kek()
+        if policy:          # whoever holds the vault secret opens it here; the policy still says what it is for
+            said = json.loads(policy)
+            for kind, what in (('steps', 'step'), ('hosts', 'host'), ('platforms', 'platform')):
+                if said[kind] and named[what] not in said[kind]:
+                    raise NotReleased(f'this secret is not released for that {what}: its policy names {", ".join(said[kind])}')
         with open_into(kek, self._blob(dn), self._blob(wd), self._aad(uuid, 'dek')) as dek:
-            with open_into(dek.view(), self._blob(n), self._blob(ct), self._aad(uuid, 'credential')) as body:
+            with open_into(dek.view(), self._blob(n), self._blob(ct), self._aad(uuid, 'credential') + (b':' + policy.encode() if policy else b'')) as body:
                 return {'username': username, **json.loads(bytes(body.view()))}
 
     def list_credentials(self) -> list[dict]:
-        return [dict(zip(('name', 'username', 'created_at', 'rotated_at'), r))
-                for r in self.conn.all('SELECT name, username, created_at, rotated_at FROM device_credentials ORDER BY name')]
+        return [dict(zip(('name', 'username', 'created_at', 'rotated_at'), r[:4])) | {'policy': json.loads(r[4]) if r[4] else None}
+                for r in self.conn.all('SELECT name, username, created_at, rotated_at, policy_json FROM device_credentials ORDER BY name')]
 
     def remove_credential(self, name: str) -> int:
         return self.conn.execute('DELETE FROM device_credentials WHERE name = :n', {'n': name}).rowcount
@@ -779,7 +842,7 @@ class AuditLog:
             prev = self.conn.scalar('SELECT entry_hash FROM audit_log ORDER BY audit_id DESC LIMIT 1') or GENESIS
             payload = json.dumps([ts, actor, action, host, key_fp, outcome, detail_json], separators=(',', ':'))
             try:
-                h = self._digest(prev, payload, alg)
+                h = self._signed_as_head(prev, payload) if alg == 'hmac-sha256' and isinstance(self.key, EnclaveMacKey) else self._digest(prev, payload, alg)
             except VaultLocked:
                 if not isinstance(self.key, EnclaveMacKey):
                     raise
@@ -792,6 +855,112 @@ class AuditLog:
                               {'ts': ts, 'a': actor, 'ac': action, 'h': host, 'fp': key_fp, 'o': outcome,
                                'd': detail_json, 'alg': alg, 'p': prev, 'e': h})
         return h
+
+    # ── the head of the chain, kept by the key enclave (roadmap section 14) ──
+    # The enclave remembers the entry it signed last. A log cut short in the database no longer ends there, and whoever holds the
+    # database cannot make the enclave forget. What it cannot tell apart from a cut, it is shown: entries others wrote after its
+    # head (a command with an enclave of its own, entries chained without the key while it was locked) are led past it one by one.
+    def _signed_as_head(self, prev: str, payload: str) -> str:
+        try:
+            return self.key.mac(prev, payload, True)
+        except ChainBroken:
+            pass
+        try:
+            self.catch_up()
+            return self.key.mac(prev, payload, True)
+        except ChainBroken:
+            # The log was cut or changed. The entry is still written and keyed, since an audit log that stops taking entries hides
+            # more than it shows; the enclave keeps the head it had, and verifying and the notification center say so.
+            return self.key.mac(prev, payload)
+
+    def _id_of(self, entry_hash: str) -> int | None:
+        return 0 if entry_hash == GENESIS else self.conn.scalar('SELECT audit_id FROM audit_log WHERE entry_hash = :h', {'h': entry_hash})
+
+    def catch_up(self) -> dict:
+        """Lead the enclave from the head it remembers to the end of the log. Raises ChainBroken where the log does not hold that
+        head (nor the entry before it, when the last one signed was never written), or where an entry after it does not follow."""
+        with _enclave.Enclave(self.key.address) as e:
+            chain = _asked(e.chain)
+            start = chain.get('head')
+            if not start:
+                return chain
+            at = self._id_of(start)
+            if at is None and chain.get('prior'):
+                start = chain['prior']
+                at = self._id_of(start)
+            if at is None:
+                try:          # shown where the log ends now, the enclave notes for itself that it does not lead there: its own count says so
+                    e.advance(self.conn.scalar('SELECT entry_hash FROM audit_log ORDER BY audit_id DESC LIMIT 1') or GENESIS, [])
+                except _enclave.EnclaveError:
+                    pass
+                raise ChainBroken('the audit log does not hold the entry the key enclave signed last: entries were removed from it')
+            while True:
+                rows = self.conn.all("""SELECT audit_id, ts_us, actor, action, target_host, key_fingerprint, outcome, detail_json, hash_alg, entry_hash
+                                        FROM audit_log WHERE audit_id > :a ORDER BY audit_id LIMIT 200""", {'a': at})
+                if not rows:
+                    return chain
+                entries, size = [], 0
+                for aid, ts, actor, action, host, fp, outcome, d, alg, h in rows:
+                    payload = json.dumps([ts, actor, action, host, fp, outcome, d], separators=(',', ':'))
+                    size += len(payload) + 100
+                    if entries and size > 512 << 10:
+                        break
+                    entries.append((alg, payload, h))
+                    at = aid
+                chain = _asked(e.advance, start, entries)
+                start = entries[-1][2]
+
+    def head_check(self) -> dict:
+        """Whether the log still ends where the key enclave last signed it. {'enclave': False} without the enclave. 'ok' is None
+        where it cannot be asked (locked)."""
+        if not isinstance(self.key, EnclaveMacKey):
+            return {'enclave': False}
+        try:
+            chain = self.catch_up()
+        except ChainBroken as exc:
+            return {'enclave': True, 'ok': False, 'why': str(exc)}
+        except VaultLocked as exc:
+            return {'enclave': True, 'ok': None, 'why': str(exc)}
+        last = self.conn.scalar('SELECT entry_hash FROM audit_log ORDER BY audit_id DESC LIMIT 1') or GENESIS
+        head = chain.get('head')
+        out = {'enclave': True, 'signed': chain.get('appended', 0), 'taken_in': chain.get('taken_in', 0), 'unwritten': chain.get('unwritten', 0), 'releases_unwritten': chain.get('releases_unwritten', 0)}
+        if not head:
+            return {**out, 'ok': True, 'why': 'the key enclave has signed no entry since it started: it takes the log as it finds it at the next one'}
+        if head == last:
+            return {**out, 'ok': True, 'why': 'the log ends at the entry the key enclave signed last'}
+        if chain.get('prior') == last:
+            release = bool(chain.get('head_release'))
+            return {**out, 'ok': not release, 'why': 'the key enclave released a secret and the entry it made for that is not in the log' if release
+                    else 'the entry the key enclave signed last was not written: a write that failed'}
+        return {**out, 'ok': False, 'why': 'the log does not end at the entry the key enclave signed last'}
+
+    def accept_head(self, token: str | None = None) -> dict:
+        """A person takes the log as it is now: the enclave's head is set to its last entry. Once step-up is on this takes a token."""
+        last = self.conn.scalar('SELECT entry_hash FROM audit_log ORDER BY audit_id DESC LIMIT 1') or GENESIS
+        with _enclave.Enclave(self.key.address) as e:
+            return _asked(e.chain_accept, last, token or presented_token())
+
+    def release(self, uuid: str, row: dict, named: dict, policy: str | None, token: str | None) -> bytes:
+        """A secret released by the enclave, with the entry the enclave made for it written into the log in the same transaction.
+        The enclave signs that entry after the log's last one before it hands the secret over, so a release that is not written
+        here leaves a log that no longer ends where the enclave says. A secret is not released into a log that was cut."""
+        ts = time.time_ns() // 1000
+        with self.conn.tx():
+            if self.db.dialect == 'postgres':
+                self.conn.execute('SELECT pg_advisory_xact_lock(727274)')
+            prev = self.conn.scalar('SELECT entry_hash FROM audit_log ORDER BY audit_id DESC LIMIT 1') or GENESIS
+            with _enclave.Enclave(self.key.address) as e:
+                try:
+                    plain, entry = _asked(e.release, uuid, row, named, ts, prev, 'credential', policy, token)
+                except ChainBroken:
+                    self.catch_up()
+                    plain, entry = _asked(e.release, uuid, row, named, ts, prev, 'credential', policy, token)
+            self.conn.execute("""INSERT INTO audit_log (ts_us, actor, action, target_host, key_fingerprint, outcome,
+                                     detail_json, hash_alg, prev_hash, entry_hash)
+                                 VALUES (:ts, :a, :ac, :h, NULL, :o, :d, 'hmac-sha256', :p, :e)""",
+                              {'ts': entry['ts'], 'a': entry['actor'], 'ac': entry['action'], 'h': entry['host'], 'o': entry['outcome'],
+                               'd': entry['detail_json'], 'p': entry['prev'], 'e': entry['hash']})
+        return plain
 
     def tail(self, limit: int = 50) -> list[dict]:
         rows = self.conn.all("""SELECT audit_id, ts_us, actor, action, target_host, key_fingerprint, outcome, detail_json

@@ -46,6 +46,26 @@ function enclaveStepUp(d) {
   return sfNode('div', { class: 'stack' }, kids);
 }
 
+/* The audit log's head, which the enclave keeps: where the log no longer ends there, a person who has looked at why takes it as it is. */
+function enclaveChain(d) {
+  const c = d.chain;
+  if (!c || d.state !== 'unlocked' || (!c.behind && !c.unwritten)) return null;
+  const kids = [sfNode('p', { class: c.behind || c.releases_unwritten ? 'st-failed' : 'st-warn' },
+    c.behind ? 'The audit log no longer ends where the enclave last signed it: entries were removed or changed. No secret is released until someone has looked.'
+      : `${c.unwritten} audit ${c.unwritten === 1 ? 'entry' : 'entries'} the enclave signed ${c.unwritten === 1 ? 'was' : 'were'} not written to the log`
+        + (c.releases_unwritten ? `, ${c.releases_unwritten} of them the record of a released secret.` : '.'))];
+  if (c.behind && can('keys.manage')) {
+    const b = sfNode('button', { type: 'button', class: 'btn ghost sm danger', title: 'Audit → Verify chain shows what is there. Accepting is written to the log, with your name' }, 'Take the log as it is now');
+    sfOnClick(b, async () => {
+      if (!(await confirmDialog({ title: 'Take the audit log as it is now?', body: 'The enclave will sign on from the log\'s last entry. What was removed stays removed: do this after finding out what happened. It is written to the log with your name.', confirm: 'Take it as it is', danger: true }))) return;
+      try { await postJSON('/api/enclave/chain/accept', {}); } catch (err) { notify(err.message, 'error'); }
+      loadEnclave();
+    });
+    kids.push(b);
+  }
+  return sfNode('div', { class: 'stack' }, kids);
+}
+
 function enclaveUnlockForm(d) {
   if (!can('keys.manage') || (d.state !== 'locked' && d.state !== 'lockdown')) return null;
   const secret = sfNode('input', { type: 'password', autocomplete: 'off', required: true, minlength: 32, 'aria-label': 'Vault secret', placeholder: 'the vault secret',
@@ -89,6 +109,6 @@ async function loadEnclave() {
   if (!box) return;
   let d;
   try { d = await getJSON('/api/enclave'); } catch (err) { box.replaceChildren(sfNode('p', { class: 'muted' }, err.message)); box.hidden = false; return; }
-  box.replaceChildren(sfNode('h3', {}, 'Key enclave'), enclaveLine(d), enclaveCounts(d), enclaveStepUp(d), enclaveUnlockForm(d), enclaveLockButton(d));
+  box.replaceChildren(sfNode('h3', {}, 'Key enclave'), enclaveLine(d), enclaveCounts(d), enclaveChain(d), enclaveStepUp(d), enclaveUnlockForm(d), enclaveLockButton(d));
   box.hidden = false;
 }
