@@ -156,6 +156,7 @@ async function secOverview() {
     const why = el('div', { class: 'small' });
     h.critical.forEach((c) => why.append(text('div', c, 'st-failed')));
     h.warnings.forEach((c) => why.append(text('div', c, 'st-warn')));
+    (h.public || []).forEach((c) => why.append(text('div', c, 'st-warn')));          // what a tunnel publishes: public with no port open
     h.gaps.forEach((c) => why.append(text('div', c, 'muted')));
     if (!why.childElementCount) why.append(text('div', 'nothing found', 'muted'));
     return [text('b', h.host), secPill(h.state, h.state), h.measured_at ? secAgo(h.measured_at) : NOT_MEASURED,
