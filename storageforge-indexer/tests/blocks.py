@@ -77,6 +77,7 @@ MEDIUM = {
     'test_enclave_counts.Counts',     # limits per kind of task, and notifications from the enclave's own counts
     'test_enclave_lock2.SecondLock',  # the second lock on the KEK, with the enclave and without
     'test_enclave_channel.Channel',   # the Noise channel and the pinned key, with a relay that reads and changes what crosses
+    'test_rotate_keys.Rewrap',        # the vault key rewrapped on schedule inside the enclave
     # bash, telnet and console sessions run for real
     'test_console.Api',
     'test_desktop_steps.Dux',

@@ -22,6 +22,8 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_ENCLAVE_IMAGE` | | With `vm`: the image digest to insist on; a different image is not started |
 | `STORAGEFORGE_VAULT_NEW_SECRET` | | The new secret for `vault rotate-secret` |
 | `STORAGEFORGE_SESSION_SECRET` / `_FILE` | random per start | Signs session cookies; at least 32 characters |
+| `STORAGEFORGE_SESSION_ROTATE_HOURS` | `24` | How often the session-signing key [changes by itself](security.md#layers). Nobody is signed out by it. `0`: the session secret signs directly, as before 0.5.5 |
+| `STORAGEFORGE_KEK_ROTATE_DAYS` | `30` | How often the vault key is derived again and every key rewrapped under it, without anyone handing over the vault secret. `0`: only when `vault rotate-secret` is run |
 | `STORAGEFORGE_LISTEN`, `STORAGEFORGE_PORT` | `127.0.0.1`, `8080` (`0.0.0.0` in the image) | Where `serve` listens |
 | `STORAGEFORGE_COOKIE_SECURE` | `0` (`1` in compose) | `Secure` `__Host-` cookie; needs HTTPS |
 | `STORAGEFORGE_PROXY_HOPS` | `0` (`1` in compose) | Trust `X-Forwarded-For` from this many proxies (`2` with another proxy in front of the stack's) |

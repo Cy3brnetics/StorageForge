@@ -104,6 +104,16 @@ KEK = HMAC-SHA256(key = host share, "storageforge:second-lock:v1" ‖ 0 ‖ Argo
 - A frame changed on the way does not decrypt: the connection ends and the enclave counts it as a malformed request. What does not begin with the handshake gets no answer.
 - What it is not: the handshake proves the enclave to the client, not the client to the enclave. Whoever can open the socket can still ask, under the same limits and with the same step-up. A client's first contact with an enclave nobody pinned for it trusts what answers.
 
+**Keys that rotate by themselves.** What can rotate cheaply does, on a schedule, so that a key someone took is of use for a short time only:
+
+- **The session-signing key** changes every `STORAGEFORGE_SESSION_ROTATE_HOURS` (24; `0` turns it off, and the session secret signs as before). It is made from two things kept in two places: the session secret in the server's secret file, and a random value made at each rotation and kept in the database. Either alone signs nothing. The keys of the last periods still check cookies for as long as a session can last (8 hours) and sign nothing, so nobody is signed out by a rotation, and a signing key read out of the server's memory is dead a day later.
+- **The vault key** is derived again under a new salt every `STORAGEFORGE_KEK_ROTATE_DAYS` (30; `0` turns it off), and every DEK is rewrapped under it. No key's ciphertext is touched, and the vault opens with the same secret afterwards. With the enclave this happens inside, from the secret the enclave has held since it was unlocked: nobody hands it over again, and since it gives nobody anything it takes no step-up. Rotating to a *new* vault secret still does. Without the enclave the server derives it from the secret in its environment, as it does at start.
+- **The enclave's tokens** last five minutes, and none survives a lock or a restart.
+- **SSH keys** are rotated by the [`rotate`](#if-a-key-may-have-leaked) plan when the operator runs it: that changes what hosts trust, and is not done unasked. Job keys per run are made per send, as before. The agent's tunnel keys come with the agent (0.5.7).
+- A rotation that fails is in the audit log (`vault.rekey`, `session.key.rotate`) and in the notification center, tried again every few minutes, and the notification leaves when one succeeds. The key in use stays in use meanwhile.
+
+For the vault key to be derived again on a schedule the enclave holds the vault secret, and the host's share where the second lock is on, from unlock to lock, in its locked memory. Before this it held the secret only for the moment of unlock.
+
 The image is `storageforge-indexer/enclave/image/build.sh`: a kernel without modules, an IP stack or block devices and with lockdown forced on, and an initramfs of one static file. The compiler image is pinned by digest and the kernel by checksum, and the build is reproducible: build it again and compare `SHA256SUMS`.
 
 ### Secrets for plan steps

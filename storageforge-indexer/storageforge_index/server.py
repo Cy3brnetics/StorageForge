@@ -175,7 +175,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, selfupdate, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
                folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
-from . import routes_enclave, routes_planner
+from . import rotate_keys, routes_enclave, routes_planner
 from .runtimes import docker
 from .capacity import parse_size, trends
 from .db import Database, epoch
@@ -2959,8 +2959,16 @@ def serve(db: Database, host: str, port: int, scan_interval: int | None, paralle
         errlog.say(f'key enclave: not unlocked at start: {exc}')
     web_core = App(db, scan_interval, parallel, timers=True)
     holder.append(web_core)
-    web = create_app(web_core, session_secret_from_env(), secure, hops,
+    session_master = session_secret_from_env()
+    web = create_app(web_core, session_master, secure, hops,
                      os.environ.get('STORAGEFORGE_PROXY_HOST', ''))
+    # keys that rotate by themselves (rotate_keys.py): the session-signing key, and the vault key by rewrapping
+    rotate_audit = lambda c, action, outcome, detail: web_core.audit(c, 'system', action, outcome, None, detail)          # noqa: E731
+    try:
+        rotate_keys.tick(db, web, session_master, rotate_audit)
+    except Exception:
+        errlog.trace()
+    threading.Thread(target=rotate_keys.run, args=(db, web, session_master, rotate_audit), name='key-rotation', daemon=True).start()
 
     def warm():
         while True:
