@@ -1,0 +1,49 @@
+# The agent receiver (docs/agent.md): the one place agents' tunnels end, as a container of its own beside the web app.
+#   docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d
+# Leave this file out and no agent can report: the agent stays off for every host until someone switches it on anyway.
+#
+# It holds its own tunnel key and nothing else: no vault secret, no SSH key, no Docker socket. Agents dial its one published port,
+# on the LAN, over the StorageForge network, or from outside at the address remote nodes reach this machine at
+# (STORAGEFORGE_AGENT_ENDPOINT, in the web app's environment, names where agents dial). On SQLite it shares the data volume with the
+# web app, as the same user, and its connection is limited to its own tables; with PostgreSQL, give it its own role and set
+# STORAGEFORGE_AGENT_RECEIVER_DB to a URL with that role (python -m storageforge_index.agentreceiver grant ROLE prints its grants).
+services:
+  storageforge:
+    environment:
+      STORAGEFORGE_AGENT_RECEIVER_DIR: /app/data/agent-receiver       # the web app reads the receiver's public key here, to give it to hosts
+      STORAGEFORGE_AGENT_ENDPOINT: ${STORAGEFORGE_AGENT_ENDPOINT:-}
+      STORAGEFORGE_AGENT_PORT: ${STORAGEFORGE_AGENT_PORT:-7843}
+
+  agent-receiver:
+    build:
+      context: .
+      target: runtime
+    image: storageforge:0.5.4.1
+    restart: unless-stopped
+    depends_on:
+      storageforge: { condition: service_healthy }
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["/usr/bin/tini", "--", "python", "-m", "storageforge_index.agentreceiver"]
+    environment:
+      STORAGEFORGE_AGENT_RECEIVER_DIR: /app/data/agent-receiver
+      STORAGEFORGE_AGENT_RECEIVER_DB: ${STORAGEFORGE_AGENT_RECEIVER_DB:-sqlite:////app/data/index.db}
+      STORAGEFORGE_AGENT_LISTEN: 0.0.0.0:7843
+    volumes:
+      - sf-data:/app/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    networks: [sf]
+    ports:
+      - "${STORAGEFORGE_AGENT_BIND:-0.0.0.0}:${STORAGEFORGE_AGENT_PORT:-7843}:7843"
+    healthcheck:
+      disable: true
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 256m, pids: 512 }
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }

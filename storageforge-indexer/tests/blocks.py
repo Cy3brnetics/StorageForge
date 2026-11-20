@@ -74,6 +74,16 @@ MEDIUM = {
     'test_agent.Lifecycle',          # the same, with the real agent started where a runtime would start it
     'test_agent.NoRuntime',
     'test_agent.LxcOnly',
+    'test_agent_tunnel.EgressRule',  # nft loading the agent's egress rule in a network namespace of its own
+    'test_agent_tunnel.RealAgent',   # the real agent over TCP to a receiver in Python
+    'test_agent_receiver.Identity',  # the receiver on a port of its own, with agents played over real Noise sessions
+    'test_agent_receiver.Counted',
+    'test_agent_receiver.Quotas',
+    'test_agent_receiver.Rate',
+    'test_agent_receiver.Sessions',
+    'test_agent_receiver.OneAtATime',
+    'test_agent_receiver.DeliveryFrames',
+    'test_agent_receiver.Delivery',  # the whole road: sfagent, the real agentctl and agent, and the real receiver
     'test_sshca.Certificates',       # a real sshd, started for one test
     'test_sshcerts.TrustStep',       # the trust and revocation steps against a real sshd, reloaded
     'test_sshcerts.CaInTheEnclave',  # the real enclave program signing a certificate

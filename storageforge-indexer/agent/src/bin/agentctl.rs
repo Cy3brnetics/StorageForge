@@ -273,6 +273,9 @@ impl Ctl {
                 return refuse("tunnel-key", "this host has another receiver key pinned for its agent's tunnel. A key that changes is taken only when a person accepts it");
             }
         }
+        if !self.host.at("/etc/systemd/system").is_dir() {
+            return refuse("no-firewall", "this host has no systemd, so the firewall rule that keeps the agent's container from reaching anything but the controller could not be loaded again at boot, before the container starts: the tunnel is not set up here yet");
+        }
         if self.host.find("nft").is_none() {
             return refuse("no-firewall", "this host has no nft, and the agent's tunnel is set up only with the firewall rule that keeps its container from reaching anything but the controller: install nftables");
         }
