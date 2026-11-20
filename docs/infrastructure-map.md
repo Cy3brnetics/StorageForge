@@ -111,6 +111,14 @@ By default the controller calls the hosts and keeps each path open, so no port n
 
 `storageforge-index sfnet` prints the members and what the readings confirm.
 
+### What goes over it
+
+Once the controller is a member, its own SSH connections to a host go over the network: scans, readings, deploys, key installs and rotations, plan runs and the console. This happens per connection, and only where the controller and the host are both active members and the readings confirm each as the other's peer by the key on record, with the right address. Then the host's SSH port is tried at its network address for two seconds; if nothing answers, the connection goes to the normal address as before, and the network is not tried again for that host for a minute. A host that is no member, is pending or revoked, or shows a key that is not the one on record is always reached at its normal address.
+
+The SSH host key that is checked is still the one pinned for the host's normal address, whichever address carries the connection, and a host whose key was never pinned is not met for the first time over the network. In the console the route is listed first as **SSH over the StorageForge network**, and on the map the interface carries that name. An interface that happens to be called `sf0` is not offered as a route by its name alone.
+
+Not carried: Sends, Moves and sync run between two hosts and keep a tunnel of their own per transfer (SSH with a job key), and NFS and SMB shares are not put on the network. In the hub topology a controller that is not a hub reaches only the hubs this way, because no step turns on forwarding at a hub.
+
 Not built yet: the page. Built, not lab-tested.
 
 ## Designs

@@ -2113,6 +2113,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if getattr(args, 'db', None) and getattr(args, 'cmd', None) not in ('serve', 'restore', 'reset', 'migrate', 'healthcheck'):
+            from . import sfnetwork
+            sfnetwork.carry(Database(args.db))      # a scan or a deploy from the command line takes the StorageForge network as the server does
         return args.fn(args)
     except KeyboardInterrupt:
         return 130

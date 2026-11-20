@@ -155,6 +155,8 @@ StorageForge's own WireGuard network ([how to set it up](infrastructure-map.md#s
 - **An interface StorageForge did not make is never changed,** whatever it is called.
 - **The controller's key is not in the controller.** Where the controller is a member, a separate program (the link, the `sfnet` container) makes the interface and holds the private key in a volume the server does not mount. The server has no capability and cannot read it. What the server asks of the link is checked line by line there: only an address, a port and WireGuard public keys are acted on, only on `sf0`, and no line is ever run or repeated in a message, so a server that is taken over cannot use the link to run a command, read the key or touch another interface. The link's one capability, `NET_ADMIN`, reaches the server container's own network and nothing on the Docker host.
 
+- **The network is a path, not an identity.** A connection StorageForge makes over it still checks the SSH host key pinned for that host, strictly, and logs in with the same vault key. The network address is used only when the controller's own interface holds the host's key on record for that address, so what answers there holds that host's private key.
+
 What it does not do: it is not a firewall. A member can open any port of another member over the network that the other's firewall allows. Add `fw-fence` steps where a service should be reached only by some.
 
 ## What is signed

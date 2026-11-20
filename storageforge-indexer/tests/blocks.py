@@ -78,6 +78,7 @@ MEDIUM = {
     'test_osinstall.TheScript',
     'test_selfupdate.Installer',
     'test_sfnetwork.InterfaceStep',
+    'test_sfnet_paths.RealSsh',     # a real sshd on a loopback address, and real ssh to it
     'test_selfupdate.Repository',
     'test_console.Session',
     'test_console_open.Open',

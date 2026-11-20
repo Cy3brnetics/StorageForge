@@ -359,6 +359,7 @@ def register(web, ctx):
         return jsonify(res), 200 if res.get('ok') else 409
 
     # StorageForge's own WireGuard network (sfnetwork.py). Nothing here reaches a host: what changes one is the plan, run like any other
+    sfnetwork.carry(db)          # and from here on this server's own SSH connections go over it where the readings confirm they can
     @web.get('/api/sfnet')
     @login_required
     def api_sfnet():

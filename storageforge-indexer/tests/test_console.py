@@ -142,7 +142,7 @@ class Routes(Base):
                                     {'name': 'sf0', 'addresses': [{'ip': '10.203.0.4'}, {'ip': '10.203.0.5'}]}, {'name': 'ztabcdef12', 'addresses': [{'ip': '10.147.17.5'}]},
                                     {'name': 'docker0', 'addresses': [{'ip': '172.17.0.1'}]}, {'name': 'eth1', 'addresses': [{'ip': '100.70.0.9'}]}])
         self.assertEqual([(r['route'], r['label'], r['address']) for r in console.routes(self.conn, 'nb')],
-                         [('lan', 'LAN', '10.0.0.3'), ('netbird', 'NetBird', '100.92.0.7'), ('storageforge', 'the StorageForge network', '10.203.0.4'),
+                         [('lan', 'LAN', '10.0.0.3'), ('netbird', 'NetBird', '100.92.0.7'),          # sf0 is not offered by its name: test_sfnet_paths
                           ('zerotier', 'ZeroTier', '10.147.17.5'), ('overlay', 'a private network', '100.70.0.9')])
         with self.assertRaises(LookupError):
             console.routes(self.conn, 'nowhere')

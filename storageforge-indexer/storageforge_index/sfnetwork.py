@@ -327,40 +327,65 @@ def plan(conn: Conn, actor: str) -> dict:
     return {'plan_id': changes.save_plan(conn, {'name': name, 'tasks': todo}, actor), 'tasks': len(todo), 'name': name}
 
 
-def route(conn: Conn, host: str) -> str | None:
+def _holds(network: dict, holder: dict, other: dict, readings: dict) -> bool:
+    """Whether holder's interface, as last read, uses the key on record and has other as a peer by its key with its address."""
+    iface = sfnet._seen(readings.get(holder['host']))
+    if iface is None or iface.get('public_key') != holder['public_key']:
+        return False
+    want = next((p for p in sfnet.desired_peers(network, holder['host']) if p['host'] == other['host'] and p['public_key'] == other['public_key']), None)
+    have = next((p for p in iface.get('peers', []) if isinstance(p, dict) and want and p.get('public_key') == want['public_key']), None)
+    return bool(want and have) and sorted(have.get('allowed_ips') or []) == sorted(want['allowed'])
+
+
+def route(conn: Conn, host: str, port: int | None = None) -> str | None:
     """The host's address on the StorageForge network, when a connection from this controller can go over it: the controller is an
-    active member with its interface up, the host is an active member, and the readings confirm each as the other's peer by key.
-    host is a name or the address scans reach it at. None in every other case: the caller uses the normal address. In the hub
-    topology two spokes are not peers, so a controller that is a spoke reaches only the hubs this way."""
+    active member, the host is another, and the readings confirm each as the other's peer by the key on record, with its address.
+    host is a scanned host's name, or with a port the address and port scans reach it at (then exactly one host must have them).
+    None in every other case, and the caller uses the normal address. In the hub topology two spokes are not peers, so a
+    controller that is a spoke reaches only the hubs this way."""
     network = load(conn)
     name = (network or {}).get('controller')
     me = sfnet.member(network, name) if name else None
     if me is None or me['state'] != 'active':
         return None
-    names = {r[0] for r in conn.all('SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h) OR ssh_host = :h', {'h': str(host)})}
-    m = next((x for x in network['members'] if x['host'] in names and x['state'] == 'active' and x is not me), None)
-    if m is None:
+    if port is None:
+        names = [r[0] for r in conn.all('SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h)', {'h': str(host)})]
+    else:
+        names = [r[0] for r in conn.all('SELECT hostname FROM hosts WHERE (ssh_host = :h OR lower(hostname) = lower(:h)) AND coalesce(ssh_port, 22) = :p', {'h': str(host), 'p': int(port)})]
+    if len(names) != 1:
+        return None                # two hosts behind one address and port: which one a connection means cannot be told
+    m = sfnet.member(network, names[0])
+    if m is None or m is me or m['state'] != 'active':
         return None
-    confirmed = sfnet.confirm(network, seen(conn, network))
-    mine, theirs = confirmed.get(name) or {}, confirmed.get(m['host']) or {}
-    if mine.get('key_changed') or theirs.get('key_changed') or m['host'] not in mine.get('confirmed', ()) or name not in theirs.get('confirmed', ()):
-        return None
-    return m['address']
+    readings = {}
+    for x in (me, m):
+        if x['host'] == sfcontroller.NAME:
+            mine = sfcontroller.reading()
+            if mine is not None:
+                readings[x['host']] = mine
+        else:
+            reading = security.measurement(conn, x['host'], 'infra')
+            if reading is not None:
+                readings[x['host']] = (reading.get('access') or {}).get('wireguard') or []
+    return m['address'] if _holds(network, me, m, readings) and _holds(network, m, me, readings) else None
 
 
 _UNREACHED: dict = {}              # (address, port) -> when a connection over the network last failed
 RETRY = 60
 
 
-def via(conn: Conn, host: str, port: int | None = 22, probe=None) -> str | None:
-    """route(), and the address answers on the SSH port. A connection that fails is not tried again for a minute, so a network that
-    is down costs one wait and not one per connection. The SSH host key is checked as it always is: the address is only the path."""
+def via(conn: Conn, host: str, port: int | None = None, probe=None) -> str | None:
+    """route(), and the address answers on the host's SSH port. A connection that fails is not tried again for a minute, so a
+    network that is down costs one short wait and not one per connection. The SSH host key is checked as it always is: the
+    address is only the path."""
     try:
-        address = route(conn, host)
+        address = route(conn, host, port)
+        if address is None:
+            return None
+        if port is None:
+            port = (conn.all('SELECT ssh_port FROM hosts WHERE lower(hostname) = lower(:h)', {'h': str(host)}) or [[22]])[0][0]
     except Exception:
         return None                # the network is an extra path: nothing about it may stop a scan
-    if address is None:
-        return None
     at = (address, int(port or 22))
     if time.time() - _UNREACHED.get(at, 0) < RETRY:
         return None
@@ -376,6 +401,23 @@ def via(conn: Conn, host: str, port: int | None = 22, probe=None) -> str | None:
 def _answers(address: str, port: int):
     import socket
     socket.create_connection((address, port), timeout=2).close()
+
+
+def carry(db):
+    """From now on every SSH connection StorageForge makes from this process (remote.Transport: scans, deploys, key work, plan
+    runs) goes over the network where via() says it can, and to the normal address where it cannot. Sends, Moves and sync are not
+    carried: they run between two hosts with a tunnel of their own per transfer."""
+    from . import remote
+
+    def path_of(host, port):
+        conn = db.connect()
+        try:
+            if load(conn) is None:
+                return None
+            return via(conn, host, port or 22)
+        finally:
+            conn.close()
+    remote.PATH_OF = path_of
 
 
 def problems(conn: Conn) -> dict:
