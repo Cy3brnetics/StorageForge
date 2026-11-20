@@ -24,8 +24,8 @@ What os-install holds to:
       other system would teach its owner to ignore the warning.
 
 os-boot's `once` sets the firmware's BootNext. If the new system does not come up, the restart after that is the old system
-again, with nothing to repair. UEFI only: a BIOS machine has one boot sector per disk, and it is the running system's. Every
-step says so on a BIOS machine and changes nothing.
+again, with nothing to repair. UEFI only: a BIOS machine has one boot sector per disk, and it is the running system's. os-install
+and os-boot say so on a BIOS machine and change nothing.
 
 Secure Boot. The boot entry points at the image's own loader, which for the distributions in the catalog is their shim, signed
 by Microsoft. The script reads whether Secure Boot is on (the firmware's variable, then mokutil). If it is, it reads the

@@ -48,7 +48,7 @@ class ThePlan(unittest.TestCase):
         self.assertIn('crit', [lv for lv, _ in said(steps_osinstall._check_install, user='root')])
         self.assertIn('crit', [lv for lv, _ in said(steps_osinstall._check_install, size_gb='1')])
         self.assertTrue(any(lv == 'warn' and 'warn' in text for lv, text in said(steps_osinstall._check_install, host_keys='new')))
-        self.assertEqual([lv for lv, _ in said(steps_osinstall._check_install)], ['note', 'note', 'note'])
+        self.assertEqual([lv for lv, _ in said(steps_osinstall._check_install)], ['note', 'note', 'note', 'note'])
         self.assertEqual([lv for lv, _ in said(steps_osinstall._check_boot, when='always', restart='yes')], ['warn', 'warn'])
         self.assertEqual(said(steps_osinstall._check_boot, when='once', restart='no'), [])
 

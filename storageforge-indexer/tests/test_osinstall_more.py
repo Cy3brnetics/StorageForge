@@ -97,7 +97,7 @@ class AnAddressSetByHand(Bash):
         got = self.network(['ip addr add 10.0.0.5/24 dev DEV', 'ip addr add 10.0.0.6/24 dev DEV', 'ip addr add 192.168.7.5/25 dev DEV', 'ip -6 addr add 2001:db8::5/64 dev DEV',
                             'ip -6 addr add 2001:db8::99/64 dev DEV valid_lft 3600 preferred_lft 3600',      # as a router advertisement gives one: not ours to write down
                             'ip route add default via 10.0.0.1 dev DEV', 'ip -6 route add default via fe80::1 dev DEV'])
-        self.assertEqual(got['addresses'], ['10.0.0.5/24', '10.0.0.6/24', '192.168.7.5/25', '2001:db8::5/64'])
+        self.assertEqual(got['addresses'], ['10.0.0.5/24', '192.168.7.5/25', '10.0.0.6/24', '2001:db8::5/64'], 'in the order the kernel has them: the first of each network, then a second one in a network')
         self.assertEqual(got['routes'], [{'to': '0.0.0.0/0', 'via': '10.0.0.1'}, {'to': '::/0', 'via': 'fe80::1'}])
         self.assertNotIn('dhcp4', got)
 
