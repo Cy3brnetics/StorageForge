@@ -1659,6 +1659,20 @@ def clean_room(db, conn: Conn, body: dict, actor: str) -> dict:
 
 
 # ── the whole picture ────────────────────────────────────────────────
+def _tunnels_say(conn: Conn, host: str) -> list[str]:
+    """What tunnels on this host make public, in a sentence each (tunnels.py). A tunnel needs no open port, so no firewall reading
+    shows it. It is said and does not change the host's state: publishing a service is a choice, and the view cannot tell a wanted
+    tunnel from an unwanted one."""
+    from . import tunnels
+    infra = measurement(conn, host, 'infra') or {}
+    out = []
+    for t in (infra.get('access') or {}).get('tunnels') or []:
+        if t.get('error') or t.get('remote') or t.get('published'):
+            out.append(tunnels.sentence(t) + ('' if t.get('running') or t.get('error') else ' (not running at the last reading)')
+                       + ('. Its token is on its command line, where every account on the host can read it' if t.get('token_on_command_line') else ''))
+    return out
+
+
 def host_coverage(conn: Conn, host: str) -> dict:
     """What is really known about one host, and every reason it is not fine yet."""
     m = measurement(conn, host)
@@ -1715,7 +1729,7 @@ def host_coverage(conn: Conn, host: str) -> dict:
     if not verified:
         gaps.append('no verified retention hold')
     state = 'critical' if critical else 'warning' if warnings else 'unknown' if gaps else 'secure'
-    return {'host': host, 'state': state, 'critical': critical, 'warnings': warnings, 'gaps': gaps, 'measured_at': (m or {}).get('measured_at'), 'stale': (m or {}).get('stale'),
+    return {'host': host, 'state': state, 'critical': critical, 'warnings': warnings, 'gaps': gaps, 'public': _tunnels_say(conn, host), 'measured_at': (m or {}).get('measured_at'), 'stale': (m or {}).get('stale'),
             'sentinel': bool(marks), 'sentinel_active': (m or {}).get('sentinel', {}).get('active') if m else None, 'armed': (m or {}).get('sentinel', {}).get('armed') if m else None,
             'decoys_armed': len(armed), 'decoys_tripped': len(tripped), 'holds_active': len(holds), 'holds_verified': len(verified),
             'deploy_ready': deploy.ready(conn, host), 'mac': (m or {}).get('selinux') or ('AppArmor' if (m or {}).get('apparmor', {}).get('enabled') else None) if m else None,

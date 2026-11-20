@@ -178,7 +178,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, selfupdate, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
-               folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_copies, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
+               folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_copies, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, routes_sshca, scheduler, security, shares, site, snapjobs, tasks, updates, users)
 from . import copies, rotate_keys, routecode, routes_enclave, routes_planner
 from .runtimes import docker
 from .capacity import parse_size, trends
@@ -841,7 +841,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "copiesview.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "sfnetview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js", "notifyview.js", "enclaveview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js"):name>')
+    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "copiesview.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "dockerview.js", "infraview.js", "sfnetview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "sshcaview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js", "notifyview.js", "enclaveview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
@@ -1566,6 +1566,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     routes_security.register(web, ctx)
     routes_infra.register(web, ctx)
     routes_network.register(web, ctx)
+    routes_sshca.register(web, ctx)
     routes_planner.register(web, ctx)
 
     @web.get('/api/shares/check')

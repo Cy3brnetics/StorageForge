@@ -139,9 +139,52 @@ Some steps need a secret on the host they run on: the `tailscale` step needs an 
 
 `vault send-secret NAME --host HOST [--step STEP]` decrypts it (with the key enclave: has it released for that host and step, which a policy on the secret may name) and writes it to `/run/storageforge/secrets/NAME` on the host over SSH, on ssh's stdin. `/run` is in memory, the folder is mode 700 and the file mode 600, and both are gone at reboot. The login needs `sudo` without a password, as deploys do. The step reads the file there. The `tailscale` step hands it to Tailscale as `--auth-key=file:…`, so the key is on no command line, and removes it once the node has joined. Both commands write to the audit log, and neither prints the secret.
 
+Two more steps take a secret the same way. Neither is lab-tested against the real service: Cloudflare needs an account, and the lab has no Pangolin server yet. The unit tests run them against stand-ins. One thing was checked against the real program: `cloudflared` 2026.10.4 lists `--token-file` and reads the file the unit names. No tunnel was started with it, and Newt has not been run at all.
+
+| Step | The secret | How the program gets it |
+| :--- | :--- | :--- |
+| `cloudflare-tunnel` | a Cloudflare Tunnel token | moved to `/etc/cloudflared/storageforge-token` (root, mode 600) and read by `cloudflared tunnel run --token-file`, as the unit `storageforge-cloudflared` |
+| `pangolin-site` | a Pangolin site secret | written with the site id and the server's address to `/etc/newt/storageforge.json` (root, mode 600), which Newt reads because the unit `storageforge-newt` sets `CONFIG_FILE` |
+
+A tunnel's token is needed at every start, so unlike a Tailscale auth key it stays on the host, in that one file. The copy under `/run` is removed once the program runs. Both programs' own instructions put the secret on a command line (`cloudflared service install <token>`, `newt --secret <secret>`), where every account on the host can read it; these steps never do. A `cloudflared` too old to have `--token-file` (before April 2025) is refused. A unit the program's own installer made is left alone, and the step says so when that unit has the secret on its command line. Neither step installs the program. `state: absent` stops the unit and removes the file.
+
+A tunnel makes what it publishes public with no port open: see [Tunnels](infrastructure-map.md#tunnels-public-with-no-port-open).
+
 ### Console keys
 
 A key bound with `--actions console` opens a terminal from the web UI ([Console](console.md)), as the binding's login. It is kept apart from scan bindings, so the read-only scan login never becomes a shell. Sessions take only host keys a scan confirmed, forward nothing, and are audited when they open and close. With recording on, they are kept in full, input included.
+
+### SSH certificates
+
+Built, not lab-tested: the unit tests run both steps against a real `sshd` on the build machine, and lab tier 21 is written and has not run.
+
+StorageForge can be a certificate authority for SSH. The CA is one more key in the vault, named `storageforge-ssh-ca`, made there (**Keys → SSH certificates → Make the SSH CA**) and never imported. With the key enclave it is made inside the enclave and signs there. It can be bound to no host: it signs certificates and logs in nowhere.
+
+**What a host is given.** The `ssh-ca-trust` plan step (Changes, group Hardening, or **Stage trust** on the Keys page) writes four things and nothing else:
+
+| File | What it holds |
+| :--- | :--- |
+| `/etc/ssh/storageforge_user_ca.pub` | the CA's public key |
+| `/etc/ssh/storageforge_principals/<user>` | who may log in as `<user>` with a certificate: `<user>@<host name>`, and any principals you added |
+| `/etc/ssh/storageforge_revoked_keys` | the list of revoked certificates, with its version beside it |
+| `/etc/ssh/sshd_config.d/50-storageforge-ca.conf` | `TrustedUserCAKeys`, `AuthorizedPrincipalsFile`, `RevokedKeys`, and `HostCertificate` if you asked for it |
+
+It does not set `AuthorizedKeysFile` or `PubkeyAuthentication`, so every key that logged in before still does. A user with no principals file cannot log in with a certificate and can with a key. Before `sshd` is reloaded the step runs `sshd -t`, then asks `sshd -T` whether the three settings took effect and whether keys are still read from the same place. If any of that fails, or `sshd` does not reload, the files are put back from a copy taken first. With a rollback timer set (10 minutes from the Keys page), the host puts them back by itself unless StorageForge reaches it again. A host that already has a `TrustedUserCAKeys`, an `AuthorizedPrincipalsFile` or a `RevokedKeys` of its own is left alone: `sshd` takes one of each, and StorageForge does not replace yours. `state: absent` removes the four files and leaves `authorized_keys` as it is.
+
+**Logins.** Certificates are opt-in per host, for the web console, for scans, or both (**Console** and **Scans** on the Keys page). For a host that is opted in, each console session and each scan gets a certificate for the key its binding already names:
+
+- one principal, `<user>@<host>`, so it logs in as that user on that host and nowhere else;
+- 5 minutes for a console (only the login has to fall inside it; an open session is not cut), 60 minutes for a scan;
+- a terminal for the console and nothing for a scan. No port, agent or X11 forwarding in either;
+- a serial number, and a key id that says what it is for and who asked, which `sshd` writes to its log.
+
+The private key stays where it was, in the agent or the enclave. The certificate is not secret; it is written to a file for `ssh` and removed after. `ssh` offers the certificate first and the plain key after it, so opting a host in before it trusts the CA breaks nothing. Once certificates work on a host you can remove the key from `authorized_keys` there yourself; StorageForge does not do that for you. Each certificate is a row under Keys and an `ssh.certificate` row in the vault's audit log. If one cannot be made, that is logged and the login goes on with the key.
+
+**Revoking.** **Revoke** marks the certificate and raises the version of the revocation list. The host learns of it when the `ssh-ca-krl` step has run there (**Stage the list for the hosts**): until then the certificate still works, for the minutes it has left. `sshd` reads the list at every login, so no reload is needed. Because `sshd` refuses every key when it cannot read the file `RevokedKeys` names, the step checks a new list with `ssh-keygen` on the host and moves it into place in one rename, and an older list never replaces a newer one. A list holds at most 8000 certificates that have not ended.
+
+**Host certificates** are optional. **Issue host certificate** signs the host key a scan pinned, for the host's name and the address it is scanned at, for 90 days; the trust step installs it when *Install this host's certificate too* is set. A client with the `@cert-authority` line for the CA then accepts the host without having seen its key. A certificate that ends within 14 days raises a notification.
+
+What this does not do: it does not issue certificates to people. Only StorageForge's own console and scan logins get them.
 
 ## Bindings
 

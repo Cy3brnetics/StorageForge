@@ -39,6 +39,20 @@ The exposure engine works from the bind address, then the firewall, then Docker'
 
 A wrong "not reachable" is worse than no answer, so unreadable rules and rules it could not understand give **Unknown**, and never **Blocked**. A published Docker port goes through the forward chains, which is why ufw does not stop it, and the map shows that with the rule that decides.
 
+### Tunnels: public with no port open
+
+A tunnel (Cloudflare Tunnel, frp, ngrok, Pangolin's Newt) dials out from the host and carries requests back in. What it publishes is public with no port open on the host or the router, and no firewall rule on the way stops it. Nothing in a firewall reading shows that, so it is read from the tunnel's own configuration, without the lines that hold its credentials, and from which tunnel programs run.
+
+- A listener that a running tunnel on the same host sends requests to is **Any address**, whatever its bind address and the firewall say. The row names the tunnel and the public address, and keeps what the level was without the tunnel.
+- The Exposure panel lists each thing a tunnel publishes, where it sends it, and through what. A tunnel that sends requests to another machine is listed here and does not change this host's listeners.
+- A tunnel whose routes are kept at its server (a `cloudflared` run from a token alone, or Newt) is **Unknown**: StorageForge cannot read what it publishes from the host. So is a tunnel that is configured and was not running at the last reading: it is public whenever it runs.
+- The Security overview says the same in a sentence for each host. It does not change the host's state: publishing a service is a choice, and the view cannot tell a tunnel you want from one you do not.
+- A `cloudflared` or `newt` that was started with its token or secret as an argument is named: every account on the host can read a command line. Only the program's name leaves the host, never the line.
+
+frp's `stcp`, `xtcp` and `sudp` proxies are not listed: only a visitor that holds the same key reaches them.
+
+Read from configuration and tested with unit tests only. The lab has no check against a real Cloudflare, ngrok or Pangolin service: **not lab-tested**.
+
 **Can A reach B?** walks a packet's path: out of A, across anything between, into B, naming the first rule that decides it. It is worked out from the configuration and tested against nothing: anything between hosts that was not scanned is listed as a blind spot.
 
 ## Planning from it
@@ -159,6 +173,7 @@ The roadmap goes further than this.
 | `tests/test_infra.py` | Real `ip` and `ss`, real `nft` and `iptables` in a throwaway network namespace, real Docker |
 | `tests/test_platform_more.py` | The firewall writer against the real kernel, reach, what-if and designs |
 | `tests/test_browser_smoke.py` | The panels and the map's modes in Chromium under the real CSP |
+| `tests/test_tunnels.py`, `tests/test_tunnel_exposure.py` | What each tunnel's configuration publishes, with no credential in what comes back; a loopback or firewalled listener a tunnel publishes shown as public; the two tunnel steps against stand-ins for `cloudflared` and `newt`, since neither is installed where the tests run |
 | [KVM lab](kvm-lab.md) tier 10 | What scans read against each VM. A capture on the VM during a scan: the only connection is SSH |
 | KVM lab tier 11 | Rules on ufw, nftables and firewalld judged by real connections between VMs, a published port's fix, a fence across a reboot, the timer undoing a firewall rule and a bridge that each cut SSH, VLANs on networkd and NetworkManager across a reboot, the reach table against real connections, the overlay against the next reading, a half-deployed design, WireGuard confirmed by key, and a placeholder promoted to a host |
 

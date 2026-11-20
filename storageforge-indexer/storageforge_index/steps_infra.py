@@ -483,7 +483,7 @@ t_sysctl_set() { local key=$1 value=$2 file=/etc/sysctl.d/90-storageforge-plan.c
 
 t_sshd_option() { local key=$1 value=$2 roll=$3 dir=/etc/ssh/sshd_config.d file conf=/etc/ssh/sshd_config have err
   file=$dir/90-storageforge.conf
-  have=$(sshd -T 2>/dev/null | awk -v k="$(tr 'A-Z' 'a-z' <<<"$key")" '$1 == k {print $2; exit}')
+  have=$(sshd -T 2>/dev/null | awk -v k="$(tr 'A-Z' 'a-z' <<<"$key")" 'tolower($1) == k {print $2; exit}')
   if [[ ${have,,} == "${value,,}" ]]; then ok "$key is $value"; return 0; fi
   grep -qiE '^[[:space:]]*Include[[:space:]].*sshd_config\.d' "$conf" 2>/dev/null || { conflict "$conf does not include sshd_config.d: change $key there by hand"; return 0; }
   act "set $key to $value (it is ${have:-unset})" || return 0

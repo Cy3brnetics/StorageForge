@@ -212,6 +212,8 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/(keys|access)', 'keys.view'),
     (READ, r'/api/enclave', 'keys.view'),                              # whether the key enclave is there, and its counts
     (_WRITE, r'/api/enclave(/.*)?', 'keys.manage'),                    # unlocking and locking it
+    (READ, r'/api/keys/ssh-ca', 'keys.view'),                          # the SSH CA: its public key, who is given certificates, what was issued
+    (('POST',), r'/api/keys/ssh-ca/plan', 'plans.edit'),               # saves a change plan and runs nothing. The rest of the CA is keys.manage, below
     (_WRITE, r'/api/(keys|bindings)(/.*)?', 'keys.manage'),
     (_WRITE, r'/api/(hostkey|access/grant)(/.*)?', 'access.manage'),
     (('DELETE',), r'/api/hosts/[^/]+', 'hosts.retire'),
