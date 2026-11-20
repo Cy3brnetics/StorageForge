@@ -633,6 +633,9 @@ class Vault:
         kid = self.conn.scalar('SELECT key_id FROM ssh_keys WHERE name = :n', {'n': key_name})
         if kid is None:
             raise VaultError(f'No key named {key_name}')
+        from .sshcerts import CA_KEY
+        if key_name == CA_KEY:
+            raise VaultError('the SSH CA signs certificates and logs in nowhere: bind another key')
         bad = set(actions.split(',')) - {'scan', 'checksum', 'deploy', 'console'}
         if bad:
             raise VaultError(f'unknown action(s): {", ".join(sorted(bad))}; allowed: scan, checksum, deploy, console')

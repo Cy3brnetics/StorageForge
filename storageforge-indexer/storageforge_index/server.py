@@ -174,7 +174,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, selfupdate, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
-               folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, scheduler, security, shares, site, snapjobs, tasks, updates, users)
+               folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_clamav, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, routes_sshca, scheduler, security, shares, site, snapjobs, tasks, updates, users)
 from . import routes_planner
 from .runtimes import docker
 from .capacity import parse_size, trends
@@ -1551,6 +1551,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     routes_security.register(web, ctx)
     routes_infra.register(web, ctx)
     routes_network.register(web, ctx)
+    routes_sshca.register(web, ctx)
     routes_planner.register(web, ctx)
 
     @web.get('/api/shares/check')

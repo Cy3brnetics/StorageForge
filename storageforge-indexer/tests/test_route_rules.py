@@ -61,6 +61,10 @@ FRESH_PASSWORD = {
     ('DELETE', '/api/invites/<int:invite_id>'),
     ('DELETE', '/api/keys/<name>'),
     ('POST', '/api/keys/install'),
+    ('POST', '/api/keys/ssh-ca'),                 # makes the SSH CA
+    ('PUT', '/api/keys/ssh-ca/hosts/<host>'),     # whether StorageForge logs in to a host with certificates
+    ('POST', '/api/keys/ssh-ca/hosts/<host>/certificate'),
+    ('POST', '/api/keys/ssh-ca/certificates/<int:serial>/revoke'),
     ('PUT', '/api/me'),
     ('POST', '/api/roles'),
     ('DELETE', '/api/roles/<name>'),
@@ -142,6 +146,7 @@ NO_FRESH_PASSWORD = {
     ('PUT', '/api/desktop/profiles/<name>'),         # a profile sits in the database; the plan step that writes it to a host is run like any other
     ('DELETE', '/api/desktop/profiles/<name>'),
     ('POST', '/api/sfnet/plan'),                  # saves a plan and runs nothing
+    ('POST', '/api/keys/ssh-ca/plan'),            # likewise
     ('POST', '/api/devices/<name>/read'),        # reads, as a scan does, through the account bound for reading
     ('POST', '/api/devices/<name>/report'),      # saves what an apply would do. The apply asks
     ('POST', '/api/hostlogs/rules'),             # a log rule decides what raises a notification: it changes nothing on a host

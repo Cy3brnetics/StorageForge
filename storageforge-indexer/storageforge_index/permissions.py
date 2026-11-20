@@ -207,6 +207,8 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (_WRITE, r'/api/git/sync', 'git.sync'),
 
     (READ, r'/api/(keys|access)', 'keys.view'),
+    (READ, r'/api/keys/ssh-ca', 'keys.view'),                          # the SSH CA: its public key, who is given certificates, what was issued
+    (('POST',), r'/api/keys/ssh-ca/plan', 'plans.edit'),               # saves a change plan and runs nothing. The rest of the CA is keys.manage, below
     (_WRITE, r'/api/(keys|bindings)(/.*)?', 'keys.manage'),
     (_WRITE, r'/api/(hostkey|access/grant)(/.*)?', 'access.manage'),
     (('DELETE',), r'/api/hosts/[^/]+', 'hosts.retire'),

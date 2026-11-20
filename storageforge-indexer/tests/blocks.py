@@ -62,6 +62,8 @@ HEAVY = {
 
 MEDIUM = {
     'test_sshca.Certificates',       # a real sshd, started for one test
+    'test_sshcerts.TrustStep',       # the trust and revocation steps against a real sshd, reloaded
+    'test_sshcerts.CaInTheEnclave',  # the real enclave program signing a certificate
     'test_scan_progress.Watched',    # a real local scan, watched
     'test_scan_progress.JobsList',
     'test_enclave.Enclave',          # the real enclave program, built with cargo, and the real ssh-add and ssh-keygen

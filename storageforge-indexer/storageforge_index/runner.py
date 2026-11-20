@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
-from . import enclave, errlog
+from . import enclave, errlog, sshcerts
 from .db import Database
 from .remote import Transport, child_env
 from .scanner import ScanOptions, scan_host
@@ -142,8 +142,9 @@ def checksum_catchup(db: Database, host_id: int, hostname: str, opts: ScanOption
                 audit = AuditLog(db, conn, vault.audit_key)
                 t = None
                 try:
-                    with ephemeral_agent(vault.decrypt_key(b.key_id)) as sock:
-                        t = Transport(host=address, user=b.user, port=b.port, agent_sock=sock,
+                    with sshcerts.login_options(vault, address=address, binding=b, purpose='scan', actor=actor, audit_log=audit) as cert, \
+                            ephemeral_agent(vault.decrypt_key(b.key_id)) as sock:
+                        t = Transport(host=address, user=b.user, port=b.port, agent_sock=sock, extra_opts=cert,
                                       known_hosts=str(known_hosts_path()), isolated=True)
                         t.signing = for_scan(conn, address, b.port, str(known_hosts_path()))
                         n = checksum_pass(db, conn, t, other_id, opts.checksum_min_size, opts.nice, like_host=host_id)
@@ -196,8 +197,10 @@ def scan_via_vault(db: Database, host: str, opts: ScanOptions, actor: str | None
             started = time.time()
             t = None
             try:
-                with ephemeral_agent(vault.decrypt_key(b.key_id)) as sock:
-                    t = Transport(host=host, user=b.user, port=b.port, agent_sock=sock,
+                # a host opted in to certificates (sshcerts.py) is given one for this login; the key in the agent signs for it
+                with sshcerts.login_options(vault, address=host, binding=b, purpose='scan', actor=actor, audit_log=audit) as cert, \
+                        ephemeral_agent(vault.decrypt_key(b.key_id)) as sock:
+                    t = Transport(host=host, user=b.user, port=b.port, agent_sock=sock, extra_opts=cert,
                                   known_hosts=str(known_hosts_path()), isolated=True)
                     from .scansign import for_scan
                     t.signing = for_scan(conn, host, b.port, str(known_hosts_path()))      # every payload signed on the host, checked here

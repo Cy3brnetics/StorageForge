@@ -321,7 +321,7 @@ class Session:
                 'started': int(self.started), 'recording': self.rec_name, 'closed': self.closed}
 
 
-def _ssh_argv(sock: str, user: str, address: str, port: int, alias: str, remote: list[str] | None = None) -> list[str]:
+def _ssh_argv(sock: str, user: str, address: str, port: int, alias: str, remote: list[str] | None = None, options: list[str] | None = None) -> list[str]:
     from .runner import known_hosts_path
     argv = ['ssh', '-F', '/dev/null', '-tt', '-p', str(port),
             '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=4',
@@ -331,6 +331,7 @@ def _ssh_argv(sock: str, user: str, address: str, port: int, alias: str, remote:
             '-o', f'IdentityAgent={sock}', '-o', 'IdentitiesOnly=no', '-o', 'PasswordAuthentication=no', '-o', 'KbdInteractiveAuthentication=no',
             # nothing of this machine goes along: no agent, no X11, no ports
             '-o', 'ForwardAgent=no', '-o', 'ForwardX11=no', '-o', 'ClearAllForwardings=yes',
+            *(x for o in options or [] for x in ('-o', o)),          # CertificateFile, where the host is given certificates (sshcerts.py)
             '-o', 'SetEnv=TERM=xterm-256color', '--', f'{user}@{address}']
     return argv + (remote or [])
 
@@ -381,8 +382,13 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
         s.spawn(['virsh', '-c', 'qemu:///system', 'console', '--force', host], {**child_env(), **env})
     else:
         try:
+            from . import sshcerts
+            from .vault import AuditLog
             with Vault(db, conn).unlock() as vault:
                 b = vault.resolve(bind_for, 'console')
+                # five minutes long and for this user on this host: only the login has to fall inside it
+                cert = sshcerts.login_line(vault, conn, address=bind_for, user=b.user, key_name=b.key_name, purpose='console', actor=f'web:{owner}',
+                                           audit=lambda outcome, detail: AuditLog(db, conn, vault.audit_key).append(f'web:{owner}', 'ssh.certificate', outcome, bind_for, b.fingerprint, detail))
                 key = vault.decrypt_key(b.key_id)
         except NoBinding as exc:
             s._audit = None
@@ -400,8 +406,8 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
 
         def hold_agent():
             try:
-                with ephemeral_agent(key, ttl=AGENT_HOLD) as sock:
-                    s.spawn(_ssh_argv(str(sock), b.user, target, b.port or port, alias, remote_cmd), env)
+                with sshcerts.certificate_file(cert) as option, ephemeral_agent(key, ttl=AGENT_HOLD) as sock:
+                    s.spawn(_ssh_argv(str(sock), b.user, target, b.port or port, alias, remote_cmd, [option] if option else None), env)
                     started.set()
                     deadline = time.time() + AGENT_HOLD
                     while time.time() < deadline and not s.closed:
