@@ -37,7 +37,8 @@ function sfnFindings(d) {
 
 function sfnAct(label, title, fn, cls = 'btn ghost sm') {
   const b = sfNode('button', { type: 'button', class: cls, title }, label);
-  sfOnClick(b, async () => { try { await fn(); } catch (err) { notify(sfnErr(err), 'error'); } await loadInfra(); });
+  // an action that was cancelled answers false: the view is not drawn again, so focus stays on the button it came back to
+  sfOnClick(b, async () => { try { if (await fn() === false) return; } catch (err) { notify(sfnErr(err), 'error'); } await loadInfra(); });
   return b;
 }
 
@@ -59,13 +60,15 @@ function sfnMemberRow(d, m, may) {
       acts.push(sfnAct('Rotate key', `Give ${m.host} a new key pair, through the next three plans`, async () => {
         const yes = await confirmDialog({ title: `Rotate the key of ${m.host}`, confirm: 'Rotate',
           body: 'Three plans follow, each after a new reading: the host makes a second key, its peers learn it, and then the host switches and the old key is deleted. Nothing is interrupted until the switch.' });
-        if (yes) await postJSON('/api/sfnet/members/rotate', { host: m.host });
+        if (!yes) return false;
+        await postJSON('/api/sfnet/members/rotate', { host: m.host });
       }));
     }
     acts.push(sfnAct('Remove', `Take ${m.host} off the network`, async () => {
       const yes = await confirmDialog({ title: `Remove ${m.host} from the StorageForge network`, confirm: 'Remove', danger: true,
         body: 'The next plan takes its key off every other member and removes its interface and its key. Its address is not given to another host.' });
-      if (yes) await postJSON('/api/sfnet/members/remove', { host: m.host });
+      if (!yes) return false;
+        await postJSON('/api/sfnet/members/remove', { host: m.host });
     }));
   }
   const name = sfNode('span', { 'data-member': m.host }, m.host, m.is_controller && !m.link ? sfNode('span', { class: 'muted' }, ' (the controller runs here)') : null,
