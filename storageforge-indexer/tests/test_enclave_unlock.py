@@ -139,6 +139,21 @@ class Unlock(Harness):
             del os.environ['STORAGEFORGE_ENCLAVE']
             self.assertIsNone(enclave_start.at_server_start(self.db), 'an installation without the enclave is left as it was')
 
+    def test_a_command_in_the_servers_container_asks_the_servers_enclave_and_needs_no_secret(self):
+        """docker compose exec storageforge storageforge-index ...: told `vm` as the server was, with the secret kept apart."""
+        self.unlock()
+        enclave_start.publish(self.address)
+        with mock.patch.dict(os.environ, {'STORAGEFORGE_ENCLAVE': 'vm'}):
+            self.assertEqual(enclave.configured(), self.address)
+            with vault.Vault(self.db, self.conn).unlock() as v:
+                self.assertEqual(v.enclave, self.address)
+                self.assertTrue(v.generate_key('by-a-command-beside-the-server'))
+            self.assertEqual(os.environ['STORAGEFORGE_ENCLAVE'], 'vm', 'it started nothing of its own')
+            self.stop()                                                        # no server's enclave answers: it would start its own,
+            with self.assertRaises(enclave.EnclaveError) as got:               # which here has no image to start from
+                enclave.configured()
+            self.assertIn('could not be started', str(got.exception))
+
     def test_a_server_whose_secret_came_from_a_file_unlocks_its_enclave_again_after_a_restart(self):
         os.environ['STORAGEFORGE_VAULT_SECRET_FILE'] = str(self.secret_file)
         self.assertEqual(enclave_start.at_server_start(self.db), 'unlocked')

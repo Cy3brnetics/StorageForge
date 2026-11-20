@@ -55,6 +55,15 @@ class EnclaveError(RuntimeError):
         self.code = code
 
 
+def published_address() -> str | None:
+    """Where the server said its enclave is (enclave_start.publish): one line in the run folder, for a starter or a command beside it."""
+    try:
+        line = Path(os.environ.get('STORAGEFORGE_ENCLAVE_ADDRESS_FILE') or run_dir() / 'enclave.addr').read_text().strip()
+    except OSError:
+        return None
+    return line or None
+
+
 # ── the enclave's key, pinned ───────────────────────────────────────
 def pin_file() -> Path:
     return run_dir() / 'enclave.pins'
@@ -140,6 +149,17 @@ def configured() -> str | None:
     the command runs. A command that needs no key (the health check, a search) never starts one."""
     value = os.environ.get(ADDRESS_ENV) or None
     if value == 'vm':
+        # A command run in the server's own container (docker compose exec storageforge ...) is told `vm` as the server was. The
+        # server's enclave is there, unlocked, and says where in its run folder: the command asks it, as the server does, and
+        # needs no vault secret of its own. Only where no server's enclave answers does it start one for itself.
+        beside = published_address()
+        if beside:
+            try:
+                with Enclave(beside, timeout=3) as e:
+                    e.status()
+                return beside
+            except EnclaveError:
+                pass
         from . import enclave_vm
         try:
             return enclave_vm.on_demand()

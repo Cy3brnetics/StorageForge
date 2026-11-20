@@ -43,11 +43,7 @@ def publish(address: str) -> None:
 
 
 def published() -> str | None:
-    try:
-        line = address_file().read_text().strip()
-    except OSError:
-        return None
-    return line or None
+    return enclave.published_address()
 
 
 def scrub_env(name: str) -> None:
