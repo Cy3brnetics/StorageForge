@@ -66,7 +66,8 @@ def routes(conn, host: str) -> list[dict]:
     net = loads(conn.scalar('SELECT data_json FROM host_network WHERE host_id = :h', {'h': hid}) or '{}') or {}
     # what each tool on the host said is its own interface and address: Nebula's interface can have any name, and Netmaker's too
     infra = loads(conn.scalar("SELECT data_json FROM security_measurements WHERE kind = 'infra' AND lower(host) = lower(:h)", {'h': host}) or '{}') or {}
-    known = overlays.interfaces_of(((infra.get('access') if isinstance(infra, dict) else None) or {}).get('overlays'))
+    access = infra.get('access') if isinstance(infra, dict) else None
+    known = overlays.interfaces_of(access.get('overlays') if isinstance(access, dict) else None)
     for iface in net.get('interfaces') or []:
         for a in iface.get('addresses') or []:
             try:

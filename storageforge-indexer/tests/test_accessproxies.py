@@ -308,6 +308,15 @@ class Boundary(unittest.TestCase):
         self.assertNotIn('SECRET', json.dumps(got))
         self.assertNotIn('gabe', json.dumps(got), 'a description is not kept')
 
+    def test_a_description_and_the_credentials_a_target_is_given_stay_on_the_host(self):
+        sent = as_collected('boundary_targets', BOUNDARY_TARGETS)
+        self.assertNotIn('gabe', sent)
+        self.assertNotIn('clvlt', sent)
+        self.assertEqual(json.loads(sent)['items'][0]['description'], '', 'and what is sent is still the JSON it was')
+        self.assertEqual(accessproxies.boundary(sent)['targets'], accessproxies.boundary(BOUNDARY_TARGETS)['targets'])
+        odd = '{"items": [{"name": "a", "description": "said \\"x\\" to bob@example.com, twice", "address": "10.0.0.1"}]}'
+        self.assertEqual(json.loads(as_collected('boundary_targets', odd)), {'items': [{'name': 'a', 'description': '', 'address': '10.0.0.1'}]}, 'a quote inside a description does not end it')
+
     def test_a_worker_and_a_controller_with_no_token_say_what_they_are(self):
         worker = accessproxies.boundary('', confread.scrub(BOUNDARY_WORKER))
         self.assertEqual((worker['roles'], worker['name'], worker['server'], worker['public'], worker['targets'], worker['targets_read']),

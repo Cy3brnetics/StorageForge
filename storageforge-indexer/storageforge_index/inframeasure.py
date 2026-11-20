@@ -171,7 +171,8 @@ sec tp_status; has tctl && { try tctl status --format=json | grep -aoE '"(name|v
 sec tp_nodes; has tctl && try tctl get nodes --format=json | grep -aoE '"(kind|hostname|addr|use_tunnel)": *("[^"]*"|true|false)' | capped 400000
 sec tp_conf; conf /etc/teleport.yaml /etc/teleport/teleport.yaml
 sec tp_login; has tsh && try tsh status --format=json | grep -aoE '"(profile_url|cluster|valid_until)": *"[^"]*"' | head -n 3
-sec boundary_targets; has boundary && try boundary targets list -recursive -scope-id global -format json </dev/null | capped 400000
+# a target's description is free text and can name a person, and which credentials it is given is nobody else's business: both are emptied
+sec boundary_targets; has boundary && try boundary targets list -recursive -scope-id global -format json </dev/null | sed -E 's/("description": *)"([^"\\]|\\.)*"/\1""/g; s/("[a-z_]*credential_source_ids": *)\[[^]]*\]/\1[]/g' | capped 400000
 sec boundary_conf; confs /etc/boundary.d/controller.hcl /etc/boundary.d/worker.hcl /etc/boundary.d/boundary.hcl /etc/boundary/controller.hcl /etc/boundary/worker.hcl /etc/boundary/boundary.hcl
 # a Pomerium policy names people: an address is replaced before the file is printed
 sec pomerium_conf; conf /etc/pomerium/config.yaml /etc/pomerium/config.yml | sed -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/someone/g'
