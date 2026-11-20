@@ -471,7 +471,7 @@ def register(web, ctx):
     @web.get('/api/os-install/offer')
     @login_required
     def api_os_install_offer():
-        return jsonify(osoffer.offer(conn()))
+        return jsonify(osoffer.offer(conn(), keys='keys.view' in current_user.permissions))
 
     @web.post('/api/os-install/plan')
     @login_required

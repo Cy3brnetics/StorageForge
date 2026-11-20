@@ -101,7 +101,8 @@ def started_by(inv: dict) -> str:
     return 'unknown'
 
 
-def offer(conn: Conn) -> dict:
+def offer(conn: Conn, keys: bool = True) -> dict:
+    """keys: whether the account may see the SSH keys kept here (keys.view). Without it the form takes a pasted key only."""
     hosts = []
     for name, user, os_info, inv_json, scanned in conn.all('SELECT hostname, ssh_user, os_info, inventory_json, last_scanned_at FROM hosts ORDER BY lower(hostname)'):
         inv = loads(inv_json) or {}
@@ -110,7 +111,7 @@ def offer(conn: Conn) -> dict:
     fields = {f['name']: f for f in steps_osinstall.INSTALL_FIELDS}
     return {'hosts': hosts,
             'images': [{'key': k, 'label': v[0], 'url': v[1], 'checksums': v[2]} for k, v in steps_osinstall.IMAGES.items()],
-            'keys': [{'name': n, 'public_key': p} for n, p in conn.all('SELECT name, public_key FROM ssh_keys WHERE disabled_at IS NULL ORDER BY lower(name)')],
+            'keys': [{'name': n, 'public_key': p} for n, p in conn.all('SELECT name, public_key FROM ssh_keys WHERE disabled_at IS NULL ORDER BY lower(name)')] if keys else [],
             'choices': {n: fields[n]['options'] for n in ('sudo', 'host_keys', 'network', 'carry')},
             'desktop': {'compositors': list(steps_desktop.DUX_COMPOSITORS), 'terminals': list(steps_desktop.TERMINALS), 'profile_compositors': list(desktop.COMPOSITORS),
                         'profiles': sorted(desktop.profiles(conn), key=str.lower), 'releases': steps_desktop.RELEASES},

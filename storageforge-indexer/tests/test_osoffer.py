@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 import dbfactory
-from storageforge_index import changes, desktop, osoffer, server, steps_osinstall, users
+from storageforge_index import changes, desktop, osoffer, permissions, server, steps_osinstall, users
 
 PW = 'correct horse battery staple'
 KEY = 'ssh-ed25519 ' + 'A' * 68 + ' gabe@laptop'
@@ -187,6 +187,11 @@ class ThePlans(unittest.TestCase):
         for client, name in ((viewer, 'viewer'), (admin, 'admin')):
             self.assertEqual(client.post('/api/login', json={'username': name, 'password': PW}).status_code, 200)
         self.assertEqual([h['host'] for h in viewer.get('/api/os-install/offer').get_json()['hosts']], ['nas', 'new'])
+        self.conn.execute("INSERT INTO ssh_keys (key_uuid, name, key_type, public_key, fingerprint, dek_nonce, wrapped_dek, key_nonce, ciphertext, created_at) "
+                          "VALUES ('u', 'laptop', 'ssh-ed25519', :k, 'SHA256:x', :b, :b, :b, :b, 1)", {'k': KEY, 'b': b'0'})
+        self.assertEqual(admin.get('/api/os-install/offer').get_json()['keys'], [{'name': 'laptop', 'public_key': KEY}])
+        may_see = 'keys.view' in permissions.BUILTIN['viewer'][1]
+        self.assertEqual(bool(viewer.get('/api/os-install/offer').get_json()['keys']), may_see, 'the keys kept here are listed only for an account that may see them')
         self.assertEqual(viewer.post('/api/os-install/plan', json=form()).status_code, 403)
         self.assertEqual(admin.post('/api/os-install/plan', json=form(confirm='/dev/sdz')).status_code, 400)
         got = admin.post('/api/os-install/plan', json=form())

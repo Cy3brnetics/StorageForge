@@ -103,6 +103,7 @@ MEDIUM = {
     'test_osinstall_more.AnAddressSetByHand',   # the real ip in a network namespace of this user's own
     'test_osinstall_more.SecureBoot',
     'test_osinstall_more.StartedByBios',
+    'test_osoffer.OnlyInThatSystem',
     'test_selfupdate.Installer',
     'test_sfnetwork.InterfaceStep',
     'test_sfnet_paths.RealSsh',     # a real sshd on a loopback address, and real ssh to it
