@@ -109,7 +109,7 @@ KEK = HMAC-SHA256(key = host share, "storageforge:second-lock:v1" ‖ 0 ‖ Argo
 - **The session-signing key** changes every `STORAGEFORGE_SESSION_ROTATE_HOURS` (24; `0` turns it off, and the session secret signs as before). It is made from two things kept in two places: the session secret in the server's secret file, and a random value made at each rotation and kept in the database. Either alone signs nothing. The keys of the last periods still check cookies for as long as a session can last (8 hours) and sign nothing, so nobody is signed out by a rotation, and a signing key read out of the server's memory is dead a day later.
 - **The vault key** is derived again under a new salt every `STORAGEFORGE_KEK_ROTATE_DAYS` (30; `0` turns it off), and every DEK is rewrapped under it. No key's ciphertext is touched, and the vault opens with the same secret afterwards. With the enclave this happens inside, from the secret the enclave has held since it was unlocked: nobody hands it over again, and since it gives nobody anything it takes no step-up. Rotating to a *new* vault secret still does. Without the enclave the server derives it from the secret in its environment, as it does at start.
 - **The enclave's tokens** last five minutes, and none survives a lock or a restart.
-- **SSH keys** are rotated by the [`rotate`](#if-a-key-may-have-leaked) plan when the operator runs it: that changes what hosts trust, and is not done unasked. Job keys per run are made per send, as before. The agent's tunnel keys come with the agent (0.5.7).
+- **SSH keys** are rotated by the [`rotate`](#if-a-key-may-have-leaked) plan when the operator runs it: that changes what hosts trust, and is not done unasked. Job keys per run are made per send, as before. The agent's tunnel uses the agent's own key, which changes when the agent is enrolled again, and fresh keys for every session, which lasts at most fifteen minutes.
 - A rotation that fails is in the audit log (`vault.rekey`, `session.key.rotate`) and in the notification center, tried again every few minutes, and the notification leaves when one succeeds. The key in use stays in use meanwhile.
 
 **Sensitive routes that move.** A request that changes keys, bindings, the key enclave, deploys, consoles, host access or security keys carries a code that changes every 30 seconds. It rides in the path, as a 2FA code does: `POST /api/keys` is sent as `POST /api/~1a2b3c4d/keys`.
@@ -284,16 +284,19 @@ The tunnel in `docker-compose.remote.yml` is the one port meant to be open beyon
 
 ## The agent
 
-The optional [agent](agent.md) is an extra layer beside SSH and shares nothing with it. Built, not lab-tested, and at this stage it has no tunnel, so it reports nothing. What holds for it:
+The optional [agent](agent.md) is an extra layer beside SSH and shares nothing with it. Built, not lab-tested. It gets **no trust for what it says** and **as little as works for what it can do**. What holds for it:
 
 - **Off unless switched on,** per host, by someone with `keys.manage` and a fresh password.
 - **Its own accounts.** The agent runs as `sfagent`, never root. The controller manages it as `storageforge-agentctl`, whose key can start one program and whose sudoers file has one line. Neither is ever in `docker`, `lxd` or `incus-admin`: the setup and every request are refused while one is.
-- **Its own keys.** The agent makes its key on the host; the public half is read back over the pinned SSH connection at enrollment and pinned. The controller's two agent keys are vault keys of their own, not the scan, deploy or job keys.
-- **Code comes from the release key.** Plugins and the agent's image run only when a release key signed them (or a key the operator put on that host by hand). The controller carries those signatures and holds no key that makes one, so a controller that was taken over chooses among signed plugins and cannot write one, widen one, or swap the image.
-- **A manifest cannot be played back.** It names one agent's key and one machine, and its counter only goes up.
-- **A container with what was declared and nothing more:** read-only, every capability dropped, no network, no runtime's socket, SSH's and StorageForge's secrets masked inside every mount.
+- **Its own keys.** The agent makes its key on the host; the public half is read back over the pinned SSH connection at enrollment and pinned. The controller's two agent keys are vault keys of their own, not the scan, deploy or job keys. The receiver has a key of its own too, which opens tunnel sessions and signs nothing.
+- **Code comes from the release key.** Plugins and the agent's image run only when a release key signed them (or a key the operator put on that host by hand). The controller carries those signatures and holds no key that makes one, so a controller that was taken over chooses among signed plugins and cannot write one, widen one, or swap the image. What arrives through the tunnel is checked the same way before a byte is written.
+- **A manifest cannot be played back.** It names one agent's key and one machine, and its counter only goes up. One that arrives through the tunnel takes effect only when `storageforge-agentctl` made the container for it, over SSH.
+- **A container with what was declared and nothing more:** read-only, every capability dropped, no runtime's socket, SSH's and StorageForge's secrets masked inside every mount, and no network at all unless it has a tunnel, in which case the host's firewall lets it reach the receiver's one address and port and nothing else, the host's own `sshd` included.
+- **Its own tunnel, both keys pinned.** Noise IK over TCP to the receiver: the agent refuses a receiver without the key pinned on its host, and a receiver key that changes is taken only when an admin accepts it.
+- **Its own receiver.** A process and (on PostgreSQL) a database role of its own, with no vault secret and nothing that can open an SSH connection. The host comes from the key the session was opened with, never from a message. Batches are signed and counted, replays refused, gaps and silence shown, and every reading is stored and shown as the agent's claim. Rates, sizes and a row quota per agent keep one agent from crowding out the others or the web app.
+- **Privileges take an admin.** A plugin that declares any privilege on the host needs `agent.privilege` and a fresh password.
 
-[The agent page](agent.md#what-it-does-not-do-or-check-yet) lists what is not checked yet.
+[The agent page](agent.md#what-a-taken-over-agent-can-and-cannot-do) says what an agent that was taken over can still do, and [what is not checked yet](agent.md#what-it-does-not-do-or-check-yet).
 
 ## The StorageForge network
 
@@ -323,6 +326,7 @@ Everything sent to a host to run as root is signed, with these named exceptions.
 | Each side of a ZFS or btrfs send to another host | **Yes, on each deploy** | A signed run on the receiver says what it may receive and writes the key's forced command. A signed run on the sender writes the key. See [Sends between hosts](#sends-between-hosts) |
 | The [agent](agent.md): requests to `storageforge-agentctl`, and each host's manifest | **Yes, each one** | By the controller's agent signing key, each in its own namespace, for one machine, once. `storageforge-agentctl` itself reaches a host on the stdin of the signed setup, which installs it only when its size and sha256 are the ones in the signed script |
 | The agent's plugins and image | **Yes, by the release key** | Not by the controller, which only carries the signatures. Or by a key the operator put on that host by hand |
+| What the agent sends: each batch | **Yes, by the agent's own key** | Checked by the receiver against the key pinned at enrollment before the batch is read, and counted so a batch cannot be played again. A valid signature makes it the agent's claim, nothing more |
 | Scans: inventory, file walk, checksums, network, containers, Git | No | Read-only, as the scan user |
 | First-time scan and deploy access | No | No signer is on the host yet. It takes a fresh password and a host key a person confirmed |
 | **`rsync` to or from another host in a task block** | **No** | The signed script on the first host logs in with that host's own root key. Nothing is signed there and no run is recorded, so the check says so and the `deploy.start` audit row names the host (`second_hops`). Use a Moves step instead: a [deployed job](deployments.md#deployed-jobs) has a forced-command key of its own |

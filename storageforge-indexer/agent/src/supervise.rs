@@ -1,12 +1,11 @@
 //! What the agent does with itself: reads its manifest, loads the plugins it names, runs them, and keeps what they report.
 //!
-//! This is the part of the agent that exists at this stage (roadmap section 11.1). It opens no socket and no connection: there is
-//! no tunnel yet, so nothing leaves the host through the agent. The seams for what comes next are marked `SEAM`:
+//! It opens no socket and no connection itself: `tunnel` does that. What connects them:
 //!
-//! - **11.2, the tunnel and the receiver.** `Outbox::drain` hands over what the plugins reported, each record numbered and
-//!   labelled by the agent with the plugin it came from. The tunnel signs batches of them with the agent's key (`sig::NS_BATCH`)
-//!   and sends them; nothing else should read the outbox. Plugin files arrive through the tunnel into `Paths::plugins`.
-//! - **11.3, wipe and stop.** `inspect` returns everything that does not match the manifest (`Report::problems`, `Report::
+//! - **The tunnel** (11.2, `tunnel.rs`). `Outbox::drain` hands over what the plugins reported, each record numbered and labelled
+//!   by the agent with the plugin it came from. The tunnel signs batches of them with the agent's key (`sig::NS_BATCH`) and sends
+//!   them; nothing else reads the outbox. Plugin files arrive through the tunnel into `Paths::plugins`.
+//! - **SEAM, 11.3, wipe and stop.** `inspect` returns everything that does not match the manifest (`Report::problems`, `Report::
 //!   stray`). Today the agent refuses the plugin and says so; 11.3 decides when that also means deleting the key and exiting.
 
 use std::collections::VecDeque;
