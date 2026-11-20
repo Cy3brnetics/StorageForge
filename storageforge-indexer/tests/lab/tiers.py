@@ -1276,8 +1276,7 @@ def tier0(r):
 
 
 # ── report ──────────────────────────────────────────────────────────
-TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs', 6: 'Sync engine', 7: 'Remote nodes', 8: 'Appliances', 9: 'Security', 10: 'Infrastructure', 11: 'Changes', 12: 'Network appliances', 13: 'Features', 14: 'Host logs', 16: 'Sends', 17: 'Network language on firewalld and ufw', 18: 'libvirt: snapshots, VM changes, networks, pools and copies', 19: 'Key enclave', 20: 'The StorageForge network'}
-TIERS[21] = 'The SSH CA, and exposure through tunnels'
+TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs', 6: 'Sync engine', 7: 'Remote nodes', 8: 'Appliances', 9: 'Security', 10: 'Infrastructure', 11: 'Changes', 12: 'Network appliances', 13: 'Features', 14: 'Host logs', 16: 'Sends', 17: 'Network language on firewalld and ufw', 18: 'libvirt: snapshots, VM changes, networks, pools and copies', 19: 'Key enclave', 20: 'The StorageForge network', 21: 'The SSH CA, and exposure through tunnels'}
 CELL = {'pass': 'pass', 'FAIL': '**FAIL**', 'skip': 'skip', 'known': 'known', 'fixed?': 'fixed?'}
 
 

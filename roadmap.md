@@ -63,6 +63,7 @@ Checked against the code on 2026-11-16.
 
 | Decision | Blocks |
 | :--- | :--- |
+| **The compose bridge and the StorageForge network's interface are both called `sf0`** on the Docker host: rename the bridge default, or the interface | The controller's Docker host joining the StorageForge network |
 | **One design document** in place of the storage blueprint and the map's design: the owner took the recommended answers in section 10.1 on 2026-11-16, to be checked again when 3i is reached | Section 10's step 3i, confirmed at 0.5.16 |
 
 ## Versions and checkpoints
@@ -187,6 +188,10 @@ Decided 2026-11-16: data is encrypted even on the LAN, and the default needs no 
 | The controller as a peer (in Docker, a WireGuard interface for the container or the host's) | open |
 | Scans, deploys, `storageforge-agentctl`, the console and the agent's tunnel over the StorageForge network where the host is on it. Sends, Moves and sync keep a tunnel of their own per transfer (the forced-command job keys and rsync over SSH, encrypted end to end); NFS and SMB shares are not carried | open |
 | Lab: a host on the LAN reached only through it, a capture showing no clear text between two hosts, a key rotated and a peer revoked | open |
+
+**State of 2.1 on 2026-11-20 (built, not lab-tested; `fed5650` to `85848e2`):** rotation through plans, the controller as a member (a link container, or a controller that runs on a member), StorageForge's own SSH connections over the network, and the page under Infrastructure. Lab tier 20 is written and has not run. **Open:** `storageforge-agentctl` and the agent's tunnel (0.5.7); a hub has no step that turns on forwarding, so two spokes cannot reach each other; the `sfnet` image target has not been built; the compose bridge is also called `sf0` on the Docker host, so that host cannot join until `STORAGEFORGE_BRIDGE` is changed (the owner's decision: rename the bridge default or the interface).
+
+**SSH CA, and exposure through tunnels, on 2026-11-20 (built, not lab-tested; `125d6b4` to `d2e742c`):** the CA as a vault key, `ssh-ca-trust` and `ssh-ca-krl`, certificates for the console and scans per host, revocation, Keys → SSH certificates; tunnel findings in Exposure and Security, and the `cloudflare-tunnel` and `pangolin-site` steps. Lab tier 21 is written and has not run; its tunnel checks use stand-ins. **Open:** certificates for people, taking the key out of `authorized_keys` once certificates work, join steps for frp and ngrok (not asked for), Pangolin's API read (0.5.10).
 
 Deploying the servers (Headscale, NetBird's management, Pangolin, a ZeroTier controller, OpenZiti's controller) is a Toolbox entry each (section 4). This section is the hosts' side.
 

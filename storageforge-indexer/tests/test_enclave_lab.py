@@ -31,7 +31,7 @@ class Tier(unittest.TestCase):
         tiers = (ROOT / 'tests' / 'lab' / 'tiers.py').read_text()
         self.assertIn("19: 'Key enclave'", tiers)
         self.assertIn('tiers_enclave.tier19(r)', tiers)
-        self.assertIn(' 18 19; do', (ROOT / 'examples' / 'lab' / 'lab.sh').read_text(), 'lab.sh test-all runs it')
+        self.assertRegex((ROOT / 'examples' / 'lab' / 'lab.sh').read_text(), r'for t in [0-9 ]* 19[ ;]', 'lab.sh test-all runs it')
         self.assertIn('not run yet', self.text)
 
     def test_it_has_a_check_for_each_thing_the_roadmap_asks_the_lab_to_show(self):
