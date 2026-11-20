@@ -123,7 +123,7 @@ Then **Stage in Changes**, where it is an ordinary step with a Report and an App
 | `openziti` | Enroll the host as an OpenZiti identity from a one-time token in the vault, read by `ziti-edge-tunnel enroll --jwt FILE`, or remove the identity and its key |
 | `container` | `docker run` or `podman run` with a fixed name. It will not replace an existing container |
 | `vm` | `virt-install --import` from a disk you already have, with its console on loopback |
-| `os-install`, `os-boot`, `os-remove` | A second operating system on the host itself, beside the running one, and which of them starts. See [host migration](host-migration.md#a-second-system-beside-the-first) |
+| `os-install`, `os-boot`, `os-remove`, `os-running` | A second operating system on the host itself, beside the running one, which of them starts, and a step that stops a plan in any system but the one it is for. See [host migration](host-migration.md#a-second-system-beside-the-first) |
 | `dux-install`, `desktop-profile` | A desktop for a user: Dux with a chosen compositor, and a profile of keys, window rules and displays kept on the server. See [host migration](host-migration.md#a-desktop-on-it) |
 | `vm-create` | A new VM from a cloud image: the image checked against its publisher's checksum, copied to a new root disk, data disks, and a cloud-init login for your SSH key. Fields can come from a [VM spec](host-migration.md#creating-vms). Never writes over a disk or a VM that is there |
 | `packages` | The packages another host was given on purpose, installed with the same package manager. Reports first, never removes a package, never adds a source |

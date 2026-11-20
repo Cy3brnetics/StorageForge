@@ -1276,7 +1276,7 @@ def tier0(r):
 
 
 # ── report ──────────────────────────────────────────────────────────
-TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs', 6: 'Sync engine', 7: 'Remote nodes', 8: 'Appliances', 9: 'Security', 10: 'Infrastructure', 11: 'Changes', 12: 'Network appliances', 13: 'Features', 14: 'Host logs', 16: 'Sends', 17: 'Network language on firewalld and ufw', 18: 'libvirt: snapshots, VM changes, networks, pools and copies', 19: 'Key enclave', 20: 'The StorageForge network', 21: 'The SSH CA, and exposure through tunnels', 22: 'Joining and leaving private networks'}
+TIERS = {0: 'Smoke', 1: 'Scan', 2: 'Deploy', 3: 'Cross-host', 4: 'Failure', 5: 'Btrfs', 6: 'Sync engine', 7: 'Remote nodes', 8: 'Appliances', 9: 'Security', 10: 'Infrastructure', 11: 'Changes', 12: 'Network appliances', 13: 'Features', 14: 'Host logs', 16: 'Sends', 17: 'Network language on firewalld and ufw', 18: 'libvirt: snapshots, VM changes, networks, pools and copies', 19: 'Key enclave', 20: 'The StorageForge network', 21: 'The SSH CA, and exposure through tunnels', 22: 'Joining and leaving private networks', 23: 'A second system beside the first, and a desktop on it'}
 CELL = {'pass': 'pass', 'FAIL': '**FAIL**', 'skip': 'skip', 'known': 'known', 'fixed?': 'fixed?'}
 
 
@@ -1356,6 +1356,9 @@ def main():
         elif tier == 22:
             import tiers_overlay
             tiers_overlay.tier22(r)
+        elif tier == 23:
+            import tiers_osinstall
+            tiers_osinstall.tier23(r)
         elif tier == 16:
             import tiers_sends
             tiers_sends.tier16(r)

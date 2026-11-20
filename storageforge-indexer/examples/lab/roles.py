@@ -73,7 +73,16 @@ def build():
     if not path.exists():
         return everything
     chosen = path.read_text().split()[1:]
-    return {name: node for name, node in everything.items() if name in chosen and not (node.can('router') or node.can('segment'))}
+    return {name: node for name, node in everything.items() if name in chosen and not (node.can('router') or node.can('segment') or node.can('extra'))}
+
+
+def extra(ability):
+    """The VMs of this build that are there for one tier alone (sf-uefi for tier 23), with this ability. To every other tier they are not
+    part of the build: they have no seed data and no shares, and tier 0 would fail on them."""
+    everything = pool()
+    path = state_dir() / 'selection'
+    chosen = path.read_text().split()[1:] if path.exists() else []
+    return [node for name, node in everything.items() if name in chosen and node.can('extra') and node.can(ability)]
 
 
 def network_lab():
@@ -122,7 +131,7 @@ def fill_host():
 def pick(number):
     everything = pool()
     rng = random.Random(number)
-    rest = sorted(n for n, node in everything.items() if n not in ALWAYS and not node.can('appliance'))   # heavy: only by --pick
+    rest = sorted(n for n, node in everything.items() if n not in ALWAYS and not node.can('appliance') and not node.can('extra'))   # heavy, or for one tier (extra): only by --pick
     while True:
         names = {*ALWAYS, *rng.sample(rest, BUILD_SIZE - len(ALWAYS))}
         chosen = [everything[n] for n in names]

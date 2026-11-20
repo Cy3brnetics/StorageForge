@@ -223,8 +223,8 @@ osinfo_for() {   # the name nodes.conf gives, or on a host whose osinfo database
 }
 
 create_node() {
-  local n=$1 image osinfo vcpu ram root ip disks nets base seed i=0 d extra=() seg
-  IFS='|' read -r _ image osinfo vcpu ram root ip disks nets < <(pool_rows | awk -F'|' -v k="$n" '$1==k')
+  local n=$1 image osinfo vcpu ram root ip disks nets fw base seed i=0 d extra=() seg
+  IFS='|' read -r _ image osinfo vcpu ram root ip disks nets fw < <(pool_rows | awk -F'|' -v k="$n" '$1==k')
   base=$(base_of "$image")
   [ "$osinfo" = - ] || osinfo=$(osinfo_for "$osinfo")
   for seg in ${nets//,/ }; do
@@ -264,6 +264,8 @@ create_node() {
     debian12) args+=(--disk "path=$seed,device=disk,format=raw,bus=virtio,readonly=on") ;;     # its cloud kernel has no SATA driver
     *) args+=(--disk "path=$seed,device=cdrom,bus=sata,readonly=on") ;;
   esac
+  # started by UEFI, with Secure Boot off: its boot entries are in an NVRAM file of its own, which a reset to golden does not put back
+  [ "$fw" != uefi ] || args+=(--boot firmware=efi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no)
   virt-install --print-xml --import --name "$n" --osinfo "$osinfo" --vcpus "$vcpu" --memory "$ram" --cpu host-passthrough \
     --network "network=$NET,mac=$(mac_of "$ip"),model=virtio" "${extra[@]}" --graphics none --video vga --console pty,target_type=serial \
     --rng /dev/urandom --noautoconsole "${args[@]}" >"$STATE/$n.xml" 2>"$STATE/$n.err" \
@@ -510,11 +512,12 @@ cmd_reset() {
 }
 
 cmd_down() {
-  local d left=0
+  local d left=0 nv
   for d in $(lab_domains); do
     say "removing $d"
     [ "$(state "$d")" = 'shut off' ] || virsh -q destroy "$d" >/dev/null || true
-    virsh -q undefine "$d" --managed-save --snapshots-metadata >/dev/null || left=1
+    nv=''; ! virsh dumpxml "$d" 2>/dev/null | grep -qE "<nvram|firmware='efi'" || nv=--nvram       # a VM started by UEFI is not undefined without it
+    virsh -q undefine "$d" --managed-save --snapshots-metadata $nv >/dev/null || left=1
   done
   if virsh net-info "$NET" >/dev/null 2>&1; then
     if virsh net-dumpxml "$NET" | grep -qF "name='$BRIDGE'"; then
@@ -618,7 +621,7 @@ cmd_test_all() {
   export SFLAB_STATE="$STATE"
   rm -rf "$STATE/results" "$STATE/gauntlet.json"
   cmd_reset
-  for t in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 16 17 18 19 20 21 22; do
+  for t in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 16 17 18 19 20 21 22 23; do
     say "== tier $t =="
     [ "$t" = 0 ] || [ "$t" = 2 ] || cmd_reset
     case $t in    # the report decides, knowing what is known
