@@ -46,7 +46,7 @@ def guests(conn: Conn) -> list[dict]:
         if o['kind'] == 'node':
             nodes_of.setdefault((o['conn_id'], o.get('remote')), set()).add(o.get('node'))
     out = []
-    for o in objs:
+    for o in sorted(objs, key=lambda o: o.get('remote') is None):      # through PDM first, so a direct connection's reading comes last and wins
         if o['kind'] != 'guest':
             continue
         r = rows[o['conn_id']]
@@ -109,8 +109,11 @@ def annotate_workloads(conn: Conn, listing: dict, host: str | None = None) -> di
             w['api'] = {'connection': a['connection'], 'status': a.get('status'), 'node': a.get('node'), 'differs': (cmp.get(key) or {}).get('differs', [])}
         elif key in cmp:
             w['api'] = {'seen': False, 'why': cmp[key].get('why')}
+    added = {}
     for g in guests(conn):
-        key = (g.get('on_host'), str(g.get('vmid')))
+        key = (g.get('on_host') or g.get('node'), str(g.get('vmid')))
+        if key in added:                    # the same guest through PDM and directly: the direct reading, which comes last
+            listing['workloads'].remove(added.pop(key))
         if key in listed or (host and (g.get('on_host') or '').lower() != host.lower()):
             continue
         listing.setdefault('workloads', []).append({
@@ -118,6 +121,7 @@ def annotate_workloads(conn: Conn, listing: dict, host: str | None = None) -> di
             'vmid': g.get('vmid'), 'state': g.get('status'), 'memory_mib': _mib(g.get('maxmem')), 'vcpus': g.get('maxcpu'), 'mounts': [], 'networks': [], 'ports': [],
             'detail': False, 'managed_by': 'proxmox', 'source': 'api', 'security': None, 'findings': [],
             'api': {'connection': g['connection'], 'status': g.get('status'), 'node': g.get('node'), 'remote': g.get('remote'), 'differs': []}})
+        added[key] = listing['workloads'][-1]
     return listing
 
 
@@ -150,7 +154,7 @@ def map_extra(conn: Conn, g: dict, layers) -> dict:
         if r.get('host') and f'host:{r["host"]}' in known:
             edge(pid, f'host:{r["host"]}', 'RUNS_ON', f'{r["title"]} API at {r["base_url"]}')
     if 'workloads' in layers:
-        for x in guests(conn):
+        for x in {(x.get('on_host') or x.get('node'), x.get('vmid')): x for x in guests(conn)}.values():     # one node per guest: the direct reading wins
             host = x.get('on_host')
             wl = f'wl:{host}:proxmox::{x.get("name")}' if host else None
             if wl and wl in known:          # the scan draws it: the API's reading goes beside it
