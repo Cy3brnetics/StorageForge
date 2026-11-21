@@ -8,6 +8,7 @@ What is here:
 - [Image updates with rollback](#image-updates-with-rollback) on a failed healthcheck.
 - [VMs from installer ISOs](#vms-from-installer-isos), for systems with no cloud image.
 - [Placement advice](#placement-advice): tuned datasets, databases off the bulk pool, network filesystems, and data nothing protects.
+- [MAC at deploy](#mac-at-deploy): `:Z` labels, the `svirt_image_t` fix and AppArmor pool paths.
 
 Running one container (`container`), VMs from cloud images (`vm-create`) and the VM steps are in [VMs on libvirt](vms.md) and [Cloning and migrating hosts](host-migration.md). Installing a runtime first is the `runtime-install` step in [Change plans](change-plans.md).
 
@@ -67,3 +68,13 @@ Before a workload's data goes somewhere, the plan check says what the index know
 | **No hold or offsite copy reaches it** | Nothing snapshots the path (a snapshot job or task, or snapshots a scan saw), no retention hold covers its dataset, and no backup takes it to a host marked offsite. Snapshotted but never copied off the host is a note |
 
 What it reads: the mounts, the disks and pools from `lsblk` and `zpool status`, the ZFS properties set on purpose, and the same facts as the 3-2-1 matrix (deployed mirror and rsnapshot jobs, storage tasks, and backups and snapshots a scan detected).
+
+## MAC at deploy
+
+SELinux and AppArmor keep a container or a VM from files that are not labelled or listed for it. StorageForge sets that at deploy, as part of the plan:
+
+- **Bind mounts of a stack (`:Z` and `:z`).** On an SELinux host, the `stack` step's *SELinux label for its bind mounts* adds `:Z` (this stack alone) or `:z` (shared with other containers) to each bind mount, through `storageforge.yaml`, so the compose file stays as given. The check warns when the last security reading says SELinux is enforcing and a bind mount has neither, and refuses a label on a system folder (`/`, `/etc`, `/usr`, `/var`, `/home`, `/srv` and the like) or `:Z` on a home folder, which would take it from its owner.
+- **VM disks under SELinux (the `svirt_image_t` fix).** The `vm-mac` step registers a folder of VM disks as `virt_image_t` with `semanage fcontext`, so a relabel keeps it, and runs `restorecon`. libvirt then gives each running VM its disks as `svirt_image_t` with categories of its own. Under `/var/lib/libvirt/images` the policy already does this; the step is for pools anywhere else.
+- **VM disks under AppArmor (pool paths).** On an AppArmor host the same step adds two path rules to `/etc/apparmor.d/local/abstractions/libvirt-qemu`, which every VM profile includes. `apparmor_parser` checks the file first, through a profile that includes the abstraction as libvirt reads it, and the file is put back when it refuses. The profiles of running VMs are reloaded.
+
+**Where it shows.** The infrastructure reading now holds the SELinux label of each libvirt pool folder and each folder a VM disk sits in, and the lines of the local libvirt-qemu abstraction. A VM whose disk folder is not `virt_image_t`, or on an AppArmor host is not under `/var/lib/libvirt/images` and not in the local abstraction, gets a finding on the Workloads page that names the `vm-mac` step for that folder.

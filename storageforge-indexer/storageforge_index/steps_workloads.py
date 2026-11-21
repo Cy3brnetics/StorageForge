@@ -427,10 +427,40 @@ def fenced_ports(ports: list[dict]) -> str:
     return ','.join(seen)
 
 
-def override(name: str, model: dict, labels: dict) -> str:
-    """storageforge.yaml: the labels of every service, merged in by compose. JSON is YAML, so every value is quoted."""
+def override(name: str, model: dict, labels: dict, relabel: str = '') -> str:
+    """storageforge.yaml: the labels of every service, merged in by compose. JSON is YAML, so every value is quoted.
+    relabel 'private' or 'shared': each bind mount again with :Z or :z, which compose puts in place of the one with the same target, so
+    SELinux lets the container use it."""
     want = {'storageforge.managed': 'true', 'storageforge.stack': name, **labels}
-    return json.dumps({'services': {s: {'labels': want} for s in model['services']}}, indent=2, sort_keys=False)
+    flag = {'private': 'Z', 'shared': 'z'}.get(relabel)
+    services = {}
+    for sname, s in model['services'].items():
+        services[sname] = {'labels': want}
+        if flag and s['binds']:
+            vols = []
+            for b in s['binds']:
+                opts = [o for o in (b['options'] or '').split(',') if o]
+                if not {'z', 'Z'} & set(opts):
+                    opts.append(flag)
+                vols.append(f'{b["source"]}:{b["target"]}:{",".join(opts)}')
+            services[sname]['volumes'] = vols
+    return json.dumps({'services': services}, indent=2, sort_keys=False)
+
+
+SYSTEM_DIRS = ('/', '/etc', '/usr', '/var', '/var/lib', '/boot', '/root', '/home', '/srv', '/opt', '/run', '/tmp', '/mnt', '/media', '/bin', '/sbin', '/lib', '/dev', '/proc', '/sys')
+
+
+def relabel_findings(binds: list[dict], relabel: str) -> list[str]:
+    """Bind mounts whose relabelling would break the host or other services: with :Z SELinux gives the folder to this container alone."""
+    out = []
+    for b in binds:
+        src = (b['source'] or '').rstrip('/') or '/'
+        opts = set((b['options'] or '').split(','))
+        if src in SYSTEM_DIRS and (relabel or opts & {'z', 'Z'}):
+            out.append(f'{src} is a system folder: relabelling it for a container breaks the host. Mount a folder under it instead')
+        elif src.startswith('/home/') and src.count('/') == 2 and (relabel == 'private' or 'Z' in opts):
+            out.append(f'{src} is a home folder: :Z gives it to this container alone, and its owner loses it')
+    return out
 
 
 def incus_ports(publish: str | None) -> tuple[list[dict], list[str]]:
@@ -516,11 +546,29 @@ def check_stack(conn, c, h, p, say):
         ports += s['ports']
     if m['volumes']:
         say('note', 'volumes compose makes if they are not there: ' + ', '.join(m['volumes']))
+    _mac_check(conn, h, m, p.get('selinux') or '', say)
     _published_check(conn, h, ports, p.get('allow_from') or '', say, 'a deny and allows in DOCKER-USER, where Docker sends published ports')
     _labels_check(p, say)
     from . import placement
     placement.say_for_stack(conn, c, h, m, where, say)
     say('note', 'the report validates the file with compose itself and shows what changes against the file deployed before')
+
+
+def _mac_check(conn, h, m, relabel, say):
+    """MAC at deploy: on an SELinux host a bind mount needs :z or :Z, or the container is denied it; and some folders must never get one."""
+    from . import security
+    binds = [b for s in m['services'].values() for b in s['binds']]
+    for f in relabel_findings(binds, relabel):
+        say('crit', f)
+    mode = (security.measurement(conn, h['name']) or {}).get('selinux')
+    unlabelled = [b['source'] for b in binds if not {'z', 'Z'} & set((b['options'] or '').split(','))]
+    if mode in ('Enforcing', 'Permissive') and unlabelled and not relabel:
+        say('warn' if mode == 'Enforcing' else 'note', f'{h["name"]} runs SELinux ({mode.lower()}): {", ".join(unlabelled[:4])} has no :z or :Z, so the container is denied it. '
+            'Choose private (:Z, this stack alone) or shared (:z) for its bind mounts')
+    elif relabel and mode in ('Enforcing', 'Permissive'):
+        say('ok', f'its bind mounts get :{"Z" if relabel == "private" else "z"}, so SELinux lets the containers use them')
+    elif relabel and not mode:
+        say('note', f'the last security reading of {h["name"]} saw no SELinux: :z and :Z do nothing there')
 
 
 def check_lxc(conn, c, h, p, say):
@@ -578,7 +626,7 @@ def _stack_extra(conn, t) -> list[str]:
     m = compose_model(p.get('compose'))
     labels, _ = labels_of(p.get('labels'))
     ports = [x for s in m['services'].values() for x in s['ports']]
-    return [override(p.get('name') or '', m, labels) if not m['error'] else '', fenced_ports(ports), 'forward']
+    return [override(p.get('name') or '', m, labels, p.get('selinux') or '') if not m['error'] else '', fenced_ports(ports), 'forward']
 
 
 # ── Ansible: the same functions, as one shell task ──────────────────
@@ -604,9 +652,10 @@ LABELS = F('labels', 'word', 'Labels', placeholder='team=web,tier=frontend')
 changes.register('stack', {'group': 'Workloads', 'label': 'Run a compose stack', 'fields': [
     F('runtime', 'choice', 'Runtime', options=['docker', 'podman'], required=True), F('name', 'name', 'Stack name', required=True, placeholder='wiki'),
     F('compose', 'lines', 'Compose file', required=True, placeholder='services:\n  web:\n    image: docker.io/library/nginx:1.27\n    ports: ["127.0.0.1:8080:80"]'),
-    F('dir', 'path', 'Kept in', placeholder=f'{STACKS_DIR}/<name>'), LABELS, ALLOW],
+    F('dir', 'path', 'Kept in', placeholder=f'{STACKS_DIR}/<name>'), LABELS, ALLOW,
+    F('selinux', 'choice', 'SELinux label for its bind mounts', options=['', 'private', 'shared'], default='')],
     'help': 'The compose file is kept as given, with your labels in a second file beside it. The report validates it with compose and shows what changes. '
-            'Only the addresses you allow reach what it publishes, through DOCKER-USER.'},
+            'Only the addresses you allow reach what it publishes, through DOCKER-USER. On SELinux hosts, private adds :Z to its bind mounts and shared :z.'},
     STACK_ARGS, lambda p: f'Stack {p["name"]} on {p["runtime"]}', check_stack, ansible_of('t_stack', STACK_ARGS, _stack_extra), args_of=_stack_extra)
 
 changes.register('lxc', {'group': 'Workloads', 'label': 'Run an LXC container', 'fields': [

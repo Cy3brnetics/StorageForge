@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 
-from . import inframeasure
+from . import inframeasure, wlread
 from .db import Conn
 from .runtimes import docker
 
@@ -81,7 +81,7 @@ def from_infra(host: str, m: dict, mounts: list) -> list[dict]:
     for d in m.get('libvirt') or []:
         out.append({'host': host, 'runtime': 'libvirt', 'kind': 'vm', 'name': d.get('name'), 'state': d.get('state'), 'autostart': d.get('autostart'), 'vcpus': d.get('vcpus'), 'memory_mib': d.get('memory_mib'), 'firmware': d.get('firmware'), 'tpm': d.get('tpm'),
                     'mounts': [{'kind': 'disk', 'source': x.get('source'), 'dest': x.get('target'), 'format': x.get('format'), 'rw': not x.get('readonly'), 'on': sits_on(mounts, x.get('source'))} for x in d.get('disks') or [] if x.get('device') != 'cdrom'],
-                    'networks': d.get('nics') or [], 'graphics': d.get('graphics') or [], 'ports': [], 'detail': not d.get('unreadable'), 'security': {'seclabel': d.get('seclabel')}, 'findings': _vm_findings(d),
+                    'networks': d.get('nics') or [], 'graphics': d.get('graphics') or [], 'ports': [], 'detail': not d.get('unreadable'), 'security': {'seclabel': d.get('seclabel')}, 'findings': _vm_findings(d) + wlread.disk_findings(m, d.get('disks') or []),
                     'disks': [{k: x.get(k) for k in ('target', 'device', 'bus', 'format', 'source', 'backing', 'readonly')} for x in d.get('disks') or []],
                     'snapshots': [{k: x.get(k) for k in ('name', 'state', 'parent', 'created', 'current', 'location', 'disk_only', 'description')} for x in d.get('snapshots') or []],
                     'agent': d.get('agent'), 'machine': d.get('machine'), 'cpu_mode': d.get('cpu_mode'), 'serial': d.get('serial'), 'osinfo': d.get('osinfo')})
