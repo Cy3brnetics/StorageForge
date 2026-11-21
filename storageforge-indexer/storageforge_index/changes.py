@@ -8,7 +8,7 @@ Each task type is described once in TYPES: its fields (which the UI builds its f
 data, and how it is checked. The script makes every task idempotent: it looks first and reports ok (already so),
 missing (would do) or conflict (blocked), and only --apply acts. Drive tasks (partition, format, adding a device to
 a pool) also need --destructive. fstab edits keep a backup and roll back when findmnt --verify rejects them. Nothing
-is deleted: "trash" moves things into .storageforge-trash on the same filesystem, and a converted folder's original
+is deleted: "trash" moves things into the host's one .storageforge-trash, on the local drive with the most free space, and a converted folder's original
 goes there too.
 """
 from __future__ import annotations
@@ -77,7 +77,7 @@ TYPES = {
         F('path', 'path', 'From', required=True), F('dest', 'path', 'To', required=True)],
         'help': 'Within one filesystem, where it is an instant rename. Use Moves to copy to another disk.'},
     'trash': {'group': 'Files and folders', 'label': 'Move to trash', 'fields': [PATH],
-              'help': 'Moved to .storageforge-trash/<date>/ at the top of its filesystem. Nothing is deleted.'},
+              'help': 'Moved to the one trash of its host, .storageforge-trash/<date>/<its whole path> on the local drive with the most free space. From another drive it is copied there first. Nothing is deleted.'},
     'symlink': {'group': 'Files and folders', 'label': 'Create symlink', 'fields': [
         F('path', 'path', 'Link', required=True), F('target', 'path', 'Points to', required=True)]},
     'perms': {'group': 'Files and folders', 'label': 'Owner and permissions', 'fields': [
@@ -542,8 +542,9 @@ def _check_task(conn, c: Host, h: dict, k: str, p: dict, say):
             c.gone.add(src)
             c.made.add(dst)
         elif k == 'trash':
-            mnt = c.mount_at(src)[0]
-            say('note', f'goes to {mnt.rstrip("/")}/.storageforge-trash/<date>/; the space returns when you empty that folder')
+            say('note', 'goes to the host\'s one trash, .storageforge-trash/<date>/ on the local drive with the most free space when the script '
+                        'runs. On that drive it is a rename; from another drive every byte is copied first, and the space comes back here '
+                        'at once and there when you empty the trash')
             c.gone.add(src)
         else:
             if c.mount_at(src)[1] != 'btrfs':
@@ -1111,8 +1112,8 @@ CHANGE_HEAD = r"""#!/usr/bin/env bash
 #   --task N     only task N            --host [user@]host   run on that machine instead
 #
 # Every task looks before it acts, so rerunning is safe. fstab is backed up before each edit and restored if
-# findmnt --verify rejects the result. Nothing is deleted: trashed paths go to .storageforge-trash/<date>/ at
-# the top of their filesystem.
+# findmnt --verify rejects the result. Nothing is deleted: trashed paths go to .storageforge-trash/<date>/<their whole
+# path> on the local drive with the most free space (SF_TRASH_HOME=/somewhere picks it instead), copied there from another drive.
 set -euo pipefail
 
 """
@@ -1245,13 +1246,34 @@ t_rename() { local s=$1 d=$2
     { conflict "$d is on another filesystem or btrfs subvolume: mv would copy every byte; use a Moves step"; return 0; }
   act "mv $s -> $d" && try mv -T -- "$s" "$d" && ok "renamed"
 }
-t_trash() { local p=$1 top rel dest up=$1 rest= d
+trash_home() { # -> the top of the local filesystem with the most free space: the one trash of this host, picked once a run
+  # SF_TRASH_HOME names it instead. Local filesystems only, written to, not the boot or EFI partition and not a container store
+  if [[ -z ${TRASH_HOME:-} ]]; then
+    if [[ -n ${SF_TRASH_HOME:-} ]]; then TRASH_HOME=${SF_TRASH_HOME%/}
+    else
+      TRASH_HOME=$(df -P -B1 -l -x tmpfs -x devtmpfs -x squashfs -x overlay -x vfat -x efivarfs -x iso9660 -x ramfs 2>/dev/null |
+        awk 'NR > 1 && $6 !~ /^\/(boot|efi|snap|run|dev|proc|sys)(\/|$)/ && $6 !~ /^\/var\/lib\/(docker|containers)(\/|$)/ { print $4 "\t" $6 }' |
+        while IFS=$'\t' read -r avail mnt; do
+          if [[ -w $mnt ]] && ! findmnt -rn -o OPTIONS --target "$mnt" | grep -qE '(^|,)ro(,|$)'; then printf '%s\t%s\n' "$avail" "$mnt"; fi
+        done | sort -rn | head -n 1 | cut -f2) || true
+      [[ -n $TRASH_HOME ]] || TRASH_HOME=$(fs_top /.)
+    fi
+    TRASH_HOME=${TRASH_HOME%/}
+  fi
+  printf '%s' "$TRASH_HOME"
+}
+t_trash() { local p=$1 top rel dest up=$1 rest= d home abs need free
+  # here: the trash of the path's own filesystem, for a caller that must not copy (a folder just turned into a subvolume)
+  if [[ ${2:-} == here && -e $p ]]; then home=$(fs_top "$p"); else home=$(trash_home); fi
   if [[ ! -e $p && ! -L $p ]]; then
-    # Already trashed means: this very path, under some date of the trash of its filesystem. Looked for by name alone, a file of
-    # the same name trashed from another folder passed for it. The folder it was in may be gone too, so go up to one that is there.
+    # Already trashed means: this very path, under some date of the trash. The central trash keeps the whole path; one made by an
+    # older script is at the top of the path's own filesystem. The folder it was in may be gone too, so go up to one that is there.
     while [[ ! -d $up && $up == /?* ]]; do rest=/${up##*/}$rest; up=${up%/*}; up=${up:-/}; done
     if [[ -d $up ]]; then
-      top=$(fs_top "$up/."); rel=$(cd "$up" && pwd -P)$rest; rel=${rel#"$top"/}
+      abs=$(cd "$up" && pwd -P)$rest; top=$(fs_top "$up/."); rel=${abs#"$top"/}
+      for d in "$home"/.storageforge-trash/*/; do
+        if [[ -e $d${abs#/} || -L $d${abs#/} ]]; then ok "$p is already in the trash: $d${abs#/}"; return 0; fi
+      done
       for d in "$top"/.storageforge-trash/*/; do
         if [[ -e $d$rel || -L $d$rel ]]; then ok "$p is already in the trash: $d$rel"; return 0; fi
       done
@@ -1259,13 +1281,25 @@ t_trash() { local p=$1 top rel dest up=$1 rest= d
     later "$p must exist"; return 0
   fi
   mountpoint -q -- "$p" && { conflict "$p is a mount point"; return 0; }
-  top=$(fs_top "$p"); rel=$(cd "$(dirname "$p")" && pwd -P)/${p##*/}; rel=${rel#"$top"/}
-  dest="$top/.storageforge-trash/$TODAY/$rel"
-  [[ -e $dest ]] && dest="$dest.$STAMP"
-  if act "mv $p -> $dest"; then
-    mkdir -p "$(dirname "$dest")" && chmod 700 "$top/.storageforge-trash"
-    try mv -T -- "$p" "$dest" && ok "in the trash: $dest"
+  abs=$(cd "$(dirname "$p")" && pwd -P)/${p##*/}
+  # a filesystem mounted inside it would be copied and emptied with it when the trash is on another drive
+  if [[ -d $p && ! -L $p ]] && findmnt -rn -o TARGET | awk -v a="$abs/" 'index($0 "/", a) == 1 { f = 1 } END { exit !f }'; then
+    conflict "a filesystem is mounted inside $p: unmount it first"; return 0
   fi
+  dest="$home/.storageforge-trash/$TODAY/${abs#/}"
+  [[ -e $dest ]] && dest="$dest.$STAMP"
+  if [[ $(stat -c %d "$(dirname "$abs")") == $(stat -c %d "$home") ]]; then
+    act "mv $p -> $dest" || return 0
+  else
+    # another drive: mv copies every byte, then removes the original only once the copy is whole
+    need=$(du -s -B1 -- "$p" 2>/dev/null | cut -f1); free=$(df -P -B1 -- "$home" | awk 'NR == 2 { print $4 }')
+    if [[ -n $need && -n $free ]] && (( need + 1073741824 > free )); then
+      conflict "$p takes $need bytes and the trash on $home has $free free: not moved"; return 0
+    fi
+    act "copy $p to the trash on $home ($need bytes), then remove it here: $dest" || return 0
+  fi
+  mkdir -p "$(dirname "$dest")" && chmod 700 "$home/.storageforge-trash"
+  try mv -T -- "$p" "$dest" && ok "in the trash: $dest"
 }
 t_symlink() { local l=$1 t=$2
   if [[ -L $l ]]; then
@@ -1318,7 +1352,7 @@ t_to_subvolume() { local p=$1 new old a b
   [[ $a == "$b" ]] || { conflict "the copy has $b entries, the folder $a: left $new for you to inspect; $p is untouched"; return 0; }
   try mv -T -- "$p" "$old" && try mv -T -- "$new" "$p" || return 0
   ok "$p is now a subvolume"
-  t_trash "$old"
+  t_trash "$old" here
 }
 t_btrfs_add() { local dev=$1 tgt=$2
   need btrfs btrfs-progs || return 0
@@ -1773,10 +1807,12 @@ def _ansible_task(t: dict, c: Host | None, conn: Conn | None = None) -> dict:
                 'creates': p['dest'], 'removes': p['path']}}
     if k == 'trash':
         return {'name': name, 'ansible.builtin.shell': {'cmd': (
-            f'set -e; p={q(p["path"])}; d=$(cd "$(dirname "$p")" && pwd -P)\n'
-            'while [ "$d" != / ] && [ "$(stat -c %d "$(dirname "$d")")" = "$(stat -c %d "$d")" ]; do d=$(dirname "$d"); done\n'
-            'r=$(cd "$(dirname "$p")" && pwd -P)/$(basename "$p"); r=${r#"$d"/}\n'
-            'dest="$d/.storageforge-trash/$(date +%F)/$r"; mkdir -p "$(dirname "$dest")"; chmod 700 "$d/.storageforge-trash"\n'
+            f'set -e; p={q(p["path"])}; a=$(cd "$(dirname "$p")" && pwd -P)/$(basename "$p")\n'
+            # the host's one trash: the local drive with the most free space, as the plan's script picks it
+            'h=${SF_TRASH_HOME:-$(df -P -B1 -l -x tmpfs -x devtmpfs -x squashfs -x overlay -x vfat -x efivarfs -x iso9660 -x ramfs | '
+            "awk 'NR > 1 && $6 !~ /^\\/(boot|efi|snap|run|dev|proc|sys)(\\/|$)/ && $6 !~ /^\\/var\\/lib\\/(docker|containers)(\\/|$)/ { print $4 \"\\t\" $6 }' | "
+            'sort -rn | head -n 1 | cut -f2)}\n'
+            'dest="${h%/}/.storageforge-trash/$(date +%F)/${a#/}"; mkdir -p "$(dirname "$dest")"; chmod 700 "${h%/}/.storageforge-trash"\n'
             'mv -T -- "$p" "$dest"\n'), 'removes': p['path']}}
     if k == 'subvolume':
         task = {'name': name, 'ansible.builtin.command': {'argv': ['btrfs', 'subvolume', 'create', p['path']], 'creates': p['path']}}

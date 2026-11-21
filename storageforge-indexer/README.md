@@ -264,7 +264,7 @@ sudo ./changes-plan.sh --apply --destructive    # also partition, format and add
 ./changes-plan.sh --host rocks@10.42.0.3 --apply
 ```
 
-Every task looks before it acts, so reruns are safe. fstab is backed up before each edit, and the backup is restored if `findmnt --verify` rejects the result. Nothing is deleted: trashed paths go to `.storageforge-trash/<date>/` at the top of their filesystem or subvolume (so it stays a rename), and a folder turned into a subvolume leaves its original there. Drive tasks have three locks:
+Every task looks before it acts, so reruns are safe. fstab is backed up before each edit, and the backup is restored if `findmnt --verify` rejects the result. Nothing is deleted: trashed paths go to the host's one trash, `.storageforge-trash/<date>/<the whole path>` on the local drive with the most free space when the script runs (`SF_TRASH_HOME=/somewhere` picks it instead). Drive tasks have three locks:
 
 1. the device typed twice in the plan;
 2. `--destructive` on the command line;

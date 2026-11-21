@@ -64,7 +64,7 @@ Every feature follows the same rules. When adding one, follow them too; the [aud
 
    `--apply` makes a host match a description (converges); `--run` performs an action (repeats).
 8. **Idempotent.** Every step looks before it acts, so a rerun after a failure picks up where it stopped.
-9. **Nothing is deleted.** Trash goes to `.storageforge-trash/<date>/` on the same filesystem; a moved source becomes `<name>.migrated-<date>`; a folder turned into a subvolume leaves its original in the trash; fstab and `smb.conf` are backed up before each edit and restored if verification fails.
+9. **Nothing is deleted.** Trash goes to the host's one trash, `.storageforge-trash/<date>/<the whole path>` on the local drive with the most free space when the script runs (`SF_TRASH_HOME=/somewhere` picks it instead); a moved source becomes `<name>.migrated-<date>`; a folder turned into a subvolume leaves its original in the trash; fstab and `smb.conf` are backed up before each edit and restored if verification fails.
 10. **Destructive means three locks.** Drive tasks need the device typed twice in the plan, `--destructive` on the command line, and the device not being mounted, swapped on, or part of RAID, LVM or LUKS.
 11. **Every script runs anywhere.** `--host [user@]host` copies the script to that machine and runs it there with sudo. Your SSH agent is forwarded only with `--forward-agent`.
 

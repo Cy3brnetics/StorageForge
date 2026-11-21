@@ -61,7 +61,7 @@ An ordered list of tasks, each on one host, like an Ansible playbook for storage
 
 **Check** walks the plan in order, so later tasks see what earlier ones create. It flags missing sources, renames across filesystems, formatting a mounted device, profiles needing more devices than the pool has, mounts over full folders, running containers on the path, and tasks that undo each other.
 
-Then choose **Bash script**, **Ansible playbook** or **Deploy…**. Drive tasks have three locks: the device typed twice, `--destructive`, and a refusal to touch anything mounted, swapped on, or part of RAID, LVM or LUKS. Trash goes to `.storageforge-trash/<date>/`, and fstab is backed up and restored if `findmnt --verify` rejects the result.
+Then choose **Bash script**, **Ansible playbook** or **Deploy…**. Drive tasks have three locks: the device typed twice, `--destructive`, and a refusal to touch anything mounted, swapped on, or part of RAID, LVM or LUKS. Trash goes to the host's one trash, `.storageforge-trash/<date>/<the whole path>` on the local drive with the most free space when the script runs (`SF_TRASH_HOME=/somewhere` picks it instead).
 
 ## Move plans
 

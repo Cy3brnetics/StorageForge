@@ -65,7 +65,7 @@ sudo ./changes-plan.sh --apply --task 3         # one task only
 ./changes-plan.sh --host rocks@10.42.0.3 --apply
 ```
 
-fstab is backed up before each edit and restored if `findmnt --verify` rejects the result. Trash goes to `.storageforge-trash/<date>/` at the top of the filesystem or subvolume, so it stays a rename. A folder turned into a subvolume is copied with reflinks and its original goes to the trash.
+fstab is backed up before each edit and restored if `findmnt --verify` rejects the result. Trash goes to the host's one trash, `.storageforge-trash/<date>/<the whole path>` on the local drive with the most free space when the script runs (`SF_TRASH_HOME=/somewhere` picks it instead). On that drive it is a rename. From another drive every byte is copied there and the original removed only once the copy is whole; the task stops when the trash would be left with less than 1 GiB free, and refuses a folder with another filesystem mounted inside it. A folder turned into a subvolume is copied with reflinks and its original goes to the trash of its own filesystem, so it is never copied again.
 
 Drive tasks have three locks: the device typed twice in the plan, `--destructive` on the command line, and a refusal to touch anything mounted, swapped on, or part of RAID, LVM or LUKS.
 
