@@ -503,4 +503,7 @@ def problems(conn: Conn) -> dict:
                                                       f'now {row["cert_offered"]}, accepted {row["cert_sha256"]}. Nothing is sent to it until a person accepts the new one in Keys, Platform connections.', 'crit')
         elif row['state'] == 'failed':
             out[f'api-read:{row["name"]}'] = ('api-read', row['host'] or row['name'], f'Reading {row["title"]} {row["name"]} failed', row['read_error'], 'warn')
+    from . import apiread, apireadback
+    out.update(apireadback.problems(conn))
+    out.update(apiread.problems(conn))
     return out

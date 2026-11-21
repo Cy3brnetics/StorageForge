@@ -9,7 +9,7 @@ from __future__ import annotations
 from flask import jsonify, request
 from flask_login import login_required
 
-from . import apiconn, apiguide
+from . import apiconn, apiguide, apiread
 from .vault import Vault, VaultError
 
 
@@ -106,6 +106,28 @@ def register(web, ctx):
             return jsonify(error=str(exc)), 400
         core.audit(conn(), actor(), 'platform.actions', 'ok', row['host'], {'name': row['name'], 'actions': got['actions'], 'was': row['actions']})
         return jsonify(connection=got, needs={a: apiguide.action_steps(got['kind'], a) for a in got['actions']})
+
+    @web.get('/api/keys/platforms/<int:conn_id>')
+    @login_required
+    def api_platform(conn_id):
+        row = found(conn_id)
+        return jsonify(connection=row, objects=apiread.objects(conn(), conn_id))
+
+    @web.post('/api/keys/platforms/<int:conn_id>/read')
+    @login_required
+    def api_platform_read(conn_id):
+        """The read-back of what the token can do, then everything the platform's reader takes. Changes nothing on the platform."""
+        row = found(conn_id)
+        json_body()
+        try:
+            got = apiread.read(db, conn(), row)
+        except apiconn.ApiError as exc:
+            core.audit(conn(), actor(), 'platform.read', 'failed', row['host'], {'name': row['name'], 'why': str(exc)[:200]})
+            return jsonify(error=str(exc), connection=apiconn.get(conn(), conn_id)), 502
+        except VaultError as exc:
+            return jsonify(error=str(exc)), 400
+        core.audit(conn(), actor(), 'platform.read', 'ok', row['host'], {'name': row['name'], 'verdict': got['readback']['verdict'], 'counts': got['counts']})
+        return jsonify(connection=apiconn.get(conn(), conn_id), **got)
 
     @web.delete('/api/keys/platforms/<int:conn_id>')
     @login_required
