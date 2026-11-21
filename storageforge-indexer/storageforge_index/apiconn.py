@@ -42,7 +42,7 @@ KINDS = {
     'pdm': {'title': 'Proxmox Datacenter Manager', 'port': 8443, 'scheme': 'PDMAPIToken', 'sep': ':', 'cert_file': '/etc/proxmox-datacenter-manager/auth/api.pem'},
 }
 NAME = re.compile(r'[a-z0-9][a-z0-9-]{0,39}')
-TOKEN_ID = re.compile(r'([^\s@:!/=]{1,64})@([A-Za-z0-9][A-Za-z0-9._-]{0,63})!([A-Za-z][A-Za-z0-9._-]{1,63})')
+TOKEN_ID = re.compile(r'([^\s@:!/=]{1,64})@([A-Za-z0-9][A-Za-z0-9._-]{0,63})!([A-Za-z][A-Za-z0-9._-]{0,63})')
 SECRET = re.compile(r'[\x21-\x7e]{8,512}')            # printable, no space: no header can be ended or added from inside it
 HOSTNAME = re.compile(r'[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\]')
 REFUSED_USERS = {'root@pam': 'root@pam can do everything on the platform: make a dedicated user and a token for it, as the guide shows'}
