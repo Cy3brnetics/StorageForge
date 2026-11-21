@@ -1,6 +1,6 @@
 # Workloads
 
-StorageForge runs workloads the way it changes anything else: each is a step of a change plan, checked against the index, reported first and run when the plan is deployed, through a signed run, into the audit log. This page covers what came in 0.5.11. All of it is built, not lab-tested: lab tier 28 is written and has not run.
+StorageForge runs workloads the way it changes anything else: each is a step of a change plan, checked against the index, reported first and run when the plan is deployed, through a signed run, into the audit log. This page covers what came in 0.5.11. All of it is built, not lab-tested: lab tier 28 (`tests/lab/tiers_workloads.py`, see [KVM lab](kvm-lab.md)) is written and has not run. The steps are in the plan editor under Workloads and VMs; adopting, drift and exports are API routes and fields of the Workloads list, with no buttons of their own yet.
 
 What is here:
 

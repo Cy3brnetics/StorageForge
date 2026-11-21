@@ -359,6 +359,12 @@ See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure
 | POST | `/api/map/designs/<id>/stage` | | what is missing, as a plan |
 | GET | `/api/workloads`, `/api/network`, `/api/firewall`, `/api/exposure` | `?host=` | `/api/exposure` gives each host's `items` (listeners and published ports, with `level` and the `rule` that decides; `tunnel` where a tunnel publishes it) and `tunnels` (what each tunnel on the host publishes: `public`, `local`, `label`, `level`, `running`) |
 | GET | `/api/workloads/libvirt` | `?host=` | each libvirt host's networks and storage pools, from its last reading. A libvirt VM in `/api/workloads` carries its disks, snapshots and guest agent state |
+| GET | `/api/workloads/placement` | `?host=&path=&use=vm\|database\|data` | placement advice for that path: `advice` of `{level, text}` ([Workloads](workloads.md#placement-advice)) |
+| GET | `/api/workloads/capture` | `?host=&runtime=&name=&format=` | the definition a workload would be captured as (`compose`, `quadlet`, `libvirt`, `incus`), saved nowhere |
+| GET | `/api/workloads/captures`, `/api/workloads/captures/<id>` | `?host=`; `?raw=1` | adopted workloads with their `state` (same, drifted, gone) and `drift`; one capture's definition |
+| POST | `/api/workloads/captures` | `{host, runtime, name, format, note}` | adopts a workload by saving its capture. `plans.edit`, audited as `workload.adopt` |
+| DELETE | `/api/workloads/captures/<id>` | | forgets a capture. `plans.edit`, audited as `workload.forget` |
+| GET | `/api/changes/<id>/export/terraform`, `.../opentofu`, `.../puppet` | | the plan's workload steps as `main.tf` or a Puppet manifest. `plans.scripts`, audited as `changes.export.<target>` |
 | POST 🔑 | `/api/infra/measure` | `{"host"}` | `security.manage` |
 | GET | `/api/sfnet` | | `hosts.view`. StorageForge's own WireGuard network: range, port, topology, and per member its address, state and which peers the readings confirm |
 | POST 🔑 | `/api/sfnet` | `{"range"?, "topology"?}` | `security.manage`. Make the network (`mesh` or `hub`); the range is picked when not given |
