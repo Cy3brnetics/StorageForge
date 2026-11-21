@@ -1251,3 +1251,10 @@ body.sf-console-page { margin: 0; height: 100vh; display: flex; flex-direction: 
 #os2-imageinfo { white-space: pre-line; margin: 0; }
 #desk-editor > .row { justify-content: flex-start; }
 #desk-editor select { font-size: 12px; }
+/* the Toolbox (toolboxview.js) */
+.tbcards, .tbtiles, .tbrisks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.tbtiles li, .tbrisks li { font-size: 12px; }
+.tbpeers { border-collapse: collapse; font-size: 12px; }
+.tbpeers th, .tbpeers td { text-align: left; padding: 2px 6px; border-bottom: 1px solid var(--line); }
+.tbpeers code { word-break: break-all; }
+#tbyaml, #tbsig { width: 100%; font-family: var(--mono, monospace); font-size: 12px; }

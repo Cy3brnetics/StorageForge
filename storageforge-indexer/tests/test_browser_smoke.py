@@ -1411,7 +1411,7 @@ class BrowserSmoke(unittest.TestCase):
         got = self.page.evaluate("""() => [...document.querySelectorAll('.tabs button[role=tab]')].map((b) => {
           const p = document.getElementById(b.getAttribute('aria-controls'));
           return [b.dataset.tab, !!p, p && p.getAttribute('role'), p && p.getAttribute('aria-labelledby') === b.id]; })""")
-        self.assertEqual(len(got), 19)
+        self.assertEqual(len(got), 20)
         for tab, found, role, back in got:
             self.assertEqual((found, role, back), (True, 'tabpanel', True), tab)
 

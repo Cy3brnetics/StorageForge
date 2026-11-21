@@ -28,6 +28,7 @@ HEAVY = {
     'test_sshcerts.BrowserSshCa',
     'test_secretstore.BrowserSecrets',
     'test_browser_platforms.BrowserPlatforms',
+    'test_browser_toolbox.BrowserToolbox',
     'test_browser_smoke.MapAtScale',
     'test_browser_vms.BrowserVms',
     # a real sshd, Docker, or the kernel's firewall
@@ -76,6 +77,7 @@ HEAVY = {
 }
 
 MEDIUM = {
+    'test_toolbox_steps.Steps',      # bash running the Toolbox steps against stand-in podman, systemctl, apt and curl
     'test_netconsole.Receiver',       # the netconsole receiver on a real UDP socket, waiting for its batches to be stored
     'test_netconsole.TheStep',        # bash running the netconsole step against stand-ins for ip and modprobe
     'test_netconsole.Pstore',         # bash running the scan's pstore script on real files

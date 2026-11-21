@@ -637,6 +637,7 @@ function showTab(name) {
   if (name === 'rebuild') { loadRebuild(); loadOsInstall(); }          // and a second system and the desktop profiles below it (osinstallview.js, desktopview.js)
   if (name === 'docker') loadDocker();
   if (name === 'infra') loadInfra();
+  if (name === 'toolbox') loadToolbox();         // the Toolbox (toolboxview.js)
   if (name === 'deploy') loadDeploy();
   if (name === 'security' && typeof loadSecurity === 'function') loadSecurity();
   applyWide();

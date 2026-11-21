@@ -850,7 +850,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "copiesview.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "osinstallview.js", "desktopview.js", "dockerview.js", "infraview.js", "sfnetview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "sshcaview.js", "secretsview.js", "apiconnview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js", "notifyview.js", "enclaveview.js", "agentview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js"):name>')
+    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "copiesview.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "osinstallview.js", "desktopview.js", "dockerview.js", "infraview.js", "toolboxview.js", "sfnetview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "sshcaview.js", "secretsview.js", "apiconnview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js", "notifyview.js", "enclaveview.js", "agentview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)

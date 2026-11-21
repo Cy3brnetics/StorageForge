@@ -14,6 +14,7 @@ function routeState() {
   if (T.mode === 'map' && typeof mapRouteParams === 'function') Object.assign(params, mapRouteParams());
   if (tab === 'security' && typeof SEC !== 'undefined' && SEC.panel && SEC.panel !== 'overview') params.sec = SEC.panel;
   if (tab === 'hostlogs' && typeof hlRouteParams === 'function') Object.assign(params, hlRouteParams());      // the Logs range and filters (hostlogsview.js)
+  if (tab === 'toolbox' && typeof tbRouteParams === 'function') Object.assign(params, tbRouteParams());      // the tool open in the Toolbox (toolboxview.js)
   return { parts: [T.mode, tab], params };
 }
 
@@ -47,6 +48,7 @@ function routeApply(r) {
     if (r.view && r.view !== T.mode) setMode(r.view);
     if (r.sec) window.SEC_LINK_PANEL = r.sec;
     if (r.panel === 'hostlogs' && typeof hlTakeLink === 'function') hlTakeLink(r.q);
+    if (r.panel === 'toolbox' && typeof tbTakeLink === 'function') tbTakeLink(r.q);
     if (routeHasTab(r.panel)) showTab(r.panel);
   } finally { ROUTE.applying = was; }
 }
@@ -59,6 +61,7 @@ function routeTake() {
   routeApply({ ...r, panel: null });
   if (r.sec) window.SEC_LINK_PANEL = r.sec;
   if (r.panel === 'hostlogs' && typeof hlTakeLink === 'function') hlTakeLink(r.q);
+  if (r.panel === 'toolbox' && typeof tbTakeLink === 'function') tbTakeLink(r.q);
   return routeHasTab(r.panel) ? r.panel : null;
 }
 
