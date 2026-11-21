@@ -1,5 +1,12 @@
-# Added to the repo's docker-compose.yml on sf-ctl: an ntfy server for alerts to reach, so nothing leaves the lab.
+# Added to the repo's docker-compose.yml on sf-ctl: an ntfy server for alerts to reach, so nothing leaves the lab, and the netconsole
+# receiver listening on UDP 6666 for tier 14 (netconsole.py). Docker's DNAT keeps a packet's source address and port, which is what the
+# receiver knows a host by.
 services:
+  storageforge:
+    environment:
+      STORAGEFORGE_NETCONSOLE_LISTEN: "0.0.0.0:6666"
+    ports:
+      - "6666:6666/udp"
   ntfy:
     image: binwiederhier/ntfy:v2.15.0
     command: [serve]
