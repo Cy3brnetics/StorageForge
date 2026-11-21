@@ -1,5 +1,5 @@
 -- StorageForge schema v62 · postgres: kernel messages over netconsole, and the last panic from pstore (roadmap section 3, phase 5;
--- netconsole.py, pstore.py, docs/scanning-and-search.md).
+-- netconsole.py, pstore.py, docs/deployments.md).
 -- netconsole_sources: which host a netconsole packet is from. A packet is taken only when its source address and port are exactly one
 -- row's, and is never trusted beyond that: UDP carries no signature, and anyone who can send from that address can write here.
 -- packets, dropped, last_at: what the receiver took and refused from it, and when it last heard from it.

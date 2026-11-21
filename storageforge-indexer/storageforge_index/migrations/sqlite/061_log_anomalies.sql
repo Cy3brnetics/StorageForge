@@ -1,4 +1,4 @@
--- StorageForge schema v61 · sqlite: anomalies on host logs (roadmap section 3, phase 3; loganomaly.py, docs/scanning-and-search.md).
+-- StorageForge schema v61 · sqlite: anomalies on host logs (roadmap section 3, phase 3; loganomaly.py, docs/deployments.md).
 -- host_log_counts_host: the baselines read one host's counts over a few hours of each of the last four weeks, by host and bucket.
 CREATE INDEX host_log_counts_host ON host_log_counts (host, bucket);
 

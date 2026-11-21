@@ -58,7 +58,7 @@ services:
       STORAGEFORGE_BACKUP_FULL_KEEP: ${STORAGEFORGE_BACKUP_FULL_KEEP:-0}  # >0: also a full copy nightly (large)
       STORAGEFORGE_ACCESS_LOG: ${STORAGEFORGE_ACCESS_LOG:-changes}        # all | changes | off
       STORAGEFORGE_REPORT_CA_FILE: /run/sf-secrets/tls_cert              # deployed jobs trust this certificate for reports
-      STORAGEFORGE_NETCONSOLE_LISTEN: ${STORAGEFORGE_NETCONSOLE_LISTEN:-}  # kernel messages over UDP, such as 0.0.0.0:6666; publish the port too (docs/scanning-and-search.md)
+      STORAGEFORGE_NETCONSOLE_LISTEN: ${STORAGEFORGE_NETCONSOLE_LISTEN:-}  # kernel messages over UDP, such as 0.0.0.0:6666; publish the port too (docs/deployments.md)
     group_add: ["${STORAGEFORGE_SECRETS_GID:-1000}"]   # lists ./keys through the host group (docker/init-secrets.sh)
     volumes:
       - sf-secrets:/run/sf-secrets:ro   # no TLS key here: that stays with the proxy

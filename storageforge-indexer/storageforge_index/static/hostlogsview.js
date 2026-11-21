@@ -1,7 +1,8 @@
 'use strict';
-/* Logs, the panel (UX-30 of the UI audit of 2026-11-04): what hosts' journals said, as of each host's last scan. A time range, when each
-   host was last collected, a bar chart of lines by level and hour, a unit filter, and a place in the URL for all of it. Nothing here tails
-   or streams: a line arrives with the scan that reads it, and nothing refreshes by itself.
+/* Logs, the panel (UX-30 of the UI audit of 2026-11-04): what hosts' journals said, as of each host's last scan or as its agent pushed them.
+   The monitoring view (each host against its usual, logmonitor.py), a time range, when each host was last collected, a bar chart of lines
+   by level and hour, a unit filter, the rules, the netconsole sources, and a place in the URL for the range and filters. Nothing here
+   tails or streams, and nothing refreshes by itself.
 
    Every value is a host's own text, so it is only ever put on the page with textContent and DOM calls, never as markup. The chart is
    SVG made with createElementNS. The server is asked through the kernel's getJSON() only. app.js calls loadHostLogs() when the panel
