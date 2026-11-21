@@ -2020,5 +2020,6 @@ from . import steps_netconsole  # noqa: E402,F401  (kernel messages over UDP to 
 from . import steps_runtime  # noqa: E402,F401  (runtime-install: Docker, Podman, Incus, LXC, libvirt)
 from . import steps_secretfile  # noqa: E402,F401  (a vault secret written to a file a service reads)
 from . import steps_workloads  # noqa: E402,F401  (compose stacks, LXC containers and Incus instances, after steps_infra, whose firewall tool they use)
+from . import steps_vmiso  # noqa: E402,F401  (VMs from installer ISOs)
 from . import secretstore  # noqa: E402  (a step's vault secret, on the runner's stdin)
 EXTRA_BASH.append(secretstore.BASH)

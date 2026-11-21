@@ -11,7 +11,7 @@ What is here:
 - [Networks and pools](#networks-and-pools): defining, changing and removing them.
 - [Copying a VM to another libvirt host](#copying-a-vm-to-another-libvirt-host), as it is.
 
-VMs made from cloud images (`vm-create`) are in [Cloning and migrating hosts](host-migration.md). A terminal on a VM, or its serial console, is the [Console](console.md).
+VMs made from cloud images (`vm-create`) are in [Cloning and migrating hosts](host-migration.md), and VMs from installer ISOs (`vm-iso`) in [Workloads](workloads.md#vms-from-installer-isos). A terminal on a VM, or its serial console, is the [Console](console.md).
 
 ## What it reads
 

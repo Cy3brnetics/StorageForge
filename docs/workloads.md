@@ -1,4 +1,4 @@
-# Workloads: stacks, LXC and Incus
+# Workloads
 
 StorageForge runs workloads the way it changes anything else: each is a step of a change plan, checked against the index, reported first and run when the plan is deployed, through a signed run, into the audit log. This page covers what came in 0.5.11. All of it is built, not lab-tested: lab tier 28 is written and has not run.
 
@@ -6,6 +6,7 @@ What is here:
 
 - [Compose stacks, LXC containers and Incus instances](#compose-stacks-lxc-containers-and-incus-instances), each with its labels and the firewall rule for what it publishes.
 - [Image updates with rollback](#image-updates-with-rollback) on a failed healthcheck.
+- [VMs from installer ISOs](#vms-from-installer-isos), for systems with no cloud image.
 
 Running one container (`container`), VMs from cloud images (`vm-create`) and the VM steps are in [VMs on libvirt](vms.md) and [Cloning and migrating hosts](host-migration.md). Installing a runtime first is the `runtime-install` step in [Change plans](change-plans.md).
 
@@ -40,3 +41,15 @@ The `image-update` step pulls what a stack's compose file or a systemd unit name
 **Before anything changes,** each image in use is tagged `localhost/storageforge-rollback:<name>-<date>`: that tag is what is put back, and after a good update it stays, so you can go back by hand later (`docker tag` it to the name and recreate). When the pull brings nothing new the tags are taken away again and nothing is recreated. An image pinned by digest is never updated.
 
 The report says which images it would pull and what healthy means, and pulls nothing.
+
+## VMs from installer ISOs
+
+The `vm-iso` step makes a VM that boots an installer, for systems with no cloud image: Proxmox VE, or an installer you prefer. Where there is a cloud image, `vm-create` is better: it boots ready, with a login for your key.
+
+**The catalog:** Debian 13 (netinst), Ubuntu Server 24.04, Fedora Server 44 (netinst), Rocky Linux 10 and AlmaLinux 10 (minimal), Arch Linux, Alpine 3.24 (virt) and Proxmox VE 9. Each entry names the checksum list its publisher puts beside its ISOs, and the newest file of that release in the list is the one used, so a point release needs no change here. A custom ISO takes its https URL and its SHA-256 or SHA-512. TrueNAS and OPNsense are not in the catalog: TrueNAS keeps no stable checksum list, and OPNsense ships its installer compressed, which this step does not unpack.
+
+**On apply:** the checksum list is read, the ISO downloaded once into `.storageforge-images` in the libvirt pool's folder and checked, an empty qcow2 disk made, and `virt-install` run with the ISO as the CD. Nothing already there is written over: a disk or a VM of that name is a conflict, and a VM StorageForge did not make is left alone.
+
+**What it sets, that hand-written scripts often get wrong:** the console (SPICE or VNC) listens on 127.0.0.1 only, reached through an SSH tunnel or the console page; the network and the pool are checked before anything is made; the OS variant is checked against the host's osinfo database, with generic defaults and a note when the host does not know it; the guest agent channel is there, for snapshots that freeze the filesystems; firmware is BIOS, UEFI or UEFI with secure boot, and a TPM (swtpm) can be added. UEFI is refused when the host has no OVMF, and a TPM when it has no swtpm.
+
+After the install, take the ISO out with `virsh change-media NAME <CD target> --eject --config`; the report names the command. Unattended installs (kickstart, preseed, autoinstall) are not built: their answer files carry a password or a key, which would have to come from the vault.
