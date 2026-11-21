@@ -21,14 +21,14 @@ try:
     from test_enclave_stepup import Base as EnclaveBase
 except ImportError:      # run as tests.test_x from the project folder
     from tests.test_enclave_stepup import Base as EnclaveBase
-from storageforge_index import changes, cli, deploy, secretstore, server, steps_tailscale, users, vault
+from storageforge_index import changes, cli, deploy, secretstore, server, steps_secretfile, steps_tailscale, users, vault
 
 SECRET = 's' * 48
 PW = 'a long enough password'
 HARNESS = r'''
 set -u
 ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*"; PROBLEMS=$((PROBLEMS + 1)); }
-info() { echo "info: $*"; }; doing() { echo "doing: $*"; }
+info() { echo "info: $*"; }; doing() { echo "doing: $*"; }; durable() { sync -- "$@"; }
 act() { if ((APPLY)); then echo "doing: $*"; return 0; else echo "would: $*"; return 1; fi; }
 try() { "$@" || { conflict "failed: $*"; return 1; }; }
 PROBLEMS=0
@@ -39,7 +39,7 @@ def stand_ins(d: Path, log: Path) -> Path:
     """A PATH where every program the scripts start writes its command line to log before the real one runs: what ps would show."""
     b = d / 'bin'
     b.mkdir()
-    for name in ('base64', 'mv', 'mkdir', 'chmod', 'rm', 'tailscale', 'cat', 'install', 'printf'):
+    for name in ('base64', 'mv', 'mkdir', 'chmod', 'rm', 'tailscale', 'cat', 'install', 'printf', 'cmp', 'chown', 'mktemp', 'stat', 'id', 'sync'):
         real = shutil.which(name)
         body = f'exec {real} "$@"' if real and name != 'tailscale' else (
             'case $1 in status) [[ -e $FAKE/up ]] && echo \'  "BackendState": "Running",\' || echo \'  "BackendState": "NeedsLogin",\' ;; '
@@ -242,6 +242,44 @@ class Delivery(Db):
         for seen in (argv, out.stdout.decode(), out.stderr.decode()):                     # on no command line and in no output
             self.assertNotIn(self.value, seen)
         self.assertFalse((self.secrets / 'ts-key').exists())                               # tailscale removes it once joined
+
+    def test_the_secret_file_step_writes_it_where_a_service_reads_it(self):
+        import getpass
+        import grp
+        me, group = getpass.getuser(), grp.getgrgid(os.getgid()).gr_name
+        out_dir = self.tmp / 'etc-app'
+        out_dir.mkdir()
+        target = out_dir / 'db-password'
+        plan = {'name': 'app', 'tasks': [{'host': 'web', 'type': 'secret-file', 'params': {'secret': 'ts-key', 'path': str(target), 'owner': me, 'mode': '0640'}}]}
+        self.conn.execute("UPDATE device_credentials SET policy_json = NULL WHERE name = 'ts-key'")      # sealed with its policy: it no longer opens
+        self.v.store_credential('ts-key', 'secret', self.value, policy={'steps': ['secret-file'], 'hosts': ['web']}, made={'origin': 'generated', 'kind': 'token', 'length': 48})
+        with mock.patch('storageforge_index.receiving.items', return_value=([], [])):
+            item = changes.deploy_items(self.db, self.conn, plan, 'apply', 'gabe')[0]
+            self.assertNotIn('data', changes.deploy_items(self.db, self.conn, plan, 'report', 'gabe')[0])
+        data = b''.join(item['data'])
+        call = f'\nt_secret_file ts-key {target} {me} "" 0640 present\n'
+        report = self.bash(steps_secretfile.BASH, b'', apply=0, extra=call).stdout.decode()
+        self.assertIn(f'would: write the secret ts-key to {target} ({me}:{group}, mode 0640)', report)
+        out = self.bash(secretstore.BASH + steps_secretfile.BASH, data, extra=call)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn(f'ok: {target} holds the secret ts-key', out.stdout.decode())
+        self.assertEqual(target.read_text(), self.value + '\n')
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
+        self.assertEqual(sorted(p.name for p in out_dir.iterdir()), ['db-password'])          # no temporary file left
+        again = self.bash(steps_secretfile.BASH, b'', extra=call).stdout.decode()          # from the copy in /run that the first run left
+        self.assertIn(f'ok: {target} holds the secret ts-key ({me}:{group}, mode 0640)', again)
+        self.assertNotIn('doing:', again)
+        for seen in (self.log.read_text(), out.stdout.decode(), again):
+            self.assertNotIn(self.value, seen)
+        gone = self.bash(steps_secretfile.BASH, b'', extra=f'\nt_secret_file ts-key {target} {me} "" 0640 absent\n').stdout.decode()
+        self.assertIn(f'ok: removed {target}', gone)
+        items = []
+        steps_secretfile._check(self.conn, None, {'name': 'web'}, {'secret': 'ts-key', 'path': '/run/storageforge/secrets/x', 'mode': '0644'}, lambda lvl, t: items.append(lvl))
+        self.assertEqual(items.count('crit'), 1)
+        for bad in ({'path': 'rel/x'}, {'path': '/etc/../x'}, {'owner': 'Bad Name'}, {'mode': '999'}, {'secret': '../x'}):
+            items = []
+            steps_secretfile._check(self.conn, None, {'name': 'web'}, {'secret': 'k', 'path': '/etc/x', **bad}, lambda lvl, t: items.append(lvl))
+            self.assertIn('crit', items, bad)
 
     def test_the_file_is_private(self):
         data = b''.join(self.items('apply')[0]['data'])

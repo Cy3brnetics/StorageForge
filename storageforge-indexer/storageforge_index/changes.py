@@ -2016,5 +2016,6 @@ from . import steps_overlay  # noqa: E402,F401  (joining and leaving NetBird, Ze
 from . import steps_kvm  # noqa: E402,F401  (libvirt: snapshots, VM changes, networks, pools, copies)
 from . import steps_netconsole  # noqa: E402,F401  (kernel messages over UDP to the controller)
 from . import steps_runtime  # noqa: E402,F401  (runtime-install: Docker, Podman, Incus, LXC, libvirt)
+from . import steps_secretfile  # noqa: E402,F401  (a vault secret written to a file a service reads)
 from . import secretstore  # noqa: E402  (a step's vault secret, on the runner's stdin)
 EXTRA_BASH.append(secretstore.BASH)
