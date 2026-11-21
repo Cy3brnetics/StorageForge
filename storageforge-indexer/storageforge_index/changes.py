@@ -1061,8 +1061,9 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, actor: str, destructive:
                 c.close()
         return hook
     long_run = {'timeout': receiving.LONG_RUN} if any(t['type'] in SEND_TYPES for t in plan['tasks']) else {}    # stopped halfway, a send starts again from nothing
-    return [*before, *({'host': h, 'script': text, 'args': args, 'kind': 'changes', 'ref': plan['name'], 'mode': mode, **long_run,
-                        **({'on_ok': mark(h)} if mode == 'apply' and plan_id else {})} for h in order), *after]
+    carried = secretstore.items_data(db, conn, plan, mode)          # the secrets its steps name, on the runner's stdin, in an apply only
+    return [*before, *({'host': h, 'script': text, 'args': args + (['--secrets-stdin'] if h in carried else []), 'kind': 'changes', 'ref': plan['name'],
+                        'mode': mode, **long_run, **carried.get(h, {}), **({'on_ok': mark(h)} if mode == 'apply' and plan_id else {})} for h in order), *after]
 
 
 @site.stamped
@@ -1124,6 +1125,7 @@ while (($#)); do
     --task) ONLY=${2:?--task needs a number}; shift ;;
     --host) HOST=${2:?--host needs [user@]host}; shift ;;
     --forward-agent) FWD_AGENT=1 ;;
+    --secrets-stdin) SECRETS_STDIN=1 ;;   # a signed run: the secrets its steps name follow on stdin (secretstore.py)
     -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
@@ -2013,3 +2015,7 @@ from . import steps_tunnels  # noqa: E402,F401  (a Cloudflare Tunnel and a Pango
 from . import steps_overlay  # noqa: E402,F401  (joining and leaving NetBird, ZeroTier, Nebula and OpenZiti, after steps_tunnels, whose helpers it uses)
 from . import steps_kvm  # noqa: E402,F401  (libvirt: snapshots, VM changes, networks, pools, copies)
 from . import steps_netconsole  # noqa: E402,F401  (kernel messages over UDP to the controller)
+from . import steps_runtime  # noqa: E402,F401  (runtime-install: Docker, Podman, Incus, LXC, libvirt)
+from . import steps_secretfile  # noqa: E402,F401  (a vault secret written to a file a service reads)
+from . import secretstore  # noqa: E402  (a step's vault secret, on the runner's stdin)
+EXTRA_BASH.append(secretstore.BASH)

@@ -13,6 +13,8 @@ Every script prints in the same words: `ok` (already so), `missing` (would chang
 
 ## Staged changes
 
+[Change plans](change-plans.md) says how a plan is reported and applied, and covers the steps that install a runtime or need a secret ([Secrets for plan steps](secrets.md)).
+
 Change plans work like an Ansible playbook for storage: an ordered list of tasks, each on one host. Stage them from the topology (every box has **Plan a change**, and **Browse folders** on a mount lists folders with their indexed sizes) or in the **Changes** panel.
 
 ![Changes panel after Check](images/changes.jpg)

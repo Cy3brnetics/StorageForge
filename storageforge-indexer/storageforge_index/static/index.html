@@ -133,6 +133,11 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <p class="muted">A certificate authority kept in the vault. A host that trusts it lets StorageForge in with a certificate that lasts minutes and names one user on that host, and a certificate can be revoked. Keys in authorized_keys go on working: trusting the CA takes nothing away.</p>
       <p id="sshcamsg" class="muted" role="status" hidden></p>
       <div id="sshcabox" class="stack"></div>
+      <h3>Secrets for plan steps</h3>
+      <p class="muted">Passwords, tokens and keys that plan steps need on a host, made here and kept in the vault. A value is shown once, when it is made or rotated, and then never again: a plan step gets it on the host through the signed runner, when the plan is applied.</p>
+      <p id="secretmsg" class="muted" role="status" hidden></p>
+      <div id="secretonce" class="stack" role="status" hidden></div>
+      <div id="secretbox" class="stack"></div>
     </div>
     <div id="tab-access" class="tab" role="tabpanel" aria-labelledby="tabbtn-access" hidden>
       <p class="muted">Folders the latest scan of each host could not open, and read-only scan access to fix it without running scans as root.</p>
@@ -446,5 +451,6 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/securityview.js"></script>
 <script src="/securitymore.js"></script>
 <script src="/sshcaview.js"></script>
+<script src="/secretsview.js"></script>
 </body>
 </html>

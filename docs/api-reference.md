@@ -130,6 +130,11 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | PUT 🔑 | `/api/keys/ssh-ca/hosts/<host>` | `{"console": bool, "scan": bool}` | whether console sessions and scans log in to this host with a certificate; `keys.manage` |
 | POST 🔑 | `/api/keys/ssh-ca/hosts/<host>/certificate` | `{}` | issue a host certificate for the host key a scan pinned; 400 before the first scan; `keys.manage` |
 | POST 🔑 | `/api/keys/ssh-ca/certificates/<serial>/revoke` | `{"reason"}` | revoke one certificate; returns the new `krl_version`; `keys.manage` |
+| GET | `/api/keys/secrets` | | the secret store: each secret's name, kind, length, origin, policy, when it was made and rotated, and where it was delivered; the kinds; whether the key enclave is configured. Never a value; `keys.view` |
+| POST 🔑 | `/api/keys/secrets` | `{"name", "kind", "length", "steps", "hosts", "platforms", "sensitive"}` | make a secret (201); the answer holds `value`, the one time it is given; `keys.manage` |
+| GET | `/api/keys/secrets/<name>/rotate` | | what a rotation would do: the hosts it would send the new value to and what blocks it; `keys.view` |
+| POST 🔑 | `/api/keys/secrets/<name>/rotate` | `{}` | rotate it everywhere it went or nowhere; 409 with `why` when it did not; the answer holds the new `value` once; `keys.manage` and `deploy.apply` |
+| DELETE 🔑 | `/api/keys/secrets/<name>` | | remove it and the record of where it went; `keys.manage` |
 | POST | `/api/keys/ssh-ca/plan` | `{"kind": "trust", "hosts": [...], "users", "host_cert", "rollback"}` or `{"kind": "krl", "hosts": [...]}` | save a change plan of `ssh-ca-trust` or `ssh-ca-krl` steps and run nothing; `plans.edit` |
 | POST | `/api/hostkey/confirm` | `{"host", "port", "fingerprint"}` | confirm a host key before a password goes there *(in progress)* |
 | GET | `/api/access?host=` | | how scans read each host, and unreadable folders |

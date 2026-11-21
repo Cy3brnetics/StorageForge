@@ -614,9 +614,11 @@ class Vault:
             return open_into(dek.view(), self._blob(kn), self._blob(ct), self._aad(uuid, 'key'))
 
     # device passwords: for gear that takes no SSH key. Each has its own key, wrapped as an SSH key's is
-    def store_credential(self, name: str, username: str | None, password: str, enable_password: str | None = None, policy: dict | None = None) -> dict:
+    def store_credential(self, name: str, username: str | None, password: str, enable_password: str | None = None, policy: dict | None = None,
+                         made: dict | None = None) -> dict:
         """policy: what this secret may be released for and whether a release takes a step-up (policy_text). None: no policy, as
-        every secret stored before 0.5.5 has none."""
+        every secret stored before 0.5.5 has none. made: how a step's secret was made (secretstore.py): {'kind', 'length', 'origin',
+        'rotated_at'}, stored beside it in the clear, as its name is."""
         kek = None if self.enclave else self._need_kek()
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', name or ''):
             raise VaultError('a credential name is letters, digits, dot, dash and underscore')
@@ -639,9 +641,12 @@ class Vault:
                 n, ct = seal(dek.view(), body, self._aad(uuid, 'credential') + (b':' + text.encode() if text else b''))
         with self.conn.tx():
             self.conn.execute('DELETE FROM device_credentials WHERE name = :n', {'n': name})
-            self.conn.execute("""INSERT INTO device_credentials (cred_uuid, name, username, dek_nonce, wrapped_dek, nonce, ciphertext, created_at, policy_json)
-                                 VALUES (:u, :n, :un, :dn, :wd, :non, :ct, :t, :p)""",
-                              {'u': uuid, 'n': name, 'un': username, 'dn': dn, 'wd': wdek, 'non': n, 'ct': ct, 't': int(time.time()), 'p': text})
+            made = made or {}
+            self.conn.execute("""INSERT INTO device_credentials (cred_uuid, name, username, dek_nonce, wrapped_dek, nonce, ciphertext, created_at, policy_json,
+                                                             secret_kind, secret_length, secret_origin, value_rotated_at)
+                                 VALUES (:u, :n, :un, :dn, :wd, :non, :ct, :t, :p, :sk, :sl, :so, :vr)""",
+                              {'u': uuid, 'n': name, 'un': username, 'dn': dn, 'wd': wdek, 'non': n, 'ct': ct, 't': made.get('created_at') or int(time.time()), 'p': text,
+                               'sk': made.get('kind'), 'sl': made.get('length'), 'so': made.get('origin'), 'vr': made.get('rotated_at')})
         return {'name': name, 'username': username, 'policy': json.loads(text) if text else None}
 
     def credential(self, name: str, host: str | None = None, step: str | None = None, platform: str | None = None) -> dict:

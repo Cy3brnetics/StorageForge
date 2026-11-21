@@ -79,6 +79,9 @@ FRESH_PASSWORD = {
     ('PUT', '/api/keys/ssh-ca/hosts/<host>'),     # whether StorageForge logs in to a host with certificates
     ('POST', '/api/keys/ssh-ca/hosts/<host>/certificate'),
     ('POST', '/api/keys/ssh-ca/certificates/<int:serial>/revoke'),
+    ('POST', '/api/keys/secrets'),                # makes a secret, and shows its value this once
+    ('POST', '/api/keys/secrets/<name>/rotate'),  # a signed run on every host the secret went to
+    ('DELETE', '/api/keys/secrets/<name>'),
     ('PUT', '/api/me'),
     ('POST', '/api/roles'),
     ('DELETE', '/api/roles/<name>'),

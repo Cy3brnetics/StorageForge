@@ -28,6 +28,8 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Planner](planner.md) | The design tool at `/planner`: devices, mounts, links, RAID, protection, export |
 | [Scanning and search](scanning-and-search.md) | What a scan reads, guardrails, incremental sync, read-only access, git and Docker discovery, search patterns |
 | [Plans and scripts](plans-and-scripts.md) | Staged changes, data moves, NFS/SMB shares and block-built storage tasks, and the scripts they produce |
+| [Change plans](change-plans.md) | How a plan goes from saved to applied (check, report, apply from the report, 409 on a changed plan), and the runtime-install step |
+| [Secrets for plan steps](secrets.md) | The secret store: secrets made, shown once, brought to a step on the runner's stdin, rotated and removed, and what the web app can get from it |
 | [Deployments](deployments.md) | Deploy access, the signed runner, deployed jobs, alerts and drift |
 | [Remote nodes](remote-nodes.md) | Hosts behind NAT that dial in through a locked-down tunnel |
 | [The agent](agent.md) | The optional agent, switched on per host: its two programs, accounts and one sudoers line, runtimes, signed plugins and manifest, and what it can and cannot do. Built, not lab-tested |
