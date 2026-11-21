@@ -17,6 +17,8 @@ without root with a session that lingers, the distributions' own package manager
        STORAGEFORGE_AGENT_DIR (the programs)
     4. for the tunnel and receiver checks: the stack started with docker-compose.agent.yml as well, and STORAGEFORGE_AGENT_ENDPOINT
        naming sf-ctl's address and the receiver's port, so that agents have somewhere to dial
+    5. for the plugin checks: the official plugins laid out and signed with the lab's release key (agent/plugins.sh lay, then sign),
+       and STORAGEFORGE_AGENT_PLUGINS naming that folder on the lab's server
 
 Until then /api/agents names no image and every check here shows as skip with that reason, not as a pass. Without 4, the tunnel and
 receiver checks show as skip, with that reason.
@@ -37,12 +39,25 @@ receiver checks show as skip, with that reason.
                     sender's host, and the claim is a security finding
     flood           batches past the agent's rate are refused and counted, the web UI answers meanwhile, and another host's agent
                     keeps every row
-    not built       a tripwire report naming another client, and a share freeze asked by one agent: no agent report can cause any
-                    action at all yet, so these are skipped with that reason
+    replayed        batches deleted on the way show as a gap, and one played again with other bytes as a repeat, and is refused
+    not built       a tripwire report naming another client, and a share freeze asked by one agent: neither action is built (the
+                    Windows tripwire is 0.5.14), so these are skipped with that reason; the gate both go through, agentaction.py,
+                    holds in the unit tests (test_agent_guard.Gate)
+    checked         the check from outside, over SSH, finds nothing on an agent as it was made
+    plugins         heartbeat, logs, health and network, each signed by the lab's release key and delivered through the tunnel: beats
+                    arrive, a line written with logger arrives within seconds signed and matched by a log rule, health says sshd
+                    listens on the host's SSH port, network reports the interfaces
+    sshd down       sshd stopped for a minute and a half (a timer on the host starts it again): the agent goes on reporting and the
+                    notification center says SSH is down
+    written into    a file written into the running container's own layer: the check from outside wipes it, the container is
+                    stopped and left stopped, its key is gone, a notification that cannot be ignored is open, and scans still work
+    tampered        a file dropped into the plugin folder, a plugin program changed, and an old manifest put back, each as root on
+                    the host: the agent wipes its key by itself within a minute, its last word reaches the controller, and the
+                    controller revokes it; only an admin enrolls it again
     pve             on Proxmox VE the agent runs in an unprivileged LXC container made by pct, and Podman was never installed
     stop, remove    stopped it stays stopped; removed, the accounts, the sudoers line and the program are gone, and scans still work
 
-The checks of the plugins and wipe-and-stop are sections 11.3 and 11.4, and belong to this tier when built.
+The checks of the plugins and of wipe and stop (sections 11.3 and 11.4) were written with them, in 0.5.7, and have not run either.
 """
 import base64
 import json
@@ -200,6 +215,7 @@ def tier24(r):
         r.check('agent-no-socket-inside', node.name, no_socket)
 
         tunnel_checks(node, name)
+        guard_checks(node, name, expect)
 
         def stop_remove():
             api.post(f'/api/agents/{name}/stop')
@@ -312,6 +328,27 @@ def tier24(r):
             return f'{refused} of 200 refused in {time.time() - began:.0f} s; the web UI answered; nobody else\'s rows changed'
         r.check('agent-flood-costs-only-itself', node.name, flood)
 
+        def replayed():
+            last = json.loads(json.dumps(api.get(f'/api/agents/{name}/records')['peer'] or {})).get('last_counter') or 0
+            # three batches never sent (deleted on the way), then one played again with other bytes
+            want(play(last + 4, [[]]) == ['ack'], 'a batch after a gap was not taken')
+            body = json.dumps({'counter': last + 4, 'run': 2, 'sent': int(time.time()), 'dropped': 0, 'records': []}).encode()
+            sock = socket.create_connection((address, int(port)), timeout=15)
+            try:
+                s, _welcome = agenttunnel.initiate(sock, agenttunnel.x25519_of_seed(seed), receiver)
+                s.send_json(sock, {'op': 'hello', 'version': 'lab', 'run': 2, 'claims': {}, 'manifest': None, 'have': []})
+                while json.loads(s.read(sock))['op'] != 'ready':
+                    pass
+                s.send_json(sock, {'op': 'batch', 'body': body.decode(), 'signature': agenttunnel.sign_batch(key, body)})
+                answer = json.loads(s.read(sock))
+            finally:
+                sock.close()
+            want(answer['op'] == 'refused', f'a batch played again with other bytes was taken: {answer}')
+            peer = api.get(f'/api/agents/{name}/records')['peer']
+            want(peer['gaps'] >= 3 and peer['repeats'] >= 1, f'the gap and the repeat are not counted: {peer}')
+            return f'{peer["gaps"]} missing, {peer["repeats"]} played again and refused'
+        r.check('agent-batches-deleted-or-replayed', node.name, replayed)
+
         def stolen_after_removal():
             api('DELETE', f'/api/agents/{name}')
             time.sleep(8)                               # the receiver reads the pinned keys every few seconds
@@ -327,8 +364,111 @@ def tier24(r):
             return 'refused at the handshake once removed; enrolled again, the agent has a new key'
         r.check('agent-stolen-key-after-removal', node.name, stolen_after_removal)
 
-        r.add('agent-tripwire-own-address', node.name, None, 'no agent report can cause any action yet (the tripwire is section 11.4, Windows, 0.5.14)')
-        r.add('agent-freeze-needs-second-witness', node.name, None, 'no agent report can cause any action yet: one asking for a freeze has nowhere to go')
+        r.add('agent-tripwire-own-address', node.name, None, 'the tripwire is not built (section 11.4, Windows, 0.5.14); the gate it will go through, '
+              'agentaction.on_self, acts on the reporter alone in the unit tests')
+        r.add('agent-freeze-needs-second-witness', node.name, None, 'no share freeze is built; the gate it will go through, agentaction.wider, holds a request '
+              'with no independent witness for a person in the unit tests')
+
+    def reenroll(name):
+        """An agent that was wiped, enrolled again by an admin (the lab signs in as one), for the checks that follow."""
+        got = install(api, name)
+        want(got['state'] == 'running', f'the agent was not enrolled again after the wipe: {got.get("detail")}')
+        return got
+
+    def wiped(name, timeout=180):
+        return demo.wait(f'the agent on {name} wiped', lambda: row(api, name)['state'] == 'wiped' or None, timeout=timeout)
+
+    def guard_checks(node, name, expect):
+        """Wipe and stop (11.3), the plugins (11.4) and the rows of 11.6 about them, on a host whose agent runs."""
+        if row(api, name)['state'] != 'running':
+            r.add('agent-wipe-and-stop', node.name, None, 'the agent is not running here after the tunnel checks')
+            return
+
+        def checked_clean():
+            got = api.post(f'/api/agents/{name}/check')
+            want(got.get('checked') and got.get('clean'), f'the check from outside found something on an agent as it was made: {got}')
+            return 'nothing found: image, mounts, capabilities, devices, files in the container, plugin and state folders'
+        r.check('agent-checked-from-outside', node.name, checked_clean)
+
+        a = row(api, name)
+        done = {}
+        if not a.get('endpoint'):
+            r.add('agent-plugins', node.name, None, 'no receiver in the lab: plugins report through the tunnel')
+        else:
+            def plugins():
+                got = api.post(f'/api/agents/{name}/plugins', {'plugins': ['heartbeat', 'logs', 'health', 'network']})
+                want(got.get('state') == 'running', f'the plugins were not applied: {got}')
+                demo.wait('a heartbeat', lambda: [x for x in api.get(f'/api/agents/{name}/records?plugin=heartbeat')['records']] or None, timeout=300)
+                time.sleep(5)
+                marker = f'sf-lab-push-{int(time.time())}'
+                sudo(node.name, f'logger -p user.err -t sflab {marker}: Out of memory: Killed process 1 (lab)')
+                found = demo.wait('the pushed line in host logs', lambda: [e for e in api.get(f'/api/hostlogs?host={name}&q={marker}')['entries']] or None, timeout=120)
+                want(found[0].get('signed'), f'the line is not marked as pushed and signed: {found[0]}')
+                status = api.get(f'/api/hostlogs/status?host={name}')['hosts'][0]
+                want(status['via'] == 'agent' and status['delay_ms'] is not None, f'the host does not show its lines as pushed: {status}')
+                health = demo.wait('a health reading', lambda: [x for x in api.get(f'/api/agents/{name}/records?plugin=health')['records'] if x['kind'] == 'health'] or None, timeout=180)
+                want(22 in (health[0]['body'].get('ssh') or {}).get('listening', []), f'health does not see sshd listening: {health[0]["body"].get("ssh")}')
+                traffic = demo.wait('a traffic reading', lambda: [x for x in api.get(f'/api/agents/{name}/records?plugin=network')['records'] if x['kind'] == 'traffic'] or None, timeout=180)
+                want(traffic[0]['body']['interfaces'], 'no interface in the network reading')
+                done['plugins'] = True
+                return f'beats, health and traffic arrive; a line logged now came back in {status["delay_ms"]} ms, signed, gaps {status["gaps"]}'
+            r.check('agent-plugins', node.name, plugins)
+        plugins_ok = done.get('plugins', False)
+
+        if plugins_ok:
+            def sshd_down():
+                unit = 'ssh' if 'ssh.service' in sudo(node.name, 'systemctl list-unit-files ssh.service 2>/dev/null; true', check=False) else 'sshd'
+                # a timer on the host brings sshd back, since nothing else can reach it while it is down
+                sudo(node.name, f'systemd-run --on-active=90 --unit=sflab-sshd-back systemctl start {unit}.socket {unit}.service >/dev/null 2>&1; '
+                                f'(sleep 2; systemctl stop {unit}.socket {unit}.service) >/dev/null 2>&1 &')
+                def said():
+                    center = api.get(f'/api/notifications?host={name}')
+                    return any(x.get('key') == f'agent-ssh-down:{name}' for g in center.get('groups', []) for x in g.get('items', [])) or None
+                demo.wait('SSH down in the notification center', said, timeout=80)
+                demo.wait('sshd back', lambda: sudo(node.name, 'true', check=False) == '' or None, timeout=180)
+                return 'the agent said SSH was down while it was, and sshd came back on its timer'
+            r.check('agent-says-sshd-is-down', node.name, sshd_down)
+
+        if expect == 'docker':
+            def written_into():
+                upper = sudo(node.name, "docker inspect -f '{{.GraphDriver.Data.UpperDir}}' storageforge-agent").strip()
+                want(upper.startswith('/'), f'the container has no layer of its own to write into: {upper}')
+                sudo(node.name, f'mkdir -p {shlex.quote(upper)}/usr/bin && echo x > {shlex.quote(upper)}/usr/bin/sflab-dropped')
+                got = api.post(f'/api/agents/{name}/check')
+                want(not got.get('clean') and any('sflab-dropped' in f for f in got.get('findings', [])), f'the file was not found: {got}')
+                want(row(api, name)['state'] == 'wiped', 'the agent was not wiped')
+                state = sudo(node.name, "docker inspect -f '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' storageforge-agent").strip()
+                want(state == 'false no', f'the container is not stopped and left stopped: {state}')
+                want(sudo(node.name, 'test -e /var/lib/storageforge-agent/state/agent_key && echo there; true', check=False).strip() == '', 'the agent\'s key is still on the host')
+                center = api.get(f'/api/notifications?host={name}')
+                items = [x for g in center.get('groups', []) for x in g.get('items', []) if x.get('key') == f'security-agent-wiped:{name}']
+                want(items and not items[0].get('ignorable', True), f'no wiped notification that cannot be ignored: {items}')
+                demo.scan(api, [node.ip])          # SSH is unaffected
+                reenroll(name)
+                return 'found from outside, wiped: stopped and left stopped, key gone, a notification that cannot be ignored; scans work'
+            r.check('agent-file-written-into-container', node.name, written_into)
+
+        def tampered(what, act):
+            def check():
+                if row(api, name)['state'] != 'running':
+                    reenroll(name)
+                act()
+                wiped(name)
+                left = sudo(node.name, 'cat /var/lib/storageforge-agent/state/wiped 2>/dev/null; true', check=False)
+                actions = api.get(f'/api/agents/{name}/records').get('actions') or []
+                want(left.strip(), 'the agent left no word of why on the host')
+                reenroll(name)
+                return f'the agent wiped itself ({left.strip()[:120]}); the controller acted on it alone: {[x["outcome"] for x in actions[:1]]}'
+            r.check(f'agent-refuses-{what}', node.name, check)
+
+        state = '/var/lib/storageforge-agent/state'
+        tampered('a-stray-plugin-file', lambda: sudo(node.name, f'install -o sfagent -m 0600 /dev/null {state}/plugins/dropped.plugin'))
+        if plugins_ok:
+            tampered('a-changed-plugin', lambda: sudo(node.name, f'printf x >> {state}/plugins/heartbeat.plugin'))
+        old = '/var/lib/storageforge-agent/manifest'
+        sudo(node.name, f'cp {old}/manifest.json /root/sflab-old-manifest.json; cp {old}/manifest.json.sig /root/sflab-old-manifest.json.sig', check=False)
+        api.post(f'/api/agents/{name}/plugins', {'plugins': []})
+        tampered('an-old-manifest', lambda: sudo(node.name, f'cp /root/sflab-old-manifest.json {old}/manifest.json; cp /root/sflab-old-manifest.json.sig {old}/manifest.json.sig'))
 
     for node, expect in ((with_docker, 'docker'), (with_podman, 'podman-rootless'), (bare, 'podman-rootless')):
         if node is None:

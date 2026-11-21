@@ -329,21 +329,23 @@ class LastWord(test_agent_receiver.Delivery):
         self.wait_for(lambda: not self.r.sessions)
 
 
-class RealDockerCheck(test_agent.RealDocker):
-    """The check from outside against the real Docker and the agent's real image: what Docker really says of the container
-    storageforge-agentctl made is no finding, and the wipe leaves it stopped for good."""
-    test_the_real_image_runs_as_sfagent_read_only_with_no_capability_and_no_network = None
+class ReceiverRole(test_agent_receiver.Role):
+    """What an agent's report may cause, and pushed lines, are moved on the web app's side: the receiver's own role or authorizer
+    cannot write what agents may cause, nor host logs, nor wipe an agent, nor read the cursors of anything but its own table."""
+    test_it_writes_its_own_tables_reads_the_pins_and_nothing_else = None
+    test_the_grants_name_its_tables_and_no_others = None
 
-    def test_the_real_container_is_clean_and_a_wipe_leaves_it_stopped(self):
-        self.install()
-        got = agentguard.check(self.db, 'nas')
-        self.assertEqual((got['checked'], got['findings']), (True, []), got)
-        self.assertIn('files changed in the container', json.loads(sfagent.get(self.conn, 'nas')['check_json'])['checked'])
-        (self.host.root / 'var/lib/storageforge-agent/state/payload').write_text('x')
-        got = agentguard.check(self.db, 'nas')
-        self.assertEqual(got['findings'], ["payload is in the agent's state folder and the agent keeps no such file"])
-        self.assertEqual(sfagent.get(self.conn, 'nas')['state'], 'wiped')
-        self.assertEqual(self.inspect('{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}'), 'false no')
+    def test_the_receiver_cannot_act_or_write_host_logs(self):
+        from storageforge_index import agentreceiver as ar
+        conn = ar.connect(self.receiver_db())
+        self.addCleanup(conn.close)
+        conn.execute("UPDATE agent_peers SET resume_json = '{}' WHERE fingerprint = 'none'")      # its own table, its own column
+        for sql in ("INSERT INTO agent_actions (at, host, action, target, outcome) VALUES (0, 'nas', 'wipe-self', 'nas', 'done')",
+                    "INSERT INTO host_log_lines (host, line_key, at_us, priority, message, collected_at) VALUES ('nas', 'k', 0, 3, 'm', 0)",
+                    "UPDATE host_log_status SET seq_gaps = 0", "INSERT INTO log_rule_hits (rule_id, host, bucket, hits) VALUES (1, 'nas', 0, 1)",
+                    "UPDATE agents SET state = 'wiped'", "SELECT check_json FROM agents"):
+            with self.assertRaises(Exception, msg=sql):
+                conn.execute(sql).fetchall()
 
 
 if __name__ == '__main__':
