@@ -266,7 +266,7 @@ t_net_dhcp() { local iface=$1 family=${2:-ipv4} state=${3:-on} roll=$4 b want4= 
         m4=$(nm_get "$con" ipv4.method); m6=$(nm_get "$con" ipv6.method)
         if { [[ -z $want4 ]] || [[ ($want4 == true && $m4 == auto) || ($want4 == false && $m4 != auto) ]]; } && { [[ -z $want6 ]] || [[ ($want6 == true && ($m6 == auto || $m6 == dhcp)) || ($want6 == false && $m6 != auto && $m6 != dhcp) ]]; }; then ok "NetworkManager has DHCP $state for $family on $iface"; return 0; fi ;;
     networkd) cur=$(nd_dhcp "$iface")
-              f=$(case $family-$state in ipv4-on) echo ipv4 ;; ipv6-on) echo ipv6 ;; both-on) echo yes ;; *) echo no ;; esac)
+              f=$(case $family-$state in (ipv4-on) echo ipv4 ;; (ipv6-on) echo ipv6 ;; (both-on) echo yes ;; (*) echo no ;; esac)
               if [[ $cur == "DHCP=$f" ]]; then ok "systemd-networkd has DHCP=$f on $iface"; return 0; fi ;;
     ifupdown) f=sf-dhcp-$tag
               if [[ $state == on && -e $IF_D/$f ]]; then ok "ifupdown has DHCP on $iface"; return 0; fi
