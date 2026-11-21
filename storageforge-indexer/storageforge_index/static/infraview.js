@@ -219,6 +219,16 @@ async function infNetwork(content) {
   kids.push(text('h4', 'Interfaces'), infTable(['Name', 'Kind', 'State', 'Addresses', 'MTU', 'Part of'], network.interfaces.map((i) => [
     el('span', { class: 'mono' }, i.name), i.kind + (i.vlan_id ? ` ${i.vlan_id}` : ''), i.state, i.addresses.map((a) => `${a.ip}/${a.prefix}`).join(', '), i.mtu, i.master || ''])));
   kids.push(text('h4', 'Routes'), infTable(['To', 'Via', 'Device'], network.routes.map((r) => [r.dst, r.via || '', r.dev || ''])));
+  const cfg = network.config;
+  if (cfg) {
+    const said = { netplan: 'netplan', nm: 'NetworkManager', networkd: 'systemd-networkd', ifupdown: 'ifupdown', none: 'nothing that keeps it' }[cfg.manager] || cfg.manager;
+    const live = new Set(network.interfaces.map((i) => i.name));
+    kids.push(text('h4', 'Set up in files'), text('p', `The network is kept by ${said}. What its files say, beside what the kernel has above.`, 'muted small'));
+    if (cfg.unreadable.length) kids.push(text('p', `The scan user could not read: ${cfg.unreadable.join(', ')}. What they say is not shown.`, 'st-warn'));
+    kids.push(infTable(['Name', 'Set up in', 'DHCP', 'Addresses', 'Routes', 'Now'], Object.entries(cfg.interfaces).filter(([n]) => n !== 'lo').map(([n, c]) => [
+      el('span', { class: 'mono' }, n), c.source || '', ['4', '6'].filter((f) => c[`dhcp${f}`]).map((f) => `IPv${f}`).join(', '), (c.addresses || []).join(', '),
+      (c.routes || []).map((r) => `${r.to || 'default'} via ${r.via || ''}`).join(', '), live.has(n) ? 'present' : 'not present'])));
+  }
   kids.push(text('h4', 'Seen nearby'), text('p', 'From the host\'s neighbour table. These may not be managed hosts.', 'muted small'),
     infTable(['Address', 'MAC', 'Device'], network.neighbours.map((n) => [n.ip, n.mac, n.dev])));
   kids.push(text('p', `DNS: ${network.dns.nameservers.join(', ') || 'none read'}`, 'small'));
