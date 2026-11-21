@@ -420,7 +420,8 @@ def measure(db, conn: Conn, host, actor: str) -> dict:
 
 
 def reading(conn: Conn, host: str) -> dict | None:
-    return security.measurement(conn, host, 'infra')
+    from . import apipangolin
+    return apipangolin.fill_newt(conn, host, security.measurement(conn, host, 'infra'))       # a running Newt's routes, from Pangolin's API when connected
 
 
 def off_hosts(conn: Conn) -> list[str]:
