@@ -1106,6 +1106,9 @@ def _send_secret(db, conn, v, args) -> int:
     del cred
     ok = p.returncode == 0
     _audit(db, conn, v, 'vault.secret_send', 'ok' if ok else 'failed', host=args.host, name=args.name)
+    if ok:
+        from . import secretstore
+        secretstore.delivered(conn, args.name, args.host, args.step or 'send-secret', 'send-secret')          # where a rotation sends the next value
     if not ok:
         print(f'could not write it on {args.host}: {p.stderr.decode(errors="replace").strip()[-300:]}', file=sys.stderr)
         return 1
@@ -1123,6 +1126,67 @@ def _secret_policy(args) -> dict | None:
     if not (args.step or args.for_host or args.platform or args.sensitive):
         return None
     return {'steps': args.step or [], 'hosts': args.for_host or [], 'platforms': args.platform or [], 'sensitive': bool(args.sensitive)}
+
+
+def _secret_store(db, conn, v, args) -> int:
+    """`vault secret-generate|secret-list|secret-rotate|secret-remove` (secretstore.py). A value is printed once, to stdout alone, when it
+    is made or rotated: everything else goes to stderr, so `> file` keeps only the value."""
+    from . import secretstore
+    from .vault import VaultError
+    a = args.vault_cmd
+    try:
+        if a == 'secret-list':
+            for s in secretstore.listing(conn):
+                made = f'{s["kind"]} of {s["length"]}' if s['origin'] == 'generated' else 'given'
+                went = ', '.join(d['host'] for d in s['delivered']) or 'not delivered yet'
+                print(f'{s["name"]:<24} {made:<16} {went}' + (f'  policy {json.dumps(s["policy"], sort_keys=True)}' if s['policy'] else ''))
+            return 0
+        if a == 'secret-generate':
+            row, value = secretstore.make(v, conn, args.name, args.kind, args.length, _secret_policy(args))
+            _audit(db, conn, v, 'vault.secret_generate', name=row['name'], kind=row['kind'], length=row['length'], policy=row['policy'])
+            print(f'generated {row["kind"]} secret {row["name"]} ({row["length"]} characters). It is shown this once:', file=sys.stderr)
+            print(value)
+            del value
+            return 0
+        if a == 'secret-remove':
+            n = secretstore.remove(conn, args.name)
+            _audit(db, conn, v, 'vault.secret_remove', 'ok' if n else 'failed', name=args.name)
+            print(f'removed {n} secret(s). Copies on hosts are in /run, so they go at the next reboot', file=sys.stderr)
+            return 0 if n else 1
+        # secret-rotate
+        plan = secretstore.rotate_plan(conn, args.name)
+        if not args.apply:
+            print(f'{args.name}: {plan["note"]}, sent to:', file=sys.stderr)
+            for h in plan['hosts']:
+                print(f'  {h["host"]:<24} ({h["how"]}{", step " + h["step"] if h["step"] else ""})' + ('' if h['ready'] else f'  blocked: {h["why"]}'), file=sys.stderr)
+            if not plan['hosts']:
+                print('  no host yet: only the vault changes', file=sys.stderr)
+            print('nothing changed: --apply rotates it', file=sys.stderr)
+            return 0
+        given = None
+        if args.given:
+            given = sys.stdin.read().strip()
+        from .vault import actor_name
+        got = secretstore.rotate(db, conn, v, args.name, actor_name(), given)
+        del given
+        _audit(db, conn, v, 'vault.secret_rotate', 'ok' if got['rotated'] else 'failed', name=args.name,
+               hosts=[r['host'] for r in got.get('results', [])], why=got['why'][:200])
+        for r in got.get('results', []):
+            print(f'  {r["host"]:<24} {r["stage"]}' + (f', {r["commit"]}' if r.get('commit') else ''), file=sys.stderr)
+        if not got['rotated']:
+            print(f'not rotated: {got["why"]}', file=sys.stderr)
+            return 1
+        if got['why']:
+            print(got['why'], file=sys.stderr)
+        if got.get('value'):
+            print(f'rotated {args.name}. The new value is shown this once:', file=sys.stderr)
+            print(got['value'])
+        else:
+            print(f'rotated {args.name}', file=sys.stderr)
+        return 0
+    except (VaultError, secretstore.SecretError, LookupError) as exc:
+        print(exc if not isinstance(exc, LookupError) else exc.args[0], file=sys.stderr)
+        return 1
 
 
 def _second_lock(args) -> int:
@@ -1290,7 +1354,7 @@ def cmd_vault(args) -> int:
                 return 2
             policy = _secret_policy(args)
             v.remove_credential(args.name)
-            v.store_credential(args.name, 'secret', text, policy=policy)
+            v.store_credential(args.name, 'secret', text, policy=policy, made={'origin': 'given'})
             del text
             _audit(db, conn, v, 'vault.secret_add', name=args.name, policy=policy)
             print(f'stored secret {args.name}: send it to a host with  storageforge-index vault send-secret {args.name} --host HOST')
@@ -1311,7 +1375,9 @@ def cmd_vault(args) -> int:
             said = row['policy'] or {}
             try:
                 got = v.credential(args.name, host=(said.get('hosts') or [None])[0], step=(said.get('steps') or ['secret-policy'])[0], platform=(said.get('platforms') or [None])[0])
-                v.store_credential(args.name, got['username'], got['password'], got.get('enable'), policy=policy)
+                from . import secretstore
+                v.store_credential(args.name, got['username'], got['password'], got.get('enable'), policy=policy,
+                                   made=secretstore.made_of(secretstore.meta(conn, args.name)) if got['username'] == secretstore.USERNAME else None)
             except VaultError as exc:
                 print(f'not changed: {exc}', file=sys.stderr)
                 return 1
@@ -1321,6 +1387,8 @@ def cmd_vault(args) -> int:
             return 0
         if a == 'send-secret':
             return _send_secret(db, conn, v, args)
+        if a in ('secret-generate', 'secret-list', 'secret-rotate', 'secret-remove'):
+            return _secret_store(db, conn, v, args)
         if a in ('nebula-ca', 'nebula-issue', 'nebula-revoke', 'nebula-list', 'headscale-key'):
             from . import overlaykeys
             return overlaykeys.command(db, conn, v, args, lambda action, outcome, host, **detail: _audit(db, conn, v, action, outcome, host=host, **detail))
@@ -2146,6 +2214,19 @@ def build_parser() -> argparse.ArgumentParser:
                       ('--sensitive', dict(action='store_true', help='with the key enclave: a release takes a step-up the enclave checks itself')))
     for flag, kw in policy_options:
         x.add_argument(flag, **kw)
+    x = vs.add_parser('secret-generate', help='make a secret for plan steps (a password, token, hex key, PIN or WireGuard key), print it once and keep it in the vault')
+    x.add_argument('name')
+    x.add_argument('--kind', default='password', choices=('password', 'token', 'hex', 'pin', 'wireguard'))
+    x.add_argument('--length', type=int, help='characters (default per kind: password 24, token 40, hex 64, pin 8)')
+    for flag, kw in policy_options:
+        x.add_argument(flag, **kw)
+    vs.add_parser('secret-list', help='the secrets plan steps use, how each was made and where it was delivered: never a value')
+    x = vs.add_parser('secret-rotate', help='a new value for a secret, sent to every host it was delivered to, or to none (a dry run without --apply)')
+    x.add_argument('name')
+    x.add_argument('--apply', action='store_true')
+    x.add_argument('--given', action='store_true', help='for a secret you gave: the new value on stdin, as one line')
+    x = vs.add_parser('secret-remove', help='remove a secret plan steps use, and the record of where it went')
+    x.add_argument('name')
     x = vs.add_parser('secret-policy', help='show or change what a stored secret may be released for; --none takes the policy off')
     x.add_argument('name')
     x.add_argument('--none', action='store_true', help='no policy: the secret is stored as before 0.5.5')
