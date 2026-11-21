@@ -13,6 +13,8 @@ from __future__ import annotations
 from . import apiread, inframeasure
 from .db import Conn
 
+PROXMOX = ('pve', 'pbs', 'pdm')
+
 
 def _hosts(conn: Conn) -> dict:
     out = {}
@@ -122,6 +124,17 @@ def annotate_workloads(conn: Conn, listing: dict, host: str | None = None) -> di
             'detail': False, 'managed_by': 'proxmox', 'source': 'api', 'security': None, 'findings': [],
             'api': {'connection': g['connection'], 'status': g.get('status'), 'node': g.get('node'), 'remote': g.get('remote'), 'differs': []}})
         added[key] = listing['workloads'][-1]
+    for pw in platform_workloads(conn, host):          # Xen Orchestra, TrueNAS and the panels: beside the scan's reading, or added
+        same = next((w for w in listing.get('workloads') or [] if pw.get('host') and w.get('host') == pw['host'] and w.get('name') == pw.get('name')
+                     and w.get('runtime') == pw.get('runtime') and w.get('source') != 'api'), None)
+        if same:
+            differs = [{'field': 'state', 'api': pw.get('state'), 'ssh': same.get('state')}] if pw.get('state') and same.get('state') and pw['state'] != same['state'] else []
+            same['api'] = {**pw['api'], 'state': pw.get('state'), 'stack': pw.get('stack'), 'differs': differs}
+            continue
+        listing.setdefault('workloads', []).append({
+            'host': pw.get('host'), 'runtime': pw.get('runtime'), 'kind': pw.get('kind') or 'container', 'name': pw.get('name'), 'state': pw.get('state'),
+            'memory_mib': pw.get('memory_mib'), 'vcpus': pw.get('vcpus'), 'mounts': [], 'networks': [], 'ports': [], 'detail': False,
+            'managed_by': pw['api']['platform'], 'source': 'api', 'security': None, 'findings': [], 'api': {**pw['api'], 'stack': pw.get('stack'), 'differs': []}})
     return listing
 
 
@@ -166,9 +179,22 @@ def map_extra(conn: Conn, g: dict, layers) -> dict:
                 edge(nid, f'host:{host}', 'RUNS_ON', f'{x["title"]} API: on node {x.get("node")}')
             else:
                 edge(nid, f'api:{x["connection"]}', 'MANAGED_BY', f'{x["title"]} API: on node {x.get("node")}, which is not a scanned host')
+    for cid, r in rows.items():                 # the platforms beyond Proxmox draw their own objects (map_nodes in each reader)
+        mod = apiread.reader(r['kind'])
+        if r['kind'] in PROXMOX or not hasattr(mod, 'map_nodes') or (not r.get('read_ok') and not r.get('read_at')):
+            continue
+        for n in mod.map_nodes(conn, r, apiread.objects(conn, cid), hosts, layers):
+            if n.get('attach') in known:     # the scan draws it already: the API's reading goes beside it, not a second node
+                known[n['attach']]['props']['api'] = {**n.get('props', {}), 'connection': r['name']}
+                continue
+            nid = add(n['id'], n['kind'], n['label'], n['layer'], n.get('host'), **n.get('props', {}))
+            for dst, rel, why in n.get('edges', []):
+                edge(nid, dst, rel, why)
+            if not n.get('edges'):
+                edge(nid, f'api:{r["name"]}', 'MANAGED_BY', f'{r["title"]} API')
     if 'storage' in layers:
         for o in apiread.objects(conn):
-            if o['kind'] not in ('storage', 'datastore'):
+            if o['kind'] not in ('storage', 'datastore') or o['platform'] not in PROXMOX:
                 continue
             r = rows[o['conn_id']]
             host = host_of_node(hosts, r, o.get('node'), 1 if o['kind'] == 'datastore' else 0) if not o.get('remote') else None
@@ -193,4 +219,36 @@ def compare_connection(conn: Conn, row: dict) -> dict:
     if row['kind'] == 'pbs':
         from . import apipbs
         out['datastores'] = apipbs.compare_mounts(conn, row, apiread.objects(conn, row['conn_id']))
+    mod = apiread.reader(row['kind'])
+    if row['kind'] not in PROXMOX and hasattr(mod, 'compare'):
+        out.update(mod.compare(conn, row, apiread.objects(conn, row['conn_id'])))
+    return out
+
+
+def platform_workloads(conn: Conn, host: str | None = None) -> list[dict]:
+    """What the platforms beyond Proxmox say runs where (Xen Orchestra's VMs, a panel's containers, TrueNAS apps), each reader's
+    workloads(), for the Workloads list: one entry per workload, with the scanned host when one is known."""
+    from . import apiconn
+    out = []
+    for r in apiconn.listing(conn):
+        mod = apiread.reader(r['kind'])
+        if r['kind'] in PROXMOX or not hasattr(mod, 'workloads'):
+            continue
+        for w in mod.workloads(conn, r, apiread.objects(conn, r['conn_id'])):
+            if host and (w.get('host') or '').lower() != host.lower():
+                continue
+            out.append({**w, 'api': {**(w.get('api') or {}), 'connection': r['name'], 'platform': r['kind']}})
+    return out
+
+
+def managed_by(conn: Conn, host: str) -> dict:
+    """HOOK for section 6's "externally managed" detection, which is built apart (workloads code, not here): which containers on a
+    scanned host a Docker panel (Dockhand, Portainer, Komodo) or TrueNAS says it manages, read from the panel's own API.
+    {container name: {'panel', 'connection', 'stack', 'environment'}}. Nothing calls it yet: the detection can, so that a container a
+    panel deploys is told apart from one deployed by hand even when its labels say nothing."""
+    out = {}
+    for w in platform_workloads(conn, host):
+        if w.get('runtime') in ('docker', 'compose') and w.get('name'):
+            a = w['api']
+            out[w['name']] = {'panel': a['platform'], 'connection': a['connection'], 'stack': w.get('stack'), 'environment': a.get('environment')}
     return out

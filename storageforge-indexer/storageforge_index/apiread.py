@@ -17,7 +17,8 @@ READERS = {'pve': 'apipve', 'pbs': 'apipbs', 'pdm': 'apipdm'}
 
 
 def reader(kind: str):
-    name = READERS.get(kind)
+    from . import apiguide
+    name = READERS.get(kind) or apiguide.PLATFORMS.get(kind)
     if not name:
         return None
     try:

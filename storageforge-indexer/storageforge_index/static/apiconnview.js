@@ -6,6 +6,7 @@
 
 const vapiMsg = (msg, ok) => { const m = $('#platformmsg'); m.hidden = false; m.className = ok ? 'st-ok' : 'st-failed'; m.replaceChildren(msg); };
 const vapiDo = async (fn) => { try { await fn(); } catch (err) { vapiMsg(err.message, false); } };
+let VAPI_KINDS = {};                 // kind -> what the connect screen says beside each field, from GET /api/keys/platforms
 const VAPI_STATE = { 'certificate-unaccepted': 'certificate not accepted yet: nothing has been sent', 'certificate-changed': 'the certificate changed: nothing is sent until you accept it',
   'not-read': 'not read yet', ok: 'read', failed: 'the last read failed' };
 
@@ -26,8 +27,9 @@ function vapiGuide(g) {
 async function vapiAccept(c, offered) {
   const cert = offered || (await getJSON(`/api/keys/platforms/${c.conn_id}/certificate`)).certificate;
   const file = { pve: '/etc/pve/local/pve-ssl.pem', pbs: '/etc/proxmox-backup/proxy.pem', pdm: '/etc/proxmox-datacenter-manager/auth/api.pem' }[c.kind];
+  const where = file ? `on the platform, run\n\nopenssl x509 -noout -fingerprint -sha256 -in ${file}` : `it is ${(VAPI_KINDS[c.kind] || {}).cert_file || 'the certificate the platform serves'}`;
   const ok = await confirmDialog({ title: `Accept the certificate of ${c.name}?`, confirm: 'Accept it',
-    body: `${c.base_url} presents the certificate below. Compare its fingerprint with the platform's own before you accept it: on the platform, run\n\nopenssl x509 -noout -fingerprint -sha256 -in ${file}\n\nThe token is sent only to a server that presents this certificate.`,
+    body: `${c.base_url} presents the certificate below. Compare its fingerprint with the platform's own before you accept it: ${where}.\n\nThe token is sent only to a server that presents this certificate.`,
     items: [`SHA-256 ${cert.sha256}`, ...(cert.subject ? [`subject ${cert.subject}`, `issuer ${cert.issuer}${cert.self_signed ? ' (self-signed)' : ''}`] : []),
       ...(c.cert_sha256 ? [`accepted before: ${c.cert_sha256}`] : [])] });
   if (!ok) return false;                     // cancelled: nothing is sent and nothing on the page changes
@@ -112,11 +114,9 @@ function vapiForm(kinds) {
   const field = (label, input, hint) => sfNode('label', { class: 'sf-field' }, sfNode('span', {}, label), input, hint ? sfNode('small', {}, hint) : null);
   const kind = sfNode('select', { id: 'platkind' }, kinds.map((k) => sfNode('option', { value: k.kind }, k.title)));
   const scope = sfNode('input', { id: 'platscope', autocomplete: 'off', placeholder: '/' });
-  const scopeHint = { pve: 'Paths: / for all, or /vms /storage /nodes to keep the rest hidden.', pbs: 'The datastores it should see, separated by spaces.', pdm: 'The remotes it should see, separated by spaces.' };
   const hint = sfNode('small', {});
-  const setHint = () => { hint.textContent = scopeHint[kind.value]; scope.placeholder = { pve: '/', pbs: 'store1', pdm: 'pve-a pbs-b' }[kind.value]; };
-  kind.addEventListener('change', setHint);
-  setHint();
+  const setHint = () => { const k = VAPI_KINDS[kind.value] || {}; hint.textContent = k.scope_hint || ''; scope.placeholder = k.scope_placeholder || '';
+    url.placeholder = `https://${kind.value}.example:${k.port || 443}`; tokenId.placeholder = k.token_id_placeholder || ''; idHint.textContent = `The token ID is ${k.token_id_hint || ''}.`; };
   const guideBox = sfNode('div', { class: 'stack', id: 'platguidebox' });
   const name = sfNode('input', { id: 'platname', required: true, maxlength: 40, pattern: '[a-z0-9][a-z0-9-]{0,39}', autocomplete: 'off', placeholder: 'pve-lab' });
   const url = sfNode('input', { id: 'platurl', required: true, autocomplete: 'off', placeholder: 'https://pve.example:8006' });
@@ -124,8 +124,11 @@ function vapiForm(kinds) {
   const secret = sfNode('input', { id: 'plattoken', required: true, type: 'password', autocomplete: 'off', spellcheck: false });
   const host = sfNode('input', { id: 'plathost', autocomplete: 'off', placeholder: 'found by its address when empty' });
   const expires = sfNode('input', { id: 'platexpiry', type: 'date' });
+  const idHint = sfNode('small', {});
+  kind.addEventListener('change', setHint);
+  setHint();
   const tokenForm = sfNode('form', { class: 'stack', id: 'plattokenform', hidden: true },
-    field('Name of this connection', name), field('Address', url, 'https only: plain HTTP is refused.'), field('Token ID', tokenId, 'user@realm!tokenname, as the platform shows it.'),
+    field('Name of this connection', name), field('Address', url, 'https only: plain HTTP is refused.'), sfNode('label', { class: 'sf-field' }, sfNode('span', {}, 'Token ID'), tokenId, idHint),
     field('Token secret', secret, 'Shown by the platform once. It goes into the vault and is never shown again.'), field('Scanned host it runs on', host),
     field('Token expires on', expires, 'Only where the platform cannot say: a date it reads back wins. A warning comes 30 days before.'),
     sfNode('div', { class: 'row end' }, sfNode('button', { class: 'btn pri', type: 'submit' }, 'Add, then check the certificate')));
@@ -134,7 +137,6 @@ function vapiForm(kinds) {
     const q = scope.value.trim() ? `?scope=${encodeURIComponent(scope.value.trim())}` : '';
     const g = await getJSON(`/api/keys/platforms/guide/${kind.value}${q}`);
     guideBox.replaceChildren(vapiGuide(g));
-    tokenId.placeholder = `storageforge@${kind.value}!storageforge`;
     tokenForm.hidden = false;
   }));
   tokenForm.addEventListener('submit', (ev) => { ev.preventDefault(); vapiDo(async () => {
@@ -161,6 +163,7 @@ async function loadPlatforms(withForm = true) {
   if (!box) return;
   try {
     const d = await getJSON('/api/keys/platforms');
+    VAPI_KINDS = Object.fromEntries(d.kinds.map((k) => [k.kind, k]));
     const manage = can('keys.manage');
     const list = document.createElement('ol'); list.className = 'list'; list.id = 'platformlist';
     list.replaceChildren(...d.connections.map((c) => vapiRow(c, manage)));

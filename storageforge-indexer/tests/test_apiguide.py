@@ -20,7 +20,7 @@ class Guide(unittest.TestCase):
 
     def test_each_platform_recommends_its_read_only_role_and_never_a_full_one(self):
         want = {'pve': 'PVEAuditor', 'pbs': 'DatastoreAudit', 'pdm': 'Auditor'}
-        for kind in apiguide.GUIDES:
+        for kind in want:                       # the other platforms have their own test of this (test_apitruenas and the rest)
             with self.subTest(kind):
                 cmds = self.runs(kind, scope='store1' if kind == 'pbs' else 'lab' if kind == 'pdm' else None)
                 self.assertTrue(any(want[kind] in c for c in cmds))
