@@ -103,6 +103,10 @@ MEDIUM = {
     'test_sshcerts.TrustStep',       # the trust and revocation steps against a real sshd, reloaded
     'test_sshcerts.CaInTheEnclave',  # the real enclave program signing a certificate
     'test_tunnel_exposure.Steps',    # bash running the two tunnel steps against stand-ins
+    'test_pool_steps.Bash',          # bash running the pool and LUKS steps against stand-ins, and the real cryptsetup on an image
+    'test_pool_steps.Checks',        # shellcheck over a plan of every pool step
+    'test_network_steps.Bash',       # bash running the network steps against stand-ins for ip, netplan, nmcli, networkctl and ifup
+    'test_network_steps.Checks',     # shellcheck over a plan of every network step
     'test_connections.MoreCollected',    # the collector's lines in bash against stand-ins, and a CA made by the real openssl
     'test_overlay_steps.NetBird',    # bash running the join and leave steps against stand-ins, on a PATH of their own
     'test_overlay_steps.ZeroTier',

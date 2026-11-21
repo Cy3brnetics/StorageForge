@@ -2007,6 +2007,7 @@ from . import steps_desktop  # noqa: E402,F401  (dux-install and desktop-profile
 from . import steps_clone  # noqa: E402,F401  (packages from another host)
 from . import steps_md  # noqa: E402,F401  (mdadm arrays)
 from . import steps_pools  # noqa: E402,F401  (vdevs, disk replacements, md growth and LUKS, after steps_md)
+from . import steps_network  # noqa: E402,F401  (bonds, addresses, routes and DHCP, in netplan, NetworkManager, networkd or ifupdown)
 from . import steps_services  # noqa: E402,F401  (services of another host)
 from . import steps_tailscale  # noqa: E402,F401  (joining a tailnet)
 from . import steps_sshca  # noqa: E402,F401  (trusting the SSH CA, and its revocation list)
