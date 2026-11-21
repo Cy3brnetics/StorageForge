@@ -63,13 +63,15 @@ class Platform:
                 got = fake.routes.get(path, (404, 'Not Found', {'data': None}))
                 if callable(got):
                     got = got(req)
-                status, reason, data = got if isinstance(got, tuple) else (200, 'OK', got)
+                status, reason, data, extra = (got + ({},))[:4] if isinstance(got, tuple) else (200, 'OK', got, {})      # a 4th item: more headers (a Location)
                 if fake.wrap and not (isinstance(data, dict) and 'data' in data) and not isinstance(data, (str, bytes)):
                     data = {'data': data}
                 raw = data if isinstance(data, bytes) else (data.encode() if isinstance(data, str) else json.dumps(data).encode())
                 self.send_response(status, reason)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(raw)))
+                for k, v in extra.items():
+                    self.send_header(k, v)
                 self.end_headers()
                 self.wfile.write(raw)
 

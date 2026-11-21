@@ -575,20 +575,27 @@ class Client:
         url = self.path_of(path, params if method == 'GET' else None)
         body = json.dumps(params if params is not None else {}).encode() if method != 'GET' else None
         tries = RETRIES if reading else 0
-        for attempt in range(tries + 1):
+        attempt = redirects = 0
+        while attempt <= tries:
             _wait_turn(int(self.row.get('conn_id') or 0), self.rate)
             self.sent += 1
             try:
-                status, reason, text, retry_after = self._once(method, url, body)
+                status, reason, text, retry_after, location = self._once(method, url, body)
             except (CertificateChanged, NotPinned):
                 raise
             except ApiError:
                 if attempt < tries:
-                    time.sleep(0.5 * (attempt + 1))
+                    attempt += 1
+                    time.sleep(0.5 * attempt)
                     continue
                 raise
+            if status in (301, 302, 303, 307, 308) and method == 'GET' and redirects < 3:
+                url = self._redirect(location, url)          # Xen Orchestra sends /users/me on to /users/ID
+                redirects += 1
+                continue
             if status in RETRY_STATUS and attempt < tries:
-                time.sleep(min(retry_after or 0.5 * (attempt + 1), 5))
+                attempt += 1
+                time.sleep(min(retry_after or 0.5 * attempt, 5))
                 continue
             if status in (401, 403):
                 raise Refused(f'{self.row["title"]} refused the token for {path}: {status} {self.clean(reason)}', status)
@@ -596,6 +603,16 @@ class Client:
                 raise ApiError(f'{self.row["title"]} answered {status} {self.clean(reason)} for {path}')
             return text
         raise ApiError(f'{self.row["title"]} did not answer {path}')       # not reached: the loop returns or raises
+
+    def _redirect(self, location: str | None, was: str) -> str:
+        """Where a redirect may lead: only to another API path on the same server, so the token never follows it anywhere else."""
+        target = urlsplit(location or '')
+        if (target.scheme and target.scheme != 'https') or (target.netloc and (target.hostname or '').lower() != self.host.strip('[]').lower()) \
+                or (target.port not in (None, self.port) if target.netloc else False):
+            raise ApiError(f'{self.row["title"]} sent the request to another server: not followed')
+        if not target.path.startswith(self.spec['prefix'] + '/') or '..' in target.path:
+            raise ApiError(f'{self.row["title"]} sent the request outside its API: not followed')
+        return target.path + ('?' + (target.query or urlsplit(was).query) if (target.query or urlsplit(was).query) else '')
 
     def _once(self, method: str, url: str, body: bytes | None):
         c = self._connect()
@@ -609,7 +626,7 @@ class Client:
             if len(data) > MAX_BODY:
                 raise ApiError(f'the answer to {url.split("?")[0]} is larger than {MAX_BODY >> 20} MiB: not read')
             retry = r.getheader('Retry-After')
-            return r.status, r.reason or '', data.decode('utf-8', 'replace'), float(retry) if retry and retry.isdigit() else None
+            return r.status, r.reason or '', data.decode('utf-8', 'replace'), float(retry) if retry and retry.isdigit() else None, r.getheader('Location')
         except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
             raise ApiError(f'{self.host}:{self.port}: {self.clean(exc)}') from None
         finally:
