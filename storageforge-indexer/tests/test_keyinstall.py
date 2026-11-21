@@ -69,7 +69,7 @@ class InstallPublicKey(unittest.TestCase):
         self.assertEqual((self.t / 'log.json.answer').read_text(), PASSWORD, 'askpass gave ssh the password as typed ($(...) took its newline)')
         self.assertFalse(any(PASSWORD in a for a in seen['argv']), 'never on the command line')
         self.assertFalse(any(PASSWORD in f for f in seen['files']), 'never a file name')
-        self.assertEqual(seen['key'], PUBLIC + '\n', 'the one file is the public key')
+        self.assertEqual(seen['key'], 'restrict,pty ' + PUBLIC + '\n', 'the one file is the public key, restricted')
         self.assertEqual(seen['files'], ['key.pub'], 'and nothing else is in its folder')
         self.assertFalse(seen['tty'], 'no terminal for ssh to ask on')
 

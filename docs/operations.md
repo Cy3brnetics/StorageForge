@@ -283,7 +283,7 @@ To run it every hour, copy `docker/update/storageforge-update.service` and `.tim
 
 Whoever can push a tag to that remote runs their code on your Docker host, so decide who that is:
 
-- **Sign releases.** Set `STORAGEFORGE_UPDATE_SIGNERS` to an allowed-signers file (the format of `ssh-keygen -Y verify`, one line per key: `name namespaces="git" ssh-ed25519 AAAA…`). A release is then installed only if its tag is signed by one of those keys. Without it the script trusts the remote alone, and says so on every run.
+- **Sign releases.** Set `STORAGEFORGE_UPDATE_SIGNERS` to an allowed-signers file (the format of `ssh-keygen -Y verify`, one line per key: `name namespaces="git" ssh-ed25519 AAAA…`). A release is installed only if its tag is signed by one of those keys, and only if the signed tag names the release it is stored as: a signed old release pushed again under a newer name is refused, and so is a tag with no signature at all. **Without a signers file `apply` installs nothing** (since 0.5.10). `STORAGEFORGE_UPDATE_TRUST_REMOTE=1` installs from the remote unchecked, for the one run it is set for; the shipped timer unit sets the signers file and not this. `check` needs neither. The lock that keeps two runs apart is in the clone's `.git` folder.
 - **Read the upgrade notes.** An automatic install does not read the changelog. A release that asks for a step by hand says so under *Upgrade notes*; if you want to read first, run `check` on the timer.
 - **A migration cannot be taken back by this script.** Going back restarts the old release on the data as the new one left it. Releases that change the database's layout say so, and the nightly backup is what a real return starts from.
 

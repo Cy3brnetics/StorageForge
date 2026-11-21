@@ -61,6 +61,31 @@ def key_login_works(db, conn, key_name: str, host: str, user: str, port: int = 2
                 t.close()
 
 
+FROM_ENV = 'STORAGEFORGE_SSH_FROM'       # the addresses or networks the controller logs in from, as hosts see them: from= on every key line
+
+
+def restricted_line(public_line: str) -> str:
+    """The authorized_keys line for a vault key: `restrict` (no port, agent or X11 forwarding, no ~/.ssh/rc) and `pty` back on for
+    the console; `from=` when STORAGEFORGE_SSH_FROM names where the controller comes from. A command can still be run: scans are
+    commands. Options already on the line are kept off: this is the line as StorageForge means it."""
+    import ipaddress
+    parts = public_line.strip().split()
+    i = next((n for n, p in enumerate(parts) if p.startswith(('ssh-', 'ecdsa-', 'sk-'))), None)
+    if i is None or len(parts) < i + 2:
+        raise ValueError('not an OpenSSH public key line')
+    opts = ['restrict', 'pty']
+    nets = []
+    for item in (os.environ.get(FROM_ENV) or '').replace(' ', ',').split(','):
+        if item:
+            try:
+                nets.append(str(ipaddress.ip_network(item, strict=False)))
+            except ValueError:
+                raise ValueError(f'{FROM_ENV}: {item[:60]} is not an address or network') from None
+    if nets:
+        opts.append(f'from="{",".join(nets)}"')
+    return ' '.join([','.join(opts), *parts[i:]])
+
+
 def install_public_key(public_line: str, host: str, user: str, password: str, port: int = 22) -> dict:
     validate(host, user, port)
     if not password:
@@ -70,7 +95,7 @@ def install_public_key(public_line: str, host: str, user: str, password: str, po
     work = Path(tempfile.mkdtemp(prefix='copy-id-', dir=runtime_dir()))
     try:
         pub = work / 'key.pub'
-        pub.write_text(public_line.strip() + '\n')
+        pub.write_text(restricted_line(public_line) + '\n')   # ssh-copy-id -f appends the file as it is, options and all
         (work / '.ssh').mkdir(mode=0o700)       # ssh-copy-id makes its scratch dir under ~/.ssh; HOME is this dir
         argv = ['ssh-copy-id', '-f', '-i', str(pub), '-p', str(port),
                 '-o', 'StrictHostKeyChecking=yes',      # the caller made sure a person confirmed this key

@@ -366,7 +366,7 @@ echo '@@configs'; for f in /etc/fstab /etc/crypttab /etc/mdadm.conf /etc/mdadm/m
 echo '@@authkeys'; getent passwd 2>/dev/null | awk -F: '$3==0 || ($3>=1000 && $3<60000) {print $1 ":" $6}' | while IFS=: read -r u h; do
   if [ -e "$h" ] && [ ! -x "$h" ] || { [ -d "$h/.ssh" ] && [ ! -x "$h/.ssh" ]; }; then printf '!\t%s\n' "$u"; continue; fi
   for f in "$h/.ssh/authorized_keys" "$h/.ssh/authorized_keys2"; do
-    [ -e "$f" ] || continue; if [ -r "$f" ]; then head -c 262144 "$f" | awk -v u="$u" '!/^[ \t]*#/ { for (i = 1; i < NF; i++) if ($i ~ /^(ssh-|ecdsa-|sk-)/) { c = ""; for (j = i + 2; j <= NF; j++) c = c " " $j; print u "\t" $(i + 1) "\t" c; break } }'
+    [ -e "$f" ] || continue; if [ -r "$f" ]; then head -c 262144 "$f" | awk -v u="$u" '!/^[ \t]*#/ { for (i = 1; i < NF; i++) if ($i ~ /^(ssh-|ecdsa-|sk-)/) { c = ""; for (j = i + 2; j <= NF; j++) c = c " " $j; o = ""; for (j = 1; j < i; j++) o = o " " $j; gsub(/="[^"]*"/, "", o); gsub(/^ +/, "", o); print u "\t" $(i + 1) "\t" c "\t" o; break } }'
     else printf '!\t%s\n' "$u"; fi
   done
 done

@@ -54,7 +54,8 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - **The enclave's image**. `storageforge-indexer/enclave/image/build.sh` builds the micro VM: a kernel with no modules, no IP stack, no block devices and the lockdown forced on, and an initramfs whose one file is the enclave program, static. Sources are pinned (the compiler image by digest, the kernel by checksum) and the build is reproducible: two builds gave the same kernel bytes. Booted with vsock as its only device it answers in under a second, and `status` now says whether it is the VM's only program and whether its memory is locked; in the VM it stops rather than run unlocked. Every enclave test runs again against the booted image where KVM is available.
 
 ### Fixed
--- **A bridge port on a netplan host now joins the bridge.** Netplan's own file matched the port first, so it never joined.
+-- **The console limit of four was for the whole server:** one person with four consoles open locked everyone else out. It is now four per person, and sixteen in all.
+- **A bridge port on a netplan host now joins the bridge.** Netplan's own file matched the port first, so it never joined.
 - **Cancelling a dialog in the notification center redrew the list.**
 - **Docker gave a process that is not root no usable capability,** so a plugin that needs one could not have worked.
 - **The agent tables are in the backups:** the pinned counters, the revocations and the signed manifests in the essentials backup, so an agent wiped before a restore stays wiped after it and a recorded old batch is not taken again. (Found before any release held them.)
@@ -69,6 +70,9 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 ## 0.5.4.1 — 2026-11-18
 
 ### Security
+- **A scan key is written into `authorized_keys` restricted** (from a machine audit on 2026-11-20, which found a bare scan key in accounts in `docker` and `wheel` on two hosts). Installing a key from Keys, and rotating one, write `restrict,pty` before it, and `from="…"` when `STORAGEFORGE_SSH_FROM` names the controller's addresses. Scans now read which options each key line carries, names only, and two warnings follow: a StorageForge key with no restrictions, and a StorageForge key in an account in `docker`, `lxd`, `incus-admin`, `wheel`, `sudo`, `admin` or `libvirt`, which makes the web app root on that host in effect. Keys installed before this keep their bare line until installed again.
+- **`storageforge-update apply` installs nothing without a signers file,** unless `STORAGEFORGE_UPDATE_TRUST_REMOTE=1` is set for that run; the shipped timer unit now sets `STORAGEFORGE_UPDATE_SIGNERS`. A signed tag must also name the release it is stored as, so a signed old release pushed again under a newer version is refused, and a tag with no signature is refused. The update lock moved from a predictable name in `/tmp` into the clone's `.git` folder.
+- **A console VM name can no longer start with `-`,** and the name reaches `virsh` after `--domain`, so it is never read as an option.
 - **A platform token is released only for the platform it was stored for,** checked inside the key enclave when there is one; `root@pam` tokens and plain HTTP are refused, and a token never appears in a log, an audit row or an error.
 - **Docker's repository is added only when its key matches the pinned fingerprint;** nothing new is installed with `curl | sh`. (The older `tailscale` step still runs Tailscale's install script; it is on the list for the 0.6.0 audit.)
 - **netconsole lines are unsigned UDP and say so;** adding a source needs a fresh password and is audited. **A plugin's capability is kept by the agent giving root up at start,** with only declared capabilities in its bounding set and the securebits locked, and the check from outside reads its process from the host's `/proc`.

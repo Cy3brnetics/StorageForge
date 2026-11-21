@@ -8,9 +8,10 @@
 # release is a tag vX.Y.Z or vX.Y.Z.N on the clone's remote. Nothing else is ever installed: not a branch, not a tag with
 # another name, not a release older than this one.
 #
-# Whoever can push a tag to that remote runs their code on this host. STORAGEFORGE_UPDATE_SIGNERS names an allowed-signers
-# file (ssh-keygen's format); when it is set a release is installed only if its tag is signed by a key in it. Without it this
-# script says, every time, that it trusts the remote alone.
+# Whoever can push a tag to that remote would run their code on this host, so apply installs only a release whose tag is signed by
+# a key in STORAGEFORGE_UPDATE_SIGNERS (an allowed-signers file, ssh-keygen's format), and whose signed tag object names the
+# release it is stored as: a signed old release pushed again under a newer name is refused. Without a signers file apply refuses,
+# unless STORAGEFORGE_UPDATE_TRUST_REMOTE=1 says, for this run, that the remote alone is trusted. check needs neither.
 #
 # The web application has no part in this and cannot start it. docs/operations.md "Updates".
 set -euo pipefail
@@ -31,7 +32,8 @@ cd "$dir" || die "no folder $dir"
 git rev-parse --git-dir >/dev/null 2>&1 || die "$dir is not a git clone: this installation was not started from one, so there is nothing to compare releases with"
 
 # One at a time: a timer and a person, or two timers
-exec 9>"${TMPDIR:-/tmp}/storageforge-update.$(id -u).lock"
+# The lock is in the clone's git folder, which only the installation's account writes: a name in /tmp anyone could make first
+exec 9>"$(git rev-parse --absolute-git-dir)/storageforge-update.lock"
 flock -n 9 || die "another update is running"
 
 # A version as one string that compares in order: 0.5.4 is 0.5.4.0, and 0.5.10 comes after 0.5.4.1
@@ -61,11 +63,17 @@ git fetch --quiet --force "$remote" "refs/tags/$newest:refs/tags/$newest" || die
 
 if [ -n "${STORAGEFORGE_UPDATE_SIGNERS:-}" ]; then
   [ -r "$STORAGEFORGE_UPDATE_SIGNERS" ] || die "STORAGEFORGE_UPDATE_SIGNERS names $STORAGEFORGE_UPDATE_SIGNERS, which cannot be read"
+  [ "$(git cat-file -t "refs/tags/$newest")" = tag ] || die "$newest is a tag with no signature (a lightweight tag): not installed"
   git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$STORAGEFORGE_UPDATE_SIGNERS" verify-tag "$newest" >/dev/null 2>&1 \
     || die "$newest is not signed by a key in $STORAGEFORGE_UPDATE_SIGNERS: not installed"
+  # verify-tag checks the signature over the tag object, not the name it is stored under: the name inside it must be this one
+  named=$(git cat-file tag "refs/tags/$newest" | sed -n 's/^tag //p;/^$/q')
+  [ "$named" = "$newest" ] || die "the tag stored as $newest is the signed tag of ${named:-no name}: an older release under a newer name, not installed"
   say "$newest is signed by a key in $STORAGEFORGE_UPDATE_SIGNERS"
+elif [ "${STORAGEFORGE_UPDATE_TRUST_REMOTE:-}" = 1 ]; then
+  say "the tag's signature is not checked (STORAGEFORGE_UPDATE_TRUST_REMOTE=1): $remote alone is trusted"
 else
-  say "the tag's signature is not checked (STORAGEFORGE_UPDATE_SIGNERS is not set): $remote alone is trusted"
+  die "STORAGEFORGE_UPDATE_SIGNERS is not set, so $newest cannot be checked: not installed. Name the release signers file, or set STORAGEFORGE_UPDATE_TRUST_REMOTE=1 for one run (docs/operations.md, Updates)"
 fi
 
 healthy() {     # every container of the installation is running, and those with a health check pass it

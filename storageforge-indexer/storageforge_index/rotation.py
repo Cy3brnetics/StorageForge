@@ -81,7 +81,8 @@ def _run(v: Vault, conn, key_name: str, place: dict, command: str) -> str:
 
 
 def add_line(public_line: str) -> str:
-    q = shlex.quote(public_line.strip())
+    from .keyinstall import restricted_line
+    q = shlex.quote(restricted_line(public_line))          # the new key goes in restricted, as a first install writes it
     return ('umask 077; mkdir -p "$HOME/.ssh" && touch "$HOME/.ssh/authorized_keys" && '
             f'{{ grep -qxF -- {q} "$HOME/.ssh/authorized_keys" || printf "%s\\n" {q} >>"$HOME/.ssh/authorized_keys"; }} && echo added')
 

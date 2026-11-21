@@ -113,12 +113,23 @@ class Open(Base):
             self.open()
         opened[0].close('done')
         self.addCleanup(self.open().close, 'test over')
+        other = self.open(owner='bob')          # another person still gets one: the limit is each person's (machine audit, 2026-11-20)
+        self.addCleanup(other.close, 'test over')
+        with mock.patch.object(console, 'MAX_ALL_SESSIONS', len(opened) + 1):
+            with self.assertRaisesRegex(console.ConsoleError, 'on this server already'):
+                self.open(owner='carol')
+
+    def test_a_vm_name_is_never_read_as_an_option(self):
+        self.assertIsNone(console.serial_via(self.conn, '-c'))
+        self.assertIsNone(console.serial_via(self.conn, '--connect=qemu+ssh://x/system'))
+        self.assertFalse(console.VM.fullmatch('-vm'))
+        self.assertTrue(console.VM.fullmatch('vm-9'))
 
     def test_a_vm_on_this_machine_gets_its_serial_console_here(self):
         with mock.patch.object(console, 'serial_via', return_value={'via': 'local', 'host': 'this machine'}):
             s = self.open(host='vm9', kind='serial')
         self.addCleanup(s.close, 'test over')
-        self.assertEqual(self.argv('virsh'), ['-c', 'qemu:///system', 'console', '--force', 'vm9'])
+        self.assertEqual(self.argv('virsh'), ['-c', 'qemu:///system', 'console', '--force', '--domain', 'vm9'])
         self.assertEqual((s.kind, s.route), ('serial', 'local'))
 
     def test_a_vm_on_a_scanned_host_gets_virsh_over_ssh_to_that_host(self):
@@ -127,7 +138,7 @@ class Open(Base):
             s = self.open(host='vm9', kind='serial')
         self.addCleanup(s.close, 'test over')
         argv = self.argv('ssh')
-        self.assertEqual(argv[-6:], ['virsh', '-c', 'qemu:///system', 'console', '--force', 'vm9'])
+        self.assertEqual(argv[-7:], ['virsh', '-c', 'qemu:///system', 'console', '--force', '--domain', 'vm9'])
         self.assertIn('admin@10.0.0.5', argv)
 
 

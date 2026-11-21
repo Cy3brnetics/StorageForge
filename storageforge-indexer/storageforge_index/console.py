@@ -34,7 +34,8 @@ import time
 from collections import deque
 from pathlib import Path
 
-MAX_SESSIONS = 4              # each open console holds a server thread while it waits for output
+MAX_SESSIONS = 4              # per person: one admin with four consoles open does not lock the others out
+MAX_ALL_SESSIONS = 16         # in all: each open console holds a server thread while it waits for output
 IDLE = 15 * 60                # a session nobody typed into or read from for this long is closed
 MAX_LIFE = 8 * 3600
 BUFFER = 1 << 20              # output kept for a reader that fell behind
@@ -42,7 +43,7 @@ WAIT = 20                     # how long one output request waits for something 
 AGENT_HOLD = 60               # the private agent lives this long after ssh starts: enough to log in, then gone
 SETTINGS_KEY = 'console'
 DEFAULTS = {'record': False, 'keep_days': 90}
-VM = re.compile(r'[A-Za-z0-9_.+-]{1,64}')
+VM = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.+-]{0,63}')      # never a leading dash: virsh would read the name as an option
 _REGISTRY: dict[str, 'Session'] = {}
 _LOCK = threading.Lock()
 
@@ -102,7 +103,7 @@ def serial_via(conn, host: str) -> dict | None:
     if kvm:
         return {'via': 'host', 'host': kvm}
     try:
-        p = subprocess.run(['virsh', '-c', 'qemu:///system', 'domstate', host], capture_output=True, text=True, timeout=10)
+        p = subprocess.run(['virsh', '-c', 'qemu:///system', 'domstate', '--domain', host], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return {'via': 'local', 'host': None, 'state': p.stdout.strip()} if p.returncode == 0 else None
@@ -364,9 +365,11 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
         raise ValueError('kind is ssh or serial')
     cols, rows = max(20, min(int(cols), 500)), max(5, min(int(rows), 200))
     with _LOCK:
-        mine = [s for s in _REGISTRY.values() if not s.closed]
-        if len(mine) >= MAX_SESSIONS:
-            raise ConsoleError(f'{MAX_SESSIONS} consoles are open already: close one first')
+        open_now = [s for s in _REGISTRY.values() if not s.closed]
+        if sum(1 for s in open_now if s.owner == owner) >= MAX_SESSIONS:
+            raise ConsoleError(f'you have {MAX_SESSIONS} consoles open already: close one first')
+        if len(open_now) >= MAX_ALL_SESSIONS:
+            raise ConsoleError(f'{MAX_ALL_SESSIONS} consoles are open on this server already: try again when one closes')
     env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'TERM': 'xterm-256color', 'LANG': os.environ.get('LANG', 'C.UTF-8')}
 
     if kind == 'ssh':
@@ -400,7 +403,7 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
             from .remote import known_hosts_name
             lan = next((x['address'] for x in r if x['route'] == 'lan'), r[0]['address'])
             target, alias, port, bind_for = r[0]['address'], known_hosts_name(lan, r[0]['port']), r[0]['port'], lan
-            remote_cmd = ['virsh', '-c', 'qemu:///system', 'console', '--force', host]
+            remote_cmd = ['virsh', '-c', 'qemu:///system', 'console', '--force', '--domain', host]
 
     def audited(action, detail):
         audit(action, {'session': s.id, 'kind': s.kind, 'route': s.route, 'address': s.address, **detail})
@@ -408,7 +411,7 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
     s._start_recording(conn, f'{host} ({s.kind}, {s.route})')
 
     if kind == 'serial' and target is None:
-        s.spawn(['virsh', '-c', 'qemu:///system', 'console', '--force', host], {**child_env(), **env})
+        s.spawn(['virsh', '-c', 'qemu:///system', 'console', '--force', '--domain', host], {**child_env(), **env})
     else:
         from . import agentmonitor
         monitoring = kind == 'ssh' and agentmonitor.monitoring_only(conn, host)

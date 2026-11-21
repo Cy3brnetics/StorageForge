@@ -222,6 +222,17 @@ What this does not do: it does not issue certificates to people. Only StorageFor
 
 `key_bindings` maps a key to an exact host or IP, a glob (`*.tailnet.ts.net`) or a CIDR, with a user, port and allowed actions (`scan`, `checksum`, `deploy`). The most specific match wins: exact host, then glob, then longest prefix, then the lowest priority number. `vault resolve --host H` shows which key and user a host would get.
 
+### The scan key's line on a host
+
+A scan key is a login: whoever can make StorageForge run a command over it has the account it logs in to. So the line StorageForge writes into `authorized_keys`, when a key is installed from Keys and when one is rotated, is `restrict,pty ssh-ed25519 AAAA… name`: no port, agent or X11 forwarding and no `~/.ssh/rc`, with a terminal kept for the console. Set `STORAGEFORGE_SSH_FROM` to the addresses or networks the controller logs in from, as the hosts see them (`10.42.0.3`, or the Docker network on the controller's own host), and the line also carries `from="…"`: a stolen key is then of no use from anywhere else. `restrict` does not stop a command: scans are commands.
+
+Each scan reads which options every key line carries (the option names only: a forced command's text never leaves the host). Two findings follow, both warnings:
+
+- **A StorageForge key with no restrictions** (`key-unrestricted`): a line written by hand or by a version before 0.5.10. Install the key again from Keys, or put `restrict,pty` in front of it on that line.
+- **A StorageForge key in an account that is root in effect** (`key-account-root`): the account is in `docker`, `lxd`, `incus-admin`, `wheel`, `sudo`, `admin` or `libvirt`. A scan needs none of these. Bind the scan key to an account outside them: everything a compromise of the web app could then do on that host is what that account can do.
+
+Found by a machine audit on 2026-11-20, which saw a bare scan key in accounts in `docker` and `wheel` on two hosts.
+
 ## Host identity
 
 A host's name is what it reports, so it proves nothing.

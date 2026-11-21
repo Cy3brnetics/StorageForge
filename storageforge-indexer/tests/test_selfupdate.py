@@ -222,9 +222,10 @@ esac
             f.chmod(0o755)
 
     def run_it(self, mode, **env):
+        trust = {} if 'STORAGEFORGE_UPDATE_SIGNERS' in env or env.pop('trust', True) is False else {'STORAGEFORGE_UPDATE_TRUST_REMOTE': '1'}
         return subprocess.run([str(SCRIPT), mode], capture_output=True, text=True,
                               env={'PATH': f'{self.bin}:{os.environ["PATH"]}', 'HOME': str(self.tmp), 'TMPDIR': str(self.tmp), 'STORAGEFORGE_DIR': str(self.clone),
-                                   'STORAGEFORGE_UPDATE_WAIT': '1', **GIT_ENV, **env})
+                                   'STORAGEFORGE_UPDATE_WAIT': '1', **GIT_ENV, **trust, **env})
 
     def calls(self):
         f = self.tmp / 'calls'
@@ -301,11 +302,40 @@ esac
         missing = self.run_it('apply', STORAGEFORGE_UPDATE_SIGNERS=str(self.tmp / 'nowhere'))
         self.assertEqual(missing.returncode, 0, 'nothing newer: nothing to verify')
 
+    def test_without_a_signers_file_apply_installs_nothing_unless_told_to_trust_the_remote(self):
+        release(self.upstream, '0.5.5')
+        got = self.run_it('apply', trust=False)
+        self.assertEqual((got.returncode, self.calls(), self.here()), (1, [], '0.5.4'))
+        self.assertIn('STORAGEFORGE_UPDATE_SIGNERS is not set', got.stderr)
+        self.assertEqual(self.run_it('check', trust=False).returncode, 10, 'check still says a newer one is there')
+
+    def test_an_old_signed_release_under_a_newer_name_is_refused(self):
+        """verify-tag checks the signature over the tag object, not the ref it is stored under (machine audit, 2026-11-20)."""
+        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'ours', '-f', str(self.tmp / 'ours')], check=True)
+        signers = self.tmp / 'signers'
+        signers.write_text(f'release@storageforge namespaces="git" {(self.tmp / "ours.pub").read_text()}')
+        release(self.upstream, '0.5.5', sign=str(self.tmp / 'ours'))
+        obj = git(self.upstream, 'rev-parse', 'refs/tags/v0.5.5').strip()
+        git(self.upstream, 'update-ref', 'refs/tags/v0.9.0', obj)           # the same signed object, stored as a newer release
+        got = self.run_it('apply', STORAGEFORGE_UPDATE_SIGNERS=str(signers))
+        self.assertEqual((got.returncode, self.calls(), self.here()), (1, [], '0.5.4'), got.stdout + got.stderr)
+        self.assertIn('an older release under a newer name', got.stderr)
+
+    def test_a_lightweight_tag_is_refused_when_signatures_are_checked(self):
+        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'ours', '-f', str(self.tmp / 'ours')], check=True)
+        signers = self.tmp / 'signers'
+        signers.write_text(f'release@storageforge namespaces="git" {(self.tmp / "ours.pub").read_text()}')
+        release(self.upstream, '0.5.5', sign=str(self.tmp / 'ours'))
+        git(self.upstream, 'tag', 'v0.9.1', 'HEAD')
+        got = self.run_it('apply', STORAGEFORGE_UPDATE_SIGNERS=str(signers))
+        self.assertEqual((got.returncode, self.here()), (1, '0.5.4'), got.stdout + got.stderr)
+        self.assertIn('no signature', got.stderr)
+
     def test_two_at_once_and_a_folder_that_is_not_an_installation(self):
         self.assertEqual(self.run_it('apply', STORAGEFORGE_DIR=str(self.tmp)).returncode, 1)
         self.assertEqual(self.run_it('install').returncode, 1)
         import fcntl
-        with open(self.tmp / f'storageforge-update.{os.getuid()}.lock', 'w') as lock:
+        with open(self.clone / '.git' / 'storageforge-update.lock', 'w') as lock:       # in the clone, not a name in /tmp
             fcntl.flock(lock, fcntl.LOCK_EX)
             got = self.run_it('check')
         self.assertEqual(got.returncode, 1)
