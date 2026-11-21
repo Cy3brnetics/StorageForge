@@ -37,13 +37,17 @@ ESSENTIAL = ('vault_meta', 'ssh_keys', 'device_credentials', 'key_bindings', 'us
              'scan_signers', 'security_waivers', 'security_profiles', 'security_retention_policies', 'security_playbooks', 'security_yara_rules', 'security_dashboards', 'security_webauthn',
              'design_versions', 'enclave_stepup',
              'ssh_certificates', 'ssh_ca_hosts',     # which SSH certificates were issued and revoked, and the hosts opted in: the revocation list is made from the first
-             'agents')                               # each agent's pinned key and the last manifest counter signed for its host, which must not start again from 1
+             'agents',                               # each agent's pinned key and the last manifest counter signed for its host, which must not start again from 1
+             'agent_peers',                          # the last batch counter taken from each agent: restored at 0, a recorded old batch would be taken again
+             'agent_actions',                        # what agents' reports caused, revocations among them: an agent wiped before a restore stays wiped after it
+             'agent_deliveries')                     # the manifest signed for each host, with its counter
 # Left out of essentials: a rescan or the next deploy rebuilds these, they are history, or they are sessions.
 # Every table is in exactly one of the two lists (tests/test_consistency.py).
 REBUILDABLE = ('network_scans', 'network_scan_hosts', 'traffic_samples', 'mounts', 'scans', 'directories', 'file_records', 'file_fts', 'file_changes', 'scan_denied', 'scan_jobs',
                'graph_nodes', 'graph_edges', 'git_repos', 'docker_hosts', 'host_network', 'deploy_runs', 'deploy_groups', 'host_checks', 'job_runs', 'alerts', 'notification_mutes', 'notification_events', 'log_rules', 'log_rule_hits',
                'web_sessions', 'schema_version', 'task_runs', 'host_logs', 'host_log_lines', 'host_log_status', 'host_log_counts', 'mount_usage', 'schedule_runs', 'job_state', 'clamav_runs',
-               'security_measurements', 'graph_snapshots', 'security_playbook_runs', 'security_readings', 'security_ban_history', 'scan_signatures')
+               'security_measurements', 'graph_snapshots', 'security_playbook_runs', 'security_readings', 'security_ban_history', 'scan_signatures',
+               'agent_records', 'agent_events')     # what agents said, and the receiver's notes on it: claims and history
 ENC_MAGIC, ENC_SUFFIX, ENC_CHUNK = b'STORAGEFORGE-BACKUP-1\n', '.enc', 1 << 20
 ENC_KDF = {'time_cost': 3, 'memory_kib': 65536, 'lanes': 4}    # as the vault's own key
 PREFIX = {'essentials': 'storageforge-essentials-', 'full': 'storageforge-full-'}

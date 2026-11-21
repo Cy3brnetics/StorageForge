@@ -24,6 +24,7 @@ Checked against the code on 2026-11-16.
 | Run the disk-health collector on this machine's real disks (it needs sudo here) | PF-04 on real worn disks |
 | Download pfSense CE once (Netgate's installer and store want an account), so its checksum can be pinned and `lab.sh` can take it from the image cache | pfSense in the lab |
 | A Cisco account for Cisco Modeling Labs Free | Cisco in the lab |
+| Sign the agent's four plugins with the release key (`storageforge-indexer/agent/plugins.sh sign`) | Any host being offered the agent's plugins |
 | Give CI the release key (`STORAGEFORGE_RELEASE_KEY`) and an `enclave/image/allowed_signers` file | The enclave image signed in CI |
 | A PagerDuty account, if a free plan still exists | PagerDuty reaching the real service |
 | A physical FIDO2 token | FIDO2 at step-up and at sign-in |
@@ -460,6 +461,8 @@ Anything in a container that the manifest does not account for ends its access.
 | **From inside** | At start and on a timer, the agent checks its loaded code and plugin files against the manifest, and refuses an unsigned plugin, one not in the manifest, or a stale manifest |
 | **What happens** | The controller revokes the agent's key on its own side first, which an attacker cannot undo; the agent deletes its key and exits; the container is stopped over SSH and left stopped, whatever its restart policy; an alert opens. Only an admin re-enrolls it, with re-authentication, and the audit log records it |
 
+**State of 11.3 on 2026-11-20 (built, not lab-tested; `f2bdf86`):** checked from outside over SSH, on a timer and after each scan; any finding revokes the key and stops the container for good; an agent that finds tampering wipes its own key. 11.2's *its actions affect only itself* and *anything wider needs a second witness* are built in the same commit. **Open:** the container itself compared under Incus and `pct` (only the agent's folders are), Podman's output as it really is.
+
 ### 11.4 Plugins
 
 | Plugin | Gets | Privileges it declares | Status |
@@ -474,6 +477,8 @@ Anything in a container that the manifest does not account for ends its access.
 | **Sentinel reports** | The sentinel's events through the agent. The sentinel itself stays on the host, because its local actions need the host's root | none | open |
 | **Toolbox status** | Status tiles that stay current (section 4) | per tool | open |
 | **Shadow-copy tripwire (Windows)** | On a Windows client: process starts (Windows' process auditing with command lines, or Sysmon) for `vssadmin delete shadows`, `wmic shadowcopy delete`, PowerShell removing `Win32_ShadowCopy`, `wbadmin delete catalog` and `bcdedit … recoveryenabled no`, and shadow copies that vanish. The controller then drops that client from every share, snapshots, and freezes if armed, usually before encryption starts. Deleting shadow copies needs administrator rights, which can stop the agent first: its silence is the signal then, and the share's decoys stay the backstop. It detects and reports; it does not block the process, and StorageForge does not claim to be an EDR | Windows process events | open |
+
+**State of 11.4 on 2026-11-20 (built, not lab-tested; `01a057a`):** heartbeat, logs (section 3 phase 2, with gaps in `__SEQNUM` read), health (with *SSH is down*, so 11.2's *either one fails alone* holds) and network. 11.6's rows for wipe, plugins, replay, the receiver role, one-sender actions and the second witness are unit tests (`eb90477`) and tier 24 checks, written and not run; the tripwire and freeze rows wait for those actions. **Open:** signing the four plugins with the release key (the owner: `agent/plugins.sh sign`), OpenRC log files, xz-compressed journal fields, capacity of filesystems other than btrfs and ZFS scrub progress in health.
 
 ### 11.5 Hosts by mode
 
