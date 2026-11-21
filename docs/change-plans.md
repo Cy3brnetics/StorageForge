@@ -70,3 +70,7 @@ Not built yet: removing a runtime, choosing the storage pool and network of a ne
 ## secret-file
 
 Writes a vault secret to a file a service reads, with its owner and mode. See [Secrets for plan steps](secrets.md#the-secret-file-step).
+
+## tool-install, tool-remove and tool-data-remove
+
+The Toolbox steps (0.5.12). `tool-install` installs a catalog entry by one of its methods, and takes everything it runs from the catalog when the script is written, only from an entry that is still trusted and still the one staged; `tool-remove` takes away what an install made and keeps its data; `tool-data-remove` moves that data to the host trash, and is destructive. They are staged from the Toolbox panel rather than written by hand. See [Toolbox](toolbox.md#installing). Built, not lab-tested.

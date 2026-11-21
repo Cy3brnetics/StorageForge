@@ -377,6 +377,18 @@ See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure
 | POST | `/api/workloads/captures` | `{host, runtime, name, format, note}` | adopts a workload by saving its capture. `plans.edit`, audited as `workload.adopt` |
 | DELETE | `/api/workloads/captures/<id>` | | forgets a capture. `plans.edit`, audited as `workload.forget` |
 | GET | `/api/changes/<id>/export/terraform`, `.../opentofu`, `.../puppet` | | the plan's workload steps as `main.tf` or a Puppet manifest. `plans.scripts`, audited as `changes.export.<target>` |
+| GET | `/api/toolbox/catalog`, `/api/toolbox/catalog/<id>` | | `workloads.view`. The [Toolbox](toolbox.md) catalog: each entry's `trust` (`release-signed`, `packaged`, `operator-signed`, `unsigned`, `refused`) and why, `risks`, `gui_level`, `lab`; one entry with its YAML `text` |
+| POST | `/api/toolbox/catalog/validate` | `{"yaml", "signature"?}` | `workloads.view`. Schema, risk labels, the SHA-256 of the text, whether the signature is an operator key's over it, and the `sign` command to run on your machine. Saves nothing |
+| POST 🔑, DELETE 🔑 | `/api/toolbox/catalog/custom`, `/api/toolbox/catalog/custom/<id>` | `{"yaml", "signature"?}` | `hosts.command`. A custom entry, kept byte for byte |
+| POST 🔑 | `/api/toolbox/catalog/sign` | `{"id", "signature"}` | `hosts.command`. Checks a signature made on the operator's machine and keeps it. Nothing is signed on the controller |
+| POST 🔑 | `/api/toolbox/catalog/update` | `{"manifest", "signature", "entries"}` | `hosts.command`. An update of the official catalog: taken only when the release key signed the manifest and its serial is higher |
+| GET, POST 🔑, DELETE 🔑 | `/api/toolbox/signers`, `/api/toolbox/signers/<name>` | `{"name", "public_key"}` | reading `workloads.view`, writing `hosts.command`. Operator public keys |
+| GET | `/api/toolbox/installed`, `/api/toolbox/installed/<host>/<id>/status` | `?host=` | `workloads.view`. Installs, adapter status rows; for one tool its tiles, links and actions |
+| POST | `/api/toolbox/preview` | `{"host", "tool" or "yaml", "method"?, "inputs"?, "exposure"?, "bind"?, "allow_from"?}` | `workloads.view`. The plan an install would be and its report; with `yaml`, a dry run of an entry not saved yet |
+| POST | `/api/toolbox/stage` | as preview, with `"action": "install"\|"remove"`, `"with_data"?`, `"accept_unsigned"?` | `plans.edit`. Saves the plan (`plan_id`). A custom entry needs `hosts.command`; accepting an unsigned one a fresh password too |
+| GET, POST | `/api/toolbox/<host>/<id>/actions`, `.../actions/<action>` | `{"values"}` | `plans.edit` to stage. An adapter action, saved as ordinary steps |
+| GET, PUT | `/api/toolbox/overrides/<host>/<id>` | `{"yaml"}` | `plans.edit` (an `image` override needs `hosts.command`). Ports, bind, exposure, volumes, method or image of one tool on one host |
+| GET | `/api/toolbox/updates`, `/api/toolbox/exposure` | | `workloads.view`; exposure `security.view`. Installs with a newer entry revision; what each tool listens on against what was staged |
 | POST 🔑 | `/api/infra/measure` | `{"host"}` | `security.manage` |
 | GET | `/api/sfnet` | | `hosts.view`. StorageForge's own WireGuard network: range, port, topology, and per member its address, state and which peers the readings confirm |
 | POST 🔑 | `/api/sfnet` | `{"range"?, "topology"?}` | `security.manage`. Make the network (`mesh` or `hub`); the range is picked when not given |
