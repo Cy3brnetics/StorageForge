@@ -1,15 +1,20 @@
-"""Web routes: log rules (logrules.py). Reading takes hostlogs.view; saving and deleting take hostlogs.rules and are audited. A rule changes
-nothing on a host, so none asks for the password again."""
+"""Web routes: log rules (logrules.py) and the monitoring view (logmonitor.py). Reading takes hostlogs.view; saving and deleting take
+hostlogs.rules and are audited. A rule changes nothing on a host, so none asks for the password again."""
 from __future__ import annotations
 
-from flask import jsonify
+from flask import jsonify, request
 from flask_login import login_required
 
-from . import logrules
+from . import logmonitor, logrules
 
 
 def register(web, ctx):
     core, conn, actor, json_body = ctx.core, ctx.conn, ctx.actor, ctx.json_body
+
+    @web.get('/api/hostlogs/monitor')
+    @login_required
+    def api_hostlogs_monitor():
+        return jsonify(logmonitor.monitor(conn(), host=(request.args.get('host') or '').strip()[:200] or None))
 
     @web.get('/api/hostlogs/rules')
     @login_required

@@ -10,7 +10,8 @@ from pathlib import Path
 from unittest import mock
 
 import dbfactory
-from storageforge_index import alerts, hostlogs, loganomaly, notifications
+from storageforge_index import alerts, hostlogs, loganomaly, logmonitor, notifications, server, users
+from storageforge_index.db import Database
 
 HOUR, DAY, WEEK = 3600, 86400, 7 * 86400
 NOW = 2000000000.0 - 2000000000.0 % 300          # on a 5-minute edge, so an hour is twelve whole buckets
@@ -275,6 +276,46 @@ class AsNotifications(Db):
 
     def learn_pc(self):
         self.pickup([self.row('job 1 ran in 20 ms', NOW - 9 * DAY)], NOW - 9 * DAY + 60, 'pc')
+
+
+class Monitor(Db):
+    def test_the_view_ranks_the_silent_host_first_with_its_baseline_alerts_kinds_and_ingest(self):
+        self.weeks_of(3, 4, 30, via='agent')
+        self.hours(NOW - 4 * HOUR, 2, 30, via='agent')
+        self.weeks_of(3, 2, 20, host='pc')
+        self.hours(NOW - 2 * HOUR, 2, 20, host='pc')
+        with self.conn.tx():
+            self.conn.execute("""INSERT INTO alerts (alert_key, kind, ref, title, message, state, first_at, last_at, level, host)
+                                 VALUES ('log-rule:1:pc', 'log-rule', 'pc:1', 'Services failing on pc', '3 line(s)', 'open', :t, :t, 'warn', 'pc')""", {'t': int(NOW)})
+            self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json) VALUES ('cold', 'cold', 'scan', '{}')")
+        d = logmonitor.monitor(self.conn, NOW)
+        self.assertEqual([(h['host'], h['level']) for h in d['hosts']], [('nas', 'crit'), ('pc', 'warn'), ('cold', 'ok')])
+        self.assertEqual(d['silent'], ['nas'])
+        nas, pc, cold = d['hosts']
+        self.assertTrue(nas['pushed'] and nas['ingest']['signed'])
+        self.assertEqual(nas['ingest']['last_arrival'], int(NOW - 2 * HOUR))
+        self.assertEqual((pc['rate']['weeks'], pc['rate']['usual'], pc['rate']['hour']), (3, 20, 20))
+        self.assertEqual([a['title'] for a in pc['alerts']], ['Services failing on pc'])
+        self.assertFalse(pc['ingest']['signed'])
+        self.assertEqual((cold['ingest']['state'], cold['rate']), ('never', None))
+
+    def test_it_is_read_with_hostlogs_view_and_not_without(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        db = Database(str(tmp / 'index.db'))
+        conn = db.connect()
+        self.addCleanup(conn.close)
+        db.migrate(conn)
+        for role in ('operator', 'viewer'):
+            users.create(conn, role, 'correct horse battery staple', role)
+        app = server.create_app(server.App(db), 's' * 48)
+        got = {}
+        for role in ('operator', 'viewer'):
+            c = app.test_client()
+            self.assertEqual(c.post('/api/login', json={'username': role, 'password': 'correct horse battery staple'}).status_code, 200)
+            got[role] = c.get('/api/hostlogs/monitor')
+        self.assertEqual((got['operator'].status_code, got['operator'].get_json()['hosts']), (200, []))
+        self.assertEqual(got['viewer'].status_code, 403)
 
 
 if __name__ == '__main__':

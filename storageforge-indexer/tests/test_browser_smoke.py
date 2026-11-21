@@ -1231,7 +1231,7 @@ class BrowserSmoke(unittest.TestCase):
         self.open_tab('hostlogs')
         self.page.wait_for_selector('#hl-lines li:has-text("link is up")')
         meta = self.page.locator('#hl-lines li span.m').first
-        self.assertEqual(meta.get_attribute('title'), '2023-11-14 22:13:20 UTC')
+        self.assertTrue(meta.get_attribute('title').startswith('2023-11-14 22:13:20 UTC · '), meta.get_attribute('title'))     # then how the line came
         self.assertTrue(meta.inner_text().startswith(self.page.evaluate('fmtTime(1700000000, { seconds: true })')))
         self.assertEqual(self.errors, [])
 

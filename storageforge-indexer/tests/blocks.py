@@ -17,6 +17,7 @@ HEAVY = {
     'test_browser_drafts.BrowserDrafts',
     'test_browser_enclave.BrowserEnclave',
     'test_browser_logs.BrowserLogs',
+    'test_browser_logs_monitor.BrowserLogsMonitor',
     'test_browser_notifications.BrowserNotifications',
     'test_browser_osinstall.BrowserOsInstall',
     'test_browser_map_whatif.MapWhatIfBrowser',

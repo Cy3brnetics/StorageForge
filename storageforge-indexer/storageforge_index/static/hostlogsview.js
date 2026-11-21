@@ -97,14 +97,29 @@ function hlTakeLink(q) {
   HL.q = (q.get('q') || '').slice(0, 200);
   hlShow();
 }
-/* A link to the Logs panel for a host, in the form the router reads. It keeps the view the person is in. */
-function hlLink(host) {
+/* A link to the Logs panel for a host, in the form the router reads. It keeps the view the person is in. `q` and `unit` filter the lines,
+   and `from` (seconds) starts a custom range there, open to now: a notification links to the lines since an hour before it opened. */
+function hlLink(host, { q = '', unit = '', from = null } = {}) {
   const parts = [typeof T !== 'undefined' && T.mode ? T.mode : 'topo', 'hostlogs'];
-  return sfFormatHash(parts, { host, lhost: host });
+  return sfFormatHash(parts, { host, lhost: host, unit, q, ...(from != null ? { range: 'custom', from: hlUrlTime(from) } : {}) });
 }
-function hlLinkEl(host, label = 'Logs') {
-  const a = hlEl('a', { class: 'btn', href: hlLink(host), title: `What ${host}'s journal said, as of its last scan` }, label);
-  return a;
+function hlLinkEl(host, label = 'Logs', opts = {}) {
+  const what = opts.q ? ` that mention ${opts.q}` : opts.unit ? ` from ${opts.unit}` : '';
+  return hlEl('a', { class: opts.small ? 'btn ghost sm' : 'btn', href: hlLink(host, opts), title: `The lines of ${host}'s journal${what}` }, label);
+}
+/* The Logs link of a disk, a partition, a pool or a mount in the storage views: the host's lines that name it. A kernel names a disk or a
+   partition by its device (sdb, sdb1, nvme0n1), ZFS and md a pool by its name, and a filesystem error names its device, so a mount is
+   searched by the device it is mounted from when that is known and by its path when not. */
+function hlDeviceWord(kind, name) {
+  const v = String(name || '').trim();
+  if (!v) return '';
+  if (kind === 'mount' && !v.startsWith('/dev/')) return v;
+  return v.replace(/^\/dev\/(mapper\/)?/, '').slice(0, 200);
+}
+function hlDeviceLinkEl(host, kind, name) {
+  if (!host || typeof can !== 'function' || !can('hostlogs.view')) return null;
+  const q = hlDeviceWord(kind, name);
+  return q ? hlLinkEl(host, 'Logs', { q, small: true }) : null;
 }
 function hlSync(replace = false) { if (typeof routeSync === 'function') routeSync(replace); }
 
@@ -383,6 +398,82 @@ function hlRenderHosts(names, status) {
   list.replaceChildren(sfMoreList(rows, render, { limit: 12, label: 'hosts', tag: 'ul', className: 'list hl-hostlist' }));
 }
 
+/* ── monitoring: each host against its usual (logmonitor.py) ────── */
+const HL_LEVEL_WORD = { crit: 'Critical', warn: 'Warning', info: 'Information' };
+const hlN = (x) => (x == null ? '-' : Number(x) >= 10 || Number.isInteger(Number(x)) ? Math.round(Number(x)).toLocaleString() : Number(x).toFixed(1));
+function hlRateText(r) {
+  if (!r) return 'Nothing collected yet: no baseline.';
+  if (r.known_until == null) return 'Nothing known of the last hour: the last scan failed, or was too long ago.';
+  if (r.learning) return `Learning what is usual: a baseline needs two weeks of counts, ${r.learned_at ? `from ${fmtDate(r.learned_at)}` : 'once lines come'}.`;
+  return `${hlPlural(r.hour || 0, 'line')} in the last hour, usually ${hlN(r.usual)} (the same hour of the last ${r.weeks} weeks).`;
+}
+function hlMonState(h) {
+  if (h.silent) return hlEl('span', { class: h.pushed ? 'st-failed' : 'st-warn' }, 'stopped logging');
+  if (h.alerts.some((a) => a.level === 'crit')) return hlEl('span', { class: 'st-failed' }, hlPlural(h.alerts.length, 'open log alert'));
+  if (h.alerts.length) return hlEl('span', { class: 'st-warn' }, hlPlural(h.alerts.length, 'open log alert'));
+  if (h.ingest.state === 'never') return hlEl('span', { class: 'st-warn' }, 'not collected');
+  if (!h.rate || h.rate.learning || h.rate.known_until == null) return hlEl('span', {}, 'no baseline yet');
+  return hlEl('span', { class: 'st-ok' }, 'as usual');
+}
+function hlIngestText(i) {
+  if (i.state === 'never') return 'No journal has been collected from this host. Scan it to get one.';
+  const parts = [i.via === 'agent' ? `pushed by the agent, signed${i.delay_ms != null ? `, ${(i.delay_ms / 1000).toFixed(1)} s behind` : ''}` : 'collected by the scan over SSH, not signed'];
+  parts.push(i.last_line ? `last line ${fmtTime(i.last_line)}` : 'no line kept');
+  if (i.last_arrival) parts.push(`last new line arrived ${fmtAgo(i.last_arrival)}`);
+  parts.push(i.gaps ? `${hlPlural(i.gaps, 'line')} missing from the journal's count` : i.via === 'agent' ? 'none missing from the journal\'s count' : 'gaps not seen by scans');
+  if (i.over_total) parts.push(`${hlPlural(i.over_total, 'line')} over the rate, counted and not kept`);
+  return parts.join(' · ');
+}
+function hlMonHost(h) {
+  const pick = hlEl('button', { type: 'button', class: 'btn ghost sm', title: `Show only ${h.host}'s lines` }, h.host);
+  pick.addEventListener('click', () => { document.getElementById('hl-host').value = h.host; hlApply(); document.getElementById('hl-lines').scrollIntoView({ block: 'nearest' }); });
+  const kids = [hlEl('span', { class: 'hl-hname' }, pick, hlMonState(h)), hlEl('span', { class: 'm' }, hlRateText(h.rate))];
+  if (h.rate && h.rate.loud.length) {
+    kids.push(hlEl('ul', { class: 'hl-mon-sub', 'aria-label': `Units on ${h.host} logging more than usual` }, h.rate.loud.map((u) =>
+      hlEl('li', { class: 'st-warn' }, `${u.unit == null ? 'all of it' : u.unit || 'lines with no unit'}: ${hlPlural(u.lines, 'line')} in the last hour, usually ${hlN(u.usual)}`))));
+  }
+  if (h.silent) kids.push(hlEl('span', { class: h.pushed ? 'm st-failed' : 'm st-warn' }, `No new line since ${fmtTime(h.silent.since)}; it usually logs ${hlN(h.silent.usual)} lines in this part of the week.`));
+  if (h.silent_units.length) {
+    kids.push(hlEl('ul', { class: 'hl-mon-sub', 'aria-label': `Units on ${h.host} that stopped logging` }, h.silent_units.map((u) =>
+      hlEl('li', { class: 'st-warn' }, `${u.unit} quiet since ${fmtTime(u.since)}, usually ${hlN(u.usual)} lines by now`))));
+  }
+  if (h.alerts.length) {
+    kids.push(hlEl('ul', { class: 'hl-mon-sub', 'aria-label': `Open log alerts on ${h.host}` }, h.alerts.map((a) => {
+      const go = hlEl('button', { type: 'button', class: 'btn ghost sm', title: 'Open the notification center' }, 'In the notification center');
+      go.addEventListener('click', () => { if (typeof showTab === 'function') showTab('notifications'); });
+      return hlEl('li', {}, hlEl('span', { class: a.level === 'crit' ? 'st-failed' : a.level === 'warn' ? 'st-warn' : '' }, `${HL_LEVEL_WORD[a.level]}: ${a.title}`),
+        hlEl('span', { class: 'm' }, a.message), hlEl('span', { class: 'row' }, go));
+    })));
+  }
+  const k = h.new_kinds;
+  if (k.count) {
+    kids.push(hlEl('details', { class: 'hl-alt' }, hlEl('summary', {}, `${hlPlural(k.count, 'new kind')} of line in the last day`),
+      hlEl('ul', { class: 'hl-mon-sub' }, k.kinds.map((x) => hlEl('li', {}, hlEl('span', { class: x.priority <= 3 ? 'st-failed' : x.priority === 4 ? 'st-warn' : '' }, x.sample),
+        hlEl('span', { class: 'm' }, `${x.level} · ${x.program || 'no program name'} · first ${fmtTime(x.first_at)} · ${hlPlural(x.lines, 'line')}`)))),
+      k.count > k.kinds.length ? hlEl('p', { class: 'muted small' }, `The worst ${k.kinds.length} are shown.`) : null,
+      k.over ? hlEl('p', { class: 'muted small' }, `${hlPlural(k.over, 'more kind')} were not kept: the host has as many as one host keeps.`) : null));
+  } else if (h.ingest.state !== 'never') {
+    kids.push(hlEl('span', { class: 'm' }, k.learning ? `New kinds of line are said from ${k.learned_at ? fmtDate(k.learned_at) : 'a week after the first line'}.` : 'No new kind of line in the last day.'));
+  }
+  kids.push(hlEl('span', { class: h.ingest.gaps ? 'm st-warn' : 'm' }, hlIngestText(h.ingest)));
+  return hlEl('li', { class: 'hl-host', 'data-host': h.host }, ...kids);
+}
+async function hlMonitor() {
+  const box = document.getElementById('hl-monitor');
+  if (!box) return;
+  const fresh = latest('hostlogs-monitor');
+  try {
+    const d = await getJSON('/api/hostlogs/monitor');
+    if (!fresh()) return;
+    const need = d.hosts.filter((h) => h.rank < 3).length;
+    box.replaceChildren(
+      hlEl('p', { class: 'muted small', id: 'hl-mon-sum' }, d.hosts.length ? (need ? `${hlPlural(need, 'host')} with something to look at, first.` : 'Every host is logging as usual, or has no baseline yet.') : 'No hosts yet.'),
+      d.hosts.length ? sfMoreList(d.hosts, hlMonHost, { limit: 8, label: 'hosts', tag: 'ul', className: 'list hl-hostlist' }) : null);
+  } catch (err) {
+    if (fresh()) box.replaceChildren(hlEl('p', { class: 'muted' }, err.message));
+  }
+}
+
 /* ── opening the panel, and what a change of control does ───────── */
 function hlKnownHosts() { return [...document.querySelectorAll('#host option')].map((o) => o.value).filter(Boolean); }
 async function loadHostLogs() {
@@ -402,7 +493,7 @@ async function loadHostLogs() {
   pick.replaceChildren(Object.assign(hlEl('option', {}, 'All hosts'), { value: '' }), ...names.map((n) => Object.assign(hlEl('option', {}, n), { value: n })));
   hlShow();
   hlRenderHosts(names, status);
-  await Promise.all([hlChart(), hlUnits(), hlSearch(false)]);
+  await Promise.all([hlMonitor(), hlChart(), hlUnits(), hlSearch(false)]);
 }
 /* A change of host or range: the chart, the units and the lines are asked again. A change of level, unit or text asks for lines only. */
 function hlApply({ push = true, chart = true } = {}) {

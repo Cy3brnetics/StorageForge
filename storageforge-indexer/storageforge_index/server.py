@@ -45,6 +45,7 @@ GET  /api/hostlogs[?host=&unit=&level=&q=&since=&until=&limit=&offset=]   hosts'
 GET  /api/hostlogs/status[?host=]    how the last pickup from each host went
 GET  /api/hostlogs/counts[?host=&since=&until=]   stored lines by level and by UTC hour
 GET  /api/hostlogs/units[?host=]     the unit names stored, with a line count each, most first
+GET  /api/hostlogs/monitor[?host=]   each host against its usual: rate, open log alerts, new kinds of line, silence, ingest health
 GET  /api/hostlogs/export?format=csv|json|text[&...]   the same lines as a file
 POST /api/scan  {"host": "…"}       queue a vault-backed scan
 POST /api/scan/all                  queue a scan of every host with a scan binding
