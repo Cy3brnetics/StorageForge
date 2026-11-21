@@ -45,6 +45,8 @@ GET  /api/hostlogs[?host=&unit=&level=&q=&since=&until=&limit=&offset=]   hosts'
 GET  /api/hostlogs/status[?host=]    how the last pickup from each host went
 GET  /api/hostlogs/counts[?host=&since=&until=]   stored lines by level and by UTC hour
 GET  /api/hostlogs/units[?host=]     the unit names stored, with a line count each, most first
+GET  /api/hostlogs/monitor[?host=]   each host against its usual: rate, open log alerts, new kinds of line, silence, ingest health
+GET  /api/hostlogs/netconsole       the hosts netconsole packets are taken from, and the receiver's state
 GET  /api/hostlogs/export?format=csv|json|text[&...]   the same lines as a file
 POST /api/scan  {"host": "…"}       queue a vault-backed scan
 POST /api/scan/all                  queue a scan of every host with a scan binding
@@ -313,6 +315,8 @@ class App:
             threading.Thread(target=self._security, name='security', daemon=True).start()
             threading.Thread(target=selfupdate.run, kwargs={'wake': self.alerts_wake.set}, name='release-check', daemon=True).start()
             threading.Thread(target=agentingest.run, args=(self.db, self.alerts_wake.set), name='agent-ingest', daemon=True).start()
+            from . import netconsole          # kernel messages over UDP, when STORAGEFORGE_NETCONSOLE_LISTEN says where: a socket and a thread of its own
+            threading.Thread(target=netconsole.run, args=(self.db, self.alerts_wake.set), name='netconsole', daemon=True).start()
 
     def _alerts(self):
         time.sleep(30)

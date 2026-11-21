@@ -10,9 +10,13 @@ const NT_WHY = 'Cannot be snoozed or muted: it leaves when it is resolved.';
 
 const ntNotifChip = sfNotificationChip(document.getElementById('notifchip'), () => { showTab('notifications'); }, () => can('deploy.view'), 1800);
 
+/* fn returns false when the person cancelled its dialog: nothing changed, so the list is not drawn again under them. */
 function ntAct(label, title, fn) {
   const b = sfNode('button', { type: 'button', class: 'btn ghost sm', title }, label);
-  sfOnClick(b, async () => { try { await fn(); } catch (e) { notify(e.message, 'error'); } await loadNotifications(); ntNotifChip(); });
+  sfOnClick(b, async () => {
+    try { if (await fn() === false) return; } catch (e) { notify(e.message, 'error'); }
+    await loadNotifications(); ntNotifChip();
+  });
   return b;
 }
 
@@ -23,7 +27,8 @@ function ntItem(x) {
     acts.push(x.acked ? ntAct('Not on it', 'Take the acknowledgement back', () => api(`/api/notifications/ack/${key}`, { method: 'DELETE' }))
       : ntAct('Acknowledge', 'Say you are on it. It stays in the list until it is resolved', async () => {
         const f = await formDialog({ title: 'Acknowledge', body: x.title, fields: [{ name: 'note', label: 'A note for whoever looks next', maxlength: 500 }], confirm: 'Acknowledge' });
-        if (f) await postJSON(`/api/notifications/ack/${key}`, { note: f.note });
+        if (!f) return false;
+        await postJSON(`/api/notifications/ack/${key}`, { note: f.note });
       }));
     if (x.ignorable && !x.quiet) {
       const hours = sfNode('select', { 'aria-label': `Snooze ${x.title} for` }, [['1', '1 hour'], ['8', '8 hours'], ['24', '1 day'], ['168', '7 days'], ['720', '30 days']].map(([v, t]) => sfNode('option', { value: v }, t)));
@@ -31,7 +36,8 @@ function ntItem(x) {
       acts.push(ntAct('Mute…', 'Mute this kind on this host', async () => {
         const f = await formDialog({ title: `Mute ${x.kind} on ${x.host || 'every host'}`, body: 'New notifications of this kind are listed apart and not pushed. A critical one is never muted.',
           fields: [{ name: 'note', label: 'Why', maxlength: 500 }, { name: 'days', label: 'For how many days (empty: until removed)', inputmode: 'numeric' }], confirm: 'Mute' });
-        if (f) await postJSON('/api/notifications/mutes', { host: x.host || '*', kind: x.kind, note: f.note, ...(f.days ? { days: Number(f.days) } : {}) });
+        if (!f) return false;
+        await postJSON('/api/notifications/mutes', { host: x.host || '*', kind: x.kind, note: f.note, ...(f.days ? { days: Number(f.days) } : {}) });
       }));
     }
     if (x.snoozed_until) acts.push(ntAct('End snooze', 'Show it again now', () => api(`/api/notifications/snooze/${key}`, { method: 'DELETE' })));
@@ -52,6 +58,9 @@ function ntItem(x) {
       fix.push(make);
     }
   }
+  // the host's lines from an hour before it opened (hostlogsview.js)
+  const logs = x.host && can('hostlogs.view') && typeof hlLinkEl === 'function' ? hlLinkEl(x.host, `${x.host}'s logs`, { from: x.first_at - 3600, small: true }) : null;
+  if (logs) acts.push(logs);
   const cls = x.level === 'crit' ? 'st-failed' : x.level === 'warn' ? 'st-warn' : '';
   return sfNode('li', { 'data-key': x.key },
     sfNode('span', cls ? { class: cls } : {}, x.title),

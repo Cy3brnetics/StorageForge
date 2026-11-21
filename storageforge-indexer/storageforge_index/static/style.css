@@ -1156,6 +1156,7 @@ body.searchpage { display: block; overflow: auto; height: auto; min-height: 100v
 .hl-hours { list-style: none; margin: 4px 0 0; padding: 0; font-family: var(--mono); font-size: 11.5px; }
 .hl-hostlist { display: flex; flex-direction: column; gap: 2px; list-style: none; margin: 0; padding: 0; }
 .hl-hname { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.hl-mon-sub { list-style: none; margin: 2px 0; padding: 0 0 0 12px; display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
 #tab-hostlogs > * { flex-shrink: 0; }          /* the panel scrolls: a child that can clip (the range switch, the chart) must not be squeezed to nothing by a long list */
 #tab-hostlogs .seg { align-self: flex-start; }
 

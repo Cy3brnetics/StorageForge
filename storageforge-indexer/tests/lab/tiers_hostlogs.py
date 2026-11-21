@@ -22,9 +22,23 @@ What a stand-in journalctl cannot say, and this tier is for:
                that host that cannot be snoozed. A flood of one line is one notification that says how many, and `logger -t sshd`
                does not set off the rule about sshd
 
+For 0.5.8 (section 3, phases 3 to 5), written and not run yet:
+
+    anomalies  real journal text from the VM, laid over three weeks before now in a throwaway database, through the product's own
+               store and loganomaly: an ordinary hour says nothing, the shapes of real lines are fewer than the lines, and 600 lines
+               of a flood with one line of a kind never logged are a volume warning and a new kind with that line as its sample
+    monitor    /api/hostlogs/monitor on the real controller lists every host, and each one's ingest says what /api/hostlogs/status says
+    netconsole the netconsole plan step deployed on a lab host: the file it writes names the controller, netconsole is loaded, a line
+               written to /dev/kmsg on the VM comes back over UDP with its level and marked not signed, and the way back takes it
+               all out so the next line does not come. Needs the controller listening (compose.lab.yml sets it)
+    panic      only with SFLAB_CRASH=1, on the throwaway UEFI VM: netconsole set up by the step's own script, the kernel crashed with
+               sysrq, the panic seen over netconsole and raised as critical, and after the VM reboots by itself the scan finds the
+               crash record in pstore
+
 A check reads the answer from the VM it is about, never from StorageForge's report of its work. tiers.py runs it.
 """
 import json
+import os
 import re
 import secrets
 import shlex
@@ -394,3 +408,153 @@ print(json.dumps(out))
         r.check('logrule-zfs-offline', pools[0].name, zfs_offline(pools[0]))
     else:
         r.add('logrule-zfs-offline', '-', None, 'no ZFS host in this build')
+    tier14_monitoring(r, api, nodes, journald, bare)
+
+
+# ── 0.5.8: anomalies, the monitoring view, netconsole and pstore (section 3, phases 3 to 5). Written, not run yet ──
+ANOMALIES = """
+import json, shutil, sys, tempfile, time
+from storageforge_index import hostlogs, loganomaly
+from storageforge_index.db import Database
+base, flood = sys.stdin.read().split('\\n@@@@\\n')
+now = time.time() - time.time() % 300
+W = loganomaly.WEEK_SECS
+d = tempfile.mkdtemp(); db = Database(d + '/t.db'); conn = db.connect(); db.migrate(conn)
+def shifted(text, back, tag):
+    p = hostlogs.parse(text, now)
+    for x in p['lines']:
+        x['at_us'] -= int(back * 1e6); x['key'] = x['key'] + tag
+    return p
+for k in (3, 2, 1):                      # the same real journal, as it would have been one, two and three weeks ago
+    hostlogs.store(conn, 'h', shifted(base, k * W, 'w%d' % k), now - k * W)
+hostlogs.store(conn, 'h', hostlogs.parse(base, now), now)
+out = {'ordinary': sorted(loganomaly.problems(conn, now)), 'kinds': conn.scalar('SELECT count(*) FROM host_log_kinds'),
+       'lines': conn.scalar('SELECT count(*) FROM host_log_lines WHERE collected_at = :t', {'t': int(now)}), 'weeks': loganomaly.assess(conn, 'h', now)['weeks']}
+hostlogs.store(conn, 'h', hostlogs.parse(flood, now + 1), now + 1)
+out['flooded'] = {k: v[3] for k, v in loganomaly.problems(conn, now + 1).items()}
+conn.close(); shutil.rmtree(d, True)
+print(json.dumps(out))
+"""
+
+
+def tier14_monitoring(r, api, nodes, journald, bare):
+    fetch = 'from storageforge_index import hostlogs; import sys; print(hostlogs.script(int(sys.argv[1])))'
+
+    def anomalies(node):
+        def check():
+            since = str(int(time.time()) - 7 * 86400)
+            base = ssh(node.name, 'sudo -n -u scan sh -s', stdin=in_product(fetch, since))
+            token = ''.join(secrets.choice('abcdefghijklmnopqrstuvwxyz') for _ in range(12))       # letters only: a number would be blanked
+            sudo(node.name, f'for i in $(seq 1 600); do logger -t {TAG}-flood -p user.notice "flood line $i"; done; logger -t {TAG}-kind -p user.err "sflab never seen {token}"')
+            flood = ssh(node.name, 'sudo -n -u scan sh -s', stdin=in_product(fetch, since))
+            got = json.loads(in_product(ANOMALIES, stdin=base + '\n@@@@\n' + flood))
+            want(got['weeks'] == 3, f'three weeks were laid down and the baseline sees {got["weeks"]}')
+            want(got['ordinary'] == [], f'an ordinary hour of {node.name}, against three weeks of the same, raised {got["ordinary"]}')
+            want(0 < got['kinds'] < got['lines'], f'{got["lines"]} real lines made {got["kinds"]} kinds: their numbers and names were not blanked')
+            flooded = got['flooded']
+            want('log-volume:h' in flooded, f'600 lines more than usual raised no volume warning: {flooded}')
+            want('log-new-kind:h' in flooded and token in flooded['log-new-kind:h'], f'the line of a new kind was not said: {flooded.get("log-new-kind:h")!r}')
+            return f'{got["lines"]} real lines in {got["kinds"]} kinds; an ordinary hour quiet; the flood: {flooded["log-volume:h"][:120]!r}'
+        return check
+
+    def monitor_view():
+        def check():
+            got = {h['host']: h for h in api.get('/api/hostlogs/monitor')['hosts']}
+            status = {s['host']: s for s in api.get('/api/hostlogs/status')['hosts']}
+            missing = [n.name for n in journald + bare if n.name not in got]
+            want(not missing, f'the monitoring view leaves out {missing}')
+            for n in journald:
+                i, s = got[n.name]['ingest'], status.get(n.name)
+                want(s and i['state'] == s['state'] and i['last_line'] == s['newest'] and i['signed'] == s['signed'],
+                     f'{n.name}: the view says {i}, the status says {s}')
+            for n in bare:
+                want(got[n.name]['ingest']['state'] == 'no_journal', f'{n.name} has no journal and the view says {got[n.name]["ingest"]}')
+            ranks = [h['rank'] for h in api.get('/api/hostlogs/monitor')['hosts']]
+            want(ranks == sorted(ranks), f'hosts with something to look at do not come first: {ranks}')
+            return f'{len(got)} hosts, the ingest of each as its status says'
+        return check
+
+    controller = next((n for n in nodes if n.can('controller')), None)
+
+    def netconsole_plan(node):
+        def check():
+            want(controller, 'no controller in this build')
+            got = api.get('/api/hostlogs/netconsole')
+            want(got['receiver']['listening'], f'the controller does not listen for netconsole: {got["receiver"]}. compose.lab.yml sets STORAGEFORGE_NETCONSOLE_LISTEN')
+            api('PUT', f'/api/hostlogs/netconsole/{node.name}', {'address': node.ip, 'port': 6665})
+            plan = api.post('/api/changes', {'name': 'sflab netconsole', 'tasks': [{'type': 'netconsole', 'host': node.name, 'params': {'target': controller.ip}}]})
+            demo.deploy(api, 'changes', plan['id'], 'netconsole on')
+            try:
+                conf = sudo(node.name, 'cat /etc/modprobe.d/storageforge-netconsole.conf').strip()
+                want(conf.startswith('options netconsole netconsole=+6665@') and f',6666@{controller.ip}/' in conf, f'the file it wrote: {conf!r}')
+                want(sudo(node.name, 'test -d /sys/module/netconsole && echo yes || echo no').strip() == 'yes', 'netconsole is not loaded')
+                token = secrets.token_hex(6)
+                sudo(node.name, f'echo "<2>sflab-netconsole-{token}" > /dev/kmsg')
+                found = t.wait_for('the line over netconsole', lambda: [e for e in api.get(f'/api/hostlogs?host={node.name}&q={token}&limit=10')['entries']
+                                                                        if e['via'] == 'netconsole'], timeout=60)
+                want(found[0]['priority'] == 2 and not found[0]['signed'], f'it came, but as {found[0]}')
+                src = next(x for x in api.get('/api/hostlogs/netconsole')['sources'] if x['host'] == node.name)
+                want(src['packets'] >= 1 and src['last_at'], f'the source does not count what came: {src}')
+            finally:
+                undo = api.post('/api/changes', {'name': 'sflab netconsole off', 'tasks': [{'type': 'netconsole', 'host': node.name,
+                                                                                            'params': {'target': controller.ip, 'state': 'absent'}}]})
+                demo.deploy(api, 'changes', undo['id'], 'netconsole off')
+            left = sudo(node.name, 'ls /etc/modprobe.d/storageforge-netconsole.conf /etc/modules-load.d/storageforge-netconsole.conf 2>/dev/null; true').strip()
+            want(not left, f'the way back left {left}')
+            after = secrets.token_hex(6)
+            sudo(node.name, f'echo "<2>sflab-netconsole-{after}" > /dev/kmsg; sleep 8')
+            came = [e for e in api.get(f'/api/hostlogs?host={node.name}&q={after}&limit=10')['entries'] if e['via'] == 'netconsole']
+            api('DELETE', f'/api/hostlogs/netconsole/{node.name}')
+            want(not came, 'a line still came over netconsole after the way back')
+            return f'{conf}; a line at crit came over UDP, not signed; the way back removed both files and the next line did not come'
+        return check
+
+    def panic(node):
+        """The VM is crashed for real, so only when asked (SFLAB_CRASH=1), and only on the throwaway UEFI VM."""
+        def check():
+            want(controller, 'no controller in this build')
+            sudo(node.name, 'modprobe efi_pstore 2>/dev/null; true', check=False)
+            backend = sudo(node.name, 'cat /sys/module/pstore/parameters/backend 2>/dev/null; true', check=False).strip()
+            want(backend and backend != '(null)', f'{node.name} has no pstore backend ({backend!r}): the crash record would have nowhere to go')
+            api('PUT', f'/api/hostlogs/netconsole/{node.name}', {'address': node.ip, 'port': 6665})
+            bash = in_product('from storageforge_index import steps_netconsole; print(steps_netconsole.BASH)')
+            head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*"; exit 1; }; info() { :; }; '
+                    'act() { :; }; durable() { sync; }\n')
+            sudo(node.name, 'bash -s', stdin=head + bash + f'\nt_netconsole {controller.ip} 6666 6665 "" present\n')
+            sudo(node.name, 'sysctl -q kernel.panic=10; sync')
+            ssh(node.name, 'sudo -n sh -c "sleep 2; echo c > /proc/sysrq-trigger" >/dev/null 2>&1 &', check=False)
+            try:
+                said = t.wait_for('the panic over netconsole', lambda: [e for e in api.get(f'/api/hostlogs?host={node.name}&q=sysrq&limit=20')['entries']
+                                                                        if e['via'] == 'netconsole'], timeout=90)
+                t.alerts_now()
+                crit = [x for g in api.get(f'/api/notifications?host={node.name}&kind=log-rule')['groups'] for x in g['items'] if x['level'] == 'crit']
+                want(crit, f'the panic came over netconsole ({said[0]["message"]!r}) and raised nothing critical')
+                demo.wait(f'{node.name} back after the crash', lambda: ssh(node.name, 'echo up', check=False).strip() == 'up', timeout=600)
+                scan(api, node)
+                t.alerts_now()
+                row = api.get(f'/api/hostlogs/monitor?host={node.name}')['hosts'][0]
+                ps = row['ingest'].get('pstore')
+                want(ps and ps['records'] >= 1, f'after the reboot the scan found no crash record in pstore: {row["ingest"]}')
+                note = [x for g in api.get(f'/api/notifications?host={node.name}&kind=log-pstore')['groups'] for x in g['items']]
+                want(note and note[0]['level'] == 'warn', f'a crash record and no warning: {note}')
+                return (f'the crash over netconsole: {said[0]["message"][:80]!r}; after the reboot {ps["records"]} record(s) in pstore, '
+                        + ('read' if ps['read'] else f'not readable: {ps["note"][:80]}'))
+            finally:
+                sudo(node.name, 'bash -s', stdin=head + bash + f'\nt_netconsole {controller.ip} 6666 6665 "" absent\n', check=False)
+                sudo(node.name, 'rm -f /sys/fs/pstore/* 2>/dev/null; rm -rf /var/lib/systemd/pstore/* 2>/dev/null; true', check=False)
+                api('DELETE', f'/api/hostlogs/netconsole/{node.name}')
+        return check
+
+    if journald:
+        r.check('logs-anomalies', journald[0].name, anomalies(journald[0]))
+    r.check('logs-monitor-view', '-', monitor_view())
+    able = [n for n in journald if n.can('deploy') and not n.can('controller')]
+    if able:
+        r.check('netconsole-plan', able[0].name, netconsole_plan(able[0]))
+    else:
+        r.add('netconsole-plan', '-', None, 'no host with systemd that deploys in this build')
+    crashable = roles.extra('uefi')
+    if crashable and os.environ.get('SFLAB_CRASH') == '1':
+        r.check('netconsole-panic-pstore', crashable[0].name, panic(crashable[0]))
+    else:
+        r.add('netconsole-panic-pstore', crashable[0].name if crashable else '-', None, 'crashes a VM: run with SFLAB_CRASH=1 and the UEFI VM in the build')

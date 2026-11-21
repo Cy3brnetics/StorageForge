@@ -416,6 +416,10 @@ function renderDetails(n) {
   if (n.kind === 'Host' && !n.props.external && can('hostlogs.view') && typeof hlLinkEl === 'function') actions.append(hlLinkEl(n.label));
   if (n.kind === 'Host' && !n.props.external) actions.append(button('Open in planner', () => { location.href = `/planner#overview@${encodeURIComponent(n.label)}`; }, 'btn'));
   if (n.kind === 'MountPoint' && n.host) actions.append(button('Largest files', () => runSearch({ under: n.label, host: n.host, size_gt: '1MiB' }), 'btn'));
+  if (['MountPoint', 'Filesystem', 'StoragePool'].includes(n.kind) && n.host && typeof hlDeviceLinkEl === 'function') {     // the host's lines that name it: a mount by the device it is mounted from
+    const from = n.kind === 'MountPoint' ? ((S.adj.get(n.id) || []).find(({ other }) => other.kind === 'Filesystem')?.other.props.source || '') : '';
+    actions.append(hlDeviceLinkEl(n.host, n.kind === 'MountPoint' ? 'mount' : 'device', n.kind === 'Filesystem' ? n.props.source : n.kind === 'StoragePool' ? n.label.split('/')[0] : from.startsWith('/dev/') ? from : n.label) || '');
+  }
   if ((n.kind === 'Host' || n.kind === 'MountPoint') && typeof openGitForPath === 'function') {
     actions.append(button('Git repos…', () => openGitForPath(n.host || n.label, n.kind === 'MountPoint' ? n.label : '/'), 'btn ghost'));
   }

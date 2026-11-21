@@ -37,6 +37,9 @@ BUILTIN = (
     ('pool-degraded', 'A ZFS pool or an md array is degraded', '*', 'notice',        # zed says a state change at notice: found in the KVM lab
     
      '*pool * is DEGRADED*|*state of pool*DEGRADED*|*statechange*vdev_state=FAULTED*|*statechange*vdev_state=DEGRADED*|*statechange*vdev_state=OFFLINE*|*statechange*vdev_state=REMOVED*|*statechange*vdev_state=UNAVAIL*|*vdev state changed*state=*FAULTED*|*md/raid*: Disk failure on *|*md*: Operation continuing on * devices*|*md*: * active with * out of * devices*', 1, 3600, 'crit', True),
+    # what netconsole and pstore bring (netconsole.py, pstore.py), and the journal when the host lived to write it
+    ('panic', 'The kernel panicked or locked up', 'kernel', 'debug',
+     '*Kernel panic - not syncing*|*BUG: soft lockup*|*Watchdog detected hard LOCKUP*|*hard LOCKUP on cpu*|*rcu_sched self-detected stall*|*rcu: INFO: rcu_* detected stalls*|*rcu_preempt self-detected stall*', 1, 86400, 'crit', True),
     ('share-down', 'An NFS or SMB server is not responding', 'kernel', 'warning', '*nfs: server * not responding*|*CIFS: VFS: *has not responded in*|*CIFS*server * not responding*', 1, 1800, 'warn', True),
     ('unit-failed', 'Services failing', 'systemd', 'warning', '*Failed with result *|Failed to start *', 3, 3600, 'warn', True),
     ('segfault', 'Programs crashing', 'kernel', 'info', '*segfault at *|*general protection fault*', 3, 3600, 'warn', True),

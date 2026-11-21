@@ -48,6 +48,9 @@ RATE_PER_DAY = float(os.environ.get('STORAGEFORGE_LOG_RATE_PER_DAY', '0')) or KE
 COUNT_SECS = 300
 COUNT_KEEP_DAYS = int(os.environ.get('STORAGEFORGE_LOG_COUNT_KEEP_DAYS', '400'))
 MAX_EXPORT = 20000
+# kernel lines that come beside the journal: over netconsole (netconsole.py) and from pstore after a crash (pstore.py). They are stored,
+# shown and matched by the log rules, but never change how the journal's own pickup went, nor the counts baselines are made of
+SIDE = ('netconsole', 'pstore')
 PUSH_FRESH_SECS = 600           # a host whose agent pushed lines this recently is not asked for them by the scan too
 JOURNAL_GROUPS = {'systemd-journal', 'adm', 'wheel', 'root'}                # the groups journald's files are readable by
 FIELDS = 'MESSAGE,PRIORITY,_SYSTEMD_UNIT,SYSLOG_IDENTIFIER,_PID,_UID,_COMM,_EXE'    # never _CMDLINE: that is where passwords sit. __SEQNUM and its ID always come
@@ -245,8 +248,11 @@ def store(conn: Conn, host: str, parsed: dict, now: float | None = None, via: st
                                 {'h': host, 'k': x['key'], 'a': x['at_us'], 'p': x['priority'], 'u': x['unit'], 'i': x['ident'], 'd': x['pid'], 'm': x['message'],
                                  't': int(now), 'uid': x.get('uid'), 'comm': x.get('comm'), 'exe': x.get('exe'), 'seq': x.get('seqnum'), 'sid': x.get('seqnum_id'), 'via': via}).rowcount
         left -= new
+        side = via in SIDE
         for x in fresh:
             arrived.append(x)
+            if side:                # the journal's counts are what baselines are made of: a second copy of kernel lines is not counted
+                continue
             # by the host's clock, since that is when it happened, but never after now: a clock ahead does not write the future's counts
             bucket = int(min(x['at_us'] / 1e6, now) // COUNT_SECS)
             key = (x['unit'] or '', x['priority'], bucket)
@@ -263,10 +269,18 @@ def store(conn: Conn, host: str, parsed: dict, now: float | None = None, via: st
         if over:
             note = (f'{over} line(s) were over this host\'s rate of {int(RATE_PER_DAY)} a day and were not stored, routine ones first. They are counted. '
                     'Raise STORAGEFORGE_LOG_KEEP_ROWS or STORAGEFORGE_LOG_RATE_PER_DAY to keep more.')
-        _set_status(conn, host, int(now), state, new, cut, max(seen) if seen else None, note)
-        conn.execute('UPDATE host_log_status SET rate_tokens = :l, rate_at = :t, over_rate = :o, over_total = over_total + :o, via = :v WHERE host = :h',
-                     {'h': host, 'l': left, 't': int(now), 'o': over, 'v': via or 'scan'})
-        if arrived:
+        if side:                    # how the journal's own pickup went is not theirs to say: only the rate they used is kept
+            conn.execute("INSERT INTO host_log_status (host, collected_at, state, note) VALUES (:h, :t, 'side', '') ON CONFLICT (host) DO NOTHING", {'h': host, 't': int(now)})
+            conn.execute('UPDATE host_log_status SET rate_tokens = :l, rate_at = :t, over_total = over_total + :o WHERE host = :h', {'h': host, 'l': left, 't': int(now), 'o': over})
+        else:
+            _set_status(conn, host, int(now), state, new, cut, max(seen) if seen else None, note)
+            conn.execute('''UPDATE host_log_status SET rate_tokens = :l, rate_at = :t, over_rate = :o, over_total = over_total + :o, via = :v,
+                            fresh_at = CASE WHEN :f > 0 THEN :t ELSE fresh_at END WHERE host = :h''',
+                         {'h': host, 'l': left, 't': int(now), 'o': over, 'v': via or 'scan', 'f': len(fresh)})
+        if arrived and not side:
+            from . import loganomaly        # new kinds of line, flagged the first time this host logs one
+            loganomaly.note(conn, host, arrived, now)
+        if arrived and via != 'pstore':     # a crash record is history: pstore.py says it once, not each rule its lines would match
             from . import logrules          # it takes its levels and its 5 minutes from here
             hits = logrules.match_new(conn, host, arrived, now)
             if counts is not None:

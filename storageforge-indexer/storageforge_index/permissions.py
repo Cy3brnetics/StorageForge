@@ -16,7 +16,7 @@ CATALOG = (
     ('Logs', (
         ('logs.view', 'Read the activity log and command output', False),
         ('hostlogs.view', "Read hosts' journals as scans collected them: sign-ins, sudo commands, service output", False),
-        ('hostlogs.rules', 'Create, change and turn off log rules, which decide what a host logging raises a notification for', False),
+        ('hostlogs.rules', 'Create, change and turn off log rules, which decide what a host logging raises a notification for, and say which address each host sends netconsole messages from', False),
         ('audit.view', 'Read the audit log', False),
         ('audit.verify', 'Verify the audit chain and sign evidence (unlocks the vault)', False),)),
     ('Scans', (
@@ -102,6 +102,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/log(/.*)?', 'logs.view'),
     (READ, r'/api/hostlogs(/.*)?', 'hostlogs.view'),
     (_WRITE, r'/api/hostlogs/rules(/\d+)?', 'hostlogs.rules'),
+    (_WRITE, r'/api/hostlogs/netconsole/[^/]+', 'hostlogs.rules'),     # whose name netconsole packets from an address are stored in
 
     (READ, r'/api/search(/hosts)?', 'search.files'),
     (READ, r'/api/planner/versions(/\d+)?', 'plans.view'),            # saved versions of a design (design_versions.py)

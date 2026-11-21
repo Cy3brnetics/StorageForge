@@ -433,6 +433,11 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
             collect_logs(conn, t, inv.hostname, log=log)
         except Exception as exc:
             log(f'  host logs: {exc}')
+        try:                                           # the last crash's record, if the kernel left one (pstore.py)
+            from .pstore import collect as collect_pstore
+            collect_pstore(conn, t, inv.hostname, log=log)
+        except Exception as exc:
+            log(f'  pstore: {exc}')
         if inv.jobs:                                   # runs of deployed jobs that could not report themselves
             try:
                 from .jobs import ingest_scan

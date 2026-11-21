@@ -381,6 +381,14 @@ It can't read the receiver: no verb sends anything back but names, ids and what 
 
 **What this does not cover.** Scripts you download and Ansible playbooks hold no key, so a send to another host stops and says so. `rsync` blocks are the row above.
 
+## Netconsole and pstore
+
+[netconsole](deployments.md#kernel-messages-over-netconsole) is plain UDP from a host's kernel, and **it proves nothing about who sent it**. It has no signature, no sequence a sender has to keep and no answer back. The receiver takes a packet only when its source address and port are exactly those of one host listed under **Logs, Netconsole**, and trusts it no further than that: anyone who can send packets from that address and port, on the path or by forging the source on a network that lets them, can write lines in that host's name, and packets can be lost, repeated or come out of order with nothing to say so. So a line that came this way is marked **came over netconsole: UDP, not signed**, never as signed; it is matched by the log rules, so a forged panic can raise a critical notification, and it never changes how the host's journal pickup went or its baselines. Each source is held to a rate and a packet size, and packets from unknown addresses are counted and dropped without being read further. Use it to see why a host died, not as evidence; the agent's signed lines are the record. Saying which address a host sends from takes the password typed in the last minutes and is audited, since it decides whose name unsigned packets are stored in.
+
+The receiver listens only when `STORAGEFORGE_NETCONSOLE_LISTEN` says where. Keep the port reachable from the hosts that send and from nowhere else: a firewall rule that admits UDP to it only from those hosts' network is the one thing that makes forging their addresses harder.
+
+**pstore** records are the host kernel's last words, written before a crash and read by the scan after the reboot. Root on the host can write or delete one, so a record says why a host died when nothing else does, and proves nothing. The scan reads them only where the scan user may; nothing is added to a host for it.
+
 ## On the hosts
 
 | Feature | What it adds | Removal |
@@ -389,6 +397,7 @@ It can't read the receiver: no verb sends anything back but names, ids and what 
 | Read-only scan access | `find` and `sha256sum` copies with `CAP_DAC_READ_SEARCH`, executable only by `storageforge-scan`; the scan user in `systemd-journal`, so it can read every journal line for scans to collect | `access script --remove` |
 | Deploy access | `storageforge-deploy` user, a sudoers file allowing two commands, `storageforge-run`, `allowed_signers` | the setup script's `--remove` |
 | Deployed jobs | `storageforge-job`, per-job configs, keys and timers; forced-command keys on sources | deploy the plan empty (**Remove from hosts**) |
+| netconsole (the plan step) | `/etc/modprobe.d/storageforge-netconsole.conf`, `/etc/modules-load.d/storageforge-netconsole.conf`, and netconsole loaded, or a target of its own in configfs | the same step with **stop** |
 | Sends between hosts | On the receiver: `storageforge-job`, `/etc/storageforge/receive/<id>.conf` and a forced-command key. On the sender: `/etc/storageforge/sends/<id>.key` and `.hostkey` | goes when a plan ends; **Uninstall** for a task or schedule. Records stay in `/var/lib/storageforge/receive/` |
 
 ## If a key may have leaked

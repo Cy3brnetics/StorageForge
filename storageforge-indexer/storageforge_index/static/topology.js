@@ -825,6 +825,9 @@ function renderEditor() {
   const gnode = gid && S.byId.get(gid);
   const tail = gnode ? [el('div', { class: 'row' }, button('Show in graph', () => { setMode('graph'); select(gid, true); }, 'btn ghost sm'),
     ...(n.kind === 'mount' ? [button('Largest files', () => runSearch({ under: n.target, host: doc.host, size_gt: '1MiB' }), 'btn ghost sm')] : []))] : [];
+  const logs = typeof hlDeviceLinkEl === 'function' && ['disk', 'part', 'pool', 'mount'].includes(n.kind) && !n.planned       // the host's lines that name it (hostlogsview.js)
+    ? hlDeviceLinkEl(doc.host, n.kind === 'mount' ? 'mount' : 'device', n.kind === 'pool' ? n.ref.name : n.kind === 'mount' ? n.target : n.title) : null;
+  if (logs) tail.push(el('div', { class: 'row' }, logs));
   $('#summary').replaceChildren(...kids, form, ...tail);
 }
 const mountActions = (doc, n) => {

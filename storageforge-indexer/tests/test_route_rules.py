@@ -26,6 +26,8 @@ FRESH_PASSWORD = {
     ('PUT', '/api/console/settings'),           # whether every session is recorded in full
     ('PUT', '/api/scans/signing'),                # whether unsigned scans are refused
     ('DELETE', '/api/scans/signing/<path:addr>'),  # forgetting a pinned key lets the next signer take its place
+    ('PUT', '/api/hostlogs/netconsole/<host>'),    # whose name unsigned packets from an address and port are stored in
+    ('DELETE', '/api/hostlogs/netconsole/<host>'),
     ('POST', '/api/devices'),
     ('DELETE', '/api/devices/<name>'),
     ('POST', '/api/devices/credentials'),

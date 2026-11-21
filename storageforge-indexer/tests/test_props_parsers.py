@@ -11,8 +11,8 @@ import unittest
 from pathlib import Path
 
 from props import HAVE, given, settings, st, scaled
-from storageforge_index import (authkeys, cisco, clamav, firewall, gitrepos, health, hostconfig, hostlogs, inframeasure, netfacts, netscan, openwrt, payloads,
-                                pfsense, pkglist, preflight, remote, routeros, secplus, security, snapfind, steps_services, updates)
+from storageforge_index import (authkeys, cisco, clamav, firewall, gitrepos, health, hostconfig, hostlogs, inframeasure, netconsole, netfacts, netscan, openwrt, payloads,
+                                pfsense, pkglist, preflight, pstore, remote, routeros, secplus, security, snapfind, steps_services, updates)
 
 FIX = Path(__file__).parent / 'fixtures'
 
@@ -69,7 +69,7 @@ def mutated(draw, text: str):
 
 # parser: what it may do with text it can't read. 'reads' never raises; 'refuses' may raise ValueError and nothing else.
 READS = {
-    'hostlogs.parse': hostlogs.parse, 'updates.parse': updates.parse, 'health.parse_report': health.parse_report, 'health.parse_snapshots': health.parse_snapshots,
+    'hostlogs.parse': hostlogs.parse, 'pstore.parse': pstore.parse, 'netconsole.parse_packet': lambda t: netconsole.parse_packet(t.encode('utf-8', 'surrogatepass')), 'updates.parse': updates.parse, 'health.parse_report': health.parse_report, 'health.parse_snapshots': health.parse_snapshots,
     'snapfind.parse': snapfind.parse, 'steps_services.parse': steps_services.parse, 'netfacts.parse_listeners': netfacts.parse_listeners,
     'cisco.parse_running': cisco.parse_running, 'cisco.parse_acls': cisco.parse_acls, 'cisco.parse_brief': cisco.parse_brief, 'cisco.parse_routes': cisco.parse_routes,
     'cisco.parse_arp': cisco.parse_arp, 'cisco.parse_cdp': cisco.parse_cdp, 'cisco.parse_lldp': cisco.parse_lldp, 'cisco.parse_vlans': cisco.parse_vlans,
