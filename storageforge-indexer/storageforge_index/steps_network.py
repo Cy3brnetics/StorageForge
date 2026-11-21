@@ -57,6 +57,12 @@ nw_covers() { local net=${1%/*} len=${1#*/} m
   (( ($(nw_int "$net") & m) == ($(nw_int "$2") & m) ))
 }
 
+# a route that covers where this session comes from could send the reply elsewhere
+nw_route_guard() { local cl; cl=$(nw_client)
+  [[ -n $cl && -z $2 ]] && nw_covers "$1" "$cl" || return 0
+  conflict "this session comes from $cl, inside $1: stage a rollback timer, or this could cut the host off for good"; return 1
+}
+
 # ── netplan ─────────────────────────────────────────────────────────
 NP_DIR=/etc/netplan
 np_type() { local t v
@@ -212,12 +218,10 @@ t_net_route() { local dst=$1 via=$2 dev=$3 metric=$4 state=${5:-present} roll=$6
     ifupdown) grep -qsx -- "$dev $dst $via${metric:+ $metric}" "$IF_ROUTES" && where=ours ;;
     *) nw_none; return 0 ;;
   esac
-  # a route that covers where this session comes from could send the reply elsewhere
-  cl=$(nw_client)
-  if [[ -n $cl && -z $roll ]] && nw_covers "$dst" "$cl"; then conflict "this session comes from $cl, inside $dst: stage a rollback timer, or this could cut the host off for good"; return 0; fi
   if [[ $state == absent ]]; then
     if ((!live)) && [[ -z ${where:-} ]]; then ok "there is no route to $dst via $via"; return 0; fi
     [[ -z ${where:-} || $where == ours ]] || { nw_other "the route to $dst via $via" "$where"; return 0; }
+    nw_route_guard "$dst" "$roll" || return 0
     act "remove the route to $dst via $via on $dev, with $(nw_said "$b")" || return 0
     if [[ ${where:-} == ours ]]; then
       case $b in
@@ -233,6 +237,7 @@ t_net_route() { local dst=$1 via=$2 dev=$3 metric=$4 state=${5:-present} roll=$6
     return 0
   fi
   if ((live)) && [[ -n ${where:-} ]]; then ok "the route to $dst via $via is there, and $(nw_said "$b") keeps it"; return 0; fi
+  nw_route_guard "$dst" "$roll" || return 0
   act "route $dst via $via on $dev${metric:+ (metric $metric)}, with $(nw_said "$b")" || return 0
   if [[ -z ${where:-} ]]; then
     case $b in
