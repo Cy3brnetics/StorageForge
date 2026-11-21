@@ -64,6 +64,19 @@ def register(web, ctx):
         core.audit(conn(), actor(), 'workload.adopt', 'ok', None, {'host': got['host'], 'runtime': got['runtime'], 'name': got['name'], 'format': got['format']})
         return jsonify(got)
 
+    @web.get('/api/changes/<int:plan_id>/export/<any("terraform", "opentofu", "puppet"):target>')
+    @login_required
+    def api_change_export(plan_id, target):
+        """A change plan's workload steps as main.tf (Terraform or OpenTofu) or a Puppet manifest, to download."""
+        from . import changes, wlexport
+        try:
+            plan = changes.get_plan(conn(), plan_id)
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        name, text = wlexport.render(plan, target)
+        core.audit(conn(), actor(), f'changes.export.{target}', 'ok', None, {'plan': plan_id})
+        return Response(text, mimetype='text/plain', headers={'Content-Disposition': f'attachment; filename="{name}"'})
+
     @web.delete('/api/workloads/captures/<int:cid>')
     @login_required
     def api_workloads_capture_forget(cid):

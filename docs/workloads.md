@@ -12,6 +12,7 @@ What is here:
 - [The read side](#the-read-side-quadlets-adopting-a-workload-and-drift): Quadlets, adopting a workload by capturing it, and drift against the capture.
 - [Quiesced stacks](#quiesced-stacks): stop, snapshot, start, with the method recorded.
 - [Externally managed workloads](#externally-managed-workloads), told by what the host shows, with a warning before a step changes one.
+- [Exports](#exports-terraform-opentofu-and-puppet): Terraform, OpenTofu and Puppet.
 
 Running one container (`container`), VMs from cloud images (`vm-create`) and the VM steps are in [VMs on libvirt](vms.md) and [Cloning and migrating hosts](host-migration.md). Installing a runtime first is the `runtime-install` step in [Change plans](change-plans.md).
 
@@ -129,3 +130,19 @@ A panel, a unit or a hypervisor that manages a workload puts back what StorageFo
 | A configuration management agent on the host (Puppet, Chef, Salt, ansible-pull, CFEngine) | A note on every workload there that nothing else claims |
 
 The steps that warn are `container`, `stack`, `lxc`, `incus`, `image-update`, `stack-snapshot`, `workload-action`, `workload-remove`, `vm-edit`, `vm-snapshot` and `vm-revert`. The warning says to change it in the tool that manages it, or to adopt it first. A workload made by a StorageForge step is not warned about. Platforms read through their own APIs come with the API connection kind, not from here.
+
+## Exports: Terraform, OpenTofu and Puppet
+
+`GET /api/changes/ID/export/terraform`, `.../opentofu` or `.../puppet` (with `plans.scripts`, into the audit log as `changes.export.TARGET`) writes the workload steps of a change plan as `main.tf` or a Puppet manifest, for your own pipeline. Each is read straight from the plan, never from the Bash script or from each other. Applying inside StorageForge always goes through the signed runner.
+
+| Step | Terraform and OpenTofu | Puppet |
+| :--- | :--- | :--- |
+| `container` | `docker_image` and `docker_container` (kreuzwerker/docker) | `docker::run` (puppetlabs-docker) |
+| `stack` | A `docker_container` for each compose service, with the stack labels | The compose file and `storageforge.yaml` as `file` resources, and `docker_compose` |
+| `incus` | `incus_instance` (lxc/incus) with its config, root disk, NIC and proxy devices | `exec incus launch`, guarded by `incus info` |
+| `lxc` | A comment: plain LXC has no provider | `exec lxc-create`, guarded by `lxc-info` |
+| `vm-create`, `vm-iso`, `vm` | `libvirt_volume`, `libvirt_cloudinit_disk` and `libvirt_domain` (dmacvicar/libvirt), the console on 127.0.0.1 | `exec virt-install`, guarded by `virsh dominfo`, the console on 127.0.0.1 |
+
+Terraform and OpenTofu take the same HCL; only the header and the commands it names differ. Each provider block points at the host its steps are on, and a plan with steps on several hosts says where to add an aliased provider. What has no counterpart is said in a comment where it would be: a firewall rule (`allow_from`, written by `storageforge-fwrules`), the cloud-init part of `vm-create` in Puppet, any step that is not a workload. No export holds a secret: the steps exported carry none, and a VM login key is a public key.
+
+The round-trip tests read each export back and compare it with the plan. They check it with `tofu`, `terraform` or `puppet` where installed; on the build machine none are, and those checks skip. Applying an export on a lab host (OpenTofu with the libvirt provider, `puppet apply`) is roadmap section 1.3, not built here.
