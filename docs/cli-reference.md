@@ -134,6 +134,10 @@ Both report commands also take `--title`, `--as-of YYYY-MM-DD`, `--kwh-price`, `
 | `vault import-dir DIR` | import every key file in a folder (name = file stem) |
 | `vault bind ... --actions console` | a key for the web console, as that login ([Console](console.md)) |
 | `vault secret-add NAME` | store a secret a plan step reads on a host, such as a Tailscale auth key: one line on stdin |
+| `vault secret-generate NAME [--kind password\|token\|hex\|pin\|wireguard] [--length N] [--step S] [--for-host H] [--platform P] [--sensitive]` | make a secret for plan steps and print it once, to stdout alone. [Secrets for plan steps](secrets.md) |
+| `vault secret-list` | the secrets plan steps use, how each was made and where it was delivered: never a value |
+| `vault secret-rotate NAME [--apply] [--given]` | a new value sent to every host the secret was delivered to, or to none: a dry run without `--apply`. `--given`: the new value of a secret you gave, on stdin |
+| `vault secret-remove NAME` | remove a secret and the record of where it went |
 | `vault send-secret NAME --host HOST [--user U] [--key FILE] [--ssh-option OPT]...` | write it to `/run/storageforge/secrets/NAME` on the host over SSH (mode 600, in memory, gone at reboot). [Secrets for plan steps](security.md#secrets-for-plan-steps) |
 | `vault headscale-key NAME --host SERVER (--hs-user ID \| --tags tag:x) [--expiration 1h] [--reusable] [--ephemeral] [--container C]` | make a pre-auth key on a Headscale server over SSH and store it as the secret `NAME` for the `tailscale` step. It is never printed. `--container` when Headscale runs in Docker. Takes `--user`, `--key` and `--ssh-option` as `send-secret` does |
 | `vault nebula-ca NAME [--days 730] [--networks 10.9.0.0/24,...]` | make a Nebula certificate authority. Its key is made in the vault and stays there; its certificate is printed |
