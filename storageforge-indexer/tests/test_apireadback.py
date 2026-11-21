@@ -77,6 +77,7 @@ class AgainstThePlatform(Base):
         super().setUp()
         self.fake.routes['/access/permissions'] = {'/': PVE_AUDITOR}
         self.fake.routes['/access/users/storageforge@pve/token/storageforge'] = TOKEN_INFO
+        self.fake.routes.update({'/cluster/resources': [], '/cluster/backup': []})     # an empty cluster: the read-back is what is tested here
         self.row = self.pinned()
 
     def test_the_read_back_is_stored_and_an_admin_token_is_a_finding_that_leaves_when_narrowed(self):
