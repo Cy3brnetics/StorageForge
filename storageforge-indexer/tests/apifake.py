@@ -9,6 +9,7 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import unquote
 
 
 def make_cert(folder: Path, name: str, cn: str = 'pve.lab') -> tuple[Path, Path, str]:
@@ -43,7 +44,7 @@ class Platform:
                 req = {'method': self.command, 'path': self.path, 'headers': dict(self.headers), 'body': body.decode('utf-8', 'replace')}
                 fake.requests.append(req)
                 path = self.path.split('?', 1)[0]
-                path = path[len('/api2/json'):] if path.startswith('/api2/json') else path
+                path = unquote(path[len('/api2/json'):] if path.startswith('/api2/json') else path)
                 got = fake.routes.get(path, (404, 'Not Found', {'data': None}))
                 if callable(got):
                     got = got(req)

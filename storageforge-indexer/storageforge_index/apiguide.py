@@ -54,6 +54,7 @@ GUIDES = {
         'never': ['root@pam or a token of root@pam (refused here)', 'the Administrator, PVEAdmin, PVEVMAdmin or PVESysAdmin role',
                   'a token with privilege separation off: it then has every right of its user', 'Permissions.Modify or Sys.Modify anywhere'],
         'check': 'pveum user token permissions storageforge@pve storageforge',
+        'expiry': {'allowed': True, 'read_back': True, 'how': 'pveum user token add takes -expire (epoch seconds); the read-back reads it from the token, and a warning comes 30 days before it lapses'},
     },
     'pbs': {
         'title': 'Proxmox Backup Server',
@@ -71,6 +72,7 @@ GUIDES = {
         'admin': ['Permissions.Modify', 'Sys.Modify', 'Sys.Console', 'Sys.PowerManagement', 'Realm.Allocate', 'Datastore.Allocate', 'Remote.Modify'],
         'never': ['root@pam or a token of root@pam (refused here)', 'the Admin or DatastoreAdmin role', 'an ACL on / or /datastore when only some datastores should be seen'],
         'check': "proxmox-backup-manager user permissions 'storageforge@pbs!storageforge' --path /datastore/<name>",
+        'expiry': {'allowed': True, 'read_back': True, 'how': 'proxmox-backup-manager user generate-token takes --expire (epoch seconds); the read-back reads it from the token, and a warning comes 30 days before it lapses'},
     },
     'pdm': {
         'title': 'Proxmox Datacenter Manager',
@@ -87,6 +89,7 @@ GUIDES = {
         'never': ['root@pam or a token of root@pam (refused here)', 'the Administrator role, on any path', 'the Auditor role on / when only some remotes should be seen'],
         'reach': 'PDM holds its own token to every remote it manages, so a PDM token reaches as far as PDM does. Connecting each Proxmox VE and Backup Server directly, each with its own narrower token, is the tighter choice.',
         'check': 'proxmox-datacenter-manager-client acl list',
+        'expiry': {'allowed': True, 'read_back': True, 'how': 'the web interface sets an expiry date when it makes the token; the read-back reads it from the token, and a warning comes 30 days before it lapses'},
     },
 }
 
@@ -205,7 +208,7 @@ def guide(kind: str, **kw) -> dict:
     return {'kind': kind, 'title': g['title'], 'least': g['least'], 'role': g['role'], 'why_role': g['why_role'], 'scope': g['scope'],
             'read': [{'feature': f, **v} for f, v in g['read'].items()],
             'actions': [{'action': k, **v} for k, v in g['actions'].items()], 'no_actions': g.get('no_actions'),
-            'never': g['never'], 'reach': g.get('reach'), 'steps': steps(kind, **kw), 'sources': SOURCES[kind], 'fetched': FETCHED,
+            'never': g['never'], 'reach': g.get('reach'), 'steps': steps(kind, **kw), 'sources': SOURCES[kind], 'fetched': FETCHED, 'expiry': g['expiry'],
             'label': 'not lab-tested'}
 
 

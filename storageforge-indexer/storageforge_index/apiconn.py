@@ -116,7 +116,7 @@ def normalize_url(url: str, kind: str) -> str:
     return f'https://{host}:{port or KINDS[kind]["port"]}'
 
 
-def check_token_id(token_id: str) -> str:
+def check_token_id(token_id: str, kind: str = 'pve') -> str:
     token_id = (token_id or '').strip()
     m = TOKEN_ID.fullmatch(token_id)
     if not m:
@@ -144,7 +144,8 @@ def secret_name(kind: str, name: str) -> str:
 
 # ── the rows ─────────────────────────────────────────────────────────
 COLS = ('conn_id', 'kind', 'name', 'base_url', 'host', 'token_id', 'secret_name', 'cert_sha256', 'cert_offered', 'cert_pinned_by', 'cert_pinned_at',
-        'actions_json', 'created_by', 'created_at', 'read_at', 'read_ok', 'read_error', 'readback_json', 'readback_at')
+        'actions_json', 'created_by', 'created_at', 'read_at', 'read_ok', 'read_error', 'readback_json', 'readback_at',
+        'token_expires_at', 'token_expiry_source', 'token_set_at', 'token_previous')
 
 
 def _row(r) -> dict:
@@ -154,6 +155,7 @@ def _row(r) -> dict:
     d['read_ok'] = bool(d['read_ok'])
     d['title'] = KINDS.get(d['kind'], {}).get('title', d['kind'])
     d['state'] = state_of(d)
+    d['expiry'] = expiry_of(d)
     return d
 
 
@@ -190,7 +192,7 @@ def host_for(conn: Conn, base_url: str) -> str | None:
     return None
 
 
-def add(v, conn: Conn, kind: str, name: str, url: str, token_id: str, secret: str, actor: str, host: str | None = None) -> dict:
+def add(v, conn: Conn, kind: str, name: str, url: str, token_id: str, secret: str, actor: str, host: str | None = None, expires_at=None) -> dict:
     """A new connection: the token sealed in the vault with a policy for this platform alone, and the row. Nothing is sent to the
     platform here: the certificate is accepted first, and only then does the token go anywhere."""
     if kind not in KINDS:
@@ -198,8 +200,9 @@ def add(v, conn: Conn, kind: str, name: str, url: str, token_id: str, secret: st
     if not NAME.fullmatch(name or ''):
         raise ConnError('a connection name is lower-case letters, digits and dashes, up to 40, starting with a letter or digit')
     base = normalize_url(url, kind)
-    token_id = check_token_id(token_id)
+    token_id = check_token_id(token_id, kind)
     check_secret(secret)
+    expires = check_expiry(expires_at)
     if host:
         found = conn.scalar('SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h)', {'h': host})
         if not found:
@@ -214,24 +217,134 @@ def add(v, conn: Conn, kind: str, name: str, url: str, token_id: str, secret: st
         raise ConnError(f'the vault already holds a secret named {sname}: remove it first, or name this connection another way')
     v.store_credential(sname, token_id, secret, policy={'platforms': [platform_of(kind, name)]}, made={'origin': 'given'})
     try:
-        conn.execute("""INSERT INTO platform_connections (kind, name, base_url, host, token_id, secret_name, created_by, created_at)
-                        VALUES (:k, :n, :b, :h, :t, :s, :a, :at)""",
-                     {'k': kind, 'n': name, 'b': base, 'h': host, 't': token_id, 's': sname, 'a': actor, 'at': int(time.time())})
+        now = int(time.time())
+        conn.execute("""INSERT INTO platform_connections (kind, name, base_url, host, token_id, secret_name, created_by, created_at, token_set_at,
+                                                          token_expires_at, token_expiry_source)
+                        VALUES (:k, :n, :b, :h, :t, :s, :a, :at, :at, :e, :es)""",
+                     {'k': kind, 'n': name, 'b': base, 'h': host, 't': token_id, 's': sname, 'a': actor, 'at': now, 'e': expires,
+                      'es': 'given' if expires is not None else None})
     except Exception:
         conn.execute('DELETE FROM device_credentials WHERE name = :n', {'n': sname})
         raise
     return by_name(conn, name)
 
 
-def replace_token(v, conn: Conn, conn_id, token_id: str, secret: str) -> dict:
-    """A new token for a connection: the old one is overwritten in the vault, the read-back is cleared until the next read."""
+class RotationRefused(ApiError):
+    """The new token was not taken: the old one stays in place and keeps working. Its text never holds either token."""
+
+
+def check_expiry(value) -> int | None:
+    """When a token lapses, as a person gives it where the platform cannot say: epoch seconds, a YYYY-MM-DD date, or nothing."""
+    if value in (None, ''):
+        return None
+    bad = ConnError('the expiry is a date (YYYY-MM-DD) or epoch seconds')
+    if isinstance(value, bool):
+        raise bad
+    if isinstance(value, (int, float)):
+        when = int(value)
+    elif isinstance(value, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', value.strip()):
+        try:
+            when = int(time.mktime(time.strptime(value.strip(), '%Y-%m-%d')))
+        except (ValueError, OverflowError):
+            raise bad from None
+    elif isinstance(value, str) and value.strip().isdigit() and len(value.strip()) < 13:
+        when = int(value.strip())
+    else:
+        raise bad
+    if not 0 < when < 1 << 40:
+        raise bad
+    return when
+
+
+EXPIRY_WARN = 30 * 86400          # a warning this long before a token lapses
+EXPIRY_CRIT = 7 * 86400           # and a critical one this long before
+
+
+def expiry_of(d: dict, now: float | None = None) -> dict:
+    """{'at', 'source', 'state', 'days'}: state is unknown (nobody said), never (the platform says it does not lapse), ok, soon (within
+    30 days), very-soon (within 7) or expired."""
+    at, now = d.get('token_expires_at'), now or time.time()
+    if at is None:
+        return {'at': None, 'source': None, 'state': 'unknown', 'days': None}
+    if at == 0:
+        return {'at': 0, 'source': d.get('token_expiry_source'), 'state': 'never', 'days': None}
+    left = at - now
+    state = 'expired' if left <= 0 else 'very-soon' if left < EXPIRY_CRIT else 'soon' if left < EXPIRY_WARN else 'ok'
+    return {'at': at, 'source': d.get('token_expiry_source'), 'state': state, 'days': int(left // 86400)}
+
+
+def note_expiry(conn: Conn, row: dict, expire) -> None:
+    """What a read-back found of the token's expiry: the platform's word replaces a person's, and a platform that does not say leaves
+    what a person gave."""
+    if expire is None:
+        return
+    conn.execute("UPDATE platform_connections SET token_expires_at = :e, token_expiry_source = 'platform' WHERE conn_id = :i",
+                 {'e': int(expire), 'i': row['conn_id']})
+
+
+def staged_name(row: dict) -> str:
+    return f'{row["secret_name"]}.next'
+
+
+def rotate(db, conn: Conn, conn_id, token_id: str, secret: str, actor: str, expires_at=None) -> dict:
+    """A new token for a connection, without a gap. The new one is sealed beside the old one and checked by the read-back against the
+    platform. Only when the platform takes it, it reads at least what the old one read, and it can do no more than StorageForge needs
+    does it replace the old one in the vault. Otherwise the new one is dropped and the old one keeps working. Either way the old token
+    still works on the platform until someone deletes it there, and the connection says so until a person says it is done.
+
+    The secret store rotates a step's secret the same way (secretstore.rotate): staged where it is used, switched over only when every
+    place took it. Here the one place is the platform, and the read-back is how it is asked."""
+    from . import apireadback
+    from .vault import Vault
     row = get(conn, conn_id)
     if not row:
         raise LookupError('no such connection')
-    token_id = check_token_id(token_id)
+    token_id = check_token_id(token_id, row['kind'])
     check_secret(secret)
-    v.store_credential(row['secret_name'], token_id, secret, policy={'platforms': [platform_of(row['kind'], row['name'])]}, made={'origin': 'given'})
-    conn.execute('UPDATE platform_connections SET token_id = :t, readback_json = NULL, readback_at = NULL WHERE conn_id = :i', {'t': token_id, 'i': row['conn_id']})
+    expires = check_expiry(expires_at)
+    if not row.get('cert_sha256') or row.get('cert_offered'):
+        raise ConnError('accept the platform certificate first: a new token is checked against the platform before it is taken')
+    staged = staged_name(row)
+    policy = {'platforms': [platform_of(row['kind'], row['name'])]}
+    with Vault(db, conn).unlock() as v:
+        v.store_credential(staged, token_id, secret, policy=policy, made={'origin': 'given'})
+    trial = {**row, 'token_id': token_id, 'secret_name': staged}
+    try:
+        try:
+            with open_client(db, conn, trial) as client:
+                rb = apireadback.readback(client, trial)
+        except ApiError as exc:
+            raise RotationRefused(f'the platform did not take the new token: {_clean(str(exc), secret)}. The old token stays in place') from None
+        old = row.get('readback') or {}
+        lost = sorted(f for f, v in (old.get('features') or {}).items() if v.get('ok') and not (rb.get('features') or {}).get(f, {}).get('ok'))
+        if lost:
+            raise RotationRefused(f'the new token cannot read what the old one reads ({", ".join(lost)}): give it what the guide shows. The old token stays in place')
+        if rb.get('verdict') == 'over' and old.get('verdict') != 'over':
+            privs = sorted({str(o.get('priv', '')) for o in rb.get('over') or []})
+            raise RotationRefused(f'the new token can do more than StorageForge needs ({", ".join(privs[:8])}): narrow it as the guide shows. The old token stays in place')
+    except Exception:
+        conn.execute('DELETE FROM device_credentials WHERE name = :n', {'n': staged})
+        raise
+    with Vault(db, conn).unlock() as v:
+        v.store_credential(row['secret_name'], token_id, secret, policy=policy, made={'origin': 'given', 'rotated_at': int(time.time())})
+    conn.execute('DELETE FROM device_credentials WHERE name = :n', {'n': staged})
+    expire = (rb.get('token') or {}).get('expire')
+    previous = row['token_id'] if row['token_id'] != token_id else f'{row["token_id"]} (its old secret)'
+    conn.execute("""UPDATE platform_connections SET token_id = :t, token_set_at = :now, token_previous = :p, token_expires_at = :e,
+                    token_expiry_source = :es WHERE conn_id = :i""",
+                 {'t': token_id, 'now': int(time.time()), 'p': previous, 'e': expire if expire is not None else expires,
+                  'es': 'platform' if expire is not None else 'given' if expires is not None else None, 'i': row['conn_id']})
+    apireadback.store(conn, row, rb)
+    return {'connection': get(conn, conn_id), 'readback': rb, 'previous': previous,
+            'note': f'The old token {previous} still works on the platform until you delete it there.'}
+
+
+def forget_previous(conn: Conn, conn_id) -> dict:
+    """A person deleted the replaced token on the platform: the connection stops reminding them."""
+    row = get(conn, conn_id)
+    if not row:
+        raise LookupError('no such connection')
+    conn.execute('UPDATE platform_connections SET token_previous = NULL WHERE conn_id = :i', {'i': row['conn_id']})
     return get(conn, conn_id)
 
 
@@ -244,7 +357,7 @@ def remove(conn: Conn, conn_id) -> dict | None:
     with conn.tx():
         conn.execute('DELETE FROM platform_objects WHERE conn_id = :i', {'i': row['conn_id']})
         conn.execute('DELETE FROM platform_connections WHERE conn_id = :i', {'i': row['conn_id']})
-        conn.execute('DELETE FROM device_credentials WHERE name = :n', {'n': row['secret_name']})
+        conn.execute('DELETE FROM device_credentials WHERE name IN (:n, :s)', {'n': row['secret_name'], 's': staged_name(row)})
     return row
 
 
@@ -503,6 +616,20 @@ def problems(conn: Conn) -> dict:
                                                       f'now {row["cert_offered"]}, accepted {row["cert_sha256"]}. Nothing is sent to it until a person accepts the new one in Keys, Platform connections.', 'crit')
         elif row['state'] == 'failed':
             out[f'api-read:{row["name"]}'] = ('api-read', row['host'] or row['name'], f'Reading {row["title"]} {row["name"]} failed', row['read_error'], 'warn')
+        exp = row['expiry']
+        if exp['state'] in ('soon', 'very-soon', 'expired'):
+            when = time.strftime('%Y-%m-%d', time.localtime(exp['at']))
+            title = (f'The {row["title"]} token of {row["name"]} expired on {when}' if exp['state'] == 'expired'
+                     else f'The {row["title"]} token of {row["name"]} expires on {when}')
+            said = ' The date is the one given when the token was entered: the platform does not say.' if exp['source'] == 'given' else ''
+            out[f'api-token-expiry:{row["name"]}'] = ('api-token-expiry', row['host'] or row['name'], title,
+                                                      'Make a new token as the guide shows and give it under Keys, Platform connections, Replace the token: '
+                                                      'it is checked against the platform before the old one is dropped.' + said,
+                                                      'warn' if exp['state'] == 'soon' else 'crit')
+        if row.get('token_previous'):
+            out[f'api-token-previous:{row["name"]}'] = ('api-token-previous', row['host'] or row['name'], f'The replaced {row["title"]} token of {row["name"]} still works',
+                                                        f'{row["token_previous"]} was replaced and works on the platform until it is deleted there. Delete it, then '
+                                                        'say so under Keys, Platform connections.', 'info')
     from . import apiread, apireadback
     out.update(apireadback.problems(conn))
     out.update(apiread.problems(conn))

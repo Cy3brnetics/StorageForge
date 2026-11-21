@@ -119,8 +119,10 @@ def readback(client, row: dict) -> dict:
 
 
 def store(conn: Conn, row: dict, result: dict) -> None:
+    from . import apiconn
     conn.execute('UPDATE platform_connections SET readback_json = :r, readback_at = :t WHERE conn_id = :i',
                  {'r': json.dumps(result, sort_keys=True), 't': result.get('at') or int(time.time()), 'i': row['conn_id']})
+    apiconn.note_expiry(conn, row, (result.get('token') or {}).get('expire'))
 
 
 def problems(conn: Conn) -> dict:

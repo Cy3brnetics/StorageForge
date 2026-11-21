@@ -45,6 +45,30 @@ function vapiReadback(rb) {
   return sfNode('div', { class: 'readback' }, parts);
 }
 
+/* A new token without a gap: the server tries it against the platform (the read-back) and takes it only when the platform does, it reads
+   what the old one read and can do no more than needed. Otherwise the old token stays and the reason is shown. */
+async function vapiReplace(c) {
+  const tokenId = sfNode('input', { id: 'platnewid', required: true, autocomplete: 'off', spellcheck: false, value: c.token_id });
+  const secret = sfNode('input', { id: 'platnewtoken', required: true, type: 'password', autocomplete: 'off', spellcheck: false });
+  const expires = sfNode('input', { id: 'platnewexpiry', type: 'date' });
+  const form = sfNode('form', { class: 'stack', id: 'platreplace' },
+    sfNode('p', { class: 'muted' }, `Make the new token on ${c.title} as the guide shows, with an expiry date. It is checked against the platform before the old one is dropped; if it is refused, the old one stays.`),
+    sfNode('label', { class: 'sf-field' }, sfNode('span', {}, 'New token ID'), tokenId),
+    sfNode('label', { class: 'sf-field' }, sfNode('span', {}, 'New token secret'), secret),
+    sfNode('label', { class: 'sf-field' }, sfNode('span', {}, 'Expires on'), expires, sfNode('small', {}, 'Only needed where the platform cannot say; a date it reads back wins.')),
+    sfNode('div', { class: 'row end' }, sfNode('button', { class: 'btn pri', type: 'submit' }, 'Check it, then replace')));
+  form.addEventListener('submit', (ev) => { ev.preventDefault(); vapiDo(async () => {
+    const body = { token_id: tokenId.value.trim(), token: secret.value, expires_at: expires.value || null };
+    secret.value = '';
+    const got = await (await postJSON(`/api/keys/platforms/${c.conn_id}/token`, body)).json();
+    body.token = null;
+    vapiMsg(`${c.name} now uses ${got.connection.token_id}. ${got.note}`, true);
+    loadPlatforms(false);
+  }); });
+  const li = $(`#platformlist li[data-platform="${c.name}"]`);
+  if (li && !li.querySelector('#platreplace')) li.append(form);
+}
+
 function vapiRow(c, manage) {
   const li = document.createElement('li');
   li.dataset.platform = c.name;
@@ -52,9 +76,19 @@ function vapiRow(c, manage) {
     ...(c.read_at ? [text('span', ' · read ', 'm'), timeEl(c.read_at)] : []),
     ...(c.read_error ? [text('span', ` · ${c.read_error}`, 'm')] : []),
     ...(c.actions.length ? [text('span', ` · actions on: ${c.actions.join(', ')}`, 'm')] : [text('span', ' · read-only', 'm')]));
+  const exp = c.expiry || {};
+  if (exp.state === 'never') li.append(text('span', ' · the token never expires: the guide recommends a date', 'm'));
+  else if (exp.at) li.append(text('span', ` · token ${exp.state === 'expired' ? 'expired' : 'expires'} `, exp.state === 'ok' ? 'm' : 'm st-warn'), timeEl(exp.at),
+    ...(exp.source === 'given' ? [text('span', ' (the date you gave)', 'm')] : []));
+  if (c.token_previous) li.append(text('span', ` · the replaced token ${c.token_previous} works on the platform until you delete it there`, 'm st-warn'));
   const rb = vapiReadback(c.readback);
   if (rb) li.append(rb);
   if (!manage) return li;
+  if (c.state !== 'certificate-unaccepted' && c.state !== 'certificate-changed') li.append(button('Replace the token', () => vapiDo(() => vapiReplace(c)), 'btn ghost sm'));
+  if (c.token_previous) li.append(button('The old token is deleted', () => vapiDo(async () => {
+    await postJSON(`/api/keys/platforms/${c.conn_id}/token/previous`, {});
+    loadPlatforms(false);
+  }), 'btn ghost sm'));
   if (c.state === 'certificate-unaccepted' || c.state === 'certificate-changed') li.append(button('Accept the certificate', () => vapiDo(async () => {
     if (await vapiAccept(c)) { vapiMsg(`The certificate of ${c.name} is accepted.`, true); loadPlatforms(); }
   }), 'btn ghost sm'));
@@ -89,9 +123,11 @@ function vapiForm(kinds) {
   const tokenId = sfNode('input', { id: 'plattokenid', required: true, autocomplete: 'off', spellcheck: false, placeholder: 'storageforge@pve!storageforge' });
   const secret = sfNode('input', { id: 'plattoken', required: true, type: 'password', autocomplete: 'off', spellcheck: false });
   const host = sfNode('input', { id: 'plathost', autocomplete: 'off', placeholder: 'found by its address when empty' });
+  const expires = sfNode('input', { id: 'platexpiry', type: 'date' });
   const tokenForm = sfNode('form', { class: 'stack', id: 'plattokenform', hidden: true },
     field('Name of this connection', name), field('Address', url, 'https only: plain HTTP is refused.'), field('Token ID', tokenId, 'user@realm!tokenname, as the platform shows it.'),
     field('Token secret', secret, 'Shown by the platform once. It goes into the vault and is never shown again.'), field('Scanned host it runs on', host),
+    field('Token expires on', expires, 'Only where the platform cannot say: a date it reads back wins. A warning comes 30 days before.'),
     sfNode('div', { class: 'row end' }, sfNode('button', { class: 'btn pri', type: 'submit' }, 'Add, then check the certificate')));
   const show = sfNode('button', { class: 'btn', type: 'button' }, 'Show what the token needs');
   show.addEventListener('click', () => vapiDo(async () => {
@@ -102,7 +138,7 @@ function vapiForm(kinds) {
     tokenForm.hidden = false;
   }));
   tokenForm.addEventListener('submit', (ev) => { ev.preventDefault(); vapiDo(async () => {
-    const body = { kind: kind.value, name: name.value.trim(), url: url.value.trim(), token_id: tokenId.value.trim(), token: secret.value, host: host.value.trim() || null };
+    const body = { kind: kind.value, name: name.value.trim(), url: url.value.trim(), token_id: tokenId.value.trim(), token: secret.value, host: host.value.trim() || null, expires_at: expires.value || null };
     secret.value = '';
     const got = await (await postJSON('/api/keys/platforms', body)).json();
     body.token = null;

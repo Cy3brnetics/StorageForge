@@ -54,7 +54,8 @@ def register(web, ctx):
         try:
             with Vault(db, conn()).unlock() as v:
                 row = apiconn.add(v, conn(), str(body.get('kind') or ''), str(body.get('name') or ''), str(body.get('url') or ''),
-                                  str(body.get('token_id') or ''), secret if isinstance(secret, str) else '', actor(), body.get('host') or None)
+                                  str(body.get('token_id') or ''), secret if isinstance(secret, str) else '', actor(), body.get('host') or None,
+                                  body.get('expires_at'))
         except (apiconn.ConnError, VaultError) as exc:
             return jsonify(error=str(exc)), 400
         finally:
@@ -128,6 +129,41 @@ def register(web, ctx):
             return jsonify(error=str(exc)), 400
         core.audit(conn(), actor(), 'platform.read', 'ok', row['host'], {'name': row['name'], 'verdict': got['readback']['verdict'], 'counts': got['counts']})
         return jsonify(connection=apiconn.get(conn(), conn_id), **got)
+
+    @web.post('/api/keys/platforms/<int:conn_id>/token')
+    @login_required
+    @password_confirmed
+    def api_platform_token(conn_id):
+        """Replaces the token without a gap: the new one is read back against the platform first, and taken only if it reads at least
+        what the old one read and can do no more than StorageForge needs. A refused one is dropped and the old one stays."""
+        row = found(conn_id)
+        body = json_body()
+        secret = body.pop('token', None)
+        try:
+            got = apiconn.rotate(db, conn(), conn_id, str(body.get('token_id') or ''), secret if isinstance(secret, str) else '', actor(),
+                                 body.get('expires_at'))
+        except (apiconn.ConnError, VaultError) as exc:
+            return jsonify(error=str(exc)), 400
+        except apiconn.ApiError as exc:
+            core.audit(conn(), actor(), 'platform.token', 'failed', row['host'], {'name': row['name'], 'token_id': str(body.get('token_id') or '')[:200], 'why': str(exc)[:200]})
+            return jsonify(error=str(exc), connection=apiconn.get(conn(), conn_id)), 409
+        finally:
+            secret = None
+        core.audit(conn(), actor(), 'platform.token', 'ok', row['host'], {'name': row['name'], 'token_id': got['connection']['token_id'], 'was': row['token_id'],
+                                                                         'verdict': got['readback']['verdict']})
+        resp = jsonify(**got)
+        resp.headers['Cache-Control'] = 'no-store'
+        return resp
+
+    @web.post('/api/keys/platforms/<int:conn_id>/token/previous')
+    @login_required
+    def api_platform_token_previous(conn_id):
+        """The replaced token was deleted on the platform: the reminder goes away. Nothing is sent to the platform."""
+        row = found(conn_id)
+        json_body()
+        got = apiconn.forget_previous(conn(), conn_id)
+        core.audit(conn(), actor(), 'platform.token_previous', 'ok', row['host'], {'name': row['name'], 'previous': row['token_previous']})
+        return jsonify(connection=got)
 
     @web.delete('/api/keys/platforms/<int:conn_id>')
     @login_required

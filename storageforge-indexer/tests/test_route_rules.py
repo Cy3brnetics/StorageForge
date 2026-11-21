@@ -86,6 +86,7 @@ FRESH_PASSWORD = {
     ('POST', '/api/keys/platforms/<int:conn_id>/certificate'),  # which certificate the token may be sent to
     ('PUT', '/api/keys/platforms/<int:conn_id>/actions'),       # what StorageForge may change on the platform
     ('DELETE', '/api/keys/platforms/<int:conn_id>'),
+    ('POST', '/api/keys/platforms/<int:conn_id>/token'),         # a new token, checked against the platform before the old one is dropped
     ('PUT', '/api/me'),
     ('POST', '/api/roles'),
     ('DELETE', '/api/roles/<name>'),
@@ -177,6 +178,7 @@ NO_FRESH_PASSWORD = {
     ('POST', '/api/keys/ssh-ca/plan'),            # likewise
     ('POST', '/api/devices/<name>/read'),        # reads, as a scan does, through the account bound for reading
     ('POST', '/api/keys/platforms/<int:conn_id>/read'),  # reads a platform through its API with the token it was given; changes nothing there
+    ('POST', '/api/keys/platforms/<int:conn_id>/token/previous'),  # only stops a reminder that the replaced token still works on the platform
     ('POST', '/api/devices/<name>/report'),      # saves what an apply would do. The apply asks
     ('POST', '/api/hostlogs/rules'),             # a log rule decides what raises a notification: it changes nothing on a host
     ('PUT', '/api/hostlogs/rules/<int:rule_id>'),
