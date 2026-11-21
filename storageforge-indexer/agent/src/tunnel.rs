@@ -19,9 +19,10 @@
 //! agent -> controller   {"op":"hello","version":V,"run":R,"claims":{...},"manifest":{"counter":C,"sha256":S}|null,"have":[plugins loaded]}
 //! controller -> agent   {"op":"manifest","manifest":TEXT|null,"signature":TEXT|null}
 //!                       {"op":"plugin","name":N,"descriptor":TEXT,"signature":TEXT}, {"op":"chunk","name":N,"data":B64}..., {"op":"plugin-end","name":N}
+//!                       {"op":"resume","cursors":{"PLUGIN":CURSOR|null,...}}   where it has each plugin's readings up to
 //!                       {"op":"ready"}
 //! agent -> controller   {"op":"batch","body":TEXT,"signature":SSHSIG}     body: {"counter":N,"run":R,"sent":T,"dropped":D,"records":[...]}
-//! controller -> agent   {"op":"ack","counter":N} or {"op":"refused","counter":N,"why":TEXT}
+//! controller -> agent   {"op":"ack","counter":N} or {"op":"refused","counter":N,"why":TEXT[,"retry":true]}   retry: over quota, send it again later
 //! controller -> agent   {"op":"bye","why":TEXT}                             the session is over: dial again
 //! ```
 //!
@@ -66,6 +67,8 @@ pub const CHUNK: usize = 512 << 10;
 pub const BEAT_SECS: u64 = 60;
 /// How long the agent waits for an answer.
 const ANSWER_SECS: u64 = 30;
+/// How long a batch the controller would not take this minute waits before it goes again.
+const RETRY_SECS: u64 = 10;
 
 /// Set when the agent has wiped itself and its last record is in the outbox: the tunnel sends what is left, writes no plugin that
 /// arrives, and sets `SAID` once the controller has answered the last batch.
@@ -367,6 +370,16 @@ pub fn session(paths: &Paths, key: &SigningKey, address: SocketAddr, pinned: &[u
                 },
                 None => return Over::Refused("the end of no plugin that is arriving".into()),
             },
+            // where the controller has each plugin's readings up to: a plugin that resumes starts there after the agent starts again
+            "resume" => {
+                if let Some(cursors) = v["cursors"].as_object() {
+                    for (name, cursor) in cursors.iter().take(plugin::MAX_PLUGINS) {
+                        if plugin::is_name(name) && (cursor.is_null() || (cursor.is_object() && cursor.to_string().len() <= 1024)) {
+                            outbox.controller_resume(name, cursor.clone());
+                        }
+                    }
+                }
+            }
             "ready" if arriving.is_none() => break,
             "bye" => return Over::Again(format!("the controller ended the session: {}", runner::plain(v["why"].as_str().unwrap_or("")))),
             _ => return Over::Refused("the controller sent what this agent does not take while a session starts".into()),
@@ -423,6 +436,17 @@ pub fn session(paths: &Paths, key: &SigningKey, address: SocketAddr, pinned: &[u
         };
         match (v["op"].as_str().unwrap_or(""), v["counter"].as_u64()) {
             ("ack", Some(c)) if c == b.counter => link.pending = None,
+            // over the agent's quota this minute (refused before the batch is read, so perhaps without its counter: there is one
+            // batch in flight): the same batch goes again in a while, so that a burst waits and is not lost
+            ("refused", c) if v["retry"].as_bool() == Some(true) && c.is_none_or(|c| c == b.counter) => {
+                log(format!("the controller is not taking more this minute: batch {} goes again in {RETRY_SECS} s", b.counter));
+                for _ in 0..RETRY_SECS * 2 {
+                    if stop.load(Ordering::Relaxed) {
+                        return Over::Stopped;
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
             ("refused", Some(c)) if c == b.counter => {
                 // not sent again: the controller said why, and the agent's log keeps it
                 log(format!("the controller refused batch {c}: {}", runner::plain(v["why"].as_str().unwrap_or(""))));
@@ -467,6 +491,6 @@ pub fn run(paths: &Paths, key: &SigningKey, address: SocketAddr, pinned: &[u8; 3
 /// The records of a batch body, as the controller reads them. Here so that both ends' tests read the same thing.
 pub fn records_of(body: &str) -> Vec<Record> {
     serde_json::from_str::<Value>(body).ok().and_then(|v| v["records"].as_array().cloned()).unwrap_or_default().into_iter().filter_map(|r| {
-        Some(Record { seq: r["seq"].as_u64()?, at: r["at"].as_u64()?, plugin: r["plugin"].as_str()?.to_string(), kind: r["kind"].as_str()?.to_string(), body: r["body"].clone() })
+        Some(Record { seq: r["seq"].as_u64()?, at: r["at"].as_u64()?, plugin: r["plugin"].as_str()?.to_string(), kind: r["kind"].as_str()?.to_string(), body: r["body"].clone(), size: 0 })
     }).collect()
 }

@@ -184,6 +184,11 @@ impl Ctl {
 
     fn spec(&self, kind: Kind, image: &str, needs: &Needs) -> Result<Spec, Stop> {
         let path = |p: PathBuf| p.to_string_lossy().into_owned();
+        // A declared path this host does not have is not mounted (a host whose journal is kept only in /run has no
+        // /var/log/journal): the container gets less than was declared, never more, and nothing is made on the host for it.
+        let mut needs = needs.clone();
+        needs.mounts.retain(|m| self.host.at(m).exists());
+        let needs = &needs;
         let (mask_dirs, mask_files) = self.host.masks(&needs.mounts).map_err(|why| Stop { exit: REFUSED, code: "cannot-mask", why })?;
         let mut group_ids = Vec::new();
         for group in &needs.groups {
@@ -432,6 +437,9 @@ impl Ctl {
             self.tunnel = Some(*address);
         }
         let (kind, spec) = self.plan(&m.image, &needs)?;
+        for path in needs.mounts.iter().filter(|p| !spec.needs.mounts.contains(p)) {
+            self.notes.push(format!("{path} is not on this host and is not mounted"));
+        }
         // everything is checked, and this host can give what is asked; the counter is written down first, so that this manifest
         // or a later one is all that is accepted from here on, whatever becomes of the steps below
         self.folders()?;

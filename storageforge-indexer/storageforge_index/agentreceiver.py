@@ -22,6 +22,9 @@ It is the one place where what an agent says enters StorageForge, and it treats 
   another process altogether.
 - **Sessions are short.** A session ends after SESSION_SECS and the agent opens another with fresh keys. A key taken off the pinned
   list (the agent removed, or wiped) ends its session within seconds, and no new one opens.
+- **Where each plugin is up to.** The cursor in the last reading of a plugin that resumes (the logs plugin's place in the journal)
+  is kept per key in agent_peers and handed back when a session opens, so after a reboot the plugin starts after the last line the
+  controller has. A cursor is the agent's claim about its own host, and moves nothing but its own plugin's place.
 - **No vault, no SSH.** It holds its own tunnel key and nothing else: it reads no vault secret, opens no SSH connection and imports
   nothing that could. What it stores reaches SSH only through a person.
 """
@@ -60,6 +63,7 @@ MAX_CLAIMS = 4096
 EVENT_DAYS = 30
 PIN_REFRESH = 5
 PRUNE_EVERY = 20                    # batches between two looks at a host's quota
+MAX_CURSOR = 1024                   # the most a plugin's cursor may be, as JSON
 NAME = re.compile(r'[a-z][a-z0-9-]{0,31}')
 TABLES_WRITTEN = ('agent_peers', 'agent_records', 'agent_events')
 READ_COLUMNS = {'agents': ('host', 'enabled', 'state', 'public_key', 'fingerprint'), 'agent_deliveries': None}
@@ -205,7 +209,7 @@ class Pins:
 
 
 # ── the store ───────────────────────────────────────────────────────
-PEER_COLUMNS = ('fingerprint', 'host', 'last_counter', 'last_digest', 'last_run', 'last_seq', 'last_dropped', 'batches')
+PEER_COLUMNS = ('fingerprint', 'host', 'last_counter', 'last_digest', 'last_run', 'last_seq', 'last_dropped', 'batches', 'resume_json')
 
 
 class Store:
@@ -239,6 +243,22 @@ class Store:
 
     def last_counter(self, conn, fp: str) -> int:
         return conn.scalar('SELECT last_counter FROM agent_peers WHERE fingerprint = :f', {'f': fp}) or 0
+
+    def cursors(self, conn, fp: str, delivery: dict | None) -> dict | None:
+        """Where the receiver has each plugin of the delivered manifest up to: plugin name -> the cursor of its last reading stored,
+        or None. None as a whole when there is no manifest to name plugins."""
+        if not delivery:
+            return None
+        try:
+            names = [e['name'] for e in json.loads(delivery['manifest']).get('plugins') or [] if isinstance(e, dict) and NAME.fullmatch(str(e.get('name') or ''))]
+        except (ValueError, TypeError, AttributeError):
+            return None
+        stored = conn.scalar('SELECT resume_json FROM agent_peers WHERE fingerprint = :f', {'f': fp})
+        try:
+            stored = json.loads(stored) if stored else {}
+        except ValueError:
+            stored = {}
+        return {n: stored.get(n) if isinstance(stored.get(n), dict) else None for n in names}
 
     def delivery(self, conn, host: str, fp: str) -> dict | None:
         rows = conn.all('SELECT manifest, signature, plugins_json FROM agent_deliveries WHERE host = :h AND fingerprint = :f', {'h': host, 'f': fp})
@@ -283,6 +303,19 @@ class Store:
             if lost:
                 self.bump(conn, fp, lost=lost)
                 self.event(conn, host, fp, 'lost', lost, 'records the agent made and never sent: its queue was full, or they were dropped')
+            cursors = {}
+            for r in b['records']:
+                c = r['body'].get('cursor')
+                if isinstance(c, dict) and len(json.dumps(c)) <= MAX_CURSOR:
+                    cursors[r['plugin']] = c
+            if cursors:
+                try:
+                    kept = json.loads(p['resume_json']) if p['resume_json'] else {}
+                except ValueError:
+                    kept = {}
+                kept = (kept if isinstance(kept, dict) else {}) | cursors
+                conn.execute('UPDATE agent_peers SET resume_json = :j WHERE fingerprint = :f',
+                             {'j': json.dumps(dict(list(kept.items())[:64]), separators=(',', ':')), 'f': fp})
             for r in b['records']:
                 conn.execute("""INSERT INTO agent_records (host, fingerprint, source, counter, seq, plugin, kind, claimed_at, received_at, body_json)
                                 VALUES (:h, :f, 'agent', :c, :s, :p, :k, :a, :t, :b)""",
@@ -456,7 +489,8 @@ class Receiver:
             return
         self.store.hello(db_conn, fp, host, hello, address)
         have = [h for h in hello.get('have') or [] if isinstance(h, str) and NAME.fullmatch(h)][:64]
-        for frame in t.delivery_frames(self.store.delivery(db_conn, host, fp), have):
+        delivery = self.store.delivery(db_conn, host, fp)
+        for frame in t.delivery_frames(delivery, have, self.store.cursors(db_conn, fp, delivery)):
             s.send_json(conn, frame)
         with self.lock:
             rates = self.rates.setdefault(fp, (Bucket(self.bpm), Bucket(self.bytes_pm)))
@@ -492,7 +526,9 @@ class Receiver:
             except Refused as r:
                 if r.kind in ('malformed', 'over-quota'):
                     self._count(db_conn, host, fp, r.kind, r.why)
-                s.send_json(conn, {'op': 'refused', 'counter': counter if type(counter) is int else None, 'why': r.why})
+                # over its quota for this minute: the agent sends the same batch again later, so a burst waits instead of being lost
+                s.send_json(conn, {'op': 'refused', 'counter': counter if type(counter) is int else None, 'why': r.why}
+                            | ({'retry': True} if r.kind == 'over-quota' else {}))
                 if r.kind == 'malformed':
                     malformed += 1
                     if malformed >= MALFORMED_LIMIT:

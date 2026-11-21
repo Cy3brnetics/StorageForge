@@ -4,7 +4,8 @@
 #
 #   inside.sh x86_64|aarch64|sums|test     WORKSPACE (the folder with Cargo.toml, read-only), OUT, EPOCH
 #
-# out/ARCH/storageforge-agent and out/ARCH/storageforge-agentctl, then out/SHA256SUMS over all four. The container is x86_64:
+# out/ARCH/storageforge-agent, out/ARCH/storageforge-agentctl and the official plugins' programs, out/plugins/ARCH/NAME.plugin and
+# NAME.plugin.json as the controller serves them (plugins.sh), then out/SHA256SUMS over the programs and the descriptors. The container is x86_64:
 # aarch64 is cross-compiled with the Rust target for it and Rust's own linker, since every crate is Rust and the target brings
 # its own C runtime. STORAGEFORGE_RELEASE_SIGNERS names another signers file to compile in than agent/release_signers (build.rs).
 set -eu
@@ -25,16 +26,19 @@ x86_64|aarch64)
   fi
   SOURCE_DATE_EPOCH=$EPOCH RUSTFLAGS="$flags" cargo build --release --locked --quiet --target "$target" -p storageforge-agent --bins
   mkdir -p "$OUT/$1"
-  for program in storageforge-agent storageforge-agentctl; do
+  for program in storageforge-agent storageforge-agentctl storageforge-plugin-heartbeat storageforge-plugin-logs storageforge-plugin-health storageforge-plugin-network; do
     file=target/$target/release/$program
     ! ( readelf -d "$file" 2>/dev/null | grep -q NEEDED ) || { echo "$program is not static" >&2; exit 1; }
     cp "$file" "$OUT/$1/$program"
   done
+  # the official plugins as the controller serves them, unsigned: the release key's holder signs them (plugins.sh sign)
+  sh "$WORKSPACE/agent/plugins.sh" lay "$OUT/$1" "$1" "$OUT/plugins"
   # the same folder under Docker's name for the machine, which is what a Dockerfile stage is told (TARGETARCH)
   case $1 in x86_64) ln -sfn x86_64 "$OUT/amd64" ;; aarch64) ln -sfn aarch64 "$OUT/arm64" ;; esac
   ;;
 sums)
-  cd "$OUT" && sha256sum x86_64/storageforge-agent x86_64/storageforge-agentctl aarch64/storageforge-agent aarch64/storageforge-agentctl > SHA256SUMS && cat SHA256SUMS
+  cd "$OUT" && sha256sum x86_64/storageforge-agent x86_64/storageforge-agentctl aarch64/storageforge-agent aarch64/storageforge-agentctl \
+    plugins/x86_64/*.plugin plugins/x86_64/*.plugin.json plugins/aarch64/*.plugin plugins/aarch64/*.plugin.json > SHA256SUMS && cat SHA256SUMS
   ;;
 test)
   # the unit tests of the workspace's own crates, in the container the programs are built in

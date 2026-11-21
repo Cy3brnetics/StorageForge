@@ -13,10 +13,11 @@
 //! **The protocol** (version 1). Every message is one frame of JSON, at most `MAX_MESSAGE` bytes.
 //!
 //! ```text
-//! agent  -> plugin   {"op":"hello","protocol":1,"name":"NAME","host":"/host"}     first, once
+//! agent  -> plugin   {"op":"hello","protocol":1,"name":"NAME","host":"/host","resume":CURSOR|null}     first, once
 //! plugin -> agent    {"op":"ready"}                                               its answer
 //! plugin -> agent    {"op":"data","kind":"KIND","body":{...}}                     a reading, as often as it has one
 //! plugin -> agent    {"op":"log","text":"..."}                                    a line for the agent's own log
+//! agent  -> plugin   {"op":"resume","cursor":CURSOR|null}                         where the controller has its readings up to
 //! agent  -> plugin   {"op":"stop"}                                                finish and exit
 //! ```
 //!
@@ -47,6 +48,16 @@ pub const MAX_MESSAGE: usize = 256 << 10;
 pub const MESSAGES_PER_MINUTE: u32 = 6000;
 /// Where the host's paths are mounted in the container.
 pub const HOST_ROOT: &str = "/host";
+static HOST_ROOT_ELSEWHERE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Tells plugins another folder than `HOST_ROOT` holds the host's paths: for the tests, which run the agent outside a container.
+pub fn set_host_root(path: &str) {
+    let _ = HOST_ROOT_ELSEWHERE.set(path.to_string());
+}
+
+fn host_root() -> &'static str {
+    HOST_ROOT_ELSEWHERE.get().map(String::as_str).unwrap_or(HOST_ROOT)
+}
 
 pub fn descriptor_file(name: &str) -> String {
     format!("{name}.plugin.json")
@@ -244,8 +255,9 @@ pub fn read_message(from: &mut impl Read) -> Result<Message, Hangup> {
     }
 }
 
-pub fn hello(name: &str) -> Vec<u8> {
-    json!({"op": "hello", "protocol": plugin::PROTOCOL, "name": name, "host": HOST_ROOT}).to_string().into_bytes()
+/// The first message to a plugin. `resume` is where it left off in this run of the agent, if it resumes and was started before.
+pub fn hello(name: &str, resume: Option<Value>) -> Vec<u8> {
+    json!({"op": "hello", "protocol": plugin::PROTOCOL, "name": name, "host": host_root(), "resume": resume}).to_string().into_bytes()
 }
 
 pub fn send(to: &mut impl Write, message: &[u8]) -> std::io::Result<()> {

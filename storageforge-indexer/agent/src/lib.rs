@@ -27,11 +27,14 @@
 //! fields it does not know, parsing is linear, and what no honest peer sends ends the conversation.
 
 pub mod host;
+pub mod hostread;
 pub mod identity;
+pub mod journal;
 pub mod manifest;
 pub mod needs;
 pub mod outside;
 pub mod plugin;
+pub mod pluginside;
 pub mod request;
 pub mod runner;
 pub mod runtime;

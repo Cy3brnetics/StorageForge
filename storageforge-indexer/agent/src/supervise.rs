@@ -11,7 +11,7 @@
 //!   older one played back. On tampering the agent deletes its key and stops for good. A plugin that has not arrived yet is not
 //!   tampering: it is refused and waited for.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,6 +34,8 @@ pub const MANIFEST_SIGNATURE: &str = "manifest.json.sig";
 pub const SEEN_FILE: &str = "manifest.seen";
 /// How many records the outbox holds before the oldest are dropped, and counted.
 pub const OUTBOX_RECORDS: usize = 4096;
+/// How many bytes of one plugin's readings the outbox holds before the agent stops reading that plugin's pipe.
+pub const PLUGIN_QUEUE_BYTES: usize = 4 << 20;
 
 /// Where the agent's files are. In the container these are fixed; the tests point them elsewhere.
 #[derive(Clone, Debug)]
@@ -230,15 +232,30 @@ pub struct Record {
     pub plugin: String,
     pub kind: String,
     pub body: Value,
+    /// How many bytes its body is, as JSON: what it costs in the outbox. Not sent.
+    #[serde(skip)]
+    pub size: usize,
+}
+
+/// Where a plugin that resumes is: the newest `cursor` it put in a reading in this run of the agent, and what the controller said it
+/// has, waiting to be handed to the plugin.
+#[derive(Default)]
+struct Resume {
+    local: Option<Value>,
+    from_controller: Option<Value>,
 }
 
 struct Queue {
     records: VecDeque<Record>,
     next: u64,
     dropped: u64,
+    bytes: HashMap<String, usize>,
+    resumes: HashMap<String, Resume>,
 }
 
-/// What the plugins reported and nothing has sent yet. Bounded: when it is full the oldest record goes, and is counted.
+/// What the plugins reported and nothing has sent yet. Bounded: when it is full the oldest record goes, and is counted. Each plugin
+/// may also hold no more than `PLUGIN_QUEUE_BYTES` in it: past that the agent stops reading that plugin's pipe until the tunnel
+/// has sent some, so a plugin that reads at its own pace (the logs plugin, reading the journal) waits instead of losing lines.
 pub struct Outbox {
     queue: Mutex<Queue>,
     most: usize,
@@ -246,46 +263,62 @@ pub struct Outbox {
 
 impl Outbox {
     pub fn new(most: usize) -> Outbox {
-        Outbox { queue: Mutex::new(Queue { records: VecDeque::new(), next: 1, dropped: 0 }), most: most.max(1) }
+        Outbox { queue: Mutex::new(Queue { records: VecDeque::new(), next: 1, dropped: 0, bytes: HashMap::new(), resumes: HashMap::new() }), most: most.max(1) }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Queue> {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn push(&self, plugin: &str, kind: String, body: Value, at: u64) {
-        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let size = serde_json::to_vec(&body).map(|b| b.len()).unwrap_or(0);
+        let mut q = self.lock();
+        if let Some(cursor) = body.get("cursor").filter(|c| c.is_object()) {
+            q.resumes.entry(plugin.to_string()).or_default().local = Some(cursor.clone());
+        }
         let seq = q.next;
         q.next += 1;
         if q.records.len() >= self.most {
-            q.records.pop_front();
+            if let Some(old) = q.records.pop_front() {
+                forget(&mut q.bytes, &old);
+            }
             q.dropped += 1;
         }
-        q.records.push_back(Record { seq, at, plugin: plugin.to_string(), kind, body });
+        *q.bytes.entry(plugin.to_string()).or_default() += size;
+        q.records.push_back(Record { seq, at, plugin: plugin.to_string(), kind, body, size });
     }
 
-    /// SEAM (11.2): the tunnel takes up to `most` records to sign and send. A gap in `seq` on the other side is what was dropped.
+    /// The tunnel takes up to `most` records to sign and send. A gap in `seq` on the other side is what was dropped.
     pub fn drain(&self, most: usize) -> Vec<Record> {
-        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut q = self.lock();
         let n = most.min(q.records.len());
-        q.records.drain(..n).collect()
+        let out: Vec<Record> = q.records.drain(..n).collect();
+        for r in &out {
+            forget(&mut q.bytes, r);
+        }
+        out
     }
 
     /// Puts records that were drained and not sent back at the front, in their order. What no longer fits is dropped and counted.
     pub fn requeue(&self, records: Vec<Record>) {
-        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut q = self.lock();
         for r in records.into_iter().rev() {
             if q.records.len() >= self.most {
                 q.dropped += 1;
                 continue;
             }
+            *q.bytes.entry(r.plugin.clone()).or_default() += r.size;
             q.records.push_front(r);
         }
     }
 
     /// Counts records that were let go without being sent.
     pub fn count_dropped(&self, n: u64) {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).dropped += n;
+        self.lock().dropped += n;
     }
 
     pub fn len(&self) -> usize {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).records.len()
+        self.lock().records.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -293,7 +326,38 @@ impl Outbox {
     }
 
     pub fn dropped(&self) -> u64 {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).dropped
+        self.lock().dropped
+    }
+
+    /// How many bytes of one plugin's readings wait to be sent.
+    pub fn queued_bytes(&self, plugin: &str) -> usize {
+        self.lock().bytes.get(plugin).copied().unwrap_or(0)
+    }
+
+    /// Where a plugin left off in this run of the agent, for its hello when it is started again.
+    pub fn resume_for(&self, plugin: &str) -> Option<Value> {
+        self.lock().resumes.get(plugin).and_then(|r| r.local.clone())
+    }
+
+    /// What the controller says it has of a plugin's readings, at the start of a session: handed to the plugin unless the plugin
+    /// has gone further in this run already, which is the newer word.
+    pub fn controller_resume(&self, plugin: &str, cursor: Value) {
+        let mut q = self.lock();
+        let r = q.resumes.entry(plugin.to_string()).or_default();
+        if r.local.is_none() {
+            r.from_controller = Some(cursor);
+        }
+    }
+
+    /// The controller's word for a plugin, once.
+    pub fn take_controller_resume(&self, plugin: &str) -> Option<Value> {
+        self.lock().resumes.get_mut(plugin).and_then(|r| r.from_controller.take())
+    }
+}
+
+fn forget(bytes: &mut HashMap<String, usize>, r: &Record) {
+    if let Some(n) = bytes.get_mut(&r.plugin) {
+        *n = n.saturating_sub(r.size);
     }
 }
 
@@ -336,13 +400,17 @@ pub fn serve(loaded: &Loaded, outbox: &Outbox, stop: &AtomicBool, log: &(dyn Fn(
                 log(format!("plugin {name} stderr: {}", runner::plain(&String::from_utf8_lossy(&line))));
             }
         });
-        if runner::send(&mut stdin, &runner::hello(&name)).is_err() {
+        if runner::send(&mut stdin, &runner::hello(&name, outbox.resume_for(&name))).is_err() {
             let _ = child.kill();
             return Ended::Exited;
         }
-        // The agent stopping: the plugin is told, given a second, and killed. Reading below then ends on the closed pipe.
+        // The agent stopping: the plugin is told, given a second, and killed. Reading below then ends on the closed pipe. Meanwhile
+        // the controller's word on where the plugin's readings are up to is handed on, when a session brings one.
         scope.spawn(|| {
             while !done.load(Ordering::Relaxed) {
+                if let Some(cursor) = outbox.take_controller_resume(&name) {
+                    let _ = runner::send(&mut stdin, serde_json::json!({"op": "resume", "cursor": cursor}).to_string().as_bytes());
+                }
                 if stop.load(Ordering::Relaxed) {
                     let _ = runner::send(&mut stdin, br#"{"op":"stop"}"#);
                     for _ in 0..10 {
@@ -361,6 +429,10 @@ pub fn serve(loaded: &Loaded, outbox: &Outbox, stop: &AtomicBool, log: &(dyn Fn(
         let mut rate = Rate::new();
         let mut ready = false;
         let ended = loop {
+            // a plugin with more waiting to be sent than its share waits, blocked on its pipe, until the tunnel catches up
+            while outbox.queued_bytes(&name) > PLUGIN_QUEUE_BYTES && !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
             let message = runner::read_message(&mut stdout);
             if stop.load(Ordering::Relaxed) {
                 break Ended::Stopped;
@@ -402,5 +474,27 @@ mod tests {
         assert_eq!(got[0].plugin, "heartbeat");
         assert_eq!(outbox.drain(10).len(), 1);
         assert!(outbox.is_empty());
+    }
+
+    #[test]
+    fn each_plugin_has_its_share_and_its_place_to_resume() {
+        let outbox = Outbox::new(100);
+        outbox.push("logs", "lines".into(), json!({"lines": ["x"], "cursor": {"s": "a", "i": 5}}), 1);
+        outbox.push("health", "health".into(), json!({"load": 1}), 1);
+        let logs = outbox.queued_bytes("logs");
+        assert!(logs > 20 && outbox.queued_bytes("health") > 0);
+        // what the plugin said last is where it resumes in this run, and the controller's word does not undo that
+        assert_eq!(outbox.resume_for("logs"), Some(json!({"s": "a", "i": 5})));
+        outbox.controller_resume("logs", json!({"s": "a", "i": 2}));
+        assert_eq!(outbox.take_controller_resume("logs"), None);
+        // a plugin that has said nothing in this run gets the controller's word, once
+        outbox.controller_resume("other", json!(null));
+        assert_eq!(outbox.take_controller_resume("other"), Some(json!(null)));
+        assert_eq!(outbox.take_controller_resume("other"), None);
+        // sent: its share is free again; put back: taken again
+        let records = outbox.drain(1);
+        assert_eq!(outbox.queued_bytes("logs"), 0);
+        outbox.requeue(records);
+        assert_eq!(outbox.queued_bytes("logs"), logs);
     }
 }

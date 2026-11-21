@@ -18,11 +18,30 @@ path = "src/bin/agent.rs"
 name = "storageforge-agentctl"
 path = "src/bin/agentctl.rs"
 
+# an official plugin (roadmap 11.4): a static program of its own, which the agent starts as a child and speaks to over pipes
+[[bin]]
+name = "storageforge-plugin-heartbeat"
+path = "src/bin/plugin-heartbeat.rs"
+
+[[bin]]
+name = "storageforge-plugin-logs"
+path = "src/bin/plugin-logs.rs"
+
+[[bin]]
+name = "storageforge-plugin-health"
+path = "src/bin/plugin-health.rs"
+
+[[bin]]
+name = "storageforge-plugin-network"
+path = "src/bin/plugin-network.rs"
+
 [dependencies]
 base64 = "0.22"
 ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
 libc = "0.2"
+lz4_flex = { version = "0.11.7", default-features = false, features = ["safe-decode"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+ruzstd = { version = "0.8.2", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

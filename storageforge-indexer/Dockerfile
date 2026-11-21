@@ -261,6 +261,9 @@ COPY --from=enclave /out/vmlinux /out/bzImage /out/initramfs.cpio.gz /out/SHA256
 COPY --from=agent-build /out/x86_64/storageforge-agentctl /usr/share/storageforge/agent/x86_64/storageforge-agentctl
 COPY --from=agent-build /out/aarch64/storageforge-agentctl /usr/share/storageforge/agent/aarch64/storageforge-agentctl
 COPY --from=agent-build /out/SHA256SUMS /usr/share/storageforge/agent/SHA256SUMS
+# the official plugins, unsigned until the release key's holder signs them (agent/plugins.sh sign): a plugin without its signature
+# is not offered, and no host would run it
+COPY --from=agent-build /out/plugins/ /usr/share/storageforge/agent/plugins/
 RUN ["/usr/bin/firecracker", "--version"]
 RUN ["/usr/bin/ssh", "-V"]
 RUN ["/usr/bin/nmap", "--version"]

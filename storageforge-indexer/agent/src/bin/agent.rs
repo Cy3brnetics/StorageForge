@@ -46,6 +46,7 @@ fn paths(args: &[String]) -> Result<Paths, String> {
             "--etc" => p.etc = value.into(),
             "--manifest" => p.manifest = value.into(),
             "--state" => p.state = value.into(),
+            "--host" => storageforge_agent::runner::set_host_root(value),
             _ => return Err(format!("unknown option {flag}")),
         }
     }

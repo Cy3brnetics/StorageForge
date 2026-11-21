@@ -18,6 +18,12 @@ host through a person.
                                     agent there again or removes it
         agent-unchecked:HOST        the check from outside has not run for an hour: the host could not be reached over SSH
         agent-held:HOST             an agent asked for an action on others, held for a person (agentaction.py)
+        agent-ssh-down:HOST         the agent's health plugin says nothing listens on the host's SSH port: the agent still reports while
+                                    SSH is down (roadmap 11.2, "either one fails alone")
+        log-gap:HOST                numbers missing from the journal lines the agent pushed: lines deleted on the host, or never sent
+
+An agent with the heartbeat plugin is silent after BEAT_SILENT_SECS rather than SILENT_SECS, and agentingest wakes the notification
+center the moment one goes silent.
 """
 from __future__ import annotations
 
@@ -28,6 +34,9 @@ from . import agentaction
 from .db import Conn
 
 SILENT_SECS = 300            # five beats missed
+BEAT_SILENT_SECS = 30        # three beats of the heartbeat plugin missed
+HEALTH_FRESH_SECS = 300      # a health reading older than this says nothing about now
+GAP_SECS = 86400
 RECENT_SECS = 86400
 LABEL = 'reported by agent'
 
@@ -73,9 +82,55 @@ def events(conn: Conn, host: str, since: int, kinds: tuple) -> dict:
     return {k: int(n or 0) for k, n in rows}
 
 
+def _with_plugin(conn: Conn, name: str) -> set:
+    """The hosts whose delivered manifest names the plugin."""
+    out = set()
+    for host, manifest in conn.all('SELECT host, manifest FROM agent_deliveries'):
+        m = _loads(manifest) or {}
+        if any(isinstance(e, dict) and e.get('name') == name for e in (m.get('plugins') or [])):
+            out.add(host)
+    return out
+
+
+def silent_beats(conn: Conn, now: float | None = None) -> list[str]:
+    """Running agents with the heartbeat plugin that were heard from once and not for BEAT_SILENT_SECS."""
+    now = int(now or time.time())
+    beating = _with_plugin(conn, 'heartbeat')
+    rows = conn.all("""SELECT a.host, p.last_seen FROM agents a JOIN agent_peers p ON p.fingerprint = a.fingerprint
+                       WHERE a.enabled = 1 AND a.state = 'running' AND a.endpoint IS NOT NULL""")
+    return sorted(host for host, last_seen in rows if host in beating and last_seen and now - last_seen > BEAT_SILENT_SECS)
+
+
+def ssh_said(conn: Conn, host: str, now: float | None = None) -> dict | None:
+    """What the host's agent last said of SSH, from its health plugin, if it said it recently: {'process', 'listening', 'read'}."""
+    now = int(now or time.time())
+    rows = conn.all("""SELECT kind, body_json FROM agent_records WHERE host = :h AND plugin = 'health' AND kind IN ('health', 'ssh') AND received_at >= :t
+                       ORDER BY record_id DESC LIMIT 1""", {'h': host, 't': now - HEALTH_FRESH_SECS})
+    if not rows:
+        return None
+    body = _loads(rows[0][1]) or {}
+    said = body.get('ssh') if rows[0][0] == 'health' else body
+    return said if isinstance(said, dict) and isinstance(said.get('listening'), list) else None
+
+
 def problems(conn: Conn, now: float | None = None) -> dict:
     now = int(now or time.time())
     out = agentaction.problems(conn, now)
+    for host in silent_beats(conn, now):
+        out[f'agent-silent:{host}'] = ('agent-silent', host, f'The agent on {host} went silent',
+                                       f'its heartbeat stopped more than {BEAT_SILENT_SECS} seconds ago: stopped, wiped, cut off, or hiding what it sees. Scans over SSH go on', 'warn')
+    for host, port in conn.all("""SELECT a.host, h.ssh_port FROM agents a LEFT JOIN hosts h ON h.hostname = a.host
+                                  WHERE a.enabled = 1 AND a.state = 'running' AND a.fingerprint IS NOT NULL"""):
+        said = ssh_said(conn, host, now)
+        port = int(port or 22)
+        if said and said.get('read') is not False and port not in said['listening']:
+            why = f'nothing listens on port {port}' + ('' if said.get('process') else ', and no sshd process runs')
+            out[f'agent-ssh-down:{host}'] = ('agent-ssh-down', host, f'The agent on {host} says SSH is down',
+                                             f'{LABEL}: {why}. Scans, deploys and the console go over SSH and will fail until it is back; the agent goes on reporting', 'warn')
+    for host, gaps, gap_at in conn.all('SELECT host, seq_gaps, seq_gap_at FROM host_log_status WHERE seq_gap_at >= :t', {'t': now - GAP_SECS}):
+        out[f'log-gap:{host}'] = ('log-gap', host, f'Lines are missing from the journal of {host}',
+                                  f'{int(gaps or 0)} numbered line(s) of the journal its agent pushed never came, the last on '
+                                  f'{time.strftime("%Y-%m-%d %H:%M", time.localtime(gap_at))}: deleted on the host, or lost on the way', 'warn')
     from .agentguard import UNCHECKED_SECS
     for host, detail, wiped_at in conn.all("SELECT host, detail, wiped_at FROM agents WHERE enabled = 1 AND state = 'wiped'"):
         when = time.strftime('%Y-%m-%d %H:%M', time.localtime(wiped_at)) if wiped_at else 'at some point'
@@ -93,7 +148,7 @@ def problems(conn: Conn, now: float | None = None) -> dict:
                        FROM agents a LEFT JOIN hosts h ON h.hostname = a.host LEFT JOIN agent_peers p ON p.fingerprint = a.fingerprint
                        WHERE a.enabled = 1 AND a.state = 'running' AND a.fingerprint IS NOT NULL""")
     for host, fp, manifest_sha, updated_at, endpoint, machine, last_seen, claims_json in rows:
-        if endpoint:
+        if endpoint and f'agent-silent:{host}' not in out:
             if last_seen is None and now - (updated_at or now) > SILENT_SECS:
                 out[f'agent-silent:{host}'] = ('agent-silent', host, f'The agent on {host} has not reported', 'it has a tunnel and has not opened a session since it was set up', 'warn')
             elif last_seen is not None and now - last_seen > SILENT_SECS:

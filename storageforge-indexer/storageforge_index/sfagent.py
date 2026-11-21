@@ -388,7 +388,7 @@ def agentctl_program(arch: str) -> bytes:
     if not path or not path.is_file():
         raise AgentError('STORAGEFORGE_AGENT_DIR has no storageforge-agentctl for ' + arch + ': build it with agent/build.sh')
     data = path.read_bytes()
-    if not data.startswith(b'\x7fELF') or len(data) > 16 * 1024 * 1024:
+    if not data.startswith(b'\x7fELF') or len(data) > 32 * 1024 * 1024:      # a release build is about 1.5 MB; a debug build is larger
         raise AgentError(f'{path} is not the program')
     return data
 

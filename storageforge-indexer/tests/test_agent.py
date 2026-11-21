@@ -522,6 +522,7 @@ class Lifecycle(Base):
 
     def test_a_plugin_gets_what_its_signed_descriptor_declares_and_secrets_are_masked(self):
         self.install()
+        (self.host.root / "proc").mkdir()        # a path the host does not have is not mounted, so the stand-in host has one
         descriptor, signature, by = self.plugin(needs='{"mounts":["/etc","/proc"],"namespaces":["pid"]}')
         got = sfagent.apply(self.db, 'nas', [(descriptor, signature, by)], actor='test')
         self.assertEqual((got['counter'], got['runtime']), (2, 'docker'))
@@ -953,6 +954,19 @@ class RealDocker(Base):
 
     def inspect(self, fmt):
         return subprocess.run(['docker', 'inspect', '--format', fmt, 'storageforge-agent'], capture_output=True, text=True).stdout.strip()
+
+    def test_the_real_container_is_clean_checked_from_outside_and_a_wipe_leaves_it_stopped(self):
+        """Wipe and stop (roadmap 11.3, agentguard.py): what the real Docker says of the container is no finding, and a finding wipes it."""
+        from storageforge_index import agentguard
+        self.install()
+        got = agentguard.check(self.db, 'nas')
+        self.assertEqual((got['checked'], got['findings']), (True, []), got)
+        self.assertIn('files changed in the container', json.loads(sfagent.get(self.conn, 'nas')['check_json'])['checked'])
+        (self.host.root / 'var/lib/storageforge-agent/state/payload').write_text('x')
+        got = agentguard.check(self.db, 'nas')
+        self.assertEqual(got['findings'], ["payload is in the agent's state folder and the agent keeps no such file"])
+        self.assertEqual(sfagent.get(self.conn, 'nas')['state'], 'wiped')
+        self.assertEqual(self.inspect('{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}'), 'false no')
 
     def test_the_real_image_runs_as_sfagent_read_only_with_no_capability_and_no_network(self):
         got = self.install()

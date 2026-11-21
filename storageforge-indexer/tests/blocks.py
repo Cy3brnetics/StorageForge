@@ -30,7 +30,6 @@ HEAVY = {
     # a real sshd, Docker, or the kernel's firewall
     'test_feature_routes.RealSshServer',
     'test_agent.RealDocker',         # the agent's real image, built, pushed to a registry started for the test, and run by the real Docker
-    'test_agent_guard.RealDockerCheck',  # the same, checked from outside and wiped
     'test_infra.RealDocker',
     'test_infra.RealIptables',
     'test_infra.RealNft',
@@ -88,6 +87,9 @@ MEDIUM = {
     'test_agent_guard.Outside',      # wipe and stop: the real agentctl's check from outside and its wipe, against a stand-in host
     'test_agent_guard.Reports',
     'test_agent_guard.LastWord',     # the real agent's last word through the real tunnel and receiver
+    'test_agent_plugins.ReceiverResume',
+    'test_agent_plugins.OverQuota',
+    'test_agent_plugins.LogsRoad',   # the real logs and heartbeat plugins through the real tunnel, reading journal files systemd wrote
     'test_sshca.Certificates',       # a real sshd, started for one test
     'test_sshcerts.TrustStep',       # the trust and revocation steps against a real sshd, reloaded
     'test_sshcerts.CaInTheEnclave',  # the real enclave program signing a certificate

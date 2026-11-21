@@ -361,8 +361,10 @@ def program_of(descriptor: str) -> bytes:
     return data
 
 
-def delivery_frames(delivery: dict | None, have: list) -> list[dict]:
-    """What the receiver sends after an agent's hello: the manifest, then each plugin the agent does not have loaded, in chunks."""
+def delivery_frames(delivery: dict | None, have: list, cursors: dict | None = None) -> list[dict]:
+    """What the receiver sends after an agent's hello: the manifest, then each plugin the agent does not have loaded, in chunks, then
+    where the receiver has each plugin's readings up to (`cursors`, plugin name -> the last cursor it stored or None), so that a
+    plugin that resumes starts after the last reading the controller has."""
     if not delivery:
         return [{'op': 'manifest', 'manifest': None, 'signature': None}, {'op': 'ready'}]
     out = [{'op': 'manifest', 'manifest': delivery['manifest'], 'signature': delivery['signature']}]
@@ -375,6 +377,8 @@ def delivery_frames(delivery: dict | None, have: list) -> list[dict]:
         for i in range(0, len(program), CHUNK):
             out.append({'op': 'chunk', 'name': name, 'data': base64.b64encode(program[i:i + CHUNK]).decode()})
         out.append({'op': 'plugin-end', 'name': name})
+    if cursors is not None:
+        out.append({'op': 'resume', 'cursors': cursors})
     out.append({'op': 'ready'})
     return out
 

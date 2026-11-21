@@ -1,5 +1,7 @@
-"""Host logs: what each host's journal said, picked up by the scan and kept here to search. Nothing runs between scans
-and nothing streams: to see newer logs, scan the host.
+"""Host logs: what each host's journal said, picked up by the scan, or pushed as it is written by the agent's logs plugin on a host
+that has one (agentingest.py, roadmap section 3 phase 2), and kept here to search. A host without the agent's logs plugin gets its
+lines with each scan; to see newer logs there, scan the host. A host whose agent pushes its lines is not asked again by the scan while
+lines keep coming (PUSH_FRESH_SECS), and is again as soon as they stop.
 
 A scan asks for what is new since the last one, up to LINES_IMPORTANT at warning or worse and LINES_ROUTINE at info or
 worse, so a chatty service can't push errors out. Lines are one row each: time, host, level, unit, program, pid, message.
@@ -46,6 +48,7 @@ RATE_PER_DAY = float(os.environ.get('STORAGEFORGE_LOG_RATE_PER_DAY', '0')) or KE
 COUNT_SECS = 300
 COUNT_KEEP_DAYS = int(os.environ.get('STORAGEFORGE_LOG_COUNT_KEEP_DAYS', '400'))
 MAX_EXPORT = 20000
+PUSH_FRESH_SECS = 600           # a host whose agent pushed lines this recently is not asked for them by the scan too
 JOURNAL_GROUPS = {'systemd-journal', 'adm', 'wheel', 'root'}                # the groups journald's files are readable by
 FIELDS = 'MESSAGE,PRIORITY,_SYSTEMD_UNIT,SYSLOG_IDENTIFIER,_PID,_UID,_COMM,_EXE'    # never _CMDLINE: that is where passwords sit. __SEQNUM and its ID always come
 HINTS = {'limited': "the scan user can't read the whole journal: run `access script --host <host>` on it as root, then scan again",
@@ -214,8 +217,9 @@ def _allowance(conn: Conn, host: str, now: float) -> float:
     return min(RATE_PER_DAY, max(0.0, float(row[0])) + max(0.0, now - row[1]) * RATE_PER_DAY / 86400)
 
 
-def store(conn: Conn, host: str, parsed: dict, now: float | None = None) -> int:
-    """Saves one scan's lines. Returns how many were new."""
+def store(conn: Conn, host: str, parsed: dict, now: float | None = None, via: str | None = None, counts: dict | None = None) -> int:
+    """Saves one scan's lines, or one push of the agent's (via='agent'). Returns how many were new; `counts` gets 'hits', how many of
+    them a log rule matched."""
     now = time.time() if now is None else now
     lines, state, cut = parsed['lines'], parsed['state'], parsed['cut']
     new = over = 0
@@ -236,10 +240,10 @@ def store(conn: Conn, host: str, parsed: dict, now: float | None = None) -> int:
         over = len(lost)
         # stored oldest first, so that under the row limit, which goes by arrival and then by row, a pickup's newest lines are the last to go
         for x in sorted(keep, key=lambda x: x['at_us']):
-            new += conn.execute("""INSERT INTO host_log_lines (host, line_key, at_us, priority, unit, ident, pid, message, collected_at, uid, comm, exe, seqnum, seqnum_id)
-                                   VALUES (:h, :k, :a, :p, :u, :i, :d, :m, :t, :uid, :comm, :exe, :seq, :sid) ON CONFLICT (host, line_key) DO NOTHING""",
+            new += conn.execute("""INSERT INTO host_log_lines (host, line_key, at_us, priority, unit, ident, pid, message, collected_at, uid, comm, exe, seqnum, seqnum_id, via)
+                                   VALUES (:h, :k, :a, :p, :u, :i, :d, :m, :t, :uid, :comm, :exe, :seq, :sid, :via) ON CONFLICT (host, line_key) DO NOTHING""",
                                 {'h': host, 'k': x['key'], 'a': x['at_us'], 'p': x['priority'], 'u': x['unit'], 'i': x['ident'], 'd': x['pid'], 'm': x['message'],
-                                 't': int(now), 'uid': x.get('uid'), 'comm': x.get('comm'), 'exe': x.get('exe'), 'seq': x.get('seqnum'), 'sid': x.get('seqnum_id')}).rowcount
+                                 't': int(now), 'uid': x.get('uid'), 'comm': x.get('comm'), 'exe': x.get('exe'), 'seq': x.get('seqnum'), 'sid': x.get('seqnum_id'), 'via': via}).rowcount
         left -= new
         for x in fresh:
             arrived.append(x)
@@ -260,11 +264,13 @@ def store(conn: Conn, host: str, parsed: dict, now: float | None = None) -> int:
             note = (f'{over} line(s) were over this host\'s rate of {int(RATE_PER_DAY)} a day and were not stored, routine ones first. They are counted. '
                     'Raise STORAGEFORGE_LOG_KEEP_ROWS or STORAGEFORGE_LOG_RATE_PER_DAY to keep more.')
         _set_status(conn, host, int(now), state, new, cut, max(seen) if seen else None, note)
-        conn.execute('UPDATE host_log_status SET rate_tokens = :l, rate_at = :t, over_rate = :o, over_total = over_total + :o WHERE host = :h',
-                     {'h': host, 'l': left, 't': int(now), 'o': over})
+        conn.execute('UPDATE host_log_status SET rate_tokens = :l, rate_at = :t, over_rate = :o, over_total = over_total + :o, via = :v WHERE host = :h',
+                     {'h': host, 'l': left, 't': int(now), 'o': over, 'v': via or 'scan'})
         if arrived:
             from . import logrules          # it takes its levels and its 5 minutes from here
-            logrules.match_new(conn, host, arrived, now)
+            hits = logrules.match_new(conn, host, arrived, now)
+            if counts is not None:
+                counts['hits'] = counts.get('hits', 0) + hits
         prune(conn, host, now)
     return new
 
@@ -278,11 +284,21 @@ def prune(conn: Conn, host: str, now: float):
     conn.execute('DELETE FROM host_log_counts WHERE host = :h AND bucket < :b', {'h': host, 'b': int((now - COUNT_KEEP_DAYS * 86400) // COUNT_SECS)})
 
 
+def pushing(conn: Conn, host: str, now: float | None = None) -> bool:
+    """Whether the host's agent is pushing its lines: they came in the last PUSH_FRESH_SECS."""
+    at = conn.scalar("SELECT pushed_at FROM host_log_status WHERE host = :h AND via = 'agent'", {'h': host})
+    return bool(at) and (now or time.time()) - at < PUSH_FRESH_SECS
+
+
 def collect(conn: Conn, t, host: str, log=lambda _: None) -> dict | None:
     """One scan's log pickup. A failure here is said and recorded; it never costs the scan its files."""
     if not enabled():
         return None
     now = time.time()
+    if pushing(conn, host, now):
+        # the agent sends them as they are written, signed: asking again over SSH would only read the same lines twice
+        log('  host logs: pushed by the agent as they are written; not asked for by the scan')
+        return {'state': 'agent', 'new': 0}
     try:
         parsed = parse(t.run(script(since_for(conn, host, now)), timeout=90), now)
     except Exception as exc:
@@ -321,10 +337,10 @@ def _rows(conn: Conn, f: dict, limit: int, offset: int = 0) -> list[dict]:
         p['unit'], p['unit_s'] = f['unit'], f'{f["unit"]}.service'
     if extra:
         where += (' AND ' if where else ' WHERE ') + ' AND '.join(extra)
-    rows = conn.all(f"""SELECT at_us, host, priority, unit, ident, pid, message, uid, comm, exe, collected_at FROM host_log_lines{where}
+    rows = conn.all(f"""SELECT at_us, host, priority, unit, ident, pid, message, uid, comm, exe, collected_at, via FROM host_log_lines{where}
                         ORDER BY at_us DESC, line_id DESC LIMIT :n OFFSET :o""", p)
     return [{'ts': r[0] / 1e6, 'host': r[1], 'level': LEVELS[r[2]], 'priority': r[2], 'unit': r[3], 'ident': r[4], 'pid': r[5], 'message': r[6],
-             'uid': r[7], 'comm': r[8], 'exe': r[9], 'arrived': r[10]} for r in rows]
+             'uid': r[7], 'comm': r[8], 'exe': r[9], 'arrived': r[10], 'via': r[11] or 'scan', 'signed': r[11] == 'agent'} for r in rows]
 
 
 def page(conn: Conn, f: dict, limit: int = 100, offset: int = 0) -> dict:
@@ -337,10 +353,14 @@ def status(conn: Conn, host: str | None = None) -> list[dict]:
     rows = conn.all(f"""SELECT s.host, s.collected_at, s.state, s.new_lines, s.cut, s.note,
                                (SELECT count(*) FROM host_log_lines l WHERE l.host = s.host),
                                (SELECT min(at_us) FROM host_log_lines l WHERE l.host = s.host),
-                               (SELECT max(at_us) FROM host_log_lines l WHERE l.host = s.host), s.over_rate, s.over_total
+                               (SELECT max(at_us) FROM host_log_lines l WHERE l.host = s.host), s.over_rate, s.over_total,
+                               s.via, s.pushed_at, s.push_delay_ms, s.push_lines, s.seq_gaps, s.seq_gap_at
                         FROM host_log_status s {'WHERE s.host = :h' if host else ''} ORDER BY s.host""", {'h': host})
+    # how the lines come: pushed by the agent as they are written, in batches its key signed, or collected by the scan over SSH
     return [{'host': r[0], 'collected_at': r[1], 'state': r[2], 'new_lines': r[3], 'cut': bool(r[4]), 'note': r[5], 'lines': r[6],
-             'oldest': r[7] / 1e6 if r[7] else None, 'newest': r[8] / 1e6 if r[8] else None, 'over_rate': r[9], 'over_total': r[10], 'rate_per_day': int(RATE_PER_DAY)} for r in rows]
+             'oldest': r[7] / 1e6 if r[7] else None, 'newest': r[8] / 1e6 if r[8] else None, 'over_rate': r[9], 'over_total': r[10], 'rate_per_day': int(RATE_PER_DAY),
+             'via': r[11] or 'scan', 'signed': r[11] == 'agent', 'pushed_at': r[12], 'delay_ms': r[13], 'pushed_lines': r[14] or 0, 'gaps': r[15] or 0,
+             'gap_at': r[16]} for r in rows]
 
 
 # ── counts and units, for the Logs view ─────────────────────────────
