@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from props import HAVE, given, settings, st, scaled
-from storageforge_index import (apidockhand, apipbs, apipdm, apipve, apireadback, apitruenas, apixo, authkeys, cisco, clamav, firewall, gitrepos, health, hostconfig, hostlogs, inframeasure, netconfig, netconsole, netfacts, netscan, openwrt, payloads,
+from storageforge_index import (apidockhand, apipbs, apipdm, apiportainer, apipve, apireadback, apitruenas, apixo, authkeys, cisco, clamav, firewall, gitrepos, health, hostconfig, hostlogs, inframeasure, netconfig, netconsole, netfacts, netscan, openwrt, payloads,
                                 pfsense, pkglist, preflight, pstore, remote, routeros, secplus, security, snapfind, steps_services, updates)
 
 FIX = Path(__file__).parent / 'fixtures'
@@ -103,6 +103,7 @@ READS = {
     **{f'apitruenas.{n}': getattr(apitruenas, n) for n in dir(apitruenas) if n.startswith('parse_')},     # each takes the JSON text of one call's result
     **{f'apixo.{n}': getattr(apixo, n) for n in dir(apixo) if n.startswith('parse_')},
     **{f'apidockhand.{n}': getattr(apidockhand, n) for n in dir(apidockhand) if n.startswith('parse_')},
+    **{f'apiportainer.{n}': getattr(apiportainer, n) for n in dir(apiportainer) if n.startswith('parse_')},
 }
 SECTIONED_READS = {'netfacts.parse': (netfacts.parse, netfacts.SECTIONS), 'inframeasure.parse': (inframeasure.parse, inframeasure.SECTIONS),
                    'remote.parse_sections': (remote.parse_sections, remote.SECTIONS), 'security.parse_measure': (security.parse_measure, getattr(security, 'SECTIONS', ('end',)))}

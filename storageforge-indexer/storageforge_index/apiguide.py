@@ -253,3 +253,4 @@ def register(kind: str, module_name: str) -> None:
 register('truenas', 'apitruenas')
 register('xo', 'apixo')
 register('dockhand', 'apidockhand')
+register('portainer', 'apiportainer')
