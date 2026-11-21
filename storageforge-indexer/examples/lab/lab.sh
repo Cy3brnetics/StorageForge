@@ -114,9 +114,10 @@ ensure_state() {
 image_path() { local url; url=$(awk -F'|' -v k="$1" '$1==k {print $2}' "$HERE/images.conf"); echo "$IMG_DIR/$(basename "$url")"; }
 
 fetch_image() {
-  local key=$1 url sums file want have
+  local key=$1 url sums file want have pinned
   url=$(awk -F'|' -v k="$key" '$1==k {print $2}' "$HERE/images.conf")
   sums=$(awk -F'|' -v k="$key" '$1==k {print $3}' "$HERE/images.conf")
+  pinned=$(awk -F'|' -v k="$key" '$1==k {print $4}' "$HERE/images.conf")
   [ -n "$url" ] || die "$key is not in images.conf"
   file=$(image_path "$key")
   [ -f "$file.ok" ] && [ -f "$file" ] && return 0
@@ -125,6 +126,8 @@ fetch_image() {
   want=$({ grep -F -- "$(basename "$file")" <<<"$want" || { [[ $sums == *.sha512 || $sums == *.sha256 || $sums == *.SHA256 ]] && printf '%s\n' "$want"; }; } \
          | grep -oE '\b[0-9a-f]{64}([0-9a-f]{64})?\b' | head -1) || true
   [ -n "$want" ] || die "$key: no published checksum at $sums"
+  # a fourth field pins the checksum the vendor published when the row was written: a list that now says otherwise is refused
+  [ -z "$pinned" ] || [ "$pinned" = "$want" ] || die "$key: $sums now gives $want, not the pinned $pinned"
   say "downloading $(basename "$file")"
   curl -fsSL --retry 3 -C - -o "$file.part" "$url" || die "$key: download failed"
   case ${#want} in 64) have=$(sha256sum "$file.part") ;; *) have=$(sha512sum "$file.part") ;; esac
@@ -233,7 +236,7 @@ create_node() {
   done
   i=0
   case $image in
-    proxmox|truenas|xcp-ng)    # installers, not cloud images: see provision/appliance.py
+    proxmox|pbs|pdm|truenas|xcp-ng)    # installers, not cloud images: see provision/appliance.py
       python3 "$HERE/provision/appliance.py" "$image" "$n" "$ip" "$NET" "$LAB_DIR" "$base" "$STATE/id_ed25519.pub" "$STATE/admin-password" "$root" "$ram" "$vcpu" "$disks" || die "$n: install failed"
       return ;;
   esac
@@ -621,7 +624,7 @@ cmd_test_all() {
   export SFLAB_STATE="$STATE"
   rm -rf "$STATE/results" "$STATE/gauntlet.json"
   cmd_reset
-  for t in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 16 17 18 19 20 21 22 23 24 25 26; do
+  for t in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 16 17 18 19 20 21 22 23 24 25 26 27; do
     say "== tier $t =="
     [ "$t" = 0 ] || [ "$t" = 2 ] || cmd_reset
     case $t in    # the report decides, knowing what is known
