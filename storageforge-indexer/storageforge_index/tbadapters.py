@@ -400,6 +400,37 @@ def read_status(conn: Conn, host: str, tool_id: str) -> dict:
             'actions': acts, 'lab': row['lab']}
 
 
+def exposure(conn: Conn) -> list[dict]:
+    """What each tool StorageForge installed exposes, as staged and as the last reading of its host saw it: the addresses its ports
+    listen on, and whether that is more than was staged."""
+    from . import inframeasure, toolbox
+    out = []
+    readings: dict = {}
+    for i in toolbox.installs(conn):
+        if i['status'] in ('removed',):
+            continue
+        if i['host'] not in readings:
+            readings[i['host']] = inframeasure.reading(conn, i['host']) or {}
+        listeners = readings[i['host']].get('listeners') or []
+        staged = i['params'].get('exposure') or 'loopback'
+        ports = []
+        for p in i['params'].get('ports') or []:
+            m = re.fullmatch(r'(?:([0-9a-f.:]+):)?(\d+):\d+/(tcp|udp)', p)
+            if m:
+                ports.append((int(m[2]), m[3]))
+        sock = (i['params'].get('socket') or {}).get('port')
+        if sock:
+            ports.append((int(sock), 'tcp'))
+        if not ports:            # a tool that publishes nothing itself (WireGuard): the ports its entry says it needs
+            e = (toolbox.find(conn, i['tool']) or {}).get('entry') or {}
+            ports = [(p['port'], p['proto']) for p in (e.get('requires') or {}).get('ports') or []]
+        seen = [{'proto': x['proto'], 'addr': x['addr'], 'port': x['port'], 'scope': x.get('scope')} for x in listeners if (x['port'], x['proto']) in ports]
+        wider = [x for x in seen if staged == 'loopback' and x.get('scope') not in ('loopback',)]
+        out.append({'host': i['host'], 'tool': i['tool'], 'status': i['status'], 'staged': staged, 'ports': [f'{p}/{q}' for p, q in ports], 'listening': seen,
+                    'wider_than_staged': bool(wider), 'read': bool(readings[i['host']])})
+    return out
+
+
 def stage_action(conn: Conn, host: str, tool_id: str, action: str, values: dict, actor: str) -> dict:
     """An adapter action as a saved plan: ordinary steps, checked when saved and deployed like any plan."""
     from . import changes, inframeasure, toolbox

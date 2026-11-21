@@ -87,6 +87,12 @@ FRESH_PASSWORD = {
     ('PUT', '/api/keys/platforms/<int:conn_id>/actions'),       # what StorageForge may change on the platform
     ('DELETE', '/api/keys/platforms/<int:conn_id>'),
     ('POST', '/api/keys/platforms/<int:conn_id>/token'),         # a new token, checked against the platform before the old one is dropped
+    ('POST', '/api/toolbox/catalog/custom'),                 # a custom entry is root on the host by another name
+    ('DELETE', '/api/toolbox/catalog/custom/<tool>'),
+    ('POST', '/api/toolbox/catalog/sign'),                   # attaches a signature made on the operator's machine, after checking it
+    ('POST', '/api/toolbox/catalog/update'),                 # an update of the official catalog, signed by the release key
+    ('POST', '/api/toolbox/signers'),                        # whose signature makes a custom entry signed
+    ('DELETE', '/api/toolbox/signers/<name>'),
     ('PUT', '/api/me'),
     ('POST', '/api/roles'),
     ('DELETE', '/api/roles/<name>'),
@@ -232,6 +238,11 @@ NO_FRESH_PASSWORD = {
     ('DELETE', '/api/vm/specs/<name>'),
     ('POST', '/api/workloads/captures'),          # adopting a workload saves its capture in the database: nothing runs on a host
     ('DELETE', '/api/workloads/captures/<int:cid>'),
+    ('POST', '/api/toolbox/stage'),               # saves a plan, as /api/changes does; accepting an unsigned entry asks for the password in the route
+    ('POST', '/api/toolbox/<host>/<tool>/actions/<action>'),     # an adapter action, saved as a plan
+    ('PUT', '/api/toolbox/overrides/<host>/<tool>'),  # an override is read when an install is staged; the plan it goes into is deployed like any other
+    ('POST', '/api/toolbox/preview'),             # builds a plan and saves nothing
+    ('POST', '/api/toolbox/catalog/validate'),    # checks an entry and saves nothing
     ('POST', '/api/deploy/check'),
     ('POST', '/api/deploy/groups/<gid>/cancel'),
     ('POST', '/api/deploy/jobs/<jid>/browse'),
@@ -319,6 +330,8 @@ NOT_AUDITED = {
     'api_shares_validate': 'compares with the index and saves nothing',
     'api_planner_changes': 'compares with the index and saves nothing',
     'api_planner_version_compare': 'compares two designs and saves nothing',
+    'api_toolbox_preview': 'builds a plan from the catalog and saves nothing',
+    'api_toolbox_validate': 'checks an entry against the schema and saves nothing',
 }
 
 
