@@ -242,6 +242,100 @@ t_incus() { local name=$1 image=${2:-images:debian/13} type=${3:-container} prof
   try incus start "$name" && ok "$name is made and runs"
   wl_fw "Incus instance" "$name" input "$ports" "$allow"
 }
+
+# ── image updates, with the images before kept to go back to ─────────
+wl_ids() { # runtime stack service unit container: the containers it is about, one id a line
+  if [[ -n $2 ]]; then "$1" ps -aq --filter "label=com.docker.compose.project=$2" ${3:+--filter "label=com.docker.compose.service=$3"} 2>/dev/null
+  elif [[ -n $5 ]]; then "$1" ps -aq --filter "name=^$5\$" 2>/dev/null
+  else "$1" ps -aq --filter "label=PODMAN_SYSTEMD_UNIT=$4" 2>/dev/null; fi
+  return 0
+}
+wl_health() { # runtime id: state, restart count, health (none without a healthcheck)
+  local f
+  if [[ $1 == docker ]]; then f="{{.State.Status}} {{.RestartCount}} {{with index .State \"Health\"}}{{index . \"Status\"}}{{else}}none{{end}}"
+  else f="{{.State.Status}} {{.RestartCount}} {{with .State.Health}}{{.Status}}{{else}}none{{end}}"; fi
+  "$1" inspect -f "$f" "$2" 2>/dev/null || echo "gone 0 none"
+}
+wl_wait() { # runtime seconds ids...: 0 once all are healthy (or running and not restarted for WL_SETTLE seconds without a healthcheck); 1 and WL_WHY
+  local rt=$1 secs=$2 id st rc hs t=0 all; shift 2
+  local -A rc0=()
+  WL_WHY=
+  for id; do read -r st rc hs < <(wl_health "$rt" "$id"); rc0[$id]=${rc:-0}; done
+  while :; do
+    all=1
+    for id; do
+      read -r st rc hs < <(wl_health "$rt" "$id"); hs=${hs:-none}
+      case $st in
+        running)
+          if ((${rc:-0} > ${rc0[$id]})); then WL_WHY="$("$rt" inspect -f "{{.Name}}" "$id" 2>/dev/null) restarted"
+          elif [[ $hs == unhealthy ]]; then WL_WHY="$("$rt" inspect -f "{{.Name}}" "$id" 2>/dev/null) is unhealthy"
+          elif [[ $hs == starting ]] || { [[ $hs == none ]] && ((t < ${WL_SETTLE:-10})); }; then all=0; fi ;;
+        created) all=0 ;;
+        *) WL_WHY="$("$rt" inspect -f "{{.Name}}" "$id" 2>/dev/null) is $st" ;;
+      esac
+      [[ -n $WL_WHY ]] && return 1
+    done
+    ((all)) && return 0
+    ((t >= secs)) && { WL_WHY="not healthy after ${secs}s"; return 1; }
+    sleep "${WL_TICK:-2}"; t=$((t + ${WL_TICK:-2}))
+  done
+}
+wl_tagof() { local t=${1//[^A-Za-z0-9_.-]/-}; echo "${t:0:100}"; }
+wl_recreate() { # runtime stack service unit dir force compose-args...
+  local rt=$1 stack=$2 service=$3 unit=$4 wd=$5 force=$6; shift 6
+  if [[ -n $stack ]]; then (cd "$wd" && "${WL_C[@]}" "$@" up -d ${force:+--force-recreate} ${service:+"$service"}) >/dev/null 2>&1
+  else systemctl restart "$unit"; fi
+}
+t_image_update() { local runtime=$1 stack=$2 service=$3 unit=$4 container=$5 wait=${6:-120}
+  local ids=() id ref img refs=() olds=() i changed=() wd= files f args=() new what keep=() why
+  command -v "$runtime" >/dev/null || { conflict "$runtime is not on this host"; return 0; }
+  what="stack $stack${service:+, service $service}"; [[ -n $stack ]] || what="unit $unit"
+  mapfile -t ids < <(wl_ids "$runtime" "$stack" "$service" "$unit" "$container")
+  ((${#ids[@]})) || { conflict "no container of $what here"; return 0; }
+  if [[ -n $stack ]]; then
+    wd=$("$runtime" inspect -f "{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}" "${ids[0]}" 2>/dev/null || true)
+    files=$("$runtime" inspect -f "{{index .Config.Labels \"com.docker.compose.project.config_files\"}}" "${ids[0]}" 2>/dev/null || true)
+    [[ -n $wd && -d $wd ]] || { conflict "the folder stack $stack was started from (${wd:-none recorded}) is not here: update it where its compose file is"; return 0; }
+    wl_compose "$runtime" || { conflict "no compose for $runtime here"; return 0; }
+    args=(-p "$stack"); for f in ${files//,/ }; do args+=(-f "$f"); done
+  else
+    systemctl cat "$unit" >/dev/null 2>&1 || { conflict "there is no unit $unit here"; return 0; }
+  fi
+  for id in "${ids[@]}"; do
+    ref=$("$runtime" inspect -f "{{.Config.Image}}" "$id" 2>/dev/null) || continue
+    img=$("$runtime" inspect -f "{{.Image}}" "$id" 2>/dev/null) || continue
+    [[ " ${refs[*]} " == *" $ref "* ]] && continue
+    if [[ $ref == *@sha256:* ]]; then info "$ref is pinned by digest: nothing to update"; continue; fi
+    refs+=("$ref"); olds+=("$img")
+    info "$ref runs image ${img#sha256:}"
+  done
+  ((${#refs[@]})) || { ok "every image of $what is pinned by digest: nothing to update"; return 0; }
+  info "healthy means: each container passes its healthcheck, or runs ${WL_SETTLE:-10}s without restarting where it has none, within ${wait}s"
+  act "pull ${refs[*]} for $what, recreate what changed, and go back to the images it had if it is not healthy within ${wait}s" || return 0
+  for i in "${!refs[@]}"; do keep+=("localhost/storageforge-rollback:$(wl_tagof "${refs[$i]}")-$STAMP"); try "$runtime" tag "${olds[$i]}" "${keep[$i]}" || return 0; done
+  if [[ -n $stack ]]; then
+    if ! (cd "$wd" && "${WL_C[@]}" "${args[@]}" pull ${service:+"$service"}) >/dev/null 2>&1; then conflict "the pull failed: nothing was changed"; "$runtime" rmi "${keep[@]}" >/dev/null 2>&1; return 0; fi
+  else
+    for ref in "${refs[@]}"; do "$runtime" pull -q "$ref" >/dev/null 2>&1 || { conflict "could not pull $ref: nothing was changed"; "$runtime" rmi "${keep[@]}" >/dev/null 2>&1; return 0; }; done
+  fi
+  for i in "${!refs[@]}"; do
+    new=$("$runtime" image inspect -f "{{.Id}}" "${refs[$i]}" 2>/dev/null || true)
+    if [[ -n $new && $new != "${olds[$i]}" ]]; then changed+=("$i"); info "${refs[$i]}: new image ${new#sha256:}"; fi
+  done
+  if ((!${#changed[@]})); then "$runtime" rmi "${keep[@]}" >/dev/null 2>&1; ok "the images of $what are current: nothing changed"; return 0; fi
+  wl_recreate "$runtime" "$stack" "$service" "$unit" "$wd" "" "${args[@]}" || info "recreating $what did not finish cleanly: its health decides"
+  mapfile -t ids < <(wl_ids "$runtime" "$stack" "$service" "$unit" "$container")
+  if wl_wait "$runtime" "$wait" "${ids[@]}"; then
+    ok "updated $what, and it is healthy. The images before are kept as ${keep[*]}"
+    return 0
+  fi
+  why=$WL_WHY
+  for i in "${changed[@]}"; do try "$runtime" tag "${olds[$i]}" "${refs[$i]}"; done
+  wl_recreate "$runtime" "$stack" "$service" "$unit" "$wd" force "${args[@]}" || true
+  mapfile -t ids < <(wl_ids "$runtime" "$stack" "$service" "$unit" "$container")
+  if wl_wait "$runtime" "$wait" "${ids[@]}"; then conflict "rolled back: $why on the new image, so $what runs the images it had before again, and is healthy"
+  else conflict "rolled back after $why, and $what is still not healthy on the images it had before: $WL_WHY"; fi
+}
 """.replace('@STACKS@', STACKS_DIR)
 
 
@@ -527,5 +621,55 @@ changes.register('incus', {'group': 'Workloads', 'label': 'Run an Incus instance
     'help': 'Profiles, pool and network are checked first. Labels are user.* keys, published ports are proxy devices, and only the addresses you allow reach them.'},
     INCUS_ARGS, lambda p: f'Incus {p["type"] or "container"} {p["name"]} from {p["image"] or "images:debian/13"}', check_incus,
     ansible_of('t_incus', INCUS_ARGS, _incus_extra), args_of=_incus_extra)
+
+
+# ── image updates ───────────────────────────────────────────────────
+UPDATE_ARGS = ('runtime', 'stack', 'service', 'unit', 'container', 'wait')
+
+
+def check_image_update(conn, c, h, p, say):
+    from .runtimes import docker
+    stack, unit = p.get('stack'), p.get('unit')
+    if bool(stack) == bool(unit):
+        say('crit', 'name a stack, or the systemd unit that runs the container: one of the two')
+        return
+    if p.get('container') and not unit:
+        say('crit', 'a container name goes with a unit')
+    if unit and p.get('runtime') == 'docker' and not p.get('container'):
+        say('crit', 'with Docker, name the container the unit runs: only Podman labels its containers with their unit')
+    wait = int(p.get('wait') or 120)
+    if not 10 <= wait <= 3600:
+        say('crit', 'wait between 10 and 3600 seconds for it to be healthy')
+    if stack:
+        views = docker.listing(conn, h['name'])
+        found = [s for v in views for s in v['stacks'] if s.get('project') == stack]
+        if not views:
+            say('warn', f'the last scan of {h["name"]} saw no container engine')
+        elif not found:
+            say('warn', f'the last scan of {h["name"]} saw no stack {stack}')
+        for s in found:
+            cs = [x for x in s['containers'] if not p.get('service') or (x.get('labels') or {}).get('com.docker.compose.service') == p['service']]
+            if p.get('service') and not cs:
+                say('warn', f'the last scan saw no service {p["service"]} in {stack}')
+            for x in cs:
+                if '@sha256:' in (x.get('image') or ''):
+                    say('note', f'{x["name"]} runs an image pinned by digest: an update changes nothing there')
+                elif x.get('detail') and not x.get('health'):
+                    say('note', f'{x["name"]} has no healthcheck: healthy then means running without a restart for 10 seconds')
+                elif x.get('health'):
+                    say('ok', f'{x["name"]} has a healthcheck ({x["health"]} at the last scan)')
+    else:
+        say('note', f'the unit {unit} recreates the container from its definition, a Quadlet or a unit file, after the pull')
+    say('note', 'the images it runs now are tagged localhost/storageforge-rollback:... first, and put back if it is not healthy after the update')
+
+
+changes.register('image-update', {'group': 'Workloads', 'label': 'Update the images of a stack or a unit', 'fields': [
+    F('runtime', 'choice', 'Runtime', options=['docker', 'podman'], required=True), F('stack', 'name', 'Stack (compose project)', placeholder='wiki'),
+    F('service', 'name', 'Only this service'), F('unit', 'unit', 'Or the systemd unit that runs it', placeholder='wiki.service'),
+    F('container', 'name', 'The container the unit runs (Docker only)'), F('wait', 'number', 'Seconds to wait for it to be healthy', placeholder='120')],
+    'help': 'Pulls what the compose file or unit names and recreates what changed. If it is not healthy in time, the images it ran before are put back and it is recreated '
+            'again. A container started by hand has nothing to recreate it from: adopt it as compose first.'},
+    UPDATE_ARGS, lambda p: f'Update the images of {"stack " + p["stack"] if p["stack"] else p["unit"]}' + (f', service {p["service"]}' if p.get('service') else ''),
+    check_image_update, ansible_of('t_image_update', UPDATE_ARGS))
 
 changes.EXTRA_BASH.append(BASH)
