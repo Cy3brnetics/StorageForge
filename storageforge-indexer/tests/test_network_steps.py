@@ -314,6 +314,20 @@ class Bash(unittest.TestCase):
         out = self.run_bash('nw_covers 0.0.0.0/0 1.2.3.4 && echo in; nw_covers 10.0.0.0/8 11.0.0.1 || echo out; nw_covers 10.1.2.3/32 10.1.2.3 && echo in')
         self.assertEqual(out.stdout.split(), ['in', 'out', 'in'])
 
+    def test_a_bridge_port_file_comes_before_the_one_netplan_writes(self):
+        """networkd takes the first .network file in name order that matches: netplan writes 10-netplan-<port>.network, and a bridge port
+        written as 10-sf-... came after it, so on a netplan host the port never joined the bridge."""
+        self.networkd()
+        fns = ''.join(re.search(rf'^{n}\(\) \{{.*?^\}}$', steps_infra.BASH, re.M | re.S)[0] + '\n' for n in ('net_manager', 't_net_bridge'))
+        out = self.run_bash(fns.replace('/etc/systemd/network', '$FAKE/network') + 't_net_bridge br0 eth1 "" 5')
+        self.assertEqual(out.returncode, 0, out.stdout)
+        port = self.fake / 'network' / '05-sf-br0-eth1.network'
+        self.assertEqual(port.read_text(), '[Match]\nName=eth1\n[Network]\nBridge=br0\n')
+        self.assertLess('05-sf-br0-eth1.network', '10-netplan-eth1.network')
+        self.assertIn('networkctl reconfigure eth1', self.log())
+        self.undo()
+        self.assertFalse(port.exists())
+
     def test_the_real_rollback_journal_undoes_a_bond(self):
         """storageforge-fwrules itself: the step journals with note, and revert (what the timer runs) puts the files back."""
         self.networkd()
