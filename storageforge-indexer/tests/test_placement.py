@@ -67,7 +67,8 @@ class Placement(unittest.TestCase):
 
     def test_data_no_hold_or_offsite_copy_reaches(self):
         self.assertTrue(any(l == 'warn' and 'no hold or offsite copy reaches /tank/db/pg' in t for l, t in self.advise('/tank/db/pg', 'data')))
-        inv = json.loads(self.conn.scalar("SELECT inventory_json FROM hosts WHERE hostname = 'nas'"))
+        inv = self.conn.scalar("SELECT inventory_json FROM hosts WHERE hostname = 'nas'")
+        inv = inv if isinstance(inv, dict) else json.loads(inv)      # PostgreSQL gives JSON back as a dict
         inv['snapshots'] = {'zfs': {'tank/db': {'count': 12, 'newest': int(time.time())}}}
         self.conn.execute("UPDATE hosts SET inventory_json = :i WHERE hostname = 'nas'", {'i': json.dumps(inv)})
         got = self.advise('/tank/db/pg', 'data')
