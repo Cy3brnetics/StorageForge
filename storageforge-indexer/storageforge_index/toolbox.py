@@ -56,7 +56,7 @@ EXPOSURES = ('loopback', 'management', 'any')
 PMS = ('apt', 'dnf', 'zypper', 'pacman')
 CAPS = ('NET_BIND_SERVICE', 'NET_ADMIN', 'NET_RAW', 'CHOWN', 'SETUID', 'SETGID', 'DAC_OVERRIDE', 'FOWNER', 'KILL')
 # the step kinds an entry may add beside its install, with values from the entry's inputs; each is checked as any plan step is
-ENTRY_STEPS = ('wg-interface', 'wg-peer', 'secret-file', 'unit-state', 'sysctl-set', 'dir')
+ENTRY_STEPS = ('wg-interface', 'wg-peer', 'unit-state')    # kept short on purpose: each is a way an entry reaches a host
 # what each risk label means, and what lessens it. Shown in the report before anything is staged
 RISKS = {
     'docker-socket': ('mounts the Docker socket', 'root on the host in effect', 'use a socket proxy that allows only what it needs'),
@@ -295,6 +295,15 @@ def load_entry(text: str) -> tuple[dict | None, list[str]]:
     if not methods:
         problems.append('install.methods names at least one way to install it')
     e['methods'] = sorted(methods, key=lambda m: METHODS.index(m['kind']))
+    for m in e['methods']:
+        # what an entry may switch on, or install in /usr/local/bin, is its own: a unit named after its packages or itself, a program named
+        # after itself. Never debug-shell.service, never a sudo that shadows the real one
+        own = {e['id'], *(n for names in (m.get('packages') or {}).values() for n in names)}
+        for u in (m.get('units') or []) + ([m['socket']['unit']] if m.get('socket') else []):
+            if not any(u == o or u.startswith(o + '.') or u.startswith(o + '-') or u.startswith(o + '@') for o in own):
+                problems.append(f'install.methods: the unit {u} is not named after {e["id"]} or one of its packages')
+        if m['kind'] == 'binary' and m.get('name') and e['id'] and not (m['name'] == e['id'] or m['name'].startswith(e['id'] + '-')):
+            problems.append(f'install.methods (binary): the program is named {e["id"]} or {e["id"]}-something, so it cannot stand in for another')
     from . import changes
     e['inputs'] = []
     for i, inp in enumerate(_list(raw.get('inputs'), problems, 'inputs')):
@@ -729,6 +738,16 @@ TRUSTED = ('release-signed', 'packaged', 'operator-signed')
 
 # ── overrides ───────────────────────────────────────────────────────
 OVERRIDE_KEYS = ('ports', 'bind', 'exposure', 'volumes', 'method', 'image')
+SYSTEM_PREFIXES = ('/etc', '/root', '/usr', '/boot', '/proc', '/sys', '/dev', '/run', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/var', '/tmp', '/snap')
+
+
+def data_folder_ok(path: str) -> bool:
+    """A folder a tool may keep its data in: a volume gets :Z (SELinux gives it to that container alone) and a rootless tool's account
+    owns what it makes, so never a system folder or anything under one, never / and never a home folder itself."""
+    p = '/' + path.strip('/')
+    if p == '/' or any(p == s or p.startswith(s + '/') for s in SYSTEM_PREFIXES):
+        return False
+    return not (p == '/home' or (p.startswith('/home/') and p.count('/') == 2))
 
 
 def load_override(text: str) -> tuple[dict, list[str]]:
@@ -762,9 +781,9 @@ def load_override(text: str) -> tuple[dict, list[str]]:
             else:
                 out['exposure'] = v
         elif k == 'volumes':
-            if not isinstance(v, dict) or not all(isinstance(p, str) and CPATH.fullmatch(p) and '..' not in p.split('/') and p.rstrip('/') not in ('', '/etc', '/root', '/var', '/usr', '/boot')
-                                                  for p in v.values()):
-                problems.append('volumes is {name: /an/absolute/folder}, and not a system folder')
+            if not isinstance(v, dict) or not all(isinstance(p, str) and CPATH.fullmatch(p) and '..' not in p.split('/') and data_folder_ok(p) for p in v.values()):
+                problems.append('volumes is {name: /an/absolute/folder}, outside the system folders (/etc, /usr, /var, /root, /boot, /run and the like) '
+                                'and not a home folder itself: the folder is relabelled for the container and given to its account')
             else:
                 out['volumes'] = {str(a): b.rstrip('/') for a, b in v.items()}
         elif k == 'method':

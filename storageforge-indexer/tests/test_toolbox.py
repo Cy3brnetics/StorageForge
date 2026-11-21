@@ -107,6 +107,11 @@ class Schema(Base):
         self.assertIn('is not a field of an entry', problems('requires:', 'run: rm -rf /\nrequires:'))
         self.assertIn('not something an entry may ask for', problems('      ports:', '      socket: /var/run/docker.sock\n      ports:'))
         self.assertIn('capability SYS_ADMIN', problems('      ports:', '      caps_add: [SYS_ADMIN]\n      ports:'))
+        pkg = 'format: 1\nid: tool\nrevision: 1\nname: T\ncategory: monitoring\nsummary: s\ninstall:\n  methods:\n    - kind: package\n      packages: {apt: [tool]}\n'
+        self.assertEqual(toolbox.load_entry(pkg + '      units: [tool.service]\n')[1], [])
+        self.assertIn('not named after tool', ' '.join(toolbox.load_entry(pkg + '      units: [debug-shell.service]\n')[1]))
+        binary = 'format: 1\nid: tool\nrevision: 1\nname: T\ncategory: monitoring\nsummary: s\ninstall:\n  methods:\n    - kind: binary\n      name: sudo\n      files: {x86_64: {url: "https://x.example/a", sha256: %s}}\n' % ('a' * 64)
+        self.assertIn('cannot stand in for another', ' '.join(toolbox.load_entry(binary)[1]))
         self.assertIn('no adapter nope', problems('gui:\n', 'gui:\n  panel: {level: status, adapter: nope}\n'))
         self.assertIn('type is one of', problems('requires:', 'steps:\n  - {type: command, params: {cmd: id}}\nrequires:'))
         self.assertIn('names an input', problems('requires:', 'steps:\n  - {type: wg-interface, params: {iface: "{nope}"}}\nrequires:'))
@@ -283,6 +288,10 @@ class Staging(Base):
         self.assertIn('overridden on box: ports', ' '.join(x['text'] for x in got['report']))
         with self.assertRaises(toolbox.CatalogError):
             toolbox.set_override(self.conn, 'box', 'uptime-kuma', 'volumes: {data: /etc}\n', 'test')
+        for bad in ('/etc/ssh', '/var/lib/docker', '/home/alice', '/', '/root/x'):
+            with self.assertRaises(toolbox.CatalogError, msg=bad):
+                toolbox.set_override(self.conn, 'box', 'uptime-kuma', f'volumes: {{data: {bad}}}\n', 'test')
+        self.assertTrue(toolbox.data_folder_ok('/home/alice/kuma') and toolbox.data_folder_ok('/srv/kuma') and toolbox.data_folder_ok('/tank/apps/kuma'))
         with self.assertRaises(toolbox.CatalogError):
             toolbox.set_override(self.conn, 'box', 'uptime-kuma', 'image: docker.io/x/y:1\n', 'test')
         toolbox.set_override(self.conn, 'box', 'uptime-kuma', 'ports: {3001: 3902}\n', 'test')

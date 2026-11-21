@@ -171,6 +171,9 @@ class Steps(Base):
         out = self.install(True, 'tinybin')
         self.assertIn('installed, SHA-256 ' + good, out)
         self.assertTrue((self.root / 'usr/local/bin/tinybin').exists())
+        (self.root / 'usr/local/bin/tinybin-other').write_text('someone else')
+        self.assertIn('StorageForge did not put it there', self.run_fn(True, 'tb_binary', ['tinybin-other', 'tinybin-other', 'https://example.org/x', good, '', '']))
+        self.assertEqual((self.root / 'usr/local/bin/tinybin-other').read_text(), 'someone else')
 
     def test_removal_takes_the_unit_and_keeps_the_data(self):
         toolbox.stage(self.conn, 'box', 'uptime-kuma', 'test')

@@ -151,7 +151,8 @@ tb_binary() { local tool=$1 name=$2 u86=$3 s86=$4 uarm=$5 sarm=$6 url= sha= dest
   case $(uname -m) in x86_64) url=$u86 sha=$s86 ;; aarch64) url=$uarm sha=$sarm ;; esac
   [[ -n $url ]] || { conflict "$tool has no binary for $(uname -m)"; return 0; }
   if [[ -f $dest ]] && [[ $(sha256sum "$dest" | cut -c1-64) == "$sha" ]]; then ok "$dest is there, SHA-256 $sha"; return 0; fi
-  [[ -e $dest ]] && info "$dest is there and is another file: it is replaced"
+  if [[ -e $dest && ! -e @HOME@/.binaries/$name ]]; then conflict "$dest is there and StorageForge did not put it there: it is left as it is"; return 0; fi
+  [[ -e $dest ]] && info "$dest is the one this tool installed before: it is replaced"
   act "download $url and install it as $dest, once its SHA-256 is $sha" || return 0
   command -v curl >/dev/null || { conflict "curl is not installed"; return 0; }
   tmp=$(mktemp) || { conflict "could not make a temporary file"; return 0; }
@@ -159,6 +160,7 @@ tb_binary() { local tool=$1 name=$2 u86=$3 s86=$4 uarm=$5 sarm=$6 url= sha= dest
   have=$(sha256sum "$tmp" | cut -c1-64)
   if [[ $have != "$sha" ]]; then rm -f -- "$tmp"; conflict "$url has SHA-256 $have, not $sha: nothing was installed"; return 0; fi
   install -m 0755 -- "$tmp" "$dest"; rm -f -- "$tmp"
+  install -d -m 0755 -- @HOME@/.binaries && : >"@HOME@/.binaries/$name"
   ok "$dest installed, SHA-256 $sha"
 }
 t_tool_install() { local tool=$1 method=$2 sha=$3 ovr=$4 exposure=$5 bind=$6 allow=$7 verdict=$8 why=$9
@@ -229,7 +231,9 @@ tb_remove_package() { local tool=$1 apt=$2 dnf=$3 zypper=$4 pacman=$5 units=$6 s
   tb_kept "$keep"
 }
 tb_remove_binary() { local tool=$1 path=$2 keep=$3
-  if [[ ! -e $path ]]; then ok "$path is not there"; elif act "remove $path"; then rm -f -- "$path"; ok "$path is gone"; fi
+  if [[ ! -e $path ]]; then ok "$path is not there"
+  elif [[ ! -e @HOME@/.binaries/${path##*/} ]]; then conflict "$path is not one StorageForge installed: it is left as it is"; return 0
+  elif act "remove $path"; then rm -f -- "$path" "@HOME@/.binaries/${path##*/}"; ok "$path is gone"; fi
   tb_kept "$keep"
 }
 t_tool_remove() { local tool=$1 method=$2 verdict=$3 why=$4
