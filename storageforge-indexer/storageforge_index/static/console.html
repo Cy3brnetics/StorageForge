@@ -16,6 +16,9 @@
   <label>Connect by
     <select id="cons-route" aria-describedby="cons-route-help"></select>
   </label>
+  <label id="cons-user-label" hidden>as
+    <input id="cons-user" type="text" autocomplete="off" spellcheck="false" maxlength="32" placeholder="account" aria-describedby="cons-route-help">
+  </label>
   <button id="cons-connect" type="button" class="sf-btn">Connect</button>
   <button id="cons-close" type="button" class="sf-btn ghost" hidden>Disconnect</button>
   <span id="cons-status" role="status" aria-live="polite"></span>

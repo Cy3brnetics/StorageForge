@@ -200,6 +200,7 @@ class Session:
         self.rec = None
         self.rec_name = None
         self._audit = None
+        self._on_close = None          # what turns off again what was turned on for this session (agentconsole.py)
 
     # what goes to the browser
     def _push(self, data: bytes):
@@ -327,6 +328,9 @@ class Session:
                 self.rec_name = None
         with _LOCK:
             _REGISTRY.pop(self.id, None)
+        if self._on_close:
+            done, self._on_close = self._on_close, None
+            threading.Thread(target=done, name=f'console-close-{self.id[:6]}', daemon=True).start()
         if self._audit:
             self._audit('console.close', {'reason': reason, 'seconds': int(time.time() - self.started),
                                           'bytes_in': self.bytes_in, 'bytes_out': self.bytes_out, 'recording': self.rec_name})
@@ -351,7 +355,7 @@ def _ssh_argv(sock: str, user: str, address: str, port: int, alias: str, remote:
     return argv + (remote or [])
 
 
-def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols: int, rows: int, audit) -> Session:
+def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols: int, rows: int, audit, user: str | None = None) -> Session:
     """audit(action, detail): writes to the audit log as the owner, against host."""
     from .remote import child_env
     from .runner import ephemeral_agent
@@ -406,15 +410,21 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
     if kind == 'serial' and target is None:
         s.spawn(['virsh', '-c', 'qemu:///system', 'console', '--force', host], {**child_env(), **env})
     else:
+        from . import agentmonitor
+        monitoring = kind == 'ssh' and agentmonitor.monitoring_only(conn, host)
         try:
             from . import sshcerts
             from .vault import AuditLog
-            with Vault(db, conn).unlock() as vault:
-                b = vault.resolve(bind_for, 'console')
-                # five minutes long and for this user on this host: only the login has to fall inside it
-                cert = sshcerts.login_line(vault, conn, address=bind_for, user=b.user, key_name=b.key_name, purpose='console', actor=f'web:{owner}',
-                                           audit=lambda outcome, detail: AuditLog(db, conn, vault.audit_key).append(f'web:{owner}', 'ssh.certificate', outcome, bind_for, b.fingerprint, detail))
-                key = vault.decrypt_key(b.key_id, 'console')
+            if monitoring:
+                # a monitoring-only host: SSH turned on for this session through storageforge-agentctl, off again when it ends
+                b, cert, key = _monitoring_login(db, s, host, user, owner)
+            else:
+                with Vault(db, conn).unlock() as vault:
+                    b = vault.resolve(bind_for, 'console')
+                    # five minutes long and for this user on this host: only the login has to fall inside it
+                    cert = sshcerts.login_line(vault, conn, address=bind_for, user=b.user, key_name=b.key_name, purpose='console', actor=f'web:{owner}',
+                                               audit=lambda outcome, detail: AuditLog(db, conn, vault.audit_key).append(f'web:{owner}', 'ssh.certificate', outcome, bind_for, b.fingerprint, detail))
+                    key = vault.decrypt_key(b.key_id, 'console')
         except NoBinding as exc:
             s._audit = None
             s.close('no console key')
@@ -450,6 +460,27 @@ def open_session(db, conn, *, owner: str, host: str, kind: str, route: str, cols
         _REGISTRY[s.id] = s
     audited('console.open', {'recording': s.rec_name, 'cols': cols, 'rows': rows})
     return s
+
+
+def _monitoring_login(db, s: 'Session', host: str, user: str | None, owner: str):
+    """(login, certificate, key) for a console on a monitoring-only host: a key made for this session, put in place by
+    storageforge-agentctl as an account the host's admin listed, and taken out again when the session closes."""
+    from types import SimpleNamespace
+    from . import agentconsole
+    if not user or not re.fullmatch(r'[A-Za-z0-9._-]{1,32}', user) or user.startswith('-'):
+        s._audit = None
+        s.close('no account named')
+        raise ConsoleError(f'{host} is monitoring only: name the account to log in as, one its admin listed in /etc/storageforge-agent/console_users. '
+                           'SSH is turned on for this session alone, through storageforge-agentctl, and off again after')
+    try:
+        gid, key = agentconsole.grant(db, host, user, f'web:{owner}')
+    except agentconsole.ConsoleGrantError as exc:
+        s._audit = None
+        s.close('SSH could not be turned on')
+        raise ConsoleError(f'SSH could not be turned on for this session: {exc}') from None
+    s._on_close = lambda: agentconsole.close(db, host, gid, f'the session ended ({s.closed})')
+    s.grant = gid
+    return SimpleNamespace(user=user, port=None, fingerprint=None), None, key
 
 
 def get(sid: str, owner: str) -> Session:

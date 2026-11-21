@@ -37,7 +37,7 @@ use storageforge_agent::request::{self, Request, REFUSED};
 use storageforge_agent::runtime::{self, Kind, Spec, Step, Tools};
 use storageforge_agent::sig::{self, Signers};
 use storageforge_agent::supervise::{now, CONTROLLER_SIGNERS, MANIFEST_FILE, MANIFEST_SIGNATURE, OPERATOR_SIGNERS, SEEN_FILE};
-use storageforge_agent::{identity, outside, runner, tunnel, wipe, VERSION};
+use storageforge_agent::{console, identity, outside, runner, tunnel, wipe, VERSION};
 
 /// What storageforge-agentctl keeps of the container it made: the spec it was made with, which `check` compares against (the masks
 /// are found on the host when the container is made, and a folder made since is not in the container yet), and under plain LXC the
@@ -705,6 +705,10 @@ fn run() -> Result<Value, Stop> {
         return refuse("account", format!("sfagent is in the {group} group on this host: the agent's account is in no group that gives root"));
     }
     let mut ctl = Ctl { host, agent, notes: Vec::new(), tunnel: None };
+    // a console whose time is past is closed whatever was asked, so that one the controller never closed does not stay open
+    for grant in console::sweep(&ctl.host, &ctl.host.ctl(), now()) {
+        ctl.notes.push(format!("a console that was not closed in time was closed: {grant}"));
+    }
     // a tunnel file that cannot be read gives no tunnel: the container is then made with no network, never with one unruled
     ctl.tunnel = ctl.pinned_tunnel().ok().flatten().map(|(address, _)| address);
     let mut out = match r.op.as_str() {
@@ -733,6 +737,17 @@ fn run() -> Result<Value, Stop> {
         "remove" => ctl.remove()?,
         "check" => ctl.check(&controller, &machine)?,
         "wipe" => ctl.wipe(r.reason.as_deref().unwrap_or(""))?,
+        "console-open" => {
+            let c = r.console.as_ref().ok_or(()).or_else(|_| refuse("request", "no console asked for"))?;
+            let until = console::open(&ctl.host, &ctl.host.ctl(), c.user.as_deref().unwrap_or(""), c.key.as_deref().unwrap_or(""), &c.grant, c.minutes.unwrap_or(0), now())
+                .map_err(|why| Stop { exit: REFUSED, code: "console", why })?;
+            json!({"grant": c.grant, "user": c.user, "until": until})
+        }
+        "console-close" => {
+            let c = r.console.as_ref().ok_or(()).or_else(|_| refuse("request", "no console named"))?;
+            let closed = console::close(&ctl.host, &ctl.host.ctl(), &c.grant).map_err(failed)?;
+            json!({"grant": c.grant, "closed": closed})
+        }
         _ => return refuse("request", "not an agent operation"),
     };
     out["ok"] = json!(true);

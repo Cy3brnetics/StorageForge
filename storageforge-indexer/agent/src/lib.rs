@@ -11,6 +11,7 @@
 //!
 //! - `caps`       giving up root with only the capabilities the plugins declare, for a container that needs some
 //! - `smart`      a disk's SMART health decoded from what it answers, in the shape smartctl prints
+//! - `console`    SSH turned on for one console session on a monitoring-only host, as accounts the host's admin listed
 //! - `sig`        SSH signatures made and checked in Rust: the one signature format everything uses
 //! - `needs`      the whole vocabulary of what a plugin may ask of a host
 //! - `plugin`     the plugin format, and who may sign one
@@ -29,6 +30,7 @@
 //! fields it does not know, parsing is linear, and what no honest peer sends ends the conversation.
 
 pub mod caps;
+pub mod console;
 pub mod host;
 pub mod hostread;
 pub mod identity;

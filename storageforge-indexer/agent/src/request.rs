@@ -39,7 +39,8 @@ pub const REFUSED: i32 = 97;
 /// The operations there are. Nothing else is one.
 /// `check` compares the running container with the manifest from outside (roadmap 11.3); `wipe` ends an agent's access there:
 /// its key deleted, its container stopped and left stopped.
-pub const OPS: [&str; 10] = ["preflight", "enroll", "apply", "start", "stop", "restart", "status", "remove", "check", "wipe"];
+/// `console-open` and `console-close`: SSH turned on for one console session on a monitoring-only host, and off again (console.rs).
+pub const OPS: [&str; 12] = ["preflight", "enroll", "apply", "start", "stop", "restart", "status", "remove", "check", "wipe", "console-open", "console-close"];
 /// The most a wipe's reason may be.
 pub const MAX_REASON: usize = 500;
 
@@ -85,6 +86,22 @@ pub struct Request {
     /// `wipe`: why, in words, kept beside what is left of the agent on the host.
     #[serde(default)]
     pub reason: Option<String>,
+    /// `console-open` and `console-close`: the session's grant, and to open it the account, the session's public key and the minutes
+    /// the key may be used to log in.
+    #[serde(default)]
+    pub console: Option<ConsoleRequest>,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ConsoleRequest {
+    pub grant: String,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub minutes: Option<u32>,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -160,8 +177,14 @@ pub fn verify(payload: &[u8], signature: &str, controller: &Signers, machine: &s
         return Err("the reason is longer than a reason may be".into());
     }
     let reason = r.reason.is_some();
+    let console = r.console.as_ref();
     let fits = match r.op.as_str() {
         _ if reason && r.op != "wipe" => false,
+        _ if console.is_some() && !r.op.starts_with("console-") => false,
+        "console-open" => !image && !manifest && r.image_signature.is_none() && r.tunnel.is_none()
+            && console.is_some_and(|c| c.user.is_some() && c.key.is_some() && c.minutes.is_some()),
+        "console-close" => !image && !manifest && r.image_signature.is_none() && r.tunnel.is_none()
+            && console.is_some_and(|c| c.user.is_none() && c.key.is_none() && c.minutes.is_none()),
         "enroll" => image && signed_image && !manifest,
         "apply" => !image && signed_image && !r.install_podman && r.manifest.is_some() && r.manifest_signature.is_some() && (r.tunnel.is_some() || !r.accept_new_tunnel_key),
         _ => !image && !manifest && !r.install_podman && r.image_signature.is_none() && r.tunnel.is_none() && !r.accept_new_tunnel_key,

@@ -1833,8 +1833,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             rs = console.routes(conn(), host)
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
+        from . import agentmonitor
         return jsonify(host=host, routes=rs, serial=console.serial_via(conn(), host), viewer=console.viewer(conn(), host),
-                       recording=console.settings(conn())['record'], open=console.mine(current_user.username))
+                       recording=console.settings(conn())['record'], open=console.mine(current_user.username),
+                       monitoring_only=agentmonitor.monitoring_only(conn(), host))      # SSH turned on for the session (agentconsole.py)
 
     @web.post('/api/console/sessions')
     @login_required
@@ -1856,7 +1858,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
                 c.close()
         try:
             s = console.open_session(core.db, conn(), owner=current_user.username, host=host, kind=kind, route=route,
-                                     cols=arg_num_of(b, 'cols', 80, 20, 500), rows=arg_num_of(b, 'rows', 24, 5, 200), audit=audit)
+                                     cols=arg_num_of(b, 'cols', 80, 20, 500), rows=arg_num_of(b, 'rows', 24, 5, 200), audit=audit,
+                                     user=str(b.get('user') or '')[:32] or None)     # a monitoring-only host: the account (agentconsole.py)
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
         except (console.ConsoleError, ValueError) as exc:

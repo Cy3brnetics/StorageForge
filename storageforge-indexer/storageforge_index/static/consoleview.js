@@ -33,6 +33,13 @@ async function load() {
   $c('cons-route-help').textContent = 'SSH uses the key bound to this host for "console" in the vault, and only a host key a scan confirmed. '
     + 'The serial console works when the network or SSH of a VM does not. Your password is asked for each session.';
   $c('cons-rec').hidden = !CON.info.recording;
+  if (CON.info.monitoring_only) {
+    // a monitoring-only host (agentconsole.py): SSH is turned on for this session alone, as an account the host's admin listed
+    $c('cons-user-label').hidden = false;
+    $c('cons-route-help').textContent = `${CON.host} is monitoring only: StorageForge has no SSH login there. For this session SSH is turned on through `
+      + 'storageforge-agentctl with a key made for it, as an account the host\'s admin listed in /etc/storageforge-agent/console_users, and turned off again when it ends. '
+      + 'The agent itself has no part in it. Your password is asked for each session.';
+  }
   if (CON.info.viewer) {
     const v = CON.info.viewer, code = sfNode('code', {}, v.command);
     const copy = sfNode('button', { type: 'button', class: 'sf-btn ghost sm' }, 'Copy');
@@ -104,7 +111,8 @@ async function connect() {
   status('Connecting…');
   $c('cons-connect').disabled = true;
   try {
-    const res = await postJSON('/api/console/sessions', { host: CON.host, kind, route: route || 'auto', cols: CON.term.cols, rows: CON.term.rows });
+    const user = CON.info.monitoring_only ? $c('cons-user').value.trim() : '';
+    const res = await postJSON('/api/console/sessions', { host: CON.host, kind, route: route || 'auto', cols: CON.term.cols, rows: CON.term.rows, ...(user ? { user } : {}) });
     const s = await res.json();
     CON.sid = s.id; CON.next = 0; CON.stop = false;
     status(`Connected${s.kind === 'ssh' ? ` over ${((CON.info.routes || []).find((r) => r.route === s.route) || {}).label || s.route} to ${s.address}` : ': serial console'}.${s.recording ? ' Recording.' : ''}`, 'ok');
