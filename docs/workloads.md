@@ -10,6 +10,7 @@ What is here:
 - [Placement advice](#placement-advice): tuned datasets, databases off the bulk pool, network filesystems, and data nothing protects.
 - [MAC at deploy](#mac-at-deploy): `:Z` labels, the `svirt_image_t` fix and AppArmor pool paths.
 - [The read side](#the-read-side-quadlets-adopting-a-workload-and-drift): Quadlets, adopting a workload by capturing it, and drift against the capture.
+- [Quiesced stacks](#quiesced-stacks): stop, snapshot, start, with the method recorded.
 
 Running one container (`container`), VMs from cloud images (`vm-create`) and the VM steps are in [VMs on libvirt](vms.md) and [Cloning and migrating hosts](host-migration.md). Installing a runtime first is the `runtime-install` step in [Change plans](change-plans.md).
 
@@ -102,3 +103,11 @@ A scan never reads environment values, so none are in a capture: the compose and
 | `POST /api/workloads/captures` | Adopts it: `{host, runtime, name, format, note}`. Needs `plans.edit`, and is in the audit log as `workload.adopt` |
 | `GET /api/workloads/captures`, `GET /api/workloads/captures/ID` (`?raw=1` for the text) | Captures with their drift, and one capture |
 | `DELETE /api/workloads/captures/ID` | Forgets a capture (`workload.forget`) |
+
+## Quiesced stacks
+
+The `stack-snapshot` step snapshots what a compose stack keeps, with the stack quiet while it happens. VMs already freeze their filesystems through the guest agent (`vm-snapshot`); this is the same for stacks.
+
+- **What is snapshotted:** each ZFS dataset and btrfs subvolume holding a folder or volume its containers mount, once each. A ZFS snapshot is `DATASET@sf-STACK-DATE`; a btrfs one is read-only, in `.storageforge-snapshots/STACK-DATE` inside the subvolume. A mount on another filesystem is named in the report and left out; when nothing is on ZFS or btrfs the check refuses the step.
+- **How it is quiesced:** *stop* (the default, and what a stateful stack needs) stops its containers, takes the snapshots and starts them again, whatever happened to the snapshots; *pause* freezes the processes instead, so the stack stays up but writes still in memory are not in the snapshot; *live* takes them as it runs, crash-consistent only, and the check warns when the stack has a database.
+- **The method is recorded** with each snapshot: as the ZFS user property `storageforge:quiesce`, and as a line (date, stack, method, snapshots) in `/var/lib/storageforge/quiesce.log` on the host, besides the run output in the deploy log.

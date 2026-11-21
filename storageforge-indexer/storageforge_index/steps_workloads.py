@@ -336,6 +336,57 @@ t_image_update() { local runtime=$1 stack=$2 service=$3 unit=$4 container=$5 wai
   if wl_wait "$runtime" "$wait" "${ids[@]}"; then conflict "rolled back: $why on the new image, so $what runs the images it had before again, and is healthy"
   else conflict "rolled back after $why, and $what is still not healthy on the images it had before: $WL_WHY"; fi
 }
+
+# ── quiesced snapshots of a stack ────────────────────────────────────
+wl_snap_target() { # path -> "zfs DATASET" or "btrfs SUBVOLUME" or "none FSTYPE"
+  local fs src p
+  read -r fs src < <(findmnt -n -o FSTYPE,SOURCE -T "$1" 2>/dev/null) || { echo "none unknown"; return 0; }
+  case $fs in
+    zfs) echo "zfs ${src%%[*}" ;;
+    btrfs) p=$1
+      while [[ $p != / && $(stat -c %i -- "$p" 2>/dev/null) != 256 ]]; do p=$(dirname -- "$p"); done
+      echo "btrfs $p" ;;
+    *) echo "none ${fs:-unknown}" ;;
+  esac
+}
+t_stack_snapshot() { local runtime=$1 stack=$2 method=${3:-stop} ids=() id src t kind what targets=() bad=() made=() log=${WL_LOG:-/var/lib/storageforge/quiesce.log} rc=0 how
+  command -v "$runtime" >/dev/null || { conflict "$runtime is not on this host"; return 0; }
+  mapfile -t ids < <("$runtime" ps -aq --filter "label=com.docker.compose.project=$stack" 2>/dev/null)
+  ((${#ids[@]})) || { conflict "no container of stack $stack here"; return 0; }
+  for id in "${ids[@]}"; do
+    while IFS= read -r src; do
+      [[ $src == /* ]] || continue
+      t=$(wl_snap_target "$src")
+      [[ " ${targets[*]} " == *" ${t// /:} "* ]] && continue
+      case $t in none*) bad+=("$src (${t#none })") ;; *) targets+=("${t// /:}") ;; esac
+    done < <("$runtime" inspect -f "{{range .Mounts}}{{.Source}}{{println}}{{end}}" "$id" 2>/dev/null)
+  done
+  ((${#bad[@]})) && info "not snapshotted, as their filesystem has no snapshots: ${bad[*]}"
+  ((${#targets[@]})) || { conflict "nothing stack $stack keeps is on ZFS or btrfs, so there is nothing to snapshot"; return 0; }
+  case $method in stop) how=stop-snapshot-start ;; pause) how=pause-snapshot-unpause ;; live) how="live, crash-consistent" ;; *) conflict "the method is stop, pause or live"; return 0 ;; esac
+  info "${#ids[@]} container(s) of $stack; snapshots of ${targets[*]//:/ }; method $how"
+  act "snapshot stack $stack ($how)" || return 0
+  case $method in
+    stop) try "$runtime" stop -t 30 "${ids[@]}" >/dev/null || return 0 ;;
+    pause) try "$runtime" pause "${ids[@]}" >/dev/null || return 0 ;;
+  esac
+  for t in "${targets[@]}"; do
+    kind=${t%%:*}; what=${t#*:}
+    if [[ $kind == zfs ]]; then
+      zfs snapshot -o "storageforge:quiesce=$method" "$what@sf-$stack-$STAMP" && made+=("$what@sf-$stack-$STAMP") || rc=1
+    else
+      mkdir -p -- "$what/.storageforge-snapshots" && btrfs subvolume snapshot -r -- "$what" "$what/.storageforge-snapshots/$stack-$STAMP" >/dev/null && made+=("$what/.storageforge-snapshots/$stack-$STAMP") || rc=1
+    fi
+  done
+  # whatever happened to the snapshots, the stack runs again
+  case $method in
+    stop) "$runtime" start "${ids[@]}" >/dev/null || conflict "stack $stack did not start again: start it by hand" ;;
+    pause) "$runtime" unpause "${ids[@]}" >/dev/null || conflict "stack $stack did not unpause: unpause it by hand" ;;
+  esac
+  mkdir -p -- "$(dirname -- "$log")" && printf "%s\t%s\t%s\t%s\n" "$STAMP" "$stack" "$how" "${made[*]}" >>"$log"
+  if ((rc)); then conflict "some snapshots of $stack failed; made: ${made[*]:-none}"
+  else ok "snapshots of $stack, $how: ${made[*]}. The method is recorded in $log"; fi
+}
 """.replace('@STACKS@', STACKS_DIR)
 
 
@@ -725,5 +776,45 @@ changes.register('image-update', {'group': 'Workloads', 'label': 'Update the ima
             'again. A container started by hand has nothing to recreate it from: adopt it as compose first.'},
     UPDATE_ARGS, lambda p: f'Update the images of {"stack " + p["stack"] if p["stack"] else p["unit"]}' + (f', service {p["service"]}' if p.get('service') else ''),
     check_image_update, ansible_of('t_image_update', UPDATE_ARGS))
+
+# ── quiesced snapshots ──────────────────────────────────────────────
+SNAP_ARGS = ('runtime', 'stack', 'method')
+
+
+def check_stack_snapshot(conn, c, h, p, say):
+    from . import placement
+    from .runtimes import docker
+    method = p.get('method') or 'stop'
+    found = [s for v in docker.listing(conn, h['name']) for s in v['stacks'] if s.get('project') == p.get('stack')]
+    if not found:
+        say('warn', f'the last scan of {h["name"]} saw no stack {p.get("stack")}')
+        return
+    db = [x['name'] for s in found for x in s['containers'] if placement.is_database(x.get('image'))]
+    sources = sorted({m.get('source') for s in found for x in s['containers'] for m in x.get('mounts') or [] if (m.get('source') or '').startswith('/')})
+    snap, none = [], []
+    for src in sources:
+        where, fs = c.mount_at(src)
+        (snap if fs in ('zfs', 'btrfs') else none).append(f'{src} ({fs or "unknown"})')
+    if snap:
+        say('ok', f'snapshots of what it keeps: {", ".join(snap[:6])}')
+    if none:
+        say('warn', f'not on ZFS or btrfs, so not snapshotted: {", ".join(none[:6])}')
+    if not snap and sources:
+        say('crit', 'nothing the stack keeps is on ZFS or btrfs: there is nothing to snapshot')
+    if db and method == 'live':
+        say('warn', f'{", ".join(db)} is a database: a live snapshot is crash-consistent only. Stop is the safe method for a stateful stack')
+    elif method == 'stop':
+        say('note', f'the stack stops for as long as the snapshots take (seconds), then starts again whatever happened to them')
+    elif method == 'pause':
+        say('note', 'its processes are paused, not stopped: writes in flight in memory are not on disk in the snapshot')
+    say('note', 'the method is recorded with each snapshot: a ZFS user property (storageforge:quiesce), and a line in /var/lib/storageforge/quiesce.log')
+
+
+changes.register('stack-snapshot', {'group': 'Workloads', 'label': 'Snapshot a stack, quiesced', 'fields': [
+    F('runtime', 'choice', 'Runtime', options=['docker', 'podman'], required=True), F('stack', 'name', 'Stack (compose project)', required=True, placeholder='wiki'),
+    F('method', 'choice', 'How to quiesce it', options=['', 'stop', 'pause', 'live'], default='')],
+    'help': 'Snapshots the ZFS datasets and btrfs subvolumes its containers keep data on. Stop (the default, for stateful stacks) stops it, snapshots and starts it; '
+            'pause pauses it instead; live takes them as it runs. The method is recorded with the snapshots.'},
+    SNAP_ARGS, lambda p: f'Snapshot stack {p["stack"]} ({p.get("method") or "stop"})', check_stack_snapshot, ansible_of('t_stack_snapshot', SNAP_ARGS))
 
 changes.EXTRA_BASH.append(BASH)
