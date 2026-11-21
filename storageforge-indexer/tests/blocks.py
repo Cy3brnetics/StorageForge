@@ -70,6 +70,9 @@ HEAVY = {
 }
 
 MEDIUM = {
+    'test_netconsole.Receiver',       # the netconsole receiver on a real UDP socket, waiting for its batches to be stored
+    'test_netconsole.TheStep',        # bash running the netconsole step against stand-ins for ip and modprobe
+    'test_netconsole.Pstore',         # bash running the scan's pstore script on real files
     'test_agent.Setup',              # bash running the agent's setup script against a stand-in host
     'test_agent.Requests',           # the real storageforge-agentctl, built with cargo, asked directly
     'test_agent.Lifecycle',          # the same, with the real agent started where a runtime would start it

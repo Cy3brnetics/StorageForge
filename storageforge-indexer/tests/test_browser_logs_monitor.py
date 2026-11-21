@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest import mock
 
-from storageforge_index import alerts, hostlogs, server, users
+from storageforge_index import alerts, hostlogs, netconsole, pstore, server, users
 from storageforge_index.db import Database
 
 try:
@@ -52,6 +52,9 @@ class BrowserLogsMonitor(unittest.TestCase):
         hours('nas', now - 3 * HOUR, 2, 20)
         hours('nas', now - HOUR, 1, 400, unit='smbd.service', msg='smbd {i} refused')       # nas: twenty times its usual hour
         hours('nas', now - HOUR, 1, 1, unit='', msg=HOSTILE, priority=3)                    # and a kind of line it never logged
+        netconsole.save_source(conn, 'nas', '10.42.0.7', 6665, 'admin')
+        pstore.store(conn, 'quiet', pstore.parse(f'@@who 0\n@@records\n{int(now) - 7200} 900 /var/lib/systemd/pstore/1/dmesg.txt\n'
+                                                 f'@@file {int(now) - 7200} /var/lib/systemd/pstore/1/dmesg.txt\n|<0>[ 9.1] Kernel panic - not syncing: VFS\n@@end\n', now), now)
         conn.close()
         with mock.patch.object(alerts, 'scan_problems', lambda conn: {}), mock.patch.object(alerts, 'backup_problems', lambda conn: {}), \
                 mock.patch.object(alerts, 'cert_problems', lambda: {}), mock.patch.object(alerts, 'send', lambda *a, **k: ['recorded']):
@@ -111,6 +114,42 @@ class BrowserLogsMonitor(unittest.TestCase):
         self.assertIn('collected by the scan over SSH, not signed', nas.inner_text())
         self.assertIn('not collected', self.host('cold').inner_text())
         self.assertIn('2 hosts with something to look at, first.', self.page.inner_text('#hl-mon-sum'))
+        self.assertEqual(self.errors, [])
+
+    def test_netconsole_and_pstore_are_said_beside_the_journal_and_never_as_signed(self):
+        self.open_logs()
+        self.assertIn('netconsole from 10.42.0.7 port 6665, not signed: nothing heard yet', self.host('nas').inner_text())
+        quiet = self.host('quiet')
+        self.assertIn('pstore: 1 crash record, the newest written', quiet.inner_text())
+        self.assertIn('Warning: The kernel on quiet crashed and left a record', quiet.inner_text())
+        self.assertEqual(self.errors, [])
+
+    def test_a_netconsole_source_is_added_and_a_cancelled_dialog_draws_nothing_again(self):
+        self.open_logs()
+        self.page.click('#hl-nc-box summary')
+        self.page.wait_for_selector('#hl-nc li:has-text("nas: 10.42.0.7 port 6665")')
+        self.assertIn('does not listen for netconsole', self.page.inner_text('#hl-nc-recv'))
+        self.page.eval_on_selector('#hl-nc li', 'li => { li.dataset.mark = "kept" }')
+        asked = len([u for u in self.requests if '/api/hostlogs/netconsole' in u])
+        self.page.click('#hl-nc-new')
+        self.page.wait_for_selector('dialog[open]')
+        self.page.keyboard.press('Escape')
+        self.page.wait_for_selector('dialog[open]', state='detached')
+        self.page.click('#hl-nc li button:has-text("Remove")')
+        self.page.wait_for_selector('dialog[open]')
+        self.page.keyboard.press('Escape')
+        self.page.wait_for_selector('dialog[open]', state='detached')
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.page.locator('#hl-nc li[data-mark="kept"]').count(), 1)
+        self.assertEqual(len([u for u in self.requests if '/api/hostlogs/netconsole' in u]), asked, 'a cancelled dialog asks the server nothing')
+        self.page.click('#hl-nc-new')
+        self.page.fill('dialog[open] input >> nth=0', 'cold')
+        self.page.fill('dialog[open] input >> nth=1', '10.42.0.9')
+        self.page.click('dialog[open] button[type=submit]')
+        if self.page.locator('#reauthpw').count():
+            self.page.fill('#reauthpw', PW)
+            self.page.click('#reauthform button[type=submit]')
+        self.page.wait_for_selector('#hl-nc li:has-text("cold: 10.42.0.9 port 6665")')
         self.assertEqual(self.errors, [])
 
     def test_a_new_kind_of_line_is_shown_as_text_and_opens_from_the_keyboard(self):

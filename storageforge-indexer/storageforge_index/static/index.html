@@ -289,6 +289,12 @@ storageforge-index graph import --blueprint atlas.json</pre>
         <div class="row"><button id="hl-rule-new" type="button" class="btn sm" hidden>New rule</button></div>
         <ul id="hl-rules" class="list"></ul>
       </details>
+      <details id="hl-nc-box"><summary>Netconsole: kernel messages over UDP</summary>
+        <p class="muted small">A host's kernel can send its messages straight to the controller, which still works when nothing else on the host does: a panic or a hang reaches here. They come over plain UDP with no signature. The controller takes them only from the address and port given here, and a line that came this way says something sent it from that address, not that the host did. The netconsole plan step sets a host up to send.</p>
+        <p id="hl-nc-recv" class="muted small" role="status"></p>
+        <div class="row"><button id="hl-nc-new" type="button" class="btn sm" hidden>Add a host</button></div>
+        <ul id="hl-nc" class="list"></ul>
+      </details>
     </div>
     <div id="tab-audit" class="tab" role="tabpanel" aria-labelledby="tabbtn-audit" hidden>
       <div class="row"><button id="verify" type="button" class="btn">Verify chain</button><span id="verified" class="muted"></span></div>

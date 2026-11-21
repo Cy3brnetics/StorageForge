@@ -2012,3 +2012,4 @@ from . import steps_sshca  # noqa: E402,F401  (trusting the SSH CA, and its revo
 from . import steps_tunnels  # noqa: E402,F401  (a Cloudflare Tunnel and a Pangolin site, from a token in the vault)
 from . import steps_overlay  # noqa: E402,F401  (joining and leaving NetBird, ZeroTier, Nebula and OpenZiti, after steps_tunnels, whose helpers it uses)
 from . import steps_kvm  # noqa: E402,F401  (libvirt: snapshots, VM changes, networks, pools, copies)
+from . import steps_netconsole  # noqa: E402,F401  (kernel messages over UDP to the controller)

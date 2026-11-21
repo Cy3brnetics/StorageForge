@@ -190,7 +190,8 @@ function hlVia(s) {
   return `pushed by the agent, signed${delay}${gaps}`;
 }
 function hlWriter(e) {
-  const parts = [fmtUtc(e.ts), e.signed ? 'pushed by the agent, signed' : 'collected by a scan'];
+  const parts = [fmtUtc(e.ts), e.signed ? 'pushed by the agent, signed' : e.via === 'netconsole' ? 'came over netconsole: UDP, not signed'
+    : e.via === 'pstore' ? 'read from pstore, written by the kernel before a crash' : 'collected by a scan'];
   if (e.exe || e.comm) parts.push(`journald: ${e.exe || e.comm}${e.uid != null ? `, uid ${e.uid}` : ''}`);
   if (e.arrived) parts.push(`arrived ${fmtUtc(e.arrived)}`);
   return parts.join(' · ');
@@ -367,7 +368,7 @@ async function hlUnits() {
 }
 
 /* ── hosts: when each was last collected ─────────────────────────── */
-const HL_STATE = { ok: 'collected', partial: 'collected, but cut', limited: 'collected, the journal only in part', no_journal: 'no journal on this host', failed: 'the last try failed' };
+const HL_STATE = { side: 'only kernel messages from netconsole or pstore, no journal yet', ok: 'collected', partial: 'collected, but cut', limited: 'collected, the journal only in part', no_journal: 'no journal on this host', failed: 'the last try failed' };
 function hlHostRows(names, status) {
   const by = new Map(status.map((s) => [s.host, s]));
   const rows = [...new Set([...names, ...by.keys()])].map((name) => ({ name, s: by.get(name) || null }));
@@ -424,6 +425,15 @@ function hlIngestText(i) {
   if (i.over_total) parts.push(`${hlPlural(i.over_total, 'line')} over the rate, counted and not kept`);
   return parts.join(' · ');
 }
+/* netconsole and pstore come beside the journal, and may come when there is no journal at all */
+function hlSideText(i) {
+  const parts = [];
+  const nc = i.netconsole;
+  if (nc) parts.push(`netconsole from ${nc.address} port ${nc.port}${nc.enabled ? '' : ' (off)'}, not signed: ${nc.last_at ? `last heard ${fmtAgo(nc.last_at)}` : 'nothing heard yet'}${nc.dropped ? `, ${hlPlural(nc.dropped, 'packet')} dropped` : ''}`);
+  const p = i.pstore;
+  if (p) parts.push(`pstore: ${hlPlural(p.records, 'crash record')}, the newest written ${fmtTime(p.at)}${p.read ? '' : `. ${p.note}`}`);
+  return parts.join(' · ');
+}
 function hlMonHost(h) {
   const pick = hlEl('button', { type: 'button', class: 'btn ghost sm', title: `Show only ${h.host}'s lines` }, h.host);
   pick.addEventListener('click', () => { document.getElementById('hl-host').value = h.host; hlApply(); document.getElementById('hl-lines').scrollIntoView({ block: 'nearest' }); });
@@ -456,6 +466,8 @@ function hlMonHost(h) {
     kids.push(hlEl('span', { class: 'm' }, k.learning ? `New kinds of line are said from ${k.learned_at ? fmtDate(k.learned_at) : 'a week after the first line'}.` : 'No new kind of line in the last day.'));
   }
   kids.push(hlEl('span', { class: h.ingest.gaps ? 'm st-warn' : 'm' }, hlIngestText(h.ingest)));
+  const side = hlSideText(h.ingest);
+  if (side) kids.push(hlEl('span', { class: h.ingest.pstore ? 'm st-warn' : 'm' }, side));
   return hlEl('li', { class: 'hl-host', 'data-host': h.host }, ...kids);
 }
 async function hlMonitor() {
@@ -586,3 +598,44 @@ document.getElementById('hl-rule-new').addEventListener('click', async () => {
   catch (e) { notify(e.message, 'error'); }
   hlRules();
 });
+
+/* ── netconsole (netconsole.py): which address and port each host's kernel messages are taken from ── */
+async function hlNetconsole() {
+  const list = document.getElementById('hl-nc'), may = can('hostlogs.rules');
+  document.getElementById('hl-nc-new').hidden = !may;
+  let d;
+  try { d = await getJSON('/api/hostlogs/netconsole'); } catch (e) { list.replaceChildren(hlEl('li', { class: 'st-failed' }, e.message)); return; }
+  const r = d.receiver;
+  document.getElementById('hl-nc-recv').textContent = r.listening ? `The controller listens on ${r.listening}. ${hlPlural(r.unknown, 'packet')} from addresses not listed here ${r.unknown === 1 ? 'was' : 'were'} dropped${r.last_unknown ? `, the last from ${r.last_unknown}` : ''}.`
+    : r.error ? r.error : 'The controller does not listen for netconsole: set STORAGEFORGE_NETCONSOLE_LISTEN, such as 0.0.0.0:6666, and restart it.';
+  HL.ncDefault = d.default_source_port;
+  if (!d.sources.length) { list.replaceChildren(hlEl('li', { class: 'muted' }, 'No host sends netconsole here yet.')); return; }
+  list.replaceChildren(...d.sources.map((s) => {
+    const edit = hlEl('button', { type: 'button', class: 'btn ghost sm' }, 'Change');
+    edit.addEventListener('click', () => hlNcEdit(s));
+    const del = hlEl('button', { type: 'button', class: 'btn ghost sm' }, 'Remove');
+    del.addEventListener('click', async () => {
+      if (!await confirmDialog({ title: `Stop taking netconsole packets from ${s.host}?`, body: 'Packets from its address are dropped from then on. The host goes on sending until the netconsole step is undone there.', confirm: 'Remove', danger: true })) return;
+      try { await api(`/api/hostlogs/netconsole/${encodeURIComponent(s.host)}`, { method: 'DELETE' }); } catch (e) { notify(e.message, 'error'); return; }
+      hlNetconsole();
+    });
+    return hlEl('li', {}, hlEl('span', { class: s.enabled ? '' : 'muted' }, `${s.host}: ${s.address} port ${s.port}${s.enabled ? '' : ' (off)'}`),
+      hlEl('span', { class: 'm' }, `${s.last_at ? `last heard ${fmtAgo(s.last_at)}` : 'nothing heard yet'} · ${hlPlural(s.packets, 'packet')} taken${s.dropped ? `, ${hlPlural(s.dropped, 'packet')} over the rate or too big` : ''}`),
+      may ? hlEl('span', { class: 'row' }, edit, del) : null);
+  }));
+}
+async function hlNcEdit(s = null) {
+  const f = await formDialog({ title: s ? `Netconsole from ${s.host}` : 'Take netconsole packets from a host',
+    body: 'Only packets from exactly this address and port are taken, and stored as the host\'s lines. UDP has no signature: anyone who can send from this address can write in the host\'s name.',
+    fields: [...(s ? [] : [{ name: 'host', label: 'Host', required: true, maxlength: 200 }]),
+             { name: 'address', label: 'The address it sends from', value: s ? s.address : '', required: true, maxlength: 64, placeholder: '10.42.0.7' },
+             { name: 'port', label: 'The port it sends from', value: String(s ? s.port : HL.ncDefault || 6665), inputmode: 'numeric', validate: hlNum(1, 65535, 'The port') }],
+    confirm: s ? 'Save' : 'Add' });
+  if (!f) return;                                  // cancelled: nothing changed, so nothing is drawn again
+  const host = s ? s.host : f.host.trim();
+  try { await api(`/api/hostlogs/netconsole/${encodeURIComponent(host)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: f.address.trim(), port: Number(f.port), enabled: s ? s.enabled : true }) }); }
+  catch (e) { notify(e.message, 'error'); return; }
+  hlNetconsole();
+}
+document.getElementById('hl-nc-box').addEventListener('toggle', (ev) => { if (ev.target.open) hlNetconsole(); });
+document.getElementById('hl-nc-new').addEventListener('click', () => hlNcEdit());
