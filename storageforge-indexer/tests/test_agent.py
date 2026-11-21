@@ -41,14 +41,22 @@ def build():
     """The agent's programs and the example plugin, built once for the run with a release key of this folder's compiled in."""
     global BUILT
     if BUILT is None and shutil.which('cargo'):
+        import fcntl
         TARGET.mkdir(parents=True, exist_ok=True)
-        key = TARGET / 'release-key'
-        if not key.exists():
-            subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'test-release', '-f', str(key)], check=True)
-        signers = TARGET / 'release_signers'
-        signers.write_text('testrelease namespaces="storageforge-plugin,storageforge-agent-image" ' + ' '.join(key.with_suffix('.pub').read_text().split()[:2]) + '\n')
-        p = subprocess.run(['cargo', 'build', '--quiet', '--locked', '-j', '4', '-p', 'storageforge-agent', '--bins', '--examples'], cwd=ROOT, capture_output=True, text=True,
-                           env={**os.environ, 'STORAGEFORGE_RELEASE_SIGNERS': str(signers), 'CARGO_TARGET_DIR': str(TARGET)})
+        # One build at a time for the whole run: each test worker is a process of its own and calls this. Two at once rewrote the
+        # signers file under the other's build and replaced programs another worker's test was running.
+        with open(TARGET / '.build.lock', 'w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            key = TARGET / 'release-key'
+            if not key.exists():
+                subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'test-release', '-f', str(key)], check=True)
+            signers = TARGET / 'release_signers'
+            want = 'testrelease namespaces="storageforge-plugin,storageforge-agent-image" ' + ' '.join(key.with_suffix('.pub').read_text().split()[:2]) + '\n'
+            if not signers.exists() or signers.read_text() != want:
+                signers.with_suffix('.new').write_text(want)
+                signers.with_suffix('.new').replace(signers)
+            p = subprocess.run(['cargo', 'build', '--quiet', '--locked', '-j', '4', '-p', 'storageforge-agent', '--bins', '--examples'], cwd=ROOT, capture_output=True, text=True,
+                               env={**os.environ, 'STORAGEFORGE_RELEASE_SIGNERS': str(signers), 'CARGO_TARGET_DIR': str(TARGET)})
         out = TARGET / 'debug'
         BUILT = out if p.returncode == 0 and (out / 'storageforge-agentctl').exists() else False
         if not BUILT:

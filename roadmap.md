@@ -265,13 +265,13 @@ Built since the last roadmap: storage pools of every kind as steps (`zfs-pool`, 
 
 | Item | What's left | Status |
 | :--- | :--- | :--- |
-| **Secret store** | Generic secrets generated, shown once, delivered through the runner's stdin, with a rotation path like `rotate` has for SSH keys | open |
-| **`runtime-install`** | The four runtimes across distros, rootless setup, and a preflight that says present, installable or blocked. [Detail](archive/roadmaps/infrastructure-platform-roadmap.md#71-runtime-install) | open |
-| **Pools: what's left** | Add a vdev to a ZFS pool, replace or attach a disk; add, replace and grow an md array; LUKS | open |
-| **Networks: what's left** | Bonds, addresses, routes, DHCP; read netplan, NetworkManager and networkd files as well as what the kernel has | open |
+| **Secret store** | Generic secrets generated, shown once, delivered through the runner's stdin, with a rotation path like `rotate` has for SSH keys | built 2026-11-20, not lab-tested (`6d52a6b`, `b5e412b`); tier 25 written, not run. Open: restarting what uses a rotated secret, delivery to Ansible by stdin, whether rotating a sensitive secret needs a step-up (the owner's call) |
+| **`runtime-install`** | The four runtimes across distros, rootless setup, and a preflight that says present, installable or blocked. [Detail](archive/roadmaps/infrastructure-platform-roadmap.md#71-runtime-install) | built 2026-11-20, not lab-tested (`daa35b7`); tier 25 written, not run. Open: removing a runtime, Alpine |
+| **Pools: what's left** | Add a vdev to a ZFS pool, replace or attach a disk; add, replace and grow an md array; LUKS | built 2026-11-20, not lab-tested (`5d8be48`); tier 26 and its `sf-pools` VM written, not run |
+| **Networks: what's left** | Bonds, addresses, routes, DHCP; read netplan, NetworkManager and networkd files as well as what the kernel has | built 2026-11-20, not lab-tested (`9baa653`, `e5e368f`, `7779f37`); tier 26 written, not run |
 | **Copies on other hosts** (the owner's request of 2026-11-19) | Duplicates across hosts are possible backups: a class of their own, never reclaimable or offered for the trash. The plan check names *the last copy* and *the copy on HOST would be the only one left*. Keep in sync prepares a Moves mirror plan; a deployed pair is kept in sync and no longer a duplicate. Pairs left are suggested, with one notification, and can be set aside | built, not lab-tested: `3aa6ee8`, `40b8cd2`, `9d48e09`, `587e360`; the lab check `copies-across-hosts` (tier 13) is written in `90815ae` and has not run. Open: a sync action for single files, a CLI command, `keep_replaced` in the dialog, a folder with another filesystem mounted inside it |
 
-**Exit:** install a runtime on a bare VM from a plan. The report changes nothing, a changed plan gets 409, and a bridge change that cuts SSH rolls itself back.
+**Exit** (written as tiers 25 and 26 on 2026-11-20, not run): install a runtime on a bare VM from a plan. The report changes nothing, a changed plan gets 409, and a bridge change that cuts SSH rolls itself back.
 
 ## 6. Workloads
 
