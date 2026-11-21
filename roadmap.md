@@ -25,6 +25,7 @@ Checked against the code on 2026-11-16.
 | Download pfSense CE once (Netgate's installer and store want an account), so its checksum can be pinned and `lab.sh` can take it from the image cache | pfSense in the lab |
 | A Cisco account for Cisco Modeling Labs Free | Cisco in the lab |
 | Sign the agent's four plugins with the release key (`storageforge-indexer/agent/plugins.sh sign`) | Any host being offered the agent's plugins |
+| Sign the Toolbox catalog with the release key (its public half in `catalog/release_signers`, then sign `catalog/catalog.json`) | The packaged catalog being trusted, and any catalog update |
 | Give CI the release key (`STORAGEFORGE_RELEASE_KEY`) and an `enclave/image/allowed_signers` file | The enclave image signed in CI |
 | A PagerDuty account, if a free plan still exists | PagerDuty reaching the real service |
 | A physical FIDO2 token | FIDO2 at step-up and at sign-in |
@@ -227,16 +228,18 @@ None of it exists. It needs the catalog engine and the secret store (section 5).
 
 | Item | What | Status |
 | :--- | :--- | :--- |
-| **Catalog engine** | Entry schema, signatures (the project's for the official catalog, the operator's for their own), validation, the override layer that survives catalog updates, install methods in order of safety (rootless container, distro package, verified binary; Quadlet and compose), risk labels in the report, uninstall that keeps data | open |
-| **Adapters** | `detect`, `status`, `actions`, `links`, `metrics`, read-only by default, over the existing SSH scan; an action is a staged plan step; credentials by vault reference only, and an adapter that talks to a panel's API uses section 13's connection kind and permission guide; a failed adapter says "status unavailable" and never blocks a scan | open |
-| **GUI levels** | Link, SSO link, status tiles, panel with actions | open |
-| **Toolbox view** | The rail item, host cards, deep links (`/#host=gw-01&tab=toolbox&tool=wireguard`) | open |
-| **API and tables** | `/api/toolbox/...` (catalog, validate, sign, installed, status, stage, bundles, actions, updates, exposure); `toolbox_catalog`, `toolbox_installs`, `toolbox_status`, `toolbox_bundles`, `toolbox_overrides` | open |
-| **Custom entries** | An editor with validation, a dry run and signing with the operator's key | open |
+| **Catalog engine** | Entry schema, signatures (the project's for the official catalog, the operator's for their own), validation, the override layer that survives catalog updates, install methods in order of safety (rootless container, distro package, verified binary; Quadlet and compose), risk labels in the report, uninstall that keeps data | built 2026-11-20, not lab-tested (`4ae52ca`, `d3b288d`); the packaged catalog shows as *packaged* until the release key signs it |
+| **Adapters** | `detect`, `status`, `actions`, `links`, `metrics`, read-only by default, over the existing SSH scan; an action is a staged plan step; credentials by vault reference only, and an adapter that talks to a panel's API uses section 13's connection kind and permission guide; a failed adapter says "status unavailable" and never blocks a scan | built 2026-11-20, not lab-tested (`f90e471`); an SSO link falls back to a plain link until an identity provider entry exists (0.5.13) |
+| **GUI levels** | Link, SSO link, status tiles, panel with actions | built 2026-11-20, not lab-tested (`4482e3e`) |
+| **Toolbox view** | The rail item, host cards, deep links (`/#host=gw-01&tab=toolbox&tool=wireguard`) | built 2026-11-20, not lab-tested (`4482e3e`) |
+| **API and tables** | `/api/toolbox/...` (catalog, validate, sign, installed, status, stage, bundles, actions, updates, exposure); `toolbox_catalog`, `toolbox_installs`, `toolbox_status`, `toolbox_bundles`, `toolbox_overrides` | built 2026-11-20, not lab-tested (`482c9e2`), except bundles and `toolbox_bundles` (0.5.13) |
+| **Custom entries** | An editor with validation, a dry run and signing with the operator's key | built 2026-11-20, not lab-tested (`4482e3e`); signed on the operator's own machine, the controller only verifies |
 | **Bundles** | Ordering, shared secrets, one firewall change set, one report, rollback of the whole bundle | open |
 | **Role profiles and per-host exclusions** | Default tools per host role (`edge`, `nas`, `hypervisor`) | open |
 | **Custom dashboards** | Tool tiles in the dashboard grid | open |
 | **Feeds** | Trivy findings and CrowdSec decisions into alerts and the quarantine view, with bans reconciled so quarantine doesn't fight the bouncer | open |
+
+**State on 2026-11-20:** WireGuard (with its peer manager), Cockpit and Uptime Kuma exist as the engine's own test entries. Lab tier 29 is written and has not run. **Open:** CVE deltas in updates and image scans (need Trivy), WireGuard peer QR codes, binaries inside archives, cosign and minisign checks.
 
 ### 4.2 The entries
 
