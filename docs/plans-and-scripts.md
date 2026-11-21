@@ -21,7 +21,9 @@ Change plans work like an Ansible playbook for storage: an ordered list of tasks
 | :--- | :--- |
 | Files and folders | create folder, rename or move (same filesystem), move to trash, symlink, owner and permissions |
 | btrfs | create subvolume (optionally no copy-on-write), snapshot, turn a folder into a subvolume, add, replace or remove a pool device, convert profile (balance), reclaim free space, grow to fill a device, restore a subvolume from a snapshot, turn on quotas, scrub |
-| ZFS | create a pool, create a dataset with properties, snapshot, send a snapshot to another host, scrub |
+| ZFS | create a pool, add a vdev to one, replace a disk, attach a disk (make or widen a mirror), create a dataset with properties, snapshot, send a snapshot to another host, scrub |
+| mdadm | create an array, add a disk, replace a disk, grow an array onto more devices or into larger ones |
+| LUKS | encrypt a device, open it, close it, add a key |
 | LVM | create a volume group, add a device to one, create a logical volume, grow one with its filesystem, snapshot one |
 | Mounts | add a mount (fstab), change mount options, unmount |
 | Drives | partition a disk (GPT, one partition), format, set the filesystem label |
@@ -65,6 +67,26 @@ fstab is backed up before each edit and restored if `findmnt --verify` rejects t
 
 Drive tasks have three locks: the device typed twice in the plan, `--destructive` on the command line, and a refusal to touch anything mounted, swapped on, or part of RAID, LVM or LUKS.
 
+### Pools that exist, and LUKS
+
+Built, not lab-tested (the [lab checks](kvm-lab.md) of tier 26 are written and have not run).
+
+| Step | Does | Stops when |
+| :--- | :--- | :--- |
+| `zfs-add` | `zpool add` a vdev of the layout you give, as data, log, cache or spare, with the pool's own sector size | the pool's data vdevs have another layout or width: a mirror of two takes a mirror of two, a raidz1 of three a raidz1 of three. `zpool add` refuses a mismatched layout unless forced, and the step never forces it, so a stray disk never makes a mirror pool depend on a disk with no copy. A draid pool is left to a person |
+| `zfs-replace` | `zpool replace`, then says how far the resilver is; a rerun reports it until it is done | the old disk is not in the pool, or is a cache or spare device, or the new one is smaller |
+| `zfs-attach` | `zpool attach`: a single disk becomes a 2-way mirror, or a mirror gets one more side | the disk is in a raidz: attach does not widen one here |
+| `md-add` | `mdadm --add`: a spare for a working array, or the disk a degraded one rebuilds onto | the disk has failed in the array: take it out first |
+| `md-replace` | `mdadm --add` and `--replace --with`, so the array stays redundant while it copies. A rerun once it is done takes the old disk out | the old disk is not a working member: then `md-add` puts the new one in its place |
+| `md-grow` | adds the devices and `mdadm --grow --raid-devices`, then says how far the reshape is; with `max`, grows into larger devices once no reshape runs. An `ARRAY` line in `mdadm.conf` that counts the devices is brought up to date | the level is not raid1, 4, 5, 6 or 10, or the array is degraded, recovering or resyncing. With no devices, type the array's name in the confirm field |
+| `luks-format` | `cryptsetup luksFormat --type luks2`, then opens it if asked, and lists it in `/etc/crypttab` as `noauto`, or `nofail` to be asked for at boot | the device is in use or holds a filesystem you did not tick to overwrite. A LUKS device is not formatted again |
+| `luks-open`, `luks-close` | `cryptsetup open` with the key, or `close` | close: something is mounted from it, or LVM or another mapping is on it |
+| `luks-add-key` | `cryptsetup luksAddKey`: the new key in a free slot, the old keys stay | the key it has does not open the device. A key that opens it already is nothing to do |
+
+Every step that writes to a device takes the three locks above. A LUKS key is a vault secret (`vault secret-add`), sent to the host with `vault send-secret` into `/run/storageforge/secrets`, which is memory. cryptsetup reads it on stdin, and `luks-add-key` gives it the new key as a file in that same memory, so a key is never on a command line, in a plan, in the script or in a log. The step refuses a key file that is not in memory, and removes the file once it has used it: the vault keeps the key, and the next step that needs it needs it sent again.
+
+The Ansible tasks of these steps run the same functions as the script, and those that write to a device run only with `-e storageforge_destructive=true`.
+
 **Ansible playbook** (`changes-<plan>.yml`) writes the same tasks with standard modules (`ansible.builtin.file`, `ansible.posix.mount`, `community.general.parted` and `filesystem`, `command` for btrfs). The inventory lines from the last scans are at the top. Drive tasks run only with `-e storageforge_destructive=true`. A send to another host stops the playbook with the reason, since a playbook has no signature and no key: deploy that plan from StorageForge.
 
 ### Sending snapshots
@@ -92,7 +114,7 @@ LVM has no equivalent. To copy an LVM snapshot, mount it and use a Moves step.
 
 ### Firewalls, networks and hardening
 
-These steps come from the [map](infrastructure-map.md#planning-from-it) and from Security, and work the same as any other: report first, Apply through a signed run. `storageforge-fwrules`, shown in full in the script, writes each firewall rule in whichever firewall the host runs. nftables and iptables forget their rules at a reboot unless told otherwise, so it keeps them and a unit puts them back. firewalld and ufw keep their own. A step with a rollback timer undoes itself unless StorageForge can still reach the host to stop the timer.
+These steps come from the [map](infrastructure-map.md#planning-from-it) and from Security, and work the same as any other: report first, Apply through a signed run. Bonds, addresses, routes and DHCP are written in whatever keeps the host's network: see [networks](infrastructure-map.md#networks-in-the-hosts-own-files). `storageforge-fwrules`, shown in full in the script, writes each firewall rule in whichever firewall the host runs. nftables and iptables forget their rules at a reboot unless told otherwise, so it keeps them and a unit puts them back. firewalld and ufw keep their own. A step with a rollback timer undoes itself unless StorageForge can still reach the host to stop the timer.
 
 ## Data moves
 
