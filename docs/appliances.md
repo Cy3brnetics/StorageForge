@@ -44,7 +44,7 @@ Add the user from the control domain's shell. Guest disks live in storage reposi
 
 ## Limits
 
-- **Files and disks only:** scans read filesystems, pools and volumes. StorageForge doesn't list VMs or containers, or use the Proxmox, TrueNAS or Xen APIs.
+- **Files and disks first:** scans read filesystems, pools and volumes, and the Proxmox guests `qm` and `pct` list. Since 0.5.10 a [platform connection](api-connections.md) reads Proxmox VE, Backup Server and Datacenter Manager through their APIs (built, not lab-tested). The TrueNAS and Xen APIs are not used yet.
 - **TrueNAS's own datasets:** a scan indexes the system's datasets, such as `/usr` and `/var`, as well as your pools.
 - **Tested on single hosts:** the lab has no Proxmox cluster, Ceph or TrueNAS with apps installed.
 

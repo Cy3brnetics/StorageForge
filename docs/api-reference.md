@@ -135,6 +135,16 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/keys/secrets/<name>/rotate` | | what a rotation would do: the hosts it would send the new value to and what blocks it; `keys.view` |
 | POST 🔑 | `/api/keys/secrets/<name>/rotate` | `{}` | rotate it everywhere it went or nowhere; 409 with `why` when it did not; the answer holds the new `value` once; `keys.manage` and `deploy.apply` |
 | DELETE 🔑 | `/api/keys/secrets/<name>` | | remove it and the record of where it went; `keys.manage` |
+| GET | `/api/keys/platforms` | | platform API connections ([Platform connections](api-connections.md)): kind, address, host, token ID, certificate, state, actions, the last read-back. Never a token; `keys.view` |
+| GET | `/api/keys/platforms/guide/<kind>` | `?scope=&user=&token=` | the least a token needs on `pve`, `pbs` or `pdm`, and the commands that make it; `keys.view` |
+| GET | `/api/keys/platforms/guide/<kind>/<action>` | | what one action needs, on which object; `keys.view` |
+| POST 🔑 | `/api/keys/platforms` | `{"kind", "name", "url", "token_id", "token", "host"}` | add a connection (201): the token goes into the vault and nowhere else; the answer holds the certificate the platform presents; `keys.manage` |
+| GET | `/api/keys/platforms/<id>/certificate` | | the certificate the platform presents now; `keys.view` |
+| POST 🔑 | `/api/keys/platforms/<id>/certificate` | `{"sha256"}` | accept a certificate (409 when the platform presents another); `keys.manage` |
+| PUT 🔑 | `/api/keys/platforms/<id>/actions` | `{"actions": [...]}` | turn actions on or off; the answer says what each needs; `keys.manage` |
+| POST | `/api/keys/platforms/<id>/read` | `{}` | read back what the token can do, then read the platform (502 with why when it failed); `keys.manage` |
+| GET | `/api/keys/platforms/<id>` | | one connection, the objects it read, and how they compare with the SSH scan; `keys.view` |
+| DELETE 🔑 | `/api/keys/platforms/<id>` | | remove it, its token and what it read; `keys.manage` |
 | POST | `/api/keys/ssh-ca/plan` | `{"kind": "trust", "hosts": [...], "users", "host_cert", "rollback"}` or `{"kind": "krl", "hosts": [...]}` | save a change plan of `ssh-ca-trust` or `ssh-ca-krl` steps and run nothing; `plans.edit` |
 | POST | `/api/hostkey/confirm` | `{"host", "port", "fingerprint"}` | confirm a host key before a password goes there *(in progress)* |
 | GET | `/api/access?host=` | | how scans read each host, and unreadable folders |

@@ -910,6 +910,7 @@ async function loadKeys(select) {
   } catch (err) { $('#keys').replaceChildren(text('li', err.message, 'muted')); }
   loadSshCa();          // the SSH CA and its certificates, below the bindings (sshcaview.js)
   loadSecrets();        // the secret store, below the CA (secretsview.js)
+  loadPlatforms();      // platform API connections, below the secrets (apiconnview.js)
 }
 async function setBindingActions(b, actions) {
   if (actions.includes('console') && !b.actions.split(',').includes('console')

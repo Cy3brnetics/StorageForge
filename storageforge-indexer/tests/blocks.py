@@ -27,6 +27,7 @@ HEAVY = {
     'test_browser_smoke.BrowserSmoke',
     'test_sshcerts.BrowserSshCa',
     'test_secretstore.BrowserSecrets',
+    'test_browser_platforms.BrowserPlatforms',
     'test_browser_smoke.MapAtScale',
     'test_browser_vms.BrowserVms',
     # a real sshd, Docker, or the kernel's firewall

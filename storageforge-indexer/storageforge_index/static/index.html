@@ -138,6 +138,10 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <p id="secretmsg" class="muted" role="status" hidden></p>
       <div id="secretonce" class="stack" role="status" hidden></div>
       <div id="secretbox" class="stack"></div>
+      <h3>Platform connections</h3>
+      <p class="muted">Proxmox VE, Backup Server and Datacenter Manager read through their own APIs, beside SSH. First what the token needs, the least that works and never root or a full-access role; then the token, kept in the vault; then the platform's certificate, which you accept before the token is sent anywhere. Read-only unless you turn an action on. Not lab-tested.</p>
+      <p id="platformmsg" class="muted" role="status" hidden></p>
+      <div id="platformbox" class="stack"></div>
     </div>
     <div id="tab-access" class="tab" role="tabpanel" aria-labelledby="tabbtn-access" hidden>
       <p class="muted">Folders the latest scan of each host could not open, and read-only scan access to fix it without running scans as root.</p>
@@ -452,5 +456,6 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/securitymore.js"></script>
 <script src="/sshcaview.js"></script>
 <script src="/secretsview.js"></script>
+<script src="/apiconnview.js"></script>
 </body>
 </html>
