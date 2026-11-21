@@ -193,6 +193,9 @@ def tier27(r):
     else:
         r.add('cert-changed', '-', None, 'no sf-pve connection to change the certificate under')
 
+    import tiers_api2
+    tiers_api2.platforms(r, api, secrets_seen)        # TrueNAS, Xen Orchestra and the panels (0.5.10 part 2)
+
     logs = demo.ssh('sf-ctl', f'{demo.COMPOSE} logs --no-color storageforge 2>&1 | tail -n 20000', check=False)
     answers = json.dumps([api.get('/api/keys/platforms'), api.get('/api/notifications')])
     audit = demo.ssh('sf-ctl', f'{demo.COMPOSE} exec -T storageforge python -c '
