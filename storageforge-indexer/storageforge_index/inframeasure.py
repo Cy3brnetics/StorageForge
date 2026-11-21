@@ -14,7 +14,7 @@ import time
 
 from . import alerts, deploy, firewall, netfacts, security
 from .db import Conn
-from . import accessproxies, confread, overlays, tunnels, wlread
+from . import accessproxies, confread, overlays, tbadapters, tunnels, wlread
 from .runtimes import docker, guests
 
 MEASURE_EVERY = 6 * 3600
@@ -192,13 +192,16 @@ sec end
 """
 
 
-def script() -> str:
+def script(health: str = '') -> str:
+    """health: the loopback health checks of the Toolbox tools on the host being read (tbadapters.health_body)."""
     fmt = docker.FMT_C[:-1] + ',' + docker.FMT_D_PODMAN[docker.FMT_D_PODMAN.index('"image_id"'):]
     return ('#!/usr/bin/env bash\n# Written by StorageForge. Only reads.\nset -u\nexport LC_ALL=C\nPATH=$PATH:/usr/sbin:/sbin\n'
-            f'PVE_KEYS={shlex.quote(PVE_KEYS)}\nFMT={shlex.quote(fmt)}\n{SCRUB_VARS}' + BODY)
+            f'PVE_KEYS={shlex.quote(PVE_KEYS)}\nFMT={shlex.quote(fmt)}\n{SCRUB_VARS}' + BODY.replace('@TB_HEALTH@\n', health))
 
 
 BODY = BODY.replace('@SECRET_LINE@', tunnels.SECRET_LINE).replace('\nsec end\n', '\n' + wlread.BODY + 'sec end\n')     # what workloads add (wlread.py)
+BODY = BODY.replace('\nsec end\n', '\n' + tbadapters.BODY + '@TB_HEALTH@\nsec end\n')      # what the Toolbox adapters add (tbadapters.py)
+SECTIONS = SECTIONS + tbadapters.SECTIONS
 # The index of an OpenSSL CA, one certificate to a line: of the subject only the common name is printed, never an email address
 PKI_AWK = '{ cn = $6; if (!sub(/.*\\/CN=/, "", cn)) cn = ""; sub(/\\/.*/, "", cn); print "i", $1, $2, $3, $4, cn }'
 SCRUB_VARS = f'SCRUB_RE={shlex.quote(confread.SECRET_LINE)}\nSCRUB_AWK={shlex.quote(confread.SCRUB_AWK)}\nPKI_AWK={shlex.quote(PKI_AWK)}\n'
@@ -401,12 +404,17 @@ def parse(text: str) -> dict | None:
     return {'tools': tools, 'firewall': fw, 'listeners': parse_listeners(s.get('listeners', [])), 'storage_clients': parse_storage_clients(s.get('storage_clients', [])),
             'libvirt': guests.with_snapshots(guests.parse_libvirt(s.get('libvirt', [])), guests.parse_libvirt_snapshots(s.get('libvirt_snap', []))), 'libvirt_networks': guests.parse_libvirt_networks(s.get('libvirt_net', [])),
             'libvirt_pools': guests.parse_libvirt_pools(s.get('libvirt_pool', [])), 'incus': guests.parse_incus(s.get('incus', [])), 'lxc': guests.parse_lxc(s.get('lxc', [])),
-            'proxmox': guests.parse_proxmox(s.get('proxmox', [])), 'podman_rootless': _podman(s.get('podman', [])), 'access': parse_access(s, tools), **wlread.read(s)}
+            'proxmox': guests.parse_proxmox(s.get('proxmox', [])), 'podman_rootless': _podman(s.get('podman', [])), 'access': parse_access(s, tools), **wlread.read(s),
+            'toolbox': tbadapters.sections_of(s)}
 
 
 def measure(db, conn: Conn, host, actor: str) -> dict:
     name = security.known_host(conn, host)
-    res = deploy.run(db, name, script(), [], kind='security', ref='infra-measure', mode='report', actor=actor, timeout=300)
+    try:
+        health = tbadapters.health_body(tbadapters.health_checks(conn, name))
+    except Exception:                              # noqa: BLE001  the Toolbox never holds up a reading
+        health = ''
+    res = deploy.run(db, name, script(health), [], kind='security', ref='infra-measure', mode='report', actor=actor, timeout=300)
     if res['status'] != 'ok':
         return {'ok': False, 'host': name, 'error': (res.get('output') or res['status'])[-500:], 'run_id': res.get('run_id')}
     data = parse(res.get('output') or '')
@@ -416,6 +424,11 @@ def measure(db, conn: Conn, host, actor: str) -> dict:
     security._save_measurement(conn, name, 'infra', now, 'measure', data)
     from .infragraph import rebuild
     rebuild(conn, name)
+    try:
+        tbadapters.refresh(conn, name, data)       # each Toolbox tool's status; an adapter that fails says so, and the reading stands
+    except Exception:                              # noqa: BLE001
+        from . import errlog
+        errlog.trace()
     return {'ok': True, 'host': name, 'measured_at': now, 'run_id': res.get('run_id')}
 
 

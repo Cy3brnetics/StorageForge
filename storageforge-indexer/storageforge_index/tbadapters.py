@@ -42,7 +42,7 @@ STALE = 3 * 60          # a WireGuard handshake older than this is a peer that i
 def health_body(checks: list[tuple[str, str]]) -> str:
     """The loopback health checks of the tools installed on one host, as a section of its reading: the status code only, never the body.
     Each URL was checked against HEALTH_URL, and goes in as a quoted word."""
-    lines = ['sec tb_health', 'if has curl; then']
+    lines = ['sec tb_health', 'if has curl; then', '  :']
     for tool, url in checks:
         if not HEALTH_URL.fullmatch(url) or not re.fullmatch(r'[a-z0-9-]{1,41}', tool):
             continue
