@@ -58,6 +58,22 @@ receiver checks show as skip, with that reason.
     stop, remove    stopped it stays stopped; removed, the accounts, the sudoers line and the program are gone, and scans still work
 
 The checks of the plugins and of wipe and stop (sections 11.3 and 11.4) were written with them, in 0.5.7, and have not run either.
+
+Written in 0.5.8 and not run either (on the Docker host, after the checks above, and on one more host made monitoring only):
+
+    disks           the disks plugin reports each disk (SMART where the disk answers it, the reason where it does not, as on virtio), and
+                    its process gave up root for sfagent and holds SYS_RAWIO and nothing else, in every set the kernel shows
+    files root      switching the files plugin on takes an admin, and the answer says it is root on the host in effect
+    files           a file written by an ordinary account comes back with its process and account, and is in the file index
+    hand edit       a line added by hand to /etc/exports is configuration drift that cannot be ignored
+    off-hours       with no working hours set, an account reading many files is a notification
+    from both       a file changed while the files plugin is held back is found by the next scan as a change the agent never reported;
+                    a change the agent reports that did not happen (played with the agent's key) is contradicted by the next scan
+    sentinel        an event the sentinel writes as root reaches the controller through the agent, marked as come through it
+    monitoring      a host StorageForge forgets is registered monitoring only, set up by hand with the setup script and adopted with the
+                    line it printed; its agent runs, its scan plugin's inventory and mounts arrive, and a deploy is refused with the reason
+    console         on that host: refused until its admin lists an account; then a session opens as that account with a key made for it,
+                    the key line is in its authorized_keys while the session runs and gone after, and sshd refuses the key once used
 """
 import base64
 import json
@@ -469,12 +485,155 @@ def tier24(r):
         sudo(node.name, f'cp {old}/manifest.json /root/sflab-old-manifest.json; cp {old}/manifest.json.sig /root/sflab-old-manifest.json.sig', check=False)
         api.post(f'/api/agents/{name}/plugins', {'plugins': []})
         tampered('an-old-manifest', lambda: sudo(node.name, f'cp /root/sflab-old-manifest.json {old}/manifest.json; cp /root/sflab-old-manifest.json.sig {old}/manifest.json.sig'))
+        if plugins_ok and expect == 'docker':
+            more_plugins(node, name)
+
+    def records(name, plugin):
+        return api.get(f'/api/agents/{name}/records?plugin={plugin}')
+
+    def center_has(name, key):
+        center = api.get(f'/api/notifications?host={name}')
+        found = [x for g in center.get('groups', []) for x in g.get('items', []) if x.get('key') == key]
+        return found[0] if found else None
+
+    def more_plugins(node, name):
+        """0.5.8: the disks, files and sentinel plugins on the Docker host (roadmap 11.4 and 9). Written, not run."""
+        if row(api, name)['state'] != 'running':
+            reenroll(name)
+
+        def disks():
+            got = api.post(f'/api/agents/{name}/plugins', {'plugins': ['heartbeat', 'disks']})
+            want(got.get('state') == 'running', f'the disks plugin was not applied: {got}')
+            listed = demo.wait('a disks reading', lambda: records(name, 'disks').get('disks') or None, timeout=300)
+            want(all(d.get('health') or d.get('error') for d in listed), f'a disk with neither health nor a reason: {listed}')
+            s = status_of(node, agent_pid(node))
+            uid = sudo(node.name, f'id -u {AGENT}').strip()
+            want(s['Uid'].split() == [uid] * 4, f'the agent is not sfagent in every uid: {s["Uid"]}')
+            for field in ('CapPrm', 'CapBnd', 'CapAmb'):
+                want(int(s[field], 16) == 1 << 17, f'{field} is {s[field]}, not SYS_RAWIO alone')
+            want(int(s['CapEff'], 16) == 0, 'the agent itself holds an effective capability')
+            return f'{len(listed)} disk(s); the agent is sfagent holding SYS_RAWIO alone: ' + ', '.join(f'{d["dev"]} {(d.get("health") or {}).get("smart") or d.get("error", "")[:40]}' for d in listed)
+        r.check('agent-disks-plugin', node.name, disks)
+
+        def files_root():
+            got = api.get('/api/agents')
+            files = next((p for p in got.get('plugins', []) if p['name'] == 'files'), None)
+            want(files and files['root_in_effect'] and files['note'].startswith('ROOT ON THIS HOST IN EFFECT'), f'the files plugin is not listed as root in effect: {files}')
+            got = api.post(f'/api/agents/{name}/plugins', {'plugins': ['heartbeat', 'files', 'sentinel']})
+            want('ROOT ON THIS HOST IN EFFECT' in (got.get('warning') or ''), f'switching it on did not say it is root in effect: {got}')
+            return 'listed as root in effect; switched on by an admin, and the answer says so again'
+        r.check('agent-files-root-in-effect', node.name, files_root)
+
+        def files():
+            st = demo.wait('the files plugin watching', lambda: (records(name, 'files').get('files_state') or {}).get('watching') or None, timeout=300)
+            want(st.get('filesystems'), f'no filesystem watched: {st}')
+            marker = f'/var/tmp/sflab-files-{int(time.time())}'
+            sudo(node.name, f'useradd -m sflabuser 2>/dev/null; su -s /bin/sh sflabuser -c "echo hello > {marker}"')
+            ev = demo.wait('the change', lambda: [e for e in records(name, 'files')['files'] if e['path'] == marker] or None, timeout=120)
+            want(ev[0]['user'] in ('sflabuser', None) and ev[0]['process'], f'no process or account: {ev[0]}')
+            return f'{marker} by {ev[0]["process"]} as {ev[0]["user"] or ev[0]["uid"]}; index: {ev[0]["indexed"]}'
+        r.check('agent-files-changes', node.name, files)
+
+        def hand_edit():
+            sudo(node.name, 'touch /etc/exports; echo "# sflab hand edit" >> /etc/exports')
+            item = demo.wait('the hand edit in the notification center', lambda: center_has(name, f'agent-hand-edit:{name}:/etc/exports'), timeout=120)
+            want(not item.get('ignorable', True), f'a hand edit can be ignored: {item}')
+            sudo(node.name, "sed -i '/# sflab hand edit/d' /etc/exports")
+            return 'drift, which cannot be ignored'
+        r.check('agent-files-hand-edit', node.name, hand_edit)
+
+        def offhours():
+            demo_setting(api, {'work_days': [], 'offhours_reads_per_hour': 50})
+            reads = shlex.quote('for i in $(seq 1 200); do cat /etc/hostname >/dev/null; done')
+            sudo(node.name, f'su -s /bin/sh sflabuser -c {reads}')
+            item = demo.wait('reads out of hours', lambda: next((x for g in api.get(f'/api/notifications?host={name}').get('groups', []) for x in g.get('items', []) if str(x.get('key', '')).startswith(f'agent-offhours:{name}:')), None), timeout=180)
+            return item['title']
+        r.check('agent-files-offhours', node.name, offhours)
+
+        def from_both():
+            api.post(f'/api/agents/{name}/plugins', {'plugins': ['heartbeat']})          # held back
+            path = f'/srv/sflab-unreported-{int(time.time())}'
+            sudo(node.name, f'mkdir -p /srv && echo x > {path}')
+            api.post(f'/api/agents/{name}/plugins', {'plugins': ['heartbeat', 'files']})
+            demo.scan(api, [node.ip])
+            item = demo.wait('the disagreement', lambda: center_has(name, f'agent-files-disagree:{name}'), timeout=300)
+            want('never reported' in item.get('detail', ''), f'not said as a change the agent never reported: {item}')
+            return item['detail'][:200]
+        r.check('agent-files-from-both', node.name, from_both)
+
+        def sentinel():
+            import uuid
+            line = f'ev\t{uuid.uuid4()}\tsentinel_test\t{int(time.time())}\t{base64.b64encode(b"sflab").decode()}\t'
+            sudo(node.name, 'logger -t storageforge-sentinel', stdin=line + '\n')        # as root, as the sentinel writes it
+            got = demo.wait('the sentinel event through the agent', lambda: [e for e in api.get(f'/api/security/events?host={name}&all=1').get('events', []) if e.get('via') == 'agent'] or None, timeout=120)
+            return f'{got[0]["kind"]} via {got[0]["via"]}'
+        r.check('agent-sentinel-through-the-agent', node.name, sentinel)
+
+    def demo_setting(api, value):
+        """The files plugin's working hours: a setting, written as the web app writes it."""
+        from tiers_platform import sql_write
+        sql_write("DELETE FROM settings WHERE key = 'agent.files'")
+        sql_write("INSERT INTO settings (key, value_json, updated_at, updated_by) VALUES ('agent.files', '" + json.dumps(value) + "', 0, 'lab')")
+
+    def monitoring_checks(node):
+        """0.5.8: a monitoring-only host (roadmap 11.5) and its console. Written, not run."""
+        name = demo.known_as(api, node.name)
+        addr = node.ip
+        arch = sudo(node.name, 'uname -m').strip()
+
+        def adopted():
+            status, out = api.raw('DELETE', f'/api/hosts/{name}')
+            if status == 403 and out.get('reauth'):
+                api.raw('POST', '/api/reauth', {'password': api.password})
+                status, out = api.raw('DELETE', f'/api/hosts/{name}')
+            want(status == 200, f'the host could not be forgotten first: {status} {out}')
+            api.post('/api/agents/monitoring', {'host': name, 'address': addr, 'port': 22, 'arch': arch})
+            bundle = api.get(f'/api/agents/{name}/setup')
+            with api.web.open(demo.urllib.request.Request(demo.BASE + f'/api/agents/program/{arch}'), timeout=300) as resp:
+                program = resp.read()
+            sudo(node.name, 'base64 -d > /root/storageforge-agentctl', stdin=base64.b64encode(program).decode())
+            sudo(node.name, 'cat > /root/storageforge-agent-setup.sh', stdin=bundle['script'])
+            out = sudo(node.name, 'bash /root/storageforge-agent-setup.sh /root/storageforge-agentctl')
+            line = next(l for l in out.splitlines() if l.startswith('storageforge-agent-adopt '))
+            own = sudo(node.name, 'cut -d " " -f 2 /etc/ssh/ssh_host_ed25519_key.pub').strip()
+            want(own in line, 'the line does not carry the host\'s own key')
+            got = api.post(f'/api/agents/{name}/adopt', {'line': line})
+            want(got.get('state') == 'running' and got.get('mode') == 'monitoring', f'not adopted: {got}')
+            api.post(f'/api/agents/{name}/plugins', {'plugins': ['heartbeat', 'scan', 'health']})
+            inv = demo.wait('the scan plugin\'s inventory', lambda: records(name, 'scan').get('inventory') or None, timeout=300)
+            status, out = api.raw('POST', '/api/deploy/start', {'host': name, 'kind': 'nfs', 'mode': 'apply'})
+            want(status >= 400 or 'monitoring only' in json.dumps(out), f'a deploy to a monitoring-only host was not refused: {status} {out}')
+            return f'adopted; inventory sections {inv["sections"]}; a deploy is refused with the reason'
+        r.check('agent-monitoring-only-host', node.name, adopted)
+
+        def console():
+            if row(api, name).get('mode') != 'monitoring':
+                raise AssertionError('the host is not monitoring only after the check before')
+            status, out = api.raw('POST', '/api/console/sessions', {'host': name, 'kind': 'ssh', 'user': 'sflabadmin'})
+            if status == 403 and out.get('reauth'):
+                api.raw('POST', '/api/reauth', {'password': api.password})
+                status, out = api.raw('POST', '/api/console/sessions', {'host': name, 'kind': 'ssh', 'user': 'sflabadmin'})
+            want(status == 409 and 'allows no console' in out.get('error', ''), f'a console opened without the host\'s own list: {status} {out}')
+            sudo(node.name, 'useradd -m -s /bin/bash sflabadmin 2>/dev/null; echo sflabadmin > /etc/storageforge-agent/console_users')
+            s = api.post('/api/console/sessions', {'host': name, 'kind': 'ssh', 'user': 'sflabadmin'})
+            keys = sudo(node.name, 'cat ~sflabadmin/.ssh/authorized_keys')
+            want('storageforge-console:' in keys and 'expiry-time=' in keys and 'restrict,pty' in keys, f'no session key line: {keys}')
+            api('DELETE', f'/api/console/sessions/{s["id"]}')
+            demo.wait('the key line gone', lambda: 'storageforge-console:' not in sudo(node.name, 'cat ~sflabadmin/.ssh/authorized_keys') or None, timeout=60)
+            return 'refused until the host listed an account; then a session as it, and SSH off again after'
+        r.check('agent-monitoring-console', node.name, console)
 
     for node, expect in ((with_docker, 'docker'), (with_podman, 'podman-rootless'), (bare, 'podman-rootless')):
         if node is None:
             r.add('agent-install', '-', None, f'no host for this in the build (wanted one that runs it under {expect})')
         else:
             checks_on(node, expect)
+
+    spare = next((n for n in vms if n not in (with_docker, with_podman, bare) and (has(n, 'docker') or has(n, 'podman'))), None)
+    if spare is None:
+        r.add('agent-monitoring-only-host', '-', None, 'no further host with a runtime in this build to make monitoring only')
+    else:
+        monitoring_checks(spare)
 
     if pve is None:
         r.add('agent-lxc-on-pve', '-', None, 'no Proxmox VE host that takes deploys in this build')
