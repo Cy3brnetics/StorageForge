@@ -45,6 +45,7 @@ class Witness:
     host: str             # whose scan, decoy or sentinel
     target: str           # what it saw: the same target the action is about
     at: float             # when
+    via: str = ''         # how it reached the controller: 'agent' when an agent carried it (the sentinel plugin), which makes it an agent's word
 
 
 def _record(conn: Conn, host: str, fp: str | None, action: str, target: str, outcome: str, named=None, witnesses=None, detail: str = ''):
@@ -90,7 +91,9 @@ def independent(reporter: str, target: str, witnesses: list[Witness], now: float
     now = time.time() if now is None else now
     return [w for w in witnesses
             if w.source in WITNESS_SOURCES and w.target == target and now - WITNESS_SECS <= w.at <= now + 60
-            and not (w.source == 'sentinel' and w.host == reporter)]
+            and not (w.source == 'sentinel' and w.host == reporter)
+            # a sentinel's event an agent carried (the sentinel plugin) is that agent's word, and an agent is never a witness
+            and w.via != 'agent']
 
 
 def wider(conn: Conn, reporter: str, fingerprint: str | None, action: str, target: str, witnesses: list[Witness], perform,

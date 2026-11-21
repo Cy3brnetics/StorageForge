@@ -489,6 +489,8 @@ emit() { # kind summary detail
   line=$(printf 'ev\t%s\t%s\t%s\t%s\t%s' "$(cat /proc/sys/kernel/random/uuid)" "$1" "$(date +%s)" "$(b64 "$2")" "$(b64 "${3:-}")")
   printf '%s\n' "$line" >>"$EVENTS"
   send "$line"
+  # into the journal too, where the agent's sentinel plugin reads it as it is written (docs/agent.md)
+  if ((EUID == 0)) && command -v logger >/dev/null; then logger -t storageforge-sentinel -- "$line" 2>/dev/null || true; fi
   if (($(stat -c %s "$EVENTS") > 1048576)); then tail -n 1000 "$EVENTS" >"$EVENTS.new" && mv -f "$EVENTS.new" "$EVENTS"; fi
 }
 client_of() { # smbd runs one process per client, so its pid finds the address. NFS is served by the kernel, and has no such pid

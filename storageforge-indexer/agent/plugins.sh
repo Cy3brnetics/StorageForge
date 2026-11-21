@@ -11,7 +11,7 @@
 # a plugin exactly what its signed descriptor declares and nothing more.
 set -eu
 VERSION=0.5.7
-PLUGINS="heartbeat logs health network disks files scan"
+PLUGINS="heartbeat logs health network disks files scan sentinel"
 needs() {
   case $1 in
     heartbeat) printf '{}' ;;
@@ -23,6 +23,7 @@ needs() {
     files) printf '{"mounts":["/proc"],"capabilities":["DAC_READ_SEARCH","SYS_ADMIN","SYS_PTRACE"],"namespaces":["pid"]}' ;;
     # the read-only scans carried in the plugin: the host root read-only with the secrets masked, and no capability
     scan) printf '{"mounts":["/","/proc","/sys"],"namespaces":["pid"]}' ;;
+    sentinel) printf '{"mounts":["/etc/machine-id","/run/log/journal","/var/log/journal"],"groups":["systemd-journal"]}' ;;
     *) echo "no plugin $1" >&2; exit 1 ;;
   esac
 }

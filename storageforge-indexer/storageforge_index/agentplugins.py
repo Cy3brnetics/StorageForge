@@ -11,6 +11,14 @@ import json
 import time
 
 from . import agentdisks, agentfiles, agentscan, errlog
+
+
+def _sentinel_events(conn, host: str, body: dict, at: int) -> int:
+    """The sentinel's events an agent carried: the host's claim, through the checks and limits of the sentinel's own reports, marked
+    as come through the agent (security.ingest_events with via 'agent'), which is never a witness for an action on another host."""
+    from .security import ingest_events
+    lines = [x for x in (body.get('lines') if isinstance(body.get('lines'), list) else [])[:500] if isinstance(x, str) and len(x) <= 16 << 10]
+    return ingest_events(conn, host, '\n'.join(lines), 'agent')
 from .db import Database
 
 RECORDS_PER_TICK = 500
@@ -19,7 +27,7 @@ RECORDS_PER_TICK = 500
 def _takers() -> dict:
     return {('disks', 'smart'): agentdisks.take_smart, ('disks', 'errors'): agentdisks.take_errors,
             ('files', 'changes'): agentfiles.take_changes, ('files', 'reads'): agentfiles.take_reads, ('files', 'watching'): agentfiles.take_watching,
-            ('scan', 'inventory'): agentscan.take_inventory}
+            ('scan', 'inventory'): agentscan.take_inventory, ('sentinel', 'events'): _sentinel_events}
 
 
 def take(db: Database, now: float | None = None) -> dict:

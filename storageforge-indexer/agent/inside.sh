@@ -26,7 +26,7 @@ x86_64|aarch64)
   fi
   SOURCE_DATE_EPOCH=$EPOCH RUSTFLAGS="$flags" cargo build --release --locked --quiet --target "$target" -p storageforge-agent --bins
   mkdir -p "$OUT/$1"
-  for program in storageforge-agent storageforge-agentctl storageforge-plugin-heartbeat storageforge-plugin-logs storageforge-plugin-health storageforge-plugin-network storageforge-plugin-disks storageforge-plugin-files storageforge-plugin-scan; do
+  for program in storageforge-agent storageforge-agentctl storageforge-plugin-heartbeat storageforge-plugin-logs storageforge-plugin-health storageforge-plugin-network storageforge-plugin-disks storageforge-plugin-files storageforge-plugin-scan storageforge-plugin-sentinel; do
     file=target/$target/release/$program
     ! ( readelf -d "$file" 2>/dev/null | grep -q NEEDED ) || { echo "$program is not static" >&2; exit 1; }
     cp "$file" "$OUT/$1/$program"
