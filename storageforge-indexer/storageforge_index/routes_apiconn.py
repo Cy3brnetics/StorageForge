@@ -9,7 +9,7 @@ from __future__ import annotations
 from flask import jsonify, request
 from flask_login import login_required
 
-from . import apiconn, apiguide, apiread
+from . import apiconn, apiguide, apiread, apiviews
 from .vault import Vault, VaultError
 
 
@@ -111,7 +111,7 @@ def register(web, ctx):
     @login_required
     def api_platform(conn_id):
         row = found(conn_id)
-        return jsonify(connection=row, objects=apiread.objects(conn(), conn_id))
+        return jsonify(connection=row, objects=apiread.objects(conn(), conn_id), compare=apiviews.compare_connection(conn(), row))
 
     @web.post('/api/keys/platforms/<int:conn_id>/read')
     @login_required

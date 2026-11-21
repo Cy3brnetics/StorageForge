@@ -174,4 +174,19 @@ def map_extra(conn: Conn, g: dict, layers) -> dict:
             nid = add(f'api:{o["connection"]}:{o["kind"]}:{o["ref"]}', 'StoragePool', label, 'storage', host, platform=o['platform'], plugintype=o.get('plugintype'),
                       used=used, total=total, shared=o.get('shared'), node=o.get('node'), remote=o.get('remote'), connection=o['connection'])
             edge(nid, f'api:{o["connection"]}', 'MANAGED_BY', f'{r["title"]} API')
+            if host and o.get('path'):          # a Backup Server datastore sits on a mount the scan drew
+                points = [n['label'] for n in g['nodes'] if n['kind'] == 'MountPoint' and n.get('host') == host and (o['path'] == n['label'] or o['path'].startswith(n['label'].rstrip('/') + '/'))]
+                if points:
+                    edge(nid, f'mnt:{host}:{max(points, key=len)}', 'STORED_ON', f'{r["title"]} API: datastore path {o["path"]}')
     return g
+
+
+def compare_connection(conn: Conn, row: dict) -> dict:
+    """What this connection reads beside what the SSH scan reads of the same things."""
+    out = {'guests': [], 'datastores': []}
+    if row['kind'] in ('pve', 'pdm'):
+        out['guests'] = [c for c in compare(conn) if any(g.get('connection') == row['name'] for g in c['guests'])]
+    if row['kind'] == 'pbs':
+        from . import apipbs
+        out['datastores'] = apipbs.compare_mounts(conn, row, apiread.objects(conn, row['conn_id']))
+    return out
