@@ -2,7 +2,7 @@
 
 StorageForge reads and changes hosts over SSH, with nothing installed on them. That stays the base, on every host, and keeps every feature. The agent is an extra, switched on one host at a time, for what a scan cannot do: readings as they happen instead of once per scan. Routers, firewalls, switches and appliances stay agentless.
 
-**Built, not lab-tested.** What this page describes is the agent's base (its two programs, its image, how a host is set up for it and how it is enrolled, the plugin format and the signatures), its tunnel to the controller and the receiver at the other end, the trust model they keep, wipe and stop, and its first four plugins: heartbeat, logs, health and network (the roadmap's sections 11.1 to 11.4). Docker is the only runtime it has run under, in the unit tests, with the real image. Podman, LXC, Incus and Proxmox VE are written and have run only against stand-ins. Lab tier 24 is written and has not run.
+**Built, not lab-tested.** What this page describes is the agent's base (its two programs, its image, how a host is set up for it and how it is enrolled, the plugin format and the signatures), its tunnel to the controller and the receiver at the other end, the trust model they keep, wipe and stop, its first four plugins (heartbeat, logs, health and network), and from 0.5.8 the disks, files, scan and sentinel plugins, monitoring-only hosts and their console (the roadmap's sections 11.1 to 11.5). Docker is the only runtime it has run under, in the unit tests, with the real image. Podman, LXC, Incus and Proxmox VE are written and have run only against stand-ins. Lab tier 24 is written and has not run.
 
 ## How it is put together
 
@@ -19,7 +19,7 @@ agent ──its own tunnel, Noise IK, both keys pinned──► receiver (a proc
 | `storageforge-agent` | The one program in the container. Rust, static: no interpreter, no OpenSSL, no libc. It runs as `sfagent`, makes its own key, reads its manifest, and starts the signed plugins the manifest names. It refuses to run as root |
 | `storageforge-agentctl` | A second static Rust program, on the host, behind the one sudoers line. It takes a signed request on stdin, does one agent operation, prints one line of JSON. It drives the runtime itself, so nobody else needs access to it |
 | The image | The `agent` stage of the `Dockerfile`: Wolfi's base layout, the program, and nothing else. No shell, no package manager, 1.5 MB. The same image on every host and every runtime |
-| A plugin | A static program of its own, with a signed descriptor that says what it needs of the host. It reaches the agent through the tunnel; the agent starts it as a child and speaks to it over pipes. Four are official: [heartbeat, logs, health and network](#the-official-plugins) |
+| A plugin | A static program of its own, with a signed descriptor that says what it needs of the host. It reaches the agent through the tunnel; the agent starts it as a child and speaks to it over pipes. Eight are official: [heartbeat, logs, health, network, disks, files, scan and sentinel](#the-official-plugins) |
 | The manifest | Which plugins a host runs, signed by the controller with the time and a counter |
 | The tunnel | One TCP connection from the agent to the receiver, encrypted and authenticated both ways with Noise IK: the agent's key is its own, the receiver's is pinned on the host |
 | The receiver | `python -m storageforge_index.agentreceiver`, a process of its own beside the web app, with a database role of its own: the one place what agents say comes in |
@@ -31,14 +31,14 @@ Both programs are in one Cargo workspace with the [key enclave](security.md#key-
 The agent is off for every host. Nothing on this page happens to a host until someone with `keys.manage` switches it on for that host and types their password.
 
 1. **Settings on the controller.** `STORAGEFORGE_AGENT_IMAGE` names the agent's image by digest (`registry/storageforge-agent@sha256:…`; a tag is refused, since a tag can be moved to other bytes). `STORAGEFORGE_AGENT_IMAGE_SIG` names the file with the signature of that digest (see [The image](#the-image)). `STORAGEFORGE_AGENT_DIR` is where `storageforge-agentctl` is, which the server's own image sets. For the agent to report, the [receiver](#the-receiver) runs and `STORAGEFORGE_AGENT_ENDPOINT` says where agents dial it; without them the agent runs and says nothing.
-2. **Deploy access.** The host needs [deploy access](deployments.md), since the setup runs through it. A host without it (monitoring only) is set up by hand with the same script; that road has no page in the UI yet.
+2. **Deploy access.** The host needs [deploy access](deployments.md), since the setup runs through it. A host without it is [monitoring only](#monitoring-only-hosts), set up by hand with the same script.
 3. **Switch it on.** `PUT /api/agents/<host>` with `{"enabled": true}`. The answer says what the last scan knows of a runtime on that host.
 4. **Install.** `POST /api/agents/<host>/install`. It returns a group id, polled as a deploy is. The steps: the setup script as a signed deploy, with `storageforge-agentctl` on its stdin; `preflight`, which reads which runtimes the host has; `enroll`, which starts the container and reads back the public half of the key the agent made; `apply`, which gives it its first manifest, with no plugin in it, and with a receiver running, the receiver's address and key, which the host pins.
 5. **A host with no container runtime** is not touched further at step 4. The install stops in the state `needs-podman` with a notice that Podman will be installed with the host's own package manager. Only an install started again with `{"install_podman": true}` installs it, and then the agent runs under Podman without root.
 
 6. **Plugins.** `POST /api/agents/<host>/plugins` with the names of plugins of the release. A plugin that declares any privilege on the host takes an admin: the `agent.privilege` permission, as well as `keys.manage` and a fresh password.
 
-There is no page for this in the web UI yet: the routes are in the [API reference](api-reference.md#the-agent).
+Keys → Agents lists the hosts that run the agent, in which mode, and lets someone with `keys.manage` choose each one's plugins; the files plugin is shown there as root on the host in effect, and ticking it asks again. Switching the agent on, installing and adopting have no page yet: the routes are in the [API reference](api-reference.md#the-agent).
 
 `POST /api/agents/<host>/stop`, `start`, `restart` and `status`, and `DELETE /api/agents/<host>`, do what they say. A stopped agent stays stopped: its restart policy is taken off first, and under Podman its container is removed, because Podman starts containers with a restart policy again at boot. Removing forgets the pinned key on the controller first, then takes the container, the key, both accounts, the sudoers line and the program off the host.
 
@@ -84,6 +84,8 @@ On every runtime, whatever the manifest says:
 What a runtime cannot give is refused with the reason, and the agent that runs is left as it is. Under LXC that is, today: a capability or a device (an unprivileged container cannot have the host's), reading as a host group, and under Incus and Proxmox VE the host's process table or network, and any mount that would show a path that has to be masked, since they cannot mask. Under Incus and Proxmox VE the root filesystem is not read-only yet.
 
 Privileges follow plugins. The container is made again with the union of what the manifest's plugins declare, and a plugin taken out takes its privileges with it, including the host group `sfagent` was put in for it.
+
+**A capability is kept by giving root up.** Docker and Podman give a process that is not root no capability it can use: what `--cap-add` names lands in its bounding set and nowhere else. So a container whose plugins declare a capability is started as root (`--user 0:<sfagent's group>`) with every capability dropped but the declared ones and `SETUID`, `SETGID` and `SETPCAP`, and told whom to become (`run --as UID:GID`). Before it reads anything, the agent becomes `sfagent` in every uid and gid, keeps the declared capabilities in its permitted, inheritable and ambient sets and none in its effective set, drops the other three from its bounding set, and locks the securebits so that nothing it starts can become root again (`agent/src/caps.rs`). A bounding set with anything else in it, or a failure on the way, and it does not start. Each plugin is started with only its own declared capabilities in its ambient set. The check from outside reads the process from the host's `/proc`: a uid of root, or a capability beyond the declared ones in any set, is a finding.
 
 ## Plugins
 
@@ -134,8 +136,57 @@ Built from the same Cargo workspace (`src/bin/plugin-*.rs`). `agent/plugins.sh l
 | `logs` | `/etc/machine-id`, `/run/log/journal`, `/var/log/journal` read-only; the `systemd-journal` group | `lines`: the journal as it is written, read from the journal files themselves (regular or compact, zstd or LZ4), up to 200 lines a reading, with the fields a scan collects (never `_CMDLINE`) and journalctl's own cursor, so a line pushed and the same line scanned are one. Debug lines are left out and said, so they are not taken for lines deleted on the host. See [host logs](web-ui.md) |
 | `health` | `/proc` and `/sys` read-only; the host's process table | `health` every minute: CPU, load, memory, pressure, disk latency and how busy each disk is, md arrays with their rebuilds, ZFS pool states, btrfs allocation, uptime. `ssh` within ten seconds of a change: whether sshd runs and the ports the host listens on, so the agent says when SSH is down |
 | `network` | the host's network | `shares` within five seconds of a change and every minute: who is connected to SMB (139, 445) and NFS (2049), who came and who went. `traffic` every minute: each interface's counters and rates |
+| `disks` | the whole disks read-only, `SYS_RAWIO`, `/sys`, the journal folders and `/etc/machine-id` read-only, the `systemd-journal` group | `smart` at start and hourly: each disk's health, asked of the disk itself with the ioctls smartctl uses (ATA pass-through, the NVMe health log) and written in the shape `smartctl -j -a` prints, so the controller reads it with the SSH collector's own parser (PF-04) and compares the two. `errors` as they happen: the kernel's count of a disk's failed commands, md's errors per member, and the kernel's lines that say a disk failed |
+| `files` | **root on the host in effect:** `SYS_ADMIN`, `SYS_PTRACE`, `DAC_READ_SEARCH`, the host's process table, `/proc` read-only | `changes` every five seconds: each file created, written, moved or deleted on the host's local filesystems, with the process and account that did it, and its size and time where it is still there. `reads` every minute: files read per account and the folders they were in. `watching`: which filesystems it watches and which it could not. See [The files plugin](#the-files-plugin-root-in-effect) |
+| `scan` | the host's root, `/proc` and `/sys` read-only, the process table; no capability | `inventory` at start and every fifteen minutes: the read-only scan it carries, in parts. See [Scans carried in the plugin](#scans-carried-in-the-plugin) |
+| `sentinel` | the journal folders and `/etc/machine-id` read-only, the `systemd-journal` group | `events` within two seconds: the [sentinel](security.md)'s events, which it writes to the journal as root as well as to its own file. Only lines root wrote under the name `storageforge-sentinel`, in the sentinel's form, are taken. The controller reads them through the same checks and limits as the sentinel's own reports, marked as come through the agent, and one event is one event whichever way it came |
 
 A path a plugin declares that the host does not have (`/run/log/journal`, say, or `/var/log/journal` on a host that keeps its journal only in memory) is not mounted, and `apply` says so: a plugin gets less than it declared, never more.
+
+### The files plugin: root in effect
+
+It is said here first because it is the plugin that changes what the agent is. Fanotify on whole filesystems takes `SYS_ADMIN`, and a process with `SYS_ADMIN` can unmount the masks over SSH's keys and do most of what root does; it also holds `SYS_PTRACE`, to reach each filesystem through the host's first process and see which program a process runs, and `DAC_READ_SEARCH`, to find a changed file by its handle and read its size whoever owns it. So with the files plugin running, **an agent that was taken over has what root has on that host**. Without it, it has what `sfagent` has.
+
+That is why it is off unless an admin switches it on for one host: it takes `agent.privilege` and a fresh password, Keys → Agents shows it as root on the host in effect and asks again before it is ticked, the route's answer says so once more, and the audit log records it. It opens no file's contents and writes nothing; what it reports is the host's claim like any other reading.
+
+What it is for:
+
+- **An index that updates itself.** Each change is applied to the host's file index as it comes, on the mounts a scan indexed (or, on a monitoring-only host, the mounts its scan plugin reported), so a search finds a file a minute after it was written.
+- **The file index from both** (decision of 2026-11-16). After each SSH scan, the changes it found are set against what the agent reported since the scan before: a change the agent never reported (the plugin was held back, or lost it), and one the agent reported that the scan contradicts (the agent lied, or read too early), are a disagreement in the notification center.
+- **Hand edits.** A change to a file StorageForge manages (the files its drift check lists, and fstab, crypttab, mdadm, exports and Samba files) made while no deploy of the host ran is configuration drift, which cannot be ignored. It leaves when a scan or a deploy of the host finished after the edit.
+- **Reads out of hours** (roadmap section 9, *Watchers*). Files read per account and hour; an account that reads more than the limit (500 an hour) outside working hours (07:00 to 19:00, Monday to Friday, the controller's clock; setting `agent.files`) is a notification.
+
+How it watches: one fanotify group with a mark on each local filesystem in the host's mount table (ext4, XFS, btrfs, ZFS and others; not network filesystems or tmpfs). A btrfs subvolume has an fsid of its own, which a whole-filesystem mark refuses, so there it marks each folder, and each new folder as it is made, up to 200 000 folders in all; past that it says the filesystem is watched in part. A queue overflow or changes left out (more than 500 in five seconds) are said, as is a filesystem it could not watch.
+
+### Scans carried in the plugin
+
+The decision of 2026-11-16: scans on an agent host are scripts carried in the scan plugin, not requests. The script (`agent/scan/inventory.scan`) is compiled into the plugin's program, so the release key that signs the program decides what it runs; no message from the controller names a script, a path or a command. Each word of it reads: a section header, the first of some files, every file a glob names, and readers for the hostname, OS, addresses, block devices, btrfs, accounts, groups and enabled units. None runs a program (the image has no shell to run one with), writes, or follows a host's words somewhere it was not told; a file that is not a plain file is not read, and nothing waits on a pipe.
+
+It writes the sections of the SSH scan's inventory it can read from files, in their form (`hostname`, `machineid`, `ip`, `os`, `lsblk`, `mountinfo`, `btrfs`, `ids`, `nfs`, `smb`, `configs`, `accounts`, `services`, `packages`), and the controller reads them with the SSH scan's own parser. On a monitoring-only host they become the host's inventory and its mounts, labelled as reported by agent; on a host with SSH they are compared with the last SSH scan, and a difference in the OS or the filesystems mounted is a notification. It does not read what needs a program or root: ZFS pools, LVM, `df`'s usage, packages, SMART (the disks plugin's), or anything under the masks, such as `authorized_keys` and StorageForge's own records.
+
+## Monitoring-only hosts
+
+A host the controller has no SSH scan key and no deploy access for (roadmap section 11.5): `storageforge-agentctl` is its only way in, and the agent is the only way the controller hears of it.
+
+1. `POST /api/agents/monitoring` with `{"host", "address", "port", "arch"}` registers it, with its agent switched on in mode `monitoring`. A name or address StorageForge has already is refused: switch the agent on for that host instead.
+2. `GET /api/agents/<host>/setup` gives the setup script, the same one a deploy sends, and `GET /api/agents/program/<arch>` the program it installs. On the host, as root: `bash storageforge-agent-setup.sh ./storageforge-agentctl`. It checks the program by size and sha256, and ends with a line `storageforge-agent-adopt <machine-id> ssh-ed25519 <host key>`.
+3. Compare the host key in that line with the host's own (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`), then `POST /api/agents/<host>/adopt` with `{"line": ...}`. That takes `agent.privilege`: the host key is pinned as a key a person compared, a key already pinned for that address that is another one is refused, and the agent is enrolled through `storageforge-agentctl` as on any host.
+
+| A monitoring-only host gets | It does not get, and why |
+| :--- | :--- |
+| Every plugin: health, logs, disks, network, files, sentinel, and the scan plugin's inventory and mounts, which give it a file index through the agent | Change plans, deploys, Moves, sends, clone, holds and quarantine. They act over SSH as root, which the controller does not have there. Each is refused with that reason before anything reaches the host |
+| Wipe and stop, from outside and inside | A scan over SSH, so nothing checks the agent's word but its silence and the check from outside |
+| A console that turns SSH on for the session ([below](#the-console-on-a-monitoring-only-host)) | |
+
+Adding SSH access later is an upgrade, not a reinstall.
+
+### The console on a monitoring-only host
+
+The decision of 2026-11-16: SSH turned on for that session through `storageforge-agentctl`, and off again after. Never a shell in the agent: the agent has no part in it.
+
+When someone with `console.open` opens a console on a monitoring-only host and names an account, the controller makes an ed25519 key for that session, held in memory only, and sends `console-open` to `storageforge-agentctl` with its public half. That puts one line in the account's own `authorized_keys`: `restrict,pty,expiry-time="…Z" ssh-ed25519 … storageforge-console:<grant>`. sshd stops taking the key five minutes later (only the login has to fall inside them), and it forwards nothing. The file is written by a child that has become that account, so a link or a file the account controls reaches nothing the account could not reach itself. When the session closes, `console-close` takes the line out; every request to `storageforge-agentctl` also takes out every grant whose time is past, so a console the controller never closed is closed by the next request, and sshd refused its key long before. Each grant is a row of `agent_console_grants` and the session is in the audit log as any console's.
+
+**Only the accounts this host's own admin listed** in `/etc/storageforge-agent/console_users`, by hand, one name a line, may be logged in as. Without that file there is no console on that host. No request writes it, so a controller that was taken over can open a console only where a person on the host allowed one, as whom they named. The agent's two accounts are never one of them, whatever the file says. sshd before OpenSSH 8.2 does not read `expiry-time` and skips the line: no console there.
 
 ## The manifest
 
@@ -243,7 +294,7 @@ STORAGEFORGE-AGENTCTL 1
 {"op":"apply","machine":"<machine-id>","issued":1794960000,"nonce":"<32 hex>", …}<SSH signature, namespace "storageforge-agentctl">
 ```
 
-A request is acted on only when the controller pinned on that host signed it, for that machine, in the last ten minutes, with a nonce not used there before. The signature is checked before the request is parsed. The operations are `preflight`, `enroll`, `apply`, `start`, `stop`, `restart`, `status`, `remove`, `check` and `wipe`. None runs a command, reads a file or makes a mount that the caller chose, and a request with a field its operation does not take is refused. It exits 0 when done, 97 when refused with nothing changed, 1 when it failed part way.
+A request is acted on only when the controller pinned on that host signed it, for that machine, in the last ten minutes, with a nonce not used there before. The signature is checked before the request is parsed. The operations are `preflight`, `enroll`, `apply`, `start`, `stop`, `restart`, `status`, `remove`, `check`, `wipe`, `console-open` and `console-close`. None runs a command, reads a file or makes a mount that the caller chose (the console's two write one line, as an account the host's admin listed, in that account's `authorized_keys`), and a request with a field its operation does not take is refused. It exits 0 when done, 97 when refused with nothing changed, 1 when it failed part way.
 
 ## The image
 
@@ -305,6 +356,12 @@ Say whoever holds a host also holds its agent: its key, its state folder, its pr
 | Say SSH is down when it is not, or up when it is not | A notification for a person, labelled as reported by agent. SSH itself is not touched, and scans say what they find |
 | Have itself wiped | By claiming it found tampering: it loses its own access, which it could give up by stopping |
 | Run the plugins it was given, and read what their mounts show | That host's files, as `sfagent`, which whoever holds the host already has |
+| With the files plugin running: what root has on that host (`SYS_ADMIN`, `SYS_PTRACE`, `DAC_READ_SEARCH`), the masks over SSH's keys included | Only an admin switches it on, told it is root in effect. It gains nothing beyond that host: its key, the receiver and the controller treat it as any agent |
+| With the disks plugin running: send its disks any command, not only reads (`SYS_RAWIO`) | That host's disks only, which whoever holds the host could already reach |
+| Report file changes that did not happen, or hide ones that did, and so steer that host's file index | Each SSH scan sets the changes it found against the agent's: both kinds are a disagreement in the notification center |
+| Report a hand edit, or reads out of hours, that did not happen | A notification for a person about its own host; nothing acts on it |
+| Invent sentinel events for its host | Stored as that host's claim, through the sentinel's limits, marked as come through the agent, and never a witness for an action on another host |
+| Send a scan inventory of its choosing | On a monitoring-only host it becomes that host's inventory, labelled as reported by agent, with its machine id kept from adoption and a claim of another compared; on a host with SSH it is compared with the SSH scan |
 
 | They cannot | Why |
 | :--- | :--- |
@@ -314,8 +371,12 @@ Say whoever holds a host also holds its agent: its key, its state folder, its pr
 | Reach SSH, the vault or the web app | Its container reaches the receiver's port and nothing else; the receiver has no vault secret and no SSH; the web app does not listen on the tunnel |
 | Get code run with more privileges | Plugins and the image are signed by the release key or the operator's own, privileges come only from a manifest `storageforge-agentctl` accepted over SSH, and one that adds any takes an admin |
 | Pass for the receiver to another agent, or for another agent to the receiver | Each end pins the other's key |
+| Open a console or turn SSH on | The agent has no part in it: `console-open` is a request the controller signs to `storageforge-agentctl` over SSH, for accounts the host's admin listed |
+| Keep a capability past what its plugins declare, or become root | It gave root up before reading anything, its bounding set holds only the declared capabilities, the securebits are locked, and the check from outside reads its process from the host |
 
 What they could still do, and nothing stops: tell lies about their own host that agree with each other; send up to their quota of plausible data; and, if they also hold the receiver's key (which lives on the controller), read what other agents send and offer them files, which those agents refuse unless a release key signed them.
+
+**What a controller that was taken over can now do, through the agent's side, that it could not before 0.5.8:** open a console on a monitoring-only host, as an account that host's admin listed, and only there; choose the files plugin for a host (it holds no key that signs one, and the route takes an admin, but a controller taken over at that level signs what it wants), which makes the agent on that host root in effect. It still cannot run code of its own through the agent, choose what the scan plugin runs, or log in to a monitoring-only host where its admin listed nobody.
 
 ## What it does not do or check, yet
 
@@ -325,9 +386,13 @@ Stated here so that nobody takes more from the above than is there.
 - **The check from outside compares the container itself under Docker and Podman, and under plain LXC its root filesystem**, against a hash taken when it was made. Under Incus and Proxmox VE only the agent's folders are compared yet. Under Podman a smaller set of fields is compared than under Docker (capabilities dropped, `no-new-privileges` and the network name are not), since how Podman reports them has not been seen on a real host.
 - **The check from inside protects an honest agent from its host's files being changed under it.** An agent whose own process was taken over can skip it; that is what the check from outside is for.
 - **`.ssh` folders are found when the container is made:** those of the accounts in `/etc/passwd`, of every folder directly under `/home`, and of every folder directly under a mount. One made later is masked from the next start. One deeper down (`/srv/users/ana/.ssh`) is not masked. As `sfagent`, with no capability, such a folder is unreadable anyway when its mode is the usual 0700; the masks are what protects it from a plugin that declares `DAC_READ_SEARCH` or `SYS_ADMIN`.
-- **A plugin with `SYS_ADMIN` can undo a mask** by unmounting it, and is root on the host in effect. The roadmap says so of the files plugin, and the UI will have to.
+- **A plugin with `SYS_ADMIN` can undo a mask** by unmounting it, and is root on the host in effect. The files plugin is one, and Keys → Agents and the route say so where it is switched on.
 - **Groups from a directory service are not seen.** The check that the managing user is in none of `docker`, `lxd`, `incus-admin` reads `/etc/group` and the account's own group (the setup script asks `id`, which does see them).
-- **A capability given by Docker to a process that is not root is not effective** without more work (ambient capabilities). No plugin needs one yet; the disks and files plugins will.
+- **NVMe health takes `SYS_ADMIN`,** which the kernel asks of any process that reads the health log, and the disks plugin does not declare it. Where the kernel refuses, the reading says so and the SSH collector's report stays the source for that disk. An ATA disk behind a USB bridge or a virtual disk (virtio) answers no SMART data, and says so. No SMART read has run against a real disk here: the decoding is tested against the bytes the standards lay out, and the ioctls against stand-in files.
+- **The files plugin runs only under Docker or Podman as root**, since an unprivileged LXC container cannot hold its capabilities, and has run only in a container against this machine's kernel. On a btrfs subvolume it marks folders one by one. It does not watch network filesystems. A process that ended before its event was read is reported without its name. Ransomware signs on every path, which the roadmap lists for it, are not built.
+- **The scan plugin reads files only:** no ZFS, LVM, usage figures, packages or `authorized_keys`, and nothing under the masks.
+- **The sentinel plugin reads from its start on.** An event written while the agent was down arrives by the sentinel's own report or the next scan.
+- **Monitoring-only hosts are set up and adopted through the API;** there is no page for it yet. A single scan asked of one fails for want of a scan key.
 - **The tunnel is not built for LXC, Incus or Proxmox VE** (an unprivileged container there has no network of its own for it yet), nor for hosts without systemd (the firewall rule could not be loaded again at boot before the container starts) or without `nft`. The agent runs there and reports nothing, with the reason.
 - **The egress rule is matched on the agent's bridge and on `sfagent`'s uid,** not on the container's cgroup as the roadmap says. A process that is not `sfagent` and is put on the bridge by hand is held by it; one of `sfagent`'s outside the container is held too, which is as meant.
 - **On SQLite the receiver has no database role.** It runs as its own process with an authorizer on its connection; if the process itself were taken over it could open the file without one. The role boundary is PostgreSQL's. In the Docker setup the receiver runs as the web app's user and shares its data volume, so its key file is readable by the web app.
@@ -335,7 +400,7 @@ Stated here so that nobody takes more from the above than is there.
 - **The logs plugin reads systemd's journal only.** OpenRC hosts' log files are not read yet, and a field compressed with xz (which systemd has not written by default for years) is not read and is counted. The scan stops asking for a host's lines while its agent pushes and asks again ten minutes after pushing stops.
 - **Health does not read the capacity of filesystems other than btrfs, nor a ZFS scrub's progress**, which /proc and /sys do not show. Scans over SSH read those.
 - **A heartbeat that stops wakes the notification center within seconds**, and the alert itself is pushed at once; the other agent notifications come at its tick, every five minutes.
-- **There is no page for what agents report** in the web UI: the route is in the API reference.
+- **There is no page for what agents report** in the web UI beyond Keys → Agents: the route is in the API reference.
 - **The agent's state folder has no size limit.**
 - **Under Podman without root there is no memory or process limit** on the container, since not every host lets a user set one.
 - **`cargo audit` and `cargo deny` do not run in CI.** The workspace's `Cargo.lock` is scanned by Trivy in the enclave job.
@@ -356,5 +421,7 @@ Lab tier 24 (`tests/lab/tiers_agent.py`) is written and has not run, its tunnel,
 `tests/test_agent_tunnel.py` checks the Python side of the handshake against the Rust side byte for byte, runs the real agent against a receiver over TCP through a plugin delivery and back, and loads the egress rule with the real `nft` in a network namespace of its own. `tests/test_agent_receiver.py` plays agents over real sessions against the real receiver, everything a taken-over agent might send, on SQLite and PostgreSQL, where the receiver's role is made and shown to reach nothing else; its `Delivery` class runs the whole road, from `sfagent` through the real `storageforge-agentctl` and agent to the receiver.
 
 `tests/test_agent_guard.py` runs the check from outside and the wipe through the real `storageforge-agentctl`, the agent's last word through the real tunnel, and the gate on what a report may cause; `tests/test_agent_plugins.py` takes pushed lines into host logs and runs the real logs and heartbeat plugins, signed by a key made for the run, through the real tunnel against journal files written by systemd's own `systemd-journal-remote`. `agent/tests/journal.rs` reads every layout systemd writes and compares each entry with what `journalctl` says of it.
+
+`tests/test_agent_disks.py`, `test_agent_files.py`, `test_agent_scan.py`, `test_agent_sentinel.py`, `test_agent_monitoring.py` and `test_agent_console.py` cover 0.5.8: the disks plugin's readings read with the collector's parser, the files plugin's changes in the index, hand edits, reads out of hours and the comparison with a scan, with the real plugin under the real kernel's fanotify in a container; the real scan plugin's script read by the SSH scan's parser; the real sentinel plugin against journal files systemd wrote; a host set up by hand and adopted through the real `storageforge-agentctl`; and the console's key line written and taken out by it. `RealDocker` checks that a plugin's capability is kept by giving root up, as the kernel shows the process.
 
 `tests/test_agent.py` builds both programs with a release key it made, runs the setup script in bash against a folder that stands for a host's `/`, sends the controller's signed requests to the real `storageforge-agentctl`, and starts the real agent where a runtime would. `RealDocker` runs the same road against the real Docker with the image from the `agent` stage, where Docker and a `registry` image are at hand.
