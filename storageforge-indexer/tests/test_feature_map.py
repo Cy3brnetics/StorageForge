@@ -13,7 +13,7 @@ DOCS = ROOT.parent / 'docs'
 LAB = TESTS / 'lab'
 TIER_FILE = {1: 'tiers.py', 3: 'tiers.py', 4: 'tiers.py', 5: 'tiers.py', 6: 'tiers.py', 7: 'tiers.py', 8: 'tiers.py', 2: 'gauntlet.py',
              9: 'tiers_platform.py', 10: 'tiers_platform.py', 11: 'tiers_platform.py', 12: 'tiers_network.py', 13: 'tiers_features.py', 14: 'tiers_hostlogs.py', 16: 'tiers_sends.py', 17: 'tiers_netlang.py', 18: 'tiers_kvm.py',
-             19: 'tiers_enclave.py', 20: 'tiers_sfnet.py', 21: 'tiers_sshca.py', 22: 'tiers_overlay.py', 23: 'tiers_osinstall.py', 24: 'tiers_agent.py'}
+             19: 'tiers_enclave.py', 20: 'tiers_sfnet.py', 21: 'tiers_sshca.py', 22: 'tiers_overlay.py', 23: 'tiers_osinstall.py', 24: 'tiers_agent.py', 25: 'tiers_engine.py'}
 
 
 def unit_names():
