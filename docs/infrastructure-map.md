@@ -113,6 +113,10 @@ Then **Stage in Changes**, where it is an ordinary step with a Report and an App
 | `fw-rule` | A rule in whichever firewall the host runs, so that firewall still lists it. `forward` is for published ports: it goes in `DOCKER-USER` |
 | `fw-fence` | Only these clients may reach these ports, in a table ahead of any other firewall |
 | `net-bridge`, `net-vlan`, `net-mtu` | With NetworkManager or systemd-networkd |
+| `net-bond` | A bond over interfaces, in a mode you choose (`active-backup` if empty; `802.3ad` needs the switch set up for LACP), with an address or DHCP. See [networks](#networks-in-the-hosts-own-files) |
+| `net-address` | Give an interface an address, or take one off. An address another file sets is not taken off: the step names the file |
+| `net-route` | A route to a network through a gateway, with a metric, on the interface that reaches the gateway if none is named; or take one away. `0.0.0.0/0` is the default route |
+| `net-dhcp` | DHCP on or off for IPv4, IPv6 or both on an interface. Off leaves it with the addresses set for it, and the check warns when there are none |
 | `wg-peer` | Add or revoke a WireGuard peer, with where to call it and a keepalive where it cannot call back |
 | `wg-interface` | Make a WireGuard interface and its key pair on the host, or remove them. The private key is made on the host and never leaves it. An interface StorageForge did not make is left alone |
 | `wg-rotate` | One half of a key rotation on an interface StorageForge made. `prepare` makes a second key pair on the host, beside the one in use. `switch` starts using it, and only if it is the key the peers were given. `cancel` removes a second key that was never used |
@@ -130,6 +134,25 @@ Then **Stage in Changes**, where it is an ordinary step with a Report and an App
 | `workload-action`, `workload-remove` | Start, stop, restart, snapshot. Removing keeps volumes and disks, and takes `--destructive` |
 
 A step that could cut StorageForge off can carry a rollback timer. The script journals how to undo it and starts a systemd timer. Only a second signed run stops that timer, and that can only happen if the path still works.
+
+### Networks in the host's own files
+
+Built, not lab-tested (the [lab checks](kvm-lab.md) of tier 26 are written and have not run).
+
+A scan reads what the host's network files say beside what the kernel has: netplan (`/etc/netplan`), systemd-networkd (`/etc/systemd/network` and what netplan writes into `/run/systemd/network`), NetworkManager (`nmcli`, one connection at a time) and ifupdown (`/etc/network/interfaces` and `interfaces.d`). It reads as the scan user, so a file only root can read (netplan wants its files closed so, and NetworkManager its keyfiles) is listed as unreadable, never taken as empty: what netplan rendered for networkd or NetworkManager still shows. The **Network** panel lists, per interface, where it is set up, DHCP for each family, its addresses and routes, and whether it is there now. On the map each interface says where it is set up and which configured addresses it does not have, and an interface that is set up and not there (a bond not made yet, a port unplugged, a name mistyped) is drawn in outline as *configured, not present*.
+
+`net-bond`, `net-address`, `net-route` and `net-dhcp` work out on the host which system keeps the network, in this order: netplan where it has files (it writes for networkd or NetworkManager itself), NetworkManager when it runs, systemd-networkd when it is active, ifupdown. Each writes in that system's own way and applies the change now:
+
+| System | Where a change goes | Applied with |
+| :--- | :--- | :--- |
+| netplan | a file of its own, `/etc/netplan/90-storageforge-*.yaml`, mode 600, checked by `netplan generate` before it is kept | `netplan apply` |
+| NetworkManager | the connection on the interface (`+ipv4.addresses`, `ipv4.routes`, `ipv4.method`), or new `sf-` connections for a bond | `nmcli device reapply`, `nmcli connection up` |
+| systemd-networkd | a drop-in beside the `.network` file that manages the interface, or `05-sf-` files for a bond so they come before any other file that matches its ports | `networkctl reload` and `reconfigure` |
+| ifupdown | a file of its own in `interfaces.d`, which `/etc/network/interfaces` must read with `source`; routes in `/etc/storageforge/net/routes`, put back by an `if-up.d` hook each time the interface comes up | `ip` now, `ifup` for a bond or DHCP |
+
+What another file says is not edited. An address or route set elsewhere, or how an ifupdown interface gets its address, is left to a person, and the step names the file. On a host with none of the four, the step says nothing would keep the change across a reboot and makes none.
+
+A change that could cut StorageForge off needs a rollback timer, or the host refuses it: a bond over the interface StorageForge comes in on, DHCP on or off on that interface, taking off the address it reaches, and a route that covers the address the session comes from. The timer is the one firewall rules use: the change is journalled first, and only the plan's second signed run, which can only get through if the path still works, stops it. With systemd-networkd, `net-dhcp` sets `DHCP=` to the one family asked for, or to `no`.
 
 ### Joining a private network
 
@@ -240,7 +263,7 @@ The roadmap goes further than this.
 - From the map: moving, cloning or resizing a VM, restricting a service's bind address, putting a listener behind a proxy, rotating a peer's key.
 - `bridge`-family firewall rules for bridged VMs. A quarantine has `input` and `forward` hooks, and bridged VMs bypass both: the map says a bridged VM is outside host rules.
 - Reading a rich firewalld rule beyond source, port and verdict. The others stay unmodelled, which gives **Unknown**.
-- Reading netplan, NetworkManager or networkd files: what the kernel has is what is read. DHCP scopes as nodes, and activity from byte counters between scans.
+- DHCP scopes as nodes, and activity from byte counters between scans. Changing what another file of the host's network says: the network steps write files of their own.
 - Force-directed and rack layouts, custom icons and colour rules, per-role default views, and map tiles on dashboards.
 - Rendering for very large fleets, NetBox and Grafana exports, SNMP and LLDP.
 
@@ -253,6 +276,7 @@ The roadmap goes further than this.
 | `tests/test_browser_smoke.py` | The panels and the map's modes in Chromium under the real CSP |
 | `tests/test_tunnels.py`, `tests/test_tunnel_exposure.py` | What each tunnel's configuration publishes, with no credential in what comes back; a loopback or firewalled listener a tunnel publishes shown as public; the two tunnel steps against stand-ins for `cloudflared` and `newt`, since neither is installed where the tests run |
 | `tests/test_overlay_readers.py`, `tests/test_accessproxies.py`, `tests/test_connections.py` | Each reader on a sample of the tool's own output, saying where the sample comes from; Nebula against the real `nebula-cert`, the OpenVPN CA against one the real `openssl` made; the collector's own lines run in bash against stand-in tools, with no credential and no person's name in what they print; the rule that cuts a configuration file gives the same text in awk on the host and in Python on the server; no reader raises on anything; the map built from the readings |
+| `tests/test_network_steps.py`, `tests/test_netconfig.py` | The bond, address, route and DHCP steps in bash against stand-ins for `ip`, `netplan`, `nmcli`, `networkctl` and `ifup` that keep their state in files: what each system is given, a second run finding its own work, the way back the rollback timer runs, and the real `storageforge-fwrules` journal undoing a bond. The readers of netplan, networkd, NetworkManager and ifupdown on samples of each format, damaged at random, and the map built from them |
 | `tests/test_overlay_steps.py` | The `netbird`, `zerotier` and `openziti` steps against stand-ins on a PATH of their own, since none of the three is installed where the tests run. Nebula against the real thing: certificates made here are accepted by the real `nebula-cert` 1.12.0 and read back the same, `nebula -test` accepts the configurations, and two real Nebula nodes in network namespaces reach each other with them until one certificate is revoked. `vault headscale-key` against a stand-in for `headscale` |
 | [KVM lab](kvm-lab.md) tier 10 | What scans read against each VM. A capture on the VM during a scan: the only connection is SSH |
 | KVM lab tier 11 | Rules on ufw, nftables and firewalld judged by real connections between VMs, a published port's fix, a fence across a reboot, the timer undoing a firewall rule and a bridge that each cut SSH, VLANs on networkd and NetworkManager across a reboot, the reach table against real connections, the overlay against the next reading, a half-deployed design, WireGuard confirmed by key, and a placeholder promoted to a host |

@@ -20,7 +20,7 @@ from .db import Conn
 from .moves import find_host, hosts
 
 CAVEAT = 'Per configuration, from the last readings. Nothing has changed on any host, and the Report on the host itself has the last word.'
-MODELLED = {'fw-rule', 'fw-fence', 'net-bridge', 'net-vlan', 'net-mtu', 'container', 'vm', 'workload-action', 'workload-remove', 'wg-peer'}
+MODELLED = {'fw-rule', 'fw-fence', 'net-bridge', 'net-vlan', 'net-mtu', 'net-bond', 'net-address', 'net-route', 'net-dhcp', 'container', 'vm', 'workload-action', 'workload-remove', 'wg-peer'}
 NOT_ON_THE_MAP = {'sysctl-set', 'umask-set', 'sshd-option', 'selinux-boolean', 'selinux-relabel', 'apparmor-local', 'apparmor-mode', 'chrony-nts'}
 
 
@@ -136,6 +136,24 @@ def _apply_task(t: dict, facts: dict, ghost: dict, conflicts: list, host: str, f
     if k == 'net-mtu':
         ghost['changed'].append({'id': f'nic:{host}:{p["iface"]}', 'what': f'MTU {p["mtu"]}'})
         return None
+    if k == 'net-bond':
+        node(f'nic:{host}:{p["name"]}', 'Bond', p['name'], addresses=[p['address']] if p['address'] else [], mode=p['mode'])
+        edge(f'nic:{host}:{p["name"]}', f'host:{host}', 'ATTACHED_TO')
+        for port in filter(None, (p['ports'] or '').split(',')):
+            edge(f'nic:{host}:{port}', f'nic:{host}:{p["name"]}', 'MEMBER_OF')
+        ip = p['address'].split('/')[0] if p['address'] else None
+        if ip and ip in fleet_addrs and fleet_addrs[ip] != host:
+            conflicts.append({'level': 'crit', 'text': f'{ip} is already held by {fleet_addrs[ip]}'})
+        return None
+    if k == 'net-address':
+        ghost['changed'].append({'id': f'nic:{host}:{p["iface"]}', 'what': ('takes off ' if p['state'] == 'absent' else 'adds ') + p['address']})
+        ip = p['address'].split('/')[0]
+        if p['state'] != 'absent' and ip in fleet_addrs and fleet_addrs[ip] != host:
+            conflicts.append({'level': 'crit', 'text': f'{ip} is already held by {fleet_addrs[ip]}'})
+        return None
+    if k in ('net-route', 'net-dhcp'):
+        ghost['changed'].append({'id': f'nic:{host}:{p["iface"]}' if p.get('iface') else f'host:{host}', 'what': changes.title(t)})
+        return None
     if k == 'container':
         nid = f'wl:{host}:{p["runtime"]}::{p["name"]}'
         node(nid, 'Container', p['name'], image=p['image'], runtime=p['runtime'])
@@ -201,7 +219,8 @@ def _ssh_iface(tasks: list[dict], facts: dict, host: str, h: dict) -> list[dict]
         if t['host'] != host or not iface:
             continue
         p = t['params']
-        names = (p.get('ports') or '').split(',') if t['type'] == 'net-bridge' else [p.get('iface')] if t['type'] == 'net-mtu' else []
+        names = ((p.get('ports') or '').split(',') if t['type'] in ('net-bridge', 'net-bond') else [p.get('iface')] if t['type'] in ('net-mtu', 'net-dhcp') else
+                 [p.get('iface')] if t['type'] == 'net-address' and p.get('state') == 'absent' and p.get('address', '').split('/')[0] == addr else [])
         if iface in names:
             out.append({'level': 'crit', 'text': f'{changes.title(t)} touches {iface}, which is how StorageForge reaches {host}', 'host': host, 'blocks_ssh': True})
     return out

@@ -325,7 +325,7 @@ def normalize(body: dict) -> dict:
             if params.get('devices'):
                 params['devices'] = ' '.join(params['devices'].split())
                 params['confirm'] = ' '.join(params.get('confirm', '').split())
-            dev = params.get('device') or params.get('disk') or params.get('devices')
+            dev = params.get('device') or params.get('disk') or params.get('devices') or params.get(spec.get('confirm_of', ''))   # confirm_of: md-grow with no devices
             if params.get('confirm') != dev:
                 raise ValueError(f'task {i} ({spec["label"]}): type {dev} again in the confirm field')
         tasks.append({'id': str(t.get('id') or f't{i}'), 'type': kind, 'host': host, 'params': params,
@@ -2008,6 +2008,8 @@ from . import steps_osinstall  # noqa: E402,F401  (os-install, after steps_vm, w
 from . import steps_desktop  # noqa: E402,F401  (dux-install and desktop-profile)
 from . import steps_clone  # noqa: E402,F401  (packages from another host)
 from . import steps_md  # noqa: E402,F401  (mdadm arrays)
+from . import steps_pools  # noqa: E402,F401  (vdevs, disk replacements, md growth and LUKS, after steps_md)
+from . import steps_network  # noqa: E402,F401  (bonds, addresses, routes and DHCP, in netplan, NetworkManager, networkd or ifupdown)
 from . import steps_services  # noqa: E402,F401  (services of another host)
 from . import steps_tailscale  # noqa: E402,F401  (joining a tailnet)
 from . import steps_sshca  # noqa: E402,F401  (trusting the SSH CA, and its revocation list)

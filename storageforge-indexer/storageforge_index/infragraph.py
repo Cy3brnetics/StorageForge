@@ -36,6 +36,16 @@ def _bridge_name(iface: dict) -> bool:
     return iface['kind'] == 'bridge' and (iface['name'] or '').startswith(('docker', 'br-', 'podman', 'cni', 'virbr', 'lxdbr', 'incusbr'))
 
 
+def _configured(c: dict | None, live: list[str]) -> dict:
+    """What the network files say about an interface, for its node: where, DHCP, and the addresses they give that it does not have."""
+    if not c:
+        return {}
+    dhcp = [f for f in ('4', '6') if c.get(f'dhcp{f}')]
+    missing = [a for a in c.get('addresses') or [] if a not in live]
+    return {'configured_in': c.get('source'), 'configured_dhcp': ', '.join(f'IPv{f}' for f in dhcp) or None,
+            'configured_addresses': c.get('addresses') or None, 'not_live': missing or None}
+
+
 def build(host: str, net: dict | None, infra: dict | None, containers: list[dict], loads_workloads: list[dict], peers: dict, mount_nodes: set, wg_keys: dict | None = None, forwards: list | None = None,
           overlay_keys: dict | None = None, now: float | None = None) -> tuple[dict, list]:
     """peers: every other scanned host's addresses, address → name. wg_keys: every scanned host's WireGuard public keys. Pure, so
@@ -54,12 +64,18 @@ def build(host: str, net: dict | None, infra: dict | None, containers: list[dict
         edges.append({'src': src, 'dst': dst, 'rel': rel, 'props': {'evidence': {'host': host, 'source': source}, 'confidence': confidence, **props}})
 
     names = {}
+    conf = ((net or {}).get('config') or {}).get('interfaces') or {}
     for iface in (net or {}).get('interfaces') or []:
         if iface['kind'] in SKIP_IFACES:
             continue
+        live = [f'{a["ip"]}/{a["prefix"]}' for a in iface.get('addresses') or []]
         nid = add(f'nic:{host}:{iface["name"]}', KIND.get(iface['kind'], 'NIC'), iface['name'], 'network', state=iface.get('state'), mac=iface.get('mac'), mtu=iface.get('mtu'),
-                  addresses=[f'{a["ip"]}/{a["prefix"]}' for a in iface.get('addresses') or []], vlan_id=iface.get('vlan_id'), container_bridge=_bridge_name(iface) or None)
+                  addresses=live, vlan_id=iface.get('vlan_id'), container_bridge=_bridge_name(iface) or None, **_configured(conf.get(iface['name']), live))
         names[iface['name']] = nid
+    for name, c in conf.items():           # set up in a file and not there: a bond not made yet, a port unplugged, a typo
+        if name in names or name == 'lo' or any(ch in name for ch in '*?[') or c.get('kind') in ('loopback', 'tun', 'wifi'):
+            continue
+        add(f'nic:{host}:{name}', KIND.get(c.get('kind') or '', 'NIC'), name, 'network', confidence='inferred', state='configured, not present', **_configured(c, []))
     for iface in (net or {}).get('interfaces') or []:
         nid = names.get(iface['name'])
         if not nid:

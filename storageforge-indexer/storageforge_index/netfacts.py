@@ -1,4 +1,5 @@
-"""A host's network as its scan user can read it: interfaces, bridges, VLANs, routes, neighbours, listeners and DNS.
+"""A host's network as its scan user can read it: interfaces, bridges, VLANs, routes, neighbours, listeners and DNS, and what its
+network files say (netconfig.py: netplan, NetworkManager, systemd-networkd, ifupdown).
 
 Only reads, and only the host's own state: nothing here sends a packet to find out what exists. It runs after the walk in
 the scan's SSH session, as the scan user, so what needs root is not here: a listener's owning process and the firewall rules
@@ -12,6 +13,7 @@ import json
 import re
 import time
 
+from . import netconfig
 from .db import Conn
 
 # Debian keeps ip and ss off an ordinary user's PATH. POSIX sh: Alpine has no bash.
@@ -26,9 +28,10 @@ echo; echo '@@neigh'; t ip -j neigh show
 echo; echo '@@bridge'; t bridge -j vlan show
 echo; echo '@@listen'; t ss -H -tuln || echo '@@listen_failed'
 echo; echo '@@resolv'; [ -r /etc/resolv.conf ] && grep -E '^(nameserver|search)[[:space:]]' /etc/resolv.conf
+@NETCONFIG@
 echo; echo '@@end'
-"""
-SECTIONS = ('link', 'addr', 'route', 'route6', 'neigh', 'bridge', 'listen', 'listen_failed', 'resolv', 'end')
+""".replace('@NETCONFIG@', netconfig.SCRIPT.strip())
+SECTIONS = ('link', 'addr', 'route', 'route6', 'neigh', 'bridge', 'listen', 'listen_failed', 'resolv', *netconfig.SECTIONS, 'end')
 MAX_NEIGHBOURS = 500
 
 
@@ -126,7 +129,7 @@ def parse(text: str) -> dict:
         'listeners': parse_listeners(s.get('listen', '')),
         'dns': {'nameservers': [x.split()[1] for x in resolv if x.startswith('nameserver') and len(x.split()) > 1],
                 'search': [w for x in resolv if x.startswith('search') for w in x.split()[1:]]},
-        'unreadable': unreadable, 'complete': 'end' in s}
+        'config': netconfig.read(s), 'unreadable': unreadable, 'complete': 'end' in s}
 
 
 def survey(conn: Conn, t, host_id: int, scan_id: int) -> dict:

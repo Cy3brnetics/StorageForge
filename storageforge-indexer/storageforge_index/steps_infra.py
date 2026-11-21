@@ -422,11 +422,13 @@ t_net_bridge() { local name=$1 ports=$2 address=$3 roll=$4 mgr first=${2%%,*}
     # a port has to be brought up too, or nothing moves until the next reboot, when it would all happen at once with nobody watching
     for p in ${ports//,/ }; do try nmcli connection up "sf-$name-$p" || return 0; done
   else
-    fw_arm "$roll" "rm -f /etc/systemd/network/10-sf-$name.netdev /etc/systemd/network/10-sf-$name.network /etc/systemd/network/10-sf-$name-*.network; networkctl reload; ip link del $name"
+    fw_arm "$roll" "rm -f /etc/systemd/network/10-sf-$name.netdev /etc/systemd/network/10-sf-$name.network /etc/systemd/network/10-sf-$name-*.network /etc/systemd/network/05-sf-$name-*.network; networkctl reload; ip link del $name; for q in ${ports//,/ }; do networkctl reconfigure \$q; done"
     printf '[NetDev]\nName=%s\nKind=bridge\n' "$name" >"/etc/systemd/network/10-sf-$name.netdev"
     { printf '[Match]\nName=%s\n[Network]\nDHCP=no\nLinkLocalAddressing=no\n' "$name"; [[ -n $address ]] && printf 'Address=%s\n' "$address"; } >"/etc/systemd/network/10-sf-$name.network"
-    local q; for q in ${ports//,/ }; do printf '[Match]\nName=%s\n[Network]\nBridge=%s\n' "$q" "$name" >"/etc/systemd/network/10-sf-$name-$q.network"; done
+    # 05-: networkd takes the first file in name order that matches a port, and the one netplan writes is 10-netplan-<port>.network
+    local q; for q in ${ports//,/ }; do printf '[Match]\nName=%s\n[Network]\nBridge=%s\n' "$q" "$name" >"/etc/systemd/network/05-sf-$name-$q.network"; done
     durable /etc/systemd/network; networkctl reload || true
+    for q in ${ports//,/ }; do networkctl reconfigure "$q" 2>/dev/null || true; done
   fi
   ok "bridge $name"
 }
