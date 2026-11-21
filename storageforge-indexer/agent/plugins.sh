@@ -11,7 +11,7 @@
 # a plugin exactly what its signed descriptor declares and nothing more.
 set -eu
 VERSION=0.5.7
-PLUGINS="heartbeat logs health network disks files"
+PLUGINS="heartbeat logs health network disks files scan"
 needs() {
   case $1 in
     heartbeat) printf '{}' ;;
@@ -21,6 +21,8 @@ needs() {
     disks) printf '{"mounts":["/etc/machine-id","/run/log/journal","/sys","/var/log/journal"],"capabilities":["SYS_RAWIO"],"devices":["disks"],"groups":["systemd-journal"]}' ;;
     # root on the host in effect (SYS_ADMIN): the UI and docs/agent.md say so where it is switched on, and only an admin can
     files) printf '{"mounts":["/proc"],"capabilities":["DAC_READ_SEARCH","SYS_ADMIN","SYS_PTRACE"],"namespaces":["pid"]}' ;;
+    # the read-only scans carried in the plugin: the host root read-only with the secrets masked, and no capability
+    scan) printf '{"mounts":["/","/proc","/sys"],"namespaces":["pid"]}' ;;
     *) echo "no plugin $1" >&2; exit 1 ;;
   esac
 }

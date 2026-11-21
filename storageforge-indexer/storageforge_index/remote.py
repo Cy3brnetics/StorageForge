@@ -585,14 +585,18 @@ def parse_mountinfo(text: str, df_text: str = '') -> list[MountInfo]:
 
 
 def collect_inventory(t: Transport) -> HostInventory:
-    sec = parse_sections(t.run(INVENTORY_SCRIPT, timeout=90))
+    return inventory_of(parse_sections(t.run(INVENTORY_SCRIPT, timeout=90)), t.host, local=t.local)
 
+
+def inventory_of(sec: dict[str, str], host: str, local: bool = False) -> HostInventory:
+    """The inventory from the scan's sections: the SSH scan's, or the agent's scan plugin's, which writes the sections it can read
+    from files in the same form (agentscan.py)."""
     def lines(key):
         return [l.strip() for l in sec.get(key, '').splitlines() if l.strip()]
 
-    hostname = (lines('hostname') or [t.host])[0]
+    hostname = (lines('hostname') or [host])[0]
     ips = ' '.join(lines('ip')).split()
-    ip = ips[0].split('/')[0] if ips else (None if t.local else t.host)
+    ip = ips[0].split('/')[0] if ips else (None if local else host)
     try:
         lsblk = json.loads(sec['lsblk']) if sec.get('lsblk', '').strip() else None
     except ValueError:
@@ -600,7 +604,7 @@ def collect_inventory(t: Transport) -> HostInventory:
     mounts = parse_findmnt(sec.get('findmnt', '')) or parse_mountinfo(sec.get('mountinfo', ''), sec.get('df', ''))
     fill_sizes(mounts, sec.get('df', ''))
     if not mounts:
-        raise RemoteError(f'{t.host}: could not read the mount table (findmnt and /proc/self/mountinfo both failed)')
+        raise RemoteError(f'{host}: could not read the mount table (findmnt and /proc/self/mountinfo both failed)')
     apply_mergerfs(mounts, sec.get('mergerfs', ''))
     access, user = (lines('access') + ['', ''])[:2]
     from .health import parse_report, parse_snapshots

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 
-from . import agentdisks, agentfiles, errlog
+from . import agentdisks, agentfiles, agentscan, errlog
 from .db import Database
 
 RECORDS_PER_TICK = 500
@@ -18,7 +18,8 @@ RECORDS_PER_TICK = 500
 
 def _takers() -> dict:
     return {('disks', 'smart'): agentdisks.take_smart, ('disks', 'errors'): agentdisks.take_errors,
-            ('files', 'changes'): agentfiles.take_changes, ('files', 'reads'): agentfiles.take_reads, ('files', 'watching'): agentfiles.take_watching}
+            ('files', 'changes'): agentfiles.take_changes, ('files', 'reads'): agentfiles.take_reads, ('files', 'watching'): agentfiles.take_watching,
+            ('scan', 'inventory'): agentscan.take_inventory}
 
 
 def take(db: Database, now: float | None = None) -> dict:
@@ -56,7 +57,7 @@ def take(db: Database, now: float | None = None) -> dict:
 
 def problems(conn, now: float | None = None) -> dict:
     out = {}
-    for module in (agentdisks, agentfiles):
+    for module in (agentdisks, agentfiles, agentscan):
         try:
             out.update(module.problems(conn, now))
         except Exception:

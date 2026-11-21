@@ -1,0 +1,43 @@
+# The inventory scan the scan plugin carries (roadmap section 11.4; decision of 2026-11-16: scans on an agent host are scripts carried
+# in the plugin, so no code crosses the wire per scan and only the release key decides what runs). It is compiled into the plugin's
+# program, which the release key signs, and the controller cannot send another.
+#
+# It writes the sections of the SSH scan's inventory (remote.py, INVENTORY_SCRIPT) that can be read from files, with the same names and
+# in the same form, so the controller reads them with the same parser. Every word reads; none runs a program or writes.
+#
+#   section NAME        a line @@NAME
+#   cat PATH...         the first of the files that can be read, as it is
+#   each GLOB           every file the glob names (a * in the last part only), each as it is
+#   hostname, osname, uname, machineid, ip, lsblk, ids, accounts, services, btrfs, arch    read from /proc, /sys and /etc
+#   configs PATH...     each file that is there, as PATH<TAB>base64, as the SSH scan writes them
+section hostname
+hostname
+section machineid
+machineid
+section ip
+ip
+section os
+osname
+uname
+section lsblk
+lsblk
+section mountinfo
+cat /proc/1/mountinfo
+section btrfs
+btrfs
+section ids
+ids
+section nfs
+cat /var/lib/nfs/etab /etc/exports
+each /etc/exports.d/*.exports
+section smb
+cat /etc/samba/smb.conf
+section configs
+configs /etc/fstab /etc/crypttab /etc/mdadm.conf /etc/mdadm/mdadm.conf /etc/exports /etc/exports.d/*.exports /etc/samba/*.conf
+section accounts
+accounts
+section services
+services
+section packages
+arch
+section end

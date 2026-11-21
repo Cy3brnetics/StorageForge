@@ -43,6 +43,10 @@ path = "src/bin/plugin-disks.rs"
 name = "storageforge-plugin-files"
 path = "src/bin/plugin-files.rs"
 
+[[bin]]
+name = "storageforge-plugin-scan"
+path = "src/bin/plugin-scan.rs"
+
 [dependencies]
 base64 = "0.22"
 ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
