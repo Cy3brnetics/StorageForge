@@ -351,6 +351,45 @@ def release_plugin(arch: str, name: str) -> tuple[bytes, str, str]:
     raise AgentError(f'the release has no plugin {name} for {arch}')
 
 
+# What a plugin of the release gives a host, in words, shown where plugins are switched on. A plugin that declares any privilege
+# takes agent.privilege (routes_agent.py); the files plugin is root on the host in effect, and says so first.
+PLUGIN_NOTES = {
+    'heartbeat': 'Silence noticed within seconds. Declares nothing.',
+    'logs': 'The journal pushed as it is written. Reads the journal as the systemd-journal group.',
+    'health': 'CPU, memory, disks and whether SSH is up. Reads /proc and /sys and sees the host\'s processes.',
+    'network': 'Traffic, and who is on the shares. On the host\'s network.',
+    'disks': 'SMART health of each disk and its errors as they happen. Reads the whole disks and holds SYS_RAWIO, which lets it send '
+             'a disk any command, not only reads.',
+    'files': 'ROOT ON THIS HOST IN EFFECT. Every change to every file as it happens, which process and account made it, hand edits '
+             'and reads out of hours. It holds SYS_ADMIN, SYS_PTRACE and DAC_READ_SEARCH and sees every process: it can read any file '
+             'on the host and undo the masks over SSH\'s keys, and whoever takes over the agent while it runs has what root has. '
+             'Switch it on only where that is worth it.',
+    'scan': 'The read-only scans, carried in the plugin, for a host with no SSH scan access. Reads the host\'s root read-only, with '
+            'SSH\'s and StorageForge\'s secrets masked.',
+    'sentinel': 'The sentinel\'s events through the agent. Reads the journal as the systemd-journal group.',
+}
+ROOT_IN_EFFECT = ('files',)
+
+
+def release_plugins() -> list[dict]:
+    """The plugins of the release this controller can offer, with what each declares and the words for it. Only signed ones."""
+    folder = agenttunnel.plugins_dir()
+    out = []
+    for arch in ('x86_64', 'aarch64'):
+        sub = folder / arch if folder else None
+        for d in sorted(sub.glob('*.plugin.json')) if sub and sub.is_dir() else []:
+            name = d.name.removesuffix('.plugin.json')
+            if any(p['name'] == name for p in out) or not (sub / f'{name}.plugin.sig').is_file():
+                continue
+            try:
+                needs = json.loads(d.read_bytes()[:16 << 10]).get('needs') or {}
+            except ValueError:
+                continue
+            out.append({'name': name, 'needs': needs, 'privileged': bool(needs), 'root_in_effect': name in ROOT_IN_EFFECT,
+                        'note': PLUGIN_NOTES.get(name, 'A plugin of the release.')})
+    return out
+
+
 # ── what the controller is configured with ──────────────────────────
 def agent_image() -> str:
     """The agent's image, by digest, from STORAGEFORGE_AGENT_IMAGE. There is no default: a tag can be moved to other bytes, and the
@@ -415,7 +454,7 @@ def runtime_hint(conn, name: str) -> dict:
 
 # ── the table ───────────────────────────────────────────────────────
 COLUMNS = ('host', 'enabled', 'state', 'public_key', 'fingerprint', 'runtime', 'image', 'counter', 'manifest_sha', 'detail',
-           'enrolled_at', 'updated_at', 'updated_by', 'receiver_key', 'endpoint', 'checked_at', 'check_json', 'wiped_at')
+           'enrolled_at', 'updated_at', 'updated_by', 'receiver_key', 'endpoint', 'checked_at', 'check_json', 'wiped_at', 'mode', 'host_key')
 
 
 def get(conn, name: str) -> dict | None:
@@ -431,8 +470,17 @@ def view(conn) -> list[dict]:
     for r in rows:
         d = dict(zip(COLUMNS, r))
         out.append(d | {'enabled': bool(d['enabled']), 'state': d['state'] or 'off', 'counter': d['counter'] or 0, 'public_key': None,
-                        'deploy_ready': deploy.ready(conn, d['host'])})
+                        'mode': d['mode'] or 'ssh', 'deploy_ready': deploy.ready(conn, d['host']), 'plugins': plugins_of(conn, d['host'])})
     return out
+
+
+def plugins_of(conn, name: str) -> list[str]:
+    """The plugins the manifest last signed for the host names."""
+    text = conn.scalar('SELECT manifest FROM agent_deliveries WHERE host = :h', {'h': name})
+    try:
+        return [str(e.get('name')) for e in (json.loads(text).get('plugins') or []) if isinstance(e, dict)] if text else []
+    except (ValueError, AttributeError):
+        return []
 
 
 def _save(conn, name: str, actor: str, **fields):

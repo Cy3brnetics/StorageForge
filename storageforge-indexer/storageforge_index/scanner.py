@@ -563,6 +563,14 @@ def scan_host(db: Database, t: Transport, opts: ScanOptions, log=log_err) -> dic
             except Exception as exc:
                 log(f'  schedule runs: {exc}')
         if status != 'failed':
+            try:                                           # the file index from both: what the agent's files plugin reported (agentfiles.py)
+                from .agentfiles import after_scan
+                compared = after_scan(conn, inv.hostname, scan_id)
+                if compared['unreported'] or compared['contradicted']:
+                    log(f'  agent: {compared["unreported"]} change(s) it never reported, {compared["contradicted"]} it reported that this scan contradicts')
+            except Exception as exc:
+                log(f'  agent files: {exc}')
+        if status != 'failed':
             from .hostconfig import capture
             try:
                 if capture(conn, inv.hostname)['new']:

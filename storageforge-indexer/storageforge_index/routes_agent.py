@@ -13,7 +13,7 @@ import json
 from flask import jsonify, request
 from flask_login import current_user, login_required
 
-from . import agentaction, agentdisks, agentguard, agentwatch, deploy, sfagent
+from . import agentaction, agentdisks, agentfiles, agentguard, agentwatch, deploy, sfagent
 
 
 def register(web, ctx):
@@ -30,7 +30,7 @@ def register(web, ctx):
             image = sfagent.agent_image()
         except sfagent.AgentError:
             pass
-        return jsonify(agents=sfagent.view(conn()), image=image, manager=sfagent.MANAGER, agent_user=sfagent.AGENT_USER)
+        return jsonify(agents=sfagent.view(conn()), image=image, manager=sfagent.MANAGER, agent_user=sfagent.AGENT_USER, plugins=sfagent.release_plugins())
 
     @web.put('/api/agents/<host>')
     @login_required
@@ -96,7 +96,8 @@ def register(web, ctx):
         plugin = request.args.get('plugin') or None
         return jsonify(host=name, label=agentwatch.LABEL, peer=agentwatch.peer(conn(), name),
                        records=agentwatch.records(conn(), name, plugin=plugin, limit=request.args.get('limit', 100, type=int)),
-                       actions=agentaction.recent(conn(), name, 20), disks=agentdisks.disks(conn(), name))
+                       actions=agentaction.recent(conn(), name, 20), disks=agentdisks.disks(conn(), name), files=agentfiles.recent(conn(), name, 100),
+                       files_state=agentfiles.state(conn(), name))
 
     @web.post('/api/agents/<host>/plugins')
     @login_required
@@ -117,6 +118,8 @@ def register(web, ctx):
         if (privileged or accept) and 'agent.privilege' not in current_user.permissions:
             core.audit(conn(), actor(), 'agent.plugins', 'denied', name, {'privileged': privileged, 'accept_new_key': accept})
             why = (f'{", ".join(privileged)} declares privileges on the host' if privileged else 'taking a new receiver key') + ': that takes agent.privilege, which admins hold'
+            if any(n in sfagent.ROOT_IN_EFFECT for n in privileged):
+                why += '. The files plugin is root on the host in effect'
             return jsonify(error=why, code='privilege'), 403
         try:
             got = sfagent.apply(db, name, chosen, actor=actor(), accept_new_key=accept)
@@ -124,7 +127,9 @@ def register(web, ctx):
             core.audit(conn(), actor(), 'agent.plugins', 'failed', name, {'plugins': names[:32], 'error': str(exc)[:300]})
             return refused(exc)
         core.audit(conn(), actor(), 'agent.plugins', 'ok', name, {'plugins': [json.loads(d)['name'] for d, _s, _k in chosen], 'privileged': privileged,
-                                                                   'accept_new_key': accept})
+                                                                   'root_in_effect': [n for n in privileged if n in sfagent.ROOT_IN_EFFECT], 'accept_new_key': accept})
+        if any(n in sfagent.ROOT_IN_EFFECT for n in privileged):
+            got = got | {'warning': sfagent.PLUGIN_NOTES['files']}
         return jsonify(got)
 
     @web.delete('/api/agents/<host>')
