@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 
-SECTIONS = ('vm_mac', 'quadlet')
+SECTIONS = ('vm_mac', 'quadlet', 'wl_units')
 
 BODY = r"""
 # the MAC labels of where VM disks are: each pool folder and each folder a disk sits in, with SELinux's label for it and what it should be
@@ -40,6 +41,12 @@ qfiles() {
   done
 }
 for d in /etc/containers/systemd /usr/share/containers/systemd; do qfiles root "$d"; done
+# the units that say something else runs workloads here: a container under a unit of its own, a panel, a config management agent. Names only
+sec wl_units
+has systemctl && try systemctl list-units --type=service --type=timer --all --no-legend --plain | awk '{print $1}' \
+  | grep -aE '^(container-.+|pod-.+|docker-compose@.+|podman-compose@.+|komodo-periphery|periphery|portainer.*|dockhand.*|dockge.*|coolify.*|puppet|pxp-agent|chef-client|salt-minion|ansible-pull.*|cfengine3|pvedaemon|pve-cluster)\.(service|timer)$' | head -n 200
+[ -d /etc/pve ] && echo "marker:pve"
+[ -e /etc/puppetlabs/puppet/puppet.conf ] && echo "marker:puppet"
 if [ -d /var/lib/systemd/linger ]; then
   for u in /var/lib/systemd/linger/*; do u=${u##*/}; h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6); [ -n "$h" ] && qfiles "$u" "$h/.config/containers/systemd"; done
 fi
@@ -125,9 +132,24 @@ def vm_mac(lines: list[str]) -> dict:
     return out
 
 
+UNIT = re.compile(r'[A-Za-z0-9:_.@-]{1,200}\.(service|timer)')
+
+
+def units_of(lines: list[str]) -> dict:
+    """The wl_units section: {'units': [names], 'markers': ['pve', 'puppet']}."""
+    units, markers = [], []
+    for line in lines:
+        line = line.strip()
+        if line.startswith('marker:') and line[7:] in ('pve', 'puppet'):
+            markers.append(line[7:])
+        elif UNIT.fullmatch(line):
+            units.append(line)
+    return {'units': units[:200], 'markers': sorted(set(markers))}
+
+
 def read(s: dict) -> dict:
     """What inframeasure.parse adds to a reading."""
-    return {'vm_mac': vm_mac(s.get('vm_mac', [])), 'quadlets': quadlets(s.get('quadlet', []))}
+    return {'vm_mac': vm_mac(s.get('vm_mac', [])), 'quadlets': quadlets(s.get('quadlet', [])), 'wl_units': units_of(s.get('wl_units', []))}
 
 
 # ── what the reading says about a VM's disks ────────────────────────

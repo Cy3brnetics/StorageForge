@@ -11,6 +11,7 @@ What is here:
 - [MAC at deploy](#mac-at-deploy): `:Z` labels, the `svirt_image_t` fix and AppArmor pool paths.
 - [The read side](#the-read-side-quadlets-adopting-a-workload-and-drift): Quadlets, adopting a workload by capturing it, and drift against the capture.
 - [Quiesced stacks](#quiesced-stacks): stop, snapshot, start, with the method recorded.
+- [Externally managed workloads](#externally-managed-workloads), told by what the host shows, with a warning before a step changes one.
 
 Running one container (`container`), VMs from cloud images (`vm-create`) and the VM steps are in [VMs on libvirt](vms.md) and [Cloning and migrating hosts](host-migration.md). Installing a runtime first is the `runtime-install` step in [Change plans](change-plans.md).
 
@@ -111,3 +112,20 @@ The `stack-snapshot` step snapshots what a compose stack keeps, with the stack q
 - **What is snapshotted:** each ZFS dataset and btrfs subvolume holding a folder or volume its containers mount, once each. A ZFS snapshot is `DATASET@sf-STACK-DATE`; a btrfs one is read-only, in `.storageforge-snapshots/STACK-DATE` inside the subvolume. A mount on another filesystem is named in the report and left out; when nothing is on ZFS or btrfs the check refuses the step.
 - **How it is quiesced:** *stop* (the default, and what a stateful stack needs) stops its containers, takes the snapshots and starts them again, whatever happened to the snapshots; *pause* freezes the processes instead, so the stack stays up but writes still in memory are not in the snapshot; *live* takes them as it runs, crash-consistent only, and the check warns when the stack has a database.
 - **The method is recorded** with each snapshot: as the ZFS user property `storageforge:quiesce`, and as a line (date, stack, method, snapshots) in `/var/lib/storageforge/quiesce.log` on the host, besides the run output in the deploy log.
+
+## Externally managed workloads
+
+A panel, a unit or a hypervisor that manages a workload puts back what StorageForge changes, or fights it. StorageForge tells such a workload by what the host itself shows, puts it on the Workloads page (`managed`: who and how), and warns in the plan check before a step changes it.
+
+| What shows it | Managed by |
+| :--- | :--- |
+| Container labels: Komodo, Portainer, Coolify, Dockhand, Dockge; a `managed-by` label (as Terraform modules and Helm-style tools set) | That tool |
+| `PODMAN_SYSTEMD_UNIT`, or a `container-NAME.service` unit from `podman generate systemd` | systemd: the Quadlet or unit recreates it |
+| The folder a compose project was started from: `/data/compose` (Portainer), `/opt/stacks` (Dockge) and the other panel folders the Docker page knows | That panel |
+| A compose project anywhere else | compose, as a note: the next `compose up` there puts back what is changed |
+| A panel running on the host with the container engine socket mounted (or its unit, such as `komodo-periphery`) | *possibly* that panel, as a note, for containers nothing else claims |
+| A Proxmox VE host (`/etc/pve`, `qm`, `pct`) | Proxmox VE, for its guests and its LXC containers |
+| libvirt metadata another tool wrote (oVirt, OpenStack Nova, or a namespace StorageForge does not know) | That tool |
+| A configuration management agent on the host (Puppet, Chef, Salt, ansible-pull, CFEngine) | A note on every workload there that nothing else claims |
+
+The steps that warn are `container`, `stack`, `lxc`, `incus`, `image-update`, `stack-snapshot`, `workload-action`, `workload-remove`, `vm-edit`, `vm-snapshot` and `vm-revert`. The warning says to change it in the tool that manages it, or to adopt it first. A workload made by a StorageForge step is not warned about. Platforms read through their own APIs come with the API connection kind, not from here.

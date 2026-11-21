@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 
-from . import inframeasure, wlread
+from . import inframeasure, wlmanaged, wlread
 from .db import Conn
 from .runtimes import docker
 
@@ -84,7 +84,7 @@ def from_infra(host: str, m: dict, mounts: list) -> list[dict]:
                     'networks': d.get('nics') or [], 'graphics': d.get('graphics') or [], 'ports': [], 'detail': not d.get('unreadable'), 'security': {'seclabel': d.get('seclabel')}, 'findings': _vm_findings(d) + wlread.disk_findings(m, d.get('disks') or []),
                     'disks': [{k: x.get(k) for k in ('target', 'device', 'bus', 'format', 'source', 'backing', 'readonly')} for x in d.get('disks') or []],
                     'snapshots': [{k: x.get(k) for k in ('name', 'state', 'parent', 'created', 'current', 'location', 'disk_only', 'description')} for x in d.get('snapshots') or []],
-                    'agent': d.get('agent'), 'machine': d.get('machine'), 'cpu_mode': d.get('cpu_mode'), 'serial': d.get('serial'), 'osinfo': d.get('osinfo')})
+                    'agent': d.get('agent'), 'machine': d.get('machine'), 'cpu_mode': d.get('cpu_mode'), 'serial': d.get('serial'), 'osinfo': d.get('osinfo'), 'metadata_ns': d.get('metadata_ns') or []})
     for i in m.get('incus') or []:
         priv = (i.get('security') or {}).get('security.privileged') == 'true'
         devs = i.get('devices') or {}
@@ -122,6 +122,7 @@ def listing(conn: Conn, host: str | None = None) -> dict:
         if m:
             out += from_infra(name, m, mounts)
         wlread.with_quadlets(out, name, (m or {}).get('quadlets') or [])
+        wlmanaged.annotate(out, name, m)       # what something else manages, from what the host shows
         hosts.append({'host': name, 'engine': (view or {}).get('engine'), 'containers_read_at': (view or {}).get('updated_at'), 'measured_at': (m or {}).get('measured_at'), 'measure_stale': (m or {}).get('stale')})
     from . import wlcapture
     wlcapture.annotate(conn, out)          # adopted workloads, with their drift against the capture
