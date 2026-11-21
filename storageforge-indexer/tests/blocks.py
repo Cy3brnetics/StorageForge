@@ -35,6 +35,9 @@ HEAVY = {
     'test_agent.RealDocker',         # the agent's real image, built, pushed to a registry started for the test, and run by the real Docker
     'test_agent_files.InDocker',     # the real files plugin under the real kernel's fanotify, in a container with its capabilities
     'test_infra.RealDocker',
+    'test_workload_steps.RealDockerStack',   # a compose stack brought up and taken down by the real Docker
+    'test_image_update.RealDockerUpdate',    # an update and its rollback on a failed healthcheck, by the real Docker
+    'test_workload_capture.RealDockerCapture',   # a container started by the real Docker, scanned and captured as compose
     'test_infra.RealIptables',
     'test_infra.RealNft',
     'test_nettransport.RealSshTerminal',

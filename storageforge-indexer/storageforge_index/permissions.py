@@ -128,6 +128,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (('DELETE',), r'/api/security/worm/policies/\d+', 'security.emergency'),
     (('POST',), r'/api/security/(worm/freeze|worm/policies|incident/clean-room/sweep|playbooks|playbooks/runs/\d+)', 'security.emergency'),
     (('DELETE',), r'/api/security/playbooks/\d+', 'security.emergency'),
+    (('POST', 'DELETE'), r'/api/workloads/captures(/\d+)?', 'plans.edit'),      # adopting a workload saves its capture, as saving a plan does
     (READ, r'/api/workloads(/.*)?', 'workloads.view'),
     (READ, r'/api/netscan(/.*)?', 'netscan.view'),
     (_WRITE, r'/api/netscan(/.*)?', 'netscan.run'),
@@ -145,6 +146,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (_WRITE, r'/api/devices(/.*)?', 'devices.manage'),
     (READ, r'/api/map/(exposure|reach|coverage)', 'security.view'),
     (READ, r'/api/map/designs/\d+/export', 'plans.scripts'),
+    (READ, r'/api/changes/\d+/export/(terraform|opentofu|puppet)', 'plans.scripts'),     # a change plan's workloads as Terraform, OpenTofu or Puppet
     (READ, r'/api/(network|map(/.*)?)', 'map.view'),
     (_WRITE, r'/api/map/(views|manual|annotations)(/\d+)?', 'map.edit'),
     (('POST',), r'/api/map/whatif', 'security.view'),

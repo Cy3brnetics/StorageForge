@@ -131,8 +131,8 @@ Everything that can be tested without the owner's items above.
 
 | Item | How | Status |
 | :--- | :--- | :--- |
-| **Reverse proxies** | Caddy, nginx, Traefik and HAProxy installed on lab hosts, their routes read and drawn | open |
-| **Identity providers** | Keycloak, Authentik, Authelia and LLDAP in containers | open |
+| **Reverse proxies** | Caddy, nginx, Traefik and HAProxy installed on lab hosts, their routes read and drawn | written as tier 28 on 2026-11-20, not run |
+| **Identity providers** | Keycloak, Authentik, Authelia and LLDAP in containers | written as tier 28 on 2026-11-20, not run |
 | **Tailscale** | Headscale as the control server, real Tailscale clients, the `tailscale` step joining and leaving | open |
 | **Terraform and Puppet exports** | OpenTofu and Puppet installed; validate, then apply: `puppet apply` on a lab host, OpenTofu with the libvirt provider | open |
 | **Host migration phase 1b** | Image-based and transactional systems (Fedora CoreOS or bootc, MicroOS) as lab images | open |
@@ -279,15 +279,17 @@ Built: running a container, VMs from cloud images (`vm-create`), defining a VM, 
 
 | Item | What | Status |
 | :--- | :--- | :--- |
-| **`stack` and `lxc` steps** | Each carrying its firewall rule and labels; Incus instances too | open |
-| **Image updates** | With rollback on a failed healthcheck | open |
-| **VMs from ISOs** | Cloud images are built | open |
-| **Placement advice** | A pool on a dataset tuned for its use, databases off the bulk pool, warnings for bind mounts on network filesystems, and a warning when data sits where no hold or offsite copy reaches | open |
-| **MAC at deploy** | `:Z` labels, the `svirt_image_t` fix as a plan step, AppArmor pool paths | open |
-| **Read side** | Podman Quadlets; adopting a workload by capturing it as compose, Quadlet, libvirt XML or Incus YAML, with drift against the capture | open |
-| **Quiesced stacks** | Stop, snapshot, start for stateful stacks, with the method recorded (VMs already freeze through the guest agent) | open |
-| **Externally managed** | Detect a workload something else manages, and warn before changing it | open |
-| **Exports** | Terraform, OpenTofu and Puppet for workloads, with round-trip tests | open |
+| **`stack` and `lxc` steps** | Each carrying its firewall rule and labels; Incus instances too | built 2026-11-20, not lab-tested (`841be70`); no step yet to remove a stack or an LXC container |
+| **Image updates** | With rollback on a failed healthcheck | built 2026-11-20, not lab-tested (`38a2f77`) |
+| **VMs from ISOs** | Cloud images are built | built 2026-11-20, not lab-tested (`dd72566`); unattended installs wait for an answer file with a vault secret; no TrueNAS or OPNsense ISO (no stable checksum list) |
+| **Placement advice** | A pool on a dataset tuned for its use, databases off the bulk pool, warnings for bind mounts on network filesystems, and a warning when data sits where no hold or offsite copy reaches | built 2026-11-20, not lab-tested (`1c284bb`) |
+| **MAC at deploy** | `:Z` labels, the `svirt_image_t` fix as a plan step, AppArmor pool paths | built 2026-11-20, not lab-tested (`dc22460`) |
+| **Read side** | Podman Quadlets; adopting a workload by capturing it as compose, Quadlet, libvirt XML or Incus YAML, with drift against the capture | built 2026-11-20, not lab-tested (`8de9cee`); adopt, drift and export are API routes with no buttons yet; Podman paths tested only against stand-ins |
+| **Quiesced stacks** | Stop, snapshot, start for stateful stacks, with the method recorded (VMs already freeze through the guest agent) | built 2026-11-20, not lab-tested (`fe4940c`), on ZFS or btrfs |
+| **Externally managed** | Detect a workload something else manages, and warn before changing it | host-side detection built 2026-11-20, not lab-tested (`e92ca19`); reading it through platform APIs is open |
+| **Exports** | Terraform, OpenTofu and Puppet for workloads, with round-trip tests | built 2026-11-20, not lab-tested (`d7fa31b`); validation skips where tofu, terraform or puppet is not installed |
+
+Lab tier 28 (workloads, and 1.3's reverse proxies and identity providers) is written and has not run.
 
 [Workload roadmap](archive/roadmaps/workload-platform-roadmap.md) for field lists, and the [merged plan](archive/roadmaps/infrastructure-platform-roadmap.md#7-workloads-in-detail) where they differ.
 

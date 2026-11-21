@@ -45,6 +45,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Disaster recovery](disaster-recovery.md) | What to keep elsewhere, and rebuilding on a new machine |
 | [Console](console.md) | A terminal on a host or VM in the browser: SSH over LAN or Tailscale, or a VM's serial console, with every session audited and optionally recorded in full |
 | [VMs on libvirt](vms.md) | The VM panel, disk-only snapshots with filesystems frozen by the guest agent, revert and delete, scheduled VM snapshots and backups, changing a VM, libvirt networks and pools, and copying a VM as it is to another libvirt host |
+| [Workloads](workloads.md) | Compose stacks, LXC containers and Incus instances with their labels and firewall rules, image updates with rollback, VMs from ISOs, placement advice, MAC at deploy, Quadlets, adopting a workload with drift, quiesced stacks, externally managed workloads, and Terraform, OpenTofu and Puppet exports. Built, not lab-tested |
 | [Cloning and migrating hosts](host-migration.md) | Copying a server or desktop between physical machines and VMs in any direction, for testing or migration. Design; the package list is built |
 | [Target hosts](target-hosts.md) | What a scanned or changed machine needs, and SSH for sending snapshots |
 | [Network devices](network-devices.md) | Routers, switches and firewalls, the one network language, changes with a rollback on the device, the opt-in scanner, the management planner |

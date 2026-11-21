@@ -14,7 +14,7 @@ import time
 
 from . import alerts, deploy, firewall, netfacts, security
 from .db import Conn
-from . import accessproxies, confread, overlays, tunnels
+from . import accessproxies, confread, overlays, tunnels, wlread
 from .runtimes import docker, guests
 
 MEASURE_EVERY = 6 * 3600
@@ -22,7 +22,7 @@ OFF_KEY = 'infra.read.off'
 SECTIONS = ('tools', 'fw_state', 'nft', 'iptables', 'ip6tables', 'ufw', 'firewalld', 'listeners', 'storage_clients', 'libvirt', 'libvirt_snap', 'libvirt_net', 'libvirt_pool',
             'incus', 'lxc', 'proxmox', 'podman', 'wireguard', 'tailscale', 'netbird', 'headscale', 'tailscale_json', 'netbird_json', 'zt_info', 'zt_networks', 'zt_peers', 'headscale_json',
             'openvpn_status', 'openvpn_pki', 'nebula_conf', 'nebula_cert', 'netmaker_json', 'swan_sas', 'swan_conns', 'ziti_status', 'tp_status', 'tp_nodes', 'tp_conf',
-            'tp_login', 'boundary_targets', 'boundary_conf', 'pomerium_conf', 'cloudflared', 'frp', 'ngrok', 'tunnel_procs', 'tunnel_cmdline', 'caddy', 'nginx', 'units', 'end')
+            'tp_login', 'boundary_targets', 'boundary_conf', 'pomerium_conf', 'cloudflared', 'frp', 'ngrok', 'tunnel_procs', 'tunnel_cmdline', 'caddy', 'nginx', 'units', 'vm_mac', 'quadlet', 'wl_units', 'end')
 PVE_KEYS = '^(cores|memory|onboot|unprivileged|net[0-9]+|(scsi|virtio|sata|ide|efidisk|tpmstate|mp)[0-9]+|rootfs): '
 BODY = r"""
 sec() { printf '\n@@%s\n' "$1"; }
@@ -198,7 +198,7 @@ def script() -> str:
             f'PVE_KEYS={shlex.quote(PVE_KEYS)}\nFMT={shlex.quote(fmt)}\n{SCRUB_VARS}' + BODY)
 
 
-BODY = BODY.replace('@SECRET_LINE@', tunnels.SECRET_LINE)
+BODY = BODY.replace('@SECRET_LINE@', tunnels.SECRET_LINE).replace('\nsec end\n', '\n' + wlread.BODY + 'sec end\n')     # what workloads add (wlread.py)
 # The index of an OpenSSL CA, one certificate to a line: of the subject only the common name is printed, never an email address
 PKI_AWK = '{ cn = $6; if (!sub(/.*\\/CN=/, "", cn)) cn = ""; sub(/\\/.*/, "", cn); print "i", $1, $2, $3, $4, cn }'
 SCRUB_VARS = f'SCRUB_RE={shlex.quote(confread.SECRET_LINE)}\nSCRUB_AWK={shlex.quote(confread.SCRUB_AWK)}\nPKI_AWK={shlex.quote(PKI_AWK)}\n'
@@ -401,7 +401,7 @@ def parse(text: str) -> dict | None:
     return {'tools': tools, 'firewall': fw, 'listeners': parse_listeners(s.get('listeners', [])), 'storage_clients': parse_storage_clients(s.get('storage_clients', [])),
             'libvirt': guests.with_snapshots(guests.parse_libvirt(s.get('libvirt', [])), guests.parse_libvirt_snapshots(s.get('libvirt_snap', []))), 'libvirt_networks': guests.parse_libvirt_networks(s.get('libvirt_net', [])),
             'libvirt_pools': guests.parse_libvirt_pools(s.get('libvirt_pool', [])), 'incus': guests.parse_incus(s.get('incus', [])), 'lxc': guests.parse_lxc(s.get('lxc', [])),
-            'proxmox': guests.parse_proxmox(s.get('proxmox', [])), 'podman_rootless': _podman(s.get('podman', [])), 'access': parse_access(s, tools)}
+            'proxmox': guests.parse_proxmox(s.get('proxmox', [])), 'podman_rootless': _podman(s.get('podman', [])), 'access': parse_access(s, tools), **wlread.read(s)}
 
 
 def measure(db, conn: Conn, host, actor: str) -> dict:

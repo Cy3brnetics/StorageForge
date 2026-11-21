@@ -228,6 +228,8 @@ NO_FRESH_PASSWORD = {
     ('DELETE', '/api/console/sessions/<sid>'),        # closing a session of your own
     ('PUT', '/api/vm/specs/<name>'),               # a VM spec only fills a step's empty fields when a plan is saved: nothing runs
     ('DELETE', '/api/vm/specs/<name>'),
+    ('POST', '/api/workloads/captures'),          # adopting a workload saves its capture in the database: nothing runs on a host
+    ('DELETE', '/api/workloads/captures/<int:cid>'),
     ('POST', '/api/deploy/check'),
     ('POST', '/api/deploy/groups/<gid>/cancel'),
     ('POST', '/api/deploy/jobs/<jid>/browse'),

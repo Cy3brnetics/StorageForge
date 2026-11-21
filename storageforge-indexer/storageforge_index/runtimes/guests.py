@@ -68,6 +68,8 @@ def parse_domain(text: str | None) -> dict | None:
         if tgt is not None and tgt.get('name') == 'org.qemu.guest_agent.0':
             agent = tgt.get('state') or 'defined'      # connected or disconnected on a running VM; defined on one that is off
     osinfo = next((e.get('id') for e in root.iter() if e.tag.endswith('}os') and e.get('id', '').startswith('http')), None)
+    meta = root.find('metadata')       # who else keeps data on this VM: each child of <metadata> is in its own namespace (wlmanaged.py)
+    metadata_ns = sorted({c.tag[1:].split('}')[0] for c in (meta if meta is not None else []) if c.tag.startswith('{')})
     loader = None if os_el is None else os_el.find('loader')
     return {'name': root.findtext('name'), 'uuid': root.findtext('uuid'), 'vcpus': root.findtext('vcpu'), 'memory_mib': int(mib) if mib is not None else None,
             'disks': disks, 'nics': nics, 'graphics': graphics, 'tpm': root.find('./devices/tpm') is not None,
@@ -76,7 +78,7 @@ def parse_domain(text: str | None) -> dict | None:
             'machine': None if typ is None else typ.get('machine'), 'arch': None if typ is None else typ.get('arch'),
             'cpu_mode': None if cpu is None else cpu.get('mode'), 'agent': agent, 'osinfo': osinfo,
             'serial': root.find('./devices/serial') is not None or root.find('./devices/console') is not None,
-            'seclabel': None if sec is None else {'type': sec.get('type'), 'model': sec.get('model'), 'label': sec.findtext('label')}}
+            'seclabel': None if sec is None else {'type': sec.get('type'), 'model': sec.get('model'), 'label': sec.findtext('label')}, 'metadata_ns': metadata_ns}
 
 
 def parse_libvirt(lines: list[str]) -> list[dict]:

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 
-from . import inframeasure
+from . import inframeasure, wlmanaged, wlread
 from .db import Conn
 from .runtimes import docker
 
@@ -59,7 +59,7 @@ def _container(host, runtime, c, mounts, volumes, stack=None, user=None) -> dict
     return {'host': host, 'runtime': runtime, 'kind': 'container', 'name': c.get('name'), 'state': c.get('state'), 'image': image, 'digests': c.get('digests') or [], 'stack': stack, 'user': user,
             'mounts': ms, 'ports': c.get('ports') or [], 'networks': c.get('networks') or [], 'health': c.get('health'), 'panel': panel, 'detail': bool(c.get('detail')),
             'security': {k: c.get(k) for k in ('privileged', 'cap_add', 'cap_drop', 'security_opt', 'readonly_root', 'apparmor', 'selinux', 'network_mode')} if c.get('detail') else None,
-            'findings': container_findings(c)}
+            'labels': c.get('labels') or {}, 'restart': c.get('restart'), 'findings': container_findings(c)}
 
 
 def _vm_findings(d: dict) -> list[str]:
@@ -81,16 +81,16 @@ def from_infra(host: str, m: dict, mounts: list) -> list[dict]:
     for d in m.get('libvirt') or []:
         out.append({'host': host, 'runtime': 'libvirt', 'kind': 'vm', 'name': d.get('name'), 'state': d.get('state'), 'autostart': d.get('autostart'), 'vcpus': d.get('vcpus'), 'memory_mib': d.get('memory_mib'), 'firmware': d.get('firmware'), 'tpm': d.get('tpm'),
                     'mounts': [{'kind': 'disk', 'source': x.get('source'), 'dest': x.get('target'), 'format': x.get('format'), 'rw': not x.get('readonly'), 'on': sits_on(mounts, x.get('source'))} for x in d.get('disks') or [] if x.get('device') != 'cdrom'],
-                    'networks': d.get('nics') or [], 'graphics': d.get('graphics') or [], 'ports': [], 'detail': not d.get('unreadable'), 'security': {'seclabel': d.get('seclabel')}, 'findings': _vm_findings(d),
+                    'networks': d.get('nics') or [], 'graphics': d.get('graphics') or [], 'ports': [], 'detail': not d.get('unreadable'), 'security': {'seclabel': d.get('seclabel')}, 'findings': _vm_findings(d) + wlread.disk_findings(m, d.get('disks') or []),
                     'disks': [{k: x.get(k) for k in ('target', 'device', 'bus', 'format', 'source', 'backing', 'readonly')} for x in d.get('disks') or []],
                     'snapshots': [{k: x.get(k) for k in ('name', 'state', 'parent', 'created', 'current', 'location', 'disk_only', 'description')} for x in d.get('snapshots') or []],
-                    'agent': d.get('agent'), 'machine': d.get('machine'), 'cpu_mode': d.get('cpu_mode'), 'serial': d.get('serial'), 'osinfo': d.get('osinfo')})
+                    'agent': d.get('agent'), 'machine': d.get('machine'), 'cpu_mode': d.get('cpu_mode'), 'serial': d.get('serial'), 'osinfo': d.get('osinfo'), 'metadata_ns': d.get('metadata_ns') or []})
     for i in m.get('incus') or []:
         priv = (i.get('security') or {}).get('security.privileged') == 'true'
         devs = i.get('devices') or {}
         out.append({'host': host, 'runtime': 'incus', 'kind': 'vm' if i.get('type') == 'vm' else 'instance', 'name': i.get('name'), 'state': i.get('state'),
                     'mounts': [{'kind': 'disk', 'source': v.get('source') or v.get('pool'), 'dest': v.get('path'), 'on': sits_on(mounts, v.get('source'))} for v in devs.values() if v.get('type') == 'disk'],
-                    'networks': [{'source': v.get('network') or v.get('parent'), 'type': v.get('nictype')} for v in devs.values() if v.get('type') == 'nic'], 'ports': [], 'detail': True, 'security': i.get('security') or {},
+                    'networks': [{'source': v.get('network') or v.get('parent'), 'type': v.get('nictype')} for v in devs.values() if v.get('type') == 'nic'], 'ports': [], 'detail': True, 'security': i.get('security') or {}, 'profiles': i.get('profiles') or [], 'devices': devs,
                     'findings': ['privileged instance'] if priv else []})
     for i in m.get('lxc') or []:
         out.append({'host': host, 'runtime': 'lxc', 'kind': 'instance', 'name': i.get('name'), 'state': i.get('state'), 'mounts': [], 'networks': [], 'ports': [], 'detail': False, 'security': None, 'findings': []})
@@ -121,7 +121,11 @@ def listing(conn: Conn, host: str | None = None) -> dict:
         m = inframeasure.reading(conn, name)
         if m:
             out += from_infra(name, m, mounts)
+        wlread.with_quadlets(out, name, (m or {}).get('quadlets') or [])
+        wlmanaged.annotate(out, name, m)       # what something else manages, from what the host shows
         hosts.append({'host': name, 'engine': (view or {}).get('engine'), 'containers_read_at': (view or {}).get('updated_at'), 'measured_at': (m or {}).get('measured_at'), 'measure_stale': (m or {}).get('stale')})
+    from . import wlcapture
+    wlcapture.annotate(conn, out)          # adopted workloads, with their drift against the capture
     return {'workloads': out, 'hosts': hosts}
 
 
