@@ -113,6 +113,9 @@ PLATFORM = {
     'FIDO2 step-up': {'unit': ['test_platform_more.Webauthn', 'test_platform_more.StepUp'], 'lab': [], 'why': 'Needs a physical token. Chromium\'s virtual authenticator is the closest a browser test gets.'},
     'Device transports: SSH terminal, Telnet, legacy SSH and sealed device passwords': {'unit': ['test_nettransport.Telnet', 'test_nettransport.RealSshTerminal', 'test_nettransport.Legacy', 'test_nettransport.Credentials'], 'lab': [], 'why': 'Tier 12 needs the router VMs, which are phase 8 of the networking roadmap. Until then a real sshd with a simulated switch shell, and a real socket server speaking RFC 854. No real router has been connected to, and SSH password logins have not run, since they need root sshd.'},
     'Terraform and Puppet exports': {'unit': ['test_platform_more.Exports'], 'lab': [(10, 'exports-redacted')]},
+    'Toolbox: catalog, signatures, installs and adapters': {'unit': ['test_toolbox.Schema', 'test_toolbox.Signatures', 'test_toolbox.Staging', 'test_toolbox_steps.Steps', 'test_toolbox_adapters.Adapters',
+                                                                    'test_toolbox_routes.Routes', 'test_browser_toolbox.BrowserToolbox'],
+                                                           'lab': [(29, 'tb-signed'), (29, 'tb-tampered'), (29, 'tb-kuma-rootless'), (29, 'tb-kuma-remove'), (29, 'tb-wg-pair'), (29, 'tb-plan-changed')]},
 }
 
 # On the roadmap and not built: nothing to test yet. docs/kvm-lab.md lists tier 12 for it, and tiers_network.py does not exist.
