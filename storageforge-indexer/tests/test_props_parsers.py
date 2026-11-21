@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from props import HAVE, given, settings, st, scaled
-from storageforge_index import (apireadback, authkeys, cisco, clamav, firewall, gitrepos, health, hostconfig, hostlogs, inframeasure, netconfig, netconsole, netfacts, netscan, openwrt, payloads,
+from storageforge_index import (apipve, apireadback, authkeys, cisco, clamav, firewall, gitrepos, health, hostconfig, hostlogs, inframeasure, netconfig, netconsole, netfacts, netscan, openwrt, payloads,
                                 pfsense, pkglist, preflight, pstore, remote, routeros, secplus, security, snapfind, steps_services, updates)
 
 FIX = Path(__file__).parent / 'fixtures'
@@ -95,6 +95,8 @@ READS = {
     'inframeasure.parse_tunnels': lambda t: inframeasure.parse_tunnels({k: t.splitlines() for k in ('cloudflared', 'frp', 'ngrok', 'tunnel_procs', 'tunnel_cmdline')}),
     'inframeasure.parse_proxy_routes': lambda t: inframeasure.parse_proxy_routes(t.splitlines(), t.splitlines()[::-1]),
     'apireadback.parse_permissions': apireadback.parse_permissions, 'apireadback.parse_token_info': apireadback.parse_token_info,
+    'apipve.parse_version': apipve.parse_version, 'apipve.parse_resources': apipve.parse_resources, 'apipve.parse_backup_jobs': apipve.parse_backup_jobs,
+    'apipve.parse_backups': apipve.parse_backups,
 }
 SECTIONED_READS = {'netfacts.parse': (netfacts.parse, netfacts.SECTIONS), 'inframeasure.parse': (inframeasure.parse, inframeasure.SECTIONS),
                    'remote.parse_sections': (remote.parse_sections, remote.SECTIONS), 'security.parse_measure': (security.parse_measure, getattr(security, 'SECTIONS', ('end',)))}

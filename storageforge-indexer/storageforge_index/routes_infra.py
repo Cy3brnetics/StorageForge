@@ -7,7 +7,7 @@ import time
 from flask import Response, jsonify, request
 from flask_login import current_user, login_required
 
-from . import changes, desktop, exposure, graph, infragraph, inframeasure, mapdesign, mapexport, netdevice, netfacts, osoffer, reach, security, sfnetwork, whatif, workloads
+from . import apiviews, changes, desktop, exposure, graph, infragraph, inframeasure, mapdesign, mapexport, netdevice, netfacts, osoffer, reach, security, sfnetwork, whatif, workloads
 
 
 def register(web, ctx):
@@ -38,6 +38,8 @@ def register(web, ctx):
             g['nodes'] += extra['nodes']
             known = {n['id'] for n in g['nodes']}
             g['edges'] += [e for e in extra['edges'] if e['dst'] in known]
+        if not request.args.get('host'):
+            apiviews.map_extra(conn(), g, layers)          # what platform API connections read, beside the scans: source api
         if 'storage' not in layers:           # the hosts everything hangs from stay, and the rest of storage goes
             g['nodes'] = [n for n in g['nodes'] if n['layer'] != 'storage' or n['kind'] == 'Host']
             ids = {n['id'] for n in g['nodes']}
@@ -317,7 +319,8 @@ def register(web, ctx):
     @web.get('/api/workloads')
     @login_required
     def api_workloads():
-        return jsonify(workloads.listing(conn(), request.args.get('host') or None))
+        host = request.args.get('host') or None
+        return jsonify(apiviews.annotate_workloads(conn(), workloads.listing(conn(), host), host))   # the API beside the scan, compared
 
     @web.get('/api/workloads/libvirt')
     @login_required

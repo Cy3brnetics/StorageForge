@@ -338,6 +338,8 @@ class App:
                 done['devices'] = netdevice.tick(self.db)
                 done['netscan'] = netscan.tick(self.db)
                 done['agents'] = agentguard.tick(self.db)      # wipe and stop: each agent checked from outside, over SSH
+                from . import apiread
+                done['platforms'] = apiread.tick(self.db)       # platform API connections due a read, with the read-back of each token
                 if any(done.values()):
                     self.alerts_wake.set()
             except Exception:
