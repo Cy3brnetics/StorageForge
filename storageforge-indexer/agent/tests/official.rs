@@ -193,3 +193,55 @@ fn network_reports_traffic_and_who_is_on_the_shares() {
     let traffic = p.reading("traffic", 5);
     assert!(traffic["interfaces"].as_array().unwrap().iter().any(|i| i["name"] == "lo"), "{traffic}");
 }
+
+#[test]
+fn disks_reads_each_disk_and_says_its_errors_as_they_come() {
+    let host = folder("disks");
+    let machine = "0123456789abcdef0123456789abcdef";
+    put(&host, "etc/machine-id", &format!("{machine}\n"));
+    put(&host, "sys/block/sda/device/model", "WDC WD40EFRX\n");
+    put(&host, "sys/block/sda/device/ioerr_cnt", "0x0\n");
+    put(&host, "sys/block/sda/queue/rotational", "1\n");
+    put(&host, "sys/block/nvme0n1/device/serial", "S4EWNX0R\n");
+    put(&host, "sys/block/md0/md/dev-sda1/errors", "0\n");
+    std::fs::create_dir_all(host.join("sys/block/loop0")).unwrap();
+    // the disks stand in as plain files: the plugin opens them and the disk commands are refused, which it says per disk
+    put(&host, "dev/sda", "");
+    let dir = host.join("var/log/journal").join(machine);
+    std::fs::create_dir_all(&dir).unwrap();
+    let remote = Path::new(REMOTE).exists();
+    if remote {
+        // a host has its journal before the plugin starts: what is in it was a scan's to collect
+        journal(&dir, &[("3", "blk_update_request: I/O error, dev sdz, sector 1 (before the plugin ran)")]);
+    }
+    let p = Plugin::start(env!("CARGO_BIN_EXE_storageforge-plugin-disks"), "disks", &host, Value::Null);
+    let smart = p.reading("smart", 5);
+    let disks = smart["disks"].as_array().unwrap();
+    assert_eq!(disks.iter().map(|d| d["dev"].as_str().unwrap()).collect::<Vec<_>>(), ["nvme0n1", "sda"], "whole disks only");
+    assert_eq!((disks[1]["model"].as_str(), disks[1]["kind"].as_str(), disks[1]["rotational"].as_bool()), (Some("WDC WD40EFRX"), Some("ata"), Some(true)));
+    assert!(disks[1]["error"].is_string() && disks[1].get("smartctl").is_none(), "{}", disks[1]);
+    assert!(disks[0]["error"].as_str().unwrap().contains("could not be opened"), "{}", disks[0]);
+    let first = p.reading("errors", 5);
+    assert_eq!((first["ioerr"]["sda"].as_u64(), first["md"]["md0/sda1"].as_u64(), first["first"].as_bool()), (Some(0), Some(0), Some(true)));
+    // the kernel counts a failed command, and md a member's error: said at the next look
+    put(&host, "sys/block/sda/device/ioerr_cnt", "0x3\n");
+    put(&host, "sys/block/md0/md/dev-sda1/errors", "2\n");
+    let next = p.reading("errors", 20);
+    assert_eq!((next["ioerr"]["sda"].as_u64(), next["md"]["md0/sda1"].as_u64(), next["first"].as_bool()), (Some(3), Some(2), Some(false)));
+    if remote {
+        // a kernel line that says a disk failed, written now: pushed with the disk it names; others are not the disks plugin's
+        let mut text = String::new();
+        let entries = [("kernel", "blk_update_request: I/O error, dev sda, sector 2048 op 0x0:(READ)"), ("kernel", "EXT4-fs (sdb1): mounted"), ("syslog", "I/O error in my app")];
+        for (i, (transport, message)) in entries.iter().enumerate() {
+            text += &format!("__REALTIME_TIMESTAMP={}\n__MONOTONIC_TIMESTAMP={}\n_BOOT_ID={machine}\nPRIORITY=3\nMESSAGE={message}\n_TRANSPORT={transport}\n\n", 1795000000000000u64 + i as u64, 1000 + i);
+        }
+        std::fs::write(dir.join("in.export"), text).unwrap();
+        let out = Command::new(REMOTE).arg(format!("--output={}", dir.join("system.journal").display())).arg(dir.join("in.export")).output().unwrap();
+        assert!(out.status.success());
+        std::fs::remove_file(dir.join("in.export")).unwrap();
+        let got = p.reading("errors", 30);
+        let lines = got["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 1, "{got}");
+        assert_eq!(lines[0]["dev"], "sda");
+    }
+}

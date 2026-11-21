@@ -116,6 +116,8 @@ def ssh_said(conn: Conn, host: str, now: float | None = None) -> dict | None:
 def problems(conn: Conn, now: float | None = None) -> dict:
     now = int(now or time.time())
     out = agentaction.problems(conn, now)
+    from . import agentplugins
+    out.update(agentplugins.problems(conn, now))     # the disks, files, scan and sentinel plugins
     for host in silent_beats(conn, now):
         out[f'agent-silent:{host}'] = ('agent-silent', host, f'The agent on {host} went silent',
                                        f'its heartbeat stopped more than {BEAT_SILENT_SECS} seconds ago: stopped, wiped, cut off, or hiding what it sees. Scans over SSH go on', 'warn')

@@ -8,7 +8,7 @@
 //! is what runs, whatever happens to the file in the plugin folder afterwards.
 //!
 //! **Running.** The child gets an empty environment, the three pipes and no other open file, cannot gain privileges
-//! (`no_new_privs`), holds no ambient capability unless its descriptor declares one, and dies with the agent.
+//! (`no_new_privs`), holds no ambient capability but the ones its own descriptor declares, and dies with the agent.
 //!
 //! **The protocol** (version 1). Every message is one frame of JSON, at most `MAX_MESSAGE` bytes.
 //!
@@ -180,7 +180,7 @@ pub fn load(dir: &Path, entry: &Entry, anchors: &Anchors) -> Result<Loaded, Refu
 /// Starts a loaded plugin. Its stdin, stdout and stderr are pipes.
 pub fn spawn(loaded: &Loaded) -> std::io::Result<Child> {
     let fd = loaded.program.as_raw_fd();
-    let keeps_capabilities = !loaded.descriptor.needs.capabilities.is_empty();
+    let declared = crate::caps::mask_of(&loaded.descriptor.needs.capabilities);
     let mut command = Command::new(format!("/proc/self/fd/{fd}"));
     command.arg0(format!("sfplugin-{}", loaded.descriptor.name)).env_clear().current_dir("/").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     unsafe {
@@ -189,8 +189,11 @@ pub fn spawn(loaded: &Loaded) -> std::io::Result<Child> {
             let must = |rc: libc::c_int| if rc == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) };
             must(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0))?;
             must(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0))?;
-            if !keeps_capabilities {
+            // the plugin's own declared capabilities, and none of another plugin's (caps.rs)
+            if declared == 0 {
                 must(libc::prctl(libc::PR_CAP_AMBIENT, libc::PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0))?;
+            } else {
+                crate::caps::limit_ambient(declared)?;
             }
             let none = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
             must(libc::setrlimit(libc::RLIMIT_CORE, &none))?;

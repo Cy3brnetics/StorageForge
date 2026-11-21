@@ -293,7 +293,7 @@ pub fn container_args(kind: Kind, spec: &Spec) -> Vec<String> {
     let n = &spec.needs;
     let mut a = words(&["run", "-d", "--name", NAME, "--restart", if podman { "always" } else { "unless-stopped" }]);
     a.extend(words(&["--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges"]));
-    a.extend(["--user".to_string(), format!("{}:{}", spec.uid, spec.gid)]);
+    a.extend(["--user".to_string(), user_of(kind, spec)]);
     if rootless {
         // sfagent inside is sfagent outside, and nobody inside is root on the host
         a.extend(words(&["--userns", "keep-id"]));
@@ -337,6 +337,12 @@ pub fn container_args(kind: Kind, spec: &Spec) -> Vec<String> {
     for cap in &n.capabilities {
         a.extend(["--cap-add".to_string(), cap.clone()]);
     }
+    if starts_as_root(kind, spec) {
+        // what it takes to give up root and keep only the declared capabilities, and what the agent drops at once (caps.rs)
+        for cap in BECOME_CAPS {
+            a.extend(["--cap-add".to_string(), cap.to_string()]);
+        }
+    }
     if rootless && !n.groups.is_empty() {
         a.extend(words(&["--group-add", "keep-groups"]));
     } else {
@@ -348,7 +354,28 @@ pub fn container_args(kind: Kind, spec: &Spec) -> Vec<String> {
         a.extend(["--device".to_string(), format!("{device}:{device}:r")]);
     }
     a.extend([spec.image.clone(), "run".to_string()]);
+    if starts_as_root(kind, spec) {
+        a.extend(["--as".to_string(), format!("{}:{}", spec.uid, spec.gid)]);
+    }
     a
+}
+
+/// The capabilities a container that starts as root holds for the moment it takes the agent to give root up (caps.rs).
+pub const BECOME_CAPS: [&str; 3] = ["SETGID", "SETPCAP", "SETUID"];
+
+/// Whether the agent's container starts as root, to give root up for `sfagent` at once and keep the declared capabilities: Docker
+/// and Podman as root give a process that is not root no capability it can use.
+pub fn starts_as_root(kind: Kind, spec: &Spec) -> bool {
+    matches!(kind, Kind::Docker | Kind::Podman) && !spec.needs.capabilities.is_empty()
+}
+
+/// The user the runtime starts the container's process as.
+pub fn user_of(kind: Kind, spec: &Spec) -> String {
+    if starts_as_root(kind, spec) {
+        format!("0:{}", spec.gid)
+    } else {
+        format!("{}:{}", spec.uid, spec.gid)
+    }
 }
 
 fn lxc_conf(spec: &Spec) -> String {
@@ -700,11 +727,17 @@ mod tests {
             ("--mount", "type=bind,src=/proc,dst=/host/proc,readonly,bind-recursive=disabled"),
             ("--tmpfs", "/host/root/.ssh:ro,size=4k,mode=000"),
             ("--mount", "type=bind,src=/dev/null,dst=/host/etc/shadow,readonly"),
-            ("--cap-drop", "ALL"), ("--user", "987:985"),
+            ("--cap-drop", "ALL"), ("--user", "0:985"), ("--cap-add", "SETUID"), ("--cap-add", "SETGID"), ("--cap-add", "SETPCAP"),
         ] {
             assert!(has(&a, flag, value), "{flag} {value}: {a:?}");
         }
-        assert_eq!(a.iter().filter(|x| *x == "--cap-add").count(), 1);
+        // started as root only to give it up for sfagent, keeping SYS_ADMIN: the agent is told whom to become
+        assert_eq!(a.iter().filter(|x| *x == "--cap-add").count(), 4);
+        assert_eq!(&a[a.len() - 3..], ["run", "--as", "987:985"]);
+        // with no capability declared it starts as sfagent, as before
+        let plain = spec(r#"{"mounts":["/proc"],"namespaces":["pid"]}"#);
+        let b = container_args(Kind::Docker, &plain);
+        assert!(has(&b, "--user", "987:985") && !b.contains(&"--as".to_string()) && !b.contains(&"--cap-add".to_string()));
         assert!(a.contains(&"--read-only".to_string()));
         // a Docker from before 25 knows the option by its old name only
         s.docker_major = docker_major("Docker version 24.0.7, build afdd53b");

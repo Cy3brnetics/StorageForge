@@ -38,7 +38,7 @@ const MAX_FIELD: usize = 64 << 10;
 const MAX_ITEMS: u64 = 4096;
 
 /// The fields kept from each entry. Never `_CMDLINE`, where passwords sit.
-pub const FIELDS: [&str; 8] = ["MESSAGE", "PRIORITY", "_SYSTEMD_UNIT", "SYSLOG_IDENTIFIER", "_PID", "_UID", "_COMM", "_EXE"];
+pub const FIELDS: [&str; 9] = ["MESSAGE", "PRIORITY", "_SYSTEMD_UNIT", "SYSLOG_IDENTIFIER", "_PID", "_UID", "_COMM", "_EXE", "_TRANSPORT"];
 
 fn le64(b: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(b[at..at + 8].try_into().unwrap())

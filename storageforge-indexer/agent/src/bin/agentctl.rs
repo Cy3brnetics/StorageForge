@@ -581,6 +581,12 @@ impl Ctl {
                                 let id = self.answer(&words(&[program, "image", "inspect", "--format", "{{.Id}}", &spec.image]), as_agent).ok().filter(|(ok, _)| *ok).map(|(_, t)| t.trim().to_string());
                                 findings.extend(outside::compare_inspect(kind, &spec, &v, id.as_deref()));
                                 checked.push("image, mounts, capabilities and devices");
+                                // the process itself, from the host's side: what it runs as and what it holds
+                                let pid = v.get(0).unwrap_or(&v)["State"]["Pid"].as_u64().filter(|p| *p > 1 && kind != Kind::PodmanRootless);
+                                if let Some(status) = pid.and_then(|p| read_small(&self.host.at(&format!("/proc/{p}/status")), 64 << 10).ok()) {
+                                    findings.extend(outside::compare_process(&spec, &String::from_utf8_lossy(&status)));
+                                    checked.push("the agent's process: its user and capabilities");
+                                }
                             }
                             Err(_) => findings.push(format!("{program} described the agent's container in a form this program does not read")),
                         },

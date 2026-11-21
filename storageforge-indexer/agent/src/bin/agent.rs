@@ -23,6 +23,8 @@ use storageforge_agent::{identity, plugin, sig, tunnel, wipe, VERSION};
 static STOP: AtomicBool = AtomicBool::new(false);
 static PLUGINS_STOP: AtomicBool = AtomicBool::new(false);
 static RELOAD: AtomicBool = AtomicBool::new(false);
+/// `--as UID:GID`: the account to become when the container started this program as root to give its plugins capabilities (caps.rs).
+static BECOME: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
 /// How long a wiped agent waits for its last word to reach the controller before it exits.
 const LAST_WORD_SECS: u64 = 20;
 
@@ -47,6 +49,11 @@ fn paths(args: &[String]) -> Result<Paths, String> {
             "--manifest" => p.manifest = value.into(),
             "--state" => p.state = value.into(),
             "--host" => storageforge_agent::runner::set_host_root(value),
+            "--as" => {
+                let (uid, gid) = value.split_once(':').ok_or("--as takes UID:GID")?;
+                let ids = (uid.parse::<u32>().map_err(|_| "--as takes UID:GID")?, gid.parse::<u32>().map_err(|_| "--as takes UID:GID")?);
+                let _ = BECOME.set(ids);
+            }
             _ => return Err(format!("unknown option {flag}")),
         }
     }
@@ -81,8 +88,19 @@ fn wipe_and_exit(paths: &Paths, why: &[String], outbox: &Outbox, tunnel_up: bool
 
 fn run(paths: &Paths) -> i32 {
     if unsafe { libc::geteuid() } == 0 {
-        log("refusing to run as root: the agent runs as sfagent".into());
-        return 78;
+        // Started as root only so that the declared capabilities can be kept (caps.rs): root is given up first, before anything
+        // is read. Started as root without being told whom to become, it refuses.
+        let Some(&(uid, gid)) = BECOME.get() else {
+            log("refusing to run as root: the agent runs as sfagent".into());
+            return 78;
+        };
+        match storageforge_agent::caps::become_agent(uid, gid) {
+            Ok(kept) => log(format!("gave up root for {uid}:{gid}, keeping for its plugins: {}", if kept.is_empty() { "nothing".to_string() } else { kept.join(", ") })),
+            Err(why) => {
+                log(format!("refusing to run: {why}"));
+                return 78;
+            }
+        }
     }
     unsafe {
         libc::signal(libc::SIGTERM, on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t);

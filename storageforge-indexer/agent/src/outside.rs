@@ -77,6 +77,35 @@ fn same_path(a: &str, b: &str) -> bool {
     a.trim_end_matches('/') == b.trim_end_matches('/')
 }
 
+/// The agent's process as the host's kernel has it (`/proc/PID/status` on the host, the pid the runtime gave), compared with what it
+/// has to be: `sfagent` in every uid and gid, never root, unable to gain privileges, and no capability beyond the declared ones in any
+/// set. This is read from the host's side, so an agent that was taken over cannot answer for itself.
+pub fn compare_process(spec: &Spec, status: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let field = |name: &str| status.lines().find_map(|l| l.strip_prefix(name).and_then(|r| r.strip_prefix(':')).map(|r| r.trim().to_string()));
+    let ids = |name: &str| field(name).map(|v| v.split_whitespace().filter_map(|x| x.parse::<u32>().ok()).collect::<Vec<u32>>()).unwrap_or_default();
+    let (uids, gids) = (ids("Uid"), ids("Gid"));
+    if uids.len() != 4 || uids.iter().any(|&u| u != spec.uid) {
+        out.push(format!("the agent's process runs as uid {}, not as sfagent", runner::plain(&field("Uid").unwrap_or_default())));
+    }
+    if gids.len() != 4 || gids.iter().any(|&g| g != spec.gid) {
+        out.push(format!("the agent's process runs as gid {}, not as sfagent's group", runner::plain(&field("Gid").unwrap_or_default())));
+    }
+    if field("NoNewPrivs").as_deref() != Some("1") {
+        out.push("the agent's process may gain privileges".into());
+    }
+    let declared = crate::caps::mask_of(&spec.needs.capabilities);
+    for set in ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"] {
+        match field(set).and_then(|v| u64::from_str_radix(&v, 16).ok()) {
+            Some(held) if held & !declared != 0 => out.push(format!("the agent's process holds capabilities no plugin of the manifest declares ({set} {held:#x})")),
+            Some(_) => {}
+            None if set == "CapAmb" => {}
+            None => out.push(format!("the agent's process has no {set} the kernel reports")),
+        }
+    }
+    out
+}
+
 /// What `docker inspect` (or `podman inspect`) printed for the agent's container, compared with what it was made with. `image_id`
 /// is the id the runtime has for the manifest's image, by digest, when it could be read.
 pub fn compare_inspect(kind: Kind, spec: &Spec, inspected: &Value, image_id: Option<&str>) -> Vec<String> {
@@ -105,12 +134,17 @@ pub fn compare_inspect(kind: Kind, spec: &Spec, inspected: &Value, image_id: Opt
         out.push("the container's root filesystem can be written".into());
     }
     let user = c["Config"]["User"].as_str().unwrap_or("");
-    if user != format!("{}:{}", spec.uid, spec.gid) {
+    // a container whose plugins declare a capability starts as root, and the agent gives root up at once (caps.rs): what it runs
+    // as is then read from the process itself (`compare_process`)
+    if user != crate::runtime::user_of(kind, spec) {
         out.push(format!("the container runs as {}, not as sfagent", runner::plain(if user.is_empty() { "its image's user" } else { user })));
     }
     // capabilities: all dropped, and back only what the plugins declare
     let added: BTreeSet<String> = strings(&hc["CapAdd"]).iter().map(|c| cap(c)).collect();
-    let wanted: BTreeSet<String> = spec.needs.capabilities.iter().map(|c| cap(c)).collect();
+    let mut wanted: BTreeSet<String> = spec.needs.capabilities.iter().map(|c| cap(c)).collect();
+    if crate::runtime::starts_as_root(kind, spec) {
+        wanted.extend(crate::runtime::BECOME_CAPS.iter().map(|c| c.to_string()));
+    }
     for extra in added.difference(&wanted) {
         out.push(format!("the container holds {extra}, which no plugin of the manifest declares"));
     }
@@ -452,6 +486,29 @@ mod tests {
             "/usr/bin/sh in the container was added", "/usr/bin/storageforge-agent in the container was changed", "/etc/passwd in the container was deleted",
             "/host/etc/shadow.d in the container was added",
         ]);
+    }
+
+    #[test]
+    fn a_container_that_starts_as_root_to_keep_a_capability_is_checked_by_its_process() {
+        let mut s = spec();
+        s.needs.capabilities = vec!["SYS_RAWIO".into()];
+        let mut v = inspected(&s);
+        v[0]["Config"]["User"] = json!("0:990");
+        v[0]["HostConfig"]["CapAdd"] = json!(["SYS_RAWIO", "SETUID", "SETGID", "SETPCAP"]);
+        assert_eq!(compare_inspect(Kind::Docker, &s, &v, Some("sha256:1111")), Vec::<String>::new());
+        v[0]["HostConfig"]["CapAdd"] = json!(["SYS_RAWIO", "SETUID", "SETGID", "SETPCAP", "SYS_ADMIN"]);
+        assert!(compare_inspect(Kind::Docker, &s, &v, Some("sha256:1111")).iter().any(|f| f.contains("holds SYS_ADMIN")));
+        // and the process, as the host's kernel has it: sfagent, holding SYS_RAWIO (bit 17) and nothing else
+        let good = "Name:\tstorageforge-age\nUid:\t990\t990\t990\t990\nGid:\t990\t990\t990\t990\nCapInh:\t0000000000020000\nCapPrm:\t0000000000020000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000020000\nCapAmb:\t0000000000020000\nNoNewPrivs:\t1\n";
+        assert_eq!(compare_process(&s, good), Vec::<String>::new());
+        let root = good.replace("Uid:\t990\t990\t990\t990", "Uid:\t990\t0\t990\t990");
+        assert!(compare_process(&s, &root)[0].contains("not as sfagent"));
+        let wider = good.replace("CapBnd:\t0000000000020000", "CapBnd:\t00000000002200c0");
+        assert!(compare_process(&s, &wider)[0].contains("CapBnd"));
+        let nnp = good.replace("NoNewPrivs:\t1", "NoNewPrivs:\t0");
+        assert!(compare_process(&s, &nnp)[0].contains("gain privileges"));
+        // with no capability declared, holding any is a finding
+        assert!(compare_process(&spec(), good).iter().any(|f| f.contains("CapPrm")));
     }
 
     #[test]

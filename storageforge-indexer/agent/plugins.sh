@@ -11,13 +11,14 @@
 # a plugin exactly what its signed descriptor declares and nothing more.
 set -eu
 VERSION=0.5.7
-PLUGINS="heartbeat logs health network"
+PLUGINS="heartbeat logs health network disks"
 needs() {
   case $1 in
     heartbeat) printf '{}' ;;
     logs) printf '{"mounts":["/etc/machine-id","/run/log/journal","/var/log/journal"],"groups":["systemd-journal"]}' ;;
     health) printf '{"mounts":["/proc","/sys"],"namespaces":["pid"]}' ;;
     network) printf '{"namespaces":["net"]}' ;;
+    disks) printf '{"mounts":["/etc/machine-id","/run/log/journal","/sys","/var/log/journal"],"capabilities":["SYS_RAWIO"],"devices":["disks"],"groups":["systemd-journal"]}' ;;
     *) echo "no plugin $1" >&2; exit 1 ;;
   esac
 }

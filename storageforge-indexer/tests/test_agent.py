@@ -747,7 +747,9 @@ class NoRuntime(Base):
         run = self.host.calls('podman run')[-1]
         self.assertIn('--cap-add SYS_RAWIO', run)
         self.assertIn('--device /dev/sda:/dev/sda:r', run)
-        self.assertIn(f'--user {os.getuid()}:{os.getgid()}', run)
+        # it starts as root only to give root up at once for sfagent, keeping SYS_RAWIO and nothing else (agent/src/caps.rs)
+        self.assertIn(f'--user 0:{os.getgid()}', run)
+        self.assertTrue(run.endswith(f' run --as {os.getuid()}:{os.getgid()}'), run)
         self.assertNotIn('keep-id', run)
         self.assertGreater(len(self.host.calls('podman run')), n)
 
@@ -1009,6 +1011,26 @@ class RealDocker(Base):
         self.assertEqual(mounts['/host/etc/ssh/ssh_host_ed25519_key']['Source'], '/dev/null')
         self.assertIn('/host/etc/sudoers.d', json.loads(self.inspect('{{json .HostConfig.Tmpfs}}')))
         self.assertEqual(self.inspect('{{.State.Running}}'), 'true')
+        # a plugin that declares a capability: the container starts as root, and the agent gives root up for sfagent at once, keeping
+        # that capability, and nothing else, for its plugins (agent/src/caps.rs). Docker alone would give sfagent none it could use.
+        descriptor, signature, _ = self.plugin(needs='{"capabilities":["SYS_RAWIO"]}')
+        sfagent.apply(self.db, 'nas', [(descriptor, signature, 'operator')], actor='test')
+        self.assertEqual(self.inspect('{{.Config.User}} {{.HostConfig.CapAdd}}'), f'0:{os.getgid()} [CAP_SETGID CAP_SETPCAP CAP_SETUID CAP_SYS_RAWIO]')
+        fields = {}
+        for _ in range(50):
+            pid = self.inspect('{{.State.Pid}}')
+            status = Path(f'/proc/{pid}/status').read_text() if pid not in ('', '0') and Path(f'/proc/{pid}/status').exists() else ''
+            fields = dict(line.split(':\t', 1) for line in status.splitlines() if ':\t' in line)
+            if fields.get('Uid', '').split()[:1] == [str(os.getuid())]:
+                break
+            time.sleep(0.1)
+        self.assertEqual(fields['Uid'].split(), [str(os.getuid())] * 4, 'not root in any of its uids')
+        self.assertEqual(fields['Gid'].split(), [str(os.getgid())] * 4)
+        rawio = 1 << 17
+        self.assertEqual((int(fields['CapEff'], 16), int(fields['CapPrm'], 16), int(fields['CapInh'], 16), int(fields['CapBnd'], 16), int(fields['CapAmb'], 16)),
+                         (0, rawio, rawio, rawio, rawio), 'SETUID, SETGID and SETPCAP are gone even from the bounding set')
+        self.assertEqual(fields['NoNewPrivs'], '1')
+        self.assertIn('gave up root', subprocess.run(['docker', 'logs', 'storageforge-agent'], capture_output=True, text=True).stderr)
         # stopped, it stays stopped; removed, it is gone
         sfagent.lifecycle(self.db, 'nas', 'stop', 'test')
         self.assertEqual(self.inspect('{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}'), 'false no')

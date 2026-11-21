@@ -35,6 +35,10 @@ path = "src/bin/plugin-health.rs"
 name = "storageforge-plugin-network"
 path = "src/bin/plugin-network.rs"
 
+[[bin]]
+name = "storageforge-plugin-disks"
+path = "src/bin/plugin-disks.rs"
+
 [dependencies]
 base64 = "0.22"
 ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }

@@ -3,7 +3,8 @@ never on a web request's (roadmap sections 11.3 and 3 phase 2; the receiver, a p
 
     run(db, wake)      the loop: every TICK_SECS, take_once(db), and wake the notification center when something changed
     take_once(db)      agents' last words (agentguard.take_reports, which acts only on the agent that sent one), the lines their logs
-                       plugins pushed (take_lines), and whether an agent with the heartbeat plugin went silent (silent_beats)
+                       plugins pushed (take_lines), whether an agent with the heartbeat plugin went silent (silent_beats), and
+                       the readings of the disks, files, scan and sentinel plugins (agentplugins.take)
     take_lines(db)     pushed journal lines into the host's logs: the host is the one the receiver stored them under, from the key
                        that signed the batch, never one a line names. Each line goes through hostlogs.store, as a scan's do: scrubbed
                        of secrets, the host's rate, the log rules matched as the lines arrive. Per host it also keeps the delay (when a
@@ -20,7 +21,7 @@ import json
 import statistics
 import time
 
-from . import agentguard, agentwatch, errlog, hostlogs
+from . import agentguard, agentplugins, agentwatch, errlog, hostlogs
 from .db import Database
 
 TICK_SECS = 5
@@ -112,6 +113,7 @@ class Beats:
 def take_once(db: Database, beats: Beats | None = None) -> dict:
     counts = {}
     out = {'wiped': agentguard.take_reports(db), 'lines': sum(take_lines(db, counts=counts).values()), 'hits': counts.get('hits', 0)}
+    out['readings'] = agentplugins.take(db)       # the disks, files, scan and sentinel plugins (agentplugins.py)
     if beats is not None:
         out['silence'] = beats.changed(db)
     return out
@@ -124,7 +126,7 @@ def run(db: Database, wake=None, tick: float = TICK_SECS):
         try:
             done = take_once(db, beats)
             # a log rule a pushed line matched is a notification now, not at the notification center's next tick
-            if wake and (done['wiped'] or done.get('silence') or done['hits']):
+            if wake and (done['wiped'] or done.get('silence') or done['hits'] or done.get('readings')):
                 wake()
         except Exception:
             errlog.trace()

@@ -9,6 +9,8 @@
 //!
 //! What is here, by module:
 //!
+//! - `caps`       giving up root with only the capabilities the plugins declare, for a container that needs some
+//! - `smart`      a disk's SMART health decoded from what it answers, in the shape smartctl prints
 //! - `sig`        SSH signatures made and checked in Rust: the one signature format everything uses
 //! - `needs`      the whole vocabulary of what a plugin may ask of a host
 //! - `plugin`     the plugin format, and who may sign one
@@ -26,6 +28,7 @@
 //! The habits are the key enclave's: every input has a size limit that is checked before it is read, every structure refuses
 //! fields it does not know, parsing is linear, and what no honest peer sends ends the conversation.
 
+pub mod caps;
 pub mod host;
 pub mod hostread;
 pub mod identity;
@@ -39,6 +42,7 @@ pub mod request;
 pub mod runner;
 pub mod runtime;
 pub mod sig;
+pub mod smart;
 pub mod supervise;
 pub mod tunnel;
 pub mod wipe;

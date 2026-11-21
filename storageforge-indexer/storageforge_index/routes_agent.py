@@ -13,7 +13,7 @@ import json
 from flask import jsonify, request
 from flask_login import current_user, login_required
 
-from . import agentaction, agentguard, agentwatch, deploy, sfagent
+from . import agentaction, agentdisks, agentguard, agentwatch, deploy, sfagent
 
 
 def register(web, ctx):
@@ -96,7 +96,7 @@ def register(web, ctx):
         plugin = request.args.get('plugin') or None
         return jsonify(host=name, label=agentwatch.LABEL, peer=agentwatch.peer(conn(), name),
                        records=agentwatch.records(conn(), name, plugin=plugin, limit=request.args.get('limit', 100, type=int)),
-                       actions=agentaction.recent(conn(), name, 20))
+                       actions=agentaction.recent(conn(), name, 20), disks=agentdisks.disks(conn(), name))
 
     @web.post('/api/agents/<host>/plugins')
     @login_required
