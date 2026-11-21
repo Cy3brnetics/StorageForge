@@ -450,6 +450,9 @@ def run(db: Database, host: str, script: str, args=(), *, kind: str, ref: str | 
     status, rc = 'failed', None
     try:
         name = canonical(conn, host)
+        from .agentmonitor import refusal          # a monitoring-only host is reached through storageforge-agentctl alone (roadmap 11.5)
+        if why := refusal(conn, name, 'deploys, change plans, Moves, sends, clone, holds and quarantine'):
+            raise DeployError(why)
         if require_ready and not ready(conn, name):
             raise DeployError(f'{name} is not set up for deploys yet (Deploy tab → Set up deploy access)')
         addr = connect_address(conn, name)
@@ -536,6 +539,10 @@ def raw(db: Database, host: str, script: str, *, kind: str, ref: str | None = No
     actor = actor or actor_name()
     conn = db.connect()
     name = canonical(conn, host)
+    from .agentmonitor import refusal
+    if why := refusal(conn, name, 'deploys, change plans, Moves, sends, clone, holds and quarantine'):
+        conn.close()
+        raise DeployError(why)
     if not ready(conn, name):
         conn.close()
         raise DeployError(f'{name} is not set up for deploys yet')

@@ -13,7 +13,7 @@ import json
 from flask import jsonify, request
 from flask_login import current_user, login_required
 
-from . import agentaction, agentdisks, agentfiles, agentguard, agentscan, agentwatch, deploy, sfagent
+from . import agentaction, agentdisks, agentfiles, agentguard, agentmonitor, agentscan, agentwatch, deploy, sfagent
 
 
 def register(web, ctx):
@@ -86,6 +86,64 @@ def register(web, ctx):
             return refused(exc)
         if verb == 'status':
             core.audit(conn(), actor(), 'agent.status', 'ok', got['host'], {'running': got['running'], 'key_matches': got['key_matches']})
+        return jsonify(got)
+
+    @web.post('/api/agents/monitoring')
+    @login_required
+    @password_confirmed
+    def api_agent_monitoring():
+        """A monitoring-only host (roadmap 11.5): the controller has no SSH scan key and no deploy access there, and storageforge-agentctl
+        is the only way in. Registers it, with its agent switched on; the setup is run on the host by hand."""
+        b = json_body()
+        try:
+            got = agentmonitor.register(conn(), str(b.get('host') or ''), str(b.get('address') or ''), int(b.get('port') or 22), str(b.get('arch') or ''), actor())
+        except (ValueError, LookupError, agentmonitor.MonitoringError, sfagent.AgentError) as exc:
+            core.audit(conn(), actor(), 'agent.monitoring', 'failed', str(b.get('host') or '')[:100], {'error': str(exc)[:300]})
+            return refused(exc)
+        core.audit(conn(), actor(), 'agent.monitoring', 'ok', got['host'], {'address': str(b.get('address'))[:100], 'mode': 'monitoring'})
+        return jsonify(got | {'public_key': None}), 201
+
+    @web.get('/api/agents/<host>/setup')
+    @login_required
+    def api_agent_setup(host):
+        """The setup script for a monitoring-only host, run there by hand, and the program it installs: public keys only."""
+        if 'keys.manage' not in current_user.permissions:
+            return jsonify(error='this takes keys.manage'), 403
+        try:
+            return jsonify(agentmonitor.setup(db, host))
+        except (agentmonitor.MonitoringError, sfagent.AgentError) as exc:
+            return refused(exc)
+
+    @web.get('/api/agents/program/<arch>')
+    @login_required
+    def api_agent_program(arch):
+        """storageforge-agentctl for a kind of machine, for a setup run by hand."""
+        if 'keys.manage' not in current_user.permissions:
+            return jsonify(error='this takes keys.manage'), 403
+        from flask import Response
+        try:
+            data = sfagent.agentctl_program(arch)
+        except sfagent.AgentError as exc:
+            return refused(exc)
+        return Response(data, mimetype='application/octet-stream', headers={'Content-Disposition': 'attachment; filename=storageforge-agentctl'})
+
+    @web.post('/api/agents/<host>/adopt')
+    @login_required
+    @password_confirmed
+    def api_agent_adopt(host):
+        """The line the setup printed on a monitoring-only host: its machine id and SSH host key. Pinning a host key and enrolling the only
+        way into a host take an admin (agent.privilege), as a person who compared the key with the host's own."""
+        b = json_body()
+        name = deploy.canonical(conn(), host)
+        if 'agent.privilege' not in current_user.permissions:
+            core.audit(conn(), actor(), 'agent.adopt', 'denied', name, {})
+            return jsonify(error='adopting a monitoring-only host pins its host key: that takes agent.privilege, which admins hold', code='privilege'), 403
+        try:
+            got = agentmonitor.adopt(db, name, str(b.get('line') or '')[:2000], actor(), install_podman=b.get('install_podman') is True)
+        except (LookupError, agentmonitor.MonitoringError, sfagent.AgentError) as exc:
+            core.audit(conn(), actor(), 'agent.adopt', 'failed', name, {'error': str(exc)[:300]})
+            return refused(exc)
+        core.audit(conn(), actor(), 'agent.adopt', 'ok', name, {'host_key': got.get('host_key'), 'state': got.get('state')})
         return jsonify(got)
 
     @web.get('/api/agents/<host>/records')

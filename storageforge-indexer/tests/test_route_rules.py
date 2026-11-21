@@ -71,6 +71,8 @@ FRESH_PASSWORD = {
     ('POST', '/api/agents/<host>/<any("start", "stop", "restart", "status", "check"):verb>'),     # check: wipe and stop from outside
     ('DELETE', '/api/agents/<host>'),
     ('POST', '/api/agents/<host>/plugins'),       # which signed plugins a host's agent runs; privileges need agent.privilege too
+    ('POST', '/api/agents/monitoring'),           # a monitoring-only host: storageforge-agentctl the only way in
+    ('POST', '/api/agents/<host>/adopt'),         # pins the host key an admin pasted and enrolls its agent; takes agent.privilege too
     ('POST', '/api/keys/ssh-ca'),                 # makes the SSH CA
     ('PUT', '/api/keys/ssh-ca/hosts/<host>'),     # whether StorageForge logs in to a host with certificates
     ('POST', '/api/keys/ssh-ca/hosts/<host>/certificate'),

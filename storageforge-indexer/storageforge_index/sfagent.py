@@ -157,6 +157,10 @@ found=
 for c in docker podman pct incus lxc-create; do if command -v "$c" >/dev/null 2>&1; then found="$found $c"; fi; done
 echo "runtimes:${found:- none}"
 echo "the agent can be enrolled: $M may only run $BIN, and that takes only requests this controller signed"
+# what a host with no SSH access for the controller is adopted with: its machine id and its SSH host key, pasted by an admin
+mid=$(head -c 64 "$R/etc/machine-id" 2>/dev/null | tr -cd 0-9a-f || true)
+hk=$(head -n 1 "$R/etc/ssh/ssh_host_ed25519_key.pub" 2>/dev/null | cut -d " " -f 1,2 || true)
+echo "storageforge-agent-adopt ${mid:-none} ${hk:-none}"
 """
 
 REMOVE = r"""set -euo pipefail
@@ -614,29 +618,37 @@ def install(db: Database, host: str, actor: str | None = None, install_podman: b
                            actor=actor, group_id=group_id, data=program)
             if r['status'] != 'ok':
                 raise AgentError(f'{name}: the setup did not finish: ' + (r['output'] or '').strip()[-600:])
-            pre = call(db, name, 'preflight', group_id=group_id, actor=actor, timeout=120)
-            runtimes = [x for x in pre.get('runtimes') or [] if x in ('docker', 'podman', 'pct', 'incus', 'lxc')]
-            if not runtimes and not install_podman:
-                _save(conn, name, actor, state='needs-podman', detail=PODMAN_NOTICE)
-                return {'host': name, 'state': 'needs-podman', 'message': PODMAN_NOTICE}
-            got = call(db, name, 'enroll', group_id=group_id, actor=actor, image=image, image_signature=image_sig,
-                       install_podman=bool(install_podman and not runtimes))
-            public = str(got.get('public_key') or '')
-            if not PUBLIC_RE.fullmatch(public):
-                raise AgentError(f'{name}: what came back from the enrollment is not an agent key')
-            fp = fingerprint(public)
-            _save(conn, name, actor, public_key=public, fingerprint=fp, runtime=_runtime(got), image=image, enrolled_at=int(time.time()), manifest_sha=None,
-                  wiped_at=None, checked_at=None, check_json=None)
-            _audit(db, conn, actor, 'agent.enroll', 'ok', name, fp, {'runtime': _runtime(got), 'image': image, 'podman_installed': bool(install_podman and not runtimes),
-                                                                     'after_wipe': bool(row.get('wiped_at'))})
-            applied = apply(db, name, [], actor=actor, group_id=group_id)
+            return enroll_set_up(db, conn, name, row, actor, image, image_sig, install_podman=install_podman, group_id=group_id)
         except Exception as exc:
             _save(conn, name, actor, state='failed', detail=str(exc))
             _audit(db, conn, actor, 'agent.install', 'failed', name, None, {'error': str(exc)[:500]})
             raise
-        return {'host': name, 'state': 'running', 'fingerprint': fp, 'runtime': applied['runtime'], 'notes': [str(n)[:300] for n in (got.get('notes') or [])][:10]}
     finally:
         conn.close()
+
+
+def enroll_set_up(db: Database, conn, name: str, row: dict, actor: str, image: str, image_sig: str, install_podman: bool = False,
+                  group_id: str | None = None) -> dict:
+    """The enrollment on a host the setup has run on: storageforge-agentctl reads its runtimes, makes the container, the agent makes its
+    key, the public half is read back over the pinned SSH connection and pinned here, and the first manifest is applied. Through the
+    host's deploy access (install) or, on a monitoring-only host, after an admin ran the setup by hand (agentmonitor.adopt)."""
+    pre = call(db, name, 'preflight', group_id=group_id, actor=actor, timeout=120)
+    runtimes = [x for x in pre.get('runtimes') or [] if x in ('docker', 'podman', 'pct', 'incus', 'lxc')]
+    if not runtimes and not install_podman:
+        _save(conn, name, actor, state='needs-podman', detail=PODMAN_NOTICE)
+        return {'host': name, 'state': 'needs-podman', 'message': PODMAN_NOTICE}
+    got = call(db, name, 'enroll', group_id=group_id, actor=actor, image=image, image_signature=image_sig,
+               install_podman=bool(install_podman and not runtimes))
+    public = str(got.get('public_key') or '')
+    if not PUBLIC_RE.fullmatch(public):
+        raise AgentError(f'{name}: what came back from the enrollment is not an agent key')
+    fp = fingerprint(public)
+    _save(conn, name, actor, public_key=public, fingerprint=fp, runtime=_runtime(got), image=image, enrolled_at=int(time.time()), manifest_sha=None,
+          wiped_at=None, checked_at=None, check_json=None)
+    _audit(db, conn, actor, 'agent.enroll', 'ok', name, fp, {'runtime': _runtime(got), 'image': image, 'podman_installed': bool(install_podman and not runtimes),
+                                                             'after_wipe': bool(row.get('wiped_at'))})
+    applied = apply(db, name, [], actor=actor, group_id=group_id)
+    return {'host': name, 'state': 'running', 'fingerprint': fp, 'runtime': applied['runtime'], 'notes': [str(n)[:300] for n in (got.get('notes') or [])][:10]}
 
 
 def apply(db: Database, host: str, plugins: list[tuple[bytes, str, str]], actor: str | None = None, group_id: str | None = None,

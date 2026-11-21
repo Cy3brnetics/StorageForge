@@ -218,6 +218,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (_WRITE, r'/api/enclave(/.*)?', 'keys.manage'),                    # unlocking and locking it
     (READ, r'/api/agents', 'keys.view'),                               # the optional agent: which hosts have it switched on, and its state
     (READ, r'/api/agents/[^/]+/records', 'hosts.view'),                # what a host's agent reported, each row labelled as its claim
+    (READ, r'/api/agents/([^/]+/setup|program/[^/]+)', 'keys.manage'),  # the setup of a monitoring-only host, run there by hand: public keys only
     (_WRITE, r'/api/agents(/.*)?', 'keys.manage'),                     # switching it on, enrolling it (which pins a key) and removing it
     (READ, r'/api/keys/ssh-ca', 'keys.view'),                          # the SSH CA: its public key, who is given certificates, what was issued
     (('POST',), r'/api/keys/ssh-ca/plan', 'plans.edit'),               # saves a change plan and runs nothing. The rest of the CA is keys.manage, below
