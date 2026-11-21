@@ -264,9 +264,12 @@ def store(conn: Conn, host: str, parsed: dict, now: float | None = None, via: st
             note = (f'{over} line(s) were over this host\'s rate of {int(RATE_PER_DAY)} a day and were not stored, routine ones first. They are counted. '
                     'Raise STORAGEFORGE_LOG_KEEP_ROWS or STORAGEFORGE_LOG_RATE_PER_DAY to keep more.')
         _set_status(conn, host, int(now), state, new, cut, max(seen) if seen else None, note)
-        conn.execute('UPDATE host_log_status SET rate_tokens = :l, rate_at = :t, over_rate = :o, over_total = over_total + :o, via = :v WHERE host = :h',
-                     {'h': host, 'l': left, 't': int(now), 'o': over, 'v': via or 'scan'})
+        conn.execute('''UPDATE host_log_status SET rate_tokens = :l, rate_at = :t, over_rate = :o, over_total = over_total + :o, via = :v,
+                        fresh_at = CASE WHEN :f > 0 THEN :t ELSE fresh_at END WHERE host = :h''',
+                     {'h': host, 'l': left, 't': int(now), 'o': over, 'v': via or 'scan', 'f': len(fresh)})
         if arrived:
+            from . import loganomaly        # new kinds of line, flagged the first time this host logs one
+            loganomaly.note(conn, host, arrived, now)
             from . import logrules          # it takes its levels and its 5 minutes from here
             hits = logrules.match_new(conn, host, arrived, now)
             if counts is not None:
