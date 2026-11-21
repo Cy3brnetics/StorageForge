@@ -30,6 +30,7 @@ HEAVY = {
     # a real sshd, Docker, or the kernel's firewall
     'test_feature_routes.RealSshServer',
     'test_agent.RealDocker',         # the agent's real image, built, pushed to a registry started for the test, and run by the real Docker
+    'test_agent_files.InDocker',     # the real files plugin under the real kernel's fanotify, in a container with its capabilities
     'test_infra.RealDocker',
     'test_infra.RealIptables',
     'test_infra.RealNft',
@@ -90,6 +91,10 @@ MEDIUM = {
     'test_agent_plugins.ReceiverResume',
     'test_agent_plugins.OverQuota',
     'test_agent_plugins.LogsRoad',   # the real logs and heartbeat plugins through the real tunnel, reading journal files systemd wrote
+    'test_agent_scan.Scan',          # the real scan plugin's carried script against a stand-in host
+    'test_agent_sentinel.Road',      # the real sentinel plugin reading journal files systemd wrote
+    'test_agent_monitoring.Adopt',   # a host set up by hand and adopted through the real storageforge-agentctl
+    'test_agent_console.Grant',      # the real storageforge-agentctl writing and taking out a console's key line
     'test_sshca.Certificates',       # a real sshd, started for one test
     'test_sshcerts.TrustStep',       # the trust and revocation steps against a real sshd, reloaded
     'test_sshcerts.CaInTheEnclave',  # the real enclave program signing a certificate
