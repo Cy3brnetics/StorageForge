@@ -7,6 +7,7 @@ What is here:
 - [Compose stacks, LXC containers and Incus instances](#compose-stacks-lxc-containers-and-incus-instances), each with its labels and the firewall rule for what it publishes.
 - [Image updates with rollback](#image-updates-with-rollback) on a failed healthcheck.
 - [VMs from installer ISOs](#vms-from-installer-isos), for systems with no cloud image.
+- [Placement advice](#placement-advice): tuned datasets, databases off the bulk pool, network filesystems, and data nothing protects.
 
 Running one container (`container`), VMs from cloud images (`vm-create`) and the VM steps are in [VMs on libvirt](vms.md) and [Cloning and migrating hosts](host-migration.md). Installing a runtime first is the `runtime-install` step in [Change plans](change-plans.md).
 
@@ -53,3 +54,16 @@ The `vm-iso` step makes a VM that boots an installer, for systems with no cloud 
 **What it sets, that hand-written scripts often get wrong:** the console (SPICE or VNC) listens on 127.0.0.1 only, reached through an SSH tunnel or the console page; the network and the pool are checked before anything is made; the OS variant is checked against the host's osinfo database, with generic defaults and a note when the host does not know it; the guest agent channel is there, for snapshots that freeze the filesystems; firmware is BIOS, UEFI or UEFI with secure boot, and a TPM (swtpm) can be added. UEFI is refused when the host has no OVMF, and a TPM when it has no swtpm.
 
 After the install, take the ISO out with `virsh change-media NAME <CD target> --eject --config`; the report names the command. Unattended installs (kickstart, preseed, autoinstall) are not built: their answer files carry a password or a key, which would have to come from the vault.
+
+## Placement advice
+
+Before a workload's data goes somewhere, the plan check says what the index knows of that place. It never stops a plan: placement is advice. It comes with `stack` (for each bind mount, by what the service is, and for a database with no bind mount, the engine's volume folder), `lxc` (the container folder), `vm-create` and `vm-iso` (the libvirt pool's folder), and from `GET /api/workloads/placement?host=&path=&use=vm|database|data` for a deploy form.
+
+| Advice | When |
+| :--- | :--- |
+| **A dataset tuned for its use** | VM images on ZFS with a recordsize above 64K (qcow2 writes 64 KiB clusters), databases on ZFS above 16K; the recordsize is the dataset's own or the nearest parent's set on purpose, else ZFS's 128K. VM images or database files on btrfs with copy-on-write, unless the mount has `nodatacow` |
+| **Databases off the bulk pool** | A database (by its image: PostgreSQL, MySQL, MariaDB, MongoDB, Redis, InfluxDB, ClickHouse, Elasticsearch and the like) on a pool of spinning disks or parity RAID (raidz, RAID 5, RAID 6) |
+| **Bind mounts on network filesystems** | Data on NFS, SMB, sshfs, GlusterFS, Ceph and the like: a database there is a warning that it corrupts or stalls when the connection drops |
+| **No hold or offsite copy reaches it** | Nothing snapshots the path (a snapshot job or task, or snapshots a scan saw), no retention hold covers its dataset, and no backup takes it to a host marked offsite. Snapshotted but never copied off the host is a note |
+
+What it reads: the mounts, the disks and pools from `lsblk` and `zpool status`, the ZFS properties set on purpose, and the same facts as the 3-2-1 matrix (deployed mirror and rsnapshot jobs, storage tasks, and backups and snapshots a scan detected).

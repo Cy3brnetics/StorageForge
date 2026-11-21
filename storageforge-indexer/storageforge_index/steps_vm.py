@@ -384,6 +384,8 @@ def _check(conn, c, h, p, say):
         if m and m.get('total') is not None and m.get('used') is not None:
             free = (m['total'] - m['used']) // 2**30
             say('ok' if free >= need else 'warn', f'its disks can grow to {need} GiB, and {path} has {free} GiB free')
+        from . import placement      # a pool on a dataset tuned for VM images, and what snapshots or copies reach it
+        placement.say_for_vm(conn, c, h, path, say)
     if p['bridge']:
         say('warn', 'bridged: the host firewall does not see this guest\'s traffic')
     else:

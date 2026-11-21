@@ -180,7 +180,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, selfupdate, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
-               folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_agent, routes_clamav, routes_copies, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_secrets, routes_security, routes_sshca, scheduler, security, shares, site, snapjobs, tasks, updates, users)
+               folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_agent, routes_clamav, routes_copies, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_secrets, routes_security, routes_sshca, routes_workloads, scheduler, security, shares, site, snapjobs, tasks, updates, users)
 from . import copies, rotate_keys, routecode, routes_enclave, routes_planner
 from . import agentguard, agentingest
 from .runtimes import docker
@@ -1577,6 +1577,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     routes_secrets.register(web, ctx)     # the secret store, under Keys
     routes_agent.register(web, ctx)
     routes_planner.register(web, ctx)
+    routes_workloads.register(web, ctx)    # placement, captures and drift, exports (0.5.11)
 
     @web.get('/api/shares/check')
     @login_required

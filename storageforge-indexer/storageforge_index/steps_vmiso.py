@@ -179,6 +179,8 @@ def _check(conn, c, h, p, say):
         if m and m.get('total') is not None and m.get('used') is not None:
             free = (m['total'] - m['used']) // 2**30
             say('ok' if free >= need else 'warn', f'its disk can grow to {need - 2} GiB with the ISO beside it, and {path} has {free} GiB free')
+        from . import placement
+        placement.say_for_vm(conn, c, h, path, say)
     if p['bridge']:
         say('warn', 'bridged: the host firewall does not see this guest\'s traffic')
     else:

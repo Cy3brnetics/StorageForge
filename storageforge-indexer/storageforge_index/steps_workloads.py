@@ -518,6 +518,8 @@ def check_stack(conn, c, h, p, say):
         say('note', 'volumes compose makes if they are not there: ' + ', '.join(m['volumes']))
     _published_check(conn, h, ports, p.get('allow_from') or '', say, 'a deny and allows in DOCKER-USER, where Docker sends published ports')
     _labels_check(p, say)
+    from . import placement
+    placement.say_for_stack(conn, c, h, m, where, say)
     say('note', 'the report validates the file with compose itself and shows what changes against the file deployed before')
 
 
@@ -542,6 +544,9 @@ def check_lxc(conn, c, h, p, say):
         say('note', f'only {p["allow_from"]} may reach ports {p["ports"]}: a fence on input')
     say('note', 'unprivileged, mapped to subordinate ids of root (added to /etc/subuid and /etc/subgid when root has none)')
     _labels_check(p, say)
+    from . import placement
+    for level, text in placement.advise(conn, c, h, '/var/lib/lxc', 'data', 'its root filesystem'):
+        say(level, text)
 
 
 def check_incus(conn, c, h, p, say):
