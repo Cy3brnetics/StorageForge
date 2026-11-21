@@ -452,7 +452,8 @@ def tunnel_items(infra: dict | None) -> list[dict]:
             continue
         for p in published[:200]:
             host, port = tunnel_target(p.get('local'), p.get('protocol'))
-            item = {**base, 'public': p.get('public'), 'local': p.get('local'), 'protocol': p.get('protocol'), 'name': p.get('name'), 'target_host': host, 'target_port': port}
+            item = {**base, 'public': p.get('public'), 'local': p.get('local'), 'protocol': p.get('protocol'), 'name': p.get('name'), 'target_host': host, 'target_port': port,
+                    **({'login': p['login']} if p.get('login') else {})}           # behind which login, where the tunnel's server says (Pangolin's API)
             if t.get('running'):
                 out.append({**item, 'level': 'any', 'rule': f'public through {label}: no open port and no firewall rule is involved'})
             else:

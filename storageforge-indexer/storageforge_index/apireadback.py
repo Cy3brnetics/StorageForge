@@ -104,9 +104,32 @@ def judge(kind: str, paths: dict, actions: list[str] | None = None, token: dict 
             'over': over, 'extra_read': extra, 'token': token, 'notes': notes, 'actions': list(actions or [])}
 
 
+def verdict(kind: str, features: dict, over: list[dict], token: dict | None = None, notes: list[str] | None = None, extra: list[dict] | None = None,
+            actions: list[str] | None = None, now: float | None = None, unknown: list[str] | None = None) -> dict:
+    """The same answer judge() gives, for a platform whose read-back is not a privilege map (roles, a key's actions, admin flags).
+    features: feature -> {'ok', 'what', 'add', 'on'}; over: [{'path', 'priv', 'admin'}], each a thing the token holds that changes
+    something and no action turned on needs; unknown: what the platform would not say, which is said and is not a finding."""
+    short = [{'feature': f, 'what': v['what'], 'add': v.get('add') or ''} for f, v in features.items() if not v.get('ok')]
+    token = token or {}
+    notes = list(notes or [])
+    if token.get('enable') is False:
+        notes.append('the token is disabled on the platform')
+    expire = token.get('expire')
+    if expire == 0:
+        notes.append('the token has no expiry date: the guide recommends one')
+    elif expire and expire < (now or time.time()):
+        notes.append('the token has expired')
+    notes += [f'the platform does not say {u}' for u in unknown or []]
+    return {'kind': kind, 'verdict': 'over' if over else 'short' if short else 'exact', 'admin': any(o.get('admin') for o in over),
+            'features': {f: {'ok': bool(v.get('ok')), 'what': v['what'], 'on': v.get('on') or []} for f, v in features.items()}, 'short': short,
+            'over': over, 'extra_read': extra or [], 'token': token, 'notes': notes, 'actions': list(actions or []), 'unknown': list(unknown or [])}
+
+
 def readback(client, row: dict) -> dict:
     """Ask the platform what this token can do. Raises apiconn.ApiError when the platform cannot be asked at all."""
-    from . import apiconn
+    from . import apiconn, apiguide
+    if row['kind'] in apiguide.PLATFORMS:
+        return {**apiguide.module(row['kind']).readback(client, row), 'at': int(time.time())}
     perms = parse_permissions(client.get('/access/permissions'))
     if perms['unreadable']:
         raise apiconn.ApiError(f'{row["title"]} answered /access/permissions with something that is not a permission list')
@@ -119,8 +142,10 @@ def readback(client, row: dict) -> dict:
 
 
 def store(conn: Conn, row: dict, result: dict) -> None:
+    from . import apiconn
     conn.execute('UPDATE platform_connections SET readback_json = :r, readback_at = :t WHERE conn_id = :i',
                  {'r': json.dumps(result, sort_keys=True), 't': result.get('at') or int(time.time()), 'i': row['conn_id']})
+    apiconn.note_expiry(conn, row, (result.get('token') or {}).get('expire'))
 
 
 def problems(conn: Conn) -> dict:

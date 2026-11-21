@@ -54,6 +54,7 @@ GUIDES = {
         'never': ['root@pam or a token of root@pam (refused here)', 'the Administrator, PVEAdmin, PVEVMAdmin or PVESysAdmin role',
                   'a token with privilege separation off: it then has every right of its user', 'Permissions.Modify or Sys.Modify anywhere'],
         'check': 'pveum user token permissions storageforge@pve storageforge',
+        'expiry': {'allowed': True, 'read_back': True, 'how': 'pveum user token add takes -expire (epoch seconds); the read-back reads it from the token, and a warning comes 30 days before it lapses'},
     },
     'pbs': {
         'title': 'Proxmox Backup Server',
@@ -71,6 +72,7 @@ GUIDES = {
         'admin': ['Permissions.Modify', 'Sys.Modify', 'Sys.Console', 'Sys.PowerManagement', 'Realm.Allocate', 'Datastore.Allocate', 'Remote.Modify'],
         'never': ['root@pam or a token of root@pam (refused here)', 'the Admin or DatastoreAdmin role', 'an ACL on / or /datastore when only some datastores should be seen'],
         'check': "proxmox-backup-manager user permissions 'storageforge@pbs!storageforge' --path /datastore/<name>",
+        'expiry': {'allowed': True, 'read_back': True, 'how': 'proxmox-backup-manager user generate-token takes --expire (epoch seconds); the read-back reads it from the token, and a warning comes 30 days before it lapses'},
     },
     'pdm': {
         'title': 'Proxmox Datacenter Manager',
@@ -87,6 +89,7 @@ GUIDES = {
         'never': ['root@pam or a token of root@pam (refused here)', 'the Administrator role, on any path', 'the Auditor role on / when only some remotes should be seen'],
         'reach': 'PDM holds its own token to every remote it manages, so a PDM token reaches as far as PDM does. Connecting each Proxmox VE and Backup Server directly, each with its own narrower token, is the tighter choice.',
         'check': 'proxmox-datacenter-manager-client acl list',
+        'expiry': {'allowed': True, 'read_back': True, 'how': 'the web interface sets an expiry date when it makes the token; the read-back reads it from the token, and a warning comes 30 days before it lapses'},
     },
 }
 
@@ -123,6 +126,8 @@ def steps(kind: str, user: str = 'storageforge', token: str = 'storageforge', sc
             raise GuideError(f'{what} is letters, digits, dot, dash and underscore')
     expire = int((time.time() if now is None else now) + EXPIRE_DAYS * 86400)
     when = time.strftime('%Y-%m-%d', time.gmtime(expire))
+    if kind in PLATFORMS:
+        return module(kind).steps(user, token, scope, expire)
     if kind == 'pve':
         uid = f'{user}@pve'
         tid = f'{uid}!{token}'
@@ -182,6 +187,8 @@ def action_steps(kind: str, action: str, user: str = 'storageforge', token: str 
     a = (g.get('actions') or {}).get(action)
     if not a:
         raise GuideError(g.get('no_actions') or f'{g.get("title", kind)} has no action {action}')
+    if kind in PLATFORMS:
+        return module(kind).action_steps(action, a, user)
     if kind == 'pve':
         uid, tid = f'{user}@pve', f'{user}@pve!{token}'
         privs = ' '.join(a['privs'])
@@ -205,9 +212,47 @@ def guide(kind: str, **kw) -> dict:
     return {'kind': kind, 'title': g['title'], 'least': g['least'], 'role': g['role'], 'why_role': g['why_role'], 'scope': g['scope'],
             'read': [{'feature': f, **v} for f, v in g['read'].items()],
             'actions': [{'action': k, **v} for k, v in g['actions'].items()], 'no_actions': g.get('no_actions'),
-            'never': g['never'], 'reach': g.get('reach'), 'steps': steps(kind, **kw), 'sources': SOURCES[kind], 'fetched': FETCHED,
+            'never': g['never'], 'reach': g.get('reach'), 'steps': steps(kind, **kw), 'sources': SOURCES[kind], 'fetched': g.get('fetched', FETCHED), 'expiry': g['expiry'],
             'label': 'not lab-tested'}
 
 
+SCOPE_HINTS = {'pve': ('Paths: / for all, or /vms /storage /nodes to keep the rest hidden.', '/'),
+               'pbs': ('The datastores it should see, separated by spaces.', 'store1'), 'pdm': ('The remotes it should see, separated by spaces.', 'pve-a pbs-b')}
+
+
 def kinds() -> list[dict]:
-    return [{'kind': k, 'title': g['title'], 'least': g['least']} for k, g in GUIDES.items()]
+    """The platforms, with what the connect screen says beside each field for them."""
+    from . import apiconn
+    out = []
+    for k, g in GUIDES.items():
+        spec = apiconn.KINDS[k]
+        hint, placeholder = g.get('scope_hint') or SCOPE_HINTS.get(k, ('', ''))
+        out.append({'kind': k, 'title': g['title'], 'least': g['least'], 'port': spec['port'], 'token_id_hint': spec['token_id'][1],
+                    'token_id_placeholder': g.get('token_id_placeholder') or f'storageforge@{k}!storageforge', 'cert_file': spec['cert_file'],
+                    'scope_hint': hint, 'scope_placeholder': placeholder})
+    return out
+
+
+# The platforms beyond Proxmox each keep their guide beside their reader: GUIDE (the same fields as GUIDES above), SOURCES (the pages it
+# was written from, fetched on the date each gives), steps(user, token, scope, expire) and action_steps(action, spec, user).
+PLATFORMS = {}
+
+
+def module(kind: str):
+    import importlib
+    return importlib.import_module(f'.{PLATFORMS[kind]}', __package__)
+
+
+def register(kind: str, module_name: str) -> None:
+    PLATFORMS[kind] = module_name
+    mod = module(kind)
+    GUIDES[kind] = mod.GUIDE
+    SOURCES[kind] = mod.SOURCES
+
+
+register('truenas', 'apitruenas')
+register('xo', 'apixo')
+register('dockhand', 'apidockhand')
+register('portainer', 'apiportainer')
+register('komodo', 'apikomodo')
+register('pangolin', 'apipangolin')
