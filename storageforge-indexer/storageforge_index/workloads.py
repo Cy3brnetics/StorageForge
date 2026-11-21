@@ -59,7 +59,7 @@ def _container(host, runtime, c, mounts, volumes, stack=None, user=None) -> dict
     return {'host': host, 'runtime': runtime, 'kind': 'container', 'name': c.get('name'), 'state': c.get('state'), 'image': image, 'digests': c.get('digests') or [], 'stack': stack, 'user': user,
             'mounts': ms, 'ports': c.get('ports') or [], 'networks': c.get('networks') or [], 'health': c.get('health'), 'panel': panel, 'detail': bool(c.get('detail')),
             'security': {k: c.get(k) for k in ('privileged', 'cap_add', 'cap_drop', 'security_opt', 'readonly_root', 'apparmor', 'selinux', 'network_mode')} if c.get('detail') else None,
-            'findings': container_findings(c)}
+            'labels': c.get('labels') or {}, 'restart': c.get('restart'), 'findings': container_findings(c)}
 
 
 def _vm_findings(d: dict) -> list[str]:
@@ -90,7 +90,7 @@ def from_infra(host: str, m: dict, mounts: list) -> list[dict]:
         devs = i.get('devices') or {}
         out.append({'host': host, 'runtime': 'incus', 'kind': 'vm' if i.get('type') == 'vm' else 'instance', 'name': i.get('name'), 'state': i.get('state'),
                     'mounts': [{'kind': 'disk', 'source': v.get('source') or v.get('pool'), 'dest': v.get('path'), 'on': sits_on(mounts, v.get('source'))} for v in devs.values() if v.get('type') == 'disk'],
-                    'networks': [{'source': v.get('network') or v.get('parent'), 'type': v.get('nictype')} for v in devs.values() if v.get('type') == 'nic'], 'ports': [], 'detail': True, 'security': i.get('security') or {},
+                    'networks': [{'source': v.get('network') or v.get('parent'), 'type': v.get('nictype')} for v in devs.values() if v.get('type') == 'nic'], 'ports': [], 'detail': True, 'security': i.get('security') or {}, 'profiles': i.get('profiles') or [], 'devices': devs,
                     'findings': ['privileged instance'] if priv else []})
     for i in m.get('lxc') or []:
         out.append({'host': host, 'runtime': 'lxc', 'kind': 'instance', 'name': i.get('name'), 'state': i.get('state'), 'mounts': [], 'networks': [], 'ports': [], 'detail': False, 'security': None, 'findings': []})
@@ -121,7 +121,10 @@ def listing(conn: Conn, host: str | None = None) -> dict:
         m = inframeasure.reading(conn, name)
         if m:
             out += from_infra(name, m, mounts)
+        wlread.with_quadlets(out, name, (m or {}).get('quadlets') or [])
         hosts.append({'host': name, 'engine': (view or {}).get('engine'), 'containers_read_at': (view or {}).get('updated_at'), 'measured_at': (m or {}).get('measured_at'), 'measure_stale': (m or {}).get('stale')})
+    from . import wlcapture
+    wlcapture.annotate(conn, out)          # adopted workloads, with their drift against the capture
     return {'workloads': out, 'hosts': hosts}
 
 

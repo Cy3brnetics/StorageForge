@@ -26,7 +26,8 @@ COMPOSE_NAMES = ('docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'co
 NOT_STACKS = ('/overlay2/', '/containerd/', '/node_modules/', '/.cache/', '/fuse-overlayfs/', '/vfs/dir/',
               '/.local/share/Trash/', '/site-packages/', '/tests/', '/test/', '/examples/', '/docs/')
 MAX_COMPOSE = 500
-KEEP_LABELS = re.compile(r'^(com\.docker\.compose\.|io\.podman\.compose\.|komodo\.|org\.opencontainers\.image\.title$)')
+KEEP_LABELS = re.compile(r'^(com\.docker\.compose\.|io\.podman\.compose\.|komodo\.|org\.opencontainers\.image\.title$|storageforge\.|PODMAN_SYSTEMD_UNIT$|io\.containers\.autoupdate$|'
+                         r'com\.centurylinklabs\.watchtower|coolify\.|io\.portainer\.|dockhand\.|dev\.dockge\.|(.*[./])?managed[-_]by$)')   # what says who runs a container (wlmanaged.py)
 SECRET_OPT = re.compile(r'((?:pass|password|pwd|secret|token)=)[^,]*', re.I)
 
 FMT_C = ('{"id":"{{.Id}}","name":{{json .Name}},"image":{{json .Config.Image}},"state":{{json .State.Status}},'

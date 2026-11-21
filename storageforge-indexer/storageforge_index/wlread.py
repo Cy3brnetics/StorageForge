@@ -8,7 +8,7 @@ from __future__ import annotations
 import base64
 import binascii
 
-SECTIONS = ('vm_mac',)
+SECTIONS = ('vm_mac', 'quadlet')
 
 BODY = r"""
 # the MAC labels of where VM disks are: each pool folder and each folder a disk sits in, with SELinux's label for it and what it should be
@@ -28,7 +28,67 @@ if has virsh; then
     grep -av '^[[:space:]]*#' /etc/apparmor.d/local/abstractions/libvirt-qemu | head -n 200 | while IFS= read -r l; do [ -n "$l" ] && printf 'a\t%s\n' "$(printf %s "$l" | base64 -w0)"; done
   fi
 fi
+# Podman Quadlet units, of root and of each account that lingers: only the keys that say what runs. Never Environment, Secret or Exec,
+# which can hold secrets
+sec quadlet
+qfiles() {
+  [ -d "$2" ] || return 0
+  find "$2" -maxdepth 3 -type f \( -name '*.container' -o -name '*.pod' -o -name '*.volume' -o -name '*.network' -o -name '*.kube' -o -name '*.image' -o -name '*.build' \) 2>/dev/null | head -n 200 | while read -r f; do
+    printf 'f\t%s\t%s\n' "$1" "$(printf %s "$f" | base64 -w0)"
+    awk '{ k = $0; sub(/=.*/, "", k); gsub(/[[:space:]]/, "", k) } /^\[/ { print "s\t" $0; next }
+         k ~ /^(Image|ContainerName|PublishPort|Volume|Network|Label|Pod|PodName|AutoUpdate|HealthCmd|Pull|User|Yaml|VolumeName|NetworkName)$/ { v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); print "k\t" k "\t" v }' "$f" 2>/dev/null | head -n 200
+  done
+}
+for d in /etc/containers/systemd /usr/share/containers/systemd; do qfiles root "$d"; done
+if [ -d /var/lib/systemd/linger ]; then
+  for u in /var/lib/systemd/linger/*; do u=${u##*/}; h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6); [ -n "$h" ] && qfiles "$u" "$h/.config/containers/systemd"; done
+fi
 """
+
+QUADLET_KINDS = ('container', 'pod', 'volume', 'network', 'kube', 'image', 'build')
+
+
+def quadlets(lines: list[str]) -> list[dict]:
+    """The quadlet section: one record per unit file, with the unit systemd makes of it. Reads what it can."""
+    import posixpath
+    out: list[dict] = []
+    cur = None
+    for line in lines:
+        tag, _, rest = line.partition('\t')
+        if tag == 'f':
+            user, _, b = rest.partition('\t')
+            path = _b64(b)
+            kind = posixpath.splitext(path or '')[1].lstrip('.')
+            if not path or not path.startswith('/') or kind not in QUADLET_KINDS or not user:
+                cur = None
+                continue
+            name = posixpath.splitext(posixpath.basename(path))[0]
+            cur = {'path': path, 'user': user[:64], 'kind': kind, 'name': name, 'unit': name + ('' if kind in ('container', 'kube') else f'-{kind}') + '.service',
+                   'image': None, 'container_name': None, 'publish': [], 'volumes': [], 'networks': [], 'labels': {}, 'auto_update': None, 'pod': None}
+            out.append(cur)
+        elif tag == 'k' and cur is not None:
+            key, _, value = rest.partition('\t')
+            value = value.strip()[:500]
+            if key == 'Image':
+                cur['image'] = value
+            elif key == 'ContainerName':
+                cur['container_name'] = value
+            elif key == 'PublishPort':
+                cur['publish'].append(value)
+            elif key == 'Volume':
+                cur['volumes'].append(value)
+            elif key == 'Network':
+                cur['networks'].append(value)
+            elif key == 'Label':
+                for part in value.split():
+                    k, eq, v = part.strip('"').partition('=')
+                    if eq and k:
+                        cur['labels'][k[:100]] = v[:200]
+            elif key == 'AutoUpdate':
+                cur['auto_update'] = value
+            elif key == 'Pod':
+                cur['pod'] = value
+    return out
 
 
 def _b64(text: str) -> str | None:
@@ -67,7 +127,7 @@ def vm_mac(lines: list[str]) -> dict:
 
 def read(s: dict) -> dict:
     """What inframeasure.parse adds to a reading."""
-    return {'vm_mac': vm_mac(s.get('vm_mac', []))}
+    return {'vm_mac': vm_mac(s.get('vm_mac', [])), 'quadlets': quadlets(s.get('quadlet', []))}
 
 
 # ── what the reading says about a VM's disks ────────────────────────
@@ -107,3 +167,23 @@ def disk_findings(reading: dict, disks: list[dict]) -> list[str]:
             if not (folder == LIBVIRT_DEFAULT or folder.startswith(LIBVIRT_DEFAULT + '/')) and not apparmor_covers(vm.get('apparmor_local') or [], folder):
                 out.append(f'{folder} is not in AppArmor\'s libvirt-qemu abstraction: a backing file or a disk added later there can be refused. Stage a vm-mac step for {folder}')
     return sorted(set(out))
+
+
+def with_quadlets(workloads: list[dict], host: str, units: list[dict]) -> None:
+    """Ties each Podman container to the Quadlet unit that runs it (Podman labels it PODMAN_SYSTEMD_UNIT), and lists a Quadlet container
+    with no container running as a workload of its own, in state 'defined'."""
+    for q in units:
+        if q['kind'] != 'container':
+            continue
+        found = False
+        for w in workloads:
+            if w.get('host') != host or w.get('runtime') != 'podman' or w.get('kind') != 'container':
+                continue
+            if (w.get('user') or 'root') == q['user'] and (w.get('labels') or {}).get('PODMAN_SYSTEMD_UNIT') == q['unit']:
+                w['quadlet'], w['unit'] = q['path'], q['unit']
+                found = True
+        if not found:
+            workloads.append({'host': host, 'runtime': 'podman', 'kind': 'container', 'name': q['container_name'] or f'systemd-{q["name"]}', 'state': 'defined',
+                              'image': q['image'] or '', 'user': None if q['user'] == 'root' else q['user'], 'quadlet': q['path'], 'unit': q['unit'],
+                              'mounts': [], 'ports': [], 'networks': [], 'labels': dict(q['labels']), 'detail': False, 'security': None,
+                              'findings': [f'its Quadlet unit {q["unit"]} has no container running']})

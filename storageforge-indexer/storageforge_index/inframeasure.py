@@ -22,7 +22,7 @@ OFF_KEY = 'infra.read.off'
 SECTIONS = ('tools', 'fw_state', 'nft', 'iptables', 'ip6tables', 'ufw', 'firewalld', 'listeners', 'storage_clients', 'libvirt', 'libvirt_snap', 'libvirt_net', 'libvirt_pool',
             'incus', 'lxc', 'proxmox', 'podman', 'wireguard', 'tailscale', 'netbird', 'headscale', 'tailscale_json', 'netbird_json', 'zt_info', 'zt_networks', 'zt_peers', 'headscale_json',
             'openvpn_status', 'openvpn_pki', 'nebula_conf', 'nebula_cert', 'netmaker_json', 'swan_sas', 'swan_conns', 'ziti_status', 'tp_status', 'tp_nodes', 'tp_conf',
-            'tp_login', 'boundary_targets', 'boundary_conf', 'pomerium_conf', 'cloudflared', 'frp', 'ngrok', 'tunnel_procs', 'tunnel_cmdline', 'caddy', 'nginx', 'units', 'vm_mac', 'end')
+            'tp_login', 'boundary_targets', 'boundary_conf', 'pomerium_conf', 'cloudflared', 'frp', 'ngrok', 'tunnel_procs', 'tunnel_cmdline', 'caddy', 'nginx', 'units', 'vm_mac', 'quadlet', 'end')
 PVE_KEYS = '^(cores|memory|onboot|unprivileged|net[0-9]+|(scsi|virtio|sata|ide|efidisk|tpmstate|mp)[0-9]+|rootfs): '
 BODY = r"""
 sec() { printf '\n@@%s\n' "$1"; }

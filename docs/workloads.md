@@ -9,6 +9,7 @@ What is here:
 - [VMs from installer ISOs](#vms-from-installer-isos), for systems with no cloud image.
 - [Placement advice](#placement-advice): tuned datasets, databases off the bulk pool, network filesystems, and data nothing protects.
 - [MAC at deploy](#mac-at-deploy): `:Z` labels, the `svirt_image_t` fix and AppArmor pool paths.
+- [The read side](#the-read-side-quadlets-adopting-a-workload-and-drift): Quadlets, adopting a workload by capturing it, and drift against the capture.
 
 Running one container (`container`), VMs from cloud images (`vm-create`) and the VM steps are in [VMs on libvirt](vms.md) and [Cloning and migrating hosts](host-migration.md). Installing a runtime first is the `runtime-install` step in [Change plans](change-plans.md).
 
@@ -78,3 +79,26 @@ SELinux and AppArmor keep a container or a VM from files that are not labelled o
 - **VM disks under AppArmor (pool paths).** On an AppArmor host the same step adds two path rules to `/etc/apparmor.d/local/abstractions/libvirt-qemu`, which every VM profile includes. `apparmor_parser` checks the file first, through a profile that includes the abstraction as libvirt reads it, and the file is put back when it refuses. The profiles of running VMs are reloaded.
 
 **Where it shows.** The infrastructure reading now holds the SELinux label of each libvirt pool folder and each folder a VM disk sits in, and the lines of the local libvirt-qemu abstraction. A VM whose disk folder is not `virt_image_t`, or on an AppArmor host is not under `/var/lib/libvirt/images` and not in the local abstraction, gets a finding on the Workloads page that names the `vm-mac` step for that folder.
+
+## The read side: Quadlets, adopting a workload, and drift
+
+**Podman Quadlets.** The infrastructure reading lists the Quadlet unit files of root (`/etc/containers/systemd`, `/usr/share/containers/systemd`) and of each account that lingers (`~/.config/containers/systemd`): for each, only the keys that say what runs (`Image`, `ContainerName`, `PublishPort`, `Volume`, `Network`, `Label`, `Pod`, `AutoUpdate` and a few more). `Environment`, `Secret` and `Exec` are never printed, as they can hold secrets. On the Workloads page a Podman container shows the Quadlet file that runs it (Podman labels it with its unit), and a Quadlet container with nothing running shows as *defined*.
+
+**Adopting a workload** captures its definition from what the index read of it, and keeps it:
+
+| Runtime | Captured as |
+| :--- | :--- |
+| Docker, Podman | A compose file (the default) or a Quadlet `.container` unit. Named volumes and networks already there are marked external, so compose uses them rather than making new ones |
+| libvirt | Domain XML: CPU, memory, firmware, disks, NICs, graphics (always on 127.0.0.1, whatever the VM had), TPM, serial console and the guest agent channel. It passes `virt-xml-validate`, and holds the fields the reading keeps, not every device libvirt adds by itself |
+| Incus | Instance YAML: type, profiles, devices and security keys |
+
+A scan never reads environment values, so none are in a capture: the compose and Quadlet captures say to give them with an env file of your own. A container started by hand can be adopted as compose, deployed as a `stack` from that file, and then updated with `image-update`.
+
+**Drift.** Each later reading is compared with the capture: the image and its digests, published ports, mounts, networks, privileges and added capabilities for a container; vCPUs, memory, firmware, disks, NICs and consoles for a VM; type, profiles, devices and security keys for an instance. The Workloads list puts the capture and its drift on each adopted workload, and `GET /api/workloads/captures` lists every capture as *same*, *drifted* (with what was added and removed) or *gone*.
+
+| Route | What it does |
+| :--- | :--- |
+| `GET /api/workloads/capture?host=&runtime=&name=&format=` | The definition as it would be captured, saved nowhere |
+| `POST /api/workloads/captures` | Adopts it: `{host, runtime, name, format, note}`. Needs `plans.edit`, and is in the audit log as `workload.adopt` |
+| `GET /api/workloads/captures`, `GET /api/workloads/captures/ID` (`?raw=1` for the text) | Captures with their drift, and one capture |
+| `DELETE /api/workloads/captures/ID` | Forgets a capture (`workload.forget`) |

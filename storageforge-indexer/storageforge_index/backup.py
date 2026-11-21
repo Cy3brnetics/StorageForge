@@ -43,7 +43,8 @@ ESSENTIAL = ('vault_meta', 'ssh_keys', 'device_credentials', 'key_bindings', 'us
              'agent_deliveries',                     # the manifest signed for each host, with its counter
              'agent_console_grants',                 # each console SSH was turned on for through storageforge-agentctl, and when it was turned off
              'netconsole_sources',                   # which address and port each host's kernel messages come from
-             'secret_deliveries')                    # where each secret was delivered: where a rotation sends the new value
+             'secret_deliveries',                    # where each secret was delivered: where a rotation sends the new value
+             'workload_captures')                    # workloads adopted by capturing their definitions, which drift is measured against
 # Left out of essentials: a rescan or the next deploy rebuilds these, they are history, or they are sessions.
 # Every table is in exactly one of the two lists (tests/test_consistency.py).
 REBUILDABLE = ('network_scans', 'network_scan_hosts', 'traffic_samples', 'mounts', 'scans', 'directories', 'file_records', 'file_fts', 'file_changes', 'scan_denied', 'scan_jobs',
