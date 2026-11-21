@@ -166,8 +166,16 @@ function hlBy(e) {
   const said = (e.ident || '').toLowerCase(), was = (e.comm || '').toLowerCase();
   return was && said && was !== said && !said.startsWith(was) && !was.startsWith(said) ? ` · written by ${e.comm}${e.uid != null ? ` (uid ${e.uid})` : ''}` : '';
 }
+/* How a host's lines come: pushed by its agent as they are written, in batches its key signed (with the delay and the numbers missing
+   from the journal's own count), or collected by the scan over SSH, which signs nothing. */
+function hlVia(s) {
+  if (s.via !== 'agent') return 'collected by the scan over SSH, not signed';
+  const delay = s.delay_ms != null ? `, ${(s.delay_ms / 1000).toFixed(1)} s behind` : '';
+  const gaps = s.gaps ? `, ${hlPlural(s.gaps, 'line')} missing from the journal's count (deleted on the host, or lost)` : ', none missing';
+  return `pushed by the agent, signed${delay}${gaps}`;
+}
 function hlWriter(e) {
-  const parts = [fmtUtc(e.ts)];
+  const parts = [fmtUtc(e.ts), e.signed ? 'pushed by the agent, signed' : 'collected by a scan'];
   if (e.exe || e.comm) parts.push(`journald: ${e.exe || e.comm}${e.uid != null ? `, uid ${e.uid}` : ''}`);
   if (e.arrived) parts.push(`arrived ${fmtUtc(e.arrived)}`);
   return parts.join(' · ');
@@ -369,6 +377,7 @@ function hlRenderHosts(names, status) {
     const kept = s.lines ? `${hlPlural(s.lines, 'line')} kept, from ${fmtTime(s.oldest)} to ${fmtTime(s.newest)}` : 'no lines kept';
     return hlEl('li', { class: 'hl-host' }, hlEl('span', { class: 'hl-hname' }, pick(name), label, when),
                 hlEl('span', { class: 'm' }, `${kept}${s.state === 'failed' ? '' : `, ${hlPlural(s.new_lines, 'new line')} in the last pickup`}`),
+                hlEl('span', { class: s.gaps ? 'm st-warn' : 'm' }, hlVia(s)),
                 s.note ? hlEl('span', { class: 'm st-warn' }, s.note) : null);
   };
   list.replaceChildren(sfMoreList(rows, render, { limit: 12, label: 'hosts', tag: 'ul', className: 'list hl-hostlist' }));

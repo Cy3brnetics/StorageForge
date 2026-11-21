@@ -2,7 +2,7 @@
 
 StorageForge reads and changes hosts over SSH, with nothing installed on them. That stays the base, on every host, and keeps every feature. The agent is an extra, switched on one host at a time, for what a scan cannot do: readings as they happen instead of once per scan. Routers, firewalls, switches and appliances stay agentless.
 
-**Built, not lab-tested.** What this page describes is the agent's base (its two programs, its image, how a host is set up for it and how it is enrolled, the plugin format and the signatures), its tunnel to the controller and the receiver at the other end, and the trust model they keep (the roadmap's sections 11.1 and 11.2). **There are no plugins of its own yet** (section 11.4), so an enrolled agent with a tunnel sends a signed, empty batch every minute, which is how its silence is noticed, and nothing else. Docker is the only runtime it has run under, in the unit tests, with the real image. Podman, LXC, Incus and Proxmox VE are written and have run only against stand-ins.
+**Built, not lab-tested.** What this page describes is the agent's base (its two programs, its image, how a host is set up for it and how it is enrolled, the plugin format and the signatures), its tunnel to the controller and the receiver at the other end, the trust model they keep, wipe and stop, and its first four plugins: heartbeat, logs, health and network (the roadmap's sections 11.1 to 11.4). Docker is the only runtime it has run under, in the unit tests, with the real image. Podman, LXC, Incus and Proxmox VE are written and have run only against stand-ins. Lab tier 24 is written and has not run.
 
 ## How it is put together
 
@@ -19,7 +19,7 @@ agent ──its own tunnel, Noise IK, both keys pinned──► receiver (a proc
 | `storageforge-agent` | The one program in the container. Rust, static: no interpreter, no OpenSSL, no libc. It runs as `sfagent`, makes its own key, reads its manifest, and starts the signed plugins the manifest names. It refuses to run as root |
 | `storageforge-agentctl` | A second static Rust program, on the host, behind the one sudoers line. It takes a signed request on stdin, does one agent operation, prints one line of JSON. It drives the runtime itself, so nobody else needs access to it |
 | The image | The `agent` stage of the `Dockerfile`: Wolfi's base layout, the program, and nothing else. No shell, no package manager, 1.5 MB. The same image on every host and every runtime |
-| A plugin | A static program of its own, with a signed descriptor that says what it needs of the host. It reaches the agent through the tunnel; the agent starts it as a child and speaks to it over pipes. None exists yet |
+| A plugin | A static program of its own, with a signed descriptor that says what it needs of the host. It reaches the agent through the tunnel; the agent starts it as a child and speaks to it over pipes. Four are official: [heartbeat, logs, health and network](#the-official-plugins) |
 | The manifest | Which plugins a host runs, signed by the controller with the time and a counter |
 | The tunnel | One TCP connection from the agent to the receiver, encrypted and authenticated both ways with Noise IK: the agent's key is its own, the receiver's is pinned on the host |
 | The receiver | `python -m storageforge_index.agentreceiver`, a process of its own beside the web app, with a database role of its own: the one place what agents say comes in |
@@ -122,6 +122,21 @@ There is no word for a writable mount, a privileged container or a socket.
 
 **How it runs.** The agent reads the program once into a sealed memory file, hashes it there and runs it from there, so what was checked is what runs, whatever happens to the file afterwards. The child gets an empty environment, three pipes and no other open file, cannot gain privileges, and dies with the agent. Every message is a length and then JSON, at most 256 KiB: the agent says `hello`, the plugin says `ready`, then `data` readings and `log` lines. Anything else, a frame too large, or more than 6000 messages in a minute ends the plugin, and it is not started again until the agent is.
 
+**Resuming.** A plugin that reads at its own pace (the logs plugin) puts its place in its readings as `cursor`. The agent keeps the newest one and hands it back in `hello` when it starts the plugin again; after the agent itself starts again (a reboot), the receiver hands back the cursor of the last reading it stored, in `resume`, when the session opens. A plugin whose readings wait in the agent's outbox beyond its share (4 MiB) is not read from until the tunnel has sent some, so it waits, with the journal on disk, instead of losing lines.
+
+### The official plugins
+
+Built from the same Cargo workspace (`src/bin/plugin-*.rs`). `agent/plugins.sh lay` writes each program and its descriptor the way the controller serves them, and `agent/plugins.sh sign OUT KEY` signs the descriptors: the release is signed with the release key by its holder, and until then the server's image carries them unsigned and offers none. What each declares is in that script and nowhere else.
+
+| Plugin | Declares | Reports |
+| :--- | :--- | :--- |
+| `heartbeat` | nothing | `beat` every 10 seconds. While the tunnel is down beats wait in the outbox with their own times, so afterwards the controller sees the agent was alive and cut off. While it is up, its silence is a notification within seconds |
+| `logs` | `/etc/machine-id`, `/run/log/journal`, `/var/log/journal` read-only; the `systemd-journal` group | `lines`: the journal as it is written, read from the journal files themselves (regular or compact, zstd or LZ4), up to 200 lines a reading, with the fields a scan collects (never `_CMDLINE`) and journalctl's own cursor, so a line pushed and the same line scanned are one. Debug lines are left out and said, so they are not taken for lines deleted on the host. See [host logs](web-ui.md) |
+| `health` | `/proc` and `/sys` read-only; the host's process table | `health` every minute: CPU, load, memory, pressure, disk latency and how busy each disk is, md arrays with their rebuilds, ZFS pool states, btrfs allocation, uptime. `ssh` within ten seconds of a change: whether sshd runs and the ports the host listens on, so the agent says when SSH is down |
+| `network` | the host's network | `shares` within five seconds of a change and every minute: who is connected to SMB (139, 445) and NFS (2049), who came and who went. `traffic` every minute: each interface's counters and rates |
+
+A path a plugin declares that the host does not have (`/run/log/journal`, say, or `/var/log/journal` on a host that keeps its journal only in memory) is not mounted, and `apply` says so: a plugin gets less than it declared, never more.
+
 ## The manifest
 
 ```json
@@ -153,10 +168,12 @@ It is not inside an SSH session and not inside the tunnel container's SSH tunnel
 
 ```text
 agent    -> receiver   hello: version, its claims about itself, the manifest it runs, the plugins it has loaded
-receiver -> agent      the manifest the controller signed for its host, then each plugin of it the agent lacks, in chunks
+receiver -> agent      the manifest the controller signed for its host, then each plugin of it the agent lacks, in chunks, then
+                       where it has each plugin's readings up to (resume)
 agent    -> receiver   batches: {"counter","run","sent","dropped","records":[{"seq","at","plugin","kind","body"}]}, each signed
                        with the agent's key (namespace storageforge-agent-batch); at least one a minute, empty if need be
-receiver -> agent      ack or refused, per batch; bye when the session is over
+receiver -> agent      ack or refused, per batch (a batch over the agent's quota for the minute is refused with retry, and the
+                       agent sends it again ten seconds later); bye when the session is over
 ```
 
 The agent writes a plugin to its plugin folder only when it is named by the manifest in force (the one `storageforge-agentctl` made the container for), its descriptor is signed by the kind of key the manifest names, and its program has the hash and size the descriptor says; then it starts itself again in place, under every runtime, to load it. A delivered manifest newer than the one in force is said in its log and not used: the privileges it takes come only through `storageforge-agentctl`, over SSH. The batch counter is written to the agent's state folder before a batch is sent, and a batch that got no answer is sent again with the same counter and bytes.
@@ -184,7 +201,38 @@ It makes its X25519 key the first time it starts (mode 0600 in its folder) and w
 | Keeps sessions short | Fifteen minutes, then the agent opens another with fresh keys. A key taken off the pinned list (the agent removed or enrolled again) ends its session within seconds |
 | Labels what it stores | Every row of `agent_records` has `source = 'agent'`; the web app shows it as *reported by agent*, never mixed with what a scan measured |
 
-**In the notification center:** an agent with a tunnel that has not been heard from for five minutes (stopped, wiped, cut off, or hiding what it sees; scans go on), batches missing or played again, batches refused, an agent that says it runs another manifest than its host was given, and, as a security finding that cannot be ignored, an agent that says it is on another machine than SSH reads.
+**In the notification center:** an agent with a tunnel that has not been heard from for five minutes, or for thirty seconds when it runs the heartbeat plugin (stopped, wiped, cut off, or hiding what it sees; scans go on), batches missing or played again, batches refused, an agent that says it runs another manifest than its host was given, an agent whose health plugin says nothing listens on the host's SSH port, lines missing from the journal its logs plugin pushed, an agent that could not be checked from outside for an hour, a request of an agent's held for a person, and, as security findings that cannot be ignored, an agent that says it is on another machine than SSH reads and an agent that was wiped.
+
+The receiver's role writes only its three tables. Moving what agents said into the rest of StorageForge (pushed lines into host logs, an agent's last word into a wipe) happens on the web app's side, on a background thread of its own every five seconds (`agentingest.py`), never on a web request's.
+
+## Wipe and stop
+
+Anything in an agent's container that its manifest does not account for ends its access (the owner's decision of 2026-11-16; roadmap section 11.3).
+
+**From outside, over SSH: the check that counts**, since a container that was taken over can lie about itself. On a timer (every fifteen minutes for each running agent, and again after each scan of its host) and on `POST /api/agents/<host>/check`, the controller asks `storageforge-agentctl check`. It reads nothing the agent says, and compares:
+
+| What | Against |
+| :--- | :--- |
+| The image the container runs | The one the signed manifest names, by digest, and the id the runtime has under that digest |
+| Files changed in the container (`docker diff`, `podman diff`; under plain LXC a hash of its root filesystem) | Nothing but the places the runtime makes for its mounts |
+| Its mounts, capabilities, devices, network, process table, user, privileged or not | What it was made with (kept on the host when it was made): the union of what the manifest's plugins declare, as [What a container is given](#what-a-container-is-given) says, the masks included |
+| The plugin folder, read from the host's side | Each file of a plugin the manifest names, as signed, and nothing else. A plugin still on its way is a note, not a finding |
+| The state folder | The agent's own files and nothing else; its key there, and the one enrolled |
+
+**From inside.** At start and every thirty seconds the agent checks its manifest and every plugin file, and its own program against what it was when it started. A file in the plugin folder nothing accounts for, a plugin file that is there and is not what was signed, a manifest the controller did not sign, another agent's, or an older one played back, is tampering. A plugin that has not arrived yet is not, and a manifest merely signed long ago with a later counter is refused without wiping, since clocks differ.
+
+**What happens.** On any finding from outside, the controller revokes the agent's key on its own side first (the receiver drops it from its pinned keys within seconds and ends its session), which nothing on the host can undo; then asks `storageforge-agentctl wipe`, which stops the container and leaves it stopped whatever its restart policy, deletes the agent's key and plugin files, writes why beside them, and forgets the key pinned on the host so that `start` and `apply` refuse; and a notification that cannot be ignored opens, until an agent is enrolled there again or removed. On tampering found inside, the agent deletes its key, writes why, gives its last word through the tunnel (one record, under the name `agent`, which no plugin may have) and exits; started again by its runtime it finds what it wrote and exits at once, making no new key. Its last word makes the controller do the same as for a finding from outside. Only an admin (`agent.privilege`, and a fresh password) enrolls an agent again after a wipe, and the audit log records it.
+
+A check that cannot run (the host unreachable) wipes nothing: not being able to look is not a finding. After an hour it is a notification.
+
+### What an agent's report may cause
+
+An agent's word causes an action through one road only (`agentaction.py`), and that road holds the roadmap's two rules (11.2):
+
+- **Its actions affect only itself.** A report acts by itself only on the agent that sent it: the host the receiver stored it under, from the key, whatever the message names. Only protective actions are allowed by themselves, and today there is one: an agent that says it wiped itself is revoked and stopped. What a lying agent gains from that it could have had by stopping. What a report names (another host, an address) is kept beside it as its claim and never chosen as a target.
+- **Anything wider needs a second witness.** An action that would touch another host or client (a share frozen, a client dropped from every share) is taken only when an independent source agrees about the same target, recently: a scan over SSH, a decoy hit, or the share host's own sentinel. Never the reporter's own sentinel, and never another agent. Without one it is held, and a person is told. No such action is built yet; the shadow-copy tripwire (Windows, 0.5.14) and the share freeze will go through it.
+
+Every action caused, held or refused is a row of `agent_actions`, shown with the host's records.
 
 ## Requests to storageforge-agentctl
 
@@ -195,7 +243,7 @@ STORAGEFORGE-AGENTCTL 1
 {"op":"apply","machine":"<machine-id>","issued":1794960000,"nonce":"<32 hex>", …}<SSH signature, namespace "storageforge-agentctl">
 ```
 
-A request is acted on only when the controller pinned on that host signed it, for that machine, in the last ten minutes, with a nonce not used there before. The signature is checked before the request is parsed. The operations are `preflight`, `enroll`, `apply`, `start`, `stop`, `restart`, `status` and `remove`. None runs a command, reads a file or makes a mount that the caller chose, and a request with a field its operation does not take is refused. It exits 0 when done, 97 when refused with nothing changed, 1 when it failed part way.
+A request is acted on only when the controller pinned on that host signed it, for that machine, in the last ten minutes, with a nonce not used there before. The signature is checked before the request is parsed. The operations are `preflight`, `enroll`, `apply`, `start`, `stop`, `restart`, `status`, `remove`, `check` and `wipe`. None runs a command, reads a file or makes a mount that the caller chose, and a request with a field its operation does not take is refused. It exits 0 when done, 97 when refused with nothing changed, 1 when it failed part way.
 
 ## The image
 
@@ -221,7 +269,8 @@ echo sha256:… > digest && ssh-keygen -Y sign -n storageforge-agent-image -f KE
 - run on a host as `sfagent`, in a container with what its plugins' signed descriptors declare and nothing more
 - make its own key and keep the private half in its state folder
 - read the files of the host it was given read-only mounts of, as `sfagent`
-- start signed plugins named in its manifest, take readings from them, and send them through its tunnel as signed batches
+- start signed plugins named in its manifest, take readings from them, and send them through its tunnel as signed batches: with the official ones, its host's journal lines as they are written, its health, who is on its shares, and a heartbeat
+- delete its own key and stop for good, which it does when it finds its container tampered with
 - reach the receiver's one address and port, and take from it the signed manifest and signed plugins of its own host
 
 **It cannot:**
@@ -251,13 +300,17 @@ Say whoever holds a host also holds its agent: its key, its state folder, its pr
 | Replay or delete batches on the way | A replay is refused; a gap is counted and shown |
 | Send malformed or oversized input | Refused before it is stored, counted; five end the session and hold the key out for ten minutes. Frames over 1 MiB end the connection unread |
 | Keep its key after the agent is removed | Removing it on the controller takes the key off the pinned list: no new session, and an open one ends within seconds |
-| Read what the controller sends it | The signed manifest and plugins of its own host: none of it secret |
+| Read what the controller sends it | The signed manifest and plugins of its own host, and where the receiver has its readings up to: none of it secret |
+| Push its host's journal lines, true or invented, and move its own resume point | Stored as that host's lines, through the scrubbing, the host's rate and its quota; a jump in the journal's numbers is a gap shown, and its resume point moves nothing but its own plugin's place |
+| Say SSH is down when it is not, or up when it is not | A notification for a person, labelled as reported by agent. SSH itself is not touched, and scans say what they find |
+| Have itself wiped | By claiming it found tampering: it loses its own access, which it could give up by stopping |
 | Run the plugins it was given, and read what their mounts show | That host's files, as `sfagent`, which whoever holds the host already has |
 
 | They cannot | Why |
 | :--- | :--- |
 | Speak for another host, or write anything but its own rows | The host is worked out from its key; the receiver's role or authorizer reaches three tables |
-| Cause an action anywhere | No agent report can trigger any action yet: everything it says goes to a person, through the notification center |
+| Cause an action on another host or client | A report acts by itself only on its sender, and only to revoke and stop it. Anything wider waits for a scan over SSH, a decoy or the share host's sentinel to agree, or for a person (no such action is built yet) |
+| Keep running after its container was changed | The check from outside, over SSH, reads the runtime's own account and the host's files, not the agent's; any finding revokes its key first |
 | Reach SSH, the vault or the web app | Its container reaches the receiver's port and nothing else; the receiver has no vault secret and no SSH; the web app does not listen on the tunnel |
 | Get code run with more privileges | Plugins and the image are signed by the release key or the operator's own, privileges come only from a manifest `storageforge-agentctl` accepted over SSH, and one that adds any takes an admin |
 | Pass for the receiver to another agent, or for another agent to the receiver | Each end pins the other's key |
@@ -269,7 +322,8 @@ What they could still do, and nothing stops: tell lies about their own host that
 Stated here so that nobody takes more from the above than is there.
 
 - **Nothing is lab-tested**, and Podman, LXC, Incus and `pct` have only run against stand-ins. The commands for LXC, Incus and Proxmox VE are written from those tools' documentation.
-- **No check from outside yet, and no wipe.** The agent refuses what does not match its manifest and says so in its log. Comparing the running container with the manifest over SSH, and wiping an agent that fails that, is the roadmap's section 11.3.
+- **The check from outside compares the container itself under Docker and Podman, and under plain LXC its root filesystem**, against a hash taken when it was made. Under Incus and Proxmox VE only the agent's folders are compared yet. Under Podman a smaller set of fields is compared than under Docker (capabilities dropped, `no-new-privileges` and the network name are not), since how Podman reports them has not been seen on a real host.
+- **The check from inside protects an honest agent from its host's files being changed under it.** An agent whose own process was taken over can skip it; that is what the check from outside is for.
 - **`.ssh` folders are found when the container is made:** those of the accounts in `/etc/passwd`, of every folder directly under `/home`, and of every folder directly under a mount. One made later is masked from the next start. One deeper down (`/srv/users/ana/.ssh`) is not masked. As `sfagent`, with no capability, such a folder is unreadable anyway when its mode is the usual 0700; the masks are what protects it from a plugin that declares `DAC_READ_SEARCH` or `SYS_ADMIN`.
 - **A plugin with `SYS_ADMIN` can undo a mask** by unmounting it, and is root on the host in effect. The roadmap says so of the files plugin, and the UI will have to.
 - **Groups from a directory service are not seen.** The check that the managing user is in none of `docker`, `lxd`, `incus-admin` reads `/etc/group` and the account's own group (the setup script asks `id`, which does see them).
@@ -277,8 +331,10 @@ Stated here so that nobody takes more from the above than is there.
 - **The tunnel is not built for LXC, Incus or Proxmox VE** (an unprivileged container there has no network of its own for it yet), nor for hosts without systemd (the firewall rule could not be loaded again at boot before the container starts) or without `nft`. The agent runs there and reports nothing, with the reason.
 - **The egress rule is matched on the agent's bridge and on `sfagent`'s uid,** not on the container's cgroup as the roadmap says. A process that is not `sfagent` and is put on the bridge by hand is held by it; one of `sfagent`'s outside the container is held too, which is as meant.
 - **On SQLite the receiver has no database role.** It runs as its own process with an authorizer on its connection; if the process itself were taken over it could open the file without one. The role boundary is PostgreSQL's. In the Docker setup the receiver runs as the web app's user and shares its data volume, so its key file is readable by the web app.
-- **No agent report causes any action,** so the roadmap's protective reaction (the tripwire dropping the reporter's own address) and the second witness have nothing to act on yet.
-- **"`sshd` is down" is not reported** by the agent: that takes a plugin (section 11.4). Its silence is reported.
+- **The only action an agent's report causes is its own wipe.** The tripwire and the share freeze are not built; the gate they will go through is.
+- **The logs plugin reads systemd's journal only.** OpenRC hosts' log files are not read yet, and a field compressed with xz (which systemd has not written by default for years) is not read and is counted. The scan stops asking for a host's lines while its agent pushes and asks again ten minutes after pushing stops.
+- **Health does not read the capacity of filesystems other than btrfs, nor a ZFS scrub's progress**, which /proc and /sys do not show. Scans over SSH read those.
+- **A heartbeat that stops wakes the notification center within seconds**, and the alert itself is pushed at once; the other agent notifications come at its tick, every five minutes.
 - **There is no page for what agents report** in the web UI: the route is in the API reference.
 - **The agent's state folder has no size limit.**
 - **Under Podman without root there is no memory or process limit** on the container, since not every host lets a user set one.
@@ -289,13 +345,16 @@ Stated here so that nobody takes more from the above than is there.
 
 ```sh
 cd storageforge-indexer
-cargo test -p storageforge-wire --features noise -p storageforge-agent      # formats, signatures, the counter, a real plugin process, the tunnel
+cargo test -p storageforge-wire --features noise -p storageforge-agent      # formats, signatures, the counter, a real plugin process, the tunnel,
+                                                                           # wipe and stop, the official plugins, the journal against systemd's own files
 python tests/run.py all -k test_agent                      # the setup script, the real programs against a stand-in host, the real Docker,
                                                            # the tunnel and the receiver (test_agent_tunnel, test_agent_receiver, test_agent_trust)
 ```
 
-Lab tier 24 (`tests/lab/tiers_agent.py`) is written and has not run, its tunnel and receiver checks included. The lab's build does not publish an agent image or start the receiver yet, so until it does every check of that tier shows as skip, with that reason.
+Lab tier 24 (`tests/lab/tiers_agent.py`) is written and has not run, its tunnel, receiver, plugin and wipe-and-stop checks included. The lab's build does not publish an agent image or start the receiver yet, so until it does every check of that tier shows as skip, with that reason.
 
 `tests/test_agent_tunnel.py` checks the Python side of the handshake against the Rust side byte for byte, runs the real agent against a receiver over TCP through a plugin delivery and back, and loads the egress rule with the real `nft` in a network namespace of its own. `tests/test_agent_receiver.py` plays agents over real sessions against the real receiver, everything a taken-over agent might send, on SQLite and PostgreSQL, where the receiver's role is made and shown to reach nothing else; its `Delivery` class runs the whole road, from `sfagent` through the real `storageforge-agentctl` and agent to the receiver.
+
+`tests/test_agent_guard.py` runs the check from outside and the wipe through the real `storageforge-agentctl`, the agent's last word through the real tunnel, and the gate on what a report may cause; `tests/test_agent_plugins.py` takes pushed lines into host logs and runs the real logs and heartbeat plugins, signed by a key made for the run, through the real tunnel against journal files written by systemd's own `systemd-journal-remote`. `agent/tests/journal.rs` reads every layout systemd writes and compares each entry with what `journalctl` says of it.
 
 `tests/test_agent.py` builds both programs with a release key it made, runs the setup script in bash against a folder that stands for a host's `/`, sends the controller's signed requests to the real `storageforge-agentctl`, and starts the real agent where a runtime would. `RealDocker` runs the same road against the real Docker with the image from the `agent` stage, where Docker and a `registry` image are at hand.
