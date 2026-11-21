@@ -1812,4 +1812,6 @@ def problems(conn: Conn) -> dict:
             if (not m or m['stale']) and time.time() - marks[0]['at'] > STALE_AFTER:
                 out[f'security-stale:{name}'] = ('security-stale', name, f'No recent security reading from {name}', 'it may be unreachable, or someone has stopped it answering', 'warn')
     out.update(_secplus().problems(conn))
+    from . import apiconn
+    out.update(apiconn.problems(conn))         # a platform's changed certificate, and later an over-privileged token
     return out

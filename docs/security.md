@@ -170,6 +170,18 @@ If a program repeats its secret when it fails, the step takes it out of what it 
 
 **The Nebula CA.** The CA's certificate and the list of what it issued are kept as a setting, with no key in it. A certificate from here always has one address inside the CA's networks, an end no later than the CA's own, and the CA's fingerprint as its issuer. An address is given to a second name only after the first one's certificate is revoked. Revoking does not reach a host by itself: a host refuses a revoked certificate once the `nebula` step has run on it again, and a tunnel that is already up stays up until its next handshake. Making a CA, issuing and revoking are in the audit log (`vault.nebula_ca`, `vault.nebula_issue`, `vault.nebula_revoke`). They are commands of `storageforge-index vault`, run by someone who can unlock the vault: there is no page or API route for them yet.
 
+### Platform API tokens
+
+*Since 0.5.10 (built, not lab-tested; lab tier 27 is written and has not run):* StorageForge can read Proxmox VE, Backup Server and Datacenter Manager through their own APIs ([Platform connections](api-connections.md)). What holds for the tokens it keeps for them:
+
+- **The least, always shown first.** Before a token is asked for, the guide shows the narrowest role and scope that does the job (`PVEAuditor`, `DatastoreAudit`, PDM's `Auditor` on named remotes) and the commands that make it. `root@pam` is refused outright. An action that needs more says what, on which object, when it is turned on.
+- **Read back on every read.** The platform is asked what the token can really do. A privilege that changes something and that no turned-on action needs is a security finding that cannot be muted or snoozed (critical when it reaches users, permissions or the system), and it leaves when the token is narrowed.
+- **Sealed for one platform.** The token is a vault row (inside the key enclave when it is configured) whose sealed policy releases it only for that platform instance. It goes into the Authorization header and nowhere else: never a URL, a command line, a log line, an audit row or an error message. Tests search each of those for it.
+- **The certificate is accepted by a person, then pinned.** Nothing is sent with the token before you accept the platform's certificate by its SHA-256 fingerprint, and a changed certificate gets nothing and raises a critical finding that cannot be muted.
+- **Read-only by default**, with plain HTTP refused, a timeout on every request, a rate limit per platform and a cap on each read.
+
+What a taken-over web app can do with a stored token, and what stops it, is in [Platform connections](api-connections.md#what-a-taken-over-web-app-can-do-with-a-stored-token): in short, it can use a token for its own platform within the enclave's limits, each release written up, and do there only what the token's role allows, which the guide keeps to reading.
+
 ### Console keys
 
 A key bound with `--actions console` opens a terminal from the web UI ([Console](console.md)), as the binding's login. It is kept apart from scan bindings, so the read-only scan login never becomes a shell. Sessions take only host keys a scan confirmed, forward nothing, and are audited when they open and close. With recording on, they are kept in full, input included.

@@ -82,6 +82,10 @@ FRESH_PASSWORD = {
     ('POST', '/api/keys/secrets'),                # makes a secret, and shows its value this once
     ('POST', '/api/keys/secrets/<name>/rotate'),  # a signed run on every host the secret went to
     ('DELETE', '/api/keys/secrets/<name>'),
+    ('POST', '/api/keys/platforms'),                         # takes a platform token into the vault
+    ('POST', '/api/keys/platforms/<int:conn_id>/certificate'),  # which certificate the token may be sent to
+    ('PUT', '/api/keys/platforms/<int:conn_id>/actions'),       # what StorageForge may change on the platform
+    ('DELETE', '/api/keys/platforms/<int:conn_id>'),
     ('PUT', '/api/me'),
     ('POST', '/api/roles'),
     ('DELETE', '/api/roles/<name>'),
@@ -172,6 +176,7 @@ NO_FRESH_PASSWORD = {
     ('POST', '/api/enclave/stepup/begin'),        # a challenge for a security key
     ('POST', '/api/keys/ssh-ca/plan'),            # likewise
     ('POST', '/api/devices/<name>/read'),        # reads, as a scan does, through the account bound for reading
+    ('POST', '/api/keys/platforms/<int:conn_id>/read'),  # reads a platform through its API with the token it was given; changes nothing there
     ('POST', '/api/devices/<name>/report'),      # saves what an apply would do. The apply asks
     ('POST', '/api/hostlogs/rules'),             # a log rule decides what raises a notification: it changes nothing on a host
     ('PUT', '/api/hostlogs/rules/<int:rule_id>'),

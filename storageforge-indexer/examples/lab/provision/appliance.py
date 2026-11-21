@@ -3,7 +3,7 @@
 systems have no cloud images, so lab.sh calls this in place of cloud-init. Afterwards the VM is running from its disk, with
 the same lab, sfadmin and scan accounts as every other config.
 
-    appliance.py proxmox|xcp-ng|truenas <name> <ip> <network> <vm dir> <iso> <pubkey file> <password file> <root GB> <RAM MB> <vcpus> <data GB,...>
+    appliance.py proxmox|pbs|pdm|xcp-ng|truenas <name> <ip> <network> <vm dir> <iso> <pubkey file> <password file> <root GB> <RAM MB> <vcpus> <data GB,...>
 """
 import base64
 import gzip
@@ -132,7 +132,8 @@ def password_hash(password):
 
 
 def proxmox(vm):
-    """Proxmox's own auto-installer. Its tool is a Debian package, so it runs in a throwaway container."""
+    """Proxmox's own auto-installer, for VE, Backup Server and Datacenter Manager alike (each product's installation docs, "Install ...
+    Unattended"). Its tool is a Debian package, so it runs in a throwaway container."""
     work = Path(tempfile.mkdtemp(prefix='sflab-pve-'))
     (work / 'answer.toml').write_text(f'''[global]
 keyboard = "en-us"
@@ -299,7 +300,8 @@ for u in lab sfadmin scan; do
 done
 printf 'lab ALL=(ALL) NOPASSWD: ALL\nsfadmin ALL=(ALL) ALL\n' >/etc/sudoers.d/sflab; chmod 440 /etc/sudoers.d/sflab
 """
-# Proxmox as a home lab runs it: the paid repositories off, the free one on, and sudo, which it does not ship.
+# Proxmox as a home lab runs it: the paid repositories off, the free one on, and sudo, which it does not ship. Backup Server and
+# Datacenter Manager the same, with their own repositories (pbs docs and pdm docs, installation.html: "No-Subscription Repository").
 PROXMOX_SETUP = r"""for f in /etc/apt/sources.list.d/pve-enterprise.sources /etc/apt/sources.list.d/ceph.sources; do
   [ -e "$f" ] && { grep -q '^Enabled:' "$f" && sed -i 's/^Enabled:.*/Enabled: no/' "$f" || echo 'Enabled: no' >>"$f"; }
 done
@@ -313,6 +315,21 @@ EOF
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq; apt-get install -y -qq --no-install-recommends sudo >/dev/null
 """
+
+
+def product_setup(product):
+    """PROXMOX_SETUP for Backup Server (pbs) or Datacenter Manager (pdm). The Backup Server also makes its datastore store1 on its first
+    data disk, which tier 27 reads."""
+    text = PROXMOX_SETUP.replace('pve-enterprise.sources /etc/apt/sources.list.d/ceph.sources', f'{product}-enterprise.sources')
+    text = text.replace('debian/pve', f'debian/{product}').replace('pve-no-subscription', f'{product}-no-subscription')
+    if product == 'pbs':
+        text += ('''if [ -b /dev/vdb ] && ! grep -q /mnt/datastore/store1 /etc/fstab; then
+  mkfs.ext4 -q -F /dev/vdb; mkdir -p /mnt/datastore/store1
+  echo "/dev/vdb /mnt/datastore/store1 ext4 defaults 0 2" >>/etc/fstab; mount /mnt/datastore/store1
+  proxmox-backup-manager datastore create store1 /mnt/datastore/store1
+fi
+''')
+    return text
 
 
 def root_setup(vm, script):
@@ -340,11 +357,13 @@ def setup(vm):
         truenas_setup(vm)
     elif vm.kind == 'proxmox':
         root_setup(vm, ACCOUNTS.replace('printf', PROXMOX_SETUP + 'printf', 1))
+    elif vm.kind in ('pbs', 'pdm'):
+        root_setup(vm, ACCOUNTS.replace('printf', product_setup(vm.kind) + 'printf', 1))
     else:
         root_setup(vm, ACCOUNTS)
 
 
 if __name__ == '__main__':
     target = Vm(sys.argv[1:])
-    {'proxmox': proxmox, 'xcp-ng': xcp_ng, 'truenas': truenas}[target.kind](target)
+    {'proxmox': proxmox, 'pbs': proxmox, 'pdm': proxmox, 'xcp-ng': xcp_ng, 'truenas': truenas}[target.kind](target)
     setup(target)

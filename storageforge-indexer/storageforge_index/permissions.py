@@ -224,6 +224,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/keys/ssh-ca', 'keys.view'),                          # the SSH CA: its public key, who is given certificates, what was issued
     (('POST',), r'/api/keys/ssh-ca/plan', 'plans.edit'),               # saves a change plan and runs nothing. The rest of the CA is keys.manage, below
     (READ, r'/api/keys/secrets(/[^/]+/rotate)?', 'keys.view'),        # the secret store: names, kinds and where each went, never a value
+    (READ, r'/api/keys/platforms(/.*)?', 'keys.view'),                 # platform API connections: names, token IDs, certificates, the guide; never a token
     (_WRITE, r'/api/(keys|bindings)(/.*)?', 'keys.manage'),
     (_WRITE, r'/api/(hostkey|access/grant)(/.*)?', 'access.manage'),
     (('DELETE',), r'/api/hosts/[^/]+', 'hosts.retire'),
