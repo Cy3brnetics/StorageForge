@@ -397,6 +397,18 @@ class Checks(Db):
         self.assertIn(('crit', 'eth0 carries the address StorageForge reaches this host on: stage a rollback timer'), got)
         self.assertIn(('warn', 'eth1 has no other address at the last scan: with DHCP off it has none'), self.said('net-dhcp', iface='eth1', state='off'))
 
+    def test_what_if_draws_the_bond_and_blocks_one_over_the_ssh_interface(self):
+        from storageforge_index import whatif
+        got = whatif.run(self.conn, {'tasks': [{'type': 'net-bond', 'host': 'nas', 'params': {'name': 'bond0', 'ports': 'eth0,eth1', 'address': '10.0.7.2/24'}}]})
+        self.assertTrue(got['blocked'], got['conflicts'])
+        self.assertIn('nic:nas:bond0', [n['id'] for n in got['ghost']['add']])
+        got = whatif.run(self.conn, {'tasks': [{'type': 'net-bond', 'host': 'nas', 'params': {'name': 'bond0', 'ports': 'eth0,eth1', 'address': '10.0.7.2/24', 'rollback': '5'}}]})
+        self.assertFalse(got['blocked'], got['conflicts'])
+        got = whatif.run(self.conn, {'tasks': [{'type': 'net-dhcp', 'host': 'nas', 'params': {'iface': 'eth1', 'state': 'on'}},
+                                               {'type': 'net-address', 'host': 'nas', 'params': {'iface': 'eth1', 'address': '10.0.5.2/24'}}]})
+        self.assertFalse(got['blocked'], got['conflicts'])
+        self.assertIn('adds 10.0.5.2/24', [c['what'] for c in got['ghost']['changed']])
+
     def test_a_script_of_every_kind_passes_bash_and_shellcheck(self):
         plan = {'name': 'p', 'tasks': [{'type': 'net-bond', 'host': 'nas', 'params': {'name': 'bond0', 'ports': 'eth1', 'rollback': '5'}},
                                        {'type': 'net-address', 'host': 'nas', 'params': {'iface': 'eth1', 'address': '10.0.5.2/24'}},
