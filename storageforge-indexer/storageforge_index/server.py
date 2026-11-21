@@ -180,6 +180,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from . import (__version__, access, selfupdate, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
                folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_agent, routes_clamav, routes_copies, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_scheduler, routes_secplus, routes_security, routes_sshca, scheduler, security, shares, site, snapjobs, tasks, updates, users)
 from . import copies, rotate_keys, routecode, routes_enclave, routes_planner
+from . import agentguard, agentingest
 from .runtimes import docker
 from .capacity import parse_size, trends
 from .db import Database, epoch
@@ -311,6 +312,7 @@ class App:
             threading.Thread(target=self._alerts, name='alerts', daemon=True).start()
             threading.Thread(target=self._security, name='security', daemon=True).start()
             threading.Thread(target=selfupdate.run, kwargs={'wake': self.alerts_wake.set}, name='release-check', daemon=True).start()
+            threading.Thread(target=agentingest.run, args=(self.db, self.alerts_wake.set), name='agent-ingest', daemon=True).start()
 
     def _alerts(self):
         time.sleep(30)
@@ -331,6 +333,7 @@ class App:
                 done['infra'] = inframeasure.tick(self.db)
                 done['devices'] = netdevice.tick(self.db)
                 done['netscan'] = netscan.tick(self.db)
+                done['agents'] = agentguard.tick(self.db)      # wipe and stop: each agent checked from outside, over SSH
                 if any(done.values()):
                     self.alerts_wake.set()
             except Exception:

@@ -5,8 +5,11 @@
 //! - **The tunnel** (11.2, `tunnel.rs`). `Outbox::drain` hands over what the plugins reported, each record numbered and labelled
 //!   by the agent with the plugin it came from. The tunnel signs batches of them with the agent's key (`sig::NS_BATCH`) and sends
 //!   them; nothing else reads the outbox. Plugin files arrive through the tunnel into `Paths::plugins`.
-//! - **SEAM, 11.3, wipe and stop.** `inspect` returns everything that does not match the manifest (`Report::problems`, `Report::
-//!   stray`). Today the agent refuses the plugin and says so; 11.3 decides when that also means deleting the key and exiting.
+//! - **Wipe and stop (11.3, `wipe.rs`).** `inspect` returns everything that does not match the manifest (`Report::problems`,
+//!   `Report::stray`), and of that, what can only be tampering (`Report::tamper`): a file in the plugin folder nothing accounts for,
+//!   a plugin file that is there and is not what was signed, a manifest that is not the controller's, is another agent's, or is an
+//!   older one played back. On tampering the agent deletes its key and stops for good. A plugin that has not arrived yet is not
+//!   tampering: it is refused and waited for.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
@@ -87,6 +90,8 @@ pub struct Report {
     pub stray: Vec<String>,
     /// Everything that was refused, in words.
     pub problems: Vec<String>,
+    /// What of that can only be tampering: on any of it the agent wipes its key and stops (`wipe.rs`).
+    pub tamper: Vec<String>,
 }
 
 fn stray_files(dir: &Path, names: &[String]) -> Vec<String> {
@@ -94,8 +99,10 @@ fn stray_files(dir: &Path, names: &[String]) -> Vec<String> {
     for name in names {
         known.extend([runner::descriptor_file(name), runner::signature_file(name), runner::program_file(name)]);
     }
+    // a file of the manifest's plugins being written whole (identity::write_whole writes NAME.new and renames it) is not a stray one
+    let accounted = |name: &str| known.iter().any(|k| k == name || name.strip_suffix(".new") == Some(k.as_str()));
     let mut out: Vec<String> = match std::fs::read_dir(dir) {
-        Ok(entries) => entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|name| !known.contains(name)).map(|name| runner::plain(&name)).collect(),
+        Ok(entries) => entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|name| !accounted(name)).map(|name| runner::plain(&name)).collect(),
         Err(_) => Vec::new(),
     };
     out.sort();
@@ -106,6 +113,14 @@ fn stray_files(dir: &Path, names: &[String]) -> Vec<String> {
 /// One pass over everything the agent would run: the manifest and every plugin it names, each checked in full. With `record`
 /// the counter of a newly accepted manifest is written down, so that an older one is refused from then on.
 pub fn inspect(paths: &Paths, key: &SigningKey, now: u64, record: bool) -> (Report, Vec<Loaded>) {
+    let (mut report, loaded) = inspect_inner(paths, key, now, record);
+    for name in &report.stray {
+        report.tamper.push(format!("{name} is in the plugin folder and no plugin of the manifest accounts for it"));
+    }
+    (report, loaded)
+}
+
+fn inspect_inner(paths: &Paths, key: &SigningKey, now: u64, record: bool) -> (Report, Vec<Loaded>) {
     let mut report = Report { agent: sig::fingerprint(&key.verifying_key().to_bytes()), ..Report::default() };
     let mut loaded = Vec::new();
     let plugins_dir = paths.plugins();
@@ -129,15 +144,22 @@ pub fn inspect(paths: &Paths, key: &SigningKey, now: u64, record: bool) -> (Repo
         }
     };
     let signature = read_small(&paths.manifest.join(MANIFEST_SIGNATURE), sig::MAX_SIGNATURE).ok().and_then(|b| String::from_utf8(b).ok()).unwrap_or_default();
+    let signed = sig::verify(&anchors.controller, sig::NS_MANIFEST, &bytes, &signature).is_ok();
     let m = match manifest::verify(&bytes, &signature, &anchors.controller) {
         Ok(m) => m,
         Err(why) => {
+            if !signed {
+                // the folder is root's and read-only to the agent: a manifest there that the controller did not sign was put there
+                report.tamper.push(why.clone());
+            }
             report.problems.push(why);
             return (report, loaded);
         }
     };
     if m.agent != report.agent {
-        report.problems.push("the manifest is for another agent's key".into());
+        let why = "the manifest is for another agent's key".to_string();
+        report.tamper.push(why.clone());
+        report.problems.push(why);
         return (report, loaded);
     }
     let digest = sig::sha256_hex(&bytes);
@@ -147,7 +169,9 @@ pub fn inspect(paths: &Paths, key: &SigningKey, now: u64, record: bool) -> (Repo
             Some(seen) => Some(seen),
             None => {
                 // a record that cannot be read is not "no record": that would let any old manifest in
-                report.problems.push("the record of the last manifest accepted cannot be read".into());
+                let why = "the record of the last manifest accepted cannot be read".to_string();
+                report.tamper.push(why.clone());
+                report.problems.push(why);
                 return (report, loaded);
             }
         },
@@ -168,6 +192,11 @@ pub fn inspect(paths: &Paths, key: &SigningKey, now: u64, record: bool) -> (Repo
             }
         }
         Err(why) => {
+            // an older counter, or the same counter with other bytes, is a manifest played back: tampering. One that is merely not
+            // fresh (clocks that differ) is refused and not acted on
+            if seen.as_ref().is_some_and(|s| m.counter <= s.counter) {
+                report.tamper.push(why.clone());
+            }
             report.problems.push(why);
             return (report, loaded);
         }
@@ -180,9 +209,12 @@ pub fn inspect(paths: &Paths, key: &SigningKey, now: u64, record: bool) -> (Repo
                 report.plugins.push(PluginState { name: entry.name.clone(), version: Some(l.descriptor.version.clone()), loaded: true, why: None });
                 loaded.push(l);
             }
-            Err(why) => {
-                report.problems.push(why.clone());
-                report.plugins.push(PluginState { name: entry.name.clone(), version: None, loaded: false, why: Some(why) });
+            Err(refusal) => {
+                if refusal.tamper {
+                    report.tamper.push(refusal.why.clone());
+                }
+                report.problems.push(refusal.why.clone());
+                report.plugins.push(PluginState { name: entry.name.clone(), version: None, loaded: false, why: Some(refusal.why) });
             }
         }
     }

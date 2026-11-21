@@ -27,6 +27,9 @@ pub const PROTOCOL: u32 = 1;
 pub const MAX_DESCRIPTOR: usize = 16 << 10;
 pub const MAX_PROGRAM: u64 = 32 << 20;
 pub const MAX_PLUGINS: usize = 32;
+/// The name the agent's own records go under (its last word when it wipes itself). No plugin may have it, so no plugin can speak
+/// as the agent.
+pub const AGENT_NAME: &str = "agent";
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(deny_unknown_fields)]
@@ -92,6 +95,9 @@ pub fn read(bytes: &[u8]) -> Result<Descriptor, String> {
     }
     if !is_name(&d.name) {
         return Err("the plugin's name is not a lower-case letter and then letters, digits and -".into());
+    }
+    if d.name == AGENT_NAME {
+        return Err("agent is the agent's own name, never a plugin's".into());
     }
     if d.version.is_empty() || d.version.len() > 32 || !d.version.bytes().all(|b| b.is_ascii_alphanumeric() || b".+-".contains(&b)) {
         return Err("the plugin's version is not letters, digits, . + and -".into());

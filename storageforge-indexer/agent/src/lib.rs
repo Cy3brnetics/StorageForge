@@ -20,6 +20,8 @@
 //! - `request`    a signed request to storageforge-agentctl
 //! - `host`       what storageforge-agentctl reads from the host: accounts, groups, the machine id
 //! - `runtime`    the container, as Docker, Podman or LXC is asked to make it
+//! - `wipe`       wipe and stop from inside: on tampering the agent deletes its key and never starts again
+//! - `outside`    wipe and stop from outside: what storageforge-agentctl's `check` compares
 //!
 //! The habits are the key enclave's: every input has a size limit that is checked before it is read, every structure refuses
 //! fields it does not know, parsing is linear, and what no honest peer sends ends the conversation.
@@ -28,6 +30,7 @@ pub mod host;
 pub mod identity;
 pub mod manifest;
 pub mod needs;
+pub mod outside;
 pub mod plugin;
 pub mod request;
 pub mod runner;
@@ -35,5 +38,6 @@ pub mod runtime;
 pub mod sig;
 pub mod supervise;
 pub mod tunnel;
+pub mod wipe;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

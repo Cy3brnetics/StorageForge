@@ -6,7 +6,8 @@
 //!
 //! It takes one signed request (`request`), does that one agent operation, prints one line of JSON and exits: 0 done, 97 refused
 //! (nothing was changed), 1 failed part way. The operations are `preflight`, `enroll`, `apply`, `start`, `stop`, `restart`,
-//! `status` and `remove`, and there is no other: nothing here runs a command, reads a file or makes a mount that a caller chose.
+//! `status`, `remove`, `check` and `wipe`, and there is no other: nothing here runs a command, reads a file or makes a mount that a
+//! caller chose.
 //! It drives Docker, Podman or LXC itself, so the user behind it needs no access to any of them, and it refuses to act at all
 //! while that user is in a group that is root by another name (`docker`, `lxd`, `incus-admin`).
 //!
@@ -14,8 +15,10 @@
 //! release keys it was built with for plugins, and the operator's own keys in /etc/storageforge-agent/operator_signers. It trusts
 //! nothing the agent's container wrote but the public key it reads once, at enrollment.
 //!
-//! SEAM (11.3): the check from outside (image digest, files changed, mounts and capabilities against the manifest) is one more
-//! operation here, reading what `status` reads today and more; wiping is `stop` followed by `remove`.
+//! Wipe and stop from outside (roadmap 11.3): `check` compares the running container with the manifest (the image by digest, what
+//! changed in the container, its mounts, capabilities and devices, the plugin files and the state folder; `outside.rs`) and says what
+//! it found. `wipe` ends the agent's access on this host: its container stopped and left stopped whatever its restart policy, its
+//! key and plugin files deleted, and nothing left that `start` or `apply` would take for an enrolled agent.
 
 use std::io::Read;
 use std::net::SocketAddr;
@@ -34,7 +37,15 @@ use storageforge_agent::request::{self, Request, REFUSED};
 use storageforge_agent::runtime::{self, Kind, Spec, Step, Tools};
 use storageforge_agent::sig::{self, Signers};
 use storageforge_agent::supervise::{now, CONTROLLER_SIGNERS, MANIFEST_FILE, MANIFEST_SIGNATURE, OPERATOR_SIGNERS, SEEN_FILE};
-use storageforge_agent::{identity, runner, tunnel, VERSION};
+use storageforge_agent::{identity, outside, runner, tunnel, wipe, VERSION};
+
+/// What storageforge-agentctl keeps of the container it made: the spec it was made with, which `check` compares against (the masks
+/// are found on the host when the container is made, and a folder made since is not in the container yet), and under plain LXC the
+/// hash of its root filesystem.
+const SPEC_FILE: &str = "spec.json";
+const ROOTFS_FILE: &str = "rootfs.sha256";
+/// The most of a runtime's answer `check` reads.
+const MOST_ANSWER: usize = 1 << 20;
 
 /// Why nothing, or not everything, was done.
 struct Stop {
@@ -90,6 +101,15 @@ impl Ctl {
         let mut c = Command::new(program);
         c.args(&full[1..]).env_clear().env("PATH", &self.host.path).env("LC_ALL", "C").envs(env.iter().copied()).current_dir("/").stdin(Stdio::null());
         Ok(c)
+    }
+
+    /// Runs a program and returns whether it succeeded and all it printed, up to `MOST_ANSWER`: what `check` reads.
+    fn answer(&self, argv: &[String], as_agent: bool) -> Result<(bool, String), String> {
+        let out = self.command(argv, as_agent, &[])?.output().map_err(|e| format!("{} could not be run: {e}", argv[0]))?;
+        if out.stdout.len() > MOST_ANSWER {
+            return Err(format!("{} said more than a description of one container", argv[0]));
+        }
+        Ok((out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned()))
     }
 
     /// Runs a program and returns whether it succeeded and what it printed, cut to what a log line can carry.
@@ -253,6 +273,15 @@ impl Ctl {
             self.act(&runtime::network(kind))?;
         }
         self.act(&runtime::create(kind, spec))?;
+        // what the container was made with, for the check from outside
+        let _ = std::fs::remove_file(self.file(ROOTFS_FILE));
+        self.keep(SPEC_FILE, &serde_json::to_string(spec).unwrap_or_default())?;
+        if kind == Kind::Lxc {
+            match outside::tree_hash(&self.host.at(&format!("/var/lib/lxc/{}/rootfs", runtime::NAME))) {
+                Some(hash) => self.keep(ROOTFS_FILE, &hash)?,
+                None => self.notes.push("the container's root filesystem could not be hashed: the check from outside cannot see files changed in it".into()),
+            }
+        }
         Ok(kind)
     }
 
@@ -317,7 +346,7 @@ impl Ctl {
         self.folders()?;
         // a new enrollment is a new key: nothing of an earlier agent's is kept
         let state = self.host.state_dir();
-        for name in [identity::KEY_FILE, identity::PUBLIC_FILE, SEEN_FILE] {
+        for name in [identity::KEY_FILE, identity::PUBLIC_FILE, SEEN_FILE, wipe::WIPED_FILE] {
             let _ = std::fs::remove_file(state.join(name));
         }
         let _ = std::fs::remove_dir_all(state.join("plugins"));
@@ -410,6 +439,20 @@ impl Ctl {
             self.keep(SEEN_FILE, Seen { counter: m.counter, sha256: digest.clone() }.line().trim_end())?;
         }
         let dir = self.host.manifest_dir();
+        // The files of a plugin this manifest takes out go with it: the agent takes anything in its plugin folder that its manifest
+        // does not account for as tampering (roadmap 11.3). Only the files of plugins the manifest in force named are taken away;
+        // anything else found there stays, for the check from outside to find.
+        if let Ok(old) = read_small(&dir.join(MANIFEST_FILE), manifest::MAX_MANIFEST) {
+            if let Ok(old) = serde_json::from_slice::<Manifest>(&old) {
+                let plugins = self.host.state_dir().join("plugins");
+                for gone in old.plugins.iter().filter(|e| plugin::is_name(&e.name) && !m.plugins.iter().any(|n| n.name == e.name)) {
+                    for file in [runner::descriptor_file(&gone.name), runner::signature_file(&gone.name), runner::program_file(&gone.name)] {
+                        let _ = std::fs::remove_file(plugins.join(&file));
+                        let _ = std::fs::remove_file(plugins.join(format!("{file}.new")));
+                    }
+                }
+            }
+        }
         write_whole(&dir.join(MANIFEST_SIGNATURE), signature.as_bytes(), 0o644).and_then(|_| write_whole(&dir.join(MANIFEST_FILE), bytes, 0o644)).map_err(|e| failed(format!("cannot write the manifest: {e}")))?;
         if let Some((text, _)) = &tunnel {
             write_whole(&self.host.etc().join(tunnel::TUNNEL_FILE), format!("{text}\n").as_bytes(), 0o644).map_err(|e| failed(format!("cannot write the tunnel file: {e}")))?;
@@ -467,6 +510,122 @@ impl Ctl {
         })
     }
 
+    /// The check from outside (roadmap 11.3): the running container against the manifest, and the agent's folders against what it
+    /// keeps. Every finding is a sentence; the controller wipes the agent on any. Nothing here changes anything on the host.
+    fn check(&self, controller: &Signers, machine: &str) -> Result<Value, Stop> {
+        let pinned = self.pinned_agent()?;
+        let anchors = self.anchors(controller.clone())?;
+        let (mut findings, mut notes, mut checked) = (Vec::new(), Vec::new(), Vec::new());
+        // the manifest in force, as this program accepted it
+        let dir = self.host.manifest_dir();
+        let mut manifest = None;
+        match read_small(&dir.join(MANIFEST_FILE), manifest::MAX_MANIFEST) {
+            Ok(bytes) => {
+                let signature = read_small(&dir.join(MANIFEST_SIGNATURE), sig::MAX_SIGNATURE).ok().and_then(|b| String::from_utf8(b).ok()).unwrap_or_default();
+                match self.admit(&bytes, &signature, controller, machine) {
+                    Ok((m, _, Admitted::Same)) => manifest = Some(m),
+                    Ok(_) => findings.push("the manifest on this host is not the one that was accepted last".to_string()),
+                    Err(stop) => findings.push(format!("the manifest on this host: {}", stop.why)),
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => findings.push(format!("the manifest on this host cannot be read: {e}")),
+        }
+        checked.push("manifest");
+        let recorded_image = self.text("image").unwrap_or_default();
+        let image = manifest.as_ref().map(|m| m.image.clone()).unwrap_or_else(|| recorded_image.clone());
+        if manifest.is_some() && image != recorded_image {
+            findings.push("the manifest names another image than the one that was checked and run here".into());
+        }
+        let state = self.host.state_dir();
+        findings.extend(outside::compare_state(&state, &pinned));
+        checked.push("state folder");
+        let (found, waiting) = outside::compare_plugins(&state.join(outside::PLUGINS_DIR), manifest.as_ref(), &anchors);
+        findings.extend(found);
+        notes.extend(waiting);
+        checked.push("plugin files");
+        let mut running = false;
+        if let Some((kind, _)) = self.recorded() {
+            let made: Option<Spec> = read_small(&self.file(SPEC_FILE), 1 << 20).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            let spec = match made {
+                Some(spec) => spec,
+                None => {
+                    notes.push("what the container was made with was not kept (it was made by an earlier version): compared with what it would be made with now".into());
+                    let needs = manifest.as_ref().map(Manifest::needs).unwrap_or_default();
+                    self.spec(kind, &image, &needs)?
+                }
+            };
+            if spec.image != image {
+                findings.push("the container was made from another image than the manifest names".into());
+            }
+            let (argv, as_agent) = runtime::state_command(kind, &spec);
+            if let Ok((ok, out, _)) = self.output(&argv, as_agent, &[]) {
+                running = runtime::read_state(kind, ok, &out).0;
+            }
+            match kind {
+                Kind::Docker | Kind::Podman | Kind::PodmanRootless => {
+                    let program = if kind == Kind::Docker { "docker" } else { "podman" };
+                    let as_agent = kind == Kind::PodmanRootless;
+                    let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+                    match self.answer(&words(&[program, "inspect", runtime::NAME]), as_agent) {
+                        Ok((true, text)) => match serde_json::from_str::<Value>(&text) {
+                            Ok(v) => {
+                                let id = self.answer(&words(&[program, "image", "inspect", "--format", "{{.Id}}", &spec.image]), as_agent).ok().filter(|(ok, _)| *ok).map(|(_, t)| t.trim().to_string());
+                                findings.extend(outside::compare_inspect(kind, &spec, &v, id.as_deref()));
+                                checked.push("image, mounts, capabilities and devices");
+                            }
+                            Err(_) => findings.push(format!("{program} described the agent's container in a form this program does not read")),
+                        },
+                        Ok((false, _)) => notes.push("the agent's container is not there".into()),
+                        Err(why) => notes.push(why),
+                    }
+                    match self.answer(&words(&[program, "diff", runtime::NAME]), as_agent) {
+                        Ok((true, text)) => {
+                            findings.extend(outside::compare_diff(&spec, &text));
+                            checked.push("files changed in the container");
+                        }
+                        Ok((false, _)) => {}
+                        Err(why) => notes.push(why),
+                    }
+                }
+                Kind::Lxc => match (self.text(ROOTFS_FILE), outside::tree_hash(&self.host.at(&format!("/var/lib/lxc/{}/rootfs", runtime::NAME)))) {
+                    (Some(was), Some(now)) if was == now => checked.push("files changed in the container's root filesystem"),
+                    (Some(_), Some(_)) => {
+                        findings.push("the container's root filesystem changed since it was made".into());
+                        checked.push("files changed in the container's root filesystem");
+                    }
+                    (Some(_), None) => findings.push("the container's root filesystem is gone or cannot be read".into()),
+                    (None, _) => notes.push("no hash of the container's root filesystem was taken when it was made".into()),
+                },
+                Kind::Incus | Kind::Pct => notes.push(format!("under {} the container itself is not compared with the manifest yet: its folders are", kind.name())),
+            }
+        }
+        findings.truncate(100);
+        Ok(json!({"clean": findings.is_empty(), "findings": findings, "checked": checked, "running": running, "waiting": notes}))
+    }
+
+    /// Ends the agent's access on this host (roadmap 11.3). The controller revoked its key on its own side first. Here: the container
+    /// stopped and left stopped, the key and the plugin files deleted as the agent would delete them, why written beside them, and
+    /// the key pinned here forgotten, so that `start` and `apply` refuse until an admin enrolls an agent again.
+    fn wipe(&mut self, reason: &str) -> Result<Value, Stop> {
+        self.pinned_agent()?;
+        let mut stopped = false;
+        if let Some((kind, spec)) = self.recorded() {
+            self.act(&runtime::stop(kind, &spec))?;
+            stopped = true;
+        }
+        let state = self.host.state_dir();
+        let why = format!("wiped by the controller: {}", runner::plain(reason));
+        if let Err(e) = wipe::wipe(&state, &[why], now()) {
+            self.notes.push(e);
+        }
+        if unsafe { libc::geteuid() } == 0 {
+            let _ = std::os::unix::fs::chown(state.join(wipe::WIPED_FILE), Some(self.agent.uid), Some(self.agent.gid));
+        }
+        let _ = std::fs::remove_file(self.file("agent.pub"));
+        Ok(json!({"wiped": true, "stopped": stopped}))
+    }
+
     fn remove(&mut self) -> Result<Value, Stop> {
         let recorded = self.recorded();
         if let Some((kind, spec)) = &recorded {
@@ -494,7 +653,7 @@ impl Ctl {
         for name in [MANIFEST_FILE, MANIFEST_SIGNATURE] {
             let _ = std::fs::remove_file(self.host.manifest_dir().join(name));
         }
-        for name in ["agent.pub", "runtime", "image", "vmid", "lxc.conf", SEEN_FILE] {
+        for name in ["agent.pub", "runtime", "image", "vmid", "lxc.conf", SEEN_FILE, SPEC_FILE, ROOTFS_FILE] {
             let _ = std::fs::remove_file(self.file(name));
         }
         Ok(json!({"removed": true}))
@@ -558,6 +717,8 @@ fn run() -> Result<Value, Stop> {
         }
         "status" => ctl.status(),
         "remove" => ctl.remove()?,
+        "check" => ctl.check(&controller, &machine)?,
+        "wipe" => ctl.wipe(r.reason.as_deref().unwrap_or(""))?,
         _ => return refuse("request", "not an agent operation"),
     };
     out["ok"] = json!(true);

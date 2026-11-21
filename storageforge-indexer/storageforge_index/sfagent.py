@@ -3,7 +3,8 @@
     controller ──signed deploy, once──► host: the setup script, with storageforge-agentctl on its stdin
         accounts sfagent (the agent) and storageforge-agentctl (who manages it), one sudoers line, the controller's key pinned
     controller ──ssh storageforge-agentctl@host──► sudo -n /usr/local/sbin/storageforge-agentctl   (whatever ssh asks for)
-        a signed request on stdin: preflight, enroll, apply, start, stop, restart, status, remove. One line of JSON comes back.
+        a signed request on stdin: preflight, enroll, apply, start, stop, restart, status, remove, check, wipe. One line of JSON
+        comes back. check and wipe are wipe and stop from outside (agentguard.py, roadmap 11.3).
     vault: storageforge-agentctl       (ed25519) logs in as storageforge-agentctl, which can start nothing but that program
     vault: storageforge-agent-signing  (ed25519) signs each request and each host's manifest, in two namespaces
     no key here signs code: plugins and the agent's image are signed by the release key (or an operator's own, kept off the
@@ -52,8 +53,8 @@ NS_REQUEST = 'storageforge-agentctl'
 NS_MANIFEST = 'storageforge-agent-manifest'
 ROOT_GROUPS = ('docker', 'lxd', 'incus-admin')   # root on a host by another name
 RUNTIMES = ('docker', 'podman-rootless', 'podman', 'lxc', 'incus', 'pct')
-OPS = ('preflight', 'enroll', 'apply', 'start', 'stop', 'restart', 'status', 'remove')
-STATES = ('off', 'on', 'needs-podman', 'running', 'stopped', 'removed', 'failed')
+OPS = ('preflight', 'enroll', 'apply', 'start', 'stop', 'restart', 'status', 'remove', 'check', 'wipe')
+STATES = ('off', 'on', 'needs-podman', 'running', 'stopped', 'removed', 'failed', 'wiped')
 MAX_REPLY = 64 * 1024
 REFUSED = 97                                    # storageforge-agentctl's exit code for a request it would not act on
 IMAGE_RE = re.compile(r'[a-z0-9][a-z0-9._:/-]{0,199}@sha256:[0-9a-f]{64}')
@@ -414,7 +415,7 @@ def runtime_hint(conn, name: str) -> dict:
 
 # ── the table ───────────────────────────────────────────────────────
 COLUMNS = ('host', 'enabled', 'state', 'public_key', 'fingerprint', 'runtime', 'image', 'counter', 'manifest_sha', 'detail',
-           'enrolled_at', 'updated_at', 'updated_by', 'receiver_key', 'endpoint')
+           'enrolled_at', 'updated_at', 'updated_by', 'receiver_key', 'endpoint', 'checked_at', 'check_json', 'wiped_at')
 
 
 def get(conn, name: str) -> dict | None:
@@ -456,7 +457,7 @@ def switch(conn, host: str, on: bool, actor: str) -> dict:
     if conn.scalar('SELECT count(*) FROM network_devices WHERE name = :n', {'n': name}):
         raise AgentError(f'{name} is a network device: routers, firewalls, switches and appliances stay agentless')
     row = get(conn, name)
-    if not on and row and row['state'] in ('running', 'stopped'):
+    if not on and row and row['state'] in ('running', 'stopped', 'wiped'):
         raise AgentError(f'{name} has an agent enrolled: remove it before switching the agent off for this host')
     _save(conn, name, actor, enabled=1 if on else 0, state='on' if on else 'off', **({} if on else {'detail': ''}))
     return get(conn, name)
@@ -576,8 +577,10 @@ def install(db: Database, host: str, actor: str | None = None, install_podman: b
             if not PUBLIC_RE.fullmatch(public):
                 raise AgentError(f'{name}: what came back from the enrollment is not an agent key')
             fp = fingerprint(public)
-            _save(conn, name, actor, public_key=public, fingerprint=fp, runtime=_runtime(got), image=image, enrolled_at=int(time.time()), manifest_sha=None)
-            _audit(db, conn, actor, 'agent.enroll', 'ok', name, fp, {'runtime': _runtime(got), 'image': image, 'podman_installed': bool(install_podman and not runtimes)})
+            _save(conn, name, actor, public_key=public, fingerprint=fp, runtime=_runtime(got), image=image, enrolled_at=int(time.time()), manifest_sha=None,
+                  wiped_at=None, checked_at=None, check_json=None)
+            _audit(db, conn, actor, 'agent.enroll', 'ok', name, fp, {'runtime': _runtime(got), 'image': image, 'podman_installed': bool(install_podman and not runtimes),
+                                                                     'after_wipe': bool(row.get('wiped_at'))})
             applied = apply(db, name, [], actor=actor, group_id=group_id)
         except Exception as exc:
             _save(conn, name, actor, state='failed', detail=str(exc))
@@ -606,6 +609,8 @@ def apply(db: Database, host: str, plugins: list[tuple[bytes, str, str]], actor:
         row = get(conn, name)
         if not row or not row['enabled'] or not row['fingerprint']:
             raise AgentError(f'{name} has no agent enrolled')
+        if row['state'] == 'wiped':
+            raise AgentError(f'the agent on {name} was wiped: an admin enrolls it again', 'wiped')
         machine = deploy._machine(conn, name)
         image, image_sig = agent_image(), image_signature()      # the image this controller is set to now: applying is also how an agent is updated
         entries = [plugin_entry(descriptor, signer) for descriptor, _sig, signer in plugins]
@@ -648,6 +653,8 @@ def lifecycle(db: Database, host: str, verb: str, actor: str | None = None) -> d
         row = get(conn, name)
         if not row or not row['fingerprint']:
             raise AgentError(f'{name} has no agent enrolled')
+        if row['state'] == 'wiped' and verb in ('start', 'restart'):
+            raise AgentError(f'the agent on {name} was wiped: an admin enrolls it again', 'wiped')
         got = call(db, name, verb, actor=actor, timeout=300)
         if verb == 'status':
             # what the host says, beside what is pinned here: a key that is not the pinned one is said, never taken
@@ -704,7 +711,7 @@ def start_install(db: Database, host: str, actor: str, install_podman: bool = Fa
     try:
         name = deploy.canonical(conn, host)
         row = get(conn, name)
-        if row and row['enabled'] and row['state'] in ('needs-podman', 'failed', 'removed'):
+        if row and row['enabled'] and row['state'] in ('needs-podman', 'failed', 'removed', 'wiped'):
             _save(conn, name, actor, state='on', detail='')      # so that whoever polls sees this install's end, not the last one's
     finally:
         conn.close()

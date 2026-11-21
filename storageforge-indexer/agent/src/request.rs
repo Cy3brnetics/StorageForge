@@ -37,7 +37,11 @@ pub const MAX_AHEAD: u64 = 300;
 /// What storageforge-agentctl exits with for a request it would not act on. The same as `storageforge-run`.
 pub const REFUSED: i32 = 97;
 /// The operations there are. Nothing else is one.
-pub const OPS: [&str; 8] = ["preflight", "enroll", "apply", "start", "stop", "restart", "status", "remove"];
+/// `check` compares the running container with the manifest from outside (roadmap 11.3); `wipe` ends an agent's access there:
+/// its key deleted, its container stopped and left stopped.
+pub const OPS: [&str; 10] = ["preflight", "enroll", "apply", "start", "stop", "restart", "status", "remove", "check", "wipe"];
+/// The most a wipe's reason may be.
+pub const MAX_REASON: usize = 500;
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -78,6 +82,9 @@ pub struct Request {
     /// `apply`: a receiver key other than the one pinned here is taken, because a person accepted it.
     #[serde(default)]
     pub accept_new_tunnel_key: bool,
+    /// `wipe`: why, in words, kept beside what is left of the agent on the host.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -149,7 +156,12 @@ pub fn verify(payload: &[u8], signature: &str, controller: &Signers, machine: &s
     // each operation takes its own fields and no others: a field that would be ignored is a request nobody meant to send
     let (image, manifest) = (r.image.is_some(), r.manifest.is_some() || r.manifest_signature.is_some() || !r.plugins.is_empty());
     let signed_image = r.image_signature.as_deref().is_some_and(|s| !s.is_empty() && s.len() <= sig::MAX_SIGNATURE);
+    if r.reason.as_deref().is_some_and(|w| w.len() > MAX_REASON) {
+        return Err("the reason is longer than a reason may be".into());
+    }
+    let reason = r.reason.is_some();
     let fits = match r.op.as_str() {
+        _ if reason && r.op != "wipe" => false,
         "enroll" => image && signed_image && !manifest,
         "apply" => !image && signed_image && !r.install_podman && r.manifest.is_some() && r.manifest_signature.is_some() && (r.tunnel.is_some() || !r.accept_new_tunnel_key),
         _ => !image && !manifest && !r.install_podman && r.image_signature.is_none() && r.tunnel.is_none() && !r.accept_new_tunnel_key,
@@ -262,6 +274,12 @@ pub(crate) mod tests {
         assert!(check(&body("enroll", now, &format!(r#","image":"{IMAGE}""#))).is_err(), "enroll without the image's signature");
         assert!(check(&body("status", now, r#","image_signature":"s""#)).is_err());
         assert!(check(&body("apply", now, r#","manifest":"{}","manifest_signature":"x","image_signature":"s""#)).is_ok());
+        // the check from outside takes nothing; a wipe takes its reason and nothing else
+        assert!(check(&body("check", now, "")).is_ok());
+        assert!(check(&body("wipe", now, r#","reason":"files changed in the container""#)).is_ok());
+        assert!(check(&body("status", now, r#","reason":"x""#)).is_err());
+        assert!(check(&body("wipe", now, &format!(r#","reason":"{}""#, "x".repeat(MAX_REASON + 1)))).is_err());
+        assert!(check(&body("check", now, &format!(r#","image":"{IMAGE}""#))).is_err());
     }
 
     #[test]

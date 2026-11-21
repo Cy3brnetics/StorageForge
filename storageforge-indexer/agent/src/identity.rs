@@ -112,7 +112,7 @@ pub fn load_or_generate(state: &Path) -> Result<SigningKey, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 

@@ -13,12 +13,18 @@ host through a person.
         security-agent-claim:HOST   the agent says it is on another machine than SSH reads: a lie, or another machine with its key
         agent-manifest:HOST         the agent says it runs another manifest than the controller last gave its host
         agent-refused:HOST          batches refused for their form or for the agent's quota
+        security-agent-wiped:HOST   the agent was wiped (roadmap 11.3): a check from outside found something, or it found tampering
+                                    in its own container. Its key is revoked. Cannot be ignored; leaves when an admin enrolls an
+                                    agent there again or removes it
+        agent-unchecked:HOST        the check from outside has not run for an hour: the host could not be reached over SSH
+        agent-held:HOST             an agent asked for an action on others, held for a person (agentaction.py)
 """
 from __future__ import annotations
 
 import json
 import time
 
+from . import agentaction
 from .db import Conn
 
 SILENT_SECS = 300            # five beats missed
@@ -69,7 +75,20 @@ def events(conn: Conn, host: str, since: int, kinds: tuple) -> dict:
 
 def problems(conn: Conn, now: float | None = None) -> dict:
     now = int(now or time.time())
-    out = {}
+    out = agentaction.problems(conn, now)
+    from .agentguard import UNCHECKED_SECS
+    for host, detail, wiped_at in conn.all("SELECT host, detail, wiped_at FROM agents WHERE enabled = 1 AND state = 'wiped'"):
+        when = time.strftime('%Y-%m-%d %H:%M', time.localtime(wiped_at)) if wiped_at else 'at some point'
+        out[f'security-agent-wiped:{host}'] = ('security-agent-wiped', host, f'The agent on {host} was wiped',
+                                               f'{when}: {str(detail or "")[:600]}. Its key is revoked and its container stopped. Scans over SSH go on; '
+                                               'look at the host, then enroll an agent again (an admin) or remove it', 'crit')
+    for host, checked_at, check_json, enrolled_at in conn.all("""SELECT host, checked_at, check_json, enrolled_at FROM agents
+                                                                 WHERE enabled = 1 AND state = 'running' AND fingerprint IS NOT NULL"""):
+        last = _loads(check_json) or {}
+        since = checked_at if last.get('ok') else None
+        if since is None and checked_at is not None and enrolled_at and now - enrolled_at > UNCHECKED_SECS:
+            out[f'agent-unchecked:{host}'] = ('agent-unchecked', host, f'The agent on {host} could not be checked from outside',
+                                              f'the last try said: {str(last.get("error") or "")[:300]}', 'warn')
     rows = conn.all("""SELECT a.host, a.fingerprint, a.manifest_sha, a.updated_at, a.endpoint, h.machine_id, p.last_seen, p.claims_json
                        FROM agents a LEFT JOIN hosts h ON h.hostname = a.host LEFT JOIN agent_peers p ON p.fingerprint = a.fingerprint
                        WHERE a.enabled = 1 AND a.state = 'running' AND a.fingerprint IS NOT NULL""")

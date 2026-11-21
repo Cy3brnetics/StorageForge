@@ -1,7 +1,8 @@
 """Web routes: the optional agent (sfagent.py, docs/agent.md). Reading takes keys.view. Everything else takes keys.manage and a fresh
 password, because enrolling an agent pins a key and gives a host a new way to speak to the controller: switching the agent on for
-a host, setting it up there, starting and stopping it, choosing its plugins, and removing it. A plugin that declares privileges on
-the host, and a receiver key that changed, need agent.privilege as well. Each is in the audit log. What an agent reported is read
+a host, setting it up there, starting and stopping it, checking it from outside, choosing its plugins, and removing it. A plugin that
+declares privileges on the host, a receiver key that changed, and enrolling an agent again where one was wiped (roadmap 11.3) need
+agent.privilege as well. Each is in the audit log. What an agent reported is read
 with hosts.view, every row labelled as the agent's claim.
 
 Nothing here is a GET that reaches a host: asking a host for its agent's status is a POST."""
@@ -12,7 +13,7 @@ import json
 from flask import jsonify, request
 from flask_login import current_user, login_required
 
-from . import agentwatch, deploy, sfagent
+from . import agentaction, agentguard, agentwatch, deploy, sfagent
 
 
 def register(web, ctx):
@@ -53,6 +54,10 @@ def register(web, ctx):
         try:      # what can be refused without touching the host is refused here, where the answer is seen at once
             if not row or not row['enabled']:
                 raise sfagent.AgentError(f'the agent is switched off for {name}: switch it on for this host first')
+            if (row['state'] == 'wiped' or row.get('wiped_at')) and 'agent.privilege' not in current_user.permissions:
+                # only an admin enrolls an agent again where one was wiped (roadmap 11.3)
+                core.audit(conn(), actor(), 'agent.install', 'denied', name, {'after_wipe': True})
+                return jsonify(error=f'the agent on {name} was wiped: enrolling one there again takes agent.privilege, which admins hold', code='privilege'), 403
             if not deploy.ready(conn(), name):
                 raise sfagent.AgentError(f'{name} has no deploy access yet, and the agent is set up through it: set up deploy access first')
             sfagent.agent_image()
@@ -63,11 +68,17 @@ def register(web, ctx):
         gid = sfagent.start_install(db, name, actor(), install_podman=b.get('install_podman') is True, accept_new_key=b.get('accept_new_key') is True)
         return jsonify(host=name, group_id=gid), 202
 
-    @web.post('/api/agents/<host>/<any("start", "stop", "restart", "status"):verb>')
+    @web.post('/api/agents/<host>/<any("start", "stop", "restart", "status", "check"):verb>')
     @login_required
     @password_confirmed
     def api_agent_lifecycle(host, verb):
         json_body()
+        if verb == 'check':
+            # the check from outside, now rather than on the timer; any finding wipes the agent (roadmap 11.3)
+            got = agentguard.check(db, host, actor())
+            core.audit(conn(), actor(), 'agent.check', 'ok' if got.get('checked') else 'failed', got['host'],
+                       {'clean': got.get('clean'), 'findings': len(got.get('findings') or []), 'why': got.get('why')})
+            return jsonify(got)
         try:
             got = sfagent.lifecycle(db, host, verb, actor())
         except (LookupError, sfagent.AgentError) as exc:
@@ -84,7 +95,8 @@ def register(web, ctx):
         name = deploy.canonical(conn(), host)
         plugin = request.args.get('plugin') or None
         return jsonify(host=name, label=agentwatch.LABEL, peer=agentwatch.peer(conn(), name),
-                       records=agentwatch.records(conn(), name, plugin=plugin, limit=request.args.get('limit', 100, type=int)))
+                       records=agentwatch.records(conn(), name, plugin=plugin, limit=request.args.get('limit', 100, type=int)),
+                       actions=agentaction.recent(conn(), name, 20))
 
     @web.post('/api/agents/<host>/plugins')
     @login_required

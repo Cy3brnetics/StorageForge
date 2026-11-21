@@ -104,6 +104,9 @@ pub fn verify(bytes: &[u8], signature: &str, controller: &Signers) -> Result<Man
         if !plugin::is_name(&e.name) || !sig::is_sha256(&e.descriptor) {
             return Err("a plugin in the manifest has no proper name or descriptor hash".into());
         }
+        if e.name == plugin::AGENT_NAME {
+            return Err("agent is the name the agent reports its own records under, never a plugin's".into());
+        }
         if i > 0 && m.plugins[i - 1].name >= e.name {
             return Err("the manifest's plugins are not sorted by name, or one is there twice".into());
         }

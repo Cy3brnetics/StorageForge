@@ -124,7 +124,8 @@ pub fn choose(tools: &Tools, needs: &Needs) -> Result<Kind, Unserved> {
 }
 
 /// Everything a runtime is told to make the container. All paths are the host's.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Spec {
     pub image: String,
     /// `sfagent` on this host.

@@ -523,9 +523,10 @@ class Lifecycle(Base):
     def test_a_plugin_gets_what_its_signed_descriptor_declares_and_secrets_are_masked(self):
         self.install()
         descriptor, signature, by = self.plugin(needs='{"mounts":["/etc","/proc"],"namespaces":["pid"]}')
-        self.put_plugin(descriptor, signature)
         got = sfagent.apply(self.db, 'nas', [(descriptor, signature, by)], actor='test')
         self.assertEqual((got['counter'], got['runtime']), (2, 'docker'))
+        # the files come after the manifest that names them, as through the tunnel: before it, an agent takes them for tampering
+        self.put_plugin(descriptor, signature)
         run = self.host.calls('docker run')[-1]
         root = self.host.root
         for must in (f'type=bind,src={root}/etc,dst=/host/etc,readonly,bind-recursive=disabled', f'type=bind,src={root}/proc,dst=/host/proc,readonly,bind-recursive=disabled',

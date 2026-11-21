@@ -2,6 +2,9 @@
 //!
 //!   storageforge-agent run        make the key on first start, then load and run the plugins the manifest names
 //!   storageforge-agent check      one pass over the manifest and every plugin, as JSON; exit 0 only when nothing was refused
+//!
+//! On anything that can only be tampering, at start or on its timer, it deletes its key and stops for good (roadmap 11.3,
+//! `wipe.rs`), after giving its last word to the controller through the tunnel if it can.
 //!   storageforge-agent pubkey     the agent's public key
 //!   storageforge-agent anchors    the release keys this program was built with
 //!   storageforge-agent version
@@ -12,11 +15,16 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use serde_json::json;
 use storageforge_agent::supervise::{self, Ended, Outbox, Paths};
-use storageforge_agent::{identity, plugin, sig, tunnel, VERSION};
+use storageforge_agent::{identity, plugin, sig, tunnel, wipe, VERSION};
 
+/// The tunnel stops with this; the plugins stop with it or with `PLUGINS_STOP`.
 static STOP: AtomicBool = AtomicBool::new(false);
+static PLUGINS_STOP: AtomicBool = AtomicBool::new(false);
 static RELOAD: AtomicBool = AtomicBool::new(false);
+/// How long a wiped agent waits for its last word to reach the controller before it exits.
+const LAST_WORD_SECS: u64 = 20;
 
 fn log(line: String) {
     eprintln!("storageforge-agent: {line}");
@@ -44,6 +52,32 @@ fn paths(args: &[String]) -> Result<Paths, String> {
     Ok(p)
 }
 
+/// Ends this agent's access (roadmap 11.3): the plugins are stopped, the key and the plugin files deleted and why written down, the
+/// last word put in the outbox for the tunnel, and after it was answered, or `LAST_WORD_SECS`, the agent exits for good.
+fn wipe_and_exit(paths: &Paths, why: &[String], outbox: &Outbox, tunnel_up: bool) -> ! {
+    PLUGINS_STOP.store(true, Ordering::Relaxed);
+    for reason in why {
+        log(format!("tampering: {reason}"));
+    }
+    match wipe::wipe(&paths.state, why, supervise::now()) {
+        Ok(()) => log("the agent's key is deleted and it stops for good: only a new enrollment, by an admin, makes another agent here".into()),
+        Err(e) => log(format!("wiping did not finish ({e}); the agent stops for good all the same")),
+    }
+    if tunnel_up {
+        let reasons: Vec<String> = why.iter().take(20).map(|w| storageforge_agent::runner::plain(w)).collect();
+        outbox.push(plugin::AGENT_NAME, "wipe".into(), json!({"why": reasons}), supervise::now());
+        tunnel::LAST_WORD.store(true, Ordering::Relaxed);
+        for _ in 0..LAST_WORD_SECS * 4 {
+            if tunnel::SAID.load(Ordering::Relaxed) {
+                log("the controller has the agent's last word".into());
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+    std::process::exit(wipe::EXIT_WIPED);
+}
+
 fn run(paths: &Paths) -> i32 {
     if unsafe { libc::geteuid() } == 0 {
         log("refusing to run as root: the agent runs as sfagent".into());
@@ -53,6 +87,12 @@ fn run(paths: &Paths) -> i32 {
         libc::signal(libc::SIGTERM, on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t);
         libc::signal(libc::SIGINT, on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t);
     }
+    // a wiped agent makes no new key and runs nothing, whatever starts it again
+    if let Some(said) = wipe::wiped(&paths.state) {
+        log(format!("this agent was wiped and does not start again: {said}"));
+        return wipe::EXIT_WIPED;
+    }
+    let program = wipe::own_program();
     let key = match identity::load_or_generate(&paths.state) {
         Ok(key) => key,
         Err(why) => {
@@ -71,10 +111,6 @@ fn run(paths: &Paths) -> i32 {
     for problem in &report.problems {
         log(format!("refused: {problem}"));
     }
-    for name in &report.stray {
-        // SEAM (11.3): a file nothing accounts for. Today it is said and not run; wipe and stop decides what else follows.
-        log(format!("refused: {name} is in the plugin folder and no plugin of the manifest accounts for it"));
-    }
     let tunnel = match tunnel::load_config(&paths.etc) {
         Ok(t) => t,
         Err(why) => {
@@ -88,12 +124,29 @@ fn run(paths: &Paths) -> i32 {
     let outbox = Outbox::new(supervise::OUTBOX_RECORDS);
     let running = report.manifest.clone();
     std::thread::scope(|scope| {
+        // The tunnel: batches of what the plugins report go out, the manifest and the plugin files come in. Plugin files of the
+        // manifest in force that arrive are loaded by starting the agent again, in place. It starts first, so that an agent that
+        // finds tampering at once can still say so before it goes.
+        let delivered = tunnel.map(|(address, pinned)| {
+            let (outbox, key) = (&outbox, &key);
+            scope.spawn(move || {
+                let names = tunnel::run(paths, key, address, &pinned, outbox, &STOP, &log);
+                if !names.is_empty() {
+                    log(format!("plugins delivered through the tunnel: {}; starting again to load them", names.join(", ")));
+                    RELOAD.store(true, Ordering::Relaxed);
+                }
+            })
+        });
+        let _ = delivered;
+        if !report.tamper.is_empty() {
+            wipe_and_exit(paths, &report.tamper, &outbox, tunnel.is_some());
+        }
         for plugin in &loaded {
             let outbox = &outbox;
             scope.spawn(move || {
                 let mut wait = 5;
-                while !STOP.load(Ordering::Relaxed) {
-                    match supervise::serve(plugin, outbox, &STOP, &log) {
+                while !STOP.load(Ordering::Relaxed) && !PLUGINS_STOP.load(Ordering::Relaxed) {
+                    match supervise::serve(plugin, outbox, &PLUGINS_STOP, &log) {
                         Ended::Stopped => return,
                         Ended::Exited => log(format!("plugin {} ended; starting it again in {wait} s", plugin.descriptor.name)),
                         Ended::Failed(why) => log(format!("{why}; trying again in {wait} s")),
@@ -108,19 +161,6 @@ fn run(paths: &Paths) -> i32 {
                 }
             });
         }
-        // The tunnel: batches of what the plugins report go out, the manifest and the plugin files come in. Plugin files of the
-        // manifest in force that arrive are loaded by starting the agent again, in place.
-        let delivered = tunnel.map(|(address, pinned)| {
-            let (outbox, key) = (&outbox, &key);
-            scope.spawn(move || {
-                let names = tunnel::run(paths, key, address, &pinned, outbox, &STOP, &log);
-                if !names.is_empty() {
-                    log(format!("plugins delivered through the tunnel: {}; starting again to load them", names.join(", ")));
-                    RELOAD.store(true, Ordering::Relaxed);
-                }
-            })
-        });
-        let _ = delivered;
         // The manifest and the plugin files are checked again on a timer. A manifest that changed means another set of plugins
         // or privileges: the agent starts again with what is there now. It starts itself again in place, so that this holds under
         // every runtime, LXC included, whose container stays down when its one program leaves.
@@ -132,6 +172,13 @@ fn run(paths: &Paths) -> i32 {
                 }
             }
             let (again, _) = supervise::inspect(paths, &key, supervise::now(), false);
+            let mut tamper = again.tamper.clone();
+            if program.is_some() && wipe::own_program() != program {
+                tamper.push("the agent's own program changed while it ran".into());
+            }
+            if !tamper.is_empty() {
+                wipe_and_exit(paths, &tamper, &outbox, tunnel.is_some());
+            }
             if again.manifest != running || again.problems != report.problems || again.stray != report.stray {
                 log("the manifest or the plugin files changed: starting again with what is there now".into());
                 restart();

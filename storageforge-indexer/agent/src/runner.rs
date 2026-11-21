@@ -110,19 +110,45 @@ fn sealed_copy(name: &str, mut from: impl Read, size: u64) -> Result<(File, Stri
     Ok((sealed, hash.finalize().iter().map(|b| format!("{b:02x}")).collect()))
 }
 
+/// Why a plugin was not loaded. `tamper` is set when what is in the plugin folder is there and is not what was signed (a changed
+/// program, a broken signature, a link where a file should be): that is what wipe and stop acts on (roadmap 11.3). A file that is not
+/// there yet (the plugin is still on its way through the tunnel), or a plugin built for another machine, is refused and waited for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    pub why: String,
+    pub tamper: bool,
+}
+
+impl Refusal {
+    fn waiting(why: String) -> Refusal {
+        Refusal { why, tamper: false }
+    }
+
+    fn tampered(why: String) -> Refusal {
+        Refusal { why, tamper: true }
+    }
+}
+
 /// Loads the plugin `entry` names from `dir`, or says why it is refused.
-pub fn load(dir: &Path, entry: &Entry, anchors: &Anchors) -> Result<Loaded, String> {
+pub fn load(dir: &Path, entry: &Entry, anchors: &Anchors) -> Result<Loaded, Refusal> {
     let name = &entry.name;
     if !plugin::is_name(name) {
-        return Err("not a plugin name".into());
+        return Err(Refusal::tampered("not a plugin name".into()));
     }
-    let missing = |what: &str, e: std::io::Error| format!("plugin {name}: its {what} is not in the plugin folder as a plain file ({e})");
+    let missing = |what: &str, e: std::io::Error| {
+        let why = format!("plugin {name}: its {what} is not in the plugin folder as a plain file ({e})");
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Refusal::waiting(why)
+        } else {
+            Refusal::tampered(why)
+        }
+    };
     let bytes = read_small(&dir.join(descriptor_file(name)), plugin::MAX_DESCRIPTOR).map_err(|e| missing("descriptor", e))?;
     let signature = read_small(&dir.join(signature_file(name)), sig::MAX_SIGNATURE).map_err(|e| missing("signature", e))?;
-    let signature = String::from_utf8(signature).map_err(|_| format!("plugin {name}: its signature is not text"))?;
-    let descriptor = Manifest::admit_plugin(entry, &bytes, &signature, anchors)?;
+    let signature = String::from_utf8(signature).map_err(|_| Refusal::tampered(format!("plugin {name}: its signature is not text")))?;
+    let descriptor = Manifest::admit_plugin(entry, &bytes, &signature, anchors).map_err(Refusal::tampered)?;
     if descriptor.arch != plugin::this_arch() {
-        return Err(format!("plugin {name}: it is built for {}, and this is {}", descriptor.arch, plugin::this_arch()));
+        return Err(Refusal::waiting(format!("plugin {name}: it is built for {}, and this is {}", descriptor.arch, plugin::this_arch())));
     }
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -131,11 +157,11 @@ pub fn load(dir: &Path, entry: &Entry, anchors: &Anchors) -> Result<Loaded, Stri
         .map_err(|e| missing("program", e))?;
     let meta = file.metadata().map_err(|e| missing("program", e))?;
     if !meta.is_file() || meta.len() != descriptor.size {
-        return Err(format!("plugin {name}: its program is not a plain file of the size its descriptor says"));
+        return Err(Refusal::tampered(format!("plugin {name}: its program is not a plain file of the size its descriptor says")));
     }
-    let (program, sha256) = sealed_copy(name, file, descriptor.size).map_err(|why| format!("plugin {name}: {why}"))?;
+    let (program, sha256) = sealed_copy(name, file, descriptor.size).map_err(|why| Refusal::waiting(format!("plugin {name}: {why}")))?;
     if sha256 != descriptor.sha256 {
-        return Err(format!("plugin {name}: its program is not the one that was signed"));
+        return Err(Refusal::tampered(format!("plugin {name}: its program is not the one that was signed")));
     }
     Ok(Loaded { descriptor, program })
 }

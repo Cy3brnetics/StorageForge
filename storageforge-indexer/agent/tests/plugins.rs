@@ -252,3 +252,74 @@ fn an_old_manifest_played_back_is_refused() {
     w.manifest(7, now, &[]);
     assert!(w.inspect(true).0.problems[0].contains("cannot be read"));
 }
+
+#[test]
+fn tampering_is_told_apart_from_a_plugin_still_on_its_way() {
+    let w = World::new("tamper");
+    let now = supervise::now();
+    let entry = w.plugin("probe", "{}", &w.operator);
+    w.manifest(3, now, &[entry.clone()]);
+    let tamper = |w: &World| w.inspect(true).0.tamper;
+    assert!(tamper(&w).is_empty());
+    // not there yet: refused and waited for, not tampering
+    std::fs::remove_file(file(&w.paths.plugins(), "probe.plugin")).unwrap();
+    let (report, _) = w.inspect(false);
+    assert!(!report.problems.is_empty() && report.tamper.is_empty(), "{report:?}");
+    // a half-written file of a plugin of the manifest is not a stray one
+    std::fs::write(file(&w.paths.plugins(), "probe.plugin.new"), b"half").unwrap();
+    assert!(w.inspect(false).0.tamper.is_empty());
+    std::fs::remove_file(file(&w.paths.plugins(), "probe.plugin.new")).unwrap();
+    // a program that is not the one that was signed, a signature that does not hold, a stray file: tampering, every one
+    let mut changed = w.probe.clone();
+    *changed.last_mut().unwrap() ^= 1;
+    std::fs::write(file(&w.paths.plugins(), "probe.plugin"), &changed).unwrap();
+    assert!(tamper(&w).iter().any(|t| t.contains("not the one that was signed")));
+    std::fs::write(file(&w.paths.plugins(), "probe.plugin"), &w.probe).unwrap();
+    std::fs::write(file(&w.paths.plugins(), "probe.plugin.sig"), "").unwrap();
+    assert!(tamper(&w).iter().any(|t| t.contains("not signed")));
+    w.plugin("probe", "{}", &w.operator);
+    std::fs::write(file(&w.paths.plugins(), "dropped-in"), b"#!/bin/sh\n").unwrap();
+    assert_eq!(tamper(&w), ["dropped-in is in the plugin folder and no plugin of the manifest accounts for it"]);
+    std::fs::remove_file(file(&w.paths.plugins(), "dropped-in")).unwrap();
+    // a manifest nobody signed, and an older one played back: tampering. One merely signed long ago, with a later counter: refused
+    let text = std::fs::read(w.paths.manifest.join("manifest.json")).unwrap();
+    std::fs::write(w.paths.manifest.join("manifest.json.sig"), sig::sign(&w.operator, sig::NS_MANIFEST, &text)).unwrap();
+    assert!(tamper(&w).iter().any(|t| t.contains("not signed by this host's controller")));
+    w.manifest(2, now, &[entry.clone()]);
+    assert!(tamper(&w).iter().any(|t| t.contains("old one played back")));
+    w.manifest(9, now - 3600, &[entry.clone()]);
+    let (report, _) = w.inspect(true);
+    assert!(report.tamper.is_empty() && report.problems[0].contains("not signed a moment ago"), "{report:?}");
+}
+
+#[test]
+fn the_agent_wipes_its_key_on_tampering_and_never_starts_again() {
+    let w = World::new("wipes");
+    let entry = w.plugin("probe", "{}", &w.operator);
+    w.manifest(1, supervise::now(), &[entry]);
+    std::fs::write(file(&w.paths.plugins(), "dropped-in"), b"#!/bin/sh\n").unwrap();
+    let agent = env!("CARGO_BIN_EXE_storageforge-agent");
+    let run = || {
+        std::process::Command::new(agent)
+            .args(["run", "--etc"])
+            .arg(&w.paths.etc)
+            .arg("--manifest")
+            .arg(&w.paths.manifest)
+            .arg("--state")
+            .arg(&w.paths.state)
+            .output()
+            .unwrap()
+    };
+    let out = run();
+    let said = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(storageforge_agent::wipe::EXIT_WIPED), "{said}");
+    assert!(said.contains("tampering: dropped-in is in the plugin folder"), "{said}");
+    assert!(!w.paths.state.join(identity::KEY_FILE).exists(), "the key is gone");
+    assert!(!w.paths.plugins().exists(), "and the plugin files with it");
+    assert!(storageforge_agent::wipe::wiped(&w.paths.state).unwrap()["why"][0].as_str().unwrap().contains("dropped-in"));
+    // started again, as a restart policy would: no new key, nothing run
+    let out = run();
+    assert_eq!(out.status.code(), Some(storageforge_agent::wipe::EXIT_WIPED));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("was wiped and does not start again"));
+    assert!(!w.paths.state.join(identity::KEY_FILE).exists(), "no new key was made");
+}

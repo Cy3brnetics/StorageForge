@@ -67,6 +67,11 @@ pub const BEAT_SECS: u64 = 60;
 /// How long the agent waits for an answer.
 const ANSWER_SECS: u64 = 30;
 
+/// Set when the agent has wiped itself and its last record is in the outbox: the tunnel sends what is left, writes no plugin that
+/// arrives, and sets `SAID` once the controller has answered the last batch.
+pub static LAST_WORD: AtomicBool = AtomicBool::new(false);
+pub static SAID: AtomicBool = AtomicBool::new(false);
+
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -230,7 +235,13 @@ fn finish_plugin(dir: &Path, a: Arriving) -> Result<Option<String>, String> {
         return Ok(None);
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("cannot make the plugin folder: {e}"))?;
-    // the program first and the descriptor last: until all three are there, the plugin is refused as incomplete, never run half
+    // An earlier descriptor goes first, then the program, the signature and the descriptor: until all three are there the plugin is
+    // refused as not there yet, never run half, and never seen as an old descriptor beside a new program, which is tampering (11.3)
+    match std::fs::remove_file(dir.join(runner::descriptor_file(&a.name))) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("cannot replace plugin {}: {e}", a.name)),
+    }
     write_whole(&dir.join(runner::program_file(&a.name)), &a.program, 0o600)
         .and_then(|_| write_whole(&dir.join(runner::signature_file(&a.name)), a.signature.as_bytes(), 0o600))
         .and_then(|_| write_whole(&dir.join(runner::descriptor_file(&a.name)), a.descriptor.as_bytes(), 0o600))
@@ -347,6 +358,8 @@ pub fn session(paths: &Paths, key: &SigningKey, address: SocketAddr, pinned: &[u
                 a.program.extend_from_slice(&data);
             }
             "plugin-end" => match arriving.take().filter(|a| v["name"].as_str() == Some(a.name.as_str())) {
+                // a wiped agent writes nothing more into its state folder
+                Some(_) if LAST_WORD.load(Ordering::Relaxed) => {}
                 Some(a) => match finish_plugin(&paths.plugins(), a) {
                     Ok(Some(name)) => written.push(name),
                     Ok(None) => {}
@@ -366,6 +379,10 @@ pub fn session(paths: &Paths, key: &SigningKey, address: SocketAddr, pinned: &[u
     let mut last = Instant::now() - Duration::from_secs(BEAT_SECS);
     loop {
         if stop.load(Ordering::Relaxed) {
+            return Over::Stopped;
+        }
+        if link.pending.is_none() && outbox.is_empty() && LAST_WORD.load(Ordering::Relaxed) {
+            SAID.store(true, Ordering::Relaxed);
             return Over::Stopped;
         }
         if link.pending.is_none() {

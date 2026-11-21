@@ -68,7 +68,7 @@ FRESH_PASSWORD = {
     ('POST', '/api/keys/install'),
     ('PUT', '/api/agents/<host>'),                # the per-host switch of the optional agent
     ('POST', '/api/agents/<host>/install'),       # sets it up on the host and pins its key
-    ('POST', '/api/agents/<host>/<any("start", "stop", "restart", "status"):verb>'),
+    ('POST', '/api/agents/<host>/<any("start", "stop", "restart", "status", "check"):verb>'),     # check: wipe and stop from outside
     ('DELETE', '/api/agents/<host>'),
     ('POST', '/api/agents/<host>/plugins'),       # which signed plugins a host's agent runs; privileges need agent.privilege too
     ('POST', '/api/keys/ssh-ca'),                 # makes the SSH CA
