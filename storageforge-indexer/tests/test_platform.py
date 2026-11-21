@@ -2103,6 +2103,8 @@ class ScriptHeaderTests(DBCase):
                        'pubkey': 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl', 'names': 'vim',
                        'dhcprange': '10.0.0.100-10.0.0.200', 'vmdisks': 'vda:virtio:qcow2:vm1-vda.qcow2', 'vmnics': 'network=default:virtio:new', 'osinfo': 'debian12', 'unit': 'nginx.service', 'endpoint': '10.0.0.5:51820', 'ipv4': '10.0.0.5'}[f['kind']]
                       for f in spec['fields']}
+            if spec.get('confirm_of') and not params.get('device') and not params.get('devices'):
+                params['confirm'] = params[spec['confirm_of']]       # typed again: the field it names (tool-data-remove: the tool)
             out[f'changes {kind}'] = changes.script(self.conn, {'name': 'p', 'tasks': [{'type': kind, 'host': 'nas', 'params': params, 'note': text}]})
         for kind, spec in tasks.TYPES.items():
             if kind in ('command', 'if', 'try'):             # a command block's value is code on purpose

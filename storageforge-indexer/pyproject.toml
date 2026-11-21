@@ -28,4 +28,4 @@ select = ["E9", "F63", "F7", "F82"]    # syntax errors and code that cannot work
 include = ["storageforge_index*"]
 
 [tool.setuptools.package-data]
-storageforge_index = ["migrations/*/*.sql", "static/*"]
+storageforge_index = ["migrations/*/*.sql", "static/*", "catalog/*"]

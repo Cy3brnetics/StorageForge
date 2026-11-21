@@ -1,0 +1,7 @@
+# The keys whose signature makes the official Toolbox catalog, or an update of it, the official one (roadmap section 4.1,
+# docs/toolbox.md). The format is ssh-keygen's allowed-signers file, one key a line, and the namespace has to be named:
+#
+#   storageforge namespaces="storageforge-catalog" ssh-ed25519 AAAA...
+#
+# There is no key here yet: the owner holds the release key and adds its public half. Until then the catalog that came in the
+# package is shown as packaged and not release-signed, and no catalog update can be taken, since nothing could vouch for one.

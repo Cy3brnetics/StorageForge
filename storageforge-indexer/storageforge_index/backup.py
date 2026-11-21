@@ -45,7 +45,9 @@ ESSENTIAL = ('vault_meta', 'ssh_keys', 'device_credentials', 'key_bindings', 'us
              'netconsole_sources',                   # which address and port each host's kernel messages come from
              'secret_deliveries',                    # where each secret was delivered: where a rotation sends the new value
              'platform_connections',                 # each API connection's accepted certificate and which vault row holds its token
-             'workload_captures')                    # workloads adopted by capturing their definitions, which drift is measured against
+             'workload_captures',                    # workloads adopted by capturing their definitions, which drift is measured against
+             'toolbox_catalog', 'toolbox_signers',   # custom entries and catalog updates with their signatures, and the operator keys that sign them
+             'toolbox_installs', 'toolbox_overrides')  # which tools were staged where, from which entry, and each host's overrides
 # Left out of essentials: a rescan or the next deploy rebuilds these, they are history, or they are sessions.
 # Every table is in exactly one of the two lists (tests/test_consistency.py).
 REBUILDABLE = ('network_scans', 'network_scan_hosts', 'traffic_samples', 'mounts', 'scans', 'directories', 'file_records', 'file_fts', 'file_changes', 'scan_denied', 'scan_jobs',
@@ -54,7 +56,8 @@ REBUILDABLE = ('network_scans', 'network_scan_hosts', 'traffic_samples', 'mounts
                'security_measurements', 'graph_snapshots', 'security_playbook_runs', 'security_readings', 'security_ban_history', 'scan_signatures',
                'agent_records', 'agent_events',     # what agents said, and the receiver's notes on it: claims and history
                'agent_disks', 'agent_file_events', 'agent_file_reads', 'agent_inventory',   # what was made of what agents said: the next readings make it again
-               'platform_objects')                  # what the last read of each API connection found: the next read finds it again
+               'platform_objects',                  # what the last read of each API connection found: the next read finds it again
+               'toolbox_status')                    # each tool's adapter status: the next reading makes it again
 ENC_MAGIC, ENC_SUFFIX, ENC_CHUNK = b'STORAGEFORGE-BACKUP-1\n', '.enc', 1 << 20
 ENC_KDF = {'time_cost': 3, 'memory_kib': 65536, 'lanes': 4}    # as the vault's own key
 PREFIX = {'essentials': 'storageforge-essentials-', 'full': 'storageforge-full-'}

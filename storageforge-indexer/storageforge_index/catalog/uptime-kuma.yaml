@@ -1,0 +1,51 @@
+format: 1
+id: uptime-kuma
+revision: 1
+name: Uptime Kuma
+app_version: 2.0.2
+category: monitoring
+summary: Watches websites, ports and services and says when one goes down, with its own web UI.
+homepage: https://github.com/louislam/uptime-kuma
+license: MIT
+install:
+  methods:
+    - kind: container
+      image: docker.io/louislam/uptime-kuma:2.0.2@sha256:4c364ef96aaddac7ec4c85f5e5f31c3394d35f631381ccbbf93f18fd26ac7cba
+      ports: ["3001:3001/tcp"]
+      volumes: {data: /app/data}
+    - kind: quadlet
+      image: docker.io/louislam/uptime-kuma:2.0.2@sha256:4c364ef96aaddac7ec4c85f5e5f31c3394d35f631381ccbbf93f18fd26ac7cba
+      ports: ["3001:3001/tcp"]
+      volumes: {data: /app/data}
+    - kind: compose
+      image: docker.io/louislam/uptime-kuma:2.0.2@sha256:4c364ef96aaddac7ec4c85f5e5f31c3394d35f631381ccbbf93f18fd26ac7cba
+      ports: ["3001:3001/tcp"]
+      volumes: {data: /app/data}
+requires:
+  ports: [3001/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:3001/
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 3001
+    sso: none
+  panel:
+    level: status
+    adapter: uptime-kuma
+upgrade:
+  strategy: recreate
+  rollback_on_unhealthy: false
+risk: [holds-credentials]
+mac:
+  selinux: container_t
+  notes: the data folder is mounted with :Z, so SELinux lets the container use it and nothing else

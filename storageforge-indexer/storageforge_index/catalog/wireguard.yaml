@@ -1,0 +1,40 @@
+format: 1
+id: wireguard
+revision: 1
+name: WireGuard
+app_version: from the distribution
+category: vpn
+summary: A VPN in the kernel. The peer manager adds, revokes and rotates peers, each as a plan step.
+homepage: https://www.wireguard.com/
+license: GPL-2.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [wireguard-tools]
+        dnf: [wireguard-tools]
+        zypper: [wireguard-tools]
+        pacman: [wireguard-tools]
+inputs:
+  - {name: iface, kind: iface, label: Interface, default: wg0}
+  - {name: address, kind: cidr, label: "This host's address and range", default: 10.8.0.1/24}
+  - {name: port, kind: port, label: UDP port, default: "51820"}
+steps:
+  - type: wg-interface
+    params: {iface: "{iface}", address: "{address}", port: "{port}", state: present}
+requires:
+  ports: [51820/udp]
+exposure:
+  default: any
+  public_optional: true
+backup:
+  paths: [/etc/wireguard]
+gui:
+  native: none
+  panel:
+    level: full
+    adapter: wireguard
+upgrade:
+  strategy: package
+risk: [holds-credentials, internet-listener]
+notes: The interface key is made on the host and never leaves it. A peer is added by its public key; its private key stays on the peer.

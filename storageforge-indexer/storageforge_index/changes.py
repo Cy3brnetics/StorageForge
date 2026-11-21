@@ -2058,6 +2058,7 @@ from . import steps_secretfile  # noqa: E402,F401  (a vault secret written to a 
 from . import steps_workloads  # noqa: E402,F401  (compose stacks, LXC containers and Incus instances, after steps_infra, whose firewall tool they use)
 from . import steps_vmiso  # noqa: E402,F401  (VMs from installer ISOs)
 from . import steps_mac  # noqa: E402,F401  (letting VMs use a folder of disks under SELinux or AppArmor)
+from . import steps_toolbox  # noqa: E402,F401  (Toolbox installs and removals, after steps_runtime and steps_workloads, whose helpers they call)
 from . import wlmanaged  # noqa: E402  (a warning before a step changes a workload something else manages, after every step it wraps)
 wlmanaged.install()
 from . import secretstore  # noqa: E402  (a step's vault secret, on the runner's stdin)

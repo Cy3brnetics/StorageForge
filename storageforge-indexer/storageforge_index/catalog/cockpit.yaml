@@ -1,0 +1,40 @@
+format: 1
+id: cockpit
+revision: 1
+name: Cockpit
+app_version: from the distribution
+category: panel
+summary: A web console for one Linux host. Services, logs, storage, networking and a terminal, behind the host's own sign-in.
+homepage: https://cockpit-project.org/
+license: LGPL-2.1
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [cockpit]
+        dnf: [cockpit]
+        zypper: [cockpit]
+        pacman: [cockpit]
+      units: [cockpit.socket]
+      socket: {unit: cockpit.socket, port: 9090}
+requires:
+  ports: [9090/tcp]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: https://127.0.0.1:9090/ping
+  expect: 200
+gui:
+  native:
+    url_template: "https://{host}:{port}/"
+    port: 9090
+    sso: none
+  panel:
+    level: status+actions
+    adapter: cockpit
+upgrade:
+  strategy: package
+risk: [runs-as-root]
+notes: Whoever signs in to Cockpit can do what that account can on the host, sudo included. Keep it on loopback or the management network.
