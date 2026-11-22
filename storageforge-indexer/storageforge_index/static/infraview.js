@@ -4,7 +4,7 @@
    dockerview.js; uses the shared helpers. */
 
 const INF = { view: 'workloads' };
-const INF_VIEWS = [['workloads', 'Workloads'], ['exposure', 'Exposure'], ['network', 'Network'], ['firewall', 'Firewall'], ['sfnet', 'StorageForge network']];
+const INF_VIEWS = [['workloads', 'Workloads'], ['containers', 'Containers'], ['exposure', 'Exposure'], ['network', 'Network'], ['firewall', 'Firewall'], ['sfnet', 'StorageForge network'], ['toolbox', 'Toolbox']];
 const INF_LEVEL = { any: 'Any address', lan: 'Private networks', vpn: 'VPN only', blocked: 'Blocked', loopback: 'This machine only', unknown: 'Unknown' };
 const INF_CLASS = { any: 'st-failed', lan: 'st-warn', vpn: 'muted', blocked: 'muted', loopback: 'muted', unknown: 'st-warn' };
 
@@ -29,6 +29,7 @@ async function loadInfra() {
   const box = $('#infrabox');
   const nav = document.createElement('div'); nav.className = 'seg sm'; nav.setAttribute('role', 'group');
   for (const [id, label] of INF_VIEWS) {
+    if (id === 'containers' && !can('services.view')) continue;
     if ((id === 'exposure' || id === 'firewall') && !can('security.view')) continue;
     if (id === 'network' && !can('map.view')) continue;
     const b = button(label, () => { INF.view = id; loadInfra(); }, INF.view === id ? 'on' : '');
@@ -38,8 +39,36 @@ async function loadInfra() {
   content.append(text('p', 'Loading…', 'muted small'));
   box.replaceChildren(nav, content);
   try {
-    await ({ workloads: infWorkloads, exposure: infExposure, network: infNetwork, firewall: infFirewall, sfnet: sfnView })[INF.view](content);      // sfnView: sfnetview.js
+    await ({
+      workloads: infWorkloads,
+      containers: infContainers,
+      exposure: infExposure,
+      network: infNetwork,
+      firewall: infFirewall,
+      sfnet: sfnView,
+      toolbox: infToolbox,
+    })[INF.view](content);
   } catch (err) { content.replaceChildren(text('p', err.message, 'st-failed')); }
+}
+
+async function infContainers(content) {
+  const box = el('div', { id: 'dockerbox', class: 'stack' });
+  content.replaceChildren(
+    text('p', 'Containers and compose stacks on each host, the folders they use, and stacks stored on disk that are not deployed. Stacks run by a manager in a container (Dockhand, Portainer, Komodo) are traced to their real folders.', 'muted small'),
+    box,
+  );
+  await loadDocker();
+}
+
+async function infToolbox(content) {
+  const msg = el('p', { id: 'toolboxmsg', class: 'muted', role: 'status', hidden: true });
+  const box = el('div', { id: 'toolboxbox', class: 'stack' });
+  content.replaceChildren(
+    text('p', 'Tools from a signed catalog, installed on hosts as change plans and shown here at the level each supports. Every install, removal and action saves a change plan, deployed from Changes with its report first.', 'muted small'),
+    msg,
+    box,
+  );
+  await loadToolbox();
 }
 
 function infMeasure(host, out) {

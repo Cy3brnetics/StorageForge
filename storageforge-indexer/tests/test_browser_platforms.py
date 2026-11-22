@@ -42,7 +42,7 @@ class BrowserPlatforms(Base):
         page.press('input[type=password]', 'Enter')
         page.wait_for_url(base + '/**')
         page.wait_for_selector('html[data-route-ready]', state='attached')
-        page.evaluate("showTab('keys')")
+        page.goto(base + '/admin#/secrets')
         page.wait_for_selector('#platformbox li:has-text("No platform connections yet.")')
         page.click('#platadd summary')
         self.assertTrue(page.is_hidden('#plattokenform'), 'the token is not asked for before the guide is shown')

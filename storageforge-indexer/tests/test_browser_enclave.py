@@ -86,7 +86,7 @@ class BrowserEnclave(unittest.TestCase):
         self.page.wait_for_selector('html[data-route-ready]', state='attached')
 
     def keys(self):
-        self.page.click('#tabbtn-keys')
+        self.page.goto(self.base + '/admin#/enclave')
         self.page.wait_for_selector('#enclavebox:not([hidden]) b')
         return self.page.inner_text('#enclavebox')
 
@@ -108,15 +108,18 @@ class BrowserEnclave(unittest.TestCase):
         self.wait_for_label('Key enclave: on')
         self.assertIn('Step-up is off', self.page.inner_text('#enclavebox'))
         # a key is made on the web app's word, until someone enrolls
+        self.page.click('#adnav button[data-sec="keys"]')
         self.page.fill('#genname', 'before')
         self.page.click('#genform button[type=submit]')
         self.page.wait_for_function('() => [...document.querySelectorAll("#keys li")].some((li) => li.textContent.includes("before"))')
+        self.page.click('#adnav button[data-sec="enclave"]')
         self.page.click('#enclavebox button:has-text("Enroll your password with the enclave")')
         self.page.fill('dialog[open] input[type=password]', PW)
         self.page.click('dialog[open] button[type=submit]')
         self.page.wait_for_function('() => document.querySelector("#enclavebox").textContent.includes("Step-up is on")')
         self.assertIn('Your password is enrolled', self.page.inner_text('#enclavebox'))
         # now the enclave wants the person: the page asks, the enclave checks, and the key is made
+        self.page.click('#adnav button[data-sec="keys"]')
         self.page.fill('#genname', 'after')
         self.page.click('#genform button[type=submit]')
         self.page.wait_for_selector('dialog[open] #stepuptitle')
@@ -134,7 +137,7 @@ class BrowserEnclave(unittest.TestCase):
         for path in paths:
             self.assertRegex(path, r'^api/~[0-9a-f]{8}/(keys|enclave/unlock|enclave/stepup(/enroll)?)$')
         # the security view says the same thing in its own words
-        self.page.click('#tabbtn-security')
+        self.page.goto(self.base + '/security#/overview')
         self.page.wait_for_selector('#sec-enclave b')
         self.assertEqual(self.page.inner_text('#sec-enclave b'), 'Key enclave: on')
 
@@ -147,7 +150,7 @@ class BrowserEnclave(unittest.TestCase):
             self.assertIn('the extra layer is not there', said)
             self.assertIn('/dev/kvm is not here', said)
             self.assertEqual(self.page.locator('#enclavebox input').count(), 0, 'nothing to unlock')
-            self.page.click('#tabbtn-security')
+            self.page.goto(self.base + '/security#/overview')
             self.page.wait_for_selector('#sec-enclave b')
             self.assertIn('Key enclave: off', self.page.inner_text('#sec-enclave'))
         self.assertEqual(self.errors, [])

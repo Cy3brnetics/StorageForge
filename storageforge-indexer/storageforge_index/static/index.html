@@ -28,6 +28,9 @@
     <span id="hextra" class="hextra">
       <a id="toplanner" class="btn" href="/planner">Planner</a>
       <a id="tomanage" class="btn" href="/manage">Manage</a>
+      <a id="tosecurity" class="btn" href="/security">Security</a>
+      <a id="tologs" class="btn" href="/logs">Logs</a>
+      <a id="toadmin" class="btn" href="/admin">Admin</a>
       <label id="sessfield" class="field" title="How long a sign-in lasts (changing it asks for your password)" hidden><span>Session</span><select id="sesslen" aria-label="Session length"><option value="30">30 min</option><option value="60">1 h</option><option value="120">2 h</option><option value="240">4 h</option><option value="480">8 h</option></select></label>
       <button id="prefs" type="button" class="btn ghost" title="Theme, density and motion, kept in this browser">Preferences</button>
     </span>
@@ -77,81 +80,19 @@ storageforge-index graph import --blueprint atlas.json</pre>
     <div id="tab-details" class="tab" role="tabpanel" aria-labelledby="tabbtn-details"><p id="detailshint" class="muted"></p><div id="summary"></div></div>
     <div id="tab-search" class="tab" role="tabpanel" aria-labelledby="tabbtn-search" hidden><p class="muted">Type a pattern above. Select a result to focus its mount point.</p><ol id="results" class="results"></ol></div>
     <div id="tab-jobs" class="tab" role="tabpanel" aria-labelledby="tabbtn-jobs" hidden>
-      <form id="scanform" class="row"><input id="scanhost" type="text" placeholder="hostname or IP bound in the vault" aria-label="Host to scan" required><button class="btn pri" type="submit">Scan</button><button id="scanall" type="button" class="btn" title="Queue a scan of every host with a scan binding. Several hosts scan at once.">Scan all hosts</button></form>
-      <p id="scanmsg" hidden></p>
-      <ol id="jobs" class="list"></ol>
-    </div>
-    <div id="tab-keys" class="tab" role="tabpanel" aria-labelledby="tabbtn-keys" hidden>
-      <section id="enclavebox" class="card" aria-live="polite" hidden></section>
-      <section id="agentbox" class="card" aria-live="polite" hidden></section>
-      <h3>1 · Generate a key</h3>
-      <form id="genform" class="row">
-        <input id="genname" type="text" placeholder="key name, e.g. fleet" aria-label="Key name" autocomplete="off" spellcheck="false" required>
-        <select id="gentype" aria-label="Key type"><option value="ed25519">ed25519</option><option value="rsa">RSA 4096</option></select>
-        <button class="btn pri" type="submit">Generate</button>
-      </form>
-      <p class="muted">The private key is created inside the encrypted vault and never leaves it.</p>
-      <h3>2 · Install on a host with ssh-copy-id</h3>
-      <form id="installform" class="stack">
-        <label class="field col"><span>Key</span><select id="instkey" required></select></label>
-        <div class="row">
-          <label class="field col grow"><span>Host</span><input id="insthost" type="text" placeholder="nas-02 or 10.0.20.5" autocomplete="off" spellcheck="false" required></label>
-          <label class="field col port"><span>Port</span><input id="instport" type="number" min="1" max="65535" value="22" required></label>
-        </div>
-        <label class="field col"><span>User</span><input id="instuser" type="text" placeholder="scan" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
-        <label class="field col"><span>That user's SSH password (used once, not stored)</span><input id="instpw" type="password" autocomplete="off" required
-               data-1p-ignore data-lpignore="true" data-bwignore="true"></label>
-        <label class="check"><input id="instbind" type="checkbox" checked> Bind the key to this host for scans</label>
-        <label class="check"><input id="instsum" type="checkbox"> Allow checksum scans too (finds identical files, across hosts as well)</label>
-        <label class="check"><input id="instconsole" type="checkbox"> Allow the web console too: a terminal as this user</label>
-        <div class="row end"><button class="btn pri" type="submit">Install key</button></div>
-      </form>
-      <p id="instmsg" class="muted" hidden></p>
-      <h3>Keys</h3>
-      <ol id="keys" class="list"></ol>
-      <h3>Bindings</h3>
-      <p class="muted">What each key may do on a host: scan it, checksum its files, or open a terminal on it from the web console. A console login can do whatever that account can, so give it a login of its own where you can.</p>
-      <ol id="bindings" class="list"></ol>
-      <details id="bindadd">
-        <summary>Bind a key that is already on a host</summary>
-        <form id="bindform" class="stack">
-          <label class="field col"><span>Key</span><select id="bindkey" required></select></label>
-          <div class="row">
-            <label class="field col grow"><span>Host, glob or CIDR</span><input id="bindhost" type="text" placeholder="nas-02, nas-* or 10.0.20.0/24" autocomplete="off" spellcheck="false" required></label>
-            <label class="field col port"><span>Port</span><input id="bindport" type="number" min="1" max="65535" value="22" required></label>
-          </div>
-          <label class="field col"><span>User</span><input id="binduser" type="text" placeholder="scan" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
-          <fieldset class="row wrap"><legend>Allow</legend>
-            <label class="check"><input id="bindscan" type="checkbox" checked> Scans</label>
-            <label class="check"><input id="bindsum" type="checkbox"> Checksum scans</label>
-            <label class="check"><input id="bindconsole" type="checkbox"> Web console</label>
-          </fieldset>
-          <div class="row end"><button class="btn pri" type="submit">Bind</button></div>
-        </form>
-      </details>
-      <h3>SSH certificates</h3>
-      <p class="muted">A certificate authority kept in the vault. A host that trusts it lets StorageForge in with a certificate that lasts minutes and names one user on that host, and a certificate can be revoked. Keys in authorized_keys go on working: trusting the CA takes nothing away.</p>
-      <p id="sshcamsg" class="muted" role="status" hidden></p>
-      <div id="sshcabox" class="stack"></div>
-      <h3>Secrets for plan steps</h3>
-      <p class="muted">Passwords, tokens and keys that plan steps need on a host, made here and kept in the vault. A value is shown once, when it is made or rotated, and then never again: a plan step gets it on the host through the signed runner, when the plan is applied.</p>
-      <p id="secretmsg" class="muted" role="status" hidden></p>
-      <div id="secretonce" class="stack" role="status" hidden></div>
-      <div id="secretbox" class="stack"></div>
-      <h3>Platform connections</h3>
-      <p class="muted">Proxmox VE, Backup Server and Datacenter Manager read through their own APIs, beside SSH. First what the token needs, the least that works and never root or a full-access role; then the token, kept in the vault; then the platform's certificate, which you accept before the token is sent anywhere. Read-only unless you turn an action on. Not lab-tested.</p>
-      <p id="platformmsg" class="muted" role="status" hidden></p>
-      <div id="platformbox" class="stack"></div>
-    </div>
-    <div id="tab-access" class="tab" role="tabpanel" aria-labelledby="tabbtn-access" hidden>
-      <p class="muted">Folders the latest scan of each host could not open, and read-only scan access to fix it without running scans as root.</p>
-      <div id="accessbox" class="stack"></div>
-    </div>
-    <div id="tab-malware" class="tab" role="tabpanel" aria-labelledby="tabbtn-malware" hidden>
-      <p class="muted">ClamAV runs on each host you deploy it to and only reports. Files move to quarantine only when you say so, and nothing is deleted. Results arrive with the next scan of the host, or use Collect. One engine misses things: no detections does not prove a host is clean.</p>
-      <div id="malwarehosts" class="stack"></div>
-      <h3>Detections</h3>
-      <div id="malwarebox" class="stack"></div>
+      <div id="scans-subnav" class="seg sm" role="group" aria-label="Scan panels">
+        <button type="button" data-sub="jobs" aria-pressed="true">Scan jobs</button>
+        <button type="button" data-sub="access" id="scans-sub-access" aria-pressed="false">Blocked folders</button>
+      </div>
+      <section id="scans-pane-jobs" class="stack">
+        <form id="scanform" class="row"><input id="scanhost" type="text" placeholder="hostname or IP bound in the vault" aria-label="Host to scan" required><button class="btn pri" type="submit">Scan</button><button id="scanall" type="button" class="btn" title="Queue a scan of every host with a scan binding. Several hosts scan at once.">Scan all hosts</button></form>
+        <p id="scanmsg" hidden></p>
+        <ol id="jobs" class="list"></ol>
+      </section>
+      <section id="scans-pane-access" class="stack" hidden>
+        <p class="muted">Folders the latest scan of each host could not open, and read-only scan access to fix it without running scans as root.</p>
+        <div id="accessbox" class="stack"></div>
+      </section>
     </div>
     <div id="tab-copies" class="tab" role="tabpanel" aria-labelledby="tabbtn-copies" hidden>
       <div id="copies-subnav" class="seg sm" role="group" aria-label="Cleanup panels">
@@ -199,9 +140,49 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <p class="muted">Plan where data goes: each step copies, moves, mirrors or snapshots a folder with rsync. Check it against the index, then download the script and run it like storage-setup.sh.</p>
       <div id="movesbox" class="stack"></div>
     </div>
-    <div id="tab-schedule" class="tab" role="tabpanel" aria-labelledby="tabbtn-schedule" hidden>
-      <p class="muted">Unified Scheduler: schedule any task StorageForge can run (Storage tasks, Change plans, Move plans, Shares, Host scans, or Commands) as cron jobs on client hosts with comprehensive server verification.</p>
-      <div id="schedulebox" class="stack"></div>
+    <div id="tab-infra" class="tab" role="tabpanel" aria-labelledby="tabbtn-infra" hidden>
+      <p class="muted">Workloads, containers, toolbox catalog, exposure, network and firewall of each host, read from scans and signed readings. Nothing here probes a network.</p>
+      <div id="infrabox" class="stack"></div>
+    </div>
+    <div id="tab-deploy" class="tab" role="tabpanel" aria-labelledby="tabbtn-deploy" hidden>
+      <div id="deploy-subnav" class="seg sm" role="group" aria-label="Deploy panels">
+        <button type="button" data-sub="deploy" aria-pressed="true">Deployments</button>
+        <button type="button" data-sub="schedule" id="deploy-sub-schedule" aria-pressed="false">Schedule</button>
+      </div>
+      <section id="deploy-pane-deploy" class="stack">
+        <div id="deploybox" class="stack"></div>
+      </section>
+      <section id="deploy-pane-schedule" class="stack" hidden>
+        <p class="muted">Unified Scheduler: schedule any task StorageForge can run (Storage tasks, Change plans, Move plans, Shares, Host scans, or Commands) as cron jobs on client hosts with comprehensive server verification.</p>
+        <div id="schedulebox" class="stack"></div>
+      </section>
+    </div>
+    <div id="tab-rebuild" class="tab" role="tabpanel" aria-labelledby="tabbtn-rebuild" hidden>
+      <div id="rebuild-subnav" class="seg sm" role="group" aria-label="Rebuild panels">
+        <button type="button" data-sub="configs" aria-pressed="true">Host configs</button>
+        <button type="button" data-sub="os2" id="rebuild-sub-os2" aria-pressed="false">Second OS</button>
+        <button type="button" data-sub="desk" id="rebuild-sub-desk" aria-pressed="false">Desktop profiles</button>
+      </div>
+      <section id="rebuild-pane-configs" class="stack">
+        <p class="muted">What it takes to rebuild each host: its fstab, mounts, subvolumes, accounts, shares and symlinks. Each scan saves a version when any of it changed, and these versions are in every essentials backup. The reinstall script mounts everything again on a fresh install. It never formats a drive.</p>
+        <div id="rebuildbox" class="stack"></div>
+      </section>
+      <section id="rebuild-pane-os2" class="stack" hidden>
+        <section id="os2" class="stack" aria-labelledby="os2head">
+          <h3 id="os2head">A second system beside the first</h3>
+          <p class="muted">Another distribution on a host you reach over SSH, in unpartitioned space or on a blank disk, with a boot entry of its own. The host fetches the distribution's cloud image and checks it against the checksum its publisher lists. The form makes a change plan: nothing runs until you have read it and run it in Changes.</p>
+          <p id="os2msg" class="muted" role="status" hidden></p>
+          <div id="os2box" class="stack"></div>
+        </section>
+      </section>
+      <section id="rebuild-pane-desk" class="stack" hidden>
+        <section id="desk" class="stack" aria-labelledby="deskhead">
+          <h3 id="deskhead">Desktop profiles</h3>
+          <p class="muted">Keys, window rules and displays written once and kept here, and written out as niri, Hyprland or Sway configuration by the desktop-profile step of a plan.</p>
+          <p id="deskmsg" class="muted" role="status" hidden></p>
+          <div id="deskbox" class="stack"></div>
+        </section>
+      </section>
     </div>
     <div id="tab-git" class="tab" role="tabpanel" aria-labelledby="tabbtn-git" hidden>
       <div class="git-header-bar row">
@@ -211,43 +192,6 @@ storageforge-index graph import --blueprint atlas.json</pre>
       </div>
       <p class="muted">Every git repository the scans found. Copies are matched by their first commit, so a bare archive on another machine counts whatever it is called.</p>
       <div id="gitbox" class="stack"></div>
-    </div>
-    <div id="tab-infra" class="tab" role="tabpanel" aria-labelledby="tabbtn-infra" hidden>
-      <p class="muted">What runs on each host and who can reach it, read from scans and signed readings. Nothing here probes a network.</p>
-      <div id="infrabox" class="stack"></div>
-    </div>
-    <div id="tab-docker" class="tab" role="tabpanel" aria-labelledby="tabbtn-docker" hidden>
-      <p class="muted">Containers and compose stacks on each host, the folders they use, and stacks stored on disk that are not deployed. Stacks run by a manager in a container (Dockhand, Portainer, Komodo) are traced to their real folders.</p>
-      <div id="dockerbox" class="stack"></div>
-    </div>
-    <div id="tab-toolbox" class="tab" role="tabpanel" aria-labelledby="tabbtn-toolbox" hidden>
-      <p class="muted">Tools from a signed catalog, installed on hosts as change plans and shown here at the level each supports: a link to its own UI, status tiles, or a panel with actions. Nothing here changes a host by itself: every install, removal and action is a plan, deployed from Changes with its report first.</p>
-      <p id="toolboxmsg" class="muted" role="status" hidden></p>
-      <div id="toolboxbox" class="stack"></div>
-    </div>
-    <div id="tab-deploy" class="tab" role="tabpanel" aria-labelledby="tabbtn-deploy" hidden>
-      <div id="deploybox" class="stack"></div>
-    </div>
-    <div id="tab-rebuild" class="tab" role="tabpanel" aria-labelledby="tabbtn-rebuild" hidden>
-      <p class="muted">What it takes to rebuild each host: its fstab, mounts, subvolumes, accounts, shares and symlinks. Each scan saves a version when any of it changed, and these versions are in every essentials backup. The reinstall script mounts everything again on a fresh install. It never formats a drive.</p>
-      <div id="rebuildbox" class="stack"></div>
-      <section id="os2" class="stack" aria-labelledby="os2head" hidden>
-        <h3 id="os2head">A second system beside the first</h3>
-        <p class="muted">Another distribution on a host you reach over SSH, in unpartitioned space or on a blank disk, with a boot entry of its own. The host fetches the distribution's cloud image and checks it against the checksum its publisher lists. The form makes a change plan: nothing runs until you have read it and run it in Changes.</p>
-        <p id="os2msg" class="muted" role="status" hidden></p>
-        <div id="os2box" class="stack"></div>
-      </section>
-      <section id="desk" class="stack" aria-labelledby="deskhead" hidden>
-        <h3 id="deskhead">Desktop profiles</h3>
-        <p class="muted">Keys, window rules and displays written once and kept here, and written out as niri, Hyprland or Sway configuration by the desktop-profile step of a plan.</p>
-        <p id="deskmsg" class="muted" role="status" hidden></p>
-        <div id="deskbox" class="stack"></div>
-      </section>
-    </div>
-    <div id="tab-security" class="tab" role="tabpanel" aria-labelledby="tabbtn-security" hidden>
-      <div id="sec-banner" class="sec-banner sec-unknown"></div>
-      <div id="sec-subnav" class="seg sm" role="group" aria-label="Security panels"></div>
-      <div id="sec-content" class="stack"></div>
     </div>
     <div id="tab-notifications" class="tab" role="tabpanel" aria-labelledby="tabbtn-notifications" hidden>
       <p class="muted">Everything that wants attention, most critical first. A critical notification, drift and a security finding cannot be snoozed or muted: they leave when they are resolved.</p>
@@ -264,101 +208,6 @@ storageforge-index graph import --blueprint atlas.json</pre>
         <ul id="nt-history" class="list"></ul>
         <button type="button" id="nt-older" class="btn ghost sm" hidden>Older</button>
       </details>
-    </div>
-    <div id="tab-hostlogs" class="tab" role="tabpanel" aria-labelledby="tabbtn-hostlogs" hidden>
-      <p class="muted">What hosts' journals said, as of each host's last scan or as its agent pushed them. Nothing here refreshes by itself: open the panel again for newer lines.</p>
-      <h3 id="hl-mon-head">Monitoring</h3>
-      <p class="muted small">Each host's last hour against the same hour of the weeks before, its open log alerts, the kinds of line it logged for the first time, silence, and how its lines come in. Hosts with something to look at come first.</p>
-      <div id="hl-monitor" role="region" aria-labelledby="hl-mon-head"></div>
-      <div id="hl-range" class="seg sm" role="group" aria-label="Time range">
-        <button type="button" data-range="hour" aria-pressed="false">Last hour</button>
-        <button type="button" data-range="day" aria-pressed="false">Last day</button>
-        <button type="button" data-range="week" aria-pressed="true">Last 7 days</button>
-        <button type="button" data-range="month" aria-pressed="false">Last 30 days</button>
-        <button type="button" data-range="custom" aria-pressed="false">Custom</button>
-      </div>
-      <form id="hl-custom" class="row wrap" hidden>
-        <label class="field"><span>From</span><input id="hl-from" type="datetime-local"></label>
-        <label class="field"><span>To</span><input id="hl-to" type="datetime-local"></label>
-        <button type="submit" class="btn">Apply</button>
-        <span id="hl-custom-msg" class="st-failed" role="alert" hidden></span>
-      </form>
-      <h3>Lines by level and hour</h3>
-      <div id="hl-chart" aria-live="polite"></div>
-      <h3>Lines</h3>
-      <form id="hl-form" class="stack">
-        <label class="field"><span>Host</span><select id="hl-host"><option value="">All hosts</option></select></label>
-        <label class="field"><span>Level</span><select id="hl-level"><option value="">Any</option><option value="err">Errors or worse</option><option value="warning">Warnings or worse</option><option value="notice">Notices or worse</option></select></label>
-        <label class="field"><span>Unit</span><input id="hl-unit" type="text" maxlength="200" placeholder="sshd" autocomplete="off" list="hl-units" spellcheck="false"></label>
-        <datalist id="hl-units"></datalist>
-        <label class="field"><span>Text</span><input id="hl-q" type="search" maxlength="200" autocomplete="off"></label>
-        <div class="row"><button type="submit" class="btn">Search</button><a id="hl-export" class="btn" download>Export CSV</a></div>
-      </form>
-      <p id="hl-count" class="muted small" role="status"></p>
-      <ol id="hl-lines" class="list"></ol>
-      <div class="row"><button id="hl-more" type="button" class="btn" hidden>Older</button></div>
-      <h3>Hosts: when each was last collected</h3>
-      <div id="hl-status"></div>
-      <details id="hl-rules-box"><summary>Rules: what raises a notification</summary>
-        <p class="muted small">A rule counts the lines it means as scans bring them in, and is one notification per host when it reaches its threshold. A pattern is text with * for anything and | between alternatives.</p>
-        <div class="row"><button id="hl-rule-new" type="button" class="btn sm" hidden>New rule</button></div>
-        <ul id="hl-rules" class="list"></ul>
-      </details>
-      <details id="hl-nc-box"><summary>Netconsole: kernel messages over UDP</summary>
-        <p class="muted small">A host's kernel can send its messages straight to the controller, which still works when nothing else on the host does: a panic or a hang reaches here. They come over plain UDP with no signature. The controller takes them only from the address and port given here, and a line that came this way says something sent it from that address, not that the host did. The netconsole plan step sets a host up to send.</p>
-        <p id="hl-nc-recv" class="muted small" role="status"></p>
-        <div class="row"><button id="hl-nc-new" type="button" class="btn sm" hidden>Add a host</button></div>
-        <ul id="hl-nc" class="list"></ul>
-      </details>
-    </div>
-    <div id="tab-audit" class="tab" role="tabpanel" aria-labelledby="tabbtn-audit" hidden>
-      <div class="row"><button id="verify" type="button" class="btn">Verify chain</button><span id="verified" class="muted"></span></div>
-      <ol id="audit" class="list"></ol>
-      <h3 id="backupshead">Backups</h3>
-      <div id="backupsbox"></div>
-      <h3>Your password</h3>
-      <form id="pwform" class="row wrap">
-        <input id="pwold" type="password" autocomplete="current-password" placeholder="current password" aria-label="Current password" required>
-        <input id="pwnew" type="password" autocomplete="new-password" placeholder="new password" aria-label="New password" required>
-        <button class="btn" type="submit">Change password</button><span id="pwmsg" class="muted"></span>
-      </form>
-      <div id="userscard" hidden>
-        <h3>Accounts</h3>
-        <ol id="userlist" class="list"></ol>
-        <form id="userform" class="row wrap">
-          <input id="newuser" type="text" autocomplete="off" placeholder="username" aria-label="New username" required>
-          <input id="newuserpw" type="password" autocomplete="new-password" placeholder="password" aria-label="New account password" required>
-          <select id="newuserrole" aria-label="Role"></select>
-          <button class="btn" type="submit">Add account</button><span id="usermsg" class="muted"></span>
-        </form>
-        <h3>Invite links</h3>
-        <p class="muted small">Someone opens the link and makes their own account with the role you pick. A link works once.</p>
-        <form id="inviteform" class="row wrap">
-          <select id="inviterole" aria-label="Role the invite gives"></select>
-          <select id="invitehours" aria-label="Link lasts"><option value="24">1 day</option><option value="72" selected>3 days</option><option value="168">7 days</option><option value="720">30 days</option></select>
-          <input id="invitenote" type="text" maxlength="200" autocomplete="off" placeholder="who it is for (optional)" aria-label="Who the invite is for">
-          <button class="btn" type="submit">Create link</button>
-        </form>
-        <div id="linkbox" class="linkbox" hidden>
-          <p id="linkwhat" class="small"></p>
-          <div class="row nowrap"><input id="linkurl" type="text" readonly aria-label="Link to send"><button id="linkcopy" type="button" class="btn sm">Copy</button></div>
-          <p class="muted small">It is shown only now. Send it over a channel you trust.</p>
-        </div>
-        <span id="invitemsg" class="muted"></span>
-        <ol id="invitelist" class="list"></ol>
-      </div>
-      <div id="rolescard" hidden>
-        <h3>Roles</h3>
-        <ol id="rolelist" class="list"></ol>
-        <button id="rolenew" type="button" class="btn sm">New role</button>
-        <form id="roleform" class="roleform" hidden>
-          <input id="rolename" type="text" maxlength="32" autocomplete="off" placeholder="role name" aria-label="Role name" required>
-          <input id="roledesc" type="text" maxlength="200" autocomplete="off" placeholder="what it is for" aria-label="What the role is for">
-          <div id="roleperms"></div>
-          <p id="rolerisk" class="st-warn small" hidden>Editing plans and applying them together amounts to root on every enrolled host.</p>
-          <div class="row"><button class="btn pri" type="submit">Save role</button><button id="rolecancel" type="button" class="btn ghost">Cancel</button><span id="rolemsg" class="muted"></span></div>
-        </form>
-      </div>
     </div>
     <div id="gitdrawer" class="pdrawer collapsed" aria-label="Git Inspector">
       <div class="pdrawer-bar">
@@ -405,24 +254,13 @@ storageforge-index graph import --blueprint atlas.json</pre>
       <span class="rgroup" aria-hidden="true">Plan</span>
       <button type="button" role="tab" data-tab="changes" id="tabbtn-changes" aria-controls="tab-changes" title="Staged changes: folders, btrfs, mounts, drives" aria-label="Staged changes: folders, btrfs, mounts, drives"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6h10M10 12h10M10 18h10M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg><span class="lbl">Changes</span></button>
       <button type="button" role="tab" data-tab="moves" id="tabbtn-moves" aria-controls="tab-moves" title="Data moves with rsync" aria-label="Data moves with rsync"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h14l-3-3M20 16H6l3 3"/></svg><span class="lbl">Moves</span></button>
-      <button type="button" role="tab" data-tab="schedule" id="tabbtn-schedule" aria-controls="tab-schedule" title="Unified Scheduler: cron jobs and server verification" aria-label="Unified Scheduler: cron jobs and server verification"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg><span class="lbl">Schedule</span></button>
-      <button type="button" role="tab" data-tab="deploy" id="tabbtn-deploy" aria-controls="tab-deploy" title="Deployments" aria-label="Deployments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M5 20h14"/></svg><span class="lbl">Deploy</span></button>
+      <button type="button" role="tab" data-tab="deploy" id="tabbtn-deploy" aria-controls="tab-deploy" title="Deployments and scheduled cron tasks" aria-label="Deployments and scheduled cron tasks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M5 20h14"/></svg><span class="lbl">Deploy</span></button>
+      <button type="button" role="tab" data-tab="jobs" id="tabbtn-jobs" aria-controls="tab-jobs" title="Scan jobs and scan access" aria-label="Scan jobs and scan access"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/></svg><span class="lbl">Scans</span><span id="naccess" class="cnt"></span></button>
       <span class="rgroup" aria-hidden="true">Estate</span>
-      <button type="button" role="tab" data-tab="docker" id="tabbtn-docker" aria-controls="tab-docker" title="Containers and compose stacks" aria-label="Containers and compose stacks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8l9-4 9 4v8l-9 4-9-4zM3 8l9 4 9-4M12 12v8"/></svg><span class="lbl">Docker</span></button>
-      <button type="button" role="tab" data-tab="infra" id="tabbtn-infra" aria-controls="tab-infra" title="Workloads, networks and exposure" aria-label="Workloads, networks and exposure"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v5H4zM4 14h16v5H4zM8 7.5h.01M8 16.5h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="lbl">Infra</span></button>
-      <button type="button" role="tab" data-tab="toolbox" id="tabbtn-toolbox" aria-controls="tab-toolbox" title="Toolbox: tools from the catalog on each host" aria-label="Toolbox: tools from the catalog on each host"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9h18v10H3zM8 9V6a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v3M3 13h18"/></svg><span class="lbl">Toolbox</span></button>
+      <button type="button" role="tab" data-tab="infra" id="tabbtn-infra" aria-controls="tab-infra" title="Workloads, containers, toolbox, networks and exposure" aria-label="Workloads, containers, toolbox, networks and exposure"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v5H4zM4 14h16v5H4zM8 7.5h.01M8 16.5h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="lbl">Infra</span></button>
       <button type="button" role="tab" data-tab="git" id="tabbtn-git" aria-controls="tab-git" title="Git repositories and their copies" aria-label="Git repositories and their copies"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 5-8 4-11 8.5"/></svg><span class="lbl">Git</span></button>
-      <button type="button" role="tab" data-tab="rebuild" id="tabbtn-rebuild" aria-controls="tab-rebuild" title="Host configurations and reinstall scripts" aria-label="Host configurations and reinstall scripts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 14-5.3L20 9M20 4v5h-5M20 12a8 8 0 0 1-14 5.3L4 15M4 20v-5h5"/></svg><span class="lbl">Rebuild</span></button>
+      <button type="button" role="tab" data-tab="rebuild" id="tabbtn-rebuild" aria-controls="tab-rebuild" title="Host configurations, second OS install and desktop profiles" aria-label="Host configurations, second OS install and desktop profiles"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 14-5.3L20 9M20 4v5h-5M20 12a8 8 0 0 1-14 5.3L4 15M4 20v-5h5"/></svg><span class="lbl">Rebuild</span></button>
       <button type="button" role="tab" data-tab="copies" id="tabbtn-copies" aria-controls="tab-copies" title="Likely copies and cold data" aria-label="Likely copies and cold data"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg><span class="lbl">Cleanup</span></button>
-      <button type="button" role="tab" data-tab="malware" id="tabbtn-malware" aria-controls="tab-malware" title="ClamAV on hosts: detections and quarantine" aria-label="ClamAV on hosts: detections and quarantine"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" fill="none" stroke="currentColor" stroke-width="2"/></svg><span class="lbl">Malware</span></button>
-      <button type="button" role="tab" data-tab="access" id="tabbtn-access" aria-controls="tab-access" title="Folders scans could not read" aria-label="Folders scans could not read"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg><span class="lbl">Access</span><span id="naccess" class="cnt"></span></button>
-      <span class="rgroup" aria-hidden="true">Security</span>
-      <button type="button" role="tab" data-tab="security" id="tabbtn-security" aria-controls="tab-security" title="Ransomware defense, WORM retention, canaries and SOC center" aria-label="Ransomware defense, WORM retention, canaries and SOC center"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l7 4v6c0 5-3.5 9-7 10-3.5-1-7-5-7-10V6l7-4z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 8v5M12 16h.01"/></svg><span class="lbl">Security</span></button>
-      <span class="rgroup" aria-hidden="true">Admin</span>
-      <button type="button" role="tab" data-tab="jobs" id="tabbtn-jobs" aria-controls="tab-jobs" title="Scan jobs" aria-label="Scan jobs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/></svg><span class="lbl">Scans</span></button>
-      <button type="button" role="tab" data-tab="keys" id="tabbtn-keys" aria-controls="tab-keys" title="SSH keys and host bindings" aria-label="SSH keys and host bindings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l3 3"/></svg><span class="lbl">Keys</span></button>
-      <button type="button" role="tab" data-tab="hostlogs" id="tabbtn-hostlogs" aria-controls="tab-hostlogs" title="Host logs" aria-label="Host logs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M9 11h7M9 15h7"/></svg><span class="lbl">Logs</span></button>
-      <button type="button" role="tab" data-tab="audit" id="tabbtn-audit" aria-controls="tab-audit" title="Audit log" aria-label="Audit log"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="m9 12 2 2 4-4"/></svg><span class="lbl">Audit</span></button>
     </nav>
     <button type="button" id="railmore" class="railmore" aria-hidden="true" tabindex="-1" title="More panels below: scroll the list" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
   </aside>
@@ -434,10 +272,7 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/router.js"></script>
 <script src="/canvas.js"></script>
 <script src="/app.js"></script>
-<script src="/hostlogsview.js"></script>
 <script src="/notifyview.js"></script>
-<script src="/enclaveview.js"></script>
-<script src="/agentview.js"></script>
 <script src="/topology.js"></script>
 <script src="/fsbrowse.js"></script>
 <script src="/checks.js"></script>
@@ -459,10 +294,5 @@ storageforge-index graph import --blueprint atlas.json</pre>
 <script src="/sharewiz.js"></script>
 <script src="/tasks.js"></script>
 <script src="/scheduler.js"></script>
-<script src="/securityview.js"></script>
-<script src="/securitymore.js"></script>
-<script src="/sshcaview.js"></script>
-<script src="/secretsview.js"></script>
-<script src="/apiconnview.js"></script>
 </body>
 </html>

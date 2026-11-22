@@ -86,10 +86,11 @@ class BrowserPolish(unittest.TestCase):
         self.assertEqual(self.labels()[0], 'Go to Schedule')                 # a plain substring, case folded
         self.assertEqual(page.get_attribute('dialog.sf-palette [role=option][aria-selected=true]', 'id'), page.get_attribute('dialog.sf-palette input', 'aria-activedescendant'))
         page.keyboard.press('Enter')
-        page.wait_for_selector('.tabs button[data-tab="schedule"][aria-selected="true"]')
-        self.assertIn('/topo/schedule', page.evaluate('location.hash'))      # the router's own form, so Back returns
+        page.wait_for_selector('.tabs button[data-tab="deploy"][aria-selected="true"]')
+        page.wait_for_selector('#deploy-sub-schedule[aria-pressed="true"]')
+        self.assertIn('sub=schedule', page.evaluate('location.hash'))      # the router's own form, so Back returns
         page.go_back()
-        page.wait_for_selector('.tabs button[data-tab="schedule"][aria-selected="false"]')
+        page.wait_for_selector('.tabs button[data-tab="deploy"][aria-selected="false"]')
         self.assertEqual(self.errors, [])
 
     def test_the_palette_moves_with_arrows_and_closes_with_escape_to_where_focus_was(self):
@@ -149,7 +150,7 @@ class BrowserPolish(unittest.TestCase):
         page.wait_for_selector('#sesslen')
         self.palette()
         admin = self.labels()
-        for want in ('Go to Logs', 'Go to Keys', 'Go to Security: Firewall', 'Go to Map', 'Preferences', 'Go to Storage planner'):
+        for want in ('Go to Host logs', 'Go to Admin & vault', 'Go to Security center', 'Go to Map', 'Preferences', 'Go to Storage planner'):
             self.assertIn(want, admin)
         page.keyboard.press('Escape')
         page.close()
@@ -158,7 +159,7 @@ class BrowserPolish(unittest.TestCase):
         self.palette()
         viewer = self.labels()
         self.assertIn('Go to Schedule', viewer)
-        self.assertNotIn('Go to Logs', viewer)                               # hostlogs.view is not in the viewer role
+        self.assertNotIn('Go to Host logs', viewer)                               # hostlogs.view is not in the viewer role
         self.assertLess(len(viewer), len(admin))
 
     def test_the_palette_sets_every_label_as_text(self):
@@ -254,13 +255,14 @@ class BrowserPolish(unittest.TestCase):
         page = self.open(self.empty)
         page.wait_for_selector('#firstrun:not([hidden])')
         links = page.eval_on_selector_all('#firstrun a', 'els => els.map(a => [a.textContent, a.getAttribute("href")])')
-        self.assertEqual(links, [['Enrol a host', '#/topo/keys'], ['Run the first scan', '#/topo/jobs'], ['Set up a backup alert', '#/topo/deploy']])
+        self.assertEqual(links, [['Enrol a host', '/admin#/keys'], ['Run the first scan', '#/topo/jobs'], ['Set up a backup alert', '#/topo/deploy']])
         self.assertEqual(page.eval_on_selector_all('#firstrun .frstate', 'els => els.map(e => e.textContent)'), ['To do'] * 3)
         page.click('#firstrun a:has-text("Set up a backup alert")')
         page.wait_for_selector('.tabs button[data-tab="deploy"][aria-selected="true"]')
         self.assertIn('/topo/deploy', page.evaluate('location.hash'))
         page.click('#firstrun a:has-text("Enrol a host")')
-        page.wait_for_selector('.tabs button[data-tab="keys"][aria-selected="true"]')
+        page.wait_for_url('**/admin#/keys')
+        page.wait_for_selector('#keys')
         self.assertEqual(self.errors, [])
 
     def test_the_checklist_stays_gone_once_dismissed_for_that_account_only(self):

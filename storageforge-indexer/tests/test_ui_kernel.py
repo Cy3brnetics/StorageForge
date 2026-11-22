@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / 'storageforge_index' / 'static'
 SERVER = (ROOT / 'storageforge_index' / 'server.py').read_text()
-PAGES = ['index.html', 'planner.html', 'manage.html', 'search.html']
+PAGES = ['index.html', 'planner.html', 'manage.html', 'search.html', 'security.html', 'logs.html', 'admin.html']
 SIGN_IN_PAGES = ['login.html', 'enroll.html']
 # the scripts that may call fetch(): the kernel, the session guard that runs before it, and the two pages that have no session to lose
 MAY_FETCH = {'kernel.js', 'session.js', 'login.js', 'enroll.js'}

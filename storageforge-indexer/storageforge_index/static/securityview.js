@@ -84,7 +84,7 @@ async function loadSecurity() {
   const nav = $('#sec-subnav');
   if (!nav.childElementCount) {
     // sixteen panels in a row was a wall: grouped by what a person is doing, Overview on its own on top (the grouping is a first one, to be checked against use)
-    const groups = [['', ['overview']], ['Prepare', ['worm', 'policy', 'mac', 'firewall', 'seckeys']], ['Detect', ['decoys', 'behavior', 'integrity', 'detect', 'identity']],
+    const groups = [['', ['overview']], ['Prepare', ['worm', 'policy', 'mac', 'firewall', 'seckeys']], ['Detect', ['malware', 'decoys', 'behavior', 'integrity', 'detect', 'identity']],
                     ['Respond', ['fencing', 'playbooks', 'timeline']], ['Prove', ['compliance', 'dash']]];
     const placed = new Set(groups.flatMap(([, ids]) => ids));
     const rest = SEC_PANELS.map(([id]) => id).filter((id) => !placed.has(id));       // a panel added later still shows

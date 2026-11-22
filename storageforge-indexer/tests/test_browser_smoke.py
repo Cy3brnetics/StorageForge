@@ -14,7 +14,7 @@ try:
 except ImportError:
     sync_playwright = None
 PW = 'a long enough password'
-TABS = ('details', 'search', 'changes', 'moves', 'schedule', 'deploy', 'docker', 'infra', 'git', 'rebuild', 'cleanup', 'malware', 'access')
+TABS = ('details', 'search', 'notifications', 'changes', 'moves', 'deploy', 'jobs', 'infra', 'git', 'rebuild', 'copies')
 
 
 @unittest.skipUnless(sync_playwright, 'needs playwright (CI has it)')
@@ -177,7 +177,7 @@ class BrowserSmoke(unittest.TestCase):
         page.wait_for_url(base + '/**')
         page.wait_for_selector('.tabs button')
         self.assertEqual(page.request.post(base + '/api/reauth', data={'password': PW}).status, 200)
-        page.click('.tabs button[data-tab="security"]')
+        page.goto(base + '/security#/seckeys')
         page.wait_for_selector('#sec-subnav button')
         page.click('#sec-subnav button[data-sub="seckeys"]')
         page.wait_for_selector('#sec-content button:has-text("Enroll a key")')
@@ -190,9 +190,9 @@ class BrowserSmoke(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_every_new_security_panel_really_opens_under_the_csp(self):
-        self.page.click('.tabs button[data-tab="security"]')
+        self.page.goto(self.base + '/security')
         self.page.wait_for_selector('#sec-subnav button')
-        for sub in ('policy', 'playbooks', 'dash', 'timeline', 'seckeys'):
+        for sub in ('malware', 'policy', 'playbooks', 'dash', 'timeline', 'seckeys'):
             self.page.click(f'#sec-subnav button[data-sub="{sub}"]')
             self.settled()
             self.page.wait_for_timeout(200)
@@ -223,11 +223,11 @@ class BrowserSmoke(unittest.TestCase):
 
     def test_the_panels_about_one_host_really_draw_under_the_csp(self):
         self.a_read_host()
+        self.page.goto(self.base + '/security#/overview?host=read')
         self.page.wait_for_selector('#host option[value="read"]', state='attached')
         self.page.select_option('#host', 'read')
-        self.page.click('.tabs button[data-tab="security"]')
         self.page.wait_for_selector('#sec-subnav button')
-        for sub in ('overview', 'worm', 'decoys', 'mac', 'firewall', 'behavior', 'integrity', 'compliance', 'policy', 'fencing', 'identity', 'detect', 'playbooks', 'dash', 'timeline', 'seckeys'):
+        for sub in ('overview', 'malware', 'worm', 'decoys', 'mac', 'firewall', 'behavior', 'integrity', 'compliance', 'policy', 'fencing', 'identity', 'detect', 'playbooks', 'dash', 'timeline', 'seckeys'):
             self.page.click(f'#sec-subnav button[data-sub="{sub}"]')
             self.settled()
             self.page.wait_for_timeout(200)
@@ -243,12 +243,12 @@ class BrowserSmoke(unittest.TestCase):
         self.fail('the security panel never finished loading')
 
     def test_the_security_panels_really_open_under_the_csp(self):       # they were onclick= attributes once, which the CSP refuses in silence
-        self.page.click('.tabs button[data-tab="security"]')
+        self.page.goto(self.base + '/security')
         self.page.wait_for_selector('#sec-subnav button')
         self.page.wait_for_selector('#sec-content .sec-card')
         self.assertIn('never measured', self.page.inner_text('#sec-content'))
         self.assertIn('Not known', self.page.inner_text('#sec-banner'))
-        self.assertNotIn('SECURE', self.page.inner_text('#tab-security'))
+        self.assertNotIn('SECURE', self.page.inner_text('#sec-content'))
         for panel in ('worm', 'firewall', 'overview'):
             self.page.click(f'#sec-subnav button[data-sub="{panel}"]')
             self.page.wait_for_selector(f'#sec-subnav button[data-sub="{panel}"][aria-pressed="true"]')
@@ -406,7 +406,8 @@ class BrowserSmoke(unittest.TestCase):
         self.assertRegex(self.page.inner_text('#host'), r'nas \(not scanned for \d+ days\)')
 
     def test_the_schedule_panel_shows_a_reported_run(self):  # PF-24
-        self.page.click('.tabs button[data-tab="schedule"]')
+        self.page.click('.tabs button[data-tab="deploy"]')
+        self.page.click('#deploy-sub-schedule')
         self.page.wait_for_selector('.pill:has-text("REPORTED")')
         for gone in ('Run local', 'Allow destructive', 'catchup', 'Host Scan (index host)'):
             self.assertEqual(self.page.locator(f'text={gone}').count(), 0, gone)
@@ -453,14 +454,20 @@ class BrowserSmoke(unittest.TestCase):
         """`/` moved focus to the search box from anywhere, so a path lost its first character and a password its tail."""
         searches = []
         self.page.on('request', lambda r: searches.append(r.url) if '/api/search' in r.url else None)
-        for tab, sel, typed in (('jobs', '#scanhost', '/mnt/x'), ('keys', '#genname', 'a/b'), ('keys', '#instpw', 'pa/ss'),
-                                ('audit', '#pwnew', 'pa/ss'), ('hostlogs', '#hl-q', '/var/log')):
-            self.open_tab(tab)
+        for tab, sel, typed in (('jobs', '#scanhost', '/mnt/x'), ('/admin#/keys', '#genname', 'a/b'), ('/admin#/keys', '#instpw', 'pa/ss'),
+                                ('/admin#/account', '#pwnew', 'pa/ss'), ('/logs', '#hl-q', '/var/log')):
+            if tab.startswith('/'):
+                self.page.goto(self.base + tab)
+                self.page.wait_for_selector('html[data-route-ready]', state='attached')
+            else:
+                self.open_tab(tab)
             self.page.wait_for_selector(sel, state='visible')
             self.page.fill(sel, '')
             self.page.focus(sel)
             self.page.keyboard.type(typed)
             self.assertEqual(self.page.input_value(sel), typed, sel)
+        self.page.goto(self.base + '/')
+        self.page.wait_for_selector('html[data-route-ready]', state='attached')
         self.page.wait_for_timeout(500)                          # the search box debounces: a stolen tail would be sent by now
         self.assertEqual(self.page.input_value('#q'), '')
         self.assertEqual(searches, [])
@@ -535,12 +542,12 @@ class BrowserSmoke(unittest.TestCase):
                           return b.top >= r.top - 1 && b.bottom <= r.bottom + 1; }"""
 
     def test_the_rail_says_when_more_of_it_is_below_the_fold(self):            # UX-01
-        """The rail needs about 1000 px and scrolls with its scrollbar hidden: Security and Logs were out of sight, with nothing to say so."""
-        self.page.set_viewport_size({'width': 1366, 'height': 768})
+        """At 1366x768 the slimmed 11-panel rail fits without scrolling; on shorter screens the fold fade and chevron still appear."""
+        self.page.set_viewport_size({'width': 1366, 'height': 460})
         self.page.wait_for_timeout(300)
         self.assertEqual(self.page.evaluate("document.querySelector('.rail').dataset.more"), 'after')
         self.assertTrue(self.page.is_visible('#railmore'))
-        self.assertFalse(self.page.evaluate(self.IN_VIEW, 'audit'))
+        self.assertFalse(self.page.evaluate(self.IN_VIEW, 'copies'))
         for _ in range(8):                                        # the chevron scrolls it, until there is no more
             if not self.page.is_visible('#railmore'):
                 break
@@ -548,20 +555,20 @@ class BrowserSmoke(unittest.TestCase):
             self.page.wait_for_timeout(500)
         self.assertFalse(self.page.is_visible('#railmore'))
         self.assertEqual(self.page.evaluate("document.querySelector('.rail').dataset.more"), 'before')
-        self.assertTrue(self.page.evaluate(self.IN_VIEW, 'audit'))
-        self.page.set_viewport_size({'width': 1920, 'height': 1200})   # with room for all of it there is nothing to say
+        self.assertTrue(self.page.evaluate(self.IN_VIEW, 'copies'))
+        self.page.set_viewport_size({'width': 1366, 'height': 768})   # at normal laptop height, the slimmed rail fits completely
         self.page.wait_for_timeout(300)
         self.assertEqual(self.page.evaluate("document.querySelector('.rail').dataset.more"), '')
         self.assertFalse(self.page.is_visible('#railmore'))
         self.assertEqual(self.errors, [])
 
     def test_a_panel_opened_from_a_link_is_in_view_in_the_rail(self):          # UX-01
-        self.page.set_viewport_size({'width': 1366, 'height': 768})
+        self.page.set_viewport_size({'width': 1366, 'height': 460})
         self.page.goto(self.base + '/search')                      # from another page, as a link from the planner is: on the same page a hash change is not read (UX-08)
-        self.page.goto(self.base + '/#tab=audit')
-        self.page.wait_for_selector('.tabs button[data-tab="audit"][aria-selected="true"]')
+        self.page.goto(self.base + '/#tab=copies')
+        self.page.wait_for_selector('.tabs button[data-tab="copies"][aria-selected="true"]')
         self.page.wait_for_timeout(400)
-        self.assertTrue(self.page.evaluate(self.IN_VIEW, 'audit'))
+        self.assertTrue(self.page.evaluate(self.IN_VIEW, 'copies'))
 
     def test_the_header_has_no_primary_button_and_export_shows_only_where_it_applies(self):    # UX-02
         for mode, shown in (('topo', True), ('graph', True), ('tasks', False), ('map', False), ('scan', False)):
@@ -747,6 +754,8 @@ class BrowserSmoke(unittest.TestCase):
 
     def test_the_security_rows_say_what_they_leave_out(self):                             # UX-13, sfMoreList
         """Four of its tables showed the first fifty (forty, three hundred) rows of a longer answer and said nothing."""
+        self.page.goto(self.base + '/security')
+        self.page.wait_for_selector('#sec-subnav button')
         self.page.evaluate("""() => {
             document.getElementById('t-more')?.remove();
             const host = document.createElement('div');
@@ -864,7 +873,7 @@ class BrowserSmoke(unittest.TestCase):
 
     def test_slow_host_logs_do_not_land_on_top_of_a_newer_search(self):          # UX-12
         import re
-        self.open_tab('hostlogs')
+        self.page.goto(self.base + '/logs')
         self.page.wait_for_selector('#hl-lines li')
         held = self.hold_first(re.compile(r'/api/hostlogs\?'))
         self.page.evaluate("() => { hlSearch(false); hlSearch(false); }")
@@ -940,6 +949,8 @@ class BrowserSmoke(unittest.TestCase):
         import re
         seen = []
         self.json_route(re.compile(r'/api/(~[0-9a-f]{8}/)?keys/x$'), seen=seen)          # with the code of the moment in its path (routecode.py)
+        self.page.goto(self.base + '/admin#/keys')
+        self.page.wait_for_selector('html[data-route-ready]', state='attached')
         self.page.evaluate("() => { removeVaultItem('/api/keys/x', 'Remove key x? It cannot be recovered.'); }")
         self.page.wait_for_selector('dialog.sf-dialog[open]')
         self.assertEqual(self.page.inner_text('dialog.sf-dialog h2'), 'Remove key x? It cannot be recovered.')
@@ -1187,12 +1198,13 @@ class BrowserSmoke(unittest.TestCase):
     # ── shared chrome: the security chip and the way between the pages: UX-09 and UX-03 ───────────────────────────────
     def test_every_page_shows_the_security_chip_and_the_way_to_the_others(self):     # UX-09, UX-03
         """Only the main page had a line about security, though the changelog said "a line at the top of every page"."""
-        for path, here in (('/planner', '/planner'), ('/manage', '/manage')):
+        for path, here in (('/planner', '/planner'), ('/manage', '/manage'), ('/security', '/security'), ('/logs', '/logs'), ('/admin', '/admin')):
             self.page.goto(self.base + path)
             self.page.wait_for_selector('.sf-chrome .threat:not([hidden])', timeout=9000)
             self.assertTrue(self.page.inner_text('.sf-chrome .threat').startswith('Security: '), path)
             self.assertIn('measured in the last day', self.page.inner_text('.sf-chrome .threat-detail'))
-            self.assertEqual(self.page.eval_on_selector_all('.sf-chrome nav a', 'as => as.map((a) => a.textContent)'), ['Topology and map', 'Storage planner', 'Network management', 'Changes', 'Moves', 'Schedule'])
+            self.assertEqual(self.page.eval_on_selector_all('.sf-chrome nav a', 'as => as.map((a) => a.textContent)'),
+                             ['Topology and map', 'Storage planner', 'Network management', 'Security center', 'Host logs', 'Admin & vault', 'Changes', 'Moves', 'Schedule'])
             self.assertEqual(self.page.get_attribute('.sf-chrome nav a[aria-current="page"]', 'href'), here)
             self.assertIn('admin', self.page.inner_text('.sf-user'))
         self.page.goto(self.base + '/search')
@@ -1204,7 +1216,8 @@ class BrowserSmoke(unittest.TestCase):
         self.page.goto(self.base + '/manage')
         self.page.wait_for_selector('.sf-chrome .threat:not([hidden])', timeout=9000)
         self.page.click('.sf-chrome .threat')
-        self.page.wait_for_selector('.tabs button[data-tab="security"][aria-selected="true"]')
+        self.page.wait_for_url('**/security**')
+        self.page.wait_for_selector('#sec-subnav button')
         self.assertEqual(self.errors, [])
 
     def test_the_planner_and_manage_can_sign_out(self):                               # UX-03
@@ -1280,7 +1293,7 @@ class BrowserSmoke(unittest.TestCase):
     def test_a_log_line_shows_local_time_and_its_utc_form_on_hover(self):               # UX-16
         import re
         self.json_route(re.compile(r'/api/hostlogs\?'), body={'entries': [{'message': 'link is up', 'priority': 6, 'ts': 1700000000, 'host': 'nas', 'level': 'info', 'unit': 'x', 'pid': None, 'ident': None}], 'more': False})
-        self.open_tab('hostlogs')
+        self.page.goto(self.base + '/logs')
         self.page.wait_for_selector('#hl-lines li:has-text("link is up")')
         meta = self.page.locator('#hl-lines li span.m').first
         self.assertTrue(meta.get_attribute('title').startswith('2023-11-14 22:13:20 UTC · '), meta.get_attribute('title'))     # then how the line came
@@ -1384,9 +1397,10 @@ class BrowserSmoke(unittest.TestCase):
     def test_the_security_sub_panel_is_part_of_the_url(self):                        # UX-08
         self.page.goto(self.base + '/manage')
         self.page.goto(self.base + '/#/topo/security?host=nas&sec=firewall')
+        self.page.wait_for_url('**/security**')
         self.page.wait_for_selector('#sec-subnav button[data-sub="firewall"][aria-pressed="true"]')
         self.page.click('#sec-subnav button[data-sub="worm"]')
-        self.assertIn('sec=worm', self.page.url)
+        self.assertIn('#/worm', self.page.url)
         self.assertIn('host=nas', self.page.url)
         self.page.go_back()
         self.page.wait_for_selector('#sec-subnav button[data-sub="firewall"][aria-pressed="true"]')
@@ -1394,10 +1408,13 @@ class BrowserSmoke(unittest.TestCase):
 
     def test_the_old_links_still_work_and_are_tidied_into_the_new_form(self):        # UX-08
         self.page.goto(self.base + '/manage')
-        self.page.goto(self.base + '/#host=nas&tab=audit')
-        self.page.wait_for_selector('.tabs button[data-tab="audit"].on')
+        self.page.goto(self.base + '/#host=nas&tab=changes')
+        self.page.wait_for_selector('.tabs button[data-tab="changes"].on')
         self.assertEqual(self.page.input_value('#host'), 'nas')
-        self.assertIn('#/topo/audit?host=nas', self.page.url)
+        self.assertIn('#/topo/changes?host=nas', self.page.url)
+        self.page.goto(self.base + '/#host=nas&tab=audit')
+        self.page.wait_for_url('**/admin#/audit**')
+        self.assertEqual(self.errors, [])
         self.page.goto(self.base + '/manage')
         self.page.goto(self.base + '/#view=map&mode=storage')                           # what the map's own links wrote
         self.page.wait_for_selector('.mpmodes button[aria-pressed="true"]:has-text("Storage only")')
@@ -1409,8 +1426,9 @@ class BrowserSmoke(unittest.TestCase):
         self.page.wait_for_selector('.tabs button[data-tab="rebuild"].on')
         self.assertEqual(self.page.evaluate('window.__same'), 42)                       # nothing reloaded
         self.assertEqual(self.view_and_panel(), ['graph', 'rebuild'])
-        self.page.evaluate("() => { location.hash = '#host=nas&tab=schedule'; }")        # the old form, the same way
-        self.page.wait_for_selector('.tabs button[data-tab="schedule"].on')
+        self.page.evaluate("() => { location.hash = '#host=nas&tab=schedule'; }")        # the old form resolves cleanly to Deploy -> Schedule
+        self.page.wait_for_selector('.tabs button[data-tab="deploy"].on')
+        self.page.wait_for_selector('#deploy-sub-schedule[aria-pressed="true"]')
         self.assertEqual(self.page.evaluate('window.__same'), 42)
         self.assertEqual(self.errors, [])
         self.page.click('#viewmode button[data-mode="topo"]')
@@ -1463,7 +1481,7 @@ class BrowserSmoke(unittest.TestCase):
         got = self.page.evaluate("""() => [...document.querySelectorAll('.tabs button[role=tab]')].map((b) => {
           const p = document.getElementById(b.getAttribute('aria-controls'));
           return [b.dataset.tab, !!p, p && p.getAttribute('role'), p && p.getAttribute('aria-labelledby') === b.id]; })""")
-        self.assertEqual(len(got), 20)
+        self.assertEqual(len(got), 11)
         for tab, found, role, back in got:
             self.assertEqual((found, role, back), (True, 'tabpanel', True), tab)
 
@@ -1505,7 +1523,7 @@ class BrowserSmoke(unittest.TestCase):
 
     def test_the_group_that_held_the_inventory_is_called_the_estate(self):               # UX-05
         groups = self.page.eval_on_selector_all('.tabs .rgroup', 'gs => gs.map((g) => g.textContent)')
-        self.assertEqual(groups, ['Inspect', 'Plan', 'Estate', 'Security', 'Admin'])
+        self.assertEqual(groups, ['Inspect', 'Plan', 'Estate'])
 
 
     # ── Security and the settings with room: UX-04 ───────────────────────────────────────────────────────────────────
@@ -1513,17 +1531,16 @@ class BrowserSmoke(unittest.TestCase):
         return self.page.evaluate("document.querySelector('.layout').classList.contains('wide')")
 
     def test_security_and_the_settings_panels_open_with_the_whole_page(self):            # UX-04
-        """Sixteen security panels and the accounts, roles and invites were laid out in a 380 px column."""
+        """Security, Logs and Admin now live in dedicated full-width windows without crowding the main sidebar."""
         self.assertFalse(self.wide())
-        for tab in ('security', 'audit', 'keys', 'jobs', 'access', 'hostlogs'):
-            self.open_tab(tab)
-            self.page.wait_for_selector(f'#tab-{tab}', state='visible')
-            self.assertTrue(self.wide(), tab)
-            self.assertEqual(self.page.evaluate("getComputedStyle(document.querySelector('#stage')).display"), 'none', tab)
-            self.assertGreater(self.page.evaluate(f"document.getElementById('tab-{tab}').getBoundingClientRect().width"), 800, tab)
-        self.open_tab('changes')
+        for url, sel in (('/security', '#sec-content'), ('/logs', '#hl-monitor'), ('/admin', '#ad-sec-keys')):
+            self.page.goto(self.base + url)
+            self.page.wait_for_selector(sel, state='visible')
+            self.assertGreater(self.page.evaluate(f"document.querySelector({json.dumps(sel)}).getBoundingClientRect().width"), 800, url)
+        self.page.goto(self.base + '/#/topo/changes')
+        self.page.wait_for_selector('#tab-changes', state='visible')
         self.assertFalse(self.wide())
-        self.assertTrue(self.page.is_visible('#stage'))                                  # the view is back, and it kept its place
+        self.assertTrue(self.page.is_visible('#stage'))
         self.assertEqual(self.errors, [])
 
     def test_any_panel_can_take_the_page_and_the_choice_is_remembered_per_panel(self):    # UX-04
@@ -1538,30 +1555,33 @@ class BrowserSmoke(unittest.TestCase):
         self.assertTrue(self.wide())                                                      # after a reload
         self.open_tab('moves')
         self.assertFalse(self.wide())                                                     # another panel is its own choice
-        self.open_tab('security')
+        self.open_tab('changes')
         self.assertTrue(self.wide())
         self.page.click('#pwide')                                                         # and the default can be undone
         self.assertFalse(self.wide())
         self.assertEqual(self.errors, [])
-        self.page.evaluate("localStorage.removeItem('sf.wide.changes'); localStorage.removeItem('sf.wide.security')")
+        self.page.evaluate("localStorage.removeItem('sf.wide.changes')")
 
     def test_hiding_the_panel_gives_the_view_back(self):                                  # UX-04
-        self.open_tab('security')
+        self.open_tab('changes')
+        self.page.click('#pwide')
         self.assertTrue(self.wide())
         self.page.click('#pclose')
         self.assertFalse(self.wide())
         self.assertTrue(self.page.is_visible('#stage'))
-        self.page.click('.tabs button[data-tab="security"]')
+        self.page.click('.tabs button[data-tab="changes"]')
         self.assertTrue(self.wide())
+        self.page.click('#pwide')
+        self.page.evaluate("localStorage.removeItem('sf.wide.changes')")
 
     def test_the_security_panels_are_grouped_by_what_a_person_is_doing(self):           # UX-04
-        self.open_tab('security')
+        self.page.goto(self.base + '/security')
         self.page.wait_for_selector('#sec-subnav .sec-navgroup')
         groups = self.page.eval_on_selector_all('#sec-subnav .sec-navgroup', 'gs => gs.map((g) => g.getAttribute("aria-label"))')
         self.assertEqual(groups, ['Overview', 'Prepare', 'Detect', 'Respond', 'Prove'])
         subs = self.page.eval_on_selector_all('#sec-subnav button', 'bs => bs.map((b) => b.dataset.sub)')
-        self.assertEqual(len(subs), 16)
-        self.assertEqual(len(set(subs)), 16)                                              # every panel once, none lost in the regrouping
+        self.assertEqual(len(subs), 17)
+        self.assertEqual(len(set(subs)), 17)                                              # every panel once (16 + malware), none lost in the regrouping
         self.page.click('#sec-subnav button[data-sub="firewall"]')
         self.page.wait_for_selector('#sec-subnav button[data-sub="firewall"][aria-pressed="true"]')
         self.assertEqual(self.errors, [])
@@ -1607,9 +1627,9 @@ class BrowserSmoke(unittest.TestCase):
     # ── a host where a panel needs one, one way into the plan, which view for what: UX-07, UX-03 and UX-06 ───────────
     def test_a_panel_about_one_host_carries_its_own_picker(self):                          # UX-07
         """It said "pick a host at the top of the page", which is a dead end for a person looking at the panel."""
-        self.assertEqual(self.page.input_value('#host'), '')
-        self.open_tab('security')
+        self.page.goto(self.base + '/security')
         self.page.wait_for_selector('#sec-subnav')
+        self.assertEqual(self.page.input_value('#host'), '')
         self.page.click('#sec-subnav button[data-sub="decoys"]')
         self.page.wait_for_selector('#sec-content select[aria-label="Host"]')
         self.assertNotIn('top of the page', self.page.inner_text('#sec-content'))

@@ -32,7 +32,7 @@ class WebUiPage(unittest.TestCase):
     def test_the_page_finds_what_it_checks(self):
         """A changed markup must not make the tests below pass by finding nothing."""
         self.assertGreaterEqual(len(views()), 5)
-        self.assertGreaterEqual(len(panels()), 18)
+        self.assertGreaterEqual(len(panels()), 11)
 
     def test_every_view_is_named_and_the_count_is_true(self):
         for label in views():

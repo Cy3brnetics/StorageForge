@@ -316,7 +316,3 @@ SEC_MORE.threatsCard = function secThreatsCard(host, d, out) {
     procs.length ? secTable(['Kind', 'PID', 'Process', 'Path', ''], procs.map((p) => [secPill(p.kind, p.tone), String(p.pid), `${p.comm} (uid ${p.uid})`, text('code', p.path, 'small'), killActs(p)])) : '',
     flags.length ? secTable(['Indicator', 'Detail', 'Level'], flags.map(([k, v, t]) => [k, v, secPill(t === 'critical' ? 'critical' : 'warning', t)])) : '');
 };
-
-/* ── the line at the top of every page ────────────────────────────── */
-// the chip is chrome.js's, so the planner, /manage and the search page show the same one; a click here opens the Security panel
-const threatBanner = sfSecurityChip($('#threatbanner'), () => { showTab('security'); }, () => can('security.view'), 1500);

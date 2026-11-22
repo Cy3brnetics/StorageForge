@@ -183,8 +183,10 @@ async function loadOsInstall() {
   const part = $('#os2');
   if (!part) return;
   const may = can('plans.view');
-  part.hidden = !may; $('#desk').hidden = !may;
-  if (!may) return;
+  if (!may) {
+    $('#os2box')?.replaceChildren(text('p', 'Your account cannot view plans.', 'muted'));
+    return;
+  }
   let d;
   try { d = await getJSON('/api/os-install/offer'); }
   catch (err) { $('#os2box').replaceChildren(text('p', err.message, 'st-failed')); return; }

@@ -815,6 +815,26 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def manage_page():
         return app_page('manage.html')
 
+    @web.get('/security')
+    def security_page():
+        return app_page('security.html')
+
+    @web.get('/logs')
+    def logs_page():
+        return app_page('logs.html')
+
+    @web.get('/admin')
+    def admin_page():
+        return app_page('admin.html')
+
+    @web.get('/admin/users')
+    def admin_users_page():
+        if not current_user.is_authenticated:
+            return to_login()
+        if not ({'users.manage', 'roles.manage'} & current_user.permissions):
+            return abort(403)
+        return page('admin.html')
+
     def app_page(name):
         if not current_user.is_authenticated:
             return to_login()
@@ -844,13 +864,13 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return redirect(safe_next(request.args.get('next')))
         return page('login.html')
 
-    @web.get('/<any("login.js", "enroll.js", "style.css", "tokens.css", "components.css", "favicon.svg"):name>')
+    @web.get('/<any("login.js", "enroll.js", "style.css", "tokens.css", "components.css", "window.css", "favicon.svg"):name>')
     def public_static(name):
         resp = send_from_directory(STATIC, name, max_age=0)
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "kernel.js", "chrome.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "copiesview.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "osinstallview.js", "desktopview.js", "dockerview.js", "infraview.js", "toolboxview.js", "sfnetview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "sshcaview.js", "secretsview.js", "apiconnview.js", "deployview.js", "fsbrowse.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "hostlogsview.js", "notifyview.js", "enclaveview.js", "agentview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js"):name>')
+    @web.get('/<any("session.js", "kernel.js", "chrome.js", "ui.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "copiesview.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "osinstallview.js", "desktopview.js", "dockerview.js", "infraview.js", "toolboxview.js", "sfnetview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "sshcaview.js", "secretsview.js", "apiconnview.js", "deployview.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "malwareview.js", "securitypage.js", "hostlogsview.js", "logspage.js", "adminview.js", "adminpage.js", "notifyview.js", "enclaveview.js", "agentview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js", "fsbrowse.js"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)

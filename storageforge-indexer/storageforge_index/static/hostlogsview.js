@@ -60,11 +60,6 @@ function hlRangeText() {
 }
 /* A custom end in a URL is UTC to the minute, 2026-11-06T09:30Z: a link means the same instant in every time zone. The date-time
    fields of the form are local time, which is what a person types. */
-function hlUrlTime(secs) {
-  if (secs == null) return '';
-  const iso = new Date(secs * 1000).toISOString();
-  return `${iso.slice(0, 16)}Z`;
-}
 function hlParseUrlTime(v) {
   if (!v) return null;
   const ms = Date.parse(/Z$|[+-]\d\d:\d\d$/.test(v) ? v : `${v}Z`);
@@ -97,30 +92,6 @@ function hlTakeLink(q) {
   HL.unit = (q.get('unit') || '').slice(0, 200);
   HL.q = (q.get('q') || '').slice(0, 200);
   hlShow();
-}
-/* A link to the Logs panel for a host, in the form the router reads. It keeps the view the person is in. `q` and `unit` filter the lines,
-   and `from` (seconds) starts a custom range there, open to now: a notification links to the lines since an hour before it opened. */
-function hlLink(host, { q = '', unit = '', from = null } = {}) {
-  const parts = [typeof T !== 'undefined' && T.mode ? T.mode : 'topo', 'hostlogs'];
-  return sfFormatHash(parts, { host, lhost: host, unit, q, ...(from != null ? { range: 'custom', from: hlUrlTime(from) } : {}) });
-}
-function hlLinkEl(host, label = 'Logs', opts = {}) {
-  const what = opts.q ? ` that mention ${opts.q}` : opts.unit ? ` from ${opts.unit}` : '';
-  return hlEl('a', { class: opts.small ? 'btn ghost sm' : 'btn', href: hlLink(host, opts), title: `The lines of ${host}'s journal${what}` }, label);
-}
-/* The Logs link of a disk, a partition, a pool or a mount in the storage views: the host's lines that name it. A kernel names a disk or a
-   partition by its device (sdb, sdb1, nvme0n1), ZFS and md a pool by its name, and a filesystem error names its device, so a mount is
-   searched by the device it is mounted from when that is known and by its path when not. */
-function hlDeviceWord(kind, name) {
-  const v = String(name || '').trim();
-  if (!v) return '';
-  if (kind === 'mount' && !v.startsWith('/dev/')) return v;
-  return v.replace(/^\/dev\/(mapper\/)?/, '').slice(0, 200);
-}
-function hlDeviceLinkEl(host, kind, name) {
-  if (!host || typeof can !== 'function' || !can('hostlogs.view')) return null;
-  const q = hlDeviceWord(kind, name);
-  return q ? hlLinkEl(host, 'Logs', { q, small: true }) : null;
 }
 function hlSync(replace = false) { if (typeof routeSync === 'function') routeSync(replace); }
 

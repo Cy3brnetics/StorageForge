@@ -125,88 +125,7 @@ async function loadChanged() {
         text('span', `+${f.added.toLocaleString()} ~${f.modified.toLocaleString()} -${f.deleted.toLocaleString()} · ${f.delta < 0 ? '-' : '+'}${fmtBytes(Math.abs(f.delta))}`, 'muted small')))));
   } catch (err) { box.replaceChildren(text('p', err.message, 'muted')); }
 }
-/* ── malware ─────────────────────────────────────────────────────── */
-async function malwarePost(path, body, box) {
-  try {
-    const res = await postJSON(path, body);
-    const r = await res.json().catch(() => ({}));
-    if (res.ok) return r;
-    box.append(text('p', r.error || 'That was refused', 'st-failed'));
-    if (r.output) box.append(el('pre', { class: 'small' }, r.output));
-  } catch (err) { box.append(text('p', err.message, 'st-failed')); }
-  return null;
-}
-function malwareHost(h) {
-  const run = h.last_run, box = el('div', { class: 'stack' });
-  const when = (t) => fmtTime(t);
-  box.append(text('strong', h.host));
-  box.append(text('p', !h.installed ? 'ClamAV scan not deployed.' : !run ? 'Deployed. No result yet.'
-    : `Last scan ${when(run.finished_at)}: ${run.scanned.toLocaleString()} files, ${run.found} found. ${run.version || ''}${[0, 1].includes(run.exit_code) ? '' : ` Exit code ${run.exit_code}: it may be incomplete.`}`,
-  run && ![0, 1].includes(run.exit_code) ? 'st-failed small' : 'muted small'));
-  if (can('deploy.apply')) {
-    const schedule = el('select', { 'aria-label': 'Schedule' }, ...['daily', 'weekly', 'monthly'].map((s) => new Option(s, s)));
-    schedule.value = h.config.schedule;
-    const responseMode = el('select', { 'aria-label': 'When malware is found' },
-      new Option('Report only', 'report'), new Option('Ask first', 'confirm'), new Option('Auto-quarantine', 'auto'));
-    responseMode.value = h.config.response_mode || 'report';
-    const autoScan = el('input', { type: 'checkbox' }); autoScan.checked = !!h.config.auto_scan_changes;
-    const killOpen = el('input', { type: 'checkbox' }); killOpen.checked = !!h.config.kill_open;
-    const paths = el('input', { type: 'text', 'aria-label': 'Folders to scan, separated by spaces', value: h.config.paths.join(' '), title: 'Folders to scan, separated by spaces. Each stays on its own filesystem.' });
-    const save = async () => malwarePost(`/api/clamav/hosts/${encodeURIComponent(h.host)}/config`, {
-      schedule: schedule.value,
-      paths: paths.value.split(/\s+/).filter(Boolean),
-      response_mode: responseMode.value,
-      auto_scan_changes: autoScan.checked,
-      kill_open: killOpen.checked,
-    }, box);
-    const go = (mode, title, extra) => async () => { if (await save()) startDeploy('clamav', h.host, mode, title, extra); };
-    box.append(el('div', { class: 'row wrap' }, schedule, paths, responseMode,
-      el('label', { class: 'small' }, autoScan, ' Scan changed files'),
-      el('label', { class: 'small' }, killOpen, ' Kill open processes')));
-    const buttons = [button('Dry run', go('report', `ClamAV dry run on ${h.host}`, {}), 'btn sm ghost'), button(h.installed ? 'Update' : 'Deploy', go('apply', `Deploy ClamAV to ${h.host}`, {}), 'btn sm'),
-      button('Save policy', async () => { if (await save()) loadMalware(); }, 'btn sm ghost')];
-    if (h.installed) buttons.push(button('Scan now', go('apply', `ClamAV scan on ${h.host}`, { run: true }), 'btn sm ghost'), button('Remove', async () => { if (await confirmDialog({ title: `Remove the ClamAV scan from ${h.host}?`, body: 'Quarantined files stay.', confirm: 'Remove', danger: true })) startDeploy('clamav', h.host, 'apply', `Remove ClamAV scan from ${h.host}`, { remove: true }); }, 'btn sm ghost'));
-    if (h.installed && can('deploy.report')) buttons.push(button('Collect', async () => { if (await malwarePost(`/api/clamav/hosts/${encodeURIComponent(h.host)}/collect`, {}, box)) loadMalware(); }, 'btn sm ghost'));
-    box.append(el('div', { class: 'row' }, ...buttons));
-    if (!h.deploy_ready) box.append(text('p', 'Set up deploy access for this host first.', 'muted small'));
-  }
-  return box;
-}
-function malwareDetection(d, box) {
-  const act = (verb, body) => async () => { if (await malwarePost(`/api/clamav/detections/${d.id}/${verb}`, body, box)) loadMalware(); };
-  const acts = [];
-  if (d.state === 'open' && can('security.manage')) {
-    acts.push(button('Look at it', async () => { const r = await malwarePost('/api/security/malware/preview', { id: d.id }, box); if (r?.output) box.append(el('pre', { class: 'small sec-out' }, r.output)); }, 'btn sm ghost'));
-  }
-  if (can('deploy.destructive')) {
-    if (d.state === 'open') {
-      acts.push(button('Quarantine', async () => {
-        const sys = d.system_path;
-        if (!(await confirmDialog({ title: `Move ${d.path} on ${d.host} to quarantine?`, body: `${sys ? 'This is a system path: moving it can stop the host from booting.\n\n' : ''}A running process that has it open keeps running.`, confirm: 'Move to quarantine', danger: true }))) return;
-        act('quarantine', { allow_system: sys })();
-      }, 'btn sm'));
-      acts.push(button('Quarantine & kill process', async () => {
-        const sys = d.system_path;
-        if (!(await confirmDialog({ title: `Kill open processes and quarantine ${d.path} on ${d.host}?`, body: `${sys ? 'This is a system path: moving it can stop the host from booting.\n\n' : ''}Processes holding ${d.path} open will be terminated first.`, confirm: 'Kill and quarantine', danger: true }))) return;
-        act('quarantine', { allow_system: sys, kill_open: true })();
-      }, 'btn sm danger'));
-      acts.push(button(d.ignored ? 'Stop ignoring' : 'Not malware: ignore', act('ignore', { ignore: !d.ignored, reason: 'marked in the Malware panel' }), 'btn sm ghost'));
-    } else if (d.state === 'quarantined') {
-      acts.push(button('Restore', async () => { if (await confirmDialog({ title: `Move ${d.path} back to where it was on ${d.host}?`, body: 'It will be ignored from then on.', confirm: 'Restore' })) act('restore', {})(); }, 'btn sm ghost'));
-    }
-  }
-  const cls = d.ignored ? 'muted' : d.state === 'open' ? 'st-failed' : 'muted';
-  return el('div', { class: 'stack' }, text('strong', `${d.signature}${d.state === 'quarantined' ? ' (in quarantine)' : ''}${d.ignored ? ' (ignored)' : ''}`, cls),
-    text('span', `${d.host}:${d.path}`, 'mono small'), el('div', { class: 'row' }, ...acts));
-}
-async function loadMalware() {
-  const hostsBox = $('#malwarehosts'), box = $('#malwarebox');
-  try {
-    const { hosts, detections } = await getJSON(`/api/clamav${S.host ? `?host=${encodeURIComponent(S.host)}` : ''}`);
-    hostsBox.replaceChildren(...hosts.map(malwareHost));
-    box.replaceChildren(...(detections.length ? detections.map((d) => malwareDetection(d, box)) : [text('p', 'No detections reported.', 'muted')]));
-  } catch (err) { box.replaceChildren(text('p', err.message, 'st-failed')); }
-}
+/* malwareview.js holds ClamAV detections and active quarantine inside the Security Center (/security#/malware). */
 /* A copy on another host is a possible backup, not waste (the owner's request of 2026-11-19): a class of its own wherever copies show,
    never counted as space to free and never offered for the trash. filemap.js says the same with these. */
 const COPY_ELSEWHERE = 'a copy on another host: a possible backup';
@@ -219,7 +138,7 @@ async function loadDupes() {
     const { groups, checksummed } = r, away = r.across_hosts || { groups: 0, bytes: 0 };
     if (!groups.length) {
       box.replaceChildren(text('p', checksummed ? 'No identical files at this size.'
-        : 'No file checksums in the index yet. Turn Checksums on for a host in Keys → Bindings: its next scan hashes the files whose size another file has, here or on another host, and the hosts holding the other copies catch up.', 'muted'));
+        : 'No file checksums in the index yet. Turn Checksums on for a host in Admin → Keys & Bindings: its next scan hashes the files whose size another file has, here or on another host, and the hosts holding the other copies catch up.', 'muted'));
       return;
     }
     const head = text('p', `${fmtBytes(r.reclaimable || 0)} could be freed within hosts`

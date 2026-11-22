@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Host Logs · StorageForge</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/tokens.css">
+<link rel="stylesheet" href="/components.css">
+<link rel="stylesheet" href="/window.css">
+</head>
+<body>
+<div class="win">
+  <aside class="win-rail">
+    <div class="win-brand">
+      <svg width="24" height="24" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="3" width="24" height="6" rx="1.5" fill="var(--fast)"/><rect x="2" y="11" width="24" height="6" rx="1.5" fill="var(--mass)"/><rect x="2" y="19" width="24" height="6" rx="1.5" fill="var(--remote)"/></svg>
+      <div><b>StorageForge</b><small>Host Logs</small></div>
+    </div>
+    <div class="win-rail-sec">
+      <span class="win-lbl">Sections</span>
+      <nav class="win-nav" aria-label="Log sections">
+        <a href="#hl-mon-head">Monitoring</a>
+        <a href="#hl-chart-head">Activity chart</a>
+        <a href="#hl-lines-head">Search lines</a>
+        <a href="#hl-status-head">Collection status</a>
+        <a href="#hl-rules-box">Alert rules</a>
+        <a href="#hl-nc-box">Netconsole</a>
+      </nav>
+    </div>
+    <div class="win-rail-end">
+      <div data-sf-chrome data-here="logs"></div>
+    </div>
+  </aside>
+  <main class="win-main">
+    <header class="win-head">
+      <div>
+        <h1>Host Logs &amp; Monitoring</h1>
+        <p class="muted">What hosts' journals said as of each host's last scan or as its agent pushed them. Nothing here refreshes by itself.</p>
+      </div>
+      <div data-sf-chrome="chip" data-here="logs"></div>
+    </header>
+    <div class="win-body" id="logs-root">
+      <section class="card stack">
+        <h3 id="hl-mon-head">Monitoring</h3>
+        <p class="muted small">Each host's last hour against the same hour of the weeks before, its open log alerts, the kinds of line it logged for the first time, silence, and how its lines come in. Hosts with something to look at come first.</p>
+        <div id="hl-monitor" role="region" aria-labelledby="hl-mon-head"></div>
+      </section>
+
+      <section class="card stack">
+        <div class="row wrap">
+          <div id="hl-range" class="seg sm" role="group" aria-label="Time range">
+            <button type="button" data-range="hour" aria-pressed="false">Last hour</button>
+            <button type="button" data-range="day" aria-pressed="false">Last day</button>
+            <button type="button" data-range="week" aria-pressed="true">Last 7 days</button>
+            <button type="button" data-range="month" aria-pressed="false">Last 30 days</button>
+            <button type="button" data-range="custom" aria-pressed="false">Custom</button>
+          </div>
+          <form id="hl-custom" class="row wrap" hidden>
+            <label class="field"><span>From</span><input id="hl-from" type="datetime-local"></label>
+            <label class="field"><span>To</span><input id="hl-to" type="datetime-local"></label>
+            <button type="submit" class="btn sm pri">Apply</button>
+            <span id="hl-custom-msg" class="st-failed" role="alert" hidden></span>
+          </form>
+        </div>
+        <h3 id="hl-chart-head">Lines by level and hour</h3>
+        <div id="hl-chart" aria-live="polite"></div>
+      </section>
+
+      <section class="card stack">
+        <h3 id="hl-lines-head">Lines</h3>
+        <form id="hl-form">
+          <label class="field"><span>Host</span><select id="hl-host"><option value="">All hosts</option></select></label>
+          <label class="field"><span>Level</span><select id="hl-level"><option value="">Any</option><option value="err">Errors or worse</option><option value="warning">Warnings or worse</option><option value="notice">Notices or worse</option></select></label>
+          <label class="field"><span>Unit</span><input id="hl-unit" type="text" maxlength="200" placeholder="sshd" autocomplete="off" list="hl-units" spellcheck="false"></label>
+          <datalist id="hl-units"></datalist>
+          <label class="field"><span>Text</span><input id="hl-q" type="search" maxlength="200" autocomplete="off"></label>
+          <div class="row"><button type="submit" class="btn pri">Search</button><a id="hl-export" class="btn" download>Export CSV</a></div>
+        </form>
+        <p id="hl-count" class="muted small" role="status"></p>
+        <ol id="hl-lines" class="list"></ol>
+        <div class="row"><button id="hl-more" type="button" class="btn" hidden>Older</button></div>
+      </section>
+
+      <section class="card stack">
+        <h3 id="hl-status-head">Hosts: when each was last collected</h3>
+        <div id="hl-status"></div>
+      </section>
+
+      <section class="card stack">
+        <details id="hl-rules-box"><summary>Rules: what raises a notification</summary>
+          <p class="muted small">A rule counts the lines it means as scans bring them in, and is one notification per host when it reaches its threshold. A pattern is text with * for anything and | between alternatives.</p>
+          <div class="row"><button id="hl-rule-new" type="button" class="btn sm" hidden>New rule</button></div>
+          <ul id="hl-rules" class="list"></ul>
+        </details>
+      </section>
+
+      <section class="card stack">
+        <details id="hl-nc-box"><summary>Netconsole: kernel messages over UDP</summary>
+          <p class="muted small">A host's kernel can send its messages straight to the controller, which still works when nothing else on the host does: a panic or a hang reaches here. They come over plain UDP with no signature. The controller takes them only from the address and port given here, and a line that came this way says something sent it from that address, not that the host did. The netconsole plan step sets a host up to send.</p>
+          <p id="hl-nc-recv" class="muted small" role="status"></p>
+          <div class="row"><button id="hl-nc-new" type="button" class="btn sm" hidden>Add a host</button></div>
+          <ul id="hl-nc" class="list"></ul>
+        </details>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script src="/session.js"></script>
+<script src="/kernel.js"></script>
+<script src="/chrome.js"></script>
+<script src="/ui.js"></script>
+<script src="/hostlogsview.js"></script>
+<script src="/logspage.js"></script>
+</body>
+</html>

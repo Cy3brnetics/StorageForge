@@ -257,4 +257,4 @@ async function loadToolbox() {
   } catch (err) { if (fresh()) tbMsg(err.message, false); }
 }
 
-$('#host').addEventListener('change', () => { if (curTab() === 'toolbox') loadToolbox(); });      // the cards and the open tool follow the host picker
+$('#host').addEventListener('change', () => { if (curTab() === 'toolbox' || (curTab() === 'infra' && typeof INF !== 'undefined' && INF.view === 'toolbox')) loadToolbox(); });      // the cards and the open tool follow the host picker

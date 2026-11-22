@@ -71,8 +71,11 @@ class BrowserOsInstall(unittest.TestCase):
         self.page.wait_for_selector('.tabs button')
         self.page.wait_for_selector('html[data-route-ready]', state='attached')
         self.page.click('#tabbtn-rebuild')
+        self.page.click('#rebuild-sub-os2')
         self.page.wait_for_selector('#os2-form')
+        self.page.click('#rebuild-sub-desk')
         self.page.wait_for_selector('#desk-list')
+        self.page.click('#rebuild-sub-os2')
 
     def plans(self):
         return {p['name']: changes.get_plan(self.conn, p['id']) for p in changes.list_plans(self.conn)}
@@ -128,6 +131,7 @@ class BrowserOsInstall(unittest.TestCase):
         # the panel opened again keeps what was typed
         page.click('#tabbtn-changes')
         page.click('#tabbtn-rebuild')
+        page.click('#rebuild-sub-os2')
         page.wait_for_selector('#os2-form')
         self.assertEqual((page.input_value('#os2-name'), page.input_value('#os2-disk'), page.input_value('#os2-confirm')), ('nas-fedora', '/dev/sda', '/dev/sda'))
         page.click('#os2msg button:has-text("Open Changes")')
@@ -209,6 +213,7 @@ class BrowserOsInstall(unittest.TestCase):
     def test_a_profile_is_made_shown_saved_edited_and_deleted(self):
         self.sign_in()
         page = self.page
+        page.click('#rebuild-sub-desk')
         self.assertIn('No profiles yet', page.inner_text('#desk-list'))
         page.click('#desk-new')
         page.wait_for_selector('#desk-editor')
@@ -265,7 +270,9 @@ class BrowserOsInstall(unittest.TestCase):
         self.assertEqual(saved['binds'], [{'keys': 'mod+Return', 'action': 'spawn', 'arg': 'ghostty'}, {'keys': 'mod+q', 'action': 'close', 'arg': ''}])
         self.assertEqual(saved['rules'], [{'app': 'firefox', 'title': '', 'workspace': '2', 'floating': False, 'fullscreen': False}])
         self.assertEqual((saved['displays'][0]['output'], saved['hosts']['pi'][0]['scale']), ('DP-1', '1.5'))
+        page.click('#rebuild-sub-os2')
         self.assertEqual(page.locator('#os2-profile option').all_inner_texts(), ['No profile', 'fleet'], 'and the form above offers it')
+        page.click('#rebuild-sub-desk')
 
         page.click('[aria-label="Edit the profile fleet"]')
         page.wait_for_selector('#desk-editor')
@@ -297,6 +304,7 @@ class BrowserOsInstall(unittest.TestCase):
         self.assertEqual(page.locator('#os2-make').count(), 0)
         self.assertEqual(page.locator('#os2-systems button').count(), 0)
         self.assertIn('nas-fedora', page.inner_text('#os2-systems'))
+        page.click('#rebuild-sub-desk')
         self.assertEqual(page.locator('#desk-new').count(), 0)
         self.assertEqual(page.locator('[aria-label="Delete the profile fleet"]').count(), 0)
         page.click('[aria-label="Open the profile fleet"]')
@@ -309,6 +317,7 @@ class BrowserOsInstall(unittest.TestCase):
     def test_every_control_has_a_name_and_the_parts_have_headings(self):
         self.sign_in()
         page = self.page
+        page.click('#rebuild-sub-desk')
         page.click('#desk-new')
         for add in ('Add a key', 'Add a window rule', 'Add a display'):
             page.click(f'#desk-editor button:has-text("{add}")')

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Security Center · StorageForge</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/tokens.css">
+<link rel="stylesheet" href="/components.css">
+<link rel="stylesheet" href="/window.css">
+</head>
+<body>
+<div class="win">
+  <aside class="win-rail">
+    <div class="win-brand">
+      <svg width="24" height="24" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="3" width="24" height="6" rx="1.5" fill="var(--fast)"/><rect x="2" y="11" width="24" height="6" rx="1.5" fill="var(--mass)"/><rect x="2" y="19" width="24" height="6" rx="1.5" fill="var(--remote)"/></svg>
+      <div><b>StorageForge</b><small>Security Center</small></div>
+    </div>
+    <label class="field"><span>Host filter</span><select id="host"><option value="">All hosts</option></select></label>
+    <div id="sec-subnav" role="group" aria-label="Security panels"></div>
+    <div class="win-rail-end">
+      <div data-sf-chrome data-here="security"></div>
+    </div>
+  </aside>
+  <main class="win-main">
+    <header class="win-head">
+      <div>
+        <h1 id="sectitle">Security Center</h1>
+        <p class="muted" id="secsub">Posture across hosts, live threat detection, malware quarantine, WORM holds and containment</p>
+      </div>
+      <div data-sf-chrome="chip" data-here="security"></div>
+    </header>
+    <div class="win-body">
+      <div id="sec-banner" class="sec-banner sec-unknown"></div>
+      <div id="sec-content" class="stack"></div>
+    </div>
+  </main>
+</div>
+
+<script src="/session.js"></script>
+<script src="/kernel.js"></script>
+<script src="/chrome.js"></script>
+<script src="/ui.js"></script>
+<script src="/enclaveview.js"></script>
+<script src="/securityview.js"></script>
+<script src="/securitymore.js"></script>
+<script src="/malwareview.js"></script>
+<script src="/securitypage.js"></script>
+</body>
+</html>

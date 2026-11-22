@@ -76,10 +76,10 @@ class BrowserLogs(unittest.TestCase):
         self.page.wait_for_selector('html[data-route-ready]', state='attached')
 
     def open_logs(self, query=''):
-        self.page.goto(f'{self.base}/#/topo/hostlogs{query}')
+        self.page.goto(f'{self.base}/logs#{query}')
         self.page.reload()                                           # a typed address is a fresh page, as a pasted link is
         self.page.wait_for_selector('html[data-route-ready]', state='attached')
-        self.assertTrue(self.hash().startswith('#/topo/hostlogs'), f'the link was not followed: the page is at {self.hash()}')
+        self.assertIn('/logs', self.page.url)
         self.page.wait_for_selector('#hl-lines li')
 
     def hash(self):
@@ -265,12 +265,11 @@ class BrowserLogs(unittest.TestCase):
         self.page.select_option('#host', 'nas')
         link = self.page.locator('#summary a:has-text("logs")')
         link.wait_for()
-        self.assertIn('hostlogs', link.get_attribute('href'))
+        self.assertIn('/logs', link.get_attribute('href'))
         link.click()
-        self.page.wait_for_selector('#tab-hostlogs', state='visible')
+        self.page.wait_for_url('**/logs**')
         self.page.wait_for_selector('#hl-lines li:has-text("pool degraded")')
         self.assertEqual(self.page.input_value('#hl-host'), 'nas')
-        self.assertRegex(self.hash(), r'^#/topo/hostlogs\?.*host=nas')
         self.assertIn('lhost=nas', self.hash())
         self.assertEqual(self.errors, [])
 

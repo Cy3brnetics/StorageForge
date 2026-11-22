@@ -91,7 +91,7 @@ class BrowserLogsMonitor(unittest.TestCase):
         self.page.wait_for_selector('html[data-route-ready]', state='attached')
 
     def open_logs(self, query=''):
-        self.page.goto(f'{self.base}/#/topo/hostlogs{query}')
+        self.page.goto(f'{self.base}/logs#{query}')
         self.page.reload()
         self.page.wait_for_selector('html[data-route-ready]', state='attached')
         self.page.wait_for_selector('#hl-monitor li.hl-host')
@@ -180,7 +180,7 @@ class BrowserLogsMonitor(unittest.TestCase):
         self.assertIn('lhost=nas', href)
         self.assertIn('range=custom', href)
         link.click()
-        self.page.wait_for_selector('#tab-hostlogs:not([hidden])')
+        self.page.wait_for_url('**/logs**')
         self.page.wait_for_selector('#hl-range button[data-range=custom][aria-pressed=true]')
         self.assertEqual(self.page.input_value('#hl-host'), 'nas')
         self.page.wait_for_selector('#hl-lines li:has-text("smbd")')
@@ -212,7 +212,7 @@ class BrowserLogsMonitor(unittest.TestCase):
         self.assertEqual(got[:5], ['sdb', 'vg-data', 'tank', '/srv/media', 'sdc1'])
         self.assertIn('lhost=nas', got[5])
         self.assertIn('q=sdb', got[5])
-        self.page.goto(f'{self.base}/{got[5]}')
+        self.page.goto(f'{self.base}{got[5]}')
         self.page.reload()
         self.page.wait_for_selector('html[data-route-ready]', state='attached')
         self.page.wait_for_function("document.querySelector('#hl-q').value === 'sdb'")

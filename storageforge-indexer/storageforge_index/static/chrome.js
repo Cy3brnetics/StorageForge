@@ -52,11 +52,42 @@ function sfNotificationChip(chip, open, allowed = () => true, delay = 0) {
 }
 
 // [key, href, label, the permission it needs]
-const SF_PAGES = [['main', '/', 'Topology and map', 'hosts.view'], ['planner', '/planner', 'Storage planner', 'hosts.view'],
-                  ['manage', '/manage', 'Network management', 'devices.view']];
+const SF_PAGES = [
+  ['main', '/', 'Topology and map', 'hosts.view'],
+  ['planner', '/planner', 'Storage planner', 'hosts.view'],
+  ['manage', '/manage', 'Network management', 'devices.view'],
+  ['security', '/security', 'Security center', 'security.view'],
+  ['logs', '/logs', 'Host logs', 'hostlogs.view'],
+  ['admin', '/admin', 'Admin & vault', 'hosts.view'],
+];
 
 // the steps of a plan live in the main page's rail: one way in from here, under one name each
 const SF_PLAN = [['changes', '/#/topo/changes', 'Changes', 'plans.view'], ['moves', '/#/topo/moves', 'Moves', 'plans.view'], ['schedule', '/#/topo/schedule', 'Schedule', 'plans.view']];
+
+/* Links to Host Logs (/logs), shared across Topology, Details, Notifications and /manage. */
+function hlUrlTime(secs) {
+  if (secs == null) return '';
+  const iso = new Date(secs * 1000).toISOString();
+  return `${iso.slice(0, 16)}Z`;
+}
+function hlLink(host, { q = '', unit = '', from = null } = {}) {
+  return `/logs${sfFormatHash([], { lhost: host, unit, q, ...(from != null ? { range: 'custom', from: hlUrlTime(from) } : {}) })}`;
+}
+function hlLinkEl(host, label = 'Logs', opts = {}) {
+  const what = opts.q ? ` that mention ${opts.q}` : opts.unit ? ` from ${opts.unit}` : '';
+  return sfNode('a', { class: opts.small ? 'btn ghost sm' : 'btn', href: hlLink(host, opts), title: `The lines of ${host}'s journal${what}` }, label);
+}
+function hlDeviceWord(kind, name) {
+  const v = String(name || '').trim();
+  if (!v) return '';
+  if (kind === 'mount' && !v.startsWith('/dev/')) return v;
+  return v.replace(/^\/dev\/(mapper\/)?/, '').slice(0, 200);
+}
+function hlDeviceLinkEl(host, kind, name) {
+  if (!host || typeof can !== 'function' || !can('hostlogs.view')) return null;
+  const q = hlDeviceWord(kind, name);
+  return q ? hlLinkEl(host, 'Logs', { q, small: true }) : null;
+}
 
 /* The chrome of a page that has none of its own. A slot says which parts it wants in data-sf-chrome ("site pages chip user", the default),
    so a page can put the chip at the top where it is seen and the rest further down. */
@@ -80,7 +111,7 @@ async function sfMountChrome(slot) {
   ].filter(Boolean);                                         // replaceChildren(null) would write the word "null"
   slot.className = 'sf-chrome';
   slot.replaceChildren(...parts);
-  if (want.has('chip')) sfSecurityChip(chip, () => { location.href = '/#tab=security'; }, () => perms.has('security.view'));
+  if (want.has('chip')) sfSecurityChip(chip, () => { location.href = '/security'; }, () => perms.has('security.view'));
   if (want.has('chip')) sfNotificationChip(bell, () => { location.href = '/#/topo/notifications'; }, () => perms.has('deploy.view'));
 }
 document.querySelectorAll('[data-sf-chrome]').forEach(sfMountChrome);

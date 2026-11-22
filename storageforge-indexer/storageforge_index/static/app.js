@@ -631,7 +631,54 @@ document.querySelectorAll('.skip').forEach((a) => a.addEventListener('click', (e
   target.focus();
 }));
 
+let DEPLOY_SUB = 'deploy';
+let SCANS_SUB = 'jobs';
+let REBUILD_SUB = 'configs';
+
+function deploySub(sub) {
+  DEPLOY_SUB = sub === 'schedule' && can('plans.view') ? 'schedule' : 'deploy';
+  document.querySelectorAll('#deploy-subnav button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.sub === DEPLOY_SUB)));
+  $('#deploy-pane-deploy').hidden = DEPLOY_SUB !== 'deploy';
+  $('#deploy-pane-schedule').hidden = DEPLOY_SUB !== 'schedule';
+  if (DEPLOY_SUB === 'deploy') loadDeploy();
+  else if (typeof loadScheduler === 'function') loadScheduler();
+  routeSync();
+}
+function scansSub(sub) {
+  SCANS_SUB = sub === 'access' && can('keys.view') ? 'access' : 'jobs';
+  document.querySelectorAll('#scans-subnav button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.sub === SCANS_SUB)));
+  $('#scans-pane-jobs').hidden = SCANS_SUB !== 'jobs';
+  $('#scans-pane-access').hidden = SCANS_SUB !== 'access';
+  clearInterval(jobTimer);
+  if (SCANS_SUB === 'jobs') { loadJobs(); jobTimer = setInterval(loadJobs, 3000); }
+  else if (typeof loadAccess === 'function') loadAccess();
+  routeSync();
+}
+function rebuildSub(sub, forceLoad = false) {
+  REBUILD_SUB = ['os2', 'desk'].includes(sub) && can('plans.view') ? sub : 'configs';
+  document.querySelectorAll('#rebuild-subnav button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.sub === REBUILD_SUB)));
+  $('#rebuild-pane-configs').hidden = REBUILD_SUB !== 'configs';
+  $('#rebuild-pane-os2').hidden = REBUILD_SUB !== 'os2';
+  $('#rebuild-pane-desk').hidden = REBUILD_SUB !== 'desk';
+  if (REBUILD_SUB === 'configs') loadRebuild();
+  else if (REBUILD_SUB === 'os2' && typeof loadOsInstall === 'function' && (forceLoad || !OS2.data)) loadOsInstall();
+  else if (REBUILD_SUB === 'desk' && typeof loadOsInstall === 'function' && (forceLoad || !OS2.data)) loadOsInstall();
+  routeSync();
+}
+document.querySelectorAll('#deploy-subnav button').forEach((b) => b.addEventListener('click', () => deploySub(b.dataset.sub)));
+document.querySelectorAll('#scans-subnav button').forEach((b) => b.addEventListener('click', () => scansSub(b.dataset.sub)));
+document.querySelectorAll('#rebuild-subnav button').forEach((b) => b.addEventListener('click', () => rebuildSub(b.dataset.sub)));
+
 function showTab(name) {
+  if (name === 'security') { location.href = `/security${S.host ? `#/overview?host=${encodeURIComponent(S.host)}` : ''}`; return; }
+  if (name === 'malware') { location.href = `/security${S.host ? `#/malware?host=${encodeURIComponent(S.host)}` : '#/malware'}`; return; }
+  if (name === 'hostlogs') { location.href = `/logs${S.host ? `#?lhost=${encodeURIComponent(S.host)}` : ''}`; return; }
+  if (name === 'keys' || name === 'audit') { location.href = `/admin#/${name}`; return; }
+  if (name === 'schedule') { DEPLOY_SUB = 'schedule'; name = 'deploy'; }
+  if (name === 'access') { SCANS_SUB = 'access'; name = 'jobs'; }
+  if (name === 'docker') { if (typeof INF !== 'undefined') INF.view = 'containers'; name = 'infra'; }
+  if (name === 'toolbox') { if (typeof INF !== 'undefined') INF.view = 'toolbox'; name = 'infra'; }
+
   document.querySelectorAll('.tabs button').forEach((b) => {
     const on = b.dataset.tab === name;
     b.classList.toggle('on', on); b.setAttribute('aria-selected', on);
@@ -646,24 +693,27 @@ function showTab(name) {
   document.querySelectorAll('.tab').forEach((t) => { t.hidden = t.id !== `tab-${name}`; });
   setPanelOpen(true);
   clearInterval(jobTimer);
-  if (name === 'jobs') { loadJobs(); jobTimer = setInterval(loadJobs, 3000); }
-  if (name === 'audit') loadAudit();
-  if (name === 'hostlogs') loadHostLogs();
+  if (name === 'jobs') {
+    const sub = window.SCANS_LINK_SUB || SCANS_SUB;
+    window.SCANS_LINK_SUB = null;
+    scansSub(sub);
+  }
   if (name === 'notifications') loadNotifications();
-  if (name === 'keys') loadKeys();
-  if (name === 'access') loadAccess();
   if (name === 'copies') loadCopies();
-  if (name === 'malware') loadMalware();
   if (name === 'moves') loadMoves();
   if (name === 'changes') loadChanges();
-  if (name === 'schedule' && typeof loadScheduler === 'function') loadScheduler();
   if (name === 'git') loadGit();
-  if (name === 'rebuild') { loadRebuild(); loadOsInstall(); }          // and a second system and the desktop profiles below it (osinstallview.js, desktopview.js)
-  if (name === 'docker') loadDocker();
+  if (name === 'rebuild') {
+    const sub = window.REBUILD_LINK_SUB || REBUILD_SUB;
+    window.REBUILD_LINK_SUB = null;
+    rebuildSub(sub, true);
+  }
   if (name === 'infra') loadInfra();
-  if (name === 'toolbox') loadToolbox();         // the Toolbox (toolboxview.js)
-  if (name === 'deploy') loadDeploy();
-  if (name === 'security' && typeof loadSecurity === 'function') loadSecurity();
+  if (name === 'deploy') {
+    const sub = window.DEPLOY_LINK_SUB || DEPLOY_SUB;
+    window.DEPLOY_LINK_SUB = null;
+    deploySub(sub);
+  }
   applyWide();
   routeSync();
 }
@@ -713,10 +763,9 @@ function setPanelOpen(open) {
   if (!open && panel.contains(document.activeElement)) $('.tabs button.on')?.focus();
   applyWide();
 }
-/* A panel can have the whole page (UX-04): Security and the settings panels (the audit log with accounts and roles, keys, scans, scan access,
-   host logs) open that way, and the button in the panel's header gives any other panel the same, remembered per panel. The view behind
-   it keeps its place and comes back when the panel is narrow again. */
-const WIDE_BY_DEFAULT = new Set(['security', 'audit', 'keys', 'jobs', 'access', 'hostlogs']);
+/* Full-screen windows (/security, /logs, /admin) now live on their own routes, so no rail tab forces the whole page by default;
+   #pwide still lets the user widen any panel whenever they want. */
+const WIDE_BY_DEFAULT = new Set();
 function wantsWide(name) {
   const v = prefs(`sf.wide.${name}`);
   return v ? v === '1' : WIDE_BY_DEFAULT.has(name);
@@ -881,121 +930,17 @@ async function scanAll() {
 $('#scanall').addEventListener('click', scanAll);
 $('#scanform').addEventListener('submit', (ev) => { ev.preventDefault(); const h = $('#scanhost').value.trim(); if (h) queueScan(h); });
 
-/* ── keys: generate in the vault, install with ssh-copy-id ────────── */
-function keyMsg(msg, ok) { const m = $('#instmsg'); m.hidden = false; m.textContent = msg; m.className = ok ? 'st-ok' : 'st-failed'; }
-async function loadKeys(select) {
-  loadEnclave();          // enclaveview.js: whether the extra layer on these keys is there
-  loadAgents();           // agentview.js: the hosts that run the agent, and its plugins
-  try {
-    const { keys, bindings } = await getJSON('/api/keys');
-    const sel = $('#instkey'); const keep = select || sel.value;
-    sel.replaceChildren(...keys.map((k) => new Option(`${k.name} · ${k.type}`, k.name)));
-    if (keep) sel.value = keep;
-    $('#keys').replaceChildren(...keys.map((k) => {
-      const li = document.createElement('li');
-      const pub = text('code', k.public_key, 'pub');
-      li.append(text('span', `${k.name} · ${k.type} · ${k.origin} · ${k.bindings} binding${k.bindings === 1 ? '' : 's'}`),
-        text('span', k.fingerprint, 'm'), pub,
-        button('Copy public key', async (ev) => {
-          try { await navigator.clipboard.writeText(k.public_key); ev.target.textContent = 'Copied'; }
-          catch { getSelection().selectAllChildren(pub); }
-        }, 'btn ghost sm'),
-        k.bindings ? '' : button('Remove', () => removeVaultItem(`/api/keys/${encodeURIComponent(k.name)}`, `Remove key ${k.name}? It cannot be recovered.`), 'btn ghost sm danger'));
-      return li;
-    }));
-    if (!keys.length) $('#keys').replaceChildren(text('li', 'No keys yet. Generate one above.', 'muted'));
-    const bk = $('#bindkey'), bkeep = bk.value;
-    bk.replaceChildren(...keys.map((k) => new Option(`${k.name} · ${k.type}`, k.name)));
-    if (bkeep) bk.value = bkeep;
-    $('#bindconsole').disabled = !can('console.open');
-    $('#bindconsole').title = can('console.open') ? '' : 'Your account cannot open consoles, so it cannot allow one';
-    $('#instconsole').disabled = $('#bindconsole').disabled;
-    $('#instconsole').title = $('#bindconsole').title;
-    $('#bindings').replaceChildren(...bindings.map((b) => {
-      const li = document.createElement('li');
-      const acts = b.actions.split(',');
-      li.append(text('span', `${b.user}@${b.pattern}:${b.port} → ${b.key}`), text('span', `${b.kind} · ${b.actions}`, 'm'));
-      if (b.kind === 'host') li.append(button('Scan now', () => queueScan(b.pattern), 'btn ghost sm'));
-      if (!acts.includes('deploy')) {                // a deploy binding is Deploy → access's to change
-        const toggle = (act, label) => {
-          const on = acts.includes(act);
-          const next = on ? acts.filter((a) => a !== act && !(act === 'scan' && a === 'checksum')) : [...acts, act, ...(act === 'checksum' && !acts.includes('scan') ? ['scan'] : [])];
-          const btn = button(`${label}: ${on ? 'on' : 'off'}`, () => setBindingActions(b, next), 'btn ghost sm');
-          btn.setAttribute('aria-pressed', String(on));
-          if (!next.length) { btn.disabled = true; btn.title = 'A binding allows something: Unbind it instead'; }
-          if (act === 'console' && !can('console.open')) { btn.disabled = true; btn.title = 'Your account cannot open consoles'; }
-          return btn;
-        };
-        li.append(toggle('checksum', 'Checksums'), toggle('console', 'Console'));
-      }
-      li.append(button('Unbind', () => removeVaultItem(`/api/bindings/${b.binding_id}`, `Stop using ${b.key} for ${b.user}@${b.pattern}?`), 'btn ghost sm danger'));
-      return li;
-    }));
-    if (!bindings.length) $('#bindings').replaceChildren(text('li', 'No bindings yet.', 'muted'));
-  } catch (err) { $('#keys').replaceChildren(text('li', err.message, 'muted')); }
-  loadSshCa();          // the SSH CA and its certificates, below the bindings (sshcaview.js)
-  loadSecrets();        // the secret store, below the CA (secretsview.js)
-  loadPlatforms();      // platform API connections, below the secrets (apiconnview.js)
-}
-async function setBindingActions(b, actions) {
-  if (actions.includes('console') && !b.actions.split(',').includes('console')
-      && !(await confirmDialog({ title: `Allow the web console as ${b.user}@${b.pattern}?`, confirm: 'Allow the console',
-        body: `Anyone who may open consoles gets a terminal as ${b.user} there, able to do whatever ${b.user} can. Every session is in the audit log.` }))) return;
-  try { await api(`/api/bindings/${b.binding_id}`, jsonOpts('PUT', { actions })); loadKeys(); }
-  catch (err) { keyMsg(err.message, false); }
-}
-$('#bindform').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  const actions = [['scan', '#bindscan'], ['checksum', '#bindsum'], ['console', '#bindconsole']].filter(([, id]) => $(id).checked).map(([a]) => a);
-  const body = { key: $('#bindkey').value, host: $('#bindhost').value.trim(), port: Number($('#bindport').value), user: $('#binduser').value.trim(), actions };
-  try {
-    const r = await (await postJSON('/api/bindings', body)).json();
-    keyMsg(`Bound ${body.key} to ${body.user}@${body.host} for ${r.actions.replaceAll(',', ', ')} (binding #${r.binding_id}).`, true);
-    $('#bindhost').value = '';
-    loadKeys();
-  } catch (err) { keyMsg(err.message, false); }
-});
-async function removeVaultItem(path, question) {
-  if (!(await confirmDialog({ title: question, confirm: 'Remove', danger: true }))) return;
-  try { await api(path, { method: 'DELETE' }); loadKeys(); }
-  catch (err) { keyMsg(err.message, false); }
-}
-$('#genform').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  const name = $('#genname').value.trim();
-  try {
-    await (await postJSON('/api/keys', { name, type: $('#gentype').value })).json();
-    $('#genname').value = '';
-    keyMsg(`Generated key "${name}". Now install it on a host.`, true);
-    loadKeys(name);
-  } catch (err) { keyMsg(err.message, false); }
-});
-$('#installform').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  const body = { key: $('#instkey').value, host: $('#insthost').value.trim(), port: Number($('#instport').value),
-                 user: $('#instuser').value.trim(), password: $('#instpw').value,
-                 bind: $('#instbind').checked, checksum: $('#instsum').checked, console: $('#instconsole').checked };
-  $('#instpw').value = '';
-  const btn = ev.submitter; btn.disabled = true;
-  keyMsg(`Running ssh-copy-id for ${body.user}@${body.host}…`, true);
-  try {
-    const r = await (await postJSON('/api/keys/install', body)).json();
-    keyMsg(`Installed "${body.key}" on ${body.user}@${body.host}` +
-           (r.keys_added === 0 ? ' (it was already there)' : ', and key login works') +
-           (r.binding_id ? ` and bound it for ${(r.actions || 'scan').replaceAll(',', ', ')} (binding #${r.binding_id}).` : '.'), true);
-    loadKeys();
-  } catch (err) { keyMsg(err.message, false); }
-  finally { btn.disabled = false; }
-});
-
 /* ── what this account may do ────────────────────────────────────── */
 let ME = null;
 const can = (perm) => !!ME && ME.permissions.includes(perm);
+const jsonOpts = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 // a console opens in a tab of its own (console.html): the terminal takes the window, and several can be open at once
 function openConsole(host) { window.open(`/console#${encodeURIComponent(host)}`, '_blank', 'noopener'); }
-const TAB_NEEDS = { notifications: 'deploy.view', search: 'search.files', changes: 'plans.view', moves: 'plans.view', schedule: 'plans.view', deploy: 'deploy.view',
-                    docker: 'services.view', infra: 'workloads.view', git: 'services.view', rebuild: 'configs.view', copies: 'files.browse', malware: 'files.browse', access: 'keys.view',
-                    security: 'security.view', jobs: 'scans.view', keys: 'keys.view', hostlogs: 'hostlogs.view' };
+const TAB_NEEDS = {
+  notifications: 'deploy.view', search: 'search.files', changes: 'plans.view', moves: 'plans.view',
+  deploy: 'deploy.view', jobs: 'scans.view', infra: 'workloads.view', git: 'services.view',
+  rebuild: 'configs.view', copies: 'files.browse',
+};
 function applyPermissions(me) {          // only hides what would answer 403: the server decides
   ME = me;
   document.querySelectorAll('.tabs button[data-tab]').forEach((b) => { const need = TAB_NEEDS[b.dataset.tab]; b.hidden = !!need && !can(need); });
@@ -1006,204 +951,20 @@ function applyPermissions(me) {          // only hides what would answer 403: th
   });
   railHint();                              // fewer tabs for this account: the rail may now fit
   $('#searchform').hidden = !can('search.files');
-  $('#verify').hidden = !can('audit.verify');
-  $('#audit').hidden = !can('audit.view');
-  $('#backupshead').hidden = $('#backupsbox').hidden = !can('backups.view');
+  if ($('#tomanage')) $('#tomanage').hidden = !can('devices.view');
+  if ($('#tosecurity')) $('#tosecurity').hidden = !can('security.view');
+  if ($('#tologs')) $('#tologs').hidden = !can('hostlogs.view');
+  if ($('#toadmin')) $('#toadmin').hidden = !(can('keys.view') || can('audit.view') || can('users.manage'));
+  if ($('#scans-sub-access')) $('#scans-sub-access').hidden = !can('keys.view');
+  if ($('#deploy-sub-schedule')) $('#deploy-sub-schedule').hidden = !can('plans.view');
+  if ($('#rebuild-sub-os2')) $('#rebuild-sub-os2').hidden = !can('plans.view');
+  if ($('#rebuild-sub-desk')) $('#rebuild-sub-desk').hidden = !can('plans.view');
 }
 
-const jsonOpts = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-const untilText = (t) => fmtTime(t);
-function showLink(what, token) {
-  $('#linkwhat').textContent = what;
-  $('#linkurl').value = `${location.origin}/enroll#${token}`;
-  $('#linkbox').hidden = false;
-  $('#linkurl').select();
-}
-$('#linkcopy').addEventListener('click', async () => {
-  $('#linkurl').select();
-  try { await navigator.clipboard.writeText($('#linkurl').value); toast('Link copied'); } catch { toast('Copy it from the box'); }
-});
-
-let CATALOG = [];
-async function loadUsers() {
-  $('#userscard').hidden = !can('users.manage');
-  $('#rolescard').hidden = !can('roles.manage');
-  if ($('#userscard').hidden && $('#rolescard').hidden) return;
-  try {
-    const { roles, catalog } = await getJSON('/api/roles');
-    CATALOG = catalog;
-    const mine = roles.filter((r) => r.permissions.every((p) => ME.permissions.includes(p)));
-    if (can('roles.manage')) renderRoles(roles, mine);
-    if (!can('users.manage')) return;
-    for (const sel of [$('#newuserrole'), $('#inviterole')]) {
-      const was = sel.value;
-      sel.replaceChildren(...mine.map((r) => new Option(r.name, r.name)));
-      sel.value = was && mine.some((r) => r.name === was) ? was : 'viewer';
-    }
-    const [{ users }, { invites, now }] = await Promise.all([getJSON('/api/users'), getJSON('/api/invites')]);
-    const change = async (u, body) => {
-      try { await api(`/api/users/${encodeURIComponent(u)}`, jsonOpts('PUT', body)); }
-      catch (err) { $('#usermsg').textContent = err.message; }
-      loadUsers();
-    };
-    $('#userlist').replaceChildren(...users.map((u) => {
-      const role = el('select', { 'aria-label': `Role of ${u.username}`, onchange: () => change(u.username, { role: role.value }) },
-        ...roles.map((r) => new Option(r.name, r.name)));
-      role.value = u.role;
-      return el('li', {}, text('span', `${u.username}${u.disabled_at ? ' · disabled' : ''}`), role,
-        button(u.disabled_at ? 'Enable' : 'Disable', () => change(u.username, { disabled: !u.disabled_at }), 'btn ghost sm'),
-        button('Password reset link', async () => {
-          try { showLink(`New password for ${u.username}, good for one day:`, (await (await postJSON(`/api/users/${encodeURIComponent(u.username)}/reset-link`, {})).json()).token); }
-          catch (err) { $('#usermsg').textContent = err.message; }
-        }, 'btn ghost sm'),
-        button('Remove', async () => {
-          if (!(await confirmDialog({ title: `Remove account ${u.username}?`, confirm: 'Remove account', danger: true }))) return;
-          try { await api(`/api/users/${encodeURIComponent(u.username)}`, { method: 'DELETE' }); }
-          catch (err) { $('#usermsg').textContent = err.message; }
-          loadUsers();
-        }, 'btn ghost sm danger'));
-    }));
-    $('#invitelist').replaceChildren(...invites.map((i) => {
-      const open = !i.used_at && !i.revoked_at && i.expires_at > now;
-      const state = i.used_at ? `used by ${i.used_by}` : i.revoked_at ? 'revoked' : open ? `open until ${untilText(i.expires_at)}` : 'expired';
-      const what = i.reset_user ? `Password reset for ${i.reset_user}` : `${i.role}${i.note ? ` · ${i.note}` : ''}`;
-      return el('li', {}, text('span', what), text('span', `${state} · made by ${i.created_by}`, 'm'),
-        ...(open ? [button('Revoke', async () => {
-          try { await api(`/api/invites/${i.invite_id}`, { method: 'DELETE' }); }
-          catch (err) { $('#invitemsg').textContent = err.message; }
-          loadUsers();
-        }, 'btn ghost sm danger')] : []));
-    }));
-  } catch (err) { $('#usermsg').textContent = err.message; }
-}
-
-let editingRole = null;     // null: a new role
-function checkRoleRisk() {
-  const on = (p) => !!document.querySelector(`#roleperms input[value="${p}"]:checked`);
-  $('#rolerisk').hidden = !(on('plans.edit') && (on('deploy.apply') || on('deploy.destructive')));
-}
-function openRoleForm(role) {
-  editingRole = role ? role.name : null;
-  $('#roleform').hidden = false;
-  $('#rolename').value = role ? role.name : '';
-  $('#rolename').disabled = !!role;
-  $('#roledesc').value = role ? role.description : '';
-  $('#rolemsg').textContent = '';
-  $('#roleperms').replaceChildren(...CATALOG.map((g) => el('fieldset', { class: 'permgroup' }, text('legend', g.group),
-    ...g.permissions.map((p) => {
-      const box = el('input', { type: 'checkbox', value: p.name, onchange: checkRoleRisk });
-      box.checked = !!role && role.permissions.includes(p.name);
-      box.disabled = !can(p.name);       // nobody grants what they cannot do themselves
-      return el('label', { class: 'perm', title: p.name }, box, text('span', p.text), ...(p.high_risk ? [text('span', 'high risk', 'st-warn small')] : []));
-    }))));
-  checkRoleRisk();
-}
-function renderRoles(roles, mine) {
-  $('#rolelist').replaceChildren(...roles.map((r) => el('li', {},
-    text('span', `${r.name}${r.builtin ? ' · built-in' : ''} · ${r.users} account${r.users === 1 ? '' : 's'}`),
-    text('span', r.description || `${r.permissions.length} permissions`, 'm'),
-    ...(r.builtin || !mine.includes(r) ? [] : [
-      button('Edit', () => openRoleForm(r), 'btn ghost sm'),
-      button('Remove', async () => {
-        if (!(await confirmDialog({ title: `Remove role ${r.name}?`, confirm: 'Remove role', danger: true }))) return;
-        try { await api(`/api/roles/${encodeURIComponent(r.name)}`, { method: 'DELETE' }); $('#rolemsg').textContent = ''; }
-        catch (err) { notify(err.message, 'error'); }
-        loadUsers();
-      }, 'btn ghost sm danger')]))));
-}
-$('#rolenew').addEventListener('click', () => openRoleForm(null));
-$('#rolecancel').addEventListener('click', () => { $('#roleform').hidden = true; });
-$('#roleform').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  const body = { name: $('#rolename').value.trim(), description: $('#roledesc').value.trim(),
-                 permissions: [...document.querySelectorAll('#roleperms input:checked')].map((b) => b.value) };
-  try {
-    if (editingRole) await api(`/api/roles/${encodeURIComponent(editingRole)}`, jsonOpts('PUT', body));
-    else await api('/api/roles', jsonOpts('POST', body));
-    $('#roleform').hidden = true;
-    loadUsers();
-  } catch (err) { $('#rolemsg').textContent = err.message; }
-});
-$('#inviteform').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  try {
-    const role = $('#inviterole').value;
-    const r = await (await postJSON('/api/invites', { role, hours: Number($('#invitehours').value), note: $('#invitenote').value.trim() })).json();
-    showLink(`Invite with the role ${role}:`, r.token);
-    $('#invitenote').value = ''; $('#invitemsg').textContent = '';
-  } catch (err) { $('#invitemsg').textContent = err.message; }
-  loadUsers();
-});
-$('#pwform').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  try {
-    await postJSON('/api/me/password', { password: $('#pwold').value, new_password: $('#pwnew').value });
-    sfSignedOut('');
-  } catch (err) { $('#pwmsg').textContent = err.message; }
-});
-$('#userform').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  try {
-    await postJSON('/api/users', { username: $('#newuser').value.trim(), password: $('#newuserpw').value, role: $('#newuserrole').value });
-    ev.target.reset(); $('#usermsg').textContent = '';
-  } catch (err) { $('#usermsg').textContent = err.message; }
-  loadUsers();
-});
-async function loadBackups() {
-  const box = $('#backupsbox');
-  try {
-    const b = await getJSON('/api/backups');
-    if (b.external) { box.replaceChildren(text('p', 'This database is PostgreSQL: StorageForge makes no backups of it. Use pg_dump, and keep the vault secret safe.', 'st-running')); return; }
-    const newest = b.backups[0];
-    const hours = newest ? (Date.now() / 1000 - newest.created) / 3600 : null;
-    const host = el('input', { type: 'text', placeholder: 'host', 'aria-label': 'Copy backups to host' }); host.value = b.target?.host || '';
-    const path = el('input', { type: 'text', class: 'mono', placeholder: '/srv/storageforge-backups', 'aria-label': 'Folder on that host' }); path.value = b.target?.path || '';
-    const msg = text('span', '', 'muted');
-    const when_ = (x) => fmtTime(x);
-    box.replaceChildren(
-      text('p', newest ? `Newest: ${newest.kind}, ${fmtBytes(newest.bytes)}, ${hours < 48 ? `${Math.round(hours)} h` : `${Math.round(hours / 24)} days`} ago. Runs nightly at ${b.hour}:00, keeps ${b.keep}.` : 'No backups yet.', newest && hours < 48 ? 'st-ok' : 'st-failed'),
-      b.nightly ? text('p', `Last nightly: ${b.nightly.outcome}, ${when_(b.nightly.at)}`, `small st-${b.nightly.outcome}`) : '',
-      b.copy ? text('p', `Last copy off this machine: ${b.copy.outcome}, ${when_(b.copy.at)}${b.copy.detail.error ? `: ${b.copy.detail.error}` : ''}`, `small st-${b.copy.outcome}`)
-        : text('p', 'These backups sit on the same volume as the database. Add a host below so that losing the volume does not lose them too.', 'small st-running'),
-      el('div', { class: 'row wrap' }, host, path,
-        button('Save', async () => {
-          try { await api('/api/backups/target', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host: host.value.trim(), path: path.value.trim() }) }); msg.textContent = 'Saved. It uses the key bound to that host for deploys.'; }
-          catch (err) { msg.textContent = err.message; }
-        }, 'btn ghost sm'),
-        button('Back up now', async () => {
-          try { await postJSON('/api/backups', { kind: 'essentials' }); loadBackups(); }
-          catch (err) { msg.textContent = err.message; }
-        }, 'btn sm'), msg));
-  } catch (err) { box.replaceChildren(text('p', err.message, 'muted')); }
-}
-async function loadAudit() {
-  loadUsers();
-  if (can('backups.view')) loadBackups();
-  if (!can('audit.view')) return;
-  try {
-    const { entries } = await getJSON('/api/audit?limit=100');
-    $('#audit').replaceChildren(...entries.map((a) => {
-      const li = document.createElement('li');
-      li.append(text('span', `${a.action} · ${a.outcome}${a.host ? ' · ' + a.host : ''}`, `st-${a.outcome}`),
-        Object.assign(text('span', `${fmtTime(a.ts, { seconds: true })} · ${a.actor}${a.key ? ' · ' + a.key : ''}`, 'm'), { title: fmtUtc(a.ts) }),
-        ...(Object.keys(a.detail).length ? [text('span', JSON.stringify(a.detail), 'm')] : []));
-      return li;
-    }));
-  } catch (err) { $('#audit').replaceChildren(text('li', err.message, 'muted')); }
-}
-
-/* Host logs are hostlogsview.js: loadHostLogs() opens the panel, hlLinkEl() is the link from a host. */
-$('#verify').addEventListener('click', async () => {
-  $('#verified').textContent = 'Checking…';
-  try {
-    const v = await getJSON('/api/audit/verify');
-    const weak = v.unkeyed_after_keyed ? ` · ${v.unkeyed_after_keyed} later entries were written with the vault locked (no key): `
-      + `whoever can write the database could have rewritten them, from #${v.first_unkeyed_after_keyed}` : '';
-    const head = v.head && v.head.enclave ? ` · Key enclave: ${v.head.why}` : '';          // whether the log still ends where the enclave last signed it
-    $('#verified').textContent = (v.valid ? `Chain intact · ${v.entries_checked} entries` : v.first_bad_id ? `Chain broken at entry #${v.first_bad_id}` : 'Every entry there is checks out, and the log was cut or changed') + weak + head;
-    $('#verified').className = !v.valid ? 'st-failed' : weak ? 'st-warn' : 'st-ok';
-  } catch (err) { $('#verified').textContent = err.message; }
-});
+/* The security posture chip in the header opens /security. */
+const threatBanner = $('#threatbanner') ? sfSecurityChip($('#threatbanner'), () => {
+  location.href = `/security${S.host ? `#/overview?host=${encodeURIComponent(S.host)}` : ''}`;
+}, () => can('security.view'), 1500) : null;
 
 /* ── header controls ─────────────────────────────────────────────── */
 const STALE_DAYS = 14;
@@ -1276,9 +1037,13 @@ sfPaletteSource(() => {
   const views = [...document.querySelectorAll('#viewmode button[data-mode]')].map((b) => ({ label: `Go to ${b.textContent}`, hint: 'View', run: routeGo(b.dataset.mode, routeTab()) }));
   const panels = [...document.querySelectorAll('.tabs button[data-tab]')].filter((b) => !b.hidden && (!TAB_NEEDS[b.dataset.tab] || can(TAB_NEEDS[b.dataset.tab])))
     .map((b) => ({ label: `Go to ${b.querySelector('.lbl').textContent}`, hint: `Panel, ${b.previousElementSibling?.classList.contains('rgroup') ? b.previousElementSibling.textContent : 'rail'}`, run: routeGo(T.mode, b.dataset.tab) }));
-  const sec = can('security.view') && typeof SEC_PANELS !== 'undefined' ? SEC_PANELS.filter(([id]) => id !== 'overview')
-    .map(([id, name]) => ({ label: `Go to Security: ${name}`, hint: 'Security panel', run: routeGo(T.mode, 'security', { sec: id }) })) : [];
-  return [...views, ...panels, ...sec];
+  const subpanels = [
+    ...(can('plans.view') ? [{ label: 'Go to Schedule', hint: 'Panel, Deploy', run: () => showTab('schedule') }] : []),
+    ...(can('keys.view') ? [{ label: 'Go to Blocked folders', hint: 'Panel, Scans', run: () => showTab('access') }] : []),
+    ...(can('services.view') ? [{ label: 'Go to Containers', hint: 'Panel, Infra', run: () => showTab('docker') }] : []),
+    ...(can('workloads.view') ? [{ label: 'Go to Toolbox', hint: 'Panel, Infra', run: () => showTab('toolbox') }] : []),
+  ];
+  return [...views, ...panels, ...subpanels];
 });
 
 // a link, or the URL the page was opened with, says where to be (router.js): #/graph/changes?host=nas-02, or the old #host=nas-02&tab=changes
@@ -1315,7 +1080,7 @@ async function firstRun(who) {
       ask('keys.view', '/api/keys', (d) => d.bindings.length > 0),
       ask('scans.view', '/api/jobs', (d) => d.jobs.some((j) => j.result && j.result.scan_id)),
       ask('settings.manage', '/api/deploy/settings', (d) => ['ntfy', 'gotify', 'webhook'].some((ch) => d.alerts?.[ch]?.url))]);
-    const steps = [['keys.view', 'Enrol a host', 'Install a key on it, so scans can log in', '#/topo/keys', bound],
+    const steps = [['keys.view', 'Enrol a host', 'Install a key on it, so scans can log in', '/admin#/keys', bound],
                    ['scans.view', 'Run the first scan', 'Scans reads its disks, mounts and files', '#/topo/jobs', scanned],
                    ['deploy.view', 'Set up a backup alert', 'Say where a failed or stale job is pushed', '#/topo/deploy', alerting]]
       .filter(([need]) => can(need)).map(([, label, detail, href, done]) => ({ label, detail, href, done }));

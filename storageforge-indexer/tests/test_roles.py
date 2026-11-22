@@ -112,11 +112,21 @@ class SearchOnly(Base):
 
     def test_lands_on_the_search_page(self):
         c = self.as_user('sam', 'search')
-        for page in ('/', '/planner'):
+        for page in ('/', '/planner', '/manage', '/security', '/logs', '/admin'):
             r = c.get(page)
             self.assertEqual((r.status_code, r.headers['Location']), (302, '/search'))
         self.assertIn(b'id="sform"', c.get('/search').data)
         self.assertEqual(self.web.test_client().get('/search').status_code, 302)
+
+    def test_admin_users_page_is_guarded_by_user_or_role_permissions(self):
+        self.assertEqual(self.web.test_client().get('/admin/users').status_code, 302)
+        for role in ('search', 'viewer', 'operator'):
+            c = self.as_user(f'u_{role}', role)
+            self.assertEqual(c.get('/admin/users').status_code, 403, role)
+        admin = self.as_user('root')
+        r = admin.get('/admin/users')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b'id="ad-sec-users"', r.data)
 
 
 class CustomRoles(Base):

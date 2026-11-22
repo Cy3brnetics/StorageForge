@@ -8,13 +8,74 @@ const ROUTE_VIEWS = ['topo', 'graph', 'tasks', 'map', 'scan'];
 const routeTab = () => document.querySelector('.tabs button.on')?.dataset.tab || 'details';
 const routeHasTab = (name) => !!name && !!document.querySelector(`.tabs button[data-tab="${CSS.escape(name)}"]`);
 
+/* Standalone windows and combined workspace panels mapped from legacy tab names. */
+function routeWindowRedirect(r) {
+  if (!r || !r.panel) return false;
+  const hostQ = r.host ? { host: r.host } : {};
+  if (r.panel === 'security') {
+    const sub = r.sec || 'overview';
+    location.replace(`/security${sfFormatHash([sub], hostQ)}`);
+    return true;
+  }
+  if (r.panel === 'malware') {
+    location.replace(`/security${sfFormatHash(['malware'], hostQ)}`);
+    return true;
+  }
+  if (r.panel === 'hostlogs') {
+    const p = {};
+    for (const k of ['lhost', 'range', 'from', 'to', 'level', 'unit', 'q']) {
+      const v = r.q?.get(k);
+      if (v) p[k] = v;
+    }
+    if (!p.lhost && r.host) p.lhost = r.host;
+    location.replace(`/logs${sfFormatHash([], p)}`);
+    return true;
+  }
+  if (r.panel === 'keys' || r.panel === 'audit') {
+    location.replace(`/admin${sfFormatHash([r.panel])}`);
+    return true;
+  }
+  return false;
+}
+
+function routeResolvePanel(r) {
+  const sub = r.q?.get('sub');
+  if (r.panel === 'schedule' || (r.panel === 'deploy' && sub === 'schedule')) {
+    window.DEPLOY_LINK_SUB = 'schedule';
+    return 'deploy';
+  }
+  if (r.panel === 'deploy' && sub === 'deploy') window.DEPLOY_LINK_SUB = 'deploy';
+  if (r.panel === 'access' || (r.panel === 'jobs' && sub === 'access')) {
+    window.SCANS_LINK_SUB = 'access';
+    return 'jobs';
+  }
+  if (r.panel === 'jobs' && sub === 'jobs') window.SCANS_LINK_SUB = 'jobs';
+  if (r.panel === 'docker') {
+    if (typeof INF !== 'undefined') INF.view = 'containers';
+    return 'infra';
+  }
+  if (r.panel === 'toolbox') {
+    if (typeof INF !== 'undefined') INF.view = 'toolbox';
+    if (typeof tbTakeLink === 'function' && r.q) tbTakeLink(r.q);
+    return 'infra';
+  }
+  if (r.panel === 'infra' && sub && typeof INF !== 'undefined') {
+    INF.view = sub;
+    if (sub === 'toolbox' && typeof tbTakeLink === 'function' && r.q) tbTakeLink(r.q);
+  }
+  if (r.panel === 'rebuild' && sub) window.REBUILD_LINK_SUB = sub;
+  return r.panel;
+}
+
 function routeState() {
   const tab = routeTab();
   const params = { host: S.host };
   if (T.mode === 'map' && typeof mapRouteParams === 'function') Object.assign(params, mapRouteParams());
-  if (tab === 'security' && typeof SEC !== 'undefined' && SEC.panel && SEC.panel !== 'overview') params.sec = SEC.panel;
-  if (tab === 'hostlogs' && typeof hlRouteParams === 'function') Object.assign(params, hlRouteParams());      // the Logs range and filters (hostlogsview.js)
-  if (tab === 'toolbox' && typeof tbRouteParams === 'function') Object.assign(params, tbRouteParams());      // the tool open in the Toolbox (toolboxview.js)
+  if (tab === 'deploy' && typeof DEPLOY_SUB !== 'undefined' && DEPLOY_SUB !== 'deploy') params.sub = DEPLOY_SUB;
+  if (tab === 'jobs' && typeof SCANS_SUB !== 'undefined' && SCANS_SUB !== 'jobs') params.sub = SCANS_SUB;
+  if (tab === 'rebuild' && typeof REBUILD_SUB !== 'undefined' && REBUILD_SUB !== 'configs') params.sub = REBUILD_SUB;
+  if (tab === 'infra' && typeof INF !== 'undefined' && INF.view !== 'workloads') params.sub = INF.view;
+  if (tab === 'infra' && typeof INF !== 'undefined' && INF.view === 'toolbox' && typeof tbRouteParams === 'function') Object.assign(params, tbRouteParams());
   return { parts: [T.mode, tab], params };
 }
 
@@ -36,6 +97,7 @@ function routeRead(parsed = sfParseHash()) {
 }
 
 function routeApply(r) {
+  if (routeWindowRedirect(r)) return;
   const was = ROUTE.applying;
   ROUTE.applying = true;                          // what this does to the page is not a new step in the history
   try {
@@ -46,10 +108,8 @@ function routeApply(r) {
     }
     if (r.view === 'map' && typeof mapTakeLink === 'function') mapTakeLink(r.q);
     if (r.view && r.view !== T.mode) setMode(r.view);
-    if (r.sec) window.SEC_LINK_PANEL = r.sec;
-    if (r.panel === 'hostlogs' && typeof hlTakeLink === 'function') hlTakeLink(r.q);
-    if (r.panel === 'toolbox' && typeof tbTakeLink === 'function') tbTakeLink(r.q);
-    if (routeHasTab(r.panel)) showTab(r.panel);
+    const resolved = routeResolvePanel(r);
+    if (routeHasTab(resolved)) showTab(resolved);
   } finally { ROUTE.applying = was; }
 }
 
@@ -57,12 +117,11 @@ function routeApply(r) {
 function routeTake() {
   ROUTE.seen = location.hash;                     // what start-up read: a change after this and before routeStart() is not lost
   const r = routeRead();
+  if (routeWindowRedirect(r)) return null;
   if (!r.view && !r.panel && !r.host) return null;
   routeApply({ ...r, panel: null });
-  if (r.sec) window.SEC_LINK_PANEL = r.sec;
-  if (r.panel === 'hostlogs' && typeof hlTakeLink === 'function') hlTakeLink(r.q);
-  if (r.panel === 'toolbox' && typeof tbTakeLink === 'function') tbTakeLink(r.q);
-  return routeHasTab(r.panel) ? r.panel : null;
+  const resolved = routeResolvePanel(r);
+  return routeHasTab(resolved) ? resolved : null;
 }
 
 function routeStart() {                           // once the page has what it needs: the URL is made canonical, and from here it is followed

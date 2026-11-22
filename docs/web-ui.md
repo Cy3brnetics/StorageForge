@@ -2,9 +2,9 @@
 
 For a guided tour of every feature, see the [feature guide](features/README.md).
 
-The main page (`/`) has five views in the header (**Topology**, **Graph**, **Tasks**, **Map** and **Scan**) and a rail of 20 panels on the right. Every page except `/login` needs a session; an open page clears itself and returns to the sign-in page when the session ends.
+The main page (`/`) has five views in the header (**Topology**, **Graph**, **Tasks**, **Map** and **Scan**) and a rail of 11 panels on the right. Every page except `/login` needs a session; an open page clears itself and returns to the sign-in page when the session ends.
 
-The header also holds the host filter, file search, the security chip, links to the [Planner](planner.md) and to [Manage](#other-pages), **Export .canvas** (in Topology and Graph, the two views it exports), the session length menu and **Sign out**. The chip says in a line where the [security posture](ransomware-defense.md) stands (*Security: nothing wrong found*, *needs a look*, *incident* or *not known*), with the reason under it, and a click opens the **Security** panel. Accounts that may not view security do not see it.
+The header also holds the host filter, file search, the security chip, links to the [Planner](planner.md), [Manage](#other-pages), [Security](#other-pages), [Logs](#other-pages) and [Admin](#other-pages), **Export .canvas** (in Topology and Graph, the two views it exports), the session length menu and **Sign out**. The chip says in a line where the [security posture](ransomware-defense.md) stands (*Security: nothing wrong found*, *needs a look*, *incident* or *not known*), with the reason under it, and a click opens [Security](#other-pages). Accounts that may not view security do not see it.
 
 Which view is for what: **Topology** is where you edit what you own, **Graph** is for exploring how hosts, pools and mounts relate and where copies of files are (look here, edit in Topology), **Tasks** builds storage tasks from blocks, **Map** shows networks, listeners, firewalls and workloads and who can reach what, and **Scan** shows what the network scanner found. Hovering a view's button says the same.
 
@@ -85,7 +85,7 @@ What the opt-in network scanner found. It is off until someone turns it on and n
 
 ## Panels
 
-The rail on the right opens panels in the inspector: 20 of them in five groups. It is one tab stop: Up and Down move between the panels, Home and End go to the first and the last, and Enter or Space opens the one that has focus. A panel that is about one host (the Security panels that need one, the Infra views, what a scan changed) has its own host picker when none is chosen, starting on the host with the most to look at, and choosing sets the page's host. A skip link at the top of the page, the first thing Tab reaches, goes to the view or to the panel. **Security** and the settings panels (**Audit**, which holds accounts, roles, invites, backups and your password, **Keys**, **Scans**, **Access** and **Logs**) open with the whole page, and the button in any panel's header (⤢) gives that panel the whole page too, which the browser remembers for that panel. Hiding the panel gives the view its room back. The first panel, **Details**, describes the selection or summarises health across every host. It belongs to Topology and Graph: in Tasks, Map and Scan it says where to go instead.
+The rail on the right opens panels in the inspector: 11 of them in three groups. It is one tab stop: Up and Down move between the panels, Home and End go to the first and the last, and Enter or Space opens the one that has focus. A panel that is about one host (the Infra views, what a scan changed) has its own host picker when none is chosen, starting on the host with the most to look at, and choosing sets the page's host. A skip link at the top of the page, the first thing Tab reaches, goes to the view or to the panel. Heavy standalone workflows (**Security & Malware**, **Host Logs**, and **Keys, Users & Audit**) live on their own pages (`/security`, `/logs`, `/admin`), and the button in any panel's header (⤢) still gives that panel the whole page if needed, which the browser remembers for that panel. Hiding the panel gives the view its room back. The first panel, **Details**, describes the selection or summarises health across every host. It belongs to Topology and Graph: in Tasks, Map and Scan it says where to go instead.
 
 ### Inspect
 
@@ -103,8 +103,8 @@ The rail on the right opens panels in the inspector: 20 of them in five groups. 
 | :--- | :--- |
 | **Changes** | [Staged change plans](plans-and-scripts.md#staged-changes): review, reorder, **Check**, **Bash script**, **Ansible playbook**, **Deploy** |
 | **Moves** | [Move plans](plans-and-scripts.md#data-moves): steps, **Check**, **Download script**, **Deploy** |
-| **Schedule** | [Unified task scheduler](plans-and-scripts.md#unified-task-scheduler): cron jobs on client hosts with comprehensive server-side verification, SSH deploy, on-demand runs and verification inspector |
-| **Deploy** | [Deploy access](deployments.md) per host, deployed jobs and shares, drift, recent deploys, reporting and alert settings |
+| **Deploy** | Combined deployments and [Unified task scheduler](plans-and-scripts.md#unified-task-scheduler): [Deploy access](deployments.md) per host, deployed jobs and shares, drift, recent deploys, reporting and alert settings, plus scheduled cron jobs with server-side verification |
+| **Scans** | Combined scan queue and blocked folders: queue a scan of a bound host or **Scan all hosts**, follow progress bars, and inspect/fix [unreadable folders](scanning-and-search.md#unreadable-folders-and-read-only-access) with read-only scan access |
 
 ![Changes panel after Check](images/changes.jpg)
 
@@ -116,37 +116,12 @@ The rail on the right opens panels in the inspector: 20 of them in five groups. 
 
 | Panel | What it does |
 | :--- | :--- |
-| **Docker** | Each host's [compose stacks](scanning-and-search.md#docker-and-compose-stacks), their containers and the folders and volumes they use; unused volumes; containers that mount the Docker socket |
+| **Infra** | Combined workloads, [containers and compose stacks](scanning-and-search.md#docker-and-compose-stacks), [Toolbox](toolbox.md) catalog, exposure, network, firewall and [StorageForge's own network](infrastructure-map.md#storageforges-own-network) of each host. Needs `security.view` for exposure and firewall, `map.view` for network. See [Infrastructure map](infrastructure-map.md) |
 | **Git** | [Repositories](scanning-and-search.md#git-repositories) the scans found, matched across hosts by history, with **Archive to…**, bulk archiving of selected repositories, and a per-host hide list |
-| **Rebuild** | Each host's saved configuration: mounts, subvolumes, shares, accounts, symlinks and config files, with what changed in each version. Downloads the reinstall script or a bundle. See [rebuilding a host](disaster-recovery.md#rebuild-a-host-after-reinstalling-it). |
-| **Infra** | Workloads, exposure, network and firewall of each host, as they were last read: containers, VMs and instances; what listens and who can reach it; interfaces and routes; firewall rules. **Measure now**, for accounts that may manage security, reads a host again. **StorageForge network** is the page of [StorageForge's own encrypted network](infrastructure-map.md#storageforges-own-network): its members, what the readings confirm, key rotation, the findings and the plan. Needs `security.view` for exposure and firewall, `map.view` for network. See [Infrastructure map](infrastructure-map.md) |
-| **Toolbox** | Tools from a signed catalog: a card for each host with the tools on it and their status, the catalog with each entry's signature, risk labels and GUI level, and one tool at a time (a deep link such as `#host=gw-01&tab=toolbox&tool=wireguard` opens it). Installing, removing and every action save a change plan, deployed from Changes. **Custom entries** checks and dry-runs an entry of your own and shows the command that signs it on your machine. See [Toolbox](toolbox.md). Built, not lab-tested |
+| **Rebuild** | Sub-tabbed host recovery and provisioning: saved host configurations and reinstall scripts ([rebuilding a host](disaster-recovery.md#rebuild-a-host-after-reinstalling-it)), second OS install, and desktop compositor profiles |
 | **Cleanup** | Three sub-panels: **Duplicates** (folders with the same names, sizes and layout, and identical files from checksums; a copy on another host is listed as a possible backup and never counted as space to free; **Copies on other hosts** at the top lists the pairs kept in sync and the ones to answer, with **Keep these two in sync…** and **Not a backup of each other**), **Cold data** (newest file older than a cutoff, with **Move…**), and **Trends & changes** (capacity over time and what the last scan changed). The last one chosen is kept |
-| **Malware** | [ClamAV](scanning-and-search.md#clamav) on the hosts you deployed it to: what it detected, and **Quarantine** |
-| **Access** | Folders the last scan could not read, and [read-only scan access](scanning-and-search.md#unreadable-folders-and-read-only-access) to fix it |
 
 ![Cleanup panel](images/cleanup.jpg)
-
-![Access panel](images/access.jpg)
-
-### Security
-
-| Panel | What it does |
-| :--- | :--- |
-| **Security** | [Ransomware defense](ransomware-defense.md): the posture of every host on top, then sixteen sub-panels grouped by what you are doing: **Prepare** (Holds, Retention, Access control, Firewall, Hardware keys), **Detect** (Decoys, Behaviour, Integrity, Falco and YARA, Identity), **Respond** (Fencing, Playbooks, Timeline) and **Prove** (Compliance, Dashboard). See [its panels](ransomware-defense.md#panels) |
-
-### Admin
-
-| Panel | What it does |
-| :--- | :--- |
-| **Scans** | Queue a scan of a bound host, or **Scan all hosts**, and follow recent scan jobs. A running scan shows a bar with its stage, the entries read against what the last scan of that host saw, the filesystems done and the ones being read, and the time so far; a first scan, with nothing to measure against, goes by filesystems. A waiting scan says how many are before it. Above the list, one bar covers the whole round: scans done, running and waiting |
-| **Keys** | Generate a key in the vault, install it on a host with its password once, list keys and bindings, **Scan now** per binding |
-| **Logs** | What each host's journal said, as the last scan collected it, or as the agent's logs plugin pushed it the moment it was written (built, not lab-tested): a time range (last hour, day, 7 or 30 days, or from and to), a bar chart of lines by level and hour with the same numbers as a list, a list of when each host was last collected (or that it never was), and filters by host, level, unit (a list of the units stored) and text that apply as you type, **Older**, and export as a file. The range and filters are in the URL (`range`, `from`, `to`, `lhost`, `level`, `unit`, `q`), and a host's Details has a link to its logs. On a host without the agent nothing streams: a line arrives with the scan that reads it, and a host that could not be read says why. Each host says how its lines come: collected by the scan over SSH, not signed; or pushed by the agent, signed, with how far behind they arrive and how many numbered lines of the journal never came (deleted on the host, or lost), which is also a notification. While the agent pushes, the scan does not ask for the same lines again. A line says **written by** another program when journald saw a different one write it than the name the line gives itself (`logger -t sshd` is anyone), with the program's path, its uid and when the line arrived on hover. A host that logged more than its rate says how many lines were not kept. **Rules** lists what raises a notification from a host's logs: each rule can be turned on or off and given its own count, window and level, and you can add and delete your own ([log rules](deployments.md#reporting-alerts-and-drift)). **Monitoring**, at the top, is each host against its usual (built, not lab-tested): its last hour against the same hour of the weeks before, the units logging much more than usual, its open log alerts, the kinds of line it logged for the first time in the last day (open the list to read them), whether it or a unit on it has stopped logging, and how its lines come in: the last line, when the last new one arrived, the delay, lines missing from the journal's count, signed or not, and netconsole and pstore beside the journal. Hosts with something to look at come first, and each says it in words. **Netconsole** lists the hosts whose kernel messages the controller takes over UDP, from which address and port, and whether the controller listens. A notification about a host has a link to that host's lines from an hour before it opened, and a disk, a partition, a pool or a mount in Topology and Details has a **Logs** link to the lines that name it. Times are in your time zone, with the UTC form on hover. Also [`storageforge-index hostlogs`](cli-reference.md) |
-| **Audit** | The newest audit entries and **Verify chain**. Also your own password, backups, and for admins [accounts, invite links and roles](features/administration.md#accounts-and-sign-in). |
-
-![Keys panel](images/keys.jpg)
-
-![Audit panel](images/audit.jpg)
 
 ## Other pages
 
@@ -154,6 +129,9 @@ The rail on the right opens panels in the inspector: 20 of them in five groups. 
 | :--- | :--- |
 | `/planner` | The [storage design tool](planner.md): devices, mounts, links, RAID, protection and export. **Planner** in the header. Its rail, like `/manage`'s, leads to the main page's **Changes**, **Moves** and **Schedule** |
 | `/manage` | The [management planner](network-devices.md#the-management-planner), **Manage** in the header. **Fleet** is every host and device and how it stands; **Devices** are routers, switches and firewalls; **Compose** writes the one network language, shows what each target makes of it, and **Stage in Changes** turns a Linux host's rules into steps there, or **Check** reports on a device before **Apply**; **Changes** is what was reported, applied, confirmed and rolled back; **Traffic** is interface counters over time, with a way to the Scan view |
+| `/security` | Security & Threat Center (**Security** in the header): combines [ransomware defense](ransomware-defense.md) posture, live threat detection, [ClamAV](scanning-and-search.md#clamav) malware detection and quarantine, WORM holds, retention, access control, firewall, fencing, playbooks, timeline and compliance |
+| `/logs` | Host Logs & Monitoring (**Logs** in the header): anomaly monitoring, time range selector, hourly level bar chart, searchable journal lines, CSV export, collection status, [alert rules](deployments.md#reporting-alerts-and-drift) and netconsole sources |
+| `/admin` | Administration & Vault (**Admin** in the header): SSH keys and host bindings, enclave, host agent, SSH certificate authority, vault secrets, platform API connections, accounts, invite links, roles, your password, tamper-evident audit chain verification and backups |
 | `/search` | File search on a page of its own, with a host picker |
 | `/login`, `/enroll` | Sign-in, and the page an invite or reset link opens |
 

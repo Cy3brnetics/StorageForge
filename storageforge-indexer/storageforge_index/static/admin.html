@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Admin &amp; Vault · StorageForge</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/tokens.css">
+<link rel="stylesheet" href="/components.css">
+<link rel="stylesheet" href="/window.css">
+</head>
+<body>
+<div class="win">
+  <aside class="win-rail">
+    <div class="win-brand">
+      <svg width="24" height="24" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="3" width="24" height="6" rx="1.5" fill="var(--fast)"/><rect x="2" y="11" width="24" height="6" rx="1.5" fill="var(--mass)"/><rect x="2" y="19" width="24" height="6" rx="1.5" fill="var(--remote)"/></svg>
+      <div><b>StorageForge</b><small>Admin &amp; Vault</small></div>
+    </div>
+    <nav id="adnav" class="win-nav" aria-label="Administration sections">
+      <button type="button" data-sec="keys" aria-current="page">Keys &amp; Bindings</button>
+      <button type="button" data-sec="enclave">Enclave, Agent &amp; CA</button>
+      <button type="button" data-sec="secrets">Secrets &amp; Platforms</button>
+      <button type="button" data-sec="users">Users &amp; Roles</button>
+      <button type="button" data-sec="audit">Audit Log &amp; Backups</button>
+      <button type="button" data-sec="account">My Password</button>
+    </nav>
+    <div class="win-rail-end">
+      <div data-sf-chrome data-here="admin"></div>
+    </div>
+  </aside>
+  <main class="win-main">
+    <header class="win-head">
+      <div>
+        <h1 id="adtitle">Keys &amp; Host Bindings</h1>
+        <p id="adsub" class="muted">Generate keys inside the encrypted vault, install public keys onto hosts, and bind allowed actions.</p>
+      </div>
+      <div data-sf-chrome="chip" data-here="admin"></div>
+    </header>
+    <div class="win-body">
+      <section id="ad-sec-keys" class="stack">
+        <div class="card stack">
+          <h3>1 · Generate a key</h3>
+          <form id="genform" class="row wrap">
+            <input id="genname" type="text" placeholder="key name, e.g. fleet" aria-label="Key name" autocomplete="off" spellcheck="false" required>
+            <select id="gentype" aria-label="Key type"><option value="ed25519">ed25519</option><option value="rsa">RSA 4096</option></select>
+            <button class="btn pri" type="submit">Generate</button>
+          </form>
+          <p class="muted small">The private key is created inside the encrypted vault and never leaves it.</p>
+        </div>
+
+        <div class="card stack">
+          <h3>2 · Install on a host with ssh-copy-id</h3>
+          <form id="installform" class="stack">
+            <label class="field col"><span>Key</span><select id="instkey" required></select></label>
+            <div class="row">
+              <label class="field col grow"><span>Host</span><input id="insthost" type="text" placeholder="nas-02 or 10.0.20.5" autocomplete="off" spellcheck="false" required></label>
+              <label class="field col port"><span>Port</span><input id="instport" type="number" min="1" max="65535" value="22" required></label>
+            </div>
+            <label class="field col"><span>User</span><input id="instuser" type="text" placeholder="scan" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+            <label class="field col"><span>That user's SSH password (used once, not stored)</span><input id="instpw" type="password" autocomplete="off" required
+                   data-1p-ignore data-lpignore="true" data-bwignore="true"></label>
+            <label class="check"><input id="instbind" type="checkbox" checked> Bind the key to this host for scans</label>
+            <label class="check"><input id="instsum" type="checkbox"> Allow checksum scans too (finds identical files, across hosts as well)</label>
+            <label class="check"><input id="instconsole" type="checkbox"> Allow the web console too: a terminal as this user</label>
+            <div class="row end"><button class="btn pri" type="submit">Install key</button></div>
+          </form>
+          <p id="instmsg" class="muted" hidden></p>
+        </div>
+
+        <div class="card stack">
+          <h3>Keys</h3>
+          <ol id="keys" class="list"></ol>
+        </div>
+
+        <div class="card stack">
+          <h3>Bindings</h3>
+          <p class="muted small">What each key may do on a host: scan it, checksum its files, or open a terminal on it from the web console. A console login can do whatever that account can, so give it a login of its own where you can.</p>
+          <ol id="bindings" class="list"></ol>
+          <details id="bindadd">
+            <summary>Bind a key that is already on a host</summary>
+            <form id="bindform" class="stack">
+              <label class="field col"><span>Key</span><select id="bindkey" required></select></label>
+              <div class="row">
+                <label class="field col grow"><span>Host, glob or CIDR</span><input id="bindhost" type="text" placeholder="nas-02, nas-* or 10.0.20.0/24" autocomplete="off" spellcheck="false" required></label>
+                <label class="field col port"><span>Port</span><input id="bindport" type="number" min="1" max="65535" value="22" required></label>
+              </div>
+              <label class="field col"><span>User</span><input id="binduser" type="text" placeholder="scan" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+              <fieldset class="row wrap"><legend>Allow</legend>
+                <label class="check"><input id="bindscan" type="checkbox" checked> Scans</label>
+                <label class="check"><input id="bindsum" type="checkbox"> Checksum scans</label>
+                <label class="check"><input id="bindconsole" type="checkbox"> Web console</label>
+              </fieldset>
+              <div class="row end"><button class="btn pri" type="submit">Bind</button></div>
+            </form>
+          </details>
+        </div>
+      </section>
+
+      <section id="ad-sec-enclave" class="stack" hidden>
+        <section id="enclavebox" class="card" aria-live="polite" hidden></section>
+        <section id="agentbox" class="card" aria-live="polite" hidden></section>
+        <div class="card stack">
+          <h3>SSH certificates</h3>
+          <p class="muted small">A certificate authority kept in the vault. A host that trusts it lets StorageForge in with a certificate that lasts minutes and names one user on that host, and a certificate can be revoked. Keys in authorized_keys go on working: trusting the CA takes nothing away.</p>
+          <p id="sshcamsg" class="muted" role="status" hidden></p>
+          <div id="sshcabox" class="stack"></div>
+        </div>
+      </section>
+
+      <section id="ad-sec-secrets" class="stack" hidden>
+        <div class="card stack">
+          <h3>Secrets for plan steps</h3>
+          <p class="muted small">Passwords, tokens and keys that plan steps need on a host, made here and kept in the vault. A value is shown once, when it is made or rotated, and then never again: a plan step gets it on the host through the signed runner, when the plan is applied.</p>
+          <p id="secretmsg" class="muted" role="status" hidden></p>
+          <div id="secretonce" class="stack" role="status" hidden></div>
+          <div id="secretbox" class="stack"></div>
+        </div>
+        <div class="card stack">
+          <h3>Platform connections</h3>
+          <p class="muted small">Proxmox VE, Backup Server and Datacenter Manager read through their own APIs, beside SSH. First what the token needs, the least that works and never root or a full-access role; then the token, kept in the vault; then the platform's certificate, which you accept before the token is sent anywhere. Read-only unless you turn an action on. Not lab-tested.</p>
+          <p id="platformmsg" class="muted" role="status" hidden></p>
+          <div id="platformbox" class="stack"></div>
+        </div>
+      </section>
+
+      <section id="ad-sec-users" class="stack" hidden>
+        <div id="userscard" class="card stack" hidden>
+          <h3>Accounts</h3>
+          <ol id="userlist" class="list"></ol>
+          <form id="userform" class="row wrap">
+            <input id="newuser" type="text" autocomplete="off" placeholder="username" aria-label="New username" required>
+            <input id="newuserpw" type="password" autocomplete="new-password" placeholder="password" aria-label="New account password" required>
+            <select id="newuserrole" aria-label="Role"></select>
+            <button class="btn pri" type="submit">Add account</button><span id="usermsg" class="muted"></span>
+          </form>
+          <h3>Invite links</h3>
+          <p class="muted small">Someone opens the link and makes their own account with the role you pick. A link works once.</p>
+          <form id="inviteform" class="row wrap">
+            <select id="inviterole" aria-label="Role the invite gives"></select>
+            <select id="invitehours" aria-label="Link lasts"><option value="24">1 day</option><option value="72" selected>3 days</option><option value="168">7 days</option><option value="720">30 days</option></select>
+            <input id="invitenote" type="text" maxlength="200" autocomplete="off" placeholder="who it is for (optional)" aria-label="Who the invite is for">
+            <button class="btn" type="submit">Create link</button>
+          </form>
+          <div id="linkbox" class="linkbox" hidden>
+            <p id="linkwhat" class="small"></p>
+            <div class="row nowrap"><input id="linkurl" type="text" readonly aria-label="Link to send"><button id="linkcopy" type="button" class="btn sm">Copy</button></div>
+            <p class="muted small">It is shown only now. Send it over a channel you trust.</p>
+          </div>
+          <span id="invitemsg" class="muted"></span>
+          <ol id="invitelist" class="list"></ol>
+        </div>
+
+        <div id="rolescard" class="card stack" hidden>
+          <h3>Roles</h3>
+          <ol id="rolelist" class="list"></ol>
+          <div class="row"><button id="rolenew" type="button" class="btn sm">New role</button></div>
+          <form id="roleform" class="roleform" hidden>
+            <input id="rolename" type="text" maxlength="32" autocomplete="off" placeholder="role name" aria-label="Role name" required>
+            <input id="roledesc" type="text" maxlength="200" autocomplete="off" placeholder="what it is for" aria-label="What the role is for">
+            <div id="roleperms"></div>
+            <p id="rolerisk" class="st-warn small" hidden>Editing plans and applying them together amounts to root on every enrolled host.</p>
+            <div class="row"><button class="btn pri" type="submit">Save role</button><button id="rolecancel" type="button" class="btn ghost">Cancel</button><span id="rolemsg" class="muted"></span></div>
+          </form>
+        </div>
+      </section>
+
+      <section id="ad-sec-audit" class="stack" hidden>
+        <div class="card stack">
+          <div class="row wrap"><button id="verify" type="button" class="btn">Verify chain</button><span id="verified" class="muted"></span></div>
+          <ol id="audit" class="list"></ol>
+        </div>
+        <div class="card stack">
+          <h3 id="backupshead">Backups</h3>
+          <div id="backupsbox" class="stack"></div>
+        </div>
+      </section>
+
+      <section id="ad-sec-account" class="stack" hidden>
+        <div class="card stack">
+          <h3>Your password</h3>
+          <form id="pwform" class="row wrap">
+            <input id="pwold" type="password" autocomplete="current-password" placeholder="current password" aria-label="Current password" required>
+            <input id="pwnew" type="password" autocomplete="new-password" placeholder="new password" aria-label="New password" required>
+            <button class="btn pri" type="submit">Change password</button><span id="pwmsg" class="muted"></span>
+          </form>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script src="/session.js"></script>
+<script src="/kernel.js"></script>
+<script src="/chrome.js"></script>
+<script src="/ui.js"></script>
+<script src="/enclaveview.js"></script>
+<script src="/agentview.js"></script>
+<script src="/sshcaview.js"></script>
+<script src="/secretsview.js"></script>
+<script src="/apiconnview.js"></script>
+<script src="/adminview.js"></script>
+<script src="/adminpage.js"></script>
+</body>
+</html>
