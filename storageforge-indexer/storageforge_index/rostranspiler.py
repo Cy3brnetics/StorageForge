@@ -187,8 +187,13 @@ def _wgkey(v):
         raise ValueError('not a WireGuard key')
 
 
+def _pos(v):
+    if not re.fullmatch(r'(?:\d+|\*[0-9A-Fa-f]+|[A-Za-z0-9][A-Za-z0-9._:-]{0,63})', v):
+        raise ValueError('rule index, *id, or comment tag')
+
+
 FILTER_ATTRS = {'chain': _name, 'action': _oneof(*sorted(ACTIONS)), 'protocol': _proto, 'src-address': _cidr, 'dst-address': _cidr, 'src-port': _ports, 'dst-port': _ports, 'in-interface': _name, 'out-interface': _name,
-                'src-address-list': _name, 'dst-address-list': _name, 'connection-state': _state, 'comment': _comment, 'jump-target': _name, 'log-prefix': _comment}
+                'src-address-list': _name, 'dst-address-list': _name, 'connection-state': _state, 'comment': _comment, 'jump-target': _name, 'log-prefix': _comment, 'place-before': _pos}
 NAT_ATTRS = {'chain': _oneof('dstnat', 'srcnat'), 'action': _oneof(*sorted(NAT_ACTIONS)), 'protocol': _proto, 'src-address': _cidr, 'dst-address': _cidr, 'dst-port': _ports, 'in-interface': _name, 'out-interface': _name, 'to-addresses': _ip_ok, 'to-ports': _ports, 'comment': _comment,
              'src-address-list': _name, 'dst-address-list': _name}
 SCHEMA = {
@@ -439,7 +444,14 @@ def to_nftables(stmts, table: str = 'storageforge_dsl', **_) -> dict:
             if s.get('comment'):
                 line += f' comment "{s["comment"]}"'
             chain = s['chain']
-            (chains if chain in chains else extra).setdefault(chain, []).append(line)
+            target_list = (chains if chain in chains else extra).setdefault(chain, [])
+            pos = s.get('place-before')
+            if pos and pos.isdigit():
+                target_list.insert(min(int(pos), len(target_list)), line)
+            else:
+                if pos:
+                    o.notes.append(f'line {s.line}: nftables emits chains in statement order; non-numeric place-before={pos} only positions against an existing RouterOS rule')
+                target_list.append(line)
             if s.get('jump-target'):
                 extra.setdefault(s['jump-target'], [])
         elif s.path == NAT:
@@ -540,7 +552,14 @@ def to_iptables(stmts, **_) -> dict:
             if act == 'jump':
                 target = s['jump-target']
                 custom[target] = 1
-            filt.append(' '.join(['-A', chain, *m, *(['-j', target] if target else [])]))
+            pos = s.get('place-before')
+            if pos and pos.isdigit():
+                verb = ['-I', chain, str(int(pos) + 1)]
+            else:
+                if pos:
+                    o.notes.append(f'line {s.line}: iptables only inserts by numeric position (place-before={pos} was appended)')
+                verb = ['-A', chain]
+            filt.append(' '.join([*verb, *m, *(['-j', target] if target else [])]))
         elif s.path == NAT:
             m = _ipt_match(s, o)
             if m is None:
@@ -629,6 +648,11 @@ def to_ufw(stmts, **_) -> dict:
             o.no(s, 'ufw has no custom chains')
             continue
         words = ['ufw']
+        pos = s.get('place-before')
+        if pos and pos.isdigit():
+            words += ['insert', str(int(pos) + 1)]
+        elif pos:
+            o.notes.append(f'line {s.line}: ufw only inserts by numeric rule position (place-before={pos} was appended)')
         if s['chain'] == 'forward':
             words.append('route')
         words.append(verbs[s['action']])
@@ -1014,22 +1038,84 @@ def compile_text(text: str, target: str, **options) -> dict:
 
 
 # ── back to the model, and back to the language ─────────────────────
-def to_model_rules(stmts: list[Stmt], start: int = 0) -> dict:
+def _find_place_before(in_chain: list[dict], pos: str) -> int | None:
+    if pos.isdigit():
+        idx = int(pos)
+        return idx if 0 <= idx < len(in_chain) else None
+    for idx, r in enumerate(in_chain):
+        if r.get('id') == pos or r.get('comment') == pos:
+            return idx
+    return None
+
+
+def _is_catchall_drop(r: dict) -> bool:
+    if r.get('action') not in ('drop', 'reject'):
+        return False
+    return not any(r.get(k) for k in ('proto', 'dports', 'orig_dports', 'saddr', 'not_saddr', 'daddr', 'iif', 'not_iif', 'oif', 'not_oif', 'ct', 'unmodelled'))
+
+
+def shadowed_notes(existing: list[dict] | None, stmts: list[Stmt]) -> list[str]:
+    """Warn when a rule is appended to a chain below an existing catch-all drop/reject without place-before."""
+    by_chain: dict[str, list[dict]] = {}
+    for r in sorted(existing or [], key=lambda x: x.get('order') or 0):
+        ch = r.get('chain') or r.get('hook')
+        if ch:
+            by_chain.setdefault(ch, []).append(r)
+    notes = []
+    for s in stmts:
+        if s.path != FILTER:
+            continue
+        in_chain = by_chain.setdefault(s['chain'], [])
+        pos = s.get('place-before')
+        if not pos:
+            blocker = next((r for r in in_chain if _is_catchall_drop(r)), None)
+            if blocker:
+                notes.append(f'line {s.line}: added at the end of {s["chain"]}, below a catch-all {blocker["action"]}, so it will never match; add place-before=0 (or a rule comment/index) to move it up')
+        added = to_model_rules([s], existing=in_chain)['rules'][0]
+        ins = _find_place_before(in_chain, pos) if pos else None
+        if ins is not None:
+            in_chain.insert(ins, added)
+        else:
+            in_chain.append(added)
+    return notes
+
+
+def to_model_rules(stmts: list[Stmt], start: int = 0, existing: list[dict] | None = None) -> dict:
     """What these statements would add to a firewall model: for a what-if, before anything is sent."""
     from .firewall import _ports as fw_ports
     from .firewall import _rule
     rules, nat = [], []
-    order = start
+    by_chain: dict[str, list[dict]] = {}
+    for r in sorted(existing or [], key=lambda x: x.get('order') or 0):
+        ch = r.get('chain') or r.get('hook')
+        if ch:
+            by_chain.setdefault(ch, []).append(r)
+    order = max([start, *(r.get('order') or 0 for r in existing or [])])
     for s in stmts:
         if s.path not in (FILTER, NAT):
             continue
-        order += 10
         kw = dict(proto=None if s.get('protocol') in (None, 'any') else s['protocol'], comment=s.get('comment'), dports=fw_ports(s['dst-port']) or [] if s.get('dst-port') else [], saddr=s.get('src-address'), daddr=s.get('dst-address'), iif=s.get('in-interface'), oif=s.get('out-interface'), ct=s.get('connection-state'))
         if s.path == FILTER:
             act = s['action']
             action = {'jump': f'jump:{s.get("jump-target")}', 'fasttrack-connection': 'accept', 'log': None, 'passthrough': None}.get(act, act)
-            rules.append(_rule('routeros', 'filter', s['chain'], order, action=action, hook=s['chain'], **kw))
+            in_chain = by_chain.setdefault(s['chain'], [])
+            pos = s.get('place-before')
+            ins = _find_place_before(in_chain, pos) if pos else None
+            if ins is not None:
+                after_ord = in_chain[ins].get('order') or 0
+                before_ord = (in_chain[ins - 1].get('order') or 0) if ins > 0 else (after_ord - 10)
+                rule_order = (before_ord + after_ord) / 2 if before_ord < after_ord else (after_ord - 0.001)
+            else:
+                order = max(order, max((r.get('order') or 0 for r in in_chain), default=0)) + 10
+                rule_order = order
+            rule = _rule('routeros', 'filter', s['chain'], rule_order, action=action, hook=s['chain'], **kw)
+            rules.append(rule)
+            if ins is not None:
+                in_chain.insert(ins, rule)
+            else:
+                in_chain.append(rule)
         else:
+            order += 10
             action = 'dnat' if s['action'] in ('dst-nat', 'redirect') else 'snat'
             nat.append(_rule('routeros', 'nat', s['chain'], order, action=action, to_addr=s.get('to-addresses'), to_port=int(s['to-ports']) if _digits(str(s.get('to-ports') or '')) else None, **kw))
     return {'rules': rules, 'nat': nat}

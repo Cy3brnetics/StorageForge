@@ -68,7 +68,7 @@ def _addr_matches(rule_addr, addr) -> bool | None:
 
 def _match(rule: dict, flow: dict) -> str:
     """yes, no, source (matches for only some source addresses) or unknown (a part of it could not be understood)."""
-    if rule.get('family') in ('ip', 'ip6') and flow.get('family') and rule['family'] != flow['family']:
+    if rule.get('family') in ('ip', 'ip6') and flow.get('family') in ('ip', 'ip6') and rule['family'] != flow['family']:
         return 'no'
     if rule.get('proto') and flow['proto'] not in str(rule['proto']).lower().split(','):
         return 'no'
@@ -163,7 +163,7 @@ def walk(chain_rules: list[dict], by_chain: dict, flow: dict, state: dict, depth
     return None
 
 
-OWN_TABLES = 'inet storageforge_'
+OWN_TABLES = ('inet storageforge_', 'bridge storageforge_')
 
 
 def _path(state: dict, verdict: str, rule) -> dict:
@@ -177,7 +177,10 @@ def kernel_path(fw: dict, hook: str, flow: dict, own_only: bool = False) -> dict
     for r in sorted(fw['rules'], key=lambda r: r.get('order') or 0):
         by_chain.setdefault((r.get('table'), r.get('chain')), []).append(r)
     state = {'unknown': [], 'sources': [], 'rule': None}
-    chains = [c for c in fw.get('chains') or [] if c['hook'] == hook and c.get('family') in (None, 'inet', flow.get('family')) and (not own_only or str(c.get('table')).startswith(OWN_TABLES))]
+    bridged = bool(flow.get('bridged')) or flow.get('family') == 'bridge'
+    chains = [c for c in fw.get('chains') or [] if c['hook'] == hook
+              and (c.get('family') == 'bridge' if bridged else c.get('family') in (None, 'inet', flow.get('family')))
+              and (not own_only or str(c.get('table')).startswith(OWN_TABLES))]
     verdict = 'accept'
     for c in sorted(chains, key=lambda c: c.get('prio') or 0):
         state['rule'] = None

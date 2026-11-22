@@ -49,8 +49,8 @@ def tasks_of(stmts: list) -> tuple[list, list]:
     tasks, left = [], []
     for s in stmts:
         action = {'accept': 'allow', 'drop': 'deny', 'reject': 'deny'}.get(s.get('action')) if s.path == rostranspiler.FILTER else None
-        plain = action and s['chain'] in ('input', 'forward') and s.get('protocol') in ('tcp', 'udp') and s.get('dst-port') and not (set(s.attrs) - {'chain', 'action', 'protocol', 'dst-port', 'src-address', 'in-interface', 'comment'})
-        if plain and not str(s.get('src-address', '')).startswith('!') and not str(s.get('in-interface', '')).startswith('!') and '-' not in s.get('src-address', '') and not s['dst-port'].startswith('!'):
+        plain = action and s['chain'] in ('input', 'forward') and s.get('protocol') in ('tcp', 'udp') and s.get('dst-port') and not (set(s.attrs) - {'chain', 'action', 'protocol', 'dst-port', 'src-address', 'in-interface', 'comment', 'place-before'})
+        if plain and s.get('place-before') in (None, '0') and not str(s.get('src-address', '')).startswith('!') and not str(s.get('in-interface', '')).startswith('!') and '-' not in s.get('src-address', '') and not s['dst-port'].startswith('!'):
             for port in s['dst-port'].split(','):       # a step takes one port or range, so a list is several steps
                 tasks.append({'type': 'fw-rule', 'params': {'hook': s['chain'], 'action': action, 'proto': s['protocol'], 'port': port, 'source': s.get('src-address', ''), 'iface': s.get('in-interface', ''), 'state': 'present'}})
         else:
@@ -229,14 +229,16 @@ def register(web, ctx):
         proto = 'udp' if body.get('proto') == 'udp' else 'tcp'
         fleet_now = reach.load(conn())
         before = reach.query(fleet_now, a, b, port, proto)
+        notes = []
         if host in fleet_now.hosts and (fleet_now.hosts[host].get('infra') or {}).get('firewall'):
             fw = fleet_now.hosts[host]['infra']['firewall']
-            add = rostranspiler.to_model_rules(stmts, max([r.get('order') or 0 for r in fw['rules']] or [0]))
-            # RouterOS appends, so a rule below a chain's final drop means nothing: the operator sees the same order the device would have
+            add = rostranspiler.to_model_rules(stmts, max([r.get('order') or 0 for r in fw['rules']] or [0]), existing=fw['rules'])
+            notes = rostranspiler.shadowed_notes(fw['rules'], stmts)
+            # RouterOS appends unless place-before is given, so a rule below a chain's final drop means nothing: the operator sees the same order the device would have
             chains = fw.get('chains') or [{'backend': 'dsl', 'table': 'filter', 'name': h, 'hook': h, 'prio': 0, 'policy': 'accept', 'family': None} for h in ('input', 'forward', 'output')]     # a host with no firewall has no chains yet
-            fleet_now.hosts[host]['infra']['firewall'] = {**fw, 'rules': fw['rules'] + add['rules'], 'nat': fw['nat'] + add['nat'], 'chains': chains, 'backends': fw.get('backends') or ['dsl']}
+            fleet_now.hosts[host]['infra']['firewall'] = {**fw, 'rules': sorted(fw['rules'] + add['rules'], key=lambda r: r.get('order') or 0), 'nat': fw['nat'] + add['nat'], 'chains': chains, 'backends': fw.get('backends') or ['dsl']}
         after = reach.query(fleet_now, a, b, port, proto)
-        return jsonify(before=before, after=after, changed=before['verdict'] != after['verdict'])
+        return jsonify(before=before, after=after, changed=before['verdict'] != after['verdict'], notes=notes)
 
     @web.post('/api/dsl/stage')
     @login_required

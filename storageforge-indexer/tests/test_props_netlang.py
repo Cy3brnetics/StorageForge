@@ -71,6 +71,7 @@ STRATEGIES = {
     r._range: st.lists(ipv4 | st.tuples(ipv4, ipv4).map('-'.join), min_size=1, max_size=3).map(','.join),
     r._endpoint: st.tuples(ipv4 | name.filter(lambda n: re.fullmatch(r'[A-Za-z0-9.:-]+', n)), port).map(lambda t: f'{t[0]}:{t[1]}'),
     r._wgkey: wgkey,
+    r._pos: st.integers(0, 50).map(str) | st.from_regex(r'\A(?:\*[0-9a-f]{1,4}|[A-Za-z0-9][A-Za-z0-9._:-]{0,15})\Z'),
 }
 
 
@@ -218,7 +219,7 @@ class ShellTargets(unittest.TestCase):
     @given(statement([r.FILTER]), comment.filter(lambda c: c.strip()))
     def test_a_comment_arrives_as_one_argument(self, stmt, text):
         stmt.attrs.update({'chain': 'input', 'action': 'accept', 'protocol': 'tcp', 'dst-port': '22', 'comment': text})
-        for k in ('src-port', 'jump-target', 'connection-state', 'src-address-list', 'dst-address-list', 'log-prefix'):
+        for k in ('src-port', 'jump-target', 'connection-state', 'src-address-list', 'dst-address-list', 'log-prefix', 'place-before'):
             stmt.attrs.pop(k, None)
         stmts = r.parse(as_text([stmt]))
         out = r.emit(stmts, 'ufw')

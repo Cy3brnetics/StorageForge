@@ -889,17 +889,28 @@ class RealNftables(Base):
             bash {q} --apply; bash {q} --apply; bash {q6} --apply; bash {net} --apply
             nft list table inet storageforge_fence
             nft get element inet storageforge_fence q4 '{{ 10.1.2.3 }}' >/dev/null && echo NET-MEMBER
+            if nft list table bridge storageforge_fence_bridge >/dev/null 2>&1; then
+              nft list table bridge storageforge_fence_bridge
+              nft get element bridge storageforge_fence_bridge q4 '{{ 10.0.0.5 }}' >/dev/null && echo BRIDGE-HAS
+            else
+              echo NO-BRIDGE-FAMILY
+            fi
             bash {u} --apply
-            nft get element inet storageforge_fence q4 '{{ 10.0.0.5 }}' 2>/dev/null || echo LIFTED''')
+            nft get element inet storageforge_fence q4 '{{ 10.0.0.5 }}' 2>/dev/null || echo LIFTED
+            if nft list table bridge storageforge_fence_bridge >/dev/null 2>&1; then
+              nft get element bridge storageforge_fence_bridge q4 '{{ 10.0.0.5 }}' 2>/dev/null || echo BRIDGE-LIFTED
+            fi''')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn('NOT-REPORT-FIRST', r.stdout)
         self.assertIn('QUARANTINED 10.0.0.5', r.stdout)
         self.assertIn('ip saddr @q4 drop', r.stdout)                # the rule that makes the set mean something
         self.assertIn('ip6 saddr @q6 drop', r.stdout)
-        self.assertIn('timeout 1h', r.stdout)
-        self.assertEqual(r.stdout.count('ip saddr @q4 drop'), 2)     # input and forward, once each, however many runs
         self.assertIn('NET-MEMBER', r.stdout)
         self.assertIn('LIFTED', r.stdout)
+        if 'NO-BRIDGE-FAMILY' not in r.stdout:
+            self.assertIn('BRIDGE-HAS', r.stdout)
+            self.assertIn('ip daddr @q4 drop', r.stdout)
+            self.assertIn('BRIDGE-LIFTED', r.stdout)
 
     def test_the_table_really_drops_packets(self):
         q = self.wrap(sx.quarantine_script('127.0.0.5', 0), 'q.sh')

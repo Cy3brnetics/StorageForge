@@ -166,8 +166,8 @@ def parse_nft(text: str, skip_compat: bool = False) -> dict | None:
             if ch.get('hook') in HOOKS and ch.get('type') == 'filter' and not compat:
                 chains.append({'backend': 'nftables', 'table': f"{ch.get('family')} {ch.get('table')}", 'name': ch.get('name'), 'hook': ch['hook'],
                                'prio': ch.get('prio') or 0, 'policy': ch.get('policy') or 'accept', 'family': ch.get('family')})
-            if ch.get('hook') in HOOKS and ch.get('type') == 'filter' and ch.get('policy') and not compat:
-                # any base chain that drops by default makes the hook drop, whatever the others say
+            if ch.get('hook') in HOOKS and ch.get('type') == 'filter' and ch.get('policy') and not compat and ch.get('family') != 'bridge':
+                # any L3 base chain that drops by default makes the hook drop; bridge base chains apply only to bridged frames
                 old = policies.get(ch['hook'])
                 policies[ch['hook']] = 'drop' if 'drop' in (old, ch['policy']) else ch['policy']
     for it in items:

@@ -424,6 +424,7 @@ def parse_measure(text: str) -> dict | None:
         'ntp_synced': {'yes': True, 'no': False}.get(ntp.get('NTPSynchronized', '').strip()),
         'auditd': {'active': audit[0] == 'active' if audit else None, 'storageforge_rules': _int(audit[1]) if len(audit) > 1 else None},
         'fence': 'storageforge_fence' in fence,
+        'fence_bridge': 'storageforge_fence_bridge' in fence,
         'airgap': 'storageforge_airgap' in fence,
         'quarantined': [q.strip() for q in s.get('quarantined', [])[:2000] if q.strip()],
         'sysctl': sysctl,
@@ -1161,7 +1162,7 @@ def firewall_view(conn: Conn, host: str | None = None) -> dict:
     from . import tbfeeds
     tools = (m or {}).get('tools') or []
     return {'quarantine': entries, 'vips': vip_list(conn), 'controller': _controller_ips(conn, host) if host else [], 'measured_at': (m or {}).get('measured_at'),
-            'fence_present': (m or {}).get('fence'), 'airgap': (m or {}).get('airgap'), 'unknown_drops': sorted(live - {e['ip_address'] for e in entries}),
+            'fence_present': (m or {}).get('fence'), 'fence_bridge': (m or {}).get('fence_bridge'), 'airgap': (m or {}).get('airgap'), 'unknown_drops': sorted(live - {e['ip_address'] for e in entries}),
             'firewalls': [t for t in ('nft', 'firewall-cmd', 'ufw', 'iptables') if t in tools],
             'bouncer': tbfeeds.bouncer_view(conn, host)}
 

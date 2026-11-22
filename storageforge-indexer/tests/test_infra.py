@@ -249,6 +249,23 @@ class Exposure(unittest.TestCase):
         self.assertEqual(level(8443)['level'], 'lan')
         self.assertEqual(level(9999)['level'], 'unknown')    # a rich rule it cannot read might allow it: not called closed
 
+    def test_bridge_family_rules_apply_only_to_bridged_flows(self):
+        nft = json.dumps({'nftables': [
+            {'chain': {'family': 'inet', 'table': 'filter', 'name': 'forward', 'type': 'filter', 'hook': 'forward', 'prio': 0, 'policy': 'accept'}},
+            {'chain': {'family': 'bridge', 'table': 'storageforge_fence_bridge', 'name': 'forward', 'type': 'filter', 'hook': 'forward', 'prio': -200, 'policy': 'accept'}},
+            {'rule': {'family': 'bridge', 'table': 'storageforge_fence_bridge', 'chain': 'forward', 'expr': [
+                {'match': {'op': '==', 'left': {'payload': {'protocol': 'ip', 'field': 'saddr'}}, 'right': '10.0.0.55'}},
+                {'drop': None},
+            ]}},
+        ]})
+        fw = firewall.model({'tools': ['nft'], 'nft': nft})
+        self.assertEqual(fw['policies'].get('forward'), 'accept')
+        # Normal L3 routed traffic checks inet/ip chains, not bridge chains
+        self.assertEqual(exposure.kernel_path(fw, 'forward', {'proto': 'tcp', 'port': 22, 'saddr': '10.0.0.55', 'family': 'ip'})['verdict'], 'accept')
+        # Bridged VM traffic checks bridge chains (and StorageForge own bridge fence catches it)
+        got = exposure.kernel_path(fw, 'forward', {'proto': 'tcp', 'port': 22, 'saddr': '10.0.0.55', 'family': 'ip', 'bridged': True}, own_only=True)
+        self.assertEqual(got['verdict'], 'drop')
+
     def test_published_listener_is_not_listed_twice(self):
         net = {**NET, 'listeners': [{**LISTEN, 'port': 8080}, {**LISTEN, 'port': 22}], 'read_at': 1}
         report = exposure.host_report(net, {'firewall': self.fw(iptables=DOCKER_RULES, ufw=UFW)}, [CONTAINER], 'nas')

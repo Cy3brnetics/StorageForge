@@ -719,6 +719,20 @@ class Language(unittest.TestCase):
         self.assertEqual(exposure.kernel_path(fw, 'forward', {'proto': 'tcp', 'port': 80, 'family': 'ip'})['verdict'], 'drop')
         self.assertEqual(exposure.kernel_path(fw, 'forward', {'proto': 'tcp', 'port': 81, 'family': 'ip'})['verdict'], 'accept')
 
+    def test_place_before_positions_across_targets_and_model(self):
+        stmts = ros.parse('/ip firewall filter add chain=input protocol=tcp dst-port=22 action=accept\n/ip firewall filter add chain=input protocol=tcp dst-port=443 action=accept place-before=0')
+        self.assertIn('place-before=0', ros.emit(stmts, 'routeros')['text'])
+        nft = ros.emit(stmts, 'nftables')['text']
+        self.assertLess(nft.index('dport 443'), nft.index('dport 22'))
+        ipt = ros.emit(stmts, 'iptables')['text']
+        self.assertIn('-I INPUT 1', ipt)
+        ufw = ros.emit(stmts, 'ufw')['text']
+        self.assertIn('ufw insert 1 allow', ufw)
+        # Matching by comment moves the accept above a named drop rule
+        existing = [{'chain': 'input', 'hook': 'input', 'order': 10, 'action': 'drop', 'comment': 'drop-all', 'id': '*9'}]
+        added = ros.to_model_rules(ros.parse('/ip firewall filter add chain=input protocol=tcp dst-port=8291 action=accept place-before=drop-all'), existing=existing)
+        self.assertLess(added['rules'][0]['order'], 10)
+
 
 class Scanner(unittest.TestCase):
     XML = '''<?xml version="1.0"?><!DOCTYPE nmaprun><nmaprun><host><status state="up"/><address addr="10.0.0.5" addrtype="ipv4"/><address addr="AA:BB:CC:00:11:22" addrtype="mac" vendor="Acme"/><hostnames><hostname name="printer"/></hostnames><ports><port protocol="tcp" portid="22"><state state="open"/><service name="ssh"/></port><port protocol="tcp" portid="80"><state state="closed"/></port></ports></host>
@@ -974,6 +988,10 @@ class Api(Base):
     def test_a_what_if_flips_on_the_rule_it_was_given(self):
         got = self.client.post('/api/dsl/whatif', json={'host': 'gw', 'dsl': '/ip firewall filter add chain=input in-interface=ether2 protocol=tcp dst-port=8291 action=accept', 'from': '198.51.100.9', 'to': '198.51.100.1', 'port': 8291}).get_json()
         self.assertEqual((got['before']['verdict'], got['changed']), ('blocked', False), 'it goes after the final drop, where RouterOS would append it')
+        self.assertTrue(any('place-before' in n for n in got.get('notes') or []), got)
+        positioned = self.client.post('/api/dsl/whatif', json={'host': 'gw', 'dsl': '/ip firewall filter add chain=input in-interface=ether2 protocol=tcp dst-port=8291 action=accept place-before=0', 'from': '198.51.100.9', 'to': '198.51.100.1', 'port': 8291}).get_json()
+        self.assertEqual((positioned['before']['verdict'], positioned['after']['verdict'], positioned['changed']), ('blocked', 'allowed', True))
+        self.assertEqual(positioned.get('notes'), [])
         got = self.client.post('/api/dsl/whatif', json={'host': 'dmzbox', 'dsl': '/ip firewall filter add chain=input protocol=tcp dst-port=80 action=drop', 'from': '10.77.20.80', 'to': '10.77.20.80', 'port': 80}).get_json()
         self.assertTrue(got['changed'])
 
@@ -1156,6 +1174,10 @@ class Devices(unittest.TestCase):
         self.stored()
         rep = netdevice.report(self.db, self.conn, 'gw', '/ip firewall filter add chain=input in-interface=ether1 protocol=tcp dst-port=22 action=drop', 'a')
         self.assertFalse(rep['cuts_off']['cuts'], 'RouterOS appends, and the accept before it still matches')
+        self.assertTrue(any('place-before' in n for n in rep['notes']))
+        top = netdevice.report(self.db, self.conn, 'gw', '/ip firewall filter add chain=input in-interface=ether1 protocol=tcp dst-port=22 action=drop place-before=0', 'a')
+        self.assertTrue(top['cuts_off']['cuts'], 'place-before=0 moves it above the accept and cuts SSH')
+        self.assertEqual(top['notes'], [])
         self.conn.execute("UPDATE security_measurements SET data_json = :d WHERE host = 'gw' AND kind = 'infra'", {'d': json.dumps({'firewall': {'readable': True, 'backends': ['routeros'], 'rules': [], 'nat': [], 'chains': routeros.firewall({'filter': [], 'nat': []})['chains'], 'policies': {}}})})
         rep = netdevice.report(self.db, self.conn, 'gw', '/ip firewall filter add chain=input in-interface=ether1 protocol=tcp dst-port=22 action=drop', 'a')
         self.assertTrue(rep['cuts_off']['cuts'])

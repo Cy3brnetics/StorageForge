@@ -325,8 +325,8 @@ def cuts_off(conn: Conn, d: dict, stmts: list) -> dict | None:
     fw = (m or {}).get('firewall')
     if not fw or not fw.get('readable') or not net:
         return {'cuts': None, 'why': 'its firewall has not been read'}
-    added = rostranspiler.to_model_rules(stmts, max([r.get('order') or 0 for r in fw['rules']] or [0]))
-    combined = {**fw, 'rules': fw['rules'] + added['rules']}
+    added = rostranspiler.to_model_rules(stmts, max([r.get('order') or 0 for r in fw['rules']] or [0]), existing=fw['rules'])
+    combined = {**fw, 'rules': sorted(fw['rules'] + added['rules'], key=lambda r: r.get('order') or 0)}
     iif = next((i['name'] for i in net.get('interfaces') or [] for a in i.get('addresses') or [] if a.get('ip') == d['address']), None)
     src = next(iter(_controller_ips(conn, d['name'])), None)
     flow = {'proto': 'tcp', 'port': d['port'], 'iif': iif, 'daddr': d['address'], 'saddr': src, 'family': 'ip'}
@@ -341,6 +341,11 @@ def report(db, conn: Conn, name: str, text: str, actor: str) -> dict:
     if not stmts:
         raise DeviceError('nothing to do')
     compiled = compile_for(conn, name, text)
+    if d['platform'] == 'routeros':
+        from . import inframeasure
+        fw = (inframeasure.reading(conn, d['name']) or {}).get('firewall')
+        if fw and fw.get('readable'):
+            compiled['notes'] = compiled['notes'] + rostranspiler.shadowed_notes(fw.get('rules') or [], stmts)
     risk = cuts_off(conn, d, stmts)
     now = int(time.time())
     result = {'statements': compiled['statements'], 'native': _redacted(compiled, stmts), 'unsupported': compiled['unsupported'], 'notes': compiled['notes'], 'cuts_off': risk, 'platform': d['platform']}
@@ -419,12 +424,17 @@ class RouterOsApply:
 
     def apply(self, run, compiled: dict) -> list[str]:
         out = []
-        for line in compiled['text'].splitlines():
-            if line.strip():
-                got = run(line)
-                if self.REFUSED.search(got or ''):
-                    raise DeviceError(f'the router refused `{line[:120]}`: {got.strip()[:200]}')
-                out.append(got)
+        lines = [line for line in compiled['text'].splitlines() if line.strip()]
+        if any(re.search(r'\bplace-before=\d+\b', line) for line in lines):
+            out.append(run('/ip firewall filter print terse without-paging'))
+        for line in lines:
+            cmd = re.sub(r'\bplace-before=([A-Za-z0-9._:-]+)\b',
+                         lambda m: m.group(0) if (m.group(1).isdigit() or re.fullmatch(r'\*[0-9A-Fa-f]+', m.group(1))) else f'place-before=[find comment="{m.group(1)}"]',
+                         line)
+            got = run(cmd)
+            if self.REFUSED.search(got or ''):
+                raise DeviceError(f'the router refused `{line[:120]}`: {got.strip()[:200]}')
+            out.append(got)
         return out
 
     def confirm(self, run):

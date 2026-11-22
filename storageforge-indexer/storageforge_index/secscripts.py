@@ -64,13 +64,42 @@ table inet storageforge_fence {
 }
 SF_NFT
 }
-fence_ready() { nft list table inet storageforge_fence >/dev/null 2>&1 || fence_rules | nft -f -; }
+fence_bridge_rules() { cat <<'SF_NFT'
+table bridge storageforge_fence_bridge {
+  set q4 {
+    type ipv4_addr
+    flags interval,timeout
+  }
+  set q6 {
+    type ipv6_addr
+    flags interval,timeout
+  }
+  chain forward {
+    type filter hook forward priority -200; policy accept;
+    ip saddr @q4 drop
+    ip daddr @q4 drop
+    ip6 saddr @q6 drop
+    ip6 daddr @q6 drop
+  }
+}
+SF_NFT
+}
+fence_ready() {
+  nft list table inet storageforge_fence >/dev/null 2>&1 || fence_rules | nft -f -
+  if ! nft list table bridge storageforge_fence_bridge >/dev/null 2>&1; then
+    fence_bridge_rules | nft -f - 2>/dev/null || :
+  fi
+}
 fence_set() { if [[ $1 == *:* ]]; then echo q6; else echo q4; fi; }
 fence_has() { nft get element inet storageforge_fence "$(fence_set "$1")" "{ $1 }" >/dev/null 2>&1; }
 fence_add() { # address seconds (0: until someone lifts it)
   local set to=; set=$(fence_set "$1"); (($2 > 0)) && to=" timeout ${2}s"
   nft delete element inet storageforge_fence "$set" "{ $1 }" 2>/dev/null || :   # a new timeout replaces the old one
   nft add element inet storageforge_fence "$set" "{ $1$to }"
+  if nft list table bridge storageforge_fence_bridge >/dev/null 2>&1; then
+    nft delete element bridge storageforge_fence_bridge "$set" "{ $1 }" 2>/dev/null || :
+    nft add element bridge storageforge_fence_bridge "$set" "{ $1$to }" 2>/dev/null || :
+  fi
 }
 fence_remember() { # address expires(0: never). Comes back after a reboot through storageforge-fence.
   mkdir -p "$CONF"; local tmp; tmp=$(mktemp "$CONF/.quarantine.XXXXXX")
@@ -133,7 +162,7 @@ sec chrony; has chronyc && try chronyc -c tracking
 sec chrony_auth; has chronyc && try chronyc -c authdata
 sec timedatectl; has timedatectl && try timedatectl show -p NTPSynchronized -p NTP
 sec auditd; has systemctl && try systemctl is-active auditd; has auditctl && try auditctl -l | grep -a -c -- 'key=sf_\|-k sf_' || :
-sec fence; if has nft; then try nft list tables | sed -n 's/^table inet \(storageforge_[a-z]*\)$/\1/p'; fi
+sec fence; if has nft; then try nft list tables | sed -n 's/^table \(inet\|bridge\) \(storageforge_[a-z_]*\)$/\2/p'; fi
 sec quarantined; if has nft; then for s in q4 q6; do try nft list set inet storageforge_fence "$s" | tr ',{}' '\n\n\n' | sed -n 's/^[[:space:]]*\([0-9a-fA-F:.][0-9a-fA-F:./]*\)\( .*\)\{0,1\}$/\1/p'; done; fi
 sec sysctl; for k in "${SYSCTLS[@]}"; do printf '%s=%s\n' "$k" "$(sysctl -n "$k" 2>/dev/null)"; done
 sec umask; cat /etc/profile.d/storageforge-umask.sh 2>/dev/null || :
@@ -383,6 +412,7 @@ elif ((APPLY == 0)); then missing "lift $IP"; finished; exit 0
 else
   doing "lift $IP"
   nft delete element inet storageforge_fence "$(fence_set "$IP")" "{ $IP }"
+  nft delete element bridge storageforge_fence_bridge "$(fence_set "$IP")" "{ $IP }" 2>/dev/null || :
   fence_has "$IP" && { conflict "$IP is still in the set"; exit 1; }
 fi
 if ((APPLY)); then fence_remember "$IP" ""; echo "LIFTED $IP"; fi
