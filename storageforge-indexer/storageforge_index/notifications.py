@@ -18,7 +18,7 @@ import time
 from .db import Conn
 
 LEVELS = ('crit', 'warn', 'info')
-SECURITY_KINDS = ('clamav', 'shared-key', 'map-listener', 'device-telnet')      # beside every kind that starts with security-
+SECURITY_KINDS = ('clamav', 'shared-key', 'map-listener', 'device-telnet', 'toolbox-cve', 'toolbox-bouncer-vip', 'toolbox-suricata')      # beside every kind that starts with security-
 MAX_SNOOZE = 30 * 86400
 NOTE_CHARS = 500
 EVENTS = ('opened', 'escalated', 'resolved', 'acknowledged', 'unacknowledged', 'snoozed', 'unsnoozed', 'fix-prepared', 'undo-prepared')

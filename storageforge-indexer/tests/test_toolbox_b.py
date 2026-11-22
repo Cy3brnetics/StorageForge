@@ -21,7 +21,7 @@ from storageforge_index import changes, inframeasure, security, steps_toolbox_b,
 
 FIX = Path(__file__).resolve().parent / 'fixtures' / 'toolbox'
 PROXY_DNS = ('caddy', 'traefik', 'nginx-proxy-manager', 'step-ca', 'pi-hole', 'adguard-home', 'unbound', 'coredns', 'dnsmasq', 'chrony')
-DETECTION: tuple = ()
+DETECTION = ('crowdsec', 'fail2ban', 'suricata', 'zeek', 'trivy', 'grype', 'openscap')
 MONITORING: tuple = ()
 
 
@@ -283,6 +283,58 @@ class Adapters(Base):
         self.assertEqual(changes.get_plan(self.conn, got['plan_id'])['tasks'][0]['params'], {'servers': 'time.cloudflare.com,nts.netnod.se'})
         bad = {'name': 'x', 'tasks': [{'host': 'box', 'type': 'caddy-route', 'params': {'site': 'a b', 'port': '0', 'state': 'present'}}]}
         self.assertGreaterEqual(changes.check(self.conn, bad)['crit'], 1)
+
+
+class Feeds(Base):
+    def setUp(self):
+        super().setUp()
+        self.host('box', 'apt', ['podman', 'caddy'])
+        self.r = reading(self.tmp)
+        security._save_measurement(self.conn, 'box', 'infra', int(time.time()), 'measure', self.r)
+
+    def test_suricata_ingest_and_bouncer_vip_reconciliation(self):
+        from storageforge_index import alerts, tbfeeds
+        now = int(time.time())
+        # add a high-severity Suricata alert and test ingest deduplication
+        r2 = json.loads(json.dumps(self.r))
+        r2['toolbox']['suricata']['alerts'].append({
+            'timestamp': '2026-11-22T01:02:03.000000+0000',
+            'src_ip': '198.51.100.44',
+            'dest_ip': '10.0.0.5',
+            'signature': 'ET EXPLOIT Attempt',
+            'signature_id': 99001,
+            'severity': 1,
+        })
+        security._save_measurement(self.conn, 'box', 'infra', now, 'measure', r2)
+        self.assertEqual(tbfeeds.ingest(self.conn, 'box', r2, now)['suricata'], 2)
+        self.assertEqual(tbfeeds.ingest(self.conn, 'box', r2, now)['suricata'], 0, 'deduped by deterministic uuid')
+        evs = security.list_events(self.conn, 'box', 10)
+        self.assertTrue(any(e['kind'] == 'suricata_alert' and '198.51.100.44' in e['detail'] for e in evs))
+
+        # VIP overlap in CrowdSec ban + quarantine discrepancy
+        security.save_vips(self.conn, ['203.0.113.7/32'], 'test')
+        self.conn.execute("INSERT INTO security_quarantine (host, ip_address, reason, added_at, actor) VALUES ('box', '203.0.113.99', 'test', :t, 'a')", {'t': now})
+        bv = security.firewall_view(self.conn, 'box')['bouncer']
+        self.assertEqual([c['ip'] for c in bv['vip_conflicts']], ['203.0.113.7'])
+        self.assertEqual(bv['unsynced_quarantine'], ['203.0.113.99'])
+        self.assertIn('203.0.113.9', bv['unsynced_bouncer'])
+
+        probs = alerts.problems(self.conn)
+        self.assertIn('toolbox-bouncer-vip:box', probs)
+        self.assertIn('toolbox-cve:box', probs)
+        self.assertIn('toolbox-suricata:box', probs)
+
+        plan_lift = tbfeeds.reconcile_bouncer(self.db, self.conn, {'host': 'box', 'action': 'unban_vips'}, 'test')
+        self.assertEqual(plan_lift['tasks'], 1)
+        tasks_lift = changes.get_plan(self.conn, plan_lift['plan_id'])['tasks']
+        self.assertEqual(tasks_lift[0]['params']['state'], 'lifted')
+        self.assertEqual(tasks_lift[0]['params']['ip'], '203.0.113.7')
+
+        plan_push = tbfeeds.reconcile_bouncer(self.db, self.conn, {'host': 'box', 'action': 'push_quarantine'}, 'test')
+        self.assertEqual(plan_push['tasks'], 1)
+        tasks_push = changes.get_plan(self.conn, plan_push['plan_id'])['tasks']
+        self.assertEqual(tasks_push[0]['params']['state'], 'banned')
+        self.assertEqual(tasks_push[0]['params']['ip'], '203.0.113.99')
 
 
 # ── the panel steps, against stand-in programs ──

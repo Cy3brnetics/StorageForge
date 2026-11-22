@@ -146,11 +146,25 @@ function malwareHost(h) {
   if (can('deploy.apply')) {
     const schedule = el('select', { 'aria-label': 'Schedule' }, ...['daily', 'weekly', 'monthly'].map((s) => new Option(s, s)));
     schedule.value = h.config.schedule;
+    const responseMode = el('select', { 'aria-label': 'When malware is found' },
+      new Option('Report only', 'report'), new Option('Ask first', 'confirm'), new Option('Auto-quarantine', 'auto'));
+    responseMode.value = h.config.response_mode || 'report';
+    const autoScan = el('input', { type: 'checkbox' }); autoScan.checked = !!h.config.auto_scan_changes;
+    const killOpen = el('input', { type: 'checkbox' }); killOpen.checked = !!h.config.kill_open;
     const paths = el('input', { type: 'text', 'aria-label': 'Folders to scan, separated by spaces', value: h.config.paths.join(' '), title: 'Folders to scan, separated by spaces. Each stays on its own filesystem.' });
-    const save = async () => malwarePost(`/api/clamav/hosts/${encodeURIComponent(h.host)}/config`, { schedule: schedule.value, paths: paths.value.split(/\s+/).filter(Boolean) }, box);
+    const save = async () => malwarePost(`/api/clamav/hosts/${encodeURIComponent(h.host)}/config`, {
+      schedule: schedule.value,
+      paths: paths.value.split(/\s+/).filter(Boolean),
+      response_mode: responseMode.value,
+      auto_scan_changes: autoScan.checked,
+      kill_open: killOpen.checked,
+    }, box);
     const go = (mode, title, extra) => async () => { if (await save()) startDeploy('clamav', h.host, mode, title, extra); };
-    box.append(el('div', { class: 'row' }, schedule, paths));
-    const buttons = [button('Dry run', go('report', `ClamAV dry run on ${h.host}`, {}), 'btn sm ghost'), button(h.installed ? 'Update' : 'Deploy', go('apply', `Deploy ClamAV to ${h.host}`, {}), 'btn sm')];
+    box.append(el('div', { class: 'row wrap' }, schedule, paths, responseMode,
+      el('label', { class: 'small' }, autoScan, ' Scan changed files'),
+      el('label', { class: 'small' }, killOpen, ' Kill open processes')));
+    const buttons = [button('Dry run', go('report', `ClamAV dry run on ${h.host}`, {}), 'btn sm ghost'), button(h.installed ? 'Update' : 'Deploy', go('apply', `Deploy ClamAV to ${h.host}`, {}), 'btn sm'),
+      button('Save policy', async () => { if (await save()) loadMalware(); }, 'btn sm ghost')];
     if (h.installed) buttons.push(button('Scan now', go('apply', `ClamAV scan on ${h.host}`, { run: true }), 'btn sm ghost'), button('Remove', async () => { if (await confirmDialog({ title: `Remove the ClamAV scan from ${h.host}?`, body: 'Quarantined files stay.', confirm: 'Remove', danger: true })) startDeploy('clamav', h.host, 'apply', `Remove ClamAV scan from ${h.host}`, { remove: true }); }, 'btn sm ghost'));
     if (h.installed && can('deploy.report')) buttons.push(button('Collect', async () => { if (await malwarePost(`/api/clamav/hosts/${encodeURIComponent(h.host)}/collect`, {}, box)) loadMalware(); }, 'btn sm ghost'));
     box.append(el('div', { class: 'row' }, ...buttons));
@@ -171,6 +185,11 @@ function malwareDetection(d, box) {
         if (!(await confirmDialog({ title: `Move ${d.path} on ${d.host} to quarantine?`, body: `${sys ? 'This is a system path: moving it can stop the host from booting.\n\n' : ''}A running process that has it open keeps running.`, confirm: 'Move to quarantine', danger: true }))) return;
         act('quarantine', { allow_system: sys })();
       }, 'btn sm'));
+      acts.push(button('Quarantine & kill process', async () => {
+        const sys = d.system_path;
+        if (!(await confirmDialog({ title: `Kill open processes and quarantine ${d.path} on ${d.host}?`, body: `${sys ? 'This is a system path: moving it can stop the host from booting.\n\n' : ''}Processes holding ${d.path} open will be terminated first.`, confirm: 'Kill and quarantine', danger: true }))) return;
+        act('quarantine', { allow_system: sys, kill_open: true })();
+      }, 'btn sm danger'));
       acts.push(button(d.ignored ? 'Stop ignoring' : 'Not malware: ignore', act('ignore', { ignore: !d.ignored, reason: 'marked in the Malware panel' }), 'btn sm ghost'));
     } else if (d.state === 'quarantined') {
       acts.push(button('Restore', async () => { if (await confirmDialog({ title: `Move ${d.path} back to where it was on ${d.host}?`, body: 'It will be ignored from then on.', confirm: 'Restore' })) act('restore', {})(); }, 'btn sm ghost'));

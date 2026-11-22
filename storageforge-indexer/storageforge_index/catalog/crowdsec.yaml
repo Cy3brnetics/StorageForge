@@ -1,0 +1,35 @@
+format: 1
+id: crowdsec
+revision: 1
+name: CrowdSec
+app_version: from the distribution
+category: detection
+summary: Collaborative intrusion prevention engine that reads logs and drops attacking addresses through an nftables bouncer.
+homepage: https://www.crowdsec.net/
+license: MIT
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [crowdsec, crowdsec-firewall-bouncer-nftables]
+        dnf: [crowdsec, crowdsec-firewall-bouncer-nftables]
+        pacman: [crowdsec]
+      units: [crowdsec.service]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+backup:
+  paths: [/etc/crowdsec]
+  consistency: live
+gui:
+  native: none
+  panel:
+    level: status+actions
+    adapter: crowdsec
+upgrade:
+  strategy: package
+risk: [runs-as-root, net-admin]
+compliance: [intrusion prevention]
+notes: CrowdSec keeps its own local API key for each bouncer, and StorageForge reconciles its bans with the host quarantine so never-quarantine addresses are not dropped by mistake.

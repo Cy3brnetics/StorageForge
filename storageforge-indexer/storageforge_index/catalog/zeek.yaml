@@ -1,0 +1,33 @@
+format: 1
+id: zeek
+revision: 1
+name: Zeek
+app_version: from the distribution
+category: detection
+summary: Passive network security monitor that records connection, DNS, TLS and SMB protocol activity logs.
+homepage: https://zeek.org/
+license: BSD-3-Clause
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [zeek]
+        pacman: [zeek]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+backup:
+  paths: [/etc/zeek]
+  consistency: live
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: zeek
+upgrade:
+  strategy: package
+risk: [runs-as-root]
+compliance: [network telemetry]
+notes: Configure the monitored interface in /etc/zeek/node.cfg; StorageForge checks zeek presence and version.

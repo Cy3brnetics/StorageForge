@@ -1,0 +1,45 @@
+format: 1
+id: trivy
+revision: 1
+name: Trivy
+app_version: 0.76.2
+category: detection
+summary: Vulnerability scanner for container images and filesystems, run rootless or via its local database server on loopback.
+homepage: https://trivy.dev/
+license: Apache-2.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+      ports: ["4954:4954/tcp"]
+      volumes: {cache: /home/scanner/.cache}
+      command: [server, --listen, "0.0.0.0:4954"]
+      user: "65532:65532"
+      volume_owner: "65532"
+      read_only: true
+      drop_caps: all
+    - kind: package
+      packages:
+        pacman: [trivy]
+requires:
+  ports: [4954/tcp]
+  volumes: [cache]
+exposure:
+  default: loopback
+  public_optional: false
+health:
+  url: http://127.0.0.1:4954/healthz
+  expect: 200
+backup:
+  paths: [cache]
+  consistency: live
+gui:
+  native: none
+  panel:
+    level: full
+    adapter: trivy
+upgrade:
+  strategy: recreate
+risk: []
+compliance: [vulnerability scanning]
+notes: Scans of running container images write findings into /var/lib/storageforge-tools/scans and surface fixable critical CVEs in alerts.

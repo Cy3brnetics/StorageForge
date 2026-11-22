@@ -94,6 +94,21 @@ class Results(unittest.TestCase):
             with self.assertRaises(ValueError):
                 clamav.save_config(self.conn, 'nas', bad, 'me')
         self.assertEqual(clamav.save_config(self.conn, 'nas', {'schedule': 'daily', 'paths': ['/x']}, 'me')['paths'], ['/x'])
+        cfg = clamav.save_config(self.conn, 'nas', {'response_mode': 'confirm', 'auto_scan_changes': True, 'kill_open': True}, 'me')
+        self.assertEqual((cfg['response_mode'], cfg['auto_scan_changes'], cfg['kill_open']), ('confirm', True, True))
+        with self.assertRaises(ValueError):
+            clamav.save_config(self.conn, 'nas', {'response_mode': 'nuke'}, 'me')
+
+    def test_new_detections_emit_security_events_and_confirm_runs(self):
+        from storageforge_index import secplus, security
+        clamav.save_config(self.conn, 'nas', {'response_mode': 'confirm', 'kill_open': True}, 'me')
+        self.assertTrue(clamav.ingest(self.conn, 'nas', report([('/srv/dropper', SIG)])))
+        evs = security.list_events(self.conn, 'nas', 10)
+        self.assertEqual(evs[0]['kind'], 'malware_detected')
+        self.assertEqual(evs[0]['severity'], 'crit')
+        pending = secplus.pending_runs(self.conn)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]['actions'], ['quarantine_file', 'kill_proc'])
 
     def test_deploy_items_follow_the_mode(self):
         deploy_args = lambda **k: clamav.deploy_items(self.db, self.conn, 'nas', k.pop('mode', 'apply'), 'me', **k)[0]['args']   # noqa: E731
@@ -259,6 +274,18 @@ class Scripts(unittest.TestCase):
         self.assertEqual(self.run_script(clamav.restore_script(d), '--apply').returncode, 0)
         self.assertTrue(f.exists())
         self.assertFalse(canary.exists())
+
+    def test_yara_detection_quarantines_without_clamscan_and_kill_open_kills_process(self):
+        self.clam(0)  # clamscan would say 0 (clean) for a YARA detection
+        self.stub('fuser', 'echo "fuser $*" >>"$STUB_LOG"\n[[ $1 == -s ]] && exit 0\n[[ $1 == -k ]] && exit 0\necho "4242 4343"')
+        f, d = self.detection('evil.yarhit')
+        yara_det = {**d, 'signature': 'YARA:Ransom_Pattern'}
+        r = self.run_script(clamav.quarantine_script(yara_det, 'b' * 32, kill_open=True), '--apply')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('KILLED 4242 4343', r.stdout)
+        self.assertRegex(r.stdout, r'QUARANTINED b{32} [0-9a-f]{64}')
+        self.assertIn('fuser -k -TERM', self.calls())
+        self.assertFalse(f.exists())
 
 
 if __name__ == '__main__':

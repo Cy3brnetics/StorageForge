@@ -52,7 +52,8 @@ COOL_OFF_HOURS = (12, 24, 48, 72)
 MIN_CIDR = {4: 16, 6: 48}           # a network wider than this is a mistake, not a quarantine
 EVENT_SEVERITY = {'canary_tripped': 'crit', 'clock_jump': 'crit', 'clock_set': 'warn', 'brake_ran': 'crit', 'watcher_stopped': 'warn', 'canary_source': 'warn',
                   'sentinel_started': 'info', 'sentinel_test': 'info', 'hold_missing': 'crit', 'events_dropped': 'warn', 'break_glass_used': 'crit',
-                  'falco_crit': 'crit', 'falco_warn': 'warn', 'identity_enumeration': 'crit', 'identity_multi_subnet': 'warn', 'identity_off_hours': 'warn', 'entropy_flagged': 'warn', 'velocity': 'warn'}
+                  'falco_crit': 'crit', 'falco_warn': 'warn', 'identity_enumeration': 'crit', 'identity_multi_subnet': 'warn', 'identity_off_hours': 'warn', 'entropy_flagged': 'warn', 'velocity': 'warn',
+                  'malware_detected': 'crit', 'suricata_alert': 'crit', 'rootkit_suspect': 'crit', 'persistence_changed': 'warn', 'aide_changed': 'warn'}
 HOST_EVENTS = frozenset({'canary_tripped', 'canary_source', 'clock_jump', 'clock_set', 'brake_ran', 'watcher_stopped', 'sentinel_started', 'sentinel_test',
                          'identity_enumeration', 'identity_multi_subnet', 'identity_off_hours'})
 EVENTS_PER_HOUR = 300               # what one host may store in an hour, whatever its token sends
@@ -441,6 +442,7 @@ def parse_measure(text: str) -> dict | None:
         'snapshots': [x.strip() for x in s.get('snapshots', [])[-500:] if ZFS_SNAP_RE.fullmatch(x.strip())],
         'sessions': _secplus().parse_sessions(s.get('sessions', [])),
         'falco_alerts': _secplus().parse_falco(s.get('falco_alerts', [])),
+        'threats': _secplus().parse_threats(s.get('threats', [])),
     }
 
 
@@ -1156,10 +1158,12 @@ def firewall_view(conn: Conn, host: str | None = None) -> dict:
     entries = [{'id': i, 'host': h, 'ip_address': ip, 'reason': r, 'added_at': a, 'expires_at': e, 'actor': who,
                 'remaining_seconds': None if e is None else max(0, e - now), 'live': (ip in live) if m else None}
                for i, h, ip, r, a, e, who in rows if e is None or e > now]
+    from . import tbfeeds
     tools = (m or {}).get('tools') or []
     return {'quarantine': entries, 'vips': vip_list(conn), 'controller': _controller_ips(conn, host) if host else [], 'measured_at': (m or {}).get('measured_at'),
             'fence_present': (m or {}).get('fence'), 'airgap': (m or {}).get('airgap'), 'unknown_drops': sorted(live - {e['ip_address'] for e in entries}),
-            'firewalls': [t for t in ('nft', 'firewall-cmd', 'ufw', 'iptables') if t in tools]}
+            'firewalls': [t for t in ('nft', 'firewall-cmd', 'ufw', 'iptables') if t in tools],
+            'bouncer': tbfeeds.bouncer_view(conn, host)}
 
 
 def quarantine(db, conn: Conn, body: dict, actor: str) -> dict:
@@ -1407,7 +1411,9 @@ def behavior_view(conn: Conn, host: str) -> dict:
     m = measurement(conn, host)
     sp = _secplus()
     return {'host': host, 'velocity': velocity(conn, host), 'entropy': measurement(conn, host, 'entropy'), 'falco': (m or {}).get('falco'), 'measured_at': (m or {}).get('measured_at'),
-            'falco_events': [e for e in list_events(conn, host, 100) if e['kind'] in ('falco_crit', 'falco_warn')][:50], 'falco_rules': sp.falco_rules(conn), 'thresholds': sp.thresholds(conn), 'scan_filters': sp.scan_filters(conn), 'yara': sp.list_yara(conn)}
+            'falco_events': [e for e in list_events(conn, host, 100) if e['kind'] in ('falco_crit', 'falco_warn')][:50], 'falco_rules': sp.falco_rules(conn), 'thresholds': sp.thresholds(conn), 'scan_filters': sp.scan_filters(conn), 'yara': sp.list_yara(conn),
+            'threats': (m or {}).get('threats'), 'persistence_drift': sp.persistence_drift(conn, host),
+            'threat_events': [e for e in list_events(conn, host, 100) if e['kind'] in ('rootkit_suspect', 'persistence_changed', 'suricata_alert', 'malware_detected')][:50]}
 
 
 # ── integrity ────────────────────────────────────────────────────────
@@ -1415,8 +1421,10 @@ def integrity_view(conn: Conn, host: str) -> dict:
     m = measurement(conn, host)
     if not m:
         return {'host': host, 'measured_at': None}
+    sp = _secplus()
     return {'host': host, 'measured_at': m['measured_at'], 'stale': m['stale'], 'aide': m.get('aide'), 'lynis': m.get('lynis'),
-            'tools': [t for t in m.get('tools') or [] if t in ('aide', 'lynis')]}
+            'tools': [t for t in m.get('tools') or [] if t in ('aide', 'lynis')],
+            'persistence_drift': sp.persistence_drift(conn, host), 'threats': m.get('threats')}
 
 
 def run_tool(db, conn: Conn, body: dict, actor: str) -> dict:
@@ -1722,6 +1730,17 @@ def host_coverage(conn: Conn, host: str) -> dict:
             warnings.append('someone other than root may destroy or release snapshots: ' + '; '.join(m['zfs_allow'][:2]))
         if marks and not (m.get('sentinel') or {}).get('active'):
             warnings.append('the sentinel is deployed but not running')
+        th = m.get('threats') or {}
+        if th.get('tmp_exe'):
+            critical.append(f'{len(th["tmp_exe"])} process(es) executing from temporary folders')
+        if th.get('ld_preload'):
+            critical.append(f'{len(th["ld_preload"])} /etc/ld.so.preload entry/entries present')
+        if th.get('uid0_users'):
+            critical.append('extra UID-0 accounts: ' + ', '.join(th['uid0_users'][:4]))
+        if th.get('deleted_exe'):
+            warnings.append(f'{len(th["deleted_exe"])} process(es) running deleted binaries')
+        if _secplus().persistence_drift(conn, host):
+            warnings.append('cron or SSH persistence files changed')
     if not marks:
         gaps.append('no sentinel')
     if not armed:

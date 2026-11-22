@@ -40,9 +40,11 @@ def register(web, ctx):
     @login_required
     @password_confirmed
     def api_clamav_quarantine(did):
+        body = json_body()
         host = clamav.get_detection(conn(), did)['host']
-        res = clamav.quarantine(db, conn(), did, actor(), json_body().get('allow_system') is True)
-        core.audit(conn(), actor(), 'clamav.quarantine', 'ok' if res['ok'] else 'failed', host, {'detection': did})
+        kill_open = body['kill_open'] is True if 'kill_open' in body else None
+        res = clamav.quarantine(db, conn(), did, actor(), body.get('allow_system') is True, kill_open=kill_open)
+        core.audit(conn(), actor(), 'clamav.quarantine', 'ok' if res['ok'] else 'failed', host, {'detection': did, 'killed': res.get('killed') or []})
         return answer(res)
 
     @web.post('/api/clamav/detections/<int:did>/restore')

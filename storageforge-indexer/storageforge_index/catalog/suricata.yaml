@@ -1,0 +1,36 @@
+format: 1
+id: suricata
+revision: 1
+name: Suricata IDS
+app_version: from the distribution
+category: detection
+summary: Network intrusion detection engine that inspects packets on the wire and writes structured alerts to EVE JSON.
+homepage: https://suricata.io/
+license: GPL-2.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [suricata]
+        dnf: [suricata]
+        zypper: [suricata]
+        pacman: [suricata]
+      units: [suricata.service]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+backup:
+  paths: [/etc/suricata]
+  consistency: live
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: suricata
+upgrade:
+  strategy: package
+risk: [runs-as-root]
+compliance: [network intrusion detection]
+notes: Reads alert summaries from /var/log/suricata/eve.json without exporting raw packet payloads; high-severity alerts raise security events that playbooks can act on.

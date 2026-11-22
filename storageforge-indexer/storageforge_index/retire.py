@@ -46,7 +46,7 @@ def retire(conn: Conn, name: str, keep_design: bool = False) -> dict:
         conn.execute("DELETE FROM security_timelock_queue WHERE lower(host) = lower(:h)", {'h': name})
         out['log_lines'] = conn.execute('DELETE FROM host_log_lines WHERE lower(host) = lower(:h)', {'h': name}).rowcount
         conn.execute('DELETE FROM host_log_status WHERE lower(host) = lower(:h)', {'h': name})
-        for prefix in ('security.host', 'security.clock', 'security.profile'):
+        for prefix in ('security.host', 'security.clock', 'security.profile', 'security.persistence', 'security.aide.last', 'security.autoscan'):
             conn.execute('DELETE FROM settings WHERE key = :k', {'k': f'{prefix}:{name.lower()}'})
         out['scan_jobs'] = conn.execute('DELETE FROM scan_jobs WHERE lower(host) = lower(:h)', {'h': name}).rowcount
         if not keep_design:

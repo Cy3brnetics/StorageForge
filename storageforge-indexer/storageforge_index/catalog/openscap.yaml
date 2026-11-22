@@ -1,0 +1,32 @@
+format: 1
+id: openscap
+revision: 1
+name: OpenSCAP
+app_version: from the distribution
+category: detection
+summary: Security compliance and OVAL vulnerability scanner implementing SCAP benchmarks on Linux hosts.
+homepage: https://www.open-scap.org/
+license: LGPL-2.1
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [openscap-scanner]
+        dnf: [openscap-scanner]
+        zypper: [openscap-utils]
+        pacman: [openscap]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: openscap
+upgrade:
+  strategy: package
+risk: [runs-as-root]
+compliance: [cis, nist-800-53]
+notes: Installs the oscap scanner binary and checks its availability and version in infrastructure measurements.

@@ -322,11 +322,42 @@ async function secFirewall() {
   const tier = el('select', { 'aria-label': 'Tier' }, new Option('These minutes', ''), new Option('Tier 1', '1'), new Option('Tier 2', '2'), new Option('Tier 3', '3'));
   const vips = secArea('one address or network a line', d.vips.join('\n'));
   const lift = (q) => async () => { if (await secPost(`/api/security/firewall/quarantine/${encodeURIComponent(q.ip_address)}?host=${encodeURIComponent(q.host)}&mode=apply`, null, out, 'DELETE')) secRender(); };
+  const b = d.bouncer || {};
+  const reconcileBtns = [];
+  if (host && secCan('security.manage')) {
+    if (b.vip_conflicts?.length) {
+      reconcileBtns.push(button('Stage lift VIP bans', async () => {
+        const r = await secPost('/api/security/firewall/reconcile', { host, action: 'unban_vips' }, out);
+        if (r?.plan_id && window.SEC_MORE) out.prepend(text('p', `Plan #${r.plan_id} staged (${r.tasks} step(s)): open Changes.`, 'st-ok'));
+      }, 'btn sm danger'));
+    }
+    if (b.unsynced_quarantine?.length) {
+      reconcileBtns.push(button('Stage push quarantine to bouncer', async () => {
+        const r = await secPost('/api/security/firewall/reconcile', { host, action: 'push_quarantine' }, out);
+        if (r?.plan_id) out.prepend(text('p', `Plan #${r.plan_id} staged (${r.tasks} step(s)): open Changes.`, 'st-ok'));
+      }, 'btn sm'));
+    }
+    if (b.unsynced_bouncer?.length) {
+      reconcileBtns.push(button('Import bouncer bans to quarantine', async () => {
+        const r = await secPost('/api/security/firewall/reconcile', { host, action: 'import_bans', mode: 'apply' }, out);
+        if (r?.ok) secRender();
+      }, 'btn sm'));
+    }
+  }
+  const bouncerCard = (host && (b.crowdsec_present || b.fail2ban_present || b.bans?.length))
+    ? secCard(`IPS bouncer on ${host}`,
+        b.vip_conflicts?.length ? text('p', `${b.vip_conflicts.length} bouncer ban(s) hit a never-quarantine VIP address.`, 'st-failed') : '',
+        b.bans?.length ? secTable(['Tool', 'Address', 'Scenario', 'Quarantine', 'VIP conflict'],
+          b.bans.map((x) => [x.tool, x.ip, x.scenario || x.jail || '', secOkPill(x.in_quarantine, 'synced', 'not in quarantine'), x.vip_conflict ? secPill('VIP conflict', 'critical') : '']))
+          : text('p', 'No active bouncer bans.', 'muted'),
+        reconcileBtns.length ? el('div', { class: 'row wrap sec-acts' }, ...reconcileBtns) : '')
+    : '';
   return el('div', { class: 'stack' },
     secCard('Quarantine', d.quarantine.length ? secTable(['Host', 'Address', 'Why', 'Since', 'Ends', 'In the firewall', ''], d.quarantine.map((q) => [q.host, q.ip_address, q.reason, secWhen(q.added_at), q.expires_at ? `in ${secSpan(q.remaining_seconds)}` : 'until lifted', secOkPill(q.live, 'yes', 'no, it is gone'), secCan('security.manage') ? button('Lift', lift(q), 'btn sm ghost') : ''])) : text('p', 'Nobody is quarantined.', 'muted'),
       d.unknown_drops?.length ? text('p', `Dropped on the host with no record here: ${d.unknown_drops.join(', ')}`, 'st-warn') : '',
       host ? el('div', { class: 'stack' }, el('div', { class: 'sec-form' }, secField('Address', ip), secField('Minutes (0: until lifted)', minutes), secField('Or a tier', tier), secField('Why', reason)),
         secActions('/api/security/firewall/quarantine', () => ({ host, ip_address: ip.value.trim(), minutes: minutes.value.trim(), ...(tier.value ? { tier: tier.value } : {}), reason: reason.value.trim() }), out, { apply: 'Drop it', after: () => secRender() })) : text('p', 'Pick a host to add an address.', 'muted')),
+    bouncerCard,
     host ? secCard(`Firewall on ${host}`, el('div', { class: 'stat-row' }, secStat('Found', d.measured_at ? (d.firewalls.join(', ') || 'none') : NOT_MEASURED), secStat('Quarantine table', d.measured_at ? (d.fence_present ? 'present' : 'not yet') : NOT_MEASURED), secStat('Airgap', d.measured_at ? (d.airgap ? 'ENGAGED' : 'off') : NOT_MEASURED, d.airgap ? 'st-failed' : ''), secStat('StorageForge reaches it from', d.controller.join(', ') || 'unknown')),
       text('p', 'The quarantine is its own nftables table, ahead of firewalld or ufw, so it works beside either and neither can undo it.', 'muted small'),
       secCan('security.emergency') ? el('div', { class: 'stack' }, text('h4', 'Emergency airgap'), text('p', 'Cuts everything except StorageForge, open connections included. It undoes itself in 10 minutes unless StorageForge can still reach the host through it, so it cannot lock you out for good.', 'muted small'),
@@ -360,6 +391,7 @@ async function secBehavior() {
       text('p', 'Compressed data looks just like ciphertext, so archives, images and video are skipped, and a known file header clears a file. What is left is a reason to look, not proof.', 'muted small'),
       secCan('security.manage') ? el('div', { class: 'row wrap sec-acts' }, button('Sample changed files', async () => { if (await secPost('/api/security/behavior/entropy', { host }, out)) secRender(); }, 'btn sm'), button('ClamAV on changed files', async () => { const r = await secPost('/api/security/behavior/diff-scan', { host }, out); if (r) out.prepend(text('p', `Scanned ${r.scanned} changed files in ${r.seconds} s: ${r.found} new detections. They are in the Malware panel.`, r.found ? 'st-failed' : 'st-ok')); }, 'btn sm')) : ''),
     secCard('Falco', text('p', d.measured_at ? (d.falco?.installed ? `Installed, ${d.falco.active ? 'running' : 'not running'}.` : 'Not installed.') : `${NOT_MEASURED}.`, 'muted'), button('Rules, alerts and YARA', () => secOpen('detect'), 'btn sm')),
+    window.SEC_MORE?.threatsCard ? SEC_MORE.threatsCard(host, d, out) : '',
     out);
 }
 
@@ -376,7 +408,7 @@ async function secIntegrity() {
       text('h4', 'Check files'), run('aide-check', 'Run a check'), text('h4', 'Make a new baseline'), text('p', 'After an upgrade you trust. Anything already changed becomes the new normal.', 'muted small'), run('aide-init', 'Make the baseline')),
     secCard('Lynis', l ? el('div', { class: 'stack' }, el('div', { class: 'stat-row' }, secStat('Hardening index', secVal(l.hardening_index)), secStat('Audited', secWhen(l.at)), secStat('Warnings', l.warnings.length), secStat('Suggestions', l.suggestions.length)),
       l.warnings.length ? secTable(['Warning', ''], l.warnings.map((w) => [w.id, w.text])) : '', l.suggestions.length ? secTable(['Suggestion', ''], l.suggestions.map((w) => [w.id, w.text]), 20) : '') : text('p', 'No audit has run.', 'muted'), run('lynis', 'Run an audit')),
-    text('p', 'These run in the background on the host. Measure again when they are done.', 'muted small'), secCan('security.manage') ? secMeasureButton(host, out) : '', out, await SEC_MORE.integrityExtra(host));
+    text('p', 'These run in the background on the host. Measure again when they are done.', 'muted small'), secCan('security.manage') ? secMeasureButton(host, out) : '', window.SEC_MORE?.threatsCard ? SEC_MORE.threatsCard(host, d, out) : '', out, await SEC_MORE.integrityExtra(host));
 }
 
 /* ── compliance ───────────────────────────────────────────────────── */

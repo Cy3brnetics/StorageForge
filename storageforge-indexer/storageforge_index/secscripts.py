@@ -23,6 +23,7 @@ SENTINEL = f'{SBIN}/storageforge-sentinel'
 BRAKE = f'{SBIN}/storageforge-brake'
 FENCE = f'{SBIN}/storageforge-fence'
 AUDIT_RULES = '/etc/audit/rules.d/storageforge-security.rules'
+QUARANTINE = '/var/lib/storageforge/quarantine'
 CANARY_KEY = 'sf_canary'
 BRAKE_ACTIONS = ('triage', 'quarantine', 'snapshot', 'freeze')
 SEBOOLEANS = ('samba_export_all_rw', 'samba_export_all_ro', 'samba_enable_home_dirs', 'nfs_export_all_rw', 'nfs_export_all_ro')
@@ -32,9 +33,9 @@ SYSCTLS = {'fs.protected_symlinks': '1', 'fs.protected_hardlinks': '1', 'fs.suid
 UMASK = '027'
 
 # Tests run these unprivileged. Under the runner they are root, and this does nothing.
-ROOTS = rf"""CONF={CONF} STATE={STATE} FORENSICS={FORENSICS} UNITS={UNITS} MANAGED={MANAGED} SBIN={SBIN}
+ROOTS = rf"""CONF={CONF} STATE={STATE} FORENSICS={FORENSICS} UNITS={UNITS} MANAGED={MANAGED} SBIN={SBIN} QUAR={QUARANTINE}
 if ((EUID != 0)) && [[ -n ${{SF_SEC_ROOT:-}} ]]; then
-  CONF=$SF_SEC_ROOT$CONF STATE=$SF_SEC_ROOT$STATE FORENSICS=$SF_SEC_ROOT$FORENSICS UNITS=$SF_SEC_ROOT$UNITS MANAGED=$SF_SEC_ROOT$MANAGED SBIN=$SF_SEC_ROOT$SBIN
+  CONF=$SF_SEC_ROOT$CONF STATE=$SF_SEC_ROOT$STATE FORENSICS=$SF_SEC_ROOT$FORENSICS UNITS=$SF_SEC_ROOT$UNITS MANAGED=$SF_SEC_ROOT$MANAGED SBIN=$SF_SEC_ROOT$SBIN QUAR=$SF_SEC_ROOT$QUAR
 fi
 """
 
@@ -156,12 +157,128 @@ if [[ -r $STATE/falco.jsonl ]]; then tail -n 200 "$STATE/falco.jsonl" | while IF
   f() { if [[ $l =~ \"$1\":\"([^\"]*)\" ]]; then printf '%s' "${BASH_REMATCH[1]}"; fi; }
   printf 'a\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(f rule)" "$(f priority)" "$(f time)" "$(f proc.name)" "$(f fs.path.target)$(f fd.name)" "$(f user.name)"
 done; fi
+sec threats
+ETC_ROOT=
+if ((EUID != 0)) && [[ -n ${SF_SEC_ROOT:-} ]]; then ETC_ROOT=$SF_SEC_ROOT; fi
+for p in /proc/[0-9]*/exe; do
+  [[ -L $p ]] || continue
+  pid=${p#/proc/}; pid=${pid%/exe}
+  t=$(readlink "$p" 2>/dev/null) || continue
+  [[ -n $t ]] || continue
+  comm=$(head -c 64 "/proc/$pid/comm" 2>/dev/null | tr -d '\n\t')
+  uid=$(awk '/^Uid:/ {print $2}' "/proc/$pid/status" 2>/dev/null)
+  case $t in
+    /memfd:*|/SYSV*|/dev/zero*|/run/*) ;;
+    *' (deleted)')
+      clean=${t%' (deleted)'}
+      printf 'deleted\t%s\t%s\t%s\t%s\n' "$pid" "${uid:-0}" "${comm:-?}" "$(printf %s "$clean" | base64 -w0)" ;;
+  esac
+  clean=${t%' (deleted)'}
+  case $clean in
+    /tmp/.mount_*) ;;
+    /tmp/*|/var/tmp/*|/dev/shm/*|/run/shm/*)
+      printf 'tmp_exe\t%s\t%s\t%s\t%s\n' "$pid" "${uid:-0}" "${comm:-?}" "$(printf %s "$clean" | base64 -w0)" ;;
+  esac
+done 2>/dev/null | head -n 100
+if [[ -s $ETC_ROOT/etc/ld.so.preload ]]; then
+  grep -aEv '^[[:space:]]*(#|$)' "$ETC_ROOT/etc/ld.so.preload" 2>/dev/null | head -n 20 | while IFS= read -r l; do
+    printf 'preload\t%s\n' "$(printf %s "$l" | base64 -w0)"
+  done
+fi
+awk -F: '$3 == 0 && $1 != "root" {printf "uid0\t%s\n", $1}' "$ETC_ROOT/etc/passwd" 2>/dev/null | head -n 20
+if has ip; then
+  ip -o link show 2>/dev/null | awk -F': ' '$3 ~ /PROMISC/ && $2 !~ /^(veth|br-|docker|virbr|tap|vnet|cali|flannel)/ {printf "promisc\t%s\n", $2}' | head -n 20
+fi
+for f in "$ETC_ROOT/etc/crontab" "$ETC_ROOT/etc/rc.local" "$ETC_ROOT/root/.ssh/authorized_keys" "$ETC_ROOT"/etc/cron.d/* "$ETC_ROOT"/etc/cron.hourly/* "$ETC_ROOT"/etc/cron.daily/* "$ETC_ROOT"/var/spool/cron/crontabs/* "$ETC_ROOT"/var/spool/cron/*; do
+  [[ -f $f && ! -L $f ]] || continue
+  sha=$(sha256sum -- "$f" 2>/dev/null | cut -d' ' -f1) || continue
+  rel=${f#"$ETC_ROOT"}
+  printf 'persist\t%s\t%s\n' "$sha" "$(printf %s "$rel" | base64 -w0)"
+done 2>/dev/null | head -n 200
 sec end
 """
 
 
 def bash_array(name: str, values) -> str:
     return f'{name}=(' + ' '.join(shlex.quote(str(v)) for v in values) + ')\n'
+
+
+def threat_kill_script(pid: int, comm: str = '', path: str = '', quarantine_file: bool = False, qid: str = '') -> str:
+    body = r"""
+section "Stop process $PID"
+[[ $PID =~ ^[0-9]+$ ]] && ((PID > 1)) || { conflict "invalid pid"; exit 1; }
+[[ -d /proc/$PID ]] || { ok "process $PID is already gone"; finished; exit 0; }
+actual=$(head -c 64 "/proc/$PID/comm" 2>/dev/null | tr -d '\n\t')
+if [[ -n $COMM && $actual != "$COMM" ]]; then
+  conflict "pid $PID is now $actual, not $COMM: pid was reused, refusing to kill"; exit 1
+fi
+TPATH=; if [[ -n $TPATH_B64 ]]; then TPATH=$(base64 -d <<<"$TPATH_B64"; echo x); TPATH=${TPATH%x}; fi
+if ((APPLY == 0)); then
+  doing "would stop process $PID ($actual)"
+  if ((QUARANTINE)) && [[ -n $TPATH && -f $TPATH && ! -L $TPATH ]]; then doing "would quarantine $TPATH"; fi
+  finished; exit 0
+fi
+kill -TERM "$PID" 2>/dev/null || :
+for _ in 1 2 3 4 5; do [[ -d /proc/$PID ]] || break; sleep 0.1; done
+if [[ -d /proc/$PID ]]; then kill -KILL "$PID" 2>/dev/null || :; sleep 0.1; fi
+[[ ! -d /proc/$PID ]] || { conflict "process $PID did not exit"; exit 1; }
+ok "stopped process $PID ($actual)"
+echo "KILLED_PID $PID"
+if ((QUARANTINE)) && [[ -n $TPATH && ! -L $TPATH && -f $TPATH ]]; then
+  case $TPATH in
+    /bin/*|/sbin/*|/lib/*|/lib32/*|/lib64/*|/usr/*|/boot/*|/etc/*)
+      info "system path $TPATH was not moved to quarantine" ;;
+    *)
+      q=$QUAR/$QID
+      if [[ ! -e $q/file ]]; then
+        sha=$(sha256sum -- "$TPATH" | cut -d' ' -f1)
+        b64p=$(printf %s "$TPATH" | base64 -w0)
+        mkdir -p -m 0700 "$QUAR"; chmod 0700 "$QUAR"; mkdir -m 0700 "$q"
+        printf 'b64=%s\nmode=%s\nowner=%s\nsignature=%s\nsha256=%s\nat=%s\n' \
+          "$b64p" "$(stat -c %a -- "$TPATH")" "$(stat -c %u:%g -- "$TPATH")" "THREAT:${actual:-proc}" "$sha" "$(date +%s)" >"$q/meta"
+        mv -- "$TPATH" "$q/file"; chmod 000 "$q/file"
+        ok "quarantined $TPATH"
+        echo "QUARANTINED $QID $sha"
+      fi ;;
+  esac
+fi
+finished
+"""
+    return (head() + APPLY_ONLY
+            + f'PID={int(pid)} COMM={shlex.quote(comm)} TPATH_B64={shlex.quote(b64(path) if path else "")} QUARANTINE={1 if quarantine_file else 0} QID={shlex.quote(qid)}\n'
+            + body)
+
+
+def stop_workload_script(path: str) -> str:
+    body = r"""
+TPATH=$(base64 -d <<<"$TPATH_B64"; echo x); TPATH=${TPATH%x}
+section "Stop containers touching $TPATH"
+[[ $TPATH == /* ]] || { conflict "invalid path"; exit 1; }
+hits=0
+for rt in docker podman; do
+  command -v "$rt" >/dev/null || continue
+  while IFS= read -r cid; do
+    [[ -n $cid ]] || continue
+    cname=$("$rt" inspect --format '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##')
+    match=0
+    while IFS= read -r src; do
+      [[ -n $src ]] || continue
+      if [[ $TPATH == "$src" || $TPATH == "$src"/* || $src == "$TPATH"/* ]]; then match=1; break; fi
+    done < <("$rt" inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "$cid" 2>/dev/null)
+    ((match)) || continue
+    hits=$((hits + 1))
+    if ((APPLY == 0)); then doing "would stop $rt container $cname ($cid)"
+    elif timeout 30 "$rt" stop -t 15 "$cid" >/dev/null 2>&1; then
+      ok "stopped $rt container $cname ($cid)"; echo "STOPPED_CONTAINER $rt $cname"
+    else
+      conflict "could not stop $rt container $cname ($cid)"
+    fi
+  done < <("$rt" ps -q 2>/dev/null)
+done
+((hits)) || ok "no running container bind mount overlaps $TPATH"
+finished
+"""
+    return head() + APPLY_ONLY + f'TPATH_B64={shlex.quote(b64(path))}\n' + body
 
 
 def measure_script(zfs_snaps=(), btrfs_paths=(), canaries=(), mounts=()) -> str:

@@ -123,10 +123,10 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (('POST',), r'/api/security/(compliance/reconverge|integrity/stage|worm/preview/stage|mac/context/stage|firewall/shares/stage)', 'plans.edit'),
     (('POST', 'DELETE'), r'/api/security/webauthn(/.*)?', 'security.emergency'),    # the touch only guards what this permission allows
     (_WRITE, r'/api/security/dash(/\d+)?', 'security.manage'),
-    (('POST',), r'/api/security/(waivers|profiles|worm/policies/apply|worm/preview|integrity/aide/watch|mac/identity/deploy|mac/noise|mac/context|firewall/tiers|behavior/thresholds|behavior/filters|behavior/falco|behavior/yara|behavior/yara/rules|malware/preview|packages/check|packages/bundle)', 'security.manage'),
+    (('POST',), r'/api/security/(waivers|profiles|worm/policies/apply|worm/preview|integrity/aide/watch|mac/identity/deploy|mac/noise|mac/context|firewall/tiers|firewall/reconcile|behavior/thresholds|behavior/filters|behavior/falco|behavior/yara|behavior/yara/rules|malware/preview|packages/check|packages/bundle)', 'security.manage'),
     (('DELETE',), r'/api/security/(waivers|profiles|behavior/yara/rules)/\d+', 'security.manage'),
     (('DELETE',), r'/api/security/worm/policies/\d+', 'security.emergency'),
-    (('POST',), r'/api/security/(worm/freeze|worm/policies|incident/clean-room/sweep|playbooks|playbooks/runs/\d+)', 'security.emergency'),
+    (('POST',), r'/api/security/(worm/freeze|worm/policies|incident/clean-room/sweep|threats/kill|playbooks|playbooks/runs/\d+)', 'security.emergency'),
     (('DELETE',), r'/api/security/playbooks/\d+', 'security.emergency'),
     (('POST', 'DELETE'), r'/api/workloads/captures(/\d+)?', 'plans.edit'),      # adopting a workload saves its capture, as saving a plan does
     (READ, r'/api/workloads(/.*)?', 'workloads.view'),

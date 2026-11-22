@@ -1,0 +1,36 @@
+format: 1
+id: fail2ban
+revision: 1
+name: fail2ban
+app_version: from the distribution
+category: detection
+summary: Watches SSH and service logs for repeated authentication failures and bans offending IP addresses per jail.
+homepage: https://github.com/fail2ban/fail2ban
+license: GPL-2.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [fail2ban]
+        dnf: [fail2ban]
+        zypper: [fail2ban]
+        pacman: [fail2ban]
+      units: [fail2ban.service]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+backup:
+  paths: [/etc/fail2ban]
+  consistency: live
+gui:
+  native: none
+  panel:
+    level: status+actions
+    adapter: fail2ban
+upgrade:
+  strategy: package
+risk: [runs-as-root, net-admin]
+compliance: [brute-force protection]
+notes: Bans and lifts from StorageForge use fail2ban-client for a named jail and appear alongside host quarantine rules.

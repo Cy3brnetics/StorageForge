@@ -86,7 +86,7 @@ READS = {
     'pfsense.parse_netstat': pfsense.parse_netstat, 'pfsense.parse_arp': pfsense.parse_arp, 'pfsense.parse_sockstat': pfsense.parse_sockstat,
     'cisco.parse_ace': lambda t: [cisco.parse_ace(x, 'acl', n) for n, x in enumerate(t.splitlines())],
     # these take the lines of one section
-    'secplus.parse_sessions': lambda t: secplus.parse_sessions(t.splitlines()), 'secplus.parse_falco': lambda t: secplus.parse_falco(t.splitlines()),
+    'secplus.parse_sessions': lambda t: secplus.parse_sessions(t.splitlines()), 'secplus.parse_falco': lambda t: secplus.parse_falco(t.splitlines()), 'secplus.parse_threats': lambda t: secplus.parse_threats(t.splitlines()),
     'inframeasure.parse_listeners': lambda t: inframeasure.parse_listeners(t.splitlines()), 'inframeasure.parse_storage_clients': lambda t: inframeasure.parse_storage_clients(t.splitlines()),
     'inframeasure.parse_wireguard': lambda t: inframeasure.parse_wireguard(t.splitlines()), 'inframeasure.parse_tailscale': lambda t: inframeasure.parse_tailscale(t.splitlines()),
     'inframeasure.parse_overlays': lambda t: inframeasure.parse_overlays({k: t.splitlines() for k in ('tailscale_json', 'netbird_json', 'headscale_json', 'openvpn_status', 'zt_info', 'zt_networks', 'zt_peers',

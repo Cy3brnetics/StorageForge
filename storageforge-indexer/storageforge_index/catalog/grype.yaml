@@ -1,0 +1,42 @@
+format: 1
+id: grype
+revision: 1
+name: Grype
+app_version: 0.122.1
+category: detection
+summary: Container image and filesystem vulnerability scanner from Anchore, writing structured findings for each scanned image.
+homepage: https://github.com/anchore/grype
+license: Apache-2.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/anchore/grype:v0.122.1-nonroot@sha256:35e6adfef62c2d04fa4995a30dd28829963ce62506c343bf3ed4ae9b5db1dadc
+      ports: []
+      volumes: {cache: /.cache}
+      command: [version]
+      user: "65532:65532"
+      volume_owner: "65532"
+      read_only: true
+      drop_caps: all
+    - kind: package
+      packages:
+        pacman: [grype]
+requires:
+  ports: []
+  volumes: [cache]
+exposure:
+  default: loopback
+  public_optional: false
+backup:
+  paths: [cache]
+  consistency: live
+gui:
+  native: none
+  panel:
+    level: full
+    adapter: grype
+upgrade:
+  strategy: recreate
+risk: []
+compliance: [vulnerability scanning]
+notes: Runs image scans alongside Trivy through trivy-scan plan steps and reports fixable critical and high CVEs.

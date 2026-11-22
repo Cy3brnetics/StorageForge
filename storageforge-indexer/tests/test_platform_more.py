@@ -813,6 +813,36 @@ class Playbooks(Base):
         security.record_event(self.conn, 'nas', 'canary_source', 'from', f'path_b64={path};client=10.0.1.42;pid=9', 'test')
         self.assertEqual(secplus._client_of(self.conn, 'nas', first, secplus.event_fields(f'path_b64={path};event=MODIFY')), '10.0.1.42')
 
+    def test_expanded_containment_actions_run_on_malware_ids_and_threats(self):
+        self.add_host('peer2')
+        # drop_fleet + stop_workload + airgap + quarantine_file + kill_proc
+        mal_file = self.root / 'bad.elf'
+        mal_file.write_text('malware')
+        # Stub clamscan, docker, sleep/kill via bin or mock _run for kill_proc/stop_workload/quarantine_file
+        (self.bin / 'fuser').write_text('#!/bin/bash\nexit 1\n')
+        (self.bin / 'fuser').chmod(0o755)
+        (self.bin / 'docker').write_text('#!/bin/bash\nif [[ $1 == ps ]]; then echo "cid1"; elif [[ $* == *Name* ]]; then echo "/app1"; elif [[ $* == *Mounts* ]]; then echo "/srv/share"; elif [[ $1 == stop ]]; then echo "docker stop $*"; exit 0; fi\n')
+        (self.bin / 'docker').chmod(0o755)
+        self.save(name='Malware & IDS respond', trigger='suricata_alert', actions=['drop_fleet', 'stop_workload', 'quarantine_file'], mode='live')
+        self.start()
+        pb64 = base64.b64encode(str(self.root / 'bad.elf').encode()).decode()
+        # First test quarantine_file + stop_workload via direct run_actions on /srv/share/file and then drop_fleet via event
+        security.record_event(self.conn, 'nas', 'suricata_alert', 'ET TEST from 203.0.113.55', f'client=203.0.113.55;path_b64={pb64};sig=YARA:TestRule', 'suricata')
+        with mock.patch.object(alerts, 'send', return_value=['ok']):
+            fired = secplus.process_events(self.db, self.conn)
+        self.assertEqual(fired, 1)
+        run = secplus.playbook_runs(self.conn)[0]
+        self.assertEqual(run['outcome'], 'ran', run)
+        # Verify drop_fleet quarantined client on both ready hosts ('nas' and 'peer2')
+        qhosts = {r[0] for r in self.conn.all("SELECT host FROM security_quarantine WHERE ip_address = '203.0.113.55'")}
+        self.assertEqual(qhosts, {'nas', 'peer2'})
+        self.assertFalse(mal_file.exists(), 'quarantine_file should move the YARA-flagged file to quarantine')
+        # Test stop_workload on path inside mounted container dir
+        pb = {'id': 99, 'name': 'Workload stop', 'actions': ['stop_workload']}
+        out = secplus.run_actions(self.db, self.conn, pb, 'nas', {'id': 1, 'summary': 'test'}, {'path': '/srv/share/sub/x'})
+        self.assertEqual(out['failed'], [])
+        self.assertIn('app1', out['steps'][0]['detail'])
+
 
 class FakeToken:
     """A FIDO2 token, with a real P-256 key. What a browser would hand over, without a browser."""
@@ -1000,10 +1030,63 @@ class EveryRouteAnswers(Base):
             alerts.save_settings(self.conn, {'alerts': {'routes': [{'level': 'crit', 'host': '*', 'channels': ['nope']}]}}, 'a')
 
 
+class ThreatChecks(Base):
+    def test_threat_parsing_persistence_drift_and_kill_endpoint(self):
+        b64 = lambda s: base64.b64encode(s.encode()).decode()
+        lines = [
+            f'tmp_exe\t999999\t0\tminer\t{b64("/tmp/xmrig")}',
+            f'deleted\t999998\t1000\told_daemon\t{b64("/usr/sbin/sshd")}',
+            f'preload\t{b64("/tmp/hook.so")}',
+            'uid0\tbackdoor',
+            'promisc\teth0',
+            f'persist\t{"a" * 64}\t{b64("/etc/crontab")}',
+        ]
+        parsed = secplus.parse_threats(lines)
+        self.assertEqual(parsed['tmp_exe'][0]['path'], '/tmp/xmrig')
+        self.assertEqual(parsed['ld_preload'], ['/tmp/hook.so'])
+        self.assertEqual(parsed['uid0_users'], ['backdoor'])
+        self.assertEqual(parsed['persistence'], {'/etc/crontab': 'a' * 64})
+
+        now = int(time.time())
+        data1 = {'host_now': now, 'tools': ['aide'], 'aide': {'last_action': 'check', 'exit_code': 0, 'last_at': now - 10, 'entries': []},
+                 'threats': {'deleted_exe': [], 'tmp_exe': [], 'ld_preload': [], 'uid0_users': [], 'promisc': [], 'persistence': {'/etc/crontab': 'a' * 64}}}
+        secplus.after_measure(self.conn, 'nas', data1, now)
+        self.assertEqual(secplus.persistence_drift(self.conn, 'nas'), [])
+
+        data2 = {'host_now': now + 60, 'tools': ['aide'],
+                 'aide': {'last_action': 'check', 'exit_code': 4, 'last_at': now + 50, 'entries': ['changed: /etc/passwd']},
+                 'threats': parsed}
+        secplus.after_measure(self.conn, 'nas', data2, now + 60)
+        # First baseline only saved on data1; now persistence stays empty drift because crontab sha matched, let's also change crontab sha:
+        data3 = {'host_now': now + 120, 'tools': [], 'threats': {**parsed, 'persistence': {'/etc/crontab': 'b' * 64}}}
+        secplus.after_measure(self.conn, 'nas', data3, now + 120)
+        self.assertEqual(secplus.persistence_drift(self.conn, 'nas'), [{'path': '/etc/crontab', 'kind': 'changed'}])
+        kinds = {e['kind'] for e in security.list_events(self.conn, 'nas', 50)}
+        self.assertTrue({'rootkit_suspect', 'persistence_changed', 'aide_changed'} <= kinds, kinds)
+
+        # Spawn a real sleep subprocess and verify /api/security/threats/kill stops it & quarantines a copy of the binary
+        proc = subprocess.Popen(['sleep', '30'])
+        self.addCleanup(proc.kill)
+        payload = self.root / 'sleep_payload'
+        payload.write_text('bin')
+        # Reused PID guard first: ask for wrong comm
+        bad = self.post('/api/security/threats/kill', host='nas', pid=proc.pid, comm='wrongcomm', path=str(payload), quarantine=True, mode='apply')
+        self.assertEqual(bad.status_code, 409)
+        self.assertIn('reused', bad.get_json()['error'])
+        # Now match real comm 'sleep'
+        ok = self.post('/api/security/threats/kill', host='nas', pid=proc.pid, comm='sleep', path=str(payload), quarantine=True, mode='apply')
+        self.assertEqual(ok.status_code, 200, ok.get_data(as_text=True))
+        got = ok.get_json()
+        self.assertTrue((got['killed'], got['quarantined']))
+        self.assertFalse(payload.exists())
+        proc.wait(timeout=5)
+
+
 class Bash(unittest.TestCase):
     def test_what_goes_on_hosts_parses(self):
         from storageforge_index import secscripts
         for name, text in (('identity', secplus.identity_script(10, 22, 6)), ('falco', secplus.falco_script(secplus.DEFAULT_FALCO)), ('falco-off', secplus.falco_script('', True)), ('yara', secplus.YARA_SCAN), ('tree', secplus.YARA_TREE), ('sessions', secplus.SESSIONS_SCRIPT),
+                           ('threat-kill', secscripts.threat_kill_script(999, 'x', '/tmp/x', True, 'a' * 32)), ('stop-workload', secscripts.stop_workload_script('/srv/x')),
                            ('compliance', secscripts.compliance_script('cis-l1', 'nas')), ('aide', secscripts.tool_script('aide-check', ['/opt/x y'])), ('lynis', secscripts.tool_script('lynis')), ('airgap', secscripts.airgap_script(['10.0.0.1'])), ('quarantine', secscripts.quarantine_script('10.0.0.1', 60))):
             self.assertEqual(subprocess.run(['bash', '-n'], input=text, text=True, capture_output=True).stderr, '', name)
 

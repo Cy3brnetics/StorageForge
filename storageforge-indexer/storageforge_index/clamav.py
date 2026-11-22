@@ -33,6 +33,7 @@ UNITS = '/etc/systemd/system'
 MANAGED = '/var/lib/storageforge/managed'
 USER = 'storageforge-clamav'
 SCHEDULES = {'daily': '*-*-* 03:15:00', 'weekly': 'Sun *-*-* 03:15:00', 'monthly': '*-*-01 03:15:00'}
+RESPONSE_MODES = ('report', 'confirm', 'auto')
 SYSTEM_PATHS = ('/bin', '/sbin', '/lib', '/lib32', '/lib64', '/usr', '/boot', '/etc')
 UUID_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 QID_RE = re.compile(r'[0-9a-f]{32}')
@@ -200,7 +201,7 @@ path=$(base64 -d <<<"$B64"; echo x); path=${path%x}
 """
 
 QUARANTINE_BODY = r"""
-SYSTEM=@SYSTEM@ SIG=@SIG@
+SYSTEM=@SYSTEM@ SIG=@SIG@ KILL_OPEN=@KILL_OPEN@ SKIP_CLAMSCAN=@SKIP_CLAMSCAN@
 if [[ -e $q/file ]]; then
   [[ ! -e $path ]] && { ok "already in quarantine"; echo "QUARANTINED $QID $(sed -n 's/^sha256=//p' "$q/meta")"; exit 0; }
   conflict "this quarantine id already holds a file, and $path exists too"; exit 1
@@ -212,16 +213,29 @@ if ((SYSTEM == 0)); then
     conflict "$path is a system path: moving it can stop this host from booting. Allow system paths to go ahead"; exit 1 ;;
   esac
 fi
-rc=0; clamscan --no-summary --infected "$path" >/dev/null 2>&1 || rc=$?
-case $rc in
-  1) ok "ClamAV still detects $path" ;;
-  0) conflict "ClamAV no longer detects $path: it was left where it is"; exit 1 ;;
-  *) conflict "ClamAV could not check $path (exit code $rc): it was left where it is"; exit 1 ;;
-esac
+if ((SKIP_CLAMSCAN)); then
+  info "detected as $SIG: skipping ClamAV re-check"
+else
+  rc=0; clamscan --no-summary --infected "$path" >/dev/null 2>&1 || rc=$?
+  case $rc in
+    1) ok "ClamAV still detects $path" ;;
+    0) conflict "ClamAV no longer detects $path: it was left where it is"; exit 1 ;;
+    *) conflict "ClamAV could not check $path (exit code $rc): it was left where it is"; exit 1 ;;
+  esac
+fi
 links=$(stat -c %h "$path")
 ((links == 1)) || info "$path has $links hard links: the others stay where they are"
 if command -v fuser >/dev/null && fuser -s "$path" 2>/dev/null; then
-  info "a process has $path open. Moving the file does not stop that process: look at it yourself"
+  if ((KILL_OPEN)); then
+    pids=$(fuser "$path" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' | tr '\n' ' ')
+    fuser -k -TERM "$path" >/dev/null 2>&1 || :
+    sleep 0.2
+    fuser -k -KILL "$path" >/dev/null 2>&1 || :
+    doing "stopped process(es) holding $path open: ${pids:-unknown}"
+    echo "KILLED ${pids:-1}"
+  else
+    info "a process has $path open. Moving the file does not stop that process: look at it yourself"
+  fi
 fi
 if ((APPLY == 0)); then
   doing "would move $path to $q"; finished; exit 0
@@ -267,19 +281,40 @@ def default_paths(conn: Conn, host: str) -> list[str]:
 
 def get_config(conn: Conn, host: str) -> dict:
     saved = alerts.get_setting(conn, f'clamav.host:{host.lower()}') or {}
-    return {'schedule': saved.get('schedule') or 'weekly', 'paths': saved.get('paths') or default_paths(conn, host),
-            'custom_paths': bool(saved.get('paths'))}
+    mode = saved.get('response_mode')
+    return {
+        'schedule': saved.get('schedule') or 'weekly',
+        'paths': saved.get('paths') or default_paths(conn, host),
+        'custom_paths': bool(saved.get('paths')),
+        'auto_scan_changes': bool(saved.get('auto_scan_changes', False)),
+        'response_mode': mode if mode in RESPONSE_MODES else 'report',
+        'kill_open': bool(saved.get('kill_open', False)),
+    }
 
 
 def save_config(conn: Conn, host: str, body: dict, actor: str) -> dict:
-    schedule = str(body.get('schedule') or 'weekly')
+    saved = alerts.get_setting(conn, f'clamav.host:{host.lower()}') or {}
+    schedule = str(body['schedule'] if 'schedule' in body else (saved.get('schedule') or 'weekly'))
     if schedule not in SCHEDULES:
         raise ValueError('the schedule is daily, weekly or monthly')
-    paths = [str(p).strip() for p in body.get('paths') or [] if str(p).strip()]
-    for p in paths:
-        if not p.startswith('/') or '/../' in p + '/' or any(ord(c) < 32 for c in p) or len(p) > 1000:
-            raise ValueError(f'not an absolute path: {p[:80]}')
-    alerts.set_setting(conn, f'clamav.host:{host.lower()}', {'schedule': schedule, 'paths': paths}, actor)
+    if 'paths' in body:
+        paths = [str(p).strip() for p in body.get('paths') or [] if str(p).strip()]
+        for p in paths:
+            if not p.startswith('/') or '/../' in p + '/' or any(ord(c) < 32 for c in p) or len(p) > 1000:
+                raise ValueError(f'not an absolute path: {p[:80]}')
+    else:
+        paths = saved.get('paths') or []
+    mode = str(body['response_mode'] if body.get('response_mode') is not None else (saved.get('response_mode') or 'report'))
+    if mode not in RESPONSE_MODES:
+        raise ValueError('response_mode is report, confirm or auto')
+    auto_scan = bool(body['auto_scan_changes']) if 'auto_scan_changes' in body else bool(saved.get('auto_scan_changes', False))
+    kill_open = bool(body['kill_open']) if 'kill_open' in body else bool(saved.get('kill_open', False))
+    alerts.set_setting(
+        conn,
+        f'clamav.host:{host.lower()}',
+        {'schedule': schedule, 'paths': paths, 'auto_scan_changes': auto_scan, 'response_mode': mode, 'kill_open': kill_open},
+        actor,
+    )
     return get_config(conn, host)
 
 
@@ -366,6 +401,44 @@ def parse_report(text: str) -> tuple[dict, list[tuple[str, str, str]]] | None:
     return run, found
 
 
+def _on_new_detections(conn: Conn, host: str, hits: list[tuple[str, str, str]], via: str, now: int):
+    """Emit malware_detected security events and queue confirm runs if host response_mode is confirm."""
+    if not hits:
+        return
+    from . import security
+    cfg = get_config(conn, host)
+    for b64, path, sig in hits:
+        uid = str(uuid.uuid4())
+        summary = f'{sig} found at {path}'
+        detail = f'path_b64={b64};sig={sig}'
+        security.record_event(conn, host, 'malware_detected', summary, detail, via, now, uid)
+        if cfg['response_mode'] == 'confirm' and not is_system_path(path):
+            eid = conn.scalar('SELECT event_id FROM security_events WHERE uuid = :u', {'u': uid})
+            if eid is not None:
+                actions = ['quarantine_file', 'kill_proc'] if cfg['kill_open'] else ['quarantine_file']
+                already = conn.scalar(
+                    """SELECT 1 FROM security_playbook_runs
+                       WHERE lower(host) = lower(:h) AND outcome = 'pending' AND detail_json LIKE :p LIMIT 1""",
+                    {'h': host, 'p': f'%"path_b64": "{b64}"%'},
+                )
+                if not already:
+                    conn.execute(
+                        """INSERT INTO security_playbook_runs (playbook_id, event_id, host, at, outcome, detail_json)
+                           VALUES (0, :e, :h, :t, 'pending', :d)""",
+                        {
+                            'e': eid,
+                            'h': host,
+                            't': now,
+                            'd': json.dumps({
+                                'playbook': f'Malware policy ({host})',
+                                'actions': actions,
+                                'summary': summary,
+                                'fields': {'path_b64': b64, 'path': path, 'sig': sig},
+                            }),
+                        },
+                    )
+
+
 def ingest(conn: Conn, host: str, text: str, via: str = 'scan') -> bool:
     """One host's last result. Returns False if already seen or unreadable. Only a finished run clears what it no longer
     reports: a scan cut short, or one that read nothing, must not close a detection."""
@@ -377,25 +450,31 @@ def ingest(conn: Conn, host: str, text: str, via: str = 'scan') -> bool:
         return False
     now = int(time.time())
     complete = run['rc'] in (0, 1) and run['scanned'] > 0
+    new_hits: list[tuple[str, str, str]] = []
     with conn.tx():
         conn.execute("""INSERT INTO clamav_runs (run_uuid, host, started_at, finished_at, exit_code, scanned, found, version, signatures_at, via, received_at)
                         VALUES (:u, :h, :s, :e, :rc, :n, :f, :v, :sa, :via, :t)""",
                      {'u': run['run'], 'h': host, 's': run['start'], 'e': run['end'], 'rc': run['rc'], 'n': run['scanned'], 'f': len(found),
                       'v': run['version'], 'sa': _signature_time(run['version']), 'via': via, 't': now})
-        existing = {(r[1], r[2]): r[0] for r in conn.all("""SELECT detection_id, path_b64, signature FROM clamav_detections
-                                                            WHERE host = :h AND state IN ('open', 'gone')""", {'h': host})}
+        existing = {(r[1], r[2]): (r[0], r[3]) for r in conn.all("""SELECT detection_id, path_b64, signature, state FROM clamav_detections
+                                                                      WHERE host = :h AND state IN ('open', 'gone')""", {'h': host})}
         seen = set()
         for b64, path, sig in found:
             seen.add((b64, sig))
             if (b64, sig) in existing:
-                conn.execute("UPDATE clamav_detections SET state = 'open', last_seen = :t WHERE detection_id = :i", {'t': now, 'i': existing[(b64, sig)]})
+                did, prev_state = existing[(b64, sig)]
+                conn.execute("UPDATE clamav_detections SET state = 'open', last_seen = :t WHERE detection_id = :i", {'t': now, 'i': did})
+                if prev_state == 'gone':
+                    new_hits.append((b64, path, sig))
             else:
                 conn.execute("""INSERT INTO clamav_detections (host, path_b64, path, signature, state, ignored, first_seen, last_seen)
                                 VALUES (:h, :b, :p, :s, 'open', 0, :t, :t)""", {'h': host, 'b': b64, 'p': path, 's': sig, 't': now})
+                new_hits.append((b64, path, sig))
         if complete:
-            for key, did in existing.items():
+            for key, (did, _) in existing.items():
                 if key not in seen:
                     conn.execute("UPDATE clamav_detections SET state = 'gone' WHERE detection_id = :i AND state = 'open'", {'i': did})
+    _on_new_detections(conn, host, new_hits, via, now)
     return True
 
 
@@ -403,7 +482,8 @@ def add_found(conn: Conn, host: str, text: str) -> int:
     """Detections from a scan of only some files: found\\tpath_b64\\tsignature lines. Unlike ingest this closes nothing,
     since it says nothing about the files it did not read. Returns how many are new."""
     now, new = int(time.time()), 0
-    known = {(r[1], r[2]): r[0] for r in conn.all('SELECT detection_id, path_b64, signature FROM clamav_detections WHERE host = :h', {'h': host})}
+    new_hits: list[tuple[str, str, str]] = []
+    known = {(r[1], r[2]): (r[0], r[3]) for r in conn.all('SELECT detection_id, path_b64, signature, state FROM clamav_detections WHERE host = :h', {'h': host})}
     for line in (text or '').splitlines():
         f = line.split('\t')
         if len(f) != 3 or f[0] != 'found' or not SIG_RE.fullmatch(f[2]):
@@ -414,12 +494,18 @@ def add_found(conn: Conn, host: str, text: str) -> int:
             continue
         if not raw.startswith(b'/') or b'\0' in raw or len(raw) > 4096:
             continue
+        path = raw.decode('utf-8', 'replace')
         if (f[1], f[2]) in known:
-            conn.execute("UPDATE clamav_detections SET last_seen = :t, state = CASE WHEN state = 'gone' THEN 'open' ELSE state END WHERE detection_id = :i", {'t': now, 'i': known[(f[1], f[2])]})
+            did, prev_state = known[(f[1], f[2])]
+            conn.execute("UPDATE clamav_detections SET last_seen = :t, state = CASE WHEN state = 'gone' THEN 'open' ELSE state END WHERE detection_id = :i", {'t': now, 'i': did})
+            if prev_state == 'gone':
+                new_hits.append((f[1], path, f[2]))
         else:
             conn.execute("""INSERT INTO clamav_detections (host, path_b64, path, signature, state, ignored, first_seen, last_seen)
-                            VALUES (:h, :b, :p, :s, 'open', 0, :t, :t)""", {'h': host, 'b': f[1], 'p': raw.decode('utf-8', 'replace'), 's': f[2], 't': now})
+                            VALUES (:h, :b, :p, :s, 'open', 0, :t, :t)""", {'h': host, 'b': f[1], 'p': path, 's': f[2], 't': now})
             new += 1
+            new_hits.append((f[1], path, f[2]))
+    _on_new_detections(conn, host, new_hits, 'diff-scan', now)
     return new
 
 
@@ -499,27 +585,40 @@ def _action_script(body: str, qid: str, b64: str, **values) -> str:
     return _head() + text + body
 
 
-def quarantine_script(d: dict, qid: str, allow_system: bool = False) -> str:
-    return _action_script(QUARANTINE_BODY, qid, d['b64'], SYSTEM=1 if allow_system else 0, SIG=d['signature'])
+def quarantine_script(d: dict, qid: str, allow_system: bool = False, kill_open: bool = False) -> str:
+    skip = 1 if str(d.get('signature') or '').startswith(('YARA:', 'THREAT:')) else 0
+    return _action_script(
+        QUARANTINE_BODY,
+        qid,
+        d['b64'],
+        SYSTEM=1 if allow_system else 0,
+        SIG=d['signature'],
+        KILL_OPEN=1 if kill_open else 0,
+        SKIP_CLAMSCAN=skip,
+    )
 
 
 def restore_script(d: dict) -> str:
     return _action_script(RESTORE_BODY, d['qid'], d['b64'])
 
 
-def quarantine(db, conn: Conn, did: int, actor: str, allow_system: bool = False) -> dict:
+def quarantine(db, conn: Conn, did: int, actor: str, allow_system: bool = False, kill_open: bool | None = None) -> dict:
     from . import deploy
     d = get_detection(conn, did)
     if d['state'] != 'open':
         raise ValueError(f'this detection is {d["state"]}')
+    do_kill = get_config(conn, d['host'])['kill_open'] if kill_open is None else bool(kill_open)
     qid = uuid.uuid4().hex
-    res = deploy.run(db, d['host'], quarantine_script(d, qid, allow_system), ['--apply'], kind='clamav-action', ref=f'quarantine:{did}', mode='apply', actor=actor, timeout=600)
-    m = re.search(rf'^QUARANTINED {qid} ([0-9a-f]{{64}})$', res.get('output') or '', re.M)
+    res = deploy.run(db, d['host'], quarantine_script(d, qid, allow_system, kill_open=do_kill), ['--apply'], kind='clamav-action', ref=f'quarantine:{did}', mode='apply', actor=actor, timeout=600)
+    output = res.get('output') or ''
+    km = re.search(r'^KILLED (.+)$', output, re.M)
+    killed = [int(x) for x in km[1].split() if x.isdigit()] if km else []
+    m = re.search(rf'^QUARANTINED {qid} ([0-9a-f]{{64}})$', output, re.M)
     if res['status'] == 'ok' and m:
         conn.execute("""UPDATE clamav_detections SET state = 'quarantined', quarantine_id = :q, sha256 = :s, handled_by = :a, handled_at = :t
                         WHERE detection_id = :i""", {'q': qid, 's': m[1], 'a': actor, 't': int(time.time()), 'i': did})
-        return {'ok': True, 'output': res['output']}
-    return {'ok': False, 'output': res.get('output') or '', 'error': 'the file was not moved: see the output'}
+        return {'ok': True, 'output': output, 'killed': killed}
+    return {'ok': False, 'output': output, 'killed': killed, 'error': 'the file was not moved: see the output'}
 
 
 def restore(db, conn: Conn, did: int, actor: str) -> dict:

@@ -157,12 +157,132 @@ def trend(conn: Conn, host: str, kind: str, limit: int = 60) -> list[dict]:
     return [{'at': a, 'value': v} for a, v in reversed(rows)]
 
 
+def parse_threats(lines: list[str]) -> dict:
+    """Live host threat indicators and persistence hashes from MEASURE_BODY @@threats."""
+    out: dict = {'deleted_exe': [], 'tmp_exe': [], 'ld_preload': [], 'uid0_users': [], 'promisc': [], 'persistence': {}}
+    for line in lines or ():
+        f = line.split('\t')
+        tag = f[0]
+        if tag in ('deleted', 'tmp_exe') and len(f) == 5 and f[1].isdigit():
+            path = security._b64text(f[4])
+            if path and len(out['deleted_exe'] if tag == 'deleted' else out['tmp_exe']) < 100:
+                entry = {'pid': int(f[1]), 'uid': security._int(f[2], 0), 'comm': security.clean_text(f[3], 64), 'path': security.clean_text(path, 500)}
+                (out['deleted_exe'] if tag == 'deleted' else out['tmp_exe']).append(entry)
+        elif tag == 'preload' and len(f) == 2:
+            val = security._b64text(f[1])
+            if val and len(out['ld_preload']) < 20:
+                out['ld_preload'].append(security.clean_text(val, 200))
+        elif tag == 'uid0' and len(f) == 2 and f[1] and len(out['uid0_users']) < 20:
+            out['uid0_users'].append(security.clean_text(f[1], 64))
+        elif tag == 'promisc' and len(f) == 2 and f[1] and len(out['promisc']) < 20:
+            out['promisc'].append(security.clean_text(f[1], 64))
+        elif tag == 'persist' and len(f) == 3 and re.fullmatch(r'[0-9a-f]{64}', f[1]):
+            path = security._b64text(f[2])
+            if path and path.startswith('/') and len(out['persistence']) < 200:
+                out['persistence'][security.clean_text(path, 300)] = f[1]
+    return out
+
+
+def persistence_drift(conn: Conn, host: str) -> list[dict]:
+    saved = alerts.get_setting(conn, f'security.persistence:{host.lower()}') or {}
+    return list(saved.get('drift') or [])
+
+
+def _evaluate_threats(conn: Conn, host: str, data: dict, at: int):
+    th = data.get('threats') or {}
+    if 'threats' in data:
+        cur = th.get('persistence') or {}
+        pkey = f'security.persistence:{host.lower()}'
+        saved = alerts.get_setting(conn, pkey)
+        if saved is None:
+            alerts.set_setting(conn, pkey, {'baseline': cur, 'drift': [], 'at': at}, 'measure')
+        else:
+            prev = saved.get('baseline') or {}
+            diff = ([{'path': p, 'kind': 'added'} for p in sorted(cur) if p not in prev]
+                    + [{'path': p, 'kind': 'changed'} for p in sorted(cur) if p in prev and cur[p] != prev[p]]
+                    + [{'path': p, 'kind': 'removed'} for p in sorted(prev) if p not in cur])
+            alerts.set_setting(conn, pkey, {'baseline': cur, 'drift': diff, 'at': at}, 'measure')
+            if diff:
+                summary = f'Persistence files changed on {host}: ' + ', '.join(f'{d["path"]} ({d["kind"]})' for d in diff[:4])
+                uid = str(uuid.uuid5(uuid.NAMESPACE_URL, f'persist:{host.lower()}:{at}:{json.dumps(diff, sort_keys=True)}'))
+                security.record_event(conn, host, 'persistence_changed', summary, f'path_b64={sx.b64(diff[0]["path"])}', 'measure', at, uid)
+
+        sus_deleted = [d for d in (th.get('deleted_exe') or []) if str(d.get('path') or '').startswith(('/tmp/', '/var/tmp/', '/dev/shm/', '/run/shm/', '/home/', '/root/'))]
+        tmp_exe = th.get('tmp_exe') or []
+        preload = th.get('ld_preload') or []
+        uid0 = th.get('uid0_users') or []
+        if tmp_exe or preload or uid0 or sus_deleted:
+            parts = []
+            if tmp_exe:
+                parts.append(f'{len(tmp_exe)} temp-folder binary(ies)')
+            if preload:
+                parts.append('/etc/ld.so.preload set')
+            if uid0:
+                parts.append('extra UID-0 user(s): ' + ', '.join(uid0[:3]))
+            if sus_deleted:
+                parts.append(f'{len(sus_deleted)} deleted suspicious binary(ies)')
+            summary = f'Live threat signs on {host}: ' + '; '.join(parts)
+            top = (tmp_exe or sus_deleted)[0] if (tmp_exe or sus_deleted) else None
+            detail = f'path_b64={sx.b64(top["path"])};pid={top["pid"]};comm={top["comm"]}' if top else ';'.join(preload[:2] + uid0[:2])
+            recent = conn.scalar(
+                "SELECT 1 FROM security_events WHERE lower(host) = lower(:h) AND kind = 'rootkit_suspect' AND acknowledged_at IS NULL AND summary = :s AND occurred_at > :t LIMIT 1",
+                {'h': host, 's': security.clean_text(summary), 't': at - 3600},
+            )
+            if not recent:
+                uid = str(uuid.uuid5(uuid.NAMESPACE_URL, f'threat:{host.lower()}:{at}'))
+                security.record_event(conn, host, 'rootkit_suspect', summary, detail, 'measure', at, uid)
+    aide = data.get('aide') or {}
+    if aide.get('last_action') == 'check' and aide.get('exit_code') not in (None, 0) and aide.get('last_at'):
+        akey = f'security.aide.last:{host.lower()}'
+        if alerts.get_setting(conn, akey) != aide['last_at']:
+            alerts.set_setting(conn, akey, aide['last_at'], 'measure')
+            uid = str(uuid.uuid5(uuid.NAMESPACE_URL, f'aide:{host.lower()}:{aide["last_at"]}'))
+            security.record_event(conn, host, 'aide_changed', f'AIDE found filesystem changes on {host} (exit {aide["exit_code"]})',
+                                  '; '.join(aide.get('entries') or [])[:500], 'measure', aide['last_at'], uid)
+
+
+def kill_threat(db, conn: Conn, body: dict, actor: str) -> dict:
+    """Stop a flagged suspicious PID after verifying its /proc comm, and optionally quarantine its executable."""
+    host, mode = security.known_host(conn, body.get('host')), security._mode(body)
+    pid = security._int(body.get('pid'), 0) or 0
+    if pid <= 1:
+        raise ValueError('pid must be greater than 1')
+    comm = security.clean_text(body.get('comm') or '', 64).strip()
+    path = security.clean_path(body['path'], 'the path') if body.get('path') else ''
+    quar = bool(body.get('quarantine'))
+    qid = uuid.uuid4().hex
+    script = sx.threat_kill_script(pid, comm, path, quar, qid)
+    if mode == 'preview':
+        return {'ok': True, 'mode': mode, 'host': host, 'pid': pid, 'script': script}
+    res = security._run(db, host, script, ['--apply'] if mode == 'apply' else [], ref=f'threat-kill:{pid}', mode=mode, actor=actor, timeout=120)
+    output = res.get('output') or ''
+    if mode == 'report':
+        return {**security._result(res, mode), 'host': host, 'pid': pid}
+    killed = bool(re.search(rf'^KILLED_PID {pid}$', output, re.M)) or f'process {pid} is already gone' in output
+    qm = re.search(rf'^QUARANTINED {qid} ([0-9a-f]{{64}})$', output, re.M)
+    if qm and path:
+        now = NOW()
+        b64p = sx.b64(path)
+        sig = f'THREAT:{comm or "proc"}'
+        existing = conn.scalar("SELECT detection_id FROM clamav_detections WHERE lower(host) = lower(:h) AND path = :p AND state = 'open' LIMIT 1", {'h': host, 'p': path})
+        if existing:
+            conn.execute("""UPDATE clamav_detections SET state = 'quarantined', quarantine_id = :q, sha256 = :s, handled_by = :a, handled_at = :t
+                            WHERE detection_id = :i""", {'q': qid, 's': qm[1], 'a': actor, 't': now, 'i': existing})
+        else:
+            conn.execute("""INSERT INTO clamav_detections (host, path_b64, path, signature, state, ignored, quarantine_id, sha256, first_seen, last_seen, handled_by, handled_at)
+                            VALUES (:h, :b, :p, :sig, 'quarantined', 0, :q, :s, :t, :t, :a, :t)""",
+                         {'h': host, 'b': b64p, 'p': path, 'sig': sig, 'q': qid, 's': qm[1], 't': now, 'a': actor})
+    err = None if (res['status'] in deploy.FINISHED and killed) else f'could not stop process {pid}: see the output'
+    return {**security._result(res, mode, err), 'host': host, 'pid': pid, 'killed': killed, 'quarantined': bool(qm)}
+
+
 def after_measure(conn: Conn, host: str, data: dict, at: int):
     """Keeps what makes a trend, picks up what only a measurement carries, and notices a check that passed before and fails now."""
     ly = data.get('lynis') or {}
     if ly.get('hardening_index') is not None:
         record_reading(conn, host, 'lynis', ly['hardening_index'], at=ly.get('at') or at)
     ingest_falco(conn, host, data.get('falco_alerts') or [])
+    _evaluate_threats(conn, host, data, at)
     profile = alerts.get_setting(conn, security.profile_key(host)) or 'cis-l1'
     try:
         status = security.compliance_status(conn, host, profile)
@@ -955,10 +1075,44 @@ def clean_room_sweep(db, conn: Conn, body: dict, actor: str) -> dict:
 
 
 # ── playbooks: if this happens, do that ──────────────────────────────
-TRIGGERS = {'canary_tripped': 'A decoy changed', 'falco_crit': 'Falco: critical', 'falco_warn': 'Falco: warning', 'identity_enumeration': 'One user on many shares', 'identity_multi_subnet': 'One user on several networks',
-            'identity_off_hours': 'Connected off hours', 'clock_jump': 'The clock jumped', 'hold_missing': 'A hold is gone from the host', 'entropy_flagged': 'Changed files look encrypted', 'velocity': 'Files changing much faster than usual'}
-ACTIONS = {'triage': 'Save what is only in memory', 'drop_client': 'Drop the client', 'snapshot': 'Snapshot and hold', 'freeze': 'Make it read-only', 'measure': 'Measure the host now', 'notify': 'Send an alert'}
+TRIGGERS = {
+    'canary_tripped': 'A decoy changed',
+    'canary_source': 'Decoy touched with client known',
+    'malware_detected': 'Malware or YARA match found',
+    'suricata_alert': 'Suricata IDS alert',
+    'rootkit_suspect': 'Live threat or rootkit sign found',
+    'persistence_changed': 'Persistence, cron or authorized_keys changed',
+    'aide_changed': 'AIDE integrity check found changes',
+    'falco_crit': 'Falco: critical',
+    'falco_warn': 'Falco: warning',
+    'identity_enumeration': 'One user on many shares',
+    'identity_multi_subnet': 'One user on several networks',
+    'identity_off_hours': 'Connected off hours',
+    'clock_jump': 'The clock jumped',
+    'hold_missing': 'A hold is gone from the host',
+    'entropy_flagged': 'Changed files look encrypted',
+    'velocity': 'Files changing much faster than usual',
+}
+ACTIONS = {
+    'triage': 'Save what is only in memory',
+    'drop_client': 'Drop the client',
+    'drop_fleet': 'Drop the client on every host',
+    'quarantine_file': 'Quarantine the detected file',
+    'kill_proc': 'Stop processes using the file or pid',
+    'stop_workload': 'Stop containers touching the path',
+    'snapshot': 'Snapshot and hold',
+    'freeze': 'Make it read-only',
+    'airgap': 'Engage emergency airgap',
+    'measure': 'Measure the host now',
+    'notify': 'Send an alert',
+}
 BRAKE = {'triage': 'triage', 'drop_client': 'quarantine', 'snapshot': 'snapshot', 'freeze': 'freeze'}
+PLAYBOOK_TEMPLATES = [
+    {'id': 'ransomware-active', 'name': 'Ransomware active brake', 'trigger': 'canary_tripped', 'mode': 'confirm', 'actions': ['triage', 'drop_fleet', 'snapshot', 'freeze', 'notify']},
+    {'id': 'malware-quarantine', 'name': 'Malware file containment', 'trigger': 'malware_detected', 'mode': 'confirm', 'actions': ['quarantine_file', 'kill_proc', 'stop_workload', 'notify']},
+    {'id': 'suricata-fleet', 'name': 'IPS attacker fleet ban', 'trigger': 'suricata_alert', 'mode': 'confirm', 'actions': ['drop_fleet', 'notify']},
+    {'id': 'rootkit-contain', 'name': 'Live threat stop & airgap', 'trigger': 'rootkit_suspect', 'mode': 'dry_run', 'actions': ['triage', 'kill_proc', 'quarantine_file', 'airgap', 'notify']},
+]
 
 
 def list_playbooks(conn: Conn) -> list[dict]:
@@ -995,7 +1149,7 @@ def event_fields(detail: str) -> dict:
     out = {}
     for part in (detail or '').split(';'):
         k, _, v = part.partition('=')
-        if k in ('path_b64', 'client', 'pid', 'event'):
+        if k in ('path_b64', 'client', 'pid', 'event', 'comm', 'sig', 'severity', 'dest', 'signature_id'):
             out[k] = v
     if out.get('path_b64'):
         out['path'] = security._b64text(out['path_b64']) or ''
@@ -1027,19 +1181,77 @@ def _client_of(conn: Conn, host: str, event_id: int, fields: dict) -> str:
 
 def run_actions(db, conn: Conn, pb: dict, host: str, event: dict, fields: dict) -> dict:
     """Each action reports what it really did. A brake step runs through the same program a person pulls, with a run on the host behind it."""
+    from . import clamav
     actor = f'playbook:{pb["name"]}'[:60]
     steps, failed = [], []
-    brake = [BRAKE[a] for a in pb['actions'] if a in BRAKE]
+    actions = pb['actions']
+    brake = [BRAKE[a] for a in actions if a in BRAKE]
     if brake:
         client = _client_of(conn, host, event['id'], fields)
         out = security.brake(db, conn, {'host': host, 'path': fields.get('path') or '', 'client_ip': client, 'actions': brake, 'mode': 'apply', 'reason': f'{pb["name"]}: {event["summary"]}'[:200], 'minutes': ban_minutes(conn, 2)}, actor)
         steps += out.get('steps') or []
         if out.get('error'):
             failed.append(out['error'])
-    if 'measure' in pb['actions']:
+    handled_file = False
+    if 'kill_proc' in actions and fields.get('pid') and str(fields['pid']).isdigit() and int(fields['pid']) > 1:
+        want_q = 'quarantine_file' in actions and bool(fields.get('path'))
+        k = kill_threat(db, conn, {'host': host, 'pid': int(fields['pid']), 'comm': fields.get('comm') or '', 'path': fields.get('path') or '', 'quarantine': want_q, 'mode': 'apply'}, actor)
+        steps.append({'step': 'kill_proc', 'status': 'ok' if k.get('ok') else 'failed', 'detail': f'pid {fields["pid"]}' + (' + quarantined' if k.get('quarantined') else '')})
+        if not k.get('ok'):
+            failed.append(k.get('error') or 'kill_proc failed')
+        if k.get('quarantined'):
+            handled_file = True
+    if 'quarantine_file' in actions and fields.get('path') and not handled_file:
+        tpath = fields['path']
+        if clamav.is_system_path(tpath):
+            steps.append({'step': 'quarantine_file', 'status': 'skipped', 'detail': f'system path kept: {tpath}'})
+        else:
+            did = conn.scalar("SELECT detection_id FROM clamav_detections WHERE lower(host) = lower(:h) AND path = :p AND state = 'open' LIMIT 1", {'h': host, 'p': tpath})
+            if not did:
+                now = NOW()
+                conn.execute("""INSERT INTO clamav_detections (host, path_b64, path, signature, state, ignored, first_seen, last_seen)
+                                VALUES (:h, :b, :p, :s, 'open', 0, :t, :t)""",
+                             {'h': host, 'b': sx.b64(tpath), 'p': tpath, 's': fields.get('sig') or 'THREAT:Playbook', 't': now})
+                did = conn.scalar("SELECT detection_id FROM clamav_detections WHERE lower(host) = lower(:h) AND path = :p AND state = 'open' ORDER BY detection_id DESC LIMIT 1", {'h': host, 'p': tpath})
+            if did:
+                q = clamav.quarantine(db, conn, did, actor, allow_system=False, kill_open='kill_proc' in actions)
+                steps.append({'step': 'quarantine_file', 'status': 'ok' if q.get('ok') else 'failed', 'detail': tpath + (f' (killed {q["killed"]})' if q.get('killed') else '')})
+                if not q.get('ok'):
+                    failed.append(q.get('error') or 'quarantine_file failed')
+    if 'drop_fleet' in actions:
+        client = _client_of(conn, host, event['id'], fields)
+        if not client:
+            steps.append({'step': 'drop_fleet', 'status': 'skipped', 'detail': 'no client address known'})
+        else:
+            targets = sorted({r['host'] for r in deploy.access(conn) if r.get('state') == 'ready' and deploy.ready(conn, r['host'])}) or [host]
+            mins = ban_minutes(conn, 2) or 60
+            dropped, bad_hosts = [], []
+            for h in targets:
+                res = security.quarantine(db, conn, {'host': h, 'ip_address': client, 'minutes': mins, 'reason': f'{pb["name"]}: {event["summary"]}'[:200], 'mode': 'apply'}, actor)
+                (dropped if res.get('ok') else bad_hosts).append(h)
+            steps.append({'step': 'drop_fleet', 'status': 'failed' if bad_hosts and not dropped else 'ok', 'detail': f'{client} on {", ".join(dropped)}' if dropped else ', '.join(bad_hosts)})
+            if bad_hosts and not dropped:
+                failed.append(f'drop_fleet failed on {", ".join(bad_hosts)}')
+    if 'stop_workload' in actions:
+        tpath = fields.get('path') or ''
+        if not tpath:
+            steps.append({'step': 'stop_workload', 'status': 'skipped', 'detail': 'no path in event'})
+        else:
+            w = security._run(db, host, sx.stop_workload_script(tpath), ['--apply'], ref='stop-workload', mode='apply', actor=actor, timeout=120)
+            stopped = re.findall(r'^STOPPED_CONTAINER \w+ (\S+)$', w.get('output') or '', re.M)
+            ok = w['status'] in deploy.FINISHED
+            steps.append({'step': 'stop_workload', 'status': 'ok' if ok else 'failed', 'detail': ', '.join(stopped) if stopped else 'no matching container'})
+            if not ok:
+                failed.append('stop_workload failed')
+    if 'airgap' in actions:
+        ag = security.airgap(db, conn, {'host': host, 'enabled': True, 'mode': 'apply'}, actor)
+        steps.append({'step': 'airgap', 'status': 'ok' if ag.get('ok') else 'failed', 'detail': ag.get('error') or 'engaged'})
+        if not ag.get('ok'):
+            failed.append(ag.get('error') or 'airgap failed')
+    if 'measure' in actions:
         m = security.measure(db, conn, host, actor)
         steps.append({'step': 'measure', 'status': 'ok' if m.get('ok') else 'failed', 'detail': m.get('error') or ''})
-    if 'notify' in pb['actions']:
+    if 'notify' in actions:
         res = alerts.send(alerts.get_setting(conn, 'alerts'), f'{pb["name"]}: {host}', event['summary'], 'crit', {'kind': 'playbook', 'ref': host})
         steps.append({'step': 'notify', 'status': 'ok', 'detail': '; '.join(res)})
     return {'steps': steps, 'failed': failed}
@@ -1093,14 +1305,27 @@ def process_events(db, conn: Conn) -> int:
 
 
 def pending_runs(conn: Conn) -> list[dict]:
-    rows = conn.all("""SELECT r.id, r.playbook_id, p.name, r.event_id, r.host, r.at, r.detail_json FROM security_playbook_runs r JOIN security_playbooks p ON p.id = r.playbook_id
+    rows = conn.all("""SELECT r.id, r.playbook_id, COALESCE(p.name, ''), r.event_id, r.host, r.at, r.detail_json
+                       FROM security_playbook_runs r LEFT JOIN security_playbooks p ON p.id = r.playbook_id
                        WHERE r.outcome = 'pending' ORDER BY r.at DESC LIMIT 100""")
-    return [{'id': r[0], 'playbook_id': r[1], 'playbook': r[2], 'event_id': r[3], 'host': r[4], 'at': r[5], **{k: v for k, v in (loads(r[6]) or {}).items() if k in ('actions', 'summary')}} for r in rows]
+    out = []
+    for r in rows:
+        d = loads(r[6]) or {}
+        name = r[2] or d.get('playbook') or f'Host policy ({r[4]})'
+        out.append({'id': r[0], 'playbook_id': r[1], 'playbook': name, 'event_id': r[3], 'host': r[4], 'at': r[5],
+                    **{k: v for k, v in d.items() if k in ('actions', 'summary')}})
+    return out
 
 
 def playbook_runs(conn: Conn, limit: int = 100) -> list[dict]:
-    rows = conn.all(f"""SELECT r.id, p.name, r.host, r.at, r.outcome, r.detail_json FROM security_playbook_runs r JOIN security_playbooks p ON p.id = r.playbook_id ORDER BY r.at DESC, r.id DESC LIMIT {int(limit)}""")
-    return [{'id': r[0], 'playbook': r[1], 'host': r[2], 'at': r[3], 'outcome': r[4], 'detail': loads(r[5]) or {}} for r in rows]
+    rows = conn.all(f"""SELECT r.id, COALESCE(p.name, ''), r.host, r.at, r.outcome, r.detail_json
+                        FROM security_playbook_runs r LEFT JOIN security_playbooks p ON p.id = r.playbook_id
+                        ORDER BY r.at DESC, r.id DESC LIMIT {int(limit)}""")
+    out = []
+    for r in rows:
+        d = loads(r[5]) or {}
+        out.append({'id': r[0], 'playbook': r[1] or d.get('playbook') or f'Host policy ({r[2]})', 'host': r[2], 'at': r[3], 'outcome': r[4], 'detail': d})
+    return out
 
 
 def decide_run(db, conn: Conn, run_id: int, confirm: bool, actor: str) -> dict:
@@ -1109,7 +1334,8 @@ def decide_run(db, conn: Conn, run_id: int, confirm: bool, actor: str) -> dict:
         raise LookupError('nothing is waiting there')
     pid, eid, host, raw = rows[0]
     detail = loads(raw) or {}
-    pb = next((p for p in list_playbooks(conn) if p['id'] == pid), None)
+    pb = ({'id': 0, 'name': detail.get('playbook') or f'Malware policy ({host})', 'actions': detail.get('actions') or ['quarantine_file']}
+          if pid == 0 else next((p for p in list_playbooks(conn) if p['id'] == pid), None))
     if not confirm or not pb:
         conn.execute("UPDATE security_playbook_runs SET outcome = 'dismissed', detail_json = :d WHERE id = :i", {'d': json.dumps({**detail, 'by': actor}), 'i': run_id})
         return {'ok': True, 'host': host, 'outcome': 'dismissed'}
@@ -1483,14 +1709,46 @@ def timeline(conn: Conn, args: dict) -> list[dict]:
 
 
 # ── once a minute, from security.tick ────────────────────────────────
+def _auto_malware_tick(db, conn: Conn) -> int:
+    """When enabled per host: auto-scan newly changed files with ClamAV/YARA and auto-quarantine open non-system detections."""
+    from . import clamav
+    acted = 0
+    for (name,) in conn.all('SELECT hostname FROM hosts ORDER BY hostname'):
+        if not deploy.ready(conn, name) or security.clock_frozen(conn, name):
+            continue
+        cfg = clamav.get_config(conn, name)
+        if cfg['auto_scan_changes']:
+            latest = security._latest_scans(conn, name, 1)
+            if latest and (latest[0]['added'] + latest[0]['modified'] > 0):
+                skey = f'security.autoscan:{name.lower()}'
+                if alerts.get_setting(conn, skey) != latest[0]['id']:
+                    alerts.set_setting(conn, skey, latest[0]['id'], 'autoscan')
+                    if deploy.deployed(conn, host=name, kind='clamav'):
+                        security.diff_scan(db, conn, {'host': name}, 'autoscan')
+                        acted += 1
+                    m = security.measurement(conn, name)
+                    if 'yara' in ((m or {}).get('tools') or []):
+                        yara_scan(db, conn, {'host': name}, 'autoscan')
+                        acted += 1
+        if cfg['response_mode'] == 'auto':
+            for d in [d for d in clamav.detections(conn, name) if d['state'] == 'open' and not d['ignored'] and not d['system_path']][:10]:
+                res = clamav.quarantine(db, conn, d['id'], 'auto-policy', allow_system=False, kill_open=cfg['kill_open'])
+                acted += bool(res.get('ok'))
+    return acted
+
+
 def tick(db) -> dict:
     from . import errlog
     conn = db.connect()
-    done = {'fired': 0, 'policy_holds': 0}
+    done = {'fired': 0, 'policy_holds': 0, 'auto_malware': 0}
     try:
         try:
             note_velocity(conn)
             done['fired'] = process_events(db, conn)
+        except Exception:
+            errlog.trace()
+        try:
+            done['auto_malware'] = _auto_malware_tick(db, conn)
         except Exception:
             errlog.trace()
         last = alerts.get_setting(conn, 'security.policy_last') or 0

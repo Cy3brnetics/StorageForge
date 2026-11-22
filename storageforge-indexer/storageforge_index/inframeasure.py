@@ -429,6 +429,12 @@ def measure(db, conn: Conn, host, actor: str) -> dict:
     except Exception:                              # noqa: BLE001
         from . import errlog
         errlog.trace()
+    try:
+        from . import tbfeeds
+        tbfeeds.ingest(conn, name, data, now)
+    except Exception:                              # noqa: BLE001
+        from . import errlog
+        errlog.trace()
     return {'ok': True, 'host': name, 'measured_at': now, 'run_id': res.get('run_id')}
 
 

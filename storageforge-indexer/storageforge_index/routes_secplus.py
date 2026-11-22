@@ -10,7 +10,7 @@ import time
 from flask import Response, jsonify, request, session
 from flask_login import current_user, login_required
 
-from . import alerts, clamav, deploy, secplus, secscripts as sx, security, webauthn
+from . import alerts, clamav, deploy, secplus, secscripts as sx, security, tbfeeds, webauthn
 
 
 def register(web, ctx):
@@ -313,6 +313,23 @@ def register(web, ctx):
         res = secplus.save_ban_tiers(conn(), json_body(), actor())
         return note_audit('security.tiers', res)
 
+    @web.post('/api/security/firewall/reconcile')
+    @login_required
+    @password_confirmed
+    def api_firewall_reconcile():
+        res = tbfeeds.reconcile_bouncer(db, conn(), json_body(), actor())
+        if res.get('action') == 'import_bans':
+            return audit('security.firewall.reconcile', res, action=res.get('action'), imported=res.get('imported', 0))
+        return note_audit('security.firewall.reconcile', res, action=res.get('action'), plan=res.get('plan_id'))
+
+    @web.post('/api/security/threats/kill')
+    @login_required
+    @password_confirmed
+    @step_up
+    def api_threat_kill():
+        res = secplus.kill_threat(db, conn(), json_body(), actor())
+        return audit('security.threat.kill', res, pid=res.get('pid'), quarantined=bool(res.get('quarantined')))
+
     # ── behaviour ───────────────────────────────────────────────────
     @web.post('/api/security/behavior/thresholds')
     @login_required
@@ -389,7 +406,7 @@ echo "@@STRINGS"; head -c 1048576 -- "$p" | LC_ALL=C tr -c '[:print:]\n' '\n' | 
     @web.get('/api/security/playbooks')
     @login_required
     def api_playbooks():
-        return jsonify(playbooks=secplus.list_playbooks(conn()), triggers=secplus.TRIGGERS, actions=secplus.ACTIONS, runs=secplus.playbook_runs(conn()), pending=secplus.pending_runs(conn()))
+        return jsonify(playbooks=secplus.list_playbooks(conn()), triggers=secplus.TRIGGERS, actions=secplus.ACTIONS, templates=secplus.PLAYBOOK_TEMPLATES, runs=secplus.playbook_runs(conn()), pending=secplus.pending_runs(conn()))
 
     @web.post('/api/security/playbooks')
     @login_required

@@ -133,11 +133,20 @@ SEC_MORE.playbooks = async function secPlaybooks() {
   const name = secInput('Name'), trig = el('select', { 'aria-label': 'When' }, ...Object.entries(d.triggers).map(([k, v]) => new Option(v, k))), host = secInput('every host, or nas-*'), path = secInput('under this path');
   const mode = el('select', { 'aria-label': 'How' }, new Option('Say what it would do, and do nothing', 'dry_run'), new Option('Ask a person first', 'confirm'), new Option('Do it by itself', 'live'));
   const acts = Object.entries(d.actions).map(([k, v]) => { const c = el('input', { type: 'checkbox' }); c.value = k; return el('label', { class: 'small' }, c, ` ${v}`); });
+  const tpl = el('select', { 'aria-label': 'Template' }, new Option('Choose a template…', ''), ...(d.templates || []).map((t) => new Option(t.name, t.id)));
+  tpl.addEventListener('change', () => {
+    const t = (d.templates || []).find((x) => x.id === tpl.value);
+    if (!t) return;
+    name.value = t.name;
+    trig.value = t.trigger;
+    mode.value = t.mode;
+    acts.forEach((l) => { l.firstChild.checked = t.actions.includes(l.firstChild.value); });
+  });
   return el('div', { class: 'stack' },
     d.pending.length ? secCard('Waiting for you', secTable(['Playbook', 'Host', 'Why', 'It would', ''], d.pending.map((r) => [r.playbook, r.host, r.summary, (r.actions || []).join(', '), emergency ? el('div', { class: 'row wrap' }, button('Do it', () => secSave(`/api/security/playbooks/runs/${r.id}`, { confirm: true }, out, () => secRender()), 'btn sm danger'), button('Dismiss', () => secSave(`/api/security/playbooks/runs/${r.id}`, { confirm: false }, out, () => secRender()), 'btn sm ghost')) : '']))) : '',
     secCard('Playbooks', text('p', 'If this happens, do that. New ones say what they would do and do nothing: watch one for a while before letting it act. These run from StorageForge, so they need it up and the host reachable. An armed sentinel acts on the host by itself, with neither.', 'muted small'),
       d.playbooks.length ? secTable(['Name', 'When', 'Then', 'How', ''], d.playbooks.map((p) => [p.name, d.triggers[p.trigger], p.actions.map((a) => d.actions[a]).join(', '), p.dry_run ? 'only says' : p.conditions.confirm ? 'asks first' : 'by itself', emergency ? button('Remove', async () => { if (await secPost(`/api/security/playbooks/${p.id}`, null, out, 'DELETE')) secRender(); }, 'btn sm ghost') : ''])) : text('p', 'None.', 'muted'),
-      emergency ? el('div', { class: 'stack' }, el('div', { class: 'sec-form' }, secField('Name', name), secField('When', trig), secField('On which hosts', host), secField('Under which path', path), secField('How', mode)), el('div', { class: 'row wrap' }, ...acts),
+      emergency ? el('div', { class: 'stack' }, (d.templates || []).length ? secField('Template', tpl) : '', el('div', { class: 'sec-form' }, secField('Name', name), secField('When', trig), secField('On which hosts', host), secField('Under which path', path), secField('How', mode)), el('div', { class: 'row wrap' }, ...acts),
         button('Save', () => secSave('/api/security/playbooks', { name: name.value.trim(), trigger: trig.value, mode: mode.value === 'confirm' ? 'confirm' : mode.value, conditions: { host: host.value.trim(), path: path.value.trim() }, actions: acts.map((l) => l.firstChild).filter((c) => c.checked).map((c) => c.value) }, out, () => secRender()), 'btn sm pri')) : ''),
     await secRoutesCard(out),
     secCard('What they have done', d.runs.length ? secTable(['When', 'Playbook', 'Host', 'Outcome', 'Why'], d.runs.map((r) => [secWhen(r.at), r.playbook, r.host, secPill(r.outcome, r.outcome === 'failed' ? 'critical' : r.outcome === 'ran' ? 'secure' : 'unknown'), r.detail.summary]), 20) : text('p', 'Nothing yet.', 'muted')), out);
@@ -279,6 +288,33 @@ SEC_MORE.macExtra = function secMacExtra(host, d) {
     secCard('Denials that are only noise', text('p', 'Folded out of the counts, not deleted. Program and path, each may have a *.', 'muted small'), noise, secCan('security.manage') ? button('Save', () => secSave('/api/security/mac/noise', { rules: secLines(noise).map((l) => { const [daemon, path] = l.split(/\s+/); return { daemon, path }; }) }, out, () => secRender()), 'btn sm') : ''),
     d.apparmor?.enabled ? secCard('AppArmor', text('p', 'Local rules go in /etc/apparmor.d/local, so a package update keeps them. Both become steps in a plan.', 'muted small'), secField('Profile', profile), rules,
       secCan('plans.edit') ? el('div', { class: 'row wrap sec-acts' }, button('Stage these rules', stage(() => ({ type: 'apparmor-local', params: { profile: profile.value.trim(), rules: rules.value } })), 'btn sm'), mode, button('Stage this mode', stage(() => ({ type: 'apparmor-mode', params: { profile: profile.value.trim(), mode: mode.value } })), 'btn sm')) : '') : '', out);
+};
+
+SEC_MORE.threatsCard = function secThreatsCard(host, d, out) {
+  const th = d.threats || {}, drift = d.persistence_drift || [], emergency = secCan('security.emergency');
+  const procs = [
+    ...(th.tmp_exe || []).map((p) => ({ ...p, kind: 'Temp binary', tone: 'critical' })),
+    ...(th.deleted_exe || []).map((p) => ({ ...p, kind: 'Deleted binary', tone: 'warning' })),
+  ];
+  const flags = [
+    ...(th.ld_preload || []).map((x) => ['/etc/ld.so.preload', x, 'critical']),
+    ...(th.uid0_users || []).map((x) => ['Extra UID 0 user', x, 'critical']),
+    ...(th.promisc || []).map((x) => ['Promiscuous interface', x, 'warning']),
+    ...drift.map((x) => [`Persistence ${x.kind}`, x.path, 'warning']),
+  ];
+  if (!d.measured_at) return '';
+  if (!procs.length && !flags.length) {
+    return secCard(`Live threats & persistence on ${host}`, text('p', 'No suspicious executables, ld.so.preload hooks, extra UID-0 accounts or persistence file changes seen in the last measurement.', 'muted small'));
+  }
+  const killActs = (p) => emergency ? el('div', { class: 'row wrap' },
+    secActions('/api/security/threats/kill', () => ({ host, pid: p.pid, comm: p.comm, path: p.path, quarantine: false }), out, { apply: 'Stop process', danger: `Stop PID ${p.pid} (${p.comm}) on ${host}?`, need: 'security.emergency', after: () => secRender() }),
+    button('Stop & quarantine', async () => {
+      if (!(await confirmDialog({ title: `Stop PID ${p.pid} and quarantine ${p.path}?`, body: `Verifies /proc/${p.pid}/comm (${p.comm}) before stopping and moves the executable to quarantine.`, confirm: 'Stop & quarantine', danger: true }))) return;
+      if (await secPost('/api/security/threats/kill', { host, pid: p.pid, comm: p.comm, path: p.path, quarantine: true, mode: 'apply' }, out)) secRender();
+    }, 'btn sm danger')) : '';
+  return secCard(`Live threats & persistence on ${host}`,
+    procs.length ? secTable(['Kind', 'PID', 'Process', 'Path', ''], procs.map((p) => [secPill(p.kind, p.tone), String(p.pid), `${p.comm} (uid ${p.uid})`, text('code', p.path, 'small'), killActs(p)])) : '',
+    flags.length ? secTable(['Indicator', 'Detail', 'Level'], flags.map(([k, v, t]) => [k, v, secPill(t === 'critical' ? 'critical' : 'warning', t)])) : '');
 };
 
 /* ── the line at the top of every page ────────────────────────────── */
