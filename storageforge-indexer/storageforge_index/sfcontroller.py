@@ -37,7 +37,7 @@ STALE = 60                                # seconds without a report: the link i
 MAX_STATE = 1 << 20
 WANT_ENV, STATE_ENV = 'STORAGEFORGE_SFNET_WANT', 'STORAGEFORGE_SFNET_STATE'
 ALLOWED = re.compile(r'\d{1,3}(\.\d{1,3}){3}/\d{1,2}(,\d{1,3}(\.\d{1,3}){3}/\d{1,2})*')
-ENDPOINT = re.compile(r'[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?:\d{1,5}')
+ENDPOINT = re.compile(r'([A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?|\[[0-9A-Fa-f:]{2,39}\]):\d{1,5}')
 
 
 def _dir(env: str) -> Path | None:
@@ -142,7 +142,7 @@ TAB=$(printf "\t")
 RE_KEY="^[A-Za-z0-9+/]{43}=\$"
 RE_ADDR="^[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2}\$"
 RE_ALLOWED="^[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2}(,[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2})*\$"
-RE_ENDPOINT="^[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?:[0-9]{1,5}\$"
+RE_ENDPOINT="^([A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?|\\[[0-9A-Fa-f:]{2,39}\\]):[0-9]{1,5}\$"
 RE_NUM="^[0-9]{1,5}\$"
 
 up() { wg show "$IFACE" public-key >/dev/null 2>&1; }

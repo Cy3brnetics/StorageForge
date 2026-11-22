@@ -70,10 +70,21 @@ def create(conn: Conn, actor: str, range_: str | None = None, topology: str = 'm
     return network
 
 
+def _normalize_endpoint(where: str | None) -> str | None:
+    if not where:
+        return None
+    s = str(where).strip()
+    if s.startswith('[') and s.endswith(']'):
+        s = s[1:-1].strip()
+    return s or None
+
+
 def _callable(where: str) -> bool:
-    """A host name or an IPv4 address, and nothing after it: the port is the network's."""
+    """A host name, IPv4 address, or IPv6 address (with or without []), and no port."""
+    clean = _normalize_endpoint(where) or ''
     try:
-        return ipaddress.ip_address(where).version == 4
+        ip = ipaddress.ip_address(clean)
+        return not (ip.is_unspecified or ip.is_multicast or ip.is_link_local)
     except ValueError:
         return bool(NAME.fullmatch(where)) and not where.replace('.', '').isdigit()
 
@@ -89,9 +100,9 @@ def join(conn: Conn, host, actor: str, endpoint: str | None = None, hub: bool = 
     name = security.known_host(conn, host)
     with conn.tx():
         network = _network(conn)
-        where = (str(endpoint).strip() or None) if endpoint else (_called_at(conn, name) if reachable else None)
+        where = _normalize_endpoint(endpoint) if endpoint else (_called_at(conn, name) if reachable else None)
         if where and not _callable(where):
-            raise sfnet.NetworkError('where to call it is a host name or an address, without a port')
+            raise sfnet.NetworkError('where to call it is a host name, IPv4 or IPv6 address, without a port')
         member = dict(sfnet.join(network, name, where if reachable else None, hub))
         _save(conn, network, actor)
     return member
@@ -224,9 +235,9 @@ def join_controller(conn: Conn, actor: str, endpoint: str | None = None, hub: bo
     address, with the UDP port published); without one the controller calls the hosts and keeps the paths open."""
     if not sfcontroller.configured():
         raise sfnet.NetworkError('this controller was not started with a link for the StorageForge network: see docs/infrastructure-map.md')
-    where = str(endpoint or '').strip() or None
+    where = _normalize_endpoint(endpoint)
     if where and not _callable(where):
-        raise sfnet.NetworkError('where to call it is a host name or an address, without a port')
+        raise sfnet.NetworkError('where to call it is a host name, IPv4 or IPv6 address, without a port')
     with conn.tx():
         network = _network(conn)
         member = dict(sfnet.join(network, sfcontroller.NAME, where, hub))
@@ -315,6 +326,8 @@ def tasks(conn: Conn) -> list[dict]:
                 out.append({'type': 'wg-rotate', 'host': host, 'params': {'iface': sfnet.INTERFACE, 'phase': 'cancel'}})
         # a member with no key yet has no peers and is nobody's peer: its peers are written by the plan after the reading that takes its key
         out += [{'type': s['kind'], 'host': host, 'params': {k: v for k, v in s['params'].items() if v != ''}} for s in sfnet.steps(then, host, readings.get(host))]
+        if m['state'] == 'active' and network.get('topology') == 'hub' and m.get('hub'):
+            out.append({'type': 'wg-forward', 'host': host, 'params': {'iface': sfnet.INTERFACE, 'range': network['range'], 'state': 'present'}})
     return first + out
 
 
@@ -439,3 +452,36 @@ def problems(conn: Conn) -> dict:
             out[f'sfnet-peer:{m["host"]}'] = ('sfnet-peer', m['host'], f'{m["host"]} has a peer on {sfnet.INTERFACE} that nobody asked for',
                                             f'{len(m["unknown"])} key(s) not on record. The next plan revokes them', 'warn')
     return out
+
+
+DIR_KEY = 'sfnet_directory'
+DIR_SEQ_KEY = 'sfnet_directory_seq'
+
+
+def cached_directory(conn: Conn) -> dict | None:
+    return alerts.get_setting(conn, DIR_KEY) or None
+
+
+def sign_directory(conn: Conn, signer, signer_public: str, *, ttl: int = 86400, now: int | None = None, actor: str = 'system') -> dict:
+    """Build and sshsig-sign the management network head/route directory with a monotonic sequence number."""
+    import json
+    from . import deploy
+    observe(conn)
+    network = _network(conn)
+    with conn.tx():
+        cur_seq = int((alerts.get_setting(conn, DIR_SEQ_KEY) or {}).get('seq') or 0) + 1
+        alerts.set_setting(conn, DIR_SEQ_KEY, {'seq': cur_seq}, actor[:60])
+    payload = sfnet.directory_payload(network, seq=cur_seq, issued=now, ttl=ttl)
+    text = json.dumps(payload, separators=(',', ':'), sort_keys=True)
+    sig = deploy.sshsig(signer, text.encode(), sfnet.DIRECTORY_NS)
+    record = {
+        'directory': payload,
+        'directory_json': text,
+        'signature': sig,
+        'signer_public': signer_public,
+        'namespace': sfnet.DIRECTORY_NS,
+        'signed': True,
+    }
+    with conn.tx():
+        alerts.set_setting(conn, DIR_KEY, record, actor[:60])
+    return record

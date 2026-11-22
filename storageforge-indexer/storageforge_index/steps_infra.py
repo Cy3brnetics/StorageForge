@@ -672,6 +672,35 @@ t_wg_rotate() { local iface=$1 phase=$2 pubkey=${3:-} dir=${SF_WG_DIR:-/etc/wire
   esac
 }
 
+t_wg_forward() { local iface=$1 cidr=$2 state=${3:-present}
+  local sysfile=${SF_SYSCTL_DIR:-/etc/sysctl.d}/90-storageforge-$iface.conf key=net.ipv4.ip_forward tool
+  [[ $cidr == *:* ]] && key=net.ipv6.conf.all.forwarding
+  if [[ $state == absent ]]; then
+    if [[ ! -e $sysfile ]]; then ok "hub forwarding for $iface is already absent"; return 0; fi
+    act "remove hub forwarding for $iface" || return 0
+    rm -f -- "$sysfile"
+    command -v sysctl >/dev/null && try sysctl -w "$key=0" >/dev/null
+    ok "removed hub forwarding for $iface"
+    return 0
+  fi
+  local cur=0; command -v sysctl >/dev/null && cur=$(sysctl -n "$key" 2>/dev/null || echo 0)
+  if [[ $cur == 1 && -s $sysfile ]]; then ok "hub forwarding on $iface ($key=1) is already set"; return 0; fi
+  act "enable $key=1 in $sysfile for hub $iface" || return 0
+  install -d -m 0755 "${sysfile%/*}"
+  (umask 022; printf "%s = 1\n" "$key" >"$sysfile.new" && mv -f "$sysfile.new" "$sysfile")
+  durable "$sysfile"
+  if command -v sysctl >/dev/null; then try sysctl -w "$key=1" >/dev/null || return 0; fi
+  tool=$(backend)
+  if [[ $tool == nftables ]] && command -v nft >/dev/null; then
+    nft list table inet storageforge_hub >/dev/null 2>&1 || nft add table inet storageforge_hub >/dev/null 2>&1 || :
+    nft list chain inet storageforge_hub forward >/dev/null 2>&1 || nft add chain inet storageforge_hub forward "{ type filter hook forward priority -5; policy accept; }" >/dev/null 2>&1 || :
+    nft list chain inet storageforge_hub forward 2>/dev/null | grep -qF "iifname \"$iface\" oifname \"$iface\" accept" || nft add rule inet storageforge_hub forward iifname "$iface" oifname "$iface" accept >/dev/null 2>&1 || :
+  elif [[ $tool == iptables ]] && command -v iptables >/dev/null; then
+    iptables -C FORWARD -i "$iface" -o "$iface" -j ACCEPT >/dev/null 2>&1 || iptables -I FORWARD 1 -i "$iface" -o "$iface" -j ACCEPT >/dev/null 2>&1 || :
+  fi
+  ok "hub forwarding enabled on $iface ($key=1)"
+}
+
 t_workload_action() { local runtime=$1 name=$2 action=$3 state
   command -v "${runtime/libvirt/virsh}" >/dev/null || { conflict "$runtime is not on this host"; return 0; }
   case $runtime in
@@ -1034,6 +1063,17 @@ def _check_wg_rotate(conn, c, h, p, say):
         say('warn', f'{p["iface"]} was not seen at the last reading')
 
 
+def _check_wg_forward(conn, c, h, p, say):
+    try:
+        ipaddress.ip_network(p['range'], strict=False)
+    except ValueError:
+        say('crit', f'not a network range: {p["range"]}')
+    if p.get('state') == 'absent':
+        say('note', f'disables forwarding for {p["iface"]} in /etc/sysctl.d')
+    else:
+        say('note', f'enables IP forwarding on {h["name"]} so hub {p["iface"]} routes spokes across {p["range"]}')
+
+
 def _check_wg_interface(conn, c, h, p, say):
     try:
         mine = ipaddress.ip_interface(p['address'])
@@ -1309,6 +1349,13 @@ changes.register('wg-rotate', {'group': 'Network', 'label': 'WireGuard key rotat
     'help': 'Prepare makes a second key pair on the host, beside the one in use. Switch starts using it, once every peer knows it. The private keys never leave the host.'},
     ('iface', 'phase', 'pubkey'), lambda p: {'prepare': f'Make the next key of {p["iface"]}', 'switch': f'Switch {p["iface"]} to its next key', 'cancel': f'Remove the next key of {p["iface"]}'}.get(p['phase'], f'Rotate the key of {p["iface"]}'),
     _check_wg_rotate, _ansible_bash('t_wg_rotate', ('iface', 'phase', 'pubkey')))
+
+changes.register('wg-forward', {'group': 'Network', 'label': 'WireGuard hub forwarding', 'fields': [
+    F('iface', 'iface', 'Interface', required=True, placeholder='sf0'),
+    F('range', 'cidr', 'Network range', required=True, placeholder='10.203.0.0/20'),
+    F('state', 'choice', 'Enable or remove', options=['present', 'absent'], default='present')]},
+    ('iface', 'range', 'state'), lambda p: f'WireGuard hub forwarding on {p["iface"]}' if p.get('state') != 'absent' else f'Remove hub forwarding on {p["iface"]}',
+    _check_wg_forward, _ansible_bash('t_wg_forward', ('iface', 'range', 'state')))
 
 changes.register('workload-action', {'group': 'Workloads', 'label': 'Start, stop or snapshot', 'fields': [
     F('runtime', 'choice', 'Runtime', options=RUNTIMES, required=True), F('name', 'name', 'Name', required=True), F('action', 'choice', 'Action', options=['start', 'stop', 'restart', 'force-off', 'snapshot'], required=True)]},

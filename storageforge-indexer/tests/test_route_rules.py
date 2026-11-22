@@ -150,6 +150,7 @@ FRESH_PASSWORD = {
     ('POST', '/api/sfnet/members/rotate'),
     ('POST', '/api/sfnet/controller'),
     ('POST', '/api/sfnet/controller/apply'),
+    ('POST', '/api/sfnet/directory'),
     ('POST', '/api/map/placeholders/<path:node_id>/promote'),
     ('POST', '/api/map/manual'),
     ('DELETE', '/api/map/manual/<int:manual_id>'),

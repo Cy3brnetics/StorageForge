@@ -7,7 +7,8 @@ import time
 from flask import Response, jsonify, request
 from flask_login import current_user, login_required
 
-from . import apiviews, changes, desktop, exposure, graph, infragraph, inframeasure, mapdesign, mapexport, netdevice, netfacts, osoffer, reach, security, sfnetwork, whatif, workloads
+from . import apiviews, changes, deploy, desktop, exposure, graph, infragraph, inframeasure, mapdesign, mapexport, netdevice, netfacts, osoffer, reach, security, sfnet, sfnetwork, whatif, workloads
+from .vault import Vault
 
 
 def register(web, ctx):
@@ -433,6 +434,31 @@ def register(web, ctx):
         made = sfnetwork.plan(conn(), actor())
         core.audit(conn(), actor(), 'sfnet.plan', 'ok', str(made['plan_id'] or ''), {'tasks': made['tasks']})
         return jsonify(made)
+
+    @web.get('/api/sfnet/directory')
+    @login_required
+    def api_sfnet_directory():
+        cached = sfnetwork.cached_directory(conn())
+        if cached:
+            return jsonify(cached)
+        network = sfnetwork.load(conn())
+        if network is None:
+            return jsonify(directory=None, signed=False)
+        return jsonify(directory=sfnet.directory_payload(network), signed=False)
+
+    @web.post('/api/sfnet/directory')
+    @login_required
+    @password_confirmed
+    def api_sfnet_directory_sign():
+        c = conn()
+        body = json_body()
+        ttl = int(body.get('ttl') or 86400)
+        with Vault(db, c).unlock() as v:
+            signer = deploy._signer(v)
+            pub = v.public_key(deploy.SIGNING_KEY)
+            rec = sfnetwork.sign_directory(c, signer, pub, ttl=ttl, actor=actor())
+        core.audit(c, actor(), 'sfnet.directory.sign', 'ok', str(rec['directory']['seq']), {'expires': rec['directory']['expires']})
+        return jsonify(rec)
 
     # Desktop profiles (desktop.py): kept here, written to hosts by the desktop-profile plan step and by nothing else
     @web.get('/api/desktop/profiles')

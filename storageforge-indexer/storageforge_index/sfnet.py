@@ -31,6 +31,7 @@ import re
 INTERFACE = 'sf0'
 PORT = 51903
 KEEPALIVE = 25                       # seconds, towards a peer that has to be reached through its own NAT
+DIRECTORY_NS = 'storageforge-sfnet-directory'
 WGKEY = re.compile(r'[A-Za-z0-9+/]{43}=')
 SHARED = ipaddress.ip_network('100.64.0.0/10')          # Tailscale's and NetBird's: never ours
 # Tried in order. Ranges nobody's router hands out by default, sixteen /24s each: room for about four thousand hosts.
@@ -199,6 +200,21 @@ def revoke(network: dict, host: str) -> dict:
     return m
 
 
+def format_endpoint(where: str | None, port: int) -> str | None:
+    """Format host/IPv4/IPv6 endpoint as wg expects (`host:port` or `[ipv6]:port`)."""
+    if not where:
+        return None
+    clean = where.strip()
+    if clean.startswith('[') and clean.endswith(']'):
+        clean = clean[1:-1]
+    try:
+        if ipaddress.ip_address(clean).version == 6:
+            return f'[{clean}]:{int(port)}'
+    except ValueError:
+        pass
+    return f'{clean}:{int(port)}'
+
+
 def desired_peers(network: dict, host: str) -> list[dict]:
     """Who this host should have as peers: [{'host', 'public_key', 'allowed': [...], 'endpoint', 'keepalive'}]. One entry per key, so
     a member in the middle of a rotation appears twice, with its address on the key it uses now."""
@@ -213,7 +229,7 @@ def desired_peers(network: dict, host: str) -> list[dict]:
             continue                                      # two spokes are not peers: they meet at a hub
         whole = network['topology'] == 'hub' and m['hub'] and not me['hub']
         allowed = [network['range']] if whole else [f'{m["address"]}/32']
-        endpoint = f'{m["endpoint"]}:{network["port"]}' if m['endpoint'] else None
+        endpoint = format_endpoint(m['endpoint'], network['port'])
         # without an address to call, the other side has to call here and keep the path open
         keepalive = KEEPALIVE if (endpoint and not me['endpoint']) else None
         out.append({'host': m['host'], 'public_key': m['public_key'], 'allowed': allowed, 'endpoint': endpoint, 'keepalive': keepalive})
@@ -272,3 +288,77 @@ def confirm(network: dict, seen: dict) -> dict:
         if out[host]['state'] == 'ok' and (out[host]['missing'] or out[host]['unknown'] or out[host]['key_changed']):
             out[host]['state'] = 'differs'
     return out
+
+
+def directory_payload(network: dict, *, seq: int = 1, issued: int | None = None, ttl: int = 86400) -> dict:
+    """Signed-head directory payload so roaming peers can verify current controller/hub/peer endpoints from any mirror."""
+    import time
+    now = int(issued if issued is not None else time.time())
+    port = int(network['port'])
+    peers = []
+    for m in network.get('members') or []:
+        if m.get('state') != 'active' or not m.get('public_key'):
+            continue
+        peers.append({
+            'host': m['host'],
+            'address': m['address'],
+            'public_key': m['public_key'],
+            'hub': bool(m.get('hub')),
+            'endpoint': format_endpoint(m.get('endpoint'), port),
+        })
+    ctrl = network.get('controller')
+    head = next((p for p in peers if p['host'] == ctrl and p.get('endpoint')), None)
+    if head is None:
+        head = next((p for p in peers if p['hub'] and p.get('endpoint')), None)
+    if head is None:
+        head = next((p for p in peers if p['host'] == ctrl or p['hub']), None)
+    return {
+        'format': 1,
+        'network': INTERFACE,
+        'range': network['range'],
+        'port': port,
+        'topology': network['topology'],
+        'seq': int(seq),
+        'issued': now,
+        'expires': now + max(60, int(ttl)),
+        'head': head,
+        'peers': peers,
+    }
+
+
+def verify_directory(text: str, signature: str, signers: list[str], *, min_seq: int = 0, now: float | None = None) -> dict:
+    """Verify an sshsig-signed management directory against pinned signer public keys, rejecting expired or stale seqs."""
+    import json
+    import subprocess
+    import tempfile
+    import time
+    from pathlib import Path
+    if not signers:
+        raise NetworkError('no trusted directory signer keys supplied')
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        raise NetworkError('directory payload is not valid JSON') from None
+    if not isinstance(doc, dict) or doc.get('format') != 1 or doc.get('network') != INTERFACE:
+        raise NetworkError('not a StorageForge management directory')
+    if not isinstance(doc.get('seq'), int) or doc['seq'] < min_seq:
+        raise NetworkError('stale directory sequence number')
+    at = float(now if now is not None else time.time())
+    if not isinstance(doc.get('expires'), (int, float)) or doc['expires'] <= at:
+        raise NetworkError('directory signature has expired')
+    for entry in ([doc['head']] if doc.get('head') else []) + list(doc.get('peers') or []):
+        if not isinstance(entry, dict) or not WGKEY.fullmatch(str(entry.get('public_key') or '')):
+            raise NetworkError('directory entry carries an invalid WireGuard public key')
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        allowed = tmp / 'allowed'
+        sig_path = tmp / 'dir.sig'
+        allowed.write_text(''.join(f'sfnet {k.strip()}\n' for k in signers if str(k).strip()))
+        sig_path.write_text(signature or '')
+        p = subprocess.run(
+            ['ssh-keygen', '-Y', 'verify', '-f', str(allowed), '-I', 'sfnet', '-n', DIRECTORY_NS, '-s', str(sig_path)],
+            input=text.encode(), capture_output=True, timeout=10,
+        )
+        if p.returncode != 0:
+            raise NetworkError('directory signature verification failed')
+    return doc
