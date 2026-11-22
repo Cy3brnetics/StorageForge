@@ -242,6 +242,14 @@ NO_FRESH_PASSWORD = {
     ('POST', '/api/workloads/captures'),          # adopting a workload saves its capture in the database: nothing runs on a host
     ('DELETE', '/api/workloads/captures/<int:cid>'),
     ('POST', '/api/toolbox/stage'),               # saves a plan, as /api/changes does; accepting an unsigned entry asks for the password in the route
+    ('POST', '/api/toolbox/bundles'),             # saves a bundle definition; nothing runs on a host
+    ('DELETE', '/api/toolbox/bundles/<bundle_id>'),
+    ('POST', '/api/toolbox/bundles/preview'),     # builds a bundle plan and saves nothing
+    ('POST', '/api/toolbox/bundles/stage'),       # saves a bundle plan; accepting an unsigned entry asks for the password in the route
+    ('POST', '/api/toolbox/bundles/remove'),      # saves a reverse-order removal plan
+    ('PUT', '/api/toolbox/profiles/<role>'),      # configures role default tool set; nothing runs until staged & deployed
+    ('PUT', '/api/toolbox/profiles/host/<host>'),
+    ('POST', '/api/toolbox/profiles/host/<host>/stage'),
     ('POST', '/api/toolbox/<host>/<tool>/actions/<action>'),     # an adapter action, saved as a plan
     ('PUT', '/api/toolbox/overrides/<host>/<tool>'),  # an override is read when an install is staged; the plan it goes into is deployed like any other
     ('POST', '/api/toolbox/preview'),             # builds a plan and saves nothing
@@ -334,6 +342,7 @@ NOT_AUDITED = {
     'api_planner_changes': 'compares with the index and saves nothing',
     'api_planner_version_compare': 'compares two designs and saves nothing',
     'api_toolbox_preview': 'builds a plan from the catalog and saves nothing',
+    'api_toolbox_bundle_preview': 'builds a bundle plan from the catalog and saves nothing',
     'api_toolbox_validate': 'checks an entry against the schema and saves nothing',
 }
 

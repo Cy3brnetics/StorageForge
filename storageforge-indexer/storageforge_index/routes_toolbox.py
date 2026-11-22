@@ -11,7 +11,7 @@ from __future__ import annotations
 from flask import abort, jsonify, request
 from flask_login import current_user, login_required
 
-from . import tbadapters, toolbox
+from . import secplus, tbadapters, tbbundles, toolbox
 
 
 def register(web, ctx):
@@ -262,3 +262,148 @@ def register(web, ctx):
     @login_required
     def api_toolbox_exposure():
         return jsonify(exposure=tbadapters.exposure(conn()))
+
+    # ── bundles, role profiles and custom dashboard tiles (0.5.13) ──
+    @web.get('/api/toolbox/bundles')
+    @login_required
+    def api_toolbox_bundles():
+        return jsonify(bundles=tbbundles.list_bundles(conn()))
+
+    @web.post('/api/toolbox/bundles')
+    @login_required
+    def api_toolbox_bundle_save():
+        b = json_body()
+        try:
+            got = tbbundles.save_bundle(conn(), b, actor())
+        except toolbox.CatalogError as exc:
+            return bad(exc)
+        core.audit(conn(), actor(), 'toolbox.bundle.save', 'ok', None, {'bundle': got['id'], 'entries': got['entries']})
+        return jsonify(got), 201
+
+    @web.delete('/api/toolbox/bundles/<bundle_id>')
+    @login_required
+    def api_toolbox_bundle_delete(bundle_id):
+        try:
+            ok = tbbundles.delete_bundle(conn(), bundle_id)
+        except toolbox.CatalogError as exc:
+            return bad(exc)
+        if not ok:
+            return bad('no such user bundle', 404)
+        core.audit(conn(), actor(), 'toolbox.bundle.delete', 'ok', None, {'bundle': bundle_id})
+        return jsonify(removed=bundle_id)
+
+    @web.post('/api/toolbox/bundles/preview')
+    @login_required
+    def api_toolbox_bundle_preview():
+        b = json_body()
+        try:
+            got = tbbundles.preview_bundle(conn(), str(b.get('host') or ''), b.get('bundle_id') or None,
+                                           entries=b.get('entries'), params=b.get('params'), name=b.get('name'),
+                                           accept_unsigned=bool(b.get('accept_unsigned')))
+        except LookupError as exc:
+            return bad(exc, 404)
+        except (toolbox.CatalogError, ValueError) as exc:
+            return bad(exc)
+        return jsonify(got)
+
+    @web.post('/api/toolbox/bundles/stage')
+    @login_required
+    def api_toolbox_bundle_stage():
+        b = json_body()
+        host, bid = str(b.get('host') or ''), b.get('bundle_id') or None
+        accept = bool(b.get('accept_unsigned'))
+        if accept:
+            if 'hosts.command' not in current_user.permissions:
+                abort(403, description='accepting an unsigned entry takes hosts.command')
+            stale = password_stale()
+            if stale:
+                return stale
+        try:
+            entries = b.get('entries')
+            if entries is None and bid:
+                bdef = tbbundles.get_bundle(conn(), bid)
+                entries_to_check = (bdef or {}).get('entries') or []
+            else:
+                entries_to_check = entries or []
+            for tid in entries_to_check:
+                row = toolbox.find(conn(), str(tid))
+                if row and row['source'] == 'custom' and 'hosts.command' not in current_user.permissions:
+                    abort(403, description='a custom entry is root on the host by another name: staging one takes hosts.command')
+            got = tbbundles.stage_bundle(conn(), host, bid, actor(), entries=entries, params=b.get('params'),
+                                         name=b.get('name'), accept_unsigned=accept)
+        except LookupError as exc:
+            return bad(exc, 404)
+        except (toolbox.CatalogError, ValueError) as exc:
+            core.audit(conn(), actor(), 'toolbox.bundle.stage', 'failed', host[:80] or None, {'bundle': str(bid or 'custom')[:60], 'why': str(exc)[:200]})
+            return bad(exc)
+        core.audit(conn(), actor(), 'toolbox.bundle.stage', 'ok', got['host'], {'bundle': got['bundle_id'], 'plan': got['plan_id'], 'order': got['order']})
+        return jsonify(got), 201
+
+    @web.post('/api/toolbox/bundles/remove')
+    @login_required
+    def api_toolbox_bundle_remove():
+        b = json_body()
+        try:
+            got = tbbundles.stage_bundle_remove(conn(), str(b.get('host') or ''), str(b.get('bundle_id') or ''), actor(), bool(b.get('with_data')))
+        except LookupError as exc:
+            return bad(exc, 404)
+        except (toolbox.CatalogError, ValueError) as exc:
+            return bad(exc)
+        core.audit(conn(), actor(), 'toolbox.bundle.remove', 'ok', got['host'], {'bundle': got['bundle_id'], 'plan': got['plan_id']})
+        return jsonify(got), 201
+
+    @web.get('/api/toolbox/profiles')
+    @login_required
+    def api_toolbox_profiles():
+        return jsonify(tbbundles.list_profiles(conn()))
+
+    @web.put('/api/toolbox/profiles/<role>')
+    @login_required
+    def api_toolbox_profile_set(role):
+        b = json_body()
+        try:
+            got = tbbundles.set_role_profile(conn(), role, b.get('tools'), b.get('params'), actor())
+        except toolbox.CatalogError as exc:
+            return bad(exc)
+        core.audit(conn(), actor(), 'toolbox.profile.set', 'ok', None, {'role': got['role'], 'tools': got['tools']})
+        return jsonify(got)
+
+    @web.put('/api/toolbox/profiles/host/<host>')
+    @login_required
+    def api_toolbox_host_profile_set(host):
+        b = json_body()
+        try:
+            got = tbbundles.set_host_role(conn(), host, str(b.get('role') or ''), b.get('excluded'), actor())
+        except LookupError as exc:
+            return bad(exc, 404)
+        except toolbox.CatalogError as exc:
+            return bad(exc)
+        core.audit(conn(), actor(), 'toolbox.profile.host', 'ok', got['host'], {'role': got['role'], 'excluded': got['excluded']})
+        return jsonify(got)
+
+    @web.post('/api/toolbox/profiles/host/<host>/stage')
+    @login_required
+    def api_toolbox_host_profile_stage(host):
+        b = json_body()
+        try:
+            got = tbbundles.stage_host_profile(conn(), host, actor(), params=b.get('params'), accept_unsigned=bool(b.get('accept_unsigned')))
+        except LookupError as exc:
+            return bad(exc, 404)
+        except (toolbox.CatalogError, ValueError) as exc:
+            return bad(exc)
+        core.audit(conn(), actor(), 'toolbox.profile.stage', 'ok', got['host'], {'plan': got['plan_id'], 'order': got['order']})
+        return jsonify(got), 201
+
+    @web.get('/api/toolbox/dash/tiles')
+    @login_required
+    def api_toolbox_dash_tiles():
+        kinds = secplus.tile_kinds(conn())
+        return jsonify(tiles={k: v for k, v in kinds.items() if k == 'toolbox' or k.startswith('tool:')}, all_tiles=kinds)
+
+    @web.get('/api/toolbox/dash/tile/<kind>')
+    @login_required
+    def api_toolbox_dash_tile(kind):
+        try:
+            return jsonify(secplus.tile(conn(), kind, request.args.get('host') or None))
+        except LookupError as exc:
+            return bad(exc, 404)

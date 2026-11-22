@@ -47,7 +47,8 @@ ESSENTIAL = ('vault_meta', 'ssh_keys', 'device_credentials', 'key_bindings', 'us
              'platform_connections',                 # each API connection's accepted certificate and which vault row holds its token
              'workload_captures',                    # workloads adopted by capturing their definitions, which drift is measured against
              'toolbox_catalog', 'toolbox_signers',   # custom entries and catalog updates with their signatures, and the operator keys that sign them
-             'toolbox_installs', 'toolbox_overrides')  # which tools were staged where, from which entry, and each host's overrides
+             'toolbox_installs', 'toolbox_overrides', # which tools were staged where, from which entry, and each host's overrides
+             'toolbox_bundles', 'toolbox_profiles', 'toolbox_host_roles')  # user bundles, host role defaults and per-host exclusions
 # Left out of essentials: a rescan or the next deploy rebuilds these, they are history, or they are sessions.
 # Every table is in exactly one of the two lists (tests/test_consistency.py).
 REBUILDABLE = ('network_scans', 'network_scan_hosts', 'traffic_samples', 'mounts', 'scans', 'directories', 'file_records', 'file_fts', 'file_changes', 'scan_denied', 'scan_jobs',

@@ -130,7 +130,9 @@ Paste the signature with the entry, or later through `POST /api/toolbox/catalog/
 
 **Toolbox** in the rail has a card for each host with the tools on it and their health, the catalog by category, one tool at a time, *Custom entries* and *Operator keys*. A deep link opens a tool on its host: `/#host=gw-01&tab=toolbox&tool=wireguard`, which the page tidies into `/#/topo/toolbox?host=gw-01&tool=wireguard`. A cancelled dialog sends nothing and leaves the page as it was.
 
-The routes are under `/api/toolbox/` (catalog, validate, custom, sign, update, signers, installed, status, preview, stage, actions, overrides, updates, exposure): see [API reference](api-reference.md). Reads take `workloads.view`, and exposure `security.view`. Staging takes `plans.edit` and saves a plan; deploying it asks for the password again. Every write is in the audit log (`toolbox.*`).
+The routes are under `/api/toolbox/` (catalog, validate, custom, sign, update, signers, installed, status, preview, stage, bundles, profiles, dash, actions, overrides, updates, exposure): see [API reference](api-reference.md). Reads take `workloads.view`, and exposure `security.view`. Staging takes `plans.edit` and saves a plan; deploying it asks for the password again. Every write is in the audit log (`toolbox.*`).
+
+**Bundles** (`tbbundles.py`, `/api/toolbox/bundles`) order entries by dependency (PKI/secrets -> identity -> VPN -> proxy/DNS -> detection -> apps -> backup), consolidate `runtime-install`, reuse shared secret references, check port collisions across members, and stage the whole bundle as a single change plan with reverse-order removal (keeping data). **Role profiles** (`edge`, `nas`, `hypervisor`, `container-host`) assign default tool sets per host with per-host exclusions (`not-a-default` entries never enter a default profile). **Tool dashboard tiles** (`toolbox` and `tool:<id>`) appear in Toolbox and in the draggable Security Dashboard grid (`/security#/dash`).
 
 **Updates** lists installs whose entry has a newer revision in the catalog, or whose entry is no longer trusted; an update is staged as an install again, and its report shows what changes. **Exposure** compares what each tool was staged to listen on with the addresses the last reading saw it listen on.
 
@@ -146,8 +148,7 @@ The catalog's signature decides which entries are offered without a warning, and
 
 ## Not built yet
 
-- **Bundles, role profiles and per-host exclusions, custom dashboards, feeds** (Trivy findings and CrowdSec decisions), and the `toolbox_bundles` table: 0.5.13, with the rest of the catalog.
-- **sso-link** with a registered OIDC client: needs an identity provider entry (0.5.13). Until then it is a plain link.
+- **sso-link** with a registered OIDC client: needs an identity provider entry configured. Until then it is a plain link.
 - **CVE deltas** in updates: need the Trivy entry (0.5.13).
 - **Image CVE scans before the first deploy** and the CI job that checks entries against published checksums.
 - **QR codes** for WireGuard peer configurations.

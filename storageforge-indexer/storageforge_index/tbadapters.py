@@ -466,4 +466,41 @@ def stage_action(conn: Conn, host: str, tool_id: str, action: str, values: dict,
     return {'plan_id': plan_id, 'tasks': tasks}
 
 
+def dashboard_summary(conn: Conn, host: str | None = None) -> dict:
+    """Toolbox status summary tile payload for custom dashboards (matches secplus tile shape)."""
+    from . import toolbox
+    rows = status_rows(conn, host)
+    insts = toolbox.installs(conn, host)
+    if not rows and not insts:
+        return {'none': 'No Toolbox tools installed or measured yet'}
+    ok = sum(1 for r in rows if r['health'] == 'ok')
+    warn = sum(1 for r in rows if r['health'] in ('warn', 'unavailable', 'unknown'))
+    down = sum(1 for r in rows if r['health'] in ('down', 'missing'))
+    staged = sum(1 for i in insts if i['status'] == 'staged')
+    return {
+        'stats': [{'label': 'Running', 'value': ok}, {'label': 'Attention', 'value': warn + down}, {'label': 'Staged', 'value': staged}],
+        'rows': [{'label': f'{r["tool"]} ({r["version"] or r["health"]})', 'value': r['health'], 'host': r['host']} for r in rows[:8]],
+    }
+
+
+def tool_tile(conn: Conn, tool_id: str, host: str | None = None) -> dict:
+    """Single catalog tool tile payload for custom dashboards (matches secplus tile shape)."""
+    from . import toolbox
+    row = toolbox.find(conn, tool_id)
+    if not row:
+        raise LookupError(f'no catalog entry {tool_id}')
+    statuses = [s for s in status_rows(conn, host) if s['tool'] == tool_id]
+    insts = [i for i in toolbox.installs(conn, host) if i['tool'] == tool_id]
+    if not statuses and not insts:
+        return {'none': f'{row["name"]}: not installed or measured yet'}
+    if statuses:
+        rows = []
+        for s in statuses[:8]:
+            first = (s.get('tiles') or [{}])[0]
+            val = first.get('value') or s['version'] or s['health']
+            rows.append({'label': s['host'], 'value': f'{s["health"]}: {val}' if first.get('value') else val})
+        return {'rows': rows}
+    return {'rows': [{'label': i['host'], 'value': i['status']} for i in insts[:8]]}
+
+
 from . import tbadapters_c  # noqa: E402,F401  the adapters of the backup, secrets, provisioning, storage and offline entries

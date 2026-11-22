@@ -132,9 +132,9 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/workloads(/.*)?', 'workloads.view'),
     (READ, r'/api/toolbox/exposure', 'security.view'),                 # what each tool listens on, and to whom: how to get in
     (READ, r'/api/toolbox(/.*)?', 'workloads.view'),                   # the catalog, installs, status tiles, actions, updates
-    (('POST',), r'/api/toolbox/(preview|catalog/validate)', 'workloads.view'),      # reads: a plan or a check shown, nothing saved
+    (('POST',), r'/api/toolbox/(preview|bundles/preview|catalog/validate)', 'workloads.view'),      # reads: a plan or a check shown, nothing saved
     (_WRITE, r'/api/toolbox/(catalog/(custom|sign|update)|signers)(/.*)?', 'hosts.command'),    # a custom entry is root on the host by another name
-    (_WRITE, r'/api/toolbox/(stage|overrides/[^/]+/[^/]+|[^/]+/[^/]+/actions/[^/]+)', 'plans.edit'),     # saves a change plan; deploying it asks again
+    (_WRITE, r'/api/toolbox/(stage|bundles(/.*)?|profiles(/.*)?|overrides/[^/]+/[^/]+|[^/]+/[^/]+/actions/[^/]+)', 'plans.edit'),     # saves a change plan, bundle or role profile; deploying it asks again
     (READ, r'/api/netscan(/.*)?', 'netscan.view'),
     (_WRITE, r'/api/netscan(/.*)?', 'netscan.run'),
     (READ, r'/api/traffic', 'netscan.view'),

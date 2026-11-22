@@ -464,7 +464,7 @@ echo "@@STRINGS"; head -c 1048576 -- "$p" | LC_ALL=C tr -c '[:print:]\n' '\n' | 
     @web.get('/api/security/dash/tiles')
     @login_required
     def api_tile_kinds():
-        return jsonify(tiles=secplus.TILES)
+        return jsonify(tiles=secplus.tile_kinds(conn()))
 
     @web.get('/api/security/dash/tile/<kind>')
     @login_required

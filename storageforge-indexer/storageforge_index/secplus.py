@@ -1565,14 +1565,30 @@ def bundle(db, conn: Conn, body: dict, actor: str) -> dict:
 
 
 # ── the whole picture, in tiles ──────────────────────────────────────
-TILES = {'posture': 'Fleet state', 'alarms': 'Alarms', 'decoys': 'Decoys', 'blocked': 'Who is dropped', 'holds': 'Holds', 'entropy': 'Files that look encrypted', 'avc': 'Storage denials', 'lynis': 'Hardening index', 'compliance': 'Checks passing', 'exposure': 'Widest exposure', 'playbooks': 'Playbooks'}
+TILES = {'posture': 'Fleet state', 'alarms': 'Alarms', 'decoys': 'Decoys', 'blocked': 'Who is dropped', 'holds': 'Holds', 'entropy': 'Files that look encrypted', 'avc': 'Storage denials', 'lynis': 'Hardening index', 'compliance': 'Checks passing', 'exposure': 'Widest exposure', 'playbooks': 'Playbooks', 'toolbox': 'Toolbox health'}
+
+
+def tile_kinds(conn: Conn | None = None) -> dict[str, str]:
+    """Built-in dashboard tiles plus per-tool Toolbox tiles when a database connection is available."""
+    out = dict(TILES)
+    if conn is not None:
+        from . import toolbox
+        for e in toolbox.catalog(conn):
+            out[f'tool:{e["id"]}'] = f'Tool: {e["name"]}'
+    return out
 
 
 def tile(conn: Conn, kind: str, host: str | None) -> dict:
     """Every number here was measured. A tile with nothing to read says so; it never shows zero for unread."""
+    if kind.startswith('tool:'):
+        from . import tbadapters
+        return tbadapters.tool_tile(conn, kind.split(':', 1)[1], security.known_host(conn, host) if host else None)
     if kind not in TILES:
         raise LookupError(f'no such tile: {kind[:40]}')
     names = [security.known_host(conn, host)] if host else [r[0] for r in conn.all('SELECT hostname FROM hosts ORDER BY hostname')]
+    if kind == 'toolbox':
+        from . import tbadapters
+        return tbadapters.dashboard_summary(conn, security.known_host(conn, host) if host else None)
     if kind == 'posture':
         p = security.posture(conn, host)
         return {'state': p['state'], 'text': p['banner']}
@@ -1629,9 +1645,10 @@ def save_dashboard(conn: Conn, body: dict, owner: str) -> dict:
     name = str(body.get('name') or '').strip()
     if not RULE_NAME.fullmatch(name):
         raise ValueError('a dashboard needs a plain name')
+    known = tile_kinds(conn)
     layout = []
     for t in (body.get('layout') or [])[:40]:
-        if t.get('kind') not in TILES:
+        if t.get('kind') not in known:
             raise ValueError('no such tile')
         layout.append({'kind': t['kind'], 'w': min(4, max(1, int(t.get('w') or 1))), 'h': min(4, max(1, int(t.get('h') or 1)))})
     conn.execute("""INSERT INTO security_dashboards (owner, name, layout_json, updated_at) VALUES (:o, :n, :l, :t)

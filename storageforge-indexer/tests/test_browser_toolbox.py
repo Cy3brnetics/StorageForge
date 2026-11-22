@@ -99,6 +99,16 @@ class BrowserToolbox(Base):
         page.fill('#tbyaml', CUSTOM)
         page.click('#tbcustom button:has-text("Dry run on the host")')
         page.wait_for_selector('#tbedout:has-text("Nothing was saved")')
+        # bundles, role profiles with per-host exclusions, and tool dashboard tile
+        page.wait_for_selector('#tbdash h3:has-text("Tool dashboard")')
+        page.click('#tbbundles summary')
+        page.click('#tbbundles li[data-bundle="observability"] button:has-text("Preview bundle")')
+        page.wait_for_selector('#tbbundlereport:has-text("Observability on box")')
+        page.click('#tbprofiles summary')
+        page.select_option('#tbrolepick', 'nas')
+        page.uncheck('#tbroleexcl input[value="samba"]')
+        page.click('#tbprofiles button:has-text("Save role")')
+        page.wait_for_selector('#toolboxmsg:has-text("Saved role nas for box")')
         self.assertEqual(errors, [])
 
 

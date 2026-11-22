@@ -230,11 +230,107 @@ async function tbSigners() {
   return box;
 }
 
+function tbBundles(bundles) {
+  const host = S.host;
+  const out = sfNode('div', { id: 'tbbundlereport', class: 'stack', 'aria-live': 'polite' });
+  const list = (bundles || []).map((b) => sfNode('li', { 'data-bundle': b.id },
+    sfNode('b', {}, b.name), sfNode('span', { class: 'm' }, ` · ${b.summary} (${b.entries.join(' -> ')})`),
+    host ? sfNode('span', { class: 'row wrap' },
+      button('Preview bundle', () => tbDo(async () => {
+        const pv = await (await postJSON('/api/toolbox/bundles/preview', { host, bundle_id: b.id })).json();
+        out.replaceChildren(
+          sfNode('p', {}, sfNode('b', {}, `${pv.name} on ${pv.host}: `), `order ${pv.order.join(' -> ')}`),
+          sfNode('ul', {}, pv.report.map((x) => sfNode('li', { class: tbLevel(x.level === 'note' ? 'warn' : x.level) }, x.text))),
+          sfNode('p', { class: 'muted' }, `Steps (${pv.tasks.length}): ${pv.tasks.map((t) => t.type).join(', ')}.`));
+      }), 'btn ghost sm'),
+      button('Stage bundle', () => tbDo(async () => {
+        if (!(await confirmDialog({ title: `Stage bundle ${b.name} on ${host}?`, confirm: 'Save as one plan',
+          body: `Stages ${b.entries.join(', ')} in dependency order as a single change plan. Nothing runs until you deploy it from Changes.` }))) return;
+        const got = await (await postJSON('/api/toolbox/bundles/stage', { host, bundle_id: b.id })).json();
+        tbStaged(got, `Bundle ${got.name} on ${got.host}`);
+        loadToolbox();
+      }), 'btn sm pri'),
+      button('Stage bundle removal', () => tbDo(async () => {
+        if (!(await confirmDialog({ title: `Remove bundle ${b.name} from ${host}?`, danger: true, confirm: 'Save removal plan',
+          body: 'Removes tools from this bundle in reverse order as one change plan. Their data folders stay where they are.' }))) return;
+        const got = await (await postJSON('/api/toolbox/bundles/remove', { host, bundle_id: b.id })).json();
+        tbStaged(got, `Removing ${b.name} from ${got.host}`);
+        loadToolbox();
+      }), 'btn ghost sm danger')) : null));
+  return sfNode('details', { id: 'tbbundles' }, sfNode('summary', {}, 'Bundles'),
+    sfNode('p', { class: 'muted' }, host ? `Stage a curated multi-tool bundle on ${host} as one ordered change plan with port-collision checks and whole-bundle rollback.` : 'Choose a host at the top to preview or stage a bundle.'),
+    sfNode('ul', { class: 'list' }, list), out);
+}
+
+function tbProfiles(profiles) {
+  const host = S.host;
+  const roles = (profiles && profiles.roles) || [];
+  const box = sfNode('details', { id: 'tbprofiles' }, sfNode('summary', {}, 'Role profiles'));
+  if (!host) {
+    box.append(sfNode('p', { class: 'muted' }, 'Choose a host at the top to assign its role profile and per-host tool exclusions.'),
+      sfNode('ul', { class: 'list' }, roles.map((r) => sfNode('li', {}, sfNode('b', {}, r.label), sfNode('span', { class: 'm' }, ` · ${r.tools.join(', ')}`)))));
+    return box;
+  }
+  const cur = ((profiles && profiles.hosts) || []).find((h) => h.host === host);
+  const pick = sfNode('select', { id: 'tbrolepick', 'aria-label': 'Host role' }, roles.map((r) => {
+    const o = sfNode('option', { value: r.role }, `${r.label} (${r.role})`);
+    if (cur && cur.role === r.role) o.selected = true;
+    return o;
+  }));
+  const exBox = sfNode('div', { class: 'row wrap', id: 'tbroleexcl' });
+  const drawChecks = () => {
+    const rdef = roles.find((r) => r.role === pick.value) || { tools: [] };
+    const ex = new Set(cur && cur.role === pick.value ? cur.excluded : []);
+    exBox.replaceChildren(...rdef.tools.map((t) => {
+      const cb = sfNode('input', { type: 'checkbox', value: t });
+      cb.checked = !ex.has(t);
+      return sfNode('label', { class: 'row' }, cb, t);
+    }));
+  };
+  pick.addEventListener('change', drawChecks);
+  drawChecks();
+  box.append(sfNode('p', { class: 'muted' }, `Assign a default role to ${host} and uncheck any tool to exclude for this host alone.`),
+    sfNode('div', { class: 'row wrap' }, tbField('Role', pick)), exBox,
+    sfNode('div', { class: 'row wrap' },
+      button('Save role', () => tbDo(async () => {
+        const excluded = [...exBox.querySelectorAll('input[type="checkbox"]')].filter((c) => !c.checked).map((c) => c.value);
+        const got = await (await api(`/api/toolbox/profiles/host/${encodeURIComponent(host)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: pick.value, excluded }) })).json();
+        tbMsg(`Saved role ${got.role} for ${got.host} (${got.tools.length} tool(s) active).`, true);
+        loadToolbox();
+      }), 'btn'),
+      cur ? button(`Stage ${cur.role} tools`, () => tbDo(async () => {
+        const got = await (await postJSON(`/api/toolbox/profiles/host/${encodeURIComponent(host)}/stage`, {})).json();
+        tbStaged(got, `Role ${cur.role} on ${got.host}`);
+        loadToolbox();
+      }), 'btn pri') : null));
+  return box;
+}
+
+function tbDashboardTile(summary) {
+  const box = sfNode('section', { id: 'tbdash', class: 'card stack', 'aria-labelledby': 'tbdashtitle' },
+    sfNode('div', { class: 'row' }, sfNode('h3', { id: 'tbdashtitle' }, 'Tool dashboard'),
+      sfNode('a', { href: '/security#/dash', class: 'btn ghost sm' }, 'Open dashboard grid')));
+  if (!summary || summary.none) {
+    box.append(sfNode('p', { class: 'muted' }, (summary && summary.none) || 'No Toolbox tools measured yet. Tool tiles also join the Security Dashboard grid.'));
+    return box;
+  }
+  if (summary.stats) box.append(sfNode('div', { class: 'stat-row' }, summary.stats.map((s) => sfNode('div', { class: 'stat' }, sfNode('b', {}, String(s.value)), sfNode('span', { class: 'muted' }, s.label)))));
+  if ((summary.rows || []).length) box.append(sfNode('ul', { class: 'list' }, summary.rows.map((r) => sfNode('li', {}, sfNode('b', {}, r.label), sfNode('span', { class: 'm' }, ` · ${r.value}${r.host ? ` · ${r.host}` : ''}`)))));
+  return box;
+}
+
 async function loadToolbox() {
   const fresh = latest('toolbox');
   const box = $('#toolboxbox');
   try {
-    const [cat, inst] = await Promise.all([getJSON('/api/toolbox/catalog'), getJSON('/api/toolbox/installed')]);
+    const dashUrl = `/api/toolbox/dash/tile/toolbox${S.host ? `?host=${encodeURIComponent(S.host)}` : ''}`;
+    const [cat, inst, bund, prof, summary] = await Promise.all([
+      getJSON('/api/toolbox/catalog'),
+      getJSON('/api/toolbox/installed'),
+      getJSON('/api/toolbox/bundles'),
+      getJSON('/api/toolbox/profiles'),
+      getJSON(dashUrl),
+    ]);
     if (!fresh()) return;
     TB.cat = cat; TB.inst = inst; TB.may = cat.may_write;
     const hosts = {};
@@ -244,10 +340,11 @@ async function loadToolbox() {
     const parts = [];
     if (TB.tool) parts.push(await tbToolView(TB.tool));
     if (!fresh()) return;
+    parts.push(tbDashboardTile(summary));
     parts.push(sfNode('section', { id: 'tbhosts', 'aria-labelledby': 'tbhoststitle' }, sfNode('h3', { id: 'tbhoststitle' }, 'Hosts'),
       shown.length ? sfNode('ul', { class: 'tbcards' }, shown.map((h) => tbHostCard(h, [...(hosts[h] || new Map()).values()])))
         : sfNode('p', { class: 'muted' }, 'No tool from the catalog is installed or found on any host yet. Open one below to install it.')));
-    parts.push(tbCatalogList(), tbEditor());
+    parts.push(tbBundles(bund.bundles), tbProfiles(prof), tbCatalogList(), tbEditor());
     const signers = await tbSigners();
     if (!fresh()) return;
     if (signers) parts.push(signers);
