@@ -497,7 +497,7 @@ function renderSummary() {
 /* ── right-click menus: an element with _menu(ev) returning items gets one ──
    item: { label, run, danger, disabled, checked } · '-' (separator) · { heading }.
    Shift+right-click, links, text fields and selected text keep the browser's own menu. */
-let menuEl = null, menuKeyAt = 0;
+let menuEl = null, menuKeyAt = 0, menuClosedFrom = null, menuClosedAt = 0;
 function closeMenu(refocus = false) {
   if (!menuEl) return;
   const from = menuEl.from; menuEl.remove(); menuEl = null;
@@ -505,11 +505,17 @@ function closeMenu(refocus = false) {
   if (refocus && from && from.isConnected && from.focus) from.focus();
 }
 function openMenu(items, x, y, from) {
+  if (from && from === menuClosedFrom && Date.now() - menuClosedAt < 400) { menuClosedFrom = null; return; }
+  menuClosedFrom = null;
   closeMenu();
   const list = [];
   for (const it of items) if (it && (it !== '-' || (list.length && list[list.length - 1] !== '-'))) list.push(it);
   while (list[list.length - 1] === '-') list.pop();
   const m = document.createElement('div'); m.className = 'ctxmenu'; m.setAttribute('role', 'menu'); m.from = from;
+  const scroller = from && from !== canvas && from.closest ? from.closest('.tab, .tkcanvas') : null;
+  m._scroller = scroller;
+  m._scrollTop = scroller ? scroller.scrollTop : 0;
+  m._scrollLeft = scroller ? scroller.scrollLeft : 0;
   for (const it of list) {
     if (it === '-') { m.append(document.createElement('hr')); continue; }
     if (it.heading) { m.append(text('div', it.heading, 'ctxh')); continue; }
@@ -529,8 +535,15 @@ function openMenu(items, x, y, from) {
   });
   m.style.visibility = 'hidden'; document.body.append(m);
   const w = m.offsetWidth, h = m.offsetHeight;
-  m.style.left = `${Math.max(8, Math.min(x, innerWidth - w - 8))}px`;
-  m.style.top = `${y + h > innerHeight - 8 ? Math.max(8, y - h) : y}px`;
+  if (from && from !== canvas && from.tagName === 'BUTTON') {
+    const r = from.getBoundingClientRect();
+    const left = Math.abs(x - r.left) <= 4 ? r.left : r.right - w;
+    m.style.left = `${Math.max(8, Math.min(left, innerWidth - w - 8))}px`;
+    m.style.top = `${r.bottom + 4 + h > innerHeight - 8 ? Math.max(8, r.top - h - 4) : r.bottom + 4}px`;
+  } else {
+    m.style.left = `${Math.max(8, Math.min(x, innerWidth - w - 8))}px`;
+    m.style.top = `${y + h > innerHeight - 8 ? Math.max(8, y - h) : y}px`;
+  }
   m.style.visibility = '';
   menuEl = m;
   if (from !== canvas) from?.classList.add('menu-open');
@@ -566,10 +579,21 @@ const menuFromKey = (ev) => {
 };
 sfShortcut({ id: 'context-menu', key: 'ContextMenu', mods: 'any', label: 'Open the menu of the focused item', dialogs: true, when: () => !menuEl, run: menuFromKey });
 sfShortcut({ id: 'context-menu-f10', key: 'F10', mods: 'shift', label: 'Open the menu of the focused item', dialogs: true, when: () => !menuEl, run: menuFromKey });
-document.addEventListener('pointerdown', (ev) => { if (menuEl && !menuEl.contains(ev.target)) closeMenu(); }, true);
-document.addEventListener('scroll', (ev) => { if (menuEl && !menuEl.contains(ev.target)) closeMenu(); }, true);
+document.addEventListener('pointerdown', (ev) => {
+  if (menuEl && !menuEl.contains(ev.target)) {
+    if (menuEl.from && menuEl.from !== canvas && menuEl.from.contains?.(ev.target)) {
+      menuClosedFrom = menuEl.from;
+      menuClosedAt = Date.now();
+    }
+    closeMenu();
+  }
+}, true);
+document.addEventListener('scroll', (ev) => {
+  if (!menuEl || menuEl.contains(ev.target)) return;
+  const s = menuEl._scroller;
+  if (s && (ev.target === s || ev.target.contains?.(s)) && Math.hypot(s.scrollTop - menuEl._scrollTop, s.scrollLeft - menuEl._scrollLeft) > 20) closeMenu();
+}, true);
 window.addEventListener('resize', () => closeMenu());
-window.addEventListener('blur', () => closeMenu());
 
 function copyText(s, what = 'Copied') {
   const done = () => toast(`${what}: ${s}`);

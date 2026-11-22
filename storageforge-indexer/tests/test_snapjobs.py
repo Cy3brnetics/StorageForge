@@ -152,6 +152,10 @@ class Advice(unittest.TestCase):
     def test_snapper_with_cleanup_off_is_called_out(self):
         self.assertIn('snapper-cleanup.timer', snapjobs.fit(snapfind.parse(SNAPPER)[0])[0]['text'])
 
+    def test_excludes_are_parsed(self):
+        j = snapfind.parse(found_text() + f'\nR\t{CONF}\texclude\t*.tmp\nR\t{CONF}\texclude\t.cache/')[0]
+        self.assertEqual(j['excludes'], ['*.tmp', '.cache/'])
+
 
 class Imported(unittest.TestCase):
     def setUp(self):
@@ -322,6 +326,35 @@ class Imported(unittest.TestCase):
             snapjobs.retention(None, self.conn, jid, {'daily': 14}, 't')
         self.assertEqual(jobs.get(self.conn, jid)['spec']['levels']['daily'], 14)
 
+    def test_edit_job_updates_rsnapshot_config_and_rejects_bad_inputs(self):
+        jid = snapjobs.import_job(self.conn, 'pi', 'rsnapshot', CONF, 't')
+        for bad in (
+            {'root': 'relative/path', 'backups': [{'src': '/home/', 'dst': 'localhost/'}], 'keep': {'daily': 7}},
+            {'root': '/mnt/snaps', 'backups': [], 'keep': {'daily': 7}},
+            {'root': '/mnt/snaps', 'backups': [{'src': '/home/', 'dst': '../escape'}], 'keep': {'daily': 7}},
+            {'root': '/mnt/snaps', 'backups': [{'src': 'not a path', 'dst': 'localhost/'}], 'keep': {'daily': 7}},
+            {'root': '/mnt/snaps', 'backups': [{'src': '/home/', 'dst': 'localhost/'}], 'excludes': ['a\tb'], 'keep': {'daily': 7}},
+            {'root': '/mnt/snaps', 'backups': [{'src': '/home/', 'dst': 'localhost/'}], 'keep': {'daily': 0}},
+        ):
+            with self.assertRaises(ValueError):
+                snapjobs.edit_job(None, self.conn, jid, bad, 't')
+
+        ran = []
+        with mock.patch.object(deploy, 'run', lambda db, host, script, **kw: ran.append(script) or {'status': 'ok', 'output': 'configtest ok'}):
+            res = snapjobs.edit_job(None, self.conn, jid, {
+                'root': '/mnt/ssd/newsnaps',
+                'backups': [{'src': '/srv/media', 'dst': 'localhost/'}, {'src': 'rpi@nas:/data', 'dst': 'nas/'}],
+                'excludes': ['*.tmp', '.cache/'],
+                'keep': {'daily': 14, 'weekly': 6},
+            }, 't')
+        self.assertEqual(res['status'], 'ok')
+        j = self.job(jid)
+        self.assertEqual(j['dst'], '/mnt/ssd/newsnaps')
+        self.assertEqual(j['backups'], [{'src': '/srv/media/', 'dst': 'localhost/'}, {'src': 'rpi@nas:/data/', 'dst': 'nas/'}])
+        self.assertEqual(j['excludes'], ['*.tmp', '.cache/'])
+        self.assertEqual(j['levels'], {'daily': 14, 'weekly': 6})
+        self.assertIn('SF_ROOT=/mnt/ssd/newsnaps/', ran[0])
+
     def test_a_plan_is_told_when_rsnapshot_does_not_suit(self):
         def said(fstype):
             mounts = [{'id': 1, 'target': '/', 'source': '/dev/a', 'fstype': fstype, 'total': 1 << 40, 'used': 0, 'state': 'indexed', 'options': ''}]
@@ -481,6 +514,68 @@ class Scripts(unittest.TestCase):
         run = lambda rel: self.bash(snapjobs.HEAD + f'BASE={shlex.quote(str(snap))} REL={shlex.quote(rel)}\n' + snapjobs._INSIDE)  # noqa: E731
         self.assertEqual(run('localhost/a.txt').returncode, 0)
         self.assertIn('leads out', run('localhost/out/passwd').stderr)
+
+    def test_edit_script_rewrites_rsnapshot_conf_and_rolls_back_on_bad_configtest(self):
+        conf = self.tmp / 'rsnapshot.conf'
+        orig = (
+            '# header comment\n'
+            'config_version\t1.2\n'
+            'snapshot_root\t/mnt/old/\n'
+            'retain\tdaily\t7\n'
+            'retain\tweekly\t4\n'
+            'exclude\t*.bak\n'
+            'backup\t/home/\tlocalhost/\n'
+            'backup\t/etc/\tlocalhost/\n'
+        )
+        conf.write_text(orig)
+        conf.chmod(0o640)
+        stubs = self.tmp / 'bin'
+        stubs.mkdir()
+        (stubs / 'stat').write_text('#!/bin/bash\nif [[ $1 == -c && $2 == %u ]]; then echo 0; else echo 640; fi\n')
+        (stubs / 'rsnapshot').write_text('#!/bin/bash\nexit 0\n')
+        for f in (stubs / 'stat', stubs / 'rsnapshot'):
+            f.chmod(0o755)
+        env = {'PATH': f'{stubs}:{os.environ["PATH"]}'}
+
+        captured = []
+        j = self.spec(config=str(conf))
+        with mock.patch.object(jobs, 'get', return_value=j), \
+                mock.patch.object(deploy, 'run', side_effect=lambda db, host, s, **kw: captured.append(s) or {'status': 'ok', 'output': ''}):
+            conn = mock.MagicMock()
+            snapjobs.edit_job(None, conn, 'x-rs-1', {
+                'root': '/mnt/new',
+                'backups': [{'src': '/var/data/', 'dst': 'localhost/'}, {'src': 'rpi@nas:/srv/', 'dst': 'nas/'}],
+                'excludes': ['*.tmp', '.cache/'],
+                'keep': {'hourly': 6, 'daily': 14},
+            }, 't')
+        r = self.bash(captured[0], env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        updated = conf.read_text()
+        self.assertIn('# header comment\nconfig_version\t1.2\n', updated)
+        self.assertIn('snapshot_root\t/mnt/new/\n', updated)
+        self.assertIn('retain\thourly\t6\nretain\tdaily\t14\n', updated)
+        self.assertIn('exclude\t*.tmp\nexclude\t.cache/\n', updated)
+        self.assertIn('backup\t/var/data/\tlocalhost/\nbackup\trpi@nas:/srv/\tnas/\n', updated)
+        self.assertNotIn('*.bak', updated)
+        self.assertNotIn('/mnt/old/', updated)
+        self.assertEqual(stat.S_IMODE(conf.stat().st_mode), 0o640)
+
+        # If rsnapshot configtest fails, the original file is restored from .sf-bak
+        before_fail = conf.read_text()
+        (stubs / 'rsnapshot').write_text('#!/bin/bash\necho "syntax error" >&2; exit 1\n')
+        with mock.patch.object(jobs, 'get', return_value=j), \
+                mock.patch.object(deploy, 'run', side_effect=lambda db, host, s, **kw: captured.append(s) or {'status': 'ok', 'output': ''}):
+            conn = mock.MagicMock()
+            snapjobs.edit_job(None, conn, 'x-rs-1', {
+                'root': '/mnt/broken',
+                'backups': [{'src': '/broken/', 'dst': 'localhost/'}],
+                'excludes': [],
+                'keep': {'daily': 3},
+            }, 't')
+        r2 = self.bash(captured[1], env)
+        self.assertNotEqual(r2.returncode, 0)
+        self.assertIn('back as it was', r2.stderr)
+        self.assertEqual(conf.read_text(), before_fail)
 
 
 if __name__ == '__main__':

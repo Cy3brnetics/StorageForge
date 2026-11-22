@@ -745,5 +745,6 @@ def overview(conn: Conn, now: float | None = None) -> list[dict]:
                     'live': live.get(jid), 'routes': s.get('routes') or [], 'dedup': bool(s.get('dedup')),
                     'transport': s.get('transport') or 'rsync', 'extent_dedup': s.get('extent_dedup'),
                     'imported': imported, 'sources': sources, 'places': places, 'config': s.get('config'), 'levels': s.get('levels'),
+                    'backups': s.get('backups') or [], 'excludes': s.get('excludes') or [], 'root': s.get('root') or s.get('dst'),
                     'fstype': s.get('fstype'), 'mount': s.get('mount'), 'fit': s.get('fit') or [], 'count': s.get('count')})
     return out

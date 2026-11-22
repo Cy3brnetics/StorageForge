@@ -30,6 +30,8 @@ SNAPPER_NAME = re.compile(r'[a-z0-9][a-z0-9_-]{0,30}')
 RUN_NS = uuid.UUID('6d1f0c3a-5a2e-4a39-9a55-0b5f4f6f7c11')    # so a snapshot seen by two scans is one run
 READ_ONLY = ('dryrun', 'log', 'snapshots')
 VERBS = ('run', 'dryrun', 'pause', 'resume', 'log', 'snapshots')
+LEVEL_NAMES = ('hourly', 'daily', 'weekly', 'monthly', 'yearly', 'alpha', 'beta', 'gamma', 'delta', 'number')
+_DST_REL = re.compile(r'[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/?')
 
 
 def is_imported(j: dict) -> bool:
@@ -192,7 +194,7 @@ def _spec(found: dict) -> dict:
     return {'imported': True, 'find_key': [found['tool'], found['config']], 'tool': found['tool'], 'config': found['config'], 'root': found.get('root'),
             'src': found.get('root') if is_snapper else (local[0] if local else None),     # a remote line is not a path here: see remote_sources()
             'sources': [found['root']] if is_snapper and found.get('root') else local, 'dst': None if is_snapper else found.get('root'),
-            'backups': found.get('backups') or [], 'levels': found.get('levels') or {}, 'lowest': found.get('lowest'), 'schedule': found.get('schedule') or [],
+            'backups': found.get('backups') or [], 'excludes': found.get('excludes') or [], 'levels': found.get('levels') or {}, 'lowest': found.get('lowest'), 'schedule': found.get('schedule') or [],
             'fstype': found.get('fstype') or '', 'mount': found.get('mount') or '', 'root_exists': found.get('root_exists'),
             'sync_first': bool(found.get('sync_first')), 'logfile': found.get('logfile'), 'count': len(found.get('snapshots') or []),
             'fit': fit(found), 'keep': ' '.join(f'{k}={v}' for k, v in (found.get('levels') or {}).items())}
@@ -507,6 +509,143 @@ def retention(db, conn: Conn, jid: str, keep: dict, actor: str) -> dict:
         spec['levels'].update(keep)
         spec['keep'] = ' '.join(f'{k}={v}' for k, v in spec['levels'].items())
         conn.execute('UPDATE jobs SET spec_json = :s WHERE job_id = :j', {'s': json.dumps(spec), 'j': jid})
+    return res
+
+
+_RSNAPSHOT_EDIT_AWK = r"""BEGIN {
+  nr = split(ENVIRON["SF_RETAIN"], rets, "\n")
+  nb = split(ENVIRON["SF_BACKUPS"], baks, "\n")
+  ne = split(ENVIRON["SF_EXCLUDES"], excs, "\n")
+  set_ex = ENVIRON["SF_SET_EXCLUDES"] == "1"
+  ret_kw = "retain"
+}
+{
+  k = ""
+  if ($0 ~ /^[A-Za-z_]+[ \t]/) { split($0, kw, /[ \t]+/); k = kw[1] }
+  if (k == "snapshot_root") { print "snapshot_root\t" ENVIRON["SF_ROOT"]; done_root = 1; next }
+  if (k == "retain" || k == "interval") {
+    if (!done_ret) { ret_kw = k; for (i = 1; i <= nr; i++) if (rets[i] != "") print ret_kw "\t" rets[i]; done_ret = 1 }
+    next
+  }
+  if (k == "exclude" && set_ex) next
+  if (k == "backup") {
+    if (set_ex && !done_exc) { for (i = 1; i <= ne; i++) if (excs[i] != "") print "exclude\t" excs[i]; done_exc = 1 }
+    if (!done_bak) { for (i = 1; i <= nb; i++) if (baks[i] != "") print "backup\t" baks[i]; done_bak = 1 }
+    next
+  }
+  print
+}
+END {
+  if (!done_root) print "snapshot_root\t" ENVIRON["SF_ROOT"]
+  if (!done_ret) for (i = 1; i <= nr; i++) if (rets[i] != "") print ret_kw "\t" rets[i]
+  if (set_ex && !done_exc) for (i = 1; i <= ne; i++) if (excs[i] != "") print "exclude\t" excs[i]
+  if (!done_bak) for (i = 1; i <= nb; i++) if (baks[i] != "") print "backup\t" baks[i]
+}"""
+
+
+def edit_job(db, conn: Conn, jid: str, body: dict, actor: str) -> dict:
+    """Update an imported job's config (snapshot_root, backups, excludes, and retention levels for rsnapshot; retention for snapper)."""
+    from .jobs import get
+    j = get(conn, jid)
+    if not is_imported(j):
+        raise ValueError('a deployed job\'s settings are set in its plan')
+    if not isinstance(body, dict):
+        raise ValueError('bad edit body')
+    spec, q = dict(j['spec']), shlex.quote
+    valid_levels = set(spec.get('levels') or {}) | set(('hourly', 'daily', 'weekly', 'monthly', 'yearly', 'number') if spec['tool'] == 'snapper' else ORPHAN_LEVELS + ('yearly',))
+    keep = body.get('keep')
+    if not keep or not isinstance(keep, dict):
+        raise ValueError('say how many to keep for which level')
+    clean_keep: dict[str, int] = {}
+    for level, n in keep.items():
+        if level not in valid_levels:
+            raise ValueError(f'bad retention level {level}')
+        if not isinstance(n, int) or isinstance(n, bool) or not 0 <= n <= 9999 or (spec['tool'] == 'rsnapshot' and n < 1):
+            raise ValueError(f'bad count for {level}')
+        clean_keep[level] = n
+
+    if spec['tool'] == 'snapper':
+        names = ' '.join(q(f'{"NUMBER_LIMIT" if lv == "number" else "TIMELINE_LIMIT_" + lv.upper()}={n}') for lv, n in clean_keep.items())
+        res = deploy.run(db, j['runner'], HEAD + f'{_sn(spec)} set-config {names} && echo "retention set"\n',
+                         kind='job-action', ref=f'{jid}:edit', mode='apply', actor=actor, timeout=120)
+        if res['status'] == 'ok':
+            spec['levels'] = {**(spec.get('levels') or {}), **clean_keep}
+            spec['keep'] = ' '.join(f'{k}={v}' for k, v in spec['levels'].items())
+            conn.execute('UPDATE jobs SET spec_json = :s WHERE job_id = :j', {'s': json.dumps(spec), 'j': jid})
+        return res
+
+    root_in = body.get('root') if body.get('root') is not None else spec.get('root')
+    root = _safe_path(str(root_in).strip() if root_in is not None else None, 'snapshot root').rstrip('/') or '/'
+    if any(c.isspace() for c in root):
+        raise ValueError(f'bad snapshot root {root!r}')
+
+    raw_backups = body.get('backups') if 'backups' in body else spec.get('backups')
+    if not isinstance(raw_backups, list) or not raw_backups:
+        raise ValueError('add at least one folder to back up')
+    clean_backups: list[dict] = []
+    for b in raw_backups:
+        if not isinstance(b, dict):
+            raise ValueError('bad backup entry')
+        src = str(b.get('src') or '').strip()
+        dst = str(b.get('dst') or '').strip()
+        if not src or any(c.isspace() for c in src):
+            raise ValueError(f'bad backup source {src!r}')
+        if src.startswith('/'):
+            _safe_path(src, 'backup source')
+        elif not remote_source(src):
+            raise ValueError(f'bad backup source {src!r}')
+        if not _DST_REL.fullmatch(dst) or '..' in dst.strip('/').split('/'):
+            raise ValueError(f'bad backup destination folder {dst!r}')
+        clean_backups.append({'src': src.rstrip('/') + '/', 'dst': dst.strip('/') + '/'})
+
+    if 'excludes' in body:
+        raw_ex = body.get('excludes')
+        if not isinstance(raw_ex, list):
+            raise ValueError('bad excludes')
+        clean_excludes: list[str] = []
+        for pat in raw_ex:
+            p = str(pat).strip()
+            if not p:
+                continue
+            if any(c in p for c in '\t\r\n'):
+                raise ValueError('bad exclude pattern')
+            clean_excludes.append(p)
+    else:
+        clean_excludes = list(spec.get('excludes') or [])
+
+    conf = q(_safe_path(spec['config'], 'config'))
+    sf_root = root.rstrip('/') + '/'
+    sf_retain = '\n'.join(f'{lv}\t{n}' for lv, n in clean_keep.items())
+    sf_backups = '\n'.join(f'{b["src"]}\t{b["dst"]}' for b in clean_backups)
+    sf_excludes = '\n'.join(clean_excludes)
+    sf_set_excludes = '1' if 'excludes' in body else '0'
+    script_body = (
+        HEAD + f'conf_ok {conf}\ncp -p -- {conf} {conf}.sf-bak\ntmp=$(mktemp)\n'
+        f'SF_ROOT={q(sf_root)} SF_RETAIN={q(sf_retain)} SF_BACKUPS={q(sf_backups)} '
+        f'SF_EXCLUDES={q(sf_excludes)} SF_SET_EXCLUDES={q(sf_set_excludes)} '
+        f'awk {q(_RSNAPSHOT_EDIT_AWK)} {conf} >"$tmp" && cat "$tmp" >{conf}\n'
+        'rm -f "$tmp"\n'
+        f'if ! rsnapshot -c {conf} configtest; then cat {conf}.sf-bak >{conf}; die "rsnapshot refused it: the config is back as it was"; fi\n'
+        f'echo "updated {spec["config"]} (the old config is {spec["config"]}.sf-bak)"\n'
+    )
+    res = deploy.run(db, j['runner'], script_body, kind='job-action', ref=f'{jid}:edit', mode='apply', actor=actor, timeout=120)
+    if res['status'] == 'ok':
+        local = [b['src'] for b in clean_backups if b['src'].startswith('/')]
+        found_like = {
+            'tool': 'rsnapshot', 'config': spec['config'], 'root': root,
+            'fstype': spec.get('fstype'), 'mount': spec.get('mount'),
+            'root_exists': spec.get('root_exists'), 'backups': clean_backups,
+            'levels': clean_keep, 'schedule': spec.get('schedule') or [], 'readable': True,
+        }
+        spec.update({
+            'root': root, 'dst': root, 'backups': clean_backups,
+            'src': local[0] if local else None, 'sources': local,
+            'levels': clean_keep, 'lowest': next(iter(clean_keep), spec.get('lowest')),
+            'keep': ' '.join(f'{k}={v}' for k, v in clean_keep.items()),
+            'excludes': clean_excludes, 'fit': fit(found_like),
+        })
+        conn.execute('UPDATE jobs SET name = :n, spec_json = :s WHERE job_id = :j',
+                     {'n': _name(found_like), 's': json.dumps(spec), 'j': jid})
     return res
 
 

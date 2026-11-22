@@ -51,6 +51,7 @@ FRESH_PASSWORD = {
     ('POST', '/api/deploy/jobs/<jid>/<any("run", "dryrun", "verify", "pause", "resume", "cutover", "log", "snapshots", "dedupe"):verb>'),
     ('POST', '/api/deploy/jobs/<jid>/restore'),
     ('POST', '/api/deploy/jobs/<jid>/retention'),
+    ('POST', '/api/deploy/jobs/<jid>/edit'),
     ('POST', '/api/deploy/jobs/<jid>/forget'),
     ('POST', '/api/deploy/snapjobs/probe'),
     ('POST', '/api/deploy/snapjobs/import'),

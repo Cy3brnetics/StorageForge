@@ -34,7 +34,7 @@ done
 } | grep -vE '^/etc/storageforge/|\.(default|pacnew|pacsave|dpkg-[a-z]+|rpmnew|rpmsave|bak|orig|sf-bak)$|~$' | sort -u | while IFS= read -r c; do
   [ -f "$c" ] || continue
   [ -r "$c" ] || { printf 'N\t%s\n' "$c"; continue; }
-  grep -E '^(snapshot_root|retain|interval|backup|logfile|no_create_root|sync_first)[[:space:]]' "$c" | tag R "$c"
+  grep -E '^(snapshot_root|retain|interval|backup|exclude|logfile|no_create_root|sync_first)[[:space:]]' "$c" | tag R "$c"
   r=$(sed -n -E 's/^snapshot_root[[:space:]]+//p' "$c" | head -n 1); [ -n "$r" ] || continue
   printf 'M\t%s\t%s\n' "$c" "$(where "$r")"
   $F "$r" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%T@\n' 2>/dev/null | tag S "$c"
@@ -112,7 +112,7 @@ def parse(text: str) -> list[dict]:
     rs, sn, cron, units, global_timers = {}, {}, [], [], {}
 
     def r(conf):
-        return rs.setdefault(conf, {'tool': 'rsnapshot', 'name': conf, 'config': conf, 'root': None, 'levels': {}, 'backups': [], 'schedule': [],
+        return rs.setdefault(conf, {'tool': 'rsnapshot', 'name': conf, 'config': conf, 'root': None, 'levels': {}, 'backups': [], 'excludes': [], 'schedule': [],
                                     'snapshots': [], 'readable': True, 'fstype': '', 'mount': '', 'root_exists': None, 'last_line': ''})
 
     def s(name):
@@ -140,6 +140,8 @@ def parse(text: str) -> list[dict]:
                 j['levels'][words[0]] = int(words[1])
             elif key == 'backup' and len(words) >= 2:
                 j['backups'].append({'src': words[0], 'dst': words[1]})
+            elif key == 'exclude' and words:
+                j['excludes'].append(words[0])
             elif key == 'logfile' and words:
                 j['logfile'] = words[0]
             elif key == 'no_create_root':
@@ -170,7 +172,7 @@ def _finish_rsnapshot(rs: dict, runs: list[dict]) -> list[dict]:
     out = []
     for e in runs:
         if e['conf'] not in rs:
-            rs[e['conf']] = {'tool': 'rsnapshot', 'name': e['conf'], 'config': e['conf'], 'root': None, 'levels': {}, 'backups': [], 'schedule': [],
+            rs[e['conf']] = {'tool': 'rsnapshot', 'name': e['conf'], 'config': e['conf'], 'root': None, 'levels': {}, 'backups': [], 'excludes': [], 'schedule': [],
                              'snapshots': [], 'readable': False, 'fstype': '', 'mount': '', 'root_exists': None, 'last_line': ''}
         rs[e['conf']]['schedule'].append({k: v for k, v in e.items() if k != 'conf'})
     for j in rs.values():

@@ -1036,6 +1036,58 @@ class BrowserSmoke(unittest.TestCase):
         self.page.wait_for_timeout(200)
         self.assertEqual(json.loads(seen[0][1]), {'keep': {'daily': 3, 'weekly': 2}})
 
+    def test_job_menu_stays_open_on_mouse_move_and_edit_modal_saves(self):
+        import json
+        import re
+        seen = []
+        job = {
+            'id': 'x-rs-1', 'plan_id': None, 'name': 'rsnapshot /home/ +1 -> /mnt/ssd/snaps',
+            'method': 'rsnapshot', 'runner': 'nas', 'source': 'nas', 'schedule': None, 'paused': False,
+            'state': 'failed', 'imported': True, 'config': '/etc/rsnapshot.conf', 'root': '/mnt/ssd/snaps',
+            'dst': '/mnt/ssd/snaps', 'sources': ['/home/', '/etc/'],
+            'backups': [{'src': '/home/', 'dst': 'localhost/'}, {'src': '/etc/', 'dst': 'localhost/'}],
+            'excludes': ['*.tmp'], 'levels': {'daily': 7, 'weekly': 4}, 'pre': [], 'post': [],
+            'snapshots': True, 'fit': [],
+        }
+        self.json_route(re.compile(r'/api/deploy$'), body={
+            'access': [], 'updates': [], 'plans': [], 'jobs': [job], 'drift': [], 'deployed': [], 'groups': [], 'alerts': [],
+            'settings': {'report_url': '', 'alerts': {'ntfy': {}, 'gotify': {}, 'webhook': {}, 'notify_resolved': True}},
+        })
+        self.json_route(re.compile(r'/api/deploy/snapjobs$'), body={'found': []})
+        self.json_route(re.compile(r'/api/(~[0-9a-f]{8}/)?deploy/jobs/x-rs-1/edit$'), body={'status': 'ok', 'output': 'updated'}, seen=seen)
+        self.open_tab('deploy')
+        dots = self.page.locator('.dpjob button:has-text("⋯")')
+        dots.wait_for(state='visible')
+        dots.click()
+        menu = self.page.locator('.ctxmenu')
+        menu.wait_for(state='visible')
+        self.assertIn('Edit…', menu.inner_text())
+        box = menu.bounding_box()
+        self.page.mouse.move(box['x'] + 10, box['y'] + 10)
+        self.page.mouse.move(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
+        self.page.evaluate("() => window.dispatchEvent(new Event('blur'))")
+        self.page.wait_for_timeout(150)
+        self.assertEqual(menu.count(), 1)
+        dots.click()
+        self.page.wait_for_selector('.ctxmenu', state='detached')
+
+        self.page.click('.dpjob button:has-text("Edit…")')
+        dlg = self.page.locator('dialog.sf-dialog[open]')
+        dlg.wait_for(state='visible')
+        self.assertEqual(dlg.locator('input').nth(0).input_value(), '/mnt/ssd/snaps')
+        self.assertEqual(dlg.locator('textarea').input_value(), '*.tmp')
+        dlg.locator('textarea').fill('*.tmp\n.cache/')
+        dlg.locator('button[type=submit]').click()
+        self.page.wait_for_selector('dialog.sf-dialog', state='detached')
+        self.page.wait_for_timeout(200)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(json.loads(seen[0][1]), {
+            'root': '/mnt/ssd/snaps',
+            'backups': [{'src': '/home/', 'dst': 'localhost/'}, {'src': '/etc/', 'dst': 'localhost/'}],
+            'excludes': ['*.tmp', '.cache/'],
+            'keep': {'daily': 7, 'weekly': 4},
+        })
+
     def test_an_error_stays_until_it_is_dismissed_and_a_notice_goes_by_itself(self):   # UX-10, UX-11
         self.page.evaluate("() => { notify('it broke', 'error'); notify('saved'); announce('Saved the design'); }")
         self.assertEqual(self.page.get_attribute('.sf-toast.error', 'role'), 'alert')

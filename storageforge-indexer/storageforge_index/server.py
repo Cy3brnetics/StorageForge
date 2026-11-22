@@ -2309,6 +2309,19 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         core.audit(conn(), actor(), 'deploy.job-retention', deploy.audit_outcome(res['status']), None, {'job': jid})
         return jsonify(res)
 
+    @web.post('/api/deploy/jobs/<jid>/edit')
+    @login_required
+    @password_confirmed
+    def api_deploy_job_edit(jid):
+        j = jobs.get(conn(), jid)
+        before_hosts = job_hosts(j['runner'], jid)
+        res = snapjobs.edit_job(db, conn(), jid, json_body(), actor())
+        if res['status'] == 'ok':
+            for h in before_hosts | job_hosts(j['runner'], jid):
+                redraw_host(h)
+        core.audit(conn(), actor(), 'deploy.job-edit', deploy.audit_outcome(res['status']), None, {'job': jid})
+        return jsonify(res)
+
     @web.post('/api/deploy/jobs/<jid>/forget')
     @login_required
     @password_confirmed

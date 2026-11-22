@@ -467,7 +467,8 @@ async function jobHistory(j) {
 function jobMenu(j) {
   const a = (label, verb, extra = {}) => ({ label, run: () => jobAction(j, verb), ...extra });
   if (j.imported) return snapJobMenu(j, a);
-  return [{ heading: j.name }, a('Run now', 'run'), a('Dry run (what it would copy)', 'dryrun'), j.method !== 'git' ? a('Verify checksums now', 'verify') : null,
+  return [{ heading: j.name }, { label: 'Edit in Moves…', run: () => editJob(j) }, '-',
+    a('Run now', 'run'), a('Dry run (what it would copy)', 'dryrun'), j.method !== 'git' ? a('Verify checksums now', 'verify') : null,
     j.paused ? a('Resume timers', 'resume') : a('Pause timers', 'pause'), '-', { label: 'History', run: () => jobHistory(j) }, a('Journal log', 'log'),
     j.snapshots ? a('Snapshots…', 'snapshots') : null, j.extent_dedup ? a('Run duperemove now', 'dedupe') : null, j.method === 'move' ? a('Cut over (rename the source)', 'cutover', { danger: true }) : null,
     '-', { label: 'Open the plan in Moves', run: () => { showTab('moves'); loadMoves(j.plan_id); } },
@@ -478,8 +479,11 @@ function jobRow(j) {
   const li = el('li', { class: 'card dpjob' },
     el('div', { class: 'row' }, text('span', j.state, `pill ${JOB_STATE[j.state] || 'unknown'}`), el('b', {}, j.name),
       el('span', { class: 'row tools' }, button('Run now', () => jobAction(j, 'run'), 'btn ghost sm'),
-        button(j.method === 'snapper' ? 'Show config' : 'Dry run', () => jobAction(j, 'dryrun'), 'btn ghost sm'), button('⋯', (ev) => openMenu(jobMenu(j), ev.clientX, ev.clientY, li), 'btn ghost sm'))),
+        button(j.method === 'snapper' ? 'Show config' : 'Dry run', () => jobAction(j, 'dryrun'), 'btn ghost sm'),
+        button('Edit…', () => editJob(j), 'btn ghost sm'),
+        button('⋯', (ev) => { const r = ev.currentTarget.getBoundingClientRect(); openMenu(jobMenu(j), r.right, r.bottom + 4, ev.currentTarget); }, 'btn ghost sm'))),
     text('span', [j.method, j.imported ? 'imported' : '', j.schedule ? `on "${j.schedule}"` : j.imported ? 'no schedule found' : 'run on demand',
+      j.imported && j.backups && j.backups.length > 1 ? `backs up ${j.backups.map((b) => b.src).join(', ')}` : '',
       j.imported && j.levels ? Object.entries(j.levels).map(([k, v]) => `${k} ${v}`).join(', ') : '', j.fstype ? `on ${j.fstype}` : '', j.window ? `window ${j.window}` : '',
       j.snapshot ? 'btrfs snapshot first' : '', j.pre.length ? `${j.pre.length} pre command(s)` : '', j.verify_schedule ? `verify ${j.verify_schedule}` : '',
       j.transport && j.transport !== 'rsync' ? `${j.transport} stream` : '', j.routes && j.routes.length ? `routes ${j.routes.map((r) => r.via).join(' > ')}` : '',
@@ -552,7 +556,8 @@ async function restoreFrom(j, snapshot, path) {
 /* ── rsnapshot and snapper jobs StorageForge did not deploy ─────── */
 function fitLine(f) { return text('span', f.text, f.level === 'crit' ? 'st-failed small' : 'muted small'); }
 function snapJobMenu(j, a) {
-  return [{ heading: j.name }, a('Run now', 'run'), a(j.method === 'snapper' ? 'Show config and snapshots' : 'Dry run (what it would copy)', 'dryrun'),
+  return [{ heading: j.name }, { label: 'Edit…', run: () => editJob(j) }, '-',
+    a('Run now', 'run'), a(j.method === 'snapper' ? 'Show config and snapshots' : 'Dry run (what it would copy)', 'dryrun'),
     j.paused ? a('Resume its schedule', 'resume') : a('Pause its schedule', 'pause'), '-', { label: 'History', run: () => jobHistory(j) }, a('Log', 'log'), a('Snapshots…', 'snapshots'),
     { label: 'Retention…', run: () => editRetention(j) }, '-',
     { label: 'Forget (leaves the host as it is)', run: () => forgetJob(j), danger: true }, { label: 'Copy job id', run: () => copyText(j.id) }];
@@ -561,6 +566,132 @@ function snapMapsChanged() {       // the graphs and the Files map hold what the
   FM.data = null;
   loadGraph(); loadDesigns();
   if (fmActive()) fmLoad();
+}
+function editJob(j) {
+  if (!j.imported) { showTab('moves'); loadMoves(j.plan_id); return; }
+  if (j.method === 'snapper') { editRetention(j); return; }
+  editRsnapshotJob(j);
+}
+function editRsnapshotJob(j) {
+  const id = `dp-edit-${++DP.pollTick}`;
+  const rootIn = sfNode('input', { type: 'text', class: 'mono', value: j.root || j.dst || '', placeholder: '/mnt/backups/host', spellcheck: false, autocomplete: 'off' });
+  const initial = (j.backups && j.backups.length ? j.backups : (j.sources || []).map((s) => ({ src: s, dst: 'localhost/' })))
+    .map((b) => ({ src: b.src || '', dst: b.dst || 'localhost/' }));
+  if (!initial.length) initial.push({ src: '', dst: 'localhost/' });
+  const rowsBox = sfNode('div', { class: 'stack' });
+  const rows = [];
+  const addRow = (b = { src: '', dst: 'localhost/' }) => {
+    const srcIn = sfNode('input', { type: 'text', class: 'mono', value: b.src || '', placeholder: '/home/ or user@host:/path/', 'aria-label': 'Source folder', spellcheck: false, autocomplete: 'off', style: 'flex:2' });
+    const dstIn = sfNode('input', { type: 'text', class: 'mono', value: b.dst || '', placeholder: 'localhost/', 'aria-label': 'Folder in snapshot', spellcheck: false, autocomplete: 'off', style: 'flex:1' });
+    const rm = sfNode('button', { type: 'button', class: 'btn ghost sm danger', title: 'Remove folder', 'aria-label': 'Remove folder' }, '×');
+    const rowEl = sfNode('div', { class: 'row' }, srcIn, dstIn, rm);
+    const entry = { srcIn, dstIn, rowEl };
+    rm.addEventListener('click', () => {
+      if (rows.length <= 1) { srcIn.value = ''; dstIn.value = ''; return; }
+      rows.splice(rows.indexOf(entry), 1);
+      rowEl.remove();
+    });
+    rows.push(entry);
+    rowsBox.append(rowEl);
+  };
+  for (const b of initial) addRow(b);
+  const addBtn = sfNode('button', { type: 'button', class: 'btn ghost sm' }, '+ Add folder');
+  addBtn.addEventListener('click', () => { addRow(); rows[rows.length - 1].srcIn.focus(); });
+
+  const excludesIn = sfNode('textarea', {
+    rows: 3, class: 'mono', placeholder: '*.tmp\n.cache/\n/proc', spellcheck: false,
+    style: 'width:100%;background:var(--bg);border:1px solid var(--line-2);border-radius:6px;padding:6px 8px;color:var(--fg);font-size:12px;resize:vertical',
+  });
+  excludesIn.value = (j.excludes || []).join('\n');
+
+  const nowKeep = Object.entries(j.levels || {}).map(([k, v]) => `${k}=${v}`).join(' ');
+  const keepIn = sfNode('input', { type: 'text', class: 'mono', value: nowKeep, placeholder: 'daily=7 weekly=4 monthly=3', spellcheck: false, autocomplete: 'off' });
+  const err = sfNode('p', { class: 'sf-err', role: 'alert', hidden: true });
+  const cancelBtn = sfNode('button', { type: 'button', class: 'sf-btn ghost' }, 'Cancel');
+  const movesBtn = sfNode('button', { type: 'button', class: 'sf-btn ghost' }, 'Plan in Moves instead…');
+  const saveBtn = sfNode('button', { type: 'submit', class: 'sf-btn pri' }, 'Save');
+
+  const parseKeep = () => {
+    const v = keepIn.value.trim();
+    if (!/^\w+=\d+(\s+\w+=\d+)*$/.test(v)) return null;
+    const keep = {};
+    for (const w of v.split(/\s+/)) {
+      const [k, n] = w.split('=');
+      if (Number(n) < 1) return null;
+      keep[k] = Number(n);
+    }
+    return keep;
+  };
+  const readBackups = () => rows.map((r) => ({ src: r.srcIn.value.trim(), dst: r.dstIn.value.trim() })).filter((b) => b.src || b.dst);
+
+  const form = sfNode('form', { method: 'dialog' },
+    sfNode('h2', { id }, `Edit ${j.name}`),
+    sfNode('p', { class: 'muted small' }, `Updates ${j.config || 'the rsnapshot config'} on ${j.runner} (a backup copy is kept at ${j.config}.sf-bak) and runs rsnapshot configtest before saving.`),
+    sfNode('label', { class: 'sf-field' }, sfNode('span', {}, 'Snapshot root'), rootIn),
+    sfNode('div', { class: 'sf-field' }, sfNode('span', {}, 'Folders to back up (source and folder inside snapshot)'), rowsBox, sfNode('div', { class: 'row' }, addBtn)),
+    sfNode('label', { class: 'sf-field' }, sfNode('span', {}, 'Excludes (one per line)'), excludesIn),
+    sfNode('label', { class: 'sf-field' }, sfNode('span', {}, 'Keep, per level'), keepIn, sfNode('small', {}, 'A level, an equals sign and a count, with a space between levels (like daily=7 weekly=4).')),
+    err,
+    sfNode('div', { class: 'sf-actions' }, movesBtn, cancelBtn, saveBtn));
+  const dlg = sfModal(form, id);
+
+  cancelBtn.addEventListener('click', () => dlg.close());
+  movesBtn.addEventListener('click', async () => {
+    if (typeof MV !== 'undefined' && MV.dirty && !(await confirmDialog({ title: 'Replace unsaved move plan?', body: 'Moves holds changes that have not been saved.', confirm: 'Replace', danger: true }))) return;
+    const rootVal = (rootIn.value.trim() || j.root || '/').replace(/\/+$/, '') || '/';
+    const exList = excludesIn.value.split('\n').map((x) => x.trim()).filter(Boolean);
+    const keepParsed = parseKeep() || (j.levels || {});
+    const keepOpts = { hourly: 0, daily: 0, weekly: 0, monthly: 0 };
+    for (const k of ['hourly', 'daily', 'weekly', 'monthly']) if (keepParsed[k]) keepOpts[k] = keepParsed[k];
+    const matchHost = (raw) => {
+      const n = raw.toLowerCase();
+      const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+      return (MV.hosts || []).find((h) => h.toLowerCase() === n) || (MV.hosts || []).find((h) => norm(h) === norm(raw)) || raw;
+    };
+    const steps = readBackups().map((b) => {
+      const m = b.src.match(/^(?:([^@\s/:]+)@)?([^:\s/]+):(\/.*)$/);
+      const srcHost = m ? matchHost(m[2]) : j.runner;
+      const srcPath = m ? m[3] : b.src;
+      const rel = b.dst.replace(/^\.\/?/, '').replace(/^\/+|\/+$/g, '');
+      const dstPath = rel ? `${rootVal === '/' ? '' : rootVal}/${rel}` : rootVal;
+      const step = blankStep({ host: srcHost, path: srcPath }, { host: j.runner, path: dstPath });
+      step.method = 'rsnapshot';
+      step.excludes = [...exList];
+      step.options.keep = { ...keepOpts };
+      if (m && m[1]) step.options.src_login = `${m[1]}@${m[2]}`;
+      return step;
+    });
+    if (typeof MV !== 'undefined') {
+      MV.plan = { name: j.name || 'Imported rsnapshot', steps: steps.length ? steps : [blankStep({ host: j.runner, path: '/' }, { host: j.runner, path: rootVal })] };
+      MV.dirty = true;
+      MV.result = null;
+    }
+    dlg.close();
+    showTab('moves');
+  });
+
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    err.hidden = true;
+    const root = rootIn.value.trim();
+    if (!root.startsWith('/')) { err.textContent = 'Snapshot root must be an absolute path.'; err.hidden = false; rootIn.focus(); return; }
+    const backups = readBackups();
+    if (!backups.length) { err.textContent = 'Add at least one folder to back up.'; err.hidden = false; rows[0]?.srcIn.focus(); return; }
+    for (const b of backups) {
+      if (!b.src || !b.dst) { err.textContent = 'Each backup row needs both a source and a folder name inside the snapshot.'; err.hidden = false; return; }
+    }
+    const keep = parseKeep();
+    if (!keep) { err.textContent = 'Write retention as level=count with counts of 1 or more, like daily=7 weekly=4.'; err.hidden = false; keepIn.focus(); return; }
+    const excludes = excludesIn.value.split('\n').map((x) => x.trim()).filter(Boolean);
+    try {
+      const r = await (await postJSON(`/api/deploy/jobs/${j.id}/edit`, { root, backups, excludes, keep }, { busy: saveBtn })).json();
+      if (r.status !== 'ok') { err.textContent = r.output || `edit: ${r.status}`; err.hidden = false; return; }
+      dlg.close();
+      DP.job = { job: j, title: 'edit', output: r.output }; renderJobPanel(); loadDeploy(); snapMapsChanged();
+      toast('Backup config updated');
+    } catch (e) { err.textContent = e.message; err.hidden = false; }
+  });
+  rootIn.focus();
 }
 async function editRetention(j) {
   const now = Object.entries(j.levels || {}).map(([k, v]) => `${k}=${v}`).join(' ');
