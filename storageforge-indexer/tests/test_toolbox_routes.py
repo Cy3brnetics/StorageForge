@@ -39,7 +39,7 @@ class Routes(Base):
     def test_the_catalog_and_an_entry(self):
         c = self.client('op')
         got = c.get('/api/toolbox/catalog').get_json()
-        self.assertEqual({e['id'] for e in got['entries']}, {'cockpit', 'uptime-kuma', 'wireguard'})
+        self.assertLessEqual({'cockpit', 'uptime-kuma', 'wireguard'}, {e['id'] for e in got['entries']})
         self.assertEqual(got['official']['state'], 'packaged')
         self.assertFalse(got['may_write'])
         e = c.get('/api/toolbox/catalog/uptime-kuma').get_json()

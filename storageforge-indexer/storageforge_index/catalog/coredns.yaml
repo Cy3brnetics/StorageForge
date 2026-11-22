@@ -1,0 +1,30 @@
+format: 1
+id: coredns
+revision: 1
+name: CoreDNS
+app_version: from the distribution
+category: dns
+summary: A DNS server built from plugins, for split-horizon names of the VPN and the panels.
+homepage: https://coredns.io/
+license: Apache-2.0
+install:
+  methods:
+    - kind: package
+      packages:
+        zypper: [coredns]
+requires:
+  ports: [53/udp, 53/tcp]
+exposure:
+  default: management
+  public_optional: false
+backup:
+  paths: [/etc/coredns]
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: coredns
+upgrade:
+  strategy: package
+risk: []
+notes: Only openSUSE ships CoreDNS as a package. An entry cannot give its image a Corefile, so there is no container method. Write the Corefile in /etc/coredns and start the service by hand.

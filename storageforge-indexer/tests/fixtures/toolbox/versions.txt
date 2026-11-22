@@ -1,0 +1,8 @@
+caddy	2.6.2
+unbound	Version 1.26.2
+dnsmasq	Dnsmasq version 2.91  Copyright (c) 2000-2025 Simon Kelley
+chronyd	chronyd (chrony) version 4.6.1 (+CMDMON +NTP +REFCLOCK +RTC +PRIVDROP +SCFILTER +SIGND +ASYNCDNS +NTS +SECHASH +IPV6 -DEBUG)
+cscli	2026/11/21 05:49:13 version: v1.4.6-10+b4-debian
+fail2ban-client	Fail2Ban v1.1.0
+suricata	This is Suricata version 7.0.10 RELEASE
+smartctl	smartctl 7.4 2023-08-01 r5530 [x86_64-linux-6.12.0-amd64] (local build)

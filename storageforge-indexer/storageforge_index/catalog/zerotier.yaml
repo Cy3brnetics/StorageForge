@@ -1,0 +1,36 @@
+format: 1
+id: zerotier
+revision: 1
+name: ZeroTier controller
+app_version: 1.14.2
+category: vpn
+summary: A ZeroTier node that is the controller of your own networks, so their members are authorised here and not at my.zerotier.com.
+homepage: https://www.zerotier.com/
+license: MPL-2.0
+labels: [not-a-default, outside-service]
+outside: "nodes find each other and the controller through the root servers of ZeroTier, and relay through them when they cannot connect directly"
+install:
+  methods:
+    - kind: container
+      image: docker.io/zerotier/zerotier:1.14.2@sha256:575d150a0e09fbee1a7580625b361040a7f78f46cbfbe5016effe812abe202ff
+      ports: ["9993:9993/udp"]
+      volumes: {data: /var/lib/zerotier-one}
+      volume_owner: "999"
+requires:
+  ports: [9993/udp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: true
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: zerotier
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: "Pinned at 1.14.2, under the MPL 2.0. From 1.16 the controller is under a source-available licence that does not allow commercial use: an update past 1.14 changes the licence, so this entry is never a default and stays at 1.14. Back up its data folder: identity.secret is the controller. Networks and members are managed with zerotier-cli in its container; hosts join with the zerotier step."

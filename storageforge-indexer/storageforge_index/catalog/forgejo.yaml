@@ -1,0 +1,55 @@
+format: 1
+id: forgejo
+revision: 1
+name: Forgejo
+app_version: 17.0.2
+category: provisioning
+summary: A Git forge with issues, pull requests, packages and Actions. The Git source for compose files, Puppet and Terraform.
+homepage: https://forgejo.org/
+license: GPL-3.0
+install:
+  methods:
+    - kind: container
+      image: codeberg.org/forgejo/forgejo:17.0.2@sha256:879f4f10a98e3e167b32cde5f7ae3af0163d50bfacf567559a27a0e95a95670c
+      ports: ["3000:3000/tcp", "2222:22/tcp"]
+      volumes: {data: /data}
+      env: {USER_UID: "1000", USER_GID: "1000"}
+    - kind: quadlet
+      image: codeberg.org/forgejo/forgejo:17.0.2@sha256:879f4f10a98e3e167b32cde5f7ae3af0163d50bfacf567559a27a0e95a95670c
+      ports: ["3000:3000/tcp", "2222:22/tcp"]
+      volumes: {data: /data}
+      env: {USER_UID: "1000", USER_GID: "1000"}
+    - kind: compose
+      image: codeberg.org/forgejo/forgejo:17.0.2@sha256:879f4f10a98e3e167b32cde5f7ae3af0163d50bfacf567559a27a0e95a95670c
+      ports: ["3000:3000/tcp", "2222:22/tcp"]
+      volumes: {data: /data}
+      env: {USER_UID: "1000", USER_GID: "1000"}
+requires:
+  ports: [3000/tcp, 2222/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:3000/api/healthz
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 3000
+    sso: oidc
+  panel:
+    level: status
+    adapter: forgejo
+upgrade:
+  strategy: recreate
+  rollback_on_unhealthy: false
+risk: [holds-credentials]
+mac:
+  selinux: container_t
+  notes: the data folder is mounted with :Z, for this container alone
+notes: The first visit to the web UI sets it up and makes the first account the admin, so open it through the SSH tunnel before anyone else can. Git over SSH listens on port 2222.

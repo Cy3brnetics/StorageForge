@@ -1,0 +1,47 @@
+format: 1
+id: nginx-proxy-manager
+revision: 1
+name: nginx Proxy Manager
+app_version: 2.17.1
+category: proxy
+summary: nginx with a web UI for proxy hosts and Let's Encrypt certificates.
+homepage: https://nginxproxymanager.com/
+license: MIT
+install:
+  methods:
+    - kind: container
+      image: docker.io/jc21/nginx-proxy-manager:2.17.1@sha256:04a9d0835560b9719ab577275f84fe1f713298a1c1e2bdefa034b87f10e062e1
+      ports: ["8080:80/tcp", "8443:443/tcp", "8181:81/tcp"]
+      volumes: {data: /data, letsencrypt: /etc/letsencrypt}
+    - kind: quadlet
+      image: docker.io/jc21/nginx-proxy-manager:2.17.1@sha256:04a9d0835560b9719ab577275f84fe1f713298a1c1e2bdefa034b87f10e062e1
+      ports: ["80:80/tcp", "443:443/tcp", "8181:81/tcp"]
+      volumes: {data: /data, letsencrypt: /etc/letsencrypt}
+    - kind: compose
+      image: docker.io/jc21/nginx-proxy-manager:2.17.1@sha256:04a9d0835560b9719ab577275f84fe1f713298a1c1e2bdefa034b87f10e062e1
+      ports: ["80:80/tcp", "443:443/tcp", "8181:81/tcp"]
+      volumes: {data: /data, letsencrypt: /etc/letsencrypt}
+requires:
+  ports: [80/tcp, 443/tcp, 8181/tcp]
+  volumes: [data, letsencrypt]
+exposure:
+  default: loopback
+  public_optional: true
+health:
+  url: http://127.0.0.1:8181/api/
+  expect: 200
+backup:
+  paths: [data, letsencrypt]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 8181
+    sso: none
+  panel:
+    level: status
+    adapter: nginx-proxy-manager
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Sign in on port 8181 straight after the install and set the administrator account. The admin port listens wherever the web ports do, so fence it before the web ports face the internet. The rootless method takes 8080 and 8443.

@@ -1,0 +1,38 @@
+format: 1
+id: cloudflared
+revision: 1
+name: Cloudflare Tunnel
+app_version: 2026.11.1
+category: access
+summary: Publishes a service through Cloudflare with no port open on the host. cloudflared runs the tunnel with its token from the vault.
+homepage: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+license: Apache-2.0
+labels: [outside-account]
+outside: "a Cloudflare account, with the tunnel and its public hostnames made in its dashboard; the tunnel token goes into the vault"
+install:
+  methods:
+    - kind: package
+      packages:
+        pacman: [cloudflared]
+    - kind: binary
+      name: cloudflared
+      files:
+        x86_64: {url: "https://github.com/cloudflare/cloudflared/releases/download/2026.11.1/cloudflared-linux-amd64", sha256: 97bb3b02d23a5980fc9c15a1a270e692da1923f103f920d5b16d4931d5ab55e7}
+        aarch64: {url: "https://github.com/cloudflare/cloudflared/releases/download/2026.11.1/cloudflared-linux-arm64", sha256: b155cec3e48e489cfb8e5c602769fb8c771083018d8881d68b4d18a791567c5a}
+inputs:
+  - {name: secret, kind: name, label: "Tunnel token (a vault secret)", default: cloudflare-tunnel}
+steps:
+  - type: cloudflare-tunnel
+    params: {secret: "{secret}", state: present}
+exposure:
+  default: loopback
+  public_optional: true
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: cloudflared
+upgrade:
+  strategy: package
+risk: [holds-credentials]
+notes: "What the tunnel publishes is public, whatever the host firewall says: choose its hostnames in the Cloudflare dashboard with that in mind, and put an access policy in front of a panel. The token is needed at every start, so it stays on the host in a file only root reads; send it with vault send-secret before the plan runs."

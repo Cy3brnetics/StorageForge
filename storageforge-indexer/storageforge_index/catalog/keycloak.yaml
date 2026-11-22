@@ -1,0 +1,42 @@
+format: 1
+id: keycloak
+revision: 1
+name: Keycloak
+app_version: 26.8.2
+category: identity
+summary: An identity provider with realms, users, groups and single sign-on over OIDC and SAML, and its own admin console.
+homepage: https://www.keycloak.org/
+license: Apache-2.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/keycloak/keycloak:26.8.2@sha256:7e66a96e4739239070aeaf72e4c5decf0f7f682cfc725b9f7ea2b336eaba38b3
+      args: [start, --db=dev-file, --http-enabled=true, --hostname-strict=false, --health-enabled=true]
+      ports: ["8080:8080/tcp", "9000:9000/tcp"]
+      volumes: {data: /opt/keycloak/data}
+      volume_owner: "1000"
+requires:
+  ports: [8080/tcp, 9000/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: true
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:9000/health/ready
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/admin/"
+    port: 8080
+    sso: none
+  panel:
+    level: status
+    adapter: keycloak
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: "Its database is the file database in its data folder, which suits one small instance: for more, give it PostgreSQL yourself. It starts with no administrator: open it over the SSH tunnel and make one on its welcome page. Registering catalog panels as clients is not built for Keycloak yet: add each in its console."

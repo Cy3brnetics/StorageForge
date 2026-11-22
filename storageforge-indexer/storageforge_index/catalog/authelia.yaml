@@ -1,0 +1,54 @@
+format: 1
+id: authelia
+revision: 1
+name: Authelia
+app_version: 4.39.28
+category: identity
+summary: A sign-in portal with two-factor authentication that a reverse proxy asks before it lets a request through (forward-auth).
+homepage: https://www.authelia.com/
+license: Apache-2.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/authelia/authelia:4.39.28@sha256:bd97cff4fcbf715b5ff1f9ae286afbe6033afce385302520b0368122d43a6f54
+      ports: ["9091:9091/tcp"]
+      volumes: {data: /config}
+      env:
+        AUTHELIA_SERVER_ADDRESS: "tcp://0.0.0.0:9091/"
+        AUTHELIA_SESSION_DOMAIN: example.com
+        AUTHELIA_ACCESS_CONTROL_DEFAULT_POLICY: one_factor
+        AUTHELIA_AUTHENTICATION_BACKEND_FILE_PATH: /config/users_database.yml
+        AUTHELIA_STORAGE_LOCAL_PATH: /config/db.sqlite3
+        AUTHELIA_NOTIFIER_FILESYSTEM_FILENAME: /config/notification.txt
+        AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia/session_secret
+        AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia/storage_key
+        AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /run/secrets/authelia/jwt_secret
+requires:
+  ports: [9091/tcp]
+  volumes: [data]
+secrets:
+  - {name: session_secret, kind: hex}
+  - {name: storage_key, kind: hex}
+  - {name: jwt_secret, kind: hex}
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:9091/api/health
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 9091
+    sso: none
+  panel:
+    level: status
+    adapter: authelia
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: "Set AUTHELIA_SESSION_DOMAIN to the domain your panels share, with an override (env): the cookie is only good there. Users are in users_database.yml in its data folder, with argon2 hashes (authelia crypto hash generate argon2), or point it at LLDAP. One-time codes go to notification.txt until a mail server is set."

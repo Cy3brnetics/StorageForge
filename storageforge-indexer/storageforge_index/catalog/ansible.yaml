@@ -1,0 +1,31 @@
+format: 1
+id: ansible
+revision: 1
+name: Ansible
+app_version: from the distribution
+category: provisioning
+summary: Runs playbooks over SSH. A runner for the Ansible exports of change plans, on a host of your choosing.
+homepage: https://www.ansible.com/
+license: GPL-3.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [ansible-core]
+        dnf: [ansible-core]
+        zypper: [ansible-core]
+        pacman: [ansible-core]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: ansible
+upgrade:
+  strategy: package
+risk: [runs-as-root]
+notes: ansible-core has the builtin modules the exports use; collections are installed with ansible-galaxy by whoever runs it. It reaches other hosts with the SSH keys of the account that runs it.

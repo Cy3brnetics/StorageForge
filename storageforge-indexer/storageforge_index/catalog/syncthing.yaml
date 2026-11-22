@@ -1,0 +1,51 @@
+format: 1
+id: syncthing
+revision: 1
+name: Syncthing
+app_version: 2.1.7
+category: storage
+summary: Keeps folders in step between devices, peer to peer and encrypted, with no server in the middle.
+homepage: https://syncthing.net/
+license: MPL-2.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/syncthing/syncthing:2.1.7@sha256:2b71da7c0d0a91a6ae5285ad079226fecc0a365d08b27720e1f7037b018f7546
+      ports: ["8384:8384/tcp", "22000:22000/tcp", "22000:22000/udp", "21027:21027/udp"]
+      volumes: {data: /var/syncthing}
+    - kind: quadlet
+      image: docker.io/syncthing/syncthing:2.1.7@sha256:2b71da7c0d0a91a6ae5285ad079226fecc0a365d08b27720e1f7037b018f7546
+      ports: ["8384:8384/tcp", "22000:22000/tcp", "22000:22000/udp", "21027:21027/udp"]
+      volumes: {data: /var/syncthing}
+requires:
+  ports: [8384/tcp, 22000/tcp, 22000/udp, 21027/udp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+storage:
+  use: data
+  worm: none
+  canaries: none
+health:
+  url: http://127.0.0.1:8384/rest/noauth/health
+  expect: 200
+backup:
+  paths: [data]
+  consistency: live
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 8384
+    sso: none
+  panel:
+    level: status
+    adapter: syncthing
+upgrade:
+  strategy: recreate
+  rollback_on_unhealthy: false
+risk: [holds-credentials]
+mac:
+  selinux: container_t
+  notes: the data folder is mounted with :Z, for this container alone
+notes: Set a password for its web UI on the first visit. On loopback it reaches other devices through relays only; give it the management exposure for direct connections on the network. No decoys go in a synced folder, since they would travel to every device. A file deleted on one device is deleted on all, so snapshot the folder.

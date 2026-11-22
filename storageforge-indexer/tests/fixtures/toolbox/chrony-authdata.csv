@@ -1,0 +1,6 @@
+2.debian.pool.ntp.org,-,0,0,0,4294967295,0,0,0,0
+2.debian.pool.ntp.org,-,0,0,0,4294967295,0,0,0,0
+2.debian.pool.ntp.org,-,0,0,0,4294967295,0,0,0,0
+2.debian.pool.ntp.org,-,0,0,0,4294967295,0,0,0,0
+time.cloudflare.com,NTS,1,30,128,22,0,0,8,64
+nts.netnod.se,NTS,1,15,256,21,0,0,8,100

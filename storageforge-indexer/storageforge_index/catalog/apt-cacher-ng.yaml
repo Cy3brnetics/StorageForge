@@ -1,0 +1,37 @@
+format: 1
+id: apt-cacher-ng
+revision: 1
+name: apt-cacher-ng
+app_version: from the distribution
+category: offline
+summary: A caching proxy for Debian and Ubuntu packages, so each package is fetched once for every host, and hosts on a closed network install from it.
+homepage: https://www.unix-ag.uni-kl.de/~bloch/acng/
+license: BSD-4-Clause
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [apt-cacher-ng]
+      units: [apt-cacher-ng.service]
+requires:
+  ports: [3142/tcp]
+exposure:
+  default: any
+  public_optional: false
+storage:
+  use: data
+  worm: none
+  canaries: none
+  fence: ports
+gui:
+  native:
+    url_template: "http://{host}:3142/acng-report.html"
+    port: 3142
+    sso: none
+  panel:
+    level: status
+    adapter: apt-cacher-ng
+upgrade:
+  strategy: package
+risk: [runs-as-root]
+notes: It listens on every address the host has; give the clients and a fence drops everyone else on 3142. Point hosts at it with the apt-proxy step. Packages stay signed by their distribution, and apt checks them as it would from the mirror.

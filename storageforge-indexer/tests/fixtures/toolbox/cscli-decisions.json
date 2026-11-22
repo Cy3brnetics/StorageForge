@@ -1,0 +1,70 @@
+[
+ {
+  "capacity": 0,
+  "created_at": "2026-11-21T05:49:25Z",
+  "decisions": [
+   {
+    "duration": "29m59.254279353s",
+    "id": 2,
+    "origin": "cscli",
+    "scenario": "sample range",
+    "scope": "Range",
+    "simulated": false,
+    "type": "ban",
+    "value": "198.51.100.0/24"
+   }
+  ],
+  "events": null,
+  "events_count": 1,
+  "id": 2,
+  "labels": null,
+  "leakspeed": "0",
+  "machine_id": "1a71ea809e224f66bf391c40708d0348",
+  "message": "sample range",
+  "scenario": "sample range",
+  "scenario_hash": "",
+  "scenario_version": "",
+  "simulated": false,
+  "source": {
+   "ip": "198.51.100.0/24",
+   "scope": "Range",
+   "value": "198.51.100.0/24"
+  },
+  "start_at": "2026-11-21 05:49:25 +0000 UTC",
+  "stop_at": "2026-11-21 05:49:25 +0000 UTC"
+ },
+ {
+  "capacity": 0,
+  "created_at": "2026-11-21T05:49:25Z",
+  "decisions": [
+   {
+    "duration": "3h59m59.254277693s",
+    "id": 1,
+    "origin": "cscli",
+    "scenario": "storageforge sample",
+    "scope": "Ip",
+    "simulated": false,
+    "type": "ban",
+    "value": "203.0.113.7"
+   }
+  ],
+  "events": null,
+  "events_count": 1,
+  "id": 1,
+  "labels": null,
+  "leakspeed": "0",
+  "machine_id": "1a71ea809e224f66bf391c40708d0348",
+  "message": "storageforge sample",
+  "scenario": "storageforge sample",
+  "scenario_hash": "",
+  "scenario_version": "",
+  "simulated": false,
+  "source": {
+   "ip": "203.0.113.7",
+   "scope": "Ip",
+   "value": "203.0.113.7"
+  },
+  "start_at": "2026-11-21 05:49:25 +0000 UTC",
+  "stop_at": "2026-11-21 05:49:25 +0000 UTC"
+ }
+]

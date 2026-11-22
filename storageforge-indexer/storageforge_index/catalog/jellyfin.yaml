@@ -1,0 +1,53 @@
+format: 1
+id: jellyfin
+revision: 1
+name: Jellyfin
+app_version: 10.11.11
+category: storage
+summary: Streams your films, series, music and photos to browsers, TVs and phones.
+homepage: https://jellyfin.org/
+license: GPL-2.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/jellyfin/jellyfin:10.11.11@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db
+      ports: ["8096:8096/tcp"]
+      volumes: {config: /config, cache: /cache, media: /media}
+    - kind: quadlet
+      image: docker.io/jellyfin/jellyfin:10.11.11@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db
+      ports: ["8096:8096/tcp"]
+      volumes: {config: /config, cache: /cache, media: /media}
+requires:
+  ports: [8096/tcp]
+  volumes: [config, cache, media]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+storage:
+  use: media
+  worm: none
+  canaries: data
+  volumes: [media]
+health:
+  url: http://127.0.0.1:8096/health
+  expect: 200
+backup:
+  paths: [config]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 8096
+    sso: none
+  panel:
+    level: status
+    adapter: jellyfin
+upgrade:
+  strategy: recreate
+  rollback_on_unhealthy: false
+risk: [holds-credentials]
+mac:
+  selinux: container_t
+  notes: every folder is mounted with :Z, for this container alone; on SELinux a media folder that is also a Samba share loses its share label
+notes: The first visit makes the admin account. Point the media volume at your library with an override (volumes, media), and the decoys go there, where nothing should change.

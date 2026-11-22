@@ -1,0 +1,39 @@
+format: 1
+id: nebula-lighthouse
+revision: 1
+name: Nebula lighthouse
+app_version: from the distribution
+category: vpn
+summary: The Nebula node that the others ask where everyone is. Its certificate comes from the Nebula CA that StorageForge keeps in the vault.
+homepage: https://nebula.defined.net/
+license: MIT
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [nebula]
+        dnf: [nebula]
+        pacman: [nebula]
+inputs:
+  - {name: ca, kind: name, label: "Nebula CA (made with vault nebula-ca)", default: home}
+  - {name: port, kind: port, label: UDP port, default: "4242"}
+  - {name: inbound, kind: text, label: "Allowed in over Nebula", default: icmp}
+steps:
+  - type: nebula
+    params: {ca: "{ca}", lighthouse: "true", port: "{port}", inbound: "{inbound}", state: present}
+requires:
+  ports: [4242/udp]
+exposure:
+  default: any
+  public_optional: true
+backup:
+  paths: [/etc/nebula]
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: nebula-lighthouse
+upgrade:
+  strategy: package
+risk: [internet-listener]
+notes: "Issue the host certificate first, with vault nebula-issue: the host makes its own key, and the CA key signs in the vault, so no secret travels. The nebula step writes the configuration, checks it with nebula -test and runs it as storageforge-nebula.service; the package unit nebula.service is left off. Other hosts join with the nebula step, naming this lighthouse."

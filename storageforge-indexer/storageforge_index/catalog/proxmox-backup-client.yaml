@@ -1,0 +1,29 @@
+format: 1
+id: proxmox-backup-client
+revision: 1
+name: Proxmox Backup Server client
+app_version: from the distribution
+category: backup
+summary: Backs a host up to a Proxmox Backup Server datastore, deduplicated and encrypted on the client. The server itself is read through a platform connection.
+homepage: https://pbs.proxmox.com/
+license: AGPL-3.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [proxmox-backup-client]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: proxmox-backup-client
+upgrade:
+  strategy: package
+risk: [holds-credentials, runs-as-root]
+compliance: [3-2-1 backups]
+notes: Proxmox VE and Proxmox Backup Server hosts have the source it comes from; other Debian hosts need the Proxmox source added first, which the Toolbox does not do. Put the datastore on a dataset with a retention hold (WORM), and read the server through a Proxmox Backup Server connection under Keys, Platform connections. The API token is kept in the vault.

@@ -49,7 +49,26 @@ tb_podman_ok() { # Quadlet came with Podman 4.4
   maj=${v%%.*} min=${v#*.}
   [[ -n $v ]] && { ((maj > 4)) || ((maj == 4 && min >= 4)); }
 }
-tb_container() { local tool=$1 rootless=$2 unit=$3 acct=$4 dirs=$5 ports=$6 image=$7 allow=$8
+tb_files() { # folder owner name=base64,...: the small files the entry gives its container, mounted read-only into it
+  local dir=$1 owner=$2 item name f new
+  TB_FILES_CHANGED=0
+  [[ -n $dir && -n $3 ]] || return 0
+  for item in ${3//,/ }; do
+    name=${item%%=*} f=$dir/${item%%=*}
+    [[ $name =~ ^[a-z][a-z0-9_.-]*$ ]] || { conflict "the file name $name is not one an entry may give"; continue; }
+    new=$(mktemp) || { conflict "could not make a temporary file"; return 0; }
+    if ! printf "%s" "${item#*=}" | base64 -d >"$new" 2>/dev/null; then rm -f -- "$new"; conflict "the file $name of the entry could not be read"; continue; fi
+    if [[ -f $f ]] && cmp -s "$new" "$f"; then ok "$f is the file this entry gives"
+    elif act "write $f, which the container reads"; then
+      install -d -m 0750 -- "$dir"; cp -f -- "$new" "$f"; chmod 0640 -- "$f"
+      [[ -z $owner ]] || chown "$owner:$owner" -- "$dir" "$f"
+      durable "$f"; TB_FILES_CHANGED=1
+    fi
+    rm -f -- "$new"
+  done
+  return 0
+}
+tb_container() { local tool=$1 rootless=$2 unit=$3 acct=$4 dirs=$5 ports=$6 image=$7 allow=$8 sock=${9:-} fdir=${10:-} files=${11:-}
   local file home new owner= svc=$1.service changed=0 sc
   if ! command -v podman >/dev/null; then later "podman is not installed: a runtime-install step before this one installs it"; return 0; fi
   if ! tb_podman_ok; then conflict "this Podman ($(podman --version 2>/dev/null)) has no Quadlet, which came with 4.4: use the compose method"; return 0; fi
@@ -65,6 +84,13 @@ tb_container() { local tool=$1 rootless=$2 unit=$3 acct=$4 dirs=$5 ports=$6 imag
     sc=(systemctl)
   fi
   tb_owned "$dirs" "$owner"
+  if [[ -n $sock ]] && ((rootless)); then # a panel that runs containers: the Podman socket of its own account, never root
+    if "${sc[@]}" is-active --quiet podman.socket 2>/dev/null; then ok "the Podman socket of $acct is on"
+    elif act "switch on the Podman socket of $acct (podman.socket), which only that account and $tool reach"; then
+      "${sc[@]}" enable --now podman.socket >/dev/null 2>&1 || { conflict "could not switch on podman.socket for $acct"; return 0; }
+    fi
+  fi
+  tb_files "$fdir" "$owner" "$files"; changed=$TB_FILES_CHANGED
   new=$(mktemp) || { conflict "could not make a temporary file"; return 0; }
   printf "%s" "$unit" >"$new"
   if [[ -f $file ]] && cmp -s "$new" "$file"; then ok "$file is the unit this entry makes"
@@ -98,8 +124,9 @@ tb_container() { local tool=$1 rootless=$2 unit=$3 acct=$4 dirs=$5 ports=$6 imag
   fi
   return 0
 }
-tb_compose() { local tool=$1 runtime=$2 name=$3 compose=$4 dir=$5 override=$6 ports=$7 dirs=$8 allow=$9
-  tb_owned "$dirs" ""
+tb_compose() { local tool=$1 runtime=$2 name=$3 compose=$4 dir=$5 override=$6 ports=$7 dirs=$8 allow=$9 owner=${10:-} fdir=${11:-} files=${12:-}
+  tb_owned "$dirs" "$owner"
+  tb_files "$fdir" "$owner" "$files"
   t_stack "$runtime" "$name" "$compose" "$dir" "" "$allow" "$override" "$ports" forward
 }
 tb_pkg_has() { # package: installed, as the package manager of this host says
@@ -169,9 +196,9 @@ t_tool_install() { local tool=$1 method=$2 sha=$3 ovr=$4 exposure=$5 bind=$6 all
   info "$why"
   info "exposure: ${exposure:-as the entry says}${bind:+, bound to $bind}${allow:+, reached only from $allow}"
   case $method in
-    container) tb_container "$tool" 1 "$1" "$2" "$3" "$4" "$5" "$allow" ;;
-    quadlet) tb_container "$tool" 0 "$1" "$2" "$3" "$4" "$5" "$allow" ;;
-    compose) tb_compose "$tool" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$allow" ;;
+    container) tb_container "$tool" 1 "$1" "$2" "$3" "$4" "$5" "$allow" "${6:-}" "${7:-}" "${8:-}" ;;
+    quadlet) tb_container "$tool" 0 "$1" "$2" "$3" "$4" "$5" "$allow" "${6:-}" "${7:-}" "${8:-}" ;;
+    compose) tb_compose "$tool" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$allow" "${8:-}" "${9:-}" "${10:-}" ;;
     package) tb_package "$tool" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" ;;
     binary) tb_binary "$tool" "$1" "$2" "$3" "$4" "$5" ;;
     *) conflict "$method is not an install method" ;;
@@ -344,3 +371,6 @@ changes.register('tool-data-remove', {'group': 'Toolbox', 'label': 'Move the dat
     args_of=_data_extra)
 
 changes.EXTRA_BASH.append(BASH)
+
+from . import steps_restoretest  # noqa: E402,F401  (restore tests of the backup entries: they use the Toolbox folders above)
+from . import steps_offline  # noqa: E402,F401  (registry-mirror and apt-proxy steps for the offline entries)

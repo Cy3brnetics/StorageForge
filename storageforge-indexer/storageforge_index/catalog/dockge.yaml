@@ -1,0 +1,45 @@
+format: 1
+id: dockge
+revision: 1
+name: Dockge
+app_version: 1.5.0
+category: panel
+summary: A web panel for compose stacks. It runs the stacks of its own account, through that account's rootless Podman socket.
+homepage: https://github.com/louislam/dockge
+license: MIT
+install:
+  methods:
+    - kind: container
+      image: docker.io/louislam/dockge:1.5.0@sha256:335c6368b880ecc203236ed89e6e5232e0d6578e8ef5920e4a502390451502bf
+      ports: ["5001:5001/tcp"]
+      volumes: {data: /app/data, stacks: /srv/toolbox/dockge/stacks}
+      env: {DOCKGE_STACKS_DIR: /srv/toolbox/dockge/stacks}
+      engine_socket: own
+requires:
+  ports: [5001/tcp]
+  volumes: [data, stacks]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:5001/
+  expect: 200
+backup:
+  paths: [data, stacks]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 5001
+    sso: none
+  panel:
+    level: status
+    adapter: dockge
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+mac:
+  selinux: container_t, with label separation off for the Podman socket only
+  notes: label separation is off for this container so it can reach the socket of its account; its folders are still relabelled with :Z
+notes: "It sees and runs only the containers of its own account (sf-dockge), never those of root. A stack names its folders by their path on the host: keep the stacks volume where it is. The first visit makes its administrator."

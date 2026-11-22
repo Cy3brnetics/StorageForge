@@ -1,0 +1,38 @@
+format: 1
+id: nfs-server
+revision: 1
+name: NFS server
+app_version: from the distribution
+category: storage
+summary: NFS exports for Linux clients and hypervisors. The exports come from the host's design under Shares, fenced to their clients, with decoys in them.
+homepage: https://linux-nfs.org/
+license: GPL-2.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [nfs-kernel-server]
+        dnf: [nfs-utils]
+        zypper: [nfs-kernel-server]
+        pacman: [nfs-utils]
+      units: [nfs-server.service]
+requires:
+  ports: [2049/tcp]
+exposure:
+  default: any
+  public_optional: false
+storage:
+  use: data
+  worm: recommended
+  canaries: shares
+  fence: nfs
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: nfs-server
+upgrade:
+  strategy: package
+risk: [runs-as-root]
+compliance: [share access fenced]
+notes: NFS trusts the address a client comes from, so the fence is what keeps others out. Design the exports under Shares, which writes /etc/exports.d/storageforge.exports with the clients of each.

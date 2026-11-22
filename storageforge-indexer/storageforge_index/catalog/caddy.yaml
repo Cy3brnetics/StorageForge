@@ -1,0 +1,37 @@
+format: 1
+id: caddy
+revision: 1
+name: Caddy
+app_version: from the distribution
+category: proxy
+summary: A web server and reverse proxy with automatic HTTPS. Its panel routes a site to a tool on the same host, always to the tool's loopback port.
+homepage: https://caddyserver.com/
+license: Apache-2.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [caddy]
+        dnf: [caddy]
+        zypper: [caddy]
+        pacman: [caddy]
+      units: [caddy.service]
+requires:
+  ports: [80/tcp, 443/tcp]
+exposure:
+  default: any
+  public_optional: true
+health:
+  url: http://127.0.0.1:2019/config/
+  expect: 200
+backup:
+  paths: [/etc/caddy, /var/lib/caddy]
+gui:
+  native: none
+  panel:
+    level: full
+    adapter: caddy
+upgrade:
+  strategy: package
+risk: [publishes-80-443, holds-credentials]
+notes: Each route is a file in /etc/caddy/conf.d, checked with caddy validate before Caddy is reloaded. Its certificates and their keys are in /var/lib/caddy. Debian and Ubuntu ship Caddy 2.6.

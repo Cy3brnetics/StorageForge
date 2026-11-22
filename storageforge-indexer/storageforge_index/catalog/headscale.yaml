@@ -1,0 +1,69 @@
+format: 1
+id: headscale
+revision: 1
+name: Headscale
+app_version: 0.29.7
+category: vpn
+summary: A control server for Tailscale clients that you run yourself. Nodes join it with a pre-auth key and talk to each other over WireGuard.
+homepage: https://headscale.net/
+license: BSD-3-Clause
+labels: [outside-service]
+outside: "nodes that cannot reach each other directly relay through the public DERP servers of Tailscale, unless you run your own"
+install:
+  methods:
+    - kind: container
+      image: docker.io/headscale/headscale:0.29.7@sha256:11f81665e842809db9fe3006a38c56a66e968baa5abd4bac498e86445572b970
+      args: [serve]
+      ports: ["8080:8080/tcp"]
+      volumes: {data: /var/lib/headscale}
+      env:
+        HEADSCALE_SERVER_URL: "http://127.0.0.1:8080"
+        HEADSCALE_LISTEN_ADDR: "0.0.0.0:8080"
+        HEADSCALE_METRICS_LISTEN_ADDR: "127.0.0.1:9090"
+        HEADSCALE_DATABASE_TYPE: sqlite
+        HEADSCALE_DATABASE_SQLITE_PATH: /var/lib/headscale/db.sqlite
+        HEADSCALE_PREFIXES_V4: 100.64.0.0/10
+        HEADSCALE_PREFIXES_V6: "fd7a:115c:a1e0::/48"
+        HEADSCALE_DNS_MAGIC_DNS: "false"
+        HEADSCALE_DNS_OVERRIDE_LOCAL_DNS: "false"
+        HEADSCALE_DERP_URLS: "https://controlplane.tailscale.com/derpmap/default"
+        HEADSCALE_UNIX_SOCKET: /var/run/headscale/headscale.sock
+    - kind: quadlet
+      image: docker.io/headscale/headscale:0.29.7@sha256:11f81665e842809db9fe3006a38c56a66e968baa5abd4bac498e86445572b970
+      args: [serve]
+      ports: ["8080:8080/tcp"]
+      volumes: {data: /var/lib/headscale}
+      env:
+        HEADSCALE_SERVER_URL: "http://127.0.0.1:8080"
+        HEADSCALE_LISTEN_ADDR: "0.0.0.0:8080"
+        HEADSCALE_METRICS_LISTEN_ADDR: "127.0.0.1:9090"
+        HEADSCALE_DATABASE_TYPE: sqlite
+        HEADSCALE_DATABASE_SQLITE_PATH: /var/lib/headscale/db.sqlite
+        HEADSCALE_PREFIXES_V4: 100.64.0.0/10
+        HEADSCALE_PREFIXES_V6: "fd7a:115c:a1e0::/48"
+        HEADSCALE_DNS_MAGIC_DNS: "false"
+        HEADSCALE_DNS_OVERRIDE_LOCAL_DNS: "false"
+        HEADSCALE_DERP_URLS: "https://controlplane.tailscale.com/derpmap/default"
+        HEADSCALE_UNIX_SOCKET: /var/run/headscale/headscale.sock
+requires:
+  ports: [8080/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: true
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:8080/health
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: headscale
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: "Nodes reach it at HEADSCALE_SERVER_URL, which is its own loopback address until you set the address nodes use with an override (env), behind TLS from the reverse proxy. Pre-auth keys are made with headscale preauthkeys create in its container; a node joins with the tailscale step and the key in the vault. The noise key and the database are its data."

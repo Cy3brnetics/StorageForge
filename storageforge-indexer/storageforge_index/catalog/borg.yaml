@@ -1,0 +1,32 @@
+format: 1
+id: borg
+revision: 1
+name: BorgBackup
+app_version: from the distribution
+category: backup
+summary: Deduplicated, compressed and encrypted backups to a folder or over SSH. The panel tests restores, with the SHA-256 of each file compared.
+homepage: https://www.borgbackup.org/
+license: BSD-3-Clause
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [borgbackup]
+        dnf: [borgbackup]
+        zypper: [borgbackup]
+        pacman: [borg]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+gui:
+  native: none
+  panel:
+    level: full
+    adapter: borg
+upgrade:
+  strategy: package
+risk: [holds-credentials, runs-as-root]
+compliance: [3-2-1 backups, restore tested]
+notes: The repository key is a vault secret, given to Borg through BORG_PASSCOMMAND reading a root-only file, never on a command line. A restore test extracts the latest archive into a scratch folder and compares each unchanged file by its SHA-256.

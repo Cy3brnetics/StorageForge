@@ -1,0 +1,51 @@
+format: 1
+id: technitium
+revision: 1
+name: Technitium DNS Server
+app_version: 15.6.2
+category: provisioning
+summary: A DNS server with a DHCP server and one web panel for both, zones, blocking lists and leases.
+homepage: https://technitium.com/dns/
+license: GPL-3.0
+install:
+  methods:
+    - kind: quadlet
+      image: docker.io/technitium/dns-server:15.6.2@sha256:eb48ac5c135f4ab936b536f74f853d53e15ab39ef37fdbc9598a089b90d9f245
+      network: host
+      volumes: {config: /etc/dns}
+      env: {DNS_SERVER_DOMAIN: dns-server, DNS_SERVER_ADMIN_PASSWORD_FILE: /run/secrets/technitium/admin_password}
+    - kind: compose
+      image: docker.io/technitium/dns-server:15.6.2@sha256:eb48ac5c135f4ab936b536f74f853d53e15ab39ef37fdbc9598a089b90d9f245
+      network: host
+      volumes: {config: /etc/dns}
+      env: {DNS_SERVER_DOMAIN: dns-server, DNS_SERVER_ADMIN_PASSWORD_FILE: /run/secrets/technitium/admin_password}
+requires:
+  ports: [53/udp, 53/tcp, 67/udp, 5380/tcp]
+  volumes: [config]
+exposure:
+  default: any
+  public_optional: false
+secrets:
+  - {name: admin_password, kind: password}
+health:
+  url: http://127.0.0.1:5380/
+  expect: 200
+backup:
+  paths: [config]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 5380
+    sso: none
+  panel:
+    level: status
+    adapter: technitium
+upgrade:
+  strategy: recreate
+  rollback_on_unhealthy: false
+risk: [runs-as-root, host-network, holds-credentials]
+mac:
+  selinux: container_t
+  notes: the config folder is mounted with :Z, for this container alone
+notes: DHCP answers broadcasts, so it runs in the host network and listens on every address the host has; fence 53, 67 and the panel on 5380 to your own networks. The admin password is the vault secret tool-technitium-admin_password, read from a file on first start. Turn off the DNS server the host already runs (systemd-resolved stub, dnsmasq) first.

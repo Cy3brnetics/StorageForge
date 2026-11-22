@@ -73,9 +73,14 @@ def read_cockpit(lines: list[str]) -> dict | None:
     return out or None
 
 
+READERS: dict = {}       # name -> reader of the sections other adapter modules add (tbadapters_c.py)
+
+
 def sections_of(sections: dict) -> dict:
     """What the reading keeps of the adapters' sections (inframeasure.parse)."""
-    return {'cockpit': read_cockpit(sections.get('tb_cockpit', [])), 'health': read_health(sections.get('tb_health', []))}
+    return {'cockpit': read_cockpit(sections.get('tb_cockpit', [])), 'health': read_health(sections.get('tb_health', [])),
+            **tbadapters_a.sections_of(sections), **tbadapters_b.sections_of(sections),
+            **{k: fn(sections) for k, fn in READERS.items()}}
 
 
 # ── the adapters ────────────────────────────────────────────────────
@@ -226,6 +231,11 @@ class WireGuard(Adapter):
 
 
 ADAPTERS: dict[str, Adapter] = {a.name: a for a in (UptimeKuma(), Cockpit(), WireGuard())}
+from . import tbadapters_a, tbadapters_b  # noqa: E402  the 0.5.13 adapters and their reading sections
+ADAPTERS.update(tbadapters_a.ADAPTERS)
+ADAPTERS.update(tbadapters_b.ADAPTERS)
+SECTIONS = SECTIONS + tbadapters_a.SECTIONS + tbadapters_b.SECTIONS
+BODY = BODY + tbadapters_a.BODY + tbadapters_b.BODY
 
 
 def api_status(conn: Conn, host: str, kind: str) -> dict:
@@ -454,3 +464,6 @@ def stage_action(conn: Conn, host: str, tool_id: str, action: str, values: dict,
     tasks = a.tasks(action, values or {}, host, reading)
     plan_id = changes.save_plan(conn, {'name': toolbox._plan_name(conn, f'Toolbox: {e["name"]} on {host}, {known[action]["label"].lower()}'), 'tasks': tasks}, actor)
     return {'plan_id': plan_id, 'tasks': tasks}
+
+
+from . import tbadapters_c  # noqa: E402,F401  the adapters of the backup, secrets, provisioning, storage and offline entries

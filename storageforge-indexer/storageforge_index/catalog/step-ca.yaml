@@ -1,0 +1,50 @@
+format: 1
+id: step-ca
+revision: 1
+name: step-ca
+app_version: 0.30.2
+category: proxy
+summary: A private certificate authority for TLS inside the network, with ACME for services that renew their own certificates.
+homepage: https://smallstep.com/docs/step-ca/
+license: Apache-2.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/smallstep/step-ca:0.30.2@sha256:a2b17872915c193259b75a5474c398326f41bd199f0842093e52cf4182bc8270
+      ports: ["9000:9000/tcp"]
+      volumes: {data: /home/step}
+      env: {DOCKER_STEPCA_INIT_NAME: StorageForge internal CA, DOCKER_STEPCA_INIT_DNS_NAMES: "localhost,127.0.0.1", DOCKER_STEPCA_INIT_PASSWORD_FILE: /run/secrets/step-ca/ca-password, DOCKER_STEPCA_INIT_ACME: "true"}
+      user: "0"
+    - kind: compose
+      image: docker.io/smallstep/step-ca:0.30.2@sha256:a2b17872915c193259b75a5474c398326f41bd199f0842093e52cf4182bc8270
+      ports: ["9000:9000/tcp"]
+      volumes: {data: /home/step}
+      env: {DOCKER_STEPCA_INIT_NAME: StorageForge internal CA, DOCKER_STEPCA_INIT_DNS_NAMES: "localhost,127.0.0.1", DOCKER_STEPCA_INIT_PASSWORD_FILE: /run/secrets/step-ca/ca-password, DOCKER_STEPCA_INIT_ACME: "true"}
+      user: "0"
+secrets:
+  - {name: ca-password, kind: password}
+requires:
+  ports: [9000/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: https://127.0.0.1:9000/health
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: step-ca
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: The CA is made at its first start, its keys encrypted with the vault secret tool-step-ca-ca-password. step-ca keeps a copy of that password in its data folder to start unattended, so back the folder up as you would the vault. It answers for localhost and 127.0.0.1 until its ca.json names more.
+mac:
+  selinux: container_t
+  notes: the data folder is mounted with :Z, so SELinux lets the container use it and nothing else

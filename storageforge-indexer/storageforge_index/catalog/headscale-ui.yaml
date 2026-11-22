@@ -1,0 +1,35 @@
+format: 1
+id: headscale-ui
+revision: 1
+name: Headscale UI
+app_version: 2026.03.17
+category: vpn
+summary: A web page for Headscale's users, nodes, routes and pre-auth keys. It talks to Headscale's API from your browser with an API key.
+homepage: https://github.com/gurucomputing/headscale-ui
+license: BSD-3-Clause
+install:
+  methods:
+    - kind: container
+      image: ghcr.io/gurucomputing/headscale-ui:2026.03.17@sha256:015f5ba04bcbd5ee03178540a1dbbfc97b6896d7411032e3bf33c2f3e08f8b6f
+      ports: ["8081:8080/tcp"]
+      env: {HTTP_PORT: "8080"}
+requires:
+  ports: [8081/tcp]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:8081/web/
+  expect: 200
+gui:
+  native:
+    url_template: "http://{host}:{port}/web/"
+    port: 8081
+    sso: none
+  panel:
+    level: link
+    adapter: headscale-ui
+upgrade:
+  strategy: recreate
+notes: "It keeps nothing on the host: the API key stays in your browser. Your browser calls Headscale from the page, so serve both under one address (the page at /web) through the reverse proxy, and make the key with headscale apikeys create in the Headscale container."

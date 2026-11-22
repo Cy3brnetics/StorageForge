@@ -1,0 +1,72 @@
+format: 1
+id: authentik
+revision: 1
+name: authentik
+app_version: 2026.8.5
+category: identity
+summary: An identity provider with single sign-on over OIDC, SAML and LDAP. The Toolbox registers catalog panels with it as OIDC clients.
+homepage: https://goauthentik.io/
+license: MIT
+install:
+  methods:
+    - kind: compose
+      image: ghcr.io/goauthentik/server:2026.8.5@sha256:602227a86455d6772e3d16b7d852713c4f864f40df5df894abd1285bb53979a5
+      args: [server]
+      ports: ["9000:9000/tcp"]
+      volumes: {data: /data}
+      volume_owner: "1000"
+      env:
+        AUTHENTIK_POSTGRESQL__HOST: postgresql
+        AUTHENTIK_POSTGRESQL__NAME: authentik
+        AUTHENTIK_POSTGRESQL__USER: authentik
+        AUTHENTIK_POSTGRESQL__PASSWORD: "file:///run/secrets/authentik/db_password"
+        AUTHENTIK_SECRET_KEY: "file:///run/secrets/authentik/secret_key"
+        AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      sidecars:
+        - name: worker
+          image: ghcr.io/goauthentik/server:2026.8.5@sha256:602227a86455d6772e3d16b7d852713c4f864f40df5df894abd1285bb53979a5
+          args: [worker]
+          volumes: {data: /data, blueprints: /blueprints/custom}
+          env:
+            AUTHENTIK_POSTGRESQL__HOST: postgresql
+            AUTHENTIK_POSTGRESQL__NAME: authentik
+            AUTHENTIK_POSTGRESQL__USER: authentik
+            AUTHENTIK_POSTGRESQL__PASSWORD: "file:///run/secrets/authentik/db_password"
+            AUTHENTIK_SECRET_KEY: "file:///run/secrets/authentik/secret_key"
+            AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+        - name: postgresql
+          image: docker.io/library/postgres:16.13-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
+          user: "1000:1000"
+          volumes: {database: /var/lib/postgresql/data}
+          env:
+            POSTGRES_DB: authentik
+            POSTGRES_USER: authentik
+            POSTGRES_PASSWORD_FILE: /run/secrets/authentik/db_password
+requires:
+  ports: [9000/tcp]
+  volumes: [data, blueprints, database]
+secrets:
+  - {name: secret_key, kind: token}
+  - {name: db_password, kind: password}
+exposure:
+  default: loopback
+  public_optional: true
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:9000/-/health/live/
+  expect: 200
+backup:
+  paths: [database, data, blueprints]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 9000
+    sso: none
+  panel:
+    level: status
+    adapter: authentik
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: "Open /if/flow/initial-setup/ over the SSH tunnel at once to set the password of akadmin. Single sign-on for a catalog panel is registered from the panel page: the Toolbox writes a blueprint into the blueprints folder, which the worker applies, with the client secret read from a vault file. Browsers reach it through the reverse proxy with TLS."

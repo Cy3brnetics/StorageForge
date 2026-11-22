@@ -1,0 +1,51 @@
+format: 1
+id: lldap
+revision: 1
+name: LLDAP
+app_version: "2026-09-22"
+category: identity
+summary: A small LDAP server for users and groups, with a web page to manage them, for Authelia, Samba and anything else that speaks LDAP.
+homepage: https://github.com/lldap/lldap
+license: GPL-3.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/lldap/lldap:2026-09-22-alpine-rootless@sha256:0b694bb4cf324f2b918c73db13a6518926e5de6a73996c27e0238b1f3d342aae
+      ports: ["3890:3890/tcp", "17170:17170/tcp"]
+      volumes: {data: /data}
+      volume_owner: "1000"
+      env:
+        LLDAP_LDAP_BASE_DN: "dc=example,dc=com"
+        LLDAP_JWT_SECRET_FILE: /run/secrets/lldap/jwt_secret
+        LLDAP_KEY_SEED_FILE: /run/secrets/lldap/key_seed
+        LLDAP_LDAP_USER_PASS_FILE: /run/secrets/lldap/admin_password
+        TZ: Etc/UTC
+requires:
+  ports: [3890/tcp, 17170/tcp]
+  volumes: [data]
+secrets:
+  - {name: jwt_secret, kind: hex}
+  - {name: key_seed, kind: hex}
+  - {name: admin_password, kind: password}
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:17170/health
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 17170
+    sso: none
+  panel:
+    level: status
+    adapter: lldap
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: "Set LLDAP_LDAP_BASE_DN to your domain with an override (env) before the first start. The administrator is admin, with the password in the vault secret tool-lldap-admin_password. LDAP on 3890 is plain text: keep it on loopback or the management network, or put TLS in front of it."

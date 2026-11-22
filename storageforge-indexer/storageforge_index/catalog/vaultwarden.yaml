@@ -1,0 +1,52 @@
+format: 1
+id: vaultwarden
+revision: 1
+name: Vaultwarden
+app_version: 1.37.5
+category: secrets
+summary: A password manager for a team, served to the Bitwarden apps and browser extensions.
+homepage: https://github.com/dani-garcia/vaultwarden
+license: AGPL-3.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/vaultwarden/server:1.37.5@sha256:4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f
+      ports: ["8222:80/tcp"]
+      volumes: {data: /data}
+    - kind: quadlet
+      image: docker.io/vaultwarden/server:1.37.5@sha256:4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f
+      ports: ["8222:80/tcp"]
+      volumes: {data: /data}
+    - kind: compose
+      image: docker.io/vaultwarden/server:1.37.5@sha256:4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f
+      ports: ["8222:80/tcp"]
+      volumes: {data: /data}
+requires:
+  ports: [8222/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:8222/alive
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 8222
+    sso: none
+  panel:
+    level: status
+    adapter: vaultwarden
+upgrade:
+  strategy: recreate
+  rollback_on_unhealthy: false
+risk: [holds-credentials]
+mac:
+  selinux: container_t
+  notes: the data folder is mounted with :Z, for this container alone
+notes: The admin page stays off, since no admin token is set. The Bitwarden apps need HTTPS, or localhost through the SSH tunnel; put it behind the reverse proxy with TLS for everyone else. Anyone who reaches it can make an account until signups are turned off.

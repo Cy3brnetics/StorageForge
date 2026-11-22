@@ -1,0 +1,37 @@
+format: 1
+id: samba
+revision: 1
+name: Samba
+app_version: from the distribution
+category: storage
+summary: Windows and macOS file shares (SMB). The shares themselves come from the host's design under Shares, fenced to their clients, with decoys in them.
+homepage: https://www.samba.org/
+license: GPL-3.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [samba]
+        dnf: [samba]
+        zypper: [samba]
+        pacman: [samba]
+requires:
+  ports: [445/tcp]
+exposure:
+  default: any
+  public_optional: false
+storage:
+  use: data
+  worm: recommended
+  canaries: shares
+  fence: smb
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: samba
+upgrade:
+  strategy: package
+risk: [runs-as-root]
+compliance: [share access fenced]
+notes: Samba listens on every address the host has. Design the shares under Shares, which writes /etc/samba/storageforge.conf, labels the folders for SELinux and starts smbd; give the clients here and a fence drops everyone else. Passwords are set with smbpasswd on the host.

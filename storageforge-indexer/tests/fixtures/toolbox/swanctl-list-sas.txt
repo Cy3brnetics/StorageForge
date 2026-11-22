@@ -1,0 +1,11 @@
+site: #1, ESTABLISHED, IKEv2, f8ff64a952076a00_i* 4e17a07f75bb75c2_r
+  local  'moon' @ 172.21.0.2[4500]
+  remote 'sun' @ 172.21.0.3[4500]
+  AES_CBC-128/HMAC_SHA2_256_128/PRF_HMAC_SHA2_256/ECP_256
+  established 6s ago, rekeying in 13899s
+  net: #1, reqid 1, INSTALLED, TUNNEL, ESP:AES_GCM_16-128
+    installed 6s ago, rekeying in 3432s, expires in 3954s
+    in  c767774a,      0 bytes,     0 packets
+    out ca3a53b6,      0 bytes,     0 packets
+    local  10.1.0.0/24
+    remote 10.2.0.0/24

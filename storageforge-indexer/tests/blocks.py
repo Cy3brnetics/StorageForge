@@ -78,6 +78,13 @@ HEAVY = {
 
 MEDIUM = {
     'test_toolbox_steps.Steps',      # bash running the Toolbox steps against stand-in podman, systemctl, apt and curl
+    'test_toolbox_catalog_a.Socket',  # bash running a panel install against the same stand-ins
+    'test_toolbox_catalog_a.Probes',  # the adapter probes of the 0.5.13 entries as bash, against stand-ins that print what the real tools print
+    'test_toolbox_b.Sections',        # bash running the 0.5.13 adapter reading sections against stand-ins
+    'test_toolbox_b.PanelSteps',      # bash running the 0.5.13 panel steps (caddy-route, ips-decision, trivy-scan)
+    'test_toolbox_entries_c.EngineFilesRun',  # bash running container file injection and restarts
+    'test_toolbox_restore.RestoreTest',       # bash running restic and Borg restore tests against stand-ins
+    'test_toolbox_restore.RealRestic',        # the same against real restic when installed
     'test_netconsole.Receiver',       # the netconsole receiver on a real UDP socket, waiting for its batches to be stored
     'test_netconsole.TheStep',        # bash running the netconsole step against stand-ins for ip and modprobe
     'test_netconsole.Pstore',         # bash running the scan's pstore script on real files

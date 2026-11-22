@@ -1,0 +1,72 @@
+format: 1
+id: garage
+revision: 1
+name: Garage
+app_version: 2.5.0
+category: storage
+summary: S3-compatible object storage, small enough for one host and made to spread over several. A target for restic, Kopia and anything that speaks S3.
+homepage: https://garagehq.deuxfleurs.fr/
+license: AGPL-3.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
+      ports: ["3900:3900/tcp", "3903:3903/tcp"]
+      volumes: {meta: /var/lib/garage/meta, data: /var/lib/garage/data}
+      files:
+        garage.toml:
+          path: /etc/garage.toml
+          text: |
+            # Written by StorageForge from the Toolbox entry garage: one node, SQLite metadata, secrets read from files.
+            metadata_dir = "/var/lib/garage/meta"
+            data_dir = "/var/lib/garage/data"
+            db_engine = "sqlite"
+            replication_factor = 1
+            rpc_bind_addr = "[::]:3901"
+            rpc_public_addr = "127.0.0.1:3901"
+            rpc_secret_file = "/run/secrets/garage/rpc_secret"
+
+            [s3_api]
+            s3_region = "garage"
+            api_bind_addr = "[::]:3900"
+            root_domain = ".s3.garage.localhost"
+
+            [admin]
+            api_bind_addr = "[::]:3903"
+            admin_token_file = "/run/secrets/garage/admin_token"
+            metrics_token_file = "/run/secrets/garage/metrics_token"
+requires:
+  ports: [3900/tcp, 3903/tcp]
+  volumes: [meta, data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+secrets:
+  - {name: rpc_secret, kind: hex}
+  - {name: admin_token, kind: token}
+  - {name: metrics_token, kind: token}
+storage:
+  use: data
+  worm: recommended
+  canaries: none
+  volumes: [data]
+health:
+  url: http://127.0.0.1:3903/health
+  expect: 200
+backup:
+  paths: [meta, data]
+  consistency: stop-snapshot
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: garage
+upgrade:
+  strategy: recreate
+  rollback_on_unhealthy: false
+risk: [holds-credentials]
+mac:
+  selinux: container_t
+  notes: the metadata, data and configuration are mounted with :Z, for this container alone
+notes: "A new node holds nothing until it is given a place in the layout: garage layout assign, then garage layout apply, run in the container. The health check says down until then. Keep the metadata on an SSD if you can."

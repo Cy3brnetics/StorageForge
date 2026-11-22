@@ -1,0 +1,29 @@
+format: 1
+id: opentofu
+revision: 1
+name: OpenTofu
+app_version: from the distribution
+category: provisioning
+summary: The open fork of Terraform, which reads the same files. A runner for the Terraform exports of change plans.
+homepage: https://opentofu.org/
+license: MPL-2.0
+install:
+  methods:
+    - kind: package
+      packages:
+        dnf: [opentofu]
+        pacman: [opentofu]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: opentofu
+upgrade:
+  strategy: package
+risk: [runs-as-root]
+notes: Fedora and Arch carry it; Debian, Ubuntu and openSUSE need the OpenTofu source, which the Toolbox does not add. Terraform itself is under the BSL licence and is not in the catalog. Its state file can hold secrets of what it manages; keep it encrypted.

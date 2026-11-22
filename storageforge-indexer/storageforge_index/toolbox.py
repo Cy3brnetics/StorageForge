@@ -56,7 +56,7 @@ EXPOSURES = ('loopback', 'management', 'any')
 PMS = ('apt', 'dnf', 'zypper', 'pacman')
 CAPS = ('NET_BIND_SERVICE', 'NET_ADMIN', 'NET_RAW', 'CHOWN', 'SETUID', 'SETGID', 'DAC_OVERRIDE', 'FOWNER', 'KILL')
 # the step kinds an entry may add beside its install, with values from the entry's inputs; each is checked as any plan step is
-ENTRY_STEPS = ('wg-interface', 'wg-peer', 'unit-state')    # kept short on purpose: each is a way an entry reaches a host
+ENTRY_STEPS = ('wg-interface', 'wg-peer', 'unit-state', 'nebula', 'cloudflare-tunnel', 'ssh-ca-trust', 'chrony-nts')    # kept short on purpose: each is a way an entry reaches a host
 # what each risk label means, and what lessens it. Shown in the report before anything is staged
 RISKS = {
     'docker-socket': ('mounts the Docker socket', 'root on the host in effect', 'use a socket proxy that allows only what it needs'),
@@ -67,6 +67,17 @@ RISKS = {
     'holds-credentials': ('holds credentials', 'it keeps passwords, keys or tokens of its own', 'back up its data with the rest of the vault, and keep it off the internet'),
     'internet-listener': ('listens on the internet', 'anyone who can reach the host can reach it', 'keep it on loopback or the management network, or fence it to known addresses'),
     'net-admin': ('changes the network', 'it can change interfaces, routes and firewall rules', 'none: it is what the tool is for'),
+    'engine-socket': ('runs containers', 'it holds the rootless Podman socket of its own account, so it can run any container as that account, '
+                      'and SELinux does not separate it from that socket', 'none for root: the account owns nothing else, and root containers stay out of its reach'),
+}
+# what an entry says of itself beyond its risks: shown beside it in the catalog and in the report. An entry labelled non-commercial is
+# never part of a bundle or a role profile's defaults: someone chooses it, knowing its licence
+LABELS = {
+    'outside-account': 'needs an account with an outside service, made by you there',
+    'outside-service': 'talks to a service run by someone else for part of what it does',
+    'non-commercial': 'its licence does not allow commercial use of some of it: read the licence before you use it at work',
+    'source-available': 'its licence is not an open-source one: read what it allows',
+    'not-a-default': 'never installed as part of a bundle or a role profile: choose it yourself',
 }
 LAB_PASSED: set[str] = set()     # tools with a passing run of the toolbox tier (tests/lab): none yet, so every entry is not lab-tested
 
@@ -75,8 +86,11 @@ IMAGE = re.compile(r'[a-z0-9][a-z0-9._-]*(:[0-9]{1,5})?(/[a-z0-9][a-z0-9._-]*)+:
 PORT = re.compile(r'(\d{1,5}):(\d{1,5})/(tcp|udp)')
 PORT_DECL = re.compile(r'(\d{1,5})/(tcp|udp)')
 CPATH = re.compile(r'/[A-Za-z0-9._/-]{0,200}')
-ENV_KEY = re.compile(r'[A-Z][A-Z0-9_]{0,63}')
+ENV_KEY = re.compile(r'[A-Z][A-Za-z0-9_]{0,63}')        # Pi-hole reads FTLCONF_dns_listeningMode: the case is part of the name
 ENV_VALUE = re.compile(r'[A-Za-z0-9 ._:/@+=,-]{0,200}')       # no %: systemd would expand it in a unit file
+ARG = re.compile(r'[A-Za-z0-9._:/=@,+-]{1,200}')                # a word of a container's command: no space, no quote, no %, no $
+FILE_NAME = re.compile(r'[a-z][a-z0-9_.-]{0,40}')
+MAX_FILE = 8 << 10
 PKG = re.compile(r'[a-z0-9][a-z0-9+._-]{0,99}')
 UNIT = re.compile(r'[A-Za-z0-9_.@-]{1,120}\.(service|socket|timer)')
 HTTPS = re.compile(r'https://[A-Za-z0-9.-]+(:\d{1,5})?/[A-Za-z0-9._~/%+-]{0,300}')
@@ -139,8 +153,9 @@ def _map(v, problems, where):
     return v
 
 
-def _container(m: dict, i: int, volumes: list, problems: list) -> dict:
-    where = f'install.methods[{i}] ({m.get("kind")})'
+def _container(m: dict, i: int, volumes: list, problems: list, secret_files: frozenset = frozenset(),
+               secret_uris: frozenset = frozenset(), sidecar: str = '') -> dict:
+    where = f'install.methods[{i}] ({m.get("kind")})' + (f' sidecar {sidecar}' if sidecar else '')
     out = {'kind': m['kind'], 'image': _str(m.get('image'), problems, f'{where} image', IMAGE, limit=300)}
     if m.get('image') and not out['image'] and isinstance(m.get('image'), str) and '@sha256:' not in m['image']:
         problems.append(f'{where}: the image is pinned by digest (name:tag@sha256:...), so an update cannot bring anything else')
@@ -163,8 +178,9 @@ def _container(m: dict, i: int, volumes: list, problems: list) -> dict:
     for k, v in _map(m.get('env'), problems, f'{where} env').items():
         if not ENV_KEY.fullmatch(str(k)) or not isinstance(v, (str, int)) or isinstance(v, bool) or not ENV_VALUE.fullmatch(str(v)):
             problems.append(f'{where}: env {k} is NAME: value, in letters, digits and . _ : / @ + = , - only')
-        elif SECRETISH.search(str(k)):
-            problems.append(f'{where}: env {k} looks like a secret: declare it under secrets, and it reaches the container as a file')
+        elif SECRETISH.search(str(k)) and not ((str(k).endswith('_FILE') and str(v) in secret_files) or str(v) in secret_uris):
+            problems.append(f'{where}: env {k} looks like a secret (or points at {v}, which is not one of the secrets the entry declares): '
+                            'declare it under secrets, and it reaches the container as a file (/run/secrets/<entry>/<name>, or file:// before it)')
         else:
             out['env'][str(k)] = str(v)
     out['caps'] = []
@@ -185,6 +201,56 @@ def _container(m: dict, i: int, volumes: list, problems: list) -> dict:
     out['read_only'] = bool(m.get('read_only'))
     out['drop_caps'] = m.get('drop_caps') == 'all'
     out['user'] = _str(m.get('user'), problems, f'{where} user', re.compile(r'\d{1,10}(:\d{1,10})?'), required=False)
+    # the uid the image runs as, when it is not root: its folders are given to it (Podman's U option; chown for a compose stack)
+    out['volume_owner'] = _str(m.get('volume_owner'), problems, f'{where} volume_owner', re.compile(r'[1-9]\d{0,9}'), required=False)
+    out['args'] = []
+    raw_cmd = m.get('args') if m.get('args') is not None else m.get('command')
+    cmd_where = 'args' if m.get('command') is None else 'command'
+    for a in _list(raw_cmd, problems, f'{where} {cmd_where}')[:20]:
+        if not isinstance(a, (str, int)) or isinstance(a, bool) or not ARG.fullmatch(str(a)):
+            problems.append(f'{where}: args are words (a word of the command, one word of letters, digits and . _ : / = @ , + -; {a!r} is not: no spaces, no shell)')
+        else:
+            out['args'].append(str(a))
+    out['command'] = out['args']
+    out['files'] = {}
+    for name, f in list(_map(m.get('files'), problems, f'{where} files').items())[:6]:
+        f = f if isinstance(f, dict) else {}
+        target, body = f.get('path'), f.get('text')
+        if not FILE_NAME.fullmatch(str(name)):
+            problems.append(f'{where}: a file is named in lower-case letters, digits and . _ -')
+        elif not isinstance(target, str) or not CPATH.fullmatch(target) or '..' in target.split('/'):
+            problems.append(f'{where}: the file {name} is mounted at an absolute path in the container')
+        elif not isinstance(body, str) or len(body.encode()) > MAX_FILE or re.search(r'[\0\r\x1b]', body):
+            problems.append(f'{where}: the file {name} is text of up to {MAX_FILE >> 10} KiB')
+        elif re.search(r'(?im)^\s*[a-z_]*(password|secret|token)\s*[=:]\s*["\']?[A-Za-z0-9+/]{12,}', body):
+            problems.append(f'{where}: the file {name} looks like it holds a secret: declare it under secrets, and point the file at /run/secrets')
+        else:
+            out['files'][str(name)] = {'path': target, 'text': body}
+    # a panel that manages containers gets the rootless Podman socket of its own account: never root's, never Docker's
+    sock = m.get('engine_socket')
+    out['engine_socket'] = sock == 'own' and m['kind'] == 'container' and not sidecar
+    if sock is not None and not out['engine_socket']:
+        problems.append(f'{where}: engine_socket is own, and only for the rootless container method: the socket of its own account, not root\'s')
+    out['sidecars'] = []
+    if not sidecar:
+        names = set()
+        for j, sc in enumerate(_list(m.get('sidecars'), problems, f'{where} sidecars')[:6]):
+            sc = sc if isinstance(sc, dict) else {}
+            name = _str(sc.get('name'), problems, f'{where} sidecars[{j}] name', re.compile(r'[a-z][a-z0-9-]{0,20}'))
+            if m['kind'] != 'compose':
+                problems.append(f'{where}: sidecars are for the compose method, which runs the tool and them as one stack')
+                break
+            if not name or name in names:
+                problems.append(f'{where}: each sidecar has a name of its own')
+                continue
+            names.add(name)
+            if sc.get('ports'):
+                problems.append(f'{where} sidecar {name}: a sidecar publishes no port; the tool reaches it by its name inside the stack')
+            got = _container({**{k: v for k, v in sc.items() if k not in ('name', 'ports')}, 'kind': 'compose'},
+                             i, volumes, problems, secret_files, secret_uris, sidecar=name)
+            out['sidecars'].append({**got, 'name': name})
+    elif m.get('sidecars'):
+        problems.append(f'{where}: a sidecar has no sidecars of its own')
     return out
 
 
@@ -250,7 +316,7 @@ def load_entry(text: str) -> tuple[dict | None, list[str]]:
     if not isinstance(raw, dict):
         return None, ['an entry is a YAML mapping']
     known = {'format', 'id', 'revision', 'name', 'app_version', 'category', 'summary', 'homepage', 'license', 'install', 'inputs', 'steps', 'requires',
-             'exposure', 'secrets', 'firewall', 'mac', 'health', 'backup', 'gui', 'upgrade', 'risk', 'compliance', 'notes'}
+             'exposure', 'secrets', 'firewall', 'mac', 'health', 'backup', 'gui', 'upgrade', 'risk', 'compliance', 'notes', 'labels', 'outside', 'storage'}
     for k in raw:
         if k not in known:
             problems.append(f'{k} is not a field of an entry')
@@ -281,7 +347,13 @@ def load_entry(text: str) -> tuple[dict | None, list[str]]:
         else:
             ports.append({'port': int(mm[1]), 'proto': mm[2]})
     e['requires'] = {'ports': ports, 'volumes': volumes}
+    from . import tbstorage
+    e['storage'] = tbstorage.load_storage(raw.get('storage'), volumes, problems)     # where a storage-facing app's data goes (tbstorage.py)
     methods = []
+    rid = str(raw.get('id') or '')
+    snames = [s['name'] for s in (raw.get('secrets') or []) if isinstance(s, dict) and isinstance(s.get('name'), str)]
+    secret_files = frozenset(f'/run/secrets/{rid}/{n}' for n in snames)
+    secret_uris = frozenset(f'file:///run/secrets/{rid}/{n}' for n in snames)
     inst = _map(raw.get('install'), problems, 'install')
     for i, m in enumerate(_list(inst.get('methods'), problems, 'install.methods')):
         if not isinstance(m, dict) or m.get('kind') not in METHODS:
@@ -290,7 +362,7 @@ def load_entry(text: str) -> tuple[dict | None, list[str]]:
         if any(x['kind'] == m['kind'] for x in methods):
             problems.append(f'install.methods[{i}]: {m["kind"]} is given twice')
             continue
-        methods.append(_container(m, i, volumes, problems) if m['kind'] in ('container', 'quadlet', 'compose') else
+        methods.append(_container(m, i, volumes, problems, secret_files, secret_uris) if m['kind'] in ('container', 'quadlet', 'compose') else
                        _package(m, i, problems) if m['kind'] == 'package' else _binary(m, i, problems))
     if not methods:
         problems.append('install.methods names at least one way to install it')
@@ -300,7 +372,8 @@ def load_entry(text: str) -> tuple[dict | None, list[str]]:
         # after itself. Never debug-shell.service, never a sudo that shadows the real one
         own = {e['id'], *(n for names in (m.get('packages') or {}).values() for n in names)}
         for u in (m.get('units') or []) + ([m['socket']['unit']] if m.get('socket') else []):
-            if not any(u == o or u.startswith(o + '.') or u.startswith(o + '-') or u.startswith(o + '@') for o in own):
+            # chronyd.service and smartd.service: a daemon named after its package with a d, as Fedora and Arch name them
+            if not any(u == o or u.startswith(o + '.') or u.startswith(o + '-') or u.startswith(o + '@') or u.startswith(o + 'd.') for o in own):
                 problems.append(f'install.methods: the unit {u} is not named after {e["id"]} or one of its packages')
         if m['kind'] == 'binary' and m.get('name') and e['id'] and not (m['name'] == e['id'] or m['name'].startswith(e['id'] + '-')):
             problems.append(f'install.methods (binary): the program is named {e["id"]} or {e["id"]}-something, so it cannot stand in for another')
@@ -373,8 +446,12 @@ def load_entry(text: str) -> tuple[dict | None, list[str]]:
         sso = native.get('sso') or 'none'
         if sso not in ('none', 'oidc', 'forward-auth'):
             problems.append('gui.native.sso is none, oidc or forward-auth')
+        # where an identity provider sends a browser back after signing in, as a path of the tool's own address
+        redirect = _str(native.get('oidc_redirect'), problems, 'gui.native.oidc_redirect', re.compile(r'/[A-Za-z0-9._/-]{0,100}'), required=False) or ''
+        if redirect and sso != 'oidc':
+            problems.append('gui.native.oidc_redirect is for sso: oidc')
         if tpl:
-            e['gui']['native'] = {'url_template': tpl, 'port': port, 'sso': sso}
+            e['gui']['native'] = {'url_template': tpl, 'port': port, 'sso': sso, 'oidc_redirect': redirect}
             e['gui']['level'] = 'link'
     elif native not in (None, 'none'):
         problems.append('gui.native is {url_template, port, sso}, or none')
@@ -409,6 +486,17 @@ def load_entry(text: str) -> tuple[dict | None, list[str]]:
         else:
             e['declared_risks'].append(r)
     e['compliance'] = [str(c)[:60] for c in _list(raw.get('compliance'), problems, 'compliance')][:20]
+    e['labels'] = []
+    for lb in _list(raw.get('labels'), problems, 'labels'):
+        if lb not in LABELS:
+            problems.append(f'labels: {lb} is not a known label ({", ".join(LABELS)})')
+        elif lb not in e['labels']:
+            e['labels'].append(lb)
+    if 'non-commercial' in e['labels'] and 'not-a-default' not in e['labels']:
+        e['labels'].append('not-a-default')
+    e['outside'] = _str(raw.get('outside'), problems, 'outside', WORDS, required=False, limit=200) or ''
+    if e['outside'] and not {'outside-account', 'outside-service'} & set(e['labels']):
+        problems.append('outside says what outside account or service it needs: label it outside-account or outside-service too')
     mac = _map(raw.get('mac'), problems, 'mac')
     e['mac'] = {k: str(mac[k])[:200] for k in ('selinux', 'apparmor', 'notes') if mac.get(k)}
     fw = _map(raw.get('firewall'), problems, 'firewall')
@@ -423,12 +511,15 @@ def risks(e: dict, method: str | None = None, exposure: str | None = None) -> li
     for m in e['methods']:
         if method and m['kind'] != method:
             continue
-        if m['kind'] in ('package', 'binary', 'quadlet', 'compose') and not m.get('user'):
+        if m['kind'] in ('package', 'binary', 'quadlet', 'compose') and (not m.get('user') or m['user'].split(':')[0] == '0'):
             found.add('runs-as-root')
-        if m.get('network') == 'host':
-            found.add('host-network')
-        if 'NET_ADMIN' in (m.get('caps') or []):
-            found.add('net-admin')
+        if m.get('engine_socket'):
+            found.add('engine-socket')
+        for part in (m, *(m.get('sidecars') or [])):
+            if part.get('network') == 'host':
+                found.add('host-network')
+            if 'NET_ADMIN' in (part.get('caps') or []):
+                found.add('net-admin')
         if any(p['host'] in (80, 443) for p in m.get('ports') or []):
             found.add('publishes-80-443')
     if e.get('secrets'):
@@ -694,9 +785,11 @@ def _row(tid: str, text: str, digest: str, source: str, state: str, why: str, si
            'lab': 'lab-tested' if tid in LAB_PASSED else 'not lab-tested', 'text': text}
     if e and not problems:
         out.update({'name': e['name'], 'category': e['category'], 'summary': e['summary'], 'revision': e['revision'], 'app_version': e['app_version'],
-                    'gui_level': e['gui']['level'], 'risks': risks(e), 'methods': [m['kind'] for m in e['methods']], 'entry': e})
+                    'gui_level': e['gui']['level'], 'risks': risks(e), 'methods': [m['kind'] for m in e['methods']], 'entry': e,
+                    'labels': [{'label': lb, 'means': LABELS[lb]} for lb in e['labels']], 'outside': e['outside'], 'license': e['license']})
     else:
-        out.update({'name': tid, 'category': '', 'summary': '', 'revision': 0, 'app_version': '', 'gui_level': 'none', 'risks': [], 'methods': [], 'entry': None})
+        out.update({'name': tid, 'category': '', 'summary': '', 'revision': 0, 'app_version': '', 'gui_level': 'none', 'risks': [], 'methods': [], 'entry': None,
+                    'labels': [], 'outside': '', 'license': ''})
     return out
 
 
@@ -737,7 +830,7 @@ TRUSTED = ('release-signed', 'packaged', 'operator-signed')
 
 
 # ── overrides ───────────────────────────────────────────────────────
-OVERRIDE_KEYS = ('ports', 'bind', 'exposure', 'volumes', 'method', 'image')
+OVERRIDE_KEYS = ('ports', 'bind', 'exposure', 'volumes', 'method', 'image', 'env')
 SYSTEM_PREFIXES = ('/etc', '/root', '/usr', '/boot', '/proc', '/sys', '/dev', '/run', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/var', '/tmp', '/snap')
 
 
@@ -796,6 +889,13 @@ def load_override(text: str) -> tuple[dict, list[str]]:
                 problems.append('an image is pinned by digest: name:tag@sha256:...')
             else:
                 out['image'] = v
+        elif k == 'env':
+            # a value of an environment variable the entry already sets (a server's own address, say); never a new one, never a secret
+            if not isinstance(v, dict) or not all(ENV_KEY.fullmatch(str(a)) and not SECRETISH.search(str(a)) and isinstance(b, (str, int))
+                                                  and not isinstance(b, bool) and ENV_VALUE.fullmatch(str(b)) for a, b in v.items()):
+                problems.append('env is {NAME: value} for variables the entry sets, in letters, digits and . _ : / @ + = , - only, and never a secret')
+            else:
+                out['env'] = {str(a): str(b) for a, b in v.items()}
     return out, problems
 
 
@@ -896,8 +996,12 @@ def resolve(e: dict, m: dict, ovr: dict, exposure: str, bind: str) -> dict:
     for p in m.get('ports') or []:
         host_port = (ovr.get('ports') or {}).get(p['container'], p['host'])
         ports.append({'bind': addr, 'host': host_port, 'container': p['container'], 'proto': p['proto']})
-    vols = {name: (ovr.get('volumes') or {}).get(name, f'{DATA_ROOT}/{e["id"]}/{name}') for name in (m.get('volumes') or {})}
-    return {'exposure': exposure, 'bind': addr, 'ports': ports, 'volumes': vols, 'image': ovr.get('image') or m.get('image') or ''}
+    names = set(m.get('volumes') or {}) | {n for sc in m.get('sidecars') or [] for n in sc.get('volumes') or {}}
+    vols = {name: (ovr.get('volumes') or {}).get(name, f'{DATA_ROOT}/{e["id"]}/{name}') for name in sorted(names)}
+    env = dict(m.get('env') or {})
+    env.update({k: v for k, v in (ovr.get('env') or {}).items() if k in env})
+    return {'exposure': exposure, 'bind': addr, 'ports': ports, 'volumes': vols, 'image': ovr.get('image') or m.get('image') or '', 'env': env,
+            'env_ignored': sorted(k for k in (ovr.get('env') or {}) if k not in env)}
 
 
 def publish(p: dict) -> str:
@@ -911,10 +1015,13 @@ def quadlet_text(e: dict, m: dict, r: dict, rootless: bool) -> str:
              f'ContainerName=sf-{e["id"]}', f'Image={r["image"]}', 'Label=storageforge.managed=true', f'Label=storageforge.tool={e["id"]}',
              f'Label=storageforge.revision={e["revision"]}', 'NoNewPrivileges=true']
     lines += [f'PublishPort={publish(p)}' for p in r['ports']]
-    lines += [f'Volume={r["volumes"][name]}:{target}:Z' for name, target in sorted((m.get('volumes') or {}).items())]
+    lines += [f'Volume={r["volumes"][name]}:{target}:{"Z,U" if m.get("volume_owner") else "Z"}' for name, target in sorted((m.get('volumes') or {}).items())]
     if e.get('secrets'):
-        lines.append(f'Volume={DATA_ROOT}/{e["id"]}/secrets:/run/secrets/{e["id"]}:ro,Z')
-    lines += [f'Environment={k}={v}' for k, v in sorted((m.get('env') or {}).items())]
+        lines.append(f'Volume={DATA_ROOT}/{e["id"]}/secrets:/run/secrets/{e["id"]}:{"ro,Z,U" if m.get("volume_owner") else "ro,Z"}')
+    lines += [f'Volume={DATA_ROOT}/{e["id"]}/files/{name}:{f["path"]}:{"ro,Z,U" if m.get("volume_owner") else "ro,Z"}' for name, f in sorted((m.get('files') or {}).items())]
+    if m.get('engine_socket'):        # its own account's Podman socket, which the step switches on: %t is that account's runtime folder
+        lines += ['Volume=%t/podman/podman.sock:/var/run/docker.sock', 'SecurityLabelDisable=true']
+    lines += [f'Environment={k}={v}' for k, v in sorted(r.get('env', m.get('env') or {}).items())]
     if m.get('drop_caps'):
         lines.append('DropCapability=ALL')
     lines += [f'AddCapability={c}' for c in m.get('caps') or []]
@@ -924,22 +1031,42 @@ def quadlet_text(e: dict, m: dict, r: dict, rootless: bool) -> str:
         lines.append('ReadOnly=true')
     if m.get('user'):
         lines.append(f'User={m["user"]}')
+    if m.get('args'):
+        lines.append('Exec=' + ' '.join(m['args']))
     lines += ['', '[Service]', 'Restart=always', 'TimeoutStartSec=600', '', '[Install]', f'WantedBy={"default.target" if rootless else "multi-user.target"}']
     return '\n'.join(lines) + '\n'
 
 
 def compose_text(e: dict, m: dict, r: dict) -> str:
-    svc = {'image': r['image'], 'container_name': f'sf-{e["id"]}', 'restart': 'unless-stopped',
-           'labels': {'storageforge.managed': 'true', 'storageforge.tool': e['id'], 'storageforge.revision': str(e['revision'])}, 'security_opt': ['no-new-privileges:true']}
+    parts = [m, *(m.get('sidecars') or [])]
+    used = [n for p in parts for n in (p.get('volumes') or {})]
+    r = dict(r, shared={n for n in used if used.count(n) > 1} | ({'secrets'} if len(parts) > 1 else set()))
+    services = {e['id']: _compose_service(e, m, r, r['image'], f'sf-{e["id"]}', r.get('env', m.get('env') or {}))}
     if r['ports']:
-        svc['ports'] = [publish(p) for p in r['ports']]
-    vols = [f'{r["volumes"][n]}:{t}:Z' for n, t in sorted((m.get('volumes') or {}).items())]
+        services[e['id']]['ports'] = [publish(p) for p in r['ports']]
+    for sc in m.get('sidecars') or []:       # reached by the tool by its name inside the stack; it publishes nothing
+        services[sc['name']] = _compose_service(e, sc, r, sc['image'], f'sf-{e["id"]}-{sc["name"]}', sc.get('env') or {}, part=sc['name'])
+    if m.get('sidecars'):
+        services[e['id']]['depends_on'] = [sc['name'] for sc in m['sidecars']]
+    return yaml.safe_dump({'services': services}, sort_keys=False)
+
+
+def _compose_service(e: dict, m: dict, r: dict, image: str, name: str, env: dict, part: str = '') -> dict:
+    svc = {'image': image, 'container_name': name, 'restart': 'unless-stopped',
+           'labels': {'storageforge.managed': 'true', 'storageforge.tool': e['id'], 'storageforge.revision': str(e['revision']), **({'storageforge.part': part} if part else {})},
+           'security_opt': ['no-new-privileges:true']}
+    # :Z gives a folder to one container alone; a folder two services of the stack mount (the secrets, say) takes :z, shared by them
+    shared = r.get('shared') or set()
+    vols = [f'{r["volumes"][n]}:{t}:{"z" if n in shared else "Z"}' for n, t in sorted((m.get('volumes') or {}).items())]
     if e.get('secrets'):
-        vols.append(f'{DATA_ROOT}/{e["id"]}/secrets:/run/secrets/{e["id"]}:ro,Z')
+        vols.append(f'{DATA_ROOT}/{e["id"]}/secrets:/run/secrets/{e["id"]}:{"ro,z" if "secrets" in shared else "ro,Z"}')
+    vols += [f'{DATA_ROOT}/{e["id"]}/files/{fname}:{f["path"]}:ro,Z' for fname, f in sorted((m.get('files') or {}).items())]
     if vols:
         svc['volumes'] = vols
-    if m.get('env'):
-        svc['environment'] = dict(sorted(m['env'].items()))
+    if env:
+        svc['environment'] = dict(sorted(env.items()))
+    if m.get('args'):
+        svc['command'] = list(m['args'])
     if m.get('caps'):
         svc['cap_add'] = list(m['caps'])
     if m.get('drop_caps'):
@@ -950,7 +1077,7 @@ def compose_text(e: dict, m: dict, r: dict) -> str:
         svc['read_only'] = True
     if m.get('user'):
         svc['user'] = m['user']
-    return yaml.safe_dump({'services': {e['id']: svc}}, sort_keys=False)
+    return svc
 
 
 def made(e: dict, m: dict, r: dict, facts: dict | None = None) -> dict:
@@ -1017,11 +1144,15 @@ def preview(conn: Conn, host: str, tool_id: str, method: str | None = None, inpu
         f'{e["name"]}, entry revision {e["revision"]}: {row["trust_why"]}')
     if row['lab'] != 'lab-tested':
         say('note', f'{e["name"]} is not lab-tested')
-    for k in ('ports', 'volumes', 'image', 'exposure', 'bind', 'method'):
+    for k in ('ports', 'volumes', 'image', 'exposure', 'bind', 'method', 'env'):
         if k in ovr:
             say('note' if k != 'image' else 'warn', f'overridden on {host}: {k} ({ovr_row["updated_by"]})')
     for rk in risks(e, m['kind'], r['exposure']):
         say('warn', f'risk: {rk["title"]}: {rk["means"]}. {rk["mitigation"]}')
+    for lb in e['labels']:
+        say('warn' if lb in ('outside-account', 'non-commercial', 'source-available') else 'note', f'{e["name"]} {LABELS[lb]}' + (f': {e["outside"]}' if lb.startswith('outside') and e['outside'] else ''))
+    for k in r['env_ignored']:
+        say('warn', f'the override sets env {k}, which {e["name"]} does not set: it is left out')
     if r['exposure'] == 'loopback' and r['ports']:
         say('note', f'listens on 127.0.0.1 only: reach it through SSH (ssh -L {r["ports"][0]["host"]}:127.0.0.1:{r["ports"][0]["host"]} {host}) or a reverse proxy')
     elif r['exposure'] == 'any' and not allow_from and (r['ports'] or m['kind'] == 'package'):
@@ -1045,7 +1176,8 @@ def preview(conn: Conn, host: str, tool_id: str, method: str | None = None, inpu
         if not secretstore.meta(conn, name):
             say('crit', f'make the secret {name} ({s["kind"]}) under Keys, Secrets for plan steps, before this plan is applied')
         tasks.append({'host': host, 'type': 'secret-file', 'params': {'secret': name, 'path': f'{DATA_ROOT}/{e["id"]}/secrets/{s["name"]}',
-                      'owner': account_of(e['id']) if m['kind'] == 'container' else 'root', 'mode': '0600', 'state': 'present'}, 'note': f'for {e["name"]}'})
+                      'owner': account_of(e['id']) if m['kind'] == 'container' else (m.get('volume_owner') or 'root') if m['kind'] == 'compose' else 'root',
+                      'mode': '0600', 'state': 'present'}, 'note': f'for {e["name"]}'})
     ovr_sha = ovr_row['sha256'] if ovr_row and not problems else ''
     tasks.append({'host': host, 'type': 'tool-install', 'params': {'tool': e['id'], 'method': m['kind'], 'sha': row['sha256'], 'override': ovr_sha,
                   'exposure': r['exposure'], 'bind': r['bind'] if r['exposure'] == 'management' else '', 'allow_from': allow_from or ''},
@@ -1053,6 +1185,8 @@ def preview(conn: Conn, host: str, tool_id: str, method: str | None = None, inpu
     for st in e['steps']:
         params = {k: re.sub(r'\{([a-z0-9_]+)\}', lambda mm: cleaned[mm[1]], v) for k, v in st['params'].items()}
         tasks.append({'host': host, 'type': st['type'], 'params': params, 'note': f'part of {e["name"]}'})
+    from . import tbstorage
+    tasks += tbstorage.wire(conn, host, e, m, r, allow_from, say)       # a storage-facing app: placement, WORM, decoys and its fence
     if e['backup']['paths']:
         say('note', 'its data: ' + ', '.join(r['volumes'].get(p, p) for p in e['backup']['paths']) + f' ({e["backup"]["consistency"]}); removing the tool keeps it')
     for note in (e['mac'].get('notes'),):
@@ -1084,15 +1218,22 @@ def stage(conn: Conn, host: str, tool_id: str, actor: str, *, method=None, input
     if any(x['level'] == 'crit' for x in pv['report'] if 'secret' not in x['text']):
         raise CatalogError('; '.join(x['text'] for x in pv['report'] if x['level'] == 'crit'))
     plan_id = changes.save_plan(conn, {'name': _plan_name(conn, f'Toolbox: install {pv["name"]} on {pv["host"]}'), 'tasks': pv['tasks']}, actor)
+    return record_install(conn, pv, plan_id, actor)
+
+
+def record_install(conn: Conn, pv: dict, plan_id: int, actor: str) -> dict:
+    """The install of a preview recorded as staged in the plan plan_id (an install of its own, or one tool of a bundle), and its decoy
+    folders added to the host's sentinel configuration when it is a storage-facing app (tbstorage.py)."""
+    from . import tbstorage
     t = int(time.time())
-    rev = find(conn, tool_id)['revision']
-    p = {'h': pv['host'], 't': tool_id, 'r': rev, 's': pv['sha256'], 'm': pv['method'], 'j': json.dumps(pv['made']), 'p': plan_id,
+    rev = find(conn, pv['tool'])['revision']
+    p = {'h': pv['host'], 't': pv['tool'], 'r': rev, 's': pv['sha256'], 'm': pv['method'], 'j': json.dumps(pv['made']), 'p': plan_id,
          'u': actor[:60] if pv['trust'] == 'unsigned' else None, 'n': t, 'a': actor[:60]}
     with conn.tx():
         conn.execute('DELETE FROM toolbox_installs WHERE host = :h AND tool_id = :t', p)
         conn.execute("""INSERT INTO toolbox_installs (host, tool_id, revision, sha256, method, params_json, status, plan_id, managed_by, unsigned_by, staged_at, staged_by, updated_at)
                         VALUES (:h, :t, :r, :s, :m, :j, 'staged', :p, 'storageforge', :u, :n, :a, :n)""", p)
-    return pv | {'plan_id': plan_id}
+    return pv | {'plan_id': plan_id, 'decoy_folders_added': tbstorage.after_stage(conn, pv, actor)}
 
 
 def stage_remove(conn: Conn, host: str, tool_id: str, actor: str, with_data: bool = False) -> dict:
@@ -1149,7 +1290,8 @@ def install_words(conn: Conn, t: dict) -> list[str]:
         rootless = m['kind'] == 'container'
         dirs = ','.join(sorted(set(r['volumes'].values())) + ([f'{DATA_ROOT}/{e["id"]}/secrets'] if e['secrets'] else []))
         ports = ','.join(f'{x["host"]}/{x["proto"]}' for x in r['ports'])
-        return ['ok', why, quadlet_text(e, m, r, rootless), account_of(e['id']) if rootless else '', dirs, ports, r['image']]
+        return ['ok', why, quadlet_text(e, m, r, rootless), account_of(e['id']) if rootless else '', dirs, ports, r['image'],
+                '1' if m.get('engine_socket') else '', *file_words(e, m)]
     if m['kind'] == 'compose':
         from . import steps_workloads
         facts = host_facts(conn, host)
@@ -1161,7 +1303,8 @@ def install_words(conn: Conn, t: dict) -> list[str]:
         override = steps_workloads.override(f'sf-{e["id"]}', model, {'storageforge.tool': e['id']})
         dirs = ','.join(sorted(set(r['volumes'].values())))
         ports = steps_workloads.fenced_ports([x for s in model['services'].values() for x in s['ports']])
-        return ['ok', why, runtime, f'sf-{e["id"]}', text, f'{DATA_ROOT}/{e["id"]}/compose', override, ports, dirs]
+        return ['ok', why, runtime, f'sf-{e["id"]}', text, f'{DATA_ROOT}/{e["id"]}/compose', override, ports, dirs,
+                m.get('volume_owner') or '', *file_words(e, m)]
     if m['kind'] == 'package':
         sock = m['socket'] or {}
         listen = '' if not sock else (f'{r["bind"]}:{sock["port"]}' if r['bind'] else str(sock['port']))
@@ -1170,6 +1313,16 @@ def install_words(conn: Conn, t: dict) -> list[str]:
         f = m['files']
         return ['ok', why, m['name'], *(x for arch in ('x86_64', 'aarch64') for x in (f.get(arch, {}).get('url', ''), f.get(arch, {}).get('sha256', '')))]
     return ['refused', f'{m["kind"]} cannot be installed by this version']
+
+
+def file_words(e: dict, m: dict) -> list[str]:
+    """The folder of the small files an entry gives its container, and the files as name=base64 words joined by commas: the text was
+    checked by the schema and reaches the host as data, never as a command."""
+    import base64
+    files = m.get('files') or {}
+    if not files:
+        return ['', '']
+    return [f'{DATA_ROOT}/{e["id"]}/files', ','.join(f'{n}={base64.b64encode(f["text"].encode()).decode()}' for n, f in sorted(files.items()))]
 
 
 def remove_words(conn: Conn, t: dict, data: bool = False) -> list[str]:

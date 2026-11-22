@@ -1,0 +1,30 @@
+format: 1
+id: puppet
+revision: 1
+name: Puppet agent
+app_version: from the distribution
+category: provisioning
+summary: Applies Puppet manifests. A runner for the Puppet exports of change plans, with puppet apply; it does not call a Puppet server.
+homepage: https://www.puppet.com/
+license: Apache-2.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [puppet-agent]
+        dnf: [puppet]
+        pacman: [puppet]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: puppet
+upgrade:
+  strategy: package
+risk: [runs-as-root]
+notes: The package can bring a puppet.service that calls a Puppet server; it is not switched on. Debian 13 and Ubuntu name it puppet-agent; openSUSE has no package of its own.

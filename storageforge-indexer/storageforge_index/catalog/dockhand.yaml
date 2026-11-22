@@ -1,0 +1,45 @@
+format: 1
+id: dockhand
+revision: 1
+name: Dockhand
+app_version: 1.0.58
+category: panel
+summary: A web panel for containers and compose stacks; here for the containers of its own account, through its rootless Podman socket.
+homepage: https://dockhand.pro/
+license: BUSL-1.1
+labels: [source-available]
+install:
+  methods:
+    - kind: container
+      image: docker.io/fnsys/dockhand:v1.0.58@sha256:515c6e0f28cf3922c51a2dfd3463b972880e40418c2464b1bc91b8a3afe66c7f
+      ports: ["3000:3000/tcp"]
+      volumes: {data: /app/data}
+      engine_socket: own
+requires:
+  ports: [3000/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:3000/
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 3000
+    sso: none
+  panel:
+    level: status
+    api: dockhand
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+mac:
+  selinux: container_t, with label separation off for the Podman socket only
+  notes: label separation is off for this container so it can reach the socket of its account; its folders are still relabelled with :Z
+notes: "It manages the containers of its own account (sf-dockhand), never those of root. Its status is read through a Dockhand platform connection. Its licence is the Business Source License: read what it allows before you use it at work."

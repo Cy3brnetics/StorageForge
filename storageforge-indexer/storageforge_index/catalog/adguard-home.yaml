@@ -1,0 +1,40 @@
+format: 1
+id: adguard-home
+revision: 1
+name: AdGuard Home
+app_version: 0.107.80
+category: dns
+summary: A DNS server that blocks advertising and tracking domains, with encrypted upstreams and a web UI.
+homepage: https://adguard.com/adguard-home/overview.html
+license: GPL-3.0
+install:
+  methods:
+    - kind: quadlet
+      image: docker.io/adguard/adguardhome:v0.107.80@sha256:e2e1b48c832f7705be915873f95de0d5114de573736441d7f2923a8a6293027c
+      ports: ["53:53/tcp", "53:53/udp", "3000:3000/tcp"]
+      volumes: {work: /opt/adguardhome/work, conf: /opt/adguardhome/conf}
+    - kind: compose
+      image: docker.io/adguard/adguardhome:v0.107.80@sha256:e2e1b48c832f7705be915873f95de0d5114de573736441d7f2923a8a6293027c
+      ports: ["53:53/tcp", "53:53/udp", "3000:3000/tcp"]
+      volumes: {work: /opt/adguardhome/work, conf: /opt/adguardhome/conf}
+requires:
+  ports: [53/tcp, 53/udp, 3000/tcp]
+  volumes: [work, conf]
+exposure:
+  default: management
+  public_optional: false
+backup:
+  paths: [conf, work]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 3000
+    sso: none
+  panel:
+    level: status
+    adapter: adguard-home
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: The first visit to port 3000 runs its setup, which sets the administrator password; keep the admin interface on port 3000 there, the only web port published. Port 53 needs root, so there is no rootless method.

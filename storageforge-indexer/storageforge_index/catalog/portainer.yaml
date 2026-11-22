@@ -1,0 +1,45 @@
+format: 1
+id: portainer
+revision: 1
+name: Portainer CE
+app_version: 2.45.4 LTS
+category: panel
+summary: A web panel for containers, images, volumes and networks; here for the containers of its own account, through its rootless Podman socket.
+homepage: https://www.portainer.io/
+license: Zlib
+install:
+  methods:
+    - kind: container
+      image: docker.io/portainer/portainer-ce:2.45.4@sha256:18616fff2998f8ca0e8ebe7f028658ae1682859cf43f212f81a849c1093ad639
+      ports: ["9443:9443/tcp"]
+      volumes: {data: /data}
+      engine_socket: own
+requires:
+  ports: [9443/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: https://127.0.0.1:9443/api/system/status
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "https://{host}:{port}/"
+    port: 9443
+    sso: oidc
+    oidc_redirect: "/"
+  panel:
+    level: status
+    api: portainer
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+mac:
+  selinux: container_t, with label separation off for the Podman socket only
+  notes: label separation is off for this container so it can reach the socket of its account; its folders are still relabelled with :Z
+notes: "Make its administrator within five minutes of the first start, or Portainer stops itself until it is restarted. It manages the containers of its own account (sf-portainer); other hosts join it through a Portainer agent of their own. Its status is read through a Portainer platform connection."

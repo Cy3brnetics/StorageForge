@@ -1,0 +1,39 @@
+format: 1
+id: chrony
+revision: 1
+name: Chrony with NTS
+app_version: from the distribution
+category: dns
+summary: Network time from sources authenticated by NTS, so the time cannot be forged on the way. The same sources the clock guard asks for.
+homepage: https://chrony-project.org/
+license: GPL-2.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [chrony]
+        dnf: [chrony]
+        zypper: [chrony]
+        pacman: [chrony]
+      units: [chronyd.service]
+inputs:
+  - {name: servers, kind: word, label: NTS servers, default: "time.cloudflare.com,nts.netnod.se"}
+steps:
+  - type: chrony-nts
+    params: {servers: "{servers}"}
+requires:
+  ports: [4460/tcp, 123/udp]
+exposure:
+  default: loopback
+  public_optional: false
+backup:
+  paths: [/etc/chrony]
+gui:
+  native: none
+  panel:
+    level: status+actions
+    adapter: chrony
+upgrade:
+  strategy: package
+risk: []
+notes: Chrony takes the place of systemd-timesyncd or ntpd where the distribution says so. NTS needs TCP 4460 out to the servers as well as NTP on UDP 123.

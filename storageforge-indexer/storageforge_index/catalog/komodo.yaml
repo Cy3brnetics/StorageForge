@@ -1,0 +1,69 @@
+format: 1
+id: komodo
+revision: 1
+name: Komodo
+app_version: 2.3.4
+category: panel
+summary: Builds and deploys containers and compose stacks on many servers. This installs Komodo Core with its MongoDB, as one compose stack.
+homepage: https://komo.do/
+license: GPL-3.0
+install:
+  methods:
+    - kind: compose
+      image: ghcr.io/moghtech/komodo-core:2.3.4@sha256:91b2afd7b3bb2abea0ebd3046d65ec457eb1f3d505868d1d60cb0f8562490ef9
+      ports: ["9120:9120/tcp"]
+      volumes: {keys: /config/keys, backups: /backups}
+      volume_owner: "999"
+      env:
+        KOMODO_HOST: "http://127.0.0.1:9120"
+        KOMODO_TITLE: Komodo
+        KOMODO_DATABASE_ADDRESS: "mongo:27017"
+        KOMODO_DATABASE_USERNAME: komodo
+        KOMODO_DATABASE_PASSWORD_FILE: /run/secrets/komodo/db_password
+        KOMODO_JWT_SECRET_FILE: /run/secrets/komodo/jwt_secret
+        KOMODO_WEBHOOK_SECRET_FILE: /run/secrets/komodo/webhook_secret
+        KOMODO_LOCAL_AUTH: "true"
+        KOMODO_DISABLE_USER_REGISTRATION: "false"
+        KOMODO_ENABLE_NEW_USERS: "false"
+        KOMODO_DISABLE_INIT_RESOURCES: "true"
+        KOMODO_OIDC_ENABLED: "false"
+        TZ: Etc/UTC
+      sidecars:
+        - name: mongo
+          image: docker.io/library/mongo:8.0.38@sha256:479e85ced54ffb8a40dade1dcde2da2a9ae858515b9415e9cc54bfb8f0575d01
+          user: "999:999"
+          args: [mongod, --quiet, --wiredTigerCacheSizeGB, "0.25"]
+          volumes: {mongo: /data/db}
+          env:
+            MONGO_INITDB_ROOT_USERNAME: komodo
+            MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/komodo/db_password
+requires:
+  ports: [9120/tcp]
+  volumes: [keys, backups, mongo]
+secrets:
+  - {name: db_password, kind: password}
+  - {name: jwt_secret, kind: hex}
+  - {name: webhook_secret, kind: hex}
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:9120/
+  expect: 200
+backup:
+  paths: [mongo, keys, backups]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 9120
+    sso: oidc
+    oidc_redirect: /auth/oidc/callback
+  panel:
+    level: status
+    api: komodo
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: "The first account made on its page is the administrator: make it at once, over the SSH tunnel. Komodo Periphery, which runs the containers on each server, is not installed by this entry: it needs the Docker socket of root, which no entry may mount. KOMODO_HOST is its own address as people reach it: change it with an override (env). MongoDB 8 needs a processor with AVX on x86_64."

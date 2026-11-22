@@ -1,0 +1,45 @@
+format: 1
+id: openziti
+revision: 1
+name: OpenZiti controller
+app_version: 2.0.9
+category: access
+summary: The controller of an OpenZiti network, with its console (ZAC). Services are reached through identities and policies, not open ports.
+homepage: https://openziti.io/
+license: Apache-2.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/openziti/ziti-controller:2.0.9@sha256:279db01cf8fdc252a9fbe1d91bf3bb9fde329c59ab2ab71792055beebb356969
+      args: [run, config.yml]
+      ports: ["1280:1280/tcp"]
+      volumes: {data: /ziti-controller}
+      volume_owner: "2171"
+      env:
+        ZITI_CTRL_ADVERTISED_ADDRESS: "127.0.0.1"
+        ZITI_CTRL_ADVERTISED_PORT: "1280"
+        ZITI_BOOTSTRAP_CONSOLE: "true"
+requires:
+  ports: [1280/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: true
+health:
+  url: https://127.0.0.1:1280/edge/client/v1/version
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "https://{host}:{port}/zac/"
+    port: 1280
+    sso: none
+  panel:
+    level: status
+    adapter: openziti
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: "Set ZITI_CTRL_ADVERTISED_ADDRESS to the name routers and clients use, with an override (env), before the first start: its certificates are made for that name. It starts with no administrator; make one with ziti agent cluster init in its container. Its PKI and database are its data. Hosts enroll with the openziti step."

@@ -1,0 +1,30 @@
+format: 1
+id: age
+revision: 1
+name: age
+app_version: from the distribution
+category: secrets
+summary: Small, simple file encryption with short keys. SOPS encrypts to age keys.
+homepage: https://age-encryption.org/
+license: BSD-3-Clause
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [age]
+        dnf: [age]
+        zypper: [age]
+        pacman: [age]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: age
+upgrade:
+  strategy: package
+notes: A key made with age-keygen is a private key in a file. Make it where it is used, keep the file 0600, and give others only its public line.

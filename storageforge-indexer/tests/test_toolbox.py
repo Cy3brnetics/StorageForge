@@ -86,7 +86,7 @@ class Base(unittest.TestCase):
 class Schema(Base):
     def test_the_packaged_entries_pass_and_the_manifest_lists_them(self):
         texts = {f.stem: f.read_text() for f in toolbox.CATALOG_DIR.glob('*.yaml')}
-        self.assertEqual(set(texts), {'wireguard', 'cockpit', 'uptime-kuma'})
+        self.assertLessEqual({'wireguard', 'cockpit', 'uptime-kuma'}, set(texts))
         for tid, text in texts.items():
             e, problems = toolbox.load_entry(text)
             self.assertEqual(problems, [], tid)
@@ -131,7 +131,9 @@ class Signatures(Base):
     def test_packaged_without_a_release_key_is_labelled_so(self):
         off = toolbox.official(self.conn)
         self.assertEqual(off['state'], 'packaged')
-        self.assertEqual({r['id']: r['trust'] for r in toolbox.catalog(self.conn)}, dict.fromkeys(('cockpit', 'uptime-kuma', 'wireguard'), 'packaged'))
+        trust = {r['id']: r['trust'] for r in toolbox.catalog(self.conn)}
+        self.assertLessEqual({'cockpit', 'uptime-kuma', 'wireguard'}, set(trust))
+        self.assertEqual(set(trust.values()), {'packaged'})
         self.assertTrue(all(r['lab'] == 'not lab-tested' for r in toolbox.catalog(self.conn)))
 
     def test_a_changed_file_in_the_package_is_refused(self):

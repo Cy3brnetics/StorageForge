@@ -1,0 +1,44 @@
+format: 1
+id: netbootxyz
+revision: 1
+name: netboot.xyz
+app_version: 0.7.6-nbxyz28
+category: provisioning
+summary: Boots machines over the network (PXE and iPXE) into installers and live systems, with a web UI for its menus and local copies of the images.
+homepage: https://netboot.xyz/
+license: Apache-2.0
+install:
+  methods:
+    - kind: quadlet
+      image: ghcr.io/netbootxyz/netbootxyz:0.7.6-nbxyz28@sha256:a3af92f8447d4df33e7d18607c968db792a6b2da0db9c2255ceb7f45e01897bd
+      ports: ["3000:3000/tcp", "69:69/udp", "8080:80/tcp"]
+      volumes: {config: /config, assets: /assets}
+    - kind: compose
+      image: ghcr.io/netbootxyz/netbootxyz:0.7.6-nbxyz28@sha256:a3af92f8447d4df33e7d18607c968db792a6b2da0db9c2255ceb7f45e01897bd
+      ports: ["3000:3000/tcp", "69:69/udp", "8080:80/tcp"]
+      volumes: {config: /config, assets: /assets}
+requires:
+  ports: [3000/tcp, 69/udp, 8080/tcp]
+  volumes: [config, assets]
+exposure:
+  default: management
+  public_optional: false
+backup:
+  paths: [config]
+  consistency: live
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 3000
+    sso: none
+  panel:
+    level: status
+    adapter: netbootxyz
+upgrade:
+  strategy: recreate
+  rollback_on_unhealthy: false
+risk: [runs-as-root]
+mac:
+  selinux: container_t
+  notes: the config and assets folders are mounted with :Z, for this container alone
+notes: "TFTP needs port 69, which a rootless container cannot take, so this runs under root Podman, bound to the management address you give. Point your DHCP server at it: next-server this host, boot file netboot.xyz.efi (UEFI) or netboot.xyz.kpxe (BIOS). The menus UI has no sign-in, so keep it off other networks."

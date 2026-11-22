@@ -1,0 +1,3 @@
+total.num.queries=0
+total.num.cachehits=0
+total.num.cachemiss=0

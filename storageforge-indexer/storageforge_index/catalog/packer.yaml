@@ -1,0 +1,28 @@
+format: 1
+id: packer
+revision: 1
+name: Packer
+app_version: from the distribution
+category: provisioning
+summary: Builds machine images from templates. Makes the golden cloud images that VM templates start from.
+homepage: https://www.packer.io/
+license: BUSL-1.1
+install:
+  methods:
+    - kind: package
+      packages:
+        pacman: [packer]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: packer
+upgrade:
+  strategy: package
+risk: [runs-as-root]
+notes: Only Arch carries a current Packer; HashiCorp ships the rest as a zip archive, which the binary method does not unpack, or from its own source, which the Toolbox does not add. Its licence (BUSL) limits competing commercial use.

@@ -1,0 +1,73 @@
+format: 1
+id: zot
+revision: 1
+name: Zot registry mirror
+app_version: 2.1.23
+category: offline
+summary: An OCI registry that mirrors Docker Hub, GHCR, Quay and Codeberg on demand, and takes the images of an offline bundle, so hosts without internet can install from the catalog.
+homepage: https://zotregistry.dev/
+license: Apache-2.0
+install:
+  methods:
+    - kind: container
+      image: ghcr.io/project-zot/zot:v2.1.23@sha256:9d3de83ac2099e6f4843045b4c9b65b7e8baf40f92d28f54906dee9d4d390fd7
+      ports: ["5000:5000/tcp"]
+      volumes: {data: /var/lib/registry}
+      args: [serve, /etc/zot/config.json]
+      files:
+        config.json:
+          path: /etc/zot/config.json
+          text: |
+            {
+              "distSpecVersion": "1.1.1",
+              "storage": {"rootDirectory": "/var/lib/registry", "dedupe": true, "gc": true},
+              "http": {
+                "address": "0.0.0.0",
+                "port": "5000",
+                "accessControl": {"repositories": {"**": {"anonymousPolicy": ["read", "create"]}}}
+              },
+              "log": {"level": "info"},
+              "extensions": {
+                "search": {"enable": true},
+                "ui": {"enable": true},
+                "sync": {
+                  "enable": true,
+                  "registries": [
+                    {"urls": ["https://registry-1.docker.io"], "onDemand": true, "tlsVerify": true, "content": [{"prefix": "**", "destination": "/docker.io"}]},
+                    {"urls": ["https://ghcr.io"], "onDemand": true, "tlsVerify": true, "content": [{"prefix": "**", "destination": "/ghcr.io"}]},
+                    {"urls": ["https://quay.io"], "onDemand": true, "tlsVerify": true, "content": [{"prefix": "**", "destination": "/quay.io"}]},
+                    {"urls": ["https://codeberg.org"], "onDemand": true, "tlsVerify": true, "content": [{"prefix": "**", "destination": "/codeberg.org"}]}
+                  ]
+                }
+              }
+            }
+requires:
+  ports: [5000/tcp]
+  volumes: [data]
+exposure:
+  default: management
+  public_optional: false
+storage:
+  use: data
+  worm: none
+  canaries: none
+  fence: ports
+backup:
+  paths: [data]
+  consistency: live
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 5000
+    sso: none
+  panel:
+    level: status
+    adapter: zot
+upgrade:
+  strategy: recreate
+  rollback_on_unhealthy: false
+risk: []
+mac:
+  selinux: container_t
+  notes: the data folder and the configuration are mounted with :Z, for this container alone
+notes: Anyone who reaches it may pull, and push an image that is not there yet, but not replace one; catalog images are pulled by digest, so a mirror cannot hand out another image under a pinned name. It speaks plain HTTP on the management network. Point hosts at it with the registry-mirror step.

@@ -1,0 +1,34 @@
+format: 1
+id: restic
+revision: 1
+name: restic
+app_version: from the distribution
+category: backup
+summary: Encrypted, deduplicated backups to a folder, SFTP, S3 or a REST server. The panel tests restores, with the SHA-256 of each file compared.
+homepage: https://restic.net/
+license: BSD-2-Clause
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [restic]
+        dnf: [restic]
+        zypper: [restic]
+        pacman: [restic]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+backup:
+  paths: []
+gui:
+  native: none
+  panel:
+    level: full
+    adapter: restic
+upgrade:
+  strategy: package
+risk: [holds-credentials, runs-as-root]
+compliance: [3-2-1 backups, restore tested]
+notes: The repository key is a vault secret, read through RESTIC_PASSWORD_FILE and never on a command line. A restore test restores the latest snapshot into a scratch folder and compares each unchanged file by its SHA-256.

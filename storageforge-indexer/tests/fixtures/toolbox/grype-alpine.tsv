@@ -1,0 +1,63 @@
+v	CVE-2024-6119	libcrypto3	3.1.0-r4	3.1.7-r0	High
+v	CVE-2024-6119	libssl3	3.1.0-r4	3.1.7-r0	High
+v	CVE-2023-2650	libcrypto3	3.1.0-r4	3.1.1-r0	Medium
+v	CVE-2023-2650	libssl3	3.1.0-r4	3.1.1-r0	Medium
+v	CVE-2024-2511	libcrypto3	3.1.0-r4	3.1.4-r6	Medium
+v	CVE-2024-2511	libssl3	3.1.0-r4	3.1.4-r6	Medium
+v	CVE-2024-9143	libcrypto3	3.1.0-r4	3.1.7-r1	High
+v	CVE-2024-9143	libssl3	3.1.0-r4	3.1.7-r1	High
+v	CVE-2024-5535	libcrypto3	3.1.0-r4	3.1.6-r0	Critical
+v	CVE-2024-5535	libssl3	3.1.0-r4	3.1.6-r0	Critical
+v	CVE-2023-3446	libcrypto3	3.1.0-r4	3.1.1-r3	Medium
+v	CVE-2023-3446	libssl3	3.1.0-r4	3.1.1-r3	Medium
+v	CVE-2024-4741	libcrypto3	3.1.0-r4	3.1.6-r0	Critical
+v	CVE-2024-4741	libssl3	3.1.0-r4	3.1.6-r0	Critical
+v	CVE-2022-48174	busybox	1.36.0-r9	1.36.1-r1	Critical
+v	CVE-2022-48174	busybox-binsh	1.36.0-r9	1.36.1-r1	Critical
+v	CVE-2022-48174	ssl_client	1.36.0-r9	1.36.1-r1	Critical
+v	CVE-2023-5363	libcrypto3	3.1.0-r4	3.1.4-r0	High
+v	CVE-2023-5363	libssl3	3.1.0-r4	3.1.4-r0	High
+v	CVE-2023-5678	libcrypto3	3.1.0-r4	3.1.4-r1	Medium
+v	CVE-2023-5678	libssl3	3.1.0-r4	3.1.4-r1	Medium
+v	CVE-2024-0727	libcrypto3	3.1.0-r4	3.1.4-r5	Medium
+v	CVE-2024-0727	libssl3	3.1.0-r4	3.1.4-r5	Medium
+v	CVE-2023-3817	libcrypto3	3.1.0-r4	3.1.2-r0	Medium
+v	CVE-2023-3817	libssl3	3.1.0-r4	3.1.2-r0	Medium
+v	CVE-2023-6237	libcrypto3	3.1.0-r4	3.1.4-r4	Medium
+v	CVE-2023-6237	libssl3	3.1.0-r4	3.1.4-r4	Medium
+v	CVE-2023-6129	libcrypto3	3.1.0-r4	3.1.4-r3	Medium
+v	CVE-2023-6129	libssl3	3.1.0-r4	3.1.4-r3	Medium
+v	CVE-2024-4603	libcrypto3	3.1.0-r4	3.1.5-r0	Medium
+v	CVE-2024-4603	libssl3	3.1.0-r4	3.1.5-r0	Medium
+v	CVE-2024-13176	libcrypto3	3.1.0-r4	3.1.8-r0	Medium
+v	CVE-2024-13176	libssl3	3.1.0-r4	3.1.8-r0	Medium
+v	CVE-2023-2975	libcrypto3	3.1.0-r4	3.1.1-r2	Medium
+v	CVE-2023-2975	libssl3	3.1.0-r4	3.1.1-r2	Medium
+v	CVE-2025-26519	musl	1.2.4-r0	1.2.4-r3	High
+v	CVE-2025-26519	musl-utils	1.2.4-r0	1.2.4-r3	High
+v	CVE-2023-42364	busybox	1.36.0-r9	1.36.1-r7	Medium
+v	CVE-2023-42364	busybox-binsh	1.36.0-r9	1.36.1-r7	Medium
+v	CVE-2023-42364	ssl_client	1.36.0-r9	1.36.1-r7	Medium
+v	CVE-2023-42363	busybox	1.36.0-r9	1.36.1-r7	Medium
+v	CVE-2023-42363	busybox-binsh	1.36.0-r9	1.36.1-r7	Medium
+v	CVE-2023-42363	ssl_client	1.36.0-r9	1.36.1-r7	Medium
+v	CVE-2023-42366	busybox	1.36.0-r9	1.36.1-r6	Medium
+v	CVE-2023-42366	busybox-binsh	1.36.0-r9	1.36.1-r6	Medium
+v	CVE-2023-42366	ssl_client	1.36.0-r9	1.36.1-r6	Medium
+v	CVE-2023-42365	busybox	1.36.0-r9	1.36.1-r7	Medium
+v	CVE-2023-42365	busybox-binsh	1.36.0-r9	1.36.1-r7	Medium
+v	CVE-2023-42365	ssl_client	1.36.0-r9	1.36.1-r7	Medium
+v	CVE-2025-60876	busybox	1.36.0-r9		Medium
+v	CVE-2025-60876	busybox-binsh	1.36.0-r9		Medium
+v	CVE-2025-60876	ssl_client	1.36.0-r9		Medium
+v	CVE-2026-40200	musl	1.2.4-r0		High
+v	CVE-2026-40200	musl-utils	1.2.4-r0		High
+v	CVE-2026-27171	zlib	1.2.13-r1		Medium
+v	CVE-2026-6042	musl	1.2.4-r0		Medium
+v	CVE-2026-6042	musl-utils	1.2.4-r0		Medium
+v	CVE-2025-46394	busybox	1.36.0-r9		Low
+v	CVE-2025-46394	busybox-binsh	1.36.0-r9		Low
+v	CVE-2025-46394	ssl_client	1.36.0-r9		Low
+v	CVE-2024-58251	busybox	1.36.0-r9		Low
+v	CVE-2024-58251	busybox-binsh	1.36.0-r9		Low
+v	CVE-2024-58251	ssl_client	1.36.0-r9		Low

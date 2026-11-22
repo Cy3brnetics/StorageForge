@@ -1,0 +1,5 @@
+headscale version v0.29.7
+commit: c9cf210b8bc84d13177e18b91f555788a44b47b6
+build time: 2026-10-30T09:33:17Z
+built with: go1.27.3 linux/amd64
+

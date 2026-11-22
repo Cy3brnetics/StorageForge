@@ -1,0 +1,44 @@
+format: 1
+id: pi-hole
+revision: 1
+name: Pi-hole
+app_version: 2026.11.0
+category: dns
+summary: A DNS server for the network that blocks advertising and tracking domains, with a web UI.
+homepage: https://pi-hole.net/
+license: EUPL-1.2
+install:
+  methods:
+    - kind: quadlet
+      image: docker.io/pihole/pihole:2026.11.0@sha256:66c798d79a95c2691f280329c3611dba1746117c61c9f331907ca35a06a52778
+      ports: ["53:53/tcp", "53:53/udp", "8053:80/tcp"]
+      volumes: {etc: /etc/pihole}
+      env: {TZ: UTC, FTLCONF_dns_listeningMode: all, WEBPASSWORD_FILE: /run/secrets/pi-hole/web-password}
+    - kind: compose
+      image: docker.io/pihole/pihole:2026.11.0@sha256:66c798d79a95c2691f280329c3611dba1746117c61c9f331907ca35a06a52778
+      ports: ["53:53/tcp", "53:53/udp", "8053:80/tcp"]
+      volumes: {etc: /etc/pihole}
+      env: {TZ: UTC, FTLCONF_dns_listeningMode: all, WEBPASSWORD_FILE: /run/secrets/pi-hole/web-password}
+secrets:
+  - {name: web-password, kind: password}
+requires:
+  ports: [53/tcp, 53/udp, 8053/tcp]
+  volumes: [etc]
+exposure:
+  default: management
+  public_optional: false
+backup:
+  paths: [etc]
+  consistency: live
+gui:
+  native:
+    url_template: "http://{host}:{port}/admin/"
+    port: 8053
+    sso: none
+  panel:
+    level: status
+    adapter: pi-hole
+upgrade:
+  strategy: recreate
+risk: []
+notes: A DNS server answers on port 53, which only root can take, so there is no rootless method. Bind it to the address clients use. The web password is the vault secret tool-pi-hole-web-password.

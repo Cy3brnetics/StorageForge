@@ -1,0 +1,82 @@
+format: 1
+id: openbao
+revision: 1
+name: OpenBao
+app_version: 2.7.3
+category: secrets
+summary: A secrets manager with a web UI, the open fork of Vault. Unsealed by a quorum of key holders, t of n, each holding one share encrypted to their own key.
+homepage: https://openbao.org/
+license: MPL-2.0
+install:
+  methods:
+    - kind: container
+      image: quay.io/openbao/openbao:2.7.3@sha256:ba4b133eb9586630024e71a617e66f37f29cc3534cdd46a6233e098ceded8dc9
+      ports: ["8200:8200/tcp"]
+      volumes: {data: /openbao/file}
+      env: {SKIP_SETCAP: "true"}
+      args: [server]
+      files:
+        storageforge.hcl:
+          path: /openbao/config/storageforge.hcl
+          text: |
+            # Written by StorageForge from the Toolbox entry openbao. Data in the file storage, the UI on, TLS from the reverse proxy.
+            ui = true
+            disable_mlock = true
+            api_addr = "http://127.0.0.1:8200"
+            storage "file" {
+              path = "/openbao/file"
+            }
+            listener "tcp" {
+              address = "0.0.0.0:8200"
+              tls_disable = true
+            }
+    - kind: quadlet
+      image: quay.io/openbao/openbao:2.7.3@sha256:ba4b133eb9586630024e71a617e66f37f29cc3534cdd46a6233e098ceded8dc9
+      ports: ["8200:8200/tcp"]
+      volumes: {data: /openbao/file}
+      env: {SKIP_SETCAP: "true"}
+      args: [server]
+      files:
+        storageforge.hcl:
+          path: /openbao/config/storageforge.hcl
+          text: |
+            # Written by StorageForge from the Toolbox entry openbao. Data in the file storage, the UI on, TLS from the reverse proxy.
+            ui = true
+            disable_mlock = true
+            api_addr = "http://127.0.0.1:8200"
+            storage "file" {
+              path = "/openbao/file"
+            }
+            listener "tcp" {
+              address = "0.0.0.0:8200"
+              tls_disable = true
+            }
+requires:
+  ports: [8200/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:8200/v1/sys/health
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/ui/"
+    port: 8200
+    sso: oidc
+  panel:
+    level: status
+    adapter: openbao
+upgrade:
+  strategy: recreate
+  rollback_on_unhealthy: false
+risk: [holds-credentials]
+mac:
+  selinux: container_t
+  notes: the data folder and the configuration are mounted with :Z, for this container alone
+notes: "Initialize it once with bao operator init -key-shares N -key-threshold T -pgp-keys with one public key per holder: each share leaves encrypted to its holder, and StorageForge never sees one. The health check says down until it is unsealed. Memory is not locked (no IPC_LOCK), so keep swap encrypted."

@@ -1,0 +1,49 @@
+format: 1
+id: traefik
+revision: 1
+name: Traefik
+app_version: 3.7.19
+category: proxy
+summary: A reverse proxy that reads its routes from files. Its dashboard and API stay off, so nothing of it answers but the web ports.
+homepage: https://traefik.io/traefik/
+license: MIT
+install:
+  methods:
+    - kind: container
+      image: docker.io/library/traefik:v3.7.19@sha256:a6c0194dda77bcb804824580f36fa7edc56e315b1acfe933366c8b52844a78a4
+      ports: ["8000:80/tcp", "8443:443/tcp"]
+      volumes: {dynamic: /etc/traefik/dynamic}
+      env: {TRAEFIK_ENTRYPOINTS_WEB_ADDRESS: ":80", TRAEFIK_ENTRYPOINTS_WEBSECURE_ADDRESS: ":443", TRAEFIK_PROVIDERS_FILE_DIRECTORY: /etc/traefik/dynamic, TRAEFIK_PROVIDERS_FILE_WATCH: "true", TRAEFIK_GLOBAL_SENDANONYMOUSUSAGE: "false"}
+      drop_caps: all
+      caps_add: [NET_BIND_SERVICE]
+    - kind: quadlet
+      image: docker.io/library/traefik:v3.7.19@sha256:a6c0194dda77bcb804824580f36fa7edc56e315b1acfe933366c8b52844a78a4
+      ports: ["80:80/tcp", "443:443/tcp"]
+      volumes: {dynamic: /etc/traefik/dynamic}
+      env: {TRAEFIK_ENTRYPOINTS_WEB_ADDRESS: ":80", TRAEFIK_ENTRYPOINTS_WEBSECURE_ADDRESS: ":443", TRAEFIK_PROVIDERS_FILE_DIRECTORY: /etc/traefik/dynamic, TRAEFIK_PROVIDERS_FILE_WATCH: "true", TRAEFIK_GLOBAL_SENDANONYMOUSUSAGE: "false"}
+      drop_caps: all
+      caps_add: [NET_BIND_SERVICE]
+    - kind: compose
+      image: docker.io/library/traefik:v3.7.19@sha256:a6c0194dda77bcb804824580f36fa7edc56e315b1acfe933366c8b52844a78a4
+      ports: ["80:80/tcp", "443:443/tcp"]
+      volumes: {dynamic: /etc/traefik/dynamic}
+      env: {TRAEFIK_ENTRYPOINTS_WEB_ADDRESS: ":80", TRAEFIK_ENTRYPOINTS_WEBSECURE_ADDRESS: ":443", TRAEFIK_PROVIDERS_FILE_DIRECTORY: /etc/traefik/dynamic, TRAEFIK_PROVIDERS_FILE_WATCH: "true", TRAEFIK_GLOBAL_SENDANONYMOUSUSAGE: "false"}
+      drop_caps: all
+      caps_add: [NET_BIND_SERVICE]
+requires:
+  ports: [80/tcp, 443/tcp]
+  volumes: [dynamic]
+exposure:
+  default: any
+  public_optional: true
+backup:
+  paths: [dynamic]
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: traefik
+upgrade:
+  strategy: recreate
+risk: []
+notes: Routes are YAML files in /srv/toolbox/traefik/dynamic, read as they change. Discovery from container labels needs the Docker socket, which no Toolbox entry may mount. The rootless method takes ports 8000 and 8443, since an account that is not root cannot take 80 and 443.
