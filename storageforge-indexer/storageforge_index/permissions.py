@@ -82,7 +82,7 @@ BUILTIN = {
     'admin': ('Everything, including keys, accounts and settings', ALL),
 }
 
-ANYONE = ('/api/login', '/api/logout', '/api/reauth', '/api/routecode', '/api/me', '/api/version', '/api/me/password', '/api/enroll', '/api/enroll/check')
+ANYONE = ('/api/login', '/api/login/webauthn/begin', '/api/login/webauthn/finish', '/api/logout', '/api/reauth', '/api/routecode', '/api/me', '/api/version', '/api/me/password', '/api/enroll', '/api/enroll/check')
 READ = ('GET', 'HEAD')
 _ANY = ('GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH')
 _WRITE = ('POST', 'PUT', 'DELETE', 'PATCH')

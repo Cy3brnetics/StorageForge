@@ -289,6 +289,12 @@ def register(web, ctx):
         res = secplus.stage_context(conn(), json_body(), actor())
         return note_audit('security.context.stage', res, plan=res.get('plan_id'))
 
+    @web.post('/api/security/mac/apparmor/stage')
+    @login_required
+    def api_apparmor_stage():
+        res = secplus.stage_apparmor(conn(), json_body(), actor())
+        return note_audit('security.apparmor.stage', res, plan=res.get('plan_id'), profile=res.get('profile'))
+
     # ── firewall ────────────────────────────────────────────────────
     @web.get('/api/security/firewall/shares')
     @login_required
@@ -356,6 +362,11 @@ def register(web, ctx):
     @password_confirmed
     def api_falco():
         return audit('security.falco', secplus.falco_deploy(db, conn(), json_body(), actor()))
+
+    @web.post('/api/security/behavior/falco/simulate')
+    @login_required
+    def api_falco_simulate():
+        return jsonify(secplus.simulate_falco(conn(), json_body()))
 
     @web.post('/api/security/behavior/yara')
     @login_required
@@ -436,6 +447,11 @@ echo "@@STRINGS"; head -c 1048576 -- "$p" | LC_ALL=C tr -c '[:print:]\n' '\n' | 
     def api_packages():
         host = must_host()
         return jsonify(host=host, reading=security.measurement(conn(), host, 'packages'))
+
+    @web.get('/api/security/packages/mirrors')
+    @login_required
+    def api_packages_mirrors():
+        return jsonify(secplus.discover_mirrors(conn(), must_host()))
 
     @web.post('/api/security/packages/check')
     @login_required

@@ -1451,6 +1451,8 @@ CHECKS = {
     'decoys': 'Decoys armed, with the sentinel running',
     'worm': 'A verified hold of the required length',
     'malware': 'ClamAV deployed and reporting',
+    'runtime_audit': 'auditd rules for container and libvirt sockets and config',
+    'runtime_cis': 'CIS Docker, Podman and libvirt runtime hardening',
 }
 STANDARDS = {
     'cis-l1': {'name': 'CIS Linux Level 1', 'target_lynis': 78, 'min_worm_days': 7, 'controls': {
@@ -1458,6 +1460,8 @@ STANDARDS = {
     'cis-l2': {'name': 'CIS Linux Level 2', 'target_lynis': 85, 'min_worm_days': 14, 'controls': {
         'sysctl': 'Network and kernel parameters', 'umask': 'Default umask', 'auditd': 'System auditing', 'mac': 'Mandatory access control', 'booleans': 'Mandatory access control',
         'aide': 'Filesystem integrity checking', 'lynis': 'Hardening index', 'time': 'Time synchronization', 'nts': 'Time synchronization', 'fence': 'Host firewall', 'decoys': 'Detection', 'worm': 'Backups'}},
+    'cis-runtime': {'name': 'CIS Container and Virtualization (Docker, Podman, libvirt)', 'target_lynis': 82, 'min_worm_days': 7, 'controls': {
+        'runtime_audit': 'CIS Docker 1.1 / Podman / libvirt auditd', 'runtime_cis': 'CIS Docker 2.x / 5.x and libvirt daemon isolation', 'mac': 'Mandatory access control', 'auditd': 'System auditing', 'fence': 'Host firewall'}},
     'nist-800-53': {'name': 'NIST SP 800-53 Rev 5', 'target_lynis': 85, 'min_worm_days': 30, 'controls': {
         'auditd': 'AU-2, AU-12', 'decoys': 'SI-4', 'malware': 'SI-3', 'aide': 'SI-7', 'fence': 'SC-7', 'worm': 'CP-9, CP-10', 'mac': 'AC-3', 'time': 'AU-8', 'nts': 'AU-8', 'sysctl': 'CM-6'}},
     'hipaa': {'name': 'HIPAA Security Rule, technical safeguards', 'target_lynis': 84, 'min_worm_days': 30, 'controls': {
@@ -1540,6 +1544,31 @@ def _check(conn: Conn, host: str, m: dict, check: str, std: dict) -> tuple[str, 
         return 'fail', f'no verified hold of {std["min_worm_days"]} days'
     if check == 'malware':
         return ('pass', 'deployed') if deploy.deployed(conn, host=deploy.canonical(conn, host), kind='clamav') else ('fail', 'not deployed')
+    if check == 'runtime_audit':
+        rules = m.get('audit_rules') or []
+        if any('sf_runtime' in r for r in rules):
+            return 'pass', 'sf_runtime rules loaded'
+        if not (m.get('auditd') or {}).get('active'):
+            return 'fail', 'auditd is not running'
+        return 'fail', 'no sf_runtime rules loaded for runtime sockets'
+    if check == 'runtime_cis':
+        from . import workloads
+        bad = []
+        for c in workloads.containers_of(conn, host):
+            cname = c.get('name') or 'container'
+            if c.get('privileged'):
+                bad.append(f'{cname} is privileged')
+            for mt in c.get('mounts') or []:
+                dst = (mt.get('Destination') or mt.get('destination') or mt.get('source') or '') if isinstance(mt, dict) else str(mt)
+                rw = mt.get('RW', mt.get('rw', True)) if isinstance(mt, dict) else False
+                if rw and dst in ('/', '/var/run/docker.sock', '/run/docker.sock'):
+                    bad.append(f'{cname} mounts {dst} writable')
+        rc = m.get('runtime_cis') or {}
+        if rc.get('docker_tcp_unauth'):
+            bad.append('unauthenticated Docker TCP socket')
+        if rc.get('libvirt_tcp_unauth'):
+            bad.append('unauthenticated libvirt TCP listener')
+        return ('fail', '; '.join(bad[:5])) if bad else ('pass', 'no privileged containers or exposed runtime sockets')
     raise KeyError(check)
 
 
@@ -1630,9 +1659,32 @@ def blast_radius(conn: Conn, host: str, at: int | None = None) -> dict:
                            ORDER BY acknowledged_at IS NULL DESC, occurred_at DESC LIMIT 1""", {'h': name})
         at = rows[0][0] if rows else None
     out = {'host': name, 'incident_at': at, 'scan_at': None, 'total_files': None, 'changed_since': None, 'unchanged_files': None, 'ransom_names': None, 'appended_extensions': None,
-           'entropy_flagged': None, 'entropy_at': None, 'newest_hold': None, 'rpo_seconds': None}
+           'entropy_flagged': None, 'entropy_at': None, 'newest_hold': None, 'rpo_seconds': None, 'affected_workloads': []}
     if at is None:
         return out
+    from . import workloads
+    indexed_mounts = [r[0] for r in conn.all("""SELECT m.mount_point FROM mounts m JOIN hosts h ON h.host_id = m.host_id
+                                                WHERE lower(h.hostname) = lower(:h) AND m.scan_state = 'indexed' ORDER BY m.mount_point""", {'h': name})]
+    affected = []
+    seen_wl = set()
+    for w in workloads.listing(conn, host=name).get('workloads') or []:
+        wpaths = [str(p) for p in (w.get('paths') or w.get('mounts') or []) if p]
+        matched = [p for p in wpaths if any(p == mp or p.startswith(mp.rstrip('/') + '/') for mp in indexed_mounts)]
+        if matched or not wpaths:
+            key = (w.get('kind') or '', w.get('name') or '')
+            if key not in seen_wl:
+                seen_wl.add(key)
+                affected.append({'name': w.get('name'), 'kind': w.get('kind'), 'paths': matched or wpaths[:5]})
+    for c in workloads.containers_of(conn, name):
+        cname = c.get('name') or c.get('Name')
+        if not cname or ('container', cname) in seen_wl:
+            continue
+        cpaths = [str(mt.get('Source') or mt.get('source') or '') if isinstance(mt, dict) else str(mt) for mt in (c.get('mounts') or [])]
+        matched = [p for p in cpaths if p and any(p == mp or p.startswith(mp.rstrip('/') + '/') for mp in indexed_mounts)]
+        if matched:
+            seen_wl.add(('container', cname))
+            affected.append({'name': cname, 'kind': 'container', 'paths': matched})
+    out['affected_workloads'] = affected[:50]
     scans = [s for s in _latest_scans(conn, name, 100) if s['at'] >= at]
     hold = next((h for h in hold_rows(conn, name) if h['verified_at'] and h['created_at'] <= at and h['status'] != 'released'), None)
     if hold:
@@ -1659,12 +1711,20 @@ def clean_room(db, conn: Conn, body: dict, actor: str) -> dict:
     mount = clean_path(body.get('mount') or '/mnt/sf-cleanroom', 'the mount point')
     if mount in ('/', '/mnt', '/etc', '/usr', '/var', '/boot', '/root', '/home', '/srv'):
         raise ValueError(f'{mount} cannot be a clean room')
-    script = sx.cleanroom_script(snapshot, mount)
+    wl = body.get('workload') if isinstance(body.get('workload'), dict) else {}
+    boot_kind = str(body.get('boot_kind') or wl.get('kind') or '').strip().lower()
+    boot_target = str(body.get('boot_target') or body.get('boot_image') or body.get('boot_name') or wl.get('image') or wl.get('name') or '').strip()
+    if boot_kind not in ('', 'container', 'vm'):
+        raise ValueError('boot_kind must be container or vm')
+    if boot_kind:
+        if not boot_target or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}', boot_target):
+            raise ValueError('boot_target must name a valid image or VM')
+    script = sx.cleanroom_script(snapshot, mount, boot_kind=boot_kind, boot_target=boot_target)
     if mode == 'preview':
-        return {'ok': True, 'mode': mode, 'host': host, 'script': script}
+        return {'ok': True, 'mode': mode, 'host': host, 'script': script, **({'boot_kind': boot_kind, 'boot_target': boot_target} if boot_kind else {})}
     args = ['--remove'] if body.get('remove') is True else ['--apply'] if mode == 'apply' else []
     res = _run(db, host, script, args, ref=f'cleanroom:{snapshot}'[:200], mode=mode, actor=actor, timeout=180)
-    return {**_result(res, mode), 'host': host, 'snapshot': snapshot, 'mount': mount}
+    return {**_result(res, mode), 'host': host, 'snapshot': snapshot, 'mount': mount, **({'boot_kind': boot_kind, 'boot_target': boot_target} if boot_kind else {})}
 
 
 # ── the whole picture ────────────────────────────────────────────────

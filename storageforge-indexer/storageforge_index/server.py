@@ -979,6 +979,64 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return jsonify(username=user.username, **routecode.issued(session_secret, session))
         return jsonify(username=user.username)
 
+    @web.post('/api/login/webauthn/begin')
+    @limiter.limit(LOGIN_LIMIT_PER_IP, deduct_when=lambda r: r.status_code == 401, error_message='too many failed sign-ins; try again later')
+    def api_login_webauthn_begin():
+        """FIDO2 sign-in challenge for a user who has enrolled a security key."""
+        from . import webauthn
+        name = str(json_body().get('username') or '').strip()
+        if not name:
+            return jsonify(error='enter a username'), 400
+        rows = conn().all('SELECT username FROM users WHERE lower(username) = lower(:n) AND disabled_at IS NULL', {'n': name})
+        keys = webauthn.keys_of(conn(), rows[0][0]) if rows else []
+        if not rows or not keys:
+            return jsonify(error='no security key enrolled for that account'), 401
+        host = request.host.split(':')[0].strip('[]')
+        options, challenge = webauthn.assert_options(host, [k['credential_id'] for k in keys])
+        session['login_webauthn_user'] = rows[0][0]
+        session['login_webauthn_challenge'] = challenge
+        return jsonify(options)
+
+    @web.post('/api/login/webauthn/finish')
+    @limiter.limit(LOGIN_LIMIT_PER_IP, deduct_when=lambda r: r.status_code in (401, 403), error_message='too many failed sign-ins; try again later')
+    def api_login_webauthn_finish():
+        """Completes a FIDO2 sign-in assertion and opens a full session."""
+        from . import webauthn
+        body = json_body()
+        uname = session.pop('login_webauthn_user', '')
+        challenge = session.pop('login_webauthn_challenge', '')
+        if not uname or not challenge:
+            return jsonify(error='no pending security key sign-in challenge'), 401
+        rows = conn().all('SELECT user_id, username, session_version, session_minutes, role FROM users '
+                          'WHERE lower(username) = lower(:n) AND disabled_at IS NULL', {'n': uname})
+        if not rows:
+            return jsonify(error='unknown or disabled account'), 401
+        user = users.User(*rows[0], users.permissions_of(conn(), rows[0][4]))
+        key = next((k for k in webauthn.keys_of(conn(), user.username) if k['credential_id'] == body.get('id')), None)
+        if not key:
+            core.audit(conn(), f'web:{request.remote_addr}', 'web.login.webauthn', 'denied', None, {'username': user.username})
+            return jsonify(error='that is not a key on this account'), 403
+        host, origin = request.host.split(':')[0].strip('[]'), request.host_url.rstrip('/')
+        try:
+            count = webauthn.assert_finish(body, challenge, origin, host, key['public_key'], key['sign_count'])
+        except (KeyError, ValueError, TypeError) as exc:
+            core.audit(conn(), f'web:{request.remote_addr}', 'web.login.webauthn', 'denied', None, {'username': user.username, 'why': str(exc)[:100]})
+            return jsonify(error=f'that did not check out: {exc}'), 403
+        conn().execute('UPDATE security_webauthn SET sign_count = :c WHERE id = :i', {'c': count, 'i': key['id']})
+        session.clear()
+        session['login_at'] = session['auth_at'] = int(time.time())
+        session['webauthn_at'] = time.time()
+        session['sid'] = users.start_session(conn(), user.user_id, request.remote_addr)
+        if len(signed_in_from) >= 10_000:
+            signed_in_from.clear()
+        signed_in_from.add((user.username.lower(), client_net()))
+        login_user(user)
+        core.audit(conn(), f'web:{request.remote_addr}', 'web.login.webauthn', 'ok', None, {'username': user.username, 'key': key['id']})
+        if body.get('route_code') is True:
+            session['rc'] = 1
+            return jsonify(username=user.username, **routecode.issued(session_secret, session))
+        return jsonify(username=user.username)
+
     @web.post('/api/logout')
     def api_logout():
         users.end_session(conn(), session.get('sid'))

@@ -69,19 +69,37 @@ function secHeatmap(holds) {
 /* ── who can reach each share ─────────────────────────────────────── */
 SEC_MORE.fencing = async function secFencing() {
   const host = S.host, d = await getJSON(`/api/security/firewall/shares${secQ(host)}`), t = await getJSON('/api/security/firewall/tiers'), out = el('div', { class: 'stack' });
+  const cidrsMap = {};
+  const subnets = Array.from(new Set([...d.shares.flatMap((s) => s.declared), ...(d.clients || []), '10.0.0.0/24', '192.168.1.0/24'].filter((x) => /[0-9]/.test(x)))).slice(0, 8);
   const rows = d.shares.map((s) => {
     const cidrs = secInput('10.0.20.0/24', s.declared.filter((x) => /[0-9]/.test(x)).join(','));
+    cidrsMap[s.name || s.path] = cidrs;
     const iface = secInput('only on interface');
     return [text('b', `${s.name || s.path} (${s.protocol})`), s.path, s.declared.join(', ') || 'nobody declared',
       s.firewall ? el('div', {}, secPill(MP_LEVEL[s.firewall] || s.firewall, s.firewall === 'any' ? 'critical' : s.firewall === 'lan' ? 'warning' : 'secure'), text('div', s.rule || '', 'muted small'), s.fenced_to ? text('div', `Fenced to ${s.fenced_to.join(', ')}`, 'small') : '') : NOT_MEASURED,
       s.connected.length ? s.connected.map((c) => `${c.client} (${c.connections})`).join(', ') : d.measured_at ? 'nobody' : NOT_MEASURED,
       secCan('plans.edit') ? el('div', { class: 'row wrap' }, cidrs, iface, button('Stage a fence', async () => { const r = await secPost('/api/security/firewall/shares/stage', { host, name: s.name || 'share', service: s.protocol === 'SMB' ? 'smb' : 'nfs', clients: cidrs.value.trim(), iface: iface.value.trim() }, out); secChanges(r, out); }, 'btn sm')) : ''];
   });
+  const matrixRows = d.shares.map((s) => {
+    const k = s.name || s.path, cur = () => new Set((cidrsMap[k].value || '').split(',').map((x) => x.trim()).filter(Boolean));
+    return [text('b', k), ...subnets.map((net) => {
+      const b = button(cur().has(net) ? 'Allow' : 'Block', () => {
+        const set = cur();
+        if (set.has(net)) set.delete(net); else set.add(net);
+        cidrsMap[k].value = Array.from(set).join(',');
+        b.textContent = set.has(net) ? 'Allow' : 'Block';
+        b.className = set.has(net) ? 'btn sm pri' : 'btn sm ghost';
+      }, cur().has(net) ? 'btn sm pri' : 'btn sm ghost');
+      return b;
+    })];
+  });
   const inputs = {};
   for (const k of ['1', '2', '3']) inputs[k] = secInput('minutes', String(t.tiers[k].minutes));
   return el('div', { class: 'stack' },
     secCard(`Shares on ${host}`, text('p', d.caveat, 'muted small'), d.read ? '' : text('p', 'The firewall has not been read here, so what it allows is not known.', 'st-warn small'),
       rows.length ? secTable(['Share', 'Path', 'Declared clients', 'The firewall allows', 'Connected now', ''], rows) : text('p', 'No shares in this host\'s design.', 'muted')),
+    rows.length && subnets.length ? secCard('Subnet matrix', text('p', 'Click a cell to toggle whether a subnet is allowed on each share before staging its fence.', 'muted small'),
+      secTable(['Share', ...subnets], matrixRows)) : '',
     secCard('How long a client stays dropped', text('p', 'A second offence inside 30 days goes up a tier. 0 means until someone lifts it.', 'muted small'),
       el('div', { class: 'sec-form' }, ...['1', '2', '3'].map((k) => secField(`Tier ${k}: ${t.tiers[k].label}`, inputs[k]))),
       secCan('security.manage') ? button('Save', () => secSave('/api/security/firewall/tiers', { tiers: Object.fromEntries(['1', '2', '3'].map((k) => [k, { minutes: inputs[k].value.trim(), label: t.tiers[k].label }])) }, out), 'btn sm') : ''), out);
@@ -105,6 +123,17 @@ SEC_MORE.identity = async function secIdentity() {
 SEC_MORE.detect = async function secDetect() {
   const host = S.host, d = await getJSON(`/api/security/behavior${secQ(host)}`), y = await getJSON('/api/security/behavior/yara/rules'), out = el('div', { class: 'stack' });
   const rules = el('textarea', { rows: '14', class: 'mono small', spellcheck: 'false' }); rules.value = d.falco_rules;
+  const simEvt = secInput('evt.type (rename, execve)', 'rename'), simProc = secInput('proc.name', 'python3'), simPath = secInput('path / target', '/srv/doc.locked'), simArgs = secInput('proc.args', '');
+  const simOut = el('div', { class: 'stack' });
+  const runSim = async (includeScenarios) => {
+    const events = simPath.value.trim() || simProc.value.trim() ? [{ evt_type: simEvt.value.trim() || 'execve', proc: simProc.value.trim(), path: simPath.value.trim(), exe: simPath.value.trim(), args: simArgs.value.trim() }] : [];
+    const r = await secPost('/api/security/behavior/falco/simulate', { host, rules: rules.value, include_scenarios: includeScenarios, events }, out);
+    if (!r) return;
+    simOut.replaceChildren(
+      text('p', `Evaluated ${r.rules_checked} rule(s) across ${r.evaluated} event(s): ${(r.matches || []).length} match(es).`, (r.matches || []).length ? 'st-warn' : 'st-ok'),
+      (r.per_rule || []).length ? secTable(['Rule', 'Priority', 'Hits', 'Sample alert output'], r.per_rule.map((pr) => [pr.rule, secPill(pr.priority, pr.priority.startsWith('crit') ? 'critical' : 'warning'), String(pr.hits), pr.sample_output || '—'])) : '',
+      (r.matches || []).length ? secTable(['Source', 'Rule', 'Process', 'Path', 'Rendered alert'], r.matches.map((m) => [m.scenario || m.source, m.rule, m.proc || '—', m.path || '—', m.output || m.rule]), 30) : '');
+  };
   const yname = secInput('Rule set name'), ybody = el('textarea', { rows: '10', class: 'mono small', spellcheck: 'false', placeholder: 'rule name { ... }' }); ybody.value = Object.values(y.example)[0] || '';
   const f = d.scan_filters, over = secInput('MB', String(f.skip_over_mb)), skip = secInput('.mkv .iso', f.skip_ext.join(' ')), deep = secInput('.exe .sh', f.deep_ext.join(' '));
   const ent = secArea('/srv/docs 7.2, one a line', d.thresholds.entropy.map((e) => `${e.prefix} ${e.threshold}`).join('\n'));
@@ -112,7 +141,12 @@ SEC_MORE.detect = async function secDetect() {
   return el('div', { class: 'stack' },
     secCard(`Falco on ${host}`, el('div', { class: 'stat-row' }, secStat('Installed', d.measured_at ? (d.falco?.installed ? 'yes' : 'no') : NOT_MEASURED), secStat('Running', d.measured_at ? (d.falco?.active ? 'yes' : 'no') : NOT_MEASURED), secStat('Alerts read', d.falco_events.length)),
       text('p', 'It comes from Falco\'s own repository, which the script adds, and needs a kernel with modern eBPF. Alerts reach here with each measurement. A rule sees one event at a time, so "many renames fast" is for the change rate between scans, not for Falco. $STORAGE_MOUNT_ONE, $STORAGE_MOUNTS, $CANARY_PATHS and $AUTHORIZED_BACKUP_SCRIPTS are filled in from the index.', 'muted small'),
-      secField('Rules', rules), secActions('/api/security/behavior/falco', () => ({ host, rules: rules.value }), out, { apply: 'Install with these rules', after: () => secRender() }),
+      secField('Rules', rules),
+      el('div', { class: 'sec-form' }, secField('Test evt.type', simEvt), secField('Test proc.name', simProc), secField('Test path', simPath), secField('Test proc.args', simArgs)),
+      el('div', { class: 'row wrap sec-acts' }, secActions('/api/security/behavior/falco', () => ({ host, rules: rules.value }), out, { apply: 'Install with these rules', after: () => secRender() }),
+        button('Simulate recorded events', () => runSim(false), 'btn sm'),
+        button('Test with attack scenarios', () => runSim(true), 'btn sm pri')),
+      simOut,
       d.falco_events.length ? secTable(['When', 'Rule', ''], d.falco_events.map((e) => [secWhen(e.occurred_at), e.summary, secPill(e.severity, e.severity === 'crit' ? 'critical' : 'warning')])) : ''),
     secCard('YARA', text('p', 'Rules are data here, and YARA on the host checks them first. They run on what the last scan saw change, and matches join the Malware panel, where they can be quarantined. Test runs one on the changed files and records nothing.', 'muted small'),
       y.rules.length ? secTable(['Rule set', 'Used', ''], y.rules.map((r) => [r.name, r.enabled ? 'yes' : 'no', secCan('security.manage') ? button('Remove', async () => { if (await secPost(`/api/security/behavior/yara/rules/${r.id}`, null, out, 'DELETE')) secRender(); }, 'btn sm ghost') : ''])) : text('p', 'None saved: the example below is used.', 'muted small'),
@@ -133,6 +167,17 @@ SEC_MORE.playbooks = async function secPlaybooks() {
   const name = secInput('Name'), trig = el('select', { 'aria-label': 'When' }, ...Object.entries(d.triggers).map(([k, v]) => new Option(v, k))), host = secInput('every host, or nas-*'), path = secInput('under this path');
   const mode = el('select', { 'aria-label': 'How' }, new Option('Say what it would do, and do nothing', 'dry_run'), new Option('Ask a person first', 'confirm'), new Option('Do it by itself', 'live'));
   const acts = Object.entries(d.actions).map(([k, v]) => { const c = el('input', { type: 'checkbox' }); c.value = k; return el('label', { class: 'small' }, c, ` ${v}`); });
+  const flow = [];
+  const builderPreview = el('div', { class: 'row wrap' });
+  const renderFlow = () => {
+    builderPreview.replaceChildren(...(flow.length ? flow.map((k, idx) => button(`${idx + 1}. ${d.actions[k] || k} x`, () => { flow.splice(idx, 1); acts.forEach((l) => { if (l.firstChild.value === k) l.firstChild.checked = false; }); renderFlow(); }, 'btn sm ghost')) : [text('span', 'Pick actions below to build the response sequence.', 'muted small')]));
+  };
+  acts.forEach((l) => l.firstChild.addEventListener('change', () => {
+    const k = l.firstChild.value;
+    if (l.firstChild.checked && !flow.includes(k)) flow.push(k);
+    else if (!l.firstChild.checked) { const i = flow.indexOf(k); if (i >= 0) flow.splice(i, 1); }
+    renderFlow();
+  }));
   const tpl = el('select', { 'aria-label': 'Template' }, new Option('Choose a template…', ''), ...(d.templates || []).map((t) => new Option(t.name, t.id)));
   tpl.addEventListener('change', () => {
     const t = (d.templates || []).find((x) => x.id === tpl.value);
@@ -140,14 +185,17 @@ SEC_MORE.playbooks = async function secPlaybooks() {
     name.value = t.name;
     trig.value = t.trigger;
     mode.value = t.mode;
+    flow.length = 0; flow.push(...t.actions);
     acts.forEach((l) => { l.firstChild.checked = t.actions.includes(l.firstChild.value); });
+    renderFlow();
   });
+  renderFlow();
   return el('div', { class: 'stack' },
     d.pending.length ? secCard('Waiting for you', secTable(['Playbook', 'Host', 'Why', 'It would', ''], d.pending.map((r) => [r.playbook, r.host, r.summary, (r.actions || []).join(', '), emergency ? el('div', { class: 'row wrap' }, button('Do it', () => secSave(`/api/security/playbooks/runs/${r.id}`, { confirm: true }, out, () => secRender()), 'btn sm danger'), button('Dismiss', () => secSave(`/api/security/playbooks/runs/${r.id}`, { confirm: false }, out, () => secRender()), 'btn sm ghost')) : '']))) : '',
     secCard('Playbooks', text('p', 'If this happens, do that. New ones say what they would do and do nothing: watch one for a while before letting it act. These run from StorageForge, so they need it up and the host reachable. An armed sentinel acts on the host by itself, with neither.', 'muted small'),
       d.playbooks.length ? secTable(['Name', 'When', 'Then', 'How', ''], d.playbooks.map((p) => [p.name, d.triggers[p.trigger], p.actions.map((a) => d.actions[a]).join(', '), p.dry_run ? 'only says' : p.conditions.confirm ? 'asks first' : 'by itself', emergency ? button('Remove', async () => { if (await secPost(`/api/security/playbooks/${p.id}`, null, out, 'DELETE')) secRender(); }, 'btn sm ghost') : ''])) : text('p', 'None.', 'muted'),
-      emergency ? el('div', { class: 'stack' }, (d.templates || []).length ? secField('Template', tpl) : '', el('div', { class: 'sec-form' }, secField('Name', name), secField('When', trig), secField('On which hosts', host), secField('Under which path', path), secField('How', mode)), el('div', { class: 'row wrap' }, ...acts),
-        button('Save', () => secSave('/api/security/playbooks', { name: name.value.trim(), trigger: trig.value, mode: mode.value === 'confirm' ? 'confirm' : mode.value, conditions: { host: host.value.trim(), path: path.value.trim() }, actions: acts.map((l) => l.firstChild).filter((c) => c.checked).map((c) => c.value) }, out, () => secRender()), 'btn sm pri')) : ''),
+      emergency ? el('div', { class: 'stack' }, (d.templates || []).length ? secField('Template', tpl) : '', el('div', { class: 'sec-form' }, secField('Name', name), secField('When', trig), secField('On which hosts', host), secField('Under which path', path), secField('How', mode)), builderPreview, el('div', { class: 'row wrap' }, ...acts),
+        button('Save', () => secSave('/api/security/playbooks', { name: name.value.trim(), trigger: trig.value, mode: mode.value === 'confirm' ? 'confirm' : mode.value, conditions: { host: host.value.trim(), path: path.value.trim() }, actions: flow.length ? flow : acts.map((l) => l.firstChild).filter((c) => c.checked).map((c) => c.value) }, out, () => secRender()), 'btn sm pri')) : ''),
     await secRoutesCard(out),
     secCard('What they have done', d.runs.length ? secTable(['When', 'Playbook', 'Host', 'Outcome', 'Why'], d.runs.map((r) => [secWhen(r.at), r.playbook, r.host, secPill(r.outcome, r.outcome === 'failed' ? 'critical' : r.outcome === 'ran' ? 'secure' : 'unknown'), r.detail.summary]), 20) : text('p', 'Nothing yet.', 'muted')), out);
 };
@@ -264,6 +312,7 @@ SEC_MORE.complianceExtra = function secComplianceExtra(host, pick, standards) {
       secCan('security.manage') ? button('Save', () => secSave('/api/security/profiles', { name: name.value.trim(), base: base.value, overrides: { target_lynis: target.value.trim(), min_worm_days: worm.value.trim() } }, out, () => secRender()), 'btn sm') : ''),
     secCard('What is on this host', text('p', 'Present, installable from its package lists, or blocked: for a host with no mirror, make a bundle on an online host of the same distro, and pass it to the script with --offline-bundle.', 'muted small'), pk,
       secCan('security.manage') ? el('div', { class: 'row wrap sec-acts' }, button('Check', async () => { const r = await secPost('/api/security/packages/check', { host }, pk); if (r) pk.replaceChildren(secTable(['Tool', 'State'], Object.entries(r.tools).map(([k, v]) => [k, secPill(v, v === 'present' ? 'secure' : v === 'installable' ? 'warning' : 'critical')]))); }, 'btn sm'),
+        button('Discover local mirrors', async () => { const r = await getJSON(`/api/security/packages/mirrors${secQ(host)}`); pk.replaceChildren(r.mirrors.length ? secTable(['Configured mirror'], r.mirrors.map((m) => [text('code', m, 'small')])) : text('p', 'No local mirrors recorded yet.', 'muted small')); }, 'btn sm'),
         button('Make a bundle here', async () => { const r = await secPost('/api/security/packages/bundle', { host, mode: 'apply' }, pk); if (r?.path) pk.prepend(text('p', `${r.packages} packages in ${r.path}. SHA-256 ${r.sha256}`, 'st-ok small')); }, 'btn sm')) : ''));
 };
 
@@ -287,7 +336,8 @@ SEC_MORE.macExtra = function secMacExtra(host, d) {
     secCard('Path to label rules', text('p', 'Your own rule for what a path should be labelled. Compared with what the last measurement read.', 'muted small'), map, secCan('security.manage') ? button('Save', () => secSave('/api/security/mac/context', { rules: secLines(map).map((l) => { const [pattern, type] = l.split(/\s+/); return { pattern, type }; }) }, out, () => secRender()), 'btn sm') : ''),
     secCard('Denials that are only noise', text('p', 'Folded out of the counts, not deleted. Program and path, each may have a *.', 'muted small'), noise, secCan('security.manage') ? button('Save', () => secSave('/api/security/mac/noise', { rules: secLines(noise).map((l) => { const [daemon, path] = l.split(/\s+/); return { daemon, path }; }) }, out, () => secRender()), 'btn sm') : ''),
     d.apparmor?.enabled ? secCard('AppArmor', text('p', 'Local rules go in /etc/apparmor.d/local, so a package update keeps them. Both become steps in a plan.', 'muted small'), secField('Profile', profile), rules,
-      secCan('plans.edit') ? el('div', { class: 'row wrap sec-acts' }, button('Stage these rules', stage(() => ({ type: 'apparmor-local', params: { profile: profile.value.trim(), rules: rules.value } })), 'btn sm'), mode, button('Stage this mode', stage(() => ({ type: 'apparmor-mode', params: { profile: profile.value.trim(), mode: mode.value } })), 'btn sm')) : '') : '', out);
+      secCan('plans.edit') ? el('div', { class: 'row wrap sec-acts' }, button('Stage these rules', stage(() => ({ type: 'apparmor-local', params: { profile: profile.value.trim(), rules: rules.value } })), 'btn sm'), mode, button('Stage this mode', stage(() => ({ type: 'apparmor-mode', params: { profile: profile.value.trim(), mode: mode.value } })), 'btn sm'),
+        button('Stage AppArmor plan', async () => { const r = await secPost('/api/security/mac/apparmor/stage', { host, profile: profile.value.trim(), mode: mode.value, rules: rules.value }, out); secChanges(r, out); }, 'btn sm pri')) : '') : '', out);
 };
 
 SEC_MORE.threatsCard = function secThreatsCard(host, d, out) {

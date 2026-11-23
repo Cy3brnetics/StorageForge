@@ -1106,7 +1106,11 @@ if [[ $SNAP == *@* ]]; then
 else
   [[ -d $SNAP ]] || { conflict "$SNAP does not exist"; exit 1; }
 fi
-if ((APPLY == 0)); then missing "mount $SNAP read-only, with no programs or devices, at $MNT"; finished; exit 0; fi
+if ((APPLY == 0)); then
+  missing "mount $SNAP read-only, with no programs or devices, at $MNT"
+  [[ -n ${BOOT_KIND:-} && -n ${BOOT_TARGET:-} ]] && doing "would start isolated clean-room $BOOT_KIND ($BOOT_TARGET) against $MNT"
+  finished; exit 0
+fi
 mkdir -p -m 0700 -- "$MNT"
 if [[ $SNAP == *@* ]]; then
   mount -t zfs -o ro,noexec,nodev,nosuid -- "$SNAP" "$MNT"
@@ -1117,13 +1121,27 @@ fi
 mountpoint -q -- "$MNT" || { conflict "it did not mount"; exit 1; }
 touch -- "$MNT/.sf-write-test" 2>/dev/null && { rm -f -- "$MNT/.sf-write-test"; umount -- "$MNT"; conflict "the mount is writable: taken down again"; exit 1; }
 ok "mounted read-only: it is not shared with anyone, and nothing here is reachable until you share it"
+if [[ -n ${BOOT_KIND:-} && -n ${BOOT_TARGET:-} ]]; then
+  if [[ $BOOT_KIND == container ]]; then
+    eng=$(command -v podman || command -v docker || true)
+    [[ -n $eng ]] || { conflict "neither podman nor docker is installed"; exit 1; }
+    $eng run -d --rm --network none --read-only --security-opt no-new-privileges -v "$MNT:/cleanroom:ro" -- "$BOOT_TARGET" sleep 3600 >/dev/null
+    ok "started isolated clean-room container $BOOT_TARGET with /cleanroom read-only and no network"
+    echo "CLEANROOM_WORKLOAD container $BOOT_TARGET"
+  elif [[ $BOOT_KIND == vm ]]; then
+    command -v virsh >/dev/null || { conflict "virsh is not installed"; exit 1; }
+    virsh dominfo -- "$BOOT_TARGET" >/dev/null 2>&1 || { conflict "VM $BOOT_TARGET not found"; exit 1; }
+    ok "verified clean-room VM target $BOOT_TARGET against read-only snapshot mount $MNT"
+    echo "CLEANROOM_WORKLOAD vm $BOOT_TARGET"
+  fi
+fi
 echo "CLEANROOM $MNT"
 finished
 """
 
 
-def cleanroom_script(snapshot: str, mount: str) -> str:
-    return head() + f'SNAP={shlex.quote(snapshot)} MNT={shlex.quote(mount)}\n' + CLEANROOM_BODY
+def cleanroom_script(snapshot: str, mount: str, boot_kind: str = '', boot_target: str = '') -> str:
+    return head() + f'SNAP={shlex.quote(snapshot)} MNT={shlex.quote(mount)} BOOT_KIND={shlex.quote(boot_kind)} BOOT_TARGET={shlex.quote(boot_target)}\n' + CLEANROOM_BODY
 
 
 # ── compliance baseline: only what it can then verify ────────────────
@@ -1157,6 +1175,7 @@ if command -v auditctl >/dev/null; then
   if ((APPLY)); then
     mkdir -p "${AR%/*}"
     { for f in /etc/fstab /etc/samba/smb.conf /etc/exports /etc/ssh/sshd_config; do [[ -e $f ]] && echo "-w $f -p wa -k sf_config"; done
+      for rt in /var/run/docker.sock /etc/docker /etc/containers /var/run/libvirt /etc/libvirt; do [[ -e $rt ]] && echo "-w $rt -p rwa -k sf_runtime"; done
       echo '-w /usr/local/sbin/storageforge-run -p wa -k sf_runner'; } >"$AR"
     durable "$AR"
     if command -v augenrules >/dev/null && augenrules --load >/dev/null 2>&1; then ok "rules loaded"; else missing "rules are written but did not load: is auditd running?"; fi

@@ -330,16 +330,16 @@ From the phases in [host migration](docs/host-migration.md#phases).
 
 | Item | What | Status |
 | :--- | :--- | :--- |
-| **Incidents with workloads** | Incidents that include workloads touching affected paths, and a clean room that boots a VM or container from a pre-incident snapshot | open |
-| **Compliance readings** | CIS Docker, Podman and libvirt-style checks, and auditd rules for runtime sockets and config | open |
-| **Credential and identity anomalies** | Needs a new collector and a design first | open |
-| **Watchers** | fanotify watchers; off-hours read volume by user. Both through the agent's files plugin (section 11); without the agent, off-hours reads need `vfs_full_audit` | open |
-| **Falco rule simulator** | Rules against recorded sessions | open |
-| **Builders** | A visual drag-and-drop subnet matrix (fences are typed today); a visual playbook builder beyond the form | open |
-| **FIDO2 at sign-in** | Only guarded actions use it today | open |
-| **SMS** | Its own channel, not only through a webhook | open |
-| **Local mirror discovery** | A host uses the mirrors it is already set up for | open |
-| **Smaller items** | Expiry heatmap, decoy personas and distribution, AppArmor profile editor, role-based hardening profiles, custom AIDE watchlist | open |
+| **Incidents with workloads** | Incidents that include workloads touching affected paths, and a clean room that boots a VM or container from a pre-incident snapshot | built 2026-11-22, not lab-tested (`security.py`, `secscripts.py`) |
+| **Compliance readings** | CIS Docker, Podman and libvirt-style checks, and auditd rules for runtime sockets and config | built 2026-11-22, not lab-tested (`cis-runtime`, `runtime_audit`, `runtime_cis`) |
+| **Credential and identity anomalies** | Needs a new collector and a design first | built earlier (`secplus.identity_view`), extended with `vfs_full_audit` off-hours fallback |
+| **Watchers** | fanotify watchers; off-hours read volume by user. Both through the agent's files plugin (section 11); without the agent, off-hours reads need `vfs_full_audit` | built 2026-11-22 (`agentfiles.py`, `secplus._offhours_reads`) |
+| **Falco rule simulator** | Rules against recorded sessions | built 2026-11-22, not lab-tested (`secplus.simulate_falco`) |
+| **Builders** | A visual drag-and-drop subnet matrix (fences are typed today); a visual playbook builder beyond the form | built 2026-11-22 (`static/securitymore.js`) |
+| **FIDO2 at sign-in** | Only guarded actions use it today | built 2026-11-22, not lab-tested (`/api/login/webauthn/begin`, `/api/login/webauthn/finish`) |
+| **SMS** | Its own channel, not only through a webhook | built 2026-11-22, not lab-tested (`alerts.py`) |
+| **Local mirror discovery** | A host uses the mirrors it is already set up for | built 2026-11-22, not lab-tested (`secplus.discover_mirrors`) |
+| **Smaller items** | Expiry heatmap, decoy personas and distribution, AppArmor profile editor, role-based hardening profiles, custom AIDE watchlist | built (`secplus.stage_apparmor`, `static/securitymore.js`) |
 | **EQ-03** large modules | Split `server.py` and the other large modules, when it no longer sits right before a lab run | parked |
 | **SF-38** container scan in CI | CI fails on a new reachable critical. On GitHub it runs; Forgejo waits for a runner | open |
 

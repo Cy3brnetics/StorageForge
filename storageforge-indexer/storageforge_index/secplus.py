@@ -712,12 +712,39 @@ def identity_deploy(db, conn: Conn, body: dict, actor: str) -> dict:
     return out
 
 
+def _offhours_reads(conn: Conn, host: str) -> list[dict]:
+    """Off-hours file read volume by user, from the agent's files plugin or Samba vfs_full_audit logs when no agent runs."""
+    rows = conn.all("""SELECT COALESCE(user_name, CAST(uid AS TEXT)), sum(reads) FROM agent_file_reads WHERE lower(host) = lower(:h)
+                       GROUP BY COALESCE(user_name, CAST(uid AS TEXT)) ORDER BY sum(reads) DESC LIMIT 100""", {'h': host})
+    if rows:
+        return [{'user': r[0], 'reads': int(r[1] or 0), 'source': 'agent'} for r in rows]
+    cfg = identity_config(conn, host)
+    off_from, off_to = cfg.get('off_from'), cfg.get('off_to')
+    counts: dict[str, int] = {}
+    logs = conn.all("""SELECT at_us, message FROM host_log_lines WHERE lower(host) = lower(:h)
+                       AND (message LIKE '%smbd_audit%' OR message LIKE '%full_audit%')
+                       ORDER BY at_us DESC LIMIT 1000""", {'h': host})
+    import datetime as dt
+    for at_us, msg in logs:
+        if off_from is not None and off_to is not None:
+            hr = dt.datetime.fromtimestamp((at_us or 0) / 1_000_000).hour
+            in_off = (hr >= off_from or hr < off_to) if off_from > off_to else (off_from <= hr < off_to)
+            if not in_off:
+                continue
+        m = re.search(r'\b(?:smbd_audit|full_audit)\b[^|]*\|([^|\s]+)\|[^|]*\|(?:pread|open|read)\b', str(msg or ''))
+        if m:
+            user = security.clean_text(m.group(1), 64)
+            counts[user] = counts.get(user, 0) + 1
+    return [{'user': u, 'reads': n, 'source': 'vfs_full_audit'} for u, n in sorted(counts.items(), key=lambda kv: -kv[1])]
+
+
 def identity_view(conn: Conn, host: str) -> dict:
     m = security.measurement(conn, host) or {}
     sessions = m.get('sessions') or []
     latest = max((s['at'] for s in sessions), default=None)
     kinds = ('identity_enumeration', 'identity_multi_subnet', 'identity_off_hours')
     return {'host': host, 'config': identity_config(conn, host), 'measured_at': m.get('measured_at'), 'sessions': [s for s in sessions if s['at'] == latest][:200], 'sampled_at': latest,
+            'offhours_reads': _offhours_reads(conn, host),
             'events': [e for e in security.list_events(conn, host, 200, False) if e['kind'] in kinds]}
 
 
@@ -919,6 +946,214 @@ def ingest_falco(conn: Conn, host: str, alerts_seen: list[dict]) -> int:
         summary = f'{a["rule"]}: {a["proc"] or "?"}' + (f' on {a["path"]}' if a['path'] else '') + (f' as {a["user"]}' if a['user'] else '')
         new += bool(security.record_event(conn, host, kind, summary, json.dumps(a), 'measure', None, key))
     return new
+
+
+FALCO_SCENARIOS = (
+    {'scenario': 'Ransomware rename suffix', 'evt_type': 'rename', 'proc': 'python3', 'path': '{mount}/finance/q4.xlsx.locked', 'user': 'www-data', 'args': 'encrypt.py'},
+    {'scenario': 'Immutable flag stripped', 'evt_type': 'execve', 'proc': 'chattr', 'args': '-i {mount}/backups/hold', 'path': '{mount}/backups/hold', 'user': 'root'},
+    {'scenario': 'Unauthorized disk wipe', 'evt_type': 'execve', 'proc': 'wipefs', 'pname': 'bash', 'args': '-a /dev/sdb', 'user': 'root'},
+    {'scenario': 'Authorized backup script (must not alert)', 'evt_type': 'execve', 'proc': 'zpool', 'pname': 'storageforge-job', 'args': 'scrub tank', 'user': 'root'},
+    {'scenario': 'Program executed from storage mount', 'evt_type': 'execve', 'proc': 'payload.elf', 'exe': '{mount}/.stage/payload.elf', 'path': '{mount}/.stage/payload.elf', 'user': 'nobody'},
+    {'scenario': 'Benign SMB read (must not alert)', 'evt_type': 'open', 'proc': 'smbd', 'path': '{mount}/readme.txt', 'user': 'alice'},
+)
+
+
+def _split_top(expr: str, kw: str) -> list[str]:
+    """Splits `expr` on ` kw ` only at parenthesis depth 0 and outside double/single quotes."""
+    parts, cur, depth, q = [], [], 0, None
+    i, n = 0, len(expr)
+    needle = f' {kw} '
+    while i < n:
+        ch = expr[i]
+        if q:
+            cur.append(ch)
+            if ch == q and (i == 0 or expr[i - 1] != '\\'):
+                q = None
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            q = ch
+            cur.append(ch)
+            i += 1
+            continue
+        if ch == '(':
+            depth += 1
+        elif ch == ')' and depth > 0:
+            depth -= 1
+        elif depth == 0 and expr[i:i + len(needle)].lower() == needle:
+            parts.append(''.join(cur).strip())
+            cur = []
+            i += len(needle)
+            continue
+        cur.append(ch)
+        i += 1
+    parts.append(''.join(cur).strip())
+    return [p for p in parts if p]
+
+
+def _unwrap_parens(expr: str) -> str:
+    expr = expr.strip()
+    while expr.startswith('(') and expr.endswith(')'):
+        depth, q, wrapped = 0, None, True
+        for idx, ch in enumerate(expr):
+            if q:
+                if ch == q and (idx == 0 or expr[idx - 1] != '\\'):
+                    q = None
+                continue
+            if ch in ('"', "'"):
+                q = ch
+                continue
+            depth += (ch == '(') - (ch == ')')
+            if depth == 0 and idx < len(expr) - 1:
+                wrapped = False
+                break
+        if not wrapped or depth != 0:
+            break
+        expr = expr[1:-1].strip()
+    return expr
+
+
+def _falco_field(field: str, ev: dict) -> str:
+    return {
+        'evt.type': str(ev.get('evt_type') or ev.get('kind') or ''),
+        'proc.name': str(ev.get('proc') or ''),
+        'proc.pname': str(ev.get('pname') or ''),
+        'proc.args': str(ev.get('args') or ''),
+        'proc.cmdline': f'{ev.get("proc") or ""} {ev.get("args") or ""}'.strip(),
+        'proc.exepath': str(ev.get('exe') or ev.get('path') or ''),
+        'fd.name': str(ev.get('path') or ''),
+        'fs.path.target': str(ev.get('path') or ''),
+        'fs.path.source': str(ev.get('src_path') or ev.get('path') or ''),
+        'user.name': str(ev.get('user') or ''),
+    }.get(field, '')
+
+
+def _expand_vals(raw: str, lists: dict) -> list[str]:
+    out = []
+    for tok in raw.split(','):
+        v = tok.strip().strip('"\'')
+        if v.startswith('$') and v[1:] in lists:
+            out.extend(lists[v[1:]])
+        elif v:
+            out.append(v.lower())
+    return out
+
+
+def _eval_falco_clause(clause: str, ev: dict, macros: dict, lists: dict, depth: int = 0) -> bool:
+    if depth > 8:
+        return False
+    clause = _unwrap_parens(clause)
+    if not clause:
+        return False
+    if clause.lower().startswith('not '):
+        return not _eval_falco_cond(clause[4:], ev, macros, lists, depth + 1)
+    if re.match(r'^evt\.dir\s*=\s*[<>=]$', clause):
+        return True
+    if m := re.match(r'^([a-z0-9_.]+)\s+in\s*\(([^)]+)\)$', clause):
+        val = _falco_field(m.group(1), ev).lower()
+        return val in _expand_vals(m.group(2), lists)
+    if m := re.match(r'^([a-z0-9_.]+)\s*(!=|=)\s*(.+)$', clause):
+        field, op, raw = m.group(1), m.group(2), m.group(3).strip().strip('"\'')
+        want = macros.get(raw, raw).lower()
+        got = _falco_field(field, ev).lower()
+        return (got != want) if op == '!=' else (got == want)
+    if m := re.match(r'^([a-z0-9_.]+)\s+(startswith|endswith|icontains|contains)\s+(.+)$', clause):
+        field, op, raw = m.group(1), m.group(2), m.group(3).strip().strip('"\'')
+        want = macros.get(raw, raw)
+        got = _falco_field(field, ev)
+        gl, wl = got.lower(), want.lower()
+        if op == 'startswith':
+            return gl.startswith(wl)
+        if op == 'endswith':
+            return gl.endswith(wl)
+        if op == 'icontains':
+            return wl in gl
+        return want in got or wl in gl
+    if clause in macros:
+        return _eval_falco_cond(macros[clause], ev, macros, lists, depth + 1)
+    return False
+
+
+def _eval_falco_cond(cond: str, ev: dict, macros: dict, lists: dict, depth: int = 0) -> bool:
+    if depth > 8:
+        return False
+    cond = _unwrap_parens(cond)
+    ors = _split_top(cond, 'or')
+    if len(ors) > 1:
+        return any(_eval_falco_cond(o, ev, macros, lists, depth + 1) for o in ors)
+    ands = _split_top(cond, 'and')
+    if len(ands) > 1:
+        return all(_eval_falco_cond(a, ev, macros, lists, depth + 1) for a in ands)
+    return _eval_falco_clause(cond, ev, macros, lists, depth + 1)
+
+
+def _render_falco_output(template: str, ev: dict) -> str:
+    rep = {
+        '%fs.path.target': str(ev.get('path') or ''),
+        '%fd.name': str(ev.get('path') or ev.get('exe') or ''),
+        '%proc.name': str(ev.get('proc') or '?'),
+        '%proc.pname': str(ev.get('pname') or '?'),
+        '%proc.args': str(ev.get('args') or ''),
+        '%proc.exepath': str(ev.get('exe') or ev.get('path') or ''),
+        '%user.name': str(ev.get('user') or '?'),
+        '%evt.type': str(ev.get('evt_type') or '?'),
+    }
+    out = str(template or '')
+    for k, v in rep.items():
+        out = out.replace(k, v)
+    return out
+
+
+def simulate_falco(conn: Conn, body: dict) -> dict:
+    """Evaluates Falco YAML rules against recorded sessions/events and optional built-in scenarios without deploying to a host."""
+    import yaml
+    host = security.known_host(conn, body['host']) if body.get('host') else None
+    text = str(body.get('rules') if body.get('rules') is not None else falco_rules(conn))
+    check_falco_yaml(text)
+    rendered = render_falco(conn, host, text) if host else text
+    doc = yaml.safe_load(rendered) or []
+    macros = {x['macro']: x.get('condition', '') for x in doc if isinstance(x, dict) and 'macro' in x}
+    lists = {x['list']: [str(i).lower() for i in (x.get('items') or [])] for x in doc if isinstance(x, dict) and 'list' in x}
+    rules = [x for x in doc if isinstance(x, dict) and x.get('rule') and x.get('condition')]
+    mount_one = '/srv'
+    if host:
+        m_row = conn.all("""SELECT m.mount_point FROM mounts m JOIN hosts h ON h.host_id = m.host_id
+                            WHERE lower(h.hostname) = lower(:h) AND m.scan_state = 'indexed'
+                            AND m.mount_point NOT IN ('/', '/boot', '/boot/efi', '/var', '/usr')
+                            ORDER BY m.mount_point LIMIT 1""", {'h': host})
+        if m_row:
+            mount_one = m_row[0][0]
+    samples: list[dict] = [{**e, 'source': str(e.get('source') or 'custom')} for e in (body.get('events') or [])[:500] if isinstance(e, dict)]
+    if body.get('include_scenarios') is True:
+        for sc in FALCO_SCENARIOS:
+            samples.append({k: (v.replace('{mount}', mount_one) if isinstance(v, str) else v) for k, v in sc.items()} | {'source': 'scenario'})
+    if host:
+        for action, path, proc, uname, uid_s, at in conn.all("""SELECT action, path, process, user_name, uid, at FROM agent_file_events
+                                                                WHERE lower(host) = lower(:h) ORDER BY at DESC LIMIT 200""", {'h': host}):
+            samples.append({'evt_type': 'rename' if action in ('moved_from', 'moved_to') else 'execve',
+                            'path': path or '', 'proc': proc or '', 'exe': path or '',
+                            'user': str(uname or ('' if uid_s is None else uid_s)), 'at': at, 'source': 'recorded'})
+        for kind, summary, detail, at in conn.all("""SELECT kind, summary, detail, occurred_at FROM security_events
+                                                     WHERE lower(host) = lower(:h) ORDER BY occurred_at DESC LIMIT 200""", {'h': host}):
+            samples.append({'evt_type': 'execve', 'path': detail or '', 'proc': kind, 'args': summary or '', 'exe': detail or '', 'at': at, 'source': 'recorded'})
+    matches = []
+    per_rule = {r['rule']: {'rule': r['rule'], 'priority': str(r.get('priority') or 'WARNING').lower(),
+                            'desc': str(r.get('desc') or ''), 'hits': 0, 'sample_output': ''} for r in rules}
+    for ev in samples:
+        for r in rules:
+            if _eval_falco_cond(str(r['condition']), ev, macros, lists):
+                out_msg = _render_falco_output(str(r.get('output') or r['rule']), ev)
+                pr = per_rule[r['rule']]
+                pr['hits'] += 1
+                if not pr['sample_output']:
+                    pr['sample_output'] = out_msg
+                if len(matches) < 200:
+                    matches.append({'rule': r['rule'], 'priority': str(r.get('priority') or 'WARNING').lower(),
+                                    'output': out_msg, 'proc': ev.get('proc') or '', 'path': ev.get('path') or '',
+                                    'evt_type': ev.get('evt_type') or '', 'user': ev.get('user') or '',
+                                    'source': ev.get('source') or 'recorded', 'scenario': ev.get('scenario') or ''})
+    return {'ok': True, 'host': host, 'rules_checked': len(rules), 'evaluated': len(samples),
+            'matches': matches, 'per_rule': list(per_rule.values())}
 
 
 # ── YARA: rules as data, on changed files, beside ClamAV ─────────────
@@ -1469,6 +1704,26 @@ def stage_context(conn: Conn, body: dict, actor: str) -> dict:
     return {'ok': True, 'host': host, 'plan_id': stage_plan(conn, f'Labels: {host}'[:80], tasks, actor), 'tasks': len(tasks)}
 
 
+def stage_apparmor(conn: Conn, body: dict, actor: str) -> dict:
+    """Stages AppArmor local path rules and/or profile mode changes into Changes."""
+    host = security.known_host(conn, body.get('host'))
+    profile = str(body.get('profile') or '').strip()
+    if not profile or not re.fullmatch(r'[A-Za-z0-9._-]+', profile):
+        raise ValueError('profile must be an AppArmor profile filename such as usr.sbin.smbd')
+    mode = str(body.get('mode') or '').strip().lower()
+    if mode not in ('', 'enforce', 'complain'):
+        raise ValueError('mode must be enforce or complain')
+    rules = str(body.get('rules') or '').strip()
+    tasks = []
+    if rules:
+        tasks.append({'type': 'apparmor-local', 'host': host, 'params': {'profile': profile, 'rules': rules}, 'note': f'AppArmor local: {profile}'})
+    if mode:
+        tasks.append({'type': 'apparmor-mode', 'host': host, 'params': {'profile': profile, 'mode': mode}, 'note': f'AppArmor mode: {profile}'})
+    if not tasks:
+        raise ValueError('specify rules or a profile mode to stage')
+    return {'ok': True, 'host': host, 'profile': profile, 'plan_id': stage_plan(conn, f'AppArmor: {host} ({profile})'[:80], tasks, actor), 'tasks': len(tasks)}
+
+
 def aide_watch(conn: Conn) -> list[str]:
     return alerts.get_setting(conn, AIDE_WATCH) or []
 
@@ -1562,6 +1817,20 @@ def bundle(db, conn: Conn, body: dict, actor: str) -> dict:
         m = re.search(r'^BUNDLE (\S+) (\S+) (\d+)$', res['output'], re.M)
         out.update(path=m[1], sha256=m[2], packages=int(m[3]))
     return out
+
+
+def discover_mirrors(conn: Conn, host: str) -> dict:
+    """Returns configured package mirrors/repositories discovered on `host` by the package inventory scan."""
+    from . import pkglist
+    name = security.known_host(conn, host)
+    pk = pkglist.for_host(conn, name) or {}
+    seen, mirrors = set(), []
+    for r in pk.get('repos') or []:
+        u = r.get('url') if isinstance(r, dict) else (str(r) if r else '')
+        if u and u not in seen:
+            seen.add(u)
+            mirrors.append(u)
+    return {'ok': True, 'host': name, 'pm': pk.get('pm'), 'distro': pk.get('distro'), 'mirrors': mirrors}
 
 
 # ── the whole picture, in tiles ──────────────────────────────────────

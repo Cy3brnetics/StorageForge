@@ -29,10 +29,12 @@ URL_RE = re.compile(r'https?://[^\s"<>]{3,500}')
 REPORT_URL_RE = re.compile(r'https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]{1,253})(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?')
 TOPIC_RE = re.compile(r'[A-Za-z0-9_-]{1,64}')
 DEFAULTS = {'report_url': '', 'alerts': {'ntfy': {'url': '', 'topic': '', 'token': ''}, 'gotify': {'url': '', 'token': ''},
-                                         'webhook': {'url': ''}, 'pagerduty': {'routing_key': ''}, 'routes': [], 'notify_resolved': True}}
+                                         'webhook': {'url': ''}, 'pagerduty': {'routing_key': ''},
+                                         'sms': {'url': '', 'token': '', 'from_number': '', 'to_number': ''},
+                                         'routes': [], 'notify_resolved': True}}
 FILLS_UP_DAYS = int(os.environ.get('STORAGEFORGE_FILLS_UP_DAYS', '14'))
 LARGE_DELETE = int(os.environ.get('STORAGEFORGE_LARGE_DELETE', '10000'))   # files gone in one scan
-SECRET_FIELDS = (('ntfy', 'token'), ('gotify', 'token'), ('pagerduty', 'routing_key'))
+SECRET_FIELDS = (('ntfy', 'token'), ('gotify', 'token'), ('pagerduty', 'routing_key'), ('sms', 'token'))
 _lock = threading.Lock()
 
 
@@ -60,8 +62,8 @@ def public_settings(conn: Conn) -> dict:
     """For accounts that see deploys but not the settings: which channels are on, and nothing that could post to them.
     A webhook's or ntfy topic's address is itself the credential."""
     s = settings(conn)
-    for ch in ('ntfy', 'gotify', 'webhook'):
-        c = s['alerts'][ch]
+    for ch in ('ntfy', 'gotify', 'webhook', 'sms'):
+        c = s['alerts'].setdefault(ch, {})
         u = urllib.parse.urlsplit(c.get('url') or '')
         c['url'] = f'{u.scheme}://{u.netloc.rpartition("@")[2]}' if u.netloc else ''
         if c.get('topic'):
@@ -91,6 +93,21 @@ def save_settings(conn: Conn, body: dict, actor: str) -> dict:
             if f == 'topic' and v and not TOPIC_RE.fullmatch(v):
                 raise ValueError('ntfy topic: letters, digits, - and _ only')
             cur[ch][f] = v.rstrip('/') if f == 'url' else v
+    if 'sms' in new and isinstance(new.get('sms'), dict):
+        sms_cur = cur.setdefault('sms', {'url': '', 'token': '', 'from_number': '', 'to_number': ''})
+        old_origin = _origin(sms_cur.get('url'))
+        for f in ('url', 'token', 'from_number', 'to_number'):
+            given = new['sms'].get(f)
+            v = str(sms_cur.get(f, '') if given is None else given or '').strip()
+            if f == 'token' and (given is None or v == '••••••'):
+                v = sms_cur.get('token', '') if _origin(sms_cur.get('url')) == old_origin else ''
+            if f == 'url' and v:
+                if not URL_RE.fullmatch(v):
+                    raise ValueError('sms: the URL must start with http:// or https://')
+                _check_target(v, 'sms')
+            if f in ('from_number', 'to_number') and v and not re.fullmatch(r'\+?[0-9]{7,20}', v):
+                raise ValueError(f'sms: {f} must be digits (optionally +country)')
+            sms_cur[f] = v.rstrip('/') if f == 'url' else v
     key = (new.get('pagerduty') or {}).get('routing_key')
     if key is not None:
         if key != '••••••':
@@ -215,7 +232,7 @@ def _why(exc: Exception) -> str:
 
 
 PAGERDUTY_URL = 'https://events.pagerduty.com/v2/enqueue'
-CHANNELS = ('ntfy', 'gotify', 'webhook', 'pagerduty')
+CHANNELS = ('ntfy', 'gotify', 'webhook', 'pagerduty', 'sms')
 
 
 def routed(cfg: dict, level: str, ref) -> set | None:
@@ -232,10 +249,10 @@ def send(cfg: dict, title: str, message: str, level: str = 'warn', extra: dict |
     """Push one notification to every configured channel. Returns what was sent (or why not), per channel."""
     out = []
     prio = {'crit': 5, 'warn': 4, 'ok': 2}.get(level, 3)
-    n, g, w, pd = cfg.get('ntfy') or {}, cfg.get('gotify') or {}, cfg.get('webhook') or {}, cfg.get('pagerduty') or {}
+    n, g, w, pd, sm = cfg.get('ntfy') or {}, cfg.get('gotify') or {}, cfg.get('webhook') or {}, cfg.get('pagerduty') or {}, cfg.get('sms') or {}
     chosen = routed(cfg, level, (extra or {}).get('ref'))
     if chosen is not None:
-        n, g, w, pd = (x if name in chosen else {} for x, name in ((n, 'ntfy'), (g, 'gotify'), (w, 'webhook'), (pd, 'pagerduty')))
+        n, g, w, pd, sm = (x if name in chosen else {} for x, name in ((n, 'ntfy'), (g, 'gotify'), (w, 'webhook'), (pd, 'pagerduty'), (sm, 'sms')))
     if pd.get('routing_key') and level != 'ok':
         try:
             _post(PAGERDUTY_URL, json.dumps({'routing_key': pd['routing_key'], 'event_action': 'trigger', 'dedup_key': str((extra or {}).get('key') or title)[:255],
@@ -268,6 +285,16 @@ def send(cfg: dict, title: str, message: str, level: str = 'warn', extra: dict |
             out.append('webhook: sent')
         except Exception as exc:
             out.append(f'webhook: {_why(exc)}')
+    if sm.get('url') and sm.get('to_number'):
+        try:
+            h = {'Content-Type': 'application/json'}
+            if sm.get('token'):
+                h['Authorization'] = f'Bearer {sm["token"]}'
+            _post(sm['url'], json.dumps({'to': sm['to_number'], 'from': sm.get('from_number') or 'StorageForge',
+                                         'body': f'[{level.upper()}] {title}: {message}'[:320]}).encode(), h)
+            out.append('sms: sent')
+        except Exception as exc:
+            out.append(f'sms: {_why(exc)}')
     return out or ['no channel is set up']
 
 

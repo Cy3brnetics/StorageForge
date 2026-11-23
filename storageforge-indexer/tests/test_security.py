@@ -1633,5 +1633,115 @@ class Migration(unittest.TestCase):
         self.assertEqual(tables('sqlite'), tables('postgres'))
 
 
+class Section9Depth(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.db = Database(f'sqlite:///{self.tmp}/sec9.db')
+        self.conn = self.db.connect()
+        self.addCleanup(self.conn.close)
+        self.db.migrate(self.conn)
+        from storageforge_index import pkglist
+        pk = pkglist.parse('pm apt-get\ndistro\tdebian\t13\t\nr\t/etc/apt/sources.list\thttps://deb.local/debian\n')
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_port, inventory_json) VALUES ('nas', '10.0.0.5', 22, :inv)",
+                          {'inv': json.dumps({'pkglist': pk})})
+        self.hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'nas'")
+        self.conn.execute("INSERT INTO mounts (host_id, mount_point, filesystem_type, scan_state) VALUES (:h, '/tank/data', 'zfs', 'indexed')", {'h': self.hid})
+        users.create(self.conn, 'root', PW, 'admin')
+        self.web = server.create_app(server.App(self.db), 's' * 48)
+        self.client = self.web.test_client()
+        self.client.post('/api/login', json={'username': 'root', 'password': PW})
+
+    def test_incident_workloads_and_clean_room_boot_script(self):
+        self.conn.execute("INSERT INTO security_events (uuid, host, kind, severity, occurred_at, received_at, via, summary) VALUES ('u1', 'nas', 'canary_tripped', 'crit', 1000, 1000, 'sentinel', 'decoy touched')")
+        self.conn.execute("""INSERT INTO docker_hosts (host_id, engine, access, root_dir, containers_json, volumes_json, compose_json, updated_at)
+                             VALUES (:h, 'docker', 'direct', '/var/lib/docker', :c, '[]', '[]', 1000)""",
+                          {'h': self.hid, 'c': json.dumps([{'name': 'worker', 'image': 'alpine', 'state': 'running', 'labels': {},
+                                                             'mounts': [{'source': '/tank/data/uploads', 'destination': '/data', 'rw': True}]}])})
+        br = security.blast_radius(self.conn, 'nas', at=1000)
+        self.assertEqual([w['name'] for w in br['affected_workloads']], ['worker'])
+        pre = security.clean_room(self.db, self.conn, {'host': 'nas', 'snapshot': 'tank/data@clean', 'boot_kind': 'container', 'boot_target': 'alpine:3.20', 'mode': 'preview'}, 'root')
+        self.assertEqual(pre['boot_kind'], 'container')
+        self.assertIn('CLEANROOM_WORKLOAD container', pre['script'])
+        self.assertIn('--network none --read-only', pre['script'])
+        sh = self.tmp / 'cleanroom.sh'
+        sh.write_text(pre['script'])
+        self.assertEqual(subprocess.run(['bash', '-n', str(sh)], capture_output=True, text=True).stderr, '')
+
+    def test_runtime_compliance_falco_simulator_mirrors_apparmor_and_vfs_offhours(self):
+        from storageforge_index import secplus
+        self.assertIn('sf_runtime', sx.compliance_script('cis-runtime', 'nas'))
+        security._save_measurement(self.conn, 'nas', 'host', int(time.time()), 'test',
+                                   {'measured_at': int(time.time()), 'tools': ['auditctl', 'nft'], 'selinux': 'Enforcing',
+                                    'auditd': {'active': True, 'storageforge_rules': 2}, 'fence': True,
+                                    'audit_rules': ['-w /var/run/docker.sock -p rwa -k sf_runtime']})
+        st = security.compliance_status(self.conn, 'nas', 'cis-runtime')
+        self.assertEqual(next(c['result'] for c in st['checks'] if c['id'] == 'runtime_audit'), 'pass')
+        self.conn.execute("""INSERT INTO docker_hosts (host_id, engine, access, root_dir, containers_json, volumes_json, compose_json, updated_at)
+                             VALUES (:h, 'docker', 'direct', '/var/lib/docker', :c, '[]', '[]', 1000)""",
+                          {'h': self.hid, 'c': json.dumps([{'name': 'priv', 'image': 'alpine', 'state': 'running', 'privileged': True, 'labels': {}, 'mounts': []}])})
+        st2 = security.compliance_status(self.conn, 'nas', 'cis-runtime')
+        self.assertEqual(next(c['result'] for c in st2['checks'] if c['id'] == 'runtime_cis'), 'fail')
+
+        # Falco rule simulator: custom event + built-in attack & benign scenarios
+        r_sim = self.client.post('/api/security/behavior/falco/simulate', json={'host': 'nas', 'include_scenarios': True,
+                                                                               'events': [{'evt_type': 'rename', 'path': '/tank/a.locked', 'proc': 'evil', 'user': 'mallory'}]})
+        self.assertEqual(r_sim.status_code, 200)
+        sim = r_sim.get_json()
+        self.assertEqual(sim['rules_checked'], 4)
+        self.assertGreaterEqual(len(sim['matches']), 4)
+        self.assertTrue(any('evil' in m['output'] and '/tank/a.locked' in m['output'] for m in sim['matches']))
+        self.assertFalse(any(m['proc'] == 'zpool' for m in sim['matches']), 'authorized backup script excluded by proc.pname')
+        self.assertFalse(any(m['proc'] == 'smbd' for m in sim['matches']), 'benign read must not alert')
+        self.assertTrue(all(pr['hits'] >= 1 for pr in sim['per_rule']), sim['per_rule'])
+
+        # Mirror discovery & AppArmor staging
+        r_mir = self.client.get('/api/security/packages/mirrors?host=nas')
+        self.assertEqual((r_mir.status_code, r_mir.get_json()['mirrors']), (200, ['https://deb.local/debian']))
+        r_aa = self.client.post('/api/security/mac/apparmor/stage', json={'host': 'nas', 'profile': 'usr.sbin.smbd', 'mode': 'enforce', 'rules': '/tank/data/** r,'})
+        self.assertEqual((r_aa.status_code, r_aa.get_json()['tasks']), (200, 2))
+
+        # vfs_full_audit off-hours read fallback & agent_file_reads path
+        alerts.set_setting(self.conn, secplus.IDENTITY + 'nas', {'enabled': True, 'max_shares': 10, 'off_from': 20, 'off_to': 6}, 'test')
+        ts_23 = 1700002800
+        self.conn.execute("""INSERT INTO host_log_lines (host, line_key, at_us, priority, message, collected_at)
+                             VALUES ('nas', 'k1', :u, 6, 'smbd_audit: alice|10.0.0.9|nas|pread|ok|/tank/data/f', :c)""", {'u': ts_23 * 1_000_000, 'c': ts_23})
+        view = secplus.identity_view(self.conn, 'nas')
+        self.assertIsInstance(view['offhours_reads'], list)
+        self.conn.execute("INSERT INTO agent_file_reads (host, minute, uid, user_name, reads, folders_json) VALUES ('nas', 100, 1000, 'alice', 42, '[]')")
+        view2 = secplus.identity_view(self.conn, 'nas')
+        self.assertEqual(view2['offhours_reads'][0]['source'], 'agent')
+        self.assertEqual(view2['offhours_reads'][0]['reads'], 42)
+
+    def test_fido2_login_and_sms_channel(self):
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from storageforge_index import webauthn
+        sk = ec.generate_private_key(ec.SECP256R1())
+        pub = sk.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+        cred_id = webauthn.b64u(b'cred-login-1')
+        webauthn.add_key(self.conn, 'root', {'credential_id': cred_id, 'public_key': webauthn.b64u(pub), 'sign_count': 1}, 'YubiKey')
+
+        c = self.web.test_client()
+        b = c.post('/api/login/webauthn/begin', json={'username': 'root'})
+        self.assertEqual(b.status_code, 200)
+        opts = b.get_json()
+        cdj = json.dumps({'type': 'webauthn.get', 'challenge': opts['challenge'], 'origin': 'http://localhost'}).encode()
+        auth_data = __import__('hashlib').sha256(b'localhost').digest() + bytes([1]) + (2).to_bytes(4, 'big')
+        sig = sk.sign(auth_data + __import__('hashlib').sha256(cdj).digest(), ec.ECDSA(hashes.SHA256()))
+        f = c.post('/api/login/webauthn/finish', json={'id': cred_id, 'clientDataJSON': webauthn.b64u(cdj),
+                                                       'authenticatorData': webauthn.b64u(auth_data), 'signature': webauthn.b64u(sig)})
+        self.assertEqual((f.status_code, f.get_json()['username']), (200, 'root'))
+        self.assertEqual(c.get('/api/me').status_code, 200)
+
+        # SMS alert channel validation and delivery
+        with mock.patch.object(alerts, '_check_target'):
+            alerts.save_settings(self.conn, {'report_url': '', 'alerts': {'sms': {'url': 'https://sms.example/send', 'token': 'tok', 'from_number': '+15550001', 'to_number': '+15550002'}}}, 'root')
+        with mock.patch.object(alerts, '_post') as p:
+            res = alerts.send(alerts.settings(self.conn, reveal=True)['alerts'], 'Alert title', 'Disk failed', 'crit')
+        self.assertIn('sms: sent', res)
+        self.assertTrue(any('sms.example/send' in str(call.args[0]) for call in p.call_args_list))
+
+
 if __name__ == '__main__':
     unittest.main()
