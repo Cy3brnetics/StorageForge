@@ -1715,6 +1715,12 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         return Response(tasks.script(conn(), body), mimetype='text/x-shellscript',
                         headers={'Content-Disposition': f'attachment; filename="{name}"'})
 
+    @web.get('/api/disks')
+    @login_required
+    def api_disks():
+        from . import steps_storage
+        return jsonify(hosts=steps_storage.disks_of(conn(), request.args.get('host') or None))
+
     @web.get('/api/changes/types')
     @login_required
     def api_change_types():

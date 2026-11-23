@@ -173,7 +173,8 @@ TYPES = {
         F('disk', 'device', 'Disk', required=True), F('fstype', 'choice', 'Then format as', options=[''] + MKFS),
         F('label', 'label', 'Label'), F('wipe', 'bool', 'It has partitions: replace them'), CONFIRM,
         F('table', 'choice', 'Partition table (GPT if empty)', options=['', 'gpt', 'msdos'], added=True),
-        F('flag', 'choice', 'Partition flag', options=['', 'esp', 'lvm', 'raid', 'swap'], added=True), MKFS_FIELD],
+        F('flag', 'choice', 'Partition flag', options=['', 'esp', 'lvm', 'raid', 'swap'], added=True), MKFS_FIELD,
+        F('secure_wipe', 'choice', 'Secure wipe before partitioning', options=['', 'zero', 'random', 'random-zero', 'discard'], added=True)],
         'help': 'A new partition table with one partition spanning the disk.'},
     'partition-add': {'group': 'Drives', 'label': 'Add a partition', 'destructive': True, 'fields': [
         F('disk', 'device', 'Disk', required=True), F('name', 'label', 'Partition name', required=True),
@@ -190,7 +191,8 @@ TYPES = {
         'help': 'Writes a udev rule matched on the serial number, so it follows the drive if its name changes, and applies it now. Empty fields are left as they are.'},
     'format': {'group': 'Drives', 'label': 'Format', 'destructive': True, 'fields': [
         F('device', 'device', 'Device', required=True), F('fstype', 'choice', 'Filesystem', options=MKFS, required=True),
-        F('label', 'label', 'Label'), F('wipe', 'bool', 'It has a filesystem: destroy it'), CONFIRM, MKFS_FIELD]},
+        F('label', 'label', 'Label'), F('wipe', 'bool', 'It has a filesystem: destroy it'), CONFIRM, MKFS_FIELD,
+        F('secure_wipe', 'choice', 'Secure wipe before formatting', options=['', 'zero', 'random', 'random-zero', 'discard'], added=True)]},
     'label': {'group': 'Drives', 'label': 'Set filesystem label', 'fields': [
         F('target', 'path', 'Mount point or device', required=True), F('label', 'label', 'Label', required=True)]},
 }
@@ -325,7 +327,7 @@ def normalize(body: dict) -> dict:
             if params.get('devices'):
                 params['devices'] = ' '.join(params['devices'].split())
                 params['confirm'] = ' '.join(params.get('confirm', '').split())
-            dev = params.get('device') or params.get('disk') or params.get('devices') or params.get(spec.get('confirm_of', ''))   # confirm_of: md-grow with no devices
+            dev = params.get('partition') or params.get('device') or params.get('disk') or params.get('devices') or params.get(spec.get('confirm_of', ''))   # confirm_of: md-grow with no devices, secure-delete path
             if params.get('confirm') != dev:
                 raise ValueError(f'task {i} ({spec["label"]}): type {dev} again in the confirm field')
         tasks.append({'id': str(t.get('id') or f't{i}'), 'type': kind, 'host': host, 'params': params,
@@ -413,6 +415,8 @@ class Host:
         crypt = {p.get('crypt') for d in self.node['disks'] for p in d['parts'] if p['dev'] in names and p.get('crypt')}
         out = []
         for t, m in self.mounted.items():
+            if t in self.unmounted and t not in self.new_mounts:
+                continue
             src = (m.get('source') or '').split('[')[0].removeprefix('/dev/')
             if src in names or src.removeprefix('mapper/') in crypt:
                 out.append(t)
@@ -726,12 +730,16 @@ def _check_task(conn, c: Host, h: dict, k: str, p: dict, say):
                 say('warn', 'replaces: ' + ', '.join(f'{x["dev"]} ({x.get("fs") or "no fs"})' for x in info['parts']))
             size = info['disk'].get('size')
             say('ok', f'{info["disk"].get("model") or dev} · {_fmt(size)}' if size else dev)
+            if p.get('secure_wipe'):
+                say('warn', f'securely wipes {dev} ({p["secure_wipe"]}) before partitioning')
         else:
             fs = info.get('fs') or (info['kind'] == 'disk' and info['parts'] and 'partitions') or None
             if fs and not p['wipe']:
                 say('crit', f'{dev} holds {fs}: tick the box to destroy it')
             elif fs:
                 say('warn', f'destroys the {fs} on {dev}' + (f' ("{info["label"]}")' if info.get('label') else ''))
+            if p.get('secure_wipe'):
+                say('warn', f'securely wipes {dev} ({p["secure_wipe"]}) before formatting')
             if k == 'btrfs-add':
                 mnt, fstype = c.mount_at(p['target'])
                 if fstype != 'btrfs' or mnt != p['target']:
@@ -998,9 +1006,9 @@ ARGS = {'dir': ('path', 'owner', 'group', 'mode'), 'rename': ('path', 'dest'), '
         'btrfs-reclaim': ('target', 'dusage', 'musage'), 'btrfs-replace': ('target', 'old', 'device', 'wipe'), 'btrfs-remove': ('target', 'device'),
         'btrfs-resize': ('target', 'devid'), 'subvolume-restore': ('source', 'path'), 'btrfs-quota': ('target',),
         'mount': ('source', 'subvol', 'target', 'fstype', 'options', 'fsck_pass'), 'mount-options': ('target', 'options'),
-        'unmount': ('target',), 'partition': ('disk', 'fstype', 'label', 'wipe', 'table', 'flag', 'mkfs'),
+        'unmount': ('target',), 'partition': ('disk', 'fstype', 'label', 'wipe', 'table', 'flag', 'mkfs', 'secure_wipe'),
         'partition-add': ('disk', 'name', 'size', 'fstype', 'label', 'flag', 'mkfs'),
-        'drive-tune': ('device', 'scheduler', 'read_ahead', 'spindown', 'write_cache'), 'format': ('device', 'fstype', 'label', 'wipe', 'mkfs'),
+        'drive-tune': ('device', 'scheduler', 'read_ahead', 'spindown', 'write_cache'), 'format': ('device', 'fstype', 'label', 'wipe', 'mkfs', 'secure_wipe'),
         'label': ('target', 'label'), 'btrfs-send': ('source', 'parent', 'dest'),
         'zfs-pool': ('pool', 'level', 'devices', 'mountpoint', 'wipe', 'ashift', 'pool_props', 'fs_props'), 'zfs-dataset': ('dataset', 'mountpoint', 'options'),
         'zfs-snapshot': ('dataset', 'name', 'recursive'), 'zfs-send': ('dataset', 'name', 'base', 'dest', 'recursive', 'raw'),
@@ -1493,15 +1501,16 @@ t_unmount() { local tgt=$1 have inner
     fstab_verify && ok "fstab line commented out"
   fi
 }
-t_partition() { local disk=$1 fs=$2 label=$3 wipe=$4 table=${5:-gpt} flag=$6 more=$7 n part
+t_partition() { local disk=$1 fs=$2 label=$3 wipe=$4 table=${5:-gpt} flag=$6 more=$7 sw=${8:-} n part
   ((APPLY)) || plan_part "$disk"
   need parted parted || return 0
   part=$(part_of "$disk" 1); n=$(lsblk -nro TYPE -- "$disk" 2>/dev/null | grep -c part || true)
-  if ((n == 1)) && [[ -b $part ]] && [[ -z $fs || $(blkid -p -o value -s TYPE -- "$part" 2>/dev/null) == "$fs" ]]; then
+  if [[ -z $sw ]] && ((n == 1)) && [[ -b $part ]] && [[ -z $fs || $(blkid -p -o value -s TYPE -- "$part" 2>/dev/null) == "$fs" ]]; then
     ok "$disk has one partition${fs:+ with $fs}"; return 0; fi
   dev_guard "$disk" || return 0
   ((n == 0)) || [[ $wipe == 1 ]] || { conflict "$disk has $n partition(s); the plan doesn't allow replacing them"; return 0; }
-  act "new $table table on $disk with one partition${flag:+ ($flag)}${fs:+, formatted $fs}" || return 0
+  act "new $table table on $disk with one partition${flag:+ ($flag)}${sw:+ (wipe=$sw)}${fs:+, formatted $fs}" || return 0
+  [[ -n $sw ]] && { wipe_dev "$disk" "$sw" 1 || return 0; }
   try wipefs -aq -- "$disk" && try parted -s -- "$disk" mklabel "$table" mkpart primary 1MiB 100% || return 0
   [[ -z $flag ]] || try parted -s -- "$disk" set 1 "$flag" on || return 0
   partprobe -- "$disk" 2>/dev/null || true; udevadm settle 2>/dev/null || true
@@ -1575,12 +1584,13 @@ t_drive_tune() { local dev=$1 sched=$2 ra=$3 spin=$4 wc=$5 base=${1##*/} serial 
   udevadm settle 2>/dev/null || true
   ok "applied: $(sed -n 's/.*\[\(.*\)\].*/\1/p' "/sys/block/$base/queue/scheduler" 2>/dev/null || true) scheduler, read-ahead $(cat "/sys/block/$base/queue/read_ahead_kb" 2>/dev/null || echo '?') KiB"
 }
-t_format() { local dev=$1 fs=$2 label=$3 wipe=$4 more=$5 have
+t_format() { local dev=$1 fs=$2 label=$3 wipe=$4 more=$5 sw=${6:-} have
   have=$(blkid -p -o value -s TYPE -- "$dev" 2>/dev/null || true)
-  if [[ $have == "$fs" && ( -z $label || $(blkid -p -o value -s LABEL -- "$dev" 2>/dev/null) == "$label" ) ]]; then ok "$dev is $fs"; return 0; fi
+  if [[ -z $sw && $have == "$fs" && ( -z $label || $(blkid -p -o value -s LABEL -- "$dev" 2>/dev/null) == "$label" ) ]]; then ok "$dev is $fs"; return 0; fi
   dev_guard "$dev" || return 0
   [[ -z $have || $wipe == 1 ]] || { conflict "$dev holds $have; the plan doesn't allow destroying it"; return 0; }
-  act "mkfs.$fs ${label:+-L $label }$dev${have:+ (destroys its $have)}" || return 0
+  act "mkfs.$fs ${label:+-L $label }$dev${sw:+ (wipe=$sw)}${have:+ (destroys its $have)}" || return 0
+  [[ -n $sw ]] && { wipe_dev "$dev" "$sw" 1 || return 0; }
   [[ -n $have ]] && { try wipefs -aq -- "$dev" || return 0; }
   mkfs_dev "$dev" "$fs" "$label" "$more" && ok "formatted" || conflict "mkfs.$fs $dev failed"
 }
@@ -1848,16 +1858,22 @@ def _ansible_task(t: dict, c: Host | None, conn: Conn | None = None) -> dict:
         return {'name': name, 'ansible.posix.mount': {'path': p['target'], 'state': 'absent', 'backup': True}}
     gate = {'tags': ['destructive'], 'when': 'storageforge_destructive | default(false) | bool'}
     if k == 'partition':
-        tasks = [{'name': name, 'community.general.parted': {'device': p['disk'], 'label': p['table'] or 'gpt', 'number': 1, 'state': 'present',
-                  'part_start': '1MiB', 'part_end': '100%', **({'flags': [p['flag']]} if p['flag'] else {})}, **gate}]
+        tasks = []
+        if p.get('secure_wipe'):
+            tasks.append({'name': f'Securely wipe {p["disk"]} ({p["secure_wipe"]})', 'ansible.builtin.shell': {'executable': '/bin/bash', 'cmd': steps_storage._ansible_wipe_snippet(q(p['disk']), p['secure_wipe'], '1')}, **gate})
+        tasks.append({'name': name, 'community.general.parted': {'device': p['disk'], 'label': p['table'] or 'gpt', 'number': 1, 'state': 'present',
+                      'part_start': '1MiB', 'part_end': '100%', **({'flags': [p['flag']]} if p['flag'] else {})}, **gate})
         if p['fstype']:
             part = p['disk'] + ('p1' if p['disk'][-1].isdigit() else '1')
             tasks.append({'name': f'Format {part} as {p["fstype"]}', 'community.general.filesystem': {k2: v for k2, v in (
                 ('dev', part), ('fstype', p['fstype']), ('opts', _mkfs_opts(p))) if v}, **gate})
         return tasks
     if k == 'format':
-        return {'name': name, 'community.general.filesystem': {k2: v for k2, v in (
-            ('dev', p['device']), ('fstype', p['fstype']), ('force', p['wipe'] or None), ('opts', _mkfs_opts(p))) if v}, **gate}
+        fmt_task = {'name': name, 'community.general.filesystem': {k2: v for k2, v in (
+            ('dev', p['device']), ('fstype', p['fstype']), ('force', p['wipe'] or p.get('secure_wipe') or None), ('opts', _mkfs_opts(p))) if v}, **gate}
+        if p.get('secure_wipe'):
+            return [{'name': f'Securely wipe {p["device"]} ({p["secure_wipe"]})', 'ansible.builtin.shell': {'executable': '/bin/bash', 'cmd': steps_storage._ansible_wipe_snippet(q(p['device']), p['secure_wipe'], '1')}, **gate}, fmt_task]
+        return fmt_task
     if k == 'btrfs-add':
         return {'name': name, 'ansible.builtin.command': {'argv': ['btrfs', 'device', 'add'] + (['-f'] if p['wipe'] else [])
                 + [p['device'], p['target']]}, **gate}
@@ -2060,6 +2076,7 @@ from . import steps_vmiso  # noqa: E402,F401  (VMs from installer ISOs)
 from . import steps_mac  # noqa: E402,F401  (letting VMs use a folder of disks under SELinux or AppArmor)
 from . import steps_toolbox  # noqa: E402,F401  (Toolbox installs and removals, after steps_runtime and steps_workloads, whose helpers they call)
 from . import steps_toolbox_b  # noqa: E402,F401  (Caddy routes, bans in CrowdSec and fail2ban, image scans: the 0.5.13 panels)
+from . import steps_storage  # noqa: E402,F401  (partition edit/delete, secure wipe/format, secure delete)
 from . import wlmanaged  # noqa: E402  (a warning before a step changes a workload something else manages, after every step it wraps)
 wlmanaged.install()
 from . import secretstore  # noqa: E402  (a step's vault secret, on the runner's stdin)

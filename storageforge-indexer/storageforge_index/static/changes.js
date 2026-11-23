@@ -54,7 +54,12 @@ function taskTitle(t) {
     mount: () => `Mount ${p.source}${p.subvol ? '[' + p.subvol + ']' : ''} at ${p.target}`,
     'mount-options': () => `Mount options of ${p.target}: ${p.options}`, unmount: () => `Unmount ${p.target}`,
     partition: () => `Partition ${p.disk}${p.fstype ? ' and format it ' + p.fstype : ''}`,
-    format: () => `Format ${p.device} as ${p.fstype}`, label: () => `Label ${p.target} "${p.label}"`,
+    'partition-add': () => `Add partition ${p.name} (${p.size || 'the rest'}) on ${p.disk}${p.fstype ? ' and format it ' + p.fstype : ''}`,
+    'partition-edit': () => `Edit partition ${p.partition} on ${p.disk}`,
+    'partition-delete': () => `Delete partition ${p.partition} from ${p.disk}${p.method && p.method !== 'quick' ? ' (' + p.method + ')' : ''}`,
+    'drive-wipe': () => `Securely wipe ${p.device} (${p.method})`,
+    'secure-delete': () => `Securely delete ${p.path} (${p.method})`,
+    format: () => `Format ${p.device} as ${p.fstype}${p.secure_wipe ? ' (' + p.secure_wipe + ')' : ''}`, label: () => `Label ${p.target} "${p.label}"`,
     'vm-create': () => `VM ${p.name} from ${p.image || 'an image'}${p.spec ? ' (' + p.spec + ')' : ''}`,
     packages: () => `Packages of ${p.from_host}${p.skip ? ', less ' + p.skip : ''}`,
     accounts: () => `Accounts of ${p.from_host}`, 'config-files': () => `Share files of ${p.from_host}`,
@@ -94,8 +99,9 @@ async function openTask(type, host, preset = {}, edit = null) {
     } else if (f.kind === 'choice') {
       input = el('select', {}, ...f.options.map((o) => new Option(o || '(none)', o))); input.value = v || f.options[0];
     } else {
+      const defPh = f.kind === 'confirm' ? (preset[spec.confirm_of || 'device'] || preset.device || preset.disk || preset.partition || preset.path || 'e.g. /dev/sdc') : '';
       input = el('input', { type: 'text', class: ['path', 'device', 'devices', 'dataset', 'name', 'size', 'host', 'spec', 'options', 'confirm', 'vmname', 'url', 'sha', 'sizes', 'pubkey', 'names'].includes(f.kind) ? 'mono' : '',
-                            placeholder: f.placeholder || (f.kind === 'confirm' ? 'e.g. /dev/sdc' : ''), autocomplete: 'off', spellcheck: 'false' });
+                            placeholder: f.placeholder || defPh, autocomplete: 'off', spellcheck: 'false' });
       input.value = v;
     }
     inputs[f.name] = () => input.value.trim();
@@ -134,12 +140,16 @@ function stageActions(doc, n) {
   const out = [];
   if (n.kind === 'disk') {
     const dev = '/dev/' + bare(n.ref.dev);
-    out.push(b('Partition…', 'partition', { disk: dev }), b('Format whole disk…', 'format', { device: dev }));
+    out.push(b('Add partition…', 'partition-add', { disk: dev }), b('Partition…', 'partition', { disk: dev }),
+      b('Format whole disk…', 'format', { device: dev }), b('Secure wipe drive…', 'drive-wipe', { device: dev }));
     if (btrfsMounts.length) out.push(b('Add to a btrfs pool…', 'btrfs-add', { device: dev, target: btrfsMounts[0].target }));
     out.push(b('New ZFS pool…', 'zfs-pool', { devices: dev }), b('New volume group…', 'lvm-vg', { devices: dev }), b('Add to a volume group…', 'lvm-vg-extend', { device: dev }));
   } else if (n.kind === 'part') {
-    const dev = '/dev/' + n.ref.id, uuid = n.ref.uuid;
-    out.push(b('Format…', 'format', { device: dev, fstype: n.ref.fs && n.ref.fs !== 'none' ? n.ref.fs : 'ext4' }),
+    const dev = '/dev/' + n.ref.id, uuid = n.ref.uuid, disk = '/dev/' + bare(n.disk || dev.replace(/p?\d+$/, ''));
+    out.push(b('Edit partition…', 'partition-edit', { disk, partition: dev }),
+      b('Format…', 'format', { device: dev, fstype: n.ref.fs && n.ref.fs !== 'none' ? n.ref.fs : 'ext4' }),
+      b('Secure wipe partition…', 'drive-wipe', { device: dev, wipe_table: false }),
+      b('Delete partition…', 'partition-delete', { disk, partition: dev }),
       b('Label…', 'label', { target: n.ref.mount || dev, label: n.ref.label || '' }));
     if (!n.ref.mount && n.ref.fs && n.ref.fs !== 'none') out.push(b('Mount…', 'mount', { source: uuid ? 'UUID=' + uuid : dev, fstype: n.ref.fs, options: 'defaults,noatime,nofail' }));
     if (btrfsMounts.length && !n.ref.mount) out.push(b('Add to a btrfs pool…', 'btrfs-add', { device: dev, target: btrfsMounts[0].target }));
@@ -186,7 +196,7 @@ function stagedOn(doc, n) {
       return !!path && path.startsWith('/') && !path.startsWith('/dev/') && containing(path, mounts) === n.target;
     }
     if (n.kind === 'disk' || n.kind === 'part') {
-      const dev = bare(p.device || p.disk || (String(p.target || '').startsWith('/dev/') ? p.target : ''));
+      const dev = bare(p.partition || p.device || p.disk || (String(p.target || '').startsWith('/dev/') ? p.target : ''));
       return !!dev && (n.key === 'part:' + dev || n.key === 'disk:' + dev);
     }
     return false;
@@ -203,6 +213,7 @@ function folderActions(host, full, btrfs) {
   const go = (type, preset) => () => openTask(type, host, preset);
   return [{ label: 'Rename or move…', run: go('rename', { path: full, dest: full }) },
     { label: 'Move to trash', run: go('trash', { path: full }) },
+    { label: 'Securely delete…', run: go('secure-delete', { path: full }) },
     { label: 'Owner and permissions…', run: go('perms', { path: full }) },
     { label: 'Link to it from…', run: go('symlink', { path: '', target: full }) },
     ...(btrfs ? [{ label: 'Turn into a subvolume', run: go('to-subvolume', { path: full }) },
@@ -491,4 +502,99 @@ async function cloneForm(source) {
     el('label', { class: 'field col' }, el('span', {}, 'Or these folders'), folders), el('label', { class: 'field col' }, el('span', {}, 'For'), mode),
     el('div', { class: 'row wrap' }, pkL, acL, shL, snL), el('div', { class: 'row end' }, preview), out));
   target.focus();
+}
+
+/* ── Partition manager, secure format, drive wipe and file secure delete ── */
+async function openPartitionManager(initialHost = null) {
+  const dlg = el('dialog', { class: 'pmdlg', 'aria-label': 'Partition Manager and Secure Erase' });
+  const close = () => { dlg.close(); dlg.remove(); };
+  const body = el('div', { class: 'stack' }, text('p', 'Reading disks…', 'muted'));
+  const hostSel = el('select', { 'aria-label': 'Host' });
+  dlg.append(
+    el('div', { class: 'row' },
+      el('h2', {}, 'Partition Manager'),
+      el('label', { class: 'field' }, el('span', {}, 'Host'), hostSel),
+      el('span', { class: 'grow' }),
+      button('Close', close, 'btn ghost sm')),
+    body,
+  );
+  dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); close(); });
+  document.body.append(dlg);
+  dlg.showModal();
+
+  let hostsData = [];
+  try {
+    const r = await getJSON('/api/disks');
+    hostsData = r.hosts || [];
+  } catch (err) {
+    body.replaceChildren(text('p', err.message, 'st-failed'));
+    return;
+  }
+  if (!hostsData.length) {
+    body.replaceChildren(text('p', 'No scanned hosts with disk inventory yet.', 'muted'));
+    return;
+  }
+  const pick = (initialHost && hostsData.some((h) => h.host === initialHost)) ? initialHost : hostsData[0].host;
+  hostSel.replaceChildren(...hostsData.map((h) => new Option(h.host, h.host)));
+  hostSel.value = pick;
+
+  const stage = (type, host, preset) => () => { close(); openTask(type, host, preset); };
+
+  function draw() {
+    const entry = hostsData.find((h) => h.host === hostSel.value) || hostsData[0];
+    const h = entry.host;
+    const cards = entry.disks.map((d) => {
+      const segs = d.parts.map((p) => {
+        const w = Math.max(4, p.pct || 0);
+        const lbl = `${p.name} · ${p.fs || 'raw'} · ${fmtBytes(p.size)}`;
+        const btn = el('button', { type: 'button', class: 'pm-seg', style: `flex:${w} 0 auto`, title: lbl,
+          onclick: stage('partition-edit', h, { disk: d.dev, partition: p.dev }) }, `${p.name}${p.fs ? ' (' + p.fs + ')' : ''}`);
+        return btn;
+      });
+      if (d.free_bytes > 0 || !d.parts.length) {
+        const fw = d.size ? Math.max(6, Math.round(d.free_bytes * 100 / d.size)) : 100;
+        segs.push(el('div', { class: 'pm-free', style: `flex:${fw} 0 auto` }, `${fmtBytes(d.free_bytes)} unallocated`));
+      }
+      const tbl = d.parts.length ? el('table', { class: 'pm-tbl' },
+        el('thead', {}, el('tr', {}, el('th', {}, 'Partition'), el('th', {}, 'Size'), el('th', {}, 'Filesystem'), el('th', {}, 'Label'), el('th', {}, 'Mount / Member'), el('th', {}, 'Actions'))),
+        el('tbody', {}, ...d.parts.map((p) => el('tr', {},
+          el('td', { class: 'mono' }, p.dev),
+          el('td', { class: 'mono' }, fmtBytes(p.size)),
+          el('td', { class: 'mono' }, p.fs || '—'),
+          el('td', { class: 'mono' }, p.label || '—'),
+          el('td', { class: 'mono' }, p.mount || (p.member ? `pool: ${p.member}` : '—')),
+          el('td', { class: 'row' },
+            button('Edit', stage('partition-edit', h, { disk: d.dev, partition: p.dev }), 'btn ghost sm'),
+            button('Format', stage('format', h, { device: p.dev, fstype: p.fs || 'ext4' }), 'btn ghost sm'),
+            button('Secure format', stage('format', h, { device: p.dev, fstype: p.fs || 'ext4', wipe: true, secure_wipe: 'zero' }), 'btn ghost sm'),
+            button('Secure wipe', stage('drive-wipe', h, { device: p.dev, method: 'zero', wipe_table: false }), 'btn ghost sm'),
+            button('Delete', stage('partition-delete', h, { disk: d.dev, partition: p.dev }), 'btn ghost sm danger'))))))
+        : text('p', 'No partitions on this drive.', 'muted small');
+
+      return el('section', { class: 'pm-disk stack' },
+        el('div', { class: 'row wrap' },
+          el('b', { class: 'mono' }, d.dev),
+          text('span', `${d.model || 'Disk'} · ${fmtBytes(d.size)} · ${d.table ? d.table.toUpperCase() : 'no table'}${d.media ? ' · ' + d.media : ''}${d.member ? ' · member: ' + d.member : ''}`, 'muted small'),
+          el('span', { class: 'grow' }),
+          button('+ Create partition', stage('partition-add', h, { disk: d.dev }), 'btn sm'),
+          button('New 1-part table', stage('partition', h, { disk: d.dev }), 'btn ghost sm'),
+          button('Secure format drive', stage('format', h, { device: d.dev, fstype: 'ext4', wipe: true, secure_wipe: 'zero' }), 'btn ghost sm'),
+          button('Secure wipe drive', stage('drive-wipe', h, { device: d.dev, method: 'zero', wipe_table: true }), 'btn ghost sm danger')),
+        el('div', { class: 'pm-bar' }, ...segs),
+        tbl);
+    });
+
+    const fpath = el('input', { type: 'text', class: 'mono grow', placeholder: '/path/to/file-or-folder', 'aria-label': 'Path to securely delete', autocomplete: 'off', spellcheck: 'false' });
+    const fdel = el('section', { class: 'pm-disk stack' },
+      el('b', {}, 'Securely delete a file or folder'),
+      text('p', 'Overwrites active file blocks (shred/dd) and permanently unlinks the path, bypassing .storageforge-trash.', 'muted small'),
+      el('div', { class: 'row wrap' },
+        fpath,
+        typeof pickPath === 'function' ? button('Browse…', async () => { const p = await pickPath(h, fpath.value || '/', { title: 'Pick a file or folder', pick: 'any', label: 'Use this folder' }); if (p) fpath.value = p; }, 'btn ghost sm') : '',
+        button('Securely delete…', () => { const p = fpath.value.trim(); close(); openTask('secure-delete', h, p ? { path: p } : {}); }, 'btn ghost sm danger')));
+
+    body.replaceChildren(...(cards.length ? cards : [text('p', `No physical disks found on ${h}.`, 'muted')]), fdel);
+  }
+  hostSel.addEventListener('change', draw);
+  draw();
 }

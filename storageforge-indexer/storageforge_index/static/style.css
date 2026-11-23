@@ -1258,3 +1258,13 @@ body.sf-console-page { margin: 0; height: 100vh; display: flex; flex-direction: 
 .tbpeers th, .tbpeers td { text-align: left; padding: 2px 6px; border-bottom: 1px solid var(--line); }
 .tbpeers code { word-break: break-all; }
 #tbyaml, #tbsig { width: 100%; font-family: var(--mono, monospace); font-size: 12px; }
+/* Partition manager (changes.js) */
+.pmdlg { width: min(920px, 94vw); max-height: 86vh; overflow: auto; background: var(--panel); color: var(--fg); border: 1px solid var(--line-2); border-radius: 10px; padding: 16px; }
+.pm-disk { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--bg); }
+.pm-bar { display: flex; height: 22px; border-radius: 5px; overflow: hidden; border: 1px solid var(--line-2); margin: 8px 0; background: var(--panel); }
+.pm-seg { border: 0; border-right: 1px solid var(--line-2); padding: 0 6px; font: 11px var(--mono); color: var(--fg); background: color-mix(in srgb, var(--accent) 26%, var(--panel)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; text-align: left; }
+.pm-seg:hover { background: color-mix(in srgb, var(--accent) 42%, var(--panel)); }
+.pm-free { display: flex; align-items: center; justify-content: center; font: 11px var(--mono); color: var(--muted); flex: 1 1 auto; min-width: 48px; }
+.pm-tbl { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+.pm-tbl th, .pm-tbl td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.pm-tbl td.row { justify-content: flex-start; gap: 4px; flex-wrap: wrap; }

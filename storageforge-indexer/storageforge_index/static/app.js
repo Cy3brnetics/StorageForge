@@ -835,6 +835,7 @@ function resultMenu(r) {
     '-', { heading: 'Plan a change' },
     { label: 'Rename or move…', run: stage('rename', { path: r.path, dest: r.path }) },
     { label: 'Move to trash', run: stage('trash', { path: r.path }) },
+    { label: 'Securely delete…', run: stage('secure-delete', { path: r.path }) },
     { label: 'Owner and permissions…', run: stage('perms', { path: r.path }) },
     { label: 'Copy its folder to another disk (Moves)…', run: () => moveFrom(r.host, dir) }];
 }

@@ -223,9 +223,12 @@ function model(doc) {
       if (from) link(from.key, key, 'planned');
     } else if (t.type === 'unmount') {
       const nd = nodes.get('mnt:' + p.target); if (nd) nd.removing = true;
-    } else if (['format', 'partition', 'btrfs-add'].includes(t.type)) {
-      const dev = bare(p.device || p.disk), nd = nodes.get('part:' + dev) || nodes.get('disk:' + dev);
-      if (nd) (nd.pending = nd.pending || []).push(t.type === 'format' ? `format ${p.fstype}` : t.type === 'partition' ? `partition${p.fstype ? ' + ' + p.fstype : ''}` : 'add to pool');
+    } else if (['format', 'partition', 'partition-edit', 'partition-delete', 'drive-wipe', 'btrfs-add'].includes(t.type)) {
+      const dev = bare(p.partition || p.device || p.disk), nd = nodes.get('part:' + dev) || nodes.get('disk:' + dev);
+      if (nd) (nd.pending = nd.pending || []).push(
+        t.type === 'format' ? `format ${p.fstype}` : t.type === 'partition' ? `partition${p.fstype ? ' + ' + p.fstype : ''}`
+          : t.type === 'partition-edit' ? 'edit partition' : t.type === 'partition-delete' ? 'delete partition'
+            : t.type === 'drive-wipe' ? `wipe (${p.method})` : 'add to pool');
     } else {
       const path = p.path || p.target || p.source, at = path && containing(path, mounts), nd = at && nodes.get('mnt:' + at);
       if (nd) nd.staged = (nd.staged || 0) + 1;
@@ -587,6 +590,7 @@ function initCanvas() {
       tool('Auto-layout', autoLayout, 'Forget the saved positions and lay the tables out again'),
       tool('Collapse all', toggleAll, 'Collapse or expand every table', 'tcollapse'),
       tool('Shares', () => openSharesManager(), 'See, edit and remove the NFS and SMB shares on these hosts'),
+      tool('Partitions', () => { if (typeof openPartitionManager === 'function') openPartitionManager(S.host || null); }, 'Create, edit, format, wipe and delete partitions, drives and files'),
       el('span', { class: 'tsep' }), T.find, T.findN),
     el('details', { class: 'tlegend' }, el('summary', {}, 'Legend'),
       el('div', { class: 'tleg' },

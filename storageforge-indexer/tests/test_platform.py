@@ -1415,7 +1415,7 @@ class ServerTests(DBCase):
         import re
         public = {('GET', '/login'), ('GET', '/healthz'), ('POST', '/api/logout'), ('POST', '/api/login'),
                   ('GET', '/enroll'), ('POST', '/api/enroll'), ('POST', '/api/enroll/check'),
-                  ('GET', '/<any("login.js", "enroll.js", "style.css", "tokens.css", "components.css", "favicon.svg"):name>')}
+                  ('GET', '/<any("login.js", "enroll.js", "style.css", "tokens.css", "components.css", "window.css", "favicon.svg"):name>')}
         answered = []
         for rule in self.web.url_map.iter_rules():
             path = re.sub(r'<int:\w+>', '1', rule.rule)
@@ -1437,7 +1437,7 @@ class ServerTests(DBCase):
         self.assertEqual(self.client.get('/api/me').get_json()['role'], 'viewer')
         self.assertEqual(self.client.get('/api/hosts').status_code, 200)
         allowed = {'/api/login', '/api/logout', '/api/reauth', '/api/routecode', '/api/me', '/api/me/password', '/api/jobs/report', '/api/jobs/state', '/api/map/whatif', '/api/dsl/compile', '/api/dsl/whatif', '/api/planner/versions/compare',
-                   '/api/toolbox/catalog/validate', '/api/toolbox/preview'}    # a what-if, a compile, an entry checked and a plan previewed read only
+                   '/api/toolbox/catalog/validate', '/api/toolbox/preview', '/api/toolbox/bundles/preview'}    # a what-if, a compile, an entry checked and a plan or bundle previewed read only
         wrote = []
         for rule in self.web.url_map.iter_rules():
             path = re.sub(r'<int:\w+>', '1', rule.rule)

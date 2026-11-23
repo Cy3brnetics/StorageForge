@@ -97,8 +97,10 @@ function fsBrowser({ host, path = '/', pick = 'folder', onPick, onChange, pickLa
       }
       if (st.files) {
         for (const x of d.files.filter((x) => !f || x.name.toLowerCase().includes(f))) {
+          const full = joinPath(d.path, x.name);
           kids.push(el('li', {}, el('div', { class: 'fsrow file' }, text('span', x.link ? '↪' : '·', 'ic'),
-            text('span', x.name + (x.link ? ` → ${x.link}` : ''), 'n'), text('span', fmtBytes(x.bytes), 's'))));
+            text('span', x.name + (x.link ? ` → ${x.link}` : ''), 'n'), text('span', fmtBytes(x.bytes), 's'),
+            onPick && pick === 'any' ? button('Use', () => onPick(full), 'btn ghost sm use') : null)));
         }
         if (d.more_files) kids.push(text('li', `… and ${d.more_files.toLocaleString()} more files`, 'muted small fsmore'));
       }
