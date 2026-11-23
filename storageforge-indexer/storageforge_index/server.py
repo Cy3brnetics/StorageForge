@@ -1855,9 +1855,45 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         open_ids = sorted({r['id'] for r in built['risks'] if r['level'] in ('crit', 'warn')} - set(b.get('accept') or []))
         if open_ids:
             return jsonify(error='accept each risk first', open=open_ids, risks=built['risks']), 409
-        saved = clone.save(conn(), built, actor())
+        saved = clone.save(conn(), built, actor(), accepted=sorted(b.get('accept') or []))
         core.audit(conn(), actor(), 'clone.save', 'ok', built['target'], {'source': built['source'], 'plans': saved, 'accepted': sorted(b.get('accept') or [])})
         return jsonify(saved=saved, **built), 201
+
+    @web.get('/api/clone/report')
+    @login_required
+    def api_clone_report():
+        from . import clone
+        source, target = request.args.get('source', '').strip(), request.args.get('target', '').strip()
+        try:
+            return jsonify(clone.report(conn(), source, target, request.args.get('before', type=int)))
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+
+    @web.post('/api/clone/cutover')
+    @login_required
+    def api_clone_cutover():
+        from . import clone
+        b = json_body()
+        try:
+            res = clone.cutover(conn(), str(b.get('source') or ''), str(b.get('target') or ''), actor())
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        core.audit(conn(), actor(), 'clone.cutover', 'ok', res['target'], {'source': res['source'], 'plan': res['plan_id']})
+        return jsonify(res), 201
+
+    @web.post('/api/clone/image')
+    @login_required
+    def api_clone_image():
+        from . import clone
+        b = json_body()
+        try:
+            res = clone.disk_image(conn(), str(b.get('source') or ''), str(b.get('dest') or '/var/lib/libvirt/images/host.qcow2'),
+                                   source_dev=str(b.get('source_dev') or '/dev/vda'), fmt=str(b.get('format') or 'qcow2'),
+                                   fix_boot=b.get('fix_boot', True) is not False, live_target=str(b.get('live_target') or '/dev/sda'), actor=actor())
+        except LookupError as exc:
+            return jsonify(error=str(exc)), 404
+        core.audit(conn(), actor(), 'clone.image', 'ok', res['source'], {'plan': res['plan_id'], 'dest': res['dest']})
+        return jsonify(res), 201
 
     # ── consoles: a terminal on a host or VM (console.py). Each session is the opener's alone, in the audit log, and
     # recorded in full when recording is on. The browser long-polls for output: no WebSocket, so a plain proxy works.

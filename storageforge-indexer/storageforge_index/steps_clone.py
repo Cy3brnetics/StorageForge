@@ -133,7 +133,7 @@ from . import hostconfig, reinstall
 # the account functions of the reinstall script, word for word: one way of adding an account, and one set of refusals
 _HELPERS = '\n'.join(_re.search(rf'^{fn}\(\) \{{.*?^\}}$', reinstall.BODY, _re.M | _re.S)[0] for fn in ('group_on', 'user_on', 'member_on', 'home_on'))
 _SAFE_PATH = _re.compile(r'/[A-Za-z0-9._/@+-]{0,250}')
-SHARE_FILE = _re.compile(r'/etc/(exports|exports\.d/[\w.-]+\.exports|samba/[\w.-]+\.conf)')
+SHARE_FILE = _re.compile(r'/etc/(exports|exports\.d/[\w.-]+\.exports|samba/[\w.-]+\.conf|hosts|timezone|locale\.conf|vconsole\.conf|sysctl\.d/[\w.-]+\.conf|udev/rules\.d/[\w.-]+\.rules)')
 
 
 def _record(conn, host):
@@ -190,7 +190,7 @@ t_accounts() { local from=$1 homes=$2 body=$3 kind a b c d e
 t_config_files() { local from=$1 body=$2 path data tmp changed=0
   [[ -n $body ]] || { ok "$from had no NFS or Samba share files"; return 0; }
   while IFS=$'\t' read -r path data || [[ -n ${path:-} ]]; do
-    case $path in /etc/exports|/etc/exports.d/*.exports|/etc/samba/*.conf) ;; *) conflict "not a file this step writes: $path"; continue ;; esac
+    case $path in /etc/exports|/etc/exports.d/*.exports|/etc/samba/*.conf|/etc/hosts|/etc/timezone|/etc/locale.conf|/etc/vconsole.conf|/etc/sysctl.d/*.conf|/etc/udev/rules.d/*.rules) ;; *) conflict "not a file this step writes: $path"; continue ;; esac
     tmp=$(mktemp) || { conflict "could not make a temporary file"; return 0; }
     base64 -d <<<"$data" >"$tmp" 2>/dev/null || { rm -f "$tmp"; conflict "$path: damaged in this script"; continue; }
     if [[ -f $path ]] && cmp -s "$tmp" "$path"; then ok "$path is as on $from"; rm -f "$tmp"; continue; fi
@@ -274,6 +274,83 @@ changes.register('accounts', {'group': 'Software', 'label': 'Add the accounts of
 
 changes.register('config-files', {'group': 'Software', 'label': 'Copy the share files of another host', 'fields': [
     F('from_host', 'host', 'The NFS and Samba files of', required=True, placeholder='web-01')],
-    'help': '/etc/exports and the Samba files from its config history. A file that differs here is kept beside the new one. Passwords are not copied: scans never keep them.'},
+    'help': '/etc/exports, Samba files and system config files from its config history. A file that differs here is kept beside the new one. Passwords are not copied: scans never keep them.'},
     ('from_host',), lambda p: f'Share files of {p["from_host"]}', _check_config, _ansible_lines('t_config_files', ''), args_of=_config_args)
 changes.EXTRA_BASH.append(ACCOUNTS_BASH)
+
+# ── Phase 4b snapshot holds & Phase 7 physical disk-image capture ───────────────────────────────────
+PHASE7_BASH = r"""
+t_zfs_hold() { local snap=$1 tag=$2
+  command -v zfs >/dev/null || { conflict "zfs tools are not installed"; return 0; }
+  zfs list -H -t snapshot -o name -- "$snap" >/dev/null 2>&1 || { later "snapshot $snap must exist first"; return 0; }
+  if zfs holds -H -- "$snap" 2>/dev/null | awk '{print $2}' | grep -Fxq -- "$tag"; then ok "hold $tag on $snap exists"; return 0; fi
+  act "zfs hold $tag $snap" && try zfs hold -- "$tag" "$snap" && ok "held $snap with $tag"
+}
+
+t_disk_image() { local src=$1 dest=$2 fmt=${3:-qcow2} fix_boot=${4:-1} snap=""
+  [[ $src == /dev/* ]] || { conflict "source device must be a /dev/ path: $src"; return 0; }
+  [[ -e $dest ]] && { ok "disk image $dest already exists"; return 0; }
+  command -v qemu-img >/dev/null || { conflict "qemu-img is not installed"; return 0; }
+  if ((!APPLY)); then missing "would image snapshot of $src into $dest ($fmt, fix_boot=$fix_boot)"; return 0; fi
+  act "capture $src into $dest ($fmt)" || return 0
+  if command -v lvs >/dev/null && lvs --noheadings -o lv_name -- "$src" >/dev/null 2>&1; then
+    snap="${src}-sf-img-$STAMP"
+    try lvcreate -s -L 1G -n "${snap##*/}" "$src" >/dev/null
+    src=$snap
+  fi
+  mkdir -p "$(dirname -- "$dest")"
+  try qemu-img convert -f raw -O "$fmt" -- "$src" "$dest"
+  [[ -n $snap ]] && lvremove -f -- "$snap" >/dev/null 2>&1 || true
+  if [[ $fix_boot == 1 ]] && command -v virt-customize >/dev/null; then
+    virt-customize -a "$dest" --run-command "command -v dracut >/dev/null && dracut -f --add-drivers virtio_blk || true" >/dev/null 2>&1 || true
+  fi
+  ok "wrote $dest ($fmt)"
+}
+"""
+
+
+def _check_zfs_hold(conn, c, h, p, say):
+    snap, tag = p.get('snapshot') or '', p.get('tag') or 'sf-clone'
+    if '@' not in snap:
+        say('crit', f'{snap} must be dataset@snapshot')
+    else:
+        say('ok', f'holds {snap} with tag {tag} so expiry cannot destroy it')
+
+
+def _check_disk_image(conn, c, h, p, say):
+    src, dest = p.get('source_dev') or '', p.get('dest') or ''
+    if not src.startswith('/dev/'):
+        say('crit', 'source_dev must be a block device under /dev/')
+    if not dest.startswith('/'):
+        say('crit', 'dest must be an absolute file path')
+    elif p.get('fix_boot'):
+        say('note', 'reads from a snapshot when possible and updates virtio initramfs/fstab for VM boot')
+
+
+def _ansible_phase7(fn: str, args: tuple):
+    def render(t):
+        q = shlex.quote
+        p = t['params']
+        call = ' '.join(q(str(p.get(a) if not isinstance(p.get(a), bool) else ('1' if p[a] else ''))) for a in args)
+        head = 'APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }\n'
+        return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + PHASE7_BASH + f'\n{fn} {call}\n', 'executable': '/bin/bash'},
+                'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+    return render
+
+
+changes.register('zfs-hold', {'group': 'ZFS', 'label': 'Hold a ZFS snapshot', 'fields': [
+    F('snapshot', 'dataset', 'Snapshot (dataset@name)', required=True),
+    F('tag', 'name', 'Hold tag', default='sf-clone', required=True)]},
+    ('snapshot', 'tag'), lambda p: f'Hold ZFS snapshot {p["snapshot"]} ({p["tag"] or "sf-clone"})',
+    _check_zfs_hold, _ansible_phase7('t_zfs_hold', ('snapshot', 'tag')))
+
+changes.register('disk-image', {'group': 'VMs', 'label': 'Image a physical disk/LV into qcow2', 'fields': [
+    F('source_dev', 'device', 'Source block device or LV', required=True, placeholder='/dev/vg0/root'),
+    F('dest', 'path', 'Output image path', required=True, placeholder='/var/lib/libvirt/images/host.qcow2'),
+    F('format', 'choice', 'Format', options=['qcow2', 'raw'], default='qcow2'),
+    F('fix_boot', 'bool', 'Fix virtio/boot inside image', default=True)],
+    'help': 'Takes an LVM snapshot when the source is an LV, converts blocks into qcow2 with qemu-img, and prepares virtio boot.'},
+    ('source_dev', 'dest', 'format', 'fix_boot'), lambda p: f'Disk image {p["source_dev"]} -> {p["dest"]} ({p["format"] or "qcow2"})',
+    _check_disk_image, _ansible_phase7('t_disk_image', ('source_dev', 'dest', 'format', 'fix_boot')))
+changes.EXTRA_BASH.append(PHASE7_BASH)
+

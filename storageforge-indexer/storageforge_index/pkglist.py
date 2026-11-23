@@ -107,8 +107,9 @@ def parse(text: str) -> dict:
     installed on purpose, 'all' every package (dnf had no cache or history to tell them apart)."""
     pm = distro = version = None
     like: list[str] = []
-    manual, every, auto, foreign, holds, backports = set(), set(), set(), set(), set(), set()
-    flatpak, snap, repos, versions = {}, {}, [], {}
+    manual, every, auto, foreign, holds, backports, cached = set(), set(), set(), set(), set(), set(), set()
+    flatpak, snap, repos, versions, aur_commits = {}, {}, [], {}, {}
+    ala_date = None
     from_history = complete = False
     mode, image_ref, cpu, arch = 'normal', None, None, None
     for raw in text.splitlines():
@@ -141,6 +142,16 @@ def parse(text: str) -> dict:
                 foreign.add(name.strip())
                 if _NAME.fullmatch(ver.strip()):
                     versions[name.strip()] = ver.strip()
+        elif kind == 'c':
+            if _NAME.fullmatch(rest.strip()):
+                cached.add(rest.strip())
+        elif kind == 'A':
+            pkg, _, sha = rest.partition('\t')
+            if _NAME.fullmatch(pkg.strip()) and re.fullmatch(r'[0-9a-fA-F]{7,40}', sha.strip()):
+                aur_commits[pkg.strip()] = sha.strip()
+        elif kind == 'L':
+            if re.fullmatch(r'\d{4}/\d{2}/\d{2}', rest.strip()):
+                ala_date = rest.strip()
         elif kind in ('h', 'b'):
             if _NAME.fullmatch(rest.strip()):
                 (holds if kind == 'h' else backports).add(rest.strip())
@@ -178,7 +189,9 @@ def parse(text: str) -> dict:
             'mode': mode, 'image_ref': image_ref, 'base_packages': base,
             'holds': sorted(holds & set(names)), 'backports': sorted(backports & set(names)),
             'packages': names[:MAX_NAMES], 'foreign': sorted(foreign & manual)[:MAX_NAMES],
-            'foreign_versions': {k: v for k, v in versions.items() if k in manual}, 'flatpak': [{'id': k, 'origin': v} for k, v in sorted(flatpak.items())],
+            'foreign_versions': {k: v for k, v in versions.items() if k in manual},
+            'cached': sorted(cached), 'aur_commits': {k: v for k, v in aur_commits.items() if k in manual or k in foreign}, 'ala_date': ala_date,
+            'flatpak': [{'id': k, 'origin': v} for k, v in sorted(flatpak.items())],
             'snap': [{'name': k, 'confinement': v} for k, v in sorted(snap.items())],
             'repos': [dict(t) for t in dict.fromkeys(tuple(r.items()) for r in repos)],
             'arch': arch, 'cpu_level': cpu, 'needs_level': needs_level(repos),
@@ -420,8 +433,18 @@ fi
 
 if ((${#FOREIGN[@]})); then
   section "Built or downloaded by hand"
-  info "${#FOREIGN[@]} package(s) came from no package source (the AUR, a local .deb or .rpm, or a file): never installed by this script"
+  info "${#FOREIGN[@]} package(s) came from no package source (the AUR, a local .deb or .rpm, or a file): never installed automatically unless cached"
   info "${FOREIGN[*]}"
+  if [[ -n ${SRC_ALA:-} ]]; then
+    info "Arch Linux Archive pin on $SRC_HOST: Server = https://archive.archlinux.org/repos/$SRC_ALA/\$repo/os/\$arch"
+  fi
+  for p in "${CACHED_PKGS[@]+"${CACHED_PKGS[@]}"}"; do
+    info "pacman cache or bacman export candidate: bacman $p (or copy /var/cache/pacman/pkg/$p-*.pkg.tar.*)"
+  done
+  for c in "${AUR_COMMITS[@]+"${AUR_COMMITS[@]}"}"; do
+    pkg=${c%%=*}; sha=${c#*=}
+    info "AUR pinned build: git clone https://aur.archlinux.org/$pkg.git && git -C $pkg checkout $sha && (cd $pkg && makepkg -si)"
+  done
 fi
 
 if ((APPS)) && ((${#FLATPAKS[@]})); then
@@ -491,6 +514,9 @@ def script(pk: dict, host: str, when: str = '', also: list | None = None) -> str
             + _array('FLATPAKS', [f['id'] for f in flat]) + _array('FLATPAK_ORIGINS', [f.get('origin') or '' for f in flat])
             + _array('SNAPS', [s['name'] for s in snaps]) + _array('SNAP_FLAGS', [s.get('confinement') or '' for s in snaps])
             + _array('FOREIGN', [p + (f' {pk["foreign_versions"][p]}' if (pk.get('foreign_versions') or {}).get(p) else '') for p in pk.get('foreign') or [] if _NAME.fullmatch(p)])
+            + _array('CACHED_PKGS', [p for p in pk.get('cached') or [] if _NAME.fullmatch(p)])
+            + _array('AUR_COMMITS', [f'{k}={v}' for k, v in sorted((pk.get('aur_commits') or {}).items()) if _NAME.fullmatch(k)])
+            + f'SRC_ALA={shlex.quote(pk.get("ala_date") or "")}\n'
             + _array('HOLDS', [p for p in pk.get('holds') or [] if _NAME.fullmatch(p)])
             + _array('BACKPORTS', [p for p in pk.get('backports') or [] if _NAME.fullmatch(p)])
             + f'SRC_MODE={shlex.quote(pk.get("mode") or "normal")} SRC_IMAGE={shlex.quote(pk.get("image_ref") or "")} SRC_BASE={int(pk.get("base_packages") or 0)}\n'

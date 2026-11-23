@@ -19,8 +19,9 @@ import copy
 import datetime as dt
 import json
 import re
+import shlex
 
-from . import changes, hostconfig, pkglist, steps_clone
+from . import changes, hostconfig, pkglist, steps_clone, steps_services
 from .changes import OS_MOUNTS
 from .db import Conn, epoch
 from .moves import host_slug
@@ -397,16 +398,39 @@ def build(conn: Conn, source: str, target: str, *, packages: bool = True, skip: 
     if snapshots and before:
         after = _snapshot_tasks(conn, tgt, 'after', stamp, notes, risks)
         if after:
-            plans['after'] = {'name': f'{title}: snapshot after', 'tasks': after}
+            # Phase 4b: hold clone ZFS snapshots so retention expiry cannot remove them prematurely
+            holds = [{'type': 'zfs-hold', 'host': t['host'], 'params': {'snapshot': f'{t["params"]["dataset"]}@{t["params"]["snapshot"]}', 'tag': 'sf-clone'}}
+                     for t in before + after if t['type'] == 'zfs-snapshot']
+            plans['after'] = {'name': f'{title}: snapshot after', 'tasks': after + holds}
+
+    # Phase 3d: LUKS vault-backed keys when present, otherwise explicit owner custody note
+    try:
+        src_cfg = hostconfig.build(conn, src['name'])
+    except Exception:
+        src_cfg = {'crypt': []}
+    for cr in src_cfg.get('crypt') or []:
+        cname = cr.get('name') or 'crypt'
+        vault_secret = conn.scalar("SELECT name FROM device_credentials WHERE name IN (:a, :b) AND username = 'secret' LIMIT 1",
+                                   {'a': f'luks-{cname}', 'b': f'{src["name"]}-{cname}'})
+        if vault_secret:
+            notes.append(f'LUKS {cname}: vault holds {vault_secret}; stage luks-format/luks-open using --secrets-stdin on {tgt["name"]}')
+        else:
+            not_carried.append(f'LUKS {cname}: key stays with the owner (by hand, or add vault secret luks-{cname})')
 
     fresh = [f'{m["target"]} ({(m.get("used") or 0) // 2**30} GiB)' for m in tgt['mounts']
              if m['target'] not in OS_MOUNTS and (m.get('fstype') or '') in ('ext4', 'xfs', 'btrfs', 'zfs', 'f2fs') and (m.get('used') or 0) > 2**30]
     if fresh:
         risks.append({'level': 'warn', 'id': 'not-fresh', 'text': f'{tgt["name"]} is not freshly installed: it holds data on {", ".join(fresh[:6])}. The copy adds to it'})
+    from . import workloads
+    is_vm = any(w.get('host') == tgt['name'] or w.get('name') == tgt['name'] for w in workloads.listing(conn).get('workloads') or [] if w.get('kind') == 'vm')
+    isolation = {'sshd_authorized_keys': 'kept' if mode == 'test' else 'replaced',
+                 'outward_services': 'excluded' if mode == 'test' else 'enabled',
+                 'timers': 'excluded' if mode == 'test' else 'enabled',
+                 'network': 'sf-isolated' if mode == 'test' and is_vm else 'standalone'}
     if mode == 'migrate':
-        notes.append(f'migration: when the copy is checked, stop what writes on {src["name"]}, run the files plan again for what changed, then move the name and address over')
+        notes.append(f'migration: when the copy is checked, stop what writes on {src["name"]}, run the files plan again for what changed, then run cutover to {tgt["name"]}')
     else:
-        notes.append(f'test: the copy has its own name and keys. Jobs, timers and network mounts of {src["name"]} are not copied, so it can\'t write to its backup targets')
+        notes.append(f'test: the copy stays isolated ({isolation["network"]}). Jobs, timers and network mounts of {src["name"]} are not copied, so it can\'t write to its backup targets')
     there = pkglist.for_host(conn, tgt['name']) or {}
     if pk and pk.get('arch') and there.get('arch') and pk['arch'] != there['arch']:
         risks.append({'level': 'warn', 'id': 'arch-change', 'text': f'{src["name"]} is {pk["arch"]} and {tgt["name"]} {there["arch"]}: packages are '
@@ -415,11 +439,14 @@ def build(conn: Conn, source: str, target: str, *, packages: bool = True, skip: 
     if pk and pk.get('foreign'):
         not_carried.append(f'{len(pk["foreign"])} package(s) from no package source (the AUR, a local file): {", ".join(pk["foreign"][:8])}')
     order = {'crit': 0, 'warn': 1, 'note': 2}
-    return {'source': src['name'], 'target': tgt['name'], 'mode': mode, 'files': files, 'paths': paths, 'plans': plans,
+    crit_ids = [r['id'] for r in risks if r['level'] == 'crit']
+    if crit_ids and 'changes' in plans:
+        plans['changes']['require_accept'] = crit_ids
+    return {'source': src['name'], 'target': tgt['name'], 'mode': mode, 'files': files, 'paths': paths, 'plans': plans, 'isolation': isolation,
             'risks': sorted(risks, key=lambda r: order.get(r['level'], 3)), 'notes': notes, 'not_carried': not_carried}
 
 
-def save(conn: Conn, built: dict, actor: str) -> dict:
+def save(conn: Conn, built: dict, actor: str, accepted: list[str] | None = None) -> dict:
     """Save the plans. A name already taken gets the date and time on the end, then a number if that is taken too."""
     from . import moves
     stamp = dt.datetime.now().strftime('%Y-%m-%d %H%M')
@@ -440,3 +467,77 @@ def save(conn: Conn, built: dict, actor: str) -> dict:
         body = {**body, 'name': name}
         out[key] = (moves.save_plan if key == 'files' else changes.save_plan)(conn, body, actor)
     return out
+
+
+def report(conn: Conn, source: str, target: str, before_config_id: int | None = None) -> dict:
+    """Phase 4b: Before-and-after 'what changed' report comparing target config history, packages and services against source."""
+    hs = changes.hosts(conn)
+    src = changes.find_host(hs, source)
+    tgt = changes.find_host(hs, target)
+    if not src or not tgt:
+        raise LookupError(f'{target if not tgt else source} has not been scanned')
+    versions = hostconfig.versions(conn, tgt['name'])
+    cfg_diffs = []
+    if len(versions) >= 2 or (before_config_id and versions):
+        after_v = hostconfig.get(conn, versions[0]['config_id'])
+        before_v = hostconfig.get(conn, before_config_id) if before_config_id else hostconfig.get(conn, versions[-1]['config_id'])
+        if before_v and after_v:
+            cfg_diffs = hostconfig.diff(before_v['body'], after_v['body'])
+    src_pk, tgt_pk = pkglist.for_host(conn, src['name']), pkglist.for_host(conn, tgt['name'])
+    pkg_diff = pkglist.compare(src_pk, tgt_pk) if src_pk and tgt_pk else None
+    src_sv = steps_services.for_host(conn, src['name'])
+    svc_take, svc_left = steps_services.choose(src_sv, timers=True)
+    return {
+        'source': src['name'], 'target': tgt['name'],
+        'config_diffs': cfg_diffs,
+        'packages': pkg_diff,
+        'services_expected': [s['unit'] for s in svc_take],
+        'services_excluded': [{'unit': u, 'why': w} for u, w in svc_left],
+    }
+
+
+def cutover(conn: Conn, source: str, target: str, actor: str) -> dict:
+    """Phase 5: Save the final migration cutover plan: enable timers/outward services on target and record cutover checklist."""
+    hs = changes.hosts(conn)
+    src = changes.find_host(hs, source)
+    tgt = changes.find_host(hs, target)
+    if not src or not tgt:
+        raise LookupError(f'{target if not tgt else source} has not been scanned')
+    if src['name'] == tgt['name']:
+        raise ValueError('pick another host for cutover')
+    src_sv = steps_services.for_host(conn, src['name'])
+    if not src_sv:
+        raise ValueError(f'{src["name"]} has no service list: scan it first')
+    tasks = [{'type': 'services', 'host': tgt['name'], 'params': {'from_host': src['name'], 'timers': True},
+              'note': f'Enable timers and outward services on {tgt["name"]} after stopping them on {src["name"]}'}]
+    plan = {'name': f'Cutover {src["name"]} -> {tgt["name"]}'[:80],
+            'notes': f'1. Stop services on {src["name"]}; 2. Re-run file sync Moves plan; 3. Apply this cutover plan on {tgt["name"]}; 4. Move IP/DNS to {tgt["name"]}.',
+            'tasks': tasks}
+    pid = changes.save_plan(conn, plan, actor)
+    return {'plan_id': pid, 'source': src['name'], 'target': tgt['name'], 'plan': plan}
+
+
+def bare_metal_restore_script(qcow2_path: str, target_dev: str) -> str:
+    """Phase 7: Live-environment commands to write a captured qcow2 image back to a bare-metal disk."""
+    q = shlex.quote
+    return (
+        '#!/usr/bin/env bash\nset -euo pipefail\n'
+        f'IMG={q(qcow2_path)}\nDEV={q(target_dev)}\n'
+        'test -b "$DEV" || { echo "target block device not found: $DEV" >&2; exit 1; }\n'
+        'qemu-img convert -p -O raw -- "$IMG" "$DEV"\n'
+        'partprobe "$DEV" || true\n'
+        'echo "written $IMG to $DEV; reinstall GRUB/efibootmgr from chroot before rebooting"\n'
+    )
+
+
+def disk_image(conn: Conn, source: str, dest_path: str, source_dev: str = '/dev/vda', fmt: str = 'qcow2', fix_boot: bool = True, live_target: str = '/dev/sda', actor: str = 'web') -> dict:
+    """Phase 7: Save a disk-image plan (snapshot -> qcow2 + boot fixup) and bare-metal live restore script."""
+    hs = changes.hosts(conn)
+    src = changes.find_host(hs, source)
+    if not src:
+        raise LookupError(f'{source} has not been scanned')
+    plan = {'name': f'Disk image {src["name"]}'[:80], 'tasks': [{'type': 'disk-image', 'host': src['name'],
+            'params': {'source_dev': source_dev, 'dest': dest_path, 'format': fmt, 'fix_boot': bool(fix_boot)}}]}
+    pid = changes.save_plan(conn, plan, actor)
+    return {'plan_id': pid, 'source': src['name'], 'dest': dest_path, 'format': fmt,
+            'bare_metal_script': bare_metal_restore_script(dest_path, live_target)}

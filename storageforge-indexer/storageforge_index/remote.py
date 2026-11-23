@@ -361,7 +361,7 @@ echo '@@ids'; getent passwd 2>/dev/null | awk -F: '$3>=1000 && $3<60000 {print "
 echo '@@nfs'; cat /var/lib/nfs/etab 2>/dev/null || cat /etc/exports /etc/exports.d/*.exports 2>/dev/null
 echo '@@smb'; if command -v smbd >/dev/null 2>&1 || [ -f /etc/samba/smb.conf ]; then
   pgrep -x smbd >/dev/null 2>&1 && echo '# smbd running'; testparm -s 2>/dev/null || cat /etc/samba/smb.conf 2>/dev/null; fi
-echo '@@configs'; for f in /etc/fstab /etc/crypttab /etc/mdadm.conf /etc/mdadm/mdadm.conf /etc/exports /etc/exports.d/*.exports /etc/samba/*.conf; do
+echo '@@configs'; for f in /etc/fstab /etc/crypttab /etc/mdadm.conf /etc/mdadm/mdadm.conf /etc/exports /etc/exports.d/*.exports /etc/samba/*.conf /etc/hosts /etc/timezone /etc/locale.conf /etc/vconsole.conf /etc/sysctl.d/*.conf /etc/udev/rules.d/*.rules; do
   [ -f "$f" ] || continue; if [ -r "$f" ]; then printf '%s\t' "$f"; head -c 262144 "$f" | base64 | tr -d '\n'; echo; else printf '%s\t!\n' "$f"; fi; done
 echo '@@authkeys'; getent passwd 2>/dev/null | awk -F: '$3==0 || ($3>=1000 && $3<60000) {print $1 ":" $6}' | while IFS=: read -r u h; do
   if [ -e "$h" ] && [ ! -x "$h" ] || { [ -d "$h/.ssh" ] && [ ! -x "$h/.ssh" ]; }; then printf '!\t%s\n' "$u"; continue; fi
@@ -390,6 +390,9 @@ echo '@@pkglist'; (PATH="$PATH:/usr/sbin:/sbin"; . /etc/os-release 2>/dev/null; 
     bounded dpkg-query -W -f='${binary:Package}\t${Version}\n' 2>/dev/null | awk -F'\t' '$2 ~ /~bpo/ {print "b\t" $1}'
     bounded apt list --installed 2>/dev/null | awk -F/ '/,local\]/ {print "o\t" $1}'
   elif command -v pacman >/dev/null 2>&1; then echo 'pm pacman'; bounded pacman -Qqe 2>/dev/null | awk '{print "m\t" $0}'; bounded pacman -Qm 2>/dev/null | awk '{print "o\t" $1 "\t" $2}'
+    ls -1 /var/cache/pacman/pkg/*.pkg.tar.* 2>/dev/null | sed -n 's|.*/\([^/]*\)-[^-]*-[^-]*-[^-]*\.pkg\.tar\..*|c\t\1|p' | head -n 500
+    sed -n 's|.*archive\.archlinux\.org/repos/\([0-9]\{4\}/[0-9]\{2\}/[0-9]\{2\}\).*|L\t\1|p' /etc/pacman.d/mirrorlist 2>/dev/null | head -n 1
+    for d in /var/cache/yay/* "$HOME"/.cache/yay/* /var/cache/paru/*; do [ -d "$d/.git" ] && printf 'A\t%s\t%s\n' "${d##*/}" "$(git -C "$d" rev-parse HEAD 2>/dev/null)"; done | head -n 200
   elif command -v zypper >/dev/null 2>&1; then echo 'pm zypper'; bounded rpm -qa --qf '%{NAME}\n' 2>/dev/null | awk '{print "a\t" $0}'
     [ -r /var/lib/zypp/AutoInstalled ] && grep -v '^#' /var/lib/zypp/AutoInstalled | awk '{print "x\t" $0}'
   elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then m=dnf; command -v dnf >/dev/null 2>&1 || m=yum; echo "pm $m"

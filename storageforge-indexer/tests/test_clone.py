@@ -334,6 +334,72 @@ class Api(Db):
         self.assertIn('run them in this order: plan script', o2.getvalue())
         self.assertEqual(len(changes.list_plans(self.conn)), 1)
 
+    def test_phase3b_aur_ala_bacman_and_3d_luks_and_etc(self):
+        from storageforge_index import pkglist, hostconfig
+        pk = pkglist.parse('''pm pacman
+distro\tarch\t\t
+m\tbase
+o\tyay\t12.0-1
+c\tyay
+A\tyay\tdeadbeef1234
+L\t2026/11/01
+complete
+''')
+        self.assertEqual(pk['ala_date'], '2026/11/01')
+        self.assertEqual(pk['cached'], ['yay'])
+        self.assertEqual(pk['aur_commits']['yay'], 'deadbeef1234')
+        sh_text = pkglist.script(pk, 'arch-box')
+        self.assertIn('SRC_ALA=2026/11/01', sh_text)
+        self.assertIn('archive.archlinux.org/repos/$SRC_ALA', sh_text)
+        self.assertIn('CACHED_PKGS=(yay)', sh_text)
+        self.assertIn('bacman $p', sh_text)
+        self.assertIn('deadbeef1234', sh_text)
+        # 3d: extra /etc configs + LUKS vault detection
+        cfg = hostconfig.parse_configs(f'/etc/sysctl.d/99-sf.conf\t{base64.b64encode(b"vm.swappiness=10\\n").decode()}\n')
+        self.assertIn('/etc/sysctl.d/99-sf.conf', cfg['files'])
+        hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'web-01'")
+        inv = json.loads(self.conn.scalar("SELECT inventory_json FROM hosts WHERE host_id = :h", {'h': hid}))
+        inv['configs']['files']['/etc/crypttab'] = 'cryptdata UUID=1111 none luks\n'
+        self.conn.execute("UPDATE hosts SET inventory_json = :i WHERE host_id = :h", {'i': json.dumps(inv), 'h': hid})
+        built = clone.build(self.conn, 'web-01', 'web-copy')
+        self.assertTrue(any('LUKS cryptdata' in n for n in built['not_carried']))
+
+    def test_phase4b_accept_holds_report_phase5_cutover_and_phase7_disk_image(self):
+        built = clone.build(self.conn, 'web-01', 'web-copy', storage={'/srv/data': '/dev/vdd'})
+        self.assertEqual(built['isolation']['sshd_authorized_keys'], 'kept')
+        self.assertIn('format-/dev/vdd', built['plans']['changes'].get('require_accept', []))
+        script = changes.script(self.conn, built['plans']['changes'])
+        self.assertIn('--accept', script)
+        self.assertIn('REQUIRED_ACCEPTS=', script)
+        sh = Path(self.tmp) / 'accept.sh'
+        sh.write_text(script)
+        self.assertEqual(subprocess.run(['bash', '-n', str(sh)], capture_output=True, text=True).stderr, '')
+        # Phase 4b report
+        rep = clone.report(self.conn, 'web-01', 'web-copy')
+        self.assertEqual((rep['source'], rep['target']), ('web-01', 'web-copy'))
+        # Phase 5 cutover & Phase 7 disk-image API/CLI
+        from storageforge_index import server, users
+        users.create(self.conn, 'alice', 'a long enough password')
+        client = server.create_app(server.App(self.db), 's' * 48).test_client()
+        client.post('/api/login', json={'username': 'alice', 'password': 'a long enough password'})
+        # Add services to web-01 inventory so cutover can plan timers=True
+        hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'web-01'")
+        inv = json.loads(self.conn.scalar("SELECT inventory_json FROM hosts WHERE host_id = :h", {'h': hid}))
+        inv['services'] = {'init': 'systemd', 'enabled': [{'unit': 'borgmatic.timer', 'preset': 'enabled'}]}
+        self.conn.execute("UPDATE hosts SET inventory_json = :i WHERE host_id = :h", {'i': json.dumps(inv), 'h': hid})
+        r_rep = client.get('/api/clone/report?source=web-01&target=web-copy')
+        self.assertEqual(r_rep.status_code, 200)
+        r_cut = client.post('/api/clone/cutover', json={'source': 'web-01', 'target': 'web-copy'})
+        self.assertEqual(r_cut.status_code, 201)
+        self.assertIn('Cutover web-01 -> web-copy', r_cut.get_json()['plan']['name'])
+        r_img = client.post('/api/clone/image', json={'source': 'web-01', 'dest': '/srv/vm/web.qcow2', 'source_dev': '/dev/sda'})
+        self.assertEqual(r_img.status_code, 201)
+        self.assertIn('qemu-img convert -p -O raw', r_img.get_json()['bare_metal_script'])
+        img_script = changes.script(self.conn, changes.get_plan(self.conn, r_img.get_json()['plan_id']))
+        self.assertIn('t_disk_image', img_script)
+        (Path(self.tmp) / 'img.sh').write_text(img_script)
+        self.assertEqual(subprocess.run(['bash', '-n', str(Path(self.tmp) / 'img.sh')], capture_output=True, text=True).stderr, '')
+
 
 if __name__ == '__main__':
     unittest.main()

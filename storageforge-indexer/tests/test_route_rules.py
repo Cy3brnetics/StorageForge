@@ -234,6 +234,8 @@ NO_FRESH_PASSWORD = {
     ('POST', '/api/changes/check'),
     ('POST', '/api/clone/preview'),                # reads the index only
     ('POST', '/api/clone'),                        # saves plans, as /api/changes does: running them is what asks
+    ('POST', '/api/clone/cutover'),                # saves the migration cutover plan in changes
+    ('POST', '/api/clone/image'),                  # saves the disk-image capture plan in changes
     ('POST', '/api/vm/copy/preview'),              # reads the index only
     ('POST', '/api/vm/copy'),                      # saves a plan, as /api/changes does: deploying it is what asks
     ('POST', '/api/console/sessions/<sid>/input'),    # typing into a session already opened with the password

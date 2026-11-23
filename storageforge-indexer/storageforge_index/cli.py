@@ -884,6 +884,17 @@ def _data_disks(conn, host: str) -> str:
 def cmd_clone(args) -> int:
     from . import changes, clone
     _, conn = open_db(args)
+    if getattr(args, 'report', False):
+        print(json.dumps(clone.report(conn, args.source, args.to), indent=2))
+        return 0
+    if getattr(args, 'cutover', False):
+        res = clone.cutover(conn, args.source, args.to, f'cli:{os.environ.get("USER", "?")}')
+        print(f'saved cutover change plan #{res["plan_id"]}: {res["source"]} -> {res["target"]}')
+        return 0
+    if getattr(args, 'image', None):
+        res = clone.disk_image(conn, args.source, args.image, actor=f'cli:{os.environ.get("USER", "?")}')
+        print(f'saved disk-image plan #{res["plan_id"]}: {res["source"]} -> {res["dest"]}')
+        return 0
     mapping = {}
     for pair in args.map or []:
         k, sep, v = pair.partition('=')
@@ -2061,6 +2072,9 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument('--no-packages', action='store_true'); cl.add_argument('--no-accounts', action='store_true')
     cl.add_argument('--no-shares', action='store_true'); cl.add_argument('--no-snapshots', action='store_true')
     cl.add_argument('--no-services', action='store_true', help='leave the services as the target has them')
+    cl.add_argument('--report', action='store_true', help='print the before-and-after what changed report')
+    cl.add_argument('--cutover', action='store_true', help='save the migration cutover plan')
+    cl.add_argument('--image', metavar='PATH', help='save a disk-image capture plan to this qcow2 path')
     cl.add_argument('--dry-run', action='store_true', help='show the plans and the risks, save nothing')
     cl.set_defaults(fn=cmd_clone)
 

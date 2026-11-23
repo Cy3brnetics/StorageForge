@@ -31,7 +31,7 @@ from .remote import NETWORK_FS, PSEUDO_FS, TMP_FS, is_under
 
 KEEP = 30              # versions kept per host
 CONFIG_PATH = re.compile(r'/etc/(fstab|crypttab|mdadm\.conf|mdadm/mdadm\.conf|exports|exports\.d/[\w.-]+\.exports'
-                         r'|samba/[\w.-]+\.conf)')
+                         r'|samba/[\w.-]+\.conf|hosts|timezone|locale\.conf|vconsole\.conf|sysctl\.d/[\w.-]+\.conf|udev/rules\.d/[\w.-]+\.rules)')
 REDACTED = '**removed**'
 REBUILT_MARK = '# Rebuilt by StorageForge from '      # such a file says the same as the original, in other words
 # fstab options (cifs password=, sshfs password_stdin stays), and smb.conf lines naming a password or secret

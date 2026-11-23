@@ -332,7 +332,10 @@ def normalize(body: dict) -> dict:
                 raise ValueError(f'task {i} ({spec["label"]}): type {dev} again in the confirm field')
         tasks.append({'id': str(t.get('id') or f't{i}'), 'type': kind, 'host': host, 'params': params,
                       'note': one_line(t.get('note') or '')[:300]})
-    return {'name': name, 'notes': str(body.get('notes') or '')[:2000], 'tasks': tasks}
+    out = {'name': name, 'notes': str(body.get('notes') or '')[:2000], 'tasks': tasks}
+    if body.get('require_accept'):
+        out['require_accept'] = [str(x)[:64] for x in body['require_accept'] if x]
+    return out
 
 
 # ── checks against the index, in plan order ─────────────────────────────
@@ -1099,7 +1102,9 @@ def script(conn: Conn, plan: dict, owner: str | None = None) -> str:
     return (CHANGE_HEAD.format(name=one_line(plan['name']), slug=slug(plan['name']),
                                date=dt.datetime.now().strftime('%Y-%m-%d %H:%M'), tasks=comments(summary, '#   (no tasks)'),
                                problems=comments(problems, '#   none'))
-            + f'PLAN={q(slug(plan["name"]))}\n' + CHANGE_BODY_1 + HELPERS + RECEIVE_KIT + SEND_KIT + CHANGE_BODY_2 + REMOTE
+            + f'PLAN={q(slug(plan["name"]))}\n'
+            + f'REQUIRED_ACCEPTS={q(",".join(sorted(str(x) for x in (plan.get("require_accept") or []))))}\n'
+            + CHANGE_BODY_1 + HELPERS + RECEIVE_KIT + SEND_KIT + CHANGE_BODY_2 + REMOTE
             + CHANGE_BODY_3.replace('@DESTRUCTIVE@', '|'.join(k for k, v in EXTRA.items() if TYPES[k].get('destructive')) or 'zfs-pool') + ''.join(EXTRA_BASH)
             + '\n'.join(calls) + CHANGE_TAIL)
 
@@ -1127,10 +1132,11 @@ set -euo pipefail
 """
 
 CHANGE_BODY_1 = r"""
-MODE=check; ONLY=; HOST=; DESTRUCTIVE=0; ARGS=("$@")
+MODE=check; ONLY=; HOST=; DESTRUCTIVE=0; ACCEPTED=; ARGS=("$@")
 while (($#)); do
   case $1 in
     --check|--report) MODE=check ;; --apply) MODE=apply ;; --destructive) DESTRUCTIVE=1 ;;
+    --accept) ACCEPTED="${ACCEPTED:+$ACCEPTED,}${2:?--accept needs a risk id}"; shift ;;
     --task) ONLY=${2:?--task needs a number}; shift ;;
     --host) HOST=${2:?--host needs [user@]host}; shift ;;
     --forward-agent) FWD_AGENT=1 ;;
@@ -1161,9 +1167,16 @@ if ((APPLY)); then
   exec > >(tee -a "$LOG") 2>&1; echo "log: $LOG"
 fi
 
-# act DESCRIPTION: report it (check), refuse it (destructive without --destructive), or announce it and go on
+# act DESCRIPTION: report it (check), refuse it (destructive without --destructive or unaccepted clone risk), or announce it and go on
 act() {
   if ((!APPLY)); then missing "would: $*"; return 1; fi
+  if ((CUR_DESTRUCTIVE)) && [[ -n ${REQUIRED_ACCEPTS:-} ]]; then
+    local _req
+    IFS=, read -ra _reqs <<<"$REQUIRED_ACCEPTS"
+    for _req in "${_reqs[@]}"; do
+      [[ -n $_req && ",$ACCEPTED," != *",$_req,"* ]] && { missing "risk $_req not accepted: rerun with --accept $_req"; return 1; }
+    done
+  fi
   if ((CUR_DESTRUCTIVE && !DESTRUCTIVE)); then missing "destructive, skipped: $* (rerun with --apply --destructive)"; return 1; fi
   doing "$*"
 }
