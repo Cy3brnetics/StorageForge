@@ -51,7 +51,7 @@ DEFAULT_COOL_OFF = 24
 COOL_OFF_HOURS = (12, 24, 48, 72)
 MIN_CIDR = {4: 16, 6: 48}           # a network wider than this is a mistake, not a quarantine
 EVENT_SEVERITY = {'canary_tripped': 'crit', 'clock_jump': 'crit', 'clock_set': 'warn', 'brake_ran': 'crit', 'watcher_stopped': 'warn', 'canary_source': 'warn',
-                  'sentinel_started': 'info', 'sentinel_test': 'info', 'hold_missing': 'crit', 'events_dropped': 'warn', 'break_glass_used': 'crit',
+                  'shadow_copy_tripwire': 'crit', 'sentinel_started': 'info', 'sentinel_test': 'info', 'hold_missing': 'crit', 'events_dropped': 'warn', 'break_glass_used': 'crit',
                   'falco_crit': 'crit', 'falco_warn': 'warn', 'identity_enumeration': 'crit', 'identity_multi_subnet': 'warn', 'identity_off_hours': 'warn', 'entropy_flagged': 'warn', 'velocity': 'warn',
                   'malware_detected': 'crit', 'suricata_alert': 'crit', 'rootkit_suspect': 'crit', 'persistence_changed': 'warn', 'aide_changed': 'warn'}
 HOST_EVENTS = frozenset({'canary_tripped', 'canary_source', 'clock_jump', 'clock_set', 'brake_ran', 'watcher_stopped', 'sentinel_started', 'sentinel_test',

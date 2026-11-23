@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 
-from . import agentdisks, agentfiles, agentscan, errlog
+from . import agentaction, agentdisks, agentfiles, agentscan, errlog
 
 
 def _sentinel_events(conn, host: str, body: dict, at: int) -> int:
@@ -19,6 +19,23 @@ def _sentinel_events(conn, host: str, body: dict, at: int) -> int:
     from .security import ingest_events
     lines = [x for x in (body.get('lines') if isinstance(body.get('lines'), list) else [])[:500] if isinstance(x, str) and len(x) <= 16 << 10]
     return ingest_events(conn, host, '\n'.join(lines), 'agent')
+
+
+def take_tripwire(conn, host: str, body: dict, at: int) -> int:
+    """Shadow-copy tripwire readings pushed from a Windows agent (sections 11.2 & 11.4).
+    Records the alarm under the key's host as an agent claim and routes any wider drop through agentaction.tripwire_drop
+    (pinned address only, independent witness required)."""
+    reason = agentaction.detect_shadow_copy_tamper(body)
+    if not reason:
+        return 0
+    from .security import record_event
+    cmd = ' '.join(str(body.get('command') or '').split())[:400]
+    summary = f'{host}: Windows shadow-copy tripwire ({reason})'
+    detail = f'reason={reason}; command={cmd}' if cmd else f'reason={reason}'
+    record_event(conn, host, 'shadow_copy_tripwire', summary, detail, via='agent', occurred=at)
+    fp = conn.scalar('SELECT fingerprint FROM agents WHERE host = :h', {'h': host})
+    agentaction.tripwire_drop(conn, host, fp, body, now=at)
+    return 1
 from .db import Database
 
 RECORDS_PER_TICK = 500
@@ -27,7 +44,8 @@ RECORDS_PER_TICK = 500
 def _takers() -> dict:
     return {('disks', 'smart'): agentdisks.take_smart, ('disks', 'errors'): agentdisks.take_errors,
             ('files', 'changes'): agentfiles.take_changes, ('files', 'reads'): agentfiles.take_reads, ('files', 'watching'): agentfiles.take_watching,
-            ('scan', 'inventory'): agentscan.take_inventory, ('sentinel', 'events'): _sentinel_events}
+            ('scan', 'inventory'): agentscan.take_inventory, ('sentinel', 'events'): _sentinel_events,
+            ('tripwire', 'shadow_copy'): take_tripwire}
 
 
 def take(db: Database, now: float | None = None) -> dict:

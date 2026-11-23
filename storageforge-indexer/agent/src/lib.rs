@@ -25,6 +25,7 @@
 //! - `runtime`    the container, as Docker, Podman or LXC is asked to make it
 //! - `wipe`       wipe and stop from inside: on tampering the agent deletes its key and never starts again
 //! - `outside`    wipe and stop from outside: what storageforge-agentctl's `check` compares
+//! - `windows`    native Windows service configuration, OpenSSH-for-Windows lockdown and shadow-copy tripwire
 //!
 //! The habits are the key enclave's: every input has a size limit that is checked before it is read, every structure refuses
 //! fields it does not know, parsing is linear, and what no honest peer sends ends the conversation.
@@ -47,6 +48,7 @@ pub mod sig;
 pub mod smart;
 pub mod supervise;
 pub mod tunnel;
+pub mod windows;
 pub mod wipe;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

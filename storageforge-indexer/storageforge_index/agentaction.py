@@ -16,12 +16,13 @@ is the one road by which a report causes an action, and it holds two rules:
   recently. An agent never witnesses for itself, and another agent's report is not a witness either. Without one the action is not
   taken: it is held, and a person is told (agentwatch.problems, `agent-held:HOST`).
 
-No wider action exists yet: the shadow-copy tripwire and the share freeze (sections 11.4 and 9) are to go through `wider` when they
-are built. Every call here, done, held or refused, is a row of agent_actions.
+No wider action exists yet: wait—see WIDER below: the shadow-copy tripwire and the share freeze (sections 11.4 and 9) go
+through `wider` (`tripwire_drop` and `freeze_share`). Every call here, done, held or refused, is a row of agent_actions.
 """
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 
@@ -29,10 +30,24 @@ from .db import Conn
 
 # Protective actions a report may cause by itself, against its sender only. Each value says what it does, for the record.
 SELF = {'wipe-self': 'the agent said it found tampering in its own container and wiped itself: its key is revoked here and its container stopped over SSH'}
+# Actions that reach past the reporter and require an independent second witness (or a person).
+WIDER = {
+    'shadow-copy-tripwire': 'drop the reporting client\'s pinned address from shares after a shadow-copy tripwire event',
+    'freeze-share': 'freeze a share after independent corroboration',
+    'drop-client': 'drop a client from shares',
+}
 # Who may witness a wider action: sources independent of every agent.
 WITNESS_SOURCES = ('scan', 'decoy', 'sentinel')
 WITNESS_SECS = 900
 HELD_SECS = 86400
+
+_VSS_PATTERNS = (
+    ('vssadmin delete shadows', re.compile(r'\bvssadmin(?:\.exe)?\b.*\bdelete\b.*\bshadows\b', re.I)),
+    ('wmic shadowcopy delete', re.compile(r'\bwmic(?:\.exe)?\b.*\bshadowcopy\b.*\bdelete\b', re.I)),
+    ('PowerShell Win32_ShadowCopy removal', re.compile(r'\bwin32_shadowcopy\b.*\b(?:delete|remove-ciminstance|remove-wmiobject)\b|\b(?:remove-ciminstance|remove-wmiobject)\b.*\bwin32_shadowcopy\b', re.I)),
+    ('wbadmin delete catalog', re.compile(r'\bwbadmin(?:\.exe)?\b.*\bdelete\b.*\b(?:catalog|systemstatebackup)\b', re.I)),
+    ('bcdedit recoveryenabled no', re.compile(r'\bbcdedit(?:\.exe)?\b.*\brecoveryenabled\b.*\b(?:no|off|0)\b', re.I)),
+)
 
 
 class Refused(Exception):
@@ -145,3 +160,92 @@ def problems(conn: Conn, now: float | None = None) -> dict:
         out[f'agent-held:{host}'] = ('agent-held', host, f'The agent on {host} asked for an action on others',
                                      f'{n} request(s) in the last day ({last}), held because no independent witness agreed: look before acting', 'warn')
     return out
+
+
+def detect_shadow_copy_tamper(body: dict) -> str | None:
+    """Matches Windows shadow-copy deletion commands or vanished shadow copies in a tripwire reading."""
+    if not isinstance(body, dict):
+        return None
+    cmd = ' '.join(str(body.get('command') or '').split())
+    if cmd:
+        for label, pat in _VSS_PATTERNS:
+            if pat.search(cmd[:8192]):
+                return label
+    before, after = body.get('before'), body.get('after')
+    if body.get('reason') == 'shadows_vanished' or (
+        isinstance(before, int) and isinstance(after, int) and not isinstance(before, bool) and not isinstance(after, bool) and 0 <= after < before
+    ):
+        return 'shadow copies vanished'
+    return None
+
+
+def pinned_client_address(conn: Conn, reporter: str) -> str | None:
+    """The address pinned for `reporter` at enrollment (hosts.ssh_host), never an address named inside an agent report."""
+    if not reporter:
+        return None
+    addr = conn.scalar('SELECT ssh_host FROM hosts WHERE lower(hostname) = lower(:h)', {'h': reporter})
+    return str(addr).strip() if isinstance(addr, str) and str(addr).strip() else None
+
+
+def recent_witnesses(conn: Conn, reporter: str, target: str, now: float | None = None) -> list[Witness]:
+    """Independent witnesses already recorded near `now` for `target` (scans, non-agent sentinels, or tripped decoys)."""
+    now = float(time.time() if now is None else now)
+    cutoff = int(now) - WITNESS_SECS
+    out: list[Witness] = []
+    rows = conn.all("""SELECT host, kind, occurred_at, via, detail FROM security_events
+                       WHERE occurred_at >= :t AND via != 'agent' AND kind IN ('canary_tripped', 'canary_source', 'brake_ran')
+                       ORDER BY occurred_at DESC LIMIT 200""", {'t': cutoff})
+    for ev_host, _kind, occurred_at, via, detail in rows:
+        src = 'sentinel' if via == 'sentinel' else 'scan' if via in ('scan', 'measure') else None
+        if not src:
+            continue
+        detail_str = str(detail or '')
+        if ev_host == target or f'client={target}' in detail_str or target in detail_str:
+            out.append(Witness(source=src, host=ev_host, target=target, at=float(occurred_at or now), via=via))
+    canaries = conn.all("""SELECT host, path, tripped_at FROM security_canaries
+                           WHERE status = 'tripped' AND tripped_at >= :t""", {'t': cutoff})
+    for chost, cpath, cat in canaries:
+        if target in (chost, cpath, f'share:{cpath}'):
+            has_agent_only = conn.scalar("""SELECT 1 FROM security_events WHERE host = :h AND kind = 'canary_tripped'
+                                            AND occurred_at = :at AND via = 'agent' LIMIT 1""", {'h': chost, 'at': cat})
+            has_indep = conn.scalar("""SELECT 1 FROM security_events WHERE host = :h AND kind = 'canary_tripped'
+                                       AND occurred_at = :at AND via != 'agent' LIMIT 1""", {'h': chost, 'at': cat})
+            if has_indep or not has_agent_only:
+                out.append(Witness(source='decoy', host=chost, target=target, at=float(cat or now), via='decoy'))
+    return out
+
+
+def _named_claims(body: dict | None) -> dict | None:
+    if not isinstance(body, dict):
+        return None
+    keep = {k: str(body[k])[:300] for k in ('host', 'hostname', 'address', 'client', 'ip', 'command', 'pid', 'process', 'reason', 'before', 'after')
+            if body.get(k) is not None}
+    return keep or None
+
+
+def tripwire_drop(conn: Conn, reporter: str, fingerprint: str | None, body: dict,
+                  witnesses: list[Witness] | None = None, perform=None, now: float | None = None) -> dict:
+    """Shadow-copy tripwire action (sections 11.2 & 11.4): drops ONLY the address pinned for `reporter` at enrollment,
+    never an address named inside `body`, and executes only when an independent second witness agrees."""
+    reason = detect_shadow_copy_tamper(body)
+    if not reason:
+        raise Refused('no shadow-copy tampering indicator matched')
+    named = _named_claims(body)
+    target = pinned_client_address(conn, reporter)
+    if not target:
+        _record(conn, reporter, fingerprint, 'shadow-copy-tripwire', '', 'refused', named, detail=f'no pinned enrollment address for {reporter}')
+        raise Refused(f'no pinned enrollment address is recorded for {reporter}')
+    wlist = recent_witnesses(conn, reporter, target, now) if witnesses is None else witnesses
+    outcome = wider(conn, reporter, fingerprint, 'shadow-copy-tripwire', target, wlist, perform or (lambda _target: None), named=named, now=now)
+    return {'outcome': outcome, 'target': target, 'reason': reason, 'named': named}
+
+
+def freeze_share(conn: Conn, reporter: str, fingerprint: str | None, share: str,
+                 witnesses: list[Witness] | None = None, perform=None, named=None, now: float | None = None) -> dict:
+    """Freezes `share` when requested by an agent, gated through `wider` (independent second witness required)."""
+    target = str(share or '').strip()
+    if not target or len(target) > 500:
+        raise Refused('freeze-share requires a share target')
+    wlist = recent_witnesses(conn, reporter, target, now) if witnesses is None else witnesses
+    outcome = wider(conn, reporter, fingerprint, 'freeze-share', target, wlist, perform or (lambda _target: None), named=named, now=now)
+    return {'outcome': outcome, 'target': target}

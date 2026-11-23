@@ -96,7 +96,7 @@ def register(web, ctx):
         is the only way in. Registers it, with its agent switched on; the setup is run on the host by hand."""
         b = json_body()
         try:
-            got = agentmonitor.register(conn(), str(b.get('host') or ''), str(b.get('address') or ''), int(b.get('port') or 22), str(b.get('arch') or ''), actor())
+            got = agentmonitor.register(conn(), str(b.get('host') or ''), str(b.get('address') or ''), int(b.get('port') or 22), str(b.get('arch') or ''), actor(), os_family=str(b.get('os') or 'linux'))
         except (ValueError, LookupError, agentmonitor.MonitoringError, sfagent.AgentError) as exc:
             core.audit(conn(), actor(), 'agent.monitoring', 'failed', str(b.get('host') or '')[:100], {'error': str(exc)[:300]})
             return refused(exc)

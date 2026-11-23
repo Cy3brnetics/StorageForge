@@ -47,12 +47,61 @@ def refusal(conn, host: str, what: str) -> str | None:
     return WHY.format(host=name, what=what) if monitoring_only(conn, name) else None
 
 
-def register(conn, name: str, address: str, port: int, arch: str, actor: str) -> dict:
+def host_os(conn, host: str) -> str:
+    """Operating system family recorded for a monitoring-only host ('linux' or 'windows')."""
+    import json
+    inv = conn.scalar('SELECT inventory_json FROM hosts WHERE lower(hostname) = lower(:h)', {'h': deploy.canonical(conn, host)})
+    inv = (inv if isinstance(inv, dict) else json.loads(inv or '{}')) or {}
+    for line in str(inv.get('packages') or '').splitlines():
+        if line.startswith('os\t'):
+            val = line.split('\t', 1)[1].strip().lower()
+            if val in ('linux', 'windows'):
+                return val
+    return 'linux'
+
+
+def windows_setup_script(signing_pub: str, login_pub: str, program_sha256: str, program_size: int) -> str:
+    """PowerShell setup script for a native Windows service monitoring-only agent managed over OpenSSH for Windows."""
+    lines = [
+        '# Run from an elevated Administrator PowerShell prompt on the Windows host:',
+        '#   powershell -ExecutionPolicy Bypass -File .\\storageforge-agent-setup.ps1 .\\storageforge-agentctl.exe',
+        'param([Parameter(Mandatory=$true)][string]$AgentCtlExe)',
+        '$ErrorActionPreference = "Stop"',
+        f'$ExpectedSize = {int(program_size)}',
+        f'$ExpectedSha = "{program_sha256}"',
+        '$Item = Get-Item -LiteralPath $AgentCtlExe',
+        'if ($Item.Length -ne $ExpectedSize) { throw "storageforge-agentctl.exe size mismatch" }',
+        '$Hash = (Get-FileHash -LiteralPath $AgentCtlExe -Algorithm SHA256).Hash.ToLowerInvariant()',
+        'if ($Hash -ne $ExpectedSha) { throw "storageforge-agentctl.exe sha256 mismatch" }',
+        r'$ProgDir = "C:\Program Files\StorageForge\Agent"',
+        r'$DataDir = "C:\ProgramData\StorageForge\Agent"',
+        r'New-Item -ItemType Directory -Force -Path $ProgDir, "$DataDir\etc", "$DataDir\manifest", "$DataDir\state", "$ProgDir\plugins" | Out-Null',
+        r'Copy-Item -Force -LiteralPath $AgentCtlExe -Destination "$ProgDir\storageforge-agentctl.exe"',
+        'icacls $DataDir /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" | Out-Null',
+        f'$SignerLine = "controller cert-authority,namespaces=`"storageforge-agentctl,storageforge-agent-manifest`" {signing_pub.strip()}"',
+        r'Set-Content -Path "$DataDir\etc\controller_signers" -Value $SignerLine -Encoding Ascii',
+        r'$AuthLine = "restrict,command=`"C:\\Program Files\\StorageForge\\Agent\\storageforge-agentctl.exe`" ' + login_pub.strip() + '"',
+        r'Set-Content -Path "C:\ProgramData\ssh\administrators_authorized_keys" -Value $AuthLine -Encoding Ascii',
+        'icacls "C:\\ProgramData\\ssh\\administrators_authorized_keys" /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null',
+        r'$BinPath = "`"C:\Program Files\StorageForge\Agent\storageforge-agent.exe`" run --etc `"C:\ProgramData\StorageForge\Agent\etc`" --manifest `"C:\ProgramData\StorageForge\Agent\manifest`" --state `"C:\ProgramData\StorageForge\Agent\state`""',
+        'if (Get-Service -Name StorageForgeAgent -ErrorAction SilentlyContinue) { Stop-Service -Name StorageForgeAgent -Force -ErrorAction SilentlyContinue }',
+        'sc.exe create StorageForgeAgent binPath= $BinPath start= auto DisplayName= "StorageForge Monitoring Agent" | Out-Null',
+        '$Mid = ((Get-ItemProperty "HKLM:\\SOFTWARE\\Microsoft\\Cryptography").MachineGuid -replace "[^0-9a-fA-F]", "").ToLowerInvariant().PadRight(32, "0").Substring(0, 32)',
+        '$HostKey = (Get-Content "C:\\ProgramData\\ssh\\ssh_host_ed25519_key.pub" -TotalCount 1).Trim().Split(" ")[0..1] -join " "',
+        'Write-Output "storageforge-agent-adopt $Mid $HostKey"',
+    ]
+    return '\n'.join(lines) + '\n'
+
+
+def register(conn, name: str, address: str, port: int, arch: str, actor: str, os_family: str = 'linux') -> dict:
     if not NAME_RE.fullmatch(name or '') or not ADDRESS_RE.fullmatch(address or '') or not 0 < int(port) < 65536:
         raise MonitoringError('a monitoring-only host is a name, an address and an SSH port')
     arch = {'amd64': 'x86_64', 'arm64': 'aarch64'}.get(arch, arch)
     if arch not in ('x86_64', 'aarch64'):
         raise MonitoringError('the agent is built for x86_64 and arm64')
+    os_family = (os_family or 'linux').strip().lower()
+    if os_family not in ('linux', 'windows'):
+        raise MonitoringError('monitoring-only hosts support linux or windows')
     if conn.scalar('SELECT count(*) FROM hosts WHERE lower(hostname) = lower(:h) OR ssh_host = :a', {'h': name, 'a': address}):
         raise MonitoringError(f'{name} or {address} is a host StorageForge has already: switch the agent on for it instead')
     if conn.scalar('SELECT count(*) FROM network_devices WHERE name = :n', {'n': name}):
@@ -60,10 +109,25 @@ def register(conn, name: str, address: str, port: int, arch: str, actor: str) ->
     cast = ':inv' if conn.dialect == 'sqlite' else 'CAST(:inv AS jsonb)'
     import json
     conn.execute(f"""INSERT INTO hosts (hostname, ssh_host, ssh_user, ssh_port, inventory_json) VALUES (:h, :a, :u, :p, {cast})""",
-                 {'h': name, 'a': address, 'u': sfagent.MANAGER, 'p': int(port), 'inv': json.dumps({'packages': f'arch\t{arch}', 'source': 'agent', 'label': 'reported by agent'})})
+                 {'h': name, 'a': address, 'u': sfagent.MANAGER, 'p': int(port), 'inv': json.dumps({'packages': f'arch\t{arch}\nos\t{os_family}', 'source': 'agent', 'label': 'reported by agent'})})
     sfagent.switch(conn, name, True, actor)
     sfagent._save(conn, name, actor, mode='monitoring', detail='set up the agent on the host by hand, then paste the line the setup printed')
     return sfagent.get(conn, name)
+
+
+def _windows_agentctl(arch: str) -> bytes:
+    """Finds storageforge-agentctl.exe for Windows when present, falling back to sfagent.agentctl_program."""
+    import os
+    from pathlib import Path
+    folder = os.environ.get('STORAGEFORGE_AGENT_DIR', '').strip()
+    if folder:
+        exe = Path(folder) / arch / 'storageforge-agentctl.exe'
+        if exe.is_file():
+            data = exe.read_bytes()
+            if data.startswith(b'MZ') and len(data) <= 32 * 1024 * 1024:
+                return data
+            raise sfagent.AgentError(f'{exe} is not a Windows executable')
+    return sfagent.agentctl_program(arch)
 
 
 def setup(db: Database, name: str) -> dict:
@@ -72,12 +136,22 @@ def setup(db: Database, name: str) -> dict:
         name = deploy.canonical(conn, name)
         if not monitoring_only(conn, name):
             raise MonitoringError(f'{name} is not a monitoring-only host: its agent is set up through its deploy access')
-        program = sfagent.agentctl_program(sfagent.host_arch(conn, name))
+        arch = sfagent.host_arch(conn, name)
+        os_family = host_os(conn, name)
+        program = _windows_agentctl(arch) if os_family == 'windows' else sfagent.agentctl_program(arch)
         from .vault import Vault
         with Vault(db, conn).unlock() as v:
             signing_pub, login_pub = sfagent.ensure_keys(v)
-        return {'host': name, 'script': sfagent.setup_script(signing_pub, login_pub, program), 'arch': sfagent.host_arch(conn, name),
-                'program_sha256': hashlib.sha256(program).hexdigest(), 'program_size': len(program),
+        sha = hashlib.sha256(program).hexdigest()
+        if os_family == 'windows':
+            return {'host': name, 'platform': 'windows', 'service': 'StorageForgeAgent',
+                    'script': windows_setup_script(signing_pub, login_pub, sha, len(program)),
+                    'arch': arch, 'program_sha256': sha, 'program_size': len(program),
+                    'how': 'Native Windows service (not a container), monitoring only, managed over OpenSSH for Windows. '
+                           'Run the PowerShell script as Administrator, compare C:\\ProgramData\\ssh\\ssh_host_ed25519_key.pub, '
+                           'and paste the storageforge-agent-adopt line here.'}
+        return {'host': name, 'platform': 'linux', 'script': sfagent.setup_script(signing_pub, login_pub, program), 'arch': arch,
+                'program_sha256': sha, 'program_size': len(program),
                 'how': 'Copy storageforge-agentctl and this script to the host, then as root: bash storageforge-agent-setup.sh ./storageforge-agentctl. '
                        'It checks the program by size and sha256, makes the two accounts and the one sudoers line, and prints a line '
                        'beginning storageforge-agent-adopt: compare the host key in it with the host\'s own (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub) '

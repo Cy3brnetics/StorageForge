@@ -144,6 +144,46 @@ class Gate(unittest.TestCase):
         with self.assertRaises(agentaction.Refused):
             agentaction.wider(self.conn, 'nas', None, 'wipe-self', 'nas', [], frozen.append)
 
+    def test_shadow_copy_tripwire_drops_pinned_address_only_and_requires_witness(self):
+        from storageforge_index import agentplugins
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_port) VALUES ('win-client', '10.0.0.55', 22)")
+        self.conn.execute("""INSERT INTO agents (host, enabled, state, public_key, fingerprint, counter, updated_at, updated_by)
+                             VALUES ('win-client', 1, 'running', 'ssh-ed25519 AAAA', 'SHA256:win', 1, 0, 'test')""")
+        # All 5 documented shadow-copy commands + vanished shadows match
+        for cmd in ('vssadmin.exe delete shadows /all /quiet', 'wmic shadowcopy delete',
+                    'powershell Get-WmiObject Win32_ShadowCopy | ForEach-Object { $_.Delete() }',
+                    'wbadmin delete catalog -quiet', 'bcdedit /set {default} recoveryenabled no'):
+            self.assertIsNotNone(agentaction.detect_shadow_copy_tamper({'command': cmd}), cmd)
+        self.assertIsNotNone(agentaction.detect_shadow_copy_tamper({'before': 3, 'after': 0}))
+        self.assertIsNone(agentaction.detect_shadow_copy_tamper({'command': 'vssadmin list shadows'}))
+
+        # Ingested report naming another client IP ('10.0.0.99') only targets pinned '10.0.0.55' and holds without witness
+        now = int(time.time())
+        self.conn.execute("""INSERT INTO agent_records (host, fingerprint, counter, seq, plugin, kind, received_at, body_json)
+                             VALUES ('win-client', 'SHA256:win', 1, 1, 'tripwire', 'shadow_copy', :t, :b)""",
+                          {'t': now, 'b': json.dumps({'command': 'vssadmin delete shadows /all', 'client': '10.0.0.99', 'host': 'other-pc'})})
+        self.assertEqual(agentplugins.take(self.db, now), {'tripwire': 1})
+        act = agentaction.recent(self.conn, 'win-client')[0]
+        self.assertEqual((act['action'], act['target'], act['outcome']), ('shadow-copy-tripwire', '10.0.0.55', 'held'))
+        self.assertEqual(act['named']['client'], '10.0.0.99')
+        self.assertIn('agent-held:win-client', agentwatch.problems(self.conn, now))
+        self.assertEqual(self.conn.scalar("SELECT kind FROM security_events WHERE host = 'win-client'"), 'shadow_copy_tripwire')
+
+        # With an independent witness (share host's own sentinel seeing 10.0.0.55), tripwire_drop executes against pinned address
+        dropped = []
+        witnesses = [agentaction.Witness('sentinel', 'nas', '10.0.0.55', now)]
+        res = agentaction.tripwire_drop(self.conn, 'win-client', 'SHA256:win', {'command': 'wmic shadowcopy delete', 'address': '10.0.0.88'},
+                                        witnesses=witnesses, perform=dropped.append, now=now)
+        self.assertEqual((res['outcome'], res['target'], dropped), ('done', '10.0.0.55', ['10.0.0.55']))
+
+        # Share freeze also routes cleanly through wider
+        frozen = []
+        self.assertEqual(agentaction.freeze_share(self.conn, 'win-client', 'SHA256:win', 'share:/srv/smb', witnesses=[], perform=frozen.append, now=now)['outcome'], 'held')
+        self.assertEqual(frozen, [])
+        self.assertEqual(agentaction.freeze_share(self.conn, 'win-client', 'SHA256:win', 'share:/srv/smb',
+                                                witnesses=[agentaction.Witness('decoy', 'nas', 'share:/srv/smb', now)], perform=frozen.append, now=now)['outcome'], 'done')
+        self.assertEqual(frozen, ['share:/srv/smb'])
+
     def test_a_failed_action_is_recorded_as_failed(self):
         def boom(_host):
             raise RuntimeError('the host could not be reached')
