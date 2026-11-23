@@ -1,0 +1,38 @@
+format: 1
+id: netmaker
+revision: 1
+name: Netmaker
+app_version: 1.0.0
+category: vpn
+summary: WireGuard virtual network management platform for mesh overlays and site gateways.
+homepage: https://www.netmaker.io/
+license: SSPL-1.0
+labels: [source-available, not-a-default]
+install:
+  methods:
+    - kind: container
+      image: docker.io/gravitl/netmaker:v1.0.0@sha256:03bb7621400e3e521b82b22ed1822368925b0b6cf220663c89f78be537f6ee88
+      ports: ["8081:8081/tcp"]
+      volumes: {data: /root/data}
+requires:
+  ports: [8081/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 8081
+    sso: oidc
+  panel:
+    level: status
+    adapter: netmaker
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Netmaker is read by scans; netclient takes enrollment tokens on the command line only, so no join step is offered.

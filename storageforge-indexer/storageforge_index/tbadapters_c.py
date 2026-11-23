@@ -33,9 +33,10 @@ has puppet && printf 'v\tpuppet\t%s\n' "$(puppet --version 2>/dev/null | head -n
 has tofu && printf 'v\topentofu\t%s\n' "$(tofu version 2>/dev/null | head -n 1 | cut -c1-80)"
 has packer && printf 'v\tpacker\t%s\n' "$(CHECKPOINT_DISABLE=1 packer version 2>/dev/null | head -n 1 | cut -c1-80)"
 has proxmox-backup-client && printf 'v\tproxmox-backup-client\t%s\n' "$(proxmox-backup-client version 2>/dev/null | head -n 1 | cut -c1-80)"
+has kopia && printf 'v\tkopia\t%s\n' "$(kopia --version 2>/dev/null | head -n 1 | cut -c1-80)"
 has smbd && printf 'v\tsamba\t%s\n' "$(smbd --version 2>/dev/null | head -n 1 | cut -c1-80)"
 if has systemctl; then
-  for u in smbd smb nfs-server apt-cacher-ng; do
+  for u in smbd smb nfs-server apt-cacher-ng proxmox-backup-proxy proxmox-backup; do
     systemctl cat "$u.service" >/dev/null 2>&1 && printf 'u\t%s\t%s\t%s\n' "$u" "$(systemctl is-active "$u.service" 2>/dev/null)" "$(systemctl is-enabled "$u.service" 2>/dev/null)"
   done
 fi
@@ -211,11 +212,13 @@ class OpenBao(ContainerTool):
 
 
 ADAPTERS = [
-    BackupTool('restic'), BackupTool('borg'), CliTool('proxmox-backup-client'),
+    BackupTool('restic'), BackupTool('borg'), CliTool('kopia'), CliTool('proxmox-backup-client'),
+    UnitTool('proxmox-backup-server', ('proxmox-backup-proxy', 'proxmox-backup')),
     CliTool('sops'), CliTool('age'), CliTool('ansible'), CliTool('puppet'), CliTool('opentofu'), CliTool('packer'),
     UnitTool('samba', ('smbd', 'smb'), 'samba'), UnitTool('nfs-server', ('nfs-server',)), UnitTool('apt-cacher-ng', ('apt-cacher-ng',)),
     OpenBao('openbao', 'openbao/openbao'), ContainerTool('vaultwarden', 'vaultwarden/server'), ContainerTool('netbootxyz', 'netbootxyz/netbootxyz'),
-    ContainerTool('forgejo', 'forgejo/forgejo'), ContainerTool('technitium', 'technitium/dns-server'), ContainerTool('zot', 'project-zot/zot'),
+    ContainerTool('forgejo', 'forgejo/forgejo'), ContainerTool('renovate', 'renovate/renovate'), ContainerTool('technitium', 'technitium/dns-server'),
+    ContainerTool('zot', 'project-zot/zot'), ContainerTool('minio', 'minio/minio'),
     ContainerTool('garage', 'dxflrs/garage'), ContainerTool('nextcloud', 'library/nextcloud'), ContainerTool('syncthing', 'syncthing/syncthing'),
     ContainerTool('jellyfin', 'jellyfin/jellyfin'),
 ]

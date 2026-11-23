@@ -1,0 +1,35 @@
+format: 1
+id: smartd
+revision: 1
+name: smartd and smartctl_exporter
+app_version: from the distribution
+category: monitoring
+summary: SMART disk health monitoring daemon and Prometheus exporter checking ATA, SAS and NVMe drives without waking sleeping disks.
+homepage: https://www.smartmontools.org/
+license: GPL-2.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [smartmontools, prometheus-smartctl-exporter]
+        dnf: [smartmontools]
+        zypper: [smartmontools]
+        pacman: [smartmontools]
+      units: [smartmontools.service]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+backup:
+  paths: [/etc/smartd.conf]
+  consistency: live
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: smartd
+upgrade:
+  strategy: package
+risk: [runs-as-root]
+notes: Readings run smartctl -H -n standby so disks in standby are never spun up just for a status tile.

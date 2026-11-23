@@ -1,0 +1,37 @@
+format: 1
+id: teleport
+revision: 1
+name: Teleport
+app_version: 18.2.1
+category: access
+summary: Identity-aware access proxy for SSH, HTTPS and databases with session recording.
+homepage: https://goteleport.com/
+license: Apache-2.0
+install:
+  methods:
+    - kind: container
+      image: public.ecr.aws/gravitational/teleport-distroless:18.2.1@sha256:e706ec78386ad305ca1364fe727a0014499a86fea149dcc4ae8e7b1d6b56c1bb
+      ports: ["3080:3080/tcp"]
+      volumes: {data: /var/lib/teleport, config: /etc/teleport}
+requires:
+  ports: [3080/tcp]
+  volumes: [data, config]
+exposure:
+  default: loopback
+  public_optional: true
+  behind: reverse-proxy
+backup:
+  paths: [data, config]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "https://{host}:{port}/"
+    port: 3080
+    sso: oidc
+  panel:
+    level: status
+    adapter: teleport
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Keep Teleport session recordings on a dataset covered by a retention hold so an attacker cannot erase their session trail.

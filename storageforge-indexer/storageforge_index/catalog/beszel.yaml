@@ -1,0 +1,42 @@
+format: 1
+id: beszel
+revision: 1
+name: Beszel
+app_version: 0.10.2
+category: monitoring
+summary: Lightweight server resource monitoring hub with historical charts, Docker stats and configurable alerts.
+homepage: https://beszel.dev/
+license: MIT
+install:
+  methods:
+    - kind: container
+      image: docker.io/henrygd/beszel:0.10.2@sha256:422aa0a6eec7ca608b64e7e1972d42822f258872e32f587312549ff76662e872
+      ports: ["8090:8090/tcp"]
+      volumes: {data: /beszel_data}
+      read_only: true
+      drop_caps: all
+requires:
+  ports: [8090/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:8090/api/health
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 8090
+    sso: oidc
+  panel:
+    level: status
+    adapter: beszel
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Agents authenticate over SSH using Ed25519 keys generated per hub.

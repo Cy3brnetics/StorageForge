@@ -1,0 +1,37 @@
+format: 1
+id: netbird
+revision: 1
+name: NetBird Management
+app_version: 0.54.1
+category: vpn
+summary: Self-hosted WireGuard overlay management service coordinating peer mesh keys, access rules and routes.
+homepage: https://netbird.io/
+license: BSD-3-Clause
+install:
+  methods:
+    - kind: container
+      image: docker.io/netbirdio/management:0.54.1@sha256:ca9eced971395d43bf8464ecb13f8a2f3729d9791ee12e64cfcc73801b062951
+      ports: ["33073:33073/tcp"]
+      volumes: {data: /var/lib/netbird}
+requires:
+  ports: [33073/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: true
+  behind: reverse-proxy
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 33073
+    sso: oidc
+  panel:
+    level: status
+    adapter: netbird
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Hosts join with the netbird plan step using a setup key stored in the vault.

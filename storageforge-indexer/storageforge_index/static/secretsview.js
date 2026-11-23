@@ -60,17 +60,19 @@ function vsecForm(kinds) {
   setLength();
   const steps = sfNode('input', { id: 'secsteps', placeholder: 'tailscale netbird', autocomplete: 'off' });
   const hosts = sfNode('input', { id: 'sechosts', placeholder: 'nas-01 web-02', autocomplete: 'off' });
+  const platforms = sfNode('input', { id: 'secplatforms', placeholder: 'pve-main truenas-01', autocomplete: 'off' });
   const sensitive = sfNode('input', { id: 'secsensitive', type: 'checkbox' });
   const field = (label, input, hint) => sfNode('label', { class: 'sf-field' }, sfNode('span', {}, label), input, hint ? sfNode('small', {}, hint) : null);
   const form = sfNode('form', { class: 'stack' },
     field('Name', name), field('Kind', kind), field('Length', length),
     field('Only for these steps', steps, 'Step kinds, separated by spaces. Empty: any step.'),
     field('Only for these hosts', hosts, 'Empty: any host.'),
+    field('Only for these platforms', platforms, 'Connected platform names, separated by spaces. Empty: any platform.'),
     sfNode('label', { class: 'check' }, sensitive, ' With the key enclave, each release takes a step-up'),
     sfNode('div', { class: 'row end' }, sfNode('button', { class: 'btn pri', type: 'submit' }, 'Make it')));
   form.addEventListener('submit', (ev) => { ev.preventDefault(); vsecDo(async () => {
     const r = await (await postJSON('/api/keys/secrets', { name: name.value.trim(), kind: kind.value, length: length.disabled ? null : Number(length.value),
-      steps: steps.value, hosts: hosts.value, sensitive: sensitive.checked })).json();
+      steps: steps.value, hosts: hosts.value, platforms: platforms.value, sensitive: sensitive.checked })).json();
     vsecShowOnce(r.secret.name, r.value, 'Made');
     vsecMsg(`${r.secret.name} is in the vault. A plan step that names it gets it on the host when the plan is applied.`, true);
     form.reset(); setLength();

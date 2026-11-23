@@ -1,0 +1,41 @@
+format: 1
+id: apprise
+revision: 1
+name: Apprise API
+app_version: 1.9.2
+category: monitoring
+summary: Notification relay gateway translating a single webhook call into dozens of messaging and paging services.
+homepage: https://github.com/caronc/apprise-api
+license: MIT
+install:
+  methods:
+    - kind: container
+      image: docker.io/caronc/apprise:1.2.1@sha256:aa5133b1de6421aea3a8f7e87e748c1f5985e45b852116ff6e527ef60b1bff7c
+      ports: ["8008:8000/tcp"]
+      volumes: {config: /config}
+      drop_caps: all
+requires:
+  ports: [8008/tcp]
+  volumes: [config]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:8008/status
+  expect: 200
+backup:
+  paths: [config]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 8008
+    sso: forward-auth
+  panel:
+    level: status
+    adapter: apprise
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Keep Apprise on loopback so only StorageForge on the controller or an authenticated proxy can trigger outbound notifications.

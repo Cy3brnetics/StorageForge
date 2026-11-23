@@ -1,0 +1,54 @@
+format: 1
+id: grafana
+revision: 1
+name: Grafana
+app_version: 11.5.2
+category: monitoring
+summary: Dashboards for Prometheus, Loki and StorageForge fleet exports.
+homepage: https://grafana.com/
+license: AGPL-3.0
+secrets:
+  - {name: admin_password, kind: password}
+install:
+  methods:
+    - kind: container
+      image: docker.io/grafana/grafana:11.5.2@sha256:4e708cdfdf55818d74a33bb1155654c32399c8a582536a0ca184cb6f01f8ffef
+      ports: ["3000:3000/tcp"]
+      volumes: {data: /var/lib/grafana}
+      env: {GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana/admin_password}
+      user: "472:472"
+      volume_owner: "472"
+      read_only: true
+      drop_caps: all
+    - kind: package
+      packages:
+        apt: [grafana]
+        dnf: [grafana]
+        zypper: [grafana]
+        pacman: [grafana]
+      units: [grafana-server.service]
+requires:
+  ports: [3000/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:3000/api/health
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 3000
+    sso: oidc
+  panel:
+    level: status
+    adapter: grafana
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Import the StorageForge Grafana dashboard JSON from Infrastructure Map -> Integrations.

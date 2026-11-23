@@ -36,6 +36,7 @@ WGKEY = re.compile(r'[A-Za-z0-9+/]{43}=')
 SHARED = ipaddress.ip_network('100.64.0.0/10')          # Tailscale's and NetBird's: never ours
 # Tried in order. Ranges nobody's router hands out by default, sixteen /24s each: room for about four thousand hosts.
 CANDIDATES = ('10.203.0.0/20', '10.87.64.0/20', '10.151.112.0/20', '172.29.160.0/20', '172.22.208.0/20', '192.168.203.0/24')
+ULA_CANDIDATES = ('fd53:466e:7400::/64', 'fd53:466e:7401::/64', 'fd53:466e:7402::/64')
 
 
 class NetworkError(ValueError):
@@ -60,7 +61,24 @@ def pick_range(in_use) -> str:
     raise NetworkError('every range StorageForge would pick is in use at this site: give it one')
 
 
-def new(in_use=(), range_: str | None = None, topology: str = 'mesh') -> dict:
+def pick_v6_range(in_use=()) -> str:
+    """Pick the first candidate IPv6 ULA /64 that does not overlap any IPv6 network in in_use."""
+    taken = []
+    for value in in_use:
+        try:
+            net = ipaddress.ip_network(str(value).strip(), strict=False)
+        except ValueError:
+            continue
+        if net.version == 6 and net.prefixlen > 0:
+            taken.append(net)
+    for candidate in ULA_CANDIDATES:
+        net = ipaddress.ip_network(candidate)
+        if not any(net.overlaps(t) for t in taken):
+            return candidate
+    raise NetworkError('every IPv6 ULA range StorageForge would pick is in use at this site: give it one')
+
+
+def new(in_use=(), range_: str | None = None, topology: str = 'mesh', range6: str | bool | None = None) -> dict:
     if topology not in ('mesh', 'hub'):
         raise NetworkError('topology is mesh or hub')
     if range_ is not None:
@@ -70,7 +88,18 @@ def new(in_use=(), range_: str | None = None, topology: str = 'mesh') -> dict:
             raise NetworkError(f'{range_!r} is not a network') from None
         if net.version != 4 or not net.is_private or net.overlaps(SHARED) or not 16 <= net.prefixlen <= 28:
             raise NetworkError('the range is a private IPv4 network between /16 and /28, outside 100.64.0.0/10')
-    return {'range': range_ or pick_range(in_use), 'port': PORT, 'topology': topology, 'controller': None, 'members': []}
+    out = {'range': range_ or pick_range(in_use), 'port': PORT, 'topology': topology, 'controller': None, 'members': []}
+    if range6 is True:
+        out['range6'] = pick_v6_range(in_use)
+    elif isinstance(range6, str) and range6:
+        try:
+            net6 = ipaddress.ip_network(range6)
+        except ValueError:
+            raise NetworkError(f'{range6!r} is not an IPv6 network') from None
+        if net6.version != 6 or not net6.is_private or not 48 <= net6.prefixlen <= 64:
+            raise NetworkError('the IPv6 range is a private ULA network between /48 and /64')
+        out['range6'] = str(net6)
+    return out
 
 
 def member(network: dict, host: str) -> dict | None:
@@ -92,6 +121,14 @@ def join(network: dict, host: str, endpoint: str | None = None, hub: bool = Fals
         network['members'].remove(m)
         network['members'].append({**m, 'host': f'{host} (revoked {m["address"]})', 'endpoint': None})          # kept, so its key and address stay refused
     m = {'host': host, 'address': address, 'public_key': None, 'next_public_key': None, 'endpoint': endpoint, 'hub': bool(hub), 'state': 'pending', 'rotation': None}
+    if network.get('range6'):
+        given6 = {x.get('address6') for x in network['members'] if x.get('address6')}
+        net6 = ipaddress.ip_network(network['range6'])
+        idx = int(ipaddress.ip_address(address)) - int(ipaddress.ip_network(network['range']).network_address)
+        cand6 = str(net6.network_address + max(1, idx))
+        if cand6 in given6:
+            cand6 = next(str(net6.network_address + i) for i in range(1, 65536) if str(net6.network_address + i) not in given6)
+        m['address6'] = cand6
     network['members'].append(m)
     return m
 
@@ -229,6 +266,8 @@ def desired_peers(network: dict, host: str) -> list[dict]:
             continue                                      # two spokes are not peers: they meet at a hub
         whole = network['topology'] == 'hub' and m['hub'] and not me['hub']
         allowed = [network['range']] if whole else [f'{m["address"]}/32']
+        if network.get('range6') and m.get('address6'):
+            allowed.append(network['range6'] if whole else f'{m["address6"]}/128')
         endpoint = format_endpoint(m['endpoint'], network['port'])
         # without an address to call, the other side has to call here and keep the path open
         keepalive = KEEPALIVE if (endpoint and not me['endpoint']) else None
@@ -362,3 +401,51 @@ def verify_directory(text: str, signature: str, signers: list[str], *, min_seq: 
         if p.returncode != 0:
             raise NetworkError('directory signature verification failed')
     return doc
+
+
+def mirror_pull_script(mirrors: list[str], signers: list[str], iface: str = INTERFACE) -> str:
+    """Render an outbound roaming peer shell script that fetches /api/sfnet/directory from mirrors,
+    verifies the sshsig signature and monotonic seq, and updates WireGuard peer endpoints."""
+    import shlex
+    clean_mirrors = [str(m).strip() for m in mirrors if str(m).strip()]
+    clean_signers = [str(k).strip() for k in signers if str(k).strip()]
+    if not clean_mirrors or not clean_signers:
+        raise NetworkError('at least one mirror URL and one directory signer key are required')
+    signer_lines = ''.join(f'sfnet {k}\n' for k in clean_signers)
+    mirror_args = ' '.join(shlex.quote(u) for u in clean_mirrors)
+    return (
+        '#!/usr/bin/env bash\n'
+        'set -euo pipefail\n'
+        f'IFACE={shlex.quote(iface)}\n'
+        'STATE=/var/lib/storageforge-sfnet\n'
+        'mkdir -p "$STATE"\n'
+        'TMP=$(mktemp -d)\n'
+        'trap "rm -rf $TMP" EXIT\n'
+        'cat > "$TMP/allowed" <<\\ALLOWED\n'
+        f'{signer_lines}'
+        'ALLOWED\n'
+        f'for url in {mirror_args}; do\n'
+        '  if curl -fsSL --max-time 10 "$url" > "$TMP/resp.json" 2>/dev/null; then\n'
+        '    python3 - "$TMP" "$STATE" "$IFACE" <<\\PY\n'
+        'import json, pathlib, subprocess, sys, time\n'
+        'tmp, state, iface = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]\n'
+        'resp = json.loads((tmp / "resp.json").read_text())\n'
+        'payload = resp.get("payload") or json.dumps(resp.get("directory") or {})\n'
+        'sig = resp.get("signature") or ""\n'
+        '(tmp / "dir.sig").write_text(sig)\n'
+        'doc = json.loads(payload)\n'
+        'seq_file = state / "seq"\n'
+        'min_seq = int(seq_file.read_text().strip()) if seq_file.exists() else 0\n'
+        'if doc.get("seq", 0) < min_seq or doc.get("expires", 0) <= time.time():\n'
+        '    sys.exit(1)\n'
+        f'subprocess.run(["ssh-keygen", "-Y", "verify", "-f", str(tmp / "allowed"), "-I", "sfnet", "-n", {DIRECTORY_NS!r}, "-s", str(tmp / "dir.sig")], input=payload.encode(), check=True)\n'
+        'for p in doc.get("peers") or []:\n'
+        '    if p.get("public_key") and p.get("endpoint"):\n'
+        '        subprocess.run(["wg", "set", iface, "peer", p["public_key"], "endpoint", p["endpoint"]], check=False)\n'
+        'seq_file.write_text(str(doc["seq"]))\n'
+        'PY\n'
+        '    exit 0\n'
+        '  fi\n'
+        'done\n'
+        'exit 1\n'
+    )

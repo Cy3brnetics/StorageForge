@@ -1,0 +1,43 @@
+format: 1
+id: kopia
+revision: 1
+name: Kopia
+app_version: 0.19.0
+category: backup
+summary: Encrypted, deduplicated, compressed snapshot backup tool supporting S3, Garage, SFTP and local filesystems.
+homepage: https://kopia.io/
+license: Apache-2.0
+install:
+  methods:
+    - kind: binary
+      name: kopia
+      files:
+        x86_64:
+          url: https://github.com/kopia/kopia/releases/download/v0.19.0/kopia-0.19.0-linux-x64.tar.gz
+          sha256: 3a6b731a6537b23c6747e0e2bc63fb1a8c38314b211a1b520eb1d84e9a62fb74
+          archive:
+            member: kopia-0.19.0-linux-x64/kopia
+            sha256: 7b48a8e31c54c19e10c23781b66c58025c07d2c60662eb3a81e7b18e76524921
+        aarch64:
+          url: https://github.com/kopia/kopia/releases/download/v0.19.0/kopia-0.19.0-linux-arm64.tar.gz
+          sha256: 88d95a6381cf5e487a1d5a6c7b40a1a5f4273143cf6320185086a2f2e0d4137b
+          archive:
+            member: kopia-0.19.0-linux-arm64/kopia
+            sha256: 9d81a24e073f2a0d5c89e471a21b3872e45f12c9a637b210485e3f1b7c210948
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+backup:
+  paths: []
+  consistency: live
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: kopia
+upgrade:
+  strategy: binary
+risk: [runs-as-root]
+notes: Extracted from the release tar.gz archive only after both the archive SHA-256 and the kopia binary SHA-256 match.

@@ -1,0 +1,35 @@
+format: 1
+id: proxmox-backup-server
+revision: 1
+name: Proxmox Backup Server
+app_version: from the Proxmox repository
+category: backup
+summary: Enterprise deduplicating backup server for Proxmox VE guests and Linux hosts with verify, prune and sync jobs.
+homepage: https://www.proxmox.com/en/proxmox-backup-server
+license: AGPL-3.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [proxmox-backup-server]
+requires:
+  ports: [8007/tcp]
+exposure:
+  default: management
+  public_optional: false
+backup:
+  paths: [/etc/proxmox-backup]
+  consistency: live
+gui:
+  native:
+    url_template: "https://{host}:{port}/"
+    port: 8007
+    sso: oidc
+  panel:
+    level: status
+    adapter: proxmox-backup-server
+    api: pbs
+upgrade:
+  strategy: package
+risk: [holds-credentials, runs-as-root]
+notes: Connect Proxmox Backup Server under Keys -> Platform connections with a DatastoreAudit token to monitor verify jobs, namespaces and stale groups.

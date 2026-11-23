@@ -1,0 +1,38 @@
+format: 1
+id: pangolin
+revision: 1
+name: Pangolin
+app_version: 1.8.0
+category: vpn
+summary: Self-hosted identity-aware tunnel and reverse proxy server paired with Newt site agents and Gerbil WireGuard termination.
+homepage: https://github.com/fosrl/pangolin
+license: AGPL-3.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/fosrl/pangolin:1.8.0@sha256:4be00ea5dcd046829255e6ee1d66d5239d1c36ed089c75bffd6cabac9f4b54d4
+      ports: ["3003:3003/tcp"]
+      volumes: {config: /app/config}
+requires:
+  ports: [3003/tcp]
+  volumes: [config]
+exposure:
+  default: loopback
+  public_optional: true
+  behind: reverse-proxy
+backup:
+  paths: [config]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 3003
+    sso: oidc
+  panel:
+    level: status
+    adapter: pangolin
+    api: pangolin
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Connect Pangolin under Keys -> Platform connections so the exposure engine counts every domain published through Newt.

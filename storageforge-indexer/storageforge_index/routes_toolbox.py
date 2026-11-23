@@ -256,7 +256,7 @@ def register(web, ctx):
     @web.get('/api/toolbox/updates')
     @login_required
     def api_toolbox_updates():
-        return jsonify(updates=toolbox.updates(conn()), cve='not built: image scanning comes with the Trivy entry (0.5.13)')
+        return jsonify(updates=toolbox.updates(conn()), cve=toolbox.cve_summary(conn()))
 
     @web.get('/api/toolbox/exposure')
     @login_required

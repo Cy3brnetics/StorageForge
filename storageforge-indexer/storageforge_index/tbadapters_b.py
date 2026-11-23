@@ -27,13 +27,14 @@ from .toolbox import TOOLS_HOME
 
 SECTIONS = ('tb_units', 'tb_versions', 'tb_crowdsec', 'tb_fail2ban', 'tb_chrony', 'tb_unbound', 'tb_suricata', 'tb_scans', 'tb_smart', 'tb_api')
 UNITS = ('caddy', 'traefik', 'unbound', 'coredns', 'dnsmasq', 'chronyd', 'chrony', 'crowdsec', 'crowdsec-firewall-bouncer', 'fail2ban', 'suricata',
+         'falco', 'falco-modern-bpf', 'wazuh-manager', 'wazuh-agent',
          'prometheus', 'prometheus-node-exporter', 'node_exporter', 'prometheus-smartctl-exporter', 'smartctl_exporter', 'grafana-server', 'loki',
          'netdata', 'smartd', 'smartmontools', 'step-ca', 'adguardhome',
          # the units root Podman makes from the Quadlet files of the container entries
-         'nginx-proxy-manager', 'pi-hole', 'adguard-home', 'trivy', 'grafana', 'beszel', 'ntfy', 'gotify', 'apprise')
+         'nginx-proxy-manager', 'pi-hole', 'adguard-home', 'trivy', 'grafana', 'beszel', 'ntfy', 'gotify', 'apprise', 'wazuh')
 VERSIONS = (('caddy', 'version'), ('traefik', 'version'), ('unbound', '-V'), ('coredns', '-version'), ('dnsmasq', '--version'), ('chronyd', '-v'),
             ('cscli', 'version'), ('fail2ban-client', '--version'), ('suricata', '-V'), ('zeek', '--version'), ('trivy', '--version'), ('grype', '--version'),
-            ('oscap', '--version'), ('prometheus', '--version'), ('prometheus-node-exporter', '--version'), ('node_exporter', '--version'),
+            ('oscap', '--version'), ('falco', '--version'), ('prometheus', '--version'), ('prometheus-node-exporter', '--version'), ('node_exporter', '--version'),
             ('grafana-server', '-v'), ('loki', '-version'), ('netdata', '-V'), ('smartctl', '--version'), ('smartctl_exporter', '--version'),
             ('prometheus-smartctl-exporter', '--version'), ('step-ca', 'version'), ('apprise', '--version'), ('adguardhome', '--version'))
 SCANS = f'{TOOLS_HOME}/scans'
@@ -637,6 +638,8 @@ ADAPTERS = {a.name: a for a in (
     Scanner('trivy', ['trivy'], ['trivy'], 'aquasec/trivy', level='full'),
     Scanner('grype', (), ['grype'], level='full'),
     Tool('openscap', (), ['oscap']),
+    Tool('falco', ['falco', 'falco-modern-bpf'], ['falco'], 'falcosecurity/falco'),
+    Tool('wazuh', ['wazuh-manager', 'wazuh-agent', 'wazuh'], (), 'wazuh/wazuh-manager'),
     Prometheus('prometheus', ['prometheus'], ['prometheus'], 'prom/prometheus'),
     Tool('node-exporter', ['prometheus-node-exporter', 'node_exporter'], ['prometheus-node-exporter', 'node_exporter']),
     Tool('grafana', ['grafana', 'grafana-server'], ['grafana-server'], 'grafana/grafana'),

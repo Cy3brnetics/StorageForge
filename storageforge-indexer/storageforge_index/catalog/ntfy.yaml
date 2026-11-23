@@ -1,0 +1,43 @@
+format: 1
+id: ntfy
+revision: 1
+name: ntfy
+app_version: 2.11.0
+category: monitoring
+summary: Self-hosted pub-sub push notification server that StorageForge alert routes can deliver critical notifications to.
+homepage: https://ntfy.sh/
+license: Apache-2.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/binwiederhier/ntfy:v2.11.0@sha256:dcf1ea4628ac1b1ddba86588ed8e25dcd83810688fc37690dd1dbdbeb9f92165
+      ports: ["2586:80/tcp"]
+      volumes: {cache: /var/cache/ntfy, config: /etc/ntfy}
+      command: [serve, --cache-file, /var/cache/ntfy/cache.db]
+      read_only: true
+      drop_caps: all
+requires:
+  ports: [2586/tcp]
+  volumes: [cache, config]
+exposure:
+  default: loopback
+  public_optional: true
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:2586/v1/health
+  expect: 200
+backup:
+  paths: [cache, config]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 2586
+    sso: none
+  panel:
+    level: status
+    adapter: ntfy
+upgrade:
+  strategy: recreate
+risk: []
+notes: Point StorageForge notification routes at http://127.0.0.1:2586/<topic> or through Caddy with access tokens enabled.

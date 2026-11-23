@@ -1,0 +1,42 @@
+format: 1
+id: gotify
+revision: 1
+name: Gotify
+app_version: 2.6.1
+category: monitoring
+summary: Self-hosted notification server receiving webhook and alert pushes per application token.
+homepage: https://gotify.net/
+license: MIT
+install:
+  methods:
+    - kind: container
+      image: docker.io/gotify/server:2.6.1@sha256:68b308bc78a74715e4be74f613c85e4ea6f2989439ed66be52a26da61e7fa13b
+      ports: ["8088:80/tcp"]
+      volumes: {data: /app/data}
+      read_only: true
+      drop_caps: all
+requires:
+  ports: [8088/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:8088/health
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 8088
+    sso: none
+  panel:
+    level: status
+    adapter: gotify
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Create a dedicated application token in Gotify for StorageForge alert routing.

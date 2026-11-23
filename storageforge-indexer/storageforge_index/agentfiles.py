@@ -34,7 +34,7 @@ KEEP_READS_SECS = 8 * 86400
 RECENT_SECS = 86400
 ACTIONS = ('write', 'create', 'delete', 'moved_from', 'moved_to')
 SETTINGS_KEY = 'agent.files'
-DEFAULTS = {'work_start': 7, 'work_end': 19, 'work_days': [0, 1, 2, 3, 4], 'offhours_reads_per_hour': 500}
+DEFAULTS = {'work_start': 7, 'work_end': 19, 'work_days': [0, 1, 2, 3, 4], 'offhours_reads_per_hour': 500, 'ransomware_burst_per_minute': 40}
 LABEL = 'reported by agent'
 _PATH_BAD = re.compile(r'[\x00-\x1f\x7f]')
 
@@ -264,12 +264,35 @@ def offhours(when: int, cfg: dict) -> bool:
     return t.tm_wday not in cfg['work_days'] or not (cfg['work_start'] <= t.tm_hour < cfg['work_end'])
 
 
+def ransomware_signs(conn: Conn, host: str, now: float | None = None) -> list[dict]:
+    """Detect high-rate file write/rename/delete bursts in agent_file_events over the last hour."""
+    now = int(now or time.time())
+    cfg = settings(conn)
+    limit = int(cfg.get('ransomware_burst_per_minute') or 40)
+    rows = conn.all("""SELECT (at / 60) AS bucket, max(process), max(user_name), count(*), max(at)
+                       FROM agent_file_events
+                       WHERE host = :h AND at >= :s AND action IN ('write', 'delete', 'moved_from', 'moved_to')
+                       GROUP BY (at / 60), COALESCE(process, '')
+                       HAVING count(*) >= :lim
+                       ORDER BY count(*) DESC LIMIT 5""",
+                    {'h': host, 's': now - 3600, 'lim': limit})
+    return [{'host': host, 'minute': int(b), 'process': proc or 'unknown', 'user': user or 'unknown', 'count': int(cnt), 'at': int(at)}
+            for b, proc, user, cnt, at in rows]
+
+
 def problems(conn: Conn, now: float | None = None) -> dict:
     now = int(now or time.time())
     out = {}
     running = [h for (h,) in conn.all("SELECT host FROM agents WHERE enabled = 1 AND state = 'running'")]
     cfg = settings(conn)
     for host in running:
+        bursts = ransomware_signs(conn, host, now)
+        if bursts:
+            top = bursts[0]
+            out[f'agent-files-ransomware:{host}'] = (
+                'security-ransomware', host, f'High-rate file modification burst on {host}',
+                f'{LABEL}: {top["process"]} ({top["user"]}) modified or renamed {top["count"]} files in one minute', 'crit'
+            )
         last_seen = _last_settled(conn, host)
         for path, at, process, user, uid in conn.all("""SELECT path, max(at), max(process), max(user_name), max(uid) FROM agent_file_events
                                                         WHERE host = :h AND managed = 1 AND at > :s GROUP BY path""", {'h': host, 's': last_seen}):

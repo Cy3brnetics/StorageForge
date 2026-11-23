@@ -1,0 +1,50 @@
+format: 1
+id: minio
+revision: 1
+name: MinIO
+app_version: 2025.02.28
+category: storage
+summary: S3-compatible object storage server placed on a dedicated dataset with snapshot holds, share fencing and canaries.
+homepage: https://min.io/
+license: AGPL-3.0
+secrets:
+  - {name: root_password, kind: password}
+install:
+  methods:
+    - kind: container
+      image: docker.io/minio/minio:RELEASE.2025-02-28T09-55-16Z@sha256:ed3cb831b2d61ee4d0891327c826142ab4343f7fcc1d1dd96e5d4f25f95358a5
+      ports: ["9000:9000/tcp", "9001:9001/tcp"]
+      volumes: {data: /data}
+      command: [server, /data, --console-address, ":9001"]
+      env: {MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio/root_password}
+      drop_caps: all
+requires:
+  ports: [9000/tcp, 9001/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+storage:
+  use: data
+  worm: recommended
+  canaries: none
+  volumes: [data]
+health:
+  url: http://127.0.0.1:9000/minio/health/live
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 9001
+    sso: oidc
+  panel:
+    level: status
+    adapter: minio
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Placed on a dataset with a recommended retention hold so ransomware with stolen S3 keys cannot destroy underlying ZFS/btrfs snapshots.

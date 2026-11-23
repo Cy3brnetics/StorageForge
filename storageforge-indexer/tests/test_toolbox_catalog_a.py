@@ -25,10 +25,10 @@ except ImportError:      # run as tests.test_x from the project folder
 from storageforge_index import changes, inframeasure, security, steps_toolbox, tbadapters, tbadapters_a, toolbox
 
 FIX = Path(__file__).resolve().parent / 'fixtures' / 'toolbox'
-PANELS = ('dockge', 'portainer', 'komodo', 'dockhand')
-VPN = ('headscale', 'headscale-ui', 'zerotier', 'nebula-lighthouse', 'strongswan')
-ACCESS = ('cloudflared', 'ssh-ca', 'openziti')
-IDENTITY = ('authelia', 'authentik', 'keycloak', 'lldap')
+PANELS = ('dockge', 'portainer', 'komodo', 'dockhand', 'dokploy', 'incus-ui')
+VPN = ('headscale', 'headscale-ui', 'zerotier', 'nebula-lighthouse', 'strongswan', 'netbird', 'netmaker', 'openvpn', 'pangolin')
+ACCESS = ('cloudflared', 'ssh-ca', 'openziti', 'pomerium', 'teleport', 'boundary')
+IDENTITY = ('authelia', 'authentik', 'keycloak', 'lldap', 'kanidm', 'samba-ad-dc', 'freeipa')
 GROUPS = {'panel': PANELS, 'vpn': VPN, 'access': ACCESS, 'identity': IDENTITY}
 
 
@@ -66,7 +66,8 @@ class Entries(Base):
                 e = entry(tid)
                 for m in e['methods']:
                     host = 'box' if m['kind'] != 'package' or 'apt' in m['packages'] else 'fed'
-                    pv = toolbox.preview(self.conn, host, tid, m['kind'])
+                    kw = {'exposure': 'management', 'bind': '10.0.0.5'} if e['exposure']['default'] == 'management' else {}
+                    pv = toolbox.preview(self.conn, host, tid, m['kind'], **kw)
                     t = next(x for x in pv['tasks'] if x['type'] == 'tool-install')
                     words = toolbox.install_words(self.conn, t)
                     self.assertEqual(words[0], 'ok', (tid, m['kind'], words[:2]))

@@ -41,10 +41,22 @@ function tbLinks(links) {
 function tbPeers(st) {
   if (!st || !(st.peers || []).length) return null;
   return sfNode('table', { class: 'tbpeers' }, sfNode('caption', {}, 'Peers'),
-    sfNode('thead', {}, sfNode('tr', {}, ['Interface', 'Public key', 'Addresses', 'Endpoint', 'Last handshake'].map((h) => sfNode('th', { scope: 'col' }, h)))),
-    sfNode('tbody', {}, st.peers.map((p) => sfNode('tr', {}, sfNode('td', {}, p.iface), sfNode('td', {}, sfNode('code', {}, p.public_key)),
-      sfNode('td', {}, (p.allowed_ips || []).join(', ') || 'none'), sfNode('td', {}, p.endpoint || 'it calls in'),
-      sfNode('td', {}, p.handshake ? timeEl(p.handshake) : 'never')))));
+    sfNode('thead', {}, sfNode('tr', {}, ['Interface', 'Public key', 'Addresses', 'Endpoint', 'Last handshake', 'Peer config & QR'].map((h) => sfNode('th', { scope: 'col' }, h)))),
+    sfNode('tbody', {}, st.peers.map((p) => {
+      let qrCell = sfNode('td', {}, '—');
+      if (p.config) {
+        const det = sfNode('details', {}, sfNode('summary', {}, 'Show QR & config'), sfNode('pre', {}, p.config));
+        if (p.qr_svg) {
+          const img = sfNode('img', { alt: `QR code for peer ${p.public_key}`, width: '160', height: '160',
+            src: `data:image/svg+xml;utf8,${encodeURIComponent(p.qr_svg)}` });
+          det.append(img);
+        }
+        qrCell = sfNode('td', {}, det);
+      }
+      return sfNode('tr', {}, sfNode('td', {}, p.iface), sfNode('td', {}, sfNode('code', {}, p.public_key)),
+        sfNode('td', {}, (p.allowed_ips || []).join(', ') || 'none'), sfNode('td', {}, p.endpoint || 'it calls in'),
+        sfNode('td', {}, p.handshake ? timeEl(p.handshake) : 'never'), qrCell);
+    })));
 }
 
 async function tbAction(host, tool, a) {

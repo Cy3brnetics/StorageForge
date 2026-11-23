@@ -27,10 +27,10 @@ def steps_without_their_tests():
 Steps = steps_without_their_tests()
 
 GROUP_C = {
-    'backup': {'restic', 'borg', 'proxmox-backup-client'},
+    'backup': {'restic', 'borg', 'kopia', 'proxmox-backup-client', 'proxmox-backup-server'},
     'secrets': {'openbao', 'sops', 'age', 'vaultwarden'},
-    'provisioning': {'packer', 'netbootxyz', 'forgejo', 'technitium', 'ansible', 'puppet', 'opentofu'},
-    'storage': {'samba', 'nfs-server', 'garage', 'nextcloud', 'syncthing', 'jellyfin'},
+    'provisioning': {'packer', 'netbootxyz', 'forgejo', 'renovate', 'technitium', 'ansible', 'puppet', 'opentofu'},
+    'storage': {'samba', 'nfs-server', 'minio', 'garage', 'nextcloud', 'syncthing', 'jellyfin'},
     'offline': {'zot', 'apt-cacher-ng'},
 }
 ENTRY = """format: 1

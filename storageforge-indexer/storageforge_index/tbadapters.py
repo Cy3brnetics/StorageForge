@@ -185,8 +185,27 @@ class WireGuard(Adapter):
             return None
         return {'running': bool(ifaces), 'how': 'kernel', 'interfaces': [i['name'] for i in ifaces]}
 
+    def peer_config(self, iface: dict, peer: dict, host: str = '') -> str:
+        addr = ', '.join(peer.get('allowed_ips') or ['10.8.0.2/32'])
+        port = iface.get('listen_port') or 51820
+        endpoint = f'{host}:{port}' if host else f'<host>:{port}'
+        lines = [
+            '# Peer configuration template (fill PrivateKey on the peer device; never stored on StorageForge)',
+            '[Interface]',
+            f'Address = {addr}',
+            'PrivateKey = <replace-on-peer-device>',
+            '',
+            '[Peer]',
+            f'PublicKey = {iface.get("public_key") or ""}',
+            'AllowedIPs = 0.0.0.0/0, ::/0',
+            f'Endpoint = {endpoint}',
+        ]
+        return '\n'.join(lines) + '\n'
+
     def status(self, reading, ctx, found):
+        from . import qrsvg
         now = ctx.get('now') or time.time()
+        host = str(ctx.get('host') or '')
         tiles, peers, live = [], 0, 0
         for i in self._ifaces(reading):
             n = len(i.get('peers') or [])
@@ -196,9 +215,15 @@ class WireGuard(Adapter):
                                + (', a key rotation waits' if i.get('next_public_key') else ''), 'ok'))
         if not tiles:
             tiles.append(_tile('Interfaces', 'wg is installed and no interface is up', 'warn'))
+        peer_rows = []
+        for i in self._ifaces(reading):
+            for p in i.get('peers') or []:
+                cfg = self.peer_config(i, p, host)
+                peer_rows.append({'iface': i['name'], 'public_key': p['public_key'], 'endpoint': p.get('endpoint'),
+                                  'allowed_ips': p.get('allowed_ips') or [], 'handshake': p.get('handshake'),
+                                  'config': cfg, 'qr_svg': qrsvg.svg(cfg)})
         return {'health': 'ok' if tiles and self._ifaces(reading) else 'warn', 'version': None, 'tiles': tiles,
-                'peers': [{'iface': i['name'], 'public_key': p['public_key'], 'endpoint': p.get('endpoint'), 'allowed_ips': p.get('allowed_ips') or [],
-                           'handshake': p.get('handshake')} for i in self._ifaces(reading) for p in i.get('peers') or []]}
+                'peers': peer_rows}
 
     def actions(self, reading, ctx):
         names = [i['name'] for i in self._ifaces(reading)]
@@ -270,7 +295,7 @@ def context(conn: Conn, host: str, reading: dict) -> dict:
     for u in reading.get('podman_rootless') or []:
         for c in u.get('containers') or []:
             cs.append({'name': c.get('name'), 'image': c.get('image'), 'state': c.get('state'), 'labels': c.get('labels') or {}, 'how': f'rootless podman ({u.get("user")})'})
-    return {'containers': cs, 'health': (reading.get('toolbox') or {}).get('health') or {}, 'now': time.time()}
+    return {'host': host, 'containers': cs, 'health': (reading.get('toolbox') or {}).get('health') or {}, 'now': time.time()}
 
 
 def refresh(conn: Conn, host: str, reading: dict | None) -> dict:

@@ -1,0 +1,39 @@
+format: 1
+id: freeipa
+revision: 1
+name: FreeIPA
+app_version: 4.12.2
+category: identity
+summary: Integrated identity, Kerberos KDC, 389 Directory Server, dogtag PKI CA and host HBAC policy server for Linux fleets.
+homepage: https://www.freeipa.org/
+license: GPL-3.0
+secrets:
+  - {name: admin_password, kind: password}
+install:
+  methods:
+    - kind: quadlet
+      image: docker.io/freeipa/freeipa-server:fedora-41@sha256:9ae6111571cef73aa6d0a47113f312f717d04e8ac346fd0cb6b158f2d24dac1d
+      ports: ["8443:443/tcp", "389:389/tcp", "636:636/tcp", "88:88/tcp", "88:88/udp"]
+      volumes: {data: /data}
+      env: {PASSWORD_FILE: /run/secrets/freeipa/admin_password}
+requires:
+  ports: [8443/tcp, 389/tcp, 636/tcp, 88/tcp, 88/udp]
+  volumes: [data]
+exposure:
+  default: management
+  public_optional: false
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "https://{host}:{port}/"
+    port: 8443
+    sso: none
+  panel:
+    level: status
+    adapter: freeipa
+upgrade:
+  strategy: recreate
+risk: [holds-credentials, runs-as-root]
+notes: Runs under root Podman Quadlet on the management interface; back up /data with the container stopped.

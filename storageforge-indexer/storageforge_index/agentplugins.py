@@ -36,6 +36,16 @@ def take_tripwire(conn, host: str, body: dict, at: int) -> int:
     fp = conn.scalar('SELECT fingerprint FROM agents WHERE host = :h', {'h': host})
     agentaction.tripwire_drop(conn, host, fp, body, now=at)
     return 1
+
+
+def take_toolbox_status(conn, host: str, body: dict, at: int) -> int:
+    """Toolbox adapter status pushed by the agent's toolbox plugin (section 11.4), updating toolbox_status without SSH."""
+    from . import tbadapters
+    readings = body.get('readings') if isinstance(body.get('readings'), dict) else body
+    rows = tbadapters.refresh(conn, host, readings)
+    return len(rows)
+
+
 from .db import Database
 
 RECORDS_PER_TICK = 500
@@ -45,7 +55,7 @@ def _takers() -> dict:
     return {('disks', 'smart'): agentdisks.take_smart, ('disks', 'errors'): agentdisks.take_errors,
             ('files', 'changes'): agentfiles.take_changes, ('files', 'reads'): agentfiles.take_reads, ('files', 'watching'): agentfiles.take_watching,
             ('scan', 'inventory'): agentscan.take_inventory, ('sentinel', 'events'): _sentinel_events,
-            ('tripwire', 'shadow_copy'): take_tripwire}
+            ('tripwire', 'shadow_copy'): take_tripwire, ('toolbox', 'status'): take_toolbox_status}
 
 
 def take(db: Database, now: float | None = None) -> dict:

@@ -1,0 +1,38 @@
+format: 1
+id: boundary
+revision: 1
+name: HashiCorp Boundary
+app_version: 0.19.1
+category: access
+summary: Identity-based access management controller and worker brokering host connections without exposing private network credentials.
+homepage: https://www.boundaryproject.io/
+license: BSL-1.1
+labels: [source-available, not-a-default]
+install:
+  methods:
+    - kind: container
+      image: docker.io/hashicorp/boundary:0.19.1@sha256:f525641639bd69a0d550d4709817a9cfb1da37ba1c3356ce0f78203bb29ea1ef
+      ports: ["9200:9200/tcp", "9202:9202/tcp"]
+      volumes: {data: /boundary}
+requires:
+  ports: [9200/tcp, 9202/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 9200
+    sso: oidc
+  panel:
+    level: status
+    adapter: boundary
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Built under the Business Source License (BSL 1.1), so it is never added by a default role profile.

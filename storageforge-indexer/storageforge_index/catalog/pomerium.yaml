@@ -1,0 +1,37 @@
+format: 1
+id: pomerium
+revision: 1
+name: Pomerium
+app_version: 0.30.2
+category: access
+summary: Identity-aware access proxy enforcing per-route OIDC and PPL authorization policies in front of internal services.
+homepage: https://www.pomerium.com/
+license: Apache-2.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/pomerium/pomerium:v0.30.2@sha256:043b11b88d68cbb1dff67ab23a3306befad45ff53e0946afca1939a1f49ca4f7
+      ports: ["8443:8443/tcp"]
+      volumes: {data: /pomerium}
+requires:
+  ports: [8443/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: true
+  behind: reverse-proxy
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "https://{host}:{port}/"
+    port: 8443
+    sso: oidc
+  panel:
+    level: status
+    adapter: pomerium
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Routes with allow_public_unauthenticated are flagged as public by the exposure engine.

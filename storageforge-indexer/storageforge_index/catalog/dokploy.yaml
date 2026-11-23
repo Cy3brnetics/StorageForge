@@ -1,0 +1,41 @@
+format: 1
+id: dokploy
+revision: 1
+name: Dokploy
+app_version: 0.24.4
+category: panel
+summary: Self-hosted deployment panel for applications and compose stacks using the account rootless Podman socket.
+homepage: https://dokploy.com/
+license: Apache-2.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/dokploy/dokploy:v0.24.4@sha256:a0597c80bb9ec94e7d1866b0ef2bbf54e5651d665cdfc9e6c863cbbd21cc36f4
+      ports: ["3000:3000/tcp"]
+      volumes: {data: /etc/dokploy}
+      engine_socket: own
+requires:
+  ports: [3000/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:3000/
+  expect: 200
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 3000
+    sso: none
+  panel:
+    level: status
+    adapter: dokploy
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Runs against the rootless Podman socket of its own account (sf-dokploy) and never touches root containers.

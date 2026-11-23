@@ -1157,6 +1157,8 @@ def made(e: dict, m: dict, r: dict, facts: dict | None = None) -> dict:
     """What an install of this method makes on the host: what removing it takes away, and the data it leaves."""
     out = {'method': m['kind'], 'data': sorted(set(r['volumes'].values())) + ([f'{DATA_ROOT}/{e["id"]}/secrets'] if e.get('secrets') else []),
            'ports': [publish(p) for p in r['ports']], 'exposure': r['exposure']}
+    if r.get('image'):
+        out['image'] = r['image']
     if m['kind'] == 'container':
         out.update(account=account_of(e['id']), unit=f'{e["id"]}.service', quadlet=f'{TOOLS_HOME}/{e["id"]}/.config/containers/systemd/{e["id"]}.container')
     elif m['kind'] == 'quadlet':
@@ -1442,12 +1444,63 @@ def remove_words(conn: Conn, t: dict, data: bool = False) -> list[str]:
     return ['refused', f'{inst["method"]} cannot be removed by this version']
 
 
-# ── updates ─────────────────────────────────────────────────────────
+# ── updates and CVE deltas ──────────────────────────────────────────
+def _match_scan(scans: list[dict], image: str | None) -> dict | None:
+    if not image or not scans:
+        return None
+    exact = next((s for s in scans if s.get('image') == image), None)
+    if exact:
+        return exact
+    no_digest = image.split('@', 1)[0]
+    by_tag = next((s for s in scans if (s.get('image') or '').split('@', 1)[0] == no_digest), None)
+    if by_tag:
+        return by_tag
+    repo = no_digest.rsplit(':', 1)[0]
+    return next((s for s in scans if (s.get('image') or '').split('@', 1)[0].rsplit(':', 1)[0] == repo), None)
+
+
+def cve_delta(old_scan: dict | None, new_scan: dict | None) -> dict | None:
+    """Compares two Trivy/Grype image scan reports (tbadapters_b.read_scans) or summarizes the installed image's CVEs."""
+    sevs = ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN')
+    if not old_scan and not new_scan:
+        return None
+    if old_scan and new_scan:
+        old_ids = {f['id'] for f in (old_scan.get('findings') or []) if f.get('id')}
+        new_ids = {f['id'] for f in (new_scan.get('findings') or []) if f.get('id')}
+        cb = {k: int((old_scan.get('counts') or {}).get(k, 0)) for k in sevs}
+        ca = {k: int((new_scan.get('counts') or {}).get(k, 0)) for k in sevs}
+        return {
+            'old_image': old_scan.get('image'),
+            'new_image': new_scan.get('image'),
+            'scanner': new_scan.get('scanner') or old_scan.get('scanner') or 'trivy',
+            'counts_before': cb,
+            'counts_after': ca,
+            'delta': {k: ca[k] - cb[k] for k in sevs},
+            'fixed': sorted(old_ids - new_ids),
+            'introduced': sorted(new_ids - old_ids),
+        }
+    scan = old_scan or new_scan
+    cb = {k: int((scan.get('counts') or {}).get(k, 0)) for k in sevs}
+    fixable = {k: int((scan.get('fixable') or {}).get(k, 0)) for k in sevs}
+    return {
+        'old_image': old_scan.get('image') if old_scan else None,
+        'new_image': new_scan.get('image') if new_scan else None,
+        'scanner': scan.get('scanner') or 'trivy',
+        'counts_before': cb if old_scan else None,
+        'counts_after': cb if new_scan and not old_scan else None,
+        'fixable': fixable,
+        'fixed': sorted({f['id'] for f in (scan.get('findings') or []) if f.get('id') and f.get('fixed')}) if old_scan else [],
+        'introduced': [],
+    }
+
+
 def updates(conn: Conn) -> list[dict]:
-    """Each install whose entry has a newer revision in the catalog, or whose entry is no longer trusted. Nothing is applied: an update
-    is staged as an install again, and its report shows what changes."""
+    """Each install whose entry has a newer revision in the catalog, or whose entry is no longer trusted, with Trivy/Grype CVE deltas when
+    image scan reports exist on the host. Nothing is applied: an update is staged as an install again, and its report shows what changes."""
+    from . import inframeasure
     out = []
     cat = {x['id']: x for x in catalog(conn)}
+    readings: dict[str, dict] = {}
     for i in installs(conn):
         if i['status'] in ('removed',):
             continue
@@ -1457,9 +1510,44 @@ def updates(conn: Conn) -> list[dict]:
         elif row['trust'] == 'refused':
             out.append({'host': i['host'], 'tool': i['tool'], 'state': 'refused', 'why': row['trust_why']})
         elif row['sha256'] != i['sha256']:
-            out.append({'host': i['host'], 'tool': i['tool'], 'state': 'update', 'from_revision': i['revision'], 'to_revision': row['revision'],
-                        'app_version': row['app_version'], 'why': f'revision {row["revision"]} of the entry is in the catalog; {i["revision"]} was staged'})
+            if i['host'] not in readings:
+                readings[i['host']] = inframeasure.reading(conn, i['host']) or {}
+            scans = ((readings[i['host']].get('toolbox') or {}).get('scans')) or []
+            old_img = (i.get('params') or {}).get('image')
+            m = next((x for x in row['entry']['methods'] if x['kind'] == i['method']), None)
+            new_img = (m or {}).get('image')
+            old_scan = _match_scan(scans, old_img) if old_img else None
+            new_scan = _match_scan(scans, new_img) if new_img and new_img != old_img else None
+            if not old_scan and new_img:
+                old_scan = _match_scan(scans, new_img)
+            item = {'host': i['host'], 'tool': i['tool'], 'state': 'update', 'from_revision': i['revision'], 'to_revision': row['revision'],
+                    'app_version': row['app_version'], 'why': f'revision {row["revision"]} of the entry is in the catalog; {i["revision"]} was staged'}
+            cve = cve_delta(old_scan, new_scan)
+            if cve:
+                item['cve'] = cve
+            out.append(item)
     return out
+
+
+def cve_summary(conn: Conn) -> dict:
+    """Aggregates Trivy and Grype image scan findings across hosts alongside CVE deltas on pending catalog updates."""
+    from . import inframeasure
+    hosts_out = []
+    total_images = crit_fixable = high_fixable = 0
+    for (host,) in conn.all('SELECT hostname FROM hosts ORDER BY hostname'):
+        r = inframeasure.reading(conn, host) or {}
+        scans = ((r.get('toolbox') or {}).get('scans')) or []
+        if not scans:
+            continue
+        c_fix = sum(int((s.get('fixable') or {}).get('CRITICAL', 0)) for s in scans)
+        h_fix = sum(int((s.get('fixable') or {}).get('HIGH', 0)) for s in scans)
+        total_images += len(scans)
+        crit_fixable += c_fix
+        high_fixable += h_fix
+        hosts_out.append({'host': host, 'images': len(scans), 'fixable_critical': c_fix, 'fixable_high': h_fix,
+                          'reports': [{'image': s.get('image'), 'scanner': s.get('scanner'), 'scanned_at': s.get('scanned_at'),
+                                       'counts': s.get('counts'), 'fixable': s.get('fixable')} for s in scans[:25]]})
+    return {'images_scanned': total_images, 'fixable_critical': crit_fixable, 'fixable_high': high_fixable, 'hosts': hosts_out}
 
 
 def write_manifest(serial: int, folder: Path | None = None) -> Path:

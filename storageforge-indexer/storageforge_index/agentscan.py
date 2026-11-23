@@ -88,7 +88,14 @@ def apply_monitoring(conn: Conn, host: str, sections: dict, at: int):
     data = json.loads(inv.to_json()) | {'source': 'agent', 'label': LABEL, 'agent_at': at}
     cast = ':inv' if conn.dialect == 'sqlite' else 'CAST(:inv AS jsonb)'
     conn.execute(f'UPDATE hosts SET inventory_json = {cast}, os_info = :os WHERE host_id = :h', {'inv': json.dumps(data), 'os': inv.os_info, 'h': host_id})
-    Database.sync_mounts(_Dialect(conn.dialect), conn, host_id, plan_mounts(inv.mounts, ScanOptions()))
+    planned = plan_mounts(inv.mounts, ScanOptions())
+    Database.sync_mounts(_Dialect(conn.dialect), conn, host_id, planned)
+    for pm in planned:
+        if getattr(pm.mount, 'size_bytes', 0) and pm.mount.size_bytes > 0:
+            mid = conn.scalar('SELECT mount_id FROM mounts WHERE host_id = :h AND mount_point = :p', {'h': host_id, 'p': pm.mount.target})
+            if mid:
+                conn.execute('INSERT INTO mount_usage (mount_id, total_bytes, used_bytes) VALUES (:m, :t, :u)',
+                             {'m': mid, 't': int(pm.mount.size_bytes), 'u': int(getattr(pm.mount, 'used_bytes', 0) or 0)})
 
 
 def _mounted(mounts) -> set:
@@ -120,6 +127,10 @@ def compare(conn: Conn, host: str, sections: dict) -> dict:
         only_scan, only_agent = sorted(theirs - mine)[:5], sorted(mine - theirs)[:5]
         differs.append('the filesystems mounted: ' + '; '.join(x for x in (f'only the scan saw {", ".join(only_scan)}' if only_scan else '',
                                                                         f'only the agent saw {", ".join(only_agent)}' if only_agent else '') if x))
+    ssh_pools = {p.get('name') for p in (ssh.get('zfs_pools') or []) if isinstance(p, dict) and p.get('name')}
+    agent_pools = {p.get('name') if isinstance(p, dict) else getattr(p, 'name', None) for p in (getattr(inv, 'zfs_pools', None) or [])} - {None}
+    if ssh_pools and agent_pools and ssh_pools != agent_pools:
+        differs.append(f'the ZFS pools: scan saw {", ".join(sorted(ssh_pools))}, agent saw {", ".join(sorted(agent_pools))}')
     return {'differs': differs, 'compared': True}
 
 

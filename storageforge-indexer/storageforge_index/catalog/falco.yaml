@@ -1,0 +1,36 @@
+format: 1
+id: falco
+revision: 1
+name: Falco
+app_version: 0.40.0
+category: detection
+summary: Kernel eBPF runtime security detector watching system calls for unexpected shell spawns, sensitive file reads and container escapes.
+homepage: https://falco.org/
+license: Apache-2.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [falco]
+        dnf: [falco]
+        zypper: [falco]
+        pacman: [falco]
+      units: [falco.service]
+requires:
+  ports: []
+exposure:
+  default: loopback
+  public_optional: false
+backup:
+  paths: [/etc/falco]
+  consistency: live
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: falco
+upgrade:
+  strategy: package
+risk: [runs-as-root]
+compliance: [runtime detection]
+notes: Test custom Falco rules against recorded file and session events in the Security -> Falco Rule Simulator Workbench before deploying.

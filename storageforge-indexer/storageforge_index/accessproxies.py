@@ -292,3 +292,42 @@ def sentence(reading: dict) -> str:
     if open_to_all:
         text += '. Public without a sign-in: ' + ', '.join(str(n) for n in open_to_all[:8]) + (f' and {len(open_to_all) - 8} more' if len(open_to_all) > 8 else '')
     return text
+
+
+def inventory_targets(conn) -> list[dict]:
+    """Generate Teleport and Boundary target descriptors from StorageForge's scanned host inventory."""
+    rows = conn.all('SELECT hostname, ssh_host, ssh_port, os_info FROM hosts ORDER BY hostname')
+    out = []
+    for hostname, ssh_host, ssh_port, os_info in rows:
+        addr = ssh_host or hostname
+        port = int(ssh_port or 22)
+        out.append({
+            'host': hostname,
+            'address': addr,
+            'port': port,
+            'os': os_info or '',
+            'teleport_node': {'kind': 'node', 'hostname': hostname, 'addr': f'{addr}:{port}', 'labels': {'managed_by': 'storageforge'}},
+            'boundary_target': {'name': hostname, 'type': 'ssh', 'address': addr, 'default_port': port},
+        })
+    return out
+
+
+def teleport_recording_check(conn, host: str, reading: dict | None = None, recording_path: str = '/var/lib/teleport/log') -> dict:
+    """Check whether a Teleport host's session recording directory sits on a ZFS or btrfs mount covered by a retention hold."""
+    rows = conn.all("""SELECT m.mount_point, m.fs_type FROM mounts m JOIN hosts h ON h.host_id = m.host_id
+                       WHERE h.hostname = :h""", {'h': host})
+    best_mp, best_fs = None, None
+    for mp, fstype in rows:
+        if recording_path == mp or recording_path.startswith(str(mp).rstrip('/') + '/'):
+            if best_mp is None or len(str(mp)) > len(best_mp):
+                best_mp, best_fs = str(mp), str(fstype or '')
+    holds = conn.all("SELECT dataset FROM security_retention_holds WHERE host = :h AND status IN ('held', 'active')", {'h': host})
+    has_hold = bool(holds) and best_fs in ('zfs', 'btrfs')
+    return {
+        'host': host,
+        'recording_path': recording_path,
+        'mount_point': best_mp,
+        'fstype': best_fs,
+        'hold': has_hold,
+        'protected': bool(best_fs in ('zfs', 'btrfs') and has_hold),
+    }

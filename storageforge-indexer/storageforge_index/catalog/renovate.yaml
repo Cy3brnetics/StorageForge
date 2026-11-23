@@ -1,0 +1,37 @@
+format: 1
+id: renovate
+revision: 1
+name: Renovate
+app_version: 39.180.0
+category: provisioning
+summary: Automated dependency and container image digest update runner for self-hosted Forgejo and Git repositories.
+homepage: https://docs.renovatebot.com/
+license: AGPL-3.0
+secrets:
+  - {name: git_token, kind: token}
+install:
+  methods:
+    - kind: container
+      image: docker.io/renovate/renovate:39.180.0@sha256:eed8ebeffa148c455ca5c1ef36ec59caf70f8e85d837f04ffe5f24cf737ac6d6
+      volumes: {cache: /tmp/renovate}
+      env: {RENOVATE_TOKEN_FILE: /run/secrets/renovate/git_token}
+      read_only: true
+      drop_caps: all
+requires:
+  ports: []
+  volumes: [cache]
+exposure:
+  default: loopback
+  public_optional: false
+backup:
+  paths: [cache]
+  consistency: live
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: renovate
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Runs rootless with the Git token mounted from a file in /run/secrets/renovate/git_token.

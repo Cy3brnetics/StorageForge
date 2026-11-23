@@ -1,0 +1,37 @@
+format: 1
+id: kanidm
+revision: 1
+name: Kanidm
+app_version: 1.8.4
+category: identity
+summary: Rust identity management server providing OIDC, OAuth2, WebAuthn passkeys, LDAP and POSIX account authentication.
+homepage: https://kanidm.com/
+license: MPL-2.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/kanidm/server:1.8.4@sha256:1450f21fcda4ec1384794c9c357c465dc30a0af57cd43717b8d68bec48640ea4
+      ports: ["8443:8443/tcp"]
+      volumes: {data: /data}
+requires:
+  ports: [8443/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: true
+  behind: reverse-proxy
+backup:
+  paths: [data]
+  consistency: stop-snapshot
+gui:
+  native:
+    url_template: "https://{host}:{port}/"
+    port: 8443
+    sso: none
+  panel:
+    level: status
+    adapter: kanidm
+upgrade:
+  strategy: recreate
+risk: [holds-credentials]
+notes: Enforces WebAuthn/FIDO2 passkeys and hardware security keys out of the box for OIDC clients.

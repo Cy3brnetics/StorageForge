@@ -1,0 +1,36 @@
+format: 1
+id: incus-ui
+revision: 1
+name: Incus UI
+app_version: 6.18.0
+category: panel
+summary: Web interface for managing Incus system containers, virtual machines, storage pools and networks.
+homepage: https://linuxcontainers.org/incus/
+license: Apache-2.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [incus-ui-canonical]
+        dnf: [incus]
+requires:
+  ports: [8443/tcp]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+backup:
+  paths: [/var/lib/incus]
+  consistency: live
+gui:
+  native:
+    url_template: "https://{host}:{port}/"
+    port: 8443
+    sso: oidc
+  panel:
+    level: status
+    adapter: incus-ui
+upgrade:
+  strategy: package
+risk: [holds-credentials]
+notes: Authenticates with client TLS certificates or OIDC against the local Incus daemon.

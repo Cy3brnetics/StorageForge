@@ -1,0 +1,42 @@
+format: 1
+id: netdata
+revision: 1
+name: Netdata
+app_version: from the distribution
+category: monitoring
+summary: Per-second real-time system, storage and network metrics dashboard running from the distribution package.
+homepage: https://www.netdata.cloud/
+license: GPL-3.0
+install:
+  methods:
+    - kind: package
+      packages:
+        apt: [netdata]
+        dnf: [netdata]
+        zypper: [netdata]
+        pacman: [netdata]
+      units: [netdata.service]
+requires:
+  ports: [19999/tcp]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:19999/api/v1/info
+  expect: 200
+backup:
+  paths: [/etc/netdata]
+  consistency: live
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 19999
+    sso: forward-auth
+  panel:
+    level: status
+    adapter: netdata
+upgrade:
+  strategy: package
+risk: [runs-as-root]
+notes: Installed from the distribution package with no cloud account required; keep port 19999 on loopback or behind forward-auth.

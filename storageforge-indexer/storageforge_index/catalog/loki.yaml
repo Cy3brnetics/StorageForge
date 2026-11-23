@@ -1,0 +1,46 @@
+format: 1
+id: loki
+revision: 1
+name: Loki
+app_version: 3.4.2
+category: monitoring
+summary: Log aggregation store indexed by labels, queried through Grafana alongside Prometheus metrics.
+homepage: https://grafana.com/oss/loki/
+license: AGPL-3.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/grafana/loki:3.4.2@sha256:cb73a4cb0c16e548faec029f8d622c147534b33be5b14c94655ceb4ca49eeb11
+      ports: ["3100:3100/tcp"]
+      volumes: {data: /loki}
+      user: "10001:10001"
+      volume_owner: "10001"
+      read_only: true
+      drop_caps: all
+    - kind: package
+      packages:
+        apt: [loki]
+        dnf: [loki]
+        pacman: [loki]
+      units: [loki.service]
+requires:
+  ports: [3100/tcp]
+  volumes: [data]
+exposure:
+  default: loopback
+  public_optional: false
+health:
+  url: http://127.0.0.1:3100/ready
+  expect: 200
+backup:
+  paths: [data]
+  consistency: live
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: loki
+upgrade:
+  strategy: recreate
+risk: []
+notes: Keep Loki bound to loopback or fence port 3100 to known log shippers because Loki ships without built-in authentication.

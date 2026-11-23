@@ -21,8 +21,8 @@ from storageforge_index import changes, inframeasure, security, steps_toolbox_b,
 
 FIX = Path(__file__).resolve().parent / 'fixtures' / 'toolbox'
 PROXY_DNS = ('caddy', 'traefik', 'nginx-proxy-manager', 'step-ca', 'pi-hole', 'adguard-home', 'unbound', 'coredns', 'dnsmasq', 'chrony')
-DETECTION = ('crowdsec', 'fail2ban', 'suricata', 'zeek', 'trivy', 'grype', 'openscap')
-MONITORING: tuple = ()
+DETECTION = ('crowdsec', 'fail2ban', 'suricata', 'zeek', 'trivy', 'grype', 'openscap', 'falco', 'wazuh')
+MONITORING = ('prometheus', 'grafana', 'loki', 'beszel', 'netdata', 'smartd', 'ntfy', 'gotify', 'apprise')
 
 
 def entry(tid):

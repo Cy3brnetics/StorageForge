@@ -1,0 +1,37 @@
+format: 1
+id: samba-ad-dc
+revision: 1
+name: Samba AD DC
+app_version: 4.22.1
+category: identity
+summary: Active Directory compatible domain controller providing Kerberos, LDAP and SMB domain authentication.
+homepage: https://www.samba.org/
+license: GPL-3.0
+secrets:
+  - {name: admin_password, kind: password}
+install:
+  methods:
+    - kind: quadlet
+      image: docker.io/nowsci/samba-domain:latest@sha256:2e650d61cf33be5c63d198285c2b46a6b5539de6dc5157b4f21568a86a0dd0b3
+      ports: ["389:389/tcp", "636:636/tcp", "88:88/tcp", "88:88/udp"]
+      volumes: {data: /var/lib/samba, config: /etc/samba/external}
+      env: {DOMAINPASS_FILE: /run/secrets/samba-ad-dc/admin_password}
+      caps_add: [NET_BIND_SERVICE, CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]
+requires:
+  ports: [389/tcp, 636/tcp, 88/tcp, 88/udp]
+  volumes: [data, config]
+exposure:
+  default: management
+  public_optional: false
+backup:
+  paths: [data, config]
+  consistency: stop-snapshot
+gui:
+  native: none
+  panel:
+    level: status
+    adapter: samba-ad-dc
+upgrade:
+  strategy: recreate
+risk: [holds-credentials, runs-as-root]
+notes: Binds privileged Kerberos and LDAP ports on the management address; never expose it on WAN.

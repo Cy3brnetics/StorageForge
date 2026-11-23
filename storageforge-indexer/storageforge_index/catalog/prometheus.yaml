@@ -1,0 +1,51 @@
+format: 1
+id: prometheus
+revision: 1
+name: Prometheus
+app_version: 3.2.1
+category: monitoring
+summary: Time-series metrics server and alerting engine scraping node_exporter, smartctl_exporter and Toolbox metrics.
+homepage: https://prometheus.io/
+license: Apache-2.0
+install:
+  methods:
+    - kind: container
+      image: docker.io/prom/prometheus:v3.2.1@sha256:d7fd95582563addb1c7bfc83a2493195750550458bd5557161ed60145bfd61f6
+      ports: ["9090:9090/tcp"]
+      volumes: {data: /prometheus, config: /etc/prometheus}
+      user: "65534:65534"
+      volume_owner: "65534"
+      read_only: true
+      drop_caps: all
+    - kind: package
+      packages:
+        apt: [prometheus, prometheus-node-exporter]
+        dnf: [prometheus, golang-github-prometheus-node-exporter]
+        zypper: [golang-github-prometheus-prometheus, golang-github-prometheus-node_exporter]
+        pacman: [prometheus, prometheus-node-exporter]
+      units: [prometheus.service]
+requires:
+  ports: [9090/tcp]
+  volumes: [data, config]
+exposure:
+  default: loopback
+  public_optional: false
+  behind: reverse-proxy
+health:
+  url: http://127.0.0.1:9090/-/healthy
+  expect: 200
+backup:
+  paths: [data, config]
+  consistency: live
+gui:
+  native:
+    url_template: "http://{host}:{port}/"
+    port: 9090
+    sso: forward-auth
+  panel:
+    level: status
+    adapter: prometheus
+upgrade:
+  strategy: recreate
+risk: []
+notes: The adapter reads active scrape target health counts from 127.0.0.1:9090 without exposing metrics off the host.

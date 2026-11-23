@@ -548,3 +548,54 @@ def sentence(reading: dict, now: float | None = None) -> str:
         text += ('. The CRL passed its next update: OpenVPN refuses every client until it is made again' if c['crl_ended']
                  else f'. The CRL is good until {c["crl_next"]}' if c['crl_next'] else '')
     return text
+
+
+def openvpn_client_profile(remote_host: str, ca_pem: str, cert_pem: str = '', port: int = 1194, proto: str = 'udp') -> str:
+    """Render an importable OpenVPN client profile (.ovpn) template for a scanned OpenVPN server."""
+    clean_proto = 'tcp' if str(proto).lower().startswith('tcp') else 'udp'
+    lines = [
+        'client',
+        'dev tun',
+        f'proto {clean_proto}',
+        f'remote {str(remote_host).strip()} {int(port)}',
+        'resolv-retry infinite',
+        'nobind',
+        'persist-key',
+        'persist-tun',
+        'remote-cert-tls server',
+        'cipher AES-256-GCM',
+        'verb 3',
+        '<ca>',
+        ca_pem.strip(),
+        '</ca>',
+    ]
+    if cert_pem.strip():
+        lines.extend(['<cert>', cert_pem.strip(), '</cert>', '# Insert client private key in <key>...</key> locally'])
+    return '\n'.join(lines) + '\n'
+
+
+def strongswan_site_template(name: str, local_addr: str, remote_addr: str, local_ts: str, remote_ts: str) -> str:
+    """Render an IKEv2 swanctl.conf site-to-site connection template between two peers and their traffic selectors."""
+    slug = re.sub(r'[^A-Za-z0-9_-]', '-', str(name).strip()) or 'site-tunnel'
+    return (
+        'connections {\n'
+        f'  {slug} {{\n'
+        '    version = 2\n'
+        f'    local_addrs = {str(local_addr).strip()}\n'
+        f'    remote_addrs = {str(remote_addr).strip()}\n'
+        '    local {\n'
+        '      auth = pubkey\n'
+        '    }\n'
+        '    remote {\n'
+        '      auth = pubkey\n'
+        '    }\n'
+        '    children {\n'
+        f'      {slug}-net {{\n'
+        f'        local_ts = {str(local_ts).strip()}\n'
+        f'        remote_ts = {str(remote_ts).strip()}\n'
+        '        start_action = trap\n'
+        '      }\n'
+        '    }\n'
+        '  }\n'
+        '}\n'
+    )

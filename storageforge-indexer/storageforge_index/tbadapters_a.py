@@ -24,7 +24,8 @@ import re
 from .tbadapters import Adapter, _containers, _tile
 
 SECTIONS = ('tb_access',)
-UNITS = ('strongswan.service', 'strongswan-starter.service', 'storageforge-nebula.service', 'storageforge-cloudflared.service')
+UNITS = ('strongswan.service', 'strongswan-starter.service', 'storageforge-nebula.service', 'storageforge-cloudflared.service',
+         'openvpn.service', 'openvpn@server.service', 'openvpn-server@server.service')
 BODY = r"""
 # the Toolbox adapters of tbadapters_a.py: unit states, version lines and counts only
 sec tb_access
@@ -44,6 +45,7 @@ fi
 has nebula && printf "v\tnebula\t%s\n" "$(nebula -version 2>/dev/null | sed -n "s/^Version: *//p" | head -n 1)"
 has swanctl && printf "v\tstrongswan\t%s\n" "$(swanctl --version 2>/dev/null | head -n 1)"
 has cloudflared && printf "v\tcloudflared\t%s\n" "$(cloudflared --version 2>/dev/null | head -n 1)"
+has openvpn && printf "v\topenvpn\t%s\n" "$(openvpn --version 2>/dev/null | head -n 1)"
 if has swanctl; then
   swanctl --list-sas 2>/dev/null | grep -E "^[^ ]+: #[0-9]+, |^  [^ ]+: #[0-9]+, " | head -n 200 | while IFS= read -r l; do printf "s\t%s\n" "$l"; done
 fi
@@ -68,7 +70,7 @@ def read_access(lines: list[str]) -> dict:
         f = line.split('\t')
         if f[0] == 'u' and len(f) == 4 and f[1] in UNITS:
             out['units'][f[1]] = {'active': f[2][:20], 'enabled': f[3][:20]}
-        elif f[0] == 'v' and len(f) == 3 and f[1] in ('nebula', 'strongswan', 'cloudflared'):
+        elif f[0] == 'v' and len(f) == 3 and f[1] in ('nebula', 'strongswan', 'cloudflared', 'openvpn'):
             m = re.search(r'\d+\.\d+(\.\d+)?', f[2])
             if m:
                 out['versions'][f[1]] = m[0]
@@ -207,9 +209,17 @@ class SshCa(Adapter):
 
 
 ADAPTERS = {a.name: a for a in (
-    ContainerTool('dockge', 'louislam/dockge'), ContainerTool('headscale-ui', 'gurucomputing/headscale-ui', 'link'),
+    ContainerTool('dockge', 'louislam/dockge'), ContainerTool('dokploy', 'dokploy/dokploy'), ContainerTool('incus-ui', 'zabbly/incus'),
+    ContainerTool('headscale-ui', 'gurucomputing/headscale-ui', 'link'),
     Headscale('headscale', 'headscale/headscale'), ZeroTier('zerotier', 'zerotier/zerotier'),
-    ContainerTool('openziti', 'openziti/ziti-controller'), ContainerTool('authentik', 'goauthentik/server'), ContainerTool('keycloak', 'keycloak/keycloak'),
+    ContainerTool('netbird', 'netbirdio/management'), ContainerTool('netmaker', 'gravitl/netmaker'),
+    ContainerTool('pangolin', 'fosrl/pangolin'),
+    UnitTool('openvpn', ('openvpn-server@server.service', 'openvpn@server.service', 'openvpn.service'), 'openvpn'),
+    ContainerTool('openziti', 'openziti/ziti-controller'), ContainerTool('pomerium', 'pomerium/pomerium'),
+    ContainerTool('teleport', 'gravitational/teleport'), ContainerTool('boundary', 'hashicorp/boundary'),
+    ContainerTool('authentik', 'goauthentik/server'), ContainerTool('keycloak', 'keycloak/keycloak'),
     ContainerTool('authelia', 'authelia/authelia'), ContainerTool('lldap', 'lldap/lldap'),
+    ContainerTool('kanidm', 'kanidm/server'), ContainerTool('samba-ad-dc', 'nowsci/samba-domain'),
+    ContainerTool('freeipa', 'freeipa/freeipa-server'),
     UnitTool('nebula-lighthouse', ('storageforge-nebula.service',), 'nebula'), UnitTool('cloudflared', ('storageforge-cloudflared.service',), 'cloudflared'),
     StrongSwan('strongswan', ('strongswan.service', 'strongswan-starter.service'), 'strongswan'), SshCa())}
