@@ -309,15 +309,49 @@ def parse_ufw(text: str) -> dict | None:
 SERVICES = {'ssh': ('tcp', 22), 'http': ('tcp', 80), 'https': ('tcp', 443), 'samba': ('tcp', 445), 'nfs': ('tcp', 2049), 'mountd': ('tcp', 20048), 'cockpit': ('tcp', 9090)}
 
 
-RICH = re.compile(r'^rule(?: family="(?P<family>ipv[46])")?(?: source address="(?P<src>[0-9a-fA-F:./]+)")? port port="(?P<port>[0-9-]+)" protocol="(?P<proto>tcp|udp)" (?P<action>accept|drop|reject)$')
-
-
 def _rich(text: str) -> dict | None:
-    """The plain kind of rich rule: a source, a port, a verdict. Anything else stays unmodelled."""
-    m = RICH.match(text.strip())
-    if not m:
+    """Firewalld rich rule: family, source, destination, service, port, protocol, masquerade, and accept/drop/reject."""
+    s = text.strip()
+    if not s.startswith('rule '):
         return None
-    return {'proto': m['proto'], 'dports': _ports(m['port']) or [], 'saddr': m['src'], 'action': m['action'], **({'family': 'ip' if m['family'] == 'ipv4' else 'ip6'} if m['family'] else {})}
+    verdict = re.search(r'\b(accept|drop|reject)(?:\s+.*)?$', s)
+    masquerade = bool(re.search(r'\bmasquerade\b', s))
+    if not verdict and not masquerade:
+        return None
+    action = 'snat' if masquerade else verdict[1]
+    fam_m = re.search(r'\bfamily="(ipv[46])"', s)
+    src_m = re.search(r'\bsource\s+(?P<neg>invert="true"\s+)?address="([^"]+)"', s)
+    dst_m = re.search(r'\bdestination\s+(?P<neg>invert="true"\s+)?address="([^"]+)"', s)
+    port_m = re.search(r'\bport\s+port="([0-9-]+)"\s+protocol="(tcp|udp)"', s)
+    svc_m = re.search(r'\bservice\s+name="([^"]+)"', s)
+    proto_m = re.search(r'\bprotocol\s+value="([^"]+)"', s)
+    proto, dports = None, []
+    if port_m:
+        proto = port_m[2]
+        dports = _ports(port_m[1]) or []
+    elif svc_m:
+        if svc_m[1] not in SERVICES:
+            return None
+        proto, svc_port = SERVICES[svc_m[1]]
+        dports = [svc_port]
+    elif proto_m:
+        proto = proto_m[1]
+    elif not src_m and not dst_m and not masquerade:
+        return None
+    # Anything with unknown rich clauses (forward-port, icmp-type, mark, limit) stays unmodelled
+    stripped = re.sub(r'\b(?:rule|accept|drop|reject(?:\s+type="[^"]+")?|masquerade|family="ipv[46]"|source\s+(?:invert="true"\s+)?address="[^"]+"|destination\s+(?:invert="true"\s+)?address="[^"]+"|port\s+port="[0-9-]+"\s+protocol="(?:tcp|udp)"|service\s+name="[^"]+"|protocol\s+value="[^"]+"|log(?:\s+\S+="[^"]*")*|audit(?:\s+\S+="[^"]*")*)', '', s)
+    if re.search(r'[A-Za-z0-9_]', stripped):
+        return None
+    out = {'proto': proto, 'dports': dports, 'saddr': None if (src_m and src_m['neg']) else (src_m[2] if src_m else None), 'action': action}
+    if src_m and src_m['neg']:
+        out['not_saddr'] = src_m[2]
+    if dst_m and not dst_m['neg']:
+        out['daddr'] = dst_m[2]
+    elif dst_m and dst_m['neg']:
+        return None
+    if fam_m:
+        out['family'] = 'ip' if fam_m[1] == 'ipv4' else 'ip6'
+    return out
 
 
 def parse_firewalld(text: str) -> dict | None:

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from props import HAVE, given, settings, st, scaled
 from storageforge_index import (apidockhand, apikomodo, apipangolin, apipbs, apipdm, apiportainer, apipve, apireadback, apitruenas, apixo, authkeys, cisco, clamav, firewall, gitrepos, health, hostconfig, hostlogs, inframeasure, netconfig, netconsole, netfacts, netscan, openwrt, payloads,
-                                pfsense, pkglist, preflight, pstore, remote, routeros, secplus, security, snapfind, steps_services, updates)
+                                pfsense, pkglist, preflight, pstore, remote, routeros, secplus, security, snapfind, snmp, steps_services, updates)
 
 FIX = Path(__file__).parent / 'fixtures'
 
@@ -74,7 +74,10 @@ READS = {
     'netconfig.parse_netplan': netconfig.parse_netplan, 'netconfig.parse_networkd': netconfig.parse_networkd, 'netconfig.parse_nm': netconfig.parse_nm, 'netconfig.parse_ifupdown': netconfig.parse_ifupdown,
     'cisco.parse_running': cisco.parse_running, 'cisco.parse_acls': cisco.parse_acls, 'cisco.parse_brief': cisco.parse_brief, 'cisco.parse_routes': cisco.parse_routes,
     'cisco.parse_arp': cisco.parse_arp, 'cisco.parse_cdp': cisco.parse_cdp, 'cisco.parse_lldp': cisco.parse_lldp, 'cisco.parse_vlans': cisco.parse_vlans,
+    'cisco.parse_vrf': cisco.parse_vrf, 'cisco.parse_ospf': cisco.parse_ospf, 'cisco.parse_bgp': cisco.parse_bgp,
     'cisco.parse_counters': cisco.parse_counters, 'routeros.parse_terse': routeros.parse_terse, 'routeros.parse_table': routeros.parse_table,
+    'openwrt.parse_stations': openwrt.parse_stations,
+    'snmp.parse': lambda t: snmp.parse({'system': t, 'if': t, 'ip': t, 'arp': t, 'lldp': t}),
     'firewall.parse_nft': firewall.parse_nft, 'firewall.parse_iptables': firewall.parse_iptables, 'firewall.parse_ufw': firewall.parse_ufw,
     'firewall.parse_firewalld': firewall.parse_firewalld, 'payloads.parse_fstab': payloads.parse_fstab, 'payloads.parse_df': payloads.parse_df,
     'payloads.parse_zpool_status': payloads.parse_zpool_status, 'payloads.parse_nfs_exports': payloads.parse_nfs_exports, 'payloads.parse_smb_conf': payloads.parse_smb_conf,

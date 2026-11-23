@@ -1515,5 +1515,114 @@ class RollbackFolder(unittest.TestCase):
             self.assertEqual(list(elsewhere.iterdir()), [], cls.__name__)
 
 
+class DeeperReadsAndIntegrations(Base):
+    """Section 8: Cisco ZBFW/VRF/OSPF/BGP, RouterOS/OpenWrt wireless+DHCP, richer firewalld rich rules, LLDP, SNMP, NetBox/Grafana exports, role views and tiles."""
+
+    def test_cisco_zbfw_vrf_ospf_bgp(self):
+        running = '''hostname core-gw
+zone security LAN
+zone security WAN
+zone-pair security L2W source LAN destination WAN
+ service-policy type inspect P-OUT
+policy-map type inspect P-OUT
+ class type inspect C-ALLOW
+  inspect
+interface GigabitEthernet0/0
+ ip vrf forwarding CORP
+ zone-member security LAN
+ ip address 10.1.0.1 255.255.255.0
+interface GigabitEthernet0/1
+ zone-member security WAN
+ ip address 198.51.100.2 255.255.255.0
+'''
+        brief = 'Interface IP-Address OK? Method Status Protocol\nGigabitEthernet0/0 10.1.0.1 YES manual up up\nGigabitEthernet0/1 198.51.100.2 YES manual up up\n'
+        vrf = 'Name                             Default RD          Interfaces\nCORP                             65000:1             Gi0/0\n'
+        ospf = '10.1.0.2          1   FULL/DR         00:00:34    10.1.0.2        GigabitEthernet0/0\n'
+        bgp = '198.51.100.1    4      65001       10      12       100    0    0 00:10:00        5\n'
+        out = cisco.model({'running': running, 'brief': brief, 'route': '', 'acl': '', 'vrf': vrf, 'ospf': ospf, 'bgp': bgp})
+        self.assertIn('cisco_zbfw', out['firewall']['backends'])
+        self.assertEqual([v['name'] for v in out['facts']['vrfs']], ['CORP'])
+        self.assertEqual(out['facts']['routing']['ospf'][0]['state'], 'FULL/DR')
+        self.assertEqual(out['facts']['routing']['bgp'][0]['asn'], 65001)
+
+    def test_firewalld_rich_rules_service_dest_and_masq(self):
+        from storageforge_index import firewall
+        fw = firewall.parse_firewalld('''public (active)
+  interfaces: eth0
+  rich rules:
+    rule family="ipv4" source address="10.0.0.0/24" destination address="10.0.0.5" service name="https" accept
+    rule family="ipv4" source address="192.168.1.0/24" masquerade
+''')
+        rules = fw['rules']
+        self.assertEqual(len(rules), 2)
+        self.assertEqual((rules[0]['dports'], rules[0]['daddr'], rules[0]['action'], rules[0]['unmodelled']), ([443], '10.0.0.5', 'accept', []))
+        self.assertEqual(rules[1]['action'], 'snat')
+
+    def test_openwrt_dhcp_scopes_stations_and_linux_lldp_graph(self):
+        from storageforge_index import infragraph, netfacts
+        text = '''@@ubus
+{"interface": [{"interface": "lan", "l3_device": "br-lan", "up": true, "ipv4-address": [{"address": "10.20.0.1", "mask": 24}]}]}
+@@uci_dhcp
+dhcp.lan=dhcp
+dhcp.lan.interface='lan'
+dhcp.lan.start='100'
+dhcp.lan.limit='150'
+@@stations
+dev:wlan0
+Station aa:bb:cc:dd:ee:ff (on wlan0)
+    signal: -52 dBm
+@@board
+{"hostname": "ap1", "release": {"version": "24.10"}}
+@@end
+'''
+        parsed = openwrt.parse(text)
+        self.assertEqual(parsed['facts']['dhcp_scopes'][0]['subnet'], '10.20.0.0/24')
+        self.assertEqual(parsed['facts']['wireless_clients'][0]['mac'], 'aa:bb:cc:dd:ee:ff')
+        lldp_txt = json.dumps({'lldp': {'interface': [{'eth0': {'chassis': {'core-sw': {'mgmt-ip': '10.20.0.254', 'descr': 'SwitchOS'}}, 'port': {'id': {'value': 'Gi1/0/1'}}}}]}})
+        net = netfacts.parse(f'@@link\n[]\n@@addr\n[]\n@@route\n[]\n@@neigh\n[]\n@@listen\n\n@@lldp\n{lldp_txt}\n@@end\n')
+        nodes, edges = infragraph.build('nas', net, None, [], [], {}, set(), device=parsed['facts'])
+        self.assertIn('dhcp:nas:10.20.0.0/24', nodes)
+        self.assertTrue(any(e['rel'] == 'NEIGHBOUR_OF' and 'LLDP' in e['props']['evidence']['source'] for e in edges))
+
+    def test_snmp_parse_and_device_registration(self):
+        from storageforge_index import snmp
+        parsed = snmp.parse({
+            'system': '.1.3.6.1.2.1.1.1.0 = STRING: "ProCurve Switch"\n.1.3.6.1.2.1.1.5.0 = STRING: "sw-core"\n',
+            'if': '.1.3.6.1.2.1.2.2.1.2.1 = STRING: "eth1"\n.1.3.6.1.2.1.2.2.1.8.1 = INTEGER: up(1)\n.1.3.6.1.2.1.2.2.1.10.1 = Counter32: 12345\n',
+            'ip': '.1.3.6.1.2.1.4.20.1.2.10.0.0.2 = INTEGER: 1\n.1.3.6.1.2.1.4.20.1.3.10.0.0.2 = IpAddress: 255.255.255.0\n',
+            'arp': '.1.3.6.1.2.1.4.22.1.2.1.10.0.0.9 = Hex-STRING: AA BB CC DD EE FF\n',
+            'lldp': '.1.0.8802.1.1.2.1.4.1.1.9.0.1.1 = STRING: "ap-hall"\n.1.0.8802.1.1.2.1.4.1.1.7.0.1.1 = STRING: "eth0"\n',
+        })
+        self.assertEqual(parsed['identity'], 'sw-core')
+        self.assertEqual(parsed['facts']['counters'][0]['rx_bytes'], 12345)
+        self.assertEqual(parsed['facts']['discovered'][0]['name'], 'ap-hall')
+        d = netdevice.add(self.conn, {'name': 'sw-core', 'platform': 'snmp', 'address': '10.0.0.2'}, 'a')
+        self.assertEqual(d['port'], 161)
+
+    def test_netbox_grafana_exports_role_defaults_and_map_tile(self):
+        self.conn.execute("INSERT INTO hosts (hostname, ip_address, ssh_host) VALUES ('dmzbox', '10.77.20.80', '10.77.20.80')")
+        self.conn.execute("INSERT INTO graph_nodes (node_id, kind, label, host, layer, updated_at) VALUES ('host:dmzbox', 'Host', 'dmzbox', 'dmzbox', 'storage', 1)")
+        hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'dmzbox'")
+        self.conn.execute("INSERT INTO host_network (host_id, data_json, scan_id, updated_at) VALUES (:h, :d, 0, 1)",
+                          {'h': hid, 'd': json.dumps(linux('10.77.20.80', 24, [], [web_listener(80)])['net'])})
+        from storageforge_index import infragraph
+        infragraph.rebuild(self.conn, 'dmzbox')
+        r_nb = self.client.get('/api/map/export?format=netbox')
+        self.assertEqual(r_nb.status_code, 200)
+        nb = r_nb.get_json()
+        self.assertEqual(nb['schema'], 'storageforge/netbox-v1')
+        self.assertTrue(any(d['name'] == 'dmzbox' for d in nb['devices']))
+        r_gf = self.client.get('/api/map/export?format=grafana')
+        self.assertEqual(r_gf.status_code, 200)
+        gf = r_gf.get_json()
+        self.assertEqual(gf['panels'][0]['type'], 'nodeGraph')
+        self.assertEqual(self.client.put('/api/map/views/defaults', json={'viewer': 'NetOnly'}).status_code, 200)
+        views = self.client.get('/api/map/views').get_json()
+        self.assertEqual(views['defaults']['viewer'], 'NetOnly')
+        tile = self.client.get('/api/map/tile')
+        self.assertEqual(tile.status_code, 200)
+        self.assertGreaterEqual(tile.get_json()['hosts'], 1)
+
+
 if __name__ == '__main__':
     unittest.main()

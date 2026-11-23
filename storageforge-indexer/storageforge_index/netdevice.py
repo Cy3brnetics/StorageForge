@@ -28,7 +28,8 @@ PLATFORMS = {'routeros': {'target': 'routeros', 'transport': 'direct', 'profile'
              'openwrt': {'target': 'openwrt', 'transport': 'sh', 'profile': 'openwrt', 'label': 'OpenWrt', 'adapter': openwrt},
              'pfsense': {'target': 'pfsense', 'transport': 'sh', 'profile': 'pfsense', 'label': 'pfSense', 'adapter': pfsense},
              'opnsense': {'target': 'pfsense', 'transport': 'sh', 'profile': 'pfsense', 'label': 'OPNsense', 'adapter': pfsense},
-             'cisco': {'target': 'cisco', 'transport': 'cli', 'profile': 'cisco', 'label': 'Cisco IOS', 'adapter': cisco}}
+             'cisco': {'target': 'cisco', 'transport': 'cli', 'profile': 'cisco', 'label': 'Cisco IOS', 'adapter': cisco},
+             'snmp': {'target': 'snmp', 'transport': 'snmp', 'profile': 'snmp', 'label': 'SNMP (read-only)', 'adapter': None}}
 TRANSPORTS = ('default', 'cli', 'telnet')
 NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 USER = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$')
@@ -89,7 +90,7 @@ def add(conn: Conn, body: dict, actor: str) -> dict:
     transport = str(body.get('transport') or 'default')
     if transport not in TRANSPORTS:
         raise DeviceError('transport is default, cli or telnet')
-    default_port = 23 if transport == 'telnet' else 22
+    default_port = 161 if platform == 'snmp' else (23 if transport == 'telnet' else 22)
     port = body.get('port') or default_port
     if not isinstance(port, int) or not 0 < port < 65536:
         raise DeviceError('port is a number from 1 to 65535')
@@ -203,8 +204,17 @@ def _login(user: str | None, spec: dict) -> str | None:
 def read(db, conn: Conn, name: str, actor: str = 'system') -> dict:
     d = get(conn, name)
     try:
-        with session(db, conn, d, 'scan') as run:
-            data = PLATFORMS[d['platform']]['adapter'].collect(run)
+        if PLATFORMS[d['platform']]['transport'] == 'snmp':
+            from . import snmp
+            from .vault import Vault
+            secret = None
+            if d['credential']:
+                with Vault(db, conn).unlock() as v:
+                    secret = v.credential(d['credential'], host=d.get('name') or d['address'], platform='snmp')
+            data = snmp.collect(d['address'], port=d['port'] or 161, secret=secret)
+        else:
+            with session(db, conn, d, 'scan') as run:
+                data = PLATFORMS[d['platform']]['adapter'].collect(run)
     except Exception as exc:
         text = str(exc)[:500]
         conn.execute('UPDATE network_devices SET last_error = :e WHERE device_id = :i', {'e': text, 'i': d['id']})

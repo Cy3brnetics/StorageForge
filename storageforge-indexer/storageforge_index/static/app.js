@@ -484,7 +484,21 @@ function renderSummary() {
     more.id = 'needsmore';
     more.setAttribute('aria-expanded', String(needsAll));
   }
+  const tile = el('div', { class: 'maptile stack', id: 'maptile' }, text('span', 'Loading map summary…', 'muted small'));
+  if (can('map.view')) {
+    getJSON('/api/map/tile').then((t) => {
+      if (!tile.isConnected) return;
+      tile.replaceChildren(
+        el('div', { class: 'row wrap small' }, text('b', `${t.hosts} hosts · ${t.subnets} subnets · ${t.nodes} nodes`),
+          t.exposed ? text('span', `${t.exposed} internet-exposed`, 'st-warn') : text('span', '0 exposed', 'st-ok'),
+          t.placeholders ? text('span', `${t.placeholders} placeholders`, 'muted') : ''),
+        button('Open Fleet Map', () => setMode('map'), 'btn ghost sm'));
+    }).catch(() => { tile.hidden = true; });
+  } else {
+    tile.hidden = true;
+  }
   $('#summary').replaceChildren(text('h3', 'Nodes'), dl, text('h3', 'Health'), hl,
+    ...(can('map.view') ? [text('h3', 'Fleet map'), tile] : []),
     ...(broken.length ? [text('h3', 'Needs attention'), ul, ...(more ? [more] : [])] : []),
     ...(S.host && can('hostlogs.view') && typeof hlLinkEl === 'function' ? [text('h3', 'Logs'), hlLinkEl(S.host, `${S.host}'s logs`)] : []),
     ...(S.host && can('console.open') ? [text('h3', 'Console'), el('div', { class: 'row wrap' }, button('Open console…', () => openConsole(S.host), 'btn ghost sm'))] : []),

@@ -154,6 +154,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/changes/\d+/export/(terraform|opentofu|puppet)', 'plans.scripts'),     # a change plan's workloads as Terraform, OpenTofu or Puppet
     (READ, r'/api/(network|map(/.*)?)', 'map.view'),
     (_WRITE, r'/api/map/(views|manual|annotations)(/\d+)?', 'map.edit'),
+    (('PUT',), r'/api/map/views/defaults', 'settings.manage'),
     (('POST',), r'/api/map/whatif', 'security.view'),
     (('POST',), r'/api/map/stage', 'plans.edit'),
     (('POST',), r'/api/map/placeholders/.+/promote', 'keys.manage'),

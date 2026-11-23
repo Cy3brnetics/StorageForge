@@ -3,8 +3,8 @@
    from what hosts report, and drawn with SVG and DOM APIs only. Dashed means inferred. Colour on a listener is who can reach it,
    per configuration. Positions, layers and the filter can be saved as a view; the facts always come from the index. */
 
-const MP = { layers: new Set(['network', 'services', 'workloads', 'firewall', 'access', 'manual', 'scan']), redact: false, filter: '', graph: null, sel: null, hover: null, mode: 'custom', at: null, group: 'host', scope: 'all', ghost: null, notes: [], coverage: null, trace: new Set(), collapsed: new Set(),
-             view: { x: 0, y: 0, k: 1 }, positions: {}, exposed: false, loopback: false, neighbours: false, bridges: false, fitted: false, drag: null, rects: new Map(),
+const MP = { layers: new Set(['network', 'services', 'workloads', 'firewall', 'access', 'manual', 'scan']), redact: false, filter: '', graph: null, sel: null, hover: null, mode: 'custom', at: null, group: 'host', layout: 'grid', scope: 'all', ghost: null, notes: [], coverage: null, trace: new Set(), collapsed: new Set(),
+             view: { x: 0, y: 0, k: 1 }, positions: {}, styleRules: [], defaultApplied: false, exposed: false, loopback: false, neighbours: false, bridges: false, fitted: false, drag: null, rects: new Map(),
              open: {} };      // which cut lists are showing all their rows (see mapMore)
 const MP_LAYERS = [['storage', 'Storage'], ['network', 'Network'], ['services', 'Services'], ['firewall', 'Firewall'], ['workloads', 'Workloads'], ['access', 'Access'], ['scan', 'Scanned'], ['manual', 'Placed by hand']];
 const MP_MODES = { network: { label: 'Network', layers: ['network', 'manual'] }, flow: { label: 'Flow', layers: ['network', 'services', 'firewall', 'access'] }, workloads: { label: 'Workloads', layers: ['workloads', 'services'] }, storage: { label: 'Storage only', layers: ['storage'] },
@@ -16,9 +16,9 @@ const MP_ROW = 24, MP_W = 330, MP_GAP = 44;
 /* The look is Topology's (UX: one canvas language): a dot grid, a host as a dashed frame with a ruled heading, each thing in it a row with a kind
    tag at its left end, as a table row has there. The tag says the kind in letters; its colour only repeats the family. */
 const MP_GRID = 20, MP_TAGW = 30;
-const MP_KIND = { NIC: 'NIC', Bond: 'BOND', Bridge: 'BR', VLAN: 'VLAN', VPNInterface: 'VPN', VPNNetwork: 'VPN', Subnet: 'NET', Gateway: 'GW', Neighbour: 'DEV', Peer: 'PEER', Listener: 'PORT',
+const MP_KIND = { NIC: 'NIC', Bond: 'BOND', Bridge: 'BR', VLAN: 'VLAN', VPNInterface: 'VPN', VPNNetwork: 'VPN', Subnet: 'NET', DHCPScope: 'DHCP', Gateway: 'GW', Neighbour: 'DEV', Peer: 'PEER', Listener: 'PORT',
   FirewallPolicy: 'FW', ProxyRoute: 'RTE', Tunnel: 'TUN', AccessProxy: 'ACC', IdentityProvider: 'IDP', Container: 'CTR', VM: 'VM', Instance: 'INST', MountPoint: 'MNT', Filesystem: 'FS', StoragePool: 'POOL', Host: 'HOST', Platform: 'API' };
-const MP_FAMILY = { NIC: 'net', Bond: 'net', Bridge: 'net', VLAN: 'net', VPNInterface: 'net', VPNNetwork: 'net', Subnet: 'net', Gateway: 'net', Neighbour: 'net', Peer: 'net',
+const MP_FAMILY = { NIC: 'net', Bond: 'net', Bridge: 'net', VLAN: 'net', VPNInterface: 'net', VPNNetwork: 'net', Subnet: 'net', DHCPScope: 'net', Gateway: 'net', Neighbour: 'net', Peer: 'net',
   Listener: 'svc', FirewallPolicy: 'svc', ProxyRoute: 'svc', Tunnel: 'svc', AccessProxy: 'svc', IdentityProvider: 'svc', Container: 'wl', VM: 'wl', Instance: 'wl', MountPoint: 'sto', Filesystem: 'sto', StoragePool: 'sto', Platform: 'wl' };
 const MP_SHOWN = { changes: 20, cover: 20, warn: 10, compare: 30 };      // rows a list shows before it says "+N more"
 
@@ -106,10 +106,13 @@ function mapShell(box) {
   const group = el('select', { 'aria-label': 'Group by' }, new Option('By host', 'host'), new Option('By subnet', 'subnet'), new Option('By runtime', 'runtime'));
   group.value = MP.group;
   group.addEventListener('change', () => { MP.group = group.value; MP.fitted = false; mapDraw(); });
+  const layoutSel = el('select', { 'aria-label': 'Layout' }, new Option('Grid layout', 'grid'), new Option('Force layout', 'force'), new Option('Rack layout', 'rack'));
+  layoutSel.value = MP.layout;
+  layoutSel.addEventListener('change', () => { MP.layout = layoutSel.value; MP.fitted = false; mapDraw(); });
   const scope = el('select', { 'aria-label': 'Reachable from' }, new Option('From anywhere it can be', 'all'), new Option('Reachable from the LAN', 'lan'), new Option('Reachable over the VPN', 'vpn'), new Option('Reachable from any address', 'any'));
   scope.value = MP.scope;
   scope.addEventListener('change', () => { MP.scope = scope.value; MP.fitted = false; mapDraw(); });
-  bar.append(group, scope);
+  bar.append(group, layoutSel, scope);
   const search = el('input', { type: 'search', placeholder: 'Filter by name, address or port', 'aria-label': 'Filter the map', id: 'mpfilter' });
   search.addEventListener('input', () => { MP.filter = search.value.trim().toLowerCase(); mapDraw(); routeSync(true); });
   const exposed = el('input', { type: 'checkbox' }); exposed.checked = MP.exposed;
@@ -118,7 +121,7 @@ function mapShell(box) {
   redact.addEventListener('change', () => { MP.redact = redact.checked; loadMap(); });
   const toggle = (key, label) => { const c = el('input', { type: 'checkbox' }); c.addEventListener('change', () => { MP[key] = c.checked; MP.fitted = false; mapDraw(); }); return el('label', { class: 'small' }, c, label); };
   bar.append(search, toggle('loopback', ' This-machine-only ports'), toggle('bridges', ' Container networks'), toggle('neighbours', ' Devices nearby'), el('label', { class: 'small' }, exposed, ' Only what others can reach'), el('label', { class: 'small' }, redact, ' Hide names and addresses'));
-  const fmts = el('select', { 'aria-label': 'Export as' }, new Option('Export…', ''), ...['json', 'mermaid', 'dot', 'svg', 'drawio', 'canvas'].map((f) => new Option(f.toUpperCase(), f)), new Option('PNG, as drawn', 'png'), new Option('SVG, as drawn', 'drawn'), new Option('PDF: print this', 'pdf'));
+  const fmts = el('select', { 'aria-label': 'Export as' }, new Option('Export…', ''), ...['json', 'mermaid', 'dot', 'svg', 'drawio', 'canvas', 'netbox', 'grafana'].map((f) => new Option(f.toUpperCase(), f)), new Option('PNG, as drawn', 'png'), new Option('SVG, as drawn', 'drawn'), new Option('PDF: print this', 'pdf'));
   fmts.addEventListener('change', () => {
     const f = fmts.value; fmts.value = '';
     if (f === 'png') mapSavePng();
@@ -177,26 +180,53 @@ function mapLayout(g) {
     rects.set(n.id, r);
   });
   const top = shared.length ? 40 + Math.ceil(shared.length / perRow) * 40 : 20;
-  const cols = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(frames.size))));
+  const sortedFrames = [...frames].sort((a, b) => a[0].localeCompare(b[0]));
+  const cols = MP.layout === 'rack' ? Math.max(1, sortedFrames.length) : Math.max(1, Math.min(4, Math.ceil(Math.sqrt(frames.size))));
   const heights = new Array(cols).fill(top);
   const out = [];
-  const order = { NIC: 0, Bond: 0, Bridge: 0, VLAN: 0, VPNInterface: 0, FirewallPolicy: 1, Listener: 2, Container: 3, VM: 3, Instance: 3, StoragePool: 4, Filesystem: 4, MountPoint: 4, Symlink: 5 };
-  for (const [host, items] of [...frames].sort((a, b) => a[0].localeCompare(b[0]))) {
-    const col = heights.indexOf(Math.min(...heights));
+  const largeFleet = g.nodes.length > 250;
+  const order = { NIC: 0, Bond: 0, Bridge: 0, VLAN: 0, VPNInterface: 0, DHCPScope: 0, FirewallPolicy: 1, Listener: 2, Container: 3, VM: 3, Instance: 3, StoragePool: 4, Filesystem: 4, MountPoint: 4, Symlink: 5 };
+  // Force-directed host offsets: deterministic spring layout over host-to-host / shared edges
+  const fpos = new Map();
+  if (MP.layout === 'force' && sortedFrames.length > 1) {
+    const k = Math.max(380, MP_W + MP_GAP * 2);
+    sortedFrames.forEach(([h], i) => fpos.set(h, { x: Math.cos((2 * Math.PI * i) / sortedFrames.length) * k, y: top + Math.sin((2 * Math.PI * i) / sortedFrames.length) * k }));
+    const nodeHost = new Map(g.nodes.map((n) => [n.id, n.host || (n.kind === 'Host' ? n.label : null)]));
+    for (let it = 0; it < 28; it++) {
+      for (let i = 0; i < sortedFrames.length; i++) for (let j = i + 1; j < sortedFrames.length; j++) {
+        const a = fpos.get(sortedFrames[i][0]), b = fpos.get(sortedFrames[j][0]);
+        let dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+        const rep = (k * k) / (d * 20);
+        a.x -= (dx / d) * rep; a.y -= (dy / d) * rep; b.x += (dx / d) * rep; b.y += (dy / d) * rep;
+      }
+      for (const e of g.edges) {
+        const ha = nodeHost.get(e.src), hb = nodeHost.get(e.dst);
+        if (ha && hb && ha !== hb && fpos.has(ha) && fpos.has(hb)) {
+          const a = fpos.get(ha), b = fpos.get(hb);
+          a.x += (b.x - a.x) * 0.05; a.y += (b.y - a.y) * 0.05; b.x -= (b.x - a.x) * 0.05; b.y -= (b.y - a.y) * 0.05;
+        }
+      }
+    }
+    const minX = Math.min(...[...fpos.values()].map((p) => p.x)), minY = Math.min(...[...fpos.values()].map((p) => p.y));
+    for (const p of fpos.values()) { p.x = Math.round(p.x - minX + 20); p.y = Math.round(p.y - minY + top); }
+  }
+  sortedFrames.forEach(([host, items], idx) => {
+    const col = MP.layout === 'rack' ? idx % cols : heights.indexOf(Math.min(...heights));
     items.sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9) || a.label.localeCompare(b.label));
-    const x = 20 + col * (MP_W + MP_GAP), y = heights[col];
+    const x = fpos.has(host) ? fpos.get(host).x : 20 + col * (MP_W + MP_GAP);
+    const y = fpos.has(host) ? fpos.get(host).y : heights[col];
     const hostNode = hosts.find((n) => n.label === host);
     const pin = MP.positions[`frame:${host}`];
-    const shut = MP.collapsed.has(host);
+    const shut = MP.collapsed.has(host) || (largeFleet && !MP.expanded?.has?.(host));
     const fx = pin ? pin.x : x, fy = pin ? pin.y : y;
     const frame = { x: fx, y: fy, w: MP_W, h: shut ? 44 : 44 + items.length * MP_ROW + 8, host, node: hostNode, count: items.length, shut };
-    // semantic zoom: far out, or shut by hand, a host is one box, and lines to what is inside it go to the box
+    // semantic zoom: far out, or shut by hand (or large-fleet auto-collapse), a host is one box, and lines to what is inside it go to the box
     if (!shut) items.forEach((n, i) => rects.set(n.id, { x: fx + 10, y: fy + 44 + i * MP_ROW, w: MP_W - 20, h: MP_ROW - 4, node: n, fh: host }));
     else items.forEach((n) => rects.set(n.id, { x: fx, y: fy, w: MP_W, h: 36, node: n, inside: true, fh: host }));
     if (hostNode) rects.set(hostNode.id, { x: fx, y: fy, w: MP_W, h: 36, node: hostNode, frame: true, fh: host });
     out.push(frame);
     heights[col] = (pin ? y : y + frame.h + MP_GAP);
-  }
+  });
   for (const [id, p] of Object.entries(MP.positions)) {       // a pinned shared node stays where it was put
     const r = rects.get(id);
     if (r && !r.node.host) { r.x = p.x; r.y = p.y; }
@@ -257,9 +287,11 @@ function mapDraw() {
   }
   root.append(edgeLayer);
   /* Every node is a button a keyboard can reach (UX-17), in reading order: the shared band first, then each host's header followed by what is in its frame. */
+  const ruleMatch = (n) => (MP.styleRules || []).find((r) => (!r.kind || r.kind === n.kind) && (!r.exposure || r.exposure === n.props.exposure) && (!r.match || String(n.label || '').toLowerCase().includes(String(r.match).toLowerCase())));
   const nodeEl = (r) => {
     const n = r.node;
-    const kind = (MP_KIND[n.kind] || n.kind.slice(0, 4)).toUpperCase(), ty = r.y + (r.h - 13) / 2;
+    const rule = ruleMatch(n);
+    const kind = (rule?.icon || MP_KIND[n.kind] || n.kind.slice(0, 4)).toUpperCase(), ty = r.y + (r.h - 13) / 2;
     // a path and not a rect: the outlines that say inferred, staged or changed are the row's, and stay off the tag
     const tagBox = sv('path', { d: `M${r.x + 8} ${ty} h${MP_TAGW - 4} a2 2 0 0 1 2 2 v9 a2 2 0 0 1 -2 2 h-${MP_TAGW - 4} a2 2 0 0 1 -2 -2 v-9 a2 2 0 0 1 2 -2 z`, class: 'mptk', 'aria-hidden': 'true' });
     const tagWord = sv('text', { x: r.x + 6 + MP_TAGW / 2, y: ty + 9.5, class: 'mptkt', 'text-anchor': 'middle', 'aria-hidden': 'true' });
@@ -271,7 +303,9 @@ function mapDraw() {
     const word = tag ? sv('text', { x: r.x + r.w - 6, y: r.y + r.h / 2 + 4, class: 'mplabel mptag', 'text-anchor': 'end' }) : null;
     if (word) word.textContent = tag;
     const said = n.props.exposure ? `, ${MP_LEVEL[n.props.exposure]}` : '';
-    return sv('g', { class: mapClass(n) + (dim ? ' dim' : ''), 'data-id': n.id, tabindex: '0', role: 'button', 'aria-label': `${n.kind}: ${n.label}${said}` }, sv('rect', { x: r.x, y: r.y, width: r.w, height: r.h, rx: 4 }), tagBox, tagWord, label, ...(word ? [word] : []));
+    const box = sv('rect', { x: r.x, y: r.y, width: r.w, height: r.h, rx: 4 });
+    if (rule?.color) box.style.stroke = rule.color;
+    return sv('g', { class: mapClass(n) + (dim ? ' dim' : ''), 'data-id': n.id, tabindex: '0', role: 'button', 'aria-label': `${n.kind}: ${n.label}${said}` }, box, tagBox, tagWord, label, ...(word ? [word] : []));
   };
   const loose = [...rects.values()].filter((r) => !r.frame && !r.inside);
   const inFrame = (r, f) => r.x >= f.x && r.y >= f.y && r.x + r.w <= f.x + f.w + 1 && r.y + r.h <= f.y + f.h + 1;
@@ -502,24 +536,54 @@ async function mapViews() {
   const box = $('#mpviews');
   if (!box) return;
   try {
-    const { views } = await getJSON('/api/map/views');
+    const { views, default_view } = await getJSON('/api/map/views');
+    if (!MP.defaultApplied && default_view && !location.hash.includes('layers=')) {
+      MP.defaultApplied = true;
+      const def = views.find((v) => v.name === default_view);
+      if (def) {
+        MP.layers = new Set(def.body.layers || [...MP.layers]);
+        MP.filter = def.body.filter || '';
+        MP.positions = def.body.positions || {};
+        MP.mode = def.body.mode || 'custom';
+        MP.group = def.body.group || 'host';
+        MP.layout = def.body.layout || 'grid';
+        MP.styleRules = def.body.style_rules || def.body.rules || [];
+      }
+    }
     const rows = [text('h4', 'Saved views')];
     for (const v of views) {
-      rows.push(el('div', { class: 'row small' }, button(v.name, () => {
+      rows.push(el('div', { class: 'row small' }, button(v.name + (v.name === default_view ? ' ★' : ''), () => {
         MP.layers = new Set(v.body.layers || []); MP.filter = v.body.filter || ''; MP.positions = v.body.positions || {}; MP.mode = v.body.mode || 'custom'; MP.group = v.body.group || 'host';
+        MP.layout = v.body.layout || 'grid'; MP.styleRules = v.body.style_rules || v.body.rules || [];
         const f = $('#mpfilter'); if (f) f.value = MP.filter;
         $('#mapview').replaceChildren(); loadMap();
       }, 'btn small'), can('map.edit') && v.mine ? button('Remove', async () => { await api(`/api/map/views/${v.id}`, { method: 'DELETE' }); mapViews(); }, 'btn small') : document.createTextNode('')));
     }
     if (can('map.edit')) {
       const name = el('input', { type: 'text', placeholder: 'Name this view', 'aria-label': 'View name' });
+      const ruleKind = el('input', { type: 'text', placeholder: 'Kind (VM, Listener…)', 'aria-label': 'Style rule kind' });
+      const ruleColor = el('input', { type: 'text', placeholder: 'Colour (#e67e22)', 'aria-label': 'Style rule colour' });
+      const ruleIcon = el('input', { type: 'text', placeholder: 'Icon badge (2-4 ch)', 'aria-label': 'Style rule icon' });
       const shared = el('input', { type: 'checkbox' }), said = el('span', { class: 'small st-failed' });
+      rows.push(el('div', { class: 'mpform small' }, ruleKind, ruleColor, ruleIcon, button('Add style rule', () => {
+        if (!ruleKind.value.trim() && !ruleColor.value.trim()) return;
+        MP.styleRules = [...(MP.styleRules || []), { kind: ruleKind.value.trim(), color: ruleColor.value.trim(), icon: ruleIcon.value.trim().slice(0, 4) }];
+        ruleKind.value = ''; ruleColor.value = ''; ruleIcon.value = ''; mapDraw();
+      }, 'btn small')));
       rows.push(el('div', { class: 'row small' }, name, el('label', { class: 'small' }, shared, ' Share with everyone'), button('Save', async () => {
         try {
-          await postJSON('/api/map/views', { name: name.value, layers: [...MP.layers], filter: MP.filter, positions: MP.positions, mode: MP.mode, group: MP.group, shared: shared.checked });
+          await postJSON('/api/map/views', { name: name.value, layers: [...MP.layers], filter: MP.filter, positions: MP.positions, mode: MP.mode, group: MP.group, layout: MP.layout, style_rules: MP.styleRules, shared: shared.checked });
           mapViews();
         } catch (err) { said.textContent = err.message; }
       }, 'btn small'), said));
+      if (can('settings.manage')) {
+        const defRole = el('select', { 'aria-label': 'Default for role' }, new Option('viewer', 'viewer'), new Option('operator', 'operator'), new Option('admin', 'admin'));
+        const defView = el('input', { type: 'text', placeholder: 'Default view name', 'aria-label': 'Default view name' });
+        rows.push(el('div', { class: 'row small' }, defRole, defView, button('Set role default', async () => {
+          await api('/api/map/views/defaults', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [defRole.value]: defView.value.trim() || null }) });
+          mapViews();
+        }, 'btn small')));
+      }
     }
     box.replaceChildren(...rows);
   } catch { box.replaceChildren(); }
@@ -608,8 +672,11 @@ function mapActions(n) {
   if (n.kind === 'Listener') {
     const [port, proto] = n.label.split('/');
     acts.push(say('Block it from everyone', 'fw-rule', { action: 'deny', proto, port, hook: n.props.container ? 'forward' : 'input', rollback: port === '22' ? '10' : '' }));
+    acts.push(say('Restrict to loopback (127.0.0.1)', 'fw-rule', { action: 'allow', proto, port, source: '127.0.0.1/32', hook: n.props.container ? 'forward' : 'input' }));
     const src = el('input', { type: 'text', placeholder: '10.0.20.0/24', 'aria-label': 'Allow from' });
     acts.push(el('div', { class: 'row small' }, src, button('Allow only from', () => { MP.draft.push({ type: 'fw-rule', host, params: { action: 'allow', proto, port, source: src.value.trim(), hook: n.props.container ? 'forward' : 'input' } }, { type: 'fw-rule', host, params: { action: 'deny', proto, port, hook: n.props.container ? 'forward' : 'input' } }); mapWhatIf(); }, 'btn small')));
+    const site = el('input', { type: 'text', placeholder: 'app.lab.example', 'aria-label': 'Reverse proxy site' });
+    acts.push(el('div', { class: 'row small' }, site, button('Put behind Caddy proxy', () => { MP.draft.push({ type: 'caddy-route', host, params: { site: site.value.trim(), port: Number(port), state: 'present' } }); mapWhatIf(); }, 'btn small')));
   }
   if (['NIC', 'Bridge', 'Bond'].includes(n.kind)) {
     const mtu = el('input', { type: 'text', placeholder: '9000', 'aria-label': 'MTU' }), vid = el('input', { type: 'text', placeholder: 'VLAN id', 'aria-label': 'VLAN id' });
@@ -618,6 +685,12 @@ function mapActions(n) {
   if (['Container', 'VM', 'Instance'].includes(n.kind) && n.props.runtime && n.props.runtime !== 'proxmox') {
     for (const a of ['start', 'stop', 'restart', 'snapshot']) acts.push(say(a[0].toUpperCase() + a.slice(1), 'workload-action', { runtime: n.props.runtime, name: n.label, action: a }));
     acts.push(say('Remove (keeps its data)', 'workload-remove', { runtime: n.props.runtime, name: n.label }));
+    if (n.kind === 'VM') {
+      const vc = el('input', { type: 'number', placeholder: 'vCPUs', 'aria-label': 'vCPUs' }), mem = el('input', { type: 'number', placeholder: 'RAM MiB', 'aria-label': 'Memory MiB' });
+      const destHost = el('input', { type: 'text', placeholder: 'Target host', 'aria-label': 'Move VM to host' }), destDir = el('input', { type: 'text', placeholder: '/var/lib/libvirt/images', 'aria-label': 'Destination folder' });
+      acts.push(el('div', { class: 'row small' }, vc, mem, button('Resize VM', () => { MP.draft.push({ type: 'vm-edit', host, params: { name: n.label, vcpus: vc.value.trim() || undefined, memory_mib: mem.value.trim() || undefined } }); mapWhatIf(); }, 'btn small')));
+      acts.push(el('div', { class: 'mpform small' }, destHost, destDir, button('Move / clone VM', () => { MP.draft.push({ type: 'vm-send', host, params: { name: n.label, dest_host: destHost.value.trim(), dest: destDir.value.trim() || '/var/lib/libvirt/images', live: true } }); mapWhatIf(); }, 'btn small')));
+    }
   }
   if (n.kind === 'VPNNetwork') {
     const key = el('input', { type: 'text', placeholder: 'public key', 'aria-label': 'Peer key' }), ips = el('input', { type: 'text', placeholder: '10.8.0.2/32', 'aria-label': 'Allowed' });
@@ -626,12 +699,20 @@ function mapActions(n) {
   if (n.kind === 'Peer' && n.props.public_key) {
     const iface = n.id.split(':')[2];
     acts.push(say('Revoke this peer', 'wg-peer', { iface, pubkey: n.props.public_key, allowed: (n.props.allowed_ips || []).join(',') || '0.0.0.0/32', state: 'absent' }));
+    acts.push(say('Rotate interface key', 'wg-rotate', { iface, phase: 'prepare' }));
   }
   if (n.kind === 'Host') {
     const name = el('input', { type: 'text', placeholder: 'name', 'aria-label': 'Container name' }), image = el('input', { type: 'text', placeholder: 'image:tag', 'aria-label': 'Image' }), pub = el('input', { type: 'text', placeholder: '127.0.0.1:8080:80', 'aria-label': 'Publish' });
     const br = el('input', { type: 'text', placeholder: 'br0', 'aria-label': 'Bridge' }), cidr = el('input', { type: 'text', placeholder: '10.0.5.1/24', 'aria-label': 'Address' });
     acts.push(el('div', { class: 'mpform small' }, name, image, pub, button('Run a container here', () => { MP.draft.push({ type: 'container', host, params: { runtime: n.props.runtimes?.[0] || 'docker', name: name.value.trim(), image: image.value.trim(), publish: pub.value.trim() } }); mapWhatIf(); }, 'btn small')),
       el('div', { class: 'mpform small' }, br, cidr, button('Create a bridge', () => { MP.draft.push({ type: 'net-bridge', host, params: { name: br.value.trim(), address: cidr.value.trim() } }); mapWhatIf(); }, 'btn small')));
+    if (typeof openTask === 'function') {
+      acts.push(el('div', { class: 'row wrap small' },
+        button('Deploy a stack…', () => openTask('stack', host, { runtime: 'docker' }), 'btn small'),
+        button('Create LXC…', () => openTask('lxc', host, {}), 'btn small'),
+        button('Install catalog tool…', () => openTask('tool-install', host, {}), 'btn small'),
+        button('Create a VM…', () => openTask('vm-create', host, {}), 'btn small')));
+    }
   }
   if (n.kind === 'FirewallPolicy') {
     const port = el('input', { type: 'text', placeholder: 'port', 'aria-label': 'Port' }), src = el('input', { type: 'text', placeholder: 'from', 'aria-label': 'From' });

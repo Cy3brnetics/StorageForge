@@ -80,7 +80,7 @@ def dot(graph: dict) -> str:
 
 
 # ── drawn, for documents and diagrams ───────────────────────────────
-ORDER = ('Host', 'Subnet', 'Gateway', 'Neighbour', 'NIC', 'Bond', 'Bridge', 'VLAN', 'VPNInterface', 'VPNNetwork', 'Peer', 'Tunnel', 'AccessProxy', 'ProxyRoute', 'IdentityProvider', 'FirewallPolicy', 'Listener', 'Container', 'VM', 'Instance', 'StoragePool', 'Filesystem', 'MountPoint', 'Symlink')
+ORDER = ('Host', 'Subnet', 'DHCPScope', 'Gateway', 'Neighbour', 'NIC', 'Bond', 'Bridge', 'VLAN', 'VPNInterface', 'VPNNetwork', 'Peer', 'Tunnel', 'AccessProxy', 'ProxyRoute', 'IdentityProvider', 'FirewallPolicy', 'Listener', 'Container', 'VM', 'Instance', 'StoragePool', 'Filesystem', 'MountPoint', 'Symlink')
 
 
 def layout(graph: dict) -> dict:
@@ -157,4 +157,46 @@ def canvas(graph: dict) -> str:
     return json.dumps({'nodes': nodes, 'edges': edges}, indent=1) + '\n'
 
 
-FORMATS = {'svg': ('image/svg+xml', 'svg', svg), 'drawio': ('application/xml', 'drawio', drawio), 'canvas': ('application/json', 'canvas', canvas), 'json': ('application/json', 'json', lambda g: json.dumps(g, indent=1, default=str)), 'mermaid': ('text/plain', 'mmd', mermaid), 'dot': ('text/vnd.graphviz', 'dot', dot)}
+def netbox(graph: dict) -> str:
+    """NetBox-compatible DCIM/IPAM bulk JSON export: devices, interfaces, prefixes, IP addresses and services."""
+    devices, interfaces, prefixes, ips, services = [], [], [], [], []
+    seen_prefix = set()
+    for n in graph['nodes']:
+        p = n.get('props') or {}
+        if n['kind'] == 'Host':
+            devices.append({'name': n['label'], 'role': p.get('platform') or 'server', 'status': 'active'})
+        elif n['kind'] in ('Subnet', 'DHCPScope') and p.get('cidr'):
+            if p['cidr'] not in seen_prefix:
+                seen_prefix.add(p['cidr'])
+                prefixes.append({'prefix': p['cidr'], 'status': 'active', 'description': n['label']})
+        elif n['kind'] in ('NIC', 'Bond', 'Bridge', 'VLAN', 'VPNInterface') and n.get('host'):
+            interfaces.append({'device': n['host'], 'name': n['label'], 'type': n['kind'].lower(), 'mac_address': p.get('mac'), 'mtu': p.get('mtu')})
+            for addr in p.get('addresses') or []:
+                ips.append({'address': addr, 'assigned_object_device': n['host'], 'assigned_object_name': n['label'], 'status': 'active'})
+        elif n['kind'] == 'Listener' and n.get('host'):
+            port_s, _, proto = str(n['label']).partition('/')
+            if port_s.isdigit():
+                services.append({'device': n['host'], 'name': (p.get('process') or [n['label']])[0], 'protocol': proto or 'tcp', 'ports': [int(port_s)]})
+    return json.dumps({'schema': 'storageforge/netbox-v1', 'redacted': bool(graph.get('redacted')),
+                       'devices': devices, 'interfaces': interfaces, 'prefixes': prefixes, 'ip_addresses': ips, 'services': services}, indent=1) + '\n'
+
+
+def grafana(graph: dict) -> str:
+    """Grafana Node Graph panel + dashboard JSON export."""
+    nodes = [{'id': n['id'], 'title': n['label'], 'subTitle': n['kind'], 'mainStat': (n.get('props') or {}).get('exposure') or n.get('layer'),
+              'arc__failed': 1 if (n.get('props') or {}).get('exposure') == 'any' else 0,
+              'arc__ok': 0 if (n.get('props') or {}).get('exposure') == 'any' else 1} for n in graph['nodes']]
+    edges = [{'id': f'e{i}', 'source': e['src'], 'target': e['dst'], 'mainStat': e['rel']} for i, e in enumerate(graph['edges'])]
+    dash = {
+        'schemaVersion': 39,
+        'title': 'StorageForge Fleet Map',
+        'tags': ['storageforge', 'infrastructure'],
+        'panels': [
+            {'id': 1, 'type': 'nodeGraph', 'title': 'Fleet Topology', 'gridPos': {'h': 16, 'w': 24, 'x': 0, 'y': 0},
+             'targets': [{'refId': 'A', 'nodes': nodes, 'edges': edges}]},
+        ],
+    }
+    return json.dumps(dash, indent=1) + '\n'
+
+
+FORMATS = {'svg': ('image/svg+xml', 'svg', svg), 'drawio': ('application/xml', 'drawio', drawio), 'canvas': ('application/json', 'canvas', canvas), 'json': ('application/json', 'json', lambda g: json.dumps(g, indent=1, default=str)), 'mermaid': ('text/plain', 'mmd', mermaid), 'dot': ('text/vnd.graphviz', 'dot', dot), 'netbox': ('application/json', 'netbox.json', netbox), 'grafana': ('application/json', 'grafana.json', grafana)}

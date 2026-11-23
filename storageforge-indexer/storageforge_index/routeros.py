@@ -16,6 +16,8 @@ from .firewall import _ports, _rule
 
 TABLES = {'address': '/ip/address', 'interface': '/interface', 'route': '/ip/route', 'filter': '/ip/firewall/filter', 'nat': '/ip/firewall/nat', 'neighbor': '/ip/neighbor',
           'bridge_port': '/interface/bridge/port', 'bridge_vlan': '/interface/bridge/vlan', 'vlan': '/interface/vlan', 'bonding': '/interface/bonding', 'lease': '/ip/dhcp-server/lease',
+          'dhcp_scope': '/ip/dhcp-server/network', 'ospf_neighbor': '/routing/ospf/neighbor', 'bgp_session': '/routing/bgp/session',
+          'wifi_reg': '/interface/wifi/registration-table', 'wireless_reg': '/interface/wireless/registration-table',
           'arp': '/ip/arp', 'address_list': '/ip/firewall/address-list', 'service': '/ip/service', 'iface_list': '/interface/list/member', 'address6': '/ipv6/address', 'route6': '/ipv6/route'}
 MUST_READ = ('address', 'interface', 'route', 'filter', 'nat')
 KINDS = {'ether': 'ethernet', 'bridge': 'bridge', 'vlan': 'vlan', 'bond': 'bond', 'wg': 'wireguard', 'loopback': 'loopback', 'pppoe-out': 'tunnel', 'gre-tunnel': 'tunnel', 'ipip-tunnel': 'tunnel', 'eoip': 'tunnel', 'l2tp-out': 'tunnel', 'wlan': 'wireless', 'wifi': 'wireless'}
@@ -259,10 +261,19 @@ def firewall(t: dict) -> dict:
 
 
 def facts(t: dict, extra: dict) -> dict:
-    """What only a network device has: who it found by discovery, whom it leased to, and its own counters."""
+    """What only a network device has: who it found by discovery, whom it leased to, routing state, DHCP scopes, wireless clients, and its own counters."""
+    wifi = [{'iface': w.get('interface'), 'mac': str(w.get('mac-address') or '').lower() or None, 'ssid': w.get('ssid'), 'signal': _text(w.get('signal') or w.get('signal-strength'))}
+            for w in (t.get('wifi_reg') or []) + (t.get('wireless_reg') or []) if w.get('mac-address')]
+    scopes = [{'subnet': s.get('address'), 'gateway': _text(s.get('gateway')), 'dns': _text(s.get('dns-server')), 'comment': s.get('comment')}
+              for s in t.get('dhcp_scope') or [] if s.get('address')]
+    ospf = [{'neighbor_id': o.get('router-id') or o.get('address'), 'address': o.get('address'), 'state': o.get('state'), 'iface': o.get('interface')}
+            for o in t.get('ospf_neighbor') or [] if o.get('address') or o.get('router-id')]
+    bgp = [{'neighbor': b.get('remote.address') or b.get('remote-address') or b.get('name'), 'asn': b.get('remote.as') or b.get('remote-as'), 'state': 'established' if _yes(b.get('established')) else (b.get('state') or 'down')}
+           for b in t.get('bgp_session') or [] if b.get('name') or b.get('remote.address') or b.get('remote-address')]
     return {'platform': 'routeros', 'version': extra.get('version'), 'identity': extra.get('identity'), 'board': extra.get('board'), 'uptime': extra.get('uptime'),
             'discovered': [{'ip': n.get('address'), 'mac': str(n.get('mac-address') or '').lower() or None, 'name': n.get('identity'), 'platform': n.get('platform'), 'via': n.get('interface'), 'protocol': _text(n.get('discovered-by'))} for n in t.get('neighbor') or []],
             'leases': [{'ip': x.get('address'), 'mac': str(x.get('mac-address') or '').lower() or None, 'name': x.get('host-name'), 'state': x.get('status'), 'static': not _yes(x.get('dynamic'))} for x in t.get('lease') or []],
+            'dhcp_scopes': scopes, 'wireless_clients': wifi, 'routing': {'ospf': ospf, 'bgp': bgp},
             'counters': extra.get('counters') or [], 'connections': extra.get('connections')}
 
 

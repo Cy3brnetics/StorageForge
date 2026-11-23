@@ -216,6 +216,7 @@ NO_FRESH_PASSWORD = {
     ('POST', '/api/security/dash'),
     ('DELETE', '/api/security/dash/<int:dash_id>'),
     ('POST', '/api/map/views'),
+    ('PUT', '/api/map/views/defaults'),
     ('DELETE', '/api/map/views/<int:view_id>'),
     ('POST', '/api/map/whatif'),
     ('POST', '/api/map/stage'),

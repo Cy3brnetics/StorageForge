@@ -27,11 +27,12 @@ echo; echo '@@route6'; t ip -j -6 route show
 echo; echo '@@neigh'; t ip -j neigh show
 echo; echo '@@bridge'; t bridge -j vlan show
 echo; echo '@@listen'; t ss -H -tuln || echo '@@listen_failed'
+echo; echo '@@lldp'; t lldpctl -f json
 echo; echo '@@resolv'; [ -r /etc/resolv.conf ] && grep -E '^(nameserver|search)[[:space:]]' /etc/resolv.conf
 @NETCONFIG@
 echo; echo '@@end'
 """.replace('@NETCONFIG@', netconfig.SCRIPT.strip())
-SECTIONS = ('link', 'addr', 'route', 'route6', 'neigh', 'bridge', 'listen', 'listen_failed', 'resolv', *netconfig.SECTIONS, 'end')
+SECTIONS = ('link', 'addr', 'route', 'route6', 'neigh', 'bridge', 'listen', 'listen_failed', 'lldp', 'resolv', *netconfig.SECTIONS, 'end')
 MAX_NEIGHBOURS = 500
 
 
@@ -99,6 +100,38 @@ def _kind(link: dict) -> str:
     return kind if kind else 'ethernet' if link.get('link_type') == 'ether' else (link.get('link_type') or 'unknown')
 
 
+def _lldp(text: str | None) -> list[dict]:
+    if not text:
+        return []
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return []
+    if not isinstance(doc, dict):
+        return []
+    lldp = doc.get('lldp') if isinstance(doc.get('lldp'), dict) else {}
+    ifaces = lldp.get('interface')
+    items = ifaces if isinstance(ifaces, list) else [ifaces] if isinstance(ifaces, dict) else []
+    out = []
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        for local_if, body in entry.items():
+            if not isinstance(body, dict):
+                continue
+            ch = body.get('chassis') if isinstance(body.get('chassis'), dict) else {}
+            port = body.get('port') if isinstance(body.get('port'), dict) else {}
+            for name, info in ch.items():
+                if not isinstance(info, dict):
+                    continue
+                ip = info.get('mgmt-ip')
+                if isinstance(ip, list):
+                    ip = ip[0] if ip else None
+                out.append({'name': name, 'ip': ip if isinstance(ip, str) else None, 'platform': str(info.get('descr') or '')[:120] or None,
+                            'via': local_if, 'remote_port': port.get('id', {}).get('value') if isinstance(port.get('id'), dict) else None, 'protocol': 'lldp'})
+    return out[:200]
+
+
 def _counters(links: list[dict] | None) -> list[dict]:
     out = []
     for link in links or []:
@@ -151,6 +184,7 @@ def parse(text: str) -> dict:
         'dns': {'nameservers': [x.split()[1] for x in resolv if x.startswith('nameserver') and len(x.split()) > 1],
                 'search': [w for x in resolv if x.startswith('search') for w in x.split()[1:]]},
         'counters': _counters(links),
+        'discovered': _lldp(s.get('lldp')),
         'config': netconfig.read(s), 'unreadable': unreadable, 'complete': 'end' in s}
 
 

@@ -47,7 +47,7 @@ def _configured(c: dict | None, live: list[str]) -> dict:
 
 
 def build(host: str, net: dict | None, infra: dict | None, containers: list[dict], loads_workloads: list[dict], peers: dict, mount_nodes: set, wg_keys: dict | None = None, forwards: list | None = None,
-          overlay_keys: dict | None = None, now: float | None = None) -> tuple[dict, list]:
+          overlay_keys: dict | None = None, now: float | None = None, device: dict | None = None) -> tuple[dict, list]:
     """peers: every other scanned host's addresses, address → name. wg_keys: every scanned host's WireGuard public keys. Pure, so
     it can be tested with no database."""
     wg_keys = wg_keys or {}
@@ -283,6 +283,38 @@ def build(host: str, net: dict | None, infra: dict | None, containers: list[dict
         if who:
             pid = add(f'idp:{host}:{unit}', 'IdentityProvider', who, 'access', unit=unit)
             edge(pid, host_id, 'RUNS_ON', f'systemd: {unit} is running')
+    dev = device or {}
+    if dev:
+        add(host_id, 'Host', host, 'network')
+        if dev.get('vrfs'):
+            nodes[host_id]['props']['vrfs'] = [v['name'] for v in dev['vrfs'] if v.get('name')]
+        if dev.get('routing'):
+            nodes[host_id]['props']['routing'] = dev['routing']
+        if dev.get('wireless_clients'):
+            nodes[host_id]['props']['wireless_clients'] = len(dev['wireless_clients'])
+    peer_names = {v.lower(): v for v in peers.values()}
+    for d in list((net or {}).get('discovered') or []) + list(dev.get('discovered') or []):
+        dname = d.get('name') or d.get('ip')
+        if not dname:
+            continue
+        proto = (d.get('protocol') or 'lldp').upper()
+        via = f'{proto} on {d["via"]}' if d.get('via') else proto
+        target = f'host:{peers[d["ip"]]}' if d.get('ip') and d['ip'] in peers else (f'host:{peer_names[d["name"].lower()]}' if d.get('name') and d['name'].lower() in peer_names else None)
+        if target and target != host_id:
+            edge(host_id, target, 'NEIGHBOUR_OF', via, 'confirmed', remote_port=d.get('remote_port'))
+        elif not target:
+            key = d.get('ip') or dname
+            nid = placeholder(key, 'Neighbour', via, mac=d.get('mac'), platform=d.get('platform'), remote_port=d.get('remote_port'))
+            nodes[nid]['label'] = dname
+            edge(host_id, nid, 'NEIGHBOUR_OF', via, 'inferred', remote_port=d.get('remote_port'))
+    for sc in dev.get('dhcp_scopes') or []:
+        label = sc.get('subnet') or sc.get('name') or sc.get('start')
+        if not label:
+            continue
+        sid = add(f'dhcp:{host}:{label}', 'DHCPScope', label, 'network', subnet=sc.get('subnet'), start=sc.get('start'), end=sc.get('end') or sc.get('limit'), gateway=sc.get('gateway'))
+        edge(host_id, sid, 'SERVES_DHCP', f'DHCP scope {label}')
+        if sc.get('subnet') and f'subnet:{sc["subnet"]}' in nodes:
+            edge(sid, f'subnet:{sc["subnet"]}', 'ON_SUBNET', f'DHCP for {sc["subnet"]}')
     return nodes, edges
 
 
@@ -359,10 +391,12 @@ def rebuild(conn: Conn, host: str) -> tuple[int, int]:
     """Replaces this host's nodes above the storage layer. An unknown edge target is dropped rather than invented."""
     now = int(time.time())
     net, infra = netfacts.reading(conn, host), inframeasure.reading(conn, host)
+    dev_raw = conn.scalar("SELECT data_json FROM security_measurements WHERE host = :h AND kind = 'device' ORDER BY measured_at DESC LIMIT 1", {'h': host})
+    device = loads(dev_raw) if isinstance(dev_raw, str) else (dev_raw if isinstance(dev_raw, dict) else None)
     listed = workloads.listing(conn, host)['workloads']
     mount_nodes = {r[0] for r in conn.all("SELECT node_id FROM graph_nodes WHERE host = :h AND kind = 'MountPoint'", {'h': host})}
     from .netdevice import forwards
-    nodes, edges = build(host, net, infra, workloads.containers_of(conn, host), listed, _peers(conn), mount_nodes, _wg_keys(conn), forwards(conn), _overlay_keys(conn), now)
+    nodes, edges = build(host, net, infra, workloads.containers_of(conn, host), listed, _peers(conn), mount_nodes, _wg_keys(conn), forwards(conn), _overlay_keys(conn), now, device=device)
     built_by = f'infra:{host}'
     with conn.tx():
         conn.execute('DELETE FROM graph_edges WHERE built_by = :b', {'b': built_by})

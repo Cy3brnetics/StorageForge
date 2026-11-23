@@ -12,7 +12,8 @@ import re
 from .firewall import _rule
 
 COMMANDS = {'version': 'show version', 'brief': 'show ip interface brief', 'running': 'show running-config', 'route': 'show ip route', 'arp': 'show ip arp', 'acl': 'show ip access-lists', 'vlan': 'show vlan brief',
-            'cdp': 'show cdp neighbors detail', 'lldp': 'show lldp neighbors detail', 'mac': 'show mac address-table', 'nat': 'show ip nat translations', 'counters': 'show interfaces'}
+            'cdp': 'show cdp neighbors detail', 'lldp': 'show lldp neighbors detail', 'mac': 'show mac address-table', 'nat': 'show ip nat translations', 'counters': 'show interfaces',
+            'vrf': 'show ip vrf', 'ospf': 'show ip ospf neighbor', 'bgp': 'show ip bgp summary'}
 SERVICES = {'www': 80, 'http': 80, 'https': 443, 'ssh': 22, 'telnet': 23, 'smtp': 25, 'domain': 53, 'ftp': 21, 'ntp': 123, 'pop3': 110, 'imap': 143, 'snmp': 161, 'syslog': 514, 'bgp': 179, 'tftp': 69, 'isakmp': 500}
 ERROR = re.compile(r'^\s*(?:% ?Invalid|% ?Incomplete|% ?Ambiguous|% ?Unknown|% ?Authorization)', re.M)
 SECRET = re.compile(r'^(\s*(?:username|enable (?:secret|password)|snmp-server community|.*\bpassword\b|.*\bsecret\b|.*\bkey\b)).*$', re.M | re.I)
@@ -138,18 +139,27 @@ def parse_acls(text: str) -> dict:
 
 
 def parse_running(text: str) -> dict:
-    """Per interface: description, address, VLAN mode, ACL bindings, NAT side. And: hostname, static NAT, default gateway."""
-    out = {'interfaces': {}, 'hostname': None, 'nat': [], 'name_servers': []}
-    cur = None
+    """Per interface: description, address, VLAN mode, ACL/zone/VRF bindings, NAT side. And: hostname, static NAT, ZBFW zones/pairs, default gateway."""
+    out = {'interfaces': {}, 'hostname': None, 'nat': [], 'name_servers': [], 'zones': {}, 'zone_pairs': [], 'policy_maps': {}}
+    cur, zpair, pmap, cmap = None, None, None, None
     for line in (text or '').splitlines():
         if not line.startswith(' '):
-            cur = None
+            cur, zpair, pmap, cmap = None, None, None, None
         m = re.match(r'^hostname (\S+)', line)
         if m:
             out['hostname'] = m[1]
+        if (m := re.match(r'^zone security (\S+)', line)):
+            out['zones'].setdefault(m[1], {'name': m[1], 'interfaces': []})
+        if (m := re.match(r'^zone-pair security (\S+) source (\S+) destination (\S+)', line)):
+            zpair = {'name': m[1], 'source': m[2], 'destination': m[3], 'policy': None}
+            out['zone_pairs'].append(zpair)
+            continue
+        if (m := re.match(r'^policy-map type inspect (\S+)', line)):
+            pmap = out['policy_maps'].setdefault(m[1], [])
+            continue
         m = re.match(r'^interface (\S+)', line)
         if m:
-            cur = out['interfaces'].setdefault(m[1], {'acl_in': None, 'acl_out': None, 'nat': None, 'mode': None, 'access_vlan': None, 'trunk_vlans': [], 'channel': None, 'shutdown': False, 'descr': None, 'addresses': []})
+            cur = out['interfaces'].setdefault(m[1], {'acl_in': None, 'acl_out': None, 'nat': None, 'mode': None, 'access_vlan': None, 'trunk_vlans': [], 'channel': None, 'shutdown': False, 'descr': None, 'addresses': [], 'zone': None, 'vrf': None})
             continue
         m = re.match(r'^ip name-server (.*)', line)
         if m:
@@ -159,11 +169,28 @@ def parse_running(text: str) -> dict:
             out['nat'].append(_rule('cisco_acl', 'nat', 'dstnat', len(out['nat']) + 1, action='dnat', proto=m[1], dports=[int(m[6])], to_addr=m[2], to_port=int(m[3]), iif=m[4], daddr=m[5]))
         elif (m := re.match(r'^ip nat inside source static\s+(\S+)\s+(\S+)', line)):
             out['nat'].append(_rule('cisco_acl', 'nat', 'dstnat', len(out['nat']) + 1, action='dnat', to_addr=m[1], daddr=m[2]))
+        if zpair is not None:
+            if (m := re.match(r'^service-policy type inspect (\S+)', line.strip())):
+                zpair['policy'] = m[1]
+            continue
+        if pmap is not None:
+            s = line.strip()
+            if (m := re.match(r'^class (?:type inspect )?(\S+)', s)):
+                cmap = {'class': m[1], 'action': 'pass'}
+                pmap.append(cmap)
+            elif cmap is not None and s in ('inspect', 'drop', 'pass'):
+                cmap['action'] = s
+            continue
         if cur is None:
             continue
         s = line.strip()
         if (m := re.match(r'^ip access-group (\S+) (in|out)', s)):
             cur[f'acl_{m[2]}'] = m[1]
+        elif (m := re.match(r'^zone-member security (\S+)', s)):
+            cur['zone'] = m[1]
+            out['zones'].setdefault(m[1], {'name': m[1], 'interfaces': []})['interfaces'].append(next((k for k, v in out['interfaces'].items() if v is cur), None))
+        elif (m := re.match(r'^(?:ip )?vrf forwarding (\S+)', s)):
+            cur['vrf'] = m[1]
         elif s == 'ip nat inside':
             cur['nat'] = 'inside'
         elif s == 'ip nat outside':
@@ -280,6 +307,34 @@ def _kind(name: str) -> str:
     return 'bond' if low.startswith('port-channel') else 'vlan' if low.startswith('vlan') else 'loopback' if low.startswith('loopback') else 'tunnel' if low.startswith('tunnel') else 'ethernet'
 
 
+def parse_vrf(text: str) -> list[dict]:
+    out = []
+    for line in (text or '').splitlines():
+        m = re.match(r'^(\S+)\s+([0-9a-fA-F.:]+|<not set>)\s+(\S.*)$', line.strip())
+        if m and m[1].lower() not in ('name', 'vrf'):
+            ifaces = [p.strip() for p in m[3].split() if p.strip()]
+            out.append({'name': m[1], 'rd': None if m[2] == '<not set>' else m[2], 'interfaces': ifaces})
+    return out
+
+
+def parse_ospf(text: str) -> list[dict]:
+    out = []
+    for line in (text or '').splitlines():
+        f = line.split()
+        if len(f) >= 6 and re.fullmatch(r'[0-9.]+', f[0]) and re.fullmatch(r'[0-9.]+', f[-2]):
+            out.append({'neighbor_id': f[0], 'priority': int(f[1]) if f[1].isdigit() else None, 'state': f[2], 'address': f[-2], 'iface': f[-1]})
+    return out
+
+
+def parse_bgp(text: str) -> list[dict]:
+    out = []
+    for line in (text or '').splitlines():
+        f = line.split()
+        if len(f) >= 10 and re.fullmatch(r'[0-9.:a-fA-F]+', f[0]) and f[2].isdigit():
+            out.append({'neighbor': f[0], 'asn': int(f[2]), 'state': f[9], 'prefixes': int(f[9]) if f[9].isdigit() else 0})
+    return out
+
+
 def model(t: dict) -> dict:
     """t: each command's text. Raises when what must be read wasn't."""
     for key in ('brief', 'running', 'route', 'acl'):
@@ -294,12 +349,13 @@ def model(t: dict) -> dict:
         addrs = cfg.get('addresses') or ([{'ip': brief[name]['ip'], 'prefix': None, 'scope': 'global'}] if brief.get(name, {}).get('ip') else [])
         vlan = re.match(r'^Vlan(\d+)$', name, re.I)
         interfaces.append({'name': name, 'kind': _kind(name), 'state': (brief.get(name) or {}).get('state') or ('down' if cfg.get('shutdown') else 'unknown'), 'mtu': None, 'mac': None, 'master': cfg.get('channel'), 'parent': None,
-                           'vlan_id': int(vlan[1]) if vlan else cfg.get('access_vlan'), 'bridge_vlans': cfg.get('trunk_vlans') or [], 'switchport': cfg.get('mode'), 'descr': cfg.get('descr'), 'nat_side': cfg.get('nat'), 'addresses': addrs})
+                           'vlan_id': int(vlan[1]) if vlan else cfg.get('access_vlan'), 'bridge_vlans': cfg.get('trunk_vlans') or [], 'switchport': cfg.get('mode'), 'descr': cfg.get('descr'), 'nat_side': cfg.get('nat'), 'vrf': cfg.get('vrf'), 'zone': cfg.get('zone'), 'addresses': addrs})
     routes = parse_routes(t['route'])
     net = {'interfaces': interfaces, 'routes': routes, 'gateways': sorted({r['via'] for r in routes if r['dst'] == 'default' and r['via']}), 'neighbours': parse_arp(t.get('arp')), 'listeners': [],
            'dns': {'nameservers': run['name_servers'], 'search': []}, 'unreadable': ['listeners'], 'complete': True}
     acls = parse_acls(t['acl'])
-    fw = {'readable': True, 'backends': ['cisco_acl'], 'policies': {'input': 'accept', 'forward': 'accept', 'output': 'accept'}, 'chains': [], 'rules': [], 'nat': run['nat'], 'zones': [], 'notes': [], 'interface_acls': {}}
+    zones_list = [{'name': z['name'], 'interfaces': [i for i in z['interfaces'] if i]} for z in run['zones'].values()]
+    fw = {'readable': True, 'backends': ['cisco_acl', *(['cisco_zbfw'] if run['zone_pairs'] else [])], 'policies': {'input': 'accept', 'forward': 'accept', 'output': 'accept'}, 'chains': [], 'rules': [], 'nat': run['nat'], 'zones': zones_list, 'notes': [], 'interface_acls': {}}
     # An ACL on an interface sees what crosses that interface: one forward chain, and within it one jump per binding, guarded by the interface
     fw['chains'].append({'backend': 'cisco_acl', 'table': 'acl', 'name': 'forward', 'hook': 'forward', 'prio': 0, 'policy': 'accept', 'family': 'ip'})
     fw['chains'].append({'backend': 'cisco_acl', 'table': 'acl', 'name': 'input', 'hook': 'input', 'prio': 0, 'policy': 'accept', 'family': 'ip'})
@@ -319,9 +375,19 @@ def model(t: dict) -> dict:
                 fw['rules'].append({**rule, 'chain': 'forward', 'order': order, 'hook': 'forward', 'iif': name if side == 'in' else None, 'oif': name if side == 'out' else None, 'acl': acl})
             order += 1
             fw['rules'].append(_rule('cisco_acl', 'acl', 'forward', order, action='drop', hook='forward', iif=name if side == 'in' else None, oif=name if side == 'out' else None, acl=acl, comment=f'{acl}: implicit deny'))
+    for zp in run['zone_pairs']:
+        src_if = run['zones'].get(zp['source'], {}).get('interfaces') or []
+        dst_if = run['zones'].get(zp['destination'], {}).get('interfaces') or []
+        actions = run['policy_maps'].get(zp['policy'] or '', [])
+        verdict = 'drop' if any(c['action'] == 'drop' for c in actions) and not any(c['action'] in ('inspect', 'pass') for c in actions) else 'accept'
+        order += 1
+        fw['rules'].append(_rule('cisco_zbfw', 'zone', 'forward', order, action=verdict, hook='forward',
+                                 iif=','.join(x for x in src_if if x) or None, oif=','.join(x for x in dst_if if x) or None,
+                                 zone=zp['name'], zone_interfaces=[x for x in src_if + dst_if if x], comment=f"zone-pair {zp['name']}: {zp['source']}->{zp['destination']} ({zp['policy'] or 'none'})"))
     version = re.search(r'Version ([^\s,]+)', t.get('version') or '')
     return {'net': net, 'firewall': fw, 'os': f'Cisco IOS {version[1] if version else "unknown"}', 'identity': run['hostname'],
             'facts': {'platform': 'cisco', 'version': version[1] if version else None, 'identity': run['hostname'], 'discovered': parse_cdp(t.get('cdp')) + parse_lldp(t.get('lldp')), 'leases': [], 'vlans': parse_vlans(t.get('vlan')), 'counters': parse_counters(t.get('counters')),
+                      'vrfs': parse_vrf(t.get('vrf')), 'zone_pairs': run['zone_pairs'], 'routing': {'ospf': parse_ospf(t.get('ospf')), 'bgp': parse_bgp(t.get('bgp'))},
                       'wan': [n for n, c in run['interfaces'].items() if c.get('nat') == 'outside']}, 'config': strip_secrets(t['running'])}
 
 

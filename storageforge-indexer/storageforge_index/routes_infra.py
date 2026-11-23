@@ -303,7 +303,45 @@ def register(web, ctx):
         """Your own, and those someone chose to share. Nobody but its owner changes a view."""
         me = actor()
         views = [{'id': i, 'name': n, 'owner': o, 'mine': o == me, 'body': json.loads(b), 'updated_at': t} for i, n, o, b, t in conn().all('SELECT id, name, owner, body_json, updated_at FROM map_views ORDER BY name')]
-        return jsonify(views=[v for v in views if v['mine'] or v['body'].get('shared') is True])
+        raw_def = conn().scalar("SELECT value_json FROM settings WHERE key = 'map.role_defaults'")
+        defaults = json.loads(raw_def) if raw_def else {}
+        role = getattr(current_user, 'role', None) or 'viewer'
+        return jsonify(views=[v for v in views if v['mine'] or v['body'].get('shared') is True], defaults=defaults, default_view=defaults.get(role))
+
+    @web.get('/api/map/views/defaults')
+    @login_required
+    def api_map_views_defaults():
+        raw_def = conn().scalar("SELECT value_json FROM settings WHERE key = 'map.role_defaults'")
+        defaults = json.loads(raw_def) if raw_def else {}
+        return jsonify(defaults=defaults)
+
+    @web.put('/api/map/views/defaults')
+    @login_required
+    def api_map_views_defaults_set():
+        body = json_body()
+        raw_def = conn().scalar("SELECT value_json FROM settings WHERE key = 'map.role_defaults'")
+        defaults = json.loads(raw_def) if raw_def else {}
+        for role, view_name in (body.get('defaults') or body).items():
+            if not isinstance(role, str) or not role.strip():
+                continue
+            if view_name:
+                defaults[role.strip()] = str(view_name).strip()[:80]
+            else:
+                defaults.pop(role.strip(), None)
+        conn().execute("INSERT INTO settings (key, value_json, updated_at, updated_by) VALUES ('map.role_defaults', :v, :t, :a) ON CONFLICT (key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+                       {'v': json.dumps(defaults), 't': int(time.time()), 'a': actor()[:60]})
+        core.audit(conn(), actor(), 'map.view.defaults', 'ok', None, defaults)
+        return jsonify(defaults=defaults)
+
+    @web.get('/api/map/tile')
+    @login_required
+    def api_map_tile():
+        g = map_graph()
+        hosts = sum(1 for n in g['nodes'] if n['kind'] == 'Host')
+        placeholders = sum(1 for n in g['nodes'] if (n.get('props') or {}).get('placeholder'))
+        exposed = sum(1 for n in g['nodes'] if n['kind'] == 'Listener' and (n.get('props') or {}).get('exposure') == 'any')
+        subnets = sum(1 for n in g['nodes'] if n['kind'] == 'Subnet')
+        return jsonify(hosts=hosts, nodes=len(g['nodes']), edges=len(g['edges']), exposed=exposed, placeholders=placeholders, subnets=subnets)
 
     @web.post('/api/map/views')
     @login_required
@@ -312,7 +350,7 @@ def register(web, ctx):
         name = str(body.get('name') or '').strip()[:80]
         if not name or any(c in name for c in '<>"`') or any(ord(c) < 32 for c in name):
             raise ValueError('a view needs a plain name')
-        keep = {k: body.get(k) for k in ('layers', 'filter', 'positions', 'host', 'mode', 'group', 'shared', 'rules') if k in (body or {})}
+        keep = {k: body.get(k) for k in ('layers', 'filter', 'positions', 'host', 'mode', 'group', 'layout', 'style_rules', 'shared', 'rules') if k in (body or {})}
         keep['shared'] = keep.get('shared') is True
         text = json.dumps(keep)
         if len(text) > 200_000:

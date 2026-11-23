@@ -365,8 +365,21 @@ def parse(text: str) -> dict:
     net = network(root, ifaces, s)
     version = (s.get('version') or '').splitlines()[0] if s.get('version') else None
     wan = [i['if'] for k, i in ifaces.items() if k == 'wan' and i.get('if')]
+    scopes = []
+    for sub in list(root.find('dhcpd') if root.find('dhcpd') is not None else []):
+        rng = sub.find('range')
+        if rng is not None and _t(rng, 'from') and _t(rng, 'to'):
+            iface = ifaces.get(sub.tag) or {}
+            subnet = None
+            if iface.get('ip') and iface.get('prefix') is not None:
+                try:
+                    subnet = str(ipaddress.ip_interface(f'{iface["ip"]}/{iface["prefix"]}').network)
+                except ValueError:
+                    subnet = None
+            scopes.append({'name': sub.tag, 'subnet': subnet, 'start': _t(rng, 'from'), 'end': _t(rng, 'to')})
     return {'net': net, 'firewall': fw, 'os': f'{"OPNsense" if root.tag == "opnsense" else "pfSense"} {version or "unknown"}', 'identity': s.get('hostname') or _t(root, 'system/hostname'),
             'facts': {'platform': 'opnsense' if root.tag == 'opnsense' else 'pfsense', 'version': version, 'identity': s.get('hostname'), 'wan': wan, 'discovered': [], 'counters': [],
+                      'dhcp_scopes': scopes,
                       'leases': [{'ip': _t(m, 'ipaddr'), 'mac': (_t(m, 'mac') or '').lower() or None, 'name': _t(m, 'hostname'), 'static': True} for m in root.findall('dhcpd/*/staticmap')],
                       'vpn': {'wireguard': bool(root.findall('wireguard') or root.findall('OPNsense/wireguard')), 'openvpn': bool(root.findall('openvpn/openvpn-server') or root.findall('openvpn/openvpn-client'))}}, 'config': None}
 

@@ -16,6 +16,7 @@ echo; echo '@@ubus'; ubus call network.interface dump 2>/dev/null
 echo; echo '@@board'; ubus call system board 2>/dev/null
 echo; echo '@@uci_network'; uci show network 2>/dev/null
 echo; echo '@@uci_firewall'; uci show firewall 2>/dev/null
+echo; echo '@@uci_dhcp'; uci show dhcp 2>/dev/null
 echo; echo '@@leases'; cat /tmp/dhcp.leases 2>/dev/null
 echo; echo '@@nft'; nft -j list ruleset 2>/dev/null
 echo; echo '@@iptables'; iptables-save 2>/dev/null
@@ -23,8 +24,9 @@ echo; echo '@@dev'; cat /proc/net/dev 2>/dev/null
 echo; echo '@@arp'; cat /proc/net/arp 2>/dev/null
 echo; echo '@@netstat'; netstat -ltun 2>/dev/null
 echo; echo '@@wifi'; iwinfo 2>/dev/null | head -n 100
+echo; echo '@@stations'; iw dev 2>/dev/null | sed -n 's/^[[:space:]]*Interface //p' | while read -r d; do echo "dev:$d"; iw dev "$d" station dump 2>/dev/null | head -n 200; done
 echo; echo '@@end'""")
-EXTRA = ('ubus', 'board', 'uci_network', 'uci_firewall', 'leases', 'nft', 'iptables', 'dev', 'arp', 'netstat', 'wifi')
+EXTRA = ('ubus', 'board', 'uci_network', 'uci_firewall', 'uci_dhcp', 'leases', 'nft', 'iptables', 'dev', 'arp', 'netstat', 'wifi', 'stations')
 # Interfaces OpenWrt names by role: what the firewall's zones call them
 ALL_SECTIONS = (*netfacts.SECTIONS, *EXTRA)
 
@@ -179,6 +181,38 @@ def wan_devices(ubus: dict, zone_rows: list[dict]) -> list[str]:
     return sorted({(ubus.get(n) or {}).get('l3_device') or (ubus.get(n) or {}).get('device') for z in zone_rows if z['masq'] for n in z['networks']} - {None})
 
 
+def _dhcp_scopes(uci: dict, ubus: dict) -> list[dict]:
+    import ipaddress
+    out = []
+    for name, row in uci.items():
+        if row.get('.type') != 'dhcp' or row.get('ignore') == '1':
+            continue
+        iface = row.get('interface') or name
+        info = ubus.get(iface) or {}
+        addrs = _objects(info.get('ipv4-address'))
+        subnet = None
+        if addrs and addrs[0].get('address') and addrs[0].get('mask') is not None:
+            try:
+                subnet = str(ipaddress.ip_interface(f'{addrs[0]["address"]}/{addrs[0]["mask"]}').network)
+            except ValueError:
+                subnet = None
+        out.append({'name': iface, 'subnet': subnet, 'start': row.get('start'), 'limit': row.get('limit'), 'leasetime': row.get('leasetime')})
+    return out
+
+
+def parse_stations(text: str) -> list[dict]:
+    out, dev, cur = [], None, None
+    for line in (text or '').splitlines():
+        if line.startswith('dev:'):
+            dev = line[4:].strip()
+        elif (m := re.match(r'^Station\s+([0-9a-fA-F:]{17})', line)):
+            cur = {'iface': dev, 'mac': m[1].lower(), 'signal': None}
+            out.append(cur)
+        elif cur and (m := re.search(r'signal:\s*(-?\d+\s*dBm)', line)):
+            cur['signal'] = m[1]
+    return out
+
+
 def parse(text: str) -> dict:
     s = sections(text)
     if 'end' not in s:
@@ -219,6 +253,7 @@ def parse(text: str) -> dict:
             rows.append({'name': name.strip(), 'rx-byte': f[0], 'rx-error': f[2], 'rx-drop': f[3], 'tx-byte': f[8], 'tx-error': f[10], 'tx-drop': f[11]})
     return {'net': net, 'firewall': fw, 'os': f'OpenWrt {version or "unknown"}', 'identity': board.get('hostname'),
             'facts': {'platform': 'openwrt', 'version': version, 'identity': board.get('hostname'), 'board': board.get('model'), 'leases': parse_leases(s.get('leases')), 'discovered': [],
+                      'dhcp_scopes': _dhcp_scopes(parse_uci(s.get('uci_dhcp')), ubus), 'wireless_clients': parse_stations(s.get('stations')),
                       'wan': wan_devices(ubus, zone_rows), 'zones': zone_rows, 'counters': counters(rows), 'wifi': (s.get('wifi') or '')[:4000]}, 'config': strip_secrets(s.get('uci_network'))}
 
 
