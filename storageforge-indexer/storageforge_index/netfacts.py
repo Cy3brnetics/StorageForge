@@ -20,7 +20,7 @@ from .db import Conn
 SCRIPT = r"""
 PATH=$PATH:/usr/sbin:/sbin; export PATH LC_ALL=C
 t() { if command -v timeout >/dev/null 2>&1; then timeout 20 "$@" 2>/dev/null; else "$@" 2>/dev/null; fi; }
-echo '@@link'; t ip -j -d link show
+echo '@@link'; t ip -j -s -d link show
 echo; echo '@@addr'; t ip -j addr show
 echo; echo '@@route'; t ip -j route show
 echo; echo '@@route6'; t ip -j -6 route show
@@ -99,6 +99,27 @@ def _kind(link: dict) -> str:
     return kind if kind else 'ethernet' if link.get('link_type') == 'ether' else (link.get('link_type') or 'unknown')
 
 
+def _counters(links: list[dict] | None) -> list[dict]:
+    out = []
+    for link in links or []:
+        name = link.get('ifname')
+        if not name or link.get('link_type') == 'loopback':
+            continue
+        st = link.get('stats64') or link.get('stats') or {}
+        rx, tx = st.get('rx') or {}, st.get('tx') or {}
+        if isinstance(rx.get('bytes'), int) and isinstance(tx.get('bytes'), int):
+            out.append({
+                'iface': name,
+                'rx_bytes': int(rx['bytes']),
+                'tx_bytes': int(tx['bytes']),
+                'rx_drop': int(rx.get('dropped') or 0),
+                'tx_drop': int(tx.get('dropped') or 0),
+                'rx_error': int(rx.get('errors') or 0),
+                'tx_error': int(tx.get('errors') or 0),
+            })
+    return out
+
+
 def parse(text: str) -> dict:
     """What the script printed, as one record. `unreadable` lists what could not be read: never treat those as empty."""
     s = _sections(text)
@@ -129,6 +150,7 @@ def parse(text: str) -> dict:
         'listeners': parse_listeners(s.get('listen', '')),
         'dns': {'nameservers': [x.split()[1] for x in resolv if x.startswith('nameserver') and len(x.split()) > 1],
                 'search': [w for x in resolv if x.startswith('search') for w in x.split()[1:]]},
+        'counters': _counters(links),
         'config': netconfig.read(s), 'unreadable': unreadable, 'complete': 'end' in s}
 
 
@@ -137,10 +159,15 @@ def survey(conn: Conn, t, host_id: int, scan_id: int) -> dict:
     data = parse(t.run(SCRIPT, timeout=120))
     if not data['complete']:
         return {'error': 'the network read was cut short'}
+    now = int(time.time())
     with conn.tx():
         conn.execute('DELETE FROM host_network WHERE host_id = :h', {'h': host_id})
         conn.execute('INSERT INTO host_network (host_id, data_json, scan_id, updated_at) VALUES (:h, :d, :s, :t)',
-                     {'h': host_id, 'd': json.dumps(data), 's': scan_id, 't': int(time.time())})
+                     {'h': host_id, 'd': json.dumps(data), 's': scan_id, 't': now})
+    host = conn.scalar('SELECT hostname FROM hosts WHERE host_id = :h', {'h': host_id})
+    if host and data.get('counters'):
+        from . import traffic
+        traffic.record(conn, host, data['counters'], now)
     return {'interfaces': len(data['interfaces']), 'listeners': len(data['listeners']), 'unreadable': data['unreadable']}
 
 

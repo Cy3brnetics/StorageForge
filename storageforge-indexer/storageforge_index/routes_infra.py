@@ -39,6 +39,18 @@ def register(web, ctx):
             g['nodes'] += extra['nodes']
             known = {n['id'] for n in g['nodes']}
             g['edges'] += [e for e in extra['edges'] if e['dst'] in known]
+        if 'scan' in layers and not request.args.get('host'):
+            scan_extra = infragraph.scan_nodes(conn())
+            by_id = {n['id']: n for n in g['nodes']}
+            for sn in scan_extra['nodes']:
+                if sn['id'] in by_id:
+                    by_id[sn['id']]['props'] = {**by_id[sn['id']].get('props', {}), **sn.get('props', {})}
+                else:
+                    g['nodes'].append(sn)
+                    by_id[sn['id']] = sn
+            for se in scan_extra['edges']:
+                if se['src'] in by_id and se['dst'] in by_id:
+                    g['edges'].append(se)
         if not request.args.get('host'):
             apiviews.map_extra(conn(), g, layers)          # what platform API connections read, beside the scans: source api
         if 'storage' not in layers:           # the hosts everything hangs from stay, and the rest of storage goes
@@ -162,9 +174,18 @@ def register(web, ctx):
         """Starts enrolling something only ever seen from elsewhere. A name proves nothing, so it goes through the normal first scan:
         host key confirmation, a bound key, and consent on that machine. Its edges turn solid when a scan holds its address."""
         rows = conn().all("SELECT label, props_json FROM graph_nodes WHERE node_id = :i", {'i': node_id})
-        if not rows or not json.loads(rows[0][1] or '{}').get('placeholder'):
+        if rows:
+            props = json.loads(rows[0][1] or '{}')
+            label = props.get('ip') or rows[0][0]
+        else:
+            sn = next((n for n in infragraph.scan_nodes(conn())['nodes'] if n['id'] == node_id), None)
+            if not sn:
+                return jsonify(error='that is not a placeholder'), 404
+            props = sn.get('props') or {}
+            label = props.get('ip') or sn['label']
+        if not props.get('placeholder'):
             return jsonify(error='that is not a placeholder'), 404
-        address = rows[0][0]
+        address = label
         core.audit(conn(), actor(), 'map.promote', 'ok', address, {'node': node_id})
         return jsonify(ok=True, address=address, message=f'To add {address}: bind a key to it in Keys, then scan it. Its host key is shown for you to confirm, and its lines turn solid after the first scan.', next={'scan': address})
 

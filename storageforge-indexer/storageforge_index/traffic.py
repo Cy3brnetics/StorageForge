@@ -87,3 +87,15 @@ def stats(conn: Conn, host: str | None = None) -> list[dict]:
 
 def anomalies(conn: Conn) -> list[dict]:
     return [{'host': s['host'], 'iface': s['iface'], **a} for s in stats(conn) for a in s['anomalies']]
+
+
+def problems(conn: Conn) -> dict:
+    """Traffic spikes, new errors or new drops turned into notification-center items when traffic monitoring is on."""
+    if not enabled(conn):
+        return {}
+    out = {}
+    for a in anomalies(conn):
+        level = 'crit' if a['kind'] == 'rate' and a['value'] > max(100 << 20, a['usual'] * 10) else 'warn'
+        out[f'traffic:{a["host"]}:{a["iface"]}:{a["kind"]}'] = (
+            'traffic', f'{a["host"]}:{a["iface"]}', f'Unusual traffic on {a["host"]} ({a["iface"]})', a['text'], level)
+    return out

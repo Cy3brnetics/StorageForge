@@ -3,10 +3,10 @@
    from what hosts report, and drawn with SVG and DOM APIs only. Dashed means inferred. Colour on a listener is who can reach it,
    per configuration. Positions, layers and the filter can be saved as a view; the facts always come from the index. */
 
-const MP = { layers: new Set(['network', 'services', 'workloads', 'firewall', 'access', 'manual']), redact: false, filter: '', graph: null, sel: null, hover: null, mode: 'custom', at: null, group: 'host', scope: 'all', ghost: null, notes: [], coverage: null, trace: new Set(), collapsed: new Set(),
+const MP = { layers: new Set(['network', 'services', 'workloads', 'firewall', 'access', 'manual', 'scan']), redact: false, filter: '', graph: null, sel: null, hover: null, mode: 'custom', at: null, group: 'host', scope: 'all', ghost: null, notes: [], coverage: null, trace: new Set(), collapsed: new Set(),
              view: { x: 0, y: 0, k: 1 }, positions: {}, exposed: false, loopback: false, neighbours: false, bridges: false, fitted: false, drag: null, rects: new Map(),
              open: {} };      // which cut lists are showing all their rows (see mapMore)
-const MP_LAYERS = [['storage', 'Storage'], ['network', 'Network'], ['services', 'Services'], ['firewall', 'Firewall'], ['workloads', 'Workloads'], ['access', 'Access'], ['manual', 'Placed by hand']];
+const MP_LAYERS = [['storage', 'Storage'], ['network', 'Network'], ['services', 'Services'], ['firewall', 'Firewall'], ['workloads', 'Workloads'], ['access', 'Access'], ['scan', 'Scanned'], ['manual', 'Placed by hand']];
 const MP_MODES = { network: { label: 'Network', layers: ['network', 'manual'] }, flow: { label: 'Flow', layers: ['network', 'services', 'firewall', 'access'] }, workloads: { label: 'Workloads', layers: ['workloads', 'services'] }, storage: { label: 'Storage only', layers: ['storage'] },
                    security: { label: 'Security', layers: ['services', 'firewall', 'workloads', 'storage'], exposed: true }, custom: { label: 'Custom', layers: null } };
 const MP_LEVEL = { any: 'Any address', lan: 'Private networks', vpn: 'VPN only', blocked: 'Blocked', loopback: 'This machine only', unknown: 'Unknown' };

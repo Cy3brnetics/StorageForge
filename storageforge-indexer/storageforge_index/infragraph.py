@@ -20,7 +20,7 @@ import time
 from . import accessproxies, exposure, inframeasure, netfacts, overlays, tunnels, workloads
 from .db import Conn, loads
 
-LAYERS = ('storage', 'network', 'services', 'firewall', 'workloads', 'access', 'manual')
+LAYERS = ('storage', 'network', 'services', 'firewall', 'workloads', 'access', 'manual', 'scan')
 # Who made this interface, from the first three bytes of its MAC. Only what a person would recognise; the rest stays unknown.
 OUI = {'52:54:00': 'QEMU/KVM', '00:50:56': 'VMware', '00:0c:29': 'VMware', '08:00:27': 'VirtualBox', '02:42:ac': 'Docker', '00:16:3e': 'Xen', 'b8:27:eb': 'Raspberry Pi', 'dc:a6:32': 'Raspberry Pi', 'e4:5f:01': 'Raspberry Pi',
        '00:1a:79': 'Ubiquiti', '24:5a:4c': 'Ubiquiti', '74:83:c2': 'Ubiquiti', 'f0:9f:c2': 'Ubiquiti', '00:11:32': 'Synology', '00:08:9b': 'QNAP', '24:5e:be': 'QNAP', '3c:ec:ef': 'Supermicro', '00:25:90': 'Supermicro', 'ac:1f:6b': 'Supermicro'}
@@ -502,6 +502,42 @@ def history_of(conn: Conn, node_id: str, limit: int = 50) -> list[dict]:
 # ── what the operator put there ──────────────────────────────────────
 MANUAL_KINDS = ('Switch', 'Router', 'Modem', 'AccessPoint', 'Firewall', 'IoT', 'Server', 'Other')
 LABEL_OK = re.compile(r'[^\x00-\x1f\x7f<>"`]{1,120}')
+
+
+def scan_nodes(conn: Conn) -> dict:
+    """Unmanaged hosts discovered by the latest opt-in nmap scan, shown on the map as inferred placeholders."""
+    from . import netscan
+    res = netscan.results(conn)
+    if not res.get('scan'):
+        return {'nodes': [], 'edges': []}
+    nodes, edges = [], []
+    seen_subnets = set()
+    for h in res.get('hosts') or []:
+        link = h.get('link') or {}
+        if link.get('managed'):
+            continue
+        ip = h['ip']
+        mac = h.get('mac')
+        vendor = h.get('vendor') or (OUI.get(mac[:8].lower()) if mac else None)
+        ports = [f'{p["port"]}/{p["proto"]}' + (f' ({p["service"]})' if p.get('service') else '') for p in h.get('ports') or []]
+        nid = f'ph:{ip}'
+        nodes.append({
+            'id': nid, 'kind': 'Neighbour', 'label': h.get('name') or ip, 'host': None,
+            'layer': 'scan', 'confidence': 'inferred', 'health': 'unknown',
+            'first_seen': (res['scan'] or {}).get('finished_at') or (res['scan'] or {}).get('started_at'),
+            'props': {k: v for k, v in (
+                ('placeholder', True), ('ip', ip), ('mac', mac), ('vendor', vendor),
+                ('ports', ports or None), ('ssh', link.get('ssh') or None),
+                ('seen_as', f'nmap scan ({h.get("range") or "network"})'),
+            ) if v not in (None, '', [], {})},
+        })
+        if h.get('range'):
+            sid = f'subnet:{h["range"]}'
+            if sid not in seen_subnets:
+                seen_subnets.add(sid)
+                nodes.append({'id': sid, 'kind': 'Subnet', 'label': h['range'], 'host': None, 'layer': 'scan', 'confidence': 'inferred', 'health': 'unknown', 'props': {}})
+            edges.append({'src': nid, 'dst': sid, 'rel': 'ON_SUBNET', 'props': {'confidence': 'inferred', 'evidence': {'source': f'nmap scan {h["range"]}'}}})
+    return {'nodes': nodes, 'edges': edges}
 
 
 def manual_nodes(conn: Conn) -> dict:

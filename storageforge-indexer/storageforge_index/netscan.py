@@ -274,3 +274,28 @@ def tick(db) -> int:
     finally:
         conn.close()
 
+
+def problems(conn: Conn) -> dict:
+    """New hosts or new open ports seen in the latest completed nmap scan relative to the prior scan."""
+    if not settings(conn).get('enabled'):
+        return {}
+    res = results(conn)
+    if res.get('previous') is None or not res.get('scan'):
+        return {}
+    out = {}
+    for h in res.get('hosts') or []:
+        ip = h['ip']
+        link = h.get('link') or {}
+        if h.get('new') and not link.get('managed'):
+            ports = ', '.join(f'{p["port"]}/{p["proto"]}' for p in (h.get('ports') or [])[:8]) or 'no open ports listed'
+            out[f'netscan-host:{ip}'] = (
+                'netscan-host', ip, f'New host found on the network: {ip}' + (f' ({h["name"]})' if h.get('name') else ''),
+                f'Seen in {h.get("range") or "scan"}: {ports}', 'warn')
+        elif h.get('new_ports'):
+            ports = ', '.join(str(p) for p in h['new_ports'][:10])
+            who = link.get('name') or ip
+            out[f'netscan-ports:{ip}'] = (
+                'netscan-ports', who, f'New open ports on {who}: {ports}',
+                f'Found by nmap scan in {h.get("range") or "scanned range"}.', 'warn')
+    return out
+

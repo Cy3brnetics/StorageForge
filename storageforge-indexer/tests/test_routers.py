@@ -849,6 +849,25 @@ class Scanner(unittest.TestCase):
         with self.assertRaises(ValueError):
             netscan.parse_xml('<!DOCTYPE x [<!ENTITY a "b">]><nmaprun/>')
 
+    def test_scanner_findings_go_to_alerts_and_map_placeholders(self):
+        from storageforge_index import alerts, infragraph
+        netscan.save_settings(self.conn, {'enabled': True, 'ranges': ['10.0.0.0/24']}, 'a')
+        netscan.run(self.db, self.conn, None, 'a', wait=True, runner=lambda argv: self.XML)
+        second = '''<?xml version="1.0"?><nmaprun>
+<host><status state="up"/><address addr="10.0.0.5" addrtype="ipv4"/><ports><port protocol="tcp" portid="22"><state state="open"/></port><port protocol="tcp" portid="8080"><state state="open"/></port></ports></host>
+<host><status state="up"/><address addr="10.0.0.9" addrtype="ipv4"/><address addr="00:11:32:aa:bb:cc" addrtype="mac" vendor="Synology"/><hostnames><hostname name="nas-new"/></hostnames><ports><port protocol="tcp" portid="445"><state state="open"/></port></ports></host>
+</nmaprun>'''
+        netscan.run(self.db, self.conn, None, 'a', wait=True, runner=lambda argv: second)
+        probs = alerts.problems(self.conn)
+        self.assertIn('netscan-ports:10.0.0.5', probs)
+        self.assertIn('8080', probs['netscan-ports:10.0.0.5'][2])
+        self.assertIn('netscan-host:10.0.0.9', probs)
+        nodes = infragraph.scan_nodes(self.conn)['nodes']
+        by_id = {n['id']: n for n in nodes}
+        self.assertIn('ph:10.0.0.9', by_id)
+        self.assertTrue(by_id['ph:10.0.0.9']['props']['placeholder'])
+        self.assertIn('445/tcp', by_id['ph:10.0.0.9']['props']['ports'])
+
 
 class Traffic(unittest.TestCase):
     def series(self, rate=1000, n=20, last=None):
@@ -889,6 +908,25 @@ class Traffic(unittest.TestCase):
             self.assertEqual(traffic.record(conn, 'h', [row], 100), 1)
             self.assertEqual(traffic.record(conn, 'h', [row], 200), 1)
             self.assertEqual(traffic.stats(conn, 'h')[0]['iface'], 'e')
+            conn.close()
+
+    def test_linux_byte_counters_and_traffic_alerts(self):
+        from storageforge_index import alerts, netfacts
+        sample = ('@@link\n' + json.dumps([
+            {'ifname': 'lo', 'link_type': 'loopback', 'operstate': 'UNKNOWN', 'stats64': {'rx': {'bytes': 10}, 'tx': {'bytes': 10}}},
+            {'ifname': 'eth0', 'link_type': 'ether', 'operstate': 'UP', 'stats64': {'rx': {'bytes': 5000, 'dropped': 1, 'errors': 2}, 'tx': {'bytes': 9000, 'dropped': 0, 'errors': 0}}},
+        ]) + '\n@@addr\n[]\n@@route\n[]\n@@neigh\n[]\n@@listen\n\n@@end\n')
+        parsed = netfacts.parse(sample)
+        self.assertEqual(parsed['counters'], [{'iface': 'eth0', 'rx_bytes': 5000, 'tx_bytes': 9000, 'rx_drop': 1, 'tx_drop': 0, 'rx_error': 2, 'tx_error': 0}])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(f'sqlite:///{tmp}/t.db')
+            conn = db.connect()
+            db.migrate(conn)
+            traffic.set_enabled(conn, True, 'a')
+            for at, rx, tx, _rxp, _txp, err, drp in self.series(rate=1 << 21, last=1 << 26):
+                traffic.record(conn, 'nas', [{'iface': 'eth0', 'rx_bytes': rx, 'tx_bytes': tx, 'rx_drop': drp, 'tx_drop': 0, 'rx_error': err, 'tx_error': 0}], at)
+            probs = alerts.problems(conn)
+            self.assertIn('traffic:nas:eth0:rate', probs)
             conn.close()
 
 
