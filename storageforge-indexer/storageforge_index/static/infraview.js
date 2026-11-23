@@ -92,7 +92,9 @@ async function infWorkloads(content) {
   const qs = S.host ? `?host=${encodeURIComponent(S.host)}` : '';
   const [{ workloads, hosts }, lvs] = await Promise.all([getJSON('/api/workloads' + qs), getJSON('/api/workloads/libvirt' + qs).then((r) => r.hosts).catch(() => [])]);
   const out = document.createElement('div');
-  const vms = workloads.filter((w) => w.runtime === 'libvirt' || w.runtime === 'proxmox' || w.kind === 'vm');
+  const systemContainer = (w) => ['lxc', 'incus'].includes(w.runtime) || (w.runtime === 'proxmox' && w.kind === 'instance');
+  const virtualMachine = (w) => !systemContainer(w) && (['libvirt', 'proxmox'].includes(w.runtime) || w.kind === 'vm');
+  const vms = workloads.filter(virtualMachine);
   const cts = workloads.filter((w) => !vms.includes(w));
   const running = workloads.filter((w) => w.state === 'running');
   const vcpus = vms.reduce((a, w) => a + (Number(w.vcpus) || 0), 0);
@@ -121,15 +123,15 @@ async function infWorkloads(content) {
     edit && lvs.length ? button('+ New Pool…', () => openTask('libvirt-pool', targetHost, { type: 'dir', autostart: true }), 'btn sm') : null);
 
   function matchesGuest(w) {
-    if (INF.wlRuntime === 'vm' && w.runtime !== 'libvirt' && w.runtime !== 'proxmox' && w.kind !== 'vm') return false;
-    if (INF.wlRuntime === 'lxc' && !['lxc', 'incus'].includes(w.runtime)) return false;
-    if (INF.wlRuntime === 'ctr' && !['docker', 'podman', 'podman_rootless'].includes(w.runtime)) return false;
+    if (INF.wlRuntime === 'vm' && !virtualMachine(w)) return false;
+    if (INF.wlRuntime === 'lxc' && !systemContainer(w)) return false;
+    if (INF.wlRuntime === 'ctr' && !['docker', 'podman', 'podman_rootless', 'compose', 'truenas-app'].includes(w.runtime)) return false;
     if (INF.wlState === 'running' && w.state !== 'running') return false;
     if (INF.wlState === 'stopped' && w.state === 'running') return false;
     if (INF.wlState === 'findings' && !(w.findings || []).length) return false;
     const q = INF.wlFind.trim().toLowerCase();
     if (!q) return true;
-    const hay = [w.host, w.name, w.runtime, w.kind, w.state, ...(w.findings || []),
+    const hay = [w.host, w.name, w.runtime, w.kind, w.state, w.api?.connection, w.api?.platform, w.api?.node, w.api?.environment, ...(w.findings || []),
       ...(w.ports || []).map((p) => `${p.host_ip}:${p.host_port}:${p.port}`),
       ...(w.mounts || []).map((m) => m.on?.mount || m.dest || '')].join(' ').toLowerCase();
     return hay.includes(q);
@@ -137,23 +139,30 @@ async function infWorkloads(content) {
 
   function drawList() {
     const kids = [];
-    for (const h of hosts) {
-      const mine = workloads.filter((w) => w.host === h.host);
+    const scanned = new Set(hosts.map((h) => h.host));
+    const apiOnly = workloads.filter((w) => w.source === 'api' && !scanned.has(w.host));
+    const groups = hosts.map((h) => ({ host: h, rows: workloads.filter((w) => w.host === h.host) }));
+    if (apiOnly.length) groups.push({ host: null, rows: apiOnly });
+    for (const { host: h, rows: mine } of groups) {
       const shown = mine.filter(matchesGuest);
-      const head = document.createElement('div'); head.className = 'row';
-      head.append(el('b', { class: 'mono' }, h.host), text('span', `containers read ${infWhen(h.containers_read_at)} · VMs and instances read ${infWhen(h.measured_at)}${h.measure_stale ? ' (old)' : ''}`, 'muted small'), infMeasure(h.host, out));
+      const head = el('div', { class: 'row' }, el('b', { class: h ? 'mono' : '' }, h ? h.host : 'Connected platforms'));
+      if (h) {
+        head.append(text('span', `containers read ${infWhen(h.containers_read_at)} · VMs and instances read ${infWhen(h.measured_at)}${h.measure_stale ? ' (old)' : ''}`, 'muted small'), infMeasure(h.host, out));
+      }
       kids.push(head);
-      if (!h.measured_at) kids.push(text('p', 'VMs, instances and other users\' containers take a signed reading, and this host has none yet, so this list may not be complete.', 'muted small'));
-      const lv = lvs.find((x) => x.host === h.host);
+      if (h && !h.measured_at) kids.push(text('p', "VMs, instances and other users' containers take a signed reading, and this host has none yet, so this list may not be complete.", 'muted small'));
+      const lv = h ? lvs.find((x) => x.host === h.host) : null;
       if (!mine.length) { kids.push(text('p', h.measured_at ? 'Nothing found.' : 'No containers found by the scan.', 'muted small')); if (lv) kids.push(infLibvirt(h.host, lv)); continue; }
       if (!shown.length) { kids.push(text('p', `No guests match the current filters (${mine.length} hidden).`, 'muted small')); if (lv) kids.push(infLibvirt(h.host, lv)); continue; }
       const panel = el('div', { class: 'stack' });
-      kids.push(infTable(['Name', 'Kind', 'State', 'Ports', 'Stored on', 'Worth a look'], shown.map((w) => [
-        w.runtime === 'libvirt' && w.name
-          ? button(w.name, () => infVm(panel, h.host, w), 'btn ghost sm mono')
-          : w.name ? button(w.name, () => infGuest(panel, h.host, w), 'btn ghost sm mono') : el('span', { class: 'mono' }, '?'),
+      kids.push(infTable(['Name', 'Kind', 'State', 'Platform API', 'Ports', 'Stored on', 'Worth a look'], shown.map((w) => [
+        w.runtime === 'libvirt' && w.name && w.source !== 'api'
+          ? button(w.name, () => infVm(panel, w.host, w), 'btn ghost sm mono')
+          : w.name ? button(w.name, () => infGuest(panel, w.host, w), 'btn ghost sm mono') : el('span', { class: 'mono' }, '?'),
         `${w.runtime} ${w.kind}${w.user ? ` (${w.user})` : ''}${w.panel ? ' · panel' : ''}`,
         text('span', w.state || '?', INF_VM_STATE[w.state] || ''),
+        w.api?.seen === false ? 'Not seen' : w.api?.connection
+          ? `${w.api.connection}${w.api.differs?.length ? ` · ${w.api.differs.length} differences` : ''}` : '',
         (w.ports || []).map((p) => `${p.host_ip}:${p.host_port}→${p.port}/${p.proto}`).join(', '),
         [...new Set((w.mounts || []).map((m) => m.on ? `${m.on.mount} (${m.on.filesystem})` : null).filter(Boolean))].join(', '),
         w.detail ? (w.findings || []).join('; ') : 'Not read in full'])), panel);
@@ -165,14 +174,31 @@ async function infWorkloads(content) {
   content.replaceChildren(out, kpis, bar, listBox);
 }
 
+function infWorkloadApi(w) {
+  const api = w.api;
+  if (!api) return null;
+  if (api.seen === false) return text('p', api.why || 'The platform API did not list this workload.', 'muted small');
+  const details = [api.connection, api.platform, api.node || w.host, api.remote, api.environment, api.stack].filter(Boolean);
+  const state = api.status || api.state;
+  if (state) details.push(`state ${state}`);
+  const kids = [text('h4', 'Platform API'), text('p', details.join(' · '), 'small')];
+  if (w.source === 'api') kids.push(text('p', 'Listed by the platform API only.', 'muted small'));
+  if (api.differs?.length) {
+    kids.push(infTable(['Field', 'Platform API', 'SSH reading'], api.differs.map((d) => [
+      d.field, String(d.api ?? '—'), String(d.ssh ?? '—'),
+    ])));
+  }
+  return el('div', { class: 'stack' }, ...kids);
+}
+
 /* Proxmox-style container / LXC guest summary & control card */
 function infGuest(panel, host, w) {
-  const edit = typeof openTask === 'function' && can('plans.edit') && ['docker', 'podman', 'lxc', 'incus'].includes(w.runtime);
+  const edit = typeof openTask === 'function' && can('plans.edit') && host && w.source !== 'api' && ['docker', 'podman', 'incus'].includes(w.runtime);
   const stage = (label, action, cls = 'btn sm') => button(label, () => openTask('workload-action', host, { runtime: w.runtime, name: w.name, action }), cls);
   const head = el('div', { class: 'row wrap' }, el('b', { class: 'mono' }, w.name), text('span', w.state || '?', INF_VM_STATE[w.state] || ''),
     text('span', `${w.runtime} · ${w.kind}${w.user ? ` (${w.user})` : ''}`, 'muted small'),
     button('Close', () => panel.replaceChildren(), 'btn ghost sm'));
-  const kids = [head];
+  const kids = [head, infWorkloadApi(w)];
   if (edit) {
     const acts = el('div', { class: 'row wrap', role: 'group', 'aria-label': `Plan a change to ${w.name}` });
     if (w.state !== 'running') acts.append(stage('Start', 'start'));
@@ -208,7 +234,7 @@ function infVm(panel, host, w) {
     el('div', { class: 'pve-kpi accent' }, text('span', 'Compute', 'pve-kpi-lbl'), el('b', {}, `${w.vcpus || '?'} vCPU`), text('small', w.memory_mib != null ? fmtBytes(w.memory_mib * 2 ** 20) : 'Memory ?')),
     el('div', { class: 'pve-kpi' }, text('span', 'Firmware & Agent', 'pve-kpi-lbl'), el('b', {}, (w.firmware || 'bios').toUpperCase()), text('small', `${w.tpm ? 'TPM · ' : ''}${w.agent === 'connected' ? 'QEMU agent OK' : 'Agent offline'}`)),
     el('div', { class: 'pve-kpi' }, text('span', 'Disks & Snapshots', 'pve-kpi-lbl'), el('b', {}, `${(w.disks || []).length} / ${(w.snapshots || []).length}`), text('small', 'disks / snapshots')));
-  const kids = [head, vmKpis];
+  const kids = [head, vmKpis, infWorkloadApi(w)];
   if (edit) {
     const acts = el('div', { class: 'row wrap', role: 'group', 'aria-label': `Plan a change to ${w.name}` });
     const lv = { runtime: 'libvirt', name: w.name };

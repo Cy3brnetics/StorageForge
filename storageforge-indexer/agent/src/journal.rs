@@ -1,8 +1,7 @@
 //! Reading systemd's journal files directly, for the logs plugin (roadmap section 3, phase 2). The agent's image has no
 //! `journalctl` and no libsystemd, so the files are read here, as systemd documents them (JOURNAL_FILE_FORMAT): the header, the
 //! chain of entry arrays, each entry and the data objects it names. Regular and compact files, keyed hashes or not, data compressed
-//! with zstd or LZ4 (each in pure Rust). Data compressed with xz, which systemd has not written by default for years, is not read:
-//! such a field is shown as not read, and counted.
+//! with zstd, LZ4 or XZ (each in pure Rust).
 //!
 //! Nothing here trusts the file: every offset is checked against the file's size, every object against the size its header says
 //! and a ceiling, and an entry that cannot be read is skipped and counted, never followed. A file is read with `pread`, never mapped,
@@ -80,7 +79,7 @@ pub struct Entry {
     pub boot_id: String,
     pub xor_hash: u64,
     pub fields: BTreeMap<String, String>,
-    /// Fields that were there and could not be read (compressed with xz, too large, damaged).
+    /// Fields that were there and could not be read (too large or damaged).
     pub unread: u32,
 }
 
@@ -264,7 +263,8 @@ impl JournalFile {
             0 => raw.to_vec(),
             COMPRESSED_ZSTD => zstd(raw)?,
             COMPRESSED_LZ4 => lz4(raw)?,
-            _ => return Err("compressed with xz".into()),
+            COMPRESSED_XZ => xz(raw)?,
+            _ => return Err("conflicting compression flags".into()),
         };
         let Some(eq) = bytes.iter().position(|b| *b == b'=') else { return Err("a field without =".into()) };
         let name = std::str::from_utf8(&bytes[..eq]).map_err(|_| "a field name that is not text")?;
@@ -302,6 +302,19 @@ fn zstd(raw: &[u8]) -> Result<Vec<u8>, String> {
     (&mut decoder).take(MAX_FIELD as u64 + 1).read_to_end(&mut out).map_err(|e| format!("zstd: {e}"))?;
     if out.len() > MAX_FIELD {
         out.truncate(MAX_FIELD);
+    }
+    Ok(out)
+}
+
+/// Older journald versions store the complete field as an XZ stream.
+fn xz(raw: &[u8]) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    const MAX_DECODER_KIB: u32 = 16 * 1024;
+    let decoder = lzma_rust2::XzReader::new_mem_limit(raw, false, MAX_DECODER_KIB);
+    let mut out = Vec::new();
+    decoder.take(MAX_FIELD as u64 + 1).read_to_end(&mut out).map_err(|e| format!("xz: {e}"))?;
+    if out.len() > MAX_FIELD {
+        return Err("xz: field too large".into());
     }
     Ok(out)
 }
@@ -516,5 +529,23 @@ impl Reader {
 
     pub fn files(&self) -> usize {
         self.files.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::xz;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    #[test]
+    fn xz_journal_fields_have_bounded_memory_and_output() {
+        // XZ streams made with liblzma, using presets 0, 0 and 9 respectively.
+        let normal = STANDARD.decode("/Td6WFoAAATm1rRGAgAhAQwAAACPmEGcAQAVTUVTU0FHRT1sZWdhY3kgam91cm5hbAAAAHmiA+3YArezAAEuFlYJVd8ftvN9AQAAAAAEWVo=").unwrap();
+        assert_eq!(xz(&normal).unwrap(), b"MESSAGE=legacy journal");
+        assert!(xz(&normal[..normal.len() - 1]).is_err());
+        let too_long = STANDARD.decode("/Td6WFoAAATm1rRGAgAhAQwAAACPmEGc4QAHAFRdACaRRqzQb3S4pgDFK04pB+lmKlEIqtL/8bAUpuOEh1E+mJhydztfyNx/GnI+ouOh9xucd8Ho/bzZ1jttJYXJUU78Lihcz3sr+OqwafW+Y7EOVPzOAAC3TKfRqqAE8AABcIiABAAAqDyxo7HEZ/sCAAAAAARZWg==").unwrap();
+        assert_eq!(xz(&too_long).unwrap_err(), "xz: field too large");
+        let large_dictionary = STANDARD.decode("/Td6WFoAAATm1rRGAgAhARwAAAAQz1jMAQAXTUVTU0FHRT1sYXJnZSBkaWN0aW9uYXJ5AOPZKR5Rk3WrAAEwGI4brOwftvN9AQAAAAAEWVo=").unwrap();
+        assert!(xz(&large_dictionary).is_err());
     }
 }

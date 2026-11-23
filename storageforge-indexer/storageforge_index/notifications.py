@@ -209,6 +209,8 @@ def prepare_undo(conn: Conn, plan_id: int, actor: str) -> dict:
     if not row:
         raise LookupError('no fix was prepared as that plan')
     key, kind, host, level, title = row[0]
+    if kind != 'log-rule':
+        raise ValueError('this notification fix has no supported undo')
     try:
         plan = changes.get_plan(conn, plan_id)
     except (KeyError, LookupError, ValueError):

@@ -34,6 +34,7 @@ async function copiesKeepInSync(places) {
     fill();
     src.addEventListener('change', fill);
     const del = sfNode('input', { type: 'checkbox', class: 'cp-delete' });
+    const keep = sfNode('input', { type: 'checkbox', class: 'cp-keep-replaced' });
     const runs = sfNode('select', { class: 'cp-runs', 'aria-label': 'How often it runs' }, [['hourly', 'every hour'], ['daily', 'every day'], ['weekly', 'every week']].map(([v, t]) => sfNode('option', { value: v }, t)));
     runs.value = 'daily';
     const no = sfNode('button', { type: 'button', class: 'sf-btn ghost' }, 'Cancel');
@@ -43,6 +44,7 @@ async function copiesKeepInSync(places) {
       sfNode('label', { class: 'sf-field' }, sfNode('span', {}, `Source. The side that changed last is offered: ${cpAt(sides[info.source])}`), src),
       sfNode('label', { class: 'sf-field' }, sfNode('span', {}, 'Destination'), dst),
       sfNode('label', { class: 'sf-field' }, sfNode('span', {}, 'Runs'), runs),
+      sfNode('label', { class: 'check' }, keep, 'Keep a dated copy of replaced files'),
       sfNode('label', { class: 'check' }, del, 'Also delete at the destination what is gone from the source'),
       sfNode('p', { class: 'muted small' }, 'This saves a plan in Moves with one mirror step. Nothing is copied until you check it there and deploy it, with your password.'),
       sfNode('div', { class: 'sf-actions' }, no, sfNode('button', { type: 'submit', class: 'sf-btn pri' }, 'Prepare the sync')));
@@ -50,7 +52,7 @@ async function copiesKeepInSync(places) {
     form.addEventListener('submit', (ev) => {
       ev.preventDefault();
       const from = sides[Number(src.value)], to = sides[Number(dst.value)];
-      answer = { src: { host: from.host, path: from.path }, dst: { host: to.host, path: to.path }, delete: del.checked, schedule: runs.value };
+      answer = { src: { host: from.host, path: from.path }, dst: { host: to.host, path: to.path }, delete: del.checked, schedule: runs.value, keep_replaced: keep.checked };
       dlg.close();
     });
     no.addEventListener('click', () => dlg.close());

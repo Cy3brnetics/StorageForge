@@ -102,17 +102,18 @@ def register(conn, name: str, address: str, port: int, arch: str, actor: str, os
     os_family = (os_family or 'linux').strip().lower()
     if os_family not in ('linux', 'windows'):
         raise MonitoringError('monitoring-only hosts support linux or windows')
-    if conn.scalar('SELECT count(*) FROM hosts WHERE lower(hostname) = lower(:h) OR ssh_host = :a', {'h': name, 'a': address}):
-        raise MonitoringError(f'{name} or {address} is a host StorageForge has already: switch the agent on for it instead')
-    if conn.scalar('SELECT count(*) FROM network_devices WHERE name = :n', {'n': name}):
-        raise MonitoringError(f'{name} is a network device: routers, firewalls, switches and appliances stay agentless')
-    cast = ':inv' if conn.dialect == 'sqlite' else 'CAST(:inv AS jsonb)'
-    import json
-    conn.execute(f"""INSERT INTO hosts (hostname, ssh_host, ssh_user, ssh_port, inventory_json) VALUES (:h, :a, :u, :p, {cast})""",
-                 {'h': name, 'a': address, 'u': sfagent.MANAGER, 'p': int(port), 'inv': json.dumps({'packages': f'arch\t{arch}\nos\t{os_family}', 'source': 'agent', 'label': 'reported by agent'})})
-    sfagent.switch(conn, name, True, actor)
-    sfagent._save(conn, name, actor, mode='monitoring', detail='set up the agent on the host by hand, then paste the line the setup printed')
-    return sfagent.get(conn, name)
+    with conn.tx():
+        if conn.scalar('SELECT count(*) FROM hosts WHERE lower(hostname) = lower(:h) OR ssh_host = :a', {'h': name, 'a': address}):
+            raise MonitoringError(f'{name} or {address} is a host StorageForge has already: switch the agent on for it instead')
+        if conn.scalar('SELECT count(*) FROM network_devices WHERE name = :n', {'n': name}):
+            raise MonitoringError(f'{name} is a network device: routers, firewalls, switches and appliances stay agentless')
+        cast = ':inv' if conn.dialect == 'sqlite' else 'CAST(:inv AS jsonb)'
+        import json
+        conn.execute(f"""INSERT INTO hosts (hostname, ssh_host, ssh_user, ssh_port, inventory_json) VALUES (:h, :a, :u, :p, {cast})""",
+                     {'h': name, 'a': address, 'u': sfagent.MANAGER, 'p': int(port), 'inv': json.dumps({'packages': f'arch\t{arch}\nos\t{os_family}', 'source': 'agent', 'label': 'reported by agent'})})
+        sfagent.switch(conn, name, True, actor)
+        sfagent._save(conn, name, actor, mode='monitoring', detail='set up the agent on the host by hand, then paste the line the setup printed')
+        return sfagent.get(conn, name)
 
 
 def _windows_agentctl(arch: str) -> bytes:

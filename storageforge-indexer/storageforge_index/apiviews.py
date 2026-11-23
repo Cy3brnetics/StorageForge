@@ -241,14 +241,19 @@ def platform_workloads(conn: Conn, host: str | None = None) -> list[dict]:
     return out
 
 
-def managed_by(conn: Conn, host: str) -> dict:
-    """HOOK for section 6's "externally managed" detection, which is built apart (workloads code, not here): which containers on a
-    scanned host a Docker panel (Dockhand, Portainer, Komodo) or TrueNAS says it manages, read from the panel's own API.
-    {container name: {'panel', 'connection', 'stack', 'environment'}}. Nothing calls it yet: the detection can, so that a container a
-    panel deploys is told apart from one deployed by hand even when its labels say nothing."""
+def managed_by_host(conn: Conn, host: str | None = None) -> dict:
+    """Docker workloads a connected platform manages, indexed by scanned host and workload name."""
     out = {}
     for w in platform_workloads(conn, host):
-        if w.get('runtime') in ('docker', 'compose') and w.get('name'):
-            a = w['api']
-            out[w['name']] = {'panel': a['platform'], 'connection': a['connection'], 'stack': w.get('stack'), 'environment': a.get('environment')}
+        if w.get('runtime') in ('docker', 'compose') and w.get('host') and w.get('name'):
+            api = w['api']
+            out.setdefault(w['host'].lower(), {})[w['name']] = {
+                'panel': api['platform'], 'connection': api['connection'],
+                'stack': w.get('stack'), 'environment': api.get('environment'),
+            }
     return out
+
+
+def managed_by(conn: Conn, host: str) -> dict:
+    """The connected platform managers of Docker workloads on one scanned host."""
+    return managed_by_host(conn, host).get(host.lower(), {})

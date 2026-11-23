@@ -153,12 +153,22 @@ def _map(v, problems, where):
     return v
 
 
+def _qualified_image(image: str) -> bool:
+    registry = image.split('/', 1)[0]
+    return bool(IMAGE.fullmatch(image) and ('.' in registry or ':' in registry or registry == 'localhost'))
+
+
 def _container(m: dict, i: int, volumes: list, problems: list, secret_files: frozenset = frozenset(),
                secret_uris: frozenset = frozenset(), sidecar: str = '') -> dict:
     where = f'install.methods[{i}] ({m.get("kind")})' + (f' sidecar {sidecar}' if sidecar else '')
     out = {'kind': m['kind'], 'image': _str(m.get('image'), problems, f'{where} image', IMAGE, limit=300)}
     if m.get('image') and not out['image'] and isinstance(m.get('image'), str) and '@sha256:' not in m['image']:
         problems.append(f'{where}: the image is pinned by digest (name:tag@sha256:...), so an update cannot bring anything else')
+    if 'cosign' in m:
+        meta = _map(m['cosign'], problems, f'{where} cosign')
+        out['cosign_key'] = _cosign_key(meta.get('public_key'), problems, f'{where} cosign.public_key')
+        if out['image'] and not _qualified_image(out['image']):
+            problems.append(f'{where}: Cosign needs an image with an explicit registry host')
     out['ports'] = []
     for p in _list(m.get('ports'), problems, f'{where} ports'):
         mm = PORT.fullmatch(str(p))
@@ -249,6 +259,10 @@ def _container(m: dict, i: int, volumes: list, problems: list, secret_files: fro
             got = _container({**{k: v for k, v in sc.items() if k not in ('name', 'ports')}, 'kind': 'compose'},
                              i, volumes, problems, secret_files, secret_uris, sidecar=name)
             out['sidecars'].append({**got, 'name': name})
+        if out['sidecars']:
+            images = [out, *out['sidecars']]
+            if any('cosign_key' in image for image in images) and not all(image.get('cosign_key') for image in images):
+                problems.append(f'{where}: Cosign verification requires a publisher key for the main image and every sidecar')
     elif m.get('sidecars'):
         problems.append(f'{where}: a sidecar has no sidecars of its own')
     return out
@@ -283,6 +297,22 @@ def _package(m: dict, i: int, problems: list) -> dict:
     return out
 
 
+def _cosign_key(value, problems: list, where: str) -> str:
+    from cryptography.exceptions import UnsupportedAlgorithm
+    from cryptography.hazmat.primitives import serialization
+
+    if isinstance(value, str) and len(value) <= 4096:
+        text = value.strip()
+        if re.fullmatch(r'-----BEGIN PUBLIC KEY-----\n[A-Za-z0-9+/=\n]+\n-----END PUBLIC KEY-----', text):
+            try:
+                key = serialization.load_pem_public_key(text.encode('ascii'))
+                return key.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode('ascii')
+            except (ValueError, UnsupportedAlgorithm):
+                pass
+    problems.append(f'{where} must be a PEM public key')
+    return ''
+
+
 def _binary(m: dict, i: int, problems: list) -> dict:
     where = f'install.methods[{i}] (binary)'
     out = {'kind': 'binary', 'name': _str(m.get('name'), problems, f'{where} name', re.compile(r'[a-z0-9][a-z0-9._-]{0,60}')), 'files': {}}
@@ -295,10 +325,37 @@ def _binary(m: dict, i: int, problems: list) -> dict:
         sha = _str(f.get('sha256'), problems, f'{where} files.{arch}.sha256', re.compile(r'[0-9a-f]{64}'))
         if url and sha:
             out['files'][arch] = {'url': url, 'sha256': sha}
+        if 'archive' in f:
+            archive = _map(f['archive'], problems, f'{where} files.{arch}.archive')
+            member = _str(archive.get('member'), problems, f'{where} files.{arch}.archive.member',
+                          re.compile(r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*'), limit=255)
+            if member and any(part in ('.', '..') for part in member.split('/')):
+                problems.append(f'{where}: archive member must be a relative path without dot segments')
+            member_sha = _str(archive.get('sha256'), problems, f'{where} files.{arch}.archive.sha256', re.compile(r'[0-9a-f]{64}'))
+            if url and sha and member and member_sha:
+                out['files'][arch]['archive'] = {'member': member, 'sha256': member_sha}
+        if 'minisign' in f:
+            meta = f'{where} files.{arch}.minisign'
+            sig = _map(f['minisign'], problems, meta)
+            signature_url = _str(sig.get('url'), problems, f'{meta}.url', HTTPS, limit=400)
+            # Base64 of the 42-byte Ed header, key ID and Ed25519 public key.
+            public_key = _str(sig.get('public_key'), problems, f'{meta}.public_key',
+                              re.compile(r'RW[QRST][A-Za-z0-9+/]{53}'))
+            if url and sha and signature_url and public_key:
+                out['files'][arch]['minisign'] = {'url': signature_url, 'public_key': public_key}
+        if 'cosign' in f:
+            meta = f'{where} files.{arch}.cosign'
+            bundle = _map(f['cosign'], problems, meta)
+            bundle_url = _str(bundle.get('bundle_url'), problems, f'{meta}.bundle_url', HTTPS, limit=400)
+            public_key = _cosign_key(bundle.get('public_key'), problems, f'{meta}.public_key')
+            if 'minisign' in f:
+                problems.append(f'{where} files.{arch} must choose one publisher signature format')
+            if url and sha and bundle_url and public_key:
+                out['files'][arch]['cosign'] = {'url': bundle_url, 'public_key': public_key}
     if not out['files']:
         problems.append(f'{where} has no file to download')
     if m.get('archive'):
-        problems.append(f'{where}: archives are not unpacked; the file downloaded is the program')
+        problems.append(f'{where}: put archive metadata under each file in files.<architecture>.archive')
     return out
 
 
@@ -362,6 +419,8 @@ def load_entry(text: str) -> tuple[dict | None, list[str]]:
         if any(x['kind'] == m['kind'] for x in methods):
             problems.append(f'install.methods[{i}]: {m["kind"]} is given twice')
             continue
+        if m['kind'] in ('package', 'binary') and 'cosign' in m:
+            problems.append(f'install.methods[{i}]: cosign is for an image, or under files.<architecture> for a binary')
         methods.append(_container(m, i, volumes, problems, secret_files, secret_uris) if m['kind'] in ('container', 'quadlet', 'compose') else
                        _package(m, i, problems) if m['kind'] == 'package' else _binary(m, i, problems))
     if not methods:
@@ -370,6 +429,8 @@ def load_entry(text: str) -> tuple[dict | None, list[str]]:
     for m in e['methods']:
         # what an entry may switch on, or install in /usr/local/bin, is its own: a unit named after its packages or itself, a program named
         # after itself. Never debug-shell.service, never a sudo that shadows the real one
+        if any(sc['name'] == e['id'] for sc in m.get('sidecars', [])):
+            problems.append(f'install.methods: sidecars cannot use the main service name {e["id"]}')
         own = {e['id'], *(n for names in (m.get('packages') or {}).values() for n in names)}
         for u in (m.get('units') or []) + ([m['socket']['unit']] if m.get('socket') else []):
             # chronyd.service and smartd.service: a daemon named after its package with a d, as Fedora and Arch name them
@@ -661,7 +722,10 @@ def packaged() -> dict:
         sig = None
     texts = {}
     for f in sorted(CATALOG_DIR.glob('*.yaml')):
-        texts[f.stem] = f.read_text()
+        try:
+            texts[f.stem] = f.read_text()
+        except (OSError, UnicodeError):
+            continue  # the manifest verification below refuses unreadable entries
     return _official_from(manifest, sig, texts, 'packaged')
 
 
@@ -1004,6 +1068,15 @@ def resolve(e: dict, m: dict, ovr: dict, exposure: str, bind: str) -> dict:
             'env_ignored': sorted(k for k in (ovr.get('env') or {}) if k not in env)}
 
 
+def image_verification_words(m: dict, image: str) -> list[str]:
+    """Exact images and their cataloged keys, ready to pass to the host as pairs."""
+    if not m.get('cosign_key'):
+        return []
+    if not _qualified_image(image):
+        raise CatalogError('Cosign needs an explicit registry host in the image override')
+    return [image, m['cosign_key'], *(v for sc in m.get('sidecars', []) for v in (sc['image'], sc['cosign_key']))]
+
+
 def publish(p: dict) -> str:
     return f'{p["bind"] + ":" if p["bind"] else ""}{p["host"]}:{p["container"]}/{p["proto"]}'
 
@@ -1139,6 +1212,9 @@ def preview(conn: Conn, host: str, tool_id: str, method: str | None = None, inpu
     r = resolve(e, m, ovr, exposure or '', bind or '')
     if r['exposure'] == 'management' and not r['bind']:
         raise CatalogError('management exposure binds to one address of the host: give it')
+    verification = image_verification_words(m, r['image'])
+    for image in verification[::2]:
+        say('note', f'Cosign verifies {image} with the catalog publisher key on apply, before installing the tool')
     say('note', f'method: {why}')
     say('ok' if row['trust'] in ('release-signed', 'operator-signed') else 'note' if row['trust'] == 'packaged' else 'warn',
         f'{e["name"]}, entry revision {e["revision"]}: {row["trust_why"]}')
@@ -1286,12 +1362,16 @@ def install_words(conn: Conn, t: dict) -> list[str]:
     if r['exposure'] == 'management' and not r['bind']:
         return ['refused', 'management exposure needs the address to bind to']
     why = f'{e["name"]}, entry revision {e["revision"]}, {row["trust_why"]}'
+    try:
+        verification = image_verification_words(m, r['image'])
+    except CatalogError as exc:
+        return ['refused', str(exc)]
     if m['kind'] in ('container', 'quadlet'):
         rootless = m['kind'] == 'container'
         dirs = ','.join(sorted(set(r['volumes'].values())) + ([f'{DATA_ROOT}/{e["id"]}/secrets'] if e['secrets'] else []))
         ports = ','.join(f'{x["host"]}/{x["proto"]}' for x in r['ports'])
         return ['ok', why, quadlet_text(e, m, r, rootless), account_of(e['id']) if rootless else '', dirs, ports, r['image'],
-                '1' if m.get('engine_socket') else '', *file_words(e, m)]
+                '1' if m.get('engine_socket') else '', *file_words(e, m), *verification]
     if m['kind'] == 'compose':
         from . import steps_workloads
         facts = host_facts(conn, host)
@@ -1304,14 +1384,22 @@ def install_words(conn: Conn, t: dict) -> list[str]:
         dirs = ','.join(sorted(set(r['volumes'].values())))
         ports = steps_workloads.fenced_ports([x for s in model['services'].values() for x in s['ports']])
         return ['ok', why, runtime, f'sf-{e["id"]}', text, f'{DATA_ROOT}/{e["id"]}/compose', override, ports, dirs,
-                m.get('volume_owner') or '', *file_words(e, m)]
+                m.get('volume_owner') or '', *file_words(e, m), *verification]
     if m['kind'] == 'package':
         sock = m['socket'] or {}
         listen = '' if not sock else (f'{r["bind"]}:{sock["port"]}' if r['bind'] else str(sock['port']))
         return ['ok', why, *(','.join(m['packages'].get(pm, [])) for pm in PMS), ','.join(m['units']), sock.get('unit', ''), listen, str(sock.get('port', ''))]
     if m['kind'] == 'binary':
         f = m['files']
-        return ['ok', why, m['name'], *(x for arch in ('x86_64', 'aarch64') for x in (f.get(arch, {}).get('url', ''), f.get(arch, {}).get('sha256', '')))]
+        files = [f.get(arch, {}) for arch in ('x86_64', 'aarch64')]
+        signatures = []
+        for file in files:
+            verifier = next((name for name in ('minisign', 'cosign') if name in file), '')
+            signature = file.get(verifier, {})
+            signatures.extend((verifier, signature.get('url', ''), signature.get('public_key', '')))
+        return ['ok', why, m['name'], *(file.get(key, '') for file in files for key in ('url', 'sha256')),
+                *(file.get('archive', {}).get(key, '') for file in files for key in ('member', 'sha256')),
+                *signatures]
     return ['refused', f'{m["kind"]} cannot be installed by this version']
 
 

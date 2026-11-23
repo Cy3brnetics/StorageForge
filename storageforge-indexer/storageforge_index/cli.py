@@ -1844,7 +1844,30 @@ def cmd_healthcheck(args) -> int:
         return 1
 
 
+
+def cmd_copies(args) -> int:
+    from . import copies
+
+    def place(value):
+        host, _, path = value.partition(':')
+        return {'host': host, 'path': path}
+
+    _, conn = open_db(args)
+    try:
+        got = copies.prepare_sync(conn, place(args.src), place(args.dst), 'cli',
+                                  delete=args.delete, schedule=args.schedule, keep_replaced=args.keep_replaced)
+    except (ValueError, LookupError) as exc:
+        print(f'error: {exc}', file=sys.stderr)
+        return 2
+    finally:
+        conn.close()
+    print(f"Plan {got['plan']}: {got['name']}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
+    from .copies import SCHEDULES
+
     p = argparse.ArgumentParser(prog='storageforge-index', description=__doc__)
     p.add_argument('--version', action='version', version=__version__)
     p.add_argument('--db', default=DEFAULT_DB, help='SQLite path or postgresql:// URL (env STORAGEFORGE_DB)')
@@ -1936,6 +1959,16 @@ def build_parser() -> argparse.ArgumentParser:
     a3.add_argument('--require', choices=('on', 'off'), help='refuse payloads a host did not sign (a bad signature is always refused)')
     a3.add_argument('--forget', metavar='ADDRESS', help='forget the scan signing key pinned for an address (host, or host:port)')
     ac.set_defaults(fn=cmd_access)
+
+    cp = sub.add_parser('copies', help='manage copies and mirror pairs across hosts')
+    cp_sub = cp.add_subparsers(dest='copies_action', required=True)
+    cps = cp_sub.add_parser('sync', help='prepare a sync mirror plan between two copies')
+    cps.add_argument('src', help='source host:path')
+    cps.add_argument('dst', help='destination host:path')
+    cps.add_argument('--delete', action='store_true', help='delete extraneous files at destination')
+    cps.add_argument('--schedule', choices=SCHEDULES, default='daily', help='sync schedule')
+    cps.add_argument('--keep-replaced', action='store_true', help='keep replaced files')
+    cps.set_defaults(fn=cmd_copies)
 
     mv = sub.add_parser('moves', help='data move plans: list, check against the index, write the rsync script')
     mvs = mv.add_subparsers(dest='moves_cmd', required=True)

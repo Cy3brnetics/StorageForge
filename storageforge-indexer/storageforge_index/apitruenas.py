@@ -10,6 +10,7 @@ name and the key: the key crosses once, inside TLS, and TrueNAS itself revokes a
     system.info                   the version and host name
     pool.query                    pools: name, status, healthy, size, allocated, free
     pool.dataset.query            datasets (flat list): name, pool, type, used, available, mountpoint, encrypted
+    pool.snapshot.query           individual snapshots and selected ZFS properties
     pool.snapshottask.query       periodic snapshot tasks and the state of their last run
     replication.query             replication tasks and the state of their last run (credentials in it are dropped)
     sharing.smb.query, sharing.nfs.query   shares
@@ -19,7 +20,7 @@ name and the key: the key crosses once, inside TLS, and TrueNAS itself revokes a
 Field names are those of the API reference for TrueNAS 25.10.5 (api.truenas.com/v25.10, fetched 2026-11-20). Each parse_ function takes
 the JSON text of one result and never raises: what it cannot read is dropped, as a scan's parsers do.
 
-Not read: individual snapshots (25.10 moved them to zfs.resource.* calls not read here), and anything that needs FULL_ADMIN.
+Reads use the documented TrueNAS 25.10 middleware methods.
 """
 from __future__ import annotations
 
@@ -37,11 +38,13 @@ SOURCES = ['https://api.truenas.com/v25.10/jsonrpc.html (JSON-RPC 2.0 over WebSo
            'https://api.truenas.com/v25.10/api_methods_user.create.html and api_methods_privilege.create.html',
            'https://www.truenas.com/docs/scale/25.10/scaletutorials/toptoolbar/managingapikeys/ (user-linked keys, revoked over HTTP, expiry)']
 MAX_DATASETS = 5000
+MAX_SNAPSHOTS = 5000
 
 # what each feature reads, and the individual role READONLY_ADMIN gives it (READONLY_ADMIN expands into every *_READ role)
 READ = {
     'pools': {'roles': ['POOL_READ'], 'what': 'pools and their health'},
     'datasets': {'roles': ['DATASET_READ'], 'what': 'datasets, their space and mount points'},
+    'snapshots': {'roles': ['SNAPSHOT_READ'], 'what': 'individual ZFS snapshots'},
     'snapshot-tasks': {'roles': ['SNAPSHOT_TASK_READ'], 'what': 'periodic snapshot tasks and their last run'},
     'replication': {'roles': ['REPLICATION_TASK_READ'], 'what': 'replication tasks and their last run'},
     'shares': {'roles': ['SHARING_SMB_READ', 'SHARING_NFS_READ'], 'what': 'SMB and NFS shares'},
@@ -196,6 +199,21 @@ def parse_datasets(text: str) -> dict:
     return {'datasets': out, 'unreadable': bad, 'cut': len(items) > MAX_DATASETS}
 
 
+def parse_snapshots(text: str) -> dict:
+    items, bad = _list(text)
+    out = []
+    for x in items[:MAX_SNAPSHOTS]:
+        name, dataset = _s(x.get('name'), 300), _s(x.get('dataset'), 255)
+        if not dataset or not name or not name.startswith(dataset + '@') or not name.rpartition('@')[2]:
+            continue
+        properties = x.get('properties')
+        properties = properties if isinstance(properties, dict) else {}
+        out.append({'name': name, 'dataset': dataset, 'pool': _s(x.get('pool'), 128),
+                    'created': _prop(properties.get('creation')), 'used': _prop(properties.get('used')),
+                    'referenced': _prop(properties.get('referenced'))})
+    return {'snapshots': out, 'unreadable': bad, 'cut': len(items) > MAX_SNAPSHOTS}
+
+
 def _state(v) -> dict:
     v = v if isinstance(v, dict) else {}
     return {'state': _s(v.get('state'), 40), 'at': _when(v.get('datetime')), 'error': _s(v.get('error'), 300)}
@@ -311,6 +329,7 @@ def readback(client, row: dict) -> dict:
 # ── the read ──────────────────────────────────────────────────────────
 CALLS = (('pools', 'pool.query', parse_pools, 'pool', 'pools', 'name'),
          ('datasets', 'pool.dataset.query', parse_datasets, 'dataset', 'datasets', 'name'),
+         ('snapshots', 'pool.snapshot.query', parse_snapshots, 'snapshot', 'snapshots', 'name'),
          ('snapshot-tasks', 'pool.snapshottask.query', parse_snapshot_tasks, 'snapshot-task', 'tasks', 'id'),
          ('replication', 'replication.query', parse_replications, 'replication', 'replications', 'id'),
          ('apps', 'app.query', parse_apps, 'app', 'apps', 'name'))
@@ -325,12 +344,16 @@ def read(client, row: dict, rb: dict) -> tuple[list, list]:
             skipped.append(f'{feature}: the key lacks {", ".join(READ[feature]["roles"])}')
             continue
         try:
-            got = parse(json.dumps(client.call(method)))
+            params = ([], {'limit': MAX_SNAPSHOTS + 1, 'extra': {'properties': ['creation', 'used', 'referenced']}}) if feature == 'snapshots' else ()
+            got = parse(json.dumps(client.call(method, *params)))
         except ApiError as exc:
             skipped.append(f'{feature}: {exc}'[:200])
             continue
+        if got.get('unreadable'):
+            skipped.append(f'{feature}: the list was not readable')
         if got.get('cut'):
-            skipped.append(f'more than {MAX_DATASETS} datasets: the rest was not read')
+            limit = MAX_SNAPSHOTS if feature == 'snapshots' else MAX_DATASETS
+            skipped.append(f'more than {limit} {feature}: the rest was not read')
         objs += [(kind, str(x[ref]), x) for x in got[key]]
     if feats.get('shares', {}).get('ok'):
         for proto, method in (('smb', 'sharing.smb.query'), ('nfs', 'sharing.nfs.query')):

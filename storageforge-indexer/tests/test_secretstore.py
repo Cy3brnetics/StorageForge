@@ -383,6 +383,14 @@ class Rotate(Db):
         self.assertNotIn(new, ''.join(self.outputs))                     # in no run's output
         self.assertEqual([d['how'] for d in secretstore.listing(self.conn)[0]['delivered']], ['rotate', 'rotate'])
 
+    def test_a_failed_commit_does_not_claim_delivery(self):
+        self.fail_on.add(('web', 'commit'))
+        got = secretstore.rotate(self.db, self.conn, self.v, 'app', 'gabe')
+        self.assertEqual({r['host']: r['commit'] for r in got['results']}, {'nas': 'switched', 'web': 'failed'})
+        deliveries = dict(self.conn.all("SELECT host, how FROM secret_deliveries WHERE name = 'app'"))
+        self.assertEqual(deliveries, {'nas': 'rotate', 'web': 'plan'})
+        self.assertEqual((self.dirs['web'] / 'app').read_text().strip(), self.old)
+
     def test_one_host_that_does_not_take_it_leaves_the_old_value_everywhere(self):
         self.fail_on = {('web', 'stage')}
         got = secretstore.rotate(self.db, self.conn, self.v, 'app', 'gabe')
@@ -492,7 +500,7 @@ except ImportError:
 class BrowserSecrets(Db):
     """Keys, Secrets for plan steps, in a real browser: one is made and shown once, the list never shows it, and it is removed."""
 
-    def test_the_section_under_keys(self):
+    def test_the_section_under_secrets(self):
         import threading
         from werkzeug.serving import make_server
         users.create(self.conn, 'admin', PW, 'admin')
@@ -512,7 +520,8 @@ class BrowserSecrets(Db):
         page.press('input[type=password]', 'Enter')
         page.wait_for_url(base + '/**')
         page.wait_for_selector('html[data-route-ready]', state='attached')
-        page.evaluate("showTab('keys')")
+        page.goto(base + '/admin#/secrets')
+        page.wait_for_selector('html[data-route-ready]', state='attached')
         page.wait_for_selector('#secretbox li:has-text("No secrets yet.")')
         page.click('#secretbox summary')
         page.fill('#secname', 'grafana-admin')

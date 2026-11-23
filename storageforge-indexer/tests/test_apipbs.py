@@ -39,6 +39,7 @@ PRUNE = [{'id': 'p-store1', 'store': 'store1', 'schedule': 'daily', 'keep-last':
 def pbs_routes():
     return {'/version': {'version': '4.1', 'release': '2', 'repoid': '0123abcd'}, '/status/datastore-usage': USAGE, '/config/datastore': CONFIG,
             '/admin/datastore/store1/groups': GROUPS, '/admin/datastore/store1/snapshots': SNAPS, '/admin/datastore/gone/groups': (400, 'datastore not found', {'data': None}),
+            '/admin/datastore/store1/namespace': [], '/admin/datastore/gone/namespace': [], '/admin/datastore/gone/snapshots': [],
             '/admin/verify': VERIFY, '/admin/prune': PRUNE, '/access/permissions': {'/datastore/store1': {'Datastore.Audit': True}},
             '/access/users/storageforge@pbs/token/storageforge': {'tokenid': TID, 'enable': True, 'expire': NOW + 86400 * 200, 'comment': 'StorageForge'}}
 
@@ -65,6 +66,16 @@ class Read(Base):
         self.assertIn('store1/ct/101', found['api-backup-stale:backups'][3])
         self.assertTrue(all(r['method'] == 'GET' for r in self.fake.requests))
         self.assertEqual(self.fake.requests[0]['headers']['Authorization'].split('=')[0], 'PBSAPIToken')
+
+    def test_nonroot_namespaces_are_read_even_if_root_groups_are_denied(self):
+        self.fake.routes['/admin/datastore/store1/namespace'] = [{'ns': ''}, {'ns': 'team/nas'}]
+        self.fake.routes['/admin/datastore/store1/groups'] = lambda req: GROUPS if '?ns=team%2Fnas' in req['path'] else (403, 'Forbidden', None)
+        got = apiread.read(self.db, self.conn, self.row)
+        self.assertTrue(any('store1 groups:' in msg for msg in got['skipped']))
+        objs = {(o['kind'], o['ref']): o for o in apiread.objects(self.conn, self.row['conn_id'])}
+        self.assertEqual(objs[('backup-group', 'store1/team/nas/vm/100')]['ns'], 'team/nas')
+        self.assertIn(('snapshot', f'store1/team/nas/ct/101/{NOW - 10 * 86400}'), objs)
+        self.assertIn(('snapshot', f'store1/ct/101/{NOW - 10 * 86400}'), objs)
 
     def test_a_token_with_more_than_datastore_audit_is_found(self):
         self.fake.routes['/access/permissions'] = {'/datastore/store1': {'Datastore.Audit': True, 'Datastore.Modify': True, 'Datastore.Prune': True}}

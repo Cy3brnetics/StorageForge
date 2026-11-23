@@ -136,6 +136,20 @@ class Runtime(unittest.TestCase):
         self.assertEqual(self.tree(), before)
         self.assertNotRegex(self.log(), r'(?m)^(apt-get install|systemctl enable|loginctl|usermod)')
 
+    def test_alpine_reports_and_installs_packages_without_systemd_setup(self):
+        self.host('arch')
+        (self.bin / 'pacman').rename(self.bin / '.pacman')
+        (self.root / 'etc/os-release').write_text('ID=alpine\nVERSION_ID=3.23\n')
+        stub(self.bin, 'apk', PM_STUB + 'shift; if [[ $1 == --simulate ]]; then avail "$2"; else shift; put "$@"; fi')
+        out = self.run_step(False, 'docker', AVAIL='docker docker-compose')
+        self.assertIn('installable: docker, and when there docker-compose', out)
+        self.assertNotIn('apk add --no-cache', self.log())
+        out = self.run_step(True, 'docker', AVAIL='docker docker-compose')
+        self.assertIn('ok: installed:', out)
+        self.assertIn('Alpine: configure and start any required services separately', out)
+        self.assertIn('apk add --no-cache docker docker-compose', self.log())
+        self.assertNotIn('systemctl enable', self.log())
+
     def test_present_is_said_with_its_version(self):
         self.host('arch')
         stub(self.bin, 'docker', 'echo "Docker version 27.5.1, build 9f9e405"')

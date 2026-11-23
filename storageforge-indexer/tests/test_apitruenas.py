@@ -29,7 +29,7 @@ from storageforge_index import alerts, apiconn, apiguide, apiread, apitruenas, a
 KEY = '7-Zk3qPw9xLm2Vb8Nc4Rt6Yh1Ju5Fd0Sa7Ge3Wq9Er2Ty6Ui8Op4As1Df5Gh7Jk'
 NOW = int(time.time())
 GiB = 1 << 30
-READ_ROLES = ['READONLY_ADMIN', 'POOL_READ', 'DATASET_READ', 'SNAPSHOT_TASK_READ', 'REPLICATION_TASK_READ', 'SHARING_READ', 'SHARING_SMB_READ',
+READ_ROLES = ['READONLY_ADMIN', 'POOL_READ', 'DATASET_READ', 'SNAPSHOT_READ', 'SNAPSHOT_TASK_READ', 'REPLICATION_TASK_READ', 'SHARING_READ', 'SHARING_SMB_READ',
               'SHARING_NFS_READ', 'APPS_READ', 'ACCOUNT_READ', 'ALERT_LIST_READ']
 
 
@@ -56,6 +56,8 @@ def methods(roles=READ_ROLES):
                                 'used': {'parsed': 2000 * GiB, 'rawvalue': str(2000 * GiB), 'value': '1.95T', 'source': 'NONE'},
                                 'available': {'parsed': 5000 * GiB, 'rawvalue': str(5000 * GiB), 'value': '4.88T', 'source': 'NONE'}, 'children': []},
                                {'id': 'tank/vm', 'type': 'VOLUME', 'name': 'tank/vm', 'pool': 'tank', 'encrypted': True, 'used': {'parsed': 50 * GiB}}],
+        'pool.snapshot.query': [{'name': 'tank/media@daily', 'dataset': 'tank/media', 'pool': 'tank',
+                                 'properties': {'creation': {'rawvalue': str(NOW)}, 'used': {'parsed': 4096}}}],
         'pool.snapshottask.query': [{'id': 3, 'dataset': 'tank/media', 'recursive': True, 'lifetime_value': 2, 'lifetime_unit': 'WEEK', 'enabled': True,
                                      'state': {'state': 'FINISHED', 'datetime': {'$date': (NOW - 3600) * 1000}}}],
         'replication.query': [{'id': 4, 'name': 'media to backup', 'direction': 'PUSH', 'transport': 'SSH', 'source_datasets': ['tank/media'], 'target_dataset': 'backup/media',
@@ -95,11 +97,16 @@ class Read(Base):
         got = apiread.read(self.db, self.conn, self.row)
         rb = got['readback']
         self.assertEqual((rb['verdict'], rb['admin']), ('exact', False))
-        self.assertEqual(got['counts'], {'platform': 1, 'pool': 2, 'dataset': 2, 'snapshot-task': 1, 'replication': 1, 'share': 2, 'app': 1, 'alert': 2})
+        self.assertEqual(got['counts'], {'platform': 1, 'pool': 2, 'dataset': 2, 'snapshot': 1, 'snapshot-task': 1, 'replication': 1, 'share': 2, 'app': 1, 'alert': 2})
         self.assertEqual(self.fake.calls[0]['method'], 'auth.login_ex')
         self.assertEqual(self.fake.calls[0]['params'][0]['mechanism'], 'API_KEY_PLAIN')
         self.assertEqual(len(self.fake.requests), 1, 'one WebSocket for the whole read')
         objs = {(o['kind'], o['ref']): o for o in apiread.objects(self.conn, self.row['conn_id'])}
+        snapshot = objs[('snapshot', 'tank/media@daily')]
+        self.assertEqual((snapshot['dataset'], snapshot['created'], snapshot['used']), ('tank/media', NOW, 4096))
+        query = next(c for c in self.fake.calls if c['method'] == 'pool.snapshot.query')
+        self.assertEqual(query['params'], [[], {'limit': apitruenas.MAX_SNAPSHOTS + 1,
+                                               'extra': {'properties': ['creation', 'used', 'referenced']}}])
         self.assertEqual(objs[('dataset', 'tank/media')]['used'], 2000 * GiB)
         self.assertEqual(objs[('replication', '4')]['last']['state'], 'ERROR')
         self.assertNotIn('ssh_credentials', objs[('replication', '4')])
@@ -136,8 +143,9 @@ class Read(Base):
         self.assertEqual(rb['verdict'], 'exact')
         self.fake.methods['auth.me'] = me(['POOL_READ', 'DATASET_READ'])
         got = apiread.read(self.db, self.conn, apiconn.get(self.conn, self.row['conn_id']))
-        self.assertEqual(sorted(s['feature'] for s in got['readback']['short']), ['apps', 'replication', 'shares', 'snapshot-tasks'])
+        self.assertEqual(sorted(s['feature'] for s in got['readback']['short']), ['apps', 'replication', 'shares', 'snapshot-tasks', 'snapshots'])
         self.assertNotIn('app', got['counts'])
+        self.assertNotIn('snapshot', got['counts'])
         self.assertIn('apps: the key lacks APPS_READ', got['skipped'])
 
     def test_a_key_truenas_refuses_fails_the_read_and_a_change_is_refused_before_it_is_sent(self):

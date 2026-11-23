@@ -441,10 +441,28 @@ def tunnel_target(local, protocol=None) -> tuple[str | None, int | None]:
 
 
 def tunnel_items(infra: dict | None) -> list[dict]:
-    """One item for each thing a tunnel on this host publishes, and one for a tunnel whose routes could not be read."""
+    """One item for each thing a tunnel or access proxy on this host publishes."""
     from . import tunnels
     out = []
-    for t in ((infra or {}).get('access') or {}).get('tunnels') or []:
+    access = (infra or {}).get('access') or {}
+    running = any(unit.startswith('pomerium') for unit in access.get('units') or [])
+    for proxy in access.get('proxies') or []:
+        if proxy.get('tool') != 'pomerium':
+            continue
+        for target in proxy.get('targets') or []:
+            if not target.get('public'):
+                continue
+            port = target.get('port')
+            out.append({
+                'kind': 'tunnel', 'tool': 'pomerium', 'label': 'Pomerium', 'server': proxy.get('server'),
+                'running': running, 'why': [], 'level': 'any' if running else 'unknown',
+                'public': target.get('name'), 'local': target.get('upstream'), 'protocol': target.get('kind'),
+                'name': target.get('name'), 'target_host': target.get('address'),
+                'target_port': int(port) if port and port.isdecimal() else None,
+                'rule': ('public through Pomerium policy' if running else
+                         'Pomerium is configured for public access; its service was not seen running'),
+            })
+    for t in access.get('tunnels') or []:
         label = tunnels.LABELS.get(t.get('tool'), 'a tunnel')
         base = {'kind': 'tunnel', 'tool': t.get('tool'), 'label': label, 'server': t.get('server'), 'running': bool(t.get('running')), 'why': []}
         published = t.get('published') or []

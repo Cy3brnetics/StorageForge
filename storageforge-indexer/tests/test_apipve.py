@@ -76,6 +76,15 @@ class Read(Base):
         self.fake.routes.update(pve_routes())
         self.row = self.pinned('cluster')
 
+    def test_ceph_read_is_stored_and_reaches_the_alerts(self):
+        self.fake.routes['/cluster/ceph/status'] = {
+            'health': {'status': 'HEALTH_WARN'},
+            'osdmap': {'num_osds': 6, 'num_up_osds': 5, 'num_in_osds': 5},
+        }
+        got = apiread.read(self.db, self.conn, self.row)
+        self.assertEqual(got['counts']['ceph'], 1)
+        self.assertEqual(apiread.problems(self.conn)['api-pve-ceph:cluster'][3], 'OSDs: 5/6 up')
+
     def test_nodes_guests_storage_jobs_and_backups_are_read_and_a_shared_storage_once(self):
         got = apiread.read(self.db, self.conn, self.row)
         self.assertEqual(got['counts'], {'platform': 1, 'node': 2, 'guest': 4, 'storage': 4, 'backup-job': 2, 'backup': 4})

@@ -106,10 +106,13 @@ def from_infra(host: str, m: dict, mounts: list) -> list[dict]:
 
 def listing(conn: Conn, host: str | None = None) -> dict:
     """{'workloads': [...], 'hosts': [{'host', 'read': ..}]}. `read` says what each host's list is based on, so an empty list can be told from an unread one."""
+    from . import apiviews
+
     names = [r[0] for r in conn.all('SELECT hostname FROM hosts ORDER BY hostname')]
     if host:
         names = [n for n in names if n.lower() == host.lower() or n.split('.')[0].lower() == host.lower()]
     views = {h['host']: h for h in docker.listing(conn)}
+    managers = apiviews.managed_by_host(conn, names[0] if len(names) == 1 else None) if names else {}
     out, hosts = [], []
     for name in names:
         mounts = _mounts_of(conn, name)
@@ -122,7 +125,7 @@ def listing(conn: Conn, host: str | None = None) -> dict:
         if m:
             out += from_infra(name, m, mounts)
         wlread.with_quadlets(out, name, (m or {}).get('quadlets') or [])
-        wlmanaged.annotate(out, name, m)       # what something else manages, from what the host shows
+        wlmanaged.annotate(out, name, m, managers.get(name.lower()))
         hosts.append({'host': name, 'engine': (view or {}).get('engine'), 'containers_read_at': (view or {}).get('updated_at'), 'measured_at': (m or {}).get('measured_at'), 'measure_stale': (m or {}).get('stale')})
     from . import wlcapture
     wlcapture.annotate(conn, out)          # adopted workloads, with their drift against the capture

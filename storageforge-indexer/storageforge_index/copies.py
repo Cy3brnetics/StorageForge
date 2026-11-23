@@ -147,6 +147,13 @@ def prepare_sync(conn: Conn, src, dst, actor: str, delete: bool = False, schedul
         raise ValueError(f'the sync runs {", ".join(SCHEDULES[:-1])} or {SCHEDULES[-1]}: other times are set on the plan in Moves')
     if src['host'] == dst['host'] and (is_under(src['path'], dst['path']) or is_under(dst['path'], src['path'])):
         raise ValueError('the two folders are the same, or one is inside the other')
+    # Check if another filesystem is mounted inside src or dst
+    for place in (src, dst):
+        path = place['path']
+        inner = next((m['target'] for m in hs[place['host']]['mounts']
+                      if m['target'] != path and is_under(m['target'], path)), None)
+        if inner:
+            raise ValueError(f'{place["host"]}:{path} has another filesystem mounted inside it ({inner})')
     pair = {(src['host'], src['path']), (dst['host'], dst['path'])}
     for s in syncs(conn):
         if {(s['src']['host'], s['src']['path']), (s['dst']['host'], s['dst']['path'])} == pair:

@@ -152,5 +152,23 @@ The catalog's signature decides which entries are offered without a warning, and
 - **CVE deltas** in updates: need the Trivy entry (0.5.13).
 - **Image CVE scans before the first deploy** and the CI job that checks entries against published checksums.
 - **QR codes** for WireGuard peer configurations.
-- **Binaries in archives**: a binary method downloads the program itself; nothing is unpacked. Publisher signatures (cosign, minisign) beyond the SHA-256 the signed entry pins are not checked.
+- **Binaries in archives**. A binary method can download a standalone program or select one regular file from a gzip-compressed tar archive. For an archive, set `archive.member` and `archive.sha256` under the architecture's file entry. The file entry’s `sha256` pins the complete download. `archive.sha256` pins the selected program. The host needs Python 3 to read the archive. To also verify a publisher signature, set `minisign.url` to the detached signature’s HTTPS URL and `minisign.public_key` to the single Base64 key line from the publisher’s public key. The host needs `minisign`. The signature covers the complete download, so it is verified before archive extraction. A SHA-256 match never substitutes for a configured signature check.
+
+  ```yaml
+  files:
+    x86_64:
+      url: https://example.org/tool-linux-amd64.tar.gz
+      sha256: "<SHA-256 of the downloaded archive>"
+      archive:
+        member: tool-linux-amd64/tool
+        sha256: "<SHA-256 of the program>"
+      minisign:
+        url: https://example.org/tool-linux-amd64.tar.gz.minisig
+        public_key: "<publisher’s Base64 minisign key>"
+  ```
+
+  To use Cosign instead, specify `cosign.bundle_url` (the publisher’s HTTPS URL for its Sigstore bundle) and `cosign.public_key` (the publisher’s PEM `PUBLIC KEY`). Use a YAML literal block for the PEM. The host needs Cosign 3.x and access to the trust material Cosign normally uses. The runner keeps Cosign’s default verification policy. Choose one signature format per download. For an archive, the bundle must cover the complete tar.gz file. [Sigstore verification](https://docs.sigstore.dev/cosign/verifying/verify/)
+
+  For a `container`, `quadlet` or `compose` install method, set `cosign.public_key` on the method (and on every entry in `sidecars` when a compose stack verifies its images) to a PEM `PUBLIC KEY`. Each verified image must name an explicit registry host (`docker.io/...`, `ghcr.io/...`, `localhost:5000/...`) and is verified by digest (`<repository>@sha256:<digest>`) with `cosign verify --key` on the host before any unit or compose stack is written or started.
+
 - **The release key**: the owner adds its public half to `catalog/release_signers` and signs `catalog/catalog.json`. Until then the official catalog is labelled *packaged*, and no catalog update can be taken.

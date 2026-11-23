@@ -9,6 +9,8 @@ manages, for the Workloads view and section 6's "externally managed" detection (
     GET /api/environments             the environments the token may see (filtered by RBAC with an enterprise key)
     GET /api/containers?env=ID        each environment's containers
     GET /api/stacks?env=ID            each environment's Compose stacks, with how Dockhand came to know each (sourceType)
+    GET /api/images?env=ID            image identities, tags and sizes
+    GET /api/volumes?env=ID           named volumes and their drivers and mount points
 
 The token is a Bearer token (dh_ and 43 characters) of the user it was made by; Dockhand gives a token no way to read its own
 permissions, so the read-back says what it can tell and says plainly what it cannot. A Hawser agent token is never used: it is an
@@ -33,6 +35,8 @@ SOURCES = ['https://github.com/Finsys/dockhand/blob/main/src/lib/server/api-toke
 READ = {
     'environments': {'perm': 'environments:view', 'what': 'the environments (Docker hosts) it may see'},
     'containers': {'perm': 'containers:view', 'what': 'the containers in each environment'},
+    'images': {'perm': 'images:view', 'what': 'the images in each environment'},
+    'volumes': {'perm': 'volumes:view', 'what': 'the volumes in each environment'},
     'stacks': {'perm': 'stacks:view', 'what': 'the Compose stacks in each environment, and which Dockhand manages'},
 }
 MAX_ENVIRONMENTS = 100
@@ -142,6 +146,35 @@ def parse_stacks(text: str) -> dict:
     return {'stacks': out, 'unreadable': bad}
 
 
+def parse_images(text: str) -> dict:
+    items, bad = _list(text)
+    out = []
+    for x in items:
+        image_id = _s(x.get('Id'), 128)
+        if not image_id:
+            continue
+        tags = x.get('RepoTags')
+        out.append({'id': image_id, 'tags': [tag[:255] for tag in tags if isinstance(tag, str)][:100] if isinstance(tags, list) else [],
+                    'size': _i(x.get('Size')), 'created': _i(x.get('Created'))})
+    return {'images': out, 'unreadable': bad}
+
+
+def parse_volumes(text: str) -> dict:
+    items, bad = _list(text)
+    return {'volumes': [{'name': _s(x['Name'], 255), 'driver': _s(x.get('Driver'), 80),
+                         'mountpoint': _s(x.get('Mountpoint'), 500), 'scope': _s(x.get('Scope'), 32),
+                         'created': _s(x.get('CreatedAt'), 40)}
+                        for x in items if _s(x.get('Name'))], 'unreadable': bad}
+
+
+INVENTORY = {
+    'containers': (parse_containers, 'container', 'name'),
+    'stacks': (parse_stacks, 'stack', 'name'),
+    'images': (parse_images, 'image', 'id'),
+    'volumes': (parse_volumes, 'volume', 'name'),
+}
+
+
 # ── the read-back ─────────────────────────────────────────────────────
 def token_prefix(secret: str | None) -> str | None:
     """The 8 characters after dh_: what Dockhand stores and shows to tell a user's tokens apart. Not the token."""
@@ -164,7 +197,7 @@ def judge(lic: dict, reads: dict, users_visible: bool, actions: list[str] | None
 
 
 def readback(client, row: dict) -> dict:
-    from .apiconn import ApiError, Refused
+    from .apiconn import ApiError, CertificateChanged, NotPinned, Refused
     lic = parse_license(client.get('/license'))
     reads = {}
     try:
@@ -172,13 +205,16 @@ def readback(client, row: dict) -> dict:
         reads['environments'] = [e['name'] for e in envs]
     except Refused:
         envs = []
-    if envs:
-        for feature, path in (('containers', '/containers'), ('stacks', '/stacks')):
+    for feature in INVENTORY:
+        for env in envs:
             try:
-                client.get(path, env=envs[0]['id'])
-                reads[feature] = [envs[0]['name']]
-            except Refused:
-                pass
+                client.get(f'/{feature}', env=env['id'])
+            except (CertificateChanged, NotPinned):
+                raise
+            except ApiError:
+                continue
+            reads[feature] = [env['name']]
+            break
     try:
         client.get('/users')
         users_visible = True
@@ -195,7 +231,7 @@ def readback(client, row: dict) -> dict:
 
 # ── the read ──────────────────────────────────────────────────────────
 def read(client, row: dict, rb: dict) -> tuple[list, list]:
-    from .apiconn import ApiError
+    from .apiconn import ApiError, CertificateChanged, NotPinned
     objs, skipped = [], []
     feats = rb.get('features') or {}
     if not feats.get('environments', {}).get('ok'):
@@ -203,18 +239,23 @@ def read(client, row: dict, rb: dict) -> tuple[list, list]:
     envs = parse_environments(client.get('/environments'))['environments']
     for e in envs:
         objs.append(('environment', str(e['id']), e))
-        for feature, path, parse, key, kind in (('containers', '/containers', parse_containers, 'containers', 'container'), ('stacks', '/stacks', parse_stacks, 'stacks', 'stack')):
+        for feature, (parse, kind, key) in INVENTORY.items():
             if not feats.get(feature, {}).get('ok'):
                 continue
             try:
-                for x in parse(client.get(path, env=e['id']))[key]:
-                    objs.append((kind, f'{e["id"]}/{x["name"]}', {**x, 'environment': e['id'], 'environment_name': e['name']}))
+                parsed = parse(client.get(f'/{feature}', env=e['id']))
+            except (CertificateChanged, NotPinned):
+                raise
             except ApiError as exc:
                 skipped.append(f'{e["name"]} {feature}: {exc}'[:200])
-    for f in ('containers', 'stacks'):
+                continue
+            if parsed['unreadable']:
+                skipped.append(f'{e["name"]} {feature}: the list was not readable')
+            for x in parsed[feature]:
+                objs.append((kind, f'{e["id"]}/{x[key]}', {**x, 'environment': e['id'], 'environment_name': e['name']}))
+    for f in INVENTORY:
         if not feats.get(f, {}).get('ok'):
-            skipped.append(f'{f}: the token lacks {READ[f]["perm"]}')
-    skipped.append('images and volumes are not read yet')
+            skipped.append(f'{f}: could not confirm {READ[f]["perm"]} on any environment')
     return objs, list(dict.fromkeys(skipped))
 
 

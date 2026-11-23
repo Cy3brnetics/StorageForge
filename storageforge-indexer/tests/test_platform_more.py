@@ -8,6 +8,7 @@ import re
 import shutil
 import struct
 import subprocess
+import threading
 import time
 import unittest
 import uuid
@@ -18,7 +19,7 @@ from unittest import mock
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from storageforge_index import alerts, changes, deploy, exposure, firewall, infragraph, inframeasure, mapdesign, mapexport, netfacts, reach, secplus, security, steps_infra, webauthn, whatif
+from storageforge_index import alerts, changes, clamav, deploy, exposure, firewall, infragraph, inframeasure, mapdesign, mapexport, netfacts, reach, secplus, security, steps_infra, webauthn, whatif
 from test_security import PW, Base
 
 NS = ['unshare', '--user', '--map-root-user', '--net']
@@ -823,12 +824,13 @@ class Playbooks(Base):
         (self.bin / 'fuser').chmod(0o755)
         (self.bin / 'docker').write_text('#!/bin/bash\nif [[ $1 == ps ]]; then echo "cid1"; elif [[ $* == *Name* ]]; then echo "/app1"; elif [[ $* == *Mounts* ]]; then echo "/srv/share"; elif [[ $1 == stop ]]; then echo "docker stop $*"; exit 0; fi\n')
         (self.bin / 'docker').chmod(0o755)
-        self.save(name='Malware & IDS respond', trigger='suricata_alert', actions=['drop_fleet', 'stop_workload', 'quarantine_file'], mode='live')
+        self.save(name='Malware and IDS respond', trigger='suricata_alert', actions=['drop_fleet', 'stop_workload', 'quarantine_file'], mode='live')
         self.start()
         pb64 = base64.b64encode(str(self.root / 'bad.elf').encode()).decode()
         # First test quarantine_file + stop_workload via direct run_actions on /srv/share/file and then drop_fleet via event
         security.record_event(self.conn, 'nas', 'suricata_alert', 'ET TEST from 203.0.113.55', f'client=203.0.113.55;path_b64={pb64};sig=YARA:TestRule', 'suricata')
-        with mock.patch.object(alerts, 'send', return_value=['ok']):
+        with (mock.patch.object(alerts, 'send', return_value=['ok']),
+              mock.patch.object(clamav, 'QUARANTINE', str(self.root / 'quarantine'))):
             fired = secplus.process_events(self.db, self.conn)
         self.assertEqual(fired, 1)
         run = secplus.playbook_runs(self.conn)[0]
@@ -1072,14 +1074,20 @@ class ThreatChecks(Base):
         # Reused PID guard first: ask for wrong comm
         bad = self.post('/api/security/threats/kill', host='nas', pid=proc.pid, comm='wrongcomm', path=str(payload), quarantine=True, mode='apply')
         self.assertEqual(bad.status_code, 409)
-        self.assertIn('reused', bad.get_json()['error'])
+        self.assertIn('pid was reused', bad.get_json()['output'])
+        self.assertIsNone(proc.poll(), 'the mismatched process identity leaves the process running')
+        self.assertTrue(payload.exists(), 'the rejected request leaves the file untouched')
+        # The parent reaps the exited child while the runner waits for the PID to vanish.
+        reaper = threading.Thread(target=proc.wait, daemon=True)
+        reaper.start()
         # Now match real comm 'sleep'
         ok = self.post('/api/security/threats/kill', host='nas', pid=proc.pid, comm='sleep', path=str(payload), quarantine=True, mode='apply')
         self.assertEqual(ok.status_code, 200, ok.get_data(as_text=True))
         got = ok.get_json()
         self.assertTrue((got['killed'], got['quarantined']))
         self.assertFalse(payload.exists())
-        proc.wait(timeout=5)
+        reaper.join(timeout=5)
+        self.assertIsNotNone(proc.returncode)
 
 
 class Bash(unittest.TestCase):

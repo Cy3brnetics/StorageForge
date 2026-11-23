@@ -1706,7 +1706,7 @@ class MapAtScale(unittest.TestCase):
                 page.fill('input[type=password]', PW)
                 page.press('input[type=password]', 'Enter')
                 page.wait_for_url(base + '/**')
-                page.wait_for_selector('.tabs button')
+                page.wait_for_selector('html[data-route-ready]', state='attached')
                 start = time.time()
                 page.click('#viewmode button[data-mode="map"]')
                 page.wait_for_selector('#mpsvg', timeout=30000)

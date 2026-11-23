@@ -99,8 +99,9 @@ READS = {
     'inframeasure.parse_proxy_routes': lambda t: inframeasure.parse_proxy_routes(t.splitlines(), t.splitlines()[::-1]),
     'apireadback.parse_permissions': apireadback.parse_permissions, 'apireadback.parse_token_info': apireadback.parse_token_info,
     'apipve.parse_version': apipve.parse_version, 'apipve.parse_resources': apipve.parse_resources, 'apipve.parse_backup_jobs': apipve.parse_backup_jobs,
-    'apipve.parse_backups': apipve.parse_backups,
+    'apipve.parse_backups': apipve.parse_backups, 'apipve.parse_ceph_status': apipve.parse_ceph_status,
     'apipbs.parse_version': apipbs.parse_version, 'apipbs.parse_usage': apipbs.parse_usage, 'apipbs.parse_config': apipbs.parse_config,
+    'apipbs.parse_namespaces': apipbs.parse_namespaces,
     'apipbs.parse_groups': apipbs.parse_groups, 'apipbs.parse_snapshots': apipbs.parse_snapshots, 'apipbs.parse_jobs': apipbs.parse_jobs,
     'apipdm.parse_version': apipdm.parse_version, 'apipdm.parse_remotes': apipdm.parse_remotes, 'apipdm.parse_resources': apipdm.parse_resources,
     **{f'apitruenas.{n}': getattr(apitruenas, n) for n in dir(apitruenas) if n.startswith('parse_')},     # each takes the JSON text of one call's result

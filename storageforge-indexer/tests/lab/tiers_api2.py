@@ -18,7 +18,7 @@ taken from each project's documentation and were never tried. A check that canno
     readback-portainer Portainer CE in a container on the Docker host: a standard user given the local environment reads back
                        over (Community Edition has no read-only role), not critical; read-portainer finds the local environment
     readback-dockhand  Dockhand behind an HTTPS proxy on the Docker host, without an enterprise key: the read-back raises the
-                       critical "every user has full access" finding, which is what the free edition is
+                       critical "every user has full access" finding, which is what the free edition is; read-dockhand-inventory checks images and a scratch volume
     readback-komodo    Komodo Core with FerretDB and a Periphery on the Docker host: a service user in a Read group reads back
                        exact; read-komodo finds the server
 Pangolin is not here: it needs a public domain, DNS and a certificate the lab does not have. Its read is tested on this machine only.
@@ -68,6 +68,7 @@ def truenas(r, api, secrets_seen):
     node = node_with('truenas')
     if not node:
         r.add('guide-truenas', '-', None, 'no TrueNAS in this build: up --join sf-truenas')
+        r.add('read-truenas-snapshot', '-', None, 'no TrueNAS in this build')
         return
     guide = api.get('/api/keys/platforms/guide/truenas')
     key = None
@@ -81,11 +82,20 @@ def truenas(r, api, secrets_seen):
     r.add('refused-truenas', node.name, status == 400 and 'FULL_ADMIN' in json.dumps(out), f'HTTP {status}')
     if not key:
         return
-    cid, got, raw = connect(r, api, node, 'truenas', 'truenas', f'https://{node.ip}', 'storageforge', key, secrets_seen, 443)
-    rb = (got or {}).get('readback') or {}
-    r.add('readback-truenas', node.name, rb.get('verdict') == 'exact', f'verdict {rb.get("verdict")}', json.dumps(raw)[:2000])
-    r.add('read-truenas', node.name, bool(got) and any(o.get('ref') == 'tank' for o in api.get(f'/api/keys/platforms/{cid}')['objects'] if o['kind'] == 'pool'),
-          json.dumps((got or {}).get('counts')))
+    snapshot = f'tank@sf-lab-inventory-{time.time_ns()}'
+    sudo(node.name, f'zfs snapshot {snapshot}')
+    try:
+        cid, got, raw = connect(r, api, node, 'truenas', 'truenas', f'https://{node.ip}', 'storageforge', key, secrets_seen, 443)
+        rb = (got or {}).get('readback') or {}
+        r.add('readback-truenas', node.name, rb.get('verdict') == 'exact', f'verdict {rb.get("verdict")}', json.dumps(raw)[:2000])
+        objects = api.get(f'/api/keys/platforms/{cid}')['objects'] if got else []
+        r.add('read-truenas', node.name, any(o.get('ref') == 'tank' for o in objects if o['kind'] == 'pool'),
+              json.dumps((got or {}).get('counts')))
+        r.add('read-truenas-snapshot', node.name, any(o.get('ref') == snapshot and o.get('dataset') == 'tank'
+                                                      for o in objects if o['kind'] == 'snapshot'),
+              'the read-only key can see the lab snapshot')
+    finally:
+        sudo(node.name, f'zfs destroy {snapshot}', check=False)
     widen = ("midclt call privilege.update \"$(midclt call privilege.query '[[\"name\", \"=\", \"StorageForge read\"]]' '{\"get\": true}' | jq .id)\" "
              "'{\"roles\": [\"READONLY_ADMIN\", \"SHARING_ADMIN\"]}'")
     sudo(node.name, widen, check=False)
@@ -146,6 +156,7 @@ def dockhand(r, api, secrets_seen):
     node = docker_host()
     if not node:
         r.add('readback-dockhand', '-', None, 'no Docker host in this build')
+        r.add('read-dockhand-inventory', '-', None, 'no Docker host in this build')
         return
     password = 'Sf-lab-' + str(int(time.time()))
     self_signed(node, '/srv/sf-dockhand-tls', node.ip)
@@ -154,6 +165,8 @@ def dockhand(r, api, secrets_seen):
                     '--internal-certs', check=False)
     base = 'http://127.0.0.1:3000/api'
     demo.wait('Dockhand to answer', lambda: 'authEnabled' in json.dumps(http_json(node, 'GET', f'{base}/auth/session')), timeout=180)
+    http_json(node, 'POST', f'{base}/environments',
+              {'name': 'sf-lab-docker', 'connectionType': 'socket', 'socketPath': '/var/run/docker.sock'})
     http_json(node, 'POST', f'{base}/users', {'username': 'storageforge', 'password': password})
     http_json(node, 'PUT', f'{base}/auth/settings', {'authEnabled': True})
     sudo(node.name, f'rm -f /tmp/sf-dh.jar; curl -s -c /tmp/sf-dh.jar -H "Content-Type: application/json" --data-binary @- {base}/auth/login >/dev/null',
@@ -164,10 +177,20 @@ def dockhand(r, api, secrets_seen):
     if not m:
         r.add('readback-dockhand', node.name, False, 'no token was made', out[:300])
         return
-    cid, got, raw = connect(r, api, node, 'dockhand', 'dockhand', f'https://{node.ip}:3443', 'storageforge', m.group(1), secrets_seen, 3443)
-    rb = (got or {}).get('readback') or {}
-    r.add('readback-dockhand', node.name, rb.get('verdict') == 'over' and rb.get('admin') and 'full access' in json.dumps(rb.get('over')),
-          f'verdict {rb.get("verdict")} (the free edition must be a critical finding)', json.dumps(raw)[:2000])
+    volume = f'sf-dockhand-inventory-{time.time_ns()}'
+    sudo(node.name, f'docker volume create {volume}')
+    try:
+        cid, got, raw = connect(r, api, node, 'dockhand', 'dockhand', f'https://{node.ip}:3443', 'storageforge', m.group(1), secrets_seen, 3443)
+        rb = (got or {}).get('readback') or {}
+        r.add('readback-dockhand', node.name, rb.get('verdict') == 'over' and rb.get('admin') and 'full access' in json.dumps(rb.get('over')),
+              f'verdict {rb.get("verdict")} (the free edition must be a critical finding)', json.dumps(raw)[:2000])
+        objects = api.get(f'/api/keys/platforms/{cid}')['objects'] if got else []
+        volume_envs = {o['environment'] for o in objects if o['kind'] == 'volume' and o.get('name') == volume}
+        image_envs = {o['environment'] for o in objects if o['kind'] == 'image' and any(t in (DOCKHAND_IMAGE, f'docker.io/{DOCKHAND_IMAGE}') for t in o.get('tags', []))}
+        r.add('read-dockhand-inventory', node.name, bool(volume_envs & image_envs),
+              'the scratch volume and the Dockhand image appear in the same environment')
+    finally:
+        sudo(node.name, f'docker volume rm {volume}', check=False)
 
 
 def xen_orchestra(r, api, secrets_seen):

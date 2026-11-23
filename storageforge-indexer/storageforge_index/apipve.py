@@ -4,6 +4,7 @@ on its storage with their verification, for the places StorageForge's model has 
     GET /version                                     the release
     GET /cluster/resources                           nodes, guests (qemu and lxc) and storage, cluster wide (each entry only as far as the
                                                      token may see it)
+    GET /cluster/ceph/status                         cluster health when Ceph is configured and visible to the token
     GET /cluster/backup                              the backup jobs: only with Sys.Audit on /, which the read-back says
     GET /nodes/N/storage/S/content?content=backup    the backups on each storage that holds them, with each one's last verification
                                                      (Proxmox Backup Server storage only); a shared storage is read once
@@ -104,6 +105,23 @@ def parse_backup_jobs(text: str) -> dict:
     return {'jobs': jobs, 'unreadable': bad}
 
 
+def parse_ceph_status(text: str) -> dict:
+    """Parses Proxmox VE Ceph status: /cluster/ceph/status."""
+    data = _data(text)
+    data = data if isinstance(data, dict) else {}
+    health = data.get('health') if isinstance(data.get('health'), dict) else {}
+    osdmap = data.get('osdmap') if isinstance(data.get('osdmap'), dict) else {}
+    if isinstance(osdmap.get('osdmap'), dict):
+        osdmap = osdmap['osdmap']
+    return {
+        'status': _s(health.get('status') or health.get('overall_status'), 20) or 'UNKNOWN',
+        'num_osds': _i(osdmap.get('num_osds')) or 0,
+        'num_up_osds': _i(osdmap.get('num_up_osds')) or 0,
+        'num_in_osds': _i(osdmap.get('num_in_osds')) or 0,
+        'degraded': _b(health.get('degraded')) is True or (health.get('status') or health.get('overall_status')) in ('HEALTH_WARN', 'HEALTH_ERR'),
+    }
+
+
 def parse_backups(text: str) -> dict:
     """The backups on one storage: /nodes/N/storage/S/content?content=backup."""
     items, bad = _items(text)
@@ -121,7 +139,7 @@ def parse_backups(text: str) -> dict:
 
 def read(client, row: dict, rb: dict) -> tuple[list, list]:
     """(objects, skipped). Each feature the read-back found the token lacks is skipped and said, not asked for and refused."""
-    from .apiconn import ApiError
+    from .apiconn import ApiError, CertificateChanged, NotPinned
     feats = rb.get('features') or {}
     objs, skipped = [], []
     v = parse_version(client.get('/version'))
@@ -131,6 +149,14 @@ def read(client, row: dict, rb: dict) -> tuple[list, list]:
         skipped.append('the resource list was not readable')
     for n in res['nodes']:
         objs.append(('node', n['node'], n))
+    try:
+        ceph = parse_ceph_status(client.get('/cluster/ceph/status'))
+        if ceph['status'] != 'UNKNOWN':
+            objs.append(('ceph', 'status', ceph))
+    except (CertificateChanged, NotPinned):
+        raise
+    except ApiError:
+        pass
     for g in res['guests']:
         objs.append(('guest', str(g['vmid']), g))
     for s in res['storage']:
@@ -167,10 +193,13 @@ def read(client, row: dict, rb: dict) -> tuple[list, list]:
 
 
 def problems(conn, row: dict, objects: list[dict], now: float | None = None) -> dict:
-    """A backup whose last verification failed, a storage over 90 percent full, and a guest no enabled backup job covers."""
-    now = now or time.time()
+    """Alerts from Ceph, storage capacity, backup verification and job coverage."""
     out = {}
     host = row['host'] or row['name']
+    ceph = next((o for o in objects if o['kind'] == 'ceph' and o['ref'] == 'status'), None)
+    if ceph and ceph.get('degraded'):
+        out[f'api-pve-ceph:{row["name"]}'] = ('api-pve-ceph', host, f'Ceph cluster on {row["name"]} is degraded ({ceph.get("status")})',
+                                                f'OSDs: {ceph.get("num_up_osds")}/{ceph.get("num_osds")} up', 'warn')
     failed = [o for o in objects if o['kind'] == 'backup' and o.get('verify') == 'failed']
     if failed:
         out[f'api-backup-verify:{row["name"]}'] = ('api-backup-verify', host, f'{len(failed)} backup(s) on {row["name"]} failed verification',

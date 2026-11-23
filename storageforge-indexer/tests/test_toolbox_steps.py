@@ -3,6 +3,9 @@ stand-in podman, systemctl, package managers and curl on folders standing in for
 makes its account, subordinate ids, lingering and Quadlet unit and starts it once; a package install binds the socket to the exposure's
 address; a binary is installed only when its SHA-256 is the entry's; a refused step does nothing; a removal keeps the data."""
 import hashlib
+import io
+import json
+import tarfile
 import shlex
 import shutil
 import subprocess
@@ -24,7 +27,7 @@ try() { "$@" || { conflict "failed: $*"; return 1; }; }
 t_trash() { echo "trash: $1"; mv -- "$1" "$FAKE/trash/"; }
 PROBLEMS=0 DESTRUCTIVE=1 CUR_DESTRUCTIVE=1
 '''
-REAL = ('bash', 'env', 'awk', 'grep', 'sed', 'cat', 'head', 'tail', 'tr', 'mktemp', 'rm', 'mkdir', 'install', 'printf', 'wc', 'cut', 'sort', 'cmp', 'diff',
+REAL = ('bash', 'python3', 'env', 'awk', 'grep', 'sed', 'cat', 'head', 'tail', 'tr', 'mktemp', 'rm', 'mkdir', 'install', 'printf', 'wc', 'cut', 'sort', 'cmp', 'diff',
         'chmod', 'mv', 'cp', 'touch', 'sync', 'ls', 'dirname', 'basename', 'stat', 'sha256sum', 'id', 'uname')
 
 STUBS = {
@@ -153,9 +156,9 @@ class Steps(Base):
         out = self.install(True, 'cockpit', exposure='management', bind='10.0.0.5')
         self.assertIn('ListenStream=10.0.0.5:9090', (self.root / 'etc/systemd/system/cockpit.socket.d/storageforge-listen.conf').read_text())
 
-    def binary_entry(self, sha):
+    def binary_entry(self, sha, extra=""):
         text = (f'format: 1\nid: tinybin\nrevision: 1\nname: Tiny\ncategory: monitoring\nsummary: A program.\ninstall:\n  methods:\n'
-                f'    - kind: binary\n      name: tinybin\n      files:\n        x86_64: {{url: "https://example.org/tinybin", sha256: {sha}}}\n'
+                f'    - kind: binary\n      name: tinybin\n      files:\n        x86_64: {{url: "https://example.org/tinybin", sha256: {sha}{extra}}}\n'
                 f'        aarch64: {{url: "https://example.org/tinybin-arm", sha256: {sha}}}\n')
         toolbox.save_custom(self.conn, text, None, 'test')
         toolbox.stage(self.conn, 'box', 'tinybin', 'root', accept_unsigned=True)
@@ -174,6 +177,205 @@ class Steps(Base):
         (self.root / 'usr/local/bin/tinybin-other').write_text('someone else')
         self.assertIn('StorageForge did not put it there', self.run_fn(True, 'tb_binary', ['tinybin-other', 'tinybin-other', 'https://example.org/x', good, '', '']))
         self.assertEqual((self.root / 'usr/local/bin/tinybin-other').read_text(), 'someone else')
+
+    def serve_binary_signature(self):
+        curl = self.bin / 'curl'
+        curl.write_text('#!/bin/bash\no=; while (($# > 1)); do [[ $1 == -o ]] && o=$2; shift; done\n'
+                        'case "$1" in *.minisig) cp "$FAKE/signature" "$o" ;; *) cp "$FAKE/download" "$o" ;; esac\n')
+
+    @unittest.skipUnless(shutil.which('minisign'), 'needs minisign for the genuine signature check')
+    def test_verifies_a_genuine_detached_publisher_signature(self):
+        (self.real / 'minisign').symlink_to(shutil.which('minisign'))
+        self.serve_binary_signature()
+        program = self.fake / 'download'
+        program.write_bytes(b'#!/bin/sh\necho tiny\n')
+        key = self.fake / 'publisher.key'
+        public = self.fake / 'publisher.pub'
+        signature = self.fake / 'signature'
+        subprocess.run(['minisign', '-GW', '-p', str(public), '-s', str(key)], check=True, capture_output=True)
+        subprocess.run(['minisign', '-Sm', str(program), '-s', str(key), '-x', str(signature)], check=True, capture_output=True)
+        public_key = public.read_text().splitlines()[-1]
+        self.binary_entry(hashlib.sha256(program.read_bytes()).hexdigest(),
+                          f', minisign: {{url: "https://example.org/tinybin.minisig", public_key: "{public_key}"}}')
+        other = self.fake / 'other'
+        other.write_bytes(b'different release')
+        wrong_signature = self.fake / 'wrong-signature'
+        subprocess.run(['minisign', '-Sm', str(other), '-s', str(key), '-x', str(wrong_signature)], check=True, capture_output=True)
+        correct_signature = signature.read_bytes()
+        signature.write_bytes(wrong_signature.read_bytes())
+        self.assertIn('publisher signature did not verify', self.install(True, 'tinybin'))
+        self.assertFalse((self.root / 'usr/local/bin/tinybin').exists())
+        signature.write_bytes(correct_signature)
+        out = self.install(True, 'tinybin')
+        self.assertIn('minisign publisher signature verified', out)
+        self.assertEqual((self.root / 'usr/local/bin/tinybin').read_bytes(), program.read_bytes())
+
+    def test_binary_requires_its_publisher_signature_even_when_the_hash_matches(self):
+        program = b'#!/bin/sh\necho tiny\n'
+        key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+        self.binary_entry(hashlib.sha256(program).hexdigest(),
+                          f', minisign: {{url: "https://example.org/tinybin.minisig", public_key: "{key}"}}')
+        (self.fake / 'download').write_bytes(program)
+        dest = self.root / 'usr/local/bin/tinybin'
+        self.assertIn('minisign is needed', self.install(True, 'tinybin'))
+        self.assertFalse(dest.exists())
+        self.serve_binary_signature()
+        verifier = self.bin / 'minisign'
+        verifier.write_text(f'#!/bin/bash\n[[ "$1" == -Vm && "$3" == -x && "$5" == -P && "$6" == {key} ]] && '
+                            'cmp "$2" "$FAKE/download" && grep -qx signed "$4"\n')
+        verifier.chmod(0o755)
+        signature = self.fake / 'signature'
+        signature.write_text('invalid')
+        self.assertIn('publisher signature did not verify', self.install(True, 'tinybin'))
+        self.assertFalse(dest.exists())
+        signature.write_text('signed')
+        self.assertIn('installed, SHA-256', self.install(True, 'tinybin'))
+        self.assertEqual(dest.read_bytes(), program)
+        signature.write_text('invalid')
+        self.assertIn('publisher signature did not verify', self.install(True, 'tinybin'))
+        self.assertEqual(dest.read_bytes(), program)
+
+    def test_cosign_binary_requires_the_bundle_and_the_catalog_public_key(self):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        program = b'#!/bin/sh\necho tiny\n'
+        key = ec.generate_private_key(ec.SECP256R1()).public_key()
+        public = key.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+        self.binary_entry(hashlib.sha256(program).hexdigest(),
+                          f', cosign: {{bundle_url: "https://example.org/tinybin.sigstore.json", public_key: {json.dumps(public)}}}')
+        (self.fake / 'publisher.pub').write_text(public)
+        (self.fake / 'download').write_bytes(program)
+        dest = self.root / 'usr/local/bin/tinybin'
+        self.assertIn('cosign is needed', self.install(True, 'tinybin'))
+        self.assertFalse(dest.exists())
+        curl = self.bin / 'curl'
+        curl.write_text('#!/bin/bash\no=; while (($# > 1)); do [[ $1 == -o ]] && o=$2; shift; done\n'
+                        'case "$1" in *.sigstore.json) cp "$FAKE/bundle" "$o" ;; *) cp "$FAKE/download" "$o" ;; esac\n')
+        verifier = self.bin / 'cosign'
+        verifier.write_text('#!/bin/bash\n[[ "$1" == verify-blob && "$2" == --bundle && "$4" == --key && "$#" == 6 ]] && '
+                            'cmp "$5" "$FAKE/publisher.pub" && cmp "$6" "$FAKE/download" && grep -qx signed "$3"\n')
+        verifier.chmod(0o755)
+        bundle = self.fake / 'bundle'
+        bundle.write_text('invalid')
+        self.assertIn('cosign publisher signature did not verify', self.install(True, 'tinybin'))
+        self.assertFalse(dest.exists())
+        bundle.write_text('signed')
+        self.assertIn('cosign publisher signature verified', self.install(True, 'tinybin'))
+        self.assertEqual(dest.read_bytes(), program)
+        bundle.write_text('invalid')
+        self.assertIn('cosign publisher signature did not verify', self.install(True, 'tinybin'))
+        self.assertEqual(dest.read_bytes(), program)
+
+    def test_cosign_image_verifies_digest_before_container_or_compose_install(self):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        self.assertNotIn("'", steps_toolbox.BASH)
+        key_main = ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        ).decode()
+        key_side = ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        ).decode()
+        (self.fake / 'main.pub').write_text(key_main)
+        (self.fake / 'side.pub').write_text(key_side)
+        main_img = f'docker.io/traefik/whoami:v1.10.3@sha256:{"1" * 64}'
+        side_img = f'ghcr.io/example/redis:7.2@sha256:{"2" * 64}'
+        entry = (
+            'format: 1\nid: signedapp\nrevision: 1\nname: Signed App\ncategory: monitoring\nsummary: Signed image app.\n'
+            'install:\n  methods:\n'
+            f'    - kind: container\n      image: {main_img}\n      cosign: {{public_key: {json.dumps(key_main)}}}\n      ports: ["8099:80/tcp"]\n'
+            f'    - kind: compose\n      image: {main_img}\n      cosign: {{public_key: {json.dumps(key_main)}}}\n      ports: ["8099:80/tcp"]\n'
+            f'      sidecars:\n        - name: cache\n          image: {side_img}\n          cosign: {{public_key: {json.dumps(key_side)}}}\n'
+            'requires:\n  ports: [8099/tcp]\nexposure:\n  default: loopback\n'
+        )
+        toolbox.save_custom(self.conn, entry, None, 'test')
+        pv = toolbox.preview(self.conn, 'box', 'signedapp', method='compose')
+        self.assertIn(f'Cosign verifies {main_img}', ' '.join(x['text'] for x in pv['report']))
+        self.assertIn(f'Cosign verifies {side_img}', ' '.join(x['text'] for x in pv['report']))
+
+        toolbox.stage(self.conn, 'box', 'signedapp', 'root', accept_unsigned=True)
+        quadlet = self.tmp / 'home/signedapp/.config/containers/systemd/signedapp.container'
+        self.assertIn('cosign is needed to verify the images before installation', self.install(True, 'signedapp'))
+        self.assertFalse(quadlet.exists())
+
+        verifier = self.bin / 'cosign'
+        verifier.write_text(
+            '#!/bin/bash\n'
+            '[[ "$1" == verify && "$2" == --key && "$#" == 4 ]] || exit 1\n'
+            'case "$4" in\n'
+            f'  "docker.io/traefik/whoami@sha256:{"1" * 64}") cmp -s "$3" "$FAKE/main.pub" && grep -qx main-ok "$FAKE/cosign-state" ;;\n'
+            f'  "ghcr.io/example/redis@sha256:{"2" * 64}") cmp -s "$3" "$FAKE/side.pub" && grep -qx side-ok "$FAKE/cosign-state" ;;\n'
+            '  *) exit 1 ;;\n'
+            'esac\n'
+        )
+        verifier.chmod(0o755)
+        state = self.fake / 'cosign-state'
+        state.write_text('none\n')
+        report_out = self.install(False, 'signedapp')
+        self.assertIn(f'on apply, verify {main_img} with the catalog Cosign public key', report_out)
+        self.assertFalse(quadlet.exists())
+
+        self.assertIn(f'Cosign could not verify {main_img}', self.install(True, 'signedapp'))
+        self.assertFalse(quadlet.exists())
+
+        state.write_text('main-ok\n')
+        self.assertIn(f'ok: Cosign verified {main_img}', self.install(True, 'signedapp'))
+        self.assertTrue(quadlet.exists())
+
+        # Compose method verifies both main image and sidecars before writing compose files
+        docker = self.bin / 'docker'
+        docker.write_text('#!/bin/bash\necho "docker $*" >>"$LOG"\n[[ "$1" == compose ]] && exit 0\n')
+        docker.chmod(0o755)
+        compose_dir = self.root / 'srv/toolbox/signedapp/compose'
+        toolbox.stage(self.conn, 'box', 'signedapp', 'root', method='compose', accept_unsigned=True)
+        self.assertIn(f'Cosign could not verify {side_img}', self.install(True, 'signedapp', method='compose'))
+        self.assertFalse((compose_dir / 'compose.yaml').exists())
+
+        state.write_text('main-ok\nside-ok\n')
+        out = self.install(True, 'signedapp', method='compose')
+        self.assertIn(f'ok: Cosign verified {main_img}', out)
+        self.assertIn(f'ok: Cosign verified {side_img}', out)
+        self.assertTrue((compose_dir / 'compose.yaml').exists())
+
+    def test_binary_archive_verifies_both_hashes_and_extracts_only_the_member(self):
+        program = b'#!/bin/sh\necho tiny\n'
+        digest = hashlib.sha256(program).hexdigest()
+        dest = self.root / 'usr/local/bin/tinybin'
+        def archive_entry(link=False, member_sha=digest):
+            path = self.fake / 'download'
+            with tarfile.open(path, 'w:gz') as tar:
+                item = tarfile.TarInfo('release/tinybin')
+                if link:
+                    item.type, item.linkname = tarfile.SYMTYPE, '/etc/passwd'
+                    tar.addfile(item)
+                else:
+                    item.size = len(program)
+                    tar.addfile(item, io.BytesIO(program))
+                sibling = tarfile.TarInfo('release/ignored')
+                sibling.size = len(program)
+                tar.addfile(sibling, io.BytesIO(program))
+            sha = hashlib.sha256(path.read_bytes()).hexdigest()
+            entry = ('format: 1\nid: tinybin\nrevision: 1\nname: Tiny\ncategory: monitoring\nsummary: A program.\n'
+                     'install:\n  methods:\n    - kind: binary\n      name: tinybin\n      files:\n        x86_64:\n'
+                     f'          url: https://example.org/release.tar.gz\n          sha256: {sha}\n'
+                     f'          archive: {{member: release/tinybin, sha256: {member_sha}}}\n')
+            toolbox.save_custom(self.conn, entry, None, 'test')
+            toolbox.stage(self.conn, 'box', 'tinybin', 'root', accept_unsigned=True)
+
+        archive_entry(link=True)
+        self.assertIn('could not read archive member', self.install(True, 'tinybin'))
+        self.assertFalse(dest.exists())
+        archive_entry(member_sha='b' * 64)
+        self.assertIn('nothing was installed', self.install(True, 'tinybin'))
+        self.assertFalse(dest.exists())
+        archive_entry()
+        self.assertIn('would: download', self.install(False, 'tinybin'))
+        self.assertFalse(dest.exists())
+        self.assertIn('installed, SHA-256 ' + digest, self.install(True, 'tinybin'))
+        self.assertEqual(dest.read_bytes(), program)
+        self.assertIn('is there, SHA-256 ' + digest, self.install(True, 'tinybin'))
 
     def test_removal_takes_the_unit_and_keeps_the_data(self):
         toolbox.stage(self.conn, 'box', 'uptime-kuma', 'test')

@@ -1,0 +1,7 @@
+# Add this file to the production stack to receive kernel logs over UDP.
+services:
+  storageforge:
+    environment:
+      STORAGEFORGE_NETCONSOLE_LISTEN: 0.0.0.0:6666
+    ports:
+      - "${STORAGEFORGE_NETCONSOLE_BIND:-127.0.0.1}:${STORAGEFORGE_NETCONSOLE_PORT:-6666}:6666/udp"

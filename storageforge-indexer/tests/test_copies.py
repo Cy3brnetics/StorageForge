@@ -415,6 +415,14 @@ class KeepInSync(Index):
             with self.assertRaises(ValueError):
                 copies.sides(self.conn, bad)
 
+    def test_preparing_refuses_a_filesystem_nested_under_the_destination(self):
+        self.pair()
+        self.conn.execute("""INSERT INTO mounts (host_id, mount_point, source, filesystem_type, scan_state)
+                             SELECT host_id, '/backup/2019-copy/other', '/dev/nested', 'ext4', 'skipped'
+                             FROM hosts WHERE hostname = 'pc'""")
+        with self.assertRaisesRegex(ValueError, 'mounted inside it'):
+            copies.prepare_sync(self.conn, self.A, self.B, 'web:ana')
+
     def test_preparing_saves_a_moves_plan_and_syncs_nothing(self):
         self.pair()
         got = copies.prepare_sync(self.conn, self.A, self.B, 'web:ana')

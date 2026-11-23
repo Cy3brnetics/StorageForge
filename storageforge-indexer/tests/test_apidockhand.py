@@ -37,6 +37,9 @@ def routes(lic=ENTERPRISE):
         '/containers': lambda req: [{'id': 'a1b2c3d4e5f6', 'name': 'immich_server', 'image': 'ghcr.io/immich-app/immich-server:latest', 'state': 'running', 'status': 'Up 2 hours (healthy)'},
                                     {'id': 'b2c3d4e5f6a1', 'name': 'immich_redis', 'image': 'redis:7', 'state': 'exited', 'status': 'Exited (0)'}] if 'env=1' in req['path'] else
                                    [{'id': 'c3', 'name': 'edge-app', 'image': 'nginx', 'state': 'running', 'status': 'Up'}],
+        '/images': [{'Id': 'sha256:abc', 'RepoTags': ['nginx:latest'], 'Size': 142000000, 'Created': 1719830400}],
+        '/volumes': [{'Name': 'web_data', 'Driver': 'local', 'Mountpoint': '/var/lib/docker/volumes/web_data/_data',
+                      'Scope': 'local', 'Options': {'password': 'VOLUME-OPTION-NEVER-KEPT'}}],
         '/stacks': lambda req: [{'name': 'immich', 'containers': ['immich_server', 'immich_redis'], 'containerDetails': [], 'status': 'partial', 'sourceType': 'internal'}] if 'env=1' in req['path'] else [],
     }
 
@@ -65,12 +68,25 @@ class Read(Base):
         rb = got['readback']
         self.assertEqual(rb['verdict'], 'exact')
         self.assertTrue(any('no way to read its own permissions' in n for n in rb['notes']))
-        self.assertEqual(got['counts'], {'environment': 2, 'container': 3, 'stack': 1})
-        self.assertIn('images and volumes are not read yet', got['skipped'])
+        self.assertEqual(got['counts'], {'environment': 2, 'container': 3, 'stack': 1, 'image': 2, 'volume': 2})
+        self.assertEqual(got['skipped'], [])
+        images = apiread.objects(self.conn, self.row['conn_id'], 'image')
+        self.assertEqual([(x['ref'], x['tags']) for x in images], [('1/sha256:abc', ['nginx:latest']), ('2/sha256:abc', ['nginx:latest'])])
+        volumes = apiread.objects(self.conn, self.row['conn_id'], 'volume')
+        self.assertEqual([(x['ref'], x['driver']) for x in volumes], [('1/web_data', 'local'), ('2/web_data', 'local')])
+        self.assertEqual(self.everywhere('VOLUME-OPTION-NEVER-KEPT'), [])
         row = apiconn.get(self.conn, self.row['conn_id'])
         self.assertEqual((row['expiry']['state'], row['expiry']['source']), ('ok', 'platform'), 'the expiry of the token whose prefix is in use')
         self.assertIn('api-panel-stopped:dockhand', alerts.problems(self.conn))
         self.no_secret(got)
+
+    def test_inventory_continues_when_the_first_environment_refuses_volumes(self):
+        volumes = self.fake.routes['/volumes']
+        self.fake.routes['/volumes'] = lambda req: (403, 'Forbidden', {}) if 'env=1' in req['path'] else volumes
+        got = apiread.read(self.db, self.conn, self.row)
+        self.assertEqual(got['readback']['features']['volumes']['on'], ['docker2'])
+        self.assertEqual(got['counts']['volume'], 1)
+        self.assertTrue(any(msg.startswith('local volumes:') for msg in got['skipped']))
 
     def test_the_free_edition_or_a_license_manager_is_a_critical_finding_and_the_key_is_dropped(self):
         self.fake.routes['/license'] = {'valid': False, 'active': False, 'hostname': 'dockhand'}
@@ -88,7 +104,7 @@ class Read(Base):
     def test_a_token_that_sees_no_environment_reads_nothing_and_says_what_to_add(self):
         self.fake.routes['/environments'] = (403, 'Forbidden', {'error': 'Permission denied'})
         got = apiread.read(self.db, self.conn, self.row)
-        self.assertEqual(sorted(s['feature'] for s in got['readback']['short']), ['containers', 'environments', 'stacks'])
+        self.assertEqual(sorted(s['feature'] for s in got['readback']['short']), ['containers', 'environments', 'images', 'stacks', 'volumes'])
         self.assertEqual(got['counts'], {})
 
     def test_containers_beside_the_scan_and_the_hook_for_section_6(self):

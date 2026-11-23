@@ -4,12 +4,12 @@ verify and prune jobs, so "is it backed up, and was the backup checked" is read 
     GET /version
     GET /status/datastore-usage                       each datastore the token may see: total, used, available, the estimated full date
     GET /config/datastore                             where each datastore is on disk, compared with the SSH scan's mounts
+    GET /admin/datastore/S/namespace                  namespaces visible to the token
     GET /admin/datastore/S/groups                     backup groups: type, ID, how many snapshots, the last backup, the owner
     GET /admin/datastore/S/snapshots                  snapshots, each with its last verification (ok or failed)
     GET /admin/verify, /admin/prune                   the jobs, with the state of their last run
 
-Field names are those of the API viewer (pbs docs api-viewer/apidoc.js, fetched 2026-11-20). Only the root namespace of each datastore
-is read; backups kept in other namespaces are not. Every parse_ function reads what it can and never raises.
+Reads the root namespace and any additional namespaces visible to the token. Every parse_ function reads what it can and never raises.
 """
 from __future__ import annotations
 
@@ -50,6 +50,11 @@ def parse_config(text: str) -> dict:
     return {'config': out, 'unreadable': bad}
 
 
+def parse_namespaces(text: str) -> dict:
+    items, bad = _items(text)
+    return {'namespaces': list(dict.fromkeys(x['ns'] for x in items if isinstance(x.get('ns'), str) and x['ns'])), 'unreadable': bad}
+
+
 def parse_groups(text: str) -> dict:
     items, bad = _items(text)
     out = []
@@ -88,7 +93,7 @@ def parse_jobs(text: str) -> dict:
 
 
 def read(client, row: dict, rb: dict) -> tuple[list, list]:
-    from .apiconn import ApiError
+    from .apiconn import ApiError, CertificateChanged, NotPinned
     objs, skipped = [('platform', 'version', parse_version(client.get('/version')))], []
     if not (rb.get('features') or {}).get('datastores', {}).get('ok'):
         return objs, ['datastores: the token lacks Datastore.Audit']
@@ -102,17 +107,44 @@ def read(client, row: dict, rb: dict) -> tuple[list, list]:
     for d in usage:
         store = d['store']
         objs.append(('datastore', store, {**d, **(config.get(store) or {})}))
+        path = f'/admin/datastore/{client.seg(store)}'
+        ns_list = ['']
         try:
-            for gr in parse_groups(client.get(f'/admin/datastore/{client.seg(store)}/groups'))['groups']:
-                objs.append(('backup-group', f'{store}/{gr["type"]}/{gr["id"]}', {**gr, 'store': store}))
-            for sn in parse_snapshots(client.get(f'/admin/datastore/{client.seg(store)}/snapshots'))['snapshots']:
-                if count >= MAX_SNAPSHOTS:
-                    skipped.append(f'more than {MAX_SNAPSHOTS} snapshots: the rest was not read')
-                    break
-                count += 1
-                objs.append(('snapshot', f'{store}/{sn["type"]}/{sn["id"]}/{sn["time"]}', {**sn, 'store': store}))
+            namespaces = parse_namespaces(client.get(f'{path}/namespace'))
+            ns_list.extend(namespaces['namespaces'])
+            if namespaces['unreadable']:
+                skipped.append(f'{store} namespaces: the list was not readable')
+        except (CertificateChanged, NotPinned):
+            raise
         except ApiError as exc:
-            skipped.append(f'{store}: {exc}'[:200])
+            skipped.append(f'{store} namespaces: {exc}'[:200])
+        for ns in ns_list:
+            ns_arg = {'ns': ns} if ns else {}
+            ref = f'{store}/{ns}' if ns else store
+            for endpoint, parse, kind in (('groups', parse_groups, 'backup-group'), ('snapshots', parse_snapshots, 'snapshot')):
+                if kind == 'snapshot' and count >= MAX_SNAPSHOTS:
+                    skipped.append(f'snapshot limit of {MAX_SNAPSHOTS} reached')
+                    continue
+                try:
+                    parsed = parse(client.get(f'{path}/{endpoint}', **ns_arg))
+                except (CertificateChanged, NotPinned):
+                    raise
+                except ApiError as exc:
+                    skipped.append(f'{ref} {endpoint}: {exc}'[:200])
+                    continue
+                if parsed['unreadable']:
+                    skipped.append(f'{ref} {endpoint}: the list was not readable')
+                items = parsed[endpoint]
+                if kind == 'snapshot':
+                    if len(items) > MAX_SNAPSHOTS - count:
+                        skipped.append(f'snapshot limit of {MAX_SNAPSHOTS} reached')
+                    items = items[:MAX_SNAPSHOTS - count]
+                    count += len(items)
+                for item in items:
+                    key = f'{ref}/{item["type"]}/{item["id"]}'
+                    if kind == 'snapshot':
+                        key = f'{key}/{item["time"]}'
+                    objs.append((kind, key, {**item, 'store': store, 'ns': ns}))
     for path, kind in (('/admin/verify', 'verify-job'), ('/admin/prune', 'prune-job')):
         try:
             for j in parse_jobs(client.get(path))['jobs']:

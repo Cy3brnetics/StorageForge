@@ -168,6 +168,10 @@ It writes the sections of the SSH scan's inventory it can read from files, in th
 
 A host the controller has no SSH scan key and no deploy access for (roadmap section 11.5): `storageforge-agentctl` is its only way in, and the agent is the only way the controller hears of it.
 
+In **Administration → Enclave, Agent & SSH CA**, choose **Register a monitoring-only Linux host**. After registration, open **Set up monitoring** to download the script and the matching helper. Run the displayed instructions on the host. Compare its SSH public key before pasting the adoption line and submitting it. **Agent records** shows the latest readings, labelled as reports from the agent.
+
+The equivalent API flow is:
+
 1. `POST /api/agents/monitoring` with `{"host", "address", "port", "arch"}` registers it, with its agent switched on in mode `monitoring`. A name or address StorageForge has already is refused: switch the agent on for that host instead.
 2. `GET /api/agents/<host>/setup` gives the setup script, the same one a deploy sends, and `GET /api/agents/program/<arch>` the program it installs. On the host, as root: `bash storageforge-agent-setup.sh ./storageforge-agentctl`. It checks the program by size and sha256, and ends with a line `storageforge-agent-adopt <machine-id> ssh-ed25519 <host key>`.
 3. Compare the host key in that line with the host's own (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`), then `POST /api/agents/<host>/adopt` with `{"line": ...}`. That takes `agent.privilege`: the host key is pinned as a key a person compared, a key already pinned for that address that is another one is refused, and the agent is enrolled through `storageforge-agentctl` as on any host.

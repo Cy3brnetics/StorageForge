@@ -94,6 +94,31 @@ class BrowserVms(unittest.TestCase):
         self.assertEqual(form.locator('input').nth(1).input_value(), 'before-upgrade')
         self.assertEqual(self.errors, [])
 
+    def test_workloads_show_platform_provenance_and_disagreements(self):
+        def inventory(route):
+            response = route.fetch()
+            data = response.json()
+            web = next(w for w in data['workloads'] if w['name'] == 'web')
+            web['api'] = {'connection': 'lab-platform', 'differs': [{'field': 'state', 'api': 'stopped', 'ssh': 'running'}]}
+            data['workloads'].append({'name': 'platform-guest', 'host': 'unscanned', 'runtime': 'docker',
+                                      'kind': 'container', 'source': 'api', 'state': 'running',
+                                      'api': {'connection': 'lab-platform', 'environment': 'remote'}})
+            route.fulfill(response=response, json=data)
+
+        self.page.route('**/api/workloads', inventory)
+        self.page.click('#infrabox .seg button:has-text("Firewall")')
+        self.page.click('#infrabox .seg button:has-text("Workloads")')
+        self.page.locator('#infrabox').get_by_role('button', name='web', exact=True).click()
+        vm = self.page.get_by_role('region', name='VM web')
+        self.assertIn('lab-platform', vm.inner_text())
+        self.assertIn('state stopped running', ' '.join(vm.inner_text().split()))
+        self.page.locator('#infrabox').get_by_role('button', name='platform-guest', exact=True).click()
+        guest = self.page.get_by_role('region', name='Guest platform-guest')
+        self.assertIn('Listed by the platform API only.', guest.inner_text())
+        self.assertIn('unscanned', guest.inner_text())
+        self.assertEqual(guest.get_by_role('button', name='Remove…').count(), 0)
+        self.assertEqual(self.errors, [])
+
     def test_networks_and_pools_under_the_host(self):
         box = self.page.inner_text('#infrabox')
         for want in ('libvirt networks', '192.168.122.1/24', '192.168.122.2-192.168.122.254', 'Storage pools', '/var/lib/libvirt/images', '60.00 GiB of 100.00 GiB'):

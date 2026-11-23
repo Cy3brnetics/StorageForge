@@ -44,7 +44,7 @@ rt_os() { # what this host is: RT_ID RT_VER RT_LIKE RT_CODENAME RT_PM RT_MODE RT
   if [[ -r $root/etc/os-release ]]; then
     IFS=$'\t' read -r RT_ID RT_VER RT_LIKE RT_CODENAME < <(. "$root/etc/os-release"; printf "%s\t%s\t%s\t%s\n" "${ID:-}" "${VERSION_ID:-}" "${ID_LIKE:-}" "${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}")
   fi
-  for m in apt-get dnf yum zypper pacman; do command -v $m >/dev/null && { RT_PM=$m; break; }; done
+  for m in apt-get dnf yum zypper pacman apk; do command -v $m >/dev/null && { RT_PM=$m; break; }; done
   [[ -e $root/run/ostree-booted ]] && RT_MODE=image
   if command -v transactional-update >/dev/null && findmnt -no OPTIONS / 2>/dev/null | grep -qE "(^|,)ro(,|$)"; then RT_MODE=transactional; fi
   return 0
@@ -62,6 +62,7 @@ rt_avail() { # package -> 0 it can be installed (or is), 1 it cannot, 2 not know
       "$RT_PM" -q -C repolist >/dev/null 2>&1 && return 1; return 2 ;;
     zypper) zypper -n --no-refresh -q info "$1" 2>/dev/null | grep -q "^Name *: *$1\$" ;;
     pacman) pacman -Si "$1" >/dev/null 2>&1 || pacman -Qi "$1" >/dev/null 2>&1 ;;
+    apk) apk add --simulate "$1" >/dev/null 2>&1 ;;
     *) return 1 ;;
   esac
 }
@@ -71,6 +72,7 @@ rt_install() { # packages... with this host package manager
     dnf|yum) "$RT_PM" install -y -q "$@" 2>&1 ;;
     zypper) zypper -n -q install "$@" 2>&1 ;;
     pacman) pacman -S --needed --noconfirm "$@" 2>&1 || { echo "(the pacman package lists may be out of date: run pacman -Syu on the host, reboot if the kernel changed, then run this again)"; return 1; } ;;
+    apk) apk add --no-cache "$@" 2>&1 ;;
   esac
 }
 rt_present() { # runtime -> its version on stdout when it is there
@@ -92,7 +94,7 @@ rt_plan() { # runtime source -> RT_PKGS (all needed), RT_OPT (each when there; a
     image) RT_WHY="an image-based system (rpm-ostree): layer the packages with rpm-ostree install and reboot, or run the runtime in a toolbox"; return 1 ;;
     transactional) RT_WHY="a transactional system with a read-only root: install with transactional-update pkg install, then reboot"; return 1 ;;
   esac
-  case $RT_PM in apt-get|dnf|yum|zypper|pacman) ;; *) RT_WHY="no package manager StorageForge knows here (apt, dnf, yum, zypper, pacman)"; return 1 ;; esac
+  case $RT_PM in apt-get|dnf|yum|zypper|pacman|apk) ;; *) RT_WHY="no package manager StorageForge knows here (apt, dnf, yum, zypper, pacman, apk)"; return 1 ;; esac
   case $RT_ARCH in x86_64|aarch64) ;; *) [[ $rt == libvirt ]] && { RT_WHY="libvirt is set up here for x86_64 and aarch64, and this is $RT_ARCH"; return 1; } ;; esac
   if [[ $src == vendor ]]; then
     [[ $rt == docker ]] || { RT_WHY="only Docker is installed from a repository of its own; $rt comes from the distribution"; return 1; }
@@ -110,6 +112,12 @@ rt_plan() { # runtime source -> RT_PKGS (all needed), RT_OPT (each when there; a
     return 0
   fi
   case $rt:$RT_PM in
+    docker:apk) RT_PKGS=(docker); RT_OPT=(docker-compose) ;;
+    podman:apk) RT_PKGS=(podman buildah skopeo) ;;
+    incus:apk) RT_PKGS=(incus) ;;
+    lxc:apk) RT_PKGS=(lxc) ;;
+    libvirt:apk)
+      if [[ $RT_ARCH == x86_64 ]]; then RT_PKGS=(libvirt qemu-system-x86_64); else RT_PKGS=(libvirt qemu-system-aarch64); fi ;;
     docker:apt-get) RT_PKGS=(docker.io); RT_OPT=("docker-compose-v2|docker-compose") ;;
     docker:dnf|docker:yum)
       if [[ $RT_ID == fedora ]]; then RT_PKGS=(moby-engine); RT_OPT=(docker-compose)
@@ -161,6 +169,7 @@ rt_preflight() { # runtime rootless user -> notes, and 1 when something blocks i
       if [[ $rt == docker || $rt == incus ]] && ! modprobe -n br_netfilter >/dev/null 2>&1; then info "no br_netfilter module: firewall rules do not see bridged container traffic"; fi ;;
   esac
   if ((rootless)); then
+    if [[ $RT_PM == apk ]]; then conflict "blocked: apk installs runtime packages; rootless service setup is manual on Alpine"; blocked=1; fi
     n=$(cat "$root/proc/sys/user/max_user_namespaces" 2>/dev/null || echo 1)
     if [[ $n == 0 ]]; then conflict "blocked: user namespaces are turned off (user.max_user_namespaces is 0): rootless containers cannot run"; blocked=1; fi
     if [[ $(cat "$root/proc/sys/kernel/unprivileged_userns_clone" 2>/dev/null || echo 1) == 0 ]]; then conflict "blocked: kernel.unprivileged_userns_clone is 0: rootless containers cannot run until it is 1"; blocked=1; fi
@@ -240,6 +249,10 @@ rt_group() { # user group
 }
 rt_after() { # runtime rootless user: what makes it usable, each looked at before it is done
   local rt=$1 rootless=$2 user=$3 root=${RT_ROOT:-} pools
+  if [[ $RT_PM == apk ]]; then
+    info "Alpine: configure and start any required services separately"
+    return 0
+  fi
   case $rt in
     docker)
       if [[ -e $root/etc/docker/daemon.json ]]; then ok "/etc/docker/daemon.json is there and left as it is"
@@ -336,8 +349,8 @@ def _check(conn, c, h, p, say):
         say('note', f'rescan {h["name"]} to see here which packages it would get; the report on the host says present, installable or blocked')
     elif mode in ('image', 'transactional', 'readonly'):
         say('crit', f'{h["name"]} is an {"image-based" if mode == "image" else "read-only" if mode == "readonly" else "transactional"} system: packages are not installed on it this way')
-    elif pm not in ('apt-get', 'dnf', 'yum', 'zypper', 'pacman'):
-        say('crit', f'{h["name"]} has no package manager this step knows (apt, dnf, yum, zypper, pacman)')
+    elif pm not in ('apt-get', 'dnf', 'yum', 'zypper', 'pacman', 'apk'):
+        say('crit', f'{h["name"]} has no package manager this step knows (apt, dnf, yum, zypper, pacman, apk)')
     elif rt == 'docker' and src == 'distro' and pm in ('dnf', 'yum') and distro != 'fedora':
         say('crit', f'{distro or "this host"} carries Podman and not Docker: choose the Docker repository as the source, or Podman')
     elif rt == 'docker' and src == 'vendor' and not (pm == 'apt-get' and distro in ('debian', 'ubuntu') or pm in ('dnf', 'yum') and (distro == 'fedora' or distro in RHEL_LIKE)):
@@ -346,7 +359,11 @@ def _check(conn, c, h, p, say):
         say('note', f'adds the Docker repository; its signing key is installed only if its fingerprint is the pinned one ({DOCKER_APT_FPR if pm == "apt-get" else DOCKER_RPM_FPR})')
     if rt == 'libvirt':
         say('note', 'VMs need hardware virtualization: the report says whether /dev/kvm is there and whether nested virtualization is on')
-    if rt == 'incus':
+    if pm == 'apk':
+        say('note', 'Alpine: this step installs packages. Service setup is manual.')
+        if p.get('rootless'):
+            say('crit', 'this step does not configure rootless services on Alpine')
+    elif rt == 'incus':
         say('note', 'a new Incus gets incus admin init --minimal: a storage pool in a folder and the bridge incusbr0')
     say('note', 'the report changes nothing and says present, installable or blocked, with why. Nothing is installed by a script fetched from the network')
 

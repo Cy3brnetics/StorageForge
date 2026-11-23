@@ -80,7 +80,13 @@ def parse_packet(data: bytes, now: float | None = None) -> list[dict]:
     else:
         for n, raw in enumerate(text.split('\n')):
             if raw.strip():
-                out.append((6, raw, f'nc|p|{now}|{n}|{raw}'))
+                # check for syslog priority prefix <N> (0-7)
+                pm = re.match(r'^<([0-7])>(.*)$', raw)
+                if pm:
+                    prio, msg = int(pm[1]), pm[2]
+                else:
+                    prio, msg = 6, raw
+                out.append((prio, msg, f'nc|p|{now}|{n}|{msg}'))
     lines = []
     for priority, message, key in out:
         message = hostlogs.scrub(hostlogs._text(message, hostlogs.MESSAGE_CHARS))

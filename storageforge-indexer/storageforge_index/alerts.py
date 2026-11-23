@@ -497,6 +497,24 @@ def cert_problems() -> dict:
     return {f'cert-{level}': (f'cert-{level}', 'tls', f'The HTTPS certificate {text}', 'See "Certificates" in docs/operations.md', level)}
 
 
+def openvpn_cert_problems(conn: Conn) -> dict:
+    """OpenVPN certificates near expiry and CRLs past their next update."""
+    from . import overlays
+    out = {}
+    now = time.time()
+    for host, data in conn.all("""SELECT h.hostname, m.data_json FROM security_measurements m
+                                  JOIN hosts h ON lower(h.hostname) = lower(m.host) WHERE m.kind = 'infra'"""):
+        r = loads(data) or {}
+        for o in (r.get('access') or {}).get('overlays') or []:
+            if o.get('network') == 'openvpn' and o.get('pki'):
+                c = overlays.certificate_counts(o['pki'], now)
+                if c.get('crl_ended'):
+                    out[f'openvpn-crl-ended:{host}'] = ('openvpn-crl-ended', host, f'OpenVPN CRL on {host} has expired', 'OpenVPN refuses all clients until CRL is updated', 'crit')
+                if c.get('ending'):
+                    out[f'openvpn-cert-ending:{host}'] = ('openvpn-cert-ending', host, f'OpenVPN certificates ending soon on {host}', f'{len(c["ending"])} certificate(s) ending within 30 days', 'warn')
+    return out
+
+
 # ── evaluation ──────────────────────────────────────────────────────
 def _map_problems(conn: Conn) -> dict:
     from .infragraph import problems as map_problems
@@ -510,7 +528,7 @@ def _device_problems(conn: Conn) -> dict:
 
 def problems(conn: Conn) -> dict:
     from . import agentwatch, authkeys, clamav, copies, enclave, jobs, loganomaly, logrules, netscan, pstore, rotate_keys, scheduler, security, selfupdate, sfnetwork, site, sshcerts, tbfeeds, traffic
-    now = {**agentwatch.problems(conn), **enclave.problems(), **rotate_keys.problems(conn), **logrules.problems(conn), **loganomaly.problems(conn), **pstore.problems(conn), **scan_problems(conn), **backup_problems(conn), **cert_problems(), **selfupdate.problems(), **sfnetwork.problems(conn), **site.shared_problems(conn), **copies.problems(conn),
+    now = {**agentwatch.problems(conn), **enclave.problems(), **rotate_keys.problems(conn), **logrules.problems(conn), **loganomaly.problems(conn), **pstore.problems(conn), **scan_problems(conn), **backup_problems(conn), **cert_problems(), **openvpn_cert_problems(conn), **selfupdate.problems(), **sfnetwork.problems(conn), **site.shared_problems(conn), **copies.problems(conn),
            **authkeys.problems(conn), **clamav.problems(conn), **security.problems(conn), **_map_problems(conn), **_device_problems(conn), **sshcerts.problems(conn), **tbfeeds.problems(conn), **netscan.problems(conn), **traffic.problems(conn)}
     for j in jobs.overview(conn):
         if j['state'] == 'failed':

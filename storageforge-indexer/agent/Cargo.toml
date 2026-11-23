@@ -55,6 +55,7 @@ path = "src/bin/plugin-sentinel.rs"
 base64 = "0.22"
 ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
 libc = "0.2"
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 lz4_flex = { version = "0.11.7", default-features = false, features = ["safe-decode"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 ruzstd = { version = "0.8.2", default-features = false, features = ["std"] }

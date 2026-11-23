@@ -38,6 +38,90 @@ function agentLine(a) {
     a.runtime ? ` · ${a.runtime}` : '', a.fingerprint ? sfNode('span', { class: 'muted small' }, ` · ${a.fingerprint}`) : null);
 }
 
+function agentMonitoringForm() {
+  const host = sfNode('input', { required: true, maxlength: 100, autocomplete: 'off', spellcheck: false });
+  const address = sfNode('input', { required: true, maxlength: 255, autocomplete: 'off', spellcheck: false });
+  const port = sfNode('input', { type: 'number', min: 1, max: 65535, value: 22, required: true });
+  const arch = sfNode('select', {}, new Option('x86-64', 'x86_64'), new Option('ARM64', 'aarch64'));
+  const label = (name, field) => sfNode('label', { class: 'sf-field' }, sfNode('span', {}, name), field);
+  const submit = sfNode('button', { type: 'submit', class: 'btn pri sm' }, 'Register host');
+  const form = sfNode('form', { class: 'stack' },
+    label('Host name', host), label('SSH address', address), label('SSH port', port), label('Architecture', arch), submit);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    try {
+      const res = await postJSON('/api/agents/monitoring', {
+        host: host.value.trim(), address: address.value.trim(), port: Number(port.value), arch: arch.value,
+      }, { busy: submit });
+      const registered = await res.json();
+      await loadAgents();
+      notify(`${registered.host} registered. Open its setup instructions to continue.`);
+    } catch (err) { notify(err.message, 'error'); }
+  });
+  return sfNode('details', {}, sfNode('summary', {}, 'Register a monitoring-only Linux host'), form);
+}
+
+function agentMonitoringSetup(host) {
+  const path = `/api/agents/${encodeURIComponent(host)}`;
+  const panel = sfNode('div', { class: 'stack' });
+  const load = button('Get setup instructions', async () => {
+    try {
+      const setup = await getJSON(`${path}/setup`);
+      const scriptName = setup.platform === 'windows' ? 'storageforge-agent-setup.ps1' : 'storageforge-agent-setup.sh';
+      const script = button('Download setup script', () => {
+        const url = URL.createObjectURL(new Blob([setup.script], { type: 'text/plain' }));
+        const a = sfNode('a', { href: url, download: scriptName });
+        document.body.append(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      }, 'btn ghost sm');
+      const program = setup.platform === 'linux' ? button('Download storageforge-agentctl', () =>
+        download(`/api/agents/program/${encodeURIComponent(setup.arch)}`, 'storageforge-agentctl'), 'btn ghost sm') : null;
+      panel.replaceChildren(sfNode('p', {}, setup.how), sfNode('div', { class: 'row wrap' }, script, program));
+    } catch (err) { panel.replaceChildren(sfNode('p', { class: 'st-failed' }, err.message)); }
+  }, 'btn ghost sm');
+  const kids = [sfNode('summary', {}, 'Set up monitoring'), load, panel];
+  if (can('agent.privilege')) {
+    const line = sfNode('textarea', { required: true, maxlength: 2000, rows: 2, spellcheck: false, autocomplete: 'off' });
+    const confirmed = sfNode('input', { type: 'checkbox', required: true });
+    const submit = sfNode('button', { type: 'submit', class: 'btn pri sm' }, 'Adopt host');
+    const form = sfNode('form', { class: 'stack' },
+      sfNode('label', { class: 'sf-field' }, sfNode('span', {}, 'Line beginning storageforge-agent-adopt'), line),
+      sfNode('label', { class: 'check' }, confirmed, 'I compared the key in this line with the host’s own SSH public key.'),
+      submit);
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      try {
+        const res = await postJSON(`${path}/adopt`, { line: line.value.trim() }, { busy: submit });
+        const adopted = await res.json();
+        await loadAgents();
+        notify(`${adopted.host}: ${adopted.state}.`);
+      } catch (err) { notify(err.message, 'error'); }
+    });
+    kids.push(form);
+  }
+  return sfNode('details', { class: 'stack' }, ...kids);
+}
+
+function agentRecords(host) {
+  const panel = sfNode('div', { class: 'stack' });
+  const refresh = button('Load recent records', async () => {
+    try {
+      const data = await getJSON(`/api/agents/${encodeURIComponent(host)}/records?limit=30`);
+      const records = (data.records || []).map((record) => sfNode('details', {},
+        sfNode('summary', {}, `${record.plugin} · ${record.kind} · `, timeEl(record.received_at)),
+        sfNode('pre', {}, JSON.stringify(record.body, null, 2))));
+      const actions = (data.actions || []).map((action) => sfNode('li', {},
+        timeEl(action.at), ` · ${action.action} · ${action.outcome}`, action.detail ? ` · ${action.detail}` : ''));
+      panel.replaceChildren(sfNode('p', { class: 'muted small' }, data.label),
+        ...(records.length ? records : [sfNode('p', {}, 'No records received.')]),
+        ...(actions.length ? [sfNode('h4', {}, 'Recent actions'), sfNode('ul', {}, ...actions)] : []));
+    } catch (err) { panel.replaceChildren(sfNode('p', { class: 'st-failed' }, err.message)); }
+  }, 'btn ghost sm');
+  return sfNode('details', { class: 'stack' }, sfNode('summary', {}, 'Agent records'), refresh, panel);
+}
+
 async function loadAgents() {
   const box = document.getElementById('agentbox');
   if (!box) return;
@@ -46,9 +130,12 @@ async function loadAgents() {
   const enrolled = (d.agents || []).filter((a) => a.state && a.state !== 'off');
   const kids = [sfNode('h3', {}, 'Agents'),
     sfNode('p', { class: 'muted small' }, 'The agent is an extra, switched on one host at a time: readings as they happen. Built, not lab-tested. See docs/agent.md.')];
+  if (can('keys.manage')) kids.push(agentMonitoringForm());
   if (!enrolled.length) kids.push(sfNode('p', { class: 'muted' }, 'No host runs the agent.'));
   for (const a of enrolled) {
     kids.push(agentLine(a));
+    if (can('hosts.view')) kids.push(agentRecords(a.host));
+    if (a.mode === 'monitoring' && a.state !== 'running' && can('keys.manage')) kids.push(agentMonitoringSetup(a.host));
     if (a.state === 'running' && can('keys.manage') && (d.plugins || []).length) {
       const det = sfNode('details', {}, sfNode('summary', {}, 'Plugins'), agentPluginsForm(a.host, d.plugins, a.plugins || []));
       kids.push(det);

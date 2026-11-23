@@ -33,6 +33,7 @@ SCAN_SECONDS = 60 * 60              # a scan keeps one connection, and opens ano
 HOST_SECONDS = 90 * 24 * 3600
 HOST_RENEW_SECONDS = 14 * 24 * 3600
 PURPOSES = ('console', 'scan')
+LOGIN_SECONDS = {'console': CONSOLE_SECONDS, 'scan': SCAN_SECONDS, 'user': 24 * 3600}
 KRL_VERSION_KEY = 'sshca.krl_version'
 KEEP_SECONDS = 90 * 24 * 3600       # how long the row of an ended certificate is kept
 MAX_LISTED = 8000                   # revoked certificates that have not ended. The list reaches a host as one word of a script, which the kernel caps at 128 KiB
@@ -153,23 +154,23 @@ def _record(conn: Conn, kind: str, purpose: str, host: str, key_id: str, princip
 
 
 def issue_user(vault, *, host: str, user: str, key_name: str, purpose: str, actor: str, source_addresses: list[str] | None = None) -> dict:
-    """A certificate for the vault key key_name to log in as user on host (its StorageForge name), for the console or a scan.
-    The console gets a terminal and nothing else; a scan gets not even that. No forwarding of any kind in either."""
-    if purpose not in PURPOSES:
-        raise CAError('a login certificate is for the console or for a scan')
+    """A certificate for the vault key key_name to log in as user on host (its StorageForge name), for the console, a scan, or a person.
+    Interactive sessions get a terminal. None of these certificates permits forwarding."""
+    if purpose not in LOGIN_SECONDS:
+        raise CAError('unknown login certificate purpose')
     conn = vault.conn
     ca = ca_public(conn)
     if not ca:
         raise CAError('there is no SSH CA yet: make it under Keys')
     subject = vault.public_key(key_name)
     who = principal(user, host)
-    seconds = CONSOLE_SECONDS if purpose == 'console' else SCAN_SECONDS
+    seconds = LOGIN_SECONDS[purpose]
     key_id = f'storageforge {purpose} {host} {actor}'[:200]
     key_id = key_id if sshca.KEY_ID.fullmatch(key_id) else f'storageforge {purpose} {host}'
     sign = signer(vault)
     serial, line = _record(conn, 'user', purpose, host, key_id, [who], subject, seconds, actor,
                            lambda serial, now: sshca.issue(subject, ca, sign, key_id=key_id, principals=[who], serial=serial, seconds=seconds, now=now,
-                                                           extensions=('permit-pty',) if purpose == 'console' else (), source_addresses=source_addresses))
+                                                           extensions=('permit-pty',) if purpose in ('console', 'user') else (), source_addresses=source_addresses))
     return {'serial': serial, 'certificate': line, 'principal': who, 'seconds': seconds, 'key_id': key_id}
 
 

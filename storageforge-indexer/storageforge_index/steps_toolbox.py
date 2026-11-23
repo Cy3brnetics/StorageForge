@@ -10,7 +10,7 @@ tool-install       a catalog entry by one of its methods. The step holds the too
   compose          a compose stack made from the entry (t_stack of steps_workloads.py), kept in /srv/toolbox/<tool>/compose.
   package          the distribution's packages, from the sources the host already has; units enabled; a socket bound to the address
                    the exposure says with a drop-in.
-  binary           downloaded over HTTPS on the host and installed in /usr/local/bin only when its SHA-256 is the entry's.
+  binary           downloaded over HTTPS and checked by SHA-256. An optional tar.gz member is checked separately before install.
 tool-remove        stops and takes away what the install made, from its record. Data folders stay, and the report lists them.
 tool-data-remove   moves those folders into the host's trash. Destructive: type the tool's name again.
 
@@ -174,21 +174,138 @@ tb_package() { local tool=$1 apt=$2 dnf=$3 zypper=$4 pacman=$5 units=$6 sock=$7 
   fi
   return 0
 }
-tb_binary() { local tool=$1 name=$2 u86=$3 s86=$4 uarm=$5 sarm=$6 url= sha= dest=/usr/local/bin/$2 tmp have
-  case $(uname -m) in x86_64) url=$u86 sha=$s86 ;; aarch64) url=$uarm sha=$sarm ;; esac
+tb_archive_member() {
+  python3 - "$1" "$2" "$3" <<\PYARCHIVE
+import gzip
+import shutil
+import sys
+import tarfile
+
+archive, member, destination = sys.argv[1:]
+limit = 512 * 1024 * 1024
+
+class Bounded:
+    def __init__(self, source):
+        self.source = source
+        self.left = limit
+
+    def read(self, size):
+        data = self.source.read(min(size, self.left + 1))
+        self.left -= len(data)
+        if self.left < 0:
+            raise ValueError("archive exceeds the uncompressed size limit")
+        return data
+
+try:
+    with gzip.open(archive, "rb") as gzip_file, tarfile.open(fileobj=Bounded(gzip_file), mode="r|") as tar:
+        found = False
+        for item in tar:
+            name = item.name[2:] if item.name.startswith("./") else item.name
+            if name != member:
+                continue
+            if found or item.type not in (tarfile.REGTYPE, tarfile.AREGTYPE) or item.issparse() or not 0 < item.size <= limit:
+                raise ValueError("the selected member must be one nonempty regular file")
+            with tar.extractfile(item) as source, open(destination, "wb") as output:
+                shutil.copyfileobj(source, output)
+            found = True
+        if not found:
+            raise ValueError("archive member was not found")
+except (OSError, ValueError, EOFError, tarfile.TarError) as exc:
+    sys.exit(str(exc))
+PYARCHIVE
+}
+tb_binary() { local tool=$1 name=$2 u86=$3 s86=$4 uarm=$5 sarm=$6 url= sha= member= payload_sha= dest=/usr/local/bin/$2 tmp have payload verifier= sig= key= matches=0 sig_limit=16384
+  case $(uname -m) in
+    x86_64) url=$u86 sha=$s86 member=${7:-} payload_sha=${8:-$s86} verifier=${11:-} sig=${12:-} key=${13:-} ;;
+    aarch64) url=$uarm sha=$sarm member=${9:-} payload_sha=${10:-$sarm} verifier=${14:-} sig=${15:-} key=${16:-} ;;
+  esac
   [[ -n $url ]] || { conflict "$tool has no binary for $(uname -m)"; return 0; }
-  if [[ -f $dest ]] && [[ $(sha256sum "$dest" | cut -c1-64) == "$sha" ]]; then ok "$dest is there, SHA-256 $sha"; return 0; fi
-  if [[ -e $dest && ! -e @HOME@/.binaries/$name ]]; then conflict "$dest is there and StorageForge did not put it there: it is left as it is"; return 0; fi
-  [[ -e $dest ]] && info "$dest is the one this tool installed before: it is replaced"
-  act "download $url and install it as $dest, once its SHA-256 is $sha" || return 0
+  if [[ -f $dest ]] && [[ $(sha256sum "$dest" | cut -c1-64) == "$payload_sha" ]]; then matches=1; fi
+  if ((matches)) && [[ -z $verifier ]]; then ok "$dest is there, SHA-256 $payload_sha"; return 0; fi
+  if ((!matches)) && [[ -e $dest && ! -e @HOME@/.binaries/$name ]]; then conflict "$dest is there and StorageForge did not put it there: it is left as it is"; return 0; fi
+  if [[ -n $member ]] && ! command -v python3 >/dev/null; then conflict "python3 is needed to read the binary archive"; return 0; fi
+  case $verifier in
+    "") ;;
+    cosign|minisign)
+      command -v "$verifier" >/dev/null || { conflict "$verifier is needed to verify the publisher signature"; return 0; }
+      info "verify the download against the catalog $verifier public key" ;;
+    *) conflict "unknown publisher signature verifier"; return 0 ;;
+  esac
+  if ((matches)); then
+    act "verify the publisher signature for $dest" || return 0
+  else
+    [[ -e $dest ]] && info "$dest is the one this tool installed before: it is replaced"
+    act "download $url and install ${member:-it} as $dest, once the download SHA-256 is $sha" || return 0
+  fi
   command -v curl >/dev/null || { conflict "curl is not installed"; return 0; }
-  tmp=$(mktemp) || { conflict "could not make a temporary file"; return 0; }
-  if ! curl -fsSL --proto =https --tlsv1.2 --retry 3 --max-filesize 536870912 -o "$tmp" "$url"; then rm -f -- "$tmp"; conflict "could not download $url"; return 0; fi
-  have=$(sha256sum "$tmp" | cut -c1-64)
-  if [[ $have != "$sha" ]]; then rm -f -- "$tmp"; conflict "$url has SHA-256 $have, not $sha: nothing was installed"; return 0; fi
-  install -m 0755 -- "$tmp" "$dest"; rm -f -- "$tmp"
-  install -d -m 0755 -- @HOME@/.binaries && : >"@HOME@/.binaries/$name"
-  ok "$dest installed, SHA-256 $sha"
+  tmp=$(mktemp -d) || { conflict "could not make a temporary directory"; return 0; }
+  payload=$tmp/download
+  if ! curl -fsSL --proto =https --tlsv1.2 --retry 3 --max-filesize 536870912 -o "$payload" "$url"; then rm -rf -- "$tmp"; conflict "could not download $url"; return 0; fi
+  have=$(sha256sum "$payload" | cut -c1-64)
+  if [[ $have != "$sha" ]]; then rm -rf -- "$tmp"; conflict "$url has SHA-256 $have, not $sha: nothing was installed"; return 0; fi
+  if [[ -n $verifier ]]; then
+    [[ $verifier == cosign ]] && sig_limit=1048576
+    if ! curl -fsSL --proto =https --tlsv1.2 --retry 3 --max-filesize "$sig_limit" -o "$tmp/signature" "$sig" ||
+       [[ $(wc -c <"$tmp/signature") -gt $sig_limit ]]; then
+      rm -rf -- "$tmp"; conflict "could not download the $verifier signature"; return 0
+    fi
+    local verified=0
+    case $verifier in
+      minisign)
+        minisign -Vm "$payload" -x "$tmp/signature" -P "$key" -q >/dev/null 2>&1 && verified=1 ;;
+      cosign)
+        if printf "%s" "$key" >"$tmp/publisher.pub" &&
+           cosign verify-blob --bundle "$tmp/signature" --key "$tmp/publisher.pub" "$payload" >/dev/null 2>&1; then
+          verified=1
+        fi ;;
+    esac
+    if ((!verified)); then
+      rm -rf -- "$tmp"; conflict "the $verifier publisher signature did not verify"; return 0
+    fi
+    info "$verifier publisher signature verified"
+  fi
+  if [[ -n $member ]]; then
+    if ! tb_archive_member "$payload" "$member" "$tmp/program"; then rm -rf -- "$tmp"; conflict "could not read archive member $member"; return 0; fi
+    payload=$tmp/program
+    have=$(sha256sum "$payload" | cut -c1-64)
+    if [[ $have != "$payload_sha" ]]; then rm -rf -- "$tmp"; conflict "$member has SHA-256 $have, not $payload_sha: nothing was installed"; return 0; fi
+  fi
+  if ((matches)); then
+    rm -rf -- "$tmp"
+    ok "$dest is there, SHA-256 $payload_sha"
+    return 0
+  fi
+  if ! install -d -m 0755 -- @HOME@/.binaries || ! install -m 0755 -- "$payload" "$dest"; then
+    rm -rf -- "$tmp"; conflict "could not install $dest"; return 0
+  fi
+  rm -rf -- "$tmp"
+  if ! : >"@HOME@/.binaries/$name"; then conflict "could not record ownership of $dest"; return 0; fi
+  ok "$dest installed, SHA-256 $payload_sha"
+}
+tb_verify_images() { # image/key pairs from the catalog
+  [[ -n ${1:-} ]] || return 0
+  command -v cosign >/dev/null || { conflict "cosign is needed to verify the images before installation"; return 1; }
+  local ref key repository digest pub
+  while [[ -n ${1:-} ]]; do
+    ref=$1 key=$2; shift 2
+    if ((!APPLY)); then
+      info "on apply, verify $ref with the catalog Cosign public key"
+      continue
+    fi
+    # The catalog and runtime use tag@digest. Verify the same digest without its informational tag.
+    repository=${ref%@sha256:*}
+    digest=${ref##*@}
+    pub=$(mktemp) || { conflict "could not make a temporary public key file"; return 1; }
+    if ! printf "%s" "$key" >"$pub" ||
+       ! cosign verify --key "$pub" "${repository%:*}@$digest" >/dev/null 2>&1; then
+      rm -f -- "$pub"
+      conflict "Cosign could not verify $ref with the catalog publisher key"
+      return 1
+    fi
+    rm -f -- "$pub"
+    ok "Cosign verified $ref"
+  done
+  return 0
 }
 t_tool_install() { local tool=$1 method=$2 sha=$3 ovr=$4 exposure=$5 bind=$6 allow=$7 verdict=$8 why=$9
   shift 9
@@ -196,11 +313,15 @@ t_tool_install() { local tool=$1 method=$2 sha=$3 ovr=$4 exposure=$5 bind=$6 all
   info "$why"
   info "exposure: ${exposure:-as the entry says}${bind:+, bound to $bind}${allow:+, reached only from $allow}"
   case $method in
+    container|quadlet) tb_verify_images "${@:9}" || return 0 ;;
+    compose) tb_verify_images "${@:11}" || return 0 ;;
+  esac
+  case $method in
     container) tb_container "$tool" 1 "$1" "$2" "$3" "$4" "$5" "$allow" "${6:-}" "${7:-}" "${8:-}" ;;
     quadlet) tb_container "$tool" 0 "$1" "$2" "$3" "$4" "$5" "$allow" "${6:-}" "${7:-}" "${8:-}" ;;
     compose) tb_compose "$tool" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$allow" "${8:-}" "${9:-}" "${10:-}" ;;
     package) tb_package "$tool" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" ;;
-    binary) tb_binary "$tool" "$1" "$2" "$3" "$4" "$5" ;;
+    binary) tb_binary "$tool" "$@" ;;
     *) conflict "$method is not an install method" ;;
   esac
   return 0

@@ -9,12 +9,15 @@ import json
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import dbfactory
 import test_agent
-from storageforge_index import agentmonitor, deploy, sfagent
+from storageforge_index import agentmonitor, deploy, server, sfagent, users
+from storageforge_index.db import Database
 from storageforge_index.remote import known_host_keys
 from storageforge_index.runner import known_hosts_path
 
@@ -95,6 +98,12 @@ class Features(unittest.TestCase):
         self.db.migrate(self.conn)
         agentmonitor.register(self.conn, 'quiet', '10.0.0.7', 22, 'arm64', 'test')
 
+    def test_registration_rolls_back_if_the_agent_cannot_be_enabled(self):
+        with mock.patch.object(sfagent, 'switch', side_effect=sfagent.AgentError('cannot enable')):
+            with self.assertRaisesRegex(sfagent.AgentError, 'cannot enable'):
+                agentmonitor.register(self.conn, 'other', '192.0.2.11', 22, 'x86_64', 'test')
+        self.assertIsNone(self.conn.scalar("SELECT hostname FROM hosts WHERE hostname = 'other'"))
+
     def test_deploys_and_everything_over_ssh_as_root_are_refused_with_the_reason(self):
         got = deploy.run(self.db, 'quiet', 'echo hello', kind='nfs', mode='apply', actor='test', require_ready=False)
         self.assertEqual(got['status'], 'failed')
@@ -107,6 +116,63 @@ class Features(unittest.TestCase):
         self.assertEqual(sfagent.host_arch(self.conn, 'quiet'), 'aarch64')
         listed = {a['host']: a for a in sfagent.view(self.conn)}
         self.assertEqual(listed['quiet']['mode'], 'monitoring')
+
+
+class BrowserMonitoring(unittest.TestCase):
+    def test_register_setup_adopt_and_view_agent_records(self):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self.skipTest('needs Playwright')
+        from werkzeug.serving import make_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(f'sqlite:///{tmp}/index.db')
+            conn = db.connect()
+            db.migrate(conn)
+            password = 'a long enough password'
+            users.create(conn, 'admin', password, 'admin')
+            conn.close()
+            http = make_server('127.0.0.1', 0, server.create_app(server.App(db), 's' * 48), threaded=True)
+            threading.Thread(target=http.serve_forever, daemon=True).start()
+            self.addCleanup(http.server_close)
+            self.addCleanup(http.shutdown)
+            base = f'http://127.0.0.1:{http.server_port}'
+            setup = {'platform': 'linux', 'arch': 'x86_64', 'script': '# example', 'how': 'Compare the host key before adopting.'}
+            adopted = {'host': 'quiet', 'state': 'running'}
+            with (mock.patch.object(agentmonitor, 'setup', return_value=setup),
+                  mock.patch.object(agentmonitor, 'adopt', return_value=adopted) as adopt,
+                  sync_playwright() as pw):
+                browser = pw.chromium.launch()
+                try:
+                    page = browser.new_page()
+                    self.assertTrue(page.request.post(base + '/api/login', data={'username': 'admin', 'password': password}).ok)
+                    page.goto(base + '/admin#/enclave')
+                    box = page.locator('#agentbox')
+                    box.get_by_text('Register a monitoring-only Linux host').click()
+                    box.get_by_label('Host name').fill('quiet')
+                    box.get_by_label('SSH address').fill('192.0.2.10')
+                    box.get_by_role('button', name='Register host').click()
+                    box.get_by_text('Set up monitoring').click()
+                    box.get_by_role('button', name='Get setup instructions').click()
+                    box.get_by_text(setup['how']).wait_for()
+                    with page.expect_download() as item:
+                        box.get_by_role('button', name='Download setup script').click()
+                    self.assertEqual(item.value.suggested_filename, 'storageforge-agent-setup.sh')
+                    line = 'storageforge-agent-adopt test host key'
+                    box.get_by_label('Line beginning storageforge-agent-adopt').fill(line)
+                    box.get_by_role('button', name='Adopt host').click()
+                    adopt.assert_not_called()
+                    box.get_by_role('checkbox', name='I compared the key', exact=False).check()
+                    with page.expect_response(lambda r: r.url.endswith('/api/agents/quiet/adopt')) as response:
+                        box.get_by_role('button', name='Adopt host').click()
+                    self.assertTrue(response.value.ok)
+                    self.assertEqual(adopt.call_args.args[1:3], ('quiet', line))
+                    box.get_by_text('Agent records', exact=True).click()
+                    box.get_by_role('button', name='Load recent records').click()
+                    box.get_by_text('No records received.').wait_for()
+                finally:
+                    browser.close()
 
 
 if __name__ == '__main__':

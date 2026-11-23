@@ -48,6 +48,22 @@ def register(web, ctx):
         core.audit(conn(), actor(), 'sshca.issue', 'ok', made['host'], {'kind': 'host', 'serial': str(made['serial']), 'principals': made['principals'], 'expires_at': made['expires_at']})
         return jsonify(made | {'serial': str(made['serial'])}), 201
 
+    @web.post('/api/keys/ssh-ca/user-certificate')
+    @login_required
+    @password_confirmed
+    def api_sshca_user_certificate():
+        body = json_body()
+        user = str(body.get('user') or '').strip()
+        host = str(body.get('host') or '').strip()
+        key_name = str(body.get('key_name') or '').strip()
+        if not user or not host or not key_name:
+            raise ValueError('give a host, SSH user and vault key name')
+        host = sshcerts._known_host(conn(), host)
+        with Vault(db, conn()).unlock() as v:
+            made = sshcerts.issue_user(v, host=host, user=user, key_name=key_name, purpose='user', actor=actor())
+        core.audit(conn(), actor(), 'sshca.issue', 'ok', host, {'kind': 'user', 'serial': str(made['serial']), 'principal': made['principal']})
+        return jsonify(made | {'serial': str(made['serial'])}), 201
+
     @web.post('/api/keys/ssh-ca/certificates/<int:serial>/revoke')
     @login_required
     @password_confirmed

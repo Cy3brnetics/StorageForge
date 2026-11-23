@@ -70,6 +70,18 @@ class Kept(unittest.TestCase):
 
 
 class Authority(Kept):
+
+    def test_user_certificate_route_issue(self):
+        sshcerts.ensure_ca(self.vault)
+        c = server.create_app(server.App(self.db), 's' * 48).test_client()
+        users.create(self.conn, 'admin', PW, 'admin')
+        c.post('/api/login', json={'username': 'admin', 'password': PW})
+        res = c.post('/api/keys/ssh-ca/user-certificate', json={'key_name': 'scan-key', 'user': 'alice', 'host': 'nas'})
+        self.assertEqual(res.status_code, 201)
+        cert = self.read(res.get_json()['certificate'])
+        self.assertEqual(cert.valid_principals, [b'alice@nas'])
+        self.assertEqual(cert.extensions, {b'permit-pty': b''})
+
     def test_the_ca_is_one_vault_key_that_logs_in_nowhere(self):
         self.assertIsNone(sshcerts.ca_public(self.conn))
         made = sshcerts.ensure_ca(self.vault)
@@ -572,7 +584,7 @@ except ImportError:
 class BrowserSshCa(Kept):
     """Keys, SSH certificates, in a real browser: the CA is made, a host is opted in, trust is staged as a plan, a certificate is revoked."""
 
-    def test_the_section_under_keys(self):
+    def test_the_section_under_enclave(self):
         import threading
         from werkzeug.serving import make_server
         users.create(self.conn, 'admin', PW, 'admin')
@@ -592,7 +604,8 @@ class BrowserSshCa(Kept):
         page.press('input[type=password]', 'Enter')
         page.wait_for_url(base + '/**')
         page.wait_for_selector('html[data-route-ready]', state='attached')
-        page.evaluate("showTab('keys')")
+        page.goto(base + '/admin#/enclave')
+        page.wait_for_selector('html[data-route-ready]', state='attached')
         page.click('#sshcabox button:has-text("Make the SSH CA")')
         page.wait_for_selector('#sshcabox code.pub')
         self.assertEqual(page.inner_text('#sshcabox code.pub'), sshcerts.ca_public(self.conn))

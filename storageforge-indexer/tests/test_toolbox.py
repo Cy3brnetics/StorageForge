@@ -95,6 +95,12 @@ class Schema(Base):
         self.assertEqual(man['entries'], {k: toolbox.sha256(v) for k, v in texts.items()},
                          'an entry changed: python -m storageforge_index.toolbox manifest SERIAL writes the manifest again')
 
+    def test_an_unreadable_packaged_entry_does_not_hide_the_catalog(self):
+        (self.cat / 'cockpit.yaml').write_bytes(b'\xff')
+        entries = toolbox.packaged()['entries']
+        self.assertEqual(entries['cockpit']['state'], 'refused')
+        self.assertIn(entries['wireguard']['state'], ('packaged', 'signed'))
+
     def test_what_an_entry_may_not_say(self):
         def problems(old, new):
             text = CUSTOM.replace(old, new)
@@ -118,6 +124,31 @@ class Schema(Base):
         self.assertIn('health.url', problems('gui:\n', 'health: {url: "http://10.0.0.1/"}\ngui:\n'))
         self.assertIn('env X is NAME', problems('      ports:', '      env: {X: "%h"}\n      ports:'))
         self.assertEqual(toolbox.load_entry('just: [a list')[1][0][:8], 'not YAML')
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        pub = ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        ).decode()
+        self.assertIn('must be a PEM public key', problems('      ports:', '      cosign: {public_key: "not-a-pem"}\n      ports:'))
+        self.assertIn('explicit registry host', problems(
+            '      image: docker.io/traefik/whoami:v1.10.3@sha256:' + '1' * 64,
+            f'      image: library/whoami:v1.10.3@sha256:{"1" * 64}\n      cosign: {{public_key: {json.dumps(pub)}}}',
+        ))
+        self.assertIn('cosign is for an image', ' '.join(toolbox.load_entry(pkg + f'      cosign: {{public_key: {json.dumps(pub)}}}\n')[1]))
+        compose_entry = CUSTOM.replace('kind: container', 'kind: compose').replace(
+            '      ports: ["8099:80/tcp"]\n',
+            f'      cosign: {{public_key: {json.dumps(pub)}}}\n      ports: ["8099:80/tcp"]\n'
+            f'      sidecars:\n        - name: db\n          image: docker.io/library/postgres:16@sha256:{"2" * 64}\n',
+        )
+        self.assertIn('main image and every sidecar', ' '.join(toolbox.load_entry(compose_entry)[1]))
+        with_sidecar_cosign = compose_entry.replace(
+            f'          image: docker.io/library/postgres:16@sha256:{"2" * 64}\n',
+            f'          image: docker.io/library/postgres:16@sha256:{"2" * 64}\n          cosign: {{public_key: {json.dumps(pub)}}}\n',
+        )
+        self.assertEqual(toolbox.load_entry(with_sidecar_cosign)[1], [])
+        self.assertIn('cannot use the main service name whoami', ' '.join(toolbox.load_entry(
+            with_sidecar_cosign.replace('name: db', 'name: whoami')
+        )[1]))
 
     def test_risk_labels_follow_the_method_and_the_exposure(self):
         e = toolbox.load_entry((self.cat / 'uptime-kuma.yaml').read_text())[0]

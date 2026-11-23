@@ -67,7 +67,7 @@ def of_vm(w: dict) -> dict | None:
     return None
 
 
-def annotate(workloads: list[dict], host: str, reading: dict | None) -> None:
+def annotate(workloads: list[dict], host: str, reading: dict | None, api_managed: dict | None = None) -> None:
     """Puts 'managed' ({'by', 'how', 'level'}) on each workload of one host that something manages, and a host-wide note where a
     configuration management agent runs."""
     r = reading or {}
@@ -79,8 +79,14 @@ def annotate(workloads: list[dict], host: str, reading: dict | None) -> None:
     panels = sorted({name for u in units for key, name in PANEL_UNITS if u.startswith(key)}
                     | {w['panel'] for w in workloads if w.get('host') == host and w.get('panel') and w.get('state') == 'running'
                        and any((m.get('source') or '') in ('/var/run/docker.sock', '/run/docker.sock', '/run/podman/podman.sock') for m in w.get('mounts') or [])})
+    api_managed = api_managed or {}
     for w in workloads:
         if w.get('host') != host:
+            continue
+        if w.get('runtime') == 'docker' and w.get('kind') == 'container' and w.get('name') in api_managed:
+            am = api_managed[w['name']]
+            w['managed'] = _m(am['panel'], f'managed by {am["panel"]} via API connection {am["connection"]}', 'warn')
+            w['api'] = {'platform': am.get('panel'), 'connection': am.get('connection'), 'environment': am.get('environment')}
             continue
         m = None
         if w['runtime'] in ('docker', 'podman') and w.get('kind') == 'container':

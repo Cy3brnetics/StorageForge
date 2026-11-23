@@ -366,8 +366,9 @@ def rotate(db, conn, v, name: str, actor: str, value: str | None = None) -> dict
     for r in results:
         if r['host'] in staged:
             got = _phase(db, r['host'], name, 'commit', actor)
-            r['commit'] = got['said'] or 'failed'
-            delivered(conn, name, r['host'], next(h['step'] for h in plan['hosts'] if h['host'] == r['host']), 'rotate')
+            r['commit'] = (got['said'] or 'failed') if got['ok'] else 'failed'
+            if r['commit'] == 'switched':
+                delivered(conn, name, r['host'], next(h['step'] for h in plan['hosts'] if h['host'] == r['host']), 'rotate')
     late = [r['host'] for r in results if r.get('commit') not in (None, 'switched')]
     return {**plan, 'rotated': True, 'results': results, 'value': new if row['origin'] == 'generated' else None,
             'why': (f'the vault holds the new value; {", ".join(late)} still has the old one in place and the new one beside it: '

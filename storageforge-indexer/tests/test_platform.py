@@ -1414,6 +1414,7 @@ class ServerTests(DBCase):
         """A new route that forgets @login_required fails here, not in production."""
         import re
         public = {('GET', '/login'), ('GET', '/healthz'), ('POST', '/api/logout'), ('POST', '/api/login'),
+                  ('POST', '/api/login/webauthn/begin'), ('POST', '/api/login/webauthn/finish'),
                   ('GET', '/enroll'), ('POST', '/api/enroll'), ('POST', '/api/enroll/check'),
                   ('GET', '/<any("login.js", "enroll.js", "style.css", "tokens.css", "components.css", "window.css", "favicon.svg"):name>')}
         answered = []
@@ -1436,7 +1437,7 @@ class ServerTests(DBCase):
         self.assertEqual(self.client.post('/api/login', json={'username': 'vera', 'password': 'x' * 16}).status_code, 200)
         self.assertEqual(self.client.get('/api/me').get_json()['role'], 'viewer')
         self.assertEqual(self.client.get('/api/hosts').status_code, 200)
-        allowed = {'/api/login', '/api/logout', '/api/reauth', '/api/routecode', '/api/me', '/api/me/password', '/api/jobs/report', '/api/jobs/state', '/api/map/whatif', '/api/dsl/compile', '/api/dsl/whatif', '/api/planner/versions/compare',
+        allowed = {'/api/login', '/api/login/webauthn/begin', '/api/login/webauthn/finish', '/api/logout', '/api/reauth', '/api/routecode', '/api/me', '/api/me/password', '/api/jobs/report', '/api/jobs/state', '/api/map/whatif', '/api/dsl/compile', '/api/dsl/whatif', '/api/planner/versions/compare',
                    '/api/toolbox/catalog/validate', '/api/toolbox/preview', '/api/toolbox/bundles/preview'}    # a what-if, a compile, an entry checked and a plan or bundle previewed read only
         wrote = []
         for rule in self.web.url_map.iter_rules():
