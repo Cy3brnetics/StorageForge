@@ -36,6 +36,7 @@
       </div>
       <div data-sf-chrome="chip" data-here="admin"></div>
     </header>
+    <div id="ad-kpis" class="pve-kpis" style="margin-bottom:14px" hidden></div>
     <div class="win-body">
       <section id="ad-sec-keys" class="stack">
         <div class="card stack">
@@ -75,6 +76,10 @@
         <div class="card stack">
           <h3>Bindings</h3>
           <p class="muted small">What each key may do on a host: scan it, checksum its files, or open a terminal on it from the web console. A console login can do whatever that account can, so give it a login of its own where you can.</p>
+          <div id="ad-bindbar" class="pve-toolbar">
+            <select id="ad-bindact" aria-label="Filter bindings by capability"><option value="">All actions</option><option value="scan">scan</option><option value="checksum">checksum</option><option value="console">console</option><option value="deploy">deploy</option></select>
+            <input id="ad-bindfind" type="search" placeholder="Filter host, user or key…" aria-label="Filter bindings">
+          </div>
           <ol id="bindings" class="list"></ol>
           <details id="bindadd">
             <summary>Bind a key that is already on a host</summary>
@@ -167,6 +172,10 @@
       <section id="ad-sec-audit" class="stack" hidden>
         <div class="card stack">
           <div class="row wrap"><button id="verify" type="button" class="btn">Verify chain</button><span id="verified" class="muted"></span></div>
+          <div id="ad-auditbar" class="pve-toolbar">
+            <select id="ad-auditout" aria-label="Filter audit entries by outcome"><option value="">All outcomes</option><option value="ok">ok</option><option value="failed">failed</option><option value="denied">denied</option></select>
+            <input id="ad-auditfind" type="search" placeholder="Filter action, actor, host…" aria-label="Filter audit log">
+          </div>
           <ol id="audit" class="list"></ol>
         </div>
         <div class="card stack">

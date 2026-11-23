@@ -8,7 +8,7 @@
    backup target. Save stores the design and the server rebuilds the graph, so the health dots come back from the
    same rules the reports use. Loaded after app.js and uses its helpers. DOM APIs only, never innerHTML. */
 
-const T = { mode: 'topo', docs: new Map(), order: [], sel: null, hover: null, drag: null, error: '' };
+const T = { mode: 'topo', docs: new Map(), order: [], sel: null, hover: null, drag: null, error: '', tierFilter: '', tableOpen: false, tableTab: 'pools', tableBox: null };
 const TIERS = ['fast', 'mass', 'remote'];
 const SYNC_STATES = ['None', 'Active Sync', 'Rsync Scheduled', 'Lagging', 'Disconnected'];
 const SNAP_TOOLS = ['none', 'sanoid', 'zfs-auto-snapshot', 'snapper', 'btrbk', 'timeshift', 'lvm'];
@@ -441,11 +441,100 @@ function renderTopo() {
       if (from && from.key) T.lines.push({ ha: from.host, a: from.key, ra: from.key, hb: f.host, b: key, rb: key, cls: 'share' });
     }
   }
-  for (const f of T.frames.values()) sizeFrame(f);
+  for (const f of T.frames.values()) {
+    sizeFrame(f);
+    for (const tb of f.tbs) {
+      const tier = tb.t.head ? tb.t.head.tier || 'mass' : 'exp';
+      tb.el.classList.toggle('pve-dim', Boolean(T.tierFilter && tier !== T.tierFilter));
+    }
+  }
   drawLines();
   $('#tcollapse').textContent = [...T.tables].some(([k, tb]) => !isShut(k, tb.t)) ? 'Collapse all' : 'Expand all';
   if (T.fit && T.frames.size) { T.fit = false; fitView(); } else applyView();     // first visit: everything on screen
   if (typeof renderStageBar === 'function') renderStageBar();
+  renderTopoTable();
+}
+
+/* ── TrueNAS SCALE / Proxmox VE standard storage table drawer ───── */
+function renderTopoTable() {
+  if (!T.tableBox) return;
+  T.tableBox.hidden = !T.tableOpen || T.mode !== 'topo';
+  if (!T.tableOpen || T.mode !== 'topo') return;
+  const q = (T.find?.value || '').trim().toLowerCase();
+  const hit = (parts) => !q || parts.join(' ').toLowerCase().includes(q);
+  const tierMatch = (tier) => !T.tierFilter || (tier || 'mass') === T.tierFilter;
+  const tabs = [['pools', 'Pools & VDEVs'], ['disks', 'Disks & Partitions'], ['mounts', 'Mounts & 3-2-1'], ['exports', 'NFS / SMB Exports']];
+  const seg = el('div', { class: 'seg sm', role: 'tablist', 'aria-label': 'Storage table sections' }, ...tabs.map(([id, label]) => {
+    const b = button(label, () => { T.tableTab = id; renderTopoTable(); });
+    b.setAttribute('aria-pressed', String(T.tableTab === id));
+    return b;
+  }));
+  const head = el('div', { class: 'row wrap', style: 'justify-content:space-between' },
+    el('div', { class: 'row wrap' }, el('b', {}, 'Storage Table View'), seg),
+    button('Close', () => { T.tableOpen = false; $('#ttablebtn')?.setAttribute('aria-pressed', 'false'); renderTopoTable(); }, 'btn ghost sm'));
+  const makeTbl = (cols, rows, emptyMsg) => {
+    if (!rows.length) return text('p', emptyMsg, 'muted small');
+    return el('table', { class: 'pve-table' },
+      el('thead', {}, el('tr', {}, ...cols.map((c) => text('th', c)))),
+      el('tbody', {}, ...rows.map(({ cells, host, key }) => {
+        const tr = el('tr', { tabindex: '0', onclick: () => { selectBox(host, key); reveal(host, key); } }, ...cells.map((c) => el('td', {}, c ?? '')));
+        tr.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); selectBox(host, key); reveal(host, key); } });
+        return tr;
+      })));
+  };
+  const rows = [];
+  for (const host of T.order) {
+    const doc = T.docs.get(host);
+    if (!doc?.bp) continue;
+    const bp = doc.bp;
+    if (T.tableTab === 'pools') {
+      for (const p of bp.pools || []) {
+        if (!tierMatch(p.tier) || !hit([host, p.name, p.type, p.level, p.mount])) continue;
+        rows.push({ host, key: 'pool:' + p.name, cells: [
+          text('span', host, 'mono'), text('b', p.lv ? `${p.vg}/${p.lv}` : p.name, 'mono'),
+          `${p.type} ${p.level || ''}`, p.tier || 'mass', p.encryption || 'off',
+          p.usableBytes ? fmtBytes(p.usableBytes) : '—', `${(p.datasets || []).length} datasets`,
+          text('span', p.mount || '—', 'mono'),
+        ] });
+      }
+    } else if (T.tableTab === 'disks') {
+      for (const d of bp.devices || []) {
+        if (!tierMatch(d.tier) || !hit([host, d.dev, d.model, d.bus, d.member])) continue;
+        const dev = bare(d.dev), parts = d.partitions || [];
+        rows.push({ host, key: 'disk:' + dev, cells: [
+          text('span', host, 'mono'), text('b', '/dev/' + dev, 'mono'), d.tier || 'mass',
+          fmtDec(d.sizeBytes), d.table || 'gpt',
+          d.member ? `whole → ${d.member}` : `${parts.length} part${parts.length === 1 ? '' : 's'}`,
+          d.health?.smart && d.health.smart !== 'ok' ? text('span', d.health.smart, 'st-warn') : text('span', d.health?.smart || 'ok', 'st-ok'),
+          d.model || '',
+        ] });
+      }
+    } else if (T.tableTab === 'mounts') {
+      for (const n of (doc.m?.nodes ? [...doc.m.nodes.values()] : []).filter((x) => x.kind === 'mount')) {
+        if (!tierMatch(n.tier) || !hit([host, n.target, n.sub, n.prot])) continue;
+        rows.push({ host, key: n.key, cells: [
+          text('span', host, 'mono'), text('b', n.target, 'mono'), n.sub || '', n.tier || 'mass',
+          n.health ? pill(n.health) : '—', n.prot || 'none',
+        ] });
+      }
+    } else if (T.tableTab === 'exports') {
+      (bp.exports || []).forEach((e, i) => {
+        if (!hit([host, e.protocol || e.proto, e.name, e.path, e.clients])) return;
+        rows.push({ host, key: 'exp:' + i, cells: [
+          text('span', host, 'mono'), e.protocol || e.proto || '', text('b', e.name || '', 'mono'),
+          text('span', e.path || '', 'mono'), e.clients || 'anyone',
+          e.fromScan ? 'scanned' : 'planned',
+        ] });
+      });
+    }
+  }
+  const cols = {
+    pools: ['Host', 'Pool / VG', 'Layout', 'Tier', 'Encryption', 'Usable', 'Datasets', 'Mountpoint'],
+    disks: ['Host', 'Device', 'Tier', 'Capacity', 'Table', 'Membership', 'SMART', 'Model'],
+    mounts: ['Host', 'Mountpoint', 'Filesystem & Options', 'Tier', 'Health', '3-2-1 & Containers'],
+    exports: ['Host', 'Protocol', 'Share Name', 'Path', 'Clients', 'Source'],
+  }[T.tableTab];
+  T.tableBox.replaceChildren(head, makeTbl(cols, rows, 'No matching entries in this table view.'));
 }
 
 /* ── placement: saved positions from the design, the rest laid out in columns ── */
@@ -566,14 +655,26 @@ function initCanvas() {
   T.zoomLbl = button('100%', () => zoomBy(1 / T.view.k), 'btn ghost sm tzoom');
   T.zoomLbl.title = 'Reset to 100% (0)';
   T.find = el('input', { type: 'search', placeholder: 'Find disk, pool, path…', 'aria-label': 'Find in the topology', autocomplete: 'off', spellcheck: 'false',
-    oninput: () => { T.hits = null; T.findN.textContent = ''; },
-    onkeydown: (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); findNext(ev.shiftKey); } else if (ev.key === 'Escape') { T.find.value = ''; T.hits = null; T.findN.textContent = ''; } } });
+    oninput: () => { T.hits = null; T.findN.textContent = ''; renderTopoTable(); },
+    onkeydown: (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); findNext(ev.shiftKey); } else if (ev.key === 'Escape') { T.find.value = ''; T.hits = null; T.findN.textContent = ''; renderTopoTable(); } } });
   T.findN = el('span', { class: 'muted small tfindn' });
   T.note = el('p', { class: 'tnote', hidden: true });
+  T.tableBox = el('div', { class: 'pve-drawer ttable-dock', hidden: true, role: 'region', 'aria-label': 'Storage table view' });
+  const tierSel = el('select', { 'aria-label': 'Filter tier', onchange: () => { T.tierFilter = tierSel.value; renderTopo(); } },
+    new Option('All tiers', ''), new Option('Fast tier', 'fast'), new Option('Mass tier', 'mass'), new Option('Remote / mesh', 'remote'));
+  tierSel.value = T.tierFilter;
+  const tblBtn = button('Table view', () => {
+    T.tableOpen = !T.tableOpen;
+    tblBtn.setAttribute('aria-pressed', String(T.tableOpen));
+    renderTopoTable();
+  }, 'btn ghost sm');
+  tblBtn.id = 'ttablebtn';
+  tblBtn.title = 'Open standard TrueNAS/Proxmox storage table view beside the topology map';
+  tblBtn.setAttribute('aria-pressed', String(T.tableOpen));
   T.view = T.view || { x: 40, y: 60, k: 1 };
   T.cv = sfCanvas(topo, {
-    view: T.view, apply: paintView, ignore: '.ttools, .tlegend',
-    pannable: (t) => !t.closest('.tt, .tframe > .thead, input, select, textarea, a, button, .badge'),
+    view: T.view, apply: paintView, ignore: '.ttools, .tlegend, .ttable-dock',
+    pannable: (t) => !t.closest('.tt, .tframe > .thead, .ttable-dock, input, select, textarea, a, button, .badge'),
     panStart: () => { T.hover = null; trace(null); },
     settled: (v) => store.set('sf.topo.view', v),
     tap: () => {                                    // a click on the background puts the selection down
@@ -583,12 +684,13 @@ function initCanvas() {
     },
   });
   const tool = (label, fn, title, id) => { const b = button(label, fn, 'btn ghost sm'); b.title = title; if (id) b.id = id; return b; };
-  topo.append(T.world, T.note,
+  topo.append(T.world, T.note, T.tableBox,
     el('div', { class: 'ttools', role: 'toolbar', 'aria-label': 'Canvas' },
       tool('−', () => zoomBy(1 / 1.2), 'Zoom out (−)'), T.zoomLbl, tool('+', () => zoomBy(1.2), 'Zoom in (+)'),
       tool('Fit', fitView, 'Fit everything on screen (F)'),
       tool('Auto-layout', autoLayout, 'Forget the saved positions and lay the tables out again'),
       tool('Collapse all', toggleAll, 'Collapse or expand every table', 'tcollapse'),
+      tblBtn, tierSel,
       tool('Shares', () => openSharesManager(), 'See, edit and remove the NFS and SMB shares on these hosts'),
       tool('Partitions', () => { if (typeof openPartitionManager === 'function') openPartitionManager(S.host || null); }, 'Create, edit, format, wipe and delete partitions, drives and files'),
       el('span', { class: 'tsep' }), T.find, T.findN),
@@ -1061,7 +1163,7 @@ topo.addEventListener('focusin', (ev) => trace(rowOf(ev)));
 topo.addEventListener('pointerdown', (ev) => {
   if (ev.button !== 0) return;
   const t = ev.target.nodeType === 1 ? ev.target : ev.target.parentElement;
-  if (!t || t.closest('.ttools, .tlegend, input, select, textarea, a, button, .badge')) return;
+  if (!t || t.closest('.ttools, .tlegend, .ttable-dock, input, select, textarea, a, button, .badge')) return;
   const tt = t.closest('.tth') && t.closest('.tt'), fh = t.closest('.tframe > .thead');
   let g = null;
   if (tt) { const tb = T.tables.get(tt.dataset.fid); if (tb) g = { kind: 'table', tb, rx: tb.x - tb.f.ox, ry: tb.y - tb.f.oy }; }

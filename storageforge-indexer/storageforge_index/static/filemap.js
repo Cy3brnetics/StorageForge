@@ -7,7 +7,7 @@
    ignored paths also quiets broken-link flags in the topology. "Structure" shows the force-directed graph.
    Loaded after changes.js; uses the shared helpers. DOM APIs only, never innerHTML. */
 
-const FM = { sub: 'files', data: null, sel: null, view: { x: 0, y: 0, k: 1 }, minSize: '1MiB', scope: 'all', system: false, find: '', seq: 0, comparing: false, open: new Set(), closed: new Set(), listed: new Map(), mountRows: new Set(), more: new Set(), loading: new Map(), mode: 'browse', dupBelow: new Map(), offsite: new Map(), hosts: [], picked: new Map(), dest: null, noise: { dirs: [], names: [] }, folderBy: new Map(), byDir: new Map(), tree: null, world: null, view: { x: 0, y: 0, k: 1 }, moved: false };
+const FM = { sub: 'files', data: null, sel: null, minSize: '1MiB', scope: 'all', sort: 'size', tableOpen: false, tableBox: null, system: false, find: '', seq: 0, comparing: false, open: new Set(), closed: new Set(), listed: new Map(), mountRows: new Set(), more: new Set(), loading: new Map(), mode: 'browse', dupBelow: new Map(), offsite: new Map(), hosts: [], picked: new Map(), dest: null, noise: { dirs: [], names: [] }, folderBy: new Map(), byDir: new Map(), tree: null, world: null, view: { x: 0, y: 0, k: 1 }, moved: false };
 const fmBox = $('#filemap');
 const fmKeyOf = (host, path) => `${host}\0${path}`;
 const fmActive = () => T.mode === 'graph' && FM.sub === 'files';
@@ -262,10 +262,17 @@ function fmFilesOf(n) {                    // the duplicates directly in a folde
   return here.map(({ g, c }) => ({ id: fmId(n.root, c.host, c.path), root: n.root, host: c.host, path: c.path, name: c.path.split('/').pop(), group: g, copy: c, bytes: g.size, kids: new Map() }))
     .sort((a, b) => b.bytes - a.bytes);
 }
+function fmSortVal(n) {
+  if (FM.sort === 'dupes') return FM.dupBelow.get(fmKeyOf(n.host, n.path)) || n.bytes || 0;
+  return (n.bytes || 0) + (n.links || 0);
+}
 function fmKids(n) {
-  const dirs = [...n.kids.values()].sort((a, b) => (b.bytes + b.links) - (a.bytes + a.links));
+  const cmp = (a, b) => FM.sort === 'name'
+    ? String(a.name || '').localeCompare(String(b.name || ''))
+    : fmSortVal(b) - fmSortVal(a) || String(a.name || '').localeCompare(String(b.name || ''));
+  const dirs = [...n.kids.values()].sort(cmp);
   const listed = n.listed || [];           // read from the index when a whole-folder copy was opened
-  const dupes = fmFilesOf(n), known = new Set([...dirs, ...dupes].map((k) => k.path));
+  const dupes = fmFilesOf(n).sort(cmp), known = new Set([...dirs, ...dupes].map((k) => k.path));
   const q = FM.find.toLowerCase();
   const rest = listed.filter((x) => !known.has(x.path) && !fmHidden(x.host, x.path, x.name) && (!q || x.name.toLowerCase().includes(q) || x.lazy));
   for (const x of rest) x.folder = FM.folderBy.get(fmKeyOf(x.host, x.path));
@@ -434,7 +441,8 @@ function fmDraw() {
     FM.tree = el('div', { class: 'fmtree', role: 'tree', 'aria-label': 'Folders holding duplicates', tabindex: '0', onkeydown: fmKey }, FM.world);
     FM.stat = el('div', { class: 'fmstat', role: 'status' });
     FM.pickbar = el('div', { class: 'fmpick', role: 'status', hidden: true });
-    fmBox.replaceChildren(fmBar(), FM.pickbar, FM.tree, FM.stat);
+    FM.tableBox = el('div', { class: 'pve-drawer fmtable-dock', hidden: true, role: 'region', 'aria-label': 'Dataset and duplicate explorer table' });
+    fmBox.replaceChildren(fmBar(), FM.pickbar, FM.tableBox, FM.tree, FM.stat);
     fmPanZoom();
   }
   FM.mountRows = new Set(d.folders.map((f) => `${f.host}\0${f.mount}`));
@@ -476,7 +484,57 @@ function fmDraw() {
   if (!FM.moved && L.cards.length) fmFit(); else fmApply();
   fmPickBar();
   fmMark();
+  fmRenderTable();
   if (L.pending.length) Promise.all(L.pending.map(fmLoadKids)).then(fmDraw);
+}
+function fmRenderTable() {
+  if (!FM.tableBox) return;
+  FM.tableBox.hidden = !FM.tableOpen;
+  if (!FM.tableOpen || !FM.data) return;
+  const rows = [];
+  if (FM.mode === 'dupes') {
+    for (const f of fmShownFolders()) {
+      const dup = FM.dupBelow.get(f.key) || 0;
+      rows.push({
+        host: f.host, path: f.path, bytes: f.bytes || 0, dup,
+        detail: `${f.whole ? 'whole copy · ' : ''}${(f.files || 0).toLocaleString()} files`,
+        onFocus: () => { FM.sel = { type: 'folder', key: f.key, id: fmId('f', f.host, f.path) }; fmOpenPeers(f.key); fmDraw(); showTab('details'); fmPanel(); },
+        onBrowse: () => browseFolders(f.host, f.path, f.mount),
+        onMove: () => moveFrom(f.host, f.path),
+      });
+    }
+  } else {
+    const seen = new Set();
+    for (const r of FM.tree.querySelectorAll('.fmrow')) {
+      const n = r._node;
+      if (!n || n.more || n.note || n.brokenRoot || seen.has(n.id)) continue;
+      seen.add(n.id);
+      rows.push({
+        host: n.host, path: n.path, bytes: n.bytes || 0, dup: FM.dupBelow.get(fmKeyOf(n.host, n.path)) || 0,
+        detail: n.hostRoot ? 'host root' : n.isMount ? 'mount' : n.plain ? 'file' : 'folder',
+        onFocus: () => r.click(),
+        onBrowse: n.plain ? null : () => browseFolders(n.host, n.path, mountFor(n.host, n.path)),
+        onMove: n.plain ? null : () => moveFrom(n.host, n.path),
+      });
+    }
+  }
+  rows.sort((a, b) => FM.sort === 'name'
+    ? `${a.host}:${a.path}`.localeCompare(`${b.host}:${b.path}`)
+    : FM.sort === 'dupes' ? (b.dup - a.dup) || (b.bytes - a.bytes) : b.bytes - a.bytes);
+  const head = el('div', { class: 'row wrap', style: 'justify-content:space-between' },
+    el('b', {}, `File Explorer Table (${rows.length})`),
+    button('Close', () => { FM.tableOpen = false; FM.tree = null; fmDraw(); }, 'btn ghost sm'));
+  const tbl = rows.length ? el('table', { class: 'pve-table' },
+    el('thead', {}, el('tr', {}, text('th', 'Host'), text('th', 'Path'), text('th', 'Size'), text('th', 'Duplicated'), text('th', 'Info'), text('th', 'Actions'))),
+    el('tbody', {}, ...rows.slice(0, 150).map((r) => el('tr', { onclick: r.onFocus },
+      text('td', r.host, 'mono'), text('td', r.path, 'mono'), text('td', r.bytes ? fmtBytes(r.bytes) : '—'),
+      text('td', r.dup ? fmtBytes(r.dup) : '—'), text('td', r.detail),
+      el('td', { class: 'row wrap' },
+        button('Inspect', (ev) => { ev.stopPropagation(); r.onFocus(); }, 'btn ghost sm'),
+        r.onBrowse ? button('Browse', (ev) => { ev.stopPropagation(); r.onBrowse(); }, 'btn ghost sm') : null,
+        r.onMove ? button('Move…', (ev) => { ev.stopPropagation(); r.onMove(); }, 'btn ghost sm') : null)))))
+    : text('p', 'Expand a host on the map or switch to Duplicates to populate the table.', 'muted small');
+  FM.tableBox.replaceChildren(head, tbl);
 }
 function fmPaint(v) { if (FM.world) FM.world.style.transform = `translate(${v.x}px, ${v.y}px) scale(${v.k})`; }
 function fmApply() { if (FM.cv) FM.cv.apply(true); else fmPaint(FM.view); }
@@ -511,9 +569,17 @@ function fmBar() {
     b.setAttribute('aria-pressed', String(FM.mode === m));
     return b;
   }));
+  const tblBtn = button('Table view', () => {
+    FM.tableOpen = !FM.tableOpen;
+    tblBtn.setAttribute('aria-pressed', String(FM.tableOpen));
+    fmRenderTable();
+  }, 'btn ghost sm');
+  tblBtn.setAttribute('aria-pressed', String(FM.tableOpen));
   return el('div', { class: 'ttools', role: 'toolbar', 'aria-label': 'File map' }, seg,
     FM.mode === 'browse' ? null : choice('Smallest file', FM.minSize, [['1MiB', '≥ 1 MiB'], ['10MiB', '≥ 10 MiB'], ['100MiB', '≥ 100 MiB'], ['1GiB', '≥ 1 GiB']], (v) => { FM.minSize = v; FM.moved = false; fmLoad(); }),
     FM.mode === 'browse' ? null : choice('Where the copies are', FM.scope, [['all', 'All copies'], ['same', 'Same host'], ['across', 'Across hosts']], (v) => { FM.scope = v; FM.moved = false; fmDraw(); }),
+    choice('Sort folders', FM.sort, [['size', 'Largest first'], ['dupes', 'Most duplicates'], ['name', 'Name A–Z']], (v) => { FM.sort = v; fmDraw(); }),
+    tblBtn,
     el('label', { class: 'check small' }, sys, 'System files'),
     button('−', () => fmZoom(1 / 1.2), 'btn ghost sm'), button('+', () => fmZoom(1.2), 'btn ghost sm'),
     button('Fit', () => { FM.moved = false; fmFit(); }, 'btn ghost sm'),

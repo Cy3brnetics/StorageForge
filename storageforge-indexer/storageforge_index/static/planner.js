@@ -128,7 +128,7 @@ function save(){ if(USER!==null) sfStash(draftKey(DOC.host),S,USER); if(DOC.host
 function dropDraft(h){ if(USER!==null&&sfRecall(draftKey(h),null,USER)) sfStash(draftKey(h),null,USER) }      // only its own: another account's draft is not this one's to remove
 let S=sample();
 
-const UI={view:'overview',sel:null,mountSel:'/',mountTab:'fstab',exportTab:'changes',diff:null,calc:null,hover:null};
+const UI={view:'overview',sel:null,mountSel:'/',mountTab:'fstab',exportTab:'changes',diff:null,calc:null,hover:null,devTier:'',devFind:'',poolAddOpen:false,protFilter:''};
 const VIEWS=[
   ['overview','Overview','Capacity, protection, every guardrail, and what is staged or deployed on the host.'],
   ['devices','Devices','Block devices, partition tables and filesystems. Select a partition, pool or remote to edit it.'],
@@ -580,12 +580,33 @@ function restoreFocus(st){
 }
 let renderTimer=0;
 function renderSoon(){ clearTimeout(renderTimer);renderTimer=setTimeout(render,0) }   // a change that came with Tab: let focus move on first, so the next field is the one that keeps it
+function applianceBar(){
+  const raw=sum(S.disks.filter(d=>d.tier!=='remote').map(d=>d.size));
+  const u=usableSummary();
+  const P=S.protection.map(protStatus),pOk=P.filter(x=>x.k==='ok').length,pTot=P.filter(x=>x.k!=='muted').length;
+  return `<div class="pve-appbar">
+    <div class="row" style="gap:14px">
+      <span><small class="muted">Host</small> <b class="mono">${esc(S.host)}</b></span>
+      <span><small class="muted">Usable / Raw</small> <b>${fmtBin(u.usable,1)}</b> <small class="muted">/ ${fmtBin(raw,1)}</small></span>
+      <span><small class="muted">Pools</small> <b>${S.pools.length}</b></span>
+      <span><small class="muted">Mounts</small> <b>${collectMounts().filter(m=>m.kind!=='swap').length}</b></span>
+      <span><small class="muted">Exports</small> <b>${S.exports.length}</b></span>
+      <span><small class="muted">3-2-1</small> <b>${pOk}/${pTot}</b></span>
+    </div>
+    <div class="row">
+      <button type="button" class="btn sm" data-act="quickpool">+ New Pool / VDEV</button>
+      <button type="button" class="btn sm" data-act="goto" data-v="raid">RAID Calculator</button>
+      <button type="button" class="btn sm" data-act="goto" data-v="protection">Protection</button>
+      <button type="button" class="btn sm pri" data-act="goto" data-v="export">Stage Change Plan</button>
+    </div>
+  </div>`;
+}
 function render(){
   const keep=focusState();
   nav();
   const v=VIEWS.find(x=>x[0]===UI.view);$('#vt').textContent=v[1];$('#vs').textContent=v[2];
   const fn={overview:vOverview,devices:vDevices,mounts:vMounts,links:vLinks,topology:vTopology,raid:vRaid,protection:vProtection,export:vExport}[UI.view];
-  $('#view').innerHTML=fn();
+  $('#view').innerHTML=applianceBar()+fn();
   if(UI.view==='topology') requestAnimationFrame(drawEdges);
   setChain(null);
   restoreFocus(keep);
@@ -718,14 +739,19 @@ function inspector(){
       ${p.fs==='btrfs'?`<div><div class="eyebrow" style="margin-bottom:6px">Subvolumes</div>${(p.subvols||[]).map((sv,i)=>`<div class="row" data-node="sv:${esc(p.id)}/${esc(sv.name)}" style="margin-bottom:5px"><code style="min-width:84px">${esc(sv.name)}</code><input type="text" class="mono" id="i-sv-${i}" value="${esc(sv.mount||'')}" data-f="svmount" data-i="${i}" aria-label="Mount point for ${esc(sv.name)}"><button type="button" class="xbtn" data-act="delsv" data-i="${i}" aria-label="Remove subvolume">×</button></div>`).join('')}
         <div class="row"><input type="text" class="mono" id="i-newsv" placeholder="@docker" data-f="newsv" aria-label="New subvolume name"><span class="muted" style="font-size:11.5px">Enter to add</span></div></div>`:''}
       ${mounts.length?`<div class="eyebrow">fstab preview</div><pre class="code panel" style="max-height:200px">${esc(mounts.filter(m=>m.kind!=='zfs').map(m=>[m.spec,m.target,m.fs,(m.opts.length?m.opts:['defaults']).join(','),0,passFor(m)].join('  ')).join('\n'))}</pre>`:''}
+      ${!member?`<div class="row end"><button type="button" class="btn sm danger" data-act="delpart" data-id="${esc(p.id)}">Delete partition</button></div>`:''}
     </div>`;
   }
   if(s.type==='disk'){
-    const d=diskBy(s.id);
+    const d=diskBy(s.id);if(!d) return '';
+    const usedEnd=d.parts.reduce((m,p)=>Math.max(m,p.start+(Number(p.size)||0)),MiB);
+    const limit=d.table==='mbr'?Math.min(d.size,2*TiB):d.size;
+    const free=Math.max(0,limit-usedEnd);
     return `<div class="ph"><h2>/dev/${esc(d.dev)}</h2><span class="sub">${esc(d.bus)}</span></div><div class="pb">
       <dl class="kv"><dt>Model</dt><dd>${esc(d.model)}</dd><dt>Serial</dt><dd>${esc(d.serial)}</dd><dt>Capacity</dt><dd>${d.size.toLocaleString()} B<br>${both(d.size)}</dd><dt>Sectors</dt><dd>logical ${d.lbs} · physical ${d.pbs}</dd><dt>by-id</dt><dd>${esc(byId(d))}</dd></dl>
       <div class="fields"><label class="f">Partition table<select id="i-table" data-f="table" ${d.member?'disabled':''}><option ${d.table==='gpt'?'selected':''} value="gpt">GPT</option><option ${d.table==='mbr'?'selected':''} value="mbr">MBR (msdos)</option></select></label>
       <label class="f">Tier<select id="i-tier" data-f="tier">${['fast','mass','remote'].map(t=>`<option ${t===d.tier?'selected':''}>${t}</option>`).join('')}</select></label></div>
+      ${!d.member&&free>=64*MiB?`<div class="row"><button type="button" class="btn sm pri" data-act="addpart" data-id="${esc(d.dev)}">+ Add partition (${fmtBin(free,1)} free)</button></div>`:''}
       ${d.table==='mbr'&&d.size>2*TiB?`<div class="note warn">MBR caps addressable space at 2 TiB. Switch to GPT to reclaim ${fmtBin(d.size-2*TiB)}.</div>`:''}
       <div class="note">Decimal ${fmtDec(d.size,3)} on the label is ${fmtBin(d.size,3)} in the binary units <code>lsblk</code>, <code>df -h</code> and ZFS report. The gap is ${(100-d.size/(d.size/1e12*TiB)*100).toFixed(1)}%.</div></div>`;
   }
@@ -743,6 +769,7 @@ function inspector(){
       ${r.notes.map(n=>`<div class="note ${n[0]==='info'?'':n[0]}">${esc(n[1])}</div>`).join('')}
       ${p.type==='zfs'?`<div><div class="eyebrow" style="margin-bottom:6px">Datasets</div><div class="tw"><table><thead><tr><th>Name</th><th>mountpoint</th><th>recordsize</th><th>compress</th><th>sync</th></tr></thead><tbody>${(p.datasets||[]).map((ds,i)=>`<tr data-node="ds:${esc(p.name)}/${esc(ds.name)}"><td class="mono">${esc(ds.name)}</td><td><input type="text" class="mono" id="i-ds-m-${i}" value="${esc(ds.mount||'')}" data-f="dsmount" data-i="${i}" style="width:100%;min-width:140px" aria-label="mountpoint"></td><td><select id="i-ds-r-${i}" data-f="dsrs" data-i="${i}" aria-label="recordsize">${['16K','64K','128K','1M'].map(v=>`<option ${v===ds.recordsize?'selected':''}>${v}</option>`).join('')}</select></td><td><select id="i-ds-c-${i}" data-f="dscomp" data-i="${i}" aria-label="compression">${['lz4','zstd','zstd-3','off'].map(v=>`<option ${v===ds.compression?'selected':''}>${v}</option>`).join('')}</select></td><td><select id="i-ds-s-${i}" data-f="dssync" data-i="${i}" aria-label="sync">${['standard','always','disabled'].map(v=>`<option ${v===ds.sync?'selected':''}>${v}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table></div>
         <div class="row" style="margin-top:8px"><input type="text" class="mono" id="i-newds" placeholder="new dataset name, e.g. docker" data-f="newds" aria-label="New dataset name"><span class="muted" style="font-size:11.5px">Enter to add</span></div></div>`:`<div><div class="eyebrow" style="margin-bottom:6px">Mount options</div>${optChips(p.fs,p.opts,'pool')}</div>`}
+      <div class="row end"><button type="button" class="btn sm danger" data-act="delpool" data-id="${esc(p.name)}">Remove pool</button></div>
     </div>`;
   }
   if(s.type==='rem'){
@@ -757,11 +784,48 @@ function inspector(){
   return '';
 }
 function vDevices(){
+  const q=UI.devFind.trim().toLowerCase();
+  const matchDisk=d=>{
+    if(UI.devTier==='free'&&(d.member||d.parts.length)) return false;
+    else if(['fast','mass','remote'].includes(UI.devTier)&&d.tier!==UI.devTier) return false;
+    return !q||`${d.dev} ${d.model} ${d.serial} ${d.bus} ${d.member||''}`.toLowerCase().includes(q);
+  };
+  const freeDevs=S.disks.filter(d=>!d.member&&!d.parts.length);
   const tiers=[['fast','Fast local tier'],['mass','Mass local tier'],['remote','Network block devices']];
-  return `<div class="split"><div class="stack" style="gap:22px">
-    ${tiers.map(([t,h])=>{const ds=S.disks.filter(d=>d.tier===t);return ds.length?`<section class="stack"><div class="sec-h"><h2>${h}</h2><span class="muted" style="font-size:12px">${ds.length} device${ds.length>1?'s':''} · ${both(sum(ds.map(d=>d.size)))}</span></div>${ds.map(diskHTML).join('')}</section>`:''}).join('')}
-    <section class="stack"><div class="sec-h"><h2>Pools &amp; arrays</h2></div><div class="grid g2">${S.pools.map(poolHTML).join('')}</div></section>
+  const bar=`<div class="pve-toolbar">
+    <select id="pve-dtier" data-act-change="dtier" aria-label="Filter storage tier"><option value="" ${!UI.devTier?'selected':''}>All tiers</option><option value="fast" ${UI.devTier==='fast'?'selected':''}>Fast tier</option><option value="mass" ${UI.devTier==='mass'?'selected':''}>Mass tier</option><option value="remote" ${UI.devTier==='remote'?'selected':''}>Remote tier</option><option value="free" ${UI.devTier==='free'?'selected':''}>Unassigned disks</option></select>
+    <input type="search" id="pve-dfind" value="${esc(UI.devFind)}" placeholder="Filter disks, pools, shares…" aria-label="Filter devices and pools" data-live="dfind">
+    <button type="button" class="btn sm pri" data-act="togglepool">${UI.poolAddOpen?'Close Pool Builder':'+ New Pool / VDEV'}</button>
+  </div>`;
+  const poolForm=UI.poolAddOpen?`<form class="panel pb stack" id="addpool">
+    <div class="sec-h"><h2>Create Pool / VDEV</h2><span class="muted small">Adds pool and assigns selected bare disks in blueprint</span></div>
+    <div class="fields">
+      <label class="f">Pool name<input type="text" class="mono" id="np-name" placeholder="tank2" required></label>
+      <label class="f">Engine / type<select id="np-type"><option value="zfs">OpenZFS</option><option value="mdadm">mdadm</option><option value="btrfs">Btrfs</option><option value="lvm">LVM</option></select></label>
+      <label class="f">RAID level<select id="np-level"><option value="mirror">mirror</option><option value="raidz1">raidz1</option><option value="raidz2">raidz2</option><option value="raidz3">raidz3</option><option value="stripe">stripe</option><option value="raid1">raid1</option><option value="raid5">raid5</option><option value="raid6">raid6</option><option value="raid10">raid10</option><option value="linear">linear</option></select></label>
+      <label class="f">Tier<select id="np-tier"><option value="mass">mass</option><option value="fast">fast</option></select></label>
+      <label class="f">Encryption (ZFS)<select id="np-enc"><option value="aes-256-gcm">aes-256-gcm</option><option value="aes-128-gcm">aes-128-gcm</option><option value="off">off</option></select></label>
+      <label class="f">Mountpoint<input type="text" class="mono" id="np-mount" value="/mnt/tank2" required></label>
+    </div>
+    <div class="chips">${freeDevs.length?freeDevs.map(d=>`<label class="check" style="margin-right:10px"><input type="checkbox" name="npdisk" value="${esc(d.dev)}"> <span class="mono">/dev/${esc(d.dev)}</span> (${fmtDec(d.size,1)})</label>`).join(''):'<span class="muted small">No bare unassigned disks; you can still create an empty pool skeleton and assign partitions.</span>'}</div>
+    <div class="row end"><button type="submit" class="btn sm pri">Create Pool</button></div>
+  </form>`:'';
+  const pools=S.pools.filter(p=>(!['fast','mass','remote'].includes(UI.devTier)||p.tier===UI.devTier)&&(!q||`${p.name} ${p.type} ${p.level} ${p.mount||''}`.toLowerCase().includes(q)));
+  const exps=S.exports.filter(e=>!q||`${e.proto} ${e.name} ${e.path} ${e.clients}`.toLowerCase().includes(q));
+  const sharesHtml=`<section class="panel"><div class="ph"><h2>Shares &amp; Exports</h2><span class="sub">${S.exports.length} SMB, NFS, S3 &amp; SFTP shares</span></div>
+    <div class="pb" style="border-bottom:1px solid var(--line)"><form class="row" id="addexport">
+      <select id="exp-proto" aria-label="Share protocol"><option>NFSv4.2</option><option>SMB3</option><option>S3</option><option>SFTP</option></select>
+      <input type="text" class="mono" id="exp-name" placeholder="share name" aria-label="Share name" required>
+      <input type="text" class="mono" id="exp-path" placeholder="/mnt/storage_array/share" aria-label="Export path" required>
+      <input type="text" class="mono" id="exp-clients" placeholder="10.0.20.0/24 or @group" aria-label="Allowed clients">
+      <button type="submit" class="btn sm pri">Add Share</button>
+    </form></div>
+    <div class="tw"><table><thead><tr><th>Protocol</th><th>Name</th><th>Path</th><th>Clients</th><th>Options</th><th></th></tr></thead><tbody>${exps.map(e=>`<tr><td><span class="chip">${esc(e.proto)}</span></td><td class="mono">${esc(e.name)}</td><td class="mono">${esc(e.path)}</td><td>${esc(e.clients||'anyone')}</td><td class="mono small">${esc(e.opts||'')}</td><td><button type="button" class="xbtn" data-act="delexp" data-id="${esc(e.id)}" aria-label="Remove share">×</button></td></tr>`).join('')||'<tr><td colspan="6" class="empty">No matching shares or exports.</td></tr>'}</tbody></table></div></section>`;
+  return `${bar}${poolForm}<div class="split"><div class="stack" style="gap:22px">
+    ${tiers.map(([t,h])=>{const ds=S.disks.filter(d=>d.tier===t&&matchDisk(d));return ds.length?`<section class="stack"><div class="sec-h"><h2>${h}</h2><span class="muted" style="font-size:12px">${ds.length} device${ds.length>1?'s':''} · ${both(sum(ds.map(d=>d.size)))}</span></div>${ds.map(diskHTML).join('')}</section>`:''}).join('')}
+    <section class="stack"><div class="sec-h"><h2>Pools &amp; arrays</h2></div><div class="grid g2">${pools.map(poolHTML).join('')||'<p class="muted small">No pools match.</p>'}</div></section>
     <section class="stack"><div class="sec-h"><h2>Remote / mesh targets</h2></div><div class="grid g2">${S.remotes.map(remoteHTML).join('')}</div></section>
+    ${sharesHtml}
   </div><aside class="panel insp">${inspector()}</aside></div>`;
 }
 
@@ -912,7 +976,7 @@ function vRaid(){
 
 /* protection */
 function vProtection(){
-  const rows=S.protection.map((r,i)=>{const st=protStatus(r);const c=copies321(r);const age=r.backup.target?daysSince(r.backup.last):null;
+  const rows=S.protection.map((r,i)=>({r,i,st:protStatus(r)})).filter(({st})=>!UI.protFilter||st.k===UI.protFilter).map(({r,i,st})=>{const c=copies321(r);const age=r.backup.target?daysSince(r.backup.last):null;
     const sk=r.sync.state==='Active Sync'?'ok':r.sync.state==='Rsync Scheduled'?'ok':r.sync.state==='None'?'muted':r.sync.state==='Lagging'?'warn':'crit';
     const path=(collectMounts().find(m=>m.node===r.node)||{}).target||'';
     return `<tr data-node="${esc(r.node)}">
@@ -925,9 +989,11 @@ function vProtection(){
       <td class="num mono" style="font-size:12px">${c.c} cop${c.c>1?'ies':'y'}<br><span class="muted">${c.off?'offsite ✓':c.unstated?'offsite not stated':'no offsite'}</span></td>
       <td><span class="pill ${st.k}">${st.t}</span><div class="why">${esc(st.why.join(' · '))}</div></td></tr>`}).join('');
   const P=S.protection.map(protStatus);
+  const fbtn=(k,lbl)=>`<button type="button" class="btn sm ${UI.protFilter===k?'pri':''}" data-act="pfilt" data-k="${k}">${lbl}</button>`;
   return `<div class="grid g4">${[['ok','Protected','Snapshots plus a validated offsite copy'],['warn','Local only','A copy is missing, stale or on the same site'],['crit','Critical','Stale sync, unvalidated backup or a single copy'],['muted','Excluded','Ephemeral scratch, not tracked']].map(([k,t,d])=>`<div class="panel kpi"><span class="pill ${k}">${t}</span><span class="v">${P.filter(x=>x.k===k).length}</span><span class="s">${d}</span></div>`).join('')}</div>
+  <div class="pve-toolbar">${fbtn('','All')}${fbtn('ok','Protected')}${fbtn('warn','Local only')}${fbtn('crit','Critical')}${fbtn('muted','Excluded')}<button type="button" class="btn sm pri" style="margin-left:auto" data-act="pbaseline">Apply 3-2-1 snapshot/sync baseline</button></div>
   <section class="panel"><div class="ph"><h2>3-2-1 health grid</h2><span class="sub">Click a sync or snapshot cell to simulate a state change</span>${DOC.host&&DOC.signedIn?`<button type="button" class="btn sm ghost" data-act="offsite" title="Backups that run on this host count as offsite">${DOC.offsite?'This host is offsite':'Mark this host offsite'}</button>`:''}</div>
-  <div class="tw"><table style="min-width:1080px"><thead><tr><th>Dataset</th><th>Synced</th><th>Snapshots</th><th>Backup</th><th>Encryption</th><th>Last validated</th><th>3-2-1</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+  <div class="tw"><table style="min-width:1080px"><thead><tr><th>Dataset</th><th>Synced</th><th>Snapshots</th><th>Backup</th><th>Encryption</th><th>Last validated</th><th>3-2-1</th><th>Status</th></tr></thead><tbody>${rows||'<tr><td colspan="8" class="empty">No datasets in this state.</td></tr>'}</tbody></table></div></section>`;
 }
 
 /* export */
@@ -1242,13 +1308,25 @@ view.addEventListener('click',e=>{
   if(act==='cload'){ const id=a.dataset.id; if(id==='mixed') UI.calc={...defaultCalc(),layout:'btrfs-raid1',sizes:[16e12,16e12,16e12,16e12,12e12,12e12],width:6}; else {const p=poolBy(id);if(p){UI.calc=poolCalc(p);if(p.type==='zfs')UI.calc.recordsize=1048576}} render(); return }
   if(act==='cdel'){ UI.calc.sizes.splice(+a.dataset.i,1); UI.calc.width=Math.min(UI.calc.width,UI.calc.sizes.length)||1; render(); return }
   if(act==='cadd'){ const n=Math.max(1,Math.min(24,+$('#c-addn').value||1));const tb=+$('#c-addtb').value||1;for(let i=0;i<n;i++)UI.calc.sizes.push(tb*1e12); if(UI.calc.layout.startsWith('zfs')&&!UI.calc.layout.endsWith('mirror')) UI.calc.width=UI.calc.sizes.length; render(); return }
+  if(act==='quickpool'){ UI.poolAddOpen=true; go('devices'); return }
+  if(act==='togglepool'){ UI.poolAddOpen=!UI.poolAddOpen; render(); return }
+  if(act==='addpart'){ const d=diskBy(a.dataset.id);if(!d) return;const usedEnd=d.parts.reduce((m,p)=>Math.max(m,p.start+(Number(p.size)||0)),MiB);const limit=d.table==='mbr'?Math.min(d.size,2*TiB):d.size;const free=Math.max(0,limit-usedEnd);if(free<64*MiB) return;const num=d.parts.reduce((m,p)=>Math.max(m,p.num||0),0)+1;const pid=(/nvme|mmcblk/.test(d.dev)?`${d.dev}p${num}`:`${d.dev}${num}`);d.parts.push({id:pid,num,start:Math.ceil(usedEnd/MiB)*MiB,size:free,fs:'ext4',label:pid,mount:`/mnt/${pid}`,opts:['noatime','nofail']});UI.sel={type:'part',id:pid};commit();return }
+  if(act==='delpart'){ const x=findPart(a.dataset.id);if(!x) return;x.d.parts=x.d.parts.filter(p=>p.id!==x.p.id);UI.sel={type:'disk',id:x.d.dev};commit();return }
+  if(act==='delpool'){ const pn=a.dataset.id;S.disks.forEach(d=>{if(d.member===pn)delete d.member;d.parts.forEach(p=>{if(p.member===pn)delete p.member})});S.pools=S.pools.filter(p=>p.name!==pn);UI.sel=null;commit();return }
+  if(act==='delexp'){ S.exports=S.exports.filter(x=>x.id!==a.dataset.id);commit();return }
+  if(act==='pfilt'){ UI.protFilter=a.dataset.k||'';render();return }
+  if(act==='pbaseline'){ let touched=0;S.protection.forEach(r=>{if(r.deployed||r.ephemeral) return;if(!r.snap.on){r.snap.on=true;r.snap.tool=r.node.startsWith('ds:')?'sanoid':'snapper';r.snap.policy='hourly 24 · daily 7';touched++}if(r.sync.state==='None'){r.sync.state='Rsync Scheduled';r.sync.target=r.sync.target||'offsite nightly';touched++}});if(!touched) docState('All custom non-ephemeral datasets already have snapshot and sync rules.');else commit();return }
   if(act==='copy'){ const pre=document.getElementById(a.dataset.src);const txt=pre.textContent;
     const done=ok=>{a.textContent=ok?'Copied':'Selected · press Ctrl+C';setTimeout(()=>{a.textContent='Copy'},1800)};
     const fallback=()=>{const rg=document.createRange();rg.selectNodeContents(pre);const s=getSelection();s.removeAllRanges();s.addRange(rg);done(false)};
     try{ navigator.clipboard.writeText(txt).then(()=>done(true),fallback) }catch(err){ fallback() } return }
 });
+view.addEventListener('input',e=>{
+  if(e.target.dataset.live==='dfind'){ UI.devFind=e.target.value;renderSoon(); }
+});
 view.addEventListener('change',e=>{
   const t=e.target;
+  if(t.dataset.actChange==='dtier'){ UI.devTier=t.value;render();return }
   if(t.dataset.c!==undefined){ const c=UI.calc;const k=t.dataset.c;
     if(k==='layout'){c.layout=t.value;if(c.layout.endsWith('mirror'))c.width=2;else c.width=c.sizes.length}
     else if(k==='drive') c.sizes[+t.dataset.i]=Math.max(0.1,+t.value)*1e12;
@@ -1287,10 +1365,30 @@ view.addEventListener('change',e=>{
   commitSoon();
 });
 view.addEventListener('submit',e=>{
-  if(e.target.id!=='addlink') return;e.preventDefault();
-  const kind=$('#nl-kind').value,p=$('#nl-path').value.trim(),t=$('#nl-target').value.trim();
-  if(!p.startsWith('/')||!t.startsWith('/')) return;
-  S.links.push({id:'L'+Date.now().toString(36),kind,path:p,target:t});commit();
+  if(e.target.id==='addlink'){
+    e.preventDefault();
+    const kind=$('#nl-kind').value,p=$('#nl-path').value.trim(),t=$('#nl-target').value.trim();
+    if(!p.startsWith('/')||!t.startsWith('/')) return;
+    S.links.push({id:'L'+Date.now().toString(36),kind,path:p,target:t});commit();
+    return;
+  }
+  if(e.target.id==='addpool'){
+    e.preventDefault();
+    const name=ident($('#np-name').value.trim()),type=$('#np-type').value,level=$('#np-level').value,tier=$('#np-tier').value,enc=$('#np-enc').value,mount=$('#np-mount').value.trim();
+    if(!name||poolBy(name)) return;
+    const picked=[...e.target.querySelectorAll('input[name="npdisk"]:checked')].map(x=>x.value);
+    picked.forEach(dev=>{const d=diskBy(dev);if(d&&!d.member&&!d.parts.length)d.member=name});
+    S.pools.push({name,type,level,ashift:12,tier,encryption:type==='zfs'?enc:undefined,fs:type==='zfs'?undefined:'ext4',mount:mount.startsWith('/')?mount:'/mnt/'+name,datasets:type==='zfs'?[{name:'data',mount:(mount.startsWith('/')?mount:'/mnt/'+name)+'/data',recordsize:'128K',compression:'zstd',sync:'standard'}]:[]});
+    UI.poolAddOpen=false;UI.sel={type:'pool',id:name};commit();
+    return;
+  }
+  if(e.target.id==='addexport'){
+    e.preventDefault();
+    const proto=$('#exp-proto').value,name=$('#exp-name').value.trim(),path=$('#exp-path').value.trim(),clients=$('#exp-clients').value.trim();
+    if(!name||!path.startsWith('/')) return;
+    S.exports.push({id:'e'+Date.now().toString(36),proto,name,path,clients,opts:proto.startsWith('NFS')?'rw,no_subtree_check':''});
+    commit();
+  }
 });
 let rz;window.addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(()=>{if(UI.view==='topology')drawEdges()},120)});
 if(document.fonts&&document.fonts.ready) document.fonts.ready.then(()=>{if(UI.view==='topology')drawEdges()});

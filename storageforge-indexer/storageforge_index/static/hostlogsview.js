@@ -19,7 +19,7 @@ const HL_RANGES = [
 const HL_DEFAULT_RANGE = 'week';
 const HL_PAGE = 100;
 const HL = { host: '', range: HL_DEFAULT_RANGE, from: null, to: null, level: '', unit: '', q: '',          // from and to: seconds, for a custom range
-             status: null, counts: null, offset: 0, typing: 0 };
+             status: null, counts: null, monHosts: null, selEntry: null, offset: 0, typing: 0 };
 
 /* A level on the chart is one of four bands, drawn from the bottom up as errors first so that their height is comparable from hour to
    hour. Colour is never the only cue: each band has its own fill pattern, and the legend and the table say the names and the numbers. */
@@ -180,8 +180,16 @@ async function hlSearch(more) {
     if (!fresh()) return;                         // a newer search was asked for while this one was on its way
     const rows = entries.map((e) => {
       const cls = e.priority <= 3 ? 'st-failed' : e.priority === 4 ? 'st-warn' : '';
-      return hlEl('li', {}, hlEl('span', cls ? { class: cls } : {}, e.message),
+      const li = hlEl('li', { class: 'pve-clickrow', tabindex: '0' }, hlEl('span', cls ? { class: cls } : {}, e.message),
         hlEl('span', { class: 'm', title: hlWriter(e) }, `${hlWhen(e.ts)} · ${e.host} · ${e.level} · ${e.unit || e.ident || '-'}${e.pid ? ` [${e.pid}]` : ''}${hlBy(e)}`));
+      const openEntry = () => {
+        lines.querySelectorAll('li.sel').forEach((x) => x.classList.remove('sel'));
+        li.classList.add('sel');
+        hlInspectEntry(e);
+      };
+      li.addEventListener('click', openEntry);
+      li.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openEntry(); } });
+      return li;
     });
     let empty = null;
     if (!rows.length && !more) {                  // nothing collected, nothing in the range and nothing under these filters are three different answers
@@ -190,7 +198,10 @@ async function hlSearch(more) {
       empty = hlEmpty();
     }
     if (more) lines.append(...rows);
-    else lines.replaceChildren(...(rows.length ? rows : [empty]));
+    else {
+      lines.replaceChildren(...(rows.length ? rows : [empty]));
+      hlInspectEntry(null);
+    }
     document.getElementById('hl-more').hidden = !hasMore;
     const shown = lines.querySelectorAll('li').length;
     document.getElementById('hl-count').textContent = rows.length || more ? `${hlPlural(shown, 'line')} shown, newest first${hasMore ? '. Older ones follow.' : ''}` : '';
@@ -319,6 +330,7 @@ async function hlChart() {
       if (!fresh()) return null;
       HL.counts = counts;
       hlDrawChart(counts);
+      hlRenderKpis();
       return counts;
     } catch (err) {
       if (fresh()) box.replaceChildren(hlEl('p', { class: 'muted' }, err.message));
@@ -449,6 +461,15 @@ async function hlMonitor() {
   try {
     const d = await getJSON('/api/hostlogs/monitor');
     if (!fresh()) return;
+    HL.monHosts = d.hosts || [];
+    const names = [...new Set([...hlKnownHosts(), ...(HL.status || []).map((s) => s.host), ...HL.monHosts.map((h) => h.host)])].sort();
+    const pick = document.getElementById('hl-host');
+    if (pick) {
+      pick.replaceChildren(Object.assign(hlEl('option', {}, 'All hosts'), { value: '' }), ...names.map((n) => Object.assign(hlEl('option', {}, n), { value: n })));
+      hlShow();
+    }
+    hlRenderHosts(names, HL.status || []);
+    hlRenderKpis();
     const need = d.hosts.filter((h) => h.rank < 3).length;
     box.replaceChildren(
       hlEl('p', { class: 'muted small', id: 'hl-mon-sum' }, d.hosts.length ? (need ? `${hlPlural(need, 'host')} with something to look at, first.` : 'Every host is logging as usual, or has no baseline yet.') : 'No hosts yet.'),
@@ -609,5 +630,76 @@ async function hlNcEdit(s = null) {
   catch (e) { notify(e.message, 'error'); return; }
   hlNetconsole();
 }
+/* ── TrueNAS/Proxmox log telemetry KPIs, quick presets & entry inspector ── */
+function hlRenderKpis() {
+  const box = document.getElementById('hl-kpis');
+  if (!box) return;
+  const mon = HL.monHosts || [];
+  const need = mon.filter((h) => h.rank < 3).length;
+  const pushed = (HL.status || []).filter((s) => s.via === 'agent').length;
+  const c = HL.counts;
+  const bands = c ? hlBand(c.by_level) : null;
+  const errN = bands ? (bands.find((b) => b.key === 'err')?.n || 0) : null;
+  const warnN = bands ? (bands.find((b) => b.key === 'warning')?.n || 0) : null;
+  const tile = (val, lbl, sub, cls = '') => hlEl('div', { class: `pve-kpi ${cls}` },
+    hlEl('span', { class: 'pve-kpi-lbl' }, lbl),
+    hlEl('b', {}, val),
+    hlEl('small', {}, sub));
+  box.replaceChildren(
+    tile(String(mon.length), 'Monitored Hosts', pushed ? `${pushed} signed agent stream${pushed === 1 ? '' : 's'}` : 'collected by SSH scan', 'accent'),
+    tile(String(need), 'Needs Attention', need ? 'anomalies or open log alerts' : 'logging within baseline', need ? 'warn' : 'ok'),
+    tile(c ? c.total.toLocaleString() : '—', 'Lines in Range', hlRangeText()),
+    tile(errN != null ? errN.toLocaleString() : '—', 'Errors & Critical', 'emerg / alert / crit / err', errN ? 'bad' : 'ok'),
+    tile(warnN != null ? warnN.toLocaleString() : '—', 'Warnings', 'priority 4', warnN ? 'warn' : ''),
+  );
+}
+function hlInspectEntry(e) {
+  const box = document.getElementById('hl-inspector');
+  if (!box) return;
+  HL.selEntry = e;
+  box.hidden = !e;
+  if (!e) { box.replaceChildren(); return; }
+  const btn = (label, fn, cls = 'btn ghost sm') => { const b = hlEl('button', { type: 'button', class: cls }, label); b.addEventListener('click', fn); return b; };
+  box.replaceChildren(
+    hlEl('div', { class: 'row wrap', style: 'justify-content:space-between' },
+      hlEl('b', {}, `${e.host} · ${e.level} · ${e.unit || e.ident || '-'}`),
+      btn('Close', () => hlInspectEntry(null))),
+    hlEl('pre', { class: 'pub', style: 'margin:0;white-space:pre-wrap;word-break:break-word' }, e.message),
+    hlEl('div', { class: 'sec-kv small' },
+      hlEl('span', { class: 'sec-k' }, 'Local / UTC'), hlEl('span', { class: 'sec-v mono' }, `${hlWhen(e.ts)} (${fmtUtc(e.ts)})`),
+      hlEl('span', { class: 'sec-k' }, 'Unit / Program'), hlEl('span', { class: 'sec-v mono' }, `${e.unit || '-'} · ident ${e.ident || '-'}${e.comm ? ` · process ${e.comm}` : ''}${e.exe ? ` (${e.exe})` : ''}${e.uid != null ? ` · uid ${e.uid}` : ''}`),
+      hlEl('span', { class: 'sec-k' }, 'Ingest'), hlEl('span', { class: 'sec-v' }, hlWriter(e))),
+    hlEl('div', { class: 'row wrap' },
+      btn(`Filter host: ${e.host}`, () => { document.getElementById('hl-host').value = e.host; hlApply(); }),
+      e.unit ? btn(`Filter unit: ${e.unit}`, () => { document.getElementById('hl-unit').value = e.unit; hlApply({ chart: false }); }) : null,
+      btn('Refresh entries', () => hlSearch(false))));
+}
+function hlInitPresets() {
+  const box = document.getElementById('hl-presets');
+  if (!box) return;
+  const act = (label, fn, title) => {
+    const b = hlEl('button', { type: 'button', class: 'btn ghost sm', title }, label);
+    b.addEventListener('click', fn);
+    return b;
+  };
+  const setFilters = ({ level = '', unit = '', q = '' }) => {
+    document.getElementById('hl-level').value = level;
+    document.getElementById('hl-unit').value = unit;
+    document.getElementById('hl-q').value = q;
+    hlApply({ chart: false });
+  };
+  box.replaceChildren(
+    hlEl('span', { class: 'small muted' }, 'Triage:'),
+    act('All levels', () => setFilters({ level: '' }), 'Clear severity filter'),
+    act('Errors & Critical', () => setFilters({ level: 'err', unit: document.getElementById('hl-unit').value, q: document.getElementById('hl-q').value }), 'Show priority 0-3 lines'),
+    act('Warnings+', () => setFilters({ level: 'warning', unit: document.getElementById('hl-unit').value, q: document.getElementById('hl-q').value }), 'Show warnings and worse'),
+    act('SSH / Auth', () => setFilters({ level: '', unit: 'sshd.service', q: '' }), 'Filter sshd.service'),
+    act('ZFS / zed', () => setFilters({ level: '', unit: 'zed.service', q: '' }), 'Filter zed.service'),
+    act('Reset filters', () => { document.getElementById('hl-host').value = ''; setFilters({ level: '', unit: '', q: '' }); }, 'Reset host, level, unit and text'),
+    act('Refresh', () => loadHostLogs(), 'Reload monitoring, chart and log lines'),
+  );
+}
+hlInitPresets();
+
 document.getElementById('hl-nc-box').addEventListener('toggle', (ev) => { if (ev.target.open) hlNetconsole(); });
 document.getElementById('hl-nc-new').addEventListener('click', () => hlNcEdit());

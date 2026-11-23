@@ -10,6 +10,104 @@ function keyMsg(msg, ok) {
   m.className = ok ? 'st-ok' : 'st-failed';
 }
 
+const AD_STATE = { keys: [], bindings: [], users: null, roles: null, entries: [], backups: null };
+
+function renderAdminKpis() {
+  const box = $('#ad-kpis');
+  if (!box) return;
+  const tile = (val, lbl, sub, sec, cls = '') => {
+    const b = el('button', { type: 'button', class: `pve-kpi ${cls}`, onclick: () => typeof adOpen === 'function' && adOpen(sec) },
+      text('span', lbl, 'pve-kpi-lbl'), el('b', {}, val), text('small', sub));
+    return b;
+  };
+  const items = [];
+  if (can('keys.view')) {
+    items.push(tile(String(AD_STATE.keys.length), 'Vault Keys', `${AD_STATE.bindings.length} host bindings`, 'keys', 'accent'));
+  }
+  if (can('users.manage') || can('roles.manage')) {
+    const uCount = AD_STATE.users == null ? '—' : String(AD_STATE.users);
+    const rCount = AD_STATE.roles == null ? '—' : `${AD_STATE.roles} roles`;
+    items.push(tile(uCount, 'Users & Roles', rCount, 'users'));
+  }
+  if (can('audit.view')) {
+    const bad = AD_STATE.entries.filter((a) => a.outcome !== 'ok').length;
+    items.push(tile(String(AD_STATE.entries.length), 'Audit Events', bad ? `${bad} failed / denied` : 'recent events ok', 'audit', bad ? 'warn' : 'ok'));
+  }
+  if (can('backups.view') && AD_STATE.backups) {
+    const b = AD_STATE.backups;
+    const lbl = b.external ? 'PG' : String((b.backups || []).length);
+    const sub = b.external ? 'external pg_dump' : (b.backups?.[0] ? `last ${fmtAgo(b.backups[0].created)}` : 'none yet');
+    items.push(tile(lbl, 'Essentials Backups', sub, 'audit', b.backups?.[0] || b.external ? 'ok' : 'warn'));
+  }
+  box.hidden = !items.length;
+  box.replaceChildren(...items);
+}
+
+async function loadAdminSummary() {
+  const jobs = [];
+  if (can('keys.view')) jobs.push(getJSON('/api/keys').then((r) => { AD_STATE.keys = r.keys || []; AD_STATE.bindings = r.bindings || []; }).catch(() => {}));
+  if (can('users.manage')) jobs.push(getJSON('/api/users').then((r) => { AD_STATE.users = (r.users || []).length; }).catch(() => {}));
+  if (can('roles.manage')) jobs.push(getJSON('/api/roles').then((r) => { AD_STATE.roles = (r.roles || []).length; }).catch(() => {}));
+  if (can('audit.view')) jobs.push(getJSON('/api/audit?limit=100').then((r) => { AD_STATE.entries = r.entries || []; }).catch(() => {}));
+  if (can('backups.view')) jobs.push(getJSON('/api/backups').then((r) => { AD_STATE.backups = r; }).catch(() => {}));
+  await Promise.all(jobs);
+  renderAdminKpis();
+}
+
+function renderBindingsList() {
+  const bindingsEl = $('#bindings');
+  if (!bindingsEl) return;
+  const actFilter = $('#ad-bindact')?.value || '';
+  const q = ($('#ad-bindfind')?.value || '').trim().toLowerCase();
+  const filtered = AD_STATE.bindings.filter((b) => {
+    const acts = b.actions.split(',');
+    if (actFilter && !acts.includes(actFilter)) return false;
+    return !q || `${b.user}@${b.pattern}:${b.port} ${b.key} ${b.kind} ${b.actions}`.toLowerCase().includes(q);
+  });
+  bindingsEl.replaceChildren(...filtered.map((b) => {
+    const li = document.createElement('li');
+    const acts = b.actions.split(',');
+    li.append(text('span', `${b.user}@${b.pattern}:${b.port} → ${b.key}`), text('span', `${b.kind} · ${b.actions}`, 'm'));
+    if (b.kind === 'host') li.append(button('Scan now', () => queueScan(b.pattern), 'btn ghost sm'));
+    if (!acts.includes('deploy')) {
+      const toggle = (act, label) => {
+        const on = acts.includes(act);
+        const next = on ? acts.filter((a) => a !== act && !(act === 'scan' && a === 'checksum')) : [...acts, act, ...(act === 'checksum' && !acts.includes('scan') ? ['scan'] : [])];
+        const btn = button(`${label}: ${on ? 'on' : 'off'}`, () => setBindingActions(b, next), 'btn ghost sm');
+        btn.setAttribute('aria-pressed', String(on));
+        if (!next.length) { btn.disabled = true; btn.title = 'A binding allows something: Unbind it instead'; }
+        if (act === 'console' && !can('console.open')) { btn.disabled = true; btn.title = 'Your account cannot open consoles'; }
+        return btn;
+      };
+      li.append(toggle('checksum', 'Checksums'), toggle('console', 'Console'));
+    }
+    li.append(button('Unbind', () => removeVaultItem(`/api/bindings/${b.binding_id}`, `Stop using ${b.key} for ${b.user}@${b.pattern}?`), 'btn ghost sm danger'));
+    return li;
+  }));
+  if (!filtered.length) bindingsEl.replaceChildren(text('li', AD_STATE.bindings.length ? 'No bindings match the filter.' : 'No bindings yet.', 'muted'));
+}
+
+function renderAuditList() {
+  const auditEl = $('#audit');
+  if (!auditEl) return;
+  const out = $('#ad-auditout')?.value || '';
+  const q = ($('#ad-auditfind')?.value || '').trim().toLowerCase();
+  const filtered = AD_STATE.entries.filter((a) => {
+    if (out && a.outcome !== out) return false;
+    return !q || `${a.action} ${a.outcome} ${a.actor} ${a.host || ''} ${a.key || ''} ${JSON.stringify(a.detail || {})}`.toLowerCase().includes(q);
+  });
+  auditEl.replaceChildren(...filtered.map((a) => {
+    const li = document.createElement('li');
+    li.append(
+      text('span', `${a.action} · ${a.outcome}${a.host ? ' · ' + a.host : ''}`, `st-${a.outcome}`),
+      Object.assign(text('span', `${fmtTime(a.ts, { seconds: true })} · ${a.actor}${a.key ? ' · ' + a.key : ''}`, 'm'), { title: fmtUtc(a.ts) }),
+      ...(Object.keys(a.detail).length ? [text('span', JSON.stringify(a.detail), 'm')] : []),
+    );
+    return li;
+  }));
+  if (!filtered.length) auditEl.replaceChildren(text('li', AD_STATE.entries.length ? 'No audit entries match the filter.' : 'No audit entries yet.', 'muted'));
+}
+
 async function loadKeys(select) {
   if (typeof loadEnclave === 'function') loadEnclave();
   if (typeof loadAgents === 'function') loadAgents();
@@ -17,6 +115,9 @@ async function loadKeys(select) {
   if (!keysEl) return;
   try {
     const { keys, bindings } = await getJSON('/api/keys');
+    AD_STATE.keys = keys || [];
+    AD_STATE.bindings = bindings || [];
+    renderAdminKpis();
     const sel = $('#instkey');
     if (sel) {
       const keep = select || sel.value;
@@ -53,30 +154,7 @@ async function loadKeys(select) {
       $('#instconsole').disabled = $('#bindconsole').disabled;
       $('#instconsole').title = $('#bindconsole').title;
     }
-    const bindingsEl = $('#bindings');
-    if (bindingsEl) {
-      bindingsEl.replaceChildren(...bindings.map((b) => {
-        const li = document.createElement('li');
-        const acts = b.actions.split(',');
-        li.append(text('span', `${b.user}@${b.pattern}:${b.port} → ${b.key}`), text('span', `${b.kind} · ${b.actions}`, 'm'));
-        if (b.kind === 'host') li.append(button('Scan now', () => queueScan(b.pattern), 'btn ghost sm'));
-        if (!acts.includes('deploy')) {
-          const toggle = (act, label) => {
-            const on = acts.includes(act);
-            const next = on ? acts.filter((a) => a !== act && !(act === 'scan' && a === 'checksum')) : [...acts, act, ...(act === 'checksum' && !acts.includes('scan') ? ['scan'] : [])];
-            const btn = button(`${label}: ${on ? 'on' : 'off'}`, () => setBindingActions(b, next), 'btn ghost sm');
-            btn.setAttribute('aria-pressed', String(on));
-            if (!next.length) { btn.disabled = true; btn.title = 'A binding allows something: Unbind it instead'; }
-            if (act === 'console' && !can('console.open')) { btn.disabled = true; btn.title = 'Your account cannot open consoles'; }
-            return btn;
-          };
-          li.append(toggle('checksum', 'Checksums'), toggle('console', 'Console'));
-        }
-        li.append(button('Unbind', () => removeVaultItem(`/api/bindings/${b.binding_id}`, `Stop using ${b.key} for ${b.user}@${b.pattern}?`), 'btn ghost sm danger'));
-        return li;
-      }));
-      if (!bindings.length) bindingsEl.replaceChildren(text('li', 'No bindings yet.', 'muted'));
-    }
+    renderBindingsList();
   } catch (err) {
     keysEl.replaceChildren(text('li', err.message, 'muted'));
   }
@@ -120,15 +198,18 @@ async function loadUsers() {
   try {
     const { roles, catalog } = await getJSON('/api/roles');
     CATALOG = catalog;
+    AD_STATE.roles = roles.length;
     const mine = roles.filter((r) => r.permissions.every((p) => ME.permissions.includes(p)));
     if (can('roles.manage')) renderRoles(roles, mine);
-    if (!can('users.manage')) return;
+    if (!can('users.manage')) { renderAdminKpis(); return; }
     for (const sel of [$('#newuserrole'), $('#inviterole')]) {
       const was = sel.value;
       sel.replaceChildren(...mine.map((r) => new Option(r.name, r.name)));
       sel.value = was && mine.some((r) => r.name === was) ? was : 'viewer';
     }
     const [{ users }, { invites, now }] = await Promise.all([getJSON('/api/users'), getJSON('/api/invites')]);
+    AD_STATE.users = users.length;
+    renderAdminKpis();
     const change = async (u, body) => {
       try { await api(`/api/users/${encodeURIComponent(u)}`, jsonOpts('PUT', body)); }
       catch (err) { $('#usermsg').textContent = err.message; }
@@ -210,6 +291,8 @@ async function loadBackups() {
   if (!box) return;
   try {
     const b = await getJSON('/api/backups');
+    AD_STATE.backups = b;
+    renderAdminKpis();
     if (b.external) {
       box.replaceChildren(text('p', 'This database is PostgreSQL: StorageForge makes no backups of it. Use pg_dump, and keep the vault secret safe.', 'st-running'));
       return;
@@ -250,21 +333,19 @@ async function loadAudit() {
   if (!can('audit.view')) return;
   try {
     const { entries } = await getJSON('/api/audit?limit=100');
-    auditEl.replaceChildren(...entries.map((a) => {
-      const li = document.createElement('li');
-      li.append(
-        text('span', `${a.action} · ${a.outcome}${a.host ? ' · ' + a.host : ''}`, `st-${a.outcome}`),
-        Object.assign(text('span', `${fmtTime(a.ts, { seconds: true })} · ${a.actor}${a.key ? ' · ' + a.key : ''}`, 'm'), { title: fmtUtc(a.ts) }),
-        ...(Object.keys(a.detail).length ? [text('span', JSON.stringify(a.detail), 'm')] : []),
-      );
-      return li;
-    }));
+    AD_STATE.entries = entries || [];
+    renderAdminKpis();
+    renderAuditList();
   } catch (err) {
     auditEl.replaceChildren(text('li', err.message, 'muted'));
   }
 }
 
 function bindAdminForms() {
+  $('#ad-bindact')?.addEventListener('change', renderBindingsList);
+  $('#ad-bindfind')?.addEventListener('input', renderBindingsList);
+  $('#ad-auditout')?.addEventListener('change', renderAuditList);
+  $('#ad-auditfind')?.addEventListener('input', renderAuditList);
   $('#bindform')?.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const actions = [['scan', '#bindscan'], ['checksum', '#bindsum'], ['console', '#bindconsole']].filter(([, id]) => $(id).checked).map(([a]) => a);

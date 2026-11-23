@@ -3,7 +3,7 @@
    the index and says how old it is. "Measure now" is the one action, and it only reads. DOM APIs only. Loaded after
    dockerview.js; uses the shared helpers. */
 
-const INF = { view: 'workloads' };
+const INF = { view: 'workloads', wlRuntime: '', wlState: '', wlFind: '', vmTab: 'all', fwFind: '' };
 const INF_VIEWS = [['workloads', 'Workloads'], ['containers', 'Containers'], ['exposure', 'Exposure'], ['network', 'Network'], ['firewall', 'Firewall'], ['sfnet', 'StorageForge network'], ['toolbox', 'Toolbox']];
 const INF_LEVEL = { any: 'Any address', lan: 'Private networks', vpn: 'VPN only', blocked: 'Blocked', loopback: 'This machine only', unknown: 'Unknown' };
 const INF_CLASS = { any: 'st-failed', lan: 'st-warn', vpn: 'muted', blocked: 'muted', loopback: 'muted', unknown: 'st-warn' };
@@ -92,26 +92,105 @@ async function infWorkloads(content) {
   const qs = S.host ? `?host=${encodeURIComponent(S.host)}` : '';
   const [{ workloads, hosts }, lvs] = await Promise.all([getJSON('/api/workloads' + qs), getJSON('/api/workloads/libvirt' + qs).then((r) => r.hosts).catch(() => [])]);
   const out = document.createElement('div');
-  const kids = [out];
-  for (const h of hosts) {
-    const mine = workloads.filter((w) => w.host === h.host);
-    const head = document.createElement('div'); head.className = 'row';
-    head.append(el('b', { class: 'mono' }, h.host), text('span', `containers read ${infWhen(h.containers_read_at)} · VMs and instances read ${infWhen(h.measured_at)}${h.measure_stale ? ' (old)' : ''}`, 'muted small'), infMeasure(h.host, out));
-    kids.push(head);
-    if (!h.measured_at) kids.push(text('p', 'VMs, instances and other users\' containers take a signed reading, and this host has none yet, so this list may not be complete.', 'muted small'));
-    const lv = lvs.find((x) => x.host === h.host);
-    if (!mine.length) { kids.push(text('p', h.measured_at ? 'Nothing found.' : 'No containers found by the scan.', 'muted small')); if (lv) kids.push(infLibvirt(h.host, lv)); continue; }
-    const panel = el('div', { class: 'stack' });
-    kids.push(infTable(['Name', 'Kind', 'State', 'Ports', 'Stored on', 'Worth a look'], mine.map((w) => [
-      w.runtime === 'libvirt' && w.name ? button(w.name, () => infVm(panel, h.host, w), 'btn ghost sm mono') : el('span', { class: 'mono' }, w.name || '?'),
-      `${w.runtime} ${w.kind}${w.user ? ` (${w.user})` : ''}${w.panel ? ' · panel' : ''}`,
-      w.state || '?',
-      (w.ports || []).map((p) => `${p.host_ip}:${p.host_port}→${p.port}/${p.proto}`).join(', '),
-      [...new Set((w.mounts || []).map((m) => m.on ? `${m.on.mount} (${m.on.filesystem})` : null).filter(Boolean))].join(', '),
-      w.detail ? (w.findings || []).join('; ') : 'Not read in full'])), panel);
-    if (lv) kids.push(infLibvirt(h.host, lv));
+  const vms = workloads.filter((w) => w.runtime === 'libvirt' || w.runtime === 'proxmox' || w.kind === 'vm');
+  const cts = workloads.filter((w) => !vms.includes(w));
+  const running = workloads.filter((w) => w.state === 'running');
+  const vcpus = vms.reduce((a, w) => a + (Number(w.vcpus) || 0), 0);
+  const ramMib = vms.reduce((a, w) => a + (Number(w.memory_mib) || 0), 0);
+  const warnCount = workloads.filter((w) => (w.findings || []).length > 0).length;
+  const kpis = el('div', { class: 'pve-kpis' },
+    el('div', { class: 'pve-kpi accent' }, text('span', 'Nodes', 'pve-kpi-lbl'), el('b', {}, String(hosts.length)), text('small', `${workloads.length} total guests`)),
+    el('div', { class: `pve-kpi ${running.length ? 'ok' : ''}` }, text('span', 'Running', 'pve-kpi-lbl'), el('b', {}, String(running.length)), text('small', `${workloads.length - running.length} stopped / other`)),
+    el('div', { class: 'pve-kpi' }, text('span', 'VMs / Instances', 'pve-kpi-lbl'), el('b', {}, String(vms.length)), text('small', `${vcpus} vCPUs · ${ramMib ? fmtBytes(ramMib * 2 ** 20) : '0 B'}`)),
+    el('div', { class: `pve-kpi ${warnCount ? 'warn' : ''}` }, text('span', 'Containers & Alerts', 'pve-kpi-lbl'), el('b', {}, String(cts.length)), text('small', `${warnCount} guest${warnCount === 1 ? '' : 's'} with findings`)));
+
+  const listBox = el('div', { class: 'stack' });
+  const rtSel = el('select', { 'aria-label': 'Filter guest runtime', onchange: () => { INF.wlRuntime = rtSel.value; drawList(); } },
+    new Option('All runtimes', ''), new Option('VMs (libvirt / Proxmox)', 'vm'), new Option('System containers (LXC / Incus)', 'lxc'), new Option('App containers (Docker / Podman)', 'ctr'));
+  rtSel.value = INF.wlRuntime;
+  const stSel = el('select', { 'aria-label': 'Filter guest state', onchange: () => { INF.wlState = stSel.value; drawList(); } },
+    new Option('All states', ''), new Option('Running', 'running'), new Option('Stopped / off', 'stopped'), new Option('With findings', 'findings'));
+  stSel.value = INF.wlState;
+  const find = el('input', { type: 'search', value: INF.wlFind, placeholder: 'Filter guests, ports or mounts…', 'aria-label': 'Filter guests', autocomplete: 'off',
+    oninput: () => { INF.wlFind = find.value; drawList(); } });
+  const targetHost = S.host || (hosts[0] && hosts[0].host) || '';
+  const edit = typeof openTask === 'function' && can('plans.edit') && targetHost;
+  const bar = el('div', { class: 'pve-toolbar' }, rtSel, stSel, find,
+    edit ? button('+ New VM…', () => openTask('vm-create', targetHost, {}), 'btn sm pri') : null,
+    edit && lvs.length ? button('+ New Network…', () => openTask('libvirt-network', targetHost, { mode: 'nat', autostart: true }), 'btn sm') : null,
+    edit && lvs.length ? button('+ New Pool…', () => openTask('libvirt-pool', targetHost, { type: 'dir', autostart: true }), 'btn sm') : null);
+
+  function matchesGuest(w) {
+    if (INF.wlRuntime === 'vm' && w.runtime !== 'libvirt' && w.runtime !== 'proxmox' && w.kind !== 'vm') return false;
+    if (INF.wlRuntime === 'lxc' && !['lxc', 'incus'].includes(w.runtime)) return false;
+    if (INF.wlRuntime === 'ctr' && !['docker', 'podman', 'podman_rootless'].includes(w.runtime)) return false;
+    if (INF.wlState === 'running' && w.state !== 'running') return false;
+    if (INF.wlState === 'stopped' && w.state === 'running') return false;
+    if (INF.wlState === 'findings' && !(w.findings || []).length) return false;
+    const q = INF.wlFind.trim().toLowerCase();
+    if (!q) return true;
+    const hay = [w.host, w.name, w.runtime, w.kind, w.state, ...(w.findings || []),
+      ...(w.ports || []).map((p) => `${p.host_ip}:${p.host_port}:${p.port}`),
+      ...(w.mounts || []).map((m) => m.on?.mount || m.dest || '')].join(' ').toLowerCase();
+    return hay.includes(q);
   }
-  content.replaceChildren(...kids);
+
+  function drawList() {
+    const kids = [];
+    for (const h of hosts) {
+      const mine = workloads.filter((w) => w.host === h.host);
+      const shown = mine.filter(matchesGuest);
+      const head = document.createElement('div'); head.className = 'row';
+      head.append(el('b', { class: 'mono' }, h.host), text('span', `containers read ${infWhen(h.containers_read_at)} · VMs and instances read ${infWhen(h.measured_at)}${h.measure_stale ? ' (old)' : ''}`, 'muted small'), infMeasure(h.host, out));
+      kids.push(head);
+      if (!h.measured_at) kids.push(text('p', 'VMs, instances and other users\' containers take a signed reading, and this host has none yet, so this list may not be complete.', 'muted small'));
+      const lv = lvs.find((x) => x.host === h.host);
+      if (!mine.length) { kids.push(text('p', h.measured_at ? 'Nothing found.' : 'No containers found by the scan.', 'muted small')); if (lv) kids.push(infLibvirt(h.host, lv)); continue; }
+      if (!shown.length) { kids.push(text('p', `No guests match the current filters (${mine.length} hidden).`, 'muted small')); if (lv) kids.push(infLibvirt(h.host, lv)); continue; }
+      const panel = el('div', { class: 'stack' });
+      kids.push(infTable(['Name', 'Kind', 'State', 'Ports', 'Stored on', 'Worth a look'], shown.map((w) => [
+        w.runtime === 'libvirt' && w.name
+          ? button(w.name, () => infVm(panel, h.host, w), 'btn ghost sm mono')
+          : w.name ? button(w.name, () => infGuest(panel, h.host, w), 'btn ghost sm mono') : el('span', { class: 'mono' }, '?'),
+        `${w.runtime} ${w.kind}${w.user ? ` (${w.user})` : ''}${w.panel ? ' · panel' : ''}`,
+        text('span', w.state || '?', INF_VM_STATE[w.state] || ''),
+        (w.ports || []).map((p) => `${p.host_ip}:${p.host_port}→${p.port}/${p.proto}`).join(', '),
+        [...new Set((w.mounts || []).map((m) => m.on ? `${m.on.mount} (${m.on.filesystem})` : null).filter(Boolean))].join(', '),
+        w.detail ? (w.findings || []).join('; ') : 'Not read in full'])), panel);
+      if (lv) kids.push(infLibvirt(h.host, lv));
+    }
+    listBox.replaceChildren(...kids);
+  }
+  drawList();
+  content.replaceChildren(out, kpis, bar, listBox);
+}
+
+/* Proxmox-style container / LXC guest summary & control card */
+function infGuest(panel, host, w) {
+  const edit = typeof openTask === 'function' && can('plans.edit') && ['docker', 'podman', 'lxc', 'incus'].includes(w.runtime);
+  const stage = (label, action, cls = 'btn sm') => button(label, () => openTask('workload-action', host, { runtime: w.runtime, name: w.name, action }), cls);
+  const head = el('div', { class: 'row wrap' }, el('b', { class: 'mono' }, w.name), text('span', w.state || '?', INF_VM_STATE[w.state] || ''),
+    text('span', `${w.runtime} · ${w.kind}${w.user ? ` (${w.user})` : ''}`, 'muted small'),
+    button('Close', () => panel.replaceChildren(), 'btn ghost sm'));
+  const kids = [head];
+  if (edit) {
+    const acts = el('div', { class: 'row wrap', role: 'group', 'aria-label': `Plan a change to ${w.name}` });
+    if (w.state !== 'running') acts.append(stage('Start', 'start'));
+    else acts.append(stage('Stop', 'stop'), stage('Restart', 'restart'));
+    acts.append(button('Remove…', () => openTask('workload-remove', host, { runtime: w.runtime, name: w.name }), 'btn ghost sm danger'));
+    if (typeof hlLinkEl === 'function' && can('hostlogs.view')) acts.append(hlLinkEl(host, 'Logs', { q: w.name, small: true }));
+    kids.push(acts);
+  }
+  if ((w.mounts || []).length) {
+    kids.push(text('h4', 'Mounts'), infTable(['Source', 'Target', 'Backed by'], w.mounts.map((m) => [
+      el('span', { class: 'mono' }, m.source || ''), el('span', { class: 'mono' }, m.dest || ''), m.on ? `${m.on.mount} (${m.on.filesystem})` : ''])));
+  }
+  if ((w.ports || []).length) {
+    kids.push(text('h4', 'Published ports'), infTable(['Host', 'Port', 'Proto'], w.ports.map((p) => [p.host_ip || '0.0.0.0', String(p.host_port || p.port), p.proto || 'tcp'])));
+  }
+  if ((w.findings || []).length) kids.push(text('p', w.findings.join('; '), 'st-warn small'));
+  panel.replaceChildren(el('div', { class: 'card stack pve-drawer', role: 'region', 'aria-label': `Guest ${w.name}` }, ...kids));
+  panel.scrollIntoView({ block: 'nearest' });
 }
 
 /* A libvirt VM: what the last reading says of it, its snapshots, and buttons that stage a plan step. Nothing runs from
@@ -124,7 +203,12 @@ function infVm(panel, host, w) {
     text('span', `${w.vcpus || '?'} vCPUs · ${w.memory_mib != null ? fmtBytes(w.memory_mib * 2 ** 20) : '?'} · ${w.firmware || 'bios'}${w.tpm ? ' · TPM' : ''}${w.autostart ? ' · starts at boot' : ''}`, 'muted small'),
     text('span', w.agent === 'connected' ? 'guest agent answers: snapshots freeze its filesystems' : w.agent ? `guest agent ${w.agent}` : 'no guest agent channel', w.agent === 'connected' ? 'st-ok small' : 'muted small'),
     button('Close', () => panel.replaceChildren(), 'btn ghost sm'));
-  const kids = [head];
+  const vmKpis = el('div', { class: 'pve-kpis' },
+    el('div', { class: `pve-kpi ${w.state === 'running' ? 'ok' : w.state === 'crashed' ? 'bad' : ''}` }, text('span', 'State', 'pve-kpi-lbl'), el('b', {}, w.state || '?'), text('small', w.autostart ? 'Autostart on' : 'Manual start')),
+    el('div', { class: 'pve-kpi accent' }, text('span', 'Compute', 'pve-kpi-lbl'), el('b', {}, `${w.vcpus || '?'} vCPU`), text('small', w.memory_mib != null ? fmtBytes(w.memory_mib * 2 ** 20) : 'Memory ?')),
+    el('div', { class: 'pve-kpi' }, text('span', 'Firmware & Agent', 'pve-kpi-lbl'), el('b', {}, (w.firmware || 'bios').toUpperCase()), text('small', `${w.tpm ? 'TPM · ' : ''}${w.agent === 'connected' ? 'QEMU agent OK' : 'Agent offline'}`)),
+    el('div', { class: 'pve-kpi' }, text('span', 'Disks & Snapshots', 'pve-kpi-lbl'), el('b', {}, `${(w.disks || []).length} / ${(w.snapshots || []).length}`), text('small', 'disks / snapshots')));
+  const kids = [head, vmKpis];
   if (edit) {
     const acts = el('div', { class: 'row wrap', role: 'group', 'aria-label': `Plan a change to ${w.name}` });
     const lv = { runtime: 'libvirt', name: w.name };
@@ -134,23 +218,37 @@ function infVm(panel, host, w) {
     acts.append(stage('Snapshot…', 'vm-snapshot', { name: w.name, disk_only: true }), stage('Change…', 'vm-edit', { name: w.name }),
       button('Copy to another host…', () => infVmCopy(host, w), 'btn sm'));
     if (can('console.open')) acts.append(el('a', { class: 'btn sm', href: `/console#${encodeURIComponent(w.name)}`, target: '_blank', rel: 'noopener' }, 'Console'));
+    if (typeof hlLinkEl === 'function' && can('hostlogs.view')) acts.append(hlLinkEl(host, 'Logs', { q: w.name, small: true }));
     acts.append(stage('Remove…', 'workload-remove', lv, 'btn ghost sm danger'));
     kids.push(acts, text('p', 'Each button opens the step of a change plan: it is checked against this reading, reports first, and runs when the plan is deployed.', 'muted small'));
   }
-  kids.push(text('h4', 'Disks'), infTable(['Disk', 'Kind', 'Bus', 'Format', 'File or device', 'Stored on'], (w.disks || []).map((d) => {
+  const secHw = el('div', { class: 'stack' }, text('h4', 'Disks'), infTable(['Disk', 'Kind', 'Bus', 'Format', 'File or device', 'Stored on'], (w.disks || []).map((d) => {
     const m = (w.mounts || []).find((x) => x.dest === d.target);
     return [el('span', { class: 'mono' }, d.target || '?'), d.device + (d.readonly ? ', read-only' : ''), d.bus || '', d.format + (d.backing ? ', on a base image' : ''),
       el('span', { class: 'mono' }, d.source || ''), m && m.on ? `${m.on.mount} (${m.on.filesystem})` : ''];
   })));
   const snaps = w.snapshots || [];
-  kids.push(text('h4', `Snapshots (${snaps.length})`));
-  if (!snaps.length) kids.push(text('p', 'None.', 'muted small'));
-  else kids.push(infTable(['Snapshot', 'Taken', 'Kind', 'Of a VM that was', ''], snaps.slice().reverse().map((x) => [
-    el('span', { class: 'mono' }, x.name + (x.current ? ' (current)' : '')), x.created ? fmtTime(x.created) : '',
-    x.location === 'external' ? 'disk-only' : 'internal, with memory', x.state === 'disk-snapshot' ? 'its disks only' : x.state || '',
-    edit ? el('div', { class: 'row' }, stage('Revert…', 'vm-revert', { name: w.name, snapshot: x.name }, 'btn ghost sm'),
-      stage('Delete…', 'vm-snapshot', { name: w.name, snapshot: x.name, action: 'delete', disk_only: x.location === 'external' }, 'btn ghost sm')) : ''])));
-  panel.replaceChildren(el('div', { class: 'card stack', role: 'region', 'aria-label': `VM ${w.name}` }, ...kids));
+  const secSnap = el('div', { class: 'stack' }, text('h4', `Snapshots (${snaps.length})`),
+    !snaps.length ? text('p', 'None.', 'muted small') : infTable(['Snapshot', 'Taken', 'Kind', 'Of a VM that was', ''], snaps.slice().reverse().map((x) => [
+      el('span', { class: 'mono' }, x.name + (x.current ? ' (current)' : '')), x.created ? fmtTime(x.created) : '',
+      x.location === 'external' ? 'disk-only' : 'internal, with memory', x.state === 'disk-snapshot' ? 'its disks only' : x.state || '',
+      edit ? el('div', { class: 'row' }, stage('Revert…', 'vm-revert', { name: w.name, snapshot: x.name }, 'btn ghost sm'),
+        stage('Delete…', 'vm-snapshot', { name: w.name, snapshot: x.name, action: 'delete', disk_only: x.location === 'external' }, 'btn ghost sm')) : ''])));
+  const vmBar = el('div', { class: 'pve-toolbar' });
+  const vmTabs = [['all', 'Summary (Hardware + Snapshots)'], ['hw', 'Hardware & Disks'], ['snaps', 'Snapshots']];
+  const syncVm = () => {
+    secHw.hidden = INF.vmTab === 'snaps';
+    secSnap.hidden = INF.vmTab === 'hw';
+    vmBar.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.vmtab === INF.vmTab)));
+  };
+  for (const [id, label] of vmTabs) {
+    const b = button(label, () => { INF.vmTab = id; syncVm(); }, 'btn ghost sm');
+    b.dataset.vmtab = id;
+    vmBar.append(b);
+  }
+  syncVm();
+  kids.push(vmBar, secHw, secSnap);
+  panel.replaceChildren(el('div', { class: 'card stack pve-drawer', role: 'region', 'aria-label': `VM ${w.name}` }, ...kids));
   panel.scrollIntoView({ block: 'nearest' });
 }
 
@@ -243,15 +341,35 @@ async function infNetwork(content) {
   if (infNeedHost(content)) return;
   const { host, network } = await getJSON(`/api/network?host=${encodeURIComponent(S.host)}`);
   if (!network) { content.replaceChildren(text('p', `No network reading for ${host} yet: it comes with the next scan.`, 'muted')); return; }
-  const kids = [text('p', `Read ${infWhen(network.read_at)}.`, 'muted small')];
+  const ifaces = network.interfaces || [];
+  const nonLo = ifaces.filter((i) => i.kind !== 'loopback');
+  const upCount = nonLo.filter((i) => String(i.state).toLowerCase() === 'up').length;
+  const bridgesBonds = nonLo.filter((i) => ['bridge', 'bond', 'vlan', 'wireguard'].includes(i.kind)).length;
+  const defRoute = (network.routes || []).find((r) => r.dst === 'default');
+  const cfg = network.config;
+  const mgrName = cfg ? ({ netplan: 'netplan', nm: 'NetworkManager', networkd: 'systemd-networkd', ifupdown: 'ifupdown', none: 'unmanaged' }[cfg.manager] || cfg.manager) : 'not read';
+  const kpis = el('div', { class: 'pve-kpis' },
+    el('div', { class: `pve-kpi ${upCount ? 'ok' : ''}` }, text('span', 'Links Up', 'pve-kpi-lbl'), el('b', {}, `${upCount} / ${nonLo.length}`), text('small', `${bridgesBonds} virtual / overlay`)),
+    el('div', { class: 'pve-kpi accent' }, text('span', 'Default Gateway', 'pve-kpi-lbl'), el('b', {}, defRoute?.via || 'none'), text('small', defRoute?.dev ? `via ${defRoute.dev}` : 'no default route')),
+    el('div', { class: 'pve-kpi' }, text('span', 'DNS & Config', 'pve-kpi-lbl'), el('b', {}, String((network.dns?.nameservers || []).length)), text('small', `${mgrName} · ${(network.neighbours || []).length} neighbours`)));
+  const portCards = nonLo.length ? el('div', { class: 'pve-ports' }, ...nonLo.map((i) => {
+    const up = String(i.state).toLowerCase() === 'up';
+    const addrs = (i.addresses || []).filter((a) => a.scope !== 'link').map((a) => `${a.ip}/${a.prefix}`);
+    return el('div', { class: `pve-port ${up ? 'up' : 'down'}` },
+      el('div', { class: 'pve-port-hd' }, el('b', { class: 'mono small' }, i.name), text('span', i.state || '?', up ? 'st-ok small' : 'st-failed small')),
+      text('span', `${i.kind || ''}${i.vlan_id ? ` vlan ${i.vlan_id}` : ''}${i.master ? ` · → ${i.master}` : ''}${i.mtu ? ` · mtu ${i.mtu}` : ''}`, 'pve-port-meta'),
+      addrs.length ? text('span', addrs.join(', '), 'mono small') : text('span', 'no address', 'muted small'));
+  })) : null;
+  const kids = [el('div', { class: 'row wrap', style: 'justify-content:space-between' }, text('p', `Read ${infWhen(network.read_at)}.`, 'muted small'),
+    can('devices.view') ? el('a', { class: 'btn ghost sm', href: '/manage#/compose' }, 'Open Network Manager →') : null), kpis];
   if (network.unreadable.length) kids.push(text('p', `Could not read: ${network.unreadable.join(', ')}. That does not mean there are none.`, 'st-warn'));
-  kids.push(text('h4', 'Interfaces'), infTable(['Name', 'Kind', 'State', 'Addresses', 'MTU', 'Part of'], network.interfaces.map((i) => [
+  if (portCards) kids.push(text('h4', 'Ports & Bridges'), portCards);
+  kids.push(text('h4', 'Interfaces'), infTable(['Name', 'Kind', 'State', 'Addresses', 'MTU', 'Part of'], ifaces.map((i) => [
     el('span', { class: 'mono' }, i.name), i.kind + (i.vlan_id ? ` ${i.vlan_id}` : ''), i.state, i.addresses.map((a) => `${a.ip}/${a.prefix}`).join(', '), i.mtu, i.master || ''])));
   kids.push(text('h4', 'Routes'), infTable(['To', 'Via', 'Device'], network.routes.map((r) => [r.dst, r.via || '', r.dev || ''])));
-  const cfg = network.config;
   if (cfg) {
     const said = { netplan: 'netplan', nm: 'NetworkManager', networkd: 'systemd-networkd', ifupdown: 'ifupdown', none: 'nothing that keeps it' }[cfg.manager] || cfg.manager;
-    const live = new Set(network.interfaces.map((i) => i.name));
+    const live = new Set(ifaces.map((i) => i.name));
     kids.push(text('h4', 'Set up in files'), text('p', `The network is kept by ${said}. What its files say, beside what the kernel has above.`, 'muted small'));
     if (cfg.unreadable.length) kids.push(text('p', `The scan user could not read: ${cfg.unreadable.join(', ')}. What they say is not shown.`, 'st-warn'));
     kids.push(infTable(['Name', 'Set up in', 'DHCP', 'Addresses', 'Routes', 'Now'], Object.entries(cfg.interfaces).filter(([n]) => n !== 'lo').map(([n, c]) => [
@@ -273,9 +391,27 @@ async function infFirewall(content) {
   if (!firewall) { content.replaceChildren(head, out, text('p', 'Not read yet. Reading firewall rules takes deploy access and a signed run.', 'muted')); return; }
   const kids = [head, out];
   if (!firewall.readable) kids.push(text('p', `Not readable: ${firewall.notes.join('; ')}. Treat this as unknown, not as open or closed.`, 'st-warn'));
-  kids.push(text('p', `Backends: ${firewall.backends.join(', ') || 'none'}. Default policies: ${Object.entries(firewall.policies).map(([k, v]) => `${k} ${v}`).join(', ') || 'none read'}.`, 'small'));
-  kids.push(infTable(['Where', 'Action', 'Protocol', 'Ports', 'From', 'Note'], firewall.rules.map((r) => [
-    `${r.table} ${r.chain}`, r.action || '', r.proto || '', (r.dports || []).map((p) => Array.isArray(p) ? p.join('-') : p).join(', '), r.saddr || '',
-    [r.comment, ...(r.unmodelled || []).map((u) => `not understood: ${u}`)].filter(Boolean).join('; ')])));
+  const polText = Object.entries(firewall.policies).map(([k, v]) => `${k} ${v}`).join(', ') || 'none read';
+  const tblBox = el('div', { class: 'stack' });
+  const qIn = el('input', { type: 'search', value: INF.fwFind, placeholder: 'Filter rules by chain, action, port, IP…', 'aria-label': 'Filter firewall rules', autocomplete: 'off',
+    oninput: () => { INF.fwFind = qIn.value; drawRules(); } });
+  const bar = el('div', { class: 'pve-toolbar' }, qIn,
+    can('devices.view') ? el('a', { class: 'btn ghost sm', href: '/manage#/compose' }, 'Edit in Network Manager →') : null);
+  const kpis = el('div', { class: 'pve-kpis' },
+    el('div', { class: `pve-kpi ${firewall.readable ? 'ok' : 'warn'}` }, text('span', 'Backends', 'pve-kpi-lbl'), el('b', {}, firewall.backends.join(', ') || 'none'), text('small', firewall.readable ? 'Readable' : 'Restricted read')),
+    el('div', { class: 'pve-kpi' }, text('span', 'Default Policies', 'pve-kpi-lbl'), el('b', {}, String(Object.keys(firewall.policies).length)), text('small', polText)),
+    el('div', { class: 'pve-kpi accent' }, text('span', 'Rules Modelled', 'pve-kpi-lbl'), el('b', {}, String((firewall.rules || []).length)), text('small', `${(firewall.rules || []).filter((r) => (r.unmodelled || []).length).length} partial`)));
+  function drawRules() {
+    const q = INF.fwFind.trim().toLowerCase();
+    const filtered = (firewall.rules || []).filter((r) => {
+      if (!q) return true;
+      return `${r.table} ${r.chain} ${r.action} ${r.proto} ${(r.dports || []).join(',')} ${r.saddr || ''} ${r.comment || ''}`.toLowerCase().includes(q);
+    });
+    tblBox.replaceChildren(infTable(['Where', 'Action', 'Protocol', 'Ports', 'From', 'Note'], filtered.map((r) => [
+      `${r.table} ${r.chain}`, r.action || '', r.proto || '', (r.dports || []).map((p) => Array.isArray(p) ? p.join('-') : p).join(', '), r.saddr || '',
+      [r.comment, ...(r.unmodelled || []).map((u) => `not understood: ${u}`)].filter(Boolean).join('; ')])));
+  }
+  drawRules();
+  kids.push(text('p', `Backends: ${firewall.backends.join(', ') || 'none'}. Default policies: ${polText}.`, 'small'), kpis, bar, tblBox);
   content.replaceChildren(...kids);
 }

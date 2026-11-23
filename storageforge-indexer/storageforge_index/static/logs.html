@@ -40,6 +40,7 @@
       <div data-sf-chrome="chip" data-here="logs"></div>
     </header>
     <div class="win-body" id="logs-root">
+      <div id="hl-kpis" class="pve-kpis"></div>
       <section class="card stack">
         <h3 id="hl-mon-head">Monitoring</h3>
         <p class="muted small">Each host's last hour against the same hour of the weeks before, its open log alerts, the kinds of line it logged for the first time, silence, and how its lines come in. Hosts with something to look at come first.</p>
@@ -68,6 +69,7 @@
 
       <section class="card stack">
         <h3 id="hl-lines-head">Lines</h3>
+        <div id="hl-presets" class="pve-toolbar" role="toolbar" aria-label="Quick log filters"></div>
         <form id="hl-form">
           <label class="field"><span>Host</span><select id="hl-host"><option value="">All hosts</option></select></label>
           <label class="field"><span>Level</span><select id="hl-level"><option value="">Any</option><option value="err">Errors or worse</option><option value="warning">Warnings or worse</option><option value="notice">Notices or worse</option></select></label>
@@ -79,6 +81,7 @@
         <p id="hl-count" class="muted small" role="status"></p>
         <ol id="hl-lines" class="list"></ol>
         <div class="row"><button id="hl-more" type="button" class="btn" hidden>Older</button></div>
+        <div id="hl-inspector" class="pve-drawer" role="region" aria-label="Selected log entry" hidden></div>
       </section>
 
       <section class="card stack">

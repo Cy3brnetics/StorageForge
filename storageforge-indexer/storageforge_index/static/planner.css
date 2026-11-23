@@ -289,3 +289,14 @@ path.edge.lit{stroke:var(--accent);stroke-width:2.2}
 .pv-result{display:flex;flex-direction:column;gap:var(--sf-s2)}
 .pv-result:empty{display:none}
 .pv-result ul{padding-left:1.2em;margin:0;display:flex;flex-direction:column;gap:2px}
+/* TrueNAS Storage Appliance header strip & builders */
+.pve-appbar{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px 16px}
+.pve-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.pve-kpi{background:var(--panel);border:1px solid var(--line);border-top:2px solid var(--line-2);border-radius:7px;padding:10px 12px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.pve-kpi.ok{border-top-color:var(--ok)}.pve-kpi.warn{border-top-color:var(--warn)}.pve-kpi.bad{border-top-color:var(--crit)}.pve-kpi.accent{border-top-color:var(--accent)}
+.pve-kpi-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600}
+.pve-kpi b{font-family:var(--f-display);font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.15}
+.pve-kpi small{font-size:11.5px;color:var(--muted)}
+.pve-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 12px;background:var(--panel-2);border:1px solid var(--line);border-radius:7px}
+.btn.danger{border-color:var(--crit);color:var(--crit)}
+.btn.danger:hover{background:color-mix(in srgb,var(--crit) 12%,var(--panel-2))}

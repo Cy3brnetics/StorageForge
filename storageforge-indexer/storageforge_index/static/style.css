@@ -1268,3 +1268,30 @@ body.sf-console-page { margin: 0; height: 100vh; display: flex; flex-direction: 
 .pm-tbl { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
 .pm-tbl th, .pm-tbl td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 .pm-tbl td.row { justify-content: flex-start; gap: 4px; flex-wrap: wrap; }
+
+/* TrueNAS SCALE / Proxmox VE appliance widgets (shared inside main panel, topology & filemap) */
+.pve-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 8px; }
+.pve-kpi { background: var(--panel-2); border: 1px solid var(--line); border-top: 2px solid var(--line-2); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pve-kpi.ok { border-top-color: var(--protected); } .pve-kpi.warn { border-top-color: var(--local-only); } .pve-kpi.bad { border-top-color: var(--broken); } .pve-kpi.accent { border-top-color: var(--accent); }
+.pve-kpi-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 600; }
+.pve-kpi b { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.15; overflow-wrap: anywhere; }
+.pve-kpi small { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.pve-meter { display: flex; height: 5px; border-radius: 3px; overflow: hidden; background: var(--bg); margin-top: 4px; }
+.pve-meter i { display: block; height: 100%; background: var(--accent); }
+.pve-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; }
+.pve-toolbar input[type="search"], .pve-toolbar input[type="text"], .pve-toolbar select { font-size: 12px; padding: 4px 7px; }
+.pve-ports { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+.pve-port { background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--line-2); border-radius: 6px; padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pve-port.up { border-left-color: var(--protected); }
+.pve-port.down { border-left-color: var(--broken); }
+.pve-port-hd { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.pve-port-meta { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.pve-drawer { background: var(--panel); border: 1px solid var(--line-2); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.tt.pve-dim { opacity: .28; }
+.ttable-dock { position: absolute; z-index: 4; left: 14px; right: 14px; bottom: 48px; max-height: 46%; overflow: auto; box-shadow: 0 10px 30px rgb(0 0 0 / .42); }
+.fmtable-dock { max-height: 44%; overflow: auto; margin: 6px 10px; }
+.pve-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.pve-table th, .pve-table td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.pve-table th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
+.pve-table tbody tr { cursor: pointer; }
+.pve-table tbody tr:hover { background: var(--panel-2); }

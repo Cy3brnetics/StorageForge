@@ -3,7 +3,7 @@
    target, ask what it would do to a path, and then report and apply: a device through its rollback timer, a Linux host through Changes and a signed deploy. DOM APIs only. */
 
 const $ = (s) => document.querySelector(s);
-const MG = { view: 'fleet', me: null, device: null, draft: '', target: null, platforms: {} };
+const MG = { view: 'fleet', me: null, device: null, draft: '', target: null, platforms: {}, fleetKind: '', fleetFind: '', devSec: 'all', devFwFind: '', trafficFind: '' };
 const VIEWS = [['fleet', 'Fleet'], ['devices', 'Devices'], ['compose', 'Compose'], ['changes', 'Changes'], ['traffic', 'Traffic']];
 const WANT = { fleet: 'devices.view', devices: 'devices.view', compose: 'devices.view', changes: 'devices.view', traffic: 'netscan.view' };
 const TARGETS = ['routeros', 'nftables', 'iptables', 'firewalld', 'ufw', 'openwrt', 'pfsense', 'cisco', 'networkd', 'networkmanager'];
@@ -57,9 +57,29 @@ function setView(view) {
   ({ fleet: viewFleet, devices: viewDevices, compose: viewCompose, changes: viewChanges, traffic: viewTraffic })[view](box).catch((err) => box.replaceChildren(el('p', { class: 'bad' }, err.message)));
 }
 
+function renderTree(machines) {
+  const tree = $('#mg-tree');
+  if (!tree) return;
+  const devs = (machines || []).filter((m) => m.kind === 'device');
+  const hosts = (machines || []).filter((m) => m.kind !== 'device');
+  const item = (m, isDev) => {
+    const active = isDev ? (MG.view === 'devices' && MG.device === m.name) : (MG.view === 'compose' && MG.target === m.name);
+    const badge = m.error ? el('span', { class: 'bad small' }, 'err') : m.exposed ? el('span', { class: 'warn small' }, String(m.exposed)) : textNode(m.backends?.[0] || '');
+    return el('button', { type: 'button', 'aria-current': active ? 'true' : null, title: `${m.name} (${m.label})`, onclick: () => {
+      if (isDev) { MG.device = m.name; setView('devices'); } else { MG.target = m.name; setView('compose'); }
+    } }, el('span', { class: 'mono' }, m.name), badge);
+  };
+  const textNode = (s) => el('span', { class: 'muted small' }, s);
+  const parts = [];
+  if (devs.length) parts.push(el('div', { class: 'mg-tree-grp' }, el('span', { class: 'mg-tree-lbl' }, `Devices (${devs.length})`), ...devs.map((m) => item(m, true))));
+  if (hosts.length) parts.push(el('div', { class: 'mg-tree-grp' }, el('span', { class: 'mg-tree-lbl' }, `Hosts (${hosts.length})`), ...hosts.map((m) => item(m, false))));
+  tree.replaceChildren(...parts);
+}
+
 // ── fleet ───────────────────────────────────────────────────────────
 async function viewFleet(box) {
   const f = await call('/api/fleet');
+  renderTree(f.machines);
   const devices = f.machines.filter((m) => m.kind === 'device');
   const stat = (n, label, cls) => el('div', { class: 'mg-stat' }, el('b', { class: cls || '' }, String(n)), el('span', {}, label));
   const exposed = f.machines.reduce((a, m) => a + (m.exposed || 0), 0);
@@ -67,10 +87,33 @@ async function viewFleet(box) {
   if (f.warnings.length) kids.push(el('div', { class: 'mg-card' }, el('h2', {}, 'Worth knowing'), f.warnings.map((w) => el('p', { class: w.level === 'warn' ? 'warn' : 'muted' }, w.text))));
   if (f.anomalies.length) kids.push(el('div', { class: 'mg-card' }, el('h2', {}, 'Traffic out of the ordinary'), f.anomalies.map((a) => el('p', { class: 'warn' }, `${a.host} ${a.iface}: ${a.text}`))));
   if (f.pending.length) kids.push(el('div', { class: 'mg-card' }, el('h2', {}, 'Changes on a timer'), pendingRows(f.pending)));
-  kids.push(el('div', { class: 'mg-card' }, el('h2', {}, 'Machines'), table(['Name', 'Kind', 'System', 'Address', 'Firewall', 'Rules', 'Forwards', 'Exposed', 'Read', ''], f.machines.map((m) => [
-    m.name, m.label, m.os || '', m.address || '', m.firewall_read ? (m.backends.join(', ') || 'none') : el('span', { class: 'warn' }, 'not read'), String(m.rules), String(m.nat), String(m.exposed ?? '-'), m.error ? el('span', { class: 'bad', title: m.error }, 'failed') : when(m.read_at),
-    el('span', { class: 'mg-row' }, m.kind === 'device' ? btn('Open', (ev) => { ev.stopPropagation(); MG.device = m.name; setView('devices'); }) : el('a', { class: 'mg-btn', href: `/#host=${encodeURIComponent(m.name)}&tab=rebuild` }, 'Config'), btn('Compose', (ev) => { ev.stopPropagation(); MG.target = m.name; setView('compose'); })),
-  ]))));
+
+  const tableHost = el('div', {});
+  const kSel = el('select', { 'aria-label': 'Filter machines by type', onchange: () => { MG.fleetKind = kSel.value; drawMachines(); } },
+    new Option('All machines', ''), new Option('Network devices', 'device'), new Option('Linux hosts', 'host'),
+    new Option('WAN-exposed (>0)', 'exposed'), new Option('Firewall unread / error', 'unread'));
+  kSel.value = MG.fleetKind;
+  const qIn = el('input', { type: 'search', value: MG.fleetFind, placeholder: 'Filter name, OS, IP, backend…', 'aria-label': 'Filter fleet', oninput: () => { MG.fleetFind = qIn.value; drawMachines(); } });
+  const bar = el('div', { class: 'pve-toolbar' }, kSel, qIn,
+    can('devices.manage') ? btn('+ Add device', () => setView('devices'), 'sm') : null,
+    el('a', { class: 'mg-btn', href: '/#view=scan' }, 'Network scan'),
+    el('a', { class: 'mg-btn', href: '/#tab=infra' }, 'Infra & VMs'));
+  function drawMachines() {
+    const q = MG.fleetFind.trim().toLowerCase();
+    const list = f.machines.filter((m) => {
+      if (MG.fleetKind === 'device' && m.kind !== 'device') return false;
+      if (MG.fleetKind === 'host' && m.kind === 'device') return false;
+      if (MG.fleetKind === 'exposed' && !(m.exposed > 0)) return false;
+      if (MG.fleetKind === 'unread' && m.firewall_read && !m.error) return false;
+      return !q || `${m.name} ${m.label} ${m.os || ''} ${m.address || ''} ${(m.backends || []).join(' ')}`.toLowerCase().includes(q);
+    });
+    tableHost.replaceChildren(table(['Name', 'Kind', 'System', 'Address', 'Firewall', 'Rules', 'Forwards', 'Exposed', 'Read', ''], list.map((m) => [
+      m.name, m.label, m.os || '', m.address || '', m.firewall_read ? (m.backends.join(', ') || 'none') : el('span', { class: 'warn' }, 'not read'), String(m.rules), String(m.nat), String(m.exposed ?? '-'), m.error ? el('span', { class: 'bad', title: m.error }, 'failed') : when(m.read_at),
+      el('span', { class: 'mg-row' }, m.kind === 'device' ? btn('Open', (ev) => { ev.stopPropagation(); MG.device = m.name; setView('devices'); }) : el('a', { class: 'mg-btn', href: `/#host=${encodeURIComponent(m.name)}&tab=rebuild` }, 'Config'), btn('Compose', (ev) => { ev.stopPropagation(); MG.target = m.name; setView('compose'); })),
+    ])));
+  }
+  drawMachines();
+  kids.push(el('div', { class: 'mg-card' }, el('h2', {}, 'Machines'), bar, tableHost));
   if (f.forwards.length) kids.push(el('div', { class: 'mg-card' }, el('h2', {}, 'Port forwards'), table(['Router', 'From outside', 'To', 'Their rules', 'Named'], f.forwards.map((x) => [x.device, `${x.proto}/${x.outside_port}${x.from_wan ? '' : ' (not from the WAN)'}`, `${x.to_addr}:${x.to_port}`, el('span', { class: x.verdict === 'accept' ? 'warn' : 'muted' }, x.verdict === 'accept' ? 'lets it through' : x.verdict === 'drop' ? 'stops it' : 'could not be worked out'), x.nat_rule]))));
   box.replaceChildren(...kids);
 }
@@ -122,16 +165,50 @@ async function deviceCard(name) {
     btn('Compose', () => { MG.target = d.name; setView('compose'); }),
     el('a', { class: 'mg-btn', href: `/#view=map&host=${encodeURIComponent(d.name)}` }, 'On the map'),
     can('devices.manage') ? btn('Remove', async () => { await call(`/api/devices/${encodeURIComponent(d.name)}`, 'DELETE'); MG.device = null; setView('devices'); }, 'danger') : null);
-  const ifaces = table(['Interface', 'Kind', 'State', 'Addresses', 'MAC', 'In'], (net.interfaces || []).filter((i) => i.kind !== 'loopback').map((i) => [i.name, i.kind + (i.vlan_id ? ` ${i.vlan_id}` : ''), i.state, (i.addresses || []).filter((a) => a.scope !== 'link').map((a) => `${a.ip}/${a.prefix}`).join(', '), i.mac || '', i.master || '']));
+  const nonLo = (net.interfaces || []).filter((i) => i.kind !== 'loopback');
+  const portsGrid = nonLo.length ? el('div', { class: 'pve-ports' }, ...nonLo.map((i) => {
+    const up = String(i.state).toLowerCase() === 'up';
+    const addrs = (i.addresses || []).filter((a) => a.scope !== 'link').map((a) => `${a.ip}/${a.prefix}`);
+    return el('div', { class: `pve-port ${up ? 'up' : 'down'}` },
+      el('div', { class: 'pve-port-hd' }, el('b', { class: 'mono' }, i.name), el('span', { class: up ? 'ok small' : 'bad small' }, i.state || '?')),
+      el('span', { class: 'pve-port-meta' }, `${i.kind}${i.vlan_id ? ` · vlan ${i.vlan_id}` : ''}${i.master ? ` · → ${i.master}` : ''}`),
+      el('span', { class: 'pve-port-meta' }, addrs.join(', ') || i.mac || 'no IP'));
+  })) : null;
+  const ifaces = table(['Interface', 'Kind', 'State', 'Addresses', 'MAC', 'In'], nonLo.map((i) => [i.name, i.kind + (i.vlan_id ? ` ${i.vlan_id}` : ''), i.state, (i.addresses || []).filter((a) => a.scope !== 'link').map((a) => `${a.ip}/${a.prefix}`).join(', '), i.mac || '', i.master || '']));
   const routes = table(['To', 'Via', 'Interface', 'Distance'], (net.routes || []).filter((r) => r.family === 4).map((r) => [r.dst, r.via || 'attached', r.dev || '', String(r.metric ?? '')]));
   const seen = [...(facts.discovered || []).map((n) => [n.name || n.ip || '', n.ip || '', n.platform || '', n.via || '', 'discovery']), ...(facts.leases || []).map((n) => [n.name || '', n.ip || '', n.mac || '', '', n.static ? 'lease (static)' : 'lease'])];
-  return el('div', { class: 'mg-card' }, head, out,
-    el('div', { class: 'mg-cols' }, el('div', {}, el('h2', {}, 'Interfaces'), ifaces), el('div', {}, el('h2', {}, 'Routes'), routes)),
-    seen.length ? el('div', {}, el('h2', {}, 'What it knows about'), table(['Name', 'Address', 'Detail', 'On', 'From'], seen)) : null,
-    (net.unreadable || []).length ? el('p', { class: 'warn small' }, `Could not read: ${net.unreadable.join(', ')}`) : null,
-    fw ? el('details', {}, el('summary', {}, `Firewall: ${(fw.rules || []).length} rules, ${(fw.nat || []).length} NAT`), table(['Chain', 'Verdict', 'Protocol', 'Port', 'From', 'To', 'In', 'Out', 'Named', ''], (fw.rules || []).map((r) => [r.chain, r.action || '', r.proto || '', (r.dports || []).map((p) => (Array.isArray(p) ? p.join('-') : p)).join(','), r.saddr || r.not_saddr && `not ${r.not_saddr}` || '', r.daddr || '', r.iif || '', r.oif || '', r.comment || '', (r.unmodelled || []).length ? el('span', { class: 'warn' }, 'not fully read') : '']))) : null,
+
+  const secNet = el('div', {}, portsGrid, el('div', { class: 'mg-cols' }, el('div', {}, el('h2', {}, 'Interfaces'), ifaces), el('div', {}, el('h2', {}, 'Routes'), routes)));
+  const secSeen = seen.length ? el('div', {}, el('h2', {}, 'What it knows about'), table(['Name', 'Address', 'Detail', 'On', 'From'], seen)) : el('div', {});
+  let secFw = null;
+  if (fw) {
+    const fwTbl = el('div', {});
+    const fwIn = el('input', { type: 'search', value: MG.devFwFind, placeholder: 'Filter rules by chain, port, comment…', 'aria-label': 'Filter device rules', oninput: () => { MG.devFwFind = fwIn.value; drawFw(); } });
+    function drawFw() {
+      const q = MG.devFwFind.trim().toLowerCase();
+      const filtered = (fw.rules || []).filter((r) => !q || `${r.chain} ${r.action || ''} ${r.proto || ''} ${(r.dports || []).join(',')} ${r.saddr || ''} ${r.daddr || ''} ${r.iif || ''} ${r.oif || ''} ${r.comment || ''}`.toLowerCase().includes(q));
+      fwTbl.replaceChildren(table(['Chain', 'Verdict', 'Protocol', 'Port', 'From', 'To', 'In', 'Out', 'Named', ''], filtered.map((r) => [r.chain, r.action || '', r.proto || '', (r.dports || []).map((p) => (Array.isArray(p) ? p.join('-') : p)).join(','), r.saddr || r.not_saddr && `not ${r.not_saddr}` || '', r.daddr || '', r.iif || '', r.oif || '', r.comment || '', (r.unmodelled || []).length ? el('span', { class: 'warn' }, 'not fully read') : ''])));
+    }
+    drawFw();
+    secFw = el('details', { open: true }, el('summary', {}, `Firewall: ${(fw.rules || []).length} rules, ${(fw.nat || []).length} NAT`), el('div', { class: 'mg-row', style: 'margin:8px 0' }, fwIn), fwTbl);
+  }
+  const secCfg = el('div', {},
     data.dsl ? el('details', {}, el('summary', {}, 'In the one language'), el('pre', {}, data.dsl)) : null,
     facts.config ? el('details', {}, el('summary', {}, 'Saved configuration'), el('pre', {}, facts.config)) : null);
+
+  const tabs = [['all', 'All sections'], ['net', 'Interfaces & Routes'], ['seen', `Neighbours & Leases (${seen.length})`], ['fw', `Firewall (${(fw?.rules || []).length})`], ['cfg', 'DSL & Config']];
+  const seg = el('div', { class: 'mg-seg' }, ...tabs.map(([id, label]) => el('button', { type: 'button', 'aria-pressed': String(MG.devSec === id), onclick: () => { MG.devSec = id; syncSec(); } }, label)));
+  function syncSec() {
+    seg.querySelectorAll('button').forEach((b, idx) => b.setAttribute('aria-pressed', String(tabs[idx][0] === MG.devSec)));
+    secNet.hidden = MG.devSec !== 'all' && MG.devSec !== 'net';
+    secSeen.hidden = MG.devSec !== 'all' && MG.devSec !== 'seen';
+    if (secFw) secFw.hidden = MG.devSec !== 'all' && MG.devSec !== 'fw';
+    secCfg.hidden = MG.devSec !== 'all' && MG.devSec !== 'cfg';
+  }
+  syncSec();
+  return el('div', { class: 'mg-card' }, head, out, el('div', { style: 'margin:8px 0' }, seg),
+    (net.unreadable || []).length ? el('p', { class: 'warn small' }, `Could not read: ${net.unreadable.join(', ')}`) : null,
+    secNet, secSeen, secFw, secCfg);
 }
 
 // ── compose ─────────────────────────────────────────────────────────
@@ -139,6 +216,7 @@ const EXAMPLE = '# Allow web from the LAN into the DMZ, and forward HTTPS in fro
 
 async function viewCompose(box) {
   const f = await call('/api/fleet');
+  renderTree(f.machines);
   if (!MG.draft) MG.draft = sfRecall('sf.compose.draft', '', MG.me?.username);      // what was written before the page was reloaded, or the session ended
   const editor = el('textarea', { spellcheck: false, 'aria-label': 'Network language', value: MG.draft || EXAMPLE, oninput: () => { MG.draft = editor.value; sfStash('sf.compose.draft', MG.draft === EXAMPLE ? '' : MG.draft, MG.me?.username); } });
   const on = el('select', { 'aria-label': 'Machine' }, f.machines.map((m) => el('option', { value: m.name, selected: m.name === MG.target }, `${m.name} (${m.label})`)));
@@ -159,6 +237,29 @@ async function viewCompose(box) {
   on.addEventListener('change', () => { MG.target = on.value; syncTarget(); labelGo(); render(); });
   as.addEventListener('change', render);
   editor.addEventListener('input', () => { clearTimeout(MG.timer); MG.timer = setTimeout(render, 350); });
+
+  const SNIPPETS = [
+    ['+ Allow LAN SSH', '/ip firewall filter add chain=input src-address=10.0.0.0/8 protocol=tcp dst-port=22 action=accept comment="Admin SSH from LAN"'],
+    ['+ Allow HTTPS', '/ip firewall filter add chain=input protocol=tcp dst-port=443 action=accept comment="Web UI HTTPS"'],
+    ['+ Allow WireGuard', '/ip firewall filter add chain=input protocol=udp dst-port=51820 action=accept comment="WireGuard VPN"'],
+    ['+ WAN Port Forward', '/ip firewall nat add chain=dstnat in-interface=ether1 protocol=tcp dst-port=443 action=dst-nat to-addresses=10.0.20.80 to-ports=443 comment="Reverse proxy"'],
+    ['+ Drop External SMB', '/ip firewall filter add chain=input in-interface=ether1 protocol=tcp dst-port=445 action=drop comment="Block SMB from WAN"'],
+  ];
+  const insertSnippet = (line) => {
+    editor.value = `${editor.value.replace(/\s*$/, '')}\n${line}\n`;
+    MG.draft = editor.value;
+    sfStash('sf.compose.draft', MG.draft === EXAMPLE ? '' : MG.draft, MG.me?.username);
+    render();
+  };
+  const matrixBox = el('div', { class: 'stack' });
+  const compareDialects = btn('Compare all target dialects', async () => {
+    matrixBox.replaceChildren(el('p', { class: 'muted small' }, 'Compiling across all targets…'));
+    try {
+      const res = await call('/api/dsl/compile', 'POST', { dsl: editor.value, targets: TARGETS });
+      matrixBox.replaceChildren(el('div', { class: 'mg-cols' }, ...TARGETS.map((t) => el('div', { class: 'mg-card' },
+        el('b', {}, t), el('pre', {}, res.targets?.[t]?.text || '(nothing for this target)')))));
+    } catch (err) { matrixBox.replaceChildren(el('p', { class: 'bad small' }, err.message)); }
+  });
 
   const a = el('input', { placeholder: 'from', 'aria-label': 'From', size: 14 }), b = el('input', { placeholder: 'to', 'aria-label': 'To', size: 14 }), port = el('input', { placeholder: 'port', 'aria-label': 'Port', size: 6, inputmode: 'numeric' });
   const whatif = el('div', {});
@@ -212,8 +313,10 @@ async function viewCompose(box) {
     el('div', { class: 'mg-card' }, el('div', { class: 'mg-row' }, el('label', { class: 'fld' }, 'On', on), el('label', { class: 'fld' }, 'Show as', as), go, btn('Load what it runs', async () => { try { const r = await call(`/api/dsl/of?host=${encodeURIComponent(on.value)}`);
       if (MG.draft && MG.draft !== EXAMPLE && MG.draft !== r.dsl && !(await confirmDialog({ title: 'Replace what you have written?', body: `The editor holds your own text. This puts what ${on.value} runs now in its place.`, confirm: 'Replace it', danger: true }))) return;
       editor.value = r.dsl; MG.draft = r.dsl; sfStash('sf.compose.draft', MG.draft, MG.me?.username); render(); } catch (err) { notes.replaceChildren(el('p', { class: 'bad' }, err.message)); } })),
-      el('p', { class: 'small muted' }, 'On a device, Check reports what would be sent and whether it cuts StorageForge off, and Apply then has its own rollback timer. On a Linux host, Stage in Changes turns the rules into steps there, to check and deploy like any other.')),
+      el('p', { class: 'small muted' }, 'On a device, Check reports what would be sent and whether it cuts StorageForge off, and Apply then has its own rollback timer. On a Linux host, Stage in Changes turns the rules into steps there, to check and deploy like any other.'),
+      el('div', { class: 'mg-snippets' }, el('span', { class: 'small muted' }, 'Rule presets:'), ...SNIPPETS.map(([lbl, dsl]) => btn(lbl, () => insertSnippet(dsl))), compareDialects)),
     el('div', { class: 'mg-cols' }, el('div', { class: 'mg-card' }, el('h2', {}, 'What you write'), editor), el('div', { class: 'mg-card' }, el('h2', {}, 'What it becomes'), native, notes)),
+    matrixBox,
     result,
     el('div', { class: 'mg-card' }, el('h2', {}, 'Try a path'), el('div', { class: 'mg-row' }, a, b, port, ask), whatif));
   render();
@@ -259,9 +362,30 @@ const rate = (v) => (v == null ? '' : v > 1048576 ? `${(v / 1048576).toFixed(1)}
 async function viewTraffic(box) {
   const t = await call('/api/traffic');
   const toggle = can('netscan.run') ? btn(t.enabled ? 'Turn off' : 'Turn on', async () => { await call('/api/traffic/settings', 'POST', { enabled: !t.enabled }); setView('traffic'); }, t.enabled ? '' : 'pri') : null;
-  const kids = [el('div', { class: 'mg-card' }, el('div', { class: 'mg-row' }, el('b', {}, t.enabled ? 'Monitoring is on' : 'Monitoring is off'), toggle), el('p', { class: 'small muted' }, 'Sends nothing. Each number comes from a device’s own counters at an ordinary reading, every 5 minutes while this is on.'), el('p', { class: 'small muted' }, 'Looking for what else is on the network? The network scanner is a separate opt-in on the main page, and it does send packets. ', el('a', { class: 'mg-btn', href: '/#view=scan' }, 'Open Scan')))];
+  const rxTotal = t.interfaces.reduce((a, i) => a + (i.latest?.rx_rate || 0), 0);
+  const txTotal = t.interfaces.reduce((a, i) => a + (i.latest?.tx_rate || 0), 0);
+  const errs = t.interfaces.filter((i) => (i.latest?.errors || 0) + (i.latest?.drops || 0) > 0).length;
+  const kpi = (n, lbl, cls = '') => el('div', { class: `pve-kpi ${cls}` }, el('span', { class: 'pve-kpi-lbl' }, lbl), el('b', {}, n));
+  const kids = [
+    el('div', { class: 'pve-kpis' },
+      kpi(String(t.interfaces.length), 'Monitored NICs', 'accent'),
+      kpi(rate(rxTotal) || '0 KiB/s', 'Total Inbound'),
+      kpi(rate(txTotal) || '0 KiB/s', 'Total Outbound'),
+      kpi(String(errs), 'With Errors / Drops', errs ? 'warn' : 'ok')),
+    el('div', { class: 'mg-card' }, el('div', { class: 'mg-row' }, el('b', {}, t.enabled ? 'Monitoring is on' : 'Monitoring is off'), toggle), el('p', { class: 'small muted' }, 'Sends nothing. Each number comes from a device’s own counters at an ordinary reading, every 5 minutes while this is on.'), el('p', { class: 'small muted' }, 'Looking for what else is on the network? The network scanner is a separate opt-in on the main page, and it does send packets. ', el('a', { class: 'mg-btn', href: '/#view=scan' }, 'Open Scan'))),
+  ];
   if (t.anomalies.length) kids.push(el('div', { class: 'mg-card' }, el('h2', {}, 'Out of the ordinary'), t.anomalies.map((a) => el('p', { class: 'warn' }, `${a.host} ${a.iface}: ${a.text}`))));
-  if (t.interfaces.length) kids.push(el('div', { class: 'mg-card' }, table(['Machine', 'Interface', 'In', '', 'Out', '', 'Errors', 'Drops'], t.interfaces.map((i) => [i.host, i.iface, rate(i.latest?.rx_rate), spark(i.series, 'rx_rate'), rate(i.latest?.tx_rate), spark(i.series, 'tx_rate'), String(i.latest?.errors ?? ''), String(i.latest?.drops ?? '')]))));
+  if (t.interfaces.length) {
+    const tblBox = el('div', {});
+    const qIn = el('input', { type: 'search', value: MG.trafficFind, placeholder: 'Filter machine or interface…', 'aria-label': 'Filter interfaces', oninput: () => { MG.trafficFind = qIn.value; drawTbl(); } });
+    function drawTbl() {
+      const q = MG.trafficFind.trim().toLowerCase();
+      const rows = t.interfaces.filter((i) => !q || `${i.host} ${i.iface}`.toLowerCase().includes(q));
+      tblBox.replaceChildren(table(['Machine', 'Interface', 'In', '', 'Out', '', 'Errors', 'Drops'], rows.map((i) => [i.host, i.iface, rate(i.latest?.rx_rate), spark(i.series, 'rx_rate'), rate(i.latest?.tx_rate), spark(i.series, 'tx_rate'), String(i.latest?.errors ?? ''), String(i.latest?.drops ?? '')])));
+    }
+    drawTbl();
+    kids.push(el('div', { class: 'mg-card' }, el('div', { class: 'pve-toolbar' }, qIn), tblBox));
+  }
   box.replaceChildren(...kids);
 }
 
@@ -272,6 +396,7 @@ async function viewTraffic(box) {
   const nav = $('#mgnav');
   for (const [id, label] of VIEWS) if (can(WANT[id])) { const b = el('button', { type: 'button', onclick: () => setView(id) }, label); b.dataset.v = id; nav.append(b); }
   if (!VIEWS.some(([id]) => can(WANT[id]))) { $('#mgview').replaceChildren(el('p', { class: 'muted' }, 'This account has no network access.')); return; }
+  if (can('devices.view')) call('/api/fleet').then((f) => renderTree(f.machines || [])).catch(() => {});
   const at = manageRead();
   MG.applying = true;                                           // opening on what the URL says is not a step in the history
   if (at.device) MG.device = at.device;

@@ -63,6 +63,7 @@ sfPaletteSource(() => {
     const p = sfParseHash();
     const initial = location.pathname === '/admin/users' ? 'users' : (p.parts[0] || p.q.get('tab') || 'keys');
     adOpen(initial, false);
+    if (typeof loadAdminSummary === 'function') loadAdminSummary();
     AD.booted = true;
     sfReplaceHash(sfFormatHash([AD.sec]));
     window.addEventListener('hashchange', () => {
