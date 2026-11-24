@@ -1387,6 +1387,19 @@ class ServerTests(DBCase):
         self.client.post('/api/logout')
         self.assertEqual(self.client.get('/api/me').status_code, 401)
 
+    def test_cli_catalog_includes_nested_commands_and_optional_subcommands(self):
+        self.assertEqual(self.client.get('/api/cli/catalog').status_code, 401)
+        self.login()
+        response = self.client.get('/api/cli/catalog')
+        self.assertEqual(response.status_code, 200)
+        commands = {tuple(c['path']): c for c in response.get_json()['commands']}
+        self.assertIn(('backup',), commands)
+        self.assertIn(('moves', 'import'), commands)
+        create = commands['archive', 'create']
+        self.assertEqual(create['group'], 'Discovery and files')
+        self.assertIn('--compress-host', [f['flag'] for f in create['levels'][-1]])
+        self.assertTrue(all(c['group'] != 'Other' for c in commands.values()))
+
     def test_pages_need_a_session_and_send_strangers_to_login(self):
         for path, nxt in (('/', '%2F'), ('/planner', '%2Fplanner'), ('/index.html?x=1', '%2Findex.html%3Fx%3D1')):
             r = self.client.get(path)

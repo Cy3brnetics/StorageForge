@@ -10,6 +10,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - The sign-in form waits for its submit handler and uses POST for native submissions so credentials stay out of URLs.
 
 ### Added
+- Host operations forms expose the installed CLI in its corresponding workspaces and display command output there.
 - Cleanup and `copies sync --file` can schedule a one-way mirror between two individual files, including copies with different names.
 - **Lossless ultra-compression archives, wire compression & remote compression CPU offload**: Change plans (`archive`, `archive-extract` in `steps_archive.py`), Moves (`method: archive` and rsync `compress: zstd|max` in `moves.py`, `jobs.py`, `jobscript.py`), Web UI, and CLI (`storageforge-index archive create|extract`) pack files and folders into verified `.tar.zst` (`zstd --ultra -22 --long=27`), `.tar.xz` (`xz -9 -e`), or solid `.7z` archives with `.sha256` sidecars under idle CPU/IO priority (`ionice -c3 nice -n 19`). Compression CPU can run on the **sender** (smaller network transfer, zero receiver CPU), the **receiver** (raw `tar` stream from weak/busy senders), or a **remote compression agent** (`worker` / `compress_host`, zero-disk FIFO verified stream over SSH — including same-host archives, with zero-filesystem-access `<job>-compress` keys when deployed).
 - Change plans can remove the containers in a managed compose project or destroy a managed LXC container. The operator confirms the workload name and enables destructive changes.

@@ -99,3 +99,8 @@ Generated scripts on a named site carry a `# Site:` line. See [Starting a new si
 ## Databases
 
 SQLite by default, or PostgreSQL with the `postgres` extra. See [Database](../database.md). The lab runs SQLite only. CI runs the test suite on both.
+
+
+## Host operations
+
+Open **Host operations** in a workspace to run its StorageForge commands. For example, Moves includes file transfers and archives, while Audit Log & Backups includes backup and restore. Select a host with the CLI installed, fill in the arguments, and choose **Run**. Output and interactive prompts appear in the workspace. Execution requires console access and uses the selected host’s SSH account. Controller maintenance commands belong under Administration.

@@ -8,6 +8,7 @@ const AD_SECS = {
   secrets: ['Secrets & Platforms', 'Plan-step vault secrets and Proxmox VE / PBS / PDM platform API connections.'],
   users: ['User Management', 'Manage user accounts, one-time invite links, password resets and role permissions.'],
   audit: ['Audit Log & Backups', 'Tamper-evident audit chain verification and StorageForge essentials backups.'],
+  maintenance: ['Controller maintenance', 'Configuration, upgrades and service operations.'],
   account: ['My Password', 'Change the password for your signed-in account.'],
 };
 
