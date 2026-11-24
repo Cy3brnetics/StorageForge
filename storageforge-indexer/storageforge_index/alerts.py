@@ -41,7 +41,17 @@ _lock = threading.Lock()
 # ── settings ────────────────────────────────────────────────────────
 def get_setting(conn: Conn, key: str):
     v = conn.scalar('SELECT value_json FROM settings WHERE key = :k', {'k': key})
-    return json.loads(v) if v else json.loads(json.dumps(DEFAULTS.get(key)))
+    defaults = json.loads(json.dumps(DEFAULTS.get(key)))
+    if not v:
+        return defaults
+    stored = json.loads(v)
+    if key == 'alerts':
+        for channel, fields in defaults.items():
+            if isinstance(fields, dict):
+                stored[channel] = {**fields, **stored.get(channel, {})}
+            else:
+                stored.setdefault(channel, fields)
+    return stored
 
 
 def set_setting(conn: Conn, key: str, value, actor: str):
@@ -75,7 +85,6 @@ def save_settings(conn: Conn, body: dict, actor: str) -> dict:
     url = str(body.get('report_url') or '').strip().rstrip('/')
     if url and not REPORT_URL_RE.fullmatch(url):
         raise ValueError('the report URL must be http(s)://host:port (optionally /path), as the hosts reach StorageForge')
-    set_setting(conn, 'report_url', url, actor)
     cur, new = get_setting(conn, 'alerts'), body.get('alerts') or {}
     for ch, fields in (('ntfy', ('url', 'topic', 'token')), ('gotify', ('url', 'token')), ('webhook', ('url',))):
         old_origin = _origin(cur[ch].get('url'))
@@ -124,7 +133,9 @@ def save_settings(conn: Conn, body: dict, actor: str) -> dict:
             routes.append({'level': level, 'host': re.sub(r'[^A-Za-z0-9_.*?-]', '', str(r.get('host') or '*'))[:100] or '*', 'channels': channels})
         cur['routes'] = routes
     cur['notify_resolved'] = bool(new.get('notify_resolved', cur.get('notify_resolved', True)))
-    set_setting(conn, 'alerts', cur, actor)
+    with conn.tx():
+        set_setting(conn, 'report_url', url, actor)
+        set_setting(conn, 'alerts', cur, actor)
     return settings(conn)
 
 
@@ -609,7 +620,7 @@ def evaluate(db) -> dict:
             current = problems(conn)
             open_ = {r[0]: r for r in conn.all("SELECT alert_key, title, message, level, kind, host, snoozed_until FROM alerts WHERE state = 'open'")}
             hosts, rules = notifications.known_hosts(conn), notifications.mutes(conn, now_t)
-            sent = []
+            sent, to_send = [], []
 
             def quiet(kind, host, level, snoozed=None):
                 if not notifications.ignorable(kind, level):
@@ -623,7 +634,7 @@ def evaluate(db) -> dict:
                                  {'t': now_t, 'm': message[:2000], 'l': level, 'h': host, 'k': key})
                     if level == 'crit' and was != 'crit':        # it got worse: said again, and a snooze it had no longer holds
                         notifications.record(conn, key, kind, host, notifications.level_of(level), title, 'escalated', at=now_t)
-                        send(cfg, title, message or title, level, {'state': 'open', 'kind': kind, 'ref': ref})
+                        to_send.append((None, title, message or title, level, {'state': 'open', 'kind': kind, 'ref': ref}))
                     continue
                 conn.execute('DELETE FROM alerts WHERE alert_key = :k', {'k': key})
                 conn.execute("""INSERT INTO alerts (alert_key, kind, ref, title, message, state, first_at, last_at, level, host)
@@ -633,17 +644,20 @@ def evaluate(db) -> dict:
                 if quiet(kind, host, notifications.level_of(level)):
                     sent.append((key, ['muted']))
                     continue
-                res = send(cfg, title, message or title, level, {'state': 'open', 'kind': kind, 'ref': ref})
-                if not res[0].startswith('no channel'):
-                    conn.execute('UPDATE alerts SET notified_at = :t WHERE alert_key = :k', {'t': now_t, 'k': key})
-                sent.append((key, res))
+                to_send.append((key, title, message or title, level, {'state': 'open', 'kind': kind, 'ref': ref}))
             for key, (_k, title, _m, level, kind, host, snoozed) in open_.items():
                 if key not in current:
                     conn.execute("UPDATE alerts SET state = 'resolved', resolved_at = :t WHERE alert_key = :k",
                                  {'t': now_t, 'k': key})
                     notifications.record(conn, key, kind, host, notifications.level_of(level), title, 'resolved', at=now_t)
                     if cfg.get('notify_resolved', True) and not quiet(kind, host, notifications.level_of(level), snoozed):
-                        send(cfg, f'Resolved: {title}', f'Resolved: {title}', 'ok', {'state': 'resolved', 'key': key})
+                        to_send.append((None, f'Resolved: {title}', f'Resolved: {title}', 'ok', {'state': 'resolved', 'key': key}))
+            for key, title, body, level, extra in to_send:
+                res = send(cfg, title, body, level, extra)
+                if key is not None:
+                    if not res[0].startswith('no channel'):
+                        conn.execute('UPDATE alerts SET notified_at = :t WHERE alert_key = :k', {'t': now_t, 'k': key})
+                    sent.append((key, res))
             return {'open': len(current), 'new': len(sent)}
         finally:
             conn.close()

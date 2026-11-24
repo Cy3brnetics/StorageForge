@@ -33,6 +33,12 @@ class Db(unittest.TestCase):
 
 
 class SavingSettings(Db):
+    def test_upgrade_preserves_old_channels_and_initializes_new_ones(self):
+        alerts.set_setting(self.conn, 'alerts', {'ntfy': {'topic': 'old', 'token': TOKEN}}, 'test')
+        self.assertEqual(self.save(ntfy={'topic': 'new'})['alerts']['ntfy']['token'], '••••••')
+        self.assertEqual(self.stored()['ntfy']['token'], TOKEN)
+        self.assertEqual(self.stored()['sms']['token'], '')
+
     def test_a_token_is_write_only_and_kept_while_the_server_is_the_same(self):
         self.save(ntfy={'url': 'https://192.0.2.10/', 'topic': 'nas', 'token': TOKEN})
         self.assertEqual(alerts.settings(self.conn)['alerts']['ntfy']['token'], '••••••', 'never shown back')
